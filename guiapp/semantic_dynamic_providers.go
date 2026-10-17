@@ -403,6 +403,7 @@ func (c *sharedAgentLoopCallbacks) executeSemanticDynamicProviderWithContext(exe
 			return tool.SelectionExecutionResult{Result: "[system rejected] dynamic_effect_coordinator_unavailable", ReasonCode: "dynamic_effect_coordinator_unavailable"}, true
 		}
 	}
+	c.emitSemanticSelectionProgress(selection, argsJSON)
 	result := catalog.ExecuteSelectionWithEffects(ctx, c.semanticSurface.scope, principal, guiSemanticMCPBridge{handler: c.handler}, guiSemanticSkillBridge{handler: c.handler}, coordinator, selection, argsJSON)
 	return result, true
 }

@@ -48,6 +48,7 @@ func (e *CoreAgentExecutor) mailboxHost(ctx context.Context, req ExecuteRequest,
 	}
 	_ = ctx
 	reader, sender := mailboxPeers(e)
+	attachMailboxRefresh(e, req.Principal, reader)
 	principal := memoryOwnerIDForPrincipal(req.Principal)
 	session := strings.TrimSpace(req.Session.ID)
 	return &mailbox.Host{
@@ -83,6 +84,51 @@ func mailboxPeers(e *CoreAgentExecutor) (mailbox.MailReader, mailbox.MailSender)
 	return reader, sender
 }
 
+// attachMailboxRefresh refreshes a rejected Gmail or Hotmail token on the
+// access that failed. A login saved since the token was read is used instead,
+// because refreshing the rejected token would revoke that login.
+func attachMailboxRefresh(e *CoreAgentExecutor, principal Principal, reader mailbox.MailReader) {
+	dialer, ok := reader.(*mailbox.NetDialer)
+	if !ok || e == nil {
+		return
+	}
+	dialer.ReplaceSecret = func(ctx context.Context, account mailbox.Account, rejected string) (string, error) {
+		return e.replaceRejectedMailboxOAuth(ctx, principal, account, rejected)
+	}
+}
+
+func (e *CoreAgentExecutor) replaceRejectedMailboxOAuth(ctx context.Context, principal Principal, account mailbox.Account, rejected string) (string, error) {
+	if e == nil {
+		return "", errors.New(mailbox.MsgOAuthReauth)
+	}
+	return mailbox.AdoptRejectedOAuth(ctx, rejected, time.Now(),
+		func(side string) (string, error) {
+			return e.readMailboxSecret(principal, account.ID, side), nil
+		},
+		func(updated string) error {
+			if strings.TrimSpace(e.MailboxSecretDir) == "" {
+				return errors.New(mailbox.MsgKeyring)
+			}
+			return persistRefreshedMailboxSecret(e.MailboxSecretDir, principal.TenantID, principal.UserID, mailbox.SecretRef(account.ID, mailbox.SideInbound), updated)
+		},
+	)
+}
+
+func (e *CoreAgentExecutor) readMailboxSecret(principal Principal, id, side string) string {
+	if e == nil {
+		return ""
+	}
+	path, err := mailboxSecretPath(e.MailboxSecretDir, principal.TenantID, principal.UserID, mailbox.SecretRef(id, side))
+	if err != nil {
+		return ""
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
 func (c *coreAgentCallbacks) mailboxRuntime() *mailbox.Host {
 	if c == nil {
 		return &mailbox.Host{Budget: mailbox.NewTurnBudget(), Drafts: mailbox.NewDraftStore()}
@@ -91,6 +137,9 @@ func (c *coreAgentCallbacks) mailboxRuntime() *mailbox.Host {
 		return c.mailboxHost
 	}
 	reader, sender := mailboxPeers(c.executor)
+	if c.executor != nil {
+		attachMailboxRefresh(c.executor, c.principal, reader)
+	}
 	drafts := mailbox.NewDraftStore()
 	var secrets mailbox.SecretResolver
 	if c.executor != nil {
@@ -296,13 +345,21 @@ func mailboxFileResolver(dir, tenant, user string) mailbox.SecretResolver {
 		if strings.TrimSpace(secret) == "" {
 			return "", errors.New("mailbox secret is empty")
 		}
-		current, updated, err := mailbox.MaterializeSecret(ctx, secret, time.Now())
+		readLatest := func() (string, error) {
+			next, rerr := os.ReadFile(path)
+			if rerr != nil {
+				return "", rerr
+			}
+			return string(next), nil
+		}
+		current, updated, err := mailbox.MaterializeForAccess(ctx, secret, readLatest, time.Now())
 		if err != nil {
 			return "", err
 		}
+		current, updated = mailbox.ClaimOAuthUpdate(ctx, secret, current, updated, readLatest, time.Now())
 		if updated != "" {
 			if err := persistRefreshedMailboxSecret(dir, tenant, user, ref, updated); err != nil {
-				return "", err
+				_ = persistRefreshedMailboxSecret(dir, tenant, user, ref, updated)
 			}
 		}
 		return current, nil

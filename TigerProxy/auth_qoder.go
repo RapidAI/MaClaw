@@ -133,7 +133,6 @@ func (a *App) applyQoderToken(mode string, profile qoder.Profile, token qoder.To
 	if strings.TrimSpace(token.AccessToken) == "" {
 		return Status{}, fmt.Errorf("Qoder 登录未返回访问令牌")
 	}
-	a.setRelaunchAfterAuth(true)
 	status, err := a.applyVendorLogin(vendorCredential{
 		Mode:         mode,
 		BaseURL:      profile.ChatURL,
@@ -143,11 +142,7 @@ func (a *App) applyQoderToken(mode string, profile qoder.Profile, token qoder.To
 		UserID:       token.UserID,
 		ExpiresAt:    token.ExpiresAt,
 	})
-	if err != nil {
-		a.setRelaunchAfterAuth(false)
-		return Status{}, err
-	}
-	return status, nil
+	return status, err
 }
 
 func fetchQoderModels(ctx context.Context, profile qoder.Profile, userID, apiKey string) ([]ModelOption, error) {

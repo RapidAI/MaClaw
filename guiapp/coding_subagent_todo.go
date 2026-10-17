@@ -95,7 +95,7 @@ func normalizeCodingAgentTodoStatus(raw string) string {
 		return codingAgentTodoInProgress
 	case codingAgentTodoCompleted, "done", "passed", "complete", "finished", "ok", "success":
 		return codingAgentTodoCompleted
-	case codingAgentTodoCancelled, "skipped", "cancel", "drop", "aborted":
+	case codingAgentTodoCancelled, "skipped", "cancel", "canceled", "drop", "aborted", "abandoned", "failed", "failure", "blocked":
 		return codingAgentTodoCancelled
 	case codingAgentTodoPending, "todo", "open", "new":
 		return codingAgentTodoPending
@@ -106,7 +106,7 @@ func normalizeCodingAgentTodoStatus(raw string) string {
 		return codingAgentTodoInProgress
 	case "完成", "已完成", "做完", "勾选":
 		return codingAgentTodoCompleted
-	case "取消", "跳过", "放弃":
+	case "取消", "已取消", "跳过", "放弃", "失败", "已失败", "阻塞", "受阻":
 		return codingAgentTodoCancelled
 	case "待办", "未开始", "待处理":
 		return codingAgentTodoPending
@@ -339,6 +339,41 @@ func formatCodingAgentTodoProgressLine(items []codingAgentTodoItem) string {
 	return fmt.Sprintf("完成 %d/%d", done, total)
 }
 
+const checklistUnsettledUserMessage = "步骤清单还有未关闭项，不能把这一轮当成完成"
+
+// openCodingAgentChecklistNudge is the continuation the loop injects when a
+// prose stop leaves this checklist open. Empty means the list is absent or
+// every item is already terminal. It does not embed revision or version:
+// those tokens are reprinted on the next request's todo_write definition.
+func openCodingAgentChecklistNudge(state *codingAgentTodoState) string {
+	if state == nil {
+		return ""
+	}
+	snap := state.controlPlaneSnapshot()
+	unresolved := codingAgentTodoUnresolvedSummary(snap.Items)
+	if unresolved == "" {
+		return ""
+	}
+	// Tokens are request-scoped. The next model request re-renders the
+	// todo_write definition and may advance the version, so a number captured
+	// here would be rejected as stale.
+	return fmt.Sprintf("[系统] 本轮步骤清单还有未关闭项，不能用文字结束。\n%s\n请立刻调用 todo_write，merge=true，只按上面的 id 更新：已做完的标 completed，失败或放弃的标 cancelled；若还有未做的步骤，先做完再勾选。不要新开一条步骤，也不要把未勾选的步骤写成已完成。expected_revision 和 expected_version 必须从本轮 todo_write 的 definition 原样带回，不要沿用上一轮的数字。勾完后保留你已经写好的结论作为最终回复。", unresolved)
+}
+
+func (c *codingSubAgentCallbacks) OpenChecklistNudge() string {
+	if c == nil {
+		return ""
+	}
+	return openCodingAgentChecklistNudge(&c.todos)
+}
+
+func (c *remoteCodingCallbacks) OpenChecklistNudge() string {
+	if c == nil {
+		return ""
+	}
+	return openCodingAgentChecklistNudge(&c.todos)
+}
+
 // codingAgentTodoUnresolvedSummary lists incomplete steps for end-of-turn soft notes.
 func codingAgentTodoUnresolvedSummary(items []codingAgentTodoItem) string {
 	if len(items) == 0 {
@@ -350,7 +385,7 @@ func codingAgentTodoUnresolvedSummary(items []codingAgentTodoItem) string {
 		case codingAgentTodoCompleted, codingAgentTodoCancelled:
 			continue
 		default:
-			open = append(open, fmt.Sprintf("%d. %s (%s)", i+1, it.Content, it.Status))
+			open = append(open, fmt.Sprintf("%d. %s (id=%s, %s)", i+1, it.Content, it.ID, it.Status))
 		}
 	}
 	if len(open) == 0 {
@@ -487,7 +522,7 @@ const codingAgentTodoPromptSection = `
 2. 一项一项做：同一时间最多一个 in_progress。
 3. 做完立刻勾：将该步改为 completed，并把下一步改为 in_progress（可 merge=true 只更新 id+status）。
 4. 失败或取消：标 cancelled，并在摘要里说明原因。
-5. 禁止空口报完成：未勾选的步骤不得在最终回复里声称已完成。
+5. 禁止空口报完成：清单里还有 pending 或 in_progress 时，宿主会拒绝纯文字收尾。结束前必须调用 todo_write，把做完的标 completed、明确放弃的标 cancelled；还没做完的先做完再勾。未勾选的步骤不得在最终回复里声称已完成。
 6. 若用户消息带 [Plan step Tn/N] 或写明只执行当前计划步：todo 只能拆解**当前这一步**的内部子工作，禁止把整份多步计划（T1…Tn）重新列成清单并在本回合全部做完；后续计划步由编排器另开任务执行。
 琐碎单点修改（改一个 typo、跑一条命令）可不建清单。
 `

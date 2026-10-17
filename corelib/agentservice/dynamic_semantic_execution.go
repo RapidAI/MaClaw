@@ -357,6 +357,13 @@ func (c *DynamicSemanticCatalog) ExecuteSelectionWithEffects(ctx context.Context
 	if err != nil {
 		return dynamicSemanticDispatchError(binding, err)
 	}
+	// A read-only selection never enters the receipt coordinator. The headless
+	// bridge still encodes a finished tools/call error as an "Error:" string
+	// with a nil Go error. Treating that string as success would complete the
+	// route off a call the tool already refused.
+	if completedDynamicToolResultFailure(selection, result) {
+		return coretool.SelectionExecutionResult{Result: result, ReasonCode: dynamicMCPToolErrorReason}
+	}
 	return coretool.SelectionExecutionResult{Result: result, Succeeded: true}
 }
 

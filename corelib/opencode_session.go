@@ -492,15 +492,24 @@ func IsOpenCodeZenFreeModel(model string) bool {
 	}
 }
 
-// OpenCodeZenAgentModel reports the two Zen free ids that reject a request
+// OpenCodeZenAgentModel reports a Zen free model that rejects a request
 // unless it streams and advertises the official bash and read tools.
+// Every Zen-only free id is gated this way. Go-native free ids are not.
 func OpenCodeZenAgentModel(model string) bool {
-	switch openCodeModelID(model) {
-	case "glm-5.3-flash-free", "deepseek-v4.1-flash-free":
-		return true
-	default:
+	if openCodeModelID(model) == "big-pickle" {
 		return false
 	}
+	return IsOpenCodeZenFreeModel(model)
+}
+
+// OpenCodeUsesResponsesAPI reports Zen free models that reject Chat
+// Completions and the Anthropic messages API. They answer on the Responses
+// API when the request streams and includes the official bash and read tools.
+func OpenCodeUsesResponsesAPI(rawURL, model string) bool {
+	if !IsOpenCodeURL(rawURL) {
+		return false
+	}
+	return openCodeModelID(model) == "muse-spark-1.2-contributor-free"
 }
 
 // OpenCodeChatEndpoint sends Zen-only free models to /zen/v1 and every other

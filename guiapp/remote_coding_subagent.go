@@ -888,10 +888,14 @@ func remoteCodingSubAgentResultFromLoopResult(result agent.LoopResult) *RemoteCo
 	}
 	if result.Error != "" {
 		status := "failed"
+		errText := result.Error
 		if remoteCodingSubAgentLoopErrorIsCancelled(result.Error) {
 			status = "cancelled"
 		}
-		return base(status, result.Error)
+		if result.Error == agent.ErrChecklistUnsettled {
+			errText = checklistUnsettledUserMessage
+		}
+		return base(status, errText)
 	}
 	if result.HardExit {
 		return base("failed", "remote coding subagent hard exit")

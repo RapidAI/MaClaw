@@ -1420,6 +1420,21 @@ func (a *App) attachPetConversationFile(mem *agent.ConversationMemory) {
 	}
 }
 
+// attachPetConversationFileDuringLoad binds the pet transcript on the loader
+// goroutine. UseSeparateSessionFile would wait for that load and deadlock.
+func (a *App) attachPetConversationFileDuringLoad(mem *agent.ConversationMemory) {
+	if a == nil || mem == nil {
+		return
+	}
+	path := a.petConversationPath()
+	if path == "" {
+		return
+	}
+	if err := mem.BindSeparateSessionFile(petCompanionUserID, path); err != nil {
+		petLogf("separate memory: %v", err)
+	}
+}
+
 func (a *App) petConversationPath() string {
 	if a == nil {
 		return ""

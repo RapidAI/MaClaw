@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
@@ -674,6 +675,131 @@ type RequiredEffectGuard interface {
 	RequiredEffectUnsettled() bool
 }
 
+// ErrChecklistUnsettled is the hard-exit code when the model stops with prose
+// while a checklist it published still has non-terminal items. A written
+// summary does not close that checklist. A nameless tool call that already
+// streamed that summary is the same kind of stop.
+const ErrChecklistUnsettled = "checklist_unsettled"
+
+// checklistStillOpenNudge is the reminder after the first open-checklist stop.
+// Later stops must not repeat the full id list.
+const checklistStillOpenNudge = "[系统] 清单仍未关闭。请马上用 todo_write，merge=true，按上一条列出的 id 把每一项标成 completed 或 cancelled。expected_revision 和 expected_version 从本轮 todo_write 的 definition 原样带回。然后保留已写好的结论。"
+
+// ChecklistSettlementGuard is an optional host callback. A tool-less stop is
+// not completion while the agent has published a checklist that still has
+// pending or in-progress items. OpenChecklistNudge returns the continuation
+// text; an empty string means there is no open checklist. The nudge must not
+// embed request-scoped call tokens, because the next request re-renders them.
+// A prose stop gets one more look. An empty stop uses the empty-response
+// bound. A nameless tool call whose report was already streamed is a prose
+// stop, not a successful finish. Exhaustion is ErrChecklistUnsettled,
+// not a passed turn. Tool calls reset the look count so real remaining work
+// can still finish and then close the list.
+type ChecklistSettlementGuard interface {
+	OpenChecklistNudge() string
+}
+
+// preferChecklistDeliverable keeps the report written before a checklist
+// nudge when the follow-up is only a short close-out. A later answer that
+// restates or extends the work stands.
+func preferChecklistDeliverable(pre, follow string) string {
+	pre = strings.TrimSpace(pre)
+	follow = strings.TrimSpace(follow)
+	if pre == "" || pre == llm.MalformedContentToolCallErrorMsg {
+		return follow
+	}
+	if follow == "" || follow == pre {
+		return pre
+	}
+	// A one-line "checked" acknowledgement is not a new report. A short
+	// follow-up that states a failure is, and must not be discarded.
+	if checklistFollowUpCarriesOutcome(follow) {
+		return follow
+	}
+	if utf8.RuneCountInString(follow) < 48 && utf8.RuneCountInString(pre) > utf8.RuneCountInString(follow) {
+		return pre
+	}
+	return follow
+}
+
+// noteChecklistDeliverable keeps the strongest report seen while a checklist
+// is still open. The first prose stop is often a status aside; a later
+// completion write-up must replace it, and a short "checked" line must not.
+func noteChecklistDeliverable(pre, content string) string {
+	answer := strings.TrimSpace(content)
+	if answer == "" || answer == llm.MalformedContentToolCallErrorMsg {
+		return pre
+	}
+	if strings.TrimSpace(preferChecklistDeliverable(pre, content)) == answer {
+		return content
+	}
+	return pre
+}
+
+// considerOpenChecklistStop decides whether a tool-less stop may finish while
+// a published checklist is still open. answer is the prose already written,
+// including a streamed reply kept after a nameless tool call, or a tool body
+// the loop itself adopted. consecutive is that stop series only: model prose
+// and a loop-authored fallback do not share it. cont asks for another model
+// look and nudge is the message to inject. unsettled means the look budget
+// is spent; text is the report to keep and the caller must finish with
+// ErrChecklistUnsettled. A closed or absent checklist returns both flags
+// false. emptyLimit is the bound for a blank answer; maxTotal caps reminders
+// for the whole turn.
+func considerOpenChecklistStop(cb LoopCallbacks, answer string, room bool, consecutive, total *int, preAnswer *string, emptyLimit, maxTotal int) (nudge string, cont, unsettled bool, text string) {
+	guard, ok := cb.(ChecklistSettlementGuard)
+	if !ok {
+		return "", false, false, ""
+	}
+	nudge = strings.TrimSpace(guard.OpenChecklistNudge())
+	if nudge == "" || consecutive == nil || total == nil || preAnswer == nil {
+		return "", false, false, ""
+	}
+	*consecutive++
+	*total++
+	*preAnswer = noteChecklistDeliverable(*preAnswer, answer)
+	limit := 2
+	if strings.TrimSpace(answer) == "" {
+		limit = emptyLimit
+	}
+	if *total > 1 {
+		// The first nudge already listed the open ids. Repeating that block
+		// on every later stop only spends context.
+		nudge = checklistStillOpenNudge
+	}
+	if *consecutive >= limit || *total >= maxTotal || !room {
+		text = StripThinkingTags(answer)
+		if pre := strings.TrimSpace(StripThinkingTags(*preAnswer)); pre != "" {
+			text = preferChecklistDeliverable(pre, text)
+		}
+		return "", false, true, text
+	}
+	return nudge, true, false, ""
+}
+
+func checklistFollowUpCarriesOutcome(follow string) bool {
+	lower := strings.ToLower(strings.TrimSpace(follow))
+	if lower == "" {
+		return false
+	}
+	// A passing count contains the same words as a failure. It must not
+	// replace the report the model already wrote.
+	for _, benign := range []string{
+		"0 failed", "0 tests failed", "no tests failed", "no failure", "without failure",
+		"未失败", "没有失败",
+	} {
+		if strings.Contains(lower, benign) {
+			return false
+		}
+	}
+	for _, mark := range []string{"failed", "failure", "panic", "失败", "未通过", "没有通过", "报错"} {
+		if strings.Contains(lower, mark) {
+			return true
+		}
+	}
+	return false
+}
+
 // EarlyStopper is an optional host callback for non-cancel stops (e.g. daily
 // LLM budget). Distinct from ShouldStop(), which maps to "cancelled".
 type EarlyStopper interface {
@@ -1019,6 +1145,18 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	}
 	consecutiveEmpty := 0
 	unsettledNoToolStops := 0
+	checklistStopNudges := 0
+	// checklistFallbackNudges counts loop-authored tool-body finishes. Those
+	// are not model prose stops, so they must not spend checklistStopNudges.
+	checklistFallbackNudges := 0
+	// checklistNudgeTotal caps continuations for the whole turn. Tool calls
+	// reset the consecutive counts so real work can proceed, but they must not
+	// buy an unbounded series of "close the checklist" reminders.
+	checklistNudgeTotal := 0
+	// checklistPreAnswer is the best report written while the checklist was
+	// still open. A later short acknowledgement must not replace it.
+	checklistPreAnswer := ""
+	const maxChecklistNudges = 3
 	const maxConsecutiveEmpty = 5
 	var lastToolName string         // track last tool name for empty-response recovery
 	var lastToolOutcome toolOutcome // structured outcome of last tool execution
@@ -2321,175 +2459,208 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 
 		// Track consecutive empty responses for hard exit.
 		if strings.TrimSpace(content) == "" && len(choice.Message.ToolCalls) == 0 {
-			// The provider response was consumed, but it did not produce a usable
-			// assistant turn. Retire this exact surface before any backoff, steering
-			// check, or recovery prompt can create the next request surface.
-			disposeSurface(ToolSurfaceResponseAbandoned)
-			// The bubble already showed this call's text. A nameless tool call
-			// must not swap that text for the search listing. A streamed
-			// "no lookup tool" sentence after web_search succeeded is not that
-			// text: another round usually repeats it, so finish from the result.
-			answer := streamedVisibleAnswer(iterationStreamed.String())
+			// A nameless tool call is not a tool batch. Text the bubble already
+			// showed is assistant content, and the tool-less finish below is the
+			// only stop. The length floor stays so a fragment does not hide a
+			// search transcript. Once this turn kept a checklist report, the
+			// fragment is the close-out and that same finish folds it.
+			rawStream := iterationStreamed.String()
+			answer := streamedVisibleAnswer(rawStream)
+			aboveFloor := answer != ""
+			if !aboveFloor && strings.TrimSpace(checklistPreAnswer) != "" {
+				answer = streamedBubbleText(rawStream)
+			}
+			// A streamed "no lookup tool" sentence after web_search succeeded
+			// is not that text: another round usually repeats it, so finish
+			// from the result.
 			denial := blankBecauseNameless && streamedDenialAfterSearch(answer, historyDelta)
-			if blankBecauseNameless && answer != "" && answer != strings.TrimSpace(reasoningContent) && !denial {
+			keptStreamed := blankBecauseNameless && answer != "" && answer != strings.TrimSpace(reasoningContent) && !denial
+			if keptStreamed {
 				log.Printf("[agent-loop] keeping streamed answer after nameless tool call (%d runes)", len([]rune(answer)))
-				next, nudge, cont := gateDesktopReply(cb, userText, answer, historyDelta, latestShot, iteration+1 < maxIter)
-				if cont {
-					conversation = append(conversation, map[string]interface{}{
-						"role":              "assistant",
-						"content":           answer,
-						"reasoning_content": reasoningContent,
-					})
-					historyDelta = append(historyDelta, ConversationEntry{
-						Role:             "assistant",
-						Content:          answer,
-						ReasoningContent: reasoningContent,
-						FinishReason:     "stop",
-					})
-					conversation = append(conversation, map[string]interface{}{
-						"role":    "user",
-						"content": nudge,
-					})
-					historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: nudge})
-					continue
+				content = answer
+				// A below-floor close-out is folded into the checklist report
+				// at the finish. It must not become the fallback answer.
+				if aboveFloor {
+					lastNonEmptyContent = answer
 				}
-				historyDelta = append(historyDelta, ConversationEntry{
-					Role:             "assistant",
-					Content:          next,
-					ReasoningContent: reasoningContent,
-					FinishReason:     "stop",
-				})
-				return finish(LoopResult{
-					Text:       next,
-					Iterations: iteration + 1,
-					ToolCalls:  totalToolCalls,
-				})
+				choice.FinishReason = "stop"
 			}
-			consecutiveEmpty++
-			if denial {
-				consecutiveEmpty = maxConsecutiveEmpty
-			}
-			// A nameless call after a successful search cannot be executed, but
-			// the model can still write the answer in plain text. Do not replace
-			// that reply with the search listing on the first miss. The spent
-			// grant is usually gone by then; the second miss still uses the
-			// result already stored in this turn.
-			snippetLen := len([]rune(lastToolOutcome.snippet))
-			log.Printf("[agent-loop] empty response #%d (iteration=%d, lastTool=%s, outcome=%d, snippet_len=%d)",
-				consecutiveEmpty, iteration, lastToolName, lastToolOutcome.kind, snippetLen)
-			if consecutiveEmpty >= maxConsecutiveEmpty || (blankBecauseNameless && consecutiveEmpty >= 2) {
-				log.Printf("[agent-loop] hard exit: %d consecutive empty responses nameless=%t", consecutiveEmpty, blankBecauseNameless)
-				// Return the last non-empty content as a fallback. A repeated
-				// nameless tool call is not an empty generation: one plain-text
-				// retry is enough, and a blank bubble would hide the stop.
-				text := lastNonEmptyContent
-				hardExit := true
-				if blankBecauseNameless {
-					text = strings.TrimSpace(StripThinkingTags(text))
-					if denial {
-						text = ""
+			if !keptStreamed {
+				// The provider response was consumed, but it did not produce a usable
+				// assistant turn. Retire this exact surface before any backoff, steering
+				// check, or recovery prompt can create the next request surface.
+				disposeSurface(ToolSurfaceResponseAbandoned)
+				consecutiveEmpty++
+				if denial {
+					consecutiveEmpty = maxConsecutiveEmpty
+				}
+				// A nameless call after a successful search cannot be executed, but
+				// the model can still write the answer in plain text. Do not replace
+				// that reply with the search listing on the first miss. The spent
+				// grant is usually gone by then; the second miss still uses the
+				// result already stored in this turn.
+				snippetLen := len([]rune(lastToolOutcome.snippet))
+				log.Printf("[agent-loop] empty response #%d (iteration=%d, lastTool=%s, outcome=%d, snippet_len=%d)",
+					consecutiveEmpty, iteration, lastToolName, lastToolOutcome.kind, snippetLen)
+				if consecutiveEmpty >= maxConsecutiveEmpty || (blankBecauseNameless && consecutiveEmpty >= 2) {
+					log.Printf("[agent-loop] hard exit: %d consecutive empty responses nameless=%t", consecutiveEmpty, blankBecauseNameless)
+					// Return the last non-empty content as a fallback. A repeated
+					// nameless tool call is not an empty generation: one plain-text
+					// retry is enough, and a blank bubble would hide the stop.
+					text := lastNonEmptyContent
+					hardExit := true
+					if blankBecauseNameless {
+						text = strings.TrimSpace(StripThinkingTags(text))
+						if denial {
+							text = ""
+						}
+						if text == "" {
+							// The model never wrote a reply. A short tool body can
+							// stand as the answer. A search listing is a tool
+							// transcript: keep the full listing in the thinking
+							// panel and show only a compact digest outside it.
+							raw := lastSuccessfulToolBody(historyDelta)
+							text = userFacingToolAnswer(raw)
+							if text != "" {
+								hardExit = false
+								if text != raw && len([]rune(text)) >= 80 {
+									appendLoopDisplayReasoning(&displayReasoning, raw)
+								}
+							}
+						}
+						if text == "" {
+							text = "多次尝试均未取得进展，已停止执行。请换一种方式描述任务，或稍后再试。"
+						}
 					}
-					if text == "" {
-						// The model never wrote a reply. A short tool body can
-						// stand as the answer. A search listing is a tool
-						// transcript: keep the full listing in the thinking
-						// panel and show only a compact digest outside it.
-						raw := lastSuccessfulToolBody(historyDelta)
-						text = userFacingToolAnswer(raw)
-						if text != "" {
-							hardExit = false
-							if text != raw && len([]rune(text)) >= 80 {
-								appendLoopDisplayReasoning(&displayReasoning, raw)
+					// A tool body adopted here is a successful answer. The same
+					// checklist settlement as a prose stop has to accept it;
+					// otherwise the turn passes while items stay open.
+					if !hardExit {
+						if nudge, cont, unsettled, kept := considerOpenChecklistStop(cb, text, iteration+1 < maxIter, &checklistFallbackNudges, &checklistNudgeTotal, &checklistPreAnswer, maxConsecutiveEmpty, maxChecklistNudges); unsettled || cont {
+							if unsettled {
+								if strings.TrimSpace(kept) == "" {
+									kept = text
+								}
+								return finish(LoopResult{
+									Text:       kept,
+									Error:      ErrChecklistUnsettled,
+									Iterations: iteration + 1,
+									ToolCalls:  totalToolCalls,
+									HardExit:   true,
+								})
+							}
+							conversation = append(conversation, map[string]interface{}{
+								"role":              "assistant",
+								"content":           text,
+								"reasoning_content": "",
+							})
+							historyDelta = append(historyDelta, ConversationEntry{
+								Role:         "assistant",
+								Content:      text,
+								FinishReason: "stop",
+							})
+							conversation = append(conversation, map[string]interface{}{
+								"role":    "user",
+								"content": nudge,
+							})
+							historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: nudge})
+							continue
+						}
+					}
+					// The text is often the report written beside an earlier tool
+					// call. Publish it through the same desktop gate as a prose stop.
+					next, nudge, cont := gateDesktopReply(cb, userText, text, historyDelta, latestShot, iteration+1 < maxIter)
+					if cont {
+						conversation = append(conversation, map[string]interface{}{
+							"role":              "assistant",
+							"content":           content,
+							"reasoning_content": "",
+						})
+						historyDelta = append(historyDelta, ConversationEntry{
+							Role:         "assistant",
+							Content:      content,
+							FinishReason: ResolveAssistantFinishReason(choice.FinishReason, false),
+						})
+						conversation = append(conversation, map[string]interface{}{
+							"role":    "user",
+							"content": nudge,
+						})
+						historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: nudge})
+						continue
+					}
+					text = next
+					return finish(LoopResult{
+						Text:       text,
+						Iterations: iteration + 1,
+						ToolCalls:  totalToolCalls,
+						HardExit:   hardExit,
+					})
+				}
+
+				// A nameless tool call already came back from the provider. Waiting
+				// does not make the next call well-formed, and the 1-5s empty
+				// backoff would stall a turn that already has tool evidence.
+				// Genuine empty generations still wait, so a user correction is
+				// not stuck behind that sleep.
+				if hostCanceledBeforeFinish || cb.ShouldStop() {
+					disposeSurface(ToolSurfaceRuntimeTerminal)
+					return finish(LoopResult{Error: "cancelled", Iterations: iteration, ToolCalls: totalToolCalls})
+				}
+				if !blankBecauseNameless {
+					emptyBackoff := time.NewTimer(time.Duration(consecutiveEmpty) * time.Second)
+					emptyTicker := time.NewTicker(50 * time.Millisecond)
+					emptyReplan := false
+					// A nil channel is never selected. After finishRequest, desktop
+					// hosts have already closed this operation, and that close is not
+					// a stop. A context that is still open can still interrupt.
+					var operationDone <-chan struct{}
+					if requestBaseCtx.Err() == nil {
+						operationDone = requestBaseCtx.Done()
+					}
+				emptyWait:
+					for {
+						select {
+						case <-emptyBackoff.C:
+							break emptyWait
+						case <-operationDone:
+							break emptyWait
+						case <-emptyTicker.C:
+							if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
+								emptyReplan = true
+								break emptyWait
+							}
+							if cb.ShouldStop() {
+								break emptyWait
 							}
 						}
 					}
-					if text == "" {
-						text = "多次尝试均未取得进展，已停止执行。请换一种方式描述任务，或稍后再试。"
+					if !emptyBackoff.Stop() {
+						select {
+						case <-emptyBackoff.C:
+						default:
+						}
 					}
-				}
-				// The text is often the report written beside an earlier tool
-				// call. A clean finish already checks that report; this stop
-				// publishes it too.
-				next, nudge, cont := gateDesktopReply(cb, userText, text, historyDelta, latestShot, iteration+1 < maxIter)
-				if cont {
-					conversation = append(conversation, map[string]interface{}{
-						"role":              "assistant",
-						"content":           content,
-						"reasoning_content": "",
-					})
-					historyDelta = append(historyDelta, ConversationEntry{
-						Role:         "assistant",
-						Content:      content,
-						FinishReason: ResolveAssistantFinishReason(choice.FinishReason, false),
-					})
-					conversation = append(conversation, map[string]interface{}{
-						"role":    "user",
-						"content": nudge,
-					})
-					historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: nudge})
-					continue
-				}
-				text = next
-				return finish(LoopResult{
-					Text:       text,
-					Iterations: iteration + 1,
-					ToolCalls:  totalToolCalls,
-					HardExit:   hardExit,
-				})
-			}
-
-			// A nameless tool call already came back from the provider. Waiting
-			// does not make the next call well-formed, and the 1-5s empty
-			// backoff would stall a turn that already has tool evidence.
-			// Genuine empty generations still wait, so a user correction is
-			// not stuck behind that sleep.
-			if hostCanceledBeforeFinish || cb.ShouldStop() {
-				disposeSurface(ToolSurfaceRuntimeTerminal)
-				return finish(LoopResult{Error: "cancelled", Iterations: iteration, ToolCalls: totalToolCalls})
-			}
-			if !blankBecauseNameless {
-				emptyBackoff := time.NewTimer(time.Duration(consecutiveEmpty) * time.Second)
-				emptyTicker := time.NewTicker(50 * time.Millisecond)
-				emptyReplan := false
-				// A nil channel is never selected. After finishRequest, desktop
-				// hosts have already closed this operation, and that close is not
-				// a stop. A context that is still open can still interrupt.
-				var operationDone <-chan struct{}
-				if requestBaseCtx.Err() == nil {
-					operationDone = requestBaseCtx.Done()
-				}
-			emptyWait:
-				for {
-					select {
-					case <-emptyBackoff.C:
-						break emptyWait
-					case <-operationDone:
-						break emptyWait
-					case <-emptyTicker.C:
+					emptyTicker.Stop()
+					// Steering during the wait can cancel a context that was still
+					// open. Prefer that steer over ending the turn.
+					if !emptyReplan {
 						if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
 							emptyReplan = true
-							break emptyWait
-						}
-						if cb.ShouldStop() {
-							break emptyWait
 						}
 					}
-				}
-				if !emptyBackoff.Stop() {
-					select {
-					case <-emptyBackoff.C:
-					default:
+					if emptyReplan {
+						disposeSurface(ToolSurfaceSteered)
+						freeReplans++
+						if freeReplans <= maxFreeReplansPerLoop {
+							iteration--
+						}
+						continue
 					}
-				}
-				emptyTicker.Stop()
-				// Steering during the wait can cancel a context that was still
-				// open. Prefer that steer over ending the turn.
-				if !emptyReplan {
-					if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
-						emptyReplan = true
+					if cb.ShouldStop() || (operationDone != nil && requestBaseCtx.Err() != nil) {
+						disposeSurface(ToolSurfaceRuntimeTerminal)
+						return finish(LoopResult{Error: "cancelled", Iterations: iteration, ToolCalls: totalToolCalls})
 					}
-				}
-				if emptyReplan {
+				} else if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
 					disposeSurface(ToolSurfaceSteered)
 					freeReplans++
 					if freeReplans <= maxFreeReplansPerLoop {
@@ -2497,53 +2668,42 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					}
 					continue
 				}
-				if cb.ShouldStop() || (operationDone != nil && requestBaseCtx.Err() != nil) {
-					disposeSurface(ToolSurfaceRuntimeTerminal)
-					return finish(LoopResult{Error: "cancelled", Iterations: iteration, ToolCalls: totalToolCalls})
+
+				// Build a context-aware recovery prompt. A nameless call must not
+				// pick up the empty-round "call the tool again" hint.
+				recoverPrompt := namelessToolCallRecoveryPrompt(lastToolName)
+				if !blankBecauseNameless {
+					recoverPrompt = buildEmptyResponseRecovery(consecutiveEmpty, lastToolName, lastToolOutcome, userText)
+					workingState, _ = applyWorkingStateEmpty(workingState, userText, lastToolName, consecutiveEmpty, executedTools, loopProjectedGoal(cb))
+					// A host directive already names the next call. A stale
+					// working-state hint ("list candidates", "ask the user") must
+					// not override it.
+					if !lastToolOutcome.directive {
+						recoverPrompt = AppendNextHint(recoverPrompt, workingState)
+					}
 				}
-			} else if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
-				disposeSurface(ToolSurfaceSteered)
-				freeReplans++
-				if freeReplans <= maxFreeReplansPerLoop {
-					iteration--
+				if iteration+1 >= maxIter {
+					continue
 				}
+
+				// Inject a recover prompt to nudge the LLM.
+				conversation = append(conversation, map[string]interface{}{
+					"role":              "assistant",
+					"content":           content,
+					"reasoning_content": "", // DeepSeek V4+: must exist on all assistant messages
+				})
+				historyDelta = append(historyDelta, ConversationEntry{
+					Role:         "assistant",
+					Content:      content,
+					FinishReason: ResolveAssistantFinishReason(choice.FinishReason, false),
+				})
+				conversation = append(conversation, map[string]interface{}{
+					"role":    "user",
+					"content": recoverPrompt,
+				})
+				historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: recoverPrompt})
 				continue
 			}
-
-			// Build a context-aware recovery prompt. A nameless call must not
-			// pick up the empty-round "call the tool again" hint.
-			recoverPrompt := namelessToolCallRecoveryPrompt(lastToolName)
-			if !blankBecauseNameless {
-				recoverPrompt = buildEmptyResponseRecovery(consecutiveEmpty, lastToolName, lastToolOutcome, userText)
-				workingState, _ = applyWorkingStateEmpty(workingState, userText, lastToolName, consecutiveEmpty, executedTools, loopProjectedGoal(cb))
-				// A host directive already names the next call. A stale
-				// working-state hint ("list candidates", "ask the user") must
-				// not override it.
-				if !lastToolOutcome.directive {
-					recoverPrompt = AppendNextHint(recoverPrompt, workingState)
-				}
-			}
-			if iteration+1 >= maxIter {
-				continue
-			}
-
-			// Inject a recover prompt to nudge the LLM.
-			conversation = append(conversation, map[string]interface{}{
-				"role":              "assistant",
-				"content":           content,
-				"reasoning_content": "", // DeepSeek V4+: must exist on all assistant messages
-			})
-			historyDelta = append(historyDelta, ConversationEntry{
-				Role:         "assistant",
-				Content:      content,
-				FinishReason: ResolveAssistantFinishReason(choice.FinishReason, false),
-			})
-			conversation = append(conversation, map[string]interface{}{
-				"role":    "user",
-				"content": recoverPrompt,
-			})
-			historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: recoverPrompt})
-			continue
 		}
 		consecutiveEmpty = 0
 		// A tool turn often copies its thinking into content. That monologue is
@@ -2619,6 +2779,29 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					})
 				}
 				disposeSurface(ToolSurfaceResponseSettled)
+				continue
+			}
+			// A published checklist is a commitment. Prose that announces
+			// completion does not close pending or in-progress items, and the
+			// turn must not pass while those items are still open. A nameless
+			// call whose bubble text was kept is this same stop.
+			if nudge, cont, unsettled, text := considerOpenChecklistStop(cb, content, iteration+1 < maxIter, &checklistStopNudges, &checklistNudgeTotal, &checklistPreAnswer, maxConsecutiveEmpty, maxChecklistNudges); unsettled || cont {
+				if unsettled {
+					disposeSurface(ToolSurfaceResponseSettled)
+					return finish(LoopResult{
+						Text:       text,
+						Error:      ErrChecklistUnsettled,
+						Iterations: iteration + 1,
+						ToolCalls:  totalToolCalls,
+						HardExit:   true,
+					})
+				}
+				disposeSurface(ToolSurfaceResponseSettled)
+				conversation = append(conversation, map[string]interface{}{
+					"role":    "user",
+					"content": nudge,
+				})
+				historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: nudge})
 				continue
 			}
 			// A malformed content tool-markup interception is a transport-level
@@ -2710,6 +2893,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					historyDelta = dropStoredFactNudgeSuffix(historyDelta)
 				}
 			}
+			if pre := strings.TrimSpace(StripThinkingTags(checklistPreAnswer)); pre != "" {
+				finalText = preferChecklistDeliverable(pre, finalText)
+			}
 			// After every other rewrite. A lookup fold must not put an
 			// unchecked draft back into the reply.
 			next, message, cont := gateDesktopReply(cb, userText, finalText, historyDelta, latestShot, iteration+1 < maxIter)
@@ -2734,6 +2920,10 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			return finish(LoopResult{Text: finalText, Iterations: iteration + 1, ToolCalls: totalToolCalls})
 		}
 		unsettledNoToolStops = 0
+		// Consecutive only. checklistNudgeTotal stays, so tool calls cannot
+		// restart the close-the-checklist reminder forever.
+		checklistStopNudges = 0
+		checklistFallbackNudges = 0
 
 		// Persist a valid conversation prefix before any tool begins. A batch of
 		// known read-only tools cannot have changed state, so a crash during it
@@ -3951,12 +4141,12 @@ func prepareToolsForToolSurfaceReceipt(cfg corelib.MaclawLLMConfig, tools []map[
 	// misconfigured anthropic Protocol label must not make a Responses payload
 	// retain schema keys that its OpenAI-compatible builder removes.
 	if cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() {
-		return llm.PrepareOpenAIChatToolsForWire(cfg, tools)
+		return llm.PrepareOpenCodeZenAgentTools(cfg, llm.PrepareOpenAIChatToolsForWire(cfg, tools))
 	}
 	if strings.EqualFold(strings.TrimSpace(cfg.Protocol), "anthropic") {
 		return tools
 	}
-	return llm.PrepareOpenAIChatToolsForWire(cfg, tools)
+	return llm.PrepareOpenCodeZenAgentTools(cfg, llm.PrepareOpenAIChatToolsForWire(cfg, tools))
 }
 
 func executeAuthorizedLoopToolCallWithContext(cb LoopCallbacks, name, argsJSON, callID string, execution ToolCallExecutionContext) ToolExecutionResult {
@@ -4321,11 +4511,11 @@ func visibleAnswerBesideReasoning(visible, reasoning string) string {
 	return visible
 }
 
-// streamedVisibleAnswer is the text already shown in the chat bubble for this
-// model call. Short fragments are not an answer. A details shell is removed
-// without discarding the forecast that came before it. A raw search listing
-// is not an answer either.
-func streamedVisibleAnswer(raw string) string {
+// streamedBubbleText is the text already shown for this model call, with
+// thinking shells and search transcripts removed. It has no length floor:
+// a short close-out is still the model's text. Callers that must not let a
+// fragment hide a search transcript use streamedVisibleAnswer.
+func streamedBubbleText(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ""
@@ -4343,13 +4533,17 @@ func streamedVisibleAnswer(raw string) string {
 	}
 	// A cited forecast may name one page. Drop that URL and keep the sentence.
 	// A numbered result list is already rejected above.
-	raw = strings.TrimSpace(stripStreamedURLs(raw))
+	return strings.TrimSpace(stripStreamedURLs(raw))
+}
+
+// streamedVisibleAnswer is the bubble text worth keeping in place of a search
+// transcript. A one-line forecast is often shorter than 40 runes. A bare
+// temperature or a two-character fragment is not that forecast.
+func streamedVisibleAnswer(raw string) string {
+	raw = streamedBubbleText(raw)
 	if raw == "" {
 		return ""
 	}
-	// A one-line forecast is often shorter than 40 runes. It is already on
-	// screen; a later nameless call must not replace it with the search listing.
-	// A bare temperature or a two-character fragment is not that forecast.
 	if snippetLooksLikeForecast(raw) && len([]rune(raw)) >= 8 {
 		return raw
 	}

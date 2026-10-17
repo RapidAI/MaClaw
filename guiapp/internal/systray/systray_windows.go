@@ -68,7 +68,13 @@ var (
 	pUnregisterClass       = u32.NewProc("UnregisterClassW")
 	pUpdateWindow          = u32.NewProc("UpdateWindow")
 	pFlashWindowEx         = u32.NewProc("FlashWindowEx")
-	pMessageBeep           = u32.NewProc("MessageBeep")
+
+	winmm      = windows.NewLazySystemDLL("winmm.dll")
+	pPlaySound = winmm.NewProc("PlaySoundW")
+
+	// Kept for the life of the process. PlaySound with SND_ASYNC may read the
+	// alias after the call returns.
+	balloonSoundAlias = mustUTF16Ptr("SystemNotification")
 
 	// ErrTrayNotReadyYet is returned by functions when they are called before the tray has been initialized.
 	ErrTrayNotReadyYet = errors.New("tray not ready yet")
@@ -1192,17 +1198,33 @@ func resetMenu() {
 
 // ShowBalloonNotification displays a balloon notification from the system tray icon.
 // title is the notification title, message is the body text.
-// iconFlag: 0=none, 1=info, 2=warning, 3=error
+// iconFlag: 0=none, 1=info, 2=warning, 3=error. When the tray icon is loaded,
+// those stock glyphs are replaced by the application icon.
 func ShowBalloonNotification(title, message string, iconFlag uint32) error {
 	if !wt.isReady() {
 		return ErrTrayNotReadyYet
 	}
-	const (
-		NIF_INFO = 0x00000010
-	)
 
-	wt.muNID.Lock()
-	defer wt.muNID.Unlock()
+	err := func() error {
+		wt.muNID.Lock()
+		defer wt.muNID.Unlock()
+		return modifyBalloon(title, message, iconFlag)
+	}()
+	if err != nil {
+		return err
+	}
+	// Outside the lock: loading winmm must not stall an icon or tooltip update.
+	playBalloonSound()
+	return nil
+}
+
+// modifyBalloon fills the balloon fields and asks the shell to show it.
+// Caller holds wt.muNID.
+func modifyBalloon(title, message string, iconFlag uint32) error {
+	const (
+		NIF_INFO    = 0x00000010
+		niifNoSound = 0x00000010
+	)
 
 	// The fixed fields must stay NUL-terminated. A string that fills the
 	// buffer would otherwise run into the next field.
@@ -1213,13 +1235,62 @@ func ShowBalloonNotification(title, message string, iconFlag uint32) error {
 		return err
 	}
 
-	wt.nid.InfoFlags = iconFlag
+	// NIIF_USER on this V2-sized structure uses hIcon, which SetIcon already
+	// set to the GUI icon. Enlarging cbSize so hBalloonIcon is visible turns
+	// the balloon into a toast, and Windows hides that while this window is
+	// in front. NIIF_NOSOUND keeps the shell from adding its own ding.
+	// NIIF_LARGE_ICON is left off: the shell rejects the balloon when the
+	// icon is smaller than SM_CXICON, which happens after a DPI change
+	// because the tray icon is loaded once.
+	wt.nid.InfoFlags = balloonInfoFlags(iconFlag, wt.nid.Icon != 0) | niifNoSound
 	wt.nid.Flags |= NIF_INFO
 	wt.nid.Size = notifyIconV2Size(wt.nid)
 	err := wt.nid.modify()
 	// Leave the flag off so a later icon or tooltip update does not show this balloon again.
 	wt.nid.Flags &^= NIF_INFO
 	return err
+}
+
+func mustUTF16Ptr(s string) *uint16 {
+	p, err := windows.UTF16PtrFromString(s)
+	if err != nil {
+		return nil
+	}
+	return p
+}
+
+// playBalloonSound plays the user's notification sound. A scheme set to
+// silent stays silent. The call does not wait for the sound to finish.
+// Playback uses the process audio session, not the System Sounds slider,
+// which is often muted on its own.
+func playBalloonSound() {
+	if balloonSoundAlias == nil {
+		return
+	}
+	const (
+		sndAsync     = 0x00000001
+		sndNoDefault = 0x00000002
+		sndAlias     = 0x00010000
+	)
+	_, _, _ = pPlaySound.Call(
+		uintptr(unsafe.Pointer(balloonSoundAlias)),
+		0,
+		sndAlias|sndAsync|sndNoDefault,
+	)
+}
+
+// balloonInfoFlags selects the balloon glyph. A loaded tray icon replaces the
+// stock info, warning, and error pictures. Bits outside that choice, such as
+// NIIF_NOSOUND, stay as the caller passed them.
+func balloonInfoFlags(iconFlag uint32, hasAppIcon bool) uint32 {
+	const (
+		niifUser     = 0x00000004
+		niifIconMask = 0x0000000F
+	)
+	if !hasAppIcon {
+		return iconFlag
+	}
+	return (iconFlag &^ niifIconMask) | niifUser
 }
 
 // copyNULTerminatedUTF16 writes s into dst, including a trailing NUL.
@@ -1262,13 +1333,9 @@ type flashWindowInfo struct {
 	DwTimeout uint32
 }
 
-// FlashAndBeep plays the system notification sound and flashes the taskbar
-// icon to draw the user's attention. This is used for scheduled task alerts.
+// FlashAndBeep flashes the taskbar icon to draw the user's attention.
+// The balloon itself plays the notification sound.
 func FlashAndBeep() {
-	// Play the system "asterisk" (info) sound.
-	const MB_ICONASTERISK = 0x00000040
-	pMessageBeep.Call(uintptr(MB_ICONASTERISK))
-
 	// Flash the tray's hidden window (which flashes the taskbar button).
 	if !wt.isReady() {
 		return

@@ -75,10 +75,11 @@ export function renderAssistantBodyWithToolCalls(
     renderSegment: (segment: string, isTail: boolean) => React.ReactNode,
 ): React.ReactNode {
     if (!calls?.length && !content.includes("maclaw-tool:")) {
-        if (!content) return null;
+        if (!content.trim()) return null;
         return renderSegment(content, true);
     }
     const segments = splitAssistantToolCallContent(content, calls);
+    if (segments.length === 0) return null;
     if (segments.length === 1 && segments[0].kind === "text") {
         return renderSegment(segments[0].text || "", true);
     }

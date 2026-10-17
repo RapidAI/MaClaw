@@ -151,6 +151,14 @@ func (r *ToolRouter) ToolHead() *tool.ToolHead {
 	return r.inner.ToolHead()
 }
 
+// ToolHeadCandidates scores the installed head on this turn's query vector.
+func (r *ToolRouter) ToolHeadCandidates(vec []float32) []tool.ToolHeadScore {
+	if r == nil || r.inner == nil {
+		return nil
+	}
+	return r.inner.ToolHeadCandidates(vec)
+}
+
 // HybridActive returns true if hybrid retrieval is currently enabled.
 func (r *ToolRouter) HybridActive() bool {
 	return r.inner.HybridActive()
@@ -407,4 +415,3 @@ var codingSessionToolNames = tool.CodingSessionToolNames
 func filterCodingTools(tools []map[string]interface{}) []map[string]interface{} {
 	return tool.FilterCodingTools(tools)
 }
-

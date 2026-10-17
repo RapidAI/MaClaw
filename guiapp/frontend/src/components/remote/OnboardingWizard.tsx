@@ -175,7 +175,6 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
     const [offlineMode, setOfflineMode] = useState(false);
     const [showOfflineModeNotice, setShowOfflineModeNotice] = useState(false);
     const onboardingFlow = useMemo(() => getOnboardingFlow({ brandId, freeTrial, offlineMode }), [brandId, freeTrial, offlineMode]);
-    const isTigerclaw = onboardingFlow.isTigerclaw;
     const totalSteps = onboardingFlow.totalSteps;
     const wxStep = onboardingFlow.wxStep;
     const [freeTrialVerified, setFreeTrialVerified] = useState(false);
@@ -258,7 +257,7 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
 
     const [ssoBusy, setSsoBusy] = useState(false);
     const [ssoResult, setSsoResult] = useState<{ ok: boolean; msg: string } | null>(null);
-    // regBusy/regDone 在两种流程中均使用：普通品牌=手动注册，tigerclaw=SSO后自动注册
+    // regBusy/regDone 覆盖 Hub 注册。安装后的默认模型服务是 MaClaw 官方服务。
     const [regBusy, setRegBusy] = useState(false);
     const [regDone, setRegDone] = useState(false);
     const [hubConnecting, setHubConnecting] = useState(false);
@@ -465,7 +464,7 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
     }, []);
 
     useEffect(() => {
-        if (isTigerclaw || offlineMode) return;
+        if (offlineMode) return;
         let cancelled = false;
         GetHubLLMServiceStatus().then(status => {
             if (cancelled) return;
@@ -473,20 +472,20 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
             if (applied) setFreeTrialVerified(true);
         }).catch(() => {});
         return () => { cancelled = true; };
-    }, [applyHubServiceStatus, isTigerclaw, offlineMode]);
+    }, [applyHubServiceStatus, offlineMode]);
 
     useEffect(() => {
-        if (!isTigerclaw && !offlineMode && freeTrial && freeTrialVerified && !llmDone) {
+        if (!offlineMode && freeTrial && freeTrialVerified && !llmDone) {
             setLlmDone(true);
             onLLMConfigured();
         }
-    }, [isTigerclaw, offlineMode, freeTrial, freeTrialVerified, llmDone, onLLMConfigured]);
+    }, [offlineMode, freeTrial, freeTrialVerified, llmDone, onLLMConfigured]);
 
     useEffect(() => {
-        if (!isTigerclaw && !offlineMode && !freeTrial && llmDone && step === 2) {
+        if (!offlineMode && !freeTrial && llmDone && step === 2) {
             setStep(3);
         }
-    }, [isTigerclaw, offlineMode, freeTrial, llmDone, step]);
+    }, [offlineMode, freeTrial, llmDone, step]);
 
     useEffect(() => {
         if (!regDone || !hubConnecting || offlineMode) return;

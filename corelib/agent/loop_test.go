@@ -5134,6 +5134,377 @@ func TestRunLoopToolLessStopIsNotSuccessWhileRequiredEffectIsUnsettled(t *testin
 	}
 }
 
+type checklistGuardCallbacks struct {
+	*mockCallbacks
+	open bool
+}
+
+func (c *checklistGuardCallbacks) OpenChecklistNudge() string {
+	if c == nil || !c.open {
+		return ""
+	}
+	return "[系统] 清单未关闭，请调用 todo_write。expected_revision=3 expected_version=4"
+}
+
+func (c *checklistGuardCallbacks) ExecuteToolStructured(name, args string) ToolExecutionResult {
+	if name == "todo_write" {
+		c.open = false
+	}
+	return c.mockCallbacks.ExecuteToolStructured(name, args)
+}
+
+func TestNoteChecklistDeliverableKeepsLaterReport(t *testing.T) {
+	const aside = "looking"
+	const report = "The footer HUD is complete and verified. ctest passed 1/1 and snake.exe --selftest reported gui ok."
+	kept := noteChecklistDeliverable("", aside)
+	if kept != aside {
+		t.Fatalf("first note: %q", kept)
+	}
+	kept = noteChecklistDeliverable(kept, report)
+	if kept != report {
+		t.Fatalf("later report dropped: %q", kept)
+	}
+	kept = noteChecklistDeliverable(kept, "已勾选")
+	if kept != report {
+		t.Fatalf("ack replaced report: %q", kept)
+	}
+	if got := noteChecklistDeliverable(report, llm.MalformedContentToolCallErrorMsg); got != report {
+		t.Fatalf("malformed replaced report: %q", got)
+	}
+}
+
+func TestPreferChecklistDeliverable(t *testing.T) {
+	const report = "The footer HUD is complete and verified. ctest passed 1/1 and snake.exe --selftest reported gui ok."
+	if got := preferChecklistDeliverable(report, "已勾选"); got != report {
+		t.Fatalf("ack replaced report: %q", got)
+	}
+	const failure = "selftest failed: footer pod missing"
+	if got := preferChecklistDeliverable(report, failure); got != failure {
+		t.Fatalf("failure was discarded: %q", got)
+	}
+	if got := preferChecklistDeliverable(report, "no error"); got != report {
+		t.Fatalf("benign short note replaced report: %q", got)
+	}
+	if got := preferChecklistDeliverable(report, "0 tests failed"); got != report {
+		t.Fatalf("passing count replaced report: %q", got)
+	}
+	if got := preferChecklistDeliverable(report, ""); got != report {
+		t.Fatalf("empty follow-up: %q", got)
+	}
+	longer := report + " Widest status bar still fits."
+	if got := preferChecklistDeliverable(report, longer); got != longer {
+		t.Fatalf("longer follow-up: %q", got)
+	}
+	if got := preferChecklistDeliverable(llm.MalformedContentToolCallErrorMsg, "已勾选"); got != "已勾选" {
+		t.Fatalf("malformed pre-answer kept: %q", got)
+	}
+}
+
+func TestRunLoopOpenChecklistNudgeThenCloseKeepsDeliverable(t *testing.T) {
+	const deliverable = "The modernization change is complete and verified. The footer HUD paints a mint score pod, ctest passed 1/1, and snake.exe --selftest reported gui ok."
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		body, _ := io.ReadAll(r.Body)
+		var resp map[string]interface{}
+		switch callCount {
+		case 1:
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{{
+					"message":       map[string]interface{}{"role": "assistant", "content": deliverable},
+					"finish_reason": "stop",
+				}},
+			}
+		case 2:
+			if !strings.Contains(string(body), "清单未关闭") || !strings.Contains(string(body), "expected_revision=3") {
+				t.Errorf("checklist nudge missing from follow-up request")
+			}
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{{
+					"message": map[string]interface{}{
+						"role":    "assistant",
+						"content": "",
+						"tool_calls": []map[string]interface{}{{
+							"id":   "call_todo",
+							"type": "function",
+							"function": map[string]interface{}{
+								"name":      "todo_write",
+								"arguments": `{"merge":true}`,
+							},
+						}},
+					},
+					"finish_reason": "tool_calls",
+				}},
+			}
+		default:
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{{
+					"message":       map[string]interface{}{"role": "assistant", "content": "已勾选"},
+					"finish_reason": "stop",
+				}},
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+	cb := &checklistGuardCallbacks{
+		mockCallbacks: &mockCallbacks{
+			config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:    8,
+			sysPrompt:  "sys",
+			toolResult: "checklist updated",
+			tools:      []map[string]interface{}{tooldef.BuildToolDef("todo_write", "update checklist", map[string]interface{}{"type": "object"})},
+		},
+		open: true,
+	}
+	result := RunLoop(cb, "继续做完页脚", nil, nil)
+	if result.Error != "" || result.HardExit {
+		t.Fatalf("result=%+v", result)
+	}
+	if result.Text != deliverable {
+		t.Fatalf("text=%q", result.Text)
+	}
+	if result.Iterations != 3 || result.ToolCalls != 1 {
+		t.Fatalf("iterations=%d tools=%d", result.Iterations, result.ToolCalls)
+	}
+	if cb.open {
+		t.Fatal("checklist still open after todo_write")
+	}
+}
+
+func TestRunLoopOpenChecklistKeepsLaterReportNotFirstAside(t *testing.T) {
+	const report = "The footer HUD is complete and verified. ctest passed 1/1 and snake.exe --selftest reported gui ok."
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var resp map[string]interface{}
+		switch callCount {
+		case 2:
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{{
+					"message": map[string]interface{}{
+						"role": "assistant", "content": "",
+						"tool_calls": []map[string]interface{}{{
+							"id": "call_bash", "type": "function",
+							"function": map[string]interface{}{"name": "bash", "arguments": `{"command":"cmake --build build"}`},
+						}},
+					},
+					"finish_reason": "tool_calls",
+				}},
+			}
+		case 3:
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{{
+					"message":       map[string]interface{}{"role": "assistant", "content": report},
+					"finish_reason": "stop",
+				}},
+			}
+		case 4:
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{{
+					"message": map[string]interface{}{
+						"role": "assistant", "content": "",
+						"tool_calls": []map[string]interface{}{{
+							"id": "call_todo", "type": "function",
+							"function": map[string]interface{}{"name": "todo_write", "arguments": `{"merge":true}`},
+						}},
+					},
+					"finish_reason": "tool_calls",
+				}},
+			}
+		case 1:
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{{
+					"message":       map[string]interface{}{"role": "assistant", "content": "looking"},
+					"finish_reason": "stop",
+				}},
+			}
+		default:
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{{
+					"message":       map[string]interface{}{"role": "assistant", "content": "已勾选"},
+					"finish_reason": "stop",
+				}},
+			}
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+	cb := &checklistGuardCallbacks{
+		mockCallbacks: &mockCallbacks{
+			config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:    8,
+			sysPrompt:  "sys",
+			toolResult: "ok",
+			tools: []map[string]interface{}{
+				tooldef.BuildToolDef("bash", "run", map[string]interface{}{"type": "object"}),
+				tooldef.BuildToolDef("todo_write", "update checklist", map[string]interface{}{"type": "object"}),
+			},
+		},
+		open: true,
+	}
+	result := RunLoop(cb, "继续做完页脚", nil, nil)
+	if result.Error != "" || result.HardExit {
+		t.Fatalf("result=%+v", result)
+	}
+	if result.Text != report {
+		t.Fatalf("text=%q", result.Text)
+	}
+	if result.Iterations != 5 || result.ToolCalls != 2 {
+		t.Fatalf("iterations=%d tools=%d", result.Iterations, result.ToolCalls)
+	}
+}
+
+func TestRunLoopOpenChecklistNudgesAreBounded(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var resp map[string]interface{}
+		if callCount%2 == 0 {
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{{
+					"message": map[string]interface{}{
+						"role": "assistant", "content": "",
+						"tool_calls": []map[string]interface{}{{
+							"id": "call_bash", "type": "function",
+							"function": map[string]interface{}{"name": "bash", "arguments": `{"command":"echo x"}`},
+						}},
+					},
+					"finish_reason": "tool_calls",
+				}},
+			}
+		} else {
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{{
+					"message":       map[string]interface{}{"role": "assistant", "content": "still open"},
+					"finish_reason": "stop",
+				}},
+			}
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+	inner := &checklistGuardCallbacks{
+		mockCallbacks: &mockCallbacks{
+			config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:    8,
+			sysPrompt:  "sys",
+			toolResult: "ok",
+			tools:      []map[string]interface{}{tooldef.BuildToolDef("bash", "run", map[string]interface{}{"type": "object"})},
+		},
+		open: true,
+	}
+	result := RunLoop(&alwaysOpenChecklist{checklistGuardCallbacks: inner}, "继续", nil, nil)
+	if result.Error != ErrChecklistUnsettled || !result.HardExit {
+		t.Fatalf("result=%+v", result)
+	}
+	// prose, tool, prose, tool, prose. The third open stop exits even though
+	// each tool reset the consecutive count.
+	if callCount != 5 {
+		t.Fatalf("calls=%d", callCount)
+	}
+}
+
+func TestRunLoopOpenChecklistIgnoredIsNotSuccess(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"choices": []map[string]interface{}{{
+				"message":       map[string]interface{}{"role": "assistant", "content": "The footer HUD is done."},
+				"finish_reason": "stop",
+			}},
+		})
+	}))
+	defer server.Close()
+	cb := &checklistGuardCallbacks{
+		mockCallbacks: &mockCallbacks{
+			config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:   8,
+			sysPrompt: "sys",
+		},
+		open: true,
+	}
+	result := RunLoop(cb, "继续做完页脚", nil, nil)
+	if result.Error != ErrChecklistUnsettled || !result.HardExit {
+		t.Fatalf("result=%+v", result)
+	}
+	if result.Text != "The footer HUD is done." {
+		t.Fatalf("text=%q", result.Text)
+	}
+	if callCount != 2 {
+		t.Fatalf("calls=%d", callCount)
+	}
+}
+
+func TestRunLoopOpenChecklistToolCallResetsProseStopBudget(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var resp map[string]interface{}
+		if callCount == 2 {
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{{
+					"message": map[string]interface{}{
+						"role":    "assistant",
+						"content": "",
+						"tool_calls": []map[string]interface{}{{
+							"id":   "call_bash",
+							"type": "function",
+							"function": map[string]interface{}{
+								"name":      "bash",
+								"arguments": `{"command":"cmake --build build"}`,
+							},
+						}},
+					},
+					"finish_reason": "tool_calls",
+				}},
+			}
+		} else {
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{{
+					"message":       map[string]interface{}{"role": "assistant", "content": "still working on the footer"},
+					"finish_reason": "stop",
+				}},
+			}
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+	inner := &checklistGuardCallbacks{
+		mockCallbacks: &mockCallbacks{
+			config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:    8,
+			sysPrompt:  "sys",
+			toolResult: "build ok",
+			tools:      []map[string]interface{}{tooldef.BuildToolDef("bash", "run", map[string]interface{}{"type": "object"})},
+		},
+		open: true,
+	}
+	result := RunLoop(&alwaysOpenChecklist{checklistGuardCallbacks: inner}, "继续", nil, nil)
+	if result.Error != ErrChecklistUnsettled || !result.HardExit {
+		t.Fatalf("result=%+v", result)
+	}
+	// prose, tool, prose (budget reset), prose (exhausted) = 4 calls.
+	// Without the reset the third call would already hard-exit.
+	if callCount != 4 {
+		t.Fatalf("calls=%d", callCount)
+	}
+}
+
+type alwaysOpenChecklist struct {
+	*checklistGuardCallbacks
+}
+
+func (c *alwaysOpenChecklist) OpenChecklistNudge() string {
+	return "[系统] 清单未关闭，请调用 todo_write。expected_revision=3 expected_version=4"
+}
+
+func (c *alwaysOpenChecklist) ExecuteToolStructured(name, args string) ToolExecutionResult {
+	return c.mockCallbacks.ExecuteToolStructured(name, args)
+}
+
 func TestRunLoop_EarlyStopBudgetAfterFirstRound(t *testing.T) {
 	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -7455,6 +7826,324 @@ func TestRunLoop_NamelessAfterSearchKeepsStreamedAnswer(t *testing.T) {
 	}
 	if n := len(result.HistoryDelta); n == 0 || result.HistoryDelta[n-1].Role != "assistant" || !strings.Contains(fmt.Sprint(result.HistoryDelta[n-1].Content), "北京今天小雨") {
 		t.Fatalf("history lost the forecast: %#v", result.HistoryDelta)
+	}
+}
+
+// namelessClearedContentStream is the provider shape behind a coding turn that
+// streamed its report and then emitted a tool call with no function name.
+// The legacy function_call clears the stored message content, so the report
+// survives only in the bubble. A prose checklist guard never sees that stop.
+func writeNamelessClearedContentStream(w http.ResponseWriter, text, reasoning string) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	if reasoning != "" {
+		wrapped, _ := json.Marshal(reasoning)
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":"+string(wrapped)+"}}]}\n\n")
+	}
+	wrapped, _ := json.Marshal(text)
+	_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":"+string(wrapped)+"}}]}\n\n")
+	_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"function_call\":{\"name\":\"\",\"arguments\":\"{}\"}},\"finish_reason\":\"tool_calls\"}]}\n\n")
+	_, _ = io.WriteString(w, "data: [DONE]\n\n")
+}
+
+const namelessChecklistReport = "画质现在有真实的立体感：主要表面改成自上而下的光照渐变，棋盘外圈上亮下暗，蛇身珠子有亮冠和深底。cmake 构建通过，selftest 与 ctest 都是绿的。"
+
+func TestNamelessFunctionCallClearsStoredContentButStreamsAnswer(t *testing.T) {
+	var streamed strings.Builder
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeNamelessClearedContentStream(w, namelessChecklistReport, "Final answer.")
+	}))
+	defer server.Close()
+	resp, err := doLLMRequestWithToolsStream(context.Background(), corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"}, nil, nil, server.Client(), func(tok string) {
+		if !strings.HasPrefix(tok, "\x01") {
+			streamed.WriteString(tok)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp == nil || len(resp.Choices) == 0 {
+		t.Fatal("no choice")
+	}
+	msg := resp.Choices[0].Message
+	if strings.TrimSpace(msg.Content) != "" {
+		t.Fatalf("stored content should be empty, got %q", msg.Content)
+	}
+	if len(msg.ToolCalls) != 1 || strings.TrimSpace(msg.ToolCalls[0].Function.Name) != "" {
+		t.Fatalf("calls=%#v", msg.ToolCalls)
+	}
+	if !strings.Contains(streamed.String(), "立体感") {
+		t.Fatalf("stream=%q", streamed.String())
+	}
+}
+
+func TestRunLoop_NamelessStreamedAnswerDoesNotPassOpenChecklist(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		body, _ := io.ReadAll(r.Body)
+		switch callCount {
+		case 1:
+			writeNamelessClearedContentStream(w, namelessChecklistReport, "Final answer.")
+		case 2:
+			if !strings.Contains(string(body), "清单未关闭") {
+				t.Errorf("checklist nudge missing from follow-up request")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_todo","type":"function","function":{"name":"todo_write","arguments":"{\"merge\":true}"}}]},"finish_reason":"tool_calls"}]}`)
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"已勾选"},"finish_reason":"stop"}]}`)
+		}
+	}))
+	defer server.Close()
+	cb := &checklistGuardCallbacks{
+		mockCallbacks: &mockCallbacks{
+			config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:    6,
+			sysPrompt:  "sys",
+			toolResult: "checklist updated",
+			tools:      []map[string]interface{}{tooldef.BuildToolDef("todo_write", "update checklist", map[string]interface{}{"type": "object"})},
+		},
+		open: true,
+	}
+	result := RunLoop(cb, "画质需要有立体感", nil, server.Client())
+	if result.Error != "" || result.HardExit {
+		t.Fatalf("result=%+v", result)
+	}
+	if !strings.Contains(result.Text, "立体感") || strings.Contains(result.Text, "已勾选") {
+		t.Fatalf("text=%q", result.Text)
+	}
+	if result.ToolCalls != 1 || callCount != 3 {
+		t.Fatalf("calls=%d tools=%d", callCount, result.ToolCalls)
+	}
+	if cb.open {
+		t.Fatal("checklist still open after todo_write")
+	}
+}
+
+func TestRunLoop_NamelessStreamedAnswerIgnoredChecklistIsNotSuccess(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		writeNamelessClearedContentStream(w, namelessChecklistReport, "Final answer.")
+	}))
+	defer server.Close()
+	inner := &checklistGuardCallbacks{
+		mockCallbacks: &mockCallbacks{
+			config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:   6,
+			sysPrompt: "sys",
+		},
+		open: true,
+	}
+	result := RunLoop(&alwaysOpenChecklist{checklistGuardCallbacks: inner}, "画质需要有立体感", nil, server.Client())
+	if result.Error != ErrChecklistUnsettled || !result.HardExit {
+		t.Fatalf("result=%+v", result)
+	}
+	if !strings.Contains(result.Text, "立体感") {
+		t.Fatalf("text=%q", result.Text)
+	}
+	if callCount != 2 {
+		t.Fatalf("calls=%d", callCount)
+	}
+}
+
+func TestRunLoop_NamelessShortAckAfterChecklistCloseKeepsReport(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		body, _ := io.ReadAll(r.Body)
+		switch callCount {
+		case 1:
+			writeNamelessClearedContentStream(w, namelessChecklistReport, "Final answer.")
+		case 2:
+			if !strings.Contains(string(body), "清单未关闭") {
+				t.Errorf("checklist nudge missing from follow-up request")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_todo","type":"function","function":{"name":"todo_write","arguments":"{\"merge\":true}"}}]},"finish_reason":"tool_calls"}]}`)
+		default:
+			writeNamelessClearedContentStream(w, "已勾选", "checked")
+		}
+	}))
+	defer server.Close()
+	cb := &checklistGuardCallbacks{
+		mockCallbacks: &mockCallbacks{
+			config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:    6,
+			sysPrompt:  "sys",
+			toolResult: "checklist updated",
+			tools:      []map[string]interface{}{tooldef.BuildToolDef("todo_write", "update checklist", map[string]interface{}{"type": "object"})},
+		},
+		open: true,
+	}
+	result := RunLoop(cb, "画质需要有立体感", nil, server.Client())
+	if result.Error != "" || result.HardExit {
+		t.Fatalf("result=%+v", result)
+	}
+	if !strings.Contains(result.Text, "棋盘外圈") || strings.Contains(result.Text, "已勾选") {
+		t.Fatalf("text=%q", result.Text)
+	}
+	if result.ToolCalls != 1 || callCount != 3 {
+		t.Fatalf("calls=%d tools=%d", callCount, result.ToolCalls)
+	}
+	if cb.open {
+		t.Fatal("checklist still open after todo_write")
+	}
+}
+
+func TestRunLoop_NamelessAckAfterChecklistCloseKeepsReport(t *testing.T) {
+	// Long enough for the stream floor, short enough that the checklist
+	// fold keeps the earlier report. A copied nameless finish would return
+	// this acknowledgement itself.
+	ack := "清单五项都已勾选。光照渐变和立体感已经落地，构建与测试都通过了。没有新的问题吧。"
+	if n := len([]rune(ack)); n < 40 || n >= 48 {
+		t.Fatalf("ack rune count %d must sit between the stream floor and the deliverable fold", n)
+	}
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		switch callCount {
+		case 1:
+			writeNamelessClearedContentStream(w, namelessChecklistReport, "Final answer.")
+		case 2:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_todo","type":"function","function":{"name":"todo_write","arguments":"{\"merge\":true}"}}]},"finish_reason":"tool_calls"}]}`)
+		default:
+			writeNamelessClearedContentStream(w, ack, "checked")
+		}
+	}))
+	defer server.Close()
+	cb := &checklistGuardCallbacks{
+		mockCallbacks: &mockCallbacks{
+			config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:    6,
+			sysPrompt:  "sys",
+			toolResult: "checklist updated",
+			tools:      []map[string]interface{}{tooldef.BuildToolDef("todo_write", "update checklist", map[string]interface{}{"type": "object"})},
+		},
+		open: true,
+	}
+	result := RunLoop(cb, "画质需要有立体感", nil, server.Client())
+	if result.Error != "" || result.HardExit {
+		t.Fatalf("result=%+v", result)
+	}
+	if !strings.Contains(result.Text, "棋盘外圈") || strings.Contains(result.Text, "没有新的问题吧") {
+		t.Fatalf("text=%q", result.Text)
+	}
+	if result.ToolCalls != 1 || callCount != 3 || cb.open {
+		t.Fatalf("calls=%d tools=%d open=%t", callCount, result.ToolCalls, cb.open)
+	}
+}
+
+func TestRunLoop_NamelessShortFragmentWithoutReportStaysEmpty(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		writeNamelessClearedContentStream(w, "太短", "thinking")
+	}))
+	defer server.Close()
+	cb := &mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:   6,
+		sysPrompt: "sys",
+	}
+	result := RunLoop(cb, "你好", nil, server.Client())
+	if callCount != 2 || !result.HardExit {
+		t.Fatalf("calls=%d result=%#v", callCount, result)
+	}
+	if strings.Contains(result.Text, "太短") || !strings.Contains(result.Text, "多次尝试均未取得进展") {
+		t.Fatalf("Text = %q", result.Text)
+	}
+}
+
+func TestRunLoop_NamelessToolBodyDoesNotPassOpenChecklist(t *testing.T) {
+	callCount := 0
+	sawNudge := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "清单未关闭") {
+			sawNudge = true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if callCount == 1 {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_bash","type":"function","function":{"name":"bash","arguments":"{\"command\":\"cmake --build build\"}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+	}))
+	defer server.Close()
+	cb := &checklistGuardCallbacks{
+		mockCallbacks: &mockCallbacks{
+			config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:    6,
+			sysPrompt:  "sys",
+			toolResult: "build ok",
+			tools:      []map[string]interface{}{tooldef.BuildToolDef("bash", "run a command", map[string]interface{}{"type": "object"})},
+		},
+		open: true,
+	}
+	result := RunLoop(cb, "画质需要有立体感", nil, server.Client())
+	if result.Error != ErrChecklistUnsettled || !result.HardExit {
+		t.Fatalf("result=%+v", result)
+	}
+	if !strings.Contains(result.Text, "build ok") || !sawNudge || !cb.open {
+		t.Fatalf("text=%q nudge=%t open=%t calls=%d", result.Text, sawNudge, cb.open, callCount)
+	}
+	if callCount != 4 {
+		t.Fatalf("calls=%d", callCount)
+	}
+}
+
+func TestRunLoop_NamelessToolBodyNudgeLeavesProseBudget(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		switch callCount {
+		case 1:
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_bash","type":"function","function":{"name":"bash","arguments":"{\"command\":\"cmake --build build\"}"}}]},"finish_reason":"tool_calls"}]}`)
+		case 2, 3:
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+		case 4:
+			if !strings.Contains(string(body), "清单未关闭") {
+				t.Errorf("tool-body adoption did not nudge")
+			}
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"`+namelessChecklistReport+`"},"finish_reason":"stop"}]}`)
+		case 5:
+			if !strings.Contains(string(body), "仍未关闭") {
+				t.Errorf("prose report was treated as the budget already spent: %s", body)
+			}
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_todo","type":"function","function":{"name":"todo_write","arguments":"{\"merge\":true}"}}]},"finish_reason":"tool_calls"}]}`)
+		default:
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"已勾选"},"finish_reason":"stop"}]}`)
+		}
+	}))
+	defer server.Close()
+	cb := &checklistGuardCallbacks{
+		mockCallbacks: &mockCallbacks{
+			config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:    8,
+			sysPrompt:  "sys",
+			toolResult: "build ok",
+			tools: []map[string]interface{}{
+				tooldef.BuildToolDef("bash", "run a command", map[string]interface{}{"type": "object"}),
+				tooldef.BuildToolDef("todo_write", "update checklist", map[string]interface{}{"type": "object"}),
+			},
+		},
+		open: true,
+	}
+	result := RunLoop(cb, "画质需要有立体感", nil, server.Client())
+	if result.Error != "" || result.HardExit {
+		t.Fatalf("result=%+v calls=%d", result, callCount)
+	}
+	if !strings.Contains(result.Text, "棋盘外圈") || strings.Contains(result.Text, "已勾选") {
+		t.Fatalf("text=%q", result.Text)
+	}
+	if callCount != 6 || cb.open {
+		t.Fatalf("calls=%d open=%t", callCount, cb.open)
 	}
 }
 

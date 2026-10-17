@@ -153,7 +153,6 @@ func TestApplyVendorLoginRejectsOtherMode(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
-	t.Setenv("AICODER_SKIP_CODEXPROXY_RELAUNCH", "1")
 	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
 	app := NewApp()
 	if err := writeSettings(Settings{
@@ -164,7 +163,6 @@ func TestApplyVendorLoginRejectsOtherMode(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	app.setRelaunchAfterAuth(true)
 	_, err := app.applyVendorLogin(vendorCredential{
 		Mode:        AuthModeQoderCN,
 		AccessToken: "qoder-access",
@@ -172,9 +170,6 @@ func TestApplyVendorLoginRejectsOtherMode(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected mode mismatch")
-	}
-	if app.takeRelaunchAfterAuth() {
-		t.Fatal("failed login left a relaunch armed")
 	}
 	got, err := loadSettings()
 	if err != nil {
@@ -243,7 +238,6 @@ func TestApplyQoderLoginPersistsAccount(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
-	t.Setenv("AICODER_SKIP_CODEXPROXY_RELAUNCH", "1")
 	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
 
 	app := NewApp()

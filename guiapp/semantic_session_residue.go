@@ -552,13 +552,21 @@ func semanticMutatingCapabilities(current intent.ClassificationResult) map[tool.
 }
 
 func semanticBareAlreadyRequestedLookup(bare *intent.ClassificationResult) bool {
-	return bare != nil && semanticResultHasLookupLabel(*bare)
+	return bare != nil && semanticSentenceRequestsNewLookup(*bare)
+}
+
+func semanticLabelIsLookup(label intent.IntentLabel) bool {
+	switch label {
+	case intent.LabelSearch, intent.LabelLiveData, intent.LabelLiveDataVisual, intent.LabelWebFetch:
+		return true
+	default:
+		return false
+	}
 }
 
 func semanticResultHasLookupLabel(current intent.ClassificationResult) bool {
 	for _, label := range current.Labels() {
-		switch label {
-		case intent.LabelSearch, intent.LabelLiveData, intent.LabelLiveDataVisual, intent.LabelWebFetch:
+		if semanticLabelIsLookup(label) {
 			return true
 		}
 	}
@@ -603,9 +611,7 @@ func semanticRendersOpenLookup(current intent.ClassificationResult, residue sema
 		return false
 	}
 	for _, label := range current.Labels() {
-		switch label {
-		case intent.LabelDocumentGenerate:
-		case intent.LabelSearch, intent.LabelLiveData, intent.LabelLiveDataVisual, intent.LabelWebFetch:
+		if semanticLabelIsLookup(label) {
 			return false
 		}
 	}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useDialog } from '../CustomDialog';
 import { IconMail } from '../ai/WorkbenchIcons';
+import { MailboxManageDialog } from './MailboxManageDialog';
 import {
     MailboxAccountDelete,
     MailboxAccountSave,
@@ -158,6 +159,7 @@ export function EmailSettingsPanel({ lang }: { lang: string }) {
     const t = useCallback((en: string, hans: string, hant: string) => textFor(lang, en, hans, hant), [lang]);
     const { showConfirm } = useDialog();
     const [accounts, setAccounts] = useState<MailboxSummary[]>([]);
+    const [managing, setManaging] = useState<MailboxSummary | null>(null);
     const [signatures, setSignatures] = useState<SignatureSummary[]>([]);
     const [notice, setNotice] = useState('');
     const [noticeTone, setNoticeTone] = useState<'ok' | 'err'>('ok');
@@ -573,6 +575,7 @@ export function EmailSettingsPanel({ lang }: { lang: string }) {
                                         </div>}
                                     </div>
                                     <div className="email-settings-row__actions">
+                                        <button type="button" className="email-settings-button" disabled={busy || !account.has_inbound} title={!account.has_inbound ? t('This mailbox has no receive setup.', '这个邮箱没有配置收件。', '這個郵箱沒有配置收件。') : undefined} data-testid={`mailbox-manage-${account.id}`} onClick={() => setManaging(account)}>{t('Manage mail', '邮箱管理', '郵箱管理')}</button>
                                         {account.auth === 'oauth' && <button type="button" className="email-settings-button" disabled={busy} onClick={() => loginOAuth(account.provider || 'gmail', account.address)}>{t('Sign in again', '重新登录', '重新登入')}</button>}
                                         <button type="button" className="email-settings-button" disabled={busy} onClick={() => editAccount(account)}>{t('Edit', '编辑', '編輯')}</button>
                                         <button type="button" className="email-settings-button email-settings-button--ghost" disabled={busy} onClick={() => { void commitAccountChange(() => MailboxAccountSetEnabled(account.id, !account.enabled)); }}>{account.enabled ? t('Pause', '停用', '停用') : t('Enable', '启用', '啟用')}</button>
@@ -729,6 +732,7 @@ export function EmailSettingsPanel({ lang }: { lang: string }) {
                     </div>
                 </div>
             </section>
+            {managing && <MailboxManageDialog lang={lang} account={managing} onClose={() => setManaging(null)} />}
         </div>
     );
 }

@@ -34,12 +34,12 @@ func newKimiFakeAuthServer(t *testing.T) *kimiFakeAuthServer {
 			t.Error("device_authorization missing X-Msh-Platform")
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"user_code":                "ABCD-EFGH",
-			"device_code":              "device-code-123",
-			"verification_uri":         "https://www.kimi.com/code",
+			"user_code":                 "ABCD-EFGH",
+			"device_code":               "device-code-123",
+			"verification_uri":          "https://www.kimi.com/code",
 			"verification_uri_complete": "https://www.kimi.com/code?user_code=ABCD-EFGH",
-			"expires_in":               600,
-			"interval":                 1,
+			"expires_in":                600,
+			"interval":                  1,
 		})
 	})
 	mux.HandleFunc("/api/oauth/token", func(w http.ResponseWriter, r *http.Request) {
@@ -79,7 +79,6 @@ func kimiTestEnv(t *testing.T) {
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("KIMI_CODE_OAUTH_HOST", "")
 	t.Setenv("KIMI_OAUTH_HOST", "")
-	t.Setenv("AICODER_SKIP_CODEXPROXY_RELAUNCH", "1")
 	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
 }
 
@@ -295,17 +294,14 @@ func TestKimiBrowserOpenFailureOmitsURL(t *testing.T) {
 	}
 }
 
-// A Kimi login replaces the upstream, so it must arm the restart itself rather
-// than inherit whatever flag the mode selection left behind.
-func TestKimiLoginArmsRelaunchOnSuccess(t *testing.T) {
+// A Kimi login replaces the upstream on the running proxy. A restart flag left
+// over from mode selection must be discarded so the window does not exit.
+func TestKimiLoginAppliesWithoutProcessRestart(t *testing.T) {
 	kimiTestEnv(t)
-	t.Setenv("AICODER_SKIP_CODEXPROXY_RELAUNCH", "1")
 	fake := newKimiFakeAuthServer(t)
 	t.Setenv("KIMI_CODE_OAUTH_HOST", fake.URL)
 
 	app := NewApp()
-	// A mode switch that could not complete leaves the flag armed.
-	app.setRelaunchAfterAuth(true)
 
 	if err := writeSettings(Settings{
 		ListenAddress:  "127.0.0.1:0",
@@ -321,34 +317,17 @@ func TestKimiLoginArmsRelaunchOnSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WaitKimiWebLogin: %v", err)
 	}
-	if !status.RelaunchScheduled {
-		t.Fatal("successful Kimi login did not schedule a relaunch; the new upstream would never take effect")
+	if !status.LoggedIn || !status.Running {
+		t.Fatal("Kimi login was not applied to the running proxy")
 	}
 	if status.Settings.ActiveAuthMode != AuthModeKimiWeb {
 		t.Fatalf("active mode = %q, want kimi_web", status.Settings.ActiveAuthMode)
 	}
-}
-
-// The pending-restart flag must be consumed exactly once, so two concurrent
-// callers cannot each spawn a restart process.
-func TestRelaunchAfterAuthIsConsumedOnce(t *testing.T) {
-	app := NewApp()
-	app.setRelaunchAfterAuth(true)
-	if !app.takeRelaunchAfterAuth() {
-		t.Fatal("first take should report the pending relaunch")
+	saved, err := loadSettings()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if app.takeRelaunchAfterAuth() {
-		t.Fatal("second take should not report a relaunch")
-	}
-}
-
-func TestRelaunchGraceOutlastsTheLoginResult(t *testing.T) {
-	if relaunchGrace <= 0 {
-		t.Fatal("relaunch grace must be positive")
-	}
-	// The window must survive long enough for the login call to return its
-	// result to the frontend before the process quits.
-	if relaunchGrace < time.Second {
-		t.Fatalf("relaunch grace = %v, too short to deliver the login result", relaunchGrace)
+	if saved.AccessToken != "kimi-access-token" {
+		t.Fatalf("access token = %q", saved.AccessToken)
 	}
 }

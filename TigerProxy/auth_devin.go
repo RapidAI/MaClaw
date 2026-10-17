@@ -226,16 +226,11 @@ func (a *App) applyDevinSession(session windsurf.Session) (Status, error) {
 	if strings.TrimSpace(session.APIKey) == "" {
 		return Status{}, fmt.Errorf("Devin 登录未返回访问令牌")
 	}
-	a.setRelaunchAfterAuth(true)
 	host := windsurf.CanonicalAPIServer(session.APIKey, session.APIServerURL)
-	status, err := a.applyOAuthResultLabeled(AuthModeDevin, host, &oauth.TokenResult{
+	return a.applyOAuthResultLabeled(AuthModeDevin, host, &oauth.TokenResult{
 		AccessToken:    session.APIKey,
 		RawAccessToken: session.APIKey,
 	}, session.Name, true)
-	if err != nil || !status.RelaunchScheduled {
-		a.setRelaunchAfterAuth(false)
-	}
-	return status, err
 }
 
 // openDevinLoginURL reports whether the system browser accepted the page.

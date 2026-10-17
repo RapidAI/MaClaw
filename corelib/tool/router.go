@@ -818,6 +818,67 @@ func (r *Router) toolHeadInjectParams() (h *ToolHead, theta float64, k int) {
 	return h, theta, k
 }
 
+// ToolHeadCandidates scores the installed OvR head on a live RoleClassification
+// vector. Empty when no head is installed, the vector is missing, or the
+// vector does not match the head. Callers must not embed a second time.
+func (r *Router) ToolHeadCandidates(vec []float32) []ToolHeadScore {
+	if r == nil || len(vec) == 0 {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.toolHeadCandidatesLocked(vec)
+}
+
+func (r *Router) toolHeadCandidatesLocked(vec []float32) []ToolHeadScore {
+	h, theta, k := r.toolHeadInjectParams()
+	if h == nil || len(vec) == 0 {
+		return nil
+	}
+	probs, err := h.Predict(vec)
+	if err != nil {
+		log.Printf("[tool-head] predict failed: %v", err)
+		return nil
+	}
+	return h.TopK(probs, k, theta)
+}
+
+// routeToolHeadVector is the turn's own query vector. A cached classification
+// drops QueryVec; the live PreResolved result still carries it.
+func routeToolHeadVector(result intent.ClassificationResult, opts RouteOptions) []float32 {
+	if len(result.QueryVec) > 0 {
+		return result.QueryVec
+	}
+	if opts.PreResolved != nil && len(opts.PreResolved.QueryVec) > 0 {
+		return opts.PreResolved.QueryVec
+	}
+	return nil
+}
+
+// applyToolHeadCondKeep unions the head's top-k into the legacy conditional
+// keep set. The caller holds r.mu. Sensitive names stay fail-closed unless
+// the head itself scored them; condKeep is consulted before condFilterOut.
+func (r *Router) applyToolHeadCondKeep(condKeep map[string]bool, vec []float32) {
+	if len(vec) == 0 || condKeep == nil {
+		return
+	}
+	scores := r.toolHeadCandidatesLocked(vec)
+	if len(scores) == 0 {
+		return
+	}
+	kept := make([]string, 0, len(scores))
+	for _, s := range scores {
+		if !uicToolNameActivatable(s.Tool) {
+			continue
+		}
+		condKeep[s.Tool] = true
+		kept = append(kept, fmt.Sprintf("%s@%.2f", s.Tool, s.Prob))
+	}
+	if len(kept) > 0 {
+		log.Printf("[tool-head] legacy inject %s", strings.Join(kept, ","))
+	}
+}
+
 // SetEnrichmentStore configures the enrichment store for enhanced tool descriptions.
 func (r *Router) SetEnrichmentStore(store *EnrichmentStore) {
 	r.mu.Lock()
@@ -1581,17 +1642,10 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 		}
 
 		// First-party tool head: inject top-k (p≥θ) into condKeep using the
-		// same RoleClassification query vector intent L2/L3 already computed
-		// (uicResult.QueryVec). No extra embed; fail-closed on dim mismatch.
-		if h, theta, k := r.toolHeadInjectParams(); h != nil && len(uicResult.QueryVec) > 0 {
-			if probs, err := h.Predict(uicResult.QueryVec); err == nil {
-				for _, s := range h.TopK(probs, k, theta) {
-					if uicToolNameActivatable(s.Tool) {
-						condKeep[s.Tool] = true
-					}
-				}
-			}
-		}
+		// same RoleClassification query vector intent L2/L3 already computed.
+		// No extra embed; fail-closed on dim mismatch. The live PreResolved
+		// vector is used when the cached label copy has dropped QueryVec.
+		r.applyToolHeadCondKeep(condKeep, routeToolHeadVector(uicResult, opts))
 		uicKnowledgeWrite := !opts.SkipUnifiedClassifier && uicResult.Primary == intent.LabelKnowledgeWrite
 		for _, toolName := range classificationConditionalToolNames(uicResult) {
 			if !uicToolNameActivatable(toolName) {
@@ -1637,6 +1691,10 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 				condFilterOut[name] = true
 			}
 		}
+		// UIC abstained, but the turn may still carry the L2 vector. The head
+		// is a candidate source beside UIC, not a second vote that waits for
+		// UIC to activate. condKeep wins over condFilterOut below.
+		r.applyToolHeadCondKeep(condKeep, routeToolHeadVector(uicResult, opts))
 
 		if !opts.SkipUnifiedClassifier && r.intentClassifier != nil {
 			result := r.intentClassifier.Classify(userMessage)

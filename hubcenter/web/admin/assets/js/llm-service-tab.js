@@ -40,6 +40,8 @@ if (typeof I18N_ZH !== 'undefined') {
       vendorCatalogWarn: 'The live catalog was unavailable. Showing the built-in model list.',
       fieldProtocol: 'Protocol', fieldUserAgent: 'User-Agent',
       fieldUserAgentHint: 'Sent as the User-Agent on upstream requests. Choose a coding tool, or type your own.',
+      openCodeProviderHint: 'Leave the key empty for the anonymous free tier. A Zen API key is a paid account and is forwarded like Codex. Free and paid models share this provider; the model id picks the gateway.',
+      openCodeKeyOptional: 'Optional. Empty uses the anonymous free tier.',
       fieldUserAgentAccountHint: 'An account login sends its own User-Agent:',
       uaDefault: 'openclaw (default)', uaCustom: 'Custom', uaCustomPlaceholder: 'Type a User-Agent',
       fieldModels: 'Models (comma-separated)', fieldCapabilities: 'Capabilities',
@@ -259,6 +261,8 @@ if (typeof I18N_ZH !== 'undefined') {
       vendorCatalogWarn: '\u5b9e\u65f6\u6a21\u578b\u76ee\u5f55\u6682\u4e0d\u53ef\u7528\uff0c\u5df2\u663e\u793a\u5185\u7f6e\u6a21\u578b\u5217\u8868\u3002',
       fieldProtocol: '\u534f\u8bae', fieldUserAgent: 'User-Agent',
       fieldUserAgentHint: '\u4e0a\u6e38\u8bf7\u6c42\u4f1a\u5e26\u4e0a\u8fd9\u4e2a User-Agent\u3002\u53ef\u9009\u5e38\u89c1\u7f16\u7a0b\u5de5\u5177\uff0c\u4e5f\u53ef\u81ea\u884c\u586b\u5199\u3002',
+      openCodeProviderHint: '\u5bc6\u94a5\u7559\u7a7a\u5373\u533f\u540d\u514d\u8d39\u6863\u3002\u586b\u5199 Zen API Key \u5219\u4e0e Codex \u4e00\u6837\u6309\u4ed8\u8d39\u8d26\u53f7\u8f6c\u53d1\u3002\u514d\u8d39\u6a21\u578b\u548c\u4ed8\u8d39\u6a21\u578b\u5171\u7528\u8fd9\u4e00\u4e2a\u670d\u52a1\u5546\uff0c\u6309\u6a21\u578b id \u81ea\u52a8\u9009\u7f51\u5173\u3002',
+      openCodeKeyOptional: '\u53ef\u7559\u7a7a\u3002\u7559\u7a7a\u5373\u533f\u540d\u514d\u8d39\u6863\u3002',
       fieldUserAgentAccountHint: '\u8d26\u53f7\u767b\u5f55\u4f1a\u5e26\u4e0a\u5b83\u81ea\u5df1\u7684 User-Agent\uff1a',
       uaDefault: 'openclaw\uff08\u9ed8\u8ba4\uff09', uaCustom: '\u81ea\u5b9a\u4e49', uaCustomPlaceholder: '\u8f93\u5165 User-Agent',
       fieldModels: '\u6a21\u578b\uff08\u9017\u53f7\u5206\u9694\uff09', fieldCapabilities: '\u80fd\u529b\u6807\u7b7e',
@@ -3067,6 +3071,10 @@ if (typeof I18N_ZH !== 'undefined') {
     if (!hint) return;
     var auth = vendorLoginAuths[val('llmPrvAuth')];
     var account = auth && providerUserAgentPresetByKind(auth.kind);
+    if (val('llmPrvUserAgent') === 'OpenCode') {
+      hint.textContent = t('openCodeProviderHint');
+      return;
+    }
     hint.textContent = account ? t('fieldUserAgentAccountHint') + ' ' + account.value : t('fieldUserAgentHint');
   }
   // Returns the canonical preset value, '' for the default, or null for a custom string.
@@ -3103,7 +3111,19 @@ if (typeof I18N_ZH !== 'undefined') {
     var show = val('llmPrvUserAgent') === '__custom__';
     custom.hidden = !show;
     if (show && focusCustom && typeof custom.focus === 'function') custom.focus();
+    var url = document.getElementById('llmPrvURL');
+    if (url && val('llmPrvUserAgent') === 'OpenCode' && !String(url.value || '').trim()) {
+      url.value = 'https://opencode.ai/zen/v1';
+    }
+    refreshProviderUserAgentHint();
+    refreshOpenCodeKeyPlaceholder();
   };
+  function refreshOpenCodeKeyPlaceholder() {
+    var key = document.getElementById('llmPrvKey');
+    if (!key || val('llmPrvUserAgent') !== 'OpenCode') return;
+    var kept = key.placeholder && key.placeholder !== t('openCodeKeyOptional');
+    if (!kept) key.placeholder = t('openCodeKeyOptional');
+  }
   function providerStoresStaticKey(p) {
     return !!(p && p.has_api_key && !providerAuthValue(p));
   }
@@ -3147,6 +3167,7 @@ if (typeof I18N_ZH !== 'undefined') {
     if (probe) probe.hidden = !!preset;
     if (url) url.readOnly = !!preset;
     refreshProviderUserAgentHint();
+    refreshOpenCodeKeyPlaceholder();
     if (!preset) {
       stopWorkBuddyLoginPoll();
       return;

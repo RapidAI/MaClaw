@@ -14,6 +14,10 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     MailboxAccountSetSecret: vi.fn(),
     MailboxAccountTestDraft: vi.fn(),
     MailboxAccountsList: vi.fn(),
+    MailboxBrowseFolders: vi.fn(),
+    MailboxBrowseMessages: vi.fn(),
+    MailboxBrowseRead: vi.fn(),
+    MailboxBrowseStart: vi.fn(),
     MailboxOAuthLogin: vi.fn(),
     MailboxSignatureDelete: vi.fn(),
     MailboxSignatureSave: vi.fn(),
@@ -32,6 +36,9 @@ import {
     MailboxAccountSetSecret,
     MailboxAccountTestDraft,
     MailboxAccountsList,
+    MailboxBrowseMessages,
+    MailboxBrowseRead,
+    MailboxBrowseStart,
     MailboxOAuthLogin,
     MailboxSignatureDelete,
     MailboxSignatureSave,
@@ -500,5 +507,56 @@ describe('EmailSettingsPanel', () => {
         vi.mocked(MailboxOAuthLogin).mockResolvedValue('Gmail 邮箱 a@gmail.com 已登录' as never);
         fireEvent.click(screen.getByRole('button', { name: '重新登录' }));
         await waitFor(() => expect(MailboxOAuthLogin).toHaveBeenCalledWith('gmail', 'a@gmail.com'));
+    });
+
+    it('opens mailbox management from the row and reads a message in the selected folder', async () => {
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [
+                { name: 'INBOX', special: 'inbox' },
+                { name: 'Junk', special: 'junk' },
+            ],
+            box: 'INBOX',
+            messages: [{ uid: 3, from: 'a@ex.com', subject: 'Hello', date: '2026-10-01', seen: true }],
+        } as never);
+        vi.mocked(MailboxBrowseMessages).mockImplementation(async (_id: string, box: string) => {
+            if (box === 'Junk') {
+                return [{ uid: 9, from: 'spam@ex.com', subject: 'Capacity', date: '2026-10-14', seen: false }] as never;
+            }
+            return [{ uid: 3, from: 'a@ex.com', subject: 'Hello', date: '2026-10-01', seen: true }] as never;
+        });
+        vi.mocked(MailboxBrowseRead).mockResolvedValue({
+            uid: 9, from: 'spam@ex.com', subject: 'Capacity', date: '2026-10-14', body: 'mailbox full',
+        } as never);
+
+        render(<EmailSettingsPanel lang="zh-Hans" />);
+        await screen.findByText('Work');
+        fireEvent.click(screen.getByTestId('mailbox-manage-mb1'));
+
+        expect(await screen.findByRole('dialog', { name: '邮箱管理' })).toBeTruthy();
+        expect(await screen.findByText('Hello')).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: '垃圾邮件' }));
+        expect(await screen.findByText('Capacity')).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: /Capacity/ }));
+        expect(await screen.findByText('mailbox full')).toBeTruthy();
+        expect(MailboxBrowseRead).toHaveBeenCalledWith('mb1', 'Junk', 9);
+        expect(screen.getByRole('button', { name: /Capacity/ }).className).toContain('mailbox-manage__message--current');
+    });
+
+    it('retries opening a mailbox after the first login fails', async () => {
+        vi.mocked(MailboxBrowseStart)
+            .mockRejectedValueOnce(new Error('登录失败，请检查密码或授权码'))
+            .mockResolvedValue({
+                folders: [{ name: 'INBOX', special: 'inbox' }],
+                box: 'INBOX',
+                messages: [{ uid: 1, from: 'a@ex.com', subject: 'Hello', seen: true }],
+            } as never);
+        render(<EmailSettingsPanel lang="zh-Hans" />);
+        await screen.findByText('Work');
+        fireEvent.click(screen.getByTestId('mailbox-manage-mb1'));
+
+        expect(await screen.findByRole('alert')).toHaveProperty('textContent', '登录失败，请检查密码或授权码');
+        fireEvent.click(screen.getByRole('button', { name: '再试一次' }));
+        expect(await screen.findByText('Hello')).toBeTruthy();
+        expect(MailboxBrowseStart).toHaveBeenCalledTimes(2);
     });
 });

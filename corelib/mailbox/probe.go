@@ -97,6 +97,22 @@ func probeErr(err error, settings bool) error {
 	return classErr(class, msg)
 }
 
+// ClientError is the Chinese sentence a person should see for a mailbox failure.
+func ClientError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var class *ClassError
+	if errors.As(err, &class) && class != nil && class.Message != "" {
+		return errors.New(class.Message)
+	}
+	_, msg := classifyTransport(err, false)
+	if msg == "" {
+		msg = MsgConnect
+	}
+	return errors.New(msg)
+}
+
 func classifyTransport(err error, settings bool) (string, string) {
 	switch {
 	case err == nil:

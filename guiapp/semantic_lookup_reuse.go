@@ -154,15 +154,18 @@ func withSemanticReusableLookupFacts(ctx context.Context) context.Context {
 	return context.WithValue(ctx, semanticReusableLookupFactsKey{}, true)
 }
 
-// semanticReuseStoredLookupFacts reports whether this sentence may consume a
-// web lookup the session already recorded. A lookup label is new evidence.
-// A generate or continuation may reuse. A new office classification does not;
-// an office label produced by staying on the open residue does.
-func semanticReuseStoredLookupFacts(text string, current intent.ClassificationResult) bool {
-	if current.Degraded || semanticResultHasLookupLabel(current) {
-		return false
-	}
-	if lexicalFreshLookupRequest(text) || lexicalWebSearchRequest(text) {
+// semanticReuseStoredLookupFacts reports whether this classification may
+// consume a web lookup the session already recorded. A lookup label is new
+// evidence. Any other verdict may reuse. A new office classification does
+// not; an office label produced by staying on the open residue does.
+//
+// An inherited open-task classification still carries the original search
+// label. Pass that through semanticStoredLookupFactsApply, which drops the
+// inherited label before calling this. The sentence is not read here: a
+// paraphrase the classifier did not mark as a lookup is the same decision
+// as any other follow-up.
+func semanticReuseStoredLookupFacts(current intent.ClassificationResult) bool {
+	if semanticResultHasLookupLabel(current) {
 		return false
 	}
 	if current.Primary == intent.LabelOffice && !strings.Contains(current.Reason, "session residue") {
@@ -171,12 +174,82 @@ func semanticReuseStoredLookupFacts(text string, current intent.ClassificationRe
 	return true
 }
 
+// semanticSentenceRequestsNewLookup reports that this sentence wants
+// evidence. Degraded is not that signal. The confirmation "需要" comes back
+// unknown at 0.30, degraded, because the tree verdict contradicted a local
+// continuation leader. A collapsed lookup keeps live_data on RunnerUp, and
+// a degraded lookup hint keeps it as primary. A settled capability does not
+// consult RunnerUp; that field is escalation evidence, not a second grant.
+func semanticSentenceRequestsNewLookup(sentence intent.ClassificationResult) bool {
+	if semanticResultHasLookupLabel(sentence) {
+		return true
+	}
+	if sentence.Primary != "" && !sentence.Primary.IsNonCapabilityLabel() && !sentence.Degraded {
+		return false
+	}
+	return semanticLabelIsLookup(sentence.RunnerUp)
+}
+
 // semanticClassificationRequestsLookupEvidence reports a turn whose
 // authority is new external evidence. The open deliverable may still
 // apply; the previous subject's stored facts and spent evidence ceiling
 // do not.
 func semanticClassificationRequestsLookupEvidence(current intent.ClassificationResult) bool {
 	return semanticLookupHalf(current) || current.Primary == intent.LabelLiveDataVisual
+}
+
+// semanticStoredLookupFactsApply is the residue gate. planned is often the
+// open task after an unclear or continue rewrite, so it still names the
+// original search. That label is the task shape (search, then generate), not
+// a request for new evidence. Treating it as one withholds generate_pdf until
+// this turn calls web_search again.
+//
+// The sentence's own classification is the signal, not its wording and not
+// the degraded bit. A lookup label, including one kept only as RunnerUp
+// after the tree abstains, is new evidence and must not reuse. A degraded
+// unknown whose local leader is continuation is the confirmation that
+// already has these facts.
+func semanticStoredLookupFactsApply(text string, planned intent.ClassificationResult, bare *intent.ClassificationResult) bool {
+	// Wording is not a signal, including "再查" / "最新" / "网上搜索".
+	// A confirmation that mentions the search it does not want must still
+	// consume the stored facts. A new lookup has to be classified as one.
+	_ = text
+	sentence := planned
+	if bare != nil {
+		sentence = *bare
+	}
+	// A control-plane failure has no sentence. Do not treat it as a
+	// confirmation and render the previous lookup.
+	if sentence.ControlPlaneFailure || semanticSentenceRequestsNewLookup(sentence) {
+		return false
+	}
+	if semanticResultHasLookupLabel(planned) {
+		planned = semanticClassificationWithoutLookupLabels(planned)
+	}
+	return semanticReuseStoredLookupFacts(planned)
+}
+
+func semanticClassificationWithoutLookupLabels(current intent.ClassificationResult) intent.ClassificationResult {
+	kept := make([]intent.IntentLabel, 0, len(current.Labels()))
+	for _, label := range current.Labels() {
+		if semanticLabelIsLookup(label) {
+			continue
+		}
+		kept = append(kept, label)
+	}
+	out := current
+	if len(kept) == 0 {
+		out.Primary = ""
+		out.Secondary = nil
+		return out
+	}
+	out.Primary = kept[0]
+	if len(kept) == 1 {
+		out.Secondary = nil
+		return out
+	}
+	out.Secondary = append([]intent.IntentLabel(nil), kept[1:]...)
+	return out
 }
 
 func semanticReusableLookupFacts(ctx context.Context) bool {
@@ -191,10 +264,11 @@ func semanticNeedsForReusableConversationLookupReport(needs []tool.CapabilityNee
 	if !semanticNeedsHaveWebLookup(needs) || !semanticNeedsHaveGenerate(needs) || semanticNeedsHaveLiveDataVisual(needs) {
 		return needs, false
 	}
-	// Topic-string alignment is not a fact. Only a host residue that recorded
-	// a successful web lookup for this task, and only when the user did not
-	// ask for a fresh one.
-	if lexicalWebSearchRequest(userText) || lexicalFreshLookupRequest(userText) || !semanticReusableLookupFacts(ctx) {
+	// Topic-string alignment is not a fact. The flag is the decision, made
+	// from the sentence's own classification before planning. Reading the
+	// wording again would turn "别再查了" back into another search.
+	_ = userText
+	if !semanticReusableLookupFacts(ctx) {
 		return needs, false
 	}
 	kept := make([]tool.CapabilityNeed, 0, len(needs))
@@ -209,46 +283,6 @@ func semanticNeedsForReusableConversationLookupReport(needs []tool.CapabilityNee
 	}
 	log.Printf("[semantic] omit this-turn lookup; session residue already has web facts")
 	return kept, true
-}
-
-// lexicalWebSearchRequest detects an explicit new-search request only when
-// deciding whether prior, trusted lookup evidence may be reused. It is not an
-// intent classifier and must never grant, select, or reclassify a capability.
-func lexicalWebSearchRequest(text string) bool {
-	msg := strings.ToLower(strings.TrimSpace(text))
-	if msg == "" {
-		return false
-	}
-	for _, marker := range []string{
-		"全网搜索", "全网查", "上网搜索", "上网搜", "上网查",
-		"网上搜索", "网上搜", "网上找", "网上查",
-		"在网上搜索", "在网上查找", "在网上找",
-		"联网搜索", "互联网搜索", "联网查",
-		"search the web", "search online", "web search",
-		"google this", "bing this", "look up online",
-	} {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func lexicalFreshLookupRequest(text string) bool {
-	msg := strings.ToLower(strings.TrimSpace(text))
-	if msg == "" {
-		return false
-	}
-	for _, marker := range []string{
-		"refresh", "latest", "look up again", "search again",
-		"重新查", "再查一遍", "再查一次", "再查一下", "再查",
-		"重新搜索", "再搜", "刷新", "最新", "实时",
-	} {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
 }
 
 // semanticPetitionKeptLookupKey carries the petitioned label into a petition

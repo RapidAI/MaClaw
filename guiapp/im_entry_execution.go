@@ -337,7 +337,9 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 						}
 						if relation == semanticResidueContinue || relation == semanticResidueUnclear {
 							loopCtx.semanticResidueRemaining = semanticResidueRemainingForOpenTurn(residue, planned)
-							loopCtx.semanticResidueLookupFacts = residue.LookupFacts && semanticReuseStoredLookupFacts(msg.Text, planned)
+							// planned still carries the open task's search label.
+							// Judge reuse from the sentence, not that inherited label.
+							loopCtx.semanticResidueLookupFacts = residue.LookupFacts && semanticStoredLookupFactsApply(msg.Text, planned, &bareIntent)
 						}
 						if applied {
 							semanticIntent = &rewritten
@@ -345,7 +347,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 							log.Printf("[semantic-routing] session residue %s user=%q primary=%s", relation, msg.UserID, rewritten.Primary)
 						}
 					}
-				} else if factsOnly && semanticReuseStoredLookupFacts(msg.Text, *semanticIntent) {
+				} else if factsOnly && semanticStoredLookupFactsApply(msg.Text, *semanticIntent, &bareIntent) {
 					loopCtx.semanticResidueLookupFacts = true
 				}
 				// Final verdict still unknown / non-capability: admit this

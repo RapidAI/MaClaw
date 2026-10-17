@@ -57,6 +57,7 @@ func (h *IMMessageHandler) clearInFlightTaskMarker(userID string) {
 	if h == nil || h.memory == nil {
 		return
 	}
+	h.detachProjectTabTranscript(userID)
 	h.memory.ClearInFlightTask(userID)
-	_ = h.memory.FlushNow()
+	_ = h.memory.FlushUser(userID)
 }

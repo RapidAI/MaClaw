@@ -1104,6 +1104,23 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.messages.find(m => m.id === 'a-fn')?.content).toBe('');
     });
 
+    it('strips leaked thinking protocol closers from restored reasoning', () => {
+        localStorage.setItem(AI_ASSISTANT_HISTORY_STORAGE_KEY, JSON.stringify([
+            {
+                id: 'a-leak',
+                role: 'assistant',
+                content: '让我调用web_search来获取北京天气。\n</tool_value>\n</thinking>',
+                reasoning: '让我调用web_search来获取北京天气。\n</tool_value>\n</thinking>',
+                timestamp: 1,
+            },
+        ]));
+
+        const { result } = renderAssistantHook();
+        const restored = result.current.messages.find(m => m.id === 'a-leak');
+        expect(restored?.reasoning).toBe('让我调用web_search来获取北京天气。');
+        expect(restored?.content).toBe('让我调用web_search来获取北京天气。');
+    });
+
     it('drops a persisted Browser echo field when restoring history', () => {
         localStorage.setItem(AI_ASSISTANT_HISTORY_STORAGE_KEY, JSON.stringify([
             {
@@ -2116,7 +2133,8 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(result.current.sending).toBe(true);
-        expect(messageContents(result.current.messages)).toContain(displayText);
+        expect(result.current.messages.filter(message => message.role === 'user')).toHaveLength(0);
+        expect(result.current.messages.find(message => message.kind === 'goalChecklist')?.content).toBe(displayText);
         expect(messageContents(result.current.messages)).not.toContain(prompt);
 
         await act(async () => {
@@ -2142,6 +2160,94 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.sending).toBe(false);
         expect(result.current.progressMessages).toEqual([]);
         expect(assistantMessages(result.current.messages)[0].content).toBe('已完成本轮实现。');
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-foreground-round-started', {
+                request_id: 'goal-cont-next-step',
+                session_key: 'desktop-user',
+                text: '[系统续接][execute] 当前步骤',
+                display_text: '目标清单\n✓ 1. 环境\n→ 2. 物理内核\n进度：第 3/50 轮',
+            });
+        });
+
+        const checklists = result.current.messages.filter(message => message.kind === 'goalChecklist');
+        expect(checklists).toHaveLength(1);
+        expect(checklists[0].role).toBe('system');
+        expect(checklists[0].content).toContain('→ 2. 物理内核');
+        expect(result.current.messages.filter(message => message.role === 'user')).toHaveLength(0);
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', {
+                request_id: 'goal-cont-recovered-later',
+                session_key: 'desktop-user',
+                text: '补回的输出',
+            });
+        });
+
+        const afterRecovery = result.current.messages.filter(message => message.kind === 'goalChecklist');
+        expect(afterRecovery).toHaveLength(1);
+        expect(afterRecovery[0].content).toContain('→ 2. 物理内核');
+
+        await act(async () => {
+            emitRuntimeEvent('goal-state-changed', {
+                user_id: 'desktop-user',
+                phase: 'execute',
+                steps: [
+                    { index: 1, title: '环境', status: 'done' },
+                    { index: 2, title: '物理内核', status: 'progress' },
+                    { index: 3, title: '渲染', status: 'pending' },
+                ],
+                turns_used: 2,
+                max_turns: 50,
+                tokens_used: 9,
+                token_budget: 40,
+            });
+        });
+
+        const fromRecord = result.current.messages.filter(message => message.kind === 'goalChecklist');
+        expect(fromRecord).toHaveLength(1);
+        expect(fromRecord[0].content).toBe([
+            '目标清单',
+            '✓ 1. 环境',
+            '→ 2. 物理内核',
+            '○ 3. 渲染',
+            '进度：第 3/50 轮 | Token: 9/40',
+        ].join('\n'));
+
+        await act(async () => {
+            emitRuntimeEvent('goal-state-changed', {
+                user_id: 'desktop-user',
+                phase: 'execute',
+                steps: null,
+            });
+        });
+        expect(result.current.messages.find(message => message.kind === 'goalChecklist')?.content).toContain('→ 2. 物理内核');
+
+        await act(async () => {
+            emitRuntimeEvent('goal-state-changed', {
+                user_id: 'desktop-user:C:\\Users\\ma139\\.maclaw\\data\\tasks\\other',
+                phase: 'execute',
+                steps: [{ index: 1, title: '别的任务', status: 'done' }],
+                turns_used: 1,
+                max_turns: 50,
+            });
+        });
+        expect(result.current.messages.filter(message => message.kind === 'goalChecklist')).toHaveLength(1);
+        expect(result.current.messages.find(message => message.kind === 'goalChecklist')?.content).toContain('→ 2. 物理内核');
+
+        act(() => {
+            forgetAIAssistantSessionRounds('desktop-user');
+        });
+        await act(async () => {
+            emitRuntimeEvent('goal-state-changed', {
+                user_id: 'desktop-user',
+                phase: 'execute',
+                steps: [{ index: 1, title: '清空后的步骤', status: 'done' }],
+                turns_used: 1,
+                max_turns: 50,
+            });
+        });
+        expect(result.current.messages.find(message => message.kind === 'goalChecklist')?.content).toContain('→ 2. 物理内核');
     });
 
     it('recovers goal continuation output if the foreground start event was missed', async () => {
@@ -2157,7 +2263,8 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(result.current.sending).toBe(true);
-        expect(messageContents(result.current.messages)).toContain('/goal Continue goal');
+        expect(result.current.messages.filter(message => message.role === 'user')).toHaveLength(0);
+        expect(result.current.messages.find(message => message.kind === 'goalChecklist')?.content).toContain('Goal checklist');
         expect(assistantMessages(result.current.messages)[0].content).toBe('恢复后的流式输出');
 
         await act(async () => {
@@ -2175,6 +2282,66 @@ describe('useAIAssistant property tests', () => {
         expect(assistantMessages(result.current.messages)[0].content).toBe('恢复后的最终输出');
     });
 
+    it('recovers a goal continuation when the task session key uses Windows separators', async () => {
+        const activeKey = 'desktop-user:C:/Users/ma139/.maclaw/data/tasks/bird';
+        const rawKey = 'desktop-user:C:\\Users\\ma139\\.maclaw\\data\\tasks\\bird';
+        setActiveSessionKey(activeKey);
+        try {
+            const { result } = renderAssistantHook();
+            const requestId = 'goal-cont-win-sep';
+
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-token', {
+                    request_id: requestId,
+                    session_key: rawKey,
+                    text: '第2步骨架已写好',
+                });
+            });
+
+            expect(result.current.sending).toBe(true);
+            expect(assistantMessages(result.current.messages)[0].content).toBe('第2步骨架已写好');
+
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-response', {
+                    request_id: requestId,
+                    session_key: rawKey,
+                    text: '第2步完成。',
+                    error: '',
+                    fields: null,
+                    actions: null,
+                });
+            });
+
+            expect(result.current.sending).toBe(false);
+            expect(assistantMessages(result.current.messages)[0].content).toBe('第2步完成。');
+        } finally {
+            setActiveSessionKey('');
+        }
+    });
+
+    it('does not recover a goal continuation that belongs to another task path', async () => {
+        setActiveSessionKey('desktop-user:C:/Users/ma139/.maclaw/data/tasks/bird');
+        try {
+            const { result } = renderAssistantHook();
+
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-response', {
+                    request_id: 'goal-cont-other-task',
+                    session_key: 'desktop-user:C:\\Users\\ma139\\.maclaw\\data\\tasks\\other',
+                    text: '别的任务',
+                    error: '',
+                    fields: null,
+                    actions: null,
+                });
+            });
+
+            expect(result.current.sending).toBe(false);
+            expect(messageContents(result.current.messages)).not.toContain('别的任务');
+        } finally {
+            setActiveSessionKey('');
+        }
+    });
+
     it('recovers goal continuation output from progress if the foreground start event was missed', async () => {
         const { result } = renderAssistantHook();
         const requestId = 'goal-cont-progress-first';
@@ -2188,7 +2355,8 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(result.current.sending).toBe(true);
-        expect(messageContents(result.current.messages)).toContain('/goal Continue goal');
+        expect(result.current.messages.filter(message => message.role === 'user')).toHaveLength(0);
+        expect(result.current.messages.find(message => message.kind === 'goalChecklist')?.content).toContain('Goal checklist');
         expect(result.current.progressMessages.map(message => message.content)).toEqual(['Coding Agent: running T1 - 准备文件']);
 
         await act(async () => {
@@ -2233,7 +2401,7 @@ describe('useAIAssistant property tests', () => {
 
         expect(result.current.sending).toBe(false);
         expect(result.current.progressMessages).toEqual([]);
-        expect(messageContents(result.current.messages)).not.toContain('/goal Continue goal');
+        expect(messageContents(result.current.messages)).not.toContain('Goal checklist');
         expect(messageContents(result.current.messages)).not.toContain('late final');
     });
 
@@ -2261,7 +2429,8 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(result.current.sending).toBe(true);
-        expect(messageContents(result.current.messages)).toContain(displayText);
+        expect(result.current.messages.filter(message => message.role === 'user')).toHaveLength(0);
+        expect(result.current.messages.find(message => message.kind === 'goalChecklist')?.content).toBe(displayText);
         expect(result.current.progressMessages.map(message => message.content)).toEqual(['new progress']);
 
         await act(async () => {
@@ -2277,6 +2446,26 @@ describe('useAIAssistant property tests', () => {
 
         expect(result.current.sending).toBe(false);
         expect(assistantMessages(result.current.messages)[0].content).toBe('new final');
+    });
+
+    it('renders a goal failure notice as an error row without a user turn', async () => {
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            emitRuntimeEvent('ai-continuation', {
+                request_id: 'goal-notice-1',
+                session_key: 'desktop-user',
+                kind: 'notice',
+                text: '未能分解任务',
+                as_error: true,
+            });
+        });
+
+        const roles = result.current.messages.map(message => message.role);
+        expect(roles).not.toContain('user');
+        expect(result.current.messages.map(message => message.content)).toContain('未能分解任务');
+        expect(result.current.messages.find(message => message.content === '未能分解任务')?.role).toBe('error');
+        expect(result.current.sending).toBe(false);
     });
 
     it('treats stream-done as activity for the foreground timeout window', async () => {

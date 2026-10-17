@@ -65,6 +65,13 @@ func (ih *imInterruptHandler) EmbedText(text string) []float32 {
 	if emb == nil || embedding.IsNoop(emb) {
 		return nil
 	}
+	// Same cut as TryInterrupt: the task vector is the user-authored text.
+	// A picker block's "do not re-capture" boilerplate must not sit on the
+	// task side of a comparison whose message side has already dropped it.
+	text = stripHostAttachmentSections(text)
+	if text == "" {
+		return nil
+	}
 	if m := interruptRelevanceModelFor(emb); m != nil {
 		// Qwen3: the task side is embedded in the relevance model's format;
 		// cache it so TryInterrupt reuses this vector.
@@ -189,26 +196,43 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 	// has no embedding, relevance stays at -1 and Schedule() degrades to
 	// domain match + structure only (two-signal mode).
 	var relevance float64 = -1
+	relevanceScorer := "-"
 	if tracker != nil {
-		taskEmbed := tracker.Buffer().TaskEmbed()
 		emb := ih.currentEmbedder()
 		if m := interruptRelevanceModelFor(emb); m != nil {
-			// Embedder-specific relevance (Qwen3): instruction-formatted
-			// vectors, model score calibrated onto the scheduler bands.
-			relevance = ih.modelRelevance(emb, m, tracker.Buffer().TaskDesc(), messageText)
+			// Embedder-specific relevance (Qwen3 file head, else the built-in
+			// model): instruction-formatted vectors, calibrated onto the
+			// scheduler bands. Score the user-authored text only. Host
+			// attachment bodies are not part of the interrupt decision; the
+			// 2026-10-06 picker incident was that boilerplate. The formatted
+			// task vector lives in taskVecs, so the tracker's plain copy is
+			// not read on this path.
+			relevance = ih.modelRelevance(emb, m, tracker.Buffer().TaskDesc(), analysisText)
+			if relevance >= 0 {
+				if m == builtinQwen3InterruptRelevance {
+					relevanceScorer = "builtin"
+				} else {
+					relevanceScorer = "file"
+				}
+			}
 		} else if emb != nil && !embedding.IsNoop(emb) {
 			// A task can start during embedding startup, before runAgentLoop had an
 			// embedder available. Recover on the first interruption and cache the
 			// result, instead of permanently using the broad domain-only fallback.
+			taskEmbed := tracker.Buffer().TaskEmbed()
 			if len(taskEmbed) == 0 {
-				if vec, err := emb.Embed(tracker.Buffer().TaskDesc()); err == nil && len(vec) > 0 {
-					tracker.Buffer().SetTaskEmbed(vec)
-					taskEmbed = vec
+				taskText := stripHostAttachmentSections(tracker.Buffer().TaskDesc())
+				if taskText != "" {
+					if vec, err := emb.Embed(taskText); err == nil && len(vec) > 0 {
+						tracker.Buffer().SetTaskEmbed(vec)
+						taskEmbed = vec
+					}
 				}
 			}
 			if len(taskEmbed) > 0 {
 				if msgEmbed, err := emb.Embed(analysisText); err == nil && len(msgEmbed) > 0 {
 					relevance = progress.CosineSimilarity(taskEmbed, msgEmbed)
+					relevanceScorer = "cosine"
 				}
 			}
 		}
@@ -296,8 +320,8 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 		}
 	}
 
-	log.Printf("[interrupt] user=%s msg_len=%d analysis_len=%d action=%s conf=%.2f domain=%v reason=%s",
-		userID, len([]rune(messageText)), len([]rune(analysisText)), decision.Action, decision.Confidence, domainMatch, decision.Reason)
+	log.Printf("[interrupt] user=%s msg_len=%d analysis_len=%d action=%s conf=%.2f relevance=%.2f scorer=%s domain=%v reason=%s",
+		userID, len([]rune(messageText)), len([]rune(analysisText)), decision.Action, decision.Confidence, relevance, relevanceScorer, domainMatch, decision.Reason)
 
 	switch decision.Action {
 	case progress.ActionReplace:

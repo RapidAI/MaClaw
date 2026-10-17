@@ -75,23 +75,22 @@ type App struct {
 	promptCache     *llmpool.Cache
 	usageStore      *UsageStore
 
-	anthropicOAuth    *oauth.AnthropicOAuthParams
-	xaiSession        *oauth.XAIAuthSession
-	xaiCtx            context.Context
-	xaiCancel         context.CancelFunc
-	xaiDone           bool
-	openaiServer      *oauth.CallbackServer
-	openaiParams      *oauth.HeadlessOAuthParams
-	openaiCfg         oauth.Config
-	openaiCtx         context.Context
-	openaiCancel      context.CancelFunc
-	openaiDone        bool
-	kimiLogin         *kimiDeviceLogin
-	devinLogin        *devinLoginFlow
-	devinSaveMu       sync.Mutex
-	qoderLogin        *qoderLoginFlow
-	workbuddyLogin    *workbuddyLoginFlow
-	relaunchAfterAuth bool
+	anthropicOAuth *oauth.AnthropicOAuthParams
+	xaiSession     *oauth.XAIAuthSession
+	xaiCtx         context.Context
+	xaiCancel      context.CancelFunc
+	xaiDone        bool
+	openaiServer   *oauth.CallbackServer
+	openaiParams   *oauth.HeadlessOAuthParams
+	openaiCfg      oauth.Config
+	openaiCtx      context.Context
+	openaiCancel   context.CancelFunc
+	openaiDone     bool
+	kimiLogin      *kimiDeviceLogin
+	devinLogin     *devinLoginFlow
+	devinSaveMu    sync.Mutex
+	qoderLogin     *qoderLoginFlow
+	workbuddyLogin *workbuddyLoginFlow
 
 	// Cumulative token counters (atomic, updated via usage callback).
 	totalPromptTokens     int64
@@ -179,7 +178,6 @@ type Status struct {
 	AuthModeLabel       string                     `json:"auth_mode_label,omitempty"`
 	UpstreamKeySet      bool                       `json:"upstream_key_set"`
 	ReadyModes          []string                   `json:"ready_modes,omitempty"`
-	RelaunchScheduled   bool                       `json:"relaunch_scheduled,omitempty"`
 }
 
 // CodexCredentialSyncStatus reports the best-effort synchronization performed
@@ -385,14 +383,14 @@ func (a *App) SaveSettings(s Settings) (Status, error) {
 
 	if s.APIKey != cur.APIKey {
 		syncStatus := a.syncConfiguredCodexAPIKey(s.APIKey)
-		status, err := a.statusMaybeRelaunch()
+		status, err := a.Status()
 		if err != nil {
 			return Status{}, err
 		}
 		status.CodexCredentialSync = &syncStatus
 		return status, nil
 	}
-	return a.statusMaybeRelaunch()
+	return a.Status()
 }
 
 // applySettingsWithRestart persists settings after the new listener has bound.
@@ -465,7 +463,7 @@ func (a *App) LoginSSO() (Status, error) {
 	if err := a.applySettingsWithRestart(s); err != nil {
 		return Status{}, err
 	}
-	return a.statusMaybeRelaunch()
+	return a.Status()
 }
 
 func (a *App) StartSSOLogin() (LoginStartResult, error) {
@@ -519,7 +517,7 @@ func (a *App) CompleteSSOLogin() (Status, error) {
 	if err := a.applySettingsWithRestart(s); err != nil {
 		return Status{}, err
 	}
-	return a.statusMaybeRelaunch()
+	return a.Status()
 }
 
 func (a *App) cancelSSOLogin() {

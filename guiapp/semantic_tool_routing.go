@@ -2174,6 +2174,20 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContext(ctx *Loop
 }
 
 func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndAttachments(ctx *LoopContext, userID, userText, channel string, attachments []MessageAttachment) ([]map[string]interface{}, *semanticCallSurface, bool, error) {
+	// A goal continuation already names goal(action=plan|step|complete|fail).
+	// Classifying that host prompt as goal_manage publishes the closed
+	// create/get/end adapter under the same capability and the lifecycle tool
+	// never reaches the model. The execution-profile bypass is not enough:
+	// this planner classifies again when SemanticIntent is empty. Leave the
+	// turn on the legacy surface, which pins that lifecycle tool.
+	loopPlatform := ""
+	if ctx != nil {
+		loopPlatform = ctx.Platform
+	}
+	if goalContinuationTurn(userText, channel) || goalContinuationTurn(userText, loopPlatform) {
+		log.Printf("[semantic-routing] goal continuation keeps lifecycle goal tool user=%q channel=%q platform=%q", userID, channel, loopPlatform)
+		return nil, nil, false, nil
+	}
 	// Identity and replacement generation form one host-private lifecycle
 	// snapshot. Reading them separately would permit a fresh ingress to rotate
 	// the identity between reads, then incorrectly register an old scope as the
@@ -2639,6 +2653,12 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	if h == nil {
 		return nil, false, nil
 	}
+	// Same contract as the shared-turn surface. A shadow diagnostic or a
+	// direct planner call must not classify a continuation as goal_manage
+	// and publish the closed adapter beside the lifecycle tool.
+	if goalContinuationTurn(userText, channel) {
+		return nil, false, nil
+	}
 	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(userID) == "" {
 		return nil, true, fmt.Errorf("semantic_invocation_identity_required")
 	}
@@ -2835,6 +2855,10 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	if err != nil {
 		return nil, true, fmt.Errorf("resolve IM semantic capability needs: %w", err)
 	}
+	// The tool head scores the same vector the intent pass already computed.
+	// Managed turns never enter the name router, so this is the injection
+	// point: intent needs ∪ head top-k, still inside the capability plan.
+	needs = h.unionToolHeadNeeds(registry, needs, planning)
 	var carriedCaps []string
 	if lookupContinuationFetches(requestCtx) && planning.Primary == intent.LabelSearch {
 		// A cold search leaves web_fetch latent. Raising the selection budget

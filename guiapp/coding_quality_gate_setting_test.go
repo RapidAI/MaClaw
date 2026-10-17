@@ -256,8 +256,21 @@ func TestDisabledQualityGateDoesNotFailTaskForReadSnapshot(t *testing.T) {
 	if got := classifyCodingGuardrailCategory("edit_file", path, "", msg); got != codingSubAgentGuardrailCategoryReadSnapshot {
 		t.Fatalf("read-before-edit category = %q, want read_snapshot", got)
 	}
+	nodeRetry := "请先调用 code_navigation，operation 用 node，query 填要修改的符号，file 填 \"audio.cpp\"。返回的符号正文就是当前源码，之后才能修改。不要 read_file 整份源码。"
+	if got := classifyCodingGuardrailCategory("edit_file", path, "", nodeRetry); got != codingSubAgentGuardrailCategoryReadSnapshot {
+		t.Fatalf("code_navigation retry category = %q, want read_snapshot", got)
+	}
+	staleNode := "文件 audio.cpp 自上次读取后已变化（读取时 size=1 sha256=abc，当前 size=2 sha256=def）。请先调用 code_navigation，operation 用 node，query 填要修改的符号，file 填 \"audio.cpp\"。返回的符号正文就是当前源码，之后才能修改。"
+	if got := classifyCodingGuardrailCategory("edit_lines", path, "", staleNode); got != codingSubAgentGuardrailCategoryReadSnapshot {
+		t.Fatalf("stale node retry category = %q, want read_snapshot", got)
+	}
+	if got := classifyCodingGuardrailCategory("edit_file", path, "", "path is outside the project scope"); got != codingSubAgentGuardrailCategoryScope {
+		t.Fatalf("project scope category = %q, want scope", got)
+	}
 	unread := []CodingSubAgentGuardrailViolation{
 		{Tool: "edit_file", Category: codingSubAgentGuardrailCategoryReadSnapshot, Path: path, Summary: msg},
+		{Tool: "edit_file", Category: codingSubAgentGuardrailCategoryReadSnapshot, Path: path, Summary: nodeRetry},
+		{Tool: "edit_lines", Category: codingSubAgentGuardrailCategoryReadSnapshot, Path: path, Summary: staleNode},
 		{Tool: "edit_file", Category: codingSubAgentGuardrailCategoryReadSnapshot, Path: path, Summary: msg},
 		{Tool: "edit_file", Category: codingSubAgentGuardrailCategoryReadSnapshot, Path: path, Summary: "文件 audio.cpp 自上次 read_file 后已变化。请先重新调用 read_file 再修改。"},
 		{Tool: "write_file", Category: codingSubAgentGuardrailCategoryReadSnapshot, Path: path, Summary: "目标文件已存在，请先调用 read_file；只有创建全新文件时才能直接 write_file。"},

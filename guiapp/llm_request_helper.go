@@ -663,6 +663,17 @@ func doSimpleResponsesRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 		client = llm.SharedHTTPClient
 	}
 
+	if corelib.OpenCodeUsesResponsesAPI(cfg.URL, cfg.Model) {
+		streamed, streamErr := llm.DoResponsesAPIRequestStream(ctx, cfg, messages, nil, client, nil, nil)
+		if streamErr != nil {
+			return nil, streamErr
+		}
+		if streamed == nil || len(streamed.Choices) == 0 {
+			return nil, fmt.Errorf("no response from model")
+		}
+		msg := streamed.Choices[0].Message
+		return finishSimpleLLMText(msg.Content, msg.ReasoningContent, streamed.Choices[0].FinishReason), nil
+	}
 	requestBody := map[string]interface{}(nil)
 	if opts.ResponseFormat != nil {
 		requestBody = map[string]interface{}{"response_format": opts.ResponseFormat}

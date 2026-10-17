@@ -144,8 +144,10 @@ func projectedDynamicInvocationSchema(schema map[string]interface{}) (map[string
 	}
 	projectedProperties := make(map[string]interface{}, len(properties))
 	for name, raw := range properties {
-		if strings.TrimSpace(name) == "" || reservedDynamicInvocationField(name) {
-			return nil, fmt.Errorf("dynamic invocation property %q is reserved or invalid", name)
+		if skip, err := admitDynamicInvocationProperty(name); err != nil {
+			return nil, err
+		} else if skip || raw == nil || dynamicUnconstrainedProperty(raw) {
+			continue
 		}
 		property, ok := raw.(map[string]interface{})
 		if !ok {
@@ -157,11 +159,7 @@ func projectedDynamicInvocationSchema(schema map[string]interface{}) (map[string
 		}
 		projectedProperties[name] = projected
 	}
-	for _, field := range required {
-		if _, exists := projectedProperties[field]; !exists {
-			return nil, fmt.Errorf("dynamic invocation required field %q is not a property", field)
-		}
-	}
+	required = dynamicAdmittedRequiredFields(required, projectedProperties)
 	return map[string]interface{}{"type": "object", "properties": projectedProperties, "required": required, "additionalProperties": false}, nil
 }
 
@@ -200,8 +198,10 @@ func projectDynamicSchemaNode(schema, root map[string]interface{}, stack map[str
 		}
 		properties := make(map[string]interface{}, len(rawProperties))
 		for name, raw := range rawProperties {
-			if strings.TrimSpace(name) == "" || reservedDynamicInvocationField(name) {
-				return nil, fmt.Errorf("object property %q is reserved or invalid", name)
+			if skip, err := admitDynamicInvocationProperty(name); err != nil {
+				return nil, err
+			} else if skip || raw == nil || dynamicUnconstrainedProperty(raw) {
+				continue
 			}
 			child, ok := raw.(map[string]interface{})
 			if !ok {
@@ -213,11 +213,7 @@ func projectDynamicSchemaNode(schema, root map[string]interface{}, stack map[str
 			}
 			properties[name] = projected
 		}
-		for _, field := range required {
-			if _, exists := properties[field]; !exists {
-				return nil, fmt.Errorf("required field %q is not a property", field)
-			}
-		}
+		required = dynamicAdmittedRequiredFields(required, properties)
 		return map[string]interface{}{"type": "object", "properties": properties, "required": required, "additionalProperties": false}, nil
 	default:
 		return nil, fmt.Errorf("unsupported schema type %q", kind)
@@ -227,9 +223,11 @@ func projectDynamicSchemaNode(schema, root map[string]interface{}, stack map[str
 // resolveDynamicSchemaNode reduces the vendor shapes that still name one
 // structural type. A same-document $ref is followed back into root; remote
 // refs and cycles are not. Nullable unions (type arrays and anyOf/oneOf with
-// null) become that type. An object that only declares properties is an
-// object. A union of two real types stays unrepresentable: projecting one of
-// them would authorize arguments the tool did not declare.
+// null) become that type. An allOf is the intersection: one structural branch
+// is that branch, and compatible objects or arrays merge. An object that only
+// declares properties is an object. A union of two real types, or an allOf
+// whose branches disagree, stays unrepresentable: projecting one of them
+// would authorize arguments the tool did not declare.
 func resolveDynamicSchemaNode(schema, root map[string]interface{}, stack map[string]bool) (map[string]interface{}, error) {
 	if schema == nil {
 		return nil, fmt.Errorf("unsupported schema type %q", "")
@@ -252,18 +250,28 @@ func resolveDynamicSchemaNode(schema, root map[string]interface{}, stack map[str
 		return resolved, err
 	}
 	if alts, ok := schema["allOf"].([]interface{}); ok && len(alts) > 0 {
-		return nil, fmt.Errorf("unsupported schema type %q", "allOf")
+		return resolveDynamicAllOf(schema, alts, root, stack)
 	}
-	alternatives, exclusive, err := dynamicSchemaAlternatives(schema)
+	// anyOf/oneOf beside a shape this node already names is a constraint the
+	// server enforces. Treating it as the type source quarantines a tool whose
+	// arguments are already declared. A single structural branch is still that
+	// branch: a nullable union must not drop the fields written only there.
+	redundant, err := dynamicUnionRedundant(schema, root, stack)
 	if err != nil {
 		return nil, err
 	}
-	if exclusive {
-		branch, err := oneDynamicSchemaAlternative(alternatives)
+	if !redundant {
+		alternatives, exclusive, err := dynamicSchemaAlternatives(schema)
 		if err != nil {
 			return nil, err
 		}
-		return resolveDynamicSchemaNode(branch, root, stack)
+		if exclusive {
+			branch, err := oneDynamicSchemaAlternative(alternatives)
+			if err != nil {
+				return nil, err
+			}
+			return resolveDynamicSchemaNode(branch, root, stack)
+		}
 	}
 	if types, ok := dynamicSchemaTypeList(schema["type"]); ok {
 		kind, err := oneDynamicSchemaType(types)
@@ -281,6 +289,11 @@ func resolveDynamicSchemaNode(schema, root map[string]interface{}, stack map[str
 		return schema, nil
 	}
 	if _, ok := schema["properties"].(map[string]interface{}); ok {
+		return copyDynamicSchemaWithType(schema, "object"), nil
+	}
+	// required applies to objects. A wrapper that only adds required next
+	// to allOf is that object, not an unrepresentable schema.
+	if _, exists := schema["required"]; exists {
 		return copyDynamicSchemaWithType(schema, "object"), nil
 	}
 	if _, ok := schema["items"].(map[string]interface{}); ok {
@@ -333,6 +346,393 @@ func copyDynamicSchemaWithType(schema map[string]interface{}, kind string) map[s
 	}
 	copied["type"] = kind
 	return copied
+}
+
+// resolveDynamicAllOf projects an intersection onto one structural schema.
+// Description text, a boolean close flag, and validation keywords this host
+// does not enforce (length, pattern, enum, const, numeric bounds) are not
+// separate shapes. A single remaining branch is that branch. Objects and
+// arrays combine only when every repeated field projects to the same shape.
+func resolveDynamicAllOf(schema map[string]interface{}, alts []interface{}, root map[string]interface{}, stack map[string]bool) (map[string]interface{}, error) {
+	branches := make([]map[string]interface{}, 0, len(alts)+1)
+	for _, raw := range alts {
+		candidate, ok := raw.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("unsupported schema type %q", "allOf")
+		}
+		if dynamicSchemaNonStructural(candidate) {
+			continue
+		}
+		resolved, err := resolveDynamicSchemaNode(candidate, root, stack)
+		if err != nil {
+			return nil, err
+		}
+		if dynamicSchemaNonStructural(resolved) {
+			continue
+		}
+		branches = append(branches, resolved)
+	}
+	// A root anyOf/oneOf next to a real allOf branch is a constraint, not a
+	// second shape. A union that is the only branch is still resolved below,
+	// so a nullable schema written beside an empty allOf keeps its fields.
+	if sibling := dynamicAllOfSibling(schema); sibling != nil && (len(branches) == 0 || !dynamicSchemaIsUnionConstraint(sibling)) {
+		branches = append(branches, sibling)
+	}
+	if len(branches) == 0 {
+		return nil, fmt.Errorf("unsupported schema type %q", "allOf")
+	}
+	if len(branches) == 1 {
+		// Resolve again so a required-only sibling gains an object type.
+		// The allOf key is already removed, so this does not re-enter here.
+		return resolveDynamicSchemaNode(branches[0], root, stack)
+	}
+	kind := ""
+	normalized := make([]map[string]interface{}, 0, len(branches))
+	for _, branch := range branches {
+		branchKind, typed := dynamicResolvedSchemaKind(branch)
+		if branchKind == "" {
+			return nil, fmt.Errorf("unsupported schema type %q", "allOf")
+		}
+		if kind == "" {
+			kind = branchKind
+		} else if kind != branchKind {
+			return nil, fmt.Errorf("unsupported schema type %q", "allOf")
+		}
+		if !typed {
+			branch = copyDynamicSchemaWithType(branch, branchKind)
+		}
+		normalized = append(normalized, branch)
+	}
+	switch kind {
+	case "string", "number", "integer", "boolean":
+		return map[string]interface{}{"type": kind}, nil
+	case "object":
+		return mergeDynamicAllOfObjects(normalized, root, stack)
+	case "array":
+		return mergeDynamicAllOfArrays(normalized, root, stack)
+	default:
+		return nil, fmt.Errorf("unsupported schema type %q", "allOf")
+	}
+}
+
+func dynamicAllOfSibling(schema map[string]interface{}) map[string]interface{} {
+	sibling := make(map[string]interface{}, len(schema))
+	for key, value := range schema {
+		if key == "allOf" {
+			continue
+		}
+		sibling[key] = value
+	}
+	if dynamicSchemaNonStructural(sibling) {
+		return nil
+	}
+	return sibling
+}
+
+func dynamicSchemaNonStructural(schema map[string]interface{}) bool {
+	if len(schema) == 0 {
+		return true
+	}
+	for key, value := range schema {
+		if !dynamicSchemaKeywordIgnored(key, value) {
+			return false
+		}
+	}
+	return true
+}
+
+// dynamicSchemaKeywordIgnored reports a keyword that does not name a value
+// shape. Applicators such as if/then and patternProperties stay on the server.
+// Keeping them as a structural allOf branch quarantines the tool, because that
+// branch has no type of its own. Schema-valued additionalProperties is not
+// ignored: an open map is still unrepresentable.
+func dynamicSchemaKeywordIgnored(key string, value interface{}) bool {
+	switch key {
+	case "description", "title", "default", "examples", "example", "$comment", "markdownDescription", "deprecated", "readOnly", "writeOnly", "$defs", "definitions", "$schema", "$id", "id",
+		"if", "then", "else", "not", "dependentSchemas", "dependentRequired", "patternProperties", "propertyNames", "contains", "prefixItems":
+		return true
+	case "additionalProperties", "unevaluatedProperties", "unevaluatedItems", "nullable":
+		_, ok := value.(bool)
+		return ok
+	default:
+		return dynamicSchemaValidationKeyword(key)
+	}
+}
+
+// dynamicSchemaIsUnionConstraint reports a sibling that is only anyOf or oneOf
+// plus ignored keywords. It is not an object or array shape.
+func dynamicSchemaIsUnionConstraint(schema map[string]interface{}) bool {
+	if len(schema) == 0 {
+		return false
+	}
+	sawUnion := false
+	for key, value := range schema {
+		switch key {
+		case "anyOf", "oneOf":
+			sawUnion = true
+		default:
+			if !dynamicSchemaKeywordIgnored(key, value) {
+				return false
+			}
+		}
+	}
+	return sawUnion
+}
+
+// dynamicUnionRedundant reports whether anyOf or oneOf adds no shape beyond
+// the type this node already declares. Two agreeing branches, or only
+// validation keywords, are the server's constraint. One structural branch
+// stays in force so a nullable union is that value. A union of two different
+// types is not redundant, and a reserved field inside a branch still rejects
+// the tool.
+func dynamicUnionRedundant(schema, root map[string]interface{}, stack map[string]bool) (bool, error) {
+	if !dynamicDeclaredShapeCoversUnion(schema) {
+		return false, nil
+	}
+	declared, ok := dynamicDeclaredKind(schema)
+	if !ok {
+		return false, nil
+	}
+	alternatives, exclusive, err := dynamicSchemaAlternatives(schema)
+	if err != nil || !exclusive {
+		return err == nil, err
+	}
+	structural := 0
+	for _, raw := range alternatives {
+		branch, ok := raw.(map[string]interface{})
+		if !ok {
+			return false, nil
+		}
+		if dynamicSchemaIsNull(branch) || dynamicSchemaNonStructural(branch) {
+			continue
+		}
+		resolved, err := resolveDynamicSchemaNode(branch, root, stack)
+		if err != nil {
+			return false, err
+		}
+		if dynamicSchemaNonStructural(resolved) {
+			continue
+		}
+		kind, _ := dynamicResolvedSchemaKind(resolved)
+		if kind == "" || kind != declared {
+			return false, nil
+		}
+		// Project the branch so a reserved field such as token still rejects the
+		// tool when the union itself is only a constraint on the declared shape.
+		if _, err := projectDynamicSchemaNode(resolved, root, stack); err != nil {
+			return false, err
+		}
+		structural++
+	}
+	return structural != 1, nil
+}
+
+func dynamicDeclaredKind(schema map[string]interface{}) (string, bool) {
+	if types, ok := dynamicSchemaTypeList(schema["type"]); ok {
+		kind, err := oneDynamicSchemaType(types)
+		if err != nil {
+			return "", false
+		}
+		return kind, true
+	}
+	if kind, ok := schema["type"].(string); ok {
+		switch strings.TrimSpace(kind) {
+		case "string", "number", "integer", "boolean", "array", "object":
+			return strings.TrimSpace(kind), true
+		}
+	}
+	if properties, ok := schema["properties"].(map[string]interface{}); ok && len(properties) > 0 {
+		return "object", true
+	}
+	if _, ok := schema["items"].(map[string]interface{}); ok {
+		return "array", true
+	}
+	return "", false
+}
+
+// dynamicDeclaredShapeCoversUnion reports that the node already lists the
+// value the model can send. An object type with no properties does not cover
+// a union, because the fields may exist only on a nullable branch.
+func dynamicDeclaredShapeCoversUnion(schema map[string]interface{}) bool {
+	kind, ok := dynamicDeclaredKind(schema)
+	if !ok {
+		return false
+	}
+	switch kind {
+	case "object":
+		properties, isMap := schema["properties"].(map[string]interface{})
+		return isMap && len(properties) > 0
+	case "array":
+		_, isMap := schema["items"].(map[string]interface{})
+		return isMap
+	case "string", "number", "integer", "boolean":
+		return true
+	default:
+		return false
+	}
+}
+
+// dynamicUnconstrainedProperty reports an argument that names no value the
+// model can send: a boolean schema, an empty schema, or annotations only.
+// Omitting that field keeps the rest of the tool callable. enum and const
+// without a type are not unconstrained; they still reject the tool.
+func dynamicUnconstrainedProperty(raw interface{}) bool {
+	typed, ok := raw.(map[string]interface{})
+	if !ok {
+		_, isBool := raw.(bool)
+		return isBool
+	}
+	for key, value := range typed {
+		switch key {
+		case "description", "title", "default", "examples", "example", "$comment", "markdownDescription", "deprecated", "readOnly", "writeOnly", "$defs", "definitions", "$schema", "$id", "id":
+		case "additionalProperties", "unevaluatedProperties", "unevaluatedItems", "nullable":
+			if _, isBool := value.(bool); !isBool {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// dynamicSchemaValidationKeyword reports a JSON Schema keyword that constrains
+// a value the host already projects as a closed type. The server still
+// validates it. Keeping the keyword as a structural branch quarantines the
+// tool, because the branch has no type of its own.
+func dynamicSchemaValidationKeyword(key string) bool {
+	switch key {
+	case "minLength", "maxLength", "pattern", "format", "contentMediaType", "contentEncoding",
+		"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+		"minItems", "maxItems", "uniqueItems", "minContains", "maxContains",
+		"minProperties", "maxProperties",
+		"const", "enum", "discriminator", "xml", "externalDocs":
+		return true
+	default:
+		return false
+	}
+}
+
+func dynamicResolvedSchemaKind(schema map[string]interface{}) (string, bool) {
+	if kind, ok := schema["type"].(string); ok {
+		kind = strings.TrimSpace(kind)
+		if kind != "" {
+			return kind, true
+		}
+	}
+	if types, ok := dynamicSchemaTypeList(schema["type"]); ok {
+		kind, err := oneDynamicSchemaType(types)
+		if err != nil {
+			return "", false
+		}
+		return kind, false
+	}
+	if _, ok := schema["properties"].(map[string]interface{}); ok {
+		return "object", false
+	}
+	if _, exists := schema["required"]; exists {
+		return "object", false
+	}
+	if _, ok := schema["items"].(map[string]interface{}); ok {
+		return "array", false
+	}
+	return "", false
+}
+
+func mergeDynamicAllOfObjects(branches []map[string]interface{}, root map[string]interface{}, stack map[string]bool) (map[string]interface{}, error) {
+	properties := map[string]interface{}{}
+	requiredSeen := map[string]bool{}
+	var required []string
+	for _, branch := range branches {
+		if err := dynamicObjectClosed(branch); err != nil {
+			return nil, err
+		}
+		rawProperties, err := dynamicObjectProperties(branch)
+		if err != nil {
+			return nil, err
+		}
+		for name, raw := range rawProperties {
+			if skip, err := admitDynamicInvocationProperty(name); err != nil {
+				return nil, err
+			} else if skip || raw == nil || dynamicUnconstrainedProperty(raw) {
+				continue
+			}
+			child, ok := raw.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("unsupported schema type %q", "allOf")
+			}
+			projected, err := projectDynamicSchemaNode(child, root, stack)
+			if err != nil {
+				return nil, err
+			}
+			if existing, ok := properties[name]; ok {
+				equal, err := dynamicProjectedJSONEqual(existing, projected)
+				if err != nil || !equal {
+					return nil, fmt.Errorf("unsupported schema type %q", "allOf")
+				}
+				continue
+			}
+			properties[name] = projected
+		}
+		fields, err := dynamicRequiredFields(branch["required"])
+		if err != nil {
+			return nil, err
+		}
+		for _, field := range fields {
+			if requiredSeen[field] {
+				continue
+			}
+			requiredSeen[field] = true
+			required = append(required, field)
+		}
+	}
+	sort.Strings(required)
+	merged := map[string]interface{}{
+		"type":       "object",
+		"properties": properties,
+	}
+	if len(required) > 0 {
+		merged["required"] = required
+	}
+	return merged, nil
+}
+
+func mergeDynamicAllOfArrays(branches []map[string]interface{}, root map[string]interface{}, stack map[string]bool) (map[string]interface{}, error) {
+	var items map[string]interface{}
+	for _, branch := range branches {
+		raw, ok := branch["items"].(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("unsupported schema type %q", "allOf")
+		}
+		projected, err := projectDynamicSchemaNode(raw, root, stack)
+		if err != nil {
+			return nil, err
+		}
+		if items == nil {
+			items = projected
+			continue
+		}
+		equal, err := dynamicProjectedJSONEqual(items, projected)
+		if err != nil || !equal {
+			return nil, fmt.Errorf("unsupported schema type %q", "allOf")
+		}
+	}
+	if items == nil {
+		return nil, fmt.Errorf("unsupported schema type %q", "allOf")
+	}
+	return map[string]interface{}{"type": "array", "items": items}, nil
+}
+
+func dynamicProjectedJSONEqual(left, right interface{}) (bool, error) {
+	encodedLeft, err := json.Marshal(left)
+	if err != nil {
+		return false, err
+	}
+	encodedRight, err := json.Marshal(right)
+	if err != nil {
+		return false, err
+	}
+	return string(encodedLeft) == string(encodedRight), nil
 }
 
 // dynamicSchemaAlternatives reports anyOf or oneOf. Both at once is not a
@@ -468,6 +868,52 @@ func reservedDynamicInvocationField(field string) bool {
 	}
 }
 
+// HostBoundDynamicField reports an invocation name the host already binds:
+// server, tool, provider, selection, credential, or artifact identity. A
+// composed allOf branch can reintroduce one after the root map dropped it.
+// Omitting the field keeps the tool callable. Other reserved names, such as
+// token and location, still reject the tool.
+func HostBoundDynamicField(field string) bool {
+	switch strings.ToLower(strings.TrimSpace(field)) {
+	case "server_id", "server", "tool_name", "tool", "provider", "provider_id", "selection_id", "artifact_id", "artifact_ref", "credential", "credentials":
+		return true
+	default:
+		return false
+	}
+}
+
+// admitDynamicInvocationProperty reports whether a property is absent from the
+// model schema. Host-bound identity fields are skipped. Any other reserved
+// name rejects the whole tool.
+func admitDynamicInvocationProperty(name string) (bool, error) {
+	if strings.TrimSpace(name) == "" {
+		return false, fmt.Errorf("dynamic invocation property %q is reserved or invalid", name)
+	}
+	if HostBoundDynamicField(name) {
+		return true, nil
+	}
+	if reservedDynamicInvocationField(name) {
+		return false, fmt.Errorf("dynamic invocation property %q is reserved or invalid", name)
+	}
+	return false, nil
+}
+
+// dynamicAdmittedRequiredFields keeps required names the projected object
+// actually exposes. A name with no property cannot be sent, and failing the
+// whole tool for it drops every other argument as well.
+func dynamicAdmittedRequiredFields(required []string, properties map[string]interface{}) []string {
+	if len(required) == 0 {
+		return required
+	}
+	admitted := make([]string, 0, len(required))
+	for _, field := range required {
+		if _, ok := properties[field]; ok {
+			admitted = append(admitted, field)
+		}
+	}
+	return admitted
+}
+
 func dynamicRequiredFields(value interface{}) ([]string, error) {
 	if value == nil {
 		return []string{}, nil
@@ -488,14 +934,21 @@ func dynamicRequiredFields(value interface{}) ([]string, error) {
 		return nil, fmt.Errorf("dynamic invocation required fields are invalid")
 	}
 	seen := make(map[string]bool, len(fields))
+	deduped := make([]string, 0, len(fields))
 	for _, field := range fields {
-		if strings.TrimSpace(field) == "" || seen[field] {
+		if strings.TrimSpace(field) == "" {
 			return nil, fmt.Errorf("dynamic invocation required fields are invalid")
 		}
+		// A repeated name is the same argument. Rejecting it quarantines a tool
+		// whose schema is otherwise callable.
+		if seen[field] {
+			continue
+		}
 		seen[field] = true
+		deduped = append(deduped, field)
 	}
-	sort.Strings(fields)
-	return fields, nil
+	sort.Strings(deduped)
+	return deduped, nil
 }
 
 func dynamicInvocationSchemaDigest(schema map[string]interface{}) (string, error) {

@@ -325,3 +325,18 @@ func TestPersistRefreshedMailboxSecretRollsBack(t *testing.T) {
 		t.Fatalf("in=%q out=%q", in, out)
 	}
 }
+
+func TestRejectedOAuthUsesTheSavedLogin(t *testing.T) {
+	dir := t.TempDir()
+	exec := &CoreAgentExecutor{MailboxSecretDir: dir}
+	principal := Principal{TenantID: "tenant", UserID: "user"}
+	saved := `{"kind":"oauth","provider":"gmail","access_token":"ya29.new","refresh_token":"refresh-new","expiry":"2099-01-01T00:00:00Z"}`
+	rejected := `{"kind":"oauth","provider":"gmail","access_token":"ya29.old","refresh_token":"refresh-old","expiry":"2099-01-01T00:00:00Z"}`
+	if err := WriteMailboxSecret(dir, principal.TenantID, principal.UserID, "mb1", mailbox.SideInbound, saved); err != nil {
+		t.Fatal(err)
+	}
+	got, err := exec.replaceRejectedMailboxOAuth(context.Background(), principal, mailbox.Account{ID: "mb1"}, rejected)
+	if err != nil || !strings.Contains(got, "ya29.new") || strings.Contains(got, "refresh-old") {
+		t.Fatalf("got=%s err=%v", got, err)
+	}
+}

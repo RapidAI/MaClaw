@@ -2518,6 +2518,290 @@
     color: var(--theme-on-primary, #ffffff);
 }
 
+.mailbox-manage-overlay {
+    position: fixed;
+    inset: 0;
+    /* The settings page is scaled and clipped. This dialog is portalled to
+       document.body, so it has to sit above that shell and refuse window drags. */
+    z-index: 20000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: color-mix(in srgb, var(--theme-text-primary) 28%, transparent);
+    -webkit-app-region: no-drag;
+    --wails-draggable: no-drag;
+}
+
+.mailbox-manage {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    box-sizing: border-box;
+    width: min(920px, 100%);
+    height: min(640px, 100%);
+    min-height: 0;
+    padding: 16px;
+    border: 1px solid var(--theme-border);
+    border-radius: 14px;
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    box-shadow: 0 18px 50px color-mix(in srgb, var(--theme-text-primary) 18%, transparent);
+    -webkit-app-region: no-drag;
+    --wails-draggable: no-drag;
+}
+
+.mailbox-manage *,
+.mailbox-manage *::before,
+.mailbox-manage *::after {
+    box-sizing: border-box;
+}
+
+.mailbox-manage__header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.mailbox-manage__header h3 {
+    margin: 0;
+    color: var(--theme-text-primary);
+    font-size: 1rem;
+}
+
+.mailbox-manage__account {
+    margin: 4px 0 0;
+    color: var(--theme-text-muted);
+    font-size: 0.78rem;
+}
+
+.mailbox-manage__body {
+    display: grid;
+    grid-template-columns: 168px minmax(200px, 0.9fr) minmax(0, 1.15fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 12px;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.mailbox-manage__folders,
+.mailbox-manage__messages,
+.mailbox-manage__pane {
+    min-width: 0;
+    min-height: 0;
+}
+
+.mailbox-manage__folders,
+.mailbox-manage__messages {
+    display: grid;
+    align-content: start;
+    gap: 4px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    overflow: auto;
+}
+
+.mailbox-manage__folders > li,
+.mailbox-manage__messages > li {
+    min-width: 0;
+}
+
+.mailbox-manage__pane {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.mailbox-manage__folder,
+.mailbox-manage__message {
+    display: grid;
+    width: 100%;
+    min-width: 0;
+    padding: 8px 10px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--theme-text-primary);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+}
+
+.mailbox-manage__message {
+    position: relative;
+    gap: 2px;
+    padding-left: 22px;
+}
+
+.mailbox-manage__folder:hover,
+.mailbox-manage__message:hover {
+    background: var(--theme-surface-muted);
+}
+
+.mailbox-manage__message--unread::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 7px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--theme-primary-strong);
+    transform: translateY(-50%);
+}
+
+.mailbox-manage__close {
+    padding: 0 4px;
+    border: 0;
+    background: transparent;
+    color: var(--theme-text-muted);
+    font: inherit;
+    font-size: 1.35rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.mailbox-manage__close:hover {
+    background: var(--theme-surface-muted);
+}
+
+.mailbox-manage__row-top {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+}
+
+.mailbox-manage__from {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--theme-text-primary);
+    font-weight: 650;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mailbox-manage__subject {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--theme-text-primary);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mailbox-manage__when,
+.mailbox-manage__attach {
+    flex: 0 0 auto;
+    color: var(--theme-text-muted);
+    font-size: 0.75rem;
+}
+
+.mailbox-manage__message--unread .mailbox-manage__from,
+.mailbox-manage__message--unread .mailbox-manage__subject {
+    font-weight: 750;
+}
+
+.mailbox-manage__folder--current,
+.mailbox-manage__message--current,
+.mailbox-manage__folder--current:hover,
+.mailbox-manage__message--current:hover {
+    border-color: color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border));
+    background: var(--theme-primary-soft);
+}
+
+.mailbox-manage__folder:focus-visible,
+.mailbox-manage__message:focus-visible,
+.mailbox-manage__close:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--theme-primary-soft);
+}
+
+.mailbox-manage__view,
+.mailbox-manage__placeholder {
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 10px 12px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: 10px;
+    background: var(--theme-surface-muted);
+}
+
+.mailbox-manage__view {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 0;
+}
+
+.mailbox-manage__view__head {
+    flex: 0 0 auto;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--theme-border-subtle);
+}
+
+.mailbox-manage__view__head > :last-child {
+    margin-bottom: 0;
+}
+
+.mailbox-manage__view__body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    padding: 10px 12px 12px;
+}
+
+.mailbox-manage__view__body > :first-child {
+    margin-top: 0;
+}
+
+.mailbox-manage__placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    color: var(--theme-text-muted);
+    text-align: center;
+}
+
+.mailbox-manage__placeholder p {
+    margin: 0;
+}
+
+@media (max-width: 860px) {
+    .mailbox-manage__body {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto minmax(0, 1fr) minmax(140px, 0.8fr);
+    }
+
+    .mailbox-manage__folders {
+        max-height: 7.5rem;
+    }
+}
+
+.mailbox-manage__view h4,
+.mailbox-manage__view p {
+    margin: 0 0 6px;
+    overflow-wrap: anywhere;
+}
+
+.mailbox-manage__view pre {
+    margin: 8px 0 0;
+    white-space: pre-wrap;
+    font-family: inherit;
+    font-size: 0.84rem;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.mailbox-manage__empty {
+    color: var(--theme-text-muted);
+    font-size: 0.78rem;
+}
+
 @container email-settings (max-width: 920px) {
     .email-settings-grid--account,
     .email-settings-endpoint__grid {

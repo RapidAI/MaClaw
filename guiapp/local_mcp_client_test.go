@@ -3,12 +3,14 @@ package guiapp
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"io"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	mcputil "github.com/RapidAI/CodeClaw/corelib/mcp"
 )
 
 func TestLocalMCPClientConcurrentRequestsDoNotSerializeOnResponse(t *testing.T) {
@@ -84,6 +86,71 @@ func TestLocalMCPClientConcurrentRequestsDoNotSerializeOnResponse(t *testing.T) 
 	}
 	if !got[`"first-response"`] || !got[`"second-response"`] {
 		t.Fatalf("responses not routed by id: %#v", got)
+	}
+}
+
+func TestLocalMCPCallToolProtocolErrorIsToolCallError(t *testing.T) {
+	reqReader, reqWriter := io.Pipe()
+	respReader, respWriter := io.Pipe()
+	client := NewLocalMCPClient(corelib.LocalMCPServerEntry{ID: "test", Name: "test"})
+	client.stdin = reqWriter
+	client.stdout = bufio.NewReader(respReader)
+	client.pending = make(map[int64]chan localMCPPendingResponse)
+	client.running = true
+	go client.readLoop()
+	t.Cleanup(func() {
+		client.Stop()
+		_ = reqReader.Close()
+		_ = reqWriter.Close()
+		_ = respReader.Close()
+		_ = respWriter.Close()
+	})
+
+	seen := make(chan jsonRPCRequest, 1)
+	go func() {
+		scanner := bufio.NewScanner(reqReader)
+		for scanner.Scan() {
+			var req jsonRPCRequest
+			if err := json.Unmarshal(scanner.Bytes(), &req); err == nil {
+				seen <- req
+			}
+		}
+	}()
+
+	type callResult struct {
+		text string
+		err  error
+	}
+	done := make(chan callResult, 1)
+	go func() {
+		text, err := client.CallTool("query_worklog", map[string]interface{}{})
+		done <- callResult{text: text, err: err}
+	}()
+	req := waitForLocalMCPTestRequest(t, seen)
+	resp := jsonRPCResponse{
+		JSONRPC: "2.0",
+		ID:      req.ID,
+		Error:   &mcputil.JSONRPCProtocolError{Code: -32602, Message: "date is required"},
+	}
+	if err := json.NewEncoder(respWriter).Encode(resp); err != nil {
+		t.Fatalf("write protocol error: %v", err)
+	}
+
+	select {
+	case got := <-done:
+		var toolErr *mcputil.ToolCallError
+		if got.text != "" || !errors.As(got.err, &toolErr) || toolErr.Error() != "date is required" {
+			t.Fatalf("text=%q err=%v", got.text, got.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("tools/call did not return the protocol error")
+	}
+
+	stopped := NewLocalMCPClient(corelib.LocalMCPServerEntry{ID: "down", Name: "down"})
+	_, err := stopped.CallTool("query_worklog", nil)
+	var toolErr *mcputil.ToolCallError
+	if err == nil || errors.As(err, &toolErr) {
+		t.Fatalf("dead client err=%v", err)
 	}
 }
 

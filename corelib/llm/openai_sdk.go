@@ -352,7 +352,7 @@ func openAISDKChatStreamUnused(ctx context.Context, cfg corelib.MaclawLLMConfig,
 	msg := Message{
 		Role:             "assistant",
 		Content:          StripAllExtra(contentBuf.String()),
-		ReasoningContent: reasoningBuf.String(),
+		ReasoningContent: StripLeakedReasoningProtocol(reasoningBuf.String()),
 	}
 	if len(toolCalls) > 0 {
 		maxIdx := 0

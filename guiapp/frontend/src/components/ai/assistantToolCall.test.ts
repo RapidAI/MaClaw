@@ -1,7 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { appendToolCallMarker, assistantTaskSettledIncomplete, completedAssistantSummary, isTranscriptToolCallText, parseAssistantToolStatus, splitAssistantToolCallContent, stripAssistantToolCallMarkers, transcriptAlreadyShowsToolCall } from "./assistantToolCall";
+import { appendToolCallMarker, assistantTaskSettledIncomplete, completedAssistantSummary, formatAssistantToolFlip, isTranscriptToolCallText, parseAssistantToolStatus, splitAssistantToolCallContent, stripAssistantToolCallMarkers, transcriptAlreadyShowsToolCall } from "./assistantToolCall";
 
 describe("assistant tool call transcript", () => {
+    it("formats the live strip as the tool name and a short argument", () => {
+        expect(formatAssistantToolFlip({ name: "web_search", action: "搜索网页", detail: "北京天气" })).toEqual({
+            name: "web_search",
+            arg: "北京天气",
+            text: "web_search (北京天气)",
+        });
+        expect(formatAssistantToolFlip({
+            name: "web_search",
+            action: "搜索网页",
+            detail: '{"query":"北京天气","limit":5}',
+        }).text).toBe("web_search (北京天气)");
+        expect(formatAssistantToolFlip({ name: "bash", action: "执行命令", detail: "" }).text).toBe("bash");
+        expect(formatAssistantToolFlip({ name: "web_search", action: "搜索网页", detail: "web_search" }).text).toBe("web_search");
+        expect(formatAssistantToolFlip({ name: "bash", action: "执行命令", detail: '{"limit":5}' }).text).toBe("bash");
+        expect(formatAssistantToolFlip({ name: "web_search", action: "搜索网页", detail: '["北京天气"]' }).text).toBe("web_search (北京天气)");
+        expect(formatAssistantToolFlip({
+            name: "bash",
+            action: "执行命令",
+            detail: "curl -X POST https://api.example/v1/a-very-long-path-that-should-not-fill-the-strip",
+        }).arg.endsWith("…")).toBe(true);
+    });
+
     it("reads the tool name and arguments from a status card", () => {
         expect(parseAssistantToolStatus("工具 · 执行命令 (bash)\ncurl -X POST https://api.example")).toEqual({
             name: "bash",
@@ -53,6 +75,16 @@ describe("assistant tool call transcript", () => {
         expect(segments[2].text).toBe("然后换方式");
         expect(segments[1].call?.name).toBe("bash");
         expect(stripAssistantToolCallMarkers("先试一次\n\n<!--maclaw-tool:call-1-->\n\n然后换方式")).toBe("先试一次\n\n然后换方式");
+    });
+
+    it("drops a marker-only body instead of showing the anchor", () => {
+        expect(splitAssistantToolCallContent("\n\n<!--maclaw-tool:msg-1792198671957-29-->\n\n", undefined)).toEqual([]);
+        expect(splitAssistantToolCallContent("<!--maclaw-tool:call-1-->\n\n<!--maclaw-tool:call-2-->", undefined)).toEqual([]);
+        const placed = splitAssistantToolCallContent("\n\n<!--maclaw-tool:call-1-->\n\n", [
+            { id: "call-1", name: "web_search", action: "搜索网络", detail: "北京天气 今天 预报" },
+        ]);
+        expect(placed.map((segment) => segment.kind)).toEqual(["tool"]);
+        expect(placed[0].call?.name).toBe("web_search");
     });
 
     it("uses the terminal answer, and otherwise the prose after the last call", () => {

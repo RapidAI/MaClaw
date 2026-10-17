@@ -1993,6 +1993,10 @@ const codegraphNamesHint = "This codegraph lookup succeeded with names and locat
 // file-scope declarations are the survey. Reading the whole file repeats it.
 const codegraphFileMapHint = "This codegraph lookup succeeded with the file structure. The symbol names, locations, includes, and file-scope declarations are the map. Do not read_file or ripgrep this file to survey its sections or globals. A body is a new lookup: call code_navigation with operation node and a name below."
 
+// codegraphIndexedFileMissHint is CodeGraph's own "this file is not in the
+// index" sentence. That result is not source. read_file is how it is read.
+const codegraphIndexedFileMissHint = "CodeGraph has no indexed file by this name. Read it with read_file. Do not repeat this lookup, and do not treat this result as the file's source."
+
 // codegraphDirectReadHint is for a names result that tells the model to
 // read the file. The names hint forbids that, so a withheld config value,
 // a file codegraph could not open, or a staleness banner would stay unread.
@@ -2035,6 +2039,12 @@ func takeRemoteCodegraphHitMarker(result string) (string, bool) {
 
 func codegraphContinueHint(backend, output string) string {
 	if backend == "codegraph" {
+		// A file miss is not a map. Attaching "File structure for" or the
+		// names hint would tell the model the lookup succeeded and not to
+		// read the file CodeGraph just refused.
+		if codegraphMCPIndexedFileMiss(output) {
+			return codegraphIndexedFileMissHint
+		}
 		if strings.TrimSpace(output) != "" && len(codegraphFilesReadyToEdit(output)) == 0 {
 			if codegraphOutputAllowsDirectRead(output) {
 				return codegraphDirectReadHint
@@ -2069,10 +2079,14 @@ func (c *codingSubAgentCallbacks) noteCodegraphReadSnapshots(root, output string
 		if !navigationWithinRoot(root, abs) {
 			continue
 		}
-		if _, err := os.Stat(abs); err != nil {
+		info, err := os.Stat(abs)
+		if err != nil {
 			continue
 		}
 		c.refreshFileSnapshot(abs)
+		// The body is an index hit. Note it after the snapshot: a content
+		// change drops the survey cache, and this path must still be indexed.
+		c.noteCodegraphOwnership(abs, info, true)
 	}
 }
 
@@ -2085,13 +2099,20 @@ func codegraphFilesReadyToEdit(output string) []string {
 	seen := map[string]bool{}
 	add := func(path string) {
 		path = strings.TrimSpace(path)
-		if path == "" || seen[path] || navigationQueryEscapesRoot(path) {
+		if path == "" || seen[path] {
+			return
+		}
+		// A relative escape stays out. An absolute path is a concrete file;
+		// callers that have a project root drop anything outside that root.
+		// Rejecting every absolute path dropped a body the edit gate can use.
+		if !filepath.IsAbs(path) && navigationQueryEscapesRoot(path) {
 			return
 		}
 		seen[path] = true
 		files = append(files, path)
 	}
 	heading := ""
+	fromDisk := map[string]bool{}
 	for i, line := range lines {
 		line = strings.TrimSpace(line)
 		if name, kind, ok := codegraphMCPHeading(line); ok && codegraphMCPKindHasBody(kind) {
@@ -2100,7 +2121,11 @@ func codegraphFilesReadyToEdit(output string) []string {
 		if strings.HasPrefix(line, "Body for ") && strings.HasSuffix(line, ".") {
 			rest := strings.TrimSuffix(strings.TrimPrefix(line, "Body for "), ".")
 			if j := strings.LastIndex(rest, " in "); j >= 0 {
-				add(rest[j+len(" in "):])
+				path := strings.TrimSpace(rest[j+len(" in "):])
+				add(path)
+				// The definition was read from the file. A staleness banner
+				// for that path describes the indexed lines, not this body.
+				fromDisk[path] = true
 			}
 		}
 		fence := codegraphFenceAfter(lines, i)
@@ -2120,11 +2145,12 @@ func codegraphFilesReadyToEdit(output string) []string {
 		}
 	}
 	// A file still named by the staleness banner was not replaced from disk.
-	// Its indexed lines are not a read of the current file.
+	// Its indexed lines are not a read of the current file. A "Body for"
+	// line was read from disk, so that path stays a snapshot.
 	if codegraphMCPStale(output) {
 		kept := files[:0]
 		for _, path := range files {
-			if codegraphMCPStaleFile(output, path) {
+			if !fromDisk[path] && codegraphMCPStaleFile(output, path) {
 				delete(seen, path)
 				continue
 			}
@@ -2333,6 +2359,39 @@ func codegraphPinFile(file string) string {
 	return strings.ReplaceAll(file, `\`, "/")
 }
 
+// codegraphFileWithinRoot accepts the path the edit gate prints. That path is
+// absolute. An absolute path is not an escape when it stays inside the project;
+// dropping it made the node lookup the gate just demanded run unpinned.
+func codegraphFileWithinRoot(root, file string) string {
+	file = codegraphUnwrapPath(file)
+	if file == "" || file == "<nil>" {
+		return ""
+	}
+	if root != "" && filepath.IsAbs(file) {
+		rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(file))
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return ""
+		}
+		file = rel
+	}
+	return codegraphPinFile(file)
+}
+
+// codegraphUnwrapPath drops one pair of quotes or backticks. The edit gate
+// prints the path with %q, and a copied argument keeps those quotes. Pin
+// rejects a quoted path, so the node lookup the gate just demanded runs unpinned.
+func codegraphUnwrapPath(file string) string {
+	file = strings.TrimSpace(file)
+	if len(file) < 2 {
+		return file
+	}
+	a, b := file[0], file[len(file)-1]
+	if (a == '"' && b == '"') || (a == '\'' && b == '\'') || (a == '`' && b == '`') {
+		return strings.TrimSpace(file[1 : len(file)-1])
+	}
+	return file
+}
+
 // codegraphNodeSymbolArg is the symbol of a node lookup. File mode and
 // --symbols-only are not symbol names.
 func codegraphNodeSymbolArg(args []string) string {
@@ -2376,7 +2435,11 @@ func codegraphTargetIsFile(target string) bool {
 	if strings.ContainsAny(target, `/\`) {
 		return true
 	}
-	switch strings.ToLower(filepath.Ext(target)) {
+	return codegraphSourceExt(target)
+}
+
+func codegraphSourceExt(path string) bool {
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(path))) {
 	case ".go", ".ts", ".tsx", ".js", ".jsx", ".py", ".rs", ".java", ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".rb", ".php", ".vue", ".svelte", ".kt", ".swift":
 		return true
 	default:
@@ -2848,6 +2911,9 @@ func codegraphSourceBody(root, file, name string) string {
 	if start < 0 {
 		return ""
 	}
+	if codegraphKeywordDefines(strings.TrimRight(lines[start], "\r"), name) && !codegraphBlockBrace(lines, start, name) {
+		return codegraphUnbracedBody(lines, start)
+	}
 	var b strings.Builder
 	depth, seen := 0, false
 	for i := start; i < len(lines) && i < start+codegraphSourceBodyLines; i++ {
@@ -2874,27 +2940,242 @@ func codegraphSourceBody(root, file, name string) string {
 
 func codegraphDefinitionStart(lines []string, name string) int {
 	for i, line := range lines {
-		rest, ok := codegraphNameCall(strings.TrimRight(line, "\r"), name)
+		raw := strings.TrimRight(line, "\r")
+		rest, ok := codegraphNameCall(raw, name)
 		if !ok {
 			continue
 		}
-		if codegraphBraceOpens(rest) {
+		if codegraphBraceFollowsCall(lines, i, name) {
 			return i
 		}
 		if codegraphSemiEnds(rest) {
 			continue
 		}
-		for j := i + 1; j < len(lines) && j <= i+6; j++ {
-			part := strings.TrimRight(lines[j], "\r")
-			if codegraphBraceOpens(part) {
-				return i
-			}
-			if codegraphSemiEnds(part) {
-				break
-			}
+		// function/def/fn bodies are still definitions when the language
+		// does not use braces. A call has the name and no keyword.
+		if codegraphKeywordDefines(raw, name) {
+			return i
 		}
 	}
 	return -1
+}
+
+func codegraphBraceFollowsCall(lines []string, i int, name string) bool {
+	if i < 0 || i >= len(lines) {
+		return false
+	}
+	rest, ok := codegraphNameCall(strings.TrimRight(lines[i], "\r"), name)
+	if !ok {
+		return false
+	}
+	if codegraphBraceOpens(rest) {
+		return true
+	}
+	if codegraphSemiEnds(rest) {
+		return false
+	}
+	for j := i + 1; j < len(lines) && j <= i+6; j++ {
+		part := strings.TrimRight(lines[j], "\r")
+		if codegraphBraceOpens(part) {
+			return true
+		}
+		if codegraphSemiEnds(part) {
+			return false
+		}
+	}
+	return false
+}
+
+// codegraphBlockBrace is true when `{` opens the function. A balanced `{}`
+// in the parameter list, and a table or dict in the body, do not: the body
+// still runs to `end` or the next dedent. A `{` that is still open, or that
+// sits on the line which closes the parameter list, is the function block.
+func codegraphBlockBrace(lines []string, i int, name string) bool {
+	if i < 0 || i >= len(lines) {
+		return false
+	}
+	rest, ok := codegraphNameCall(strings.TrimRight(lines[i], "\r"), name)
+	if !ok || codegraphSemiEnds(rest) {
+		return false
+	}
+	if codegraphBraceLeftOpen(rest) {
+		return true
+	}
+	paren := codegraphParenDelta(rest)
+	for j := i + 1; j < len(lines) && j <= i+6; j++ {
+		raw := strings.TrimRight(lines[j], "\r")
+		part := strings.TrimSpace(raw)
+		if part == "" || strings.HasPrefix(part, "//") || strings.HasPrefix(part, "--") || strings.HasPrefix(part, "#") {
+			continue
+		}
+		if codegraphBraceLeftOpen(raw) {
+			return true
+		}
+		paren += codegraphParenDelta(raw)
+		if paren <= 0 {
+			return false
+		}
+	}
+	return false
+}
+
+func codegraphBraceLeftOpen(line string) bool {
+	opens, closes := codegraphBraceDelta(line)
+	return opens > closes
+}
+
+func codegraphKeywordDefines(line, name string) bool {
+	if _, ok := codegraphNameCall(line, name); !ok {
+		return false
+	}
+	idx := strings.Index(line, name+"(")
+	if idx < 0 {
+		return false
+	}
+	head := strings.TrimSpace(line[:idx])
+	if head == "" {
+		return false
+	}
+	fields := strings.Fields(head)
+	word := strings.Trim(fields[len(fields)-1], "*&")
+	switch word {
+	case "function", "def", "fn", "func", "fun", "sub", "proc", "method", "macro", "defn":
+		return true
+	default:
+		return false
+	}
+}
+
+func codegraphUnbracedBody(lines []string, start int) string {
+	base := codegraphIndent(lines[start])
+	python := codegraphSigEndsBlock(lines[start])
+	depth := 1
+	var b strings.Builder
+	for i := start; i < len(lines) && i < start+codegraphSourceBodyLines; i++ {
+		line := strings.TrimRight(lines[i], "\r")
+		trim := strings.TrimSpace(line)
+		if i > start && trim != "" && codegraphIndent(line) <= base {
+			if python || (depth <= 1 && codegraphUnbracedSibling(trim)) {
+				break
+			}
+		}
+		fmt.Fprintf(&b, "%d\t%s\n", i+1, line)
+		if python || i == start {
+			continue
+		}
+		depth += codegraphUnbracedOpenCount(trim) - codegraphUnbracedEndCount(trim)
+		if depth <= 0 {
+			break
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func codegraphSigEndsBlock(line string) bool {
+	return strings.HasSuffix(strings.TrimSpace(codegraphVisibleCode(line)), ":")
+}
+
+func codegraphUnbracedSibling(trim string) bool {
+	switch codegraphFirstWord(trim) {
+	case "function", "def", "fn", "func", "fun", "sub", "class", "module", "defn":
+		return true
+	default:
+		return false
+	}
+}
+
+func codegraphUnbracedOpenCount(trim string) int {
+	switch codegraphFirstWord(trim) {
+	case "if", "for", "while", "function", "do", "repeat", "class", "def", "fn", "func", "unless", "begin", "case", "module", "sub", "fun":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func codegraphUnbracedEndCount(trim string) int {
+	return codegraphWordHits(codegraphVisibleCode(trim), "end")
+}
+
+func codegraphFirstWord(line string) string {
+	scan := strings.TrimSpace(codegraphVisibleCode(line))
+	if scan == "" {
+		return ""
+	}
+	i := 0
+	for i < len(scan) {
+		r, size := utf8.DecodeRuneInString(scan[i:])
+		if unicode.IsLetter(r) || r == '_' {
+			break
+		}
+		i += size
+	}
+	j := i
+	for j < len(scan) {
+		r, size := utf8.DecodeRuneInString(scan[j:])
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' {
+			break
+		}
+		j += size
+	}
+	return scan[i:j]
+}
+
+func codegraphWordHits(scan, word string) int {
+	n := 0
+	for _, field := range strings.FieldsFunc(scan, func(r rune) bool {
+		return r != '_' && !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		if field == word {
+			n++
+		}
+	}
+	return n
+}
+
+// codegraphVisibleCode drops strings and line comments so a word inside
+// them is not a block boundary.
+func codegraphVisibleCode(line string) string {
+	var b strings.Builder
+	var quote byte
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		if quote != 0 {
+			if c == '\\' && i+1 < len(line) {
+				i++
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		if c == '"' || c == '\'' {
+			quote = c
+			b.WriteByte(' ')
+			continue
+		}
+		if c == '#' || (c == '-' && i+1 < len(line) && line[i+1] == '-') || (c == '/' && i+1 < len(line) && line[i+1] == '/') {
+			break
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+func codegraphIndent(line string) int {
+	n := 0
+	for _, r := range line {
+		switch r {
+		case ' ':
+			n++
+		case '\t':
+			n += 4
+		default:
+			return n
+		}
+	}
+	return n
 }
 
 func codegraphNameCall(line, name string) (string, bool) {
@@ -4148,35 +4429,175 @@ func codegraphTakeDecl(lines []string, start int, inBlock bool) (string, int) {
 	}
 	var b []string
 	depth := 0
+	paren := 0
 	for n := 0; n < 8 && start+n < len(lines); n++ {
 		line := strings.TrimRight(lines[start+n], "\r")
 		visible, next := codegraphScanCode(line, inBlock)
 		inBlock = next
+		if n > 0 && depth <= 0 && paren <= 0 && codegraphLineOpensFunction(visible) {
+			break
+		}
 		b = append(b, line)
 		opens, closes := codegraphBraceDelta(visible)
 		depth += opens - closes
-		if strings.Contains(visible, ";") && depth <= 0 {
+		paren += codegraphParenDelta(visible)
+		if strings.Contains(visible, ";") && depth <= 0 && paren <= 0 {
 			return strings.Join(b, "\n"), n
 		}
+		// A declaration that does not continue must not swallow the next
+		// function. Languages without semicolons put that function on the
+		// following line.
+		if n == 0 && depth <= 0 && paren <= 0 && !strings.Contains(visible, ";") && !codegraphDeclContinues(visible) {
+			return line, 0
+		}
+	}
+	if len(b) == 0 {
+		return "", 0
 	}
 	return strings.Join(b, "\n"), len(b) - 1
 }
 
+func codegraphDeclContinues(line string) bool {
+	trim := strings.TrimSpace(line)
+	if trim == "" {
+		return false
+	}
+	r, _ := utf8.DecodeLastRuneInString(trim)
+	switch r {
+	case '\\', ',', '=', '(', '{', '[':
+		return true
+	default:
+		return false
+	}
+}
+
+func codegraphParenDelta(line string) int {
+	if cmt := strings.Index(line, "//"); cmt >= 0 {
+		line = line[:cmt]
+	}
+	delta := 0
+	var quote byte
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		if quote != 0 {
+			if c == '\\' && i+1 < len(line) {
+				i++
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			quote = c
+		case '(':
+			delta++
+		case ')':
+			delta--
+		}
+	}
+	return delta
+}
+
+// codegraphMissedNodeBody is the current definition when a pinned node lookup
+// returned nothing. An index that has not caught a new symbol still leaves
+// that definition in the file. The "Body for" line is what records the edit
+// snapshot. A name that is not in the file stays a miss. definition is the
+// same lookup as node.
+func codegraphMissedNodeBody(root, operation, query, file string) (string, bool) {
+	if operation != "node" && operation != "definition" {
+		return "", false
+	}
+	pin := codegraphFileWithinRoot(root, file)
+	symbol := strings.TrimSpace(query)
+	if pin == "" || !codegraphRemoteNodeSymbol(symbol) || codegraphTargetIsFile(symbol) {
+		return "", false
+	}
+	body := strings.TrimSpace(codegraphSourceBody(root, pin, symbol))
+	if body == "" {
+		return "", false
+	}
+	return "Body for " + symbol + " in " + pin + ".\n" + body, true
+}
+
+// codegraphFinishPinnedNode keeps a node result that already read the pinned
+// file. A hit that does not — a symbol map, a stale span, a not-found note —
+// is replaced by the definition on disk. Returning that hit left the edit
+// gate closed after the model had called the lookup the gate demanded.
+func codegraphFinishPinnedNode(root, operation, query, file, output string) string {
+	if operation != "node" && operation != "definition" {
+		return output
+	}
+	// The index has no such file. The definition on disk is not an index hit.
+	// Replacing this sentence would record one, and the next survey would
+	// refuse to read the bytes.
+	if codegraphMCPIndexedFileMiss(output) {
+		return output
+	}
+	if codegraphFileWithinRoot(root, file) == "" {
+		return output
+	}
+	if codegraphOutputReadiesPin(root, file, output) {
+		return output
+	}
+	if body, ok := codegraphMissedNodeBody(root, operation, query, file); ok {
+		return body
+	}
+	return output
+}
+
+func codegraphOutputReadiesPin(root, pin, output string) bool {
+	for _, path := range codegraphFilesReadyToEdit(output) {
+		if codegraphSamePinnedFile(root, pin, path) {
+			return true
+		}
+	}
+	return false
+}
+
+func codegraphSamePinnedFile(root, pin, listed string) bool {
+	pin = strings.TrimPrefix(codegraphFileWithinRoot(root, pin), "./")
+	other := codegraphFileWithinRoot(root, listed)
+	if other == "" {
+		other = strings.TrimSpace(strings.ReplaceAll(listed, `\`, "/"))
+	}
+	other = strings.TrimPrefix(other, "./")
+	if pin == "" {
+		return false
+	}
+	if pin == other {
+		return true
+	}
+	return runtime.GOOS == "windows" && strings.EqualFold(pin, other)
+}
+
 // attachCodegraphPinnedNodeBody supplies the definition `node --file` leaves
 // out. A result that already contains that definition is left as it is.
+// A staleness banner means those lines are the old index, so the disk body
+// replaces them. Keeping the banner withdrew the edit snapshot.
 func attachCodegraphPinnedNodeBody(root, output string, cmds [][]string) string {
 	if root == "" || len(cmds) != 1 {
 		return output
 	}
 	file, symbol, ok := codegraphPinnedNode(cmds[0])
-	if !ok || codegraphExcerptDefines(output, symbol) {
+	if !ok {
+		return output
+	}
+	stale := codegraphMCPStale(output) && codegraphMCPStaleFile(output, file)
+	if !stale && codegraphExcerptDefines(output, symbol) {
 		return output
 	}
 	body := strings.TrimSpace(codegraphSourceBody(root, file, symbol))
 	if body == "" {
 		return output
 	}
-	return "Body for " + symbol + " in " + file + ".\n" + body + "\n" + strings.TrimSpace(output)
+	fresh := "Body for " + symbol + " in " + file + ".\n" + body
+	if stale {
+		return fresh
+	}
+	return fresh + "\n" + strings.TrimSpace(output)
 }
 
 func attachCodegraphSymbolMap(bin, root, output string, cmds [][]string) string {
@@ -4219,8 +4640,12 @@ func attachCodegraphSymbolMap(bin, root, output string, cmds [][]string) string 
 }
 
 // codegraphRemoteAcceptHit keeps a codegraph result. A one-line miss, or a
-// query score below 2000, falls through to text search.
-const codegraphRemoteAcceptHit = "_cg_esc=$(printf '\\033'); _cg_plain=$(printf '%s\\n' \"$_cg_out\" | sed \"s/${_cg_esc}\\\\[[0-9;]*[A-Za-z]//g\"); _cg_first=$(printf '%s\\n' \"$_cg_plain\" | sed -n '/[[:alpha:]]/p' | head -n 1); _cg_score=$(printf '%s\\n' \"$_cg_plain\" | sed -n 's/.*(\\([0-9][0-9]*\\)%).*/\\1/p' | head -n 1); case \"$_cg_first\" in *'Symbol \"'*' not found'*) ;; *'No results found'*) ;; *'No relevant code found'*) ;; *'No files indexed'*) ;; *'No indexed file matches'*) ;; *'No callers found'*) ;; *'No callees found'*) ;; *'Search Results'*) if [ -z \"$_cg_score\" ] || [ \"$_cg_score\" -ge 2000 ]; then printf '%s\\n' \"$_cg_out\"; _cg_hit=1; _cg_term_hit=1; fi ;; *[![:space:]]*) printf '%s\\n' \"$_cg_out\"; _cg_hit=1; _cg_term_hit=1 ;; esac"
+// query score below 2000, falls through to text search. execute() puts a
+// staleness banner and a worktree notice in front of the tool sentence, so
+// the first letter line of the raw text is not that sentence. The instruction
+// match stops at "For accurate content": the words that follow contain " of ",
+// which the shell mutation check reads as dd.
+const codegraphRemoteAcceptHit = "_cg_esc=$(printf '\\033'); _cg_plain=$(printf '%s\\n' \"$_cg_out\" | sed \"s/${_cg_esc}\\\\[[0-9;]*[A-Za-z]//g\"); _cg_first=$(printf '%s\\n' \"$_cg_plain\" | sed -n '/were edited since the last index sync/d; /CodeGraph results below come from a different git worktree/d; /^[[:space:]]*For accurate content/d; /^[[:space:]]*- .* (edited .*ms ago/d; /[[:alpha:]]/p' | head -n 1); _cg_score=$(printf '%s\\n' \"$_cg_plain\" | sed -n 's/.*(\\([0-9][0-9]*\\)%).*/\\1/p' | head -n 1); case \"$_cg_first\" in *'Symbol \"'*' not found'*) ;; *'No results found'*) ;; *'No relevant code found'*) ;; *'No files indexed'*) ;; *'No indexed file matches'*) ;; *'No callers found'*) ;; *'No callees found'*) ;; *'Search Results'*) if [ -z \"$_cg_score\" ] || [ \"$_cg_score\" -ge 2000 ]; then printf '%s\\n' \"$_cg_out\"; _cg_hit=1; _cg_term_hit=1; fi ;; *[![:space:]]*) printf '%s\\n' \"$_cg_out\"; _cg_hit=1; _cg_term_hit=1 ;; esac"
 
 // codegraphRemoteAcceptNamedNode is the node accept path. A misspelled name
 // still prints the nearest symbol and exits 0; that body is not the symbol
@@ -4342,12 +4767,14 @@ func codegraphOutputUseful(output string) bool {
 }
 
 // codegraphFirstLetterLine skips the color-only line codegraph prints before
-// a query header.
+// a query header, and the staleness or worktree preface it prepends to a
+// tool sentence. That preface is not the answer. A later source line that
+// quotes a miss stays a hit, because only this first answer line counts.
 func codegraphFirstLetterLine(output string) string {
 	output = codegraphANSIPattern.ReplaceAllString(output, "")
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" {
+		if line == "" || codegraphAnswerPreamble(line) {
 			continue
 		}
 		for _, r := range line {
@@ -4357,6 +4784,21 @@ func codegraphFirstLetterLine(output string) string {
 		}
 	}
 	return ""
+}
+
+// codegraphAnswerPreamble reports a line CodeGraph adds in front of the tool
+// sentence. The sentence itself starts on the next line.
+func codegraphAnswerPreamble(line string) bool {
+	if strings.Contains(line, "were edited since the last index sync") {
+		return true
+	}
+	if strings.HasPrefix(line, "- ") && strings.Contains(line, " (edited ") && strings.Contains(line, "ms ago") {
+		return true
+	}
+	if strings.HasPrefix(line, "For accurate content of those specific files") {
+		return true
+	}
+	return strings.Contains(line, "CodeGraph results below come from a different git worktree")
 }
 
 // codegraphBestScore reads the first "(NNN%)" relevance codegraph query prints.
@@ -4529,7 +4971,9 @@ func (c *codingSubAgentCallbacks) executeLocalCodeNavigation(args map[string]int
 	}
 	output = codegraphRetargetReadAdvice(output)
 	var truncated bool
-	if backend == "codegraph" {
+	// A file miss names the file as absent. Do not read it to decorate that
+	// sentence as a symbol map, and do not record an edit snapshot.
+	if backend == "codegraph" && !codegraphMCPIndexedFileMiss(output) {
 		// A function body does not include the globals and constants it uses.
 		// The model otherwise read_file's the top of the file and ripgreps those names.
 		// A file lookup also keeps its structure section, so a long symbol list
@@ -4540,7 +4984,7 @@ func (c *codingSubAgentCallbacks) executeLocalCodeNavigation(args map[string]int
 		}
 		output, truncated = codegraphCapWithDecls(root, fileQuery, output)
 		c.noteCodegraphReadSnapshots(root, output)
-	} else {
+	} else if backend != "codegraph" {
 		output, truncated = capCodeNavigationOutput(output)
 	}
 	payload, _ := json.Marshal(codeNavigationOutput{Backend: backend, Operation: operation, Query: query, Output: output, Truncated: truncated, ContinueWith: codegraphContinueHint(backend, output)})
@@ -4554,6 +4998,337 @@ func (c *codingSubAgentCallbacks) executeLocalCodeNavigation(args map[string]int
 		payload, _ = json.Marshal(wrapper)
 	}
 	return codingToolExecutionResult{Text: string(payload), Outcome: codingToolOutcomeSuccess}
+}
+
+// codegraphReadInstead answers a survey read with the codegraph file map when
+// the index knows that file. There is no language whitelist: a hit is the map,
+// a miss is a normal read. lines is the page cap on that survey, not a request
+// for the body. start_line and offset name a window CodeGraph does not store,
+// so those calls read the file. A stale snapshot of an indexed file stays on
+// the map: code_navigation node refreshes the edit gate. A failed survey of a
+// regular file that is already indexed does not fall through to its bytes.
+// A path that is gone still does, so the missing-file error surfaces.
+func (c *codingSubAgentCallbacks) codegraphReadInstead(fileArgs map[string]interface{}) (codingToolExecutionResult, bool) {
+	path, _ := fileArgs["path"].(string)
+	if c == nil || readArgsAskForBytes(fileArgs) || !c.sourceReadShouldUseCodegraph(path) {
+		return codingToolExecutionResult{}, false
+	}
+	if result, ok := c.codegraphFileMap(path); ok {
+		return result, true
+	}
+	// A failed survey is not a miss. A regular file that was already an index
+	// hit stays off the byte path. A missing path or a directory has nothing
+	// to protect, and the disk read reports that error without a snapshot.
+	if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() && c.codegraphPathWasIndexed(path) {
+		return indexedSurveyUnavailable(path), true
+	}
+	return codingToolExecutionResult{}, false
+}
+
+func indexedSurveyUnavailable(path string) codingToolExecutionResult {
+	return codingToolExecutionResult{
+		Text:    fmt.Sprintf("文件 %q 在 CodeGraph 索引中，这次调查没有返回符号图。请调用 code_navigation，operation 用 node，query 填要修改的符号，file 填 %q。不要改为读取整份源码。", path, path),
+		Outcome: codingToolOutcomeFailed,
+	}
+}
+
+// readArgsAskForBytes reports a read_file that names a position. Callers
+// normalize aliases onto start_line and offset before this check. lines is
+// only the maximum page size, including its limit alias, so it stays a survey.
+func readArgsAskForBytes(args map[string]interface{}) bool {
+	if n, ok := codingSubAgentArgumentIntegerValue(args["start_line"]); ok && n >= 1 {
+		return true
+	}
+	if n, ok := codingSubAgentArgumentIntegerValue(args["offset"]); ok && n >= 1 {
+		return true
+	}
+	return false
+}
+
+// lineWindowSkipsEditSnapshot keeps a positioned read of an indexed file from
+// unlocking edit_file. The window is the bytes at that position. The symbol
+// body returned by code_navigation node is the edit snapshot.
+func (c *codingSubAgentCallbacks) lineWindowSkipsEditSnapshot(args map[string]interface{}, path string) bool {
+	if !readArgsAskForBytes(args) {
+		return false
+	}
+	if c.codegraphOwnsSource(path) {
+		return true
+	}
+	// The probe did not answer. A path already known to be indexed stays
+	// locked; one line is not the symbol body.
+	return c.codegraphPathWasIndexed(path)
+}
+
+// codegraphFileMapCache is one survey answer for an unchanged file. A write
+// drops it. size and mod keep a later edit from replaying the old map.
+type codegraphFileMapCache struct {
+	size   int64
+	mod    time.Time
+	result codingToolExecutionResult
+}
+
+// codegraphFileOwnership is a hit or miss for one size and modification time.
+// A miss is not kept after the file changes, so a later index update can be seen.
+type codegraphFileOwnership struct {
+	size  int64
+	mod   time.Time
+	owned bool
+}
+
+// codegraphFileMap is the indexed file map for a survey read. It does not
+// record an edit snapshot. A symbol body from code_navigation node does.
+func (c *codingSubAgentCallbacks) codegraphFileMap(path string) (codingToolExecutionResult, bool) {
+	if c == nil {
+		return codingToolExecutionResult{}, false
+	}
+	if remembered, ok := c.rememberedCodegraphFileMap(path); ok {
+		return remembered, true
+	}
+	// This file version already missed. The line-window probe uses the same
+	// record. A survey must not open the database again.
+	if known, owned := c.codegraphSurveyKnown(path); known && !owned {
+		return codingToolExecutionResult{}, false
+	}
+	if lookCodegraphBinary() == "" {
+		return codingToolExecutionResult{}, false
+	}
+	if codegraphFileLooksBinary(path) {
+		return codingToolExecutionResult{}, false
+	}
+	query := c.codegraphProjectQuery(path)
+	if strings.TrimSpace(query) == "" {
+		return codingToolExecutionResult{}, false
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		return codingToolExecutionResult{}, false
+	}
+	result := c.executeLocalCodeNavigation(map[string]interface{}{
+		"operation": "file_symbols",
+		"query":     query,
+	})
+	if !codegraphNavigationHit(result) {
+		// A definite CodeGraph miss is remembered for this file version. The
+		// next survey and the next line window both use it. An error is not a miss.
+		if codegraphAnsweredMiss(result) {
+			c.noteCodegraphOwnership(path, before, false)
+		}
+		return codingToolExecutionResult{}, false
+	}
+	c.noteCodegraphOwnership(path, before, true)
+	c.trackSearchResult(codeNavigationToolName, map[string]interface{}{"operation": "file_symbols", "query": query}, result.Text, true)
+	c.rememberCodegraphFileMap(path, before, result)
+	return result, true
+}
+
+// codegraphAnsweredMiss reports a CodeGraph reply that names no indexed file.
+// A fallback outline or a transport error is not an answer.
+func codegraphAnsweredMiss(result codingToolExecutionResult) bool {
+	if result.Outcome != codingToolOutcomeSuccess {
+		return false
+	}
+	var payload codeNavigationOutput
+	if err := json.Unmarshal([]byte(result.Text), &payload); err != nil {
+		return false
+	}
+	return payload.Backend == "codegraph" && !codegraphOutputUseful(payload.Output)
+}
+
+func (c *codingSubAgentCallbacks) rememberedCodegraphFileMap(path string) (codingToolExecutionResult, bool) {
+	info, err := os.Stat(path)
+	if err != nil || c == nil {
+		return codingToolExecutionResult{}, false
+	}
+	key := canonicalCodingPath(path)
+	c.mu.Lock()
+	entry, ok := c.codegraphFileMaps[key]
+	c.mu.Unlock()
+	if !ok || entry.size != info.Size() || !entry.mod.Equal(info.ModTime()) {
+		return codingToolExecutionResult{}, false
+	}
+	return entry.result, true
+}
+
+func (c *codingSubAgentCallbacks) rememberCodegraphFileMap(path string, before os.FileInfo, result codingToolExecutionResult) {
+	if c == nil || before == nil || !codegraphFileStatUnchanged(path, before) {
+		return
+	}
+	key := canonicalCodingPath(path)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.codegraphFileMaps == nil {
+		c.codegraphFileMaps = map[string]codegraphFileMapCache{}
+	}
+	c.codegraphFileMaps[key] = codegraphFileMapCache{size: before.Size(), mod: before.ModTime(), result: result}
+}
+
+func codegraphFileStatUnchanged(path string, before os.FileInfo) bool {
+	if before == nil {
+		return false
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return after.Size() == before.Size() && after.ModTime().Equal(before.ModTime())
+}
+
+func (c *codingSubAgentCallbacks) codegraphMappedRead(path string) bool {
+	if c == nil {
+		return false
+	}
+	_, owned := c.codegraphSurveyKnown(path)
+	return owned
+}
+
+// codegraphSurveyKnown reports whether this path was already resolved against
+// the index for the file's current size and modification time. A miss from an
+// older version is not an answer.
+func (c *codingSubAgentCallbacks) codegraphSurveyKnown(path string) (known, owned bool) {
+	info, err := os.Stat(path)
+	if c == nil || err != nil {
+		return false, false
+	}
+	key := canonicalCodingPath(path)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.codegraphOwned[key]
+	if !ok || entry.size != info.Size() || !entry.mod.Equal(info.ModTime()) {
+		return false, false
+	}
+	return true, entry.owned
+}
+
+// codegraphPathWasIndexed reports an index hit remembered for this path.
+// Editing the file drops the cached map, but the hit stays so a later stale
+// survey does not dump the bytes. A definitive miss for the new bytes replaces it.
+func (c *codingSubAgentCallbacks) codegraphPathWasIndexed(path string) bool {
+	if c == nil || strings.TrimSpace(path) == "" {
+		return false
+	}
+	key := canonicalCodingPath(path)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.codegraphOwned[key]
+	return ok && entry.owned
+}
+
+// noteCodegraphOwnership records a hit or miss for the file version in before.
+// The file changing during the query leaves the question unanswered. A hit for
+// this same version is not replaced by a later miss.
+func (c *codingSubAgentCallbacks) noteCodegraphOwnership(path string, before os.FileInfo, owned bool) {
+	if c == nil || !codegraphFileStatUnchanged(path, before) {
+		return
+	}
+	key := canonicalCodingPath(path)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.codegraphOwned == nil {
+		c.codegraphOwned = map[string]codegraphFileOwnership{}
+	}
+	if prev, ok := c.codegraphOwned[key]; ok && prev.owned && !owned && prev.size == before.Size() && prev.mod.Equal(before.ModTime()) {
+		return
+	}
+	c.codegraphOwned[key] = codegraphFileOwnership{size: before.Size(), mod: before.ModTime(), owned: owned}
+}
+
+// codegraphOwnsSource reports that a survey of path is a codegraph hit. The
+// answer is remembered. A project with no index is not probed, so a line
+// window cannot install codegraph or create the database.
+func (c *codingSubAgentCallbacks) codegraphOwnsSource(path string) bool {
+	if c == nil || strings.TrimSpace(path) == "" {
+		return false
+	}
+	if known, owned := c.codegraphSurveyKnown(path); known {
+		return owned
+	}
+	before, err := os.Stat(path)
+	if err != nil || lookCodegraphBinary() == "" || codegraphNearestIndexRoot(c.projectPath()) == "" || codegraphFileLooksBinary(path) {
+		return false
+	}
+	query := strings.TrimSpace(c.codegraphProjectQuery(path))
+	if query == "" {
+		return false
+	}
+	// Ask CodeGraph only. The full navigation falls through to a file outline
+	// and ripgrep, and a timeout is not evidence that the file is unindexed.
+	owned, known := codegraphIndexedFile(c.projectPath(), query)
+	if !known {
+		return false
+	}
+	c.noteCodegraphOwnership(path, before, owned)
+	return owned
+}
+
+// codegraphIndexedFile reports whether the index has query. known is false
+// when CodeGraph did not answer, so the caller must not remember a miss.
+func codegraphIndexedFile(root, query string) (owned, known bool) {
+	bin := lookCodegraphBinary()
+	if bin == "" || strings.TrimSpace(query) == "" || codegraphNearestIndexRoot(root) == "" {
+		return false, false
+	}
+	question := navigationQuestion("file_symbols", query, 0)
+	// Nonempty text is the index's answer, including a file miss. A miss is
+	// not useful, and it must not start the CLI on the daemon's database.
+	if text, err := codegraphMCPNavigate(root, bin, "file_symbols", query, question, "", 0); err == nil && strings.TrimSpace(text) != "" {
+		return codegraphOutputUseful(text), true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	output, _ := runCodegraphCommands(ctx, bin, root, codegraphCommandList("file_symbols", query, question, ""))
+	if strings.TrimSpace(output) == "" {
+		return false, false
+	}
+	return codegraphOutputUseful(output), true
+}
+
+func codegraphFileLooksBinary(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return true
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return true
+	}
+	defer f.Close()
+	buf := make([]byte, 512)
+	n, _ := f.Read(buf)
+	return bytes.IndexByte(buf[:n], 0) >= 0
+}
+
+func (c *codingSubAgentCallbacks) sourceReadShouldUseCodegraph(path string) bool {
+	// An index hit is a survey even when the edit snapshot is stale.
+	// Checking that snapshot would read the whole file.
+	if c.codegraphPathWasIndexed(path) {
+		return true
+	}
+	ok, msg := c.validateReadSnapshot(path)
+	return ok || msg == ""
+}
+
+func (c *codingSubAgentCallbacks) codegraphProjectQuery(path string) string {
+	path = strings.TrimSpace(path)
+	root := c.projectPath()
+	if root != "" && filepath.IsAbs(path) {
+		rel, err := filepath.Rel(root, path)
+		if err == nil && rel != "." && !strings.HasPrefix(rel, "..") && !strings.HasPrefix(filepath.ToSlash(rel), "../") {
+			return filepath.ToSlash(rel)
+		}
+	}
+	return filepath.ToSlash(path)
+}
+
+func codegraphNavigationHit(result codingToolExecutionResult) bool {
+	if result.Outcome != codingToolOutcomeSuccess {
+		return false
+	}
+	var payload codeNavigationOutput
+	if err := json.Unmarshal([]byte(result.Text), &payload); err != nil {
+		return false
+	}
+	return payload.Backend == "codegraph" && codegraphOutputUseful(payload.Output)
 }
 
 // codegraphBootstrapAllowed is the write gate for install and codegraph init.
@@ -4579,6 +5354,7 @@ func runLocalCodeNavigation(root, operation, query string, depth int) (string, s
 }
 
 func runLocalCodeNavigationWithPosition(root, operation, query, file string, line, column, depth int, bootstrap bool) (string, string, error) {
+	file = codegraphFileWithinRoot(root, file)
 	// Install and index use their own budgets. The 30s query clock starts
 	// afterward, so a slow bootstrap cannot cancel the codegraph call or the
 	// ripgrep fallback that follows it.
@@ -4591,7 +5367,9 @@ func runLocalCodeNavigationWithPosition(root, operation, query, file string, lin
 	haveIndex := bin != "" && (codegraphNearestIndexRoot(root) != "" || (bootstrap && ensureLocalCodegraphIndex(root, bin)))
 	if haveIndex {
 		if text, mcpErr := codegraphMCPNavigate(root, bin, operation, query, navigationQuestion(operation, query, depth), file, line); mcpErr == nil && strings.TrimSpace(text) != "" {
-			return "codegraph", text, nil
+			// The text may be a file miss. It is still the index answer, so
+			// the CLI does not open the same database again.
+			return "codegraph", codegraphFinishPinnedNode(root, operation, query, file, text), nil
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		argsList := codegraphCommandList(operation, query, navigationQuestion(operation, query, depth), file)
@@ -4608,7 +5386,11 @@ func runLocalCodeNavigationWithPosition(root, operation, query, file string, lin
 					output = strings.TrimSpace(output) + "\n" + extra
 				}
 			}
-			return "codegraph", output, nil
+		}
+		// A symbol map or an empty node hit is not the body. The definition
+		// still in the file is what the edit gate asked the model to fetch.
+		if text := codegraphFinishPinnedNode(root, operation, query, file, output); strings.TrimSpace(text) != "" {
+			return "codegraph", text, nil
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

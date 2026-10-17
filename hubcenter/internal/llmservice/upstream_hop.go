@@ -624,6 +624,13 @@ func (w *hopStreamWriter) Flush() {
 }
 
 func probeProviderModels(ctx context.Context, client *http.Client, apiURL, apiKey, protocol, agentType string) ([]string, error) {
+	apiURL = OpenCodeCatalogURL(apiURL, agentType)
+	if corelib.IsOpenCodeURL(apiURL) {
+		agent := RequestAgentType(agentType)
+		if agent == "" || strings.EqualFold(agent, "openclaw") {
+			agentType = "OpenCode"
+		}
+	}
 	endpoint, err := hopModelsEndpoint(apiURL, protocol)
 	if err != nil {
 		return nil, err

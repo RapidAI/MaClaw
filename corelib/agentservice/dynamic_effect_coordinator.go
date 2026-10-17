@@ -58,10 +58,11 @@ const dynamicMCPToolErrorReason = "mcp_tool_error"
 // no later receipt source. The tools/call or skill response is the
 // observation. On the unified coordinator a successful response is settled
 // as the receipt and returned to the model. A completed tools/call error is
-// recorded failed and returned as that error; a lost transport stays
-// unknown. The legacy ledger path does not settle successes this way: a
-// host that registers a receipt source still settles those operations
-// itself. A reviewed mutation stays awaiting on both paths, including when
+// recorded failed for every MCP selection, including a reviewed mutation,
+// and the model sees that error. A lost transport stays unknown. The legacy
+// ledger path does not settle successes this way: a host that registers a
+// receipt source still settles those operations itself. A reviewed mutation's
+// successful response stays awaiting on both paths, including when
 // the planner addressed that same binding through its x:mcp grant, because
 // its provider text is not evidence the system of record changed. A channel
 // delivery stays awaiting for the same reason.
@@ -170,6 +171,12 @@ func (c LedgerDynamicExternalEffectCoordinator) CoordinateDynamicExternalEffect(
 		}
 		emitDynamicEffectUnknown(c.EventObserver, "dynamic_effect_dispatch_unknown")
 		return DynamicEffectReceipt{OperationID: record.Key, State: DynamicEffectReceiptUnknown, ReasonCode: "dynamic_effect_dispatch_unknown"}, nil
+	}
+	if completedDynamicToolResultFailure(invocation.Selection, result) {
+		if _, err := c.Ledger.Complete(record.Key, DynamicOperationFailed, dynamicOperationDigest(result), dynamicMCPToolErrorReason, c.now()); err != nil {
+			return DynamicEffectReceipt{}, fmt.Errorf("record dynamic external effect tool failure: %w", err)
+		}
+		return DynamicEffectReceipt{OperationID: record.Key, State: DynamicEffectReceiptFailed, ReasonCode: dynamicMCPToolErrorReason}, nil
 	}
 	if _, err := c.Ledger.Complete(record.Key, DynamicOperationAwaitingReceipt, dynamicOperationDigest(result), "dynamic_effect_awaiting_receipt", c.now()); err != nil {
 		// A provider response was observed, but the operation record could not
@@ -294,17 +301,18 @@ func (c LedgerDynamicExternalEffectCoordinator) coordinateUnifiedSemanticExterna
 		emitDynamicEffectUnknown(c.EventObserver, "dynamic_effect_dispatch_unknown")
 		return DynamicEffectReceipt{OperationID: prepared.OperationKey, State: DynamicEffectReceiptUnknown, ReasonCode: "dynamic_effect_dispatch_unknown"}, nil
 	}
-	if synchronousDynamicEffectObservation(invocation.Selection) {
-		// A body that the host already classifies as a hard failure is not an
-		// observation of success. Settling it would unlock dependants off an
-		// error page. The legacy bridge encodes that failure as an "Error:"
-		// string with a nil Go error; keep it on the failure record.
-		if agentruntime.SelectionFailed(result) {
-			if _, err := c.SemanticCoordinator.CompleteExternalEffectDispatch(admission, prepared.OperationKey, coretool.SemanticExternalEffectFailed, result, dynamicMCPToolErrorReason, c.now()); err != nil {
-				return DynamicEffectReceipt{}, fmt.Errorf("record dynamic external effect tool failure: %w", err)
-			}
-			return DynamicEffectReceipt{OperationID: prepared.OperationKey, State: DynamicEffectReceiptFailed, ReasonCode: dynamicMCPToolErrorReason}, nil
+	if completedDynamicToolResultFailure(invocation.Selection, result) {
+		// The headless bridge encodes a finished tools/call error as an
+		// "Error:" string with a nil Go error. That includes a reviewed
+		// mutation, whose successful body still waits for a receipt. Settling
+		// the error as awaiting would hide it and leave dependants blocked on
+		// a call the tool already refused.
+		if _, err := c.SemanticCoordinator.CompleteExternalEffectDispatch(admission, prepared.OperationKey, coretool.SemanticExternalEffectFailed, result, dynamicMCPToolErrorReason, c.now()); err != nil {
+			return DynamicEffectReceipt{}, fmt.Errorf("record dynamic external effect tool failure: %w", err)
 		}
+		return DynamicEffectReceipt{OperationID: prepared.OperationKey, State: DynamicEffectReceiptFailed, ReasonCode: dynamicMCPToolErrorReason}, nil
+	}
+	if synchronousDynamicEffectObservation(invocation.Selection) {
 		return c.observeSynchronousDynamicExternalEffect(admission, prepared.OperationKey, invocation, result)
 	}
 	if _, err := c.SemanticCoordinator.CompleteExternalEffectDispatch(admission, prepared.OperationKey, coretool.SemanticExternalEffectAwaitingReceipt, result, "dynamic_effect_awaiting_receipt", c.now()); err != nil {
@@ -354,6 +362,26 @@ func synchronousDynamicEffectObservation(selection coretool.PlannedSelection) bo
 		return true
 	}
 	return strings.HasPrefix(capability, autoMCPCapabilityPrefix)
+}
+
+// completedDynamicToolResultFailure reports a dispatch body the host already
+// classifies as a hard failure. Every MCP selection is included: the headless
+// bridge encodes a finished tools/call error as an "Error:" string and a nil
+// Go error, and a reviewed mutation must not park that error in
+// awaiting_receipt. A skill uses the same classification only when its own
+// response is the observation. A normal provider body stays on the receipt path.
+func completedDynamicToolResultFailure(selection coretool.PlannedSelection, result string) bool {
+	if !agentruntime.SelectionFailed(result) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(selection.Provider.Kind)) {
+	case "mcp":
+		return true
+	case "skill":
+		return synchronousDynamicEffectObservation(selection)
+	default:
+		return false
+	}
 }
 
 // reviewedMCPEffectDefersObservation reports a code-reviewed MCP tool whose

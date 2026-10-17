@@ -169,7 +169,9 @@ type OnboardingModel struct {
 
 const maxOnboardingWeixinRefreshes = 3
 
-var onboardingTigerClawDefault = strings.EqualFold(brand.Current().ID, "qianxin")
+// TigerClaw installs on the same path as MaClaw: Hub registration, then
+// MaClaw official service. Enterprise SSO is not the first-run default.
+var onboardingTigerClawDefault = false
 
 func onboardingWeixinTick(token string) tea.Cmd {
 	return tea.Tick(time.Second, func(time.Time) tea.Msg {

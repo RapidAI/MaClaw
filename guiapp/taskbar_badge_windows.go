@@ -29,6 +29,12 @@ import (
 //
 // An explorer.exe restart drops per-window overlays. The tray window hears
 // TaskbarCreated and asks this worker to paint the last count again.
+//
+// SW_HIDE destroys the taskbar button and the overlay with it. The title-bar
+// control hides through runtime WindowHide, which does not enter App.WindowHide,
+// so the frame is subclassed and WM_SHOWWINDOW arms the same replay. The count
+// is painted again once the window is visible, then a few extra times, because
+// the shell can accept an overlay before the new button actually keeps it.
 
 const (
 	taskbarBadgeCoInitApartmentThreaded = 0x2
@@ -71,10 +77,21 @@ const (
 	// that arrived while the window was hidden still appears later.
 	taskbarBadgeOverlayTries = 8
 
-	// Disc fill sampled from the app icon outline, RGB(19, 59, 67).
-	taskbarBadgeFillR = 19
-	taskbarBadgeFillG = 59
-	taskbarBadgeFillB = 67
+	// WM_SHOWWINDOW. ShowWindow(SW_HIDE) sends this with wParam FALSE and
+	// lParam 0. The title-bar control calls runtime WindowHide, which never
+	// enters App.WindowHide, so this message is what arms the replay.
+	taskbarBadgeWmShowWindow = 0x0018
+
+	// Subclass id for the main frame. The shell drops the overlay when the
+	// taskbar button is destroyed; the subclass sees that hide directly.
+	taskbarBadgeSubclassID = 0x4D434C42
+
+	// Disc fill. The icon outline RGB(19, 59, 67) reads almost black at
+	// badge size, so this is the same teal lifted toward the mark's mid
+	// green. White digits still sit on it.
+	taskbarBadgeFillR = 24
+	taskbarBadgeFillG = 132
+	taskbarBadgeFillB = 128
 )
 
 type taskbarBadgeGUID struct {
@@ -105,6 +122,11 @@ var (
 	procBadgeDrawText            = taskbarBadgeUser32.NewProc("DrawTextW")
 	procBadgeCreateIconIndirect  = taskbarBadgeUser32.NewProc("CreateIconIndirect")
 	procBadgeDestroyIcon         = taskbarBadgeUser32.NewProc("DestroyIcon")
+	procBadgeRegisterWindowMsg   = taskbarBadgeUser32.NewProc("RegisterWindowMessageW")
+
+	taskbarBadgeComctl32       = syscall.NewLazyDLL("comctl32.dll")
+	procBadgeSetWindowSubclass = taskbarBadgeComctl32.NewProc("SetWindowSubclass")
+	procBadgeDefSubclassProc   = taskbarBadgeComctl32.NewProc("DefSubclassProc")
 
 	taskbarBadgeGdi32           = syscall.NewLazyDLL("gdi32.dll")
 	procBadgeSetBkMode          = taskbarBadgeGdi32.NewProc("SetBkMode")
@@ -139,6 +161,17 @@ var (
 	// while the old button is still up is not treated as done.
 	taskbarBadgeShow      taskbarBadgeShowPhase
 	taskbarBadgeShowArmed time.Time
+
+	// Registered "TaskbarButtonCreated". Non-zero after init. The shell
+	// sends it when the taskbar button exists, which is the moment an
+	// overlay set during SW_HIDE would otherwise be discarded.
+	taskbarBadgeButtonCreatedMsg uintptr
+
+	taskbarBadgeSubclassMu       sync.Mutex
+	taskbarBadgeSubclassed       uintptr
+	taskbarBadgeSubclassLog      sync.Once
+	taskbarBadgeSubclassProcOnce sync.Once
+	taskbarBadgeSubclassProcCB   uintptr
 )
 
 // taskbarBadgeShowPhase tracks a hide that still has to be painted again.
@@ -152,6 +185,12 @@ const (
 
 func init() {
 	systray.OnTaskbarCreated = replayTaskbarBadge
+	name, err := syscall.UTF16PtrFromString("TaskbarButtonCreated")
+	if err != nil {
+		return
+	}
+	msg, _, _ := procBadgeRegisterWindowMsg.Call(uintptr(unsafe.Pointer(name)))
+	taskbarBadgeButtonCreatedMsg = msg
 }
 
 // notifyTaskbarBadgeCount wakes the worker with the desired count.
@@ -226,10 +265,13 @@ func taskbarBadgeWorker(requests <-chan int) {
 	var liveIcon uintptr
 	var pending int
 	waiting := false
+	watch := false
+	repaint := 0
+	cameFromHidden := false
 	misses := 0
 	overlayAttempt := 0
 	// A stopped timer that never fires. Reset arms it only while a count
-	// still needs a window or a taskbar button.
+	// still needs a window, a taskbar button, or a hide/show check.
 	retry := time.NewTimer(time.Hour)
 	taskbarBadgeDrainTimer(retry)
 
@@ -238,12 +280,34 @@ func taskbarBadgeWorker(requests <-chan int) {
 		liveIcon, result = taskbarBadgeServeCount(taskbar, count, liveIcon, taskbarBadgeRegisterTab(overlayAttempt))
 		switch result {
 		case taskbarBadgeApplied:
-			waiting = false
 			misses = 0
 			overlayAttempt = 0
+			extra := taskbarBadgeFollowUpRepaints(cameFromHidden, count)
+			cameFromHidden = false
+			if extra > 0 {
+				repaint = extra
+			} else if repaint > 0 {
+				repaint--
+			}
+			if count > 0 && repaint > 0 {
+				// The shell can drop the overlay it just accepted, once the
+				// recreated taskbar button finishes arriving. Paint again.
+				waiting = true
+				watch = false
+				retry.Reset(taskbarBadgeShowRepaintGap)
+			} else {
+				repaint = 0
+				watch = count > 0
+				waiting = watch
+				if watch {
+					retry.Reset(taskbarBadgeVisibilityWatch)
+				}
+			}
 		case taskbarBadgeNoWindow:
 			// The frame is gone. A later window needs its own plain tries
 			// before the one AddTab.
+			repaint = 0
+			watch = false
 			overlayAttempt = 0
 			waiting = true
 			misses++
@@ -253,14 +317,20 @@ func taskbarBadgeWorker(requests <-chan int) {
 			}
 			retry.Reset(wait)
 		case taskbarBadgeOverlayMiss:
+			watch = false
 			overlayAttempt++
 			waiting = true
 			wait := taskbarBadgeHWNDRetryWait
-			if overlayAttempt > taskbarBadgeOverlayTries {
+			if repaint > 0 {
+				wait = taskbarBadgeShowRepaintGap
+			} else if overlayAttempt > taskbarBadgeOverlayTries {
 				wait = taskbarBadgeHWNDSlowWait
 			}
 			retry.Reset(wait)
 		case taskbarBadgeWindowHidden:
+			cameFromHidden = true
+			repaint = 0
+			watch = false
 			waiting = true
 			retry.Reset(taskbarBadgeHiddenRetryWait)
 		}
@@ -280,9 +350,22 @@ func taskbarBadgeWorker(requests <-chan int) {
 			taskbarBadgeDrainTimer(retry)
 			misses = 0
 			overlayAttempt = 0
+			watch = false
 			apply(count)
 		case <-wake:
 			if !waiting {
+				continue
+			}
+			if watch {
+				hwnd := taskbarBadgeCachedHWND()
+				if hwnd != 0 && taskbarBadgeHWNDVisible(hwnd) {
+					retry.Reset(taskbarBadgeVisibilityWatch)
+					continue
+				}
+				// Hidden, or the cached frame is gone. Arm the same replay
+				// App.WindowHide uses, then let that request paint.
+				watch = false
+				noteTaskbarBadgeWindowHidden()
 				continue
 			}
 			apply(pending)
@@ -301,7 +384,8 @@ func taskbarBadgeRegisterTab(attempt int) bool {
 type taskbarBadgeResult int
 
 const (
-	// taskbarBadgeApplied means the count is on the taskbar. The worker stops.
+	// taskbarBadgeApplied means this attempt painted. A positive count keeps
+	// watching so a later hide can be painted again.
 	taskbarBadgeApplied taskbarBadgeResult = iota
 	// taskbarBadgeNoWindow means the top-level window does not exist yet.
 	taskbarBadgeNoWindow
@@ -323,6 +407,21 @@ const taskbarBadgeHiddenRetryWait = 250 * time.Millisecond
 // taskbarBadgeShowGrace bounds the wait for SW_HIDE. A show that lands
 // before the first check is still painted once this elapses.
 const taskbarBadgeShowGrace = 500 * time.Millisecond
+
+// taskbarBadgeVisibilityWatch is how often a painted badge checks that the
+// frame is still shown. runtime WindowHide does not call
+// noteTaskbarBadgeWindowHidden; the watch arms that replay if the
+// WM_SHOWWINDOW subclass did not see the hide.
+const taskbarBadgeVisibilityWatch = 250 * time.Millisecond
+
+// taskbarBadgeShowRepaintGap spaces extra paints after the window comes
+// back. The first paint can return S_OK before the shell has created the
+// taskbar button, and that success used to be the last attempt.
+const taskbarBadgeShowRepaintGap = 300 * time.Millisecond
+
+// taskbarBadgeShowRepaintCount is how many extra paints follow the first
+// successful paint after a hide.
+const taskbarBadgeShowRepaintCount = 3
 
 // taskbarBadgeShowGate decides whether this attempt may paint. A positive
 // count on a hidden window waits. After WindowHide, a still-visible window
@@ -539,9 +638,108 @@ func taskbarBadgeHWNDVisible(hwnd uintptr) bool {
 	return vis != 0
 }
 
+// taskbarBadgeWindowNotice is what one window message means for the badge.
+type taskbarBadgeWindowNotice int
+
+const (
+	taskbarBadgeNoticeNone taskbarBadgeWindowNotice = iota
+	taskbarBadgeNoticeHidden
+	taskbarBadgeNoticeShown
+	taskbarBadgeNoticeButton
+)
+
+// taskbarBadgeClassifyWindowMessage reports whether this message hides the
+// frame, shows it, or announces a taskbar button. WM_SHOWWINDOW is only a
+// ShowWindow call when lParam is 0; parent-zoom notices are ignored so a
+// minimize does not clear the overlay.
+func taskbarBadgeClassifyWindowMessage(msg, wParam, lParam, buttonCreated uintptr) taskbarBadgeWindowNotice {
+	if buttonCreated != 0 && msg == buttonCreated {
+		return taskbarBadgeNoticeButton
+	}
+	if msg != taskbarBadgeWmShowWindow || lParam != 0 {
+		return taskbarBadgeNoticeNone
+	}
+	if wParam == 0 {
+		return taskbarBadgeNoticeHidden
+	}
+	return taskbarBadgeNoticeShown
+}
+
+// taskbarBadgeFollowUpRepaints is how many extra overlays to set after a
+// positive count is painted on a window that was just hidden. A clear, and
+// a paint that did not follow a hide, do not need them.
+func taskbarBadgeFollowUpRepaints(fromHidden bool, count int) int {
+	if fromHidden && count > 0 {
+		return taskbarBadgeShowRepaintCount
+	}
+	return 0
+}
+
+func taskbarBadgeSubclassReady() bool {
+	return procBadgeSetWindowSubclass.Find() == nil && procBadgeDefSubclassProc.Find() == nil
+}
+
+// taskbarBadgeSubclassProcPtr creates the callback on first use. A package
+// initializer would cycle through the replay path back into this variable.
+func taskbarBadgeSubclassProcPtr() uintptr {
+	taskbarBadgeSubclassProcOnce.Do(func() {
+		taskbarBadgeSubclassProcCB = syscall.NewCallback(taskbarBadgeSubclassProc)
+	})
+	return taskbarBadgeSubclassProcCB
+}
+
+func taskbarBadgeSubclassProc(hwnd, msg, wParam, lParam, id, ref uintptr) uintptr {
+	// A panic while deciding to replay must not skip the original window
+	// procedure. DefSubclassProc still has to see the message.
+	func() {
+		defer func() { _ = recover() }()
+		switch taskbarBadgeClassifyWindowMessage(msg, wParam, lParam, taskbarBadgeButtonCreatedMsg) {
+		case taskbarBadgeNoticeHidden:
+			noteTaskbarBadgeWindowHidden()
+		case taskbarBadgeNoticeShown, taskbarBadgeNoticeButton:
+			replayTaskbarBadge()
+		}
+	}()
+	ret, _, _ := procBadgeDefSubclassProc.Call(hwnd, msg, wParam, lParam, id, ref)
+	return ret
+}
+
+// taskbarBadgeEnsureSubclass hooks the frame that owns the taskbar button.
+// The first live frame wins. Reinstalling while that window's procedure is
+// on the stack can deadlock SetWindowSubclass, so a second frame is hooked
+// only after the first one is gone.
+func taskbarBadgeEnsureSubclass(hwnd uintptr) {
+	if hwnd == 0 || !taskbarBadgeSubclassReady() {
+		return
+	}
+	taskbarBadgeSubclassMu.Lock()
+	current := taskbarBadgeSubclassed
+	taskbarBadgeSubclassMu.Unlock()
+	if current == hwnd {
+		return
+	}
+	if current != 0 {
+		if alive, _, _ := procBadgeIsWindow.Call(current); alive != 0 {
+			return
+		}
+	}
+	ok, _, _ := procBadgeSetWindowSubclass.Call(hwnd, taskbarBadgeSubclassProcPtr(), taskbarBadgeSubclassID, 0)
+	if ok == 0 {
+		taskbarBadgeSubclassLog.Do(func() {
+			log.Printf("[taskbar-badge] taskbar button watch was not installed")
+		})
+		return
+	}
+	taskbarBadgeSubclassMu.Lock()
+	taskbarBadgeSubclassed = hwnd
+	taskbarBadgeSubclassMu.Unlock()
+}
+
 // noteTaskbarBadgeWindowHidden starts a replay of the last count. Hiding the
 // main window destroys its taskbar button, and the overlay is not restored
-// when the button comes back unless it is painted again.
+// when the button comes back unless it is painted again. App.WindowHide calls
+// this directly. The title-bar control and the file companion call runtime
+// WindowHide instead, which still sends WM_SHOWWINDOW to the subclass above.
 func noteTaskbarBadgeWindowHidden() {
 	taskbarBadgeMu.Lock()
 	taskbarBadgeShow = taskbarBadgeShowWaitHide
@@ -568,6 +766,9 @@ func taskbarBadgeRememberHWND(hwnd uintptr) {
 	taskbarBadgeHWNDCacheMu.Lock()
 	taskbarBadgeHWNDCache = hwnd
 	taskbarBadgeHWNDCacheMu.Unlock()
+	// Install outside the cache lock. SetWindowSubclass can send a message
+	// to this window, and the subclass procedure also takes badge locks.
+	taskbarBadgeEnsureSubclass(hwnd)
 }
 
 func taskbarBadgeForgetHWND() {

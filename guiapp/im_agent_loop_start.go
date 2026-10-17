@@ -206,10 +206,19 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 		}
 		h.recordSemanticExecutionSurfacePlan(opts.UserID, profile, tools, semanticResidueCandidateNeeds(ctx))
 	}
+	// A continuation already refused the semantic surface. Its phase contract
+	// selects the lifecycle goal tool, and the name router skips intent
+	// classification for that turn on its own.
+	hostGoalContinuation := goalContinuationTurn(opts.UserText, opts.Platform) || goalContinuationTurn(userText, "")
+	if ctx != nil {
+		hostGoalContinuation = hostGoalContinuation || goalContinuationTurn(opts.UserText, ctx.Platform)
+	}
 	if !semanticHandled {
-		markClassifierTimeoutLookup(ctx)
-		applySemanticChatProjection(ctx)
-		applySemanticRoutingMissFallback(ctx)
+		if !hostGoalContinuation {
+			markClassifierTimeoutLookup(ctx)
+			applySemanticChatProjection(ctx)
+			applySemanticRoutingMissFallback(ctx)
+		}
 		// HostKeep continuation pins look for truncated=true on auto_extract
 		// markers. Those markers are produced by expansion, which otherwise
 		// happens only when building user content after this leftover route.
@@ -229,7 +238,7 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 		tools = toolSet.Tools
 		baseTools = toolSet.BaseTools
 	}
-	if !semanticHandled {
+	if !semanticHandled && !hostGoalContinuation {
 		if diagnostic := h.semanticRouteDiagnosticForTurnWithContext(ctx, opts.UserID, toolRoutingText, opts.Platform, attachments); diagnostic.Handled {
 			log.Printf("[semantic-routing] shadow plan=%q user=%q outcome=%s", diagnostic.PlanID, opts.UserID, diagnostic.Reason)
 		}

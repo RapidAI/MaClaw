@@ -223,8 +223,26 @@ func maskedDiagnosticAuditKey(normalized string) bool {
 	}
 }
 
+var auditSecretNeedles = []string{
+	"password", "passwd", "secret", "token", "api", "jwt", "authorization",
+	"cookie", "encryption", "access", "refresh", "private",
+}
+
+func auditStringMayContainSecret(value string) bool {
+	if strings.Contains(value, "://") {
+		return true
+	}
+	lower := strings.ToLower(value)
+	for _, needle := range auditSecretNeedles {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 func redactAuditString(value string) string {
-	if value == "" {
+	if value == "" || !auditStringMayContainSecret(value) {
 		return value
 	}
 	redacted := auditSensitiveAssignmentRe.ReplaceAllString(value, `${1}`+auditRedactedValue)

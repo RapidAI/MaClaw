@@ -241,6 +241,36 @@ func TestNotifyTaskResponseTrayRouting(t *testing.T) {
 		}
 	})
 
+	t.Run("completion shows markdown as plain text", func(t *testing.T) {
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{Text: "## 完成\n\n**已更新** `main.go`，见 [说明](https://example.com)。\n\n- 第一项\n- [x] 第二项\n\n| 文件 | 状态 |\n| --- | --- |\n| a.go | 完成 |"})
+		want := "完成 已更新 main.go，见 说明。 第一项 第二项 文件 状态 a.go 完成"
+		if len(*notifs) != 1 || (*notifs)[0].title != "任务完成" || (*notifs)[0].msg != want {
+			t.Fatalf("unexpected notifications: %+v", *notifs)
+		}
+	})
+
+	t.Run("completion keeps identifiers and drops fenced code", func(t *testing.T) {
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{Text: "调用 __init__。\n\n```go\nfmt.Println(\"hi\")\n```"})
+		if len(*notifs) != 1 || (*notifs)[0].msg != "调用 __init__。" {
+			t.Fatalf("unexpected notifications: %+v", *notifs)
+		}
+	})
+
+	t.Run("ask and confirm strip markup", func(t *testing.T) {
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{AskUserQuestion: "用**哪个**目录？"})
+		if len(*notifs) != 1 || (*notifs)[0].msg != "用哪个目录？" {
+			t.Fatalf("unexpected notifications: %+v", *notifs)
+		}
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{Confirmation: &IMResponseConfirmation{Summary: "确认**删除** `a.go`？"}})
+		if len(*notifs) != 1 || (*notifs)[0].msg != "确认删除 a.go？" {
+			t.Fatalf("unexpected notifications: %+v", *notifs)
+		}
+	})
+
 	t.Run("nil response is silent", func(t *testing.T) {
 		reset()
 		a.notifyTaskResponseTray(nil)
@@ -248,6 +278,92 @@ func TestNotifyTaskResponseTrayRouting(t *testing.T) {
 			t.Fatalf("expected no notification for nil resp, got %+v", *notifs)
 		}
 	})
+}
+
+func TestTrayBalloonPlain(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "prose around a fence",
+			in:   "已改好。\n\n```go\nfmt.Println(\"hi\")\n```\n请看日志。",
+			want: "已改好。 请看日志。",
+		},
+		{
+			name: "code only keeps the first line",
+			in:   "```go\nfmt.Println(\"hi\")\nfmt.Println(\"skip\")\n```",
+			want: "fmt.Println(\"hi\")",
+		},
+		{
+			name: "identifiers stay",
+			in:   "调用 __init__，然后看 arr[x]",
+			want: "调用 __init__，然后看 arr[x]",
+		},
+		{
+			name: "checkbox is only a list marker",
+			in:   "- [x] 完成\n下一行 arr[x] = 1",
+			want: "完成 下一行 arr[x] = 1",
+		},
+		{
+			name: "one pipe stays",
+			in:   "保留 a | b 这个写法",
+			want: "保留 a | b 这个写法",
+		},
+		{
+			name: "phone and negative stay",
+			in:   "-1 是起点\n+86 13800000000",
+			want: "-1 是起点 +86 13800000000",
+		},
+		{
+			name: "quote heading and break",
+			in:   "  ## 标题\n> 引用<br>下一行",
+			want: "标题 引用 下一行",
+		},
+		{
+			name: "link image and autolink",
+			in:   "见图 ![界面](https://example.com/a.png)，打开 <https://example.com/a>",
+			want: "见图 界面，打开 https://example.com/a",
+		},
+		{
+			name: "delivery warning stays after the prose",
+			in:   "**完成**了整理。\n\n[投递警告] push fail",
+			want: "完成了整理。\n\n[投递警告] push fail",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := trayBalloonPlain(tc.in); got != tc.want {
+				t.Fatalf("got %q\nwant %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTrayNotifyBodyKeepsWarningInsideBalloon(t *testing.T) {
+	got := trayNotifyBody("日报", strings.Repeat("字", 300)+"\n\n[投递警告] push fail")
+	if !strings.HasPrefix(got, "日报: ") || !strings.Contains(got, "\n\n[投递警告] push fail") {
+		t.Fatalf("body = %q", got)
+	}
+	if n := len([]rune(got)); n > trayInfoRunes {
+		t.Fatalf("len = %d, balloon holds %d", n, trayInfoRunes)
+	}
+}
+
+func TestShortenTrayTaskNameKeepsLiteralText(t *testing.T) {
+	if got := trayTaskCompletedMessage("1. 报表"); got != "1. 报表任务完成了" {
+		t.Fatalf("numbered = %q", got)
+	}
+	if got := trayTaskCompletedMessage("a | b"); got != "a | b任务完成了" {
+		t.Fatalf("pipe = %q", got)
+	}
+	if got := trayTaskCompletedMessage("**周报**"); got != "周报任务完成了" {
+		t.Fatalf("bold = %q", got)
+	}
+	if got := trayTaskCompletedMessage("## 周报"); got != "周报任务完成了" {
+		t.Fatalf("heading = %q", got)
+	}
 }
 
 func TestTrayTaskLabelFromCommandUsesFirstLine(t *testing.T) {

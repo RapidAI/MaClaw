@@ -139,6 +139,9 @@ func toolGoalStep(store *goal.Store, args map[string]interface{}) string {
 	if strings.TrimSpace(result) == "" {
 		result, _ = args["reason"].(string)
 	}
+	if refusal := g.StepReportRefusal(index); refusal != "" {
+		return "错误: " + refusal
+	}
 	if err := store.UpdateStep("default", g.GoalID, index, goal.StepStatus(statusRaw), result); err != nil {
 		return "错误: " + err.Error()
 	}
@@ -147,11 +150,22 @@ func toolGoalStep(store *goal.Store, args map[string]interface{}) string {
 		return "错误: 步骤更新后目标丢失"
 	}
 	for _, step := range updated.Steps {
-		if step.Index == index && step.Status == goal.StepFailed {
+		if step.Index != index {
+			continue
+		}
+		if step.Status == goal.StepFailed {
 			reason := fmt.Sprintf("步骤 %d 失败：%s", index, step.Result)
 			store.UpdateStatus("default", g.GoalID, goal.StatusFailed, reason)
 			return "错误: " + reason
 		}
+		if step.Status == goal.StepProgress {
+			return fmt.Sprintf("步骤 %d 仍在进行\n下一轮继续这一步，不要开始下一步。", index)
+		}
+		reply := fmt.Sprintf("步骤 %d 已完成", index)
+		if next, ok := updated.CurrentStep(); ok {
+			reply += fmt.Sprintf("\n下一步将单独执行步骤 %d：%s。本轮不要开始它。", next.Index, next.Title)
+		}
+		return reply
 	}
 	return fmt.Sprintf("步骤 %d 已完成", index)
 }

@@ -46,7 +46,6 @@ func TestCompleteOpenCodeLoginPinsZen(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
-	t.Setenv("AICODER_SKIP_CODEXPROXY_RELAUNCH", "1")
 	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
 	app := NewApp()
 	if err := writeSettings(Settings{
@@ -83,7 +82,6 @@ func TestUseLocalOpenCodeLogin(t *testing.T) {
 	t.Setenv("APPDATA", filepath.Join(tmpHome, "appdata"))
 	t.Setenv("LOCALAPPDATA", filepath.Join(tmpHome, "local"))
 	t.Setenv("OPENCODE_API_KEY", "")
-	t.Setenv("AICODER_SKIP_CODEXPROXY_RELAUNCH", "1")
 	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
 	path := configfile.OpencodeAuthPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -140,7 +138,6 @@ func TestUseLocalOpenCodeLoginReplacesPlaceholderDefault(t *testing.T) {
 	t.Setenv("APPDATA", filepath.Join(tmpHome, "appdata"))
 	t.Setenv("LOCALAPPDATA", filepath.Join(tmpHome, "local"))
 	t.Setenv("OPENCODE_API_KEY", "")
-	t.Setenv("AICODER_SKIP_CODEXPROXY_RELAUNCH", "1")
 	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
 	path := configfile.OpencodeAuthPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -185,7 +182,6 @@ func TestUseLocalOpenCodeLoginReadsJSONCModel(t *testing.T) {
 	t.Setenv("APPDATA", filepath.Join(tmpHome, "appdata"))
 	t.Setenv("LOCALAPPDATA", filepath.Join(tmpHome, "local"))
 	t.Setenv("OPENCODE_API_KEY", "")
-	t.Setenv("AICODER_SKIP_CODEXPROXY_RELAUNCH", "1")
 	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
 	path := configfile.OpencodeAuthPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

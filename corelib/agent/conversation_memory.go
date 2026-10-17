@@ -8,6 +8,7 @@ package agent
 // import and alias these types.
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -18,8 +19,10 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
@@ -137,10 +140,14 @@ type UnfinishedTaskSlot struct {
 	// RuntimeTaskID links UI-facing recovery state to the durable coding
 	// execution ledger. It is an opaque identifier only—never a command,
 	// tool payload, prompt, credential, or replay plan.
-	RuntimeTaskID string    `json:"runtime_task_id,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
-	BoundAt       time.Time `json:"bound_at,omitempty"`
+	RuntimeTaskID string `json:"runtime_task_id,omitempty"`
+	// LegacySessionID is the removed slot key. Loading it here lets startup
+	// rewrite a file that still has the key, without treating the same words
+	// inside message text as a reason to rewrite the whole transcript.
+	LegacySessionID json.RawMessage `json:"session_id,omitempty"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+	BoundAt         time.Time       `json:"bound_at,omitempty"`
 }
 
 func (s UnfinishedTaskSlotSource) IsSessionExit() bool {
@@ -163,7 +170,16 @@ func CloneUnfinishedTaskSlot(slot *UnfinishedTaskSlot) *UnfinishedTaskSlot {
 	}
 	clone := *slot
 	clone.Status = NormalizeUnfinishedTaskSlotStatus(clone.Status.String())
+	clone.LegacySessionID = nil
 	return &clone
+}
+
+func unfinishedSlotHasRetiredSessionID(slot *UnfinishedTaskSlot) bool {
+	if slot == nil {
+		return false
+	}
+	raw := bytes.TrimSpace(slot.LegacySessionID)
+	return len(raw) > 0 && !bytes.Equal(raw, []byte("null"))
 }
 
 // ConversationArchiver is an optional interface for archiving expired
@@ -225,6 +241,11 @@ type InFlightCheckpoint struct {
 	SideEffectState string
 }
 
+// errPersistentLoadPending means a flush raced the background open and must
+// not replace the store with the still-empty in-memory snapshot. The loader
+// flushes after sessions are installed.
+var errPersistentLoadPending = errors.New("conversation store is still loading")
+
 // ErrInFlightCheckpointRunConflict means an older loop attempted to overwrite
 // recovery evidence that is now owned by a different run. Callers must stop
 // automatic execution rather than guessing which task owns the session.
@@ -257,18 +278,30 @@ type ConversationMemory struct {
 	// same-run clear serialised. Without it a newer mutation can otherwise be
 	// captured by saveToDisk while FlushNow is still reporting an older
 	// checkpoint as durable.
-	checkpointMu   sync.Mutex
-	storePath      string
-	detachedMu     sync.Mutex
-	detached       map[string]string // userID -> separate transcript file
-	evictionStopCh chan struct{}
-	persistStopCh  chan struct{}
-	persistCh      chan struct{}
-	persistStateMu sync.Mutex
-	dirty          bool
-	stopOnce       sync.Once
-	evictionWG     sync.WaitGroup
-	persistWG      sync.WaitGroup
+	checkpointMu       sync.Mutex
+	storePath          string
+	detachedMu         sync.Mutex
+	detached           map[string]string // userID -> separate transcript file
+	detachedRev        map[string]uint64 // bumps on each detached mutation
+	detachedPendingGen map[string]uint64 // userID -> rev that still needs a side-file write
+	evictionStopCh     chan struct{}
+	persistStopCh      chan struct{}
+	persistCh          chan struct{}
+	persistStateMu     sync.Mutex
+	dirty              bool
+	// loadOnce is set only for a background open. nil means the store was loaded
+	// before the constructor returned. loadFinished flips once that open has
+	// installed every session, so a flush cannot snapshot the empty store.
+	// loadBroken stays set when the background parse panics: readers unblock,
+	// but a flush must not replace the on-disk transcript with a partial copy.
+	loadOnce     *sync.Once
+	loadFinished atomic.Bool
+	loadBroken   atomic.Bool
+	// afterLoad runs on the loader goroutine before readers are released.
+	afterLoad  func(*ConversationMemory)
+	stopOnce   sync.Once
+	evictionWG sync.WaitGroup
+	persistWG  sync.WaitGroup
 }
 
 // NewConversationMemory creates an in-memory conversation store.
@@ -295,21 +328,108 @@ func NewConversationMemory() *ConversationMemory {
 func NewPersistentConversationMemory(storePath string) *ConversationMemory {
 	cm := NewConversationMemory()
 	cm.storePath = storePath
-	if err := cm.loadFromDisk(); err != nil {
-		// Do not let the startup rewrite below replace an unreadable store with an
-		// empty snapshot. The caller can still use an empty in-memory instance,
-		// but the on-disk evidence remains available for diagnosis/recovery.
-		log.Printf("[ConversationMemory] load persistent store failed path=%q err=%v", storePath, err)
-		return cm
-	}
-	// loadFromDisk may have atomically promoted a crash marker to a visible
-	// recovery slot. Persist that transition before returning so a second crash
-	// during startup cannot re-promote the same marker.
-	_ = cm.FlushNow()
+	cm.loadPersistent()
 	return cm
 }
 
+// NewBackgroundPersistentConversationMemory returns before the transcript is
+// parsed. Reads and writes wait for that load, so startup can become interactive
+// while a large store is still opening.
+func NewBackgroundPersistentConversationMemory(storePath string) *ConversationMemory {
+	return newBackgroundPersistentConversationMemory(storePath, nil)
+}
+
+// NewBackgroundPersistentConversationMemoryAfterLoad is the startup open.
+// afterLoad runs on the loader goroutine after sessions are installed and
+// before any reader or writer proceeds. It is how the pet transcript is bound
+// without a later bind overwriting a message that arrived during the parse.
+// The hook must not call back into a method that waits for the load.
+func NewBackgroundPersistentConversationMemoryAfterLoad(storePath string, afterLoad func(*ConversationMemory)) *ConversationMemory {
+	return newBackgroundPersistentConversationMemory(storePath, afterLoad)
+}
+
+func newBackgroundPersistentConversationMemory(storePath string, afterLoad func(*ConversationMemory)) *ConversationMemory {
+	cm := NewConversationMemory()
+	cm.storePath = storePath
+	cm.afterLoad = afterLoad
+	cm.loadOnce = new(sync.Once)
+	go cm.ensureLoaded()
+	return cm
+}
+
+func (cm *ConversationMemory) ensureLoaded() {
+	if cm == nil || cm.loadOnce == nil {
+		return
+	}
+	cm.loadOnce.Do(cm.loadPersistent)
+}
+
+func (cm *ConversationMemory) loadPersistent() {
+	started := time.Now()
+	err := cm.loadFromDiskRecover()
+	if err != nil || cm.loadBroken.Load() {
+		// Do not replace an unreadable store with an empty snapshot. The caller
+		// can still use an empty in-memory instance, but the on-disk evidence
+		// remains available for diagnosis/recovery.
+		if err != nil {
+			log.Printf("[ConversationMemory] load persistent store failed path=%q err=%v elapsed=%v", cm.storePath, err, time.Since(started))
+		}
+		cm.loadFinished.Store(true)
+		return
+	}
+	if cm.afterLoad != nil {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[ConversationMemory] after-load hook panic path=%q panic=%v", cm.storePath, r)
+				}
+			}()
+			cm.afterLoad(cm)
+		}()
+	}
+	// Readers wait until the hook returns, so a message cannot land in the
+	// shared store and then be replaced by a side-file bind.
+	cm.loadFinished.Store(true)
+	// loadFromDisk may have atomically promoted a crash marker to a visible
+	// recovery slot. Persist that transition before returning so a second crash
+	// during startup cannot re-promote the same marker. A clean store is not
+	// dirty, so this does not rewrite the file. Call flushDirty directly: this
+	// function may already be inside ensureLoaded.
+	if err := cm.flushDirty(); err != nil {
+		log.Printf("[ConversationMemory] startup flush failed path=%q err=%v elapsed=%v", cm.storePath, err, time.Since(started))
+		return
+	}
+	log.Printf("[ConversationMemory] persistent load elapsed=%v path=%q", time.Since(started), cm.storePath)
+}
+
+func (cm *ConversationMemory) loadFromDiskRecover() (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[ConversationMemory] persistent load panic path=%q panic=%v", cm.storePath, r)
+			if cm.loadOnce == nil {
+				panic(r)
+			}
+			// A partial in-memory copy must not be written back over the file.
+			cm.loadBroken.Store(true)
+			err = fmt.Errorf("conversation load panic: %v", r)
+		}
+	}()
+	return cm.loadFromDisk()
+}
+
+func (cm *ConversationMemory) persistentLoadFinished() bool {
+	if cm == nil || cm.loadBroken.Load() {
+		return cm == nil
+	}
+	return cm.loadOnce == nil || cm.loadFinished.Load()
+}
+
 func (cm *ConversationMemory) shard(userID string) *memoryShard {
+	cm.ensureLoaded()
+	return cm.shardNoWait(userID)
+}
+
+func (cm *ConversationMemory) shardNoWait(userID string) *memoryShard {
 	h := uint32(2166136261)
 	for i := 0; i < len(userID); i++ {
 		h ^= uint32(userID[i])
@@ -338,6 +458,7 @@ func (cm *ConversationMemory) evictionLoop() {
 // sessions are persistent by design, and a session holding a resumable
 // unfinished slot must survive until the user decides.
 func (cm *ConversationMemory) EvictExpired() {
+	cm.ensureLoaded()
 	now := time.Now()
 	type expiredEntry struct {
 		userID  string
@@ -350,16 +471,28 @@ func (cm *ConversationMemory) EvictExpired() {
 		for _, sh := range cm.shards {
 			sh.mu.Lock()
 			for uid, s := range sh.sessions {
-				if now.Sub(s.lastAccess) > MemoryTTL {
-					if conversationSessionEvictExempt(uid, s) {
-						continue
-					}
-					if cm.Archiver != nil {
-						toArchive = append(toArchive, expiredEntry{uid, s.entries})
-					}
+				if s == nil {
 					delete(sh.sessions, uid)
 					changed = true
+					continue
 				}
+				if now.Sub(s.lastAccess) <= MemoryTTL || conversationSessionEvictExempt(uid, s) {
+					continue
+				}
+				// Hold the detached map across the delete. A bind that lands
+				// after the check and before the delete would otherwise drop
+				// the session from the shared file without writing the side file.
+				cm.detachedMu.Lock()
+				if path := strings.TrimSpace(cm.detached[uid]); path != "" {
+					cm.detachedMu.Unlock()
+					continue
+				}
+				if cm.Archiver != nil {
+					toArchive = append(toArchive, expiredEntry{uid, s.entries})
+				}
+				delete(sh.sessions, uid)
+				cm.detachedMu.Unlock()
+				changed = true
 			}
 			sh.mu.Unlock()
 		}
@@ -443,10 +576,115 @@ func (cm *ConversationMemory) markDirtyAndScheduleFlush() {
 	cm.persistStateMu.Lock()
 	cm.dirty = true
 	cm.persistStateMu.Unlock()
+	cm.signalPersist()
+}
+
+// markSessionDirty records a mutation for one owner. A detached transcript
+// queues a side-file write and leaves the shared store alone.
+func (cm *ConversationMemory) markSessionDirty(userID string) {
+	if _, ok := cm.detachedPath(userID); ok {
+		cm.noteDetachedPending(userID)
+		return
+	}
+	cm.markDirtyAndScheduleFlush()
+}
+
+func (cm *ConversationMemory) signalPersist() {
+	if cm == nil || cm.persistCh == nil {
+		return
+	}
 	select {
 	case cm.persistCh <- struct{}{}:
 	default:
 	}
+}
+
+// noteDetachedPending queues one detached owner for a side-file write.
+// The shared store is not marked dirty.
+func (cm *ConversationMemory) noteDetachedPending(userID string) {
+	if cm == nil || cm.storePath == "" {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	cm.detachedMu.Lock()
+	if _, ok := cm.detached[userID]; !ok {
+		cm.detachedMu.Unlock()
+		return
+	}
+	if cm.detachedRev == nil {
+		cm.detachedRev = map[string]uint64{}
+	}
+	if cm.detachedPendingGen == nil {
+		cm.detachedPendingGen = map[string]uint64{}
+	}
+	cm.detachedRev[userID]++
+	cm.detachedPendingGen[userID] = cm.detachedRev[userID]
+	cm.detachedMu.Unlock()
+	cm.signalPersist()
+}
+
+func (cm *ConversationMemory) detachedRevision(userID string) uint64 {
+	cm.detachedMu.Lock()
+	defer cm.detachedMu.Unlock()
+	return cm.detachedRev[userID]
+}
+
+func (cm *ConversationMemory) clearDetachedPendingGen(userID string, gen uint64) {
+	cm.detachedMu.Lock()
+	defer cm.detachedMu.Unlock()
+	if cm.detachedPendingGen[userID] == gen {
+		delete(cm.detachedPendingGen, userID)
+	}
+}
+
+func (cm *ConversationMemory) takeDetachedPending() map[string]uint64 {
+	if cm == nil {
+		return nil
+	}
+	cm.detachedMu.Lock()
+	defer cm.detachedMu.Unlock()
+	if len(cm.detachedPendingGen) == 0 {
+		return nil
+	}
+	out := cm.detachedPendingGen
+	cm.detachedPendingGen = nil
+	return out
+}
+
+func (cm *ConversationMemory) restoreDetachedPending(pending map[string]uint64) {
+	if cm == nil || len(pending) == 0 {
+		return
+	}
+	cm.detachedMu.Lock()
+	defer cm.detachedMu.Unlock()
+	if cm.detachedPendingGen == nil {
+		cm.detachedPendingGen = map[string]uint64{}
+	}
+	for userID, gen := range pending {
+		if cm.detachedRev[userID] != gen {
+			continue
+		}
+		if cur, ok := cm.detachedPendingGen[userID]; ok && cur != gen {
+			continue
+		}
+		cm.detachedPendingGen[userID] = gen
+	}
+}
+
+func (cm *ConversationMemory) copyDetached() map[string]string {
+	if cm == nil {
+		return nil
+	}
+	cm.detachedMu.Lock()
+	defer cm.detachedMu.Unlock()
+	out := make(map[string]string, len(cm.detached))
+	for userID, path := range cm.detached {
+		out[userID] = path
+	}
+	return out
 }
 
 func (cm *ConversationMemory) flushDirty() error {
@@ -455,17 +693,38 @@ func (cm *ConversationMemory) flushDirty() error {
 	}
 	cm.flushMu.Lock()
 	defer cm.flushMu.Unlock()
+	return cm.flushDirtyLocked()
+}
+
+func (cm *ConversationMemory) flushDirtyLocked() error {
 	cm.persistStateMu.Lock()
-	if !cm.dirty {
-		cm.persistStateMu.Unlock()
+	dirty := cm.dirty
+	if dirty {
+		cm.dirty = false
+	}
+	cm.persistStateMu.Unlock()
+	pending := cm.takeDetachedPending()
+	if !dirty && len(pending) == 0 {
 		return nil
 	}
-	cm.dirty = false
-	cm.persistStateMu.Unlock()
-	if err := cm.saveToDisk(); err != nil {
-		cm.persistStateMu.Lock()
-		cm.dirty = true
-		cm.persistStateMu.Unlock()
+	var err error
+	if dirty {
+		err = cm.saveToDiskPending(pending)
+	} else {
+		err = cm.writeDetachedPending(pending)
+	}
+	if err != nil {
+		if dirty {
+			cm.persistStateMu.Lock()
+			cm.dirty = true
+			cm.persistStateMu.Unlock()
+		}
+		cm.restoreDetachedPending(pending)
+		// The background open has not installed sessions yet. Keep the dirty
+		// bit for the loader's own flush and do not log a failed persist.
+		if errors.Is(err, errPersistentLoadPending) {
+			return nil
+		}
 		return err
 	}
 	return nil
@@ -475,7 +734,34 @@ func (cm *ConversationMemory) flushDirty() error {
 // debounce timer. Call this before process exit to avoid data loss when the
 // process may be killed before the async persist loop runs.
 func (cm *ConversationMemory) FlushNow() error {
+	cm.ensureLoaded()
 	return cm.flushDirty()
+}
+
+// FlushUser durably writes one owner's session. A detached transcript is a
+// small side file, so a tool checkpoint does not rewrite the shared store.
+// An owner that still lives in the shared store falls back to FlushNow.
+func (cm *ConversationMemory) FlushUser(userID string) error {
+	if cm == nil {
+		return nil
+	}
+	cm.ensureLoaded()
+	userID = strings.TrimSpace(userID)
+	cm.flushMu.Lock()
+	defer cm.flushMu.Unlock()
+	if path, ok := cm.detachedPath(userID); ok && strings.TrimSpace(path) != "" {
+		return cm.writeDetachedUser(userID)
+	}
+	cm.markDirtyAndScheduleFlush()
+	return cm.flushDirtyLocked()
+}
+
+// StorePath returns the shared transcript file, or empty for a memory-only store.
+func (cm *ConversationMemory) StorePath() string {
+	if cm == nil {
+		return ""
+	}
+	return cm.storePath
 }
 
 // EnsureStoreFile writes the current snapshot when the store file is absent.
@@ -497,6 +783,7 @@ func (cm *ConversationMemory) EnsureStoreFile() error {
 
 // Stop gracefully shuts down eviction and persistence goroutines.
 func (cm *ConversationMemory) Stop() {
+	cm.ensureLoaded()
 	cm.stopOnce.Do(func() {
 		close(cm.evictionStopCh)
 		cm.evictionWG.Wait()
@@ -567,6 +854,12 @@ func (cm *ConversationMemory) Save(userID string, entries []ConversationEntry) {
 		}
 		cm.saveEntriesLocked(s, entries, now)
 		sh.mu.Unlock()
+		if _, detached := cm.detachedPath(userID); detached {
+			if err := cm.writeDetachedUser(userID); err != nil {
+				log.Printf("[conversation_memory] detached save failed user=%q err=%v", userID, err)
+			}
+			return
+		}
 		cm.markDirtyAndScheduleFlush()
 	})
 }
@@ -606,7 +899,7 @@ func (cm *ConversationMemory) ReplaceCompactionPlaceholder(userID, compactionID,
 		}
 		sh.mu.Unlock()
 		if updated {
-			cm.markDirtyAndScheduleFlush()
+			cm.markSessionDirty(userID)
 		}
 	})
 	return updated
@@ -724,7 +1017,7 @@ func (cm *ConversationMemory) Append(userID string, entries ...ConversationEntry
 		s.entries = tree.AllConversationEntries()
 		s.lastAccess = now
 		sh.mu.Unlock()
-		cm.markDirtyAndScheduleFlush()
+		cm.markSessionDirty(userID)
 	})
 }
 
@@ -746,7 +1039,7 @@ func (cm *ConversationMemory) SetActiveBranchTip(userID, tipID string) bool {
 		}
 		s.activeBranchTipID = tree.TipID()
 		s.lastAccess = time.Now()
-		cm.markDirtyAndScheduleFlush()
+		cm.markSessionDirty(userID)
 		changed = true
 	})
 	return changed
@@ -768,8 +1061,19 @@ func deduplicateAdjacentAssistantEntries(entries []ConversationEntry, respectBra
 	if len(entries) < 2 {
 		return entries
 	}
-	result := make([]ConversationEntry, 0, len(entries))
-	for _, entry := range entries {
+	dupAt := -1
+	for i := 1; i < len(entries); i++ {
+		if isDuplicateAssistantEntry(entries[i-1], entries[i], respectBranchMetadata) {
+			dupAt = i
+			break
+		}
+	}
+	if dupAt < 0 {
+		return entries
+	}
+	result := make([]ConversationEntry, 0, len(entries)-1)
+	result = append(result, entries[:dupAt]...)
+	for _, entry := range entries[dupAt:] {
 		if len(result) > 0 && isDuplicateAssistantEntry(result[len(result)-1], entry, respectBranchMetadata) {
 			continue
 		}
@@ -850,6 +1154,10 @@ func (cm *ConversationMemory) Clear(userID string) {
 		sh.mu.Lock()
 		delete(sh.sessions, userID)
 		sh.mu.Unlock()
+		// Drop the side file too. Leaving it in place reloads the cleared
+		// transcript on the next start, because the shared snapshot no longer
+		// has this owner to win the timestamp check.
+		cm.forgetDetachedSession(userID)
 		cm.markDirtyAndScheduleFlush()
 	})
 }
@@ -881,6 +1189,7 @@ func (cm *ConversationMemory) GetUnfinishedSlot(userID string) *UnfinishedTaskSl
 // UnfinishedSlots returns a stable snapshot of recovery slots for startup UI
 // projection. It never binds or resumes a slot.
 func (cm *ConversationMemory) UnfinishedSlots() []*UnfinishedTaskSlot {
+	cm.ensureLoaded()
 	slots := make([]*UnfinishedTaskSlot, 0)
 	for _, sh := range cm.shards {
 		sh.mu.RLock()
@@ -933,7 +1242,7 @@ func (cm *ConversationMemory) UpsertUnfinishedSlot(userID string, slot *Unfinish
 			s.lastAccess = time.Now()
 		}
 		sh.mu.Unlock()
-		cm.markDirtyAndScheduleFlush()
+		cm.markSessionDirty(userID)
 	})
 }
 
@@ -977,7 +1286,7 @@ func (cm *ConversationMemory) ReplaceInFlightWithUnfinishedSlot(userID string, s
 		s.inFlightSideEffect = ""
 		s.lastAccess = now
 		sh.mu.Unlock()
-		cm.markDirtyAndScheduleFlush()
+		cm.markSessionDirty(userID)
 		replaced = true
 	})
 	return replaced
@@ -1004,7 +1313,7 @@ func (cm *ConversationMemory) BindUnfinishedSlot(userID, slotID string) bool {
 		s.unfinishedSlot.UpdatedAt = now
 		s.lastAccess = now
 		sh.mu.Unlock()
-		cm.markDirtyAndScheduleFlush()
+		cm.markSessionDirty(userID)
 		bound = true
 	})
 	return bound
@@ -1019,7 +1328,7 @@ func (cm *ConversationMemory) ClearActiveSlot(userID string) {
 			s.lastAccess = time.Now()
 		}
 		sh.mu.Unlock()
-		cm.markDirtyAndScheduleFlush()
+		cm.markSessionDirty(userID)
 	})
 }
 
@@ -1035,7 +1344,7 @@ func (cm *ConversationMemory) DismissUnfinishedSlot(userID, slotID string) {
 			}
 		}
 		sh.mu.Unlock()
-		cm.markDirtyAndScheduleFlush()
+		cm.markSessionDirty(userID)
 	})
 }
 
@@ -1053,7 +1362,7 @@ func (cm *ConversationMemory) CompleteUnfinishedSlot(userID, slotID string) {
 			}
 		}
 		sh.mu.Unlock()
-		cm.markDirtyAndScheduleFlush()
+		cm.markSessionDirty(userID)
 	})
 }
 
@@ -1071,7 +1380,7 @@ func (cm *ConversationMemory) ClearConversationButKeepSlot(userID string) {
 		s.activeSlotID = ""
 		s.lastAccess = time.Now()
 		sh.mu.Unlock()
-		cm.markDirtyAndScheduleFlush()
+		cm.markSessionDirty(userID)
 	})
 }
 
@@ -1090,7 +1399,7 @@ func (cm *ConversationMemory) ClearConversationAndDismissSlot(userID string) {
 		s.activeSlotID = ""
 		s.lastAccess = time.Now()
 		sh.mu.Unlock()
-		cm.markDirtyAndScheduleFlush()
+		cm.markSessionDirty(userID)
 	})
 }
 
@@ -1144,7 +1453,11 @@ func (cm *ConversationMemory) SetInFlightTaskForRun(userID, task, projectPath, r
 		s.inFlightSideEffect = ""
 		s.lastAccess = now
 		sh.mu.Unlock()
-		cm.markDirtyAndScheduleFlush()
+		// A detached project transcript is flushed by FlushUser. Marking the
+		// shared store dirty here would rewrite every other session.
+		if _, detached := cm.detachedPath(userID); !detached {
+			cm.markDirtyAndScheduleFlush()
+		}
 	})
 }
 
@@ -1152,6 +1465,7 @@ func (cm *ConversationMemory) SetInFlightTaskForRun(userID, task, projectPath, r
 // marker under a single user-shard lock, then synchronously persists that
 // snapshot. This prevents intentionally creating a marker-only recovery state.
 func (cm *ConversationMemory) PersistInFlightCheckpoint(userID string, entries []ConversationEntry, task, projectPath, runID string, checkpoint InFlightCheckpoint) error {
+	cm.ensureLoaded()
 	cm.checkpointMu.Lock()
 	defer cm.checkpointMu.Unlock()
 	return cm.persistInFlightCheckpointLocked(userID, entries, task, projectPath, runID, checkpoint)
@@ -1221,8 +1535,7 @@ func (cm *ConversationMemory) persistInFlightCheckpointLocked(userID string, ent
 	s.inFlightSideEffect = sideEffect
 	candidate := cloneConversationSession(s)
 	sh.mu.Unlock()
-	cm.markDirtyAndScheduleFlush()
-	if err := cm.FlushNow(); err != nil {
+	if err := cm.FlushUser(userID); err != nil {
 		cm.restoreCheckpointMutation(userID, before, candidate, createdSession)
 		return err
 	}
@@ -1237,6 +1550,7 @@ func (cm *ConversationMemory) RetireUserCancelCheckpoint(userID, runID string) e
 	if cm == nil {
 		return nil
 	}
+	cm.ensureLoaded()
 	cm.checkpointMu.Lock()
 	defer cm.checkpointMu.Unlock()
 	runID = strings.TrimSpace(runID)
@@ -1266,8 +1580,7 @@ func (cm *ConversationMemory) RetireUserCancelCheckpoint(userID, runID string) e
 	}
 	candidate := cloneConversationSession(s)
 	sh.mu.Unlock()
-	cm.markDirtyAndScheduleFlush()
-	if err := cm.FlushNow(); err != nil {
+	if err := cm.FlushUser(userID); err != nil {
 		cm.restoreCheckpointMutation(userID, before, candidate, false)
 		return err
 	}
@@ -1300,6 +1613,7 @@ func pendingSameRunRecoverySlot(slot *UnfinishedTaskSlot, scope string) bool {
 // the slot is not an unfinished task. A marker owned by a newer run is left
 // alone.
 func (cm *ConversationMemory) CompleteInFlightCheckpointForRun(userID, runID string) error {
+	cm.ensureLoaded()
 	cm.checkpointMu.Lock()
 	defer cm.checkpointMu.Unlock()
 	runID = strings.TrimSpace(runID)
@@ -1330,8 +1644,7 @@ func (cm *ConversationMemory) CompleteInFlightCheckpointForRun(userID, runID str
 	}
 	candidate := cloneConversationSession(s)
 	sh.mu.Unlock()
-	cm.markDirtyAndScheduleFlush()
-	if err := cm.FlushNow(); err != nil {
+	if err := cm.FlushUser(userID); err != nil {
 		cm.restoreCheckpointMutation(userID, before, candidate, false)
 		return err
 	}
@@ -1363,6 +1676,7 @@ func (cm *ConversationMemory) SaveAndCompleteInFlightCheckpointForRun(userID, ru
 		return fmt.Errorf("%w: empty run ID", ErrInFlightCheckpointRunConflict)
 	}
 	entries = deduplicateAdjacentAssistantEntriesForActiveBranch(entries)
+	cm.ensureLoaded()
 	cm.checkpointMu.Lock()
 	defer cm.checkpointMu.Unlock()
 
@@ -1412,8 +1726,7 @@ func (cm *ConversationMemory) SaveAndCompleteInFlightCheckpointForRun(userID, ru
 	s.lastAccess = now
 	candidate := cloneConversationSession(s)
 	sh.mu.Unlock()
-	cm.markDirtyAndScheduleFlush()
-	if err := cm.FlushNow(); err != nil {
+	if err := cm.FlushUser(userID); err != nil {
 		cm.restoreCheckpointMutation(userID, before, candidate, createdSession)
 		return err
 	}
@@ -1511,6 +1824,7 @@ func (cm *ConversationMemory) RewriteAllSessions(rewrite func(userID string, ent
 				s.entries = next
 				s.lastAccess = now
 				changed = true
+				cm.noteDetachedPending(userID)
 			}
 			sh.mu.Unlock()
 		}
@@ -1525,6 +1839,19 @@ func (cm *ConversationMemory) RewriteAllSessions(rewrite func(userID string, ent
 // session after a concurrent normal Save/Append/slot update committed while
 // its FlushNow was in progress.
 func (cm *ConversationMemory) checkpointLockedMutation(mutate func()) {
+	if cm == nil || mutate == nil {
+		return
+	}
+	// The background loader takes this lock from inside loadOnce. Waiting
+	// after the lock is held deadlocks that load, so the load has to finish
+	// before the lock is acquired.
+	cm.ensureLoaded()
+	cm.checkpointLock(mutate)
+}
+
+// checkpointLock is the loader-safe form of checkpointLockedMutation. The
+// loader is already inside loadOnce and must not call ensureLoaded again.
+func (cm *ConversationMemory) checkpointLock(mutate func()) {
 	if cm == nil || mutate == nil {
 		return
 	}
@@ -1588,7 +1915,13 @@ func (cm *ConversationMemory) RefreshInFlightTaskForRun(userID, runID string) bo
 		s.lastAccess = now
 		sh.mu.Unlock()
 		if reclaimed {
-			cm.markDirtyAndScheduleFlush()
+			if _, detached := cm.detachedPath(userID); detached {
+				if err := cm.writeDetachedUser(userID); err != nil {
+					log.Printf("[conversation_memory] detached lease reclaim flush failed user=%q err=%v", userID, err)
+				}
+			} else {
+				cm.markDirtyAndScheduleFlush()
+			}
 		}
 	})
 	return found
@@ -1615,7 +1948,7 @@ func (cm *ConversationMemory) RefreshInFlightTask(userID string) bool {
 		s.inFlightSetAt = now
 		s.lastAccess = now
 		sh.mu.Unlock()
-		cm.markDirtyAndScheduleFlush()
+		cm.markSessionDirty(userID)
 	})
 	return found
 }
@@ -1641,7 +1974,9 @@ func (cm *ConversationMemory) ClearInFlightTask(userID string) {
 		}
 		sh.mu.Unlock()
 		if changed {
-			cm.markDirtyAndScheduleFlush()
+			if _, detached := cm.detachedPath(userID); !detached {
+				cm.markDirtyAndScheduleFlush()
+			}
 		}
 	})
 }
@@ -1669,7 +2004,9 @@ func (cm *ConversationMemory) ClearInFlightTaskForRun(userID, runID string) {
 		}
 		sh.mu.Unlock()
 		if changed {
-			cm.markDirtyAndScheduleFlush()
+			if _, detached := cm.detachedPath(userID); !detached {
+				cm.markDirtyAndScheduleFlush()
+			}
 		}
 	})
 }
@@ -1678,6 +2015,11 @@ func (cm *ConversationMemory) ClearInFlightTaskForRun(userID, runID string) {
 // slots. This keeps the recoverability invariant while preventing a durable
 // busy flag from making the UI spin forever after a stuck or interrupted loop.
 func (cm *ConversationMemory) ExpireStaleInFlightTasks(now time.Time, lease time.Duration) int {
+	cm.ensureLoaded()
+	return cm.expireStaleInFlightTasks(now, lease)
+}
+
+func (cm *ConversationMemory) expireStaleInFlightTasks(now time.Time, lease time.Duration) int {
 	if now.IsZero() {
 		now = time.Now()
 	}
@@ -1685,7 +2027,7 @@ func (cm *ConversationMemory) ExpireStaleInFlightTasks(now time.Time, lease time
 		lease = InFlightTaskLease
 	}
 	expired := 0
-	cm.checkpointLockedMutation(func() {
+	cm.checkpointLock(func() {
 		for _, sh := range cm.shards {
 			sh.mu.Lock()
 			for userID, s := range sh.sessions {
@@ -1700,6 +2042,7 @@ func (cm *ConversationMemory) ExpireStaleInFlightTasks(now time.Time, lease time
 					continue
 				}
 				cm.convertExpiredInFlightLocked(userID, s, now)
+				cm.noteDetachedPending(userID)
 				expired++
 			}
 			sh.mu.Unlock()
@@ -1810,11 +2153,16 @@ func newRecoverySlotID(prefix string, now time.Time) string {
 // this intentionally does not wait for the normal in-flight lease. The slot and
 // marker transition is atomic per user and idempotent on later launches.
 func (cm *ConversationMemory) PromoteRecoverableCheckpoints(now time.Time) int {
+	cm.ensureLoaded()
+	return cm.promoteRecoverableCheckpoints(now)
+}
+
+func (cm *ConversationMemory) promoteRecoverableCheckpoints(now time.Time) int {
 	if now.IsZero() {
 		now = time.Now()
 	}
 	promoted, changed := 0, false
-	cm.checkpointLockedMutation(func() {
+	cm.checkpointLock(func() {
 		for _, sh := range cm.shards {
 			sh.mu.Lock()
 			for userID, s := range sh.sessions {
@@ -1853,6 +2201,7 @@ func (cm *ConversationMemory) PromoteRecoverableCheckpoints(now time.Time) int {
 				s.inFlightSideEffect = ""
 				s.lastAccess = now
 				changed = true
+				cm.noteDetachedPending(userID)
 			}
 			sh.mu.Unlock()
 		}
@@ -1939,7 +2288,7 @@ func (cm *ConversationMemory) ConsumeInFlightRecovery(userID string) InFlightRec
 		s.inFlightLastTool = ""
 		s.inFlightSideEffect = ""
 		sh.mu.Unlock()
-		cm.markDirtyAndScheduleFlush()
+		cm.markSessionDirty(userID)
 	})
 	return recovered
 }
@@ -1947,50 +2296,136 @@ func (cm *ConversationMemory) ConsumeInFlightRecovery(userID string) InFlightRec
 // --- Disk persistence ---
 
 func (cm *ConversationMemory) saveToDisk() error {
+	pending := cm.takeDetachedPending()
+	if err := cm.saveToDiskPending(pending); err != nil {
+		cm.restoreDetachedPending(pending)
+		return err
+	}
+	return nil
+}
+
+// saveToDiskPending writes the shared store and any detached owners in
+// pending. Detached owners are omitted from the shared file. Owners that are
+// not pending keep the side file they already have.
+func (cm *ConversationMemory) saveToDiskPending(pending map[string]uint64) error {
 	if cm.storePath == "" {
 		return nil
 	}
+	if !cm.persistentLoadFinished() {
+		return errPersistentLoadPending
+	}
+	detached := cm.copyDetached()
+	if err := cm.writeSharedSnapshot(detached, pending); err != nil {
+		return err
+	}
+	for userID, gen := range pending {
+		cm.clearDetachedPendingGen(userID, gen)
+	}
+	return nil
+}
+
+func (cm *ConversationMemory) writeSharedSnapshot(detached map[string]string, pending map[string]uint64) error {
 	cm.persistMu.Lock()
 	defer cm.persistMu.Unlock()
 	snapshot := memorySnapshot{Sessions: make(map[string]persistedSession)}
+	side := make(map[string]persistedSession, len(pending))
 	for _, sh := range cm.shards {
 		sh.mu.RLock()
 		for userID, session := range sh.sessions {
 			if session == nil {
 				continue
 			}
-			entries := sanitizeConversationEntriesForPersistence(session.entries)
-			snapshot.Sessions[userID] = persistedSession{
-				Entries:                entries,
-				ActiveBranchTipID:      session.activeBranchTipID,
-				LastAccess:             session.lastAccess,
-				UnfinishedSlot:         CloneUnfinishedTaskSlot(session.unfinishedSlot),
-				ActiveSlotID:           session.activeSlotID,
-				InFlightTask:           session.inFlightTask,
-				InFlightProjectPath:    session.inFlightProjectPath,
-				InFlightSetAt:          session.inFlightSetAt,
-				InFlightRunID:          session.inFlightRunID,
-				InFlightSequence:       session.inFlightSequence,
-				InFlightLastTool:       session.inFlightLastTool,
-				InFlightSideEffect:     session.inFlightSideEffect,
-				SemanticSessionResidue: clonePersistedSemanticResidue(session.semanticResidue),
-				ProducedDocument:       clonePersistedProducedDocument(session.producedDocument),
-				ParentExecutionTools:   cloneParentExecutionTools(session.parentExecutionTools),
-				ParentExecutionKnown:   session.parentExecutionKnown,
+			if _, isDetached := detached[userID]; isDetached {
+				if _, want := pending[userID]; want {
+					side[userID] = persistedFromSession(session)
+				}
+				continue
 			}
+			snapshot.Sessions[userID] = persistedFromSession(session)
 		}
 		sh.mu.RUnlock()
 	}
-
-	if err := cm.writeDetachedSessions(&snapshot); err != nil {
+	if err := cm.writePendingSideFiles(detached, pending, side); err != nil {
 		return err
 	}
 	return writeMemorySnapshotFile(cm.storePath, snapshot)
 }
 
+// writeDetachedPending writes side files for owners that changed without
+// touching the shared store.
+func (cm *ConversationMemory) writeDetachedPending(pending map[string]uint64) error {
+	if len(pending) == 0 {
+		return nil
+	}
+	if !cm.persistentLoadFinished() {
+		return errPersistentLoadPending
+	}
+	detached := cm.copyDetached()
+	if err := cm.writeSideSnapshot(detached, pending); err != nil {
+		return err
+	}
+	for userID, gen := range pending {
+		cm.clearDetachedPendingGen(userID, gen)
+	}
+	return nil
+}
+
+func (cm *ConversationMemory) writeSideSnapshot(detached map[string]string, pending map[string]uint64) error {
+	cm.persistMu.Lock()
+	defer cm.persistMu.Unlock()
+	side := make(map[string]persistedSession, len(pending))
+	for _, sh := range cm.shards {
+		sh.mu.RLock()
+		for userID, session := range sh.sessions {
+			if session == nil {
+				continue
+			}
+			if _, want := pending[userID]; !want {
+				continue
+			}
+			side[userID] = persistedFromSession(session)
+		}
+		sh.mu.RUnlock()
+	}
+	return cm.writePendingSideFiles(detached, pending, side)
+}
+
+func (cm *ConversationMemory) writePendingSideFiles(detached map[string]string, pending map[string]uint64, side map[string]persistedSession) error {
+	for userID := range pending {
+		path := strings.TrimSpace(detached[userID])
+		if path == "" {
+			continue
+		}
+		session, ok := side[userID]
+		if !ok {
+			// The owner is no longer in memory. Leave the existing side file
+			// in place; writing an empty snapshot would erase it.
+			continue
+		}
+		snap := memorySnapshot{Sessions: map[string]persistedSession{userID: session}}
+		if err := writeMemorySnapshotFile(path, snap); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // UseSeparateSessionFile keeps one owner's transcript out of the main store.
 // Later flushes write that owner to path and omit them from storePath.
+// A repeated bind to the same path does not reload the side file: reloading
+// would replace newer in-memory turns with the previous checkpoint.
 func (cm *ConversationMemory) UseSeparateSessionFile(userID, path string) error {
+	if cm == nil {
+		return fmt.Errorf("nil conversation memory")
+	}
+	cm.ensureLoaded()
+	return cm.BindSeparateSessionFile(userID, path)
+}
+
+// BindSeparateSessionFile moves one owner onto a side transcript. The
+// background-load hook uses this directly: UseSeparateSessionFile would wait
+// for that same load and deadlock the loader.
+func (cm *ConversationMemory) BindSeparateSessionFile(userID, path string) error {
 	if cm == nil {
 		return fmt.Errorf("nil conversation memory")
 	}
@@ -1999,58 +2434,256 @@ func (cm *ConversationMemory) UseSeparateSessionFile(userID, path string) error 
 	if userID == "" || path == "" {
 		return fmt.Errorf("missing separate session file")
 	}
-	cm.detachedMu.Lock()
-	if cm.detached == nil {
-		cm.detached = map[string]string{}
+	already, err := cm.bindDetachedSession(userID, path)
+	if err != nil {
+		return err
 	}
-	cm.detached[userID] = path
-	cm.detachedMu.Unlock()
+	if already {
+		return nil
+	}
+	log.Printf("[conversation_memory] detached session user=%q path=%q", userID, path)
 	return cm.loadDetachedSession(userID, path)
 }
 
-func (cm *ConversationMemory) writeDetachedSessions(snapshot *memorySnapshot) error {
-	if cm == nil || snapshot == nil {
-		return nil
+func (cm *ConversationMemory) detachedPath(userID string) (string, bool) {
+	if cm == nil {
+		return "", false
 	}
 	cm.detachedMu.Lock()
-	detached := make(map[string]string, len(cm.detached))
-	for userID, path := range cm.detached {
-		detached[userID] = path
+	defer cm.detachedMu.Unlock()
+	path, ok := cm.detached[userID]
+	return path, ok && strings.TrimSpace(path) != ""
+}
+
+func (cm *ConversationMemory) detachedIndexPath() string {
+	if cm == nil || strings.TrimSpace(cm.storePath) == "" {
+		return ""
+	}
+	return cm.storePath + ".detached.json"
+}
+
+type detachedSessionIndex struct {
+	Sessions map[string]string `json:"sessions"`
+}
+
+// bindDetachedSession records userID -> path and persists the index. already
+// is true when that exact binding was already durable, so the caller must not
+// reload the side file over the live session.
+func (cm *ConversationMemory) bindDetachedSession(userID, path string) (already bool, err error) {
+	cm.detachedMu.Lock()
+	defer cm.detachedMu.Unlock()
+	if cm.detached == nil {
+		cm.detached = map[string]string{}
+	}
+	if existing, ok := cm.detached[userID]; ok && existing == path {
+		return true, nil
+	}
+	prev, had := cm.detached[userID]
+	cm.detached[userID] = path
+	index := make(map[string]string, len(cm.detached))
+	for id, sessionPath := range cm.detached {
+		index[id] = sessionPath
+	}
+	if err := cm.writeDetachedIndex(index); err != nil {
+		if had {
+			cm.detached[userID] = prev
+		} else {
+			delete(cm.detached, userID)
+		}
+		return false, err
+	}
+	return false, nil
+}
+
+// forgetDetachedSession removes one owner's side-file binding and deletes the
+// side file. The caller has already dropped the in-memory session.
+func (cm *ConversationMemory) forgetDetachedSession(userID string) {
+	if cm == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	cm.detachedMu.Lock()
+	path, bound := "", false
+	if cm.detached != nil {
+		path, bound = cm.detached[userID]
+	}
+	if !bound {
+		cm.detachedMu.Unlock()
+		return
+	}
+	delete(cm.detached, userID)
+	delete(cm.detachedPendingGen, userID)
+	delete(cm.detachedRev, userID)
+	index := make(map[string]string, len(cm.detached))
+	for id, sessionPath := range cm.detached {
+		index[id] = sessionPath
+	}
+	if err := cm.writeDetachedIndex(index); err != nil {
+		if path != "" {
+			if cm.detached == nil {
+				cm.detached = map[string]string{}
+			}
+			cm.detached[userID] = path
+		}
+		cm.detachedMu.Unlock()
+		log.Printf("[conversation_memory] detach index update failed user=%q err=%v", userID, err)
+		return
 	}
 	cm.detachedMu.Unlock()
-	for userID, path := range detached {
-		session, ok := snapshot.Sessions[userID]
-		if !ok {
+	if strings.TrimSpace(path) == "" {
+		return
+	}
+	// persistMu serializes this delete with a side-file write that already
+	// snapshotted the old transcript.
+	cm.persistMu.Lock()
+	err := os.Remove(path)
+	cm.persistMu.Unlock()
+	if err != nil && !os.IsNotExist(err) {
+		log.Printf("[conversation_memory] detach file remove failed user=%q path=%q err=%v", userID, path, err)
+	}
+}
+
+func (cm *ConversationMemory) writeDetachedIndex(sessions map[string]string) error {
+	indexPath := cm.detachedIndexPath()
+	if indexPath == "" {
+		return nil
+	}
+	data, err := json.Marshal(detachedSessionIndex{Sessions: sessions})
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(indexPath), 0o755); err != nil {
+		return err
+	}
+	tmpPath := indexPath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, indexPath)
+}
+
+func (cm *ConversationMemory) readDetachedIndex() (map[string]string, error) {
+	indexPath := cm.detachedIndexPath()
+	if indexPath == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var index detachedSessionIndex
+	if err := json.Unmarshal(data, &index); err != nil {
+		return nil, err
+	}
+	return index.Sessions, nil
+}
+
+func (cm *ConversationMemory) overlayDetachedSessions() error {
+	index, err := cm.readDetachedIndex()
+	if err != nil {
+		return err
+	}
+	if len(index) == 0 {
+		return nil
+	}
+	now := time.Now()
+	const projectTabSessionMaxAge = 30 * 24 * time.Hour
+	for userID, path := range index {
+		userID = strings.TrimSpace(userID)
+		path = strings.TrimSpace(path)
+		if userID == "" || path == "" {
 			continue
 		}
-		delete(snapshot.Sessions, userID)
-		side := memorySnapshot{Sessions: map[string]persistedSession{userID: session}}
-		if err := writeMemorySnapshotFile(path, side); err != nil {
-			return err
+		cm.detachedMu.Lock()
+		if cm.detached == nil {
+			cm.detached = map[string]string{}
 		}
+		if _, exists := cm.detached[userID]; !exists {
+			cm.detached[userID] = path
+		}
+		cm.detachedMu.Unlock()
+		side, ok, err := readDetachedPersistedSession(path, userID)
+		if err != nil {
+			log.Printf("[ConversationMemory] detached session load failed user=%q path=%q err=%v", userID, path, err)
+			continue
+		}
+		if !ok {
+			cm.noteDetachedPendingIfLoaded(userID)
+			continue
+		}
+		sh := cm.shardNoWait(userID)
+		sh.mu.Lock()
+		current := sh.sessions[userID]
+		projectTab := strings.HasPrefix(userID, "desktop-user:") && len(userID) > len("desktop-user:")
+		staleSide := projectTab && !side.LastAccess.IsZero() && now.Sub(side.LastAccess) > projectTabSessionMaxAge
+		replace := sideReplacesCurrent(current, side)
+		if staleSide && current == nil {
+			replace = false
+		}
+		sh.mu.Unlock()
+		if !replace {
+			// Queue a side rewrite only when the shared copy is strictly newer.
+			// An equal timestamp is not enough evidence to overwrite the side file.
+			if current != nil && !side.LastAccess.IsZero() && side.LastAccess.Before(current.lastAccess) {
+				cm.noteDetachedPending(userID)
+			}
+			continue
+		}
+		cm.installPersistedSession(userID, side)
 	}
 	return nil
 }
 
-func (cm *ConversationMemory) loadDetachedSession(userID, path string) error {
+// sideReplacesCurrent reports whether the detached file is the copy to keep.
+// A newer session already loaded from the shared store wins, so a stale side
+// file cannot wipe turns that were flushed there before the owner was detached.
+func sideReplacesCurrent(current *conversationSession, side persistedSession) bool {
+	if current == nil {
+		return true
+	}
+	if side.LastAccess.IsZero() {
+		return current.lastAccess.IsZero()
+	}
+	if current.lastAccess.IsZero() {
+		return true
+	}
+	return side.LastAccess.After(current.lastAccess)
+}
+
+func readDetachedPersistedSession(path, userID string) (persistedSession, bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return persistedSession{}, false, nil
 		}
-		return err
+		return persistedSession{}, false, err
 	}
 	var snapshot memorySnapshot
 	if err := json.Unmarshal(data, &snapshot); err != nil {
-		return err
+		return persistedSession{}, false, err
 	}
 	session, ok := snapshot.Sessions[userID]
 	if !ok {
-		return nil
+		return persistedSession{}, false, nil
 	}
-	sh := cm.shard(userID)
+	return session, true, nil
+}
+
+func (cm *ConversationMemory) installPersistedSession(userID string, session persistedSession) {
+	sh := cm.shardNoWait(userID)
 	sh.mu.Lock()
-	sh.sessions[userID] = &conversationSession{
+	sh.sessions[userID] = conversationSessionFromPersisted(session)
+	sh.mu.Unlock()
+}
+
+func conversationSessionFromPersisted(session persistedSession) *conversationSession {
+	return &conversationSession{
 		entries:              append([]ConversationEntry(nil), session.Entries...),
 		activeBranchTipID:    session.ActiveBranchTipID,
 		lastAccess:           session.LastAccess,
@@ -2068,7 +2701,109 @@ func (cm *ConversationMemory) loadDetachedSession(userID, path string) error {
 		parentExecutionTools: cloneParentExecutionTools(session.ParentExecutionTools),
 		parentExecutionKnown: session.ParentExecutionKnown,
 	}
+}
+
+func (cm *ConversationMemory) writeDetachedUser(userID string) error {
+	path, ok := cm.detachedPath(userID)
+	if !ok {
+		return fmt.Errorf("session %q is not detached", userID)
+	}
+	// Capture the revision before the snapshot. A mutation that lands after
+	// this point bumps the revision and stays pending.
+	gen := cm.detachedRevision(userID)
+	err := func() error {
+		cm.persistMu.Lock()
+		defer cm.persistMu.Unlock()
+		sh := cm.shardNoWait(userID)
+		sh.mu.RLock()
+		session := sh.sessions[userID]
+		var snap persistedSession
+		present := session != nil
+		if present {
+			snap = persistedFromSession(session)
+		}
+		sh.mu.RUnlock()
+		side := memorySnapshot{Sessions: map[string]persistedSession{}}
+		if present {
+			side.Sessions[userID] = snap
+		}
+		return writeMemorySnapshotFile(path, side)
+	}()
+	if err != nil {
+		// Keep the shared file intact. A later side-file retry picks this up.
+		// Marking the shared store dirty here would omit this owner from the
+		// main snapshot before the side file exists.
+		cm.noteDetachedPending(userID)
+		return err
+	}
+	cm.clearDetachedPendingGen(userID, gen)
+	return nil
+}
+
+func persistedFromSession(session *conversationSession) persistedSession {
+	entries, _ := sanitizeConversationEntriesForPersistence(session.entries)
+	return persistedSession{
+		Entries:                entries,
+		ActiveBranchTipID:      session.activeBranchTipID,
+		LastAccess:             session.lastAccess,
+		UnfinishedSlot:         CloneUnfinishedTaskSlot(session.unfinishedSlot),
+		ActiveSlotID:           session.activeSlotID,
+		InFlightTask:           session.inFlightTask,
+		InFlightProjectPath:    session.inFlightProjectPath,
+		InFlightSetAt:          session.inFlightSetAt,
+		InFlightRunID:          session.inFlightRunID,
+		InFlightSequence:       session.inFlightSequence,
+		InFlightLastTool:       session.inFlightLastTool,
+		InFlightSideEffect:     session.inFlightSideEffect,
+		SemanticSessionResidue: clonePersistedSemanticResidue(session.semanticResidue),
+		ProducedDocument:       clonePersistedProducedDocument(session.producedDocument),
+		ParentExecutionTools:   cloneParentExecutionTools(session.parentExecutionTools),
+		ParentExecutionKnown:   session.parentExecutionKnown,
+	}
+}
+
+func (cm *ConversationMemory) noteDetachedPendingIfLoaded(userID string) {
+	sh := cm.shardNoWait(userID)
+	sh.mu.RLock()
+	present := sh.sessions[userID] != nil
+	sh.mu.RUnlock()
+	if present {
+		cm.noteDetachedPending(userID)
+	}
+}
+
+func (cm *ConversationMemory) loadDetachedSession(userID, path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			cm.noteDetachedPendingIfLoaded(userID)
+			return nil
+		}
+		return err
+	}
+	var snapshot memorySnapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return err
+	}
+	session, ok := snapshot.Sessions[userID]
+	if !ok {
+		cm.noteDetachedPendingIfLoaded(userID)
+		return nil
+	}
+	// shardNoWait: this runs from loadFromDisk, which may already be inside
+	// the background loadOnce. shard() would re-enter that Once and deadlock.
+	sh := cm.shardNoWait(userID)
+	sh.mu.Lock()
+	current := sh.sessions[userID]
+	replace := sideReplacesCurrent(current, session)
 	sh.mu.Unlock()
+	if !replace {
+		if current != nil && !session.LastAccess.IsZero() && session.LastAccess.Before(current.lastAccess) {
+			cm.noteDetachedPending(userID)
+		}
+		return nil
+	}
+	cm.installPersistedSession(userID, session)
 	return nil
 }
 
@@ -2105,10 +2840,13 @@ func writeMemorySnapshotFile(path string, snapshot memorySnapshot) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	data, err := json.Marshal(snapshot)
-	if err != nil {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(snapshot); err != nil {
 		return err
 	}
+	data := bytes.TrimRight(buf.Bytes(), "\n")
 	tmpPath := path + ".tmp"
 	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
 		return err
@@ -2127,13 +2865,11 @@ func (cm *ConversationMemory) loadFromDisk() error {
 		}
 		return err
 	}
-	// Detect legacy fields (session_id, tool) that should be dropped on rewrite.
-	legacyNeedsRewrite := strings.Contains(string(data), "\"session_id\"") || strings.Contains(string(data), "\"tool\"")
 	var snapshot memorySnapshot
 	if err := json.Unmarshal(data, &snapshot); err != nil {
 		return err
 	}
-	needsRewrite := legacyNeedsRewrite
+	needsRewrite := false
 	now := time.Now()
 	const projectTabSessionMaxAge = 30 * 24 * time.Hour
 	for userID, session := range snapshot.Sessions {
@@ -2149,10 +2885,9 @@ func (cm *ConversationMemory) loadFromDisk() error {
 				continue
 			}
 		}
-		entries := make([]ConversationEntry, len(session.Entries))
-		copy(entries, session.Entries)
-		sanitized := sanitizeConversationEntriesForPersistence(entries)
-		if !reflect.DeepEqual(sanitized, entries) {
+		entries := session.Entries
+		sanitized, sanitizedChanged := sanitizeConversationEntriesForPersistence(entries)
+		if sanitizedChanged {
 			entries = sanitized
 			needsRewrite = true
 		}
@@ -2181,8 +2916,11 @@ func (cm *ConversationMemory) loadFromDisk() error {
 			inFlightSetAt = session.LastAccess
 			needsRewrite = true
 		}
+		if unfinishedSlotHasRetiredSessionID(session.UnfinishedSlot) {
+			needsRewrite = true
+		}
 
-		sh := cm.shard(userID)
+		sh := cm.shardNoWait(userID)
 		sh.mu.Lock()
 		sh.sessions[userID] = &conversationSession{
 			entries:              entries,
@@ -2204,9 +2942,12 @@ func (cm *ConversationMemory) loadFromDisk() error {
 		}
 		sh.mu.Unlock()
 	}
-	if cm.PromoteRecoverableCheckpoints(time.Now()) > 0 {
+	if err := cm.overlayDetachedSessions(); err != nil {
+		log.Printf("[ConversationMemory] detached session overlay failed path=%q err=%v", cm.detachedIndexPath(), err)
+	}
+	if cm.promoteRecoverableCheckpoints(time.Now()) > 0 {
 		needsRewrite = true
-	} else if cm.ExpireStaleInFlightTasks(time.Now(), InFlightTaskLease) > 0 {
+	} else if cm.expireStaleInFlightTasks(time.Now(), InFlightTaskLease) > 0 {
 		needsRewrite = true
 	}
 	if needsRewrite {
@@ -2215,27 +2956,72 @@ func (cm *ConversationMemory) loadFromDisk() error {
 	return nil
 }
 
-func sanitizeConversationEntriesForPersistence(entries []ConversationEntry) []ConversationEntry {
-	out := make([]ConversationEntry, len(entries))
-	for i, entry := range entries {
-		out[i] = sanitizeConversationEntryForPersistence(entry)
+func sanitizeConversationEntriesForPersistence(entries []ConversationEntry) ([]ConversationEntry, bool) {
+	if len(entries) == 0 {
+		return entries, false
 	}
-	return out
+	var out []ConversationEntry
+	for i, entry := range entries {
+		next, entryChanged := sanitizeConversationEntryForPersistence(entry)
+		if !entryChanged {
+			continue
+		}
+		if out == nil {
+			out = make([]ConversationEntry, len(entries))
+			copy(out, entries)
+		}
+		out[i] = next
+	}
+	if out == nil {
+		return entries, false
+	}
+	return out, true
 }
 
-func sanitizeConversationEntryForPersistence(entry ConversationEntry) ConversationEntry {
-	entry.Content = sanitizeConversationPersistenceValue("content", entry.Content)
-	if content, ok := entry.Content.(string); ok {
-		entry.Content = stripPlainToolCallPersistenceLeak(StripRolePrefixHallucination(content))
+func sanitizeConversationEntryForPersistence(entry ConversationEntry) (ConversationEntry, bool) {
+	changed := false
+	content := sanitizeConversationPersistenceValue("content", entry.Content)
+	if text, ok := content.(string); ok {
+		content = stripPlainToolCallPersistenceLeak(StripRolePrefixHallucination(llm.StripLeakedReasoningProtocol(text)))
 	}
-	entry.ReasoningContent = stripPlainToolCallPersistenceLeak(StripRolePrefixHallucinationLeading(security.RedactSensitiveString(entry.ReasoningContent)))
+	if !persistenceValueUnchanged(entry.Content, content) {
+		entry.Content = content
+		changed = true
+	}
+	reasoning := stripPlainToolCallPersistenceLeak(StripRolePrefixHallucinationLeading(llm.StripLeakedReasoningProtocol(security.RedactSensitiveString(entry.ReasoningContent))))
+	if reasoning != entry.ReasoningContent {
+		entry.ReasoningContent = reasoning
+		changed = true
+	}
 	if entry.ToolCalls != nil {
-		entry.ToolCalls = sanitizeConversationPersistenceValue("tool_calls", entry.ToolCalls)
+		toolCalls := sanitizeConversationPersistenceValue("tool_calls", entry.ToolCalls)
+		if !persistenceValueUnchanged(entry.ToolCalls, toolCalls) {
+			entry.ToolCalls = toolCalls
+			changed = true
+		}
 	}
-	entry.ToolCallID = security.RedactSensitiveString(entry.ToolCallID)
-	entry.ToolName = security.RedactSensitiveString(entry.ToolName)
-	entry.ToolOutcome = security.RedactSensitiveString(entry.ToolOutcome)
-	return entry
+	if toolCallID := security.RedactSensitiveString(entry.ToolCallID); toolCallID != entry.ToolCallID {
+		entry.ToolCallID = toolCallID
+		changed = true
+	}
+	if toolName := security.RedactSensitiveString(entry.ToolName); toolName != entry.ToolName {
+		entry.ToolName = toolName
+		changed = true
+	}
+	if toolOutcome := security.RedactSensitiveString(entry.ToolOutcome); toolOutcome != entry.ToolOutcome {
+		entry.ToolOutcome = toolOutcome
+		changed = true
+	}
+	return entry, changed
+}
+
+func persistenceValueUnchanged(before, after interface{}) bool {
+	beforeText, beforeIsText := before.(string)
+	afterText, afterIsText := after.(string)
+	if beforeIsText || afterIsText {
+		return beforeIsText && afterIsText && beforeText == afterText
+	}
+	return reflect.DeepEqual(before, after)
 }
 
 // stripPlainToolCallPersistenceLeak truncates content at the first leaked
@@ -2243,7 +3029,33 @@ func sanitizeConversationEntryForPersistence(entry ConversationEntry) Conversati
 // <|tool_call_begin|>…). A bare English mention of the word "tool_call" —
 // common in reasoning text such as "I'll issue a tool_call to bash" — is not
 // markup and must not truncate the entry.
+func hasASCIIFold(value, needle string) bool {
+	if needle == "" || len(value) < len(needle) {
+		return false
+	}
+	for i := 0; i+len(needle) <= len(value); i++ {
+		matched := true
+		for j := 0; j < len(needle); j++ {
+			c := value[i+j]
+			if c >= 'A' && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != needle[j] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
 func stripPlainToolCallPersistenceLeak(content string) string {
+	if !hasASCIIFold(content, "tool_call") {
+		return content
+	}
 	lower := strings.ToLower(content)
 	idx := strings.Index(lower, "tool_call")
 	for idx >= 0 {

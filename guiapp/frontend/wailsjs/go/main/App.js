@@ -859,6 +859,22 @@ export function MailboxAccountsList() {
   return window['go']['main']['App']['MailboxAccountsList']();
 }
 
+export function MailboxBrowseFolders(arg1) {
+  return window['go']['main']['App']['MailboxBrowseFolders'](arg1);
+}
+
+export function MailboxBrowseStart(arg1) {
+  return window['go']['main']['App']['MailboxBrowseStart'](arg1);
+}
+
+export function MailboxBrowseMessages(arg1, arg2, arg3) {
+  return window['go']['main']['App']['MailboxBrowseMessages'](arg1, arg2, arg3);
+}
+
+export function MailboxBrowseRead(arg1, arg2, arg3) {
+  return window['go']['main']['App']['MailboxBrowseRead'](arg1, arg2, arg3);
+}
+
 export function MailboxOAuthLogin(arg1, arg2) {
   return window['go']['main']['App']['MailboxOAuthLogin'](arg1, arg2);
 }

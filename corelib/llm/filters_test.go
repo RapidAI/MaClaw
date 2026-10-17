@@ -5,6 +5,191 @@ import (
 	"testing"
 )
 
+func TestStripLeakedReasoningProtocol_DropsClosingTags(t *testing.T) {
+	input := "让我调用web_search来获取北京天气。\n</tool_value>\n</thinking>"
+	got := StripLeakedReasoningProtocol(input)
+	if strings.Contains(got, "tool_value") || strings.Contains(got, "thinking>") || strings.Contains(got, "</") {
+		t.Fatalf("protocol closers leaked: %q", got)
+	}
+	if got != "让我调用web_search来获取北京天气。" {
+		t.Fatalf("StripLeakedReasoningProtocol() = %q", got)
+	}
+	if got := StripAllExtra(input); got != "让我调用web_search来获取北京天气。" {
+		t.Fatalf("StripAllExtra() = %q", got)
+	}
+}
+
+func TestStripLeakedReasoningProtocol_DropsPayloadKeepsProse(t *testing.T) {
+	input := "<thinking>\n先查天气。\n<tool_name>web_search</tool_name>\n<tool_value>{\"query\":\"北京天气\"}</tool_value>\n</thinking>"
+	got := StripLeakedReasoningProtocol(input)
+	if strings.Contains(got, "tool_value") || strings.Contains(got, "北京天气") || strings.Contains(got, "web_search") || strings.Contains(got, "thinking") {
+		t.Fatalf("tool payload leaked: %q", got)
+	}
+	if got != "先查天气。" {
+		t.Fatalf("StripLeakedReasoningProtocol() = %q", got)
+	}
+}
+
+func TestStripLeakedReasoningProtocol_KeepsLeadingIndent(t *testing.T) {
+	input := "    func main() {\n    }\n</tool_value>\n</thinking>"
+	got := StripLeakedReasoningProtocol(input)
+	if got != "    func main() {\n    }" {
+		t.Fatalf("indent changed: %q", got)
+	}
+	wrapped := "<thinking>\n    func main() {\n    }\n</thinking>"
+	if got := StripLeakedReasoningProtocol(wrapped); got != "    func main() {\n    }" {
+		t.Fatalf("wrapped indent changed: %q", got)
+	}
+}
+
+func TestReasoningProtocolStreamFilter_FlushKeepsAmbiguousToolPrefix(t *testing.T) {
+	var out strings.Builder
+	filter := newReasoningProtocolStreamFilter(func(delta string) { out.WriteString(delta) })
+	filter.Write("use a <tool")
+	filter.Flush()
+	if got := out.String(); got != "use a <tool" {
+		t.Fatalf("flush dropped an ambiguous tail: %q", got)
+	}
+}
+
+func TestParseSSE_SplitToolCallStillHidden(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"先查\n<tool"}}]}`,
+		`data: {"choices":[{"delta":{"content":"_call>{\"name\":\"web_search\",\"arguments\":{\"query\":\"北京天气\"}}</tool_call>"}}]}`,
+		"data: [DONE]",
+		"",
+	}, "\n")
+	var streamed strings.Builder
+	resp, err := parseSSEStreamWithReasoning(strings.NewReader(body), func(delta string) {
+		streamed.WriteString(delta)
+	}, nil)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if strings.Contains(streamed.String(), "tool_call") || strings.Contains(streamed.String(), "北京天气") || strings.Contains(streamed.String(), "<tool") {
+		t.Fatalf("visible stream leaked the tool call: %q", streamed.String())
+	}
+	if strings.TrimSpace(streamed.String()) != "先查" {
+		t.Fatalf("visible stream = %q", streamed.String())
+	}
+	if len(resp.Choices) == 0 || len(resp.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("tool call = %#v", resp.Choices[0].Message)
+	}
+}
+
+func TestStripLeakedReasoningProtocol_KeepsPlainMentions(t *testing.T) {
+	for _, input := range []string{
+		"Let me think about the tool_value field before answering.",
+		"  <thinkingish> stays, including the indent",
+		"<think>hidden</think>shown",
+		"2 < 3 and <div>ok</div>",
+	} {
+		if got := StripLeakedReasoningProtocol(input); got != input {
+			t.Fatalf("plain text changed: %q -> %q", input, got)
+		}
+	}
+}
+
+func TestReasoningProtocolStreamFilter_UnicodeBeforeTag(t *testing.T) {
+	input := "İ让我调用。\n</TOOL_VALUE>\n</Thinking>"
+	if got := StripLeakedReasoningProtocol(input); got != "İ让我调用。" {
+		t.Fatalf("strip = %q", got)
+	}
+	var out strings.Builder
+	filter := newReasoningProtocolStreamFilter(func(delta string) { out.WriteString(delta) })
+	filter.Write("İ让我调用。\n</TOOL_VAL")
+	filter.Write("UE>\n</Thinking>")
+	filter.Flush()
+	if got := strings.TrimSpace(out.String()); got != "İ让我调用。" {
+		t.Fatalf("streamed = %q", out.String())
+	}
+}
+
+func TestReasoningProtocolStreamFilter_KeepsOrdinaryBrackets(t *testing.T) {
+	var out strings.Builder
+	filter := newReasoningProtocolStreamFilter(func(delta string) { out.WriteString(delta) })
+	filter.Write("2 < 3\n<div>ok</div>\n<tool_value/>之后还在")
+	filter.Flush()
+	if got := out.String(); got != "2 < 3\n<div>ok</div>\n之后还在" {
+		t.Fatalf("streamed = %q", got)
+	}
+}
+
+func TestReasoningProtocolStreamFilter_HidesSplitClosers(t *testing.T) {
+	var out strings.Builder
+	filter := newReasoningProtocolStreamFilter(func(delta string) { out.WriteString(delta) })
+	for _, delta := range []string{"让我调用。\n</tool_val", "ue>\n</thi", "nking>"} {
+		filter.Write(delta)
+	}
+	filter.Flush()
+	if got := strings.TrimSpace(out.String()); got != "让我调用。" {
+		t.Fatalf("streamed reasoning = %q", out.String())
+	}
+	if strings.Contains(out.String(), "tool_value") || strings.Contains(out.String(), "thinking>") {
+		t.Fatalf("streamed reasoning leaked protocol: %q", out.String())
+	}
+}
+
+func TestReasoningProtocolStreamFilter_DropsToolValuePayload(t *testing.T) {
+	var out strings.Builder
+	filter := newReasoningProtocolStreamFilter(func(delta string) { out.WriteString(delta) })
+	filter.Write("先查。\n<tool_value>{\"query\":\"北京天气\"}</tool_value>\n然后结束")
+	filter.Flush()
+	if got := out.String(); got != "先查。\n\n然后结束" {
+		t.Fatalf("streamed reasoning = %q", got)
+	}
+}
+
+func TestParseSSE_ReasoningProtocolClosersStayOffThePanel(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"choices":[{"delta":{"reasoning_content":"让我调用。\n</tool_val"}}]}`,
+		`data: {"choices":[{"delta":{"reasoning_content":"ue>\n</thinking>"},"finish_reason":"tool_calls"}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"北京天气\"}"}}]}}]}`,
+		"data: [DONE]",
+		"",
+	}, "\n")
+	var streamed strings.Builder
+	resp, err := parseSSEStreamWithReasoning(strings.NewReader(body), nil, func(delta string) {
+		streamed.WriteString(delta)
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if strings.Contains(streamed.String(), "tool_value") || strings.Contains(streamed.String(), "thinking>") {
+		t.Fatalf("live reasoning leaked protocol: %q", streamed.String())
+	}
+	if got := resp.Choices[0].Message.ReasoningContent; got != "让我调用。" {
+		t.Fatalf("reasoning = %q", got)
+	}
+	if len(resp.Choices[0].Message.ToolCalls) != 1 || resp.Choices[0].Message.ToolCalls[0].Function.Name != "web_search" {
+		t.Fatalf("tool call = %#v", resp.Choices[0].Message.ToolCalls)
+	}
+}
+
+func TestParseSSE_ToolCallXMLStillHiddenBesideProtocolFilter(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"先查。\n<tool_call>{\"name\":\"web_search\",\"arguments\":{\"query\":\"北京天气\"}}</tool_call>"}}]}`,
+		"data: [DONE]",
+		"",
+	}, "\n")
+	var streamed strings.Builder
+	resp, err := parseSSEStreamWithReasoning(strings.NewReader(body), func(delta string) {
+		streamed.WriteString(delta)
+	}, nil)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if strings.Contains(streamed.String(), "tool_call") || strings.Contains(streamed.String(), "北京天气") {
+		t.Fatalf("visible stream leaked the tool call: %q", streamed.String())
+	}
+	if strings.TrimSpace(streamed.String()) != "先查。" {
+		t.Fatalf("visible stream = %q", streamed.String())
+	}
+	if len(resp.Choices[0].Message.ToolCalls) != 1 || resp.Choices[0].Message.ToolCalls[0].Function.Name != "web_search" {
+		t.Fatalf("tool call = %#v content=%q", resp.Choices[0].Message.ToolCalls, resp.Choices[0].Message.Content)
+	}
+}
+
 func TestStripXMLToolCalls_RemovesDeepSeekDSML(t *testing.T) {
 	input := "好的，先查杭州最新天气。\n<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"web_search\">\n<｜DSML｜parameter name=\"query\" string=\"true\">杭州天气</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>"
 	got := StripXMLToolCalls(input)

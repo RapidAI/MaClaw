@@ -16,6 +16,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	mcputil "github.com/RapidAI/CodeClaw/corelib/mcp"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -52,15 +53,10 @@ type jsonRPCRequest struct {
 
 // jsonRPCResponse is a JSON-RPC 2.0 response.
 type jsonRPCResponse struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      int64           `json:"id"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Error   *jsonRPCError   `json:"error,omitempty"`
-}
-
-type jsonRPCError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	JSONRPC string                        `json:"jsonrpc"`
+	ID      int64                         `json:"id"`
+	Result  json.RawMessage               `json:"result,omitempty"`
+	Error   *mcputil.JSONRPCProtocolError `json:"error,omitempty"`
 }
 
 // NewLocalMCPClient creates a client for the given local MCP server entry.
@@ -234,7 +230,7 @@ func (c *LocalMCPClient) readLoop() {
 			continue
 		}
 		if resp.Error != nil {
-			ch <- localMCPPendingResponse{err: fmt.Errorf("JSON-RPC error %d: %s", resp.Error.Code, resp.Error.Message)}
+			ch <- localMCPPendingResponse{err: resp.Error}
 		} else {
 			ch <- localMCPPendingResponse{result: resp.Result}
 		}
@@ -392,7 +388,7 @@ func (c *LocalMCPClient) discoverToolsContext(ctx context.Context) ([]MCPToolVie
 			Name        string                 `json:"name"`
 			Description string                 `json:"description"`
 			InputSchema map[string]interface{} `json:"inputSchema"`
-			Annotations  *struct {
+			Annotations *struct {
 				ReadOnlyHint    *bool `json:"readOnlyHint,omitempty"`
 				DestructiveHint *bool `json:"destructiveHint,omitempty"`
 			} `json:"annotations,omitempty"`
@@ -445,6 +441,13 @@ func (c *LocalMCPClient) CallTool(toolName string, args map[string]interface{}) 
 
 	result, err := c.sendRequest("tools/call", params)
 	if err != nil {
+		// A JSON-RPC error object is the server's finished rejection of this
+		// tools/call. Surface it as ToolCallError so the semantic executor
+		// records mcp_tool_error. A timeout or a dead process stays a
+		// transport error.
+		if toolErr, ok := mcputil.JSONRPCToolCallError(err); ok {
+			return "", toolErr
+		}
 		return "", err
 	}
 

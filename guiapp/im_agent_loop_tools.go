@@ -73,11 +73,18 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	// The turn's governed classification (computed upstream with full context)
 	// travels with the route call, so a usable SemanticIntent activates its
 	// conditional tools without any new classification call.
+	platform := ""
+	if ctx != nil {
+		platform = ctx.Platform
+	}
 	var preResolved *intent.ClassificationResult
 	if ctx != nil {
 		preResolved = ctx.Runtime.SemanticIntent
 	}
-	baseTools, routerRankedNames := h.routeSessionToolsWithRanking(userID, userText, allTools, loopContextHasChatProjection(ctx) || loopContextHasRoutingMissFallback(ctx), preResolved, ctx, phase)
+	// The continuation's tool contract is the phase. The name router does not
+	// classify this turn.
+	skipUnifiedClassifier := loopContextHasChatProjection(ctx) || loopContextHasRoutingMissFallback(ctx) || goalContinuationTurn(userText, platform)
+	baseTools, routerRankedNames := h.routeSessionToolsWithRanking(userID, userText, allTools, skipUnifiedClassifier, preResolved, ctx, phase)
 	tools := baseTools
 
 	BrowserDiagCP1_Route(userText, tools)
@@ -197,10 +204,6 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	// model play speech early and then add narration such as "播报完毕" to its
 	// final answer. Remove both host- and client-declared variants, including the
 	// recovery catalog used by later loop iterations.
-	platform := ""
-	if ctx != nil {
-		platform = ctx.Platform
-	}
 	tools = filterToolsForHardwareAutoSpeech(tools, platform)
 	baseTools = filterToolsForHardwareAutoSpeech(baseTools, platform)
 	// A generic MCP gateway lets the model select arbitrary provider identity

@@ -28,8 +28,8 @@ func TestPickWailsWindowPrefersVisibleFrame(t *testing.T) {
 }
 
 func TestTaskbarBadgeDiscUsesIconGreen(t *testing.T) {
-	// Center of a 16px disc is fully covered: straight RGB(19, 59, 67).
-	if got := taskbarBadgeDiscPixel(8, 8, 16); got != 0xFF133B43 {
+	// Center of a 16px disc is fully covered: straight RGB(24, 132, 128).
+	if got := taskbarBadgeDiscPixel(8, 8, 16); got != 0xFF188480 {
 		t.Fatalf("center = %#08x", got)
 	}
 	if got := taskbarBadgeDiscPixel(0, 0, 16); got != 0 {
@@ -140,6 +140,47 @@ func TestTaskbarBadgeDescriptionMatchesBrand(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("description = %q, brand = %q", got, want)
+	}
+}
+
+func TestTaskbarBadgeSubclassCallbackCompiles(t *testing.T) {
+	if taskbarBadgeSubclassProcPtr() == 0 {
+		t.Fatal("subclass callback was not created")
+	}
+}
+
+func TestTaskbarBadgeShowWindowMessage(t *testing.T) {
+	const created = uintptr(0xC000)
+	if got := taskbarBadgeClassifyWindowMessage(taskbarBadgeWmShowWindow, 0, 0, created); got != taskbarBadgeNoticeHidden {
+		t.Fatalf("hide = %d", got)
+	}
+	if got := taskbarBadgeClassifyWindowMessage(taskbarBadgeWmShowWindow, 1, 0, created); got != taskbarBadgeNoticeShown {
+		t.Fatalf("show = %d", got)
+	}
+	// lParam other than 0 is a parent zoom or minimize notice, not ShowWindow.
+	if got := taskbarBadgeClassifyWindowMessage(taskbarBadgeWmShowWindow, 0, 1, created); got != taskbarBadgeNoticeNone {
+		t.Fatalf("parent notice = %d", got)
+	}
+	if got := taskbarBadgeClassifyWindowMessage(0x0005, 0, 0, created); got != taskbarBadgeNoticeNone {
+		t.Fatalf("size = %d", got)
+	}
+	if got := taskbarBadgeClassifyWindowMessage(created, 0, 0, created); got != taskbarBadgeNoticeButton {
+		t.Fatalf("button = %d", got)
+	}
+	if got := taskbarBadgeClassifyWindowMessage(0, 0, 0, 0); got != taskbarBadgeNoticeNone {
+		t.Fatalf("unregistered button = %d", got)
+	}
+}
+
+func TestTaskbarBadgeFollowUpRepaintsAfterHide(t *testing.T) {
+	if got := taskbarBadgeFollowUpRepaints(true, 2); got != taskbarBadgeShowRepaintCount || got < 1 {
+		t.Fatalf("follow-ups = %d", got)
+	}
+	if taskbarBadgeFollowUpRepaints(true, 0) != 0 {
+		t.Fatal("clear scheduled follow-ups")
+	}
+	if taskbarBadgeFollowUpRepaints(false, 2) != 0 {
+		t.Fatal("ordinary update scheduled follow-ups")
 	}
 }
 

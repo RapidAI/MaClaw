@@ -366,6 +366,7 @@ func (a *App) mailboxIO() (mailbox.Dialer, mailbox.MailReader, mailbox.MailSende
 	var netDialer *mailbox.NetDialer
 	if dialer == nil {
 		netDialer = mailbox.NewNetDialer()
+		netDialer.ReplaceSecret = a.replaceMailboxOAuth
 		dialer = netDialer
 	}
 	reader := mailboxToolReader
@@ -399,16 +400,48 @@ func (a *App) mailboxSecret(ctx context.Context, ref string) (string, error) {
 		}
 		return "", mailbox.ErrKeyring
 	}
-	current, updated, err := mailbox.MaterializeSecret(ctx, secret, time.Now())
+	current, updated, err := mailbox.MaterializeForAccess(ctx, secret, func() (string, error) {
+		return getMailboxKeyring(mailbox.KeyringService, item)
+	}, time.Now())
 	if err != nil {
 		return "", err
 	}
+	current, updated = mailbox.ClaimOAuthUpdate(ctx, secret, current, updated, func() (string, error) {
+		return getMailboxKeyring(mailbox.KeyringService, item)
+	}, time.Now())
 	if updated != "" {
-		if err := writeMailboxSecretBothSides(mailboxIDFromRef(ref), updated); err != nil {
-			return "", err
+		id := mailboxIDFromRef(ref)
+		if err := writeMailboxSecretBothSides(id, updated); err != nil {
+			_ = writeMailboxSecretBothSides(id, updated)
 		}
 	}
 	return current, nil
+}
+
+// replaceMailboxOAuth runs when Gmail or Hotmail rejects a token during an
+// agent or dialog access. A login saved since that token was read is used
+// as-is. Refreshing the rejected token would revoke the saved login.
+// Otherwise this access exchanges the refresh token and writes it back.
+func (a *App) replaceMailboxOAuth(ctx context.Context, account mailbox.Account, rejected string) (string, error) {
+	return mailbox.AdoptRejectedOAuth(ctx, rejected, time.Now(),
+		func(side string) (string, error) { return rawMailboxSecret(account.ID, side) },
+		func(updated string) error { return writeMailboxSecretBothSides(account.ID, updated) },
+	)
+}
+
+func rawMailboxSecret(id, side string) (string, error) {
+	item, err := mailbox.KeyringItem(id, side)
+	if err != nil {
+		return "", err
+	}
+	secret, err := getMailboxKeyring(mailbox.KeyringService, item)
+	if err != nil {
+		if mailboxSecretMissing(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return secret, nil
 }
 
 func mailboxIDFromRef(ref string) string {

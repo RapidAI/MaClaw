@@ -4,6 +4,7 @@ import "katex/dist/katex.min.css";
 import { OpenFileOrShowInFolder, ShowItemInFolder } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { ChatAction, ChatConfirmation, ChatMessage, ChatRecoverableSession, ChatUnfinishedSlot } from "./useAIAssistant";
+import { isHostGoalChecklistText, rewriteHostGoalChecklistBody } from "./aiAssistantPanelSessionUtils";
 import { renderCodingAgentProgressStatus } from "./CodingAgentProgressStatus";
 import { attachBareHeadingMarkers, normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
 import { buildMarkdownTableModel, isMarkdownTableRow, isMarkdownTableSeparatorRow, normalizeMarkdownTableLine, parseMarkdownTableCells, repairMixedNarrativeTable } from "./aiAssistantMarkdownTable";
@@ -20,6 +21,7 @@ import { stripCodingAgentAuditSections } from "./codingAgentUserFinish";
 import { cleanReasoningTrailForBody, visibleAssistantReplyForMessage } from "./assistantReasoningBody";
 import { completedAssistantSummary, assistantTaskSettledIncomplete, isProgressOnlyToolAction, parseAssistantToolStatus, stripAssistantToolCallMarkers } from "./assistantToolCall";
 import { AssistantToolCallRow, renderAssistantBodyWithToolCalls } from "./assistantToolCallRow";
+import { AssistantToolFlipTicker } from "./AssistantToolFlipTicker";
 import { TaskResultArtifacts } from "./assistantTaskArtifacts";
 import { ChatTaskCard } from "./ChatTaskCard";
 import {
@@ -773,6 +775,12 @@ export function renderContentWithCodeBlocks(
     options?: ChatMarkdownRenderOptions,
     lang?: string,
 ): React.ReactNode[] {
+    // This painter emits text nodes, so an HTML comment is visible. Tool anchors
+    // are transcript bookkeeping and must not survive into any caller.
+    if (content.includes("maclaw-tool:")) {
+        content = stripAssistantToolCallMarkers(content);
+        if (!content.trim()) return [];
+    }
     const omitBlankSpacers = options?.omitBlankSpacers === true;
     const reasoningSurface = options?.reasoningSurface === true;
     // Built on the first fence. Prose-only streams never pay for the color mixes.
@@ -1526,6 +1534,11 @@ export function renderMessage(
     if (msg.kind === "chatTask" && msg.chatTask) {
         return <ChatTaskCard key={msg.id} task={msg.chatTask} theme={t} lang={lang} />;
     }
+    // A host continuation used to be stored as a user turn ("/goal 执行步骤").
+    // Show the checklist body. The transcript keeps one of these cards.
+    if (msg.role === "user" && isHostGoalChecklistText(msg.content || "")) {
+        msg = { ...msg, role: "system", kind: "goalChecklist", content: rewriteHostGoalChecklistBody(msg.content || "") };
+    }
     // The confirmation card lives in its own module to keep this file under the
     // 2000-line UI guard cap; it receives its renderers by injection so that
     // module stays a leaf (importing back would be a cycle).
@@ -1624,6 +1637,7 @@ export function renderMessage(
                 toolCalls: !!msg.toolCalls?.length,
             });
             const taskSettled = !taskRunning && !!msg.toolCalls?.length;
+            const liveTool = taskRunning ? msg.toolCalls?.[msg.toolCalls.length - 1] : undefined;
             const summaryText = taskSettled ? completedAssistantSummary(visibleReply.content, msg.resultText) : visibleReply.content;
             return (
                 <div key={msg.id} role="group" data-testid={`assistant-chat-ai-${msg.id}`} aria-label={localizeText(lang, "AI assistant message", "AI 助手消息")} className="aamd-msg-ai">
@@ -1716,6 +1730,7 @@ export function renderMessage(
                                 </AssistantReasoningPanel>
                             );
                         })()}
+                        {liveTool ? <AssistantToolFlipTicker call={liveTool} theme={t} /> : null}
                         {(() => {
                             // Strip line-leading pictographs once up front so /btw heading match
                             // works on legacy history that still prefixes decorative marks.
@@ -1735,7 +1750,7 @@ export function renderMessage(
                             const isBtwResult = msg.requestId?.startsWith("btw-") || !!matchedBtwPrefix;
                             if (isBtwResult && rawFormattedContent) {
                                 const rawBtwBody = matchedBtwPrefix ? rawFormattedContent.slice(matchedBtwPrefix.length) : rawFormattedContent;
-                                const btwBody = stripRolePrefixForDisplay(rawBtwBody);
+                                const btwBody = stripAssistantToolCallMarkers(stripRolePrefixForDisplay(rawBtwBody)).trim();
                                 // Extract first non-empty line as preview in the collapsed summary.
                                 const firstLine = btwBody.split('\n').find(l => l.trim()) || '';
                                 // Strip markdown formatting for plain-text summary display.
@@ -1758,7 +1773,14 @@ export function renderMessage(
                             // A tool row splits the body, so that shared cache stays unused
                             // until the reply has no calls. A finished task drops the rows
                             // and keeps the result summary.
-                            const toolCalls = taskSettled ? undefined : msg.toolCalls;
+                            // The strip is the only live tool. It keeps the latest call, then hides when the task settles.
+                            // Anchors stay in the stored transcript. This renderer paints text nodes, so an
+                            // HTML comment is visible. Drop it unless a row is actually placed from it.
+                            const toolCalls = taskSettled || liveTool ? undefined : msg.toolCalls;
+                            let bodyContent = formattedContent;
+                            if (!toolCalls?.length && formattedContent.includes("maclaw-tool:")) {
+                                bodyContent = stripAssistantToolCallMarkers(formattedContent).trim();
+                            }
                             return (
                             <>
                             {taskSettled && (
@@ -1772,7 +1794,7 @@ export function renderMessage(
                                         : localizeText(lang, "Completed", "已完成", "已完成")}
                                 </div>
                             )}
-                            {renderAssistantBodyWithToolCalls(formattedContent, toolCalls, t, (segment, isTail) => {
+                            {renderAssistantBodyWithToolCalls(bodyContent, toolCalls, t, (segment, isTail) => {
                                 // The incremental cache is keyed to one growing string. A tool
                                 // row splits that string, so a slice would reuse frozen paragraphs
                                 // from the wrong half of the reply.
@@ -1849,6 +1871,16 @@ export function renderMessage(
                 </div>
             );
         case "system":
+            if (msg.kind === "goalChecklist") {
+                return (
+                    <div key={msg.id} role="status" data-testid={`assistant-goal-checklist-${msg.id}`} className="aamd-msg-row">
+                        <div style={{ maxWidth: "84%", boxSizing: "border-box", padding: "9px 12px", borderRadius: "8px", background: t.fieldBg, border: `1px solid ${t.fieldBorder}`, color: t.text, fontSize: "12px", lineHeight: "1.55", whiteSpace: "pre-wrap", overflowWrap: "break-word" }}>
+                            <div style={{ marginBottom: 4, color: t.textMuted, fontSize: 11, fontWeight: 700 }}>{lang === "en" ? "Goal" : lang === "zh-Hant" ? "目標" : "目标"}</div>
+                            {prepareChatBodyForDisplay(msg.content)}
+                        </div>
+                    </div>
+                );
+            }
             if (msg.kind === "taskContext") {
                 return (
                     <div key={msg.id} role="status" data-testid={`assistant-task-context-${msg.id}`} className="aamd-msg-row">

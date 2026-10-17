@@ -438,6 +438,14 @@ export function DatabaseProfilesList():Promise<Array<Record<string, any>>>;
 
 export function MailboxAccountsList():Promise<Array<Record<string, any>>>;
 
+export function MailboxBrowseFolders(arg1:string):Promise<Array<Record<string, any>>>;
+
+export function MailboxBrowseStart(arg1:string):Promise<Record<string, any>>;
+
+export function MailboxBrowseMessages(arg1:string,arg2:string,arg3:number):Promise<Array<Record<string, any>>>;
+
+export function MailboxBrowseRead(arg1:string,arg2:string,arg3:number):Promise<Record<string, any>>;
+
 export function MailboxOAuthLogin(arg1:string,arg2:string):Promise<string>;
 
 export function MailboxAccountSave(arg1:Record<string, any>):Promise<string>;

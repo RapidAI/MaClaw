@@ -1431,6 +1431,10 @@ type sharedAgentLoopCallbacks struct {
 	// successor input.
 	phase         agentLoopPhase
 	onProgress    tool.ProgressCallback
+	// suppressToolProgress skips the legacy progress card when the semantic
+	// path already published one for the same call. Trusted adapters such as
+	// web_search never enter that legacy path, so they need the semantic card.
+	suppressToolProgress bool
 	onToken       llm.TokenCallback
 	onNewRound    NewRoundCallback
 	events        agentruntime.EventSink
@@ -3908,7 +3912,7 @@ func (c *sharedAgentLoopCallbacks) executeToolWithoutSemanticSurface(name, argsJ
 	// Emit here where argsJSON is available; OnToolCall only receives the name.
 	// Language follows GUI interface language (App.CurrentLanguage).
 	lang := c.handler.imUILang()
-	if c.onProgress != nil {
+	if c.onProgress != nil && !c.suppressToolProgress {
 		c.onProgress(userFacingToolProgressTextWithArgs(lang, name, argsJSON))
 	}
 	// Filter internal tool chatter the same way as the legacy agent-loop path so
@@ -4132,6 +4136,7 @@ func (c *sharedAgentLoopCallbacks) executeSemanticTool(functionName, argsJSON st
 	}
 	functionName = c.bindSemanticFunctionName(functionName, argsJSON)
 	if functionName == semanticToolsSearchName {
+		c.emitUserFacingToolProgress(functionName, argsJSON)
 		return c.runSemanticToolsSearch(argsJSON)
 	}
 	grant, ok := c.semanticSurface.grants[functionName]
@@ -4244,6 +4249,7 @@ func (c *sharedAgentLoopCallbacks) executeSemanticToolCallWithEpoch(functionName
 	}
 	functionName = c.bindSemanticFunctionName(functionName, argsJSON)
 	if functionName == semanticToolsSearchName {
+		c.emitUserFacingToolProgress(functionName, argsJSON)
 		return c.runSemanticToolsSearch(argsJSON)
 	}
 	grant, ok := c.semanticSurface.grants[functionName]
@@ -5121,9 +5127,11 @@ func (c *sharedAgentLoopCallbacks) executeBoundSemanticSelectionCanonicalWithCon
 	// and a class error must not fall through to the plain-string success
 	// projection.
 	if semanticMailboxSendReceiptSelection(selection) {
+		c.emitSemanticSelectionProgress(selection, string(canonicalArgs.CanonicalJSON))
 		return c.executeTrustedMailboxSend(ctx, canonicalArgs)
 	}
 	if semanticMailboxConfigureSelection(selection) {
+		c.emitSemanticSelectionProgress(selection, string(canonicalArgs.CanonicalJSON))
 		return c.executeTrustedMailboxConfigure(ctx, canonicalArgs)
 	}
 	// An external/sensitive selection may never pass through the legacy text
@@ -5146,6 +5154,11 @@ func (c *sharedAgentLoopCallbacks) executeBoundSemanticSelectionCanonicalWithCon
 	if reason, refused := semanticManagedInvocationRefusal(selection, canonicalArgs); refused {
 		return tool.SelectionExecutionResult{Result: semanticManagedMISRefusalText(selection.AdapterName, reason), Succeeded: false, ReasonCode: reason}
 	}
+	// Trusted adapters (web_search, web_fetch, clock, shell, …) never reach
+	// the legacy executor that already publishes a tool card. Publish the
+	// same card here, once, before the adapter runs. The legacy fallthrough
+	// suppresses its own copy so generate_pdf is not announced twice.
+	c.emitSemanticSelectionProgress(selection, string(canonicalArgs.CanonicalJSON))
 	result := c.executeBoundSemanticAdapterCanonical(selection, canonicalArgs, coordinated)
 	if semanticSelectionFailed(result) {
 		return tool.SelectionExecutionResult{Result: result, Succeeded: false, ReasonCode: "selection_execution_failed"}
@@ -6795,7 +6808,36 @@ func firstRequiredArtifactContract(contracts []tool.ArtifactContract) tool.Artif
 	return tool.FirstRequiredArtifactContract(contracts)
 }
 
+// emitUserFacingToolProgress publishes the same compact tool card the legacy
+// executor sends, so the desktop strip can show web_search and the other
+// trusted adapters that never enter that executor.
+func (c *sharedAgentLoopCallbacks) emitUserFacingToolProgress(name, argsJSON string) {
+	if c == nil || c.onProgress == nil || c.handler == nil {
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	c.onProgress(userFacingToolProgressTextWithArgs(c.handler.imUILang(), name, argsJSON))
+}
+
+func (c *sharedAgentLoopCallbacks) emitSemanticSelectionProgress(selection tool.PlannedSelection, argsJSON string) {
+	name := tool.SemanticModelFunctionName(selection.AdapterName)
+	if name == "" {
+		name = strings.TrimSpace(selection.AdapterName)
+	}
+	c.emitUserFacingToolProgress(name, argsJSON)
+}
+
 func (c *sharedAgentLoopCallbacks) executeLegacyBoundAdapter(name, argsJSON string) string {
+	if c == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	// The semantic dispatcher already published this call's progress card.
+	prev := c.suppressToolProgress
+	c.suppressToolProgress = true
+	defer func() { c.suppressToolProgress = prev }()
 	return c.executeToolWithoutSemanticSurface(name, argsJSON)
 }
 

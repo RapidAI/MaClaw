@@ -72,6 +72,10 @@ func TestSemanticNeedsDropLookupWhenConversationHasFacts(t *testing.T) {
 	if semanticNeedsHaveWebLookup(got) || !semanticNeedsHaveGenerate(got) || len(got) != 2 {
 		t.Fatalf("reusable facts must drop only web lookup: %#v", got)
 	}
+	refresh := semanticNeedsForReusableConversationLookup(needs, ctx, pengzhouRefreshWeatherPDFText())
+	if semanticNeedsHaveWebLookup(refresh) || !semanticNeedsHaveGenerate(refresh) {
+		t.Fatalf("wording must not put a dropped lookup back: %#v", refresh)
+	}
 }
 
 func TestConversationReusesFetchResultsAndIgnoresKnowledgeSearch(t *testing.T) {
@@ -166,15 +170,18 @@ func TestIMSemanticRepeatWeatherPDFOmitsLookupNeed(t *testing.T) {
 
 func TestIMSemanticRefreshKeepsLookupNeed(t *testing.T) {
 	h := registerDocumentGenerateAndSearch(t)
-	ctx := withSemanticReusableLookupFacts(context.Background())
+	classification := liveDataGenerateClassification()
+	if semanticStoredLookupFactsApply(pengzhouRefreshWeatherPDFText(), *classification, classification) {
+		t.Fatal("a lookup classification must search again")
+	}
 	prepared, handled, err := h.semanticPlanForTurnWithContextAndClassificationAndAttachments(
-		ctx, "user", pengzhouRefreshWeatherPDFText(), "desktop", "root-refresh", "turn-refresh", liveDataGenerateClassification(), nil,
+		context.Background(), "user", pengzhouRefreshWeatherPDFText(), "desktop", "root-refresh", "turn-refresh", classification, nil,
 	)
 	if err != nil || !handled || prepared == nil {
 		t.Fatalf("refresh must still plan, handled=%v err=%v", handled, err)
 	}
 	if !planHasCapabilities(prepared.plan, "information.search.web", "document.generate.file") {
-		t.Fatalf("explicit refresh must keep lookup: %#v", prepared.plan.Selections)
+		t.Fatalf("a lookup classification must keep lookup: %#v", prepared.plan.Selections)
 	}
 }
 

@@ -49,6 +49,31 @@ func TestSynchronousDynamicEffectObservation(t *testing.T) {
 	}
 }
 
+func TestCompletedDynamicToolResultFailure(t *testing.T) {
+	mutation := coretool.PlannedSelection{
+		Provider: coretool.ProviderBinding{Kind: "mcp", ImplementationID: "work_log_update"},
+		FitProof: coretool.FitProof{MatchedCapability: "record.update.worklog"},
+	}
+	if !completedDynamicToolResultFailure(mutation, "Error: quota exceeded") {
+		t.Fatal("a deferred MCP tool error must be a completed failure")
+	}
+	if completedDynamicToolResultFailure(mutation, "wrote 3 rows") {
+		t.Fatal("a deferred MCP success body must keep its receipt")
+	}
+	skill := mutation
+	skill.Provider.Kind = "skill"
+	skill.Provider.ImplementationID = "lookup"
+	skill.FitProof.MatchedCapability = CapabilityInformationLookup
+	if !completedDynamicToolResultFailure(skill, "Error: quota exceeded") {
+		t.Fatal("an observed skill error body must be a completed failure")
+	}
+	deferredSkill := skill
+	deferredSkill.FitProof.MatchedCapability = "artifact.deliver.current_channel"
+	if completedDynamicToolResultFailure(deferredSkill, "Error: quota exceeded") {
+		t.Fatal("a deferred skill body must keep its own receipt")
+	}
+}
+
 func TestUnifiedCoordinatorReturnsInstalledMCPObservation(t *testing.T) {
 	const capability = coretool.CapabilityID("x:mcp:tengyun:query_worklog")
 	registry := dynamicSemanticRegistry(t)
@@ -151,6 +176,22 @@ func TestUnifiedCoordinatorKeepsLostMCPTransportUnknown(t *testing.T) {
 	}
 }
 
+func TestUnifiedCoordinatorRecordsDeferredMCPToolFailure(t *testing.T) {
+	provider := &boundMCPProviderStub{result: "Error: quota exceeded"}
+	surface, coordinator, plan, scope, principal, name := newInstalledMCPObservationSurface(t, "work_log_update", provider)
+	result, handled := surface.Execute(context.Background(), principal, provider, nil, name, `{}`, "call-update-failed")
+	if !handled || result.Succeeded || result.AwaitingReceipt || result.Unknown || result.ReasonCode != dynamicMCPToolErrorReason || !strings.Contains(result.Result, "quota exceeded") || provider.boundCalls != 1 {
+		t.Fatalf("deferred tool failure=%#v handled=%v calls=%d", result, handled, provider.boundCalls)
+	}
+	selectionID := plan.Selections[0].ID
+	if record, err := coordinator.Executions.Execution(scope, selectionID); err != nil || record.State != coretool.PlanExecutionFailed || record.ReasonCode != dynamicMCPToolErrorReason {
+		t.Fatalf("execution=%#v err=%v", record, err)
+	}
+	if completed, err := coordinator.Routes.CompletedSelections(scope); err != nil || completed[selectionID] {
+		t.Fatalf("route completion=%#v err=%v", completed, err)
+	}
+}
+
 func TestUnifiedCoordinatorDoesNotObserveReviewedMCPMutation(t *testing.T) {
 	provider := &boundMCPProviderStub{result: "wrote 3 rows"}
 	surface, coordinator, plan, scope, principal, name := newInstalledMCPObservationSurface(t, "work_log_update", provider)
@@ -192,7 +233,49 @@ func assertInstalledMCPToolFailure(t *testing.T, provider *boundMCPProviderStub,
 	}
 }
 
+func TestReadOnlyMCPToolErrorDoesNotCompleteTheSelection(t *testing.T) {
+	t.Run("error body", func(t *testing.T) {
+		provider := &boundMCPProviderStub{result: "Error: quota exceeded"}
+		surface, coordinator, plan, scope, principal, name := newInstalledMCPObservationSurfaceEffects(t, "query_worklog", provider, []coretool.EffectClass{coretool.EffectReadOnly})
+		result, handled := surface.Execute(context.Background(), principal, provider, nil, name, `{}`, "call-readonly-failed")
+		if !handled || result.Succeeded || result.AwaitingReceipt || result.Unknown || result.ReasonCode != dynamicMCPToolErrorReason || !strings.Contains(result.Result, "quota exceeded") || provider.boundCalls != 1 {
+			t.Fatalf("read-only tool failure=%#v handled=%v calls=%d", result, handled, provider.boundCalls)
+		}
+		selectionID := plan.Selections[0].ID
+		if record, err := coordinator.Executions.Execution(scope, selectionID); err != nil || record.State != coretool.PlanExecutionFailed || record.ReasonCode != dynamicMCPToolErrorReason {
+			t.Fatalf("execution=%#v err=%v", record, err)
+		}
+		if completed, err := coordinator.Routes.CompletedSelections(scope); err != nil || completed[selectionID] {
+			t.Fatalf("route completion=%#v err=%v", completed, err)
+		}
+		replay, handled := surface.Execute(context.Background(), principal, provider, nil, name, `{}`, "call-readonly-failed")
+		if !handled || replay.Succeeded || !strings.Contains(replay.Result, "quota exceeded") || provider.boundCalls != 1 {
+			t.Fatalf("replay=%#v handled=%v calls=%d", replay, handled, provider.boundCalls)
+		}
+	})
+	t.Run("success body", func(t *testing.T) {
+		provider := &boundMCPProviderStub{result: "weekly log"}
+		surface, coordinator, plan, scope, principal, name := newInstalledMCPObservationSurfaceEffects(t, "query_worklog", provider, []coretool.EffectClass{coretool.EffectReadOnly})
+		result, handled := surface.Execute(context.Background(), principal, provider, nil, name, `{}`, "call-readonly-ok")
+		if !handled || !result.Succeeded || result.AwaitingReceipt || result.Unknown || !strings.Contains(result.Result, "weekly log") || provider.boundCalls != 1 {
+			t.Fatalf("read-only success=%#v handled=%v calls=%d", result, handled, provider.boundCalls)
+		}
+		selectionID := plan.Selections[0].ID
+		if record, err := coordinator.Executions.Execution(scope, selectionID); err != nil || record.State != coretool.PlanExecutionSucceeded {
+			t.Fatalf("execution=%#v err=%v", record, err)
+		}
+		if completed, err := coordinator.Routes.CompletedSelections(scope); err != nil || !completed[selectionID] {
+			t.Fatalf("route completion=%#v err=%v", completed, err)
+		}
+	})
+}
+
 func newInstalledMCPObservationSurface(t *testing.T, toolName string, provider *boundMCPProviderStub) (*coreDynamicSemanticSurface, *coretool.SQLiteSemanticExecutionCoordinator, coretool.ToolPlan, coretool.InvocationScope, Principal, string) {
+	t.Helper()
+	return newInstalledMCPObservationSurfaceEffects(t, toolName, provider, []coretool.EffectClass{coretool.EffectExternalEffect})
+}
+
+func newInstalledMCPObservationSurfaceEffects(t *testing.T, toolName string, provider *boundMCPProviderStub, effects []coretool.EffectClass) (*coreDynamicSemanticSurface, *coretool.SQLiteSemanticExecutionCoordinator, coretool.ToolPlan, coretool.InvocationScope, Principal, string) {
 	t.Helper()
 	capability := coretool.CapabilityID("x:mcp:tengyun:" + toolName)
 	registry := dynamicSemanticRegistry(t)
@@ -213,7 +296,7 @@ func newInstalledMCPObservationSurface(t *testing.T, toolName string, provider *
 	}
 	entry := MCPToolEntry{ServerID: "tengyun", ToolName: toolName, InputSchema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "additionalProperties": false}, Contract: DynamicCapabilityContract{
 		Provisions: []coretool.CapabilityProvision{{Capability: capability, Quality: 1}},
-		Effects:    []coretool.EffectClass{coretool.EffectExternalEffect},
+		Effects:    effects,
 	}}
 	provider.entries = []MCPToolEntry{entry}
 	catalog, err := BuildDynamicSemanticCatalog([]MCPToolEntry{entry}, nil)

@@ -64,18 +64,13 @@ func (a *App) UseLocalOpenCodeLogin() (Status, error) {
 }
 
 func (a *App) applyOpenCodeKey(key string) (Status, error) {
-	a.setRelaunchAfterAuth(true)
 	status, err := a.applyVendorLogin(vendorCredential{
 		Mode:        AuthModeOpenCode,
 		BaseURL:     openCodeBaseURL(),
 		AccessToken: key,
 		ModelID:     configfile.OpenCodePreferredModel(),
 	})
-	if err != nil {
-		a.setRelaunchAfterAuth(false)
-		return Status{}, err
-	}
-	return status, nil
+	return status, err
 }
 
 const (

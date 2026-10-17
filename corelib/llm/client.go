@@ -288,6 +288,17 @@ func omitOpenCodeZenAgentReasoning(cfg corelib.MaclawLLMConfig, body map[string]
 	delete(body, "enable_thinking")
 }
 
+// PrepareOpenCodeZenAgentTools returns the tool list the OpenCode Zen free
+// models require. The agent loop freezes this projection into the tool-surface
+// receipt, and the chat body builder applies the same function, so the signed
+// manifest and the outbound payload stay identical.
+func PrepareOpenCodeZenAgentTools(cfg corelib.MaclawLLMConfig, tools []map[string]interface{}) []map[string]interface{} {
+	if !corelib.IsOpenCodeURL(cfg.URL) || !corelib.OpenCodeZenAgentModel(openCodeWireModel(cfg.UpstreamModel())) {
+		return tools
+	}
+	return ensureOpenCodeZenFreeTools(tools)
+}
+
 func applyOpenCodeZenFreeChat(cfg corelib.MaclawLLMConfig, body map[string]interface{}) {
 	if body == nil || !corelib.IsOpenCodeURL(cfg.URL) {
 		return
@@ -302,7 +313,7 @@ func applyOpenCodeZenFreeChat(cfg corelib.MaclawLLMConfig, body map[string]inter
 	}
 	callerTools := openAIChatTools(body["tools"])
 	body["stream"] = true
-	body["tools"] = ensureOpenCodeZenFreeTools(callerTools)
+	body["tools"] = PrepareOpenCodeZenAgentTools(cfg, callerTools)
 	// A tool-less caller, such as a classifier, has no executor for the gate
 	// tools. Keep them in the body and tell the model not to call any tool.
 	if len(callerTools) == 0 {
@@ -315,6 +326,31 @@ func applyOpenCodeZenFreeChat(cfg corelib.MaclawLLMConfig, body map[string]inter
 	if cfg.MaxOutputTokens <= 0 {
 		if n, ok := openAIChatInt(body["max_tokens"]); ok && n == cfg.EffectiveMaxOutputTokens() {
 			delete(body, "max_tokens")
+		}
+	}
+}
+
+// applyOpenCodeZenFreeResponses is the Responses API counterpart of
+// applyOpenCodeZenFreeChat. The tools are already flattened into the body.
+func applyOpenCodeZenFreeResponses(cfg corelib.MaclawLLMConfig, body map[string]interface{}) {
+	if body == nil || !corelib.IsOpenCodeURL(cfg.URL) {
+		return
+	}
+	model, _ := body["model"].(string)
+	model = openCodeWireModel(model)
+	if strings.TrimSpace(model) != "" {
+		body["model"] = model
+	}
+	if !corelib.OpenCodeZenAgentModel(model) {
+		return
+	}
+	body["stream"] = true
+	// Leave tool_choice alone. Zen Responses rejects "none" and named choices,
+	// and the tool-surface receipt must see the choice the loop published.
+	omitOpenCodeZenAgentReasoning(cfg, body)
+	if cfg.MaxOutputTokens <= 0 {
+		if n, ok := openAIChatInt(body["max_output_tokens"]); ok && n == cfg.EffectiveMaxOutputTokens() {
+			delete(body, "max_output_tokens")
 		}
 	}
 }
@@ -3031,7 +3067,7 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 	msg := Message{
 		Role:             "assistant",
 		Content:          StripAllExtra(visibleContent),
-		ReasoningContent: mergeOpenAIReasoningText(reasoningBuf.String(), taggedReasoning),
+		ReasoningContent: StripLeakedReasoningProtocol(mergeOpenAIReasoningText(reasoningBuf.String(), taggedReasoning)),
 	}
 
 	// Assemble tool calls in index order

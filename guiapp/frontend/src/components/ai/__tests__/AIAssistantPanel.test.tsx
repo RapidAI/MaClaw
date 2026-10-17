@@ -2220,9 +2220,9 @@ describe('AIAssistantPanel property tests', () => {
         expect(container.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在提取网页');
         expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')?.getAttribute('data-live')).toBe('true');
         expect(container.querySelector('[data-testid="assistant-reasoning-panel"] .assistant-reasoning-live-label')).toBeTruthy();
-        const toolCall = container.querySelector('[data-testid="assistant-tool-call"]');
-        expect(toolCall?.getAttribute('data-tool-name')).toBe('web_fetch');
-        expect(toolCall?.textContent).toContain('https://weather');
+        const toolFlip = container.querySelector('[data-testid="assistant-tool-flip"]');
+        expect(toolFlip?.getAttribute('aria-label')).toBe('web_fetch (https://weather)');
+        expect(container.querySelector('[data-testid="assistant-tool-call"]')).toBeNull();
         expect(container.textContent).not.toContain('maclaw-tool:');
         expect(container.textContent).not.toContain('正在执行工具');
         expect(container.textContent).not.toContain('可继续输入');
@@ -8037,6 +8037,65 @@ describe('AIAssistantPanel property tests', () => {
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
         expect(input.disabled).toBe(true);
         expect(input.readOnly).toBe(false);
+    });
+
+    it('shows the brand warmup splash instead of the new-task page while the assistant is starting', () => {
+        for (const initStatus of ['connecting', 'loading', 'warming'] as const) {
+            const view = renderPanel({
+                lang: 'zh-Hans',
+                startOnWorkbenchHome: true,
+                state: { messages: [], sending: false, streaming: false, ready: false, initStatus },
+            });
+            expect(view.queryByTestId('ai-welcome-container')).toBeNull();
+            expect(view.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('execution');
+            expect(view.getByTestId('assistant-brand-splash')).toBeTruthy();
+            const heading = view.getByRole('heading', { level: 2 });
+            expect(heading.textContent).not.toContain('新建任务');
+            expect(heading.textContent || '').toMatch(/正在连接 Hub|正在加载组件|正在预热/);
+            expect(view.queryByText('待处理')).toBeNull();
+            expect(view.queryByRole('button', { name: '暂停任务' })).toBeNull();
+            expect(view.queryByRole('button', { name: '分享任务' })).toBeNull();
+            const input = view.getByTestId('ai-input') as HTMLTextAreaElement;
+            expect(input.disabled).toBe(true);
+            expect(input.placeholder).toBe(heading.textContent);
+            view.unmount();
+        }
+    });
+
+    it('keeps setup incomplete ahead of the warmup splash', () => {
+        const { queryByTestId, getByText } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages: [], sending: false, streaming: false, ready: false, initStatus: 'warming', onboardingIncomplete: true },
+        });
+        expect(queryByTestId('assistant-brand-splash')).toBeNull();
+        expect(queryByTestId('ai-welcome-container')).toBeNull();
+        expect(getByText('设置未完成')).toBeTruthy();
+    });
+
+    it('holds a new-task wizard until warmup finishes', async () => {
+        const props = defaultPanelProps();
+        props.lang = 'zh-Hans';
+        props.startOnWorkbenchHome = true;
+        props.state = { ...props.state, messages: [], sending: false, streaming: false, ready: false, initStatus: 'warming' };
+        const view = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+        expect(view.queryByTestId('ai-welcome-container')).toBeNull();
+        expect(view.getByTestId('assistant-brand-splash')).toBeTruthy();
+        view.rerender(<AIAssistantPanel {...props} state={{ ...props.state, ready: true, initStatus: 'ready' }} />);
+        await waitFor(() => expect(view.getByTestId('ai-welcome-container')).toBeTruthy());
+    });
+
+    it('opens the new-task page after warmup finishes', () => {
+        const { getByTestId, queryByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            startOnWorkbenchHome: true,
+            state: { messages: [], sending: false, streaming: false, ready: true, initStatus: 'ready' },
+        });
+        expect(getByTestId('ai-welcome-container')).toBeTruthy();
+        expect(queryByTestId('assistant-brand-splash')).toBeNull();
     });
 
     it('falls back to streaming state for the busy spinner when visualBusy is omitted', () => {

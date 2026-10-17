@@ -519,6 +519,521 @@ func TestCodegraphFileSurveySkipsCommentedInclude(t *testing.T) {
 	}
 }
 
+func TestReadFileOfSourceUsesCodegraphMap(t *testing.T) {
+	bin := lookCodegraphBinary()
+	if bin == "" {
+		t.Skip("codegraph is not installed")
+	}
+	dir, err := os.MkdirTemp("", "codegraph-read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	src := "static const int CLIENT_W = 824;\nstatic void playTone(int freq) {\n    int x = CLIENT_W + freq;\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "audio.cpp"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lua := "local CLIENT_W = 824\nfunction playTone(freq)\n  return CLIENT_W + freq\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "tone.lua"), []byte(lua), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "CMakeLists.txt"), []byte("project(snake)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if codegraphNearestIndexRoot(dir) == "" && !ensureLocalCodegraphIndex(dir, bin) {
+		t.Fatal("codegraph init failed")
+	}
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{handler: &IMMessageHandler{}, projectPath: dir}}
+	got := cb.ExecuteTool("read_file", `{"path":"audio.cpp"}`)
+	if !strings.Contains(got, `"backend":"codegraph"`) || !strings.Contains(got, "CLIENT_W = 824") || strings.Contains(got, "static void playTone") {
+		t.Fatalf("source read_file did not return the codegraph map: %s", got)
+	}
+	if ok, _ := cb.validateReadSnapshot(filepath.Join(dir, "audio.cpp")); ok {
+		t.Fatal("file map unlocked edit")
+	}
+	if note := cb.editNeedsCodegraph(filepath.Join(dir, "audio.cpp")); !strings.Contains(note, "code_navigation") || !strings.Contains(note, "node") {
+		t.Fatalf("edit gate = %q", note)
+	}
+	searchesBeforeCold := len(cb.searchesRun)
+	cold := cb.ExecuteTool("read_file", `{"path":"tone.lua","start_line":2,"lines":1}`)
+	if strings.Contains(cold, `"backend":"codegraph"`) || !strings.Contains(cold, "playTone") {
+		t.Fatalf("cold line window was not read from disk: %s", cold)
+	}
+	if len(cb.searchesRun) != searchesBeforeCold {
+		t.Fatalf("cold line window recorded a search: %d to %d", searchesBeforeCold, len(cb.searchesRun))
+	}
+	if ok, _ := cb.validateReadSnapshot(filepath.Join(dir, "tone.lua")); ok {
+		t.Fatal("cold line window of an indexed file unlocked edit")
+	}
+	luaGot := cb.ExecuteTool("read_file", `{"path":"tone.lua"}`)
+	if !strings.Contains(luaGot, `"backend":"codegraph"`) || !strings.Contains(luaGot, "CLIENT_W") || !strings.Contains(luaGot, "playTone") || strings.Contains(luaGot, "return CLIENT_W") {
+		t.Fatalf("lua read_file did not return the codegraph map: %s", luaGot)
+	}
+	if note := cb.editNeedsCodegraph(filepath.Join(dir, "tone.lua")); !strings.Contains(note, "node") {
+		t.Fatalf("lua edit gate = %q", note)
+	}
+	searchesBeforeCap := len(cb.searchesRun)
+	capped := cb.ExecuteTool("read_file", `{"path":"audio.cpp","lines":200}`)
+	if !strings.Contains(capped, `"backend":"codegraph"`) || strings.Contains(capped, "static void playTone") {
+		t.Fatalf("lines cap bypassed the codegraph map: %s", capped)
+	}
+	if len(cb.searchesRun) != searchesBeforeCap {
+		t.Fatalf("unchanged survey queried the index again: %d to %d", searchesBeforeCap, len(cb.searchesRun))
+	}
+	searchesBeforeWindow := len(cb.searchesRun)
+	ranged := cb.ExecuteTool("read_file", `{"path":"audio.cpp","start_line":2,"lines":1}`)
+	if strings.Contains(ranged, `"backend":"codegraph"`) || !strings.Contains(ranged, "playTone") {
+		t.Fatalf("line window was not read from disk: %s", ranged)
+	}
+	if len(cb.searchesRun) != searchesBeforeWindow {
+		t.Fatalf("line window recorded a search: %d to %d", searchesBeforeWindow, len(cb.searchesRun))
+	}
+	if ok, _ := cb.validateReadSnapshot(filepath.Join(dir, "audio.cpp")); ok {
+		t.Fatal("line window of an indexed file unlocked edit")
+	}
+	if note := cb.editNeedsCodegraph(filepath.Join(dir, "audio.cpp")); !strings.Contains(note, "node") {
+		t.Fatalf("line window edit gate = %q", note)
+	}
+	searchesBeforePlain := len(cb.searchesRun)
+	plain := cb.ExecuteTool("read_file", `{"path":"CMakeLists.txt","start_line":1,"lines":1}`)
+	if !strings.Contains(plain, "project(snake)") || strings.Contains(plain, `"backend":"codegraph"`) {
+		t.Fatalf("non-source line window changed: %s", plain)
+	}
+	if ok, _ := cb.validateReadSnapshot(filepath.Join(dir, "CMakeLists.txt")); !ok {
+		t.Fatal("unindexed line window did not record the edit snapshot")
+	}
+	if len(cb.searchesRun) != searchesBeforePlain {
+		t.Fatalf("unindexed line window recorded a search: %d to %d", searchesBeforePlain, len(cb.searchesRun))
+	}
+}
+
+func TestCodegraphIndexedFileWithoutIndexIsUnknown(t *testing.T) {
+	owned, known := codegraphIndexedFile(t.TempDir(), "audio.cpp")
+	if owned || known {
+		t.Fatalf("directory without an index = owned %v known %v", owned, known)
+	}
+}
+
+func TestKnownCodegraphMissSkipsAnotherSurvey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "CMakeLists.txt")
+	if err := os.WriteFile(path, []byte("project(snake)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb := &codingSubAgentCallbacks{}
+	cb.noteCodegraphOwnership(path, info, false)
+	got, ok := cb.codegraphFileMap(path)
+	if ok || got.Text != "" {
+		t.Fatalf("known miss surveyed again: ok=%v text=%s", ok, got.Text)
+	}
+}
+
+func TestCodegraphCacheSurvivesUnchangedSnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "a.txt")
+	if err := os.WriteFile(path, []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb := &codingSubAgentCallbacks{}
+	cb.noteCodegraphOwnership(path, info, true)
+	cb.rememberCodegraphFileMap(path, info, codingToolExecutionResult{Text: "map", Outcome: codingToolOutcomeSuccess})
+	cb.refreshFileSnapshot(path)
+	if _, ok := cb.rememberedCodegraphFileMap(path); !ok {
+		t.Fatal("unchanged snapshot dropped the symbol map")
+	}
+	if known, owned := cb.codegraphSurveyKnown(path); !known || !owned {
+		t.Fatalf("unchanged snapshot dropped ownership = known %v owned %v", known, owned)
+	}
+	if err := os.WriteFile(path, []byte("ab"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb.refreshFileSnapshot(path)
+	if _, ok := cb.rememberedCodegraphFileMap(path); ok {
+		t.Fatal("changed snapshot kept the symbol map")
+	}
+	if known, owned := cb.codegraphSurveyKnown(path); known || owned {
+		t.Fatalf("changed snapshot kept the old version = known %v owned %v", known, owned)
+	}
+	if !cb.codegraphPathWasIndexed(path) {
+		t.Fatal("changed snapshot forgot that the path is indexed")
+	}
+	if err := os.WriteFile(path, []byte("abc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !cb.sourceReadShouldUseCodegraph(path) {
+		t.Fatal("stale survey after an edit fell through to the file body")
+	}
+	msg := cb.requireReadBeforeModify(path, "edit_file")
+	if !strings.Contains(msg, "node") || strings.Contains(msg, "请先调用 read_file") {
+		t.Fatalf("stale edit gate = %q", msg)
+	}
+}
+
+func TestIndexedEditAsksForNodeWhenTheStampIsOld(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "a.cpp")
+	if err := os.WriteFile(path, []byte("int a;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb := &codingSubAgentCallbacks{}
+	cb.noteCodegraphOwnership(path, info, true)
+	if err := os.WriteFile(path, []byte("int a;\nint b;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	msg := cb.requireReadBeforeModify(path, "edit_file")
+	if !strings.Contains(msg, "code_navigation") || !strings.Contains(msg, "node") || strings.Contains(msg, "请先调用 read_file") {
+		t.Fatalf("edit gate = %q", msg)
+	}
+
+	other := filepath.Join(filepath.Dir(path), "CMakeLists.txt")
+	if err := os.WriteFile(other, []byte("project(snake)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	miss, err := os.Stat(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb.noteCodegraphOwnership(other, miss, false)
+	if got := cb.requireReadBeforeModify(other, "edit_file"); !strings.Contains(got, "请先调用 read_file") {
+		t.Fatalf("unindexed edit gate = %q", got)
+	}
+}
+
+func TestMissedNodeBodyUsesTheAbsolutePathFromTheEditGate(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "selftest.cpp")
+	src := "failed = runVisualPolishChecks();\nint runVisualPolishChecks() {\n    return footer;\n}\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "selftest.cpp"), []byte("int runVisualPolishChecks() { return 1; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := codegraphFileWithinRoot(root, path); got != "selftest.cpp" {
+		t.Fatalf("absolute project path = %q", got)
+	}
+	if got := codegraphFileWithinRoot(root, `"`+path+`"`); got != "selftest.cpp" {
+		t.Fatalf("quoted absolute path = %q", got)
+	}
+	if got := codegraphFileWithinRoot(root, "`selftest.cpp`"); got != "selftest.cpp" {
+		t.Fatalf("backticked path = %q", got)
+	}
+	pinned := codegraphCommandList("node", "runVisualPolishChecks", "runVisualPolishChecks", codegraphFileWithinRoot(root, path))
+	if len(pinned) != 1 || strings.Join(pinned[0], " ") != "node --file selftest.cpp runVisualPolishChecks" {
+		t.Fatalf("absolute path must pin the node command, got %v", pinned)
+	}
+	if got := codegraphFileWithinRoot(root, filepath.Join(outside, "selftest.cpp")); got != "" {
+		t.Fatalf("path outside the project = %q", got)
+	}
+	missed, ok := codegraphMissedNodeBody(root, "node", "runVisualPolishChecks", path)
+	if !ok || !strings.Contains(missed, "Body for runVisualPolishChecks in selftest.cpp.") || !strings.Contains(missed, "return footer;") {
+		t.Fatalf("absolute pin must return the current definition, ok=%v body=%q", ok, missed)
+	}
+	if _, ok := codegraphMissedNodeBody(root, "node", "runVisualPolishChecks", "selftest.cpp"); !ok {
+		t.Fatal("relative pin must still return the definition")
+	}
+	if _, ok := codegraphMissedNodeBody(root, "explore", "runVisualPolishChecks", path); ok {
+		t.Fatal("a file survey is not a missed node body")
+	}
+	if def, ok := codegraphMissedNodeBody(root, "definition", "runVisualPolishChecks", path); !ok || !strings.Contains(def, "return footer;") {
+		t.Fatalf("definition lookup = %q ok=%v", def, ok)
+	}
+	absent := "No indexed file matches \"selftest.cpp\". Codegraph indexes source files."
+	if got := codegraphFinishPinnedNode(root, "node", "runVisualPolishChecks", path, absent); got != absent || strings.Contains(got, "Body for ") {
+		t.Fatalf("file miss became a disk body: %q", got)
+	}
+	prefixedAbsent := "⚠️ Some files referenced below were edited since the last index sync — their codegraph entries may be stale:\n  - selftest.cpp (edited 0ms ago, indexing in progress)\nFor accurate content of those specific files, Read them directly. The rest of this response is fresh.\n\n⚠ CodeGraph results below come from a different git worktree (F:/other), not where you're working (F:/test-prog) — they may reflect another branch, and symbols changed only here are missing. Run \"codegraph init -i\" here for a worktree-local index.\n\n" + absent + "\n\n(Note: 1 file(s) elsewhere in this project are pending index sync but were not referenced above:\n  - extra.go (edited 4ms ago))"
+	if got := codegraphFinishPinnedNode(root, "node", "runVisualPolishChecks", path, prefixedAbsent); got != prefixedAbsent || strings.Contains(got, "Body for ") {
+		t.Fatalf("prefixed file miss became a disk body: %q", got)
+	}
+	names := "**selftest.cpp** — 1 symbol\n- `measureCueQuality` (function) — :331\n"
+	finished := codegraphFinishPinnedNode(root, "node", "runVisualPolishChecks", path, names)
+	if !strings.Contains(finished, "Body for runVisualPolishChecks in selftest.cpp.") || !strings.Contains(finished, "return footer;") || strings.Contains(finished, "measureCueQuality") {
+		t.Fatalf("symbol map must be replaced by the definition, got %q", finished)
+	}
+	if again := codegraphFinishPinnedNode(root, "node", "runVisualPolishChecks", path, finished); again != finished {
+		t.Fatalf("a result that already read the file was rewritten")
+	}
+	if _, ok := codegraphMissedNodeBody(root, "node", "notInFile", path); ok {
+		t.Fatal("a name that is not in the file must stay a miss")
+	}
+	if _, ok := codegraphMissedNodeBody(root, "node", "runVisualPolishChecks", filepath.Join(outside, "selftest.cpp")); ok {
+		t.Fatal("a file outside the project must stay a miss")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: root}}
+	cb.noteCodegraphOwnership(path, info, true)
+	if note := cb.editNeedsCodegraph(path); !strings.Contains(note, `file 填 "selftest.cpp"`) {
+		t.Fatalf("edit gate should name the project-relative file, got %q", note)
+	}
+	cb.noteCodegraphReadSnapshots(root, missed)
+	if msg := cb.requireReadBeforeModify(path, "edit_file"); msg != "" {
+		t.Fatalf("the disk definition must open the edit gate, got %q", msg)
+	}
+	absBody := "Body for runVisualPolishChecks in " + filepath.ToSlash(path) + ".\n1\tint runVisualPolishChecks() {\n2\t    return footer;\n}\n"
+	if files := codegraphFilesReadyToEdit(absBody); len(files) != 1 || !codegraphSamePinnedFile(root, path, files[0]) {
+		t.Fatalf("absolute body path = %v", files)
+	}
+	if files := codegraphFilesReadyToEdit("Body for runVisualPolishChecks in ../selftest.cpp.\n"); len(files) != 0 {
+		t.Fatalf("a relative escape is not a read, got %v", files)
+	}
+	absCB := &codingSubAgentCallbacks{}
+	absCB.noteCodegraphOwnership(path, info, true)
+	absCB.noteCodegraphReadSnapshots(root, absBody)
+	if msg := absCB.requireReadBeforeModify(path, "edit_file"); msg != "" {
+		t.Fatalf("absolute body path must open the edit gate, got %q", msg)
+	}
+	outsideBody := "Body for runVisualPolishChecks in " + filepath.ToSlash(filepath.Join(outside, "selftest.cpp")) + ".\n1\tint runVisualPolishChecks() {\n2\t    return footer;\n}\n"
+	outCB := &codingSubAgentCallbacks{}
+	outCB.noteCodegraphOwnership(path, info, true)
+	outCB.noteCodegraphReadSnapshots(root, outsideBody)
+	if msg := outCB.requireReadBeforeModify(path, "edit_file"); !strings.Contains(msg, "code_navigation") {
+		t.Fatalf("a body outside the project must leave the edit gate closed, got %q", msg)
+	}
+}
+
+func TestDiskNodeBodySurvivesStaleIndexBanner(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "selftest.cpp")
+	if err := os.WriteFile(path, []byte("int runVisualPolishChecks() {\n    return footer;\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	banner := "⚠️ Some files referenced below were edited since the last index sync — their codegraph entries may be stale:\n  - selftest.cpp (edited 10ms ago, pending sync)\nFor accurate content of those specific files, Read them directly.\n## runVisualPolishChecks (function)\n\n**Location:** selftest.cpp:1\n\n```cpp\n1\tint runVisualPolishChecks() { return old; }\n```\n"
+	if files := codegraphFilesReadyToEdit(banner); len(files) != 0 {
+		t.Fatalf("stale indexed lines are not a read, got %v", files)
+	}
+	cmds := codegraphCommandList("node", "runVisualPolishChecks", "runVisualPolishChecks", "selftest.cpp")
+	replaced := attachCodegraphPinnedNodeBody(root, banner, cmds)
+	if strings.Contains(replaced, "return old") || strings.Contains(replaced, "were edited since") || strings.Contains(replaced, "Read them directly") || !strings.Contains(replaced, "return footer;") {
+		t.Fatalf("stale node result = %q", replaced)
+	}
+	if files := codegraphFilesReadyToEdit(replaced); len(files) != 1 || files[0] != "selftest.cpp" {
+		t.Fatalf("disk body files = %v", files)
+	}
+	kept := "Body for runVisualPolishChecks in selftest.cpp.\n1\tint runVisualPolishChecks() {\n2\t    return footer;\n}\n" + banner
+	if files := codegraphFilesReadyToEdit(kept); len(files) != 1 || files[0] != "selftest.cpp" {
+		t.Fatalf("banner beside a disk body = %v", files)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb := &codingSubAgentCallbacks{}
+	cb.noteCodegraphOwnership(path, info, true)
+	cb.noteCodegraphReadSnapshots(root, replaced)
+	if msg := cb.requireReadBeforeModify(path, "edit_file"); msg != "" {
+		t.Fatalf("replaced body must open the edit gate, got %q", msg)
+	}
+}
+
+func TestStaleIndexedSurveyStaysOnTheMap(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "a.cpp")
+	if err := os.WriteFile(path, []byte("int a;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb := &codingSubAgentCallbacks{}
+	cb.noteCodegraphReadSnapshots(root, "Body for playTone in a.cpp.\n")
+	if known, owned := cb.codegraphSurveyKnown(path); !known || !owned {
+		t.Fatalf("node body ownership = known %v owned %v", known, owned)
+	}
+	if err := os.WriteFile(path, []byte("int a;\nint b;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const mapText = `{"backend":"codegraph","output":"new map"}`
+	cb.rememberCodegraphFileMap(path, info, codingToolExecutionResult{Text: mapText, Outcome: codingToolOutcomeSuccess})
+	if !cb.sourceReadShouldUseCodegraph(path) {
+		t.Fatal("stale indexed survey fell through to the file body")
+	}
+	result, ok := cb.codegraphReadInstead(map[string]interface{}{"path": path})
+	if !ok || result.Text != mapText {
+		t.Fatalf("stale survey = ok %v text %q", ok, result.Text)
+	}
+	if snapOK, msg := cb.validateReadSnapshot(path); snapOK || !strings.Contains(msg, "code_navigation") || !strings.Contains(msg, "node") {
+		t.Fatalf("stale edit gate = ok %v msg %q", snapOK, msg)
+	}
+
+	other := filepath.Join(root, "CMakeLists.txt")
+	if err := os.WriteFile(other, []byte("project(snake)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb.trackReadFile(other)
+	if err := os.WriteFile(other, []byte("project(snake)\nadd_executable(snake)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if cb.sourceReadShouldUseCodegraph(other) {
+		t.Fatal("stale unindexed file stayed on the map")
+	}
+	if _, msg := cb.validateReadSnapshot(other); !strings.Contains(msg, "read_file") || strings.Contains(msg, "code_navigation") {
+		t.Fatalf("unindexed stale gate = %q", msg)
+	}
+}
+
+func TestIndexedSurveyFailureDoesNotDumpTheFile(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "a.cpp")
+	if err := os.WriteFile(path, []byte("int a;\nint b;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb := &codingSubAgentCallbacks{}
+	cb.noteCodegraphReadSnapshots(root, "Body for playTone in a.cpp.\n")
+	if err := os.WriteFile(path, []byte("int a;\nint b;\nint c;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, ok := cb.codegraphReadInstead(map[string]interface{}{"path": path})
+	if !ok || result.Outcome != codingToolOutcomeFailed || !strings.Contains(result.Text, "node") || strings.Contains(result.Text, "int c") {
+		t.Fatalf("failed survey = ok %v outcome %q text %q", ok, result.Outcome, result.Text)
+	}
+	if snapOK, _ := cb.validateReadSnapshot(path); snapOK {
+		t.Fatal("failed survey refreshed the edit snapshot")
+	}
+	window := map[string]interface{}{"path": path, "start_line": float64(1), "lines": float64(1)}
+	if !cb.lineWindowSkipsEditSnapshot(window, path) {
+		t.Fatal("line window unlocked an indexed file after an inconclusive probe")
+	}
+	if _, redirected := cb.codegraphReadInstead(window); redirected {
+		t.Fatal("line window was answered by the symbol map")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, redirected := cb.codegraphReadInstead(map[string]interface{}{"path": path}); redirected {
+		t.Fatal("missing indexed file did not fall through to the disk error")
+	}
+}
+
+func TestCodegraphOwnershipFollowsFileBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "note.txt")
+	if err := os.WriteFile(path, []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb := &codingSubAgentCallbacks{}
+	cb.noteCodegraphOwnership(path, info, false)
+	if known, owned := cb.codegraphSurveyKnown(path); !known || owned {
+		t.Fatalf("miss = known %v owned %v", known, owned)
+	}
+	cb.noteCodegraphOwnership(path, info, true)
+	cb.noteCodegraphOwnership(path, info, false)
+	if known, owned := cb.codegraphSurveyKnown(path); !known || !owned {
+		t.Fatalf("hit replaced by miss = known %v owned %v", known, owned)
+	}
+	if err := os.WriteFile(path, []byte("ab"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if known, owned := cb.codegraphSurveyKnown(path); known || owned {
+		t.Fatalf("stale ownership survived a write = known %v owned %v", known, owned)
+	}
+}
+
+func TestReadArgsAskForBytesNamesAPosition(t *testing.T) {
+	if readArgsAskForBytes(map[string]interface{}{"lines": float64(200)}) || readArgsAskForBytes(map[string]interface{}{"path": "audio.cpp"}) {
+		t.Fatal("a page cap is still a survey")
+	}
+	if !readArgsAskForBytes(map[string]interface{}{"start_line": float64(2), "lines": float64(1)}) {
+		t.Fatal("start_line is a window")
+	}
+	if !readArgsAskForBytes(map[string]interface{}{"offset": float64(20)}) {
+		t.Fatal("offset is a tail window")
+	}
+}
+
+func TestCodegraphUnbracedDefinitionUnlocksEdit(t *testing.T) {
+	lua := "## playTone (function)\n\n**Location:** src/tone.lua:2\n\n```lua\nfunction playTone(freq)\n  return CLIENT_W + freq\nend\n```\n"
+	if got := codegraphFilesReadyToEdit(lua); len(got) != 1 || got[0] != "src/tone.lua" {
+		t.Fatalf("lua body did not unlock edit: %#v", got)
+	}
+	call := "## playTone (function)\n\n**Location:** src/tone.lua:5\n\n```lua\nplayTone(freq)\n```\n"
+	if got := codegraphFilesReadyToEdit(call); len(got) != 0 {
+		t.Fatalf("lua call unlocked edit: %#v", got)
+	}
+	dir := t.TempDir()
+	file := "local CLIENT_W = 824\nfunction playTone(freq)\n  local t = {1, 2}\n  if freq > 0 then\n    return t[1]\n  end\n  return CLIENT_W\nend\nfunction other()\n  return 1\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "tone.lua"), []byte(file), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body := codegraphSourceBody(dir, "tone.lua", "playTone")
+	if !strings.Contains(body, "return CLIENT_W") || !strings.Contains(body, "\tend") && !strings.Contains(body, "end") || strings.Contains(body, "function other") {
+		t.Fatalf("lua body = %s", body)
+	}
+	py := "def playTone(freq):\n    t = {\"a\": 1}\n    return CLIENT_W + t[\"a\"]\n\ndef other():\n    return 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "tone.py"), []byte(py), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pyBody := codegraphSourceBody(dir, "tone.py", "playTone")
+	if !strings.Contains(pyBody, "return CLIENT_W") || strings.Contains(pyBody, "def other") {
+		t.Fatalf("python body = %s", pyBody)
+	}
+	cpp := "static void playTone(int freq) {\n    int t[] = {1, 2};\n    return;\n}\nstatic void other() {\n    return;\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "audio.cpp"), []byte(cpp), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cppBody := codegraphSourceBody(dir, "audio.cpp", "playTone")
+	if !strings.Contains(cppBody, "playTone") || !strings.Contains(cppBody, "return") || strings.Contains(cppBody, "void other") {
+		t.Fatalf("cpp body = %s", cppBody)
+	}
+	flat := "function playTone(freq)\nif freq > 0 then\nreturn t[1]\nend\nreturn CLIENT_W\nend\nfunction other()\nreturn 1\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "flat.lua"), []byte(flat), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	flatBody := codegraphSourceBody(dir, "flat.lua", "playTone")
+	if !strings.Contains(flatBody, "return CLIENT_W") || strings.Contains(flatBody, "function other") {
+		t.Fatalf("unindented lua body = %s", flatBody)
+	}
+	pyDefault := "def playTone(freq={}):\n    t = {\"a\": 1}\n    return CLIENT_W + t[\"a\"]\n\ndef other():\n    return 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "default.py"), []byte(pyDefault), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pyDefaultBody := codegraphSourceBody(dir, "default.py", "playTone")
+	if !strings.Contains(pyDefaultBody, "return CLIENT_W") || strings.Contains(pyDefaultBody, "def other") {
+		t.Fatalf("python default body = %s", pyDefaultBody)
+	}
+	goSrc := "func playTone(\n    freq int,\n) {\n    t := []int{1, 2}\n    return CLIENT_W\n}\n\nfunc other() {\n    return 1\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "audio.go"), []byte(goSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	goBody := codegraphSourceBody(dir, "audio.go", "playTone")
+	if !strings.Contains(goBody, "return CLIENT_W") || strings.Contains(goBody, "func other") {
+		t.Fatalf("go body = %s", goBody)
+	}
+}
+
+func TestCodegraphFileSurveyDoesNotSwallowUnbracedFunction(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := "local CLIENT_W = 824\nfunction playTone(freq)\n  return CLIENT_W + freq\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "src", "tone.lua"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := codegraphAttachFileSurvey(dir, "src/tone.lua", "### Symbols\n- `playTone` (function) — :2\n")
+	if !strings.Contains(got, "CLIENT_W = 824") || strings.Contains(got, "return CLIENT_W") {
+		t.Fatalf("survey swallowed the function: %s", got)
+	}
+}
+
 func TestCodegraphFileSurveySkipsIfZero(t *testing.T) {
 	dir := t.TempDir()
 	src := "#if 0\n#include \"other.h\"\nstatic const int DEAD_W = 9;\nvoid oldScene() {\n#endif\n#include \"theme.h\"\n#if 1\nstatic const int CLIENT_W = 824;\n#else\nstatic const int CLIENT_W = 1;\n#endif\nstatic void fillDot(int x) { x = CLIENT_W; }\n"
@@ -1091,6 +1606,46 @@ func TestCodegraphOutputUsefulIgnoresMissBanner(t *testing.T) {
 	if codegraphOutputUseful("No indexed file matches \"missing.go\". Read it directly.") {
 		t.Fatal("missing file should fall back")
 	}
+	prefixed := "⚠️ Some files referenced below were edited since the last index sync — their codegraph entries may be stale:\n  - CMakeLists.txt (edited 10ms ago, pending sync)\nFor accurate content of those specific files, Read them directly. The rest of this response is fresh.\n\nNo indexed file matches \"CMakeLists.txt\". Codegraph indexes source files.\n"
+	if codegraphOutputUseful(prefixed) || !codegraphMCPIndexedFileMiss(prefixed) {
+		t.Fatal("a staleness preface hid the file miss")
+	}
+	worktree := "⚠ CodeGraph results below come from a different git worktree (F:/other), not where you're working (F:/test-prog) — they may reflect another branch, and symbols changed only here are missing. Run \"codegraph init -i\" here for a worktree-local index.\n\nNo files indexed. Run `codegraph index` first.\n"
+	if codegraphOutputUseful(worktree) || !codegraphMCPIndexedFileMiss(worktree) {
+		t.Fatal("a worktree preface hid the empty index")
+	}
+	underBanner := "⚠️ Some files referenced below were edited since the last index sync — their codegraph entries may be stale:\n  - snake.cpp (edited 10ms ago, pending sync)\nFor accurate content of those specific files, Read them directly.\n## drawScene (function)\n\nstatic void drawScene() {}\n"
+	if !codegraphOutputUseful(underBanner) || codegraphMCPIndexedFileMiss(underBanner) {
+		t.Fatal("a staleness preface hid a real symbol")
+	}
+	// execute() prefixes the worktree notice, then withStalenessNotice puts the
+	// banner in front of that and the pending-files footer after the sentence.
+	// An item still being indexed uses the same shape as a pending item.
+	composed := "⚠️ Some files referenced below were edited since the last index sync — their codegraph entries may be stale:\n  - CMakeLists.txt (edited 0ms ago, indexing in progress)\nFor accurate content of those specific files, Read them directly. The rest of this response is fresh.\n\n⚠ CodeGraph results below come from a different git worktree (F:/other), not where you're working (F:/test-prog) — they may reflect another branch, and symbols changed only here are missing. Run \"codegraph init -i\" here for a worktree-local index.\n\nNo indexed file matches \"CMakeLists.txt\". Codegraph indexes source files; configs/docs it doesn't parse won't appear — Read those directly.\n\n(Note: 1 file(s) elsewhere in this project are pending index sync but were not referenced above:\n  - extra.go (edited 4ms ago))"
+	if codegraphOutputUseful(composed) || !codegraphMCPIndexedFileMiss(composed) {
+		t.Fatal("the staleness banner and worktree notice hid the file miss")
+	}
+	if got := codegraphContinueHint("codegraph", composed); got != codegraphIndexedFileMissHint || strings.Contains(got, "succeeded") {
+		t.Fatalf("composed file miss hint = %s", got)
+	}
+	if got := codegraphContinueHint("codegraph", prefixed); got != codegraphIndexedFileMissHint {
+		t.Fatalf("prefixed file miss hint = %s", got)
+	}
+	composedHit := "⚠️ Some files referenced below were edited since the last index sync — their codegraph entries may be stale:\n  - snake.cpp (edited 0ms ago, indexing in progress)\nFor accurate content of those specific files, Read them directly. The rest of this response is fresh.\n\n⚠ CodeGraph results below come from a different git worktree (F:/other), not where you're working (F:/test-prog) — they may reflect another branch, and symbols changed only here are missing. Run \"codegraph init -i\" here for a worktree-local index.\n\n## drawScene (function)\n\nstatic void drawScene() {}\n\n(Note: 1 file(s) elsewhere in this project are pending index sync but were not referenced above:\n  - extra.go (edited 4ms ago))"
+	if !codegraphOutputUseful(composedHit) || codegraphMCPIndexedFileMiss(composedHit) {
+		t.Fatal("a wrapped symbol was classified as a file miss")
+	}
+	miss := "No indexed file matches \"CMakeLists.txt\". Codegraph indexes source files; configs/docs it doesn't parse won't appear — Read those directly."
+	decorated := miss + "\n\nFile structure for CMakeLists.txt.\ninclude(Something)\n"
+	if got := codegraphContinueHint("codegraph", miss); got != codegraphIndexedFileMissHint {
+		t.Fatalf("file miss hint = %s", got)
+	}
+	if got := codegraphContinueHint("codegraph", decorated); got != codegraphIndexedFileMissHint || strings.Contains(got, "Do not read_file") {
+		t.Fatalf("decorated file miss hint = %s", got)
+	}
+	if got := codegraphContinueHint("codegraph", "**snake.cpp** — 1 symbol\n\nFile structure for snake.cpp.\n"); got != codegraphFileMapHint {
+		t.Fatalf("file map hint = %s", got)
+	}
 	if !codegraphOutputUseful("## AuthService (function)\n\nfunc AuthService() {}") {
 		t.Fatal("a real symbol result should be kept")
 	}
@@ -1420,6 +1975,61 @@ func TestCodegraphRemovePartialIndexDropsInterruptedDatabase(t *testing.T) {
 	keptData, err := os.ReadFile(kept)
 	if err != nil || string(keptData) != "default-index" {
 		t.Fatal("cleanup of the override directory should leave the default database alone")
+	}
+}
+
+func TestRemoteCodegraphAcceptSkipsAnswerPreface(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash is not installed")
+	}
+	run := func(output, accept string) (body, hit string) {
+		t.Helper()
+		script := `IFS= read -r -d '' _cg_out || true; _cg_hit=0; _cg_term_hit=0; ` + accept + `; printf '\n__HIT_%s' "$_cg_hit"`
+		cmd := exec.Command(bash, "-c", script)
+		cmd.Stdin = strings.NewReader(output)
+		cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("accept: %v\n%s", err, out)
+		}
+		text := string(out)
+		mark := strings.LastIndex(text, "\n__HIT_")
+		if mark < 0 {
+			t.Fatalf("accept marker missing: %s", text)
+		}
+		return text[:mark], text[mark+len("\n__HIT_"):]
+	}
+	banner := "⚠️ Some files referenced below were edited since the last index sync — their codegraph entries may be stale:\n  - CMakeLists.txt (edited 0ms ago, indexing in progress)\nFor accurate content of those specific files, Read them directly. The rest of this response is fresh.\n\n⚠ CodeGraph results below come from a different git worktree (F:/other), not where you're working (F:/test-prog) — they may reflect another branch, and symbols changed only here are missing. Run \"codegraph init -i\" here for a worktree-local index.\n\n"
+	footer := "\n\n(Note: 1 file(s) elsewhere in this project are pending index sync but were not referenced above:\n  - extra.go (edited 4ms ago))"
+	miss := banner + "No indexed file matches \"CMakeLists.txt\". Codegraph indexes source files; configs/docs it doesn't parse won't appear — Read those directly." + footer
+	if body, hit := run(miss, codegraphRemoteAcceptHit); hit != "0" || body != "" {
+		t.Fatalf("prefixed file miss accepted hit=%q body=%q", hit, body)
+	}
+	plainMiss := "No indexed file matches \"CMakeLists.txt\". Codegraph indexes source files."
+	if _, hit := run(plainMiss, codegraphRemoteAcceptHit); hit != "0" {
+		t.Fatalf("plain file miss hit=%q", hit)
+	}
+	symbol := banner + "## drawScene (function)\n\nstatic void drawScene() {}" + footer
+	body, hit := run(symbol, codegraphRemoteAcceptHit)
+	if hit != "1" || !strings.Contains(body, "## drawScene") || !strings.Contains(body, "static void drawScene") {
+		t.Fatalf("prefixed symbol hit=%q body=%q", hit, body)
+	}
+	named, namedHit := run(symbol, codegraphRemoteAcceptNamedNode("drawScene"))
+	if namedHit != "1" || !strings.Contains(named, "static void drawScene") {
+		t.Fatalf("named symbol under a preface hit=%q body=%q", namedHit, named)
+	}
+	other := banner + "## audioShutdown (function)\n\nstatic void audioShutdown() {}"
+	if _, hit := run(other, codegraphRemoteAcceptNamedNode("drawScene")); hit != "0" {
+		t.Fatalf("a different symbol under a preface hit=%q", hit)
+	}
+	weak := banner + "Search Results for \"bmp\"\nconstant MNS_CHECKORBMP (1380%)\n"
+	if _, hit := run(weak, codegraphRemoteAcceptHit); hit != "0" {
+		t.Fatalf("weak search under a preface hit=%q", hit)
+	}
+	strong := banner + "Search Results for \"screenshot\"\nmethod screenshot (9090%)\n  file.go:1\n"
+	if _, hit := run(strong, codegraphRemoteAcceptHit); hit != "1" {
+		t.Fatalf("strong search under a preface hit=%q", hit)
 	}
 }
 

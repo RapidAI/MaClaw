@@ -44,6 +44,31 @@ func TestCopyNULTerminatedUTF16FitsAndClearsTheTail(t *testing.T) {
 	}
 }
 
+func TestBalloonSoundAliasStaysAllocated(t *testing.T) {
+	if balloonSoundAlias == nil || *balloonSoundAlias == 0 {
+		t.Fatal("notification sound alias was not encoded")
+	}
+}
+
+func TestBalloonInfoFlagsUsesTheAppIcon(t *testing.T) {
+	const (
+		niifUser    = uint32(0x4)
+		niifNoSound = uint32(0x10)
+	)
+	for _, flag := range []uint32{0, 1, 2, 3} {
+		got := balloonInfoFlags(flag, true)
+		if got != niifUser {
+			t.Fatalf("flag %d -> %#x", flag, got)
+		}
+	}
+	if got := balloonInfoFlags(3|niifNoSound, true); got != niifUser|niifNoSound {
+		t.Fatalf("kept sound bit: %#x", got)
+	}
+	if got := balloonInfoFlags(2, false); got != 2 {
+		t.Fatalf("fallback without icon: %#x", got)
+	}
+}
+
 func TestCopyNULTerminatedUTF16CutsWithoutDroppingTheNUL(t *testing.T) {
 	var dst [4]uint16
 	if err := copyNULTerminatedUTF16(dst[:], strings.Repeat("项", 10)); err != nil {

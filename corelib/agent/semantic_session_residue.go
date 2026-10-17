@@ -69,7 +69,7 @@ func (cm *ConversationMemory) SetSemanticSessionResidue(userID string, residue S
 	}
 	session.semanticResidue = &cloned
 	sh.mu.Unlock()
-	cm.markDirtyAndScheduleFlush()
+	cm.markSessionDirty(userID)
 }
 
 // ParentExecutionTools returns the previous full turn's non-light tool
@@ -122,7 +122,7 @@ func (cm *ConversationMemory) SetParentExecutionTools(userID string, names []str
 	session.parentExecutionTools = cloned
 	session.parentExecutionKnown = true
 	sh.mu.Unlock()
-	cm.markDirtyAndScheduleFlush()
+	cm.markSessionDirty(userID)
 }
 
 // ClearParentExecutionTools drops a persisted parent tool list.
@@ -144,7 +144,7 @@ func (cm *ConversationMemory) ClearParentExecutionTools(userID string) {
 	session.parentExecutionTools = nil
 	session.parentExecutionKnown = true
 	sh.mu.Unlock()
-	cm.markDirtyAndScheduleFlush()
+	cm.markSessionDirty(userID)
 }
 
 func sameParentExecutionTools(left, right []string) bool {
@@ -216,7 +216,7 @@ func (cm *ConversationMemory) ClearSemanticSessionResidue(userID string) {
 	}
 	sh.mu.Unlock()
 	if cleared {
-		cm.markDirtyAndScheduleFlush()
+		cm.markSessionDirty(userID)
 	}
 }
 

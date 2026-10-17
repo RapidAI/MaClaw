@@ -152,18 +152,11 @@ func (d *NetDialer) Send(ctx context.Context, account Account, secret string, ms
 	if account.Outbound == nil {
 		return classErr("no_outbound", MsgNoOutbound(account.Name))
 	}
-	c, err := d.dialSMTP(ctx, *account.Outbound)
+	c, err := d.smtpClient(ctx, account, secret)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
-	user := account.Outbound.Username
-	if user == "" {
-		user = account.Address
-	}
-	if err := authSMTP(c, user, secret); err != nil {
-		return err
-	}
 	if err := mapSMTP(c.Mail(msg.From, nil), "mail"); err != nil {
 		return err
 	}
@@ -344,16 +337,8 @@ func (d *NetDialer) openBox(ctx context.Context, account Account, secret, box st
 	if account.Inbound == nil {
 		return nil, classErr("no_inbound", MsgNoInbound(account.Name))
 	}
-	c, err := d.dialIMAP(ctx, *account.Inbound)
+	c, err := d.imapClient(ctx, account, secret)
 	if err != nil {
-		return nil, err
-	}
-	user := account.Inbound.Username
-	if user == "" {
-		user = account.Address
-	}
-	if err := mapIMAP(imapLogin(c, user, secret), "auth"); err != nil {
-		_ = c.Logout()
 		return nil, err
 	}
 	if strings.TrimSpace(box) == "" {

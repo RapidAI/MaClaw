@@ -74,7 +74,7 @@ func (cm *ConversationMemory) SetProducedDocument(userID string, doc PersistedPr
 	cloned := doc
 	session.producedDocument = &cloned
 	sh.mu.Unlock()
-	cm.markDirtyAndScheduleFlush()
+	cm.markSessionDirty(userID)
 }
 
 // ClearProducedDocument drops the persisted file snapshot.
@@ -95,6 +95,6 @@ func (cm *ConversationMemory) ClearProducedDocument(userID string) {
 	}
 	sh.mu.Unlock()
 	if cleared {
-		cm.markDirtyAndScheduleFlush()
+		cm.markSessionDirty(userID)
 	}
 }

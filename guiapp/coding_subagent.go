@@ -755,14 +755,23 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 
 	status := TaskExecPassed
 	errMsg := ""
-	if result.Error != "" {
-		status = TaskExecFailed
-		errMsg = compactSubAgentErrorSummary(result.Error)
-		log.Printf("[coding-subagent] task T%d agent loop failed: %s", taskDisplayNumber(task), errMsg)
+	var openTodos []codingAgentTodoItem
+	if result.Error == agent.ErrChecklistUnsettled && cb != nil {
+		openTodos = cb.todos.snapshot()
 	}
-	if result.HardExit {
-		status = TaskExecFailed
-		errMsg = "模型连续返回空响应，任务中断"
+	if handled, st, msg := codingSubAgentStopFailure(result, openTodos); handled {
+		status, errMsg = st, msg
+		log.Printf("[coding-subagent] task T%d stopped with an open checklist: %s", taskDisplayNumber(task), errMsg)
+	} else {
+		if result.Error != "" {
+			status = TaskExecFailed
+			errMsg = compactSubAgentErrorSummary(result.Error)
+			log.Printf("[coding-subagent] task T%d agent loop failed: %s", taskDisplayNumber(task), errMsg)
+		}
+		if result.HardExit {
+			status = TaskExecFailed
+			errMsg = "模型连续返回空响应，任务中断"
+		}
 	}
 
 	modelSummary := compactSubAgentModelSummary(result.Text)
@@ -948,6 +957,9 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	}
 	if modelSummary == "" {
 		summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
+	}
+	if result.Error == agent.ErrChecklistUnsettled {
+		summary = appendCodingAgentTodoTurnNote(summary, openTodos)
 	}
 	// An unchecked diff is reported as a failed self-check once files changed.
 	// Skip that event while the gate is off, or a successful edit looks failed.
@@ -1216,6 +1228,8 @@ type codingSubAgentCallbacks struct {
 	filesModified         map[string]bool
 	filesCreated          map[string]bool
 	filesRead             map[string]bool
+	codegraphOwned        map[string]codegraphFileOwnership
+	codegraphFileMaps     map[string]codegraphFileMapCache
 	fileSnapshots         map[string]codingFileSnapshot
 	fileLineDeltas        map[string]SubAgentFileDiffStat
 	gitDiffChecked        bool
@@ -2645,9 +2659,22 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 				return codingToolExecutionResult{Text: c.rejectToolCall("read_file", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
 		}
+		// No position: this is a survey of an indexed file, answered by
+		// code_navigation. lines only caps that survey. start_line and offset
+		// name a window the index does not store, so those calls read the file.
+		if redirected, ok := c.codegraphReadInstead(fileArgs); ok {
+			if p, _ := fileArgs["path"].(string); p != "" {
+				c.emitReadFilePreview(p)
+			}
+			return redirected
+		}
 		result := executeCodingReadFile(fileArgs)
 		if p, _ := fileArgs["path"].(string); p != "" && result.Outcome == codingToolOutcomeSuccess {
-			c.trackReadFile(p)
+			// A window of an indexed file is the bytes at that position. The
+			// symbol body from code_navigation node is what unlocks the edit.
+			if !c.lineWindowSkipsEditSnapshot(fileArgs, p) {
+				c.trackReadFile(p)
+			}
 			// Emit code:file_update so the code preview panel shows the file being read.
 			c.emitReadFilePreview(p)
 		}
@@ -5439,6 +5466,7 @@ func (c *codingSubAgentCallbacks) trackReadFile(path string) {
 		c.fileSnapshots = make(map[string]codingFileSnapshot)
 	}
 	key := canonicalCodingPath(path)
+	c.dropCodegraphFileCacheIfChangedLocked(key, snap)
 	c.filesRead[key] = true
 	c.fileSnapshots[key] = snap
 	seq := c.nextEventSeqLocked()
@@ -6147,9 +6175,35 @@ func (c *codingSubAgentCallbacks) requireReadBeforeModify(path, toolName string)
 		if msg != "" {
 			return msg
 		}
+		if note := c.editNeedsCodegraph(path); note != "" {
+			return note
+		}
 		return fmt.Sprintf("请先调用 read_file(path=%q) 查看当前内容，再使用 %s 修改。编码 SubAgent 不允许未读文件就修改已有内容。", path, toolName)
 	}
 	return ""
+}
+
+// editNeedsCodegraph is the edit gate for a path the index has already hit.
+// The stamp may belong to an older version of the file. read_file still
+// returns the map for that path, so the gate asks for the symbol body.
+func (c *codingSubAgentCallbacks) editNeedsCodegraph(path string) string {
+	if c == nil || !c.codegraphPathWasIndexed(path) {
+		return ""
+	}
+	return fmt.Sprintf("请先调用 code_navigation，operation 用 node，query 填要修改的符号，file 填 %q。返回的符号正文就是当前源码，之后才能修改。不要 read_file 整份源码。", c.codingEditGatePath(path))
+}
+
+// codingEditGatePath is the file argument the edit rejection tells the model
+// to pass. A project-relative path is a pin. The absolute path is what the
+// model was editing, and copying it made the lookup drop the file.
+func (c *codingSubAgentCallbacks) codingEditGatePath(path string) string {
+	if c == nil {
+		return path
+	}
+	if rel := codegraphFileWithinRoot(c.projectPath(), path); rel != "" {
+		return rel
+	}
+	return path
 }
 
 func (c *codingSubAgentCallbacks) requireReadBeforeWriteExisting(path string, args map[string]interface{}) string {
@@ -6173,6 +6227,9 @@ func (c *codingSubAgentCallbacks) requireReadBeforeWriteExisting(path string, ar
 	if ok, msg := c.validateReadSnapshot(abs); !ok {
 		if msg != "" {
 			return msg
+		}
+		if note := c.editNeedsCodegraph(path); note != "" {
+			return note
 		}
 		return fmt.Sprintf("目标文件已存在，请先调用 read_file(path=%q) 查看当前内容；只有创建全新文件时才能直接 write_file。", path)
 	}
@@ -6204,6 +6261,9 @@ func (c *codingSubAgentCallbacks) validateReadSnapshot(path string) (bool, strin
 		return false, fmt.Sprintf("无法确认文件 %s 是否仍与 read_file 时一致：%s。请重新 read_file 后再修改。", path, err.Error())
 	}
 	if current != snap {
+		if c.codegraphPathWasIndexed(path) {
+			return false, fmt.Sprintf("文件 %s 自上次读取后已变化（读取时 %s，当前 %s）。请先调用 code_navigation，operation 用 node，query 填要修改的符号，file 填 %q。返回的符号正文就是当前源码，之后才能修改。", path, codingFileSnapshotSummary(snap), codingFileSnapshotSummary(current), c.codingEditGatePath(path))
+		}
 		return false, fmt.Sprintf("文件 %s 自上次 read_file 后已变化（read_file 时 %s，当前 %s）。请先重新调用 read_file(path=%q) 获取最新内容，再重新应用最小编辑。", path, codingFileSnapshotSummary(snap), codingFileSnapshotSummary(current), path)
 	}
 	return true, ""
@@ -6234,8 +6294,24 @@ func (c *codingSubAgentCallbacks) refreshFileSnapshot(path string) {
 		c.fileSnapshots = make(map[string]codingFileSnapshot)
 	}
 	key := canonicalCodingPath(path)
+	c.dropCodegraphFileCacheIfChangedLocked(key, snap)
 	c.filesRead[key] = true
 	c.fileSnapshots[key] = snap
+}
+
+// dropCodegraphFileCacheIfChangedLocked forgets a survey when the file bytes
+// changed. A snapshot of the same bytes, such as a node read, keeps the map.
+// An index hit stays: the map is stale, but the path is still indexed, and a
+// later survey must not fall through to the whole file. A miss does not.
+func (c *codingSubAgentCallbacks) dropCodegraphFileCacheIfChangedLocked(key string, snap codingFileSnapshot) {
+	prev, had := c.fileSnapshots[key]
+	if !had || (prev.Size == snap.Size && prev.Hash == snap.Hash) {
+		return
+	}
+	delete(c.codegraphFileMaps, key)
+	if entry, ok := c.codegraphOwned[key]; !ok || !entry.owned {
+		delete(c.codegraphOwned, key)
+	}
 }
 
 func canonicalCodingPath(path string) string {
@@ -6547,6 +6623,19 @@ func rebaseFallbackSubAgentTaskSummary(summary string, status TaskExecStatus, ta
 		return replacement + summary[idx:]
 	}
 	return replacement
+}
+
+// codingSubAgentStopFailure reports a prose stop that left the agent's own
+// checklist open. Other hard exits keep their existing messages.
+func codingSubAgentStopFailure(result agent.LoopResult, openItems []codingAgentTodoItem) (handled bool, status TaskExecStatus, errMsg string) {
+	if result.Error != agent.ErrChecklistUnsettled {
+		return false, "", ""
+	}
+	msg := checklistUnsettledUserMessage
+	if note := codingAgentTodoUnresolvedSummary(openItems); note != "" {
+		msg += "\n" + note
+	}
+	return true, TaskExecFailed, msg
 }
 
 func compactSubAgentErrorSummary(errMsg string) string {
@@ -6863,13 +6952,18 @@ func classifyCodingGuardrailCategory(toolName, path, command, result string) Cod
 	return codingSubAgentGuardrailCategoryPolicy
 }
 
-// codingGuardrailResultIsReadSnapshot reports a recoverable edit rejection:
-// the tool told the model to read_file and retry. It is not a safety block.
+// codingGuardrailResultIsReadSnapshot reports a recoverable edit rejection.
+// The tool told the model to read the current source and retry. For an indexed
+// file that source is the code_navigation node body. Nothing was written, so
+// this is not a scope block. The quality gate uses the same rule as a
+// read_file rejection.
 func codingGuardrailResultIsReadSnapshot(result string) bool {
 	switch {
 	case strings.Contains(result, "请先调用 read_file"),
 		strings.Contains(result, "缺少 read_file 快照"),
-		strings.Contains(result, "自上次 read_file"):
+		strings.Contains(result, "自上次 read_file"),
+		strings.Contains(result, "请先调用 code_navigation"),
+		strings.Contains(result, "请调用 code_navigation"):
 		return true
 	default:
 		return false
@@ -15235,7 +15329,7 @@ func codingShellNameIsContentSearch(name string) bool {
 
 func codingReaderCommandFile(name string, args []string) string {
 	switch name {
-	case "get-content", "gc", "type", "cat":
+	case "get-content", "gc", "type", "cat", "more", "less":
 	default:
 		return ""
 	}
@@ -17100,15 +17194,26 @@ func (s *CodingSubAgent) finishInspectionRoleTask(
 ) *CodingSubAgentResult {
 	status := TaskExecPassed
 	errMsg := ""
-	if result.Error != "" {
-		status = TaskExecFailed
-		errMsg = compactSubAgentErrorSummary(result.Error)
+	var openTodos []codingAgentTodoItem
+	if result.Error == agent.ErrChecklistUnsettled && cb != nil {
+		openTodos = cb.todos.snapshot()
 	}
-	if result.HardExit {
-		status = TaskExecFailed
-		errMsg = "模型连续返回空响应，任务中断"
+	if handled, st, msg := codingSubAgentStopFailure(result, openTodos); handled {
+		status, errMsg = st, msg
+	} else {
+		if result.Error != "" {
+			status = TaskExecFailed
+			errMsg = compactSubAgentErrorSummary(result.Error)
+		}
+		if result.HardExit {
+			status = TaskExecFailed
+			errMsg = "模型连续返回空响应，任务中断"
+		}
 	}
 	summary := compactSubAgentModelSummary(result.Text)
+	if result.Error == agent.ErrChecklistUnsettled {
+		summary = appendCodingAgentTodoTurnNote(summary, openTodos)
+	}
 	if summary == "" {
 		summary = fallbackSubAgentTaskSummary(status, task, result.Iterations, result.ToolCalls)
 	}
@@ -18327,8 +18432,9 @@ func applyCodingSubAgentToolHints(fn map[string]interface{}) {
 	props, _ := params["properties"].(map[string]interface{})
 	switch name {
 	case "bash":
-		appendCodingSubAgentToolDescription(fn, "Coding SubAgent bash is for read-only diagnostics and verification commands (test/build/lint/typecheck). Do not use bash to edit files, create/delete/move files, rewrite Git state, stage/commit/apply patches, or hide verifier failures with pipes/redirection/extra shell commands; use read_file/edit_file/edit_lines/write_file/git_diff instead.")
+		appendCodingSubAgentToolDescription(fn, "Coding SubAgent bash is for read-only diagnostics and verification commands (test/build/lint/typecheck). Do not use bash to edit files, create/delete/move files, rewrite Git state, stage/commit/apply patches, or hide verifier failures with pipes/redirection/extra shell commands; use read_file/edit_file/edit_lines/write_file/git_diff instead. Bash output is not a source read and does not unlock edit_file. Survey an indexed file with code_navigation or read_file. Read a line window with read_file start_line. Read one symbol with code_navigation operation node.")
 	case "read_file":
+		appendCodingSubAgentToolDescription(fn, "When codegraph has indexed the file and this call does not pass start_line or offset, the result is that file's symbol map, not the body. lines only caps a survey. Pass start_line or offset to read that window from disk; the window does not unlock edit_file. Call code_navigation with operation node for one symbol. A file codegraph does not index is read directly.")
 		ensureCodingSubAgentToolIntegerProp(props, "lines", "Max lines to read (optional, default 200, maximum 2000). Also accepts limit/num_lines/line_count.")
 		ensureCodingSubAgentToolIntegerProp(props, "start_line", "Starting line number, 1-based (optional). Also accepts start/startLine.")
 		ensureCodingSubAgentToolIntegerProp(props, "offset", "Read the last N lines of the file. Use this after adaptive output says earlier content was skipped or when inspecting logs/tails.")

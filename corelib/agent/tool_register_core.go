@@ -462,7 +462,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"understanding":       map[string]string{"type": "string", "description": "Restatement of the task (required for plan)"},
 			"steps":               map[string]interface{}{"type": "array", "description": "Ordered steps for plan. Each item is a string or {title, detail}", "items": map[string]string{"type": "object"}},
 			"index":               map[string]string{"type": "integer", "description": "1-based step index (required for step)"},
-			"status":              map[string]string{"type": "string", "description": "Step outcome for action=step: done or failed"},
+			"status":              map[string]string{"type": "string", "description": "Step outcome for action=step: progress (same step continues next turn), done, or failed"},
 			"result":              map[string]string{"type": "string", "description": "Step result (required for step)"},
 			"token_budget":        map[string]string{"type": "integer", "description": "Token budget limit (optional, 0=unlimited)"},
 			"max_turns":           map[string]string{"type": "integer", "description": "Max iteration rounds (optional, default 50)"},

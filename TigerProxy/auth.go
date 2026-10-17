@@ -257,8 +257,7 @@ func readyAuthModes(s Settings) []string {
 	return out
 }
 
-// SelectAuthMode is used on first-run (and when a switch lands on a method
-// that still needs credentials). It does not relaunch the process.
+// SelectAuthMode is used on first-run, before a login method has been chosen.
 func (a *App) SelectAuthMode(mode string) (Status, error) {
 	mode = strings.TrimSpace(mode)
 	if !validAuthMode(mode) {
@@ -290,8 +289,9 @@ func (a *App) cancelPendingLogins() {
 	a.mu.Unlock()
 }
 
-// SwitchAuthMode changes the active login method. If that method already has
-// credentials, CodexProxy relaunches so the new upstream takes effect.
+// SwitchAuthMode changes the active login method. Credentials already saved
+// for that method are applied to the running proxy immediately. A method that
+// still needs a login stays in this process until that login finishes.
 func (a *App) SwitchAuthMode(mode string) (Status, error) {
 	mode = strings.TrimSpace(mode)
 	if !validAuthMode(mode) {
@@ -311,82 +311,13 @@ func (a *App) SwitchAuthMode(mode string) (Status, error) {
 	snapshotActiveProfile(&s)
 	applyAuthProfile(&s, mode)
 	s = normalizeSettings(s)
-	ready := authProfileReady(s)
 	if err := a.applySettingsWithRestart(s); err != nil {
 		return Status{}, err
 	}
 	if s.ActiveAuthMode == AuthModeSSO {
 		go a.refreshModelsIfLoggedIn()
 	}
-	if ready {
-		if err := a.scheduleRelaunch(); err != nil {
-			return Status{}, err
-		}
-		status, err := a.Status()
-		if err != nil {
-			return status, err
-		}
-		status.RelaunchScheduled = true
-		return status, nil
-	}
-	a.setRelaunchAfterAuth(true)
 	return a.Status()
-}
-
-// setRelaunchAfterAuth arms or disarms the pending relaunch. The flag is
-// written by the login paths and read by statusMaybeRelaunch, which can run on
-// a different goroutine once applyOAuthResult returns.
-func (a *App) setRelaunchAfterAuth(v bool) {
-	a.mu.Lock()
-	a.relaunchAfterAuth = v
-	a.mu.Unlock()
-}
-
-// takeRelaunchAfterAuth reports whether a relaunch is pending, clearing it so
-// two concurrent callers cannot each schedule a restart.
-func (a *App) takeRelaunchAfterAuth() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if !a.relaunchAfterAuth {
-		return false
-	}
-	a.relaunchAfterAuth = false
-	return true
-}
-
-func (a *App) statusMaybeRelaunch() (Status, error) {
-	if a.takeRelaunchAfterAuth() && authProfileReadyMustLoad() {
-		if err := a.scheduleRelaunch(); err != nil {
-			return Status{}, err
-		}
-		status, err := a.Status()
-		if err != nil {
-			return status, err
-		}
-		status.RelaunchScheduled = true
-		return status, nil
-	}
-	return a.Status()
-}
-
-func authProfileReadyMustLoad() bool {
-	s, err := loadSettings()
-	if err != nil {
-		return false
-	}
-	return authProfileReady(s)
-}
-
-func (a *App) RelaunchApp() (Status, error) {
-	if err := a.scheduleRelaunch(); err != nil {
-		return Status{}, err
-	}
-	status, err := a.Status()
-	if err != nil {
-		return status, err
-	}
-	status.RelaunchScheduled = true
-	return status, nil
 }
 
 func (a *App) StartOpenAIOAuth() (LoginStartResult, error) {
@@ -748,7 +679,7 @@ func (a *App) applyOAuthResultLabeled(mode, baseURL string, result *oauth.TokenR
 		return Status{}, err
 	}
 	go a.refreshModelsForActiveMode()
-	return a.statusMaybeRelaunch()
+	return a.Status()
 }
 
 func (a *App) SaveUpstreamCredential(baseURL, apiKey, modelID string) (Status, error) {
@@ -774,7 +705,7 @@ func (a *App) SaveUpstreamCredential(baseURL, apiKey, modelID string) (Status, e
 	if err := a.applySettingsWithRestart(s); err != nil {
 		return Status{}, err
 	}
-	return a.statusMaybeRelaunch()
+	return a.Status()
 }
 
 func (a *App) ListUpstreamModels(baseURL, apiKey string) ([]ModelOption, error) {

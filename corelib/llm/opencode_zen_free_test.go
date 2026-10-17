@@ -2,16 +2,19 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestBuildOpenAIChatRequestDataRoutesOpenCodeFreeModelsToZen(t *testing.T) {
-	for _, model := range []string{"glm-5.3-flash-free", "deepseek-v4.1-flash-free"} {
+	for _, model := range []string{"glm-5.3-flash-free", "deepseek-v4.1-flash-free", "space-bunny-free", "nemotron-3.5-lightning-free", "muse-spark-1.2-contributor-free"} {
 		endpoint, body, err := BuildOpenAIChatRequestData(corelib.MaclawLLMConfig{
 			URL:   "https://opencode.ai/zen/go/v1",
 			Model: model,
@@ -76,8 +79,10 @@ func TestBuildOpenAIChatRequestDataKeepsOtherZenFreeModelsOnZen(t *testing.T) {
 		t.Fatalf("endpoint = %s", endpoint)
 	}
 	text := string(body)
-	if strings.Contains(text, `"name":"bash"`) || !strings.Contains(text, `"stream":false`) || !strings.Contains(text, `"model":"hy3-free"`) {
-		t.Fatalf("body = %s", text)
+	for _, want := range []string{`"model":"hy3-free"`, `"stream":true`, `"name":"bash"`, `"name":"read"`, `"tool_choice":"none"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("body missing %s: %s", want, text)
+		}
 	}
 }
 
@@ -239,5 +244,108 @@ func TestBuildOpenAIChatRequestDataKeepsOpenCodeFreeDeepSeekImages(t *testing.T)
 	}
 	if !strings.Contains(string(body), "image_url") {
 		t.Fatalf("body = %s", body)
+	}
+}
+
+func TestBuildResponsesAPIRequestDataRoutesMuseToResponses(t *testing.T) {
+	cfg := corelib.MaclawLLMConfig{
+		URL:       "https://opencode.ai/zen/go/v1",
+		Model:     "muse-spark-1.2-contributor-free",
+		AgentType: "OpenCode",
+	}
+	req, body, endpoint, err := NewResponsesAPIRequest(context.Background(), cfg, []interface{}{
+		map[string]interface{}{"role": "user", "content": "hi"},
+	}, ResponsesAPIRequestOptions{Stream: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if endpoint != "https://opencode.ai/zen/v1/responses" {
+		t.Fatalf("endpoint = %s", endpoint)
+	}
+	text := string(body)
+	for _, want := range []string{`"model":"muse-spark-1.2-contributor-free"`, `"stream":true`, `"name":"bash"`, `"name":"read"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("body missing %s: %s", want, text)
+		}
+	}
+	if strings.Contains(text, `"tool_choice"`) {
+		t.Fatalf("responses body set a tool_choice Zen rejects: %s", text)
+	}
+	if strings.Contains(text, "max_output_tokens") || strings.Contains(text, "reasoning") {
+		t.Fatalf("body = %s", text)
+	}
+	if req.Header.Get("originator") != "" {
+		t.Fatalf("originator = %s", req.Header.Get("originator"))
+	}
+	if req.Header.Get("x-opencode-client") != "cli" {
+		t.Fatalf("x-opencode-client = %s", req.Header.Get("x-opencode-client"))
+	}
+	if req.Header.Get(corelib.OpenCodeSessionHeader) == "" {
+		t.Fatal("missing opencode session")
+	}
+}
+
+func TestOpenCodeZenCatalogFreeModelsLive(t *testing.T) {
+	if os.Getenv("OPENCODE_LIVE") != "1" {
+		t.Skip("OPENCODE_LIVE=1 is not set")
+	}
+	key := strings.TrimSpace(os.Getenv("OPENCODE_KEY"))
+	if key == "" {
+		t.Skip("OPENCODE_KEY is not set")
+	}
+	for _, model := range []string{"space-bunny-free", "nemotron-3.5-lightning-free"} {
+		t.Run(model, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			defer cancel()
+			resp, err := DoOpenAIRequest(ctx, corelib.MaclawLLMConfig{
+				URL:       "https://opencode.ai/zen/v1",
+				Key:       key,
+				Model:     model,
+				Protocol:  "openai",
+				AgentType: "opencode",
+			}, []interface{}{map[string]interface{}{"role": "user", "content": "Reply with exactly PING"}}, nil, nil)
+			if err != nil {
+				var httpErr *HTTPStatusError
+				if errors.As(err, &httpErr) && httpErr != nil {
+					t.Fatalf("status=%d body=%s", httpErr.StatusCode, httpErr.Body)
+				}
+				t.Fatal(err)
+			}
+			if resp == nil || len(resp.Choices) == 0 || !strings.Contains(resp.Choices[0].Message.Content, "PING") {
+				t.Fatalf("response = %#v", resp)
+			}
+		})
+	}
+}
+
+func TestOpenCodeMuseResponsesLive(t *testing.T) {
+	if os.Getenv("OPENCODE_LIVE") != "1" {
+		t.Skip("OPENCODE_LIVE=1 is not set")
+	}
+	key := strings.TrimSpace(os.Getenv("OPENCODE_KEY"))
+	if key == "" {
+		t.Skip("OPENCODE_KEY is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	resp, err := DoResponsesAPIRequestStream(ctx, corelib.MaclawLLMConfig{
+		URL:             "https://opencode.ai/zen/v1",
+		Key:             key,
+		Model:           "muse-spark-1.2-contributor-free",
+		Protocol:        "openai",
+		AgentType:       "opencode",
+		WireAPI:         "responses",
+		MaxOutputTokens: corelib.LLMProbeMaxOutputTokens,
+		ThinkingMode:    "disabled",
+	}, []interface{}{map[string]interface{}{"role": "user", "content": "Reply with exactly PING"}}, nil, nil, nil, nil)
+	if err != nil {
+		var httpErr *HTTPStatusError
+		if errors.As(err, &httpErr) && httpErr != nil {
+			t.Fatalf("status=%d body=%s", httpErr.StatusCode, httpErr.Body)
+		}
+		t.Fatal(err)
+	}
+	if resp == nil || len(resp.Choices) == 0 || !strings.Contains(resp.Choices[0].Message.Content, "PING") {
+		t.Fatalf("response = %#v", resp)
 	}
 }

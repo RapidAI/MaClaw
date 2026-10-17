@@ -483,7 +483,8 @@ func transportText(err error) string {
 	if err == nil {
 		return ""
 	}
-	if ce, ok := err.(*ClassError); ok {
+	var ce *ClassError
+	if errors.As(err, &ce) && ce != nil && ce.Message != "" {
 		return ce.Message
 	}
 	_, msg := classifyTransport(err, false)

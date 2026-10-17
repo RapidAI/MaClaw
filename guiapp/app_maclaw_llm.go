@@ -1746,7 +1746,17 @@ func (a *App) ResolveMaclawLLMProfile(profile string) (corelib.MaclawLLMConfig, 
 	resolved.SupportsVision = providerSupportsVisionForModel(provider, model)
 	resolved.Profile = profile
 	resolved.RouteSource = "base"
+	resolved = applyOpenCodeResponsesWire(resolved)
 	return resolved, nil
+}
+
+// applyOpenCodeResponsesWire points models that reject Chat Completions at
+// the Responses API. An explicit wire already chosen by the provider stays.
+func applyOpenCodeResponsesWire(cfg corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
+	if strings.TrimSpace(cfg.WireAPI) == "" && corelib.OpenCodeUsesResponsesAPI(cfg.URL, cfg.Model) {
+		cfg.WireAPI = "responses"
+	}
+	return cfg
 }
 
 func (a *App) GetMaclawLLMConfig() corelib.MaclawLLMConfig {
@@ -3487,6 +3497,7 @@ func (a *App) TestMaclawLLM(llm corelib.MaclawLLMConfig) (corelib.MaclawLLMTestR
 	llm.URL = url
 	llm.Key = key
 	llm.Model = model
+	llm = applyOpenCodeResponsesWire(llm)
 	llm.Protocol = protocol
 	// The settings dialog waits on both checks. Run the image probe beside
 	// the text probe, and drop it if the text probe fails.
@@ -3627,6 +3638,24 @@ func (a *App) testResponsesAPILLM(cfg corelib.MaclawLLMConfig) (string, error) {
 	lease.SetCancel(scheduledCancel)
 	defer scheduledCancel()
 
+	if corelib.OpenCodeUsesResponsesAPI(cfg.URL, cfg.Model) {
+		streamed, streamErr := llm.DoResponsesAPIRequestStream(scheduledCtx, cfg, messages, nil, client, nil, nil)
+		globalLLMScheduler.ObserveResult(trace, streamErr)
+		if streamErr != nil {
+			return "", streamErr
+		}
+		text := ""
+		if streamed != nil && len(streamed.Choices) > 0 {
+			text = streamed.Choices[0].Message.Content
+			if strings.TrimSpace(text) == "" {
+				text = streamed.Choices[0].Message.ReasoningContent
+			}
+		}
+		if strings.TrimSpace(text) == "" {
+			return "", fmt.Errorf("no response from model")
+		}
+		return stripFunctionCalls(stripThinkTags(text)), nil
+	}
 	req, _, endpoint, err := llm.NewResponsesAPIRequest(scheduledCtx, cfg, messages, llm.ResponsesAPIRequestOptions{
 		Stream: false,
 	})
@@ -3944,6 +3973,23 @@ func probeVisionResponsesAPIContext(ctx context.Context, probeCfg corelib.Maclaw
 			map[string]interface{}{"type": "image_url", "image_url": map[string]interface{}{"url": "data:image/png;base64," + visionProbeRedPNG}},
 		},
 	}}
+	if corelib.OpenCodeUsesResponsesAPI(probeCfg.URL, probeCfg.Model) {
+		streamed, streamErr := llm.DoResponsesAPIRequestStream(scheduledCtx, probeCfg, messages, nil, client, nil, nil)
+		globalLLMScheduler.ObserveResult(trace, streamErr)
+		if streamErr != nil {
+			var httpErr *llm.HTTPStatusError
+			if errors.As(streamErr, &httpErr) && httpErr != nil {
+				return classifyVisionProbeHTTPFailure(httpErr.StatusCode, httpErr.Body)
+			}
+			log.Printf("[LLM] vision probe ResponsesAPI error: %v", streamErr)
+			return visionProbeInconclusive
+		}
+		content := ""
+		if streamed != nil && len(streamed.Choices) > 0 {
+			content = streamed.Choices[0].Message.Content
+		}
+		return classifyVisionProbeResponse(content)
+	}
 	req, data, _, err := llm.NewResponsesAPIRequest(scheduledCtx, probeCfg, messages, llm.ResponsesAPIRequestOptions{
 		Stream:    false,
 		ExtraBody: map[string]interface{}{"store": false},
