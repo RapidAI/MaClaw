@@ -196,6 +196,9 @@ type LoopContext struct {
 	LLMCaller string
 	// ForegroundChatBudget caps a desktop chat turn. Zero keeps the normal limit.
 	ForegroundChatBudget int
+	// ForegroundToolRounds counts inline tool calls on a desktop chat turn.
+	// More than a couple of lookups is background work.
+	ForegroundToolRounds int
 	// OfferChatTaskDispatch lets this short chat turn hand long work off.
 	OfferChatTaskDispatch bool
 	// ChatTaskID is set when this loop is itself a background chat task.

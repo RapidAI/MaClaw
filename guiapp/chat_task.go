@@ -15,11 +15,14 @@ import (
 )
 
 const (
-	chatTaskLLMCaller                    = "chat_task_loop"
-	chatTaskResultSource                 = "chat_task_result"
-	chatTaskEventName                    = "ai-assistant-task"
-	chatTaskStoreFile                    = "chat-tasks.json"
+	chatTaskLLMCaller    = "chat_task_loop"
+	chatTaskResultSource = "chat_task_result"
+	chatTaskEventName    = "ai-assistant-task"
+	chatTaskStoreFile    = "chat-tasks.json"
+	// A short reply, at most two inline lookups, then the closing sentence.
+	// A third tool call is rejected and has to be handed off.
 	desktopChatForegroundIterationBudget = 4
+	desktopChatInlineToolRounds          = 2
 	chatTaskPerSessionLimit              = 3
 )
 
@@ -488,23 +491,33 @@ func (h *IMMessageHandler) executeChatTaskAgentLoop(task *chatTaskRecord) chatTa
 		Platform:  desktopPlatform,
 		Text:      task.Prompt,
 	}, loop, func(text string) {
-		if text == "" || text == imHeartbeatMsg || strings.HasPrefix(text, "__") {
+		milestone, ok := chatTaskProgressMilestone(text)
+		if !ok {
 			return
 		}
 		if reg := h.ensureChatTasks(); reg != nil {
-			reg.noteProgress(task.ID, text)
+			reg.noteProgress(task.ID, milestone)
 		}
 	}, nil, nil, nil)
 	if loop.IsCancelled() {
 		return chatTaskRunResult{Err: fmt.Errorf("canceled")}
 	}
+	return chatTaskResultFromAgentResponse(resp, loop)
+}
+
+func chatTaskResultFromAgentResponse(resp *IMAgentResponse, loop *LoopContext) chatTaskRunResult {
 	if resp == nil {
 		return chatTaskRunResult{Err: fmt.Errorf("chat task returned no result")}
 	}
+	text := strings.TrimSpace(resp.Text)
+	artifacts := chatTaskArtifacts(resp, loop)
 	if errText := strings.TrimSpace(resp.Error); errText != "" {
-		return chatTaskRunResult{Err: fmt.Errorf("%s", errText), Text: resp.Text}
+		return chatTaskRunResult{Err: fmt.Errorf("%s", errText), Text: text, Artifacts: artifacts}
 	}
-	return chatTaskRunResult{Text: strings.TrimSpace(resp.Text), Artifacts: chatTaskArtifacts(resp, loop)}
+	if text == "" && len(artifacts) == 0 {
+		return chatTaskRunResult{Err: fmt.Errorf("ended without a verified result")}
+	}
+	return chatTaskRunResult{Text: text, Artifacts: artifacts}
 }
 
 func (h *IMMessageHandler) bindChatTaskLoop(taskID string, loop *LoopContext) {
@@ -794,24 +807,47 @@ func (h *IMMessageHandler) chatTurnMayDispatch(msg IMUserMessage, workflowAgentL
 
 func (h *IMMessageHandler) chatTaskDispatchGuidance(sessionKey string) string {
 	var b strings.Builder
-	b.WriteString("\n\n[Background tasks]\n")
-	b.WriteString("Long work (files, research, multi-step generation, office documents, batch edits) must be handed off with dispatch_background_task. Then tell the user you started it and stop. Do not keep doing that work in this turn.\n")
-	b.WriteString("Short questions, clarifications, and status checks stay in this chat. A follow-up message is a new chat turn unless the user is answering a task card or explicitly steering that task.\n")
+	b.WriteString("\n\n[Chat]\n")
+	b.WriteString("You are the conversation. Match the user's language. Be concise and warm. Lead with the answer. Never show task ids, tool names, or internal lane names.\n")
+	b.WriteString("The first thing the user sees in this turn is a short reply, before any tool call: the answer when it is quick, otherwise one sentence that names the first step.\n")
+	b.WriteString("Answer quick questions and at most two trivial lookups here. Multi-step work, long tool sequences, computer use, files, research, office documents, and batch edits go to dispatch_background_task. After it starts, one plain sentence and stop. Do not keep doing that work here.\n")
+	b.WriteString("A follow-up or correction to work already running goes to steer_background_task for that same work. Do not start a second one for it. If more than one is running and it is unclear which, ask which one.\n")
+	b.WriteString("If the user says to stop or cancel, in any phrasing, stop. Do not start new work in that turn.\n")
+	b.WriteString("Ask only when a wrong guess would delete, send, purchase, or submit something, or when ambiguity would materially change the result. Otherwise decide and proceed.\n")
+	b.WriteString("Never say work is done unless it was verified. If it is still running, blocked, or failed, say that. Do not invent results.\n")
+	b.WriteString("When a finished result appears in this chat, deliver it in plain words. Do not add work you did not see.\n")
 	if reg := h.ensureChatTasks(); reg != nil {
-		if tasks := reg.List(sessionKey); len(tasks) > 0 {
-			b.WriteString("Current background tasks:\n")
-			for _, task := range tasks {
-				fmt.Fprintf(&b, "- %s [%s] %s\n", task.ID, task.Status, task.Title)
-				if task.Progress != "" && chatTaskStatusOpen(task.Status) && task.Status != string(chatTaskNeedsInput) {
-					fmt.Fprintf(&b, "  progress: %s\n", truncateChatTaskText(task.Progress, 160))
+		var open []AIAssistantChatTask
+		for _, task := range reg.List(sessionKey) {
+			if chatTaskStatusOpen(task.Status) {
+				open = append(open, task)
+			}
+		}
+		if len(open) > 0 {
+			b.WriteString("Work already running (titles only; never repeat these labels as ids):\n")
+			for _, task := range open {
+				fmt.Fprintf(&b, "- %s (%s)", task.Title, task.Status)
+				if task.Progress != "" && task.Status != string(chatTaskNeedsInput) {
+					fmt.Fprintf(&b, " — %s", truncateChatTaskText(task.Progress, 160))
 				}
 				if task.Question != "" {
-					fmt.Fprintf(&b, "  waiting for: %s\n", truncateChatTaskText(task.Question, 160))
+					fmt.Fprintf(&b, " — waiting: %s", truncateChatTaskText(task.Question, 160))
 				}
+				b.WriteByte('\n')
 			}
+			b.WriteString("steer_background_task updates one of these. Omit task_id when only one is running; pass its title when several are.\n")
 		}
 	}
 	return b.String()
+}
+
+func chatTaskWorkerGuidance() string {
+	return "\n\n[Background work]\n" +
+		"Do the work. Your final message is what the person reads. Use their language, plain words, and lead with the result.\n" +
+		"Progress is for a real change only: a file is ready, you are blocked, or a step failed. Do not narrate each command.\n" +
+		"Call chat_task_request_input only when a wrong guess would delete, send, purchase, or submit something, or when ambiguity would materially change the result. Otherwise decide and proceed.\n" +
+		"Never say the work is done unless you verified it. If you are blocked or it failed, say that actual state. Do not invent results.\n" +
+		"Do not mention task ids, tool names, or internal lanes. Do not start another task.\n"
 }
 
 func (h *IMMessageHandler) tryChatTaskStatusReply(msg IMUserMessage) (*IMAgentResponse, bool) {
@@ -840,7 +876,7 @@ func (h *IMMessageHandler) tryChatTaskStatusReply(msg IMUserMessage) (*IMAgentRe
 		return nil, false
 	}
 	return &IMAgentResponse{
-		Text:           formatChatTaskStatus(tasks),
+		Text:           formatChatTaskStatus(tasks, desktopChatChinese(msg.Lang, msg.Text)),
 		SessionKey:     sessionKey,
 		ResponseSource: "chat_task_status",
 	}, true
@@ -850,6 +886,8 @@ func (h *IMMessageHandler) executeChatTaskToolIfAny(policyUserID, name string, a
 	switch strings.TrimSpace(name) {
 	case "dispatch_background_task":
 		return h.dispatchBackgroundTaskTool(policyUserID, args), true
+	case "steer_background_task":
+		return h.steerBackgroundTaskTool(policyUserID, args), true
 	case "chat_task_request_input":
 		return h.chatTaskRequestInputTool(policyUserID, args), true
 	default:
@@ -887,8 +925,47 @@ func (h *IMMessageHandler) dispatchBackgroundTaskTool(policyUserID string, args 
 	}
 	loop.SetMaxIterations(next)
 	return toolExecutionResult{
-		Text:     fmt.Sprintf("Background task %s started: %s. Tell the user you started it, then stop. Do not continue the work in this turn.", snap.ID, snap.Title),
+		Text:     "Started: " + snap.Title + ". Tell the user in one plain sentence, then stop. Do not continue the work in this turn. Do not mention ids, tool names, or lanes.",
 		ToolName: "dispatch_background_task",
+		Outcome:  toolOutcomeSucceeded,
+	}
+}
+
+func (h *IMMessageHandler) steerBackgroundTaskTool(policyUserID string, args map[string]interface{}) toolExecutionResult {
+	loop := h.getSessionLoopCtx(policyUserID)
+	if loop != nil && loop.ChatTaskID != "" {
+		return chatTaskToolRejected("steer_background_task", "a background chat task cannot steer another one")
+	}
+	if loop == nil || !loop.OfferChatTaskDispatch {
+		return chatTaskToolRejected("steer_background_task", "this turn cannot update a background chat task")
+	}
+	note := chatTaskArg(args, "note", "request", "text", "prompt")
+	if note == "" {
+		return chatTaskToolRejected("steer_background_task", "note is required")
+	}
+	sessionKey := strings.TrimSpace(policyUserID)
+	if sessionKey == "" {
+		sessionKey = loop.UserID
+	}
+	reg := h.ensureChatTasks()
+	if reg == nil {
+		return chatTaskToolRejected("steer_background_task", "chat tasks are unavailable")
+	}
+	task, err := reg.openTaskForSteer(sessionKey, chatTaskArg(args, "task_id", "id"), chatTaskArg(args, "title"))
+	if err != nil {
+		return chatTaskToolRejected("steer_background_task", err.Error())
+	}
+	if err := reg.Steer(task.ID, note); err != nil {
+		return chatTaskToolRejected("steer_background_task", err.Error())
+	}
+	next := loop.Iteration() + 1
+	if next < 1 {
+		next = 1
+	}
+	loop.SetMaxIterations(next)
+	return toolExecutionResult{
+		Text:     "Update sent to \"" + task.Title + "\". Tell the user in one plain sentence, then stop. Do not start another task and do not mention ids, tool names, or lanes.",
+		ToolName: "steer_background_task",
 		Outcome:  toolOutcomeSucceeded,
 	}
 }
@@ -1032,7 +1109,7 @@ func resolveChatTaskSessionKey(sessionKey, projectPath string) string {
 func chatTaskTitle(prompt string) string {
 	title := truncateChatTaskText(strings.TrimSpace(prompt), 72)
 	if title == "" {
-		return "Background task"
+		return "This work"
 	}
 	return title
 }
@@ -1049,32 +1126,81 @@ func truncateChatTaskText(text string, maxRunes int) string {
 }
 
 func formatChatTaskResultNote(title, result string) string {
-	title = strings.TrimSpace(title)
 	result = truncateChatTaskText(strings.TrimSpace(result), 800)
+	if result != "" {
+		return result
+	}
+	title = strings.TrimSpace(title)
 	if title == "" {
-		title = "Background task"
+		return ""
 	}
-	if result == "" {
-		return "Background task finished: " + title
-	}
-	return "Background task finished: " + title + "\n" + result
+	return title
 }
 
-func formatChatTaskStatus(tasks []AIAssistantChatTask) string {
+func formatChatTaskStatus(tasks []AIAssistantChatTask, chinese bool) string {
 	var b strings.Builder
-	b.WriteString("Background tasks:\n")
 	for _, task := range tasks {
-		fmt.Fprintf(&b, "- %s [%s] %s", task.ID, task.Status, task.Title)
-		if task.Progress != "" && task.Status != string(chatTaskDone) {
-			fmt.Fprintf(&b, " — %s", truncateChatTaskText(task.Progress, 120))
+		title := strings.TrimSpace(task.Title)
+		if title == "" {
+			title = "这件事"
+			if !chinese {
+				title = "that work"
+			}
 		}
-		if task.Question != "" {
-			fmt.Fprintf(&b, " — waiting: %s", truncateChatTaskText(task.Question, 120))
+		switch chatTaskStatus(task.Status) {
+		case chatTaskNeedsInput:
+			if chinese {
+				fmt.Fprintf(&b, "%s在等你：%s\n", title, truncateChatTaskText(task.Question, 160))
+			} else {
+				fmt.Fprintf(&b, "%s is waiting for you: %s\n", title, truncateChatTaskText(task.Question, 160))
+			}
+		case chatTaskDone:
+			if chinese {
+				fmt.Fprintf(&b, "%s已经做好。", title)
+			} else {
+				fmt.Fprintf(&b, "%s is done.", title)
+			}
+			if task.ResultText != "" {
+				fmt.Fprintf(&b, " %s", truncateChatTaskText(task.ResultText, 160))
+			}
+			b.WriteByte('\n')
+		case chatTaskFailed:
+			detail := task.Error
+			if detail == "" {
+				detail = task.ResultText
+			}
+			if chinese {
+				fmt.Fprintf(&b, "%s没做成。", title)
+			} else {
+				fmt.Fprintf(&b, "%s failed.", title)
+			}
+			if detail != "" {
+				fmt.Fprintf(&b, " %s", truncateChatTaskText(detail, 160))
+			}
+			b.WriteByte('\n')
+		case chatTaskCanceled:
+			if chinese {
+				fmt.Fprintf(&b, "%s已停下。\n", title)
+			} else {
+				fmt.Fprintf(&b, "%s was stopped.\n", title)
+			}
+		case chatTaskInterrupted:
+			if chinese {
+				fmt.Fprintf(&b, "%s上次中断了，没有自动重开。\n", title)
+			} else {
+				fmt.Fprintf(&b, "%s was still running when the app stopped. It was not resumed.\n", title)
+			}
+		default:
+			if chinese {
+				fmt.Fprintf(&b, "%s还在做。", title)
+			} else {
+				fmt.Fprintf(&b, "%s is still running.", title)
+			}
+			if task.Progress != "" {
+				fmt.Fprintf(&b, " %s", truncateChatTaskText(task.Progress, 160))
+			}
+			b.WriteByte('\n')
 		}
-		if task.ResultText != "" && task.Status == string(chatTaskDone) {
-			fmt.Fprintf(&b, " — %s", truncateChatTaskText(task.ResultText, 120))
-		}
-		b.WriteByte('\n')
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

@@ -41,7 +41,7 @@ export function ChatTaskCard({ task, theme, lang }: { task: ChatTaskView; theme:
             }}
         >
             <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
-                <strong style={{ fontSize: 13 }}>{task.title}</strong>
+                <strong style={{ fontSize: 13 }}>{task.title || (zh ? "这项工作" : "This work")}</strong>
                 <span style={{ fontSize: 11, color: theme.textMuted }}>{statusLabel(task.status, lang)}</span>
             </div>
             {task.status === "interrupted" && (
@@ -60,7 +60,7 @@ export function ChatTaskCard({ task, theme, lang }: { task: ChatTaskView; theme:
             {open && (
                 <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
                     <input
-                        aria-label={waiting ? (zh ? "回答这个任务" : "Answer this task") : (zh ? "补充这个任务" : "Steer this task")}
+                        aria-label={waiting ? (zh ? "回答" : "Answer") : (zh ? "补充" : "Add a note")}
                         value={draft}
                         onChange={event => setDraft(event.target.value)}
                         onKeyDown={event => {
@@ -71,7 +71,7 @@ export function ChatTaskCard({ task, theme, lang }: { task: ChatTaskView; theme:
                             emitChatTaskAction(waiting ? "answer" : "steer", task.id, text);
                             setDraft("");
                         }}
-                        placeholder={waiting ? (zh ? "回答后继续这个任务" : "Answer to continue this task") : (zh ? "补充给这个任务，不会新开一轮聊天" : "Steer this task, not a new chat turn")}
+                        placeholder={waiting ? (zh ? "回答后继续" : "Answer to continue") : (zh ? "补充后接着做" : "Add to this work")}
                         style={{ flex: 1, minWidth: 0, borderRadius: 8, border: `1px solid ${theme.inputBarBorder}`, background: theme.bg, color: theme.text, padding: "6px 8px", fontSize: 12 }}
                     />
                     <button

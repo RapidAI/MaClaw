@@ -6732,7 +6732,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         try {
             const task = await dispatchDesktopChatTask({ text: prompt, sessionKey, projectPath: options?.project_path, lang: uiLang });
             if (!task) {
-                setMessages(prev => [...prev, createErrorMessage("Background tasks are unavailable in this build.", sessionKey)]);
+                setMessages(prev => [...prev, createErrorMessage(localizeText(uiLang, "Longer work is unavailable in this build.", "这个版本还不能把比较长的工作先做着。", "這個版本還不能把比較長的工作先做著。"), sessionKey)]);
                 return false;
             }
             const now = Date.now();

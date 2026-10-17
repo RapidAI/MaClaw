@@ -25,8 +25,8 @@ export function ChatTaskTray({
             <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
                 <span style={{ fontSize: 12, color: theme.textMuted }}>
                     {open.length > 0
-                        ? (zh ? `${open.length} 个后台任务` : `${open.length} background task${open.length === 1 ? "" : "s"}`)
-                        : (zh ? "长任务可以放到后台，聊天继续" : "Long work can run in the background while you keep chatting")}
+                        ? (zh ? `${open.length} 项还在做` : `${open.length} still going`)
+                        : (zh ? "比较长的事先做着，这里可以继续聊" : "Longer work can keep going. You can keep chatting.")}
                 </span>
                 <button
                     type="button"
@@ -44,14 +44,14 @@ export function ChatTaskTray({
                         opacity: canDispatch ? 1 : 0.45,
                     }}
                 >
-                    {zh ? "放到后台" : "Run in background"}
+                    {zh ? "先做着" : "Keep this going"}
                 </button>
             </div>
             {open.length > 0 && (
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                     {open.map(task => (
                         <span key={task.id} data-testid={`chat-task-tray-${task.id}`} style={{ display: "inline-flex", alignItems: "center", gap: 6, borderRadius: 999, border: `1px solid ${theme.inputBarBorder}`, padding: "3px 8px", fontSize: 12 }}>
-                            <span>{task.title}</span>
+                            <span>{task.title || (zh ? "这项工作" : "This work")}</span>
                             <button type="button" onClick={() => onCancel(task.id)} style={{ border: "none", background: "transparent", color: theme.textMuted, cursor: "pointer", padding: 0 }}>
                                 {zh ? "取消" : "Cancel"}
                             </button>

@@ -315,7 +315,7 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 	} else {
 		b.WriteString("- /new /reset /clear 重置对话 | /cancel /取消 取消任务 | /compress 压缩历史 | /memory 查看记忆状态 | /btw 侧查询 | /help 帮助\n")
 	}
-	b.WriteString("\n请用中文回复，关键技术术语保留英文。回复要简洁实用。")
+	b.WriteString("\nReply in the user's language. Chinese users get Chinese. Keep a technical term in English only when that is the clearer name. Be concise, warm, and practical. Lead with the answer.")
 }
 
 func writeRegisteredSkillsSection(b *strings.Builder, skills []NLSkillDefinition) {

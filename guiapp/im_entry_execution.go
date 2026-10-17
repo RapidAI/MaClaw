@@ -424,6 +424,9 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	if loopCtx != nil && loopCtx.OfferChatTaskDispatch {
 		systemPrompt += h.chatTaskDispatchGuidance(msg.UserID)
 	}
+	if loopCtx != nil && strings.TrimSpace(loopCtx.ChatTaskID) != "" {
+		systemPrompt += chatTaskWorkerGuidance()
+	}
 	promptElapsed := time.Since(promptStart)
 
 	if !unarmedRemote && (!codingWorkbench || opts.WorkflowAgentLoop) {

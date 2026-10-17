@@ -242,14 +242,20 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 	)
 
 	defs = append(defs,
-		toolDef("dispatch_background_task", "Hand a long piece of work to a background chat task and return immediately. Use this for files, research, multi-step generation, office documents, and batch edits. After it succeeds, tell the user you started the task and stop. Do not keep doing the work in this turn.",
+		toolDef("dispatch_background_task", "Hand long work off and return immediately. Use this for multi-step work, long tool sequences, computer use, files, research, office documents, and batch edits, and whenever the job would take more than two tool rounds. After it succeeds, tell the user in one plain sentence and stop. Do not keep doing the work in this turn. Do not mention ids or tool names.",
 			map[string]interface{}{
-				"request": map[string]string{"type": "string", "description": "Self-contained task for the background worker, including the user's goal and any constraints already known."},
-				"title":   map[string]string{"type": "string", "description": "Short title shown on the task card. Optional."},
+				"request": map[string]string{"type": "string", "description": "Self-contained task, including the user's goal and any constraints already known."},
+				"title":   map[string]string{"type": "string", "description": "Short title the user can recognize. Optional."},
 			}, []string{"request"}),
-		toolDef("chat_task_request_input", "Ask the user a question and wait. Only a background chat task may call this. The answer arrives later on the task card and does not start a new chat turn.",
+		toolDef("steer_background_task", "Send a follow-up or correction to work that is already running. Use this instead of starting another task. Omit task_id when only one piece of work is running.",
 			map[string]interface{}{
-				"question": map[string]string{"type": "string", "description": "The question the user must answer before the task can continue."},
+				"note":    map[string]string{"type": "string", "description": "What changed, in the user's words."},
+				"title":   map[string]string{"type": "string", "description": "Title of the running work when more than one is open. Optional."},
+				"task_id": map[string]string{"type": "string", "description": "Internal id. Leave empty when title or the only running item is enough."},
+			}, []string{"note"}),
+		toolDef("chat_task_request_input", "Ask the user one question and wait. Only background work may call this, and only when a wrong guess would delete, send, purchase, or submit something, or when ambiguity would materially change the result. Otherwise decide and proceed. The answer continues the same work.",
+			map[string]interface{}{
+				"question": map[string]string{"type": "string", "description": "The one question the user must answer before the work can continue."},
 			}, []string{"question"}),
 	)
 

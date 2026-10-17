@@ -30,13 +30,18 @@ func TestPrepareAgentLoopConfigSelectsRole(t *testing.T) {
 		t.Fatalf("foreground config = model %q profile %q", fg.Config.Model, fg.Config.Profile)
 	}
 
-	bg := h.prepareAgentLoopConfig(&LoopContext{
+	bg := h.prepareAgentLoopConfig(&LoopContext{Kind: LoopKindBackground})
+	if bg.Config.Model != "bg-model" || bg.Config.Profile != maclawLLMRoleBackground {
+		t.Fatalf("background config = model %q profile %q", bg.Config.Model, bg.Config.Profile)
+	}
+
+	bgVision := h.prepareAgentLoopConfig(&LoopContext{
 		Kind:                   LoopKindBackground,
 		ComputerUseActive:      true,
 		ComputerUseGateSettled: true,
 	})
-	if bg.Config.Model != "bg-model" || bg.Config.Profile != maclawLLMRoleBackground {
-		t.Fatalf("background must win over computer use, got model %q profile %q", bg.Config.Model, bg.Config.Profile)
+	if bgVision.Config.Model != "cu-model" || bgVision.Config.Profile != maclawLLMRoleComputerUse {
+		t.Fatalf("background desktop work config = model %q profile %q", bgVision.Config.Model, bgVision.Config.Profile)
 	}
 
 	cu := h.prepareAgentLoopConfig(&LoopContext{
@@ -49,15 +54,23 @@ func TestPrepareAgentLoopConfigSelectsRole(t *testing.T) {
 	}
 
 	// Chat tasks keep LoopKindChat (iteration limits, no ContinueC pause).
-	// The model is still the background role, including over a settled gate.
+	// Ordinary task execution uses the background role. A settled computer-use
+	// gate is desktop work and uses the computer_use role.
 	chatTask := h.prepareAgentLoopConfig(&LoopContext{
+		Kind:       LoopKindChat,
+		ChatTaskID: "task-1",
+	})
+	if chatTask.Config.Model != "bg-model" || chatTask.Config.Profile != maclawLLMRoleBackground {
+		t.Fatalf("chat task config = model %q profile %q", chatTask.Config.Model, chatTask.Config.Profile)
+	}
+	chatTaskVision := h.prepareAgentLoopConfig(&LoopContext{
 		Kind:                   LoopKindChat,
 		ChatTaskID:             "task-1",
 		ComputerUseActive:      true,
 		ComputerUseGateSettled: true,
 	})
-	if chatTask.Config.Model != "bg-model" || chatTask.Config.Profile != maclawLLMRoleBackground {
-		t.Fatalf("chat task config = model %q profile %q", chatTask.Config.Model, chatTask.Config.Profile)
+	if chatTaskVision.Config.Model != "cu-model" || chatTaskVision.Config.Profile != maclawLLMRoleComputerUse {
+		t.Fatalf("chat task desktop work config = model %q profile %q", chatTaskVision.Config.Model, chatTaskVision.Config.Profile)
 	}
 }
 
