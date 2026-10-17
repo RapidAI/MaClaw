@@ -40,7 +40,7 @@ Append-only usage and ledger ops inside the age window are kept even by `--force
 
 - WAL, `busy_timeout`, and a single writer connection stay as they were (`max_write_open_conns` must be 1).
 - The background checkpointer still runs `wal_checkpoint(PASSIVE)` and, when `auto_vacuum=incremental` is already persisted, `incremental_vacuum(1024)`. Every 10th tick tries `wal_checkpoint(TRUNCATE)` with a 2s budget so the WAL file can shrink. `TRUNCATE` does not rewrite the main database.
-- `incremental_vacuum` does nothing on a database that was created with `auto_vacuum=NONE` until an offline `VACUUM` rewrites the header. That is why the file stayed 2.4GB after deletes.
+- `incremental_vacuum` does nothing on a database that was created with `auto_vacuum=NONE` until a `VACUUM` rewrites the header. That is why the file stayed 2.4GB after deletes. This build runs a small `incremental_vacuum` after each history prune batch once the header is `INCREMENTAL`, and it performs that one-time `VACUUM` itself during a low-traffic window. See [Automatic maintenance](#automatic-maintenance).
 - Default page cache is 8MiB per connection and mmap is 64MiB, so startup does not map the whole file.
 - `runtime.soft_memory_limit_mb` (default 1536) calls `debug.SetMemoryLimit`. On an 8GB host that leaves room for the kernel. Set it to `-1` to disable.
 - The in-memory gossip snapshot is capped at 8000 posts.
@@ -66,7 +66,7 @@ Old and new nodes can run together. Do not compact a node until every peer is on
 2. Upgrade one node at a time: stop it, replace the binary, start it. Leave `configs/config.yaml` in place unless you want the new defaults (`history_max_retained_ops: 4000`, `history_prune_batch_size: 1000`, `runtime.soft_memory_limit_mb: 1536`). Keys already set in the file or in the saved HA config win.
 3. While any peer is still on the old binary it does not send `ack_seq`. The new nodes log `peer acks are incomplete` and keep newest ops. That is intentional.
 4. After every peer is on this build, wait for one prune interval (default 10 minutes). The log line looks like `[hubcenter][ha] pruned history: ... ack_known=true ack_seq=<near max_seq>`. `remaining_ops` should fall toward `history_max_retained_ops` plus any append-only rows still inside the age window.
-5. Row deletes do not return disk space until `VACUUM`. On each node, one at a time:
+5. Row deletes do not return disk space until `VACUUM`. After every peer is on this build, each node converts a legacy `auto_vacuum=NONE` file by itself during the maintenance window (default 03:00–05:00 local), staggered by node id, and only when free disk and replication guards pass. You do not need an external VACUUM timer. To reclaim space immediately instead of waiting for that window, on each node, one at a time:
    - Confirm the other nodes are serving traffic.
    - `backup create` (or your existing backup) while the node is still running, or immediately after it stops.
    - Stop `maclaw-hubcenter`. Do not stop the other peers.
@@ -98,3 +98,47 @@ Neither flag is required for the normal upgrade path above.
 - `[hubcenter][ha] pruned history: ... ack_known=true`
 - No repeating `[llm-monitor] write monitor lease failed: ... SQLITE_BUSY` after the first minute
 - SQLite file size after compact should drop by the historical versions and free pages. The steady state is one snapshot head per last-write-wins entity, the retained op-log tail, append-only ops still inside the age window, and the business tables. If `ack_known` is false, newest unacked ops stay in `ha_sync_ops` and `VACUUM` cannot remove them.
+- `[hubcenter][db] maintenance file_bytes=...` about every 30 minutes, and `[hubcenter][db] WARN` if pending history ops or the database file cross their thresholds.
+- `[hubcenter][db] auto_vacuum conversion finished` once per node, after which the line does not repeat.
+
+## Automatic maintenance
+
+No external VACUUM timer is required. The process does three things, all of which turn off together when `database.maintenance.enabled` is `false`.
+
+### Incremental vacuum after each prune batch
+
+`database.auto_vacuum` defaults to `incremental`. On a new database that mode is persisted at open. After each history delete batch (including the last short batch), the pruner runs `PRAGMA incremental_vacuum(N)` with `N = database.maintenance.incremental_vacuum_pages` (default 32, hard cap 128). That is 128KiB at the default 4KiB page size, so the writer lock is not held for a long freelist walk. The background checkpointer still runs its own `incremental_vacuum(1024)` on the usual cadence. On a file that is still `auto_vacuum=NONE` the pragma is a no-op until the conversion below.
+
+### One-time conversion
+
+An existing production file is `auto_vacuum=NONE`. Switching to `INCREMENTAL` requires a full `VACUUM`, which rewrites the file and takes an exclusive lock. The service does that once, then records it in `local_maintenance_state` under the key `auto_vacuum_incremental`. That table is not an HA entity, so one node's completion is not replicated onto a peer that still needs the rewrite. A later start sees the row and the `INCREMENTAL` header and does not `VACUUM` again. If the header is still `NONE`, a stale row is ignored and the conversion is eligible again.
+
+The conversion runs only when every guard passes:
+
+- `database.auto_vacuum` is `incremental` (the default). `none` or `full` leaves the file alone.
+- The persisted mode is `NONE`. A file that is already `INCREMENTAL` is recorded and not rewritten. `FULL` is not converted online.
+- Local time is inside `database.maintenance.window_start`–`window_end` (default `03:00`–`05:00`, end exclusive). A window that crosses midnight is allowed.
+- This node's stagger offset has elapsed. The offset is a stable hash of `ha.node_id` (or `single` when HA has no node id) into the first three quarters of the window, so peers do not start the exclusive rewrite together.
+- Free space on the database filesystem is at least the main file size plus `database.maintenance.free_headroom_bytes` (default 512MiB), the same floor as `--compact-db`.
+- Replication is caught up. With no configured peers there is nothing to wait for. Otherwise every configured peer must have an ack row, this node must have a successful pull from each peer with an empty last error, and `max_seq` minus the oldest fresh peer ack must be within `history_max_retained_ops`. A protocol-2 peer that has been quiet longer than `history_peer_lag_grace_minutes` does not pin that gap; it catches up from snapshot heads. A peer that has never reported an ack (including an old binary) blocks the conversion, which matches the manual compact rule.
+- The previous attempt, if it failed, was at least 15 minutes ago.
+
+A refused conversion is logged once per distinct reason (`[hubcenter][db] auto_vacuum conversion skipped: ...`). The start and finish lines include the node id, file size, and stagger. `VACUUM` briefly raises `busy_timeout` to 60s so in-flight writes can finish, then restores the configured timeout. The offline `--compact-db` and `maintenance vacuum` commands are unchanged for an operator who wants the rewrite immediately.
+
+### Self-check
+
+About every `database.maintenance.metrics_interval_minutes` (default 30) the process logs file size, WAL size, freelist pages, auto_vacuum mode, pending `ha_sync_ops`, ack floor, free bytes, and the current conversion status. It logs a `WARN` when pending history ops exceed `warn_pending_ops` (default 20000) or the main database file exceeds `warn_db_bytes` (default 1GiB). Set either threshold to `-1` to disable that warning without disabling maintenance.
+
+```yaml
+database:
+  auto_vacuum: incremental
+  maintenance:
+    enabled: true
+    incremental_vacuum_pages: 32
+    window_start: "03:00"
+    window_end: "05:00"
+    free_headroom_bytes: 536870912
+    metrics_interval_minutes: 30
+    warn_pending_ops: 20000
+    warn_db_bytes: 1073741824
+```

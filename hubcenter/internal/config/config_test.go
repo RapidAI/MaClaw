@@ -227,6 +227,62 @@ database:
 	})
 }
 
+func TestLoadMaintenanceDefaultsAndDisable(t *testing.T) {
+	t.Run("defaults survive a config that omits maintenance", func(t *testing.T) {
+		path := writeConfigFile(t, `
+database:
+  dsn: ./data/maclaw-hubcenter.db
+`)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		m := cfg.Database.Maintenance
+		if !m.Enabled || m.WindowStart != "03:00" || m.WindowEnd != "05:00" || m.IncrementalVacuumPages != 32 {
+			t.Fatalf("maintenance = %+v", m)
+		}
+		if m.FreeHeadroomBytes != 512<<20 || m.WarnPendingOps != 20000 || m.WarnDBBytes != 1<<30 || m.MetricsIntervalMinutes != 30 {
+			t.Fatalf("maintenance thresholds = %+v", m)
+		}
+	})
+
+	t.Run("can disable and clamp the page count", func(t *testing.T) {
+		path := writeConfigFile(t, `
+database:
+  maintenance:
+    enabled: false
+    incremental_vacuum_pages: 100000
+    warn_pending_ops: -1
+`)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		m := cfg.Database.Maintenance
+		if m.Enabled {
+			t.Fatal("maintenance stayed enabled")
+		}
+		if m.IncrementalVacuumPages != 128 {
+			t.Fatalf("pages = %d, want 128", m.IncrementalVacuumPages)
+		}
+		if m.WarnPendingOps != -1 {
+			t.Fatalf("warn_pending_ops = %d", m.WarnPendingOps)
+		}
+	})
+
+	t.Run("rejects a bad window", func(t *testing.T) {
+		path := writeConfigFile(t, `
+database:
+  maintenance:
+    window_start: "25:99"
+`)
+		_, err := Load(path)
+		if err == nil || !strings.Contains(err.Error(), "database.maintenance") {
+			t.Fatalf("Load() error = %v", err)
+		}
+	})
+}
+
 func writeConfigFile(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()

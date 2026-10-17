@@ -11,6 +11,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/auth"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/config"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/dbmaint"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/diagnostics"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/entry"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/ha"
@@ -29,20 +30,21 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		applySoftMemoryLimit(cfg.Runtime.SoftMemoryLimitMB)
 	}
 	provider, err := sqlite.NewProvider(sqlite.Config{
-		DSN:                   cfg.Database.DSN,
-		WAL:                   cfg.Database.WAL,
-		BusyTimeoutMS:         cfg.Database.BusyTimeoutMS,
-		MaxReadOpenConns:      cfg.Database.MaxReadOpenConns,
-		MaxReadIdleConns:      cfg.Database.MaxReadIdleConns,
-		MaxWriteOpenConns:     cfg.Database.MaxWriteOpenConns,
-		MaxWriteIdleConns:     cfg.Database.MaxWriteIdleConns,
-		BatchFlushMS:          cfg.Database.BatchFlushMS,
-		BatchMaxSize:          cfg.Database.BatchMaxSize,
-		BatchQueueSize:        cfg.Database.BatchQueueSize,
-		CacheSizeKB:           cfg.Database.CacheSizeKB,
-		MmapSizeBytes:         cfg.Database.MmapSizeBytes,
-		CheckpointIntervalSec: cfg.Database.CheckpointIntervalSec,
-		AutoVacuum:            cfg.Database.AutoVacuum,
+		DSN:                    cfg.Database.DSN,
+		WAL:                    cfg.Database.WAL,
+		BusyTimeoutMS:          cfg.Database.BusyTimeoutMS,
+		MaxReadOpenConns:       cfg.Database.MaxReadOpenConns,
+		MaxReadIdleConns:       cfg.Database.MaxReadIdleConns,
+		MaxWriteOpenConns:      cfg.Database.MaxWriteOpenConns,
+		MaxWriteIdleConns:      cfg.Database.MaxWriteIdleConns,
+		BatchFlushMS:           cfg.Database.BatchFlushMS,
+		BatchMaxSize:           cfg.Database.BatchMaxSize,
+		BatchQueueSize:         cfg.Database.BatchQueueSize,
+		CacheSizeKB:            cfg.Database.CacheSizeKB,
+		MmapSizeBytes:          cfg.Database.MmapSizeBytes,
+		CheckpointIntervalSec:  cfg.Database.CheckpointIntervalSec,
+		AutoVacuum:             cfg.Database.AutoVacuum,
+		IncrementalVacuumPages: dbmaint.PruneVacuumPages(cfg.Database.Maintenance.Enabled, cfg.Database.Maintenance.IncrementalVacuumPages),
 	})
 	if err != nil {
 		return nil, err
@@ -262,6 +264,9 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		})
 		app.goBackground(ha.NewProber(haSvc, time.Duration(cfg.HA.SyncIntervalSeconds)*time.Second).Run)
 	}
+	app.goBackground(func(ctx context.Context) {
+		runDBMaintenance(ctx, cfg, provider, haSvc)
+	})
 	app.goBackground(func(ctx context.Context) { runRouteReconciliationLoop(ctx, hubService) })
 
 	// --- LLM Service Module ---

@@ -24,6 +24,14 @@ func RunMigrations(db *sql.DB) error {
 			value_json TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
+		// local_maintenance_state is node-local. It is not an HA entity, so a
+		// conversion recorded here is not replicated to peers that still have
+		// auto_vacuum=NONE.
+		`CREATE TABLE IF NOT EXISTS local_maintenance_state (
+			key TEXT PRIMARY KEY,
+			value_json TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
 		`CREATE TABLE IF NOT EXISTS hub_instances (
 			id TEXT PRIMARY KEY,
 			installation_id TEXT NOT NULL DEFAULT '',

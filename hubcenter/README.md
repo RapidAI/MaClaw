@@ -46,7 +46,7 @@ If little is left to prune but the SQLite main file is still bloated by historic
 go run .\cmd\hubcenter maintenance vacuum --config .\configs\config.yaml --json
 ```
 
-Both vacuum paths persist `auto_vacuum=INCREMENTAL` in the rebuilt database, so afterwards the runtime WAL checkpointer releases freed pages automatically (`database.auto_vacuum` in config, default `incremental`) and the file no longer re-bloats between manual VACUUMs.
+Both vacuum paths persist `auto_vacuum=INCREMENTAL` in the rebuilt database. A running service also does this itself: after each history prune batch it runs a small `PRAGMA incremental_vacuum`, and a legacy `auto_vacuum=NONE` file is rewritten once during the local maintenance window when disk space and replication are caught up. No external VACUUM timer is required. Set `database.maintenance.enabled: false` to turn that off. The window, stagger, and thresholds are documented in `docs/hubcenter-ha-lightweight-replication.md`.
 
 
 ## Disaster backup and restore
