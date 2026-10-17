@@ -307,8 +307,7 @@
     transition: background var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
-/* Paint wins over .settings-panel button, which forces office ink and a border.
-   Selected fill is an opaque mix so the hairline track cannot show through the cell. */
+/* Selected fill is an opaque mix so the hairline track cannot show through the cell. */
 .settings-content.settings-panel .pet-settings-panel :is(.pet-preview-state-row, .pet-segmented-control) button {
     border: 0;
     background: var(--theme-surface);

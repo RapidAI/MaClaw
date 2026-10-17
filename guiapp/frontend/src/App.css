@@ -9453,8 +9453,7 @@ button.knowledge-chip:disabled {
     transition: background var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
-/* Paint wins over .settings-panel button, which forces office ink and a border.
-   Selected fill is an opaque mix so the hairline track cannot show through the cell. */
+/* Selected fill is an opaque mix so the hairline track cannot show through the cell. */
 .settings-content.settings-panel .pet-settings-panel :is(.pet-preview-state-row, .pet-segmented-control) button {
     border: 0;
     background: var(--theme-surface);
@@ -12214,10 +12213,8 @@ button.knowledge-chip:disabled {
 }
 
 /* Panel-level CTAs: the management dialog is the primary action, the QR
-   hand-off is its quiet companion. Scoped at (0,4,1) so the generic
-   .settings-panel button repaint (0,3,1) cannot dull the state fill.
-   min-height 36px matches the .settings-panel button floor exactly so the
-   lower-specificity shape block here stays declarative, not overridable. */
+   hand-off is its quiet companion. min-height 36px matches the settings
+   button floor. */
 .llm-config-primary-action,
 .llm-config-qr-action {
     min-height: 36px;
@@ -16819,10 +16816,8 @@ button.tbk-pill {
     color: var(--theme-on-primary);
 }
 
-/* Settings floors every button at 36px and paints --office-ink (0,3,1), so the
-   selected label sat on the primary fill at about 3.4:1. Dark themes use
-   primary-strong with on-primary. Light themes darken that fill: fluent
-   primary is 4.6:1 under white, and primary-strong only reaches 5.3:1. */
+/* Selected grain uses on-primary on a darkened primary fill. Fluent primary
+   under white is about 4.6:1; mixing 75% toward black clears 5:1. */
 .settings-content.settings-panel button.token-usage-trend__grain {
     min-height: 26px;
     padding: 2px 9px;
@@ -17383,7 +17378,7 @@ button.tbk-pill {
     border: none;
     border-radius: 6px;
     background: transparent;
-    color: var(--theme-text-tertiary);
+    color: var(--theme-text-secondary);
     font-size: 0.72rem;
     font-weight: 700;
     cursor: pointer;
@@ -31382,7 +31377,14 @@ input.cwshare-url {
   box-shadow: 0 0 0 3px var(--office-accent-soft, var(--theme-primary-soft));
   outline: none;
 }
-.settings-panel button:not(.btn-primary):not([type='submit']) {
+/* Fallback ink for settings buttons that do not set their own color.
+   Specificity stays at one element, so any class color wins. The old
+   (0, 3, 1) rule painted --office-ink onto solid fills, and 保存策略
+   was gray text on the primary fill (about 1.2:1). Leave the fill on
+   --theme-primary: light schemes already set white --theme-on-primary
+   for that blue. Do not darken these controls locally, and do not put
+   this fallback in @layer. */
+:where(.settings-panel) button:where(:not(.btn-primary)):where(:not([type='submit'])) {
   border-color: var(--office-line, var(--theme-border));
   color: var(--office-ink, var(--theme-text-primary));
 }

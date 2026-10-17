@@ -586,7 +586,14 @@
   box-shadow: 0 0 0 3px var(--office-accent-soft, var(--theme-primary-soft));
   outline: none;
 }
-.settings-panel button:not(.btn-primary):not([type='submit']) {
+/* Fallback ink for settings buttons that do not set their own color.
+   Specificity stays at one element, so any class color wins. The old
+   (0, 3, 1) rule painted --office-ink onto solid fills, and 保存策略
+   was gray text on the primary fill (about 1.2:1). Leave the fill on
+   --theme-primary: light schemes already set white --theme-on-primary
+   for that blue. Do not darken these controls locally, and do not put
+   this fallback in @layer. */
+:where(.settings-panel) button:where(:not(.btn-primary)):where(:not([type='submit'])) {
   border-color: var(--office-line, var(--theme-border));
   color: var(--office-ink, var(--theme-text-primary));
 }

@@ -1300,10 +1300,8 @@
     color: var(--theme-on-primary);
 }
 
-/* Settings floors every button at 36px and paints --office-ink (0,3,1), so the
-   selected label sat on the primary fill at about 3.4:1. Dark themes use
-   primary-strong with on-primary. Light themes darken that fill: fluent
-   primary is 4.6:1 under white, and primary-strong only reaches 5.3:1. */
+/* Selected grain uses on-primary on a darkened primary fill. Fluent primary
+   under white is about 4.6:1; mixing 75% toward black clears 5:1. */
 .settings-content.settings-panel button.token-usage-trend__grain {
     min-height: 26px;
     padding: 2px 9px;
@@ -1864,7 +1862,7 @@
     border: none;
     border-radius: 6px;
     background: transparent;
-    color: var(--theme-text-tertiary);
+    color: var(--theme-text-secondary);
     font-size: 0.72rem;
     font-weight: 700;
     cursor: pointer;

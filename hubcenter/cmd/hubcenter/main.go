@@ -11,10 +11,8 @@ import (
 	"net/http/pprof"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/app"
@@ -277,19 +275,10 @@ func configuredPeerIDs(cfg *config.Config) []string {
 	return out
 }
 
+// freeBytes reports the space available at path. The implementation is
+// platform-specific (statfs is not available on Windows).
 func freeBytes(path string) (uint64, error) {
-	dir := path
-	if info, err := os.Stat(path); err != nil || !info.IsDir() {
-		dir = filepath.Dir(path)
-		if dir == "" {
-			dir = "."
-		}
-	}
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(dir, &stat); err != nil {
-		return 0, fmt.Errorf("statfs %s: %w", dir, err)
-	}
-	return stat.Bavail * uint64(stat.Bsize), nil
+	return freeBytesPlatform(path)
 }
 
 type vacuumCLIResult struct {
@@ -438,7 +427,7 @@ func runServer(args []string) error {
 	}
 	addr := cfg.Server.ListenHost + ":" + strconv.Itoa(cfg.Server.ListenPort)
 	log.Printf("MaClaw Hub Center listening on %s", addr)
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer stop()
 
 	// P1 (2026-09-09 review): the server previously set no timeouts at all,

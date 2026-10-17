@@ -948,10 +948,8 @@
 }
 
 /* Panel-level CTAs: the management dialog is the primary action, the QR
-   hand-off is its quiet companion. Scoped at (0,4,1) so the generic
-   .settings-panel button repaint (0,3,1) cannot dull the state fill.
-   min-height 36px matches the .settings-panel button floor exactly so the
-   lower-specificity shape block here stays declarative, not overridable. */
+   hand-off is its quiet companion. min-height 36px matches the settings
+   button floor. */
 .llm-config-primary-action,
 .llm-config-qr-action {
     min-height: 36px;
