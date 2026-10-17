@@ -93,6 +93,7 @@
 - 26. 仍未解决的问题
 - 27. 今天就做的五件事（27.1 打断 … 27.5 报错写下一步）
 - 28. 收尾（28.1 醒来 … 28.5 架构越值钱）
+- 29. 桌面 bot 改进计划（29.1 单一出口 … 29.10 睡眠）
 
 ---
 
@@ -151,7 +152,7 @@
 
 三件事还没有答案：跑一个月的 agent 如何跨每月换模型做评测，提示注入的防线仍然早，以及对用户报进度的疏密。现有缓解和要量的数写在第 26 节，三条都标成未解决。今天的五件事：只有要决定或整件做完才叫人，其余进度写在 `PROGRESS.md`；重活交给帮手，只收回三行结论和路径；不可逆动作每次问人；规则文件只放每次都要的那几句；自己的脚本、命令行和工具报错写出下一步。见第 27 节。
 
-这四段的材料已经齐：醒来、在哪跑、怎么干活、怎么记得。常开是随时能被叫醒，醒来接着上次停下的地方。收口在第 28 节。
+这四段的材料已经齐：醒来、在哪跑、怎么干活、怎么记得。常开是随时能被叫醒，醒来接着上次停下的地方。收口在第 28 节。动手的顺序在第 29 节：先改桌面 bot，睡眠放在最后。本文仍不改代码。
 
 ---
 
@@ -739,7 +740,7 @@ CPU：16 核上，建议同时处于 computer-use（截图+键鼠+Chrome）的�
 
 ## 12. 分阶段迁移
 
-归属：过程。每阶段都可以单独停住。Hub 的 URL 和 `desktop` 工具的动作名不变。机器和产品分开排，产品阶段不提前做厚脚手架。这些阶段把仓库从第 2、3 段收到第 4 段。四段设计和阶段的对应是：
+归属：过程。每阶段都可以单独停住。Hub 的 URL 和 `desktop` 工具的动作名不变。机器和产品分开排，产品阶段不提前做厚脚手架。这些阶段是设计上的分组，把仓库从第 2、3 段收到第 4 段。动手的先后以第 29 节为准：先改桌面 bot，第 12.1 节的睡眠和换 runtime 放在最后。四段设计和阶段的对应是：
 
 | 段 | 设计在 | 落地 |
 | --- | --- | --- |
@@ -2817,7 +2818,7 @@ MCP 的开关也在开工前定好。一场对话的工具列表在开始时钉�
 
 ## 28. 收尾
 
-归属：收口。不新增组件。材料到这里齐了。设计仍未实施，落地仍按第 12 节。第 14 节的机器问题仍开放。第 26 节三条仍未解决。
+归属：收口。不新增组件。材料到这里齐了。设计仍未实施。设计分组是第 12 节，动手顺序是第 29 节。第 14 节的机器问题仍开放。第 26 节三条仍未解决。
 
 四段都写完了：醒来、在哪跑、怎么干活、怎么记得。这是协作的第 4 段，见文首背景。
 
@@ -2854,3 +2855,242 @@ MCP 的开关也在开工前定好。一场对话的工具列表在开始时钉�
 文首那条「删掉产品」在这里收口。模型让写代码变容易之后，多写出来的多半是脚手架：再一张词表、再一条拒绝、再一套错误码。那些补的是模型今天的短处，用例变绿就删。
 
 值钱的是这四段约束。它们来自机器、人、钱和不可信输入：随时能醒并接着做，一台机器一个接口，一个出口和真风险才问人，记忆是文件并且不是指令。代码越好写，这几条越不要再包一层。阶段 0 只合并本文。
+
+---
+
+## 29. 桌面 bot 改进计划
+
+归属：实施顺序。决定是按这些原则改桌面 bot。一次阶段一次 PR。本文这次仍只改文档，不开始写这些 PR。
+
+高价值、低风险的放前面。睡眠和换 runtime 放在最后，因为它们动的是正在跑的容器，前面的改动都不依赖它们。第 12 节的阶段号仍是设计分组。下面的 PR 号才是动手顺序。
+
+离线用例放在新建的 `testdata/desktopbot/cases/<id>.json`。不打模型、不启 Docker、不上网。`.github/workflows/agent-architecture.yml` 在现有契约测试旁边跑它们，每个 PR 都要绿。在线档只在提示、工具说明、停止或模型钉改动时另跑，不进每个 PR。`desktop` 的动作名不改。
+
+标成「现在删」的，这个 PR 里拿掉。标成「以后删」的，这个 PR 不加厚，等第 25 节的对应用例绿过一轮外循环再删。
+
+### 29.1 PR-1 单一出口
+
+只让 `send_to_user` 的正文变成气泡。助手回合结束时打印的正文留下给模型，不投递。
+
+动这些：
+
+- `hub/internal/httpapi/platform_handlers.go`。今天没有助手正文就报 `did not include assistant content`。改成：有出站记录就投递那条记录；没有 `send_to_user` 就不再用正文补一条气泡。
+- `guiapp/frontend/src/components/bots/desktopBots.ts` 的 `desktopTaskStep`、`foldPlanConfirmation`。气泡文本等于 `send_to_user` 的 `text`。
+- `MaClawSrv/desktop_activity.go`。工具步骤仍可写工作行。工作行不是气泡，也不是手机通知。
+
+现在删：助手正文和 `send_to_user` 两条都能变成气泡。含「下一步」「我会」的句子不再默认变成安排按钮。`desktopTaskStep('开始吧', '先打开网站，再告诉你结果。')` 今天得到 `arrange`，改完不再得到。
+
+以后删：活动词表、`pace` 机。这个 PR 不动它们。
+
+验收：一次 run 里用户看得见的句子只来自 `send_to_user`。文件和截图附件仍能出现在完成态。没有调用 `send_to_user` 的 run 不突然造一句 Hub 说明。
+
+用例：
+
+- `no_send_silent`：只有助手正文，没有气泡。
+- `send_to_user_only`：气泡文字等于工具的 `text`，不等于正文。
+- `prose_not_arrange`：「先打开网站，再告诉你结果。」不是安排按钮。
+
+### 29.2 PR-2 提示前缀和分段哈希
+
+前缀四段按这个顺序冻住：工具、系统、记忆快照、第一条消息。两回合之间这四段的字节不变。历史只追加。
+
+动这些：
+
+- `corelib/agent/prompt_bundle.go`。`StableCacheKey` 今天只哈希 `StableSystemPrompt`。改成分段哈希：工具、系统、记忆快照、第一条消息、历史，各一段。意外变化打日志和 `maclaw_prompt_prefix_unexpected_change_total`，请求仍发钉住的字节。
+- `corelib/agentservice/core_agent_executor.go`。稳定段里拿掉每回合重写的分钟时间和记忆条数目录。
+- `guiapp/openhuman_wiring.go` 的 `buildSituationReport`。时间不进系统提示。
+- `corelib/memory/prompt_context.go` 的 `FormatMemoryIndexForPrompt`。退出系统提示。
+- `guiapp/im_system_prompt.go` 的 `loadOrBuildStaticMemorySnapshot`。快照字节在摘要之前不换。摘要本身是 PR-9。
+- 对话开工时读一次 `/home/desktop/AGENTS.md`（文件可以后补，读不到就用空段），放进系统段。中途改文件不改这场对话的前缀。MCP 开关在开工前钉进工具段。
+
+现在删：每回合重写的分钟时间和记忆条数目录。不要把 `HealthSummary` 接进提示。
+
+验收：同一条对话回放两回合，前四段哈希不变。只改历史时，历史哈希变，前四段不变。中途改 `AGENTS.md` 或开关 MCP，这场对话的工具段和系统段哈希不变。
+
+用例：
+
+- `prefix_stable_two_turns`
+- `clock_not_in_system`
+- `catalog_not_in_system`
+- `agents_md_pinned`
+
+### 29.3 PR-3 工具一份，报错写下一步
+
+计划和执行公布同一份 `desktop` / `ssh` 名字和参数。现在不能做的调用返回错误，错误里写下一步。不新增拒绝规则。
+
+动这些：
+
+- `MaClawSrv/desktop_runtime.go`。`desktopPlanActions` 和 `desktopExecuteActions` 收成一份说明。计划期的变更动作返回「这一阶段只核对。等这个人确认后再调用。不要在这一轮用别的动作代替」，不再返回 `plan phase blocks <action>`。
+- `MaClawSrv/desktop_container.go`、`MaClawSrv/desktop_runtime.go` 里仍是标签的句子，按第 20.3 节和第 27.5 节换掉：`not_password_field`、`desktop action is invalid`、`desktop file is too large`（写明 200 KiB）、`desktop requires a user`、空结果。
+- `desktopd/service.go` 的 `invalid desktop request: advertise host is required`。
+- `MaClawSrv/desktop_phase_test.go` 里对旧句子的断言一起改。
+- 第 27.5 节表里的脚本和命令行：`hub/start.sh`、`hubcenter/start.sh`、`deploy/linux/deploy_hub_maclawsrv.sh`、`deploy/linux/rollout_remote.sh`、`desktopd/remote_deploy.sh`、`desktopd/cmd/desktopd/main.go`、`hub/cmd/hub/main.go`、`hubcenter/cmd/hubcenter/main.go`。
+- 工具结果超过约 4000 字时，正文写到 `/home/desktop/tasks/<id>/out/<n>.txt`，对话里只留路径和一行。
+
+现在删：计划期和执行期各一份工具说明。
+
+以后删：「九成相同的 shell 收成专用工具」。这个 PR 不新做专用工具。
+
+留下：`desktopDeliverSizeHint` 已经写了缩小后再 deliver。`request_takeover` 的返回句。TLS 和 logrotate 里已经带命令的句子。
+
+验收：计划期和执行期工具名集合相同。变更动作在计划期返回带下一步的句子，动作仍留在列表里。第 27.5 节「现在」一列的原文不再作为最终报错。错误文本里没有令牌。
+
+用例：
+
+- `plan_mutate_stays_listed`
+- `password_field_next_step`
+- `file_too_large_next_step`
+- `missing_binary_says_next_command`（对 `start.sh` 的缺二进制路径）
+
+### 29.4 PR-4 后台进度文件
+
+每个后台任务一份 `PROGRESS.md`，三节是 `where we are`、`next step`、`open problems`。写的时候替换这三节，不在末尾追加流水。
+
+动这些：
+
+- 新增 `MaClawSrv/desktop_progress.go`。云桌面 run 的每一步工具返回之后改写容器里的 `/home/desktop/tasks/<id>/PROGRESS.md`。机器醒着时把这三段抄到 run 记录，供人问进度时用。
+- 新增 `guiapp/progress_file.go`。本机后台任务写同一形状。云桌面 bot 的文件在容器家目录，不写进本机 GUI 的数据目录。
+- 帮手交回的正文收成第 27.3 节的三行结论加路径。空结论且没有路径算失败。轨迹留在帮手侧，不复制进主会话。
+
+现在删：帮手开工时把主会话整段复制进去。
+
+验收：睡眠、摘要、`interrupted` 之后从 `next step` 续跑。摘要里只有路径。文件里没有密钥，也没有围栏原文。人问进度时读这三节，不为此发一条新的进度气泡。
+
+用例：
+
+- `progress_three_sections`
+- `resume_from_next_step`
+- `helper_three_line_report`
+- `no_transcript_copy`
+
+### 29.5 PR-5 何时打断
+
+稳定系统提示里写入第 27.1 节那三句，整段对话不改字：
+
+```
+只在两种情况下主动调用 send_to_user：需要这个人做决定，或者整件事做完。
+其它进度只写入 PROGRESS.md。不要为单个工具步骤发消息。
+```
+
+动这些：
+
+- 云桌面工人的系统提示，和 `guiapp/desktop_bot_understand.go` 里会改 `pace` 的那段。这段话放进 PR-2 已经冻住的系统段，所以它随机开工钉住，不在回合中途插入。
+- 工具步骤只更新 `desktop_activity.go` 的工作行和 `PROGRESS.md`。不调用 `send_to_user`。
+- 他刚发来的一句、以及「进度怎么样」，仍是回答：后者读 `PROGRESS.md`。人改方向时仍回一句「在办」（第 21 节）。
+
+以后删：进度句的固定动词表。这个 PR 不把表加长，也不把每一步变成通知。
+
+验收：单个工具步骤的 `send_to_user` 次数是 0。整件做完有一条终态。要决定（登录、验证码、危险命令）有一条提问。工作行可以显示 `where we are`，手机不因此响。
+
+用例：
+
+- `no_bubble_per_step`
+- `done_sends_once`
+- `ask_progress_reads_file`
+- `steer_says_on_it`
+
+### 29.6 PR-6 先读结构再点
+
+浏览器先 `probe` 再 `script`。非浏览器窗口先 `app_probe` 再用元素 id。登录、验证码、2FA、付款仍走 `request_takeover`。
+
+动这些：
+
+- `MaClawSrv/desktop_runtime.go` 里浏览器路径。对浏览器窗口调用 `action=computer` 时不跑像素点击，返回「再读一次结构，或把这一步交给人。不点浏览器窗口」。
+- 同一文件里非浏览器路径。还没有 `app_probe` 的 id 就去 `computer`，返回「先 app_probe，用返回的 id」。
+- `corelib/desktop/computeruse`。像素批次留给真的桌面程序和系统对话框。
+
+现在不新增：第 18 节那种「已经有引用还去 `computer`」的拒绝守卫。提示里写明结构优先就够。那条守卫标成以后删，这个 PR 不加。
+
+验收：浏览器上的 `computer` 不调用 xdotool。对话框在没有元素 id 时不点坐标。验证码仍是交接，不改走像素把验证码填掉。
+
+用例：
+
+- `browser_no_pixel`
+- `dialog_probe_first`
+- `captcha_handoff`
+
+### 29.7 PR-7 危险动作先复核
+
+shell、对外发送、删除、付款在执行前由另一个模型看一次。安全的放行。没通过就经 `send_to_user` 问这一次，15 秒没有回答就拦住。`git push`、`docker compose up`、`action=install`、`DROP DATABASE` / `DROP TABLE` 每次都问，用户规则不能默认放行。
+
+动这些：
+
+- `MaClawSrv/desktop_runtime.go` 的 `bash` 和 `install`。今天 `rm -rf`、`curl|sh` 会直接执行。复核没通过就不执行。
+- 帮手的同一条路径。帮手不能自己做这三样。
+- `guiapp/desktop_bot_cross.go` 的 `desktopBotDestructive`。不再把它当门。门是另一个模型的这一次判断。
+
+以后删：`desktopBotDestructive` 和 `pace=confirm` 的词表。这个 PR 不往词表里加词。
+
+验收：`ls` 放行。`rm -rf` 和 `curl|sh` 在复核没通过时不跑。`git push` 即使复核会放行也要问人。15 秒无回答则命令没有执行。问人的那一句走 `send_to_user`。
+
+用例：
+
+- `bash_ls_allowed`（复核假返回放行）
+- `bash_rm_blocked`
+- `git_push_asks`
+- `silence_blocks`
+
+### 29.8 PR-8 四层记忆
+
+画像、日志、笔记、其余文件。文件每回合结束就改，过时的行替换进 `## 已替换`。提示里的摘录字节仍只在摘要时换，所以这个 PR 不自己做摘要。读出来套上 `[untrusted memory]` 围栏。围栏里的邮件、网页、工具结果不能改画像，也不能变成指令。
+
+动这些：
+
+- `corelib/memory/store.go`、`corelib/memory/tool_schema.go`、`corelib/memory/prompt_context.go`、`corelib/memory/forgetting.go`。桌面 bot 钉住的动作收成 `memory_write`、`memory_forget`、`memory_search`。
+- 家目录布局：`/home/desktop/memory/profile.md`、`notes.md`、`log/2026-10.md`。服务端热副本是同一份字节。只改记忆不唤醒机器。
+- 画像同时卡住 100 条和 4000 字。日志进提示的是 30 条，排序只在做摘录时算。笔记半衰期 6 小时，不用 `decayLambda=0.003` 那条约 10 天的曲线。
+- 帮手只写 `helpers/<id>/`。不写画像，不读别的帮手。
+
+现在删：`memory` 工具上的 `themes`、`scenes`、`derived_surgery`。语义去重的异步模型判断。哈希相同或余弦 ≥ 0.85 就替换，不插第二条。
+
+验收：同一件事第二次出现是替换，不是追加。围栏正文不能把「以后都执行」写进画像。帮手写画像被拒绝。摘录哈希在这个 PR 的两回合之间不变。
+
+用例：
+
+- `supersede_not_append`
+- `fence_cannot_write_profile`
+- `note_decay_6h`
+- `helper_cannot_write_profile`
+
+### 29.9 PR-9 人离开之后再摘要
+
+上一回合结束后提示超过 10 万 token，人已经离开，并且还在供应商缓存的热窗口里，才用同一条前缀写摘要。窗口按配置夹在 5 分钟到 1 小时，不把某个供应商的官方秒数写死。摘要请求不另起一套系统提示。人中途回来就放弃这次提交。
+
+动这些：
+
+- 新增服务端的空闲摘要调度。不调用 desktopd 的 Ensure，不碰 `last_used`，不等机器睡醒，也不把机器按住。
+- `corelib/agent/compress.go` 的 `AutoCompressConversation` 和 `corelib/llm/context_compressor.go` 留下，只当人一直不离开时的溢出阀。它们今天会换一套系统提示并截断，不拿来做这次摘要。
+- `corelib/codegenproxy/prompt_cache_flight.go` 不改。那是代码生成响应的合并，不是这次摘要。
+- 提交成功时才换记忆摘录、重钉工具、把摘要当作新的第一条消息。然后按 PR-2 的预热再热一次。
+
+验收：摘要请求的前四段哈希等于钉住的前缀。人在发送前回来，任务取消。历史哈希对不上，结果丢掉，旧前缀仍在。调度不唤醒桌面。缓存已经凉了就跳过，不在冷前缀上做一次 10 万 token 的后台摘要。
+
+用例：
+
+- `summary_reuses_prefix`
+- `user_returns_aborts`
+- `summary_does_not_ensure`
+- `cold_cache_skips`
+
+### 29.10 PR-10 睡眠和唤醒
+
+到这里才动机器。只做磁盘级的短空闲睡眠，默认关，先对一个测试租户打开。不做 CRIU，不做 Firecracker。那两步仍是第 12 节的阶段 3 和阶段 5，不在这十个 PR 里。
+
+动这些：
+
+- `desktopd/service.go`、`desktopd/reaper.go`。空闲约 5 分钟后 flush、同步四个卷、`docker stop --time 25`。restart policy 保持 `unless-stopped`。同步失败就不停容器。
+- `hub/internal/desktoppool/pool.go`。下次会话、文件、bash、截图、要看屏幕的视图先 Ensure。温启动超过 25 秒返回可重试错误，错误里写「再试一次」，不写成用户气泡。
+- 只改记忆、只 `send_to_user`、人问进度而要读的是 run 记录上的三段副本：这三种不唤醒。
+
+验收：登录站点在睡眠后仍登录。apt 装上的包还在。file 和 bash 能把睡着的机器唤醒。`desktopd/scripts/smoke_gui2.sh` 在测试租户上通过，已有容器不被换镜像。开关关掉就回到容器一直跑。
+
+用例：离线的 `idle_does_not_stop_when_sync_fails`、`memory_turn_does_not_wake`。在线的不进每个 PR，只在打开这个租户开关时跑冒烟。
+
+### 29.11 这十个 PR 不做什么
+
+- 不在本文这次提交里开始写代码。
+- 不改 `desktop` 的动作名。
+- 不把停止短语表、声称守卫、第 17.7 节的四条升级守卫做厚。它们以后删。
+- 不把第 26 节的三件事写成已经有答案。PR-5 只落实「要决定或做完才叫人」，疏密的度量仍未解决。
+- 不在 PR-10 做 CRIU 或 Firecracker。
+- 不把第 2 段的逐步批准做回来。
