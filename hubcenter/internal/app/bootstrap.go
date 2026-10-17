@@ -25,6 +25,9 @@ import (
 )
 
 func Bootstrap(cfg *config.Config) (*App, error) {
+	if cfg != nil {
+		applySoftMemoryLimit(cfg.Runtime.SoftMemoryLimitMB)
+	}
 	provider, err := sqlite.NewProvider(sqlite.Config{
 		DSN:                   cfg.Database.DSN,
 		WAL:                   cfg.Database.WAL,
@@ -94,6 +97,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		haSvc.AttachStore(st)
 		haSvc.SetPushDebounceInterval(time.Duration(cfg.HA.PushDebounceSeconds) * time.Second)
 		haSvc.SetHeartbeatSyncMinInterval(time.Duration(cfg.HA.HeartbeatSyncMinIntervalSeconds) * time.Second)
+		haSvc.SetPeerLagGrace(time.Duration(cfg.HA.HistoryPeerLagGraceMinutes) * time.Minute)
 		haSvc.SetFailureEventRecorder(failureRecorder)
 	}
 
@@ -464,13 +468,13 @@ func runHAHistoryPruner(ctx context.Context, haSvc *ha.Service, retentionDays fl
 		retentionDays = 0.5
 	}
 	if maxRetainedOps <= 0 {
-		maxRetainedOps = 20000
+		maxRetainedOps = 4000
 	}
 	if intervalMinutes <= 0 {
 		intervalMinutes = 10
 	}
 	if batchSize <= 0 {
-		batchSize = 20000
+		batchSize = 1000
 	}
 	retention := time.Duration(retentionDays * float64(24*time.Hour))
 	prune := func() {
@@ -480,7 +484,9 @@ func runHAHistoryPruner(ctx context.Context, haSvc *ha.Service, retentionDays fl
 			return
 		}
 		if result != nil && (result.DeletedOps > 0 || result.DeletedAppliedOps > 0) {
-			log.Printf("[hubcenter][ha] pruned history: ops=%d applied_ops=%d remaining_ops=%d max_seq=%d", result.DeletedOps, result.DeletedAppliedOps, result.RemainingOps, result.MaxSeq)
+			log.Printf("[hubcenter][ha] pruned history: ops=%d applied_ops=%d remaining_ops=%d max_seq=%d ack_seq=%d ack_known=%t checkpointed_heads=%d", result.DeletedOps, result.DeletedAppliedOps, result.RemainingOps, result.MaxSeq, result.AckSeq, result.AckKnown, result.CheckpointedHeads)
+		} else if result != nil && int64(maxRetainedOps) > 0 && result.RemainingOps > int64(maxRetainedOps) && !result.AckKnown {
+			log.Printf("[hubcenter][ha] prune kept remaining_ops=%d above cap=%d max_seq=%d: peer acks are incomplete, so newest ops stay until every peer reports an ack", result.RemainingOps, maxRetainedOps, result.MaxSeq)
 		}
 	}
 	prune()

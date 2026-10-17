@@ -34,9 +34,11 @@ type gossipCachedSnapshot struct {
 	etag string
 }
 
-// snapshotMaxPosts is the upper bound for posts loaded into the snapshot cache.
-// Adjust if the gossip board grows beyond this limit.
-const snapshotMaxPosts = 100000
+// snapshotMaxPosts caps posts loaded into the in-memory gossip snapshot.
+// 100000 posts plus the gzipped file copy were an unbounded startup resident
+// set on a small host. 8000 keeps the board usable without pinning hundreds
+// of megabytes next to the SQLite cache.
+const snapshotMaxPosts = 8000
 const snapshotRefreshPageSize = 1000
 
 func NewGossipCache(gossip store.GossipRepository, filePath string) *GossipCache {

@@ -14,9 +14,10 @@ ha:
   pull_batch_size: 200
   heartbeat_sync_min_interval_seconds: 600
   history_retention_days: 0.5
-  history_max_retained_ops: 20000
+  history_max_retained_ops: 4000
   history_prune_interval_minutes: 10
-  history_prune_batch_size: 20000
+  history_prune_batch_size: 1000
+  history_peer_lag_grace_minutes: 360
   peers:
     - node_id: hc-2
       name: hubcenter-2
@@ -51,3 +52,7 @@ mail:
 logging:
   level: info
   dir: ./data/logs
+
+runtime:
+  # Go soft memory limit for an 8GB host. Set -1 to disable.
+  soft_memory_limit_mb: 1536

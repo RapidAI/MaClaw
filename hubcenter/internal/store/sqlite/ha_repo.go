@@ -357,23 +357,58 @@ func (r *haSyncOpRepo) Count(ctx context.Context) (int64, error) {
 }
 
 func (r *haSyncOpRepo) PruneHistory(ctx context.Context, cutoff time.Time, maxRetainedOps, batchSize int64) (*store.HAPruneResult, error) {
-	if batchSize <= 0 {
-		batchSize = 50000
-	}
-	if batchSize > 200000 {
-		batchSize = 200000
-	}
+	return r.PruneHistoryWithAck(ctx, cutoff, maxRetainedOps, batchSize, store.HAPeerAckFloor{})
+}
+
+// PruneHistoryWithAck prunes HA history.
+//
+// Without an ack floor the historical rules apply: a last-write-wins op is
+// removed only when a newer op for the same entity exists, and append-only
+// ops (usage and ledger batches) are removed once they are older than cutoff.
+// That keeps a lagging peer able to converge, but it does not bound the table
+// when every row is already the newest op of its entity.
+//
+// With Floor.Known set, last-write-wins ops that every pinning peer has
+// acknowledged are copied into ha_entity_heads and then deleted in short
+// autocommit batches, including newest-per-entity rows. The snapshot rows
+// stay, so a peer that restarts behind the truncated log can catch up
+// without a full history replay. Append-only ops stay until the age cutoff.
+// ForceWindow is the offline compact escape hatch: it checkpoints and then
+// drops last-write-wins ops outside the retained seq window even when acks
+// are incomplete. It never deletes append-only rows that are still inside
+// the age window, and it never writes to any table other than ha_sync_ops,
+// ha_applied_ops, and ha_entity_heads.
+func (r *haSyncOpRepo) PruneHistoryWithAck(ctx context.Context, cutoff time.Time, maxRetainedOps, batchSize int64, floor store.HAPeerAckFloor) (*store.HAPruneResult, error) {
+	return r.pruneHistory(ctx, historyPruneOptions{
+		Cutoff:         cutoff,
+		MaxRetainedOps: maxRetainedOps,
+		BatchSize:      batchSize,
+		Floor:          floor,
+	})
+}
+
+type historyPruneOptions struct {
+	Cutoff         time.Time
+	MaxRetainedOps int64
+	BatchSize      int64
+	Floor          store.HAPeerAckFloor
+	ForceWindow    bool
+}
+
+func (r *haSyncOpRepo) pruneHistory(ctx context.Context, opts historyPruneOptions) (*store.HAPruneResult, error) {
+	batchSize := clampPruneBatch(opts.BatchSize)
 	maxSeq, err := r.GetMaxSeq(ctx)
 	if err != nil {
 		return nil, err
 	}
 	seqFloor := int64(-1)
-	if maxRetainedOps > 0 && maxSeq > maxRetainedOps {
-		seqFloor = maxSeq - maxRetainedOps
+	if opts.MaxRetainedOps > 0 && maxSeq > opts.MaxRetainedOps {
+		seqFloor = maxSeq - opts.MaxRetainedOps
 	}
+	cutoff := opts.Cutoff
 	cutoffText := cutoff.UTC().Format(time.RFC3339)
 	deleteByTime := !cutoff.IsZero()
-	result := &store.HAPruneResult{MaxSeq: maxSeq}
+	result := &store.HAPruneResult{MaxSeq: maxSeq, AckKnown: opts.Floor.Known, AckSeq: opts.Floor.PinAck}
 	if deleteByTime {
 		deleted, err := r.pruneSyncOpsBefore(ctx, cutoffText, batchSize)
 		if err != nil {
@@ -400,6 +435,9 @@ func (r *haSyncOpRepo) PruneHistory(ctx context.Context, cutoff time.Time, maxRe
 	}
 	if deleteByTime {
 		for {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			res, err := r.db.ExecContext(ctx, `
 				DELETE FROM ha_applied_ops
 				WHERE op_id IN (
@@ -420,12 +458,104 @@ func (r *haSyncOpRepo) PruneHistory(ctx context.Context, cutoff time.Time, maxRe
 			}
 		}
 	}
+	if err := r.pruneAckedOps(ctx, result, opts, batchSize); err != nil {
+		return nil, err
+	}
+	if opts.ForceWindow {
+		if err := r.pruneForceWindow(ctx, result, opts.MaxRetainedOps, batchSize); err != nil {
+			return nil, err
+		}
+	}
 	remaining, err := r.Count(ctx)
 	if err != nil {
 		return nil, err
 	}
 	result.RemainingOps = remaining
+	maxSeq, err = r.GetMaxSeq(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result.MaxSeq = maxSeq
 	return result, nil
+}
+
+// clampPruneBatch keeps each DELETE statement small enough that the single
+// writer lock is released between batches. Callers may ask for more; the
+// loop still runs until the matching rows are gone.
+func clampPruneBatch(batchSize int64) int64 {
+	if batchSize <= 0 {
+		return 1000
+	}
+	if batchSize > 2000 {
+		return 2000
+	}
+	return batchSize
+}
+
+func (r *haSyncOpRepo) pruneAckedOps(ctx context.Context, result *store.HAPruneResult, opts historyPruneOptions, batchSize int64) error {
+	floor := opts.Floor
+	if !floor.Known || floor.PinAck <= 0 {
+		return nil
+	}
+	maxSeq := result.MaxSeq
+	deleteThrough := floor.PinAck
+	if opts.MaxRetainedOps > 0 && maxSeq > opts.MaxRetainedOps {
+		windowFloor := maxSeq - opts.MaxRetainedOps
+		if deleteThrough > windowFloor {
+			deleteThrough = windowFloor
+		}
+	}
+	if deleteThrough <= 0 {
+		return nil
+	}
+	// Copy the latest last-write-wins payload for every entity whose op is
+	// about to leave the log. The copy stays in ha_entity_heads after the
+	// delete, so a peer that restarts behind the truncated log can catch up
+	// from the snapshot instead of a full history replay. Append-only ops
+	// stay in the log until the age cutoff: they are facts, not heads.
+	copied, err := r.checkpointHeads(ctx, 0, deleteThrough, batchSize)
+	if err != nil {
+		return err
+	}
+	result.CheckpointedHeads += copied
+	deleted, err := r.deleteSyncOpsSeqRange(ctx, 0, deleteThrough, batchSize, true)
+	if err != nil {
+		return err
+	}
+	result.DeletedOps += deleted
+	return nil
+}
+
+// pruneForceWindow drops last-write-wins ops outside the retained seq window
+// after copying their latest payload into ha_entity_heads. Append-only ops
+// are not touched here; age-based pruning is the only way those leave.
+func (r *haSyncOpRepo) pruneForceWindow(ctx context.Context, result *store.HAPruneResult, maxRetainedOps, batchSize int64) error {
+	if maxRetainedOps <= 0 {
+		return nil
+	}
+	count, err := r.Count(ctx)
+	if err != nil {
+		return err
+	}
+	maxSeq, err := r.GetMaxSeq(ctx)
+	if err != nil {
+		return err
+	}
+	if count <= maxRetainedOps || maxSeq <= maxRetainedOps {
+		return nil
+	}
+	floor := maxSeq - maxRetainedOps
+	copied, err := r.checkpointHeads(ctx, 0, floor, batchSize)
+	if err != nil {
+		return err
+	}
+	result.CheckpointedHeads += copied
+	deleted, err := r.deleteSyncOpsSeqRange(ctx, 0, floor, batchSize, true)
+	if err != nil {
+		return err
+	}
+	result.DeletedOps += deleted
+	return nil
 }
 
 func (r *haSyncOpRepo) pruneSyncOpsBefore(ctx context.Context, cutoffText string, batchSize int64) (int64, error) {
@@ -464,23 +594,41 @@ func (r *haSyncOpRepo) pruneSyncOpsAtOrBeforeSeq(ctx context.Context, seqFloor i
 	`, seqFloor, batchSize)
 }
 
+// haAppendOnlyEntityTypes are facts that must not be collapsed into a single
+// head. Kept as literals to avoid an import cycle with the ha package.
+var haAppendOnlyEntityTypes = []string{"llm_usage_batch", "token_bank_ledger_batch"}
+
 // pruneOneShotOpsBefore deletes ops whose entity id is unique per op (so the
 // newest-op protection can never apply) once they are older than the time
-// cutoff. Matches ha.EntityLLMUsageBatch, kept as a literal to avoid an
-// import cycle with the ha package.
+// cutoff.
 func (r *haSyncOpRepo) pruneOneShotOpsBefore(ctx context.Context, cutoffText string, batchSize int64) (int64, error) {
 	var deleted int64
+	for _, entityType := range haAppendOnlyEntityTypes {
+		n, err := r.pruneOneShotEntityBefore(ctx, entityType, cutoffText, batchSize)
+		deleted += n
+		if err != nil {
+			return deleted, err
+		}
+	}
+	return deleted, nil
+}
+
+func (r *haSyncOpRepo) pruneOneShotEntityBefore(ctx context.Context, entityType, cutoffText string, batchSize int64) (int64, error) {
+	var deleted int64
 	for {
+		if err := ctx.Err(); err != nil {
+			return deleted, err
+		}
 		res, err := r.db.ExecContext(ctx, `
 			DELETE FROM ha_sync_ops WHERE seq IN (
 				SELECT seq
 				FROM ha_sync_ops INDEXED BY idx_ha_sync_ops_occurred_at
-				WHERE entity_type = 'llm_usage_batch'
+				WHERE entity_type = ?
 				  AND occurred_at < ?
 				ORDER BY occurred_at ASC, seq ASC
 				LIMIT ?
 			)
-		`, cutoffText, batchSize)
+		`, entityType, cutoffText, batchSize)
 		if err != nil {
 			return deleted, err
 		}
@@ -558,6 +706,9 @@ func NormalizeHAOccuredAtUTC(ctx context.Context, db *sql.DB, batchSize int64) (
 func (r *haSyncOpRepo) pruneSyncOps(ctx context.Context, batchSize int64, selectSQL string, args ...any) (int64, error) {
 	var deleted int64
 	for {
+		if err := ctx.Err(); err != nil {
+			return deleted, err
+		}
 		queryArgs := append([]any(nil), args...)
 		res, err := r.db.ExecContext(ctx, `DELETE FROM ha_sync_ops WHERE seq IN (`+selectSQL+`)`, queryArgs...)
 		if err != nil {
@@ -572,12 +723,291 @@ func (r *haSyncOpRepo) pruneSyncOps(ctx context.Context, batchSize int64, select
 	return deleted, nil
 }
 
+// HistoryPruneOptions configures an offline or in-process history prune.
+// PeerIDs, when set and Floor.Known is false, loads the ack floor from
+// ha_peer_acks. ForceWindow checkpoints and drops last-write-wins ops outside
+// the retained window; leave it false on a live server.
+type HistoryPruneOptions struct {
+	Cutoff         time.Time
+	MaxRetainedOps int64
+	BatchSize      int64
+	Floor          store.HAPeerAckFloor
+	ForceWindow    bool
+	PeerIDs        []string
+	PeerLagGrace   time.Duration
+}
+
 func PruneHAHistory(ctx context.Context, db *sql.DB, cutoff time.Time, maxRetainedOps, batchSize int64) (*store.HAPruneResult, error) {
+	return PruneHAHistoryOptions(ctx, db, HistoryPruneOptions{
+		Cutoff:         cutoff,
+		MaxRetainedOps: maxRetainedOps,
+		BatchSize:      batchSize,
+	})
+}
+
+func PruneHAHistoryOptions(ctx context.Context, db *sql.DB, opts HistoryPruneOptions) (*store.HAPruneResult, error) {
 	if db == nil {
 		return nil, errors.New("nil sqlite database")
 	}
 	repo := &haSyncOpRepo{db: db, readDB: db}
-	return repo.PruneHistory(ctx, cutoff, maxRetainedOps, batchSize)
+	if len(opts.PeerIDs) > 0 && !opts.Floor.Known {
+		floor, err := repo.MinPeerAck(ctx, opts.PeerIDs, opts.PeerLagGrace)
+		if err != nil {
+			return nil, err
+		}
+		opts.Floor = floor
+	}
+	return repo.pruneHistory(ctx, historyPruneOptions{
+		Cutoff:         opts.Cutoff,
+		MaxRetainedOps: opts.MaxRetainedOps,
+		BatchSize:      opts.BatchSize,
+		Floor:          opts.Floor,
+		ForceWindow:    opts.ForceWindow,
+	})
+}
+
+// RecordPeerAck stores how far peerNodeID has applied this node's op log.
+// The ack only moves forward. A rebuilt peer that reports a lower seq does
+// not reopen a hole in a log that may already have been truncated; it catches
+// up from snapshot heads or an operator restore.
+func (r *haSyncOpRepo) RecordPeerAck(ctx context.Context, peerNodeID string, ackSeq int64, protocol int) error {
+	peerNodeID = strings.TrimSpace(peerNodeID)
+	if peerNodeID == "" || ackSeq < 0 {
+		return nil
+	}
+	if protocol <= 0 {
+		protocol = 1
+	}
+	return RetryBusy(ctx, func() error {
+		_, err := r.db.ExecContext(ctx, `
+			INSERT INTO ha_peer_acks (peer_node_id, acked_seq, protocol_version, acked_at)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT(peer_node_id) DO UPDATE SET
+				acked_seq = CASE
+					WHEN excluded.acked_seq > ha_peer_acks.acked_seq THEN excluded.acked_seq
+					ELSE ha_peer_acks.acked_seq
+				END,
+				protocol_version = excluded.protocol_version,
+				acked_at = excluded.acked_at
+		`, peerNodeID, ackSeq, protocol, time.Now().UTC().Format(time.RFC3339))
+		return err
+	})
+}
+
+// MinPeerAck computes the truncation floor for the configured peers.
+// A peer with no ack row makes the floor unknown so newest ops stay put
+// (rolling upgrade: old binaries do not report acks). A protocol-2 peer
+// whose ack is older than lagGrace does not pin the log; Checkpoint asks
+// the pruner to copy last-write-wins heads before deleting past that peer.
+func (r *haSyncOpRepo) MinPeerAck(ctx context.Context, peerIDs []string, lagGrace time.Duration) (store.HAPeerAckFloor, error) {
+	if lagGrace <= 0 {
+		lagGrace = 6 * time.Hour
+	}
+	var floor store.HAPeerAckFloor
+	seen := 0
+	var pin *int64
+	var strict *int64
+	now := time.Now().UTC()
+	for _, id := range peerIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		seen++
+		var seq int64
+		var proto int
+		var at sql.NullString
+		err := r.readDB.QueryRowContext(ctx, `
+			SELECT acked_seq, protocol_version, acked_at
+			FROM ha_peer_acks
+			WHERE peer_node_id = ?
+		`, id).Scan(&seq, &proto, &at)
+		if errors.Is(err, sql.ErrNoRows) {
+			return store.HAPeerAckFloor{}, nil
+		}
+		if err != nil {
+			return store.HAPeerAckFloor{}, err
+		}
+		if strict == nil || seq < *strict {
+			v := seq
+			strict = &v
+		}
+		fresh := true
+		if proto >= 2 && at.Valid {
+			if t, parseErr := time.Parse(time.RFC3339, at.String); parseErr == nil && now.Sub(t) > lagGrace {
+				fresh = false
+				floor.Checkpoint = true
+			}
+		}
+		if fresh {
+			if pin == nil || seq < *pin {
+				v := seq
+				pin = &v
+			}
+		}
+	}
+	if seen == 0 || pin == nil || strict == nil {
+		return store.HAPeerAckFloor{}, nil
+	}
+	floor.Known = true
+	floor.PinAck = *pin
+	floor.StrictAck = *strict
+	return floor, nil
+}
+
+func (r *haSyncOpRepo) deleteSyncOpsSeqRange(ctx context.Context, afterSeq, throughSeq, batchSize int64, lwwOnly bool) (int64, error) {
+	if throughSeq <= afterSeq {
+		return 0, nil
+	}
+	extra := ""
+	if lwwOnly {
+		extra = " AND entity_type NOT IN ('llm_usage_batch', 'token_bank_ledger_batch')"
+	}
+	var deleted int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return deleted, err
+		}
+		res, err := r.db.ExecContext(ctx, `
+			DELETE FROM ha_sync_ops WHERE seq IN (
+				SELECT seq FROM ha_sync_ops
+				WHERE seq > ? AND seq <= ?`+extra+`
+				ORDER BY seq ASC
+				LIMIT ?
+			)
+		`, afterSeq, throughSeq, batchSize)
+		if err != nil {
+			return deleted, err
+		}
+		rows, _ := res.RowsAffected()
+		deleted += rows
+		if rows == 0 || rows < batchSize {
+			break
+		}
+	}
+	return deleted, nil
+}
+
+// checkpointHeads copies the latest last-write-wins op at or below upTo into
+// ha_entity_heads. Each row is its own autocommit so a multi-GB payload is
+// not wrapped in one transaction. Append-only entities are skipped.
+func (r *haSyncOpRepo) checkpointHeads(ctx context.Context, afterSeq, upTo, batchSize int64) (int64, error) {
+	if upTo <= afterSeq {
+		return 0, nil
+	}
+	readDB := r.readDB
+	if readDB == nil {
+		readDB = r.db
+	}
+	after := afterSeq
+	var copied int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return copied, err
+		}
+		rows, err := readDB.QueryContext(ctx, `
+			SELECT o.seq
+			FROM ha_sync_ops o
+			WHERE o.seq > ? AND o.seq <= ?
+			  AND o.entity_type NOT IN ('llm_usage_batch', 'token_bank_ledger_batch')
+			  AND NOT EXISTS (
+				SELECT 1 FROM ha_sync_ops newer
+				WHERE newer.entity_type = o.entity_type
+				  AND newer.entity_id = o.entity_id
+				  AND newer.seq > o.seq
+			  )
+			ORDER BY o.seq ASC
+			LIMIT ?
+		`, after, upTo, batchSize)
+		if err != nil {
+			return copied, err
+		}
+		var seqs []int64
+		for rows.Next() {
+			var seq int64
+			if err := rows.Scan(&seq); err != nil {
+				rows.Close()
+				return copied, err
+			}
+			seqs = append(seqs, seq)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return copied, err
+		}
+		rows.Close()
+		if len(seqs) == 0 {
+			return copied, nil
+		}
+		for _, seq := range seqs {
+			if seq > after {
+				after = seq
+			}
+			if err := ctx.Err(); err != nil {
+				return copied, err
+			}
+			if _, err := r.db.ExecContext(ctx, `
+				INSERT INTO ha_entity_heads (
+					entity_type, entity_id, seq, op_id, source_node_id, op_type,
+					entity_version, occurred_at, payload_json, payload_hash
+				)
+				SELECT entity_type, entity_id, seq, op_id, source_node_id, op_type,
+					entity_version, occurred_at, payload_json, payload_hash
+				FROM ha_sync_ops WHERE seq = ?
+				ON CONFLICT(entity_type, entity_id) DO UPDATE SET
+					seq = excluded.seq,
+					op_id = excluded.op_id,
+					source_node_id = excluded.source_node_id,
+					op_type = excluded.op_type,
+					entity_version = excluded.entity_version,
+					occurred_at = excluded.occurred_at,
+					payload_json = excluded.payload_json,
+					payload_hash = excluded.payload_hash
+				WHERE excluded.seq >= ha_entity_heads.seq
+			`, seq); err != nil {
+				return copied, err
+			}
+			copied++
+		}
+		if int64(len(seqs)) < batchSize {
+			return copied, nil
+		}
+	}
+}
+
+func (r *haSyncOpRepo) ListSnapshotHeads(ctx context.Context, afterSeq int64, limit int) ([]*store.HASyncOp, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 2000 {
+		limit = 2000
+	}
+	readDB := r.readDB
+	if readDB == nil {
+		readDB = r.db
+	}
+	rows, err := readDB.QueryContext(ctx, `
+		SELECT seq, op_id, source_node_id, entity_type, entity_id, op_type, entity_version, occurred_at, payload_json, payload_hash
+		FROM ha_entity_heads
+		WHERE seq > ?
+		ORDER BY seq ASC
+		LIMIT ?
+	`, afterSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*store.HASyncOp
+	for rows.Next() {
+		var item store.HASyncOp
+		var occurredAt string
+		if err := rows.Scan(&item.Seq, &item.OpID, &item.SourceNodeID, &item.EntityType, &item.EntityID, &item.OpType, &item.EntityVersion, &occurredAt, &item.PayloadJSON, &item.PayloadHash); err != nil {
+			return nil, err
+		}
+		item.OccurredAt = mustParseTime(occurredAt)
+		out = append(out, &item)
+	}
+	return out, rows.Err()
 }
 
 // Vacuum rebuilds the SQLite file to reclaim the free pages that repeated

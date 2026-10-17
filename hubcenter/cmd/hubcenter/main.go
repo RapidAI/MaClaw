@@ -11,6 +11,7 @@ import (
 	"net/http/pprof"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -20,6 +21,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/auth"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/backup"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/config"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store/sqlite"
 )
 
@@ -30,6 +32,9 @@ func main() {
 }
 
 func run(args []string) error {
+	if compactDBRequested(args) {
+		return runCompactDB(args)
+	}
 	if len(args) == 0 {
 		return runServer(args)
 	}
@@ -73,9 +78,218 @@ func runMaintenance(args []string) error {
 		return runMaintenanceHAPrune(args[1:])
 	case "vacuum":
 		return runMaintenanceVacuum(args[1:])
+	case "compact":
+		return runCompactDB(args[1:])
 	default:
 		return fmt.Errorf("unknown maintenance command %q", args[0])
 	}
+}
+
+// compactDBRequested is true when --compact-db is a top-level flag.
+// A later subcommand such as backup or restore must not be hijacked by a
+// stray --compact-db argument.
+func compactDBRequested(args []string) bool {
+	for _, arg := range args {
+		switch arg {
+		case "--compact-db":
+			return true
+		case "admin", "backup", "restore", "maintenance", "help", "--help", "-h":
+			return false
+		}
+	}
+	return false
+}
+
+func containsArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
+type compactCLIResult struct {
+	haPruneCLIResult
+	VacuumSkipped string `json:"vacuum_skipped,omitempty"`
+	FreeBytes     int64  `json:"free_bytes"`
+	AckKnown      bool   `json:"ack_known"`
+	AckSeq        int64  `json:"ack_seq"`
+	ForceWindow   bool   `json:"force_window"`
+}
+
+// runCompactDB prunes HA history and VACUUMs the SQLite file. It is the
+// offline recovery tool for a multi-GB hubcenter database. Stop the service
+// first. It does not connect to any peer and does not touch production by
+// itself; the operator runs it on the host where the database lives.
+func runCompactDB(args []string) error {
+	filtered := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == "--compact-db" || arg == "compact" {
+			continue
+		}
+		filtered = append(filtered, arg)
+	}
+	if hasHelpArg(filtered) {
+		printCompactUsage()
+		return nil
+	}
+	fs := flag.NewFlagSet("compact-db", flag.ContinueOnError)
+	fs.SetOutput(os.Stdout)
+	configPath := fs.String("config", "", "Path to MaClaw Hub Center config file")
+	retentionDays := fs.Float64("retention-days", 0.5, "Delete HA history older than this many days")
+	maxRetainedOps := fs.Int64("max-retained-ops", 4000, "Keep at most this many newest HA ops after acked history is removed")
+	batchSize := fs.Int64("batch-size", 1000, "Rows deleted per SQLite statement")
+	ackedThrough := fs.Int64("acked-through", -1, "Treat every peer as having applied through this seq. Use only after checking each peer. -1 reads ha_peer_acks instead")
+	forceWindow := fs.Bool("force-window", false, "Also drop last-write-wins ops outside the retained window after copying them to snapshot heads. Protocol-1 peers that have not acked those ops will miss them")
+	jsonOut := fs.Bool("json", false, "Print machine-readable JSON")
+	if err := fs.Parse(filtered); err != nil {
+		return err
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	if !*jsonOut {
+		fmt.Fprintln(os.Stdout, "compact-db: Hub Center must be stopped. This command only opens the local SQLite file from the config DSN.")
+	}
+	sizeBefore := fileSize(cfg.Database.DSN)
+	free, err := freeBytes(cfg.Database.DSN)
+	if err != nil {
+		return err
+	}
+	provider, err := openMaintenanceDB(cfg)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = provider.Close() }()
+	if err := sqlite.RunMigrations(provider.Write); err != nil {
+		return err
+	}
+	var cutoff time.Time
+	if *retentionDays > 0 {
+		cutoff = time.Now().UTC().Add(-time.Duration(*retentionDays * float64(24*time.Hour)))
+	}
+	opts := sqlite.HistoryPruneOptions{
+		Cutoff:         cutoff,
+		MaxRetainedOps: *maxRetainedOps,
+		BatchSize:      *batchSize,
+		ForceWindow:    *forceWindow,
+		PeerIDs:        configuredPeerIDs(cfg),
+		PeerLagGrace:   time.Duration(cfg.HA.HistoryPeerLagGraceMinutes) * time.Minute,
+	}
+	if *ackedThrough >= 0 {
+		opts.Floor = store.HAPeerAckFloor{Known: true, PinAck: *ackedThrough, StrictAck: *ackedThrough}
+		opts.PeerIDs = nil
+	}
+	result, err := sqlite.PruneHAHistoryOptions(context.Background(), provider.Write, opts)
+	if err != nil {
+		return err
+	}
+	out := compactCLIResult{
+		haPruneCLIResult: haPruneCLIResult{
+			DatabasePath:    cfg.Database.DSN,
+			SizeBeforeBytes: sizeBefore,
+			Vacuum:          true,
+		},
+		FreeBytes:   int64(free),
+		ForceWindow: *forceWindow,
+	}
+	if result != nil {
+		out.DeletedOps = result.DeletedOps
+		out.DeletedAppliedOps = result.DeletedAppliedOps
+		out.RemainingOps = result.RemainingOps
+		out.MaxSeq = result.MaxSeq
+		out.AckKnown = result.AckKnown
+		out.AckSeq = result.AckSeq
+	}
+	need := sizeBefore + 512<<20
+	if free < uint64(need) {
+		out.Vacuum = false
+		out.VacuumSkipped = fmt.Sprintf("need about %d free bytes to VACUUM, have %d; history was pruned but the file was not rebuilt", need, free)
+		out.SizeAfterBytes = fileSize(cfg.Database.DSN)
+		if *jsonOut {
+			_ = printJSON(out)
+		} else {
+			fmt.Fprintf(os.Stdout, "HA history pruned: ops=%d applied_ops=%d remaining_ops=%d max_seq=%d ack_known=%t ack_seq=%d\n", out.DeletedOps, out.DeletedAppliedOps, out.RemainingOps, out.MaxSeq, out.AckKnown, out.AckSeq)
+			fmt.Fprintf(os.Stdout, "database: %s\nsize: %d bytes (unchanged by VACUUM)\n", out.DatabasePath, out.SizeAfterBytes)
+			fmt.Fprintln(os.Stdout, out.VacuumSkipped)
+		}
+		return fmt.Errorf("%s", out.VacuumSkipped)
+	}
+	if err := sqlite.Vacuum(context.Background(), provider.Write); err != nil {
+		return err
+	}
+	out.SizeAfterBytes = fileSize(cfg.Database.DSN)
+	if *jsonOut {
+		return printJSON(out)
+	}
+	fmt.Fprintf(os.Stdout, "HA history pruned: ops=%d applied_ops=%d remaining_ops=%d max_seq=%d ack_known=%t ack_seq=%d\n", out.DeletedOps, out.DeletedAppliedOps, out.RemainingOps, out.MaxSeq, out.AckKnown, out.AckSeq)
+	fmt.Fprintf(os.Stdout, "database vacuumed: %s\nsize: %d -> %d bytes\n", out.DatabasePath, out.SizeBeforeBytes, out.SizeAfterBytes)
+	fmt.Fprintln(os.Stdout, "auto_vacuum=INCREMENTAL is now persisted; the runtime checkpointer releases freed pages automatically.")
+	if !out.AckKnown && !*forceWindow && *ackedThrough < 0 {
+		fmt.Fprintln(os.Stdout, "peer acks were incomplete, so newest unacked ops were kept. After every peer runs this build and has pulled once, run compact-db again to drop the acked prefix and reclaim the rest of the file.")
+	}
+	return nil
+}
+
+func openMaintenanceDB(cfg *config.Config) (*sqlite.Provider, error) {
+	return sqlite.NewProvider(sqlite.Config{
+		DSN:                 cfg.Database.DSN,
+		WAL:                 cfg.Database.WAL,
+		BusyTimeoutMS:       cfg.Database.BusyTimeoutMS,
+		AutoVacuum:          cfg.Database.AutoVacuum,
+		MaxReadOpenConns:    1,
+		MaxReadIdleConns:    1,
+		MaxWriteOpenConns:   1,
+		MaxWriteIdleConns:   1,
+		DisableCheckpointer: true,
+	})
+}
+
+func configuredPeerIDs(cfg *config.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	self := strings.TrimSpace(cfg.HA.NodeID)
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(id string, enabled bool) {
+		if !enabled {
+			return
+		}
+		id = strings.TrimSpace(id)
+		if id == "" || id == self {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	for _, node := range cfg.HA.Nodes {
+		add(node.NodeID, node.Enabled)
+	}
+	for _, peer := range cfg.HA.Peers {
+		add(peer.NodeID, peer.Enabled)
+	}
+	return out
+}
+
+func freeBytes(path string) (uint64, error) {
+	dir := path
+	if info, err := os.Stat(path); err != nil || !info.IsDir() {
+		dir = filepath.Dir(path)
+		if dir == "" {
+			dir = "."
+		}
+	}
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(dir, &stat); err != nil {
+		return 0, fmt.Errorf("statfs %s: %w", dir, err)
+	}
+	return stat.Bavail * uint64(stat.Bsize), nil
 }
 
 type vacuumCLIResult struct {
@@ -140,9 +354,9 @@ func runMaintenanceHAPrune(args []string) error {
 	fs := flag.NewFlagSet("maintenance ha-prune", flag.ContinueOnError)
 	fs.SetOutput(os.Stdout)
 	configPath := fs.String("config", "", "Path to MaClaw Hub Center config file")
-	retentionDays := fs.Float64("retention-days", 0.5, "Delete HA history older than this many days while keeping latest op per entity")
-	maxRetainedOps := fs.Int64("max-retained-ops", 20000, "Also cap HA history to approximately this many recent ops")
-	batchSize := fs.Int64("batch-size", 20000, "Rows to delete per SQLite batch")
+	retentionDays := fs.Float64("retention-days", 0.5, "Delete HA history older than this many days while keeping latest op per entity unless peers have acked it")
+	maxRetainedOps := fs.Int64("max-retained-ops", 4000, "Also cap HA history to approximately this many recent ops")
+	batchSize := fs.Int64("batch-size", 1000, "Rows to delete per SQLite batch (statements are capped at 2000)")
 	vacuum := fs.Bool("vacuum", false, "Run VACUUM and truncate WAL after pruning to reclaim disk space; stop Hub Center first")
 	jsonOut := fs.Bool("json", false, "Print machine-readable JSON")
 	if err := fs.Parse(args); err != nil {
@@ -153,16 +367,7 @@ func runMaintenanceHAPrune(args []string) error {
 		return err
 	}
 	sizeBefore := fileSize(cfg.Database.DSN)
-	provider, err := sqlite.NewProvider(sqlite.Config{
-		DSN:               cfg.Database.DSN,
-		WAL:               cfg.Database.WAL,
-		BusyTimeoutMS:     cfg.Database.BusyTimeoutMS,
-		AutoVacuum:        cfg.Database.AutoVacuum,
-		MaxReadOpenConns:  1,
-		MaxReadIdleConns:  1,
-		MaxWriteOpenConns: 1,
-		MaxWriteIdleConns: 1,
-	})
+	provider, err := openMaintenanceDB(cfg)
 	if err != nil {
 		return err
 	}
@@ -174,7 +379,13 @@ func runMaintenanceHAPrune(args []string) error {
 	if *retentionDays > 0 {
 		cutoff = time.Now().UTC().Add(-time.Duration(*retentionDays * float64(24*time.Hour)))
 	}
-	result, err := sqlite.PruneHAHistory(context.Background(), provider.Write, cutoff, *maxRetainedOps, *batchSize)
+	result, err := sqlite.PruneHAHistoryOptions(context.Background(), provider.Write, sqlite.HistoryPruneOptions{
+		Cutoff:         cutoff,
+		MaxRetainedOps: *maxRetainedOps,
+		BatchSize:      *batchSize,
+		PeerIDs:        configuredPeerIDs(cfg),
+		PeerLagGrace:   time.Duration(cfg.HA.HistoryPeerLagGraceMinutes) * time.Minute,
+	})
 	if err != nil {
 		return err
 	}
@@ -472,6 +683,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stdout, "")
 	fmt.Fprintln(os.Stdout, "Usage:")
 	fmt.Fprintln(os.Stdout, "  hubcenter --config <config.yaml>")
+	fmt.Fprintln(os.Stdout, "  hubcenter --compact-db --config <config.yaml>")
 	fmt.Fprintln(os.Stdout, "  hubcenter backup <command> [options]")
 	fmt.Fprintln(os.Stdout, "  hubcenter restore --file <backup.tar.gz> --target-root <hubcenter-dir> [options]")
 	fmt.Fprintln(os.Stdout, "  hubcenter maintenance <command> [options]")
@@ -489,6 +701,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stdout, "  hubcenter backup inspect --help")
 	fmt.Fprintln(os.Stdout, "  hubcenter maintenance ha-prune --help")
 	fmt.Fprintln(os.Stdout, "  hubcenter maintenance vacuum --help")
+	fmt.Fprintln(os.Stdout, "  hubcenter --compact-db --help")
 	fmt.Fprintln(os.Stdout, "  hubcenter restore --help")
 }
 
@@ -496,13 +709,14 @@ func printMaintenanceUsage() {
 	fmt.Fprintln(os.Stdout, "MaClaw Hub Center maintenance tools")
 	fmt.Fprintln(os.Stdout, "")
 	fmt.Fprintln(os.Stdout, "Commands:")
-	fmt.Fprintln(os.Stdout, "  hubcenter maintenance ha-prune --config <config.yaml> [--retention-days 0.5] [--max-retained-ops 20000] [--batch-size 20000] [--vacuum] [--json]")
+	fmt.Fprintln(os.Stdout, "  hubcenter maintenance ha-prune --config <config.yaml> [--retention-days 0.5] [--max-retained-ops 4000] [--batch-size 1000] [--vacuum] [--json]")
 	fmt.Fprintln(os.Stdout, "  hubcenter maintenance vacuum --config <config.yaml> [--json]")
+	fmt.Fprintln(os.Stdout, "  hubcenter --compact-db --config <config.yaml> [--acked-through N] [--force-window] [--json]")
 	fmt.Fprintln(os.Stdout, "")
 	fmt.Fprintln(os.Stdout, "Safe emergency flow:")
 	fmt.Fprintln(os.Stdout, "  stop Hub Center")
 	fmt.Fprintln(os.Stdout, "  hubcenter backup create --config ./configs/config.yaml --out ./data/backups/pre-ha-prune.tar.gz --json")
-	fmt.Fprintln(os.Stdout, "  hubcenter maintenance ha-prune --config ./configs/config.yaml --retention-days 0.5 --max-retained-ops 20000 --batch-size 20000 --vacuum --json")
+	fmt.Fprintln(os.Stdout, "  hubcenter --compact-db --config ./configs/config.yaml --json")
 	fmt.Fprintln(os.Stdout, "  start Hub Center")
 	fmt.Fprintln(os.Stdout, "")
 	fmt.Fprintln(os.Stdout, "Disk-space-only cleanup (nothing left to prune, file still bloated):")
@@ -545,6 +759,44 @@ func printMaintenanceVacuumUsage() {
 	fmt.Fprintln(os.Stdout, "Options:")
 	fmt.Fprintln(os.Stdout, "  --config <path>             Hub Center config file.")
 	fmt.Fprintln(os.Stdout, "  --json                      Print machine-readable JSON.")
+}
+
+func printCompactUsage() {
+	fmt.Fprintln(os.Stdout, "Usage:")
+	fmt.Fprintln(os.Stdout, "  hubcenter --compact-db --config <config.yaml> [--retention-days 0.5] [--max-retained-ops 4000] [--batch-size 1000] [--acked-through N] [--force-window] [--json]")
+	fmt.Fprintln(os.Stdout, "  hubcenter maintenance compact --config <config.yaml> [same flags]")
+	fmt.Fprintln(os.Stdout, "")
+	fmt.Fprintln(os.Stdout, "Stop Hub Center first. This opens only the local SQLite file named by")
+	fmt.Fprintln(os.Stdout, "database.dsn (production has used data/codeclaw-hubcenter.db; the")
+	fmt.Fprintln(os.Stdout, "example config uses data/maclaw-hubcenter.db). It does not talk to peers.")
+	fmt.Fprintln(os.Stdout, "")
+	fmt.Fprintln(os.Stdout, "What it deletes:")
+	fmt.Fprintln(os.Stdout, "  ha_sync_ops and ha_applied_ops rows that are superseded, older than")
+	fmt.Fprintln(os.Stdout, "  the retention window (append-only usage and ledger batches), or")
+	fmt.Fprintln(os.Stdout, "  already acknowledged by every configured peer.")
+	fmt.Fprintln(os.Stdout, "  It does not delete hub, skill, order, ledger, or settings rows.")
+	fmt.Fprintln(os.Stdout, "")
+	fmt.Fprintln(os.Stdout, "Then it runs VACUUM, which needs free disk about the size of the")
+	fmt.Fprintln(os.Stdout, "database plus 512MiB, and persists auto_vacuum=INCREMENTAL.")
+	fmt.Fprintln(os.Stdout, "")
+	fmt.Fprintln(os.Stdout, "Options:")
+	fmt.Fprintln(os.Stdout, "  --config <path>             Hub Center config file.")
+	fmt.Fprintln(os.Stdout, "  --retention-days <n>        Age cutoff for superseded and append-only ops.")
+	fmt.Fprintln(os.Stdout, "  --max-retained-ops <n>      Newest ops kept even after they are acknowledged.")
+	fmt.Fprintln(os.Stdout, "  --batch-size <n>            Delete batch. Statements are capped at 2000 rows.")
+	fmt.Fprintln(os.Stdout, "  --acked-through <seq>       Operator-supplied ack. -1 (default) reads ha_peer_acks.")
+	fmt.Fprintln(os.Stdout, "                              Set this only after confirming every peer has applied")
+	fmt.Fprintln(os.Stdout, "                              through that seq. A wrong value drops unreplicated ops.")
+	fmt.Fprintln(os.Stdout, "  --force-window              Also drop unacked last-write-wins ops outside the")
+	fmt.Fprintln(os.Stdout, "                              retained window, after copying them to ha_entity_heads.")
+	fmt.Fprintln(os.Stdout, "                              Protocol-2 peers catch up from the snapshot. Protocol-1")
+	fmt.Fprintln(os.Stdout, "                              peers that have not pulled those ops will miss them.")
+	fmt.Fprintln(os.Stdout, "                              Append-only usage and ledger rows inside the age window stay.")
+	fmt.Fprintln(os.Stdout, "  --json                      Print machine-readable JSON.")
+	fmt.Fprintln(os.Stdout, "")
+	fmt.Fprintln(os.Stdout, "Safe order: upgrade every peer to this build, let them sync, confirm a")
+	fmt.Fprintln(os.Stdout, "prune log with ack_known=true, back up, stop one node, run this, start it,")
+	fmt.Fprintln(os.Stdout, "then repeat. See docs/hubcenter-ha-lightweight-replication.md.")
 }
 
 func printBackupUsage() {

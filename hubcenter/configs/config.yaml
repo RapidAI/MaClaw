@@ -26,3 +26,6 @@ mail:
 logging:
   level: info
   dir: ./data/logs
+
+runtime:
+  soft_memory_limit_mb: 1536

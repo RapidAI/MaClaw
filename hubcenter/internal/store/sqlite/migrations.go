@@ -319,6 +319,43 @@ func RunMigrations(db *sql.DB) error {
 	if err := ensureInvitationCodeRoutesTable(db); err != nil {
 		return err
 	}
+	if err := ensureHAReplicationV2(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureHAReplicationV2 adds the ack and snapshot-head tables used by the
+// lightweight replication path. Both statements are CREATE TABLE IF NOT EXISTS,
+// which only writes the sqlite_master page. They do not rewrite a multi-GB
+// ha_sync_ops table and are safe to run on a live 2.4GB database at startup.
+func ensureHAReplicationV2(db *sql.DB) error {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS ha_peer_acks (
+		peer_node_id TEXT PRIMARY KEY,
+		acked_seq INTEGER NOT NULL DEFAULT 0,
+		protocol_version INTEGER NOT NULL DEFAULT 1,
+		acked_at TEXT
+	)`); err != nil {
+		return fmt.Errorf("create ha_peer_acks: %w", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS ha_entity_heads (
+		entity_type TEXT NOT NULL,
+		entity_id TEXT NOT NULL,
+		seq INTEGER NOT NULL,
+		op_id TEXT NOT NULL,
+		source_node_id TEXT NOT NULL,
+		op_type TEXT NOT NULL,
+		entity_version INTEGER NOT NULL,
+		occurred_at TEXT NOT NULL,
+		payload_json TEXT NOT NULL,
+		payload_hash TEXT NOT NULL,
+		PRIMARY KEY (entity_type, entity_id)
+	)`); err != nil {
+		return fmt.Errorf("create ha_entity_heads: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_ha_entity_heads_seq ON ha_entity_heads(seq)`); err != nil {
+		return fmt.Errorf("create ha_entity_heads seq index: %w", err)
+	}
 	return nil
 }
 

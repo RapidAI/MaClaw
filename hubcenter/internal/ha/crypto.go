@@ -30,6 +30,14 @@ const (
 	haHeaderSignatureV2 = "X-HubCenter-Signature-V2"
 )
 
+// RequestPeerNodeID returns the node id a signed HA request claims to be.
+func RequestPeerNodeID(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.Header.Get(haHeaderNodeID))
+}
+
 // haMaxSignedBodyBytes bounds how much of a request body is buffered while
 // computing its SHA-256 for V2 signing/verification. It matches the HA
 // ops/apply JSON body ceiling (128 MiB) so a legitimate batch is never
