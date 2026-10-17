@@ -62,7 +62,7 @@ backup() {
     docker cp "$c":/desktop_supervisor.py "$d/supervisor.$(docker inspect --format '{{.Name}}' "$c" | tr -d /).py" 2>/dev/null || true
   done
   h="$HUB_DIR.bak.$ts"; mkdir -p "$h"; chmod 700 "$h"
-  for f in maclaw-hub meeting_asr_worker start.sh configs web; do if [ -e "$HUB_DIR/$f" ]; then cp -a "$HUB_DIR/$f" "$h/"; fi; done
+  for f in maclaw-hub meeting_asr_worker start.sh run-systemd.sh configs web; do if [ -e "$HUB_DIR/$f" ]; then cp -a "$HUB_DIR/$f" "$h/"; fi; done
   python3 "$REMOTE_TMP/scripts/hub_desktop_settings.py" backup "$h/desktop_service.settings.json" || log "no desktop_service settings to back up"
   s="$MACLAWSRV_DEPLOY_DIR.bak.$ts"; mkdir -p "$s/bin"; chmod 700 "$s"
   cp -a "$MACLAWSRV_DEPLOY_DIR/bin/maclawsrv" "$s/bin/" 2>/dev/null || true
@@ -104,6 +104,7 @@ deploy_hub() {
   cp -f "$SRC/bin/maclaw-hub" "$HUB_DIR/maclaw-hub"; chmod +x "$HUB_DIR/maclaw-hub"
   cp -f "$SRC/bin/meeting_asr_worker" "$HUB_DIR/meeting_asr_worker"; chmod +x "$HUB_DIR/meeting_asr_worker"
   cp -f "$SRC/hub/start.sh" "$HUB_DIR/start.sh"; sed -i 's/\r$//' "$HUB_DIR/start.sh"; chmod +x "$HUB_DIR/start.sh"
+  cp -f "$SRC/hub/run-systemd.sh" "$HUB_DIR/run-systemd.sh"; sed -i 's/\r$//' "$HUB_DIR/run-systemd.sh"; chmod +x "$HUB_DIR/run-systemd.sh"
   cp -f "$SRC/hub/configs/config.example.yaml" "$HUB_DIR/configs/config.example.yaml"
   # replace_web_tree: stage beside the live tree, verify the manifest, swap.
   staging="$HUB_DIR/web.deploying.$(date +%s).$$"
@@ -214,7 +215,7 @@ rollback() {
   if [ -d "$d/image" ]; then rm -rf "$DESKTOPD_DEPLOY_DIR/image"; cp -a "$d/image" "$DESKTOPD_DEPLOY_DIR/image"; fi
   systemctl restart maclaw-desktopd
   # 3. Hub
-  for f in maclaw-hub meeting_asr_worker start.sh; do if [ -e "$h/$f" ]; then cp -af "$h/$f" "$HUB_DIR/$f"; fi; done
+  for f in maclaw-hub meeting_asr_worker start.sh run-systemd.sh; do if [ -e "$h/$f" ]; then cp -af "$h/$f" "$HUB_DIR/$f"; fi; done
   if [ -d "$h/web" ]; then rm -rf "$HUB_DIR/web"; cp -a "$h/web" "$HUB_DIR/web"; fi
   (cd "$HUB_DIR" && ./start.sh < /dev/null)
   # 4. MaClawSrv

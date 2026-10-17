@@ -1,0 +1,20 @@
+# /etc/systemd/system/maclaw-hubcenter.service
+# Copy to that path. stdout and stderr go to the journal
+# (journalctl -u maclaw-hubcenter). Do not set StandardOutput=append:;
+# systemd 237 cannot parse it.
+#
+# Do not set ExecStart to start.sh. start.sh restarts this unit when it is
+# installed, which would loop.
+[Unit]
+Description=MaClaw Hub Center
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/data/soft/hubcenter
+ExecStart=/data/soft/hubcenter/maclaw-hubcenter --config /data/soft/hubcenter/configs/config.yaml
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -122,6 +122,7 @@ step_build() {
     GOOS=linux GOARCH=amd64 CGO_ENABLED=0 "$GO" build -p 1 -o "$stage/hub/bin/maclaw-hub" ./hub/cmd/hub
     GOOS=linux GOARCH=amd64 CGO_ENABLED=0 "$GO" build -p 1 -o "$stage/hub/bin/meeting_asr_worker" ./hub/cmd/meeting_asr_worker
     cp hub/start.sh "$stage/hub/hub/start.sh"
+    cp hub/run-systemd.sh "$stage/hub/hub/run-systemd.sh"
     cp hub/configs/config.example.yaml "$stage/hub/hub/configs/"
     git archive HEAD hub/web | tar -x -C "$stage/hub"
     (cd "$stage/hub/hub/web" && find . -type f | LC_ALL=C sort | xargs -d '\n' sha256sum) > "$stage/hub/hub-web.sha256"

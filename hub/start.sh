@@ -35,11 +35,13 @@ if [ -z "${MACLAW_MEETING_ASR_MODEL:-}" ] && [ -f "$MEETING_ASR_MODEL_DEFAULT" ]
 fi
 
 # A production installation is commonly managed by systemd (maclaw-hub.service
-# at /data/soft/hub). Starting a second copy with nohup would leave an
-# orphaned listener behind on the next deploy, while systemd keeps restarting
-# its own unit after the port bind fails. Prefer the service manager whenever
-# the matching unit is installed; retain the standalone nohup path for
-# local/manual deployments without systemd.
+# at /data/soft/hub, ExecStart=run-systemd.sh). Starting a second copy with
+# nohup would leave an orphaned listener behind on the next deploy, while
+# systemd keeps restarting its own unit after the port bind fails. Prefer the
+# service manager whenever the matching unit is installed; retain the
+# standalone nohup path for local/manual deployments without systemd.
+# This script must not be the unit ExecStart: the branch below would restart
+# the unit forever.
 if command -v systemctl >/dev/null 2>&1 && systemctl cat "$BIN_NAME.service" >/dev/null 2>&1; then
   echo "Restarting systemd service: $BIN_NAME.service"
   exec systemctl restart "$BIN_NAME.service"

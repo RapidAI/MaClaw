@@ -657,6 +657,12 @@ deploy_hub() {
     sed -i "s/maclaw-hub/$HUB_BINARY_NAME/g" "$REMOTE_HUB_DIR/start.sh"
     chmod +x "$REMOTE_HUB_DIR/start.sh"
   fi
+  if [ -f "$SRC_ROOT/hub/run-systemd.sh" ]; then
+    cp -f "$SRC_ROOT/hub/run-systemd.sh" "$REMOTE_HUB_DIR/run-systemd.sh"
+    sed -i 's/\r$//' "$REMOTE_HUB_DIR/run-systemd.sh"
+    sed -i "s/maclaw-hub/$HUB_BINARY_NAME/g" "$REMOTE_HUB_DIR/run-systemd.sh"
+    chmod +x "$REMOTE_HUB_DIR/run-systemd.sh"
+  fi
   [ -f "$SRC_ROOT/hub/configs/config.example.yaml" ] && cp -f "$SRC_ROOT/hub/configs/config.example.yaml" "$REMOTE_HUB_DIR/configs/config.example.yaml"
   if [ -d "$SRC_ROOT/hub/web" ]; then rm -rf "$REMOTE_HUB_DIR/web"; cp -R "$SRC_ROOT/hub/web" "$REMOTE_HUB_DIR/web"; fi
   backup_and_write_config "$REMOTE_HUB_DIR/configs/config.yaml" "$REMOTE_TMP_DIR/$HUB_CONFIG_BASENAME"
