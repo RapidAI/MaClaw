@@ -304,6 +304,10 @@ func (h *IMMessageHandler) handleAgentLoopNoToolBranch(opts agentLoopNoToolBranc
 		result.ContinueLoop = true
 		return result
 	}
+	if held, ok := h.continueOpenGoalContinuation(opts, result.Conversation); ok {
+		held.Tools = result.Tools
+		return held
+	}
 	localStoredInfoNeedsFirstLookup := tool.IsLocalStoredInfoQuery(opts.UserText) && opts.TotalToolCallsInLoop == 0
 	if intent, ok := classifyAgentNoToolReplyByHeuristic(result.MessageContent); ok && intent == agentNoToolReplyComplete && !localStoredInfoNeedsFirstLookup {
 		result.TrimmedVisibleContent = strings.TrimSpace(stripThinkingTags(result.MessageContent))
@@ -370,6 +374,49 @@ func (h *IMMessageHandler) handleAgentLoopNoToolBranch(opts agentLoopNoToolBranc
 
 	result.ReadyToFinalize = true
 	return result
+}
+
+// continueOpenGoalContinuation keeps a host goal turn inside this loop while
+// the phase record is still missing. A prose stop is not the end of that
+// turn. The bound is the same consecutive no-tool window the loop already
+// uses before it stops asking. Tool calls reset that window. After it is
+// spent, this turn ends and the goal engine schedules the same step again.
+func (h *IMMessageHandler) continueOpenGoalContinuation(opts agentLoopNoToolBranchOptions, conversation []interface{}) (agentLoopNoToolBranchResult, bool) {
+	result := agentLoopNoToolBranchResult{
+		Conversation:   conversation,
+		Tools:          opts.Tools,
+		MessageContent: opts.MessageContent,
+	}
+	phase := opts.Phase
+	if phase == nil {
+		return result, false
+	}
+	exp, open := h.openGoalContinuationContract(opts.UserID, opts.UserText, opts.Platform)
+	if !open {
+		return result, false
+	}
+	if phase.ConsecutiveNoTool > stalledNoToolRecoverThreshold {
+		log.Printf("[agent-loop] goal phase still open after %d consecutive no-tool replies; ending this turn phase=%s", phase.ConsecutiveNoTool, exp.phase)
+		result.TrimmedVisibleContent = strings.TrimSpace(stripThinkingTags(result.MessageContent))
+		result.ReadyToFinalize = true
+		return result, true
+	}
+	prompt := goalContinuationContractHoldPrompt(exp)
+	if prompt == "" {
+		return result, false
+	}
+	log.Printf("[agent-loop] goal phase still open; continuing this turn (no-tool %d/%d, iter=%d, phase=%s)", phase.ConsecutiveNoTool, stalledNoToolRecoverThreshold, opts.Iteration, exp.phase)
+	systemMessagesStart := len(conversation)
+	conversation = append(conversation, map[string]string{
+		"role":    "system",
+		"content": prompt,
+	})
+	if opts.RecordSystemMessages != nil {
+		opts.RecordSystemMessages(systemMessagesStart, conversation)
+	}
+	result.Conversation = conversation
+	result.ContinueLoop = true
+	return result, true
 }
 
 func (h *IMMessageHandler) shouldContinueForPendingGuideReference(userID string) bool {

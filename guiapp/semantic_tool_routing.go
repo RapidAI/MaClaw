@@ -2858,7 +2858,7 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// The tool head scores the same vector the intent pass already computed.
 	// Managed turns never enter the name router, so this is the injection
 	// point: intent needs ∪ head top-k, still inside the capability plan.
-	needs = h.unionToolHeadNeeds(registry, needs, planning)
+	needs = h.unionToolHeadNeeds(requestCtx, registry, needs, planning)
 	var carriedCaps []string
 	if lookupContinuationFetches(requestCtx) && planning.Primary == intent.LabelSearch {
 		// A cold search leaves web_fetch latent. Raising the selection budget
@@ -2984,7 +2984,11 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	if !semanticPetitionExpansion(requestCtx) {
 		needs = dropUnusedSessionCompanions(needs, remaining)
 	}
-	needs = clampNeedsToResidueRemaining(needs, remaining)
+	if semanticPetitionExpansion(requestCtx) {
+		needs = clampPetitionNeedsToResidue(needs, remaining, requestCtx)
+	} else {
+		needs = clampNeedsToResidueRemaining(needs, remaining)
+	}
 	// Drop companions the parent budget already omitted and that the
 	// petitioned label does not declare. Raising the selection cap below
 	// would otherwise put them back, and the expansion validator would

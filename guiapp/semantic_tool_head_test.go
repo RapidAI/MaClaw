@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -53,7 +54,7 @@ func TestUnionToolHeadNeedsUsesQueryVec(t *testing.T) {
 	registry := newIMSemanticCapabilityRegistry()
 	// web_search ~0.99 (read-only, add), asr ~0.99 (needs an audio input, hold),
 	// ssh ~0.88 (effectful, at the write floor, add), generate_pdf ~0.60 (hold),
-	// web_fetch ~0.99 (latent on a pure lookup; a document composite promotes it),
+	// web_fetch ~0.99 (read-only declaration, add the reviewed family),
 	// session_search ~0.62 (above theta, private read, hold).
 	head := semanticTestToolHead(t,
 		[]string{"web_search", "asr", "ssh", "generate_pdf", "web_fetch", "session_search"},
@@ -74,7 +75,7 @@ func TestUnionToolHeadNeedsUsesQueryVec(t *testing.T) {
 	needs := []tool.CapabilityNeed{{
 		ID: "need:office", Capability: tool.CapabilityDocumentWriteOffice, Required: true,
 	}}
-	got := h.unionToolHeadNeeds(registry, needs, intent.ClassificationResult{
+	got := h.unionToolHeadNeeds(context.Background(), registry, needs, intent.ClassificationResult{
 		Primary: intent.LabelSearch, Confidence: 0.95, QueryVec: []float32{1, 0, 0, 0},
 	})
 	if !capabilityNeedPresent(got, "information.search.web") {
@@ -89,17 +90,10 @@ func TestUnionToolHeadNeedsUsesQueryVec(t *testing.T) {
 	if capabilityNeedPresent(got, tool.CapabilityAudioTranscribeSpeech) {
 		t.Fatal("asr was minted without an audio input")
 	}
-	if capabilityNeedPresent(got, tool.CapabilityInformationFetchWeb) {
-		t.Fatal("pure lookup must keep web_fetch latent")
+	if got := countCapabilityNeeds(got, tool.CapabilityInformationFetchWeb); got != 5 {
+		t.Fatalf("fetch family = %d, want the reviewed 5", got)
 	}
-	composite := h.unionToolHeadNeeds(registry, needs, intent.ClassificationResult{
-		Primary: intent.LabelLiveData, Secondary: []intent.IntentLabel{intent.LabelDocumentGenerate},
-		Confidence: 0.92, QueryVec: []float32{1, 0, 0, 0},
-	})
-	if got := countCapabilityNeeds(composite, tool.CapabilityInformationFetchWeb); got != 5 {
-		t.Fatalf("document composite fetch family = %d, want the reviewed 5", got)
-	}
-	for _, need := range composite {
+	for _, need := range got {
 		if need.Capability == tool.CapabilityInformationFetchWeb && need.Required {
 			t.Fatal("tool-head fetch must stay optional so search still leads")
 		}
@@ -113,33 +107,105 @@ func TestUnionToolHeadNeedsUsesQueryVec(t *testing.T) {
 		}
 	}
 	// No vector: the head is not a second embedder.
-	same := h.unionToolHeadNeeds(registry, needs, intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.95})
+	same := h.unionToolHeadNeeds(context.Background(), registry, needs, intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.95})
 	if len(same) != 1 {
 		t.Fatalf("missing vector changed needs: %#v", same)
 	}
 }
 
-func TestToolHeadPromotesLatentFetchOnlyForDocumentComposites(t *testing.T) {
-	high := 0.93
-	low := 0.70
-	if toolHeadPromotesLatentFetch(intent.ClassificationResult{Primary: intent.LabelSearch}, high) {
-		t.Fatal("pure search must keep fetch latent")
+func TestLatentFetchBelowWriteFloorStaysOffThePlan(t *testing.T) {
+	registry := newIMSemanticCapabilityRegistry()
+	// ~0.73: above the legacy visibility threshold, below the grant floor.
+	head := semanticTestToolHead(t, []string{"web_fetch"}, [][]float64{{1, 0, 0, 0}})
+	router := NewToolRouter(nil)
+	if err := router.SetToolHead(head, toolHeadTestEmb{id: "qwen3:4", dim: 4}, 0.3, 5); err != nil {
+		t.Fatal(err)
 	}
-	if toolHeadPromotesLatentFetch(intent.ClassificationResult{Primary: intent.LabelLiveData}, high) {
-		t.Fatal("pure live data must keep fetch latent")
+	h := &IMMessageHandler{toolRouter: router}
+	got := h.unionToolHeadNeeds(context.Background(), registry, nil, intent.ClassificationResult{
+		Primary: intent.LabelSearch, Confidence: 0.95, QueryVec: []float32{1, 0, 0, 0},
+	})
+	if capabilityNeedPresent(got, tool.CapabilityInformationFetchWeb) {
+		t.Fatalf("latent fetch below the grant floor was planned: %#v", got)
 	}
-	weatherPDF := intent.ClassificationResult{
-		Primary: intent.LabelLiveData, Secondary: []intent.IntentLabel{intent.LabelDocumentGenerate},
+}
+
+func TestPetitionRedeclareKeepsParentToolHeadFamily(t *testing.T) {
+	registry := newIMSemanticCapabilityRegistry()
+	head := semanticTestToolHead(t, []string{"web_search"}, [][]float64{{5, 0, 0, 0}})
+	router := NewToolRouter(nil)
+	if err := router.SetToolHead(head, toolHeadTestEmb{id: "qwen3:4", dim: 4}, 0.3, 5); err != nil {
+		t.Fatal(err)
 	}
-	if !toolHeadPromotesLatentFetch(weatherPDF, high) {
-		t.Fatal("weather+pdf at the write floor must promote fetch")
+	h := &IMMessageHandler{toolRouter: router}
+	classification := intent.ClassificationResult{
+		Primary: intent.LabelOffice, Confidence: 0.95, QueryVec: []float32{1, 0, 0, 0},
 	}
-	if toolHeadPromotesLatentFetch(weatherPDF, low) {
-		t.Fatal("weather+pdf below the write floor must stay latent")
+	office := []tool.CapabilityNeed{{
+		ID: "need:office", Capability: tool.CapabilityDocumentWriteOffice, Required: true,
+	}}
+	parent := h.unionToolHeadNeeds(context.Background(), registry, office, classification)
+	var selections []tool.PlannedSelection
+	var parentSearchIDs []string
+	for _, need := range parent {
+		if need.Capability != "information.search.web" {
+			continue
+		}
+		parentSearchIDs = append(parentSearchIDs, need.ID)
+		selections = append(selections, tool.PlannedSelection{NeedID: need.ID})
 	}
-	if !toolHeadPromotesLatentFetch(intent.ClassificationResult{Primary: intent.LabelOffice}, high) {
-		t.Fatal("office at the write floor must promote fetch")
+	if len(parentSearchIDs) != 5 {
+		t.Fatalf("parent search family = %d, want 5", len(parentSearchIDs))
 	}
+	// The petitioned label minted search again, under its own id.
+	shadowID := "need:information.search.web:petition"
+	shadow := append(append([]tool.CapabilityNeed{}, office...), tool.CapabilityNeed{
+		ID: shadowID, Capability: "information.search.web", Required: true,
+		Qualifiers: map[string]string{"freshness": "reference"},
+	})
+	withoutParent := h.unionToolHeadNeeds(context.Background(), registry, shadow, classification)
+	if countCapabilityNeeds(withoutParent, "information.search.web") != 1 || !capabilityNeedPresent(withoutParent, "information.search.web") {
+		t.Fatalf("cold redeclare must not open a second search family: %#v", withoutParent)
+	}
+	for _, need := range withoutParent {
+		if need.ID == parentSearchIDs[0] {
+			t.Fatal("cold redeclare reused the parent tool-head id")
+		}
+	}
+	ctx := withSemanticPetitionParentFamilies(context.Background(), tool.ToolPlan{Selections: selections})
+	kept := h.unionToolHeadNeeds(ctx, registry, shadow, classification)
+	got := map[string]bool{}
+	for _, need := range kept {
+		if need.Capability == "information.search.web" {
+			got[need.ID] = true
+		}
+	}
+	if got[shadowID] {
+		t.Fatal("petition kept a second need id for the same search contract")
+	}
+	for _, id := range parentSearchIDs {
+		if !got[id] {
+			t.Fatalf("parent tool-head id %s missing from petition re-plan: %#v", id, kept)
+		}
+	}
+	currentID := "need:information.search.web:current"
+	current := append(append([]tool.CapabilityNeed{}, office...), tool.CapabilityNeed{
+		ID: currentID, Capability: "information.search.web", Required: true,
+		Qualifiers: map[string]string{"freshness": "current"},
+	})
+	both := h.unionToolHeadNeeds(ctx, registry, current, classification)
+	if !needIDPresent(both, currentID) || !needIDPresent(both, parentSearchIDs[0]) {
+		t.Fatalf("current search must sit beside the parent reference family: %#v", both)
+	}
+}
+
+func needIDPresent(needs []tool.CapabilityNeed, id string) bool {
+	for _, need := range needs {
+		if need.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func countCapabilityNeeds(needs []tool.CapabilityNeed, capability tool.CapabilityID) int {

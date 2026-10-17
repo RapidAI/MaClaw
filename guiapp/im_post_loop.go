@@ -60,6 +60,15 @@ func (h *IMMessageHandler) schedulePostLoopSideEffects(msg IMUserMessage, loopCt
 		h.captureWorkflowDocAfterAgentLoop(msg, loopCtx, resp, workflowAgentLoop)
 	}
 
+	// The phase this turn was responsible for. Side effects below can outlive
+	// the user's answer, and that answer's continuation notes a new phase.
+	ownedExpect := goalContinuationExpect{}
+	haveOwnedExpect := false
+	if h.app != nil && h.app.goalContinuation != nil {
+		ownedExpect = h.app.goalContinuation.peekContinuationExpect(msg.UserID)
+		haveOwnedExpect = true
+	}
+
 	go func() {
 		startedAt := time.Now()
 		defer func() {
@@ -77,7 +86,7 @@ func (h *IMMessageHandler) schedulePostLoopSideEffects(msg IMUserMessage, loopCt
 
 		// Goal continuation: after all post-loop side effects, check if the
 		// active goal should trigger the next iteration.
-		h.maybeScheduleGoalContinuation(msg.UserID, &respSnapshot, msg.Platform)
+		h.maybeScheduleGoalContinuationOwned(msg.UserID, &respSnapshot, msg.Platform, ownedExpect, haveOwnedExpect)
 		if h.app != nil {
 			h.app.noteRunWindowSessionSettled(msg.UserID)
 		}

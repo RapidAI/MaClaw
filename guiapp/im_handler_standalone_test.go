@@ -1526,6 +1526,199 @@ func TestHandleIMMessage_PendingTextReplyDoesNotCaptureFreshDeploymentTask(t *te
 	}
 }
 
+func TestGoalContinuationDoesNotBindPendingUserReply(t *testing.T) {
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		MaxIterationsFunc: func() int { return 1 },
+	})
+	defer h.memory.Stop()
+
+	userID := "u-goal-cont-pending"
+	question := "DrawEllipse takes center x,y, but which radius?"
+	h.pendingUserReply.Store(userID, &pendingUserReplyState{
+		Question: question,
+		History: []agent.ConversationEntry{
+			{Role: "user", Content: "[系统续接][execute] 当前步骤 4"},
+			{Role: "assistant", Content: question},
+		},
+		Timestamp: time.Now(),
+	})
+	classified := make(chan struct{}, 1)
+	h.pendingReplyAnswerClassifier = func(_, _ string) (bool, error) {
+		classified <- struct{}{}
+		return true, nil
+	}
+	entries := []agent.ConversationEntry{
+		{Role: "user", Content: "[系统续接][execute] 当前步骤 4"},
+		{Role: "assistant", Content: question},
+	}
+	var slot *agent.UnfinishedTaskSlot
+	for _, msg := range []IMUserMessage{
+		{UserID: userID, Platform: "goal-continuation", Text: "[系统续接][execute] 当前步骤 4. 物理系统集成与调参"},
+		{UserID: userID, Platform: "desktop", Text: "[系统续接][plan] 分解目标"},
+	} {
+		ctx, bound := h.bindPendingUserReplyAnswer(msg, strings.TrimSpace(msg.Text), &entries, &slot)
+		if bound || ctx != "" {
+			t.Fatalf("goal continuation must not bind as a user answer: platform=%s ctx=%q", msg.Platform, ctx)
+		}
+	}
+	raw, ok := h.pendingUserReply.Load(userID)
+	if !ok {
+		t.Fatal("goal continuation must leave the pending question for a real user reply")
+	}
+	pending, _ := raw.(*pendingUserReplyState)
+	if pending == nil || pending.Question != question {
+		t.Fatalf("pending question changed: %+v", raw)
+	}
+	select {
+	case <-classified:
+		t.Fatal("goal continuation must not classify the pending answer")
+	default:
+	}
+}
+
+func TestGoalContinuationTurnDoesNotStorePendingUserReply(t *testing.T) {
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		MaxIterationsFunc: func() int { return 1 },
+	})
+	defer h.memory.Stop()
+
+	userID := "u-goal-pending-store"
+	h.pendingUserReply.Store(userID, &pendingUserReplyState{
+		Question:  "older question?",
+		Timestamp: time.Now(),
+	})
+	classified := make(chan string, 1)
+	h.pendingReplyPromptClassifier = func(text string) (bool, error) {
+		classified <- text
+		return true, nil
+	}
+	history := []agent.ConversationEntry{
+		{Role: "user", Content: "设计并实现一个愤怒的小鸟游戏"},
+		{Role: "assistant", Content: "older question?"},
+		{Role: "user", Content: "[系统续接][execute] 当前步骤 4. 物理系统集成与调参"},
+		{Role: "assistant", Content: "先看依赖"},
+		{Role: "tool", Content: "ok"},
+		{Role: "user", Content: buildLiveSteerUserMessage("看一下椭圆")},
+		{Role: "system", Content: "[system] 本轮还没结束"},
+		{Role: "assistant", Content: "半径用哪个？"},
+	}
+	if got := turnOpeningUserText(history); !isGoalSystemContinuation(got) {
+		t.Fatalf("turn opener = %q", got)
+	}
+	h.updatePendingUserReplyFromHistory(userID, history, &IMAgentResponse{Text: "半径用哪个？"})
+	select {
+	case text := <-classified:
+		t.Fatalf("goal continuation must not classify the essay as a user question: %q", text)
+	case <-time.After(300 * time.Millisecond):
+	}
+	raw, ok := h.pendingUserReply.Load(userID)
+	if !ok {
+		t.Fatal("older pending reply must remain")
+	}
+	pending, _ := raw.(*pendingUserReplyState)
+	if pending == nil || pending.Question != "older question?" {
+		t.Fatalf("pending question changed: %+v", raw)
+	}
+
+	userID = "u-goal-pending-real-user"
+	real := []agent.ConversationEntry{
+		{Role: "user", Content: "[系统续接][execute] 上一轮"},
+		{Role: "assistant", Content: "步骤已记录"},
+		{Role: "user", Content: "半径用 10 还是 20？"},
+		{Role: "user", Content: buildLiveSteerUserMessage("用 10")},
+		{Role: "assistant", Content: "你确认用 10 吗？"},
+	}
+	if got := turnOpeningUserText(real); got != "半径用 10 还是 20？" {
+		t.Fatalf("real turn opener = %q", got)
+	}
+	h.updatePendingUserReplyFromHistory(userID, real, &IMAgentResponse{Text: "你确认用 10 吗？"})
+	select {
+	case text := <-classified:
+		if !strings.Contains(text, "你确认用 10 吗") {
+			t.Fatalf("classified the wrong turn: %q", text)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a real user turn after an older continuation must still classify")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		raw, ok = h.pendingUserReply.Load(userID)
+		if ok {
+			if pending, _ = raw.(*pendingUserReplyState); pending != nil && strings.Contains(pending.Question, "你确认用 10 吗") {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("a real user turn must store the pending question")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestGoalContinuationDoesNotConsumePendingAskUser(t *testing.T) {
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		MaxIterationsFunc: func() int { return 1 },
+	})
+	defer h.memory.Stop()
+
+	userID := "u-goal-ask-user"
+	question := "半径用 10 还是 20？"
+	history := []agent.ConversationEntry{
+		{Role: "user", Content: "[系统续接][execute] 当前步骤 4"},
+		{Role: "assistant", Content: question},
+	}
+	h.pendingAskUser.Store(userID, &pendingAskUserState{
+		Question:  question,
+		History:   history,
+		Timestamp: time.Now(),
+	})
+
+	ctx, ws, consumed, settled := h.consumePendingAskUserAnswer(userID, "[系统续接][execute] 当前步骤 4. 物理系统集成与调参", history)
+	if consumed || settled || ctx != "" || ws != nil {
+		t.Fatalf("goal continuation consumed ask_user: ctx=%q consumed=%v settled=%v", ctx, consumed, settled)
+	}
+	raw, ok := h.pendingAskUser.Load(userID)
+	if !ok {
+		t.Fatal("goal continuation must leave ask_user waiting for the person")
+	}
+	pending, _ := raw.(*pendingAskUserState)
+	if pending == nil || pending.Question != question {
+		t.Fatalf("ask_user question changed: %+v", raw)
+	}
+}
+
+func TestGoalContinuationKeepsPendingQuestionFresh(t *testing.T) {
+	question := "半径用 10 还是 20？"
+	pendingHistory := []agent.ConversationEntry{
+		{Role: "user", Content: "设计并实现一个愤怒的小鸟游戏"},
+		{Role: "assistant", Content: question},
+	}
+	afterContinuation := append(append([]agent.ConversationEntry{}, pendingHistory...),
+		agent.ConversationEntry{Role: "user", Content: "[系统续接][execute] 当前步骤 4. 物理系统集成与调参"},
+		agent.ConversationEntry{Role: "assistant", Content: "先核对物理循环。"},
+	)
+	pending, fresh := pendingUserReplyForCurrentHistory(&pendingUserReplyState{
+		Question:  question,
+		History:   pendingHistory,
+		Timestamp: time.Now(),
+	}, afterContinuation)
+	if pending == nil || !fresh {
+		t.Fatal("a saved goal continuation must leave the question waiting for the person")
+	}
+
+	afterRealUser := append(append([]agent.ConversationEntry{}, afterContinuation...),
+		agent.ConversationEntry{Role: "user", Content: "用 10"},
+		agent.ConversationEntry{Role: "assistant", Content: "好"},
+	)
+	if _, fresh := pendingUserReplyForCurrentHistory(&pendingUserReplyState{
+		Question:  question,
+		History:   pendingHistory,
+		Timestamp: time.Now(),
+	}, afterRealUser); fresh {
+		t.Fatal("a real user message after the question must retire the pending reply")
+	}
+}
+
 func strconvQuote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)

@@ -135,7 +135,11 @@ type GoalContinuationEngine struct {
 	// time.AfterFunc can still run after Stop, and that callback must not
 	// dispatch or delete the successor entry.
 	scheduleGen map[string]uint64
-	cooldown    time.Duration // delay between continuations (default 2s)
+	// expectGen identifies one note of pendingExpect. It only increases.
+	// Two notes of an unchanged step must stay distinct, or a late post-loop
+	// would retire the successor's note.
+	expectGen map[string]uint64
+	cooldown  time.Duration // delay between continuations (default 2s)
 }
 
 // goalPlanMiss records that this goal already received one plan correction.
@@ -146,12 +150,15 @@ type goalPlanMiss struct {
 
 // goalContinuationExpect is the host phase at the moment a continuation is
 // fired. The turn is finished only when the goal store records that phase.
+// generation belongs to that firing. The step fields alone repeat when the
+// next turn starts on the same unwritten step.
 type goalContinuationExpect struct {
 	goalID     string
 	phase      goal.Phase
 	stepIndex  int
 	stepStatus goal.StepStatus
 	stepResult string
+	generation uint64
 }
 
 // NewGoalContinuationEngine creates a continuation engine.
@@ -164,6 +171,7 @@ func NewGoalContinuationEngine(store *goal.Store, app *App) *GoalContinuationEng
 		planMiss:        make(map[string]goalPlanMiss),
 		planCorrection:  make(map[string]string),
 		scheduleGen:     make(map[string]uint64),
+		expectGen:       make(map[string]uint64),
 		cooldown:        2 * time.Second,
 	}
 }
@@ -173,6 +181,13 @@ func NewGoalContinuationEngine(store *goal.Store, app *App) *GoalContinuationEng
 // It accounts usage from the just-completed turn, then schedules the next
 // continuation if the goal is still continuable.
 func (e *GoalContinuationEngine) MaybeScheduleContinuation(userID, goalID string, turnTokens, turnSeconds int, hadToolCalls bool) {
+	e.finishContinuationTurn(userID, goalID, turnTokens, turnSeconds, hadToolCalls, goalContinuationExpect{}, false)
+}
+
+// finishContinuationTurn accounts this continuation and schedules the next one.
+// haveOwned means owned is the note captured when this turn ended. A successor
+// that already wrote its own note, or a timer already queued for it, stays.
+func (e *GoalContinuationEngine) finishContinuationTurn(userID, goalID string, turnTokens, turnSeconds int, hadToolCalls bool, owned goalContinuationExpect, haveOwned bool) {
 	if e == nil || e.store == nil {
 		return
 	}
@@ -189,13 +204,25 @@ func (e *GoalContinuationEngine) MaybeScheduleContinuation(userID, goalID string
 	// An empty plan is its own contract. Counting it as a no-tool turn first
 	// pauses the goal on the second miss and never reaches the failure.
 	g = e.store.Get(userID)
-	expect := e.takeContinuationExpect(userID)
+	var expect goalContinuationExpect
+	if haveOwned {
+		// Miss report stays on the note this turn captured. The map may
+		// already hold the next turn's note of the same step.
+		expect = owned
+	} else {
+		expect = e.takeContinuationExpect(userID)
+	}
 	if g != nil && g.Status == goal.StatusActive && g.EffectivePhase() == goal.PhasePlan && len(g.Steps) == 0 {
 		// One missed plan used to fail immediately, and the notice was
 		// rendered as the user. Give the model one corrective turn that
 		// can only submit goal(action=plan). A second miss still fails.
 		// Do not arm that turn when this goal can no longer run: fire would
 		// drop it and the active goal would keep an empty plan.
+		if haveOwned && e.continuationSuperseded(userID, owned) {
+			e.takeContinuationExpectIfCurrent(userID, owned)
+			log.Printf("[goal-continuation] successor already queued; this turn does not replace it user=%s goal_id=%s", userID, goalID)
+			return
+		}
 		if !g.ShouldContinue() {
 			log.Printf("[goal-continuation] empty plan cannot be corrected user=%s goal_id=%s", userID, g.GoalID)
 			e.failGoal(userID, g.GoalID, "未能分解任务", true)
@@ -220,11 +247,16 @@ func (e *GoalContinuationEngine) MaybeScheduleContinuation(userID, goalID string
 	if g != nil {
 		e.clearPlanMiss(userID, g.GoalID)
 	}
-	if reason := continuationMissedReport(expect, g); reason != "" {
-		e.failGoal(userID, g.GoalID, reason, true)
-		return
+	// A missing step record is not a failed goal. The same CurrentStep is
+	// still the work. ShouldContinue below schedules that normal execute
+	// turn. Budget, an explicit fail, and two empty turns stay the stops.
+	if reason := continuationMissedReport(expect, g); reason != "" && g != nil && g.ShouldContinue() {
+		log.Printf("[goal-continuation] step report still open; next turn stays on this step user=%s goal_id=%s reason=%s", userID, g.GoalID, reason)
 	}
 	if g == nil || !g.ShouldContinue() {
+		if haveOwned {
+			e.takeContinuationExpectIfCurrent(userID, owned)
+		}
 		if g != nil && g.IsTerminal() {
 			log.Printf("[goal-continuation] goal reached terminal state: user=%s goal_id=%s status=%s", userID, goalID, g.Status)
 			e.emitGoalStateChanged(userID, g)
@@ -237,7 +269,14 @@ func (e *GoalContinuationEngine) MaybeScheduleContinuation(userID, goalID string
 		return
 	}
 
-	// Schedule continuation with cooldown delay
+	// Schedule continuation with cooldown delay. A note this turn does not
+	// own, or a timer already waiting, belongs to the next turn.
+	if haveOwned {
+		if !e.scheduleOwnedContinuation(userID, goalID, owned) {
+			log.Printf("[goal-continuation] successor already queued; this turn does not replace it user=%s goal_id=%s", userID, goalID)
+		}
+		return
+	}
 	e.scheduleDelayed(userID, goalID)
 }
 
@@ -296,39 +335,47 @@ func (e *GoalContinuationEngine) OnUserMessage(userID string) {
 	}
 }
 
+type goalCorrectionKind int
+
+const (
+	goalCorrectionNone goalCorrectionKind = iota
+	goalCorrectionPlan
+)
+
 // scheduleDelayed schedules a continuation message after the cooldown period.
 func (e *GoalContinuationEngine) scheduleDelayed(userID, goalID string) {
-	e.scheduleAfterCooldown(userID, goalID, false)
+	e.scheduleAfterCooldown(userID, goalID, goalCorrectionNone)
 }
 
 // schedulePlanCorrection schedules the single turn that must submit the plan
 // the previous continuation left unrecorded.
 func (e *GoalContinuationEngine) schedulePlanCorrection(userID, goalID string) {
-	e.scheduleAfterCooldown(userID, goalID, true)
+	e.scheduleAfterCooldown(userID, goalID, goalCorrectionPlan)
 }
 
-func (e *GoalContinuationEngine) scheduleAfterCooldown(userID, goalID string, planCorrection bool) {
+func (e *GoalContinuationEngine) scheduleAfterCooldown(userID, goalID string, kind goalCorrectionKind) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.scheduleAfterCooldownLocked(userID, goalID, kind)
+}
 
+// scheduleAfterCooldownLocked arms the next timer. Caller holds e.mu.
+func (e *GoalContinuationEngine) scheduleAfterCooldownLocked(userID, goalID string, kind goalCorrectionKind) {
 	// Cancel any existing timer for this user
 	if existing, ok := e.scheduledTimers[userID]; ok {
 		existing.Stop()
 	}
-	if planCorrection {
+	switch kind {
+	case goalCorrectionPlan:
 		if e.planCorrection == nil {
 			e.planCorrection = map[string]string{}
 		}
 		e.planCorrection[userID] = goalID
-	} else {
+	default:
 		// A normal continuation replaces the timer above. If that timer was
-		// the unsent plan correction, keep the one-shot for the next miss.
-		// The correction flag is already gone once fire has dispatched it.
-		prev := e.planCorrection[userID]
-		delete(e.planCorrection, userID)
-		if miss, ok := e.planMiss[userID]; ok && prev != "" && miss.goalID == prev {
-			delete(e.planMiss, userID)
-		}
+		// an unsent plan correction, refund the one-shot. The flag is already
+		// gone once fire has dispatched it.
+		e.refundUnsentPlanCorrection(userID)
 	}
 
 	gen := e.bumpScheduleGen(userID)
@@ -337,6 +384,47 @@ func (e *GoalContinuationEngine) scheduleAfterCooldown(userID, goalID string, pl
 	})
 	e.scheduledTimers[userID] = timer
 	log.Printf("[goal-continuation] scheduled next turn in %s: user=%s goal_id=%s", e.cooldown, userID, goalID)
+}
+
+// scheduleOwnedContinuation schedules the next turn only when owned is still
+// this user's note and no later timer is waiting. The successor's note stays.
+func (e *GoalContinuationEngine) scheduleOwnedContinuation(userID, goalID string, owned goalContinuationExpect) bool {
+	if e == nil {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	superseded := e.continuationSupersededLocked(userID, owned)
+	if e.pendingExpect != nil && owned.goalID != "" && e.pendingExpect[userID] == owned {
+		delete(e.pendingExpect, userID)
+	}
+	if superseded {
+		return false
+	}
+	e.scheduleAfterCooldownLocked(userID, goalID, goalCorrectionNone)
+	return true
+}
+
+func (e *GoalContinuationEngine) continuationSuperseded(userID string, owned goalContinuationExpect) bool {
+	if e == nil {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.continuationSupersededLocked(userID, owned)
+}
+
+// continuationSupersededLocked reports that a later turn already owns the
+// next firing. Caller holds e.mu.
+func (e *GoalContinuationEngine) continuationSupersededLocked(userID string, owned goalContinuationExpect) bool {
+	if _, pending := e.scheduledTimers[userID]; pending {
+		return true
+	}
+	if e.pendingExpect == nil {
+		return false
+	}
+	current := e.pendingExpect[userID]
+	return current.goalID != "" && current.generation != owned.generation
 }
 
 // bumpScheduleGen retires every timer already handed to AfterFunc.
@@ -351,21 +439,17 @@ func (e *GoalContinuationEngine) bumpScheduleGen(userID string) uint64 {
 
 // claimScheduledContinuation accepts one timer generation. A stale callback
 // leaves the current timer and its plan-correction flag untouched.
-func (e *GoalContinuationEngine) claimScheduledContinuation(userID, goalID string, gen uint64) (corrective bool, ok bool) {
+func (e *GoalContinuationEngine) claimScheduledContinuation(userID, goalID string, gen uint64) (goalCorrectionKind, bool) {
 	if e == nil || gen == 0 {
-		return false, false
+		return goalCorrectionNone, false
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.scheduleGen[userID] != gen {
-		return false, false
+		return goalCorrectionNone, false
 	}
 	delete(e.scheduledTimers, userID)
-	id, exists := e.planCorrection[userID]
-	if exists {
-		delete(e.planCorrection, userID)
-	}
-	return exists && id == goalID, true
+	return e.takeScheduledCorrectionLocked(userID, goalID), true
 }
 
 func (e *GoalContinuationEngine) runScheduledContinuation(userID, goalID string, gen uint64) {
@@ -378,14 +462,14 @@ func (e *GoalContinuationEngine) runScheduledContinuation(userID, goalID string,
 
 // fireContinuation dispatches the self-message that triggers the next agent loop turn.
 func (e *GoalContinuationEngine) fireContinuation(userID, goalID string) {
-	e.dispatchContinuation(userID, goalID, e.takePlanCorrection(userID, goalID))
+	e.dispatchContinuation(userID, goalID, e.takeScheduledCorrection(userID, goalID))
 }
 
-func (e *GoalContinuationEngine) dispatchContinuation(userID, goalID string, corrective bool) {
+func (e *GoalContinuationEngine) dispatchContinuation(userID, goalID string, kind goalCorrectionKind) {
 	// Re-check goal is still active (may have been cancelled during cooldown)
 	g := e.store.Get(userID)
 	if g == nil || g.GoalID != goalID || !g.ShouldContinue() {
-		if corrective {
+		if kind == goalCorrectionPlan {
 			e.abandonUnsentPlanCorrection(userID, goalID, g)
 		}
 		log.Printf("[goal-continuation] skipping fire: goal no longer continuable user=%s", userID)
@@ -393,8 +477,8 @@ func (e *GoalContinuationEngine) dispatchContinuation(userID, goalID string, cor
 	}
 
 	prompt := e.buildContinuationPrompt(g)
-	display := e.buildContinuationDisplayText(g)
-	if corrective && g.EffectivePhase() == goal.PhasePlan && len(g.Steps) == 0 {
+	display := buildContinuationDisplayText(g)
+	if kind == goalCorrectionPlan && g.EffectivePhase() == goal.PhasePlan && len(g.Steps) == 0 {
 		prompt = buildGoalPlanCorrectionPrompt(g)
 		display = buildGoalPlanCorrectionDisplay(g)
 	}
@@ -556,7 +640,7 @@ func (e *GoalContinuationEngine) emitAssistantStreamEventWithDisplayText(name, r
 	e.app.emitEvent(name, string(payload))
 }
 
-func (e *GoalContinuationEngine) buildContinuationDisplayText(g *goal.Goal) string {
+func buildContinuationDisplayText(g *goal.Goal) string {
 	if g == nil {
 		return "目标清单\n正在继续当前步骤"
 	}
@@ -724,7 +808,13 @@ func (e *GoalContinuationEngine) noteContinuationExpect(userID string, g *goal.G
 	if e.pendingExpect == nil {
 		e.pendingExpect = make(map[string]goalContinuationExpect)
 	}
-	e.pendingExpect[userID] = continuationExpectOf(g)
+	if e.expectGen == nil {
+		e.expectGen = map[string]uint64{}
+	}
+	e.expectGen[userID]++
+	exp := continuationExpectOf(g)
+	exp.generation = e.expectGen[userID]
+	e.pendingExpect[userID] = exp
 }
 
 func (e *GoalContinuationEngine) peekContinuationExpect(userID string) goalContinuationExpect {
@@ -750,6 +840,22 @@ func (e *GoalContinuationEngine) takeContinuationExpect(userID string) goalConti
 	return exp
 }
 
+// takeContinuationExpectIfCurrent retires the note recorded for this turn.
+// Equality includes generation, so a later note of the same step stays.
+func (e *GoalContinuationEngine) takeContinuationExpectIfCurrent(userID string, owned goalContinuationExpect) goalContinuationExpect {
+	if e == nil || owned.goalID == "" {
+		return goalContinuationExpect{}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	exp := e.pendingExpect[userID]
+	if exp != owned {
+		return goalContinuationExpect{}
+	}
+	delete(e.pendingExpect, userID)
+	return exp
+}
+
 // consumePlanMiss reports whether this goal already spent its one corrective
 // plan turn. The first miss records the attempt and returns false.
 func (e *GoalContinuationEngine) consumePlanMiss(userID, goalID string) bool {
@@ -768,6 +874,16 @@ func (e *GoalContinuationEngine) consumePlanMiss(userID, goalID string) bool {
 	}
 	e.planMiss[userID] = goalPlanMiss{goalID: goalID, retried: true}
 	return false
+}
+
+// refundUnsentPlanCorrection drops a correction that has not fired and
+// returns its one-shot. Caller holds e.mu.
+func (e *GoalContinuationEngine) refundUnsentPlanCorrection(userID string) {
+	prev := e.planCorrection[userID]
+	delete(e.planCorrection, userID)
+	if miss, ok := e.planMiss[userID]; ok && prev != "" && miss.goalID == prev {
+		delete(e.planMiss, userID)
+	}
 }
 
 func (e *GoalContinuationEngine) clearPlanMiss(userID, goalID string) {
@@ -800,17 +916,26 @@ func (e *GoalContinuationEngine) abandonUnsentPlanCorrection(userID, goalID stri
 	e.clearPlanMiss(userID, goalID)
 }
 
-func (e *GoalContinuationEngine) takePlanCorrection(userID, goalID string) bool {
+func (e *GoalContinuationEngine) takeScheduledCorrection(userID, goalID string) goalCorrectionKind {
 	if e == nil {
-		return false
+		return goalCorrectionNone
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	id, ok := e.planCorrection[userID]
-	if ok {
+	return e.takeScheduledCorrectionLocked(userID, goalID)
+}
+
+// takeScheduledCorrectionLocked removes the pending correction flag.
+// Caller holds e.mu.
+func (e *GoalContinuationEngine) takeScheduledCorrectionLocked(userID, goalID string) goalCorrectionKind {
+	if id, ok := e.planCorrection[userID]; ok {
 		delete(e.planCorrection, userID)
+		if id == goalID {
+			return goalCorrectionPlan
+		}
+		return goalCorrectionNone
 	}
-	return ok && id == goalID
+	return goalCorrectionNone
 }
 
 func (e *GoalContinuationEngine) clearContinuationExpect(userID string) {
@@ -820,6 +945,42 @@ func (e *GoalContinuationEngine) clearContinuationExpect(userID string) {
 	e.mu.Lock()
 	delete(e.pendingExpect, userID)
 	e.mu.Unlock()
+}
+
+// openGoalContinuationContract reports the phase this turn was fired to
+// record, when that record is still missing. An empty expect, a different
+// goal, or a terminal goal is not an open contract.
+func (h *IMMessageHandler) openGoalContinuationContract(userID, userText, platform string) (goalContinuationExpect, bool) {
+	if h == nil || h.app == nil || h.app.goalContinuation == nil || !goalContinuationTurn(userText, platform) {
+		return goalContinuationExpect{}, false
+	}
+	engine := h.app.goalContinuation
+	if engine.store == nil {
+		return goalContinuationExpect{}, false
+	}
+	g := engine.store.Get(userID)
+	exp := engine.peekContinuationExpect(userID)
+	if exp.goalID == "" || g == nil || g.GoalID != exp.goalID || g.IsTerminal() {
+		return goalContinuationExpect{}, false
+	}
+	if goalContinuationContractMet(exp, g) {
+		return exp, false
+	}
+	return exp, true
+}
+
+// goalContinuationContractHoldPrompt restates the phase contract inside the
+// same turn. The model keeps doing that phase and writes it before stopping.
+func goalContinuationContractHoldPrompt(exp goalContinuationExpect) string {
+	marker := "[系统续接][execute]"
+	if exp.phase == goal.PhasePlan {
+		marker = "[系统续接][plan]"
+	}
+	section := strings.TrimSpace(goalContinuationPhaseSection(marker))
+	if section == "" {
+		return ""
+	}
+	return "[system] 本轮还没结束。这一阶段还没有写入目标。继续做完这一阶段，写入后再停止。\n" + section
 }
 
 // goalContinuationContractMet is true when the turn already stored the record
@@ -968,6 +1129,28 @@ func (e *GoalContinuationEngine) emitGoalStateChanged(userID string, g *goal.Goa
 	})
 }
 
+func turnWaitsForAskUser(resp *IMAgentResponse) bool {
+	return resp != nil && resp.ResponseSource == imResponseSourceAskUser.String()
+}
+
+func goalContinuationTurnCost(resp *IMAgentResponse) (tokens, seconds int) {
+	seconds = 30
+	if resp != nil {
+		tokens = resp.InputTokens + resp.OutputTokens
+	}
+	if tokens <= 0 {
+		return tokens, seconds
+	}
+	seconds = tokens / 33 // ~1 token per 30ms
+	if seconds < 5 {
+		seconds = 5
+	}
+	if seconds > 300 {
+		seconds = 300
+	}
+	return tokens, seconds
+}
+
 // maybeScheduleGoalContinuation is called from the post-loop side effects
 // goroutine. It checks if the user has an active goal and schedules the
 // next continuation turn via the continuation engine.
@@ -977,6 +1160,10 @@ func (e *GoalContinuationEngine) emitGoalStateChanged(userID string, g *goal.Goa
 //   - other platforms (user message): only schedules next turn if goal is active
 //     (no accounting — user's own agent loop is not a "goal turn")
 func (h *IMMessageHandler) maybeScheduleGoalContinuation(userID string, resp *IMAgentResponse, platform string) {
+	h.maybeScheduleGoalContinuationOwned(userID, resp, platform, goalContinuationExpect{}, false)
+}
+
+func (h *IMMessageHandler) maybeScheduleGoalContinuationOwned(userID string, resp *IMAgentResponse, platform string, ownedExpect goalContinuationExpect, haveOwnedExpect bool) {
 	if h == nil || h.app == nil || h.app.goalContinuation == nil {
 		return
 	}
@@ -999,8 +1186,14 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuation(userID string, resp *IM
 	// A failed turn closes the goal only when this phase's contract is still
 	// open. A plan or step already stored is the host record; a later audit
 	// error must not erase it. A continuation with no such record still fails
-	// with the turn error.
-	if resp != nil && strings.TrimSpace(resp.Error) != "" && !goalContinuationContractMet(engine.peekContinuationExpect(userID), g) {
+	// with the turn error. ownedExpect is the note captured when this turn
+	// ended. The map may already hold the next step, and that open note is
+	// not a reason to fail this turn.
+	contractExpect := engine.peekContinuationExpect(userID)
+	if haveOwnedExpect {
+		contractExpect = ownedExpect
+	}
+	if resp != nil && strings.TrimSpace(resp.Error) != "" && !goalContinuationContractMet(contractExpect, g) {
 		log.Printf("[goal-continuation] failing goal after turn error user=%s", userID)
 		engine.failGoal(userID, g.GoalID, resp.Error, false)
 		return
@@ -1020,12 +1213,33 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuation(userID string, resp *IM
 		}
 	}
 
+	// ask_user owns the next message. A continuation must not run in its place.
+	// The person's answer is an ordinary turn, and that turn schedules again.
+	// Post-loop work runs before this check, so the answer may already have
+	// cleared the pending map. The response snapshot is this turn's own pause
+	// and must still not queue a second continuation beside that answer.
+	// ownedExpect was captured when this turn ended. A successor may have
+	// noted a new phase while this goroutine was still in side effects.
+	if turnWaitsForAskUser(resp) || h.freshPendingAskUser(userID) {
+		log.Printf("[goal-continuation] waiting for ask_user before the next turn user=%s goal_id=%s", userID, g.GoalID)
+		if platform == "goal-continuation" {
+			tokens, seconds := goalContinuationTurnCost(resp)
+			if engine.store != nil {
+				engine.store.AccountUsage(userID, g.GoalID, tokens, seconds)
+				engine.store.ResetNoToolCounter(userID, g.GoalID)
+			}
+			if haveOwnedExpect {
+				engine.takeContinuationExpectIfCurrent(userID, ownedExpect)
+			} else {
+				engine.takeContinuationExpect(userID)
+			}
+		}
+		return
+	}
+
 	if platform == "goal-continuation" {
 		// Goal-continuation turn: account usage and schedule next
-		turnTokens := 0
-		if resp != nil {
-			turnTokens = resp.InputTokens + resp.OutputTokens
-		}
+		turnTokens, turnSeconds := goalContinuationTurnCost(resp)
 		hadToolCalls := resp != nil && resp.TraceEventCount > 0
 		// Defense-in-depth: pure coding reports often carry activity only via
 		// TraceEventCount after finalize; if still zero but response has body,
@@ -1034,18 +1248,7 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuation(userID string, resp *IM
 			hadToolCalls = true
 		}
 
-		// Estimate turn time from token count as proxy
-		turnSeconds := 30
-		if turnTokens > 0 {
-			turnSeconds = turnTokens / 33 // ~1 token per 30ms
-			if turnSeconds < 5 {
-				turnSeconds = 5
-			}
-			if turnSeconds > 300 {
-				turnSeconds = 300
-			}
-		}
-		engine.MaybeScheduleContinuation(userID, g.GoalID, turnTokens, turnSeconds, hadToolCalls)
+		engine.finishContinuationTurn(userID, g.GoalID, turnTokens, turnSeconds, hadToolCalls, ownedExpect, haveOwnedExpect)
 	} else {
 		// User-initiated turn with active goal: don't account usage (this wasn't
 		// a goal turn), but schedule continuation since goal is still active and

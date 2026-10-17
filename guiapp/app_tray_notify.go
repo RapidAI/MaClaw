@@ -211,24 +211,32 @@ func trayTaskCompletedMessage(name string) string {
 	if name == "" {
 		return "任务完成了"
 	}
+	suffix := "任务完成了"
 	if strings.HasSuffix(name, "任务") {
-		return name + "完成了"
+		suffix = "完成了"
 	}
-	return name + "任务完成了"
+	// szInfoTitle holds 63 UTF-16 units plus a NUL. Emoji take two units.
+	budget := trayTitleUnits - utf16Units(suffix)
+	if utf16Units(name) > budget {
+		name = truncateTrayUnits(name, budget)
+	}
+	return name + suffix
 }
 
 const (
-	// trayInfoRunes fits NOTIFYICONDATA.szInfo (256 UTF-16 units, including NUL).
-	trayInfoRunes = 240
-	// trayTitleRunes leaves room for the "任务完成了" suffix in szInfoTitle (64 units).
+	// trayInfoUnits is NOTIFYICONDATA.szInfo without the terminating NUL.
+	trayInfoUnits = 255
+	// trayTitleUnits is NOTIFYICONDATA.szInfoTitle without the terminating NUL.
+	trayTitleUnits = 63
+	// trayTitleRunes keeps a task name short before the "任务完成了" suffix.
 	trayTitleRunes = 40
-	// trayScanRunes bounds markdown cleanup. The balloon only shows trayInfoRunes.
+	// trayScanRunes bounds markdown cleanup. The balloon only shows trayInfoUnits.
 	trayScanRunes = 4000
 )
 
 // trayBalloonBody is the plain, length-capped text placed in a tray balloon.
 func trayBalloonBody(text string) string {
-	return fitTrayInfo(trayBalloonPlain(text), trayInfoRunes)
+	return fitTrayInfo(trayBalloonPlain(text), trayInfoUnits)
 }
 
 // trayNotifyBody is "name: summary", shortened so the whole line fits the balloon.
@@ -237,15 +245,15 @@ func trayNotifyBody(name, summary string) string {
 	name = shortenTrayTaskName(name)
 	summary = trayBalloonPlain(summary)
 	if name == "" {
-		return fitTrayInfo(summary, trayInfoRunes)
+		return fitTrayInfo(summary, trayInfoUnits)
 	}
 	if summary == "" {
 		return name
 	}
 	lead := name + ": "
-	budget := trayInfoRunes - len([]rune(lead))
+	budget := trayInfoUnits - utf16Units(lead)
 	if budget < 24 {
-		return fitTrayInfo(lead+summary, trayInfoRunes)
+		return fitTrayInfo(lead+"\n"+summary, trayInfoUnits)
 	}
 	return lead + fitTrayInfo(summary, budget)
 }
@@ -275,26 +283,33 @@ func splitTrayDeliveryWarning(text string) (body, warn string) {
 	if idx < 0 {
 		return text, ""
 	}
-	if idx > 0 {
-		prev := text[idx-1]
-		if prev != '\n' && prev != '\r' {
-			return text, ""
-		}
+	head := strings.TrimRight(text[:idx], " \t")
+	if head != "" && !strings.HasSuffix(head, "\n") && !strings.HasSuffix(head, "\r") {
+		return text, ""
 	}
-	return text[:idx], strings.TrimSpace(text[idx:])
+	return head, strings.TrimSpace(text[idx:])
 }
 
+// splitTrayFences separates prose from fenced code. A ```markdown or ```md
+// block is the answer itself, so its contents stay. Other fences are code and
+// stay out of the balloon except for the first line, used when there is no prose.
+// A bare ~~~ line is a rule, not a fence, so it cannot hide the lines after it.
 func splitTrayFences(text string) (prose, snippet string) {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
 	var b strings.Builder
-	inFence := false
+	var stack []bool // true when the open fence is prose (markdown/md)
 	for _, line := range strings.Split(text, "\n") {
 		if isTrayFenceLine(line) {
-			inFence = !inFence
+			lang := fenceLanguage(line)
+			if len(stack) > 0 && (lang == "" || !stack[len(stack)-1]) {
+				stack = stack[:len(stack)-1]
+				continue
+			}
+			stack = append(stack, fenceIsProse(lang))
 			continue
 		}
-		if inFence {
+		if len(stack) > 0 && !stack[len(stack)-1] {
 			if snippet == "" {
 				snippet = strings.TrimSpace(line)
 			}
@@ -307,8 +322,26 @@ func splitTrayFences(text string) (prose, snippet string) {
 }
 
 func isTrayFenceLine(line string) bool {
+	return strings.HasPrefix(strings.TrimSpace(line), "```")
+}
+
+func fenceLanguage(line string) string {
 	line = strings.TrimSpace(line)
-	return strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~")
+	if !strings.HasPrefix(line, "```") {
+		return ""
+	}
+	line = strings.TrimSpace(line[3:])
+	lang, _, _ := strings.Cut(line, " ")
+	return strings.ToLower(lang)
+}
+
+func fenceIsProse(lang string) bool {
+	switch lang {
+	case "markdown", "md":
+		return true
+	default:
+		return false
+	}
 }
 
 func collapseTrayLines(text string) string {
@@ -320,7 +353,9 @@ func collapseTrayLines(text string) string {
 		return strings.Join(strings.Fields(text), " ")
 	}
 	text = reTrayBreak.ReplaceAllString(text, "\n")
-	text = capTrayRunes(text, trayScanRunes)
+	if len(text) > trayScanRunes {
+		text = capTrayRunes(text, trayScanRunes)
+	}
 	lines := strings.Split(text, "\n")
 	parts := make([]string, 0, len(lines))
 	for _, line := range lines {
@@ -394,7 +429,7 @@ func trayLineIsDecoration(line string) bool {
 	}
 	for _, r := range line {
 		switch r {
-		case '-', ':', '=', '*', '_', ' ', '\t':
+		case '-', ':', '=', '*', '_', '~', ' ', '\t':
 		default:
 			return false
 		}
@@ -425,33 +460,64 @@ func fitTrayInfo(text string, max int) string {
 	body, warn := splitTrayDeliveryWarning(text)
 	body = strings.TrimSpace(body)
 	if warn == "" {
-		return truncateTrayRunes(body, max)
+		return truncateTrayUnits(body, max)
 	}
-	warnRunes := []rune(warn)
-	if len(warnRunes) >= max {
-		return truncateTrayRunes(warn, max)
+	warnUnits := utf16Units(warn)
+	if warnUnits >= max {
+		return truncateTrayUnits(warn, max)
 	}
 	// Two newlines sit between the prose and the warning.
-	budget := max - len(warnRunes) - 2
-	body = truncateTrayRunes(body, budget)
+	body = truncateTrayUnits(body, max-warnUnits-utf16Units("\n\n"))
 	if body == "" {
 		return warn
 	}
 	return body + "\n\n" + warn
 }
 
-func truncateTrayRunes(s string, max int) string {
-	if max <= 0 {
+// utf16Units counts UTF-16 code units, matching NOTIFYICONDATA's wchar buffer.
+// A rune above U+FFFF takes a surrogate pair.
+func utf16Units(s string) int {
+	n := 0
+	for _, r := range s {
+		n++
+		if r > 0xFFFF {
+			n++
+		}
+	}
+	return n
+}
+
+// truncateTrayUnits shortens s so its UTF-16 length, including an ellipsis when
+// cut, stays within max units. A rune is never split.
+func truncateTrayUnits(s string, max int) string {
+	if max <= 0 || s == "" {
 		return ""
 	}
-	r := []rune(s)
-	if len(r) <= max {
+	if utf16Units(s) <= max {
 		return s
 	}
 	if max == 1 {
 		return "…"
 	}
-	return string(r[:max-1]) + "…"
+	units := 0
+	end := 0
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		w := 1
+		if r > 0xFFFF {
+			w = 2
+		}
+		if units+w > max-1 {
+			break
+		}
+		units += w
+		i += size
+		end = i
+	}
+	if end == 0 {
+		return "…"
+	}
+	return s[:end] + "…"
 }
 
 func capTrayRunes(s string, max int) string {

@@ -232,7 +232,7 @@ func expandCompanionLabelNeeds(registry *coretool.CapabilityRegistry, rules map[
 			// Search, fetch, download, and screenshot stay off the first
 			// surface unless the turn already declared that capability. A
 			// budget upgrade of a declared family still happens above.
-			if evidence == archetypeBundleEvidence && latentArchetypeCapability(template.Capability, bundleKey) {
+			if evidence == archetypeBundleEvidence && LatentArchetypeCapability(template.Capability, bundleKey) {
 				continue
 			}
 			if evidence == archetypeBundleEvidence && addedArchetypeFamilies >= maxArchetypeCompanionFamilies {
@@ -260,9 +260,12 @@ func expandCompanionLabelNeeds(registry *coretool.CapabilityRegistry, rules map[
 
 const maxArchetypeCompanionFamilies = 2
 
-// latentArchetypeCapability is a companion the bundle may raise a ceiling for
+// LatentArchetypeCapability is a companion the bundle may raise a ceiling for
 // when the turn already declared it, but must not add to a cold surface.
-func latentArchetypeCapability(id coretool.CapabilityID, bundleKey intent.IntentLabel) bool {
+// The tool head uses the same predicate: a latent companion is not a
+// visibility hint, so a score at the legacy injection threshold does not
+// put it on the plan.
+func LatentArchetypeCapability(id coretool.CapabilityID, bundleKey intent.IntentLabel) bool {
 	switch id {
 	case CapabilityInformationSearchWeb, coretool.CapabilityInformationFetchWeb, CapabilityVisualCapture:
 		return true

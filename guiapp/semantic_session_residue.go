@@ -1293,13 +1293,45 @@ func unusedSessionCompanion(need tool.CapabilityNeed, remaining, expanded map[st
 }
 
 func clampNeedsToResidueRemaining(needs []tool.CapabilityNeed, remaining map[string]int) []tool.CapabilityNeed {
+	return clampNeedsToResidue(needs, remaining, nil)
+}
+
+// clampPetitionNeedsToResidue keeps every family the parent plan already
+// published. Those selections are the expansion validator's authority. A new
+// petition need of the same capability is what competes for whatever session
+// budget is left, so it cannot take the slot and drop the parent family.
+func clampPetitionNeedsToResidue(needs []tool.CapabilityNeed, remaining map[string]int, ctx context.Context) []tool.CapabilityNeed {
+	var families map[string]struct{}
+	if ctx != nil {
+		families, _ = ctx.Value(semanticPetitionParentFamiliesKey{}).(map[string]struct{})
+	}
+	return clampNeedsToResidue(needs, remaining, families)
+}
+
+func clampNeedsToResidue(needs []tool.CapabilityNeed, remaining map[string]int, parentFamilies map[string]struct{}) []tool.CapabilityNeed {
 	if len(needs) == 0 || len(remaining) == 0 {
 		return needs
 	}
+	// Parent families were granted on this turn. Count them before any new
+	// need, independent of slice order, or a petitioned sibling listed first
+	// consumes the ceiling and the validator loses the parent.
 	seen := map[string]int{}
+	if len(parentFamilies) > 0 {
+		for _, need := range needs {
+			if _, parent := parentFamilies[tool.RepeatFamilyKey(need.ID)]; parent {
+				seen[string(need.Capability)]++
+			}
+		}
+	}
 	out := make([]tool.CapabilityNeed, 0, len(needs))
 	for _, need := range needs {
 		capability := string(need.Capability)
+		if len(parentFamilies) > 0 {
+			if _, parent := parentFamilies[tool.RepeatFamilyKey(need.ID)]; parent {
+				out = append(out, need)
+				continue
+			}
+		}
 		limit, ok := remaining[capability]
 		if !ok {
 			out = append(out, need)
