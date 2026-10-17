@@ -5,6 +5,9 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/dbmaint"
 )
 
 type Config struct {
@@ -32,6 +35,8 @@ type Config struct {
 		MmapSizeBytes         int64  `yaml:"mmap_size_bytes"`
 		CheckpointIntervalSec int    `yaml:"checkpoint_interval_sec"`
 		AutoVacuum            string `yaml:"auto_vacuum"`
+		// Maintenance is the built-in replacement for an external VACUUM timer.
+		Maintenance DatabaseMaintenanceConfig `yaml:"maintenance"`
 	} `yaml:"database"`
 
 	Mail struct {
@@ -57,6 +62,21 @@ type Config struct {
 	Runtime struct {
 		SoftMemoryLimitMB int `yaml:"soft_memory_limit_mb"`
 	} `yaml:"runtime"`
+}
+
+// DatabaseMaintenanceConfig controls automatic SQLite maintenance.
+// The window is process-local time. Set enabled to false to keep the
+// manual maintenance commands and skip incremental vacuum, conversion,
+// and the periodic size log.
+type DatabaseMaintenanceConfig struct {
+	Enabled                bool   `yaml:"enabled"`
+	IncrementalVacuumPages int    `yaml:"incremental_vacuum_pages"`
+	WindowStart            string `yaml:"window_start"`
+	WindowEnd              string `yaml:"window_end"`
+	FreeHeadroomBytes      int64  `yaml:"free_headroom_bytes"`
+	MetricsIntervalMinutes int    `yaml:"metrics_interval_minutes"`
+	WarnPendingOps         int64  `yaml:"warn_pending_ops"`
+	WarnDBBytes            int64  `yaml:"warn_db_bytes"`
 }
 
 type HAPeerConfig struct {
@@ -151,13 +171,21 @@ func Default() *Config {
 	cfg.Database.CacheSizeKB = 8192
 	cfg.Database.MmapSizeBytes = 64 << 20
 	cfg.Database.CheckpointIntervalSec = 60
-	// Incremental auto-vacuum lets the background checkpointer hand freed pages
-	// back to the OS without ever taking an exclusive lock (the alternative to
-	// the main database file re-bloating after churny delete/insert cycles).
-	// Takes effect immediately on an empty database; on an existing one it
-	// persists after the next VACUUM rebuild (`maintenance vacuum` / ha-prune
-	// --vacuum). See provider.applyPragmas and sqlite.Vacuum.
+	// Incremental auto-vacuum lets prune batches and the background
+	// checkpointer hand freed pages back to the OS without an exclusive lock.
+	// Takes effect immediately on an empty database. A legacy file with
+	// auto_vacuum=NONE is converted by one VACUUM during the maintenance
+	// window (see DatabaseMaintenanceConfig). Offline `maintenance vacuum`
+	// still does the same rebuild on demand.
 	cfg.Database.AutoVacuum = "incremental"
+	cfg.Database.Maintenance.Enabled = true
+	cfg.Database.Maintenance.IncrementalVacuumPages = dbmaint.DefaultIncrementalVacuumPages
+	cfg.Database.Maintenance.WindowStart = dbmaint.DefaultWindowStart
+	cfg.Database.Maintenance.WindowEnd = dbmaint.DefaultWindowEnd
+	cfg.Database.Maintenance.FreeHeadroomBytes = dbmaint.DefaultFreeHeadroomBytes
+	cfg.Database.Maintenance.MetricsIntervalMinutes = int(dbmaint.DefaultMetricsInterval / time.Minute)
+	cfg.Database.Maintenance.WarnPendingOps = dbmaint.DefaultWarnPendingOps
+	cfg.Database.Maintenance.WarnDBBytes = dbmaint.DefaultWarnDBBytes
 	cfg.Mail.Provider = "smtp"
 	cfg.Mail.FromName = "MaClaw Hub Center"
 	cfg.Logging.Level = "info"
@@ -172,6 +200,9 @@ func Default() *Config {
 func (c *Config) Validate() error {
 	if c == nil {
 		return fmt.Errorf("config is required")
+	}
+	if err := normalizeDatabaseMaintenance(&c.Database.Maintenance); err != nil {
+		return err
 	}
 	switch mode := strings.ToLower(strings.TrimSpace(c.Database.AutoVacuum)); mode {
 	case "", "none", "off", "full", "incremental":
@@ -199,6 +230,34 @@ func (c *Config) Validate() error {
 		return err
 	}
 	c.HA = resolved
+	return nil
+}
+
+func normalizeDatabaseMaintenance(cfg *DatabaseMaintenanceConfig) error {
+	if cfg == nil {
+		return fmt.Errorf("database.maintenance is required")
+	}
+	normalized, err := dbmaint.Normalize(dbmaint.Config{
+		Enabled:                cfg.Enabled,
+		IncrementalVacuumPages: cfg.IncrementalVacuumPages,
+		WindowStart:            cfg.WindowStart,
+		WindowEnd:              cfg.WindowEnd,
+		FreeHeadroomBytes:      cfg.FreeHeadroomBytes,
+		MetricsInterval:        time.Duration(cfg.MetricsIntervalMinutes) * time.Minute,
+		WarnPendingOps:         cfg.WarnPendingOps,
+		WarnDBBytes:            cfg.WarnDBBytes,
+	})
+	if err != nil {
+		return fmt.Errorf("database.maintenance: %w", err)
+	}
+	cfg.Enabled = normalized.Enabled
+	cfg.IncrementalVacuumPages = normalized.IncrementalVacuumPages
+	cfg.WindowStart = normalized.WindowStart
+	cfg.WindowEnd = normalized.WindowEnd
+	cfg.FreeHeadroomBytes = normalized.FreeHeadroomBytes
+	cfg.MetricsIntervalMinutes = int(normalized.MetricsInterval / time.Minute)
+	cfg.WarnPendingOps = normalized.WarnPendingOps
+	cfg.WarnDBBytes = normalized.WarnDBBytes
 	return nil
 }
 

@@ -63,6 +63,12 @@ deploy_one() {
     chmod +x "$target_dir/start.sh"
   fi
 
+  if [ -f "$source_dir/run-systemd.sh" ]; then
+    cp -f "$source_dir/run-systemd.sh" "$target_dir/run-systemd.sh"
+    sed -i 's/\r$//' "$target_dir/run-systemd.sh"
+    chmod +x "$target_dir/run-systemd.sh"
+  fi
+
   if [ -f "$source_dir/configs/config.example.yaml" ]; then
     cp -f "$source_dir/configs/config.example.yaml" "$target_dir/configs/config.example.yaml"
   fi

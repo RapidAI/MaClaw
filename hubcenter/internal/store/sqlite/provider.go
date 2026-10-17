@@ -37,6 +37,10 @@ type Config struct {
 	// background checkpointer releases with PRAGMA incremental_vacuum instead
 	// of the file growing without bound between manual VACUUMs.
 	AutoVacuum string
+	// IncrementalVacuumPages is how many freelist pages a history prune
+	// batch may release. Zero disables that step. The checkpointer has its
+	// own cadence and is unaffected.
+	IncrementalVacuumPages int
 }
 
 type Provider struct {
@@ -48,6 +52,9 @@ type Provider struct {
 	// incrementalVacuum mirrors cfg.AutoVacuum == "incremental" so the
 	// checkpointer knows whether PRAGMA incremental_vacuum is meaningful.
 	incrementalVacuum bool
+	// incrementalVacuumPages is copied onto the HA history repo. Each prune
+	// batch releases at most this many pages.
+	incrementalVacuumPages int
 }
 
 func NewProvider(cfg Config) (*Provider, error) {
@@ -67,10 +74,11 @@ func NewProvider(cfg Config) (*Provider, error) {
 	readDB := openSQLiteDB(cfg.DSN, pragmas, cfg.MaxReadOpenConns, cfg.MaxReadIdleConns)
 
 	p := &Provider{
-		Write:             writeDB,
-		Read:              readDB,
-		batch:             newWriteBatcher(writeDB, cfg),
-		incrementalVacuum: strings.EqualFold(strings.TrimSpace(cfg.AutoVacuum), "incremental"),
+		Write:                  writeDB,
+		Read:                   readDB,
+		batch:                  newWriteBatcher(writeDB, cfg),
+		incrementalVacuum:      strings.EqualFold(strings.TrimSpace(cfg.AutoVacuum), "incremental"),
+		incrementalVacuumPages: cfg.IncrementalVacuumPages,
 	}
 
 	// Start background WAL checkpointer if WAL mode is enabled.

@@ -453,6 +453,11 @@ func (r *haSyncOpRepo) pruneHistory(ctx context.Context, opts historyPruneOption
 			}
 			rows, _ := res.RowsAffected()
 			result.DeletedAppliedOps += rows
+			if rows > 0 {
+				if err := r.releaseFreedPages(ctx); err != nil {
+					return nil, err
+				}
+			}
 			if rows == 0 || rows < batchSize {
 				break
 			}
@@ -634,6 +639,11 @@ func (r *haSyncOpRepo) pruneOneShotEntityBefore(ctx context.Context, entityType,
 		}
 		rows, _ := res.RowsAffected()
 		deleted += rows
+		if rows > 0 {
+			if err := r.releaseFreedPages(ctx); err != nil {
+				return deleted, err
+			}
+		}
 		if rows == 0 || rows < batchSize {
 			break
 		}
@@ -716,6 +726,11 @@ func (r *haSyncOpRepo) pruneSyncOps(ctx context.Context, batchSize int64, select
 		}
 		rows, _ := res.RowsAffected()
 		deleted += rows
+		if rows > 0 {
+			if err := r.releaseFreedPages(ctx); err != nil {
+				return deleted, err
+			}
+		}
 		if rows == 0 || rows < batchSize {
 			break
 		}
@@ -881,6 +896,11 @@ func (r *haSyncOpRepo) deleteSyncOpsSeqRange(ctx context.Context, afterSeq, thro
 		}
 		rows, _ := res.RowsAffected()
 		deleted += rows
+		if rows > 0 {
+			if err := r.releaseFreedPages(ctx); err != nil {
+				return deleted, err
+			}
+		}
 		if rows == 0 || rows < batchSize {
 			break
 		}

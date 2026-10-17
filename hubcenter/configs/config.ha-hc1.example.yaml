@@ -38,6 +38,15 @@ database:
   dsn: ./data/hubcenter-hc-1.db
   wal: true
   auto_vacuum: incremental
+  maintenance:
+    enabled: true
+    incremental_vacuum_pages: 32
+    window_start: "03:00"
+    window_end: "05:00"
+    free_headroom_bytes: 536870912
+    metrics_interval_minutes: 30
+    warn_pending_ops: 20000
+    warn_db_bytes: 1073741824
   busy_timeout_ms: 10000
   max_read_open_conns: 4
   max_read_idle_conns: 4

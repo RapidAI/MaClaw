@@ -1,0 +1,22 @@
+# /etc/systemd/system/maclaw-hub.service
+# Copy to that path. ExecStart is hub/run-systemd.sh installed at
+# /data/soft/hub/run-systemd.sh. Do not set ExecStart to start.sh: start.sh
+# restarts this unit when it is installed.
+#
+# Do not set StandardOutput=append: or StandardError=append:. Those specifiers
+# arrived in systemd 240. Ubuntu 18.04 ships systemd 237, which logs
+# "Failed to parse output specifier" on every daemon-reload. run-systemd.sh
+# appends data/logs/maclaw-hub.out.log itself.
+[Unit]
+Description=MaClaw Hub
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/data/soft/hub
+ExecStart=/data/soft/hub/run-systemd.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

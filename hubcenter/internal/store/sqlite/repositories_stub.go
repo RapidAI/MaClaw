@@ -57,6 +57,9 @@ type haSyncOpRepo struct {
 	// lastPayloadHash caches the most recent payload hash per entity for fast
 	// duplicate detection without hitting SQLite. Key: "entityType:entityID".
 	lastPayloadHash sync.Map
+	// incrementalVacuumPages is the bounded page count released after each
+	// history delete batch. Zero skips the pragma.
+	incrementalVacuumPages int
 }
 
 type haPeerCursorRepo struct {
@@ -108,7 +111,7 @@ func NewStore(p *Provider) *store.Store {
 		BlockedEmails:        &blockedEmailRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		BlockedIPs:           &blockedIPRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		InvitationCodeRoutes: &invitationCodeRouteRepo{db: p.Write, readDB: p.Read},
-		HASyncOps:            &haSyncOpRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		HASyncOps:            &haSyncOpRepo{db: p.Write, readDB: p.Read, batch: p.batch, incrementalVacuumPages: p.incrementalVacuumPages},
 		HAPeerCursors:        &haPeerCursorRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		HAEntityVersions:     &haEntityVersionRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		HAHeartbeatSync:      &haHeartbeatSyncStateRepo{db: p.Write, readDB: p.Read, batch: p.batch},
