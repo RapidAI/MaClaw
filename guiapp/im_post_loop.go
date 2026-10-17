@@ -18,6 +18,7 @@ func (h *IMMessageHandler) finalizeIMAgentLoopResponse(msg IMUserMessage, loopCt
 	if resp == nil {
 		resp = &IMAgentResponse{}
 	}
+	resp = h.correctUnbackedStopClaim(msg, loopCtx, resp)
 	resp.ClearUI = resp.ClearUI || clearUIAfterContextSwitch
 
 	if confirmedResume {

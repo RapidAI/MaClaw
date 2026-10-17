@@ -1,7 +1,9 @@
 package guiapp
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 	"unicode"
@@ -135,6 +137,9 @@ func desktopChatFollowUpText(chinese bool) string {
 	return "Okay, I'll keep going with that."
 }
 
+// looksLikeDesktopChatStop is the instant path only. A short line made of
+// stop words cancels without a model call. Every other phrasing is classified
+// while work is active, and the chat loop can still call stop_all_work.
 func looksLikeDesktopChatStop(text string) bool {
 	raw := strings.TrimSpace(text)
 	if raw == "" || utf8.RuneCountInString(raw) > 24 {
@@ -232,7 +237,7 @@ func (h *IMMessageHandler) rejectForegroundWorkTool(policyUserID, name string) s
 	}
 	name = strings.TrimSpace(name)
 	switch name {
-	case "dispatch_background_task", "steer_background_task", "chat_task_request_input":
+	case "dispatch_background_task", "steer_background_task", "chat_task_request_input", "stop_all_work":
 		return ""
 	}
 	loop := h.getSessionLoopCtx(policyUserID)
@@ -253,41 +258,30 @@ func (h *IMMessageHandler) rejectForegroundWorkTool(policyUserID, name string) s
 }
 
 func (h *IMMessageHandler) tryDesktopChatStopReply(msg IMUserMessage) (*IMAgentResponse, bool) {
-	if !h.desktopChatTurn(msg) || !looksLikeDesktopChatStop(msg.Text) {
+	if h == nil || !h.desktopChatTurn(msg) {
 		return nil, false
 	}
 	sessionKey := desktopChatSessionKey(msg)
 	if h.peekMailboxDraftID(sessionKey) != "" && mailbox.IsCancelText(msg.Text) {
 		return nil, false
 	}
-	chinese := desktopChatChinese(msg.Lang, msg.Text)
-	reg := h.ensureChatTasks()
-	running := 0
-	if reg != nil {
-		running += reg.activeCount(sessionKey)
+	if looksLikeDesktopChatStop(msg.Text) {
+		return h.applyWorkStop(msg, workStopIntentStop, nil)
 	}
-	if loop := h.getSessionLoopCtx(sessionKey); loop != nil && !loop.IsCancelled() && strings.TrimSpace(loop.ChatTaskID) == "" {
-		running++
+	// Nothing is running, so a line that is not an instant stop stays in the
+	// chat. While work is active, a foreground classification decides. A
+	// timeout or a bad answer falls through to the loop, which has stop_all_work.
+	if !h.sessionWorkLive(sessionKey) {
+		return nil, false
 	}
-	_ = h.cancelCurrentTaskForUser(sessionKey, msg.Lang)
-	left := 0
-	if reg != nil {
-		left = reg.activeCount(sessionKey)
+	intent, err := h.classifyWorkStopIntent(context.Background(), sessionKey, msg.Text)
+	if err != nil || intent == "" || intent == workStopIntentContinue {
+		if err != nil {
+			log.Printf("[work-stop] classify failed, leaving the line for the chat loop: %v", err)
+		}
+		return nil, false
 	}
-	var text string
-	switch {
-	case left > 0:
-		text = desktopChatStillStoppingText(chinese)
-	case running == 0:
-		text = desktopChatNothingRunningText(chinese)
-	default:
-		text = desktopChatStoppedText(chinese)
-	}
-	return &IMAgentResponse{
-		Text:           text,
-		SessionKey:     sessionKey,
-		ResponseSource: "chat_task_stop",
-	}, true
+	return h.applyWorkStop(msg, intent, nil)
 }
 
 func (h *IMMessageHandler) tryChatTaskFollowUp(msg IMUserMessage) (*IMAgentResponse, bool) {

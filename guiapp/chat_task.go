@@ -812,7 +812,7 @@ func (h *IMMessageHandler) chatTaskDispatchGuidance(sessionKey string) string {
 	b.WriteString("The first thing the user sees in this turn is a short reply, before any tool call: the answer when it is quick, otherwise one sentence that names the first step.\n")
 	b.WriteString("Answer quick questions and at most two trivial lookups here. Multi-step work, long tool sequences, computer use, files, research, office documents, and batch edits go to dispatch_background_task. After it starts, one plain sentence and stop. Do not keep doing that work here.\n")
 	b.WriteString("A follow-up or correction to work already running goes to steer_background_task for that same work. Do not start a second one for it. If more than one is running and it is unclear which, ask which one.\n")
-	b.WriteString("If the user says to stop or cancel, in any phrasing, stop. Do not start new work in that turn.\n")
+	b.WriteString("If the user wants running work stopped, cancelled, or held, in any language or phrasing, call stop_all_work before you answer. Do not start new work in that turn. You may say the work stopped only by repeating the tool's say field, and only when idle is true. If idle is false, repeat say and do not claim it has stopped. Never say the work stopped without calling the tool. A change to the content (\"stop using bold\", \"stop the music in the video\") is not a request to stop the work. If you are unsure, call stop_all_work with intent pause instead of continuing silently.\n")
 	b.WriteString("Ask only when a wrong guess would delete, send, purchase, or submit something, or when ambiguity would materially change the result. Otherwise decide and proceed.\n")
 	b.WriteString("Never say work is done unless it was verified. If it is still running, blocked, or failed, say that. Do not invent results.\n")
 	b.WriteString("When a finished result appears in this chat, deliver it in plain words. Do not add work you did not see.\n")
@@ -890,6 +890,8 @@ func (h *IMMessageHandler) executeChatTaskToolIfAny(policyUserID, name string, a
 		return h.steerBackgroundTaskTool(policyUserID, args), true
 	case "chat_task_request_input":
 		return h.chatTaskRequestInputTool(policyUserID, args), true
+	case "stop_all_work":
+		return h.stopAllWorkTool(policyUserID, args), true
 	default:
 		return toolExecutionResult{}, false
 	}

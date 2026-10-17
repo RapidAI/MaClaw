@@ -59,6 +59,11 @@ type LLMClassifyRequest struct {
 	// Used with NoThinking so a reading can finish its object without reserving
 	// a chat-sized completion.
 	MaxOutputTokens int
+
+	// Role, when set, resolves that Maclaw model role (foreground, background,
+	// computer_use) instead of the assistant profile. An unresolved role keeps
+	// the assistant config.
+	Role string
 }
 
 // LLMClassifyResult holds the response from a lightweight LLM call.
@@ -114,6 +119,13 @@ func (h *IMMessageHandler) LLMClassify(ctx context.Context, req LLMClassifyReque
 	if req.PreferLightweight {
 		if lightCfg := h.getLightweightLLMConfig(); lightCfg.URL != "" && lightCfg.Model != "" {
 			cfg = lightCfg
+		}
+	}
+	if role := strings.TrimSpace(req.Role); role != "" && h.app != nil {
+		if resolved, err := h.app.ResolveMaclawLLMRole(role); err == nil && strings.TrimSpace(resolved.Model) != "" {
+			cfg = resolved
+		} else if err != nil {
+			log.Printf("[%s] role %s resolve failed, using assistant: %v", req.Tag, role, err)
 		}
 	}
 	if req.NoThinking {

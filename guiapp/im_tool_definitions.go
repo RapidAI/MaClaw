@@ -253,6 +253,10 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"title":   map[string]string{"type": "string", "description": "Title of the running work when more than one is open. Optional."},
 				"task_id": map[string]string{"type": "string", "description": "Internal id. Leave empty when title or the only running item is enough."},
 			}, []string{"note"}),
+		toolDef("stop_all_work", "Stop every running task, desktop run, and foreground loop for this chat. Call this whenever the user wants that work stopped, cancelled, or held, in any language or phrasing, and call it before you say it stopped. Do not call it to change the content of the work, such as stopping bold text or stopping music inside a video being edited. If you are unsure whether they mean the running work, call it with intent pause rather than continuing. The result has idle and say. Tell the user only say. Claim the work stopped only when idle is true.",
+			map[string]interface{}{
+				"intent": map[string]string{"type": "string", "description": "stop or pause. pause holds the work and asks what they meant. Omit it to stop."},
+			}, nil),
 		toolDef("chat_task_request_input", "Ask the user one question and wait. Only background work may call this, and only when a wrong guess would delete, send, purchase, or submit something, or when ambiguity would materially change the result. Otherwise decide and proceed. The answer continues the same work.",
 			map[string]interface{}{
 				"question": map[string]string{"type": "string", "description": "The one question the user must answer before the work can continue."},

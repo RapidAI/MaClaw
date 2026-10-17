@@ -90,10 +90,10 @@ export function protocolControl(text: string): 'confirm' | 'resume' | '' {
     return '';
 }
 
-// Local control is only the short classes that cannot wait for the reading.
-// A stop is decided here, before any model reply, so the model cannot say
-// the work stopped while the desktop run is still going. A phrase that names
-// a task, including 「别装了」 and 「取消任务」, still goes to the reading.
+// The instant path. A short line made only of stop words cancels before any
+// model call. Other languages and phrasings are classified while work is
+// active; this list is not the only way a stop is recognized. A phrase that
+// names a task, including 「别装了」 and 「取消任务」, still goes to the reading.
 export type DesktopBotLocalControl = 'status' | 'stop' | '';
 
 const DESKTOP_BOT_STOP_PARTS = [
@@ -338,6 +338,32 @@ export function desktopBotStopIdleSentence(lang: string): string {
     if (voice === 'en') return 'Nothing is running, so there is nothing to stop.';
     if (voice === 'hant') return '現在沒有在做的事，不用停。';
     return '现在没有在做的事，不用停。';
+}
+
+export function desktopBotPauseAskSentence(lang: string): string {
+    const voice = desktopBotVoice(lang);
+    if (voice === 'en') return "I've paused it. Should I stop the whole thing, or only change what's in it?";
+    if (voice === 'hant') return '我先停一下。是整個停下，還是只改正在做的內容？';
+    return '我先停一下。是整个停下，还是只改正在做的内容？';
+}
+
+// A reply that claims the desktop work already stopped. Content edits such as
+// "stop using bold" are not that claim. STOP_WORK is the reading's cancel
+// token and is handled by the caller, not here.
+export function desktopReplyClaimsStopped(text: string): boolean {
+    const raw = (text || '').trim();
+    if (!raw || raw === 'STOP_WORK' || Array.from(raw).length > 180) return false;
+    const lower = raw.toLowerCase();
+    if (['stop using', "don't use", 'do not use', 'stop the music', 'the music', 'bold', '别用', '不要用', '粗体', '音乐', '别停', '不要停', "don't stop"].some(skip => lower.includes(skip))) {
+        return false;
+    }
+    return ['已停下', '已经停', '不再继续', '停了', "i've stopped", 'i have stopped', 'i stopped', 'work is stopped', 'work has stopped', 'cancelled the', 'canceled the'].some(hit => lower.includes(hit));
+}
+
+export function desktopFalseStopClaim(classified: string, told: string): boolean {
+    if (!classified || classified === 'skip') return false;
+    if ((told || '').trim() === 'STOP_WORK') return classified !== 'continue_other';
+    return desktopReplyClaimsStopped(told);
 }
 
 export function desktopBotStillStoppingSentence(lang: string): string {

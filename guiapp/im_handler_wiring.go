@@ -529,6 +529,12 @@ type IMMessageHandler struct {
 	pendingReplyPromptClassifier func(assistantText string) (bool, error)
 	pendingReplyAnswerClassifier func(question, answer string) (bool, error)
 	noToolReplyClassifier        func(text string) (agentNoToolReplyIntent, error)
+	// workStopClassifier classifies a user line while work is active.
+	// Tests inject it. Production calls the foreground model.
+	workStopClassifier func(text string) (string, error)
+	// workStopClaimClassifier reports whether an assistant reply claims the
+	// running work already stopped. Tests inject it.
+	workStopClaimClassifier func(text string) (bool, error)
 
 	// pendingCapabilityGap stores the result of an async capability gap
 	// resolution (skill search + install) that completed after the response

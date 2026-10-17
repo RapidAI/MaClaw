@@ -449,7 +449,7 @@ func TestChatTaskGuidanceKeepsFollowUpsOnTheSameWork(t *testing.T) {
 	if strings.Contains(text, "new chat turn") || strings.Contains(text, "ct-live") {
 		t.Fatalf("guidance leaked the old follow-up rule or an id:\n%s", text)
 	}
-	if !strings.Contains(text, "steer_background_task") || !strings.Contains(text, "slides") {
+	if !strings.Contains(text, "steer_background_task") || !strings.Contains(text, "slides") || !strings.Contains(text, "stop_all_work") {
 		t.Fatalf("guidance = %s", text)
 	}
 	if !strings.Contains(chatTaskWorkerGuidance(), "verified") {

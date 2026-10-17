@@ -13,6 +13,7 @@ import { DialogProvider } from '../CustomDialog';
 const sendTask = vi.hoisted(() => vi.fn<(...args: any[]) => any>());
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const understandTask = vi.hoisted(() => vi.fn<(...args: any[]) => any>());
+const classifyWorkStop = vi.hoisted(() => vi.fn<(...args: any[]) => any>());
 const armSchedule = vi.hoisted(() => vi.fn(async (_botId?: string, _name?: string, _rest?: unknown): Promise<string> => 'task-1'));
 const listSchedules = vi.hoisted(() => vi.fn(async (_botId?: string) => [] as Array<{ id: string; name: string; action: string; interval_minutes: number; hour: number; minute: number; day_of_week: number; next_run_at?: string; status?: string }>));
 const deleteSchedule = vi.hoisted(() => vi.fn(async (_botId?: string, _taskId?: string) => undefined));
@@ -74,6 +75,7 @@ const responseListeners = vi.hoisted(() => ({
 vi.mock('../../../wailsjs/go/main/App', () => ({
     SendDesktopBotTask: (...args: unknown[]) => sendTask(...args),
     UnderstandDesktopBotTask: (content: string, phase: string, lang: string, earlier?: string[], persona?: string, catalog?: string) => understandTask(content, phase, lang, earlier || [], persona || '', catalog || ''),
+    ClassifyDesktopWorkStop: (text: string, lang: string) => classifyWorkStop(text, lang),
     ArmDesktopBotSchedule: (...args: unknown[]) => armSchedule(...(args as [])) || 'task-1',
     ListDesktopBotSchedules: (botId: string) => listSchedules(botId),
     DeleteDesktopBotSchedule: (botId: string, taskId: string) => deleteSchedule(botId, taskId),
@@ -183,6 +185,8 @@ beforeEach(() => {
     armCross.mockReset();
     armCross.mockResolvedValue(undefined);
     understandTask.mockReset();
+    classifyWorkStop.mockReset();
+    classifyWorkStop.mockResolvedValue('unknown');
     armSchedule.mockReset();
     armSchedule.mockResolvedValue('task-1');
     listSchedules.mockReset();
@@ -2977,6 +2981,98 @@ describe('DesktopBotWorkspace', () => {
         expect(understandTask).not.toHaveBeenCalled();
         expect(sendTask).not.toHaveBeenCalled();
         expect(screen.queryByTestId('desktop-bot-processing')).toBeNull();
+    });
+
+    it('classifies a stop in another language and cancels the live run', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '码卡龙本龙', description: '共用桌面', instance_id: 'inst_1' }]);
+        listActiveRuns.mockImplementation(async () => (
+            cancelRun.mock.calls.length > 0 ? [] : [{ run_id: 'run-1', task_text: '安装 Evince' }]
+        ));
+        classifyWorkStop.mockResolvedValue('stop');
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('码卡龙本龙'));
+        act(() => {
+            responseListeners.byEvent['desktop-bot-activity']?.({ bot_id: 'bot_1', run_id: 'run-1', activity: '正在看屏幕' });
+        });
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: 'yamete' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        expect(await screen.findByText('停了。安装 Evince 不再继续。')).toBeTruthy();
+        expect(classifyWorkStop).toHaveBeenCalledWith('yamete', 'zh-Hans');
+        expect(cancelRun).toHaveBeenCalledWith('bot_1', 'run-1');
+        expect(understandTask).not.toHaveBeenCalled();
+        expect(screen.queryByTestId('desktop-bot-processing')).toBeNull();
+    });
+
+    it('pauses on an ambiguous hold and asks instead of saying the work stopped', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '码卡龙本龙', description: '共用桌面', instance_id: 'inst_1' }]);
+        listActiveRuns.mockImplementation(async () => (
+            cancelRun.mock.calls.length > 0 ? [] : [{ run_id: 'run-1', task_text: '安装 Evince' }]
+        ));
+        classifyWorkStop.mockResolvedValue('pause');
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('码卡龙本龙'));
+        act(() => {
+            responseListeners.byEvent['desktop-bot-activity']?.({ bot_id: 'bot_1', run_id: 'run-1', activity: '正在看屏幕' });
+        });
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: 'hold on' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        expect(await screen.findByText('我先停一下。是整个停下，还是只改正在做的内容？')).toBeTruthy();
+        expect(screen.queryByText('停了。安装 Evince 不再继续。')).toBeNull();
+        expect(cancelRun).toHaveBeenCalledWith('bot_1', 'run-1');
+        expect(understandTask).not.toHaveBeenCalled();
+    });
+
+    it('keeps going when stop is about the content, not the job', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '码卡龙本龙', description: '共用桌面', instance_id: 'inst_1' }]);
+        classifyWorkStop.mockResolvedValue('continue_other');
+        understandTask.mockResolvedValue({ told: '好，标题不用粗体。', instruction: '标题不用粗体', pace: 'direct' });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('码卡龙本龙'));
+        act(() => {
+            responseListeners.byEvent['desktop-bot-activity']?.({ bot_id: 'bot_1', run_id: 'run-1', activity: '正在看屏幕' });
+        });
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: 'stop using bold text' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(understandTask.mock.calls.map(call => call[0])).toContain('stop using bold text'));
+        expect(cancelRun).not.toHaveBeenCalled();
+        expect(await screen.findByText('好，标题不用粗体。')).toBeTruthy();
+    });
+
+    it('cancels when the reading claims the work stopped and the classifier did not answer', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '码卡龙本龙', description: '共用桌面', instance_id: 'inst_1' }]);
+        listActiveRuns.mockImplementation(async () => (
+            cancelRun.mock.calls.length > 0 ? [] : [{ run_id: 'run-xhs', task_text: '去小红书上给大家打个招呼' }]
+        ));
+        classifyWorkStop.mockRejectedValue(new Error('timeout'));
+        understandTask.mockResolvedValue({ told: '好的，已停下，不会继续了。', instruction: '', pace: 'reply' });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('码卡龙本龙'));
+        act(() => {
+            responseListeners.byEvent['desktop-bot-activity']?.({ bot_id: 'bot_1', run_id: 'run-xhs', activity: '正在看屏幕' });
+        });
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '算了别弄了' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        expect(await screen.findByText('停了。去小红书上给大家打个招呼 不再继续。')).toBeTruthy();
+        expect(screen.queryByText('好的，已停下，不会继续了。')).toBeNull();
+        expect(cancelRun).toHaveBeenCalledWith('bot_1', 'run-xhs');
+        expect(classifyWorkStop).toHaveBeenCalled();
+    });
+
+    it('does not classify an exact stop phrase', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '码卡龙本龙', description: '共用桌面', instance_id: 'inst_1' }]);
+        listActiveRuns.mockImplementation(async () => (
+            cancelRun.mock.calls.length > 0 ? [] : [{ run_id: 'run-xhs', task_text: '去小红书上给大家打个招呼' }]
+        ));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('码卡龙本龙'));
+        act(() => {
+            responseListeners.byEvent['desktop-bot-activity']?.({ bot_id: 'bot_1', run_id: 'run-xhs', activity: '正在看屏幕' });
+        });
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '停下，不干了。' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        expect(await screen.findByText('停了。去小红书上给大家打个招呼 不再继续。')).toBeTruthy();
+        expect(classifyWorkStop).not.toHaveBeenCalled();
+        expect(understandTask).not.toHaveBeenCalled();
     });
 
     it('stops 停下，不干了 through cancel and does not let the model claim it stopped', async () => {

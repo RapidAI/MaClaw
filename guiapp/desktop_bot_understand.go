@@ -170,6 +170,8 @@ The phase is a fact about this turn:
 When earlier messages contain a task being planned or arranged, and the latest message provides supplementary information, additional requirements, constraints, filters, or modifications (e.g. adding filtering criteria, changing output format, adding steps), do not treat it as an isolated request. Seamlessly fuse and synthesize the earlier task and the supplementary requirements into a complete, updated work order in instruction, and present the updated arrangement in told. If the task was awaiting confirmation or is a multi-step arrangement, keep pace as confirm (or direct if clear and safe) so the person can review the updated plan. When an earlier job is already underway and the latest message is a different job, do not fold it into that job and do not stop that job. instruction is only the new job. told says this one waits until the job already underway finishes. Do not say the new job has started. A constraint, filter, or correction of the job already underway is still fused into that job. Otherwise classify the latest message on its own. Earlier user messages explain a pronoun or a question you already asked. They are not a reason to repeat an earlier desktop job. If the latest message is small talk, pace is reply even when an earlier job is unfinished.
 - execute: they already confirmed, or this is the direct work. pace is direct, unless the confirmed work is itself timed or repeating: then pace is schedule and schedule carries that time. instruction is the concrete work taken from the earlier messages and this message. Do the work now. Do not ask them to confirm again. Use ask only when a fact still blocks the work.
 
+If the latest message wants work that is already running stopped or held, in any language or indirect phrasing, pace is reply, instruction is an empty string, and told is exactly STOP_WORK. Do not describe the work as stopped in your own words. A request to change what the work contains, such as stopping bold text or stopping music inside a video being edited, is not this case: classify that work as usual.
+
 Do not ask this person to choose a method. Do not reuse a stock sentence. Do not match the message against a list of phrases. Do not add keys other than schedule, markdown, or text outside the JSON object. instruction and persona may be empty strings. told may be empty only when pace is status. Otherwise told may not.`
 
 func desktopBotUnderstandClassifyRequest(req desktopBotUnderstandRequest) LLMClassifyRequest {
@@ -301,7 +303,18 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 				phase, attempt, time.Since(started).Round(time.Millisecond), len(earlier), utf8.RuneCountInString(text), utf8.RuneCountInString(raw), parseErr)
 			return desktopBotConfirmOrLost(desktopBotReadingUnread, "answer was not a reading", text, phase, earlier), nil
 		}
+		rawPace := strings.ToLower(strings.TrimSpace(understood.Pace))
 		understood.Pace = desktopBotPace(understood.Pace, phase)
+		// pace stop, or the exact token, is the cancel signal for a reading
+		// that stood in when the fast classifier did not return. It is not a
+		// desktop order and it is not a sentence the person sees.
+		if rawPace == "stop" || strings.TrimSpace(understood.Told) == "STOP_WORK" {
+			understood.Pace = "reply"
+			understood.Instruction = ""
+			understood.Told = "STOP_WORK"
+			understood.Schedule = nil
+			understood.Cross = nil
+		}
 		finishDesktopBotCross(understood, roster)
 		if err := normalizeDesktopBotSchedule(understood); err != nil {
 			log.Printf("[desktop-bot-understand] phase=%s pace=%s attempt=%d elapsed=%s earlier=%d text_len=%d schedule_err=%v",
