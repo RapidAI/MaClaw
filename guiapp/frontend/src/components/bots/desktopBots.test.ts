@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest';
-import { addDesktopBot, appendDesktopBotReport, botsForUser, botTaskText, botTranscriptGeneration, clearLiveBotTurn, confirmedWorkOrder, currentInProgressBotTasks, deleteDesktopBot, desktopBotAccountId, desktopBotActivityText, desktopBotAdmittingSentence, desktopBotAskingLabel, desktopBotCrossTargetText, desktopBotDestructive, desktopBotFiles, desktopBotImages, desktopBotLocalControl, desktopBotLocalPaths, desktopBotNoticeSeen, desktopBotRunningSentence, desktopBotStatusUnreachableSentence, desktopBotStopFailedSentence, desktopBotStopIdleSentence, desktopBotStoppedSentence, desktopBotTaskHint, desktopBotTypedConfirmSentence, desktopBotWorkingLabel, desktopCreditReadout, desktopTaskStep, inProgressBotTasks, markDesktopBotNotice, messageNeedsComputerTakeover, messagesForBot, namesLaterTime, noteLiveBotTurn, renameDesktopBot, saveBotMessages, settlePendingBotReply, userRequestBefore, BOT_PENDING_REPLY_WAIT_MS } from './desktopBots';
+import { addDesktopBot, appendDesktopBotReport, botsForUser, botTaskText, botTranscriptGeneration, clearLiveBotTurn, confirmedWorkOrder, currentInProgressBotTasks, deleteDesktopBot, desktopBotAccountId, desktopBotActivityText, desktopBotAdmittingSentence, desktopBotAskingLabel, desktopBotCrossTargetText, desktopBotDestructive, desktopBotFiles, desktopBotImages, desktopBotLocalControl, desktopBotLocalPaths, desktopBotNoticeSeen, desktopBotRunningSentence, desktopBotStatusUnreachableSentence, desktopBotStopFailedSentence, desktopBotStopIdleSentence, desktopBotStillStoppingSentence, desktopBotStopIntent, desktopBotStoppedSentence, desktopBotTaskHint, desktopBotTypedConfirmSentence, desktopBotWorkingLabel, desktopCreditReadout, desktopTaskStep, inProgressBotTasks, markDesktopBotNotice, messageNeedsComputerTakeover, messagesForBot, namesLaterTime, noteLiveBotTurn, renameDesktopBot, saveBotMessages, settlePendingBotReply, userRequestBefore, BOT_PENDING_REPLY_WAIT_MS } from './desktopBots';
 
 beforeEach(() => {
     localStorage.clear();
@@ -640,10 +640,12 @@ describe('desktop bots', () => {
         expect(desktopBotTaskHint('运行窗口')).toBe('运行窗口');
         expect(desktopBotLocalControl('运行窗口')).toBe('');
         expect(desktopBotLocalControl('把 Evince 装上')).toBe('');
-        for (const word of ['停', '停下', '别做了', '取消']) expect(desktopBotLocalControl(word)).toBe('stop');
+        for (const word of ['停', '停下', '别做了', '取消', '不干了', '算了', 'stop', '停下，不干了。']) expect(desktopBotLocalControl(word)).toBe('stop');
+        expect(desktopBotStopIntent('停下，不干了。')).toBe(true);
         expect(desktopBotLocalControl('  取消  ')).toBe('stop');
         expect(desktopBotLocalControl('别装了')).toBe('');
         expect(desktopBotLocalControl('取消任务')).toBe('');
+        expect(desktopBotStillStoppingSentence('zh-Hans')).toBe('还在停。停稳了再跟你说。');
         expect(desktopBotRunningSentence(['安装 Evince'], 'zh-Hans')).toBe('在做。这件是「安装 Evince」。');
         expect(desktopBotRunningSentence(['安装 Evince', '下载报表'], 'zh-Hans')).toBe('在做这几件：\n安装 Evince\n下载报表');
         expect(desktopBotRunningSentence(['安装 Evince'], 'zh-Hant')).toBe('在做。這件是「安装 Evince」。');

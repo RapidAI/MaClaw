@@ -898,14 +898,16 @@
 }
 
 /* Working row pinned above the composer, so scrolling the log does not hide it.
-   The mark is a picture of motion, not a stop. The sentence stays at full
-   strength; a light band walks through the glyphs. */
+   The left edge matches the assistant bubble column: the same gutter as the
+   log, and the same max width as .desktop-bot-chat__entry. .desktop-bot-chat p
+   zeros margin, so the gutter has to live on a more specific rule.
+   The circle is the pause control. The sentence stays at full strength; a
+   light band walks through the glyphs. */
 .desktop-bot-chat__processing {
     display: flex;
     align-items: center;
     gap: 8px;
     flex: 0 0 auto;
-    margin: 2px var(--desktop-bot-gutter, 8%) 0;
     min-width: 0;
     min-height: 22px;
     color: var(--theme-text-secondary, #546479);
@@ -913,7 +915,14 @@
     line-height: 22px;
 }
 
+.desktop-bot-chat .desktop-bot-chat__processing {
+    width: fit-content;
+    max-width: min(720px, calc((100% - (2 * var(--desktop-bot-gutter, 8%))) * 0.92));
+    margin: 2px auto 0 var(--desktop-bot-gutter, 8%);
+}
+
 .desktop-bot-chat__processing-mark {
+    appearance: none;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -921,8 +930,12 @@
     width: 22px;
     height: 22px;
     flex: 0 0 auto;
+    margin: 0;
+    padding: 0;
+    border: 0;
     border-radius: 999px;
     background: var(--mc-accent, var(--theme-primary, #2f6fbc));
+    cursor: pointer;
 }
 
 .desktop-bot-chat__processing-mark::before,

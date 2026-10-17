@@ -90,11 +90,18 @@ export function protocolControl(text: string): 'confirm' | 'resume' | '' {
     return '';
 }
 
-// Local control is only the three short classes that cannot wait for the
-// reading. Anything with a task name, including 「别装了」, still goes to it.
+// Local control is only the short classes that cannot wait for the reading.
+// A stop is decided here, before any model reply, so the model cannot say
+// the work stopped while the desktop run is still going. A phrase that names
+// a task, including 「别装了」 and 「取消任务」, still goes to the reading.
 export type DesktopBotLocalControl = 'status' | 'stop' | '';
 
-const DESKTOP_BOT_STOP = new Set(['停', '停下', '别做了', '取消']);
+const DESKTOP_BOT_STOP_PARTS = [
+    'stopeverything', 'canceleverything', 'nevermind', 'forgetit', 'stopall', 'stopit', 'cancelall',
+    '全部停止', '全部停下', '停止所有', '取消所有', '别继续了', '不要继续了', '都停下', '都取消',
+    '别做了', '不要了', '不干了', '不做了', '别干了', '别跑了', '不用了', '停一下', '停止吧', '取消吧',
+    '先停', '算了', '停下', '停止', '停掉', '都停', '全停', '取消', 'abort', 'stop', 'cancel', '停',
+];
 
 // Same courtesy words Hub strips in desktopTaskHint. A leftover piece is a
 // name, so the question is not answered from the generic live-run sentence.
@@ -209,10 +216,30 @@ function desktopBotAsksAboutRunning(text: string): boolean {
     return ['怎么样', '怎麼樣', '进度', '進度', '状态', '狀態', '在运行', '在運行', '在跑', '做完了'].some(word => trimmed.includes(word));
 }
 
+function desktopBotStopCompact(text: string): string {
+    return text.trim().toLowerCase().replace(/[\s.。!！?？,，、~～…:：;；'"“”]+/g, '');
+}
+
+// A short message made only of stop words. 「停下，不干了。」 is one stop.
+// 「取消任务」 keeps the task name, so it is not.
+export function desktopBotStopIntent(text: string): boolean {
+    const compact = desktopBotStopCompact(text);
+    if (!compact || Array.from(compact).length > 16) return false;
+    let rest = compact;
+    let used = false;
+    while (rest) {
+        const part = DESKTOP_BOT_STOP_PARTS.find(item => item && rest.startsWith(item));
+        if (!part) return false;
+        rest = rest.slice(part.length);
+        used = true;
+    }
+    return used;
+}
+
 export function desktopBotLocalControl(text: string): DesktopBotLocalControl {
     const trimmed = text.trim();
     if (!trimmed) return '';
-    if (DESKTOP_BOT_STOP.has(trimmed)) return 'stop';
+    if (desktopBotStopIntent(trimmed)) return 'stop';
     if (!desktopBotTaskHint(trimmed) && desktopBotAsksAboutRunning(trimmed)) return 'status';
     return '';
 }
@@ -311,6 +338,13 @@ export function desktopBotStopIdleSentence(lang: string): string {
     if (voice === 'en') return 'Nothing is running, so there is nothing to stop.';
     if (voice === 'hant') return '現在沒有在做的事，不用停。';
     return '现在没有在做的事，不用停。';
+}
+
+export function desktopBotStillStoppingSentence(lang: string): string {
+    const voice = desktopBotVoice(lang);
+    if (voice === 'en') return 'Still stopping. I will confirm when nothing is left running.';
+    if (voice === 'hant') return '還在停。停穩了再跟你說。';
+    return '还在停。停稳了再跟你说。';
 }
 
 export function desktopBotStopFailedSentence(reason: string, lang: string): string {

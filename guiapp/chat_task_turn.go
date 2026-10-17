@@ -144,11 +144,49 @@ func looksLikeDesktopChatStop(text string) bool {
 	trimmed = strings.Trim(trimmed, " \t\r\n.。!！?？,~～")
 	switch trimmed {
 	case "stop", "stop it", "stop all", "stop everything", "cancel", "cancel all", "cancel everything", "abort", "never mind", "nevermind", "forget it",
-		"停", "停下", "停止", "停掉", "别做了", "不要了", "取消", "都取消", "全部停止", "全部停下", "都停下", "算了", "不用了", "别跑了", "停止所有", "取消所有", "都停", "全停", "停一下", "先停", "停止吧", "取消吧", "别继续了", "不要继续了":
+		"停", "停下", "停止", "停掉", "别做了", "不要了", "取消", "都取消", "全部停止", "全部停下", "都停下", "算了", "不用了", "别跑了", "停止所有", "取消所有", "都停", "全停", "停一下", "先停", "停止吧", "取消吧", "别继续了", "不要继续了", "不干了", "不做了", "别干了":
 		return true
 	default:
+		return desktopChatStopParts(trimmed)
+	}
+}
+
+// desktopChatStopParts accepts a short line made only of stop words, so
+// 「停下，不干了。」 is a stop and is not left for the model to answer.
+func desktopChatStopParts(text string) bool {
+	compact := strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\t', '\n', '\r', '.', '。', '!', '！', '?', '？', ',', '，', '、', '~', '～', '…', ':', '：', ';', '；', '\'', '"', '“', '”':
+			return -1
+		default:
+			return r
+		}
+	}, strings.ToLower(strings.TrimSpace(text)))
+	if compact == "" || utf8.RuneCountInString(compact) > 16 {
 		return false
 	}
+	parts := []string{
+		"stopeverything", "canceleverything", "nevermind", "forgetit", "stopall", "stopit", "cancelall",
+		"全部停止", "全部停下", "停止所有", "取消所有", "别继续了", "不要继续了", "都停下", "都取消",
+		"别做了", "不要了", "不干了", "不做了", "别干了", "别跑了", "不用了", "停一下", "停止吧", "取消吧",
+		"先停", "算了", "停下", "停止", "停掉", "都停", "全停", "取消", "abort", "stop", "cancel", "停",
+	}
+	rest := compact
+	used := false
+	for rest != "" {
+		matched := ""
+		for _, part := range parts {
+			if strings.HasPrefix(rest, part) && len(part) > len(matched) {
+				matched = part
+			}
+		}
+		if matched == "" {
+			return false
+		}
+		rest = strings.TrimPrefix(rest, matched)
+		used = true
+	}
+	return used
 }
 
 func looksLikeChatTaskFollowUp(text string) bool {
