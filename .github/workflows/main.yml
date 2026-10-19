@@ -496,9 +496,14 @@ jobs:
           # download so a flaky feed cannot fail the whole release.
           $nsisPath = $null
           for ($attempt = 1; $attempt -le 3 -and -not $nsisPath; $attempt++) {
-            choco install nsis -y --no-progress
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "choco install nsis failed (attempt $attempt/3)"
+            # The community feed returns 503/504 wholesale during incidents;
+            # the second and third passes skip it and go straight to the
+            # direct download below, so a dead feed costs one wait, not three.
+            if ($attempt -eq 1) {
+              choco install nsis -y --no-progress
+              if ($LASTEXITCODE -ne 0) {
+                Write-Host "choco install nsis failed (attempt $attempt/3)"
+              }
             }
             Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1" -ErrorAction SilentlyContinue
             refreshenv
@@ -517,12 +522,23 @@ jobs:
           }
           if (-not $nsisPath) {
             # Last resort: the official SourceForge build, pinned by version.
+            # curl.exe ships with the Windows runner and follows the mirror
+            # redirect without Invoke-WebRequest's progress/stream quirks.
             $zip = Join-Path $env:RUNNER_TEMP "nsis.zip"
             $dst = Join-Path $env:RUNNER_TEMP "nsis"
+            $url = "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.10/nsis-3.10.zip"
             Write-Host "choco route failed; downloading NSIS 3.10 directly"
-            Invoke-WebRequest -Uri "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.10/nsis-3.10.zip" -OutFile $zip -UseBasicParsing
-            Expand-Archive -Path $zip -DestinationPath $dst -Force
-            $nsisPath = (Get-ChildItem -Path $dst -Recurse -Filter makensis.exe | Select-Object -First 1).FullName
+            for ($dl = 1; $dl -le 3 -and -not (Test-Path $zip); $dl++) {
+              curl.exe -L --fail --retry 2 --connect-timeout 20 --max-time 180 -o $zip $url
+              if (-not (Test-Path $zip)) {
+                Write-Host "NSIS download failed (attempt $dl/3); retrying in 10s"
+                Start-Sleep -Seconds 10
+              }
+            }
+            if (Test-Path $zip) {
+              Expand-Archive -Path $zip -DestinationPath $dst -Force
+              $nsisPath = (Get-ChildItem -Path $dst -Recurse -Filter makensis.exe | Select-Object -First 1).FullName
+            }
           }
           if (-not $nsisPath) { Write-Error "NSIS makensis.exe not found after install"; exit 1 }
           Write-Host "NSIS found at: $nsisPath"
@@ -880,21 +896,37 @@ jobs:
         if: matrix.goos == 'windows'
         shell: pwsh
         run: |
-          # community.chocolatey.org answers 504 under load; retry before failing.
-          $ok = $false
-          foreach ($attempt in 1..3) {
-            choco install nsis -y --no-progress
-            if ($LASTEXITCODE -eq 0) { $ok = $true; break }
-            Write-Host "choco install nsis failed (attempt $attempt/3); retrying in 15s"
-            Start-Sleep -Seconds 15
-          }
-          if (-not $ok) { Write-Error "choco install nsis failed after 3 attempts"; exit 1 }
-          Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
+          # Same resilience as the desktop job: try the community feed once,
+          # then fall back to the pinned SourceForge build. During feed
+          # incidents the CDN route is the only one that works.
+          $nsisPath = $null
+          choco install nsis -y --no-progress
+          Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1" -ErrorAction SilentlyContinue
           refreshenv
           $nsisPath = (Get-Command makensis -ErrorAction SilentlyContinue).Source
           if (-not $nsisPath) {
-            $candidates = @("C:\Program Files (x86)\NSIS\makensis.exe","C:\Program Files\NSIS\makensis.exe")
-            $nsisPath = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+            $nsisPath = @(
+              "C:\Program Files (x86)\NSIS\makensis.exe",
+              "C:\Program Files\NSIS\makensis.exe",
+              (Join-Path $env:ChocolateyInstall "bin\makensis.exe")
+            ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $nsisPath) {
+            $zip = Join-Path $env:RUNNER_TEMP "nsis.zip"
+            $dst = Join-Path $env:RUNNER_TEMP "nsis"
+            $url = "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.10/nsis-3.10.zip"
+            Write-Host "choco route failed; downloading NSIS 3.10 directly"
+            for ($dl = 1; $dl -le 3 -and -not (Test-Path $zip); $dl++) {
+              curl.exe -L --fail --retry 2 --connect-timeout 20 --max-time 180 -o $zip $url
+              if (-not (Test-Path $zip)) {
+                Write-Host "NSIS download failed (attempt $dl/3); retrying in 10s"
+                Start-Sleep -Seconds 10
+              }
+            }
+            if (Test-Path $zip) {
+              Expand-Archive -Path $zip -DestinationPath $dst -Force
+              $nsisPath = (Get-ChildItem -Path $dst -Recurse -Filter makensis.exe | Select-Object -First 1).FullName
+            }
           }
           if (-not $nsisPath) { Write-Error "NSIS not found"; exit 1 }
           echo "NSIS_PATH=$nsisPath" >> $env:GITHUB_ENV
