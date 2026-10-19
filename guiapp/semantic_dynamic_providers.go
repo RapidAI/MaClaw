@@ -346,6 +346,23 @@ func semanticSkillIsRunnable(entry corelib.NLSkillEntry) bool {
 	return strings.TrimSpace(entry.Name) != ""
 }
 
+// semanticDynamicCatalogRejection is the catalog outcome for a call that
+// has not started. An inventory error and incomplete coverage are the same
+// fact the executor reports. A caller in front of one-shot admission must
+// return this instead of continuing: admitting it consumes the only grant
+// for a tool that never ran.
+func semanticDynamicCatalogRejection(inventory semanticDynamicInventory, err error, kind string) (tool.SelectionExecutionResult, bool) {
+	if err != nil {
+		return tool.SelectionExecutionResult{Result: "[system rejected] dynamic_catalog_incomplete", ReasonCode: "dynamic_catalog_incomplete"}, true
+	}
+	coverage := inventory.coverage.ForProviderKind(kind)
+	if coverage.State != tool.CatalogCoverageComplete {
+		reason := normalizedSemanticCoverageReason(coverage.ReasonCode)
+		return tool.SelectionExecutionResult{Result: "[system rejected] " + reason, ReasonCode: reason}, true
+	}
+	return tool.SelectionExecutionResult{}, false
+}
+
 func semanticCoverageFamily(kind string, state tool.CatalogCoverageState, reason string) tool.CatalogCoverageFamily {
 	return tool.CatalogCoverageFamily{Kind: kind, State: state, ReasonCode: reason, ObservedAt: time.Now().UTC()}
 }
@@ -378,12 +395,8 @@ func (c *sharedAgentLoopCallbacks) executeSemanticDynamicProviderWithContext(exe
 	// was admitted under; the session principal is kept only as the call
 	// owner for the eventual bound dispatch.
 	inventory, err := c.handler.semanticDynamicInventoryForPrincipal(ctx, semanticDesktopContractPrincipal())
-	if err != nil {
-		return tool.SelectionExecutionResult{Result: "[system rejected] dynamic_catalog_incomplete", ReasonCode: "dynamic_catalog_incomplete"}, true
-	}
-	coverage := inventory.coverage.ForProviderKind(kind)
-	if coverage.State != tool.CatalogCoverageComplete {
-		return tool.SelectionExecutionResult{Result: "[system rejected] " + normalizedSemanticCoverageReason(coverage.ReasonCode), ReasonCode: normalizedSemanticCoverageReason(coverage.ReasonCode)}, true
+	if rejected, ok := semanticDynamicCatalogRejection(inventory, err, kind); ok {
+		return rejected, true
 	}
 	catalog, err := agentservice.BuildDynamicSemanticCatalog(inventory.mcpEntries, inventory.skillEntries)
 	if err != nil {

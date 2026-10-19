@@ -89,7 +89,9 @@ func (h *IMMessageHandler) syncVerifiedFactMemory(userID string, fact agent.Sess
 		return
 	}
 	ownerID := strings.TrimSpace(userID)
-	got := h.memoryStore.ApplyVerifiedFact(memory.VerifiedFact{
+	// The prompt snapshot stays pinned until the conversation ends. The store
+	// still records the fact for a later recall.
+	h.memoryStore.ApplyVerifiedFact(memory.VerifiedFact{
 		Entity:      fact.Entity,
 		Predicate:   fact.Predicate,
 		Claim:       fact.Claim,
@@ -97,9 +99,6 @@ func (h *IMMessageHandler) syncVerifiedFactMemory(userID string, fact agent.Sess
 		Aliases:     append([]string(nil), fact.Aliases...),
 		StrictOwner: isIsolatedAssistantSessionUserID(ownerID),
 	}, ownerID)
-	if got.Superseded > 0 || got.Saved {
-		h.RefreshMemorySnapshot(userID)
-	}
 }
 
 func (a *App) syncMemoryFromVerifiedKnowledgeText(text string) {

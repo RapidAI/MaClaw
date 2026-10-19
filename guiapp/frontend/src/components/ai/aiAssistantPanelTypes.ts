@@ -92,6 +92,10 @@ export interface AIAssistantPanelHookActions {
     cancelChatTask: (taskID: string) => Promise<void>;
     steerChatTask: (taskID: string, text: string) => Promise<void>;
     answerChatTask: (taskID: string, text: string) => Promise<void>;
+    /** True when this session has no foreground turn and no pending task. */
+    isSessionIdle: (sessionKey?: string) => boolean;
+    /** Resolves when that session's foreground turn has finished. */
+    waitForForegroundIdle: (sessionKey?: string) => Promise<void>;
 }
 
 export interface AIAssistantPanelAppActions {
@@ -118,6 +122,10 @@ export interface AIAssistantPanelProps {
     startOnWorkbenchHome?: boolean;
     activeAssistantTask?: ActiveAssistantTaskIdentity | null;
     chatFontSize?: number;
+    /** Conversation-assistant face. "system" keeps the current UI font. */
+    chatFontFamily?: string;
+    /** Programming-assistant face. "system" keeps the current UI font. */
+    codingFontFamily?: string;
     state: AIAssistantPanelStateProps;
     actions: AIAssistantPanelActionProps;
     window?: AIAssistantPanelWindowProps;

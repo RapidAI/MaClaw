@@ -79,6 +79,88 @@ describe('useAssistantOutputScroll', () => {
         expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' });
     });
 
+    it('does not measure the outer transcript when a capped thought pane absorbs the growth', () => {
+        const user = makeMsg({ role: 'user', content: 'Ningbo weather' });
+        const first = makeMsg({ id: 'a1', role: 'assistant', content: 'answer', reasoning: 'Task received' });
+        const { getByTestId, rerender } = render(<ScrollHarness messages={[user, first]} />);
+        const nested = getByTestId('nested-scroll');
+        Object.defineProperties(nested, {
+            clientHeight: { configurable: true, value: 80 },
+            scrollHeight: { configurable: true, value: 640 },
+        });
+
+        scrollIntoViewMock.mockClear();
+        rerender(
+            <ScrollHarness
+                messages={[user, { ...first, reasoning: 'Task received\nPreparing the execution path' }]}
+            />,
+        );
+        // The flush that first fills the pane still grows the outer box.
+        expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' });
+
+        scrollIntoViewMock.mockClear();
+        rerender(
+            <ScrollHarness
+                messages={[user, { ...first, reasoning: 'Task received\nPreparing the execution path\nStill thinking' }]}
+            />,
+        );
+        expect(scrollIntoViewMock).not.toHaveBeenCalled();
+
+        rerender(
+            <ScrollHarness
+                activityKey="progress-1"
+                messages={[user, { ...first, reasoning: 'Task received\nPreparing the execution path' }]}
+            />,
+        );
+        expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' });
+
+        scrollIntoViewMock.mockClear();
+        rerender(
+            <ScrollHarness
+                activityKey="progress-1"
+                messages={[user, { ...first, content: 'answer grows', reasoning: 'Task received\nPreparing the execution path' }]}
+            />,
+        );
+        expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' });
+    });
+
+    it('does not follow while the transcript is covered and pins once it is shown', () => {
+        const user = makeMsg({ role: 'user', content: 'Ningbo weather' });
+        const first = makeMsg({ id: 'a1', role: 'assistant', content: 'Ning' });
+        const suspendedRef = { current: true };
+        function Harness({ suspended, messages }: { suspended: boolean; messages: ChatMessage[] }) {
+            suspendedRef.current = suspended;
+            const { outputContainerRef, outputEndRef } = useAssistantOutputScroll({
+                hasConversation: true,
+                messages,
+                ready: true,
+                suspendedRef,
+            });
+            return (
+                <div ref={outputContainerRef} data-testid="scroll-box" hidden={suspended || undefined}>
+                    <div>{messages.map((message) => message.content)}</div>
+                    <div data-nested-scroll="" data-testid="nested-scroll" />
+                    <div
+                        ref={(node) => {
+                            outputEndRef.current = node;
+                            if (node) node.scrollIntoView = scrollIntoViewMock;
+                        }}
+                    />
+                </div>
+            );
+        }
+        const grown = [user, { ...first, content: 'Ningbo weather looks' }];
+        const { getByTestId, rerender } = render(<Harness suspended messages={[user, first]} />);
+        const nested = getByTestId('nested-scroll');
+        Object.defineProperty(nested, 'scrollHeight', { configurable: true, value: 640 });
+        scrollIntoViewMock.mockClear();
+        rerender(<Harness suspended messages={grown} />);
+        expect(scrollIntoViewMock).not.toHaveBeenCalled();
+        rerender(<Harness suspended={false} messages={grown} />);
+        expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' });
+        expect(nested.scrollTop).toBe(640);
+    });
+
     it('does not unpin follow when a delayed scroll arrives without user intent', () => {
         const user = makeMsg({ role: 'user', content: 'Ningbo weather' });
         const first = makeMsg({ id: 'a1', role: 'assistant', content: 'Ning' });

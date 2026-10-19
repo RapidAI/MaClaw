@@ -6,6 +6,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/computeruse"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 const (
@@ -123,13 +124,99 @@ func recordComputerUseGate(h *IMMessageHandler, ctx *LoopContext, routingText st
 	if ctx != nil && ctx.ComputerUseGateSettled {
 		return ctx.ComputerUseActive, ctx.ComputerUseFresh
 	}
+	if ctx != nil && ctx.ComputerHelper {
+		if !ctx.ComputerUseGateSettled {
+			ctx.ComputerUseGateSettled = true
+			ctx.ComputerUseActive = true
+			ctx.ComputerUseFresh = true
+		}
+		return ctx.ComputerUseActive, ctx.ComputerUseFresh
+	}
 	active, fresh = h.gateComputerUse(routingText)
-	if ctx != nil {
+	if ctx != nil && loopKeepsDrivingTools(ctx) {
 		ctx.ComputerUseGateSettled = true
 		ctx.ComputerUseActive = active
 		ctx.ComputerUseFresh = fresh
+		return active, fresh
 	}
-	return active, fresh
+	if ctx != nil {
+		ctx.ComputerUseGateSettled = true
+		ctx.ComputerUseActive = false
+		ctx.ComputerUseFresh = fresh
+		if active {
+			noteMainComputerDispatch(h, ctx, routingText)
+		}
+	}
+	return false, fresh
+}
+
+func noteMainComputerDispatch(h *IMMessageHandler, ctx *LoopContext, text string) {
+	if ctx == nil || ctx.ComputerHelper || ctx.ComputerHelperNoted {
+		return
+	}
+	ctx.ComputerHelperNoted = true
+	screen := strings.TrimSpace(ctx.ComputerUseOwner)
+	if screen == "" {
+		screen = strings.TrimSpace(ctx.UserID)
+	}
+	if screen == "" {
+		screen = strings.TrimSpace(ctx.SessionID)
+	}
+	card := desktopbot.CardForGoal(computerHelperGoalText(text))
+	ctx.ComputerHelperGoal = card.Goal
+	ctx.ComputerHelperLimits = card.Constraints
+	ctx.ComputerHelperSuccess = card.SuccessCriteria
+	id := computerHelperLeaseID(screen)
+	started, queued := desktopbot.ClaimComputerScreen(screen, id)
+	ctx.ComputerHelperDispatched = started
+	ctx.ComputerHelperQueued = queued
+	if !started || h == nil || h.app == nil {
+		return
+	}
+	reg := h.ensureChatTasks()
+	if reg == nil {
+		desktopbot.ReleaseComputerScreen(screen, id)
+		ctx.ComputerHelperDispatched = false
+		ctx.ComputerHelperQueued = true
+		return
+	}
+	session := strings.TrimSpace(ctx.UserID)
+	if _, err := reg.Dispatch(AIAssistantChatTaskDispatchRequest{
+		Text:       card.Text(),
+		SessionKey: session,
+		Computer:   true,
+		Screen:     screen,
+	}); err != nil {
+		desktopbot.ReleaseComputerScreen(screen, id)
+		ctx.ComputerHelperDispatched = false
+		ctx.ComputerHelperQueued = true
+	}
+}
+
+// computerHelperGoalText drops the addressing trigger. The card names the
+// work. It does not name click, type, or computer.
+func computerHelperGoalText(text string) string {
+	text = strings.TrimSpace(text)
+	lower := strings.ToLower(text)
+	for _, prefix := range []string{"@computer", "computer-use", "computer_use", "computer use"} {
+		if !strings.HasPrefix(lower, prefix) {
+			continue
+		}
+		rest := strings.TrimSpace(text[len(prefix):])
+		rest = strings.TrimLeft(rest, " :：,，")
+		if rest != "" {
+			return rest
+		}
+	}
+	return text
+}
+
+func computerHelperLeaseID(screen string) string {
+	screen = strings.TrimSpace(screen)
+	if screen == "" {
+		screen = "default"
+	}
+	return "cu-" + screen
 }
 
 func syncComputerUseTurn(h *IMMessageHandler, ctx *LoopContext, fallbackUserID, goal string) {
@@ -144,6 +231,9 @@ func syncComputerUseTurn(h *IMMessageHandler, ctx *LoopContext, fallbackUserID, 
 	}
 	active, _ := recordComputerUseGate(h, ctx, text)
 	if !active {
+		if ctx.ComputerHelperDispatched || ctx.ComputerHelperQueued {
+			return
+		}
 		// The classifier often names computer_use for "写一份简历". The gate
 		// refused the surface; drop that label so the semantic planner does
 		// not still require desktop control.

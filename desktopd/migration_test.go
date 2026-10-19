@@ -304,11 +304,12 @@ func TestScreenshotCapturesTheUsersDisplay(t *testing.T) {
 		t.Fatalf("data=%d bytes err=%v", len(data), err)
 	}
 	name := "maclaw-desktop-" + mustKey(t, "tenant", "alice")
-	if len(got) < 6 || got[0] != "exec" || got[1] != "-e" || got[2] != "DISPLAY="+desktop.DefaultDisplay || got[3] != name || got[4] != "sh" {
-		t.Fatalf("docker args=%v", got)
+	shot := commandPayload(t, got)
+	if got[1] != name || shot.Op != "shot" || shot.Display != desktop.DefaultDisplay {
+		t.Fatalf("docker args=%v shot=%+v", got, shot)
 	}
-	if script := got[len(got)-1]; !strings.Contains(script, "import -window root") || !strings.Contains(script, "scrot") || !strings.Contains(script, "base64 -w0") {
-		t.Fatalf("script=%s", script)
+	if !strings.Contains(shot.Script, "import -window root") || !strings.Contains(shot.Script, "scrot") || !strings.Contains(shot.Script, "base64 -w0") {
+		t.Fatalf("script=%s", shot.Script)
 	}
 	if _, err := svc.Screenshot(context.Background(), "tenant", "alice", ":20; rm -rf /"); err == nil {
 		t.Fatal("invalid display was accepted")
@@ -328,7 +329,7 @@ func TestScreenshotSaveWritesTheDesktopFile(t *testing.T) {
 	want := testPNG(t)
 	var script string
 	svc := &Service{Run: func(_ context.Context, args ...string) (string, error) {
-		script = args[len(args)-1]
+		script = commandPayload(t, args).Script
 		return base64.StdEncoding.EncodeToString(want), nil
 	}}
 	data, saved, err := svc.CaptureScreenshot(context.Background(), "tenant", "alice", ":20", "baidu_screenshot.png")
@@ -450,7 +451,7 @@ func TestScreenshotOptionsReturnGeometryHeaders(t *testing.T) {
 	want := testPNG(t)
 	var script string
 	svc := &Service{Run: func(_ context.Context, args ...string) (string, error) {
-		script = args[len(args)-1]
+		script = commandPayload(t, args).Script
 		return "MACLAW_SHOT 1280 800 0 0 1280 800 1024 640 10 20\n" + base64.StdEncoding.EncodeToString(want), nil
 	}}
 	srv := httptest.NewServer(Handler(svc, "primary-token", "", nil, nil))
@@ -504,9 +505,13 @@ func TestCtlEndpointRunsSupervisorRequest(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "你好") {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
 	}
-	joined := strings.Join(got, " ")
-	if !strings.Contains(joined, "DISPLAY=:20") || !strings.Contains(joined, "/desktop_supervisor.py ctl") {
-		t.Fatalf("args=%v", got)
+	ctl := commandPayload(t, got)
+	decoded, decErr := base64.StdEncoding.DecodeString(ctl.Body)
+	if decErr != nil || ctl.Op != "ctl" || ctl.Display != ":20" || !strings.Contains(string(decoded), `"op":"clipboard_get"`) {
+		t.Fatalf("ctl=%+v body=%s err=%v", ctl, decoded, decErr)
+	}
+	if joined := strings.Join(got, " "); strings.Contains(joined, " DISPLAY=") || strings.Contains(joined, " sh ") {
+		t.Fatalf("ctl still builds a host shell: %s", joined)
 	}
 	if resp, _ := post(`{"tenant_id":"tenant","user_id":"alice","request":{"op":"rm -rf"}}`); resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unknown op status=%d", resp.StatusCode)

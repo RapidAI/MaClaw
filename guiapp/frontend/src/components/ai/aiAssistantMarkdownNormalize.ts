@@ -410,9 +410,14 @@ function canAttachBareHeadingMarkerToLine(line: string, followingLine?: string):
         && !(hasUnescapedPipe(trimmed) && markdownTableStructureLinePattern.test(followingTrimmed));
 }
 
+/** A line of only `#` markers. The next line is the title and must stay in the same slice. */
+export function isBareHeadingMarkerLine(line: string): boolean {
+    return bareHeadingMarkerLinePattern.test(line.trim());
+}
+
 function getBareHeadingMarker(line: string): string | null {
     const trimmed = line.trim();
-    if (!bareHeadingMarkerLinePattern.test(trimmed)) return null;
+    if (!isBareHeadingMarkerLine(trimmed)) return null;
     const markers = trimmed.split(/\s+/);
     return markers[markers.length - 1] || null;
 }

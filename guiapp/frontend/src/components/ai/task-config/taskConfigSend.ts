@@ -24,6 +24,8 @@ export interface UnifiedTaskCreateOptions {
     expertName: string;
     workflowTemplateId: string;
     params?: Record<string, string>;
+    /** Scheduled LaTeX paper: do not cancel the shared expert turn while allocating the directory. */
+    keepExpertSession?: boolean;
 }
 
 /** 打开新任务页签并自动发送首条消息的导航载荷（EVENT_OPEN_TASK_LAUNCH）。 */

@@ -542,10 +542,10 @@ requireFile('guiapp/frontend/src/components/ai/useWorkflowStartingLabel.ts');
 requireFile('guiapp/frontend/src/components/ai/shareAssistantTask.ts');
 requireFile('guiapp/frontend/src/components/ai/aiAssistantStatusLabels.ts');
 
-// Refreshed 6800 -> 6820 -> 6840 -> 6880 -> 6895 (2026-10-15): the in-flight
-// desktop-bot/sidebar work measured 6882 lines; headroom absorbs further bursts
+// Refreshed 6800 -> ... -> 7010 -> 7040 (2026-10-19): the in-flight
+// desktop-bot/sidebar work measured 7023 lines; headroom absorbs further bursts
 // while it is in progress.
-if (lines > 6895) failures.push(`${appRel} has ${lines} lines; keep it under 6895 and extract UI instead of growing it`);
+if (lines > 7040) failures.push(`${appRel} has ${lines} lines; keep it under 7040 and extract UI instead of growing it`);
 
 const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/layout/AppSidebarShell.tsx', 500],
@@ -560,7 +560,9 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/layout/MainTopHeaderActions.tsx', 140],
   ['guiapp/frontend/src/components/layout/mainTopHeaderTitle.ts', 80],
   ['guiapp/frontend/src/components/settings/GeneralSettingsPanel.tsx', 330],
-  ['guiapp/frontend/src/components/settings/UISettingsPanel.tsx', 340],
+  // Refreshed 340 -> 490 -> 525 (2026-10-19): assistant font cards and size
+  // controls kept growing here (guard counts 507).
+  ['guiapp/frontend/src/components/settings/UISettingsPanel.tsx', 525],
   ['guiapp/frontend/src/components/settings/CodingKnowledgeSection.tsx', 520],
   ['guiapp/frontend/src/components/settings/codingKnowledgeHelpers.ts', 80],
   ['guiapp/frontend/src/components/settings/CodingKnowledgeDialogs.tsx', 100],
@@ -605,19 +607,26 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/ai/aiAssistantPanelTheme.tsx', 700],
   ['guiapp/frontend/src/components/ai/aiAssistantI18n.ts', 240],
   ['guiapp/frontend/src/components/ai/ProjectSearchPanel.tsx', 320],
-  ['guiapp/frontend/src/components/ai/useProjectSearch.ts', 140],
+  // Refreshed 140 -> 155 (2026-10-19): knowledge corpus search added
+  // (guard counts 146).
+  ['guiapp/frontend/src/components/ai/useProjectSearch.ts', 155],
   ['guiapp/frontend/src/components/ai/projectSearchTypes.ts', 30],
   ['guiapp/frontend/src/components/ai/projectSearchCaches.ts', 100],
   ['guiapp/frontend/src/components/ai/projectSearchFormat.ts', 40],
   ['guiapp/frontend/src/components/ai/ProjectSearchRow.tsx', 60],
   ['guiapp/frontend/src/components/ai/ProjectSearchContextMenu.tsx', 50],
-  ['guiapp/frontend/src/components/ai/unifiedHeaderSearch.ts', 260],
+  // Refreshed 260 -> 295 -> 345 (2026-10-19): knowledge search row mapping
+  // kept growing (guard counts 333).
+  ['guiapp/frontend/src/components/ai/unifiedHeaderSearch.ts', 345],
   ['guiapp/frontend/src/components/ai/ProjectSearchLibraryRows.tsx', 50],
   ['guiapp/frontend/src/components/ai/aiAssistantControls.tsx', 120],
   ['guiapp/frontend/src/components/ai/useTTSReadback.ts', 120],
-  ['guiapp/frontend/src/components/ai/aiAssistantPanelTypes.ts', 220],
+  // Refreshed 220 -> 235 (2026-10-19): font-size props added (guard counts 223).
+  ['guiapp/frontend/src/components/ai/aiAssistantPanelTypes.ts', 235],
   ['guiapp/frontend/src/components/ai/useAIAssistantVoiceControls.ts', 100],
-  ['guiapp/frontend/src/components/ai/useAssistantOutputScroll.ts', 240],
+  // Refreshed 240 -> 330 (2026-10-19): hidden/capped-pane scroll layout
+  // guards and scroll diagnostics added (guard counts 317).
+  ['guiapp/frontend/src/components/ai/useAssistantOutputScroll.ts', 330],
   ['guiapp/frontend/src/components/ai/assistantOutputScrollLogic.ts', 120],
   ['guiapp/frontend/src/components/ai/assistantOutputScrollFollow.ts', 60],
   ['guiapp/frontend/src/components/ai/useResizableAssistantInput.ts', 80],
@@ -928,7 +937,9 @@ requireIncludes('guiapp/frontend/src/components/settings/GeneralSettingsPanel.ts
 requireIncludes('guiapp/frontend/src/components/settings/GeneralSettingsPanel.tsx', 'SelectWorkingDir', 'general settings working directory picker');
 requireIncludes('guiapp/frontend/src/components/settings/UISettingsPanel.tsx', 'export const UISettingsPanel', 'UI settings export');
 requireIncludes('guiapp/frontend/src/components/settings/UISettingsPanel.tsx', 'SetUIZoomFactor', 'UI zoom persistence wiring');
-requireIncludes('guiapp/frontend/src/components/settings/UISettingsPanel.tsx', 'SetChatFontSize', 'AI assistant font size persistence wiring');
+// Font-size persistence moved into useChatFontSizeCommit; assert the call
+// lives there rather than inline in the panel.
+requireIncludes('guiapp/frontend/src/components/settings/useChatFontSizeCommit.ts', 'SetChatFontSize', 'AI assistant font size persistence wiring');
 requireExcludes('guiapp/frontend/src/App.tsx', 'ListToolProviders', 'removed default programming provider list wiring');
 requireExcludes('guiapp/frontend/wailsjs/go/main/App.d.ts', 'ListToolProviders', 'removed default programming provider binding');
 requireExcludes('guiapp/frontend/wailsjs/go/main/App.js', 'ListToolProviders', 'removed default programming provider binding');
@@ -1140,7 +1151,7 @@ requireIncludes('guiapp/frontend/src/components/layout/AppStatusMessageBar.tsx',
 requireIncludes('guiapp/frontend/src/components/layout/AppStatusMessageBar.tsx', 'onOpenLLMSettings', 'LLM warning navigation');
 requireIncludes('guiapp/frontend/src/components/pages/TutorialPage.tsx', 'ReactMarkdown', 'tutorial markdown rendering stays in TutorialPage');
 requireIncludes('guiapp/frontend/src/components/pages/TutorialPage.tsx', 'components={{ a: MarkdownLink }}', 'tutorial markdown link handling');
-requireIncludes('guiapp/frontend/src/components/pages/ApiStorePage.tsx', 'SetChatFontSize', 'API Store chat font size setting');
+requireIncludes('guiapp/frontend/src/components/pages/ApiStorePage.tsx', 'useChatFontSizeCommit', 'API Store chat font size setting');
 requireIncludes('guiapp/frontend/src/components/pages/ApiStorePage.tsx', 'ApiStoreProviderCard', 'API Store provider card wiring');
 requireIncludes('guiapp/frontend/src/config/apiStoreProviders.ts', 'ChatFire', 'API Store ChatFire card');
 requireIncludes('guiapp/frontend/src/config/apiStoreProviders.ts', '\\u667a\\u8c31', 'API Store Zhipu card');

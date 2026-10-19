@@ -68,6 +68,51 @@ func TestClassifyDesktopLaunchOpenFileKeepsEveryPath(t *testing.T) {
 	}
 }
 
+func TestClassifyDesktopLaunchModeSlotIsNotADocument(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "notes.md")
+	if err := os.WriteFile(real, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	named := filepath.Join(dir, "open-file")
+	if err := os.WriteFile(named, []byte("doc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(dir, "missing.md")
+	// Shell shape: MaClaw open-file "%1". The mode slot is consumed. A document
+	// whose name is open-file stays a document. The path strings are unchanged.
+	got := classifyDesktopLaunchForOS([]string{"MaClaw", "open-file", real, named, missing}, "windows")
+	if got.Mode != desktopLaunchFileCompanion || !got.Explicit {
+		t.Fatalf("launch = %#v", got)
+	}
+	want := []string{real, named, missing}
+	if strings.Join(got.Paths, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("paths = %#v", got.Paths)
+	}
+	rel := classifyDesktopLaunchForOS([]string{"MaClaw", "open-file", "notes.md"}, "windows")
+	if rel.Mode != desktopLaunchFileCompanion || len(rel.Paths) != 1 || rel.Paths[0] != "notes.md" {
+		t.Fatalf("relative document = %#v", rel)
+	}
+
+	// The registered verb is that exact token in the mode slot. A relative
+	// path, another case, and a still-quoted word are not the mode.
+	empty := t.TempDir()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(empty); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+	for _, first := range []string{"./open-file", "OPEN-FILE", `"open-file"`} {
+		notVerb := classifyDesktopLaunchForOS([]string{"MaClaw", first, real}, "windows")
+		if notVerb.Mode != desktopLaunchMain {
+			t.Fatalf("%q is not the mode slot, launch = %#v", first, notVerb)
+		}
+	}
+}
+
 func TestClassifyDesktopLaunchDoesNotStealKnownSubcommands(t *testing.T) {
 	dir := t.TempDir()
 	initFile := filepath.Join(dir, "init")

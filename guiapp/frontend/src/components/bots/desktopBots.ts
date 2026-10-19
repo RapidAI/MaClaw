@@ -1,3 +1,5 @@
+import { visibleActivityPhrase } from './visibleDesktopTurn';
+
 export interface DesktopBot {
     id: string;
     title: string;
@@ -25,7 +27,9 @@ export type DesktopBotNoReading = 'unread' | 'unscheduled' | 'unreachable' | 'un
 // assist: a person has to finish a login, captcha, or consent step.
 export type DesktopTaskStep = 'done' | 'arrange' | 'ask' | 'assist';
 
-const REMAINING_WORK = /确认后|按这个安排|我将|我会|下一步|请确认|安排[:：]/;
+// An explicit "still to confirm" mark. 「下一步」「我会」are not that mark:
+// planning prose does not open a confirm button by default.
+const REMAINING_WORK = /确认后|按这个安排|请确认|安排[:：]/;
 const FINISHED_REPORT = /已截屏|截图已|图片已附|已附在|可直接查看|已经完成|任务已完成/;
 const OPEN_QUESTION = /[?？]/;
 const ASKS_HOW = /要我|是否|怎么完成|哪个/;
@@ -749,7 +753,7 @@ export function desktopBotAccountId(config: { remote_user_id?: unknown; remote_e
 // desktopTaskStep decides the next step from the request and this reply.
 // A screenshot that is already attached finished a look. An arrangement that
 // still names later work keeps the confirm control. A login handoff does not.
-export function desktopTaskStep(userText: string, reply: Pick<DesktopBotMessage, 'content' | 'images' | 'files' | 'localPaths' | 'userControl' | 'attentionReason' | 'askUser' | 'askResolved'>): DesktopTaskStep {
+export function desktopTaskStep(userText: string, reply: Pick<DesktopBotMessage, 'content' | 'images' | 'files' | 'localPaths' | 'userControl' | 'attentionReason' | 'askUser' | 'askResolved' | 'workOrder'>): DesktopTaskStep {
     if (reply.userControl || (reply.attentionReason || '').trim()) return 'assist';
     const ask = reply.askUser;
     if (ask && !reply.askResolved && (ask.question || ask.secretName || (ask.options && ask.options.length > 0))) return 'ask';
@@ -760,7 +764,14 @@ export function desktopTaskStep(userText: string, reply: Pick<DesktopBotMessage,
     if (!remaining && FINISHED_REPORT.test(content) && !isProgramTask(userText)) return 'done';
     if (!remaining && reply.images && reply.images.length > 0 && SCREEN_REQUEST.test(userText) && !FURTHER_WORK.test(userText) && !isProgramTask(userText)) return 'done';
     if (!remaining && OPEN_QUESTION.test(content) && ASKS_HOW.test(content)) return 'ask';
-    return 'arrange';
+    if (isProgramTask(userText) && ((reply.images && reply.images.length > 0) || FINISHED_REPORT.test(content))) return 'arrange';
+    // A destructive order still needs the one button. The pace machine already
+    // turned that reading into a plan. This is that control, not a prose default.
+    const order = reply.workOrder || '';
+    if (desktopBotDestructive(userText) || desktopBotDestructive(order) || desktopBotDestructive(content)) return 'arrange';
+    if (remaining) return 'arrange';
+    // 「先打开网站，再告诉你结果。」 and any other planning prose are not a button.
+    return 'done';
 }
 
 // foldPlanConfirmation drops the foreground reading once the worker has stated
@@ -1277,6 +1288,19 @@ export function settlePendingBotReply(userId: string, botId: string, patch: { co
     saveBotMessages(userId, botId, foldPlanConfirmation(next, index));
 }
 
+// dropPendingBotReply removes a turn that ended without send_to_user.
+// An empty bubble, or 「后台没有返回结果。」, is not that ending.
+export function dropPendingBotReply(userId: string, botId: string, requestId?: string) {
+    const current = messagesForBot(userId, botId);
+    const index = pendingBotIndex(current, requestId || '');
+    if (index < 0) return;
+    const previous = current[index];
+    clearLiveBotTurn(userId, botId, previous.id);
+    const next = current.slice();
+    next.splice(index, 1);
+    saveBotMessages(userId, botId, next);
+}
+
 // applySupplementOutcomes turns a supplement receipt from "queued" into its
 // terminal answer, closing invariant I4 on the UI side. A receipt that already
 // has an outcome is never rewritten, so a repeated event or a stale pull
@@ -1334,13 +1358,8 @@ export function desktopBotDestructive(text: string): boolean {
 // A working-row phrase is 正在 plus two to six Han characters. Typed text,
 // a tool name, and the spoken word 正在处理 are not phrases. 正在一点点推进
 // is the row's own fallback, and 正在询问 is composed with the other bot's name.
-const DESKTOP_BOT_ACTIVITY = /^正在[\u4e00-\u9fff]{2,6}$/;
-const DESKTOP_BOT_ACTIVITY_BLOCKED = new Set(['正在处理', '正在一点点推进', '正在询问']);
-
 export function desktopBotActivityText(raw: string): string {
-    const text = (raw || '').trim();
-    if (!DESKTOP_BOT_ACTIVITY.test(text) || DESKTOP_BOT_ACTIVITY_BLOCKED.has(text)) return '';
-    return text;
+    return visibleActivityPhrase(raw);
 }
 
 // Asking another bot wins over the step. With no reported step the row

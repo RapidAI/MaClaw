@@ -595,6 +595,84 @@ func TestTokenBankQuoteUsesTheMemberALiveDialWould(t *testing.T) {
 	}
 }
 
+func TestTokenBankImageRequestDialsVisionMemberWithoutStealingTextTurns(t *testing.T) {
+	arrayID := "tb-vision-dial"
+	clearProviderArrayCursor(arrayID)
+	t.Cleanup(func() { clearProviderArrayCursor(arrayID) })
+	textA := TokenBankMemberID("share-a", "text-a")
+	textB := TokenBankMemberID("share-b", "text-b")
+	visionA := TokenBankMemberID("share-c", "vision-a")
+	visionB := TokenBankMemberID("share-d", "vision-b")
+	reg := &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: textA, Models: []string{"text-a"}, ArrayID: arrayID, CapabilityTags: []string{"tools", "document"}},
+			{ID: textB, Models: []string{"text-b"}, ArrayID: arrayID, CapabilityTags: []string{"tools"}},
+			{ID: visionA, Models: []string{"vision-a"}, ArrayID: arrayID, CapabilityTags: []string{"vision"}},
+			{ID: visionB, Models: []string{"vision-b"}, ArrayID: arrayID, CapabilityTags: []string{"tools", "vision"}},
+		},
+		ProviderArrays: []llmpool.ProviderArray{{
+			ID: arrayID, MemberIDs: []string{textA, textB, visionA, visionB},
+		}},
+	}
+	miss := canaryBucket(t, false)
+	quote := func(body map[string]any) string {
+		t.Helper()
+		_, profile, _ := tokenBankRouteMembers(reg, arrayID, acceptLiveProvider, "official-mid", &ProxyRequest{RequestID: miss, Body: body}, false)
+		if profile == nil {
+			t.Fatal("quote selected no member")
+		}
+		return profile.ID
+	}
+	textBody := map[string]any{"messages": []any{map[string]any{"role": "user", "content": "read C:\\paper.pdf"}}}
+	imageBody := map[string]any{"messages": []any{map[string]any{
+		"role": "user",
+		"content": []any{
+			map[string]any{"type": "text", "text": "建议几个标题\nC:\\paper.pdf"},
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/jpeg;base64,AA"}},
+		},
+	}}}
+	if got := quote(textBody); got != textA {
+		t.Fatalf("text member = %s, want %s", got, textA)
+	}
+	if got := quote(imageBody); got != visionA {
+		t.Fatalf("first image member = %s, want %s", got, visionA)
+	}
+	if got := quote(imageBody); got != visionB {
+		t.Fatalf("second image member = %s, want %s", got, visionB)
+	}
+	if got := quote(textBody); got != textB {
+		t.Fatalf("text member after image requests = %s, want %s", got, textB)
+	}
+}
+
+func TestTokenBankImageRequestSkipsTextCanary(t *testing.T) {
+	arrayID := "tb-vision-canary"
+	clearProviderArrayCursor(arrayID)
+	t.Cleanup(func() { clearProviderArrayCursor(arrayID) })
+	textCanary := TokenBankMemberID("share-a", "text-canary")
+	visionA := TokenBankMemberID("share-b", "vision-a")
+	reg := &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: textCanary, Models: []string{"text-canary"}, ArrayID: arrayID, TokenBankCanaryUntil: time.Now().Add(time.Hour).UTC().Format(time.RFC3339)},
+			{ID: visionA, Models: []string{"vision-a"}, ArrayID: arrayID, CapabilityTags: []string{"Vision"}},
+		},
+		ProviderArrays: []llmpool.ProviderArray{{
+			ID: arrayID, MemberIDs: []string{textCanary, visionA},
+		}},
+	}
+	hit := canaryBucket(t, true)
+	_, profile, _ := tokenBankRouteMembers(reg, arrayID, acceptLiveProvider, "official-mid", &ProxyRequest{
+		RequestID: hit,
+		Body: map[string]any{"messages": []any{map[string]any{
+			"role":    "user",
+			"content": []any{map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/jpeg;base64,AA"}}},
+		}}},
+	}, false)
+	if profile == nil || profile.ID != visionA {
+		t.Fatalf("canary hit member = %v, want the vision member", profile)
+	}
+}
+
 func TestTokenBankPublishKeepsCanaryDeadline(t *testing.T) {
 	svc, ctx := publishTestService(t)
 	addPublishTestServiceGroup(t, svc, ctx, "default")

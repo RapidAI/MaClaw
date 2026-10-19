@@ -6,6 +6,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 // desktopBrowserSkillRoot overrides the shared skill directory in tests.
@@ -26,14 +27,14 @@ func desktopSkillName(name string) (string, error) {
 
 func saveDesktopBrowserSkill(userKey, name, script, pageURL, summary string) (string, error) {
 	if !desktop.ValidUserKey(userKey) {
-		return "", fmt.Errorf("desktop requires a user")
+		return "", fmt.Errorf("%s", desktopbot.DesktopNeedsUser)
 	}
 	return browser.SavePageScriptSkill(desktopBrowserSkillRoot, userKey, name, script, pageURL, summary)
 }
 
 func loadDesktopBrowserSkill(userKey, name string) (desktopBrowserSkill, error) {
 	if !desktop.ValidUserKey(userKey) {
-		return desktopBrowserSkill{}, fmt.Errorf("desktop requires a user")
+		return desktopBrowserSkill{}, fmt.Errorf("%s", desktopbot.DesktopNeedsUser)
 	}
 	skill, err := browser.LoadPageScriptSkill(desktopBrowserSkillRoot, userKey, name)
 	if err != nil {
@@ -50,7 +51,7 @@ func loadDesktopBrowserSkill(userKey, name string) (desktopBrowserSkill, error) 
 
 func listDesktopBrowserSkills(userKey string) (string, error) {
 	if !desktop.ValidUserKey(userKey) {
-		return "", fmt.Errorf("desktop requires a user")
+		return "", fmt.Errorf("%s", desktopbot.DesktopNeedsUser)
 	}
 	return browser.ListPageScriptSkills(desktopBrowserSkillRoot, userKey)
 }

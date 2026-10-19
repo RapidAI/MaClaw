@@ -129,8 +129,8 @@ func TestSemanticToolsSearchRepeatedDirectoryCloses(t *testing.T) {
 	if !strings.Contains(first, "- knowledge_save_text — ") || !strings.Contains(first, "[已在当前工具面]") {
 		t.Fatalf("listed save tool dropped beside web_fetch: %s", first)
 	}
-	if !strings.Contains(first, "- web_fetch — ") || !strings.Contains(first, "[可请愿：直接调用一次]") {
-		t.Fatalf("petitionable fetch missing: %s", first)
+	if !strings.Contains(first, "- web_fetch — ") || !strings.Contains(first, "[可请愿]") || strings.Contains(first, "直接调用一次") {
+		t.Fatalf("petitionable fetch must stay eligible without a second call: %s", first)
 	}
 	if !strings.Contains(first, "立即调用已在当前工具面的名字：knowledge_save_text") {
 		t.Fatalf("listed-name directive missing: %s", first)
@@ -143,6 +143,23 @@ func TestSemanticToolsSearchRepeatedDirectoryCloses(t *testing.T) {
 	}
 	if strings.Contains(first, "- office — ") || strings.Contains(first, "- ssh — ") {
 		t.Fatalf("unrequested tools leaked into the filtered directory: %s", first)
+	}
+	decisionAt := strings.Index(first, "本轮决定：")
+	if decisionAt < 0 {
+		t.Fatalf("planned delivery must stay visible beside the listed save: %s", first)
+	}
+	decisionLine := first[decisionAt:]
+	if end := strings.IndexByte(decisionLine, '\n'); end >= 0 {
+		decisionLine = decisionLine[:end]
+	}
+	if strings.Contains(decisionLine, "现在调用") || strings.Contains(decisionLine, "先调用") || strings.Contains(decisionLine, "它出现") {
+		t.Fatalf("listed-name lookup must not add a second imperative: %s", decisionLine)
+	}
+	if !strings.Contains(decisionLine, "send_file（office 成功后，send_file 出现在下一请求）") {
+		t.Fatalf("planned delivery must stay a fact, without a call: %s", decisionLine)
+	}
+	if last := semanticToolsSearchLastLine(first); !strings.HasPrefix(last, semanticToolsSearchListedDirectivePrefix) {
+		t.Fatalf("directive must close the page: %q", last)
 	}
 	second := cb.executeSemanticTool(semanticToolsSearchName, `{"query":"fetch models","needs":["web_fetch"]}`)
 	if !strings.Contains(second, "already returned") || strings.Contains(second, "web_fetch —") {
@@ -420,7 +437,7 @@ func TestSemanticToolsSearchPaginationClosure(t *testing.T) {
 	if strings.Contains(second, "tools_search_page_token_invalid") {
 		t.Fatalf("valid continuation rejected: %s", second)
 	}
-	left := append(semanticSearchResultNames(first), semanticSearchResultNames(second)...)
+	left := semanticSearchAllPageNames(t, cb, "first")
 	if len(left) != len(uniqueStrings(left)) {
 		t.Fatalf("pagination overlaps entries: total=%d unique=%d", len(left), len(uniqueStrings(left)))
 	}
@@ -496,6 +513,282 @@ func semanticSearchResultNames(result string) []string {
 		}
 	}
 	return names
+}
+
+// A weather-PDF turn plans generate_pdf behind web_search. Discovery must say
+// that on the first page, ahead of the directory, and the page must fit the
+// inline budget even when later rows are long. Projection then has nothing
+// to cut out of the middle. Baseline grants stay directory rows.
+func TestSemanticToolsSearchWeatherPDFDecisionSurvivesCatalogBulk(t *testing.T) {
+	cb := semanticToolsSearchRegressionCallbacks(0)
+	cb.semanticSurface.plan.Selections = []tool.PlannedSelection{
+		{ID: "search", AdapterName: "web_search", FitProof: tool.FitProof{MatchedCapability: "information.search.web"}},
+		{ID: "pdf", AdapterName: "host_document_generate_file", FitProof: tool.FitProof{MatchedCapability: "document.generate.file"}, Requires: []string{"search"}},
+		{ID: "deliver", AdapterName: "semantic_deliver_current_file", FitProof: tool.FitProof{MatchedCapability: "artifact.deliver.current_channel"}, Requires: []string{"pdf"}},
+	}
+	cb.semanticSurface.grants["web_search"] = tool.InvocationGrant{SelectionID: "search", Token: "search-token", AdapterName: "web_search"}
+	// Baseline workspace tools are granted on a managed turn. They are on the
+	// surface, and they are not the predecessor of generate_pdf.
+	for _, name := range []string{"bash", "read_file", "write_file"} {
+		cb.semanticSurface.grants[name] = tool.InvocationGrant{SelectionID: "baseline-" + name, Token: name + "-token", AdapterName: name}
+	}
+	// Ungranted dynamic_mcp_ schemas never enter the directory. These names
+	// are admitted display metadata and sort before generate_pdf, so a
+	// missing builtin-first partition would push the planned row off page 0.
+	long := strings.Repeat("vendor tool description that used to fill the preview ", 30)
+	for i := 0; i < 40; i++ {
+		name := fmt.Sprintf("dynamic_%03d", i)
+		cb.semanticSurface.schemas[name] = map[string]interface{}{
+			"type":     "function",
+			"function": map[string]interface{}{"name": name, "description": long},
+		}
+	}
+	got := semanticToolsSearchRun(cb, `{"scope_id":"scope-search","catalog_digest":"catalog-search","query":"pdf office document"}`)
+	if len(got) > agent.ToolsSearchMaxToolResult {
+		t.Fatalf("page is %d bytes, budget %d", len(got), agent.ToolsSearchMaxToolResult)
+	}
+	decisionAt := strings.Index(got, "本轮决定：")
+	rowAt := strings.Index(got, "- generate_pdf — ")
+	decisionLine := got
+	if decisionAt >= 0 {
+		decisionLine = got[decisionAt:]
+		if end := strings.IndexByte(decisionLine, '\n'); end >= 0 {
+			decisionLine = decisionLine[:end]
+		}
+	}
+	if decisionAt < 0 || !strings.Contains(decisionLine, "现在调用 web_search") || !strings.Contains(decisionLine, "generate_pdf（先调用 web_search") {
+		t.Fatalf("decision must name the listed predecessor and the planned pdf: %s", got)
+	}
+	sendAt := strings.Index(decisionLine, "send_file（")
+	if sendAt < 0 {
+		t.Fatalf("decision must name planned delivery: %s", decisionLine)
+	}
+	sendClause := decisionLine[sendAt:]
+	if end := strings.Index(sendClause, "）"); end >= 0 {
+		sendClause = sendClause[:end]
+	}
+	if strings.Contains(sendClause, "它出现在下一请求") || !strings.Contains(sendClause, "generate_pdf 出现在下一请求") {
+		t.Fatalf("delivery must wait for generate_pdf, not the lookup: %s", sendClause)
+	}
+	for _, baseline := range []string{"bash", "read_file", "write_file"} {
+		if strings.Contains(decisionLine, baseline) {
+			t.Fatalf("baseline %s is granted but is not the predecessor: %s", baseline, decisionLine)
+		}
+		row := "- " + baseline + " — "
+		if !strings.Contains(got, row) {
+			t.Fatalf("baseline %s must stay a directory row: %s", baseline, got)
+		}
+	}
+	if strings.Contains(got, "不要再查目录") || !strings.Contains(got, "next_page_token=") {
+		t.Fatalf("a partial page must keep its continuation and must not forbid another read: %s", got)
+	}
+	if rowAt < 0 || decisionAt > rowAt {
+		t.Fatalf("decision must precede the planned row on the first page: %s", got)
+	}
+	if dyn := strings.Index(got, "- dynamic_"); dyn >= 0 && dyn < rowAt {
+		t.Fatalf("dynamic rows sorted ahead of the planned builtin: %s", got)
+	}
+	if strings.Contains(got, "只有标记「可请愿」") || strings.Contains(got, "仍可直接调用一次") {
+		t.Fatalf("petition invitation must not be the page action: %s", got)
+	}
+	if strings.Contains(got, "直接调用一次") || !strings.Contains(got, "[可请愿]") || !strings.Contains(decisionLine, "不要请愿") {
+		t.Fatalf("petition stays a row label and is not a second call: %s", got)
+	}
+	if last := semanticToolsSearchLastLine(got); last != "现在调用 web_search。" {
+		t.Fatalf("closing line = %q, want the same call as the decision", last)
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if (strings.HasPrefix(line, "- generate_pdf — ") || strings.HasPrefix(line, "- send_file — ")) && (strings.Contains(line, "[可请愿") || strings.Contains(line, "自动出现")) {
+			t.Fatalf("planned successor row promised a petition or an automatic appearance: %s", line)
+		}
+	}
+	proj, err := agent.ProjectToolResult("tools_search", "sess", got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(proj.Preview, "本轮决定：") || !strings.Contains(proj.Preview, "generate_pdf（先调用 web_search") {
+		t.Fatalf("projection dropped the decision: %s", proj.Preview)
+	}
+}
+
+// After the lookup commits, generate_pdf is held for the next request and
+// delivery is still behind it. Discovery must not send the model back to
+// web_search, and must not say send_file is the name that appears next.
+func TestSemanticToolsSearchHeldDeliveryDoesNotRestartSearch(t *testing.T) {
+	cb := semanticToolsSearchRegressionCallbacks(0)
+	cb.semanticHoldDependantIssue = true
+	cb.semanticSurface.completed = map[string]bool{"search": true}
+	cb.semanticSurface.plan.Selections = []tool.PlannedSelection{
+		{ID: "search", AdapterName: "web_search", FitProof: tool.FitProof{MatchedCapability: "information.search.web"}},
+		{ID: "pdf", AdapterName: "host_document_generate_file", FitProof: tool.FitProof{MatchedCapability: "document.generate.file"}, Requires: []string{"search"}},
+		{ID: "deliver", AdapterName: "semantic_deliver_current_file", FitProof: tool.FitProof{MatchedCapability: "artifact.deliver.current_channel"}, Requires: []string{"pdf"}},
+	}
+	cb.semanticSurface.grants["web_search"] = tool.InvocationGrant{SelectionID: "search", Token: "search-token", AdapterName: "web_search"}
+	got := semanticToolsSearchRun(cb, `{"scope_id":"scope-search","catalog_digest":"catalog-search","query":"pdf"}`)
+	decisionLine := got
+	if at := strings.Index(got, "本轮决定："); at >= 0 {
+		decisionLine = got[at:]
+		if end := strings.IndexByte(decisionLine, '\n'); end >= 0 {
+			decisionLine = decisionLine[:end]
+		}
+	}
+	if strings.Contains(decisionLine, "现在调用") || strings.Contains(decisionLine, "web_search") {
+		t.Fatalf("a finished lookup must not be the next call: %s", decisionLine)
+	}
+	if !strings.Contains(decisionLine, "generate_pdf（本响应的其它调用结束后出现在下一请求）") {
+		t.Fatalf("held generate must stay the next name: %s", decisionLine)
+	}
+	sendAt := strings.Index(decisionLine, "send_file（")
+	if sendAt < 0 {
+		t.Fatalf("delivery clause missing: %s", decisionLine)
+	}
+	sendClause := decisionLine[sendAt:]
+	if end := strings.Index(sendClause, "）"); end >= 0 {
+		sendClause = sendClause[:end]
+	}
+	if strings.Contains(sendClause, "它出现在下一请求") || !strings.Contains(sendClause, "generate_pdf 出现在下一请求") {
+		t.Fatalf("delivery must wait until generate_pdf is listed: %s", sendClause)
+	}
+	if strings.Contains(got, "仍可直接调用一次") || strings.Contains(got, "直接调用一次") || strings.Contains(got, "现在调用") {
+		t.Fatalf("held page must not invite a petition or restart a call: %s", got)
+	}
+	const heldCloser = "下一请求出现：generate_pdf。现在不要调用。"
+	if last := semanticToolsSearchLastLine(got); last != heldCloser {
+		t.Fatalf("closing line = %q, want %s", last, heldCloser)
+	}
+}
+
+// Grants with no unlisted plan step are already callable. The closing line
+// must not order every grant: bash is one of those grants.
+func TestSemanticToolsSearchListedSurfaceDoesNotOrderEveryGrant(t *testing.T) {
+	cb := semanticToolsSearchRegressionCallbacks(0)
+	for _, name := range []string{"bash", "web_search"} {
+		cb.semanticSurface.grants[name] = tool.InvocationGrant{SelectionID: name, Token: name + "-token", AdapterName: name}
+	}
+	got := semanticToolsSearchRun(cb, `{"query":"天气"}`)
+	decisionLine := ""
+	if at := strings.Index(got, "本轮决定："); at >= 0 {
+		decisionLine = got[at:]
+		if end := strings.IndexByte(decisionLine, '\n'); end >= 0 {
+			decisionLine = decisionLine[:end]
+		}
+	}
+	if !strings.Contains(decisionLine, "已在当前工具面：") || !strings.Contains(decisionLine, "bash") || !strings.Contains(decisionLine, "web_search") {
+		t.Fatalf("listed grants must stay in the decision: %s", decisionLine)
+	}
+	if strings.Contains(got, "现在调用") || strings.Contains(got, "仍可直接调用一次") || strings.Contains(got, "只有标记「可请愿」") {
+		t.Fatalf("listed surface must not order a call or invite a petition: %s", got)
+	}
+	if !strings.Contains(got, "[可请愿：直接调用一次]") {
+		t.Fatalf("with no planned step, a petitionable row must still admit one call: %s", got)
+	}
+	if last := semanticToolsSearchLastLine(got); last != semanticToolsSearchListedCloser {
+		t.Fatalf("closing line = %q, want %s", last, semanticToolsSearchListedCloser)
+	}
+}
+
+// The hand-built chain above matches the denial contract. This one uses the
+// desktop planner's weather-PDF surface, including delivery behind generate.
+func TestSemanticToolsSearchRealWeatherPDFNamesLookupNotDelivery(t *testing.T) {
+	cb, searchName := weatherPDFDesktopBeforeSearch(t)
+	// The loop adopts the request list before the model can call tools_search.
+	// Until then the publish leaves rendered empty, so a live grant looks unlisted.
+	if len(cb.BuildToolsForModelRequest(cb.userText, 1)) == 0 {
+		t.Fatal("request surface was not adopted")
+	}
+	got := semanticToolsSearchRun(cb, `{"query":"生成pdf"}`)
+	if len(got) > agent.ToolsSearchMaxToolResult {
+		t.Fatalf("page is %d bytes, budget %d", len(got), agent.ToolsSearchMaxToolResult)
+	}
+	decisionLine := got
+	if at := strings.Index(got, "本轮决定："); at >= 0 {
+		decisionLine = got[at:]
+		if end := strings.IndexByte(decisionLine, '\n'); end >= 0 {
+			decisionLine = decisionLine[:end]
+		}
+	} else {
+		t.Fatalf("real weather plan produced no decision: %s", got)
+	}
+	now := ""
+	if at := strings.Index(decisionLine, "现在调用 "); at >= 0 {
+		now = decisionLine[at:]
+		if end := strings.Index(now, "。"); end >= 0 {
+			now = now[:end]
+		}
+	}
+	if searchName == "" || !strings.Contains(now, searchName) {
+		t.Fatalf("call-now=%q want %s in %s", now, searchName, decisionLine)
+	}
+	for _, baseline := range []string{"bash", "read_file", "write_file"} {
+		if strings.Contains(now, baseline) {
+			t.Fatalf("baseline %s is not the weather predecessor: %s", baseline, now)
+		}
+	}
+	if !strings.Contains(decisionLine, "generate_pdf（先调用 "+searchName) {
+		t.Fatalf("generate clause missing: %s", decisionLine)
+	}
+	sendAt := strings.Index(decisionLine, "send_file（")
+	if sendAt < 0 {
+		t.Fatalf("delivery clause missing: %s", decisionLine)
+	}
+	sendClause := decisionLine[sendAt:]
+	if end := strings.Index(sendClause, "）"); end >= 0 {
+		sendClause = sendClause[:end]
+	}
+	if strings.Contains(sendClause, "它出现在下一请求") || !strings.Contains(sendClause, "generate_pdf 出现在下一请求") {
+		t.Fatalf("real plan promised delivery on the next request: %s", sendClause)
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if strings.HasPrefix(line, "- send_file — ") && strings.Contains(line, "自动出现") {
+			t.Fatalf("delivery row promised automatic appearance: %s", line)
+		}
+	}
+	if strings.Contains(got, "仍可直接调用一次") || strings.Contains(got, "直接调用一次") {
+		t.Fatalf("petition invitation must not follow the weather decision: %s", got)
+	}
+	nowSentence := ""
+	if at := strings.Index(decisionLine, "现在调用 "); at >= 0 {
+		nowSentence = decisionLine[at:]
+		if end := strings.Index(nowSentence, "。"); end >= 0 {
+			nowSentence = nowSentence[:end+len("。")]
+		}
+	}
+	if nowSentence == "" || semanticToolsSearchLastLine(got) != nowSentence {
+		t.Fatalf("closing line = %q, want %q", semanticToolsSearchLastLine(got), nowSentence)
+	}
+}
+
+func semanticToolsSearchLastLine(page string) string {
+	lines := strings.Split(strings.TrimRight(page, "\n"), "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	return lines[len(lines)-1]
+}
+
+func semanticSearchAllPageNames(t *testing.T, cb *sharedAgentLoopCallbacks, query string) []string {
+	t.Helper()
+	args := `{"scope_id":"scope-search","catalog_digest":"catalog-search","query":"` + query + `"}`
+	var names []string
+	seen := map[string]bool{}
+	for page := 0; page < 40; page++ {
+		got := semanticToolsSearchRun(cb, args)
+		if len(got) > agent.ToolsSearchMaxToolResult {
+			t.Fatalf("page %d is %d bytes, over the inline budget %d", page, len(got), agent.ToolsSearchMaxToolResult)
+		}
+		names = append(names, semanticSearchResultNames(got)...)
+		token := semanticSearchNextPageToken(got)
+		if token == "" {
+			return names
+		}
+		if seen[token] {
+			t.Fatalf("page token repeated: %s", token)
+		}
+		seen[token] = true
+		args = `{"scope_id":"scope-search","catalog_digest":"catalog-search","query":"` + query + `","page_token":"` + token + `"}`
+	}
+	t.Fatal("pagination did not finish")
+	return nil
 }
 
 func semanticSearchNextPageToken(result string) string {

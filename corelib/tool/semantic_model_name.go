@@ -221,6 +221,7 @@ var semanticModelFunctionNames = map[string]string{
 	"host_message_send_im":                  "send_im_text",
 	"semantic_send_trusted_mailbox":         "mailbox_send",
 	"semantic_configure_trusted_mailbox":    "mailbox_configure",
+	"semantic_delete_trusted_mailbox":       "mailbox_delete",
 	"semantic_transcribe_trusted_audio":     "asr",
 	"host_audio_transcribe_speech":          "asr",
 	"semantic_read_trusted_audit":           "session_search",

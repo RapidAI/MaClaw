@@ -21,6 +21,7 @@ import (
 	"strings"
 	"unsafe"
 
+	"github.com/wailsapp/wails/v2/pkg/maclawcapture"
 	"github.com/wailsapp/wails/v2/pkg/menu"
 
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -156,6 +157,8 @@ func NewWindow(frontendOptions *options.App, debug bool, devtools bool) *Window 
 	if debug && frontendOptions.Debug.OpenInspectorOnStartup {
 		showInspector(result.context)
 	}
+	// macOS fullscreen is the DOM iframe path. The pointer is only for snapshots.
+	maclawcapture.Bind(maclawcapture.PointerView{P: uintptr(C.FileCompanionWKWebView(result.context))})
 	return result
 }
 

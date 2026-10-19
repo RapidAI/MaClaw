@@ -1,6 +1,6 @@
 import type { Dispatch, SetStateAction } from 'react';
-import { SetChatFontSize } from '../../../wailsjs/go/main/App';
 import { apiStoreProviders } from '../../config/apiStoreProviders';
+import { useChatFontSizeCommit, type ChatFontSizeDraftRef } from '../settings/useChatFontSizeCommit';
 import { ApiStoreProviderCard } from './ApiStoreProviderCard';
 
 interface ApiStorePageProps {
@@ -8,9 +8,12 @@ interface ApiStorePageProps {
     t: (key: string) => string;
     chatFontSize: number;
     setChatFontSize: Dispatch<SetStateAction<number>>;
+    chatFontSizeDraftRef?: ChatFontSizeDraftRef;
 }
 
-export const ApiStorePage = ({ lang, t, chatFontSize, setChatFontSize }: ApiStorePageProps) => (
+export const ApiStorePage = ({ lang, t, chatFontSize, setChatFontSize, chatFontSizeDraftRef }: ApiStorePageProps) => {
+    const { commit: commitChatFontSize, rangeHandlers: chatFontSizeHandlers } = useChatFontSizeCommit(chatFontSize, setChatFontSize, chatFontSizeDraftRef);
+    return (
                         <div className="secondary-page-shell api-store-page" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
 
                             <div style={{ flex: 1, overflowY: 'auto', padding: '20px', overflowX: 'hidden' }}>
@@ -26,15 +29,11 @@ export const ApiStorePage = ({ lang, t, chatFontSize, setChatFontSize }: ApiStor
                                     <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '\u804a\u5929\u5b57\u4f53\u5927\u5c0f' : lang === 'zh-Hant' ? '\u804a\u5929\u5b57\u9ad4\u5927\u5c0f' : 'Chat Font Size'}</h4>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                                         <input type="range" min={12} max={24} step={1} value={chatFontSize}
-                                            onChange={e => setChatFontSize(Number(e.target.value))}
-                                            onPointerUp={async (e) => {
-                                                const v = Number((e.currentTarget as HTMLInputElement).value);
-                                                setChatFontSize(v);
-                                                await SetChatFontSize(v).catch(() => {});
-                                            }}
+                                            {...chatFontSizeHandlers}
+                                            aria-label={lang === 'zh-Hans' ? '\u804a\u5929\u5b57\u4f53\u5927\u5c0f' : lang === 'zh-Hant' ? '\u804a\u5929\u5b57\u9ad4\u5927\u5c0f' : 'Chat Font Size'}
                                             style={{ flex: 1, accentColor: 'var(--theme-primary)' }} />
                                         <span style={{ fontSize: '0.78rem', color: 'var(--theme-text-secondary)', minWidth: '42px', textAlign: 'center' }}>{chatFontSize}px</span>
-                                        <button onClick={() => { setChatFontSize(14); SetChatFontSize(14).catch(() => {}); }}
+                                        <button onClick={() => commitChatFontSize(14)}
                                             style={{ fontSize: '0.72rem', padding: '3px 10px', cursor: 'pointer', background: 'var(--theme-surface-muted)', color: 'var(--theme-text-secondary)', border: '1px solid var(--theme-border)', borderRadius: 4 }}>
                                             {lang === 'zh-Hans' ? '\u91cd\u7f6e' : lang === 'zh-Hant' ? '\u91cd\u7f6e' : 'Reset'}
                                         </button>
@@ -45,4 +44,5 @@ export const ApiStorePage = ({ lang, t, chatFontSize, setChatFontSize }: ApiStor
                                 </div>
                             </div>
                         </div>
-);
+    );
+};

@@ -38,6 +38,7 @@ func (h *IMMessageHandler) extractSessionStartMemoryAsync(userID string, entries
 func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history []agent.ConversationEntry, resp *IMAgentResponse) {
 	startedAt := time.Now()
 	history = sanitizeVEGroupExecutorHistory(userID, history)
+	history = fileCompanionStripNoteExcerptHistory(userID, history)
 
 	// Dynamic entry limit: scale MaxConversationTurns proportionally to the
 	// model's effective context window. A 128K model can hold more entries
@@ -133,7 +134,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 		resp.MemorySaveNanos = time.Since(startedAt).Nanoseconds()
 		// A settled mailbox reply is the host result. It must not become a
 		// question that captures the next message.
-		if !isAnswerCacheHit && resp.ResponseSource != "mailbox_send" {
+		if !isAnswerCacheHit && resp.ResponseSource != "mailbox_send" && resp.ResponseSource != "mailbox_delete" {
 			h.updatePendingUserReplyFromHistory(userID, trimmed, resp)
 		}
 	}

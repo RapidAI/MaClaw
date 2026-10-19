@@ -1,0 +1,6 @@
+{
+  "id": "dialog_probe_first",
+  "window": "Mousepad",
+  "steps": [{"action": "left_click", "coordinate": [12, 40]}],
+  "expect": "先 app_probe，用返回的 id"
+}

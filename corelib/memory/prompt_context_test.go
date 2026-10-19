@@ -151,17 +151,17 @@ func TestMemoryPromptProfiles(t *testing.T) {
 	}
 
 	core := CoreAgentProactivePromptOptions()
-	if !core.CatalogOnly || !core.IncludeMemoryIndex || core.Recall.MaxEntries != 0 || core.Recall.EntityLimit != 3 {
+	if !core.CatalogOnly || core.IncludeMemoryIndex || core.Recall.MaxEntries != 0 || core.Recall.EntityLimit != 3 {
 		t.Fatalf("unexpected core proactive profile: %+v", core)
 	}
 
 	im := IMProactivePromptOptions("/tmp/project", true)
-	if !im.IncludeMemoryIndex || !im.CatalogOnly || im.IncludeDerivedFacts || !im.Recall.StrictProject || im.Recall.ProjectPath != "/tmp/project" || im.Recall.MaxEntries != 0 {
+	if im.IncludeMemoryIndex || !im.CatalogOnly || im.IncludeDerivedFacts || !im.Recall.StrictProject || im.Recall.ProjectPath != "/tmp/project" || im.Recall.MaxEntries != 0 {
 		t.Fatalf("unexpected IM proactive profile: %+v", im)
 	}
 
 	ve := VEProactivePromptOptions()
-	if !ve.CatalogOnly || !ve.IncludeMemoryIndex || !ve.Recall.IncludeUserProfile || ve.Recall.MaxEntries != 0 {
+	if !ve.CatalogOnly || ve.IncludeMemoryIndex || !ve.Recall.IncludeUserProfile || ve.Recall.MaxEntries != 0 {
 		t.Fatalf("unexpected VE proactive profile: %+v", ve)
 	}
 

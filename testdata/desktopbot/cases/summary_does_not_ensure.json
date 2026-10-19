@@ -1,0 +1,19 @@
+{
+  "id": "summary_does_not_ensure",
+  "expect": "send",
+  "tokens": 180000,
+  "provider": "deepseek",
+  "ttl": "30m",
+  "idle": "2m",
+  "margin": "45s",
+  "turn_at": "2026-10-18T12:00:00Z",
+  "tick_at": "2026-10-18T12:02:00Z",
+  "tools": "tools-v1",
+  "system": "系统规则",
+  "memory": "记忆",
+  "first": "user:第一句",
+  "history": "assistant:在",
+  "summary": "短摘要",
+  "next_tools": "tools-v1",
+  "next_memory": "记忆\n补了一行"
+}

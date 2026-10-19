@@ -1,0 +1,8 @@
+{
+  "id": "supersede_not_append",
+  "first": "住在上海",
+  "again": "住在上海",
+  "replacement": "住在杭州",
+  "cosine": 0.9,
+  "turn": "t-18"
+}

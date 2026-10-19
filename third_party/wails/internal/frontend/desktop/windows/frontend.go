@@ -32,6 +32,7 @@ import (
 	"github.com/wailsapp/wails/v2/internal/system/operatingsystem"
 	"github.com/wailsapp/wails/v2/pkg/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/assetserver/webview"
+	"github.com/wailsapp/wails/v2/pkg/maclawcapture"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
 	w "golang.org/x/sys/windows"
@@ -494,6 +495,28 @@ func (f *Frontend) setupChromium() {
 		}
 	}
 
+	// Fullscreen inside the WebView (an iframe calling requestFullscreen) does
+	// not change the Win32 window. The companion listens for this event.
+	chromium.ContainsFullScreenElementChangedCallback = func(sender *edge.ICoreWebView2, _ *edge.ICoreWebView2ContainsFullScreenElementChangedEventArgs) {
+		if sender != nil {
+			maclawcapture.Bind(coreWebView{wv: sender})
+		}
+		on := false
+		if sender != nil {
+			if contains, err := sender.GetContainsFullScreenElement(); err == nil {
+				on = contains
+			}
+		}
+		f.Notify("file-companion:webview-fullscreen", map[string]bool{"fullscreen": on})
+	}
+	maclawcapture.SetUIRunner(func(fn func()) {
+		if f.mainWindow != nil {
+			f.mainWindow.Invoke(fn)
+			return
+		}
+		fn()
+	})
+
 	chromium.MessageCallback = f.processMessage
 	chromium.MessageWithAdditionalObjectsCallback = f.processMessageWithAdditionalObjects
 	chromium.WebResourceRequestedCallback = f.processRequest
@@ -627,8 +650,15 @@ func (f *Frontend) Notify(name string, data ...interface{}) {
 }
 
 func (f *Frontend) processRequest(req *edge.ICoreWebView2WebResourceRequest, args *edge.ICoreWebView2WebResourceRequestedEventArgs) {
+	// Third-party documents are not touched. Reading or writing their headers
+	// drops the Referer the browser attached for an embedded player.
+	uri, _ := req.GetUri()
+	reqUri, err := url.ParseRequestURI(uri)
+	if err != nil || !appOriginMatches(f.startURL, reqUri) {
+		return
+	}
 	// Setting the UserAgent on the CoreWebView2Settings clears the whole default UserAgent of the Edge browser, but
-	// we want to just append our ApplicationIdentifier. So we adjust the UserAgent for every request.
+	// we want to just append our ApplicationIdentifier. So we adjust the UserAgent for app requests.
 	if reqHeaders, err := req.GetHeaders(); err == nil {
 		useragent, _ := reqHeaders.GetHeader(assetserver.HeaderUserAgent)
 		useragent = strings.Join([]string{useragent, assetserver.WailsUserAgentValue}, " ")
@@ -638,22 +668,6 @@ func (f *Frontend) processRequest(req *edge.ICoreWebView2WebResourceRequest, arg
 
 	if f.assets == nil {
 		// We are using the devServer let the WebView2 handle the request with its default handler
-		return
-	}
-
-	//Get the request
-	uri, _ := req.GetUri()
-	reqUri, err := url.ParseRequestURI(uri)
-	if err != nil {
-		f.logger.Error("Unable to parse equest uri %s: %s", uri, err)
-		return
-	}
-
-	if reqUri.Scheme != f.startURL.Scheme {
-		// Let the WebView2 handle the request with its default handler
-		return
-	} else if reqUri.Host != f.startURL.Host {
-		// Let the WebView2 handle the request with its default handler
 		return
 	}
 
@@ -900,7 +914,39 @@ func (f *Frontend) ExecJS(js string) {
 	})
 }
 
+// coreWebView is the live ICoreWebView2. CapturePreview uses Pointer.
+// ContainsFullScreen reads get_ContainsFullScreenElement on the UI thread.
+type coreWebView struct {
+	wv *edge.ICoreWebView2
+}
+
+func (v coreWebView) Pointer() uintptr {
+	if v.wv == nil {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(v.wv))
+}
+
+func (v coreWebView) ContainsFullScreen() bool {
+	if v.wv == nil {
+		return false
+	}
+	var on bool
+	ok := maclawcapture.PostUI(func() {
+		contains, err := v.wv.GetContainsFullScreenElement()
+		on = err == nil && contains
+	})
+	if !ok {
+		contains, err := v.wv.GetContainsFullScreenElement()
+		return err == nil && contains
+	}
+	return on
+}
+
 func (f *Frontend) navigationCompleted(sender *edge.ICoreWebView2, args *edge.ICoreWebView2NavigationCompletedEventArgs) {
+	if sender != nil {
+		maclawcapture.Bind(coreWebView{wv: sender})
+	}
 	if f.frontendOptions.OnDomReady != nil {
 		go f.frontendOptions.OnDomReady(f.ctx)
 	}

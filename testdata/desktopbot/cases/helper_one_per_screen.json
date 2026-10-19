@@ -1,0 +1,7 @@
+{
+  "id": "helper_one_per_screen",
+  "screen": "screen-1",
+  "first": "h1",
+  "second": "h2",
+  "goal": "看首页"
+}

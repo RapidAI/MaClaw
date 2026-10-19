@@ -62,6 +62,11 @@ export interface CodingTaskLaunch {
      * open. Reused remote and cloud tasks would otherwise drop the user's text.
      */
     deliverInitialMessage?: boolean;
+    /**
+     * Scheduled run. The user did not choose this task. While the new-task
+     * cover is up, create the tab and send without taking that surface.
+     */
+    backgroundLaunch?: boolean;
 }
 
 /** Coerce untrusted Wails/event payloads into the one safe launch contract. */
@@ -111,5 +116,6 @@ export function normalizeCodingTaskLaunch(input: Partial<CodingTaskLaunch> | nul
         newTaskContext,
         noWorkflowInterception: input?.noWorkflowInterception === true,
         deliverInitialMessage: input?.deliverInitialMessage === true,
+        ...(input?.backgroundLaunch === true ? { backgroundLaunch: true } : {}),
     };
 }

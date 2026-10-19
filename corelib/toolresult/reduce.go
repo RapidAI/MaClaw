@@ -30,6 +30,8 @@ func StructuredPreview(toolName, content string, limit int) string {
 		return previewWebFetch(content, limit)
 	case tool == "computer_observe":
 		return previewComputerObserve(content, limit)
+	case tool == "tools_search":
+		return previewToolsSearch(content, limit)
 	case tool == "desktop":
 		// One tool carries file bytes and command transcripts. A command's
 		// exit line is the last line; a file's beginning is what an edit matches.
@@ -224,6 +226,80 @@ func previewComputerObserve(s string, limit int) string {
 	}
 	if len(out) > limit {
 		return previewHeadTail(out, limit, 0.6, 0.4)
+	}
+	return out
+}
+
+// previewToolsSearch keeps the surface decision and whole directory rows.
+// A generic head/tail cut deletes the middle of an alphabetical catalog,
+// which is where a planned name such as generate_pdf sits, and leaves the
+// petition sentence in the tail as the only instruction.
+func previewToolsSearch(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	firstRow, lastRow := -1, -1
+	for i, line := range lines {
+		if strings.HasPrefix(line, "- ") {
+			if firstRow < 0 {
+				firstRow = i
+			}
+			lastRow = i
+		}
+	}
+	if firstRow < 0 {
+		return DefaultPreview(s, limit)
+	}
+	prefix := strings.Join(lines[:firstRow], "\n")
+	footer := ""
+	if lastRow+1 < len(lines) {
+		footer = strings.Join(lines[lastRow+1:], "\n")
+	}
+	if len(prefix) >= limit {
+		return utf8Prefix(prefix, limit)
+	}
+	footerKeep := footer
+	remain := limit - len(prefix)
+	if footerKeep != "" {
+		footerBudget := remain / 3
+		if footerBudget < 64 {
+			footerBudget = 64
+		}
+		if len(footerKeep) > footerBudget {
+			footerKeep = utf8Suffix(footer, footerBudget)
+		}
+		if len(footerKeep) >= remain {
+			footerKeep = ""
+		} else {
+			remain -= len(footerKeep) + 1
+		}
+	}
+	var rows []string
+	used := 0
+	for _, line := range lines[firstRow : lastRow+1] {
+		need := len(line) + 1
+		if used+need > remain {
+			break
+		}
+		rows = append(rows, line)
+		used += need
+	}
+	var b strings.Builder
+	b.WriteString(prefix)
+	if len(rows) > 0 {
+		if prefix != "" && !strings.HasSuffix(prefix, "\n") {
+			b.WriteByte('\n')
+		}
+		b.WriteString(strings.Join(rows, "\n"))
+	}
+	if footerKeep != "" {
+		b.WriteByte('\n')
+		b.WriteString(strings.TrimPrefix(footerKeep, "\n"))
+	}
+	out := b.String()
+	if len(out) > limit {
+		return utf8Prefix(out, limit)
 	}
 	return out
 }

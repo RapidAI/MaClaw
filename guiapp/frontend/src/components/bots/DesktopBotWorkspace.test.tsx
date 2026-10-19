@@ -302,9 +302,34 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-2',
             session_key: 'alice:bot_1',
             text: '已在这个浏览器里继续',
+            send_to_user: '已在这个浏览器里继续',
         });
         expect(await screen.findByText('已在这个浏览器里继续')).toBeTruthy();
         expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
+    });
+
+    it('sends a choice label as written, including 停下, in that turn phase', async () => {
+        localStorage.setItem('maclaw.desktopBotMessages.v1', JSON.stringify({
+            alice: {
+                bot_1: [{
+                    id: 'm-ask',
+                    role: 'assistant',
+                    content: '继续\n停下',
+                    pending: false,
+                    phase: 'execute',
+                    askUser: { options: ['继续', '停下'], inputType: 'choice' },
+                }],
+            },
+        }));
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
+        sendTask.mockResolvedValue({ request_id: 'desktop-bot-choice', deferred: true, session_key: 'alice:bot_1' });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        const chat = await screen.findByTestId('desktop-bot-chat');
+        fireEvent.click(within(chat).getByRole('button', { name: '停下' }));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '停下', 'execute'));
+        expect(understandTask).not.toHaveBeenCalled();
+        expect(cancelRun).not.toHaveBeenCalled();
     });
 
     it('starts the next command while a live turn is older than the stale clock', async () => {
@@ -358,6 +383,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-1',
             session_key: 'alice:bot_1',
             text: '迟到的旧结果',
+            send_to_user: '迟到的旧结果',
             desktop_handoff_url: 'https://hub.example/api/v1/desktop-handoff/token/vnc.html?autoconnect=1',
             desktop_user_control: true,
         });
@@ -370,6 +396,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-2',
             session_key: 'alice:bot_1',
             text: '已在这个浏览器里继续',
+            send_to_user: '已在这个浏览器里继续',
         });
         expect(await screen.findByText('已在这个浏览器里继续')).toBeTruthy();
         expect(screen.getByText('请在这个浏览器里登录')).toBeTruthy();
@@ -604,6 +631,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'req-1',
             session_key: `alice:${botId}`,
             text: '已打开 example.org',
+            send_to_user: '已打开 example.org',
             desktop_handoff_url: 'http://dockerd.example/vnc.html?autoconnect=1',
             desktop_user_control: true,
         });
@@ -622,6 +650,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'req-1',
             session_key: `alice:${botId}`,
             text: '已继续操作',
+            send_to_user: '已继续操作',
             desktop_handoff_url: 'http://dockerd.example/vnc.html?autoconnect=1',
         });
         expect(await screen.findByText('已继续操作')).toBeTruthy();
@@ -637,6 +666,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'req-2',
             session_key: `alice:${botId}`,
             text: '已继续',
+            send_to_user: '已继续',
         });
         expect(await screen.findByText('已继续')).toBeTruthy();
         expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
@@ -668,6 +698,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-ack',
             session_key: 'alice:bot_1',
             text: '北京今天晴，25 度。',
+            send_to_user: '北京今天晴，25 度。',
         });
         expect(await screen.findByText('北京今天晴，25 度。')).toBeTruthy();
         // The accepted-task reply stays in the history; the result is its own bubble.
@@ -691,6 +722,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-md',
             session_key: 'alice:bot_1',
             text: '**错误原因分析**\n\n- `app_list` 失败',
+            send_to_user: '**错误原因分析**\n\n- `app_list` 失败',
         });
         expect(await screen.findByText('错误原因分析')).toBeTruthy();
         expect(screen.getByText('app_list').tagName).toBe('CODE');
@@ -853,6 +885,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-operating',
             session_key: 'alice:bot_1',
             text: '已打开 example.org',
+            send_to_user: '已打开 example.org',
         });
         const idle = await screen.findByTestId('desktop-bot-takeover');
         expect((idle as HTMLButtonElement).disabled).toBe(false);
@@ -1302,6 +1335,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-watch',
             session_key: 'alice:bot_1',
             text: '已打开 example.org',
+            send_to_user: '已打开 example.org',
             desktop_handoff_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1',
         });
         // The panel stays open and keeps refreshing the hold after the reply.
@@ -1342,6 +1376,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-q1',
             session_key: 'alice:bot_1',
             text: '已打开 example.org',
+            send_to_user: '已打开 example.org',
         });
         expect(await screen.findByText('已打开 example.org')).toBeTruthy();
         expect(sendTask).toHaveBeenCalledTimes(2);
@@ -1349,6 +1384,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-q2',
             session_key: 'alice:bot_1',
             text: '已截图',
+            send_to_user: '已截图',
         });
         expect(await screen.findByText('已截图')).toBeTruthy();
         expect(screen.getByTestId('desktop-bot-status').textContent).toContain('待命');
@@ -1522,6 +1558,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-gap1',
             session_key: 'alice:bot_1',
             text: '已打开 example.org',
+            send_to_user: '已打开 example.org',
         });
         expect(await screen.findByText('已打开 example.org')).toBeTruthy();
         expect(screen.getByTestId('desktop-bot-status').textContent).toContain('安排中');
@@ -1564,12 +1601,14 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-holdq2',
             session_key: 'alice:bot_1',
             text: '已截图',
+            send_to_user: '已截图',
         });
         expect(await screen.findByText('已截图')).toBeTruthy();
         responseListeners.byEvent['ai-assistant-response']?.({
             request_id: 'desktop-bot-holdq1',
             session_key: 'alice:bot_1',
             text: '需要你登录',
+            send_to_user: '需要你登录',
             desktop_handoff_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1',
             desktop_user_control: true,
         });
@@ -1585,6 +1624,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-holdq3',
             session_key: 'alice:bot_1',
             text: '登录后的页面到了。',
+            send_to_user: '登录后的页面到了。',
         });
         expect(await screen.findByText('登录后的页面到了。')).toBeTruthy();
         expect(sendTask).toHaveBeenCalledTimes(3);
@@ -1611,6 +1651,7 @@ describe('DesktopBotWorkspace', () => {
                 request_id: 'desktop-bot-beside1',
                 session_key: 'alice:bot_1',
                 text: '需要你登录',
+                send_to_user: '需要你登录',
                 desktop_handoff_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1',
                 desktop_user_control: true,
             });
@@ -1773,18 +1814,21 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-credit1',
             session_key: 'alice:bot_1',
             text: '第一件做完了',
+            send_to_user: '第一件做完了',
         });
         await waitFor(() => expect(refreshHubCredits).toHaveBeenCalledTimes(1));
         responseListeners.byEvent['ai-assistant-response']?.({
             request_id: 'desktop-bot-credit2',
             session_key: 'alice:bot_1',
             text: '第二件做完了',
+            send_to_user: '第二件做完了',
         });
         await waitFor(() => expect(refreshHubCredits).toHaveBeenCalledTimes(2));
         responseListeners.byEvent['ai-assistant-response']?.({
             request_id: 'desktop-bot-credit1',
             session_key: 'alice:bot_1',
             text: '第一件做完了',
+            send_to_user: '第一件做完了',
         });
         await waitFor(() => expect(screen.getByText('第二件做完了')).toBeTruthy());
         expect(refreshHubCredits).toHaveBeenCalledTimes(2);
@@ -1813,6 +1857,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-handoff-chat-1',
             session_key: 'alice:bot_1',
             text: '需要你登录',
+            send_to_user: '需要你登录',
             desktop_handoff_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1',
             desktop_user_control: true,
         });
@@ -1843,6 +1888,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-handoff-chat-2',
             session_key: 'alice:bot_1',
             text: '登录后的页面到了。',
+            send_to_user: '登录后的页面到了。',
         });
         expect(await screen.findByText('登录后的页面到了。')).toBeTruthy();
         expect(sendTask).toHaveBeenCalledTimes(3);
@@ -1870,6 +1916,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-resumeq2',
             session_key: 'alice:bot_1',
             text: '已截图',
+            send_to_user: '已截图',
         });
         expect(await screen.findByText('已截图')).toBeTruthy();
         responseListeners.byEvent['desktop-bot-view']?.({
@@ -1887,6 +1934,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-resumeq1',
             session_key: 'alice:bot_1',
             text: '需要你登录',
+            send_to_user: '需要你登录',
             desktop_handoff_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1',
             desktop_user_control: true,
         });
@@ -1945,6 +1993,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-collapse',
             session_key: 'alice:bot_1',
             text: '需要你登录',
+            send_to_user: '需要你登录',
             desktop_handoff_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1',
             desktop_user_control: true,
         });
@@ -2021,6 +2070,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-recover',
             session_key: 'alice:bot_1',
             text: '已打开 example.org',
+            send_to_user: '已打开 example.org',
         });
         // The recovery dispatch happened without selecting the bot; opening its
         // chat shows the recorded acceptance and the settled result.
@@ -2145,6 +2195,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-busy',
             session_key: 'bob:bot_1',
             text: '先做完了',
+            send_to_user: '先做完了',
         });
         await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', childOrder('鲍勃的任务'), 'execute'));
     });
@@ -2224,6 +2275,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-1',
             session_key: 'alice:bot_1',
             text: '已打开 example.org',
+            send_to_user: '已打开 example.org',
         });
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(await screen.findByText('Bot 1'));
@@ -2248,6 +2300,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-shot',
             session_key: 'alice:bot_1',
             text: '桌面截图已生成',
+            send_to_user: '桌面截图已生成',
             desktop_images: [
                 { mime: 'image/png', data: png },
                 { mime: 'text/html', data: png },
@@ -2310,6 +2363,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-shot-file',
             session_key: 'alice:bot_1',
             text: '桌面截图已生成',
+            send_to_user: '桌面截图已生成',
             desktop_shot_paths: ['../secret.png', shotPath],
             desktop_images: [{ mime: 'image/png', data: 'SHOULD_NOT_STORE' }],
         });
@@ -2346,6 +2400,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-shot-switch',
             session_key: 'alice:bot_1',
             text: '桌面截图已生成',
+            send_to_user: '桌面截图已生成',
             desktop_images: [{ mime: 'image/png', data: png }],
         });
         fireEvent.click(await screen.findByTestId('desktop-bot-screenshot-open'));
@@ -2379,6 +2434,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-file',
             session_key: 'alice:bot_1',
             text: '文件已放在这条回复里',
+            send_to_user: '文件已放在这条回复里',
             desktop_files: [
                 { name: '../secret.docx', mime: docx, data: 'd29yZA==' },
                 { name: '自我描述.docx', mime: docx, data: 'd29yZA==' },
@@ -2405,6 +2461,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-pdf',
             session_key: 'alice:bot_1',
             text: '天气文件已附在这条消息上',
+            send_to_user: '天气文件已附在这条消息上',
             desktop_files: [
                 { name: '../secret.pdf', mime: 'application/pdf', data: 'd29yZA==' },
                 { name: '北京天气.pdf', mime: 'application/pdf', data: 'd29yZA==' },
@@ -2433,6 +2490,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-saved',
             session_key: 'alice:bot_1',
             text: '文件已放在这条回复里',
+            send_to_user: '文件已放在这条回复里',
             local_file_paths: ['../secret.docx', docPath],
             desktop_files: [
                 { name: '自我描述.docx', mime: docx, data: 'd29yZA==' },
@@ -2511,6 +2569,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-3',
             session_key: 'alice:bot_1',
             text: '已打开 example.org',
+            send_to_user: '已打开 example.org',
             desktop_handoff_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1',
             desktop_user_control: true,
         });
@@ -2619,6 +2678,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-plan-1',
             session_key: 'alice:bot_1',
             text: '首页已打开。',
+            send_to_user: '首页已打开。',
         });
         expect(await screen.findByText('首页已打开。')).toBeTruthy();
         expect(screen.getByText('安排:改成只看首页')).toBeTruthy();
@@ -2628,7 +2688,7 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
     });
 
-    it('confirms a finished plan while an earlier job is still running', async () => {
+    it('does not turn planning prose into an arrange button while an earlier job is running', async () => {
         listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
         understandTask.mockImplementation(async (content: string, phase: string, _lang: string, earlier: string[] = []) => {
             const text = String(content || '');
@@ -2655,12 +2715,7 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
         expect(await screen.findByText('先打开网站，再告诉你结果。')).toBeTruthy();
         expect(sendTask).toHaveBeenCalledTimes(1);
-        const confirm = await screen.findByTestId('desktop-bot-confirm');
-        expect((confirm as HTMLButtonElement).disabled).toBe(false);
-        fireEvent.click(confirm);
-        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
-        expect(sendTask).toHaveBeenLastCalledWith('bot_1', childOrder('开始吧', 'plan', ['打开示例网站']), 'execute');
-        expect(screen.queryByText(CONFIRM_TASK)).toBeNull();
+        expect(screen.queryByTestId('desktop-bot-confirm')).toBeNull();
         expect(screen.getByText('先打开网站，再告诉你结果。')).toBeTruthy();
         expect(screen.getByTestId('desktop-bot-processing').textContent).toBe('正在一点点推进');
     });
@@ -2681,6 +2736,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-shot',
             session_key: 'alice:bot_1',
             text: '已截屏并发送（1440×900，含当前前台窗口）。图片已附在上方，可直接查看。',
+            send_to_user: '已截屏并发送（1440×900，含当前前台窗口）。图片已附在上方，可直接查看。',
             desktop_images: [{ mime: 'image/png', data: 'iVBORw0KGgo=' }],
         });
         expect(await screen.findByTestId('desktop-bot-screenshot')).toBeTruthy();
@@ -2710,6 +2766,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-word',
             session_key: 'alice:bot_1',
             text: '确认后我会写成文档，附在这条对话里。',
+            send_to_user: '确认后我会写成文档，附在这条对话里。',
         });
         expect(await screen.findByText('确认后我会写成文档，附在这条对话里。')).toBeTruthy();
         expect(screen.getByText(told(ask))).toBeTruthy();
@@ -2765,6 +2822,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-direct',
             session_key: 'alice:bot_1',
             text: 'PDF 已附在这条对话里。',
+            send_to_user: 'PDF 已附在这条对话里。',
         });
         expect(await screen.findByText('PDF 已附在这条对话里。')).toBeTruthy();
         expect(screen.getByText('我现在去查北京天所，整理成 PDF 发在这里。')).toBeTruthy();
@@ -2827,6 +2885,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-persona-work',
             session_key: 'alice:bot_1',
             text: '自我介绍写好了。',
+            send_to_user: '自我介绍写好了。',
         });
         expect(await screen.findByText('自我介绍写好了。')).toBeTruthy();
 
@@ -3284,6 +3343,7 @@ describe('DesktopBotWorkspace', () => {
             session_key: 'alice:bot_1',
             delivery_report: true,
             text: '报表已下载',
+            send_to_user: '报表已下载',
         };
         responseListeners.byEvent['desktop-bot-report']?.(report);
         responseListeners.byEvent['desktop-bot-report']?.(report);
@@ -3314,6 +3374,7 @@ describe('DesktopBotWorkspace', () => {
             session_key: 'alice:bot_1',
             schedule_report: true,
             text: '你好。',
+            send_to_user: '你好。',
         };
         responseListeners.byEvent['desktop-bot-report']?.(report);
         responseListeners.byEvent['desktop-bot-report']?.(report);
@@ -3365,6 +3426,7 @@ describe('DesktopBotWorkspace', () => {
             session_key: 'alice:bot_1',
             schedule_report: true,
             text: '你好。',
+            send_to_user: '你好。',
         };
         handleDesktopBotReport(payload);
         handleDesktopBotReport(payload);
@@ -3452,6 +3514,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-busy-chat',
             session_key: 'alice:bot_1',
             text: 'PDF 已附在这条对话里。',
+            send_to_user: 'PDF 已附在这条对话里。',
         });
         expect(await screen.findByText('PDF 已附在这条对话里。')).toBeTruthy();
         await act(async () => {
@@ -3497,6 +3560,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-busy-empty',
             session_key: 'alice:bot_1',
             text: 'PDF 已附在这条对话里。',
+            send_to_user: 'PDF 已附在这条对话里。',
         });
         expect(await screen.findByText('PDF 已附在这条对话里。')).toBeTruthy();
         await act(async () => {
@@ -3539,6 +3603,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-busy-verbatim',
             session_key: 'alice:bot_1',
             text: 'PDF 已附在这条对话里。',
+            send_to_user: 'PDF 已附在这条对话里。',
         });
         expect(await screen.findByText('PDF 已附在这条对话里。')).toBeTruthy();
         expect(sendTask).toHaveBeenCalledTimes(2);
@@ -3730,6 +3795,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-large',
             session_key: 'alice:bot_1',
             text: '旧办公软件已卸掉，数据已清掉。',
+            send_to_user: '旧办公软件已卸掉，数据已清掉。',
         });
         expect(await screen.findByText('旧办公软件已卸掉，数据已清掉。')).toBeTruthy();
         expect(screen.getByText(arrangement)).toBeTruthy();
@@ -3761,6 +3827,7 @@ describe('DesktopBotWorkspace', () => {
                     request_id: requestId,
                     session_key: `alice:${botId}`,
                     text: '第二件做完了',
+                    send_to_user: '第二件做完了',
                 });
             }
             return { request_id: requestId, deferred: true, session_key: `alice:${botId}` };
@@ -3794,6 +3861,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-old',
             session_key: 'alice:bot_1',
             text: '上一轮的旧结果',
+            send_to_user: '上一轮的旧结果',
         };
         handleDesktopBotResult(stray);
         const strayView = {
@@ -3864,6 +3932,7 @@ describe('DesktopBotWorkspace', () => {
         sendTask.mockImplementation(async (botId: string) => ({
             request_id: 'desktop-bot-discuss',
             text: '好，我按讨论来。',
+            send_to_user: '好，我按讨论来。',
             session_key: `alice:${botId}`,
         }));
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
@@ -3913,6 +3982,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-hold',
             session_key: 'alice:bot_1',
             text: '安排好了。',
+            send_to_user: '安排好了。',
         });
         await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
         expect(sendTask).toHaveBeenLastCalledWith('bot_1', '登录或验证已在当前桌面浏览器完成，请沿用这个登录状态继续。', 'execute');
@@ -3937,6 +4007,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-sec-1',
             session_key: 'alice:bot_1',
             text: '需要 SITE_PASSWORD。',
+            send_to_user: '需要 SITE_PASSWORD。',
             ask_user_input_type: 'secret_fill',
             ask_user_secret_name: 'SITE_PASSWORD',
         });
@@ -3960,6 +4031,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-sec-2',
             session_key: 'alice:bot_1',
             text: '安排：打开登录页后填写已保存的密码。',
+            send_to_user: '安排：打开登录页后填写已保存的密码。',
         });
         expect(await screen.findByText('安排：打开登录页后填写已保存的密码。')).toBeTruthy();
         const secretConfirm = screen.getByTestId('desktop-bot-confirm');
@@ -3971,6 +4043,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-sec-3',
             session_key: 'alice:bot_1',
             text: '请填写密码。',
+            send_to_user: '请填写密码。',
             ask_user_input_type: 'secret_fill',
             ask_user_secret_name: 'SITE_PASSWORD',
         });
@@ -4482,6 +4555,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-q1',
             session_key: 'alice:bot_new',
             text: '已打开 example.org',
+            send_to_user: '已打开 example.org',
         });
         expect(await screen.findByText('已打开 example.org')).toBeTruthy();
         expect(sendTask).toHaveBeenCalledTimes(2);
@@ -4489,6 +4563,7 @@ describe('DesktopBotWorkspace', () => {
             request_id: 'desktop-bot-q2',
             session_key: 'alice:bot_new',
             text: '已截图',
+            send_to_user: '已截图',
         });
         expect(await screen.findByText('已截图')).toBeTruthy();
         expect(sendTask).toHaveBeenCalledTimes(2);
@@ -5488,6 +5563,7 @@ describe('DesktopBotWorkspace', () => {
                 request_id: 'desktop-bot-open',
                 session_key: 'alice:bot_6',
                 text: '页面开好了。',
+                send_to_user: '页面开好了。',
             });
         });
         expect(await screen.findByText('页面开好了。')).toBeTruthy();

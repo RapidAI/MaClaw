@@ -767,7 +767,7 @@ export function codingAgentProgressStatusText(progress: CodingAgentProgress, lan
     }
 }
 
-const monoFont = "ui-monospace, SFMono-Regular, Menlo, Consolas, \"Cascadia Mono\", monospace";
+const monoFont = "var(--assistant-code-font, ui-monospace, SFMono-Regular, Menlo, Consolas, \"Cascadia Mono\", monospace)";
 
 /** Glyph + color for a progress line (Codex / Claude Code style trail). */
 export function codingAgentOutcomeMark(progress: CodingAgentProgress, isDark?: boolean): { glyph: string; color: string } {

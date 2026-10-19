@@ -2487,6 +2487,8 @@ export namespace corelib {
 	    screen_parsing_enabled?: boolean;
 	    ui_zoom_factor?: number;
 	    chat_font_size?: number;
+	    chat_font_family?: string;
+	    coding_font_family?: string;
 	    ssh_hosts?: SSHHostEntry[];
 	    knowledge_skill_token_budget: number;
 	    knowledge_vision_llm?: KnowledgeVisionLLMConfig;
@@ -2770,6 +2772,8 @@ export namespace corelib {
 	        this.screen_parsing_enabled = source["screen_parsing_enabled"];
 	        this.ui_zoom_factor = source["ui_zoom_factor"];
 	        this.chat_font_size = source["chat_font_size"];
+	        this.chat_font_family = source["chat_font_family"];
+	        this.coding_font_family = source["coding_font_family"];
 	        this.ssh_hosts = this.convertValues(source["ssh_hosts"], SSHHostEntry);
 	        this.knowledge_skill_token_budget = source["knowledge_skill_token_budget"];
 	        this.knowledge_vision_llm = this.convertValues(source["knowledge_vision_llm"], KnowledgeVisionLLMConfig);
@@ -5647,6 +5651,7 @@ export namespace knowledge {
 	    limit?: number;
 	    include_disabled?: boolean;
 	    prefer_embedding?: boolean;
+	    retrieval?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new SearchOptions(source);
@@ -5672,6 +5677,7 @@ export namespace knowledge {
 	        this.limit = source["limit"];
 	        this.include_disabled = source["include_disabled"];
 	        this.prefer_embedding = source["prefer_embedding"];
+	        this.retrieval = source["retrieval"];
 	    }
 	}
 	
@@ -13950,6 +13956,150 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class LocalSearchHit {
+	    corpus: string;
+	    route: string;
+	    freshness: string;
+	    locator?: string;
+	    title?: string;
+	    snippet?: string;
+	    score?: number;
+	    knowledge?: knowledge.SearchResult;
+	    path?: string;
+	    line?: number;
+	    workspace_id?: string;
+	    workspace_name?: string;
+	    project_path?: string;
+	    relative_path?: string;
+	    match?: string;
+	    tags?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new LocalSearchHit(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.corpus = source["corpus"];
+	        this.route = source["route"];
+	        this.freshness = source["freshness"];
+	        this.locator = source["locator"];
+	        this.title = source["title"];
+	        this.snippet = source["snippet"];
+	        this.score = source["score"];
+	        this.knowledge = this.convertValues(source["knowledge"], knowledge.SearchResult);
+	        this.path = source["path"];
+	        this.line = source["line"];
+	        this.workspace_id = source["workspace_id"];
+	        this.workspace_name = source["workspace_name"];
+	        this.project_path = source["project_path"];
+	        this.relative_path = source["relative_path"];
+	        this.match = source["match"];
+	        this.tags = source["tags"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class LocalSearchRequest {
+	    query?: string;
+	    retrieval?: string;
+	    pattern?: string;
+	    fixed?: boolean;
+	    corpus: string;
+	    root?: string;
+	    globs?: string[];
+	    file_types?: string[];
+	    limit?: number;
+	    search_scope?: string;
+	    project_path?: string;
+	    topic_hint?: string;
+	    domain?: string;
+	    context_terms?: string[];
+	    result_types?: string[];
+	    source_kinds?: string[];
+	    source_ids?: string[];
+	    labels?: string[];
+	    include_disabled?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new LocalSearchRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.query = source["query"];
+	        this.retrieval = source["retrieval"];
+	        this.pattern = source["pattern"];
+	        this.fixed = source["fixed"];
+	        this.corpus = source["corpus"];
+	        this.root = source["root"];
+	        this.globs = source["globs"];
+	        this.file_types = source["file_types"];
+	        this.limit = source["limit"];
+	        this.search_scope = source["search_scope"];
+	        this.project_path = source["project_path"];
+	        this.topic_hint = source["topic_hint"];
+	        this.domain = source["domain"];
+	        this.context_terms = source["context_terms"];
+	        this.result_types = source["result_types"];
+	        this.source_kinds = source["source_kinds"];
+	        this.source_ids = source["source_ids"];
+	        this.labels = source["labels"];
+	        this.include_disabled = source["include_disabled"];
+	    }
+	}
+	export class LocalSearchResult {
+	    corpus: string;
+	    route: string;
+	    freshness: string;
+	    hits: LocalSearchHit[];
+	
+	    static createFrom(source: any = {}) {
+	        return new LocalSearchResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.corpus = source["corpus"];
+	        this.route = source["route"];
+	        this.freshness = source["freshness"];
+	        this.hits = this.convertValues(source["hits"], LocalSearchHit);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class localStartMenuRemoteEnv {
 	    host?: string;
 	    port?: number;
@@ -17652,6 +17802,7 @@ export namespace main {
 	    expertName: string;
 	    workflowTemplateId: string;
 	    params?: Record<string, string>;
+	    keepExpertSession?: boolean;
 
 	    static createFrom(source: any = {}) {
 	        return new TaskCreateOptions(source);
@@ -17668,6 +17819,7 @@ export namespace main {
 	        this.expertName = source["expertName"];
 	        this.workflowTemplateId = source["workflowTemplateId"];
 	        this.params = source["params"];
+	        this.keepExpertSession = source["keepExpertSession"];
 	    }
 
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

@@ -26,10 +26,24 @@ const imagePullRetryAfter = time.Minute
 
 // imageContractScript is the check desktopd/remote_deploy.sh runs on a fresh
 // build: the files and tools desktop_supervisor.py and desktopd rely on. A
-// pulled image that fails it is never tagged as the local image.
-const imageContractScript = `test -f /desktop_supervisor.py && test -f /usr/share/novnc/vnc.html && ` +
-	`for tool in python3 Xvfb x11vnc websockify xdotool chromium startxfce4 dbus-launch import; do ` +
-	`command -v "$tool" >/dev/null || { echo "missing $tool"; exit 1; }; done`
+// pulled image that fails it is never tagged as the local image. $tool expands
+// inside the container. The image name is filled in here, on the host.
+func imageContractScript(image string) string {
+	image = strings.Map(func(r rune) rune {
+		switch r {
+		case '\'', '"', '`', '\\', '\n', '\r', '$', ';':
+			return -1
+		default:
+			return r
+		}
+	}, strings.TrimSpace(image))
+	if image == "" {
+		image = DefaultImage
+	}
+	return `test -f /desktop_supervisor.py && test -f /usr/share/novnc/vnc.html && ` +
+		`for tool in python3 Xvfb x11vnc websockify xdotool chromium startxfce4 dbus-launch import; do ` +
+		`command -v "$tool" >/dev/null || { echo "Image is missing $tool. This is not a desktop image. Change DESKTOPD_IMAGE_SOURCE and pull again. Do not tag it as ` + image + `."; exit 1; }; done`
+}
 
 // ParseImageSources reads DESKTOPD_IMAGE_SOURCE:
 //
@@ -231,7 +245,7 @@ func (s *Service) pullImageFromSource(image, source string) error {
 		return fail("inspect", err)
 	}
 	id = strings.TrimSpace(id)
-	if out, err := s.docker(ctx, "run", "--rm", "--entrypoint", "sh", id, "-c", imageContractScript); err != nil {
+	if out, err := s.docker(ctx, "run", "--rm", "--entrypoint", "sh", id, "-c", imageContractScript(image)); err != nil {
 		if strings.TrimSpace(out) != "" {
 			err = fmt.Errorf("%v (%s)", err, strings.TrimSpace(out))
 		}

@@ -35,6 +35,11 @@ type TaskCreateOptions struct {
 	WorkflowTemplateID string `json:"workflowTemplateId"`
 	// Params fills the pinned template's first-phase parameter slots.
 	Params map[string]string `json:"params,omitempty"`
+	// KeepExpertSession allocates a new LaTeX paper without archiving or
+	// cancelling the shared expert turn. A scheduled paper sets this so the
+	// open path can wait until that turn is idle. The wizard leaves it unset
+	// and still cuts the session over at creation time.
+	KeepExpertSession bool `json:"keepExpertSession,omitempty"`
 }
 
 // RemoteTarget carries SSH connection parameters for a remote task. Password
@@ -150,7 +155,7 @@ func (a *App) createTaskUnified(opts TaskCreateOptions) (UnifiedTaskCreateResult
 	// stored on the record and becomes the execution directory.
 	if opts.ExpertID != "" {
 		if opts.ExpertID == builtinLatexExpertID {
-			result, err := a.createFreshLatexExpertTask(opts.ExpertName, opts.WorkingDir)
+			result, err := a.createFreshLatexExpertTask(opts.ExpertName, opts.WorkingDir, opts.KeepExpertSession)
 			if err != nil {
 				return zero, err
 			}

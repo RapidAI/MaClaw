@@ -14,6 +14,10 @@ import (
 // employee. A bot turn does not fall through to that host stack.
 var DesktopWeb func(ctx context.Context, tenantID, userID, kind, query, rawURL string, maxChars int) (string, error)
 
+// CloudProgress rewrites the container progress file after a cloud-desktop
+// tool return. MaClawSrv installs it. A nil hook leaves the run unchanged.
+var CloudProgress func(ctx context.Context, tenantID, userID, taskID, toolName, result string)
+
 const botContainerToolReason = "this bot works inside its desktop container. Use the desktop tool for files, commands, and windows. web_search and web_fetch use this desktop's network"
 
 // botUsesContainer reports a cloud-desktop bot turn. A digital employee has

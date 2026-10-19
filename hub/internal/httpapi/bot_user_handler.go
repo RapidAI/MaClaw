@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
 )
@@ -349,24 +350,47 @@ func GetBotRunHandler(svc *botmgmt.Service, identity botAuthenticator) http.Hand
 			return
 		}
 		reply, done, err := svc.DesktopRunResult(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), r.PathValue("runID"))
-		if err != nil {
-			writeBotUserError(w, r, principal, err, "")
+		status, body, userErr := desktopRunPollBody(reply, done, err)
+		if userErr != nil {
+			writeBotUserError(w, r, principal, userErr, "")
 			return
 		}
-		if !done {
-			body := map[string]any{
+		if status == http.StatusAccepted {
+			running := map[string]any{
 				"accepted": true,
 				"status":   "running",
 				"run_id":   r.PathValue("runID"),
 			}
 			if activity := svc.DesktopRunActivity(principal.TenantID, principal.UserID, r.PathValue("id"), r.PathValue("runID")); activity != "" {
-				body["activity"] = activity
+				running["activity"] = activity
 			}
-			writeJSON(w, http.StatusAccepted, body)
+			writeJSON(w, http.StatusAccepted, running)
 			return
 		}
-		writeJSON(w, http.StatusOK, reply)
+		writeJSON(w, status, body)
 	}
+}
+
+// desktopRunPollBody is one read of a desktop run. A finished run is 200,
+// whether it failed, said a sentence, or said nothing. 502 stays for a read
+// that never learned the outcome, so the GUI can tell "ask again" from
+// "this run ended". A filler is silence. A real error is the failed bubble.
+// Assistant prose is not copied into that error.
+func desktopRunPollBody(reply botmgmt.Reply, done bool, err error) (status int, body any, userErr error) {
+	if !done {
+		if err != nil {
+			return 0, nil, err
+		}
+		return http.StatusAccepted, nil, nil
+	}
+	out := struct {
+		botmgmt.Reply
+		Error string `json:"error,omitempty"`
+	}{Reply: reply}
+	if err != nil && strings.TrimSpace(reply.SendToUser) == "" && !desktopbot.Filler(err.Error()) {
+		out.Error = err.Error()
+	}
+	return http.StatusOK, out, nil
 }
 
 // PostBotPreferenceHandler POST /api/v1/bots/{id}/preference

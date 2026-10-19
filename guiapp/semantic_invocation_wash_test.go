@@ -109,6 +109,54 @@ func TestSemanticSSHInvocationArgsWashesLegacyShapes(t *testing.T) {
 	if washed, err = semanticSSHInvocationArgs(garbage, false); err != nil || washed != garbage {
 		t.Fatalf("garbage must pass through: washed=%q err=%v", washed, err)
 	}
+
+	washed, err = semanticSSHInvocationArgs(`{"action":"download","session_id":"ssh_1","source_path":"/home/gpu84/out/a.pdf","local_path":"D:\\out\\a.pdf"}`, false)
+	if err != nil {
+		t.Fatalf("download-shaped wash must not error: %v", err)
+	}
+	got = parseWashedArgs(t, washed)
+	if got["remote_path"] != "/home/gpu84/out/a.pdf" || got["local_path"] != `D:\out\a.pdf` {
+		t.Fatalf("source_path must fold onto remote_path: %#v", got)
+	}
+	if _, ok := got["source_path"]; ok || got["action"] != nil || got["session_id"] != nil {
+		t.Fatalf("legacy download decoration must be gone: %#v", got)
+	}
+	if _, err = semanticSSHInvocationArgs(`{"source_path":"/home/gpu84/out/a.pdf"}`, false); err == nil || !strings.Contains(err.Error(), "trusted_ssh_download_paths_required") || !strings.Contains(err.Error(), "tool remains available") {
+		t.Fatalf("one-sided source_path must name both paths before execution: %v", err)
+	}
+	if _, err = semanticSSHInvocationArgs(`{"command":"cat /tmp/a","remote_path":"/tmp/a","local_path":"a"}`, false); err == nil || !strings.Contains(err.Error(), "trusted_ssh_conflicting_fields") {
+		t.Fatalf("command mixed with a copy must be refused before execution: %v", err)
+	}
+	washed, err = semanticSSHInvocationArgs(`{"remote_path":"/home/gpu84/out/../out/a.pdf","local_path":"D:\\out\\a.pdf"}`, false)
+	if err != nil {
+		t.Fatalf("cleanable remote path must wash: %v", err)
+	}
+	got = parseWashedArgs(t, washed)
+	if got["remote_path"] != "/home/gpu84/out/a.pdf" {
+		t.Fatalf("remote path must be cleaned before execution: %#v", got)
+	}
+	if _, err = semanticSSHInvocationArgs("{\"remote_path\":\"/tmp/a\\nb\",\"local_path\":\"C:\\\\x\"}", false); err == nil || !strings.Contains(err.Error(), "trusted_ssh_remote_path_required") || !strings.Contains(err.Error(), "tool remains available") {
+		t.Fatalf("a broken remote path must be refused before execution: %v", err)
+	}
+	washed, err = semanticSSHInvocationArgs(`{"remote_path":"~/out/a.pdf","local_path":"D:\\out\\a.pdf"}`, false)
+	if err != nil {
+		t.Fatalf("login-home download must wash: %v", err)
+	}
+	got = parseWashedArgs(t, washed)
+	if got["remote_path"] != "~/out/a.pdf" {
+		t.Fatalf("~/ must stay a login-home path: %#v", got)
+	}
+	washed, err = semanticSSHInvocationArgs(`{"remote_path":"~/foo/../../etc/passwd","local_path":"D:\\out\\passwd"}`, false)
+	if err != nil {
+		t.Fatalf("home-relative parent must wash: %v", err)
+	}
+	got = parseWashedArgs(t, washed)
+	if got["remote_path"] != "~/../etc/passwd" {
+		t.Fatalf("~/../ must keep the home anchor: %#v", got)
+	}
+	if _, err = semanticSSHInvocationArgs(`{"remote_path":"~gpu84/out/a.pdf","local_path":"D:\\out"}`, false); err == nil || !strings.Contains(err.Error(), "tool remains available") || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("~otheruser must be refused before execution: %v", err)
+	}
 }
 
 // Connect mode admits the connection fields itself; only pure legacy

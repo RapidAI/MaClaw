@@ -181,7 +181,13 @@ describe('useTaskConfigWiring cloud workspace name', () => {
 });
 
 describe('useTaskConfigWiring new-task wizard opening', () => {
-    afterEach(() => {
+    afterEach(async () => {
+        // The cover settles on a timer. Flush it inside act so a later test
+        // does not see that setState.
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
         cleanup();
     });
 
@@ -189,7 +195,7 @@ describe('useTaskConfigWiring new-task wizard opening', () => {
         const clearComposerDraft = vi.fn();
         const activateTab = vi.fn();
         const saveTabState = vi.fn();
-        renderHook(() => useTaskConfigWiring(makeOptions({
+        const { result } = renderHook(() => useTaskConfigWiring(makeOptions({
             activeTab: { id: 'proj-1', type: 'project' },
             isLocalTabActive: false,
             inputValue: 'half written',
@@ -204,11 +210,63 @@ describe('useTaskConfigWiring new-task wizard opening', () => {
             window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
         });
 
-        await waitFor(() => {
-            expect(saveTabState).toHaveBeenCalledWith('tab-1', { newTaskWizard: true });
-        });
-        expect(activateTab).toHaveBeenCalledWith('tab-1');
+        expect(result.current.wizardOverlay).toBe(true);
         expect(clearComposerDraft).not.toHaveBeenCalled();
+        expect(saveTabState).toHaveBeenCalledWith('tab-1', { newTaskWizard: true });
+        expect(activateTab).not.toHaveBeenCalled();
+    });
+
+    it('opens over another tab without switching or clearing its draft', async () => {
+        const activateTab = vi.fn();
+        const clearComposerDraft = vi.fn();
+        const { result } = renderHook(() => useTaskConfigWiring(makeOptions({
+            activeTab: { id: 'proj-1', type: 'project' },
+            isLocalTabActive: false,
+            assistantBusy: true,
+            inputValue: 'follow up',
+            clearComposerDraft,
+            activateTab,
+            getTabs: () => [{ id: 'tab-1', type: 'local' }, { id: 'proj-1', type: 'project' }],
+            getTabState: () => ({ history: [{ role: 'user', content: 'hi' }] }),
+        })));
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+
+        expect(result.current.wizardOverlay).toBe(true);
+        expect(activateTab).not.toHaveBeenCalled();
+        expect(clearComposerDraft).not.toHaveBeenCalled();
+    });
+
+    it('creates a task from the cover before the local tab is active', async () => {
+        const create = CreateTaskUnified as unknown as ReturnType<typeof vi.fn>;
+        create.mockResolvedValue({ projectPath: 'D:/tasks/new' });
+        const handleSend = vi.fn();
+        try {
+            const { result } = renderHook(() => useTaskConfigWiring(makeOptions({
+                activeTab: { id: 'proj-1', type: 'project' },
+                isLocalTabActive: false,
+                inputValue: 'project follow up',
+                guideInputValue: '写一份周报',
+                handleSend,
+                getTabs: () => [{ id: 'tab-1', type: 'local' }, { id: 'proj-1', type: 'project' }],
+                getTabState: () => ({ history: [{ role: 'user', content: 'hi' }] }),
+            })));
+
+            act(() => {
+                window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+            });
+            expect(result.current.wizardOverlay).toBe(true);
+            await act(async () => {
+                result.current.handleSendWithTaskConfig();
+            });
+            await waitFor(() => expect(create).toHaveBeenCalled());
+            expect(handleSend).not.toHaveBeenCalled();
+            expect(create.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ name: '写一份周报' }));
+        } finally {
+            create.mockReset();
+        }
     });
 
     it('prefills the new-task draft from a LaTeX template or a workflow', async () => {
@@ -793,10 +851,10 @@ describe('useTaskConfigWiring new-task wizard opening', () => {
             window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
         });
 
+        expect(result.current.wizardOverlay).toBe(true);
         await waitFor(() => {
-            expect(result.current.wizardOverlay).toBe(true);
+            expect(saveTabState).toHaveBeenCalledWith('tab-1', { newTaskWizard: true });
         });
-        expect(saveTabState).toHaveBeenCalledWith('tab-1', { newTaskWizard: true });
 
         act(() => {
             result.current.dismissWizardOverlay();

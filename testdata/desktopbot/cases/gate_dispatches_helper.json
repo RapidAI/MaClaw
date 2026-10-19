@@ -1,0 +1,7 @@
+{
+  "id": "gate_dispatches_helper",
+  "open": true,
+  "screen": "screen-1",
+  "helper_id": "h1",
+  "goal": "打开记事本"
+}

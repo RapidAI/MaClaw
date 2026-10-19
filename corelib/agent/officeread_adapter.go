@@ -1305,6 +1305,14 @@ type officeReadSettings struct {
 	formats      map[string]struct{}
 	fallback     bool
 	emitMarkdown bool
+	// imagePDFPreferVision is set on one chat expansion when the active model
+	// can see images. It is not part of the persisted OfficeRead policy.
+	// read_document stays on OCR because that tool returns text.
+	imagePDFPreferVision bool
+	// imagePDFVisionUsedBytes is how much of the vision upload budget this
+	// call's earlier images already consumed. It keeps a second picture PDF
+	// from claiming pages that will not be attached.
+	imagePDFVisionUsedBytes int64
 }
 
 func currentOfficeReadSettings() officeReadSettings {
@@ -1473,7 +1481,7 @@ func officeReadCacheKeySuffixForSettings(s officeReadSettings) string {
 		formats = append(formats, format)
 	}
 	sort.Strings(formats)
-	return string(s.engine) + ":fallback=" + strconv.FormatBool(s.fallback) + ":markdown=" + strconv.FormatBool(s.emitMarkdown) + ":formats=" + strings.Join(formats, ",")
+	return string(s.engine) + ":fallback=" + strconv.FormatBool(s.fallback) + ":markdown=" + strconv.FormatBool(s.emitMarkdown) + ":vision=" + strconv.FormatBool(s.imagePDFPreferVision) + ":vision_used=" + strconv.FormatInt(s.imagePDFVisionUsedBytes, 10) + ":formats=" + strings.Join(formats, ",")
 }
 
 const (
@@ -1780,7 +1788,7 @@ func extractOfficeTextWithEngineAfterPreflight(filePath, format string, prefligh
 
 func extractOfficeTextWithEngineAfterPreflightWithSettings(filePath, format string, preflightDone bool, settings officeReadSettings) (string, string, error) {
 	if !settings.enabledFor(format) {
-		return extractLegacyOfficeTextWithFormat(filePath, format)
+		return extractLegacyOfficeTextWithFormat(filePath, format, settings)
 	}
 	started := time.Now()
 	sourceBytes := int64(-1)
@@ -1814,7 +1822,7 @@ func extractOfficeTextWithEngineAfterPreflightWithSettings(filePath, format stri
 		if settings.engine == OfficeExtractEngineDual {
 			// Dual mode must preserve the legacy result. Skip the unsafe shadow
 			// parse but still make its omission visible in content-free telemetry.
-			legacyText, legacyFormat, legacyErr := extractLegacyOfficeTextWithFormat(filePath, format)
+			legacyText, legacyFormat, legacyErr := extractLegacyOfficeTextWithFormat(filePath, format, settings)
 			// Match the normal dual-read evidence invariant: a nil parser error
 			// without a readable body is not a successful extraction, and an
 			// unsuccessful side must not retain partial rune/token metrics.
@@ -1967,7 +1975,7 @@ func extractOfficeTextWithEngineAfterPreflightWithSettings(filePath, format stri
 		return retained, officeFormat, officeErr
 	}
 
-	legacyText, legacyFormat, legacyErr := extractLegacyOfficeTextWithFormat(legacyPath, format)
+	legacyText, legacyFormat, legacyErr := extractLegacyOfficeTextWithFormat(legacyPath, format, settings)
 	legacyOK := legacyErr == nil
 	// A nil parser error alone is not dual-read evidence: both sides need a
 	// readable body before their rune/token counters can influence migration

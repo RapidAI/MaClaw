@@ -6,7 +6,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -74,7 +77,6 @@ var semanticToolsSearchInventory = []semanticToolsSearchEntry{
 	{"git_commit", "Commit and push repository changes.", "coding.repository.mutate"},
 	{"build_verify", "Run a reviewed build, test, or lint task. A LaTeX directory is compiled by the host TeX engine.", "coding.build.verify"},
 	{"browser", "Drive a web browser session.", "computer.browser"},
-	{"computer_use", "Observe or drive the local desktop.", "computer.desktop"},
 	{"ssh", "Run a command on a remote host over SSH.", "remote.ssh"},
 	{"memory_recall", "Recall agent memory.", tool.CapabilityMemoryRecallAgent},
 	{"memory", "Read or update agent memory.", tool.CapabilityMemoryManageAgent},
@@ -98,6 +100,7 @@ var semanticToolsSearchInventory = []semanticToolsSearchEntry{
 	{"mailbox_query", "Read a configured mailbox. Does not send.", tool.CapabilityMessageReadMailbox},
 	{"mailbox_send", "Send, reply, or forward through a configured mailbox after confirmation.", tool.CapabilityMessageSendMailbox},
 	{"mailbox_configure", "Save a mailbox from the connection details the user provided. Does not send.", tool.CapabilityMessageConfigureMailbox},
+	{"mailbox_delete", "Delete mail in a configured mailbox after confirmation.", tool.CapabilityMessageDeleteMailbox},
 }
 
 // semanticToolsSearchPlanCapabilities maps display names onto the capability
@@ -123,6 +126,7 @@ var semanticToolsSearchPlanCapabilities = map[string]tool.CapabilityID{
 	"send_im_text":      tool.CapabilityMessageSendIM,
 	"mailbox_send":      tool.CapabilityMessageSendMailbox,
 	"mailbox_configure": tool.CapabilityMessageConfigureMailbox,
+	"mailbox_delete":    tool.CapabilityMessageDeleteMailbox,
 }
 
 // semanticToolsSearchNameCapability resolves the capability a managed surface
@@ -139,6 +143,16 @@ func semanticToolsSearchNameCapability(name string) (tool.CapabilityID, bool) {
 // already contains a callable name. runSemanticToolsSearch uses it to tell a
 // focused answer apart from a repeat.
 const semanticToolsSearchListedDirectivePrefix = "立即调用已在当前工具面的名字："
+
+// The closing line is the page's one action, and it is the same fact as the
+// surface decision. Petition eligibility stays on the row. A closing line
+// that invites a petition, or that tells the model to call every grant, is
+// what gets quoted (production 2026-10-19: "再用可请愿的工具生成 PDF" while
+// web_search was the listed step). Baselines such as bash are grants too, so
+// "call every listed name" is not a next step.
+const semanticToolsSearchListedCloser = "没有未列出的计划步骤。"
+const semanticToolsSearchPlannedIdleCloser = "已计划的名字要等更早的步骤完成。"
+const semanticToolsSearchDeferredCloser = "已计划的名字不要直接调用。"
 
 // semanticToolsSearchRun executes one deterministic discovery query against
 // the host inventory. Status is derived from the live surface and the turn's
@@ -236,7 +250,7 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 	// Keep the unfiltered directory. A needs filter may hide mailbox_send,
 	// and the confirmation line has to survive that page: the tail is what
 	// a shortened result keeps.
-	catalog := semanticToolsSearchCatalog(cb)
+	catalog := semanticToolsSearchBuiltinFirst(semanticToolsSearchCatalog(cb))
 	entries := catalog
 	filterNote := ""
 	var requestedNames map[string]bool
@@ -285,59 +299,448 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 	if pageStart > len(entries) {
 		return "[system rejected] tools_search_page_token_invalid"
 	}
-	// Keep the first page large enough to contain the complete built-in
-	// directory (including dynamically published adapters). Pagination remains
-	// available for unusually large catalogs, but a normal discovery call must
-	// never hide a stable entry merely because it sorted after an arbitrary
-	// top-K boundary.
-	const pageSize = 256
-	pageEnd := pageStart + pageSize
-	if pageEnd > len(entries) {
-		pageEnd = len(entries)
+	// The surface decision is a property of the plan, not of alphabetical
+	// position and not of the query. It is written before the directory so a
+	// later byte budget cannot hide a planned name behind tools that sort
+	// earlier. Production 2026-10-19: generate_pdf was planned behind
+	// web_search, the alphabetical dump was cut at database_query, and the
+	// surviving tail was the petition sermon.
+	statusCache := map[string]string{}
+	statusOf := func(name string) string {
+		if status, ok := statusCache[name]; ok {
+			return status
+		}
+		status := semanticToolsSearchStatus(cb, name)
+		statusCache[name] = status
+		return status
 	}
+	// A lookup that already names a listed tool ends with that directive.
+	// The plan's own "现在调用" / "先调用" would be a second imperative, which
+	// is how a save lookup was sent after a different listed tool.
+	deferCallNow := len(semanticToolsSearchListedNeeds(catalog, requestedNames, statusOf)) > 0
+	decision := semanticToolsSearchSurfaceDecision(cb, catalog, statusOf, deferCallNow)
 	decisionID := semanticToolsSearchDecisionIDForCollection(scopeID, catalogDigest, needs, pageStart, collectionDigest)
-	var out strings.Builder
-	fmt.Fprintf(&out, "tools_search results for %q:\n", query)
-	fmt.Fprintf(&out, "scope_id=%s catalog_digest=%s decision_id=%s\n", scopeID, catalogDigest, decisionID)
+	var header strings.Builder
+	fmt.Fprintf(&header, "tools_search results for %q:\n", query)
+	fmt.Fprintf(&header, "scope_id=%s catalog_digest=%s decision_id=%s\n", scopeID, catalogDigest, decisionID)
 	if filterNote != "" {
-		out.WriteString(filterNote)
+		header.WriteString(filterNote)
+	}
+	if decision.text != "" {
+		header.WriteString(decision.text)
 	}
 	if len(entries) == 0 {
-		out.WriteString("(no capability in this task scope)\n")
+		header.WriteString("(no capability in this task scope)\n")
 	}
-	for _, entry := range entries[pageStart:pageEnd] {
-		fmt.Fprintf(&out, "- %s — %s %s\n", entry.name, entry.summary, semanticToolsSearchStatus(cb, entry.name))
+	rows := make([]string, len(entries))
+	// A planned step already names the action. "直接调用一次" on every other
+	// row is a second action, and it is the sentence the model quotes
+	// (production 2026-10-19). The gate status stays [可请愿]. The call verb
+	// stays only when nothing is planned, which is when that call is the action
+	// (production 2026-08-27).
+	softenPetition := decision.planned
+	for i, entry := range entries {
+		rows[i] = semanticToolsSearchRenderRow(entry, statusOf(entry.name), softenPetition)
 	}
-	if pageEnd < len(entries) {
+	// The continuation token and the action line are known only after the
+	// page is chosen. FitEnd is an estimate; the assembled page is what the
+	// model sees, so rows are dropped until it fits and then added back
+	// while the inline budget still holds.
+	waiting := semanticToolsSearchConfirmationWaiting(catalog, statusOf)
+	assemble := func(end int) string {
+		return semanticToolsSearchAssemblePage(header.String(), rows, entries, pageStart, end, len(entries), scopeID, catalogDigest, needs, collectionDigest, requestedNames, waiting, statusOf, decision)
+	}
+	pageEnd := pageStart
+	if pageStart < len(rows) {
+		pageEnd = semanticToolsSearchFitEnd(header.String(), rows, pageStart, agent.ToolsSearchMaxToolResult)
+	}
+	rendered := assemble(pageEnd)
+	for len(rendered) > agent.ToolsSearchMaxToolResult && pageEnd > pageStart {
+		pageEnd--
+		rendered = assemble(pageEnd)
+	}
+	for pageEnd < len(rows) {
+		next := assemble(pageEnd + 1)
+		if len(next) > agent.ToolsSearchMaxToolResult {
+			break
+		}
+		pageEnd++
+		rendered = next
+	}
+	return rendered
+}
+
+func semanticToolsSearchAssemblePage(header string, rows []string, entries []semanticToolsSearchEntry, pageStart, pageEnd, entryCount int, scopeID, catalogDigest string, needs map[tool.CapabilityID]bool, collectionDigest string, requestedNames map[string]bool, waiting []string, statusOf func(string) string, decision semanticToolsSearchDecision) string {
+	if pageEnd < pageStart {
+		pageEnd = pageStart
+	}
+	if pageEnd > len(rows) {
+		pageEnd = len(rows)
+	}
+	var out strings.Builder
+	out.WriteString(header)
+	for _, row := range rows[pageStart:pageEnd] {
+		out.WriteString(row)
+		out.WriteByte('\n')
+	}
+	// A page that could not take a single row must not hand back its own
+	// offset. That token replays the same header forever.
+	if pageEnd > pageStart && pageEnd < entryCount {
 		nextToken := strconv.Itoa(pageEnd)
 		if scopeID != "" && catalogDigest != "" {
 			nextToken = semanticToolsSearchPageToken(scopeID, catalogDigest, needs, pageEnd, collectionDigest)
 		}
 		fmt.Fprintf(&out, "next_page_token=%s\n", nextToken)
 	}
-	// The action line is last, and it names only the listed tool. Repeating
-	// the petition rule here sends the model after web_fetch instead of the
-	// save that is already authorized (production 2026-09-27).
+	// The action line is last. A listed name the caller already asked for is
+	// the only imperative on that page (production 2026-09-27: the petition
+	// sermon sent the model after web_fetch instead of the authorized save).
+	// Otherwise the line repeats the surface decision, so a model that reads
+	// the tail follows the same call the head named. Row status still says
+	// which other names are petitionable.
 	page := entries[pageStart:pageEnd]
-	if listed := semanticToolsSearchListedNeeds(cb, page, requestedNames); len(listed) > 0 {
+	if listed := semanticToolsSearchListedNeeds(page, requestedNames, statusOf); len(listed) > 0 {
 		fmt.Fprintf(&out, "%s%s。不要再查询这些名字。\n", semanticToolsSearchListedDirectivePrefix, strings.Join(listed, ", "))
+	} else if line := semanticToolsSearchClosingLine(decision); line != "" {
+		out.WriteString(line)
+		out.WriteByte('\n')
 	} else {
 		out.WriteString("只有标记「可请愿」的未列出名字才可以直接调用一次请愿（每轮每类限一次）。「此名请愿未通过」只拒绝这一个名字，不关掉同类其它可请愿名字。bash、read_file、write_file 是保底工具，已列出即可反复调用。用户已声明的能力（如 ssh）会扩进当前范围；查询文字本身不会挑选工具。")
 	}
-	// Scan the unfiltered directory. A needs filter can hide the confirmation
-	// row, and a shortened preview keeps this tail. Either way the waiting
-	// send stays named here.
-	if waiting := semanticToolsSearchConfirmationWaiting(cb, catalog); len(waiting) > 0 {
+	if len(waiting) > 0 {
 		fmt.Fprintf(&out, "\n等待用户确认：%s。不要再次调用，也不要用其它工具完成该动作。\n", strings.Join(waiting, "、"))
 	}
 	return out.String()
 }
 
-func semanticToolsSearchConfirmationWaiting(cb *sharedAgentLoopCallbacks, page []semanticToolsSearchEntry) []string {
+// semanticToolsSearchBuiltinFirst keeps every stable inventory name ahead of
+// dynamic adapters. Dynamic descriptions sort before generate_pdf and used to
+// push the planned row off the first page.
+func semanticToolsSearchBuiltinFirst(entries []semanticToolsSearchEntry) []semanticToolsSearchEntry {
+	if len(entries) == 0 {
+		return entries
+	}
+	builtin := make(map[string]bool, len(semanticToolsSearchInventory))
+	for _, entry := range semanticToolsSearchInventory {
+		builtin[entry.name] = true
+	}
+	head := make([]semanticToolsSearchEntry, 0, len(entries))
+	tail := make([]semanticToolsSearchEntry, 0)
+	for _, entry := range entries {
+		if builtin[entry.name] {
+			head = append(head, entry)
+		} else {
+			tail = append(tail, entry)
+		}
+	}
+	return append(head, tail...)
+}
+
+func semanticToolsSearchRenderRow(entry semanticToolsSearchEntry, status string, softenPetition bool) string {
+	if softenPetition && status == "[可请愿：直接调用一次]" {
+		status = "[可请愿]"
+	}
+	return fmt.Sprintf("- %s — %s %s", entry.name, semanticToolsSearchOneLine(entry.summary), status)
+}
+
+// semanticToolsSearchOneLine keeps a directory row an index line. Full tool
+// schemas belong on the granted tool, not in the catalog dump.
+func semanticToolsSearchOneLine(summary string) string {
+	summary = strings.Join(strings.Fields(summary), " ")
+	const maxRunes = 48
+	if utf8.RuneCountInString(summary) <= maxRunes {
+		return summary
+	}
+	runes := []rune(summary)
+	return string(runes[:maxRunes-1]) + "…"
+}
+
+// semanticToolsSearchFitEnd estimates the exclusive end of a page so the
+// header and those rows fit in budget, leaving room for the continuation
+// token and the action line. The caller checks the assembled page: this
+// estimate can both overflow and leave unused budget.
+func semanticToolsSearchFitEnd(prefix string, rows []string, start, budget int) int {
+	if start >= len(rows) {
+		return start
+	}
+	if budget <= 0 {
+		budget = agent.ToolsSearchMaxToolResult
+	}
+	const reserve = 512
+	room := budget - len(prefix) - reserve
+	end := start
+	used := 0
+	maxEnd := start + 256
+	if maxEnd > len(rows) {
+		maxEnd = len(rows)
+	}
+	for end < maxEnd {
+		need := len(rows[end]) + 1
+		if end > start && used+need > room {
+			break
+		}
+		used += need
+		end++
+	}
+	if end == start {
+		end = start + 1
+	}
+	return end
+}
+
+// semanticToolsSearchDecisionBudget keeps the surface decision on the first
+// lines. A decision that names every grant pushes the planned clause out of
+// the header the projection preserves.
+const semanticToolsSearchDecisionBudget = 1500
+
+// semanticToolsSearchDecision is the plan fact written at the head of every
+// page and repeated, in shorter form, as the page's last action.
+type semanticToolsSearchDecision struct {
+	text       string
+	callNow    []string
+	nextAppear []string
+	planned    bool
+	listed     bool
+	deferred   bool
+}
+
+// semanticToolsSearchSurfaceDecision names the predecessor the model can call
+// now and the tools already planned but not listed. It does not read the
+// query. "现在调用" is only the callNow set from predecessorNamesFor — the
+// same walk a petition denial uses. Baseline grants such as bash stay
+// directory rows unless they are that predecessor. deferCallNow is set when
+// this result already names a listed tool: that directive is the imperative.
+// The planned clause then states the successor as a fact and does not say
+// "先调用", which would be a second imperative. A partial page still has a
+// continuation token, so the decision does not forbid another directory read.
+func semanticToolsSearchSurfaceDecision(cb *sharedAgentLoopCallbacks, entries []semanticToolsSearchEntry, statusOf func(string) string, deferCallNow bool) semanticToolsSearchDecision {
+	if cb == nil || cb.semanticSurface == nil || statusOf == nil {
+		return semanticToolsSearchDecision{}
+	}
+	listed := make([]string, 0, 4)
+	planned := make([]semanticToolsSearchPlanned, 0, 4)
+	seen := map[string]bool{}
+	for _, entry := range entries {
+		name := strings.TrimSpace(entry.name)
+		if name == "" || name == semanticToolsSearchName || seen[name] {
+			continue
+		}
+		status := statusOf(name)
+		switch {
+		case status == "[已在当前工具面]":
+			seen[name] = true
+			listed = append(listed, name)
+		case strings.Contains(status, "已列入本轮计划"):
+			seen[name] = true
+			planned = append(planned, semanticToolsSearchPlanned{
+				entry: entry,
+				names: cb.predecessorNamesFor(entry.capability),
+				wait:  cb.plannedSuccessorWait(entry.capability),
+			})
+		}
+	}
+	if len(listed) == 0 && len(planned) == 0 {
+		return semanticToolsSearchDecision{}
+	}
+	if len(planned) == 0 {
+		if deferCallNow {
+			return semanticToolsSearchDecision{}
+		}
+		text, _ := semanticToolsSearchFitDecision(listed, nil, semanticToolsSearchListedDecisionText)
+		return semanticToolsSearchDecision{text: text, listed: true}
+	}
+	callNow := semanticToolsSearchCallNow(planned)
+	if deferCallNow {
+		callNow = nil
+	}
+	clauses := make([]string, len(planned))
+	for i, item := range planned {
+		clauses[i] = semanticToolsSearchPlannedClause(item.entry, item.names, item.wait, deferCallNow)
+	}
+	text, fitted := semanticToolsSearchFitDecision(callNow, clauses, semanticToolsSearchPlannedDecisionText)
+	if deferCallNow {
+		fitted = nil
+	}
+	return semanticToolsSearchDecision{
+		text:       text,
+		callNow:    fitted,
+		nextAppear: semanticToolsSearchNextAppear(planned),
+		planned:    true,
+		deferred:   deferCallNow,
+	}
+}
+
+type semanticToolsSearchPlanned struct {
+	entry semanticToolsSearchEntry
+	names predecessorNames
+	wait  successorWait
+}
+
+// semanticToolsSearchClosingLine is the action a page ends with when the
+// caller did not already name a listed tool. callNow is that action. A held
+// plan names the tool that appears on the next request and does not end on
+// 请愿. A directory with no unlisted plan step does not order every grant.
+func semanticToolsSearchClosingLine(decision semanticToolsSearchDecision) string {
+	switch {
+	case len(decision.callNow) > 0:
+		return "现在调用 " + strings.Join(decision.callNow, "、") + "。"
+	case decision.deferred && decision.planned:
+		return semanticToolsSearchDeferredCloser
+	case len(decision.nextAppear) > 0:
+		return "下一请求出现：" + strings.Join(decision.nextAppear, "、") + "。现在不要调用。"
+	case decision.planned:
+		return semanticToolsSearchPlannedIdleCloser
+	case decision.listed:
+		return semanticToolsSearchListedCloser
+	default:
+		return ""
+	}
+}
+
+// semanticToolsSearchNextAppear names the planned tool the next request can
+// list. A held generate_pdf is that tool. send_file's nextRequest is
+// generate_pdf, so delivery is not named here while generate is still unlisted.
+func semanticToolsSearchNextAppear(planned []semanticToolsSearchPlanned) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(planned))
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	for _, item := range planned {
+		switch item.wait {
+		case successorWaitHeld:
+			add(item.entry.name)
+		case successorWaitImmediate:
+			if len(item.names.callNow) == 0 {
+				add(item.entry.name)
+			}
+		case successorWaitLater:
+			if len(item.names.callNow) == 0 {
+				for _, name := range item.names.nextRequest {
+					add(name)
+				}
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func semanticToolsSearchCallNow(planned []semanticToolsSearchPlanned) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(planned))
+	for _, item := range planned {
+		for _, name := range item.names.callNow {
+			name = strings.TrimSpace(name)
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// semanticToolsSearchFitDecision drops extra planned clauses first, then
+// extra head names, until the line fits. Builtin-first catalog order already
+// put the stable planned tool ahead of dynamic ones, so the kept clause is
+// that tool. The last remaining clause and the last remaining head name stay
+// even when the line is still long: an empty decision would hide the plan.
+func semanticToolsSearchFitDecision(head, tail []string, render func(head, tail []string) string) (string, []string) {
+	text := render(head, tail)
+	for len(text) > semanticToolsSearchDecisionBudget && len(tail) > 1 {
+		tail = tail[:len(tail)-1]
+		text = render(head, tail)
+	}
+	fitted := head
+	for len(text) > semanticToolsSearchDecisionBudget && len(fitted) > 1 {
+		fitted = fitted[:len(fitted)-1]
+		text = render(fitted, tail)
+	}
+	return text, fitted
+}
+
+func semanticToolsSearchListedDecisionText(listed, _ []string) string {
+	return "本轮决定：已在当前工具面：" + strings.Join(listed, "、") + "。\n"
+}
+
+func semanticToolsSearchPlannedDecisionText(callNow, clauses []string) string {
+	var b strings.Builder
+	b.WriteString("本轮决定：")
+	if len(callNow) > 0 {
+		fmt.Fprintf(&b, "现在调用 %s。", strings.Join(callNow, "、"))
+	}
+	fmt.Fprintf(&b, "已计划但本请求尚未列出：%s。不要直接调用这些名字，不要请愿，不要告诉用户工具缺失。\n", strings.Join(clauses, "；"))
+	return b.String()
+}
+
+// semanticToolsSearchPlannedClause uses the same wait the petition denial
+// uses. A listed predecessor does not mean this name appears next:
+// send_file's callNow is web_search, and the name that appears after that
+// search is generate_pdf. Promising send_file itself is what the denial
+// wording was written to avoid. factsOnly drops "先调用": the page already
+// ends by naming a different listed tool, so the clause stays a fact.
+func semanticToolsSearchPlannedClause(entry semanticToolsSearchEntry, names predecessorNames, wait successorWait, factsOnly bool) string {
+	switch wait {
+	case successorWaitHeld:
+		return fmt.Sprintf("%s（本响应的其它调用结束后出现在下一请求）", entry.name)
+	case successorWaitImmediate:
+		if len(names.callNow) > 0 {
+			if factsOnly {
+				return fmt.Sprintf("%s（%s 成功后，%s 出现在下一请求）", entry.name, strings.Join(names.callNow, "、"), entry.name)
+			}
+			return fmt.Sprintf("%s（先调用 %s，成功后它出现在下一请求）", entry.name, strings.Join(names.callNow, "、"))
+		}
+		return entry.name + "（当前步骤成功后出现在下一请求）"
+	case successorWaitLater:
+		return semanticToolsSearchLaterClause(entry.name, names, factsOnly)
+	default:
+		return entry.name + "（前置步骤完成后出现在列表）"
+	}
+}
+
+func semanticToolsSearchLaterClause(name string, names predecessorNames, factsOnly bool) string {
+	callNow := strings.Join(names.callNow, "、")
+	nextRequest := strings.Join(names.nextRequest, "、")
+	switch {
+	case len(names.callNow) > 0 && len(names.nextRequest) > 0:
+		if factsOnly {
+			return fmt.Sprintf("%s（%s 成功后 %s 出现在下一请求。%s 要等它自己出现在列表后再调用）", name, callNow, nextRequest, name)
+		}
+		return fmt.Sprintf("%s（先调用 %s；成功后 %s 出现在下一请求。%s 要等它自己出现在列表后再调用）", name, callNow, nextRequest, name)
+	case len(names.callNow) > 0:
+		if factsOnly {
+			return fmt.Sprintf("%s（%s 完成后，%s 要等它自己出现在列表后再调用）", name, callNow, name)
+		}
+		return fmt.Sprintf("%s（先调用 %s。%s 要等它自己出现在列表后再调用）", name, callNow, name)
+	case len(names.nextRequest) > 0:
+		return fmt.Sprintf("%s（%s 出现在下一请求后再调用；%s 要等它自己出现在列表）", name, nextRequest, name)
+	default:
+		return name + "（更早的计划步骤完成后才出现在列表）"
+	}
+}
+
+func semanticToolsSearchConfirmationWaiting(entries []semanticToolsSearchEntry, statusOf func(string) string) []string {
+	if statusOf == nil {
+		return nil
+	}
 	names := make([]string, 0, 1)
-	for _, entry := range page {
-		if semanticToolsSearchStatus(cb, entry.name) == "[等待用户确认：不要再次调用]" {
-			names = append(names, entry.name)
+	seen := map[string]bool{}
+	for _, entry := range entries {
+		name := strings.TrimSpace(entry.name)
+		if name == "" || seen[name] {
+			continue
+		}
+		if statusOf(name) == "[等待用户确认：不要再次调用]" {
+			seen[name] = true
+			names = append(names, name)
 		}
 	}
 	return names
@@ -525,8 +928,8 @@ func searchNeedNames(needs map[tool.CapabilityID]bool, entries []semanticToolsSe
 // semanticToolsSearchListedNeeds names requested tools that are already on
 // this turn's surface. The directive is part of the tool result, so a model
 // that asked for a listed name is told to call it instead of searching again.
-func semanticToolsSearchListedNeeds(cb *sharedAgentLoopCallbacks, page []semanticToolsSearchEntry, requested map[string]bool) []string {
-	if len(requested) == 0 {
+func semanticToolsSearchListedNeeds(page []semanticToolsSearchEntry, requested map[string]bool, statusOf func(string) string) []string {
+	if len(requested) == 0 || statusOf == nil {
 		return nil
 	}
 	names := make([]string, 0, len(requested))
@@ -534,7 +937,7 @@ func semanticToolsSearchListedNeeds(cb *sharedAgentLoopCallbacks, page []semanti
 		if !requested[entry.name] {
 			continue
 		}
-		if semanticToolsSearchStatus(cb, entry.name) != "[已在当前工具面]" {
+		if statusOf(entry.name) != "[已在当前工具面]" {
 			continue
 		}
 		names = append(names, entry.name)
@@ -756,7 +1159,11 @@ func semanticToolsSearchCatalog(cb *sharedAgentLoopCallbacks) []semanticToolsSea
 		}
 	}
 	entries := make([]semanticToolsSearchEntry, 0, len(byName))
+	mainAgent := cb == nil || !loopKeepsDrivingTools(cb.loopCtx)
 	for _, entry := range byName {
+		if mainAgent && (desktopbot.MainDropsTool(entry.name) || strings.Contains(strings.ToLower(entry.summary), "drive the local desktop")) {
+			continue
+		}
 		entries = append(entries, entry)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
@@ -844,7 +1251,7 @@ func semanticToolsSearchStatus(cb *sharedAgentLoopCallbacks, name string) string
 		}
 		if grant, ok := surface.retiredGrants[name]; ok {
 			if awaiting, reason := semanticRetiredAwaitingReceipt(surface, grant.SelectionID); awaiting {
-				if reason == mailboxSendAwaitingConfirmation {
+				if mailboxDraftAwaitingConfirmation(reason) {
 					return "[等待用户确认：不要再次调用]"
 				}
 				return "[结果未定：不要再次调用]"
@@ -861,7 +1268,10 @@ func semanticToolsSearchStatus(cb *sharedAgentLoopCallbacks, name string) string
 	// alias as planned tells the model to wait for a tool that will never be
 	// rendered and recreates the disappearing-tool failure in discovery.
 	if semanticSurfacePlansTool(surface, name) {
-		return "[已列入本轮计划：前置步骤完成后自动出现在列表，不要直接调用]"
+		// Timing lives in the surface decision. One sentence cannot say
+		// "appears automatically" for both generate_pdf (next request after
+		// web_search) and send_file (only after generate_pdf is itself listed).
+		return "[已列入本轮计划：不要直接调用，也不要请愿]"
 	}
 	if _, ok := semanticPetitionableCapabilities[name]; ok {
 		if _, denied := cb.semanticPetitionDenied[name]; denied {
@@ -888,7 +1298,15 @@ func semanticSurfacePlansTool(surface *semanticCallSurface, name string) bool {
 		return false
 	}
 	for _, selection := range surface.plan.Selections {
-		if strings.TrimSpace(selection.AdapterName) == name {
+		adapter := strings.TrimSpace(selection.AdapterName)
+		if adapter == "" {
+			continue
+		}
+		// Match the name the model will actually see. Capability equality is
+		// still wrong: list_directory and read_file share a capability, and
+		// only the selected adapter is planned. The host adapter id
+		// host_document_generate_file is the same plan row as generate_pdf.
+		if adapter == name || tool.SemanticModelFunctionName(adapter) == name {
 			return true
 		}
 	}

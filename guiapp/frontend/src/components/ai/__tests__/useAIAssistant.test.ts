@@ -52,7 +52,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
     }),
 }));
 
-import { useAIAssistant, buildOutgoingMessage, buildOutgoingMessageMulti, buildGuideReferenceRejectedNotice, sanitizeAIAssistantStreamText, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isImageFilePath, isPinnedNewsMessage, forgetAIAssistantSessionRounds, setActiveSessionKey, type ChatAction } from '../useAIAssistant';
+import { useAIAssistant, applyIncomingStreamDelta, buildOutgoingMessage, buildOutgoingMessageMulti, buildGuideReferenceRejectedNotice, sanitizeAIAssistantStreamText, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isImageFilePath, isPinnedNewsMessage, forgetAIAssistantSessionRounds, setActiveSessionKey, type ChatAction } from '../useAIAssistant';
 import { ClearAIAssistantHistory, ClearAIAssistantHistoryForSession, ClearAIAssistantUIState, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantSessionForSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadAIAssistantUIState, LoadConfig, ListRemoteSessions, InjectAIAssistantSupplementary, InjectAIAssistantSupplementaryForSession, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, InjectAIAssistantGuideReferenceForSessionWithID, HasAIAssistantGuideReferenceForSessionWithID, SaveAIAssistantUIState, SubmitAgentView, DismissAgentView } from '../../../../wailsjs/go/main/App';
 
 function renderAssistantHook(options?: Parameters<typeof useAIAssistant>[0]) {
@@ -1549,6 +1549,8 @@ describe('useAIAssistant property tests', () => {
             emitRuntimeEvent('ai-assistant-new-round', requestEvent());
             emitRuntimeEvent('ai-assistant-token', requestEvent('上一轮输出'));
             emitRuntimeEvent('ai-assistant-token', requestEvent('\x01上一轮思考'));
+            // The first token paints now. A later reasoning token shares the 33ms flush.
+            await new Promise((resolve) => setTimeout(resolve, 40));
         });
         expect(assistantMessages(result.current.messages)[0].content).toBe('上一轮输出');
         expect(assistantMessages(result.current.messages)[0].reasoning).toBe('上一轮思考');
@@ -1800,6 +1802,333 @@ describe('useAIAssistant property tests', () => {
 
         expect(assistantMessages(result.current.messages)).toHaveLength(1);
         expect(assistantMessages(result.current.messages)[0].content).toBe(repeated + repeated);
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+    });
+
+    it('trims a code-point snapshot overlap without splitting an emoji', () => {
+        const prefix = `😀${'abcdefghijklmnopqrstuvwx'}`;
+        const state = {
+            content: `ZZZ${prefix}`,
+            reasoning: '',
+            contentSnapshotMode: false,
+            reasoningSnapshotMode: false,
+        };
+        const delta = applyIncomingStreamDelta(state, `${prefix} MORE TEXT HERE`);
+        expect(Array.from(prefix).length).toBeGreaterThanOrEqual(24);
+        expect(delta).toBe(' MORE TEXT HERE');
+        expect(state.content).toBe(`ZZZ${prefix} MORE TEXT HERE`);
+    });
+
+    it('trims the longest suffix overlap when a shorter prefix is not a suffix', () => {
+        const block = 'ABCDEFGHIJKLMNOPQRSTUVWXY';
+        const state = {
+            content: `ZZZ${block}`,
+            reasoning: '',
+            contentSnapshotMode: false,
+            reasoningSnapshotMode: false,
+        };
+        const delta = applyIncomingStreamDelta(state, `${block} more`);
+        expect(Array.from(block).length).toBe(25);
+        expect(delta).toBe(' more');
+        expect(state.content).toBe(`ZZZ${block} more`);
+    });
+
+    it('matches a linear code-point overlap scan on gapped suffixes', () => {
+        const scan = (existing: string, incoming: string) => {
+            const points = Array.from(incoming);
+            const max = Math.min(Array.from(existing).length, points.length);
+            for (let length = max; length >= 24; length--) {
+                const prefix = points.slice(0, length).join('');
+                if (existing.endsWith(prefix)) return incoming.slice(prefix.length);
+            }
+            return incoming;
+        };
+        const repeated = 'abcdefghij'.repeat(3);
+        const cases: Array<[string, string]> = [
+            [`ZZZ😀${'abcdefghijklmnopqrstuvwx'}`, `😀${'abcdefghijklmnopqrstuvwx'} MORE TEXT HERE`],
+            [`ZZZ${'ABCDEFGHIJKLMNOPQRSTUVWXY'}`, `${'ABCDEFGHIJKLMNOPQRSTUVWXY'} more`],
+            [`NOPE${repeated}`, `${repeated}ZZ`],
+            [`Prefix ${'🧪'.repeat(24)}`, `${'🧪'.repeat(24)} suffix`],
+            [`${'abcd'.repeat(6)}TAIL`, `${'abcd'.repeat(6)}END`],
+        ];
+        for (const [existing, incoming] of cases) {
+            const state = {
+                content: existing,
+                reasoning: '',
+                contentSnapshotMode: false,
+                reasoningSnapshotMode: false,
+            };
+            expect(applyIncomingStreamDelta(state, incoming)).toBe(scan(existing, incoming));
+        }
+    });
+
+    it('appends a coalesced burst that repeats the visible tail', async () => {
+        const existing = 'Alpha beta gamma delta epsilon.';
+        const pieces = ['Alpha ', 'beta ', 'gamma ', 'delta ', 'epsilon. ', 'Next.'];
+        const burst = pieces.join('');
+        const freshState = () => ({
+            content: existing,
+            reasoning: '',
+            contentSnapshotMode: false,
+            reasoningSnapshotMode: false,
+        });
+        const perDelta = freshState();
+        for (const piece of pieces) {
+            expect(Array.from(piece).length).toBeLessThan(24);
+            applyIncomingStreamDelta(perDelta, piece);
+        }
+        expect(perDelta.content).toBe(existing + burst);
+        const overlapped = freshState();
+        applyIncomingStreamDelta(overlapped, burst);
+        expect(overlapped.content).not.toBe(perDelta.content);
+        expect(overlapped.content.startsWith(existing)).toBe(true);
+        expect(overlapped.content.length).toBeLessThan(perDelta.content.length);
+
+        const thought = 'Reasoning tail that is already long enough.';
+        const thoughtPieces = ['Reasoning ', 'tail that ', 'is already ', 'long enough.', ' More.'];
+        const thoughtBurst = thoughtPieces.join('');
+        const thoughtState = () => ({
+            content: '',
+            reasoning: thought,
+            contentSnapshotMode: false,
+            reasoningSnapshotMode: false,
+        });
+        const thoughtPerDelta = thoughtState();
+        for (const piece of thoughtPieces) {
+            expect(Array.from(piece).length).toBeLessThan(24);
+            applyIncomingStreamDelta(thoughtPerDelta, `\x01${piece}`);
+        }
+        expect(thoughtPerDelta.reasoning).toBe(thought + thoughtBurst);
+        const thoughtOverlapped = thoughtState();
+        applyIncomingStreamDelta(thoughtOverlapped, `\x01${thoughtBurst}`);
+        expect(thoughtOverlapped.reasoning.length).toBeLessThan(thoughtPerDelta.reasoning.length);
+
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        const { result } = renderAssistantHook();
+        await act(async () => {
+            void result.current.sendMessage('repeat a coalesced burst');
+        });
+        const req = parseSentRequest();
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', requestEvent(existing));
+            emitRuntimeEvent('ai-assistant-token', JSON.stringify({
+                request_id: req.request_id,
+                text: burst,
+                deltas: pieces,
+            }));
+            emitRuntimeEvent('ai-assistant-token', requestEvent(`\x01${thought}`));
+            emitRuntimeEvent('ai-assistant-token', JSON.stringify({
+                request_id: req.request_id,
+                text: `\x01${thoughtBurst}`,
+                deltas: thoughtPieces.map(piece => `\x01${piece}`),
+                sequence: 3,
+            }));
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
+        });
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe(existing + burst);
+        expect(assistantMessages(result.current.messages)[0].reasoning).toBe(thought + thoughtBurst);
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+    });
+
+    it('trims a joined snapshot that arrives as one delta', async () => {
+        const existing = 'Alpha beta gamma delta epsilon.';
+        const burst = 'Alpha beta gamma delta epsilon. Next.';
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        const { result } = renderAssistantHook();
+        await act(async () => {
+            void result.current.sendMessage('trim one joined snapshot');
+        });
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', requestEvent(existing));
+            emitRuntimeEvent('ai-assistant-token', requestEvent(burst));
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
+        });
+        const content = assistantMessages(result.current.messages)[0].content;
+        expect(content.startsWith(existing)).toBe(true);
+        expect(content).not.toBe(existing + burst);
+        expect(content.length).toBeLessThan((existing + burst).length);
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+    });
+
+    it('keeps the next coalesced piece when a role prefix ended on the previous one', async () => {
+        const pieces = ['Hello\nBrowser: ', ' kept'];
+        const perDelta = {
+            content: '',
+            reasoning: '',
+            contentSnapshotMode: false,
+            reasoningSnapshotMode: false,
+        };
+        for (const piece of pieces) applyIncomingStreamDelta(perDelta, piece);
+        expect(perDelta.content).toBe('Hello kept');
+        const joined = {
+            content: '',
+            reasoning: '',
+            contentSnapshotMode: false,
+            reasoningSnapshotMode: false,
+        };
+        applyIncomingStreamDelta(joined, pieces.join(''));
+        expect(joined.content).toBe('Hello');
+
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        const { result } = renderAssistantHook();
+        await act(async () => {
+            void result.current.sendMessage('role prefix across coalesced pieces');
+        });
+        const req = parseSentRequest();
+        const assistant = () => assistantMessages(result.current.messages)[0];
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', JSON.stringify({
+                request_id: req.request_id,
+                text: pieces.join(''),
+                deltas: pieces,
+            }));
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
+        });
+        expect(assistant().content).toBe('Hello kept');
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', JSON.stringify({
+                request_id: req.request_id,
+                text: 'Browser: hello',
+                deltas: ['Brow', 'ser: hello'],
+            }));
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
+        });
+        expect(assistant().content).toBe('hello');
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', JSON.stringify({
+                request_id: req.request_id,
+                text: '\x01think',
+                deltas: ['\x01thi', '\x01nk'],
+                sequence: 4,
+            }));
+            emitRuntimeEvent('ai-assistant-token', JSON.stringify({
+                request_id: req.request_id,
+                text: '\x01!',
+                sequence: 5,
+            }));
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
+        });
+        expect(assistant().reasoning).toBe('think!');
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+    });
+
+    it('keeps text that follows a role prefix closed inside one coalesced burst', async () => {
+        const pieces = ['Hello\n', 'Brow', 'ser: ', ' kept'];
+        const perDelta = {
+            content: '',
+            reasoning: '',
+            contentSnapshotMode: false,
+            reasoningSnapshotMode: false,
+        };
+        for (const piece of pieces) applyIncomingStreamDelta(perDelta, piece);
+        expect(perDelta.content).toBe('Hello kept');
+        const joined = {
+            content: '',
+            reasoning: '',
+            contentSnapshotMode: false,
+            reasoningSnapshotMode: false,
+        };
+        applyIncomingStreamDelta(joined, pieces.join(''));
+        expect(joined.content).toBe('Hello');
+
+        const reasoningPieces = pieces.map(piece => `\x01${piece}`);
+        const reasoningPerDelta = {
+            content: '',
+            reasoning: '',
+            contentSnapshotMode: false,
+            reasoningSnapshotMode: false,
+        };
+        for (const piece of reasoningPieces) applyIncomingStreamDelta(reasoningPerDelta, piece);
+        expect(reasoningPerDelta.reasoning).toBe('Hello kept');
+        const reasoningJoined = {
+            content: '',
+            reasoning: '',
+            contentSnapshotMode: false,
+            reasoningSnapshotMode: false,
+        };
+        applyIncomingStreamDelta(reasoningJoined, `\x01${pieces.join('')}`);
+        expect(reasoningJoined.reasoning).toBe('Hello');
+
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        const { result } = renderAssistantHook();
+        await act(async () => {
+            void result.current.sendMessage('role prefix closed inside a coalesced burst');
+        });
+        const req = parseSentRequest();
+        const assistant = () => assistantMessages(result.current.messages)[0];
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', JSON.stringify({
+                request_id: req.request_id,
+                text: pieces.join(''),
+                deltas: pieces,
+            }));
+            emitRuntimeEvent('ai-assistant-token', JSON.stringify({
+                request_id: req.request_id,
+                text: `\x01${pieces.join('')}`,
+                deltas: reasoningPieces,
+                sequence: 4,
+            }));
+            emitRuntimeEvent('ai-assistant-token', JSON.stringify({
+                request_id: req.request_id,
+                text: '\x01!',
+                sequence: 5,
+            }));
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
+        });
+        expect(assistant().content).toBe('Hello kept');
+        expect(assistant().reasoning).toBe('Hello kept!');
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+    });
+
+    it('keeps text that follows a role prefix closed across buffered tokens', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        const { result } = renderAssistantHook();
+        await act(async () => {
+            void result.current.sendMessage('role prefix closed across buffered tokens');
+        });
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', requestEvent('Hello\n'));
+            emitRuntimeEvent('ai-assistant-token', requestEvent('Brow'));
+            emitRuntimeEvent('ai-assistant-token', requestEvent('ser: '));
+            emitRuntimeEvent('ai-assistant-token', requestEvent(' kept'));
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
+        });
+        expect(assistantMessages(result.current.messages)[0].content).toBe('Hello kept');
 
         await act(async () => {
             pending.resolve({ text: '', error: '', fields: null, actions: null });
@@ -6388,6 +6717,8 @@ describe('useAIAssistant property tests', () => {
             emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 10, text: '\x01Inspect the implementation.' });
             emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 20, text: leaked });
             emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 30, text: '\x01Apply the focused change.' });
+            // Nothing after this thought forces a paint. It shares the 33ms flush.
+            await new Promise((resolve) => setTimeout(resolve, 40));
         });
 
         const timeline = assistantMessages(result.current.messages)[0].codingTimeline;
@@ -7213,6 +7544,344 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(messageContents(result.current.messages)).toContain('detached token');
+    });
+
+    it('flushes buffered tokens when a detached round reaches stream-done', async () => {
+        vi.useFakeTimers();
+        try {
+            (SendAIAssistantMessage as any)
+                .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                    text: '',
+                    error: '',
+                    fields: null,
+                    actions: null,
+                    request_id: req.request_id || '',
+                    deferred: true,
+                }))
+                .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                    text: 'local answer',
+                    error: '',
+                    fields: null,
+                    actions: null,
+                    request_id: req.request_id || '',
+                }));
+
+            const { result } = renderAssistantHook();
+
+            await act(async () => {
+                void result.current.sendMessage('project buffers before detach', { project_path: 'D:/tasks/weather' });
+                await Promise.resolve();
+            });
+            const projectReq = parseSentRequest(0);
+            const projectEvent = {
+                request_id: projectReq.request_id || '',
+                session_key: 'desktop-user:D:/tasks/weather',
+            };
+
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-new-round', projectEvent);
+                emitRuntimeEvent('ai-assistant-token', { ...projectEvent, text: 'Hello\n' });
+                emitRuntimeEvent('ai-assistant-token', { ...projectEvent, text: 'Brow' });
+                emitRuntimeEvent('ai-assistant-token', { ...projectEvent, text: 'ser: ' });
+                emitRuntimeEvent('ai-assistant-token', { ...projectEvent, text: ' kept' });
+            });
+
+            const projectContent = () => result.current.messages.find(
+                message => message.role === 'assistant' && message.requestId === projectReq.request_id,
+            )?.content;
+            expect(projectContent()).toBe('Hello\n');
+
+            await act(async () => {
+                void result.current.sendMessage('local takes over');
+                await Promise.resolve();
+            });
+            expect(projectContent()).toBe('Hello\n');
+            expect(result.current.busySessionKeys).toContain('desktop-user:D:/tasks/weather');
+
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-stream-done', projectEvent);
+            });
+
+            expect(projectContent()).toBe('Hello kept');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('writes buffered tokens before a detached synchronous result settles the round', async () => {
+        vi.useFakeTimers();
+        try {
+            const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+            (SendAIAssistantMessage as any)
+                .mockImplementationOnce(() => pending.promise)
+                .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                    text: 'local answer',
+                    error: '',
+                    fields: null,
+                    actions: null,
+                    request_id: req.request_id || '',
+                }));
+
+            const { result } = renderAssistantHook();
+
+            await act(async () => {
+                void result.current.sendMessage('project buffers before sync result', { project_path: 'D:/tasks/weather' });
+                await Promise.resolve();
+            });
+            const projectReq = parseSentRequest(0);
+            const projectEvent = {
+                request_id: projectReq.request_id || '',
+                session_key: 'desktop-user:D:/tasks/weather',
+            };
+
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-new-round', projectEvent);
+                emitRuntimeEvent('ai-assistant-token', { ...projectEvent, text: 'Hello\n' });
+                emitRuntimeEvent('ai-assistant-token', { ...projectEvent, text: 'Brow' });
+                emitRuntimeEvent('ai-assistant-token', { ...projectEvent, text: 'ser: ' });
+                emitRuntimeEvent('ai-assistant-token', { ...projectEvent, text: ' kept' });
+            });
+
+            const projectContent = () => result.current.messages.find(
+                message => message.role === 'assistant' && message.requestId === projectReq.request_id,
+            )?.content;
+            expect(projectContent()).toBe('Hello\n');
+
+            await act(async () => {
+                void result.current.sendMessage('local takes over');
+                await Promise.resolve();
+            });
+            expect(messageContents(result.current.messages)).toContain('local answer');
+            expect(projectContent()).toBe('Hello\n');
+
+            await act(async () => {
+                pending.resolve({
+                    text: '',
+                    error: '',
+                    fields: null,
+                    actions: null,
+                    request_id: projectReq.request_id || '',
+                });
+                await pending.promise;
+            });
+
+            expect(projectContent()).toBe('Hello kept');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('writes buffered tokens when a detached send fails', async () => {
+        vi.useFakeTimers();
+        try {
+            const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+            (SendAIAssistantMessage as any)
+                .mockImplementationOnce(() => pending.promise)
+                .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                    text: 'local answer',
+                    error: '',
+                    fields: null,
+                    actions: null,
+                    request_id: req.request_id || '',
+                }));
+
+            const { result } = renderAssistantHook();
+
+            await act(async () => {
+                void result.current.sendMessage('project buffers before send failure', { project_path: 'D:/tasks/weather' });
+                await Promise.resolve();
+            });
+            const projectReq = parseSentRequest(0);
+            const projectEvent = {
+                request_id: projectReq.request_id || '',
+                session_key: 'desktop-user:D:/tasks/weather',
+            };
+
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-new-round', projectEvent);
+                emitRuntimeEvent('ai-assistant-token', { ...projectEvent, text: 'Hello\n' });
+                emitRuntimeEvent('ai-assistant-token', { ...projectEvent, text: 'Brow' });
+                emitRuntimeEvent('ai-assistant-token', { ...projectEvent, text: 'ser: ' });
+                emitRuntimeEvent('ai-assistant-token', { ...projectEvent, text: ' kept' });
+            });
+
+            const projectContent = () => result.current.messages.find(
+                message => message.role === 'assistant' && message.requestId === projectReq.request_id,
+            )?.content;
+            expect(projectContent()).toBe('Hello\n');
+
+            await act(async () => {
+                void result.current.sendMessage('local takes over');
+                await Promise.resolve();
+            });
+            expect(messageContents(result.current.messages)).toContain('local answer');
+            expect(projectContent()).toBe('Hello\n');
+
+            await act(async () => {
+                pending.reject(new Error('backend failed'));
+                await pending.promise.catch(() => undefined);
+            });
+
+            expect(projectContent()).toBe('Hello kept');
+            expect(messageContents(result.current.messages)).toContain('local answer');
+            expect(messageContents(result.current.messages)).not.toContain('backend failed');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('flushes buffered tokens before a detached round accepts another token', async () => {
+        vi.useFakeTimers();
+        try {
+            const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+            (SendAIAssistantMessage as any)
+                .mockImplementationOnce(() => pending.promise)
+                .mockImplementationOnce(async (req: { request_id?: string }) => ({
+                    text: 'local answer',
+                    error: '',
+                    fields: null,
+                    actions: null,
+                    request_id: req.request_id || '',
+                }));
+
+            const { result } = renderAssistantHook();
+
+            await act(async () => {
+                void result.current.sendMessage('project buffers before detached token', { project_path: 'D:/tasks/weather' });
+                await Promise.resolve();
+            });
+            const projectReq = parseSentRequest(0);
+            const projectEvent = {
+                request_id: projectReq.request_id || '',
+                session_key: 'desktop-user:D:/tasks/weather',
+            };
+
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-new-round', projectEvent);
+                emitRuntimeEvent('ai-assistant-token', { ...projectEvent, text: 'Hello\n' });
+                emitRuntimeEvent('ai-assistant-token', { ...projectEvent, text: 'Brow' });
+                emitRuntimeEvent('ai-assistant-token', { ...projectEvent, text: 'ser: ' });
+                emitRuntimeEvent('ai-assistant-token', { ...projectEvent, text: ' kept' });
+            });
+
+            const projectContent = () => result.current.messages.find(
+                message => message.role === 'assistant' && message.requestId === projectReq.request_id,
+            )?.content;
+            expect(projectContent()).toBe('Hello\n');
+
+            await act(async () => {
+                void result.current.sendMessage('local takes over');
+                await Promise.resolve();
+            });
+            expect(messageContents(result.current.messages)).toContain('local answer');
+            expect(projectContent()).toBe('Hello\n');
+
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-token', { ...projectEvent, text: ' tail' });
+            });
+
+            expect(projectContent()).toBe('Hello kept tail');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('flushes buffered tokens on the timer after the backend reassigns the request id', async () => {
+        vi.useFakeTimers();
+        try {
+            const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string; deferred: boolean }>();
+            (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+            const { result } = renderAssistantHook();
+
+            await act(async () => {
+                void result.current.sendMessage('buffer survives request reassignment');
+                await Promise.resolve();
+            });
+            const clientEvent = requestEvent();
+
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-new-round', clientEvent);
+                emitRuntimeEvent('ai-assistant-token', { ...clientEvent, text: 'Hello\n' });
+                emitRuntimeEvent('ai-assistant-token', { ...clientEvent, text: 'Brow' });
+                emitRuntimeEvent('ai-assistant-token', { ...clientEvent, text: 'ser: ' });
+                emitRuntimeEvent('ai-assistant-token', { ...clientEvent, text: ' kept' });
+            });
+
+            const projectContent = () => assistantMessages(result.current.messages)[0]?.content;
+            expect(projectContent()).toBe('Hello\n');
+
+            await act(async () => {
+                pending.resolve({
+                    text: '',
+                    error: '',
+                    fields: null,
+                    actions: null,
+                    request_id: 'backend-reassigned-request',
+                    deferred: true,
+                });
+                await pending.promise;
+            });
+            expect(projectContent()).toBe('Hello\n');
+
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-token', {
+                    request_id: 'backend-reassigned-request',
+                    text: ' tail',
+                });
+            });
+            expect(projectContent()).toBe('Hello\n');
+
+            await act(async () => {
+                vi.advanceTimersByTime(33);
+            });
+
+            expect(projectContent()).toBe('Hello kept tail');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('publishes buffered tokens when the active session changes', async () => {
+        vi.useFakeTimers();
+        try {
+            const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+            (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+            let activeSessionKey = 'desktop-user:D:/tasks/weather';
+            const { result, rerender } = renderHook(() => useAIAssistant({ activeSessionKey }));
+
+            await act(async () => {
+                void result.current.sendMessage('buffer across session change', { project_path: 'D:/tasks/weather' });
+                await Promise.resolve();
+            });
+            const projectReq = parseSentRequest(0);
+            const projectEvent = {
+                request_id: projectReq.request_id || '',
+                session_key: 'desktop-user:D:/tasks/weather',
+            };
+
+            await act(async () => {
+                emitRuntimeEvent('ai-assistant-new-round', projectEvent);
+                emitRuntimeEvent('ai-assistant-token', { ...projectEvent, text: 'Hello\n' });
+                emitRuntimeEvent('ai-assistant-token', { ...projectEvent, text: 'Brow' });
+                emitRuntimeEvent('ai-assistant-token', { ...projectEvent, text: 'ser: ' });
+                emitRuntimeEvent('ai-assistant-token', { ...projectEvent, text: ' kept' });
+            });
+
+            const projectContent = () => result.current.messages.find(
+                message => message.role === 'assistant' && message.requestId === projectReq.request_id,
+            )?.content;
+            expect(projectContent()).toBe('Hello\n');
+
+            activeSessionKey = 'desktop-user';
+            await act(async () => {
+                rerender();
+            });
+
+            expect(projectContent()).toBe('Hello kept');
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('recreates a missing project assistant placeholder before applying the terminal response', async () => {

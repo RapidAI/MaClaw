@@ -1,0 +1,12 @@
+{
+  "id": "schedule_failure_mobile",
+  "origin": "schedule",
+  "channel": "mobile",
+  "failed": true,
+  "failure_text": "browser broke",
+  "expect_text": "browser broke",
+  "expect_kind": "final",
+  "expect_count": 1,
+  "expect_phone": true,
+  "forbid": ["desktop"]
+}

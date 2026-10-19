@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { CreateGroupTabOptions, CreateProjectTabOptions, CreateVETabOptions } from "./useAITabManager";
 import type { AITab, AITabState } from "./AITabTypes";
 import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
@@ -13,6 +13,7 @@ import { isLocalHumanParticipantId } from "./localAIIdentity";
 import { addParticipantIdentityKeys } from "./participantIdentity";
 import type { CodingTaskLaunch } from "./codingTaskLaunch";
 import { userTurnDisplayOptions } from "./userTurnDisplay";
+import { getNewTaskCoverHeld, subscribeNewTaskCoverHeld } from "./task-config/newTaskCoverHold";
 
 /** Pending project tab open request from external (e.g. sidebar "create task") */
 export type PendingProjectTabOpen = CodingTaskLaunch;
@@ -33,6 +34,8 @@ export interface PendingExpertOpen {
      * opens, that paper is abandoned.
      */
     projectPath?: string;
+    /** Scheduled run. Do not take the assistant while the new-task cover is up. */
+    backgroundLaunch?: boolean;
 }
 
 /** Task directory created for an expert. LaTeX experts also name the source file. */
@@ -171,7 +174,7 @@ interface PendingAssistantTabOpenOptions {
     createVETab: (veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline", avatarDataURL?: string, veSkillDescription?: string, options?: CreateVETabOptions) => AITab | null;
     createGroupTab: (id: string, title: string, participants: string[], options?: CreateGroupTabOptions) => AITab | null;
     createProjectTab: (projectPath: string, taskTitle: string, options?: CreateProjectTabOptions) => AITab | null;
-    createExpertTab?: (expert: ExpertDefinition, task?: { projectPath?: string; relativePath?: string }) => AITab | null;
+    createExpertTab?: (expert: ExpertDefinition, task?: { projectPath?: string; relativePath?: string }, options?: { focus?: boolean }) => AITab | null;
     activateTab?: (tabId: string) => void;
     getTabState?: (tabId: string) => AITabState | undefined;
     saveTabState?: (tabId: string, state: Partial<AITabState>) => void;
@@ -198,11 +201,25 @@ interface PendingAssistantTabOpenOptions {
     beforeUserProjectOpen?: (projectPath: string, cloudWorkspaceId?: string) => void;
     /** User is about to open or focus an expert task. */
     beforeUserExpertOpen?: (expertId: string) => void;
+    /** True while the new-task cover is painted. A scheduled launch must not drop it. */
+    newTaskCoverHeld?: () => boolean;
+    /** Expert id of the tab the user is looking at. Empty when that tab is not an expert. */
+    visibleExpertId?: () => string;
+    /**
+     * True when this expert's foreground turn has finished. A following LaTeX
+     * paper must not reset the shared session while the previous turn still runs.
+     * Missing means idle, so callers that do not track rounds are unchanged.
+     */
+    expertSessionIdle?: (expertId: string) => boolean;
+    /** Wakes the parked paper once expertSessionIdle can return true. */
+    whenExpertSessionIdle?: (expertId: string) => Promise<void> | void;
     /**
      * LaTeX wizard launch: archive the previous paper's transcript and clear
      * the shared expert conversation before the new first message is sent.
+     * keepConversation is checked after the archive save. When it returns true
+     * the clear is skipped because the new-task cover caught this expert.
      */
-    resetExpertConversation?: (expertId: string, previousProjectPath?: string) => Promise<void> | void;
+    resetExpertConversation?: (expertId: string, previousProjectPath?: string, keepConversation?: () => boolean) => Promise<void> | void;
     /** Apply the floor recorded by resetExpertConversation once the tab exists. */
     markExpertSessionFloor?: (expertId: string) => void;
 }
@@ -241,6 +258,10 @@ export function usePendingAssistantTabOpen({
     setLatexRelativePath,
     beforeUserProjectOpen,
     beforeUserExpertOpen,
+    newTaskCoverHeld,
+    visibleExpertId,
+    expertSessionIdle,
+    whenExpertSessionIdle,
     resetExpertConversation,
     markExpertSessionFloor,
 }: PendingAssistantTabOpenOptions): LatexEntryWatch {
@@ -392,6 +413,8 @@ export function usePendingAssistantTabOpen({
     createProjectTabRef.current = createProjectTab;
     const beforeUserProjectOpenRef = useRef(beforeUserProjectOpen);
     beforeUserProjectOpenRef.current = beforeUserProjectOpen;
+    const newTaskCoverHeldRef = useRef(newTaskCoverHeld);
+    newTaskCoverHeldRef.current = newTaskCoverHeld;
     const sendMessageRef = useRef(sendMessage);
     sendMessageRef.current = sendMessage;
     const onProjectTabHandledRef = useRef(onPendingProjectTabOpenHandled);
@@ -416,9 +439,12 @@ export function usePendingAssistantTabOpen({
         // Combined with the post-creation history check, this provides two-layer
         // protection against duplicate autoSend.
         const tabExistedInList = hasProjectTabRef.current?.(projectPath, cloudWorkspaceId) ?? false;
-        beforeUserProjectOpenRef.current?.(projectPath, cloudWorkspaceId);
+        // A scheduled run is not the user leaving the new-task cover. Keep the
+        // cover and the tab they were on; the task still opens and sends.
+        const keepCover = pendingProjectTabOpen.backgroundLaunch === true && newTaskCoverHeldRef.current?.() === true;
+        if (!keepCover) beforeUserProjectOpenRef.current?.(projectPath, cloudWorkspaceId);
 
-        const tab = createProjectTabRef.current(projectPath, taskTitle, { prepareMode, openIntent, cloudWorkspaceId, agentMode, remoteHost, remoteSafety, remoteNeedsReconnect });
+        const tab = createProjectTabRef.current(projectPath, taskTitle, { prepareMode, openIntent, cloudWorkspaceId, agentMode, remoteHost, remoteSafety, remoteNeedsReconnect, ...(keepCover ? { focus: false } : {}) });
         if (!tab) {
             onProjectTabHandledRef.current?.({ outcome: "rejected", launchId });
             return;
@@ -581,6 +607,12 @@ export function usePendingAssistantTabOpen({
     setLatexRelativePathRef.current = setLatexRelativePath;
     const beforeUserExpertOpenRef = useRef(beforeUserExpertOpen);
     beforeUserExpertOpenRef.current = beforeUserExpertOpen;
+    const visibleExpertIdRef = useRef(visibleExpertId);
+    visibleExpertIdRef.current = visibleExpertId;
+    const expertSessionIdleRef = useRef(expertSessionIdle);
+    expertSessionIdleRef.current = expertSessionIdle;
+    const whenExpertSessionIdleRef = useRef(whenExpertSessionIdle);
+    whenExpertSessionIdleRef.current = whenExpertSessionIdle;
     const sendExpertMessageRef = useRef(sendExpertMessage);
     sendExpertMessageRef.current = sendExpertMessage;
     const resetExpertConversationRef = useRef(resetExpertConversation);
@@ -589,6 +621,17 @@ export function usePendingAssistantTabOpen({
     markExpertSessionFloorRef.current = markExpertSessionFloor;
     /** Reject a stale async registration when a newer expert launch wins. */
     const expertOpenRequestRef = useRef(0);
+    /** Started launches, by object. A second run with the same prompt is a new object and still sends. */
+    const startedExpertLaunchesRef = useRef<WeakSet<PendingExpertOpen>>(new WeakSet());
+    /** Task registration already finished for a launch that had to wait again. */
+    const preparedExpertLaunchRef = useRef<WeakMap<PendingExpertOpen, { prepared?: EnsuredExpertTask | void }>>(new WeakMap());
+    /** True while one expert open owns the request id. */
+    const expertOpenInFlightRef = useRef(false);
+    /** Scheduled opens parked so they do not reset the expert the cover is protecting. */
+    const deferredExpertLaunchesRef = useRef<PendingExpertOpen[]>([]);
+    // Wake when the cover drops. The open decision reads the callback, which
+    // is already current on that render; this snapshot is only the dependency.
+    const coverHeldNow = useSyncExternalStore(subscribeNewTaskCoverHeld, getNewTaskCoverHeld, getNewTaskCoverHeld);
     const expertLangRef = useRef(lang);
     expertLangRef.current = lang;
     /** One in-flight recovery per expert, so a restored tab is not registered twice. */
@@ -655,6 +698,9 @@ export function usePendingAssistantTabOpen({
     const latexEntryBindRef = useRef<Map<string, string>>(new Map());
     const latexEntryPendingRef = useRef<Set<string>>(new Set());
     const [latexEntryEpoch, setLatexEntryEpoch] = useState(0);
+    // Bumps after a parked open finishes so the next one starts even when the
+    // handoff slot is already empty and the cover flag did not change.
+    const [parkedExpertWake, setParkedExpertWake] = useState(0);
     const releaseLatexEntryPending = (projectPath: string) => {
         if (!latexEntryPendingRef.current.delete(projectPath)) return;
         setLatexEntryEpoch(value => value + 1);
@@ -717,8 +763,85 @@ export function usePendingAssistantTabOpen({
     }, [latexEntryBindKey]);
 
     useEffect(() => {
-        if (!pendingExpertOpen) return;
-        const expert = pendingExpertOpen.expert;
+        // The store value is only a wake-up. The open decision reads the cover
+        // callback, which is already current on the render that dropped it.
+        void coverHeldNow;
+        void parkedExpertWake;
+        const coverUpNow = () => newTaskCoverHeldRef.current?.() === true;
+        const visibleExpert = () => String(visibleExpertIdRef.current?.() || "");
+        const waitsForCover = (candidate: PendingExpertOpen | null | undefined) => {
+            if (candidate?.backgroundLaunch !== true) return false;
+            const id = String(candidate.expert?.id || "").trim();
+            return !!id && coverUpNow() && visibleExpert() === id;
+        };
+        const parked = deferredExpertLaunchesRef.current;
+        const dropParked = (candidate: PendingExpertOpen) => {
+            const index = parked.indexOf(candidate);
+            if (index >= 0) parked.splice(index, 1);
+        };
+        const queued = pendingExpertOpen;
+        // Accepting a send returns while that expert's turn is still running.
+        // The next scheduled paper of the same expert must wait, whether it
+        // was parked under the cover or arrives after the slot was released.
+        // Resetting now would cancel the turn on the shared session.
+        const latexTurnBusy = (candidate: PendingExpertOpen | null | undefined) => {
+            if (candidate?.backgroundLaunch !== true) return false;
+            const id = String(candidate.expert?.id || "").trim();
+            return !!id
+                && isLatexExpertId(id)
+                && !!String(candidate.initialMessage || "").trim()
+                && expertSessionIdleRef.current?.(id) === false;
+        };
+        const armExpertIdleWake = (ticket: PendingExpertOpen) => {
+            const settle = whenExpertSessionIdleRef.current?.(String(ticket.expert?.id || "").trim());
+            if (!settle || typeof (settle as PromiseLike<void>).then !== "function") return false;
+            const wake = () => {
+                if (parked[0] !== ticket || waitsForCover(ticket) || startedExpertLaunchesRef.current.has(ticket)) return;
+                setParkedExpertWake(value => value + 1);
+            };
+            void Promise.resolve(settle).then(wake, wake);
+            return true;
+        };
+        // The cover store woke an open that already started. Re-parking it
+        // here would release the slot and let the next expert cancel it.
+        if (queued && startedExpertLaunchesRef.current.has(queued)) return;
+        if (queued && waitsForCover(queued)) {
+            // The handoff slot means an open is in progress. Parking this
+            // launch and releasing the slot lets a task-list click open
+            // another expert. A second due prompt is appended, not overwritten.
+            if (!parked.includes(queued)) parked.push(queued);
+            onExpertHandledRef.current?.();
+            return;
+        }
+        if (queued && latexTurnBusy(queued)) {
+            if (!parked.includes(queued)) parked.push(queued);
+            if (armExpertIdleWake(queued)) {
+                onExpertHandledRef.current?.();
+                return;
+            }
+        }
+        // A parked paper can start in the same commit that promotes the next
+        // scheduled launch. Starting that launch bumps the request id and
+        // cancels the registration still in flight. A user open still
+        // replaces it: the newer click is the one that should appear.
+        if (queued?.backgroundLaunch === true && expertOpenInFlightRef.current) {
+            if (!parked.includes(queued)) parked.push(queued);
+            onExpertHandledRef.current?.();
+            return;
+        }
+
+        let launch = queued;
+        if (!launch) {
+            if (expertOpenInFlightRef.current) return;
+            const next = parked[0];
+            if (!next || waitsForCover(next) || startedExpertLaunchesRef.current.has(next)) return;
+            if (latexTurnBusy(next) && armExpertIdleWake(next)) return;
+            parked.shift();
+            launch = next;
+        } else {
+            dropParked(launch);
+        }
+        const expert = launch.expert;
         // Release the slot only after this open finishes. Releasing at the
         // start lets the next queued expert bump the request id and cancel
         // the task registration that is still in flight.
@@ -728,26 +851,56 @@ export function usePendingAssistantTabOpen({
             releaseExpertOpen();
             return;
         }
-        const initialMessage = String(pendingExpertOpen.initialMessage || "").trim();
+        startedExpertLaunchesRef.current.add(launch);
+        expertOpenInFlightRef.current = true;
+        const initialMessage = String(launch.initialMessage || "").trim();
         const requestID = ++expertOpenRequestRef.current;
+        const wakeNextParked = () => {
+            const next = parked[0];
+            if (!next || waitsForCover(next)) return;
+            setParkedExpertWake(value => value + 1);
+        };
+        const finishExpertOpen = () => {
+            if (requestID !== expertOpenRequestRef.current) return;
+            expertOpenInFlightRef.current = false;
+            releaseExpertOpen();
+            wakeNextParked();
+        };
+        const parkIfSuperseded = () => {
+            if (requestID === expertOpenRequestRef.current) return false;
+            startedExpertLaunchesRef.current.delete(launch);
+            if (launch.backgroundLaunch === true && !parked.includes(launch)) parked.push(launch);
+            return true;
+        };
 
         const openExpertTab = (prepared?: EnsuredExpertTask | void) => {
-            if (requestID !== expertOpenRequestRef.current) return;
+            if (parkIfSuperseded()) return;
             const create = createExpertTabRef.current;
             if (!create) {
-                releaseExpertOpen();
+                finishExpertOpen();
                 return;
             }
 
             // Wizard handoff: the backend expert branch relies on this first
             // user message to trigger its flow, so it is sent even when the tab
             // already existed (a repeated wizard launch is a new request).
-            const sendInitialMessage = () => {
+            const sendInitialMessage = (): Promise<void> | void => {
                 if (!initialMessage) return;
-                void Promise.resolve(sendExpertMessageRef.current?.(initialMessage, expertId))
+                // Acceptance is not the end of the turn. The next parked paper
+                // waits until this expert session is idle before it resets.
+                return Promise.resolve(sendExpertMessageRef.current?.(initialMessage, expertId))
+                    .then(() => undefined)
                     .catch((error) => {
                         console.warn("[task_management] expert initial message send failed:", error);
                     });
+            };
+            const finishAfterSend = () => {
+                const sent = sendInitialMessage();
+                if (sent) {
+                    void sent.finally(() => finishExpertOpen());
+                    return;
+                }
+                finishExpertOpen();
             };
 
             // Check existence BEFORE creating so the welcome seed only happens on
@@ -755,7 +908,15 @@ export function usePendingAssistantTabOpen({
             const tabId = expertTabId(expertId);
             const existedBefore = (getTabListForExpertRef.current?.() || [])
                 .some(t => t.id === tabId || (t.type === "expert" && t.expertId === expertId));
-            beforeUserExpertOpenRef.current?.(expertId);
+            const background = launch.backgroundLaunch === true;
+            const coverUp = coverUpNow();
+            const onThisExpert = visibleExpert() === expertId;
+            const keepCover = background && coverUp;
+            // The cover dropped onto a different task. Stay there: no focus,
+            // no idle-close, and no paper bound to that task's preview.
+            const quiet = background && !coverUp && !onThisExpert;
+            if (!keepCover && !quiet) beforeUserExpertOpenRef.current?.(expertId);
+            const suppressFocus = keepCover || quiet;
 
             const projectPath = String(prepared?.projectPath || "").trim();
             const relativePath = String(prepared?.relativePath || "").trim();
@@ -763,20 +924,21 @@ export function usePendingAssistantTabOpen({
             // Call with a single argument when no task path exists: callers
             // (and tests) treat create(expert) and create(expert, undefined)
             // as the same invocation, so the arity must stay honest.
-            const tab = expertTask ? create(expert, expertTask) : create(expert);
+            const tab = suppressFocus
+                ? (expertTask ? create(expert, expertTask, { focus: false }) : create(expert, undefined, { focus: false }))
+                : (expertTask ? create(expert, expertTask) : create(expert));
             if (!tab) {
-                releaseExpertOpen();
+                finishExpertOpen();
                 return;
             }
             if (isLatexExpertId(expertId) && initialMessage) {
                 markExpertSessionFloorRef.current?.(expertId);
             }
-            if (projectPath && relativePath) {
+            if (projectPath && relativePath && !suppressFocus) {
                 dispatchOpenLatexDocument({ projectPath, relativePath });
             }
             if (existedBefore) {
-                sendInitialMessage();
-                releaseExpertOpen();
+                finishAfterSend();
                 return;
             }
 
@@ -784,8 +946,7 @@ export function usePendingAssistantTabOpen({
             const hasConversation = Array.isArray(existing?.history)
                 && existing.history.some((m) => isConversationMessage(m) && (m.role === "user" || m.role === "assistant"));
             if (hasConversation) {
-                sendInitialMessage();
-                releaseExpertOpen();
+                finishAfterSend();
                 return;
             }
 
@@ -802,8 +963,7 @@ export function usePendingAssistantTabOpen({
                 inputText: "",
                 lastActiveAt: Date.now(),
             });
-            sendInitialMessage();
-            releaseExpertOpen();
+            finishAfterSend();
         };
         const ensureTask = ensureExpertTaskRef.current;
         const startFreshLatex = isLatexExpertId(expertId) && !!initialMessage;
@@ -814,38 +974,56 @@ export function usePendingAssistantTabOpen({
             : "";
         const openAfterReset = (prepared?: EnsuredExpertTask | void) => {
             const run = () => {
-                if (requestID !== expertOpenRequestRef.current) return;
+                if (parkIfSuperseded()) return;
+                // The cover caught up while registration was in flight. Opening
+                // now would reset the conversation the banner is holding.
+                if (waitsForCover(launch)) {
+                    startedExpertLaunchesRef.current.delete(launch);
+                    if (!parked.includes(launch)) parked.push(launch);
+                    finishExpertOpen();
+                    return;
+                }
                 openExpertTab(prepared);
             };
-            if (!startFreshLatex) {
+            if (!startFreshLatex || waitsForCover(launch)) {
                 run();
                 return;
             }
-            void Promise.resolve(resetExpertConversationRef.current?.(expertId, previousLatexPath)).then(run, (error) => {
+            void Promise.resolve(resetExpertConversationRef.current?.(expertId, previousLatexPath, () => waitsForCover(launch))).then(run, (error) => {
                 console.warn("[task_management] latex fresh session reset failed:", error);
                 run();
             });
         };
+        const cached = preparedExpertLaunchRef.current.get(launch);
+        if (cached) {
+            openAfterReset(cached.prepared);
+            return;
+        }
         if (!ensureTask) {
             openAfterReset();
             return;
         }
-        const existingDocument = pendingExpertOpen.latexDocument;
+        const existingDocument = launch.latexDocument;
         // Same arity discipline as create: omit the second argument when there
         // is no LaTeX document so single-argument observers stay consistent.
-        const freshLatexPath = startFreshLatex ? String(pendingExpertOpen.projectPath || "").trim() : "";
-        void Promise.resolve(existingDocument ? ensureTask(expert, existingDocument) : ensureTask(expert)).then((prepared) => openAfterReset(prepared)).catch((error) => {
+        const freshLatexPath = startFreshLatex ? String(launch.projectPath || "").trim() : "";
+        void Promise.resolve(existingDocument ? ensureTask(expert, existingDocument) : ensureTask(expert)).then((prepared) => {
+            preparedExpertLaunchRef.current.set(launch, { prepared });
+            openAfterReset(prepared);
+        }).catch((error) => {
+            if (parkIfSuperseded()) return;
             // Task management is the durable entry point for experts. Do not
             // open a tab that cannot be reached again from the sidebar.
             console.error("[task_management] create expert task failed:", error);
-            releaseExpertOpen();
+            finishExpertOpen();
             if (!freshLatexPath) return;
             void AbandonUnopenedFreshLatexTask(freshLatexPath).catch((abandonError) => {
                 console.warn("[task_management] abandon unopened latex paper failed:", abandonError);
             });
         });
-    }, [pendingExpertOpen]);
-    // ↑ ONLY pendingExpertOpen in deps. All callbacks accessed via refs.
+    }, [coverHeldNow, parkedExpertWake, pendingExpertOpen]);
+    // ↑ pendingExpertOpen starts an open. coverHeldNow and parkedExpertWake
+    // only wake a parked one. Callbacks are read through refs.
     return {
         epoch: latexEntryEpoch,
         pending: (projectPath: string) => latexEntryPendingRef.current.has(String(projectPath || "").trim()),

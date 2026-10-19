@@ -61,11 +61,14 @@ func TestBuildSituationReport_FullContext(t *testing.T) {
 		CurrentTime:       time.Date(2026, 5, 14, 15, 0, 0, 0, time.Local),
 	})
 
-	checks := []string{"进行中", "工作流", "SSH会话", "后台任务", "最近完成", "时间"}
+	checks := []string{"进行中", "工作流", "SSH会话", "后台任务", "最近完成"}
 	for _, check := range checks {
 		if !strings.Contains(got, check) {
 			t.Errorf("missing section: %s\nfull report:\n%s", check, got)
 		}
+	}
+	if strings.Contains(got, "时间:") {
+		t.Errorf("minute clock entered the situation report:\n%s", got)
 	}
 }
 

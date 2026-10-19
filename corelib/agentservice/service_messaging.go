@@ -18,6 +18,12 @@ import (
 
 const maxMessageAttachments = coreim.ThirdPartyMaxAttachments
 
+// FinishDesktopRound runs when a request-scoped round returns. The host
+// drops that user's desktop binding here. Nil leaves the round with no
+// extra host work. SendMessage still returns when the round returns; this
+// does not start a loop that stays on the user.
+var FinishDesktopRound func(tenantID, userID, runID string)
+
 func (s *Service) SendMessage(ctx context.Context, p Principal, instanceID string, in SendMessageInput) (*Session, *Run, *Message, error) {
 	if err := s.beginRequest(); err != nil {
 		return nil, nil, nil, err
@@ -206,10 +212,14 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	// idempotent replays and validation failures must not inflate execution
 	// counters. terminalStatus is set on every post-admission return path.
 	var admitted bool
+	var roundRunID string
 	terminalStatus := "failed"
 	defer func() {
 		if admitted {
 			s.RuntimeMetrics().RecordTurnFinished(p.TenantID, terminalStatus)
+			if FinishDesktopRound != nil && roundRunID != "" {
+				FinishDesktopRound(p.TenantID, p.UserID, roundRunID)
+			}
 		}
 	}()
 	tenant, err := s.store.GetTenant(p.TenantID)
@@ -363,6 +373,7 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 		return nil, nil, err
 	}
 	admitted = true
+	roundRunID = run.ID
 	// Replay returns above this line. The pointer stays false for that
 	// call, so its finish hook can release a repeated occupy without
 	// taking the handoff the executing run still owns.
@@ -387,6 +398,8 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 		}
 	}
 	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "run.started", ResourceType: "run", ResourceID: run.ID, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: mergeCorrelationMetadata(ctx, map[string]string{"instance_id": instanceID, "session_id": sessionID})})
+	// Load this conversation from the store for this round only. The slice
+	// lives on the execute request and is not kept on the user after return.
 	history, histErr := s.store.ListMessages(sess.ID)
 	if histErr != nil {
 		// The run may already have been returned to an async caller. Persist a

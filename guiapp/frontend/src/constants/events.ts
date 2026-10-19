@@ -216,4 +216,6 @@ export type OpenTaskLaunchDetail = {
     noWorkflowInterception?: boolean;
     /** Send initialMessage even if this task's tab is already open. */
     deliverInitialMessage?: boolean;
+    /** Scheduled run: do not take the assistant while the new-task cover is up. */
+    backgroundLaunch?: boolean;
 };

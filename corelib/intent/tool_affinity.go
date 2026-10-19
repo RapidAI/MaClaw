@@ -21,6 +21,7 @@ func NewToolAffinityRegistry() *ToolAffinityRegistry {
 			LabelMailboxRead:      {"mailbox_query"},
 			LabelMailboxSend:      {"mailbox_send"},
 			LabelMailboxConfigure: {"mailbox_configure"},
+			LabelMailboxDelete:    {"mailbox_delete"},
 			LabelBrowser: {
 				"browser",
 			},

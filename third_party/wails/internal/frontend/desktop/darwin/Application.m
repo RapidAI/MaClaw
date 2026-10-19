@@ -73,6 +73,12 @@ void ExecJS(void* inctx, const char *script) {
     );
 }
 
+void* FileCompanionWKWebView(void* inctx) {
+    if (inctx == NULL) return NULL;
+    WailsContext *ctx = (__bridge WailsContext*) inctx;
+    return (__bridge void*)ctx.webview;
+}
+
 void SetTitle(void* inctx, const char *title) {
     WailsContext *ctx = (__bridge WailsContext*) inctx;
     NSString *_title = safeInit(title);

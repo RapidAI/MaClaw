@@ -157,7 +157,7 @@ export const getSettingsTabOptions = (lang: string, options: { hideVirtualEmploy
         {
             id: 'ui' as const,
             label: textForLang(lang, 'UI Config', 'UI 配置', 'UI 配置'),
-            desc: textForLang(lang, 'UI scaling and display behavior', '界面缩放与显示行为', '介面縮放與顯示行為'),
+            desc: textForLang(lang, 'UI scaling, display, and assistant fonts', '界面缩放、显示与助手字体', '介面縮放、顯示與助手字體'),
             icon: settingsTabIcons.ui,
         },
         {

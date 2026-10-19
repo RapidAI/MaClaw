@@ -115,6 +115,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		var entries []agent.ConversationEntry
 		if h != nil && h.memory != nil {
 			entries = h.memory.Load(msg.UserID)
+			entries = fileCompanionStripNoteExcerptHistory(msg.UserID, entries)
 		}
 		historyCh <- historyLoadResult{entries: entries, elapsed: time.Since(start)}
 	}()
@@ -267,13 +268,13 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 						loopCtx.semanticPriorPlanClosed = true
 					}
 					residue.PlanClosed = false
-					if key, desktop := semanticResidueSessionKey(msg); desktop {
+					if key, scoped := semanticResidueSessionKey(msg); scoped {
 						h.storeSemanticSessionResidue(key, residue)
 					}
 				}
 				shellConsent := semanticConsentShellClassification(*semanticIntent, history, planClosed)
 				consentLeaves := shellConsent != nil && semanticResidueWaveSpent(residue)
-				if key, desktop := semanticResidueSessionKey(msg); desktop && residueOpen && semanticIntent != nil && (semanticSpentWaveRelease(*semanticIntent, residue, msg.Text) || consentLeaves) {
+				if key, scoped := semanticResidueSessionKey(msg); scoped && residueOpen && semanticIntent != nil && (semanticSpentWaveRelease(*semanticIntent, residue, msg.Text) || consentLeaves) {
 					h.completeSpentSemanticSessionResidue(key, residue)
 					residueOpen = false
 					releasedSpentWave = true
@@ -338,6 +339,15 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 						if applied {
 							planned = rewritten
 						}
+						// planned may already be a shell or file write taken from
+						// the open needs. Restore reads the sentence from before
+						// that rewrite, so a companion cannot hide the stored task.
+						sentence := *semanticIntent
+						if restored, ok := semanticRestoreResidueIntentPrimary(&sentence, residue, relation); ok {
+							planned = restored
+							applied = true
+							log.Printf("[semantic-routing] session residue restored primary=%s user=%q relation=%s", restored.Primary, msg.UserID, relation)
+						}
 						if relation == semanticResidueContinue || relation == semanticResidueUnclear {
 							loopCtx.semanticResidueRemaining = semanticResidueRemainingForOpenTurn(residue, planned)
 							// planned still carries the open task's search label.
@@ -345,9 +355,9 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 							loopCtx.semanticResidueLookupFacts = residue.LookupFacts && semanticStoredLookupFactsApply(msg.Text, planned, &bareIntent)
 						}
 						if applied {
-							semanticIntent = &rewritten
+							semanticIntent = &planned
 							executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
-							log.Printf("[semantic-routing] session residue %s user=%q primary=%s", relation, msg.UserID, rewritten.Primary)
+							log.Printf("[semantic-routing] session residue %s user=%q primary=%s", relation, msg.UserID, planned.Primary)
 						}
 					}
 				} else if factsOnly && semanticStoredLookupFactsApply(msg.Text, *semanticIntent, &bareIntent) {
@@ -368,6 +378,11 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 			semanticIntent = rewritten
 			executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
 			log.Printf("[semantic-routing] explicit knowledge-write request user=%q", msg.UserID)
+		}
+		if rewritten := semanticMailboxDeletePlanningRewrite(semanticIntent, msg.Text); rewritten != nil {
+			semanticIntent = rewritten
+			executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+			log.Printf("[semantic-routing] mailbox delete planning user=%q", msg.UserID)
 		}
 		semanticIntent = projectStoredTurnIntent(msg.UserID, msg.Text, msg.NoWorkflowInterception, semanticIntent)
 		loopCtx.Runtime.Execution = h.continuationKeepsParentExecution(executionProfile, msg.UserID, msg.Text, semanticIntent)

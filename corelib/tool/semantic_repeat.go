@@ -38,6 +38,12 @@ const RepeatSiblingBudgetLimit = 32
 // write succeeded, and it may continue until this ceiling.
 const MaxRepeatFamilyInvocations = 256
 
+// InstalledMCPRepeatCeiling is how many times one installed MCP tool may run
+// in a turn. Each sibling is an external side effect, so the ceiling is the
+// published repeat budget. Local file writes and remote commands keep the
+// larger turn ceiling above.
+const InstalledMCPRepeatCeiling = RepeatSiblingBudgetLimit
+
 // RepeatSiblingNeedID names the index-th invocation of a repeatable need.
 // Index 0 returns the base identity unchanged, so a single-invocation need
 // keeps the exact ID it had before repeats existed and no already-published
@@ -148,7 +154,7 @@ func AppendRepeatSibling(plan ToolPlan, prototypeSelectionID string) (ToolPlan, 
 	// nodes are the whole allowance. Promising another call and then appending
 	// it is how a knowledge-save turn keeps executing bash after the save tool
 	// is already listed.
-	if count < 1 || count >= MaxRepeatFamilyInvocations || nextIndex < 1 || (count < 2 && !iterative) || repeatFamilyIsCompanionOnly(plan, family) || (!iterative && repeatFamilyHasContinuation(plan, family)) {
+	if count < 1 || count >= iterativeRepeatCeiling(prototype) || nextIndex < 1 || (count < 2 && !iterative) || repeatFamilyIsCompanionOnly(plan, family) || (!iterative && repeatFamilyHasContinuation(plan, family)) {
 		return plan, "", false
 	}
 	needID := RepeatSiblingNeedID(family, nextIndex)
@@ -208,13 +214,45 @@ func repeatFamilyNextIndex(plan ToolPlan, family string) (count, nextIndex int) 
 }
 
 // IterativeRepeatCapability reports a selection the same user task keeps
-// calling until the work is done. Local file mutation and remote command
-// are that class. A download, search, or send is a published wave plus at
-// most one continuation: another node after that would feed the spent-budget
-// note. A recorded fit proof is the authority. The need id is only a
-// fallback when that proof was not copied onto the selection.
+// calling until the work is done. Local file mutation, remote command, and
+// an installed MCP tool are that class. A download, search, or send is a
+// published wave plus at most one continuation: another node after that
+// would feed the spent-budget note. A recorded fit proof is the authority.
+// The need id is only a fallback when that proof was not copied onto the
+// selection.
 func IterativeRepeatCapability(selection PlannedSelection) bool {
-	return IterativeLocalFileWrite(selection) || IterativeRemoteCommand(selection)
+	return IterativeLocalFileWrite(selection) || IterativeRemoteCommand(selection) || IterativeInstalledMCP(selection)
+}
+
+// iterativeRepeatCeiling is the hard cap for one iterative family. Installed
+// MCP stops at InstalledMCPRepeatCeiling. Every other iterative family keeps
+// the turn ceiling. A one-shot family still stops after its continuation;
+// this cap does not raise that family.
+func iterativeRepeatCeiling(selection PlannedSelection) int {
+	if IterativeInstalledMCP(selection) {
+		return InstalledMCPRepeatCeiling
+	}
+	return MaxRepeatFamilyInvocations
+}
+
+// IterativeInstalledMCP reports a selection that calls one installed MCP
+// tool. A record edit is several calls, and each settled call must leave the
+// next grant on the surface. The fit proof is the authority: a proof that is
+// not an x:mcp: capability stays one-shot even when the need id mentions mcp.
+// An empty proof falls back to an mcp provider, or to a need id that carries
+// the host address or the installed-mcp marker.
+func IterativeInstalledMCP(selection PlannedSelection) bool {
+	if recorded := strings.TrimSpace(string(selection.FitProof.MatchedCapability)); recorded != "" {
+		return strings.HasPrefix(recorded, "x:mcp:")
+	}
+	if strings.EqualFold(strings.TrimSpace(selection.Provider.Kind), "mcp") {
+		return true
+	}
+	id := strings.TrimSpace(selection.NeedID)
+	if id == "" {
+		id = strings.TrimSpace(selection.ID)
+	}
+	return strings.Contains(id, "x:mcp:") || strings.Contains(id, "installed-mcp:")
 }
 
 // IterativeLocalFileWrite reports a selection whose capability is local

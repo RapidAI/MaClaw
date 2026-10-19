@@ -48,10 +48,13 @@ func TestAManagedTurnIsNotTaughtToCallToolsByName(t *testing.T) {
 // model its device, time, and slash-command context for no safety gain.
 func TestAManagedTurnKeepsTheFactualState(t *testing.T) {
 	managed := guiPostSSHRules(t, true)
-	for _, kept := range []string{"## 当前设备状态", "- 平台: ", "- 当前时间: ", "## 对话管理"} {
+	for _, kept := range []string{"## 当前设备状态", "- 平台: ", "## 对话管理"} {
 		if !strings.Contains(managed, kept) {
 			t.Errorf("managed prompt dropped factual state %q", kept)
 		}
+	}
+	if strings.Contains(managed, "当前时间:") {
+		t.Errorf("minute clock entered the system prompt: %s", managed)
 	}
 }
 

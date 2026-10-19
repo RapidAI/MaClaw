@@ -32,6 +32,7 @@ import { buildOutgoingMessageMulti } from "../useAIAssistant";
 import { defaultTaskDraft, draftFromWizardSeed, isDraftDefault, withCloudWorkspace, type NewTaskWizardSeed, type TaskDraft } from "./taskDraft";
 import { isRunWindowScheduled, runWindowCreatedNotice, runWindowCreateRequest, validateRunWindow } from "./runWindow";
 import { dispatchDueRunWindows, launchRunWindowTask } from "./runWindowDispatch";
+import { setNewTaskCoverHeld } from "./newTaskCoverHold";
 import {
     createLatexDocumentForTask,
     isLatexExpertId,
@@ -100,6 +101,14 @@ export interface TaskConfigWiringOptions {
     selectedFilePaths?: readonly string[];
     /** Puts composer text back on screen (local tab still visible). */
     showComposerText?: (text: string) => void;
+    /** New-task screen draft. It is not the conversation composer's text. */
+    guideInputValue?: string;
+    guideInputRef?: { current: HTMLTextAreaElement | null };
+    /** Files the new-task screen itself is holding. Empty unless that screen added them. */
+    guidePendingAttachments?: readonly unknown[];
+    guideSelectedFilePaths?: readonly string[];
+    /** Clears the new-task draft only. */
+    clearGuideDraft?: () => void;
     replacePendingAttachments?: (items: unknown[]) => void;
     /** Picker files, restored with the covered conversation's composer. */
     replaceSelectedFilePaths?: (paths: string[]) => void;
@@ -159,9 +168,9 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
     const {
         activeTab, isLocalTabActive, lang, taskListProp,
         inputRef, inputValue, composeAction, inputLocked, assistantBusy = false, keepExecutionSurface = false, localGuideVisible = false,
-        pendingAttachments, selectedFilePaths, showComposerText, replacePendingAttachments, replaceSelectedFilePaths, activeChatVisible = false,
+        pendingAttachments, selectedFilePaths, showComposerText, guideInputValue = "", guideInputRef, guidePendingAttachments, guideSelectedFilePaths, clearGuideDraft, replacePendingAttachments, replaceSelectedFilePaths, activeChatVisible = false,
         handleSend, handleWelcomePromptSend, clearComposerDraft,
-        getTabs, getTabState, saveTabState, activateTab,
+        getTabs, getTabState, saveTabState,
         setQueueInteractionStarted, setQueueEditDraftActive, setEditingEntryId,
         showAlert,
     } = options;
@@ -181,8 +190,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
     const [taskConfigError, setTaskConfigError] = useState("");
     const [taskConfigSending, setTaskConfigSending] = useState(false);
     const taskConfigSendingRef = useRef(false);
-    // Welcome page drawn over a conversation that is still executing. The
-    // history stays put; dismissing or a successful create retires the cover.
+    // The new-task screen is showing. The conversation underneath stays mounted.
     const [wizardOverlay, setWizardOverlay] = useState(false);
     const wizardOverlayRef = useRef(false);
     wizardOverlayRef.current = wizardOverlay;
@@ -407,7 +415,10 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         // Publish before the next render. A repeated Enter in this turn must
         // not still see the scheduled draft and create another copy.
         taskConfigDraftRef.current = next;
-        clearComposerDraft({ clearAttachments: true, focus: options?.focus !== false });
+        // The new-task screen over another tab has its own draft. Clearing the
+        // shared composer would erase the conversation the user is coming back to.
+        if (wizardOverlayRef.current && !isLocalTabActive) clearGuideDraft?.();
+        else clearComposerDraft({ clearAttachments: true, focus: options?.focus !== false });
         setTaskConfigDraft(next);
         const coveredTurn = wizardOverlayRef.current;
         setWizardOverlay(false);
@@ -417,7 +428,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         if (covered?.text) showComposerText?.(covered.text);
         if (covered?.attachments?.length) replacePendingAttachments?.(covered.attachments);
         if (covered?.selectedPaths?.length) replaceSelectedFilePaths?.(covered.selectedPaths);
-    }, [clearComposerDraft, replacePendingAttachments, replaceSelectedFilePaths, retireLocalWizardFlag, showComposerText]);
+    }, [clearComposerDraft, clearGuideDraft, isLocalTabActive, replacePendingAttachments, replaceSelectedFilePaths, retireLocalWizardFlag, showComposerText]);
 
     const runConfiguredTaskSend = useCallback(async (rawText: string, sendOptions?: { force?: boolean; initialMessage?: string }): Promise<boolean> => {
         const draft = taskConfigDraftRef.current;
@@ -519,20 +530,25 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
     // on its default. A live local conversation, and project-tab welcomes,
     // keep the legacy path.
     const isNewTaskWizardTabActive = useCallback((): boolean => {
+        // The cover paints before the local tab is active. Enter in that gap
+        // creates a task; it must not send into the conversation underneath.
+        if (wizardOverlay) return true;
         if (!isLocalTabActive) return false;
-        return localGuideVisible || wizardOverlay || !!getTabState(activeTab.id)?.newTaskWizard;
+        return localGuideVisible || !!getTabState(activeTab.id)?.newTaskWizard;
     }, [activeTab.id, getTabState, isLocalTabActive, localGuideVisible, wizardOverlay]);
 
     const collectGuideFilePaths = useCallback((): string[] => {
+        // Over another tab, the new-task screen must not send that tab's files.
+        const separate = wizardOverlay && !isLocalTabActive;
         const paths = [
-            ...(selectedFilePaths ?? []),
-            ...(pendingAttachments ?? []).map((item) => {
+            ...(separate ? (guideSelectedFilePaths ?? []) : (selectedFilePaths ?? [])),
+            ...(separate ? (guidePendingAttachments ?? []) : (pendingAttachments ?? [])).map((item) => {
                 if (!item || typeof item !== "object") return "";
                 return String((item as { filePath?: unknown }).filePath || "").trim();
             }),
         ];
         return paths.map((path) => path.trim()).filter((path, index, all) => path.length > 0 && all.indexOf(path) === index);
-    }, [pendingAttachments, selectedFilePaths]);
+    }, [guidePendingAttachments, guideSelectedFilePaths, isLocalTabActive, pendingAttachments, selectedFilePaths, wizardOverlay]);
 
     const scheduleConfiguredTask = useCallback(async (named: string, initialMessage: string): Promise<boolean> => {
         const draft = taskConfigDraftRef.current;
@@ -614,7 +630,10 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             handleSend();
             return;
         }
-        const rawInputValue = inputRef.current?.value ?? inputValue;
+        const separateScreen = wizardOverlayRef.current && !isLocalTabActive;
+        const rawInputValue = separateScreen
+            ? (guideInputRef?.current?.value ?? guideInputValue)
+            : (inputRef.current?.value ?? inputValue);
         const raw = (rawInputValue || "").trim();
         const text = applyComposeActionToText(raw, (composeAction as ComposeAction | null) ?? null);
         // /goal <objective> is a new task. Session verbs and other slash
@@ -641,7 +660,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             return;
         }
         void startGuideTask(text, wizardActive, composeAction ? raw : undefined);
-    }, [collectGuideFilePaths, composeAction, handleSend, inputValue, isNewTaskWizardTabActive, startGuideTask]);
+    }, [collectGuideFilePaths, composeAction, guideInputRef, guideInputValue, handleSend, inputValue, isLocalTabActive, isNewTaskWizardTabActive, startGuideTask]);
 
     // Welcome card "send now" path uses the same task create, including files
     // already sitting on the composer.
@@ -671,119 +690,89 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
     }, [collectGuideFilePaths, composeAction, handleWelcomePromptSend, isNewTaskWizardTabActive, startGuideTask]);
 
     // --- New-task wizard page opening (task-pane "新建任务" button) ---
-    // Phase 1 activates the fixed local tab; phase 2 runs one tick later so
-    // its closures see the local tab as active (clear/mark target the local
-    // session, not whatever tab was active when the button was clicked).
+    // Opening the screen does not switch tabs and does not unmount the
+    // transcript. Another tab keeps its composer. The local tab has one draft
+    // slot, so that text moves into the stash and comes back on Back.
     const pendingWizardSeedRef = useRef<NewTaskWizardSeed | null>(null);
-    const openNewTaskWizardRef = useRef<(switchedFromOtherTab?: boolean, seed?: NewTaskWizardSeed | null) => void>(() => {});
-    openNewTaskWizardRef.current = (switchedFromOtherTab = false, seed: NewTaskWizardSeed | null = null) => {
+    const openNewTaskWizard = useCallback(() => {
+        const seed = pendingWizardSeedRef.current;
+        pendingWizardSeedRef.current = null;
+        const localTab = getTabs().find(tab => tab.type === "local");
+        if (!localTab) return;
+        const separate = !isLocalTabActive;
         const applySeed = () => {
             if (!String(seed?.expertId || "").trim() && !String(seed?.workflowTemplateId || "").trim()) return;
             setTaskConfigDraft(draftFromWizardSeed(seed));
             setTaskConfigError("");
-            // A template, workflow, or expert launch is a new task. Leftover
-            // guide text must not become its first message.
-            clearComposerDraft({ clearAttachments: true });
+            // A template must not keep leftover guide text as its first message.
+            // The other tab's composer is a different box and stays put.
+            if (separate) clearGuideDraft?.();
+            else clearComposerDraft({ clearAttachments: true });
         };
-        const localTab = getTabs().find(tab => tab.type === "local");
-        if (!localTab) return;
+        const focusGuide = () => {
+            window.requestAnimationFrame(() => {
+                const node = (separate ? guideInputRef?.current : inputRef.current) ?? inputRef.current;
+                node?.focus();
+            });
+        };
+        if (wizardOverlayRef.current) {
+            saveTabState(localTab.id, { newTaskWizard: true });
+            applySeed();
+            focusGuide();
+            return;
+        }
+        if (localGuideVisible) {
+            if (assistantBusy) setWizardOverlay(true);
+            saveTabState(localTab.id, { newTaskWizard: true });
+            applySeed();
+            focusGuide();
+            return;
+        }
         const chatTurn = (entry: unknown) => {
             const msg = entry as { role?: unknown };
             return !!msg && typeof msg === "object" && (msg.role === "user" || msg.role === "assistant");
         };
         const state = getTabState(localTab.id);
-        // Only the local tab's own transcript. `activeChatVisible` is the
-        // active tab after the switch; another session's messages must not
-        // make an empty guide look like a conversation to cover.
-        const hasConversation = (Array.isArray(state?.history) ? state.history : []).some(chatTurn)
+        const localHasConversation = (Array.isArray(state?.history) ? state.history : []).some(chatTurn)
             || (isLocalTabActive && activeChatVisible);
-        const markWizardPage = () => {
-            setQueueInteractionStarted(false);
-            setQueueEditDraftActive(false);
-            setEditingEntryId(null);
-            clearComposerDraft({ clearAttachments: true });
-            saveTabState(localTab.id, { newTaskWizard: true });
-            requestAnimationFrame(() => inputRef.current?.focus());
-        };
-        // Welcome page over a live turn. History and the queue stay; only the
-        // shared composer is parked so the new task starts from an empty box.
-        const coverRunningConversation = () => {
+        if (keepExecutionSurface && localHasConversation) {
+            if (assistantBusy) window.dispatchEvent(new CustomEvent(EVENT_NEW_TASK_WIZARD_BLOCKED));
+            return;
+        }
+        // One draft slot. Move the follow-up out so the new task starts empty.
+        const coverLocalConversation = isLocalTabActive && (localHasConversation || assistantBusy);
+        if (coverLocalConversation) {
             if (!composerStashRef.current) {
                 composerStashRef.current = {
                     text: inputRef.current?.value ?? inputValue,
                     attachments: [...(pendingAttachments ?? [])],
                     selectedPaths: [...(selectedFilePaths ?? [])],
                 };
+                setTaskConfigDraft(defaultTaskDraft());
+                setTaskConfigError("");
+                clearComposerDraft({ clearAttachments: true });
             }
-            setTaskConfigDraft(defaultTaskDraft());
-            setTaskConfigError("");
-            clearComposerDraft({ clearAttachments: true });
-            saveTabState(localTab.id, { newTaskWizard: true });
-            window.setTimeout(() => inputRef.current?.focus(), 0);
-        };
-        // A second click while the cover is up must not wipe what they just typed.
-        if (wizardOverlayRef.current) {
-            saveTabState(localTab.id, { newTaskWizard: true });
-            applySeed();
-            window.setTimeout(() => inputRef.current?.focus(), 0);
-            return;
-        }
-        // Already the new-task page. Opening it again must not clear the draft.
-        // A busy turn on another tab still locks this composer; the cover flag
-        // unlocks it without hiding a conversation that is not on screen.
-        if (localGuideVisible) {
-            if (assistantBusy) setWizardOverlay(true);
-            saveTabState(localTab.id, { newTaskWizard: true });
-            applySeed();
-            window.setTimeout(() => inputRef.current?.focus(), 0);
-            return;
-        }
-        // The visible + sits on an open task, so this tick can still see the
-        // task identity and a hidden guide. The guide draft was just restored
-        // with the local tab; drop only the latches that keep the welcome
-        // page hidden. A busy flag here still belongs to the tab we left.
-        if (switchedFromOtherTab && !hasConversation && !(isLocalTabActive && assistantBusy)) {
-            setQueueInteractionStarted(false);
-            setQueueEditDraftActive(false);
-            setEditingEntryId(null);
-            saveTabState(localTab.id, { newTaskWizard: true });
-            applySeed();
-            window.setTimeout(() => inputRef.current?.focus(), 0);
-            return;
-        }
-        // Recording and ACP mirrors own the execution surface.
-        if (hasConversation && keepExecutionSurface) {
-            if (assistantBusy) window.dispatchEvent(new CustomEvent(EVENT_NEW_TASK_WIZARD_BLOCKED));
-            return;
-        }
-        if (hasConversation) {
-            // Cover either a running or a finished chat. Clearing it would
-            // cancel the turn and delete the transcript.
             setWizardOverlay(true);
-            coverRunningConversation();
+            saveTabState(localTab.id, { newTaskWizard: true });
             applySeed();
+            focusGuide();
             return;
         }
-        // A turn can be running before any transcript line exists. Park the
-        // composer so Back can restore it; wiping it here is not recoverable.
-        if (assistantBusy) {
+        if (!isLocalTabActive) {
             setWizardOverlay(true);
-            coverRunningConversation();
+            saveTabState(localTab.id, { newTaskWizard: true });
             applySeed();
+            focusGuide();
             return;
         }
-        markWizardPage();
+        setQueueInteractionStarted(false);
+        setQueueEditDraftActive(false);
+        setEditingEntryId(null);
+        clearComposerDraft({ clearAttachments: true });
+        saveTabState(localTab.id, { newTaskWizard: true });
         applySeed();
-    };
-    const openNewTaskWizard = useCallback(() => {
-        const seed = pendingWizardSeedRef.current;
-        pendingWizardSeedRef.current = null;
-        const localTab = getTabs().find(tab => tab.type === "local");
-        if (!localTab) return;
-        const switchedFromOtherTab = activeTab.id !== localTab.id;
-        if (switchedFromOtherTab) activateTab(localTab.id);
-        window.setTimeout(() => openNewTaskWizardRef.current(switchedFromOtherTab, seed), 0);
-    }, [activateTab, activeTab.id, getTabs]);
+        focusGuide();
+    }, [activeChatVisible, assistantBusy, clearComposerDraft, clearGuideDraft, getTabState, getTabs, guideInputRef, inputRef, inputValue, isLocalTabActive, keepExecutionSurface, localGuideVisible, pendingAttachments, saveTabState, selectedFilePaths, setEditingEntryId, setQueueEditDraftActive, setQueueInteractionStarted]);
     useEffect(() => {
         const handler = (event: Event) => {
             const detail = (event as CustomEvent<NewTaskWizardSeed | undefined>).detail;
@@ -837,6 +826,10 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         }
         if (marked) saveTabState(activeTab.id, { newTaskWizard: false });
     }, [activeTab.id, getTabState, isLocalTabActive, localGuideVisible, saveTabState, wizardOverlay]);
+    useEffect(() => {
+        setNewTaskCoverHeld(wizardOverlay);
+        return () => setNewTaskCoverHeld(false);
+    }, [wizardOverlay]);
 
     const dismissWizardOverlay = useCallback(() => {
         const covered = composerStashRef.current;
@@ -862,14 +855,14 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         onCreateCloud: handleTaskConfigCreateCloud,
         onRenameCloud: handleTaskConfigRenameCloud,
         // The cover creates a different task, so the running turn's lock does
-        // not disable its config chips. Only the local tab hosts that cover.
-        disabled: inputLocked && !(wizardOverlay && isLocalTabActive),
+        // not disable its chips — including the paint before the local tab is active.
+        disabled: inputLocked && !wizardOverlay,
         sending: taskConfigSending,
         error: taskConfigError,
         defaultExpanded: isNewTaskWizardTabActive(),
     }), [
         taskConfigDraft, taskConfigExperts, taskConfigWorkflows, taskConfigLatexTemplates, loadTaskConfigLatexTemplates, taskConfigCloudWorkspaces, taskConfigRecentPaths,
-        handleTaskConfigBrowseLocal, handleTaskConfigCreateCloud, handleTaskConfigRenameCloud, inputLocked, wizardOverlay, isLocalTabActive, taskConfigSending, taskConfigError,
+        handleTaskConfigBrowseLocal, handleTaskConfigCreateCloud, handleTaskConfigRenameCloud, inputLocked, wizardOverlay, taskConfigSending, taskConfigError,
         isNewTaskWizardTabActive,
     ]);
 

@@ -773,6 +773,22 @@ export function messageIsLocalSession(message: ChatMessage): boolean {
     return !owner || owner === "desktop-user";
 }
 
+function liveTimelineSame(left: ChatMessage["codingTimeline"], right: ChatMessage["codingTimeline"]): boolean {
+    if (left === right) return true;
+    if (!left || !right || left.length !== right.length) return false;
+    for (let i = 0; i < left.length; i += 1) {
+        if (left[i] !== right[i]) return false;
+    }
+    return true;
+}
+
+/** Timeline rows are compared by identity above. Stringifying them copies the whole thought. */
+function messageWithoutLiveTimeline(message: ChatMessage): Omit<ChatMessage, "codingTimeline" | "pendingCodingThoughts"> {
+    if (!message.codingTimeline && !message.pendingCodingThoughts) return message;
+    const { codingTimeline: _timeline, pendingCodingThoughts: _pending, ...rest } = message;
+    return rest;
+}
+
 export function chatHistoriesEquivalent(left: ChatMessage[] | undefined, right: ChatMessage[]): boolean {
     const a = Array.isArray(left) ? left : [];
     if (a.length !== right.length) return false;
@@ -782,13 +798,18 @@ export function chatHistoriesEquivalent(left: ChatMessage[] | undefined, right: 
         // The common live-sync path reuses message objects that did not change.
         // Avoid serializing large markdown/tool payloads for those entries.
         if (leftMessage === rightMessage) continue;
+        // A streamed token appends. Length and row identity catch that without
+        // copying the thought. Same-length edits still take the structural check.
+        if ((leftMessage.content || "").length !== (rightMessage.content || "").length) return false;
+        if ((leftMessage.reasoning || "").length !== (rightMessage.reasoning || "").length) return false;
+        if (!liveTimelineSame(leftMessage.codingTimeline, rightMessage.codingTimeline)) return false;
+        if (!liveTimelineSame(leftMessage.pendingCodingThoughts, rightMessage.pendingCodingThoughts)) return false;
         // This predicate guards a persistence write, not just a text rerender.
         // Comparing a selected subset silently loses later updates such as an
-        // injection label, streamed reasoning, task actions, or file evidence
-        // after switching tabs. ChatMessage is intentionally data-only, so a
-        // structural comparison is safe and keeps saved history faithful to the
-        // bubble the user actually saw.
-        if (JSON.stringify(leftMessage) !== JSON.stringify(rightMessage)) return false;
+        // injection label, task actions, or file evidence after switching tabs.
+        // ChatMessage is intentionally data-only, so a structural comparison is
+        // safe and keeps saved history faithful to the bubble the user saw.
+        if (JSON.stringify(messageWithoutLiveTimeline(leftMessage)) !== JSON.stringify(messageWithoutLiveTimeline(rightMessage))) return false;
     }
     return true;
 }

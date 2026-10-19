@@ -86,6 +86,8 @@ func (a *App) buildLocalScheduledTaskExecutor() scheduler.TaskExecutor {
 	return func(ctx context.Context, task *scheduler.ScheduledTask) (string, error) {
 		// A bot schedule runs on that bot and reports in its chat. It does
 		// not enter the host agent.
+		// A desktop-bot due time is the server Manager's round. This process
+		// does not start it, so the GUI being closed is not what skips 08:00.
 		if task != nil && strings.TrimSpace(task.DesktopBotID) != "" {
 			return a.executeDesktopBotScheduledTask(ctx, task)
 		}
@@ -163,6 +165,8 @@ func (a *App) buildHubScheduledTaskExecutor(hubClient *RemoteHubClient) schedule
 	return func(ctx context.Context, task *scheduler.ScheduledTask) (string, error) {
 		// A bot schedule runs on that bot and reports in its chat. It does
 		// not enter the host agent or the Hub owner channel.
+		// A desktop-bot due time is the server Manager's round. This process
+		// does not start it, so the GUI being closed is not what skips 08:00.
 		if task != nil && strings.TrimSpace(task.DesktopBotID) != "" {
 			return a.executeDesktopBotScheduledTask(ctx, task)
 		}

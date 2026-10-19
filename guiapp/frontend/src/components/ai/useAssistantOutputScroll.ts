@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import type { ChatMessage } from "./useAIAssistant";
-import { logAIScrollEvent, logAIScrollSnapshot } from "./assistantScrollDiag";
+import { logAIScrollEvent, logAIScrollSnapshot, scrollSnapshotDue } from "./assistantScrollDiag";
 import {
     ASSISTANT_OUTPUT_NEAR_BOTTOM_PX,
     applyUserScrollFollow,
@@ -15,6 +15,48 @@ import {
 
 export { ASSISTANT_OUTPUT_NEAR_BOTTOM_PX };
 
+/** The transcript is not the visible view. scrollHeight would lay out a tall hidden tree. */
+function outputHostHidden(container: HTMLElement | null): boolean {
+    return !!container?.closest("[hidden]");
+}
+
+/**
+ * The open thought pane is max-height capped. Once it scrolls internally,
+ * more reasoning does not change the outer transcript height. Reading the
+ * outer scrollHeight would lay out every bubble above it.
+ */
+function cappedThoughtAbsorbsGrowth(container: HTMLElement | null): boolean {
+    const last = container ? lastNestedScroll(container) : null;
+    if (!last) return false;
+    return last.scrollHeight > last.clientHeight + 1;
+}
+
+function diveToLastElement(start: Element): Element {
+    let node = start;
+    let child = node.lastElementChild;
+    while (child) {
+        node = child;
+        child = node.lastElementChild;
+    }
+    return node;
+}
+
+/** The live thought is the last nested pane. Older turns stay unread. */
+function lastNestedScroll(root: HTMLElement): HTMLElement | null {
+    let node: Element | null = diveToLastElement(root);
+    while (node) {
+        if (node instanceof HTMLElement && node.hasAttribute("data-nested-scroll")) return node;
+        if (node === root) return null;
+        const previous: Element | null = node.previousElementSibling;
+        if (previous) {
+            node = diveToLastElement(previous);
+            continue;
+        }
+        node = node.parentElement;
+    }
+    return null;
+}
+
 /**
  * The follow logic only reads identity and a length hint, so any transcript
  * matching this shape can use it — including surfaces that keep their own
@@ -28,9 +70,11 @@ interface AssistantOutputScrollOptions {
     messages: AssistantOutputScrollMessage[];
     ready: boolean;
     scrollToTopSeq?: number;
+    /** While set, skip scrollHeight reads. The new-task cover stays up over a tall transcript. */
+    suspendedRef?: { readonly current: boolean };
 }
 
-export function useAssistantOutputScroll({ activityKey, hasConversation, messages, ready, scrollToTopSeq }: AssistantOutputScrollOptions) {
+export function useAssistantOutputScroll({ activityKey, hasConversation, messages, ready, scrollToTopSeq, suspendedRef }: AssistantOutputScrollOptions) {
     const outputEndRef = useRef<HTMLDivElement | null>(null);
     const outputContainerRef = useRef<HTMLDivElement | null>(null);
     const userScrolledUpRef = useRef(false);
@@ -41,6 +85,9 @@ export function useAssistantOutputScroll({ activityKey, hasConversation, message
     const scrollRafRef = useRef<number | null>(null);
     const prevReadyRef = useRef(ready);
     const programmaticScrollRef = useRef(false);
+    const wasCoveredRef = useRef(false);
+    const prevTailStampRef = useRef("");
+    const thoughtPaneCappedRef = useRef(false);
     const resizeObserverRef = useRef<ResizeObserver | null>(null);
     const resizeRafRef = useRef<number | null>(null);
 
@@ -62,6 +109,7 @@ export function useAssistantOutputScroll({ activityKey, hasConversation, message
     }, []);
 
     const applyScroll = useCallback((behavior: ScrollBehavior) => {
+        if (suspendedRef?.current || outputHostHidden(outputContainerRef.current)) return;
         programmaticScrollRef.current = true;
         try {
             const result = tryPinAssistantOutput(outputContainerRef.current, outputEndRef.current, behavior, userIntentRef.current);
@@ -75,9 +123,10 @@ export function useAssistantOutputScroll({ activityKey, hasConversation, message
         } finally {
             programmaticScrollRef.current = false;
         }
-    }, [containerMetrics]);
+    }, [containerMetrics, suspendedRef]);
 
     const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto", force = false, settleFrames = 0) => {
+        if (suspendedRef?.current || outputHostHidden(outputContainerRef.current)) return;
         if (force) {
             if (userScrolledUpRef.current) logAIScrollEvent("force-repin", { ...containerMetrics() });
             userScrolledUpRef.current = false;
@@ -88,7 +137,24 @@ export function useAssistantOutputScroll({ activityKey, hasConversation, message
             logAIScrollSnapshot("skip-latch", { ...containerMetrics(), settleFrames }, 5000);
         }
         runPinnedScroll(applyScroll, cancelScheduledScroll, (id) => { scrollRafRef.current = id; }, behavior, force, userScrolledUpRef.current, settleFrames);
-    }, [applyScroll, cancelScheduledScroll, containerMetrics]);
+    }, [applyScroll, cancelScheduledScroll, containerMetrics, suspendedRef]);
+
+    // The cover flag is written during render, after this hook is called, so it
+    // cannot be a dependency. Compare it after each commit. Tokens that arrived
+    // under the cover did not move scrollTop; pin once on the way back.
+    useLayoutEffect(() => {
+        const covered = !!suspendedRef?.current;
+        const wasCovered = wasCoveredRef.current;
+        wasCoveredRef.current = covered;
+        if (!wasCovered || covered || userScrolledUpRef.current) return;
+        const container = outputContainerRef.current;
+        if (container) {
+            container.querySelectorAll("[data-nested-scroll]").forEach((node) => {
+                if (node instanceof HTMLElement) node.scrollTop = node.scrollHeight;
+            });
+        }
+        scrollToBottom("auto");
+    });
 
     useEffect(() => cancelScheduledScroll, [cancelScheduledScroll]);
     useEffect(() => {
@@ -101,7 +167,7 @@ export function useAssistantOutputScroll({ activityKey, hasConversation, message
         // so mount-time observation alone would miss nearly everything.
         const observer = new ResizeObserver(() => {
             // Coalesce a burst of resize notifications into one pin per frame.
-            if (userScrolledUpRef.current || resizeRafRef.current !== null || typeof requestAnimationFrame !== "function") return;
+            if (suspendedRef?.current || outputHostHidden(outputContainerRef.current) || userScrolledUpRef.current || resizeRafRef.current !== null || typeof requestAnimationFrame !== "function") return;
             resizeRafRef.current = requestAnimationFrame(() => {
                 resizeRafRef.current = null;
                 if (!userScrolledUpRef.current) applyScroll("auto");
@@ -116,7 +182,7 @@ export function useAssistantOutputScroll({ activityKey, hasConversation, message
                 resizeRafRef.current = null;
             }
         };
-    }, [applyScroll]);
+    }, [applyScroll, suspendedRef]);
     useEffect(() => {
         userScrolledUpRef.current = false;
         userIntentRef.current = false;
@@ -129,6 +195,10 @@ export function useAssistantOutputScroll({ activityKey, hasConversation, message
         // conversation still re-pins while the follow latch is clear).
         const container = outputContainerRef.current;
         const resizeObserver = resizeObserverRef.current;
+        const tailMessage = messages[messages.length - 1];
+        const tailStamp = `${tailMessage?.id ?? ""}:${tailMessage?.content?.length ?? 0}`;
+        const tailUnchanged = tailStamp === prevTailStampRef.current;
+        prevTailStampRef.current = tailStamp;
         if (container && resizeObserver) {
             resizeObserver.observe(container);
             const tail = container.lastElementChild?.previousElementSibling ?? container.lastElementChild;
@@ -153,6 +223,27 @@ export function useAssistantOutputScroll({ activityKey, hasConversation, message
         }
         const appendedUserMessage = lastUserMsgId !== undefined && lastUserMsgId !== prevLastUserMsgIdRef.current;
         prevLastUserMsgIdRef.current = lastUserMsgId;
+        if (suspendedRef?.current || outputHostHidden(container)) {
+            prevActivityKeyRef.current = activityKey;
+            prevMsgCountRef.current = messages.length;
+            return;
+        }
+        // Reasoning tokens keep the same reply body. Once the thought pane
+        // was already capped, more reasoning does not move the outer
+        // transcript, and reading its scrollHeight lays out every bubble.
+        // The flush that first fills the pane still grows the outer box.
+        const activityChanged = !!activityKey && activityKey !== prevActivityKeyRef.current;
+        const reasoningOnly = tailUnchanged && !activityChanged && !appendedUserMessage;
+        if (reasoningOnly) {
+            const thoughtCapped = cappedThoughtAbsorbsGrowth(container);
+            const thoughtAlreadyCapped = thoughtPaneCappedRef.current;
+            thoughtPaneCappedRef.current = thoughtCapped;
+            if (thoughtAlreadyCapped && thoughtCapped) {
+                prevActivityKeyRef.current = activityKey;
+                prevMsgCountRef.current = messages.length;
+                return;
+            }
+        }
         if (appendedUserMessage) {
             logAIScrollEvent("new-round", { ...containerMetrics(), latch: userScrolledUpRef.current ? 1 : 0, msgs: messages.length });
         }
@@ -170,21 +261,23 @@ export function useAssistantOutputScroll({ activityKey, hasConversation, message
             return;
         }
         if (plan.settleFrames !== undefined) scrollToBottom("auto", false, plan.settleFrames);
-        const tailMsg = messages[messages.length - 1];
-        logAIScrollSnapshot("follow", {
-            ...containerMetrics(),
-            msgs: messages.length,
-            tailRole: tailMsg?.role ?? "",
-            tailLen: tailMsg?.content?.length ?? -1,
-            latch: userScrolledUpRef.current ? 1 : 0,
-        }, 1000);
-    }, [activityKey, messages, scrollToBottom, containerMetrics]);
+        if (scrollSnapshotDue("follow", 1000)) {
+            const tailMsg = messages[messages.length - 1];
+            logAIScrollSnapshot("follow", {
+                ...containerMetrics(),
+                msgs: messages.length,
+                tailRole: tailMsg?.role ?? "",
+                tailLen: tailMsg?.content?.length ?? -1,
+                latch: userScrolledUpRef.current ? 1 : 0,
+            }, 1000);
+        }
+    }, [activityKey, messages, scrollToBottom, containerMetrics, suspendedRef]);
 
     const handleUserScrollIntent = useCallback((event?: AssistantScrollIntentEvent) => {
         if (!shouldIgnoreUserScrollIntent(event)) userIntentRef.current = true;
     }, []);
     const handleScroll = useCallback(() => {
-        if (programmaticScrollRef.current || !outputContainerRef.current) return;
+        if (programmaticScrollRef.current || !outputContainerRef.current || outputHostHidden(outputContainerRef.current)) return;
         const next = applyUserScrollFollow(userIntentRef.current, isAwayFromBottom(outputContainerRef.current), userScrolledUpRef.current);
         if (next.userScrolledUp !== userScrolledUpRef.current || next.userIntent !== userIntentRef.current) {
             logAIScrollEvent("latch", {

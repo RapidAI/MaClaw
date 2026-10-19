@@ -103,3 +103,139 @@ export function repairReasoningLineBreaks(text: string): string {
     }
     return out.join("\n");
 }
+
+export type ReasoningRepairCursor = {
+    raw: string;
+    pendingCr: boolean;
+    /** The normalized text ended on a line break. That break is not an empty line yet. */
+    hangingNewline: boolean;
+    partial: string;
+    committed: string;
+    hasCommitted: boolean;
+    open: string | null;
+    fenceMarker: string;
+    math: "$$" | "\\[" | "";
+    prevIsFence: boolean;
+    parenDepth: number;
+};
+
+export function createReasoningRepairCursor(): ReasoningRepairCursor {
+    return {
+        raw: "",
+        pendingCr: false,
+        hangingNewline: false,
+        partial: "",
+        committed: "",
+        hasCommitted: false,
+        open: null,
+        fenceMarker: "",
+        math: "",
+        prevIsFence: false,
+        parenDepth: 0,
+    };
+}
+
+/**
+ * Same joins as repairReasoningLineBreaks, fed by appends. Completed lines stay
+ * committed. The open line and a held trailing CR are applied only for the
+ * current result, because the next chunk can still join them.
+ */
+export function appendReasoningRepair(cursor: ReasoningRepairCursor, text: string): string {
+    const full = text || "";
+    if (full === cursor.raw) return previewReasoningRepair(cursor);
+    if (cursor.raw && !full.startsWith(cursor.raw)) {
+        const fresh = createReasoningRepairCursor();
+        cursor.raw = fresh.raw;
+        cursor.pendingCr = fresh.pendingCr;
+        cursor.hangingNewline = fresh.hangingNewline;
+        cursor.partial = fresh.partial;
+        cursor.committed = fresh.committed;
+        cursor.hasCommitted = fresh.hasCommitted;
+        cursor.open = fresh.open;
+        cursor.fenceMarker = fresh.fenceMarker;
+        cursor.math = fresh.math;
+        cursor.prevIsFence = fresh.prevIsFence;
+        cursor.parenDepth = fresh.parenDepth;
+    }
+    const delta = full.slice(cursor.raw.length);
+    cursor.raw = full;
+    let chunk = cursor.pendingCr ? `\r${delta}` : delta;
+    cursor.pendingCr = false;
+    if (chunk.endsWith("\r")) {
+        cursor.pendingCr = true;
+        chunk = chunk.slice(0, -1);
+    }
+    feedReasoningRepair(cursor, chunk.replace(/\r\n?/g, "\n"));
+    return previewReasoningRepair(cursor);
+}
+
+function pushRepairLine(state: ReasoningRepairCursor, line: string): void {
+    if (state.open !== null) {
+        state.committed = state.hasCommitted ? `${state.committed}\n${state.open}` : state.open;
+        state.hasCommitted = true;
+    }
+    state.open = line;
+}
+
+function applyRepairLine(state: ReasoningRepairCursor, line: string): void {
+    if (state.math) {
+        state.math = displayMathAfterLine(line, state.math);
+    } else {
+        const nextFence = markdownFenceAfterLine(line, state.fenceMarker);
+        if (state.fenceMarker || nextFence) {
+            pushRepairLine(state, line);
+            state.fenceMarker = nextFence;
+            state.prevIsFence = true;
+            return;
+        }
+        state.math = displayMathAfterLine(line, "");
+    }
+    if (!line.trim()) {
+        if (state.parenDepth <= 0) {
+            pushRepairLine(state, line);
+            state.prevIsFence = false;
+        }
+        return;
+    }
+    const prev = state.open;
+    if (prev?.trim() && !state.prevIsFence && canJoinLine(prev, line, state.parenDepth)) {
+        state.open = joinWrappedLine(prev, line);
+    } else {
+        pushRepairLine(state, line);
+        state.prevIsFence = false;
+    }
+    state.parenDepth = Math.max(0, state.parenDepth + parenDelta(line));
+}
+
+function feedReasoningRepair(cursor: ReasoningRepairCursor, normalized: string): void {
+    if (!normalized) return;
+    const fresh = cursor.partial + normalized;
+    const lastNl = fresh.lastIndexOf("\n");
+    if (lastNl < 0) {
+        cursor.partial = fresh;
+        cursor.hangingNewline = false;
+        return;
+    }
+    // The final break only terminates the previous line. It becomes a blank
+    // line when another break follows, which then sits in `completed`.
+    const completed = fresh.slice(0, lastNl);
+    cursor.partial = fresh.slice(lastNl + 1);
+    cursor.hangingNewline = cursor.partial === "";
+    for (const line of completed.split("\n")) applyRepairLine(cursor, line);
+}
+
+function formatReasoningRepair(state: ReasoningRepairCursor): string {
+    if (state.open === null) return state.committed;
+    if (!state.hasCommitted) return state.open;
+    return `${state.committed}\n${state.open}`;
+}
+
+function previewReasoningRepair(cursor: ReasoningRepairCursor): string {
+    const clone: ReasoningRepairCursor = { ...cursor };
+    if (cursor.partial) applyRepairLine(clone, cursor.partial);
+    // A break that ends the text is a real line only when the joiner keeps it.
+    // Inside parentheses that blank is dropped, so it must not be glued on as text.
+    if (cursor.hangingNewline) applyRepairLine(clone, "");
+    if (cursor.pendingCr) applyRepairLine(clone, "");
+    return formatReasoningRepair(clone);
+}

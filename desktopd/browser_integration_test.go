@@ -23,6 +23,16 @@ func runSupervisorPython(t *testing.T, code string, env ...string) string {
 	prelude := `
 import importlib.util, json, os, sys
 from pathlib import Path
+try:
+    import fcntl
+except ImportError:
+    import types
+    fcntl = types.ModuleType("fcntl")
+    fcntl.LOCK_EX = 2
+    fcntl.LOCK_UN = 8
+    fcntl.LOCK_NB = 4
+    fcntl.flock = lambda *_args, **_kwargs: None
+    sys.modules["fcntl"] = fcntl
 spec = importlib.util.spec_from_file_location("sup", sys.argv[1])
 sup = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sup)
@@ -36,7 +46,7 @@ sup.ROOT.mkdir()
 	if err != nil {
 		t.Fatalf("python: %v\n%s", err, out)
 	}
-	return strings.TrimSpace(string(out))
+	return strings.TrimSpace(strings.ReplaceAll(string(out), "\r\n", "\n"))
 }
 
 func TestBrowserIntegrationRoutesEveryBrowserEntryToTheSupervisedBrowser(t *testing.T) {

@@ -882,6 +882,12 @@ func loopContextTurnAnswerOnly(ctx *LoopContext) bool {
 }
 
 func loopContextBlocksLegacyToolRouter(ctx *LoopContext) bool {
+	// Same continuation as the shared-turn planner skip. A managed label left
+	// on the loop would make prepareAgentLoopTools return an empty list, so
+	// the approved tool would be the only name and read_file would disappear.
+	if discoveredMCPContinuationTurn(ctx) {
+		return false
+	}
 	if loopContextTurnAnswerOnly(ctx) {
 		return true
 	}
@@ -1271,6 +1277,25 @@ func semanticLocalFileDeletePlanningClassification(result intent.ClassificationR
 	}
 	out.Secondary = kept
 	return out
+}
+
+// semanticPlanningClassification applies query evidence before the resolver
+// floor. File delete wins, then a mailbox-message delete, then a markdown
+// file write, then a worklog record.
+func semanticPlanningClassification(classification intent.ClassificationResult, planningQuery string) intent.ClassificationResult {
+	if tool.QueryWantsLocalFileDelete(planningQuery) {
+		return semanticLocalFileDeletePlanningClassification(classification)
+	}
+	if rewritten := semanticMailboxDeletePlanningRewrite(&classification, planningQuery); rewritten != nil {
+		return *rewritten
+	}
+	if tool.QueryWantsMarkdownFile(planningQuery) {
+		return semanticMarkdownFileWritePlanningClassification(classification, planningQuery)
+	}
+	if kind := classifyWorklogRecord(planningQuery); kind != worklogRecordNone {
+		return semanticWorklogPlanningClassification(classification, kind)
+	}
+	return classification
 }
 
 // semanticMarkdownFileWritePlanningClassification projects a markdown-file
@@ -2188,6 +2213,14 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndAttachm
 		log.Printf("[semantic-routing] goal continuation keeps lifecycle goal tool user=%q channel=%q platform=%q", userID, channel, loopPlatform)
 		return nil, nil, false, nil
 	}
+	// The reply that approves an installed MCP write already has that tool
+	// on the loop. Task-context merge classifies the short answer from the
+	// surrounding task and would publish a different surface, or HostReject
+	// it, instead of the function the approval hint listed.
+	if discoveredMCPContinuationTurn(ctx) {
+		log.Printf("[semantic-routing] discovered MCP continuation stays on the legacy surface user=%q", userID)
+		return nil, nil, false, nil
+	}
 	// Identity and replacement generation form one host-private lifecycle
 	// snapshot. Reading them separately would permit a fresh ingress to rotate
 	// the identity between reads, then incorrectly register an old scope as the
@@ -2282,42 +2315,59 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndIdentit
 	if !handled || err != nil {
 		return nil, nil, handled, err
 	}
-	if prepared != nil && prepared.policy.Enabled && !prepared.policy.AllowsExecutableScope() {
-		return nil, nil, true, fmt.Errorf("semantic_routing_policy_mode_%s", prepared.policy.Mode)
+	definitions, surface, err := h.openPreparedSemanticCallSurface(requestCtx, userID, userText, channel, sessionID, classification, attachments, prepared)
+	if err != nil {
+		return nil, nil, true, err
+	}
+	return definitions, surface, true, nil
+}
+
+// openPreparedSemanticCallSurface publishes one already-planned preparation.
+// Callers that must not enter semanticPlanForTurn — a legacy discover bind of
+// an installed MCP tool is the case — reuse this tail so grant issuance,
+// route-state registration, and the visible closure stay one mechanism.
+// It does not note session residue: that record belongs to the managed turn
+// that classified the user's text, not to a sidecar planned from a tool name.
+func (h *IMMessageHandler) openPreparedSemanticCallSurface(requestCtx context.Context, userID, userText, channel, sessionID string, classification *intent.ClassificationResult, attachments []MessageAttachment, prepared *semanticPlanPreparation) ([]map[string]interface{}, *semanticCallSurface, error) {
+	if h == nil || prepared == nil {
+		return nil, nil, fmt.Errorf("semantic_scope_preparation_required")
+	}
+	if prepared.policy.Enabled && !prepared.policy.AllowsExecutableScope() {
+		return nil, nil, fmt.Errorf("semantic_routing_policy_mode_%s", prepared.policy.Mode)
 	}
 	if err := semanticRoutingRequestErr(requestCtx); err != nil {
-		return nil, nil, true, err
+		return nil, nil, err
 	}
 	// Re-check the immutable scope immediately before any durable publication.
 	// This closes the gap where a caller could mutate or replace the definition
 	// map between planning and grant issuance; an incomplete closure must never
 	// become a partially rendered executable surface.
 	if err := validatePreparedSemanticToolScope(prepared); err != nil {
-		return nil, nil, true, err
+		return nil, nil, err
 	}
 	issuer, err := h.semanticInvocationIssuer()
 	if err != nil {
-		return nil, nil, true, err
+		return nil, nil, err
 	}
 	hostCalls, err := h.semanticHostCallJournal()
 	if err != nil {
-		return nil, nil, true, err
+		return nil, nil, err
 	}
 	coordinator, err := h.semanticExecutionCoordinator()
 	if err != nil {
-		return nil, nil, true, err
+		return nil, nil, err
 	}
 	routeState, err := h.semanticRouteStateStore()
 	if err != nil {
-		return nil, nil, true, err
+		return nil, nil, err
 	}
 	executor, err := h.semanticPlanExecutorWithRouteState(issuer, routeState)
 	if err != nil {
-		return nil, nil, true, err
+		return nil, nil, err
 	}
 	artifactStore, err := h.semanticArtifactStore()
 	if err != nil {
-		return nil, nil, true, err
+		return nil, nil, err
 	}
 	toolSnapshotID := strings.TrimSpace(prepared.plan.SnapshotDigest)
 	if toolSnapshotID == "" {
@@ -2333,14 +2383,14 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndIdentit
 		// the current revision's completed producers, never a model-controlled
 		// artifact lookup.
 		if _, err := routeState.ReconcileCurrentArtifacts(scope, artifactStore, time.Now().UTC()); err != nil {
-			return nil, nil, true, fmt.Errorf("reconcile semantic route artifacts: %w", err)
+			return nil, nil, fmt.Errorf("reconcile semantic route artifacts: %w", err)
 		}
 		parent = &current
 	} else if currentErr.Error() != "route_revision_not_found" {
-		return nil, nil, true, fmt.Errorf("load semantic route revision: %w", currentErr)
+		return nil, nil, fmt.Errorf("load semantic route revision: %w", currentErr)
 	}
 	if err := semanticRoutingRequestErr(requestCtx); err != nil {
-		return nil, nil, true, err
+		return nil, nil, err
 	}
 	publishRequest := tool.RouteRevisionPublishRequest{
 		Scope: scope, Plan: prepared.plan, ExpectedParent: parent, SnapshotDigest: prepared.plan.SnapshotDigest,
@@ -2349,7 +2399,7 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndIdentit
 	var initialGrants []tool.InvocationGrant
 	state, initialGrants, err = tool.PublishCurrentSurface(coordinator, routeState, tool.NewSurfacePublishRequest(publishRequest, h.semanticContinuityTenantID(), issuer, semanticInvocationGrantTTL, time.Now().UTC()))
 	if err != nil {
-		return nil, nil, true, fmt.Errorf("open semantic route state: %w", err)
+		return nil, nil, fmt.Errorf("open semantic route state: %w", err)
 	}
 	classVal := intent.ClassificationResult{}
 	if classification != nil {
@@ -2364,24 +2414,24 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndIdentit
 	}
 	for _, input := range prepared.documentInputs {
 		if err := semanticRoutingRequestErr(requestCtx); err != nil {
-			return nil, nil, true, err
+			return nil, nil, err
 		}
 		if _, err := artifactStore.Publish(input.Payload); err != nil {
-			return nil, nil, true, fmt.Errorf("publish trusted document input: %w", err)
+			return nil, nil, fmt.Errorf("publish trusted document input: %w", err)
 		}
 	}
 	for _, input := range prepared.audioInputs {
 		if err := semanticRoutingRequestErr(requestCtx); err != nil {
-			return nil, nil, true, err
+			return nil, nil, err
 		}
 		if _, err := artifactStore.Publish(input.Payload); err != nil {
-			return nil, nil, true, fmt.Errorf("publish trusted audio input: %w", err)
+			return nil, nil, fmt.Errorf("publish trusted audio input: %w", err)
 		}
 	}
 	for _, materialization := range state.Materializations {
 		surface.materialized[materialization.Grant.SelectionID] = true
 		if err := tool.PlaceMaterializedGrant(materialization, surface.grants, surface.retiredGrants); err != nil {
-			return nil, nil, true, err
+			return nil, nil, err
 		}
 	}
 	// The coordinator has already issued and materialized the initial closure
@@ -2390,7 +2440,7 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndIdentit
 	// second, separate grant batch).
 	for _, grant := range initialGrants {
 		if _, err := tool.BindIssuedGrant(grant, surface.grants); err != nil {
-			return nil, nil, true, err
+			return nil, nil, err
 		}
 		surface.materialized[grant.SelectionID] = true
 	}
@@ -2406,11 +2456,11 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndIdentit
 		}
 		return nil
 	}); err != nil {
-		return nil, nil, true, err
+		return nil, nil, err
 	}
 	completed, err := tool.LoadCompletedSelections(executor, routeState, scope)
 	if err != nil {
-		return nil, nil, true, fmt.Errorf("recover semantic plan completion: %w", err)
+		return nil, nil, fmt.Errorf("recover semantic plan completion: %w", err)
 	}
 	surface.completed = completed
 	// Do not issue a new opaque grant or render a model-visible function after
@@ -2418,7 +2468,7 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndIdentit
 	// published at this point (which is safe and has no external effect), but a
 	// cancelled request must not materialize an executable surface from it.
 	if err := semanticRoutingRequestErr(requestCtx); err != nil {
-		return nil, nil, true, err
+		return nil, nil, err
 	}
 	var definitions []map[string]interface{}
 	if coordinator != nil {
@@ -2427,10 +2477,10 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndIdentit
 		definitions, err = refreshSemanticCallSurface(surface)
 	}
 	if err != nil {
-		return nil, nil, true, err
+		return nil, nil, err
 	}
 	h.persistSessionGovernedTask(userID, channel, semanticDestination(requestCtx), semanticWorkflowAgentLoop(requestCtx), surface.plan)
-	return definitions, surface, true, nil
+	return definitions, surface, nil
 }
 
 // advanceSemanticCallSurface refreshes the exposure closure after a trusted
@@ -2778,13 +2828,7 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// Leftover then ranks write_file and the petition contract invites a
 	// search for a delete name. The outcome is file_delete, so the plan
 	// grants delete_file before that search starts.
-	if planningQuery := acpInnerUserRequest(userText); tool.QueryWantsLocalFileDelete(planningQuery) {
-		classification = semanticLocalFileDeletePlanningClassification(classification)
-	} else if tool.QueryWantsMarkdownFile(planningQuery) {
-		classification = semanticMarkdownFileWritePlanningClassification(classification, planningQuery)
-	} else if kind := classifyWorklogRecord(planningQuery); kind != worklogRecordNone {
-		classification = semanticWorklogPlanningClassification(classification, kind)
-	}
+	classification = semanticPlanningClassification(classification, acpInnerUserRequest(userText))
 	// The opening utterance cannot mean both "send the attachment I was given"
 	// and "generate a new document". A petition is not that utterance: the
 	// document is already planned, and delivering the file is the next step.
@@ -4328,6 +4372,7 @@ func semanticUnpublishedManagedProvider(registered RegisteredTool, channel, dest
 		semanticUnpublishedLegacyMessageSendProvider,
 		semanticUnpublishedLegacyMailboxSendProvider,
 		semanticUnpublishedLegacyMailboxConfigureProvider,
+		semanticUnpublishedLegacyMailboxDeleteProvider,
 		semanticUnpublishedLegacyRepoMutateProvider,
 		semanticUnpublishedLegacyDownloadProvider,
 	} {
@@ -5415,6 +5460,7 @@ func appendClosedHostSemanticProviders(providers *[]tool.ProviderSpec, defsByNam
 		{semanticTrustedShellAdapter, semanticTrustedShellImplementation, semanticTrustedShellDefinition(), semanticTrustedShellInvocationSchema(), tool.CapabilityShellExecuteLocal, nil, []tool.EffectClass{tool.EffectSensitive}, true},
 		{semanticTrustedRepoMutateAdapter, semanticTrustedRepoMutateImplementation, semanticTrustedRepoMutateDefinition(), semanticTrustedRepoMutateInvocationSchema(), tool.CapabilityRepoMutateVCS, nil, []tool.EffectClass{tool.EffectExternalEffect}, true},
 		{semanticTrustedMailboxSendAdapter, semanticTrustedMailboxSendImplementation, semanticTrustedMailboxSendDefinition(), semanticTrustedMailboxSendInvocationSchema(), tool.CapabilityMessageSendMailbox, nil, []tool.EffectClass{tool.EffectExternalEffect}, true},
+		{semanticTrustedMailboxDeleteAdapter, semanticTrustedMailboxDeleteImplementation, semanticTrustedMailboxDeleteDefinition(), semanticTrustedMailboxDeleteInvocationSchema(), tool.CapabilityMessageDeleteMailbox, nil, []tool.EffectClass{tool.EffectExternalEffect}, true},
 		{semanticTrustedMailboxConfigureAdapter, semanticTrustedMailboxConfigureImplementation, semanticTrustedMailboxConfigureDefinition(), semanticTrustedMailboxConfigureInvocationSchema(), tool.CapabilityMessageConfigureMailbox, nil, []tool.EffectClass{tool.EffectSensitive}, true},
 		{semanticTrustedBuildVerifyAdapter, semanticTrustedBuildVerifyImplementation, semanticTrustedBuildVerifyDefinition(), semanticTrustedBuildVerifyInvocationSchema(), tool.CapabilityBuildVerifyLocal, nil, []tool.EffectClass{tool.EffectSensitive}, true},
 		{semanticTrustedAcquireRemoteAdapter, semanticTrustedAcquireRemoteImplementation, semanticTrustedAcquireRemoteDefinition(), semanticTrustedAcquireRemoteInvocationSchema(), tool.CapabilityArtifactAcquireRemote, nil, []tool.EffectClass{tool.EffectSensitive}, true},

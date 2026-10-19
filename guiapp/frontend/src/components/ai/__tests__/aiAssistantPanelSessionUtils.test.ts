@@ -18,6 +18,20 @@ describe("aiAssistantPanelSessionUtils", () => {
         expect(chatHistoriesEquivalent([plain], [{ ...plain, reasoning: "a later streamed detail" }])).toBe(false);
         expect(chatHistoriesEquivalent([plain], [{ ...plain, actions: [{ label: "Apply", command: "apply", style: "primary" }] }])).toBe(false);
         expect(chatHistoriesEquivalent([plain], [plain])).toBe(true);
+        expect(chatHistoriesEquivalent([plain], [{ ...plain, content: "redirect the RUNNING task" }])).toBe(false);
+        const thought = { id: "t1", sequence: 1, kind: "thinking" as const, content: "short", timestamp: 1 };
+        const before: ChatMessage = {
+            id: "a",
+            role: "assistant",
+            content: "",
+            reasoning: "short",
+            timestamp: 1,
+            codingTimeline: [thought],
+        };
+        const grownThought = { ...thought, content: "short more" };
+        const after: ChatMessage = { ...before, reasoning: "short more", codingTimeline: [grownThought] };
+        expect(chatHistoriesEquivalent([before], [after])).toBe(false);
+        expect(chatHistoriesEquivalent([after], [{ ...after, codingTimeline: [...(after.codingTimeline || [])] }])).toBe(true);
     });
 
     it("shows one goal checklist above the current reply", () => {

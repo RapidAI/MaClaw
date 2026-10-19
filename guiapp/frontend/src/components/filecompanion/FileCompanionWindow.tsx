@@ -1,13 +1,24 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
     ChooseFileCompanionFiles,
+    CancelFileCompanionTurn,
+    CancelFileCompanionWebTurn,
+    FileCompanionDiscardWebNote,
     ClearFileCompanionChat,
+    ClearFileCompanionWebChat,
     FileCompanionExportChatPDF,
+    FileCompanionExportChatTeX,
     FileCompanionExportPDF,
+    FileCompanionExportTeX,
+    FileCompanionExportWebChatPDF,
+    FileCompanionExportWebChatTeX,
+    FileCompanionExportWebPDF,
+    FileCompanionExportWebTeX,
     FileCompanionFigureDataURL,
     FileCompanionImportKnowledge,
     FileCompanionOpen,
     FileCompanionOpenArxiv,
+    FileCompanionOpenWebPage,
     FileCompanionReplaceOffice,
     FileCompanionResumePaths,
     FileCompanionSaveText,
@@ -17,6 +28,7 @@ import {
     GetFileCompanionBoot,
     SetFileCompanionOpenSet,
     SendFileCompanionMessage,
+    SendFileCompanionWebMessage,
 } from "../../../wailsjs/go/main/App";
 import { WindowHide } from "../../../wailsjs/runtime";
 import { useToast } from "../Toast";
@@ -24,7 +36,7 @@ import { AssistantReasoningPanel } from "../ai/AssistantReasoningPanel";
 import { copyTextToClipboard } from "../ai/AssistantReplyCopyButton";
 import { MarkdownPreview } from "../ai/CodePreviewMarkdown";
 import { MessageContentRenderer } from "../ai/MessageContentRenderer";
-import { reasoningTrailMarkdownOptions, renderContentWithCodeBlocks } from "../ai/aiAssistantMarkdown";
+import { reasoningTrailMarkdownOptions, renderContentWithCodeBlocks, renderInlineMarkdown } from "../ai/aiAssistantMarkdown";
 import { lightTheme } from "../ai/aiAssistantPanelTheme";
 import type { Theme as AssistantTheme } from "../ai/aiAssistantPanelTheme";
 import { isMermaidCodeFence, renderMermaidFenceToPNGDataURL } from "../ai/AssistantMermaidDiagram";
@@ -36,6 +48,8 @@ import { FileCompanionComposer } from "./FileCompanionComposer";
 import { CompanionFigureStrip, type CompanionFigure } from "./CompanionFigureStrip";
 import { companionVisibleText, finishCompanionReply, splitCompanionStreamDelta } from "./companionReasoning";
 import { PaperResultCard } from "./PaperResultCard";
+import { NoteResultCard } from "./NoteResultCard";
+import { FILE_COMPANION_OPEN_HINT, companionVideoNotePhrase, looksLikeArxivReference, noteStampAtLineStart, type NoteStampLine } from "./companionNoteSeek";
 import { windowDragHandleProps } from "../../utils/windowDrag";
 import type { CodePreviewTheme } from "../ai/FileTabBar";
 import { FilePreviewView } from "../preview/FilePreviewView";
@@ -219,7 +233,7 @@ type CompanionDoc = {
     Messages?: CompanionMessageDoc[];
 };
 
-type CompanionMessageDoc = { role?: string; Role?: string; text?: string; Text?: string; reasoning?: string; Reasoning?: string; resultPath?: string; ResultPath?: string; figures?: unknown[]; Figures?: unknown[] };
+type CompanionMessageDoc = { role?: string; Role?: string; text?: string; Text?: string; reasoning?: string; Reasoning?: string; resultPath?: string; ResultPath?: string; noteCardPath?: string; NoteCardPath?: string; webNote?: boolean; WebNote?: boolean; figures?: unknown[]; Figures?: unknown[] };
 
 type SaveResult = {
     saved?: boolean;
@@ -237,7 +251,7 @@ type SaveResult = {
 // the Markdown body, nothing else.
 type CompanionChatTurn = { role: "user" | "assistant"; content: string };
 
-type ChatMessage = { id: string; role: "user" | "assistant"; text: string; reasoning?: string; resultPath?: string; figures?: CompanionFigure[] };
+type ChatMessage = { id: string; role: "user" | "assistant"; text: string; reasoning?: string; resultPath?: string; noteCardPath?: string; webNote?: boolean; figures?: CompanionFigure[] };
 // Stable identity keeps the scroll-follow effect from re-planning on every
 // render while no file is open.
 const NO_COMPANION_MESSAGES: ChatMessage[] = [];
@@ -297,6 +311,8 @@ type CompanionTab = {
     previewEpoch: number;
     saveError: string;
     htmlPreview: boolean;
+    kind?: "web";
+    frameUrl?: string;
 };
 
 type RuntimeAPI = {
@@ -320,10 +336,13 @@ function field<T>(doc: CompanionDoc, lower: keyof CompanionDoc, upper: keyof Com
     return (value === undefined || value === null ? fallback : value) as T;
 }
 
-function bootPaths(boot: { paths?: unknown; Paths?: unknown } | null | undefined): string[] {
-    const raw = boot?.paths ?? boot?.Paths;
+function companionDocumentPaths(raw: unknown): string[] {
     if (!Array.isArray(raw)) return [];
     return raw.filter((item): item is string => typeof item === "string" && item.trim() !== "");
+}
+
+function bootPaths(boot: { paths?: unknown; Paths?: unknown } | null | undefined): string[] {
+    return companionDocumentPaths(boot?.paths ?? boot?.Paths);
 }
 
 function companionTabStaysInOpenSet(tab: { path: string; error?: string }): boolean {
@@ -416,9 +435,11 @@ function messagesFromDoc(doc: CompanionDoc): ChatMessage[] {
         const text = companionVisibleText(String(item.text ?? item.Text ?? ""));
         const reasoning = role === "assistant" ? companionVisibleText(String(item.reasoning ?? item.Reasoning ?? "")) : "";
         const resultPath = role === "assistant" ? String(item.resultPath ?? item.ResultPath ?? "").trim() : "";
+        const noteCardPath = role === "assistant" ? String(item.noteCardPath ?? item.NoteCardPath ?? "").trim() : "";
+        const webNote = role === "assistant" && (item.webNote === true || item.WebNote === true);
         const figures = role === "assistant" ? figuresFromValue(item.figures ?? item.Figures) : [];
-        if (!text.trim() && !reasoning.trim() && !resultPath) return;
-        out.push({ id: `restored:${index}`, role, text, reasoning, resultPath: resultPath || undefined, figures: figures.length > 0 ? figures : undefined });
+        if (!text.trim() && !reasoning.trim() && !resultPath && !noteCardPath) return;
+        out.push({ id: `restored:${index}`, role, text, reasoning, resultPath: resultPath || undefined, noteCardPath: noteCardPath || undefined, webNote, figures: figures.length > 0 ? figures : undefined });
     });
     return out;
 }
@@ -763,7 +784,7 @@ function MarkdownSourceEditor({
     );
 }
 
-function CompanionActionIcon({ name, size = 14 }: { name: "paper" | "knowledge" | "cloud" | "close" | "copy" | "pdf" | "check" | "file"; size?: number }) {
+function CompanionActionIcon({ name, size = 14 }: { name: "paper" | "knowledge" | "cloud" | "close" | "markdown" | "latex" | "pdf" | "check" | "file"; size?: number }) {
     const common = {
         fill: "none",
         stroke: "currentColor",
@@ -772,11 +793,20 @@ function CompanionActionIcon({ name, size = 14 }: { name: "paper" | "knowledge" 
         strokeLinejoin: "round" as const,
     };
     return (
-        <svg className="file-companion-tool-icon" width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-            {name === "copy" && (
+        <svg className="file-companion-tool-icon" data-icon={name} width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            {name === "markdown" && (
                 <>
-                    <rect {...common} x="9" y="9" width="10.5" height="10.5" rx="2.2" />
-                    <path {...common} d="M15.5 5.6A2.1 2.1 0 0 0 13.4 4.5H6.6A2.1 2.1 0 0 0 4.5 6.6v6.8A2.1 2.1 0 0 0 5.6 15.5" />
+                    <path {...common} d="M3.6 17.2V7.2L8 12.6l4.4-5.4v10" />
+                    <path {...common} d="M16.2 8.2v7.2" />
+                    <path {...common} d="m13.4 12.8 2.8 2.6 2.8-2.6" />
+                </>
+            )}
+            {name === "latex" && (
+                <>
+                    <path {...common} d="M4.2 17.4 9 6.2 13.8 17.4" />
+                    <path {...common} d="M6.4 13.2h5.2" />
+                    <path {...common} d="m15.4 17.6 3.6-5.2" />
+                    <path {...common} d="m15.4 12.4 3.6 5.2" />
                 </>
             )}
             {name === "pdf" && (
@@ -865,7 +895,7 @@ function CompanionBubbleAction({
                 onClick();
             }}
         >
-            {state === "ok" ? <CompanionActionIcon name="check" size={13} /> : <CompanionActionIcon name={name} size={13} />}
+            {state === "ok" ? <CompanionActionIcon name="check" size={14} /> : <CompanionActionIcon name={name} size={14} />}
         </button>
     );
 }
@@ -1100,9 +1130,10 @@ function companionExportNoticeKind(missingFigures: number, missingDiagrams: numb
  * Top-right controls on one companion answer: copy the Markdown source, and
  * render it into a PDF the reader names.
  */
-function CompanionMessageActions({ path, markdown, messageId, figures }: { path: string; markdown: string; messageId: string; figures?: CompanionFigure[] }) {
+function CompanionMessageActions({ path, markdown, messageId, figures, webSession }: { path: string; markdown: string; messageId: string; figures?: CompanionFigure[]; webSession?: string }) {
     const [copyState, settleCopy] = useCompanionActionState();
     const [exportState, settleExport] = useCompanionActionState();
+    const [texState, settleTex] = useCompanionActionState();
     const { showToast } = useToast();
     const runCopy = async () => {
         settleCopy("busy");
@@ -1117,7 +1148,9 @@ function CompanionMessageActions({ path, markdown, messageId, figures }: { path:
             // the reader saw under the answer would be missing.
             const withDiagrams = await inlineCompanionDiagrams(markdown, lightTheme);
             const withFigures = await appendCompanionFigures(withDiagrams.text, figures);
-            const dest = await FileCompanionExportPDF(path, withFigures.text);
+            const dest = webSession
+                ? await FileCompanionExportWebPDF(webSession, withFigures.text)
+                : await FileCompanionExportPDF(path, withFigures.text);
             // An empty path is the reader cancelling the save dialog.
             if (dest) {
                 // The two counts stay apart: a missing picture and a missing
@@ -1135,10 +1168,23 @@ function CompanionMessageActions({ path, markdown, messageId, figures }: { path:
             settleExport("err");
         }
     };
+    const runTeX = async () => {
+        settleTex("busy");
+        try {
+            const dest = webSession
+                ? await FileCompanionExportWebTeX(webSession, markdown)
+                : await FileCompanionExportTeX(path, markdown);
+            if (dest) showToast("已导出 LaTeX", "success", 6000);
+            settleTex(dest ? "ok" : "idle");
+        } catch (err) {
+            showToast(exportErrorText(err), "error", 6000);
+            settleTex("err");
+        }
+    };
     return (
         <div className="file-companion-bubble-actions" data-testid={`file-companion-actions-${messageId}`}>
             <CompanionBubbleAction
-                name="copy"
+                name="markdown"
                 label="复制为 Markdown"
                 doneLabel="已复制"
                 failedLabel="复制失败"
@@ -1155,6 +1201,159 @@ function CompanionMessageActions({ path, markdown, messageId, figures }: { path:
                 testId={`file-companion-export-pdf-${messageId}`}
                 onClick={() => { void runExport(); }}
             />
+            <CompanionBubbleAction
+                name="latex"
+                label="导出为 LaTeX"
+                doneLabel="已导出"
+                failedLabel="导出失败"
+                state={texState}
+                testId="file-companion-export-tex"
+                onClick={() => { void runTeX(); }}
+            />
+        </div>
+    );
+}
+
+type NoteAnswerBlock = { kind: "text"; text: string } | { kind: "stamp"; stamp: NoteStampLine };
+
+// A seekable stamp is one line. Everything else stays one markdown document so a
+// $$ block, a table, or a fence is not split at each newline. The stamp's own
+// sentence still goes through the inline renderer, including $...$.
+// A formula row that starts with a time stays inside the open block. A chapter
+// sentence, or a heading, ends a block that was left open.
+function noteDisplayMathOpens(line: string): "$$" | "\\[" | "" {
+    const trim = line.trim();
+    if (trim.startsWith("$$") && trim.endsWith("$$") && trim.length > 4) return "";
+    if (trim.startsWith("\\[") && trim.endsWith("\\]") && trim.length > 4) return "";
+    if (trim === "$$" || (trim.startsWith("$$") && trim.length > 2)) return "$$";
+    if (trim === "\\[" || (trim.startsWith("\\[") && trim.length > 2)) return "\\[";
+    return "";
+}
+
+function noteDisplayMathCloses(line: string, open: "$$" | "\\["): boolean {
+    const trim = line.trim();
+    const close = open === "$$" ? "$$" : "\\]";
+    return trim === close || (trim.length > close.length && trim.endsWith(close));
+}
+
+function noteFormulaBody(rest: string): boolean {
+    if (rest.includes("\\") || rest.includes("&")) return true;
+    const prose = rest.trim();
+    if (!prose) return false;
+    return !/\p{Script=Han}/u.test(prose);
+}
+
+function noteAnswerBlocks(text: string): NoteAnswerBlock[] {
+    const blocks: NoteAnswerBlock[] = [];
+    const pending: string[] = [];
+    let math: "$$" | "\\[" | "" = "";
+    const flush = () => {
+        if (pending.length === 0) return;
+        blocks.push({ kind: "text", text: pending.join("\n") });
+        pending.length = 0;
+    };
+    for (const line of text.split("\n")) {
+        if (math) {
+            if (noteDisplayMathCloses(line, math)) {
+                pending.push(line);
+                math = "";
+                continue;
+            }
+            if (line.trim().startsWith("## ")) {
+                flush();
+                math = "";
+                pending.push(line);
+                continue;
+            }
+            const inside = noteStampAtLineStart(line);
+            if (inside && !noteFormulaBody(inside.rest)) {
+                flush();
+                math = "";
+                blocks.push({ kind: "stamp", stamp: inside });
+                continue;
+            }
+            pending.push(line);
+            continue;
+        }
+        const opened = noteDisplayMathOpens(line);
+        if (opened) {
+            pending.push(line);
+            math = opened;
+            continue;
+        }
+        const stamp = noteStampAtLineStart(line);
+        if (!stamp) {
+            pending.push(line);
+            continue;
+        }
+        flush();
+        blocks.push({ kind: "stamp", stamp });
+    }
+    flush();
+    return blocks;
+}
+
+function NoteStampAnswer({ text, path, web, previewOpen, messageId, streaming, onBlocked }: {
+    text: string;
+    path: string;
+    web: boolean;
+    previewOpen: boolean;
+    messageId: string;
+    streaming: boolean;
+    onBlocked: (sentence: string) => void;
+}) {
+    const blocks = noteAnswerBlocks(text);
+    if (!blocks.some((block) => block.kind === "stamp")) {
+        return (
+            <MessageContentRenderer
+                content={text}
+                theme={lightTheme}
+                isUser={false}
+                isStreaming={streaming}
+                messageId={messageId}
+            />
+        );
+    }
+    return (
+        <div>
+            {blocks.map((block, index) => {
+                if (block.kind === "text") {
+                    return (
+                        <MessageContentRenderer
+                            key={`${messageId}-${index}`}
+                            content={block.text}
+                            theme={lightTheme}
+                            isUser={false}
+                            isStreaming={false}
+                            messageId={`${messageId}-${index}`}
+                        />
+                    );
+                }
+                const stamp = block.stamp;
+                return (
+                    <div key={`${messageId}-stamp-${index}`}>
+                        <button
+                            type="button"
+                            data-testid="file-companion-seek"
+                            data-seconds={String(stamp.seconds)}
+                            onClick={() => {
+                                if (web) {
+                                    onBlocked("网页笔记不能跳回播放位置");
+                                    return;
+                                }
+                                if (!previewOpen) {
+                                    onBlocked("预览还没打开，无法跳转");
+                                    return;
+                                }
+                                window.dispatchEvent(new CustomEvent("file-companion:seek", { detail: { path, seconds: stamp.seconds } }));
+                            }}
+                        >
+                            {stamp.label}
+                        </button>
+                        {stamp.rest ? <span>{" "}{renderInlineMarkdown(stamp.rest, lightTheme)}</span> : null}
+                    </div>
+                );
+            })}
         </div>
     );
 }
@@ -1205,6 +1404,29 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     const chatEpochRef = useRef(new Map<string, number>());
     const requestEpochRef = useRef(new Map<string, number>());
     const paperRequestIds = useRef(new Set<string>());
+    const videoNoteRequestIds = useRef(new Set<string>());
+    const webFullscreenRef = useRef(false);
+    const domFullRef = useRef(false);
+    const winFullRef = useRef(false);
+    const noteBusyRef = useRef("");
+    const webCaptureEpochRef = useRef(0);
+    const noteEpochRef = useRef(0);
+    const setNoteBusyRef = useRef<(path: string) => void>(() => undefined);
+    const webFrameRef = useRef<HTMLIFrameElement | null>(null);
+    const webCaptureFields = () => {
+        const frame = webFrameRef.current;
+        const ratio = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+        if (!frame || typeof frame.getBoundingClientRect !== "function") {
+            return { rectX: 0, rectY: 0, rectW: 0, rectH: 0 };
+        }
+        const box = frame.getBoundingClientRect();
+        return {
+            rectX: box.left * ratio,
+            rectY: box.top * ratio,
+            rectW: box.width * ratio,
+            rectH: box.height * ratio,
+        };
+    };
     const acceptedHash = useRef(new Map<string, string>());
     const saveTail = useRef(new Map<string, Promise<void>>());
     const openEpoch = useRef(new Map<string, number>());
@@ -1385,12 +1607,20 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             // Drawings from the open file travel with the reply, not inside its
             // text, so a cited chart is shown instead of only described.
             const figures = errText ? [] : figuresFromValue(parsed.body.file_companion_figures ?? parsed.body.FileCompanionFigures);
+            const noteCardPath = eventString(parsed.body, "note_card_path", "NoteCardPath");
+            const webNote = parsed.body.web_note === true || parsed.body.WebNote === true;
             const paper = paperRequestIds.current.has(parsed.requestID);
+            const videoNote = videoNoteRequestIds.current.has(parsed.requestID) || Boolean(noteCardPath);
             if (paper) paperRequestIds.current.delete(parsed.requestID);
-            const resultPath = paper && !errText && localPath ? localPath : "";
+            if (videoNote) {
+                videoNoteRequestIds.current.delete(parsed.requestID);
+                noteBusyRef.current = "";
+                setNoteBusyRef.current("");
+            }
+            const resultPath = paper && !videoNote && !errText && localPath ? localPath : "";
             const matched = tabsRef.current.find((tab) => tab.sessionId === parsed.sessionId);
             const matchedName = matched?.name.toLowerCase() ?? "";
-            const reloadPath = !paper && !errText && localPath && matched && !matchedName.endsWith(".xlsx") && !matchedName.endsWith(".pptx")
+            const reloadPath = !paper && !videoNote && !errText && localPath && matched && matched.kind !== "web" && !matchedName.endsWith(".xlsx") && !matchedName.endsWith(".pptx")
                 ? matched.path
                 : "";
             setTabs((current) => current.map((tab) => {
@@ -1406,12 +1636,24 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                         resultPath ? "已生成论文解读" : shown,
                         reasoning,
                     );
+                    const ownedCard = noteCardPath || streamed?.noteCardPath || "";
+                    // One note file per session. The turn that carries its path
+                    // owns the card; an earlier bubble would open the PDF this
+                    // turn just overwrote.
+                    if (ownedCard) {
+                        for (let i = 0; i < messages.length; i++) {
+                            if (messages[i].id === id || !messages[i].noteCardPath) continue;
+                            messages[i] = { ...messages[i], noteCardPath: undefined };
+                        }
+                    }
                     const next = {
                         id,
                         role: "assistant" as const,
                         text: resultPath ? "已生成论文解读" : (shown ? finished.text : (streamed?.text || "")),
                         reasoning: finished.reasoning,
                         resultPath: resultPath || streamed?.resultPath,
+                        noteCardPath: ownedCard || undefined,
+                        webNote: webNote || streamed?.webNote || matched?.kind === "web",
                         figures: figures.length > 0 ? figures : streamed?.figures,
                     };
                     if (index >= 0) messages[index] = { ...messages[index], ...next };
@@ -1438,6 +1680,47 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         runtime?.EventsOn?.("file-companion:preview-reload", onReload);
         runtime?.EventsOn?.("ai-assistant-progress", onProgress);
         runtime?.EventsOn?.("ai-assistant-token", onToken);
+        const syncWebFull = () => {
+            const frame = webFrameRef.current;
+            if (frame == null) {
+                // The Windows flag is about this page. Once the iframe is
+                // gone, a leftover true would keep the recording running
+                // and would let the next 记笔记 start without fullscreen.
+                domFullRef.current = false;
+                winFullRef.current = false;
+            }
+            const on = frame != null && (domFullRef.current || winFullRef.current);
+            const was = webFullscreenRef.current;
+            webFullscreenRef.current = on;
+            if (was && !on && noteBusyRef.current) {
+                // The recording tab is the one that started the note. Switching
+                // files unmounts the iframe and exits fullscreen after active
+                // already points at the other file.
+                const busyPath = noteBusyRef.current;
+                const tab = tabsRef.current.find((item) => item.kind === "web" && item.path === busyPath);
+                if (tab) void CancelFileCompanionWebTurn(tab.sessionId, noteEpochRef.current);
+            }
+        };
+        const onDomFull = () => {
+            const frame = webFrameRef.current;
+            // The iframe is gone after a tab switch. Both sides are then null,
+            // and null === null would keep the note recording.
+            const doc = document as Document & { webkitFullscreenElement?: Element | null };
+            const active = document.fullscreenElement || doc.webkitFullscreenElement || null;
+            domFullRef.current = frame != null && active === frame;
+            syncWebFull();
+        };
+        const onWinFull = (payload: unknown) => {
+            // Wails delivers Notify data as a one-element array. The test
+            // runtime emits the object itself. Both have to set the flag.
+            const raw = Array.isArray(payload) ? payload[0] : payload;
+            const body = eventBody(raw);
+            winFullRef.current = Boolean(body && (body.fullscreen === true || body.Fullscreen === true));
+            syncWebFull();
+        };
+        document.addEventListener("fullscreenchange", onDomFull);
+        document.addEventListener("webkitfullscreenchange", onDomFull);
+        runtime?.EventsOn?.("file-companion:webview-fullscreen", onWinFull);
         runtime?.EventsOn?.("ai-assistant-response", onResponse);
         runtime?.OnFileDrop?.((_x, _y, paths) => {
             paths.forEach((path) => { void openPath(path, true); });
@@ -1448,9 +1731,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             bootPromiseRef.current = Promise.resolve(GetFileCompanionBoot());
         }
         const bootPromise = bootPromiseRef.current;
-        const readyPaths = (value: unknown): string[] => (
-            Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim() !== "") : []
-        );
+        const readyPaths = (value: unknown): string[] => companionDocumentPaths(value);
         void (async () => {
             const askIfEmpty = () => {
                 if (cancelled || !windowIsEmpty()) return;
@@ -1474,8 +1755,8 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                 const boot = await bootPromise;
                 if (cancelled) return;
                 // A launch with no documents is "show the companion". The files
-                // it had open last time are the session; the launch verb is not
-                // one of them. The dialog runs only when that session is empty.
+                // it had open last time are the session. The dialog runs only
+                // when that session is empty.
                 let paths = bootPaths(boot as { paths?: unknown; Paths?: unknown });
                 if (paths.length === 0) {
                     paths = readyPaths(await Promise.resolve(FileCompanionResumePaths()).catch(() => undefined));
@@ -1499,6 +1780,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             runtime?.EventsOff?.("ai-assistant-progress");
             runtime?.EventsOff?.("ai-assistant-token");
             runtime?.EventsOff?.("ai-assistant-response");
+            runtime?.EventsOff?.("file-companion:webview-fullscreen");
+            document.removeEventListener("fullscreenchange", onDomFull);
+            document.removeEventListener("webkitfullscreenchange", onDomFull);
             runtime?.OnFileDropOff?.();
         };
     }, []);
@@ -1696,21 +1980,26 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         prevActivePathRef.current = active;
         scrollToBottom("auto", true, 1);
     }, [active, scrollToBottom]);
-    const kind: FilePreviewKind = activeTab ? filePreviewKindFromName(activeTab.name) : "text";
+    const isWebTab = activeTab?.kind === "web";
+    const kind: FilePreviewKind = activeTab && !isWebTab ? filePreviewKindFromName(activeTab.name) : "text";
     const textEditorKind = kind === "markdown" || kind === "text" || kind === "code" || kind === "html";
-    const showEditor = Boolean(activeTab && !activeTab.error && textEditorKind && (activeTab.editable || activeTab.content || activeTab.readOnlyReason));
-    const showPreview = Boolean(activeTab && !activeTab.error && (kind === "pptx" || kind === "docx" || kind === "pdf" || kind === "xlsx" || kind === "office" || kind === "image" || kind === "video" || kind === "audio" || kind === "html" || kind === "latex"));
-    const emptyFile = Boolean(activeTab && !activeTab.error && !showEditor && activeTab.size <= 0);
+    const showEditor = Boolean(activeTab && !isWebTab && !activeTab.error && textEditorKind && (activeTab.editable || activeTab.content || activeTab.readOnlyReason));
+    const showPreview = Boolean(activeTab && !isWebTab && !activeTab.error && (kind === "pptx" || kind === "docx" || kind === "pdf" || kind === "xlsx" || kind === "office" || kind === "image" || kind === "video" || kind === "audio" || kind === "html" || kind === "latex"));
+    const emptyFile = Boolean(activeTab && !isWebTab && !activeTab.error && !showEditor && activeTab.size <= 0);
     const htmlPreviewing = Boolean(activeTab && kind === "html" && activeTab.htmlPreview);
     const showSource = showEditor && !htmlPreviewing;
     const showPreviewPane = showPreview && !emptyFile && (kind !== "html" || htmlPreviewing);
-    const unsupported = Boolean(activeTab && !activeTab.error && !showEditor && !showPreview && !emptyFile);
+    const unsupported = Boolean(activeTab && !isWebTab && !activeTab.error && !showEditor && !showPreview && !emptyFile);
     const cloudDisabled = !activeTab || !activeTab.canExport || activeTab.size > CLOUD_DISABLE_BYTES;
     const [importBusyPath, setImportBusyPath] = useState("");
     const [uploadBusyPath, setUploadBusyPath] = useState("");
     const [uploadedPaths, setUploadedPaths] = useState<ReadonlySet<string>>(() => new Set());
     const [sendingPath, setSendingPath] = useState("");
     const [paperBusyPath, setPaperBusyPath] = useState("");
+    const [noteBusyPath, setNoteBusyPath] = useState("");
+    const [chatTexOpen, setChatTexOpen] = useState(false);
+    noteBusyRef.current = noteBusyPath;
+    setNoteBusyRef.current = setNoteBusyPath;
     const [chatExportBusyPath, setChatExportBusyPath] = useState("");
     const [chatWidth, setChatWidth] = useState(360);
     const chatWidthRef = useRef(chatWidth);
@@ -1727,6 +2016,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     // returned before a turn existed.
     const sendBusy = Boolean(sendingPath || (activeTab && activeTab.status.trim()));
     const paperBusy = Boolean(activeTab && paperBusyPath === activeTab.path);
+    const noteBusy = Boolean(activeTab && noteBusyPath === activeTab.path);
     const chatExportBusy = Boolean(activeTab && chatExportBusyPath === activeTab.path);
     // Computed on demand, not at render time: whether a turn is still arriving
     // depends on sendingPath, which is declared further down. Reading it later
@@ -1815,9 +2105,33 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         exportFlight.current.add(flight);
         setChatExportBusyPath(path);
         try {
-            const dest = await FileCompanionExportChatPDF(path, prepared.turns);
+            const dest = activeTab.kind === "web"
+                ? await FileCompanionExportWebChatPDF(activeTab.sessionId, prepared.turns)
+                : await FileCompanionExportChatPDF(path, prepared.turns);
             // An empty path is the reader cancelling the dialog, not a failure.
             if (dest) showToast(companionExportNotice(prepared.missingFigures, prepared.missingDiagrams), companionExportNoticeKind(prepared.missingFigures, prepared.missingDiagrams), 6000);
+        } catch (err) {
+            showToast(exportErrorText(err), "error", 6000);
+        } finally {
+            exportFlight.current.delete(flight);
+            setChatExportBusyPath((current) => (current === path ? "" : current));
+        }
+    };
+
+    const exportChatTeX = async () => {
+        if (!activeTab || chatExportBusy) return;
+        const prepared = await buildChatTurns();
+        if (prepared.turns.length === 0) return;
+        const path = activeTab.path;
+        const flight = `chat-tex:${path}`;
+        if (exportFlight.current.has(flight)) return;
+        exportFlight.current.add(flight);
+        setChatExportBusyPath(path);
+        try {
+            const dest = activeTab.kind === "web"
+                ? await FileCompanionExportWebChatTeX(activeTab.sessionId, prepared.turns)
+                : await FileCompanionExportChatTeX(path, prepared.turns);
+            if (dest) showToast("已导出 LaTeX", "success", 6000);
         } catch (err) {
             showToast(exportErrorText(err), "error", 6000);
         } finally {
@@ -1841,7 +2155,8 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             return { ...item, draft, messages: [], status: "" };
         }));
         try {
-            await ClearFileCompanionChat(tab.path);
+            if (tab.kind === "web") await ClearFileCompanionWebChat(tab.sessionId);
+            else await ClearFileCompanionChat(tab.path);
         } catch (err) {
             showToast(turnErrorText(err instanceof Error ? err.message : "没能清空聊天"), "error", 6000);
         }
@@ -1865,6 +2180,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         setSendingPath(tabPath);
         const requestID = `file-companion-${Date.now()}`;
         bindCompanionRequest(sessionId, requestID);
+        const mediaKind = filePreviewKindFromName(activeTab.name);
+        const notePhrase = !isWebTab && (mediaKind === "video" || mediaKind === "audio") && companionVideoNotePhrase(text);
+        const webNotePhrase = isWebTab && (text === "记笔记" || companionVideoNotePhrase(text));
         let accepted = false;
         try {
             if (activeTab.dirty && activeTab.editable && !activeTab.readOnly) {
@@ -1889,15 +2207,39 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         }
         // The question is sent once the user bubble is committed. The reply
         // keeps the busy lock, but ↑ must already see this line.
+        let captureEpoch = 0;
+        if (accepted && (notePhrase || webNotePhrase)) {
+            videoNoteRequestIds.current.add(requestID);
+            noteBusyRef.current = tabPath;
+            setNoteBusyPath(tabPath);
+            if (webNotePhrase) {
+                captureEpoch = webCaptureEpochRef.current + 1;
+                webCaptureEpochRef.current = captureEpoch;
+                noteEpochRef.current = captureEpoch;
+            }
+        }
         void (async () => {
             try {
-                await SendFileCompanionMessage({
-                    path: tabPath,
-                    text,
-                    selection,
-                    request_id: requestID,
-                    ...(selection && selectionStart >= 0 ? { selection_start: selectionStart } : {}),
-                });
+                if (isWebTab) {
+                    await SendFileCompanionWebMessage({
+                        sessionId,
+                        text,
+                        requestId: requestID,
+                        purpose: webNotePhrase ? "video-note" : "",
+                        fullscreen: webFullscreenRef.current,
+                        ...(captureEpoch > 0 ? { captureEpoch } : {}),
+                        ...webCaptureFields(),
+                    });
+                } else {
+                    await SendFileCompanionMessage({
+                        path: tabPath,
+                        text,
+                        selection,
+                        request_id: requestID,
+                        ...(notePhrase ? { purpose: "video-note" } : {}),
+                        ...(selection && selectionStart >= 0 ? { selection_start: selectionStart } : {}),
+                    });
+                }
             } catch (err) {
                 if (!companionEventCurrent(chatEpochRef.current, requestEpochRef.current, sessionId, requestID)) return;
                 const note = turnErrorText(err instanceof Error ? err.message : "发送失败");
@@ -1910,6 +2252,10 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             } finally {
                 sendingRef.current = false;
                 setSendingPath((current) => current === tabPath ? "" : current);
+                if (notePhrase || webNotePhrase) {
+                    noteBusyRef.current = "";
+                    setNoteBusyPath((current) => current === tabPath ? "" : current);
+                }
                 drainIntroRef.current();
             }
         })();
@@ -1960,12 +2306,93 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         }
     };
 
+    const sendNote = async () => {
+        if (!activeTab || activeTab.error) return;
+        if (noteBusy) {
+            // The turn that started the note clears noteBusy when it returns.
+            // Clearing it here labels the button 生成笔记 while that turn is still writing.
+            if (activeTab.kind === "web") await CancelFileCompanionWebTurn(activeTab.sessionId, noteEpochRef.current);
+            else await CancelFileCompanionTurn(activeTab.path);
+            return;
+        }
+        if (sendingRef.current || activeTab.status.trim() || sendingPath === activeTab.path) return;
+        const tabPath = activeTab.path;
+        const sessionId = activeTab.sessionId;
+        const web = activeTab.kind === "web";
+        const label = web ? "记笔记" : "生成笔记";
+        const captureEpoch = web ? (webCaptureEpochRef.current + 1) : 0;
+        if (web) {
+            webCaptureEpochRef.current = captureEpoch;
+            noteEpochRef.current = captureEpoch;
+        }
+        scrollToBottom("auto", true);
+        sendingRef.current = true;
+        setSendingPath(tabPath);
+        noteBusyRef.current = tabPath;
+        setNoteBusyPath(tabPath);
+        const requestID = `file-companion-${Date.now()}`;
+        bindCompanionRequest(sessionId, requestID);
+        videoNoteRequestIds.current.add(requestID);
+        const message: ChatMessage = { id: `${requestID}:user`, role: "user", text: label };
+        setTabs((current) => current.map((tab) => tab.path === tabPath ? { ...tab, messages: [...tab.messages, message] } : tab));
+        try {
+            if (web) {
+                await SendFileCompanionWebMessage({
+                    sessionId,
+                    text: label,
+                    requestId: requestID,
+                    purpose: "video-note",
+                    fullscreen: webFullscreenRef.current,
+                    captureEpoch,
+                    ...webCaptureFields(),
+                });
+            } else {
+                await SendFileCompanionMessage({
+                    path: tabPath,
+                    text: label,
+                    request_id: requestID,
+                    purpose: "video-note",
+                });
+            }
+        } catch (err) {
+            videoNoteRequestIds.current.delete(requestID);
+            if (!companionEventCurrent(chatEpochRef.current, requestEpochRef.current, sessionId, requestID)) return;
+            const note = turnErrorText(err instanceof Error ? err.message : "发送失败");
+            const assistantID = `${requestID}:assistant`;
+            setTabs((current) => current.map((tab) => {
+                if (tab.path !== tabPath) return tab;
+                if (tab.messages.some((item) => item.id === assistantID && item.text.trim() !== "")) return { ...tab, status: "" };
+                return { ...tab, status: "", messages: [...tab.messages, { id: assistantID, role: "assistant", text: note }] };
+            }));
+        } finally {
+            sendingRef.current = false;
+            setSendingPath((current) => current === tabPath ? "" : current);
+            noteBusyRef.current = "";
+            setNoteBusyPath((current) => current === tabPath ? "" : current);
+            drainIntroRef.current();
+        }
+    };
+
     // One turn at a time. A new empty file asks what it is; further files wait
     // until that turn releases the lock. The question is not typed, so it is
     // not stored in the composer's input history, and it carries no selection.
     const startIntro = (tab: CompanionTab): Promise<void> => {
         const tabPath = tab.path;
         const sessionId = tab.sessionId;
+        const mediaKind = tab.kind === "web" ? "" : filePreviewKindFromName(tab.name);
+        if (mediaKind === "video" || mediaKind === "audio") {
+            const sentence = mediaKind === "audio"
+                ? "这个音频还没有笔记。点「生成笔记」，或发送「生成笔记」。"
+                : "这个视频还没有笔记。点「生成笔记」，或发送「生成笔记」。";
+            introSerialRef.current += 1;
+            const requestID = `file-companion-intro-local-${Date.now()}-${introSerialRef.current}`;
+            const message: ChatMessage = { id: `${requestID}:assistant`, role: "assistant", text: sentence };
+            setTabs((current) => current.map((item) => {
+                if (item.path !== tabPath || item.messages.length > 0) return item;
+                return { ...item, messages: [message] };
+            }));
+            return Promise.resolve();
+        }
         const text = FILE_COMPANION_INTRO;
         sendingRef.current = true;
         setSendingPath(tabPath);
@@ -2087,7 +2514,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         };
     }, [openMenu, closeOpenMenu]);
 
-    const openArxiv = async () => {
+    const openReference = async () => {
         const value = arxivInput.trim();
         if (arxivBusyRef.current) return;
         // Enter reaches here even when 确定 is disabled, so an empty box must
@@ -2096,26 +2523,68 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             setArxivMessage("请填写 Arxiv ID 或论文链接");
             return;
         }
+        const arxiv = looksLikeArxivReference(value);
         arxivBusyRef.current = true;
         setArxivBusy(true);
         setArxivMessage("");
         try {
-            const path = await FileCompanionOpenArxiv(value);
-            if (!path) {
-                setArxivMessage("下载失败：没有拿到文件路径");
-                return;
+            if (arxiv) {
+                const path = await FileCompanionOpenArxiv(value);
+                if (!path) {
+                    setArxivMessage("下载失败：没有拿到文件路径");
+                    return;
+                }
+                await openPath(path, false, false, 0, true);
+            } else {
+                const opened = await FileCompanionOpenWebPage(value) as { kind?: string; url?: string; frameUrl?: string; sessionId?: string; error?: string; Error?: string };
+                const frame = String(opened?.frameUrl || opened?.url || "").trim();
+                const sessionId = String(opened?.sessionId || "").trim();
+                const failure = String(opened?.error || opened?.Error || "").trim();
+                if (failure || !frame || !sessionId) {
+                    setArxivMessage(failure || "打不开这个页面");
+                    return;
+                }
+                const host = (() => {
+                    try { return new URL(frame).hostname; } catch { return frame; }
+                })();
+                const next: CompanionTab = {
+                    path: frame,
+                    name: host || "网页",
+                    editable: false,
+                    readOnly: true,
+                    canExport: false,
+                    content: "",
+                    loadedHash: "",
+                    sessionId,
+                    size: 0,
+                    error: "",
+                    draft: "",
+                    selection: "",
+                    selectionStart: -1,
+                    messages: [],
+                    readOnlyReason: "",
+                    status: "",
+                    dirty: false,
+                    conflict: false,
+                    diskHash: "",
+                    confirmOverwrite: false,
+                    previewEpoch: 0,
+                    saveError: "",
+                    htmlPreview: false,
+                    kind: "web",
+                    frameUrl: frame,
+                };
+                const existing = tabsRef.current.find((tab) => tab.kind === "web" && (tab.frameUrl === frame || tab.sessionId === sessionId));
+                if (!existing) {
+                    tabCommittedRef.current = true;
+                    setTabs((current) => [...current, next]);
+                }
+                setActive(existing?.path || frame);
             }
-            // Closed only once the tab exists: a failure opening the file has
-            // to stay visible here instead of vanishing with the panel.
-            await openPath(path, false, false, 0, true);
             setArxivInput("");
-            // Enter submits from the input, so the element holding focus is
-            // about to be unmounted; a click on 确定 leaves it on that button.
-            // Either way focus must not fall to <body>.
             closeOpenMenu(focusInsideOpenMenu());
         } catch (err) {
-            // The panel stays open so the ID can be corrected in place.
-            setArxivMessage(err instanceof Error ? err.message : "下载失败");
+            setArxivMessage(err instanceof Error ? err.message : (arxiv ? "下载失败" : "打开失败"));
         } finally {
             arxivBusyRef.current = false;
             setArxivBusy(false);
@@ -2168,6 +2637,11 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                             onClick={(event) => {
                                 event.stopPropagation();
                                 const closing = tab.path;
+                                if (tab.kind === "web") {
+                                    void FileCompanionDiscardWebNote(tab.sessionId).catch(() => undefined);
+                                } else {
+                                    void CancelFileCompanionTurn(closing).catch(() => undefined);
+                                }
                                 forgetIntro(closing);
                                 const currentTabs = tabsRef.current;
                                 const index = currentTabs.findIndex((item) => item.path === closing);
@@ -2255,10 +2729,10 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                     ref={arxivInputRef}
                                     className="file-companion-open-input"
                                     data-testid="file-companion-arxiv-input"
-                                    aria-label="Arxiv ID 或 URL"
+                                    aria-label={FILE_COMPANION_OPEN_HINT}
                                     value={arxivInput}
                                     disabled={arxivBusy}
-                                    placeholder="Arxiv ID 或 URL"
+                                    placeholder={FILE_COMPANION_OPEN_HINT}
                                     spellCheck={false}
                                     onChange={(event) => {
                                         setArxivInput(event.target.value);
@@ -2267,7 +2741,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                     onKeyDown={(event) => {
                                         if (event.key !== "Enter") return;
                                         event.preventDefault();
-                                        void openArxiv();
+                                        void openReference();
                                     }}
                                 />
                                 <button
@@ -2276,9 +2750,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                     data-testid="file-companion-arxiv-go"
                                     disabled={arxivBusy || arxivInput.trim() === ""}
                                     aria-busy={arxivBusy}
-                                    onClick={() => { void openArxiv(); }}
+                                    onClick={() => { void openReference(); }}
                                 >
-                                    {arxivBusy ? "下载中…" : "确定"}
+                                    {arxivBusy ? (looksLikeArxivReference(arxivInput) ? "下载中…" : "打开中…") : "确定"}
                                 </button>
                             </div>
                             <p
@@ -2287,7 +2761,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                 data-state={arxivMessage ? "error" : "hint"}
                                 role="status"
                             >
-                                {arxivMessage || "如 2510.16079 或 arxiv.org/abs/2510.16079"}
+                                {arxivMessage || FILE_COMPANION_OPEN_HINT}
                             </p>
                         </div>
                         </>
@@ -2296,6 +2770,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                 <div className="file-companion-titlebar-gap" data-testid="file-companion-titlebar-gap" />
                 {activeTab ? (
                     <div className="file-companion-titlebar-actions" data-testid="file-companion-export">
+                        {isWebTab || kind === "video" || kind === "audio" ? null : (
                         <button
                             type="button"
                             className="file-companion-tool"
@@ -2307,6 +2782,20 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                             <CompanionActionIcon name="paper" />
                             {paperBusy ? "正在解读…" : "论文解读"}
                         </button>
+                        )}
+                        {isWebTab || kind === "video" || kind === "audio" ? (
+                        <button
+                            type="button"
+                            className="file-companion-tool"
+                            data-testid="file-companion-video-note"
+                            disabled={noteBusy ? false : Boolean(activeTab.error) || sendBusy}
+                            aria-busy={noteBusy}
+                            onClick={() => { void sendNote(); }}
+                        >
+                            <CompanionActionIcon name="paper" />
+                            {noteBusy ? (isWebTab ? "停止" : "取消") : (isWebTab ? "记笔记" : "生成笔记")}
+                        </button>
+                        ) : null}
                         <button
                             type="button"
                             className="file-companion-tool"
@@ -2317,7 +2806,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                             onClick={() => { void exportChat(); }}
                         >
                             <CompanionActionIcon name="pdf" />
-                            {chatExportBusy ? "正在导出…" : "导出 PDF"}
+                            {chatExportBusy ? "正在导出…" : "导出 PDF"}<span data-testid="file-companion-export-chat-menu" role="button" aria-label="导出格式" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setChatTexOpen((current) => !current); }}><svg viewBox="0 0 10 6" aria-hidden="true" focusable="false"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.4" /></svg></span>{chatTexOpen ? <span data-testid="file-companion-export-chat-tex" role="menuitem" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setChatTexOpen(false); void exportChatTeX(); }}>LaTeX</span> : null}
                         </button>
                         <button
                             type="button"
@@ -2404,6 +2893,22 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                 <p>此文件类型暂不支持预览</p>
                                 <p>{activeTab.name}</p>
                                 <p>{activeTab.size} 字节</p>
+                            </div>
+                        ) : null}
+                        {isWebTab && activeTab.frameUrl ? (
+                            <div data-testid="file-companion-web" style={{ flex: 1, minHeight: 160 }}>
+                                <iframe
+                                    ref={webFrameRef}
+                                    data-testid="file-companion-web-frame"
+                                    src={activeTab.frameUrl}
+                                    title={activeTab.name}
+                                    // YouTube's embed contract. The player stays on the poster
+                                    // unless this frame sends the parent origin as Referer.
+                                    referrerPolicy="strict-origin-when-cross-origin"
+                                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
+                                    allowFullScreen
+                                    style={{ width: "100%", height: "100%", border: 0 }}
+                                />
                             </div>
                         ) : null}
                         {showPreviewPane ? (
@@ -2501,7 +3006,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                                 overflowWrap: "anywhere",
                                             }}
                                             >
-                                                {shareable ? <CompanionMessageActions path={activeTab.path} markdown={answerText} messageId={message.id} figures={message.figures} /> : null}
+                                                {shareable ? <CompanionMessageActions path={activeTab.path} markdown={answerText} messageId={message.id} figures={message.figures} webSession={activeTab.kind === "web" ? activeTab.sessionId : undefined} /> : null}
                                                 {displayReasoning ? (
                                                     <AssistantReasoningPanel
                                                         defaultOpen={streaming}
@@ -2515,6 +3020,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                                 </AssistantReasoningPanel>
                                             ) : null}
                                             <div data-testid={mine ? undefined : "file-companion-answer"}>
+                                                {mine || message.resultPath ? (
                                                 <MessageContentRenderer
                                                     content={answerText}
                                                     theme={lightTheme}
@@ -2522,7 +3028,19 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                                     isStreaming={streaming && !message.resultPath}
                                                     messageId={message.id}
                                                 />
+                                                ) : (
+                                                <NoteStampAnswer
+                                                    text={answerText}
+                                                    path={activeTab.path}
+                                                    web={Boolean(message.webNote || activeTab.kind === "web")}
+                                                    previewOpen={showPreview}
+                                                    messageId={message.id}
+                                                    streaming={streaming}
+                                                    onBlocked={(sentence) => showToast(sentence, "error", 6000)}
+                                                />
+                                                )}
                                                 {message.resultPath ? <PaperResultCard filePath={message.resultPath} messageId={message.id} /> : null}
+                                                {message.noteCardPath ? <NoteResultCard filePath={message.noteCardPath} messageId={message.id} /> : null}
                                                 {!mine && message.figures && message.figures.length > 0 ? (
                                                     <CompanionFigureStrip figures={message.figures} messageId={message.id} />
                                                 ) : null}

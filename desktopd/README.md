@@ -25,7 +25,9 @@ Linux/macOS 上用 `deploy/linux/rollout_desktop_gui2.sh`(编译、打包、断�
 | 变量 | 说明 |
 | --- | --- |
 | `DESKTOPD_TOKEN` | 主 API key(`/v1/*` 的 Bearer,首次部署自动生成) |
-| `DESKTOPD_ADVERTISE_HOST` | 容器端口回调时的对外主机名(必须是 Hub/MaClawSrv 可达的名字) |
+| `DESKTOPD_ADVERTISE_HOST` | 对外 API 名。未设置 `DESKTOPD_PUBLIC_URL` 时,CDP 和 noVNC 走 `https://` 这个名字上的 `/v1/desktops/tunnel/...`,不再带容器映射端口 |
+| `DESKTOPD_PUBLIC_URL` | 可选。隧道的公开基址,例如 `https://dockerd.example.com`。设置后覆盖上面的 `https://` + 主机名 |
+| `DESKTOPD_PUBLISH_BIND` | Docker 发布浏览器和屏幕端口时绑定的地址,默认 `127.0.0.1`。只能是 IPv4 回环或内网地址。`0.0.0.0` 会被拒绝。已在跑的容器不会因此重建 |
 | `DESKTOPD_ADDR` | 监听地址,默认 `127.0.0.1:18081`(反代或 SSH 隧道用) |
 | `DESKTOPD_STATE_DIR` | 管理面板的状态目录(部署脚本指向 `<部署目录>/state`);`off` 完全禁用面板 |
 | `DESKTOPD_MAX_IDLE` | 可选空闲回收,如 `24h`。先让 supervisor 停会话并落盘登录态,再确认容器已停;容器还在就 `docker stop`(与 API 停止相同的 25 秒宽限)。容器里有正在使用的 bot 桌面时只停主人会话,不停容器。停止失败会打错误日志 |

@@ -6,12 +6,9 @@ import (
 )
 
 // TestDesktopActionVocabularyCoversBothPhases pins the desktop tool's action
-// vocabulary. One list answers the schema enum, the dispatcher's allow check,
-// and the refusal text; the plan phase exposes the read-only prefix, and the
-// phase gate blocks the rest by derivation. A new action therefore has to be
-// added to the execute list once -- and its plan-phase posture is decided by
-// whether it joins the plan list -- rather than re-stated in three places that
-// could drift.
+// vocabulary. Plan and execute advertise the execute list. The plan allow-list
+// is the phase gate: a mutating action stays in the schema and is refused by
+// desktopPlanActionAllowed. A new action is added to the execute list once.
 func TestDesktopActionVocabularyCoversBothPhases(t *testing.T) {
 	if len(desktopExecuteActions) == 0 {
 		t.Fatal("desktop tool must expose at least one action")
@@ -31,8 +28,8 @@ func TestDesktopActionVocabularyCoversBothPhases(t *testing.T) {
 			t.Fatalf("plan-phase action %q must be a member of the execute set", action)
 		}
 	}
-	// The plan phase may only observe. Everything else is blocked, and the
-	// refusal names the action so the model knows which verb was refused.
+	// The plan allow-list may only observe. Mutating actions stay out of that
+	// list. The published schema still names them.
 	mutating := map[string]bool{"navigate": true, "click": true, "type": true, "press": true, "task_run": true, "script": true, "skill_run": true, "app_run": true, "app_open": true, "install": true, "deliver": true, "file_write": true, "file_edit": true, "bash": true, "computer": true, "clipboard_set": true, "window": true, "request_takeover": true}
 	for _, action := range desktopExecuteActions {
 		if mutating[action] && desktopPlanActionAllowed(action) {

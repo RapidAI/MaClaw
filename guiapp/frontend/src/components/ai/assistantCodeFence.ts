@@ -1,7 +1,8 @@
 import type React from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
 
-export const CODE_FENCE_FONT = "ui-monospace, SFMono-Regular, Menlo, Consolas, 'Courier New', monospace";
+/** Falls back to the system monospace unless the assistant font sets --assistant-code-font. */
+export const CODE_FENCE_FONT = "var(--assistant-code-font, ui-monospace, SFMono-Regular, Menlo, Consolas, 'Courier New', monospace)";
 
 /**
  * The code element must not pick up the global `:where(pre, code)` wash.

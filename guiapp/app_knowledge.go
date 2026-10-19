@@ -4045,6 +4045,7 @@ func (a *App) normalizeKnowledgeSearchOptions(opts knowledge.SearchOptions) know
 	opts.TenantID = strings.TrimSpace(opts.TenantID)
 	opts.ProjectPath = strings.TrimSpace(opts.ProjectPath)
 	opts.Query = strings.TrimSpace(opts.Query)
+	opts.Retrieval = strings.ToLower(strings.TrimSpace(opts.Retrieval))
 	opts.SearchScope = strings.TrimSpace(opts.SearchScope)
 	opts.TopicHint = strings.TrimSpace(opts.TopicHint)
 	opts.Domain = strings.TrimSpace(opts.Domain)

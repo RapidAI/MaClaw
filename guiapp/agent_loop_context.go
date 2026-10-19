@@ -76,6 +76,10 @@ type LoopContext struct {
 	RuntimeEventSink agentruntime.EventSink
 	// Loop-scoped tools unlocked by discover_tool. Not a shared pin.
 	discoveredConditionalTools map[string]bool
+	// discoveredMCPBinds are installed MCP tools this loop's discover_tool
+	// identified. The next legacy model request publishes them as x:mcp
+	// grants. They are not host-tool names and are not a shared pin.
+	discoveredMCPBinds map[string]discoveredMCPBind
 	// exposedToolNames is the last closed surface rendered for this loop.
 	// Discovery status is relative to this set, not the global core catalog.
 	exposedToolNames []string
@@ -130,7 +134,20 @@ type LoopContext struct {
 	// It must not be stored on the process-global session.
 	ComputerUseFresh bool
 	// ComputerUseActive is the latched gate decision for this request.
+	// The chat main loop keeps it false. A computer helper and the
+	// longhorizon gui_executor ring are the loops that may set it.
 	ComputerUseActive bool
+	// ComputerHelper is the one computer-use helper for this screen.
+	// The chat loop that dispatched it stays false.
+	ComputerHelper bool
+	// ComputerHelperNoted latches the dispatch so prompt rebuilds do not
+	// start a second helper.
+	ComputerHelperNoted      bool
+	ComputerHelperDispatched bool
+	ComputerHelperQueued     bool
+	ComputerHelperGoal       string
+	ComputerHelperLimits     string
+	ComputerHelperSuccess    string
 	// ComputerUseGateSettled is true after the first gateComputerUse for this
 	// LoopContext. Prompt rebuilds and tool refresh must not re-run UIC.
 	ComputerUseGateSettled bool
@@ -955,6 +972,52 @@ func (c *LoopContext) rememberDiscoveredConditionalTool(name string) bool {
 	}
 	c.discoveredConditionalTools[name] = true
 	return true
+}
+
+func (c *LoopContext) rememberDiscoveredMCPBind(serverID, toolName string) bool {
+	serverID = strings.TrimSpace(serverID)
+	toolName = strings.TrimSpace(toolName)
+	if c == nil || serverID == "" || toolName == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.discoveredMCPBinds == nil {
+		c.discoveredMCPBinds = make(map[string]discoveredMCPBind)
+	}
+	c.discoveredMCPBinds[discoveredMCPBindKey(serverID, toolName)] = discoveredMCPBind{ServerID: serverID, ToolName: toolName}
+	return true
+}
+
+func (c *LoopContext) clearDiscoveredMCPBinds() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.discoveredMCPBinds = nil
+}
+
+func (c *LoopContext) discoveredMCPBindList() []discoveredMCPBind {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.discoveredMCPBinds) == 0 {
+		return nil
+	}
+	out := make([]discoveredMCPBind, 0, len(c.discoveredMCPBinds))
+	for _, bind := range c.discoveredMCPBinds {
+		out = append(out, bind)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ServerID != out[j].ServerID {
+			return out[i].ServerID < out[j].ServerID
+		}
+		return out[i].ToolName < out[j].ToolName
+	})
+	return out
 }
 
 func (c *LoopContext) setExposedToolNames(names []string) {

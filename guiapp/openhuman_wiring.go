@@ -255,8 +255,10 @@ func (h *IMMessageHandler) applyTurnModelRoute(primary corelib.MaclawLLMConfig, 
 	}
 	// Tightening HasAttachments to image bytes must not send a PDF/zip/voice
 	// turn to the fast model. ToolHeavy is checked before HasAttachments, so
-	// only set it when this turn has no image to see.
-	if !hasImage && len(attachments) > 0 {
+	// only set it when this turn has no image to see. A desktop picker PDF is
+	// not a MessageAttachment yet — picture pages are attached after this
+	// route — so a path-marker document has to count the same way.
+	if !hasImage && (len(attachments) > 0 || promptHasSelectedDocument(userText)) {
 		hints.ToolHeavy = true
 	}
 	// Classify the user's request, not host staging/OCR/failure notes. The
@@ -350,6 +352,17 @@ func (h *IMMessageHandler) applyTurnModelRoute(primary corelib.MaclawLLMConfig, 
 		h.app.recordLastModelRoute(decision)
 	}
 	return cfg, decision
+}
+
+// promptHasSelectedDocument reports a current picker document, such as a PDF.
+// Image paths are not documents. Historical picker markers are ignored.
+func promptHasSelectedDocument(userText string) bool {
+	for _, path := range agent.SelectedLocalFilePathsFromPrompt(userText) {
+		if agent.IsDocumentFilePath(path) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *IMMessageHandler) routedConfigSupportsVision(primary, cfg corelib.MaclawLLMConfig) bool {
@@ -577,9 +590,8 @@ func (h *IMMessageHandler) checkToolResultInjection(toolName, result string) str
 // No caching — the report is lightweight (<1ms) and must be per-user accurate.
 func (h *IMMessageHandler) buildSituationReport(userID string) string {
 	userID = strings.TrimSpace(userID)
-	ctx := agent.SituationContext{
-		CurrentTime: time.Now(),
-	}
+	// CurrentTime stays zero. Minute time must not enter the system prompt.
+	ctx := agent.SituationContext{}
 
 	// Active workflow — legacy engine removed, always nil.
 

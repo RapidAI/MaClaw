@@ -13,6 +13,18 @@ mkdir -p "$APP_DIR/data" "$LOG_DIR"
 
 cd "$APP_DIR"
 
+if [ ! -f "$APP_DIR/$BIN_NAME" ]; then
+  echo "Cannot find $APP_DIR/$BIN_NAME. Copy the binary into this directory, then run ./start.sh again." >&2
+  exit 1
+fi
+if [ ! -f "$CONFIG_PATH" ] && [ -f "$EXAMPLE_CONFIG_PATH" ]; then
+  cp -f "$EXAMPLE_CONFIG_PATH" "$CONFIG_PATH"
+fi
+if [ ! -f "$CONFIG_PATH" ]; then
+  echo "Cannot find configs/config.yaml. Run cp configs/config.example.yaml configs/config.yaml, edit it, then run ./start.sh again." >&2
+  exit 1
+fi
+
 # A production installation is commonly managed by systemd. Starting a second
 # copy with nohup would leave an orphaned listener behind on the next deploy,
 # while systemd keeps restarting its own unit after the port bind fails.
@@ -21,10 +33,6 @@ cd "$APP_DIR"
 if command -v systemctl >/dev/null 2>&1 && systemctl cat "$BIN_NAME.service" >/dev/null 2>&1; then
   echo "Restarting systemd service: $BIN_NAME.service"
   exec systemctl restart "$BIN_NAME.service"
-fi
-
-if [ ! -f "$CONFIG_PATH" ] && [ -f "$EXAMPLE_CONFIG_PATH" ]; then
-  cp -f "$EXAMPLE_CONFIG_PATH" "$CONFIG_PATH"
 fi
 
 if [ -f "$PID_FILE" ]; then
@@ -81,4 +89,9 @@ echo "Starting $BIN_NAME..."
 nohup "$APP_DIR/$BIN_NAME" --config "$CONFIG_PATH" >>"$LOG_FILE" 2>&1 &
 NEW_PID=$!
 echo "$NEW_PID" > "$PID_FILE"
+sleep 1
+if ! kill -0 "$NEW_PID" 2>/dev/null; then
+  echo "$BIN_NAME exited right after start. Read the last 20 lines of $LOG_FILE, follow the next step there, then run ./start.sh again." >&2
+  exit 1
+fi
 echo "$BIN_NAME started with PID $NEW_PID"

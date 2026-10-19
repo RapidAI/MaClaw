@@ -8,7 +8,7 @@ import type { AIAssistantPanelHookState, AIAssistantPanelHookActions } from "./a
 import { localizeText } from "./aiAssistantI18n";
 import { normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey as normalizedProjectPathFromSessionKey, projectSessionKey, expertIdFromSessionKey, expertSessionKey, isHostGoalChecklistText, formatGoalChecklistFromRecord, goalChecklistMessageId, messageBelongsToSession, upsertGoalChecklistInHistory, type GoalChecklistRecord } from "./aiAssistantPanelSessionUtils";
 import { noteAIScrollStreamFlush, noteAIScrollStreamRoundEnd, noteAIScrollStreamToken } from "./assistantScrollDiag";
-import { findRolePrefixForDisplay, isBrowserEchoFieldLabel, stripRolePrefixForDisplay, truncateRolePrefixForDisplay } from "./rolePrefixDisplay";
+import { appendRolePrefixStrip, createRolePrefixStreamCursor, findRolePrefixForDisplay, isBrowserEchoFieldLabel, stripRolePrefixForDisplay, truncateRolePrefixForDisplay, type RolePrefixStreamCursor } from "./rolePrefixDisplay";
 import { isHistoryResetCommandText } from "./composeAction";
 import { isCodingAgentChatHiddenEvent, isCodingAgentProgressContent, parseCodingAgentProgress } from "./CodingAgentProgressStatus";
 import { reasoningHasCodingStatusMilestone, stripCodingWorkbenchStatusReasoning } from "./codingAgentUserFinish";
@@ -16,6 +16,7 @@ import { clearAssistantRoundProse, isRejectedRoundContentToken, rejectStreamedAs
 import { appendToolCallMarker, contentHasAssistantToolCall, isProgressOnlyToolAction, isTranscriptToolCallText, parseAssistantToolStatus, stripAssistantToolCallMarkers, type AssistantToolCall } from "./assistantToolCall";
 import { cleanReasoningTrailForBody, parkReplacedStreamInReasoning } from "./assistantReasoningBody";
 import { answerDesktopChatTask, appendChatTaskResultMessage, cancelDesktopChatTask, chatTaskCardMessage, chatTaskEventName, chatTasksToRestore, dispatchDesktopChatTask, isChatTaskResultResponse, listDesktopChatTasks, parseChatTaskEvent, steerDesktopChatTask, upsertChatTaskCard, upsertChatTaskList, type ChatTaskView } from "./chatTaskModel";
+import { takeAssistantStreamToken } from "../bots/visibleDesktopTurn";
 
 export interface CancelAIAssistantResult {
     canceledText: string;
@@ -234,6 +235,11 @@ interface AIAssistantStreamEvent {
      * transports; older hosts fall back to receive order.
      */
     sequence?: number;
+    /**
+     * Original pieces when text joins two or more deltas. The desktop path
+     * normalizes each piece. Callers that only concatenate keep using text.
+     */
+    deltas?: string[];
 }
 
 export function sanitizeAIAssistantStreamText(value: string): string {
@@ -955,6 +961,24 @@ function stripRolePrefixReasoning(text: string): string {
     return truncateRolePrefixForDisplay(text);
 }
 
+const growingContentRole = new Map<string, RolePrefixStreamCursor>();
+const growingReasoningRole = new Map<string, RolePrefixStreamCursor>();
+
+/** Message text is the previous display plus this delta. Rescan only when the tail can change. */
+function stripGrowingRolePrefix(kind: "keep-body" | "truncate", messageId: string, text: string): string {
+    const bucket = kind === "keep-body" ? growingContentRole : growingReasoningRole;
+    let cursor = bucket.get(messageId);
+    if (!cursor) {
+        cursor = createRolePrefixStreamCursor(kind);
+        bucket.set(messageId, cursor);
+        if (bucket.size > 8) {
+            const oldest = bucket.keys().next().value;
+            if (oldest && oldest !== messageId) bucket.delete(oldest);
+        }
+    }
+    return appendRolePrefixStrip(cursor, text);
+}
+
 function sanitizeChatMessageForDisplay(message: ChatMessage): ChatMessage {
     if (message.role !== 'assistant') return message;
     // Persisted/project history can predate stream sanitization. Normalize it
@@ -1274,7 +1298,11 @@ interface ActiveRound {
 interface StreamTokenBuffer {
     requestId: string;
     assistantMessageId: string;
-    text: string;
+    // Normalized pieces waiting for one paint. They stay separate so a role
+    // prefix that closes on one piece does not strip the pieces after it.
+    parts: string[];
+    /** Transport sequence for each part. Reasoning tokens own a timeline row by it. */
+    sequences: Array<number | undefined>;
     flushTimer: ReturnType<typeof setTimeout> | null;
     hasRenderedFirstToken: boolean;
 }
@@ -1292,6 +1320,8 @@ interface StreamAppendState {
     reasoning: string;
     contentSnapshotMode: boolean;
     reasoningSnapshotMode: boolean;
+    contentRole?: RolePrefixStreamCursor;
+    reasoningRole?: RolePrefixStreamCursor;
     /**
      * Bubble text after this round's prose clear and before its content
      * tokens. Undefined until that first content token. "" is a real baseline.
@@ -1589,6 +1619,65 @@ function appendAdjacentCodingThought(
     }];
 }
 
+// A coalesced reasoning payload has one transport sequence. Pieces after the
+// first extend the thought that already owns it. Widening lastSequence would
+// occupy the next event's number and that event would be dropped.
+function extendOwnedCodingThought(
+    timeline: CodingAgentTimelineItem[],
+    content: string,
+    sequence: number,
+): CodingAgentTimelineItem[] | null {
+    const index = timeline.findIndex((item) =>
+        item.kind === 'thinking'
+        && sequence >= item.sequence
+        && sequence <= (item.lastSequence || item.sequence),
+    );
+    if (index < 0) return null;
+    const next = timeline.slice();
+    const item = next[index];
+    next[index] = {
+        ...item,
+        content: `${item.content}${content}`,
+        timestamp: Date.now(),
+    };
+    return next;
+}
+
+function messageOwnsCodingSequence(message: ChatMessage, sequence?: number): boolean {
+    const preferred = normalizeCodingTimelineSequence(sequence);
+    if (!preferred) return false;
+    if (codingTimelineSequenceIsTaken(message.pendingCodingThoughts || [], preferred)) return true;
+    return !!message.codingTimeline?.length && codingTimelineSequenceIsTaken(message.codingTimeline, preferred);
+}
+
+function applyStreamPartsToMessages(messages: ChatMessage[], assistantMessageId: string, parts: string[], eventSequence?: number): ChatMessage[] {
+    const apply = (message: ChatMessage) => applyNormalizedStreamParts(message, parts, eventSequence);
+    return updateTailMessage(messages, assistantMessageId, apply)
+        ?? updateMessageById(messages, assistantMessageId, apply);
+}
+
+function applyNormalizedStreamParts(message: ChatMessage, parts: string[], eventSequence?: number): ChatMessage {
+    if (parts[0]?.startsWith('\x01') && messageOwnsCodingSequence(message, eventSequence)) {
+        return message;
+    }
+    let current = message;
+    let claimedReasoning = false;
+    for (const part of parts) {
+        if (!part) continue;
+        const reasoning = part.startsWith('\x01');
+        const next = appendTokenToMessage(
+            current,
+            part,
+            reasoning ? eventSequence : undefined,
+            reasoning && claimedReasoning,
+        );
+        if (next === current) continue;
+        current = next;
+        if (reasoning) claimedReasoning = true;
+    }
+    return current;
+}
+
 function codingToolLifecycleMatches(startContent: string, finishedContent: string): boolean {
     const started = parseCodingAgentProgress(startContent);
     const finished = parseCodingAgentProgress(finishedContent);
@@ -1666,7 +1755,7 @@ function lastReasoningLineIsStatusBullet(existing: string): boolean {
     return i + 1 < n && existing.charCodeAt(i) === 0x2022 && existing.charCodeAt(i + 1) === 32;
 }
 
-function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence?: number): ChatMessage {
+function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence?: number, continueOwnedSequence = false): ChatMessage {
     if (isRejectedRoundContentToken(delta)) {
         return rejectStreamedAssistantContent(message);
     }
@@ -1688,7 +1777,9 @@ function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence
                 ? `${existingReasoning}${needsStatusBoundary ? '\n' : ''}${reasoningDelta}`
                 : reasoningDelta);
         const reasoningWindow = `${existingReasoning.slice(-24)}${reasoningDelta}`;
-        const nextReasoning = stripRolePrefixReasoning(
+        const nextReasoning = stripGrowingRolePrefix(
+            "truncate",
+            message.id,
             hasLeakedReasoningProtocol(reasoningWindow) ? stripLeakedReasoningProtocol(rawNextReasoning) : rawNextReasoning,
         );
         if (!reasoningDelta) {
@@ -1702,7 +1793,21 @@ function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence
         if (!timeline?.length) {
             const pendingCodingThoughts = message.pendingCodingThoughts || [];
             const preferredSequence = normalizeCodingTimelineSequence(eventSequence);
-            if (preferredSequence && codingTimelineSequenceIsTaken(pendingCodingThoughts, preferredSequence)) return message;
+            if (preferredSequence && codingTimelineSequenceIsTaken(pendingCodingThoughts, preferredSequence)) {
+                if (!continueOwnedSequence) return message;
+                const extended = extendOwnedCodingThought(pendingCodingThoughts, reasoningDelta, preferredSequence);
+                return {
+                    ...message,
+                    reasoning: nextReasoning || undefined,
+                    reasoningLive: true,
+                    ...(extended ? {
+                        pendingCodingThoughts: extended,
+                        reasoningStartSequence: message.reasoning?.trim()
+                            ? message.reasoningStartSequence
+                            : eventSequence,
+                    } : {}),
+                };
+            }
             const sequence = nextCodingTimelineSequence(pendingCodingThoughts, eventSequence);
             const adjacentThoughts = appendAdjacentCodingThought(pendingCodingThoughts, reasoningDelta, sequence, Date.now());
             const thought: CodingAgentTimelineItem = {
@@ -1724,7 +1829,16 @@ function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence
         }
         const baseTimeline = timeline;
         const preferredSequence = normalizeCodingTimelineSequence(eventSequence);
-        if (preferredSequence && codingTimelineSequenceIsTaken(baseTimeline, preferredSequence)) return message;
+        if (preferredSequence && codingTimelineSequenceIsTaken(baseTimeline, preferredSequence)) {
+            if (!continueOwnedSequence) return message;
+            const extended = extendOwnedCodingThought(baseTimeline, reasoningDelta, preferredSequence);
+            return {
+                ...message,
+                reasoning: nextReasoning || undefined,
+                reasoningLive: true,
+                ...(extended ? { codingTimeline: extended } : {}),
+            };
+        }
         const sequence = nextCodingTimelineSequence(baseTimeline, eventSequence);
         const nextTimeline = appendAdjacentCodingThought(baseTimeline, reasoningDelta, sequence, Date.now()) || insertCodingTimelineItem(baseTimeline, {
             id: nextId(),
@@ -1742,10 +1856,12 @@ function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence
     // Tags are short. Scan the new delta plus the previous tail instead of
     // lowercasing the whole answer on every token.
     const protocolWindow = `${(message.content || "").slice(-24)}${contentDelta}`;
-    const nextContent = stripRolePrefixFrontend(
+    const nextContent = stripGrowingRolePrefix(
+        "keep-body",
+        message.id,
         hasLeakedReasoningProtocol(protocolWindow) ? stripLeakedReasoningProtocol(rawNextContent) : rawNextContent,
     );
-    logRolePrefixDiagnostic('append-token', rawNextContent, nextContent, {
+    if (nextContent !== rawNextContent) logRolePrefixDiagnostic('append-token', rawNextContent, nextContent, {
         messageId: message.id,
         requestId: message.requestId,
         deltaLen: contentDelta.length,
@@ -1758,29 +1874,115 @@ function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence
     };
 }
 
+function nextCodePointIndex(value: string, index: number): number {
+    const code = value.charCodeAt(index);
+    if (code >= 0xD800 && code <= 0xDBFF && index + 1 < value.length) {
+        const next = value.charCodeAt(index + 1);
+        if (next >= 0xDC00 && next <= 0xDFFF) return index + 2;
+    }
+    return index + 1;
+}
+
+/** Code-point length, stopping once `cap` is reached. Matches `Array.from(value).length`. */
+function codePointLength(value: string, cap = Number.POSITIVE_INFINITY): number {
+    let count = 0;
+    for (let index = 0; index < value.length && count < cap; count++) {
+        index = nextCodePointIndex(value, index);
+    }
+    return count;
+}
+
+function codePointLengthUntil(value: string, unitEnd: number): number {
+    let count = 0;
+    for (let index = 0; index < unitEnd; count++) {
+        index = nextCodePointIndex(value, index);
+    }
+    return count;
+}
+
+/** True when `index` is strictly inside one surrogate pair. */
+function overlapSplitsCodePoint(value: string, index: number): boolean {
+    if (index <= 0 || index >= value.length) return false;
+    const prev = value.charCodeAt(index - 1);
+    const next = value.charCodeAt(index);
+    return prev >= 0xD800 && prev <= 0xDBFF && next >= 0xDC00 && next <= 0xDFFF;
+}
+
+/**
+ * Longest code-point-aligned length L such that incoming[0, L) is a suffix of
+ * existing. A longer prefix can match when a shorter one does not (the cut
+ * falls inside an emoji, or the shorter slice is not itself a suffix), so this
+ * cannot be a binary search. KMP reads the incoming token and only the tail of
+ * the answer.
+ */
+function longestAlignedOverlapUnits(existing: string, incoming: string): number {
+    const patternLength = incoming.length;
+    if (patternLength === 0 || existing.length === 0) return 0;
+    const border = new Array<number>(patternLength);
+    border[0] = 0;
+    for (let i = 1, matched = 0; i < patternLength; i++) {
+        while (matched > 0 && incoming.charCodeAt(i) !== incoming.charCodeAt(matched)) {
+            matched = border[matched - 1];
+        }
+        if (incoming.charCodeAt(i) === incoming.charCodeAt(matched)) matched++;
+        border[i] = matched;
+    }
+    let matched = 0;
+    // A suffix longer than the token cannot equal a prefix of the token.
+    const start = existing.length > patternLength ? existing.length - patternLength : 0;
+    for (let i = start; i < existing.length; i++) {
+        const code = existing.charCodeAt(i);
+        while (matched > 0 && code !== incoming.charCodeAt(matched)) {
+            matched = border[matched - 1];
+        }
+        if (code === incoming.charCodeAt(matched)) matched++;
+    }
+    while (matched > 0 && overlapSplitsCodePoint(incoming, matched)) {
+        matched = border[matched - 1];
+    }
+    return matched;
+}
+
 function streamAppendDelta(existing: string, incoming: string, snapshotMode = false): StreamAppendResult {
     if (!existing || !incoming) return { delta: incoming, snapshotMode: false };
-    const existingLen = Array.from(existing.trim()).length;
-    const incomingLen = Array.from(incoming.trim()).length;
-    if (incoming === existing && incomingLen >= STREAM_SNAPSHOT_DEDUP_MIN_CHARS) {
+    // Thresholds use trimmed code points. A short token cannot be a snapshot,
+    // and counting the whole answer here allocated one string per code point.
+    if (incoming === existing && codePointLength(incoming.trim(), STREAM_SNAPSHOT_DEDUP_MIN_CHARS) >= STREAM_SNAPSHOT_DEDUP_MIN_CHARS) {
         return snapshotMode ? { delta: '', snapshotMode: true } : { delta: incoming, snapshotMode: false };
     }
-    if (incoming.startsWith(existing) && existingLen >= STREAM_SNAPSHOT_DEDUP_MIN_CHARS) {
+    if (incoming.startsWith(existing) && codePointLength(existing.trim(), STREAM_SNAPSHOT_DEDUP_MIN_CHARS) >= STREAM_SNAPSHOT_DEDUP_MIN_CHARS) {
         return { delta: incoming.slice(existing.length), snapshotMode: true };
     }
-    if (existing.endsWith(incoming) && incomingLen >= STREAM_SNAPSHOT_OVERLAP_MIN_CHARS) {
+    if (
+        incoming.length >= STREAM_SNAPSHOT_OVERLAP_MIN_CHARS
+        && existing.endsWith(incoming)
+        && codePointLength(incoming.trim(), STREAM_SNAPSHOT_OVERLAP_MIN_CHARS) >= STREAM_SNAPSHOT_OVERLAP_MIN_CHARS
+    ) {
         return snapshotMode ? { delta: '', snapshotMode: true } : { delta: incoming, snapshotMode: false };
     }
-    const existingChars = Array.from(existing);
-    const incomingChars = Array.from(incoming);
-    const maxOverlap = Math.min(existingChars.length, incomingChars.length);
-    for (let overlap = maxOverlap; overlap >= STREAM_SNAPSHOT_OVERLAP_MIN_CHARS; overlap--) {
-        const incomingPrefix = incomingChars.slice(0, overlap).join('');
-        if (existing.endsWith(incomingPrefix)) {
-            return { delta: incomingChars.slice(overlap).join(''), snapshotMode: true };
-        }
+    // UTF-16 length is an upper bound on code-point length. Ordinary tokens
+    // are shorter than the overlap floor and must not walk the accumulated text.
+    if (incoming.length < STREAM_SNAPSHOT_OVERLAP_MIN_CHARS || existing.length < STREAM_SNAPSHOT_OVERLAP_MIN_CHARS) {
+        return { delta: incoming, snapshotMode: false };
     }
-    return { delta: incoming, snapshotMode: false };
+    if (codePointLength(incoming, STREAM_SNAPSHOT_OVERLAP_MIN_CHARS) < STREAM_SNAPSHOT_OVERLAP_MIN_CHARS) {
+        return { delta: incoming, snapshotMode: false };
+    }
+    const overlapUnits = longestAlignedOverlapUnits(existing, incoming);
+    if (overlapUnits < STREAM_SNAPSHOT_OVERLAP_MIN_CHARS) return { delta: incoming, snapshotMode: false };
+    if (codePointLengthUntil(incoming, overlapUnits) < STREAM_SNAPSHOT_OVERLAP_MIN_CHARS) {
+        return { delta: incoming, snapshotMode: false };
+    }
+    return { delta: incoming.slice(overlapUnits), snapshotMode: true };
+}
+
+function streamRoleCursor(state: StreamAppendState, kind: "content" | "reasoning"): RolePrefixStreamCursor {
+    if (kind === "content") {
+        if (!state.contentRole) state.contentRole = createRolePrefixStreamCursor("keep-body");
+        return state.contentRole;
+    }
+    if (!state.reasoningRole) state.reasoningRole = createRolePrefixStreamCursor("truncate");
+    return state.reasoningRole;
 }
 
 function normalizeStreamDeltaWithState(streamState: StreamAppendState, incoming: string): string {
@@ -1790,7 +1992,7 @@ function normalizeStreamDeltaWithState(streamState: StreamAppendState, incoming:
         const result = streamAppendDelta(streamState.reasoning, incomingReasoning, streamState.reasoningSnapshotMode);
         if (result.snapshotMode) streamState.reasoningSnapshotMode = true;
         if (!result.delta) return '';
-        streamState.reasoning = stripRolePrefixReasoning(streamState.reasoning + result.delta);
+        streamState.reasoning = appendRolePrefixStrip(streamRoleCursor(streamState, "reasoning"), streamState.reasoning + result.delta);
         return `\x01${result.delta}`;
     }
     const incomingContent = stripRolePrefixFrontend(incoming);
@@ -1800,8 +2002,15 @@ function normalizeStreamDeltaWithState(streamState: StreamAppendState, incoming:
     // Keep state aligned with display text, but return the raw delta. Split
     // prefixes such as "Brow" + "ser: ..." need the second raw piece so the
     // message write can strip the full reconstructed prefix from the UI text.
-    streamState.content = stripRolePrefixFrontend(streamState.content + result.delta);
+    streamState.content = appendRolePrefixStrip(streamRoleCursor(streamState, "content"), streamState.content + result.delta);
     return result.delta;
+}
+
+// applyIncomingStreamDelta is the desktop token write. Each call is one
+// original delta, including one piece of a coalesced burst. Snapshot overlap
+// and role-prefix stripping stay on that piece, not on the joined payload.
+export function applyIncomingStreamDelta(streamState: StreamAppendState, incoming: string): string {
+    return normalizeStreamDeltaWithState(streamState, incoming);
 }
 
 function appendTokenToRound(messages: ChatMessage[], assistantMessageId: string | null, delta: string, eventSequence?: number): ChatMessage[] {
@@ -3138,6 +3347,21 @@ function normalizeStreamEvent(raw: unknown): AIAssistantStreamEvent {
             }
             return undefined;
         };
+        const deltaListField = (...keys: string[]): string[] | undefined => {
+            for (const key of keys) {
+                const value = event[key];
+                if (!Array.isArray(value) || value.length === 0) continue;
+                const pieces: string[] = [];
+                for (const item of value) {
+                    if (typeof item !== 'string') continue;
+                    const cleaned = sanitizeAIAssistantStreamText(item);
+                    if (cleaned) pieces.push(cleaned);
+                }
+                return pieces.length > 0 ? pieces : undefined;
+            }
+            return undefined;
+        };
+        const deltas = deltaListField('deltas', 'Deltas');
         return {
             request_id: stringField('request_id', 'requestId', 'RequestID'),
             text: sanitizeAIAssistantStreamText(stringField('text', 'Text')),
@@ -3145,6 +3369,7 @@ function normalizeStreamEvent(raw: unknown): AIAssistantStreamEvent {
             display_text: stringField('display_text', 'displayText', 'DisplayText'),
             event_scope_id: stringField('event_scope_id', 'eventScopeId', 'EventScopeID'),
             sequence: numberField('sequence', 'seq', 'Sequence', 'Seq'),
+            ...(deltas ? { deltas } : {}),
         };
     }
     if (typeof raw === 'string') {
@@ -4155,8 +4380,12 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         }
         const buffer = streamTokenBuffersByRequestRef.current.get(oldRequestId);
         if (buffer) {
+            // The flush timer reads this object's request id when it fires.
+            // A copy would leave that callback on the old key and keep the
+            // timer handle set, so later pieces never arm another flush.
+            buffer.requestId = nextRequestId;
             streamTokenBuffersByRequestRef.current.delete(oldRequestId);
-            streamTokenBuffersByRequestRef.current.set(nextRequestId, { ...buffer, requestId: nextRequestId });
+            streamTokenBuffersByRequestRef.current.set(nextRequestId, buffer);
         }
         if (replaceRoundProseOnFirstTokenRef.current.delete(oldRequestId)) {
             replaceRoundProseOnFirstTokenRef.current.add(nextRequestId);
@@ -4564,6 +4793,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                     state.content = "";
                     state.contentSnapshotMode = false;
                     state.contentBaseline = undefined;
+                    state.contentRole = createRolePrefixStreamCursor("keep-body");
                 }
             }
             const apply = (message: ChatMessage) => rejected
@@ -4584,50 +4814,168 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         const buffer = streamTokenBuffersByRequestRef.current.get(requestId);
         if (buffer) {
             clearStreamTokenFlushTimer(buffer);
-            buffer.text = "";
+            buffer.parts = [];
+            buffer.sequences = [];
         }
         appendTokenToAssistantMessage(assistantMessageId, rejectedRoundContentToken);
     }, [appendTokenToAssistantMessage, clearStreamTokenFlushTimer]);
-
-    const appendTokenToDetachedRound = useCallback((round: ActiveRound, text: string, eventSequence?: number) => {
-        if (!round.requestId || !round.assistantMessageId || !text) return;
-        if (isRejectedRoundContentToken(text)) {
-            dropRejectedRoundContent(round.requestId, round.assistantMessageId);
-            return;
-        }
-        const normalizedText = normalizeStreamDeltaWithState(streamAppendStateForMessage(round.assistantMessageId), text);
-        if (!normalizedText) return;
-        updateInFlightRound(round.requestId, current => ({ ...current, phase: 'streaming' }));
-        const replacePreviousRound = consumeRoundProseReplacement(round.requestId);
-        setMessages(prev => {
-            const withPlaceholder = appendAssistantPlaceholder(prev, round.assistantMessageId || '', round.requestId, round.sessionKey);
-            const base = replacePreviousRound ? updateMessageById(withPlaceholder, round.assistantMessageId, clearAssistantRoundProse) : withPlaceholder;
-            if (round.assistantMessageId) rememberRoundContentBaseline(round.assistantMessageId, base, normalizedText);
-            return appendTokenToRound(
-                base,
-                round.assistantMessageId,
-                normalizedText,
-                eventSequence,
-            );
-        });
-    }, [consumeRoundProseReplacement, dropRejectedRoundContent, rememberRoundContentBaseline, streamAppendStateForMessage, updateInFlightRound]);
 
     const flushStreamTokenBuffer = useCallback((requestId?: string) => {
         const normalizedRequestId = typeof requestId === 'string' ? requestId.trim() : '';
         const buffer = streamTokenBuffersByRequestRef.current.get(normalizedRequestId || activeRoundRef.current.requestId);
         if (!buffer) return;
         clearStreamTokenFlushTimer(buffer);
-        const text = buffer.text;
-        if (!text) return;
-        buffer.text = '';
-        appendTokenToAssistantMessage(buffer.assistantMessageId, text);
-        noteAIScrollStreamFlush(text.length);
+        const parts = buffer.parts.splice(0, buffer.parts.length);
+        const sequences = buffer.sequences.splice(0, buffer.sequences.length);
+        if (parts.length === 0) return;
+        const assistantMessageId = buffer.assistantMessageId;
+        // Persist and unmount read the ref. A setState started while the
+        // subscription effect is cleaning up does not commit, so the ref has
+        // to carry the same pieces or the tail is saved as the painted prefix.
+        const applyBuffered = (messages: ChatMessage[]): ChatMessage[] => {
+            let next = messages;
+            for (let i = 0; i < parts.length; i++) {
+                const part = parts[i];
+                const sequence = sequences[i];
+                const reasoning = part.startsWith("\x01");
+                const apply = (message: ChatMessage) => appendTokenToMessage(
+                    message,
+                    part,
+                    reasoning ? sequence : undefined,
+                    reasoning && !!sequence && messageOwnsCodingSequence(message, sequence),
+                );
+                next = updateTailMessage(next, assistantMessageId, apply)
+                    ?? updateMessageById(next, assistantMessageId, apply)
+                    ?? next;
+            }
+            return next;
+        };
+        if (parts.length === 1 && !parts[0].startsWith("\x01")) {
+            const apply = (message: ChatMessage) => appendTokenToMessage(message, parts[0]);
+            latestMessagesRef.current = updateTailMessage(latestMessagesRef.current, assistantMessageId, apply)
+                ?? updateMessageById(latestMessagesRef.current, assistantMessageId, apply)
+                ?? latestMessagesRef.current;
+            appendTokenToAssistantMessage(assistantMessageId, parts[0]);
+            noteAIScrollStreamFlush(parts[0].length);
+            return;
+        }
+        latestMessagesRef.current = applyBuffered(latestMessagesRef.current);
+        setMessages(prev => applyBuffered(prev));
+        noteAIScrollStreamFlush(parts.reduce((sum, part) => sum + part.length, 0));
     }, [appendTokenToAssistantMessage, clearStreamTokenFlushTimer]);
+
+    // One coalesced payload is one transport sequence. Normalize each original
+    // piece on its own. Joining those raw pieces before the message write strips
+    // a role prefix and the text that follows it in the same burst.
+    const normalizeStreamPieces = useCallback((assistantMessageId: string, pieces: string[]): { parts: string[]; rejected: boolean } => {
+        const parts: string[] = [];
+        let lane = '';
+        for (const piece of pieces) {
+            if (!piece) continue;
+            if (isRejectedRoundContentToken(piece)) {
+                return { parts: [], rejected: true };
+            }
+            const part = applyIncomingStreamDelta(streamAppendStateForMessage(assistantMessageId), piece);
+            if (!part) continue;
+            const reasoning = part.startsWith('\x01');
+            const partLane = reasoning ? 'reasoning' : 'content';
+            if (lane && lane !== partLane) continue;
+            lane = partLane;
+            parts.push(part);
+        }
+        return { parts, rejected: false };
+    }, [streamAppendStateForMessage]);
+
+    const commitNormalizedStreamParts = useCallback((
+        round: ActiveRound,
+        parts: string[],
+        eventSequence: number | undefined,
+        ensurePlaceholder: boolean,
+    ) => {
+        const assistantMessageId = round.assistantMessageId;
+        if (!assistantMessageId || parts.length === 0) return;
+        // A burst paints in this turn. Tokens already accepted for the request
+        // are earlier in the transport. Flush them first, including a pending
+        // reasoning piece: skipping that used to append the thought after the burst.
+        flushStreamTokenBuffer(round.requestId);
+        let buffer = streamTokenBuffersByRequestRef.current.get(round.requestId);
+        if (!buffer || buffer.requestId !== round.requestId || buffer.assistantMessageId !== assistantMessageId) {
+            clearStreamTokenFlushTimer(buffer);
+            buffer = {
+                requestId: round.requestId,
+                assistantMessageId,
+                parts: [],
+                sequences: [],
+                flushTimer: null,
+                hasRenderedFirstToken: false,
+            };
+            streamTokenBuffersByRequestRef.current.set(round.requestId, buffer);
+        }
+        buffer.hasRenderedFirstToken = true;
+        const replacePreviousRound = consumeRoundProseReplacement(round.requestId);
+        const firstContent = parts.find(part => !part.startsWith('\x01'));
+        setMessages(prev => {
+            const withPlaceholder = ensurePlaceholder
+                ? appendAssistantPlaceholder(prev, assistantMessageId, round.requestId, round.sessionKey)
+                : prev;
+            const located = findLastIndex(withPlaceholder, message => message.id === assistantMessageId);
+            if (
+                located >= 0
+                && parts[0].startsWith('\x01')
+                && messageOwnsCodingSequence(withPlaceholder[located], eventSequence)
+            ) {
+                return prev;
+            }
+            const base = replacePreviousRound
+                ? updateMessageById(withPlaceholder, assistantMessageId, clearAssistantRoundProse)
+                : withPlaceholder;
+            if (firstContent) rememberRoundContentBaseline(assistantMessageId, base, firstContent);
+            return applyStreamPartsToMessages(base, assistantMessageId, parts, eventSequence);
+        });
+    }, [clearStreamTokenFlushTimer, consumeRoundProseReplacement, flushStreamTokenBuffer, rememberRoundContentBaseline]);
+
+    const appendTokenToDetachedRound = useCallback((round: ActiveRound, text: string, eventSequence?: number, pieces?: string[]) => {
+        const incoming = pieces && pieces.length > 0 ? pieces : (text ? [text] : []);
+        if (!round.requestId || !round.assistantMessageId || incoming.length === 0) return;
+        const normalized = normalizeStreamPieces(round.assistantMessageId, incoming);
+        if (normalized.rejected) {
+            dropRejectedRoundContent(round.requestId, round.assistantMessageId);
+            return;
+        }
+        const parts = normalized.parts;
+        if (parts.length === 0) return;
+        updateInFlightRound(round.requestId, current => ({ ...current, phase: 'streaming' }));
+        if (parts.length === 1) {
+            const normalizedText = parts[0];
+            // Buffered pieces were normalized against the text this write will
+            // append to. Paint them first. A later detached token, reasoning
+            // included, otherwise lands in front of them.
+            flushStreamTokenBuffer(round.requestId);
+            const replacePreviousRound = consumeRoundProseReplacement(round.requestId);
+            setMessages(prev => {
+                const withPlaceholder = appendAssistantPlaceholder(prev, round.assistantMessageId || '', round.requestId, round.sessionKey);
+                const base = replacePreviousRound ? updateMessageById(withPlaceholder, round.assistantMessageId, clearAssistantRoundProse) : withPlaceholder;
+                if (round.assistantMessageId) rememberRoundContentBaseline(round.assistantMessageId, base, normalizedText);
+                return appendTokenToRound(
+                    base,
+                    round.assistantMessageId,
+                    normalizedText,
+                    eventSequence,
+                );
+            });
+            return;
+        }
+        commitNormalizedStreamParts(round, parts, eventSequence, true);
+    }, [commitNormalizedStreamParts, consumeRoundProseReplacement, dropRejectedRoundContent, flushStreamTokenBuffer, normalizeStreamPieces, rememberRoundContentBaseline, updateInFlightRound]);
 
     const resetStreamTokenBuffer = useCallback((requestId?: string) => {
         const normalizedRequestId = typeof requestId === 'string' ? requestId.trim() : '';
         const key = normalizedRequestId || activeRoundRef.current.requestId;
         if (!key) return;
+        // Pieces in the 33ms buffer already arrived. Reset is how a failed or
+        // abandoned send drops that buffer, so publish them before the delete.
+        // Callers that flushed before choosing final text see an empty buffer.
+        flushStreamTokenBuffer(key);
         noteAIScrollStreamRoundEnd("reset-buffer");
         const buffer = streamTokenBuffersByRequestRef.current.get(key);
         clearStreamTokenFlushTimer(buffer);
@@ -4637,16 +4985,23 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         resetStreamAppendStateForMessage(buffer?.assistantMessageId || round?.assistantMessageId);
         replaceRoundProseOnFirstTokenRef.current.delete(key);
         streamTokenBuffersByRequestRef.current.delete(key);
-    }, [clearStreamTokenFlushTimer, resetStreamAppendStateForMessage]);
+    }, [clearStreamTokenFlushTimer, flushStreamTokenBuffer, resetStreamAppendStateForMessage]);
 
     const resetAllStreamTokenBuffers = useCallback(() => {
+        // The stream subscription effect cleans this up when the active
+        // session changes, and again on unmount. Dropping the map without
+        // publishing leaves the bubble on the last painted prefix.
+        const requestIds = Array.from(streamTokenBuffersByRequestRef.current.keys());
+        for (const requestId of requestIds) {
+            flushStreamTokenBuffer(requestId);
+        }
         for (const buffer of streamTokenBuffersByRequestRef.current.values()) {
             clearStreamTokenFlushTimer(buffer);
         }
         streamTokenBuffersByRequestRef.current.clear();
         streamAppendStatesByMessageRef.current.clear();
         replaceRoundProseOnFirstTokenRef.current.clear();
-    }, [clearStreamTokenFlushTimer]);
+    }, [clearStreamTokenFlushTimer, flushStreamTokenBuffer]);
 
     const forgetInFlightRoundsForSession = useCallback((sessionKey: string) => {
         const normalizedSessionKey = normalizeRuntimeSessionKey(sessionKey || 'desktop-user');
@@ -4704,25 +5059,25 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         }
     }, [bumpSelectedFilesRevision, bumpSessionResetEpoch, clearTransientProgress, notifyForegroundIdle, resetActiveRound, resetStreamTokenBuffer, stopResponseTimeout]);
 
-    const queueStreamToken = useCallback((round: ActiveRound, text: string, eventSequence?: number) => {
-        if (!round.assistantMessageId || !text) return;
-        if (isRejectedRoundContentToken(text)) {
+    const queueStreamToken = useCallback((round: ActiveRound, text: string, eventSequence?: number, pieces?: string[]) => {
+        const incoming = pieces && pieces.length > 0 ? pieces : (text ? [text] : []);
+        if (!round.assistantMessageId || incoming.length === 0) return;
+        for (const piece of incoming) {
+            if (piece) noteAIScrollStreamToken(piece.length);
+        }
+        const normalized = normalizeStreamPieces(round.assistantMessageId, incoming);
+        if (normalized.rejected) {
             dropRejectedRoundContent(round.requestId, round.assistantMessageId);
             return;
         }
-        noteAIScrollStreamToken(text.length);
-        const normalizedText = normalizeStreamDeltaWithState(streamAppendStateForMessage(round.assistantMessageId), text);
-        if (!normalizedText) return;
-
-        // Reasoning tokens (\x01 prefix) are rendered immediately without
-        // buffering. They display in a collapsed "thinking" area - the DOM
-        // update cost is minimal (hidden content), and immediate rendering
-        // ensures the first reasoning token triggers the "thinking" UI state
-        // without delay.
-        if (normalizedText.startsWith('\x01')) {
-            appendTokenToAssistantMessage(round.assistantMessageId, normalizedText, eventSequence, consumeRoundProseReplacement(round.requestId));
+        const parts = normalized.parts;
+        if (parts.length === 0) return;
+        if (parts.length > 1) {
+            commitNormalizedStreamParts(round, parts, eventSequence, false);
             return;
         }
+        const normalizedText = parts[0];
+        const reasoning = normalizedText.startsWith('\x01');
 
         let buffer = streamTokenBuffersByRequestRef.current.get(round.requestId);
         if (!buffer || buffer.requestId !== round.requestId || buffer.assistantMessageId !== round.assistantMessageId) {
@@ -4730,24 +5085,37 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             buffer = {
                 requestId: round.requestId,
                 assistantMessageId: round.assistantMessageId,
-                text: '',
+                parts: [],
+                sequences: [],
                 flushTimer: null,
                 hasRenderedFirstToken: false,
             };
             streamTokenBuffersByRequestRef.current.set(round.requestId, buffer);
         }
 
+        // The first token still paints now so the thinking row appears.
+        // Later tokens, including reasoning, share the 33ms prose flush.
+        // An open coding thought is on screen: one setState per token rebuilds
+        // that timeline and reads layout, so a click cannot run until the burst ends.
         if (!buffer.hasRenderedFirstToken) {
             buffer.hasRenderedFirstToken = true;
-            appendTokenToAssistantMessage(round.assistantMessageId, normalizedText, undefined, consumeRoundProseReplacement(round.requestId));
+            appendTokenToAssistantMessage(
+                round.assistantMessageId,
+                normalizedText,
+                reasoning ? eventSequence : undefined,
+                consumeRoundProseReplacement(round.requestId),
+            );
             return;
         }
-
-        buffer.text += normalizedText;
-        if (!buffer.flushTimer) {
-            buffer.flushTimer = setTimeout(() => flushStreamTokenBuffer(round.requestId), STREAM_TOKEN_FLUSH_MS);
+        if (buffer.parts.length > 0 && buffer.parts[0].startsWith('\x01') !== reasoning) {
+            flushStreamTokenBuffer(round.requestId);
         }
-    }, [appendTokenToAssistantMessage, clearStreamTokenFlushTimer, consumeRoundProseReplacement, dropRejectedRoundContent, flushStreamTokenBuffer, streamAppendStateForMessage]);
+        buffer.parts.push(normalizedText);
+        buffer.sequences.push(reasoning ? eventSequence : undefined);
+        if (!buffer.flushTimer) {
+            buffer.flushTimer = setTimeout(() => flushStreamTokenBuffer(buffer.requestId), STREAM_TOKEN_FLUSH_MS);
+        }
+    }, [appendTokenToAssistantMessage, clearStreamTokenFlushTimer, commitNormalizedStreamParts, consumeRoundProseReplacement, dropRejectedRoundContent, flushStreamTokenBuffer, normalizeStreamPieces]);
 
     const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const latestMessagesRef = useRef(messages);
@@ -4824,14 +5192,9 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     useEffect(() => {
         latestMessagesRef.current = messages;
         if (!uiStateLoadedRef.current) return;
-        const nextPayload = serializePersistedMessages(messages);
-        if (nextPayload === lastPersistedPayloadRef.current) {
-            if (persistTimerRef.current) {
-                clearTimeout(persistTimerRef.current);
-                persistTimerRef.current = null;
-            }
-            return;
-        }
+        // Streaming replaces the tail every 33ms. Stringifying the transcript
+        // here only to see that it changed copies the whole thought on the
+        // same turn as the paint. The quiet-period save below is the one copy.
         if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
         persistTimerRef.current = setTimeout(() => {
             persistTimerRef.current = null;
@@ -4981,6 +5344,11 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
 
         const tokenHandler = (payload: unknown) => {
             const event = normalizeStreamEvent(payload);
+            const pieces = event.deltas && event.deltas.length > 0 ? event.deltas : (event.text ? [event.text] : []);
+            const loggedText = event.text || pieces.join('');
+            // A desktop-bot run does not stream prose or thinking into a bubble
+            // or a thinking panel. The sentence arrives later, from send_to_user.
+            if (takeAssistantStreamToken(event.request_id || '', loggedText) == null) return;
             let currentRound = activeRoundRef.current;
             const recoveredRound = recoverGoalContinuationRound(event);
             if (recoveredRound && activeRoundRef.current.requestId === recoveredRound.requestId) {
@@ -4992,28 +5360,28 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             const detachedRound = event.request_id ? inFlightRoundsByRequestRef.current.get(event.request_id) : undefined;
             if (detachedRound && !matchesActiveRequest(currentRound, event)) {
                 resetResponseTimeoutForRound(detachedRound);
-                logRolePrefixDiagnostic('stream-event-received', event.text || '', undefined, {
+                logRolePrefixDiagnostic('stream-event-received', loggedText, undefined, {
                     requestId: event.request_id,
                     activeRequestId: currentRound.requestId,
                     messageId: detachedRound.assistantMessageId,
                     matchedDetachedRequest: true,
                 });
-                appendTokenToDetachedRound(detachedRound, event.text || '', event.sequence);
+                appendTokenToDetachedRound(detachedRound, event.text || '', event.sequence, pieces);
                 return;
             }
             if (!isMatchingSessionOrActiveRequest(event, currentRound, activeSessionKeyForEvents())) return;
             const isActiveRequest = matchesActiveRequest(currentRound, event);
-            logRolePrefixDiagnostic('stream-event-received', event.text || '', undefined, {
+            logRolePrefixDiagnostic('stream-event-received', loggedText, undefined, {
                 requestId: event.request_id,
                 activeRequestId: currentRound.requestId,
                 messageId: currentRound.assistantMessageId,
                 matchedActiveRequest: isActiveRequest,
             });
             if (!isActiveRequest) return;
-            if (!currentRound.assistantMessageId || !event.text) return;
+            if (!currentRound.assistantMessageId || pieces.length === 0) return;
             resetResponseTimeoutForActiveRound();
             emitPetStateForAssistant('speaking', 'ai:stream-token', 1800);
-            queueStreamToken(currentRound, event.text, event.sequence);
+            queueStreamToken(currentRound, event.text || '', event.sequence, pieces);
         };
 
         const newRoundHandler = (payload: unknown) => {
@@ -5064,6 +5432,12 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             const detachedRound = event.request_id ? inFlightRoundsByRequestRef.current.get(event.request_id) : undefined;
             if (detachedRound && !matchesActiveRequest(currentRound, event)) {
                 resetResponseTimeoutForRound(detachedRound);
+                // The 33ms content buffer is keyed by request, not by which
+                // session is on screen. Stream-done is the settle point, so the
+                // tail is written here even after a newer foreground send has
+                // taken the active round.
+                flushStreamTokenBuffer(detachedRound.requestId);
+                resetStreamAppendStateForMessage(detachedRound.assistantMessageId);
                 updateInFlightRound(event.request_id || '', current => ({ ...current, phase: 'requesting' }));
                 return;
             }
@@ -5537,6 +5911,9 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                     deferredAsync = true;
                     return true;
                 }
+                // Same order as the foreground path: the final text is chosen
+                // from the message, so buffered pieces have to land first.
+                flushStreamTokenBuffer(effectiveRequestId);
                 setMessages(prev => resolveSendResult(prev, assistantMessageId, effectiveRequestId, response, preferences));
                 if (response.confirmation) {
                     emitPetStateForAssistant('alert', 'ai:confirmation-request', 1500);
@@ -6137,6 +6514,10 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             const isStatusProgress = isThinkingStatusProgress(progressText);
             const isCodingProgress = isCodingAgentProgressContent(progressText);
             const progressRound = matchesDetachedRound ? detachedRound : (matchesSessionRound ? sessionRound || undefined : currentRound);
+            // A tool or status line is a later transport event. Publish tokens
+            // that already arrived so the thought owns its sequence before the
+            // duplicate check, and the tool is not painted in front of that thought.
+            if (progressRound?.requestId) flushStreamTokenBuffer(progressRound.requestId);
             const sessionHasCodingTrail = isCodingProgress
                 || (progressMessagesBySessionRef.current.get(progressSessionKey) || [])
                     .some((message) => isCodingAgentProgressContent(message.content || ''));
@@ -6839,7 +7220,9 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         cancelChatTask,
         steerChatTask,
         answerChatTask,
-    }), [browseFile, clearSelectedFile, setSelectedFiles, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, doFetchNews, cancelSession, submitAgentView, dismissAgentView, deactivateRecordingSession, dispatchChatTask, cancelChatTask, steerChatTask, answerChatTask]);
+        isSessionIdle,
+        waitForForegroundIdle,
+    }), [browseFile, clearSelectedFile, setSelectedFiles, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, doFetchNews, cancelSession, submitAgentView, dismissAgentView, deactivateRecordingSession, dispatchChatTask, cancelChatTask, steerChatTask, answerChatTask, isSessionIdle, waitForForegroundIdle]);
 
     return { messages, submittedPrompts, submittedPromptAttachments, draftInputValue, progressMessages, sending, sendingSessionKey, busySessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, agentView, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession, injectSupplementary, guideLaunchReference, submitAgentView, dismissAgentView, panelState, panelActions };
 }

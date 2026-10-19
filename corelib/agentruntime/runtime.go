@@ -377,6 +377,31 @@ type Scope struct {
 	RunID      string `json:"run_id,omitempty"`
 }
 
+// toolCallIDKey carries the model tool-call id into a runtime module.
+// The desktop machine call uses it as tool_call_id. It is not a transcript.
+type toolCallIDKey struct{}
+
+// WithToolCallID returns a context that names the model tool call being run.
+func WithToolCallID(ctx context.Context, id string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, toolCallIDKey{}, id)
+}
+
+// ToolCallID is the model tool-call id on ctx, or empty.
+func ToolCallID(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	id, _ := ctx.Value(toolCallIDKey{}).(string)
+	return strings.TrimSpace(id)
+}
+
 // TurnRequest carries request-scoped input and host adapters. Input is kept as
 // an opaque value at this boundary so agentruntime does not duplicate the
 // service's persistence DTOs or create an import cycle. The service adapter

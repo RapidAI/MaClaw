@@ -671,6 +671,12 @@ func TestFileCompanionPromptDescribesPDFTools(t *testing.T) {
 	if xlsx := fileCompanionPrompt("t.xlsx", ".xlsx"); !strings.Contains(xlsx, "sheets JSON") {
 		t.Fatalf("xlsx prompt lost the office contract:\n%s", xlsx)
 	}
+	video := fileCompanionPrompt("clip.mp4", ".mp4")
+	for _, want := range []string{"不要使用工具", "只有文件名", "没有画面", "用中文直接回答"} {
+		if !strings.Contains(video, want) {
+			t.Fatalf("video prompt missing %q:\n%s", want, video)
+		}
+	}
 }
 
 func TestFileCompanionHistoryRestoresToolFigures(t *testing.T) {

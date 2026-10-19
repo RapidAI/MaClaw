@@ -32,6 +32,18 @@ describe("normalizeCodingTaskLaunch", () => {
         })?.launchId).toBe("skill-run-42");
     });
 
+    it("keeps a scheduled launch marked so it does not take the new-task cover", () => {
+        expect(normalizeCodingTaskLaunch({
+            projectPath: "D:/tasks/scheduled",
+            taskTitle: "Nightly report",
+            backgroundLaunch: true,
+        })?.backgroundLaunch).toBe(true);
+        expect(normalizeCodingTaskLaunch({
+            projectPath: "D:/tasks/chosen",
+            taskTitle: "Chosen",
+        })?.backgroundLaunch).toBeUndefined();
+    });
+
     it("keeps activation intent distinct from a restore request", () => {
         expect(normalizeCodingTaskLaunch({
             projectPath: "D:/tasks/cloud",

@@ -1,0 +1,5 @@
+{
+  "id": "main_has_no_computer_tools",
+  "names": ["read_file", "computer_click", "computer_observe", "gui_click", "gui_type", "click", "type", "script", "computer", "desktop.click", "screenshot", "screenshot", "bash"],
+  "expect": ["read_file", "screenshot", "bash"]
+}

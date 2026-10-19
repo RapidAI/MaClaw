@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 )
 
@@ -56,6 +57,7 @@ type ReplyImage struct {
 
 type Reply struct {
 	Text               string       `json:"text"`
+	SendToUser         string       `json:"send_to_user,omitempty"`
 	NovncURL           string       `json:"novnc_url,omitempty"`
 	Handoff            bool         `json:"handoff,omitempty"`
 	AttentionReason    string       `json:"attention_reason,omitempty"`
@@ -448,14 +450,11 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	step := time.Now()
 	var novnc string
 	var opened bool
-	if isolated {
-		// An isolated bot's display starts on its first desktop action
-		// (MaClawSrv opens the session), not on every message. A waiting
-		// login still hands the keyboard back to the bot here.
-		s.releaseDesktopKeyboard(tenantID, desktopUser, botID)
-	} else {
-		novnc, opened, err = s.openDesktop(ctx, tenantID, userID, instanceID, botID)
-	}
+	// Accepting a message starts the server worker. It does not open the
+	// cloud desktop; the first tool that needs a machine does that. A waiting
+	// login still hands the keyboard back. err stays nil: this step no longer
+	// calls Desktop.Open.
+	s.releaseDesktopKeyboard(tenantID, desktopUser, botID)
 	traceBot(botID, "open_desktop", err,
 		"instance", instanceID,
 		"opened", traceYes(opened),
@@ -538,6 +537,9 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	if phase == "plan" || phase == "execute" {
 		messageMeta["bot_phase"] = phase
 	}
+	if phase == "execute" {
+		messageMeta["computer_helper"] = "1"
+	}
 	messageBody := map[string]any{
 		"content":            content,
 		"client_session_key": rec.Bots[index].ID,
@@ -593,6 +595,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 			Phase:           phase,
 			Task:            content,
 			Opened:          opened,
+			Isolated:        isolated,
 			Started:         pipelineStarted,
 			ClientMessageID: clientMessageID,
 		})
@@ -604,6 +607,13 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		)
 		return BotAdmission{Accepted: true, RunID: payload.Run.ID, ClientMessageID: clientMessageID}, nil
 	}
+	if !isolated && payload.DesktopHandoff && !opened && strings.TrimSpace(novnc) == "" {
+		// The worker asked this person to look. That open is the handoff,
+		// not the message admit. A failure here leaves the run's reply.
+		if url, did, openErr := s.openDesktop(ctx, tenantID, userID, instanceID, botID); openErr == nil {
+			novnc, opened = url, did
+		}
+	}
 	reply, settleErr := s.settleDesktopCommand(tenantID, userID, botID, instanceID, novnc, opened, desktopCommandBody{
 		CallErr:     callErr,
 		Text:        payload.Message.Content,
@@ -612,6 +622,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		Attention:   payload.AttentionReason,
 		Metadata:    payload.Message.Metadata,
 		Attachments: payload.Message.Attachments,
+		Waiting:     strings.TrimSpace(clientMessageID) != "",
 	})
 	if settleErr != nil {
 		return BotAdmission{}, settleErr
@@ -639,6 +650,7 @@ type desktopCommandBody struct {
 	Attention   string
 	Metadata    map[string]string
 	Attachments []replyAttachment
+	Waiting     bool
 }
 
 func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novnc string, opened bool, body desktopCommandBody) (Reply, error) {
@@ -646,10 +658,19 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 	// isolated. The attention reason is keyed per bot and owner either way.
 	userID = s.desktopUserOf(tenantID, userID, botID)
 	if body.CallErr != nil {
-		// The instance may already be waiting for a login. Stopping here
-		// would close that browser before the person can use it. A failed
-		// continuation did not take the keyboard, so the person keeps it.
-		if !desktopCallTimedOut(body.CallErr) {
+		reason := strings.TrimSpace(body.Attention)
+		if body.Handoff {
+			// This run handed the desktop over and then failed. The person
+			// still needs that browser, so this failure must not stop it.
+			s.noteDesktopHeld(tenantID, userID, botID)
+			if reason != "" {
+				s.noteDesktopAttention(tenantID, userID, botID, reason)
+			}
+			s.finishDesktopOpen(tenantID, userID, instanceID, opened, false)
+		} else if !desktopCallTimedOut(body.CallErr) {
+			// The instance may already be waiting for a login. Stopping here
+			// would close that browser before the person can use it. A failed
+			// continuation did not take the keyboard, so the person keeps it.
 			s.restoreDesktopKeyboard(tenantID, userID, botID)
 			s.finishDesktopOpen(tenantID, userID, instanceID, opened, true)
 		} else {
@@ -666,26 +687,68 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 			}
 			s.finishDesktopOpen(tenantID, userID, instanceID, opened, false)
 		}
-		return Reply{}, body.CallErr
+		// The run failed, and the error stays the error. A sentence the run
+		// actually called still belongs on the reply. Prose does not. A
+		// handoff on this same run still belongs on it, so the person can
+		// open the desktop the failure was asking them to use.
+		reply := desktopSentenceReply(body)
+		if body.Handoff {
+			reply.Handoff = true
+			reply.AttentionReason = reason
+			reply.NovncURL = s.desktopViewURL(tenantID, userID)
+			if reply.NovncURL == "" && novnc != "" {
+				reply.NovncURL = s.gateDesktopHandoff(novnc)
+			}
+		} else if reason != "" {
+			s.noteDesktopAttention(tenantID, userID, botID, reason)
+			reply.AttentionReason = reason
+		}
+		return reply, body.CallErr
 	}
 	text := strings.TrimSpace(body.Text)
-	if text == "" && strings.TrimSpace(body.Error) != "" {
-		text = strings.TrimSpace(body.Error)
+	sendToUser := ""
+	if body.Metadata != nil {
+		sendToUser = strings.TrimSpace(body.Metadata["send_to_user"])
 	}
-	if text == "" && body.Handoff {
-		text = "这一步需要你在当前桌面的浏览器里完成登录或验证。登录状态会留在这个浏览器里，完成后这个 bot 会接着操作。"
+	ask := false
+	if body.Metadata != nil {
+		// A blank question is not an ask. A real choice still is, so the
+		// reply is kept and the person can pick one.
+		ask = strings.TrimSpace(body.Metadata["ask_user_question"]) != "" ||
+			strings.TrimSpace(body.Metadata["ask_user_secret_name"]) != "" ||
+			strings.TrimSpace(body.Metadata["send_to_user_kind"]) == "ask" ||
+			desktopTaskChoiceLine(body.Metadata["ask_user_options_json"]) != ""
 	}
-	if text == "" {
-		// Not ErrSrv: no request to MaClawSrv failed. See the matching note in
-		// desktop_admit.go — calling this "maclawsrv request failed" made bots
-		// report an unreachable server for runs that were merely empty.
+	// Prose is kept on Reply.Text for the run record. The person sees only
+	// send_to_user. An empty handoff keeps the desktop and does not invent a sentence.
+	// Nobody waiting on an empty body is a quiet success. A person who is waiting
+	// on a body with nothing in it still gets the missed-reply error.
+	// 「无变化」 stays on the record so a later read can attach send_to_user.
+	quiet := desktopbot.SettleQuiet(desktopbot.SettleQuietInput{
+		Waiting:    body.Waiting,
+		Handoff:    body.Handoff,
+		Ask:        ask,
+		Failed:     strings.TrimSpace(body.Error) != "",
+		Text:       text,
+		SendToUser: sendToUser,
+	})
+	if quiet.Missed {
 		emptyErr := fmt.Errorf("run ended without a result")
 		traceBot(botID, "empty_result", emptyErr, "instance", instanceID, "handoff", traceYes(body.Handoff))
 		s.restoreDesktopKeyboard(tenantID, userID, botID)
 		s.finishDesktopOpen(tenantID, userID, instanceID, opened, true)
 		return Reply{}, emptyErr
 	}
-	reply := Reply{Text: text, Images: replyImages(body.Attachments), Files: replyFiles(body.Attachments)}
+	if quiet.Quiet {
+		s.clearDesktopHeld(tenantID, userID, botID)
+		s.finishDesktopOpen(tenantID, userID, instanceID, opened, false)
+		return Reply{}, nil
+	}
+	if text == "" && strings.TrimSpace(body.Error) != "" {
+		text = strings.TrimSpace(body.Error)
+	}
+	visible := desktopbot.Visible(desktopbot.Turn{Prose: text, SendToUser: sendToUser, Waiting: body.Waiting})
+	reply := Reply{Text: text, SendToUser: visible.Sentence, Images: replyImages(body.Attachments), Files: replyFiles(body.Attachments)}
 	if meta := body.Metadata; meta != nil {
 		reply.AskUserInputType = strings.TrimSpace(meta["ask_user_input_type"])
 		reply.AskUserSecretName = strings.TrimSpace(meta["ask_user_secret_name"])
@@ -717,6 +780,32 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 	}
 	s.finishDesktopOpen(tenantID, userID, instanceID, opened, false)
 	return reply, nil
+}
+
+// desktopSentenceReply is the send_to_user sentence, plus the files that
+// belong with it, and the question the run asked. An empty or filler call
+// leaves the sentence empty. Assistant prose stays off this reply. The
+// question still belongs on it, so a failed run can show the secret prompt
+// or the choices.
+func desktopSentenceReply(body desktopCommandBody) Reply {
+	sendToUser := ""
+	if body.Metadata != nil {
+		sendToUser = strings.TrimSpace(body.Metadata["send_to_user"])
+	}
+	visible := desktopbot.Visible(desktopbot.Turn{SendToUser: sendToUser})
+	reply := Reply{}
+	if visible.Bubble && !visible.Failed {
+		reply.SendToUser = visible.Sentence
+		reply.Images = replyImages(body.Attachments)
+		reply.Files = replyFiles(body.Attachments)
+	}
+	if meta := body.Metadata; meta != nil {
+		reply.AskUserInputType = strings.TrimSpace(meta["ask_user_input_type"])
+		reply.AskUserSecretName = strings.TrimSpace(meta["ask_user_secret_name"])
+		reply.AskUserQuestion = strings.TrimSpace(meta["ask_user_question"])
+		reply.AskUserOptionsJSON = strings.TrimSpace(meta["ask_user_options_json"])
+	}
+	return reply
 }
 
 // desktopIdentityMetadata is this Hub user on the instance, plus any

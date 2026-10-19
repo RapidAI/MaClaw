@@ -10,10 +10,12 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 func init() {
 	agentservice.DesktopWeb = desktopBotWeb
+	agentservice.FinishDesktopRound = finishDesktopRound
 }
 
 // desktopRemoteFile is set by tests. Production asks Hub, which asks the
@@ -104,7 +106,7 @@ func operateDesktopContainer(ctx context.Context, scope agentruntime.Scope, acti
 		}
 		return text, nil
 	default:
-		return "", fmt.Errorf("desktop action is invalid")
+		return "", fmt.Errorf("%s", desktopbot.DesktopActionInvalid)
 	}
 }
 
@@ -123,15 +125,15 @@ func desktopContainerFile(ctx context.Context, scope agentruntime.Scope, action 
 	newString := desktopRawArg(args, "new_string")
 	if wire == "write" {
 		if _, ok := args["content"].(string); !ok {
-			return "", fmt.Errorf("desktop file_write requires content")
+			return "", fmt.Errorf("%s", desktopbot.FileWriteNeedsContent)
 		}
 		if len(content) > desktop.FileContentMax {
-			return "", fmt.Errorf("desktop file is too large")
+			return "", fmt.Errorf("%s", desktopbot.FileTooLarge)
 		}
 	}
 	if wire == "edit" {
 		if oldString == "" {
-			return "", fmt.Errorf("desktop file_edit requires old_string")
+			return "", fmt.Errorf("%s", desktopbot.FileEditNeedsOld)
 		}
 	}
 	if desktopRemoteFile != nil {
@@ -183,7 +185,7 @@ func desktopLocalFile(ctx context.Context, action, filePath, content, oldString,
 			return current, err
 		}
 		if len(current) > desktop.FileContentMax {
-			return "", fmt.Errorf("desktop file is too large to edit")
+			return "", fmt.Errorf("%s", desktopbot.FileTooLarge)
 		}
 		next, err := desktop.ApplyEdit(current, oldString, newString)
 		if err != nil {
@@ -194,7 +196,7 @@ func desktopLocalFile(ctx context.Context, action, filePath, content, oldString,
 		}
 		return fmt.Sprintf("Updated %s.", filePath), nil
 	default:
-		return "", fmt.Errorf("desktop file action is invalid")
+		return "", fmt.Errorf("%s", desktopbot.DesktopActionInvalid)
 	}
 }
 

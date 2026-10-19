@@ -15,6 +15,8 @@ func TestDesktopFileBashAndHTTPStayInTheContainer(t *testing.T) {
 	docker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		switch r.URL.Path {
+		case "/v1/desktops/ensure":
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "running"})
 		case "/v1/desktops/file":
 			var in struct {
 				Action string `json:"action"`

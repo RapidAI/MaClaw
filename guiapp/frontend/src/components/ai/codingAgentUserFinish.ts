@@ -72,7 +72,7 @@ export function stripCodingAgentAuditSections(text: string): string {
 const CODING_WORKBENCH_STATUS_MILESTONE =
     /^(?:Task received|Preparing the execution(?: path)?|Execution environment is ready|Synchronizing conversation context|Analyzing the task(?: and starting work)?|Building the request|Step complete|Received, (?:now )?processing|\u6536\u5230\uff0c\u6b63\u5728\u5904\u7406|\u5df2\u63a5\u6536\u4efb\u52a1|\u6b63\u5728\u51c6\u5907\u6267\u884c\u8def\u5f84|\u6267\u884c\u73af\u5883\u5df2\u5c31\u7eea|\u6b63\u5728\u540c\u6b65\u4f1a\u8bdd\u4e0a\u4e0b\u6587|\u6b63\u5728\u5206\u6790\u4efb\u52a1(?:\u5e76\u5f00\u59cb\u5904\u7406)?|\u4f1a\u8bdd\u9884\u68c0\u5b8c\u6210|\u4f1a\u8bdd\u5df2\u5c31\u7eea|\u4e0a\u4e0b\u6587\u5df2\u51c6\u5907|\u6b63\u5728\u6574\u7406\u4e0a\u4e0b\u6587|\u6a21\u578b\u8bf7\u6c42\u5df2\u53d1\u9001|\u5df2\u5339\u914d\u76f4\u63a5\u6267\u884c|\u5df2\u9009\u62e9\u5feb\u901f\u6267\u884c|\u5df2\u9009\u62e9\u5b8c\u6574\u6267\u884c|\u6b63\u5728\u542f\u52a8\u4efb\u52a1)$/i;
 
-function isCodingWorkbenchStatusLine(line: string): boolean {
+export function isCodingWorkbenchStatusLine(line: string): boolean {
     const trimmed = (line || "").trim();
     if (!trimmed) return false;
     let body = trimmed;
@@ -89,25 +89,71 @@ export function reasoningHasCodingStatusMilestone(reasoning: string): boolean {
     return (reasoning || "").split(/\r?\n/).some((line) => isCodingWorkbenchStatusLine(line));
 }
 
-/** Drop chat [Status] bullets so the coding trail is not a thinking pane. */
+let statusStripMemoIn: string | undefined;
+let statusStripMemoOut = "";
+
+/**
+ * Drop chat [Status] bullets so the coding trail is not a thinking pane.
+ * The same thought is stripped again on every answer flush; an unchanged
+ * string returns the previous result without splitting it.
+ */
 export function stripCodingWorkbenchStatusReasoning(reasoning: string): string {
-    const kept = (reasoning || "").split(/\r?\n/).filter((line) => !isCodingWorkbenchStatusLine(line));
-    return kept.join("\n").replace(/^\n+|\n+$/g, "");
+    const source = reasoning || "";
+    if (source === statusStripMemoIn) return statusStripMemoOut;
+    const out = stripStatusLines(source);
+    statusStripMemoIn = source;
+    statusStripMemoOut = out;
+    return out;
 }
 
-/** Drop only a leading run of host status lines from a chat body. Mid-body quotes stay. */
-export function stripLeadingCodingWorkbenchStatus(text: string): string {
-    const lines = (text || "").split(/\r?\n/);
-    let index = 0;
-    while (index < lines.length) {
-        const trimmed = lines[index].trim();
-        if (!trimmed || isCodingWorkbenchStatusLine(lines[index])) {
-            index += 1;
-            continue;
-        }
-        break;
+function stripStatusLines(source: string): string {
+    if (!source) return source;
+    if (!source.includes("\n") && !source.includes("\r")) {
+        return isCodingWorkbenchStatusLine(source) ? "" : source;
     }
-    return lines.slice(index).join("\n").replace(/^\n+|\n+$/g, "");
+    const lines = source.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i += 1) {
+        if (!isCodingWorkbenchStatusLine(lines[i])) continue;
+        return lines.filter((line) => !isCodingWorkbenchStatusLine(line)).join("\n").replace(/^\n+|\n+$/g, "");
+    }
+    if (!source.includes("\r")) return trimEdgeNewlines(source);
+    return lines.join("\n").replace(/^\n+|\n+$/g, "");
+}
+
+function trimEdgeNewlines(source: string): string {
+    let start = 0;
+    let end = source.length;
+    while (start < end && source[start] === "\n") start += 1;
+    while (end > start && source[end - 1] === "\n") end -= 1;
+    if (start === 0 && end === source.length) return source;
+    return source.slice(start, end);
+}
+
+/**
+ * Drop only a leading run of host status lines from a chat body. Mid-body
+ * quotes stay. A body whose first line is already prose is returned as-is,
+ * so an answer flush does not split the whole reply into lines.
+ */
+export function stripLeadingCodingWorkbenchStatus(text: string): string {
+    const source = text || "";
+    if (!source) return source;
+    let start = 0;
+    while (start <= source.length) {
+        const nl = source.indexOf("\n", start);
+        const lineEnd = nl < 0 ? source.length : (nl > start && source[nl - 1] === "\r" ? nl - 1 : nl);
+        const line = source.slice(start, lineEnd);
+        if (line.trim() && !isCodingWorkbenchStatusLine(line)) break;
+        if (nl < 0) return "";
+        start = nl + 1;
+    }
+    let end = source.length;
+    while (end > start && source[end - 1] === "\n") {
+        end -= 1;
+        if (end > start && source[end - 1] === "\r") end -= 1;
+    }
+    if (start === 0 && end === source.length && !source.includes("\r")) return source;
+    const body = source.slice(start, end);
+    return body.includes("\r\n") ? body.replace(/\r\n/g, "\n") : body;
 }
 
 /** Workbench / workflow board banners that are not Coding Agent Event lines. */
@@ -118,4 +164,73 @@ export function isCodingAgentBoardProgressContent(content: string): boolean {
         return false;
     }
     return BOARD_PROGRESS.test(trimmed);
+}
+
+const AUDIT_HOLD = Math.max(
+    ...CODING_AGENT_AUDIT_HEADINGS.map((heading) => heading.length),
+    ...GENERIC_AUDIT_HEADINGS.map((heading) => heading.length),
+    "## 需要确认执行计划".length,
+    "## 需求理解".length,
+    "/plan approve".length,
+    "\n### T".length,
+);
+
+export type CodingAuditCursor = {
+    input: string;
+    output: string;
+    trailingWs: string;
+    held: string;
+    cut: boolean;
+};
+
+export function createCodingAuditCursor(): CodingAuditCursor {
+    return { input: "", output: "", trailingWs: "", held: "", cut: false };
+}
+
+/** Same cuts as stripCodingAgentAuditSections. A finished heading freezes the prefix; later approval text opens it again. */
+export function appendCodingAuditStrip(cursor: CodingAuditCursor, text: string): string {
+    const input = text || "";
+    if (input === cursor.input) return cursor.output;
+    if (cursor.input && !input.startsWith(cursor.input)) return resetCodingAudit(cursor, input);
+    if (cursor.cut) {
+        const delta = input.slice(cursor.input.length);
+        const window = cursor.held + delta;
+        cursor.input = input;
+        cursor.held = input.slice(Math.max(0, input.length - AUDIT_HOLD));
+        if (isCodingAgentPlanApprovalText(window)) return resetCodingAudit(cursor, input);
+        return cursor.output;
+    }
+    const delta = input.slice(cursor.input.length);
+    const window = cursor.held + delta;
+    if (auditWindowCuts(window)) return resetCodingAudit(cursor, input);
+    const core = delta.trimEnd();
+    if (!core) {
+        cursor.trailingWs += delta;
+        cursor.input = input;
+        cursor.held = input.slice(Math.max(0, input.length - AUDIT_HOLD));
+        return cursor.output;
+    }
+    const wsLen = delta.length - core.length;
+    cursor.output += cursor.trailingWs + (wsLen > 0 ? delta.slice(0, delta.length - wsLen) : delta);
+    cursor.trailingWs = wsLen > 0 ? delta.slice(delta.length - wsLen) : "";
+    cursor.input = input;
+    cursor.held = input.slice(Math.max(0, input.length - AUDIT_HOLD));
+    return cursor.output;
+}
+
+function auditWindowCuts(window: string): boolean {
+    const trimmed = window.trimEnd();
+    if (!trimmed || isCodingAgentPlanApprovalText(trimmed)) return false;
+    return stripCodingAgentAuditSections(window) !== trimmed;
+}
+
+function resetCodingAudit(cursor: CodingAuditCursor, input: string): string {
+    const output = stripCodingAgentAuditSections(input);
+    cursor.input = input;
+    cursor.output = output;
+    cursor.cut = output !== input.trimEnd();
+    const end = input.length - (input.length - input.trimEnd().length);
+    cursor.trailingWs = input.slice(end);
+    cursor.held = input.slice(Math.max(0, input.length - AUDIT_HOLD));
+    return output;
 }

@@ -1163,7 +1163,8 @@ func DefaultDefinitions() []IntentDefinition {
 			TreeText: "用户要查看、搜索或读取已经配置的邮箱里的邮件，不发送。" +
 				"语义判据：用户目标是收件箱、未读邮件、某封邮件正文或附件。" +
 				"边界：「发微信、QQ 或 IM 消息」→ 既有 IM 发送；「用浏览器打开网页邮箱」→ browser；" +
-				"「把文件发到邮箱」→ document_delivery；「发邮件、回复或转发」→ mailbox_send。",
+				"「把文件发到邮箱」→ document_delivery；「发邮件、回复或转发」→ mailbox_send；" +
+				"「删除邮件、清空收件箱、删除邮箱里的邮件」→ mailbox_delete。",
 			EmbedTexts: []string{
 				"看看我的邮件",
 				"打开收件箱看看未读",
@@ -1182,7 +1183,7 @@ func DefaultDefinitions() []IntentDefinition {
 			TreeText: "用户要通过已配置的邮箱发信、回复或转发。发送前必须由用户确认。" +
 				"语义判据：用户目标是把一封邮件送到对方邮箱。" +
 				"边界：「发到微信或 QQ」→ 既有 IM 发送；「只查看收件箱」→ mailbox_read；" +
-				"「配置或添加邮箱帐号」→ mailbox_configure；" +
+				"「配置或添加邮箱帐号」→ mailbox_configure；「删除邮件或清空收件箱」→ mailbox_delete；" +
 				"「用浏览器打开网页邮箱」→ browser；「把文件发到邮箱」→ document_delivery。",
 			EmbedTexts: []string{
 				"给对方发一封邮件",
@@ -1201,7 +1202,8 @@ func DefaultDefinitions() []IntentDefinition {
 			Domain: "邮箱 (Mailbox)",
 			TreeText: "用户要保存一个邮箱帐号，提供服务器、端口、协议或密码。这个动作不发送邮件。" +
 				"语义判据：用户目标是配置、添加或修改邮箱接入信息。" +
-				"边界：「发邮件、回复或转发」→ mailbox_send；「只查看收件箱」→ mailbox_read。",
+				"边界：「发邮件、回复或转发」→ mailbox_send；「只查看收件箱」→ mailbox_read；" +
+				"「删除邮件或清空收件箱」→ mailbox_delete。",
 			EmbedTexts: []string{
 				"帮我配置邮箱",
 				"添加一个邮箱帐号",
@@ -1209,6 +1211,25 @@ func DefaultDefinitions() []IntentDefinition {
 				"save this mailbox account",
 			},
 			ToolNames: []string{"mailbox_configure"},
+		},
+		{
+			Label:  LabelMailboxDelete,
+			Domain: "邮箱 (Mailbox)",
+			TreeText: "用户要删除已配置邮箱里的邮件，或清空收件箱、整个邮箱。" +
+				"语义判据：用户目标是把邮件移到已删除或永久删除。第一次只生成确认，用户确认后才删除。" +
+				"边界：「看看邮件、搜邮件、读正文」→ mailbox_read；「发邮件、回复或转发」→ mailbox_send；" +
+				"「删除邮箱帐号或配置」→ mailbox_configure；「删除本地文件」→ file_delete。",
+			EmbedTexts: []string{
+				"删除邮箱中的所有邮件",
+				"清空收件箱",
+				"把这封邮件删掉",
+				"删除已删除文件夹里的邮件",
+				"彻底删除这封邮件",
+				"delete all mail in my inbox",
+				"move this message to trash",
+				"empty my inbox",
+			},
+			ToolNames: []string{"mailbox_delete"},
 		},
 		{
 			Label:      LabelAmbiguous,

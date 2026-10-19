@@ -40,8 +40,8 @@ func TestPrepareAgentLoopConfigSelectsRole(t *testing.T) {
 		ComputerUseActive:      true,
 		ComputerUseGateSettled: true,
 	})
-	if bgVision.Config.Model != "cu-model" || bgVision.Config.Profile != maclawLLMRoleComputerUse {
-		t.Fatalf("background desktop work config = model %q profile %q", bgVision.Config.Model, bgVision.Config.Profile)
+	if bgVision.Config.Model != "bg-model" || bgVision.Config.Profile != maclawLLMRoleBackground {
+		t.Fatalf("a background loop does not drive the computer: model %q profile %q", bgVision.Config.Model, bgVision.Config.Profile)
 	}
 
 	cu := h.prepareAgentLoopConfig(&LoopContext{
@@ -49,13 +49,23 @@ func TestPrepareAgentLoopConfigSelectsRole(t *testing.T) {
 		ComputerUseActive:      true,
 		ComputerUseGateSettled: true,
 	})
-	if cu.Config.Model != "cu-model" || cu.Config.Profile != maclawLLMRoleComputerUse {
-		t.Fatalf("computer use config = model %q profile %q", cu.Config.Model, cu.Config.Profile)
+	if cu.Config.Model != "fg-model" || cu.Config.Profile != maclawLLMRoleForeground {
+		t.Fatalf("the chat loop does not drive the computer: model %q profile %q", cu.Config.Model, cu.Config.Profile)
+	}
+
+	helper := h.prepareAgentLoopConfig(&LoopContext{
+		Kind:                   LoopKindChat,
+		ComputerHelper:         true,
+		ComputerUseActive:      true,
+		ComputerUseGateSettled: true,
+	})
+	if helper.Config.Model != "cu-model" || helper.Config.Profile != maclawLLMRoleComputerUse {
+		t.Fatalf("computer helper config = model %q profile %q", helper.Config.Model, helper.Config.Profile)
 	}
 
 	// Chat tasks keep LoopKindChat (iteration limits, no ContinueC pause).
-	// Ordinary task execution uses the background role. A settled computer-use
-	// gate is desktop work and uses the computer_use role.
+	// Ordinary task execution uses the background role. Only the computer
+	// helper uses the computer_use role.
 	chatTask := h.prepareAgentLoopConfig(&LoopContext{
 		Kind:       LoopKindChat,
 		ChatTaskID: "task-1",
@@ -66,11 +76,12 @@ func TestPrepareAgentLoopConfigSelectsRole(t *testing.T) {
 	chatTaskVision := h.prepareAgentLoopConfig(&LoopContext{
 		Kind:                   LoopKindChat,
 		ChatTaskID:             "task-1",
+		ComputerHelper:         true,
 		ComputerUseActive:      true,
 		ComputerUseGateSettled: true,
 	})
 	if chatTaskVision.Config.Model != "cu-model" || chatTaskVision.Config.Profile != maclawLLMRoleComputerUse {
-		t.Fatalf("chat task desktop work config = model %q profile %q", chatTaskVision.Config.Model, chatTaskVision.Config.Profile)
+		t.Fatalf("computer helper task config = model %q profile %q", chatTaskVision.Config.Model, chatTaskVision.Config.Profile)
 	}
 }
 

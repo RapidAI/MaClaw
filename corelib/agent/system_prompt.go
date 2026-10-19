@@ -144,18 +144,17 @@ func BuildSystemPrompt(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 	return BuildPromptBundle(deps, userMessage, isFirstTurn).String()
 }
 
-// appendMemoryRecall appends proactive memory recall to the system prompt.
+// appendMemoryRecall appends the memory snapshot to the system prompt.
+// The count catalog stays out: category totals change between turns and
+// would break the prefix. isFirstTurn does not change this text. The
+// snapshot itself is replaced only when the conversation is summarized.
 func appendMemoryRecall(b *strings.Builder, store *memory.Store, userMessage string, isFirstTurn bool) {
+	_ = userMessage
+	_ = isFirstTurn
 	b.WriteString("\n\n")
 	b.WriteString(memory.PromptSectionUserMemory)
 	b.WriteByte('\n')
-
-	// Catalog only: index + pull hint. Query is unused when CatalogOnly.
-	_ = userMessage
-	promptContext, _ := store.ProactiveContextForPrompt("", memory.CoreAgentProactivePromptOptions())
-	b.WriteString(promptContext)
-
-	b.WriteString(store.StaticMemorySectionForPrompt(memory.RecallHintAndGuidePromptOptions(isFirstTurn, memory.BuildTUIProactiveMemoryPrompt())))
+	b.WriteString(store.StaticMemorySectionForPrompt(memory.RecallHintAndGuidePromptOptions(true, memory.BuildTUIProactiveMemoryPrompt())))
 }
 
 // SteeringFileKey builds a per-user key for steering context file tracking.

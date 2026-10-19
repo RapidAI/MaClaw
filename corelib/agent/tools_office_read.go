@@ -895,11 +895,11 @@ func isExplicitPlainTextFormat(format string) bool {
 // extractLegacyOfficeTextWithFormat is the pre-OfficeRead implementation.
 // Keep it private and stable so the migration adapter can use it for dual-read
 // verification and an immediate format-level fallback.
-func extractLegacyOfficeTextWithFormat(filePath, format string) (string, string, error) {
+func extractLegacyOfficeTextWithFormat(filePath, format string, settings officeReadSettings) (string, string, error) {
 	format = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(format), "."))
 	switch format {
 	case "pdf":
-		text, err := extractPDFText(filePath)
+		text, err := extractPDFText(filePath, settings)
 		return validateLegacyOfficeText(text, "pdf", err)
 	case "docx":
 		text, err := extractDocxText(filePath)
@@ -1171,7 +1171,7 @@ func ExtractPDFText(filePath string) (string, error) {
 	if sniffOfficeFormat(snapshot) != "pdf" {
 		return "", errOfficeReadFormatMismatch
 	}
-	text, err := extractPDFText(snapshot)
+	text, err := extractPDFText(snapshot, officeReadSettings{})
 	if err != nil {
 		return "", err
 	}
@@ -1181,7 +1181,7 @@ func ExtractPDFText(filePath string) (string, error) {
 	return text, nil
 }
 
-func extractPDFText(filePath string) (text string, err error) {
+func extractPDFText(filePath string, settings officeReadSettings) (text string, err error) {
 	defer recoverLegacyOfficeExtraction("PDF", &text, &err)
 	data, err := os.ReadFile(filePath)
 	if err != nil {
@@ -1207,6 +1207,20 @@ func extractPDFText(filePath string) (text string, err error) {
 		return "", fmt.Errorf("解析 PDF 失败: %v", err)
 	}
 	if strings.TrimSpace(text) == "" {
+		// Picture PDFs (one JPEG per page, no text layer) fail native
+		// extraction on purpose. A model that can see images gets the page
+		// pictures instead of a local transcript. Text-only models, and
+		// read_document, still OCR those images.
+		if settings.imagePDFPreferVision {
+			if visionText, visionErr := visionTranscriptForImageOnlyPDF(data, settings.imagePDFVisionUsedBytes); visionErr == nil && strings.TrimSpace(visionText) != "" {
+				return visionText, nil
+			}
+			// Pictures that cannot be attached (over the upload budget, or not
+			// decodable as a vision image) still get a local transcript.
+		}
+		if ocrText, ocrErr := recognizeImageOnlyPDF(data); ocrErr == nil && strings.TrimSpace(ocrText) != "" {
+			return ocrText, nil
+		}
 		return "", fmt.Errorf("PDF 中没有可读取的文本内容（可能是扫描件，需 OCR）")
 	}
 	return text, nil

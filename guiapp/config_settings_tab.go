@@ -55,6 +55,8 @@ var settingsTabFieldKeys = map[string][]string{
 	"ui": {
 		"ui_zoom_factor",
 		"chat_font_size",
+		"chat_font_family",
+		"coding_font_family",
 	},
 	"pet": {
 		"pet_enabled",

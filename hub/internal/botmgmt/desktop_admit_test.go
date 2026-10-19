@@ -99,7 +99,7 @@ func TestAdmittedDesktopRunFinishesAfterTheCallerReturns(t *testing.T) {
 			if !sawPrefer {
 				t.Fatal("message was not admitted with Prefer: respond-async")
 			}
-			if desk.stop != 0 || desk.open != 1 {
+			if desk.stop != 0 || desk.open != 0 {
 				t.Fatalf("desktop at admission open=%d stop=%d", desk.open, desk.stop)
 			}
 			if _, done, err := svc.DesktopRunResult(context.Background(), "tenant-a", "alice", "bot_alice", admission.RunID); err != nil || done {
@@ -221,8 +221,205 @@ func TestAdmittedDesktopFailureSettlesWhenTheRunFails(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if desk.stop != 1 {
-		t.Fatalf("failed run stop=%d, want 1", desk.stop)
+	if desk.open != 0 || desk.stop != 0 {
+		t.Fatalf("failed run opened or stopped a desktop it did not start open=%d stop=%d", desk.open, desk.stop)
+	}
+}
+
+func TestAdmittedFailedRunKeepsSendToUser(t *testing.T) {
+	var gate sync.Mutex
+	ready := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/auth/token":
+			_, _ = w.Write([]byte(`{"access_token":"bearer-alice","principal":{"user_id":"user_alice"}}`))
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/runs/"):
+			gate.Lock()
+			goNow := ready
+			gate.Unlock()
+			if !goNow {
+				_, _ = w.Write([]byte(`{"id":"run_fail","status":"running"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"run_fail","status":"failed","desktop_ready":true,"error":"browser broke","message":{"content":"无变化","metadata":{"send_to_user":"首页没打开。","ask_user_question":"下一步？","ask_user_secret_name":"SITE_PASSWORD"}}}`))
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/instances/"):
+			writeInstanceSettings(w, r)
+		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/instances/"):
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/messages"):
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"async":true,"run":{"id":"run_fail","status":"running"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	settings := &memSettings{}
+	raw, err := json.Marshal(record{
+		BaseURL:     srv.URL,
+		AccessToken: "secret-token",
+		AdminSecret: "admin-secret",
+		Principals: []ownerPrincipal{{
+			HubUserID: "alice", TenantID: "maclaw-tenant", UserID: "user_alice", APIKey: "key-alice", APISecret: "sec-alice",
+		}},
+		Bots:   []Bot{{ID: "bot_alice", Name: "duty", InstanceID: "inst_alice", OwnerUserID: "alice"}},
+		Grants: []Grant{{ID: "g1", Scope: ScopeUser, TargetID: "alice"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(settings)
+	svc.HTTP = srv.Client()
+	svc.admitPollInterval = 10 * time.Millisecond
+	svc.Desktop = &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
+	if _, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "打开首页", "execute", ""); err != nil {
+		t.Fatal(err)
+	}
+	gate.Lock()
+	ready = true
+	gate.Unlock()
+	deadline := time.Now().Add(2 * time.Second)
+	var reply Reply
+	for {
+		got, done, err := svc.DesktopRunResult(context.Background(), "tenant-a", "alice", "bot_alice", "run_fail")
+		if done {
+			if err == nil || !strings.Contains(err.Error(), "browser broke") {
+				t.Fatalf("done err=%v", err)
+			}
+			reply = got
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("failure did not settle")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if reply.SendToUser != "首页没打开。" || reply.Text != "" || strings.Contains(reply.Text, "无变化") || reply.AskUserQuestion != "下一步？" || reply.AskUserSecretName != "SITE_PASSWORD" {
+		t.Fatalf("reply = %#v", reply)
+	}
+	pending, err := svc.PendingDesktopDeliveries(context.Background(), "tenant-a", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].Reply.SendToUser != "首页没打开。" || strings.Contains(pending[0].Reply.Text, "无变化") || pending[0].Reply.AskUserQuestion != "下一步？" || pending[0].Status != "failed" {
+		t.Fatalf("pending = %#v", pending)
+	}
+	shown, _, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "打开首页", "zh-Hans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(shown, "没有完成") || !strings.Contains(shown, "首页没打开。") || strings.Contains(shown, "无变化") || strings.Contains(shown, "browser broke") {
+		t.Fatalf("status = %q", shown)
+	}
+}
+
+func TestAdmittedFailedRunKeepsHandoff(t *testing.T) {
+	var gate sync.Mutex
+	ready := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/auth/token":
+			_, _ = w.Write([]byte(`{"access_token":"bearer-alice","principal":{"user_id":"user_alice"}}`))
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/runs/"):
+			gate.Lock()
+			goNow := ready
+			gate.Unlock()
+			if !goNow {
+				_, _ = w.Write([]byte(`{"id":"run_fail","status":"running"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"run_fail","status":"failed","desktop_ready":true,"error":"browser broke","desktop_handoff":true,"attention_reason":"login_wall","message":{"content":"安装过程写在这里","metadata":{"send_to_user":"这一步需要你登录。","ask_user_question":"请输入密码。","ask_user_secret_name":"SITE_PASSWORD"}}}`))
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/instances/"):
+			writeInstanceSettings(w, r)
+		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/instances/"):
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/messages"):
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"async":true,"run":{"id":"run_fail","status":"running"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	settings := &memSettings{}
+	raw, err := json.Marshal(record{
+		BaseURL:     srv.URL,
+		AccessToken: "secret-token",
+		AdminSecret: "admin-secret",
+		Principals: []ownerPrincipal{{
+			HubUserID: "alice", TenantID: "maclaw-tenant", UserID: "user_alice", APIKey: "key-alice", APISecret: "sec-alice",
+		}},
+		Bots:   []Bot{{ID: "bot_alice", Name: "duty", InstanceID: "inst_alice", OwnerUserID: "alice"}},
+		Grants: []Grant{{ID: "g1", Scope: ScopeUser, TargetID: "alice"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(settings)
+	svc.HTTP = srv.Client()
+	svc.admitPollInterval = 10 * time.Millisecond
+	desk := &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
+	svc.Desktop = desk
+	if _, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "打开首页", "execute", ""); err != nil {
+		t.Fatal(err)
+	}
+	gate.Lock()
+	ready = true
+	gate.Unlock()
+	deadline := time.Now().Add(2 * time.Second)
+	var reply Reply
+	for {
+		got, done, err := svc.DesktopRunResult(context.Background(), "tenant-a", "alice", "bot_alice", "run_fail")
+		if done {
+			if err == nil || !strings.Contains(err.Error(), "browser broke") {
+				t.Fatalf("done err=%v", err)
+			}
+			reply = got
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("failure did not settle")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if desk.stop != 0 {
+		t.Fatalf("failed handoff stopped the desktop, stop=%d", desk.stop)
+	}
+	if !reply.Handoff || reply.AttentionReason != "login_wall" || reply.SendToUser != "这一步需要你登录。" || reply.AskUserQuestion != "请输入密码。" || reply.AskUserSecretName != "SITE_PASSWORD" || reply.Text != "" || strings.Contains(reply.Text, "安装过程") {
+		t.Fatalf("reply = %#v", reply)
+	}
+	if !strings.HasPrefix(reply.NovncURL, "/api/v1/desktop-handoff/") || strings.Contains(reply.NovncURL, "dockerd.example") {
+		t.Fatalf("novnc = %q", reply.NovncURL)
+	}
+	_, control, err := svc.DesktopWatch(context.Background(), "tenant-a", "alice", "bot_alice")
+	if err != nil || !control {
+		t.Fatalf("watch control=%v err=%v", control, err)
+	}
+	pending, err := svc.PendingDesktopDeliveries(context.Background(), "tenant-a", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || !pending[0].Reply.Handoff || pending[0].Reply.AttentionReason != "login_wall" || pending[0].Reply.SendToUser != "这一步需要你登录。" || strings.Contains(pending[0].Reply.Text, "安装过程") || pending[0].Status != "failed" {
+		t.Fatalf("pending = %#v", pending)
+	}
+	shown, _, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "打开首页", "zh-Hans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(shown, "没有完成") || !strings.Contains(shown, "这一步需要你登录。") || strings.Contains(shown, "安装过程") || strings.Contains(shown, "browser broke") {
+		t.Fatalf("status = %q", shown)
 	}
 }
 

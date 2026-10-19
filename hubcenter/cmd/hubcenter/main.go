@@ -79,7 +79,7 @@ func runMaintenance(args []string) error {
 	case "compact":
 		return runCompactDB(args[1:])
 	default:
-		return fmt.Errorf("unknown maintenance command %q", args[0])
+		return fmt.Errorf("Unknown maintenance command %q. Run hubcenter maintenance help.", args[0])
 	}
 }
 
@@ -491,7 +491,7 @@ func runBackup(args []string) error {
 	case "inspect", "list":
 		return runBackupInspect(args[1:])
 	default:
-		return fmt.Errorf("unknown backup command %q", args[0])
+		return fmt.Errorf("Unknown backup command %q. Run hubcenter backup help.", args[0])
 	}
 }
 
@@ -544,7 +544,7 @@ func runBackupInspect(args []string) error {
 		return err
 	}
 	if strings.TrimSpace(*filePath) == "" {
-		return fmt.Errorf("backup inspect requires --file")
+		return fmt.Errorf("Missing --file. Run hubcenter backup inspect --file <backup.tar.gz>.")
 	}
 	manifest, err := backup.Inspect(*filePath)
 	if err != nil {
@@ -611,7 +611,7 @@ func runAdminReset(args []string) error {
 		return err
 	}
 	if strings.TrimSpace(*username) == "" || strings.TrimSpace(*password) == "" {
-		return fmt.Errorf("admin reset requires -username and -password")
+		return fmt.Errorf("Missing -username or -password. Run hubcenter admin reset -username <name> -password <password>.")
 	}
 
 	cfg, err := config.Load(*configPath)

@@ -38,7 +38,7 @@ func CoreAgentProactivePromptOptions() ProactivePromptOptions {
 			MaxEntries:  0,
 			EntityLimit: 3,
 		},
-		IncludeMemoryIndex: true,
+		IncludeMemoryIndex: false,
 		MemoryIndexLabel:   "\n[\u8bb0\u5fc6\u7d22\u5f15] ",
 		MemoryIndexUnit:    "entries",
 		CatalogOnly:        true,
@@ -49,7 +49,7 @@ func CoreAgentProactivePromptOptions() ProactivePromptOptions {
 }
 
 // IMProactivePromptOptions is the shared dynamic memory profile for the main
-// desktop IM assistant.
+// desktop IM assistant. The count catalog is not part of the system prompt.
 func IMProactivePromptOptions(projectPath string, strictProject bool) ProactivePromptOptions {
 	return ProactivePromptOptions{
 		Recall: ProactiveRecallOptions{
@@ -58,10 +58,10 @@ func IMProactivePromptOptions(projectPath string, strictProject bool) ProactiveP
 			MaxEntries:    0,
 			EntityLimit:   1,
 		},
-		IncludeMemoryIndex: true,
+		IncludeMemoryIndex: false,
 		MemoryIndexLabel:   "\n[\u8bb0\u5fc6\u7d22\u5f15] ",
 		MemoryIndexUnit:    "entries",
-		CatalogOnly: true,
+		CatalogOnly:        true,
 		RecallEntries: RecallEntriesPromptOptions{
 			Footer: CatalogOnlyWorkingSetFooter(),
 		},
@@ -78,7 +78,7 @@ func VEProactivePromptOptions() ProactivePromptOptions {
 			EntityLimit:        1,
 			IncludeUserProfile: true,
 		},
-		IncludeMemoryIndex: true,
+		IncludeMemoryIndex: false,
 		MemoryIndexLabel:   "\n[Memory Index] ",
 		MemoryIndexUnit:    "entries",
 		CatalogOnly:        true,
@@ -92,8 +92,8 @@ func VEProactivePromptOptions() ProactivePromptOptions {
 // side queries. Catalog only: hosts keep identity + user facts + tool hints.
 func BtwProactivePromptOptions(projectPath string, header string) ProactivePromptOptions {
 	return ProactivePromptOptions{
-		Recall: ProactiveRecallOptions{ProjectPath: projectPath, MaxEntries: 0, EntityLimit: 1},
-		IncludeMemoryIndex: true,
+		Recall:             ProactiveRecallOptions{ProjectPath: projectPath, MaxEntries: 0, EntityLimit: 1},
+		IncludeMemoryIndex: false,
 		CatalogOnly:        true,
 		RecallEntries: RecallEntriesPromptOptions{
 			Header: header,

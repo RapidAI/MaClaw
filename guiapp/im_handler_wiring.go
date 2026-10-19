@@ -51,10 +51,14 @@ type IMMessageHandler struct {
 	mailboxDraftNotes     sync.Map
 	// mcpServerWriteNotes stashes a paused unreviewed-MCP write confirmation
 	// between the gate's __ASK_USER__ result and commitPendingAskUser.
+	// The grant itself is mcpServerWriteGrantStore: one record per user and
+	// server, kept until that server is removed.
 	mcpServerWriteNotes sync.Map
-	// mcpServerWriteGrants records per-user, per-server session grants for
-	// unreviewed external-effect MCP calls (once per server per session).
-	mcpServerWriteGrants sync.Map
+	// discoveredMCPContinuation is the one installed MCP tool a write approval
+	// must republish. The pause returns from the agent loop, and the reply is
+	// a new LoopContext, so the loop-scoped discovery bind is already gone.
+	// The approval hint tells the model the function is listed on this turn.
+	discoveredMCPContinuation sync.Map
 
 	// --- Extracted App dependencies (agent-unification Phase 1) ---
 	// These fields are wired from App at construction time (GUI) or from
@@ -707,9 +711,10 @@ type IMMessageHandler struct {
 	// sessionGovernedTaskKey(userID, channel, destination).
 	sessionGovernedTasks sync.Map
 
-	// semanticSessionResidues stores the open capability needs of a desktop
-	// conversation. Keyed by the desktop session key (userID, including the
-	// project suffix). It is not a grant and is not a RouteState session.
+	// semanticSessionResidues stores the open capability needs of one
+	// conversation. Desktop keys stay the user id. Any other platform is
+	// prefixed so it cannot share that desktop session. It is not a grant
+	// and is not a RouteState session.
 	semanticSessionResidues sync.Map
 
 	// activeLocalDocuments is a host-owned, owner/channel scoped reference to

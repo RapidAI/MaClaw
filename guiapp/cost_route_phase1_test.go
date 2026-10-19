@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	cllm "github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
@@ -201,5 +202,24 @@ func TestApplyTurnModelRoute_HostImageNotesDoNotForceVision(t *testing.T) {
 	}
 	if fileTurn.Task != string(cllm.TaskReasoning) {
 		t.Fatalf("a PDF attachment should prefer a heavy model, got %+v", fileTurn)
+	}
+	picked := "建议几个标题\n" + agent.FilePathPromptPrefix + "\nC:\\paper.pdf\n"
+	_, pathTurn := h.applyTurnModelRoute(primary, picked, &LoopContext{Kind: LoopKindChat}, nil)
+	if pathTurn.Task != string(cllm.TaskReasoning) {
+		t.Fatalf("a picked PDF should prefer a heavy model, got %+v", pathTurn)
+	}
+	_, titleOnly := h.applyTurnModelRoute(primary, "建议几个标题", &LoopContext{Kind: LoopKindChat}, nil)
+	if titleOnly.Task != string(cllm.TaskFast) {
+		t.Fatalf("title text without a document should stay fast, got %+v", titleOnly)
+	}
+	imagePicked := "你好\n" + agent.FilePathPromptPrefix + "\nC:\\scan.png\n"
+	_, imagePath := h.applyTurnModelRoute(primary, imagePicked, &LoopContext{Kind: LoopKindChat}, nil)
+	if imagePath.Task != string(cllm.TaskFast) {
+		t.Fatalf("a picked image path is not a document turn, got %+v", imagePath)
+	}
+	historical := "建议几个标题\n" + agent.FilePathPromptPrefixHistorical + "\nC:\\old.pdf\n"
+	_, oldPath := h.applyTurnModelRoute(primary, historical, &LoopContext{Kind: LoopKindChat}, nil)
+	if oldPath.Task != string(cllm.TaskFast) {
+		t.Fatalf("a historical PDF path must not keep the turn heavy, got %+v", oldPath)
 	}
 }

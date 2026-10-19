@@ -10,8 +10,10 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
 	"github.com/RapidAI/CodeClaw/corelib/computeruse"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/longhorizon"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
@@ -720,6 +722,47 @@ func removeComputerUseTools(tools []map[string]interface{}) []map[string]interfa
 	return filtered
 }
 
+func sanitizeMainScreenshotTools(tools []map[string]interface{}) []map[string]interface{} {
+	if len(tools) == 0 {
+		return tools
+	}
+	out := make([]map[string]interface{}, 0, len(tools))
+	sawShot := false
+	for _, def := range tools {
+		name := extractToolName(def)
+		if strings.EqualFold(name, "screenshot") {
+			if sawShot {
+				continue
+			}
+			sawShot = true
+			def = stripScreenshotClickParams(def)
+		}
+		out = append(out, def)
+	}
+	return out
+}
+
+func stripScreenshotClickParams(def map[string]interface{}) map[string]interface{} {
+	fn, _ := def["function"].(map[string]interface{})
+	if fn == nil {
+		return def
+	}
+	params, _ := fn["parameters"].(map[string]interface{})
+	if params == nil {
+		return def
+	}
+	props, _ := params["properties"].(map[string]interface{})
+	if props == nil {
+		return def
+	}
+	for key := range props {
+		if desktopbot.ScreenshotParamsHaveClick([]string{key}) {
+			delete(props, key)
+		}
+	}
+	return def
+}
+
 func isComputerUseToolDefinition(name string) bool {
 	name = strings.ToLower(strings.TrimSpace(name))
 	return computeruse.IsComputerUseTool(name) ||
@@ -732,9 +775,12 @@ func localFileWorkBlocksComputerUse(userText string) bool {
 }
 
 // filterComputerUseToolsForLocalFileWork is the final defense for every path
-// that composes a tool list. A settled closed gate drops computer_* so recovery
-// and injection cannot put them back. A local-file fence also drops legacy gui_*.
+// that composes a tool list. The main agent always drops computer_* and gui_*.
+// A computer helper and the gui_executor ring keep the old gate.
 func filterComputerUseToolsForLocalFileWork(ctx *LoopContext, userText string, tools []map[string]interface{}) []map[string]interface{} {
+	if !loopKeepsDrivingTools(ctx) {
+		return sanitizeMainScreenshotTools(removeComputerUseTools(tools))
+	}
 	if computerUseGateClosed(ctx) {
 		tools = removeRefComputerUseTools(tools)
 	}
@@ -742,6 +788,18 @@ func filterComputerUseToolsForLocalFileWork(ctx *LoopContext, userText string, t
 		return removeComputerUseTools(tools)
 	}
 	return tools
+}
+
+// loopKeepsDrivingTools is the computer helper and the longhorizon gui_executor
+// ring. The chat loop that started either of them does not.
+func loopKeepsDrivingTools(ctx *LoopContext) bool {
+	if ctx == nil {
+		return false
+	}
+	if ctx.ComputerHelper {
+		return true
+	}
+	return ctx.HorizonRole == longhorizon.RoleGUIExecutor
 }
 
 // computerUseGateClosed reports that this turn already ran the Computer Use
@@ -760,6 +818,9 @@ func isRefComputerUseToolName(name string) bool {
 func computerUseExecutionRejection(ctx *LoopContext, userText, toolName string) string {
 	if localFileWorkBlocksComputerUseExecution(ctx, userText, toolName) {
 		return "[system rejected] Computer Use is unavailable while handling the current local attachment. Use the local file/document tools instead."
+	}
+	if !loopKeepsDrivingTools(ctx) && (isComputerUseToolDefinition(toolName) || isRefComputerUseToolName(toolName)) {
+		return "[system rejected] The main agent does not operate the computer."
 	}
 	if computerUseGateClosed(ctx) && isRefComputerUseToolName(toolName) {
 		return "[system rejected] Computer Use is not active for this turn. It stays off unless the request operates a desktop app or says @computer."

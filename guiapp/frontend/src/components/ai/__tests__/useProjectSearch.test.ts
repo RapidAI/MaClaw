@@ -2,12 +2,16 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useProjectSearch } from "../useProjectSearch";
-import { KnowledgeSearch, ListExperts, ListMobileLibraryItems, SearchTasks } from "../../../../wailsjs/go/main/App";
+import { ListExperts, ListMobileLibraryItems, LocalSearch, SearchTasks } from "../../../../wailsjs/go/main/App";
+
+function localSearchResult(hits: unknown[] = []) {
+    return { hits } as Awaited<ReturnType<typeof LocalSearch>>;
+}
 
 vi.mock("../../../../wailsjs/go/main/App", () => ({
     SearchTasks: vi.fn().mockResolvedValue([]),
     ListMobileLibraryItems: vi.fn().mockResolvedValue([]),
-    KnowledgeSearch: vi.fn().mockResolvedValue([]),
+    LocalSearch: vi.fn().mockResolvedValue({ hits: [] }),
     ListExperts: vi.fn().mockResolvedValue("[]"),
 }));
 
@@ -15,24 +19,26 @@ describe("useProjectSearch", () => {
     beforeEach(() => {
         vi.mocked(SearchTasks).mockClear().mockResolvedValue([]);
         vi.mocked(ListMobileLibraryItems).mockClear().mockResolvedValue([]);
-        vi.mocked(KnowledgeSearch).mockClear().mockResolvedValue([]);
+        vi.mocked(LocalSearch).mockClear().mockResolvedValue(localSearchResult());
         vi.mocked(ListExperts).mockClear().mockResolvedValue("[]");
         delete (window as unknown as { go?: unknown }).go;
     });
 
     it("puts cloud workspace file hits into cloudResults", async () => {
-        const searchCloud = vi.fn().mockResolvedValue([{
-            id: "cws_1/notes/预算说明.txt",
-            workspace_id: "cws_1",
-            workspace_name: "经营分析",
-            project_path: "C:/cloud/cws_1",
-            relative_path: "notes/预算说明.txt",
-            title: "预算说明.txt",
-            preview: "经营分析 · notes/预算说明.txt",
-            match: "name",
-            tags: ["cloud_workspace:cws_1"],
-        }]);
-        (window as unknown as { go: unknown }).go = { main: { App: { SearchCloudWorkspaceContent: searchCloud } } };
+        vi.mocked(LocalSearch).mockImplementation(async (req) => {
+            if (req.corpus !== "cloud_workspace") return localSearchResult();
+            return localSearchResult([{
+                locator: "cws_1/notes/预算说明.txt",
+                workspace_id: "cws_1",
+                workspace_name: "经营分析",
+                project_path: "C:/cloud/cws_1",
+                relative_path: "notes/预算说明.txt",
+                title: "预算说明.txt",
+                snippet: "经营分析 · notes/预算说明.txt",
+                match: "name",
+                tags: ["cloud_workspace:cws_1"],
+            }]);
+        });
 
         const { result } = renderHook(() => useProjectSearch("en"));
         await act(async () => {
@@ -40,12 +46,50 @@ describe("useProjectSearch", () => {
         });
 
         await waitFor(() => expect(result.current.cloudResults).toHaveLength(1));
-        expect(searchCloud).toHaveBeenCalledWith("预算", 8);
+        expect(LocalSearch).toHaveBeenCalledWith({
+            corpus: "cloud_workspace",
+            query: "预算",
+            limit: 8,
+        });
         expect(result.current.cloudResults[0]).toMatchObject({
             workspaceId: "cws_1",
             relativePath: "notes/预算说明.txt",
             title: "预算说明.txt",
             match: "name",
+        });
+    });
+
+    it("puts knowledge citation hits into knowledgeResults", async () => {
+        vi.mocked(LocalSearch).mockImplementation(async (req) => {
+            if (req.corpus !== "knowledge") return localSearchResult();
+            return localSearchResult([{
+                knowledge: {
+                    card_id: "c1",
+                    card_title: "Gateway",
+                    snippet: "edge topology",
+                    source: { id: "s1", title: "Network" },
+                    result_type: "card",
+                },
+            }]);
+        });
+
+        const { result } = renderHook(() => useProjectSearch("en"));
+        await act(async () => {
+            result.current.openWithQuery("gateway");
+        });
+
+        await waitFor(() => expect(result.current.knowledgeResults).toHaveLength(1));
+        expect(LocalSearch).toHaveBeenCalledWith({
+            corpus: "knowledge",
+            query: "gateway",
+            retrieval: "auto",
+            limit: 8,
+        });
+        expect(result.current.knowledgeResults[0]).toMatchObject({
+            id: "c1",
+            title: "Gateway",
+            sourceId: "s1",
+            resultType: "card",
         });
     });
 
@@ -85,7 +129,7 @@ describe("useProjectSearch", () => {
         await waitFor(() => expect(SearchTasks).toHaveBeenCalledWith("report", 20));
         vi.mocked(SearchTasks).mockClear();
         vi.mocked(ListMobileLibraryItems).mockClear();
-        vi.mocked(KnowledgeSearch).mockClear();
+        vi.mocked(LocalSearch).mockClear();
         vi.mocked(ListExperts).mockClear();
 
         await act(async () => {
@@ -93,7 +137,7 @@ describe("useProjectSearch", () => {
         });
         await waitFor(() => expect(SearchTasks).toHaveBeenCalledWith("", 20));
         expect(ListMobileLibraryItems).not.toHaveBeenCalled();
-        expect(KnowledgeSearch).not.toHaveBeenCalled();
+        expect(LocalSearch).not.toHaveBeenCalled();
         expect(ListExperts).not.toHaveBeenCalled();
     });
 
@@ -146,20 +190,23 @@ describe("useProjectSearch", () => {
     });
 
     it("keeps the previous cloud hits until the next search resolves", async () => {
-        let resolveSecond: (value: unknown) => void = () => {};
-        const searchCloud = vi.fn()
-            .mockResolvedValueOnce([{
-                id: "cws_1/a.txt",
-                workspace_id: "cws_1",
-                project_path: "C:/cloud/cws_1",
-                relative_path: "a.txt",
-                title: "a.txt",
-                preview: "a",
-                match: "name",
-                tags: [],
-            }])
-            .mockImplementationOnce(() => new Promise(resolve => { resolveSecond = resolve; }));
-        (window as unknown as { go: unknown }).go = { main: { App: { SearchCloudWorkspaceContent: searchCloud } } };
+        let resolveSecond: (value: Awaited<ReturnType<typeof LocalSearch>>) => void = () => {};
+        vi.mocked(LocalSearch).mockImplementation((req) => {
+            if (req.corpus !== "cloud_workspace") return Promise.resolve(localSearchResult());
+            if (req.query === "a") {
+                return Promise.resolve(localSearchResult([{
+                    locator: "cws_1/a.txt",
+                    workspace_id: "cws_1",
+                    project_path: "C:/cloud/cws_1",
+                    relative_path: "a.txt",
+                    title: "a.txt",
+                    snippet: "a",
+                    match: "name",
+                    tags: [],
+                }]));
+            }
+            return new Promise<Awaited<ReturnType<typeof LocalSearch>>>(resolve => { resolveSecond = resolve; });
+        });
         vi.mocked(SearchTasks)
             .mockResolvedValueOnce([{ id: "t1", name: "First", project_path: "D:/t1", has_output: true } as never])
             .mockResolvedValueOnce([{ id: "t2", name: "Second", project_path: "D:/t2", has_output: true } as never]);
@@ -185,7 +232,7 @@ describe("useProjectSearch", () => {
         expect(result.current.results.map(item => item.name)).toEqual(["First"]);
 
         await act(async () => {
-            resolveSecond([]);
+            resolveSecond(localSearchResult());
         });
         await waitFor(() => expect(result.current.cloudResults).toHaveLength(0));
         expect(result.current.results.map(item => item.name)).toEqual(["Second"]);

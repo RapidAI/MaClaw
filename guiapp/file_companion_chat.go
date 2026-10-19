@@ -76,7 +76,22 @@ func (a *App) SendFileCompanionMessage(req FileCompanionTurnRequest) error {
 	if err != nil {
 		return err
 	}
+	if sentence := fileCompanionPurposeConflict(canonical, req); sentence != "" {
+		sessionID := fileCompanionSessionID(canonical)
+		userID := "file-companion:" + sessionID
+		requestID := strings.TrimSpace(req.RequestID)
+		if requestID == "" {
+			requestID = fmt.Sprintf("file-companion-%d", time.Now().UnixNano())
+		}
+		return a.fileCompanionFailNote(requestID, userID, sentence)
+	}
+	if fileCompanionWantsVideoNote(canonical, req) {
+		return a.fileCompanionRunVideoNote(path, canonical, req)
+	}
 	prompt, turn, selection, prefer := fileCompanionOutgoing(canonical, req)
+	if excerpt := a.fileCompanionLoadNoteExcerpt(canonical); excerpt != "" && !fileCompanionIsPaperPurpose(req.Purpose) {
+		turn = fileCompanionAppendNoteExcerpt(turn, excerpt)
+	}
 	paper := fileCompanionIsPaperPurpose(req.Purpose)
 	a.rememberFileCompanionSelection(path, selection, prefer)
 	a.noteFileCompanionConfigChanged()
@@ -148,7 +163,15 @@ func (a *App) SendFileCompanionMessage(req FileCompanionTurnRequest) error {
 	onStreamDone := func() {
 		streamEvents.emit("ai-assistant-stream-done", "")
 	}
-	resp := a.imHandler.HandleIMMessageWithProgressAndStream(msg, onProgress, onToken, onNewRound, onStreamDone)
+	var resp *IMAgentResponse
+	if fileCompanionTurnModelHook != nil {
+		resp = fileCompanionTurnModelHook(msg)
+	} else {
+		resp = a.imHandler.HandleIMMessageWithProgressAndStream(msg, onProgress, onToken, onNewRound, onStreamDone)
+	}
+	// The turn result is a separate event. Flush first so a token still inside
+	// the coalesce window cannot land after the finished reply.
+	streamEvents.flushTokens()
 	if resp != nil {
 		// The reply is matched against the whole turn list: the figures the
 		// question carried plus any page renders or extracts the tools made
@@ -263,6 +286,9 @@ func fileCompanionPrompt(name, ext string) string {
 		return base + "不要使用工具。如果用户要求修改这个工作簿，只返回一个完整的 JSON 对象 {\"sheets\":[...]}，不要附加说明。宿主会在工具循环之外整本替换当前文件。只讨论内容时用普通文字回答，不要返回 sheets JSON。"
 	case ".pptx":
 		return base + "不要使用工具。如果用户要求修改这个幻灯片，只返回一个完整的 JSON 对象 {\"title\":\"\",\"slides\":[...]}，不要附加说明。宿主会在工具循环之外整本替换当前文件。只讨论内容时用普通文字回答，不要返回 slides JSON。"
+	case ".mp4", ".m4v", ".webm", ".mov", ".avi", ".mkv",
+		".mp3", ".wav", ".ogg", ".oga", ".m4a", ".aac", ".flac":
+		return base + "不要使用工具。当前提示里只有文件名，没有画面、字幕或转写。用中文直接回答，不要复述系统说明，也不要写出分析步骤。不要在没有证据时编造情节、人名或数字。不要声称已经生成了笔记或 PDF。如果用户想要笔记，告诉他们点「生成笔记」或发送「生成笔记」。"
 	default:
 		return base + "不要使用工具。用户选中一段并要求翻译或改写时，只返回改写后的文字。宿主会把这段文字追加到选区之后，原文保留。"
 	}
@@ -367,6 +393,7 @@ func (a *App) ClearFileCompanionChat(path string) error {
 	if err := a.ensureFileCompanionHandler(userID, sessionID); err != nil {
 		return err
 	}
+	a.fileCompanionCancelNote(sessionID)
 	if a.imHandler != nil {
 		_, _ = a.imHandler.RequestCancelSessionForUser(userID)
 	}
@@ -631,7 +658,7 @@ func (a *App) fileCompanionHistory(sessionID string) []FileCompanionMessage {
 	inventory := append([]companionFigure(nil), a.fileCompanionFiguresBounded(a.fileCompanionSessionPath(sessionID), true)...)
 	inventory = append(inventory, a.fileCompanionTurnFigures(userID)...)
 	restore := func(entries []agent.ConversationEntry) []FileCompanionMessage {
-		return a.fileCompanionAttachPaperResult(sessionID, fileCompanionDisplayMessages(entries, inventory))
+		return a.fileCompanionAttachVideoNoteBody(sessionID, a.fileCompanionAttachPaperResult(sessionID, fileCompanionDisplayMessages(entries, inventory)))
 	}
 	if a.imHandler != nil && a.imHandler.memory != nil {
 		if entries := a.imHandler.memory.Load(userID); len(entries) > 0 {
@@ -769,6 +796,7 @@ func fileCompanionJoinReasoning(prior, next string) string {
 }
 
 func fileCompanionVisibleUserText(text string) string {
+	text = fileCompanionStripNoteExcerptText(text)
 	if idx := strings.Index(text, "\n\n选中的原文："); idx >= 0 {
 		text = text[:idx]
 	}
@@ -777,6 +805,9 @@ func fileCompanionVisibleUserText(text string) string {
 		text = text[:idx]
 	}
 	if idx := strings.Index(text, fileCompanionPaperMarker); idx >= 0 {
+		text = text[:idx]
+	}
+	if idx := strings.Index(text, fileCompanionVideoNoteMarker); idx >= 0 {
 		text = text[:idx]
 	}
 	return strings.TrimSpace(text)
@@ -869,8 +900,7 @@ func (a *App) FileCompanionUploadCloud(path string) (*MobileDocumentDraftSummary
 // ChooseFileCompanionFiles opens the system file dialog. The main process
 // starts the companion with those paths. The companion process returns them
 // so the window can open tabs. Neither path is inserted into the assistant.
-// Only files that exist are returned: the launch verb is not a document, and
-// a dialog that echoes it must not become a missing-file tab.
+// Only files that exist are returned. A missing path or a directory is not a document.
 func (a *App) ChooseFileCompanionFiles() ([]string, error) {
 	if a == nil {
 		return nil, errors.New("app unavailable")

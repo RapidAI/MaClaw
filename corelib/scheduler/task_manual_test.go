@@ -102,7 +102,7 @@ func TestScheduledRunSkipsTaskClaimedByManualRun(t *testing.T) {
 	manager.mu.RLock()
 	executor := manager.executor
 	manager.mu.RUnlock()
-	go manager.fireByID(id, executor)
+	go manager.fireByID(id, executor, time.Now())
 	time.Sleep(30 * time.Millisecond)
 	select {
 	case <-started:

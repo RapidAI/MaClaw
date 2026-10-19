@@ -4116,19 +4116,34 @@ func beginToolCallExecutionContext(cb LoopCallbacks, iteration int) ToolCallExec
 	return execution
 }
 
+// PromptToolPinner is implemented by a host that has already pinned a
+// conversation's tool list. buildToolsForModelRequest still rebuilds the
+// candidate list — host policy can change — and the pinner then decides
+// whether those bytes are allowed to replace the conversation's pin.
+type PromptToolPinner interface {
+	PinModelTools(tools []map[string]interface{}) []map[string]interface{}
+}
+
 func buildToolsForModelRequest(cb LoopCallbacks, userText string, iteration int) []map[string]interface{} {
+	var tools []map[string]interface{}
 	if renderer, ok := cb.(ModelRequestToolSurfaceRenderer); ok {
-		return FilterToolDefinitionsByAuthorizer(cb, renderer.BuildToolsForModelRequest(userText, iteration))
+		tools = renderer.BuildToolsForModelRequest(userText, iteration)
+	} else {
+		// Static compatibility callbacks do not have a reservation-bound renderer,
+		// but they still own a distinct real outbound request on every iteration,
+		// stream fallback and outer retry. Reusing the prior in-memory slice would
+		// let an old static inventory survive a host policy/configuration change and
+		// makes the next receipt prove only a stale presentation. Rebuild from the
+		// callback at each request boundary. This helper deliberately accepts no
+		// predecessor slice, so callers cannot accidentally restore cross-request
+		// surface reuse by treating cached definitions as fallback authority.
+		tools = cb.BuildTools(userText)
 	}
-	// Static compatibility callbacks do not have a reservation-bound renderer,
-	// but they still own a distinct real outbound request on every iteration,
-	// stream fallback and outer retry. Reusing the prior in-memory slice would
-	// let an old static inventory survive a host policy/configuration change and
-	// makes the next receipt prove only a stale presentation. Rebuild from the
-	// callback at each request boundary. This helper deliberately accepts no
-	// predecessor slice, so callers cannot accidentally restore cross-request
-	// surface reuse by treating cached definitions as fallback authority.
-	return FilterToolDefinitionsByAuthorizer(cb, cb.BuildTools(userText))
+	tools = FilterToolDefinitionsByAuthorizer(cb, tools)
+	if pinner, ok := cb.(PromptToolPinner); ok {
+		tools = pinner.PinModelTools(tools)
+	}
+	return tools
 }
 
 // prepareToolsForToolSurfaceReceipt applies the same provider-specific OpenAI

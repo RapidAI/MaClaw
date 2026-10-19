@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -44,8 +45,30 @@ func (a *App) notifyTaskResponseTray(resp *IMAgentResponse) {
 	} else if !a.shouldTrayNotify() {
 		return
 	}
+	// A desktop-bot balloon speaks the same sentence as the chat. Text is
+	// assistant prose and must not become a second notice. No sentence, and
+	// no real error, means no balloon.
+	sentence, desktopBot := desktopBotTraySentence(resp)
+	replyText := resp.Text
+	if desktopBot {
+		replyText = sentence
+	}
+	// A desktop run can fail and still be waiting on this person: a password,
+	// a choice, or the desktop it just handed over. That notice comes before
+	// the bare error, which would otherwise hide it. A placeholder question
+	// is not that wait: the chat already shows the error or the handoff instead.
+	waits := trayResponseWaitsForReply(resp)
+	if desktopBot {
+		// A real choice is a wait even when the question string is blank.
+		// A placeholder question, or a placeholder label, is not.
+		waits = desktopBotTrayAsk(resp)
+	}
+	personStillNeeded := desktopBot && (waits || trayResponseNeedsConfirm(resp))
 	switch {
-	case strings.TrimSpace(resp.Error) != "":
+	case strings.TrimSpace(resp.Error) != "" && sentence == "" && !personStillNeeded:
+		if desktopBot && desktopbot.Filler(resp.Error) {
+			return
+		}
 		if FlashAndBeep != nil {
 			FlashAndBeep()
 		}
@@ -54,13 +77,16 @@ func (a *App) notifyTaskResponseTray(resp *IMAgentResponse) {
 			msg = "任务出现异常，请返回窗口查看"
 		}
 		ShowNotification("任务异常", msg, 3)
-	case trayResponseWaitsForReply(resp):
+	case waits:
 		if FlashAndBeep != nil {
 			FlashAndBeep()
 		}
 		msg := trayBalloonBody(resp.AskUserQuestion)
+		if desktopBot && desktopbot.Filler(resp.AskUserQuestion) {
+			msg = ""
+		}
 		if msg == "" {
-			msg = trayBalloonBody(resp.Text)
+			msg = trayBalloonBody(replyText)
 		}
 		if msg == "" {
 			if secret := strings.TrimSpace(resp.AskUserSecretName); secret != "" {
@@ -80,14 +106,17 @@ func (a *App) notifyTaskResponseTray(resp *IMAgentResponse) {
 			msg = trayBalloonBody(resp.Confirmation.Summary)
 		}
 		if msg == "" {
-			msg = trayBalloonBody(resp.Text)
+			msg = trayBalloonBody(replyText)
 		}
 		if msg == "" {
 			msg = "任务等待确认，请返回窗口处理"
 		}
 		ShowNotification("需要确认", msg, 2)
 	default:
-		msg := trayBalloonBody(resp.Text)
+		if desktopBot && sentence == "" {
+			return
+		}
+		msg := trayBalloonBody(replyText)
 		title := "任务完成"
 		if name := trayTaskCompletionName(resp); name != "" {
 			title = trayTaskCompletedMessage(name)
@@ -100,6 +129,39 @@ func (a *App) notifyTaskResponseTray(resp *IMAgentResponse) {
 		}
 		ShowNotification(title, msg, 1)
 	}
+}
+
+// desktopBotTraySentence is the send_to_user line a desktop-bot balloon may
+// show. Other chats are unchanged. A filler or a missing call is not a sentence.
+func desktopBotTraySentence(resp *IMAgentResponse) (sentence string, desktop bool) {
+	if resp == nil || !strings.HasPrefix(strings.TrimSpace(resp.RequestID), "desktop-bot-") {
+		return "", false
+	}
+	visible := desktopbot.Visible(desktopbot.Turn{
+		SendToUser: resp.SendToUser,
+		Error:      resp.Error,
+	})
+	if visible.Bubble && !visible.Failed {
+		return visible.Sentence, true
+	}
+	return "", true
+}
+
+// desktopBotTrayAsk is a question this person can answer. A placeholder such
+// as 无变化 is not one, so it must not hide the error or the handoff.
+// A secret name or a real choice still is, even when the question is that placeholder.
+func desktopBotTrayAsk(resp *IMAgentResponse) bool {
+	if resp == nil {
+		return false
+	}
+	if strings.TrimSpace(resp.AskUserSecretName) != "" {
+		return true
+	}
+	if desktopAskHasOptions(resp.AskUserOptionsJSON) {
+		return true
+	}
+	question := strings.TrimSpace(resp.AskUserQuestion)
+	return question != "" && !desktopbot.Filler(question)
 }
 
 // trayResponseIsCompletion is a finished turn, not an error or a pause for the person.

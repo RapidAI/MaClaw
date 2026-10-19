@@ -70,7 +70,7 @@ func TestPlanPhaseIsMessageMetadataAndAttentionStaysWithTheBot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(bodies[0], `"bot_phase":"plan"`) || strings.Contains(bodies[0], "s3cret-value") {
+	if !strings.Contains(bodies[0], `"bot_phase":"plan"`) || strings.Contains(bodies[0], "s3cret-value") || strings.Contains(bodies[0], "computer_helper") {
 		t.Fatalf("plan body=%s", bodies[0])
 	}
 	if reply.Handoff || reply.AttentionReason != "" || reply.AskUserSecretName != "SITE_PASSWORD" || reply.AskUserInputType != "secret" {
@@ -84,7 +84,7 @@ func TestPlanPhaseIsMessageMetadataAndAttentionStaysWithTheBot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(bodies[1], `"bot_phase":"execute"`) || !paid.Handoff || paid.AttentionReason != "payment_confirm" {
+	if !strings.Contains(bodies[1], `"bot_phase":"execute"`) || !strings.Contains(bodies[1], `"computer_helper":"1"`) || !paid.Handoff || paid.AttentionReason != "payment_confirm" {
 		t.Fatalf("execute reply=%#v body=%s", paid, bodies[1])
 	}
 	if svc.DesktopAttention("tenant-a", "alice", "bot_alice") != "payment_confirm" {

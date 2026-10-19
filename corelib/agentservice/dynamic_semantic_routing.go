@@ -1211,9 +1211,10 @@ func (s *coreDynamicSemanticSurface) withSpentBudgetNote(result coretool.Selecti
 	return coretool.ApplySpentBudgetNote(result, s.plan, selectionID, s.issued, s.grants)
 }
 
-// listNextSettledIterativeSibling appends one local file write or remote
-// command after a settled attempt, when the published wave has no sibling
-// still waiting to be issued. The following Definitions call issues it.
+// listNextSettledIterativeSibling appends one iterative sibling after a
+// settled attempt, when the published wave has no sibling still waiting to
+// be issued: a local file write, a remote command, or an installed MCP call.
+// The following Definitions call issues it.
 // Unknown and awaiting-receipt outcomes stay put: the command may still
 // be running. A companion-only family stays at the wave it was given.
 func (s *coreDynamicSemanticSurface) listNextSettledIterativeSibling(selectionID string, result coretool.SelectionExecutionResult) {

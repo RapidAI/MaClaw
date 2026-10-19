@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { KnowledgeSearch, ListExperts, ListMobileLibraryItems, SearchTasks } from "../../../wailsjs/go/main/App";
+import { ListExperts, ListMobileLibraryItems, LocalSearch, SearchTasks } from "../../../wailsjs/go/main/App";
 import { formatProjectSearchTime } from "./projectSearchTime";
 import { isVisibleTaskRow } from "./codingTaskMode";
 import { commitProjectSearchBatch, refreshProjectSearchCaches, resetProjectSearchOutputs, type ExpertCache, type LibraryCache } from "./projectSearchCaches";
 import type { ProjectSearchItem } from "./projectSearchTypes";
-import { HEADER_SEARCH_CLOUD_LIMIT, searchCloudWorkspaceContent, type HeaderCloudWorkspaceHit } from "./cloudWorkspaceContentSearch";
+import { HEADER_SEARCH_CLOUD_LIMIT, type HeaderCloudWorkspaceHit } from "./cloudWorkspaceContentSearch";
 import { HEADER_SEARCH_DATA_DIR_LIMIT, searchDataDirectoryWorkspaces, type HeaderDataDirectoryHit } from "./dataDirectoryWorkspaceSearch";
+import { headerCloudHitsFromLocalSearch, knowledgePayloadsFromLocalSearch } from "./localSearchHeader";
 import { HEADER_SEARCH_TASK_LIMIT, headerLibrarySearchJobs, type HeaderExpertSearchHit, type HeaderFileSearchHit, type HeaderKnowledgeSearchHit } from "./unifiedHeaderSearch";
 
 export type { ProjectSearchItem } from "./projectSearchTypes";
@@ -44,10 +45,22 @@ export function useProjectSearch(lang: string) {
             .catch(() => [] as ProjectSearchItem[]);
         const jobs = headerLibrarySearchJobs(queryText, {
             listMobileLibraryItems: () => libraryItems as Promise<unknown[] | null | undefined>,
-            knowledgeSearch: (opts) => KnowledgeSearch(opts),
+            knowledgeSearch: (opts) => LocalSearch({
+                corpus: "knowledge",
+                query: opts.query,
+                retrieval: "auto",
+                limit: opts.limit,
+            }).then((result) => knowledgePayloadsFromLocalSearch(result)),
             listExperts: () => expertList,
         });
-        const cloudPromise = searchCloudWorkspaceContent(queryText, HEADER_SEARCH_CLOUD_LIMIT).catch(() => [] as HeaderCloudWorkspaceHit[]);
+        const cloudPromise = (queryText
+            ? LocalSearch({
+                corpus: "cloud_workspace",
+                query: queryText,
+                limit: HEADER_SEARCH_CLOUD_LIMIT,
+            }).then((result) => headerCloudHitsFromLocalSearch(result))
+            : Promise.resolve([] as HeaderCloudWorkspaceHit[])
+        ).catch(() => [] as HeaderCloudWorkspaceHit[]);
         const dataDirPromise = searchDataDirectoryWorkspaces(queryText, HEADER_SEARCH_DATA_DIR_LIMIT).catch(() => [] as HeaderDataDirectoryHit[]);
         // Commit every section with the header together. A fast task response must
         // not replace the list while cloud or knowledge hits still belong to the previous query.

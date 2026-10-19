@@ -2021,11 +2021,75 @@ func estimateLLMQuoteInputTokens(body map[string]any) int64 {
 	if len(body) == 0 {
 		return 0
 	}
-	payload, err := json.Marshal(body)
+	// Picture pages travel as data URLs. Marshaling those bytes and treating
+	// them as prompt text makes a short question look like a huge prompt, so
+	// admission can refuse it or crush the output ceiling. Image blocks are
+	// not text. A text-only body is marshaled as the caller built it.
+	estimateBody := body
+	if llmpool.RequestHasVisionContent(body) {
+		if stripped, ok := llmQuoteBodyWithoutImagePayloads(body); ok {
+			estimateBody = stripped
+		}
+	}
+	payload, err := json.Marshal(estimateBody)
 	if err != nil {
 		return 0
 	}
 	return int64(corelib.EstimateTextTokens(string(payload)))
+}
+
+// llmQuoteBodyWithoutImagePayloads copies body and drops picture parts.
+// The forwarded request keeps its images; only the credit estimate changes.
+func llmQuoteBodyWithoutImagePayloads(body map[string]any) (map[string]any, bool) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, false
+	}
+	var copied map[string]any
+	if err := json.Unmarshal(payload, &copied); err != nil {
+		return nil, false
+	}
+	stripLLMQuoteImagePayloads(copied)
+	return copied, true
+}
+
+func stripLLMQuoteImagePayloads(v any) any {
+	switch typed := v.(type) {
+	case map[string]any:
+		for key, item := range typed {
+			if key == "image_url" || llmQuoteVisionBlock(item) {
+				delete(typed, key)
+				continue
+			}
+			typed[key] = stripLLMQuoteImagePayloads(item)
+		}
+		return typed
+	case []any:
+		dst := make([]any, 0, len(typed))
+		for _, item := range typed {
+			if llmQuoteVisionBlock(item) {
+				continue
+			}
+			dst = append(dst, stripLLMQuoteImagePayloads(item))
+		}
+		return dst
+	default:
+		return v
+	}
+}
+
+func llmQuoteVisionBlock(v any) bool {
+	block, ok := v.(map[string]any)
+	if !ok {
+		return false
+	}
+	kind, _ := block["type"].(string)
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "image_url", "image", "input_image":
+		return true
+	default:
+		return false
+	}
 }
 
 // llmQuoteOutputTokenLimit is the largest output cap the forwarded body can

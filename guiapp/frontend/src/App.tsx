@@ -1,4 +1,4 @@
-import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckinHubLLMService, ClampMaximizedWindowToWorkArea, SetMainWindowScreenPosition, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, SetTaskbarBadgeCount, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
+import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckinHubLLMService, ClampMaximizedWindowToWorkArea, SetMainWindowScreenPosition, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontFamily, GetChatFontSize, GetCodingFontFamily, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, SetTaskbarBadgeCount, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsEmit, EventsOff, EventsOn, Quit, WindowGetPosition, WindowGetSize, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowSetSize, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
 import { DesktopBotAccess, PullDesktopBotDeliveries } from '../wailsjs/go/main/App';
 import { beginBotAccessRead, botOpenDecision, isCurrentBotAccessRead, navigationEpoch, publishBotAccess } from './components/bots/botOpenGate';
@@ -132,6 +132,7 @@ import { normalizeCodingTaskLaunch, type CodingTaskLaunch } from './components/a
 import { saveRemoteSSHPassword } from './components/ai/welcomeTaskMemory';
 import { getAssistantDarkScheme, readStoredAssistantDarkSchemeId, writeStoredAssistantDarkSchemeId, type AssistantDarkSchemeId } from './components/ai/assistantDarkSchemes';
 import { getAssistantLightScheme, readStoredAssistantLightSchemeId, writeStoredAssistantLightSchemeId, type AssistantLightSchemeId } from './components/ai/assistantLightSchemes';
+import { chatFontFamilySaveQueue, chatFontSizeSaveQueue, clampChatFontSize, codingFontFamilySaveQueue, decideConfigChatFontSize, decideConfigFontFamily, normalizeAssistantFontId, serialNewestHasStarted, snapshotConfirmsDraft } from './components/ai/assistantFonts';
 import { useAIAssistant, emitDesktopPetState } from './components/ai/useAIAssistant';
 import { START_VOICE_INPUT_EVENT } from './components/ai/useVoiceInput';
 import { useDialog } from './components/CustomDialog';
@@ -642,6 +643,36 @@ function App() {
     const [uiZoom, setUiZoom] = useState<number>(1);
     const [uiZoomAuto, setUiZoomAuto] = useState<boolean>(true);
     const [chatFontSize, setChatFontSize] = useState<number>(14);
+    const [chatFontFamily, setChatFontFamily] = useState<string>("system");
+    const [codingFontFamily, setCodingFontFamily] = useState<string>("system");
+    // Startup hydration reads are tagged with these counters. A user choice or a
+    // config-changed payload bumps the matching counter so an earlier read cannot
+    // overwrite that newer value. The config-load retry closes the loading shell
+    // without waiting for GetChatFont*, and a SaveConfig lock can hold the read
+    // past the click.
+    const assistantFontEpochRef = useRef({ size: 0, chat: 0, coding: 0 });
+    // Face last applied to the transcript. An omitted family on a snapshot is
+    // the stored default; this says whether that default would change the screen.
+    const assistantFontShownRef = useRef({ chat: "system", coding: "system" });
+    // Size the slider has shown but whose save echo has not been accepted yet.
+    // A full config snapshot still carries the previous size and must not move the thumb.
+    const chatFontSizeDraftRef = useRef<number | null>(null);
+    const chatFontFamilyDraftRef = useRef<string | null>(null);
+    const codingFontFamilyDraftRef = useRef<string | null>(null);
+    const selectChatFontSize = useCallback((value: number | ((current: number) => number)) => {
+        assistantFontEpochRef.current.size += 1;
+        setChatFontSize(value);
+    }, []);
+    const selectChatFontFamily = useCallback((fontId: string) => {
+        assistantFontEpochRef.current.chat += 1;
+        assistantFontShownRef.current.chat = fontId;
+        setChatFontFamily(fontId);
+    }, []);
+    const selectCodingFontFamily = useCallback((fontId: string) => {
+        assistantFontEpochRef.current.coding += 1;
+        assistantFontShownRef.current.coding = fontId;
+        setCodingFontFamily(fontId);
+    }, []);
     const [pendingVEOpen, setPendingVEOpen] = useState<VirtualEmployeeEntry | null>(null);
     const [pendingHistoryDiscussionOpen, setPendingHistoryDiscussionOpen] = useState<HistoryDiscussionSummary | null>(null);
     const [pendingProjectTabOpen, setPendingProjectTabOpen] = useState<CodingTaskLaunch | null>(null);
@@ -2332,6 +2363,54 @@ function App() {
             console.error("Failed to load Python environments:", err);
         });
 
+        // Font size and both assistant faces. The retry below must call this too:
+        // the first LoadConfigForUI can lose a race with SaveConfig, and a recovered
+        // config used to leave the transcript on the default face.
+        // Tag the reads with the epoch from when this effect started. The same tag
+        // covers the retry, so a choice made while the shell is already open is not
+        // replaced by the recovered snapshot or by GetChatFont* resolving later.
+        const fontHydrationEpoch = {
+            size: assistantFontEpochRef.current.size,
+            chat: assistantFontEpochRef.current.chat,
+            coding: assistantFontEpochRef.current.coding,
+        };
+        const applyStartupAssistantFonts = (loaded: { chat_font_size?: number; chat_font_family?: string; coding_font_family?: string } | null | undefined) => {
+            // The retry closes the shell without waiting for GetChatFontSize.
+            // Apply the size already on this config, clamped the same way as
+            // GetChatFontSize, so the transcript does not stay at 14 until that read returns.
+            if (typeof loaded?.chat_font_size === "number" && loaded.chat_font_size >= 12 && assistantFontEpochRef.current.size === fontHydrationEpoch.size) {
+                setChatFontSize(clampChatFontSize(loaded.chat_font_size));
+            }
+            callBackend(() => GetChatFontSize()).then((s) => {
+                if (assistantFontEpochRef.current.size !== fontHydrationEpoch.size) return;
+                if (s >= 12) setChatFontSize(clampChatFontSize(s));
+            }).catch(() => {});
+            if (typeof loaded?.chat_font_family === "string" && assistantFontEpochRef.current.chat === fontHydrationEpoch.chat) {
+                const id = normalizeAssistantFontId("conversation", loaded.chat_font_family);
+                assistantFontShownRef.current.chat = id;
+                setChatFontFamily(id);
+            }
+            if (typeof loaded?.coding_font_family === "string" && assistantFontEpochRef.current.coding === fontHydrationEpoch.coding) {
+                const id = normalizeAssistantFontId("coding", loaded.coding_font_family);
+                assistantFontShownRef.current.coding = id;
+                setCodingFontFamily(id);
+            }
+            callBackend(() => GetChatFontFamily()).then((id) => {
+                if (assistantFontEpochRef.current.chat !== fontHydrationEpoch.chat) return;
+                if (typeof id !== "string") return;
+                const normalized = normalizeAssistantFontId("conversation", id);
+                assistantFontShownRef.current.chat = normalized;
+                setChatFontFamily(normalized);
+            }).catch(() => {});
+            callBackend(() => GetCodingFontFamily()).then((id) => {
+                if (assistantFontEpochRef.current.coding !== fontHydrationEpoch.coding) return;
+                if (typeof id !== "string") return;
+                const normalized = normalizeAssistantFontId("coding", id);
+                assistantFontShownRef.current.coding = normalized;
+                setCodingFontFamily(normalized);
+            }).catch(() => {});
+        };
+
         // Config Logic — LoadConfigForUI omits NLSkills (skills come from ListNLSkills).
         callBackend(() => LoadConfigForUI()).then((cfg) => {
             logStartupTrace('config-loaded-ok', { hasConfig: !!cfg, keys: cfg ? Object.keys(cfg).length : 0 });
@@ -2353,11 +2432,7 @@ function App() {
                     disableAutoTransform: disableAutoUIScaleTransformRef.current,
                 });
             });
-            callBackend(() => GetChatFontSize()).then((s) => {
-                if (s >= 12) {
-                    setChatFontSize(s);
-                }
-            }).catch(() => {});
+            applyStartupAssistantFonts(cfg);
 
             if (cfg && cfg.language) {
                 setLang(cfg.language);
@@ -2414,6 +2489,7 @@ function App() {
                             disableAutoTransform: disableAutoUIScaleTransformRef.current,
                         });
                     });
+                    applyStartupAssistantFonts(cfg);
                     if (cfg && cfg.language) {
                         setLang(cfg.language);
                         void callBackend(() => SetLanguage(cfg.language));
@@ -2453,12 +2529,65 @@ function App() {
                 }).catch(() => {});
             }
             if (typeof cfg.chat_font_size === 'number' && cfg.chat_font_size >= 12) {
-                setChatFontSize(cfg.chat_font_size);
-            } else {
-                callBackend(() => GetChatFontSize()).then((s) => {
-                    if (s >= 12) {
-                        setChatFontSize(s);
+                const decision = decideConfigChatFontSize(cfg.chat_font_size, chatFontSizeDraftRef.current);
+                if (decision.action === 'apply') {
+                    if (snapshotConfirmsDraft(decision.size, chatFontSizeDraftRef.current, serialNewestHasStarted(chatFontSizeSaveQueue))) {
+                        chatFontSizeDraftRef.current = null;
                     }
+                    assistantFontEpochRef.current.size += 1;
+                    setChatFontSize(decision.size);
+                }
+            } else if (chatFontSizeDraftRef.current == null) {
+                const sizeEpoch = assistantFontEpochRef.current.size + 1;
+                assistantFontEpochRef.current.size = sizeEpoch;
+                callBackend(() => GetChatFontSize()).then((s) => {
+                    if (assistantFontEpochRef.current.size !== sizeEpoch) return;
+                    if (chatFontSizeDraftRef.current != null) return;
+                    if (s >= 12) {
+                        setChatFontSize(clampChatFontSize(s));
+                    }
+                }).catch(() => {});
+            }
+            const chatFamily = decideConfigFontFamily("conversation", cfg.chat_font_family, chatFontFamilyDraftRef.current, assistantFontShownRef.current.chat);
+            if (chatFamily.action === "apply") {
+                if (snapshotConfirmsDraft(chatFamily.id, chatFontFamilyDraftRef.current, serialNewestHasStarted(chatFontFamilySaveQueue))) {
+                    chatFontFamilyDraftRef.current = null;
+                }
+                assistantFontEpochRef.current.chat += 1;
+                assistantFontShownRef.current.chat = chatFamily.id;
+                setChatFontFamily(chatFamily.id);
+            } else if (chatFamily.action === "read") {
+                // The snapshot omitted the key. Read disk instead of leaving a
+                // custom face on screen, and do not invent system if that read fails.
+                const chatEpoch = assistantFontEpochRef.current.chat + 1;
+                assistantFontEpochRef.current.chat = chatEpoch;
+                callBackend(() => GetChatFontFamily()).then((raw) => {
+                    if (assistantFontEpochRef.current.chat !== chatEpoch) return;
+                    if (chatFontFamilyDraftRef.current != null) return;
+                    if (typeof raw !== "string") return;
+                    const id = normalizeAssistantFontId("conversation", raw);
+                    assistantFontShownRef.current.chat = id;
+                    setChatFontFamily(id);
+                }).catch(() => {});
+            }
+            const codingFamily = decideConfigFontFamily("coding", cfg.coding_font_family, codingFontFamilyDraftRef.current, assistantFontShownRef.current.coding);
+            if (codingFamily.action === "apply") {
+                if (snapshotConfirmsDraft(codingFamily.id, codingFontFamilyDraftRef.current, serialNewestHasStarted(codingFontFamilySaveQueue))) {
+                    codingFontFamilyDraftRef.current = null;
+                }
+                assistantFontEpochRef.current.coding += 1;
+                assistantFontShownRef.current.coding = codingFamily.id;
+                setCodingFontFamily(codingFamily.id);
+            } else if (codingFamily.action === "read") {
+                const codingEpoch = assistantFontEpochRef.current.coding + 1;
+                assistantFontEpochRef.current.coding = codingEpoch;
+                callBackend(() => GetCodingFontFamily()).then((raw) => {
+                    if (assistantFontEpochRef.current.coding !== codingEpoch) return;
+                    if (codingFontFamilyDraftRef.current != null) return;
+                    if (typeof raw !== "string") return;
+                    const id = normalizeAssistantFontId("coding", raw);
+                    assistantFontShownRef.current.coding = id;
+                    setCodingFontFamily(id);
                 }).catch(() => {});
             }
             const tool = normalizeToolTab(cfg.active_tool);
@@ -2757,7 +2886,7 @@ function App() {
 
     useEffect(() => {
         const openExpertFromSearch = (event: Event) => {
-            const detail = (event as CustomEvent<{ expert?: ExpertDefinition; initialMessage?: string; latexDocument?: { relativePath?: string }; projectPath?: string }>).detail;
+            const detail = (event as CustomEvent<{ expert?: ExpertDefinition; initialMessage?: string; latexDocument?: { relativePath?: string }; projectPath?: string; backgroundLaunch?: boolean }>).detail;
             const expert = detail?.expert;
             // Narrow before use: reading `expert.id` in the guard also proves it is defined.
             if (!expert || !String(expert.id || '').trim()) return;
@@ -2769,6 +2898,7 @@ function App() {
                 ...(initialMessage ? { initialMessage } : {}),
                 ...(relativePath ? { latexDocument: { relativePath } } : {}),
                 ...(projectPath ? { projectPath } : {}),
+                ...(detail?.backgroundLaunch === true ? { backgroundLaunch: true } : {}),
             });
             setNavTabNow('ai');
         };
@@ -3274,6 +3404,7 @@ function App() {
                 warning: String(detail?.warning || '').trim() || undefined,
                 noWorkflowInterception: detail?.noWorkflowInterception === true,
                 deliverInitialMessage: detail?.deliverInitialMessage === true,
+                ...(detail?.backgroundLaunch === true ? { backgroundLaunch: true } : {}),
             });
         };
         window.addEventListener(EVENT_OPEN_TASK_LAUNCH, openTaskLaunch);
@@ -5655,6 +5786,8 @@ ${instruction}`;
                             brandId={brandInfo?.id}
                             brandDisplayNameCN={brandInfo?.displayNameCN}
                             chatFontSize={chatFontSize}
+                            chatFontFamily={chatFontFamily}
+                            codingFontFamily={codingFontFamily}
                             themeMode={aiThemeMode}
                             darkSchemeId={aiDarkSchemeId}
                             lightSchemeId={aiLightSchemeId}
@@ -5835,7 +5968,14 @@ ${instruction}`;
                             setUiZoomAuto={setUiZoomAuto}
                             disableAutoUIScaleTransform={disableAutoUIScaleTransform}
                             chatFontSize={chatFontSize}
-                            setChatFontSize={setChatFontSize}
+                            setChatFontSize={selectChatFontSize}
+                            chatFontSizeDraftRef={chatFontSizeDraftRef}
+                            chatFontFamilyDraftRef={chatFontFamilyDraftRef}
+                            codingFontFamilyDraftRef={codingFontFamilyDraftRef}
+                            chatFontFamily={chatFontFamily}
+                            setChatFontFamily={selectChatFontFamily}
+                            codingFontFamily={codingFontFamily}
+                            setCodingFontFamily={selectCodingFontFamily}
                             darkSchemeId={aiDarkSchemeId}
                             setDarkSchemeId={handleAIDarkSchemeChange}
                             lightSchemeId={aiLightSchemeId}
@@ -5881,7 +6021,8 @@ ${instruction}`;
                             lang={lang}
                             t={t}
                             chatFontSize={chatFontSize}
-                            setChatFontSize={setChatFontSize}
+                            setChatFontSize={selectChatFontSize}
+                            chatFontSizeDraftRef={chatFontSizeDraftRef}
                         />
                     )}
                     {isToolTab(navTab) && (

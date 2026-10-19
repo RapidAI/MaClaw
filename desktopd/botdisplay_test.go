@@ -69,7 +69,9 @@ func TestBotSessionUsesTheBotKeyAndTheOwnersContainer(t *testing.T) {
 	if !strings.Contains(joined, "exec maclaw-desktop-"+owner+" python3 /desktop_supervisor.py ensure "+botKey) {
 		t.Fatalf("bot ensure not in the owner's container:\n%s", joined)
 	}
-	if session.Display != ":23" || session.CDP != "http://desktop:"+strings.Repeat("b", 32)+"@docker.example:40000" || !strings.Contains(session.Novnc, ":40001/vnc.html") {
+	token := strings.Repeat("b", 32)
+	wantCDP := "https://desktop:" + token + "@docker.example/v1/desktops/tunnel/" + owner + "/cdp"
+	if session.Display != ":23" || session.CDP != wantCDP || !strings.Contains(session.Novnc, "/v1/desktops/tunnel/"+owner+"/vnc/vnc.html") || strings.Contains(session.CDP, ":40000") || strings.Contains(session.Novnc, ":40001") {
 		t.Fatalf("session %#v", session)
 	}
 }
@@ -89,8 +91,15 @@ func TestBotRequestsUseTheServerDerivedDisplay(t *testing.T) {
 	if rec := post("/v1/desktops/app", `{"tenant_id":"tenant","user_id":"alice","bot_id":"bot_1","display":":20","args":["key","Return"]}`); rec.Code != 200 {
 		t.Fatalf("app %d %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(strings.Join(calls, "\n"), "exec -e DISPLAY=:23 maclaw-desktop-") {
-		t.Fatalf("app did not run on the bot display:\n%s", strings.Join(calls, "\n"))
+	var appCall string
+	for _, call := range calls {
+		if strings.Contains(call, " /desktop_supervisor.py command ") {
+			appCall = call
+		}
+	}
+	app := commandPayload(t, strings.Fields(appCall))
+	if app.Op != "click" || app.Display != ":23" || strings.Contains(appCall, "DISPLAY=") {
+		t.Fatalf("app did not run on the bot display: %+v\n%s", app, appCall)
 	}
 	// Bot control ops get the derived key; a client key is dropped.
 	calls = nil
@@ -102,10 +111,10 @@ func TestBotRequestsUseTheServerDerivedDisplay(t *testing.T) {
 		t.Fatalf("calls %v", calls)
 	}
 	last := calls[len(calls)-1]
-	parts := strings.Fields(last)
-	raw, _ := base64Decode(parts[len(parts)-1])
-	if !strings.Contains(raw, `"key":"`+botKey+`"`) || strings.Contains(raw, strings.Repeat("c", 32)) {
-		t.Fatalf("ctl request %s", raw)
+	ctlReq := commandPayload(t, strings.Fields(last))
+	raw, err := base64.StdEncoding.DecodeString(ctlReq.Body)
+	if err != nil || ctlReq.Display != ":23" || !strings.Contains(string(raw), `"key":"`+botKey+`"`) || strings.Contains(string(raw), strings.Repeat("c", 32)) {
+		t.Fatalf("ctl request %s err=%v", raw, err)
 	}
 	// Without a bot, bot ops are refused and the old display rules hold.
 	if rec := post("/v1/desktops/ctl", `{"tenant_id":"tenant","user_id":"alice","request":{"op":"bot_state"}}`); rec.Code != 400 {

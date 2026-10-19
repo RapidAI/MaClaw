@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findRolePrefixForDisplay, isBrowserEchoFieldLabel, stripRolePrefixForDisplay, truncateRolePrefixForDisplay } from "../rolePrefixDisplay";
+import { appendRolePrefixStrip, createRolePrefixStreamCursor, findRolePrefixForDisplay, isBrowserEchoFieldLabel, stripRolePrefixForDisplay, truncateRolePrefixForDisplay } from "../rolePrefixDisplay";
 
 describe("rolePrefixDisplay", () => {
     it("matches only the Browser echo chip label", () => {
@@ -56,5 +56,52 @@ describe("rolePrefixDisplay", () => {
         const content = "The Browser: tool already closed cleanly.";
 
         expect(stripRolePrefixForDisplay(content)).toBe(content);
+    });
+});
+
+describe("appendRolePrefixStrip", () => {
+    const samples = [
+        "The Browser: tool already closed cleanly.",
+        "有效回答。\n\nBrowser: 重复回答。",
+        "```text\nBrowser: connected\n```",
+        "```text\nBrowser: connected\n```\nTool: after the fence",
+        "> Browser：重复回答。",
+        "1. Tool: 调用回显。",
+        "Hello Tool: stay",
+        "Browser: hidden tool echo",
+        "thinking\nBrowser: hidden tool echo",
+        "Brow" + "ser: visible",
+        "hello\rTool: after cr",
+        "``" + "`\nTool: inside",
+        "```\ncode\n```\nTool: outside",
+        "Toolbox is not a prefix\nstill prose",
+    ];
+
+    it("matches the full scan for keep-body and truncate, one chunk at a time", () => {
+        for (const sample of samples) {
+            for (const step of [1, 3, 8]) {
+                const cursor = createRolePrefixStreamCursor("keep-body");
+                let built = "";
+                while (built.length < sample.length) {
+                    built = sample.slice(0, Math.min(sample.length, built.length + step));
+                    expect(appendRolePrefixStrip(cursor, built)).toBe(stripRolePrefixForDisplay(built));
+                }
+                const truncated = createRolePrefixStreamCursor("truncate");
+                built = "";
+                while (built.length < sample.length) {
+                    built = sample.slice(0, Math.min(sample.length, built.length + step));
+                    expect(appendRolePrefixStrip(truncated, built)).toBe(truncateRolePrefixForDisplay(built));
+                }
+            }
+        }
+    });
+
+    it("keeps a leading body growing after Browser and drops a later Tool tail", () => {
+        const cursor = createRolePrefixStreamCursor("keep-body");
+        expect(appendRolePrefixStrip(cursor, "Browser: hello")).toBe("hello");
+        expect(appendRolePrefixStrip(cursor, "Browser: hello world")).toBe("hello world");
+        const cut = createRolePrefixStreamCursor("keep-body");
+        expect(appendRolePrefixStrip(cut, "answer\nTool: echo")).toBe("answer");
+        expect(appendRolePrefixStrip(cut, "answer\nTool: echo more")).toBe("answer");
     });
 });

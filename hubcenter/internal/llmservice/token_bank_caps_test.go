@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
@@ -73,6 +74,59 @@ func TestTokenBankRequestCapsEstimateAndOutput(t *testing.T) {
 	}
 	if plainBody["max_tokens"] != 100 {
 		t.Fatalf("non-member max_tokens changed to %#v", plainBody["max_tokens"])
+	}
+}
+
+func TestTokenBankInputCapIgnoresPictureBlocks(t *testing.T) {
+	picture := strings.Repeat("A", 4000)
+	imageURL := map[string]any{
+		"type": "image_url",
+		"image_url": map[string]any{
+			"url": "data:image/jpeg;base64," + picture,
+		},
+	}
+	anthropic := map[string]any{
+		"type": "Image",
+		"source": map[string]any{
+			"type":       "base64",
+			"media_type": "image/jpeg",
+			"data":       picture,
+		},
+	}
+	responses := map[string]any{
+		"type":      "input_image",
+		"image_url": "data:image/jpeg;base64," + picture,
+	}
+	bare := map[string]any{"image_url": map[string]any{"url": "data:image/png;base64," + picture}}
+	body := map[string]any{
+		"messages": []any{map[string]any{
+			"content": []any{"abcde", imageURL, anthropic, responses, bare},
+		}},
+	}
+	if got := estimateTokenBankInputTokens(body); got != 2 {
+		t.Fatalf("picture pages estimated %d tokens, want 2 from the text alone", got)
+	}
+	provider := &llmpool.ProviderConfig{
+		ID:                       TokenBankMemberID("share-1", "gpt"),
+		MaxInputTokensPerRequest: 2,
+	}
+	if err := applyTokenBankRequestCaps(provider, body); err != nil {
+		t.Fatal(err)
+	}
+
+	over := map[string]any{
+		"messages": []any{map[string]any{
+			"content": []any{
+				map[string]any{"type": "text", "text": "abcdefghi"},
+				imageURL,
+			},
+		}},
+	}
+	// "text" (4) + "abcdefghi" (9) = 13 runes -> ceil(13/4) = 4. The data URL stays out.
+	err := applyTokenBankRequestCaps(provider, over)
+	var cap *TokenBankRequestCapError
+	if !errors.As(err, &cap) || cap.Estimate != 4 || cap.Limit != 2 {
+		t.Fatalf("text beside a picture = %v, want estimate 4 limit 2", err)
 	}
 }
 

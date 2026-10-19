@@ -19,6 +19,33 @@ const (
 	recallStrengthBoost = 1.0
 )
 
+const (
+	// NoteHalfLife is the desktop-bot note curve. It is not decayLambda.
+	// Profile and log do not use it. A note that is not written or searched
+	// for NoteForgetAfter is deleted from the hot copy and notes.md.
+	NoteHalfLife    = 6 * time.Hour
+	NoteForgetAfter = 24 * time.Hour
+)
+
+// NoteStrength is exp(-ln2 * hours / 6). At one half-life it is 0.5.
+// It does not read decayLambda.
+func NoteStrength(lastTouch, now time.Time) float64 {
+	if lastTouch.IsZero() || !now.After(lastTouch) {
+		return 1
+	}
+	hours := now.Sub(lastTouch).Hours()
+	return math.Exp(-math.Ln2 * hours / NoteHalfLife.Hours())
+}
+
+// NoteForgotten reports whether a note has gone 24 hours without a write or
+// a search hit. Profile and log are never forgotten by this rule.
+func NoteForgotten(lastTouch, now time.Time) bool {
+	if lastTouch.IsZero() {
+		return false
+	}
+	return !now.Before(lastTouch.Add(NoteForgetAfter))
+}
+
 // decayStrength computes the current strength of an entry using the
 // Ebbinghaus forgetting curve: S(t) = S₀ × exp(-λ × hours).
 func decayStrength(e Entry, now time.Time) float64 {

@@ -1,0 +1,7 @@
+{
+  "id": "event_quiet",
+  "origin": "event",
+  "prose": "无变化",
+  "expect_count": 0,
+  "forbid": ["无变化"]
+}

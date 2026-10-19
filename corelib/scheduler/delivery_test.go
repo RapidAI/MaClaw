@@ -87,8 +87,11 @@ func TestShouldDeliver(t *testing.T) {
 	if !d.ShouldDeliver(errors.New("x"), "") {
 		t.Fatal("always should deliver on error even without body")
 	}
-	if !d.ShouldDeliver(nil, "") {
-		t.Fatal("always should deliver even when result is empty")
+	if d.ShouldDeliver(nil, "") {
+		t.Fatal("always should stay quiet when the result is empty")
+	}
+	if d.ShouldDeliver(nil, "无变化") || d.ShouldDeliver(nil, "(无输出)") {
+		t.Fatal("always should stay quiet for a filler body")
 	}
 	if !d.ShouldDeliver(nil, "ok") {
 		t.Fatal("always should deliver on success with body")

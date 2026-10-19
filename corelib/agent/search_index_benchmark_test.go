@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func BenchmarkContentTrigramsBytes(b *testing.B) {
@@ -39,7 +40,18 @@ func BenchmarkIndexedSearchCandidates(b *testing.B) {
 		}
 	}
 	resetSearchIndexCacheForBenchmark()
-	if candidates, ok, stats := indexedSearchCandidates(dir, "TargetNeedleForBenchmark", "**/*.go", "", "", false, false); !ok || len(candidates) == 0 || stats.candidateFiles == 0 {
+	deadline := time.Now().Add(30 * time.Second)
+	var candidates []string
+	var ok bool
+	var stats searchCandidateStats
+	for time.Now().Before(deadline) {
+		candidates, ok, stats = indexedSearchCandidates(dir, "TargetNeedleForBenchmark", "**/*.go", "", "", false, false)
+		if ok && len(candidates) > 0 && stats.candidateFiles > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !ok || len(candidates) == 0 || stats.candidateFiles == 0 {
 		b.Fatalf("index warmup failed: ok=%v candidates=%d stats=%+v", ok, len(candidates), stats)
 	}
 

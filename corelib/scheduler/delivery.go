@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 // Delivery channel identifiers.
@@ -256,11 +258,11 @@ func (d *TaskDelivery) ShouldDeliver(runErr error, resultText string) bool {
 	}
 	// Local On normalize — same defaults as Normalize, without rewriting d.
 	on := strings.TrimSpace(strings.ToLower(d.On))
-	hasText := strings.TrimSpace(resultText) != ""
+	hasText := strings.TrimSpace(resultText) != "" && !desktopbot.NotContent(resultText)
 	switch on {
 	case DeliveryOnAlways:
-		// Always push when configured; FormatBody supplies a placeholder if empty.
-		return true
+		// A failure is still said. An empty success, including a filler body, is quiet.
+		return runErr != nil || hasText
 	case DeliveryOnError:
 		return runErr != nil
 	default: // success (including empty/unknown On)
@@ -334,10 +336,12 @@ func (d *TaskDelivery) FormatBody(taskName, resultText string, runErr error) str
 		b.WriteString("错误: ")
 		b.WriteString(runErr.Error())
 	} else {
-		if body == "" {
-			body = "(无输出)"
+		if desktopbot.NotContent(body) {
+			body = ""
 		}
-		b.WriteString(body)
+		if body != "" {
+			b.WriteString(body)
+		}
 	}
 	return TruncateDeliveryBody(b.String())
 }

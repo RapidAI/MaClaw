@@ -194,10 +194,13 @@ func TestBuildLightPromptUsesSharedExecutionFence(t *testing.T) {
 		ClientTools:         []agent.ClientToolDefinition{{Name: "alarm_create"}},
 		AssistantBinding:    &agent.AssistantBinding{BotProfileID: "bot-1"},
 	})
-	for _, want := range []string{"lookup assistant", "Use the smallest sufficient action", "Do not inspect local files", "Current local time: 2026-09-01 12:34:56 +0800", "Execution profile: layer=light task=fast confidence=0.91", "bot-1"} {
+	for _, want := range []string{"lookup assistant", "Use the smallest sufficient action", "Do not inspect local files", "Execution profile: layer=light task=fast confidence=0.91", "bot-1"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("shared light prompt missing %q: %s", want, prompt)
 		}
+	}
+	if strings.Contains(prompt, "Current local time:") {
+		t.Fatalf("minute clock entered the light system prompt: %s", prompt)
 	}
 }
 

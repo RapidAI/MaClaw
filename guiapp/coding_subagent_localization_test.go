@@ -3,6 +3,7 @@ package guiapp
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"math"
 	"os"
 	"os/exec"
@@ -803,6 +804,172 @@ func TestMissedNodeBodyUsesTheAbsolutePathFromTheEditGate(t *testing.T) {
 	outCB.noteCodegraphReadSnapshots(root, outsideBody)
 	if msg := outCB.requireReadBeforeModify(path, "edit_file"); !strings.Contains(msg, "code_navigation") {
 		t.Fatalf("a body outside the project must leave the edit gate closed, got %q", msg)
+	}
+}
+
+func TestCodeNavigationDoesNotReadThroughJunction(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	outside := filepath.Join(root, "outside")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	keep := filepath.Join(project, "keep.go")
+	if err := os.WriteFile(keep, []byte("int Keep() {\n    return 1;\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "secret.go"), []byte("int Secret() {\n    return 9;\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(project, "link")
+	makeCodingJunction(t, link, outside)
+	escaped := filepath.Join(link, "secret.go")
+	data, err := os.ReadFile(escaped)
+	if err != nil || !strings.Contains(string(data), "return 9") {
+		t.Fatalf("junction open = %q err=%v", data, err)
+	}
+	if !navigationWithinRoot(project, keep) {
+		t.Fatal("project file must stay inside")
+	}
+	if navigationWithinRoot(project, escaped) || navigationWithinRoot(project, link) {
+		t.Fatal("junction path must not count as inside the project")
+	}
+	if got := codegraphFileWithinRoot(project, escaped); got != "" {
+		t.Fatalf("absolute junction pin = %q", got)
+	}
+	if got := codegraphFileWithinRoot(project, "link/secret.go"); got != "" {
+		t.Fatalf("relative junction pin = %q", got)
+	}
+	if got := codegraphFileWithinRoot(project, keep); got != "keep.go" {
+		t.Fatalf("project pin = %q", got)
+	}
+	// Win32 collapses dotdot before it follows the junction, so this open stays inside.
+	if got := codegraphFileWithinRoot(project, filepath.Join(link, "..", "keep.go")); got != "keep.go" {
+		t.Fatalf("collapsed dotdot pin = %q", got)
+	}
+	if body := codegraphSourceBody(project, "keep.go", "Keep"); !strings.Contains(body, "return 1") {
+		t.Fatalf("project file body = %q", body)
+	}
+	if body := codegraphSourceBody(project, "link/secret.go", "Secret"); body != "" {
+		t.Fatalf("source body leaked through the junction: %q", body)
+	}
+	if got := codegraphResolveInclude(project, keep, "link/secret.go"); got != "" {
+		t.Fatalf("include resolved through the junction: %q", got)
+	}
+	survey := codegraphAttachFileSurvey(project, "link/secret.go", "symbols")
+	if strings.Contains(survey, "return 9") {
+		t.Fatalf("file survey leaked: %q", survey)
+	}
+	cb := &codingSubAgentCallbacks{}
+	cb.noteCodegraphReadSnapshots(project, "Body for Secret in link/secret.go.\n1\tint Secret() {\n2\t    return 9;\n}\n")
+	if msg := cb.requireReadBeforeModify(escaped, "edit_file"); msg == "" {
+		t.Fatal("junction body opened the edit gate")
+	}
+}
+
+func TestJunctionRootWalkHonorsSkipAll(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	if err := os.MkdirAll(filepath.Join(real, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(real, "z"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "a", "first.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "z", "later.txt"), []byte("z"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "m.txt"), []byte("m"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	jump := filepath.Join(root, "jump")
+	makeCodingJunction(t, jump, real)
+
+	var seen []string
+	if err := walkDirFollowingJunctionRoot(jump, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d == nil {
+			return nil
+		}
+		seen = append(seen, d.Name())
+		if d.Name() == "first.txt" {
+			return filepath.SkipAll
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range seen {
+		if name == "later.txt" || name == "m.txt" {
+			t.Fatalf("SkipAll kept walking: %v", seen)
+		}
+	}
+
+	var afterSkip []string
+	if err := walkDirFollowingJunctionRoot(jump, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d == nil || d.IsDir() {
+			return nil
+		}
+		afterSkip = append(afterSkip, d.Name())
+		if d.Name() == "a.txt" {
+			return filepath.SkipDir
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range afterSkip {
+		if name == "m.txt" {
+			t.Fatalf("SkipDir on a file kept the later sibling: %v", afterSkip)
+		}
+	}
+}
+
+func TestJunctionProjectRootStillResolvesNestedFile(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	outside := filepath.Join(root, "outside")
+	if err := os.MkdirAll(filepath.Join(real, "shallow"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "shallow", "widget.cpp"), []byte("void shallowFn() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "secret.cpp"), []byte("void secretFn() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	makeCodingJunction(t, filepath.Join(real, "escape"), outside)
+	jump := filepath.Join(root, "jump")
+	makeCodingJunction(t, jump, real)
+
+	got := navigationResolveFile(jump, "widget.cpp")
+	rel, err := filepath.Rel(jump, got)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		t.Fatalf("resolved outside the junction project: %s", got)
+	}
+	if filepath.ToSlash(rel) != "shallow/widget.cpp" {
+		t.Fatalf("basename search = %s", got)
+	}
+	if secret := navigationResolveFile(jump, "secret.cpp"); secret != "" {
+		t.Fatalf("nested junction was searched: %s", secret)
+	}
+	if !projectPathHasExistingCodeEvidence(jump) {
+		t.Fatal("a junction project with source was treated as empty")
+	}
+	outline, ok := navigationFileSymbolOutline(jump, "shallow/widget.cpp")
+	if !ok || !strings.Contains(outline, "shallowFn") || strings.Contains(outline, "secretFn") {
+		t.Fatalf("outline ok=%v text=%q", ok, outline)
 	}
 }
 

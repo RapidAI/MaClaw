@@ -8,6 +8,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 func TestContainerFileAndBashStayInTheDesktop(t *testing.T) {
@@ -53,7 +54,7 @@ func TestContainerFileAndBashStayInTheDesktop(t *testing.T) {
 			"content": "int main(){}\n",
 			"command": "echo hi",
 		})
-		if err == nil || !strings.Contains(err.Error(), "plan phase blocks "+action) {
+		if err == nil || err.Error() != desktopbot.PlanPhaseNextStep || strings.Contains(err.Error(), "plan phase blocks") {
 			t.Fatalf("plan %s err=%v", action, err)
 		}
 	}

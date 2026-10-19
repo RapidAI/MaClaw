@@ -95,6 +95,7 @@ const (
 	CapabilityMessageReadMailbox      CapabilityID = "message.read.mailbox"
 	CapabilityMessageSendMailbox      CapabilityID = "message.send.mailbox"
 	CapabilityMessageConfigureMailbox CapabilityID = "message.configure.mailbox"
+	CapabilityMessageDeleteMailbox    CapabilityID = "message.delete.mailbox"
 	CapabilityInteractionAskUser      CapabilityID = "interaction.ask.user"
 	CapabilityGovernanceInspectExp    CapabilityID = "governance.inspect.experience"
 )
@@ -123,7 +124,7 @@ func BuiltinCapabilityOntology() []CapabilityDescriptor {
 		},
 		{
 			ID: CapabilityShellExecuteRemoteHost, Version: "v1", Owner: builtinCapabilityOntologyOwner,
-			Summary: "Execute a command on a remote host over an authenticated session.",
+			Summary: "Execute a command on a remote host over an authenticated session, or copy one file or directory from that host onto this computer. A command uses command. A copy uses remote_path and local_path together, including a session opened through ProxyJump. remote_path may be absolute or start with ~/. Host, credentials, and session id are not fields. Do not cat the file through command and do not call scp.",
 			Effects: []EffectClass{EffectExternalEffect},
 		},
 		{
@@ -369,6 +370,11 @@ func BuiltinCapabilityOntology() []CapabilityDescriptor {
 			ID: CapabilityMessageConfigureMailbox, Version: "v1", Owner: builtinCapabilityOntologyOwner,
 			Summary: "Save a mailbox from the server, protocol, port, username, and password the user told the agent.",
 			Effects: []EffectClass{EffectSensitive},
+		},
+		{
+			ID: CapabilityMessageDeleteMailbox, Version: "v1", Owner: builtinCapabilityOntologyOwner,
+			Summary: "Move mailbox messages to trash, or permanently delete them, after the user confirms.",
+			Effects: []EffectClass{EffectExternalEffect},
 		},
 		{
 			ID: CapabilityInteractionAskUser, Version: "v1", Owner: builtinCapabilityOntologyOwner,

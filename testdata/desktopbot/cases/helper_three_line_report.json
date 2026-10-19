@@ -1,0 +1,8 @@
+{
+  "id": "helper_three_line_report",
+  "trace": "TRACE_SHOULD_NOT_LEAK",
+  "secret": "sk-live-should-not-show",
+  "lines": ["第一屏已保存", "通知页还没开", "没有未决问题"],
+  "path": "/home/desktop/tasks/t1/out/1.txt",
+  "empty_body": "TRACE_SHOULD_NOT_LEAK only"
+}

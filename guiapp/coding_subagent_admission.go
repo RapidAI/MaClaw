@@ -152,7 +152,7 @@ func projectPathHasExistingCodeEvidence(projectPath string) bool {
 	}
 	found := false
 	visited := 0
-	_ = filepath.WalkDir(projectPath, func(path string, d os.DirEntry, err error) error {
+	_ = walkDirFollowingJunctionRoot(projectPath, func(path string, d os.DirEntry, err error) error {
 		if err != nil || found {
 			return nil
 		}

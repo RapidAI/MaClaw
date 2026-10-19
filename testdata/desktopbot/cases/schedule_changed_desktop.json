@@ -1,0 +1,12 @@
+{
+  "id": "schedule_changed_desktop",
+  "origin": "schedule",
+  "channel": "desktop",
+  "changed": true,
+  "done": true,
+  "send_to_user": "首页没打开。",
+  "expect_text": "首页没打开。",
+  "expect_kind": "final",
+  "expect_count": 1,
+  "expect_report": true
+}

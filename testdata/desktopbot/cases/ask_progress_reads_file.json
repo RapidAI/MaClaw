@@ -1,0 +1,12 @@
+{
+  "id": "ask_progress_reads_file",
+  "origin": "person",
+  "surface": "desktop",
+  "progress_ask": true,
+  "where_we_are": "正在把登录后的第一屏存下来。",
+  "next_step": "打开设置里的通知页。",
+  "open_problems": "无",
+  "expect_kind": "reply",
+  "expect_count": 1,
+  "expect_text": "正在把登录后的第一屏存下来。\n打开设置里的通知页。\n无"
+}

@@ -273,8 +273,6 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 	b.WriteString(fmt.Sprintf("- 设备名: %s\n", hostname))
 	b.WriteString(fmt.Sprintf("- 平台: %s\n", normalizedRemotePlatform()))
 	b.WriteString(fmt.Sprintf("- App 版本: %s\n", remoteAppVersion()))
-	now := time.Now()
-	b.WriteString(fmt.Sprintf("- 当前时间: %s（%s）\n", now.Format("2006-01-02 15:04"), now.Weekday()))
 	if currentNickname != "" {
 		b.WriteString(fmt.Sprintf("- 当前昵称: %s\n", currentNickname))
 	} else {

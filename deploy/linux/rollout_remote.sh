@@ -42,7 +42,7 @@ log() { echo "[remote] $*"; }
 unpack() {
   # $1 = archive basename under $REMOTE_TMP; .tar.xz or .tar.gz
   if [ -f "$REMOTE_TMP/$1.sha256" ]; then
-    (cd "$REMOTE_TMP" && sha256sum -c --quiet "$1.sha256") || { echo "checksum mismatch: $1" >&2; exit 1; }
+    (cd "$REMOTE_TMP" && sha256sum -c --quiet "$1.sha256") || { echo "Checksum mismatch: $1. Upload that archive again. Do not continue this deploy." >&2; exit 1; }
   fi
   mkdir -p "$SRC"
   case "$1" in
@@ -85,7 +85,7 @@ backup() {
 }
 
 deploy_desktopd() {
-  [ -n "$DESKTOPD_ADVERTISE_HOST" ] || { echo "DESKTOPD_ADVERTISE_HOST is required" >&2; exit 1; }
+  [ -n "$DESKTOPD_ADVERTISE_HOST" ] || { echo "DESKTOPD_ADVERTISE_HOST is unset. export DESKTOPD_ADVERTISE_HOST=<this host's public address> and rerun remote_deploy.sh." >&2; exit 1; }
   mkdir -p /tmp/maclaw_desktopd_deploy
   cp -f "$REMOTE_TMP/desktopd-deploy.tar.gz" /tmp/maclaw_desktopd_deploy/desktopd-deploy.tar.gz
   cp -f "$REMOTE_TMP/remote_deploy.sh" /tmp/maclaw_desktopd_deploy/remote_deploy.sh
@@ -109,7 +109,7 @@ deploy_hub() {
   # replace_web_tree: stage beside the live tree, verify the manifest, swap.
   staging="$HUB_DIR/web.deploying.$(date +%s).$$"
   rm -rf "$staging"; mkdir -p "$staging"; cp -R "$SRC/hub/web/." "$staging/"
-  (cd "$staging" && sha256sum -c --quiet "$SRC/hub-web.sha256") || { rm -rf "$staging"; echo "hub web manifest mismatch" >&2; exit 1; }
+  (cd "$staging" && sha256sum -c --quiet "$SRC/hub-web.sha256") || { rm -rf "$staging"; echo "Hub web manifest does not match the package. Rebuild and upload hub-web. Do not swap this tree into place." >&2; exit 1; }
   rm -rf "$HUB_DIR/web"; mv "$staging" "$HUB_DIR/web"
   # configs/config.yaml is production state: keep it.
   (cd "$HUB_DIR" && ./start.sh < /dev/null)
@@ -118,7 +118,7 @@ deploy_hub() {
     if [ "$(curl -s -o /dev/null -w '%{http_code}' -m 10 http://127.0.0.1:9399/healthz)" = 200 ]; then ok=1; break; fi
     sleep 3
   done
-  [ -n "$ok" ] || { echo "hub healthz did not return 200" >&2; exit 1; }
+  [ -n "$ok" ] || { echo "http://127.0.0.1:9399/healthz did not return 200. Read $HUB_DIR/data/logs/maclaw-hub.out.log, fix that, then run ./start.sh again. Do not continue later steps." >&2; exit 1; }
   log "hub healthy (pid $(cat "$HUB_DIR/data/maclaw-hub.pid"))"
   rm -rf "$SRC"
 }
@@ -140,6 +140,10 @@ deploy_maclawsrv() {
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")"
+if [ ! -f ./.env ]; then
+  echo "Cannot find ./.env. Run deploy_maclawsrv.cmd once to create it, then run ./start.sh again." >&2
+  exit 1
+fi
 set -a
 . ./.env
 set +a
@@ -205,9 +209,9 @@ switch_image() {
 
 rollback() {
   ts="${BACKUP_TS:-$(cat "$REMOTE_TMP/BACKUP_TS" 2>/dev/null || true)}"
-  [ -n "$ts" ] || { echo "BACKUP_TS is required" >&2; exit 1; }
+  [ -n "$ts" ] || { echo "BACKUP_TS is unset. Run the backup step first, or export BACKUP_TS=<timestamp from the .bak directory name>, then rerun rollback." >&2; exit 1; }
   h="$HUB_DIR.bak.$ts"; d="$DESKTOPD_DEPLOY_DIR.bak.$ts"; s="$MACLAWSRV_DEPLOY_DIR.bak.$ts"
-  for x in "$h" "$d" "$s"; do [ -d "$x" ] || { echo "missing backup $x" >&2; exit 1; }; done
+  for x in "$h" "$d" "$s"; do [ -d "$x" ] || { echo "Cannot find backup directory $x. Run ls on the .bak.<timestamp> directories, set BACKUP_TS to that timestamp, then rerun rollback." >&2; exit 1; }; done
   # 1. Hub desktop settings first, so nobody else is moved while binaries change.
   if [ -f "$h/desktop_service.settings.json" ]; then python3 "$REMOTE_TMP/scripts/hub_desktop_settings.py" restore "$h/desktop_service.settings.json"; fi
   # 2. desktopd

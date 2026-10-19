@@ -42,11 +42,14 @@ export async function copyTextToClipboard(text: string): Promise<boolean> {
  */
 export function AssistantReplyCopyButton({
     text,
+    resolveText,
     theme: t,
     lang = "en",
     messageId,
 }: {
     text: string;
+    /** Click-time text. Streaming paint must not build this on every token. */
+    resolveText?: () => string;
     theme: Theme;
     lang?: string;
     messageId?: string;
@@ -92,7 +95,7 @@ export function AssistantReplyCopyButton({
                 e.stopPropagation();
                 if (state === "busy") return;
                 setState("busy");
-                const ok = await copyTextToClipboard(body);
+                const ok = await copyTextToClipboard(resolveText ? resolveText() : body);
                 if (!mountedRef.current) return;
                 setState(ok ? "ok" : "err");
                 if (timerRef.current) clearTimeout(timerRef.current);

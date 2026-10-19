@@ -913,6 +913,12 @@ func argumentMap(raw interface{}) map[string]interface{} {
 	}
 }
 
+// ToolsSearchMaxToolResult is the inline budget for one tools_search page.
+// A discovery page carries the surface decision and the built-in directory.
+// The generic 4KB head/tail cut deleted planned names that sorted in the
+// middle and left the petition sermon as the surviving instruction.
+const ToolsSearchMaxToolResult = 8192
+
 // MaxToolResultLen caps individual tool results to ~4KB before they enter
 // the conversation. This prevents a single verbose tool output (e.g. bash
 // stdout, large file read) from dominating the context window.
@@ -1079,6 +1085,8 @@ func toolResultPreviewLimitForContext(toolName string, contextTokens int) int {
 		return desktop.ToolResultMax
 	case "read_tool_result":
 		return ToolResultReadMaxToolResult
+	case "tools_search":
+		return ToolsSearchMaxToolResult
 	default:
 		if strings.HasPrefix(name, "ssh") {
 			return TerminalMaxToolResult

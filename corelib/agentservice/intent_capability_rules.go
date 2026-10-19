@@ -197,6 +197,9 @@ func IMSemanticIntentCapabilityNeedRules() map[intent.IntentLabel][]IntentCapabi
 		intent.LabelMailboxConfigure: {
 			{Capability: coretool.CapabilityMessageConfigureMailbox, Required: true, MaxInvocations: 4},
 		},
+		intent.LabelMailboxDelete: {
+			{Capability: coretool.CapabilityMessageDeleteMailbox, Required: true, MaxInvocations: 1},
+		},
 		intent.LabelScheduleManage: {
 			{Capability: coretool.CapabilityScheduleAdministerLocal, Required: true},
 		},

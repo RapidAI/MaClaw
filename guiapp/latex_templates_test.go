@@ -1026,7 +1026,7 @@ func TestCreateLatexDocumentBlankDoesNotRecordAnAmbiguousInstalledMatch(t *testi
 		}
 		// Each paper is its own task. createExpertTask would retarget the
 		// newest LaTeX task and carry its latex_entry tag into the next case.
-		created, err := app.createFreshLatexExpertTask("LaTeX", work)
+		created, err := app.createFreshLatexExpertTask("LaTeX", work, false)
 		if err != nil {
 			t.Fatal(err)
 		}

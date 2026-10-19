@@ -1,0 +1,20 @@
+{
+  "id": "summary_reuses_prefix",
+  "expect": "send",
+  "early": true,
+  "tokens": 100001,
+  "provider": "openai",
+  "ttl": "5m",
+  "idle": "2m",
+  "margin": "45s",
+  "turn_at": "2026-10-18T12:00:00Z",
+  "tick_at": "2026-10-18T12:02:00Z",
+  "tools": "tools-v1",
+  "system": "系统规则",
+  "memory": "画像\n\n日志\n\n笔记: 无",
+  "first": "user:打开首页",
+  "history": "assistant:好",
+  "summary": "决定了打开首页。",
+  "next_tools": "tools-v2",
+  "next_memory": "画像\n- 住在杭州\n\n日志\n\n笔记: 无"
+}

@@ -7,13 +7,19 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 )
 
 type handoffView struct {
 	origin string
-	until  time.Time
+	// base is the upstream directory in front of vnc.html. Empty means the
+	// page is at the origin root, which is the historical host:port URL.
+	// A tunnel URL keeps /v1/desktops/tunnel/<key>/vnc so websockify is not
+	// requested from the API root.
+	base  string
+	until time.Time
 	// bearer is the Docker-side noVNC gate token taken from the raw URL's
 	// userinfo. The proxy attaches it so the published port can require it.
 	bearer string
@@ -21,6 +27,9 @@ type handoffView struct {
 
 // gateDesktopHandoff hides the Docker host's noVNC port behind Hub.
 // The GUI loads this path on Hub. The dockerd domain keeps proxying only the API.
+// The token means the person is looking at the screen for two hours. Looking
+// it up does not extend that time, does not refresh last_used, and does not
+// stop or start the container. Sleep stays on the idle path.
 func (s *Service) gateDesktopHandoff(raw string) string {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
@@ -35,6 +44,10 @@ func (s *Service) gateDesktopHandoff(raw string) string {
 	if parsed.User != nil {
 		bearer, _ = parsed.User.Password()
 	}
+	base, ok := handoffBase(parsed.Path)
+	if !ok {
+		return ""
+	}
 	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -46,7 +59,7 @@ func (s *Service) gateDesktopHandoff(raw string) string {
 			delete(s.handoff, key)
 		}
 	}
-	s.handoff[token] = handoffView{origin: parsed.Scheme + "://" + parsed.Host, until: now.Add(2 * time.Hour), bearer: bearer}
+	s.handoff[token] = handoffView{origin: parsed.Scheme + "://" + parsed.Host, base: base, until: now.Add(2 * time.Hour), bearer: bearer}
 	socketPath := "api/v1/desktop-handoff/" + token + "/websockify"
 	return "/api/v1/desktop-handoff/" + token + "/vnc.html?autoconnect=1&resize=scale&reconnect=1&reconnect_delay=1000&path=" + url.QueryEscape(socketPath)
 }
@@ -80,6 +93,35 @@ func (s *Service) handoffViewFor(token string) (handoffView, bool) {
 	return view, true
 }
 
+// handoffBaseFromRaw recovers the upstream directory from the saved noVNC
+// URL. A restart keeps the token, and the tunnel prefix has to come back
+// with it or the picture is requested from the origin root.
+func handoffBaseFromRaw(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	base, ok := handoffBase(parsed.Path)
+	if !ok {
+		return ""
+	}
+	return base
+}
+
+// handoffBase is the directory of the upstream noVNC page. "/" means the
+// historical URL had no prefix, so the proxy keeps requesting /vnc.html.
+// A path that climbs out is refused.
+func handoffBase(urlPath string) (string, bool) {
+	if strings.Contains(urlPath, "..") || strings.Contains(urlPath, `\`) {
+		return "", false
+	}
+	dir := path.Dir(urlPath)
+	if dir == "/" || dir == "." || dir == "" {
+		return "", true
+	}
+	return dir, true
+}
+
 func validHandoffToken(token string) bool {
 	if len(token) != 64 {
 		return false
@@ -111,10 +153,14 @@ func (s *Service) ProxyDesktopHandoff(w http.ResponseWriter, r *http.Request, to
 		http.NotFound(w, r)
 		return
 	}
+	upstreamPath := "/" + rest
+	if view.base != "" {
+		upstreamPath = strings.TrimRight(view.base, "/") + "/" + rest
+	}
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
-			pr.Out.URL.Path = "/" + rest
+			pr.Out.URL.Path = upstreamPath
 			pr.Out.URL.RawPath = ""
 			pr.Out.URL.RawQuery = r.URL.RawQuery
 			pr.Out.Host = target.Host

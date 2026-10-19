@@ -6,6 +6,7 @@ import {
     isOpenableExpert,
     knowledgeHitPreview,
     knowledgeHitTitle,
+    knowledgeResultKey,
     knowledgeSearchHits,
     matchLibraryQuery,
     searchHeaderLibraries,
@@ -42,16 +43,50 @@ describe("unifiedHeaderSearch", () => {
 
     it("maps knowledge search rows onto display hits", () => {
         expect(knowledgeHitTitle({ card_title: "ACL card", source: { title: "Policy" } })).toBe("ACL card");
+        expect(knowledgeHitTitle({ card_title: "ACL card", source: { title: "[企业] Policy" } })).toBe("[企业] ACL card");
+        expect(knowledgeHitTitle({
+            result_type: "fact",
+            card_title: "Risk card",
+            snippet: "service port 18099",
+            source: { title: "[企业] Doc" },
+        })).toBe("[企业] Risk card");
+        expect(knowledgeHitPreview({
+            result_type: "fact",
+            card_title: "Risk card",
+            snippet: "service port 18099",
+            source: { title: "[企业] Doc" },
+        })).toBe("service port 18099");
         expect(knowledgeHitPreview({ snippet: "Deny by default", summary: "unused" })).toBe("Deny by default");
         const hits = knowledgeSearchHits([
             { node_id: "n1", node_title: "Gateway", snippet: "edge topology", source: { id: "s1", title: "Network" }, result_type: "node" },
             { node_id: "n1", node_title: "Duplicate" },
             { card_id: "c1", card_title: "Risk card", source: { id: "s2" } },
+            { result_type: "fact", fact_id: "f1", card_id: "c1", claim: "distinct fact", source: { id: "s2" } },
+            {
+                result_type: "fact",
+                fact_id: "f2",
+                card_id: "c1",
+                card_title: "Risk card",
+                claim: "card claim",
+                summary: "card summary",
+                snippet: "service port 18099",
+                source: { id: "s2", title: "Doc" },
+            },
+            { result_type: "table_row", row_id: "r1", source: { id: "s2", title: "Sheet" }, snippet: "first row" },
+            { result_type: "table_row", row_id: "r2", source: { id: "s2", title: "Sheet" }, snippet: "second row" },
         ], 8);
         expect(hits).toEqual([
             expect.objectContaining({ id: "n1", title: "Gateway", sourceId: "s1", resultType: "node" }),
             expect.objectContaining({ id: "c1", title: "Risk card", sourceId: "s2" }),
+            expect.objectContaining({ id: "f1", title: "distinct fact", preview: "distinct fact", resultType: "fact" }),
+            expect.objectContaining({ id: "f2", title: "Risk card", preview: "service port 18099", resultType: "fact" }),
+            expect.objectContaining({ id: "r1", title: "Sheet", preview: "first row", resultType: "table_row" }),
+            expect.objectContaining({ id: "r2", title: "Sheet", preview: "second row", resultType: "table_row" }),
         ]);
+        const sharedNode = { result_type: "fact", node_id: "n1", card_id: "c1", source: { id: "s2" } };
+        expect(knowledgeResultKey({ ...sharedNode, fact_id: "f1" }, 0)).toBe("fact-f1");
+        expect(knowledgeResultKey({ ...sharedNode, fact_id: "f2" }, 1)).toBe("fact-f2");
+        expect(knowledgeResultKey({ result_type: "table_row", row_id: "r1", source: { id: "s2" } }, 0)).toBe("table_row-r1");
     });
 
     it("resolves files without waiting for knowledge search", async () => {

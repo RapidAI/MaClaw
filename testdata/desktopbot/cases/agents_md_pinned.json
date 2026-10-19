@@ -1,0 +1,21 @@
+{
+  "id": "agents_md_pinned",
+  "role": "background",
+  "source": "pr-2",
+  "turns": [
+    {
+      "tools": "[{\"name\":\"mcp_files\"}]",
+      "system": "系统规则\nrule v1",
+      "memory_snapshot": "画像: 无",
+      "first_message": "打开首页",
+      "history": ""
+    },
+    {
+      "tools": "[{\"name\":\"mcp_browser\"}]",
+      "system": "系统规则\nrule v2",
+      "memory_snapshot": "画像: 无",
+      "first_message": "打开首页",
+      "history": "user:继续"
+    }
+  ]
+}

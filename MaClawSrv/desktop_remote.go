@@ -292,6 +292,38 @@ func (c *desktopHubClient) post(ctx context.Context, path string, body any, dest
 	return c.postLimit(ctx, path, body, dest, 1<<20)
 }
 
+// postDesktopTool sends one machine call. The body is run_id, tool_call_id,
+// tenant, user, action, args, and display when a screen is needed.
+func (c *desktopHubClient) postDesktopTool(ctx context.Context, call desktopToolCall) (desktopToolOutcome, error) {
+	raw, err := desktopToolJSON(call)
+	if err != nil {
+		return desktopToolOutcome{}, err
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return desktopToolOutcome{}, err
+	}
+	var out struct {
+		Output       string `json:"output"`
+		AttachmentID string `json:"attachment_id"`
+		Error        string `json:"error"`
+		ExecutorID   string `json:"executor_id"`
+		Volumes      string `json:"volumes"`
+		Replaced     bool   `json:"replaced"`
+	}
+	if err := c.post(ctx, "/api/v1/desktop-services/tool", payload, &out); err != nil {
+		return desktopToolOutcome{}, err
+	}
+	return desktopToolOutcome{
+		Text:         out.Output,
+		AttachmentID: out.AttachmentID,
+		Err:          strings.TrimSpace(out.Error),
+		ExecutorID:   strings.TrimSpace(out.ExecutorID),
+		Volumes:      strings.TrimSpace(out.Volumes),
+		Replaced:     out.Replaced,
+	}, nil
+}
+
 func (c *desktopHubClient) postLimit(ctx context.Context, path string, body any, dest any, limit int64) error {
 	raw, err := json.Marshal(body)
 	if err != nil {

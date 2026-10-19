@@ -135,6 +135,19 @@ func OverlayCoreToolSchema(name string, extraProps map[string]interface{}) (prop
 	return props, required, true
 }
 
+func desktopMemoryToolEntry(spec memory.DesktopTool) ToolEntry {
+	name := spec.Name
+	return ToolEntry{
+		Name:        name,
+		Description: spec.Description,
+		Properties:  spec.Properties,
+		Required:    spec.Required,
+		Handler: func(args map[string]interface{}) string {
+			return memory.DesktopBook("desktop-user").Call(name, args)
+		},
+	}
+}
+
 // RegisterCoreTools registers all platform-agnostic tools into the registry.
 // This is the single source of truth for tool definitions and handlers.
 // Every built-in name is a host-controlled constant in the toolid charset, so
@@ -357,6 +370,9 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Required:    memoryTool.Required,
 		Handler:     func(args map[string]interface{}) string { return ToolMemory(deps.MemoryStore, args, deps.LoopIDFunc) },
 	})
+	for _, spec := range memory.DesktopMemoryTools() {
+		r.Register(desktopMemoryToolEntry(spec))
+	}
 
 	r.Register(ToolEntry{
 		Name:        "ssh",
@@ -709,6 +725,14 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Required:    []string{"action", "email", "name"},
 		Handler:     extraHandler(deps, "mailbox_configure", mailbox.MsgNotConfigured),
 		HandlerCtx:  extraHandlerCtx(deps, "mailbox_configure", mailbox.MsgNotConfigured),
+	})
+	r.Register(ToolEntry{
+		Name:        "mailbox_delete",
+		Description: mailbox.ToolDescriptionDelete(),
+		Properties:  mailbox.DeleteProperties(),
+		Required:    []string{"action"},
+		Handler:     extraHandler(deps, "mailbox_delete", mailbox.MsgNotConfigured),
+		HandlerCtx:  extraHandlerCtx(deps, "mailbox_delete", mailbox.MsgNotConfigured),
 	})
 
 	r.Register(ToolEntry{

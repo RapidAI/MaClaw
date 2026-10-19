@@ -193,7 +193,27 @@ func buildLightIMSystemPrompt(msg IMUserMessage, profile ExecutionProfile, carri
 	if lookupContinuationProfile(profile) {
 		prompt += lookupContinuationToolPrompt(carried, primary)
 	}
-	return prompt
+	return appendPinnedAgentsMD(msg.UserID, prompt)
+}
+
+// appendPinnedAgentsMD reads /home/desktop/AGENTS.md once per conversation and
+// appends those bytes. A missing file adds nothing. Editing the file later
+// does not change this conversation's system segment.
+func appendPinnedAgentsMD(userID, prompt string) string {
+	meta := guiAgentsPrefixMeta(userID)
+	decision := agent.PrepareConversationPrefix(meta, agent.PromptPrefixInput{
+		Segments:      agent.PromptPrefixSegments{System: agent.ReadAgentsMD("")},
+		ProvideSystem: true,
+	})
+	return agent.SystemWithAgentsMD(prompt, decision.Send.System)
+}
+
+func guiAgentsPrefixMeta(userID string) agent.PromptPrefixMeta {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		userID = desktopUserID
+	}
+	return agent.PromptPrefixMeta{ConversationID: "agents:" + userID, BotID: "gui"}
 }
 
 func buildClientCapabilityPrompt(capabilities *agent.ClientCapabilities) string {
@@ -474,7 +494,7 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 			promptProfile,
 		)
 	}
-	return bundle.String()
+	return appendPinnedAgentsMD(promptUserID, bundle.String())
 }
 
 // desktopWorkflowDocOverride returns a system prompt section that overrides
@@ -700,16 +720,13 @@ func (h *IMMessageHandler) buildNicknameInstruction() string {
 	return ""
 }
 
-// appendMemorySection appends a lightweight "## 用户记忆" section containing:
-//   - The current owner's newest user_fact bodies, in the frozen snapshot
-//   - A catalog/index of the store (counts and tags, not other warehouse claims)
-//   - A hint that remaining warehouse content must be pulled via retrieval tools
-//   - Full memory management guide in the session-stable snapshot
+// appendMemorySection appends a lightweight "## 用户记忆" section containing
+// the frozen snapshot: the owner's user_fact bodies and the memory guide.
+// The count catalog (category totals) is not part of the system prompt.
 //
-// Frozen snapshot caching (Requirement 5.1, 5.2, 5.8):
-// On the first message of a session (per userID), the static memory section is
-// generated and cached. A successful memory save calls RefreshMemorySnapshot,
-// so the next message rebuilds this section with the current owner's facts.
+// The snapshot is generated once per conversation. A memory save does not
+// rebuild it. /new starts a new conversation and may refresh it. Replacing
+// the snapshot at summary time is a later change.
 func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn bool, userID string, eventContext lifecycle.EventContext, userMessage ...string) {
 	if h.memoryStore == nil {
 		return
@@ -731,16 +748,8 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 		}
 	}
 	_ = isFirstTurn // guide is always included in the session-stable snapshot
-
-	// --- Dynamic part: catalog + pull hint (per message, not frozen) ---
-	msg := ""
-	if len(userMessage) > 0 {
-		msg = userMessage[0]
-	}
-	// Project Tab owner IDs ("desktop-user:{projectPath}") scope the
-	// catalog index to that project. Warehouse bodies stay in tools.
-	strictProject := isProjectTabUserID(userID)
-	h.appendProactiveRecallForUser(b, msg, strictProject, userID, eventContext)
+	_ = userMessage
+	_ = eventContext
 }
 
 // appendStaticMemoryOnly injects only the static (frozen) user_fact summary
@@ -856,8 +865,9 @@ func (h *IMMessageHandler) cachedStaticMemorySnapshot(userID string) string {
 }
 
 // generateStaticMemorySection builds the frozen part of the memory section:
-// the current owner's newest user facts, the recall hint, and the memory guide.
-// RefreshMemorySnapshot drops this cache after a successful memory save.
+// the current owner's user facts as they were when this conversation pinned
+// them, the recall hint, and the memory guide. A later save stays in the
+// store until the next conversation.
 func (h *IMMessageHandler) generateStaticMemorySection(b *strings.Builder, isFirstTurn bool, userID string) {
 	if h.memoryStore == nil {
 		return
@@ -867,7 +877,9 @@ func (h *IMMessageHandler) generateStaticMemorySection(b *strings.Builder, isFir
 	b.WriteString("\n")
 	b.WriteString(corememory.PromptSectionUserMemory)
 	b.WriteByte('\n')
-	opts := corememory.RecallHintAndGuidePromptOptions(isFirstTurn && !strictOwner, corememory.BuildIMMemoryGuidePrompt())
+	// isFirstTurn must not change the snapshot bytes between two turns.
+	_ = isFirstTurn
+	opts := corememory.RecallHintAndGuidePromptOptions(!strictOwner, corememory.BuildIMMemoryGuidePrompt())
 	opts.UserFacts = corememory.UserFactSummaryPromptOptions{
 		Header:      "用户信息: ",
 		MaxRunes:    400,
@@ -939,10 +951,9 @@ func (h *IMMessageHandler) isCurrentMemoryPromptGeneration(userID string, genera
 	return h != nil && h.snapshotGeneration(userID) == generation
 }
 
-// RefreshMemorySnapshot regenerates the cached memory snapshot for the given
-// user from current persistent storage. Called when the user issues /new,
-// starts a new topic, or on application restart (first message of new session).
-// (Requirement 5.4, 5.5, 5.7)
+// RefreshMemorySnapshot drops the cached memory snapshot so the next build
+// reads the store. Call it when a conversation ends (/new), not when one
+// fact is saved. A fact saved mid-conversation stays out of the prefix.
 func (h *IMMessageHandler) RefreshMemorySnapshot(userID string) {
 	h.invalidateMemorySnapshot(userID, true)
 }

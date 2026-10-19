@@ -1194,9 +1194,10 @@ func (a *App) lookupOrCreateExpertTask(expertID, expertName, workingDir string) 
 
 // createFreshLatexExpertTask always allocates a new paper task. The wizard
 // uses it so a second LaTeX template does not continue the previous paper's
-// workspace. The shared expert transcript is cleared afterwards; the UI
-// archives that transcript onto the previous task before showing the new one.
-func (a *App) createFreshLatexExpertTask(expertName, workingDir string) (ProjectSearchResult, error) {
+// workspace. Unless keepExpertSession is set, the shared expert transcript is
+// cleared afterwards. A scheduled paper sets the flag so the turn still
+// running on this session is not cancelled; the open path clears it later.
+func (a *App) createFreshLatexExpertTask(expertName, workingDir string, keepExpertSession bool) (ProjectSearchResult, error) {
 	expertTaskMu.Lock()
 	previous := ""
 	if a.memoryStore != nil {
@@ -1210,6 +1211,11 @@ func (a *App) createFreshLatexExpertTask(expertName, workingDir string) (Project
 	expertTaskMu.Unlock()
 	if strings.TrimSpace(result.ProjectPath) == "" {
 		return ProjectSearchResult{}, fmt.Errorf("latex expert task creation failed")
+	}
+	// A scheduled paper must not cancel the turn that is still using this
+	// session. The open path archives and clears once that turn is idle.
+	if keepExpertSession {
+		return result, nil
 	}
 	// The expert tab is one shared session. Copy its transcript onto the paper
 	// being left, then clear the shared session. The copy is saved after the
@@ -1343,9 +1349,13 @@ func (a *App) AbandonUnopenedFreshLatexTask(projectPath string) error {
 	if projectPath == "" {
 		return fmt.Errorf("project path is required")
 	}
-	previous, err := a.claimUnopenedFreshLatexTask(projectPath)
+	previous, keepLiveSession, err := a.claimUnopenedFreshLatexTask(projectPath)
 	if err != nil {
 		return err
+	}
+	// The row never took the session. Leave the paper that still owns it alone.
+	if keepLiveSession {
+		return a.removeFreshLatexTaskRecord(projectPath)
 	}
 	a.restoreBuiltinLatexExpertConversationFrom(previous)
 	owner := expertSessionUserID(builtinLatexExpertID)
@@ -1361,22 +1371,28 @@ func (a *App) AbandonUnopenedFreshLatexTask(projectPath string) error {
 	return nil
 }
 
-func (a *App) claimUnopenedFreshLatexTask(projectPath string) (string, error) {
+func (a *App) claimUnopenedFreshLatexTask(projectPath string) (string, bool, error) {
 	expertTaskMu.Lock()
 	defer expertTaskMu.Unlock()
 	tasks := a.orderedVisibleLatexExpertTasks()
 	if len(tasks) == 0 || normalizeProjectSessionPath(tasks[0].ProjectPath) != projectPath {
-		return "", fmt.Errorf("latex task is no longer the unopened paper")
+		return "", false, fmt.Errorf("latex task is no longer the unopened paper")
 	}
 	// A paper the user is already talking in owns the expert transcript.
 	// Only the just-created row, whose open never finished, has an empty one.
+	// A scheduled row can also be newest while the previous paper's transcript
+	// is still the live session. That row does not own the turn.
 	if session, err := a.ensureProjectTabSessionPersist().LoadSession(expertTabSessionID(builtinLatexExpertID)); err == nil && session != nil && latexSessionHasUserTurn(session.Conversation) {
-		return "", fmt.Errorf("latex expert transcript is already in use")
+		pinned := normalizeProjectSessionPath(session.ProjectPath)
+		if pinned != "" && pinned != projectPath {
+			return "", true, nil
+		}
+		return "", false, fmt.Errorf("latex expert transcript is already in use")
 	}
 	if len(tasks) < 2 {
-		return "", nil
+		return "", false, nil
 	}
-	return normalizeProjectSessionPath(tasks[1].ProjectPath), nil
+	return normalizeProjectSessionPath(tasks[1].ProjectPath), false, nil
 }
 
 func (a *App) orderedVisibleLatexExpertTasks() []memory.ProjectRecord {

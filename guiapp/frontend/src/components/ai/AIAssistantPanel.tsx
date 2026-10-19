@@ -15,11 +15,12 @@ import {
     isRecordingInputLocked,
     type RecordingCompleteResult,
 } from "./RecordingSessionCard";
-import { createIncrementalRenderState, renderContentIncremental, type IncrementalRenderState } from "./IncrementalMarkdownRenderer";
+import { bindStreamingMarkdown, createIncrementalRenderState, streamingMarkdownUsesIncremental, type IncrementalRenderState } from "./IncrementalMarkdownRenderer";
 import { matchTaskSnapshotForProject, buildExecutionSnapshotRaw, executionSnapshotRawIsRunning } from "./taskExecutionSnapshot";
 import { formFieldInputStyle, formFieldLabelColor, maximizedInlineStyle, overlayStyle, primaryFilledButtonStyle, type Theme } from "./aiAssistantPanelTheme";
 import { getAssistantDarkScheme } from "./assistantDarkSchemes";
 import { DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, getAssistantLightScheme } from "./assistantLightSchemes";
+import { assistantMessageFontStyle } from "./assistantFonts";
 import "./ensureAIAssistantPanelStyles";
 import { localizeText } from "./aiAssistantI18n";
 import { CodingConflictLogStrip, CodingExecutionPlanCard } from "./aiCodingWorkbenchMiniPanels";
@@ -27,6 +28,7 @@ import { ProjectSearchPanel, useProjectSearch } from "./ProjectSearchPanel";
 import { useTTSReadback } from "./useTTSReadback";
 import { useAIAssistantVoiceControls } from "./useAIAssistantVoiceControls";
 import { ASSISTANT_OUTPUT_NEAR_BOTTOM_PX, useAssistantOutputScroll } from "./useAssistantOutputScroll";
+import { useNewTaskGuideDraft } from "./useNewTaskGuideDraft";
 import { useResizableAssistantInput } from "./useResizableAssistantInput";
 import { useAssistantInputHistory, type ComposerAttachmentSnapshot } from "./useAssistantInputHistory";
 import { historyAttachmentsFromSources } from "./promptHistory";
@@ -50,7 +52,7 @@ import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 import type { ComposeAction, FireSlashCommand, PlusMenuActionId } from "./composeAction";
 import { applyComposeActionToText, btwQueryFromText, getComposeActionPlaceholder, isBtwCommandText, isHistoryResetCommandText, isInstallCommandText, normalizeInstallCommandText } from "./composeAction";
 import { InlineChatCard } from "./InlineChatCard";
-import { AssistantWelcomeView, syncLocalStartMenuTemplates, type WelcomePromptSubmitMeta } from "./AssistantWelcomeView";
+import { syncLocalStartMenuTemplates, type WelcomeComposerProps, type WelcomePromptSubmitMeta } from "./AssistantWelcomeView";
 import { useTaskConfigWiring } from "./task-config/useTaskConfigWiring";
 import { WelcomeTemplateSaveOfferBanner } from "./WelcomeTemplateSaveOffer";
 import {
@@ -107,7 +109,7 @@ import { CodingAgentPlanChecklist } from "./CodingAgentPlanChecklist";
 import { buildCodingBannerChrome, codingStepGlyph, codingStepIsActive, codingStepStatusColor, codingStepStatusLabel, CodingWorkbenchControlPanel, CodingControlSection, presentCodingAgentChecklist } from "./CodingWorkbenchControlPanel";
 import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
 import { AssistantPureCodingEmptyState } from "./AssistantPureCodingEmptyState";
-import { NewTaskWizardRunningBanner } from "./NewTaskWizardRunningBanner";
+import { NewTaskWizardWelcomePane } from "./NewTaskWizardWelcomePane";
 import { agentModeFromTaskTags, CLOUD_WORKSPACE_FILES_CHANGED_EVENT, cloudWorkingDirForActiveTab, cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTab, cloudWorkspaceRevealMatchesTab, ensureCloudWorkspaceLeaseBeforeSend, FOCUS_CLOUD_WORKSPACE_TREE_EVENT, isActiveCloudWorkspacePreview, isCloudWorkspacePath, nextTabWorkingDir, parseWailsEventObject, remoteHostFromTaskTags, resolveRemoteWorkspaceDisplay, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, type CloudWorkspaceReveal, type TabWorkingDir } from "./codingTaskMode";
 import { canDispatchCodingIntent, resolveCodingTaskPhase } from "./codingTaskRuntime";
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
@@ -146,12 +148,12 @@ import { SaveTaskDialog } from "./SaveTaskDialog";
 const AssistantPreviewPane = lazy(() => import("./AssistantPreviewPane").then((module) => ({ default: module.AssistantPreviewPane })));
 const EMPTY_PROGRESS_MESSAGES: ChatMessage[] = [];
 export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
-    const { onClose, lang, startOnWorkbenchHome = false, activeAssistantTask: activeAssistantTaskProp = null, chatFontSize = 14, themeMode: controlledThemeMode, darkSchemeId, lightSchemeId = DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppReleaseNotes, onOpenAppUpdate, onDismissAppUpdate, availableProviders, currentModel, contactProviderName, contactModelId, contactIsHubService, modelOptions, modelMultipliers, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeExecutionProfile, codingInheritsAssistant, providerSelectionPending, profileSavePending, onOpenLLMSettings, onLanguageChange, onActiveExecutionProfileChange, statusSlot, tasks: taskListProp, tasksLoaded: tasksLoadedProp, onOpenTask: onOpenTaskProp, brandId, brandDisplayNameCN } = props;
+    const { onClose, lang, startOnWorkbenchHome = false, activeAssistantTask: activeAssistantTaskProp = null, chatFontSize = 14, chatFontFamily = "system", codingFontFamily = "system", themeMode: controlledThemeMode, darkSchemeId, lightSchemeId = DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppReleaseNotes, onOpenAppUpdate, onDismissAppUpdate, availableProviders, currentModel, contactProviderName, contactModelId, contactIsHubService, modelOptions, modelMultipliers, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeExecutionProfile, codingInheritsAssistant, providerSelectionPending, profileSavePending, onOpenLLMSettings, onLanguageChange, onActiveExecutionProfileChange, statusSlot, tasks: taskListProp, tasksLoaded: tasksLoadedProp, onOpenTask: onOpenTaskProp, brandId, brandDisplayNameCN } = props;
     const state = props.state || props;
     const actions = props.actions || props;
     const panelWindow = props.window || props;
     const { messages, progressMessages = [], sending, sendingSessionKey: rawSendingSessionKey, busySessionKeys: rawBusySessionKeys, streaming, streamingSessionKey: rawStreamingSessionKey, streamingSessionKeys: rawStreamingSessionKeys, visualBusy, ready, initStatus, selectedFilePath: selectedFilePathFromState = "", submittedPrompts = [], submittedPromptAttachments = [], draftInputValue = "", trialReflectEnabled = false, scrollToTopSeq, onboardingIncomplete, showTraceEntry = false, active: panelActive = true, agentView = null, chatTasks = [] } = state;
-    const { browseFile, clearSelectedFile, setSelectedFilePaths, removeSelectedFile, sendMessage, sendBtwMessage, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews, onOpenOnboarding, cancelSession, onOpenTutorial, onTaskPrefsChanged, submitAgentView, dismissAgentView, deactivateRecordingSession, dispatchChatTask, cancelChatTask, steerChatTask, answerChatTask } = actions;
+    const { browseFile, clearSelectedFile, setSelectedFilePaths, removeSelectedFile, sendMessage, sendBtwMessage, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews, onOpenOnboarding, cancelSession, onOpenTutorial, onTaskPrefsChanged, submitAgentView, dismissAgentView, deactivateRecordingSession, dispatchChatTask, cancelChatTask, steerChatTask, answerChatTask, isSessionIdle, waitForForegroundIdle } = actions;
     const selectedFilePaths = Array.isArray(state.selectedFilePaths) ? state.selectedFilePaths : (selectedFilePathFromState ? [selectedFilePathFromState] : []);
     const selectedFilePath = selectedFilePaths[0] || "";
     const { inline, maximized = false, onToggleMaximize, onHideWindow } = panelWindow || {};
@@ -300,6 +302,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [panelActive]);
     const activeTabIdForRecRef = useRef<string>("local");
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
+    const guideDraft = useNewTaskGuideDraft(setDraftInputValue);
     const cancelRestoreSeqRef = useRef(0);
     const closeAllPreviewPanelsRef = useRef<(() => void) | null>(null);
     const pendingSkillRecDataRef = useRef<any>(null);
@@ -2271,6 +2274,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         setCodingPendingPlanDraft("");
         setCodingStepStatuses([]);
     }, []);
+    const projectStreamHistoryRef = useRef<{ tabId: string; messages: ChatMessage[] } | null>(null);
+    const activeSessionStreamingRef = useRef(false);
     const clearActiveHistory = useCallback(async () => {
         // Close all right-side preview panels (workflow doc, code preview, agent view)
         closeAllPreviewPanelsRef.current?.();
@@ -2284,7 +2289,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }
             // Clear frontend state first so the welcome view appears immediately.
             clearTabConversation(activeTab.id);
-            setProjectTabMessages([]);
+            projectStreamHistoryRef.current = null; setProjectTabMessages([]);
             clearedProjectTabIdsRef.current.add(activeTab.id);
             projectConversationHydrationGenerationByTabIdRef.current.set(
                 activeTab.id,
@@ -2358,7 +2363,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // Expert tab: clear UI history and wipe agent memory for this expert
             // (cancel-only would leave conversation context for the next turn).
             clearTabConversation(activeTab.id);
-            setProjectTabMessages([]);
+            projectStreamHistoryRef.current = null; setProjectTabMessages([]);
             // Mark as explicitly cleared: blocks residual session events from
             // resurrecting the old conversation until the user sends again.
             clearedProjectTabIdsRef.current.add(activeTab.id);
@@ -2595,14 +2600,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const active = activeTabIdRef.current === tab.id;
             const nextHistory = nextGoalChecklistHistory({
                 history,
-                liveHistory: active ? projectTabLiveMessages(projectTabLiveRef.current, tab.id) : undefined,
+                liveHistory: active ? (projectStreamHistoryRef.current?.tabId === tab.id ? projectStreamHistoryRef.current.messages : projectTabLiveMessages(projectTabLiveRef.current, tab.id)) : undefined,
                 cleared: clearedProjectTabIdsRef.current.has(tab.id),
                 sessionKey: goalUser,
                 content,
             });
             if (!nextHistory) continue;
             saveTabState(tab.id, { ...existingState, history: nextHistory });
-            if (active) setProjectTabMessages(nextHistory);
+            if (active) { if (projectStreamHistoryRef.current?.tabId === tab.id) projectStreamHistoryRef.current = { tabId: tab.id, messages: nextHistory }; setProjectTabMessages(nextHistory); }
         }
     };
     useEffect(() => () => {
@@ -2704,7 +2709,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const prevTab = tabState.tabs.find(t => t.id === prevTabId);
         if (prevTab && (prevTab.type === "project" || prevTab.type === "expert")) {
             const scrollTop = outputContainerRef.current?.scrollTop || 0;
-            let historyToSave = projectTabMessages;
+            const streamedHistory = projectStreamHistoryRef.current;
+            let historyToSave = streamedHistory?.tabId === prevTabId ? streamedHistory.messages : projectTabMessages;
             if (prevTab.type === "expert") {
                 const floor = sessionFloorFor(prevTab.id, prevTab.sessionFloorMs);
                 historyToSave = historyToSave.filter((message: ChatMessage) => messageAfterSessionFloor(message, floor));
@@ -2736,6 +2742,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 projectTabRoundsRef.current.clear();
             }
             if (restored) {
+                if (projectStreamHistoryRef.current?.tabId !== currentTabId) projectStreamHistoryRef.current = null;
                 setProjectTabMessages((restored.history || []) as ChatMessage[]);
                 setLocalDraftInputValue(restored.inputText || "");
                 requestAnimationFrame(() => {
@@ -2746,7 +2753,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         el.scrollHeight - el.scrollTop - el.clientHeight > ASSISTANT_OUTPUT_NEAR_BOTTOM_PX;
                 });
             } else {
-                setProjectTabMessages([]);
+                projectStreamHistoryRef.current = null; setProjectTabMessages([]);
                 setLocalDraftInputValue("");
             }
         } else if (activeTab.id === "local") {
@@ -2887,7 +2894,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 history: nextHistory,
             });
             if (activeTabIdRef.current === tab.id) {
-                setProjectTabMessages(nextHistory);
+                projectStreamHistoryRef.current = activeSessionStreamingRef.current ? { tabId: tab.id, messages: nextHistory } : null;
+                if (!activeSessionStreamingRef.current) setProjectTabMessages(nextHistory);
             }
             for (const message of liveMessages) {
                 projectTabMsgIdsRef.current.add(message.id);
@@ -2910,13 +2918,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }
             return messages.filter(messageIsLocalSession);
         }
+        const heldProject = projectStreamHistoryRef.current;
+        const projectHistory = heldProject?.tabId === activeTab.id ? heldProject.messages : projectTabMessages;
         if (isExpertTabActive) {
             // Expert tab: tab-state history (welcome seed + persisted conversation)
             // merged with live session events keyed by desktop-user:expert:<id>.
             // The floor applies to stored history as well as live events, so a
             // new LaTeX paper cannot render the previous paper's turns.
             const expertFloor = sessionFloorFor(activeTab.id, activeTab.sessionFloorMs);
-            const expertHistory = projectTabMessages.filter((message: ChatMessage) => messageAfterSessionFloor(message, expertFloor));
+            const expertHistory = projectHistory.filter((message: ChatMessage) => messageAfterSessionFloor(message, expertFloor));
             const liveExpertMessages = messages.filter((message: ChatMessage) => messageBelongsToSession(message, activeSessionKey) && messageAfterSessionFloor(message, expertFloor));
             if (liveExpertMessages.length === 0) return expertHistory;
             if (expertHistory.length === 0) {
@@ -2929,9 +2939,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         // When projectTabMessages is empty (tab was cleared), don't merge residual
         // messages from shared state — they are stale cancel responses or streaming
         // leftovers. New rounds will populate projectTabMessages via wasSending effect.
-        const mergedProjectMessages = liveProjectMessages.length > 0 && projectTabMessages.length > 0
-            ? mergeChatMessages(projectTabMessages, liveProjectMessages)
-            : projectTabMessages;
+        const mergedProjectMessages = liveProjectMessages.length > 0 && projectHistory.length > 0
+            ? mergeChatMessages(projectHistory, liveProjectMessages)
+            : projectHistory;
         const activeProjectRound = findProjectRoundForTab(activeTab.id, activeTab.projectPath);
         if (!sending || !activeProjectRound) return mergedProjectMessages;
         // During an active round, also include messages that arrived since the
@@ -2951,6 +2961,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     displayMessagesForPlanRef.current = displayMessages as Array<{ role?: string; content?: string }>;
     const prevSendingRef = useRef(sending);
     useEffect(() => {
+        const heldProjectHistory = !sending ? projectStreamHistoryRef.current : null;
+        if (heldProjectHistory?.tabId === activeTab.id) setProjectTabMessages(heldProjectHistory.messages);
+        if (!sending) projectStreamHistoryRef.current = null;
         const wasSending = prevSendingRef.current;
         prevSendingRef.current = sending;
         if (!wasSending && sending && isProjectTabActive && activeTab.projectPath && !findProjectRoundForTab(activeTab.id, activeTab.projectPath)) {
@@ -2987,14 +3000,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         setProjectTabMessages(prev => collapseDuplicatePendingUnfinishedSlots(mergeChatMessages(prev, newMessages)));
                     }
                     const existingState = getTabState(round.tabId);
-                    // For the active tab, existingState?.history is the persisted
-                    // snapshot; projectTabMessages is the live React state. Use
-                    // the live state as the base when saving so the persisted copy
-                    // does not lag behind what the user is currently seeing.
-                    // For inactive tabs we have no in-memory live state, so use
-                    // the persisted snapshot directly.
+                    // Live sync already stored this turn. React state lags while
+                    // tokens are held, so the snapshot wins on the same id and an
+                    // empty placeholder cannot replace the finished reply.
                     const baseHistory = isProjectTabActive && activeTab.id === round.tabId
-                        ? projectTabMessages
+                        ? mergeChatMessages(projectTabMessages, existingState?.history)
                         : existingState?.history;
                     saveTabState(round.tabId, {
                         ...existingState,
@@ -3088,7 +3098,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
     }, [props.onEnsureAssistantTabTask]);
 
-    const createProjectTabWithContext = useCallback((projectPath: string, taskTitle: string, options?: { prepareMode?: PendingProjectTabOpen["prepareMode"]; openIntent?: "activate" | "restore"; cloudWorkspaceId?: string; agentMode?: PendingProjectTabOpen["agentMode"]; remoteHost?: string; remoteSafety?: "diagnosis"; remoteNeedsReconnect?: boolean; sessionKey?: string } | boolean) => {
+    const createProjectTabWithContext = useCallback((projectPath: string, taskTitle: string, options?: { prepareMode?: PendingProjectTabOpen["prepareMode"]; openIntent?: "activate" | "restore"; cloudWorkspaceId?: string; agentMode?: PendingProjectTabOpen["agentMode"]; remoteHost?: string; remoteSafety?: "diagnosis"; remoteNeedsReconnect?: boolean; sessionKey?: string; focus?: boolean } | boolean) => {
         const sessionKey = typeof options === "object" ? String(options.sessionKey || "").trim() : "";
         const cloudWorkspaceId = typeof options === "object" ? String(options.cloudWorkspaceId || "").trim() : "";
         const openIntent = typeof options === "object" ? options.openIntent : undefined;
@@ -3120,7 +3130,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             remoteSafety,
             remoteNeedsReconnect,
             sessionKey,
-            openIntent,
+            openIntent, ...(typeof options === "object" && options.focus === false ? { focus: false } : {}),
             cloudWorkspaceId: cloudWorkspaceId || undefined,
             ...(prepareMode === "new-agent" ? {
                 onSessionReady: (readyTab: { id: string; projectPath?: string }) => {
@@ -3463,8 +3473,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 if (!mergedOptions.im_task_title) mergedOptions.im_task_title = pendingIMCompletion.taskTitle;
             }
             const contextTabId = String(mergedOptions.tabId || '');
+            const heldHistory = projectStreamHistoryRef.current;
             const contextHistory = contextTabId === liveActiveTab.id
-                ? projectTabMessages
+                ? (heldHistory?.tabId === contextTabId ? heldHistory.messages : projectTabMessages)
                 : ((getTabState(contextTabId)?.history || []) as ChatMessage[]);
             (mergedOptions as Record<string, unknown>).recentMessages = buildProjectTabRecentMessages(contextHistory);
             console.info("[AIAssistantPanel] send route project", {
@@ -3536,8 +3547,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const expertProjectPath = String(expertTab?.projectPath || (liveActiveTab.type === "expert" ? liveActiveTab.projectPath : "") || "").trim();
             if (expertProjectPath) mergedOptions.project_path = expertProjectPath;
             const expertFloor = sessionFloorFor(String(expertTabId || ""), expertTab?.sessionFloorMs ?? (liveActiveTab.type === "expert" ? liveActiveTab.sessionFloorMs : undefined));
+            const expertHeld = projectStreamHistoryRef.current;
             const expertHistory = (expertTabId === liveActiveTab.id
-                ? projectTabMessages
+                ? (expertHeld?.tabId === expertTabId ? expertHeld.messages : projectTabMessages)
                 : (((expertTabId ? getTabState(expertTabId)?.history : []) || []) as ChatMessage[])
             ).filter((message: ChatMessage) => messageAfterSessionFloor(message, expertFloor));
             (mergedOptions as Record<string, unknown>).recentMessages = buildProjectTabRecentMessages(expertHistory as ChatMessage[]);
@@ -3609,8 +3621,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         setProjectTabRouteVersion, setDetachedProjectRoundVersion, persistProjectTabMsgIds,
     }), [abandonSkillRecording, closeTab, getTabState, getTabs, messages, persistProjectTabMsgIds, saveTabState, setDetachedProjectRoundVersion, setProjectTabPreparing, setProjectTabRouteVersion, setSkillRecordingTabId, skillRecordingTabId]);
     const idleTaskSwitchRef = useRef<IdleTaskSwitchContext | null>(null);
+    const dismissCoveredNewTaskRef = useRef<(() => void) | null>(null);
     const activateSwitchingTab = useCallback((tabId: string) => {
-        releaseIdleTaskTabs(idleTaskSwitchRef.current, { nextTabId: tabId });
+        dismissCoveredNewTaskRef.current?.(); releaseIdleTaskTabs(idleTaskSwitchRef.current, { nextTabId: tabId });
         activateTab(tabId);
     }, [activateTab]);
     const createProjectTabFromSearch = useCallback((
@@ -3664,7 +3677,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     return;
                 }
             }
-            releaseIdleTaskTabs(idleTaskSwitchRef.current, { projectPath });
+            dismissCoveredNewTaskRef.current?.(); releaseIdleTaskTabs(idleTaskSwitchRef.current, { projectPath });
             const tab = createProjectTabWithContext(projectPath, taskTitle, {
                 prepareMode: "restore-context",
                 agentMode: resolvedMode,
@@ -3755,8 +3768,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         createProjectTab: createProjectTabWithContext,
         createExpertTab,
         activateTab: activateSwitchingTab,
-        beforeUserProjectOpen: (projectPath, cloudWorkspaceId) => releaseIdleTaskTabs(idleTaskSwitchRef.current, { projectPath, cloudWorkspaceId }),
-        beforeUserExpertOpen: (expertId) => releaseIdleTaskTabs(idleTaskSwitchRef.current, { expertId }),
+        beforeUserProjectOpen: (projectPath, cloudWorkspaceId) => { dismissCoveredNewTaskRef.current?.(); releaseIdleTaskTabs(idleTaskSwitchRef.current, { projectPath, cloudWorkspaceId }); },
+        beforeUserExpertOpen: (expertId) => { dismissCoveredNewTaskRef.current?.(); releaseIdleTaskTabs(idleTaskSwitchRef.current, { expertId }); }, newTaskCoverHeld: () => dismissCoveredNewTaskRef.current != null, visibleExpertId: () => activeTabRef.current?.type === "expert" ? String(activeTabRef.current.expertId || "") : "", expertSessionIdle: (expertId) => isSessionIdle?.(expertSessionKey(expertId)) !== false, whenExpertSessionIdle: (expertId) => waitForForegroundIdle?.(expertSessionKey(expertId)),
         getTabState,
         saveTabState,
         getTabList: getTabs,
@@ -3771,24 +3784,24 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         onPendingProjectTabOpenHandled: props.onPendingProjectTabOpenHandled,
         pendingExpertOpen: props.pendingExpertOpen,
         onPendingExpertOpenHandled: props.onPendingExpertOpenHandled,
-        resetExpertConversation: async (expertId, archivedProjectPath) => {
+        resetExpertConversation: async (expertId, archivedProjectPath, keepConversation) => {
             if (!isLatexExpertId(expertId)) return;
             const tabId = expertTabId(expertId);
             const tab = getTabs().find(item => item.type === "expert" && item.expertId === expertId);
             const history = ((tab ? getTabState(tab.id)?.history : getTabState(tabId)?.history) || []) as ChatMessage[];
             // The caller snapshots the path before the new paper is attached.
             // Reading the tab again here can archive the old chat onto the new paper.
-            const previousPath = archivedProjectPath !== undefined
-                ? String(archivedProjectPath || "").trim()
-                : String(tab?.projectPath || "").trim();
+            const previousPath = archivedProjectPath !== undefined ? String(archivedProjectPath || "").trim() : String(tab?.projectPath || "").trim();
             if (previousPath && history.length > 0) await stashProjectTabHistory(previousPath, history);
+            // Cover may rise during the archive save. Do not clear the held conversation.
+            if (keepConversation?.()) return;
             const floor = Date.now();
             latexFreshFloorRef.current = floor;
             sessionFloorByTabIdRef.current.set(tabId, floor);
             if (tab) {
                 clearTabConversation(tab.id);
                 markSessionFloor(tab.id, floor);
-                if (activeTabRef.current.id === tab.id) setProjectTabMessages([]);
+                if (activeTabRef.current.id === tab.id) { projectStreamHistoryRef.current = null; setProjectTabMessages([]); }
                 clearedProjectTabIdsRef.current.add(tab.id);
             } else if (getTabState(tabId)) {
                 clearTabConversation(tabId);
@@ -4366,6 +4379,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         : streaming && (streamingSessionKey
             ? streamingSessionKey === activeSessionKey
             : (isProjectTabActive ? hasForegroundRoundForActiveProject : ((isLocalTabActive || isExpertTabActive) && !hasForegroundProjectRound)));
+    activeSessionStreamingRef.current = activeSessionIsStreaming;
     const isBusy = (hasExplicitBusySessionList ? activeSessionIsSending : hasActiveDetachedProjectRound || activeSessionIsSending);
     useEffect(() => {
         if (!workflowFormGeneratingPhaseID) return;
@@ -4745,7 +4759,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const { SaveCurrentChatAsTask } = await getWailsAppModule();
             const result = await SaveCurrentChatAsTask(derivedName);
             if (!result || !result.project_path) return;
-            const tab = createProjectTab(result.project_path, result.name || derivedName);
+            dismissCoveredNewTaskRef.current?.(); const tab = createProjectTab(result.project_path, result.name || derivedName);
             if (tab) {
                 saveTabState(tab.id, { history: [...messages], scrollTop: 0, inputText: "" });
             }
@@ -4946,7 +4960,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // scrolling for it would create a needless jump without new visible text.
     const lastRenderedProgressMessage = compactProgressMessages.at(-1);
     const progressActivityKey = lastRenderedProgressMessage?.id || "";
-    const { handleScroll, handleUserScrollIntent, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef } = useAssistantOutputScroll({ activityKey: progressActivityKey, hasConversation, messages: displayMessages, ready, scrollToTopSeq });
+    const wizardScrollSuspendRef = useRef(false);
+    const { handleScroll, handleUserScrollIntent, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef } = useAssistantOutputScroll({ activityKey: progressActivityKey, hasConversation, messages: displayMessages, ready, scrollToTopSeq, suspendedRef: wizardScrollSuspendRef });
     useEffect(() => {
         if (activeTab.type !== "project") return;
         latestProjectCloseSnapshotRef.current = {
@@ -5429,17 +5444,24 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         pendingAttachments, selectedFilePaths, showComposerText: updateInputValue, replacePendingAttachments: (items) => setPendingAttachments(items as typeof pendingAttachments), replaceSelectedFilePaths: (paths) => setSelectedFilePaths?.(paths),
         activeChatVisible: otherMessages.some((message: ChatMessage) => message.role === "user" || message.role === "assistant"),
         handleSend, handleWelcomePromptSend,
-        clearComposerDraft, getTabs, getTabState, saveTabState,
+        clearComposerDraft, guideInputValue: draftInputValue, guideInputRef: guideDraft.guideInputRef,
+        guidePendingAttachments: guideDraft.guideAttachments, guideSelectedFilePaths: guideDraft.guidePaths, clearGuideDraft: guideDraft.clearGuideDraft,
+        getTabs, getTabState, saveTabState,
         activateTab, setQueueInteractionStarted, setQueueEditDraftActive, setEditingEntryId,
         showAlert,
     });
-    // A running turn keeps the normal welcome gates closed. The wizard cover
-    // forces the welcome page on the local tab without clearing that turn.
-    const wizardOverlayActive = taskConfigWiring.wizardOverlay && isLocalTabActive;
-    // A wizard requested during warmup stays armed and appears once input works.
-    const showWelcomeView = showWelcomeViewBase || (wizardOverlayActive && ready);
+    dismissCoveredNewTaskRef.current = taskConfigWiring.wizardOverlay ? taskConfigWiring.dismissWizardOverlay : null;
+    // Hidden transcript does no layout work while the new-task screen is up.
+    wizardScrollSuspendRef.current = taskConfigWiring.wizardOverlay;
+    const showWelcomeView = showWelcomeViewBase;
+    const wizardScreen = taskConfigWiring.wizardOverlay && ready && !showWelcomeViewBase;
+    const separateGuide = wizardScreen && !isLocalTabActive;
     const warmupChrome = !ready && !onboardingIncomplete && !showWelcomeView;
     const startupWarmup = warmupChrome && isLocalTabActive;
+    useEffect(() => {
+        if (separateGuide) return;
+        guideDraft.dropGuideFiles();
+    }, [separateGuide, guideDraft.dropGuideFiles]);
     const title = startupWarmup
         ? initLabel
         : showWelcomeView && isLocalTabActive
@@ -5772,14 +5794,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             ? {
                 project_path: activeTab.projectPath,
                 tabId: activeTab.id,
-                recentMessages: buildProjectTabRecentMessages(projectTabMessages),
+                recentMessages: buildProjectTabRecentMessages(projectStreamHistoryRef.current?.tabId === activeTab.id ? projectStreamHistoryRef.current.messages : projectTabMessages),
             }
             : isExpertTabActive && activeTab.expertId
                 ? {
                     expert_id: activeTab.expertId,
                     tabId: activeTab.id,
                     ...(activeTab.projectPath ? { project_path: activeTab.projectPath } : {}),
-                    recentMessages: buildProjectTabRecentMessages(projectTabMessages),
+                    recentMessages: buildProjectTabRecentMessages(projectStreamHistoryRef.current?.tabId === activeTab.id ? projectStreamHistoryRef.current.messages : projectTabMessages),
                 }
                 : undefined;
         // Preserve the single-argument callback contract for local actions;
@@ -5854,6 +5876,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // (every 33ms). Without this cache, all N messages get full Markdown
     // re-parsing on every token batch flush.
     const msgRenderCacheRef = useRef<Map<string, { contentKey: string; node: ReturnType<typeof renderMessage>; message?: ChatMessage }>>(new Map());
+    const coveredOtherNodesRef = useRef<React.ReactNode[] | null>(null);
+    const coveredProgressNodesRef = useRef<React.ReactNode[] | null>(null);
     // Incremental Markdown render state for the streaming (last) assistant message.
     // This avoids re-parsing the entire message content on every 33ms token flush.
     // Only the "active tail" (last incomplete paragraph) is re-parsed each frame;
@@ -5888,7 +5912,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (cache.size > 200) {
             cache.clear();
         }
-        return otherMessages.map((msg: ChatMessage, idx: number) => {
+        // The cover is already on screen. Rebuilding the coding timeline on each
+        // token walks the tall transcript and freezes the new-task page.
+        const coveredOther = coveredOtherNodesRef.current;
+        if (taskConfigWiring.wizardOverlay && coveredOther && coveredOther.length > 0) return coveredOther;
+        const coveredNodes = otherMessages.map((msg: ChatMessage, idx: number) => {
             const isLast = idx === lastAssistantIdx;
             // Settled rows keep their object across token flushes. The live assistant follows the round.
             const settled = cache.get(msg.id);
@@ -5903,7 +5931,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 const openThoughtIndex = idx === lastAssistantIdx && (messageOwnsLive || idx === otherMessages.length - 1)
                     ? codingTimelineLastThoughtIndex(codingTimeline)
                     : -1;
-                const reply = renderMessage(
+                const replyCacheId = `${msg.id}\0reply`;
+                const replyKey = `${msg.content ?? ""}|${shownLiveLabel ?? ""}|${messageOwnsLive ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}`;
+                const replyCached = cache.get(replyCacheId);
+                const reply = replyCached?.contentKey === replyKey ? replyCached.node : renderMessage(
                     suppressWorkflowReviewActions(msg),
                     panelExecuteAction,
                     t,
@@ -5911,7 +5942,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     savedFileLabel,
                     lang,
                     isLast && activeSessionHasWork,
-                    undefined,
+                    messageOwnsLive && activeSessionIsStreaming && msg.content
+                        ? bindStreamingMarkdown(incrementalStateRef.current, msg.id, t)
+                        : undefined,
                     handleRecordingComplete,
                     true,
                     undefined,
@@ -5920,6 +5953,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     isLast && activeSessionHasWork,
                     isLatexExpertId(activeTab.expertId),
                 );
+                if (!replyCached || replyCached.contentKey !== replyKey) cache.set(replyCacheId, { contentKey: replyKey, node: reply });
                 let thoughtStep = 0;
                 const timelineNode = (
                     <Fragment key={msg.id}>
@@ -5979,26 +6013,16 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // Reasoning counts too: round 1 streams a long thinking trail before
             // the answer body reaches 2KB, and that trail needs the same
             // freeze-the-stable-part treatment to keep flushes cheap.
-            const longStreamingContent = !!(msg.content && msg.content.length > 2000);
-            const longStreamingReasoning = !!(msg.reasoning && msg.reasoning.length > 2000);
+            const longStreamingContent = !!(msg.content && streamingMarkdownUsesIncremental(msg.content.length));
+            const longStreamingReasoning = !!(msg.reasoning && streamingMarkdownUsesIncremental(msg.reasoning.length));
             if (messageOwnsLive && activeSessionIsStreaming && msg.role === 'assistant' && (longStreamingContent || longStreamingReasoning)) {
-                node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, true, (formattedContent: string) => {
-                    // Incremental render callback: called by renderMessage for the
-                    // content section of the last streaming assistant message.
-                    const incRef = incrementalStateRef.current;
-                    if (incRef.messageId !== msg.id) {
-                        incRef.messageId = msg.id;
-                        incRef.state = createIncrementalRenderState();
-                    }
-                    return renderContentIncremental(formattedContent, t, incRef.state);
-                }, handleRecordingComplete, isPureCodingEnvironment, (formattedReasoning: string) => {
-                    const incRef = reasoningIncrementalStateRef.current;
-                    if (incRef.messageId !== msg.id) {
-                        incRef.messageId = msg.id;
-                        incRef.state = createIncrementalRenderState();
-                    }
-                    return renderContentIncremental(formattedReasoning, t, incRef.state, reasoningTrailMarkdownOptions);
-                }, shownLiveLabel, liveObjectForMessage, true, isLatexExpertId(activeTab.expertId));
+                node = renderMessage(
+                    suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, true,
+                    bindStreamingMarkdown(incrementalStateRef.current, msg.id, t),
+                    handleRecordingComplete, isPureCodingEnvironment,
+                    bindStreamingMarkdown(reasoningIncrementalStateRef.current, msg.id, t, reasoningTrailMarkdownOptions),
+                    shownLiveLabel, liveObjectForMessage, true, isLatexExpertId(activeTab.expertId),
+                );
             } else {
                 // Reset incremental state when streaming ends
                 // so the final render is a clean full parse (100% correct).
@@ -6050,10 +6074,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }
             return node;
         });
-    }, [otherMessages, panelExecuteAction, t, lastAssistantIdx, lastAssistantOwnsLiveActivity, savedFileLabel, lang, isBusy, activeSessionHasWork, activeSessionIsStreaming, liveReasoningKind, liveReasoningLabel, liveReasoningObject, branchPointByDisplayIndex, handleRecordingComplete, isPureCodingEnvironment, activeTab.expertId]);
+        if (coveredNodes.length > 0) coveredOtherNodesRef.current = coveredNodes;
+        return coveredNodes;
+    }, [otherMessages, panelExecuteAction, t, lastAssistantIdx, lastAssistantOwnsLiveActivity, savedFileLabel, lang, isBusy, activeSessionHasWork, activeSessionIsStreaming, liveReasoningKind, liveReasoningLabel, liveReasoningObject, branchPointByDisplayIndex, handleRecordingComplete, isPureCodingEnvironment, activeTab.expertId, taskConfigWiring.wizardOverlay]);
     // A coding turn with an ordered timeline owns its coding progress rows.
     // Retain the legacy progress feed for non-coding and older in-flight turns.
     const renderedProgressMessages = useMemo(() => {
+        const coveredProgress = taskConfigWiring.wizardOverlay ? coveredProgressNodesRef.current : null;
+        if (coveredProgress && coveredProgress.length > 0) return coveredProgress;
         const hasTimeline = isPureCodingEnvironment && otherMessages.some((message) => message.role === "assistant" && message.codingTimeline?.length);
         const visibleProgress = (hasTimeline
             ? compactProgressMessages.filter((message) => !isCodingAgentProgressContent(message.content || ""))
@@ -6063,12 +6091,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (hasTimeline && isTranscriptToolCallText(text)) return false;
             return !transcriptAlreadyShowsToolCall(otherMessages, text);
         });
-        return visibleProgress.map((message) => (
+        const progressNodes = visibleProgress.map((message) => (
             <Fragment key={message.id}>
                 {renderMessage(suppressWorkflowReviewActions(message), panelExecuteAction, t, false, savedFileLabel, lang, false, undefined, undefined, isPureCodingEnvironment)}
             </Fragment>
         ));
-    }, [compactProgressMessages, panelExecuteAction, t, savedFileLabel, lang, isPureCodingEnvironment, otherMessages]);
+        if (progressNodes.length > 0) coveredProgressNodesRef.current = progressNodes;
+        return progressNodes;
+    }, [compactProgressMessages, panelExecuteAction, t, savedFileLabel, lang, isPureCodingEnvironment, otherMessages, taskConfigWiring.wizardOverlay]);
     // maximizedInlineStyle uses inset:0 (not 100vw/100vh) so UI scale transform cannot clip chrome.
     const containerStyle: React.CSSProperties = !inline
         ? overlayStyle
@@ -6095,6 +6125,52 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const skillRecordingHere = !!activeTab?.id && skillRecordingTabId === activeTab.id;
     const skillRecordingElsewhere = !!skillRecordingTabId && !skillRecordingHere;
     const skillRecordingAwaitingDecision = !!skillRecordingCard && (skillRecordingCard.type === "skill_recording_preparing" || skillRecordingCard.type === "skill_recording_done");
+    const wizardComposerUnlocked = taskConfigWiring.wizardOverlay;
+    const newTaskWelcomeComposer: WelcomeComposerProps = {
+        browseFile, canSend, cancelPending: wizardComposerUnlocked ? false : cancelPending, cancelSession, clearSelectedFile, composeAction,
+        exitHistoryBrowsing, finishVoicePointer, handleCancel, handleClearInput, handleDragOver, handleDrop, handlePaste,
+        handleSend: taskConfigWiring.handleSendWithTaskConfig, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave,
+        inputLocked: wizardComposerUnlocked ? false : inputLocked, inputRef, inputValue, isBusy: wizardComposerUnlocked ? false : inputVisualBusy,
+        isSelectionCollapsedAtBoundary, onComposeActionChange: handleComposeActionChange, onFireSlashCommand: handleFireSlashCommand, onInsertTemplate: handleInsertTemplate,
+        onPlusMenuAction: (actionId) => {
+            // The cover already is the new-task page. "New conversation" would clear the turn underneath.
+            if (wizardComposerUnlocked && actionId === "newConversation") return;
+            handlePlusMenuAction(actionId);
+        },
+        onPermissionModeChange: handlePermissionModeChange, pendingAttachments, permissionMode, taskCommandAllowed: taskCommandHint,
+        showWorkspacePermissionOption: isPureCodingEnvironment, ready, recallHistory, rememberHistoryEdit, removeSelectedFile, resizeInput,
+        selectedFilePaths, setPendingAttachments, showBusySpinner: wizardComposerUnlocked ? false : showBusySpinner, submittedPrompts, submittedPromptAttachments,
+        onHistoryTextAccepted: acceptHistoryText, updateInputValue, voiceInput,
+        ...(separateGuide ? {
+            browseFile: guideDraft.browseGuideFile,
+            canSend: ready && (!!draftInputValue.trim() || guideDraft.guideAttachments.length > 0 || guideDraft.guidePaths.length > 0),
+            clearSelectedFile: guideDraft.clearGuideFiles,
+            inputRef: guideDraft.guideInputRef,
+            inputValue: draftInputValue,
+            pendingAttachments: guideDraft.guideAttachments,
+            removeSelectedFile: guideDraft.removeGuideFile,
+            selectedFilePaths: guideDraft.guidePaths,
+            setPendingAttachments: guideDraft.setGuideAttachments,
+            updateInputValue: guideDraft.updateGuideDraft,
+        } : {}),
+    };
+    const newTaskWelcome = (showWelcomeView || wizardScreen) ? (
+        <NewTaskWizardWelcomePane
+            active={panelActive}
+            composer={newTaskWelcomeComposer}
+            cover={wizardScreen}
+            hidden={projectSearch.open}
+            lang={lang}
+            onBack={taskConfigWiring.dismissWizardOverlay}
+            onPromptSelect={handleWelcomePromptSelect}
+            onPromptSend={taskConfigWiring.handleWelcomePromptSendWithTaskConfig}
+            pinnedNews={pinnedNews}
+            showRunningBanner={wizardComposerUnlocked && !showWelcomeViewBase}
+            taskConfig={taskConfigWiring.taskConfig}
+            theme={t}
+            themeMode={themeMode}
+        />
+    ) : null;
     return (
         <div data-testid="ai-panel-root" data-ai-view={showWelcomeView ? "welcome" : "execution"} style={containerStyle}>
             <style>{`.branch-hover-container:hover .branch-btn { opacity: 0.7 !important; } .branch-hover-container .branch-btn:hover { opacity: 1 !important; background: ${t.fieldBg} !important; }`}</style>
@@ -6681,72 +6757,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         </div>
                     </div>
                 )}
-                {showWelcomeView ? (
-                    <div data-testid="ai-welcome-container" hidden={projectSearch.open} style={{ flex: 1, minHeight: 0, overflow: "auto", background: t.bg, boxSizing: "border-box" }}>
-                        {wizardOverlayActive && !showWelcomeViewBase && <NewTaskWizardRunningBanner lang={lang} theme={t} onBack={taskConfigWiring.dismissWizardOverlay} />}
-                        <AssistantWelcomeView
-                            lang={lang}
-                            theme={t}
-                            themeMode={themeMode}
-                            active={panelActive}
-                            onPromptSelect={handleWelcomePromptSelect}
-                            onPromptSend={taskConfigWiring.handleWelcomePromptSendWithTaskConfig}
-                            pinnedNews={pinnedNews}
-                            taskConfig={taskConfigWiring.taskConfig}
-                            composer={{
-                                browseFile,
-                                canSend,
-                                cancelPending: wizardOverlayActive ? false : cancelPending,
-                                cancelSession,
-                                clearSelectedFile,
-                                composeAction,
-                                exitHistoryBrowsing,
-                                finishVoicePointer,
-                                handleCancel,
-                                handleClearInput,
-                                handleDragOver,
-                                handleDrop,
-                                handlePaste,
-                                handleSend: taskConfigWiring.handleSendWithTaskConfig,
-                                handleVoiceClick,
-                                handleVoicePointerDown,
-                                handleVoicePointerLeave,
-                                inputLocked: wizardOverlayActive ? false : inputLocked,
-                                inputRef,
-                                inputValue,
-                                isBusy: wizardOverlayActive ? false : inputVisualBusy,
-                                isSelectionCollapsedAtBoundary,
-                                onComposeActionChange: handleComposeActionChange,
-                                onFireSlashCommand: handleFireSlashCommand,
-                                onInsertTemplate: handleInsertTemplate,
-                                onPlusMenuAction: (actionId) => {
-                                    // The cover already is the new-task page. "New conversation"
-                                    // would clear the turn running underneath.
-                                    if (wizardOverlayActive && actionId === "newConversation") return;
-                                    handlePlusMenuAction(actionId);
-                                },
-                                onPermissionModeChange: handlePermissionModeChange,
-                                pendingAttachments,
-                                permissionMode,
-                                taskCommandAllowed: taskCommandHint,
-                                showWorkspacePermissionOption: isPureCodingEnvironment,
-                                ready,
-                                recallHistory,
-                                rememberHistoryEdit,
-                                removeSelectedFile,
-                                resizeInput,
-                                selectedFilePaths,
-                                setPendingAttachments,
-                                showBusySpinner: wizardOverlayActive ? false : showBusySpinner,
-                                submittedPrompts,
-                                submittedPromptAttachments,
-                                onHistoryTextAccepted: acceptHistoryText,
-                                updateInputValue,
-                                voiceInput,
-                            }}
-                        />
-                    </div>
-                ) : (<>
+                {showWelcomeView ? newTaskWelcome : (<div hidden={wizardScreen || undefined} style={{ display: wizardScreen ? "none" : "contents" }}>
                 <div
                     className="mc-task-execution-header"
                     data-testid="task-execution-header"
@@ -6773,8 +6784,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         ) : null}
                     </div>
                 </div>
-                <div ref={outputContainerRef} data-testid="ai-output-container" className="ai-chat-scrollbar mc-task-execution" style={{ flex: 1, minHeight: 0, maxHeight: "none", padding: isPureCodingEnvironment ? "40px 10px 8px" : "8px 10px", fontSize: `${chatFontSize}px`, lineHeight: 1.5, overflowY: "auto", overflowX: "hidden", scrollbarGutter: "stable", textAlign: "left", color: t.text, background: t.bg, // Keep prose/reasoning in a CJK-capable UI font. Code blocks opt into monospace locally.
-                    fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif", whiteSpace: "normal", overflowWrap: "break-word", wordBreak: "normal" }} onScroll={handleScroll} onWheel={handleUserScrollIntent} onTouchMove={handleUserScrollIntent} onPointerDown={handleUserScrollIntent}>
+                <div ref={outputContainerRef} data-testid="ai-output-container" className="ai-chat-scrollbar mc-task-execution" style={{ flex: 1, minHeight: 0, maxHeight: "none", padding: isPureCodingEnvironment ? "40px 10px 8px" : "8px 10px", fontSize: `${chatFontSize}px`, lineHeight: 1.5, overflowY: "auto", overflowX: "hidden", scrollbarGutter: "stable", textAlign: "left", color: t.text, background: t.bg, ...assistantMessageFontStyle(isPureCodingEnvironment ? "coding" : "conversation", isPureCodingEnvironment ? codingFontFamily : chatFontFamily), whiteSpace: "normal", overflowWrap: "break-word", wordBreak: "normal" }} onScroll={handleScroll} onWheel={handleUserScrollIntent} onTouchMove={handleUserScrollIntent} onPointerDown={handleUserScrollIntent}>
                     {isExpertTabActive && displayMessages.length === 0 ? (
                         <ExpertTabEmptyBanner activeTab={activeTab} lang={lang} theme={t} />
                     ) : null}
@@ -6783,7 +6793,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     <AssistantConversationBody emptyContent={isPureCodingEnvironment ? null : undefined} initLabel={initLabel} lang={lang} messages={displayMessages} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={pinnedNews} ready={ready} renderedOtherMessages={renderedOtherMessages} renderedProgressMessages={renderedProgressMessages} liveActivityLabel={standaloneLiveActivityLabel} liveActivityObject={standaloneLiveActivityLabel ? liveReasoningObject : undefined} busyAccessory={hideWorkingTrail ? null : codingWorkingTrail} theme={t} brandId={brandId} brandDisplayNameCN={brandDisplayNameCN} />
                     </CodingAgentPreviewFocusContext.Provider>
                     <div ref={outputEndRef} />
-                </div></>)}
+                </div></div>)}
+                {wizardScreen ? newTaskWelcome : null}
                 {activeProjectPreparing && <ProjectPreparingBanner prepareMode={activeProjectPrepareMode} isRemoteCodingDev={isRemoteCodingDevEnvironment} isRemoteMaintenance={isRemoteMaintenanceEnvironment} isCodingDev={isCodingDevEnvironment} lang={lang} theme={t} />}
                 {!showWelcomeView && skillRecordingCard && <InlineChatCard card={skillRecordingCard} onResolve={(cardId, action, values) => { const resolvedCardId = cardId; setSkillRecordingCard((prev: any) => prev ? { ...prev, resolved: true, resolvedAction: action, resolvedValues: values } : null); handleResolveSkillRecordingCard(action, values); setTimeout(() => setSkillRecordingCard((prev: any) => prev && prev.id === resolvedCardId ? null : prev), 2000); }} theme={{ cardBg: t.fieldBg, cardBorder: t.titleBarBorder, textColor: t.text, mutedColor: t.promptColor, accentColor: "#4f7f6f", inputBg: t.fieldBg, inputBorder: t.titleBarBorder, buttonBg: "#4f7f6f", buttonText: "#fff", dangerColor: "#dc2626" }} lang={lang} />}
                 {!showWelcomeView && codingPreviewAllowed && (workflowAwaitingForm || workflowFormGeneratingDocument) && (
@@ -6835,7 +6846,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 {!showWelcomeView && <ComputerUseReadinessBanner lang={lang} theme={t} />}
                 {!showWelcomeView && <ComputerUseQuickBar lang={lang} theme={t} themeMode={themeMode} />}
                 {!showWelcomeView && !isPureCodingEnvironment && !isACPMirrorTabActive && !isExpertTabActive && <ChatTaskTray tasks={chatTasks.filter((task: { sessionKey?: string }) => task.sessionKey === activeSessionKey)} canDispatch={!!inputValue.trim() && !!dispatchChatTask} lang={lang} theme={t} onRunInBackground={handleRunChatTaskInBackground} onCancel={taskID => { void cancelChatTask?.(taskID); }} />}
-                {!showWelcomeView && <AssistantInputStack active={panelActive} browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} hardLockInput={recordingActive} inputRef={inputRef} inputValue={inputValue} inline={false} flushBottom isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={pendingAttachments} permissionMode={permissionMode} taskCommandAllowed={taskCommandHint} showWorkspacePermissionOption={isPureCodingEnvironment} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} submittedPromptAttachments={submittedPromptAttachments} onHistoryTextAccepted={acceptHistoryText} sendButtonStyle={{ minWidth: 40, width: 40, height: 40, borderRadius: 12, flexShrink: 0, background: t.sendBtnBg || t.btnColor, borderColor: t.sendBtnBorder || t.sendBtnBg || t.btnColor, color: t.sendBtnColor || "#fff", opacity: canSend ? 1 : 0.72, boxShadow: `0 3px 8px color-mix(in srgb, ${t.btnColor} 22%, transparent)` }} theme={t} themeMode={themeMode} toolbarEndContent={<AssistantQuickModelSwitcher lang={lang} theme={t} active={panelActive} availableProviders={availableProviders} currentModel={currentModel} modelOptions={modelOptions} modelMultipliers={modelMultipliers} modelsLoading={modelsLoading} onSwitchProvider={onSwitchProvider} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} activeProfile={activeExecutionProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} onOpenLLMSettings={onOpenLLMSettings} chipTestId="composer-model-chip" />} trailingToolbarContent={(activeTab?.type === "local" || activeTab?.type === "project" || activeTab?.type === "expert") ? (
+                {!showWelcomeView && !wizardScreen && <AssistantInputStack active={panelActive} browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} hardLockInput={recordingActive} inputRef={inputRef} inputValue={inputValue} inline={false} flushBottom isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={pendingAttachments} permissionMode={permissionMode} taskCommandAllowed={taskCommandHint} showWorkspacePermissionOption={isPureCodingEnvironment} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} submittedPromptAttachments={submittedPromptAttachments} onHistoryTextAccepted={acceptHistoryText} sendButtonStyle={{ minWidth: 40, width: 40, height: 40, borderRadius: 12, flexShrink: 0, background: t.sendBtnBg || t.btnColor, borderColor: t.sendBtnBorder || t.sendBtnBg || t.btnColor, color: t.sendBtnColor || "#fff", opacity: canSend ? 1 : 0.72, boxShadow: `0 3px 8px color-mix(in srgb, ${t.btnColor} 22%, transparent)` }} theme={t} themeMode={themeMode} toolbarEndContent={<AssistantQuickModelSwitcher lang={lang} theme={t} active={panelActive} availableProviders={availableProviders} currentModel={currentModel} modelOptions={modelOptions} modelMultipliers={modelMultipliers} modelsLoading={modelsLoading} onSwitchProvider={onSwitchProvider} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} activeProfile={activeExecutionProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} onOpenLLMSettings={onOpenLLMSettings} chipTestId="composer-model-chip" />} trailingToolbarContent={(activeTab?.type === "local" || activeTab?.type === "project" || activeTab?.type === "expert") ? (
                     // Working-directory chip inside the composer toolbar, after the
                     // permission-mode button: the primary entry for viewing/changing
                     // where this session operates.

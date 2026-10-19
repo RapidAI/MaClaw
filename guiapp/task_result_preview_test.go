@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 func TestPreviewTaskResultFilePPTX(t *testing.T) {
@@ -270,6 +272,73 @@ func TestPreviewTaskResultFileRejectsMissingAndDirectory(t *testing.T) {
 	}
 	if _, err := (*App)(nil).PreviewTaskResultFile(dir); err == nil || !strings.Contains(err.Error(), "不是文件") {
 		t.Fatalf("directory error = %v", err)
+	}
+}
+
+func TestPreviewTaskResultFileStreamsVideoPastOfficeCap(t *testing.T) {
+	resetTaskResultPreviewLeasesForTest()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "clip.mp4")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(agent.MaxOfficeReadFileBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (*App)(nil).PreviewTaskResultFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != "video" || !strings.HasPrefix(got.PreviewURL, taskResultPreviewHTTPPath+"?t=") {
+		t.Fatalf("video preview = %+v", got)
+	}
+	req := httptest.NewRequest(http.MethodGet, got.PreviewURL, nil)
+	req.Header.Set("Range", "bytes=0-3")
+	rec := httptest.NewRecorder()
+	handleTaskResultPreviewHTTP(nil, rec, req)
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d body = %q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Header().Get("Content-Type"), "video/mp4") {
+		t.Fatalf("content-type = %q", rec.Header().Get("Content-Type"))
+	}
+	if rec.Body.Len() != 4 {
+		t.Fatalf("range body = %d bytes", rec.Body.Len())
+	}
+}
+
+func TestPreviewTaskResultFileRejectsPDFPastOfficeCap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.pdf")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(agent.MaxOfficeReadFileBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = (*App)(nil).PreviewTaskResultFile(path)
+	if err == nil || !strings.Contains(err.Error(), "文件过大，无法预览") {
+		t.Fatalf("pdf over cap error = %v", err)
+	}
+}
+
+func TestTaskResultPreviewMaxBytesSeparatesMedia(t *testing.T) {
+	if taskResultPreviewMaxBytes("clip.mp4") != taskResultPreviewMediaMaxBytes {
+		t.Fatalf("video cap = %d", taskResultPreviewMaxBytes("clip.mp4"))
+	}
+	if taskResultPreviewMaxBytes("note.wav") != taskResultPreviewMediaMaxBytes {
+		t.Fatalf("audio cap = %d", taskResultPreviewMaxBytes("note.wav"))
+	}
+	if taskResultPreviewMaxBytes("doc.pdf") != agent.MaxOfficeReadFileBytes {
+		t.Fatalf("pdf cap = %d", taskResultPreviewMaxBytes("doc.pdf"))
 	}
 }
 

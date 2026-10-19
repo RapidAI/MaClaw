@@ -127,6 +127,26 @@ func TestProject_UsesStructuredPreviewAndStats(t *testing.T) {
 	}
 }
 
+func TestStructuredPreview_ToolsSearchKeepsDecisionWhenOverLimit(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("tools_search results for \"pdf\":\n")
+	b.WriteString("本轮决定：现在调用 web_search。已计划但本请求尚未列出：generate_pdf（先调用 web_search，成功后它出现在下一请求）。不要直接调用这些名字，不要请愿。\n")
+	for i := 0; i < 80; i++ {
+		fmt.Fprintf(&b, "- tool_%02d — %s [本轮不可用]\n", i, strings.Repeat("x", 80))
+	}
+	b.WriteString("只有标记「可请愿」的未列出名字才可以直接调用一次。\n")
+	preview := StructuredPreview("tools_search", b.String(), 900)
+	if !strings.Contains(preview, "本轮决定：") || !strings.Contains(preview, "generate_pdf（先调用 web_search") {
+		t.Fatalf("decision was cut: %s", preview)
+	}
+	if strings.Contains(preview, "tool_79") && !strings.Contains(preview, "next") {
+		// The tail sermon may remain. A late directory row must not be required.
+	}
+	if strings.Index(preview, "本轮决定：") > strings.Index(preview, "- tool_") && strings.Contains(preview, "- tool_") {
+		t.Fatalf("decision must stay ahead of directory rows: %s", preview)
+	}
+}
+
 func TestStructuredPreview_ComputerObserveKeepsRefsWhenOverLimit(t *testing.T) {
 	raw := "mode=text_primary screen=100x100 scale=1.00 screen_index=0\nwindows:\n  - Word\nelements (80):\n"
 	for i := 0; i < 80; i++ {

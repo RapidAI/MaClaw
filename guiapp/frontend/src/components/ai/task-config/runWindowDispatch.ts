@@ -107,7 +107,10 @@ export async function launchRunWindowTask(task: RunWindowTaskRecord, lang = "zh-
         isZh,
         bindings: {
             createTaskUnified: async (opts) => {
-                const created = await CreateTaskUnified(opts as unknown as Parameters<typeof CreateTaskUnified>[0]);
+                // The next scheduled paper is allocated before its turn can
+                // start. Cutting the shared session over here would cancel the
+                // paper that is still running. The open path clears it later.
+                const created = await CreateTaskUnified({ ...opts, keepExpertSession: true } as unknown as Parameters<typeof CreateTaskUnified>[0]);
                 projectPath = String(created?.projectPath || "").trim();
                 return { projectPath, warning: created?.warning };
             },
@@ -127,6 +130,7 @@ export async function launchRunWindowTask(task: RunWindowTaskRecord, lang = "zh-
                     warning: nav.warning,
                     noWorkflowInterception: nav.noWorkflowInterception,
                     deliverInitialMessage: true,
+                    backgroundLaunch: true,
                 };
                 window.dispatchEvent(new CustomEvent(EVENT_OPEN_TASK_LAUNCH, { detail }));
             },
@@ -136,6 +140,7 @@ export async function launchRunWindowTask(task: RunWindowTaskRecord, lang = "zh-
                     nav.initialMessage,
                     nav.latexDocument,
                     nav.projectPath,
+                    { backgroundLaunch: true },
                 );
             },
             materializeLatexDocument: async ({ projectPath: path, templateId, templateName, userText }) => {

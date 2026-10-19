@@ -194,6 +194,13 @@ func (s *SQLiteStore) searchByEmbedding(ctx context.Context, opts SearchOptions)
 	return results, nil
 }
 
+// SearchResultLocator is the stable identity of one hit. Callers that merge
+// corpora use it as the displayed locator. The same key is the RRF identity,
+// so a card and a fact from that card stay distinct.
+func SearchResultLocator(result SearchResult) string {
+	return embeddingResultKey(result)
+}
+
 func embeddingResultKey(r SearchResult) string {
 	// A fact carries its parent CardID and a table row can also carry derived
 	// card/fact fields. Use the explicit result type before looking at optional

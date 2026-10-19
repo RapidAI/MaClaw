@@ -7681,6 +7681,360 @@ func TestIsPathWithinDir(t *testing.T) {
 	}
 }
 
+func TestCodingVolumeNamesIgnoreExtendedPrefixAndEmptyVolumes(t *testing.T) {
+	if codingVolumeNamesDiffer("foo", "bar") {
+		t.Fatal("paths without a volume are not a cross-volume pair")
+	}
+	if runtime.GOOS != "windows" {
+		return
+	}
+	if codingVolumeNamesDiffer(`D:\test-proga\src\main.cpp`, `D:\test-proga`) {
+		t.Fatal("same drive should not differ")
+	}
+	if codingVolumeNamesDiffer(`c:\test-proga\src\main.cpp`, `C:\test-proga`) {
+		t.Fatal("drive-letter case should not differ")
+	}
+	if !codingVolumeNamesDiffer(`C:\Program Files`, `D:\test-proga`) {
+		t.Fatal("different drives should differ")
+	}
+	if codingVolumeNamesDiffer(`\\?\D:\test-proga\src\main.cpp`, `D:\test-proga`) {
+		t.Fatal("extended prefix on the same drive should not differ")
+	}
+	if codingVolumeNamesDiffer(`\??\D:\test-proga\src\main.cpp`, `D:\test-proga`) {
+		t.Fatal(`\??\ prefix on the same drive should not differ`)
+	}
+	if codingVolumeNamesDiffer(`\\.\D:\test-proga\src\main.cpp`, `D:\test-proga`) {
+		t.Fatal(`\\.\ prefix on the same drive should not differ`)
+	}
+	ok, err := pathWithinCleanDir(`\\?\D:\test-proga\src\main.cpp`, `D:\test-proga`)
+	if err != nil || !ok {
+		t.Fatalf("extended same-drive path should be inside, ok=%v err=%v", ok, err)
+	}
+	ok, err = pathWithinCleanDir(`\??\d:\test-proga\src\main.cpp`, `D:\test-proga`)
+	if err != nil || !ok {
+		t.Fatalf(`\??\ same-drive path should be inside, ok=%v err=%v`, ok, err)
+	}
+	ok, err = pathWithinCleanDir(`\\.\D:\test-proga\src\main.cpp`, `D:\test-proga`)
+	if err != nil || !ok {
+		t.Fatalf(`\\.\ same-drive path should be inside, ok=%v err=%v`, ok, err)
+	}
+	ok, err = pathWithinCleanDir(`\\.\C:\Windows\System32`, `D:\test-proga`)
+	if err != nil || ok {
+		t.Fatalf(`\\.\ path on another drive should be outside, ok=%v err=%v`, ok, err)
+	}
+	ok, err = pathWithinCleanDir(`\\?\D:\other\file`, `D:\test-proga`)
+	if err != nil || ok {
+		t.Fatalf("extended path outside the folder should be outside, ok=%v err=%v", ok, err)
+	}
+	ok, err = pathWithinCleanDir(`\\server\share\file`, `\\server\share`)
+	if err != nil || !ok {
+		t.Fatalf("plain UNC child should be inside the share, ok=%v err=%v", ok, err)
+	}
+	ok, err = pathWithinCleanDir(`\\?\UNC\server\share\file`, `\\server\share`)
+	if err != nil || ok {
+		t.Fatalf("extended UNC must not be rewritten into the plain share, ok=%v err=%v", ok, err)
+	}
+	ok, err = pathWithinCleanDir(`D:file`, `D:\test-proga`)
+	if err != nil || ok {
+		t.Fatalf("drive-relative path should be outside without a Rel error, ok=%v err=%v", ok, err)
+	}
+	if got, ok := codingStripDrivePrefix(`\\?\D:`, `\\?\`); !ok || got != `D:` {
+		t.Fatalf("drive root prefix = %q ok=%v", got, ok)
+	}
+}
+
+func TestCrossVolumePathIsOutsideAndHonorsFullControlOrAsk(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("cross-volume Rel is Windows-specific")
+	}
+	project := `D:\test-proga`
+	outside := `C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build`
+
+	ok, err := pathWithinCleanDir(outside, project)
+	if err != nil {
+		t.Fatalf("cross-volume path should be outside, not a Rel error: %v", err)
+	}
+	if ok {
+		t.Fatal("cross-volume path should not be inside the project")
+	}
+	ok, err = isPathWithinDir(outside, project)
+	if err != nil || ok {
+		t.Fatalf("isPathWithinDir cross-volume = ok=%v err=%v, want false, nil", ok, err)
+	}
+
+	fullCalls := 0
+	full := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
+	full.subagent.SetScopeApprovalCallback(func(ScopeApprovalRequest) ScopeApprovalDecision {
+		fullCalls++
+		return ScopeApprovalDeny
+	}, true)
+	if msg := full.requireProjectReadScope(outside, "Glob"); msg != "" {
+		t.Fatalf("完全控制 should allow cross-volume Glob, got %q", msg)
+	}
+	if fullCalls != 0 {
+		t.Fatalf("完全控制 should not ask, got %d calls", fullCalls)
+	}
+
+	var asked ScopeApprovalRequest
+	ask := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
+	ask.subagent.SetScopeApprovalCallback(func(req ScopeApprovalRequest) ScopeApprovalDecision {
+		asked = req
+		return ScopeApprovalDeny
+	}, false)
+	msg := ask.requireProjectReadScope(outside, "Glob")
+	if msg == "" || strings.Contains(msg, "无法确认") || strings.Contains(msg, "Rel:") {
+		t.Fatalf("denied cross-volume read should be a scope rejection, got %q", msg)
+	}
+	if !strings.Contains(msg, "项目目录外") {
+		t.Fatalf("denied cross-volume read should name the project boundary, got %q", msg)
+	}
+	if asked.ToolName != "Glob" || asked.Path != outside || asked.ProjectPath != project {
+		t.Fatalf("expected an approval ask for the Glob path, got %#v", asked)
+	}
+
+	allow := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
+	allow.subagent.SetScopeApprovalCallback(func(ScopeApprovalRequest) ScopeApprovalDecision {
+		return ScopeApprovalAllowOnce
+	}, false)
+	if msg := allow.requireProjectReadScope(outside, "Glob"); msg != "" {
+		t.Fatalf("user allow should pass the cross-volume Glob, got %q", msg)
+	}
+
+	bare := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
+	msg = bare.requireProjectReadScope(outside, "Glob")
+	if msg == "" || strings.Contains(msg, "Rel:") || strings.Contains(msg, "无法确认") {
+		t.Fatalf("missing approval should reject as outside the project, got %q", msg)
+	}
+}
+
+func TestIsPathWithinDirMissingProjectStaysUnresolved(t *testing.T) {
+	root := t.TempDir()
+	missing := filepath.Join(root, "missing-project")
+	ok, err := isPathWithinDir(filepath.Join(missing, "main.go"), missing)
+	if err == nil || ok {
+		t.Fatalf("missing project dir should stay unresolved, ok=%v err=%v", ok, err)
+	}
+}
+
+func TestPrepareTaskScopeApprovalUnresolvedProjectDoesNotAsk(t *testing.T) {
+	root := t.TempDir()
+	missing := filepath.Join(root, "missing-project")
+	inside := filepath.Join(missing, "main.go")
+	calls := 0
+	ask := func(ScopeApprovalRequest) ScopeApprovalDecision {
+		calls++
+		return ScopeApprovalAllowOnce
+	}
+	agent := &CodingSubAgent{
+		projectPath:   missing,
+		scopeApproval: newScopeApprovalState(ask, false),
+	}
+	msg := agent.prepareTaskScopeApproval(&TaskItem{Files: []string{inside}})
+	if calls != 0 || !strings.Contains(msg, "无法确认") || strings.Contains(msg, "Rel:") {
+		t.Fatalf("unresolved project asked or hid the error, calls=%d msg=%q", calls, msg)
+	}
+
+	calls = 0
+	agent.scopeApproval = newScopeApprovalState(ask, true)
+	msg = agent.prepareTaskScopeApproval(&TaskItem{Files: []string{inside}})
+	if calls != 0 || !strings.Contains(msg, "无法确认") {
+		t.Fatalf("full control resolved an unreadable project, calls=%d msg=%q", calls, msg)
+	}
+
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	calls = 0
+	agent.projectPath = project
+	agent.scopeApproval = newScopeApprovalState(ask, false)
+	if msg := agent.prepareTaskScopeApproval(&TaskItem{Files: []string{filepath.Join(project, "new.go")}}); msg != "" || calls != 0 {
+		t.Fatalf("in-project path should not ask, calls=%d msg=%q", calls, msg)
+	}
+	outside := filepath.Join(root, "outside", "secret.go")
+	msg = agent.prepareTaskScopeApproval(&TaskItem{Files: []string{outside}})
+	if calls != 1 || strings.Contains(msg, "无法确认") || strings.Contains(msg, "Rel:") {
+		t.Fatalf("outside path should ask, calls=%d msg=%q", calls, msg)
+	}
+}
+
+func makeCodingJunction(t *testing.T, link, target string) {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		t.Skip("junctions are Windows-specific")
+	}
+	out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput()
+	if err != nil {
+		t.Skipf("junction not available: %v (%s)", err, out)
+	}
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeIrregular == 0 {
+		t.Fatalf("expected a directory junction, mode=%v", info.Mode())
+	}
+}
+
+func TestIsPathWithinDirRejectsJunctionEscape(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	outside := filepath.Join(root, "outside")
+	real := filepath.Join(root, "real")
+	if err := os.MkdirAll(project, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(real, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "secret.go"), []byte("outside"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "main.go"), []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(project, "link")
+	makeCodingJunction(t, link, outside)
+	linkedProject := filepath.Join(root, "linked-project")
+	makeCodingJunction(t, linkedProject, real)
+
+	child := filepath.Join(link, "secret.go")
+	ok, err := isPathWithinDir(child, project)
+	if err != nil || ok {
+		t.Fatalf("junction child = ok=%v err=%v, want false, nil", ok, err)
+	}
+	ok, err = isPathWithinDir(link, project)
+	if err != nil || ok {
+		t.Fatalf("junction directory = ok=%v err=%v, want false, nil", ok, err)
+	}
+	// Win32 collapses ".." before it opens the junction, so this names a file
+	// inside the project. The scope check has to agree with that open.
+	ok, err = isPathWithinDir(link+`\..\plain.go`, project)
+	if err != nil || !ok {
+		t.Fatalf("lexical dotdot through a junction = ok=%v err=%v, want true, nil", ok, err)
+	}
+	ok, err = isPathWithinDir(filepath.Join(project, "new.go"), project)
+	if err != nil || !ok {
+		t.Fatalf("new file in the project = ok=%v err=%v, want true, nil", ok, err)
+	}
+	ok, err = isPathWithinDir(filepath.Join(linkedProject, "main.go"), linkedProject)
+	if err != nil || !ok {
+		t.Fatalf("file through a junction project root = ok=%v err=%v, want true, nil", ok, err)
+	}
+
+	calls := 0
+	full := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
+	full.subagent.SetScopeApprovalCallback(func(ScopeApprovalRequest) ScopeApprovalDecision {
+		calls++
+		return ScopeApprovalDeny
+	}, true)
+	if msg := full.requireProjectReadScope(child, "read_file"); msg != "" {
+		t.Fatalf("完全控制 should allow a junction read, got %q", msg)
+	}
+	if calls != 0 {
+		t.Fatalf("完全控制 should not ask, got %d calls", calls)
+	}
+
+	var asked ScopeApprovalRequest
+	ask := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
+	ask.subagent.SetScopeApprovalCallback(func(req ScopeApprovalRequest) ScopeApprovalDecision {
+		asked = req
+		return ScopeApprovalDeny
+	}, false)
+	msg := ask.requireProjectReadScope(child, "read_file")
+	if msg == "" || strings.Contains(msg, "无法确认") || !strings.Contains(msg, "项目目录外") {
+		t.Fatalf("denied junction read should be a scope rejection, got %q", msg)
+	}
+	if asked.Path != child {
+		t.Fatalf("expected an approval ask for the junction path, got %#v", asked)
+	}
+}
+
+func TestProjectThroughJunctionKeepsContainment(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	sub := filepath.Join(real, "sub")
+	outside := filepath.Join(root, "outside")
+	if err := os.MkdirAll(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "main.go"), []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "secret.go"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	jump := filepath.Join(root, "jump")
+	makeCodingJunction(t, jump, real)
+	project := filepath.Join(jump, "sub")
+	esc := filepath.Join(project, "esc")
+	makeCodingJunction(t, esc, outside)
+
+	file := filepath.Join(project, "main.go")
+	ok, err := isPathWithinDir(file, project)
+	if err != nil || !ok {
+		t.Fatalf("file through a junction ancestor = ok=%v err=%v, want true, nil", ok, err)
+	}
+	ok, err = isPathWithinDir(filepath.Join(project, "new.go"), project)
+	if err != nil || !ok {
+		t.Fatalf("new file through a junction ancestor = ok=%v err=%v, want true, nil", ok, err)
+	}
+	escape := filepath.Join(esc, "secret.go")
+	ok, err = isPathWithinDir(escape, project)
+	if err != nil || ok {
+		t.Fatalf("junction escape under a junction ancestor = ok=%v err=%v, want false, nil", ok, err)
+	}
+
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
+	if got := cb.displayProjectPath(file); got != "main.go" {
+		t.Fatalf("display = %q, want main.go", got)
+	}
+	shown := filepath.ToSlash(cb.displayProjectPath(escape))
+	if shown == "esc/secret.go" || !strings.Contains(shown, "outside/secret.go") {
+		t.Fatalf("escape display = %q", shown)
+	}
+
+	calls := 0
+	full := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
+	full.subagent.SetScopeApprovalCallback(func(ScopeApprovalRequest) ScopeApprovalDecision {
+		calls++
+		return ScopeApprovalDeny
+	}, true)
+	if msg := full.requireProjectReadScope(file, "read_file"); msg != "" {
+		t.Fatalf("in-project file through a junction = %q", msg)
+	}
+	if msg := full.requireProjectReadScope(escape, "read_file"); msg != "" {
+		t.Fatalf("完全控制 should allow the junction escape, got %q", msg)
+	}
+	if calls != 0 {
+		t.Fatalf("完全控制 should not ask, got %d calls", calls)
+	}
+
+	ask := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
+	ask.subagent.SetScopeApprovalCallback(func(ScopeApprovalRequest) ScopeApprovalDecision {
+		return ScopeApprovalDeny
+	}, false)
+	msg := ask.requireProjectReadScope(escape, "read_file")
+	if msg == "" || strings.Contains(msg, "无法确认") || !strings.Contains(msg, "项目目录外") {
+		t.Fatalf("denied junction escape = %q", msg)
+	}
+
+	s := newScopeApprovalState(nil, false)
+	s.approveDir(project)
+	if !s.isApproved(file) || !s.isApproved(filepath.Join(project, "new.go")) {
+		t.Fatal("grant through a junction ancestor should cover files in that directory")
+	}
+	if s.isApproved(escape) {
+		t.Fatal("grant must not cover a junction that leaves the directory")
+	}
+}
+
 func TestIsPathWithinDirRejectsSymlinkEscape(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, "project")

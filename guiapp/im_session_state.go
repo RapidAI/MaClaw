@@ -1,5 +1,7 @@
 package guiapp
 
+import "github.com/RapidAI/CodeClaw/corelib/agent"
+
 // clearPerUserSessionState resets all per-user ephemeral state that
 // accumulates during a conversation. This is the single source of truth
 // for session cleanup — every code path that destroys a conversation
@@ -119,8 +121,11 @@ func (h *IMMessageHandler) clearPerUserSessionStateOpts(userID string, keepCodin
 	// Steering file context (per-user partitioned).
 	h.clearSteeringContextFiles(userID)
 
-	// Memory snapshot cache.
+	// Memory snapshot cache. This conversation is over, so the next one may
+	// pin a new snapshot and a new AGENTS.md.
 	h.RefreshMemorySnapshot(userID)
+	meta := guiAgentsPrefixMeta(userID)
+	agent.DropConversationPrefix(meta.BotID, meta.ConversationID)
 	h.clearSessionFacts(userID)
 
 	h.clearSessionGovernedTasksForUser(userID)

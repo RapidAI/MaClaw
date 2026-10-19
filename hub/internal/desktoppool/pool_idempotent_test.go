@@ -33,6 +33,10 @@ func newRetryPool(t *testing.T, rawURL string) *Pool {
 func TestOpenDesktopRetriesAServiceThatNeverAnswered(t *testing.T) {
 	var calls int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/desktops/ensure" {
+			_, _ = w.Write([]byte(`{"status":"running"}`))
+			return
+		}
 		if r.URL.Path != "/v1/desktops/session" {
 			http.NotFound(w, r)
 			return
@@ -120,4 +124,3 @@ func errServiceProbe(message string) error {
 type serviceErrProbe struct{ message string }
 
 func (e *serviceErrProbe) Error() string { return e.message }
-

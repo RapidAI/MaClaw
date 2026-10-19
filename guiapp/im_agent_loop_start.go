@@ -227,7 +227,14 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 		// expanded extract from LoopContext so BM25 does not score the body.
 		if agent.CurrentLocalFilePathPromptIndex(userText) >= 0 {
 			originalText := userText
-			userText = agent.ExpandUserSelectedFilePathsWithContext(userText, cfg.EffectiveContextTokens())
+			// Picture PDFs go to the model when it can see images. Expansion is
+			// idempotent, so this choice has to be made before user content is
+			// built or an OCR transcript would stick for the rest of the turn.
+			if cfg.SupportsVision && allowLocalAttachmentStaging {
+				userText = agent.ExpandUserSelectedFilePathsForVisionBudget(userText, cfg.EffectiveContextTokens(), imImageAttachmentBytes(attachments))
+			} else {
+				userText = agent.ExpandUserSelectedFilePathsWithContext(userText, cfg.EffectiveContextTokens())
+			}
 			if ctx != nil {
 				ctx.autoExtractExpandedText = userText
 				toolRoutingText = computerUseRoutingText(originalText, attachments)

@@ -1,5 +1,6 @@
 import React from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { CODE_FENCE_FONT } from "./assistantCodeFence";
 import { splitAssistantToolCallContent, type AssistantToolCall } from "./assistantToolCall";
 
 function ToolCallIcon({ color }: { color: string }) {
@@ -37,7 +38,7 @@ export const AssistantToolCallRow = React.memo(function AssistantToolCallRow({ c
             </span>
             <div style={{ minWidth: 0, flex: "1 1 auto" }}>
                 <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "2px 8px" }}>
-                    <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", fontSize: 12, fontWeight: 650, color: theme.text }}>
+                    <span style={{ fontFamily: CODE_FENCE_FONT, fontSize: 12, fontWeight: 650, color: theme.text }}>
                         {title}
                     </span>
                     {action && (
@@ -54,7 +55,7 @@ export const AssistantToolCallRow = React.memo(function AssistantToolCallRow({ c
                             wordBreak: "break-word",
                             minWidth: 0,
                             maxWidth: "100%",
-                            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+                            fontFamily: CODE_FENCE_FONT,
                             fontSize: 11,
                             lineHeight: 1.45,
                             color: theme.text,

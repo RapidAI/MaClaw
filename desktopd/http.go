@@ -88,6 +88,32 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		}
 		writeJSON(w, http.StatusOK, session)
 	})
+	mux.HandleFunc("POST /v1/desktops/ensure", func(w http.ResponseWriter, r *http.Request) {
+		if !authOK(r) {
+			writeErr(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		var in struct {
+			TenantID string `json:"tenant_id"`
+			UserID   string `json:"user_id"`
+			Image    string `json:"image"`
+			Memory   string `json:"memory"`
+			CPUs     string `json:"cpus"`
+			ShmSize  string `json:"shm_size"`
+		}
+		if !decodeBody(w, r, &in) {
+			return
+		}
+		err := svc.Ensure(r.Context(), Spec{
+			TenantID: in.TenantID, UserID: in.UserID, Image: in.Image,
+			Memory: in.Memory, CPUs: in.CPUs, ShmSize: in.ShmSize,
+		})
+		if err != nil {
+			writeServiceErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "running"})
+	})
 	mux.HandleFunc("POST /v1/desktops/app", func(w http.ResponseWriter, r *http.Request) {
 		if !authOK(r) {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")
@@ -158,6 +184,16 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		if !decodeLimited(w, r, 1<<20, &in) {
 			return
 		}
+		switch strings.ToLower(strings.TrimSpace(in.Action)) {
+		case "read", "bytes", "write", "edit", "list":
+		default:
+			writeOp(w, "", fmt.Errorf("%w: file action is invalid", ErrInvalid))
+			return
+		}
+		if err := svc.Ensure(r.Context(), Spec{TenantID: in.TenantID, UserID: in.UserID}); err != nil {
+			writeServiceErr(w, err)
+			return
+		}
 		var text string
 		var err error
 		switch strings.ToLower(strings.TrimSpace(in.Action)) {
@@ -191,6 +227,10 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 			Command  string `json:"command"`
 		}
 		if !decodeLimited(w, r, 64<<10, &in) {
+			return
+		}
+		if err := svc.Ensure(r.Context(), Spec{TenantID: in.TenantID, UserID: in.UserID}); err != nil {
+			writeServiceErr(w, err)
 			return
 		}
 		text, err := svc.Bash(r.Context(), in.TenantID, in.UserID, in.Command)
@@ -346,7 +386,18 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		}
 		writeJSON(w, http.StatusOK, desktop)
 	})
-	return withBotID(mux)
+	// CDP and noVNC arrive here without the desktopd API token. The container
+	// gate checks the bearer. This path is on the API nginx already proxies.
+	// Dispatch before the mux: ServeMux redirects a ".." path to its cleaned
+	// form, which would turn a climb into some other user's tunnel.
+	tunnel := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL != nil && strings.HasPrefix(r.URL.Path, tunnelPrefix) {
+			svc.serveTunnel(w, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+	return withBotID(tunnel)
 }
 
 // decodeBody caps request bodies: the desktop API only ever carries small
@@ -394,6 +445,13 @@ func bearerToken(r *http.Request) string {
 }
 
 func writeServiceErr(w http.ResponseWriter, err error) {
+	var wake WarmStartError
+	if errors.As(err, &wake) {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"ok": false, "retryable": true, "message": wake.Error(), "error": wake.Error(),
+		})
+		return
+	}
 	if errors.Is(err, ErrInvalid) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return

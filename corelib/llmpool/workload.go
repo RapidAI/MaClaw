@@ -827,6 +827,13 @@ func capabilityNeeds(body map[string]any) map[string]int {
 	return needs
 }
 
+// RequestHasVisionContent reports an image block on the chat or responses body.
+// Provider order and token-bank member dial both use it so a picture page is
+// not rotated onto a text-only upstream.
+func RequestHasVisionContent(body map[string]any) bool {
+	return hasVisionContent(body)
+}
+
 func hasVisionContent(body map[string]any) bool {
 	if body == nil {
 		return false
@@ -843,7 +850,11 @@ func containsVisionValue(v any) bool {
 			}
 		}
 	case map[string]any:
-		if strings.EqualFold(stringValue(val["type"]), "image_url") || val["image_url"] != nil {
+		switch strings.ToLower(strings.TrimSpace(stringValue(val["type"]))) {
+		case "image_url", "image", "input_image":
+			return true
+		}
+		if val["image_url"] != nil {
 			return true
 		}
 		for _, key := range []string{"content", "parts"} {

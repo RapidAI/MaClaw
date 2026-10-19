@@ -116,7 +116,7 @@ func (s *Service) ensureDesktopHydrated(tenantID string) {
 		if s.handoff == nil {
 			s.handoff = map[string]handoffView{}
 		}
-		s.handoff[view.Token] = handoffView{origin: view.Origin, until: until, bearer: view.Bearer}
+		s.handoff[view.Token] = handoffView{origin: view.Origin, base: handoffBaseFromRaw(view.Raw), until: until, bearer: view.Bearer}
 	}
 	for key, stamp := range rec.Desktop.Viewed {
 		if !strings.HasPrefix(key, prefix) {

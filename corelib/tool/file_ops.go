@@ -19,6 +19,17 @@ const (
 
 const DefaultWriteMode = string(WriteModeOverwrite)
 
+// TextFileMutated runs after a text file is written or edited successfully.
+// Hosts use it to refresh indexes. It must return quickly.
+var TextFileMutated func(path string)
+
+func noteTextFileMutated(path string) {
+	if TextFileMutated == nil || path == "" {
+		return
+	}
+	TextFileMutated(path)
+}
+
 // WriteModeOptions is the closed set of write modes the file-write capability
 // advertises in its invocation schema, derived from the canonical constants so
 // a host cannot render one set while NormalizeWriteModeKind enforces another.
@@ -121,6 +132,7 @@ func WriteTextFile(path, content, mode string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("写入验证失败 %s: %w", path, err)
 	}
+	noteTextFileMutated(path)
 	return info.Size(), nil
 }
 
@@ -155,6 +167,7 @@ func EditTextFile(path, oldString, newString string, replaceAll bool) (*EditText
 	if err != nil {
 		return nil, fmt.Errorf("写入验证失败 %s: %w", path, err)
 	}
+	noteTextFileMutated(path)
 	return &EditTextFileResult{Count: replaced.Applied, Size: info.Size(), Path: path}, nil
 }
 
@@ -268,6 +281,7 @@ func EditFileByLine(path string, op EditLineOperation, startLine, endLine int, n
 	if err != nil {
 		return nil, fmt.Errorf("写入验证失败 %s: %w", path, err)
 	}
+	noteTextFileMutated(path)
 
 	return &EditLineResult{
 		Path:         path,

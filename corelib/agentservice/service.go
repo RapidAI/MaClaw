@@ -408,6 +408,11 @@ func NewService(cfg Config, store Store, executor Executor) (*Service, error) {
 	if setter, ok := executor.(interface{ SetDynamicOperationLedger(DynamicOperationLedger) }); ok {
 		setter.SetDynamicOperationLedger(dynamicOperations)
 	}
+	if db, ok := store.(*SQLiteStore); ok && db != nil {
+		if setter, ok := executor.(interface{ SetDesktopSteps(DesktopStepper) }); ok {
+			setter.SetDesktopSteps(db)
+		}
+	}
 	return service, nil
 }
 

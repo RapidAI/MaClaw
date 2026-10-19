@@ -25,6 +25,7 @@ vi.mock("../../../../wailsjs/go/main/App", () => ({
     SearchTasks: vi.fn().mockResolvedValue([]),
     ListMobileLibraryItems: vi.fn().mockResolvedValue([]),
     KnowledgeSearch: vi.fn().mockResolvedValue([]),
+    LocalSearch: vi.fn().mockResolvedValue({ hits: [] }),
     ListExperts: vi.fn().mockResolvedValue("[]"),
     GetArchivedExperience: getArchivedExperienceMock,
     GetProjectScene: getProjectSceneMock,

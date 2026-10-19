@@ -138,6 +138,14 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 		}
 	}
 	mentioned := discoveryMentionedNameSet(need, toolMap)
+	// An explicit MCP tool name is an address, not retrieval noise. The host
+	// catalog mention set does not contain vendor names, so without this the
+	// ranking cap can drop the tool the lookup just named.
+	for id, item := range mcpMatches {
+		if discoveryNeedMentionsTool(need, item.toolName) {
+			mentioned[id] = true
+		}
+	}
 	ranked = pinMentionedDiscoveryTools(mentioned, ranked)
 	ranked = h.filterDiscoveryRanking(ownerID, loopCtx, ranked, mcpMatches)
 	ranked = finalizeDiscoveryRanking(mentioned, ranked)
@@ -175,6 +183,31 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 			activated[item.name] = true
 		}
 	}
+	// Installed MCP tools are not legacy adapter names. Record the ones this
+	// lookup identified; the next model request publishes those bindings
+	// through the semantic planner. Do not record a bind the inventory cannot
+	// plan, and do not claim one was stored when this call has no loop.
+	mcpBound := map[string]bool{}
+	mcpSelected := map[string]bool{}
+	var mcpBindReasons []string
+	if selected := selectDiscoveredMCPBinds(need, ranked, mcpMatches); len(selected) > 0 {
+		for _, item := range selected {
+			mcpSelected[discoveredMCPBindKey(item.serverID, item.toolName)] = true
+		}
+		if loopCtx == nil {
+			mcpBindReasons = append(mcpBindReasons, discoveredMCPNoLoopSentence)
+		} else {
+			assessCtx, assessCancel := loopCtx.Context()
+			bindable, reasons := h.assessDiscoveredMCPBinds(assessCtx, selected)
+			assessCancel()
+			mcpBindReasons = append(mcpBindReasons, reasons...)
+			for _, item := range bindable {
+				if loopCtx.rememberDiscoveredMCPBind(item.serverID, item.toolName) {
+					mcpBound[discoveredMCPBindKey(item.serverID, item.toolName)] = true
+				}
+			}
+		}
+	}
 	if len(activated) > 0 {
 		h.toolsMu.Lock()
 		h.cachedTools = nil
@@ -187,15 +220,21 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 	anyGranted := false
 	anyOnSurface := false
 	anyBlocked := false
+	anyLegacy := false
 	for i, item := range ranked {
 		if mcp, ok := mcpMatches[item.name]; ok {
 			desc := mcp.description
 			if runes := []rune(desc); len(runes) > 120 {
 				desc = string(runes[:120]) + "..."
 			}
-			b.WriteString(fmt.Sprintf("%d. **MCP capability pending managed replan** (%s/%s) - %s\n", i+1, mcp.serverID, mcp.toolName, desc))
+			label := "installed MCP tool"
+			if mcpBound[discoveredMCPBindKey(mcp.serverID, mcp.toolName)] {
+				label = "installed MCP tool, bound for the next request"
+			}
+			b.WriteString(fmt.Sprintf("%d. **%s** (%s/%s) - %s\n", i+1, label, mcp.serverID, mcp.toolName, desc))
 			continue
 		}
+		anyLegacy = true
 		t := toolMap[item.name]
 		desc := t.Description
 		if runes := []rune(desc); len(runes) > 120 {
@@ -220,13 +259,40 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 		b.WriteString("\nA listed name is already on this turn's tool surface. Call it directly; do not keep calling discover_tool for the same name.")
 	case anyBlocked:
 		b.WriteString("\nA blocked name cannot be added to this turn. Use another listed tool; do not keep calling discover_tool for the same name.")
-	default:
+	case anyLegacy && len(mcpBound) == 0:
+		// A bound MCP row is already on the next request. This sentence is only
+		// for a legacy name the host did not grant. MCP-only results use the
+		// bind footer below.
 		b.WriteString("\nThe matched name is not in the current tool list yet. If it stays unmatched after this search, use another listed tool; do not keep calling discover_tool for the same name.")
 	}
-	if containsMCPDiscoveryMatch(ranked, mcpMatches) {
-		b.WriteString("\nMCP matches are not executable on this legacy surface. Request a managed semantic replan; the host must bind the provider and tool before it is exposed.")
+	if len(mcpBound) > 0 {
+		b.WriteString("\n" + discoveredMCPBoundSentence)
+	}
+	for _, reason := range mcpBindReasons {
+		b.WriteString("\n" + reason)
+	}
+	if discoveredMCPRankingLeftUnbound(ranked, mcpMatches, mcpBound, mcpSelected) {
+		b.WriteString("\n" + discoveredMCPUnboundSentence)
 	}
 	return b.String()
+}
+
+// discoveredMCPRankingLeftUnbound reports an MCP row this lookup listed but
+// neither bound nor already explained. A refused address is not asked to
+// try the same name again under the generic unbound rule.
+func discoveredMCPRankingLeftUnbound(ranked []discoveredToolScore, mcpMatches map[string]discoverableMCPTool, bound, selected map[string]bool) bool {
+	for _, item := range ranked {
+		mcp, ok := mcpMatches[item.name]
+		if !ok {
+			continue
+		}
+		key := discoveredMCPBindKey(mcp.serverID, mcp.toolName)
+		if bound[key] || selected[key] {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func shouldHideToolFromDiscovery(name string) bool {
@@ -314,15 +380,6 @@ func (h *IMMessageHandler) discoverableMCPToolDocs() map[string]discoverableMCPT
 		}
 	}
 	return out
-}
-
-func containsMCPDiscoveryMatch(ranked []discoveredToolScore, mcpMatches map[string]discoverableMCPTool) bool {
-	for _, item := range ranked {
-		if _, ok := mcpMatches[item.name]; ok {
-			return true
-		}
-	}
-	return false
 }
 
 func discoveryNeedMentionsTool(need, name string) bool {

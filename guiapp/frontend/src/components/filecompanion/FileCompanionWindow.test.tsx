@@ -36,6 +36,18 @@ const saveResult = vi.fn();
 const figureDataURL = vi.fn();
 const exportPdf = vi.fn();
 const exportChatPdf = vi.fn();
+const exportTex = vi.fn();
+const exportChatTex = vi.fn();
+const exportWebPdf = vi.fn();
+const exportWebChatPdf = vi.fn();
+const exportWebTex = vi.fn();
+const exportWebChatTex = vi.fn();
+const openWeb = vi.fn();
+const sendWeb = vi.fn();
+const clearWeb = vi.fn();
+const cancelTurn = vi.fn();
+const cancelWeb = vi.fn();
+const discardWeb = vi.fn();
 const getBrandInfo = vi.fn();
 const clipboardWrite = vi.fn();
 
@@ -53,11 +65,31 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     FileCompanionUIReady: (...args: unknown[]) => ready(...args),
     ChooseFileCompanionFiles: (...args: unknown[]) => choose(...args),
     FileCompanionOpenArxiv: (...args: unknown[]) => openArxiv(...args),
+    FileCompanionOpenWebPage: (...args: unknown[]) => openWeb(...args),
+    SendFileCompanionWebMessage: (...args: unknown[]) => sendWeb(...args),
+    ClearFileCompanionWebChat: (...args: unknown[]) => clearWeb(...args),
+    CancelFileCompanionTurn: (...args: unknown[]) => cancelTurn(...args),
+    CancelFileCompanionWebTurn: (...args: unknown[]) => cancelWeb(...args),
+    FileCompanionDiscardWebNote: (...args: unknown[]) => discardWeb(...args),
+    FileCompanionWebHistory: vi.fn(async () => []),
+    FileCompanionExportTeX: (...args: unknown[]) => exportTex(...args),
+    FileCompanionExportChatTeX: (...args: unknown[]) => exportChatTex(...args),
+    FileCompanionExportWebPDF: (...args: unknown[]) => exportWebPdf(...args),
+    FileCompanionExportWebChatPDF: (...args: unknown[]) => exportWebChatPdf(...args),
+    FileCompanionExportWebTeX: (...args: unknown[]) => exportWebTex(...args),
+    FileCompanionExportWebChatTeX: (...args: unknown[]) => exportWebChatTex(...args),
     OpenFileOrShowInFolder: (...args: unknown[]) => openResult(...args),
     ExportTaskResultFile: (...args: unknown[]) => saveResult(...args),
     FileCompanionFigureDataURL: (...args: unknown[]) => figureDataURL(...args),
     FileCompanionExportPDF: (...args: unknown[]) => exportPdf(...args),
     FileCompanionExportChatPDF: (...args: unknown[]) => exportChatPdf(...args),
+    PreviewTaskResultFile: async (path: string) => {
+        const name = String(path).toLowerCase();
+        if (name.endsWith(".mp4") || name.endsWith(".mp3")) {
+            return { kind: name.endsWith(".mp3") ? "audio" : "video", preview_url: "/maclaw-preview/v1/file?t=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" };
+        }
+        return { kind: "text", content: "" };
+    },
     GetBrandInfo: (...args: unknown[]) => getBrandInfo(...args),
 }));
 
@@ -161,6 +193,24 @@ beforeEach(() => {
     exportPdf.mockResolvedValue("");
     exportChatPdf.mockReset();
     exportChatPdf.mockResolvedValue("");
+    exportTex.mockReset();
+    exportTex.mockResolvedValue("");
+    exportChatTex.mockReset();
+    exportChatTex.mockResolvedValue("");
+    exportWebPdf.mockReset();
+    exportWebChatPdf.mockReset();
+    exportWebTex.mockReset();
+    exportWebChatTex.mockReset();
+    openWeb.mockReset();
+    sendWeb.mockReset();
+    sendWeb.mockResolvedValue(undefined);
+    clearWeb.mockReset();
+    cancelTurn.mockReset();
+    cancelTurn.mockResolvedValue(undefined);
+    cancelWeb.mockReset();
+    cancelWeb.mockResolvedValue(undefined);
+    discardWeb.mockReset();
+    discardWeb.mockResolvedValue(undefined);
     clipboardWrite.mockReset();
     clipboardWrite.mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText: clipboardWrite } });
@@ -434,7 +484,7 @@ describe("FileCompanionWindow", () => {
         expect(menu).toBeTruthy();
         expect(screen.getByTestId("file-companion-open-local").textContent).toContain("打开文件");
         const input = screen.getByTestId("file-companion-arxiv-input") as HTMLInputElement;
-        expect(input.placeholder).toBe("Arxiv ID 或 URL");
+        expect(input.placeholder).toBe("如 2510.16079、arxiv.org/abs/…，或 youtube 等视频页面地址");
         // Nothing typed yet: 确定 has nothing to fetch.
         expect((screen.getByTestId("file-companion-arxiv-go") as HTMLButtonElement).disabled).toBe(true);
         // The bar clips its row; the menu has to un-clip it or it is cut off.
@@ -1229,6 +1279,32 @@ describe("FileCompanionWindow", () => {
             expect(screen.getByRole("alert").textContent).toContain("需要先在主窗口登录，才能上传到云盘");
         });
         expect((screen.getByTestId("file-companion-upload") as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it("opens a document named open-file and reports a missing one", async () => {
+        boot.mockResolvedValue({ paths: ["C:/papers/2510.02373v1.pdf"] });
+        open.mockImplementation(async (path: string) => {
+            if (path === "C:/papers/open-file" || path.endsWith("missing.md")) return doc(path, { error: "file not found", canExport: false });
+            return doc(path);
+        });
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-2510.02373v1.pdf");
+        expect(screen.queryByTestId("file-companion-tab-open-file")).toBeNull();
+        expect(open).toHaveBeenCalledTimes(1);
+        expect(open).toHaveBeenCalledWith("C:/papers/2510.02373v1.pdf");
+
+        runtime.emit("file-companion:open", ["C:/notes/open-file", "C:/notes/missing.md", "C:/papers/open-file"]);
+        await screen.findByTestId("file-companion-tab-missing.md");
+        await waitFor(() => {
+            expect(screen.getAllByTestId("file-companion-tab-open-file").map((tab) => tab.getAttribute("title"))).toEqual([
+                "C:/notes/open-file",
+                "C:/papers/open-file",
+            ]);
+        });
+        expect(screen.getByTestId("file-companion-file-error").textContent).toContain("找不到文件");
+        fireEvent.click(screen.getAllByTestId("file-companion-tab-open-file")[0]);
+        expect(screen.queryByTestId("file-companion-file-error")).toBeNull();
     });
 
     it("dropping a directory does not create a tab", async () => {
@@ -3108,6 +3184,544 @@ describe("FileCompanionWindow", () => {
         await screen.findByText("这是摘要");
         await act(async () => { await Promise.resolve(); });
         expect(send).toHaveBeenCalledTimes(2);
+    });
+
+    it("seeks a local preview from stamps left after the English recap is peeled", async () => {
+        const proto = HTMLMediaElement.prototype;
+        const time = new WeakMap<HTMLMediaElement, number>();
+        const ready = new WeakMap<HTMLMediaElement, number>();
+        const length = new WeakMap<HTMLMediaElement, number>();
+        const prior = {
+            currentTime: Object.getOwnPropertyDescriptor(proto, "currentTime"),
+            readyState: Object.getOwnPropertyDescriptor(proto, "readyState"),
+            duration: Object.getOwnPropertyDescriptor(proto, "duration"),
+        };
+        const define = (key: "currentTime" | "readyState" | "duration", map: WeakMap<HTMLMediaElement, number>, fallback: number) => {
+            Object.defineProperty(proto, key, {
+                configurable: true,
+                get() { return map.has(this) ? map.get(this)! : fallback; },
+                set(value: number) { map.set(this, value); },
+            });
+        };
+        define("currentTime", time, 0);
+        define("readyState", ready, 0);
+        define("duration", length, Number.NaN);
+        const restore = () => {
+            (["currentTime", "readyState", "duration"] as const).forEach((key) => {
+                const desc = prior[key];
+                if (desc) Object.defineProperty(proto, key, desc);
+                else delete (proto as unknown as Record<string, unknown>)[key];
+            });
+        };
+        try {
+            const plan = [
+                "- User asks: \"这篇文档是什么？\" (What is this document?)",
+                "- 12:05 only in the plan",
+                "- System Prompt Instructions:",
+                "  - Role: AI personal assistant.",
+                "- The file extension is .mp4, which is a video file, not a document.",
+                "",
+                "这是一个名为 clip.mp4 的视频文件。",
+                "12:05 讲了板书",
+                "1:02:03 讲了下一节",
+                "12:99 不是时间",
+                "99:99 也不是",
+            ].join("\n");
+            boot.mockResolvedValue({ paths: ["C:/media/clip.mp4"] });
+            open.mockImplementation(async (path: string) => doc(path));
+            const runtime = installRuntime();
+            renderWindow();
+            await screen.findByTestId("file-companion-video-note");
+            expect(screen.queryByTestId("file-companion-paper")).toBeNull();
+            expect((screen.getByTestId("file-companion-export-chat") as HTMLButtonElement).disabled).toBe(true);
+            const video = await screen.findByTestId("media-preview-panel").then(() => document.querySelector("video") as HTMLMediaElement);
+            expect(video).toBeTruthy();
+            Object.defineProperty(video, 'readyState', { value: 1, configurable: true });
+            Object.defineProperty(video, 'duration', { value: 10000, configurable: true });
+            act(() => {
+                runtime.emit("ai-assistant-response", JSON.stringify({
+                    session_key: "file-companion:clip.mp4",
+                    text: plan,
+                    request_id: "seek-1",
+                }));
+            });
+            await screen.findByText("这是一个名为 clip.mp4 的视频文件。");
+            const stamps = screen.getAllByTestId("file-companion-seek");
+            expect(stamps.map((node) => node.textContent)).toEqual(["12:05", "1:02:03"]);
+            expect(stamps.map((node) => node.getAttribute("data-seconds"))).toEqual(["725", "3723"]);
+            expect(screen.getByText("12:05 only in the plan")).toBeTruthy();
+            expect(stamps.some((node) => (node.parentElement?.textContent || "").includes("only in the plan"))).toBe(false);
+            fireEvent.click(stamps[0]);
+            expect(video.currentTime).toBe(725);
+            fireEvent.click(stamps[1]);
+            expect(video.currentTime).toBe(3723);
+
+            runtime.emit("file-companion:open", ["C:/media/talk.mp3"]);
+            await screen.findByText("talk.mp3");
+            const audio = await waitFor(() => {
+                const node = document.querySelector("audio") as HTMLMediaElement | null;
+                expect(node).toBeTruthy();
+                return node!;
+            });
+            Object.defineProperty(audio, 'readyState', { value: 1, configurable: true });
+            Object.defineProperty(audio, 'duration', { value: 10000, configurable: true });
+            act(() => {
+                runtime.emit("ai-assistant-response", JSON.stringify({
+                    session_key: "file-companion:talk.mp3",
+                    text: "1:02:03 后半段",
+                    request_id: "seek-audio",
+                }));
+            });
+            const audioStamp = await screen.findByTestId("file-companion-seek");
+            expect(audioStamp.getAttribute("data-seconds")).toBe("3723");
+            fireEvent.click(audioStamp);
+            expect(audio.currentTime).toBe(3723);
+        } finally {
+            restore();
+        }
+    });
+
+    it("renders formulas on a seekable note line and keeps a display block intact", async () => {
+        boot.mockResolvedValue({ paths: ["C:/media/clip.mp4"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-video-note");
+        act(() => {
+            runtime.emit("ai-assistant-response", JSON.stringify({
+                session_key: "file-companion:clip.mp4",
+                text: [
+                    "## 章节",
+                    "0:00–2:00 令 $x$ 成立",
+                    "$$",
+                    "a+b",
+                    "$$",
+                    "12:05 「$y^2$」",
+                ].join("\n"),
+                request_id: "formula-1",
+            }));
+        });
+        const answer = await screen.findByTestId("file-companion-answer");
+        const stamps = answer.querySelectorAll('[data-testid="file-companion-seek"]');
+        expect(Array.from(stamps).map((node) => node.textContent)).toEqual(["0:00–2:00", "12:05"]);
+        expect(Array.from(stamps).map((node) => node.getAttribute("data-seconds"))).toEqual(["0", "725"]);
+        expect(answer.querySelectorAll('[data-testid="assistant-inline-math"]')).toHaveLength(2);
+        expect(answer.querySelector('[data-testid="assistant-display-math"]')?.textContent).toContain("a");
+        expect(answer.textContent).not.toContain("$x$");
+        expect(answer.textContent).not.toContain("$y^2$");
+        expect(answer.textContent).not.toContain("$$");
+    });
+
+    it("keeps a timed formula row inside the display block", async () => {
+        boot.mockResolvedValue({ paths: ["C:/media/clip.mp4"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-video-note");
+        act(() => {
+            runtime.emit("ai-assistant-response", JSON.stringify({
+                session_key: "file-companion:clip.mp4",
+                text: [
+                    "## 章节",
+                    "0:00–2:00 分段",
+                    "$$",
+                    "0:00 & t_0",
+                    "2:00 & t_1",
+                    "$$",
+                    "12:05 下一句",
+                ].join("\n"),
+                request_id: "formula-row-1",
+            }));
+        });
+        const answer = await screen.findByTestId("file-companion-answer");
+        const stamps = answer.querySelectorAll('[data-testid="file-companion-seek"]');
+        expect(Array.from(stamps).map((node) => node.textContent)).toEqual(["0:00–2:00", "12:05"]);
+        expect(Array.from(stamps).map((node) => node.getAttribute("data-seconds"))).toEqual(["0", "725"]);
+        expect(answer.querySelector('[data-testid="assistant-display-math"]')?.textContent).toContain("t_0");
+        expect(answer.querySelector('[data-testid="assistant-display-math"]')?.textContent).toContain("t_1");
+    });
+
+    it("keeps a symbolic timed formula row inside the display block", async () => {
+        boot.mockResolvedValue({ paths: ["C:/media/clip.mp4"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-video-note");
+        act(() => {
+            runtime.emit("ai-assistant-response", JSON.stringify({
+                session_key: "file-companion:clip.mp4",
+                text: [
+                    "## 章节",
+                    "0:00–2:00 分段",
+                    "$$",
+                    "0:00 = t_0",
+                    "2:00 = t_1",
+                    "$$",
+                    "12:05 下一句",
+                ].join("\n"),
+                request_id: "formula-symbolic-1",
+            }));
+        });
+        const answer = await screen.findByTestId("file-companion-answer");
+        const stamps = answer.querySelectorAll('[data-testid="file-companion-seek"]');
+        expect(Array.from(stamps).map((node) => node.textContent)).toEqual(["0:00–2:00", "12:05"]);
+        expect(answer.querySelector('[data-testid="assistant-display-math"]')?.textContent).toContain("t_0");
+        expect(answer.querySelector('[data-testid="assistant-display-math"]')?.textContent).toContain("t_1");
+    });
+
+    it("typesets a display formula written inside a chapter sentence", async () => {
+        boot.mockResolvedValue({ paths: ["C:/media/clip.mp4"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-video-note");
+        act(() => {
+            runtime.emit("ai-assistant-response", JSON.stringify({
+                session_key: "file-companion:clip.mp4",
+                text: ["## 章节", "0:00–2:00 令 $$E=mc^2$$ 成立", "12:05 下一句"].join("\n"),
+                request_id: "formula-sentence-1",
+            }));
+        });
+        const answer = await screen.findByTestId("file-companion-answer");
+        const stamps = answer.querySelectorAll('[data-testid="file-companion-seek"]');
+        expect(Array.from(stamps).map((node) => node.textContent)).toEqual(["0:00–2:00", "12:05"]);
+        const math = answer.querySelector('[data-testid="assistant-inline-math"]');
+        expect(math?.textContent || "").toContain("E");
+        expect(math?.textContent || "").not.toContain("$");
+        expect(answer.textContent).not.toContain("$$");
+        expect(answer.textContent).toContain("成立");
+    });
+
+    it("keeps PDF as the default export and writes LaTeX only from the same control", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { content: "hello", editable: true, readOnly: false }));
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-export-chat");
+        expect((screen.getByTestId("file-companion-export-chat") as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.queryByText("导出公式")).toBeNull();
+        act(() => {
+            runtime.emit("ai-assistant-response", JSON.stringify({
+                session_key: "file-companion:a.md",
+                text: "行内 $x^2$ 结束",
+                request_id: "export-1",
+            }));
+        });
+        await screen.findByTestId("file-companion-answer");
+        const chatExport = screen.getByTestId("file-companion-export-chat");
+        expect(chatExport.textContent).toBe("导出 PDF");
+        expect(screen.getByTestId("file-companion-paper").nextElementSibling).toBe(chatExport);
+        expect(chatExport.nextElementSibling).toBe(screen.getByTestId("file-companion-import"));
+        fireEvent.click(chatExport);
+        await waitFor(() => expect(exportChatPdf).toHaveBeenCalledTimes(1));
+        expect(exportChatTex).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByTestId("file-companion-export-chat-menu"));
+        fireEvent.click(screen.getByTestId("file-companion-export-chat-tex"));
+        await waitFor(() => expect(exportChatTex).toHaveBeenCalledTimes(1));
+        expect(exportChatPdf).toHaveBeenCalledTimes(1);
+        const answerPdf = screen.getByTestId(/^file-companion-export-pdf-/);
+        fireEvent.click(answerPdf);
+        await waitFor(() => expect(exportPdf).toHaveBeenCalledTimes(1));
+        expect(exportTex).not.toHaveBeenCalled();
+        const answerCopy = screen.getByTestId(/^file-companion-copy-/);
+        expect(answerCopy.querySelector("svg")?.getAttribute("data-icon")).toBe("markdown");
+        expect(screen.queryByTestId("file-companion-export-menu")).toBeNull();
+        const answerTex = screen.getByTestId("file-companion-export-tex");
+        expect(answerTex.querySelector("svg")?.getAttribute("data-icon")).toBe("latex");
+        expect(answerTex.getAttribute("aria-label")).toBe("导出为 LaTeX");
+        fireEvent.click(answerTex);
+        await waitFor(() => expect(exportTex).toHaveBeenCalledTimes(1));
+        expect(screen.queryByText("导出公式")).toBeNull();
+    });
+
+    it("shows a local note prompt, writes a note card, and does not call the model for that prompt", async () => {
+        boot.mockResolvedValue({ paths: ["C:/media/clip.mp4"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        const runtime = installRuntime();
+        renderWindow({ askOnOpen: true });
+        await screen.findByText("这个视频还没有笔记。点「生成笔记」，或发送「生成笔记」。");
+        expect(send).not.toHaveBeenCalled();
+        expect(screen.queryByTestId("file-companion-message-user")).toBeNull();
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({
+            path: "C:/media/clip.mp4",
+            text: "生成笔记",
+            purpose: "video-note",
+        })));
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").getAttribute("aria-busy")).toBe("false"));
+        let releaseNote: () => void = () => undefined;
+        send.mockImplementationOnce(() => new Promise<void>((resolve) => { releaseNote = resolve; }));
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("取消"));
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(cancelTurn).toHaveBeenCalledWith("C:/media/clip.mp4"));
+        expect(screen.getByTestId("file-companion-video-note").textContent).toContain("取消");
+        expect((screen.getByTestId("file-companion-video-note") as HTMLButtonElement).disabled).toBe(false);
+        releaseNote();
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("生成笔记"));
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "不要做笔记" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(3));
+        const ordinary = send.mock.calls[2][0] as { purpose?: string; text?: string };
+        expect(ordinary.text).toBe("不要做笔记");
+        expect(ordinary.purpose).toBeUndefined();
+        act(() => {
+            runtime.emit("ai-assistant-response", JSON.stringify({
+                session_key: "file-companion:clip.mp4",
+                text: "## 概要\n12:05 公式",
+                request_id: "note-1",
+                note_card_path: "C:/data/clip-笔记.pdf",
+            }));
+        });
+        await screen.findByTestId("file-companion-note-import");
+        expect(screen.queryByText("已生成论文解读")).toBeNull();
+        fireEvent.click(screen.getByTestId("file-companion-note-import"));
+        await waitFor(() => expect(importKnowledge).toHaveBeenCalledWith("C:/data/clip-笔记.md"));
+        fireEvent.click(screen.getByTestId("file-companion-note-upload"));
+        await waitFor(() => expect(uploadCloud).toHaveBeenCalledWith("C:/data/clip-笔记.pdf"));
+        act(() => {
+            runtime.emit("ai-assistant-response", JSON.stringify({
+                session_key: "file-companion:clip.mp4",
+                text: "普通回答不带走卡片",
+                request_id: "ordinary-1",
+            }));
+        });
+        await screen.findByText("普通回答不带走卡片");
+        expect(screen.getByTestId("task-result-card-note-1:assistant")).toBeTruthy();
+        act(() => {
+            runtime.emit("ai-assistant-response", JSON.stringify({
+                session_key: "file-companion:clip.mp4",
+                text: "## 概要\n第二版正文",
+                request_id: "note-2",
+                note_card_path: "C:/data/clip-笔记.pdf",
+            }));
+        });
+        await screen.findByText("第二版正文");
+        expect(screen.queryByTestId("task-result-card-note-1:assistant")).toBeNull();
+        const card = screen.getByTestId("task-result-card-note-2:assistant");
+        expect(card.querySelector("a")?.getAttribute("title")).toBe("C:/data/clip-笔记.pdf");
+        expect(screen.getAllByTestId("task-result-view-btn")).toHaveLength(1);
+        const earlier = screen.getAllByTestId("file-companion-message-assistant").find((node) => node.textContent?.includes("公式"));
+        expect(earlier?.querySelector('[data-testid="file-companion-seek"]')?.textContent).toBe("12:05");
+        expect(earlier?.querySelector('[data-testid="task-result-view-btn"]')).toBeNull();
+        fireEvent.click(screen.getByLabelText("关闭 clip.mp4"));
+        await waitFor(() => expect(cancelTurn).toHaveBeenCalledWith("C:/media/clip.mp4"));
+        expect(discardWeb).not.toHaveBeenCalled();
+    });
+
+    it("opens a video page without the local-file path and notes from the player", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        const runtime = installRuntime();
+        renderWindow();
+        await waitFor(() => expect(choose).toHaveBeenCalled());
+        const openField = async (value: string) => {
+            if (!screen.queryByTestId("file-companion-open-menu")) {
+                fireEvent.click(screen.getByTestId("file-companion-choose"));
+            }
+            fireEvent.change(screen.getByTestId("file-companion-arxiv-input"), { target: { value } });
+            fireEvent.click(screen.getByTestId("file-companion-arxiv-go"));
+        };
+        openWeb.mockResolvedValue({
+            kind: "web",
+            frameUrl: "https://www.youtube.com/embed/abc",
+            sessionId: "web-abc",
+        });
+        await openField("https://www.youtube.com/watch?v=abc&t=120");
+        const frame = await screen.findByTestId("file-companion-web-frame");
+        expect(frame.getAttribute("src")).toBe("https://www.youtube.com/embed/abc");
+        expect(frame.getAttribute("allow")).toContain("encrypted-media");
+        expect(frame.getAttribute("allow")).toContain("fullscreen");
+        expect(frame.getAttribute("referrerpolicy")).toBe("strict-origin-when-cross-origin");
+        expect(frame.hasAttribute("allowfullscreen")).toBe(true);
+        expect(frame.getAttribute("src")).not.toContain("t=");
+        expect(open).not.toHaveBeenCalled();
+        expect(openArxiv).not.toHaveBeenCalled();
+        expect(send).not.toHaveBeenCalled();
+        expect(sendWeb).not.toHaveBeenCalled();
+        expect((screen.getByTestId("file-companion-import") as HTMLButtonElement).disabled).toBe(true);
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(sendWeb).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: "web-abc",
+            text: "记笔记",
+            purpose: "video-note",
+            fullscreen: false,
+        })));
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("记笔记"));
+        sendWeb.mockClear();
+        act(() => {
+            runtime.emit("ai-assistant-response", JSON.stringify({
+                session_key: "file-companion:web-abc",
+                text: "12:05 从录制开始",
+                request_id: "web-reply",
+            }));
+        });
+        const stamp = await screen.findByTestId("file-companion-seek");
+        const seen: Array<{ path?: string; seconds?: number }> = [];
+        const onSeek = (event: Event) => {
+            seen.push((event as CustomEvent<{ path?: string; seconds?: number }>).detail);
+        };
+        window.addEventListener("file-companion:seek", onSeek);
+        fireEvent.click(stamp);
+        expect(seen).toEqual([]);
+        await screen.findByText("网页笔记不能跳回播放位置");
+        window.removeEventListener("file-companion:seek", onSeek);
+        let release: () => void = () => undefined;
+        sendWeb.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        act(() => { runtime.emit("file-companion:webview-fullscreen", [{ fullscreen: true }]); });
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(sendWeb).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: "web-abc",
+            text: "记笔记",
+            purpose: "video-note",
+            fullscreen: true,
+            rectX: 0,
+            rectY: 0,
+            rectW: 0,
+            rectH: 0,
+        })));
+        act(() => { runtime.emit("file-companion:webview-fullscreen", [{ fullscreen: false }]); });
+        await waitFor(() => expect(cancelWeb).toHaveBeenCalledWith("web-abc", expect.any(Number)));
+        release();
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("记笔记"));
+        sendWeb.mockClear();
+        cancelWeb.mockClear();
+        sendWeb.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        act(() => { runtime.emit("file-companion:webview-fullscreen", { fullscreen: true }); });
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(sendWeb).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: "web-abc",
+            text: "记笔记",
+            purpose: "video-note",
+            fullscreen: true,
+        })));
+        act(() => { runtime.emit("file-companion:webview-fullscreen", { fullscreen: false }); });
+        await waitFor(() => expect(cancelWeb).toHaveBeenCalledWith("web-abc", expect.any(Number)));
+        release();
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("记笔记"));
+
+        sendWeb.mockClear();
+        cancelWeb.mockClear();
+        sendWeb.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        act(() => { runtime.emit("file-companion:webview-fullscreen", { fullscreen: true }); });
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(sendWeb).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "web-abc" })));
+        openWeb.mockResolvedValue({ kind: "web", frameUrl: "https://example.com/other", sessionId: "web-other" });
+        await openField("https://example.com/other");
+        await screen.findByTestId("file-companion-tab-example.com");
+        act(() => { runtime.emit("file-companion:webview-fullscreen", { fullscreen: false }); });
+        await waitFor(() => expect(cancelWeb).toHaveBeenCalledWith("web-abc", expect.any(Number)));
+        expect(cancelWeb.mock.calls.some((call) => call[0] === "web-other")).toBe(false);
+        release();
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("记笔记"));
+
+        // Leaving every web tab unmounts the iframe. Another web tab keeps one,
+        // so this opens a local file. A fullscreenchange with no element must
+        // still stop the recording. The tab switch itself must not.
+        sendWeb.mockClear();
+        cancelWeb.mockClear();
+        sendWeb.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        fireEvent.click(screen.getByTestId("file-companion-tab-www.youtube.com"));
+        const liveFrame = await screen.findByTestId("file-companion-web-frame");
+        const priorFull = Object.getOwnPropertyDescriptor(document, "fullscreenElement");
+        let currentFull: Element | null = liveFrame;
+        Object.defineProperty(document, "fullscreenElement", { configurable: true, get: () => currentFull });
+        try {
+            act(() => { document.dispatchEvent(new Event("fullscreenchange")); });
+            fireEvent.click(screen.getByTestId("file-companion-video-note"));
+            await waitFor(() => expect(sendWeb).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "web-abc" })));
+            open.mockImplementation(async (path: string) => doc(path));
+            runtime.emit("file-companion:open", ["C:/notes/a.md"]);
+            await screen.findByTestId("file-companion-tab-a.md");
+            await waitFor(() => expect(screen.queryByTestId("file-companion-web-frame")).toBeNull());
+            expect(cancelWeb).not.toHaveBeenCalled();
+            currentFull = null;
+            act(() => { document.dispatchEvent(new Event("fullscreenchange")); });
+            await waitFor(() => expect(cancelWeb).toHaveBeenCalledWith("web-abc", expect.any(Number)));
+        } finally {
+            if (priorFull) Object.defineProperty(document, "fullscreenElement", priorFull);
+            else Reflect.deleteProperty(document, "fullscreenElement");
+        }
+        release();
+        fireEvent.click(screen.getByTestId("file-companion-tab-www.youtube.com"));
+        await screen.findByTestId("file-companion-web-frame");
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("记笔记"));
+        sendWeb.mockClear();
+        sendWeb.mockResolvedValue(undefined);
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(sendWeb).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: "web-abc",
+            text: "记笔记",
+            fullscreen: false,
+        })));
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("记笔记"));
+
+        // The Windows fullscreen flag can stay true after the iframe is gone.
+        // Leaving the page must still stop this attempt. Opening the page again
+        // starts a note from the visible player; the leftover flag must not
+        // keep the previous recording running.
+        sendWeb.mockClear();
+        cancelWeb.mockClear();
+        sendWeb.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        fireEvent.click(screen.getByTestId("file-companion-tab-www.youtube.com"));
+        await screen.findByTestId("file-companion-web-frame");
+        act(() => { runtime.emit("file-companion:webview-fullscreen", { fullscreen: true }); });
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(sendWeb).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: "web-abc",
+            captureEpoch: expect.any(Number),
+        })));
+        const stuckEpoch = (sendWeb.mock.calls[sendWeb.mock.calls.length - 1][0] as { captureEpoch: number }).captureEpoch;
+        open.mockImplementation(async (path: string) => doc(path));
+        runtime.emit("file-companion:open", ["C:/notes/b.md"]);
+        await screen.findByTestId("file-companion-tab-b.md");
+        await waitFor(() => expect(screen.queryByTestId("file-companion-web-frame")).toBeNull());
+        expect(cancelWeb).not.toHaveBeenCalled();
+        const priorStuck = Object.getOwnPropertyDescriptor(document, "fullscreenElement");
+        Object.defineProperty(document, "fullscreenElement", { configurable: true, get: () => null });
+        try {
+            act(() => { document.dispatchEvent(new Event("fullscreenchange")); });
+            await waitFor(() => expect(cancelWeb).toHaveBeenCalledWith("web-abc", stuckEpoch));
+        } finally {
+            if (priorStuck) Object.defineProperty(document, "fullscreenElement", priorStuck);
+            else Reflect.deleteProperty(document, "fullscreenElement");
+        }
+        release();
+        fireEvent.click(screen.getByTestId("file-companion-tab-www.youtube.com"));
+        await screen.findByTestId("file-companion-web-frame");
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("记笔记"));
+        sendWeb.mockClear();
+        sendWeb.mockResolvedValue(undefined);
+        act(() => { document.dispatchEvent(new Event("fullscreenchange")); });
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(sendWeb).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: "web-abc",
+            text: "记笔记",
+            fullscreen: false,
+        })));
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("记笔记"));
+        open.mockClear();
+
+        openWeb.mockReset();
+        openWeb.mockRejectedValue(new Error("本地文件请用「打开文件」，这里不接受 file:// 和其他协议"));
+        await openField("file:///C:/media/clip.mp4");
+        await screen.findByText("本地文件请用「打开文件」，这里不接受 file:// 和其他协议");
+        expect(open).not.toHaveBeenCalled();
+        openWeb.mockRejectedValue(new Error("这个地址是伴读自己的页面，不能当作视频网页打开"));
+        await openField("http://wails.localhost/index.html");
+        await screen.findByText("这个地址是伴读自己的页面，不能当作视频网页打开");
+        expect(open).not.toHaveBeenCalled();
+        openArxiv.mockClear();
+        openWeb.mockReset();
+        openWeb.mockResolvedValue({ kind: "web", frameUrl: "https://youtu.be/xyz", sessionId: "web-xyz" });
+        await openField("https://youtu.be/xyz");
+        await waitFor(() => expect(openWeb).toHaveBeenCalledWith("https://youtu.be/xyz"));
+        expect(openArxiv).not.toHaveBeenCalled();
+        cancelWeb.mockClear();
+        fireEvent.click(screen.getByLabelText("关闭 youtu.be"));
+        await waitFor(() => expect(discardWeb).toHaveBeenCalledWith("web-xyz"));
+        expect(cancelWeb).not.toHaveBeenCalled();
+        await openField("2510.16079");
+        await waitFor(() => expect(openArxiv).toHaveBeenCalledWith("2510.16079"));
     });
 });
 

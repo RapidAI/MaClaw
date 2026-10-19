@@ -32,7 +32,7 @@ func WantsAmbientRetrieval(primary IntentLabel) bool {
 		LabelConfigManage, LabelSessionManage, LabelTemplateManage,
 		LabelKnowledgeWrite, LabelKnowledgeAdmin, LabelFileDelete,
 		LabelWorklogRead, LabelWorklogUpdate,
-		LabelMailboxRead, LabelMailboxSend, LabelMailboxConfigure,
+		LabelMailboxRead, LabelMailboxSend, LabelMailboxConfigure, LabelMailboxDelete,
 		LabelSearch, LabelLiveData, LabelLiveDataVisual, LabelWebFetch:
 		return false
 	default:

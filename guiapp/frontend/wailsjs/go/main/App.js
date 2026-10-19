@@ -1267,6 +1267,62 @@ export function FileCompanionOpenArxiv(arg1) {
   return window['go']['main']['App']['FileCompanionOpenArxiv'](arg1);
 }
 
+export function FileCompanionOpenWebPage(arg1) {
+  return window['go']['main']['App']['FileCompanionOpenWebPage'](arg1);
+}
+
+export function SendFileCompanionWebMessage(arg1) {
+  return window['go']['main']['App']['SendFileCompanionWebMessage'](arg1);
+}
+
+export function ClearFileCompanionWebChat(arg1) {
+  return window['go']['main']['App']['ClearFileCompanionWebChat'](arg1);
+}
+
+export function CancelFileCompanionTurn(arg1) {
+  return window['go']['main']['App']['CancelFileCompanionTurn'](arg1);
+}
+
+export function CancelFileCompanionWebTurn(arg1, arg2) {
+  return window['go']['main']['App']['CancelFileCompanionWebTurn'](arg1, arg2);
+}
+
+export function FileCompanionDiscardWebNote(arg1) {
+  return window['go']['main']['App']['FileCompanionDiscardWebNote'](arg1);
+}
+
+export function FileCompanionWebViewContainsFullscreen() {
+  return window['go']['main']['App']['FileCompanionWebViewContainsFullscreen']();
+}
+
+export function FileCompanionWebHistory(arg1) {
+  return window['go']['main']['App']['FileCompanionWebHistory'](arg1);
+}
+
+export function FileCompanionExportTeX(arg1, arg2) {
+  return window['go']['main']['App']['FileCompanionExportTeX'](arg1, arg2);
+}
+
+export function FileCompanionExportChatTeX(arg1, arg2) {
+  return window['go']['main']['App']['FileCompanionExportChatTeX'](arg1, arg2);
+}
+
+export function FileCompanionExportWebPDF(arg1, arg2) {
+  return window['go']['main']['App']['FileCompanionExportWebPDF'](arg1, arg2);
+}
+
+export function FileCompanionExportWebChatPDF(arg1, arg2) {
+  return window['go']['main']['App']['FileCompanionExportWebChatPDF'](arg1, arg2);
+}
+
+export function FileCompanionExportWebTeX(arg1, arg2) {
+  return window['go']['main']['App']['FileCompanionExportWebTeX'](arg1, arg2);
+}
+
+export function FileCompanionExportWebChatTeX(arg1, arg2) {
+  return window['go']['main']['App']['FileCompanionExportWebChatTeX'](arg1, arg2);
+}
+
 export function FileCompanionSaveText(arg1, arg2, arg3) {
   return window['go']['main']['App']['FileCompanionSaveText'](arg1, arg2, arg3);
 }
@@ -1423,8 +1479,16 @@ export function GetCapabilityGapDetector() {
   return window['go']['main']['App']['GetCapabilityGapDetector']();
 }
 
+export function GetChatFontFamily() {
+  return window['go']['main']['App']['GetChatFontFamily']();
+}
+
 export function GetChatFontSize() {
   return window['go']['main']['App']['GetChatFontSize']();
+}
+
+export function GetCodingFontFamily() {
+  return window['go']['main']['App']['GetCodingFontFamily']();
 }
 
 export function GetCodingWorkbenchCheckpointSidecarStats(arg1) {
@@ -3584,6 +3648,10 @@ export function LoadProjectTabIndex() {
   return window['go']['main']['App']['LoadProjectTabIndex']();
 }
 
+export function LocalSearch(arg1) {
+  return window['go']['main']['App']['LocalSearch'](arg1);
+}
+
 export function LogFrontendDiagnostic(arg1) {
   return window['go']['main']['App']['LogFrontendDiagnostic'](arg1);
 }
@@ -4826,8 +4894,16 @@ export function SetBugReportEnabled(arg1) {
   return window['go']['main']['App']['SetBugReportEnabled'](arg1);
 }
 
+export function SetChatFontFamily(arg1) {
+  return window['go']['main']['App']['SetChatFontFamily'](arg1);
+}
+
 export function SetChatFontSize(arg1) {
   return window['go']['main']['App']['SetChatFontSize'](arg1);
+}
+
+export function SetCodingFontFamily(arg1) {
+  return window['go']['main']['App']['SetCodingFontFamily'](arg1);
 }
 
 export function SetCodingWorkbenchConflictUIState(arg1, arg2, arg3, arg4) {

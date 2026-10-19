@@ -819,6 +819,25 @@ func (h *IMMessageHandler) prepareIMLoopContext(provided *LoopContext, msg IMUse
 	}
 	loopCtx.SkipNeedsConfirmGate = skipNeedsConfirmGate
 	loopCtx.IsAskUserResponse = isAskUserResponse
+	// A new inbound turn drops the previous turn's discovery binds. The
+	// write-confirmation reply restores only the tool that was just
+	// approved. A retry of the same payload keeps the binds already on
+	// this loop: the stash was taken by the first prepare.
+	if resetRuntime {
+		loopCtx.clearDiscoveredMCPBinds()
+	}
+	// Write confirmation ends the loop that discovered the tool. Only the
+	// reply that settles that question republishes it. A background prepare
+	// in the same message passes isAskUserResponse false and must not
+	// delete the stash before the foreground continuation takes it. A later
+	// ordinary message drops a leftover so it cannot stick to another ask.
+	if isAskUserResponse {
+		if bind, ok := h.takeDiscoveredMCPContinuation(msg.UserID); ok {
+			loopCtx.rememberDiscoveredMCPBind(bind.ServerID, bind.ToolName)
+		}
+	} else if !msg.IsBackground {
+		h.dropDiscoveredMCPContinuation(msg.UserID)
+	}
 	return loopCtx
 }
 

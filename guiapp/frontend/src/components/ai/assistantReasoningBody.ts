@@ -5,9 +5,22 @@
  * only copy. Internal CoT next to a real answer stays in the thinking panel.
  */
 
-import { stripCodingAgentAuditSections, stripCodingWorkbenchStatusReasoning, stripLeadingCodingWorkbenchStatus } from "./codingAgentUserFinish";
+import {
+    appendCodingAuditStrip,
+    createCodingAuditCursor,
+    stripCodingAgentAuditSections,
+    stripCodingWorkbenchStatusReasoning,
+    stripLeadingCodingWorkbenchStatus,
+    type CodingAuditCursor,
+} from "./codingAgentUserFinish";
 import { repairReasoningLineBreaks } from "./reasoningLineBreaks";
-import { truncateRolePrefixForDisplay } from "./rolePrefixDisplay";
+import {
+    appendRolePrefixStrip,
+    createRolePrefixStreamCursor,
+    truncateRolePrefixForDisplay,
+    type RolePrefixStreamCursor,
+} from "./rolePrefixDisplay";
+import { createReasoningTrailCleanCache, rememberReasoningTrailClean } from "./reasoningTrailCleanCache";
 import { sanitizeVisibleChatText } from "./visibleChatText";
 
 export const REASONING_BODY_MIN_CHARS = 600;
@@ -21,8 +34,15 @@ const CJK_PREFIX_MAX = 0.35;
 /** Suffix looks like a Chinese deliverable when CJK share is at least this. */
 const CJK_SUFFIX_MIN = 0.45;
 
-const INTERNAL_MONOLOGUE_RE =
-    /(?:^|\n)\s*(?:The user is asking\b|The user wants\b|The user asked\b|The user said\b|Let me think\b|The system prompt\b|No tools needed\b|Keep it reasonably concise\b|\u7528\u6237(?:\u5728\u95ee|\u95ee\u7684\u662f|\u8981\u7684\u662f)|\u8ba9\u6211\u60f3\u60f3|\u6211\u6765\u601d\u8003|\u4e0d\u9700\u8981\u5de5\u5177)/i;
+const LIST_MARK = "(?:[-*+\u2022]|\\d+\\.)[ \\t]+";
+
+const INTERNAL_MONOLOGUE_RE = new RegExp(
+    `(?:^|\\n)\\s*(?:${LIST_MARK})?(?:The user is asking\\b|The user wants\\b|The user asked\\b|The user said\\b|User asks\\b|Let me think\\b|The system prompt\\b|System Prompt Instructions\\b|No tools needed\\b|Keep it reasonably concise\\b|Attached file:|Specific constraint:|\\u7528\\u6237(?:\\u5728\\u95ee|\\u95ee\\u7684\\u662f|\\u8981\\u7684\\u662f)|\\u8ba9\\u6211\\u60f3\\u60f3|\\u6211\\u6765\\u601d\\u8003|\\u4e0d\\u9700\\u8981\\u5de5\\u5177)`,
+    "i",
+);
+
+/** A cited path or media name is not prose. It must not dilute a Chinese answer. */
+const CITED_FILE_TOKEN_RE = /\S+\.(?:mp4|m4v|webm|mov|avi|mkv|mp3|wav|ogg|oga|m4a|aac|flac|pdf|docx|pptx|xlsx|png|jpe?g|gif|txt|md|html)\b/gi;
 
 const MONOLOGUE_COMMIT_RE =
     /(?:I should answer[^\n]*|I(?:'ll| will) answer[^\n]*|Let me (?:now )?answer[^\n]*|\u76f4\u63a5(?:\u7528[^\n]{0,12})?\u56de\u7b54[^\n]*|\u4e0b\u9762(?:\u7ed9\u51fa|\u56de\u7b54)[^\n]*)\n+/gi;
@@ -32,6 +52,58 @@ export function cleanReasoningTrailForBody(reasoning: string): string {
     return repairReasoningLineBreaks(stripCodingAgentAuditSections(stripCodingWorkbenchStatusReasoning(
         truncateRolePrefixForDisplay(sanitizeVisibleChatText(reasoning || "")),
     )));
+}
+
+const replyTrailClean = createReasoningTrailCleanCache();
+const contentAuditSlot = { id: "\u0000", cursor: createCodingAuditCursor() };
+const displayAuditSlot = { id: "\u0000", cursor: createCodingAuditCursor() };
+const displayRoleSlot: { id: string; cursor: RolePrefixStreamCursor } = {
+    id: "\u0000",
+    cursor: createRolePrefixStreamCursor("keep-body"),
+};
+
+/**
+ * The reply bubble cleans one thought on every answer flush. Streaming only
+ * appends, so the prefix already cleaned is reused. A different message or a
+ * rewrite runs the full clean once.
+ */
+export function reasoningCleanedForMessage(messageId: string, reasoning: string): string {
+    return rememberReasoningTrailClean(replyTrailClean, messageId || "", reasoning || "");
+}
+
+/** Audit strip of one reply. A growing answer does not rescan the stable prefix. */
+export function contentAuditForMessage(messageId: string, content: string): string {
+    return auditCached(contentAuditSlot, messageId, content);
+}
+
+/** Display text of one reply: audit cut, then the Browser/Tool prefix cut. */
+export function replyBodyForDisplay(messageId: string, prepared: string): { audited: string; visible: string } {
+    const key = messageId || "";
+    const audited = auditCached(displayAuditSlot, key, prepared);
+    if (displayRoleSlot.id !== key) {
+        displayRoleSlot.id = key;
+        displayRoleSlot.cursor = createRolePrefixStreamCursor("keep-body");
+    }
+    return { audited, visible: appendRolePrefixStrip(displayRoleSlot.cursor, audited) };
+}
+
+function auditCached(slot: { id: string; cursor: CodingAuditCursor }, messageId: string, text: string): string {
+    const key = messageId || "";
+    if (slot.id !== key) {
+        slot.id = key;
+        slot.cursor = createCodingAuditCursor();
+    }
+    return appendCodingAuditStrip(slot.cursor, text || "");
+}
+
+/** Same reply split as visibleAssistantReplyForMessage, without recleaning a settled thought. */
+export function visibleReplyForAssistantMessage(
+    messageId: string,
+    content: string,
+    reasoning: string,
+    opts?: { live?: boolean; coding?: boolean; toolCalls?: boolean },
+): { content: string; reasoning: string } {
+    return visibleAssistantReplyForMessage(content, reasoningCleanedForMessage(messageId, reasoning), opts);
 }
 
 export function looksLikeInternalMonologue(text: string): boolean {
@@ -231,7 +303,7 @@ function splitLiveMonologueUnchecked(body: string): { content: string; reasoning
     if (gap < 40) return null;
     const think = source.slice(0, gap).trim();
     const answer = source.slice(gap).trim();
-    if (answer.length < 24 || cjkRatio(answer) < CJK_SUFFIX_MIN) return null;
+    if (answer.length < 24 || deliverableCjkRatio(answer) < CJK_SUFFIX_MIN) return null;
     if (!looksLikeInternalMonologue(think)) return null;
     return { content: answer, reasoning: think };
 }
@@ -313,7 +385,7 @@ function firstLanguageShiftCut(source: string): number {
         const suffix = source.slice(at).trim();
         if (suffix.length < REASONING_FOLLOWUP_MAX_CHARS && !cjkDeliverable(suffix)) continue;
         if (cjkRatio(source.slice(0, at)) > CJK_PREFIX_MAX) continue;
-        if (cjkRatio(suffix) < CJK_SUFFIX_MIN) continue;
+        if (deliverableCjkRatio(suffix) < CJK_SUFFIX_MIN) continue;
         return at;
     }
     // "Figure 3 是…" is a Chinese answer that does not start on a CJK character.
@@ -335,7 +407,12 @@ function cjkDeliverable(text: string): boolean {
     const body = (text || "").trim();
     if (body.length < 12) return false;
     if (looksLikeInternalMonologue(body)) return false;
-    return cjkRatio(body) >= CJK_SUFFIX_MIN;
+    return deliverableCjkRatio(body) >= CJK_SUFFIX_MIN;
+}
+
+function deliverableCjkRatio(text: string): number {
+    CITED_FILE_TOKEN_RE.lastIndex = 0;
+    return cjkRatio(String(text || "").replace(CITED_FILE_TOKEN_RE, " "));
 }
 
 function cjkRatio(text: string): number {

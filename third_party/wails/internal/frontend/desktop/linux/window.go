@@ -25,6 +25,7 @@ import (
 	"unsafe"
 
 	"github.com/wailsapp/wails/v2/internal/frontend"
+	"github.com/wailsapp/wails/v2/pkg/maclawcapture"
 	"github.com/wailsapp/wails/v2/pkg/menu"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/linux"
@@ -107,6 +108,9 @@ func NewWindow(appoptions *options.App, debug bool, devtoolsEnabled bool) *Windo
 		bool2Cint(appoptions.DragAndDrop != nil && appoptions.DragAndDrop.EnableFileDrop),
 	)
 	result.webview = unsafe.Pointer(webview)
+	// Snapshots have to start on the GTK thread. Fullscreen stays on the DOM path.
+	maclawcapture.Bind(maclawcapture.PointerView{P: uintptr(result.webview)})
+	maclawcapture.SetUIRunner(invokeOnMainThread)
 	buttonPressedName := C.CString("button-press-event")
 	defer C.free(unsafe.Pointer(buttonPressedName))
 	C.ConnectButtons(unsafe.Pointer(webview))

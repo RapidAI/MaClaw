@@ -63,6 +63,7 @@ func TestBuiltinCapabilityOntologyCoversExpectedFamilies(t *testing.T) {
 		CapabilityMessageReadMailbox:        EffectReadOnly,
 		CapabilityMessageSendMailbox:        EffectExternalEffect,
 		CapabilityMessageConfigureMailbox:   EffectSensitive,
+		CapabilityMessageDeleteMailbox:      EffectExternalEffect,
 		CapabilityInteractionAskUser:        EffectReadOnly,
 		CapabilityGovernanceInspectExp:      EffectReadOnly,
 	}

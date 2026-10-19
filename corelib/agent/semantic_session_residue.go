@@ -5,14 +5,18 @@ import (
 	"time"
 )
 
-// SemanticSessionResidue is the capability remainder of one desktop
-// conversation. It is stored with the chat history. It is not a grant and
-// contains no tool names, arguments, or route revisions.
+// SemanticSessionResidue is the capability remainder of one conversation.
+// Desktop keys stay the user id. Any other platform is stored separately so
+// it cannot read a desktop session. It is stored with the chat history. It
+// is not a grant and contains no tool names, arguments, or route revisions.
 type SemanticSessionResidue struct {
 	Generation  uint64 `json:"generation,omitempty"`
 	Status      string `json:"status,omitempty"`
 	Summary     string `json:"summary,omitempty"`
 	LookupFacts bool   `json:"lookup_facts,omitempty"`
+	// IntentPrimary is the managed label that authorized this plan. Granted
+	// needs such as x:mcp:<server>:<tool> do not reconstruct it.
+	IntentPrimary string `json:"intent_primary,omitempty"`
 	// PlanClosed is set when this turn's plan hit its ceiling. The next
 	// turn reads it instead of the assistant's wording.
 	PlanClosed bool                         `json:"plan_closed,omitempty"`

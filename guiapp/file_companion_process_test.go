@@ -220,6 +220,148 @@ func TestFileCompanionSecondInstanceRevealsAndReopens(t *testing.T) {
 	}
 }
 
+func TestFileCompanionSecondInstanceOpensDocumentsOnly(t *testing.T) {
+	app := &App{}
+	dir := t.TempDir()
+	file := filepath.Join(dir, "paper.pdf")
+	named := filepath.Join(dir, "open-file")
+	if err := os.WriteFile(named, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app.seedFileCompanionPaths([]string{file, named})
+	boot := app.GetFileCompanionBoot()
+	if len(boot.Paths) != 2 || boot.Paths[0] != file || boot.Paths[1] != named {
+		t.Fatalf("boot paths = %#v", boot.Paths)
+	}
+	app.FileCompanionUIReady()
+	pdf := filepath.Join(dir, "next.pdf")
+	app.onFileCompanionSecondInstance(options.SecondInstanceData{Args: []string{"open-file", pdf, named}})
+	got := app.fileCompanion.emitted
+	if len(got) != 1 || len(got[0]) != 2 || got[0][0] != pdf || got[0][1] != named {
+		t.Fatalf("emit = %#v", got)
+	}
+}
+
+func TestFileCompanionSecondInstanceResolvesRelativeDocumentsInTheLaunchDirectory(t *testing.T) {
+	app := &App{}
+	app.FileCompanionUIReady()
+	dir := t.TempDir()
+	named := filepath.Join(dir, "open-file")
+	app.onFileCompanionSecondInstance(options.SecondInstanceData{
+		Args:             []string{"open-file", "notes.md", named},
+		WorkingDirectory: dir,
+	})
+	want, err := filepath.Abs(filepath.Join(dir, "notes.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := app.fileCompanion.emitted
+	if len(got) != 1 || len(got[0]) != 2 || got[0][0] != want || got[0][1] != named {
+		t.Fatalf("emit = %#v, notes %q", got, want)
+	}
+}
+
+func TestFileCompanionDocumentArgFreezesPlainRelativesOnly(t *testing.T) {
+	dir := t.TempDir()
+	want, err := filepath.Abs(filepath.Join(dir, "notes.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := fileCompanionDocumentArg("notes.md", dir)
+	if !ok || got != want {
+		t.Fatalf("plain relative = %q ok %v, want %q", got, ok, want)
+	}
+	parent, err := filepath.Abs(filepath.Join(dir, "..", "notes.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok = fileCompanionDocumentArg(filepath.Join("..", "notes.md"), dir)
+	if !ok || got != parent {
+		t.Fatalf("parent relative = %q ok %v, want %q", got, ok, parent)
+	}
+	absPath := filepath.Join(dir, "open-file")
+	slash := filepath.ToSlash(absPath)
+	got, ok = fileCompanionDocumentArg(slash, filepath.Join(dir, "other"))
+	if !ok || got != slash {
+		t.Fatalf("absolute = %q ok %v", got, ok)
+	}
+	got, ok = fileCompanionDocumentArg("notes.md", "relative-dir")
+	if !ok || got != "notes.md" {
+		t.Fatalf("non-absolute dir = %q ok %v", got, ok)
+	}
+	if _, ok = fileCompanionDocumentArg("   ", dir); ok {
+		t.Fatal("blank path was a document")
+	}
+	if _, ok = fileCompanionDocumentArg("notes\x00.md", dir); ok {
+		t.Fatal("NUL path was a document")
+	}
+	if goruntime.GOOS != "windows" {
+		return
+	}
+	vol := filepath.VolumeName(dir)
+	got, ok = fileCompanionDocumentArg(vol+"notes.md", dir)
+	if !ok || got != want {
+		t.Fatalf("same-volume drive relative = %q ok %v, want %q", got, ok, want)
+	}
+	other := "D:"
+	if strings.EqualFold(vol, other) {
+		other = "C:"
+	}
+	driveRel := other + "notes.md"
+	got, ok = fileCompanionDocumentArg(driveRel, dir)
+	if !ok || got != driveRel {
+		t.Fatalf("other-volume drive relative = %q ok %v", got, ok)
+	}
+	got, ok = fileCompanionDocumentArg(`\notes.md`, dir)
+	if !ok || got != `\notes.md` {
+		t.Fatalf("rooted path = %q ok %v", got, ok)
+	}
+	unchanged := vol + `/Papers/open-file`
+	got, ok = fileCompanionDocumentArg(unchanged, dir)
+	if !ok || got != unchanged {
+		t.Fatalf("absolute slash path = %q ok %v", got, ok)
+	}
+}
+
+func TestForwardFilesToCompanionResolvesDocumentsBeforeInstallCwd(t *testing.T) {
+	app := &App{}
+	var argv []string
+	app.processHooks.startProcess = func(got []string) error {
+		argv = append([]string(nil), got...)
+		return nil
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notes.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	named := filepath.Join(dir, "open-file")
+	if err := os.WriteFile(named, []byte("y"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+	if err := app.LaunchFileCompanion([]string{"notes.md", named}); err != nil {
+		t.Fatal(err)
+	}
+	absNotes, err := filepath.Abs("notes.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(argv) != 4 || argv[1] != fileCompanionOpenArg || argv[2] != absNotes || argv[3] != named {
+		t.Fatalf("argv = %#v, notes %q", argv, absNotes)
+	}
+	launch := classifyDesktopLaunchForOS(argv, "windows")
+	if launch.Mode != desktopLaunchFileCompanion || len(launch.Paths) != 2 || launch.Paths[0] != absNotes || launch.Paths[1] != named {
+		t.Fatalf("child launch = %#v", launch)
+	}
+}
+
 func TestFileCompanionCanonicalDedupeInBootQueue(t *testing.T) {
 	if goruntime.GOOS != "windows" {
 		t.Skip("full-path case fold is Windows-only")

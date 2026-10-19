@@ -1,0 +1,17 @@
+{
+  "id": "cold_cache_skips",
+  "expect": "skip",
+  "tokens": 250000,
+  "provider": "other",
+  "ttl": "5m",
+  "idle": "2m",
+  "margin": "45s",
+  "turn_at": "2026-10-18T12:00:00Z",
+  "tick_at": "2026-10-18T12:10:00Z",
+  "tools": "tools-v1",
+  "system": "系统规则",
+  "memory": "记忆",
+  "first": "user:第一句",
+  "history": "assistant:很长",
+  "summary": "不该做"
+}

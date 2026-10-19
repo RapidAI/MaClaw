@@ -110,14 +110,8 @@ Hub / MaClawSrv ──HTTP Bearer DESKTOPD_TOKEN──> desktopd (127.0.0.1:1808
                         └─ gate 6080/tcp   → noVNC/websockify(要求 Bearer gate token)
 ```
 
-- **端口**:容器只发布 `19020/tcp`(CDP gate)和 `6080/tcp`(noVNC gate),映射到宿主机随机端口;
-  desktopd 用 `docker port` 查出端口,拼成 `cdp_url` / `novnc_url` 返回(主机名是
-  `DESKTOPD_ADVERTISE_HOST`)。Chromium 调试端口、x11vnc、websockify 都只在容器内。
-- **CDP / noVNC 鉴权**:每个容器一个随机 gate token,以 URL userinfo 形式放在
-  `http://desktop:<token>@host:port` 里分发;客户端要转成 `Authorization: Bearer <token>`
-  (MaClawSrv 的 CDP 客户端、Hub 的 noVNC 代理会自动做)。无 token 或 token 错误直接拒绝。
-  Chromium 的 `/json` 拒绝 Host 为域名的请求,手动调试时用 IP 或 localhost 访问
-  (`desktopd/scripts/cdp.py` 默认 `--host 127.0.0.1`)。
+- **端口**:容器发布 `19020/tcp`(CDP gate)和 `6080/tcp`(noVNC gate)时只绑定宿主机回环或内网地址(`DESKTOPD_PUBLISH_BIND`,默认 `127.0.0.1`)。desktopd 用 `docker port` 记下映射端口,但返回的 `cdp_url` / `novnc_url` 不再带这个端口,而是 `https://<DESKTOPD_ADVERTISE_HOST>/v1/desktops/tunnel/<userkey>/cdp` 和 `.../vnc/vnc.html`(可用 `DESKTOPD_PUBLIC_URL` 换基址)。Chromium 调试端口、x11vnc、websockify 都只在容器内。容器里的 gate 仍绑定 `0.0.0.0`,Docker 才能把已发布的端口转进去。
+- **CDP / noVNC 鉴权**:每个容器一个随机 gate token,以 URL userinfo 形式放在 `https://desktop:<token>@<公开主机>/v1/desktops/tunnel/...` 里分发;客户端要转成 `Authorization: Bearer <token>`(MaClawSrv 的 CDP 客户端、Hub 的 noVNC 代理会自动做)。隧道本身不校验 desktopd 的 API token,容器里的 gate 才拒绝错误的 Bearer。token 不写入 `meta.json`,也不打进日志。Chromium 的 `/json` 拒绝 Host 为域名的请求;走隧道时由 desktopd 在最后一跳把 Host 改成回环地址。手动调试容器内端口时仍用 IP 或 localhost(`desktopd/scripts/cdp.py` 默认 `--host 127.0.0.1`)。
 - **D-Bus 会话共享**:supervisor 为每个 display 启一个 `dbus-daemon --session`,地址固定为
   `unix:path=/tmp/.maclaw-dbus-<display>`,XFCE、fcitx5、Chromium 都用它。否则每个程序各自
   autolaunch 一个 bus,fcitx5 在 Chromium 里不可用。调试时:
@@ -290,15 +284,13 @@ DESKTOPD_ADVERTISE_HOST=dockerd.example.com DESKTOPD_IMAGE_FROM=pull \
 ```
 
 - 首次部署在 `/data/soft/maclaw_desktopd/.env`(600)生成新的 `DESKTOPD_TOKEN`,不要复用其他实例的。
-- `DESKTOPD_ADVERTISE_HOST` 要填对外域名:它出现在返回给 Hub 的 `cdp_url`/`novnc_url` 里。
+- `DESKTOPD_ADVERTISE_HOST` 要填对外域名:未设置 `DESKTOPD_PUBLIC_URL` 时,返回给 Hub 的 `cdp_url`/`novnc_url` 是 `https://` 这个域名上的 `/v1/desktops/tunnel/...`,不是 Docker 映射端口。
 - nginx:按 `desktopd/deploy/nginx-dockerd.conf.example` 改 `server_name` 和证书路径,放进
   `/etc/nginx/conf.d/`,`nginx -t && systemctl reload nginx`;不带 token 访问
   `https://dockerd.example.com/v1/health` 应返回 401。
 - 冒烟:`TEST_USER=deploy-test MIGRATE=0 DESKTOPD_URL=https://dockerd.example.com sh $REMOTE_TMP/scripts/smoke_gui2.sh`
   (新主机没有 maclaw-gui:1,必须 `MIGRATE=0`),结束后用 `dapi.sh POST /v1/desktops/stop` 停掉测试桌面。
-- 防火墙:每个桌面的 CDP/noVNC gate 端口由 Docker 发布在随机高位端口(如 32768+),Docker 的
-  iptables 规则绕过 ufw,所以 ufw 不放行也能从公网访问;这些端口只靠每桌面 token 保护。
-  需要收紧时在 `DOCKER-USER` 链限制来源,而不是改 ufw。
+- 防火墙:新容器的 CDP/noVNC 只绑定 `127.0.0.1`(或 `DESKTOPD_PUBLISH_BIND` 的内网地址),公网走 nginx 443 上的 `/v1` 隧道。已在跑的容器保持原来的全地址发布,直到别的原因重建它;改绑定地址本身不会 `docker rm`。不要把容器的原始发布端口再配进这个域名的 nginx。
 
 ### 4.4 hub.mypapers.top 只替换三个二进制
 
@@ -521,6 +513,103 @@ HEAD 走到 `dd5fd934`、`build_number` 是 `12392`。这时线上已经是两�
 备份（两台各一份）：`desktopd.bak-dd-20261016`。
 
 遗留差异（这一轮没有处理）：maclaw.top 的 maclawsrv 还是本节上一份 `20261016.sync`（`e4dd1968…`，`984114cc-dirty`），而 mypapers 已经是 `12392`（`207c9adf…`）。要不要拉齐由发布流程决定——两条线并行时，最好让同一条流程发完两台。
+
+#### 12410（2026-10-19 05:55 CST）
+
+本机 HEAD `d5baf11b`（"feat: V8.1.0.12408 发版"），`build_number` 12410。
+
+这一轮仍然按「只替换确实旧的那个二进制」来做：先看线上二进制的 mtime，hub 停在 10-17、desktopd 停在 10-16，都是旧的；mypapers 的 maclawsrv 是 10-19 05:48，属于另一条流水线刚发的新版本（`/version` 报 `{"built_at":"2026-10-19T05:48:00+08:00","commit":"d5baf11b","version":"12410"}`，干净工作树），**没有动它**——期间出现过 `curl 127.0.0.1:18080` 连接被拒，是它正在重启（`ExecMainStartTimestamp=Mon 2026-10-19 05:48:24 CST`），不是故障，随后 PID 17012 正常监听。maclaw.top 的 maclawsrv 还是上面那份 `20261016.sync`，所以只有这台需要补 maclawsrv。
+
+| 组件 | mypapers | maclaw.top |
+| --- | --- | --- |
+| hub | 换成 `9a7e695c…` | 换成 `9a7e695c…` |
+| desktopd | `d90fa71a…` → `244d59ce…` | `d90fa71a…` → `244d59ce…` |
+| maclawsrv | 不动（对方刚发的 12410） | `e4dd1968…` → `92b4d00e…` |
+
+验证（两台都过了）：
+
+| 检查项 | mypapers | maclaw.top |
+| --- | --- | --- |
+| desktopd PID | 19270 | 1135824 |
+| hub PID | 19368 | 1136008 |
+| maclawsrv PID | 17012（对方的，未改） | 1135842 |
+| `/v1/health`（带 token） | 200 | 200 |
+| `/api/mobile/bootstrap`（不带 token） | 401 | 401 |
+| `/version` | 保持 `12410` / `d5baf11b` | `12410` / `d5baf11b-dirty` |
+| 桌面容器 | `af24af109248707f` 仍 `Up 33 小时`，连续运行没被打断 | 3 个都是 Exited，ID 与状态前后一致 |
+
+最后用 `sha256sum /proc/<pid>/exe` 直接哈希运行中的进程，确认跑的就是新二进制：mypapers hub `9a7e695c…` ✓、desktopd `244d59ce…` ✓；maclaw.top hub `9a7e695c…` ✓、maclawsrv `92b4d00e…` ✓、desktopd `244d59ce…` ✓。maclawsrv 注入了 `built_at`，`92b4d00e…` 是按 12410 现编的，`/version` 报 `d5baf11b-dirty` 是因为本地工作区有改动，不是版本错。
+
+备份（各台一份）：`maclaw-hub.bak-12410-20261019`、`desktopd.bak-12410-20261019`，maclaw.top 另有 `maclawsrv.bak-12410-20261019`。
+
+行为变化记一笔：mypapers 的 hub `start.sh` 这次走的是 systemd（`Restarting systemd service: maclaw-hub.service`），不再是以前那条手工 nohup 的路径，但照旧没有停 hubcenter、`configs/config.yaml` 也没动。
+
+#### 12411（2026-10-19 14:00 CST）
+
+HEAD 还是 `d5baf11b`，但 `build_number` 走到 `12411`，工作区 395 个改动。
+
+动手前先看线上状态，结果是两边已经在朝不同方向走：**mypapers 的 maclawsrv 在本次操作前几分钟（13:51、13:52 连着两次 restart）被另一条流水线刷成了 `c3dc15aa…`**，`/version` 报 `{"built_at":"2026-10-19T13:52:19+08:00","commit":"d5baf11b","version":"12411"}`（干净树）；maclaw.top 的 maclawsrv 则还是上一节我那份 `92b4d00e…`（12410、`d5baf11b-dirty`）。hub（`9a7e695c…`）和 desktopd（`244d59ce…`）两台都停在上一节那份。
+
+maclawsrv 这次用冻结元数据重编（`-X main.serviceVersion=12411 -X main.serviceCommit=d5baf11b -X main.serviceBuiltAt=2026-10-19T13:52:19+08:00`），编出来和对方那份**逐字节相同**（同为 `c3dc15aa…`）。这条很有用：既然能从本地复现出同一份二进制，就说明对面那份也是从同一棵源码树编的，把同一份发到 maclaw.top 是安全的——于是 mypapers 的 maclawsrv 照旧没碰，只在 maclaw.top 上替换，两台就此对齐。
+
+| 组件 | 旧 → 新 | mypapers | maclaw.top |
+| --- | --- | --- | --- |
+| maclaw-hub | `9a7e695c…` → `f521be73…` | 换 | 换 |
+| desktopd | `244d59ce…` → `7984c3d3…` | 换 | 换 |
+| maclawsrv | 局面见上文 | 不动（对方的 12411） | `92b4d00e…` → `c3dc15aa…` |
+
+hub 与 desktopd 不注入版本变量，哈希变即代表代码真的动了，不是元数据造成的假差异。
+
+| 检查项 | mypapers | maclaw.top |
+| --- | --- | --- |
+| maclawsrv PID | 9692（对方的，未改） | 1227082 |
+| desktopd PID | 12590 | 1227065 |
+| hub PID | 12688 | 1227114 |
+| `/v1/health`（带 token） | 200 `{"ok":true,…}` | 200 |
+| `/version` | `12411` / `d5baf11b` | 同上（与 mypapers 同一份二进制） |
+| hub 9399 `/api/mobile/bootstrap`（不带 token） | 401 | 401 |
+| 桌面容器 | `9d26279f8038` 仍 `Up 41 小时`，连续运行没被打断 | 3 个都是 Exited，ID 与状态前后一致 |
+
+`/proc/<pid>/exe` 复核：六个进程全部跑的是新二进制（mypapers `9692=c3dc15aa…`、`12590=7984c3d3…`、`12688=f521be73…`；maclaw.top `1227082=c3dc15aa…`、`1227065=7984c3d3…`、`1227114=f521be73…`）。hubcenter 两台都没动（mypapers PID 10968、maclaw.top PID 1225859）。
+
+踩到一个假回归，记下来免得下次误判：**`/api/mobile/bootstrap` 这条路由属于 hub，不在 maclawsrv**（`hub/internal/httpapi/router.go` 注册），hub 的公开端口 **9399** 上不带 token 访问返回 401 才是健康；hub 内部端口 6060 返回 404 是正常的，而打 maclawsrv 的 18080 也是 404——那是 maclawsrv 自己的 mux，本来就没这条路由。上一节把这条检查记成「18080 → 401」，看端口就知道量错了地方，**两个 404 都不是这次部署造成的**。
+
+两台的 hub `start.sh` 内容现在完全一致：装了 `maclaw-hub.service` 就 `exec systemctl restart`，否则退回 nohup。mypapers 有 unit（走 systemd，进程命令行是相对的 `./maclaw-hub`，用绝对路径 `pgrep` 会漏掉它），maclaw.top 没有 unit（fallback 到 nohup）。两种路径都不会碰 hubcenter。
+
+备份（各台一份）：`maclaw-hub.bak-12411-20261019`、`desktopd.bak-12411-20261019`，maclaw.top 另有 `maclawsrv.bak-12411-20261019`。
+
+并行发布提醒再补一条：不光二进制会被同时替换，`/data/soft/hub/start.sh` 这类运维脚本也在被对面那条流水线更新（本次 mypapers 的 start.sh mtime 是 13:54）。**每次动手前重新取一遍哈希和 PID**，不要沿用上一次会话里的数字。
+
+#### 12412（2026-10-19 21:45 CST）
+
+HEAD 仍是 `d5baf11b`，`build_number` 走到 `12412`。动手前先看线上，局面又是混的：**mypapers 在 21:22 被另一条流水线刷过一轮**（maclawsrv `a80b86b2…`、hub `24e64794…`，`/version` 报 `12412` / `d5baf11b`），desktopd 则停在当天上午我那份 `7984c3d3…`——他们不动 desktopd；maclaw.top 三个都还是上一节我发那份（maclawsrv `c3dc15aa…` 12411、hub `f521be73…`、desktopd `7984c3d3…`）。
+
+按三种配方重编后比对：
+
+| 二进制 | 本地重编 | mypapers（对方 21:22） | maclaw.top（上一节我的） | 结论 |
+| --- | --- | --- | --- | --- |
+| maclaw-hub | `24e64794…` | `24e64794…` | `f521be73…` | 本地复现出同一份 → 只补 maclaw.top |
+| maclawsrv | `a80b86b2…` | `a80b86b2…` | `c3dc15aa…` | 同上，maclawsrv 用冻结元数据（12412 / `d5baf11b` / `2026-10-19T21:22:07+08:00`）才对得上 |
+| desktopd | `769d8a42…` | `7984c3d3…` | `7984c3d3…` | 两边都旧 → 两台都换 |
+
+hub 与 maclawsrv 都能从本地工区**逐字节复现**对方那份，等于验证了「都是同一棵源码树出来的」，把本地编的这份发到 maclaw.top 是安全的，两台就此拉齐到同一批二进制。
+
+部署后两台完全一致：
+
+| 组件 | mypapers | maclaw.top |
+| --- | --- | --- |
+| maclawsrv `a80b86b2…` | PID 20332（对方的，未改） | PID 1311733 |
+| desktopd `769d8a42…` | PID 25030 | PID 1311722 |
+| maclaw-hub `24e64794…` | PID 22159（对方的，未改） | PID 1311769 |
+| 桌面容器 | `9d26279f8038` `Up 2 days`，连续运行没被打断 | 3 个 Exited，ID 与状态前后一致 |
+
+验证：两台 `/v1/health` 带 token 都是 200；hub 9399 `/api/mobile/bootstrap` 不带 token 都是 401；`/version` 都是 `12412` / `d5baf11b`。`/proc/<pid>/exe` 复核六个进程全部跑的是新二进制。hubcenter 两台都没动（mypapers PID 22062、maclaw.top PID 1308713）。
+
+**踩到一个假「源码变了」**：第一次把 maclawsrv 编到 `/tmp/b12412/` 时，产物只有 914 字节，内容是个 Go 归档（`!<arch>` + `__.PKGDEF`），哈希自然对不上——差点据此写进文档说「对面那份不是从这个源码来的」。换个干净目录（`rm -rf` 后重编）就复现出 `a80b86b2…`。**用哈希下结论之前先看一眼产物大小**：Go 的可执行文件是几十 MB，几 KB 的一定是编歪了。
+
+（同一目录下并行跑几个 `go build -o` 时，`/tmp` 里的目标目录不要复用，宁可每次新建一个。）
+
+备份（各台一份）：`desktopd.bak-12412-20261019`，maclaw.top 另有 `maclaw-hub.bak-12412-20261019`、`maclawsrv.bak-12412-20261019`。
 
 ## 5. Hub 配置
 

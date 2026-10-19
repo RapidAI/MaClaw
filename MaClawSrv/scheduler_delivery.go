@@ -11,6 +11,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/corelib/lansenger"
 	"github.com/RapidAI/CodeClaw/corelib/qqbot"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
@@ -59,7 +60,40 @@ func getSrvWeixinExactFileSender() func(ctx context.Context, peer string, data [
 
 // deliverScheduledTaskResult pushes task output to configured channel targets.
 // Supports lansenger (REST), telegram/qq (token APIs), weixin (live runtime session).
+// A caller that has no run id yet cannot dedupe. The success path passes the run id.
 func deliverScheduledTaskResult(svc *agentservice.Service, principal agentservice.Principal, task *scheduler.ScheduledTask, resultText string, runErr error) error {
+	return deliverScheduledTaskResultForRun(svc, principal, task, resultText, runErr, "")
+}
+
+// deliverScheduledTaskResultForRun sends one schedule result. The same run id
+// returns the recorded result and does not send a second time. 无变化 is not
+// a send and is not recorded.
+func deliverScheduledTaskResultForRun(svc *agentservice.Service, principal agentservice.Principal, task *scheduler.ScheduledTask, resultText string, runErr error, runID string) error {
+	if task == nil || task.Delivery == nil || !task.Delivery.Active() || !task.Delivery.ShouldDeliver(runErr, resultText) {
+		return nil
+	}
+	send := func() error {
+		return deliverScheduledTaskBody(svc, principal, task, resultText, runErr)
+	}
+	steps := currentDesktopSteps()
+	runID = strings.TrimSpace(runID)
+	if steps == nil || runID == "" {
+		return send()
+	}
+	_, _, err := steps.RunDesktopStep(desktopbot.Step{
+		RunID: runID,
+		Tool:  "delivery",
+		Key:   desktopbot.StepKey(runID, "delivery:"+runID, 0),
+	}, "", func() (string, error) {
+		if err := send(); err != nil {
+			return "", err
+		}
+		return resultText, nil
+	})
+	return err
+}
+
+func deliverScheduledTaskBody(svc *agentservice.Service, principal agentservice.Principal, task *scheduler.ScheduledTask, resultText string, runErr error) error {
 	if task == nil || task.Delivery == nil || !task.Delivery.Active() {
 		return nil
 	}

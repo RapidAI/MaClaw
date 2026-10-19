@@ -193,6 +193,60 @@ func TestRetireRejectedSemanticToolListsSettledIterativeWorkBeforeRefresh(t *tes
 	if got := cancelled.retireRejectedSemanticTool("ssh", remoteID, "[system rejected] dynamic_execution_cancelled", "dynamic_execution_cancelled"); len(cancelled.semanticSurface.plan.Selections) != 1 {
 		t.Fatalf("cancellation listed another command: %q selections=%d", got, len(cancelled.semanticSurface.plan.Selections))
 	}
+	mcpBase := "need:~installed-mcp:x:mcp:tengyun:post_work_log_add"
+	mcpID := "selection:" + mcpBase
+	mcpCall := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{{
+			ID: mcpID, NeedID: mcpBase,
+			Provider: tool.ProviderBinding{Kind: "mcp", ProviderID: "tengyun", ImplementationID: "post_work_log_add"},
+			FitProof: tool.FitProof{MatchedCapability: "x:mcp:tengyun:post_work_log_add"},
+		}}},
+		completed: map[string]bool{mcpID: true},
+	}}
+	if got := mcpCall.retireRejectedSemanticTool("invoke_old", mcpID, "[system rejected] mcp_tool_error", "selection_execution_failed"); !strings.Contains(got, "semantic_plan_retire_failed") || len(mcpCall.semanticSurface.plan.Selections) != 2 || mcpCall.semanticSurface.plan.Selections[1].Continuation {
+		t.Fatalf("settled installed MCP before refresh = %q selections=%d", got, len(mcpCall.semanticSurface.plan.Selections))
+	}
+}
+
+func TestEnsureNextIterativeInstalledMCPListsTheFollowingCall(t *testing.T) {
+	base := "need:~installed-mcp:x:mcp:tengyun:post_work_log_add"
+	selectionID := "selection:" + base
+	cb := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{{
+			ID: selectionID, NeedID: base,
+			Provider: tool.ProviderBinding{Kind: "mcp", ProviderID: "tengyun", ImplementationID: "post_work_log_add"},
+			FitProof: tool.FitProof{MatchedCapability: "x:mcp:tengyun:post_work_log_add"},
+		}}},
+		materialized: map[string]bool{selectionID: true},
+		completed:    map[string]bool{selectionID: true},
+	}}
+	cb.ensureNextIterativeInstalledMCP(selectionID)
+	if len(cb.semanticSurface.plan.Selections) != 2 {
+		t.Fatalf("spent installed MCP selections=%d", len(cb.semanticSurface.plan.Selections))
+	}
+	cb.ensureNextIterativeInstalledMCP(selectionID)
+	if len(cb.semanticSurface.plan.Selections) != 2 {
+		t.Fatal("a second ensure appended another MCP call before the first was issued")
+	}
+	pendingID := cb.semanticSurface.plan.Selections[1].ID
+	cb.semanticSurface.materialized[pendingID] = true
+	cb.semanticSurface.completed[pendingID] = true
+	cb.ensureNextIterativeInstalledMCP(pendingID)
+	if len(cb.semanticSurface.plan.Selections) != 3 || cb.semanticSurface.plan.Selections[2].Continuation {
+		t.Fatal("a spent installed MCP call must list the next call without the one-shot continuation flag")
+	}
+	lookup := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{{
+			ID: selectionID, NeedID: base,
+			FitProof: tool.FitProof{MatchedCapability: "information.lookup"},
+		}}},
+		materialized: map[string]bool{selectionID: true},
+		completed:    map[string]bool{selectionID: true},
+	}}
+	lookup.ensureNextIterativeInstalledMCP(selectionID)
+	if len(lookup.semanticSurface.plan.Selections) != 1 {
+		t.Fatal("a non-x:mcp proof listed another call because the need id mentions mcp")
+	}
 }
 
 func TestEnsureNextIterativeRemoteCommandListsTheFollowingCall(t *testing.T) {
@@ -1605,6 +1659,20 @@ func TestSemanticLightLookupDenialTellsModelToAnswerFromEvidence(t *testing.T) {
 	}
 	if got := writeOnly.ToolDenialMessage("invoke_MY0ko7TXyVVgdwJ4HfCtOjfs"); strings.Contains(got, "invoke_7hgQ9D9U1q0Bxui-AsGXOics") {
 		t.Fatalf("denial advertised a write grant as the current lookup: %q", got)
+	}
+	fullStale := &sharedAgentLoopCallbacks{
+		semanticSurface: &semanticCallSurface{
+			grants: map[string]tool.InvocationGrant{"invoke_7hgQ9D9U1q0Bxui-AsGXOics": {SelectionID: "add"}},
+		},
+		loopCtx: &LoopContext{Runtime: RuntimeContext{Execution: ExecutionProfile{Layer: string(executionLayerFull), PromptProfile: "full"}}},
+	}
+	stale := "invoke_MY0ko7TXyVVgdwJ4HfCtOjfs"
+	msg = fullStale.ToolDenialMessage(stale)
+	if !strings.Contains(msg, "another turn") || !strings.Contains(msg, stale) || strings.Contains(msg, "invoke_7hgQ9D9U1q0Bxui-AsGXOics") {
+		t.Fatalf("full stale invoke deny=%q", msg)
+	}
+	if got := fullStale.ToolDenialMessage("bash"); got != "" {
+		t.Fatalf("full ordinary deny=%q", got)
 	}
 }
 

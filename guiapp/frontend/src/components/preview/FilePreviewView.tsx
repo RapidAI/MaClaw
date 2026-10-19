@@ -4,7 +4,7 @@
  * Visual types (PPTX slides, PDF reader, images, audio/video, HTML, Word/Excel
  * as formatted markdown) render here. Callers pass `children` for source/diff.
  */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { AIAssistantAttachmentFullDataURL, PreviewTaskResultFile } from '../../../wailsjs/go/main/App';
 import { MarkdownPreview } from '../ai/CodePreviewMarkdown';
 import type { CodePreviewTheme } from '../ai/FileTabBar';
@@ -278,6 +278,34 @@ function MediaPreviewPanel({
     const [src, setSrc] = useState('');
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(true);
+    const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
+    const pendingSeconds = useRef<number | null>(null);
+    const commitSeek = (seconds: number) => {
+        const el = mediaRef.current;
+        if (!el || el.readyState < 1) {
+            pendingSeconds.current = seconds;
+            return;
+        }
+        let next = seconds;
+        const duration = el.duration;
+        if (Number.isFinite(duration) && duration > 0 && next > duration) {
+            next = Math.max(0, duration - 0.05);
+        }
+        el.currentTime = next;
+        pendingSeconds.current = null;
+    };
+
+    useEffect(() => {
+        const onSeek = (event: Event) => {
+            const detail = (event as CustomEvent<{ path?: string; seconds?: number }>).detail;
+            if (!detail || String(detail.path || '') !== String(absPath || '')) return;
+            const seconds = Number(detail.seconds);
+            if (!Number.isFinite(seconds) || seconds < 0) return;
+            commitSeek(seconds);
+        };
+        window.addEventListener('file-companion:seek', onSeek);
+        return () => window.removeEventListener('file-companion:seek', onSeek);
+    }, [absPath]);
 
     useEffect(() => {
         let cancelled = false;
@@ -328,9 +356,25 @@ function MediaPreviewPanel({
     return (
         <div data-testid="media-preview-panel" data-kind={kind} style={{ ...fillStyle(theme), alignItems: 'center', justifyContent: 'center', padding: 16 }}>
             {kind === 'video' ? (
-                <video controls src={src} style={mediaStyle} />
+                <video
+                    ref={(el) => { mediaRef.current = el; }}
+                    controls
+                    src={src}
+                    style={mediaStyle}
+                    onLoadedMetadata={() => {
+                        if (pendingSeconds.current !== null) commitSeek(pendingSeconds.current);
+                    }}
+                />
             ) : (
-                <audio controls src={src} style={{ width: '100%' }} />
+                <audio
+                    ref={(el) => { mediaRef.current = el; }}
+                    controls
+                    src={src}
+                    style={{ width: '100%' }}
+                    onLoadedMetadata={() => {
+                        if (pendingSeconds.current !== null) commitSeek(pendingSeconds.current);
+                    }}
+                />
             )}
         </div>
     );

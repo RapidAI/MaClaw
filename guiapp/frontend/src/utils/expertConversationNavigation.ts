@@ -25,6 +25,7 @@ export function openExpertConversation(
     initialMessage?: string,
     latexDocument?: { relativePath?: string },
     projectPath?: string,
+    options?: { backgroundLaunch?: boolean },
 ): void {
     const id = String(expert?.id || "").trim();
     if (!id || typeof window === "undefined") return;
@@ -37,6 +38,7 @@ export function openExpertConversation(
             ...(message ? { initialMessage: message } : {}),
             ...(relativePath ? { latexDocument: { relativePath } } : {}),
             ...(path ? { projectPath: path } : {}),
+            ...(options?.backgroundLaunch === true ? { backgroundLaunch: true } : {}),
         },
     }));
 }

@@ -1,0 +1,10 @@
+{
+  "id": "connector_down_no_browser",
+  "connector": "slack",
+  "status": 401,
+  "error": "401 unauthorized Bearer sk-live-secret-token-should-not-leak",
+  "url": "https://slack.example/a",
+  "other_url": "https://other.example/",
+  "phrase": "改用浏览器",
+  "english_phrase": "use the browser"
+}

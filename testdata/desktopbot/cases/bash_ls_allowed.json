@@ -1,0 +1,6 @@
+{
+  "id": "bash_ls_allowed",
+  "verdict": "allow",
+  "commands": [{"action": "bash", "command": "ls"}],
+  "expect_ran": true
+}

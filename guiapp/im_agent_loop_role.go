@@ -25,7 +25,7 @@ func agentLoopLLMRole(h *IMMessageHandler, ctx *LoopContext) string {
 }
 
 func agentLoopUsesComputerUse(h *IMMessageHandler, ctx *LoopContext) bool {
-	if ctx == nil {
+	if ctx == nil || !loopKeepsDrivingTools(ctx) {
 		return false
 	}
 	if ctx.ComputerUseGateSettled {

@@ -1,11 +1,13 @@
 package main
 
 import (
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 // desktopTurnResult is the reply a background desktop run finished with.
@@ -78,7 +80,11 @@ type desktopRunAPI struct {
 	// Activity is the step this run is in right now. It is empty once the
 	// run has a finished reply. The words are a fixed phrase, never the
 	// text the step typed.
-	Activity string `json:"activity,omitempty"`
+	Activity      string `json:"activity,omitempty"`
+	ProgressWhere string `json:"progress_where,omitempty"`
+	ProgressNext  string `json:"progress_next,omitempty"`
+	ProgressOpen  string `json:"progress_open,omitempty"`
+	ProgressPath  string `json:"progress_path,omitempty"`
 }
 
 func desktopRunAPIBody(dataRoot string, run *agentservice.Run) any {
@@ -88,10 +94,17 @@ func desktopRunAPIBody(dataRoot string, run *agentservice.Run) any {
 	}
 	activity := loadDesktopActivity(run.ID)
 	result, ok := loadDesktopTurnResult(run.ID)
-	if !ok && activity == "" {
+	where, next, open, path, hasProgress := desktopProgressFields(run, result.Message)
+	if !ok && activity == "" && !hasProgress {
 		return sanitized
 	}
 	body := desktopRunAPI{Run: sanitized, Activity: activity}
+	if hasProgress {
+		body.ProgressWhere = where
+		body.ProgressNext = next
+		body.ProgressOpen = open
+		body.ProgressPath = path
+	}
 	if !ok {
 		return body
 	}
@@ -100,4 +113,33 @@ func desktopRunAPIBody(dataRoot string, run *agentservice.Run) any {
 	body.AttentionReason = result.Attention
 	body.Message = result.Message
 	return body
+}
+
+func desktopProgressFields(run *agentservice.Run, msg *agentservice.Message) (where, next, open, path string, ok bool) {
+	if msg != nil && msg.Metadata != nil {
+		where = strings.TrimSpace(msg.Metadata["progress_where"])
+		next = strings.TrimSpace(msg.Metadata["progress_next"])
+		open = strings.TrimSpace(msg.Metadata["progress_open"])
+		path = strings.TrimSpace(msg.Metadata["progress_path"])
+		if where != "" || next != "" || open != "" {
+			return where, next, open, path, true
+		}
+	}
+	ids := make([]string, 0, 2)
+	if run != nil {
+		if id := strings.TrimSpace(run.SessionID); id != "" {
+			ids = append(ids, id)
+		}
+		if id := strings.TrimSpace(run.ID); id != "" && id != strings.TrimSpace(run.SessionID) {
+			ids = append(ids, id)
+		}
+	}
+	for _, id := range ids {
+		copy, found := desktopbot.RecallProgress(id)
+		if !found {
+			continue
+		}
+		return copy.Sections.WhereWeAre, copy.Sections.NextStep, copy.Sections.OpenProblems, copy.Path, true
+	}
+	return "", "", "", "", false
 }

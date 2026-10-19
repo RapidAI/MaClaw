@@ -115,17 +115,24 @@ func (h *IMMessageHandler) auditMailboxSend(userID string, ev mailbox.AuditEvent
 	if log == nil {
 		return
 	}
+	toolName := strings.TrimSpace(ev.Tool)
+	if toolName == "" {
+		toolName = "mailbox_send"
+	}
+	arguments := map[string]interface{}{"account_id": ev.AccountID}
+	if toolName == "mailbox_delete" {
+		arguments["deleted_count"] = ev.DeletedCount
+	} else {
+		arguments["recipient_count"] = ev.RecipientCount
+	}
 	_ = log.Log(security.AuditEntry{
 		Timestamp:    time.Now(),
 		UserID:       userID,
-		ToolName:     "mailbox_send",
+		ToolName:     toolName,
 		RiskLevel:    security.RiskHigh,
 		PolicyAction: security.PolicyAllow,
 		Result:       ev.Result,
-		Arguments: map[string]interface{}{
-			"account_id":      ev.AccountID,
-			"recipient_count": ev.RecipientCount,
-		},
+		Arguments:    arguments,
 	})
 }
 
@@ -133,19 +140,27 @@ func (h *IMMessageHandler) noteMailboxUncertain(userID string, draft mailbox.Dra
 	if h == nil || h.memory == nil {
 		return
 	}
+	toolName := "mailbox_send"
+	lastTask := "发送邮件"
+	fallback := "mailbox-send-uncertain"
+	if draft.Kind == mailbox.DraftKindDelete {
+		toolName = "mailbox_delete"
+		lastTask = "删除邮件"
+		fallback = "mailbox-delete-uncertain"
+	}
 	slotID := "mailbox-" + strings.TrimSpace(draft.ID)
 	if strings.TrimSpace(draft.ID) == "" {
-		slotID = "mailbox-send-uncertain"
+		slotID = fallback
 	}
 	h.memory.UpsertUnfinishedSlot(userID, &agent.UnfinishedTaskSlot{
 		SlotID:          slotID,
 		UserID:          userID,
 		Status:          agent.UnfinishedTaskSlotStatusInterrupted,
 		Source:          agent.UnfinishedTaskSlotSourceInFlightLeaseExpired,
-		LastToolName:    "mailbox_send",
+		LastToolName:    toolName,
 		SideEffectState: "external_uncertain",
 		RecoveryMode:    "requires_review",
-		LastTask:        "发送邮件",
+		LastTask:        lastTask,
 	})
 }
 
@@ -211,6 +226,19 @@ func configureMailboxToolErr(err error, secret string) string {
 	return text
 }
 
+func (h *IMMessageHandler) toolMailboxDelete(ctx context.Context, args map[string]interface{}) string {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	userID := mailboxOwnerFromContext(ctx)
+	host := h.mailboxHost(userID)
+	if host == nil {
+		return mailbox.MsgNotConfigured
+	}
+	text := host.Delete(ctx, args)
+	return h.bindFrozenMailboxDraft(userID, host, text)
+}
+
 func (h *IMMessageHandler) toolMailboxSend(ctx context.Context, args map[string]interface{}) string {
 	if ctx == nil {
 		ctx = context.Background()
@@ -221,19 +249,28 @@ func (h *IMMessageHandler) toolMailboxSend(ctx context.Context, args map[string]
 		return mailbox.MsgNotConfigured
 	}
 	text := host.Send(ctx, args)
-	if strings.HasPrefix(text, "__ASK_USER__") && host.Drafts != nil {
-		if draft, ok := host.Drafts.Pending(host.Principal, host.Session); ok {
-			// Stash the note only for a card that carries the binding
-			// marker: an unparseable or hand-rolled card stays unbound, so
-			// the draft it froze can never be claimed by a different
-			// question.
-			if bound, nonce, ok := bindMailboxDraftAskContext(text); ok {
-				text = bound
-				h.noteMailboxDraft(userID, draft.ID, nonce)
-			}
-		}
+	return h.bindFrozenMailboxDraft(userID, host, text)
+}
+
+// bindFrozenMailboxDraft stamps the confirmation card so only that question
+// can settle the draft. A send and a delete share the same binding.
+func (h *IMMessageHandler) bindFrozenMailboxDraft(userID string, host *mailbox.Host, text string) string {
+	if h == nil || host == nil || !strings.HasPrefix(text, "__ASK_USER__") || host.Drafts == nil {
+		return text
 	}
-	return text
+	draft, ok := host.Drafts.Pending(host.Principal, host.Session)
+	if !ok {
+		return text
+	}
+	// Stash the note only for a card that carries the binding marker: an
+	// unparseable or hand-rolled card stays unbound, so the draft it froze
+	// can never be claimed by a different question.
+	bound, nonce, ok := bindMailboxDraftAskContext(text)
+	if !ok {
+		return text
+	}
+	h.noteMailboxDraft(userID, draft.ID, nonce)
+	return bound
 }
 
 // mailboxDraftAskContext is the sentinel prefix stamped onto the
@@ -368,8 +405,8 @@ func (h *IMMessageHandler) peekMailboxDraftID(userID string) string {
 }
 
 // prepareMailboxTurn runs before the pending ask_user answer is consumed.
-// A confirmation or cancellation spends the send budget before the model runs
-// and still resets the query budget. Any other turn gets a fresh budget.
+// A confirmation or cancellation spends the send and delete budgets before
+// the model runs and still resets the query budget. Any other turn gets a fresh budget.
 // The handler note is cleared here so a failed commit cannot leak onto a
 // later unrelated question.
 func (h *IMMessageHandler) prepareMailboxTurn(userID, text string) {
@@ -381,8 +418,20 @@ func (h *IMMessageHandler) prepareMailboxTurn(userID, text string) {
 	budget := mailbox.NewTurnBudget()
 	if id := h.peekMailboxDraftID(userID); id != "" && (mailbox.IsApproveText(text) || mailbox.IsCancelText(text)) {
 		budget.SendUsed = true
+		budget.DeleteUsed = true
 	}
 	h.mailboxBudgets.Store(userID, budget)
+}
+
+func mailboxDraftKind(host *mailbox.Host, draftID string) string {
+	if host == nil || host.Drafts == nil {
+		return ""
+	}
+	draft, ok := host.Drafts.Peek(strings.TrimSpace(draftID))
+	if !ok {
+		return ""
+	}
+	return draft.Kind
 }
 
 func (h *IMMessageHandler) approveMailboxDraft(userID, draftID string) string {
@@ -390,9 +439,10 @@ func (h *IMMessageHandler) approveMailboxDraft(userID, draftID string) string {
 	if host == nil {
 		return mailbox.MsgExpired
 	}
+	kind := mailboxDraftKind(host, draftID)
 	result, class := host.Approve(context.Background(), draftID)
 	if class == "uncertain" {
-		h.noteMailboxUncertain(userID, mailbox.Draft{ID: draftID})
+		h.noteMailboxUncertain(userID, mailbox.Draft{ID: draftID, Kind: kind})
 	}
 	return result
 }
@@ -431,9 +481,14 @@ func mailboxUserTurnText(text, lang string) string {
 // workflow routing and reply classification. The host already dials or drops
 // the draft here, so this turn does not start a model.
 func (h *IMMessageHandler) settleFreshMailboxConfirmation(msg *IMUserMessage, trimmed string, entries []agent.ConversationEntry) *IMAgentResponse {
-	if msg == nil || h.freshMailboxDraftID(msg.UserID, trimmed, entries) == "" {
+	if msg == nil {
 		return nil
 	}
+	draftID := h.freshMailboxDraftID(msg.UserID, trimmed, entries)
+	if draftID == "" {
+		return nil
+	}
+	kind := mailboxDraftKind(h.mailboxHost(msg.UserID), draftID)
 	h.prepareMailboxTurn(msg.UserID, trimmed)
 	hint, _, _, settled := h.consumePendingAskUserAnswer(msg.UserID, trimmed, entries)
 	if !settled {
@@ -444,7 +499,11 @@ func (h *IMMessageHandler) settleFreshMailboxConfirmation(msg *IMUserMessage, tr
 		agent.ConversationEntry{Role: "user", Content: mailboxUserTurnText(trimmed, msg.Lang)},
 		agent.ConversationEntry{Role: "assistant", Content: text},
 	)
-	resp := &IMAgentResponse{Text: text, ResponseSource: "mailbox_send"}
+	source := "mailbox_send"
+	if kind == mailbox.DraftKindDelete {
+		source = "mailbox_delete"
+	}
+	resp := &IMAgentResponse{Text: text, ResponseSource: source}
 	h.saveConversationHistoryTimed(msg.UserID, history, resp)
 	return resp
 }

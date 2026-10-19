@@ -1,4 +1,5 @@
 import { Suspense, type ChangeEvent, type Dispatch, type ReactNode, type SetStateAction, useEffect, useRef, useState } from 'react';
+import type { ChatFontSizeDraftRef } from './useChatFontSizeCommit';
 import { GetSettingsTabConfig } from '../../../wailsjs/go/main/App';
 import { corelib, main } from '../../../wailsjs/go/models';
 import {
@@ -142,6 +143,13 @@ export type SettingsActiveContentProps = {
     disableAutoUIScaleTransform?: boolean;
     chatFontSize: number;
     setChatFontSize: Dispatch<SetStateAction<number>>;
+    chatFontSizeDraftRef?: ChatFontSizeDraftRef;
+    chatFontFamilyDraftRef?: { current: string | null };
+    codingFontFamilyDraftRef?: { current: string | null };
+    chatFontFamily?: string;
+    setChatFontFamily?: (fontId: string) => void;
+    codingFontFamily?: string;
+    setCodingFontFamily?: (fontId: string) => void;
     darkSchemeId: AssistantDarkSchemeId;
     setDarkSchemeId: (id: AssistantDarkSchemeId) => void;
     lightSchemeId: AssistantLightSchemeId;
@@ -244,6 +252,13 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
         disableAutoUIScaleTransform,
         chatFontSize,
         setChatFontSize,
+        chatFontSizeDraftRef,
+        chatFontFamilyDraftRef,
+        codingFontFamilyDraftRef,
+        chatFontFamily,
+        setChatFontFamily,
+        codingFontFamily,
+        setCodingFontFamily,
         darkSchemeId,
         setDarkSchemeId,
         lightSchemeId,
@@ -597,6 +612,13 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                     disableAutoUIScaleTransform={disableAutoUIScaleTransform}
                     chatFontSize={chatFontSize}
                     setChatFontSize={setChatFontSize}
+                    chatFontSizeDraftRef={chatFontSizeDraftRef}
+                    chatFontFamilyDraftRef={chatFontFamilyDraftRef}
+                    codingFontFamilyDraftRef={codingFontFamilyDraftRef}
+                    chatFontFamily={chatFontFamily}
+                    setChatFontFamily={setChatFontFamily}
+                    codingFontFamily={codingFontFamily}
+                    setCodingFontFamily={setCodingFontFamily}
                     darkSchemeId={darkSchemeId}
                     setDarkSchemeId={setDarkSchemeId}
                     lightSchemeId={lightSchemeId}

@@ -8,8 +8,8 @@
  */
 import React, { useMemo, useRef } from "react";
 import { renderContentWithCodeBlocks, type Theme as MarkdownTheme } from "./aiAssistantMarkdown";
-import { createIncrementalRenderState, renderContentIncremental, type IncrementalRenderState } from "./IncrementalMarkdownRenderer";
-import { stripRolePrefixForDisplay } from "./rolePrefixDisplay";
+import { createIncrementalRenderState, renderContentIncremental, streamingMarkdownUsesIncremental, type IncrementalRenderState } from "./IncrementalMarkdownRenderer";
+import { appendRolePrefixStrip, createRolePrefixStreamCursor } from "./rolePrefixDisplay";
 
 export interface MessageContentRendererProps {
     /** 消息文本内容 */
@@ -31,9 +31,11 @@ export interface MessageContentRendererProps {
  */
 export function MessageContentRenderer({ content, theme, isUser, isStreaming, messageId }: MessageContentRendererProps) {
     // Role-prefix only; line-leading pictograph strip runs inside renderContentWithCodeBlocks.
+    // The cursor matches stripRolePrefixForDisplay and does not rescan a dead line.
+    const roleCursorRef = useRef(createRolePrefixStreamCursor("keep-body"));
     const displayContent = useMemo(
-        () => isUser ? content : stripRolePrefixForDisplay(content),
-        [content, isUser]
+        () => isUser ? content : appendRolePrefixStrip(roleCursorRef.current, content),
+        [content, isUser],
     );
 
     // Incremental render state for streaming long messages.
@@ -52,7 +54,7 @@ export function MessageContentRenderer({ content, theme, isUser, isStreaming, me
         if (isUser || !displayContent) return null;
         // Use incremental rendering during streaming to avoid O(n) full re-parse
         // every frame for long messages.
-        if (isStreaming && messageId && displayContent.length > 2000) {
+        if (isStreaming && messageId && streamingMarkdownUsesIncremental(displayContent.length)) {
             const incRef = incStateRef.current;
             if (incRef.id !== messageId) {
                 incRef.id = messageId;

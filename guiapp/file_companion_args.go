@@ -53,6 +53,10 @@ func classifyDesktopLaunchForOS(args []string, goos string) desktopLaunch {
 		main.StartHidden = goos == "darwin"
 		return main
 	}
+	// The mode slot is the exact token the installer writes. It selects this
+	// process. It is not a path, and it is not resolved against the working
+	// directory. CommandLineToArgvW has already removed quotes, so a
+	// relative path is a document, not another way to spell the mode.
 	if filtered[0] == fileCompanionOpenArg {
 		return desktopLaunch{
 			Mode:     desktopLaunchFileCompanion,
@@ -97,10 +101,12 @@ func filterDesktopLaunchNoise(user []string) []string {
 	return out
 }
 
-// pathsAfterOpenFile keeps every non-empty argument after the open-file token.
-// A missing or directory path stays in the list so the companion can show an
-// error tab instead of dropping the batch. -psn noise before the token is
-// ignored; arguments after the token are paths, not launch serials.
+// pathsAfterOpenFile keeps the document arguments after the mode token.
+// Only that slot is the mode. Later arguments are documents, including a
+// file whose name is open-file. A missing or directory path stays in the
+// list so the companion can show an error tab instead of dropping the batch.
+// -psn noise before the token is ignored; arguments after the token are
+// paths, not launch serials.
 func pathsAfterOpenFile(user []string) []string {
 	seen := false
 	var paths []string

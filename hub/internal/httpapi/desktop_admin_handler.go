@@ -106,6 +106,8 @@ func writeDesktopError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", err.Error())
 	case errors.Is(err, desktoppool.ErrService):
 		writeError(w, http.StatusBadGateway, "DOCKER_SERVICE_REQUEST_FAILED", desktoppool.ServiceFailureMessage(err))
+	case desktoppool.IsDesktopWake(err):
+		writeError(w, http.StatusServiceUnavailable, "DESKTOP_WAKING", err.Error())
 	default:
 		writeError(w, http.StatusBadGateway, "DOCKER_SERVICE_REQUEST_FAILED", "docker service rejected the desktop request")
 	}

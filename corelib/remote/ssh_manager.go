@@ -166,7 +166,7 @@ func (m *SSHSessionManager) Create(spec SSHSessionSpec) (*SSHManagedSession, err
 	// 创建 PTY 会话
 	ptySession := NewSSHPTYSession(client, hostID)
 	if err := ptySession.Start(spec); err != nil {
-		m.pool.Release(spec.HostConfig)
+		m.pool.Release(spec.HostConfig, client)
 		return nil, fmt.Errorf("start ssh pty: %w", err)
 	}
 
@@ -317,7 +317,7 @@ func (m *SSHSessionManager) reconnectSession(s *SSHManagedSession) error {
 	hostID := spec.HostConfig.SSHHostID()
 	ptySession := NewSSHPTYSession(client, hostID)
 	if err := ptySession.Start(spec); err != nil {
-		m.pool.Release(spec.HostConfig)
+		m.pool.Release(spec.HostConfig, client)
 		return fmt.Errorf("restart ssh pty: %w", err)
 	}
 
@@ -1050,11 +1050,10 @@ func (m *SSHSessionManager) runExitLoop(s *SSHManagedSession, hostCfg SSHHostCon
 	// 关闭捕获的旧 handle（不是 s.Handle，避免关闭新会话）。
 	_ = handle.Close()
 
-	// 仅当 handle 未被替换时释放连接池引用。
-	// reconnectSession 使用 pool.Reconnect 获取新连接（refCount=1），
-	// 如果这里也 Release，新连接的 refCount 会归零被关闭。
+	// 只释放这次会话 Acquire 到的那条连接。reconnectSession 会换上新连接，
+	// 下载在旧连接被清掉后也可能拨一条新的。Release 认 client，不会把那条新连接关掉。
 	if !isStale {
-		m.pool.Release(hostCfg)
+		m.pool.Release(hostCfg, handle.client)
 	}
 
 	m.mu.RLock()

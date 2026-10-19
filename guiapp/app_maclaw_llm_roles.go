@@ -73,7 +73,7 @@ func (a *App) ResolveMaclawLLMRole(role string) (corelib.MaclawLLMConfig, error)
 		return corelib.MaclawLLMConfig{}, err
 	}
 	assistant.Profile = role
-	return ensureComputerUseRoleVision(assistant), nil
+	return ensureHubAutoRoleVision(assistant), nil
 }
 
 func maclawLLMRoleAssignment(profiles corelib.MaclawLLMProfiles, role string) corelib.MaclawLLMRoleAssignment {
@@ -137,14 +137,15 @@ func (a *App) materializeResolvedRole(role string, provider corelib.MaclawLLMPro
 	resolved.SupportsVision = providerSupportsVisionForModel(provider, resolved.Model)
 	resolved.Profile = role
 	resolved.RouteSource = "base"
-	return ensureComputerUseRoleVision(resolved)
+	return ensureHubAutoRoleVision(resolved)
 }
 
-// ensureComputerUseRoleVision sends screenshots when the computer-use role is
-// vision-capable, and also when Hub will choose the model (auto/default).
-// A pinned non-vision model stays text-primary.
-func ensureComputerUseRoleVision(cfg corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
-	if !strings.EqualFold(strings.TrimSpace(cfg.Profile), maclawLLMRoleComputerUse) || cfg.SupportsVision {
+// ensureHubAutoRoleVision attaches images when Hub will choose the model.
+// Picture-PDF pages and screenshots are sent only after SupportsVision is set;
+// Hub's auto route then sees the image parts and can stay on a vision model.
+// A pinned model keeps the probed flag, including a pinned text model.
+func ensureHubAutoRoleVision(cfg corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
+	if cfg.SupportsVision {
 		return cfg
 	}
 	model := strings.TrimSpace(cfg.Model)

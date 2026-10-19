@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
@@ -89,9 +90,11 @@ func applyTokenBankOutputCap(body map[string]any, cap int64) {
 	}
 }
 
-// estimateTokenBankInputTokens is ceil(total message string length / 4).
-// Only message text counts. A 4-byte string is one token; one extra byte
-// rounds up.
+// estimateTokenBankInputTokens is ceil(total message text runes / 4).
+// Only message text counts. Image blocks (type image_url, image, or
+// input_image) and a bare image_url payload are omitted, so a picture page
+// does not consume the per-request input cap. A 4-rune string is one token;
+// one extra rune rounds up.
 func estimateTokenBankInputTokens(body map[string]any) int64 {
 	if body == nil {
 		return 0
@@ -107,7 +110,13 @@ func estimateTokenBankInputTokens(body map[string]any) int64 {
 				walk(item)
 			}
 		case map[string]any:
-			for _, item := range typed {
+			if tokenBankVisionContentBlock(typed) {
+				return
+			}
+			for key, item := range typed {
+				if key == "image_url" {
+					continue
+				}
 				walk(item)
 			}
 		}
@@ -117,6 +126,18 @@ func estimateTokenBankInputTokens(body map[string]any) int64 {
 		return 0
 	}
 	return int64((n + 3) / 4)
+}
+
+// tokenBankVisionContentBlock reports a picture part. Its strings are image
+// bytes, not the message text the per-request cap measures.
+func tokenBankVisionContentBlock(block map[string]any) bool {
+	kind, _ := block["type"].(string)
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "image_url", "image", "input_image":
+		return true
+	default:
+		return false
+	}
 }
 
 func tokenBankBodyInt(v any) (int64, bool) {

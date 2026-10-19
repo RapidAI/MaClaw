@@ -11,14 +11,18 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
-// semanticSessionResidue is the host-owned record of what this desktop
-// conversation still has to do. It stores capability needs only. Grants,
-// tool names, parameters, and route revisions stay on the per-turn plan.
+// semanticSessionResidue is the host-owned record of what this conversation
+// still has to do. It stores capability needs only. Grants, tool names,
+// parameters, and route revisions stay on the per-turn plan.
 type semanticSessionResidue struct {
 	Generation uint64
 	Status     semanticResidueStatus
 	Needs      []tool.CapabilityNeed
 	Summary    string
+	// IntentPrimary is the managed label that authorized this plan. A
+	// follow-up restores it when the granted needs cannot. x:mcp: needs are
+	// that case: they do not name worklog_update or any other rule label.
+	IntentPrimary intent.IntentLabel
 	// Remaining is how many further invocations of each capability this
 	// session may still plan. LookupFacts records a successful web lookup.
 	Remaining   map[string]int
@@ -45,12 +49,13 @@ const (
 
 func semanticResidueToPersisted(residue semanticSessionResidue) agent.SemanticSessionResidue {
 	out := agent.SemanticSessionResidue{
-		Generation:  residue.Generation,
-		Status:      string(residue.Status),
-		Summary:     residue.Summary,
-		LookupFacts: residue.LookupFacts,
-		PlanClosed:  residue.PlanClosed,
-		Remaining:   cloneResidueRemaining(residue.Remaining),
+		Generation:    residue.Generation,
+		Status:        string(residue.Status),
+		Summary:       residue.Summary,
+		LookupFacts:   residue.LookupFacts,
+		IntentPrimary: string(residue.IntentPrimary),
+		PlanClosed:    residue.PlanClosed,
+		Remaining:     cloneResidueRemaining(residue.Remaining),
 	}
 	for _, need := range residue.Needs {
 		persisted := agent.SemanticSessionResidueNeed{
@@ -69,12 +74,13 @@ func semanticResidueToPersisted(residue semanticSessionResidue) agent.SemanticSe
 
 func semanticResidueFromPersisted(residue agent.SemanticSessionResidue) semanticSessionResidue {
 	out := semanticSessionResidue{
-		Generation:  residue.Generation,
-		Status:      semanticResidueStatus(residue.Status),
-		Summary:     residue.Summary,
-		LookupFacts: residue.LookupFacts,
-		PlanClosed:  residue.PlanClosed,
-		Remaining:   cloneResidueRemaining(residue.Remaining),
+		Generation:    residue.Generation,
+		Status:        semanticResidueStatus(residue.Status),
+		Summary:       residue.Summary,
+		LookupFacts:   residue.LookupFacts,
+		IntentPrimary: intent.IntentLabel(strings.TrimSpace(residue.IntentPrimary)),
+		PlanClosed:    residue.PlanClosed,
+		Remaining:     cloneResidueRemaining(residue.Remaining),
 	}
 	for _, need := range residue.Needs {
 		converted := tool.CapabilityNeed{
@@ -154,15 +160,22 @@ func semanticResidueRemainingForNeeds(remaining map[string]int, needs []tool.Cap
 	return out
 }
 
+// semanticResidueSessionKey names the conversation that owns a residue.
+// Desktop, and a message with no platform, keep the historical user id so
+// an already persisted desktop session still loads. Any other platform is
+// prefixed, so a lansenger thread cannot read that desktop session and a
+// desktop session cannot read the thread. The bool is false only when the
+// user id is empty.
 func semanticResidueSessionKey(msg IMUserMessage) (string, bool) {
-	if !strings.EqualFold(strings.TrimSpace(msg.Platform), "desktop") {
+	userID := strings.TrimSpace(msg.UserID)
+	if userID == "" {
 		return "", false
 	}
-	key := strings.TrimSpace(msg.UserID)
-	if key == "" {
-		return "", false
+	platform := strings.ToLower(strings.TrimSpace(msg.Platform))
+	if platform == "" || platform == "desktop" {
+		return userID, true
 	}
-	return key, true
+	return platform + "\x1f" + userID, true
 }
 
 func (h *IMMessageHandler) loadSemanticSessionResidue(key string) (semanticSessionResidue, bool) {
@@ -191,11 +204,12 @@ func (h *IMMessageHandler) loadOpenSemanticSessionResidue(key string) (semanticS
 }
 
 // loadDesktopTurnResidue returns the open task, or a completed residue that
-// still carries web-lookup facts. factsOnly means the task is finished: the
-// next follow-up may skip a fresh search, and must not reopen the old tools.
+// still carries web-lookup facts. The name is historical: the key is the
+// conversation, including an IM thread. factsOnly means the task is finished:
+// the next follow-up may skip a fresh search, and must not reopen the old tools.
 func (h *IMMessageHandler) loadDesktopTurnResidue(msg IMUserMessage, workflow bool, attachments []MessageAttachment) (semanticSessionResidue, bool, bool) {
-	key, desktop := semanticResidueSessionKey(msg)
-	if h == nil || !desktop || workflow || hostTurnSelectedLocalImage(msg.Text, attachments) {
+	key, scoped := semanticResidueSessionKey(msg)
+	if h == nil || !scoped || workflow || hostTurnSelectedLocalImage(msg.Text, attachments) {
 		return semanticSessionResidue{}, false, false
 	}
 	residue, ok := h.loadSemanticSessionResidue(key)
@@ -984,7 +998,11 @@ func (h *IMMessageHandler) noteSemanticSessionResidueCandidate(ctx *LoopContext,
 	if h == nil || ctx == nil || ctx.WorkflowAgentLoop {
 		return
 	}
-	if !strings.EqualFold(strings.TrimSpace(channel), "desktop") || h.isPureCodingWorkbenchSession(userID) {
+	// channel is the turn's transport and is not a gate. The residue key is
+	// taken from the message platform at settle, so an IM thread records a
+	// candidate the same way a desktop chat does. A pure coding workbench
+	// keeps its own plan resume and must not become this residue.
+	if h.isPureCodingWorkbenchSession(userID) {
 		return
 	}
 	needs := semanticResidueWithoutAmbient(withoutLookupCarryNeeds(grantedNeedsFromPlan(plan)))
@@ -1034,15 +1052,58 @@ func (h *IMMessageHandler) settleSemanticSessionResidue(msg IMUserMessage, loopC
 		lookupFacts = lookupFacts || previous.LookupFacts
 	}
 	h.captureProducedDocument(msg, loopCtx.semanticResidueCandidateNeeds, resp)
+	// Keep the label that authorized the previous plan when this turn did
+	// not publish a managed one. A read-only follow-up never reaches here
+	// while a mutating residue is still open.
+	primary := previous.IntentPrimary
+	if loopCtx.Runtime.SemanticIntent != nil && imSemanticIntentIsManaged(*loopCtx.Runtime.SemanticIntent) {
+		primary = loopCtx.Runtime.SemanticIntent.Primary
+	}
 	h.storeSemanticSessionResidue(key, semanticSessionResidue{
-		Generation:  previous.Generation + 1,
-		Status:      status,
-		Needs:       loopCtx.semanticResidueCandidateNeeds,
-		Summary:     summary,
-		Remaining:   residueRemainingAfterUse(loopCtx.semanticResidueCandidateNeeds, used),
-		LookupFacts: lookupFacts,
-		PlanClosed:  loopCtx.semanticSessionCeilingSpent,
+		Generation:    previous.Generation + 1,
+		Status:        status,
+		Needs:         loopCtx.semanticResidueCandidateNeeds,
+		Summary:       summary,
+		IntentPrimary: primary,
+		Remaining:     residueRemainingAfterUse(loopCtx.semanticResidueCandidateNeeds, used),
+		LookupFacts:   lookupFacts,
+		PlanClosed:    loopCtx.semanticSessionCeilingSpent,
 	})
+}
+
+// semanticRestoreResidueIntentPrimary puts the managed label that authorized
+// the open plan back on a follow-up whose own sentence did not name a task.
+// The caller passes that sentence, from before the open-residue rewrite.
+// Granted x:mcp needs do not reconstruct the label, and the rewrite can turn
+// a real shell or file obligation beside them into the task. A sentence that
+// is itself a managed task stays as it is, including when the relation is
+// unclear. The sentence text is not read.
+func semanticRestoreResidueIntentPrimary(current *intent.ClassificationResult, residue semanticSessionResidue, relation semanticResidueRelation) (intent.ClassificationResult, bool) {
+	if relation != semanticResidueContinue && relation != semanticResidueUnclear {
+		return intent.ClassificationResult{}, false
+	}
+	primary := residue.IntentPrimary
+	if primary == "" || primary.IsNonCapabilityLabel() {
+		return intent.ClassificationResult{}, false
+	}
+	restored := intent.ClassificationResult{
+		Primary:    primary,
+		Confidence: 0.98,
+		Layer:      3,
+		Reason:     "session residue continuation",
+	}
+	if !imSemanticIntentIsManaged(restored) {
+		return intent.ClassificationResult{}, false
+	}
+	if current != nil && current.HasLabel(primary) {
+		return intent.ClassificationResult{}, false
+	}
+	// A managed sentence is its own task. Restoring over it would discard a
+	// file write or an office request that only looked unclear.
+	if current != nil && imSemanticIntentIsManaged(*current) {
+		return intent.ClassificationResult{}, false
+	}
+	return restored, true
 }
 
 func (h *IMMessageHandler) markSemanticSessionPlanClosed(key string) {

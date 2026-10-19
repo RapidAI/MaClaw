@@ -90,6 +90,7 @@ func newKeywordRegistryFromEntries(keywords []KeywordEntry) *KeywordRegistry {
 		LabelMailboxRead:      42,
 		LabelMailboxSend:      43,
 		LabelMailboxConfigure: 44,
+		LabelMailboxDelete:    45,
 	}
 
 	type entryKey struct {
@@ -362,4 +363,10 @@ var defaultKeywords = []KeywordEntry{
 	{Keyword: "配置邮箱", Label: LabelMailboxConfigure, Strength: Strong},
 	{Keyword: "添加邮箱", Label: LabelMailboxConfigure, Strength: Strong},
 	{Keyword: "send an email", Label: LabelMailboxSend, Strength: Weak},
+	{Keyword: "删除邮件", Label: LabelMailboxDelete, Strength: Strong},
+	{Keyword: "删除所有邮件", Label: LabelMailboxDelete, Strength: Strong},
+	{Keyword: "清空收件箱", Label: LabelMailboxDelete, Strength: Strong},
+	{Keyword: "清空邮箱", Label: LabelMailboxDelete, Strength: Strong},
+	{Keyword: "delete email", Label: LabelMailboxDelete, Strength: Weak},
+	{Keyword: "empty inbox", Label: LabelMailboxDelete, Strength: Weak},
 }

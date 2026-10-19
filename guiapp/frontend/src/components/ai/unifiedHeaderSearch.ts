@@ -81,16 +81,60 @@ export function filterMobileLibraryHits(
     })).filter((item) => item.id);
 }
 
-export function knowledgeHitTitle(result: {
+type KnowledgeHitText = {
+    result_type?: string;
     card_title?: string;
     node_title?: string;
     claim?: string;
     summary?: string;
+    snippet?: string;
     citation?: string;
+    subject?: string;
+    predicate?: string;
+    object?: string;
     source?: { title?: string; uri?: string };
-} | null | undefined): string {
+};
+
+const ENTERPRISE_MARK = "[企业]";
+
+/** Enterprise hits are tagged on the source title. Keep that mark on the visible card or source line. */
+export function knowledgeEnterpriseLabel(text: string, sourceTitle?: string): string {
+    const body = String(text || "").trim();
+    const source = String(sourceTitle || "").trim();
+    if (!source.startsWith(ENTERPRISE_MARK) || !body || body.startsWith(ENTERPRISE_MARK)) {
+        return body;
+    }
+    return `${ENTERPRISE_MARK} ${body}`;
+}
+
+/** Fact rows copy the parent card title and summary. The body is the fact itself. */
+function knowledgeFactText(result: KnowledgeHitText | null | undefined): string {
     if (!result) return "";
-    return String(
+    const snippet = String(result.snippet || "").trim();
+    if (snippet) return snippet;
+    const triple = [result.subject, result.predicate, result.object]
+        .map((part) => String(part || "").trim())
+        .filter(Boolean)
+        .join(" ");
+    if (triple) return triple;
+    return String(result.claim || "").trim();
+}
+
+function knowledgeContextTitle(result: KnowledgeHitText): string {
+    return knowledgeEnterpriseLabel(String(
+        result.card_title || result.node_title || result.source?.title || "",
+    ), result.source?.title);
+}
+
+export function knowledgeHitTitle(result: KnowledgeHitText | null | undefined): string {
+    if (!result) return "";
+    if (String(result.result_type || "").trim() === "fact") {
+        const context = knowledgeContextTitle(result);
+        if (context) return context;
+        const fact = knowledgeFactText(result);
+        if (fact) return fact;
+    }
+    return knowledgeEnterpriseLabel(String(
         result.card_title
         || result.node_title
         || result.source?.title
@@ -99,33 +143,67 @@ export function knowledgeHitTitle(result: {
         || result.citation
         || result.source?.uri
         || "",
-    ).trim();
+    ), result.source?.title);
 }
 
-export function knowledgeHitPreview(result: {
-    snippet?: string;
-    summary?: string;
-    claim?: string;
-    citation?: string;
-} | null | undefined): string {
+export function knowledgeHitPreview(result: KnowledgeHitText | null | undefined): string {
     if (!result) return "";
+    if (String(result.result_type || "").trim() === "fact") {
+        const fact = knowledgeFactText(result);
+        if (fact) return fact;
+    }
     return String(result.snippet || result.summary || result.claim || result.citation || "").trim();
 }
 
+type KnowledgeSearchRow = {
+    node_id?: string;
+    card_id?: string;
+    fact_id?: string;
+    row_id?: string;
+    result_type?: string;
+    card_title?: string;
+    node_title?: string;
+    claim?: string;
+    summary?: string;
+    snippet?: string;
+    citation?: string;
+    source?: { id?: string; title?: string; uri?: string };
+};
+
+/** Identity follows the stored result type so a fact or table row is not folded into its parent card or source. */
+export function knowledgeHitID(result: KnowledgeSearchRow | null | undefined): string {
+    if (!result) return "";
+    const rowID = String(result.row_id || "").trim();
+    const factID = String(result.fact_id || "").trim();
+    const cardID = String(result.card_id || "").trim();
+    const nodeID = String(result.node_id || "").trim();
+    const sourceID = String(result.source?.id || "").trim();
+    switch (String(result.result_type || "").trim()) {
+        case "table_row":
+            if (rowID) return rowID;
+            break;
+        case "fact":
+            if (factID) return factID;
+            break;
+        case "card":
+            if (cardID) return cardID;
+            break;
+        case "node":
+            if (nodeID) return nodeID;
+            break;
+    }
+    return rowID || factID || cardID || nodeID || sourceID;
+}
+
+/** Row key for a search result. The type stays on the key so two evidence ids can share a suffix. */
+export function knowledgeResultKey(result: KnowledgeSearchRow | null | undefined, index = 0): string {
+    const kind = String(result?.result_type || "result").trim() || "result";
+    const id = knowledgeHitID(result);
+    return `${kind}-${id || index}`;
+}
+
 export function knowledgeSearchHits(
-    results: Array<{
-        node_id?: string;
-        card_id?: string;
-        fact_id?: string;
-        result_type?: string;
-        card_title?: string;
-        node_title?: string;
-        claim?: string;
-        summary?: string;
-        snippet?: string;
-        citation?: string;
-        source?: { id?: string; title?: string; uri?: string };
-    }> | null | undefined,
+    results: KnowledgeSearchRow[] | null | undefined,
     limit = HEADER_SEARCH_KNOWLEDGE_LIMIT,
 ): HeaderKnowledgeSearchHit[] {
     const list = Array.isArray(results) ? results : [];
@@ -133,7 +211,7 @@ export function knowledgeSearchHits(
     const seen = new Set<string>();
     for (const result of list) {
         const sourceId = String(result.source?.id || "").trim();
-        const id = String(result.node_id || result.card_id || result.fact_id || sourceId).trim();
+        const id = knowledgeHitID(result);
         if (!id || seen.has(id)) continue;
         seen.add(id);
         const title = knowledgeHitTitle(result);

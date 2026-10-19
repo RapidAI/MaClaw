@@ -173,12 +173,15 @@ func tokenBankRouteMembers(reg *Registry, routeProviderID string, accept func(*l
 	if quoted != "" || !rotate {
 		logicalID, profile, members = lookupProviderArray(reg, routeProviderID, accept)
 		if quoted == "" && !rotate && membersIncludeTokenBank(members) {
-			logicalID, profile, members = arrayEgressForBucket(reg, routeProviderID, accept, model, bucket)
+			logicalID, profile, members = arrayEgressForBucket(reg, routeProviderID, accept, model, bucket, requestBody(req))
 		}
 	} else {
-		logicalID, profile, members = arrayEgressForBucket(reg, routeProviderID, accept, model, bucket)
+		logicalID, profile, members = arrayEgressForBucket(reg, routeProviderID, accept, model, bucket, requestBody(req))
 	}
 	members = prepareTokenBankRequestMembers(members, req, model)
+	// A canary hit reorders after the vision rotation. Put vision members
+	// back in front so that hit cannot dial a text model for an image.
+	members = putVisionMembersFirst(members, requestBody(req))
 	if quoted != "" {
 		members = restrictToQuotedTokenBankMember(members, quoted)
 	}
@@ -330,6 +333,77 @@ func arrayRouteModelPaused(reg *Registry, routeProviderID string, accept func(*l
 		}
 	}
 	return true
+}
+
+func requestBody(req *ProxyRequest) map[string]any {
+	if req == nil {
+		return nil
+	}
+	return req.Body
+}
+
+// orderReadyMembers rotates the members this request will dial. An image
+// request rotates only vision-tagged members, on a separate cursor, and leaves
+// text members after them as failover. A tier array's route tag is the union
+// of its members, so provider scoring cannot make that split.
+func orderReadyMembers(logicalID, model, bucket string, ready []*llmpool.ProviderConfig, body map[string]any, now time.Time) []*llmpool.ProviderConfig {
+	if !llmpool.RequestHasVisionContent(body) {
+		return orderTokenBankReady(logicalID, model, bucket, ready, now)
+	}
+	vision, rest := splitVisionMembers(ready)
+	if len(vision) == 0 || len(rest) == 0 {
+		return orderTokenBankReady(logicalID, model, bucket, ready, now)
+	}
+	return append(orderVisionMembers(logicalID, model, bucket, vision, now), rest...)
+}
+
+func orderVisionMembers(logicalID, model, bucket string, vision []*llmpool.ProviderConfig, now time.Time) []*llmpool.ProviderConfig {
+	if !membersIncludeTokenBank(vision) {
+		return orderArrayMembers(dispatchOrderKey(logicalID, model, vision)+"\x00vision", vision)
+	}
+	return orderTokenBankReady(logicalID, visionCursorModel(model), bucket, vision, now)
+}
+
+func visionCursorModel(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "vision"
+	}
+	return model + "\x00vision"
+}
+
+func putVisionMembersFirst(members []*llmpool.ProviderConfig, body map[string]any) []*llmpool.ProviderConfig {
+	if len(members) < 2 || !llmpool.RequestHasVisionContent(body) {
+		return members
+	}
+	vision, rest := splitVisionMembers(members)
+	if len(vision) == 0 || len(rest) == 0 {
+		return members
+	}
+	return append(vision, rest...)
+}
+
+func splitVisionMembers(members []*llmpool.ProviderConfig) (vision, rest []*llmpool.ProviderConfig) {
+	for _, member := range members {
+		if memberHasVisionTag(member) {
+			vision = append(vision, member)
+			continue
+		}
+		rest = append(rest, member)
+	}
+	return vision, rest
+}
+
+func memberHasVisionTag(member *llmpool.ProviderConfig) bool {
+	if member == nil {
+		return false
+	}
+	for _, tag := range member.CapabilityTags {
+		if strings.EqualFold(strings.TrimSpace(tag), "vision") {
+			return true
+		}
+	}
+	return false
 }
 
 // dispatchOrderKey isolates a bank model's rotation from the other models

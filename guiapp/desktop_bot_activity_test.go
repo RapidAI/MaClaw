@@ -100,3 +100,23 @@ func TestDesktopBotPollClearsActivityWhenTheRunFinishes(t *testing.T) {
 		}
 	}
 }
+
+func TestPublishDesktopBotActivityIsNotABubble(t *testing.T) {
+	var activity []string
+	var results int
+	desktopBotActivitySink = func(botID, runID, phrase string) {
+		activity = append(activity, botID+"\t"+runID+"\t"+phrase)
+	}
+	desktopBotResultSink = func(*IMAgentResponse) { results++ }
+	t.Cleanup(func() {
+		desktopBotActivitySink = nil
+		desktopBotResultSink = nil
+	})
+	(&App{}).publishDesktopBotActivity("bot_1", "run_1", "正在点击")
+	if results != 0 {
+		t.Fatalf("activity published a reply: %d", results)
+	}
+	if len(activity) != 1 || activity[0] != "bot_1\trun_1\t正在点击" {
+		t.Fatalf("activity = %#v", activity)
+	}
+}

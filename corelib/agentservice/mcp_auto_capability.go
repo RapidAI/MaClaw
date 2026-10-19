@@ -93,6 +93,18 @@ func installedMCPToolSummary(id coretool.CapabilityID) string {
 	return fmt.Sprintf("Installed MCP tool %s on server %s.", toolName, server)
 }
 
+// InstalledMCPToolPromptSummary is the description prefix the catalog
+// renderer publishes for one installed MCP tool. The callable function name
+// is the rotating grant token, so a later turn identifies the successor by
+// this sentence, not by the previous invoke_* spelling.
+func InstalledMCPToolPromptSummary(serverID, toolName string) string {
+	id, err := AutoMCPCapabilityID(serverID, toolName)
+	if err != nil {
+		return ""
+	}
+	return installedMCPToolSummary(id)
+}
+
 // AutoMCPCapabilityIDForBinding is AutoMCPCapabilityID without the error:
 // binding identity was already validated non-empty upstream, so a missing slug
 // can only come from an empty input and yields "" rather than a route.

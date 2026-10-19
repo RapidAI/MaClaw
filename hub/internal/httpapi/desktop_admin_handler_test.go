@@ -47,6 +47,8 @@ func dockerDesktopFake(t *testing.T, novnc string) (*httptest.Server, *int32) {
 	var stops int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/v1/desktops/ensure":
+			writeJSON(w, http.StatusOK, map[string]string{"status": "running"})
 		case "/v1/desktops/session":
 			writeJSON(w, http.StatusOK, map[string]string{
 				"cdp_url":   "http://dockerd.example:19020",

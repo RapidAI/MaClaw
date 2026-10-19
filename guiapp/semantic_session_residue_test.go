@@ -761,12 +761,129 @@ func TestSemanticSessionResidueIsDesktopSessionScoped(t *testing.T) {
 	if _, ok := h.loadOpenSemanticSessionResidue("desktop-user:proj-b"); ok {
 		t.Fatal("another desktop session saw the residue")
 	}
-	if _, ok := semanticResidueSessionKey(IMUserMessage{UserID: "desktop-user", Platform: "lansenger"}); ok {
-		t.Fatal("group channel must not own a desktop residue key")
+	desktopKey, ok := semanticResidueSessionKey(IMUserMessage{UserID: "desktop-user", Platform: "desktop"})
+	if !ok || desktopKey != "desktop-user" {
+		t.Fatalf("desktop key=%q ok=%v", desktopKey, ok)
+	}
+	bareKey, ok := semanticResidueSessionKey(IMUserMessage{UserID: "desktop-user"})
+	if !ok || bareKey != desktopKey {
+		t.Fatalf("empty platform key=%q", bareKey)
+	}
+	groupKey, ok := semanticResidueSessionKey(IMUserMessage{UserID: "desktop-user", Platform: "lansenger"})
+	if !ok || groupKey == desktopKey {
+		t.Fatalf("group channel shared the desktop residue key %q", groupKey)
+	}
+	if _, ok := semanticResidueSessionKey(IMUserMessage{Platform: "lansenger"}); ok {
+		t.Fatal("missing user owned a residue key")
 	}
 	h.clearPerUserSessionState("desktop-user:proj-a")
 	if _, ok := h.loadOpenSemanticSessionResidue("desktop-user:proj-a"); ok {
 		t.Fatal("session reset kept the residue")
+	}
+}
+
+func TestSettleStoresManagedPrimaryOnItsConversation(t *testing.T) {
+	h := &IMMessageHandler{}
+	ctx := &LoopContext{
+		semanticResidueCandidateNeeds: []tool.CapabilityNeed{{
+			ID:         "need:~installed-mcp:x:mcp:tengyun:post_work_log_add",
+			Capability: "x:mcp:tengyun:post_work_log_add",
+			Required:   true,
+		}},
+		Runtime: RuntimeContext{SemanticIntent: &intent.ClassificationResult{
+			Primary: intent.LabelWorklogUpdate, Confidence: 0.95, Layer: 3,
+		}},
+	}
+	msg := IMUserMessage{UserID: "lansenger:12:bot", Platform: "lansenger_local", Text: "补写下午日志"}
+	h.settleSemanticSessionResidue(msg, ctx, &IMAgentResponse{})
+	key, ok := semanticResidueSessionKey(msg)
+	if !ok || key == msg.UserID {
+		t.Fatalf("conversation key=%q", key)
+	}
+	loaded, found := h.loadOpenSemanticSessionResidue(key)
+	if !found || loaded.IntentPrimary != intent.LabelWorklogUpdate {
+		t.Fatalf("loaded=%#v found=%v", loaded, found)
+	}
+	if _, found := h.loadOpenSemanticSessionResidue(msg.UserID); found {
+		t.Fatal("desktop key saw the lansenger residue")
+	}
+	if round := semanticResidueFromPersisted(semanticResidueToPersisted(loaded)); round.IntentPrimary != intent.LabelWorklogUpdate {
+		t.Fatalf("persisted primary=%q", round.IntentPrimary)
+	}
+	search := &LoopContext{semanticResidueCandidateNeeds: []tool.CapabilityNeed{{
+		ID: "need:search", Capability: "information.search.web", Required: true,
+	}}}
+	h.settleSemanticSessionResidue(msg, search, &IMAgentResponse{})
+	kept, found := h.loadOpenSemanticSessionResidue(key)
+	if !found || kept.IntentPrimary != intent.LabelWorklogUpdate || kept.Needs[0].Capability != "x:mcp:tengyun:post_work_log_add" {
+		t.Fatalf("read-only follow-up replaced the task: %#v found=%v", kept, found)
+	}
+}
+
+func TestUnclearFollowUpRestoresStoredMCPIntent(t *testing.T) {
+	residue := semanticSessionResidue{
+		Status:        semanticResidueOpen,
+		IntentPrimary: intent.LabelWorklogUpdate,
+		Needs: []tool.CapabilityNeed{
+			{ID: "need:~installed-mcp:x:mcp:tengyun:post_work_log_add", Capability: "x:mcp:tengyun:post_work_log_add", Required: true},
+			{ID: "need:zz-baseline:shell.execute.local:abc", Capability: tool.CapabilityShellExecuteLocal, EvidenceIDs: []string{"intent:baseline_workspace"}},
+		},
+	}
+	current := intent.ClassificationResult{Primary: intent.LabelUnknown, Confidence: 0.4}
+	relation := decideSemanticResidueRelation(current, "abc", residue)
+	if relation != semanticResidueContinue {
+		t.Fatalf("unmanaged follow-up relation=%s", relation)
+	}
+	rewritten, applied := semanticClassificationWithOpenResidue(current, residue.Needs, relation)
+	planned := current
+	if applied {
+		planned = rewritten
+	}
+	// The companion shell is stripped before classification, so this rewrite
+	// stays unmanaged. Restore still reads the sentence, not planned.
+	restored, ok := semanticRestoreResidueIntentPrimary(&current, residue, relation)
+	if !ok || restored.Primary != intent.LabelWorklogUpdate || !imSemanticIntentIsManaged(restored) {
+		t.Fatalf("restored=%+v ok=%v applied=%v planned=%+v", restored, ok, applied, planned)
+	}
+	other := intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.92}
+	if _, ok := semanticRestoreResidueIntentPrimary(&other, residue, semanticResidueContinue); ok {
+		t.Fatal("continue of another managed task restored the stored primary")
+	}
+	same := intent.ClassificationResult{Primary: intent.LabelWorklogUpdate, Confidence: 0.9}
+	if _, ok := semanticRestoreResidueIntentPrimary(&same, residue, semanticResidueUnclear); ok {
+		t.Fatal("a turn that already carries the stored primary was replaced")
+	}
+	if _, ok := semanticRestoreResidueIntentPrimary(&current, residue, semanticResidueNone); ok {
+		t.Fatal("a new task restored the stored primary")
+	}
+	fileWrite := intent.ClassificationResult{Primary: intent.LabelFileWrite, Confidence: 0.9}
+	if _, ok := semanticRestoreResidueIntentPrimary(&fileWrite, residue, semanticResidueUnclear); ok {
+		t.Fatal("an unclear file-write sentence was replaced by the stored task")
+	}
+
+	// A real shell obligation beside x:mcp classifies as shell. Restore must
+	// still see the unknown sentence and put the stored worklog label back.
+	// Feeding it the rewritten label would refuse, which is why the entry
+	// passes the sentence from before the rewrite.
+	shellResidue := semanticSessionResidue{
+		Status:        semanticResidueOpen,
+		IntentPrimary: intent.LabelWorklogUpdate,
+		Needs: []tool.CapabilityNeed{
+			{ID: "need:~installed-mcp:x:mcp:tengyun:post_work_log_add", Capability: "x:mcp:tengyun:post_work_log_add", Required: true},
+			{ID: "need:shell", Capability: tool.CapabilityShellExecuteLocal, Required: true},
+		},
+	}
+	shellRelation := decideSemanticResidueRelation(current, "abc", shellResidue)
+	rewrittenShell, shellApplied := semanticClassificationWithOpenResidue(current, shellResidue.Needs, shellRelation)
+	if !shellApplied || !imSemanticIntentIsManaged(rewrittenShell) || rewrittenShell.HasLabel(intent.LabelWorklogUpdate) {
+		t.Fatalf("shell obligation did not rewrite the sentence: applied=%v rewritten=%+v", shellApplied, rewrittenShell)
+	}
+	if _, ok := semanticRestoreResidueIntentPrimary(&rewrittenShell, shellResidue, shellRelation); ok {
+		t.Fatal("restore accepted the rewritten shell label")
+	}
+	restoredShell, ok := semanticRestoreResidueIntentPrimary(&current, shellResidue, shellRelation)
+	if !ok || restoredShell.Primary != intent.LabelWorklogUpdate {
+		t.Fatalf("sentence restore=%+v ok=%v", restoredShell, ok)
 	}
 }
 

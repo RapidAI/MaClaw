@@ -255,6 +255,43 @@
     font-display: swap;
 }
 
+/* Bundled assistant faces are static Regular files: weight 400, upright, no variation axis.
+   Declare only that face. A weight or slant range would match headings, strong, and emphasis
+   and then draw these same regular outlines, because synthesis runs only when no face matches.
+   With a single Regular face, the browser synthesizes bold and oblique and stays on this family.
+   Installed names stay in the font stack, not in local(), so one local hit cannot hide this file. */
+@font-face {
+    font-family: "MaClaw Maple Mono";
+    src: url("./assets/fonts/maple-mono-latin-400.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "MaClaw JetBrains Mono";
+    src: url("./assets/fonts/jetbrains-mono-latin-400.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "MaClaw Cascadia Code";
+    src: url("./assets/fonts/cascadia-code-regular.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "MaClaw Fira Code";
+    src: url("./assets/fonts/fira-code-latin-400.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
+
 .brand-version-mark {
     display: inline-block;
     margin: 0 0.06em;

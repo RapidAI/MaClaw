@@ -25,6 +25,7 @@ var (
 	mailboxProbeDialer   mailbox.Dialer
 	mailboxToolReader    mailbox.MailReader
 	mailboxToolSender    mailbox.MailSender
+	mailboxToolDeleter   mailbox.MailDeleter
 	guiMailboxDrafts     = mailbox.NewDraftStore()
 )
 
@@ -347,12 +348,17 @@ func (a *App) MailboxToolHost(principal, session, workingDir string, budget *mai
 		workingDir = cfg.WorkingDirectory
 	}
 	_, reader, sender := a.mailboxIO()
+	deleter := mailboxToolDeleter
+	if deleter == nil {
+		deleter = mailbox.DeleterFromReader(reader)
+	}
 	return &mailbox.Host{
 		Accounts:   cfg.MailboxAccounts,
 		Signatures: cfg.MailboxSignatures,
 		Secrets:    a.mailboxSecret,
 		Reader:     reader,
 		Sender:     sender,
+		Deleter:    deleter,
 		WorkingDir: workingDir,
 		Budget:     budget,
 		Drafts:     guiMailboxDrafts,

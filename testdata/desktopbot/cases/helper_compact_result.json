@@ -1,0 +1,5 @@
+{
+  "id": "helper_compact_result",
+  "trace": "computer_click x=12 y=40\nthen typed the password",
+  "report": "1. 首页已经打开。\n2. 没有新邮件。\n3. 无\n文件：/home/desktop/tasks/a/out/1.txt"
+}

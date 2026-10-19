@@ -9,8 +9,13 @@ import (
 	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 )
+
+func scheduledTaskPrompt(action string) string {
+	return desktopbot.RoutineQuietPrompt + "\n" + strings.TrimSpace(action)
+}
 
 // initScheduler creates and starts the scheduled task manager if enabled via
 // MACLAW_ENABLE_SCHEDULER=true. The executor sends task actions through the
@@ -18,6 +23,13 @@ import (
 //
 // Returns nil if scheduler is disabled or initialization fails.
 func initScheduler(dataRoot string, svc *agentservice.Service, executor *agentservice.CoreAgentExecutor) *scheduler.Manager {
+	// The step journal is not the scheduler. Bind it even when the flag is off,
+	// and clear it when this process has no service database.
+	if svc == nil {
+		bindDesktopSteps(nil)
+	} else {
+		bindDesktopSteps(svc.DesktopStepper())
+	}
 	if executor != nil && svc != nil {
 		executor.ScheduleDispatchSend = func(ctx context.Context, principal agentservice.Principal, channel string, targets []scheduler.DeliveryTarget, text string) error {
 			return sendSrvScheduleDispatch(ctx, svc, principal, channel, targets, text)
@@ -46,7 +58,22 @@ func initScheduler(dataRoot string, svc *agentservice.Service, executor *agentse
 	}
 
 	schPath := filepath.Join(dataRoot, "scheduled_tasks.json")
-	mgr, err := scheduler.NewManager(schPath)
+	var mgr *scheduler.Manager
+	var err error
+	if svc != nil && svc.ScheduledTaskStore() != nil {
+		// The JSON file is the pre-migration copy. Rows live in the service
+		// database this worker already opened. One manager, not one per user.
+		store := svc.ScheduledTaskStore()
+		if n, impErr := scheduler.ImportLegacyTasks(schPath, store); impErr != nil {
+			log.Printf("[MaClawSrv] WARNING: scheduler import failed: %v", impErr)
+		} else if n > 0 {
+			log.Printf("[MaClawSrv] scheduler imported %d task(s); scheduled_tasks.json stays as the pre-migration file", n)
+		}
+		mgr, err = scheduler.NewManagerFromStore(store)
+		schPath = "service database"
+	} else {
+		mgr, err = scheduler.NewManager(schPath)
+	}
 	if err != nil {
 		log.Printf("[MaClawSrv] WARNING: scheduler init failed: %v", err)
 		return nil
@@ -89,7 +116,7 @@ func buildSrvScheduledTaskExecutor(svc *agentservice.Service, executor *agentser
 	return func(ctx context.Context, task *scheduler.ScheduledTask) (string, error) {
 		log.Printf("[MaClawSrv-Scheduler] firing task %s: %s", task.Name, scheduler.TruncateStr(task.Action, 100))
 
-		actionText := fmt.Sprintf("[自动执行定时任务] 这是系统自动触发的定时任务，必须在一次执行中完成，不会有用户交互。请直接执行以下操作并返回结果：\n%s", task.Action)
+		actionText := scheduledTaskPrompt(task.Action)
 
 		principal, instanceID, err := srvScheduledTaskRunTarget(ctx, svc, executor, agentservice.Principal{}, task, &mu, &cachedInstanceID)
 		if err != nil {
@@ -133,7 +160,7 @@ func buildSrvScheduledTaskExecutor(svc *agentservice.Service, executor *agentser
 		runErr := scheduler.AnnotateRunErrWithContext(ctx, nil)
 
 		// Structured channel delivery (lansenger / weixin / telegram / qq).
-		if delErr := deliverScheduledTaskResult(svc, principal, task, result, runErr); delErr != nil {
+		if delErr := deliverScheduledTaskResultForRun(svc, principal, task, result, runErr, runID); delErr != nil {
 			log.Printf("[MaClawSrv-Scheduler] delivery failed: %v", delErr)
 			return scheduler.MergeDeliveryOutcome(task.Delivery, result, runErr, delErr)
 		}
@@ -257,7 +284,7 @@ func runSrvScheduledTaskAction(ctx context.Context, svc *agentservice.Service, e
 	if err != nil {
 		return "", err
 	}
-	actionText := fmt.Sprintf("[自动执行定时任务] 这是系统自动触发的定时任务，必须在一次执行中完成，不会有用户交互。请直接执行以下操作并返回结果：\n%s", task.Action)
+	actionText := scheduledTaskPrompt(task.Action)
 	instanceID, metadata, targetErr := instanceMessageTarget(ctx, svc, principal, instanceID)
 	if targetErr != nil {
 		return "", scheduler.AnnotateRunErrWithContext(ctx, fmt.Errorf("post scheduled task message: %w", targetErr))

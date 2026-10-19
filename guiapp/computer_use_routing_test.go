@@ -90,8 +90,8 @@ func TestFilterComputerUseToolsForLocalFileWork(t *testing.T) {
 
 	explicit := "@computer 请用桌面打开附件\n[附件: bundle.zip → 已保存到 C:\\tmp\\bundle.zip]"
 	names = toolNameSetForWorkflowFilterTest(filterComputerUseToolsForLocalFileWork(nil, explicit, tools))
-	if !names["computer_observe"] {
-		t.Fatalf("explicit desktop request must preserve Computer Use tools: %#v", names)
+	if names["computer_observe"] || names["gui_click"] || !names["read_file"] {
+		t.Fatalf("the main agent drops driving tools: %#v", names)
 	}
 }
 
@@ -105,33 +105,51 @@ func TestClosedComputerUseGateDropsToolsAndRejectsCalls(t *testing.T) {
 	open.ComputerUseGateSettled = true
 	open.ComputerUseActive = true
 	openNames := toolNameSetForWorkflowFilterTest(filterComputerUseToolsForLocalFileWork(open, "打开记事本程序", tools))
-	if !openNames["computer_observe"] || !openNames["read_file"] {
-		t.Fatalf("an open gate must keep computer tools: %#v", openNames)
+	if openNames["computer_observe"] || openNames["gui_click"] || !openNames["read_file"] {
+		t.Fatalf("the main agent drops driving tools while the gate is open: %#v", openNames)
 	}
 
 	closed := NewLoopContext("cu-closed", 1, nil)
 	closed.ComputerUseGateSettled = true
 	names := toolNameSetForWorkflowFilterTest(filterComputerUseToolsForLocalFileWork(closed, "帮我写一份简历", tools))
-	if names["computer_observe"] || !names["gui_click"] || !names["read_file"] {
-		t.Fatalf("closed gate must drop computer_* and keep other tools: %#v", names)
+	if names["computer_observe"] || names["gui_click"] || !names["read_file"] {
+		t.Fatalf("the main agent drops driving tools while the gate is closed: %#v", names)
 	}
 	unsettled := NewLoopContext("cu-unsettled", 1, nil)
 	unsettledNames := toolNameSetForWorkflowFilterTest(filterComputerUseToolsForLocalFileWork(unsettled, "帮我写一份简历", tools))
-	if !unsettledNames["computer_observe"] {
-		t.Fatalf("an unsettled context must not invent a refusal: %#v", unsettledNames)
+	if unsettledNames["computer_observe"] || unsettledNames["gui_click"] || !unsettledNames["read_file"] {
+		t.Fatalf("the main agent drops driving tools before the gate settles: %#v", unsettledNames)
 	}
 
-	if got := computerUseExecutionRejection(closed, "帮我写一份简历", "computer_click"); !strings.Contains(got, "not active") {
-		t.Fatalf("closed gate rejection = %q", got)
+	helper := NewLoopContext("cu-helper", 1, nil)
+	helper.ComputerHelper = true
+	helper.ComputerUseGateSettled = true
+	helper.ComputerUseActive = true
+	helperNames := toolNameSetForWorkflowFilterTest(filterComputerUseToolsForLocalFileWork(helper, "打开记事本程序", tools))
+	if !helperNames["computer_observe"] || !helperNames["gui_click"] || !helperNames["read_file"] {
+		t.Fatalf("the computer helper keeps driving tools: %#v", helperNames)
 	}
-	if got := computerUseExecutionRejection(closed, "帮我写一份简历", semanticTrustedComputerUseAdapter); !strings.Contains(got, "not active") {
+	helperClosed := NewLoopContext("cu-helper-closed", 1, nil)
+	helperClosed.ComputerHelper = true
+	helperClosed.ComputerUseGateSettled = true
+
+	if got := computerUseExecutionRejection(open, "打开记事本程序", "computer_click"); !strings.Contains(got, "does not operate") {
+		t.Fatalf("main loop rejection = %q", got)
+	}
+	if got := computerUseExecutionRejection(closed, "帮我写一份简历", "computer_click"); !strings.Contains(got, "does not operate") {
+		t.Fatalf("main loop rejection = %q", got)
+	}
+	if got := computerUseExecutionRejection(closed, "帮我写一份简历", semanticTrustedComputerUseAdapter); !strings.Contains(got, "does not operate") {
 		t.Fatalf("trusted desktop rejection = %q", got)
 	}
 	if computerUseExecutionRejection(closed, "帮我写一份简历", "read_file") != "" {
-		t.Fatal("closed gate must not reject document tools")
+		t.Fatal("the main agent must not reject document tools")
 	}
-	if computerUseExecutionRejection(open, "打开记事本程序", "computer_click") != "" {
-		t.Fatal("open gate must allow computer tools")
+	if computerUseExecutionRejection(helper, "打开记事本程序", "computer_click") != "" {
+		t.Fatal("an open computer helper must allow computer tools")
+	}
+	if got := computerUseExecutionRejection(helperClosed, "帮我写一份简历", "computer_click"); !strings.Contains(got, "not active") {
+		t.Fatalf("closed helper gate rejection = %q", got)
 	}
 }
 

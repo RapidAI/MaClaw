@@ -10,6 +10,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 func TestPlanPhaseDoesNotMutateOrHandOffLogin(t *testing.T) {
@@ -31,7 +32,7 @@ func TestPlanPhaseDoesNotMutateOrHandOffLogin(t *testing.T) {
 			"text":   "hello",
 			"key":    "Enter",
 		})
-		if err == nil || !strings.Contains(err.Error(), "plan phase blocks "+action) {
+		if err == nil || err.Error() != desktopbot.PlanPhaseNextStep || strings.Contains(err.Error(), "plan phase blocks") {
 			t.Fatalf("%s err=%v", action, err)
 		}
 	}
@@ -140,7 +141,7 @@ func TestModelTypeIntoAPasswordFieldIsRefused(t *testing.T) {
 		"action": "type",
 		"text":   secret,
 	})
-	if err == nil || err.Error() != "not_password_field" || strings.Contains(err.Error(), secret) || reached {
+	if err == nil || err.Error() != desktopbot.PasswordFieldNextStep || strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "not_password_field") || reached {
 		t.Fatalf("active type err=%v reached=%v", err, reached)
 	}
 	reached = false
@@ -149,7 +150,7 @@ func TestModelTypeIntoAPasswordFieldIsRefused(t *testing.T) {
 		"text":   secret,
 		"ref":    "e4",
 	})
-	if !reached || err == nil || err.Error() == "not_password_field" || strings.Contains(err.Error(), secret) {
+	if !reached || err == nil || err.Error() == desktopbot.PasswordFieldNextStep || err.Error() == "not_password_field" || strings.Contains(err.Error(), secret) {
 		t.Fatalf("ref type was refused with the focused password: err=%v reached=%v", err, reached)
 	}
 	reached = false
@@ -159,7 +160,7 @@ func TestModelTypeIntoAPasswordFieldIsRefused(t *testing.T) {
 			map[string]any{"action": "type", "params": map[string]any{"text": secret}},
 		},
 	})
-	if err == nil || err.Error() != "not_password_field" || strings.Contains(err.Error(), secret) || reached {
+	if err == nil || err.Error() != desktopbot.PasswordFieldNextStep || strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "not_password_field") || reached {
 		t.Fatalf("task_run active type err=%v reached=%v", err, reached)
 	}
 	reached = false
@@ -170,7 +171,7 @@ func TestModelTypeIntoAPasswordFieldIsRefused(t *testing.T) {
 			map[string]any{"action": "type", "params": map[string]any{"text": secret, "ref": "e4"}},
 		},
 	})
-	if !reached || err == nil || err.Error() == "not_password_field" || strings.Contains(err.Error(), secret) {
+	if !reached || err == nil || err.Error() == desktopbot.PasswordFieldNextStep || err.Error() == "not_password_field" || strings.Contains(err.Error(), secret) {
 		t.Fatalf("task_run ref type was refused with the focused password: err=%v reached=%v", err, reached)
 	}
 	reached = false
@@ -180,7 +181,7 @@ func TestModelTypeIntoAPasswordFieldIsRefused(t *testing.T) {
 			map[string]any{"action": "type", "text": secret},
 		},
 	})
-	if err == nil || err.Error() != "not_password_field" || strings.Contains(err.Error(), secret) {
+	if err == nil || err.Error() != desktopbot.PasswordFieldNextStep || strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "not_password_field") {
 		t.Fatalf("app_run err=%v", err)
 	}
 	for _, key := range []string{"p", "Shift_L+a", "plus", "Control_L+v"} {
@@ -188,7 +189,7 @@ func TestModelTypeIntoAPasswordFieldIsRefused(t *testing.T) {
 			"action": "press",
 			"key":    key,
 		})
-		if err == nil || err.Error() != "not_password_field" || strings.Contains(err.Error(), secret) {
+		if err == nil || err.Error() != desktopbot.PasswordFieldNextStep || strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "not_password_field") {
 			t.Fatalf("press %s err=%v", key, err)
 		}
 	}
@@ -198,7 +199,7 @@ func TestModelTypeIntoAPasswordFieldIsRefused(t *testing.T) {
 			map[string]any{"action": "press", "params": map[string]any{"key": "p"}},
 		},
 	})
-	if err == nil || err.Error() != "not_password_field" || strings.Contains(err.Error(), secret) || reached {
+	if err == nil || err.Error() != desktopbot.PasswordFieldNextStep || strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "not_password_field") || reached {
 		t.Fatalf("task_run press err=%v reached=%v", err, reached)
 	}
 }
@@ -441,6 +442,7 @@ func TestExecuteInstallRunsAptPackages(t *testing.T) {
 	t.Cleanup(func() {
 		desktopRemoteSession = previousSession
 		desktopRemoteInstall = previousInstall
+		desktopbot.ResetDangerState()
 	})
 	turn := agentruntime.TurnRequest{
 		Scope: scope,
@@ -450,14 +452,15 @@ func TestExecuteInstallRunsAptPackages(t *testing.T) {
 		"action":   "install",
 		"packages": []any{"libreoffice", "libreoffice"},
 	})
-	if err != nil || text != "installed: libreoffice" || len(got) != 1 || got[0] != "libreoffice" {
-		t.Fatalf("text=%q err=%v packages=%v", text, err, got)
+	ask, asked := desktopbot.PeekDangerAsk(scope.InstanceID)
+	if err == nil || err.Error() != desktopbot.DangerAskedError || text != "" || len(got) != 0 || !asked || ask.Kind != "ask" || !strings.Contains(ask.Text, "install") {
+		t.Fatalf("text=%q err=%v packages=%v ask=%+v", text, err, got, ask)
 	}
 	_, err = (desktopRuntimeModule{}).InvokeTool(context.Background(), turn, "desktop", map[string]any{
 		"action":   "install",
 		"packages": []any{"libreoffice;rm -rf /"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "package") || len(got) != 1 {
+	if err == nil || !strings.Contains(err.Error(), "package") || len(got) != 0 {
 		t.Fatalf("bad package err=%v packages=%v", err, got)
 	}
 }

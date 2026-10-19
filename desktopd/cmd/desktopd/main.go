@@ -25,9 +25,24 @@ func main() {
 	}
 	token := strings.TrimSpace(os.Getenv("DESKTOPD_TOKEN"))
 	if token == "" {
-		log.Fatal("DESKTOPD_TOKEN is required")
+		log.Fatal("DESKTOPD_TOKEN is unset. Write DESKTOPD_TOKEN=<token> in the deploy directory .env, then systemctl restart maclaw-desktopd.")
 	}
-	svc := &desktopd.Service{AdvertiseHost: strings.TrimSpace(os.Getenv("DESKTOPD_ADVERTISE_HOST"))}
+	svc := &desktopd.Service{
+		AdvertiseHost: strings.TrimSpace(os.Getenv("DESKTOPD_ADVERTISE_HOST")),
+		ComputerDir:   desktopd.ComputerDirFromEnv(os.Getenv("DESKTOPD_COMPUTER_DIR")),
+	}
+	publishBind, err := desktopd.ParsePublishBind(os.Getenv("DESKTOPD_PUBLISH_BIND"))
+	if err != nil {
+		log.Fatalf("[desktopd] %v", err)
+	}
+	svc.PublishBind = publishBind
+	if raw := strings.TrimSpace(os.Getenv("DESKTOPD_PUBLIC_URL")); raw != "" {
+		canonical, err := desktopd.ParsePublicURL(raw)
+		if err != nil {
+			log.Fatalf("[desktopd] %v", err)
+		}
+		svc.PublicURL = canonical
+	}
 	// DESKTOPD_IMAGE_SOURCE: where a missing maclaw-gui:2 comes from. Empty
 	// means the public ghcr.io/rapidai/maclaw-gui:2; "off" disables pulls
 	// (the image is built on the host by remote_deploy.sh). A present local
@@ -40,7 +55,7 @@ func main() {
 	if raw := strings.TrimSpace(os.Getenv("DESKTOPD_IMAGE_PULL_TIMEOUT")); raw != "" {
 		timeout, err := time.ParseDuration(raw)
 		if err != nil || timeout <= 0 {
-			log.Fatalf("DESKTOPD_IMAGE_PULL_TIMEOUT is invalid: %q", raw)
+			log.Fatalf("DESKTOPD_IMAGE_PULL_TIMEOUT=%q is not a duration. Set it to 10m in .env and restart desktopd.", raw)
 		}
 		svc.ImagePullTimeout = timeout
 	}
@@ -52,13 +67,32 @@ func main() {
 	if stateDir == "" {
 		stateDir = "data"
 	}
-	// DESKTOPD_MAX_IDLE stops desktops idle longer than this, catching
-	// containers Hub can no longer name (moved assignments, crashed callers).
-	// Empty keeps the historical behaviour of never reaping.
-	if raw := strings.TrimSpace(os.Getenv("DESKTOPD_MAX_IDLE")); raw != "" {
+	// Restart always would undo an explicit docker stop. Refuse it at start.
+	if err := desktopd.RejectRestartAlways(desktopd.RestartPolicy()); err != nil {
+		log.Fatalf("[desktopd] %v", err)
+	}
+	// DESKTOPD_SLEEP is stage 2. Empty or off keeps containers running.
+	// On: after about five minutes, flush, sync the four volumes, docker stop.
+	// It replaces DESKTOPD_MAX_IDLE for that process so a failed sync is not
+	// followed by the historical stop.
+	stage2, err := desktopd.ParseStage2Sleep(os.Getenv("DESKTOPD_SLEEP"))
+	if err != nil {
+		log.Fatalf("[desktopd] %v", err)
+	}
+	svc.Stage2Sleep = stage2
+	if svc.Stage2Sleep {
+		if strings.TrimSpace(os.Getenv("DESKTOPD_MAX_IDLE")) != "" {
+			log.Printf("[desktopd] DESKTOPD_SLEEP is on; DESKTOPD_MAX_IDLE is not used")
+		}
+		svc.StartReaper(context.Background(), 10*time.Minute, desktopd.Stage2Idle)
+		log.Printf("[desktopd] stage2 sleep enabled idle=%s restart=%s", desktopd.Stage2Idle, desktopd.RestartPolicy())
+	} else if raw := strings.TrimSpace(os.Getenv("DESKTOPD_MAX_IDLE")); raw != "" {
+		// DESKTOPD_MAX_IDLE stops desktops idle longer than this, catching
+		// containers Hub can no longer name (moved assignments, crashed callers).
+		// Empty keeps the historical behaviour of never reaping.
 		maxIdle, err := time.ParseDuration(raw)
 		if err != nil {
-			log.Fatalf("DESKTOPD_MAX_IDLE is invalid: %v", err)
+			log.Fatalf("DESKTOPD_MAX_IDLE is not a duration. Set it to 30m, or leave it empty to disable reaping, then restart desktopd.")
 		}
 		if maxIdle > 0 {
 			svc.StartReaper(context.Background(), 10*time.Minute, maxIdle)
@@ -177,6 +211,7 @@ func main() {
 		// Background only: /v1/health and the admin panel answer while it runs.
 		go svc.PrefetchImages(ctx)
 	}
+	log.Printf("[desktopd] browser and screen ports bind %s", svc.PublishBind)
 	log.Printf("desktopd listening on %s", addr)
 	if adminDisabled {
 		log.Printf("[desktopd] admin panel disabled (DESKTOPD_STATE_DIR=off)")
@@ -184,6 +219,17 @@ func main() {
 		log.Printf("[desktopd] admin panel at http://%s/admin (state dir: %s)", displayAddr, stateDir)
 	}
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if addrInUse(err) {
+			log.Fatalf("Address %s is already in use. Run systemctl stop maclaw-desktopd, or set DESKTOPD_ADDR in .env, then start again.", addr)
+		}
 		log.Fatal(err)
 	}
+}
+
+func addrInUse(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "address already in use") || strings.Contains(text, "only one usage of each socket address")
 }

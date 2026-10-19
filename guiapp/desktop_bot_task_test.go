@@ -171,9 +171,8 @@ func TestTimeoutAttachesTheDesktopOnlyWhenThePersonHasIt(t *testing.T) {
 	if got == nil || got.DesktopHandoffURL != "https://hub.example/vnc" || !got.DesktopUserControl || got.Error != "" {
 		t.Fatalf("timeout with the keyboard was not a handoff: %#v", got)
 	}
-	const loginQuestion = "这一步需要你在当前桌面的浏览器里完成登录或验证。登录状态会留在这个浏览器里，完成后这个 bot 会接着操作。"
-	if got.Text != loginQuestion {
-		t.Fatalf("timeout handoff text = %q", got.Text)
+	if got.Text != "" || got.SendToUser != "" {
+		t.Fatalf("timeout handoff invented a sentence: text=%q send_to_user=%q", got.Text, got.SendToUser)
 	}
 	for _, view := range views {
 		if strings.Contains(view, `"cleared":true`) {
@@ -221,6 +220,115 @@ func TestDesktopAddressOnAFinishedReplyIsNotAHandoff(t *testing.T) {
 	}
 }
 
+func TestFinishedFailureShowsTheErrorNotTheProse(t *testing.T) {
+	app := &App{}
+	var got *IMAgentResponse
+	var views []string
+	desktopBotResultSink = func(resp *IMAgentResponse) { got = resp }
+	desktopBotViewSink = func(payload string) { views = append(views, payload) }
+	desktopBotRelayOverride = func(context.Context, string, string, string) (desktopBotRelayResult, error) {
+		return desktopBotRelayResult{Text: "无变化", RunError: "browser broke"}, nil
+	}
+	t.Cleanup(func() {
+		desktopBotRelayOverride = nil
+		desktopBotResultSink = nil
+		desktopBotViewSink = nil
+	})
+	app.finishDesktopBotTask("desktop-bot-fail", "alice:bot_1", "bot_1", "打开首页", "execute")
+	if got == nil || got.Error != "browser broke" || got.SendToUser != "" || strings.Contains(got.Error, "无变化") {
+		t.Fatalf("failure reply = %#v", got)
+	}
+	if len(views) != 1 || !strings.Contains(views[0], `"cleared":true`) {
+		t.Fatalf("failure left the desktop up: %v", views)
+	}
+}
+
+func TestFillerQuestionDoesNotHoldAFailedDesktop(t *testing.T) {
+	app := &App{}
+	var got *IMAgentResponse
+	var views []string
+	desktopBotResultSink = func(resp *IMAgentResponse) { got = resp }
+	desktopBotViewSink = func(payload string) { views = append(views, payload) }
+	desktopBotRelayOverride = func(context.Context, string, string, string) (desktopBotRelayResult, error) {
+		return desktopBotRelayResult{
+			Text:             "页面已打开",
+			RunError:         "browser broke",
+			AskUserQuestion:  "无变化",
+			AskUserInputType: "text",
+		}, nil
+	}
+	t.Cleanup(func() {
+		desktopBotRelayOverride = nil
+		desktopBotResultSink = nil
+		desktopBotViewSink = nil
+	})
+	app.finishDesktopBotTask("desktop-bot-filler-ask", "alice:bot_1", "bot_1", "打开首页", "execute")
+	if got == nil || got.Error != "browser broke" || got.SendToUser != "" {
+		t.Fatalf("failure reply = %#v", got)
+	}
+	if len(views) != 1 || !strings.Contains(views[0], `"cleared":true`) {
+		t.Fatalf("placeholder question held the desktop: %v", views)
+	}
+
+	got = nil
+	views = nil
+	desktopBotRelayOverride = func(context.Context, string, string, string) (desktopBotRelayResult, error) {
+		return desktopBotRelayResult{
+			RunError:          "browser broke",
+			AskUserQuestion:   "无变化",
+			AskUserSecretName: "SITE_PASSWORD",
+			AskUserInputType:  "secret",
+		}, nil
+	}
+	app.finishDesktopBotTask("desktop-bot-filler-secret", "alice:bot_1", "bot_1", "打开首页", "execute")
+	if got == nil || got.Error != "browser broke" || got.AskUserSecretName != "SITE_PASSWORD" {
+		t.Fatalf("secret reply = %#v", got)
+	}
+	for _, view := range views {
+		if strings.Contains(view, `"cleared":true`) {
+			t.Fatalf("secret prompt cleared the desktop: %v", views)
+		}
+	}
+
+	got = nil
+	views = nil
+	desktopBotRelayOverride = func(context.Context, string, string, string) (desktopBotRelayResult, error) {
+		return desktopBotRelayResult{
+			RunError:           "browser broke",
+			AskUserQuestion:    "无变化",
+			AskUserInputType:   "choice",
+			AskUserOptionsJSON: `["无变化", " "]`,
+		}, nil
+	}
+	app.finishDesktopBotTask("desktop-bot-filler-options", "alice:bot_1", "bot_1", "打开首页", "execute")
+	if got == nil || got.Error != "browser broke" {
+		t.Fatalf("filler options reply = %#v", got)
+	}
+	if len(views) != 1 || !strings.Contains(views[0], `"cleared":true`) {
+		t.Fatalf("placeholder choice labels held the desktop: %v", views)
+	}
+
+	got = nil
+	views = nil
+	desktopBotRelayOverride = func(context.Context, string, string, string) (desktopBotRelayResult, error) {
+		return desktopBotRelayResult{
+			RunError:           "browser broke",
+			AskUserQuestion:    "无变化",
+			AskUserInputType:   "choice",
+			AskUserOptionsJSON: `["继续", "无变化"]`,
+		}, nil
+	}
+	app.finishDesktopBotTask("desktop-bot-real-options", "alice:bot_1", "bot_1", "打开首页", "execute")
+	if got == nil || got.Error != "browser broke" || got.AskUserOptionsJSON != `["继续", "无变化"]` {
+		t.Fatalf("real options reply = %#v", got)
+	}
+	for _, view := range views {
+		if strings.Contains(view, `"cleared":true`) {
+			t.Fatalf("real choices cleared the desktop: %v", views)
+		}
+	}
+}
+
 func TestFinishedReplyCarriesTheDesktopScreenshot(t *testing.T) {
 	base := t.TempDir()
 	prev := corelib.MaclawBaseDir()
@@ -234,7 +342,7 @@ func TestFinishedReplyCarriesTheDesktopScreenshot(t *testing.T) {
 			Text: "桌面截图已生成",
 			Images: []DesktopBotImage{
 				{MIME: "text/html", Data: payload},
-				{MIME: "image/png", Data: payload},
+				{MIME: "image/png", Data: payload, AttachmentID: "shot-1"},
 			},
 		}, nil
 	}
@@ -244,21 +352,11 @@ func TestFinishedReplyCarriesTheDesktopScreenshot(t *testing.T) {
 		desktopBotResultSink = nil
 	})
 	app.finishDesktopBotTask("desktop-bot-shot", "alice:bot_1", "bot_1", "看一下环境", "plan")
-	if got == nil || got.Text != "桌面截图已生成" || len(got.DesktopImages) != 0 || len(got.DesktopShotPaths) != 1 {
+	if got == nil || got.Text != "桌面截图已生成" || len(got.DesktopImages) != 0 || len(got.DesktopShotPaths) != 0 || len(got.DesktopAttachmentIDs) != 1 || got.DesktopAttachmentIDs[0] != "shot-1" {
 		t.Fatalf("reply=%#v", got)
 	}
-	path := got.DesktopShotPaths[0]
-	wantDir := filepath.Join(corelib.MaclawDataDir(), "bot-files", "bot_1")
-	if !filepath.IsAbs(path) || filepath.Clean(filepath.Dir(path)) != filepath.Clean(wantDir) || filepath.Base(path) != "screenshot.png" {
-		t.Fatalf("path=%s dir=%s", path, wantDir)
-	}
-	body, err := os.ReadFile(path)
-	if err != nil || string(body) != "png-bytes" {
-		t.Fatalf("body=%q err=%v", body, err)
-	}
-	shot, err := app.ReadDesktopBotShot(path)
-	if err != nil || shot == nil || shot.MIME != "image/png" || shot.Data != payload {
-		t.Fatalf("shot=%#v err=%v", shot, err)
+	if _, err := os.Stat(filepath.Join(corelib.MaclawDataDir(), "bot-files")); !os.IsNotExist(err) {
+		t.Fatalf("screenshot was written on this machine: %v", err)
 	}
 	outside := filepath.Join(base, "secret.png")
 	if err := os.WriteFile(outside, []byte("png-bytes"), 0o644); err != nil {
@@ -268,7 +366,7 @@ func TestFinishedReplyCarriesTheDesktopScreenshot(t *testing.T) {
 		t.Fatal("a screenshot outside bot-files was returned")
 	}
 	raw, err := json.Marshal(got)
-	if err != nil || !strings.Contains(string(raw), `"desktop_shot_paths"`) || strings.Contains(string(raw), payload) {
+	if err != nil || !strings.Contains(string(raw), `"desktop_attachment_ids"`) || strings.Contains(string(raw), payload) {
 		t.Fatalf("event=%s err=%v", raw, err)
 	}
 }
@@ -286,7 +384,7 @@ func TestFinishedReplyCarriesTheDocument(t *testing.T) {
 			Text: "文件已放在这条回复里",
 			Files: []DesktopBotFile{
 				{Name: "../secret.docx", MIME: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", Data: payload},
-				{Name: "自我描述.docx", MIME: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", Data: payload},
+				{Name: "自我描述.docx", MIME: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", Data: payload, AttachmentID: "file-1"},
 			},
 		}, nil
 	}
@@ -296,17 +394,19 @@ func TestFinishedReplyCarriesTheDocument(t *testing.T) {
 		desktopBotResultSink = nil
 	})
 	app.finishDesktopBotTask("desktop-bot-file", "alice:bot_1", "bot_1", "生成文档", "execute")
-	if got == nil || got.Text != "文件已放在这条回复里" || len(got.DesktopFiles) != 0 || len(got.LocalFilePaths) != 1 {
+	if got == nil || got.Text != "文件已放在这条回复里" || len(got.DesktopFiles) != 0 || len(got.LocalFilePaths) != 0 || len(got.DesktopAttachmentIDs) != 1 || got.DesktopAttachmentIDs[0] != "file-1" {
 		t.Fatalf("reply=%#v", got)
 	}
-	path := got.LocalFilePaths[0]
-	wantDir := filepath.Join(corelib.MaclawDataDir(), "bot-files", "bot_1")
-	if !filepath.IsAbs(path) || filepath.Clean(filepath.Dir(path)) != filepath.Clean(wantDir) || filepath.Base(path) != "自我描述.docx" {
-		t.Fatalf("path=%s dir=%s", path, wantDir)
+	if _, err := os.Stat(filepath.Join(corelib.MaclawDataDir(), "bot-files")); !os.IsNotExist(err) {
+		t.Fatalf("document was written on this machine: %v", err)
 	}
-	body, err := os.ReadFile(path)
-	if err != nil || string(body) != "word-bytes" {
-		t.Fatalf("body=%q err=%v", body, err)
+	first, left := storeDesktopBotFiles("bot_1", []DesktopBotFile{{
+		Name: "自我描述.docx",
+		MIME: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		Data: payload,
+	}})
+	if len(left) != 0 || len(first) != 1 || filepath.Base(first[0]) != "自我描述.docx" {
+		t.Fatalf("saved=%v left=%v", first, left)
 	}
 	again, left := storeDesktopBotFiles("bot_1", []DesktopBotFile{{
 		Name: "自我描述.docx",
@@ -317,7 +417,7 @@ func TestFinishedReplyCarriesTheDocument(t *testing.T) {
 		t.Fatalf("collision=%v left=%v", again, left)
 	}
 	raw, err := json.Marshal(got)
-	if err != nil || !strings.Contains(string(raw), `"local_file_paths"`) || strings.Contains(string(raw), payload) {
+	if err != nil || !strings.Contains(string(raw), `"desktop_attachment_ids"`) || strings.Contains(string(raw), `"local_file_paths"`) || strings.Contains(string(raw), payload) {
 		t.Fatalf("event=%s err=%v", raw, err)
 	}
 }
@@ -897,6 +997,42 @@ func TestDesktopBotAdmissionPoll(t *testing.T) {
 		_, err := (&App{}).relayDesktopBot(context.Background(), "bot_1", "打开", "execute", "")
 		if err == nil || !strings.Contains(err.Error(), "bot not found") || calls != 2 {
 			t.Fatalf("err=%v calls=%d", err, calls)
+		}
+	})
+
+	t.Run("a finished failure is the error and is not polled again", func(t *testing.T) {
+		var calls int
+		desktopBotExchangeOverride = func(_ context.Context, method, _ string, _ any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+			calls++
+			if method == http.MethodPost {
+				fillDesktopBotDest(t, dest, map[string]any{"accepted": true, "run_id": "run_fail", "status": "running"})
+				return http.StatusAccepted, nil
+			}
+			fillDesktopBotDest(t, dest, map[string]any{"text": "无变化", "error": "browser broke"})
+			return http.StatusOK, nil
+		}
+		t.Cleanup(func() { desktopBotExchangeOverride = nil })
+		got, err := (&App{}).relayDesktopBot(context.Background(), "bot_1", "打开首页", "execute", "")
+		if err != nil || got.RunError != "browser broke" || strings.Contains(got.RunError, "无变化") || calls != 2 {
+			t.Fatalf("err=%v runError=%q calls=%d", err, got.RunError, calls)
+		}
+	})
+
+	t.Run("a finished filler ends the poll quietly", func(t *testing.T) {
+		var calls int
+		desktopBotExchangeOverride = func(_ context.Context, method, _ string, _ any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+			calls++
+			if method == http.MethodPost {
+				fillDesktopBotDest(t, dest, map[string]any{"accepted": true, "run_id": "run_empty", "status": "running"})
+				return http.StatusAccepted, nil
+			}
+			fillDesktopBotDest(t, dest, map[string]any{"text": "无变化", "error": "run ended without a result"})
+			return http.StatusOK, nil
+		}
+		t.Cleanup(func() { desktopBotExchangeOverride = nil })
+		got, err := (&App{}).relayDesktopBot(context.Background(), "bot_1", "打开首页", "execute", "")
+		if err != nil || got.RunError != "" || got.SendToUser != "" || calls != 2 {
+			t.Fatalf("err=%v runError=%q send=%q calls=%d", err, got.RunError, got.SendToUser, calls)
 		}
 	})
 

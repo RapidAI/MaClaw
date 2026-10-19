@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 // specKey is the supervisor key of the desktop this spec names: the owner's
@@ -43,6 +44,7 @@ func (s *Service) specDisplay(ctx context.Context, spec Spec, requested string) 
 	if line := statusLine(out); line == "" || json.Unmarshal([]byte(line), &status) != nil || !desktop.ValidDisplay(status.Display) || status.Display == desktop.DefaultDisplay {
 		return "", fmt.Errorf("%w: desktop supervisor returned no bot display", ErrDocker)
 	}
+	s.noteComputerScreen(spec, status.Display)
 	return status.Display, nil
 }
 
@@ -93,7 +95,7 @@ func withBotID(next http.Handler) http.Handler {
 		if q := r.URL.Query(); strings.TrimSpace(q.Get("bot_id")) != "" {
 			user, err := botDesktopUser(q.Get("user_id"), q.Get("bot_id"))
 			if err != nil {
-				writeErr(w, http.StatusBadRequest, "bot is invalid")
+				writeErr(w, http.StatusBadRequest, desktopbot.MissingIdentityNextStep("bot"))
 				return
 			}
 			q.Set("user_id", user)
@@ -108,7 +110,7 @@ func withBotID(next http.Handler) http.Handler {
 			}
 			raw, err = rewriteBotBody(raw)
 			if err != nil {
-				writeErr(w, http.StatusBadRequest, "bot is invalid")
+				writeErr(w, http.StatusBadRequest, desktopbot.MissingIdentityNextStep("bot"))
 				return
 			}
 			r.Body = io.NopCloser(bytes.NewReader(raw))
@@ -132,7 +134,7 @@ func rewriteBotBody(raw []byte) ([]byte, error) {
 	var botID, userID string
 	if v, ok := fields["bot_id"]; ok {
 		if json.Unmarshal(v, &botID) != nil {
-			return nil, fmt.Errorf("%w: bot is invalid", ErrInvalid)
+			return nil, fmt.Errorf("%w: %s", ErrInvalid, desktopbot.MissingIdentityNextStep("bot"))
 		}
 	}
 	delete(fields, "bot_id")
@@ -157,7 +159,7 @@ func botDesktopUser(userID, botID string) (string, error) {
 		return userID, nil
 	}
 	if !desktop.ValidBotID(botID) {
-		return "", fmt.Errorf("%w: bot is invalid", ErrInvalid)
+		return "", fmt.Errorf("%w: %s", ErrInvalid, desktopbot.MissingIdentityNextStep("bot"))
 	}
 	return desktop.BotDesktopUser(userID, botID), nil
 }

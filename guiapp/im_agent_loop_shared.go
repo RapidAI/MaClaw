@@ -533,9 +533,11 @@ func (h *IMMessageHandler) executeSharedTurn(
 	// Cancellation must revoke the durable surface before an in-flight provider
 	// response can reach the callback. The hook is scoped to this loop and is
 	// removed after RunLoop returns, so a completed turn cannot cancel a later
-	// surface on a reused LoopContext.
+	// surface on a reused LoopContext. Register it even when the managed
+	// pointer is still nil: a discovered MCP sidecar is attached on the first
+	// model request, after this callback is built, and it is its own route.
 	removeSemanticCancelHook := func() {}
-	if ctx != nil && cb.semanticSurface != nil {
+	if ctx != nil {
 		removeSemanticCancelHook = ctx.RegisterCancelHook(cb.cancelManagedSemanticSurface)
 	}
 	defer removeSemanticCancelHook()
@@ -1396,6 +1398,13 @@ type sharedAgentLoopCallbacks struct {
 	taskAnchor      *taskIdentityAnchor
 	tools           []map[string]interface{}
 	semanticSurface *semanticCallSurface
+	// discoveredMCPSurface is the x:mcp sidecar for binds discover_tool
+	// recorded on this legacy turn. It is not c.semanticSurface: assigning
+	// that field would close the legacy tool list. Execution swaps it in
+	// only for the granted call, then restores the legacy pointer.
+	discoveredMCPSurface    *semanticCallSurface
+	discoveredMCPBinds      []discoveredMCPBind
+	discoveredMCPGeneration uint64
 	// legacyPetitionTools are host tool names admitted onto the visible
 	// surface through a governed overlay: live SQL database adapters after a
 	// semantic petition for database / database_query could not expand a
@@ -1429,23 +1438,23 @@ type sharedAgentLoopCallbacks struct {
 	// are rebuilt at every actual model-request boundary using this same
 	// host-owned posture; a predecessor's rendered definitions are never a
 	// successor input.
-	phase         agentLoopPhase
-	onProgress    tool.ProgressCallback
+	phase      agentLoopPhase
+	onProgress tool.ProgressCallback
 	// suppressToolProgress skips the legacy progress card when the semantic
 	// path already published one for the same call. Trusted adapters such as
 	// web_search never enter that legacy path, so they need the semantic card.
 	suppressToolProgress bool
-	onToken       llm.TokenCallback
-	onNewRound    NewRoundCallback
-	events        agentruntime.EventSink
-	eventScope    agentruntime.Scope
-	eventOrdinal  atomic.Uint64
-	eventSequence *atomic.Uint64
-	eventErrMu    sync.Mutex
-	eventErr      error
-	maxIter       int
-	httpClient    *http.Client
-	escalated     bool
+	onToken              llm.TokenCallback
+	onNewRound           NewRoundCallback
+	events               agentruntime.EventSink
+	eventScope           agentruntime.Scope
+	eventOrdinal         atomic.Uint64
+	eventSequence        *atomic.Uint64
+	eventErrMu           sync.Mutex
+	eventErr             error
+	maxIter              int
+	httpClient           *http.Client
+	escalated            bool
 	// surfaceRefreshPending is set when the tool-driven route escalation changes
 	// the model-visible prompt/tool policy and consumed by the core loop before
 	// its following request.
@@ -1843,6 +1852,13 @@ func (c *sharedAgentLoopCallbacks) IsToolAllowedForPromptProfile(name string, pr
 			return true
 		}
 		return tool.GrantSelectionIsLightPromptSafe(c.semanticSurface.plan, c.semanticSurface.grants, resolved)
+	}
+	// A host-signed discovered MCP grant is on the legacy list. The light
+	// allowlist does not know invoke_* names; refusing one here lists the
+	// tool and then tells the model to set PROFILE=full. Write confirmation
+	// and the external-effect receipt still run at execution.
+	if c.discoveredMCPGrantNamed(name) {
+		return true
 	}
 	if !profile.IsLight() {
 		return true
@@ -2468,6 +2484,12 @@ func (c *sharedAgentLoopCallbacks) ToolDenialMessage(name string) string {
 		resolved := c.semanticSurface.resolveFunctionName(name)
 		if retired, retiredFromSurface := c.semanticSurface.retiredGrants[resolved]; retiredFromSurface {
 			if awaiting, reason := semanticRetiredAwaitingReceipt(c.semanticSurface, retired.SelectionID); awaiting {
+				if reason == mailboxDeleteAwaitingConfirmation {
+					return fmt.Sprintf(
+						"Error: tool %q froze a draft and is waiting for the user to confirm before any mail is deleted. Do not call %q again, do not report the delete as failed, and do not use another tool to delete it.",
+						resolved, resolved,
+					)
+				}
 				if reason == mailboxSendAwaitingConfirmation {
 					return fmt.Sprintf(
 						"Error: tool %q froze a draft and is waiting for the user to confirm before any mail is sent. Do not call %q again, do not report the send as failed, and do not use another tool to send it.",
@@ -2504,6 +2526,21 @@ func (c *sharedAgentLoopCallbacks) ToolDenialMessage(name string) string {
 		}
 	}
 	if !c.semanticLightLookup() {
+		// A full continuation, including an approved MCP write, still sees the
+		// previous turn's invoke_* call in history. That token is not this
+		// turn's grant. Naming some other live grant here would pick a sibling.
+		// The description on the listed function is the successor.
+		n := strings.TrimSpace(name)
+		if c.semanticSurface != nil && isSemanticInvocationGrantName(n) {
+			if _, live := c.semanticSurface.grants[n]; !live {
+				if _, retired := c.semanticSurface.retiredGrants[n]; !retired {
+					return fmt.Sprintf(
+						"Error: tool %q is an invocation name from another turn and is not in this turn's tool list. Call the listed function whose description names the same tool. Do not retry %q and do not ask the user to re-authorize tools.",
+						n, n,
+					)
+				}
+			}
+		}
 		return ""
 	}
 	n := strings.TrimSpace(name)
@@ -2627,6 +2664,7 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 	}
 	if fileCompanionToolsDisabled(c.userID) {
 		c.semanticSurface = nil
+		c.dropDiscoveredMCPSidecar()
 		// The companion surface is closed by construction: only the read-only
 		// document definitions may reach the wire, always bound to the open
 		// document by the executor rather than by call arguments. Anything
@@ -2652,6 +2690,7 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 	}
 	if petCompanionToolsDisabled(c.userID) {
 		c.semanticSurface = nil
+		c.dropDiscoveredMCPSidecar()
 		c.setVisibleToolDefinitions(nil)
 		return nil
 	}
@@ -2686,6 +2725,12 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 	// surface, and without this the re-issued call after a granted petition
 	// would be denied again on the successor request.
 	c.setVisibleToolDefinitions(toolSet.Tools)
+	// Publish discovered MCP binds onto this legacy request. Failure leaves
+	// the legacy list intact; discover_tool already refused a bind the
+	// inventory could not plan.
+	if err := c.attachDiscoveredMCPBindings(); err != nil {
+		log.Printf("[semantic-routing] discovered MCP bind was not published: %v", err)
+	}
 	c.legacySurface = c.legacySurface.replaceDefinitions(c.tools, toolSet.ClientToolNames)
 	return c.tools
 }
@@ -2757,7 +2802,7 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 		// missing tool and not a spent budget: the generic absence text tells
 		// the model to continue with whatever else is listed, which is how a
 		// waiting send gets carried out by another tool.
-		if awaiting, reason := semanticRetiredAwaitingReceipt(surface, retired.SelectionID); awaiting && reason == mailboxSendAwaitingConfirmation {
+		if awaiting, reason := semanticRetiredAwaitingReceipt(surface, retired.SelectionID); awaiting && mailboxDraftAwaitingConfirmation(reason) {
 			return false, c.ToolDenialMessage(name)
 		}
 		return false, ""
@@ -3661,6 +3706,9 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 	if c.semanticSurface != nil {
 		return c.executeSemanticTool(name, argsJSON)
 	}
+	if c.discoveredMCPGrantNamed(name) {
+		return c.executeDiscoveredMCPGrant(name, argsJSON, "", "")
+	}
 	if c.legacySurface.HasSnapshot() && !c.legacySurface.Allows(name) {
 		return legacyToolSurfaceDeniedText(name)
 	}
@@ -3723,6 +3771,8 @@ func (c *sharedAgentLoopCallbacks) executeToolCallWithExecutionContext(name, arg
 		result = c.ExecuteToolStructured(name, argsJSON)
 	} else if c != nil && c.semanticSurface != nil {
 		result = semanticAgentToolExecutionResult(c.executeSemanticToolCallWithEpoch(name, argsJSON, callID, execution.SurfaceEpoch))
+	} else if c != nil && c.discoveredMCPGrantNamed(name) {
+		result = semanticAgentToolExecutionResult(c.executeDiscoveredMCPGrant(name, argsJSON, callID, execution.SurfaceEpoch))
 	} else {
 		if c != nil && c.legacySurface.HasSnapshot() && !c.legacySurface.Allows(name) {
 			result = agent.ToolExecutionResult{Result: legacyToolSurfaceDeniedText(name), Outcome: agent.ToolExecutionOutcomeError}
@@ -3781,10 +3831,139 @@ func (c *sharedAgentLoopCallbacks) BeginToolSurfaceEpoch(iteration int) string {
 // substitute for durable revocation: coordinator cancellation retires model
 // request surfaces, materializations and outstanding grants atomically.
 func (c *sharedAgentLoopCallbacks) cancelManagedSemanticSurface() {
-	if c == nil || c.semanticSurface == nil {
+	if c == nil {
 		return
 	}
 	cancelSemanticCallSurface(c.semanticSurface)
+	// Alias during the discovered-grant swap: cancelling twice is the same
+	// route. A distinct sidecar is its own authority and must close too.
+	if c.discoveredMCPSurface != c.semanticSurface {
+		cancelSemanticCallSurface(c.discoveredMCPSurface)
+	}
+}
+
+func (c *sharedAgentLoopCallbacks) discoveredMCPGrantNamed(name string) bool {
+	if c == nil || c.discoveredMCPSurface == nil {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	if _, ok := c.discoveredMCPSurface.grants[name]; ok {
+		return true
+	}
+	_, ok := c.discoveredMCPSurface.retiredGrants[name]
+	return ok
+}
+
+func (c *sharedAgentLoopCallbacks) appendDiscoveredMCPDefs(defs []map[string]interface{}) {
+	if c == nil || len(defs) == 0 {
+		return
+	}
+	present := map[string]bool{}
+	for _, definition := range c.tools {
+		if name := strings.TrimSpace(extractToolName(definition)); name != "" {
+			present[name] = true
+		}
+	}
+	combined := make([]map[string]interface{}, len(c.tools), len(c.tools)+len(defs))
+	copy(combined, c.tools)
+	for _, definition := range defs {
+		name := strings.TrimSpace(extractToolName(definition))
+		if name == "" || present[name] {
+			continue
+		}
+		present[name] = true
+		combined = append(combined, definition)
+	}
+	c.tools = combined
+}
+
+// attachDiscoveredMCPBindings plans the loop's discovered MCP binds and
+// appends only those grants to the current legacy list. The same bind set
+// reuses the published surface; a new publish of one turn id would be a child
+// revision and is not a discovery bind.
+func (c *sharedAgentLoopCallbacks) attachDiscoveredMCPBindings() error {
+	if c == nil || c.handler == nil || c.loopCtx == nil || c.semanticSurface != nil {
+		return nil
+	}
+	binds := c.loopCtx.discoveredMCPBindList()
+	if len(binds) == 0 {
+		c.dropDiscoveredMCPSidecar()
+		return nil
+	}
+	if c.discoveredMCPSurface != nil && discoveredMCPBindsEqual(c.discoveredMCPBinds, binds) {
+		defs, err := discoveredMCPGrantDefinitions(c.discoveredMCPSurface, binds)
+		if err != nil {
+			return err
+		}
+		c.appendDiscoveredMCPDefs(defs)
+		return nil
+	}
+	if c.discoveredMCPSurface != nil {
+		c.dropDiscoveredMCPSidecar()
+	}
+	ctx, cancel := semanticRoutingContext(c.loopCtx)
+	defer cancel()
+	userID := strings.TrimSpace(c.userID)
+	if userID == "" {
+		userID = strings.TrimSpace(c.loopCtx.UserID)
+	}
+	channel := strings.TrimSpace(c.platform)
+	if channel == "" {
+		channel = strings.TrimSpace(c.loopCtx.Platform)
+	}
+	defs, surface, err := c.handler.semanticSurfaceForDiscoveredMCP(ctx, userID, channel, semanticLoopInvocationFor(c.loopCtx), binds, c.discoveredMCPGeneration)
+	if err != nil {
+		return err
+	}
+	c.discoveredMCPSurface = surface
+	c.discoveredMCPBinds = append([]discoveredMCPBind(nil), binds...)
+	c.appendDiscoveredMCPDefs(defs)
+	return nil
+}
+
+func (c *sharedAgentLoopCallbacks) dropDiscoveredMCPSidecar() {
+	if c == nil || c.discoveredMCPSurface == nil {
+		if c != nil {
+			c.discoveredMCPBinds = nil
+		}
+		return
+	}
+	if c.discoveredMCPSurface != c.semanticSurface {
+		cancelSemanticCallSurface(c.discoveredMCPSurface)
+	}
+	c.discoveredMCPSurface = nil
+	c.discoveredMCPBinds = nil
+	c.discoveredMCPGeneration++
+}
+
+// executeDiscoveredMCPGrant runs one sidecar grant through the semantic
+// executor. The legacy surface pointer and tool list are restored even when
+// a binding-stale replan replaces c.semanticSurface for the duration of the
+// call. A child revision stays on the sidecar; the legacy pointer does not.
+func (c *sharedAgentLoopCallbacks) executeDiscoveredMCPGrant(name, argsJSON, callID, surfaceEpoch string) (result string) {
+	if c == nil || c.discoveredMCPSurface == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	savedSurface := c.semanticSurface
+	savedTools := c.tools
+	sidecar := c.discoveredMCPSurface
+	c.semanticSurface = sidecar
+	defer func() {
+		successor := c.semanticSurface
+		c.semanticSurface = savedSurface
+		c.tools = savedTools
+		if successor != nil && successor != sidecar {
+			c.discoveredMCPSurface = successor
+			return
+		}
+		if discoveredMCPResultNeedsFreshPlan(result) {
+			c.dropDiscoveredMCPSidecar()
+		}
+	}()
+	return c.executeSemanticToolCallWithEpoch(name, argsJSON, callID, surfaceEpoch)
 }
 
 // cancelSemanticCallSurface is shared by terminal loop cancellation and fresh
@@ -4160,6 +4339,20 @@ func (c *sharedAgentLoopCallbacks) executeSemanticTool(functionName, argsJSON st
 			return semanticModelParameterRejection(semanticCanonicalRejectionText(err))
 		}
 	}
+	// Bad MCP arguments are refused before the question, matching the
+	// coordinated path. A call that cannot run must not ask for a server
+	// grant, and neither the question nor a catalog refusal may reach
+	// Execute: Execute consumes the one-shot grant.
+	if selection, ok := semanticSelectionByID(c.semanticSurface.plan, grant.SelectionID); ok {
+		if strings.EqualFold(strings.TrimSpace(selection.Provider.Kind), "mcp") && tool.SelectionRequiresExternalReceipt(selection) {
+			if _, err := c.semanticCanonicalArguments(selection, argsJSON); err != nil {
+				return semanticModelParameterRejection(semanticCanonicalRejectionText(err))
+			}
+		}
+		if gated, handled := c.pauseUnconfirmedMCPServerWrite(selection); handled {
+			return gated.Result
+		}
+	}
 	// The executor admits the signed grant, loads durable predecessor facts,
 	// acquires a conditional selection run record, then invokes the immutable
 	// adapter. No callback-local completion map may manufacture DAG progress.
@@ -4276,6 +4469,12 @@ func (c *sharedAgentLoopCallbacks) executeSemanticToolCallWithEpoch(functionName
 	requestDigest := "invalid:" + tool.SchemaDigest([]byte(argsJSON))
 	if err == nil {
 		requestDigest = canonicalArgs.Digest
+		// Match the coordinator path: a question or a catalog refusal is
+		// not an execution. Renewing first rotates an expired grant and
+		// then abandons the successor when the turn pauses on the question.
+		if gated, handled := c.pauseUnconfirmedMCPServerWrite(selection); handled {
+			return gated.Result
+		}
 		// Bind the journal to the successor. Renewing after MarkAdmitted
 		// would record the revoked nonce while the executor consumes the new one.
 		renewed, renewErr := c.renewExpiredGrantIfClock(functionName, grant)
@@ -4306,10 +4505,17 @@ func (c *sharedAgentLoopCallbacks) executeSemanticToolCallWithEpoch(functionName
 	// digest keeps an invalid body distinguishable from any valid canonical
 	// request under the same host call ID.
 	result := ""
+	paused := false
 	if err != nil {
 		result = semanticModelParameterRejection(semanticCanonicalRejectionText(err))
 	} else {
-		result = c.executeSemanticToolWithCanonical(functionName, grant, canonicalArgs)
+		result, paused = c.executeSemanticToolWithCanonical(functionName, grant, canonicalArgs)
+	}
+	if paused {
+		// The adapter paused after admission. Completing that text would
+		// make this call id replay a question. The MCP write question is
+		// asked before Acquire, so this is only the backstop.
+		return result
 	}
 	if _, journalErr := c.semanticSurface.hostCalls.Complete(identity, fingerprint, requestDigest, result, time.Now().UTC()); journalErr != nil {
 		// The adapter may have run, but a host cannot safely report a result that
@@ -4349,6 +4555,12 @@ func (c *sharedAgentLoopCallbacks) executeCoordinatedSemanticToolCall(functionNa
 		// same-tool failure counter and the no-progress breaker.
 		return semanticModelParameterRejection(semanticCanonicalRejectionText(err))
 	}
+	// Ask, or refuse an incomplete catalog, before Admit. Admit consumes the
+	// one-shot grant and records a running execution. Neither outcome ran the
+	// tool. A retry of that same grant would already be consumed.
+	if gated, handled := c.pauseUnconfirmedMCPServerWrite(selection); handled {
+		return gated.Result
+	}
 	if _, err := c.semanticSurface.issuer.ValidateWithCanonicalScope(grant, semanticGrantValidateScope(c.semanticSurface.scope, grant.Scope), c.semanticSurface.plan, c.semanticSurface.completed); err != nil {
 		if !invocationGrantExpired(err) {
 			return semanticGrantRejectMessage(err.Error())
@@ -4387,12 +4599,13 @@ func (c *sharedAgentLoopCallbacks) executeCoordinatedSemanticToolCall(functionNa
 		return "[system rejected] " + err.Error()
 	}
 	if result.Paused {
-		// A paused interaction ran no adapter and no effect: the admission
-		// must stay open so the model can re-issue the call after the user's
-		// answer. Completing it here — even as failed — would burn the
-		// one-shot admission on a question. The ask marker text alone is not
-		// the signal: a confirmation that already executed an effect (a
-		// frozen mailbox draft) settles through the ordinary outcome path.
+		// Backstop for a pause that still reached an admitted call. The MCP
+		// write question is asked before Admit, so this return is not how that
+		// question keeps its grant. Completing a pause here — even as failed —
+		// would burn the one-shot admission on a question. The ask marker text
+		// alone is not the signal: a confirmation that already executed an
+		// effect (a frozen mailbox draft) settles through the ordinary outcome
+		// path.
 		return result.Result
 	}
 	if c.usesUnifiedDynamicEffectCoordinator(selected) && (result.AwaitingReceipt || result.Unknown || result.Succeeded || result.ReasonCode == "dynamic_binding_stale" || result.ReasonCode == "mcp_tool_error" || strings.HasSuffix(result.ReasonCode, "_binding_stale") || strings.HasSuffix(result.ReasonCode, "_bound_execution_unavailable")) {
@@ -4548,7 +4761,10 @@ func semanticSelectionByID(plan tool.ToolPlan, selectionID string) (tool.Planned
 	return tool.PlanSelectionByID(plan, selectionID)
 }
 
-func (c *sharedAgentLoopCallbacks) executeSemanticToolWithCanonical(functionName string, grant tool.InvocationGrant, canonicalArgs tool.CanonicalRequest) string {
+func (c *sharedAgentLoopCallbacks) executeSemanticToolWithCanonical(functionName string, grant tool.InvocationGrant, canonicalArgs tool.CanonicalRequest) (string, bool) {
+	// The journal caller asks before Acquire. Execute still consumes the
+	// grant before the adapter, so a pause that reaches this function must
+	// not be recorded as a finished host call.
 	invoke := func(active tool.InvocationGrant) (tool.SelectionExecutionResult, tool.PlannedSelection, error) {
 		return c.semanticSurface.executor.Execute(active, semanticGrantValidateScope(c.semanticSurface.scope, active.Scope), c.semanticSurface.plan, c.semanticSurface.completed, func(selection tool.PlannedSelection) tool.SelectionExecutionResult {
 			return c.executeBoundSemanticSelectionCanonical(selection, canonicalArgs)
@@ -4558,30 +4774,33 @@ func (c *sharedAgentLoopCallbacks) executeSemanticToolWithCanonical(functionName
 	// consume a successor the host-call row does not name.
 	execResult, selection, err := invoke(grant)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return "[system rejected] " + err.Error(), false
 	}
 	result := execResult.Result
+	if execResult.Paused {
+		return result, true
+	}
 	// See executeSemanticTool.  The canonical/journalled path has identical
 	// receipt semantics: retire the current opaque function without projecting
 	// a successful plan dependency.
 	if execResult.AwaitingReceipt {
 		if err := c.retireSemanticToolSurface(functionName, selection.ID); err != nil {
-			return "[system rejected] semantic_plan_retire_failed"
+			return "[system rejected] semantic_plan_retire_failed", false
 		}
-		return result
+		return result, false
 	}
 	if !execResult.Succeeded || semanticSelectionFailed(result) {
 		delete(c.semanticSurface.pendingArtifacts, selection.ID)
-		return c.retireRejectedSemanticTool(functionName, selection.ID, result, execResult.ReasonCode)
+		return c.retireRejectedSemanticTool(functionName, selection.ID, result, execResult.ReasonCode), false
 	}
 	if err := c.registerSemanticArtifacts(selection.ID); err != nil {
-		return "[system rejected] artifact_route_state_record_failed"
+		return "[system rejected] artifact_route_state_record_failed", false
 	}
 	note, err := c.advanceSemanticToolSurface(selection.ID)
 	if err != nil {
-		return semanticAdvanceAfterSuccess(withSemanticSelectionProvenance(result, selection), err)
+		return semanticAdvanceAfterSuccess(withSemanticSelectionProvenance(result, selection), err), false
 	}
-	return withSemanticSelectionProvenance(result, selection) + note
+	return withSemanticSelectionProvenance(result, selection) + note, false
 }
 
 func removeToolDefinitionByName(definitions []map[string]interface{}, functionName string) []map[string]interface{} {
@@ -4609,6 +4828,7 @@ func (c *sharedAgentLoopCallbacks) retireRejectedSemanticTool(functionName, sele
 	if repeatSelectionSpent(c.semanticSurface, selectionID) && tool.SettledIterativeListingAllowed(tool.SelectionExecutionResult{ReasonCode: reasonCode}) {
 		c.ensureNextObligationFileWrite(selectionID)
 		c.ensureNextIterativeRemoteCommand(selectionID)
+		c.ensureNextIterativeInstalledMCP(selectionID)
 	}
 	if err := c.retireSemanticToolSurface(functionName, selectionID); err != nil {
 		return "[system rejected] semantic_plan_retire_failed"
@@ -4678,12 +4898,13 @@ func (c *sharedAgentLoopCallbacks) advanceSemanticToolSurface(selectionID string
 		return "", fmt.Errorf("semantic tool surface is unavailable")
 	}
 	// A successful file edit leaves the next write on the following request.
-	// A settled remote command leaves the next call the same way. Waiting for
-	// the model to call a name that has already left the surface is the
-	// usage-limit denial: the tool vanished, the model called it, and the
-	// reply said this turn was finished.
+	// A settled remote command or installed MCP call leaves the next call the
+	// same way. Waiting for the model to call a name that has already left
+	// the surface is the usage-limit denial: the tool vanished, the model
+	// called it, and the reply said this turn was finished.
 	c.ensureNextObligationFileWrite(selectionID)
 	c.ensureNextIterativeRemoteCommand(selectionID)
+	c.ensureNextIterativeInstalledMCP(selectionID)
 	var err error
 	if c.semanticHoldDependantIssue {
 		// Hold only the host-owned generate unlock. Same-family repeats
@@ -4728,6 +4949,14 @@ func (c *sharedAgentLoopCallbacks) ensureNextIterativeRemoteCommand(selectionID 
 	c.ensureNextIterativeSibling(selectionID, obligationRemoteCommand, "remote command")
 }
 
+// ensureNextIterativeInstalledMCP appends one sibling of the same installed
+// MCP tool when the call that just settled spent the published wave. The
+// token changes; the previous grant is not re-armed. A record edit needs the
+// next call — query, change, check, retry — still on this turn.
+func (c *sharedAgentLoopCallbacks) ensureNextIterativeInstalledMCP(selectionID string) {
+	c.ensureNextIterativeSibling(selectionID, obligationInstalledMCP, "installed MCP")
+}
+
 func (c *sharedAgentLoopCallbacks) ensureNextIterativeSibling(selectionID string, owns func(tool.ToolPlan, tool.PlannedSelection) bool, kind string) {
 	if c == nil || c.semanticSurface == nil || owns == nil {
 		return
@@ -4763,6 +4992,10 @@ func obligationLocalFileWrite(plan tool.ToolPlan, selection tool.PlannedSelectio
 
 func obligationRemoteCommand(plan tool.ToolPlan, selection tool.PlannedSelection) bool {
 	return obligationIterativeFamily(plan, selection, tool.IterativeRemoteCommand(selection))
+}
+
+func obligationInstalledMCP(plan tool.ToolPlan, selection tool.PlannedSelection) bool {
+	return obligationIterativeFamily(plan, selection, tool.IterativeInstalledMCP(selection))
 }
 
 // obligationIterativeFamily is true when selection is the iterative capability
@@ -5078,7 +5311,8 @@ func semanticReceiptBoundaryMissing(selection tool.PlannedSelection) bool {
 		!semanticSpecifiedTargetArtifactDelivery(selection) &&
 		!semanticBuiltinLocalMutationSelection(selection) &&
 		!semanticHostObservedExternalSelection(selection) &&
-		!semanticMailboxSendReceiptSelection(selection)
+		!semanticMailboxSendReceiptSelection(selection) &&
+		!semanticMailboxDeleteReceiptSelection(selection)
 }
 
 // semanticSelectionAwaitsReceipt identifies a local, host-owned receipt-aware
@@ -5129,6 +5363,10 @@ func (c *sharedAgentLoopCallbacks) executeBoundSemanticSelectionCanonicalWithCon
 	if semanticMailboxSendReceiptSelection(selection) {
 		c.emitSemanticSelectionProgress(selection, string(canonicalArgs.CanonicalJSON))
 		return c.executeTrustedMailboxSend(ctx, canonicalArgs)
+	}
+	if semanticMailboxDeleteReceiptSelection(selection) {
+		c.emitSemanticSelectionProgress(selection, string(canonicalArgs.CanonicalJSON))
+		return c.executeTrustedMailboxDelete(ctx, canonicalArgs)
 	}
 	if semanticMailboxConfigureSelection(selection) {
 		c.emitSemanticSelectionProgress(selection, string(canonicalArgs.CanonicalJSON))
@@ -6507,10 +6745,20 @@ func (c *sharedAgentLoopCallbacks) executeTrustedSSH(_ tool.PlannedSelection, ca
 	if _, isConnect := args["host"]; isConnect {
 		connectArgs, err := semanticTrustedSSHConnectArgsAllowed(args)
 		if err != nil {
-			return "[system rejected] " + err.Error()
+			return semanticPrefixedRejection(err)
 		}
 		result := c.handler.sshConnect(connectArgs)
 		if strings.HasPrefix(result, "SSH 连接成功") || strings.HasPrefix(result, "复用已有 SSH 会话") {
+			if remotePath, _ := connectArgs["remote_path"].(string); strings.TrimSpace(remotePath) != "" {
+				localPath, _ := connectArgs["local_path"].(string)
+				sessionID := sshSessionIDFromConnectResult(result)
+				if sessionID == "" {
+					if session := trustedSSHSingleBoundSession(c.handler); session != nil {
+						sessionID = session.ID
+					}
+				}
+				return semanticSSHConnectDownloadResult(result, c.trustedSSHDownload(sessionID, remotePath, localPath))
+			}
 			if command, _ := args["command"].(string); strings.TrimSpace(command) != "" {
 				out, err := c.handler.executeTrustedSSH(c.semanticPrincipalID(), command, semanticTrustedSSHCommandTimeout)
 				if err != nil {
@@ -6531,9 +6779,16 @@ func (c *sharedAgentLoopCallbacks) executeTrustedSSH(_ tool.PlannedSelection, ca
 		}
 		return "[system rejected] " + result
 	}
-	command, timeout, err := semanticTrustedSSHArgsAllowed(args)
+	command, timeout, remotePath, localPath, err := semanticTrustedSSHArgsAllowed(args)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return semanticPrefixedRejection(err)
+	}
+	if remotePath != "" || localPath != "" {
+		session := trustedSSHSingleBoundSession(c.handler)
+		if session == nil {
+			return "[system rejected] trusted_ssh_session_unavailable"
+		}
+		return c.trustedSSHDownload(session.ID, remotePath, localPath)
 	}
 	text, err := c.handler.executeTrustedSSH(c.semanticPrincipalID(), command, timeout)
 	if err != nil {
@@ -6556,6 +6811,25 @@ func (c *sharedAgentLoopCallbacks) executeTrustedSSH(_ tool.PlannedSelection, ca
 		return "[system unknown] " + err.Error()
 	}
 	return out
+}
+
+func (c *sharedAgentLoopCallbacks) trustedSSHDownload(sessionID, remotePath, localPath string) string {
+	if c == nil || c.handler == nil {
+		return "下载失败: trusted_ssh_session_unavailable"
+	}
+	remotePath, err := semanticSSHRemotePath(remotePath)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	localPath, err = c.handler.resolveTrustedSSHLocalPath(c.userID, localPath)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return "[system rejected] trusted_ssh_session_unavailable"
+	}
+	// The local name is chosen after "~" expands, inside the download.
+	return c.handler.downloadTrustedSSH(sessionID, remotePath, localPath)
 }
 
 func (c *sharedAgentLoopCallbacks) executeTrustedBrowser(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
@@ -7897,7 +8171,7 @@ func (c *sharedAgentLoopCallbacks) RequiredEffectUnsettled() bool {
 		case tool.PlanExecutionFailed:
 			// A confirmation used to be stored as a failure with this reason.
 			// New drafts are awaiting_receipt. A real send failure is settled.
-			if record.ReasonCode == mailboxSendAwaitingConfirmation {
+			if mailboxDraftAwaitingConfirmation(record.ReasonCode) {
 				return true
 			}
 			continue

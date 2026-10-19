@@ -169,10 +169,11 @@ func TestMemoryPipelineCompletionImmediatelyInvalidatesAgentMemorySnapshot(t *te
 		t.Fatal("precondition: static memory snapshot not built")
 	}
 
+	before := handler.cachedStaticMemorySnapshot(desktopUserID)
 	app := &App{memoryStore: store, imHandler: handler, testHomeDir: t.TempDir()}
 	guiMemoryEventEmitter{app: app}.Emit("memory:pipeline_completed", nil)
-	if cached := handler.cachedStaticMemorySnapshot(desktopUserID); cached != "" {
-		t.Fatalf("cached agent memory remains after pipeline completion: %q", cached)
+	if got := handler.cachedStaticMemorySnapshot(desktopUserID); got != before {
+		t.Fatalf("pipeline completion rewrote the frozen snapshot:\n got %q\nwant %q", got, before)
 	}
 }
 
@@ -196,6 +197,7 @@ func TestCompressMemoriesImmediatelyInvalidatesAgentMemorySnapshot(t *testing.T)
 		t.Fatal("precondition: static memory snapshot not built")
 	}
 
+	before := handler.cachedStaticMemorySnapshot(desktopUserID)
 	app := &App{memoryStore: store, imHandler: handler, testHomeDir: t.TempDir()}
 	maintenance := memory.NewMaintenance(store, nil, nil)
 	app.memoryMaintenance = maintenance
@@ -203,8 +205,8 @@ func TestCompressMemoriesImmediatelyInvalidatesAgentMemorySnapshot(t *testing.T)
 	if _, err := app.CompressMemories(); err != nil {
 		t.Fatalf("CompressMemories() error = %v", err)
 	}
-	if cached := handler.cachedStaticMemorySnapshot(desktopUserID); cached != "" {
-		t.Fatalf("cached agent memory remains after compression: %q", cached)
+	if got := handler.cachedStaticMemorySnapshot(desktopUserID); got != before {
+		t.Fatalf("compression rewrote the frozen snapshot:\n got %q\nwant %q", got, before)
 	}
 }
 
@@ -216,20 +218,19 @@ func TestSaveAndUpdateMemoryImmediatelyInvalidateAgentMemorySnapshot(t *testing.
 	defer store.Stop()
 	handler := &IMMessageHandler{memoryStore: store}
 	handler.WarmFrozenMemorySnapshot(desktopUserID)
+	before := handler.cachedStaticMemorySnapshot(desktopUserID)
+	if before == "" {
+		t.Fatal("precondition: static memory snapshot not built")
+	}
 	app := &App{memoryStore: store, imHandler: handler, testHomeDir: t.TempDir()}
 
 	if err := app.SaveMemory("first agent fact", string(memory.CategoryUserFact), nil); err != nil {
 		t.Fatalf("SaveMemory() error = %v", err)
 	}
-	if cached := handler.cachedStaticMemorySnapshot(desktopUserID); cached != "" {
-		t.Fatalf("cached agent memory remains after save: %q", cached)
+	if got := handler.cachedStaticMemorySnapshot(desktopUserID); got != before || strings.Contains(got, "first agent fact") {
+		t.Fatalf("save rewrote the frozen snapshot: %q", got)
 	}
 	entry := store.List("", "")[0]
-	if fresh, _ := handler.loadOrBuildStaticMemorySnapshot(desktopUserID); fresh == "" {
-		t.Fatal("static memory snapshot not rebuilt after save")
-	}
-	// Saved content reaches the model via recall tools; the prompt section
-	// stays content-free, so assert the fact at the store level.
 	if entries := store.List("", ""); len(entries) != 1 || entries[0].Content != "first agent fact" {
 		t.Fatalf("store after save = %#v, want saved fact", entries)
 	}
@@ -237,15 +238,8 @@ func TestSaveAndUpdateMemoryImmediatelyInvalidateAgentMemorySnapshot(t *testing.
 	if err := app.UpdateMemory(entry.ID, "updated agent fact", string(memory.CategoryUserFact), nil); err != nil {
 		t.Fatalf("UpdateMemory() error = %v", err)
 	}
-	if cached := handler.cachedStaticMemorySnapshot(desktopUserID); cached != "" {
-		t.Fatalf("cached agent memory remains after update: %q", cached)
-	}
-	fresh, _ := handler.loadOrBuildStaticMemorySnapshot(desktopUserID)
-	if fresh == "" {
-		t.Fatal("static memory snapshot not rebuilt after update")
-	}
-	if strings.Contains(fresh, entry.Content) {
-		t.Fatalf("fresh agent memory still contains pre-update content: %q", fresh)
+	if got := handler.cachedStaticMemorySnapshot(desktopUserID); got != before || strings.Contains(got, "updated agent fact") {
+		t.Fatalf("update rewrote the frozen snapshot: %q", got)
 	}
 	if entries := store.List("", ""); len(entries) != 1 || entries[0].Content != "updated agent fact" {
 		t.Fatalf("store after update = %#v, want updated fact", entries)
@@ -264,19 +258,15 @@ func TestRestoreArchiveMemoryImmediatelyInvalidatesAgentMemorySnapshot(t *testin
 	}
 	handler := &IMMessageHandler{memoryStore: store}
 	handler.WarmFrozenMemorySnapshot(desktopUserID)
+	before := handler.cachedStaticMemorySnapshot(desktopUserID)
 	app := &App{memoryStore: store, imHandler: handler, testHomeDir: t.TempDir()}
 
 	if err := app.RestoreArchiveMemory(archived.ID); err != nil {
 		t.Fatalf("RestoreArchiveMemory() error = %v", err)
 	}
-	if cached := handler.cachedStaticMemorySnapshot(desktopUserID); cached != "" {
-		t.Fatalf("cached agent memory remains after archive restore: %q", cached)
+	if got := handler.cachedStaticMemorySnapshot(desktopUserID); got != before || strings.Contains(got, archived.Content) {
+		t.Fatalf("archive restore rewrote the frozen snapshot: %q", got)
 	}
-	fresh, _ := handler.loadOrBuildStaticMemorySnapshot(desktopUserID)
-	if fresh == "" {
-		t.Fatal("static memory snapshot not rebuilt after archive restore")
-	}
-	// Restored content reaches the model via recall; assert it at the store level.
 	if entries := store.List("", ""); len(entries) != 1 || entries[0].Content != archived.Content {
 		t.Fatalf("store after archive restore = %#v, want restored entry", entries)
 	}
@@ -298,6 +288,7 @@ func TestUserDataMigrationMemoryReplacementImmediatelyInvalidatesAgentMemorySnap
 	}
 	app := &App{memoryStore: store, imHandler: handler, testHomeDir: t.TempDir()}
 
+	before := handler.cachedStaticMemorySnapshot(desktopUserID)
 	if err := app.replaceUserDataMigrationMemoryEntries([]memory.Entry{{
 		ID:       "memory-after-migration",
 		Content:  "memory after migration replacement",
@@ -305,15 +296,8 @@ func TestUserDataMigrationMemoryReplacementImmediatelyInvalidatesAgentMemorySnap
 	}}); err != nil {
 		t.Fatalf("replaceUserDataMigrationMemoryEntries() error = %v", err)
 	}
-	if cached := handler.cachedStaticMemorySnapshot(desktopUserID); cached != "" {
-		t.Fatalf("cached agent memory remains after migration replacement: %q", cached)
-	}
-	fresh, _ := handler.loadOrBuildStaticMemorySnapshot(desktopUserID)
-	if fresh == "" {
-		t.Fatal("static memory snapshot not rebuilt after migration replacement")
-	}
-	if strings.Contains(fresh, "memory before migration replacement") {
-		t.Fatalf("fresh agent memory still contains pre-migration content: %q", fresh)
+	if got := handler.cachedStaticMemorySnapshot(desktopUserID); got != before || !strings.Contains(got, "memory before migration replacement") {
+		t.Fatalf("migration rewrote the frozen snapshot: %q", got)
 	}
 	if entries := store.List("", ""); len(entries) != 1 || entries[0].Content != "memory after migration replacement" {
 		t.Fatalf("store after migration replacement = %#v, want replacement entry", entries)
@@ -347,16 +331,17 @@ func TestDeleteMemoriesInvalidatesAllCachedAgentOwners(t *testing.T) {
 	}
 	app := &App{memoryStore: store, imHandler: handler, testHomeDir: t.TempDir()}
 
+	before := map[string]string{}
+	for _, ownerID := range owners {
+		before[ownerID] = handler.cachedStaticMemorySnapshot(ownerID)
+	}
 	if _, err := app.DeleteMemories(ids); err != nil {
 		t.Fatalf("DeleteMemories() error = %v", err)
 	}
 	for i, ownerID := range owners {
-		if cached := handler.cachedStaticMemorySnapshot(ownerID); cached != "" {
-			t.Fatalf("cached agent memory for %q remains after delete: %q", ownerID, cached)
-		}
-		fresh, _ := handler.loadOrBuildStaticMemorySnapshot(ownerID)
-		if strings.Contains(fresh, contents[i]) {
-			t.Fatalf("fresh agent memory for %q still contains deleted content: %q", ownerID, fresh)
+		got := handler.cachedStaticMemorySnapshot(ownerID)
+		if got != before[ownerID] || !strings.Contains(got, contents[i]) {
+			t.Fatalf("delete rewrote the frozen snapshot for %q: %q", ownerID, got)
 		}
 	}
 }

@@ -23,9 +23,9 @@ func TestContainerFileAndBashStayInTheUsersContainer(t *testing.T) {
 		switch {
 		case strings.Contains(joined, " curl "):
 			return "hello" + "\n__MACLAW_HTTP__" + "200 text/html", 0, nil
-		case strings.Contains(joined, " bash "):
+		case strings.Contains(joined, " /desktop_supervisor.py command "):
 			return "hi\n", 0, nil
-		case strings.Contains(joined, "head -c"):
+		case strings.Contains(joined, " file read "):
 			return "int main(){}\n", 0, nil
 		default:
 			return "", 0, nil
@@ -35,7 +35,7 @@ func TestContainerFileAndBashStayInTheUsersContainer(t *testing.T) {
 	if err != nil || !strings.Contains(text, "/home/desktop/Desktop/a.c") || stdin != "int main(){}\n" {
 		t.Fatalf("write=%q stdin=%q err=%v", text, stdin, err)
 	}
-	if !strings.Contains(strings.Join(commands[0], " "), `cat > "$1"`) || commands[0][len(commands[0])-1] != "/home/desktop/Desktop/a.c" {
+	if !strings.Contains(strings.Join(commands[0], " "), " file write ") || commands[0][len(commands[0])-1] != "/home/desktop/Desktop/a.c" {
 		t.Fatalf("write args=%v", commands[0])
 	}
 	text, err = svc.ReadFile(context.Background(), "tenant", "alice", "/root/Desktop/a.c")
@@ -71,7 +71,7 @@ func TestReadBytesKeepsAPDFIntact(t *testing.T) {
 		t.Fatalf("bytes=%q err=%v", got, err)
 	}
 	joined := strings.Join(commands[0], " ")
-	if !strings.Contains(joined, "base64 -w 0") || !strings.Contains(joined, "/home/desktop/Desktop/北京天气.pdf") {
+	if !strings.Contains(joined, " file bytes ") || !strings.Contains(joined, "/home/desktop/Desktop/北京天气.pdf") || strings.Contains(joined, "base64") {
 		t.Fatalf("args=%v", commands[0])
 	}
 	svc.RunCommand = func(context.Context, io.Reader, ...string) (string, int, error) {
@@ -96,7 +96,7 @@ func TestContainerEditHoldsTheFileAcrossTheRewrite(t *testing.T) {
 	var stdin string
 	svc := &Service{RunCommand: func(_ context.Context, in io.Reader, args ...string) (string, int, error) {
 		joined := strings.Join(args, " ")
-		if strings.Contains(joined, "head -c") {
+		if strings.Contains(joined, " file read ") {
 			return "int main(){}\n", 0, nil
 		}
 		if in != nil {

@@ -224,6 +224,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     NotifyDesktopPetMicBusy: vi.fn().mockResolvedValue(undefined),
     ListMobileLibraryItems: vi.fn().mockResolvedValue([]),
     KnowledgeSearch: vi.fn().mockResolvedValue([]),
+    LocalSearch: vi.fn().mockResolvedValue({ hits: [] }),
     ListExperts: vi.fn().mockResolvedValue('[]'),
     ListManagedIndustryExperts: listManagedIndustryExpertsMock,
     ResumeTask: vi.fn(),
@@ -8882,10 +8883,11 @@ describe('new-task wizard page (task-pane 新建任务 button)', () => {
         });
 
         await waitFor(() => {
-            expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('welcome');
+            expect(screen.getByTestId('welcome-task-config')).toBeTruthy();
         });
-        expect(screen.getByTestId('welcome-task-config')).toBeTruthy();
+        expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('execution');
         expect(screen.getByTestId('new-task-wizard-running-banner')).toBeTruthy();
+        expect(screen.getByText('Chongzhou weather').closest('[hidden]')).toBeTruthy();
         expect(clearHistory).not.toHaveBeenCalled();
 
         fireEvent.click(screen.getByTestId('new-task-wizard-back'));
@@ -8911,6 +8913,110 @@ describe('new-task wizard page (task-pane 新建任务 button)', () => {
         await waitFor(() => {
             expect(screen.getByText('Chongzhou weather')).toBeTruthy();
         });
+    });
+
+    it('returns to the covered assistant when the task list focuses that task', async () => {
+        const user = makeMsg({ role: 'user', content: 'Chongzhou weather' });
+        renderPanel({
+            window: { inline: true },
+            state: { messages: [user], sending: true, streaming: false, ready: true },
+            actions: { clearHistory: vi.fn().mockResolvedValue(undefined), sendMessage: vi.fn().mockResolvedValue(true) },
+        });
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('new-task-wizard-running-banner')).toBeTruthy();
+        });
+        expect(screen.getByText('Chongzhou weather').closest('[hidden]')).toBeTruthy();
+
+        activateLocalTab();
+
+        await waitFor(() => {
+            expect(screen.queryByTestId('new-task-wizard-running-banner')).toBeNull();
+        });
+        expect(screen.getByText('Chongzhou weather').closest('[hidden]')).toBeNull();
+        expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('execution');
+    });
+
+    it('leaves the new-task cover when a task-list row opens another assistant', async () => {
+        const user = makeMsg({ role: 'user', content: 'Chongzhou weather' });
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const controls: { openProject?: () => void } = {};
+        function Harness() {
+            const [pending, setPending] = useState<{ projectPath: string; taskTitle: string; autoSend: boolean } | null>(null);
+            const base = defaultPanelProps();
+            controls.openProject = () => setPending({ projectPath: 'D:/tasks/workspace-1', taskTitle: '中国人很强', autoSend: false });
+            return (
+                <AIAssistantPanel
+                    {...base}
+                    window={{ inline: true }}
+                    state={{ ...base.state, messages: [user], sending: true, streaming: false, ready: true }}
+                    actions={{ ...base.actions, sendMessage }}
+                    pendingProjectTabOpen={pending}
+                    onPendingProjectTabOpenHandled={() => setPending(null)}
+                />
+            );
+        }
+        render(<Harness />, { wrapper: DialogProvider });
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('new-task-wizard-running-banner')).toBeTruthy();
+        });
+
+        act(() => controls.openProject?.());
+
+        await waitFor(() => {
+            expect(screen.queryByTestId('new-task-wizard-running-banner')).toBeNull();
+        });
+        // The banner also hides when an empty project shows the welcome page.
+        // A following Enter must talk to that assistant, not create another task.
+        createTaskUnifiedMock.mockClear();
+        typeAndEnter('继续这个任务');
+        await waitFor(() => expect(sendMessage).toHaveBeenCalled());
+        expect(createTaskUnifiedMock).not.toHaveBeenCalled();
+    });
+
+    it('returns to the already-open project assistant when its task row is clicked', async () => {
+        const controls: { openProject?: () => void } = {};
+        function Harness() {
+            const [activeTask, setActiveTask] = useState<{ projectPath?: string; cloudWorkspaceId?: string; expertId?: string } | null>(null);
+            const [pending, setPending] = useState<{ projectPath: string; taskTitle: string; autoSend: boolean } | null>(null);
+            const base = defaultPanelProps();
+            controls.openProject = () => setPending({ projectPath: 'D:/tasks/workspace-1', taskTitle: '中国人很强', autoSend: false });
+            return (
+                <AIAssistantPanel
+                    {...base}
+                    window={{ inline: true }}
+                    state={{ ...base.state, messages: [], sending: false, streaming: false, ready: true }}
+                    activeAssistantTask={activeTask}
+                    onActiveAssistantTaskChange={setActiveTask}
+                    pendingProjectTabOpen={pending}
+                    onPendingProjectTabOpenHandled={() => setPending(null)}
+                />
+            );
+        }
+        render(<Harness />, { wrapper: DialogProvider });
+        act(() => controls.openProject?.());
+        await waitFor(() => expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('execution'));
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        await waitFor(() => expect(screen.getByTestId('new-task-wizard-running-banner')).toBeTruthy());
+
+        const handler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === EVENT_PROJECT_TASK_ACTIVATE)
+            .at(-1)?.[1] as ((payload: { projectPath?: string }) => void) | undefined;
+        act(() => { handler?.({ projectPath: 'D:/tasks/workspace-1' }); });
+
+        await waitFor(() => expect(screen.queryByTestId('new-task-wizard-running-banner')).toBeNull());
+        expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('execution');
+        expect(screen.getByTestId('ai-output-container')).toBeTruthy();
     });
 
     it('opens the guide from another task and keeps an unsent guide draft', async () => {

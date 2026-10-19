@@ -57,6 +57,7 @@ var expertToolMetaByName = map[string]expertToolMeta{
 	"mailbox_query":     {Category: "system", Risk: "safe", LabelZh: "读取邮箱", LabelEn: "Read mailbox"},
 	"mailbox_send":      {Category: "system", Risk: "elevated", LabelZh: "发送邮件", LabelEn: "Send email"},
 	"mailbox_configure": {Category: "system", Risk: "elevated", LabelZh: "配置邮箱", LabelEn: "Configure mailbox"},
+	"mailbox_delete":    {Category: "system", Risk: "elevated", LabelZh: "删除邮件", LabelEn: "Delete mail"},
 	"download_file":     {Category: "files", Risk: "elevated", LabelZh: "下载文件", LabelEn: "Download file"},
 
 	// Office

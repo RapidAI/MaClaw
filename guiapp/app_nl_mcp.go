@@ -467,6 +467,7 @@ func (r *MCPRegistry) Unregister(serverID string) error {
 			if err := r.saveServers(servers); err != nil {
 				return err
 			}
+			forgetMCPServerWriteGrants(serverID)
 			if r.app != nil {
 				if err := clearMCPRuntimeSyncState(serverID); err != nil {
 					return fmt.Errorf("clear MCP runtime sync state: %w", err)
@@ -1939,6 +1940,7 @@ func (r *MCPRegistry) UnregisterLocal(serverID string) error {
 			if err := r.saveLocalServers(servers); err != nil {
 				return err
 			}
+			forgetMCPServerWriteGrants(serverID)
 			if r.app != nil {
 				if err := clearMCPRuntimeSyncState(serverID); err != nil {
 					return fmt.Errorf("clear MCP runtime sync state: %w", err)

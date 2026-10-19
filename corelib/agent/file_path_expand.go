@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -98,9 +99,33 @@ func ExpandUserSelectedFilePaths(text string) string {
 }
 
 // ExpandUserSelectedFilePathsWithContext scales automatic document injection
-// to the active model's usable context window.
+// to the active model's usable context window. Image-only PDFs are read with
+// the local OCR engine. A model that can see images should use
+// ExpandUserSelectedFilePathsForVision instead.
 func ExpandUserSelectedFilePathsWithContext(text string, contextTokens int) string {
 	return expandUserSelectedFilePathsWithSettingsAndBudget(text, currentOfficeReadSettings(), contextTokens)
+}
+
+// ExpandUserSelectedFilePathsForVision is the chat expansion for a model that
+// accepts images. An image-only PDF becomes a short note plus page markers;
+// the host attaches the page images. Text-only models keep the OCR expansion.
+// The flag is on this call's settings copy, so a concurrent read_document
+// still OCRs the same file.
+func ExpandUserSelectedFilePathsForVision(text string, contextTokens int) string {
+	return ExpandUserSelectedFilePathsForVisionBudget(text, contextTokens, 0)
+}
+
+// ExpandUserSelectedFilePathsForVisionBudget is ExpandUserSelectedFilePathsForVision
+// with the bytes of images already attached on this turn. Picture pages that
+// would push the turn past the vision upload cap are left for OCR instead of
+// being described as attached.
+func ExpandUserSelectedFilePathsForVisionBudget(text string, contextTokens int, usedImageBytes int64) string {
+	settings := currentOfficeReadSettings()
+	settings.imagePDFPreferVision = true
+	if usedImageBytes > 0 {
+		settings.imagePDFVisionUsedBytes = usedImageBytes
+	}
+	return expandUserSelectedFilePathsWithSettingsAndBudget(text, settings, contextTokens)
 }
 
 func expandUserSelectedFilePathsWithSettings(text string, settings officeReadSettings) string {
@@ -435,6 +460,9 @@ func formatAutoExtractedDocumentsWithSettings(filePaths []string, perFile, total
 		}
 		block, used := formatAutoExtractedDocumentWithSettings(p, limit, slack, settings, query)
 		out = append(out, block)
+		if settings.imagePDFPreferVision && strings.Contains(block, "# text_source: vision") {
+			settings.imagePDFVisionUsedBytes += visionAttachedBytes(block)
+		}
 		if used > 0 {
 			budget -= used
 		}
@@ -671,6 +699,64 @@ func pathInSkipSet(skip map[string]struct{}, p string) bool {
 		return true
 	}
 	return false
+}
+
+// visionAttachedBytes reads the picture bytes a vision transcript actually
+// attached. The next image-only PDF in the same turn starts from that total,
+// and the total is part of the extract cache key.
+func visionAttachedBytes(block string) int64 {
+	const prefix = "# vision_bytes: "
+	for _, line := range strings.Split(block, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, prefix) {
+			n, err := strconv.ParseInt(strings.TrimPrefix(line, prefix), 10, 64)
+			if err == nil && n > 0 {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+// autoExtractBodyForPath returns the injected body for path when this turn
+// already expanded it. Picture-page attachment uses it to skip a PDF whose
+// extract is native text or OCR.
+func autoExtractBodyForPath(text, path string) (string, bool) {
+	if text == "" || path == "" || !strings.Contains(text, AutoExtractBeginMarker) {
+		return "", false
+	}
+	var body strings.Builder
+	in, found := false, false
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if isAutoExtractBeginLine(trimmed) {
+			if in {
+				break
+			}
+			blockPath := extractQuotedAttr(trimmed, "path")
+			if blockPath != "" && sameExtractedPath(blockPath, path) {
+				in, found = true, true
+			}
+			continue
+		}
+		if in && strings.HasPrefix(trimmed, AutoExtractEndMarker) {
+			break
+		}
+		if in {
+			body.WriteString(line)
+			body.WriteByte('\n')
+		}
+	}
+	if !found {
+		return "", false
+	}
+	return body.String(), true
+}
+
+func sameExtractedPath(a, b string) bool {
+	set := make(map[string]struct{}, 4)
+	indexExtractedPath(set, a)
+	return pathInSkipSet(set, b)
 }
 
 func extractIntAttr(line, key string) int {

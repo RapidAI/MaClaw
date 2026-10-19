@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 """Start one virtual desktop per user key inside the GUI container.
 
-Each key gets its own X display, Chromium profile, and CDP proxy. A later
-ensure for the same key reuses that desktop. Other keys cannot see it.
+One user has one master Chrome profile. Each screen clones a working copy
+and Chrome opens only that copy. A later ensure for the same key reuses
+that desktop. Another user's path cannot open this profile. The file
+service answers one screen's CDP address, profile path, gate token, and
+display through the screen command. Callers do not add a port to the display.
+The file command reads, writes, lists, and returns bytes. The control plane
+does not build head, ls, or base64 itself. The command service runs a shell,
+a screenshot, a click, and ctl. The control plane does not put bash, xdotool,
+or sh on the docker exec line.
 """
 import base64
 from contextlib import contextmanager
@@ -11,6 +18,7 @@ import hashlib
 import hmac
 import json
 import os
+import posixpath
 import re
 import secrets
 import shlex
@@ -35,7 +43,8 @@ VNC_GATE_PORT = 6080
 VNC_WEBSOCKIFY_PORT = 6081
 # Per-bot displays (desktop_mode=isolated). A bot key is the owner's 16-hex
 # user key followed by 16 hex of the bot id. Each bot gets its own display
-# above DISPLAY_MIN with only Xvfb, xfwm4 and its own Chromium profile. The
+# above DISPLAY_MIN with only Xvfb and xfwm4. Chrome uses a working copy of
+# the owner's master profile, not an empty profile under the bot key. The
 # owner's two published gates (CDP 19020, noVNC 6080) route a bot's token to
 # that bot's display, so no new container port is needed.
 BOT_IDLE_SECONDS = 600
@@ -563,6 +572,9 @@ def main(argv):
         if not valid_key(key):
             print("invalid user key", file=sys.stderr)
             return 2
+        if owner_key() and key != owner_key() and not is_bot_key(key):
+            print("desktop data belongs to another user", file=sys.stderr)
+            return 2
         return flush_browser(key)
     if len(argv) == 3 and argv[1] == "idle":
         key = argv[2]
@@ -589,8 +601,29 @@ def main(argv):
         if not valid_key(key):
             print("invalid user key", file=sys.stderr)
             return 2
+        if owner_key() and key != owner_key() and not is_bot_key(key):
+            print("desktop data belongs to another user", file=sys.stderr)
+            return 2
         stop_desktop(key)
         return 0
+    if len(argv) == 3 and argv[1] == "screen":
+        key = argv[2]
+        if not valid_key(key):
+            print("invalid user key", file=sys.stderr)
+            return 2
+        if owner_key() and key != owner_key() and not is_bot_key(key):
+            print("desktop data belongs to another user", file=sys.stderr)
+            return 2
+        record = screen_record(key)
+        if not record:
+            print("desktop was never opened", file=sys.stderr)
+            return 1
+        print(json.dumps(record, sort_keys=True))
+        return 0
+    if len(argv) >= 2 and argv[1] == "file":
+        return run_file(argv)
+    if len(argv) >= 2 and argv[1] == "command":
+        return run_command(argv)
     if len(argv) != 3 or argv[1] != "ensure":
         print("usage: desktop_supervisor.py ensure <user-key>", file=sys.stderr)
         return 2
@@ -690,6 +723,304 @@ def allocate_display(users):
     raise SystemExit("no free desktop display")
 
 
+# Login files copied between the master profile and a screen's working copy.
+# Chromium keeps these under Default/. The rest of a screen's copy (open
+# tabs) stays on that screen. Cookie values are never written to the record
+# or to a log line.
+SCREEN_LOGIN_REL = (
+    Path("Default") / "Cookies",
+    Path("Default") / "Local Storage",
+    Path("Default") / "Login Data",
+)
+PROFILE_LOCK_NAMES = ("SingletonLock", "SingletonCookie", "SingletonSocket")
+
+
+def user_key_of(key):
+    """The 16-hex owner of this screen. A bot key belongs to that owner.
+
+    Empty when this container's owner is set and the key is someone else.
+    """
+    owner = owner_key()
+    if is_bot_key(key, owner or None):
+        return owner or key[:16]
+    if valid_key(key) and len(key) == 16:
+        if owner and key != owner:
+            return ""
+        return key
+    return ""
+
+
+def master_profile(userkey):
+    """This user's one Chrome profile. Chrome is not pointed at it."""
+    return ROOT / userkey / "profile"
+
+
+def screen_profile(userkey, display):
+    """The working copy one screen opens. Two displays never share it."""
+    return ROOT / userkey / "screens" / str(int(display)) / "profile"
+
+
+def screen_login_record(userkey, display):
+    """Clone and write-back record. It sits beside the working copy, not inside it."""
+    return ROOT / userkey / "screens" / str(int(display)) / "login-record.json"
+
+
+def _display_number(display):
+    try:
+        if isinstance(display, str):
+            display = display.strip().lstrip(":")
+        number = int(display)
+    except (TypeError, ValueError):
+        return 0
+    if number < DISPLAY_MIN or number > DISPLAY_MAX:
+        return 0
+    return number
+
+
+def display_of(key):
+    """The display supervisor stored for this key, or :20 for the owner."""
+    entry = (load_registry().get("users", {}) or {}).get(key) or {}
+    number = _display_number(entry.get("display") or 0)
+    if number:
+        return number
+    if is_bot_key(key):
+        return 0
+    return DISPLAY_MIN
+
+
+def _same_path(left, right):
+    try:
+        return Path(left).resolve() == Path(right).resolve()
+    except OSError:
+        return Path(left) == Path(right)
+
+
+def profile_path_allowed(userkey, path):
+    """True when path stays under this user's /desktops/<userkey> tree."""
+    if not (valid_key(userkey) and len(userkey) == 16):
+        return False
+    root = ROOT / userkey
+    try:
+        target = Path(path).resolve()
+        base = root.resolve()
+    except OSError:
+        return False
+    try:
+        target.relative_to(base)
+    except ValueError:
+        return False
+    return True
+
+
+def profile_for(key, display=None):
+    """Working copy Chrome opens for this screen. Never the master."""
+    user = user_key_of(key)
+    if not user:
+        return None
+    number = _display_number(display if display is not None else display_of(key))
+    if not number:
+        return None
+    path = screen_profile(user, number)
+    if not profile_path_allowed(user, path) or _same_path(path, master_profile(user)):
+        return None
+    return path
+
+
+def profiles_of(key, display=None):
+    """Profiles whose browser means this screen is still up.
+
+    The working copy is first. The master is included so a browser still
+    open on the pre-working-copy path counts, and a second browser is not
+    started on top of it. The master's lock is not cleared here.
+    """
+    found = []
+    work = profile_for(key, display)
+    if work is not None:
+        found.append(work)
+    user = user_key_of(key)
+    if user:
+        master = master_profile(user)
+        if not any(_same_path(master, item) for item in found):
+            found.append(master)
+    legacy = ROOT / key / "profile"
+    if not any(_same_path(legacy, item) for item in found):
+        found.append(legacy)
+    return found
+
+
+def _chmod_private(path):
+    try:
+        os.chmod(str(path), 0o700)
+    except OSError:
+        pass
+
+
+def _ignore_profile_locks(directory, names):
+    """Skip Chromium's singleton files and symlinks while cloning."""
+    skipped = []
+    for name in names:
+        if name in PROFILE_LOCK_NAMES:
+            skipped.append(name)
+            continue
+        try:
+            if (Path(directory) / name).is_symlink():
+                skipped.append(name)
+        except OSError:
+            skipped.append(name)
+    return skipped
+
+
+def _copy_login_path(src, dst, userkey):
+    """Copy one login file or directory. Symlinks are not followed."""
+    src = Path(src)
+    dst = Path(dst)
+    if not profile_path_allowed(userkey, dst):
+        return False
+    try:
+        if src.is_symlink() or (dst.exists() and dst.is_symlink()):
+            return False
+    except OSError:
+        return False
+    if src.is_dir():
+        if dst.exists():
+            shutil.rmtree(dst)
+        shutil.copytree(str(src), str(dst), ignore=_ignore_profile_locks)
+        return True
+    if src.is_file():
+        dst.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        shutil.copy2(str(src), str(dst))
+        return True
+    return False
+
+
+def _note_login_record(userkey, display, cloned, wrote_back):
+    """Record that this working copy was cloned from, or written back to, the master.
+
+    The file stores paths and the two flags only. It does not store cookies.
+    """
+    path = screen_login_record(userkey, display)
+    previous = {}
+    try:
+        current = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(current, dict):
+            previous = current
+    except (OSError, ValueError):
+        previous = {}
+    record = {
+        "master": str(master_profile(userkey)),
+        "work": str(screen_profile(userkey, display)),
+        "cloned_from_master": True if cloned else bool(previous.get("cloned_from_master")),
+        "wrote_back": True if wrote_back else bool(previous.get("wrote_back")),
+    }
+    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+    os.replace(str(temporary), str(path))
+
+
+def prepare_screen_profile(key, display):
+    """Clone the master into this screen's working copy.
+
+    An already-open screen is left as it is: it re-reads the master on its
+    next start, not while its Chrome is running. The master's lock is not
+    removed, and Chrome is not given the master's path.
+    """
+    user = user_key_of(key)
+    if not user:
+        raise SystemExit("desktop data belongs to another user")
+    number = _display_number(display)
+    if not number:
+        raise SystemExit("no free desktop display")
+    master = master_profile(user)
+    work = screen_profile(user, number)
+    if not profile_path_allowed(user, master) or not profile_path_allowed(user, work) or _same_path(master, work):
+        raise SystemExit("desktop data belongs to another user")
+    user_home = ROOT / user
+    user_home.mkdir(mode=0o700, exist_ok=True)
+    master.mkdir(mode=0o700, exist_ok=True)
+    _chmod_private(user_home)
+    _chmod_private(master)
+    if browser_pid(master):
+        raise SystemExit("master profile is open")
+    screens = user_home / "screens"
+    screen_dir = screens / str(number)
+    screen_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    _chmod_private(screens)
+    _chmod_private(screen_dir)
+    if work.exists() and browser_pid(work):
+        return work
+    if work.exists():
+        for rel in SCREEN_LOGIN_REL:
+            src = master / rel
+            if src.exists() and not src.is_symlink():
+                _copy_login_path(src, work / rel, user)
+    else:
+        shutil.copytree(str(master), str(work), ignore=_ignore_profile_locks)
+    _chmod_private(work)
+    _note_login_record(user, number, True, False)
+    return work
+
+
+def writeback_screen_login(key, display=None):
+    """Copy this screen's login files onto the master after its Chrome is gone.
+
+    Cookies, Local Storage, and Login Data only. A later screen's write
+    replaces those files in the master. Nothing is copied while this
+    screen's Chrome, or a Chrome on the master, is still running, and the
+    master's lock is not cleared.
+    """
+    user = user_key_of(key)
+    if not user:
+        return False
+    number = _display_number(display if display is not None else display_of(key))
+    if not number:
+        return False
+    work = screen_profile(user, number)
+    master = master_profile(user)
+    if not profile_path_allowed(user, work) or not profile_path_allowed(user, master):
+        return False
+    if browser_pid(work) or browser_pid(master):
+        return False
+    if not work.exists():
+        return False
+    master.mkdir(mode=0o700, exist_ok=True)
+    _chmod_private(master)
+    copied = False
+    for rel in SCREEN_LOGIN_REL:
+        src = work / rel
+        if src.exists() and not src.is_symlink():
+            if _copy_login_path(src, master / rel, user):
+                copied = True
+    if copied:
+        _note_login_record(user, number, False, True)
+    return copied
+
+
+def _is_master_profile(key, profile):
+    user = user_key_of(key)
+    if not user or profile is None:
+        return False
+    return _same_path(profile, master_profile(user))
+
+
+def flush_target(key):
+    """The browser this flush quits, and the profile it has open.
+
+    Prefer this screen's working copy. A browser still open on the master
+    is quit so its cookies land there; that path is not then overwritten
+    from a working copy, and its lock is not cleared.
+    """
+    recorded = read_pids(key).get("chromium")
+    for profile in profiles_of(key):
+        pid = browser_pid(profile)
+        if pid_alive(pid):
+            return profile, pid
+    work = profile_for(key)
+    if work is not None:
+        return work, recorded
+    return ROOT / key / "profile", recorded
+
+
 def browser_pid(profile):
     """The browser process that has this profile open.
 
@@ -716,15 +1047,18 @@ def browser_pid(profile):
 
 
 def desktop_running(key):
-    """True only while this profile's browser is still the one that is running.
+    """True only while this screen's browser is still the one that is running.
 
     A recorded pid can be reused by an unrelated process after Chromium exits.
     Treating that as the desktop would skip starting the browser, so the
     website login stays in the profile and the agent never reaches it.
+    A browser still open on the master profile counts too, so a second
+    browser is not started against it.
     """
-    profile = ROOT / key / "profile"
-    if browser_pid(profile):
-        return True
+    profiles = profiles_of(key)
+    for profile in profiles:
+        if browser_pid(profile):
+            return True
     pid = read_pids(key).get("chromium")
     if not pid_alive(pid):
         return False
@@ -732,8 +1066,12 @@ def desktop_running(key):
         cmd = (PROC / str(int(pid)) / "cmdline").read_bytes()
     except (OSError, TypeError, ValueError):
         return True
-    needle = b"--user-data-dir=" + str(profile).encode()
-    return needle in cmd and b"--type=" not in cmd
+    if b"--type=" in cmd:
+        return False
+    for profile in profiles:
+        if b"--user-data-dir=" + str(profile).encode() in cmd:
+            return True
+    return False
 
 
 def desktop_env(display):
@@ -836,12 +1174,12 @@ def browser_proxy_flags():
     return ["--proxy-server=http://%s" % host, "--proxy-bypass-list=%s" % ";".join(rules)]
 
 
-def start_browser(profile, env, log, chrome_port, bot=False):
+def start_browser(key, profile, env, log, chrome_port, bot=False):
     env = dict(env)
     # /etc/chromium.d/zz-maclaw-shared-browser sends every other chromium
     # start to open_shared_browser. This is the start it must let through.
     env[SUPERVISED_BROWSER_ENV] = "1"
-    log_signin(Path(profile).parent.name, "start: before browser", browser=False)
+    log_signin(key, "start: before browser", browser=False)
     spawn(browser_argv(profile, chrome_port, bot), env, log)
     # The launcher pid can exit. Only the process that still has this profile
     # open is the browser with the website login.
@@ -913,11 +1251,11 @@ def write_dock_browser_entry(profile):
 def start_desktop(key, display):
     home = ROOT / key
     home.mkdir(mode=0o700, exist_ok=True)
-    profile = home / "profile"
-    profile.mkdir(mode=0o700, exist_ok=True)
-    # The previous browser is already gone. A leftover lock would make this
-    # start open a new empty profile and drop the website login. A leftover
-    # flush flag would make the next stop skip writing this new login.
+    profile = prepare_screen_profile(key, display)
+    # The previous browser is already gone. A leftover lock on this screen's
+    # working copy would make this start open a new empty profile and drop
+    # the website login. A leftover flush flag would make the next stop skip
+    # writing this new login. The master profile's lock is left in place.
     clear_flush_flag(key)
     release_profile_lock(profile)
     keep_website_login(profile)
@@ -928,7 +1266,7 @@ def start_desktop(key, display):
         write_dock_browser_entry(profile)
     except OSError:
         pass
-    chrome_port = 18000 + display
+    chrome_port = chrome_cdp_port(display)
     # What actually runs in this container, not only what pids.json says. An
     # earlier start that was cut off (desktopd restarted, the request was
     # dropped, Chromium was slow) leaves its X server, session and VNC running
@@ -977,7 +1315,7 @@ def start_desktop(key, display):
     # Recorded before the browser starts: a start that stops at the browser
     # still leaves a session the next ensure reuses instead of duplicating.
     write_pids(key, pids)
-    start_browser(profile, env, log, chrome_port)
+    start_browser(key, profile, env, log, chrome_port)
     try:
         restore_page_login(key)
     except (OSError, ValueError, TypeError):
@@ -1001,7 +1339,7 @@ def restart_browser(key, display, profile, env, log, chrome_port, pids):
     if shutil.which("startxfce4"):
         env.setdefault("XDG_SESSION_TYPE", "x11")
         env.setdefault("XDG_CURRENT_DESKTOP", "XFCE")
-    start_browser(profile, env, log, chrome_port)
+    start_browser(key, profile, env, log, chrome_port)
     try:
         restore_page_login(key)
     except (OSError, ValueError, TypeError):
@@ -1134,8 +1472,13 @@ def google_signin_on_disk(key):
     """How many Google sign-in cookies the profile's cookie file holds, or -1."""
     try:
         import sqlite3
-        db = ROOT / key / "profile" / "Default" / "Cookies"
-        if not db.exists():
+        db = None
+        for profile in profiles_of(key):
+            candidate = profile / "Default" / "Cookies"
+            if candidate.exists() and not candidate.is_symlink():
+                db = candidate
+                break
+        if db is None or not db.exists():
             return 0
         # The running browser holds the file locked; immutable reads it anyway.
         conn = sqlite3.connect("file:%s?mode=ro&immutable=1" % quote(str(db)), uri=True, timeout=2)
@@ -1222,6 +1565,258 @@ def clear_flush_flag(key):
         pass
 
 
+def chrome_cdp_port(display):
+    """The CDP port Chromium binds for this display.
+
+    This is the only place that port is chosen. The file service reports
+    the address through screen_record. Other code calls this function.
+    """
+    number = _display_number(display)
+    if not number:
+        return 0
+    return 18000 + number
+
+
+def screen_record(key):
+    """One screen, as the file service reports it.
+
+    Display, the CDP address Chromium binds, the working-copy profile, and
+    the gate token already stored for this key. It does not start Chrome,
+    clone the master, write the token, or refresh last_used.
+    """
+    entry = (load_registry().get("users", {}) or {}).get(key) or {}
+    if not isinstance(entry, dict):
+        return None
+    number = _display_number(entry.get("display") or 0)
+    if not number:
+        return None
+    user = user_key_of(key)
+    if not user:
+        return None
+    profile = screen_profile(user, number)
+    master = master_profile(user)
+    if not profile_path_allowed(user, profile) or _same_path(profile, master):
+        return None
+    port = chrome_cdp_port(number)
+    token = entry.get("token") or ""
+    if not port or not token or not valid_key(token):
+        return None
+    return {
+        "display": ":%d" % number,
+        "cdp": "http://127.0.0.1:%d" % port,
+        "profile": str(profile),
+        "token": token,
+    }
+
+
+# HOME matches corelib/desktop.ContainerHome. container_path matches
+# ContainerPath, including absolute paths outside that home.
+FILE_HOME = "/home/desktop"
+FILE_OPS = ("read", "write", "list", "bytes")
+
+
+def container_path(raw):
+    """The container path ContainerPath would hand to a file call."""
+    if not isinstance(raw, str):
+        raise ValueError("path is invalid")
+    raw = raw.strip()
+    if raw == "" or any(ch in raw for ch in "\r\n\x00\\") or ":" in raw:
+        raise ValueError("path is invalid")
+    if raw == "~":
+        raw = FILE_HOME
+    elif raw.startswith("~/"):
+        raw = FILE_HOME + "/" + raw[2:]
+    elif not raw.startswith("/"):
+        raw = FILE_HOME + "/" + raw
+    cleaned = posixpath.normpath(raw)
+    if not cleaned.startswith("/") or ":" in cleaned or len(cleaned) > 4096:
+        raise ValueError("path is invalid")
+    return cleaned
+
+
+def file_list_command(path):
+    """Directory listing stays ls -la. The host does not assemble it."""
+    return ["ls", "-la", "--", path]
+
+
+def file_read(path, limit):
+    with open(path, "rb") as handle:
+        return handle.read(limit)
+
+
+def file_write(path, body):
+    parent = posixpath.dirname(path)
+    if parent not in ("", "/"):
+        os.makedirs(parent, exist_ok=True)
+    with open(path, "wb") as handle:
+        handle.write(body)
+    return b""
+
+
+def file_bytes(path, limit):
+    return base64.b64encode(file_read(path, limit))
+
+
+def file_list(path):
+    proc = subprocess.run(file_list_command(path))
+    return proc.returncode
+
+
+def run_file(argv):
+    """Read, write, list, or return bytes for one container path.
+
+    This does not start Chrome, clone a profile, write the registry, or
+    refresh last_used. A bad path is refused before any file is opened.
+    """
+    usage = "usage: desktop_supervisor.py file read|write|list|bytes <path> [limit]"
+    if len(argv) < 4 or argv[1] != "file" or argv[2] not in FILE_OPS:
+        print(usage, file=sys.stderr)
+        return 2
+    op = argv[2]
+    try:
+        path = container_path(argv[3])
+    except ValueError:
+        print("path is invalid", file=sys.stderr)
+        return 2
+    limit = None
+    if op in ("read", "bytes"):
+        if len(argv) != 5:
+            print(usage, file=sys.stderr)
+            return 2
+        try:
+            limit = int(argv[4])
+        except (TypeError, ValueError):
+            print("path is invalid", file=sys.stderr)
+            return 2
+        if limit < 1:
+            print("path is invalid", file=sys.stderr)
+            return 2
+    elif len(argv) != 4:
+        print(usage, file=sys.stderr)
+        return 2
+    try:
+        if op == "list":
+            return file_list(path)
+        if op == "write":
+            payload = file_write(path, sys.stdin.buffer.read())
+        elif op == "bytes":
+            payload = file_bytes(path, limit)
+        else:
+            payload = file_read(path, limit)
+    except OSError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    if payload:
+        sys.stdout.buffer.write(payload)
+    return 0
+
+
+COMMAND_OPS = ("shell", "click", "shot", "ctl")
+COMMAND_DISPLAY = re.compile(r"^:[0-9]{1,3}$")
+SHELL_MAX = 16 << 10
+CLICK_MAX = 128
+CTL_BODY_MAX = 96 << 10
+
+
+def command_request(encoded):
+    try:
+        raw = base64.b64decode(encoded.encode("ascii"), validate=True)
+    except (ValueError, UnicodeError) as exc:
+        raise ValueError("command is invalid") from exc
+    try:
+        req = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeError) as exc:
+        raise ValueError("command is invalid") from exc
+    if not isinstance(req, dict):
+        raise ValueError("command is invalid")
+    return req
+
+
+def command_display(value, required):
+    if value is None or value == "":
+        if required:
+            raise ValueError("display is invalid")
+        return ""
+    if not isinstance(value, str) or COMMAND_DISPLAY.match(value) is None:
+        raise ValueError("display is invalid")
+    return value
+
+
+def command_plan(req):
+    """The process the command service runs. It does not start Chrome."""
+    op = req.get("op")
+    if op not in COMMAND_OPS:
+        raise ValueError("command is invalid")
+    if op == "ctl":
+        body = req.get("body")
+        if not isinstance(body, str) or body == "" or len(body) > CTL_BODY_MAX:
+            raise ValueError("command is invalid")
+        return {"op": "ctl", "body": body, "display": command_display(req.get("display"), True)}
+    display = command_display(req.get("display"), op != "shell")
+    env = {}
+    cwd = None
+    if op == "shell":
+        command = req.get("command")
+        if not isinstance(command, str) or command.strip() == "" or "\x00" in command or len(command) > SHELL_MAX:
+            raise ValueError("command is empty")
+        argv = ["bash", "-c", command]
+        env["HOME"] = FILE_HOME
+        cwd = FILE_HOME
+        if display:
+            env["DISPLAY"] = display
+    elif op == "click":
+        args = req.get("args")
+        if not isinstance(args, list) or not args or len(args) > CLICK_MAX:
+            raise ValueError("app command is invalid")
+        argv = ["xdotool"]
+        for arg in args:
+            if not isinstance(arg, str) or arg.strip() == "" or "\n" in arg or "\x00" in arg:
+                raise ValueError("app command is invalid")
+            argv.append(arg)
+        env["DISPLAY"] = display
+    else:
+        script = req.get("script")
+        if not isinstance(script, str) or script == "" or "\x00" in script:
+            raise ValueError("command is invalid")
+        argv = ["sh", "-c", script]
+        env["DISPLAY"] = display
+    return {"op": op, "argv": argv, "env": env, "cwd": cwd}
+
+
+def run_command(argv):
+    """Run one shell, screenshot, click, or ctl request.
+
+    ctl keeps the old wrapper: its stderr is discarded and the process
+    exits 0 so the caller can read the JSON whether or not the op worked.
+    This does not start Chrome, clone a profile, or write the registry.
+    """
+    if len(argv) != 3 or argv[1] != "command":
+        print("usage: desktop_supervisor.py command <request>", file=sys.stderr)
+        return 2
+    try:
+        plan = command_plan(command_request(argv[2]))
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+    if plan["op"] == "ctl":
+        os.environ["DISPLAY"] = plan["display"]
+        saved = sys.stderr
+        devnull = open(os.devnull, "w")
+        sys.stderr = devnull
+        try:
+            run_ctl(plan["body"])
+        except Exception:
+            pass
+        finally:
+            sys.stderr = saved
+            devnull.close()
+        return 0
+    child = os.environ.copy()
+    child.update(plan["env"])
+    proc = subprocess.run(plan["argv"], cwd=plan["cwd"], env=child)
+    return proc.returncode
+
+
 def chrome_debug_port(key):
     registry = load_registry()
     users = registry.get("users") or {}
@@ -1234,7 +1829,7 @@ def chrome_debug_port(key):
             display = DISPLAY_MIN
     if display < DISPLAY_MIN or display > DISPLAY_MAX:
         display = DISPLAY_MIN
-    return 18000 + display
+    return chrome_cdp_port(display)
 
 
 def session_cookie(cookie):
@@ -2095,10 +2690,16 @@ def flush_browser(key):
 
 
 def flush_browser_locked(key):
-    profile = ROOT / key / "profile"
-    pid = browser_pid(profile) or read_pids(key).get("chromium")
+    profile, pid = flush_target(key)
+    if profile is None:
+        clear_flush_flag(key)
+        return 0
     if not pid_alive(pid):
         clear_flush_flag(key)
+        # Cookies are already in the master when that is the profile that
+        # just exited. Copying a working copy over it would replace them.
+        if not _is_master_profile(key, profile):
+            writeback_screen_login(key)
         return 0
     owned = claim_flush(key)
     if not owned and flush_owner_gone(key):
@@ -2119,6 +2720,8 @@ def flush_browser_locked(key):
             clear_flush_flag(key)
             if owned:
                 log_signin(key, "stop: browser exited", browser=False)
+            if not _is_master_profile(key, profile):
+                writeback_screen_login(key)
             return 0
         # The first flush died before it could signal. This stop still has
         # to write the website login into the same profile.
@@ -2349,7 +2952,7 @@ def shared_browser_key(env=None):
         display = 0
     users = load_registry().get("users", {})
     owner = env.get("MACLAW_DESKTOP_KEY", "").strip()
-    # A bot display's browser is that bot's profile, never the owner's.
+    # A bot display joins that screen's working copy, not the owner's screen.
     if display and display != DISPLAY_MIN:
         for key, entry in users.items():
             try:
@@ -2429,12 +3032,17 @@ def open_shared_browser(args):
         return 1
     entry = load_registry().get("users", {}).get(key) or {}
     display = int(entry.get("display") or DISPLAY_MIN)
-    profile = ROOT / key / "profile"
+    profile = profile_for(key, display)
+    if profile is None:
+        print("maclaw-browser: this display has no MaClaw desktop", file=sys.stderr)
+        return 1
     started = False
-    if not browser_pid(profile):
+    opened = next((item for item in profiles_of(key, display) if browser_pid(item)), None)
+    if opened is None:
         with desktop_lock():
             ensure(key)
         started = True
+        opened = profile
     urls = [arg for arg in args if arg and not arg.startswith("-")]
     if not urls and activate_browser_window(display, 5.0 if started else 1.0):
         return 0
@@ -2442,7 +3050,7 @@ def open_shared_browser(args):
         return 0
     env = os.environ.copy()
     env[SUPERVISED_BROWSER_ENV] = "1"
-    argv = [browser_bin(), "--no-sandbox", "--user-data-dir=%s" % profile, "--profile-directory=Default"] + list(args)
+    argv = [browser_bin(), "--no-sandbox", "--user-data-dir=%s" % opened, "--profile-directory=Default"] + list(args)
     os.execvpe(argv[0], argv, env)
     return 0
 
@@ -2653,7 +3261,11 @@ def current_pids(key, display):
         elif part in pids:
             del pids[part]
             changed = True
-    browser = browser_pid(ROOT / key / "profile")
+    browser = 0
+    for profile in profiles_of(key, display):
+        browser = browser_pid(profile)
+        if browser:
+            break
     if browser and pids.get("chromium") != browser:
         pids["chromium"] = browser
         changed = True
@@ -2701,7 +3313,7 @@ def ensure_proxy(key, display):
     home = ROOT / key
     home.mkdir(mode=0o700, exist_ok=True)
     log = open(home / "desktop.log", "ab")
-    chrome_port = 18000 + display
+    chrome_port = chrome_cdp_port(display)
     proxy = spawn([sys.executable, __file__, "gate", str(proxy_port(display)), str(chrome_port), token], os.environ.copy(), log)
     pids["proxy"] = proxy.pid
     pids["proxy_code"] = supervisor_code()
@@ -2885,11 +3497,29 @@ def reap(users, current):
         stop_desktop(running.pop(0))
 
 
+def activity_stamp(key):
+    """Newest CDP or noVNC activity file, in seconds. Missing files are ignored."""
+    last = 0
+    for name in ("activity", "human_input"):
+        try:
+            last = max(last, int((ROOT / key / name).stat().st_mtime))
+        except OSError:
+            pass
+    return last
+
+
 def print_idle(key):
-    """One JSON line with how long this user's desktop has been idle."""
+    """One JSON line with how long this user's desktop has been idle.
+
+    ensure() still writes last_used. A CDP or noVNC connection touches the
+    activity file and counts here too. The idle limit is not changed.
+    """
     registry = load_registry()
     entry = (registry.get("users", {}) or {}).get(key) or {}
     last_used = int(entry.get("last_used") or 0)
+    stamp = activity_stamp(key)
+    if stamp > last_used:
+        last_used = stamp
     print(json.dumps({
         "running": desktop_running(key),
         "idle_seconds": max(0, int(time.time()) - last_used) if last_used else 0,
@@ -2902,8 +3532,7 @@ def stop_desktop(key):
     # Write cookies and tabs before the process is gone. The next start of
     # this same profile then still has the website login.
     flush_browser(key)
-    profile = ROOT / key / "profile"
-    browser_gone = not browser_pid(profile)
+    browser_gone = not any(browser_pid(profile) for profile in profiles_of(key))
     pid_file = ROOT / key / "pids.json"
     if not pid_file.exists():
         return
@@ -2979,6 +3608,17 @@ def pipe(left, right, watch=None):
             pass
 
 
+def note_gate_activity():
+    """An owner CDP or noVNC connection counts as activity.
+
+    Bot connections already touch their own activity file. The token is not
+    written into the file or the log. print_idle reads the mtime.
+    """
+    key = owner_key()
+    if key:
+        touch_bot_file(key, "activity")
+
+
 def serve_gate(listen_port, target_port, token):
     """Token-checked TCP gate for the container's published browser ports.
 
@@ -3030,6 +3670,8 @@ def serve_gate(listen_port, target_port, token):
             if bot:
                 touch_bot_file(bot, "activity")
                 watch = BotTraffic(bot, sniff_input=listen_port == VNC_GATE_PORT)
+            else:
+                note_gate_activity()
             threading.Thread(target=pipe, args=(client, remote, watch), daemon=True).start()
             threading.Thread(target=pipe, args=(remote, client), daemon=True).start()
         except OSError:
@@ -3103,7 +3745,7 @@ def request_authorized(head, token):
 # Per-bot displays (desktop_mode=isolated).
 #
 # ensure <owner+bot> starts a light display for one bot: Xvfb, a session bus,
-# xfwm4 and that bot's own Chromium profile with the memory-saving flags. The
+# xfwm4 and a working copy of the owner's master profile, with the memory-saving flags. The
 # person watches it through the owner's noVNC gate (6080) with the bot's
 # token; x11vnc and websockify for that display start only on the first
 # view. The bot's CDP goes through the owner's CDP gate (19020) the same way.
@@ -3224,14 +3866,15 @@ def evict_bots(current):
 def start_bot_desktop(key, display):
     home = ROOT / key
     home.mkdir(mode=0o700, exist_ok=True)
-    profile = home / "profile"
-    profile.mkdir(mode=0o700, exist_ok=True)
+    # The bot does not get its own profile. Chrome opens a working copy of
+    # the owner's master, and that copy is what gets written back.
+    profile = prepare_screen_profile(key, display)
     clear_flush_flag(key)
     release_profile_lock(profile)
     keep_website_login(profile)
     log = open(home / "desktop.log", "ab")
     env = desktop_env(display)
-    chrome_port = 18000 + display
+    chrome_port = chrome_cdp_port(display)
     pids = current_pids(key, display)
     if not (pid_alive(pids.get("xvfb")) and Path("/tmp/.X11-unix/X%d" % display).exists()):
         for name in ("vnc", "x11vnc", "fcitx", "panel", "panelbus", "fluxbox", "dbus", "xvfb"):
@@ -3256,7 +3899,7 @@ def start_bot_desktop(key, display):
         pids["fluxbox"] = spawn(wm, env, log).pid
     write_pids(key, pids)
     ensure_bot_panel(key, display, pids, log)
-    start_browser(profile, env, log, chrome_port, bot=True)
+    start_browser(key, profile, env, log, chrome_port, bot=True)
     try:
         restore_page_login(key)
     except (OSError, ValueError, TypeError):
@@ -3437,7 +4080,10 @@ def bot_app_env_script(display):
 
 def write_bot_dock(key, display, cfg):
     """Settings, launchers and desktop entries of one bot display's dock."""
-    profile = ROOT / key / "profile"
+    user = user_key_of(key)
+    if not user:
+        return
+    profile = screen_profile(user, display)
     lo = ROOT / key / "libreoffice"
     run = cfg / "run"
     write_if_changed(run, bot_app_env_script(display), 0o700)
@@ -3562,7 +4208,7 @@ def ensure_gates():
     code = supervisor_code()
     changed = False
     for name, port, target in (
-        ("proxy", proxy_port(DISPLAY_MIN), 18000 + DISPLAY_MIN),
+        ("proxy", proxy_port(DISPLAY_MIN), chrome_cdp_port(DISPLAY_MIN)),
         ("vgate", VNC_GATE_PORT, VNC_WEBSOCKIFY_PORT),
     ):
         if pid_alive(pids.get(name)) and pids.get(name + "_code") == code:
@@ -3647,7 +4293,8 @@ def bot_gate_route(listen_port, credential):
             port = ensure_bot_vnc(key, display)
             reap_children()
             return (port, key) if port else None
-        return (18000 + display, key)
+        port = chrome_cdp_port(display)
+        return (port, key) if port else None
     return None
 
 
@@ -3817,6 +4464,13 @@ def ctl_takeover_end(request):
     except OSError:
         pass
     touch_bot_file(key, "activity", force=True)
+    # Login handoff ended. The same flush stop and sleep use writes cookies
+    # into the working copy, then back to the master. A browser still on the
+    # master is quit into the master and is not overwritten from a copy.
+    try:
+        flush_browser(key)
+    except OSError:
+        pass
     return {"ok": True, "takeover": False}
 
 

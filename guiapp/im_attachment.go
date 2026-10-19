@@ -49,16 +49,34 @@ func buildUserContentWithLocalStaging(userText string, attachments []MessageAtta
 // helper behavior for callers that have not prepared those attachments.
 func buildUserContentWithPreparedLocalAttachments(userText string, attachments []MessageAttachment, protocol string, supportsVision bool, app *App, onProgress func(string), allowLocalStaging bool, localImagesAlreadyPrepared bool, contextTokens int) interface{} {
 	// Always expand GUI file-picker document paths (no-op when already expanded / no marker).
-	userText = agent.ExpandUserSelectedFilePathsWithContext(userText, contextTokens)
-	// The desktop composer currently sends selected files as paths in text, not
-	// as MessageAttachment values. Materialize selected images here so a vision
-	// provider receives actual image blocks instead of a path that would tempt
-	// the model to call OCR/read_file first.
-	if supportsVision && allowLocalStaging && !localImagesAlreadyPrepared {
+	// A vision model gets picture-PDF page images. Text-only models OCR those
+	// pages. Group turns that cannot read local files stay on the OCR transcript.
+	attachPicturePDFPages := supportsVision && allowLocalStaging
+	// Count picker photos before the picture-PDF transcript is written, so the
+	// transcript only marks pages that still fit in the vision upload budget.
+	if attachPicturePDFPages && !localImagesAlreadyPrepared {
 		localImages, notes := selectedLocalImageAttachments(userText)
 		attachments = append(attachments, localImages...)
 		if len(notes) > 0 {
 			userText = strings.TrimSpace(userText + "\n\n" + strings.Join(notes, "\n"))
+		}
+	}
+	if attachPicturePDFPages {
+		usedImageBytes := imImageAttachmentBytes(attachments)
+		userText = agent.ExpandUserSelectedFilePathsForVisionBudget(userText, contextTokens, usedImageBytes)
+		pages, notes := agent.SelectedImageOnlyPDFPageAttachments(userText, usedImageBytes)
+		attachments = append(attachments, pages...)
+		if len(notes) > 0 {
+			userText = strings.TrimSpace(userText + "\n\n" + strings.Join(notes, "\n"))
+		}
+	} else {
+		userText = agent.ExpandUserSelectedFilePathsWithContext(userText, contextTokens)
+		if supportsVision && allowLocalStaging && !localImagesAlreadyPrepared {
+			localImages, notes := selectedLocalImageAttachments(userText)
+			attachments = append(attachments, localImages...)
+			if len(notes) > 0 {
+				userText = strings.TrimSpace(userText + "\n\n" + strings.Join(notes, "\n"))
+			}
 		}
 	}
 	if len(attachments) == 0 {
@@ -168,15 +186,18 @@ func buildUserContentWithPreparedLocalAttachments(userText string, attachments [
 		return fullText
 	}
 
-	// This host-authored note is intentionally placed alongside the image
-	// blocks. It keeps the agent from treating a local file path as an
-	// instruction to read raw JPEG bytes, and makes OCR a precision fallback
-	// rather than the default first step for a vision-capable model.
+	// Raster images still get the generic note: look at the image before
+	// tools, and do not read_file the bytes. A picture-PDF transcript already
+	// states whether those pages are attached or still need OCR. This note is
+	// appended after that transcript, so leaving it in would invite another
+	// OCR pass on a scan the model can already see.
 	const visionFirstInstruction = "[Host note: image(s) are attached as vision input. Analyze the image directly before calling tools. Use OCR only for exact transcription, tables, or when direct visual reading is insufficient; do not use read_file to inspect image bytes.]"
-	if fullText != "" {
-		fullText += "\n\n"
+	if !agent.PicturePDFTranscriptOwnsVisionPolicy(fullText) {
+		if fullText != "" {
+			fullText += "\n\n"
+		}
+		fullText += visionFirstInstruction
 	}
-	fullText += visionFirstInstruction
 
 	// Build multimodal content blocks for vision API.
 	if protocol == "anthropic" {
@@ -298,6 +319,19 @@ func saveAttachmentToLocal(att *MessageAttachment) (string, error) {
 // isImageMime returns true if the MIME type is an image type.
 func isImageMime(mime string) bool {
 	return strings.HasPrefix(strings.ToLower(mime), "image/")
+}
+
+func imImageAttachmentBytes(attachments []MessageAttachment) int64 {
+	var total int64
+	for _, att := range attachments {
+		if att.Size <= 0 {
+			continue
+		}
+		if isImageMime(att.MimeType) || strings.EqualFold(att.Type, "image") {
+			total += att.Size
+		}
+	}
+	return total
 }
 
 // ---------------------------------------------------------------------------

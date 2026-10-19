@@ -10,7 +10,8 @@ const promptStableCacheKeyPrefix = "sha256:"
 const promptStableCacheKeyLength = 12
 
 // StableCacheKey returns a short hash of the stable prompt segment. It is meant
-// for logs and metadata so prompt-cache prefix churn can be spotted quickly.
+// for logs and metadata when MACLAW_DEBUG_PROMPT_BUNDLE=1. It is not the
+// prefix pin: alerts use PromptPrefixHash on the four sent segments.
 func (p PromptBundle) StableCacheKey() string {
 	stable := strings.TrimSpace(p.StableSystemPrompt)
 	if stable == "" {

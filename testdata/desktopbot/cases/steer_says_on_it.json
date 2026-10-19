@@ -1,0 +1,12 @@
+{
+  "id": "steer_says_on_it",
+  "origin": "person",
+  "surface": "desktop",
+  "steer": true,
+  "lang": "zh-Hans",
+  "prose": "安排改成周四，并且把整段计划再贴一遍。",
+  "expect_text": "在办",
+  "expect_kind": "final",
+  "expect_count": 1,
+  "forbid": ["安排"]
+}

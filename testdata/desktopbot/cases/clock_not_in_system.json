@@ -1,0 +1,6 @@
+{
+  "id": "clock_not_in_system",
+  "role": "background",
+  "source": "pr-2",
+  "forbid": ["时间:", "Current local time:", "当前时间:"]
+}

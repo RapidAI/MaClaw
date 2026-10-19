@@ -271,6 +271,84 @@ func TestOrderProviderRoutes_RouteModeCreditMultiplierUsesModelDefaultNotProvide
 	}
 }
 
+func TestDetectCapabilityNeedsSeesPictureBlocks(t *testing.T) {
+	body := map[string]any{
+		"tools": []any{map[string]any{"type": "function"}},
+		"messages": []any{map[string]any{
+			"role": "user",
+			"content": []any{
+				map[string]any{"type": "text", "text": "建议几个标题"},
+				map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/jpeg;base64,AA"}},
+			},
+		}},
+	}
+	needs := DetectCapabilityNeeds(body)
+	if needs["vision"] == 0 {
+		t.Fatalf("vision need = %#v", needs)
+	}
+	model := &DispatchModel{
+		Name: "official-mid",
+		ProviderRoutes: []DispatchProviderRoute{
+			{ProviderID: "text", Priority: 100, CapabilityTags: []string{"tools"}, OriginalIndex: 0},
+			{ProviderID: "vision", Priority: 1, CapabilityTags: []string{"tools", "vision"}, OriginalIndex: 1},
+		},
+	}
+	got := OrderProviderRoutes(body, model)
+	if len(got) != 2 || got[0].ProviderID != "vision" {
+		t.Fatalf("order = %+v, want the vision provider ahead of the higher-priority text provider", got)
+	}
+	plain := map[string]any{"tools": []any{map[string]any{"type": "function"}}}
+	if DetectCapabilityNeeds(plain)["vision"] != 0 {
+		t.Fatal("text tool call must not require vision")
+	}
+	plainOrder := OrderProviderRoutes(plain, model)
+	if len(plainOrder) != 2 || plainOrder[0].ProviderID != "text" {
+		t.Fatalf("text order = %+v, want the higher-priority text provider", plainOrder)
+	}
+}
+
+func TestOrderProviderRoutesPicturePDFOutranksDocumentText(t *testing.T) {
+	body := map[string]any{
+		"tools": []any{map[string]any{"type": "function"}},
+		"messages": []any{map[string]any{
+			"role": "user",
+			"content": []any{
+				map[string]any{"type": "text", "text": "建议几个标题 analyze\nC:\\paper.pdf"},
+				map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/jpeg;base64,AA"}},
+			},
+		}},
+	}
+	needs := DetectCapabilityNeeds(body)
+	if needs["vision"] == 0 || needs["document"] == 0 || needs["reasoning"] == 0 || needs["tools"] == 0 {
+		t.Fatalf("needs = %#v, want vision, document, reasoning, and tools", needs)
+	}
+	model := &DispatchModel{
+		Name: "official-mid",
+		ProviderRoutes: []DispatchProviderRoute{
+			{ProviderID: "text", Priority: 100, CapabilityTags: []string{"tools", "document", "reasoning"}, OriginalIndex: 0},
+			{ProviderID: "vision", Priority: 1, CapabilityTags: []string{"tools", "vision"}, OriginalIndex: 1},
+		},
+	}
+	scored := OrderScoredProviderRoutes(body, model)
+	if len(scored) != 2 || scored[0].Route.ProviderID != "vision" || scored[0].Score <= scored[1].Score {
+		t.Fatalf("scored = %+v, want the vision provider in a higher band than the document-tagged text provider", scored)
+	}
+	plain := map[string]any{
+		"tools": []any{map[string]any{"type": "function"}},
+		"messages": []any{map[string]any{
+			"role":    "user",
+			"content": "read C:\\paper.pdf",
+		}},
+	}
+	if DetectCapabilityNeeds(plain)["vision"] != 0 {
+		t.Fatal("a pdf path without an image block must not require vision")
+	}
+	plainOrder := OrderProviderRoutes(plain, model)
+	if len(plainOrder) != 2 || plainOrder[0].ProviderID != "text" {
+		t.Fatalf("text order = %+v, want the document-tagged provider when no page image is attached", plainOrder)
+	}
+}
+
 func TestDetectCapabilityNeeds_Tools(t *testing.T) {
 	body := map[string]any{
 		"tools": []any{map[string]any{"type": "function"}},

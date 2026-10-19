@@ -22,15 +22,18 @@
 
 import React from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
-import { renderContentWithCodeBlocks, type ChatMarkdownRenderOptions } from "./aiAssistantMarkdown";
-import { displayMathAfterLine, markdownFenceAfterLine } from "./aiAssistantMarkdownNormalize";
+import { isSplitTableRowLabel, renderContentWithCodeBlocks, type ChatMarkdownRenderOptions } from "./aiAssistantMarkdown";
+import { displayMathAfterLine, isBareHeadingMarkerLine, markdownFenceAfterLine } from "./aiAssistantMarkdownNormalize";
+import { isMarkdownTableRow } from "./aiAssistantMarkdownTable";
 
 // ─── 分割点检测 ─────────────────────────────────────────────────
 
 /**
  * 从已冻结位置向后扫描，找到 content 中最远的安全分割点。
  *
- * 安全分割点 = \n\n 位置，且该位置不在未闭合代码块或展示公式内。
+ * 安全分割点 = 已闭合的代码围栏或展示公式之后、完整的一行之后，或 \n\n。
+ * 不在未闭合围栏、展示公式、表格或裸标题（单独的 ###）内部切开。
+ * 单行换行只是分隔符，不交给任一侧渲染，避免多出一个空行。
  *
  * 扫描从 scanFrom 开始，到 maxPos 结束。
  * 正向单次 O(maxPos - scanFrom) 扫描，同时追踪代码围栏和展示公式状态。
@@ -46,6 +49,8 @@ function findBestSplitPointForward(
     // Keep the opener so an embedded shorter fence cannot close a longer one.
     let fenceMarker = "";
     let displayMathDelimiter: "$$" | "\\[" | "" = "";
+    // A table is one visual block across single newlines. A row is not a split.
+    let tableOpen = false;
     let bestSplit = -1;
     let i = scanFrom;
 
@@ -58,6 +63,8 @@ function findBestSplitPointForward(
         // Match renderContentWithCodeBlocks: while a display formula is open,
         // every line is formula source until its own closing delimiter. Code
         // fences inside TeX are not Markdown fences.
+        const fenceBefore = fenceMarker;
+        const mathBefore = displayMathDelimiter;
         if (displayMathDelimiter) {
             displayMathDelimiter = displayMathAfterLine(line, displayMathDelimiter);
         } else {
@@ -70,10 +77,36 @@ function findBestSplitPointForward(
             if (!fenceTouched) displayMathDelimiter = displayMathAfterLine(line, "");
         }
 
-        // 检查是否是 \n\n（当前行结束后紧跟空行）
-        if (!fenceMarker && !displayMathDelimiter && nlIdx + 1 < content.length && content[nlIdx + 1] === '\n') {
-            // 分割点在 \n\n 结束之后
-            bestSplit = nlIdx + 2;
+        // A closed fence or formula will not change. Leave it out of the tail
+        // even when the next paragraph never inserts a blank line.
+        const blockClosed = (fenceBefore !== "" && fenceMarker === "")
+            || (mathBefore !== "" && displayMathDelimiter === "");
+        if (blockClosed && !fenceMarker && !displayMathDelimiter) {
+            bestSplit = nlIdx + 1;
+            tableOpen = false;
+        }
+
+        if (fenceMarker || displayMathDelimiter) {
+            // Pipe rows inside a fence are source, not a Markdown table.
+            tableOpen = false;
+        } else {
+            const tableLine = isMarkdownTableRow(line) || (tableOpen && isSplitTableRowLabel(line));
+            const bareHeading = isBareHeadingMarkerLine(line);
+            const blankFollows = nlIdx + 1 < content.length && content[nlIdx + 1] === "\n";
+            if (blankFollows) {
+                // A lone "###" still owns the title after the blank line.
+                if (!bareHeading) bestSplit = nlIdx + 2;
+                tableOpen = false;
+            } else if (tableLine) {
+                tableOpen = true;
+            } else if (!bareHeading) {
+                // Lists, headings, and prose are one element per line. The
+                // newline is only the separator renderContentWithCodeBlocks splits on.
+                bestSplit = nlIdx + 1;
+                tableOpen = false;
+            } else {
+                tableOpen = false;
+            }
         }
 
         i = nlIdx + 1;
@@ -127,8 +160,35 @@ export function createIncrementalRenderState(): IncrementalRenderState {
 
 /** 冻结检查间隔：每增长 500 字符检查一次 */
 const FREEZE_CHECK_INTERVAL = 500;
-/** 最小内容长度（低于此值不启用增量模式） */
-const MIN_CONTENT_FOR_INCREMENTAL = 2000;
+/**
+ * Answers and thoughts shorter than this are still one full parse per flush.
+ * 640 is the first size where a paragraph break can freeze a prefix
+ * (freeze scan opens after 500 characters and keeps a 200-character tail)
+ * while staying under the old 2000-character full-parse floor.
+ */
+export const STREAMING_MARKDOWN_INCREMENTAL_MIN = 640;
+
+/** True when a streaming markdown body should re-parse only its unfrozen tail. */
+export function streamingMarkdownUsesIncremental(length: number): boolean {
+    return length >= STREAMING_MARKDOWN_INCREMENTAL_MIN;
+}
+
+/** One growing message owns one freeze cache. A different id starts over. */
+export function bindStreamingMarkdown(
+    bucket: { messageId: string; state: IncrementalRenderState },
+    messageId: string,
+    theme: Theme,
+    options?: ChatMarkdownRenderOptions,
+): (formatted: string) => React.ReactNode[] {
+    return (formatted: string) => {
+        if (bucket.messageId !== messageId) {
+            bucket.messageId = messageId;
+            bucket.state = createIncrementalRenderState();
+        }
+        return renderContentIncremental(formatted, theme, bucket.state, options);
+    };
+}
+
 /** 活跃尾部保留的最小字符数 */
 const MIN_TAIL_LEN = 200;
 /** display:contents makes wrapper divs invisible to CSS layout while providing
@@ -148,13 +208,15 @@ export function renderContentIncremental(
     const omitBlankSpacers = options?.omitBlankSpacers === true;
 
     // ── 缓存失效检测 ──
+    // A live round only appends. A new round can replace the bubble with a
+    // longer string that does not extend the frozen prefix; keeping those
+    // nodes would paint the previous answer in front of the new one.
     if (
         state.lastTheme !== t ||
         state.lastOmitBlankSpacers !== omitBlankSpacers ||
         content.length < state.lastContentLen ||
-        (content.length === state.lastContentLen && content !== state.lastContent)
+        (state.lastContent.length > 0 && !content.startsWith(state.lastContent))
     ) {
-        // Content 被截断或替换——完全重置
         resetState(state);
     }
     state.lastContentLen = content.length;
@@ -167,8 +229,8 @@ export function renderContentIncremental(
         resetState(state);
     }
 
-    // 短内容直接全量渲染
-    if (content.length < MIN_CONTENT_FOR_INCREMENTAL) {
+    // Short replies stay one full parse. Longer streams freeze stable paragraphs.
+    if (!streamingMarkdownUsesIncremental(content.length)) {
         return renderContentWithCodeBlocks(content, t, options);
     }
 
@@ -186,16 +248,30 @@ export function renderContentIncremental(
 
             if (splitPos > currentFrozenEnd) {
                 // 增量冻结：只解析新增的稳定部分
-                const newStableContent = content.slice(currentFrozenEnd, splitPos);
+                // The newline that ends a closer is only a line separator.
+                // Giving it to either slice makes that slice render a blank spacer
+                // the full parse never had. A blank line (\n\n) stays with the slice.
+                let renderEnd = splitPos;
+                if (renderEnd > currentFrozenEnd && content[renderEnd - 1] === "\n" && content[renderEnd - 2] !== "\n") {
+                    renderEnd -= 1;
+                }
+                const newStableContent = content.slice(currentFrozenEnd, renderEnd);
                 const newNodes = renderContentWithCodeBlocks(newStableContent, t, options);
                 const prevNodes = state.frozen?.nodes ?? [];
+                // Each slice numbers its own md-0. Concatenating those arrays
+                // makes them siblings, and React then reuses the wrong row.
+                const slice = React.createElement(
+                    "div",
+                    { key: `freeze-${splitPos}`, className: "assistant-reasoning-segment", style: contentsStyle },
+                    newNodes,
+                );
 
                 state.frozen = {
                     contentUpTo: splitPos,
                     // New array reference ensures React detects children change
                     // after freeze expansion. The O(N) copy cost is negligible
                     // (~20μs for 200 freeze cycles with 100 nodes each).
-                    nodes: prevNodes.length > 0 ? [...prevNodes, ...newNodes] : newNodes,
+                    nodes: prevNodes.length > 0 ? [...prevNodes, slice] : [slice],
                 };
                 // 输出缓存失效
                 state.lastOutput = null;

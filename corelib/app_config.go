@@ -509,6 +509,12 @@ type AppConfig struct {
 	UIZoomFactor float64 `json:"ui_zoom_factor,omitempty"`
 	// Chat font size in pixels (12 ~ 24, 0 = default 14).
 	ChatFontSize int `json:"chat_font_size,omitempty"`
+	// Conversation-assistant font id. Empty or "system" keeps the current UI face.
+	// Ids are the conversation catalog in guiapp/frontend/src/components/ai/assistantFonts.ts.
+	ChatFontFamily string `json:"chat_font_family,omitempty"`
+	// Programming-assistant font id. Empty or "system" keeps the current UI face.
+	// Ids are the coding catalog in assistantFonts.ts. Independent from ChatFontFamily.
+	CodingFontFamily string `json:"coding_font_family,omitempty"`
 	// SSH host presets.
 	SSHHosts []SSHHostEntry `json:"ssh_hosts,omitempty"`
 	// Knowledge Skill token budget.

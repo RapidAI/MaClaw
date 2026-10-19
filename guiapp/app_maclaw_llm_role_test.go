@@ -54,14 +54,14 @@ func TestResolveMaclawLLMRoleInheritsHubOverThirdPartyAssistant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fg.Model != "auto" || fg.ProviderID != "hub" || fg.Profile != maclawLLMRoleForeground {
+	if fg.Model != "auto" || fg.ProviderID != "hub" || fg.Profile != maclawLLMRoleForeground || !fg.SupportsVision {
 		t.Fatalf("foreground = %+v", fg)
 	}
 	bg, err := app.ResolveMaclawLLMRole(maclawLLMRoleBackground)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bg.Model != "worker-model" || bg.ProviderID != "hub" || bg.Profile != maclawLLMRoleBackground {
+	if bg.Model != "worker-model" || bg.ProviderID != "hub" || bg.Profile != maclawLLMRoleBackground || bg.SupportsVision {
 		t.Fatalf("background = %+v", bg)
 	}
 	cu, err := app.ResolveMaclawLLMRole(maclawLLMRoleComputerUse)

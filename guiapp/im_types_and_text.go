@@ -39,6 +39,9 @@ type IMVoicePart struct {
 // IMAgentResponse is the structured reply sent back to Hub.
 type IMAgentResponse struct {
 	Text string `json:"text"`
+	// SendToUser is the only sentence a desktop-bot run shows. Text is the
+	// assistant prose kept for the run; the desktop page does not draw it.
+	SendToUser string `json:"send_to_user,omitempty"`
 	// runWindowPaused tells follow-up schedulers not to start another model
 	// request after the run window ends. It stays on the host.
 	runWindowPaused bool `json:"-"`
@@ -87,6 +90,10 @@ type IMAgentResponse struct {
 	// this answer. Only the desktop file-companion window reads it; ordinary
 	// replies leave it empty, so it never reaches another client.
 	FileCompanionFigures []FileCompanionFigure `json:"file_companion_figures,omitempty"`
+	// NoteCardPath is the note PDF. It is not a paper resultPath.
+	NoteCardPath string `json:"note_card_path,omitempty"`
+	// WebNote marks a fullscreen web note whose timestamps do not seek.
+	WebNote bool `json:"web_note,omitempty"`
 	// ToolCallsInTurn is internal cache-safety metadata. It is never sent to
 	// clients; answer caching must not replay responses produced via tools.
 	ToolCallsInTurn int    `json:"-"`
@@ -115,6 +122,9 @@ type IMAgentResponse struct {
 	DesktopImages []DesktopBotImage `json:"desktop_images,omitempty"`
 	// DesktopShotPaths are screenshots written under the maclaw data directory.
 	DesktopShotPaths []string `json:"desktop_shot_paths,omitempty"`
+	// DesktopAttachmentIDs are server or volume ids. The bytes are not written
+	// on this machine first. The next open fetches them.
+	DesktopAttachmentIDs []string `json:"desktop_attachment_ids,omitempty"`
 	// DesktopFiles are documents that could not be written locally. The bubble
 	// still offers those bytes as a download. A saved document is LocalFilePaths.
 	DesktopFiles []DesktopBotFile `json:"desktop_files,omitempty"`

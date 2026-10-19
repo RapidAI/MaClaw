@@ -1,0 +1,11 @@
+{
+  "id": "progress_three_sections",
+  "task_id": "task_1",
+  "first_where": "正在把登录后的第一屏存下来。",
+  "first_next": "打开设置里的通知页。",
+  "second_where": "通知页已经打开。",
+  "second_next": "核对通知开关。",
+  "open_problems": "无",
+  "secret": "token=sk-live-should-not-show",
+  "fence_body": "FENCE_ORIGINAL_SECRET"
+}

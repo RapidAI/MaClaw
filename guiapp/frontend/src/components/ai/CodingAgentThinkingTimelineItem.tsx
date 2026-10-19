@@ -1,14 +1,11 @@
 import React from "react";
 import { localizeText } from "./aiAssistantI18n";
 import type { Theme } from "./aiAssistantPanelTheme";
-import { cleanReasoningTrailForBody } from "./assistantReasoningBody";
+import { createReasoningTrailCleanCache, rememberReasoningTrailClean } from "./reasoningTrailCleanCache";
 import { AssistantReasoningPanel } from "./AssistantReasoningPanel";
-import { createIncrementalRenderState, renderContentIncremental, type IncrementalRenderState } from "./IncrementalMarkdownRenderer";
+import { createIncrementalRenderState, renderContentIncremental, streamingMarkdownUsesIncremental, type IncrementalRenderState } from "./IncrementalMarkdownRenderer";
 import { reasoningTrailMarkdownOptions, renderContentWithCodeBlocks } from "./aiAssistantMarkdown";
 import type { CodingAgentTimelineItem } from "./useAIAssistant";
-
-/** Long enough that a full re-parse on every token stalls the open thought. */
-const INCREMENTAL_TRAIL_CHARS = 2000;
 
 function reasoningPreviewText(text: string, maxLength = 96): string | undefined {
     const compact = text.replace(/\s+/gu, " ").trim();
@@ -33,7 +30,7 @@ function renderGrowingThought(
     // Folding does not change the text. Keep the tree already on screen.
     if (!expanded && previous === text && rendered.current != null) return rendered.current;
     const extend = expanded
-        && text.length >= INCREMENTAL_TRAIL_CHARS
+        && streamingMarkdownUsesIncremental(text.length)
         && previous.length > 0
         && text.startsWith(previous);
     previousText.current = text;
@@ -64,7 +61,11 @@ export const CodingAgentThinkingTimelineItem = React.memo(function CodingAgentTh
     /** Open for the newest thought of the current turn. Earlier thoughts stay folded. */
     expanded?: boolean;
 }) {
-    const displayReasoning = React.useMemo(() => cleanReasoningTrailForBody(item.content || ""), [item.content]);
+    const trailCleanRef = React.useRef(createReasoningTrailCleanCache());
+    const displayReasoning = React.useMemo(
+        () => rememberReasoningTrailClean(trailCleanRef.current, item.id, item.content || ""),
+        [item.content, item.id],
+    );
     const live = !!liveLabel;
     const previousTextRef = React.useRef("");
     const renderedRef = React.useRef<React.ReactNode>(null);

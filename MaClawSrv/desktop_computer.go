@@ -65,6 +65,33 @@ func (f *desktopFrame) set(shot desktop.Shot, opts desktop.ShotOptions) {
 
 var desktopFrames sync.Map
 
+// desktopPageNeed remembers the last observation that handed the page to
+// the person. A later computer batch must not fill a captcha by pixels.
+// The record is process-local, like the prompt pin and the screen lease.
+var desktopPageNeed sync.Map
+
+func noteDesktopPageNeed(scope agentruntime.Scope, text string) {
+	if !strings.Contains(text, "page flags:") && !strings.Contains(text, "handoff=captcha") && !strings.Contains(text, "captcha challenge") {
+		return
+	}
+	key := desktopHandoffKey(scope.TenantID, scope.UserID, scope.InstanceID)
+	switch desktopAttentionReason(text) {
+	case "captcha_widget", "login_qr", "payment_confirm":
+		desktopPageNeed.Store(key, desktopAttentionReason(text))
+	default:
+		desktopPageNeed.Delete(key)
+	}
+}
+
+func desktopPageNeedFor(scope agentruntime.Scope) string {
+	value, ok := desktopPageNeed.Load(desktopHandoffKey(scope.TenantID, scope.UserID, scope.InstanceID))
+	if !ok {
+		return ""
+	}
+	reason, _ := value.(string)
+	return strings.TrimSpace(reason)
+}
+
 // desktopFrameFor is the frame of one user's desktop.
 func desktopFrameFor(scope agentruntime.Scope) *desktopFrame {
 	key := desktopRunKey(scope.TenantID, scope.UserID)
@@ -335,6 +362,10 @@ func operateDesktopSteps(ctx context.Context, scope agentruntime.Scope, display,
 		return desktopAppCommand(display, argv...)
 	}
 	env := desktopComputerEnv(ctx, scope, display, frame, run, beforeInsert, browserRaises)
+	if action == "computer" {
+		env.StructureFirst = true
+		env.PageNeedsPerson = desktopPageNeedFor(scope)
+	}
 	results, image, runErr := computeruse.Run(env, steps, action == "computer")
 	text := computeruse.ResultsText(steps, results, runErr)
 	if image != "" {

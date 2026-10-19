@@ -1,0 +1,5 @@
+{
+  "id": "readonly_screenshot_has_no_click",
+  "params": ["session_id", "x", "y", "coordinate", "click", "type", "region"],
+  "expect": ["session_id"]
+}

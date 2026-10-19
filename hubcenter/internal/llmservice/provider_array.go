@@ -941,14 +941,14 @@ func providerChatTestCandidates(reg *Registry, id string, preferArray bool, filt
 }
 
 func arrayEgressCandidates(reg *Registry, routeProviderID string, accept func(*llmpool.ProviderConfig) bool, model string) (logicalID string, profile *llmpool.ProviderConfig, members []*llmpool.ProviderConfig) {
-	return arrayEgressForBucket(reg, routeProviderID, accept, model, "")
+	return arrayEgressForBucket(reg, routeProviderID, accept, model, "", nil)
 }
 
 // arrayEgressForBucket is arrayEgressCandidates for one request id. The id is
 // the canary bucket: the same id always picks the same side of the 5% cut.
 // An empty bucket is not a hit, so a caller that has no request leaves canaries
 // out of rotation whenever a stable sibling can answer.
-func arrayEgressForBucket(reg *Registry, routeProviderID string, accept func(*llmpool.ProviderConfig) bool, model, bucket string) (logicalID string, profile *llmpool.ProviderConfig, members []*llmpool.ProviderConfig) {
+func arrayEgressForBucket(reg *Registry, routeProviderID string, accept func(*llmpool.ProviderConfig) bool, model, bucket string, body map[string]any) (logicalID string, profile *llmpool.ProviderConfig, members []*llmpool.ProviderConfig) {
 	logicalID, profile, members = lookupProviderArray(reg, routeProviderID, accept)
 	// Drop cooling members before rotating so a paused member does not consume
 	// a turn, and an array that is entirely cooling does not move the cursor.
@@ -964,7 +964,7 @@ func arrayEgressForBucket(reg *Registry, routeProviderID string, accept func(*ll
 	// stays behind them and does not consume a turn while a sibling can answer.
 	// Canaries are outside that cursor unless they are the only supply.
 	ready, delayed := splitArrayProbeMembers(members)
-	ready = orderTokenBankReady(logicalID, model, bucket, ready, time.Now())
+	ready = orderReadyMembers(logicalID, model, bucket, ready, body, time.Now())
 	if len(delayed) == 0 {
 		return logicalID, profile, ready
 	}

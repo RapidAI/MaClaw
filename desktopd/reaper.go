@@ -23,6 +23,10 @@ import (
 type reaper struct {
 	interval time.Duration
 	maxIdle  time.Duration
+	// stage2 flushes and syncs the four volumes before docker stop. A failed
+	// sync leaves the container running. Off keeps the historical stop, which
+	// does not call the syncer.
+	stage2 bool
 }
 
 // StartReaper launches the background idle reconciler. Call with maxIdle <= 0
@@ -34,7 +38,7 @@ func (s *Service) StartReaper(ctx context.Context, interval, maxIdle time.Durati
 	if interval <= 0 {
 		interval = 10 * time.Minute
 	}
-	r := &reaper{interval: interval, maxIdle: maxIdle}
+	r := &reaper{interval: interval, maxIdle: maxIdle, stage2: s.Stage2Sleep}
 	go r.loop(ctx, s)
 }
 
@@ -91,6 +95,12 @@ func (r *reaper) once(ctx context.Context, s *Service) {
 		if time.Duration(status.IdleSeconds)*time.Second < r.maxIdle {
 			continue
 		}
+		// File, bash, and http refresh the host stamp. They do not refresh the
+		// supervisor last_used. The same maxIdle applies. A recent stamp leaves
+		// the container up. An older stamp does not stretch the limit.
+		if age, ok := s.hostIdle(tenantID, userID); ok && age < r.maxIdle {
+			continue
+		}
 		log.Printf("[desktopd] reaping idle desktop container=%s tenant=%s user=%s idle=%ds", container, tenantID, userID, status.IdleSeconds)
 		if err := s.withUser(tenantID, userID, func() error {
 			return r.stopOne(ctx, s, container, tenantID, userID, key)
@@ -106,6 +116,27 @@ func (r *reaper) once(ctx context.Context, s *Service) {
 // stayed up with only the "reaping" line in the log.
 func (r *reaper) stopOne(ctx context.Context, s *Service, container, tenantID, userID, key string) error {
 	stopCtx := context.WithoutCancel(ctx)
+	if s.userBusy(tenantID, userID) {
+		log.Printf("[desktopd] idle desktop container=%s tenant=%s user=%s left running because apt or bash is in progress", container, tenantID, userID)
+		return nil
+	}
+	if r.stage2 {
+		// A busy bot display, a failed flush, or a failed sync does not reach
+		// docker stop. Sleep does not commit an image or delete a volume.
+		if s.containerHasBusyBot(stopCtx, container) {
+			log.Printf("[desktopd] idle desktop container=%s tenant=%s user=%s left running because a bot display is busy", container, tenantID, userID)
+			return nil
+		}
+		if err := s.runtime().Snapshot(stopCtx, Spec{TenantID: tenantID, UserID: userID}); err != nil {
+			log.Printf("[desktopd] stage2 sleep left container running container=%s tenant=%s user=%s: %v", container, tenantID, userID, err)
+			return nil
+		}
+		if s.wakeWanted(tenantID, userID) {
+			log.Printf("[desktopd] stage2 sleep abandoned container=%s tenant=%s user=%s: ensure arrived after flush", container, tenantID, userID)
+			s.markComputerRunning(Spec{TenantID: tenantID, UserID: userID})
+			return nil
+		}
+	}
 	_, stopErr := s.docker(stopCtx, "exec", container, "python3", "/desktop_supervisor.py", "stop", key)
 	if stopErr != nil {
 		log.Printf("[desktopd] reaper supervisor stop failed container=%s tenant=%s user=%s: %v", container, tenantID, userID, stopErr)
@@ -128,6 +159,11 @@ func (r *reaper) stopOne(ctx context.Context, s *Service, container, tenantID, u
 			return fmt.Errorf("desktop still running after supervisor stop; container left up because a bot display is busy")
 		}
 		log.Printf("[desktopd] idle desktop container=%s tenant=%s user=%s session stopped; container left running because a bot display is busy", container, tenantID, userID)
+		return nil
+	}
+	if r.stage2 && s.wakeWanted(tenantID, userID) {
+		log.Printf("[desktopd] stage2 sleep abandoned container=%s tenant=%s user=%s: ensure arrived after flush", container, tenantID, userID)
+		s.markComputerRunning(Spec{TenantID: tenantID, UserID: userID})
 		return nil
 	}
 	log.Printf("[desktopd] reaper desktop still up after supervisor stop container=%s tenant=%s user=%s; docker stop", container, tenantID, userID)

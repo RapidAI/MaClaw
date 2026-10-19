@@ -55,6 +55,14 @@ type FileCompanionMessage struct {
 	Paper bool `json:"paper,omitempty"`
 	// Figures are drawings from the open file that this answer refers to.
 	Figures []FileCompanionFigure `json:"figures,omitempty"`
+	// NoteCardPath is the PDF for a video or audio note. The bubble text stays
+	// Markdown. ResultPath stays empty so the bubble is not replaced by the
+	// paper sentence.
+	NoteCardPath string `json:"noteCardPath,omitempty"`
+	// VideoNote is the button or closed phrase, not a typed paper turn.
+	VideoNote bool `json:"videoNote,omitempty"`
+	// WebNote is a web page note. Its timestamps do not seek the preview.
+	WebNote bool `json:"webNote,omitempty"`
 }
 
 // FileCompanionSaveResult reports a text write. Conflict stops autosave.
@@ -264,9 +272,61 @@ func (a *App) fileCompanionGrant(path string) (*fileCompanionGrant, string, erro
 	grant := st.grants[canonical]
 	st.mu.Unlock()
 	if grant == nil || grant.Canonical != canonical {
+		if note := a.fileCompanionNoteResultGrant(canonical); note != nil {
+			return note, canonical, nil
+		}
 		return nil, canonical, errFileCompanionNotGranted
 	}
 	return grant, canonical, nil
+}
+
+// fileCompanionNoteResultGrant allows the note Markdown and PDF under this
+// session's results directory. It does not grant the open media, a subtitle,
+// or a path that climbs out of that directory.
+func (a *App) fileCompanionNoteResultGrant(canonical string) *fileCompanionGrant {
+	if a == nil {
+		return nil
+	}
+	root := filepath.Join(a.GetDataDir(), "file-companion", "results")
+	rel, err := filepath.Rel(root, canonical)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return nil
+	}
+	parts := strings.Split(rel, string(os.PathSeparator))
+	if len(parts) != 2 {
+		return nil
+	}
+	sessionID, base := parts[0], parts[1]
+	if sessionID == "" || strings.Contains(sessionID, "..") || strings.ContainsAny(sessionID, `/\`) {
+		return nil
+	}
+	if !strings.HasSuffix(base, "-笔记.md") && !strings.HasSuffix(base, "-笔记.pdf") {
+		return nil
+	}
+	if !a.fileCompanionSessionKnown(sessionID) {
+		return nil
+	}
+	return &fileCompanionGrant{
+		UserPath:  canonical,
+		Canonical: canonical,
+		ReadOnly:  true,
+		CanExport: true,
+	}
+}
+
+func (a *App) fileCompanionSessionKnown(sessionID string) bool {
+	st := a.companionRuntime()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.webSessions != nil && st.webSessions[sessionID] != "" {
+		return true
+	}
+	for path := range st.grants {
+		if fileCompanionSessionID(path) == sessionID {
+			return true
+		}
+	}
+	return false
 }
 
 var errFileCompanionNotGranted = errors.New("path is outside the open file")

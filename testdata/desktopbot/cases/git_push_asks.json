@@ -1,0 +1,13 @@
+{
+  "id": "git_push_asks",
+  "verdict": "allow",
+  "helper": true,
+  "commands": [
+    {"action": "bash", "command": "git push origin main"},
+    {"action": "bash", "command": "docker compose up -d"},
+    {"action": "bash", "command": "DROP TABLE users"},
+    {"action": "install", "command": "install"}
+  ],
+  "expect_ran": false,
+  "ask": true
+}

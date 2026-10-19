@@ -41,6 +41,60 @@ var (
 	ErrService             = errors.New("docker service request failed")
 )
 
+// WarmStartBudget is how long Hub waits for a stopped desktop to accept
+// docker start. The two-minute client timeout on bash stays the hard cap
+// for the command itself.
+const WarmStartBudget = 25 * time.Second
+
+// Wake operations. A memory write, a send_to_user, a progress read of the
+// three sections already on the run record, a chat message, and a schedule
+// do not start a stopped container.
+const (
+	WakeSession    = "session"
+	WakeFile       = "file"
+	WakeBash       = "bash"
+	WakeScreenshot = "screenshot"
+	WakeScreen     = "screen"
+	WakeMemory     = "memory"
+	WakeSendToUser = "send_to_user"
+	WakeProgress   = "progress"
+	WakeMessage    = "message"
+	WakeSchedule   = "schedule"
+)
+
+// WakeError is the retryable tool error for a warm start that passed 25
+// seconds. UserBubble is false: it is not a send_to_user sentence.
+type WakeError struct{}
+
+func (WakeError) Error() string    { return "桌面正在唤醒，再试一次。" }
+func (WakeError) Retryable() bool  { return true }
+func (WakeError) UserBubble() bool { return false }
+
+// IsDesktopWake reports a warm-start retry. Callers leave send_to_user empty.
+func IsDesktopWake(err error) bool {
+	var wake WakeError
+	return errors.As(err, &wake)
+}
+
+// TurnWakes reports whether this operation starts a stopped desktop.
+// progressCopied means the three PROGRESS sections are already on the run
+// record, so reading them does not wake a machine.
+func TurnWakes(op string, progressCopied bool) bool {
+	switch op {
+	case WakeMemory, WakeSendToUser, WakeMessage, WakeSchedule:
+		return false
+	case WakeProgress:
+		if progressCopied {
+			return false
+		}
+		return false
+	case WakeSession, WakeFile, WakeBash, WakeScreenshot, WakeScreen:
+		return true
+	default:
+		return false
+	}
+}
+
 // ServiceFailureMessage turns a docker desktop service failure into a message
 // an admin can act on, instead of the generic "rejected the desktop request".
 func ServiceFailureMessage(err error) string {
@@ -453,6 +507,9 @@ func (p *Pool) OpenSession(ctx context.Context, tenantID, userID string) (string
 
 // OpenDesktop is OpenSession plus the noVNC page for a human login handoff.
 func (p *Pool) OpenDesktop(ctx context.Context, tenantID, userID string) (DesktopSession, error) {
+	if err := p.ensureOp(ctx, tenantID, userID, WakeSession); err != nil {
+		return DesktopSession{}, err
+	}
 	server, err := p.resolve(ctx, tenantID, userID)
 	if err != nil {
 		return DesktopSession{}, err
@@ -577,6 +634,9 @@ func (p *Pool) RunFile(ctx context.Context, tenantID, userID, action, filePath, 
 	if action == "write" && len(content) > desktop.FileContentMax {
 		return "", fmt.Errorf("%w: file is too large", ErrInvalidInput)
 	}
+	if err := p.ensureOp(ctx, tenantID, userID, WakeFile); err != nil {
+		return "", err
+	}
 	server, err := p.resolve(ctx, tenantID, userID)
 	if err != nil {
 		return "", err
@@ -603,6 +663,9 @@ func (p *Pool) RunFile(ctx context.Context, tenantID, userID, action, filePath, 
 func (p *Pool) RunBash(ctx context.Context, tenantID, userID, command string) (string, error) {
 	if _, err := desktop.BashArgs("container", command); err != nil {
 		return "", fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
+	}
+	if err := p.ensureOp(ctx, tenantID, userID, WakeBash); err != nil {
+		return "", err
 	}
 	server, err := p.resolve(ctx, tenantID, userID)
 	if err != nil {
@@ -668,6 +731,9 @@ func (p *Pool) ScreenshotWith(ctx context.Context, tenantID, userID, display, na
 	opts, err := opts.Normalize()
 	if err != nil {
 		return desktop.Shot{}, "", fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
+	}
+	if err := p.ensureOp(ctx, tenantID, userID, WakeScreenshot); err != nil {
+		return desktop.Shot{}, "", err
 	}
 	server, err := p.resolve(ctx, tenantID, userID)
 	if err != nil {
@@ -756,6 +822,62 @@ func (p *Pool) Ctl(ctx context.Context, tenantID, userID, display string, reques
 		return nil, err
 	}
 	return out, nil
+}
+
+func (p *Pool) ensureOp(ctx context.Context, tenantID, userID, op string) error {
+	if !TurnWakes(op, false) {
+		return nil
+	}
+	return p.Ensure(ctx, tenantID, userID)
+}
+
+// Ensure asks the assigned Docker service to start a stopped desktop before
+// a session, file, bash, screenshot, or screen view. A warm start that is
+// still unfinished after 25 seconds returns WakeError. That error is not a
+// user bubble. A chat message and a schedule do not call this.
+func (p *Pool) Ensure(ctx context.Context, tenantID, userID string) error {
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return err
+	}
+	started := p.now()
+	client := &http.Client{Timeout: WarmStartBudget}
+	body := map[string]string{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+		"image":     server.Image,
+		"memory":    server.Memory,
+		"cpus":      server.CPUs,
+		"shm_size":  server.ShmSize,
+	}
+	var out struct {
+		Status string `json:"status"`
+	}
+	err = p.callClient(ctx, client, server, http.MethodPost, "/v1/desktops/ensure", body, &out)
+	if p.now().Sub(started) > WarmStartBudget || wakeTimedOut(err) {
+		return WakeError{}
+	}
+	if err != nil {
+		if strings.Contains(err.Error(), "再试一次") {
+			return WakeError{}
+		}
+		return err
+	}
+	return nil
+}
+
+func (p *Pool) now() time.Time {
+	if p != nil && p.Now != nil {
+		return p.Now()
+	}
+	return time.Now()
+}
+
+func wakeTimedOut(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "Client.Timeout")
 }
 
 func (p *Pool) resolve(ctx context.Context, tenantID, userID string) (Server, error) {

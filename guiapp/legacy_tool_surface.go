@@ -259,7 +259,7 @@ func isLegacyModelMCPGateway(name string) bool {
 }
 
 func legacyModelMCPGatewayDeniedText() string {
-	return "[system rejected] dynamic_mcp_requires_managed_surface: legacy model calls cannot select MCP server_id or tool_name. Request a managed semantic replan."
+	return "[system rejected] dynamic_mcp_requires_managed_surface: legacy model calls cannot select MCP server_id or tool_name. Name the compound tool in discover_tool; the host binds it on the next request."
 }
 
 func (s legacyToolSurface) AllowsLiveProvision(name string) bool {

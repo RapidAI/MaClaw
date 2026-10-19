@@ -60,11 +60,14 @@ for i in $(seq 1 30); do
   sleep 2
 done
 if [ "$ok" != 1 ]; then
-  echo "HEALTH_FAIL: rolling back $COMP"
   install -m 755 "$B/$(basename "$BIN")" "$BIN.new" && mv -f "$BIN.new" "$BIN"
   restart
   sleep 5
-  health && echo ROLLBACK_OK || echo ROLLBACK_HEALTH_FAIL
+  if health; then
+    echo "Health check failed. Rolled back $COMP using the binary in $B. Read the log (Hub: data/logs/maclaw-hub.out.log; MaClawSrv: journalctl -u maclawsrv). Do not deploy this binary again until that log says what to change."
+    exit 1
+  fi
+  echo "Rollback is in place and the health check still failed. Do not run this script again. Restore the binary from $B by hand after reading the log."
   exit 1
 fi
 echo "OK $COMP restarted $(TZ=Asia/Shanghai date '+%F %T') CST md5=$(md5sum "$BIN" | cut -c1-32) backup=$B"

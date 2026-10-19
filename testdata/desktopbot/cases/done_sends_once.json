@@ -1,0 +1,11 @@
+{
+  "id": "done_sends_once",
+  "origin": "background",
+  "channel": "desktop",
+  "done": true,
+  "changed": true,
+  "send_to_user": "首页已经打开。",
+  "expect_text": "首页已经打开。",
+  "expect_kind": "final",
+  "expect_count": 1
+}

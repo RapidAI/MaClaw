@@ -1022,9 +1022,9 @@ func (a *App) notifyMemoryWarehouseChanged(change memoryWarehouseChange) {
 		if a.memoryStore != nil && handler.memoryStore != a.memoryStore {
 			continue
 		}
-		// Refresh synchronously so the delete call does not return while a
-		// current agent still has the removed content cached in its prompt.
-		handler.RefreshAllMemorySnapshots()
+		// The prompt snapshot stays pinned for the open conversation. Recall
+		// caches were already dropped above, and a retraction can still be
+		// recorded for the warehouse. The snapshot bytes change at /new.
 		if len(change.Items) > 0 || len(change.Needles) > 0 {
 			handler.applyMemoryWarehouseChange(change)
 		}
@@ -2605,6 +2605,9 @@ func (a *App) startup(ctx context.Context) {
 	log.Printf("[startup] begin")
 	bootLog("App.startup ctx_nil=%v", ctx == nil)
 	a.ctx = ctx
+	// Picture PDFs have no text layer. Wire OCR before the first document read
+	// so auto-extract and office(read_document) share the local engine.
+	wireOfficeImagePDFOCR()
 	if err := registerFileCompanionLinuxDesktop(); err != nil {
 		log.Printf("[file-companion] linux desktop register: %v", err)
 	}
@@ -2962,19 +2965,22 @@ func (a *App) SetUIZoomFactor(factor float64) error {
 	return err
 }
 
-// GetChatFontSize returns the saved chat font size in pixels (default 14).
-func (a *App) GetChatFontSize() int {
+// GetChatFontSize returns the saved chat font size in pixels.
+// Missing, zero, and values below 12 are the default 14. Values above 24 clamp to 24.
+// A LoadConfig error is returned as an error. Startup and config-changed apply a
+// resolved number, so a failed read must not look like the stored default.
+func (a *App) GetChatFontSize() (int, error) {
 	cfg, err := a.LoadConfig()
-	if err != nil || cfg.ChatFontSize <= 0 {
-		return 14
+	if err != nil {
+		return 0, err
 	}
-	if cfg.ChatFontSize < 12 {
-		return 14
+	if cfg.ChatFontSize <= 0 || cfg.ChatFontSize < 12 {
+		return 14, nil
 	}
 	if cfg.ChatFontSize > 24 {
-		return 24
+		return 24, nil
 	}
-	return cfg.ChatFontSize
+	return cfg.ChatFontSize, nil
 }
 
 // SetChatFontSize persists the chat font size (clamped to 12-24).
@@ -2989,7 +2995,75 @@ func (a *App) SetChatFontSize(size int) error {
 	return err
 }
 
+// Conversation-assistant faces. Keep in sync with CONVERSATION_FONT_OPTIONS.
+var chatFontFamilyIDs = map[string]struct{}{
+	"system":        {},
+	"maple-mono":    {},
+	"dengxian":      {},
+	"sarasa-gothic": {},
+	"lxgw-wenkai":   {},
+}
+
+// Programming-assistant faces. Keep in sync with CODING_FONT_OPTIONS.
+var codingFontFamilyIDs = map[string]struct{}{
+	"system":         {},
+	"maple-mono":     {},
+	"jetbrains-mono": {},
+	"cascadia-code":  {},
+	"fira-code":      {},
+	"sarasa-mono":    {},
+}
+
+func normalizeFontFamilyID(id string, allowed map[string]struct{}) string {
+	id = strings.TrimSpace(id)
+	if _, ok := allowed[id]; ok {
+		return id
+	}
+	return "system"
+}
+
+// GetChatFontFamily returns the conversation-assistant font id.
+// Unknown and empty ids normalize to "system". A LoadConfig error is returned
+// as an error so a failed read is not applied as the system face.
+func (a *App) GetChatFontFamily() (string, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return "", err
+	}
+	return normalizeFontFamilyID(cfg.ChatFontFamily, chatFontFamilyIDs), nil
+}
+
+// SetChatFontFamily persists a conversation-assistant font id.
+// Unknown ids, including programming-only faces, are stored as system.
+func (a *App) SetChatFontFamily(id string) error {
+	id = normalizeFontFamilyID(id, chatFontFamilyIDs)
+	_, err := a.PatchConfigFields(map[string]interface{}{"chat_font_family": id})
+	return err
+}
+
+// GetCodingFontFamily returns the programming-assistant font id.
+// Unknown and empty ids normalize to "system". A LoadConfig error is returned
+// as an error so a failed read is not applied as the system face.
+func (a *App) GetCodingFontFamily() (string, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return "", err
+	}
+	return normalizeFontFamilyID(cfg.CodingFontFamily, codingFontFamilyIDs), nil
+}
+
+// SetCodingFontFamily persists a programming-assistant font id.
+// Unknown ids, including conversation-only faces, are stored as system.
+func (a *App) SetCodingFontFamily(id string) error {
+	id = normalizeFontFamilyID(id, codingFontFamilyIDs)
+	_, err := a.PatchConfigFields(map[string]interface{}{"coding_font_family": id})
+	return err
+}
+
 func (a *App) shutdown(ctx context.Context) {
+	// Closing the window stops this surface's wait. It does not cancel the
+	// server run. The person saying stop is what posts cancel.
+	abandonDesktopSurface()
 	closeKnowledgeEmbeddingRefresh()
 	a.releaseAllCloudWorkspaces()
 	if a.screenDimCancel != nil {
@@ -6122,6 +6196,9 @@ func (a *App) resetPathBoundStateForDataDirChange() {
 	a.memoryStoreMu.Unlock()
 	a.conversationArchiver = nil
 	a.sessionCheckpointer = nil
+	// The grant file lives under the data dir. Drop the table that was loaded
+	// from the previous directory; the next check reads the new file.
+	resetMCPServerWriteGrantStore()
 }
 
 func normalizeConfigTimeouts(config *corelib.AppConfig) {
@@ -8777,6 +8854,18 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				v = 24
 			}
 			cfg.ChatFontSize = v
+		case "chat_font_family":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.ChatFontFamily = normalizeFontFamilyID(v, chatFontFamilyIDs)
+		case "coding_font_family":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.CodingFontFamily = normalizeFontFamilyID(v, codingFontFamilyIDs)
 		case "env_check_interval":
 			v, err := intField(key, value)
 			if err != nil {

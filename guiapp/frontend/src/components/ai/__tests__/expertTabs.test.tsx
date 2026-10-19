@@ -10,6 +10,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import { useAITabManager } from "../useAITabManager";
 import { usePendingAssistantTabOpen, type PendingExpertOpen } from "../usePendingAssistantTabOpen";
+import { setNewTaskCoverHeld } from "../task-config/newTaskCoverHold";
 import type { ExpertDefinition } from "../expertTypes";
 import { expertTabId, expertWelcomeMessageText, DEFAULT_EXPERT_ICON } from "../expertTypes";
 import {
@@ -217,6 +218,7 @@ describe("useAITabManager.createExpertTab", () => {
 describe("usePendingAssistantTabOpen expert welcome seed", () => {
     beforeEach(() => {
         localStorage.clear();
+        setNewTaskCoverHeld(false);
         vi.clearAllMocks();
         vi.mocked(createLatexDocumentForTask).mockReset();
         vi.mocked(createLatexDocumentForTask).mockResolvedValue(null);

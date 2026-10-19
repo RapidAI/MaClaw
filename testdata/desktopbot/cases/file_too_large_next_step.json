@@ -1,0 +1,6 @@
+{
+  "id": "file_too_large_next_step",
+  "path": "/home/desktop/a.txt",
+  "marker": "sk-this-must-not-appear-in-the-error",
+  "expect": "文件超过 200 KiB。缩小内容后再 file_write。不要改走 bash 分段写"
+}

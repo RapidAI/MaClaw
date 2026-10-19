@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/computeruse"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/corelib/longhorizon"
 	"github.com/RapidAI/CodeClaw/corelib/taskengine"
 )
@@ -430,6 +431,8 @@ func TestComputerUseAcceptanceDenylist(t *testing.T) {
 func TestSyncComputerUseTurnRecordsFreshWithoutToolsPrep(t *testing.T) {
 	resetComputerUseRuntimeForTest(t)
 	resetComputerUseSessionForTest(t)
+	desktopbot.ResetComputerScreens()
+	t.Cleanup(desktopbot.ResetComputerScreens)
 	h := &IMMessageHandler{}
 	ctx := &LoopContext{
 		Runtime: RuntimeContext{
@@ -439,11 +442,14 @@ func TestSyncComputerUseTurnRecordsFreshWithoutToolsPrep(t *testing.T) {
 		ComputerUseRoutingText: "@computer 看屏幕",
 	}
 	syncComputerUseTurn(h, ctx, "desktop-user", "看屏幕")
-	if !ctx.ComputerUseFresh || !ctx.ComputerUseBegun {
-		t.Fatalf("fresh=%v begun=%v", ctx.ComputerUseFresh, ctx.ComputerUseBegun)
+	if ctx.ComputerUseActive || ctx.ComputerUseBegun {
+		t.Fatalf("active=%v begun=%v", ctx.ComputerUseActive, ctx.ComputerUseBegun)
 	}
-	if computerUseTaskStateFor("sk-sync") == nil {
-		t.Fatal("Begin must key TaskState by SessionKey")
+	if !ctx.ComputerHelperDispatched || ctx.ComputerHelperGoal == "" {
+		t.Fatalf("helper card missing: dispatched=%v goal=%q", ctx.ComputerHelperDispatched, ctx.ComputerHelperGoal)
+	}
+	if computerUseTaskStateFor("sk-sync") != nil {
+		t.Fatal("the chat loop must not begin a computer-use task")
 	}
 	if computerUseTaskStateFor("desktop-user") != nil {
 		t.Fatal("must not key TaskState by UserID when SessionKey is set")
@@ -452,6 +458,8 @@ func TestSyncComputerUseTurnRecordsFreshWithoutToolsPrep(t *testing.T) {
 
 func TestComputerUseGateUsesLoopRoutingText(t *testing.T) {
 	resetComputerUseRuntimeForTest(t)
+	desktopbot.ResetComputerScreens()
+	t.Cleanup(desktopbot.ResetComputerScreens)
 	h := &IMMessageHandler{}
 	ctx := &LoopContext{ComputerUseRoutingText: "@computer 点一下确定"}
 	activeCompact, _ := h.gateComputerUse("随便聊聊")
@@ -459,12 +467,16 @@ func TestComputerUseGateUsesLoopRoutingText(t *testing.T) {
 	if activeCompact {
 		t.Fatal("compact/chat text should not open CU")
 	}
-	if !activeShared || !ctx.ComputerUseFresh {
-		t.Fatalf("routing text must open CU fresh=%v active=%v", ctx.ComputerUseFresh, activeShared)
+	if activeShared || ctx.ComputerUseActive || !ctx.ComputerHelperDispatched || ctx.ComputerHelperGoal == "" {
+		t.Fatalf("main loop active=%v flag=%v dispatched=%v goal=%q", activeShared, ctx.ComputerUseActive, ctx.ComputerHelperDispatched, ctx.ComputerHelperGoal)
 	}
+	desktopbot.ResetComputerScreens()
 	activeAgain, _ := recordComputerUseGate(h, ctx, "随便聊聊")
-	if !activeAgain || !ctx.ComputerUseActive {
-		t.Fatal("second gate on the same LoopContext must reuse the latched decision")
+	if activeAgain || ctx.ComputerUseActive {
+		t.Fatal("a settled chat loop must not become the operator")
+	}
+	if started, queued := desktopbot.ClaimComputerScreen("default", "probe"); !started || queued {
+		t.Fatal("the settled loop claimed the screen again")
 	}
 }
 

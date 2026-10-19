@@ -17,6 +17,10 @@ func TestDesktopScreenshotHandlerRelaysThePNG(t *testing.T) {
 	var gotUser, gotDisplay, gotAuth string
 	reply := screenshotPNG
 	docker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/desktops/ensure" {
+			_, _ = w.Write([]byte(`{"status":"running"}`))
+			return
+		}
 		if r.URL.Path != "/v1/desktops/screenshot" || r.Method != http.MethodPost {
 			http.NotFound(w, r)
 			return
@@ -80,6 +84,10 @@ func TestDesktopScreenshotHandlerReturnsTheSavedPath(t *testing.T) {
 	t.Setenv("MACLAW_DESKTOP_API_TOKEN", "desktop-api-token")
 	var gotName string
 	docker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/desktops/ensure" {
+			_, _ = w.Write([]byte(`{"status":"running"}`))
+			return
+		}
 		var in struct {
 			Name string `json:"name"`
 		}

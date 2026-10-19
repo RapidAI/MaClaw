@@ -2185,11 +2185,8 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 			if h.app != nil {
 				h.app.triggerMemoryPipelineSoon(45 * time.Second)
 			}
-			// Invalidate the frozen memory snapshot so the next message's
-			// system prompt reflects the newly saved/deleted memory.
-			// Without this, user_fact changes (e.g. "remember my name is X")
-			// are invisible to the LLM until the next /new or topic switch.
-			h.RefreshMemorySnapshot(ownerID)
+			// The frozen snapshot stays until this conversation ends. The
+			// store itself is updated, so a recall tool can see the new fact.
 			if action == memoryToolActionSave {
 				h.admitSessionFactFromMemorySave(ownerID, stringVal(args, "content"))
 			}

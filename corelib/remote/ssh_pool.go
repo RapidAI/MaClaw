@@ -106,30 +106,28 @@ func (p *SSHPool) acquire(cfg SSHHostConfig) (*ssh.Client, error) {
 	cfg.Defaults()
 	hostID := sshPoolKey(cfg)
 
-	// 先尝试从池中取出候选连接（不持锁做网络 I/O）
+	// 已被会话或传输引用的连接直接复用。
+	// 对它做 keepalive 探测并在超时后 Close，会拆掉交互会话正在用的那条连接。
+	// 断连交给连接池的 keepalive。
 	p.mu.Lock()
 	entry, found := p.conns[hostID]
+	if found && entry.client != nil && entry.refCount > 0 {
+		entry.refCount++
+		client := entry.client
+		p.mu.Unlock()
+		return client, nil
+	}
 	var candidate *ssh.Client
-	if found {
+	if found && entry.client != nil {
 		candidate = entry.client
 	}
 	p.mu.Unlock()
 
-	// 在锁外检查连接是否存活（带超时保护）。
-	// 半开 TCP 连接场景下 SendRequest 可能阻塞 30-120 秒，
-	// 必须用 goroutine + select 限制等待时间。
+	// 池里没有仍被引用的连接时，才在锁外探测。
+	// 半开 TCP 上 SendRequest 可能阻塞 30-120 秒，必须限制等待时间。
 	if candidate != nil {
-		aliveCh := make(chan bool, 1)
-		go func() {
-			_, _, err := candidate.SendRequest("keepalive@openssh.com", true, nil)
-			aliveCh <- (err == nil)
-		}()
-		alive := false
-		select {
-		case alive = <-aliveCh:
-		case <-time.After(5 * time.Second):
-			// 超时视为连接已断
-		}
+		ok, finished, _ := awaitSSHProbe(candidate, sshProbeWait)
+		alive := finished && ok
 		if alive {
 			p.mu.Lock()
 			if e, ok := p.conns[hostID]; ok && e.client == candidate {
@@ -179,14 +177,19 @@ func (p *SSHPool) acquire(cfg SSHHostConfig) (*ssh.Client, error) {
 	return client, nil
 }
 
-// Release 释放连接引用。当引用计数归零时主动关闭连接，避免空闲连接泄漏。
-func (p *SSHPool) Release(cfg SSHHostConfig) {
+// Release 释放 caller 持有的那条连接。引用只对应当初 Acquire 到的 client。
+// 池里的连接若已被替换，这里什么都不做，避免把新连接的计数减掉并关掉。
+// 计数归零时才关闭，避免空闲连接泄漏。
+func (p *SSHPool) Release(cfg SSHHostConfig, client *ssh.Client) {
+	if client == nil {
+		return
+	}
 	cfg.Defaults()
 	hostID := sshPoolKey(cfg)
 
 	var toClose *ssh.Client
 	p.mu.Lock()
-	if entry, ok := p.conns[hostID]; ok {
+	if entry, ok := p.conns[hostID]; ok && entry.client == client {
 		entry.refCount--
 		if entry.refCount <= 0 {
 			toClose = entry.client
@@ -289,17 +292,8 @@ func (p *SSHPool) IsAlive(cfg SSHHostConfig) bool {
 	if !found || entry.client == nil {
 		return false
 	}
-	ch := make(chan bool, 1)
-	go func() {
-		_, _, err := entry.client.SendRequest("keepalive@openssh.com", true, nil)
-		ch <- (err == nil)
-	}()
-	select {
-	case alive := <-ch:
-		return alive
-	case <-time.After(5 * time.Second):
-		return false
-	}
+	ok, finished, _ := awaitSSHProbe(entry.client, sshProbeWait)
+	return finished && ok
 }
 
 // Reconnect 强制断开旧连接并重新建立到指定主机的连接。
@@ -358,33 +352,28 @@ func (p *SSHPool) keepalive(hostID string, client *ssh.Client, interval time.Dur
 	defer ticker.Stop()
 	failCount := 0
 	for range ticker.C {
-		// 带超时保护：半开 TCP 连接场景下 SendRequest 可能阻塞 30-120 秒，
-		// 用 goroutine + select 限制为 5 秒，加速断连检测。
-		ch := make(chan error, 1)
-		go func() {
-			_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
-			ch <- err
-		}()
-		var err error
-		select {
-		case err = <-ch:
-		case <-time.After(5 * time.Second):
-			err = fmt.Errorf("keepalive timeout")
-		}
-		if err != nil {
-			failCount++
-			// 容忍 2 次瞬时失败，连续 3 次才判定断连（约 45s）
-			if failCount >= 3 {
-				p.mu.Lock()
-				if entry, ok := p.conns[hostID]; ok && entry.client == client {
-					delete(p.conns, hostID)
-				}
-				p.mu.Unlock()
-				_ = client.Close()
-				return
-			}
-		} else {
+		// 同一条连接同时只发一个 keepalive。超时后丢掉的 SendRequest 会占着
+		// 全局锁，后面的探测跟着超时，活连接也会被关掉。
+		ok, finished, running := awaitSSHProbe(client, sshProbeWait)
+		if finished && ok {
 			failCount = 0
+			continue
 		}
+		if !sshProbeCountsAsFailure(finished, ok, running) {
+			continue
+		}
+		failCount++
+		// 三次真正的传输错误才关闭。一次请求超过 sshProbeStuckAfter 仍无应答，
+		// 说明是半开连接，立刻关闭以便正在进行的下载从阻塞里返回。
+		if finished && failCount < 3 {
+			continue
+		}
+		p.mu.Lock()
+		if entry, ok := p.conns[hostID]; ok && entry.client == client {
+			delete(p.conns, hostID)
+		}
+		p.mu.Unlock()
+		_ = client.Close()
+		return
 	}
 }

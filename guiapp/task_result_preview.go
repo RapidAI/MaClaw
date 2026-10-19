@@ -72,7 +72,7 @@ func (a *App) PreviewTaskResultFile(filePath string) (*TaskResultPreview, error)
 	if info.IsDir() {
 		return nil, fmt.Errorf("不是文件")
 	}
-	if info.Size() > agent.MaxOfficeReadFileBytes {
+	if info.Size() > taskResultPreviewMaxBytes(cleaned) {
 		return nil, fmt.Errorf("文件过大，无法预览")
 	}
 
@@ -211,6 +211,19 @@ func lookupTaskResultPreviewPath(token string) (string, bool) {
 	return lease.path, true
 }
 
+// Office and image previews share the text-extraction ceiling. Video and
+// audio are streamed with Range requests, so a recording past that ceiling
+// still opens in the player.
+const taskResultPreviewMediaMaxBytes int64 = 8 << 30
+
+func taskResultPreviewMaxBytes(path string) int64 {
+	kind, _ := previewHTTPContentType(filepath.Ext(path))
+	if kind == "video" || kind == "audio" {
+		return taskResultPreviewMediaMaxBytes
+	}
+	return agent.MaxOfficeReadFileBytes
+}
+
 func previewHTTPContentType(ext string) (kind, contentType string) {
 	switch strings.ToLower(ext) {
 	case ".pdf":
@@ -320,7 +333,7 @@ func handleTaskResultPreviewHTTP(_ *App, rw http.ResponseWriter, req *http.Reque
 	}
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil || info.IsDir() || info.Size() <= 0 || info.Size() > agent.MaxOfficeReadFileBytes {
+	if err != nil || info.IsDir() || info.Size() <= 0 || info.Size() > taskResultPreviewMaxBytes(path) {
 		http.NotFound(rw, req)
 		return
 	}

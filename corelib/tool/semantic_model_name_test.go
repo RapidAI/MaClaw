@@ -25,7 +25,10 @@ func TestSemanticModelFunctionNameIsStableAndIgnoresGrantTokens(t *testing.T) {
 		t.Fatalf("mailbox send=%q", got)
 	}
 	if got := SemanticModelFunctionName("semantic_configure_trusted_mailbox"); got != "mailbox_configure" {
-		t.Fatalf("mailbox configure=%q", got)
+		t.Fatalf("configure model name=%q", got)
+	}
+	if got := SemanticModelFunctionName("semantic_delete_trusted_mailbox"); got != "mailbox_delete" {
+		t.Fatalf("delete model name=%q", got)
 	}
 	sendA := RenderedSemanticFunctionName("semantic_send_trusted_mailbox", "invoke_turn_a")
 	sendB := RenderedSemanticFunctionName("semantic_send_trusted_mailbox", "invoke_turn_b")

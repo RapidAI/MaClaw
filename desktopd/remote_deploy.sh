@@ -80,11 +80,11 @@ rand_hex() {
 
 case "$DESKTOPD_IMAGE_FROM" in
   build|pull|auto) ;;
-  *) echo "[remote] DESKTOPD_IMAGE_FROM must be build, pull, or auto (got $DESKTOPD_IMAGE_FROM)" >&2; exit 1 ;;
+  *) echo "[remote] DESKTOPD_IMAGE_FROM must be build, pull, or auto (got $DESKTOPD_IMAGE_FROM). Set DESKTOPD_IMAGE_FROM=auto and rerun." >&2; exit 1 ;;
 esac
 
 if [ -z "$DESKTOPD_ADVERTISE_HOST" ]; then
-  echo "[remote] DESKTOPD_ADVERTISE_HOST is required" >&2
+  echo "[remote] DESKTOPD_ADVERTISE_HOST is unset. export DESKTOPD_ADVERTISE_HOST=<this host's public address> and rerun remote_deploy.sh." >&2
   exit 1
 fi
 
@@ -226,10 +226,11 @@ on_tencent_cloud() {
 # desktop_supervisor.py rely on. desktopd runs the same check after its own
 # source pulls (imageContractScript in desktopd/image_source.go).
 check_image_contract() {
+  image_name=$(printf '%s' "$DESKTOPD_IMAGE" | tr -d "'\"\\\$")
   docker run --rm --entrypoint sh "$1" -c '
       test -f /desktop_supervisor.py && test -f /usr/share/novnc/vnc.html &&
       for tool in python3 Xvfb x11vnc websockify xdotool chromium startxfce4 dbus-launch import; do
-        command -v "$tool" >/dev/null || { echo "missing $tool"; exit 1; }
+        command -v "$tool" >/dev/null || { echo "Image is missing $tool. This is not a desktop image. Change DESKTOPD_IMAGE_SOURCE and pull again. Do not tag it as '"$image_name"'."; exit 1; }
       done' >&2
 }
 
@@ -246,13 +247,13 @@ pull_desktop_image() {
   if command -v timeout >/dev/null 2>&1; then
     timeout "$DESKTOPD_IMAGE_PULL_TIMEOUT" docker pull "$src" > "$log" 2>&1 || {
       tail -n 5 "$log" >&2 || true
-      echo "[remote] Pulling $src failed or timed out" >&2
+      echo "[remote] Pulling $src failed or timed out. Read the last 5 lines of $log. If the mirror timed out, raise DESKTOPD_IMAGE_PULL_TIMEOUT and rerun. If auth failed, change DESKTOPD_IMAGE_SOURCE. $DESKTOPD_IMAGE was left unchanged." >&2
       return 1
     }
   else
-    docker pull "$src" > "$log" 2>&1 || { tail -n 5 "$log" >&2 || true; echo "[remote] Pulling $src failed" >&2; return 1; }
+    docker pull "$src" > "$log" 2>&1 || { tail -n 5 "$log" >&2 || true; echo "[remote] Pulling $src failed or timed out. Read the last 5 lines of $log. If the mirror timed out, raise DESKTOPD_IMAGE_PULL_TIMEOUT and rerun. If auth failed, change DESKTOPD_IMAGE_SOURCE. $DESKTOPD_IMAGE was left unchanged." >&2; return 1; }
   fi
-  id="$(docker image inspect --format '{{.Id}}' "$src" 2>/dev/null)" || { echo "[remote] $src is missing after the pull" >&2; return 1; }
+  id="$(docker image inspect --format '{{.Id}}' "$src" 2>/dev/null)" || { echo "[remote] Pull finished but $src is not local. Read $log, then run docker pull $src again. Do not tag $DESKTOPD_IMAGE." >&2; return 1; }
   if ! check_image_contract "$id"; then
     echo "[remote] $src does not provide the desktop contract; $DESKTOPD_IMAGE left unchanged" >&2
     return 1
@@ -283,7 +284,7 @@ provide_desktop_image() {
         echo "[remote] Falling back to building $DESKTOPD_IMAGE on this host"
         build_desktop_image
       fi ;;
-    *) echo "[remote] DESKTOPD_IMAGE_FROM must be build, pull, or auto (got $DESKTOPD_IMAGE_FROM)" >&2; exit 1 ;;
+    *) echo "[remote] DESKTOPD_IMAGE_FROM must be build, pull, or auto (got $DESKTOPD_IMAGE_FROM). Set DESKTOPD_IMAGE_FROM=auto and rerun." >&2; exit 1 ;;
   esac
 }
 
@@ -435,7 +436,7 @@ if command -v curl >/dev/null 2>&1; then
   curl -fsS -H "Authorization: Bearer $DESKTOPD_TOKEN" "http://127.0.0.1:${DESKTOPD_PORT}/v1/health"
   echo
 else
-  echo "[remote] curl is missing; skipped health check."
+  echo "[remote] curl is missing, so the health check did not run. Run apt-get install curl, then curl -fsS -H \"Authorization: Bearer <token from .env>\" http://127.0.0.1:$DESKTOPD_PORT/v1/health."
 fi
 
 rm -rf "$SRC" "$ARCHIVE_PATH" "$REMOTE_TMP_DIR/remote_deploy.sh"

@@ -262,6 +262,63 @@ func TestCreateTaskUnifiedLatexExpertStartsAFreshPaper(t *testing.T) {
 	}
 }
 
+func TestCreateTaskUnifiedLatexKeepExpertSessionLeavesTheOpenTurn(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	first, err := app.CreateTaskUnified(TaskCreateOptions{
+		Name:       "write the first paper",
+		ExpertID:   builtinLatexExpertID,
+		ExpertName: "LaTeX",
+	})
+	if err != nil {
+		t.Fatalf("first CreateTaskUnified: %v", err)
+	}
+	persist := app.ensureProjectTabSessionPersist()
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:        expertTabSessionID(builtinLatexExpertID),
+		ProjectPath:  first.ProjectPath,
+		Conversation: []interface{}{map[string]interface{}{"role": "user", "content": "still writing"}},
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := app.CreateTaskUnified(TaskCreateOptions{
+		Name:              "write the scheduled paper",
+		ExpertID:          builtinLatexExpertID,
+		ExpertName:        "LaTeX",
+		KeepExpertSession: true,
+	})
+	if err != nil {
+		t.Fatalf("scheduled CreateTaskUnified: %v", err)
+	}
+	if second.ProjectPath == "" || second.ProjectPath == first.ProjectPath {
+		t.Fatalf("scheduled paper = %q, want a new directory (first %q)", second.ProjectPath, first.ProjectPath)
+	}
+	session, err := persist.LoadSession(expertTabSessionID(builtinLatexExpertID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session == nil || !latexSessionHasUserTurn(session.Conversation) || normalizeProjectSessionPath(session.ProjectPath) != normalizeProjectSessionPath(first.ProjectPath) {
+		t.Fatalf("live expert transcript was cut over: %+v", session)
+	}
+	if err := app.AbandonUnopenedFreshLatexTask(second.ProjectPath); err != nil {
+		t.Fatalf("abandon scheduled paper: %v", err)
+	}
+	session, err = persist.LoadSession(expertTabSessionID(builtinLatexExpertID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session == nil || !latexSessionHasUserTurn(session.Conversation) || normalizeProjectSessionPath(session.ProjectPath) != normalizeProjectSessionPath(first.ProjectPath) {
+		t.Fatalf("abandon changed the live transcript: %+v", session)
+	}
+	if _, err := os.Stat(second.ProjectPath); !os.IsNotExist(err) {
+		t.Fatalf("abandoned paper directory still present: %v", err)
+	}
+	resumed := app.CreateExpertTask(builtinLatexExpertID, "LaTeX")
+	if resumed.ProjectPath != first.ProjectPath {
+		t.Fatalf("resume path = %q, want the open paper %q", resumed.ProjectPath, first.ProjectPath)
+	}
+}
+
 func TestAbandonUnopenedFreshLatexTaskRestoresThePreviousPaper(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	first, err := app.CreateTaskUnified(TaskCreateOptions{

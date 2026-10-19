@@ -2,12 +2,42 @@ import { act, render, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAITabManager } from '../useAITabManager';
 import { usePendingAssistantTabOpen } from '../usePendingAssistantTabOpen';
+import { setNewTaskCoverHeld } from '../task-config/newTaskCoverHold';
+import { resetLatexDocumentRequestForTests, takePendingLatexDocument } from '../latexDocumentOpen';
 import { AITabBar } from '../AITabBar';
-import type { PendingHistoryDiscussionOpen } from '../usePendingAssistantTabOpen';
+import type { PendingExpertOpen, PendingHistoryDiscussionOpen } from '../usePendingAssistantTabOpen';
 import { createInitialTabState, DEFAULT_MAX_VE_TABS, LOCAL_TAB } from '../AITabTypes';
 import type { AITab } from '../AITabTypes';
+import type { ExpertDefinition } from '../expertTypes';
 
 type PendingHistoryDiscussion = PendingHistoryDiscussionOpen | null;
+
+/**
+ * Minimal createExpertTab stand-in. The real signature takes a full
+ * ExpertDefinition and returns an AITab; tests only care about the ids they
+ * pass in, so accept a loose expert and return a complete-enough tab.
+ */
+const expertTabMock = () => vi.fn((expert: { id: string; name?: string }, _task?: unknown, _options?: unknown): AITab => ({
+    id: `expert:${expert.id}`,
+    type: 'expert',
+    expertId: expert.id,
+    title: expert.name || expert.id,
+    closable: true,
+}));
+
+/** Complete ExpertDefinition for pendingExpertOpen fixtures (tests only read id/name). */
+const makeExpert = (id: string, name: string): ExpertDefinition => ({
+    id,
+    name,
+    description: '',
+    icon: '',
+    system_prompt: '',
+    tools: [],
+    skills: [],
+    builtin: true,
+    created_at: '',
+    updated_at: '',
+});
 
 const runtimeEvents = vi.hoisted(() => ({
     handlers: new Map<string, (data: any) => void>(),
@@ -34,6 +64,8 @@ beforeEach(() => {
     sessionStorage.clear();
     runtimeEvents.handlers.clear();
     vi.clearAllMocks();
+    setNewTaskCoverHeld(false);
+    resetLatexDocumentRequestForTests();
 });
 
 describe('AITabTypes', () => {
@@ -254,7 +286,7 @@ describe('useAITabManager', () => {
             createGroupTab: vi.fn(),
             createProjectTab: vi.fn(),
             createExpertTab,
-            pendingExpertOpen: { expert: { id: 'expert-paper', name: 'Paper reviewer' } as any },
+            pendingExpertOpen: { expert: makeExpert('expert-paper', 'Paper reviewer') as any },
             onEnsureExpertTask,
         }));
 
@@ -271,7 +303,7 @@ describe('useAITabManager', () => {
             createGroupTab: vi.fn(),
             createProjectTab: vi.fn(),
             createExpertTab,
-            pendingExpertOpen: { expert: { id: 'expert-paper', name: 'Paper reviewer' } as any },
+            pendingExpertOpen: { expert: makeExpert('expert-paper', 'Paper reviewer') as any },
             onEnsureExpertTask: vi.fn().mockRejectedValue(new Error('task store unavailable')),
         }));
 
@@ -297,11 +329,11 @@ describe('useAITabManager', () => {
                 pendingExpertOpen,
                 onEnsureExpertTask,
             }),
-            { initialProps: { pendingExpertOpen: { expert: { id: 'expert-a', name: 'Expert A' } as any } } },
+            { initialProps: { pendingExpertOpen: { expert: makeExpert('expert-a', 'Expert A') as any } } },
         );
 
         await waitFor(() => expect(onEnsureExpertTask).toHaveBeenCalledWith(expect.objectContaining({ id: 'expert-a' })));
-        rerender({ pendingExpertOpen: { expert: { id: 'expert-b', name: 'Expert B' } as any } });
+        rerender({ pendingExpertOpen: { expert: makeExpert('expert-b', 'Expert B') as any } });
         await waitFor(() => expect(onEnsureExpertTask).toHaveBeenCalledWith(expect.objectContaining({ id: 'expert-b' })));
 
         act(() => pendingResolvers.get('expert-b')?.());
@@ -367,6 +399,627 @@ describe('useAITabManager', () => {
         rerender({ pending: null });
         rerender({ pending: { launchId: 'skill-run-2', projectPath: 'D:/tasks/opened', taskTitle: 'Opened' } });
         await waitFor(() => expect(onHandled).toHaveBeenLastCalledWith({ outcome: 'opened', launchId: 'skill-run-2' }));
+    });
+
+    it('keeps the new-task cover when a scheduled task opens underneath it', async () => {
+        const tab = { id: 'proj-scheduled', type: 'project', projectPath: 'D:/tasks/scheduled' } as AITab;
+        const beforeUser = vi.fn();
+        const createProjectTab = vi.fn((_projectPath: string, _taskTitle: string, _options?: { focus?: boolean }) => tab);
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { rerender } = renderHook(
+            ({ pending, coverHeld }) => usePendingAssistantTabOpen({
+                createVETab: vi.fn(),
+                createGroupTab: vi.fn(),
+                createProjectTab,
+                beforeUserProjectOpen: beforeUser,
+                newTaskCoverHeld: () => coverHeld,
+                hasProjectTab: vi.fn(() => false),
+                getTabState: vi.fn(() => ({ history: [], scrollTop: 0, inputText: '' })),
+                sendMessage,
+                pendingProjectTabOpen: pending,
+                onPendingProjectTabOpenHandled: vi.fn(),
+            }),
+            { initialProps: { pending: null as any, coverHeld: true } },
+        );
+
+        rerender({
+            coverHeld: true,
+            pending: {
+                projectPath: 'D:/tasks/scheduled',
+                taskTitle: 'Nightly report',
+                initialMessage: 'run the report',
+                autoSend: true,
+                backgroundLaunch: true,
+            },
+        });
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('run the report', expect.objectContaining({
+            tabId: 'proj-scheduled',
+            project_path: 'D:/tasks/scheduled',
+        })));
+        expect(beforeUser).not.toHaveBeenCalled();
+        expect(createProjectTab).toHaveBeenCalledWith('D:/tasks/scheduled', 'Nightly report', expect.objectContaining({ focus: false }));
+
+        beforeUser.mockClear();
+        createProjectTab.mockClear();
+        rerender({ pending: null, coverHeld: true });
+        rerender({
+            coverHeld: true,
+            pending: {
+                projectPath: 'D:/tasks/chosen',
+                taskTitle: 'Chosen',
+                autoSend: false,
+            },
+        });
+        await waitFor(() => expect(beforeUser).toHaveBeenCalledWith('D:/tasks/chosen', undefined));
+        expect(createProjectTab.mock.calls[0]?.[2]).not.toEqual(expect.objectContaining({ focus: false }));
+    });
+
+    it('still focuses a scheduled task when the new-task cover is not up', async () => {
+        const beforeUser = vi.fn();
+        const createProjectTab = vi.fn((_projectPath: string, _taskTitle: string, _options?: { focus?: boolean }) => ({ id: 'proj-due', type: 'project', projectPath: 'D:/tasks/due' } as AITab));
+        const { rerender } = renderHook(
+            ({ pending }) => usePendingAssistantTabOpen({
+                createVETab: vi.fn(),
+                createGroupTab: vi.fn(),
+                createProjectTab,
+                beforeUserProjectOpen: beforeUser,
+                newTaskCoverHeld: () => false,
+                pendingProjectTabOpen: pending,
+                onPendingProjectTabOpenHandled: vi.fn(),
+            }),
+            { initialProps: { pending: null as any } },
+        );
+        rerender({
+            pending: {
+                projectPath: 'D:/tasks/due',
+                taskTitle: 'Due now',
+                autoSend: false,
+                backgroundLaunch: true,
+            },
+        });
+        await waitFor(() => expect(beforeUser).toHaveBeenCalledWith('D:/tasks/due', undefined));
+        expect(createProjectTab.mock.calls[0]?.[2]).not.toEqual(expect.objectContaining({ focus: false }));
+    });
+
+    it('keeps the new-task cover when a scheduled expert opens underneath it', async () => {
+        const beforeUser = vi.fn();
+        const createExpertTab = expertTabMock();
+        const sendExpertMessage = vi.fn();
+        const { rerender } = renderHook(
+            ({ pending }) => usePendingAssistantTabOpen({
+                createVETab: vi.fn(),
+                createGroupTab: vi.fn(),
+                createProjectTab: vi.fn(),
+                createExpertTab,
+                beforeUserExpertOpen: beforeUser,
+                newTaskCoverHeld: () => true,
+                sendExpertMessage,
+                pendingExpertOpen: pending,
+                onPendingExpertOpenHandled: vi.fn(),
+            }),
+            { initialProps: { pending: null as any } },
+        );
+        rerender({
+            pending: {
+                expert: makeExpert('exp-paper', 'Paper'),
+                initialMessage: 'polish the abstract',
+                backgroundLaunch: true,
+            },
+        });
+        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('polish the abstract', 'exp-paper'));
+        expect(beforeUser).not.toHaveBeenCalled();
+        expect(createExpertTab).toHaveBeenCalledWith(expect.objectContaining({ id: 'exp-paper' }), undefined, { focus: false });
+    });
+
+    it('waits to reset a scheduled expert that is the covered conversation', async () => {
+        act(() => { setNewTaskCoverHeld(true); });
+        const beforeUser = vi.fn();
+        const handled = vi.fn();
+        const resetExpert = vi.fn();
+        const createExpertTab = expertTabMock();
+        const sendExpertMessage = vi.fn();
+        let coverHeld = true;
+        let visibleId = 'builtin-latex-paper';
+        const { rerender } = renderHook(
+            ({ pending }) => usePendingAssistantTabOpen({
+                createVETab: vi.fn(),
+                createGroupTab: vi.fn(),
+                createProjectTab: vi.fn(),
+                createExpertTab,
+                beforeUserExpertOpen: beforeUser,
+                newTaskCoverHeld: () => coverHeld,
+                visibleExpertId: () => visibleId,
+                sendExpertMessage,
+                resetExpertConversation: resetExpert,
+                pendingExpertOpen: pending,
+                onPendingExpertOpenHandled: handled,
+            }),
+            { initialProps: { pending: null as PendingExpertOpen | null } },
+        );
+        rerender({
+            pending: {
+                expert: makeExpert('builtin-latex-paper', 'LaTeX'),
+                initialMessage: 'compile the paper',
+                backgroundLaunch: true,
+            },
+        });
+        await waitFor(() => expect(handled).toHaveBeenCalledTimes(1));
+        expect(createExpertTab).not.toHaveBeenCalled();
+        expect(sendExpertMessage).not.toHaveBeenCalled();
+        expect(resetExpert).not.toHaveBeenCalled();
+
+        rerender({ pending: null });
+        coverHeld = false;
+        visibleId = 'other-expert';
+        act(() => { setNewTaskCoverHeld(false); });
+        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('compile the paper', 'builtin-latex-paper'));
+        expect(beforeUser).not.toHaveBeenCalled();
+        expect(resetExpert).toHaveBeenCalledWith('builtin-latex-paper', '', expect.any(Function));
+        expect(createExpertTab).toHaveBeenCalledWith(expect.objectContaining({ id: 'builtin-latex-paper' }), undefined, { focus: false });
+    });
+
+    it('opens the scheduled expert in front when the cover returns to that expert', async () => {
+        act(() => { setNewTaskCoverHeld(true); });
+        const beforeUser = vi.fn();
+        const handled = vi.fn();
+        const createExpertTab = expertTabMock();
+        const sendExpertMessage = vi.fn();
+        let coverHeld = true;
+        const visibleId = 'builtin-latex-paper';
+        const { rerender } = renderHook(
+            ({ pending }) => usePendingAssistantTabOpen({
+                createVETab: vi.fn(),
+                createGroupTab: vi.fn(),
+                createProjectTab: vi.fn(),
+                createExpertTab,
+                beforeUserExpertOpen: beforeUser,
+                newTaskCoverHeld: () => coverHeld,
+                visibleExpertId: () => visibleId,
+                sendExpertMessage,
+                pendingExpertOpen: pending,
+                onPendingExpertOpenHandled: handled,
+            }),
+            { initialProps: { pending: null as PendingExpertOpen | null } },
+        );
+        rerender({
+            pending: {
+                expert: makeExpert('builtin-latex-paper', 'LaTeX'),
+                initialMessage: 'compile the paper',
+                backgroundLaunch: true,
+            },
+        });
+        await waitFor(() => expect(handled).toHaveBeenCalledTimes(1));
+        expect(createExpertTab).not.toHaveBeenCalled();
+        rerender({ pending: null });
+        coverHeld = false;
+        act(() => { setNewTaskCoverHeld(false); });
+        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('compile the paper', 'builtin-latex-paper'));
+        expect(beforeUser).toHaveBeenCalledWith('builtin-latex-paper');
+        expect(createExpertTab).toHaveBeenCalledWith(expect.objectContaining({ id: 'builtin-latex-paper' }));
+        expect(createExpertTab.mock.calls[0]?.[2]).toBeUndefined();
+    });
+
+    it('does not block a chosen expert while a scheduled one waits under the cover', async () => {
+        act(() => { setNewTaskCoverHeld(true); });
+        const beforeUser = vi.fn();
+        const handled = vi.fn();
+        const createExpertTab = expertTabMock();
+        const sendExpertMessage = vi.fn();
+        let coverHeld = true;
+        let visibleId = 'builtin-latex-paper';
+        const { rerender } = renderHook(
+            ({ pending }) => usePendingAssistantTabOpen({
+                createVETab: vi.fn(),
+                createGroupTab: vi.fn(),
+                createProjectTab: vi.fn(),
+                createExpertTab,
+                beforeUserExpertOpen: beforeUser,
+                newTaskCoverHeld: () => coverHeld,
+                visibleExpertId: () => visibleId,
+                sendExpertMessage,
+                pendingExpertOpen: pending,
+                onPendingExpertOpenHandled: handled,
+            }),
+            { initialProps: { pending: null as PendingExpertOpen | null } },
+        );
+        rerender({
+            pending: {
+                expert: makeExpert('builtin-latex-paper', 'LaTeX'),
+                initialMessage: 'compile the paper',
+                backgroundLaunch: true,
+            },
+        });
+        await waitFor(() => expect(handled).toHaveBeenCalledTimes(1));
+        expect(createExpertTab).not.toHaveBeenCalled();
+        rerender({ pending: null });
+        rerender({
+            pending: {
+                expert: makeExpert('exp-other', 'Other'),
+                initialMessage: 'hello',
+            },
+        });
+        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('hello', 'exp-other'));
+        expect(beforeUser).toHaveBeenCalledTimes(1);
+        expect(beforeUser).toHaveBeenCalledWith('exp-other');
+        expect(sendExpertMessage).not.toHaveBeenCalledWith('compile the paper', 'builtin-latex-paper');
+
+        rerender({ pending: null });
+        coverHeld = false;
+        visibleId = 'exp-other';
+        act(() => { setNewTaskCoverHeld(false); });
+        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('compile the paper', 'builtin-latex-paper'));
+        expect(beforeUser).toHaveBeenCalledTimes(1);
+        expect(createExpertTab).toHaveBeenCalledWith(expect.objectContaining({ id: 'builtin-latex-paper' }), undefined, { focus: false });
+    });
+
+    it('sends both scheduled prompts when the covered expert is due twice', async () => {
+        act(() => { setNewTaskCoverHeld(true); });
+        const handled = vi.fn();
+        const beforeUser = vi.fn();
+        const createExpertTab = expertTabMock();
+        const sendExpertMessage = vi.fn();
+        let coverHeld = true;
+        let visibleId = 'exp-paper';
+        const { rerender } = renderHook(
+            ({ pending }) => usePendingAssistantTabOpen({
+                createVETab: vi.fn(),
+                createGroupTab: vi.fn(),
+                createProjectTab: vi.fn(),
+                createExpertTab,
+                beforeUserExpertOpen: beforeUser,
+                newTaskCoverHeld: () => coverHeld,
+                visibleExpertId: () => visibleId,
+                sendExpertMessage,
+                pendingExpertOpen: pending,
+                onPendingExpertOpenHandled: handled,
+            }),
+            { initialProps: { pending: null as PendingExpertOpen | null } },
+        );
+        rerender({
+            pending: {
+                expert: makeExpert('exp-paper', 'Paper'),
+                initialMessage: 'first pass',
+                backgroundLaunch: true,
+            },
+        });
+        await waitFor(() => expect(handled).toHaveBeenCalledTimes(1));
+        rerender({ pending: null });
+        rerender({
+            pending: {
+                expert: makeExpert('exp-paper', 'Paper'),
+                initialMessage: 'second pass',
+                backgroundLaunch: true,
+            },
+        });
+        await waitFor(() => expect(handled).toHaveBeenCalledTimes(2));
+        expect(sendExpertMessage).not.toHaveBeenCalled();
+        rerender({ pending: null });
+        coverHeld = false;
+        visibleId = 'other-expert';
+        act(() => { setNewTaskCoverHeld(false); });
+        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('second pass', 'exp-paper'));
+        expect(sendExpertMessage).toHaveBeenNthCalledWith(1, 'first pass', 'exp-paper');
+        expect(sendExpertMessage).toHaveBeenNthCalledWith(2, 'second pass', 'exp-paper');
+        expect(beforeUser).not.toHaveBeenCalled();
+        expect(createExpertTab).toHaveBeenCalledTimes(2);
+        expect(createExpertTab.mock.calls[0]?.[2]).toEqual({ focus: false });
+        expect(createExpertTab.mock.calls[1]?.[2]).toEqual({ focus: false });
+    });
+
+    it('sends the next scheduled prompt only after the previous one settles', async () => {
+        act(() => { setNewTaskCoverHeld(true); });
+        let releaseSend: () => void = () => {};
+        const sendExpertMessage = vi.fn(() => new Promise<void>((resolve) => { releaseSend = resolve; }));
+        const createExpertTab = expertTabMock();
+        let coverHeld = true;
+        let visibleId = 'exp-paper';
+        const { rerender } = renderHook(
+            ({ pending }) => usePendingAssistantTabOpen({
+                createVETab: vi.fn(),
+                createGroupTab: vi.fn(),
+                createProjectTab: vi.fn(),
+                createExpertTab,
+                newTaskCoverHeld: () => coverHeld,
+                visibleExpertId: () => visibleId,
+                sendExpertMessage,
+                pendingExpertOpen: pending,
+                onPendingExpertOpenHandled: vi.fn(),
+            }),
+            { initialProps: { pending: null as PendingExpertOpen | null } },
+        );
+        const expert = makeExpert('exp-paper', 'Paper');
+        rerender({ pending: { expert, initialMessage: 'first pass', backgroundLaunch: true } });
+        await waitFor(() => expect(sendExpertMessage).not.toHaveBeenCalled());
+        rerender({ pending: null });
+        rerender({ pending: { expert, initialMessage: 'second pass', backgroundLaunch: true } });
+        rerender({ pending: null });
+        coverHeld = false;
+        visibleId = 'other-expert';
+        act(() => { setNewTaskCoverHeld(false); });
+        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('first pass', 'exp-paper'));
+        expect(sendExpertMessage).not.toHaveBeenCalledWith('second pass', 'exp-paper');
+        expect(createExpertTab).toHaveBeenCalledTimes(1);
+        await act(async () => { releaseSend(); });
+        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('second pass', 'exp-paper'));
+        expect(createExpertTab).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not reset the next scheduled paper until the previous expert turn is idle', async () => {
+        act(() => { setNewTaskCoverHeld(true); });
+        let releaseSend: () => void = () => {};
+        let releaseIdle: () => void = () => {};
+        let busy = false;
+        const sendExpertMessage = vi.fn(() => {
+            busy = true;
+            return new Promise<void>((resolve) => { releaseSend = resolve; });
+        });
+        const resetExpert = vi.fn(async () => {});
+        const expertSessionIdle = vi.fn(() => !busy);
+        const whenExpertSessionIdle = vi.fn(() => new Promise<void>((resolve) => {
+            releaseIdle = () => { busy = false; resolve(); };
+        }));
+        const createExpertTab = expertTabMock();
+        let coverHeld = true;
+        let visibleId = 'builtin-latex-paper';
+        const { rerender } = renderHook(
+            ({ pending }) => usePendingAssistantTabOpen({
+                createVETab: vi.fn(),
+                createGroupTab: vi.fn(),
+                createProjectTab: vi.fn(),
+                createExpertTab,
+                newTaskCoverHeld: () => coverHeld,
+                visibleExpertId: () => visibleId,
+                expertSessionIdle,
+                whenExpertSessionIdle,
+                resetExpertConversation: resetExpert,
+                sendExpertMessage,
+                pendingExpertOpen: pending,
+                onPendingExpertOpenHandled: vi.fn(),
+            }),
+            { initialProps: { pending: null as PendingExpertOpen | null } },
+        );
+        const expert = makeExpert('builtin-latex-paper', 'LaTeX');
+        rerender({ pending: { expert, initialMessage: 'first paper', backgroundLaunch: true } });
+        await waitFor(() => expect(sendExpertMessage).not.toHaveBeenCalled());
+        rerender({ pending: null });
+        rerender({ pending: { expert, initialMessage: 'second paper', backgroundLaunch: true } });
+        rerender({ pending: null });
+        coverHeld = false;
+        visibleId = 'other-expert';
+        act(() => { setNewTaskCoverHeld(false); });
+        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('first paper', 'builtin-latex-paper'));
+        expect(resetExpert).toHaveBeenCalledTimes(1);
+        expect(sendExpertMessage).not.toHaveBeenCalledWith('second paper', 'builtin-latex-paper');
+        await act(async () => { releaseSend(); });
+        expect(sendExpertMessage).toHaveBeenCalledTimes(1);
+        expect(resetExpert).toHaveBeenCalledTimes(1);
+        expect(whenExpertSessionIdle).toHaveBeenCalledWith('builtin-latex-paper');
+        await act(async () => { releaseIdle(); });
+        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('second paper', 'builtin-latex-paper'));
+        expect(resetExpert).toHaveBeenCalledTimes(2);
+        expect(createExpertTab).toHaveBeenCalledTimes(2);
+        expect(createExpertTab.mock.calls[1]?.[2]).toEqual({ focus: false });
+    });
+
+    it('does not reset a scheduled paper that arrives while the previous turn is still running', async () => {
+        let releaseIdle: () => void = () => {};
+        let busy = false;
+        const sendExpertMessage = vi.fn(() => {
+            busy = true;
+            return Promise.resolve();
+        });
+        const resetExpert = vi.fn(async () => {});
+        const whenExpertSessionIdle = vi.fn(() => new Promise<void>((resolve) => {
+            releaseIdle = () => { busy = false; resolve(); };
+        }));
+        const handled = vi.fn();
+        const createExpertTab = expertTabMock();
+        const { rerender } = renderHook(
+            ({ pending }) => usePendingAssistantTabOpen({
+                createVETab: vi.fn(),
+                createGroupTab: vi.fn(),
+                createProjectTab: vi.fn(),
+                createExpertTab,
+                newTaskCoverHeld: () => false,
+                visibleExpertId: () => 'other-expert',
+                expertSessionIdle: () => !busy,
+                whenExpertSessionIdle,
+                resetExpertConversation: resetExpert,
+                sendExpertMessage,
+                pendingExpertOpen: pending,
+                onPendingExpertOpenHandled: handled,
+            }),
+            { initialProps: { pending: null as PendingExpertOpen | null } },
+        );
+        const expert = makeExpert('builtin-latex-paper', 'LaTeX');
+        rerender({ pending: { expert, initialMessage: 'first paper', backgroundLaunch: true } });
+        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('first paper', 'builtin-latex-paper'));
+        expect(resetExpert).toHaveBeenCalledTimes(1);
+        await act(async () => { await Promise.resolve(); });
+        rerender({ pending: null });
+        rerender({ pending: { expert, initialMessage: 'second paper', backgroundLaunch: true } });
+        await waitFor(() => expect(handled.mock.calls.length).toBeGreaterThanOrEqual(2));
+        expect(sendExpertMessage).toHaveBeenCalledTimes(1);
+        expect(resetExpert).toHaveBeenCalledTimes(1);
+        rerender({ pending: null });
+        await act(async () => { releaseIdle(); });
+        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('second paper', 'builtin-latex-paper'));
+        expect(resetExpert).toHaveBeenCalledTimes(2);
+        expect(createExpertTab.mock.calls[1]?.[2]).toEqual({ focus: false });
+    });
+
+    it('does not cancel an expert registration when the next open is promoted', async () => {
+        let resolveEnsure: (value: { projectPath: string }) => void = () => {};
+        let holdEnsure = true;
+        const ensure = vi.fn(() => {
+            if (holdEnsure) {
+                holdEnsure = false;
+                return new Promise<{ projectPath: string }>((resolve) => { resolveEnsure = resolve; });
+            }
+            return Promise.resolve({ projectPath: 'D:/tasks/paper-2' });
+        });
+        const sendExpertMessage = vi.fn((_message: string, _expertId: string) => Promise.resolve());
+        const createExpertTab = expertTabMock();
+        const { rerender } = renderHook(
+            ({ pending }) => usePendingAssistantTabOpen({
+                createVETab: vi.fn(),
+                createGroupTab: vi.fn(),
+                createProjectTab: vi.fn(),
+                createExpertTab,
+                newTaskCoverHeld: () => false,
+                visibleExpertId: () => 'other-expert',
+                onEnsureExpertTask: ensure,
+                sendExpertMessage,
+                pendingExpertOpen: pending,
+                onPendingExpertOpenHandled: vi.fn(),
+            }),
+            { initialProps: { pending: null as PendingExpertOpen | null } },
+        );
+        const expert = makeExpert('builtin-latex-paper', 'LaTeX');
+        rerender({ pending: { expert, initialMessage: 'first paper', backgroundLaunch: true, projectPath: 'D:/tasks/paper-1' } });
+        await waitFor(() => expect(ensure).toHaveBeenCalledTimes(1));
+        rerender({ pending: { expert, initialMessage: 'second paper', backgroundLaunch: true, projectPath: 'D:/tasks/paper-2' } });
+        await act(async () => { await Promise.resolve(); });
+        expect(ensure).toHaveBeenCalledTimes(1);
+        expect(sendExpertMessage).not.toHaveBeenCalled();
+        await act(async () => { resolveEnsure({ projectPath: 'D:/tasks/paper-1' }); });
+        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('first paper', 'builtin-latex-paper'));
+        await waitFor(() => expect(sendExpertMessage).toHaveBeenCalledWith('second paper', 'builtin-latex-paper'));
+        expect(sendExpertMessage.mock.calls.map(call => call[0])).toEqual(['first paper', 'second paper']);
+        expect(ensure).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not clear a scheduled expert when the cover rises during its reset', async () => {
+        let coverHeld = false;
+        let visibleId = 'builtin-latex-paper';
+        let cleared = false;
+        const resetExpert = vi.fn(async (_expertId: string, _previousPath?: string, keep?: () => boolean) => {
+            await Promise.resolve();
+            if (resetExpert.mock.calls.length === 1) {
+                coverHeld = true;
+                if (keep?.()) return;
+            }
+            cleared = true;
+        });
+        const createExpertTab = expertTabMock();
+        const { rerender } = renderHook(
+            ({ pending }) => usePendingAssistantTabOpen({
+                createVETab: vi.fn(),
+                createGroupTab: vi.fn(),
+                createProjectTab: vi.fn(),
+                createExpertTab,
+                newTaskCoverHeld: () => coverHeld,
+                visibleExpertId: () => visibleId,
+                resetExpertConversation: resetExpert,
+                sendExpertMessage: vi.fn(),
+                pendingExpertOpen: pending,
+                onPendingExpertOpenHandled: vi.fn(),
+            }),
+            { initialProps: { pending: null as PendingExpertOpen | null } },
+        );
+        rerender({
+            pending: {
+                expert: makeExpert('builtin-latex-paper', 'LaTeX'),
+                initialMessage: 'compile the paper',
+                backgroundLaunch: true,
+            },
+        });
+        await waitFor(() => expect(resetExpert).toHaveBeenCalledTimes(1));
+        expect(cleared).toBe(false);
+        expect(createExpertTab).not.toHaveBeenCalled();
+
+        coverHeld = false;
+        visibleId = 'other-expert';
+        act(() => { setNewTaskCoverHeld(true); });
+        await waitFor(() => expect(createExpertTab).toHaveBeenCalledTimes(1));
+        expect(cleared).toBe(true);
+        expect(createExpertTab.mock.calls[0]?.[2]).toEqual({ focus: false });
+    });
+
+    it('does not reset a scheduled expert when the cover closes over it during registration', async () => {
+        let resolveEnsure: (value: { projectPath: string; relativePath: string }) => void = () => {};
+        const ensure = vi.fn(() => new Promise<{ projectPath: string; relativePath: string }>((resolve) => { resolveEnsure = resolve; }));
+        const resetExpert = vi.fn();
+        const createExpertTab = expertTabMock();
+        let coverHeld = false;
+        const visibleId = 'builtin-latex-paper';
+        const { rerender } = renderHook(
+            ({ pending }) => usePendingAssistantTabOpen({
+                createVETab: vi.fn(),
+                createGroupTab: vi.fn(),
+                createProjectTab: vi.fn(),
+                createExpertTab,
+                newTaskCoverHeld: () => coverHeld,
+                visibleExpertId: () => visibleId,
+                resetExpertConversation: resetExpert,
+                onEnsureExpertTask: ensure,
+                pendingExpertOpen: pending,
+                onPendingExpertOpenHandled: vi.fn(),
+            }),
+            { initialProps: { pending: null as PendingExpertOpen | null } },
+        );
+        rerender({
+            pending: {
+                expert: makeExpert('builtin-latex-paper', 'LaTeX'),
+                initialMessage: 'compile the paper',
+                backgroundLaunch: true,
+                projectPath: 'D:/tasks/paper',
+                latexDocument: { relativePath: 'main.tex' },
+            },
+        });
+        await waitFor(() => expect(ensure).toHaveBeenCalledTimes(1));
+        coverHeld = true;
+        act(() => { setNewTaskCoverHeld(true); });
+        await act(async () => {
+            resolveEnsure({ projectPath: 'D:/tasks/paper', relativePath: 'main.tex' });
+        });
+        expect(resetExpert).not.toHaveBeenCalled();
+        expect(createExpertTab).not.toHaveBeenCalled();
+
+        coverHeld = false;
+        act(() => { setNewTaskCoverHeld(false); });
+        await waitFor(() => expect(createExpertTab).toHaveBeenCalledTimes(1));
+        expect(ensure).toHaveBeenCalledTimes(1);
+        expect(resetExpert).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not open a scheduled paper on the covered preview', async () => {
+        const createExpertTab = vi.fn((expert: { id: string; name?: string }, task?: { projectPath?: string; relativePath?: string }): AITab => ({
+            id: `expert:${expert.id}`,
+            type: 'expert',
+            expertId: expert.id,
+            title: expert.name || expert.id,
+            closable: true,
+            projectPath: task?.projectPath,
+            latexRelativePath: task?.relativePath,
+        }));
+        const { rerender } = renderHook(
+            ({ pending }) => usePendingAssistantTabOpen({
+                createVETab: vi.fn(),
+                createGroupTab: vi.fn(),
+                createProjectTab: vi.fn(),
+                createExpertTab,
+                newTaskCoverHeld: () => true,
+                visibleExpertId: () => 'other-expert',
+                onEnsureExpertTask: async () => ({ projectPath: 'D:/tasks/paper', relativePath: 'main.tex' }),
+                pendingExpertOpen: pending,
+                onPendingExpertOpenHandled: vi.fn(),
+            }),
+            { initialProps: { pending: null as PendingExpertOpen | null } },
+        );
+        rerender({
+            pending: {
+                expert: makeExpert('builtin-latex-paper', 'LaTeX'),
+                backgroundLaunch: true,
+                projectPath: 'D:/tasks/paper',
+            },
+        });
+        await waitFor(() => expect(createExpertTab).toHaveBeenCalledWith(
+            expect.objectContaining({ id: 'builtin-latex-paper' }),
+            { projectPath: 'D:/tasks/paper', relativePath: 'main.tex' },
+            { focus: false },
+        ));
+        expect(takePendingLatexDocument()).toBeNull();
     });
 
     it('does not attach deferred send or IM delivery state to a new task', async () => {
@@ -437,6 +1090,23 @@ describe('useAITabManager', () => {
     });
 
     describe('tab creation', () => {
+        it('creates a project tab without taking focus when focus is false', () => {
+            const { result } = renderHook(() => useAITabManager());
+            let first: AITab | null = null;
+            let scheduled: AITab | null = null;
+            act(() => {
+                first = result.current.createProjectTab('D:/tasks/current', 'Current');
+                scheduled = result.current.createProjectTab('D:/tasks/scheduled', 'Scheduled', { focus: false });
+            });
+            expect(scheduled).not.toBeNull();
+            expect(result.current.tabState.tabs.some(tab => tab.id === scheduled!.id)).toBe(true);
+            expect(result.current.activeTab.id).toBe(first!.id);
+            act(() => {
+                result.current.createProjectTab('D:/tasks/scheduled', 'Scheduled again', { focus: false });
+            });
+            expect(result.current.activeTab.id).toBe(first!.id);
+        });
+
         it('creates a VE tab and activates it', () => {
             const { result } = renderHook(() => useAITabManager());
 

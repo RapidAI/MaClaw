@@ -5,7 +5,7 @@
 set -eu
 
 if [ "$(id -u)" != "0" ]; then
-  echo "ERROR: must run as root" >&2
+  echo "This script must run as root. Run sudo sh install-logrotate.sh." >&2
   exit 1
 fi
 if ! command -v logrotate >/dev/null 2>&1; then
@@ -20,8 +20,8 @@ cat > /etc/logrotate.d/maclaw-hub <"$CONF_SRC"
 chmod 644 /etc/logrotate.d/maclaw-hub
 
 if ! logrotate -d /etc/logrotate.d/maclaw-hub >/dev/null 2>&1; then
-  echo "ERROR: logrotate config failed validation" >&2
   logrotate -d /etc/logrotate.d/maclaw-hub >&2 || true
+  echo "logrotate rejected /etc/logrotate.d/maclaw-hub. Fix the paths in deploy/tools/logrotate/maclaw-hub.conf and rerun this script. The dry-run output is above." >&2
   exit 1
 fi
 

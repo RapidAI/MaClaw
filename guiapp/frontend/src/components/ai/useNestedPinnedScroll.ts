@@ -19,7 +19,9 @@ export function useNestedPinnedScroll(active: boolean, contentKey: string) {
 
     const applyScroll = useCallback((_behavior?: ScrollBehavior) => {
         const el = bodyRef.current;
-        if (!el || !active) return;
+        // A covered transcript is display:none. scrollHeight is 0 there, and
+        // writing it would pin the thought to the top once the cover lifts.
+        if (!el || !active || el.closest("[hidden]")) return;
         programmaticRef.current = true;
         try {
             if (tryPinNestedScroll(el, pinnedRef.current, userIntentRef.current) === "abandoned") {
@@ -61,6 +63,7 @@ export function useNestedPinnedScroll(active: boolean, contentKey: string) {
             userIntentRef.current = false;
             return;
         }
+        if (bodyRef.current?.closest("[hidden]")) return;
         pinToBottom(1);
         return cancelScheduled;
     }, [active, contentKey, pinToBottom, cancelScheduled]);

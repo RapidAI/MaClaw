@@ -13,6 +13,10 @@ func TestDesktopScreenshotHandlerPassesOptionsAndGeometry(t *testing.T) {
 	jpeg := []byte("\xff\xd8\xff\xe0fake-jpeg")
 	var got map[string]any
 	docker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/desktops/ensure" {
+			_, _ = w.Write([]byte(`{"status":"running"}`))
+			return
+		}
 		_ = json.NewDecoder(r.Body).Decode(&got)
 		w.Header().Set("Content-Type", "image/jpeg")
 		w.Header().Set("X-Desktop-Screen-Size", "1280x800")

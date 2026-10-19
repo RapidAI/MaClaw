@@ -1,0 +1,7 @@
+{
+  "id": "no_bubble_per_step",
+  "origin": "background",
+  "step": true,
+  "where": "正在把登录后的第一屏存下来。",
+  "expect_count": 0
+}

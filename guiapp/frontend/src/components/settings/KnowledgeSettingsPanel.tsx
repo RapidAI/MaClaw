@@ -8,6 +8,7 @@ import { buildHubCardStoreURL } from '../../utils/hubCredits';
 import { EnterpriseKnowledgeListLibraries, EnterpriseKnowledgeSetLibraryUserSync, EnterprisePurgeRevokedLibrary, EnterpriseSetSyncPaused, EnterpriseSyncNow, EnterpriseSyncStatus, GetHubLLMServiceStatus, KnowledgeBackfillSourceAutoLabels, KnowledgeCapabilities, KnowledgeClearAll, KnowledgeContextPack, KnowledgeDeepCrawl, KnowledgeDeepCrawlPreview, KnowledgeDeleteHubShare, KnowledgeDeleteFragment, KnowledgeDeleteSource, KnowledgeDisableSensitiveSources, KnowledgeDisableSource, KnowledgeDisableSources, KnowledgeDisableSourcesByFilter, KnowledgeDiscoverURLs, KnowledgeDoctor, KnowledgeEnableSource, KnowledgeEnableSourcesByFilter, KnowledgeEntityProfile, KnowledgeExecuteSourceQualityMaintenancePlan, KnowledgeExplain, KnowledgeExportSnapshotWithOptions, KnowledgeFactGraph, KnowledgeFactIndex, KnowledgeGetImageAssetPaths, KnowledgeHealth, KnowledgeImportDirectory, KnowledgeImportFiles, KnowledgeImportHubShare, KnowledgeImportJobStatus, KnowledgeImportSnapshot, KnowledgeLinkSources, KnowledgeListCardsBySource, KnowledgeListDuplicateCards, KnowledgeListFactsBySource, KnowledgeListImportBatches, KnowledgeListImportItems, KnowledgeListMyHubShares, KnowledgeListSourceLabels, KnowledgeListSourceLinkEvents, KnowledgeListSourceLinks, KnowledgeListSourceVersions, KnowledgeListSources, KnowledgeListSuppressedCards, KnowledgeListURLDomainPolicies, KnowledgeMaintain, KnowledgeOpenImageAsset, KnowledgePreviewNodesBySource, KnowledgePreviewSourceRefresh, KnowledgePreviewSourceTopicLinks, KnowledgePreviewSourcesRefreshByFilter, KnowledgeQualityMaintenancePolicies, KnowledgeRebuildSourceDerived, KnowledgeRebuildSourcesDerived, KnowledgeRebuildSourcesDerivedByFilter, KnowledgeRefreshChangedSources, KnowledgeRefreshChangedSourcesByFilter, KnowledgeRefreshSource, KnowledgeRefreshSourceTopicLinks, KnowledgeRefreshSourceTopicLinksByFilter, KnowledgeRefreshSources, KnowledgeRefreshSourcesByFilter, KnowledgeRestoreSuppressedCards, KnowledgeRetryImportBatch, KnowledgeSaveText, KnowledgeSaveURL, KnowledgeSaveURLs, KnowledgeScanDirectory, KnowledgeScanFiles, KnowledgeScanSensitiveContent, KnowledgeSearch, KnowledgeSearchFacets, KnowledgeSearchStructured, DigitalAssetListContributableLibraries, DigitalAssetListMySubmissions, DigitalAssetWithdrawSubmission, KnowledgeContributeToOrg, KnowledgeShareToHub, KnowledgeSourceDigest, KnowledgeSourceGraph, KnowledgeSourceNeighborhood, KnowledgeSourcePath, KnowledgeSourceQualityMaintenancePlan, KnowledgeSourceQualityReport, KnowledgeSourceTimeline, KnowledgeStartImportDirectory, KnowledgeStructuredCatalog, KnowledgeSuggest, KnowledgeSuppressDuplicateCards, KnowledgeSyncDelete, KnowledgeSyncDownload, KnowledgeSyncStatus, KnowledgeSyncUpload, KnowledgeSyncVerifyPassword, KnowledgeTopicRelevance, KnowledgeUnlinkSources, KnowledgeUpdateHubShare, KnowledgeUpdateSourceLabels, KnowledgeUpdateSourceMetadata, KnowledgeUpdateURLDomainPolicies, LoadConfig, OpenFileOrShowInFolder, OpenSystemUrl, SelectKnowledgeDirectory, SelectKnowledgeFiles, SelectKnowledgeSnapshotExportPath, SelectKnowledgeSnapshotFile } from '../../../wailsjs/go/main/App';
 import { knowledge } from '../../../wailsjs/go/models';
 import { SuggestCombobox } from '../ui/SuggestCombobox';
+import { knowledgeEnterpriseLabel, knowledgeHitPreview, knowledgeHitTitle, knowledgeResultKey } from '../ai/unifiedHeaderSearch';
 
 type Props = {
     lang?: string;
@@ -4305,9 +4306,14 @@ function ResultList({ results, empty, query, t, busy, onDelete }: {
         const isImage = result.node_type === 'image' || result.source?.kind === 'image';
         const isTableRow = result.result_type === 'table_row';
         const canDelete = knowledgeSearchFragmentDeletable(result);
-        const sourceLabel = isTableRow
+        const plainLabel = isTableRow
             ? (result.claim || result.source?.title || result.source?.relative_path || 'Table row')
-            : (result.card_title || result.node_title || result.subject || result.source?.title || result.source?.relative_path || 'Result');
+            : result.result_type === 'fact'
+                ? (knowledgeHitTitle(result) || result.card_title || result.source?.title || 'Result')
+                : (result.card_title || result.node_title || result.subject || result.source?.title || result.source?.relative_path || 'Result');
+        const sourceLabel = result.result_type === 'fact'
+            ? plainLabel
+            : (knowledgeEnterpriseLabel(plainLabel, result.source?.title) || plainLabel);
         const meta = [
             result.result_type,
             result.source?.kind,
@@ -4317,9 +4323,12 @@ function ResultList({ results, empty, query, t, busy, onDelete }: {
             result.source?.relative_path || result.source?.uri,
             result.score ? `score ${result.score.toFixed(3)}` : '',
         ].filter(Boolean).join(' · ');
-        const snippet = result.summary || result.claim || result.snippet || [result.subject, result.predicate, result.object].filter(Boolean).join(' ');
+        const snippet = result.result_type === 'fact'
+            ? knowledgeHitPreview(result)
+            : (result.summary || result.claim || result.snippet || [result.subject, result.predicate, result.object].filter(Boolean).join(' '));
+        const rowKey = knowledgeResultKey(result, index);
         return (
-            <div key={`${result.result_type || 'result'}-${result.node_id || result.card_id || result.fact_id || result.row_id || index}`} className={`knowledge-row ${isImage ? 'knowledge-row--image' : ''}`}>
+            <div key={rowKey} className={`knowledge-row ${isImage ? 'knowledge-row--image' : ''}`}>
                 {isImage && result.media?.asset_id && <ImageResultThumbnail assetID={result.media.asset_id} title={sourceLabel} />}
                 <div className="knowledge-row-main">
                     <strong>
@@ -4335,7 +4344,7 @@ function ResultList({ results, empty, query, t, busy, onDelete }: {
                         type="button"
                         className="knowledge-button knowledge-button--danger knowledge-row-delete"
                         disabled={!!busy}
-                        data-testid={`knowledge-search-delete-${result.node_id || result.card_id || result.fact_id || result.row_id || index}`}
+                        data-testid={`knowledge-search-delete-${rowKey}`}
                         aria-label={t('Delete fragment', '删除片段')}
                         title={t('Delete fragment', '删除片段')}
                         onClick={event => {

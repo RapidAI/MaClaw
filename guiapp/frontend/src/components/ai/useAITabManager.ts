@@ -71,6 +71,12 @@ export interface CreateProjectTabOptions {
     remoteNeedsReconnect?: boolean;
     /** External ACP session identity; switches project-path tab identity to this key. */
     sessionKey?: string;
+    /** False leaves the current tab selected. Scheduled work uses this under the new-task cover. */
+    focus?: boolean;
+}
+
+function focusedTabId(currentId: string, nextId: string, focus?: boolean): string {
+    return focus === false ? currentId : nextId;
 }
 
 export interface CreateVETabOptions {
@@ -225,7 +231,7 @@ export interface UseAITabManagerResult {
     /** Resolves after CreateProjectTabSession for this tab (or immediately if none is in flight). */
     waitForProjectTabSession: (tabId: string) => Promise<void>;
     /** Create (or activate) an expert conversation tab. Returns the tab or null if limit reached. */
-    createExpertTab: (expert: ExpertDefinition, task?: { projectPath?: string; relativePath?: string }) => AITab | null;
+    createExpertTab: (expert: ExpertDefinition, task?: { projectPath?: string; relativePath?: string }, options?: { focus?: boolean }) => AITab | null;
     /** Close a tab by ID */
     closeTab: (tabId: string) => void;
     /** Remove a deleted project's tabs without persisting an archived session. */
@@ -1274,12 +1280,12 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                 if (existingState) existingState.projectPath = effectiveProjectPath;
                 updateTabState(() => ({
                     ...prev,
-                    activeTabId: existing.id,
+                    activeTabId: focusedTabId(prev.activeTabId, existing.id, options?.focus),
                     tabs: prev.tabs.map(t => t.id === existing.id ? patched : t),
                 }));
                 return patched;
             }
-            updateTabState(() => ({ ...prev, activeTabId: existing.id }));
+            updateTabState(() => ({ ...prev, activeTabId: focusedTabId(prev.activeTabId, existing.id, options?.focus) }));
             return existing;
         }
 
@@ -1357,7 +1363,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         updateTabState(() => ({
             ...prev,
             tabs: [...prev.tabs, newTab],
-            activeTabId: newTab.id,
+            activeTabId: focusedTabId(prev.activeTabId, newTab.id, options?.focus),
         }));
 
         return newTab;
@@ -1367,7 +1373,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         return projectTabSessionReadyByIDRef.current.get(tabId) ?? Promise.resolve();
     }, []);
 
-    const createExpertTab = useCallback((expert: ExpertDefinition, task?: { projectPath?: string; relativePath?: string }): AITab | null => {
+    const createExpertTab = useCallback((expert: ExpertDefinition, task?: { projectPath?: string; relativePath?: string }, options?: { focus?: boolean }): AITab | null => {
         const expertId = String(expert?.id || "").trim();
         if (!expertId) return null;
         const projectPath = String(task?.projectPath || "").trim() || undefined;
@@ -1400,7 +1406,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             updateTabState(() => ({
                 ...prev,
                 tabs: prev.tabs.map(t => t.id === existing.id ? updated : t),
-                activeTabId: existing.id,
+                activeTabId: focusedTabId(prev.activeTabId, existing.id, options?.focus),
             }));
             return updated;
         }
@@ -1436,7 +1442,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         updateTabState(() => ({
             ...prev,
             tabs: [...prev.tabs, newTab],
-            activeTabId: newTab.id,
+            activeTabId: focusedTabId(prev.activeTabId, newTab.id, options?.focus),
         }));
 
         return newTab;

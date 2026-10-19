@@ -49,6 +49,7 @@ import {
     WatchDesktopBot,
 } from '../../../wailsjs/go/main/App';
 import { desktopModeOf, effectiveScreenPick, mineScreenURL, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
+import { desktopTurnFromPayload, isDesktopBotFiller } from './visibleDesktopTurn';
 import {
     appendDesktopBotReport,
     DESKTOP_BOT_NOT_PRIMARY,
@@ -103,6 +104,7 @@ import {
     notePendingBotDesktop,
     saveBotMessages,
     settlePendingBotReply,
+    dropPendingBotReply,
     applySupplementOutcomes,
     type BotPhase,
     type DesktopBot,
@@ -258,6 +260,13 @@ function withinBudget<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
 function phaseFor(content: string, requested: BotPhase): BotPhase {
     if (planSaveName(content)) return 'plan';
     return requested === 'execute' ? 'execute' : 'plan';
+}
+
+// A delivery names the turn that asked. Anything else is not a phase.
+function reportedTurnPhase(data: Record<string, unknown>): BotPhase | undefined {
+    const phase = String(data.phase || data.Phase || '').trim();
+    if (phase === 'execute' || phase === 'plan') return phase;
+    return undefined;
 }
 
 type WorkPace = 'direct' | 'confirm' | 'ask' | 'reply' | 'schedule' | 'status';
@@ -553,7 +562,7 @@ function storedQueuePhase(item: DesktopBotMessage): BotPhase {
 // dispatched is the latest message, so it is not repeated here. A message
 // still waiting in the queue is a later job, not context for this one.
 type PreparedTurn = { told: string; instruction: string; pace: 'confirm' | 'direct'; persona: string; earlier: string[] };
-type QueuedSend = { text: string; phase: BotPhase; verbatim?: boolean; prepared?: PreparedTurn; userText?: string; crossNoteId?: string; claimed?: boolean };
+type QueuedSend = { text: string; phase: BotPhase; verbatim?: boolean; literal?: boolean; prepared?: PreparedTurn; userText?: string; crossNoteId?: string; claimed?: boolean };
 
 function sameContext(left: string[], right: string[]): boolean {
     return left.length === right.length && left.every((item, index) => item === right[index]);
@@ -594,7 +603,10 @@ function askFrom(data: Record<string, unknown>): DesktopBotAsk | undefined {
     if (typeof raw === 'string' && raw.trim()) {
         try {
             const parsed = JSON.parse(raw) as unknown;
-            if (Array.isArray(parsed)) options = parsed.map(item => String(item)).filter(Boolean);
+            if (Array.isArray(parsed)) {
+                const kept = parsed.map(item => String(item).trim()).filter(item => item !== '' && !isDesktopBotFiller(item));
+                if (kept.length) options = kept;
+            }
         } catch {
             options = undefined;
         }
@@ -741,7 +753,6 @@ function copy(lang: string) {
             userControl: 'Finish the login or verification in this browser. The login stays here for the bot.',
             returnControl: 'Login done, continue',
             returnCommand: RETURN_COMMAND,
-            emptyResult: 'The backend returned no result.',
             unavailable: 'The backend agent is unavailable.',
             orderMissing: 'That message did not become an order, so it was not sent.',
             scheduleMissing: 'That message did not become a schedule, so none was set.',
@@ -866,7 +877,6 @@ function copy(lang: string) {
             userControl: '請在這個桌面的瀏覽器裡完成登入或驗證。登入會留在這個瀏覽器裡，完成後交還。',
             returnControl: '登入完成，繼續',
             returnCommand: RETURN_COMMAND,
-            emptyResult: '後台沒有返回結果。',
             unavailable: '後台 agent 不可用。',
             orderMissing: '這句沒整理成可執行的安排，沒有發出。',
             scheduleMissing: '這句沒有整理成定時安排，沒有設定。',
@@ -990,7 +1000,6 @@ function copy(lang: string) {
         userControl: '请在这个桌面的浏览器里完成登录或验证。登录会留在这个浏览器里，完成后交还。',
         returnControl: '登录完成，继续',
         returnCommand: RETURN_COMMAND,
-        emptyResult: '后台没有返回结果。',
         unavailable: '后台 agent 不可用。',
             orderMissing: '这句没整理成可执行的安排，没有发出。',
             scheduleMissing: '这句没有整理成定时安排，没有设定。',
@@ -1070,6 +1079,16 @@ function friendlyFailure(raw: string, lang: string): string {
         return '这条没送到——我这边暂时连不上我的服务器。麻烦稍后再发一次。';
     }
     return detail;
+}
+
+// A failed bubble rewrites an operator error. The question this run asked is
+// shown as written, even when it mentions a timeout or an unreachable host.
+export function desktopBotBubbleBody(content: string, failed: boolean, question: string, lang: string): string {
+    const body = content || '';
+    if (failed && (question || '').trim() !== body.trim()) {
+        return friendlyFailure(body, lang) || body;
+    }
+    return body;
 }
 
 // The queued variant is only for a line that cannot start yet: an earlier
@@ -1202,25 +1221,32 @@ export function handleDesktopBotResult(payload: unknown) {
     const sessionKey = String(data.session_key || data.SessionKey || '');
     const split = sessionKey.lastIndexOf(':');
     if (split <= 0) return;
-    const result = responseText(data, '后台没有返回结果。');
+    const result = responseText(data);
     const screen = screenOf(data);
     const attached = attachedFiles(data, result.failed);
     const resultUser = sessionKey.slice(0, split);
     const resultBot = sessionKey.slice(split + 1);
+    const images = result.failed ? undefined : imagesFrom(data);
+    const shotPaths = result.failed ? undefined : shotPathsFrom(data);
+    const ask = askFrom(data);
+    if (!turnHasVisibleResult(result, ask, images, shotPaths, attached)) {
+        dropPendingBotReply(resultUser, resultBot, requestId);
+        return;
+    }
     settlePendingBotReply(resultUser, resultBot, {
-        content: result.content,
+        content: sentenceForTurn(result, ask),
         failed: result.failed,
         handoffUrl: screen.userControl || screen.reason ? screen.url : '',
         userControl: screen.userControl,
         attentionReason: screen.reason,
-        askUser: askFrom(data),
+        askUser: ask,
         requestId,
-        images: result.failed ? undefined : imagesFrom(data),
-        shotPaths: result.failed ? undefined : shotPathsFrom(data),
+        images,
+        shotPaths,
         files: attached.files,
         localPaths: attached.localPaths,
     });
-    reportDesktopBotCrossResult(resultUser, resultBot, result.content);
+    if (!result.silent) reportDesktopBotCrossResult(resultUser, resultBot, result.content);
 }
 
 export function handleDesktopBotReport(payload: unknown) {
@@ -1240,21 +1266,26 @@ export function handleDesktopBotReport(payload: unknown) {
     const sessionKey = String(data.session_key || data.SessionKey || '');
     const split = sessionKey.lastIndexOf(':');
     if (split <= 0) return;
-    const result = responseText(data, '后台没有返回结果。');
+    const result = responseText(data);
     const screen = screenOf(data);
     const attached = attachedFiles(data, result.failed);
+    const images = result.failed ? undefined : imagesFrom(data);
+    const shotPaths = result.failed ? undefined : shotPathsFrom(data);
+    const ask = askFrom(data);
+    if (!turnHasVisibleResult(result, ask, images, shotPaths, attached)) return;
     appendDesktopBotReport(sessionKey.slice(0, split), sessionKey.slice(split + 1), {
-        content: result.content,
+        content: sentenceForTurn(result, ask),
         failed: result.failed,
         handoffUrl: screen.userControl || screen.reason ? screen.url : '',
         userControl: screen.userControl,
         attentionReason: screen.reason,
-        askUser: askFrom(data),
+        askUser: ask,
         requestId,
-        images: result.failed ? undefined : imagesFrom(data),
-        shotPaths: result.failed ? undefined : shotPathsFrom(data),
+        images,
+        shotPaths,
         files: attached.files,
         localPaths: attached.localPaths,
+        phase: reportedTurnPhase(data),
     });
 }
 
@@ -1421,12 +1452,55 @@ function saveDesktopFile(file: DesktopBotFile) {
     URL.revokeObjectURL(url);
 }
 
-function responseText(payload: Record<string, unknown>, emptyResult: string) {
-    const text = String(payload.text || payload.Text || '').trim();
-    const error = String(payload.error || payload.Error || '').trim();
-    if (text) return { content: text, failed: false };
-    if (error) return { content: error, failed: true };
-    return { content: emptyResult, failed: true };
+function desktopTurnHasAttachment(images: unknown[] | undefined, shotPaths: string[] | undefined, attached: { files?: unknown[]; localPaths?: string[] }) {
+    return (images && images.length > 0) || (shotPaths && shotPaths.length > 0) || (attached.files && attached.files.length > 0) || (attached.localPaths && attached.localPaths.length > 0);
+}
+
+// The visible sentence is send_to_user. Assistant prose in text stays off the bubble.
+function responseText(payload: Record<string, unknown>) {
+    const view = desktopTurnFromPayload(payload);
+    return { content: view.sentence, failed: view.failed, silent: !view.bubble };
+}
+
+// A question, a secret, or a choice is still this turn when send_to_user is empty.
+// The question is the sentence. Assistant prose is not.
+function askKeepsTurn(ask: DesktopBotAsk | undefined): boolean {
+    if (!ask) return false;
+    const questionText = (ask.question || '').trim();
+    if (questionText && !isDesktopBotFiller(questionText)) return true;
+    if ((ask.secretName || '').trim()) return true;
+    // inputType is set on every ask, including a placeholder question.
+    // It is not itself something to answer. A placeholder label is not a choice.
+    return choiceLine(ask) !== '';
+}
+
+function choiceLine(ask: DesktopBotAsk | undefined): string {
+    return (ask?.options || [])
+        .map(item => (item || '').trim())
+        .filter(item => item && !isDesktopBotFiller(item))
+        .join('\n');
+}
+
+function sentenceForTurn(result: { content: string; failed?: boolean }, ask: DesktopBotAsk | undefined): string {
+    // send_to_user wins. A failure with no sentence still has its error for
+    // the status line; the chat bubble is the question the run asked.
+    // A placeholder question is not that sentence. The choice labels are,
+    // because the buttons stay hidden while this person holds the desktop.
+    // A secret name is that sentence when there is no question and no choice.
+    if (result.content && !result.failed) return result.content;
+    const question = (ask?.question || '').trim();
+    if (question && !isDesktopBotFiller(question)) return question;
+    if (!result.failed) {
+        const choices = choiceLine(ask);
+        if (choices) return choices;
+        const secret = (ask?.secretName || '').trim();
+        if (secret && !isDesktopBotFiller(secret)) return secret;
+    }
+    return result.content || '';
+}
+
+function turnHasVisibleResult(result: { silent: boolean }, ask: DesktopBotAsk | undefined, images: unknown[] | undefined, shotPaths: string[] | undefined, attached: { files?: unknown[]; localPaths?: string[] }) {
+    return !result.silent || askKeepsTurn(ask) || desktopTurnHasAttachment(images, shotPaths, attached);
 }
 
 type PendingSend = { botId: string; messageId: string; settled: boolean; admitted: boolean };
@@ -2834,29 +2908,35 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 noteCreditsSpent(requestId || pendingKey);
                 pendingRef.current.delete(pendingKey);
                 const botId = pending.botId;
-                const result = responseText(data, text.emptyResult);
+                const result = responseText(data);
                 const ask = askFrom(data);
                 const attached = attachedFiles(data, result.failed);
                 const shots = result.failed ? undefined : shotPathsFrom(data);
+                const images = result.failed || shots ? undefined : imagesFrom(data);
                 const stored = messagesForBot(userId, botId);
-                const attention = screen.userControl || screen.reason !== '';
-                const next = stored.map(item => item.id === pending.messageId ? {
-                    ...item,
-                    content: result.content,
-                    pending: false,
-                    failed: result.failed,
-                    requestId: requestId || item.requestId,
-                    handoffUrl: attention ? (screen.url || item.handoffUrl || '') : '',
-                    userControl: screen.userControl,
-                    attentionReason: screen.reason,
-                    askUser: ask || item.askUser,
-                    images: result.failed || shots ? undefined : imagesFrom(data),
-                    shotPaths: shots,
-                    localPaths: attached.localPaths,
-                    files: attached.files,
-                } : item);
-                commit(botId, foldPlanConfirmation(next, next.findIndex(item => item.id === pending.messageId)));
-                reportDesktopBotCrossResult(userId, botId, result.content);
+                if (!turnHasVisibleResult(result, ask, images, shots, attached)) {
+                    clearLiveBotTurn(userId, botId, pending.messageId);
+                    commit(botId, stored.filter(item => item.id !== pending.messageId));
+                } else {
+                    const attention = screen.userControl || screen.reason !== '';
+                    const next = stored.map(item => item.id === pending.messageId ? {
+                        ...item,
+                        content: sentenceForTurn(result, ask),
+                        pending: false,
+                        failed: result.failed,
+                        requestId: requestId || item.requestId,
+                        handoffUrl: attention ? (screen.url || item.handoffUrl || '') : '',
+                        userControl: screen.userControl,
+                        attentionReason: screen.reason,
+                        askUser: ask || item.askUser,
+                        images,
+                        shotPaths: shots,
+                        localPaths: attached.localPaths,
+                        files: attached.files,
+                    } : item);
+                    commit(botId, foldPlanConfirmation(next, next.findIndex(item => item.id === pending.messageId)));
+                    if (!result.silent) reportDesktopBotCrossResult(userId, botId, result.content);
+                }
                 drainIfIdle(botId);
             }
             const botId = sessionBotId(sessionKey, userId);
@@ -2869,7 +2949,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         };
         const off = EventsOn('ai-assistant-response', handler);
         return () => { if (typeof off === 'function') off(); };
-    }, [text.emptyResult, userId]);
+    }, [userId]);
 
     useEffect(() => {
         const handler = (payload: unknown) => {
@@ -3374,7 +3454,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // so a fast later reading cannot run before an earlier one.
     // verbatim marks a queue entry whose reading already failed once: this
     // person chose their own words, so the queue must not read it again.
-    type ReadAhead = { text: string; phase: BotPhase; settled: boolean; enqueue: boolean; drop?: boolean; wanted?: boolean; verbatim?: boolean; prepared?: PreparedTurn };
+    type ReadAhead = { text: string; phase: BotPhase; settled: boolean; enqueue: boolean; drop?: boolean; wanted?: boolean; verbatim?: boolean; literal?: boolean; prepared?: PreparedTurn };
     const readAheadRef = useRef<Map<string, ReadAhead[]>>(new Map());
     // Set only while a stop is still deciding whether a live run exists.
     // Cleared before the cancel request returns, after the old slots are marked.
@@ -3670,15 +3750,20 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const prior = messagesForBot(userId, botId);
         commit(botId, [...prior, { id: messageID(), role: 'assistant', content: desktopBotTypedConfirmSentence(lang), chat: true }]);
     };
-    const startTask = (botId: string, content: string, phase: BotPhase, mode: 'now' | 'fromQueue', verbatim = false, prepared?: PreparedTurn) => {
-        if (content.trim() === CONFIRM_COMMAND) {
+    const startTask = (botId: string, content: string, phase: BotPhase, mode: 'now' | 'fromQueue', verbatim = false, prepared?: PreparedTurn, literal = false) => {
+        // A choice is the words on the button. 停下 is one of those words,
+        // not the stop command, and it is not read again as a new order.
+        if (literal) verbatim = true;
+        if (!literal && content.trim() === CONFIRM_COMMAND) {
             sayTypedConfirm(botId);
             return;
         }
-        const control = desktopBotLocalControl(content);
-        if (control) {
-            answerDesktopControl(botId, content, control, mode);
-            return;
+        if (!literal) {
+            const control = desktopBotLocalControl(content);
+            if (control) {
+                answerDesktopControl(botId, content, control, mode);
+                return;
+            }
         }
         const turnPhase = phaseFor(content, phase);
         // A second job starts beside one that is already going. It must not
@@ -4081,7 +4166,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     if (matches.length > 0) {
                         const targetID = matches.length === 1 ? String(matches[0].candidate.run_id || '') : '';
                         const receipt = await AppendDesktopBotSupplement(botId, targetID, String(matches[0].verdict?.instruction || content.trim())) as { accepted?: boolean; stage?: string; message?: string; supplement_id?: string } | null;
-                        const note = String(receipt?.message || '已收到，会在当前任务的下一步生效。');
+                        const note = String(receipt?.message || (String(lang).toLowerCase().startsWith('en') ? 'On it' : '在办'));
                         if (receipt?.stage === 'queued') {
                             // Only the receipt's ids go on the bubble. The
                             // terminal answer (applied / missed) arrives later
@@ -4152,21 +4237,28 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     return item;
                 }));
                 const queued = queueRef.current.get(botId) || [];
-                queued.push({ text: instruction, phase: sendPhase, verbatim: true, userText: content.trim() });
+                queued.push({ text: instruction, phase: sendPhase, verbatim: true, literal, userText: content.trim() });
                 queueRef.current.set(botId, queued);
                 return;
             }
             try {
-                const response = await SendDesktopBotTask(botId, instruction, sendPhase) as { request_id?: string; RequestID?: string; deferred?: boolean; Deferred?: boolean; text?: string; Text?: string; error?: string; Error?: string };
+                const response = await SendDesktopBotTask(botId, instruction, sendPhase) as { request_id?: string; RequestID?: string; deferred?: boolean; Deferred?: boolean; text?: string; Text?: string; error?: string; Error?: string; send_to_user?: string; SendToUser?: string };
                 if (ownerLeft()) {
                     pending.settled = true;
                     pendingRef.current.delete(ticket);
                     const requestId = String(response?.request_id || response?.RequestID || '');
                     const deferred = response?.deferred === true || response?.Deferred === true;
                     const stored = messagesForBot(ownerId, botId);
-                    if (!deferred && (response?.text || response?.Text || response?.error || response?.Error)) {
-                        const result = responseText(response as Record<string, unknown>, text.emptyResult);
-                        const settled = stored.map(item => item.id === assistantMessage.id ? { ...item, content: result.content, pending: false, failed: result.failed, requestId: requestId || item.requestId } : item);
+                    const inline = response as Record<string, unknown>;
+                    const ask = askFrom(inline);
+                    if (!deferred && (response?.text || response?.Text || response?.error || response?.Error || response?.send_to_user || response?.SendToUser || askKeepsTurn(ask))) {
+                        const result = responseText(inline);
+                        if (!turnHasVisibleResult(result, ask, undefined, undefined, {})) {
+                            saveBotMessages(ownerId, botId, stored.filter(item => item.id !== assistantMessage.id));
+                            clearLiveBotTurn(ownerId, botId, assistantMessage.id);
+                            return;
+                        }
+                        const settled = stored.map(item => item.id === assistantMessage.id ? { ...item, content: sentenceForTurn(result, ask), pending: false, failed: result.failed, requestId: requestId || item.requestId, askUser: ask || item.askUser } : item);
                         saveBotMessages(ownerId, botId, foldPlanConfirmation(settled, settled.findIndex(item => item.id === assistantMessage.id)));
                         clearLiveBotTurn(ownerId, botId, assistantMessage.id);
                         return;
@@ -4181,24 +4273,30 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 if (pending.settled) return;
                 const requestId = String(response?.request_id || response?.RequestID || '');
                 const deferred = response?.deferred === true || response?.Deferred === true;
-                if (!deferred && (response?.text || response?.Text || response?.error || response?.Error)) {
+                const inline = response as Record<string, unknown>;
+                const ask = askFrom(inline);
+                if (!deferred && (response?.text || response?.Text || response?.error || response?.Error || response?.send_to_user || response?.SendToUser || askKeepsTurn(ask))) {
                     pending.settled = true;
                     pendingRef.current.delete(ticket);
                     clearLiveBotTurn(userId, botId, assistantMessage.id);
-                    const result = responseText(response as Record<string, unknown>, text.emptyResult);
-                    const inline = response as Record<string, unknown>;
+                    const result = responseText(inline);
+                    const stored = messagesForBot(userId, botId);
+                    if (!turnHasVisibleResult(result, ask, undefined, undefined, {})) {
+                        commit(botId, stored.filter(item => item.id !== assistantMessage.id));
+                        drainIfIdle(botId);
+                        return;
+                    }
                     const screen = screenOf(inline);
                     const attention = screen.userControl || screen.reason !== '';
-                    const stored = messagesForBot(userId, botId);
                     const settled = stored.map(item => item.id === assistantMessage.id ? {
                         ...item,
-                        content: result.content,
+                        content: sentenceForTurn(result, ask),
                         pending: false,
                         failed: result.failed,
                         handoffUrl: attention ? screen.url : '',
                         userControl: screen.userControl,
                         attentionReason: screen.reason,
-                        askUser: askFrom(inline) || item.askUser,
+                        askUser: ask || item.askUser,
                     } : item);
                     commit(botId, foldPlanConfirmation(settled, settled.findIndex(item => item.id === assistantMessage.id)));
                     if (attention) applyScreen(botId, screen);
@@ -4296,7 +4394,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 return copy;
             });
             commit(botId, next);
-            startTask(botId, item.text, item.phase, 'fromQueue', item.verbatim === true, item.prepared);
+            startTask(botId, item.text, item.phase, 'fromQueue', item.verbatim === true, item.prepared, item.literal === true);
         };
         // A handed-off order waits out the turn already on screen. Only this
         // branch is async. Everything else still starts in this turn.
@@ -4338,7 +4436,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         while (slots.length > 0 && slots[0].settled) {
             const item = slots.shift();
             if (!item?.enqueue) continue;
-            queued = [...queued, { text: item.text, phase: item.phase, verbatim: item.verbatim, prepared: item.prepared }];
+            queued = [...queued, { text: item.text, phase: item.phase, verbatim: item.verbatim, literal: item.literal, prepared: item.prepared }];
             added = true;
         }
         if (slots.length === 0) readAheadRef.current.delete(`${ownerId}\0${botId}`);
@@ -4495,14 +4593,16 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // verbatim starts the turn from the person's own words, skipping the
     // reading. The reading is a helper for the turn, not a gate on it: once it
     // has failed and this person chose their own words, that choice is the order.
-    const send = async (preset?: string, phase: BotPhase = 'plan', verbatim = false, prepared?: PreparedTurn) => {
+    const send = async (preset?: string, phase: BotPhase = 'plan', verbatim = false, prepared?: PreparedTurn, literal = false) => {
         if (!selected) return;
         if (!preset && secretOpenRef.current) return;
         const botId = selected.id;
         const content = (preset ?? command).trim();
         if (!content) return;
+        // A choice keeps the label. The stop list and the reading do not see it.
+        if (literal) verbatim = true;
         // Typing the old approval sentence is not an approval and not a task.
-        if (content === CONFIRM_COMMAND) {
+        if (!literal && content === CONFIRM_COMMAND) {
             if (!preset) setCommand('');
             sayTypedConfirm(botId);
             return;
@@ -4510,12 +4610,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         // A generic status question or an exact stop is answered from the live
         // run. It does not wait for a reading that is already in flight, and
         // it does not become a queued order.
-        const control = desktopBotLocalControl(content);
-        if (control) {
-            if (!preset) setCommand('');
-            applyFollowRef.current(true);
-            answerDesktopControl(botId, content, control, 'now');
-            return;
+        if (!literal) {
+            const control = desktopBotLocalControl(content);
+            if (control) {
+                if (!preset) setCommand('');
+                applyFollowRef.current(true);
+                answerDesktopControl(botId, content, control, 'now');
+                return;
+            }
         }
         // Sending is a new line the person just asked to see.
         applyFollowRef.current(true);
@@ -4556,7 +4658,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             commit(botId, [...prior, userMessage]);
             const earlier = earlierUserAsks(prior, content, 'now');
             const ownerId = userId;
-            const slot: ReadAhead = { text: content, phase: turnPhase, settled: false, enqueue: false, verbatim, prepared };
+            const slot: ReadAhead = { text: content, phase: turnPhase, settled: false, enqueue: false, verbatim, literal, prepared };
             const readKey = `${ownerId}\0${botId}`;
             const pendingReads = readAheadRef.current.get(readKey) || [];
             pendingReads.push(slot);
@@ -4732,7 +4834,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             })();
             return;
         }
-        startTask(botId, content, turnPhase, 'now', verbatim, prepared);
+        startTask(botId, content, turnPhase, 'now', verbatim, prepared, literal);
         if (!preset) setCommand('');
     };
 
@@ -5367,7 +5469,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 <p className="desktop-bot-chat__pick" data-testid="desktop-bot-pick">{text.pickEmpty}</p>
                             ) : null}
                             {messages.filter(message => !message.pending).map(message => {
-                                const rawBody = message.failed ? (friendlyFailure(message.content, lang) || message.content) : message.content;
+                                const rawBody = desktopBotBubbleBody(message.content, message.failed === true, message.askUser?.question || '', lang);
                                 const body = message.role === 'assistant' ? stripConfirmedOrderLead(rawBody) : rawBody;
                                 const structured = message.role === 'assistant' && !message.failed && botMessageIsStructured(body);
                                 return (
@@ -5452,7 +5554,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     {message.askUser?.options && !message.askResolved && !message.userControl ? (
                                         <div className="desktop-bot-chat__choices">
                                             {message.askUser.options.map((option, index) => (
-                                                <button type="button" key={option} onClick={() => { markAskResolved(selected.id, message.id); void send(option, message.phase === 'execute' ? 'execute' : 'plan'); }}>
+                                                <button type="button" key={option} onClick={() => { markAskResolved(selected.id, message.id); void send(option, message.phase === 'execute' ? 'execute' : 'plan', true, undefined, true); }}>
                                                     <span className="desktop-bot-chat__choice-key" aria-hidden="true">{String.fromCharCode(65 + (index % 26))}</span>
                                                     <span>{option}</span>
                                                     <span className="desktop-bot-chat__choice-mark" aria-hidden="true">✓</span>

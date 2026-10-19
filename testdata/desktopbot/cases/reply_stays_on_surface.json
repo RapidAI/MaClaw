@@ -1,0 +1,10 @@
+{
+  "id": "reply_stays_on_surface",
+  "origin": "person",
+  "surface": "desktop",
+  "send_to_user": "好了。",
+  "expect_text": "好了。",
+  "expect_kind": "reply",
+  "expect_count": 1,
+  "forbid": ["email"]
+}

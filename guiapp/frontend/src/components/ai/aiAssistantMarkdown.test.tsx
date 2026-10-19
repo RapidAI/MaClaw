@@ -2327,6 +2327,21 @@ describe("renderMessage assistant display guard", () => {
         await waitFor(() => expect(btn.getAttribute("aria-label")).toMatch(/已复制|Copied/i));
     });
 
+    it("strips a Browser prefix when copying a streaming reply", async () => {
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        Object.assign(navigator, { clipboard: { writeText } });
+
+        render(<div>{renderMessage({
+            id: "copy-streaming",
+            role: "assistant",
+            content: "Browser: deployment complete",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "en", true)}</div>);
+
+        await fireEvent.click(screen.getByTestId("assistant-chat-copy-copy-streaming"));
+        await waitFor(() => expect(writeText).toHaveBeenCalledWith("deployment complete"));
+    });
+
     it("hides the copy control when the assistant reply has no content yet", () => {
         render(<div>{renderMessage({
             id: "empty-ai-bubble",

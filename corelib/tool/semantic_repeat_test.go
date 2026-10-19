@@ -507,3 +507,73 @@ func TestRepeatSiblingBudgetTreatsSilenceAsSingleInvocation(t *testing.T) {
 		t.Fatalf("budget(5000) = %d, want the %d cap", got, RepeatSiblingBudgetLimit)
 	}
 }
+
+func TestInstalledMCPRepeatExtendsUntilItsCeiling(t *testing.T) {
+	if InstalledMCPRepeatCeiling != RepeatSiblingBudgetLimit {
+		t.Fatalf("ceiling=%d budget=%d", InstalledMCPRepeatCeiling, RepeatSiblingBudgetLimit)
+	}
+	base := "need:~installed-mcp:x:mcp:tengyun:post_work_log_add"
+	single := ToolPlan{Selections: []PlannedSelection{{
+		ID:       "selection:" + base,
+		NeedID:   base,
+		Provider: ProviderBinding{Kind: "mcp", ProviderID: "tengyun", ImplementationID: "post_work_log_add"},
+		FitProof: FitProof{MatchedCapability: "x:mcp:tengyun:post_work_log_add"},
+	}}}
+	extended, id, opened := AppendRepeatSibling(single, single.Selections[0].ID)
+	if !opened || len(extended.Selections) != 2 || !strings.Contains(id, "#02") || extended.Selections[1].Continuation {
+		t.Fatalf("single installed MCP id=%q opened=%v selections=%d", id, opened, len(extended.Selections))
+	}
+	again, _, openedAgain := AppendRepeatSibling(extended, extended.Selections[0].ID)
+	if !openedAgain || len(again.Selections) != 3 || again.Selections[2].Continuation {
+		t.Fatal("installed MCP stopped after one extra sibling or kept the one-shot flag")
+	}
+	decoy := ToolPlan{Selections: []PlannedSelection{{
+		ID:       "selection:" + base,
+		NeedID:   base,
+		FitProof: FitProof{MatchedCapability: "information.lookup"},
+	}}}
+	if _, _, opened := AppendRepeatSibling(decoy, decoy.Selections[0].ID); opened {
+		t.Fatal("a non-x:mcp proof extended because the need id mentions mcp")
+	}
+	prose := ToolPlan{Selections: []PlannedSelection{{
+		ID: "selection:need:mcp-prose", NeedID: "need:mcp-prose",
+	}}}
+	if _, _, opened := AppendRepeatSibling(prose, prose.Selections[0].ID); opened {
+		t.Fatal("a need that merely mentions mcp extended")
+	}
+	kindOnly := ToolPlan{Selections: []PlannedSelection{{
+		ID: "selection:need:once", NeedID: "need:once",
+		Provider: ProviderBinding{Kind: "mcp", ProviderID: "tengyun", ImplementationID: "post_work_log_add"},
+	}}}
+	if _, _, opened := AppendRepeatSibling(kindOnly, kindOnly.Selections[0].ID); !opened {
+		t.Fatal("an installed MCP provider with no fit proof must extend")
+	}
+	idOnly := ToolPlan{Selections: []PlannedSelection{{
+		ID: "selection:need:~installed-mcp:tool", NeedID: "need:~installed-mcp:tool",
+	}}}
+	if _, _, opened := AppendRepeatSibling(idOnly, idOnly.Selections[0].ID); !opened {
+		t.Fatal("an installed-mcp need with no fit proof must extend")
+	}
+	below := ToolPlan{}
+	for index := 0; index < InstalledMCPRepeatCeiling-1; index++ {
+		needID := RepeatSiblingNeedID(base, index)
+		below.Selections = append(below.Selections, PlannedSelection{
+			ID: "selection:" + needID, NeedID: needID,
+			FitProof: FitProof{MatchedCapability: "x:mcp:tengyun:post_work_log_add"},
+		})
+	}
+	if _, _, opened := AppendRepeatSibling(below, below.Selections[0].ID); !opened {
+		t.Fatal("installed MCP stopped one call before its ceiling")
+	}
+	capped := ToolPlan{}
+	for index := 0; index < InstalledMCPRepeatCeiling; index++ {
+		needID := RepeatSiblingNeedID(base, index)
+		capped.Selections = append(capped.Selections, PlannedSelection{
+			ID: "selection:" + needID, NeedID: needID,
+			FitProof: FitProof{MatchedCapability: "x:mcp:tengyun:post_work_log_add"},
+		})
+	}
+	if _, _, opened := AppendRepeatSibling(capped, capped.Selections[0].ID); opened {
+		t.Fatal("installed MCP extended past its ceiling")
+	}
+}

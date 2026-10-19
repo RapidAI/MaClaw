@@ -31,6 +31,7 @@ var colorfulH2Colors = []string{
 	"#0369a1",
 }
 var inlineMathSegmentRe = regexp.MustCompile(`\$(.+?)\$`)
+var inlineDisplayMathRe = regexp.MustCompile(`\$\$([^$\n]+)\$\$`)
 var inlineCodeRe = regexp.MustCompile("`([^`]+)`")
 var inlineStarBoldRe = regexp.MustCompile(`\*\*(.+?)\*\*`)
 var inlineUnderscoreBoldRe = regexp.MustCompile(`__(.+?)__`)
@@ -1122,13 +1123,31 @@ func markdownHeadingPresentation(prefix string, colorful bool, h2Index int) (siz
 	return size, color
 }
 
+func renderOneMath(inner string, colorful bool) string {
+	inner = strings.TrimSpace(inner)
+	if inner == "" {
+		return ""
+	}
+	if colorful {
+		inner = paperPrepareMath(inner)
+	}
+	return transformMathText(inner)
+}
+
 func renderMathSegments(text string, colorful bool) string {
+	// A $$ pair in a sentence is one formula. Replacing it first stops the
+	// single-dollar scan from taking the inner dollars apart.
+	text = inlineDisplayMathRe.ReplaceAllStringFunc(text, func(segment string) string {
+		inner := strings.TrimSuffix(strings.TrimPrefix(segment, "$$"), "$$")
+		rendered := renderOneMath(inner, colorful)
+		if rendered == "" {
+			return segment
+		}
+		return rendered
+	})
 	return inlineMathSegmentRe.ReplaceAllStringFunc(text, func(segment string) string {
 		inner := strings.TrimSuffix(strings.TrimPrefix(segment, "$"), "$")
-		if colorful {
-			inner = paperPrepareMath(inner)
-		}
-		return transformMathText(inner)
+		return renderOneMath(inner, colorful)
 	})
 }
 

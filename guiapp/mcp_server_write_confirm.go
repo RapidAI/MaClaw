@@ -1,10 +1,17 @@
 package guiapp
 
 import (
+	"encoding/json"
 	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/mailbox"
@@ -46,13 +53,12 @@ const mcpServerWriteAskContext = "mcp-server-write-confirm;"
 // moment the gate emits its __ASK_USER__ result and the moment
 // commitPendingAskUser binds it to durable history — the same hop
 // mailboxDraftNotes covers for sends. Keyed by userID; one pending write per
-// user at a time.
+// user at a time. Session reset drops the note. It does not drop a grant.
 //
-// mcpServerWriteGrants (handler field) records per-user, per-server session
-// grants. Process memory only: a session ends with the process or with an
-// explicit session reset (clearPerUserSessionStateOpts), and a grant is per
-// server — one server's confirmation never authorizes a sibling.
-// Key: userID + "\x00" + serverID; value: time.Time the grant was recorded.
+// Granted calls live in mcpServerWriteGrantStore: one record per user and
+// server, kept until that server is removed. A new chat and a process
+// restart both keep it. Decline writes nothing, so the next call asks again.
+// One server's confirmation never authorizes a sibling or another user.
 
 func mcpServerWriteGrantKey(userID, serverID string) string {
 	return strings.TrimSpace(userID) + "\x00" + strings.TrimSpace(serverID)
@@ -113,35 +119,318 @@ func (h *IMMessageHandler) takeMCPServerWriteNoteFor(userID string, askReq *AskU
 	return &write
 }
 
-// clearMCPServerWriteState drops both the pending note and every session
-// grant for a user whose conversation state is being reset.
+// mcpServerWriteGrantRecord is one durable authorization. It names the user
+// and the server. It is not a tool grant and carries no arguments.
+type mcpServerWriteGrantRecord struct {
+	UserID    string    `json:"user_id"`
+	ServerID  string    `json:"server_id"`
+	GrantedAt time.Time `json:"granted_at"`
+}
+
+type mcpServerWriteGrantFile struct {
+	Grants []mcpServerWriteGrantRecord `json:"grants"`
+}
+
+// mcpServerWriteGrantTable is process-wide so every handler reads the same
+// authorization. The file under MaclawDataDir is the record that survives a
+// restart. path is the file that produced records. A data-dir change must
+// reload; keeping the previous table would authorize the old directory and
+// the next save would write that table into the new one. Unregister must not
+// call back into the MCP registry: those methods already hold the registry lock.
+type mcpServerWriteGrantTable struct {
+	mu      sync.Mutex
+	loaded  bool
+	path    string
+	records map[string]time.Time
+}
+
+var mcpServerWriteGrantStore = &mcpServerWriteGrantTable{records: map[string]time.Time{}}
+
+func mcpServerWriteGrantPath() string {
+	return filepath.Join(corelib.MaclawDataDir(), "mcp_server_write_grants.json")
+}
+
+// loadLocked reads the grant file for the current data directory. A missing
+// file is an empty store. Any other read error leaves the store unloaded and
+// drops whatever table was in memory, so a later save cannot replace a file
+// this process did not read and cannot keep authorizing another directory.
+// Corrupt JSON is moved aside and the store starts empty; the original bytes
+// stay next to that file.
+func (s *mcpServerWriteGrantTable) loadLocked() error {
+	if s == nil {
+		return fmt.Errorf("mcp write grant store is unavailable")
+	}
+	path := mcpServerWriteGrantPath()
+	if s.loaded && s.path == path {
+		return nil
+	}
+	records, err := readMCPServerWriteGrantFile(path)
+	if err != nil {
+		s.loaded = false
+		s.path = ""
+		s.records = map[string]time.Time{}
+		return err
+	}
+	s.records = records
+	s.path = path
+	s.loaded = true
+	return nil
+}
+
+func readMCPServerWriteGrantFile(path string) (map[string]time.Time, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]time.Time{}, nil
+		}
+		return nil, fmt.Errorf("read write grants: %w", err)
+	}
+	var file mcpServerWriteGrantFile
+	if err := json.Unmarshal(data, &file); err != nil {
+		if qerr := quarantineMCPServerWriteGrantFile(path); qerr != nil {
+			return nil, fmt.Errorf("write grants unreadable: %v; quarantine: %w", err, qerr)
+		}
+		log.Printf("[mcp] write grants unreadable; quarantined and started empty: %v", err)
+		return map[string]time.Time{}, nil
+	}
+	records := make(map[string]time.Time, len(file.Grants))
+	for _, rec := range file.Grants {
+		userID := strings.TrimSpace(rec.UserID)
+		serverID := strings.TrimSpace(rec.ServerID)
+		if userID == "" || serverID == "" {
+			continue
+		}
+		records[mcpServerWriteGrantKey(userID, serverID)] = rec.GrantedAt.UTC()
+	}
+	return records, nil
+}
+
+// quarantineMCPServerWriteGrantFile renames a file this process cannot parse.
+// The next save then creates a new grant file and does not overwrite the
+// bytes that failed to parse.
+func quarantineMCPServerWriteGrantFile(path string) error {
+	stamp := time.Now().UTC().Format("20060102T150405.000000000Z")
+	var last error
+	for n := 0; n < 8; n++ {
+		dest := path + ".unreadable-" + stamp
+		if n > 0 {
+			dest = fmt.Sprintf("%s-%d", dest, n)
+		}
+		err := os.Rename(path, dest)
+		if err == nil || os.IsNotExist(err) {
+			return nil
+		}
+		last = err
+	}
+	return last
+}
+
+func (s *mcpServerWriteGrantTable) saveLocked() error {
+	if s == nil {
+		return fmt.Errorf("mcp write grant store is unavailable")
+	}
+	path := mcpServerWriteGrantPath()
+	if !s.loaded || s.path != path {
+		return fmt.Errorf("mcp write grants were not loaded")
+	}
+	if s.records == nil {
+		s.records = map[string]time.Time{}
+	}
+	keys := make([]string, 0, len(s.records))
+	for key := range s.records {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	file := mcpServerWriteGrantFile{Grants: make([]mcpServerWriteGrantRecord, 0, len(keys))}
+	for _, key := range keys {
+		userID, serverID, ok := strings.Cut(key, "\x00")
+		if !ok || strings.TrimSpace(userID) == "" || strings.TrimSpace(serverID) == "" {
+			continue
+		}
+		file.Grants = append(file.Grants, mcpServerWriteGrantRecord{
+			UserID:    userID,
+			ServerID:  serverID,
+			GrantedAt: s.records[key].UTC(),
+		})
+	}
+	data, err := json.MarshalIndent(file, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return replaceMCPServerWriteGrantFile(path, data)
+}
+
+// replaceMCPServerWriteGrantFile publishes a complete temp file by rename.
+// os.Rename replaces an existing file on the same volume. A failed rename
+// removes only the temp. The shared atomic writer deletes the destination
+// before its fallback rename, and that would drop grants already on disk.
+func replaceMCPServerWriteGrantFile(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create grant dir: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".tmp_mcp_grant_*")
+	if err != nil {
+		return fmt.Errorf("create grant temp: %w", err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write grant temp: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync grant temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close grant temp: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("replace grant file: %w", err)
+	}
+	cleanup = false
+	return nil
+}
+
+// resetMCPServerWriteGrantStore drops the in-memory table so the next read
+// loads the file again. Tests use it with a temporary Maclaw base directory.
+func resetMCPServerWriteGrantStore() {
+	mcpServerWriteGrantStore.mu.Lock()
+	defer mcpServerWriteGrantStore.mu.Unlock()
+	mcpServerWriteGrantStore.loaded = false
+	mcpServerWriteGrantStore.path = ""
+	mcpServerWriteGrantStore.records = map[string]time.Time{}
+}
+
+// clearMCPServerWriteState drops the pending confirmation for a user whose
+// conversation is being reset. The durable server grant stays: a new chat
+// must not ask again for a server this user already allowed.
 func (h *IMMessageHandler) clearMCPServerWriteState(userID string) {
 	if h == nil {
 		return
 	}
 	h.mcpServerWriteNotes.Delete(strings.TrimSpace(userID))
-	prefix := strings.TrimSpace(userID) + "\x00"
-	h.mcpServerWriteGrants.Range(func(key, _ interface{}) bool {
-		if k, ok := key.(string); ok && strings.HasPrefix(k, prefix) {
-			h.mcpServerWriteGrants.Delete(k)
-		}
-		return true
-	})
 }
 
 func (h *IMMessageHandler) mcpServerWriteConfirmed(userID, serverID string) bool {
 	if h == nil {
 		return false
 	}
-	_, ok := h.mcpServerWriteGrants.Load(mcpServerWriteGrantKey(userID, serverID))
+	userID = strings.TrimSpace(userID)
+	serverID = strings.TrimSpace(serverID)
+	if userID == "" || serverID == "" {
+		return false
+	}
+	mcpServerWriteGrantStore.mu.Lock()
+	defer mcpServerWriteGrantStore.mu.Unlock()
+	if err := mcpServerWriteGrantStore.loadLocked(); err != nil {
+		log.Printf("[mcp] write grants unavailable: %v", err)
+		return false
+	}
+	_, ok := mcpServerWriteGrantStore.records[mcpServerWriteGrantKey(userID, serverID)]
 	return ok
 }
 
-func (h *IMMessageHandler) confirmMCPServerWrite(userID, serverID string) {
-	if h == nil || strings.TrimSpace(userID) == "" || strings.TrimSpace(serverID) == "" {
+// confirmMCPServerWrite records a new grant only after the file accepts it.
+// A grant already loaded from that file stays granted: refreshing its
+// timestamp must not turn a failed rewrite into a missing approval.
+// A failed read or a failed first save leaves memory matching the last file
+// this process successfully loaded.
+func (h *IMMessageHandler) confirmMCPServerWrite(userID, serverID string) bool {
+	userID = strings.TrimSpace(userID)
+	serverID = strings.TrimSpace(serverID)
+	if h == nil || userID == "" || serverID == "" {
+		return false
+	}
+	mcpServerWriteGrantStore.mu.Lock()
+	defer mcpServerWriteGrantStore.mu.Unlock()
+	if err := mcpServerWriteGrantStore.loadLocked(); err != nil {
+		log.Printf("[mcp] write grant was not stored: %v", err)
+		return false
+	}
+	if mcpServerWriteGrantStore.records == nil {
+		mcpServerWriteGrantStore.records = map[string]time.Time{}
+	}
+	key := mcpServerWriteGrantKey(userID, serverID)
+	if _, had := mcpServerWriteGrantStore.records[key]; had {
+		return true
+	}
+	mcpServerWriteGrantStore.records[key] = time.Now().UTC()
+	if err := mcpServerWriteGrantStore.saveLocked(); err != nil {
+		delete(mcpServerWriteGrantStore.records, key)
+		log.Printf("[mcp] write grant was not stored: %v", err)
+		return false
+	}
+	return true
+}
+
+// forgetMCPServerWriteGrants drops every user's authorization for serverID.
+// Call it only after that server has been removed. It does not touch the
+// registry.
+func forgetMCPServerWriteGrants(serverID string) {
+	serverID = strings.TrimSpace(serverID)
+	if serverID == "" {
 		return
 	}
-	h.mcpServerWriteGrants.Store(mcpServerWriteGrantKey(userID, serverID), time.Now())
+	mcpServerWriteGrantStore.mu.Lock()
+	defer mcpServerWriteGrantStore.mu.Unlock()
+	if err := mcpServerWriteGrantStore.loadLocked(); err != nil {
+		log.Printf("[mcp] write grant was not cleared for server %q: %v", serverID, err)
+		return
+	}
+	next := make(map[string]time.Time, len(mcpServerWriteGrantStore.records))
+	removed := false
+	for key, grantedAt := range mcpServerWriteGrantStore.records {
+		_, id, ok := strings.Cut(key, "\x00")
+		if ok && id == serverID {
+			removed = true
+			continue
+		}
+		next[key] = grantedAt
+	}
+	if !removed {
+		return
+	}
+	previous := mcpServerWriteGrantStore.records
+	mcpServerWriteGrantStore.records = next
+	if err := mcpServerWriteGrantStore.saveLocked(); err != nil {
+		mcpServerWriteGrantStore.records = previous
+		log.Printf("[mcp] write grant was not cleared for server %q: %v", serverID, err)
+	}
+}
+
+// pauseUnconfirmedMCPServerWrite returns a pre-admission outcome for an
+// external-effect MCP call. A confirmation question and a catalog refusal
+// are not executions. Admit consumes the one-shot grant and leaves a running
+// execution for a tool that never ran; a later retry of that same grant is
+// already consumed. Read-only calls, reviewed bindings, and calls the durable
+// server grant already allows return false so admission proceeds.
+//
+// Inventory is loaded even when that server grant already exists. Incomplete
+// coverage is the same non-execution, and skipping the load would admit it.
+// The executor loads the inventory again when it actually dispatches; that
+// second load is the binding revalidation.
+func (c *sharedAgentLoopCallbacks) pauseUnconfirmedMCPServerWrite(selection tool.PlannedSelection) (tool.SelectionExecutionResult, bool) {
+	if c == nil || c.handler == nil || c.semanticSurface == nil {
+		return tool.SelectionExecutionResult{}, false
+	}
+	if !strings.EqualFold(strings.TrimSpace(selection.Provider.Kind), "mcp") || !tool.SelectionRequiresExternalReceipt(selection) {
+		return tool.SelectionExecutionResult{}, false
+	}
+	ctx, cancel := c.semanticDynamicExecutionContext()
+	defer cancel()
+	inventory, err := c.handler.semanticDynamicInventoryForPrincipal(ctx, semanticDesktopContractPrincipal())
+	if rejected, ok := semanticDynamicCatalogRejection(inventory, err, "mcp"); ok {
+		return rejected, true
+	}
+	return c.mcpServerWriteGateForSelection(selection, inventory.mcpEntries)
 }
 
 // mcpServerWriteGateForSelection decides whether a selected unreviewed MCP
@@ -216,12 +505,14 @@ func (c *sharedAgentLoopCallbacks) mcpServerWriteGateForSelection(selection tool
 	})
 	ask := &agent.AskUserRequest{
 		Question: fmt.Sprintf(
-			"MCP 服务器 %q 的工具 %q 将执行对外部系统生效的操作（写入/发送/修改）。是否允许本会话内对 %q 的此类调用？",
+			"MCP 服务器 %q 的工具 %q 将执行对外部系统生效的操作（写入、发送或修改）。是否允许此后对 %q 的此类调用？授权会保留到该服务器被移除。",
 			serverLabel, toolName, serverLabel,
 		),
 		Options:   []string{"确认", "取消"},
 		InputType: "confirm",
-		Context:   mcpServerWriteAskContext + nonce + "; unreviewed MCP server write confirmation; grant applies to this server only, for the rest of this session",
+		// The nonce binds this card to the pending note. Nothing after it is
+		// user-facing: the question already says how long the grant lasts.
+		Context: mcpServerWriteAskContext + nonce + ";",
 	}
 	return tool.SelectionExecutionResult{
 		Result:     agent.AskUserResultMarker(ask),
@@ -252,10 +543,13 @@ func mcpServerDisplayNameCandidates(h *IMMessageHandler, serverID string) []stri
 }
 
 // finishMCPServerWriteAskUser settles a paused server-write confirmation.
-// Approve records the per-server session grant and asks the model to re-issue
-// the paused call; cancel denies without granting; anything else leaves the
-// note un-granted so the next call asks again (fail closed on ambiguous
-// intake — no grant is consumed on malformed input).
+// Approve records the per-user, per-server grant and tells the model to call
+// the function listed on this turn. The paused call's name was that turn's
+// grant token; the next turn mints a new one and does not accept the old
+// token. The grant stays until that server is removed.
+// Cancel denies this call without writing a permanent denial. Anything else
+// leaves the note un-granted so the next call asks again (fail closed on
+// ambiguous intake — no grant is consumed on malformed input).
 func (h *IMMessageHandler) finishMCPServerWriteAskUser(userID, text string, write *pendingMCPServerWrite) (string, bool) {
 	if h == nil || write == nil || strings.TrimSpace(write.ServerID) == "" {
 		return "", false
@@ -265,17 +559,45 @@ func (h *IMMessageHandler) finishMCPServerWriteAskUser(userID, text string, writ
 		serverLabel = strings.TrimSpace(write.ServerID)
 	}
 	if mailbox.IsApproveText(text) {
-		h.confirmMCPServerWrite(userID, write.ServerID)
-		return fmt.Sprintf(
-			"[Context hint] The user explicitly approved external-effect calls through installed MCP server %q for the rest of this session. Re-issue the intended tool call now; the approval applies only to server %q, and the grant does not cover other servers or tools outside it.",
-			serverLabel, write.ServerID,
-		), true
+		if !h.confirmMCPServerWrite(userID, write.ServerID) {
+			// A failed store must not leave an earlier tool on the continuation.
+			h.dropDiscoveredMCPContinuation(userID)
+			return fmt.Sprintf(
+				"[Context hint] The user approved external-effect calls through installed MCP server %q, but that approval was not stored. Do not call the server yet. Tell the user the approval was not saved and that the next call will ask again.",
+				serverLabel,
+			), true
+		}
+		// The durable record only skips the next question. The invocation
+		// grant died with the paused loop, so the continuation has to
+		// publish this tool again through the discovery bind.
+		h.stashDiscoveredMCPContinuation(userID, discoveredMCPBind{ServerID: write.ServerID, ToolName: write.ToolName})
+		return mcpServerWriteApprovedHint(serverLabel, write.ServerID, write.ToolName), true
 	}
 	if mailbox.IsCancelText(text) {
+		h.dropDiscoveredMCPContinuation(userID)
 		return fmt.Sprintf(
 			"[Context hint] The user declined external-effect calls through installed MCP server %q. Do not call that server for writes; explain that the operation was declined and offer alternatives that do not write through it.",
 			serverLabel,
 		), true
 	}
+	// Ambiguous intake does not approve. Drop a leftover so this consumed
+	// question cannot republish a tool the user did not confirm.
+	h.dropDiscoveredMCPContinuation(userID)
 	return "", false
+}
+
+// mcpServerWriteApprovedHint points at the function this turn will list.
+// Unreviewed MCP renders as invoke_<grant>. That token dies with the turn.
+// The description prefix is stable, and it is the same sentence the renderer
+// puts on the successor. Naming the old function would send the model at a
+// token this turn rejects.
+func mcpServerWriteApprovedHint(serverLabel, serverID, toolName string) string {
+	match := "Call the function listed in this turn whose description names that installed MCP tool."
+	if summary := agentservice.InstalledMCPToolPromptSummary(serverID, toolName); summary != "" {
+		match = fmt.Sprintf("Call the function listed in this turn whose description starts with %q.", summary)
+	}
+	return fmt.Sprintf(
+		"[Context hint] The user explicitly approved external-effect calls through installed MCP server %q until that server is removed. %s Do not reuse a function name from an earlier turn. The approval applies only to server %q, and the grant does not cover other servers or tools outside it.",
+		serverLabel, match, serverID,
+	)
 }

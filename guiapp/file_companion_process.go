@@ -90,6 +90,23 @@ type fileCompanionRuntime struct {
 	chatMu      sync.Mutex
 	chatGen     map[string]uint64
 	chatDiscard map[string]bool
+
+	// noteMu guards the in-flight note cancel. Cancelling a note does not
+	// bump chatGen. /clear cancels the note and then drops the transcript.
+	// webStop ends the web recording without cancelling the note, so
+	// the note is written and only then the recording is deleted.
+	// webStopGen is the capture attempt stored in webStop.
+	// webStopAt is the newest attempt the user already stopped. A stop that
+	// arrives before webStop is stored still ends that attempt.
+	noteMu     sync.Mutex
+	noteCancel map[string]context.CancelFunc
+	webStop    map[string]context.CancelFunc
+	webStopGen map[string]int64
+	webStopAt  map[string]int64
+
+	// webSessions maps a web playback session id to its normalized page URL.
+	// Those tabs have no filesystem grant.
+	webSessions map[string]string
 }
 
 type recordedCompanionEvent struct {
@@ -318,10 +335,63 @@ func (a *App) forwardFilesToCompanion(paths []string) error {
 	if err != nil {
 		return err
 	}
-	argv := make([]string, 0, len(paths)+2)
+	// startCompanionProcess sets the child cwd to the install directory.
+	// Freeze a relative document against this process's cwd first. One path
+	// that cannot be resolved stays as given, so the other documents still open.
+	// The mode token is written only into the mode slot and is not passed here.
+	dir, _ := os.Getwd()
+	docs := make([]string, 0, len(paths))
+	for _, path := range paths {
+		doc, ok := fileCompanionDocumentArg(path, dir)
+		if !ok {
+			continue
+		}
+		docs = append(docs, doc)
+	}
+	if len(docs) == 0 {
+		return errors.New("no file to open")
+	}
+	argv := make([]string, 0, len(docs)+2)
 	argv = append(argv, exe, fileCompanionOpenArg)
-	argv = append(argv, paths...)
+	argv = append(argv, docs...)
 	return a.startCompanionProcess(argv)
+}
+
+// fileCompanionDocumentArg returns a document path. A plain relative path is
+// resolved against dir, an absolute directory from the launch, so this
+// process's cwd cannot move it. An absolute path is unchanged. A rooted
+// path (\notes.md) or a drive-relative path on another volume (D:notes.md)
+// is not a child of dir; joining it there would name a different file.
+// A drive-relative path on dir's own volume uses dir, because that volume's
+// cwd is dir. An empty string or a NUL is not a document. A path that cannot
+// be resolved stays as given.
+func fileCompanionDocumentArg(path, dir string) (string, bool) {
+	path = strings.TrimSpace(path)
+	if path == "" || strings.ContainsRune(path, 0) {
+		return "", false
+	}
+	original := path
+	dir = strings.TrimSpace(dir)
+	if filepath.IsAbs(path) || !filepath.IsAbs(dir) {
+		return original, true
+	}
+	if vol := filepath.VolumeName(path); vol != "" {
+		if !strings.EqualFold(vol, filepath.VolumeName(dir)) {
+			return original, true
+		}
+		path = path[len(vol):]
+		if path == "" {
+			return dir, true
+		}
+	}
+	if os.IsPathSeparator(path[0]) {
+		return original, true
+	}
+	abs, err := filepath.Abs(filepath.Join(dir, path))
+	if err != nil || abs == "" || !filepath.IsAbs(abs) {
+		return original, true
+	}
+	return abs, true
 }
 
 func companionExecutable() (string, error) {
@@ -341,19 +411,19 @@ func (a *App) startCompanionProcess(argv []string) error {
 	// unless this foreground process allows it.
 	allowCompanionForeground()
 	cmd := exec.Command(argv[0], argv[1:]...)
+	// The install directory is the child's cwd so it does not depend on
+	// the caller's directory. Document arguments are already absolute.
 	cmd.Dir = filepath.Dir(argv[0])
 	return cmd.Start()
 }
 
 // ShowFileCompanion brings the companion forward.
 //
-// open-file is the process verb, not a document. A fresh companion with no
-// document arguments restores the last open files itself. This process only
-// picks files when there is nothing to restore, and it picks them here — the
-// main process was not started with that verb, so the dialog cannot hand the
-// verb back as a chosen path. A companion that is already running is revealed
-// and is not given the list again, so a second click does not reload a tab
-// the user is editing.
+// open-file in the argument vector is the process mode, not a document. A
+// fresh companion with no document arguments restores the last open files
+// itself. This process only picks files when there is nothing to restore.
+// A companion that is already running is revealed and is not given the list
+// again, so a second click does not reload a tab the user is editing.
 func (a *App) ShowFileCompanion() error {
 	if a == nil {
 		return errors.New("app unavailable")
@@ -503,10 +573,25 @@ func (a *App) onFileCompanionSecondInstance(data options.SecondInstanceData) {
 	if launch.Mode != desktopLaunchFileCompanion {
 		return
 	}
-	logFileCompanion("second instance paths=%d", len(launch.Paths))
-	a.enqueueFileCompanionPaths(launch.Paths)
+	// This process cwd is the install directory. On Windows and Linux the
+	// new process sends its own cwd. Darwin's payload is the executable
+	// directory, so a relative document stays relative there.
+	launchDir := data.WorkingDirectory
+	if goruntime.GOOS == "darwin" {
+		launchDir = ""
+	}
+	paths := make([]string, 0, len(launch.Paths))
+	for _, path := range launch.Paths {
+		doc, ok := fileCompanionDocumentArg(path, launchDir)
+		if !ok {
+			continue
+		}
+		paths = append(paths, doc)
+	}
+	logFileCompanion("second instance paths=%d", len(paths))
+	a.enqueueFileCompanionPaths(paths)
 	a.revealFileCompanionWindow()
-	if len(launch.Paths) == 0 {
+	if len(paths) == 0 {
 		a.notifyFileCompanionShow()
 	}
 }

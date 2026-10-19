@@ -10,7 +10,10 @@ package agent
 // - What task is currently in progress
 // - What was recently completed
 // - What active sessions/connections exist
-// - Current time context
+//
+// Minute time does not belong in this report. A clock in the system prompt
+// changes the prefix every minute. Time, when the model needs it, is part of
+// the newest line, not this frozen section.
 //
 // Budget: ≤200 tokens (~400 chars). Concise bullet points.
 
@@ -35,7 +38,7 @@ type SituationContext struct {
 	UnfinishedTask string
 	// BackgroundTasks are descriptions of running background tasks.
 	BackgroundTasks []string
-	// CurrentTime is the current timestamp.
+	// CurrentTime is ignored. Minute time must not enter the system prompt.
 	CurrentTime time.Time
 }
 
@@ -73,11 +76,7 @@ func BuildSituationReport(ctx SituationContext) string {
 		n := min(len(ctx.RecentArtifacts), 3)
 		sections = append(sections, "最近完成: "+strings.Join(ctx.RecentArtifacts[:n], "; "))
 	}
-
-	// Time context
-	if !ctx.CurrentTime.IsZero() {
-		sections = append(sections, "时间: "+ctx.CurrentTime.Format("2006-01-02 15:04 Mon"))
-	}
+	_ = ctx.CurrentTime
 
 	if len(sections) == 0 {
 		return ""

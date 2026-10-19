@@ -258,12 +258,9 @@ func desktopBotCrossPrimaryLine(kind string, names []string, text, order string)
 	if body == "" {
 		body = text
 	}
-	if desktopBotDestructive(body) {
-		if strings.Contains(body, "安装") || desktopBotInstallWord.MatchString(strings.ToLower(body)) {
-			return "交给 " + name + " 了。装软件还是得你在他那边点一下。"
-		}
-		return "交给 " + name + " 了。这一步还是得你在他那边点一下。"
-	}
+	// The word list stays until a later PR deletes it. It does not decide
+	// this handoff. The gate is the review of the call the other bot runs.
+	_ = desktopBotDestructive(body)
 	return "交给 " + name + " 了，他现在去做。"
 }
 

@@ -12,7 +12,9 @@ package guiapp
 // Mechanism:
 //   - Each CodingSubAgent instance has a scopeApproval *scopeApprovalState
 //   - When requireProjectWriteScope/Read/WorkingDir detects an out-of-scope path,
-//     it calls scopeApproval.check(path) before rejecting
+//     including a different Windows volume, it calls scopeApproval.check before rejecting.
+//     完全控制 allows it. Otherwise the user is asked. A path whose containment
+//     cannot be proven for any other reason stays a hard rejection.
 //   - check() looks at the approved directories list first (instant pass)
 //   - If not approved, it calls the onScopeApproval callback (blocks until user responds)
 //   - User's response is recorded: deny → reject, allow-once → pass this call,
@@ -21,6 +23,7 @@ package guiapp
 import (
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -388,21 +391,64 @@ func (s *scopeApprovalState) setAuditCallback(callback func(ScopeApprovalRequest
 }
 
 // isApproved checks if a path falls within any previously approved directory.
+// The lexical check uses the same containment rule as the project gate, and a
+// resolved symlink that leaves the directory is not covered by the grant.
 func (s *scopeApprovalState) isApproved(absPath string) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if len(s.approvedDirs) == 0 {
+		s.mu.Unlock()
 		return false
 	}
-
-	pathLower := strings.ToLower(filepath.Clean(absPath))
+	dirs := make([]string, 0, len(s.approvedDirs))
 	for dir := range s.approvedDirs {
-		if strings.HasPrefix(pathLower, dir+string(filepath.Separator)) || pathLower == dir {
+		dirs = append(dirs, dir)
+	}
+	s.mu.Unlock()
+
+	for _, dir := range dirs {
+		if codingApprovedPathContains(absPath, dir) {
 			return true
 		}
 	}
 	return false
+}
+
+func codingApprovedPathContains(path, dir string) bool {
+	pathKey := codingScopePathKey(path)
+	dirKey := codingScopePathKey(dir)
+	if pathKey == "" || dirKey == "" {
+		return false
+	}
+	ok, err := pathWithinCleanDir(pathKey, dirKey)
+	if err != nil || !ok {
+		return false
+	}
+	return !codingSymlinkEscapesDir(path, dir)
+}
+
+// codingSymlinkEscapesDir reports whether path resolves outside dir. A missing
+// directory keeps the lexical grant, so a newly allowed folder can be created.
+// A path that cannot be resolved is treated as an escape and asked again.
+// Directory junctions are followed: EvalSymlinks leaves them in place, but
+// opening the path reads the junction target.
+func codingSymlinkEscapesDir(path, dir string) bool {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return true
+	}
+	if err := codingScopeDirExists(absDir); err != nil {
+		return !os.IsNotExist(err)
+	}
+	realDir, err := evalCodingScopePath(absDir)
+	if err != nil {
+		return true
+	}
+	realPath, err := evalCodingScopePath(path)
+	if err != nil {
+		return true
+	}
+	ok, err := pathWithinCleanDir(realPath, realDir)
+	return err != nil || !ok
 }
 
 // approveDir adds a directory to the approved set.
@@ -412,9 +458,22 @@ func (s *scopeApprovalState) approveDir(dir string) {
 
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
-		absDir = filepath.Clean(dir)
+		absDir = dir
 	}
-	s.approvedDirs[strings.ToLower(absDir)] = true
+	if key := codingScopePathKey(absDir); key != "" {
+		s.approvedDirs[key] = true
+	}
+}
+
+// codingScopePathKey is the allow-dir map key. Extended drive prefixes are
+// removed first so \\?\D:\dir and D:\dir are the same grant. Containment is
+// decided by pathWithinCleanDir, so a sibling such as D:\dir-other does not match.
+func codingScopePathKey(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	return strings.ToLower(codingStripExtendedPath(filepath.Clean(path)))
 }
 
 // grantFullAccess permanently disables scope checking for this SubAgent

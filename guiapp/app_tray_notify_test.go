@@ -278,6 +278,248 @@ func TestNotifyTaskResponseTrayRouting(t *testing.T) {
 			t.Fatalf("expected no notification for nil resp, got %+v", *notifs)
 		}
 	})
+
+	t.Run("desktop bot prose is not a balloon", func(t *testing.T) {
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{
+			RequestID:    "desktop-bot-1",
+			Text:         "无变化",
+			trayTaskName: "打开首页",
+		})
+		if len(*notifs) != 0 || *flashes != 0 {
+			t.Fatalf("prose became a balloon: %+v flashes=%d", *notifs, *flashes)
+		}
+	})
+
+	t.Run("desktop bot balloon is the sentence", func(t *testing.T) {
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{
+			RequestID:    "desktop-bot-1",
+			Text:         "无变化",
+			SendToUser:   "首页没打开。",
+			trayTaskName: "打开首页",
+		})
+		if len(*notifs) != 1 || (*notifs)[0].msg != "首页没打开。" || strings.Contains((*notifs)[0].title, "无变化") || strings.Contains((*notifs)[0].msg, "无变化") {
+			t.Fatalf("unexpected notifications: %+v", *notifs)
+		}
+	})
+
+	t.Run("desktop bot filler error stays quiet", func(t *testing.T) {
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{
+			RequestID: "desktop-bot-1",
+			Text:      "无变化",
+			Error:     "run ended without a result",
+		})
+		if len(*notifs) != 0 || *flashes != 0 {
+			t.Fatalf("filler became a balloon: %+v flashes=%d", *notifs, *flashes)
+		}
+	})
+
+	t.Run("desktop bot real error still notifies", func(t *testing.T) {
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{
+			RequestID: "desktop-bot-1",
+			Text:      "无变化",
+			Error:     "browser broke",
+		})
+		if len(*notifs) != 1 || (*notifs)[0].title != "任务异常" || (*notifs)[0].msg != "browser broke" || strings.Contains((*notifs)[0].msg, "无变化") {
+			t.Fatalf("unexpected notifications: %+v", *notifs)
+		}
+	})
+
+	t.Run("desktop bot ask does not quote prose", func(t *testing.T) {
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{
+			RequestID:       "desktop-bot-1",
+			Text:            "无变化",
+			AskUserQuestion: "用哪个账号？",
+		})
+		if len(*notifs) != 1 || (*notifs)[0].title != "等待回复" || (*notifs)[0].msg != "用哪个账号？" || strings.Contains((*notifs)[0].msg, "无变化") {
+			t.Fatalf("unexpected notifications: %+v", *notifs)
+		}
+	})
+
+	t.Run("desktop bot failure that still asks is a reply", func(t *testing.T) {
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{
+			RequestID:         "desktop-bot-1",
+			Text:              "安装过程写在这里",
+			Error:             "browser broke",
+			AskUserQuestion:   "请输入密码。",
+			AskUserSecretName: "SITE_PASSWORD",
+		})
+		if len(*notifs) != 1 || (*notifs)[0].title != "等待回复" || (*notifs)[0].msg != "请输入密码。" || strings.Contains((*notifs)[0].msg, "安装过程") || strings.Contains((*notifs)[0].msg, "browser broke") {
+			t.Fatalf("unexpected notifications: %+v", *notifs)
+		}
+	})
+
+	t.Run("desktop bot placeholder question does not hide the error", func(t *testing.T) {
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{
+			RequestID:       "desktop-bot-1",
+			Text:            "安装过程写在这里",
+			Error:           "browser broke",
+			AskUserQuestion: "无变化",
+		})
+		if len(*notifs) != 1 || (*notifs)[0].title != "任务异常" || (*notifs)[0].msg != "browser broke" || strings.Contains((*notifs)[0].msg, "无变化") || strings.Contains((*notifs)[0].msg, "安装过程") {
+			t.Fatalf("unexpected notifications: %+v", *notifs)
+		}
+	})
+
+	t.Run("desktop bot placeholder question still asks for the secret", func(t *testing.T) {
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{
+			RequestID:         "desktop-bot-1",
+			Text:              "安装过程写在这里",
+			Error:             "browser broke",
+			AskUserQuestion:   "无变化",
+			AskUserSecretName: "SITE_PASSWORD",
+		})
+		if len(*notifs) != 1 || (*notifs)[0].title != "等待回复" || (*notifs)[0].msg != "需要提供 SITE_PASSWORD" || strings.Contains((*notifs)[0].msg, "无变化") || strings.Contains((*notifs)[0].msg, "browser broke") {
+			t.Fatalf("unexpected notifications: %+v", *notifs)
+		}
+	})
+
+	t.Run("desktop bot placeholder question with choices still waits", func(t *testing.T) {
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{
+			RequestID:          "desktop-bot-1",
+			Text:               "安装过程写在这里",
+			Error:              "browser broke",
+			AskUserQuestion:    "无变化",
+			AskUserOptionsJSON: `["继续","停下"]`,
+		})
+		if len(*notifs) != 1 || (*notifs)[0].title != "等待回复" || (*notifs)[0].msg != "任务等待回复，请返回窗口查看" || strings.Contains((*notifs)[0].msg, "无变化") || strings.Contains((*notifs)[0].msg, "browser broke") || strings.Contains((*notifs)[0].msg, "安装过程") {
+			t.Fatalf("unexpected notifications: %+v", *notifs)
+		}
+	})
+
+	t.Run("desktop bot placeholder question with choices and no error still waits", func(t *testing.T) {
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{
+			RequestID:          "desktop-bot-1",
+			Text:               "无变化",
+			AskUserQuestion:    "无变化",
+			AskUserOptionsJSON: `["继续","停下"]`,
+		})
+		if len(*notifs) != 1 || (*notifs)[0].title != "等待回复" || (*notifs)[0].msg != "任务等待回复，请返回窗口查看" || strings.Contains((*notifs)[0].msg, "无变化") {
+			t.Fatalf("unexpected notifications: %+v", *notifs)
+		}
+	})
+
+	t.Run("desktop bot choices without a question still wait", func(t *testing.T) {
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{
+			RequestID:          "desktop-bot-1",
+			Text:               "安装过程写在这里",
+			AskUserOptionsJSON: `["继续","停下"]`,
+		})
+		if len(*notifs) != 1 || (*notifs)[0].title != "等待回复" || (*notifs)[0].msg != "任务等待回复，请返回窗口查看" || strings.Contains((*notifs)[0].msg, "安装过程") || strings.Contains((*notifs)[0].msg, "继续") {
+			t.Fatalf("unexpected notifications: %+v", *notifs)
+		}
+	})
+
+	t.Run("desktop bot placeholder labels without a question stay an error", func(t *testing.T) {
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{
+			RequestID:          "desktop-bot-1",
+			Text:               "安装过程写在这里",
+			Error:              "browser broke",
+			AskUserOptionsJSON: `["无变化"]`,
+		})
+		if len(*notifs) != 1 || (*notifs)[0].title != "任务异常" || (*notifs)[0].msg != "browser broke" || strings.Contains((*notifs)[0].msg, "无变化") || strings.Contains((*notifs)[0].msg, "安装过程") {
+			t.Fatalf("unexpected notifications: %+v", *notifs)
+		}
+	})
+
+	t.Run("desktop bot placeholder choice labels do not hide the error", func(t *testing.T) {
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{
+			RequestID:          "desktop-bot-1",
+			Text:               "安装过程写在这里",
+			Error:              "browser broke",
+			AskUserQuestion:    "无变化",
+			AskUserOptionsJSON: `["无变化", " "]`,
+		})
+		if len(*notifs) != 1 || (*notifs)[0].title != "任务异常" || (*notifs)[0].msg != "browser broke" || strings.Contains((*notifs)[0].msg, "无变化") {
+			t.Fatalf("unexpected notifications: %+v", *notifs)
+		}
+	})
+
+	t.Run("desktop bot placeholder choice labels leave a handoff as confirm", func(t *testing.T) {
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{
+			RequestID:              "desktop-bot-1",
+			Text:                   "安装过程写在这里",
+			Error:                  "browser broke",
+			AskUserQuestion:        "无变化",
+			AskUserOptionsJSON:     `["无变化"]`,
+			DesktopUserControl:     true,
+			DesktopAttentionReason: "login_wall",
+		})
+		if len(*notifs) != 1 || (*notifs)[0].title != "需要确认" || strings.Contains((*notifs)[0].msg, "无变化") || strings.Contains((*notifs)[0].msg, "browser broke") {
+			t.Fatalf("unexpected notifications: %+v", *notifs)
+		}
+	})
+
+	t.Run("desktop bot placeholder choice labels still ask for the secret", func(t *testing.T) {
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{
+			RequestID:          "desktop-bot-1",
+			Text:               "安装过程写在这里",
+			Error:              "browser broke",
+			AskUserQuestion:    "无变化",
+			AskUserSecretName:  "SITE_PASSWORD",
+			AskUserOptionsJSON: `["无变化"]`,
+		})
+		if len(*notifs) != 1 || (*notifs)[0].title != "等待回复" || (*notifs)[0].msg != "需要提供 SITE_PASSWORD" || strings.Contains((*notifs)[0].msg, "无变化") || strings.Contains((*notifs)[0].msg, "browser broke") {
+			t.Fatalf("unexpected notifications: %+v", *notifs)
+		}
+	})
+
+	t.Run("desktop bot empty choices do not hide the error", func(t *testing.T) {
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{
+			RequestID:          "desktop-bot-1",
+			Text:               "安装过程写在这里",
+			Error:              "browser broke",
+			AskUserQuestion:    "无变化",
+			AskUserOptionsJSON: `["", " "]`,
+		})
+		if len(*notifs) != 1 || (*notifs)[0].title != "任务异常" || (*notifs)[0].msg != "browser broke" || strings.Contains((*notifs)[0].msg, "无变化") {
+			t.Fatalf("unexpected notifications: %+v", *notifs)
+		}
+	})
+
+	t.Run("desktop bot placeholder question leaves a handoff as confirm", func(t *testing.T) {
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{
+			RequestID:              "desktop-bot-1",
+			Text:                   "安装过程写在这里",
+			Error:                  "browser broke",
+			AskUserQuestion:        "无变化",
+			DesktopUserControl:     true,
+			DesktopAttentionReason: "login_wall",
+		})
+		if len(*notifs) != 1 || (*notifs)[0].title != "需要确认" || strings.Contains((*notifs)[0].msg, "无变化") || strings.Contains((*notifs)[0].msg, "browser broke") || strings.Contains((*notifs)[0].msg, "安装过程") {
+			t.Fatalf("unexpected notifications: %+v", *notifs)
+		}
+	})
+
+	t.Run("desktop bot failure that hands off the desktop asks them back", func(t *testing.T) {
+		reset()
+		a.notifyTaskResponseTray(&IMAgentResponse{
+			RequestID:              "desktop-bot-1",
+			Text:                   "安装过程写在这里",
+			Error:                  "browser broke",
+			DesktopUserControl:     true,
+			DesktopAttentionReason: "login_wall",
+		})
+		if len(*notifs) != 1 || (*notifs)[0].title != "需要确认" || (*notifs)[0].msg != "任务等待确认，请返回窗口处理" || strings.Contains((*notifs)[0].msg, "安装过程") {
+			t.Fatalf("unexpected notifications: %+v", *notifs)
+		}
+	})
 }
 
 func TestTrayBalloonPlain(t *testing.T) {

@@ -121,8 +121,8 @@ describe('desktop bots', () => {
             { id: 'a4', role: 'assistant', content: '确认后我会整理成 PDF。', phase: 'plan' },
         ], 2)).toBe('');
         expect(desktopTaskStep('截屏发我', messages[2])).toBe('done');
-        expect(desktopTaskStep('开始吧', { content: '先打开网站，再告诉你结果。' })).toBe('arrange');
-        expect(desktopTaskStep('改成只看首页', { content: '只看首页，然后停。' })).toBe('arrange');
+        expect(desktopTaskStep('开始吧', { content: '先打开网站，再告诉你结果。' })).toBe('done');
+        expect(desktopTaskStep('改成只看首页', { content: '只看首页，然后停。' })).toBe('done');
         expect(desktopTaskStep('生成一份word文档发我', { content: '确认后我会把自述写成文档附在这条对话里。' })).toBe('arrange');
         expect(desktopTaskStep('这个页面打不开', { content: '要我换一种方式再试吗？' })).toBe('ask');
         expect(desktopTaskStep('打开网站', { content: '需要你在这个浏览器里登录。', userControl: true })).toBe('assist');

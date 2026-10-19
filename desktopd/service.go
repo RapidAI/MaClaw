@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 const (
@@ -51,6 +52,21 @@ type Service struct {
 	Run           Runner
 	RunCommand    CommandRunner
 	AdvertiseHost string
+	// PublishBind is the host address docker uses for the CDP and noVNC
+	// ports. Empty means 127.0.0.1. Production sets it from
+	// DESKTOPD_PUBLISH_BIND. It is not a recreate reason: a container that
+	// already published on every interface stays that way until something
+	// else replaces it. The tunnel still dials this address, and an old
+	// 0.0.0.0 publish accepts that dial.
+	PublishBind string
+	// PublicURL is the base of the CDP and noVNC tunnel. Empty means
+	// https:// plus AdvertiseHost. The gate token stays in the URL userinfo.
+	PublicURL string
+	// publishedPorts caches "userKey/containerPort" -> host port. OpenSession
+	// fills it. The tunnel reads it and, on a miss, asks docker port again.
+	// A new docker run drops the entry. The dial address is PublishBind, not
+	// the address docker prints and not anything from the request path.
+	publishedPorts sync.Map
 	// DesktopProxyURL is injected into desktop containers as HTTP(S)_PROXY so
 	// the browser and other tools egress through the forward proxy (see
 	// forwardproxy.go). Empty keeps desktops on the default route. It is also
@@ -68,6 +84,42 @@ type Service struct {
 	// request (imagePullRetryAfter backoff, see image_source.go).
 	pulls     imagePulls
 	userGates sync.Map
+	// activity counts apt and bash still inside this process. Sleep and the
+	// historical reaper both leave that user running.
+	activity sync.Map
+	// wakes counts Ensure calls that have announced themselves and not yet
+	// finished. The count is taken before the user lock: sleep holds that
+	// lock from flush through stop, so the announcement has to be visible
+	// while Ensure is still waiting.
+	wakes sync.Map
+	// flights collapses concurrent wakes. One Ensure runs per user. One
+	// OpenSession runs per screen. Waiters take that result. A second screen
+	// waits out the user's lock, then restores itself, and does not remove
+	// the container.
+	flights  map[string]*flightCall
+	flightMu sync.Mutex
+	// ComputerDir is the host root for computers/<tenant>/<userkey>/meta.json.
+	// Empty skips the record, which is what tests do. Production sets it from
+	// DESKTOPD_COMPUTER_DIR or DefaultComputerDir. The file has no gate token.
+	// Writing it does not add a volume and does not recreate a container.
+	ComputerDir string
+	metaMu      sync.Mutex
+	// Stage2Sleep is the stage-2 idle stop. Off by default: containers keep
+	// running. On: after about five minutes, flush, sync the four volumes to
+	// one generation, then docker stop. A failed sync does not stop. An
+	// Ensure that arrives after flush abandons the sleep and leaves the
+	// container running.
+	Stage2Sleep bool
+	// VolumeSync copies the four private volumes. Nil means object storage is
+	// not configured, and stage 2 must not docker stop. The bucket, account,
+	// and region are not chosen here. The syncer must not log a token.
+	VolumeSync func(ctx context.Context, meta SleepMeta, mounts []desktop.Mount) (VolumeSyncResult, error)
+	// Now is the warm-start clock. Tests set it. Production uses time.Now.
+	Now func() time.Time
+	// Machines is the runtime seam. Nil uses DockerRuntime, which wraps
+	// today's create, start, stop, and exec. Tests set it. Production leaves
+	// it nil. The HTTP routes do not change.
+	Machines Runtime
 }
 
 // desktopProxy resolves the proxy URL the NEXT created desktop receives: the
@@ -188,6 +240,7 @@ func (s *Service) createUnlocked(ctx context.Context, spec Spec) (Desktop, error
 	}
 	running := spec
 	running.Image = image
+	s.markComputerRunning(spec)
 	return desktopOf(running, name, "running"), nil
 }
 
@@ -298,7 +351,7 @@ func (s *Service) Stop(ctx context.Context, tenantID, userID string) (Desktop, e
 	var out Desktop
 	err = s.withUser(spec.TenantID, spec.UserID, func() error {
 		var stopErr error
-		out, stopErr = s.stopUnlocked(ctx, spec)
+		out, stopErr = s.runtime().Stop(ctx, spec)
 		return stopErr
 	})
 	return out, err
@@ -332,13 +385,16 @@ func (s *Service) stopUnlocked(ctx context.Context, spec Spec) (Desktop, error) 
 	if err := s.stopContainer(writeCtx, name); err != nil {
 		return Desktop{}, err
 	}
+	s.markComputerAbsent(spec)
 	out := desktopOf(spec, name, "stopped")
 	out.Image, out.Memory, out.CPUs, out.ShmSize = "", "", "", ""
 	return out, nil
 }
 
 // Session is the remote handle MaClawSrv uses when it is not on this machine.
-// cdp_url uses the advertised host and the published port, not the container IP.
+// cdp_url and novnc_url are the desktopd tunnel on the public API host.
+// They do not carry the container IP or the Docker published port.
+// The gate token stays in the URL userinfo and is not written into meta.json.
 type Session struct {
 	CDP       string `json:"cdp_url"`
 	Display   string `json:"display"`
@@ -351,36 +407,41 @@ func (s *Service) OpenSession(ctx context.Context, spec Spec) (Session, error) {
 	if err != nil {
 		return Session{}, err
 	}
-	var session Session
-	err = s.withUser(spec.TenantID, spec.UserID, func() error {
-		var openErr error
-		session, openErr = s.openSessionUnlocked(ctx, spec)
-		return openErr
+	// One screen, one Restore. A concurrent open of another screen waits, then
+	// runs its own Restore. That second call finds the container and does not
+	// remove it.
+	return s.flightSession(sessionFlightKey(spec), ctx, func(ctx context.Context) (Session, error) {
+		var session Session
+		err := s.withUser(spec.TenantID, spec.UserID, func() error {
+			var openErr error
+			session, openErr = s.openSessionUnlocked(ctx, spec)
+			return openErr
+		})
+		return session, err
 	})
-	return session, err
 }
 
 func (s *Service) openSessionUnlocked(ctx context.Context, spec Spec) (Session, error) {
-	host, err := s.advertiseHost()
-	if err != nil {
-		return Session{}, err
-	}
-	created, err := s.createUnlocked(ctx, spec)
+	// Fail before create when the public name is missing, so a half-configured
+	// host does not start a container it cannot hand out.
+	base, err := s.publicBase()
 	if err != nil {
 		return Session{}, err
 	}
 	spec, _ = normalize(spec)
-	key, err := specKey(spec)
+	restored, err := s.runtime().Restore(ctx, spec)
+	if err != nil {
+		return Session{}, err
+	}
+	created := Desktop{Container: restored.Container}
+	ownerKey, err := desktop.UserKey(spec.TenantID, spec.UserID)
 	if err != nil {
 		return Session{}, err
 	}
 	if spec.BotID != "" {
 		s.noteBotOwner(spec)
 	}
-	out, err := s.docker(ctx, "exec", created.Container, "python3", "/desktop_supervisor.py", "ensure", key)
-	if err != nil {
-		return Session{}, err
-	}
+	out := restored.EnsureOut
 	status, err := desktop.ParseEnsure(out)
 	if err != nil {
 		return Session{}, fmt.Errorf("%w: %s", ErrDocker, err.Error())
@@ -396,19 +457,27 @@ func (s *Service) openSessionUnlocked(ctx context.Context, spec Spec) (Session, 
 	if err != nil {
 		return Session{}, err
 	}
-	// The token rides as URL userinfo. The CDP client turns it into a Bearer
-	// header and the Hub noVNC proxy attaches it when relaying the handoff,
-	// so the published browser ports refuse unauthenticated peers.
-	authority := host
-	if status.Token != "" {
-		authority = "desktop:" + status.Token + "@" + host
+	// One tunnel per container. The owner key names it. The gate token, still
+	// only in the URL userinfo, selects the screen inside that container.
+	s.rememberPublished(ownerKey, desktop.ProxyPort, hostPort)
+	cdpURL, err := tunnelEndpoint(base, ownerKey, "cdp", status.Token, "", "")
+	if err != nil {
+		return Session{}, err
 	}
-	session := Session{CDP: "http://" + authority + ":" + hostPort, Display: status.Display, Container: created.Container}
+	session := Session{CDP: cdpURL, Display: status.Display, Container: created.Container}
 	if publishedVNC, err := s.docker(ctx, "port", created.Container, desktop.VNCPort+"/tcp"); err == nil {
 		if vncPort, err := publishedPort(publishedVNC); err == nil {
-			session.Novnc = "http://" + authority + ":" + vncPort + "/vnc.html?autoconnect=1&resize=scale"
+			s.rememberPublished(ownerKey, desktop.VNCPort, vncPort)
+			if novnc, err := tunnelEndpoint(base, ownerKey, "vnc", status.Token, "vnc.html", "autoconnect=1&resize=scale"); err == nil {
+				session.Novnc = novnc
+			}
 		}
 	}
+	// The screen table is what the control plane reads later. This call already
+	// learned the display from ensure. The token stays in the session URL and
+	// is not copied into meta.json. Opening the session is CDP and noVNC activity.
+	s.noteComputerScreen(spec, status.Display)
+	s.noteComputerActivity(spec.TenantID, spec.UserID)
 	return session, nil
 }
 
@@ -421,7 +490,7 @@ func (s *Service) App(ctx context.Context, tenantID, userID, display string, arg
 		return "", err
 	}
 	if !desktop.ValidDisplay(display) {
-		return "", fmt.Errorf("%w: display is invalid", ErrInvalid)
+		return "", fmt.Errorf("%w: %s", ErrInvalid, desktopbot.DisplayInvalidNextStep)
 	}
 	if len(args) == 0 || len(args) > desktop.MaxAppArgs {
 		return "", fmt.Errorf("%w: app command is invalid", ErrInvalid)
@@ -436,11 +505,22 @@ func (s *Service) App(ctx context.Context, tenantID, userID, display string, arg
 	}
 	var out string
 	err = s.withUser(spec.TenantID, spec.UserID, func() error {
-		var runErr error
-		command := append([]string{"exec", "-e", "DISPLAY=" + display, containerName(spec.TenantID, spec.UserID), "xdotool"}, args...)
-		out, runErr = s.docker(ctx, command...)
+		command, cmdErr := commandServiceArgs(containerName(spec.TenantID, spec.UserID), commandRequest{
+			Op:      "click",
+			Display: display,
+			Args:    args,
+		})
+		if cmdErr != nil {
+			return cmdErr
+		}
+		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{Kind: ExecClick, Args: command, Combined: true})
+		out = result.Out
 		return runErr
 	})
+	if err == nil {
+		s.noteComputerScreen(spec, display)
+		s.noteComputerActivity(spec.TenantID, spec.UserID)
+	}
 	return out, err
 }
 
@@ -491,6 +571,8 @@ func (s *Service) Install(ctx context.Context, tenantID, userID string, packages
 	defer cancel()
 	container := containerName(spec.TenantID, spec.UserID)
 	var output string
+	release := s.holdWork(spec.TenantID, spec.UserID)
+	defer release()
 	err = s.withUser(spec.TenantID, spec.UserID, func() error {
 		// ensure() starts apt-mirror in the background and returns before
 		// that process takes the lock. The wait either blocks until the
@@ -566,12 +648,24 @@ func (s *Service) CaptureShot(ctx context.Context, tenantID, userID, display, na
 		display = desktop.DefaultDisplay
 	}
 	if !desktop.ValidDisplay(display) {
-		return desktop.Shot{}, "", fmt.Errorf("%w: display is invalid", ErrInvalid)
+		return desktop.Shot{}, "", fmt.Errorf("%w: %s", ErrInvalid, desktopbot.DisplayInvalidNextStep)
 	}
 	var out string
 	err = s.withUser(spec.TenantID, spec.UserID, func() error {
-		var runErr error
-		out, runErr = s.docker(ctx, "exec", "-e", "DISPLAY="+display, containerName(spec.TenantID, spec.UserID), "sh", "-c", script)
+		command, cmdErr := commandServiceArgs(containerName(spec.TenantID, spec.UserID), commandRequest{
+			Op:      "shot",
+			Display: display,
+			Script:  script,
+		})
+		if cmdErr != nil {
+			return cmdErr
+		}
+		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{
+			Kind:     ExecShot,
+			Args:     command,
+			Combined: true,
+		})
+		out = result.Out
 		return runErr
 	})
 	if err != nil {
@@ -581,6 +675,8 @@ func (s *Service) CaptureShot(ctx context.Context, tenantID, userID, display, na
 	if err != nil {
 		return desktop.Shot{}, "", fmt.Errorf("%w: %s", ErrDocker, err.Error())
 	}
+	s.noteComputerScreen(spec, display)
+	s.noteComputerActivity(spec.TenantID, spec.UserID)
 	return shot, desktop.DesktopShotPath(name), nil
 }
 
@@ -623,7 +719,7 @@ func (s *Service) advertiseHost() (string, error) {
 		host = strings.TrimSpace(os.Getenv("DESKTOPD_ADVERTISE_HOST"))
 	}
 	if host == "" || strings.ContainsAny(host, " /\r\n") {
-		return "", fmt.Errorf("%w: advertise host is required", ErrInvalid)
+		return "", fmt.Errorf("%w: %s", ErrInvalid, desktopbot.AdvertiseHostNextStep)
 	}
 	return host, nil
 }
@@ -858,11 +954,20 @@ func (s *Service) runContainer(ctx context.Context, name string, spec Spec, imag
 	if err != nil {
 		return err
 	}
+	if err := RejectRestartAlways(desktopRestartPolicy); err != nil {
+		return err
+	}
+	bind, err := s.publishBind()
+	if err != nil {
+		return err
+	}
+	// The previous random host port belongs to the container we are replacing.
+	s.forgetPublished(key)
 	args := []string{
 		"run", "-d",
 		"--name", name,
 		"--entrypoint", "sh",
-		"--restart", "unless-stopped",
+		"--restart", desktopRestartPolicy,
 		"--memory", spec.Memory,
 		"--cpus", spec.CPUs,
 		"--shm-size", spec.ShmSize,
@@ -885,8 +990,8 @@ func (s *Service) runContainer(ctx context.Context, name string, spec Spec, imag
 		"--env", "NO_PROXY=" + desktopProxyNoProxy,
 		"--env", "no_proxy=" + desktopProxyNoProxy,
 		"--label", desktopProxyLabel + "=" + s.desktopProxy(),
-		"--publish", desktop.ProxyPort + "/tcp",
-		"--publish", desktop.VNCPort + "/tcp",
+		"--publish", publishSpec(bind, desktop.ProxyPort),
+		"--publish", publishSpec(bind, desktop.VNCPort),
 	}
 	for _, mount := range mounts {
 		args = append(args, "--volume", mount.Volume+":"+mount.Target)
@@ -980,17 +1085,17 @@ func normalize(spec Spec) (Spec, error) {
 	if owner, bot := desktop.SplitDesktopUser(spec.UserID); bot != "" {
 		spec.UserID, spec.BotID = owner, bot
 	} else if strings.Contains(spec.UserID, desktop.BotUserSep) {
-		return Spec{}, fmt.Errorf("%w: bot is invalid", ErrInvalid)
+		return Spec{}, fmt.Errorf("%w: %s", ErrInvalid, desktopbot.MissingIdentityNextStep("bot"))
 	}
 	spec.BotID = strings.TrimSpace(spec.BotID)
 	if spec.BotID != "" && !desktop.ValidBotID(spec.BotID) {
-		return Spec{}, fmt.Errorf("%w: bot is invalid", ErrInvalid)
+		return Spec{}, fmt.Errorf("%w: %s", ErrInvalid, desktopbot.MissingIdentityNextStep("bot"))
 	}
 	if spec.TenantID == "" || strings.ContainsAny(spec.TenantID, "\r\n\x00") {
-		return Spec{}, fmt.Errorf("%w: tenant is required", ErrInvalid)
+		return Spec{}, fmt.Errorf("%w: %s", ErrInvalid, desktopbot.MissingIdentityNextStep("tenant"))
 	}
 	if !desktop.ValidUserID(spec.UserID) {
-		return Spec{}, fmt.Errorf("%w: user is required", ErrInvalid)
+		return Spec{}, fmt.Errorf("%w: %s", ErrInvalid, desktopbot.MissingIdentityNextStep("user"))
 	}
 	resources, err := desktop.NormalizeResources(spec.Image, spec.Memory, spec.CPUs, spec.ShmSize)
 	if err != nil {
@@ -1057,7 +1162,7 @@ func (s *Service) Ctl(ctx context.Context, tenantID, userID, display string, req
 		display = desktop.DefaultDisplay
 	}
 	if !desktop.ValidDisplay(display) {
-		return nil, fmt.Errorf("%w: display is invalid", ErrInvalid)
+		return nil, fmt.Errorf("%w: %s", ErrInvalid, desktopbot.DisplayInvalidNextStep)
 	}
 	// The supervisor acts on a bot display's own state only for the key
 	// derived here. A key a client sent is never used.
@@ -1079,16 +1184,25 @@ func (s *Service) Ctl(ctx context.Context, tenantID, userID, display string, req
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrInvalid, strings.TrimPrefix(err.Error(), desktop.ErrInvalid.Error()+": "))
 	}
+	command, err := commandServiceArgs(containerName(spec.TenantID, spec.UserID), commandRequest{
+		Op:      "ctl",
+		Display: display,
+		Body:    tail[len(tail)-1],
+	})
+	if err != nil {
+		return nil, err
+	}
 	var out string
 	err = s.withUser(spec.TenantID, spec.UserID, func() error {
-		var runErr error
-		command := append([]string{"exec", "-e", "DISPLAY=" + display, containerName(spec.TenantID, spec.UserID)}, tail...)
-		out, runErr = s.docker(ctx, command...)
+		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{Kind: ExecCtl, Args: command, Combined: true})
+		out = result.Out
 		return runErr
 	})
 	if err != nil {
 		return nil, err
 	}
+	s.noteComputerScreen(spec, display)
+	s.noteComputerActivity(spec.TenantID, spec.UserID)
 	result, err := desktop.DecodeCtl(out)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrDocker, err.Error())

@@ -5,7 +5,7 @@ import {
     compactCodingAgentProgressMessages,
     groupCodingAgentProgressForRender,
 } from "../compactCodingAgentProgressMessages";
-import { isCodingAgentBoardProgressContent, reasoningHasCodingStatusMilestone, stripCodingAgentAuditSections, stripCodingWorkbenchStatusReasoning, stripLeadingCodingWorkbenchStatus } from "../codingAgentUserFinish";
+import { isCodingAgentBoardProgressContent, isCodingWorkbenchStatusLine, reasoningHasCodingStatusMilestone, stripCodingAgentAuditSections, stripCodingWorkbenchStatusReasoning, stripLeadingCodingWorkbenchStatus } from "../codingAgentUserFinish";
 
 const message = (id: string, content: string): ChatMessage => ({
     id,
@@ -316,4 +316,53 @@ describe("stripLeadingCodingWorkbenchStatus", () => {
         expect(stripLeadingCodingWorkbenchStatus(answer)).toBe(answer);
         expect(stripCodingWorkbenchStatusReasoning(answer)).toBe(answer);
     });
+
+    it("matches the line-split strip for breaks, trailing newlines, and a repeated call", () => {
+        const legacy = (text: string) => {
+            const lines = (text || "").split(/\r?\n/);
+            let index = 0;
+            while (index < lines.length) {
+                const trimmed = lines[index].trim();
+                if (!trimmed || isCodingWorkbenchStatusLine(lines[index])) {
+                    index += 1;
+                    continue;
+                }
+                break;
+            }
+            return lines.slice(index).join("\n").replace(/^\n+|\n+$/g, "");
+        };
+        const samples = [
+            "",
+            "Hello",
+            "Hello\n",
+            "Hello\n\n",
+            "\nHello",
+            "\n\nHello\n",
+            "Hello\r\nworld",
+            "Hello\rworld",
+            "Hello\r\n",
+            "\r\nHello\r\n",
+            "• 执行环境已就绪",
+            "• 执行环境已就绪\r\n正文",
+            "• 执行环境已就绪\n\n正文\n",
+            "  \nHello",
+            "Hello\n• 执行环境已就绪\nmore",
+            "已接收任务，正在准备执行路径\nHello",
+            "正在分析任务的复杂之处\n然后给出结论。\n",
+        ];
+        for (const sample of samples) {
+            expect(stripLeadingCodingWorkbenchStatus(sample)).toBe(legacy(sample));
+        }
+        const stable = "正在分析任务的复杂之处\n然后给出结论。";
+        const withStatus = "• 执行环境已就绪\r\nI'll write hello.cpp.\n";
+        expect(stripCodingWorkbenchStatusReasoning(stable)).toBe(legacyStatus(stable));
+        expect(stripCodingWorkbenchStatusReasoning(stable)).toBe(legacyStatus(stable));
+        expect(stripCodingWorkbenchStatusReasoning(withStatus)).toBe(legacyStatus(withStatus));
+        expect(stripCodingWorkbenchStatusReasoning(withStatus)).toBe(legacyStatus(withStatus));
+    });
 });
+
+function legacyStatus(text: string): string {
+    const kept = (text || "").split(/\r?\n/).filter((line) => !isCodingWorkbenchStatusLine(line));
+    return kept.join("\n").replace(/^\n+|\n+$/g, "");
+}

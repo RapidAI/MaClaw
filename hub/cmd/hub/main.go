@@ -174,7 +174,7 @@ func runTenant(args []string) error {
 	case "migrate-users":
 		return runTenantMigrateUsers(args[1:])
 	default:
-		return fmt.Errorf("unknown tenant command %q", args[0])
+		return fmt.Errorf("Unknown tenant command %q. Run hub tenant help.", args[0])
 	}
 }
 
@@ -196,7 +196,7 @@ func runTenantMigrateUsers(args []string) error {
 		return err
 	}
 	if strings.TrimSpace(*mappingPath) == "" {
-		return fmt.Errorf("tenant migrate-users requires --mapping")
+		return fmt.Errorf("Missing --mapping. Run hub tenant migrate-users --config <config.yaml> --mapping <users.csv> --dry-run.")
 	}
 	cfg, err := config.Load(resolveConfigPath(*configPath))
 	if err != nil {
@@ -267,7 +267,7 @@ func runBackup(args []string) error {
 	case "inspect", "list":
 		return runBackupInspect(args[1:])
 	default:
-		return fmt.Errorf("unknown backup command %q", args[0])
+		return fmt.Errorf("Unknown backup command %q. Run hub backup help.", args[0])
 	}
 }
 
@@ -326,7 +326,7 @@ func runBackupInspect(args []string) error {
 		return err
 	}
 	if strings.TrimSpace(*filePath) == "" {
-		return fmt.Errorf("backup inspect requires --file")
+		return fmt.Errorf("Missing --file. Run hub backup inspect --file <backup.tar.gz>.")
 	}
 	manifest, err := backup.Inspect(*filePath)
 	if err != nil {
@@ -400,7 +400,7 @@ func runAdminReset(args []string) error {
 		return err
 	}
 	if strings.TrimSpace(*username) == "" || strings.TrimSpace(*password) == "" {
-		return fmt.Errorf("admin reset requires -username and -password")
+		return fmt.Errorf("Missing -username or -password. Run hub admin reset -username <name> -password <password>.")
 	}
 
 	cfg, err := config.Load(resolveConfigPath(*configPath))

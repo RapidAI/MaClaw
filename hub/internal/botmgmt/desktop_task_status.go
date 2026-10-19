@@ -2,12 +2,15 @@ package botmgmt
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 // A finished desktop run stays available until the GUI has shown it. Six hours
@@ -27,32 +30,40 @@ const (
 // bytes stay in memory with the live reply; this record is the text, the
 // status, and whether the GUI has already been given that result.
 type desktopTaskPin struct {
-	UserID          string `json:"user_id"`
-	BotID           string `json:"bot_id"`
-	RunID           string `json:"run_id"`
-	InstanceID      string `json:"instance_id,omitempty"`
-	Task            string `json:"task"`
-	Phase           string `json:"phase,omitempty"`
-	Status          string `json:"status"`
-	Text            string `json:"text,omitempty"`
-	Error           string `json:"error,omitempty"`
-	Handoff         bool   `json:"handoff,omitempty"`
-	Attention       string `json:"attention,omitempty"`
-	Delivered       bool   `json:"delivered,omitempty"`
-	Started         string `json:"started,omitempty"`
-	Finished        string `json:"finished,omitempty"`
-	ClientMessageID string `json:"client_message_id,omitempty"`
+	UserID             string `json:"user_id"`
+	BotID              string `json:"bot_id"`
+	RunID              string `json:"run_id"`
+	InstanceID         string `json:"instance_id,omitempty"`
+	Task               string `json:"task"`
+	Phase              string `json:"phase,omitempty"`
+	Status             string `json:"status"`
+	Text               string `json:"text,omitempty"`
+	SendToUser         string `json:"send_to_user,omitempty"`
+	AskUserInputType   string `json:"ask_user_input_type,omitempty"`
+	AskUserSecretName  string `json:"ask_user_secret_name,omitempty"`
+	AskUserQuestion    string `json:"ask_user_question,omitempty"`
+	AskUserOptionsJSON string `json:"ask_user_options_json,omitempty"`
+	Error              string `json:"error,omitempty"`
+	Handoff            bool   `json:"handoff,omitempty"`
+	Attention          string `json:"attention,omitempty"`
+	Delivered          bool   `json:"delivered,omitempty"`
+	Started            string `json:"started,omitempty"`
+	Finished           string `json:"finished,omitempty"`
+	ClientMessageID    string `json:"client_message_id,omitempty"`
 }
 
 // DesktopTaskStatus is one run as a status question would see it.
 type DesktopTaskStatus struct {
-	RunID   string    `json:"run_id"`
-	BotID   string    `json:"bot_id"`
-	Task    string    `json:"task"`
-	Status  string    `json:"status"`
-	Text    string    `json:"text,omitempty"`
-	Error   string    `json:"error,omitempty"`
-	Started time.Time `json:"-"`
+	RunID        string    `json:"run_id"`
+	BotID        string    `json:"bot_id"`
+	Task         string    `json:"task"`
+	Status       string    `json:"status"`
+	Text         string    `json:"text,omitempty"`
+	Error        string    `json:"error,omitempty"`
+	WhereWeAre   string    `json:"where_we_are,omitempty"`
+	NextStep     string    `json:"next_step,omitempty"`
+	OpenProblems string    `json:"open_problems,omitempty"`
+	Started      time.Time `json:"-"`
 }
 
 // DesktopTaskDelivery is one finished run the GUI has not shown yet.
@@ -61,6 +72,7 @@ type DesktopTaskDelivery struct {
 	RunID  string `json:"run_id"`
 	Task   string `json:"task"`
 	Status string `json:"status"`
+	Phase  string `json:"phase,omitempty"`
 	Reply  Reply  `json:"reply"`
 	Error  string `json:"error,omitempty"`
 }
@@ -120,19 +132,24 @@ func (st *desktopAdmitState) pinLocked() *desktopTaskPin {
 		errText = clipDesktopRunes(st.err.Error(), 500)
 	}
 	pin := &desktopTaskPin{
-		UserID:          st.userID,
-		BotID:           st.botID,
-		RunID:           st.runID,
-		InstanceID:      st.instanceID,
-		Task:            st.task,
-		Phase:           st.phase,
-		Status:          status,
-		Text:            clipDesktopRunes(st.reply.Text, desktopTaskTextKeep),
-		Error:           errText,
-		Handoff:         st.reply.Handoff,
-		Attention:       strings.TrimSpace(st.reply.AttentionReason),
-		Delivered:       st.delivered,
-		ClientMessageID: strings.TrimSpace(st.clientMessageID),
+		UserID:             st.userID,
+		BotID:              st.botID,
+		RunID:              st.runID,
+		InstanceID:         st.instanceID,
+		Task:               st.task,
+		Phase:              st.phase,
+		Status:             status,
+		Text:               clipDesktopRunes(st.reply.Text, desktopTaskTextKeep),
+		SendToUser:         clipDesktopRunes(st.reply.SendToUser, desktopTaskTextKeep),
+		AskUserInputType:   strings.TrimSpace(st.reply.AskUserInputType),
+		AskUserSecretName:  strings.TrimSpace(st.reply.AskUserSecretName),
+		AskUserQuestion:    clipDesktopRunes(st.reply.AskUserQuestion, desktopTaskTextKeep),
+		AskUserOptionsJSON: clipDesktopRunes(st.reply.AskUserOptionsJSON, desktopTaskTextKeep),
+		Error:              errText,
+		Handoff:            st.reply.Handoff,
+		Attention:          strings.TrimSpace(st.reply.AttentionReason),
+		Delivered:          st.delivered,
+		ClientMessageID:    strings.TrimSpace(st.clientMessageID),
 	}
 	if !st.started.IsZero() {
 		pin.Started = st.started.UTC().Format(time.RFC3339)
@@ -201,9 +218,14 @@ func (s *Service) restoreDesktopTasks(tenantID string, tasks map[string]*desktop
 			delivered:       pin.Delivered,
 			clientMessageID: strings.TrimSpace(pin.ClientMessageID),
 			reply: Reply{
-				Text:            pin.Text,
-				Handoff:         pin.Handoff,
-				AttentionReason: pin.Attention,
+				Text:               pin.Text,
+				SendToUser:         pin.SendToUser,
+				Handoff:            pin.Handoff,
+				AttentionReason:    pin.Attention,
+				AskUserInputType:   pin.AskUserInputType,
+				AskUserSecretName:  pin.AskUserSecretName,
+				AskUserQuestion:    pin.AskUserQuestion,
+				AskUserOptionsJSON: pin.AskUserOptionsJSON,
 			},
 		}
 		if state.status == "" {
@@ -381,6 +403,8 @@ func (s *Service) fillPendingMedia(ctx context.Context, tenantID, userID string,
 	defer cancelBudget()
 	sem := make(chan struct{}, 4)
 	var wg sync.WaitGroup
+	var persistMu sync.Mutex
+	persistSentence := false
 	for _, need := range needs {
 		wg.Add(1)
 		go func(need pendingMedia) {
@@ -417,6 +441,43 @@ func (s *Service) fillPendingMedia(ctx context.Context, tenantID, userID string,
 					need.state.reply.Text = text
 				}
 			}
+			if strings.TrimSpace(need.state.reply.SendToUser) == "" {
+				send := ""
+				if view.Message.Metadata != nil {
+					send = strings.TrimSpace(view.Message.Metadata["send_to_user"])
+				}
+				visible := desktopbot.Visible(desktopbot.Turn{Prose: need.state.reply.Text, SendToUser: send})
+				if visible.Bubble && !visible.Failed {
+					need.state.reply.SendToUser = visible.Sentence
+					persistMu.Lock()
+					persistSentence = true
+					persistMu.Unlock()
+				}
+			}
+			if meta := view.Message.Metadata; meta != nil {
+				filledAsk := false
+				if strings.TrimSpace(need.state.reply.AskUserQuestion) == "" && strings.TrimSpace(meta["ask_user_question"]) != "" {
+					need.state.reply.AskUserQuestion = strings.TrimSpace(meta["ask_user_question"])
+					filledAsk = true
+				}
+				if strings.TrimSpace(need.state.reply.AskUserInputType) == "" && strings.TrimSpace(meta["ask_user_input_type"]) != "" {
+					need.state.reply.AskUserInputType = strings.TrimSpace(meta["ask_user_input_type"])
+					filledAsk = true
+				}
+				if strings.TrimSpace(need.state.reply.AskUserSecretName) == "" && strings.TrimSpace(meta["ask_user_secret_name"]) != "" {
+					need.state.reply.AskUserSecretName = strings.TrimSpace(meta["ask_user_secret_name"])
+					filledAsk = true
+				}
+				if strings.TrimSpace(need.state.reply.AskUserOptionsJSON) == "" && strings.TrimSpace(meta["ask_user_options_json"]) != "" {
+					need.state.reply.AskUserOptionsJSON = strings.TrimSpace(meta["ask_user_options_json"])
+					filledAsk = true
+				}
+				if filledAsk {
+					persistMu.Lock()
+					persistSentence = true
+					persistMu.Unlock()
+				}
+			}
 			if need.index >= 0 && need.index < len(out) {
 				out[need.index].Reply = need.state.reply
 			}
@@ -424,6 +485,12 @@ func (s *Service) fillPendingMedia(ctx context.Context, tenantID, userID string,
 		}(need)
 	}
 	wg.Wait()
+	persistMu.Lock()
+	save := persistSentence
+	persistMu.Unlock()
+	if save {
+		s.persistDesktopTasks(tenantID)
+	}
 }
 
 // AckDesktopTask marks one run's result as shown. A second ack is a no-op,
@@ -450,8 +517,26 @@ func (s *Service) AckDesktopTask(ctx context.Context, tenantID, userID, botID, r
 	state.mu.Lock()
 	state.delivered = true
 	state.mu.Unlock()
+	// The reply has been handed off. This round's admit does not stay for the
+	// old six-hour window.
+	delete(s.desktopAdmits, desktopAdmitKey(tenantID, userID, botID, runID))
 	s.persistDesktopState(tenantID)
 	return nil
+}
+
+// EndDesktopRound drops this run's admit. The round is over, so the in-memory
+// follow does not stay on the user. An empty reserve still expires through
+// the 30 second sweep.
+func (s *Service) EndDesktopRound(tenantID, userID, botID, runID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.desktopAdmits) == 0 {
+		return
+	}
+	delete(s.desktopAdmits, desktopAdmitKey(tenantID, userID, botID, runID))
 }
 
 func (s *Service) listDesktopTasks(ctx context.Context, tenantID, userID, botID string) ([]DesktopTaskStatus, error) {
@@ -503,15 +588,63 @@ func statusFromState(state *desktopAdmitState) DesktopTaskStatus {
 	if state.err != nil {
 		errText = state.err.Error()
 	}
-	return DesktopTaskStatus{
-		RunID:   state.runID,
-		BotID:   state.botID,
-		Task:    desktopTaskBody(state.task),
-		Status:  status,
-		Text:    state.reply.Text,
-		Error:   errText,
-		Started: state.started,
+	// A status question speaks the sentence the run called. Assistant prose
+	// stays on the run record. A question is that sentence when send_to_user
+	// is empty. A filler is the same as no sentence, so the formatter falls
+	// through to its own "done" line and the progress file.
+	text := strings.TrimSpace(state.reply.SendToUser)
+	if desktopbot.Filler(text) {
+		text = ""
 	}
+	// A recorded error stays the detail. An empty error, or one that is only
+	// a placeholder, leaves the ask as the detail. A placeholder question
+	// is not that detail. Real choices are. A secret name is, when there
+	// is no question and no choice. The status word stays 已经做完 or 没有完成.
+	askDetail := text == "" && ((status != "failed" && status != "cancelled") || strings.TrimSpace(errText) == "" || desktopbot.Filler(errText))
+	if askDetail {
+		ask := strings.TrimSpace(state.reply.AskUserQuestion)
+		if ask != "" && !desktopbot.Filler(ask) {
+			text = ask
+		} else if choice := desktopTaskChoiceLine(state.reply.AskUserOptionsJSON); choice != "" {
+			text = choice
+		} else if secret := strings.TrimSpace(state.reply.AskUserSecretName); secret != "" && !desktopbot.Filler(secret) {
+			text = secret
+		}
+	}
+	return DesktopTaskStatus{
+		RunID:        state.runID,
+		BotID:        state.botID,
+		Task:         desktopTaskBody(state.task),
+		Status:       status,
+		Text:         text,
+		Error:        errText,
+		WhereWeAre:   state.progressWhere,
+		NextStep:     state.progressNext,
+		OpenProblems: state.progressOpen,
+		Started:      state.started,
+	}
+}
+
+// desktopTaskChoiceLine is the choice labels a status question can speak.
+// A placeholder label is not one. Invalid JSON is not a list.
+func desktopTaskChoiceLine(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	var items []string
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		return ""
+	}
+	kept := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if !desktopbot.RealChoice(item) {
+			continue
+		}
+		kept = append(kept, item)
+	}
+	return strings.Join(kept, "\n")
 }
 
 func deliveryFromState(state *desktopAdmitState) DesktopTaskDelivery {
@@ -520,11 +653,16 @@ func deliveryFromState(state *desktopAdmitState) DesktopTaskDelivery {
 	if strings.TrimSpace(reply.Text) == "" && view.Error != "" {
 		reply.Text = view.Error
 	}
+	phase := strings.TrimSpace(state.phase)
+	if phase != "plan" && phase != "execute" {
+		phase = ""
+	}
 	return DesktopTaskDelivery{
 		BotID:  view.BotID,
 		RunID:  view.RunID,
 		Task:   view.Task,
 		Status: view.Status,
+		Phase:  phase,
 		Reply:  reply,
 		Error:  view.Error,
 	}
@@ -896,13 +1034,16 @@ func formatDesktopTaskRunning(items []DesktopTaskStatus, lang string) string {
 		labels = append(labels, label)
 	}
 	if len(labels) == 1 {
+		line := "在做。这件是「" + labels[0] + "」。"
 		if en {
-			return `Working on "` + labels[0] + `".`
+			line = `Working on "` + labels[0] + `".`
+		} else if hant {
+			line = "在做。這件是「" + labels[0] + "」。"
 		}
-		if hant {
-			return "在做。這件是「" + labels[0] + "」。"
+		if extra := desktopTaskProgressLine(items[0]); extra != "" {
+			return line + "\n" + extra
 		}
-		return "在做。这件是「" + labels[0] + "」。"
+		return line
 	}
 	head := "在做这几件："
 	if en {
@@ -956,12 +1097,32 @@ func desktopTaskStatusLine(item DesktopTaskStatus, lang string, withResult, show
 		return line
 	}
 	detail := desktopTaskBody(item.Text)
-	if detail == "" {
+	if detail == "" || desktopbot.Filler(detail) {
 		detail = desktopTaskBody(item.Error)
+	}
+	if desktopbot.Filler(detail) {
+		detail = ""
 	}
 	detail = clipDesktopRunes(detail, desktopTaskStatusKeep)
 	if detail == "" || detail == label {
+		if extra := desktopTaskProgressLine(item); extra != "" {
+			return line + "\n" + extra
+		}
 		return line
 	}
+	if extra := desktopTaskProgressLine(item); extra != "" {
+		return line + "\n" + detail + "\n" + extra
+	}
 	return line + "\n" + detail
+}
+
+func desktopTaskProgressLine(item DesktopTaskStatus) string {
+	if strings.TrimSpace(item.WhereWeAre) == "" && strings.TrimSpace(item.NextStep) == "" && strings.TrimSpace(item.OpenProblems) == "" {
+		return ""
+	}
+	return desktopbot.ReadProgress("", desktopbot.Sections{
+		WhereWeAre:   item.WhereWeAre,
+		NextStep:     item.NextStep,
+		OpenProblems: item.OpenProblems,
+	}, false).Text
 }

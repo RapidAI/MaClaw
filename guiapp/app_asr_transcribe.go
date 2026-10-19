@@ -258,6 +258,10 @@ func shouldDropASRText(text string, sampleCount int) (bool, string) {
 // Thread-safe. Automatically retries if the model wasn't available before.
 // Uses the configured SenseVoice model.
 func (a *App) getASRModel() (asr.ASRModel, error) {
+	return a.getASRModelQuiet(false)
+}
+
+func (a *App) getASRModelQuiet(quiet bool) (asr.ASRModel, error) {
 	asrMu.Lock()
 	defer asrMu.Unlock()
 
@@ -275,7 +279,11 @@ func (a *App) getASRModel() (asr.ASRModel, error) {
 	}
 
 	modelPath := filepath.Join(dir, asrModelFilename)
-	log.Printf("[asr] loading model from %s", modelPath)
+	if quiet {
+		log.Printf("[asr] loading model")
+	} else {
+		log.Printf("[asr] loading model from %s", modelPath)
+	}
 	m, err := asr.NewSenseVoice(modelPath)
 	if err != nil {
 		return nil, fmt.Errorf("load SenseVoice ASR model: %w", err)
@@ -305,7 +313,14 @@ type asrTranscribeOpts struct {
 	MaxDurationSec float64
 	// SkipVAD skips Silero VAD preprocessing (faster; IM uses this).
 	SkipVAD bool
+	// Quiet suppresses transcript text and absolute paths. Video notes set it.
+	// Voice input leaves it false.
+	Quiet bool
 }
+
+// asrTranscribeModelHook replaces SenseVoice inside transcribeWAVBytes.
+// Production leaves it nil. Notes do not download a model when this is set.
+var asrTranscribeModelHook func(pcm []float32) (string, error)
 
 // TranscribeWAVBytes accepts raw WAV bytes and returns transcribed text using
 // the local SenseVoice ASR model. Shared by desktop voice input and IM voice.
@@ -331,8 +346,10 @@ func (a *App) transcribeWAVBytes(wavData []byte, opts asrTranscribeOpts) (string
 		return "", fmt.Errorf("audio data too short")
 	}
 
-	// Debug: save received WAV to disk for quality comparison
-	if asrDumpEnabled() {
+	// Debug: save received WAV to disk for quality comparison.
+	// Quiet notes skip the dump even when MACLAW_ASR_DUMP=1, because that
+	// path writes under a fixed home directory and logs an absolute path.
+	if asrDumpEnabled() && !opts.Quiet {
 		dumpASRWav(wavData)
 	}
 	header := inspectWAVHeader(wavData)
@@ -396,25 +413,39 @@ func (a *App) transcribeWAVBytes(wavData []byte, opts asrTranscribeOpts) (string
 		}
 	}
 
-	model, err := a.getASRModel()
-	if err != nil {
-		return "", fmt.Errorf("ASR model: %w", err)
-	}
-
 	// Gentle normalize: boost very quiet audio to a level the model handles well.
 	// Only activates when RMS < 0.015 (clearly too quiet). Max gain 3x.
 	pcm = gentleNormalizePCM(pcm)
 
-	text, err := model.Transcribe(pcm)
+	var text string
+	if asrTranscribeModelHook != nil {
+		text, err = asrTranscribeModelHook(pcm)
+	} else {
+		var model asr.ASRModel
+		model, err = a.getASRModelQuiet(opts.Quiet)
+		if err != nil {
+			return "", fmt.Errorf("ASR model: %w", err)
+		}
+		text, err = model.Transcribe(pcm)
+	}
 	if err != nil {
 		return "", fmt.Errorf("transcribe: %w", err)
 	}
+
 	if drop, reason := shouldDropASRText(text, len(pcm)); drop {
-		log.Printf("[asr] dropped suspicious transcript (%s): %q", reason, text)
+		if opts.Quiet {
+			log.Printf("[asr] dropped suspicious transcript (%s)", reason)
+		} else {
+			log.Printf("[asr] dropped suspicious transcript (%s): %q", reason, text)
+		}
 		return "", nil
 	}
 
-	log.Printf("[asr] transcribed %d samples -> %q", len(pcm), text)
+	if opts.Quiet {
+		log.Printf("[asr] transcribed %d samples", len(pcm))
+	} else {
+		log.Printf("[asr] transcribed %d samples -> %q", len(pcm), text)
+	}
 	return text, nil
 }
 

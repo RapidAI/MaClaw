@@ -1169,6 +1169,120 @@ func TestGetSettingsTabConfigIncludesZeroValues(t *testing.T) {
 	if _, ok := ui["chat_font_size"]; !ok {
 		t.Fatal("chat_font_size missing")
 	}
+	if v, ok := ui["chat_font_family"]; !ok || v != "" {
+		t.Fatalf("chat_font_family want empty present, got ok=%v v=%#v", ok, v)
+	}
+	if v, ok := ui["coding_font_family"]; !ok || v != "" {
+		t.Fatalf("coding_font_family want empty present, got ok=%v v=%#v", ok, v)
+	}
+}
+
+func TestChatAndCodingFontFamily(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.Language = "zh-Hans"
+	}); err != nil {
+		t.Fatalf("PatchConfig: %v", err)
+	}
+
+	if got, err := app.GetChatFontFamily(); err != nil || got != "system" {
+		t.Fatalf("default chat font = %q, %v", got, err)
+	}
+	if got, err := app.GetCodingFontFamily(); err != nil || got != "system" {
+		t.Fatalf("default coding font = %q, %v", got, err)
+	}
+	if got, err := app.GetChatFontSize(); err != nil || got != 14 {
+		t.Fatalf("default chat font size = %d, %v", got, err)
+	}
+	if err := app.SetChatFontFamily("maple-mono"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := app.GetChatFontFamily(); err != nil || got != "maple-mono" {
+		t.Fatalf("chat font = %q, %v", got, err)
+	}
+	if err := app.SetChatFontFamily("jetbrains-mono"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := app.GetChatFontFamily(); err != nil || got != "system" {
+		t.Fatalf("chat font rejected programming face, got %q, %v", got, err)
+	}
+	if err := app.SetCodingFontFamily("jetbrains-mono"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := app.GetCodingFontFamily(); err != nil || got != "jetbrains-mono" {
+		t.Fatalf("coding font = %q, %v", got, err)
+	}
+	if got, err := app.GetChatFontFamily(); err != nil || got != "system" {
+		t.Fatalf("coding choice changed conversation font to %q, %v", got, err)
+	}
+	if err := app.SetCodingFontFamily("dengxian"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := app.GetCodingFontFamily(); err != nil || got != "system" {
+		t.Fatalf("coding font rejected reading face, got %q, %v", got, err)
+	}
+	if err := app.SetCodingFontFamily("  fira-code  "); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := app.GetCodingFontFamily(); err != nil || got != "fira-code" {
+		t.Fatalf("coding font trim = %q, %v", got, err)
+	}
+	if err := app.SetChatFontSize(18); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := app.GetChatFontSize(); err != nil || got != 18 {
+		t.Fatalf("chat font size = %d, %v", got, err)
+	}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.ChatFontSize = 30
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := app.GetChatFontSize(); err != nil || got != 24 {
+		t.Fatalf("oversize chat font = %d, %v", got, err)
+	}
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.ChatFontSize = 8
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := app.GetChatFontSize(); err != nil || got != 14 {
+		t.Fatalf("undersize chat font = %d, %v", got, err)
+	}
+}
+
+// TestChatFontGettersRejectUnreadableConfig: a failed LoadConfig must not
+// resolve as the stored default. Startup applies a resolved 14 or "system".
+func TestChatFontGettersRejectUnreadableConfig(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if app.PeekConfig() != nil {
+		t.Fatal("cold app published a config snapshot")
+	}
+	path := filepath.Join(tmpHome, ".maclaw", "config.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Invalid JSON on a cold app. A warm snapshot would hide this file.
+	if err := os.WriteFile(path, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if size, err := app.GetChatFontSize(); err == nil {
+		t.Fatalf("GetChatFontSize() = %d, nil; want load error", size)
+	}
+	if id, err := app.GetChatFontFamily(); err == nil {
+		t.Fatalf("GetChatFontFamily() = %q, nil; want load error", id)
+	}
+	if id, err := app.GetCodingFontFamily(); err == nil {
+		t.Fatalf("GetCodingFontFamily() = %q, nil; want load error", id)
+	}
 }
 
 // TestGetSettingsTabConfigUsesSnapWhenWarm ensures the tab DTO path does not

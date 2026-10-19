@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 // desktopAdmitState is one accepted desktop command whose reply is not the
@@ -48,23 +49,18 @@ type desktopAdmitState struct {
 	// persisted: a restart learns it again from the next run read. Empty
 	// means the run has not named a step.
 	activity string
+	// progress is the last PROGRESS.md copy the run published. A later read
+	// with empty sections keeps this copy.
+	progressWhere string
+	progressNext  string
+	progressOpen  string
 }
 
-// desktopRunActivityPattern is the shape of a working-row phrase. Two to six
-// Han characters after 正在. Anything else, including typed text, is dropped.
-var desktopRunActivityPattern = regexp.MustCompile(`^正在\p{Han}{2,6}$`)
-
+// desktopRunActivityText keeps a working-row phrase. The closed set lives in
+// desktopbot.ActivityPhrase, so a typed password or a tool name cannot become
+// the label here either.
 func desktopRunActivityText(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if !desktopRunActivityPattern.MatchString(raw) {
-		return ""
-	}
-	switch raw {
-	case "正在处理", "正在一点点推进", "正在询问":
-		return ""
-	default:
-		return raw
-	}
+	return desktopbot.ActivityPhrase(raw)
 }
 
 // desktopAdmitAbandonAfter is how long an empty-run reserve may sit after its
@@ -90,6 +86,7 @@ type admittedDesktopFollow struct {
 	Phase           string
 	Task            string
 	Opened          bool
+	Isolated        bool
 	Started         time.Time
 	ClientMessageID string
 }
@@ -102,6 +99,9 @@ type desktopRunView struct {
 	DesktopHandoff  bool   `json:"desktop_handoff"`
 	AttentionReason string `json:"attention_reason"`
 	Activity        string `json:"activity,omitempty"`
+	ProgressWhere   string `json:"progress_where,omitempty"`
+	ProgressNext    string `json:"progress_next,omitempty"`
+	ProgressOpen    string `json:"progress_open,omitempty"`
 	Message         struct {
 		Content     string            `json:"content"`
 		Metadata    map[string]string `json:"metadata"`
@@ -342,6 +342,27 @@ func desktopRunTerminal(status string) bool {
 	}
 }
 
+// desktopTerminalMiss is the error a failed or cancelled run settles with.
+// A recorded reason stays that reason. A handoff is a result: the person
+// still has the desktop. Assistant prose that is only a filler — 「无变化」
+// and the same family — is not a result, so it settles like an empty body.
+// The sentence names the run and its status and is itself a filler, so the
+// bubble stays quiet. It must not say the server could not be reached: a
+// quota cutoff used to be wrapped that way, and the reader re-sent work
+// that had already finished.
+func desktopTerminalMiss(runID, status, text, recorded string, handoff bool) error {
+	if status != "failed" && status != "cancelled" {
+		return nil
+	}
+	if reason := strings.TrimSpace(recorded); reason != "" {
+		return fmt.Errorf("%s", reason)
+	}
+	if handoff || (strings.TrimSpace(text) != "" && !desktopbot.Filler(text)) {
+		return nil
+	}
+	return fmt.Errorf("run %s ended as %s without a result", strings.TrimSpace(runID), strings.TrimSpace(status))
+}
+
 func (s *Service) followAdmittedDesktopRun(job admittedDesktopFollow) {
 	if s == nil || strings.TrimSpace(job.RunID) == "" {
 		return
@@ -483,6 +504,7 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 			if err == nil {
 				firstTerminal = time.Time{}
 				s.rememberDesktopRunActivity(state, view.Activity)
+				s.rememberDesktopRunProgress(state, view)
 				writePoll("status:"+view.Status, nil,
 					"instance", job.InstanceID,
 					"run", job.RunID,
@@ -538,6 +560,7 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 				"polls", strconv.Itoa(polls),
 			)
 		}
+		s.rememberDesktopRunProgress(state, view)
 		body := desktopCommandBody{
 			Text:        view.Message.Content,
 			Error:       view.Error,
@@ -545,20 +568,14 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 			Attention:   view.AttentionReason,
 			Metadata:    view.Message.Metadata,
 			Attachments: view.Message.Attachments,
+			Waiting:     strings.TrimSpace(job.ClientMessageID) != "",
 		}
-		if view.Status == "failed" || view.Status == "cancelled" {
-			if strings.TrimSpace(view.Error) != "" {
-				body.CallErr = fmt.Errorf("%s", strings.TrimSpace(view.Error))
-			} else if strings.TrimSpace(body.Text) == "" && !body.Handoff {
-				// Deliberately not ErrSrv. Nothing here failed to reach
-				// MaClawSrv: the run reached a terminal state and simply
-				// produced no text. Wrapping it as "maclawsrv request failed"
-				// is what made a bot answer a run cut short by a provider
-				// quota with "I can't reach my server", and the reader then
-				// re-sent work that had already been finished.
-				body.CallErr = fmt.Errorf("run %s ended as %s without a result", job.RunID, view.Status)
+		if view.DesktopHandoff && !job.Isolated && !job.Opened && strings.TrimSpace(job.Novnc) == "" {
+			if url, did, openErr := s.openDesktop(context.Background(), job.TenantID, job.UserID, job.InstanceID, job.BotID); openErr == nil {
+				job.Novnc, job.Opened = url, did
 			}
 		}
+		body.CallErr = desktopTerminalMiss(job.RunID, view.Status, body.Text, view.Error, body.Handoff)
 		reply, settleErr := s.settleDesktopCommand(job.TenantID, job.UserID, job.BotID, job.InstanceID, job.Novnc, job.Opened, body)
 		state.mu.Lock()
 		state.reply = reply
@@ -590,6 +607,23 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 // rememberDesktopRunActivity keeps the latest step phrase for the GUI poll.
 // The watcher already reads the run, so this does not add a request. An
 // empty or rejected phrase clears the previous one.
+func (s *Service) rememberDesktopRunProgress(state *desktopAdmitState, view desktopRunView) {
+	if state == nil {
+		return
+	}
+	where := strings.TrimSpace(view.ProgressWhere)
+	next := strings.TrimSpace(view.ProgressNext)
+	open := strings.TrimSpace(view.ProgressOpen)
+	if where == "" && next == "" && open == "" {
+		return
+	}
+	state.mu.Lock()
+	state.progressWhere = where
+	state.progressNext = next
+	state.progressOpen = open
+	state.mu.Unlock()
+}
+
 func (s *Service) rememberDesktopRunActivity(state *desktopAdmitState, activity string) {
 	if state == nil {
 		return
@@ -999,14 +1033,9 @@ func (s *Service) readmitDesktopRun(ctx context.Context, tenantID, userID, botID
 		Attention:   view.AttentionReason,
 		Metadata:    view.Message.Metadata,
 		Attachments: view.Message.Attachments,
+		Waiting:     strings.TrimSpace(view.Message.Metadata["client_message_id"]) != "",
 	}
-	if view.Status == "failed" || view.Status == "cancelled" {
-		if strings.TrimSpace(view.Error) != "" {
-			body.CallErr = fmt.Errorf("%s", strings.TrimSpace(view.Error))
-		} else if strings.TrimSpace(body.Text) == "" && !body.Handoff {
-			body.CallErr = fmt.Errorf("run %s ended as %s without a result", runID, view.Status)
-		}
-	}
+	body.CallErr = desktopTerminalMiss(runID, view.Status, body.Text, view.Error, body.Handoff)
 	// Settling is claimed, not repeated. The caller polls again whenever the
 	// answer was lost, and the desktop bookkeeping inside settle does not
 	// survive being run twice.

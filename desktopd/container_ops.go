@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
@@ -17,6 +18,22 @@ func (s *Service) runCommand(ctx context.Context, stdin io.Reader, args ...strin
 		return s.RunCommand(ctx, stdin, args...)
 	}
 	return defaultRunCommand(ctx, stdin, args...)
+}
+
+// fileServiceArgs asks the in-container file service to read, write, list,
+// or return bytes. The host does not build head, ls, or base64. A write
+// keeps docker exec -i so the body stays on stdin. limit is how many bytes
+// a read may return; zero means this operation has no cap argument.
+func fileServiceArgs(container, op, filePath string, limit int) []string {
+	args := []string{"exec"}
+	if op == "write" {
+		args = append(args, "-i")
+	}
+	args = append(args, container, "python3", "/desktop_supervisor.py", "file", op, filePath)
+	if limit > 0 {
+		args = append(args, strconv.Itoa(limit))
+	}
+	return args
 }
 
 func defaultRunCommand(ctx context.Context, stdin io.Reader, args ...string) (string, int, error) {
@@ -56,13 +73,17 @@ func (s *Service) ReadFile(ctx context.Context, tenantID, userID, filePath strin
 	var output string
 	var exitCode int
 	err = s.withUser(spec.TenantID, spec.UserID, func() error {
-		var runErr error
-		output, exitCode, runErr = s.runCommand(ctx, nil, desktop.FileReadArgs(containerName(spec.TenantID, spec.UserID), filePath, desktop.FileReadMax)...)
+		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{
+			Kind: ExecFile,
+			Args: fileServiceArgs(containerName(spec.TenantID, spec.UserID), "read", filePath, desktop.FileReadMax+1),
+		})
+		output, exitCode = result.Out, result.Exit
 		return runErr
 	})
 	if err != nil {
 		return "", err
 	}
+	s.noteComputerActivity(spec.TenantID, spec.UserID)
 	if exitCode != 0 {
 		return "", fmt.Errorf("%w: %s", ErrDocker, commandFailure(output, exitCode))
 	}
@@ -91,13 +112,17 @@ func (s *Service) ReadBytes(ctx context.Context, tenantID, userID, filePath stri
 	var output string
 	var exitCode int
 	err = s.withUser(spec.TenantID, spec.UserID, func() error {
-		var runErr error
-		output, exitCode, runErr = s.runCommand(ctx, nil, desktop.FileBytesArgs(containerName(spec.TenantID, spec.UserID), filePath, desktop.FileBytesMax)...)
+		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{
+			Kind: ExecFile,
+			Args: fileServiceArgs(containerName(spec.TenantID, spec.UserID), "bytes", filePath, desktop.FileBytesMax+1),
+		})
+		output, exitCode = result.Out, result.Exit
 		return runErr
 	})
 	if err != nil {
 		return "", err
 	}
+	s.noteComputerActivity(spec.TenantID, spec.UserID)
 	if exitCode != 0 {
 		return "", fmt.Errorf("%w: %s", ErrDocker, commandFailure(output, exitCode))
 	}
@@ -124,13 +149,18 @@ func (s *Service) WriteFile(ctx context.Context, tenantID, userID, filePath, con
 	var exitCode int
 	var output string
 	err = s.withUser(spec.TenantID, spec.UserID, func() error {
-		var runErr error
-		output, exitCode, runErr = s.runCommand(ctx, strings.NewReader(content), desktop.FileWriteArgs(containerName(spec.TenantID, spec.UserID), filePath)...)
+		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{
+			Kind:  ExecFile,
+			Args:  fileServiceArgs(containerName(spec.TenantID, spec.UserID), "write", filePath, 0),
+			Stdin: strings.NewReader(content),
+		})
+		output, exitCode = result.Out, result.Exit
 		return runErr
 	})
 	if err != nil {
 		return "", err
 	}
+	s.noteComputerActivity(spec.TenantID, spec.UserID)
 	if exitCode != 0 {
 		return "", fmt.Errorf("%w: %s", ErrDocker, commandFailure(output, exitCode))
 	}
@@ -157,7 +187,11 @@ func (s *Service) EditFile(ctx context.Context, tenantID, userID, filePath, old,
 	// another command from this user replace the file before the edit lands.
 	err = s.withUser(spec.TenantID, spec.UserID, func() error {
 		var runErr error
-		output, exitCode, runErr = s.runCommand(ctx, nil, desktop.FileReadArgs(container, filePath, desktop.FileContentMax)...)
+		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{
+			Kind: ExecFile,
+			Args: fileServiceArgs(container, "read", filePath, desktop.FileContentMax+1),
+		})
+		output, exitCode = result.Out, result.Exit
 		if runErr != nil {
 			return runErr
 		}
@@ -171,7 +205,12 @@ func (s *Service) EditFile(ctx context.Context, tenantID, userID, filePath, old,
 		if editErr != nil {
 			return editErr
 		}
-		output, exitCode, runErr = s.runCommand(ctx, strings.NewReader(next), desktop.FileWriteArgs(container, filePath)...)
+		result, runErr = s.runtime().Exec(ctx, spec, ExecRequest{
+			Kind:  ExecFile,
+			Args:  fileServiceArgs(container, "write", filePath, 0),
+			Stdin: strings.NewReader(next),
+		})
+		output, exitCode = result.Out, result.Exit
 		if runErr != nil {
 			return runErr
 		}
@@ -183,6 +222,7 @@ func (s *Service) EditFile(ctx context.Context, tenantID, userID, filePath, old,
 	if err != nil {
 		return "", err
 	}
+	s.noteComputerActivity(spec.TenantID, spec.UserID)
 	return fmt.Sprintf("Updated %s.", filePath), nil
 }
 
@@ -202,13 +242,17 @@ func (s *Service) ListFile(ctx context.Context, tenantID, userID, filePath strin
 	var output string
 	var exitCode int
 	err = s.withUser(spec.TenantID, spec.UserID, func() error {
-		var runErr error
-		output, exitCode, runErr = s.runCommand(ctx, nil, desktop.FileListArgs(containerName(spec.TenantID, spec.UserID), filePath)...)
+		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{
+			Kind: ExecFile,
+			Args: fileServiceArgs(containerName(spec.TenantID, spec.UserID), "list", filePath, 0),
+		})
+		output, exitCode = result.Out, result.Exit
 		return runErr
 	})
 	if err != nil {
 		return "", err
 	}
+	s.noteComputerActivity(spec.TenantID, spec.UserID)
 	if exitCode != 0 {
 		return "", fmt.Errorf("%w: %s", ErrDocker, commandFailure(output, exitCode))
 	}
@@ -225,36 +269,49 @@ func (s *Service) Bash(ctx context.Context, tenantID, userID, command string) (s
 	if err != nil {
 		return "", err
 	}
-	args, err := desktop.BashArgs(containerName(spec.TenantID, spec.UserID), command)
-	if err != nil {
+	if _, err = desktop.BashArgs(containerName(spec.TenantID, spec.UserID), command); err != nil {
 		return "", err
 	}
+	// A bot's GUI programs belong on its own display. The command service
+	// applies that display. The docker line does not name bash.
+	display := ""
 	if spec.BotID != "" {
-		// GUI programs a bot starts from bash belong on its own display.
-		display, displayErr := s.specDisplay(ctx, spec, "")
+		var displayErr error
+		display, displayErr = s.specDisplay(ctx, spec, "")
 		if displayErr != nil {
 			return "", displayErr
 		}
-		args = append([]string{args[0], "-e", "DISPLAY=" + display}, args[1:]...)
+	}
+	commandArgs, err := commandServiceArgs(containerName(spec.TenantID, spec.UserID), commandRequest{
+		Op:      "shell",
+		Command: strings.TrimSpace(command),
+		Display: display,
+	})
+	if err != nil {
+		return "", err
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	ctx, cancel := context.WithTimeout(ctx, desktop.BashBudget)
 	defer cancel()
+	release := s.holdWork(spec.TenantID, spec.UserID)
+	defer release()
 	var output string
 	var exitCode int
 	err = s.withUser(spec.TenantID, spec.UserID, func() error {
-		var runErr error
-		output, exitCode, runErr = s.runCommand(ctx, nil, args...)
+		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{Kind: ExecShell, Args: commandArgs})
+		output, exitCode = result.Out, result.Exit
 		return runErr
 	})
 	if err != nil {
 		if ctx.Err() != nil {
+			s.noteComputerActivity(spec.TenantID, spec.UserID)
 			return desktop.ProgramOutput(output, exitCode, true), nil
 		}
 		return "", err
 	}
+	s.noteComputerActivity(spec.TenantID, spec.UserID)
 	return desktop.ProgramOutput(output, exitCode, false), nil
 }
 
@@ -279,6 +336,7 @@ func (s *Service) HTTPGet(ctx context.Context, tenantID, userID, rawURL string) 
 	if err != nil {
 		return "", 0, "", err
 	}
+	s.noteComputerActivity(spec.TenantID, spec.UserID)
 	body, status, kind := desktop.SplitCurl(output)
 	if exitCode != 0 && status == 0 {
 		return "", 0, "", fmt.Errorf("%w: %s", ErrDocker, commandFailure(output, exitCode))

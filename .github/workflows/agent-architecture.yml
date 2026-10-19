@@ -34,6 +34,69 @@ jobs:
           -run 'Test(ModuleRegistry|RuntimeExecutor|RuntimeSurfaceDigest|DescribeRuntimeCapabilities|RuntimeCapabilitiesEndpoint|RuntimeCallbacks|CoreAgentCallbacks|RegisterBuiltinModules|ResolveRole|AdaptiveRetry|HeadlessScreenshot|GUIAndSrv|SQLiteRunEventStoreConcurrent|RunEventsStream|OpenAPIDocument)'
           -count=1 -race
 
+      - name: Run desktop bot offline prompt cases
+        run: go test ./corelib/desktopbot -run 'TestDesktopBotPromptPrefixCases|TestVisible|TestActivityPhrase' -count=1
+
+      - name: Run desktop bot offline tool cases
+        run: go test ./corelib/desktopbot ./MaClawSrv ./corelib/agentservice -run 'TestDesktopBot(PromptPrefix|Tool)Cases' -count=1
+
+      - name: Run desktop bot offline progress cases
+        run: go test ./corelib/desktopbot ./MaClawSrv ./corelib/agentservice -run TestDesktopBotProgressCases -count=1
+
+      - name: Run desktop bot offline silence cases
+        run: go test ./corelib/desktopbot ./corelib/agentservice ./corelib/scheduler ./MaClawSrv ./hub/internal/botmgmt -run TestDesktopBotSilenceCases -count=1
+
+      - name: Run desktop bot offline computer cases
+        run: go test ./corelib/desktopbot ./MaClawSrv -run TestDesktopBotComputerCases -count=1
+
+      - name: Run desktop bot offline structure cases
+        run: go test ./corelib/desktop/computeruse ./MaClawSrv -run TestDesktopBotStructureCases -count=1
+
+      - name: Run desktop bot offline danger cases
+        run: go test ./corelib/desktopbot ./MaClawSrv ./corelib/agentservice -run TestDesktopBotDangerCases -count=1
+
+      - name: Run desktop bot offline memory cases
+        run: go test ./corelib/memory ./corelib/agentservice -run TestDesktopBotMemoryCases -count=1
+
+      - name: Run desktop bot offline summary cases
+        run: go test ./corelib/agent ./corelib/agentservice -run TestDesktopBotSummaryCases -count=1
+
+      - name: Run desktop bot offline sleep cases
+        run: go test ./desktopd ./hub/internal/desktoppool -run TestDesktopBotSleepCases -count=1
+
+      - name: Run desktop bot offline event cases
+        run: go test ./corelib/agentservice ./corelib/scheduler ./MaClawSrv ./hub/internal/botmgmt -run TestDesktopBotEventCases -count=1
+
+      - name: Run desktop bot offline split cases
+        run: go test ./MaClawSrv ./hub/internal/botmgmt ./hub/internal/httpapi -run TestDesktopBotSplitCases -count=1
+
+      - name: Run desktop bot offline durable cases
+        run: go test ./corelib/desktopbot ./corelib/mailbox ./corelib/agentservice ./MaClawSrv -run TestDesktopBotDurableCases -count=1
+
+      - name: Run desktop bot offline login cases
+        run: go test ./desktopd -run TestDesktopBotLoginCases -count=1
+
+      - name: Run desktop bot offline meta cases
+        run: go test ./desktopd -run TestDesktopBotMetaCases -count=1
+
+      - name: Run desktop bot offline publish cases
+        run: go test ./desktopd -run TestDesktopBotPublishCases -count=1
+
+      - name: Run desktop bot offline screen cases
+        run: go test ./desktopd -run TestDesktopBotScreenCases -count=1
+
+      - name: Run desktop bot offline runtime cases
+        run: go test ./desktopd -run TestDesktopBotRuntimeCases -count=1
+
+      - name: Run desktop bot offline file cases
+        run: go test ./desktopd -run TestDesktopBotFileCases -count=1
+
+      - name: Run desktop bot offline command cases
+        run: go test ./desktopd -run TestDesktopBotCommandCases -count=1
+
+      - name: Run desktop bot offline wake cases
+        run: go test ./desktopd -run TestDesktopBotWakeCases -count=1
+
       # guiapp's linux pet/floating files are cgo with pkg-config gtk+-3.0, and
       # the wails v2 runtime needs webkit2gtk: install them (4.0 on 22.04, or
       # 4.1 + build tag on 24.04/26.04) or the compile step dies on pkg-config.
@@ -49,3 +112,15 @@ jobs:
 
       - name: Compile GUI host contract tests
         run: GOFLAGS="-tags=$GUIHOST_TAGS" go test ./guiapp -run 'Test(SharedAgentLoopCallbacksEmitRuntimeEvents|RunAgentLoopSharedDelegatesThroughRuntimeContract|GUIRuntimeDescribesDeterministicToolSurface|GUIAndSrv)' -count=1 -race
+
+      - name: Run desktop bot local progress cases
+        run: GOFLAGS="-tags=$GUIHOST_TAGS" go test ./guiapp -run TestDesktopBotProgressCases -count=1
+
+      - name: Run desktop bot local silence cases
+        run: GOFLAGS="-tags=$GUIHOST_TAGS" go test ./guiapp -run TestDesktopBotSilenceCases -count=1
+
+      - name: Run desktop bot local computer cases
+        run: GOFLAGS="-tags=$GUIHOST_TAGS" go test ./guiapp -run TestDesktopBotComputerCases -count=1
+
+      - name: Run desktop bot local split cases
+        run: GOFLAGS="-tags=$GUIHOST_TAGS" go test ./guiapp -run TestDesktopBotSplitCases -count=1

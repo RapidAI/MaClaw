@@ -1,0 +1,6 @@
+{
+  "id": "catalog_not_in_system",
+  "role": "background",
+  "source": "pr-2",
+  "forbid": ["[记忆索引]", "[Memory Index]"]
+}

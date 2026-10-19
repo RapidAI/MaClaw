@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -354,6 +355,114 @@ func TestScopeApproval_AllowDir_CaseInsensitive(t *testing.T) {
 	msg := s.check("read_file", `d:\outside\other.go`, `D:\project`)
 	if msg != "" {
 		t.Fatalf("case-insensitive dir should be pre-approved, got %q", msg)
+	}
+}
+
+func TestScopeApproval_AllowDir_DriveRootCoversChildren(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("drive roots are Windows-specific")
+	}
+	s := newScopeApprovalState(nil, false)
+	s.approveDir(`D:\`)
+	if !s.isApproved(`D:\outside\file.go`) {
+		t.Fatal("drive root grant should cover children on that drive")
+	}
+	if !s.isApproved(`\\?\D:\outside\Build\cl.exe`) {
+		t.Fatal("drive root grant should cover extended paths on that drive")
+	}
+	if s.isApproved(`C:\outside\file.go`) {
+		t.Fatal("drive root grant should not cover another drive")
+	}
+	sibling := newScopeApprovalState(nil, false)
+	sibling.approveDir(`D:\outside`)
+	if sibling.isApproved(`D:\outside-other\file.go`) {
+		t.Fatal("sibling directory should not match")
+	}
+}
+
+func TestScopeApproval_AllowDir_RejectsJunctionEscape(t *testing.T) {
+	root := t.TempDir()
+	approved := filepath.Join(root, "approved")
+	outside := filepath.Join(root, "outside")
+	if err := os.MkdirAll(approved, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(approved, "link")
+	makeCodingJunction(t, link, outside)
+
+	s := newScopeApprovalState(nil, false)
+	s.approveDir(approved)
+	if !s.isApproved(filepath.Join(approved, "new.go")) {
+		t.Fatal("a new file in the allowed directory should stay approved")
+	}
+	if s.isApproved(filepath.Join(link, "secret.go")) {
+		t.Fatal("junction escape should not reuse the directory grant")
+	}
+	if s.isApproved(link) {
+		t.Fatal("junction directory should not reuse the parent grant")
+	}
+	if !s.isApproved(link + `\..\new.go`) {
+		t.Fatal("lexical dotdot should stay inside the granted directory")
+	}
+
+	through := newScopeApprovalState(nil, false)
+	through.approveDir(link)
+	if !through.isApproved(filepath.Join(link, "secret.go")) {
+		t.Fatal("allowing the junction itself should cover files opened through it")
+	}
+}
+
+func TestScopeApproval_AllowDir_RejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	approved := filepath.Join(root, "approved")
+	outside := filepath.Join(root, "outside")
+	if err := os.MkdirAll(approved, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(approved, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink not available: %v", err)
+	}
+	s := newScopeApprovalState(nil, false)
+	s.approveDir(approved)
+	if !s.isApproved(filepath.Join(approved, "new.go")) {
+		t.Fatal("a new file in the allowed directory should stay approved")
+	}
+	if s.isApproved(filepath.Join(link, "secret.go")) {
+		t.Fatal("symlink escape should not reuse the directory grant")
+	}
+}
+
+func TestScopeApproval_AllowDir_ExtendedDrivePrefixMatches(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("extended drive prefixes are Windows-specific")
+	}
+	calls := 0
+	s := newScopeApprovalState(func(ScopeApprovalRequest) ScopeApprovalDecision {
+		calls++
+		return ScopeApprovalAllowDir
+	}, false)
+	if msg := s.check("Glob", `D:\outside\Build`, `D:\test-proga`); msg != "" {
+		t.Fatalf("allow dir should pass, got %q", msg)
+	}
+	if msg := s.check("Glob", `\\?\D:\outside\Build\cl.exe`, `D:\test-proga`); msg != "" {
+		t.Fatalf("extended child of an allowed dir should pass, got %q", msg)
+	}
+	if msg := s.check("Glob", `\\.\D:\outside\Build\cl.exe`, `D:\test-proga`); msg != "" {
+		t.Fatalf(`\\.\ child of an allowed dir should pass, got %q`, msg)
+	}
+	if calls != 1 {
+		t.Fatalf("children of the allowed dir should not ask again, got %d callbacks", calls)
+	}
+	s.check("read_file", `D:\outside-other\file.go`, `D:\test-proga`)
+	if calls != 2 {
+		t.Fatalf("sibling directory should ask again, got %d callbacks", calls)
 	}
 }
 

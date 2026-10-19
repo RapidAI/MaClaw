@@ -1,0 +1,5 @@
+{
+  "id": "no_transcript_copy",
+  "main": ["主会话保持不动", "hello from main"],
+  "own": ["helper already knew this"]
+}

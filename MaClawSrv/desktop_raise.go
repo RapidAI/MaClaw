@@ -122,7 +122,7 @@ func desktopActivateWindow(ctx context.Context, scope agentruntime.Scope, displa
 func operateDesktopBashGUI(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
 	display := ""
 	if userKey, err := desktopUserKey(scope); err == nil {
-		if endpoint, err := desktopSession(ctx, scope, userKey); err == nil && validateDesktopEndpoint(endpoint) == nil {
+		if endpoint, err := ensureDesktopRound(ctx, scope, userKey, true); err == nil && validateDesktopEndpoint(endpoint) == nil {
 			display = endpoint.Display
 		}
 	}

@@ -88,7 +88,28 @@ func buildUserContentWithAttachmentStagingDirAndSettings(userText string, attach
 
 func buildUserContentWithAttachmentStagingDirAndSettingsWithContext(userText string, attachments []MessageAttachment, protocol string, supportsVision bool, imageOCR ImageTextRecognizer, voiceConvert VoiceConverter, stagingDir string, settings officeReadSettings, contextTokens int) interface{} {
 	// Always expand GUI file-picker document paths (no-op when already expanded / no marker).
-	userText = expandUserSelectedFilePathsWithSettingsAndBudget(userText, settings, contextTokens)
+	// A vision model receives picture-PDF pages as images. The flag stays on
+	// this call's copy so a later text extract of a saved attachment still OCRs.
+	expandSettings := settings
+	expandSettings.imagePDFPreferVision = supportsVision
+	usedImageBytes := int64(0)
+	if supportsVision {
+		usedImageBytes = messageImageAttachmentBytes(attachments)
+		expandSettings.imagePDFVisionUsedBytes = usedImageBytes
+	}
+	userText = expandUserSelectedFilePathsWithSettingsAndBudget(userText, expandSettings, contextTokens)
+	if supportsVision {
+		pages, notes := SelectedImageOnlyPDFPageAttachments(userText, usedImageBytes)
+		if len(pages) > 0 {
+			attachments = append(append([]MessageAttachment(nil), attachments...), pages...)
+		}
+		if len(notes) > 0 {
+			if strings.TrimSpace(userText) != "" {
+				userText += "\n\n"
+			}
+			userText += strings.Join(notes, "\n")
+		}
+	}
 	if len(attachments) == 0 {
 		return userText
 	}
@@ -280,6 +301,19 @@ func saveAttachmentToStagingDir(att *MessageAttachment, stagingDir string) (stri
 // IsImageMime returns true if the MIME type is an image type.
 func IsImageMime(mimeType string) bool {
 	return strings.HasPrefix(strings.ToLower(mimeType), "image/")
+}
+
+func messageImageAttachmentBytes(attachments []MessageAttachment) int64 {
+	var total int64
+	for _, att := range attachments {
+		if att.Size <= 0 {
+			continue
+		}
+		if att.Type == "image" || IsImageMime(att.MimeType) {
+			total += att.Size
+		}
+	}
+	return total
 }
 
 // BinaryDocumentAttachmentExtension returns the canonical suffix for a PDF or

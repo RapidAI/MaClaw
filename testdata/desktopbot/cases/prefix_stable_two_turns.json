@@ -1,0 +1,21 @@
+{
+  "id": "prefix_stable_two_turns",
+  "role": "background",
+  "source": "pr-2",
+  "turns": [
+    {
+      "tools": "[{\"name\":\"desktop\",\"description\":\"probe\"}]",
+      "system": "系统规则",
+      "memory_snapshot": "画像: 无",
+      "first_message": "打开首页",
+      "history": ""
+    },
+    {
+      "tools": "[{\"name\":\"desktop\",\"description\":\"probe\"}]",
+      "system": "系统规则",
+      "memory_snapshot": "画像: 无",
+      "first_message": "打开首页",
+      "history": "user:再看一眼"
+    }
+  ]
+}

@@ -1,4 +1,8 @@
 Copyright 2016 The Nunito Project Authors (contact@sansoxygen.com),
+Copyright 2022 The Maple Mono Project Authors (https://github.com/subframe7536/maple-font),
+Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono),
+Copyright 2014-2020 The Fira Code Project Authors (https://github.com/tonsky/FiraCode),
+© 2021 Microsoft Corporation. All Rights Reserved.
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:

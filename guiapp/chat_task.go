@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 const (
@@ -52,6 +53,10 @@ type AIAssistantChatTask struct {
 	ResultText    string   `json:"result_text,omitempty"`
 	Error         string   `json:"error,omitempty"`
 	ArtifactPaths []string `json:"artifact_paths,omitempty"`
+	WhereWeAre    string   `json:"where_we_are,omitempty"`
+	NextStep      string   `json:"next_step,omitempty"`
+	OpenProblems  string   `json:"open_problems,omitempty"`
+	ProgressPath  string   `json:"progress_path,omitempty"`
 	CreatedAtUnix int64    `json:"created_at_unix"`
 	UpdatedAtUnix int64    `json:"updated_at_unix"`
 	Recovered     bool     `json:"recovered,omitempty"`
@@ -62,6 +67,9 @@ type AIAssistantChatTaskDispatchRequest struct {
 	ProjectPath string `json:"project_path,omitempty"`
 	SessionKey  string `json:"session_key,omitempty"`
 	Lang        string `json:"lang,omitempty"`
+	// Computer marks the one computer-use helper for Screen.
+	Computer bool   `json:"-"`
+	Screen   string `json:"-"`
 }
 
 type chatTaskRecord struct {
@@ -76,6 +84,10 @@ type chatTaskRecord struct {
 	ResultText    string
 	Error         string
 	ArtifactPaths []string
+	WhereWeAre    string
+	NextStep      string
+	OpenProblems  string
+	ProgressPath  string
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 	Recovered     bool
@@ -84,6 +96,8 @@ type chatTaskRecord struct {
 	answerCh   chan string
 	cancelCh   chan struct{}
 	cancelOnce sync.Once
+	Computer   bool
+	Screen     string
 }
 
 type chatTaskRunResult struct {
@@ -203,6 +217,8 @@ func (r *chatTaskRegistry) Dispatch(req AIAssistantChatTaskDispatchRequest) (AIA
 		UpdatedAt:  now,
 		answerCh:   make(chan string, 1),
 		cancelCh:   make(chan struct{}),
+		Computer:   req.Computer,
+		Screen:     strings.TrimSpace(req.Screen),
 	}
 	r.tasks[id] = task
 	snap := task.snapshotLocked()
@@ -398,6 +414,7 @@ func (r *chatTaskRegistry) run(task *chatTaskRecord) {
 		return
 	}
 	defer releaseSlot()
+	r.storeTaskProgress(task.ID, task.Title, firstProgressLine(task.Prompt), desktopbot.ProgressOpenNone)
 	exec := r.executor
 	if exec == nil {
 		exec = (*IMMessageHandler).executeChatTaskAgentLoop
@@ -468,12 +485,7 @@ func (h *IMMessageHandler) executeChatTaskAgentLoop(task *chatTaskRecord) chatTa
 	if h == nil || task == nil {
 		return chatTaskRunResult{Err: fmt.Errorf("chat task handler is missing")}
 	}
-	if h.memory != nil {
-		if snap := h.memory.Load(task.SessionKey); len(snap) > 0 {
-			copied := append([]agent.ConversationEntry(nil), snap...)
-			h.memory.Save(task.MemoryKey, copied)
-		}
-	}
+	h.openHelperMemory(task, false)
 	maxIter := h.getMaclawAgentMaxIterations()
 	if maxIter <= 0 {
 		maxIter = 30
@@ -481,6 +493,13 @@ func (h *IMMessageHandler) executeChatTaskAgentLoop(task *chatTaskRecord) chatTa
 	loop := NewLoopContext("chat-task-"+task.ID, maxIter, h.taskClient)
 	loop.LLMCaller = chatTaskLLMCaller
 	loop.ChatTaskID = task.ID
+	if task.Computer {
+		loop.ComputerHelper = true
+		loop.ComputerUseActive = true
+		loop.ComputerUseGateSettled = true
+		loop.ComputerUseFresh = true
+		loop.ComputerUseRoutingText = task.Prompt
+	}
 	loop.UserID = task.MemoryKey
 	loop.Platform = desktopPlatform
 	loop.Description = task.Title
@@ -514,10 +533,29 @@ func chatTaskResultFromAgentResponse(resp *IMAgentResponse, loop *LoopContext) c
 	if errText := strings.TrimSpace(resp.Error); errText != "" {
 		return chatTaskRunResult{Err: fmt.Errorf("%s", errText), Text: text, Artifacts: artifacts}
 	}
-	if text == "" && len(artifacts) == 0 {
-		return chatTaskRunResult{Err: fmt.Errorf("ended without a verified result")}
+	shown, err := desktopbot.CollapseHelperReport(text, artifacts)
+	if err != nil {
+		return chatTaskRunResult{Err: err, Artifacts: artifacts}
 	}
-	return chatTaskRunResult{Text: text, Artifacts: artifacts}
+	return chatTaskRunResult{Text: shown, Artifacts: artifacts}
+}
+
+// openHelperMemory starts a helper without the main session.
+// A new id stays empty. The same id keeps the helper's own entries.
+func (h *IMMessageHandler) openHelperMemory(task *chatTaskRecord, sameID bool) {
+	if h == nil || h.memory == nil || task == nil {
+		return
+	}
+	var own []string
+	if sameID {
+		for _, entry := range h.memory.Load(task.MemoryKey) {
+			text, _ := entry.Content.(string)
+			if strings.TrimSpace(text) != "" {
+				own = append(own, text)
+			}
+		}
+	}
+	_ = desktopbot.HelperStartEntries(nil, own, sameID)
 }
 
 func (h *IMMessageHandler) bindChatTaskLoop(taskID string, loop *LoopContext) {
@@ -572,11 +610,65 @@ func (r *chatTaskRegistry) noteProgress(id, text string) {
 		r.mu.Unlock()
 		return
 	}
+	next := task.NextStep
+	open := task.OpenProblems
+	r.mu.Unlock()
+	r.storeTaskProgress(id, text, next, open)
+	r.mu.Lock()
+	task = r.tasks[id]
+	if task == nil || task.Status.terminal() {
+		r.mu.Unlock()
+		return
+	}
 	task.Progress = text
 	task.UpdatedAt = time.Now()
 	snap := task.snapshotLocked()
 	r.mu.Unlock()
 	r.emit(snap)
+}
+
+func (r *chatTaskRegistry) storeTaskProgress(id, where, next, open string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	task := r.tasks[id]
+	if task == nil {
+		r.mu.Unlock()
+		return
+	}
+	if strings.TrimSpace(where) != "" {
+		task.WhereWeAre = where
+	}
+	if strings.TrimSpace(next) != "" {
+		task.NextStep = next
+	}
+	if strings.TrimSpace(open) != "" {
+		task.OpenProblems = open
+	} else if strings.TrimSpace(task.OpenProblems) == "" {
+		task.OpenProblems = desktopbot.ProgressOpenNone
+	}
+	sections := desktopbot.Sections{WhereWeAre: task.WhereWeAre, NextStep: task.NextStep, OpenProblems: task.OpenProblems}
+	root := ""
+	if strings.TrimSpace(r.storePath) != "" {
+		root = filepath.Dir(r.storePath)
+	}
+	r.mu.Unlock()
+	if root == "" {
+		return
+	}
+	path, cleaned, err := writeLocalTaskProgress(root, id, false, sections)
+	if err != nil {
+		return
+	}
+	r.mu.Lock()
+	if current := r.tasks[id]; current != nil {
+		current.WhereWeAre = cleaned.WhereWeAre
+		current.NextStep = cleaned.NextStep
+		current.OpenProblems = cleaned.OpenProblems
+		current.ProgressPath = path
+	}
+	r.mu.Unlock()
 }
 
 func (r *chatTaskRegistry) finish(id string, result chatTaskRunResult) {
@@ -619,6 +711,9 @@ func (r *chatTaskRegistry) finishLocked(id string, status chatTaskStatus, text s
 }
 
 func (r *chatTaskRegistry) publishTerminal(task *chatTaskRecord, loop *LoopContext, snap AIAssistantChatTask, status chatTaskStatus) {
+	if task != nil && task.Computer {
+		desktopbot.ReleaseComputerScreen(task.Screen, computerHelperLeaseID(task.Screen))
+	}
 	if task != nil {
 		task.signalCancel()
 	}
@@ -732,6 +827,9 @@ func (r *chatTaskRegistry) load() {
 			rec.Progress = "Was running when the app stopped. It was not resumed."
 			rec.Recovered = true
 			rec.Question = ""
+			if next := resumeTaskNextStep(rec); next != "" {
+				rec.NextStep = next
+			}
 			changed = true
 		}
 		rec.answerCh = make(chan string, 1)
@@ -1068,6 +1166,10 @@ func (task *chatTaskRecord) snapshotLocked() AIAssistantChatTask {
 		ResultText:    task.ResultText,
 		Error:         task.Error,
 		ArtifactPaths: append([]string(nil), task.ArtifactPaths...),
+		WhereWeAre:    task.WhereWeAre,
+		NextStep:      task.NextStep,
+		OpenProblems:  task.OpenProblems,
+		ProgressPath:  task.ProgressPath,
 		CreatedAtUnix: task.CreatedAt.Unix(),
 		UpdatedAtUnix: task.UpdatedAt.Unix(),
 		Recovered:     task.Recovered,
@@ -1095,6 +1197,10 @@ func recordFromSnapshot(snap AIAssistantChatTask) *chatTaskRecord {
 		ResultText:    snap.ResultText,
 		Error:         snap.Error,
 		ArtifactPaths: append([]string(nil), snap.ArtifactPaths...),
+		WhereWeAre:    snap.WhereWeAre,
+		NextStep:      snap.NextStep,
+		OpenProblems:  snap.OpenProblems,
+		ProgressPath:  snap.ProgressPath,
 		CreatedAt:     created,
 		UpdatedAt:     updated,
 		Recovered:     snap.Recovered,
@@ -1106,6 +1212,31 @@ func resolveChatTaskSessionKey(sessionKey, projectPath string) string {
 		return key
 	}
 	return projectSessionOwnerID(projectPath)
+}
+
+func resumeTaskNextStep(task *chatTaskRecord) string {
+	if task == nil {
+		return ""
+	}
+	fileText := ""
+	if path := strings.TrimSpace(task.ProgressPath); path != "" {
+		if body, err := os.ReadFile(path); err == nil {
+			fileText = string(body)
+		}
+	}
+	return desktopbot.ResumeFromNextStep(fileText, desktopbot.Sections{
+		WhereWeAre:   task.WhereWeAre,
+		NextStep:     task.NextStep,
+		OpenProblems: task.OpenProblems,
+	})
+}
+
+func firstProgressLine(text string) string {
+	text = strings.TrimSpace(text)
+	if i := strings.IndexAny(text, "\r\n"); i >= 0 {
+		text = text[:i]
+	}
+	return truncateChatTaskText(text, 200)
 }
 
 func chatTaskTitle(prompt string) string {
@@ -1203,8 +1334,31 @@ func formatChatTaskStatus(tasks []AIAssistantChatTask, chinese bool) string {
 			}
 			b.WriteByte('\n')
 		}
+		if line := chatTaskProgressAnswer(task); line != "" {
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// chatTaskProgressAnswer reads the three sections for a progress question.
+// The sentence is the answer itself. SendToUser stays empty, so this is not a new progress bubble.
+func chatTaskProgressAnswer(task AIAssistantChatTask) string {
+	copy := desktopbot.Sections{WhereWeAre: task.WhereWeAre, NextStep: task.NextStep, OpenProblems: task.OpenProblems}
+	if strings.TrimSpace(copy.WhereWeAre) == "" && strings.TrimSpace(copy.NextStep) == "" && strings.TrimSpace(copy.OpenProblems) == "" {
+		return ""
+	}
+	fileText := ""
+	awake := false
+	if path := strings.TrimSpace(task.ProgressPath); path != "" {
+		if body, err := os.ReadFile(path); err == nil {
+			fileText = string(body)
+			awake = true
+		}
+	}
+	read := desktopbot.ReadProgress(fileText, copy, awake)
+	return read.Text
 }
 
 func looksLikeChatTaskStatusQuestion(text string) bool {

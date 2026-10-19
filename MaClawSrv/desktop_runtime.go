@@ -27,6 +27,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/corelib/desktop/computeruse"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 const desktopRuntimeModuleID = "maclawsrv.desktop"
@@ -36,12 +37,9 @@ const desktopContainerEnv = "MACLAW_DESKTOP_CONTAINER"
 const desktopSessionOwner = "maclawsrv-desktop"
 const desktopMaxSteps = 16
 
-// The desktop tool's action vocabulary is one list answering four questions
-// that must never disagree: what the execute-phase schema advertises, what the
-// validation accepts, what the refusal spells out, and what the description
-// teaches. Plan phase exposes the read-only prefix of the same list; which of
-// the remaining actions a plan-phase turn may take is the phase gate's own
-// decision, not a second vocabulary.
+// The desktop tool's action vocabulary is one list. Plan and execute advertise
+// that same list. The plan allow-list is only the phase gate: a mutating call
+// stays in the schema and returns the next-step sentence.
 var desktopExecuteActions = []string{"navigate", "probe", "click", "type", "press", "task_run", "script", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover"}
 
 var desktopPlanActions = []string{"probe", "screenshot", "app_list", "file_read", "file_list", "skill_list", "app_probe", "window_list", "screen_info", "clipboard_get", "wait"}
@@ -81,45 +79,16 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 	if !desktopAvailable() || !desktopTurnUsesContainer(request) {
 		return nil, nil
 	}
-	if botPhaseFromTurn(request) == "plan" {
-		return []agentruntime.ToolDefinition{{
-			Name: desktopToolName,
-			Description: "Inspect this user's cloud desktop. " +
-				"Use only probe, screenshot, app_list, file_read, file_list, or skill_list. That limit is this turn only. " +
-				"action=skill_list shows browser scripts already saved. This turn does not run them. " +
-				"Judge whether this turn already finished the request. A finished look or screenshot is the result: say it is done, and do not leave an arrangement. " +
-				"If work remains, the reply is one arrangement. Do not ask the user to choose a method, reply with a number, grant a permission, or carry out the work. The confirm control is the approval. " +
-				"Installing software belongs in the arrangement: name the Debian packages. This turn does not run apt-get. " +
-				"Starting a program belongs in the arrangement. This turn does not start it. " +
-				"file_read and file_list read files in this container. Writing a file or running a command belongs in the arrangement. This turn does not write it or run it. " +
-				"A machine outside this desktop uses the ssh tool. This turn may list its sessions. Connecting or running a command there belongs in the arrangement. This turn does not connect or run it. " +
-				"A document the user asked for belongs in that arrangement. This turn does not create the file. After confirmation the chat receives the file, or that turn reports the failure. " +
-				"Do not paste the document into the chat, and do not tell the user to copy it into Word. " +
-				"The user message is the task order for this turn. Follow it. " +
-				"A password, phone number, or verification code is requested in this chat. A cookie notice is accepted while carrying out the work. Only a QR-code login, a captcha, or a payment confirmation is the person's step on this computer. Report that and stop. Do not keep looking. " +
-				"Bots of this user are different instances of the same MaClawSrv user and share this desktop. Other users cannot see it.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					// The enum is documentation, not the boundary: the
-					// dispatcher's allow check and the refusal that names the
-					// list stay the enforcement.
-					"action": map[string]any{"type": "string", "description": "probe, screenshot, app_list, file_read, file_list, or skill_list", "enum": desktopPlanActions},
-					"path":   map[string]any{"type": "string", "description": "Container path for file_read or file_list, such as /home/desktop/Desktop/a.c or ~/Desktop/a.c"},
-					"query":  map[string]any{"type": "string", "description": "Optional probe filter. Leave it empty to list every control."},
-				},
-				"required": []string{"action"},
-			},
-		}}, nil
-	}
+	// Plan and execute publish this same definition. A plan turn that calls a
+	// mutating action gets the next-step sentence. The action stays listed.
 	description := "Operate this user's cloud desktop. "
-	return []agentruntime.ToolDefinition{{
+	def := agentruntime.ToolDefinition{
 		Name: desktopToolName,
 		Description: description +
-			"Carry out the arrangement and report the outcome in this chat. " +
+			"Carry out the arrangement. Return three conclusion lines and one file path. Do not write the person's chat reply. " +
 			"When the user asked for a file, action=deliver. A file already on this desktop, including a pdf, uses path, and the chat receives that file. name and content send the supplied text under that name. A name ending in .docx is a Word file built from that text. Say that it is attached to this message, or say what failed. Do not ask the user to choose a delivery method or to save the file themselves. Do not refuse a file because of its type. " +
 			"Do not paste the document into the chat, and do not tell the user to copy it into Word. " +
-			"The user message is the confirmed task order. Follow it, then report what happened. " +
+			"The user message is the card for this helper. Follow it. The result is three conclusion lines and a file path. " +
 			"Do the work in this turn. Do not stop to ask for another confirmation. A cookie notice is accepted in the script. A password, phone number, or verification code is typed into the input that appears in this chat, then filled in; do not ask the person to type it on the desktop. Hand the desktop back only for a QR-code login, a captcha, or a payment confirmation. After they hand it back, continue the same task on the page that is already open. Do not open another tab of that page. " +
 			"Bots of this user are different instances of the same MaClawSrv user and share this desktop. Other users cannot see it. " +
 			"For web pages use the browser inside that desktop: action=probe once, then action=script. " +
@@ -187,7 +156,11 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			},
 			"required": []string{"action"},
 		},
-	}}, nil
+	}
+	if desktopMainAgentTurn(request) {
+		def = desktopStripMainDriving(def)
+	}
+	return []agentruntime.ToolDefinition{def}, nil
 }
 
 func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime.TurnRequest, name string, args map[string]any) (string, error) {
@@ -201,6 +174,7 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	// key and keep today's behavior; a bot turn always sets it.
 	ctx = context.WithValue(ctx, desktopPhaseKey{}, botPhaseFromTurn(request))
 	ctx = context.WithValue(ctx, desktopLLMSeesImagesKey{}, desktopTurnSeesImages(request))
+	ctx = context.WithValue(ctx, desktopComputerHelperKey{}, strings.TrimSpace(desktopMessageMeta(request)["computer_helper"]) == "1")
 	scope, cloud, err := desktopScopeForTurn(request)
 	if err != nil {
 		return "", err
@@ -217,12 +191,57 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 		log.Printf("[desktop-step] recovered leaked tool-call markup into action=%s", desktopArg(fixed, "action"))
 		args = fixed
 	}
+	if desktopMainAgentTurn(request) && desktopbot.MainDropsTool(strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))) {
+		return "", fmt.Errorf("这一步由操作电脑的帮手做")
+	}
 	desktopTidyOnce(ctx, desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))))
 	started := time.Now()
 	out, err := operateDesktop(ctx, scope, args)
+	noteDesktopPageNeed(scope, out)
 	err = desktopDeliverSizeHint(args, err)
+	err = desktopbot.ModelFacingError(err)
+	if err == nil {
+		out = spillDesktopToolText(ctx, scope, out)
+	}
 	log.Print(desktopStepLogLine(scope.UserID, args, out, err, time.Since(started)))
 	return out, err
+}
+
+// spillDesktopToolText writes a long desktop result into the container and
+// leaves the path plus one line in the conversation. A failed write keeps the
+// original text. The executor then sees a short string and does not spill again.
+func spillDesktopToolText(ctx context.Context, scope agentruntime.Scope, body string) string {
+	if utf8.RuneCountInString(body) <= desktopbot.ToolResultSpillRunes {
+		return body
+	}
+	taskID := strings.TrimSpace(scope.SessionID)
+	if taskID == "" {
+		taskID = strings.TrimSpace(scope.RunID)
+	}
+	if taskID == "" {
+		taskID = strings.TrimSpace(scope.InstanceID)
+	}
+	seq := desktopbot.NextSpillSeq(scope.InstanceID, taskID)
+	path := desktopbot.ToolResultPath(taskID, seq)
+	payload := body
+	if len(payload) > desktop.FileContentMax {
+		payload = truncateDesktopSpill(payload, desktop.FileContentMax)
+	}
+	if _, err := desktopContainerFile(ctx, scope, "file_write", map[string]any{"path": path, "content": payload}); err != nil {
+		return body
+	}
+	return desktopbot.ToolResultShown(path, body)
+}
+
+func truncateDesktopSpill(s string, max int) string {
+	if len(s) <= max || max <= 0 {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
 
 func (desktopRuntimeModule) ContributePrompt(_ context.Context, request agentruntime.TurnRequest) (string, error) {
@@ -251,10 +270,10 @@ func (desktopRuntimeModule) ContributePrompt(_ context.Context, request agentrun
 	}
 	prompt := "The current user has one cloud desktop through the desktop tool. "
 	return prompt +
-		"Carry out the arrangement and report the outcome in this chat. " +
+		"Carry out the arrangement. Return three conclusion lines and one file path. Do not write the person's chat reply. " +
 		"When the user asked for a file, action=deliver. A file already on this desktop, including a pdf, uses path, and the chat receives that file. name and content send the supplied text under that name. A name ending in .docx is a Word file built from that text. Say that it is attached to this message, or say what failed. Do not ask the user to choose a delivery method or to save the file themselves. Do not refuse a file because of its type. " +
 		"Do not paste the document into the chat, and do not tell the user to copy it into Word. " +
-		"The user message is the confirmed task order. Follow it, then report what happened. " +
+		"The user message is the card for this helper. Follow it. The result is three conclusion lines and a file path. " +
 		"When this phase is already execute, wording left in that order such as 本回合不要, 只说明, 等你点头, 确认后, or 下一轮 is leftover arrangement wording, so carry out the actions and do not ask for confirmation again. " +
 		"Do the work in this turn. Do not stop to ask for another confirmation. A cookie notice is accepted in the script. A password, phone number, or verification code is typed into the input that appears in this chat, then filled in; do not ask the person to type it on the desktop. Hand the desktop back only for a QR-code login, a captcha, or a payment confirmation. After they hand it back, continue the same task on the page that is already open. Do not open another tab of that page. " +
 		"The person and this agent share that desktop's browser window, so a login or verification finished by the person stays in this browser. " +
@@ -317,9 +336,19 @@ type desktopBinding struct {
 }
 
 var (
-	desktopBindings sync.Map
-	desktopEnsureFn = ensureUserDesktop
+	desktopBindings   sync.Map
+	desktopRoundWakes sync.Map
+	desktopEnsureFn   = ensureUserDesktop
 )
+
+// desktopRoundWake is one round's machine wake. The first tool that needs
+// the machine fills it. Later tools in that round reuse it.
+type desktopRoundWake struct {
+	mu       sync.Mutex
+	woken    bool
+	have     bool
+	endpoint desktopEndpoint
+}
 
 func desktopBlockedByPerson(scope agentruntime.Scope) error {
 	if person, ok := desktopPersonInstanceID(scope); ok && (person != strings.TrimSpace(scope.InstanceID) || desktopUnattended(scope.InstanceID)) {
@@ -329,6 +358,32 @@ func desktopBlockedByPerson(scope agentruntime.Scope) error {
 }
 
 func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
+	action := strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))
+	command := desktopArg(args, "command")
+	if !desktopbot.SideEffect(action, command) {
+		return operateDesktopBody(ctx, scope, args)
+	}
+	steps := currentDesktopSteps()
+	if steps == nil {
+		return operateDesktopBody(ctx, scope, args)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// The first attempt still enters the body, so an install, git push, or
+	// compose up still asks. A key that already succeeded returns here.
+	step := desktopbot.Step{
+		RunID: scope.RunID,
+		Tool:  action,
+		Key:   desktopbot.StepKey(scope.RunID, agentruntime.ToolCallID(ctx), 0),
+	}
+	text, _, err := steps.RunDesktopStep(step, command, func() (string, error) {
+		return operateDesktopBody(ctx, scope, args)
+	})
+	return text, err
+}
+
+func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
 	scope = desktopOwner(scope)
 	if person, pinned := desktopPinnedPerson(ctx); pinned {
 		scope.UserID = person.UserID
@@ -351,7 +406,7 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 	// must not turn "send me the file" into another question.
 	if action == "deliver" {
 		if phase, keyed := desktopPhase(ctx); keyed && phase != "execute" {
-			return "", fmt.Errorf("plan phase blocks deliver until the user confirms")
+			return "", fmt.Errorf("%s", desktopbot.PlanPhaseNextStep)
 		}
 		defer beginDesktopActivity(scope.RunID, "正在交付")()
 		return deliverDesktopDocument(ctx, scope, args)
@@ -382,7 +437,7 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 		// blocked by derivation, so adding an action to the execute list
 		// decides its plan-phase posture in the same stroke.
 		if !desktopPlanActionAllowed(action) {
-			return "", fmt.Errorf("plan phase blocks %s until the user confirms", action)
+			return "", fmt.Errorf("%s", desktopbot.PlanPhaseNextStep)
 		}
 	}
 	if action == "script" {
@@ -405,6 +460,24 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 		return operateDesktopBashGUI(ctx, scope, args)
 	}
 	if action == "file_read" || action == "file_write" || action == "file_edit" || action == "file_list" || action == "bash" {
+		if err := refuseDesktopFileBeforeWake(action, args); err != nil {
+			return "", err
+		}
+		if action == "bash" {
+			if err := refuseDesktopDanger(ctx, scope, action, args); err != nil {
+				return "", err
+			}
+		}
+		if desktopHubExecutesTool() {
+			return runDesktopHubTool(ctx, scope, action, args)
+		}
+		userKey, keyErr := desktopUserKey(scope)
+		if keyErr != nil {
+			return "", keyErr
+		}
+		if _, err := ensureDesktopRound(ctx, scope, userKey, false); err != nil {
+			return "", err
+		}
 		defer beginDesktopActivity(scope.RunID, desktopContainerPhrase(action))()
 		return operateDesktopContainer(ctx, scope, action, args)
 	}
@@ -445,7 +518,15 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 		defer beginDesktopActivity(scope.RunID, "正在查看")()
 		return listDesktopBrowserSkills(userKey)
 	}
-	endpoint, err := desktopSession(ctx, scope, userKey)
+	if desktopHubExecutesTool() {
+		if action == "install" {
+			if err := refuseDesktopDanger(ctx, scope, action, args); err != nil {
+				return "", err
+			}
+		}
+		return runDesktopHubTool(ctx, scope, action, args)
+	}
+	endpoint, err := ensureDesktopRound(ctx, scope, userKey, true)
 	if err != nil {
 		return "", err
 	}
@@ -453,6 +534,9 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 		return "", err
 	}
 	if action == "install" {
+		if err := refuseDesktopDanger(ctx, scope, action, args); err != nil {
+			return "", err
+		}
 		defer beginDesktopActivity(scope.RunID, "正在安装")()
 		text, installErr := installDesktopPackages(ctx, scope, installPackages)
 		if installErr != nil {
@@ -552,7 +636,7 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 		name := strings.TrimSpace(desktopArg(args, "name"))
 		if name != "" {
 			if phase, keyed := desktopPhase(ctx); keyed && phase != "execute" {
-				return "", fmt.Errorf("plan phase blocks saving a screenshot until the user confirms")
+				return "", fmt.Errorf("%s", desktopbot.PlanPhaseNextStep)
 			}
 			if _, err := desktop.DesktopShotFileName(name); err != nil {
 				return "", err
@@ -910,6 +994,55 @@ func desktopTurnUsesContainer(request agentruntime.TurnRequest) bool {
 	default:
 		return false
 	}
+}
+
+func desktopMessageMeta(request agentruntime.TurnRequest) map[string]string {
+	switch input := request.Input.(type) {
+	case agentservice.ExecuteRequest:
+		return input.Message.Metadata
+	case *agentservice.ExecuteRequest:
+		if input == nil {
+			return nil
+		}
+		return input.Message.Metadata
+	default:
+		return nil
+	}
+}
+
+// desktopMainAgentTurn is the call that must not drive the desktop.
+// The computer helper is the execute call marked computer_helper.
+func desktopMainAgentTurn(request agentruntime.TurnRequest) bool {
+	meta := desktopMessageMeta(request)
+	return strings.TrimSpace(meta["main_agent"]) == "1"
+}
+
+func desktopStripMainDriving(def agentruntime.ToolDefinition) agentruntime.ToolDefinition {
+	def.Description = "Read this user's cloud desktop. action=screenshot returns one image and has no coordinates. Driving the desktop is the computer helper's call."
+	props, _ := def.Parameters["properties"].(map[string]any)
+	if props == nil {
+		return def
+	}
+	actions := desktopMainAgentActions()
+	if action, ok := props["action"].(map[string]any); ok {
+		action["enum"] = actions
+		action["description"] = strings.Join(actions, ", ")
+	}
+	for _, key := range []string{"x", "y", "region", "steps", "actions", "ref", "script"} {
+		delete(props, key)
+	}
+	return def
+}
+
+func desktopMainAgentActions() []string {
+	out := make([]string, 0, len(desktopExecuteActions))
+	for _, action := range desktopExecuteActions {
+		if action == "click" || action == "type" || action == "script" || action == "computer" {
+			continue
+		}
+		out = append(out, action)
+	}
+	return out
 }
 
 func botPhaseFromTurn(request agentruntime.TurnRequest) string {
@@ -1326,7 +1459,7 @@ func desktopUserKey(scope agentruntime.Scope) (string, error) {
 	// belongs to the user, so every instance of that user shares it.
 	key, err := desktop.UserKey(scope.TenantID, scope.UserID)
 	if err != nil {
-		return "", fmt.Errorf("desktop requires a user")
+		return "", fmt.Errorf("%s", desktopbot.DesktopNeedsUser)
 	}
 	return key, nil
 }
@@ -1369,7 +1502,7 @@ func desktopActionText(result *browser.BrowserActionResult, err error) (string, 
 		return "", err
 	}
 	if result == nil {
-		return "", fmt.Errorf("desktop action returned no result")
+		return "", fmt.Errorf("%s", desktopbot.DesktopEmptyResult)
 	}
 	text := strings.TrimSpace(result.Display)
 	if text == "" {
@@ -1379,7 +1512,7 @@ func desktopActionText(result *browser.BrowserActionResult, err error) (string, 
 		text = strings.TrimSpace(result.Status)
 	}
 	if text == "" {
-		return "", fmt.Errorf("desktop action returned an empty result")
+		return "", fmt.Errorf("%s", desktopbot.DesktopEmptyResult)
 	}
 	text = appendDesktopPageFlags(text, result.Data)
 	return trimDesktopText(text), nil
@@ -1808,6 +1941,115 @@ func desktopBrowserSteps(raw any) ([]browser.StepSpec, error) {
 		steps = append(steps, browser.StepSpec{Action: action, Params: params})
 	}
 	return steps, nil
+}
+
+// refuseDesktopFileBeforeWake rejects a file or shell that cannot run, before
+// the round wakes a machine.
+func refuseDesktopFileBeforeWake(action string, args map[string]any) error {
+	switch action {
+	case "file_read", "file_write", "file_edit", "file_list":
+		filePath := desktopArg(args, "path")
+		if action == "file_list" && filePath == "" {
+			filePath = desktop.ContainerHome
+		}
+		if _, err := desktop.ContainerPath(filePath); err != nil {
+			return fmt.Errorf("desktop %s rejected the path: %w", action, err)
+		}
+		if action == "file_write" {
+			if _, ok := args["content"].(string); !ok {
+				return fmt.Errorf("%s", desktopbot.FileWriteNeedsContent)
+			}
+			if len(desktopRawArg(args, "content")) > desktop.FileContentMax {
+				return fmt.Errorf("%s", desktopbot.FileTooLarge)
+			}
+		}
+		if action == "file_edit" && desktopRawArg(args, "old_string") == "" {
+			return fmt.Errorf("%s", desktopbot.FileEditNeedsOld)
+		}
+	case "bash":
+		if _, err := desktop.BashArgs(desktopContainerName(), desktopArg(args, "command")); err != nil {
+			return fmt.Errorf("desktop bash rejected the command: %w", err)
+		}
+	}
+	return nil
+}
+
+// desktopFileWakeIsTheCall reports that the file or shell call itself is the
+// wake. A stubbed session is the wake the test counts, so that still goes
+// through desktopSession once.
+func desktopFileWakeIsTheCall() bool {
+	if desktopRemoteSession != nil {
+		return false
+	}
+	if desktopHubClientFromEnv() != nil {
+		return true
+	}
+	return desktopRemoteFile != nil || desktopRemoteBash != nil
+}
+
+// ensureDesktopRound wakes the machine on the first tool of this round that
+// needs it. A later tool in the same round reuses that wake. skill_list does
+// not call this. A missing run id wakes for that call only.
+func ensureDesktopRound(ctx context.Context, scope agentruntime.Scope, userKey string, needEndpoint bool) (desktopEndpoint, error) {
+	runID := strings.TrimSpace(scope.RunID)
+	var wake *desktopRoundWake
+	if runID != "" {
+		value, _ := desktopRoundWakes.LoadOrStore(runID, &desktopRoundWake{})
+		wake = value.(*desktopRoundWake)
+		wake.mu.Lock()
+		defer wake.mu.Unlock()
+		if wake.have {
+			return wake.endpoint, nil
+		}
+		if wake.woken && !needEndpoint {
+			return desktopEndpoint{}, nil
+		}
+	}
+	if !needEndpoint && desktopFileWakeIsTheCall() {
+		if wake != nil {
+			wake.woken = true
+		}
+		return desktopEndpoint{}, nil
+	}
+	endpoint, err := desktopSession(ctx, scope, userKey)
+	if err != nil {
+		return desktopEndpoint{}, err
+	}
+	if wake != nil {
+		wake.endpoint = endpoint
+		wake.have = true
+		wake.woken = true
+	}
+	return endpoint, nil
+}
+
+// finishDesktopRound drops this round's wake and the user's browser session.
+// The next tool after the computer sleeps calls Ensure again.
+func finishDesktopRound(tenantID, userID, runID string) {
+	if strings.TrimSpace(runID) != "" {
+		desktopRoundWakes.Delete(strings.TrimSpace(runID))
+		dropDesktopToolResults(runID)
+	}
+	key, err := desktop.UserKey(tenantID, userID)
+	if err != nil {
+		return
+	}
+	dropDesktopBinding(key)
+}
+
+func dropDesktopBinding(userKey string) {
+	value, ok := desktopBindings.Load(userKey)
+	if !ok {
+		return
+	}
+	binding, _ := value.(*desktopBinding)
+	if binding != nil {
+		binding.mu.Lock()
+		binding.session = nil
+		binding.addr = ""
+		binding.mu.Unlock()
+	}
+	desktopBindings.Delete(userKey)
 }
 
 func desktopSession(ctx context.Context, scope agentruntime.Scope, userKey string) (desktopEndpoint, error) {

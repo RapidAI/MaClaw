@@ -4,15 +4,21 @@ import {
     REASONING_FOLLOWUP_MAX_CHARS,
     bodyAlreadyHasReasoning,
     cleanReasoningTrailForBody,
+    contentAuditForMessage,
     liftReasoningIntoBody,
     looksLikeInternalMonologue,
     mergeReasoningIntoBody,
     parkReplacedStreamInReasoning,
+    reasoningCleanedForMessage,
+    replyBodyForDisplay,
     resolveVisibleAssistantReply,
     visibleAssistantReplyForMessage,
+    visibleReplyForAssistantMessage,
     separateReasoningFromBody,
     shouldPromoteReasoningToBody,
 } from "./assistantReasoningBody";
+import { stripCodingAgentAuditSections } from "./codingAgentUserFinish";
+import { stripRolePrefixForDisplay } from "./rolePrefixDisplay";
 
 const longReview = "Major comment: missing scratch-prompt baseline. ".repeat(20).trim();
 const shortFollowUp = "评审意见上一条已给出。是否需要英文版 Reviewer Report？";
@@ -385,6 +391,31 @@ describe("resolveVisibleAssistantReply", () => {
         expect(visible.reasoning).toContain("Checking the forecast.");
     });
 
+    it("peels a bulleted instruction recap off a short Chinese video answer", () => {
+        const answer = "这是一个名为 [hsck123.com]2026_07_31_04_05_58.mp4 的视频文件。";
+        expect(answer.length).toBeLessThan(REASONING_FOLLOWUP_MAX_CHARS);
+        const plan = [
+            "- User asks: \"这篇文档是什么？\" (What is this document?)",
+            "- Attached file: c:\\\\users\\\\ma139\\\\downloads\\\\clip.mp4",
+            "- System Prompt Instructions:",
+            "  - Role: AI personal assistant.",
+            "  - Specific constraint: only discuss this one file.",
+            "  - Constraint: do not use tools.",
+            "- The file extension is .mp4, which is a video file, not a document.",
+            "",
+            "- The file is clip.mp4.",
+            "- It's a video file (MP4).",
+            "- Concise answer. Language: Chinese. No tool use.",
+            "- The user is asking what this document is.",
+            "- Since the prompt has only the filename, describe the file from that name.",
+        ].join("\n");
+        const visible = resolveVisibleAssistantReply(`${plan}\n\n${answer}`, "");
+        expect(visible.content).toBe(answer);
+        expect(visible.reasoning).toContain("User asks");
+        expect(visible.reasoning).toContain("System Prompt Instructions");
+        expect(visible.content).not.toContain("System Prompt Instructions");
+    });
+
     it("keeps a live answer in the bubble when it already follows the plan", () => {
         const plan = "The user is asking for the forecast. Let me think through the snippets before I answer. Several dates in the listing do not match today, so the raw page text cannot be the reply.\n\n";
         const answer = "重庆今天小雨，约 24~30℃，北风，风力不大。明天多云，约 24~31℃，北风。今起三天降雨集中在华西，外出建议带伞，并注意路面积水。空气湿度较高，体感偏闷热。";
@@ -480,5 +511,67 @@ describe("separateReasoningFromBody", () => {
         expect(separated.content).toBe(cuisineAnswer);
         expect(separated.reasoning.length).toBeGreaterThan(shortThink.length);
         expect(separated.reasoning).toContain("Let me think");
+    });
+});
+
+describe("reply render cache", () => {
+    const trail = [
+        "• 执行环境已就绪\n",
+        "The user wants a small C++ file.\n",
+        "```cpp\n",
+        "Tool: not a call\n",
+        "```\n",
+        "Browser: hidden\n",
+        "int main() {}\n",
+        "## 质量审计\n",
+        "passed\n",
+    ].join("");
+    const answer = [
+        "Created hello.cpp.\n",
+        "```cpp\n",
+        "int main() { return 0; }\n",
+        "```\n",
+        "Hello Tool: stay in the sentence.\n",
+        "Next paragraph.\n",
+        "## 验证结果\n",
+        "cl passed\n",
+        "Browser: do not show\n",
+    ].join("");
+
+    it("matches the full reasoning clean as the trail grows and when it is rewritten", () => {
+        const id = "reply-trail-grow";
+        let raw = "";
+        for (let end = 1; end <= trail.length; end += 5) {
+            raw = trail.slice(0, end);
+            expect(reasoningCleanedForMessage(id, raw)).toBe(cleanReasoningTrailForBody(raw));
+        }
+        expect(reasoningCleanedForMessage(id, trail)).toBe(cleanReasoningTrailForBody(trail));
+        expect(reasoningCleanedForMessage("reply-trail-other", cuisineCot)).toBe(cleanReasoningTrailForBody(cuisineCot));
+    });
+
+    it("matches the audit and role strips as the answer grows", () => {
+        const id = "reply-body-grow";
+        for (let end = 1; end <= answer.length; end += 4) {
+            const slice = answer.slice(0, end);
+            const shown = replyBodyForDisplay(id, slice);
+            const audited = stripCodingAgentAuditSections(slice);
+            expect(shown.audited).toBe(audited);
+            expect(shown.visible).toBe(stripRolePrefixForDisplay(audited));
+        }
+        const rewritten = replyBodyForDisplay(id, "A different answer.");
+        expect(rewritten.visible).toBe("A different answer.");
+        expect(contentAuditForMessage("audit-grow", answer)).toBe(stripCodingAgentAuditSections(answer));
+        expect(contentAuditForMessage("audit-grow", `${answer}\nkept`)).toBe(stripCodingAgentAuditSections(`${answer}\nkept`));
+    });
+
+    it("splits a coding reply the same way after the thought has already been cleaned", () => {
+        const id = "reply-split";
+        let content = "";
+        for (const piece of ["Created ", "hello.cpp.", "\nIt compiles."]) {
+            content += piece;
+            expect(visibleReplyForAssistantMessage(id, content, trail, { coding: true })).toEqual(
+                visibleAssistantReplyForMessage(content, cleanReasoningTrailForBody(trail), { coding: true }),
+            );
+        }
     });
 });

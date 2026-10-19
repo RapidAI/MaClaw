@@ -27,7 +27,7 @@ func TestDesktopTaskStatusQueryAndOfflineDelivery(t *testing.T) {
 				_, _ = w.Write([]byte(`{"id":"run_report","status":"running"}`))
 				return
 			}
-			_, _ = w.Write([]byte(`{"id":"run_report","status":"succeeded","desktop_ready":true,"message":{"content":"报表已下载"}}`))
+			_, _ = w.Write([]byte(`{"id":"run_report","status":"succeeded","desktop_ready":true,"message":{"content":"我点了下载，文件在下载目录。","metadata":{"send_to_user":"报表已下载"}}}`))
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/instances/"):
 			writeInstanceSettings(w, r)
 		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/instances/"):
@@ -107,7 +107,7 @@ func TestDesktopTaskStatusQueryAndOfflineDelivery(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(pending) == 1 && pending[0].Reply.Text == "报表已下载" {
+		if len(pending) == 1 && pending[0].Reply.Text == "我点了下载，文件在下载目录。" && pending[0].Reply.SendToUser == "报表已下载" {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -123,15 +123,18 @@ func TestDesktopTaskStatusQueryAndOfflineDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pending) != 1 || pending[0].RunID != admission.RunID || pending[0].Reply.Text != "报表已下载" {
+	if len(pending) != 1 || pending[0].RunID != admission.RunID || pending[0].Reply.Text != "我点了下载，文件在下载目录。" || pending[0].Reply.SendToUser != "报表已下载" {
 		t.Fatalf("restarted pending = %#v", pending)
 	}
-	shown, _, err := restarted.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "下载报表", "zh-Hans")
+	shown, shownItems, err := restarted.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "下载报表", "zh-Hans")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(shown, "已经做完") || !strings.Contains(shown, "报表已下载") || strings.Contains(shown, "没有找到") {
+	if !strings.Contains(shown, "已经做完") || !strings.Contains(shown, "报表已下载") || strings.Contains(shown, "没有找到") || strings.Contains(shown, "下载目录") {
 		t.Fatalf("finished sentence = %q", shown)
+	}
+	if len(shownItems) != 1 || shownItems[0].Text != "报表已下载" {
+		t.Fatalf("status item = %#v", shownItems)
 	}
 	miss, _, err := restarted.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "另一个完全无关的名字", "zh-Hans")
 	if err != nil {
@@ -323,12 +326,473 @@ func TestDesktopTaskQueryStripsLeadAndSpeaksEachLanguage(t *testing.T) {
 	evince.status = "succeeded"
 	evince.done = true
 	evince.finished = started.Add(time.Hour)
-	evince.reply.Text = "装好了"
-	done, _, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "安装 Evince", "zh-Hans")
+	evince.reply.Text = "安装过程写在这里，不给人看。"
+	evince.reply.SendToUser = "装好了"
+	done, doneItems, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "安装 Evince", "zh-Hans")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(done, "已经做完") || !strings.Contains(done, "装好了") || strings.Contains(done, "在做。这件是") {
+	if !strings.Contains(done, "已经做完") || !strings.Contains(done, "装好了") || strings.Contains(done, "在做。这件是") || strings.Contains(done, "安装过程") {
 		t.Fatalf("done = %q", done)
+	}
+	if len(doneItems) != 1 || doneItems[0].Text != "装好了" {
+		t.Fatalf("done item = %#v", doneItems)
+	}
+	evince.reply.SendToUser = ""
+	proseOnly, proseItems, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "安装 Evince", "zh-Hans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(proseOnly, "已经做完") || strings.Contains(proseOnly, "安装过程") || strings.Contains(proseOnly, "装好了") {
+		t.Fatalf("prose leaked = %q", proseOnly)
+	}
+	if len(proseItems) != 1 || proseItems[0].Text != "" {
+		t.Fatalf("prose item = %#v", proseItems)
+	}
+	evince.reply.AskUserQuestion = "下一步？"
+	asked, askedItems, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "安装 Evince", "zh-Hans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(asked, "已经做完") || !strings.Contains(asked, "下一步？") || strings.Contains(asked, "安装过程") {
+		t.Fatalf("asked = %q", asked)
+	}
+	if len(askedItems) != 1 || askedItems[0].Text != "下一步？" {
+		t.Fatalf("asked item = %#v", askedItems)
+	}
+	evince.reply.AskUserQuestion = "无变化"
+	fillerAsk, _, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "安装 Evince", "zh-Hans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(fillerAsk, "无变化") || strings.Contains(fillerAsk, "安装过程") {
+		t.Fatalf("filler ask = %q", fillerAsk)
+	}
+	evince.reply.AskUserOptionsJSON = `["继续","停下"]`
+	choiceAsk, choiceItems, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "安装 Evince", "zh-Hans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(choiceAsk, "已经做完") || !strings.Contains(choiceAsk, "继续") || !strings.Contains(choiceAsk, "停下") || strings.Contains(choiceAsk, "无变化") || strings.Contains(choiceAsk, "安装过程") {
+		t.Fatalf("choice ask = %q", choiceAsk)
+	}
+	if len(choiceItems) != 1 || choiceItems[0].Text != "继续\n停下" {
+		t.Fatalf("choice item = %#v", choiceItems)
+	}
+	evince.reply.AskUserOptionsJSON = `["", "无变化"]`
+	blankChoices, _, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "安装 Evince", "zh-Hans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(blankChoices, "无变化") || strings.Contains(blankChoices, "继续") {
+		t.Fatalf("blank choices = %q", blankChoices)
+	}
+	evince.reply.AskUserSecretName = "SITE_PASSWORD"
+	secretAsk, secretItems, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "安装 Evince", "zh-Hans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(secretAsk, "已经做完") || !strings.Contains(secretAsk, "SITE_PASSWORD") || strings.Contains(secretAsk, "无变化") || strings.Contains(secretAsk, "安装过程") {
+		t.Fatalf("secret ask = %q", secretAsk)
+	}
+	if len(secretItems) != 1 || secretItems[0].Text != "SITE_PASSWORD" {
+		t.Fatalf("secret item = %#v", secretItems)
+	}
+	evince.reply.AskUserQuestion = "下一步？"
+	questionOverSecret, _, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "安装 Evince", "zh-Hans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(questionOverSecret, "下一步？") || strings.Contains(questionOverSecret, "SITE_PASSWORD") || strings.Contains(questionOverSecret, "无变化") {
+		t.Fatalf("question over secret = %q", questionOverSecret)
+	}
+	evince.reply.AskUserQuestion = "无变化"
+	evince.reply.AskUserOptionsJSON = `["继续","停下"]`
+	choiceOverSecret, _, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "安装 Evince", "zh-Hans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(choiceOverSecret, "继续") || !strings.Contains(choiceOverSecret, "停下") || strings.Contains(choiceOverSecret, "SITE_PASSWORD") || strings.Contains(choiceOverSecret, "无变化") {
+		t.Fatalf("choices over secret = %q", choiceOverSecret)
+	}
+	evince.reply.AskUserSecretName = ""
+	evince.reply.AskUserOptionsJSON = ""
+	evince.status = "failed"
+	evince.err = taskStatusError("browser broke")
+	evince.reply.AskUserQuestion = "下一步？"
+	failedAsk, failedItems, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "安装 Evince", "zh-Hans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(failedAsk, "没有完成") || !strings.Contains(failedAsk, "browser broke") || strings.Contains(failedAsk, "下一步？") || strings.Contains(failedAsk, "安装过程") {
+		t.Fatalf("failed ask = %q", failedAsk)
+	}
+	if len(failedItems) != 1 || failedItems[0].Text != "" {
+		t.Fatalf("failed ask item = %#v", failedItems)
+	}
+	evince.reply.AskUserQuestion = "无变化"
+	evince.reply.AskUserOptionsJSON = `["继续","停下"]`
+	failedChoices, _, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "安装 Evince", "zh-Hans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(failedChoices, "没有完成") || !strings.Contains(failedChoices, "browser broke") || strings.Contains(failedChoices, "继续") || strings.Contains(failedChoices, "无变化") || strings.Contains(failedChoices, "安装过程") {
+		t.Fatalf("failed choices = %q", failedChoices)
+	}
+	evince.err = taskStatusError("run run_evince ended as failed without a result")
+	missedChoices, missedItems, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "安装 Evince", "zh-Hans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(missedChoices, "没有完成") || !strings.Contains(missedChoices, "继续") || !strings.Contains(missedChoices, "停下") || strings.Contains(missedChoices, "without a result") || strings.Contains(missedChoices, "无变化") || strings.Contains(missedChoices, "安装过程") {
+		t.Fatalf("missed choices = %q", missedChoices)
+	}
+	if len(missedItems) != 1 || missedItems[0].Text != "继续\n停下" {
+		t.Fatalf("missed choice item = %#v", missedItems)
+	}
+	evince.reply.AskUserOptionsJSON = ""
+	evince.reply.AskUserQuestion = "下一步？"
+	missedQuestion, _, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "安装 Evince", "zh-Hans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(missedQuestion, "没有完成") || !strings.Contains(missedQuestion, "下一步？") || strings.Contains(missedQuestion, "without a result") || strings.Contains(missedQuestion, "安装过程") {
+		t.Fatalf("missed question = %q", missedQuestion)
+	}
+	evince.err = nil
+	emptyErrAsk, _, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "安装 Evince", "zh-Hans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(emptyErrAsk, "没有完成") || !strings.Contains(emptyErrAsk, "下一步？") || strings.Contains(emptyErrAsk, "安装过程") {
+		t.Fatalf("empty error ask = %q", emptyErrAsk)
+	}
+	evince.err = taskStatusError("run run_evince ended as cancelled without a result")
+	evince.status = "cancelled"
+	evince.reply.AskUserQuestion = "无变化"
+	evince.reply.AskUserSecretName = "SITE_PASSWORD"
+	missedSecret, _, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "安装 Evince", "zh-Hans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(missedSecret, "没有完成") || !strings.Contains(missedSecret, "SITE_PASSWORD") || strings.Contains(missedSecret, "without a result") || strings.Contains(missedSecret, "无变化") || strings.Contains(missedSecret, "安装过程") {
+		t.Fatalf("missed secret = %q", missedSecret)
+	}
+	evince.status = "failed"
+	evince.err = taskStatusError("browser broke")
+	failedSecret, _, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "安装 Evince", "zh-Hans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(failedSecret, "没有完成") || !strings.Contains(failedSecret, "browser broke") || strings.Contains(failedSecret, "SITE_PASSWORD") || strings.Contains(failedSecret, "无变化") || strings.Contains(failedSecret, "安装过程") {
+		t.Fatalf("failed secret = %q", failedSecret)
+	}
+}
+
+func TestDesktopTaskAskSurvivesRestart(t *testing.T) {
+	settings := &memSettings{}
+	raw, err := json.Marshal(record{
+		Bots:   []Bot{{ID: "bot_alice", Name: "duty", InstanceID: "inst_alice", OwnerUserID: "alice"}},
+		Grants: []Grant{{ID: "g1", Scope: ScopeUser, TargetID: "alice"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(settings)
+	now := time.Now()
+	state := &desktopAdmitState{
+		task: "打开首页", status: "succeeded", done: true, userID: "alice", botID: "bot_alice", runID: "run_ask",
+		phase:   "execute",
+		started: now.Add(-time.Minute), finished: now,
+		reply: Reply{
+			Text:               "页面已打开",
+			AskUserQuestion:    "下一步？",
+			AskUserInputType:   "secret",
+			AskUserSecretName:  "SITE_PASSWORD",
+			AskUserOptionsJSON: `["继续","停下"]`,
+		},
+	}
+	svc.desktopAdmits = map[string]*desktopAdmitState{
+		desktopAdmitKey("tenant-a", "alice", "bot_alice", "run_ask"): state,
+	}
+	svc.persistDesktopTasks("tenant-a")
+
+	restarted := NewService(settings)
+	pending, err := restarted.PendingDesktopDeliveries(context.Background(), "tenant-a", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].Phase != "execute" {
+		t.Fatalf("pending = %#v", pending)
+	}
+	reply := pending[0].Reply
+	if reply.Text != "页面已打开" || reply.SendToUser != "" || reply.AskUserQuestion != "下一步？" || reply.AskUserSecretName != "SITE_PASSWORD" || reply.AskUserInputType != "secret" || reply.AskUserOptionsJSON != `["继续","停下"]` {
+		t.Fatalf("restarted reply = %#v", reply)
+	}
+	shown, items, err := restarted.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "打开首页", "zh-Hans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(shown, "下一步？") || strings.Contains(shown, "页面已打开") || len(items) != 1 || items[0].Text != "下一步？" {
+		t.Fatalf("shown = %q %#v", shown, items)
+	}
+}
+
+func TestDesktopTaskSendToUserSurvivesRestart(t *testing.T) {
+	var gate sync.Mutex
+	withSentence := false
+	hideSentence := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/auth/token":
+			_, _ = w.Write([]byte(`{"access_token":"bearer-alice","principal":{"user_id":"user_alice"}}`))
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/runs/"):
+			gate.Lock()
+			sentence, hidden := withSentence, hideSentence
+			gate.Unlock()
+			if !sentence {
+				_, _ = w.Write([]byte(`{"id":"run_sentence","status":"running"}`))
+				return
+			}
+			if hidden {
+				_, _ = w.Write([]byte(`{"id":"run_sentence","status":"succeeded","desktop_ready":true,"message":{"content":"无变化"}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"run_sentence","status":"succeeded","desktop_ready":true,"message":{"content":"无变化","metadata":{"send_to_user":"首页没打开。"}}}`))
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/instances/"):
+			writeInstanceSettings(w, r)
+		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/instances/"):
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/messages"):
+			raw, _ := io.ReadAll(r.Body)
+			if !strings.Contains(string(raw), "打开首页") {
+				http.Error(w, "task", http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"async":true,"run":{"id":"run_sentence","status":"running"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	settings := &memSettings{}
+	raw, err := json.Marshal(record{
+		BaseURL:     srv.URL,
+		AccessToken: "secret-token",
+		AdminSecret: "admin-secret",
+		Principals: []ownerPrincipal{{
+			HubUserID: "alice", TenantID: "maclaw-tenant", UserID: "user_alice", APIKey: "key-alice", APISecret: "sec-alice",
+		}},
+		Bots:   []Bot{{ID: "bot_alice", Name: "duty", InstanceID: "inst_alice", OwnerUserID: "alice"}},
+		Grants: []Grant{{ID: "g1", Scope: ScopeUser, TargetID: "alice"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(settings)
+	svc.HTTP = srv.Client()
+	svc.admitPollInterval = 10 * time.Millisecond
+	svc.admitReadyGrace = 20 * time.Millisecond
+	svc.Desktop = &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
+
+	if _, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "打开首页", "execute", "turn-sentence"); err != nil {
+		t.Fatal(err)
+	}
+	gate.Lock()
+	withSentence = true
+	gate.Unlock()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		pending, err := svc.PendingDesktopDeliveries(context.Background(), "tenant-a", "alice")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(pending) == 1 && pending[0].Reply.Text == "无变化" && pending[0].Reply.SendToUser == "首页没打开。" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pending = %#v", pending)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		saved, err := settings.Get(context.Background(), storageKey("tenant-a"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(saved, `"send_to_user":"首页没打开。"`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pin was not saved: %s", saved)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	gate.Lock()
+	hideSentence = true
+	gate.Unlock()
+
+	restarted := NewService(settings)
+	restarted.HTTP = srv.Client()
+	restarted.Desktop = svc.Desktop
+	pending, err := restarted.PendingDesktopDeliveries(context.Background(), "tenant-a", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].Reply.Text != "无变化" || pending[0].Reply.SendToUser != "首页没打开。" {
+		t.Fatalf("restarted pending = %#v", pending)
+	}
+}
+
+func TestDesktopTaskSendToUserFillsFromRunMetadata(t *testing.T) {
+	var gate sync.Mutex
+	ready := false
+	withSentence := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/auth/token":
+			_, _ = w.Write([]byte(`{"access_token":"bearer-alice","principal":{"user_id":"user_alice"}}`))
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/runs/"):
+			gate.Lock()
+			goNow, sentence := ready, withSentence
+			gate.Unlock()
+			if !goNow {
+				_, _ = w.Write([]byte(`{"id":"run_backfill","status":"running"}`))
+				return
+			}
+			if sentence {
+				_, _ = w.Write([]byte(`{"id":"run_backfill","status":"succeeded","desktop_ready":true,"message":{"content":"无变化","metadata":{"send_to_user":"首页没打开。","ask_user_question":"下一步？","ask_user_secret_name":"SITE_PASSWORD"}}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"run_backfill","status":"succeeded","desktop_ready":true,"message":{"content":"无变化"}}`))
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/instances/"):
+			writeInstanceSettings(w, r)
+		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/instances/"):
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/messages"):
+			raw, _ := io.ReadAll(r.Body)
+			if !strings.Contains(string(raw), "打开首页") {
+				http.Error(w, "task", http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"async":true,"run":{"id":"run_backfill","status":"running"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	settings := &memSettings{}
+	raw, err := json.Marshal(record{
+		BaseURL:     srv.URL,
+		AccessToken: "secret-token",
+		AdminSecret: "admin-secret",
+		Principals: []ownerPrincipal{{
+			HubUserID: "alice", TenantID: "maclaw-tenant", UserID: "user_alice", APIKey: "key-alice", APISecret: "sec-alice",
+		}},
+		Bots:   []Bot{{ID: "bot_alice", Name: "duty", InstanceID: "inst_alice", OwnerUserID: "alice"}},
+		Grants: []Grant{{ID: "g1", Scope: ScopeUser, TargetID: "alice"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(settings)
+	svc.HTTP = srv.Client()
+	svc.admitPollInterval = 10 * time.Millisecond
+	svc.admitReadyGrace = 20 * time.Millisecond
+	svc.Desktop = &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
+
+	if _, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "打开首页", "execute", "turn-backfill"); err != nil {
+		t.Fatal(err)
+	}
+	gate.Lock()
+	ready = true
+	gate.Unlock()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		pending, err := svc.PendingDesktopDeliveries(context.Background(), "tenant-a", "alice")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(pending) == 1 && pending[0].Reply.Text == "无变化" && pending[0].Reply.SendToUser == "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pending = %#v", pending)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		saved, err := settings.Get(context.Background(), storageKey("tenant-a"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(saved, `"text":"无变化"`) && !strings.Contains(saved, `"send_to_user"`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("old pin = %s", saved)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	gate.Lock()
+	withSentence = true
+	gate.Unlock()
+
+	restarted := NewService(settings)
+	restarted.HTTP = srv.Client()
+	restarted.Desktop = svc.Desktop
+	var pending []DesktopTaskDelivery
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		pending, err = restarted.PendingDesktopDeliveries(context.Background(), "tenant-a", "alice")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(pending) == 1 && pending[0].Reply.SendToUser == "首页没打开。" && pending[0].Reply.Text == "无变化" && pending[0].Reply.AskUserQuestion == "下一步？" && pending[0].Reply.AskUserSecretName == "SITE_PASSWORD" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("backfill pending = %#v", pending)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		saved, err := settings.Get(context.Background(), storageKey("tenant-a"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(saved, `"send_to_user":"首页没打开。"`) && strings.Contains(saved, `"ask_user_question":"下一步？"`) && strings.Contains(saved, `"ask_user_secret_name":"SITE_PASSWORD"`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("backfill was not saved: %s", saved)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	gate.Lock()
+	withSentence = false
+	gate.Unlock()
+	again := NewService(settings)
+	again.HTTP = srv.Client()
+	pending, err = again.PendingDesktopDeliveries(context.Background(), "tenant-a", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].Reply.Text != "无变化" || pending[0].Reply.SendToUser != "首页没打开。" || pending[0].Reply.AskUserQuestion != "下一步？" || pending[0].Reply.AskUserSecretName != "SITE_PASSWORD" {
+		t.Fatalf("saved backfill = %#v", pending)
 	}
 }

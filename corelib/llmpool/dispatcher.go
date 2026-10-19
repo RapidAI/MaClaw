@@ -102,8 +102,12 @@ func OrderScoredProviderRoutes(body map[string]any, model *DispatchModel) []Scor
 	return scored
 }
 
-// CapabilityMatchScore is the WRR band key for a provider. It counts only
-// tag overlap with the request; admin priority is a sort tie-break, not a band.
+// CapabilityMatchScore is the WRR band key for a provider. It counts tag
+// overlap with the request; admin priority is a sort tie-break, not a band.
+// When the request contains an image, every vision-tagged route gets the same
+// extra so it outranks every route that cannot see the image. A picture-PDF
+// path matches the "pdf" keyword and would otherwise tie a document-tagged
+// text route with a vision route; the higher priority would then go first.
 func CapabilityMatchScore(tags []string, needs map[string]int) int {
 	if len(needs) == 0 {
 		return 0
@@ -120,6 +124,17 @@ func CapabilityMatchScore(tags []string, needs map[string]int) int {
 	for need, weight := range needs {
 		if _, ok := have[need]; ok {
 			score += weight * 100
+		}
+	}
+	if needs["vision"] > 0 {
+		if _, ok := have["vision"]; ok {
+			ceiling := 0
+			for _, weight := range needs {
+				if weight > 0 {
+					ceiling += weight
+				}
+			}
+			score += ceiling * 100
 		}
 	}
 	return score
@@ -151,6 +166,12 @@ func DetectCapabilityNeeds(body map[string]any) map[string]int {
 	addKeywordWeight("document", 8, "document", "pdf", "docs", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "word", "excel", "spreadsheet", "markdown", "contract", "manual", "spec", "report", "summary", "summarize", "read file")
 	addKeywordWeight("reasoning", 5, "reason", "analyze", "analysis", "think", "math", "proof", "deduce")
 	addKeywordWeight("tools", 8, "tools", "tool", "browser", "search", "function", "call tool", "execute", "fetch")
+	// Picture-PDF pages and other uploads are image blocks, not the word "pdf".
+	// Provider order has to see them or a text-only upstream of the same tier
+	// is chosen ahead of a vision-capable one.
+	if hasVisionContent(body) {
+		needs["vision"] += 8
+	}
 	return needs
 }
 

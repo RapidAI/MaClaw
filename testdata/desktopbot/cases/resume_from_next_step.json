@@ -1,0 +1,9 @@
+{
+  "id": "resume_from_next_step",
+  "task_id": "task_1",
+  "where_we_are": "正在把登录后的第一屏存下来。",
+  "next_step": "打开设置里的通知页。",
+  "open_problems": "无",
+  "stale_next_step": "不要读这份睡着的文件。",
+  "states": ["sleep", "summary", "interrupted"]
+}

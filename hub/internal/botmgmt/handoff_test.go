@@ -2,6 +2,8 @@ package botmgmt
 
 import (
 	"bufio"
+	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -39,6 +41,84 @@ func TestDesktopHandoffStaysOnHub(t *testing.T) {
 	svc.ProxyDesktopHandoff(denied, req, strings.Repeat("ab", 32), "vnc.html")
 	if denied.Code != http.StatusNotFound {
 		t.Fatalf("status=%d", denied.Code)
+	}
+}
+
+func TestDesktopHandoffKeepsTheTunnelPrefix(t *testing.T) {
+	var seenPath, seenAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		seenAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	svc := NewService(&memSettings{})
+	raw := strings.Replace(upstream.URL, "://", "://desktop:gate-token@", 1) + "/v1/desktops/tunnel/abcdef0123456789/vnc/vnc.html?autoconnect=1"
+	gated := svc.gateDesktopHandoff(raw)
+	if strings.Contains(gated, upstream.URL) || strings.Contains(gated, "abcdef0123456789") || !strings.Contains(gated, "/vnc.html") {
+		t.Fatalf("gated=%q", gated)
+	}
+	token, rest, err := ParseHandoffPath(gated)
+	if err != nil || rest != "vnc.html" {
+		t.Fatalf("rest=%q err=%v", rest, err)
+	}
+	rec := httptest.NewRecorder()
+	svc.ProxyDesktopHandoff(rec, httptest.NewRequest(http.MethodGet, gated, nil), token, rest)
+	want := "/v1/desktops/tunnel/abcdef0123456789/vnc/vnc.html"
+	if rec.Code != http.StatusNoContent || seenPath != want || seenAuth != "Bearer gate-token" {
+		t.Fatalf("status=%d path=%q auth=%q", rec.Code, seenPath, seenAuth)
+	}
+	svc.ProxyDesktopHandoff(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/websockify", nil), token, "websockify")
+	if seenPath != "/v1/desktops/tunnel/abcdef0123456789/vnc/websockify" {
+		t.Fatalf("socket path=%q", seenPath)
+	}
+}
+
+func TestDesktopHandoffTunnelSurvivesRestart(t *testing.T) {
+	var seenPath, seenAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		seenAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	settings := &memSettings{}
+	rawRec, err := json.Marshal(record{
+		BaseURL:     "http://maclawsrv.example",
+		AccessToken: "secret-token",
+		Bots: []Bot{
+			{ID: "bot_alice", Name: "duty", InstanceID: "inst_alice", OwnerUserID: "alice"},
+		},
+		Grants: []Grant{{ID: "g1", Scope: ScopeUser, TargetID: "alice"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), string(rawRec)); err != nil {
+		t.Fatal(err)
+	}
+	svc1 := NewService(settings)
+	raw := strings.Replace(upstream.URL, "://", "://desktop:gate-token@", 1) + "/v1/desktops/tunnel/abcdef0123456789/vnc/vnc.html?autoconnect=1"
+	svc1.NoteDesktopView("tenant-a", "alice", raw)
+
+	svc2 := NewService(settings)
+	url, _, err := svc2.DesktopWatch(context.Background(), "tenant-a", "alice", "bot_alice")
+	if err != nil || url == "" {
+		t.Fatalf("restored watch url=%q err=%v", url, err)
+	}
+	token, rest, err := ParseHandoffPath(url)
+	if err != nil || rest != "vnc.html" {
+		t.Fatalf("rest=%q err=%v", rest, err)
+	}
+	rec := httptest.NewRecorder()
+	svc2.ProxyDesktopHandoff(rec, httptest.NewRequest(http.MethodGet, url, nil), token, rest)
+	want := "/v1/desktops/tunnel/abcdef0123456789/vnc/vnc.html"
+	if rec.Code != http.StatusNoContent || seenPath != want || seenAuth != "Bearer gate-token" {
+		t.Fatalf("status=%d path=%q auth=%q", rec.Code, seenPath, seenAuth)
+	}
+	svc2.ProxyDesktopHandoff(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/websockify", nil), token, "websockify")
+	if seenPath != "/v1/desktops/tunnel/abcdef0123456789/vnc/websockify" {
+		t.Fatalf("socket path=%q", seenPath)
 	}
 }
 

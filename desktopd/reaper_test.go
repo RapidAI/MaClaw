@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -35,10 +36,20 @@ type reaperDocker struct {
 	// sessionAfterStop is the idle "running" value after the first idle query.
 	sessionAfterStop bool
 	idleCalls        int
+	// idleOverride, when set, is the idle_seconds of every desktop. Zero keeps
+	// the historical split (k1 at 7200s, k2 at 60s).
+	idleOverride int
+	flushErr     error
+	// onFlush runs before the docker lock, while sleep still holds the user
+	// lock. It is how a test announces Ensure after flush without deadlocking.
+	onFlush func()
 }
 
 func (d *reaperDocker) run(_ context.Context, args ...string) (string, error) {
 	joined := strings.Join(args, " ")
+	if strings.Contains(joined, " flush ") && d.onFlush != nil {
+		d.onFlush()
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.calls = append(d.calls, joined)
@@ -65,8 +76,16 @@ func (d *reaperDocker) run(_ context.Context, args ...string) (string, error) {
 			d.running[name] = false
 		}
 		return "", nil
+	case strings.Contains(joined, " flush "):
+		if d.flushErr != nil {
+			return "", d.flushErr
+		}
+		return "", nil
 	case strings.Contains(joined, " idle "):
 		d.idleCalls++
+		if d.idleOverride > 0 {
+			return fmt.Sprintf(`{"running":true,"idle_seconds":%d,"known":true}`, d.idleOverride), nil
+		}
 		key := args[len(args)-1]
 		if strings.HasSuffix(key, "k2") || strings.Contains(joined, "maclaw-desktop-k2") {
 			return `{"running":true,"idle_seconds":60,"known":true}`, nil

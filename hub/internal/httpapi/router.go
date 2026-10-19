@@ -429,6 +429,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/v1/desktop-services/http", PostDesktopHTTPHandler(desktopPool))
 	mux.HandleFunc("POST /api/v1/desktop-services/screenshot", PostDesktopScreenshotHandler(desktopPool))
 	mux.HandleFunc("POST /api/v1/desktop-services/ctl", PostDesktopCtlHandler(desktopPool))
+	mux.HandleFunc("POST /api/v1/desktop-services/tool", PostDesktopToolHandler(desktopPool))
 	desktopMCPTokens := &desktopMCPTokenStore{system: system}
 	desktopMCP := DesktopMCPHandler(desktopPool, desktopMCPTokens, identity, admins)
 	userMCPTokens := DesktopMCPUserTokensHandler(desktopMCPTokens, identity)

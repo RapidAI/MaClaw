@@ -2,11 +2,15 @@ package guiapp
 
 import (
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -82,6 +86,22 @@ func TestSSHConnectResultForFollowUpCommandDropsLoginPreview(t *testing.T) {
 	}
 }
 
+func TestSemanticSSHConnectDownloadResultLeadsWithTheCopy(t *testing.T) {
+	connect := "SSH 连接成功\n会话 ID: ssh_1\n主机: gpu84\n状态: running\n\n--- 初始输出 ---\nMOTD"
+	fail := "下载失败: stat remote /home/gpu84/out/a.pdf: no such file\nremote_path=/home/gpu84/out/a.pdf\nlocal_path=D:\\out\\a.pdf"
+	got := semanticSSHConnectDownloadResult(connect, fail)
+	if !strings.HasPrefix(got, "下载失败:") {
+		t.Fatalf("copy failure must own the first line: %q", got)
+	}
+	if !strings.Contains(got, "ssh_1") || strings.Contains(got, "MOTD") {
+		t.Fatalf("session id must remain and the login preview must not: %q", got)
+	}
+	ok := semanticSSHConnectDownloadResult(connect, "下载完成:\nremote_path=/a\nlocal_path=D:\\a\nlocal_bytes=1 sha256=ab")
+	if !strings.HasPrefix(ok, "下载完成:") || !strings.Contains(ok, "会话 ID: ssh_1") {
+		t.Fatalf("copy success must stay ahead of the session header: %q", ok)
+	}
+}
+
 func TestSemanticTrustedSSHConnectPublishedGate(t *testing.T) {
 	if semanticTrustedSSHConnectPublished(nil) {
 		t.Fatal("nil handler must not publish connect mode")
@@ -114,41 +134,167 @@ func TestSemanticSSHSchemaModeDetection(t *testing.T) {
 	}
 }
 
+func TestSemanticSSHDownloadReceiptAndLocalDestination(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "report.pdf")
+	if err := os.WriteFile(filePath, []byte("gpu84-report"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	receipt := semanticSSHDownloadReceipt("/home/gpu84/out/report.pdf", filePath, "1 个文件, 12 B, 耗时 1ms (12 B/s)")
+	if !strings.HasPrefix(receipt, "下载完成:\n") || !strings.Contains(receipt, "local_bytes=12") || !strings.Contains(receipt, "sha256=") {
+		t.Fatalf("receipt = %s", receipt)
+	}
+	if mismatch := semanticSSHDownloadReceiptBytes("/home/gpu84/out/report.pdf", filePath, "1 个文件, 12 B", 11); !strings.HasPrefix(mismatch, "下载失败:") || strings.Contains(mismatch, "sha256=") {
+		t.Fatalf("size mismatch must not look complete: %s", mismatch)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	copied := &remote.SFTPTransferResult{
+		Files: 1, Bytes: 12,
+		Written: []remote.SFTPWrittenFile{{Path: filePath, Bytes: 12}},
+	}
+	sum := semanticSSHDownloadReceiptTransfer("/home/gpu84/out", dir, copied)
+	if !strings.HasPrefix(sum, "下载完成:\n") || !strings.Contains(sum, "file=report.pdf") || !strings.Contains(sum, "sha256=") {
+		t.Fatalf("directory receipt must hash the files this transfer wrote: %s", sum)
+	}
+	if strings.Contains(sum, "notes.txt") || strings.Contains(sum, "\nlocal_bytes=") {
+		t.Fatalf("files already in the folder are not part of this copy: %s", sum)
+	}
+	short := &remote.SFTPTransferResult{
+		Files: 1, Bytes: 1,
+		Written: []remote.SFTPWrittenFile{{Path: filePath, Bytes: 12}},
+	}
+	if got := semanticSSHDownloadReceiptTransfer("/home/gpu84/out", dir, short); !strings.HasPrefix(got, "下载失败:") {
+		t.Fatalf("written bytes must match the transfer: %s", got)
+	}
+	dest := semanticSSHLocalDestination("/home/gpu84/out/report.pdf", dir)
+	if dest != filepath.Join(dir, "report.pdf") {
+		t.Fatalf("directory destination = %s", dest)
+	}
+	missingDir := filepath.Join(dir, "newdir") + string(os.PathSeparator)
+	resolved, err := (*IMMessageHandler)(nil).resolveTrustedSSHLocalPath("user-1", missingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dest = semanticSSHLocalDestination("/home/gpu84/out/report.pdf", resolved); dest != filepath.Join(dir, "newdir", "report.pdf") {
+		t.Fatalf("trailing separator on a new directory = %s", dest)
+	}
+	explicit := filepath.Join(dir, "newdir", "other.pdf")
+	resolved, err = (*IMMessageHandler)(nil).resolveTrustedSSHLocalPath("user-1", explicit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dest = semanticSSHLocalDestination("/home/gpu84/out/report.pdf", resolved); dest != explicit {
+		t.Fatalf("explicit file destination changed: %s", dest)
+	}
+	cleanedRemote, err := semanticSSHRemotePath("/home/gpu84/out/../out/report.pdf")
+	if err != nil || cleanedRemote != "/home/gpu84/out/report.pdf" {
+		t.Fatalf("remote path = %q err=%v", cleanedRemote, err)
+	}
+	if _, rootErr := semanticSSHRemotePath("/"); rootErr == nil {
+		t.Fatal("the remote filesystem root is not a document copy")
+	}
+	homeFile, err := semanticSSHRemotePath("~/out/../out/report.pdf")
+	if err != nil || homeFile != "~/out/report.pdf" {
+		t.Fatalf("login-home path = %q err=%v", homeFile, err)
+	}
+	// path.Clean("~/foo/../../etc/passwd") drops the tilde. The copy must keep
+	// it so expansion resolves ".." against the login home, as scp does.
+	escaped, err := semanticSSHRemotePath("~/foo/../../etc/passwd")
+	if err != nil || escaped != "~/../etc/passwd" {
+		t.Fatalf("home-relative parent = %q err=%v", escaped, err)
+	}
+	if got, err := semanticSSHRemotePath("~"); err != nil || got != "~" {
+		t.Fatalf("login home = %q err=%v", got, err)
+	}
+	if _, err := semanticSSHRemotePath("~gpu84/out/a.pdf"); !errors.Is(err, errSemanticSSHRemoteHomeUser) {
+		t.Fatalf("~otheruser must be refused before execution: %v", err)
+	}
+	if dest = semanticSSHLocalDestination("~", dir); dest != dir {
+		t.Fatalf("login home must not become a local file named ~: %s", dest)
+	}
+	if dest = semanticSSHLocalDestination("/home/gpu84", dir); dest != filepath.Join(dir, "gpu84") {
+		t.Fatalf("expanded home keeps its directory name: %s", dest)
+	}
+	partial := filepath.Join(dir, "partial")
+	if err := os.Mkdir(partial, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := remote.MarkIncompleteDownload(partial, "/home/gpu84/out", "/data/home/gpu84/out"); err != nil {
+		t.Fatal(err)
+	}
+	if dest = semanticSSHLocalDestination("/home/gpu84/out", partial); dest != partial {
+		t.Fatalf("unfinished directory copy must keep the same folder: %s", dest)
+	}
+	if dest = semanticSSHLocalDestination("/data/home/gpu84/out", partial+string(os.PathSeparator)); dest != partial {
+		t.Fatalf("resolved directory must keep the same folder: %s", dest)
+	}
+	if dest = semanticSSHLocalDestination("/data/out/report.pdf", partial+string(os.PathSeparator)); dest != filepath.Join(partial, "report.pdf") {
+		t.Fatalf("another file still lands inside the unfinished folder: %s", dest)
+	}
+	props, _ := semanticTrustedSSHInvocationSchema()["properties"].(map[string]interface{})
+	if _, ok := props["remote_path"]; !ok {
+		t.Fatal("exec schema must publish remote_path")
+	}
+	if _, ok := props["local_path"]; !ok {
+		t.Fatal("exec schema must publish local_path")
+	}
+	connectProps, _ := semanticTrustedSSHConnectSchema()["properties"].(map[string]interface{})
+	if _, ok := connectProps["remote_path"]; !ok || connectProps["host"] == nil {
+		t.Fatal("connect schema must publish host and remote_path together")
+	}
+}
+
 func TestSemanticTrustedSSHTimeoutBudget(t *testing.T) {
-	command, timeout, err := semanticTrustedSSHArgsAllowed(map[string]interface{}{
+	command, timeout, remotePath, localPath, err := semanticTrustedSSHArgsAllowed(map[string]interface{}{
 		"command": "apt-get upgrade -y",
 	})
-	if err != nil || command != "apt-get upgrade -y" || timeout != semanticTrustedSSHCommandTimeout {
-		t.Fatalf("default wait = %s err=%v command=%q", timeout, err, command)
+	if err != nil || command != "apt-get upgrade -y" || timeout != semanticTrustedSSHCommandTimeout || remotePath != "" || localPath != "" {
+		t.Fatalf("default wait = %s err=%v command=%q remote=%q local=%q", timeout, err, command, remotePath, localPath)
 	}
 	if semanticTrustedSSHCommandTimeout != semanticTrustedShellMaxTimeout || semanticTrustedSSHCommandTimeout == semanticTrustedShellDefaultTimeout {
 		t.Fatalf("remote command lifetime %s must be the safety cap, not the %s stuck-session probe", semanticTrustedSSHCommandTimeout, semanticTrustedShellDefaultTimeout)
 	}
-	_, timeout, err = semanticTrustedSSHArgsAllowed(map[string]interface{}{
+	_, timeout, _, _, err = semanticTrustedSSHArgsAllowed(map[string]interface{}{
 		"command":         "sleep 45",
 		"timeout_seconds": float64(90),
 	})
 	if err != nil || timeout != 90*time.Second {
 		t.Fatalf("explicit wait = %s err=%v", timeout, err)
 	}
-	_, timeout, err = semanticTrustedSSHArgsAllowed(map[string]interface{}{
+	_, timeout, _, _, err = semanticTrustedSSHArgsAllowed(map[string]interface{}{
 		"command":         "apt-get upgrade -y",
 		"timeout_seconds": float64(9999),
 	})
 	if err != nil || timeout != semanticTrustedShellMaxTimeout {
 		t.Fatalf("over-max wait = %s err=%v, want %s", timeout, err, semanticTrustedShellMaxTimeout)
 	}
-	if _, _, err = semanticTrustedSSHArgsAllowed(map[string]interface{}{
+	if _, _, _, _, err = semanticTrustedSSHArgsAllowed(map[string]interface{}{
 		"command":         "true",
 		"timeout_seconds": float64(0),
 	}); err == nil {
 		t.Fatal("zero timeout must be rejected")
 	}
-	if _, _, err = semanticTrustedSSHArgsAllowed(map[string]interface{}{
+	if _, _, _, _, err = semanticTrustedSSHArgsAllowed(map[string]interface{}{
 		"command":      "true",
 		"wait_seconds": float64(120),
 	}); err == nil {
 		t.Fatal("wait_seconds must stay rejected")
+	}
+	_, _, remotePath, localPath, err = semanticTrustedSSHArgsAllowed(map[string]interface{}{
+		"remote_path": "/home/gpu84/out/report.pdf",
+		"local_path":  `D:\out\report.pdf`,
+	})
+	if err != nil || remotePath != "/home/gpu84/out/report.pdf" || localPath != `D:\out\report.pdf` {
+		t.Fatalf("download shape = remote %q local %q err=%v", remotePath, localPath, err)
+	}
+	if _, _, _, _, err = semanticTrustedSSHArgsAllowed(map[string]interface{}{
+		"command":     "cat /home/gpu84/out/report.pdf",
+		"remote_path": "/home/gpu84/out/report.pdf",
+		"local_path":  `D:\out\report.pdf`,
+	}); err == nil || !strings.Contains(err.Error(), "trusted_ssh_conflicting_fields") {
+		t.Fatal("command mixed with a file copy must be rejected")
 	}
 
 	authorization, err := tool.NewParameterAuthorization(semanticTrustedSSHInvocationSchema())
@@ -239,6 +385,14 @@ func TestSemanticSSHAdmissionWashRespectsSchemaMode(t *testing.T) {
 	}
 	if got := string(canonical.CanonicalJSON); strings.Contains(got, "session_id") {
 		t.Fatalf("exec mode must strip session_id: %s", got)
+	}
+
+	canonical, err = execCB.semanticCanonicalArguments(execSelection, `{"action":"download","source_path":"/home/gpu84/out/a.pdf","local_path":"D:\\out\\a.pdf","session_id":"ssh_1"}`)
+	if err != nil {
+		t.Fatalf("download-shaped legacy args must wash clean: %v", err)
+	}
+	if got := string(canonical.CanonicalJSON); !strings.Contains(got, "/home/gpu84/out/a.pdf") || strings.Contains(got, "source_path") || strings.Contains(got, "session_id") {
+		t.Fatalf("exec mode must admit the file copy and drop source_path: %s", got)
 	}
 
 	connectCB, connectSelection := surfaceFor(t, semanticTrustedSSHConnectSchema())

@@ -171,6 +171,16 @@ func TestMarkdownToHTML_DisplayMath(t *testing.T) {
 	}
 }
 
+func TestMarkdownToHTML_DisplayMathInsideASentence(t *testing.T) {
+	html := markdownToHTML("令 $$E=mc^2$$ 成立")
+	if strings.Contains(html, "$$") || strings.Contains(html, "$E") {
+		t.Fatalf("raw dollars: %s", html)
+	}
+	if !strings.Contains(html, "mc<sup>2</sup>") || !strings.Contains(html, "成立") {
+		t.Fatalf("formula: %s", html)
+	}
+}
+
 func TestMarkdownToHTML_MultiLineDisplayMath(t *testing.T) {
 	md := "$$\\int_0^1 x^2 dx\n+ \\alpha\n$$"
 	html := markdownToHTML(md)

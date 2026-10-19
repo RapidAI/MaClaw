@@ -639,6 +639,34 @@ export function SetFileCompanionOpenSet(arg1:Array<string>):Promise<void>;
 
 export function FileCompanionOpenArxiv(arg1:string):Promise<string>;
 
+export function FileCompanionOpenWebPage(arg1:string):Promise<Record<string, any>>;
+
+export function SendFileCompanionWebMessage(arg1:Record<string, any>):Promise<void>;
+
+export function ClearFileCompanionWebChat(arg1:string):Promise<void>;
+
+export function CancelFileCompanionTurn(arg1:string):Promise<void>;
+
+export function CancelFileCompanionWebTurn(arg1:string,arg2:number):Promise<void>;
+
+export function FileCompanionDiscardWebNote(arg1:string):Promise<void>;
+
+export function FileCompanionWebViewContainsFullscreen():Promise<boolean>;
+
+export function FileCompanionWebHistory(arg1:string):Promise<Array<Record<string, any>>>;
+
+export function FileCompanionExportTeX(arg1:string,arg2:string):Promise<string>;
+
+export function FileCompanionExportChatTeX(arg1:string,arg2:Array<main.CompanionChatTurn>):Promise<string>;
+
+export function FileCompanionExportWebPDF(arg1:string,arg2:string):Promise<string>;
+
+export function FileCompanionExportWebChatPDF(arg1:string,arg2:Array<main.CompanionChatTurn>):Promise<string>;
+
+export function FileCompanionExportWebTeX(arg1:string,arg2:string):Promise<string>;
+
+export function FileCompanionExportWebChatTeX(arg1:string,arg2:Array<main.CompanionChatTurn>):Promise<string>;
+
 export function FileCompanionSaveText(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
 
 export function FileCompanionAppendText(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
@@ -715,7 +743,11 @@ export function GetBrowserSessions():Promise<main.BrowserAgentManager>;
 
 export function GetCapabilityGapDetector():Promise<main.CapabilityGapDetector>;
 
+export function GetChatFontFamily():Promise<string>;
+
 export function GetChatFontSize():Promise<number>;
+
+export function GetCodingFontFamily():Promise<string>;
 
 export function GetCodingWorkbenchCheckpointSidecarStats(arg1:string):Promise<main.codingCheckpointSidecarStats>;
 
@@ -1795,6 +1827,8 @@ export function LoadProjectTabConversation(arg1:string):Promise<Array<any>>;
 
 export function LoadProjectTabIndex():Promise<Array<main.TabIndexEntry>>;
 
+export function LocalSearch(arg1:main.LocalSearchRequest):Promise<main.LocalSearchResult>;
+
 export function LogFrontendDiagnostic(arg1:Record<string, any>):Promise<void>;
 
 export function MarkAllNotificationsRead():Promise<void>;
@@ -2414,7 +2448,11 @@ export function SetAutoCompress(arg1:boolean):Promise<void>;
 
 export function SetBugReportEnabled(arg1:boolean):Promise<corelib.AppConfig>;
 
+export function SetChatFontFamily(arg1:string):Promise<void>;
+
 export function SetChatFontSize(arg1:number):Promise<void>;
+
+export function SetCodingFontFamily(arg1:string):Promise<void>;
 
 export function SetCodingWorkbenchConflictUIState(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 

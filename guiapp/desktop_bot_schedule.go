@@ -3,7 +3,6 @@ package guiapp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -12,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 )
 
@@ -421,46 +421,35 @@ func cancelDesktopBotSchedules(mgr *scheduler.Manager, owner, botID, name string
 	return n
 }
 
-// executeDesktopBotScheduledTask runs one occurrence on the bot and reports
-// the result in that bot's chat. The schedule itself is already armed.
+// executeDesktopBotScheduledTask does not start the round. The server
+// Manager fires a desktop-bot due time. The GUI being closed is not what
+// keeps 08:00 from running, and this process must not start a second one.
 func (a *App) executeDesktopBotScheduledTask(ctx context.Context, task *scheduler.ScheduledTask) (string, error) {
 	if task == nil || strings.TrimSpace(task.DesktopBotID) == "" {
 		return "", fmt.Errorf("desktop bot id is required")
 	}
-	order := "This occurrence of a schedule is already set. Do the work below once and put the result in the reply. Do not create, change, or cancel a schedule.\n" + strings.TrimSpace(task.Action)
-	// The chat has no pending bubble for a schedule, but the run still uses
-	// this bot's desktop. The Bot page locks takeover of this bot until this returns.
-	// A login handoff is the end of that hold: the person has to take the keys.
-	owner := task.DesktopBotOwner
-	held := true
-	releaseDesktop := func() {
-		if !held {
-			return
-		}
-		held = false
-		a.noteDesktopBotBusy(task.DesktopBotID, owner, false)
+	return "", nil
+}
+
+func desktopScheduleReports(text string, result desktopBotRelayResult, runErr error) bool {
+	failure := ""
+	if runErr != nil {
+		failure = runErr.Error()
 	}
-	a.noteDesktopBotBusy(task.DesktopBotID, owner, true)
-	defer releaseDesktop()
-	// A scheduled occurrence has no client request behind it, so there is no
-	// request id to name the run by. setActiveDesktopRunID skips empty ones,
-	// which leaves this turn unaddressable for supplements — it has no
-	// conversation waiting to add anything.
-	result, err := a.relayDesktopBotWhenFree(ctx, task.DesktopBotID, order, "execute", "", nil)
-	if errors.Is(err, errDesktopOccurrenceSkipped) {
-		log.Printf("[desktop-bot-schedule] skip id=%s bot=%q reason=busy_timeout", task.ID, task.DesktopBotID)
-		return "", nil
-	}
-	if result.UserControl || strings.TrimSpace(result.AttentionReason) != "" {
-		releaseDesktop()
-	}
-	text := strings.TrimSpace(result.Text)
-	if err != nil && text == "" {
-		text = err.Error()
-	}
-	a.reportDesktopBotSchedule(task, text, result, err)
-	log.Printf("[desktop-bot-schedule] run id=%s bot=%q text_len=%d err=%v", task.ID, task.DesktopBotID, len([]rune(text)), err)
-	return text, err
+	decision := desktopbot.Speak(desktopbot.SpeakInput{
+		Origin:      "schedule",
+		Channel:     "desktop",
+		SendToUser:  result.SendToUser,
+		Prose:       text,
+		Failed:      runErr != nil,
+		FailureText: failure,
+		Ask:         strings.TrimSpace(result.AskUserQuestion) != "" || strings.TrimSpace(result.AskUserSecretName) != "",
+		AskText:     result.AskUserQuestion,
+		Handoff:     result.UserControl || strings.TrimSpace(result.AttentionReason) != "",
+		Changed:     strings.TrimSpace(result.SendToUser) != "" && !desktopbot.NotContent(result.SendToUser),
+		Done:        strings.TrimSpace(result.SendToUser) != "" && !desktopbot.NotContent(result.SendToUser),
+	})
+	return decision.Report || result.UserControl || strings.TrimSpace(result.AttentionReason) != ""
 }
 
 func (a *App) reportDesktopBotSchedule(task *scheduler.ScheduledTask, text string, result desktopBotRelayResult, runErr error) {
@@ -473,34 +462,26 @@ func (a *App) reportDesktopBotSchedule(task *scheduler.ScheduledTask, text strin
 		owner = "local"
 	}
 	requestID := fmt.Sprintf("desktop-bot-sched-%s-%d", strings.TrimSpace(task.ID), time.Now().UnixNano())
-	shots := storeDesktopBotShots(botID, cleanDesktopBotImages(result.Images))
-	var images []DesktopBotImage
-	if len(shots) == 0 {
-		images = cleanDesktopBotImages(result.Images)
-	}
-	saved, left := storeDesktopBotFiles(botID, cleanDesktopBotFiles(result.Files))
+	ids := desktopAttachmentIDs(result.Images, result.Files)
+	visible := desktopbot.Visible(desktopbot.Turn{Prose: text, SendToUser: result.SendToUser})
 	payload := map[string]any{
 		"request_id":      requestID,
 		"session_key":     desktopBotLocalSessionKey(owner, botID),
 		"bot_id":          botID,
 		"owner_id":        owner,
 		"schedule_report": true,
-		"text":            text,
+	}
+	if text != "" && !desktopbot.NotContent(text) {
+		payload["text"] = text
+	}
+	if visible.Bubble && !visible.Failed {
+		payload["send_to_user"] = visible.Sentence
 	}
 	if runErr != nil {
 		payload["error"] = runErr.Error()
 	}
-	if len(shots) > 0 {
-		payload["desktop_shot_paths"] = shots
-	}
-	if len(images) > 0 {
-		payload["desktop_images"] = images
-	}
-	if len(saved) > 0 {
-		payload["local_file_paths"] = saved
-	}
-	if len(left) > 0 {
-		payload["desktop_files"] = left
+	if len(ids) > 0 {
+		payload["desktop_attachment_ids"] = ids
 	}
 	if result.UserControl || strings.TrimSpace(result.AttentionReason) != "" {
 		payload["desktop_handoff_url"] = result.NovncURL

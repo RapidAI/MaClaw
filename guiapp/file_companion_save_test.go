@@ -61,6 +61,79 @@ func TestFileCompanionOpenPathIsCanonical(t *testing.T) {
 	}
 }
 
+func TestFileCompanionOpenKeepsADocumentNamedOpenFile(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	dir := t.TempDir()
+	named := filepath.Join(dir, "open-file")
+	if err := os.WriteFile(named, []byte("body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := app.FileCompanionOpen(named)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canon, err := fileCompanionCanonicalPath(named)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Error != "" || doc.Name != "open-file" || doc.Path != canon {
+		t.Fatalf("named document = %#v", doc)
+	}
+	missingNamed := filepath.Join(dir, "gone", "open-file")
+	miss, err := app.FileCompanionOpen(missingNamed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missCanon, err := fileCompanionCanonicalPath(missingNamed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if miss.Error != "file not found" || miss.Name != "open-file" || miss.Path != missCanon {
+		t.Fatalf("missing named = %#v", miss)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+	relative, err := app.FileCompanionOpen("open-file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relative.Error != "" || relative.Name != "open-file" || relative.Path != canon {
+		t.Fatalf("relative document = %#v", relative)
+	}
+	if err := os.Remove(named); err != nil {
+		t.Fatal(err)
+	}
+	goneCanon, err := fileCompanionCanonicalPath("open-file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone, err := app.FileCompanionOpen("open-file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gone.Error != "file not found" || gone.Name != "open-file" || gone.Path != goneCanon {
+		t.Fatalf("missing relative = %#v", gone)
+	}
+	indirect := filepath.Join(dir, "sub", "..", "open-file")
+	indirectDoc, err := app.FileCompanionOpen(indirect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	indirectCanon, err := fileCompanionCanonicalPath(indirect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if indirectDoc.Error != "file not found" || indirectDoc.Name != "open-file" || indirectDoc.Path != indirectCanon {
+		t.Fatalf("indirect missing = %#v", indirectDoc)
+	}
+}
+
 func TestFileCompanionSaveRefusesSiblingAndHashMismatch(t *testing.T) {
 	app := &App{}
 	dir := t.TempDir()

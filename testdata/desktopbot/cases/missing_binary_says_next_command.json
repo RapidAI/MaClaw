@@ -1,0 +1,7 @@
+{
+  "id": "missing_binary_says_next_command",
+  "script": "hub/start.sh",
+  "expect": "Cannot find",
+  "expect_also": "Copy the binary into this directory, then run ./start.sh again.",
+  "forbid": ["started with PID", "Bearer ", "sk-"]
+}

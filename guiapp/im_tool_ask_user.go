@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/mailbox"
 )
 
 // AskUserRequest represents a structured question from the agent to the user.
@@ -103,18 +104,34 @@ func ParseAskUserResult(result string) (*AskUserRequest, bool) {
 // (used in TUI and IM gateways that don't support interactive cards).
 func FormatAskUserForDisplay(req *AskUserRequest) string {
 	var b strings.Builder
-	if req.Context != "" {
-		b.WriteString(req.Context)
+	// Confirmation gates stamp an unguessable nonce into Context. That token
+	// binds the pending note; it is not part of the question. The same strip
+	// the stored pending state uses keeps the card and the IM text free of it.
+	if context := pendingAskUserContext(req.Context); context != "" {
+		b.WriteString(context)
 		b.WriteString("\n\n")
 	}
 	b.WriteString(req.Question)
-	if len(req.Options) > 0 {
+	kind := normalizeAskUserInputKind(req.InputType)
+	// Numbers are a selection. Print them only for the list a numbered reply
+	// resolves: choice options. Confirm numbers are the action labels the
+	// channel appends, so listing Options here would print a second list.
+	// A text question keeps a typed "1", so its options stay unnumbered.
+	if choices := askUserShownChoices(req.InputType, req.Options); len(choices) > 0 && !kind.IsConfirm() {
 		b.WriteString("\n")
-		for i, opt := range req.Options {
+		for i, opt := range choices {
 			b.WriteString(fmt.Sprintf("\n  %d. %s", i+1, opt))
 		}
+	} else if !kind.IsConfirm() && len(req.Options) > 0 {
+		b.WriteString("\n")
+		for _, opt := range req.Options {
+			if strings.TrimSpace(opt) == "" {
+				continue
+			}
+			b.WriteString("\n- " + opt)
+		}
 	}
-	switch normalizeAskUserInputKind(req.InputType) {
+	switch kind {
 	case askUserInputConfirm:
 		b.WriteString("\n\n请输入：确认 或 取消")
 	case askUserInputChoice:
@@ -164,7 +181,7 @@ func (h *IMMessageHandler) handleAgentLoopAskUserToolResult(userID, platform, ms
 	}
 	toolResult := agent.FormatAskedUserHistoryResult(&agent.AskUserRequest{
 		Question: askReq.Question,
-		Context:  askReq.Context,
+		Context:  pendingAskUserContext(askReq.Context),
 	})
 	out.ToolResults = append(out.ToolResults, toolResult)
 	// "paused" matches shared RecordEarlyStopToolResult / interactive training labels.
@@ -189,8 +206,27 @@ func (h *IMMessageHandler) handleAgentLoopAskUserToolResult(userID, platform, ms
 		h.commitPendingAskUser(userID, askReq, out.History, nil)
 	}
 	resp := buildAskUserResponse(displayText, askReq)
+	// Lansenger and the third-party gateway turn every action into another
+	// numbered list. A choice question already numbers askUserShownChoices in
+	// the text, so a second list can disagree after markdown is stripped.
+	// Confirm questions do not number the body; those channels must keep the
+	// actions and print them once.
+	if resp != nil && normalizeAskUserInputKind(askReq.InputType).IsChoice() && channelAppendsAskUserActionsAsText(platform) {
+		resp.Actions = nil
+	}
 	out.Response = resp
 	return out
+}
+
+// channelAppendsAskUserActionsAsText reports channels that have no buttons
+// and that append resp.Actions as a second numbered list under the message body.
+func channelAppendsAskUserActionsAsText(platform string) bool {
+	switch normalizeIMMessagePlatformKind(platform) {
+	case imMessagePlatformLansenger, imMessagePlatformLansengerLocal:
+		return true
+	}
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	return platform == "thirdparty" || strings.HasPrefix(platform, "thirdparty:")
 }
 
 // commitPendingAskUser publishes the question only after its paired tool result
@@ -251,17 +287,43 @@ func buildAskUserResponse(displayText string, askReq *AskUserRequest) *IMAgentRe
 		return resp
 	}
 	askInputKind := normalizeAskUserInputKind(askReq.InputType)
-	if askInputKind.IsChoice() && len(askReq.Options) > 0 {
-		actions := make([]IMResponseAction, len(askReq.Options))
-		for i, opt := range askReq.Options {
+	if choices := askUserShownChoices(askReq.InputType, askReq.Options); askInputKind.IsChoice() && len(choices) > 0 {
+		actions := make([]IMResponseAction, len(choices))
+		for i, opt := range choices {
 			actions[i] = IMResponseAction{Label: opt, Command: opt}
 		}
 		resp.Actions = actions
 	} else if askInputKind.IsConfirm() {
+		// Channels without buttons print these labels as the numbered reply.
+		// The command stays confirm/cancel so a desktop click still settles.
+		choices := askUserShownChoices(askReq.InputType, askReq.Options)
 		resp.Actions = []IMResponseAction{
-			{Label: "Confirm", Command: "confirm"},
-			{Label: "Cancel", Command: "cancel"},
+			{Label: choices[0], Command: "confirm"},
+			{Label: choices[1], Command: "cancel"},
 		}
 	}
 	return resp
+}
+
+// askUserShownChoices is the list a text channel numbers. A numbered reply
+// selects from this same list. Choice questions print their options, including
+// blanks, so the index stays aligned with the button. Confirm questions print
+// the settler's approve/cancel pair when the question uses those words, and
+// otherwise the English command labels. A captcha whose only option is 继续,
+// and a confirm question that stored no options, both print Confirm/Cancel.
+func askUserShownChoices(inputType string, options []string) []string {
+	kind := normalizeAskUserInputKind(inputType)
+	switch {
+	case kind.IsChoice():
+		return options
+	case kind.IsConfirm():
+		approve, cancel := "Confirm", "Cancel"
+		if len(options) >= 2 && mailbox.IsApproveText(options[0]) && mailbox.IsCancelText(options[1]) {
+			approve = strings.TrimSpace(options[0])
+			cancel = strings.TrimSpace(options[1])
+		}
+		return []string{approve, cancel}
+	default:
+		return nil
+	}
 }

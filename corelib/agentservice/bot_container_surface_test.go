@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 )
@@ -169,7 +170,7 @@ func TestBotKeepsTheRemoteSSHTool(t *testing.T) {
 
 	bot.messageMetadata = map[string]string{"bot_phase": "plan"}
 	blocked := bot.ExecuteToolStructured("ssh", `{"action":"exec","command":"nvidia-smi"}`)
-	if !strings.Contains(blocked.Result, "plan phase blocks ssh exec") {
+	if !strings.Contains(blocked.Result, desktopbot.PlanPhaseNextStep) || strings.Contains(blocked.Result, "plan phase blocks") {
 		t.Fatalf("plan exec: %+v", blocked)
 	}
 	listed := bot.ExecuteToolCall("ssh", `{"action":"list"}`, "call-ssh")

@@ -140,12 +140,14 @@ const (
 	// update of that record; "add it to the todo list" stays task_track.
 	LabelWorklogRead   IntentLabel = "worklog_read"
 	LabelWorklogUpdate IntentLabel = "worklog_update"
-	// LabelMailboxRead, LabelMailboxSend, and LabelMailboxConfigure use a
-	// configured IMAP/SMTP mailbox. They are not IM channel sends and not a
-	// browser session on a webmail site. Saving an account is not sending.
+	// LabelMailboxRead, LabelMailboxSend, LabelMailboxConfigure, and
+	// LabelMailboxDelete use a configured IMAP/SMTP mailbox. They are not IM
+	// channel sends and not a browser session on a webmail site. Saving an
+	// account is not sending. Deleting messages is not deleting the account.
 	LabelMailboxRead      IntentLabel = "mailbox_read"
 	LabelMailboxSend      IntentLabel = "mailbox_send"
 	LabelMailboxConfigure IntentLabel = "mailbox_configure"
+	LabelMailboxDelete    IntentLabel = "mailbox_delete"
 
 	LabelAmbiguous IntentLabel = "ambiguous"
 	LabelUnknown   IntentLabel = "unknown"
@@ -207,6 +209,7 @@ func AllLabels() []IntentLabel {
 		LabelMailboxRead,
 		LabelMailboxSend,
 		LabelMailboxConfigure,
+		LabelMailboxDelete,
 		LabelAmbiguous,
 		LabelUnknown,
 	}

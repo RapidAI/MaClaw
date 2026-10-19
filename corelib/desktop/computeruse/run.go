@@ -28,6 +28,12 @@ type Env struct {
 	WindowClass func() string
 	// Settle waits for the screen to draw before the closing screenshot.
 	Settle func()
+	// StructureFirst refuses a pixel batch on a browser and a coordinate
+	// batch that has no app_probe id. app_run leaves it false.
+	StructureFirst bool
+	// PageNeedsPerson is captcha_widget, login_qr, or payment_confirm when
+	// the last page observation already handed that step to the person.
+	PageNeedsPerson string
 }
 
 // Run runs parsed steps in order and stops at the first failure.
@@ -36,6 +42,15 @@ type Env struct {
 // app_run always did. The last screenshot or zoom image (or a fresh shot
 // after input) is returned separately so only one image is attached.
 func Run(env Env, steps []Step, perStep bool) ([]Result, string, error) {
+	if env.StructureFirst {
+		class := ""
+		if env.WindowClass != nil {
+			class = env.WindowClass()
+		}
+		if err := PixelRefusal(class, env.PageNeedsPerson, steps); err != nil {
+			return nil, "", err
+		}
+	}
 	results := make([]Result, 0, len(steps))
 	frame, _ := env.Frame()
 	var batch [][]string

@@ -1,0 +1,6 @@
+{
+  "id": "browser_no_pixel",
+  "window": "Chromium",
+  "steps": [{"action": "left_click", "coordinate": [12, 40]}],
+  "expect": "再读一次结构，或把这一步交给人。不点浏览器窗口"
+}

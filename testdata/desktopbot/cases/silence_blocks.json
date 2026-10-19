@@ -1,0 +1,8 @@
+{
+  "id": "silence_blocks",
+  "verdict": "block",
+  "commands": [{"action": "bash", "command": "rm -rf /tmp/old"}],
+  "expect_ran": false,
+  "ask": true,
+  "silence": true
+}

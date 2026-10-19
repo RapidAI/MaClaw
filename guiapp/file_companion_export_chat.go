@@ -76,6 +76,21 @@ func (a *App) FileCompanionExportChatPDF(path string, turns []CompanionChatTurn)
 	return written, nil
 }
 
+// FileCompanionExportWebChatPDF writes a web tab's chat. It does not call fileCompanionGrant.
+func (a *App) FileCompanionExportWebChatPDF(sessionID string, turns []CompanionChatTurn) (string, error) {
+	if a == nil {
+		return "", errors.New("应用不可用")
+	}
+	if a.fileCompanionWebFrame(sessionID) == "" {
+		return "", errors.New("web session is not open")
+	}
+	body, turnCount := fileCompanionChatDocument(turns)
+	if turnCount == 0 {
+		return "", errors.New("没有可导出的内容")
+	}
+	return a.fileCompanionWriteExportPDF("对话.pdf", "网页", fmt.Sprintf("伴读对话记录 · %d 条消息", turnCount), body, "companion-chat", "", false)
+}
+
 // fileCompanionChatFileName is the default save-dialog name for a transcript.
 const fileCompanionChatNameSuffix = "-伴读对话.pdf"
 

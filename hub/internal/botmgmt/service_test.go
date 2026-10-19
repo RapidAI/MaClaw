@@ -584,7 +584,7 @@ func TestLoginHandoffKeepsTheDesktop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reply.Handoff || !strings.HasPrefix(reply.NovncURL, "/api/v1/desktop-handoff/") || strings.Contains(reply.NovncURL, "dockerd.example") || reply.Text == "" {
+	if !reply.Handoff || !strings.HasPrefix(reply.NovncURL, "/api/v1/desktop-handoff/") || strings.Contains(reply.NovncURL, "dockerd.example") || reply.Text != "" || reply.SendToUser != "" {
 		t.Fatalf("reply=%#v", reply)
 	}
 	if desk.open != 1 || desk.stop != 0 {
@@ -608,8 +608,8 @@ func TestLoginHandoffKeepsTheDesktop(t *testing.T) {
 	if _, err := svc.PostMessage(context.Background(), "tenant-a", "alice", "bot_alice", "失败"); err == nil {
 		t.Fatal("failure after the handoff bot finished should surface")
 	}
-	if desk.stop != 1 {
-		t.Fatalf("desktop was not stopped after the handoff bot finished: %d", desk.stop)
+	if desk.open != 1 || desk.stop != 0 {
+		t.Fatalf("a later message changed the desktop the handoff opened open=%d stop=%d", desk.open, desk.stop)
 	}
 }
 
@@ -746,8 +746,11 @@ func TestLoginHoldArrivesBeforeTheReply(t *testing.T) {
 	if _, err := svc.PostMessage(context.Background(), "tenant-a", "alice", "bot_other", "再失败"); err == nil {
 		t.Fatal("failure after the login finished should surface")
 	}
-	if desk.stop != 1 {
-		t.Fatalf("desktop was not stopped after the login bot finished: %d", desk.stop)
+	if desk.open != 0 || desk.stop != 0 {
+		t.Fatalf("a later message stopped a desktop it did not open open=%d stop=%d", desk.open, desk.stop)
+	}
+	if svc.desktopViewURL("tenant-a", "alice") == "" {
+		t.Fatal("a later failure dropped the desktop this message did not open")
 	}
 }
 
@@ -895,8 +898,8 @@ func TestIdentityWriteFailureKeepsTheLoginDesktop(t *testing.T) {
 	if _, err := svc.PostMessage(context.Background(), "tenant-a", "alice", "bot_alice", "打开网站"); err == nil {
 		t.Fatal("identity failure should surface")
 	}
-	if desk.stop != 1 {
-		t.Fatalf("a fresh command left the desktop running: %d", desk.stop)
+	if desk.open != 0 || desk.stop != 0 {
+		t.Fatalf("a fresh command opened or stopped a desktop it did not start open=%d stop=%d", desk.open, desk.stop)
 	}
 	svc.NoteDesktopView("tenant-a", "alice", "http://dockerd.example:6081/vnc.html?autoconnect=1")
 	if err := svc.HoldDesktop(context.Background(), "tenant-a", "alice", "inst_alice"); err != nil {
@@ -905,8 +908,8 @@ func TestIdentityWriteFailureKeepsTheLoginDesktop(t *testing.T) {
 	if _, err := svc.PostMessage(context.Background(), "tenant-a", "alice", "bot_alice", "登录完成"); err == nil {
 		t.Fatal("identity failure during login should surface")
 	}
-	if desk.stop != 1 {
-		t.Fatalf("identity failure stopped the logged-in desktop: %d", desk.stop)
+	if desk.open != 0 || desk.stop != 0 {
+		t.Fatalf("identity failure stopped the logged-in desktop open=%d stop=%d", desk.open, desk.stop)
 	}
 	if _, control, err := svc.DesktopWatch(context.Background(), "tenant-a", "alice", "bot_alice"); err != nil || !control {
 		t.Fatalf("identity failure took the keyboard: control=%v err=%v", control, err)
@@ -959,8 +962,8 @@ func TestUnreadInstanceSettingsAreNotReplaced(t *testing.T) {
 	if patched != 0 || posted != 0 {
 		t.Fatalf("unread settings were written patched=%d posted=%d", patched, posted)
 	}
-	if desk.stop != 1 {
-		t.Fatalf("a fresh command left the desktop running: %d", desk.stop)
+	if desk.open != 0 || desk.stop != 0 {
+		t.Fatalf("a fresh command opened or stopped a desktop it did not start open=%d stop=%d", desk.open, desk.stop)
 	}
 	svc.NoteDesktopView("tenant-a", "alice", "http://dockerd.example:6081/vnc.html?autoconnect=1")
 	if err := svc.HoldDesktop(context.Background(), "tenant-a", "alice", "inst_alice"); err != nil {
@@ -972,8 +975,8 @@ func TestUnreadInstanceSettingsAreNotReplaced(t *testing.T) {
 	if patched != 0 || posted != 0 {
 		t.Fatalf("login continuation replaced the instance patched=%d posted=%d", patched, posted)
 	}
-	if desk.stop != 1 {
-		t.Fatalf("unread settings stopped the logged-in desktop: %d", desk.stop)
+	if desk.open != 0 || desk.stop != 0 {
+		t.Fatalf("unread settings stopped the logged-in desktop open=%d stop=%d", desk.open, desk.stop)
 	}
 	if _, control, err := svc.DesktopWatch(context.Background(), "tenant-a", "alice", "bot_alice"); err != nil || !control {
 		t.Fatalf("unread settings took the keyboard: control=%v err=%v", control, err)
@@ -1269,18 +1272,18 @@ func TestMessageTimeoutLeavesTheDesktopUp(t *testing.T) {
 	if _, err := svc.PostMessage(context.Background(), "tenant-a", "alice", "bot_alice", "失败"); err == nil {
 		t.Fatal("rejected message should surface")
 	}
-	if desk.stop != 1 {
-		t.Fatalf("failed message stop=%d", desk.stop)
+	if desk.open != 0 || desk.stop != 0 {
+		t.Fatalf("failed message opened or stopped a desktop it did not start open=%d stop=%d", desk.open, desk.stop)
 	}
 	if _, err := svc.PostMessage(context.Background(), "tenant-a", "alice", "bot_alice", "继续"); err == nil {
 		t.Fatal("timed out message should surface")
 	}
-	if desk.stop != 1 {
-		t.Fatalf("timeout stopped the desktop: %d", desk.stop)
+	if desk.open != 0 || desk.stop != 0 {
+		t.Fatalf("timeout opened or stopped a desktop it did not start open=%d stop=%d", desk.open, desk.stop)
 	}
 	watch, control, err := svc.DesktopWatch(context.Background(), "tenant-a", "alice", "bot_alice")
-	if err != nil || watch == "" || control {
-		t.Fatalf("timeout changed the desktop watch=%q control=%v err=%v", watch, control, err)
+	if err != nil || watch != "" || control {
+		t.Fatalf("timeout published a desktop watch=%q control=%v err=%v", watch, control, err)
 	}
 }
 
@@ -1304,6 +1307,8 @@ func TestTimeoutKeepsTheLoginDesktopForThisBot(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
 	settings := &memSettings{}
 	raw, err := json.Marshal(record{
 		BaseURL:     srv.URL,
@@ -1340,16 +1345,16 @@ func TestTimeoutKeepsTheLoginDesktopForThisBot(t *testing.T) {
 		t.Fatal("timed out command did not return")
 	}
 	watch, control, err := svc.DesktopWatch(context.Background(), "tenant-a", "alice", "bot_alice")
-	if err != nil || watch == "" || control {
-		t.Fatalf("a slow task was handed the keyboard watch=%q control=%v err=%v", watch, control, err)
+	if err != nil || watch != "" || control {
+		t.Fatalf("a slow task opened a desktop or took the keyboard watch=%q control=%v err=%v", watch, control, err)
 	}
 	if _, err := svc.PostMessage(context.Background(), "tenant-a", "alice", "bot_other", "失败"); err == nil {
 		t.Fatal("rejected message should surface")
 	}
-	if desk.stop != 0 {
-		t.Fatalf("another bot stopped the desktop after a timeout: %d", desk.stop)
+	if desk.open != 0 || desk.stop != 0 {
+		t.Fatalf("a timed out message opened or stopped a desktop open=%d stop=%d", desk.open, desk.stop)
 	}
-	close(release)
+	releaseOnce.Do(func() { close(release) })
 }
 
 func TestTimeoutDuringLoginReturnsTheKeyboard(t *testing.T) {
@@ -1370,6 +1375,8 @@ func TestTimeoutDuringLoginReturnsTheKeyboard(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
 	settings := &memSettings{}
 	raw, err := json.Marshal(record{
 		BaseURL:     srv.URL,
@@ -1390,7 +1397,9 @@ func TestTimeoutDuringLoginReturnsTheKeyboard(t *testing.T) {
 	svc := NewService(settings)
 	svc.HTTP = srv.Client()
 	svc.messageTimeout = 40 * time.Millisecond
-	svc.Desktop = &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
+	desk := &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
+	svc.Desktop = desk
+	svc.NoteDesktopView("tenant-a", "alice", "http://dockerd.example:6081/vnc.html?autoconnect=1")
 	svc.noteDesktopHeld("tenant-a", "alice", "bot_alice")
 	done := make(chan struct{})
 	go func() {
@@ -1406,7 +1415,10 @@ func TestTimeoutDuringLoginReturnsTheKeyboard(t *testing.T) {
 	if err != nil || watch == "" || !control {
 		t.Fatalf("timeout took the keyboard during login watch=%q control=%v err=%v", watch, control, err)
 	}
-	close(release)
+	if desk.open != 0 || desk.stop != 0 {
+		t.Fatalf("a timed out login opened or stopped the desktop open=%d stop=%d", desk.open, desk.stop)
+	}
+	releaseOnce.Do(func() { close(release) })
 }
 
 func TestStopLeavesTheDesktopWhileThePersonIsLoggingIn(t *testing.T) {

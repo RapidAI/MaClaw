@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -2237,20 +2238,199 @@ type AIAssistantStreamEvent struct {
 	// Sequence is monotonic within one foreground request. The UI uses it to
 	// retain the exact thought/tool arrival order when transports batch events.
 	Sequence uint64 `json:"sequence,omitempty"`
+	// Deltas holds the original per-delta strings when Text joins two or more
+	// of them. The desktop UI runs each piece through the same normalizer it
+	// uses for a live token. A one-delta payload leaves this empty so a real
+	// snapshot still trims. Text stays the join for callers that concatenate.
+	Deltas []string `json:"deltas,omitempty"`
 }
+
+// assistantTokenCoalesceWindow merges a same-lane token run onto one Wails
+// event. Progress, round, and stream-done events flush immediately, so the
+// window only delays a pure token run.
+const assistantTokenCoalesceWindow = 20 * time.Millisecond
 
 type aiAssistantStreamEventEmitter struct {
 	app        *App
 	requestID  string
 	sessionKey string
 	sequence   atomic.Uint64
+
+	mu             sync.Mutex
+	sendMu         sync.Mutex
+	pending        []string
+	flushTimer     *time.Timer
+	coalesceWindow time.Duration
+	emitFn         func(name string, event AIAssistantStreamEvent)
+	// beforeDeliver runs after a drained token batch is taken and before it is
+	// sent. Nil in production. Tests block here. The call sits inside sendMu so
+	// a concurrent stream-done or response cannot pass the batch.
+	beforeDeliver func()
+}
+
+func (e *aiAssistantStreamEventEmitter) tokenCoalesceWindow() time.Duration {
+	if e != nil && e.coalesceWindow > 0 {
+		return e.coalesceWindow
+	}
+	return assistantTokenCoalesceWindow
+}
+
+func assistantTokenIsCoalescable(name, value string) bool {
+	if name != "ai-assistant-token" || value == "" {
+		return false
+	}
+	return !strings.HasPrefix(value, rejectedRoundContentToken)
+}
+
+type coalescedAssistantToken struct {
+	Text string
+	// Deltas is the original pieces when Text joins two or more of them.
+	// A single delta leaves it nil so the UI still trims a real snapshot.
+	Deltas []string
+}
+
+// coalesceAssistantTokenDeltas merges consecutive same-lane token deltas into
+// one payload per run. Reasoning keeps a single leading \x01. A rejected-round
+// marker stays its own payload so the UI can drop the draft.
+func coalesceAssistantTokenDeltas(deltas []string) []coalescedAssistantToken {
+	if len(deltas) == 0 {
+		return nil
+	}
+	out := make([]coalescedAssistantToken, 0, 1)
+	var b strings.Builder
+	var pieces []string
+	lane := ""
+	flush := func() {
+		if lane == "" {
+			return
+		}
+		item := coalescedAssistantToken{Text: b.String()}
+		if len(pieces) > 1 {
+			item.Deltas = pieces
+		}
+		out = append(out, item)
+		b.Reset()
+		pieces = nil
+		lane = ""
+	}
+	for _, delta := range deltas {
+		if delta == "" {
+			continue
+		}
+		if strings.HasPrefix(delta, rejectedRoundContentToken) {
+			flush()
+			out = append(out, coalescedAssistantToken{Text: delta})
+			continue
+		}
+		next := "content"
+		body := delta
+		if strings.HasPrefix(delta, "\x01") {
+			next = "reasoning"
+			body = strings.TrimPrefix(delta, "\x01")
+		}
+		if lane != "" && lane != next {
+			flush()
+		}
+		if next == "reasoning" && lane != "reasoning" {
+			b.WriteString("\x01")
+		}
+		b.WriteString(body)
+		pieces = append(pieces, delta)
+		lane = next
+	}
+	flush()
+	return out
 }
 
 func (e *aiAssistantStreamEventEmitter) emit(name, value string) {
-	if e == nil || e.app == nil {
+	if e == nil || (e.app == nil && e.emitFn == nil) {
 		return
 	}
-	payload, err := json.Marshal(e.payload(value))
+	if assistantTokenIsCoalescable(name, value) {
+		e.mu.Lock()
+		e.pending = append(e.pending, value)
+		if e.flushTimer == nil {
+			e.flushTimer = time.AfterFunc(e.tokenCoalesceWindow(), func() {
+				e.flushTokens()
+			})
+		}
+		e.mu.Unlock()
+		return
+	}
+	// sendMu covers the drained batch and this control event together. The
+	// timer goroutine cannot deliver an already-taken batch after stream-done,
+	// progress, or the caller that flushes before the final response.
+	e.sendMu.Lock()
+	e.deliverPendingLocked()
+	e.deliver(name, e.payload(value))
+	e.sendMu.Unlock()
+}
+
+// flushTokens emits one payload per pending lane run. Stream-done, new-round,
+// and progress call this before their own event so the latest text lands first.
+// It does not return while a drained batch is still unsent.
+func (e *aiAssistantStreamEventEmitter) flushTokens() {
+	if e == nil {
+		return
+	}
+	e.sendMu.Lock()
+	e.deliverPendingLocked()
+	e.sendMu.Unlock()
+}
+
+// deliverPendingLocked drains and sends the token batch. The caller holds sendMu.
+// Lock order is sendMu then mu.
+func (e *aiAssistantStreamEventEmitter) deliverPendingLocked() {
+	e.mu.Lock()
+	events := e.drainPendingLocked()
+	e.mu.Unlock()
+	if len(events) == 0 {
+		return
+	}
+	if e.beforeDeliver != nil {
+		e.beforeDeliver()
+	}
+	for i := range events {
+		e.deliver("ai-assistant-token", events[i])
+	}
+}
+
+func (e *aiAssistantStreamEventEmitter) drainPendingLocked() []AIAssistantStreamEvent {
+	if e.flushTimer != nil {
+		e.flushTimer.Stop()
+		e.flushTimer = nil
+	}
+	if len(e.pending) == 0 {
+		return nil
+	}
+	payloads := coalesceAssistantTokenDeltas(e.pending)
+	e.pending = nil
+	if len(payloads) == 0 {
+		return nil
+	}
+	events := make([]AIAssistantStreamEvent, 0, len(payloads))
+	for _, item := range payloads {
+		if item.Text == "" {
+			continue
+		}
+		event := e.payload(item.Text)
+		if len(item.Deltas) > 1 {
+			event.Deltas = append([]string(nil), item.Deltas...)
+		}
+		events = append(events, event)
+	}
+	return events
+}
+
+func (e *aiAssistantStreamEventEmitter) deliver(name string, event AIAssistantStreamEvent) {
+	if e.emitFn != nil {
+		e.emitFn(name, event)
+		return
+	}
+	if e.app == nil {
+		return
+	}
+	payload, err := json.Marshal(event)
 	if err != nil {
 		log.Printf("[SendAIAssistantMessage] marshal %s event failed: %v", name, err)
 		return
@@ -2735,9 +2915,15 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 	sendStartedAt := time.Now()
 	readyAt, firstChatLogPending := a.beginFirstAIAssistantChatTelemetry()
 	responseEmitted := false
+	var streamEvents *aiAssistantStreamEventEmitter
 	emitFinalResponse := func(resp *IMAgentResponse) {
 		if responseEmitted {
 			return
+		}
+		// Deliver any token run still inside the coalesce window before the
+		// terminal payload, so the settled answer is not appended twice.
+		if streamEvents != nil {
+			streamEvents.flushTokens()
 		}
 		if resp == nil {
 			resp = &IMAgentResponse{}
@@ -2852,7 +3038,7 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 		msg.CodingTaskIngressToken = a.beginDesktopCodingTaskIngressForRequestWithWorkspace(userID, workspaceDir, req.StartNewTask)
 		defer a.endDesktopCodingTaskIngressForOwner(userID)
 	}
-	streamEvents := newAIAssistantStreamEventEmitter(a, requestID, userID)
+	streamEvents = newAIAssistantStreamEventEmitter(a, requestID, userID)
 	emitEvent := func(name, value string) {
 		streamEvents.emit(name, value)
 	}
@@ -2886,6 +3072,9 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 	onToken := func(delta string) {
 		delta = streamDeltaNormalizer.Normalize(delta)
 		if delta == "" {
+			return
+		}
+		if strings.HasPrefix(strings.TrimSpace(requestID), "desktop-bot-") {
 			return
 		}
 		if firstTokenAt.IsZero() {
@@ -3113,6 +3302,10 @@ func truncateStartMenuCompletion(text string) string {
 // streaming round (e.g. form submission echo before the async agent loop starts).
 func (a *App) emitStreamingToken(requestID, sessionKey, text string) {
 	if a == nil || a.ctx == nil || requestID == "" || text == "" {
+		return
+	}
+	// Desktop-bot runs do not stream tokens into the assistant bubble.
+	if strings.HasPrefix(strings.TrimSpace(requestID), "desktop-bot-") {
 		return
 	}
 	payload, err := json.Marshal(AIAssistantStreamEvent{RequestID: requestID, Text: text, SessionKey: sessionKey})

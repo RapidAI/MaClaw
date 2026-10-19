@@ -1,0 +1,5 @@
+{
+  "id": "plan_mutate_stays_listed",
+  "mutating": ["file_write", "bash", "navigate", "deliver", "computer"],
+  "expect": "这一阶段只核对。等这个人确认后再调用。不要在这一轮用别的动作代替"
+}

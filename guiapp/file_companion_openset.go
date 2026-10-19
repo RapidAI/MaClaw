@@ -26,8 +26,8 @@ func fileCompanionOpenSetPath(a *App) string {
 	return filepath.Join(a.GetDataDir(), "file-companion", "open-set.json")
 }
 
-// fileCompanionExistingFiles keeps documents. The bare launch verb is not a
-// path. A file that is confirmed gone, and a directory, are not documents.
+// fileCompanionExistingFiles keeps documents. A file that is confirmed gone,
+// and a directory, are not documents.
 // A stat that fails for another reason stays: a volume that is not ready
 // should be tried again, not forgotten.
 func fileCompanionExistingFiles(paths []string) []string {
@@ -50,7 +50,7 @@ func fileCompanionExistingFiles(paths []string) []string {
 
 func fileCompanionDocumentPath(path string) (string, bool) {
 	path = strings.TrimSpace(path)
-	if path == "" || path == fileCompanionOpenArg || strings.ContainsRune(path, 0) {
+	if path == "" || strings.ContainsRune(path, 0) {
 		return "", false
 	}
 	info, err := os.Stat(path)
@@ -136,9 +136,9 @@ func writeReplacingFile(path string, data []byte) error {
 }
 
 // SetFileCompanionOpenSet stores the window's current tabs. The active file
-// is first. Error tabs and the launch verb are not documents, so they are
-// not stored. An empty list is stored: the user closed the last file, and
-// the next open must ask instead of resurrecting an old transcript.
+// is first. The window does not send error tabs. An empty list is stored:
+// the user closed the last file, and the next open must ask instead of
+// resurrecting an old transcript.
 func (a *App) SetFileCompanionOpenSet(paths []string) error {
 	if a == nil {
 		return os.ErrInvalid
@@ -147,7 +147,7 @@ func (a *App) SetFileCompanionOpenSet(paths []string) error {
 	seen := map[string]bool{}
 	for _, path := range paths {
 		path = strings.TrimSpace(path)
-		if path == "" || path == fileCompanionOpenArg || strings.ContainsRune(path, 0) {
+		if path == "" || strings.ContainsRune(path, 0) {
 			continue
 		}
 		key := fileCompanionDedupeKey(path)

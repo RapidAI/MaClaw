@@ -9,8 +9,42 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/corelib/mailbox"
 )
+
+// mailboxStepJournal adapts the service step table to one mailbox send.
+// The draft id is the idempotency key. Finish records the send; it does not
+// send again.
+type mailboxStepJournal struct {
+	steps DesktopStepper
+	runID string
+}
+
+func (j mailboxStepJournal) Finished(key string) (string, bool, error) {
+	if j.steps == nil {
+		return "", false, nil
+	}
+	return j.steps.FinishedDesktopStep(key)
+}
+
+func (j mailboxStepJournal) Finish(key, tool, result string) error {
+	if j.steps == nil || strings.TrimSpace(key) == "" {
+		return nil
+	}
+	runID := strings.TrimSpace(j.runID)
+	if runID == "" {
+		runID = strings.TrimSpace(key)
+	}
+	_, _, err := j.steps.RunDesktopStep(desktopbot.Step{
+		RunID: runID,
+		Tool:  tool,
+		Key:   key,
+	}, "", func() (string, error) {
+		return result, nil
+	})
+	return err
+}
 
 func mailboxToolContext(c *coreAgentCallbacks) context.Context {
 	if c == nil || c.ctx == nil {
@@ -57,6 +91,7 @@ func (e *CoreAgentExecutor) mailboxHost(ctx context.Context, req ExecuteRequest,
 		Secrets:    e.mailboxSecrets(req.Principal),
 		Reader:     reader,
 		Sender:     sender,
+		Deleter:    mailbox.DeleterFromReader(reader),
 		WorkingDir: strings.TrimSpace(req.Instance.Workspace),
 		Budget:     budget,
 		Drafts:     e.mailboxDraftStore(),
@@ -152,6 +187,7 @@ func (c *coreAgentCallbacks) mailboxRuntime() *mailbox.Host {
 		Secrets:    secrets,
 		Reader:     reader,
 		Sender:     sender,
+		Deleter:    mailbox.DeleterFromReader(reader),
 		WorkingDir: c.workspace,
 		Budget:     mailbox.NewTurnBudget(),
 		Drafts:     drafts,
@@ -161,8 +197,8 @@ func (c *coreAgentCallbacks) mailboxRuntime() *mailbox.Host {
 	return c.mailboxHost
 }
 
-// consumeMailboxConfirmation sends or cancels a frozen draft before the model
-// runs. Any other text leaves the draft in place and does not contact SMTP.
+// consumeMailboxConfirmation sends, deletes, or cancels a frozen draft before
+// the model runs. Any other text leaves the draft in place and does not dial.
 func (e *CoreAgentExecutor) consumeMailboxConfirmation(ctx context.Context, req ExecuteRequest) (string, bool) {
 	if e == nil {
 		return "", false
@@ -170,13 +206,16 @@ func (e *CoreAgentExecutor) consumeMailboxConfirmation(ctx context.Context, req 
 	text := strings.TrimSpace(req.Message.Content)
 	principal := memoryOwnerIDForPrincipal(req.Principal)
 	session := strings.TrimSpace(req.Session.ID)
-	if _, latched := e.mailboxReview(principal, session); latched {
+	if rev, latched := e.mailboxReview(principal, session); latched {
 		if mailboxReviewDismiss(text) {
 			e.clearMailboxReview(principal, session)
 			if draft, ok := e.mailboxDraftStore().Pending(principal, session); ok {
 				e.mailboxDraftStore().Drop(draft.ID)
 			}
 			return "", false
+		}
+		if rev.LastToolName == "mailbox_delete" {
+			return mailbox.MsgDeleteExternalReview, true
 		}
 		return mailbox.MsgExternalReview, true
 	}
@@ -185,12 +224,25 @@ func (e *CoreAgentExecutor) consumeMailboxConfirmation(ctx context.Context, req 
 		return "", false
 	}
 	if mailbox.IsApproveText(text) {
-		result, class := e.mailboxHost(ctx, req, mailbox.NewTurnBudget()).Approve(ctx, draft.ID)
-		if class == "approved" {
-			result += "\n这封邮件已经按确认发送。不要再次调用 mailbox_send。"
+		host := e.mailboxHost(ctx, req, mailbox.NewTurnBudget())
+		if steps := e.desktopSteps(); steps != nil && strings.TrimSpace(draft.ID) != "" {
+			host.Steps = mailboxStepJournal{steps: steps, runID: strings.TrimSpace(req.RunID)}
+			host.StepKey = desktopbot.StepKey(req.RunID, draft.ID, 0)
 		}
-		if class == "uncertain" && !strings.Contains(result, mailbox.MsgExternalReview) {
-			result += "\n" + mailbox.MsgExternalReview
+		result, class := host.Approve(ctx, draft.ID)
+		if class == "approved" {
+			if draft.Kind == mailbox.DraftKindDelete {
+				result += "\n这些邮件已经按确认删除。不要再次删除。"
+			} else {
+				result += "\n这封邮件已经按确认发送。不要再次调用 mailbox_send。"
+			}
+		}
+		review := mailbox.MsgExternalReview
+		if draft.Kind == mailbox.DraftKindDelete {
+			review = mailbox.MsgDeleteExternalReview
+		}
+		if class == "uncertain" && !strings.Contains(result, review) {
+			result += "\n" + review
 		}
 		return result, true
 	}
@@ -218,9 +270,15 @@ func (e *CoreAgentExecutor) noteMailboxReview(principal, session string, draft m
 	if e == nil {
 		return
 	}
+	toolName := "mailbox_send"
+	fallback := "mailbox-send-uncertain"
+	if draft.Kind == mailbox.DraftKindDelete {
+		toolName = "mailbox_delete"
+		fallback = "mailbox-delete-uncertain"
+	}
 	slotID := "mailbox-" + strings.TrimSpace(draft.ID)
 	if strings.TrimSpace(draft.ID) == "" {
-		slotID = "mailbox-send-uncertain"
+		slotID = fallback
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -231,7 +289,7 @@ func (e *CoreAgentExecutor) noteMailboxReview(principal, session string, draft m
 		SlotID:          slotID,
 		SideEffectState: "external_uncertain",
 		RecoveryMode:    "requires_review",
-		LastToolName:    "mailbox_send",
+		LastToolName:    toolName,
 	}
 }
 
@@ -268,6 +326,22 @@ func (c *coreAgentCallbacks) mailboxReviewLatched() bool {
 	}
 	_, ok := c.executor.mailboxReview(memoryOwnerIDForPrincipal(c.principal), strings.TrimSpace(c.session.ID))
 	return ok
+}
+
+// mailboxReviewMessage is the reply a mailbox mutation must return while the
+// previous attempt is still uncertain. The tool must not dial again.
+func (c *coreAgentCallbacks) mailboxReviewMessage() (string, bool) {
+	if c == nil || c.executor == nil {
+		return "", false
+	}
+	rev, ok := c.executor.mailboxReview(memoryOwnerIDForPrincipal(c.principal), strings.TrimSpace(c.session.ID))
+	if !ok {
+		return "", false
+	}
+	if rev.LastToolName == "mailbox_delete" {
+		return mailbox.MsgDeleteExternalReview, true
+	}
+	return mailbox.MsgExternalReview, true
 }
 
 // configureMailbox saves one account from the details the user told the agent.

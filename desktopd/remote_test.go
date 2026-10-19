@@ -257,21 +257,25 @@ func TestSessionUsesAdvertisedHostNotContainerIP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if session.CDP != "http://docker.example:32768" || session.Display != ":20" {
+	key, err := desktop.UserKey("tenant", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.CDP != "https://docker.example/v1/desktops/tunnel/"+key+"/cdp" || session.Display != ":20" {
 		t.Fatalf("session=%#v", session)
 	}
-	if session.Novnc != "http://docker.example:6081/vnc.html?autoconnect=1&resize=scale" {
+	if session.Novnc != "https://docker.example/v1/desktops/tunnel/"+key+"/vnc/vnc.html?autoconnect=1&resize=scale" {
 		t.Fatalf("novnc=%q", session.Novnc)
 	}
-	if strings.Contains(session.CDP, "172.") {
-		t.Fatal("cdp url used a container address")
+	if strings.Contains(session.CDP, "172.") || strings.Contains(session.CDP, "32768") || strings.Contains(session.Novnc, "6081") {
+		t.Fatal("cdp url used a container or published address")
 	}
 	joined := strings.Join(runArgs, "\n")
 	mounts, err := desktop.PrivateMounts("tenant", "alice")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"--memory 4g", "--cpus 2", "--shm-size 1g", "--publish 19020/tcp", "--publish 6080/tcp", "HOME=/home/desktop", "MACLAW_DESKTOP_KEY=", "--entrypoint sh", "desktop_supervisor.py flush", "sleep infinity"} {
+	for _, want := range []string{"--memory 4g", "--cpus 2", "--shm-size 1g", "--publish 127.0.0.1::19020/tcp", "--publish 127.0.0.1::6080/tcp", "HOME=/home/desktop", "MACLAW_DESKTOP_KEY=", "--entrypoint sh", "desktop_supervisor.py flush", "sleep infinity"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("docker run missing %s\n%s", want, joined)
 		}
@@ -670,17 +674,20 @@ func TestBatchedAppCommandReachesXdotool(t *testing.T) {
 	if err != nil || out != "ok" {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
-	if len(got) < 5 || got[0] != "exec" || got[len(got)-1] != "1" {
-		t.Fatalf("docker args=%v", got)
+	click := commandPayload(t, got)
+	if click.Op != "click" || click.Display != ":20" || strings.Join(click.Args, " ") == "" || !strings.Contains(strings.Join(click.Args, " "), "mousemove") || strings.Count(strings.Join(click.Args, " "), "click") != 16 {
+		t.Fatalf("batch was split: %+v", click)
 	}
-	joined := strings.Join(got, " ")
-	if !strings.Contains(joined, "xdotool mousemove") || strings.Count(joined, "click") != 16 {
-		t.Fatalf("batch was split: %s", joined)
+	for _, arg := range got {
+		if arg == "xdotool" || arg == "sh" || arg == "bash" {
+			t.Fatalf("host built %s: %v", arg, got)
+		}
 	}
 	got = nil
 	out, err = svc.App(context.Background(), "tenant", "alice", ":20", []string{"type", "--delay", "20", "int main() {\rreturn 0;\r}"})
-	if err != nil || out != "ok" || !strings.Contains(strings.Join(got, " "), "int main() {\rreturn 0;\r}") {
-		t.Fatalf("out=%q err=%v args=%v", out, err, got)
+	typed := commandPayload(t, got)
+	if err != nil || out != "ok" || len(typed.Args) != 4 || typed.Args[3] != "int main() {\rreturn 0;\r}" {
+		t.Fatalf("out=%q err=%v args=%v", out, err, typed.Args)
 	}
 	if _, err := svc.App(context.Background(), "tenant", "alice", ":20", []string{"type", "line\nline"}); err == nil {
 		t.Fatal("a newline argument was forwarded to xdotool")

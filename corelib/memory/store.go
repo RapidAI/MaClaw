@@ -4718,6 +4718,24 @@ func (s *Store) RecallWithBFS(query string, category Category, projectPath strin
 	return result
 }
 
+// LayerOf classifies an existing category into the desktop four layers.
+// Uncertain categories are files and stay out of the memory snapshot.
+// A short task artifact is a log line; a long one stays a file. The caller
+// applies that length cut. Notes are a desktop layer and are not a category
+// in this store.
+func LayerOf(c Category) string {
+	switch MapToCanonical(c) {
+	case CategoryUserFact, CategoryPreference, CategoryInstruction, CategorySelfIdentity, CategoryProfile:
+		return "profile"
+	case CategoryConversationSummary, CategorySessionCheckpoint, CategoryTaskArtifact:
+		return "log"
+	case CategoryProjectKnowledge:
+		return "file"
+	default:
+		return "file"
+	}
+}
+
 // Embedder returns the configured embedder (may be nil).
 func (s *Store) Embedder() embedding.Embedder {
 	s.mu.RLock()

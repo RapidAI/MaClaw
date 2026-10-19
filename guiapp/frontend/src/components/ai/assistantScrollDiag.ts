@@ -46,11 +46,15 @@ export function logAIScrollEvent(ev: string, fields: Record<string, unknown>) {
     sendDiag(ev, fields);
 }
 
+/** True when the next snapshot would be sent. Callers can skip a layout read when it is not. */
+export function scrollSnapshotDue(ev: string, minIntervalMs = 1000): boolean {
+    return now() - (lastSnapshotAtByEv.get(ev) ?? -Infinity) >= minIntervalMs;
+}
+
 /** Periodic snapshot, emitted at most once per minIntervalMs per event name. */
 export function logAIScrollSnapshot(ev: string, fields: Record<string, unknown>, minIntervalMs = 1000) {
-    const t = now();
-    if (t - (lastSnapshotAtByEv.get(ev) ?? -Infinity) < minIntervalMs) return;
-    lastSnapshotAtByEv.set(ev, t);
+    if (!scrollSnapshotDue(ev, minIntervalMs)) return;
+    lastSnapshotAtByEv.set(ev, now());
     sendDiag(ev, fields);
 }
 

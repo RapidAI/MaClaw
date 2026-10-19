@@ -2362,13 +2362,22 @@ func codegraphPinFile(file string) string {
 // codegraphFileWithinRoot accepts the path the edit gate prints. That path is
 // absolute. An absolute path is not an escape when it stays inside the project;
 // dropping it made the node lookup the gate just demanded run unpinned.
+// A Windows junction is lexically inside and still must not be pinned: the
+// codegraph process opens it and follows the junction out of the project.
 func codegraphFileWithinRoot(root, file string) string {
 	file = codegraphUnwrapPath(file)
 	if file == "" || file == "<nil>" {
 		return ""
 	}
-	if root != "" && filepath.IsAbs(file) {
-		rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(file))
+	if root != "" {
+		candidate := file
+		if !filepath.IsAbs(candidate) {
+			candidate = filepath.Join(root, candidate)
+		}
+		if !navigationWithinRoot(root, candidate) {
+			return ""
+		}
+		rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(candidate))
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return ""
 		}
@@ -5672,7 +5681,7 @@ func navigationResolveFile(root, query string) string {
 	base := filepath.Base(query)
 	bestDepth := -1
 	var found string
-	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	_ = walkDirFollowingJunctionRoot(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -5707,6 +5716,75 @@ func navigationResolveFile(root, query string) string {
 	return found
 }
 
+// walkDirFollowingJunctionRoot is filepath.WalkDir, except when root itself is
+// a Windows directory junction. WalkDir uses Lstat, which does not report that
+// junction as a directory, so a project reached through one used to look empty.
+// A junction discovered under another directory is not followed.
+// filepath.WalkDir turns SkipAll into a nil error, so a child directory is
+// walked through a wrapper that still stops the rest of this root.
+func walkDirFollowingJunctionRoot(root string, fn fs.WalkDirFunc) error {
+	info, lerr := os.Lstat(root)
+	if lerr != nil || info.Mode()&os.ModeIrregular == 0 {
+		return filepath.WalkDir(root, fn)
+	}
+	followed, serr := os.Stat(root)
+	if serr != nil || !followed.IsDir() {
+		return filepath.WalkDir(root, fn)
+	}
+	entry := fs.FileInfoToDirEntry(followed)
+	if err := fn(root, entry, nil); err != nil {
+		if err == filepath.SkipDir || err == filepath.SkipAll {
+			return nil
+		}
+		return err
+	}
+	children, err := os.ReadDir(root)
+	if err != nil {
+		err = fn(root, entry, err)
+		if err == nil || err == filepath.SkipDir || err == filepath.SkipAll {
+			return nil
+		}
+		return err
+	}
+	sort.Slice(children, func(i, j int) bool { return children[i].Name() < children[j].Name() })
+	stopped := false
+	wrapped := func(path string, d fs.DirEntry, err error) error {
+		if stopped {
+			return filepath.SkipAll
+		}
+		werr := fn(path, d, err)
+		if werr == filepath.SkipAll {
+			stopped = true
+		}
+		return werr
+	}
+	for _, child := range children {
+		childPath := filepath.Join(root, child.Name())
+		var walkErr error
+		if child.IsDir() {
+			walkErr = filepath.WalkDir(childPath, wrapped)
+			if stopped {
+				return nil
+			}
+			if walkErr != nil {
+				return walkErr
+			}
+			continue
+		}
+		walkErr = wrapped(childPath, child, nil)
+		if stopped || walkErr == filepath.SkipAll || walkErr == filepath.SkipDir {
+			return nil
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+	}
+	return nil
+}
+
+// navigationWithinRoot reports whether opening path stays inside root.
+// Lexical containment is not enough. os.ReadFile follows a Windows junction,
+// and a junction child resolves outside the project.
 func navigationWithinRoot(root, path string) bool {
 	root = filepath.Clean(strings.TrimSpace(root))
 	path = filepath.Clean(strings.TrimSpace(path))
@@ -5714,10 +5792,11 @@ func navigationWithinRoot(root, path string) bool {
 		return false
 	}
 	rel, err := filepath.Rel(root, path)
-	if err != nil {
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return false
 	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	ok, err := isPathWithinDir(path, root)
+	return err == nil && ok
 }
 
 func navigationFileSymbolOutline(root, query string) (string, bool) {

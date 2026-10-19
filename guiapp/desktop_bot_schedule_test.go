@@ -110,46 +110,54 @@ func TestListDesktopBotSchedulesShowsOnlyThisBot(t *testing.T) {
 }
 
 func TestExecuteDesktopBotScheduleReportsTheWorkerReply(t *testing.T) {
-	var gotBot, gotText, gotPhase string
-	desktopBotRelayOverride = func(_ context.Context, botID, text, phase string) (desktopBotRelayResult, error) {
-		gotBot, gotText, gotPhase = botID, text, phase
+	relays := 0
+	desktopBotRelayOverride = func(context.Context, string, string, string) (desktopBotRelayResult, error) {
+		relays++
 		return desktopBotRelayResult{Text: "你好。"}, nil
 	}
 	t.Cleanup(func() { desktopBotRelayOverride = nil })
 	var payload string
 	desktopBotReportSink = func(raw string) { payload = raw }
 	t.Cleanup(func() { desktopBotReportSink = nil })
-	app := &App{}
-	text, err := app.executeDesktopBotScheduledTask(context.Background(), &scheduler.ScheduledTask{
+	text, err := (&App{}).executeDesktopBotScheduledTask(context.Background(), &scheduler.ScheduledTask{
 		ID:              "sched-1",
 		DesktopBotID:    "bot_1",
 		DesktopBotOwner: "alice",
 		Action:          "向用户问好一次。",
 	})
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || text != "" || relays != 0 || payload != "" {
+		t.Fatalf("GUI started the round text=%q relays=%d payload=%s err=%v", text, relays, payload, err)
 	}
-	if text != "你好。" || gotBot != "bot_1" || gotPhase != "execute" || !strings.Contains(gotText, "向用户问好一次。") || !strings.Contains(gotText, "already set") {
-		t.Fatalf("relay text=%q bot=%q phase=%q order=%q", text, gotBot, gotPhase, gotText)
+}
+
+func TestExecuteDesktopBotScheduleReportsSendToUser(t *testing.T) {
+	relays := 0
+	desktopBotRelayOverride = func(context.Context, string, string, string) (desktopBotRelayResult, error) {
+		relays++
+		return desktopBotRelayResult{Text: "无变化", SendToUser: "首页没打开。"}, nil
 	}
-	if !strings.Contains(payload, `"schedule_report":true`) || !strings.Contains(payload, `"text":"你好。"`) || !strings.Contains(payload, `"bot_id":"bot_1"`) || !strings.Contains(payload, `"owner_id":"alice"`) || !strings.Contains(payload, "desktop-bot-sched-") {
-		t.Fatalf("report = %s", payload)
+	t.Cleanup(func() { desktopBotRelayOverride = nil })
+	reports := 0
+	desktopBotReportSink = func(string) { reports++ }
+	t.Cleanup(func() { desktopBotReportSink = nil })
+	text, err := (&App{}).executeDesktopBotScheduledTask(context.Background(), &scheduler.ScheduledTask{
+		ID:              "sched-sentence",
+		DesktopBotID:    "bot_1",
+		DesktopBotOwner: "alice",
+		Action:          "打开首页。",
+	})
+	if err != nil || text != "" || relays != 0 || reports != 0 {
+		t.Fatalf("GUI started the round text=%q relays=%d reports=%d err=%v", text, relays, reports, err)
 	}
 }
 
 func TestExecuteDesktopBotScheduleHoldsTheSharedDesktop(t *testing.T) {
 	var marks []bool
-	desktopBotBusySink = func(botID string, busy bool) {
-		if botID != "bot_1" {
-			t.Errorf("busy bot = %q", botID)
-		}
-		marks = append(marks, busy)
-	}
+	desktopBotBusySink = func(string, bool) { marks = append(marks, true) }
 	t.Cleanup(func() { desktopBotBusySink = nil })
+	relays := 0
 	desktopBotRelayOverride = func(context.Context, string, string, string) (desktopBotRelayResult, error) {
-		if len(marks) != 1 || !marks[0] {
-			t.Errorf("desktop busy before the run = %v", marks)
-		}
+		relays++
 		return desktopBotRelayResult{Text: "做好了。"}, nil
 	}
 	t.Cleanup(func() { desktopBotRelayOverride = nil })
@@ -158,35 +166,15 @@ func TestExecuteDesktopBotScheduleHoldsTheSharedDesktop(t *testing.T) {
 		DesktopBotID: "bot_1",
 		Action:       "整理早间简报。",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(marks) != 2 || !marks[0] || marks[1] {
-		t.Fatalf("busy marks = %v", marks)
+	if err != nil || relays != 0 || len(marks) != 0 {
+		t.Fatalf("GUI held the desktop relays=%d marks=%v err=%v", relays, marks, err)
 	}
 }
 
 func TestExecuteDesktopBotScheduleReleasesTheDesktopForALogin(t *testing.T) {
-	released := false
-	desktopBotBusySink = func(botID string, busy bool) {
-		if botID != "bot_1" {
-			t.Errorf("busy bot = %q", botID)
-		}
-		if !busy {
-			released = true
-		}
-	}
-	t.Cleanup(func() { desktopBotBusySink = nil })
-	desktopBotReportSink = func(string) {
-		if !released {
-			t.Error("login handoff was reported while the desktop was still held")
-		}
-	}
-	t.Cleanup(func() { desktopBotReportSink = nil })
+	relays := 0
 	desktopBotRelayOverride = func(context.Context, string, string, string) (desktopBotRelayResult, error) {
-		if released {
-			t.Error("desktop was released before the run finished")
-		}
+		relays++
 		return desktopBotRelayResult{Text: "需要登录", UserControl: true}, nil
 	}
 	t.Cleanup(func() { desktopBotRelayOverride = nil })
@@ -196,11 +184,8 @@ func TestExecuteDesktopBotScheduleReleasesTheDesktopForALogin(t *testing.T) {
 		DesktopBotOwner: "alice",
 		Action:          "打开网站。",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !released {
-		t.Fatal("desktop was still held after a login handoff")
+	if err != nil || relays != 0 {
+		t.Fatalf("GUI started the login round relays=%d err=%v", relays, err)
 	}
 }
 
@@ -221,7 +206,7 @@ func TestExecuteDesktopBotScheduleSendsOnceWhenTheDesktopIsFree(t *testing.T) {
 			return desktopBotRelayResult{}, fmt.Errorf("%s", desktopBotBusyMessage)
 		}
 		successes++
-		return desktopBotRelayResult{Text: "做好了。"}, nil
+		return desktopBotRelayResult{Text: "做好了。", SendToUser: "做好了。"}, nil
 	}
 	polls := 0
 	desktopBotExchangeOverride = func(_ context.Context, method, path string, _ any, dest any, _ time.Duration, _ map[string]string) (int, error) {
@@ -246,14 +231,8 @@ func TestExecuteDesktopBotScheduleSendsOnceWhenTheDesktopIsFree(t *testing.T) {
 		DesktopBotOwner: "alice",
 		Action:          "整理早间简报。",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if text != "做好了。" || successes != 1 || relays != 2 {
-		t.Fatalf("text=%q relays=%d successes=%d polls=%d", text, relays, successes, polls)
-	}
-	if strings.Contains(payload, desktopBotBusyMessage) || !strings.Contains(payload, `"text":"做好了。"`) {
-		t.Fatalf("report = %s", payload)
+	if err != nil || text != "" || relays != 0 || successes != 0 || payload != "" {
+		t.Fatalf("GUI started the round text=%q relays=%d successes=%d payload=%s err=%v", text, relays, successes, payload, err)
 	}
 }
 
@@ -289,7 +268,7 @@ func TestExecuteDesktopBotScheduleSkipsWhenTheDesktopStaysBusy(t *testing.T) {
 		DesktopBotID: "bot_1",
 		Action:       "整理早间简报。",
 	})
-	if err != nil || text != "" || reports != 0 || relays != 1 {
+	if err != nil || text != "" || reports != 0 || relays != 0 {
 		t.Fatalf("text=%q err=%v reports=%d relays=%d", text, err, reports, relays)
 	}
 }

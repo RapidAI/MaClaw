@@ -461,14 +461,14 @@ func TestRegisterMCPServerImmediatelySyncsTools(t *testing.T) {
 
 	handler := &IMMessageHandler{app: app, registry: NewToolRegistry()}
 	out := handler.toolDiscoverTool(map[string]interface{}{"need": "search enterprise content"})
-	if !strings.Contains(out, "managed replan") || !strings.Contains(out, "remote/search") || strings.Contains(out, "call call_mcp_tool") {
-		t.Fatalf("discover_tool should report MCP as managed-only, got %s", out)
+	if !strings.Contains(out, "remote/search") || !strings.Contains(out, "compound") || strings.Contains(out, "managed replan") || strings.Contains(out, "call call_mcp_tool") || strings.Contains(out, "bound for the next request") {
+		t.Fatalf("bare MCP word must stay unbound without a replan request, got %s", out)
 	}
 
 	handlerWithoutToolRegistry := &IMMessageHandler{app: app}
 	out = handlerWithoutToolRegistry.toolDiscoverTool(map[string]interface{}{"need": "query enterprise content"})
-	if !strings.Contains(out, "managed replan") || !strings.Contains(out, "remote/search") || strings.Contains(out, "call call_mcp_tool") {
-		t.Fatalf("discover_tool should report MCP-only inventory as managed-only, got %s", out)
+	if !strings.Contains(out, "remote/search") || !strings.Contains(out, "compound") || strings.Contains(out, "managed replan") || strings.Contains(out, "call call_mcp_tool") || strings.Contains(out, "bound for the next request") {
+		t.Fatalf("bare MCP word must stay unbound without a replan request, got %s", out)
 	}
 }
 

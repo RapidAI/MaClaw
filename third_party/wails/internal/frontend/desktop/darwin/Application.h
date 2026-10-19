@@ -40,6 +40,9 @@ void HideApplication(void* ctx);
 void ShowApplication(void* ctx);
 void SetBackgroundColour(void* ctx, int r, int g, int b, int a);
 void ExecJS(void* ctx, const char*);
+// FileCompanionWKWebView returns the WKWebView created for this window.
+// The companion crops snapshots from that view. NULL when the window has none.
+void* FileCompanionWKWebView(void* ctx);
 void Quit(void*);
 void WindowPrint(void* ctx);
 

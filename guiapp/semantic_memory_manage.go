@@ -174,7 +174,6 @@ func (h *IMMessageHandler) administerTrustedMemory(principalID, content, query, 
 			if h.app != nil {
 				h.app.triggerMemoryPipelineSoon(45 * time.Second)
 			}
-			h.RefreshMemorySnapshot(principalID)
 		},
 	})
 	if semanticTrustedMemoryResultFailed(out) {

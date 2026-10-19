@@ -30,6 +30,9 @@ type Draft struct {
 	ExpiresAt time.Time
 	Principal string
 	Session   string
+	// Kind is empty for a send. DraftKindDelete carries Delete.
+	Kind   string
+	Delete DeletePlan
 }
 
 type DraftStore struct {
@@ -55,6 +58,20 @@ func (s *DraftStore) Put(d Draft) {
 	cp := d
 	s.byID[d.ID] = &cp
 	s.pending[sessionKey(d.Principal, d.Session)] = d.ID
+}
+
+// Peek returns a draft without removing it.
+func (s *DraftStore) Peek(id string) (Draft, bool) {
+	if s == nil || id == "" {
+		return Draft{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.byID[id]
+	if !ok || d == nil {
+		return Draft{}, false
+	}
+	return *d, true
 }
 
 func (s *DraftStore) Pending(principal, session string) (Draft, bool) {
@@ -123,9 +140,10 @@ func IsCancelText(text string) bool {
 }
 
 type TurnBudget struct {
-	mu        sync.Mutex
-	QueryLeft int
-	SendUsed  bool
+	mu         sync.Mutex
+	QueryLeft  int
+	SendUsed   bool
+	DeleteUsed bool
 }
 
 func NewTurnBudget() *TurnBudget {
@@ -158,9 +176,39 @@ func (b *TurnBudget) ConsumeSend() error {
 	return nil
 }
 
+func (b *TurnBudget) ConsumeDelete() error {
+	if b == nil {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.DeleteUsed {
+		return classErr("budget", MsgDeleteBudget)
+	}
+	b.DeleteUsed = true
+	return nil
+}
+
 func (h *Host) Approve(ctx context.Context, draftID string) (string, string) {
 	if h == nil || h.Drafts == nil {
 		return MsgExpired, "expired"
+	}
+	if recorded, done, err := h.finishedSend(); err != nil {
+		return err.Error(), "error"
+	} else if done {
+		kind := ""
+		if pending, ok := h.Drafts.Peek(draftID); ok {
+			kind = pending.Kind
+		}
+		h.Drafts.Drop(draftID)
+		if strings.TrimSpace(recorded) == "" {
+			if kind == DraftKindDelete {
+				recorded = MsgDeletePurged
+			} else {
+				recorded = "邮件已发送"
+			}
+		}
+		return recorded, "approved"
 	}
 	draft, state := h.Drafts.Take(draftID, h.now())
 	switch state {
@@ -168,7 +216,13 @@ func (h *Host) Approve(ctx context.Context, draftID string) (string, string) {
 		return MsgExpired, "expired"
 	case "expired":
 		h.countSend("expired")
+		if draft.Kind == DraftKindDelete {
+			return MsgDeleteExpired, "expired"
+		}
 		return MsgExpired, "expired"
+	}
+	if draft.Kind == DraftKindDelete {
+		return h.approveDelete(ctx, draft)
 	}
 	secret, err := h.secretFor(ctx, draft.Account, SideOutbound)
 	if err != nil {
@@ -197,15 +251,44 @@ func (h *Host) Approve(ctx context.Context, draftID string) (string, string) {
 	}
 	h.countSend("approved")
 	h.audit(draft, "approved")
-	return "邮件已发送", "approved"
+	const sent = "邮件已发送"
+	if err := h.finishSend(sent); err != nil {
+		return err.Error(), "error"
+	}
+	return sent, "approved"
+}
+
+func (h *Host) finishedSend() (string, bool, error) {
+	if h == nil || h.Steps == nil || strings.TrimSpace(h.StepKey) == "" {
+		return "", false, nil
+	}
+	return h.Steps.Finished(strings.TrimSpace(h.StepKey))
+}
+
+func (h *Host) finishSend(result string) error {
+	return h.finishStep("email", result)
+}
+
+func (h *Host) finishStep(toolName, result string) error {
+	if h == nil || h.Steps == nil || strings.TrimSpace(h.StepKey) == "" {
+		return nil
+	}
+	return h.Steps.Finish(strings.TrimSpace(h.StepKey), toolName, result)
 }
 
 func (h *Host) Cancel(draftID string) (string, string) {
 	if h == nil || h.Drafts == nil {
 		return MsgCancelled, "cancelled"
 	}
+	kind := ""
+	if draft, ok := h.Drafts.Peek(draftID); ok {
+		kind = draft.Kind
+	}
 	h.Drafts.Drop(draftID)
 	h.countSend("cancelled")
+	if kind == DraftKindDelete {
+		return MsgDeleteCancelled, "cancelled"
+	}
 	return MsgCancelled, "cancelled"
 }
 

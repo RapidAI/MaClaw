@@ -40,8 +40,8 @@ type ScheduledTask struct {
 	InstanceID string `json:"instance_id,omitempty"`
 	// OwnerTenantID and OwnerUserID identify the instance owner used when
 	// the task fires. They are not chosen by the model.
-	OwnerTenantID   string `json:"owner_tenant_id,omitempty"`
-	OwnerUserID     string `json:"owner_user_id,omitempty"`
+	OwnerTenantID string `json:"owner_tenant_id,omitempty"`
+	OwnerUserID   string `json:"owner_user_id,omitempty"`
 	// DesktopBotID is the Bot workspace that owns this task. Empty is a
 	// legacy scheduled task. A desktop bot task runs on that bot and the
 	// result is reported in its chat. DesktopBotOwner is the account key.
@@ -74,12 +74,21 @@ type ScheduledTask struct {
 // ctx.Done() to allow graceful cancellation of long-running tasks.
 type TaskExecutor func(ctx context.Context, task *ScheduledTask) (result string, err error)
 
-// Manager manages scheduled tasks with JSON persistence
-// and a background ticker that fires due tasks.
+// TaskStore is the service database the worker already has open.
+// scheduled_tasks.json is the file from before that migration.
+type TaskStore interface {
+	LoadScheduledTasks() ([]ScheduledTask, error)
+	SaveScheduledTasks([]ScheduledTask) error
+}
+
+// Manager manages scheduled tasks and a background ticker that fires due tasks.
+// A store keeps the rows in the service database. Without one, path is the
+// JSON file used by hosts that have not moved.
 type Manager struct {
 	mu              sync.RWMutex
 	tasks           []ScheduledTask
 	path            string
+	store           TaskStore
 	stopCh          chan struct{}
 	running         bool
 	executor        TaskExecutor
@@ -106,12 +115,35 @@ func NewManager(path string) (*Manager, error) {
 	if err := m.load(); err != nil {
 		return nil, err
 	}
-	// Remove expired tasks and recalculate next run times.
+	m.finishNew()
+	return m, nil
+}
+
+// NewManagerFromStore keeps task rows in the service database. One manager
+// on the host watches every row. It does not start a loop per user.
+func NewManagerFromStore(store TaskStore) (*Manager, error) {
+	if store == nil {
+		return nil, fmt.Errorf("scheduler: task store is required")
+	}
+	m := &Manager{
+		tasks:        make([]ScheduledTask, 0),
+		store:        store,
+		stopCh:       make(chan struct{}),
+		runningTasks: make(map[string]context.CancelFunc),
+	}
+	if err := m.load(); err != nil {
+		return nil, err
+	}
+	m.finishNew()
+	return m, nil
+}
+
+func (m *Manager) finishNew() {
 	now := time.Now()
 	var active []ScheduledTask
 	for i := range m.tasks {
 		if m.tasks[i].Status == "expired" || m.isExpired(&m.tasks[i], now) {
-			continue // drop expired tasks
+			continue
 		}
 		if m.tasks[i].Status == "active" {
 			next := m.calcNext(&m.tasks[i], now)
@@ -121,13 +153,46 @@ func NewManager(path string) (*Manager, error) {
 	}
 	m.tasks = active
 	_ = m.save()
-
-	// Collect process-type tasks that missed a run and need catch-up.
-	// We do this after save so the task list is clean. The actual catch-up
-	// fires are deferred until Start() is called (executor must be set first).
 	m.pendingCatchUps = m.detectMissedRuns(now)
+}
 
-	return m, nil
+// ImportLegacyTasks copies scheduled_tasks.json into the service database
+// once, when that database has no rows yet. The file stays where it is.
+func ImportLegacyTasks(path string, store TaskStore) (int, error) {
+	if store == nil {
+		return 0, fmt.Errorf("scheduler: task store is required")
+	}
+	existing, err := store.LoadScheduledTasks()
+	if err != nil || len(existing) > 0 {
+		return 0, err
+	}
+	tasks, err := LoadTaskFile(path)
+	if err != nil || len(tasks) == 0 {
+		return 0, err
+	}
+	if err := store.SaveScheduledTasks(tasks); err != nil {
+		return 0, err
+	}
+	return len(tasks), nil
+}
+
+// LoadTaskFile reads the pre-migration JSON file. A missing file is empty.
+func LoadTaskFile(path string) ([]ScheduledTask, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("scheduler: read %s: %w", path, err)
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var tasks []ScheduledTask
+	if err := json.Unmarshal(data, &tasks); err != nil {
+		return nil, fmt.Errorf("scheduler: decode %s: %w", path, err)
+	}
+	return tasks, nil
 }
 
 // SetExecutor sets the callback invoked when a task fires.
@@ -174,7 +239,7 @@ func (m *Manager) Start() {
 
 	// Fire catch-up runs for process-type tasks that missed execution.
 	for _, id := range catchUps {
-		go m.fireByID(id, executor)
+		go m.fireByID(id, executor, time.Now())
 	}
 
 	go m.loop()
@@ -210,7 +275,24 @@ func (m *Manager) loop() {
 }
 
 func (m *Manager) tick() {
-	now := time.Now()
+	m.fireDue(time.Now())
+}
+
+// FireDue starts one worker for each task that is due at now. Each worker
+// runs one round and then leaves. Tests pass the clock; the host loop passes
+// time.Now every 30 seconds.
+func (m *Manager) FireDue(now time.Time) {
+	m.fireDue(now)
+}
+
+// Inflight is the number of workers still inside a round.
+func (m *Manager) Inflight() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.runningTasks)
+}
+
+func (m *Manager) fireDue(now time.Time) {
 	m.mu.RLock()
 	var dueIDs []string
 	for _, t := range m.tasks {
@@ -222,7 +304,7 @@ func (m *Manager) tick() {
 	m.mu.RUnlock()
 
 	for _, id := range dueIDs {
-		go m.fireByID(id, executor)
+		go m.fireByID(id, executor, now)
 	}
 
 	// Auto-delete expired tasks so they don't clutter the list.
@@ -277,7 +359,7 @@ func computeExecutionTimeout(task *ScheduledTask) time.Duration {
 	return timeout
 }
 
-func (m *Manager) fireByID(id string, executor TaskExecutor) {
+func (m *Manager) fireByID(id string, executor TaskExecutor, now time.Time) {
 	// Atomically claim the task. Manual runs retain NextRunAt, so checking it
 	// alone is insufficient: use runningTasks as the common execution lease.
 	m.mu.Lock()
@@ -344,8 +426,7 @@ func (m *Manager) fireByID(id string, executor TaskExecutor) {
 	// If the context was cancelled (timeout or shutdown), annotate when missing.
 	errStr = annotateExecErrStr(ctx, errStr, timeout)
 
-	// Update state under lock.
-	now := time.Now()
+	// The next run is after the clock that discovered this one was due.
 	m.mu.Lock()
 	for i := range m.tasks {
 		if m.tasks[i].ID != id {
@@ -939,6 +1020,17 @@ func (m *Manager) isExpired(t *ScheduledTask, now time.Time) bool {
 // ---------------------------------------------------------------------------
 
 func (m *Manager) load() error {
+	if m.store != nil {
+		tasks, err := m.store.LoadScheduledTasks()
+		if err != nil {
+			return err
+		}
+		if tasks == nil {
+			tasks = []ScheduledTask{}
+		}
+		m.tasks = tasks
+		return nil
+	}
 	data, err := os.ReadFile(m.path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -953,6 +1045,9 @@ func (m *Manager) load() error {
 }
 
 func (m *Manager) save() error {
+	if m.store != nil {
+		return m.store.SaveScheduledTasks(append([]ScheduledTask(nil), m.tasks...))
+	}
 	dir := filepath.Dir(m.path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("scheduler: mkdir: %w", err)

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -25,6 +26,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/database"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -151,6 +153,7 @@ type CoreAgentExecutor struct {
 	mcpProvider              MCPToolProvider
 	skillProvider            SkillToolProvider
 	dynamicOperationLedger   DynamicOperationLedger
+	stepJournal              DesktopStepper
 	dynamicSemanticRouting   *DynamicSemanticRouting
 	// codingRuntimeStore is optional and set by the service host after its
 	// durable runtime ledger has been opened. Only explicitly marked coding
@@ -253,6 +256,26 @@ func (e *CoreAgentExecutor) SetDynamicOperationLedger(ledger DynamicOperationLed
 	e.mu.Lock()
 	e.dynamicOperationLedger = ledger
 	e.mu.Unlock()
+}
+
+// SetDesktopSteps installs the sqlite step journal. A nil journal leaves
+// tool calls unchanged. The journal is not the dynamic operation ledger.
+func (e *CoreAgentExecutor) SetDesktopSteps(steps DesktopStepper) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	e.stepJournal = steps
+	e.mu.Unlock()
+}
+
+func (e *CoreAgentExecutor) desktopSteps() DesktopStepper {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.stepJournal
 }
 
 func (e *CoreAgentExecutor) getDynamicOperationLedger() DynamicOperationLedger {
@@ -446,6 +469,8 @@ type coreAgentCallbacks struct {
 	dynamicSemanticManaged        bool
 	loopID                        string
 	botID                         string
+	connectorGate                 *desktopbot.ConnectorGate
+	connectorAsk                  desktopbot.ConnectorAsk
 	botRound                      int32
 	onToken                       func(string)
 	onToolCall                    func(string)
@@ -805,19 +830,26 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 	// Read the config from cb every round: hosts may escalate the model, and
 	// the context window is what decides when to trim.
 	compressionHooks := agent.NewCompressionHook(func() corelib.MaclawLLMConfig { return cb.GetLLMConfig() }, cb.httpClient)
+	if cb.promptPrefixActive() && strings.TrimSpace(req.Message.Content) != "" {
+		agent.NoteUserReturned(cb.botID, cb.session.ID, time.Now())
+	}
 	log.Printf("[VE-STREAMING] ===== EXECUTOR STAGE: RunLoop starting ===== session=%s onToken_wired=%v moa_preset=%q", req.Session.ID, req.OnToken != nil, cb.moaRequestPreset)
 	result := agentruntime.RunAgentTurnWithUserContent(cb, req.Message.Content, userContent, cb.history, cb.httpClient, supplementHooks, compressionHooks)
 	log.Printf("[VE-STREAMING] ===== EXECUTOR STAGE: RunLoop finished ===== session=%s iterations=%d text_len=%d error=%q", req.Session.ID, result.Iterations, len(result.Text), result.Error)
+	cb.noteDesktopIdleSummary(result)
 	if result.Error != "" {
 		// Keep whatever the model already produced. A run cut short by an
 		// upstream throttle has often finished the actual work in earlier
 		// rounds; returning only the error surfaces it as an empty turn and
 		// leaves the reader unable to tell what is already done.
 		if partial := strings.TrimSpace(result.Text); partial != "" {
+			partialMeta := map[string]string{metaPartialResult: "true"}
+			cb.mergeConnectorAsk(partialMeta)
+			cb.mergeProgressCopy(partialMeta)
 			return &ExecuteResult{
 				Content:    partial,
 				OutputType: "text/plain",
-				Metadata:   map[string]string{metaPartialResult: "true"},
+				Metadata:   partialMeta,
 			}, loopFailureError(&result)
 		}
 		return nil, loopFailureError(&result)
@@ -858,7 +890,7 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 	if result.HardExit {
 		metadata["hard_exit"] = "true"
 	}
-	if result.AskUser != nil {
+	if askUserAddressesPerson(result.AskUser) {
 		metadata[metaResponseSource] = string(responseSourceAskUser)
 		metadata[metaAskUserQuestion] = result.AskUser.Question
 		metadata[metaAskUserInputType] = result.AskUser.InputType
@@ -874,7 +906,33 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 	if handle, err := cb.issueTaskContinuationHandle(); err == nil && handle != "" {
 		metadata["task_continuation_handle"] = handle
 	}
+	cb.mergeConnectorAsk(metadata)
+	cb.mergeProgressCopy(metadata)
 	return &ExecuteResult{Content: textutil.SanitizeVisibleChatText(result.Text), OutputType: "text/plain", Metadata: metadata}, nil
+}
+
+// askUserAddressesPerson is an ask the next message should answer. A
+// placeholder question such as 无变化 is not one: recording it would make
+// the following command look like a reply to that placeholder. A secret or
+// a real choice still is. A placeholder label is not a choice.
+func askUserAddressesPerson(req *agent.AskUserRequest) bool {
+	if req == nil {
+		return false
+	}
+	if strings.TrimSpace(req.SecretName) != "" || askHasRealChoice(req.Options) {
+		return true
+	}
+	question := strings.TrimSpace(req.Question)
+	return question != "" && !desktopbot.Filler(question)
+}
+
+func askHasRealChoice(options []string) bool {
+	for _, opt := range options {
+		if desktopbot.RealChoice(opt) {
+			return true
+		}
+	}
+	return false
 }
 
 const (
@@ -1698,7 +1756,108 @@ Specified IM file delivery:
 	if managedSemantic && !promptProfile.IsLight() {
 		prompt = agentruntime.EnsureSemanticGrantPromptFence(prompt)
 	}
-	return prompt
+	if c.promptPrefixActive() {
+		prompt = desktopbot.PinWorthSaying(prompt)
+	}
+	return c.pinDesktopSystemPrompt(prompt)
+}
+
+// pinDesktopSystemPrompt freezes the system segment, the memory snapshot, and
+// the first message for one desktop-bot conversation. A later turn that
+// rebuilds different bytes still sends the pinned system text.
+func (c *coreAgentCallbacks) pinDesktopSystemPrompt(prompt string) string {
+	if !c.promptPrefixActive() {
+		return prompt
+	}
+	first, history := agent.PromptHistoryText(c.history, c.userText)
+	decision := agent.PrepareConversationPrefix(c.promptPrefixMeta(), agent.PromptPrefixInput{
+		Segments: agent.PromptPrefixSegments{
+			System:         agent.SystemWithAgentsMD(prompt, agent.ReadAgentsMD("")),
+			MemorySnapshot: c.promptMemorySnapshot(),
+			FirstMessage:   first,
+			History:        history,
+		},
+		ProvideSystem:  true,
+		ProvideMemory:  true,
+		ProvideFirst:   true,
+		ProvideHistory: true,
+	})
+	return decision.Send.System
+}
+
+func (c *coreAgentCallbacks) promptPrefixActive() bool {
+	return c != nil && strings.TrimSpace(c.botID) != "" && strings.TrimSpace(c.session.ID) != ""
+}
+
+func (c *coreAgentCallbacks) promptPrefixMeta() agent.PromptPrefixMeta {
+	return agent.PromptPrefixMeta{
+		ConversationID: c.session.ID,
+		BotID:          c.botID,
+		Provider:       c.llmCfg.ProviderName,
+		Model:          c.llmCfg.Model,
+	}
+}
+
+func (c *coreAgentCallbacks) promptMemorySnapshot() string {
+	if c == nil {
+		return ""
+	}
+	if !c.promptPrefixActive() {
+		if c.memory == nil {
+			return ""
+		}
+		return c.memory.StaticMemorySectionForPrompt(memory.RecallHintAndGuidePromptOptions(true, memory.BuildTUIProactiveMemoryPrompt()))
+	}
+	owner := memoryOwnerIDForPrincipal(c.principal)
+	if owner == "" {
+		owner = strings.TrimSpace(c.user.ID)
+	}
+	book := memory.DesktopBook(owner)
+	book.SeedFromStore(c.memory, owner)
+	return book.Excerpt()
+}
+
+func (c *coreAgentCallbacks) desktopMemoryCall(name string, args map[string]interface{}) string {
+	owner := ""
+	helper := false
+	helperID := ""
+	if c != nil {
+		owner = memoryOwnerIDForPrincipal(c.principal)
+		if owner == "" {
+			owner = strings.TrimSpace(c.user.ID)
+		}
+		if strings.TrimSpace(c.messageMetadata["computer_helper"]) == "1" {
+			helper = true
+			helperID = strings.TrimSpace(c.messageMetadata["helper_id"])
+			if helperID == "" {
+				helperID = strings.TrimSpace(c.botID)
+			}
+		}
+	}
+	book := memory.DesktopBook(owner)
+	if helper {
+		book = book.Helper(helperID)
+	}
+	return book.Call(name, args)
+}
+
+// PinModelTools implements agent.PromptToolPinner. Desktop-bot conversations
+// send the tool JSON pinned at the first request. A mid-conversation MCP
+// change is reported and does not replace that JSON.
+func (c *coreAgentCallbacks) PinModelTools(tools []map[string]interface{}) []map[string]interface{} {
+	if !c.promptPrefixActive() {
+		return tools
+	}
+	tools = memory.SwapDesktopMemoryTools(tools)
+	decision := agent.PrepareConversationPrefix(c.promptPrefixMeta(), agent.PromptPrefixInput{
+		Segments:     agent.PromptPrefixSegments{Tools: agent.CanonicalToolJSON(tools)},
+		ProvideTools: true,
+	})
+	pinned, err := agent.ToolsFromCanonicalJSON(decision.Send.Tools)
+	if err != nil {
+		return tools
+	}
+	return pinned
 }
 
 type coreAgentPlatformProfile struct {
@@ -2286,7 +2445,8 @@ func (c *coreAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 // can replay the original outcome after reconnect instead of consuming a
 // second invocation grant or dispatching the provider again.
 func (c *coreAgentCallbacks) ExecuteToolCall(name, argsJSON, callID string) agent.ToolExecutionResult {
-	return c.executeToolCallLegacy(name, argsJSON, callID)
+	result := c.executeToolCallLegacy(name, argsJSON, callID)
+	return c.finishBotToolResult(name, argsJSON, result)
 }
 
 // executeToolCallLegacy is the full legacy entry point. ExecuteToolCall
@@ -2297,6 +2457,9 @@ func (c *coreAgentCallbacks) ExecuteToolCall(name, argsJSON, callID string) agen
 // and the ExecuteToolStructured preamble guards all stay on the path.
 func (c *coreAgentCallbacks) executeToolCallLegacy(name, argsJSON, callID string) agent.ToolExecutionResult {
 	name, argsJSON, _ = agentruntime.CanonicalizeToolCallJSON(name, argsJSON)
+	if text, ok := c.replayDoneDesktopStep(name, argsJSON, callID); ok {
+		return agent.ToolExecutionResult{Result: text, Outcome: agent.ToolExecutionOutcomeOK}
+	}
 	if c != nil && c.botUsesContainer() {
 		trimmed := strings.TrimSpace(name)
 		if trimmed == "web_search" || trimmed == "web_fetch" {
@@ -2325,7 +2488,14 @@ func (c *coreAgentCallbacks) executeToolCallLegacy(name, argsJSON, callID string
 			}
 			args = parsed
 		}
-		result, handled, err := c.runtimeToolInvoker.InvokeRuntimeTool(c.ctx, strings.TrimSpace(name), args)
+		toolCtx := c.ctx
+		if toolCtx == nil {
+			toolCtx = context.Background()
+		}
+		if id := strings.TrimSpace(callID); id != "" {
+			toolCtx = agentruntime.WithToolCallID(toolCtx, id)
+		}
+		result, handled, err := c.runtimeToolInvoker.InvokeRuntimeTool(toolCtx, strings.TrimSpace(name), args)
 		if handled {
 			if err != nil {
 				return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: runtime tool %s: %v", name, err), Outcome: agent.ToolExecutionOutcomeError}
@@ -2353,6 +2523,52 @@ func (c *coreAgentCallbacks) executeToolCallLegacy(name, argsJSON, callID string
 		return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: unknown semantic tool %s", name), Outcome: agent.ToolExecutionOutcomeError}
 	}
 	return c.ExecuteToolStructured(name, argsJSON)
+}
+
+// replayDoneDesktopStep returns a completed side effect without running it.
+// A missing journal, an empty key, and a read-only tool fall through.
+func (c *coreAgentCallbacks) replayDoneDesktopStep(name, argsJSON, callID string) (string, bool) {
+	if c == nil || c.executor == nil {
+		return "", false
+	}
+	steps := c.executor.desktopSteps()
+	if steps == nil {
+		return "", false
+	}
+	tool := strings.TrimSpace(name)
+	command := ""
+	if strings.TrimSpace(argsJSON) != "" {
+		args, err := agentruntime.ParseToolArgumentsObject(argsJSON)
+		if err != nil {
+			return "", false
+		}
+		command = desktopReplayArg(args, "command")
+		if tool == "desktop" || tool == "computer" {
+			if action := desktopReplayArg(args, "action"); action != "" {
+				tool = action
+			}
+		}
+	}
+	if !desktopbot.SideEffect(tool, command) {
+		return "", false
+	}
+	key := desktopbot.StepKey(c.runtimeRequest.RunID, callID, 0)
+	if key == "" {
+		return "", false
+	}
+	text, done, err := steps.FinishedDesktopStep(key)
+	if err != nil || !done {
+		return "", false
+	}
+	return text, true
+}
+
+func desktopReplayArg(args map[string]any, key string) string {
+	if args == nil {
+		return ""
+	}
+	text, _ := args[key].(string)
+	return strings.TrimSpace(text)
 }
 
 func (c *coreAgentCallbacks) runtimeToolExposed(name string) bool {
@@ -2578,6 +2794,15 @@ func (c *coreAgentCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, str
 	if c != nil && c.botMissesContainer(name) {
 		return false, botContainerToolReason
 	}
+	if c != nil && c.botUsesContainer() && strings.TrimSpace(name) == "desktop" {
+		args, err := parseCoreAgentToolArguments(argsJSON)
+		if err != nil {
+			return false, fmt.Sprintf("invalid tool arguments: %v", err)
+		}
+		if allowed, reason := c.connectorBypassAllowed(args); !allowed {
+			return false, reason
+		}
+	}
 	if c != nil && c.dynamicSemanticManaged && c.dynamicSemanticSurface != nil && c.dynamicSemanticSurface.HasGrant(name) {
 		// Dynamic semantic calls use an opaque grant as their function name.
 		// The planner has already applied the capability-level policy; the
@@ -2629,6 +2854,149 @@ func (c *coreAgentCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, str
 		return false, reason
 	}
 	return true, ""
+}
+
+func (c *coreAgentCallbacks) conversationGate() *desktopbot.ConnectorGate {
+	if c == nil {
+		return nil
+	}
+	if c.connectorGate != nil {
+		return c.connectorGate
+	}
+	conv := strings.TrimSpace(c.session.ID)
+	if c.botID != "" || conv != "" {
+		c.connectorGate = desktopbot.ConversationGate(c.botID, conv)
+		return c.connectorGate
+	}
+	c.connectorGate = desktopbot.NewConnectorGate()
+	return c.connectorGate
+}
+
+func (c *coreAgentCallbacks) noteConnectorAsk(ask desktopbot.ConnectorAsk) {
+	if c == nil || strings.TrimSpace(ask.Text) == "" || strings.TrimSpace(c.connectorAsk.Text) != "" {
+		return
+	}
+	if ask.Kind == "" {
+		ask.Kind = "ask"
+	}
+	c.connectorAsk = ask
+}
+
+func (c *coreAgentCallbacks) mergeConnectorAsk(metadata map[string]string) {
+	if c == nil || metadata == nil {
+		return
+	}
+	if strings.TrimSpace(metadata["send_to_user"]) == "" && strings.TrimSpace(c.connectorAsk.Text) != "" {
+		metadata["send_to_user"] = c.connectorAsk.Text
+		kind := c.connectorAsk.Kind
+		if kind == "" {
+			kind = "ask"
+		}
+		metadata["send_to_user_kind"] = kind
+	}
+	desktopbot.ApplyDangerAsk(metadata, strings.TrimSpace(c.session.ID))
+}
+
+func connectorCallURL(args map[string]interface{}) string {
+	for _, key := range []string{"url", "site", "host"} {
+		if value := stringArg(args, key); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func (c *coreAgentCallbacks) connectorBypassAllowed(args map[string]interface{}) (bool, string) {
+	if c == nil {
+		return true, ""
+	}
+	level := desktopbot.BrowserLevel(stringArg(args, "action"))
+	if level == 0 {
+		return true, ""
+	}
+	decision := c.conversationGate().Decide(desktopbot.BypassCall{
+		Action:               stringArg(args, "action"),
+		URL:                  connectorCallURL(args),
+		UserAuthorizedBypass: boolArg(args, "user_authorized_bypass", false),
+		UserSaidUseBrowser:   desktopbot.UserSaidUseBrowser(c.userText),
+	})
+	if decision.Ask.Text != "" {
+		c.noteConnectorAsk(decision.Ask)
+	}
+	if decision.Allowed {
+		return true, ""
+	}
+	return false, decision.Sentence
+}
+
+func (c *coreAgentCallbacks) toolSpillRoot() string {
+	if root := strings.TrimSpace(desktopbot.SpillRoot()); root != "" {
+		return root
+	}
+	info, err := os.Stat("/home/desktop")
+	if err == nil && info.IsDir() {
+		return "/home/desktop"
+	}
+	return ""
+}
+
+func (c *coreAgentCallbacks) finishBotToolResult(name, argsJSON string, result agent.ToolExecutionResult) agent.ToolExecutionResult {
+	if c == nil || !c.botUsesContainer() {
+		return result
+	}
+	if result.Outcome == agent.ToolExecutionOutcomeError && desktopbot.ConnectorObservable(name) {
+		args, _ := parseCoreAgentToolArguments(argsJSON)
+		c.conversationGate().Observe(name, 0, result.Result, connectorCallURL(args))
+	}
+	c.noteCloudProgress(name, result.Result)
+	if utf8.RuneCountInString(result.Result) <= desktopbot.ToolResultSpillRunes {
+		return result
+	}
+	root := c.toolSpillRoot()
+	if root == "" {
+		return result
+	}
+	taskID := strings.TrimSpace(c.session.ID)
+	if taskID == "" {
+		taskID = strings.TrimSpace(c.loopID)
+	}
+	seq := desktopbot.NextSpillSeq(c.botID, taskID)
+	shown, err := desktopbot.SpillToolResult(root, taskID, seq, result.Result)
+	if err != nil {
+		return result
+	}
+	result.Result = shown
+	return result
+}
+
+func (c *coreAgentCallbacks) noteCloudProgress(name, body string) {
+	if c == nil || CloudProgress == nil || !c.botUsesContainer() {
+		return
+	}
+	tenant, user, _ := c.desktopPersonAccount()
+	taskID := strings.TrimSpace(c.session.ID)
+	if taskID == "" {
+		taskID = strings.TrimSpace(c.loopID)
+	}
+	CloudProgress(c.parentContext(), tenant, user, taskID, name, body)
+}
+
+func (c *coreAgentCallbacks) mergeProgressCopy(metadata map[string]string) {
+	if c == nil || metadata == nil || !c.botUsesContainer() {
+		return
+	}
+	taskID := strings.TrimSpace(c.session.ID)
+	if taskID == "" {
+		taskID = strings.TrimSpace(c.loopID)
+	}
+	copy, ok := desktopbot.RecallProgress(taskID)
+	if !ok {
+		return
+	}
+	metadata["progress_path"] = copy.Path
+	metadata["progress_where"] = copy.Sections.WhereWeAre
+	metadata["progress_next"] = copy.Sections.NextStep
+	metadata["progress_open"] = copy.Sections.OpenProblems
 }
 
 func knowledgeToolResult(result string) agent.ToolExecutionResult {
@@ -2712,7 +3080,7 @@ func (c *coreAgentCallbacks) executeToolStructuredUnguarded(name, argsJSON strin
 			return agent.ToolExecutionResult{Result: "Error: " + c.sshDeniedReason(), Outcome: agent.ToolExecutionOutcomeError}
 		}
 		if action := strings.TrimSpace(agent.StringArg(args, "action")); action != "" && c.botUsesContainer() && strings.TrimSpace(c.messageMetadata["bot_phase"]) == "plan" && !botSSHPlanAction(action) {
-			return agent.ToolExecutionResult{Result: "Error: plan phase blocks ssh " + action + " until the user confirms", Outcome: agent.ToolExecutionOutcomeError}
+			return agent.ToolExecutionResult{Result: "Error: " + desktopbot.PlanPhaseNextStep, Outcome: agent.ToolExecutionOutcomeError}
 		}
 		if c.runtimeRemoteBinding != nil {
 			resources := c.runtimeParentExecutor.sshResourcesForUser(c.principal.TenantID, c.principal.UserID)
@@ -2764,6 +3132,8 @@ func (c *coreAgentCallbacks) executeToolStructuredUnguarded(name, argsJSON strin
 			OwnerID:     memoryOwnerIDForPrincipal(c.principal),
 			LoopID:      c.loopID,
 		}))
+	case "memory_write", "memory_forget", "memory_search":
+		return toolTextResult(c.desktopMemoryCall(name, args))
 	case "read_file":
 		text, err := c.readFileDetailed(args)
 		if err != nil {

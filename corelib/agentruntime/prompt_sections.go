@@ -54,10 +54,10 @@ func BuildLightPrompt(request LightPromptRequest) string {
 		},
 	}, request.UserText, true)
 
-	now := request.CurrentTime
-	if now.IsZero() {
-		now = time.Now()
-	}
+	// Minute time stays out of the system prompt. A clock here would change
+	// the prefix on every turn. CurrentTime remains on the request so hosts
+	// can put it on the newest line instead.
+	_ = request.CurrentTime
 	var b strings.Builder
 	b.WriteString(prompt)
 	b.WriteString("\n")
@@ -65,7 +65,6 @@ func BuildLightPrompt(request LightPromptRequest) string {
 	b.WriteString("Do not inspect local files, run shell commands, manage projects, start group discussions, change memory, create tasks, or generate files.\n")
 	b.WriteString("Do not ask the user to re-authorize tools. If a listed lookup already returned evidence, answer from that evidence.\n")
 	b.WriteString("If the request needs code, files, project context, or multi-step planning, say those tools are not in this turn instead of improvising.\n")
-	b.WriteString(fmt.Sprintf("Current local time: %s\n", now.Format("2006-01-02 15:04:05 -0700")))
 	b.WriteString(fmt.Sprintf("Execution profile: layer=%s task=%s confidence=%.2f reason=%s\n", strings.TrimSpace(request.ExecutionLayer), strings.TrimSpace(request.ExecutionTask), request.ExecutionConfidence, strings.TrimSpace(request.ExecutionReason)))
 	if clientContext := agent.BuildClientCapabilityPrompt(request.ClientCapabilities); clientContext != "" {
 		b.WriteString(clientContext)

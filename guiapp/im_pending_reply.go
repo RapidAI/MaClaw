@@ -458,13 +458,17 @@ func (h *IMMessageHandler) consumePendingAskUserAnswer(userID, trimmed string, e
 		}
 		return "", nil, false, false
 	}
-	context := agent.FormatPendingAskUserAnswerHint(pending.Question, trimmed, pending.Context)
+	// A numbered card says "reply with the option". "1" is that option, not a
+	// different answer. Confirm and choice questions resolve it before any
+	// settler sees the text; a free-text question keeps the digits.
+	answer := pendingAskOptionAnswer(pending, trimmed)
+	context := agent.FormatPendingAskUserAnswerHint(pending.Question, answer, pending.Context)
 	mailboxSettled := false
-	if hint, handled := h.finishMailboxAskUser(userID, trimmed, pending.MailboxDraftID); handled {
+	if hint, handled := h.finishMailboxAskUser(userID, answer, pending.MailboxDraftID); handled {
 		context = hint
 		mailboxSettled = true
 	}
-	if hint, handled := h.finishMCPServerWriteAskUser(userID, trimmed, pending.MCPServerWrite); handled {
+	if hint, handled := h.finishMCPServerWriteAskUser(userID, answer, pending.MCPServerWrite); handled {
 		// Unlike a mailbox draft, an approved write grant must resume the
 		// paused task so the model re-issues the call — settle stays false.
 		context = hint
@@ -473,6 +477,43 @@ func (h *IMMessageHandler) consumePendingAskUserAnswer(userID, trimmed string, e
 	ws := agent.CloneWorkingState(pending.WorkingState)
 	agent.AdvanceWorkingStateAfterUserReply(ws)
 	return context, ws, true, mailboxSettled
+}
+
+// pendingAskOptionAnswer maps a reply that selects a numbered option back to
+// the label the card printed. "1" and "1. 确认" are the first shown choice.
+// The index is the channel's action list, not the raw stored options: a
+// confirm card with no options, or whose only option is 继续, still numbers
+// Confirm and Cancel. A reply that only starts with a digit and then says
+// something else is left unchanged.
+func pendingAskOptionAnswer(pending *pendingAskUserState, text string) string {
+	text = strings.TrimSpace(text)
+	if pending == nil || text == "" {
+		return text
+	}
+	choices := askUserShownChoices(pending.InputType, pending.Options)
+	if len(choices) == 0 {
+		return text
+	}
+	i := 0
+	for i < len(text) && text[i] >= '0' && text[i] <= '9' {
+		i++
+	}
+	if i == 0 || i > 2 {
+		return text
+	}
+	n := 0
+	for _, c := range text[:i] {
+		n = n*10 + int(c-'0')
+	}
+	if n < 1 || n > len(choices) {
+		return text
+	}
+	rest := strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(text[i:]), ".、)）．"))
+	choice := strings.TrimSpace(choices[n-1])
+	if choice == "" || (rest != "" && !strings.EqualFold(rest, choice)) {
+		return text
+	}
+	return choice
 }
 
 func mailboxDraftIDFromPending(raw interface{}) string {

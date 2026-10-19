@@ -29,7 +29,7 @@ type SSHPTYSession struct {
 // NewSSHPTYSession 基于已有的 SSH 连接创建 PTY 会话。
 func NewSSHPTYSession(client *ssh.Client, hostID string) *SSHPTYSession {
 	return &SSHPTYSession{
-		client:   client,
+		client: client,
 		// 较大缓冲：高吞吐命令（ps/grep/du）短时突发输出时减少丢包。
 		// 仍满时 readLoop 优先丢弃旧数据，保留最新（含 EXIT/prompt）。
 		outputCh: make(chan []byte, 256),
@@ -130,19 +130,8 @@ func (s *SSHPTYSession) IsAlive() bool {
 	client := s.client
 	s.mu.Unlock()
 
-	// 在 goroutine 中做网络 I/O，带超时保护。
-	// 半开 TCP 连接场景下 SendRequest 可能阻塞 30-120 秒。
-	ch := make(chan bool, 1)
-	go func() {
-		_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
-		ch <- (err == nil)
-	}()
-	select {
-	case alive := <-ch:
-		return alive
-	case <-time.After(5 * time.Second):
-		return false
-	}
+	ok, finished, _ := awaitSSHProbe(client, sshProbeWait)
+	return finished && ok
 }
 
 // Client 返回底层池化 SSH 连接，供非 PTY 的 per-command exec channel 复用。
@@ -211,8 +200,8 @@ func (s *SSHPTYSession) Close() error {
 
 // sessionKeepalive 定期通过底层 ssh.Client 发送 keepalive 请求，
 // 防止 SSH channel 因空闲被服务端或中间网络设备断开。
-// 与 SSHPool 的连接级 keepalive 互补：pool 保活 TCP 连接，这里保活 session channel。
-// SendRequest 带 5s 超时：半开 TCP 上可能阻塞 30–120s，超时计为一次失败。
+// 与 SSHPool 的连接级 keepalive 共用同一次探测，避免超时后的 SendRequest
+// 占着全局锁，把活连接计成断线。这里不关闭连接。
 func (s *SSHPTYSession) sessionKeepalive(interval time.Duration) {
 	if interval <= 0 {
 		interval = 15 * time.Second
@@ -232,30 +221,48 @@ func (s *SSHPTYSession) sessionKeepalive(interval time.Duration) {
 			if closed || client == nil {
 				return
 			}
-			// 带超时的 keepalive，避免半开连接拖死整个会话探测
-			ch := make(chan error, 1)
-			go func() {
-				_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
-				ch <- err
-			}()
-			var err error
-			select {
-			case <-s.stopKA:
+			ok, finished, running, stopped := s.readSSHProbe(client)
+			if stopped {
 				return
-			case err = <-ch:
-			case <-time.After(5 * time.Second):
-				err = fmt.Errorf("session keepalive timeout")
 			}
-			if err != nil {
-				failCount++
-				// 连续 3 次失败才放弃，避免瞬时网络抖动误判
-				if failCount >= 3 {
-					return
-				}
-			} else {
+			if finished && ok {
 				failCount = 0
+				continue
+			}
+			if !sshProbeCountsAsFailure(finished, ok, running) {
+				continue
+			}
+			failCount++
+			// 这里不关闭连接。连接池的 keepalive 负责回收；三次传输错误或一次
+			// 长时间无应答后停止本循环，避免继续堆积探测。
+			if !finished || failCount >= 3 {
+				return
 			}
 		}
+	}
+}
+
+// readSSHProbe waits for the shared keepalive, or returns early when the
+// session is closed. stopped means the session asked this loop to end.
+func (s *SSHPTYSession) readSSHProbe(client *ssh.Client) (ok bool, finished bool, running time.Duration, stopped bool) {
+	type probe struct {
+		ok       bool
+		finished bool
+		running  time.Duration
+	}
+	// Buffer the result so a close during the wait does not leave the
+	// goroutine blocked, and so it never writes this function's results
+	// after return.
+	got := make(chan probe, 1)
+	go func() {
+		ok, finished, running := awaitSSHProbe(client, sshProbeWait)
+		got <- probe{ok: ok, finished: finished, running: running}
+	}()
+	select {
+	case <-s.stopKA:
+		return false, false, 0, true
+	case result := <-got:
+		return result.ok, result.finished, result.running, false
 	}
 }
 

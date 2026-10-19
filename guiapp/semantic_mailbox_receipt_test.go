@@ -146,6 +146,51 @@ func TestMailboxConfigurePlanDoesNotMaterializeSend(t *testing.T) {
 	}
 }
 
+func TestMailboxDeletePlanMaterializesOnlyTheTrustedDeleteAdapter(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	registerBuiltinTools(h.registry, h)
+	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+		"user-mail-delete", "删除邮箱中的所有邮件", "desktop", "root-mail-delete", "turn-mail-delete",
+		&intent.ClassificationResult{Primary: intent.LabelMailboxDelete, Confidence: .92},
+	)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("handled=%v surface=%v err=%v", handled, surface != nil, err)
+	}
+	closeSemanticSurface(t, surface)
+	if got := semanticGrantNameForAdapter(surface, semanticTrustedMailboxDeleteAdapter); got != "mailbox_delete" {
+		t.Fatalf("delete plan model name=%q, want mailbox_delete", got)
+	}
+	deleteDef := semanticDefForGrantName(defs, "mailbox_delete")
+	if deleteDef == nil {
+		t.Fatal("model list omitted mailbox_delete")
+	}
+	deleteFn, _ := deleteDef["function"].(map[string]interface{})
+	if deleteFn == nil {
+		t.Fatal("mailbox_delete definition has no function")
+	}
+	deleteDesc, _ := deleteFn["description"].(string)
+	if !strings.Contains(deleteDesc, "freezes a draft") || !strings.Contains(deleteDesc, "stays listed") || strings.Contains(deleteDesc, "reappear") {
+		t.Fatalf("delete description=%q", deleteDesc)
+	}
+	if semanticGrantNameForAdapter(surface, semanticTrustedMailboxSendAdapter) != "" {
+		t.Fatal("delete plan materialized mailbox send")
+	}
+	for _, selection := range surface.plan.Selections {
+		if selection.AdapterName == "mailbox_delete" {
+			t.Fatal("managed delete plan still selected the legacy mailbox_delete adapter")
+		}
+		if selection.FitProof.MatchedCapability == tool.CapabilityMessageDeleteMailbox {
+			if semanticReceiptBoundaryMissing(selection) || !semanticMailboxDeleteReceiptSelection(selection) {
+				t.Fatalf("delete selection is not a receipt boundary: %+v", selection.AdapterName)
+			}
+		}
+	}
+	cb := &sharedAgentLoopCallbacks{semanticSurface: surface}
+	if got := semanticToolsSearchStatus(cb, "mailbox_delete"); got != "[已在当前工具面]" {
+		t.Fatalf("discovery status=%s", got)
+	}
+}
+
 func TestTrustedMailboxSendFreezesADraftAndDoesNotDial(t *testing.T) {
 	sender := &statusMailSender{}
 	h, userID := newMailboxToolFixture(t, sender)

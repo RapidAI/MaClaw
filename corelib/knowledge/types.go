@@ -954,6 +954,11 @@ type SearchOptions struct {
 	// returned medium-confidence hits. Auto-recall leaves this false so Search
 	// still runs embedding when FTS is empty or best FTS score < 2.0.
 	PreferEmbedding bool `json:"prefer_embedding,omitempty"`
+	// Retrieval selects the indexed route. Empty and "auto" keep the heuristic
+	// above. "fts" stays lexical, "vector" returns only embedding hits, and
+	// "hybrid" always fuses both when an embedder is attached. A composite or
+	// unknown name still suppresses embedding on every route.
+	Retrieval string `json:"retrieval,omitempty"`
 }
 
 // ImageSearchOptions limits a knowledge query to image evidence. Results are

@@ -20,6 +20,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/browser"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 func desktopTestPNG(t *testing.T, width, height int, noisy bool) []byte {
@@ -723,7 +724,7 @@ func TestScreenshotSaveNamesOnlyTheWrittenFile(t *testing.T) {
 		t.Fatalf("claimed=%q", claimed.Content)
 	}
 	plan := context.WithValue(ctx, desktopPhaseKey{}, "plan")
-	if _, err := operateDesktop(plan, scope, map[string]any{"action": "screenshot", "name": "baidu_screenshot.png"}); err == nil || !strings.Contains(err.Error(), "plan phase blocks saving") {
+	if _, err := operateDesktop(plan, scope, map[string]any{"action": "screenshot", "name": "baidu_screenshot.png"}); err == nil || err.Error() != desktopbot.PlanPhaseNextStep {
 		t.Fatal(err)
 	}
 	if _, err := operateDesktop(ctx, scope, map[string]any{"action": "screenshot", "name": "../secret.png"}); err == nil {

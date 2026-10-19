@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +20,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/botlog"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 const desktopBotDisabledMessage = "服务器没有开通bot功能"
@@ -31,20 +31,23 @@ const desktopBotDisabledMessage = "服务器没有开通bot功能"
 // DesktopBotImage is one cloud-desktop screenshot for the bot bubble.
 // Data is standard base64 with no data: prefix.
 type DesktopBotImage struct {
-	MIME string `json:"mime"`
-	Data string `json:"data"`
+	MIME         string `json:"mime"`
+	Data         string `json:"data"`
+	AttachmentID string `json:"attachment_id,omitempty"`
 }
 
 // DesktopBotFile is one document attached to the bot reply.
 // Data is standard base64 with no data: prefix.
 type DesktopBotFile struct {
-	Name string `json:"name"`
-	MIME string `json:"mime"`
-	Data string `json:"data"`
+	Name         string `json:"name"`
+	MIME         string `json:"mime"`
+	Data         string `json:"data"`
+	AttachmentID string `json:"attachment_id,omitempty"`
 }
 
 type desktopBotRelayResult struct {
 	Text            string
+	SendToUser      string
 	NovncURL        string
 	UserControl     bool
 	AttentionReason string
@@ -57,6 +60,10 @@ type desktopBotRelayResult struct {
 	AskUserOptionsJSON string
 	Images             []DesktopBotImage
 	Files              []DesktopBotFile
+	// RunError is a finished run's own failure. It is not a transport error:
+	// the read succeeded, and the bubble is this text when the run never
+	// called send_to_user. A filler stays empty so the turn ends quietly.
+	RunError string
 }
 
 // desktopBotRelayOverride is set by tests. Production posts to Hub.
@@ -872,7 +879,7 @@ func (a *App) AppendDesktopBotSupplement(botID, runID, supplement string) (*Desk
 		return nil, err
 	}
 	botlog.Write(botID, "gui.supplement_dispatched", nil, "run", target.RunID, "supplement", sent.SupplementID)
-	return &DesktopBotSupplementReceipt{Accepted: true, Stage: desktopBotSupplementQueued, RunID: target.RunID, SupplementID: sent.SupplementID, Message: "已收到，会在当前任务的下一步生效。"}, nil
+	return &DesktopBotSupplementReceipt{Accepted: true, Stage: desktopBotSupplementQueued, RunID: target.RunID, SupplementID: sent.SupplementID, Message: desktopbot.SteerOnIt}, nil
 }
 
 // PersistDesktopBotPreference writes a preference to the user's instance on the
@@ -1017,7 +1024,7 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 		a.publishDesktopRunDriving(botID)
 	}()
 	started := time.Now()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(desktopSurfaceContext())
 	defer cancel()
 	botlog.Write(botID, "gui.relay_begin", nil, "request_id", requestID, "phase", phase, "text_len", strconv.Itoa(len(text)))
 	if desktopBotRelayOverride == nil {
@@ -1026,6 +1033,12 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 	result, err := a.relayDesktopBotWhenFree(ctx, botID, text, phase, requestID, func() {
 		a.noteDesktopBotQueued(botID, sessionKey)
 	})
+	if errors.Is(err, context.Canceled) {
+		// The window closed. This surface stops waiting. The server run
+		// is not cancelled, and the outbound message stays for the next open.
+		botlog.Write(botID, "gui.surface_left", err, "request_id", requestID, "phase", phase)
+		return
+	}
 	resp := &IMAgentResponse{RequestID: requestID, SessionKey: sessionKey, EventScopeID: sessionKey}
 	waiting := false
 	if err != nil {
@@ -1033,7 +1046,6 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 		if novnc, ok := a.desktopTimeoutHandoff(botID, err); ok {
 			resp.DesktopHandoffURL = novnc
 			resp.DesktopUserControl = true
-			resp.Text = "这一步需要你在当前桌面的浏览器里完成登录或验证。登录状态会留在这个浏览器里，完成后这个 bot 会接着操作。"
 			resp.Error = ""
 		} else if novnc, ok := a.desktopFailureKeepsLogin(botID, err); ok {
 			resp.DesktopHandoffURL = novnc
@@ -1043,34 +1055,44 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 		}
 	} else {
 		resp.Text = result.Text
-		// The screenshot lives on this machine. The event carries the path, and
-		// the bytes stay out of the chat transcript. Bytes remain only when the
-		// file could not be written.
-		shots := cleanDesktopBotImages(result.Images)
-		resp.DesktopShotPaths = storeDesktopBotShots(botID, shots)
-		if len(resp.DesktopShotPaths) == 0 {
-			resp.DesktopImages = shots
+		visible := desktopbot.Visible(desktopbot.Turn{Prose: result.Text, SendToUser: result.SendToUser})
+		if visible.Bubble && !visible.Failed {
+			resp.SendToUser = visible.Sentence
 		}
-		// The document lives on this machine. The event carries the path, and
-		// the bytes stay out of the chat transcript.
-		saved, left := storeDesktopBotFiles(botID, cleanDesktopBotFiles(result.Files))
-		resp.LocalFilePaths = saved
-		resp.DesktopFiles = left
+		// The bytes stay on the server attachment or the computer volume.
+		// This event carries the id. The next open fetches it.
+		resp.DesktopAttachmentIDs = desktopAttachmentIDs(result.Images, result.Files)
 		resp.DesktopUserControl = result.UserControl
 		resp.DesktopAttentionReason = strings.TrimSpace(result.AttentionReason)
 		resp.AskUserInputType = strings.TrimSpace(result.AskUserInputType)
 		resp.AskUserSecretName = strings.TrimSpace(result.AskUserSecretName)
 		resp.AskUserQuestion = strings.TrimSpace(result.AskUserQuestion)
 		resp.AskUserOptionsJSON = strings.TrimSpace(result.AskUserOptionsJSON)
-		if result.WaitingForUser || resp.AskUserQuestion != "" || resp.AskUserSecretName != "" {
+		if desktopPersonStillAsked(resp.AskUserQuestion, resp.AskUserSecretName, resp.AskUserOptionsJSON) {
 			// The run ended to ask this person something. Mark it so a reply is
 			// routed back as the next turn instead of being offered to a run
-			// that can no longer consume it.
+			// that can no longer consume it. A placeholder question is not that ask.
 			a.markDesktopRunWaitingForUser(botID, requestID)
 			waiting = true
 		}
 		if result.UserControl || resp.DesktopAttentionReason != "" {
 			resp.DesktopHandoffURL = result.NovncURL
+		}
+		// The run finished. A real error is the failed bubble. A sentence
+		// already spoken stays that sentence, and a filler ends with neither.
+		if resp.SendToUser == "" {
+			runErr := strings.TrimSpace(result.RunError)
+			if runErr != "" && !desktopbot.Filler(runErr) {
+				resp.Error = runErr
+				if !resp.DesktopUserControl && strings.TrimSpace(resp.DesktopAttentionReason) == "" && !desktopPersonStillAsked(resp.AskUserQuestion, resp.AskUserSecretName, resp.AskUserOptionsJSON) {
+					if novnc, ok := a.desktopFailureKeepsLogin(botID, fmt.Errorf("%s", runErr)); ok {
+						resp.DesktopHandoffURL = novnc
+						resp.DesktopUserControl = true
+					} else {
+						a.emitDesktopBotCleared(requestID, sessionKey)
+					}
+				}
+			}
 		}
 	}
 	if desktopBotResultSink != nil {
@@ -1243,6 +1265,7 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 	defer endAdmitRequest(botID, requestID)
 	var out struct {
 		Text               string            `json:"text"`
+		SendToUser         string            `json:"send_to_user"`
 		NovncURL           string            `json:"novnc_url"`
 		Handoff            bool              `json:"handoff"`
 		AttentionReason    string            `json:"attention_reason"`
@@ -1252,6 +1275,7 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 		AskUserOptionsJSON string            `json:"ask_user_options_json"`
 		Images             []DesktopBotImage `json:"images"`
 		Files              []DesktopBotFile  `json:"files"`
+		Error              string            `json:"error"`
 		Accepted           bool              `json:"accepted"`
 		RunID              string            `json:"run_id"`
 		Status             string            `json:"status"`
@@ -1339,7 +1363,7 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 		"phase", phase,
 		"text_len", strconv.Itoa(len(strings.TrimSpace(out.Text))),
 	)
-	return a.desktopRelayFromWire(out.Text, out.NovncURL, out.AttentionReason, out.AskUserInputType, out.AskUserSecretName, out.AskUserQuestion, out.AskUserOptionsJSON, out.Handoff, out.Images, out.Files)
+	return a.desktopRelayFromWire(out.Text, out.SendToUser, out.NovncURL, out.AttentionReason, out.AskUserInputType, out.AskUserSecretName, out.AskUserQuestion, out.AskUserOptionsJSON, out.Handoff, out.Images, out.Files, out.Error)
 }
 
 // desktopBotAdmitAttempts is how many times one admission is tried. The
@@ -1383,23 +1407,11 @@ func desktopBotAdmitAgain(status int, err error) bool {
 // One slow read is tried again. The run itself is not limited by this gap.
 var desktopBotPollInterval = time.Second
 
-// desktopBotActivityPattern matches a working-row phrase. The poll drops
-// anything else, so a typed password or a tool name cannot become the label.
-// 正在处理 is the spoken-status word and is not a step. 正在一点点推进 is the
-// row's own fallback. 正在询问 is composed locally with the other bot's name.
-var desktopBotActivityPattern = regexp.MustCompile(`^正在\p{Han}{2,6}$`)
-
+// desktopBotActivityText keeps a working-row phrase. The closed set lives in
+// desktopbot.ActivityPhrase. 正在处理 is the spoken-status word. 正在一点点推进
+// is the row's own fallback. 正在询问 is composed locally with the other bot's name.
 func desktopBotActivityText(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if !desktopBotActivityPattern.MatchString(raw) {
-		return ""
-	}
-	switch raw {
-	case "正在处理", "正在一点点推进", "正在询问":
-		return ""
-	default:
-		return raw
-	}
+	return desktopbot.ActivityPhrase(raw)
 }
 
 // desktopBotActivitySink is set by tests. Production also emits the event.
@@ -1423,12 +1435,48 @@ func (a *App) publishDesktopBotActivity(botID, runID, activity string) {
 	a.emitEvent("desktop-bot-activity", string(raw))
 }
 
-func (a *App) desktopRelayFromWire(text, novnc, attention, askType, askName, askQuestion, askOptions string, handoff bool, images []DesktopBotImage, files []DesktopBotFile) (desktopBotRelayResult, error) {
-	if strings.TrimSpace(text) == "" {
-		return desktopBotRelayResult{}, fmt.Errorf("MaClawSrv 没有返回结果")
+// desktopPersonStillAsked is a question, a secret, or a choice the person can
+// answer. A placeholder such as 无变化 is not one, and neither is the input
+// type that every ask carries. Those must not keep a failed desktop up.
+func desktopPersonStillAsked(question, secret, optionsJSON string) bool {
+	if strings.TrimSpace(secret) != "" {
+		return true
+	}
+	if desktopAskHasOptions(optionsJSON) {
+		return true
+	}
+	question = strings.TrimSpace(question)
+	return question != "" && !desktopbot.Filler(question)
+}
+
+func desktopAskHasOptions(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	var items []string
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		return false
+	}
+	for _, item := range items {
+		if desktopbot.RealChoice(item) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) desktopRelayFromWire(text, sendToUser, novnc, attention, askType, askName, askQuestion, askOptions string, handoff bool, images []DesktopBotImage, files []DesktopBotFile, runError string) (desktopBotRelayResult, error) {
+	// An empty body is a quiet finish, not 「没有返回结果」. The person sees
+	// send_to_user when the run called it, and nothing when it did not.
+	// A filler error is the same silence. A real error is the failed bubble.
+	runError = strings.TrimSpace(runError)
+	if desktopbot.Filler(runError) {
+		runError = ""
 	}
 	return desktopBotRelayResult{
 		Text:               text,
+		SendToUser:         strings.TrimSpace(sendToUser),
 		NovncURL:           a.absoluteHubPath(novnc),
 		UserControl:        handoff,
 		AttentionReason:    strings.TrimSpace(attention),
@@ -1438,6 +1486,7 @@ func (a *App) desktopRelayFromWire(text, novnc, attention, askType, askName, ask
 		AskUserOptionsJSON: strings.TrimSpace(askOptions),
 		Images:             cleanDesktopBotImages(images),
 		Files:              cleanDesktopBotFiles(files),
+		RunError:           runError,
 	}, nil
 }
 
@@ -1480,6 +1529,7 @@ func (a *App) waitDesktopBotRun(ctx context.Context, botID, runID string) (deskt
 		}
 		var out struct {
 			Text               string            `json:"text"`
+			SendToUser         string            `json:"send_to_user"`
 			NovncURL           string            `json:"novnc_url"`
 			Handoff            bool              `json:"handoff"`
 			AttentionReason    string            `json:"attention_reason"`
@@ -1489,6 +1539,7 @@ func (a *App) waitDesktopBotRun(ctx context.Context, botID, runID string) (deskt
 			AskUserOptionsJSON string            `json:"ask_user_options_json"`
 			Images             []DesktopBotImage `json:"images"`
 			Files              []DesktopBotFile  `json:"files"`
+			Error              string            `json:"error"`
 			Accepted           bool              `json:"accepted"`
 			Status             string            `json:"status"`
 			Activity           string            `json:"activity"`
@@ -1525,7 +1576,10 @@ func (a *App) waitDesktopBotRun(ctx context.Context, botID, runID string) (deskt
 			return desktopBotRelayResult{}, err
 		}
 		readsFailed = 0
-		if status == http.StatusAccepted || out.Status == "running" || (out.Accepted && strings.TrimSpace(out.Text) == "") {
+		// A real error on a 200 is the run's outcome, not a reason to read
+		// again. A filler is absent here, so an empty finished body ends too.
+		finishedError := strings.TrimSpace(out.Error) != "" && !desktopbot.Filler(out.Error)
+		if !finishedError && (status == http.StatusAccepted || out.Status == "running" || (out.Accepted && strings.TrimSpace(out.Text) == "" && strings.TrimSpace(out.SendToUser) == "")) {
 			state := strings.TrimSpace(out.Status)
 			if state == "" {
 				state = "accepted"
@@ -1558,7 +1612,7 @@ func (a *App) waitDesktopBotRun(ctx context.Context, botID, runID string) (deskt
 			"attention", strings.TrimSpace(out.AttentionReason),
 			"polls", strconv.Itoa(polls),
 		)
-		return a.desktopRelayFromWire(out.Text, out.NovncURL, out.AttentionReason, out.AskUserInputType, out.AskUserSecretName, out.AskUserQuestion, out.AskUserOptionsJSON, out.Handoff, out.Images, out.Files)
+		return a.desktopRelayFromWire(out.Text, out.SendToUser, out.NovncURL, out.AttentionReason, out.AskUserInputType, out.AskUserSecretName, out.AskUserQuestion, out.AskUserOptionsJSON, out.Handoff, out.Images, out.Files, out.Error)
 	}
 }
 
@@ -1722,6 +1776,52 @@ func desktopBotDeliverMIME(raw string) string {
 // storeDesktopBotShots writes each screenshot next to that bot's documents.
 // The returned paths are absolute. A shot that cannot be written is omitted
 // so the caller can still offer the bytes for this turn.
+// desktopAttachmentIDs are the server or volume ids on this result.
+// The GUI does not write those bytes first. It fetches them the next time it opens.
+func desktopAttachmentIDs(images []DesktopBotImage, files []DesktopBotFile) []string {
+	var ids []string
+	for _, image := range images {
+		if id := strings.TrimSpace(image.AttachmentID); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	for _, file := range files {
+		if id := strings.TrimSpace(file.AttachmentID); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+var (
+	desktopSurfaceMu     sync.Mutex
+	desktopSurfaceCtx    context.Context
+	desktopSurfaceCancel context.CancelFunc
+)
+
+// desktopSurfaceContext is this window's wait. Closing the window cancels it.
+// That cancel does not post /runs/{id}/cancel.
+func desktopSurfaceContext() context.Context {
+	desktopSurfaceMu.Lock()
+	defer desktopSurfaceMu.Unlock()
+	if desktopSurfaceCtx == nil {
+		desktopSurfaceCtx, desktopSurfaceCancel = context.WithCancel(context.Background())
+	}
+	return desktopSurfaceCtx
+}
+
+// abandonDesktopSurface stops this surface's wait. The server run keeps going.
+func abandonDesktopSurface() {
+	desktopSurfaceMu.Lock()
+	cancel := desktopSurfaceCancel
+	desktopSurfaceCtx = nil
+	desktopSurfaceCancel = nil
+	desktopSurfaceMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 func storeDesktopBotShots(botID string, images []DesktopBotImage) []string {
 	id := safeDesktopBotDir(botID)
 	if id == "" || len(images) == 0 {

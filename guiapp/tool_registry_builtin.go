@@ -899,6 +899,14 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	annotateSemanticTool(registry, "mailbox_configure", []tool.CapabilityProvision{{
 		Capability: tool.CapabilityMessageConfigureMailbox, Quality: 1,
 	}}, []tool.EffectClass{tool.EffectSensitive})
+	regCtxP("mailbox_delete", mailbox.ToolDescriptionDelete(),
+		ToolCategoryBuiltin, []string{"mailbox", "email", "imap", "delete", "邮箱", "删除邮件"},
+		mailbox.DeleteProperties(), []string{"action"}, func(ctx context.Context, args map[string]interface{}, _ tool.ProgressCallback) string {
+			return h.toolMailboxDelete(ctx, args)
+		})
+	annotateSemanticTool(registry, "mailbox_delete", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityMessageDeleteMailbox, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectExternalEffect})
 
 	officeSchema, officeRequired := overlayCoreToolSchema("office", map[string]interface{}{
 		"phase_id": map[string]string{"type": "string", "description": workflowDocGeneratePDFPhaseIDSchemaDescription()},

@@ -567,14 +567,21 @@ func (s *CodingSubAgent) setNestedWorkerScopeApproval(callback ScopeApprovalCall
 }
 
 // prepareTaskScopeApproval resolves declared absolute paths before model
-// execution. Tool-level checks remain in place for paths discovered later.
+// execution. A path outside the project is asked, or rejected when there is
+// no approval channel. A path whose containment cannot be proved stays a hard
+// rejection, including under 完全控制: a missing project directory would
+// otherwise prompt for every lexically in-project path. Tool-level checks
+// remain in place for paths discovered later.
 func (s *CodingSubAgent) prepareTaskScopeApproval(task *TaskItem) string {
 	if s == nil || task == nil || strings.TrimSpace(s.projectPath) == "" {
 		return ""
 	}
 	for _, path := range collectTaskAbsolutePaths(task) {
 		withinProject, err := isPathWithinDir(path, s.projectPath)
-		if err == nil && withinProject {
+		if err != nil {
+			return fmt.Sprintf("无法确认 task_scope 路径是否位于项目目录内：%s", err.Error())
+		}
+		if withinProject {
 			continue
 		}
 		if s.scopeApproval == nil {
@@ -5545,7 +5552,10 @@ func (c *codingSubAgentCallbacks) displayProjectPath(path string) string {
 		return filepath.Clean(path)
 	}
 	absProject = filepath.Clean(absProject)
-	realProject, err := filepath.EvalSymlinks(absProject)
+	if err := codingScopeDirExists(absProject); err != nil {
+		return filepath.Clean(path)
+	}
+	realProject, err := evalCodingScopePath(absProject)
 	if err != nil {
 		return filepath.Clean(path)
 	}
@@ -6095,79 +6105,56 @@ func (c *codingSubAgentCallbacks) rememberFileLineDelta(path string, added, remo
 }
 
 func (c *codingSubAgentCallbacks) requireProjectWriteScope(path string) string {
-	projectPath := c.projectPath()
-	if projectPath == "" {
-		return ""
-	}
-	ok, err := isPathWithinDir(path, projectPath)
-	if err != nil {
+	return c.decideProjectScope(path, "write_file", func(err error) string {
 		return fmt.Sprintf("无法确认写入路径是否位于项目目录内：%s", err.Error())
-	}
-	if ok {
-		return ""
-	}
-	// Out of scope — try interactive approval before rejecting.
-	if c.subagent != nil && c.subagent.scopeApproval != nil {
-		return c.subagent.scopeApproval.check("write_file", path, projectPath)
-	}
-	return formatScopeRejection("write_file", path, projectPath)
+	})
 }
 
 func (c *codingSubAgentCallbacks) requireProjectReadScope(path, toolName string) string {
+	return c.decideProjectScope(path, toolName, func(err error) string {
+		return fmt.Sprintf("无法确认 %s 路径是否位于项目目录内：%s", toolName, err.Error())
+	})
+}
+
+func (c *codingSubAgentCallbacks) requireProjectWorkingDirScope(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return ""
+	}
+	return c.decideProjectScope(path, "bash", func(err error) string {
+		return fmt.Sprintf("无法确认命令 working_dir 是否位于项目目录内：%s", err.Error())
+	})
+}
+
+func (c *codingSubAgentCallbacks) requireProjectDiffScope(path string) string {
+	return c.decideProjectScope(path, "git_diff", func(err error) string {
+		return fmt.Sprintf("无法确认 git_diff 路径是否位于项目目录内：%s", err.Error())
+	})
+}
+
+// decideProjectScope allows a path inside the project. A path outside it,
+// including one on another Windows volume, is allowed under 完全控制 and
+// otherwise asked. Any other failure to prove containment stays a hard
+// rejection: prompting there would ask about files inside a project directory
+// that could not be resolved.
+func (c *codingSubAgentCallbacks) decideProjectScope(path, toolName string, uncertain func(error) string) string {
 	projectPath := c.projectPath()
 	if projectPath == "" {
 		return ""
 	}
 	ok, err := isPathWithinDir(path, projectPath)
 	if err != nil {
-		return fmt.Sprintf("无法确认 %s 路径是否位于项目目录内：%s", toolName, err.Error())
+		if uncertain == nil {
+			return err.Error()
+		}
+		return uncertain(err)
 	}
 	if ok {
 		return ""
 	}
-	// Out of scope — try interactive approval before rejecting.
 	if c.subagent != nil && c.subagent.scopeApproval != nil {
 		return c.subagent.scopeApproval.check(toolName, path, projectPath)
 	}
 	return formatScopeRejection(toolName, path, projectPath)
-}
-
-func (c *codingSubAgentCallbacks) requireProjectWorkingDirScope(path string) string {
-	projectPath := c.projectPath()
-	if projectPath == "" || strings.TrimSpace(path) == "" {
-		return ""
-	}
-	ok, err := isPathWithinDir(path, projectPath)
-	if err != nil {
-		return fmt.Sprintf("无法确认命令 working_dir 是否位于项目目录内：%s", err.Error())
-	}
-	if ok {
-		return ""
-	}
-	// Out of scope — try interactive approval before rejecting.
-	if c.subagent != nil && c.subagent.scopeApproval != nil {
-		return c.subagent.scopeApproval.check("bash", path, projectPath)
-	}
-	return formatScopeRejection("bash", path, projectPath)
-}
-
-func (c *codingSubAgentCallbacks) requireProjectDiffScope(path string) string {
-	projectPath := c.projectPath()
-	if projectPath == "" {
-		return ""
-	}
-	ok, err := isPathWithinDir(path, projectPath)
-	if err != nil {
-		return fmt.Sprintf("无法确认 git_diff 路径是否位于项目目录内：%s", err.Error())
-	}
-	if ok {
-		return ""
-	}
-	// Out of scope — try interactive approval before rejecting.
-	if c.subagent != nil && c.subagent.scopeApproval != nil {
-		return c.subagent.scopeApproval.check("git_diff", path, projectPath)
-	}
-	return formatScopeRejection("git_diff", path, projectPath)
 }
 
 func (c *codingSubAgentCallbacks) requireReadBeforeModify(path, toolName string) string {
@@ -6353,7 +6340,13 @@ func isPathWithinDir(path, dir string) (bool, error) {
 		return ok, err
 	}
 
-	realDir, err := filepath.EvalSymlinks(absDir)
+	// A missing project directory must stay an error. Asking would prompt for
+	// every lexically in-project path. Stat is used here because EvalSymlinks
+	// fails when an ancestor is a Windows junction, while open follows it.
+	if err := codingScopeDirExists(absDir); err != nil {
+		return false, err
+	}
+	realDir, err := evalCodingScopePath(absDir)
 	if err != nil {
 		return false, err
 	}
@@ -6365,40 +6358,219 @@ func isPathWithinDir(path, dir string) (bool, error) {
 }
 
 func pathWithinCleanDir(path, dir string) (bool, error) {
-	rel, err := filepath.Rel(filepath.Clean(dir), filepath.Clean(path))
+	path = codingStripExtendedPath(filepath.Clean(path))
+	dir = codingStripExtendedPath(filepath.Clean(dir))
+	// filepath.Rel fails when the path is not on this directory's volume
+	// ("Rel: can't make C:\... relative to D:\...") and for a drive-relative
+	// path such as D:file. Both mean outside. Returning the error made the
+	// scope gate hard-block before 完全控制 or an ask could run.
+	if codingVolumeNamesDiffer(path, dir) {
+		return false, nil
+	}
+	rel, err := filepath.Rel(dir, path)
 	if err != nil {
-		return false, err
+		return false, nil
 	}
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))), nil
 }
 
+// codingStripExtendedPath removes a Win32 or NT drive prefix so \\?\D:\file,
+// \\.\D:\file, and \??\D:\file compare as D:\file. It does not rewrite
+// \\?\UNC\...: Clean treats only "\\?\UNC" as the volume, so collapsing ".."
+// and then turning the result into a normal UNC path can mark a different
+// share as inside the project. The tool still opens the original path.
+func codingStripExtendedPath(path string) string {
+	if stripped, ok := codingStripDrivePrefix(path, `\\?\`); ok {
+		return stripped
+	}
+	if stripped, ok := codingStripDrivePrefix(path, `\\.\`); ok {
+		return stripped
+	}
+	if stripped, ok := codingStripDrivePrefix(path, `\??\`); ok {
+		return stripped
+	}
+	return path
+}
+
+func codingStripDrivePrefix(path, prefix string) (string, bool) {
+	if !strings.HasPrefix(path, prefix) || len(path) < len(prefix)+2 {
+		return "", false
+	}
+	rest := path[len(prefix):]
+	if !isASCIIDriveLetter(rest[0]) || rest[1] != ':' {
+		return "", false
+	}
+	return rest, true
+}
+
+func isASCIIDriveLetter(c byte) bool {
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+}
+
+func codingVolumeNamesDiffer(path, dir string) bool {
+	pathVol := filepath.VolumeName(codingStripExtendedPath(path))
+	dirVol := filepath.VolumeName(codingStripExtendedPath(dir))
+	if pathVol == "" || dirVol == "" {
+		return false
+	}
+	return !strings.EqualFold(pathVol, dirVol)
+}
+
+// codingScopeDirExists reports whether dir can be opened. EvalSymlinks
+// returns a not-exist error when any ancestor is a Windows junction, even
+// though Stat and the file APIs follow that junction. Treating that error as
+// a missing directory keeps a lexical allow-dir grant and would cover a
+// junction that leaves the directory.
+func codingScopeDirExists(dir string) error {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	_, err = os.Stat(abs)
+	return err
+}
+
+// evalCodingScopePath resolves path the way os.Open does.
+//
+// Win32 collapses "." and ".." before it follows a reparse point, so
+// approved\link\..\secret and approved\secret are the same open when the
+// path has no \\?\ prefix. filepath.Abs does that collapse. A \\?\ path
+// that still contains ".." fails with an invalid name and does not climb
+// out through the link.
+//
+// filepath.EvalSymlinks follows symlinks only. A Windows directory junction
+// is ModeIrregular, so EvalSymlinks leaves the junction path in place while
+// ReadFile and ReadDir follow it. This walk follows both.
 func evalCodingScopePath(path string) (string, error) {
-	clean := filepath.Clean(path)
-	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
-		return filepath.Clean(resolved), nil
-	} else if !os.IsNotExist(err) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("empty path")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
 		return "", err
 	}
+	return codingFollowReparse(filepath.Clean(abs), 0)
+}
 
-	var missing []string
-	current := clean
-	for {
-		parent := filepath.Dir(current)
-		if parent == current {
-			return "", fmt.Errorf("no existing parent for %s", path)
-		}
-		missing = append(missing, filepath.Base(current))
-		if resolvedParent, err := filepath.EvalSymlinks(parent); err == nil {
-			resolved := resolvedParent
-			for i := len(missing) - 1; i >= 0; i-- {
-				resolved = filepath.Join(resolved, missing[i])
-			}
-			return filepath.Clean(resolved), nil
-		} else if !os.IsNotExist(err) {
-			return "", err
-		}
-		current = parent
+func codingFollowReparse(absClean string, depth int) (string, error) {
+	if depth > 255 {
+		return "", fmt.Errorf("too many links in %s", absClean)
 	}
+	prefix, components := codingSplitCleanPath(absClean)
+	dest := prefix
+	for i, comp := range components {
+		if comp == ".." {
+			dest = codingScopeParent(dest, prefix)
+			continue
+		}
+		next := codingScopeJoin(dest, comp)
+		info, err := os.Lstat(next)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return "", err
+			}
+			dest = next
+			for _, tail := range components[i+1:] {
+				if tail == ".." {
+					dest = codingScopeParent(dest, prefix)
+					continue
+				}
+				if tail == "." {
+					continue
+				}
+				dest = codingScopeJoin(dest, tail)
+			}
+			return filepath.Clean(dest), nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeIrregular != 0 {
+			target, rerr := os.Readlink(next)
+			if rerr == nil && target != "" {
+				resolved, err := codingResolveLinkTarget(dest, target)
+				if err != nil {
+					return "", err
+				}
+				if rest := components[i+1:]; len(rest) > 0 {
+					resolved = filepath.Join(append([]string{resolved}, rest...)...)
+				}
+				return codingFollowReparse(resolved, depth+1)
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				if rerr != nil {
+					return "", rerr
+				}
+				return "", fmt.Errorf("empty link target %s", next)
+			}
+		}
+		if !info.IsDir() && i != len(components)-1 {
+			return "", fmt.Errorf("not a directory: %s", next)
+		}
+		dest = next
+	}
+	if dest == "" {
+		return filepath.Clean(absClean), nil
+	}
+	return filepath.Clean(dest), nil
+}
+
+func codingSplitCleanPath(path string) (prefix string, components []string) {
+	vol := filepath.VolumeName(path)
+	rest := path
+	if len(vol) <= len(path) {
+		rest = path[len(vol):]
+	}
+	if rest != "" && os.IsPathSeparator(rest[0]) {
+		vol += rest[:1]
+		rest = rest[1:]
+	}
+	if rest == "" {
+		return vol, nil
+	}
+	for _, part := range strings.FieldsFunc(rest, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if part != "" && part != "." {
+			components = append(components, part)
+		}
+	}
+	return vol, components
+}
+
+func codingScopeJoin(dir, name string) string {
+	if dir == "" {
+		return name
+	}
+	if strings.HasSuffix(dir, `\`) || strings.HasSuffix(dir, `/`) {
+		return dir + name
+	}
+	return dir + string(os.PathSeparator) + name
+}
+
+func codingScopeParent(path, floor string) string {
+	if floor != "" && len(path) <= len(floor) {
+		return floor
+	}
+	i := strings.LastIndexAny(path, `/\`)
+	if i < 0 || (floor != "" && i < len(floor)) {
+		if floor != "" {
+			return floor
+		}
+		return path
+	}
+	parent := path[:i]
+	if parent == "" || (floor != "" && len(parent) < len(floor)) {
+		return floor
+	}
+	return parent
+}
+
+func codingResolveLinkTarget(parent, target string) (string, error) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return "", fmt.Errorf("empty link target")
+	}
+	stripped := codingStripExtendedPath(target)
+	if filepath.IsAbs(stripped) {
+		return filepath.Abs(stripped)
+	}
+	return filepath.Abs(filepath.Join(parent, stripped))
 }
 
 func snapshotCodingFile(path string) (codingFileSnapshot, error) {
@@ -18087,22 +18259,13 @@ func expandCodingSSHHomePath(path string) string {
 }
 
 func (c *codingSubAgentCallbacks) requireCodingSSHLocalPath(path string) string {
-	projectPath := c.projectPath()
 	path = strings.TrimSpace(path)
-	if projectPath == "" || path == "" {
+	if path == "" {
 		return ""
 	}
-	ok, err := isPathWithinDir(path, projectPath)
-	if err != nil {
+	return c.decideProjectScope(path, "ssh", func(err error) string {
 		return fmt.Sprintf("无法确认 ssh 本地路径是否位于项目目录内：%s", err.Error())
-	}
-	if ok {
-		return ""
-	}
-	if c.subagent != nil && c.subagent.scopeApproval != nil {
-		return c.subagent.scopeApproval.check("ssh", path, projectPath)
-	}
-	return formatScopeRejection("ssh", path, projectPath)
+	})
 }
 
 // guardCodingRemoteShellCommand is the high-risk half of the local bash

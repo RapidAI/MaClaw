@@ -44,6 +44,10 @@ const (
 	// is the capability. The host writes it only to the maclaw keyring and
 	// never returns, logs, or pushes it through Hub.
 	reasonMailboxKeyringCredential = "mailbox password is written only to the maclaw keyring and is never returned, logged, or synced"
+	// remote_path and local_path name one SFTP copy on the session the host
+	// already authenticated, including ProxyJump. The adapter writes the
+	// local file itself. session_id and a second host are not accepted.
+	reasonBoundSessionFileCopy = "remote_path and local_path name one copy through the already-bound SSH session, including ProxyJump. The adapter writes the local file itself and does not accept session_id or another host."
 )
 
 // managedSchemaGateBaseline maps an adapter to the crossings that were reviewed
@@ -66,14 +70,17 @@ var managedSchemaGateBaseline = map[string]map[string]string{
 		"url": reasonCapabilityTargetURL,
 	},
 	// The ssh adapter publishes exactly one mode per catalog build. Exec mode
-	// is command-only; connect mode (session-less) carries the connection
-	// parameters because opening a session cannot be expressed without them —
-	// the same reason as the remote acquirer. The host-side connect path
-	// (sshConnect) validates the host, keeps the password in memory only for
+	// is command or one file copy. Connect mode (session-less) carries the
+	// connection parameters because opening a session cannot be expressed
+	// without them — the same reason as the remote acquirer — and the same
+	// copy fields so a jump host can be opened and downloaded in one call.
+	// sshConnect validates the host, keeps the password in memory only for
 	// the dial, and pins the host key under the same rules as the legacy tool.
 	"semantic_execute_trusted_ssh": {
-		"host":     reasonCapabilityTargetURL,
-		"password": reasonTrustedSSHConnectCredential,
+		"host":        reasonCapabilityTargetURL,
+		"password":    reasonTrustedSSHConnectCredential,
+		"remote_path": reasonBoundSessionFileCopy,
+		"local_path":  reasonBoundSessionFileCopy,
 	},
 	// business.data.mis is reachable from LabelBusinessData and is served by
 	// the legacy MIS multiplexer: the model supplies every record identifier
@@ -295,6 +302,7 @@ func TestManagedSchemaGateLegacySurfaceDoesNotGrow(t *testing.T) {
 	closedByDesign := map[string]bool{
 		reasonWorkspaceConfinedLocation: true,
 		reasonCapabilityTargetURL:       true,
+		reasonBoundSessionFileCopy:      true,
 	}
 	legacy, readOnly := 0, 0
 	for _, reviewed := range managedSchemaGateBaseline {

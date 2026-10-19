@@ -38,6 +38,12 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
         if (String(path).endsWith('.html')) {
             return { kind: 'text', language: 'html', content: '<html><body>Hi</body></html>' };
         }
+        if (String(path).endsWith('.mp4') || String(path).endsWith('.mp3')) {
+            return {
+                kind: String(path).endsWith('.mp3') ? 'audio' : 'video',
+                preview_url: '/maclaw-preview/v1/file?t=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+            };
+        }
         return { kind: 'text', content: 'plain' };
     }),
     AIAssistantAttachmentFullDataURL: vi.fn(async () => ''),
@@ -388,5 +394,82 @@ describe('FilePreviewView', () => {
             />,
         );
         await waitFor(() => expect(getByTestId('html-preview-panel')).toBeTruthy());
+    });
+
+    it('seeks video and audio previews, queues until metadata, and clamps past the end', async () => {
+        const proto = HTMLMediaElement.prototype;
+        const time = new WeakMap<HTMLMediaElement, number>();
+        const ready = new WeakMap<HTMLMediaElement, number>();
+        const length = new WeakMap<HTMLMediaElement, number>();
+        const prior = {
+            currentTime: Object.getOwnPropertyDescriptor(proto, 'currentTime'),
+            readyState: Object.getOwnPropertyDescriptor(proto, 'readyState'),
+            duration: Object.getOwnPropertyDescriptor(proto, 'duration'),
+        };
+        const define = (key: 'currentTime' | 'readyState' | 'duration', map: WeakMap<HTMLMediaElement, number>, fallback: number) => {
+            Object.defineProperty(proto, key, {
+                configurable: true,
+                get() { return map.has(this) ? map.get(this)! : fallback; },
+                set(value: number) { map.set(this, value); },
+            });
+        };
+        define('currentTime', time, 0);
+        define('readyState', ready, 0);
+        define('duration', length, Number.NaN);
+        const restore = () => {
+            (['currentTime', 'readyState', 'duration'] as const).forEach((key) => {
+                const desc = prior[key];
+                if (desc) Object.defineProperty(proto, key, desc);
+                else delete (proto as unknown as Record<string, unknown>)[key];
+            });
+        };
+        const seek = (path: string, seconds: number) => {
+            window.dispatchEvent(new CustomEvent('file-companion:seek', { detail: { path, seconds } }));
+        };
+        try {
+            const videoPath = 'D:/media/clip.mp4';
+            const videoView = render(
+                <FilePreviewView
+                    file={{ fileName: 'clip.mp4', absPath: videoPath }}
+                    theme={lightCodePreviewTheme}
+                    lang="zh"
+                />,
+            );
+            await waitFor(() => expect(videoView.getByTestId('media-preview-panel').getAttribute('data-kind')).toBe('video'));
+            const video = videoView.container.querySelector('video') as HTMLMediaElement;
+            expect(video).toBeTruthy();
+            seek(videoPath, 725);
+            expect(video.currentTime).toBe(0);
+            Object.defineProperty(video, 'readyState', { value: 1, configurable: true });
+            fireEvent.loadedMetadata(video);
+            expect(video.currentTime).toBe(725);
+            Object.defineProperty(video, 'duration', { value: 100, configurable: true });
+            seek(videoPath, 5000);
+            expect(video.currentTime).toBeCloseTo(99.95);
+            seek(videoPath, -1);
+            expect(video.currentTime).toBeCloseTo(99.95);
+            seek('D:/media/other.mp4', 3);
+            expect(video.currentTime).toBeCloseTo(99.95);
+            videoView.unmount();
+
+            const audioPath = 'D:/media/talk.mp3';
+            const audioView = render(
+                <FilePreviewView
+                    file={{ fileName: 'talk.mp3', absPath: audioPath }}
+                    theme={lightCodePreviewTheme}
+                    lang="zh"
+                />,
+            );
+            await waitFor(() => expect(audioView.getByTestId('media-preview-panel').getAttribute('data-kind')).toBe('audio'));
+            const audio = audioView.container.querySelector('audio') as HTMLMediaElement;
+            expect(audio).toBeTruthy();
+            Object.defineProperty(audio, 'readyState', { value: 1, configurable: true });
+            Object.defineProperty(audio, 'duration', { value: 10000, configurable: true });
+            seek(audioPath, 3723);
+            expect(audio.currentTime).toBe(3723);
+            audioView.unmount();
+        } finally {
+            restore();
+        }
     });
 });

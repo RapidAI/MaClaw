@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/botlog"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
 // QueryDesktopBotTaskStatus asks Hub how this bot's recent runs are doing and
@@ -210,8 +211,10 @@ type desktopBotDelivery struct {
 	RunID  string `json:"run_id"`
 	Task   string `json:"task"`
 	Status string `json:"status"`
+	Phase  string `json:"phase"`
 	Reply  struct {
 		Text               string            `json:"text"`
+		SendToUser         string            `json:"send_to_user"`
 		NovncURL           string            `json:"novnc_url"`
 		Handoff            bool              `json:"handoff"`
 		AttentionReason    string            `json:"attention_reason"`
@@ -234,25 +237,13 @@ func (a *App) emitDesktopBotDelivery(owner string, item desktopBotDelivery) bool
 	if owner == "" {
 		owner = "local"
 	}
-	text := strings.TrimSpace(item.Reply.Text)
-	if text == "" {
-		text = strings.TrimSpace(item.Error)
-	}
 	failed := item.Status == "failed" || item.Status == "cancelled"
-	// A screenshot with no caption would be stored as a failure and then
-	// dropped, because an empty reply is treated as "nothing came back".
-	if text == "" && !failed && (len(item.Reply.Images) > 0 || len(item.Reply.Files) > 0) {
-		text = desktopDeliveryLabel(item.Task)
-	}
-	if label := desktopDeliveryLabel(item.Task); label != "" && text != "" && !strings.Contains(text, label) {
-		text = label + "\n" + text
-	}
-	shots := storeDesktopBotShots(botID, cleanDesktopBotImages(item.Reply.Images))
-	var images []DesktopBotImage
-	if len(shots) == 0 {
-		images = cleanDesktopBotImages(item.Reply.Images)
-	}
-	saved, left := storeDesktopBotFiles(botID, cleanDesktopBotFiles(item.Reply.Files))
+	visible := desktopbot.Visible(desktopbot.Turn{
+		Prose:      item.Reply.Text,
+		SendToUser: item.Reply.SendToUser,
+		Error:      item.Error,
+	})
+	ids := desktopAttachmentIDs(item.Reply.Images, item.Reply.Files)
 	payload := map[string]any{
 		"request_id":      "desktop-bot-deliver-" + strings.TrimSpace(item.RunID),
 		"session_key":     desktopBotLocalSessionKey(owner, botID),
@@ -261,40 +252,36 @@ func (a *App) emitDesktopBotDelivery(owner string, item desktopBotDelivery) bool
 		"run_id":          strings.TrimSpace(item.RunID),
 		"delivery_report": true,
 	}
-	// A failed run with reply text must not look like a success. The chat
-	// treats any non-empty text as succeeded, so the failure goes in error.
+	// send_to_user is the only sentence. Assistant prose stays off the event.
+	// A real transport error stays on error.
+	if visible.Bubble && !visible.Failed {
+		payload["send_to_user"] = visible.Sentence
+	}
 	if failed {
-		if text == "" {
-			text = strings.TrimSpace(item.Error)
+		errText := strings.TrimSpace(item.Error)
+		if errText != "" && !desktopbot.Filler(errText) {
+			payload["error"] = errText
 		}
-		if text != "" {
-			payload["error"] = text
-		}
-	} else if text != "" {
-		payload["text"] = text
 	}
-	if len(shots) > 0 {
-		payload["desktop_shot_paths"] = shots
+	if len(ids) > 0 {
+		payload["desktop_attachment_ids"] = ids
 	}
-	if len(images) > 0 {
-		payload["desktop_images"] = images
-	}
-	if len(saved) > 0 {
-		payload["local_file_paths"] = saved
-	}
-	if len(left) > 0 {
-		payload["desktop_files"] = left
+	switch strings.TrimSpace(item.Phase) {
+	case "plan", "execute":
+		payload["phase"] = strings.TrimSpace(item.Phase)
 	}
 	if item.Reply.Handoff || strings.TrimSpace(item.Reply.AttentionReason) != "" {
 		payload["desktop_handoff_url"] = a.absoluteHubPath(item.Reply.NovncURL)
 		payload["desktop_user_control"] = item.Reply.Handoff
 		payload["attention_reason"] = strings.TrimSpace(item.Reply.AttentionReason)
 	}
-	if question := strings.TrimSpace(item.Reply.AskUserQuestion); question != "" || strings.TrimSpace(item.Reply.AskUserSecretName) != "" {
+	question := strings.TrimSpace(item.Reply.AskUserQuestion)
+	options := strings.TrimSpace(item.Reply.AskUserOptionsJSON)
+	if question != "" || strings.TrimSpace(item.Reply.AskUserSecretName) != "" || desktopAskHasOptions(options) {
 		payload["ask_user_input_type"] = strings.TrimSpace(item.Reply.AskUserInputType)
 		payload["ask_user_secret_name"] = strings.TrimSpace(item.Reply.AskUserSecretName)
 		payload["ask_user_question"] = question
-		payload["ask_user_options_json"] = strings.TrimSpace(item.Reply.AskUserOptionsJSON)
+		payload["ask_user_options_json"] = options
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -305,22 +292,4 @@ func (a *App) emitDesktopBotDelivery(owner string, item desktopBotDelivery) bool
 	}
 	a.emitEvent("desktop-bot-report", string(raw))
 	return true
-}
-
-func desktopDeliveryLabel(task string) string {
-	task = strings.TrimSpace(task)
-	if task == "" {
-		return ""
-	}
-	if i := strings.IndexAny(task, "\r\n"); i >= 0 {
-		task = strings.TrimSpace(task[:i])
-	}
-	if i := strings.IndexAny(task, "，。,.;；"); i > 0 {
-		task = strings.TrimSpace(task[:i])
-	}
-	runes := []rune(task)
-	if len(runes) > 32 {
-		task = string(runes[:32])
-	}
-	return task
 }

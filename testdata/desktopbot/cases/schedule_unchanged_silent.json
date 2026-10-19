@@ -1,0 +1,9 @@
+{
+  "id": "schedule_unchanged_silent",
+  "origin": "schedule",
+  "channel": "desktop",
+  "prose": "无变化",
+  "send_to_user": "(无输出)",
+  "expect_count": 0,
+  "forbid": ["无变化", "(无输出)", "no change"]
+}

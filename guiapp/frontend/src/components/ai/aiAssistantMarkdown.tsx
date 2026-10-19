@@ -18,7 +18,7 @@ import { userTurnDisplayView } from "./userTurnDisplay";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { isBrowserEchoFieldLabel, stripRolePrefixForDisplay } from "./rolePrefixDisplay";
 import { stripCodingAgentAuditSections } from "./codingAgentUserFinish";
-import { cleanReasoningTrailForBody, visibleAssistantReplyForMessage } from "./assistantReasoningBody";
+import { contentAuditForMessage, reasoningCleanedForMessage, replyBodyForDisplay, visibleReplyForAssistantMessage } from "./assistantReasoningBody";
 import { completedAssistantSummary, assistantTaskSettledIncomplete, isProgressOnlyToolAction, parseAssistantToolStatus, stripAssistantToolCallMarkers } from "./assistantToolCall";
 import { AssistantToolCallRow, renderAssistantBodyWithToolCalls } from "./assistantToolCallRow";
 import { AssistantToolFlipTicker } from "./AssistantToolFlipTicker";
@@ -463,6 +463,23 @@ function splitInlineMath(text: string): InlineMathSegment[] {
             }
         }
 
+        // A $$...$$ pair inside a sentence is one formula. The single-dollar
+        // scan would treat the first pair as empty and keep a stray dollar.
+        if (
+            text.startsWith("$$", index)
+            && !isEscapedAt(text, index)
+            && isInlineMathBoundaryBefore(text, index)
+        ) {
+            const close = findUnescapedDelimiter(text, "$$", index + 2);
+            if (close > index + 2 && isInlineMathBoundaryAfter(text, close + 1)) {
+                const inner = text.slice(index + 2, close).trim();
+                if (inner) {
+                    pushMath(close + 2, inner);
+                    continue;
+                }
+            }
+        }
+
         if (
             text[index] === "$"
             && !isEscapedAt(text, index)
@@ -527,8 +544,9 @@ function renderMath(latex: string, displayMode: boolean, key: React.Key): React.
 }
 
 export function renderInlineMarkdown(text: string, t: Theme, quietCode = false): React.ReactNode[] {
-    // `$` and `\(` are the only inline-math openers. Backticks only hide those
-    // openers, so a line with neither sequence is one text segment.
+    // `$`, `$$`, and `\(` open inline math. A $$ pair in a sentence is one
+    // formula, not two dollars. Backticks hide those openers, so a line with
+    // none of them is one text segment.
     if (!text.includes("$") && !text.includes("\\(")) {
         return renderInlineMarkdownRestored(text, t, quietCode);
     }
@@ -701,7 +719,7 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme, quietC
 // A streamed table can leave its row label as the only cell on a line.  Keep
 // that line in the current table so the table-model repair can join it with the
 // following N-1 cells.
-function isSplitTableRowLabel(line: string): boolean {
+export function isSplitTableRowLabel(line: string): boolean {
     const normalized = normalizeMarkdownTableLine(line);
     const cells = parseMarkdownTableCells(normalized);
     return normalized.includes("|") && cells.length === 1 && Boolean(cells[0]);
@@ -1038,7 +1056,7 @@ function renderFields(fields: Array<{ label: string; value: string }>, t: Theme)
                         borderRadius: "999px",
                         padding: "3px 10px",
                         fontSize: "11px",
-                        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+                        fontFamily: CODE_FENCE_FONT,
                     }
                     : {
                         background: t.fieldBg,
@@ -1484,10 +1502,10 @@ export function assistantMessageHasVisibleBody(msg: ChatMessage): boolean {
     // In the coding workbench reasoning is rendered as ordered timeline nodes.
     // Do not leave an empty assistant bubble at the original placeholder.
     const reasoningVisibleHere = !msg.codingTimeline?.length
-        && cleanReasoningTrailForBody(msg.reasoning || "").trim();
+        && reasoningCleanedForMessage(msg.id, msg.reasoning || "").trim();
     const hasRenderableScreenshot = hasRenderableAssistantScreenshot(msg, visibleFields.length > 0);
     return !!(
-        stripCodingAgentAuditSections((msg.content || "").trim())
+        contentAuditForMessage(msg.id, (msg.content || "").trim())
         || reasoningVisibleHere
         || visibleFields.length
         || hasRenderableScreenshot
@@ -1627,11 +1645,11 @@ export function renderMessage(
             // second live title beside the standalone bar.
             const liveForReasoning = isLastAssistant && (!!liveReasoningLabel || (isStreaming && !codingAnswerStarted));
 
-            const cleanedReasoning = cleanReasoningTrailForBody(msg.reasoning || "");
             // After the stream ends, peel CoT out of a mixed body. Ordinary chat
             // may still lift a hidden non-monologue deliverable; coding workbench
-            // only separates, so thoughts stay on the timeline.
-            const visibleReply = visibleAssistantReplyForMessage(msg.content || "", cleanedReasoning, {
+            // only separates, so thoughts stay on the timeline. The clean is
+            // incremental: an answer flush must not walk the whole thought again.
+            const visibleReply = visibleReplyForAssistantMessage(msg.id, msg.content || "", msg.reasoning || "", {
                 live: liveForReasoning,
                 coding: !!(msg.codingTimeline?.length || collapseReasoningByDefault),
                 toolCalls: !!msg.toolCalls?.length,
@@ -1643,7 +1661,10 @@ export function renderMessage(
                 <div key={msg.id} role="group" data-testid={`assistant-chat-ai-${msg.id}`} aria-label={localizeText(lang, "AI assistant message", "AI 助手消息")} className="aamd-msg-ai">
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, margin: `0 4px ${CHAT_SPEAKER_LABEL_GAP}px`, color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}><span className="mc-message-avatar mc-message-avatar--assistant" aria-hidden="true">M</span><span>{assistantSpeakerLabel(lang)}</span></span>
                     {(() => {
-                        const copyPayload = buildAssistantReplyCopyText(summaryText, msg.unfinishedSlot, lang);
+                        // Role-prefix and audit scans walk the whole answer. A streaming
+                        // flush only needs to know the button is visible; the click
+                        // builds the paste text once.
+                        const copyPayload = isStreaming ? summaryText : buildAssistantReplyCopyText(summaryText, msg.unfinishedSlot, lang);
                         const showCopy = copyPayload.trim().length > 0;
                         return (
                     <ChatBubbleFrame
@@ -1656,6 +1677,7 @@ export function renderMessage(
                         topRight={showCopy ? (
                             <AssistantReplyCopyButton
                                 text={copyPayload}
+                                resolveText={isStreaming ? () => buildAssistantReplyCopyText(summaryText, msg.unfinishedSlot, lang) : undefined}
                                 theme={t}
                                 lang={lang}
                                 messageId={msg.id}
@@ -1736,9 +1758,11 @@ export function renderMessage(
                             // works on legacy history that still prefixes decorative marks.
                             // renderContentWithCodeBlocks re-strips after compact-heading normalize
                             // (idempotent; that second pass catches "### <pictograph> …").
-                            const rawFormattedContent = stripCodingAgentAuditSections(prepareChatBodyForDisplay(
+                            const preparedReplyBody = prepareChatBodyForDisplay(
                                 formatUnfinishedSlotNotice(summaryText, msg.unfinishedSlot, lang),
-                            ));
+                            );
+                            const displayedReply = replyBodyForDisplay(msg.id, preparedReplyBody);
+                            const rawFormattedContent = displayedReply.audited;
                             // /btw side query results are collapsible to reduce space.
                             // Detection: requestId starts with "btw-" (set by sendBtwMessage)
                             // OR content starts with the backend prefix (fallback for history reload).
@@ -1767,7 +1791,7 @@ export function renderMessage(
                                     </details>
                                 );
                             }
-                            const formattedContent = stripRolePrefixForDisplay(rawFormattedContent);
+                            const formattedContent = displayedReply.visible;
                             // Use incremental renderer when provided (streaming long messages)
                             // to avoid O(content.length) full re-parse every 33ms token flush.
                             // A tool row splits the body, so that shared cache stays unused

@@ -1,0 +1,18 @@
+{
+  "id": "user_returns_aborts",
+  "expect": "abort",
+  "tokens": 120000,
+  "provider": "anthropic",
+  "ttl": "5m",
+  "idle": "2m",
+  "margin": "45s",
+  "turn_at": "2026-10-18T12:00:00Z",
+  "return_at": "2026-10-18T12:01:00Z",
+  "tick_at": "2026-10-18T12:02:00Z",
+  "tools": "tools-v1",
+  "system": "系统规则",
+  "memory": "记忆",
+  "first": "user:第一句",
+  "history": "assistant:在",
+  "summary": "不该装上"
+}

@@ -147,6 +147,18 @@ func cdpSocketOnEndpoint(cdpHTTP, wsURL string) string {
 	}
 	parsed.Host = base.Host
 	parsed.User = base.User
+	// A tunnel URL is scheme://host/v1/desktops/tunnel/<key>/cdp. Chrome's
+	// debugger socket is only /devtools/..., so without this join the path
+	// prefix is dropped and the websocket never reaches the tunnel.
+	// An empty path, or "/", stays as Chrome advertised it.
+	basePath := base.EscapedPath()
+	if basePath != "" && basePath != "/" && parsed.Path != "" {
+		if !strings.HasPrefix(parsed.Path, "/") {
+			parsed.Path = "/" + parsed.Path
+		}
+		parsed.Path = strings.TrimRight(basePath, "/") + parsed.Path
+		parsed.RawPath = ""
+	}
 	return parsed.String()
 }
 
@@ -193,12 +205,13 @@ func cdpHTTPClient(timeout time.Duration) *http.Client {
 	return client
 }
 
-// useCDPChromeHost makes Chromium accept this request. Its DevTools server
-// returns HTTP 500 when Host is a DNS name, with the body "Host header is
-// specified and is not an IP address or localhost." The desktop publishes
-// that name. The TCP dial stays on it. Only the header becomes 127.0.0.1
-// with the same port, which is the form Chromium copies into
-// webSocketDebuggerUrl. cdpSocketOnEndpoint puts the published host back
+// useCDPChromeHost makes Chromium accept a direct published-port request.
+// Its DevTools server returns HTTP 500 when Host is a DNS name, with the
+// body "Host header is specified and is not an IP address or localhost."
+// The TCP dial stays on the published name. Only the header becomes
+// 127.0.0.1 with the same port. A /v1/desktops/tunnel path is not rewritten:
+// nginx selects the vhost by Host, and desktopd sets an IP Host on the hop
+// that reaches Chromium. cdpSocketOnEndpoint puts the published host back
 // before the next dial.
 func useCDPChromeHost(req *http.Request) {
 	if req == nil || req.URL == nil {
@@ -215,6 +228,12 @@ func useCDPChromeHost(req *http.Request) {
 func cdpChromeHost(endpoint string) string {
 	parsed, err := url.Parse(strings.TrimSpace(endpoint))
 	if err != nil || parsed.Hostname() == "" || cdpHostIsLocal(parsed.Hostname()) {
+		return ""
+	}
+	// The next hop is nginx and desktopd, not Chromium. Rewriting Host to
+	// 127.0.0.1 here would miss the public vhost. The tunnel sets an IP Host
+	// on the hop that actually reaches Chrome.
+	if strings.Contains(parsed.EscapedPath(), "/v1/desktops/tunnel/") {
 		return ""
 	}
 	port := parsed.Port()

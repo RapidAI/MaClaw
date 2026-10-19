@@ -104,10 +104,99 @@ func TestSSHPoolAcquireResolvedPinsCapturedHandshakeAndReusesIt(t *testing.T) {
 	if second != first {
 		t.Fatal("pinned acquire did not reuse the authenticated captured connection")
 	}
-	pool.Release(resolved)
-	pool.Release(resolved)
+	pool.Release(resolved, first)
+	pool.Release(resolved, first)
 	if got := pool.Stats(); len(got) != 0 {
 		t.Fatalf("pool still has entries after both releases: %#v", got)
+	}
+}
+
+func TestAcquireReusesReferencedClientWhenProbeWouldFail(t *testing.T) {
+	signer := testSSHSigner(t)
+	address := startTestPasswordSSHServer(t, signer, "deploy", "correct-password")
+	host, port := testSSHHostPort(t, address)
+	cfg := SSHHostConfig{
+		Host:           host,
+		User:           "deploy",
+		Port:           port,
+		Password:       "correct-password",
+		AuthMethod:     "password",
+		ConnectTimeout: 2 * time.Second,
+	}
+	pool := NewSSHPool()
+	t.Cleanup(pool.CloseAll)
+
+	first, err := pool.acquire(cfg)
+	if err != nil {
+		t.Fatalf("acquire() error = %v", err)
+	}
+	key := sshPoolKey(cfg)
+	pool.mu.Lock()
+	held := pool.conns[key]
+	pool.mu.Unlock()
+	if held == nil || held.client != first || held.refCount != 1 {
+		t.Fatalf("session ref = %#v", held)
+	}
+
+	// The TCP session is gone. A keepalive probe now fails, and closing the
+	// pooled client here would drop the session that still holds a reference.
+	if err := first.Close(); err != nil {
+		t.Fatalf("close live client: %v", err)
+	}
+
+	second, err := pool.acquire(cfg)
+	if err != nil {
+		t.Fatalf("acquire() while referenced error = %v", err)
+	}
+	if second != first {
+		t.Fatal("acquire replaced a connection that a session still references")
+	}
+	pool.mu.Lock()
+	held = pool.conns[key]
+	pool.mu.Unlock()
+	if held == nil || held.client != first || held.refCount != 2 {
+		t.Fatalf("after second acquire, entry = %#v", held)
+	}
+
+	pool.Release(cfg, first)
+	pool.mu.Lock()
+	held = pool.conns[key]
+	pool.mu.Unlock()
+	if held == nil || held.client != first || held.refCount != 1 {
+		t.Fatal("releasing the extra reference closed the session connection")
+	}
+}
+
+func TestReleaseOnlyDropsTheAcquiredClient(t *testing.T) {
+	pool := NewSSHPool()
+	cfg := SSHHostConfig{Host: "10.0.0.8", User: "deploy", Port: 22}
+	cfg.Defaults()
+	key := sshPoolKey(cfg)
+	session := &ssh.Client{}
+	replacement := &ssh.Client{}
+	pool.mu.Lock()
+	pool.conns[key] = &poolEntry{client: session, hostID: cfg.SSHHostID(), refCount: 2}
+	pool.mu.Unlock()
+
+	pool.Release(cfg, session)
+	pool.mu.Lock()
+	entry := pool.conns[key]
+	pool.mu.Unlock()
+	if entry == nil || entry.client != session || entry.refCount != 1 {
+		t.Fatalf("matching release entry = %#v", entry)
+	}
+
+	pool.mu.Lock()
+	entry.client = replacement
+	entry.refCount = 1
+	pool.mu.Unlock()
+
+	pool.Release(cfg, session)
+	pool.mu.Lock()
+	entry = pool.conns[key]
+	pool.mu.Unlock()
+	if entry == nil || entry.client != replacement || entry.refCount != 1 {
+		t.Fatalf("replacement entry = %#v", entry)
 	}
 }
 

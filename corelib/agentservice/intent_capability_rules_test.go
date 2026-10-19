@@ -110,4 +110,8 @@ func TestMailboxSendNeedIsOnlySend(t *testing.T) {
 	if len(configure) != 1 || configure[0].Capability != coretool.CapabilityMessageConfigureMailbox || !configure[0].Required {
 		t.Fatalf("configure rule=%#v", configure)
 	}
+	del := im[intent.LabelMailboxDelete]
+	if len(del) != 1 || del[0].Capability != coretool.CapabilityMessageDeleteMailbox || !del[0].Required || del[0].MaxInvocations != 1 {
+		t.Fatalf("delete rule=%#v", del)
+	}
 }
