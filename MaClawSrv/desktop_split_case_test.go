@@ -96,11 +96,13 @@ func TestDesktopBotSplitCases(t *testing.T) {
 		const runID = "run-rpc"
 		desktopRoundWakes.Store(runID, &desktopRoundWake{woken: true, have: true, endpoint: desktopEndpoint{Display: ":20"}})
 		t.Cleanup(func() { finishDesktopRound("tenant-rpc", "alice", runID) })
+		// Screen actions (click, type, app_open, computer...) run on the
+		// guarded path; a command is the single machine call.
 		ctx := agentruntime.WithToolCallID(context.Background(), "call-click")
 		scope := agentruntime.Scope{TenantID: "tenant-rpc", UserID: "alice", InstanceID: "bot-rpc", RunID: runID}
 		text, err := operateDesktop(ctx, scope, map[string]any{
-			"action":       "click",
-			"text":         "确定",
+			"action":       "bash",
+			"command":      "ls /home/desktop",
 			"messages":     []any{map[string]any{"role": "user", "content": "把对话带去"}},
 			"memory":       "画像",
 			"send_to_user": "告诉这个人",
@@ -125,19 +127,19 @@ func TestDesktopBotSplitCases(t *testing.T) {
 				t.Fatalf("body key %s", key)
 			}
 		}
-		for _, key := range []string{"run_id", "tool_call_id", "tenant", "user", "action", "args", "display"} {
+		for _, key := range []string{"run_id", "tool_call_id", "tenant", "user", "action", "args"} {
 			if _, ok := body[key]; !ok {
 				t.Fatalf("body missing %s: %s", key, body)
 			}
 		}
-		if string(body["run_id"]) != `"run-rpc"` || string(body["tool_call_id"]) != `"call-click"` || string(body["action"]) != `"click"` || string(body["display"]) != `":20"` {
+		if string(body["run_id"]) != `"run-rpc"` || string(body["tool_call_id"]) != `"call-click"` || string(body["action"]) != `"bash"` {
 			t.Fatalf("body = %s", body)
 		}
 		var args map[string]any
 		if err := json.Unmarshal(body["args"], &args); err != nil {
 			t.Fatal(err)
 		}
-		if len(args) != 1 || args["text"] != "确定" {
+		if len(args) != 1 || args["command"] != "ls /home/desktop" {
 			t.Fatalf("args = %#v", args)
 		}
 		raw, _ := json.Marshal(body)

@@ -278,6 +278,21 @@ func desktopRoundDisplay(scope agentruntime.Scope) string {
 	return strings.TrimSpace(wake.endpoint.Display)
 }
 
+// desktopHubRPCDirect reports an action the worker may send to Hub as one
+// machine call without running it through operateDesktopBody's screen path.
+// These need no display and have no worker-side guard after the call.
+// app_open (window raise), app_run/computer (paste guard, every step of a
+// batch), browser actions (session, password and captcha checks), and
+// screenshot (frame and page list) stay on the guarded path.
+func desktopHubRPCDirect(action string) bool {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "file_read", "file_write", "file_edit", "file_list", "bash", "install", "http":
+		return true
+	default:
+		return false
+	}
+}
+
 func desktopHubExecutesTool() bool {
 	if desktopHubClientFromEnv() == nil {
 		return false
@@ -305,6 +320,15 @@ func runDesktopHubTool(ctx context.Context, scope agentruntime.Scope, action str
 	}
 	if desktopToolNeedsDisplay(action) {
 		call.Display = desktopRoundDisplay(scope)
+		if call.Display == "" {
+			// No tool of this round opened the session yet. Without a display
+			// Hub would use the user's default screen, not this bot's.
+			if userKey, keyErr := desktopUserKey(scope); keyErr == nil {
+				if endpoint, wakeErr := ensureDesktopRound(ctx, scope, userKey, true); wakeErr == nil {
+					call.Display = strings.TrimSpace(endpoint.Display)
+				}
+			}
+		}
 	}
 	exec := desktopToolExec{ID: desktopCurrentExecutor(scope), Volumes: desktopToolVolumes}
 	outcome, err := dispatchDesktopTool(call, exec, func(call desktopToolCall, _ desktopToolExec) (desktopToolOutcome, error) {

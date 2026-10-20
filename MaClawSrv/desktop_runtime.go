@@ -518,7 +518,12 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		defer beginDesktopActivity(scope.RunID, "正在查看")()
 		return listDesktopBrowserSkills(userKey)
 	}
-	if desktopHubExecutesTool() {
+	// Only a call with no worker-side guard goes to Hub as one machine call.
+	// Screen actions keep the round's display (an isolated bot's own screen),
+	// the window raise after app_open, the paste guard, the captcha/page-need
+	// read, and the browser session. Those run here and reach the computer
+	// through Hub's session, app, open, ctl, and screenshot routes below.
+	if desktopHubExecutesTool() && desktopHubRPCDirect(action) {
 		if action == "install" {
 			if err := refuseDesktopDanger(ctx, scope, action, args); err != nil {
 				return "", err
