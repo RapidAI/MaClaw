@@ -3635,51 +3635,61 @@ def serve_gate(listen_port, target_port, token):
     server.listen(32)
 
     while True:
-        client, _ = server.accept()
-        reap_children()
         try:
-            head = read_request_head(client)
-            route = None
-            if head is not None:
-                if request_authorized(head, token):
-                    route = (target_port, "")
-                else:
-                    route = bot_gate_route(listen_port, request_bearer(head))
-            if route is None:
-                client.close()
-                continue
-            target, bot = route
-            remote = None
-            for _ in range(40):
-                try:
-                    remote = socket.create_connection(("127.0.0.1", target), 1)
-                    break
-                except OSError:
-                    time.sleep(0.25)
-            if remote is None:
-                client.close()
-                continue
-            # read_request_head leaves a 10s timeout on the client and
-            # create_connection leaves its connect timeout on the remote.
-            # Both must go: an idle noVNC screen or a quiet CDP session is
-            # normal, and the relay has to sit there silently for hours.
-            client.settimeout(None)
-            remote.settimeout(None)
-            remote.sendall(head)
-            watch = None
-            if bot:
-                touch_bot_file(bot, "activity")
-                watch = BotTraffic(bot, sniff_input=listen_port == VNC_GATE_PORT)
-            else:
-                note_gate_activity()
-            threading.Thread(target=pipe, args=(client, remote, watch), daemon=True).start()
-            threading.Thread(target=pipe, args=(remote, client), daemon=True).start()
+            client, _ = server.accept()
         except OSError:
-            try:
-                client.close()
-            except OSError:
-                pass
+            continue
+        # One thread per connection: the header read (10s), a bot's first
+        # noVNC start and the upstream connect retry (10s) must not hold up
+        # every other CDP or noVNC client on this gate.
+        threading.Thread(target=gate_connection, args=(client, listen_port, target_port, token), daemon=True).start()
 
+
+def gate_connection(client, listen_port, target_port, token):
+    """Authorize one gate connection, then pipe it to its local port."""
+    reap_children()
+    try:
+        head = read_request_head(client)
+        route = None
+        if head is not None:
+            if request_authorized(head, token):
+                route = (target_port, "")
+            else:
+                route = bot_gate_route(listen_port, request_bearer(head))
+        if route is None:
+            client.close()
+            return
+        target, bot = route
+        remote = None
+        for _ in range(40):
+            try:
+                remote = socket.create_connection(("127.0.0.1", target), 1)
+                break
+            except OSError:
+                time.sleep(0.25)
+        if remote is None:
+            client.close()
+            return
+        # read_request_head leaves a 10s timeout on the client and
+        # create_connection leaves its connect timeout on the remote.
+        # Both must go: an idle noVNC screen or a quiet CDP session is
+        # normal, and the relay has to sit there silently for hours.
+        client.settimeout(None)
+        remote.settimeout(None)
+        remote.sendall(head)
+        watch = None
+        if bot:
+            touch_bot_file(bot, "activity")
+            watch = BotTraffic(bot, sniff_input=listen_port == VNC_GATE_PORT)
+        else:
+            note_gate_activity()
+        threading.Thread(target=pipe, args=(client, remote, watch), daemon=True).start()
+        pipe(remote, client)
+    except OSError:
+        try:
+            client.close()
+        except OSError:
+            pass
 
 def read_request_head(client, limit=16384, timeout=10):
     """Read up to the end of the HTTP request header block.
