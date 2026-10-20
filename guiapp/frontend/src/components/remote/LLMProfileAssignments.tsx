@@ -11,7 +11,7 @@ type RoleAssignment = { model?: string; inherit_hub?: boolean };
 type RoleKey = "foreground" | "background" | "computer_use";
 type Provider = { id: string; name: string; model?: string; models?: string[]; connection_test_passed?: boolean; is_hub_service?: boolean; supports_vision?: boolean; vision_models?: string[]; vision_tested_models?: string[] };
 type Summary = { provider_id?: string; provider_name?: string; model?: string; inherit_assistant?: boolean; health?: string };
-type RoleSummary = { model?: string; inherit_hub?: boolean; provider_name?: string; configured?: boolean };
+type RoleSummary = { model?: string; inherit_hub?: boolean; provider_id?: string; provider_name?: string; configured?: boolean };
 type ProbeResult = {
     profile: "assistant" | "coding" | "caption";
     health?: string;
@@ -670,13 +670,16 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
                 const summary = key === "foreground" ? state.foreground : key === "background" ? state.background : state.computer_use;
                 const hubModel = state.hub_role_models?.[key];
                 const shown = String(summary?.model || hubModel || "auto");
+                const hubProvider = providers.find(provider => provider.is_hub_service);
+                const summaryProviderID = String(summary?.provider_id || "").trim();
+                const foregroundUsesAssistant = key === "foreground" && inherits && summaryProviderID !== "" && summaryProviderID !== String(hubProvider?.id || "").trim();
                 return (
                     <div key={key} style={{ borderTop: `1px solid ${colors.border}`, paddingTop: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", gap: 14, alignItems: "start" }}>
                         <div style={{ minWidth: 0 }}><strong style={{ fontSize: "0.78rem", color: colors.text }}>{title}</strong><p style={{ margin: "3px 0 0", color: colors.textMuted, fontSize: "0.68rem", lineHeight: 1.35 }}>{hint}</p></div>
                         <div style={{ minWidth: 0 }}>
                             <label style={{ display: "inline-flex", gap: 7, alignItems: "center", cursor: "pointer", fontSize: "0.75rem", color: colors.text, marginBottom: inherits ? 6 : 10 }}>
                                 <input type="checkbox" aria-label={aria} checked={inherits} onChange={e => setRoleInherit(key, e.target.checked)} />
-                                {t("Follow Hub", "跟随 Hub", "跟隨 Hub")}
+                                {foregroundUsesAssistant ? t("Follow AI assistant", "跟随普通 AI 助手", "跟隨普通 AI 助手") : t("Follow Hub", "跟随 Hub", "跟隨 Hub")}
                             </label>
                             {inherits
                                 ? <div aria-live="polite" style={{ color: colors.textSecondary, fontSize: "0.74rem" }}>{t("Effective now: ", "当前生效：", "目前生效：")}{summary?.provider_name ? `${summary.provider_name} · ` : ""}{shown}</div>

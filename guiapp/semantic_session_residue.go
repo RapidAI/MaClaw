@@ -263,6 +263,14 @@ func resetSemanticTurnLocalState(ctx *LoopContext) {
 	ctx.semanticResidueLookupFacts = false
 	ctx.semanticResidueLookupUsed = false
 	ctx.semanticResidueUsed = nil
+	// Desktop chat handoff is turn-local. A reused loop that kept the previous
+	// message's round count or a stale dispatch offer would publish only the
+	// handoff tools on the next message.
+	ctx.ForegroundToolRounds = 0
+	ctx.ChatTaskHandoffSent = false
+	ctx.ForegroundHandoffNeeded = false
+	ctx.OfferChatTaskDispatch = false
+	ctx.ForegroundChatBudget = 0
 }
 
 func (h *IMMessageHandler) clearSemanticSessionResidue(key string) {
@@ -1233,8 +1241,8 @@ func semanticResidueRemainingForOpenTurn(residue semanticSessionResidue, planned
 // semanticResidueRenewIterativeFileWrite drops a carried fs.write.local
 // count when this open task itself writes files. Absence is not a new
 // quota: the planner publishes the capability's own repeat family, and a
-// later call can append siblings up to the turn cap. A companion write on
-// an unrelated task is left untouched.
+// later call appends the next sibling. A count of calls is not a stop. A
+// companion write on an unrelated task is left untouched.
 func semanticResidueRenewIterativeFileWrite(remaining map[string]int, residue semanticSessionResidue, planned intent.ClassificationResult) map[string]int {
 	if !semanticOpenFileWriteContinues(residue, planned) {
 		return remaining

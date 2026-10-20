@@ -377,6 +377,11 @@ func (h *IMMessageHandler) stopAllWorkTool(policyUserID string, args map[string]
 	if !ok || resp == nil {
 		return chatTaskToolRejected("stop_all_work", "stop did not run")
 	}
+	// The user asked this turn to stop. Do not start the refused inline work
+	// again when the loop returns.
+	if loop != nil {
+		loop.markChatTaskHandoffSent()
+	}
 	idle := loop != nil && loop.WorkStopIdle
 	if loop == nil {
 		idle = !h.sessionWorkLeft(sessionKey, nil)

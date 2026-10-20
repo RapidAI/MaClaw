@@ -376,7 +376,7 @@ func TestRunLoop_ToolCallPetitionNotConsultedForConsumedGrant(t *testing.T) {
 	if len(cb.toolCalls) != 1 {
 		t.Fatalf("toolCalls=%v, want exactly one execution", cb.toolCalls)
 	}
-	if len(bodies) < 3 || !strings.Contains(string(bodies[2]), "usage limit") {
+	if len(bodies) < 3 || !strings.Contains(string(bodies[2]), "quota") {
 		t.Fatalf("consumed-grant denial missing from conversation: %q", bodies[2])
 	}
 }

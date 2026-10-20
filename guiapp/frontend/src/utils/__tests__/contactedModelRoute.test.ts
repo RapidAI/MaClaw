@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { contactedProfileForExecution, contactedProfileModel, contactedProfileProviderName, quickModelWriteProfile } from '../contactedModelRoute';
+import { contactedProfileForExecution, contactedProfileModel, contactedProfileProviderName, foregroundRoleSeparatesTurn, quickModelWriteProfile } from '../contactedModelRoute';
 
 describe('contactedProfileForExecution', () => {
     const summaries = {
@@ -36,6 +36,23 @@ describe('contactedProfileForExecution', () => {
         });
         expect(contactedProfileProviderName(route)).toBe('MaClaw官方');
         expect(contactedProfileModel(route)).toBe('auto');
+    });
+
+    it('separates the foreground role only when its provider or model differs', () => {
+        const shared = {
+            assistant: { provider_name: 'Custom1', model: 'old-model' },
+            foreground: { provider_name: 'Custom1', model: 'old-model' },
+        };
+        expect(foregroundRoleSeparatesTurn('none', shared)).toBe(false);
+        expect(foregroundRoleSeparatesTurn('assistant', shared)).toBe(false);
+        expect(foregroundRoleSeparatesTurn('none', {
+            ...shared,
+            foreground: { provider_name: 'MaClaw官方', model: 'auto' },
+        })).toBe(true);
+        expect(foregroundRoleSeparatesTurn('coding', {
+            ...shared,
+            foreground: { provider_name: 'MaClaw官方', model: 'auto' },
+        })).toBe(false);
     });
 
     it('keeps the assistant profile when the foreground role is unresolved', () => {

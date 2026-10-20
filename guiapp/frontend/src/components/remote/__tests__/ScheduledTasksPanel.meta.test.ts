@@ -34,6 +34,26 @@ describe("buildTaskMetaRows", () => {
         expect(rows.find((r) => r.label === "已执行")?.value).toBe("7");
     });
 
+    it("shows an hourly interval without calling midnight the first run", () => {
+        const rows = buildTaskMetaRows({ ...baseTask, hour: 0, minute: 0, interval_minutes: 60, start_date: "", end_date: "" }, "zh-Hans", t);
+        expect(rows.find((r) => r.label === "计划")?.value).toBe("每1小时");
+    });
+
+    it("treats hour 9 on a 60-minute grid as every hour", () => {
+        const rows = buildTaskMetaRows({ ...baseTask, hour: 9, minute: 0, interval_minutes: 60, start_date: "", end_date: "" }, "zh-Hans", t);
+        expect(rows.find((r) => r.label === "计划")?.value).toBe("每1小时");
+    });
+
+    it("shows a weekday limit on an hourly task", () => {
+        const rows = buildTaskMetaRows({ ...baseTask, hour: 0, minute: 0, interval_minutes: 60, day_of_week: 1, start_date: "", end_date: "" }, "zh-Hans", t);
+        expect(rows.find((r) => r.label === "计划")?.value).toBe("每1小时 周一");
+    });
+
+    it("keeps the time of day when the interval is a whole number of days", () => {
+        const rows = buildTaskMetaRows({ ...baseTask, hour: 9, minute: 0, interval_minutes: 1440, start_date: "", end_date: "" }, "zh-Hans", t);
+        expect(rows.find((r) => r.label === "计划")?.value).toBe("每1天 09:00");
+    });
+
     it("includes push row when delivery text is provided", () => {
         const rows = buildTaskMetaRows(baseTask, "zh-Hans", t, "lansenger → 群:ops");
         expect(rows.some((r) => r.label === "推送" && r.value.includes("ops"))).toBe(true);

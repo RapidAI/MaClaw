@@ -34,7 +34,7 @@ func roleTestProviders() []corelib.MaclawLLMProvider {
 	}
 }
 
-func TestResolveMaclawLLMRoleInheritsHubOverThirdPartyAssistant(t *testing.T) {
+func TestResolveMaclawLLMRoleForegroundFollowsThirdPartyAssistant(t *testing.T) {
 	app := newRoleTestApp(t, corelib.AppConfig{
 		MaclawLLMProviders:       roleTestProviders(),
 		MaclawLLMCurrentProvider: "Local",
@@ -54,8 +54,8 @@ func TestResolveMaclawLLMRoleInheritsHubOverThirdPartyAssistant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fg.Model != "auto" || fg.ProviderID != "hub" || fg.Profile != maclawLLMRoleForeground || !fg.SupportsVision {
-		t.Fatalf("foreground = %+v", fg)
+	if fg.Model != "assistant-model" || fg.ProviderID != "local" || fg.Profile != maclawLLMRoleForeground || fg.URL != "https://local.example/v1" {
+		t.Fatalf("foreground should follow the switched assistant, got %+v", fg)
 	}
 	bg, err := app.ResolveMaclawLLMRole(maclawLLMRoleBackground)
 	if err != nil {
@@ -70,6 +70,194 @@ func TestResolveMaclawLLMRoleInheritsHubOverThirdPartyAssistant(t *testing.T) {
 	}
 	if cu.Model != "auto" || !cu.SupportsVision || cu.Profile != maclawLLMRoleComputerUse {
 		t.Fatalf("computer_use = model %q vision %v profile %q", cu.Model, cu.SupportsVision, cu.Profile)
+	}
+}
+
+func TestResolveMaclawLLMRoleProxyAutoIsNotOfficial(t *testing.T) {
+	providers := append(roleTestProviders(), corelib.MaclawLLMProvider{
+		ID: "proxy", Name: "Proxy", URL: "https://proxy.example/api/llm/v1", Key: "key",
+		Model: "auto", Protocol: "openai", ConnectionTestPassed: true,
+	})
+	app := newRoleTestApp(t, corelib.AppConfig{
+		MaclawLLMProviders:       providers,
+		MaclawLLMCurrentProvider: "Proxy",
+		HubRoleModels: corelib.MaclawLLMHubRoleModels{
+			Foreground: "official-high",
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "proxy", Model: "auto"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	fg, err := app.ResolveMaclawLLMRole(maclawLLMRoleForeground)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fg.ProviderID != "proxy" || fg.Model != "auto" || fg.URL != "https://proxy.example/api/llm/v1" || fg.SupportsVision {
+		t.Fatalf("proxy auto must stay on that provider without Hub vision, got %+v", fg)
+	}
+}
+
+func TestResolveMaclawLLMRoleProxyAutoWithoutSnapshotStaysText(t *testing.T) {
+	providers := []corelib.MaclawLLMProvider{
+		{
+			ID: "hub", Name: hubServiceProviderName, IsHubService: true,
+			URL: "https://hub.example/api/llm/v1", Key: "viewer", Model: "auto",
+			Protocol: "openai", ConnectionTestPassed: true,
+		},
+		{
+			ID: "proxy", Name: "Proxy", URL: "https://proxy.example/api/llm/v1", Key: "key",
+			Model: "auto", Protocol: "openai", ConnectionTestPassed: true,
+		},
+	}
+	app := newRoleTestApp(t, corelib.AppConfig{
+		MaclawLLMProviders:       providers,
+		MaclawLLMCurrentProvider: "Proxy",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "proxy", Model: "auto"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	for _, role := range []string{maclawLLMRoleForeground, maclawLLMRoleBackground, maclawLLMRoleComputerUse} {
+		resolved, err := app.ResolveMaclawLLMRole(role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resolved.ProviderID != "proxy" || resolved.Model != "auto" || resolved.SupportsVision {
+			t.Fatalf("%s fallback borrowed Hub vision: %+v", role, resolved)
+		}
+	}
+}
+
+func TestResolveMaclawLLMRoleOfficialAutoWithoutSnapshotKeepsVision(t *testing.T) {
+	app := newRoleTestApp(t, corelib.AppConfig{
+		MaclawLLMProviders:       roleTestProviders(),
+		MaclawLLMCurrentProvider: hubServiceProviderName,
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "hub", Model: "auto"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	fg, err := app.ResolveMaclawLLMRole(maclawLLMRoleForeground)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fg.ProviderID != "hub" || fg.Model != "auto" || !fg.SupportsVision {
+		t.Fatalf("official auto without a snapshot should still send images, got %+v", fg)
+	}
+}
+
+func TestResolveMaclawLLMRolePinnedProxyAutoWithoutHubStaysText(t *testing.T) {
+	app := newRoleTestApp(t, corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			ID: "proxy", Name: "Proxy", URL: "https://proxy.example/api/llm/v1", Key: "key",
+			Model: "auto", Protocol: "openai", ConnectionTestPassed: true,
+		}},
+		MaclawLLMCurrentProvider: "Proxy",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:    maclawLLMProfilesVersion,
+			Assistant:  corelib.MaclawLLMProfile{ProviderID: "proxy", Model: "assistant-model"},
+			Coding:     corelib.MaclawLLMProfile{InheritAssistant: true},
+			Foreground: corelib.MaclawLLMRoleAssignment{InheritHub: boolPtr(false), Model: "auto"},
+		},
+	})
+	fg, err := app.ResolveMaclawLLMRole(maclawLLMRoleForeground)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fg.ProviderID != "proxy" || fg.Model != "auto" || fg.SupportsVision {
+		t.Fatalf("pinned proxy auto = %+v", fg)
+	}
+}
+
+func TestResolveMaclawLLMRoleOfficialAssistantKeepsHubSnapshot(t *testing.T) {
+	app := newRoleTestApp(t, corelib.AppConfig{
+		MaclawLLMProviders:       roleTestProviders(),
+		MaclawLLMCurrentProvider: hubServiceProviderName,
+		HubRoleModels: corelib.MaclawLLMHubRoleModels{
+			Foreground: "official-high",
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "hub", Model: "auto"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	fg, err := app.ResolveMaclawLLMRole(maclawLLMRoleForeground)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fg.Model != "official-high" || fg.ProviderID != "hub" {
+		t.Fatalf("official auto should keep the Hub foreground band, got %+v", fg)
+	}
+}
+
+func TestResolveMaclawLLMRoleOfficialBandAliasMatchesSnapshot(t *testing.T) {
+	app := newRoleTestApp(t, corelib.AppConfig{
+		MaclawLLMProviders:       roleTestProviders(),
+		MaclawLLMCurrentProvider: hubServiceProviderName,
+		HubRoleModels: corelib.MaclawLLMHubRoleModels{
+			Foreground: "official-high",
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "hub", Model: "high"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	fg, err := app.ResolveMaclawLLMRole(maclawLLMRoleForeground)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fg.Model != "official-high" || fg.ProviderID != "hub" {
+		t.Fatalf("short band high is the official-high snapshot, got %+v", fg)
+	}
+}
+
+func TestResolveMaclawLLMRoleOfficialShortBandOverridesAuto(t *testing.T) {
+	app := newRoleTestApp(t, corelib.AppConfig{
+		MaclawLLMProviders:       roleTestProviders(),
+		MaclawLLMCurrentProvider: hubServiceProviderName,
+		HubRoleModels: corelib.MaclawLLMHubRoleModels{
+			Foreground: "auto",
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "hub", Model: "mid"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	fg, err := app.ResolveMaclawLLMRole(maclawLLMRoleForeground)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fg.Model != "mid" || fg.ProviderID != "hub" {
+		t.Fatalf("short band mid should replace auto, got %+v", fg)
+	}
+}
+
+func TestResolveMaclawLLMRoleOfficialModelSwitchWins(t *testing.T) {
+	app := newRoleTestApp(t, corelib.AppConfig{
+		MaclawLLMProviders:       roleTestProviders(),
+		MaclawLLMCurrentProvider: hubServiceProviderName,
+		HubRoleModels: corelib.MaclawLLMHubRoleModels{
+			Foreground: "auto",
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "hub", Model: "official-mid"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	fg, err := app.ResolveMaclawLLMRole(maclawLLMRoleForeground)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fg.Model != "official-mid" || fg.ProviderID != "hub" {
+		t.Fatalf("explicit official model should replace the Hub band, got %+v", fg)
 	}
 }
 

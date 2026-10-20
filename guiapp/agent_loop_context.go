@@ -211,12 +211,23 @@ type LoopContext struct {
 	// LLMCaller overrides the scheduler lane for this loop. Desktop chat
 	// tasks use chat_task_loop so a later chat turn does not cancel them.
 	LLMCaller string
-	// ForegroundChatBudget caps a desktop chat turn. Zero keeps the normal limit.
+	// ForegroundChatBudget caps a desktop chat turn when set. Zero keeps the
+	// normal limit. Desktop chat leaves it zero: a call count is not a stop.
 	ForegroundChatBudget int
-	// ForegroundToolRounds counts inline tool calls on a desktop chat turn.
-	// More than a couple of lookups is background work.
+	// ForegroundToolRounds is cleared with the turn envelope. A call count
+	// does not reject a tool or end the turn.
 	ForegroundToolRounds int
+	// ChatTaskHandoffSent is set once this turn has successfully dispatched or
+	// steered. Later work tools, and a second dispatch, stay closed.
+	ChatTaskHandoffSent bool
+	// ForegroundHandoffNeeded closes the rest of this chat turn. A refused
+	// desktop-control call does not set it: the computer-use gate starts the
+	// helper, and this chat turn keeps its own tools. resetSemanticTurnLocalState
+	// clears it.
+	ForegroundHandoffNeeded bool
 	// OfferChatTaskDispatch lets this short chat turn hand long work off.
+	// It is per message. prepareIMLoopContext clears it, and the entry path
+	// sets it again only when this message may dispatch.
 	OfferChatTaskDispatch bool
 	// ChatTaskID is set when this loop is itself a background chat task.
 	ChatTaskID string

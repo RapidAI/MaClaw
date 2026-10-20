@@ -667,8 +667,12 @@ func TestRegistrationContactEmailSendRejectsExistingTenantUser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start enrollment: %v", err)
 	}
-	if _, err := identity.ManualBindForTenant(context.Background(), store.DefaultTenantID, "taken@example.com"); err != nil {
+	owner, err := identity.ManualBindForTenant(context.Background(), store.DefaultTenantID, "taken@example.com")
+	if err != nil {
 		t.Fatalf("create existing email user: %v", err)
+	}
+	if err := identity.BindVerifiedEmailToUser(auth.WithTenant(context.Background(), store.DefaultTenantID), owner, "taken@example.com"); err != nil {
+		t.Fatalf("bind existing email identity: %v", err)
 	}
 
 	body := bytes.NewBufferString(`{"kind":"email","email":"taken@example.com","machine_id":"` + enrolled.MachineID + `","machine_token":"` + enrolled.MachineToken + `"}`)
@@ -677,6 +681,77 @@ func TestRegistrationContactEmailSendRejectsExistingTenantUser(t *testing.T) {
 	RegistrationContactSendCodeHandler(identity, nil, nil, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "EMAIL_ALREADY_REGISTERED") {
 		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRegistrationContactEmailSendAllowsDirtyPrimaryWithoutEmailIdentity(t *testing.T) {
+	identity, _, provider := newPreservationTestIdentity(t)
+	enrolled, err := identity.StartEnrollment(auth.WithTenant(context.Background(), store.DefaultTenantID), "owner@example.com", "desk", "windows", "client-1", "")
+	if err != nil {
+		t.Fatalf("start enrollment: %v", err)
+	}
+	// A users.email value with no email identity is dirty data. Create() would
+	// also insert the identity, so this row is seeded directly. The send path
+	// must follow CanProveVerifiedEmailForUser and allow the proof.
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := provider.Write.ExecContext(context.Background(),
+		`INSERT INTO users (id, tenant_id, email, sn, status, enrollment_status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"user_dirty_primary_duplicate", store.DefaultTenantID, "dirty@example.com", "SN-dirty-primary",
+		"active", "approved", now, now,
+	); err != nil {
+		t.Fatalf("seed dirty primary email: %v", err)
+	}
+
+	body := bytes.NewBufferString(`{"kind":"email","email":"dirty@example.com","machine_id":"` + enrolled.MachineID + `","machine_token":"` + enrolled.MachineToken + `"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/profile/send-code", body)
+	rr := httptest.NewRecorder()
+	RegistrationContactSendCodeHandler(identity, nil, nil, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable || !strings.Contains(rr.Body.String(), "MAIL_NOT_CONFIGURED") {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRegistrationContactEmailSendForPhoneUserDoesNotConsultHubRoute(t *testing.T) {
+	identity, _, _ := newPreservationTestIdentity(t)
+	ctx := auth.WithTenant(context.Background(), store.DefaultTenantID)
+	enrolled, err := identity.StartEnrollment(ctx, "phone:13301168516", "desk", "windows", "client-phone", "", auth.WithPhoneVerifiedRegistration())
+	if err != nil {
+		t.Fatalf("start phone enrollment: %v", err)
+	}
+	route := &fakeRegistrationSMSRouteSyncer{allowed: false, targetHubID: "hub_other"}
+	identity.SetUserRouteSyncer(route)
+
+	const email = "13301168516@189.cn"
+	body := bytes.NewBufferString(`{"kind":"email","email":"` + email + `","machine_id":"` + enrolled.MachineID + `","machine_token":"` + enrolled.MachineToken + `"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/profile/send-code", body)
+	rr := httptest.NewRecorder()
+	RegistrationContactSendCodeHandler(identity, nil, nil, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable || !strings.Contains(rr.Body.String(), "MAIL_NOT_CONFIGURED") {
+		t.Fatalf("send status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if route.checked {
+		t.Fatal("sending a verification code consulted HubCenter route ownership")
+	}
+
+	key := registrationContactEmailKey(enrolled.UserID, email)
+	deleteVerifyCode(store.DefaultTenantID, key)
+	if !storeVerifyCode(store.DefaultTenantID, key, "123456") {
+		t.Fatal("store verification code")
+	}
+	t.Cleanup(func() { deleteVerifyCode(store.DefaultTenantID, key) })
+	verifyBody := bytes.NewBufferString(`{"kind":"email","email":"` + email + `","verify_code":"123456","machine_id":"` + enrolled.MachineID + `","machine_token":"` + enrolled.MachineToken + `"}`)
+	verifyReq := httptest.NewRequest(http.MethodPost, "/api/enroll/profile/verify", verifyBody)
+	verifyRR := httptest.NewRecorder()
+	RegistrationContactVerifyHandler(identity, nil, nil).ServeHTTP(verifyRR, verifyReq)
+	if verifyRR.Code != http.StatusConflict || !strings.Contains(verifyRR.Body.String(), "EMAIL_ROUTED_TO_ANOTHER_HUB") {
+		t.Fatalf("verify status = %d body=%s", verifyRR.Code, verifyRR.Body.String())
+	}
+	if !route.checked {
+		t.Fatal("verify must still enforce Hub route ownership")
+	}
+	if ok, _ := consumeVerifyCode(store.DefaultTenantID, key, "123456"); !ok {
+		t.Fatal("route rejection must not consume the verification code")
 	}
 }
 

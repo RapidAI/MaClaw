@@ -2,13 +2,17 @@ package mailbox
 
 import "strings"
 
-// QueryWantsMessageDelete reports a request to delete mailbox messages.
+// QueryWantsMessageDelete reports a request to delete mailbox messages now.
 // Removing a mailbox account, a question, and a named file stay on their
-// own labels. Call it after a local file-delete check so "删除邮件.md" stays
-// a file delete.
+// own labels. A delete that is only the body of a schedule being created or
+// changed is not this request. Call it after a local file-delete check so
+// "删除邮件.md" stays a file delete.
 func QueryWantsMessageDelete(userMessage string) bool {
 	q := strings.ToLower(strings.TrimSpace(userMessage))
 	if q == "" || queryAsksAboutMailDelete(q) || queryNamesMailFile(q) || queryNegatesMailDelete(q) {
+		return false
+	}
+	if QuerySchedulesMessageDelete(userMessage) {
 		return false
 	}
 	if mailboxAccountRemoval(q) && !mentionsMailMessage(q) {
@@ -18,6 +22,171 @@ func QueryWantsMessageDelete(userMessage string) bool {
 		return true
 	}
 	return hasMailEmptyVerb(q) && mentionsMailbox(q)
+}
+
+// QuerySchedulesMessageDelete reports that the mail-delete verbs are the
+// body of a schedule being created or changed, not a deletion to perform now.
+// A question, a named file, and a governed refusal stay false, same as
+// QueryWantsMessageDelete. Bare 定时, 定时器, and 每小时 are not a schedule act.
+func QuerySchedulesMessageDelete(userMessage string) bool {
+	q := strings.ToLower(strings.TrimSpace(userMessage))
+	if q == "" || queryAsksAboutMailDelete(q) || queryNamesMailFile(q) || queryNegatesMailDelete(q) {
+		return false
+	}
+	if !mailDeleteIsScheduledPayload(q) {
+		return false
+	}
+	if mentionsMailMessage(q) && hasMailDeleteVerb(q) {
+		return true
+	}
+	return hasMailEmptyVerb(q) && mentionsMailbox(q)
+}
+
+// mailDeleteIsScheduledPayload is clause government. A schedule-act clause
+// holds a schedule noun and an administration verb before that noun. Delete
+// verbs in earlier clauses, and delete verbs in the act clause that start
+// before the administration verb, are still immediate. Delete verbs at or
+// after that verb, and delete verbs in later clauses, are the payload. Any
+// immediate delete verb means this is not only a scheduled payload.
+func mailDeleteIsScheduledPayload(q string) bool {
+	clauses := mailClauses(q)
+	act := -1
+	adminAt := 0
+	for i, clause := range clauses {
+		at, ok := scheduleActAdminIndex(clause)
+		if !ok {
+			continue
+		}
+		act = i
+		adminAt = at
+		break
+	}
+	if act < 0 {
+		return false
+	}
+	sawPayload := false
+	for i, clause := range clauses {
+		for _, span := range mailDeleteVerbSpans(stripMailNonDeleteCompounds(clause)) {
+			if i < act || (i == act && span.start < adminAt) {
+				return false
+			}
+			sawPayload = true
+		}
+	}
+	return sawPayload
+}
+
+// scheduleNounMarkers are whole schedule records. 定时 and 定时器 are not
+// records. Longer nouns are listed first so a shorter noun cannot claim the
+// same span.
+var scheduleNounMarkers = []string{
+	"定时任务", "定時任務", "定时提醒", "定時提醒", "计划任务", "計劃任務", "日程",
+}
+
+var scheduleNounPhrases = []string{"scheduled tasks", "scheduled task"}
+
+// scheduleAdminVerbs name creating or changing the record. They are not the
+// payload verb. English verbs are bounded so "schedule" does not match inside
+// "scheduled".
+var scheduleAdminVerbs = []string{"创建", "新建", "新增", "添加", "设置", "設定", "安排", "建立"}
+
+var scheduleAdminEnglish = []string{"set up", "create", "schedule", "add"}
+
+func scheduleActAdminIndex(clause string) (int, bool) {
+	for _, nounAt := range scheduleNounIndexes(clause) {
+		if adminAt := lastScheduleAdminVerbBefore(clause[:nounAt]); adminAt >= 0 {
+			return adminAt, true
+		}
+	}
+	return 0, false
+}
+
+func scheduleNounIndexes(clause string) []int {
+	seen := map[int]bool{}
+	var hits []int
+	add := func(at int) {
+		if at < 0 || seen[at] {
+			return
+		}
+		seen[at] = true
+		hits = append(hits, at)
+	}
+	for _, noun := range scheduleNounMarkers {
+		start := 0
+		for start < len(clause) {
+			idx := strings.Index(clause[start:], noun)
+			if idx < 0 {
+				break
+			}
+			add(start + idx)
+			start = start + idx + len(noun)
+		}
+	}
+	for _, phrase := range scheduleNounPhrases {
+		start := 0
+		for start < len(clause) {
+			idx := strings.Index(clause[start:], phrase)
+			if idx < 0 {
+				break
+			}
+			at := start + idx
+			if asciiBoundedAt(clause, at, len(phrase)) {
+				add(at)
+			}
+			start = at + 1
+		}
+	}
+	start := 0
+	for start < len(clause) {
+		idx := strings.Index(clause[start:], "cron")
+		if idx < 0 {
+			break
+		}
+		at := start + idx
+		if asciiBoundedAt(clause, at, len("cron")) {
+			add(at)
+		}
+		start = at + 1
+	}
+	// Earliest noun is the one an administration verb has to precede.
+	for i := 1; i < len(hits); i++ {
+		for j := i; j > 0 && hits[j] < hits[j-1]; j-- {
+			hits[j], hits[j-1] = hits[j-1], hits[j]
+		}
+	}
+	return hits
+}
+
+func lastScheduleAdminVerbBefore(prefix string) int {
+	best := -1
+	for _, verb := range scheduleAdminVerbs {
+		if at := strings.LastIndex(prefix, verb); at > best {
+			best = at
+		}
+	}
+	for _, phrase := range scheduleAdminEnglish {
+		if at := lastBoundedPhrase(prefix, phrase); at > best {
+			best = at
+		}
+	}
+	return best
+}
+
+func lastBoundedPhrase(q, phrase string) int {
+	best := -1
+	start := 0
+	for start < len(q) {
+		idx := strings.Index(q[start:], phrase)
+		if idx < 0 {
+			return best
+		}
+		at := start + idx
+		if asciiBoundedAt(q, at, len(phrase)) {
+			best = at
+		}
+		start = at + 1
+	}
+	return best
 }
 
 // queryNegatesMailDelete is true when every delete verb is governed by a

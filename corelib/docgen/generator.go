@@ -69,6 +69,7 @@ func detectSystemFonts() (regular, bold []byte) {
 	detectSystemFontsOnce.Do(func() {
 		detectedRegularFontData, detectedBoldFontData, detectedFontFailure =
 			loadFontCandidates(fontCandidates())
+		selectStyleRuleGlyph(detectedRegularFontData)
 	})
 	return detectedRegularFontData, detectedBoldFontData
 }
@@ -197,6 +198,9 @@ func (g *Generator) Generate(spec Spec) ([]byte, error) {
 	}
 
 	pdf.AddPage()
+	spec.boundStyle = styleForSpec(spec)
+	pageStyle := spec.boundStyle
+	paintPageChrome(&pdf, layout, pageStyle)
 	titleHTML := buildTitleHTML(spec)
 	endY, err := pdf.InsertHTMLBox(layout.marginX, layout.marginY, layout.contentW, 120, titleHTML, gopdf.HTMLBoxOption{
 		DefaultFontFamily: "regular",
@@ -208,14 +212,8 @@ func (g *Generator) Generate(spec Spec) ([]byte, error) {
 		return nil, fmt.Errorf("渲染标题失败: %w", err)
 	}
 
-	endY += 8
-	pdf.SetLineWidth(0.5)
-	if spec.Colorful {
-		pdf.SetStrokeColor(29, 78, 216)
-	} else {
-		pdf.SetStrokeColor(200, 200, 200)
-	}
-	pdf.Line(layout.marginX, endY, layout.marginX+layout.contentW, endY)
+	endY += 6
+	paintTitleUnderline(&pdf, layout, pageStyle, endY)
 	endY += 12
 
 	if err := g.renderPagedMarkdown(&pdf, layout, endY, spec); err != nil {
@@ -315,12 +313,9 @@ func buildTitleHTML(spec Spec) string {
 	projectLine := strings.TrimSpace(spec.ProjectName)
 	brand := strings.TrimSpace(spec.Brand)
 	var sb strings.Builder
-	titleColor, subtitleColor, projectColor, brandColor := "#1a1a2e", "#888", "#16213e", "#666"
-	if spec.Colorful {
-		titleColor, subtitleColor, projectColor, brandColor = "#1d4ed8", "#0f766e", "#7c3aed", "#1d4ed8"
-	}
+	titleColor, subtitleColor, projectColor, brandColor, titleSize := styledTitleColors(styleForSpec(spec))
 	sb.WriteString("<center>")
-	sb.WriteString(fmt.Sprintf(`<p style="font-size:18pt; color:%s"><b>%s</b></p>`, titleColor, escapeHTML(title)))
+	sb.WriteString(fmt.Sprintf(`<p style="font-size:%s; color:%s"><b>%s</b></p>`, titleSize, titleColor, escapeHTML(title)))
 	if subtitle != "" {
 		sb.WriteString(fmt.Sprintf(`<p style="font-size:9pt; color:%s">%s</p>`, subtitleColor, escapeHTML(subtitle)))
 	}
@@ -404,22 +399,17 @@ func addFooter(pdf *gopdf.GoPdf, layout pdfPageLayout, spec Spec) {
 	if strings.TrimSpace(spec.FooterHint) != "" {
 		footerParts = append(footerParts, strings.TrimSpace(spec.FooterHint))
 	}
+	footerStyle := styleForSpec(spec)
+	rule := mustRGB(footerStyle.Colors.Rule)
+	meta := mustRGB(footerStyle.Colors.Meta)
+	pdf.SetLineWidth(0.8)
+	pdf.SetStrokeColor(rule[0], rule[1], rule[2])
+	pdf.Line(layout.marginX, layout.footerY, layout.marginX+layout.contentW, layout.footerY)
 	if len(footerParts) == 0 {
 		return
 	}
-	pdf.SetLineWidth(0.3)
-	if spec.Colorful {
-		pdf.SetStrokeColor(29, 78, 216)
-	} else {
-		pdf.SetStrokeColor(220, 220, 220)
-	}
-	pdf.Line(layout.marginX, layout.footerY, layout.marginX+layout.contentW, layout.footerY)
 	_ = pdf.SetFont("regular", "", 8)
-	if spec.Colorful {
-		pdf.SetTextColor(15, 118, 110)
-	} else {
-		pdf.SetTextColor(120, 120, 120)
-	}
+	pdf.SetTextColor(meta[0], meta[1], meta[2])
 	// InsertHTMLBox leaves X at the end of the last line, and SetY does not
 	// move X. A Cell from that point runs off the right edge. Draw from the
 	// left margin and wrap inside the content width. The box height is the
@@ -536,11 +526,18 @@ type measurer struct {
 	// so that measuring and drawing share one set of files, and so callers can
 	// drop the whole directory when the render ends.
 	scratch *dataURLScratch
+	style   Style
 }
 
 // markdownToHTML renders this measurer's Markdown through its own scratch.
 func (m *measurer) markdownToHTML(markdown string, colorful bool) string {
-	return markdownToHTMLWithScratch(m.scratch, markdown, colorful)
+	style := Style{}
+	scratch := (*dataURLScratch)(nil)
+	if m != nil {
+		style = m.style
+		scratch = m.scratch
+	}
+	return markdownToHTMLStyled(scratch, markdown, colorful, style)
 }
 
 // newMeasurer builds the measurement document once the page size is known.
@@ -644,6 +641,7 @@ func (g *Generator) renderPagedMarkdown(pdf *gopdf.GoPdf, layout pdfPageLayout, 
 	if err != nil {
 		return err
 	}
+	m.style = styleForSpec(spec)
 	// Every figure decoded from a data URL lands in a temporary directory for
 	// this render. Deferring the cleanup covers every return path below,
 	// including the ones that bail out on a measurement error.
@@ -680,6 +678,7 @@ func (g *Generator) renderPagedMarkdown(pdf *gopdf.GoPdf, layout pdfPageLayout, 
 			if currentY > layout.marginY+1 {
 				addFooter(pdf, layout, spec)
 				pdf.AddPage()
+				paintPageChrome(pdf, layout, m.style)
 				currentY = layout.marginY
 				continue
 			}
@@ -711,6 +710,7 @@ func (g *Generator) renderPagedMarkdown(pdf *gopdf.GoPdf, layout pdfPageLayout, 
 			break
 		}
 		pdf.AddPage()
+		paintPageChrome(pdf, layout, m.style)
 		currentY = layout.marginY
 	}
 	return nil

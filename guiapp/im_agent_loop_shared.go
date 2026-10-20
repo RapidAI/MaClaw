@@ -512,6 +512,7 @@ func (h *IMMessageHandler) executeSharedTurn(
 		semanticSurface:   startState.SemanticSurface,
 		legacySurface:     newLegacyToolSurfaceWithClientTools(startState.Tools, startState.ClientToolNames),
 		llmCfg:            cfg,
+		roleBase:          startState.RoleBase,
 		route:             startState.RouteDecision,
 		phase:             startState.Phase,
 		onProgress:        progressOut,
@@ -686,6 +687,21 @@ func (h *IMMessageHandler) executeSharedTurn(
 	// generic asynchronous history save: doing so could later flush a tool batch
 	// which was explicitly rejected as unsafe to recover. Preserve only the last
 	// successfully checkpointed context and stop the loop instead.
+	// A spent inline budget that never handed off continues the open task, or
+	// starts one when nothing is running. History stores that note, not the
+	// model's request for another user message.
+	handedOff := false
+	if cb == nil || !cb.hasPendingToolBatch {
+		if note, ok := h.continueSpentForegroundChat(ctx, userID, userText, loopResult); ok {
+			loopResult.Text = note
+			outHistory = applyForegroundHandoffNote(outHistory, len(history), note)
+			handedOff = true
+			if loopResult.Error == "max iterations reached" {
+				loopResult.Error = ""
+				loopResult.HardExit = false
+			}
+		}
+	}
 	if shouldSaveSharedLoopTerminalHistory(loopResult, cb) {
 		h.saveConversationHistoryTimed(userID, outHistory, &IMAgentResponse{})
 	}
@@ -731,6 +747,13 @@ func (h *IMMessageHandler) executeSharedTurn(
 		h.adoptLateTreeSemanticIntent(ctx, userID, userText, history)
 	}
 
+	// shared_agent_loop tells the bubble that a short text is the last
+	// fragment of the stream. The handoff note is the reply itself. A longer
+	// streamed sentence must not stay in its place.
+	responseSource := "shared_agent_loop"
+	if handedOff {
+		responseSource = imResponseSourceChatTaskHandoff.String()
+	}
 	resp := &IMAgentResponse{
 		Text:           sharedLoopUserFacingText(loopResult.Text),
 		Reasoning:      sharedLoopDisplayReasoning(loopResult),
@@ -738,7 +761,7 @@ func (h *IMMessageHandler) executeSharedTurn(
 		HardExit:       loopResult.HardExit,
 		RequestID:      requestID,
 		SessionKey:     userID,
-		ResponseSource: "shared_agent_loop",
+		ResponseSource: responseSource,
 	}
 	attachSharedLoopArtifacts(resp, cb)
 	if loopResult.AskUser != nil {
@@ -799,11 +822,61 @@ func (h *IMMessageHandler) executeSharedTurn(
 	// P0-1 (0b-i): a degraded turn that silently lost its write tools gets a
 	// chance to self-recover (tombstone + async reclassification + model
 	// re-decision continuation, or an explicit notice).
-	if loopResult.Error == "" {
+	if loopResult.Error == "" && !handedOff {
 		h.maybeRecoverDegradedTurn(ctx, userID, userText, requestID, cb.tools, platform, "")
 	}
 	_ = loopID
 	return resp
+}
+
+// applyForegroundHandoffNote stores the host continuation as this turn's
+// closing reply. turnStart is the first index that belongs to this turn;
+// older assistant replies stay as they were. A tool-calling assistant
+// message inside the turn is left intact, and the note is appended after
+// its results. The input slice is not modified.
+func applyForegroundHandoffNote(history []agent.ConversationEntry, turnStart int, note string) []agent.ConversationEntry {
+	note = strings.TrimSpace(note)
+	if note == "" {
+		return history
+	}
+	if turnStart < 0 {
+		turnStart = 0
+	}
+	if turnStart > len(history) {
+		turnStart = len(history)
+	}
+	out := append([]agent.ConversationEntry(nil), history...)
+	for i := len(out) - 1; i >= turnStart; i-- {
+		if out[i].Role != "assistant" {
+			continue
+		}
+		// A final answer still carries the provider's tool-call slice. An empty
+		// slice is not a tool call, and the closing sentence is the one to replace.
+		if assistantEntryIssuedToolCalls(out[i]) {
+			break
+		}
+		out[i].Content = note
+		out[i].FinishReason = "stop"
+		out[i].ToolCalls = nil
+		return out
+	}
+	return append(out, agent.ConversationEntry{Role: "assistant", Content: note, FinishReason: "stop"})
+}
+
+// assistantEntryIssuedToolCalls reports a real tool call. The loop stores the
+// provider slice on every assistant entry, and a nil slice inside interface{}
+// is not a nil interface.
+func assistantEntryIssuedToolCalls(entry agent.ConversationEntry) bool {
+	if entry.ToolCalls == nil {
+		return false
+	}
+	value := reflect.ValueOf(entry.ToolCalls)
+	switch value.Kind() {
+	case reflect.Slice, reflect.Array:
+		return value.Len() > 0
+	default:
+		return true
+	}
 }
 
 // sharedLoopDisplayReasoning returns all provider-supplied display-safe
@@ -838,8 +911,14 @@ func attachSharedLoopArtifacts(resp *IMAgentResponse, cb *sharedAgentLoopCallbac
 	// newly listed grant. A repeat weather+PDF turn can skip search entirely
 	// and reuse history; host still issues generate from the assistant report
 	// so the PDF is not lost behind an unused lookup edge.
-	cb.flushHostOwnedDocumentGenerate(resp)
-	cb.flushHostOwnedLiveDataVisual(resp)
+	// A chat-task handoff already gave that remaining work to a background
+	// task. These flushes would publish a document from this turn's lookup
+	// evidence after the worker has started. Files the inline tools already
+	// produced still attach below.
+	if canonicalIMResponseSourceKind(resp.ResponseSource) != imResponseSourceChatTaskHandoff {
+		cb.flushHostOwnedDocumentGenerate(resp)
+		cb.flushHostOwnedLiveDataVisual(resp)
+	}
 	// Specified-target runs before current-channel. Both can be live for one
 	// bound document. Current-channel would attach the local card first and
 	// set the file payload, and the IM sender would then no-op. A generate
@@ -858,19 +937,19 @@ func attachSharedLoopArtifacts(resp *IMAgentResponse, cb *sharedAgentLoopCallbac
 		resp.LocalFilePath = cb.deliveredPaths[0]
 		resp.FileMaterializeNanos = cb.fileMaterializeNanos
 		if cb.filesForwarded > 0 {
-			resp.ResponseSource = imResponseSourceFileDelivery.String()
+			setSharedLoopArtifactSource(resp, imResponseSourceFileDelivery)
 		}
 	}
 	if cb.semanticDeliveryImageKey != "" {
 		resp.ImageKey = cb.semanticDeliveryImageKey
 		resp.SemanticDelivery = cb.semanticDelivery
-		resp.ResponseSource = imResponseSourceScreenshot.String()
+		setSharedLoopArtifactSource(resp, imResponseSourceScreenshot)
 	} else if cb.semanticDeliveryFileData != "" {
 		resp.FileData = cb.semanticDeliveryFileData
 		resp.FileName = cb.semanticDeliveryFileName
 		resp.FileMimeType = cb.semanticDeliveryFileMIME
 		resp.SemanticDelivery = cb.semanticDelivery
-		resp.ResponseSource = imResponseSourceFileDelivery.String()
+		setSharedLoopArtifactSource(resp, imResponseSourceFileDelivery)
 		materializeSemanticDeliveryFileForLocalChat(resp, cb)
 	} else if cb.semanticDeliveryVoiceData != "" {
 		resp.VoiceData = cb.semanticDeliveryVoiceData
@@ -879,7 +958,7 @@ func attachSharedLoopArtifacts(resp *IMAgentResponse, cb *sharedAgentLoopCallbac
 		resp.SemanticDelivery = cb.semanticDelivery
 	} else if cb.screenshotImageKey != "" {
 		resp.ImageKey = cb.screenshotImageKey
-		resp.ResponseSource = imResponseSourceScreenshot.String()
+		setSharedLoopArtifactSource(resp, imResponseSourceScreenshot)
 	}
 	finalizeHostOwnedFileResponse(resp, cb)
 }
@@ -1016,7 +1095,9 @@ func finalizeHostOwnedFileResponse(resp *IMAgentResponse, cb *sharedAgentLoopCal
 	if strings.TrimSpace(resp.LocalFilePath) == "" && strings.TrimSpace(resp.FileData) == "" {
 		return
 	}
-	if hostResponseHasPDF(resp) && hostTurnPublishedPDF(cb) {
+	// The continuation note is the reply. A published PDF still attaches; its
+	// receipt must not replace the note.
+	if canonicalIMResponseSourceKind(resp.ResponseSource) != imResponseSourceChatTaskHandoff && hostResponseHasPDF(resp) && hostTurnPublishedPDF(cb) {
 		title := ""
 		if cb != nil {
 			title = hostOwnedPDFReportTitle(cb.userText)
@@ -1034,7 +1115,7 @@ func finalizeHostOwnedFileResponse(resp *IMAgentResponse, cb *sharedAgentLoopCal
 	// A desktop forward with no assistant sentence still has to name the
 	// file that left. The caption is the same one the IM sender used, taken
 	// from the artifact file name. It is not a report title from the utterance.
-	if !hostTurnPublishedPDF(cb) && cb != nil && cb.filesForwarded > 0 && strings.TrimSpace(resp.Text) == "" {
+	if canonicalIMResponseSourceKind(resp.ResponseSource) != imResponseSourceChatTaskHandoff && !hostTurnPublishedPDF(cb) && cb != nil && cb.filesForwarded > 0 && strings.TrimSpace(resp.Text) == "" {
 		name := strings.TrimSpace(resp.FileName)
 		if name == "" {
 			name = filepath.Base(strings.TrimSpace(resp.LocalFilePath))
@@ -1353,6 +1434,12 @@ type sharedAgentLoopCallbacks struct {
 	loopCtx  *LoopContext
 	userID   string
 	userText string
+	// scheduleAdministerListed is set only when this turn's schedule
+	// administration call succeeded as a list. advanceSemanticToolSurface
+	// consumes it for that capability. A list whose utterance still owes a
+	// change mints one observation follow-up. A mutation does not. An
+	// unrelated advance leaves the flag alone.
+	scheduleAdministerListed bool
 	// checkpointHistory contains only provider-valid history: a valid prefix plus
 	// full, durable tool batches. It is never updated from OnToolExecuted
 	// because that callback runs before history commit and would create
@@ -1405,6 +1492,17 @@ type sharedAgentLoopCallbacks struct {
 	discoveredMCPSurface    *semanticCallSurface
 	discoveredMCPBinds      []discoveredMCPBind
 	discoveredMCPGeneration uint64
+	// requestSurfaceEpoch is the epoch BeginToolSurfaceEpoch minted for the
+	// model request being prepared. The loop keeps that one value and pairs
+	// it with every call from the response. The installed-MCP sidecar adopts
+	// it instead of minting a second epoch the loop would never send back.
+	requestSurfaceEpoch string
+	// managedMCPSpentThisRequest names an installed MCP function the managed
+	// surface retired during this model request and did not reissue. The
+	// sidecar still holds its own unconsumed grant for that stable name.
+	// Running it in this same request would be a second tools/call. The next
+	// BeginToolSurfaceEpoch clears the set, so that later request can call it.
+	managedMCPSpentThisRequest map[string]struct{}
 	// legacyPetitionTools are host tool names admitted onto the visible
 	// surface through a governed overlay: live SQL database adapters after a
 	// semantic petition for database / database_query could not expand a
@@ -1433,7 +1531,10 @@ type sharedAgentLoopCallbacks struct {
 	// this task already produced is a delivery and must not set this flag.
 	turnPublishedPDF bool
 	llmCfg           corelib.MaclawLLMConfig
-	route            modelRouteDecision
+	// roleBase is the loop role before light or auxiliary routing. Post-tool
+	// escalation upgrades this snapshot and must not reread the assistant profile.
+	roleBase corelib.MaclawLLMConfig
+	route    modelRouteDecision
 	// phase is the inbound-turn routing posture. Legacy compatibility surfaces
 	// are rebuilt at every actual model-request boundary using this same
 	// host-owned posture; a predecessor's rendered definitions are never a
@@ -1456,8 +1557,9 @@ type sharedAgentLoopCallbacks struct {
 	httpClient           *http.Client
 	escalated            bool
 	// surfaceRefreshPending is set when the tool-driven route escalation changes
-	// the model-visible prompt/tool policy and consumed by the core loop before
-	// its following request.
+	// the endpoint, credentials, or context budget the prompt was built for.
+	// A Hub hint-only upgrade does not set it. The core loop consumes the flag
+	// before its following request.
 	surfaceRefreshPending bool
 	// petitionPromptReady is set when a petition rewrote the system prompt
 	// because the child plan can no longer run under the light fence. The core
@@ -1824,6 +1926,12 @@ func (c *sharedAgentLoopCallbacks) IsToolAllowedForPromptProfile(name string, pr
 	if fileCompanionToolsDisabled(c.userID) {
 		return isFileCompanionHostTool(name)
 	}
+	if c != nil && c.foregroundHandoffOnly() {
+		return c.chatTaskHostTool(name)
+	}
+	if c != nil && c.chatTaskHostTool(name) {
+		return true
+	}
 	if c != nil && c.semanticSurface != nil {
 		resolved := c.semanticSurface.resolveFunctionName(name)
 		if resolved == semanticToolsSearchName {
@@ -1840,6 +1948,13 @@ func (c *sharedAgentLoopCallbacks) IsToolAllowedForPromptProfile(name string, pr
 			// A semantic surface is closed: retired and invented names cannot
 			// fall through to a legacy light-safe tool with a similar name,
 			// including after a light→full prompt-budget upgrade.
+			// An installed MCP tool the sidecar listed is already authorized.
+			// The managed plan does not have to select it first. A light
+			// profile does not know server__tool names, so this admission
+			// is the same one the legacy sidecar path uses below.
+			if c.liveInstalledMCPSidecarGrant(resolved) || c.liveInstalledMCPSidecarGrant(name) {
+				return true
+			}
 			return false
 		}
 		if !profile.IsLight() {
@@ -1901,16 +2016,33 @@ func (c *sharedAgentLoopCallbacks) IsToolAllowed(name string) bool {
 		return isFileCompanionHostTool(name)
 	}
 	if c == nil || c.semanticSurface == nil {
+		if c.chatTaskHostTool(name) {
+			return true
+		}
+		if c.foregroundHandoffOnly() {
+			return false
+		}
 		return true
 	}
 	name = c.semanticSurface.resolveFunctionName(name)
-	if name == semanticToolsSearchName {
+	if c.foregroundHandoffOnly() {
+		return c.chatTaskHostTool(name)
+	}
+	if name == semanticToolsSearchName || c.chatTaskHostTool(name) {
 		return true
 	}
 	if c.legacyPetitionAllows(name) {
 		return true
 	}
 	if _, ok := c.semanticSurface.grants[name]; !ok {
+		// The sidecar published this installed MCP tool for this request.
+		// Installation authorized it. A light turn must not hide it, and a
+		// managed sibling is the wrong path for a name the plan never granted.
+		// A spent-but-still-live sidecar grant stays allowed here so ExecuteTool
+		// can return the hop-fence message. A retired-only name does not.
+		if c.liveInstalledMCPSidecarGrant(name) {
+			return true
+		}
 		// A light turn cannot run the download, so do not publish a sibling
 		// that this check would then reject. authorizeLoopTool hits this
 		// before IsToolCallAllowed; opening the next sibling here is what
@@ -1933,8 +2065,7 @@ func (c *sharedAgentLoopCallbacks) IsToolAllowed(name string) bool {
 
 // openNextRepeatSibling publishes one more invocation when a repeatable
 // tool's current wave is spent and the model asks for another call. The
-// user does not have to send a new message. One-shot tools and a family
-// that is already at the turn cap stay denied.
+// user does not have to send a new message. One-shot tools stay denied.
 func (c *sharedAgentLoopCallbacks) openNextRepeatSibling(name string) bool {
 	if c == nil || c.semanticSurface == nil {
 		return false
@@ -1952,21 +2083,10 @@ func (c *sharedAgentLoopCallbacks) openNextRepeatSibling(name string) bool {
 		return false
 	}
 	// A previous attempt may already have stored the next sibling and then
-	// failed to issue it. Appending again would pile unused nodes up to the
-	// turn cap while the call still fails. AppendRepeatSibling itself rejects
-	// one-shot families and a family already at the turn cap.
+	// failed to issue it. Appending again would pile unused nodes while the
+	// call still fails. AppendRepeatSibling itself rejects one-shot families.
 	if _, pending := pendingDownloadSibling(c.semanticSurface, selection); !pending {
-		var updated tool.ToolPlan
-		var err error
-		if c.semanticSurface.coordinator != nil {
-			updated, err = c.semanticSurface.coordinator.AppendRepeatSibling(c.semanticSurface.scope, retired.SelectionID, time.Now().UTC())
-		} else {
-			var opened bool
-			updated, _, opened = tool.AppendRepeatSibling(c.semanticSurface.plan, retired.SelectionID)
-			if !opened {
-				err = fmt.Errorf("repeat sibling unavailable")
-			}
-		}
+		updated, err := c.storeNextRepeatSibling(retired.SelectionID, false)
 		if err != nil {
 			return false
 		}
@@ -1984,7 +2104,54 @@ func (c *sharedAgentLoopCallbacks) openNextRepeatSibling(name string) bool {
 // whose published wave is spent is still the same user task; the next call
 // is listed instead of ending the turn.
 func (c *sharedAgentLoopCallbacks) OpenNextRepeatWave(name string) bool {
+	// Computer use, or a handoff that already succeeded, has collapsed this
+	// request to the host tools. Reopening write_file or ssh would nudge a
+	// call the list no longer allows. A call count does not.
+	if c.foregroundHandoffOnly() && !c.chatTaskHostTool(strings.TrimSpace(name)) {
+		return false
+	}
+	// The next call is already on this turn's list. Do not append another
+	// node, and do not treat the listed tool as a spent quota.
+	if c != nil && c.semanticSurface != nil {
+		if _, live := c.semanticSurface.grants[name]; live {
+			return true
+		}
+	}
 	return c.openNextRepeatSibling(name)
+}
+
+// storeNextRepeatSibling appends one sibling and keeps the route plan aligned
+// with the in-memory plan. A route left on the old plan rejects the next
+// grant as a binding mismatch, and the tool drops off the list.
+func (c *sharedAgentLoopCallbacks) storeNextRepeatSibling(selectionID string, observation bool) (tool.ToolPlan, error) {
+	if c == nil || c.semanticSurface == nil {
+		return tool.ToolPlan{}, fmt.Errorf("repeat sibling unavailable")
+	}
+	surface := c.semanticSurface
+	now := time.Now().UTC()
+	if surface.coordinator != nil {
+		if observation {
+			return surface.coordinator.AppendObservationFollowUp(surface.scope, selectionID, now)
+		}
+		return surface.coordinator.AppendRepeatSibling(surface.scope, selectionID, now)
+	}
+	if surface.routeState != nil {
+		return tool.PersistRepeatSibling(surface.routeState, surface.scope, selectionID, now, observation)
+	}
+	var updated tool.ToolPlan
+	var opened bool
+	if observation {
+		updated, _, opened = tool.AppendObservationFollowUp(surface.plan, selectionID)
+	} else {
+		updated, _, opened = tool.AppendRepeatSibling(surface.plan, selectionID)
+	}
+	if !opened {
+		if observation {
+			return tool.ToolPlan{}, fmt.Errorf("schedule observation follow-up unavailable")
+		}
+		return tool.ToolPlan{}, fmt.Errorf("repeat sibling unavailable")
+	}
+	return updated, nil
 }
 
 func repeatSelectionSpent(surface *semanticCallSurface, selectionID string) bool {
@@ -2043,11 +2210,22 @@ func (c *sharedAgentLoopCallbacks) IsToolCallAllowed(name, argsJSON string) (boo
 	if c.sessionTurnDeniesTools() {
 		return false, c.sessionToolClosedMessage()
 	}
+	// A legacy turn has no semantic surface. The handoff still applies there:
+	// returning true used to let a fallback catalog run bash after the budget.
+	if c != nil && c.chatTaskHandoffAlreadySent() && strings.TrimSpace(name) == chatTaskToolDispatch {
+		return false, chatTaskAlreadyHandedOffMessage
+	}
+	if c != nil && c.foregroundHandoffOnly() && !c.chatTaskHostTool(name) {
+		return false, c.chatTaskHandoffAdmissionMessage()
+	}
+	if c != nil && c.chatTaskHostTool(name) {
+		return true, ""
+	}
 	if c == nil || c.semanticSurface == nil {
 		return true, ""
 	}
 	resolved := c.semanticSurface.resolveFunctionName(name)
-	if resolved == semanticToolsSearchName {
+	if resolved == semanticToolsSearchName || c.chatTaskHostTool(resolved) {
 		return true, ""
 	}
 	if c.legacyPetitionAllows(resolved) {
@@ -2477,6 +2655,14 @@ func (c *sharedAgentLoopCallbacks) selectionWait(known, ready map[string]struct{
 // governed lookup should tell the model to stop and answer from evidence;
 // coding/workflow policy denials keep the generic execution-policy text.
 func (c *sharedAgentLoopCallbacks) ToolDenialMessage(name string) string {
+	// authorizeLoopTool asks IsToolAllowed before IsToolCallAllowed. Once the
+	// handoff has closed work tools, this is the text the model actually sees.
+	if c != nil && c.foregroundHandoffOnly() && !c.chatTaskHostTool(name) {
+		return "Error: " + c.chatTaskHandoffAdmissionMessage()
+	}
+	if c != nil && c.chatTaskHandoffAlreadySent() && strings.TrimSpace(name) == chatTaskToolDispatch {
+		return "Error: " + chatTaskAlreadyHandedOffMessage
+	}
 	if msg := semanticUnissuedGeneratePDFDenial(c, name); msg != "" {
 		return msg
 	}
@@ -2509,8 +2695,8 @@ func (c *sharedAgentLoopCallbacks) ToolDenialMessage(name string) string {
 				// download_file attempts on HTTP 404/403 and the denial then
 				// reported a standing success that never happened.
 				return fmt.Sprintf(
-					"Error: tool %q was already used earlier in this turn and did not complete successfully; its budget is spent or it is not currently listed. Do not report that action as succeeded, and do not retry %q unless the name is listed again later. Continue from what you already have and state plainly what remains unfinished.",
-					resolved, resolved,
+					"Error: tool %q was already used earlier in this turn and did not complete successfully. Do not report that action as succeeded. If the name is listed, call it again and continue. Do not tell the user a quota was used up and do not ask them to send another message.",
+					resolved,
 				)
 			}
 			// A consumed grant is not a missing tool. The model reads the
@@ -2520,8 +2706,8 @@ func (c *sharedAgentLoopCallbacks) ToolDenialMessage(name string) string {
 			// the model dropped the user's photo requirement, declaring
 			// search unavailable with 8 fresh results in context).
 			return fmt.Sprintf(
-				"Error: tool %q already ran successfully earlier in this turn and has reached this turn's usage limit. That earlier result still stands and remains valid evidence; do not retry %q, do not report that capability as failed, consumed, or unavailable, and continue from the result you already have. If the name is listed again later, it may be used again.",
-				resolved, resolved,
+				"Error: tool %q already ran successfully earlier in this turn. That result still stands and remains valid evidence. If the name is listed, call it and continue the unfinished task. Do not tell the user that a quota or usage limit was used up, do not ask them to send another message, and do not report that capability as failed, consumed, or unavailable.",
+				resolved,
 			)
 		}
 	}
@@ -2700,14 +2886,23 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 		c.maybeOverlaySpilledToolResultReader()
 		definitions, err := visibleSemanticCallSurfaceDefinitions(c.semanticSurface)
 		if err != nil {
+			// A broken managed plan must not hide servers the user already
+			// installed. The request continues with host controls and those
+			// MCP tools; the grants that failed to render stay off the list.
 			log.Printf("[semantic-routing] request-bound surface render failed: %v", err)
-			return nil
+			definitions = nil
 		}
-		// The discovery meta-tool is always rendered on a governed surface: it
-		// is the deterministic path from "the tool I need is not listed" to the
-		// exact petitionable name, and it carries no grant of its own.
-		definitions = append(definitions, semanticToolsSearchDefinition())
+		// Capability grants and host conversation controls are one request.
+		// tools_search and the chat-task handoff are not grants. Once the
+		// inline lookup budget is spent, the request lists only the handoff:
+		// admission already refuses every other name.
+		definitions = c.withRequestControlTools(definitions)
 		c.setVisibleToolDefinitions(definitions)
+		// Installed MCP tools are part of the request, not a discovery
+		// follow-up. A managed plan that did not select one still lists it.
+		if !c.foregroundHandoffOnly() {
+			c.publishReadyInstalledMCPTools()
+		}
 		return c.tools
 	}
 	if c.handler == nil {
@@ -2724,12 +2919,13 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 	// surface-less fallback turn): the rebuild above starts from the policy
 	// surface, and without this the re-issued call after a granted petition
 	// would be denied again on the successor request.
-	c.setVisibleToolDefinitions(toolSet.Tools)
-	// Publish discovered MCP binds onto this legacy request. Failure leaves
-	// the legacy list intact; discover_tool already refused a bind the
-	// inventory could not plan.
-	if err := c.attachDiscoveredMCPBindings(); err != nil {
-		log.Printf("[semantic-routing] discovered MCP bind was not published: %v", err)
+	c.setVisibleToolDefinitions(c.withRequestControlTools(toolSet.Tools))
+	// Installed MCP tools are listed on this request. Discovery is not
+	// required, and a bind recorded earlier in the turn is included.
+	// A spent inline budget has already replaced the list with the handoff
+	// tools; putting work tools back would advertise calls this turn rejects.
+	if !c.foregroundHandoffOnly() {
+		c.publishReadyInstalledMCPTools()
 	}
 	c.legacySurface = c.legacySurface.replaceDefinitions(c.tools, toolSet.ClientToolNames)
 	return c.tools
@@ -2754,6 +2950,16 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return false, ""
+	}
+	// Dispatch stays a host tool so a same-batch retry reaches the chat
+	// executor, but it must not be granted back onto the next request.
+	if c.chatTaskHandoffAlreadySent() && name == chatTaskToolDispatch {
+		return false, chatTaskAlreadyHandedOffMessage
+	}
+	// The inline budget already closed this turn's work tools. A petition must
+	// not put bash or write_file back on the next request.
+	if c.foregroundHandoffOnly() && !c.chatTaskHostTool(name) {
+		return false, c.chatTaskHandoffAdmissionMessage()
 	}
 	// A plan continuation's surface is read-only plus goal. Granting bash or
 	// write_file here puts the mutation tools back onto the next request.
@@ -3365,11 +3571,132 @@ func (c *sharedAgentLoopCallbacks) semanticGrantNamed(name string) bool {
 	return ok && strings.TrimSpace(grant.Token) != ""
 }
 
+// chatTaskHostTool is a conversation-control name this loop is allowed to run.
+// It is not a semantic grant. A foreground chat turn sees the handoff tools.
+// A background chat task sees only the question it may ask the user.
+func (c *sharedAgentLoopCallbacks) chatTaskHostTool(name string) bool {
+	if c == nil || c.loopCtx == nil {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	if strings.TrimSpace(c.loopCtx.ChatTaskID) != "" {
+		return name == chatTaskToolRequestInput
+	}
+	if !c.loopCtx.OfferChatTaskDispatch {
+		return false
+	}
+	switch name {
+	case chatTaskToolDispatch, chatTaskToolSteer, chatTaskToolStop:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *sharedAgentLoopCallbacks) chatTaskControlDefinitions() []map[string]interface{} {
+	if c == nil || c.loopCtx == nil {
+		return nil
+	}
+	if strings.TrimSpace(c.loopCtx.ChatTaskID) != "" {
+		return chatTaskWorkerControlDefinitions()
+	}
+	if !c.loopCtx.OfferChatTaskDispatch {
+		return nil
+	}
+	if c.loopCtx.chatTaskHandoffSent() {
+		return chatTaskAfterHandoffDefinitions()
+	}
+	return chatTaskForegroundHandoffDefinitions()
+}
+
+func (c *sharedAgentLoopCallbacks) chatTaskHandoffAlreadySent() bool {
+	return c != nil && c.loopCtx != nil && c.loopCtx.chatTaskHandoffSent()
+}
+
+func (c *sharedAgentLoopCallbacks) chatTaskHandoffAdmissionMessage() string {
+	if c.chatTaskHandoffAlreadySent() {
+		return chatTaskAlreadyHandedOffMessage
+	}
+	if c != nil && c.loopCtx != nil {
+		c.loopCtx.mu.RLock()
+		needed := c.loopCtx.ForegroundHandoffNeeded
+		c.loopCtx.mu.RUnlock()
+		if needed {
+			return chatTaskComputerUseHandoffMessage
+		}
+	}
+	return chatTaskHandoffRequiredMessage
+}
+
+// foregroundHandoffOnly reports that this desktop chat turn may no longer run
+// work tools. That is true once computer use was refused, and once dispatch
+// or steer has already succeeded. A call count does not close the list.
+func (c *sharedAgentLoopCallbacks) foregroundHandoffOnly() bool {
+	if c == nil || c.loopCtx == nil || !c.loopCtx.OfferChatTaskDispatch || strings.TrimSpace(c.loopCtx.ChatTaskID) != "" {
+		return false
+	}
+	c.loopCtx.mu.RLock()
+	handedOff := c.loopCtx.ChatTaskHandoffSent
+	needed := c.loopCtx.ForegroundHandoffNeeded
+	c.loopCtx.mu.RUnlock()
+	return handedOff || needed
+}
+
+// withRequestControlTools publishes host controls beside the capability
+// surface. Discovery stays on a governed surface until the handoff replaces
+// that surface. The two lists are deduped so a legacy catalog that already
+// carries the same names does not list them twice.
+func (c *sharedAgentLoopCallbacks) withRequestControlTools(definitions []map[string]interface{}) []map[string]interface{} {
+	control := c.chatTaskControlDefinitions()
+	if c.foregroundHandoffOnly() && len(control) > 0 {
+		return control
+	}
+	if c != nil && c.semanticSurface != nil {
+		definitions = appendUniqueToolDefs(definitions, []map[string]interface{}{semanticToolsSearchDefinition()})
+	}
+	return appendUniqueToolDefs(definitions, control)
+}
+
+func appendUniqueToolDefs(base, extra []map[string]interface{}) []map[string]interface{} {
+	if len(extra) == 0 {
+		return base
+	}
+	present := map[string]bool{}
+	for _, def := range base {
+		if name := strings.TrimSpace(extractToolName(def)); name != "" {
+			present[name] = true
+		}
+	}
+	out := base
+	for _, def := range extra {
+		name := strings.TrimSpace(extractToolName(def))
+		if name == "" || present[name] {
+			continue
+		}
+		present[name] = true
+		out = append(out, def)
+	}
+	return out
+}
+
 func (c *sharedAgentLoopCallbacks) setVisibleToolDefinitions(definitions []map[string]interface{}) {
 	if c == nil {
 		return
 	}
-	c.tools = c.appendLegacyPetitionedDatabaseTools(definitions)
+	// Sync and replan publish the grant closure, not the request the model
+	// may call. Once the handoff has closed work tools, those callers must
+	// not put bash back on the host record: the next denial treats a name
+	// left in rendered as listed, and a refresh can issue it again.
+	// Companion surfaces are closed by their own predicate and do not take
+	// the chat handoff.
+	if c.foregroundHandoffOnly() && !fileCompanionToolsDisabled(c.userID) && !petCompanionToolsDisabled(c.userID) {
+		if control := c.chatTaskControlDefinitions(); len(control) > 0 {
+			definitions = control
+		}
+		c.tools = definitions
+	} else {
+		c.tools = c.appendLegacyPetitionedDatabaseTools(definitions)
+	}
 	// surface.rendered is the host record of names emitted on this surface.
 	// A coordinator publish leaves that map empty, so a live grant looks
 	// unlisted and a successor denial cannot name it. Record only when the
@@ -3704,6 +4031,12 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 		return c.executeToolWithoutSemanticSurface(name, c.continuationOverlayArgsJSON(name, argsJSON))
 	}
 	if c.semanticSurface != nil {
+		if spent, ok := c.rejectManagedInstalledMCPSpent(name); ok {
+			return spent.Result
+		}
+		if c.installedMCPSidecarCall(name) {
+			return c.executeDiscoveredMCPGrant(name, argsJSON, "", "")
+		}
 		return c.executeSemanticTool(name, argsJSON)
 	}
 	if c.discoveredMCPGrantNamed(name) {
@@ -3769,6 +4102,10 @@ func (c *sharedAgentLoopCallbacks) executeToolCallWithExecutionContext(name, arg
 		result = agent.ToolExecutionResult{Result: text, Outcome: outcome}
 	} else if c != nil && c.legacyPetitionAllows(name) {
 		result = c.ExecuteToolStructured(name, argsJSON)
+	} else if spent, ok := c.rejectManagedInstalledMCPSpent(name); ok {
+		result = spent
+	} else if c != nil && c.semanticSurface != nil && c.installedMCPSidecarCall(name) {
+		result = semanticAgentToolExecutionResult(c.executeDiscoveredMCPGrant(name, argsJSON, callID, execution.SurfaceEpoch))
 	} else if c != nil && c.semanticSurface != nil {
 		result = semanticAgentToolExecutionResult(c.executeSemanticToolCallWithEpoch(name, argsJSON, callID, execution.SurfaceEpoch))
 	} else if c != nil && c.discoveredMCPGrantNamed(name) {
@@ -3820,10 +4157,48 @@ func (c *sharedAgentLoopCallbacks) BeginToolSurfaceEpoch(iteration int) string {
 	if c == nil {
 		return ""
 	}
+	// A finished managed call may use the sidecar grant on this request.
+	// A call that is still awaiting its receipt may not: that sidecar grant
+	// would be a second tools/call of the same name.
+	c.retainAwaitingManagedMCPSpent()
+	var epoch string
 	if c.semanticSurface != nil {
-		return c.semanticSurface.beginEpoch()
+		epoch = c.semanticSurface.beginEpoch()
+	} else {
+		epoch = c.legacySurface.beginEpoch()
 	}
-	return c.legacySurface.beginEpoch()
+	// Retire the previous sidecar epoch before this request's tools are
+	// rendered. A publish that replaces the sidecar adopts the same epoch
+	// again after the new grants exist.
+	c.requestSurfaceEpoch = epoch
+	c.adoptInstalledMCPRequestEpoch()
+	return epoch
+}
+
+// adoptInstalledMCPRequestEpoch stamps the sidecar with the epoch this
+// request already returned to the loop. The managed surface keeps its own
+// beginEpoch digest; copying that digest here is what makes a superseded
+// response fail closed on a stable server__tool name.
+func (c *sharedAgentLoopCallbacks) adoptInstalledMCPRequestEpoch() {
+	if c == nil || c.discoveredMCPSurface == nil || c.discoveredMCPSurface == c.semanticSurface {
+		return
+	}
+	c.discoveredMCPSurface.adoptRequestEpoch(c.requestSurfaceEpoch)
+}
+
+// installedMCPSidecarEpochAdmits is the only stale-epoch exception for an
+// installed MCP call. The name must be a live sidecar grant the managed
+// surface does not hold, and that sidecar must still be on this request's
+// epoch or on the one same-family continuation that epoch snapshotted.
+func (c *sharedAgentLoopCallbacks) installedMCPSidecarEpochAdmits(epoch, name string) bool {
+	if !c.installedMCPSidecarCall(name) {
+		return false
+	}
+	surface := c.discoveredMCPSurface
+	if surface.epochIsCurrent(epoch) {
+		return true
+	}
+	return surface.staleEpochSameFamilyContinuation(epoch, name)
 }
 
 // cancelManagedSemanticSurface is the single lifecycle fence for an IM
@@ -3842,6 +4217,160 @@ func (c *sharedAgentLoopCallbacks) cancelManagedSemanticSurface() {
 	}
 }
 
+// installedMCPSidecarCall reports a name the installed-MCP sidecar can run
+// and the managed surface does not already hold live. The managed grant
+// wins when both list the same stable name. A name the managed surface
+// retired during this request, and did not reissue, stays on the managed
+// path so the sidecar's unconsumed grant cannot tools/call again.
+func (c *sharedAgentLoopCallbacks) installedMCPSidecarCall(name string) bool {
+	if c == nil || c.discoveredMCPSurface == nil {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	if _, ok := c.discoveredMCPSurface.grants[name]; !ok {
+		return false
+	}
+	if c.managedInstalledMCPSpentThisRequest(name) {
+		return false
+	}
+	if c.semanticSurface == nil {
+		return true
+	}
+	_, live := c.semanticSurface.grants[name]
+	return !live
+}
+
+// noteManagedInstalledMCPSpent records a stable name the managed surface
+// just retired, unless that name is live again (the next sibling) or this
+// call is the sidecar executing under the swapped surface pointer.
+func (c *sharedAgentLoopCallbacks) noteManagedInstalledMCPSpent(name string) {
+	if c == nil || c.discoveredMCPSurface == nil || c.semanticSurface == nil || c.discoveredMCPSurface == c.semanticSurface {
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	if _, sidecar := c.discoveredMCPSurface.grants[name]; !sidecar {
+		return
+	}
+	if _, live := c.semanticSurface.grants[name]; live {
+		delete(c.managedMCPSpentThisRequest, name)
+		return
+	}
+	if c.managedMCPSpentThisRequest == nil {
+		c.managedMCPSpentThisRequest = map[string]struct{}{}
+	}
+	c.managedMCPSpentThisRequest[name] = struct{}{}
+}
+
+// retainAwaitingManagedMCPSpent drops fences whose effect has settled.
+// An awaiting-receipt retirement stays fenced across later model requests
+// in this turn so the sidecar cannot write again before the receipt lands.
+func (c *sharedAgentLoopCallbacks) retainAwaitingManagedMCPSpent() {
+	if c == nil || len(c.managedMCPSpentThisRequest) == 0 {
+		if c != nil {
+			c.managedMCPSpentThisRequest = nil
+		}
+		return
+	}
+	kept := make(map[string]struct{}, len(c.managedMCPSpentThisRequest))
+	for name := range c.managedMCPSpentThisRequest {
+		if c.managedMCPNameAwaitingReceipt(name) {
+			kept[name] = struct{}{}
+		}
+	}
+	if len(kept) == 0 {
+		c.managedMCPSpentThisRequest = nil
+		return
+	}
+	c.managedMCPSpentThisRequest = kept
+}
+
+func (c *sharedAgentLoopCallbacks) managedMCPNameAwaitingReceipt(name string) bool {
+	if c == nil || c.semanticSurface == nil || c.semanticSurface == c.discoveredMCPSurface {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	if _, live := c.semanticSurface.grants[name]; live {
+		return false
+	}
+	grant, ok := c.semanticSurface.retiredGrants[name]
+	if !ok {
+		return false
+	}
+	awaiting, _ := semanticRetiredAwaitingReceipt(c.semanticSurface, grant.SelectionID)
+	return awaiting
+}
+
+func (c *sharedAgentLoopCallbacks) managedInstalledMCPSpentThisRequest(name string) bool {
+	if c == nil || len(c.managedMCPSpentThisRequest) == 0 {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	if _, spent := c.managedMCPSpentThisRequest[name]; !spent {
+		return false
+	}
+	if c.semanticSurface != nil {
+		if _, live := c.semanticSurface.grants[name]; live {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *sharedAgentLoopCallbacks) rejectManagedInstalledMCPSpent(name string) (agent.ToolExecutionResult, bool) {
+	if !c.managedInstalledMCPSpentThisRequest(name) {
+		return agent.ToolExecutionResult{}, false
+	}
+	return semanticAgentToolExecutionResult(c.managedInstalledMCPSpentMessage(name)), true
+}
+
+// managedInstalledMCPSpentMessage tells the model the managed call already
+// happened. ToolDenialMessage carries the awaiting-receipt and completed
+// wording. The fallback is used when that grant is not on the managed map.
+func (c *sharedAgentLoopCallbacks) managedInstalledMCPSpentMessage(name string) string {
+	name = strings.TrimSpace(name)
+	if c != nil {
+		if msg := strings.TrimSpace(c.ToolDenialMessage(name)); msg != "" {
+			return msg
+		}
+	}
+	if name == "" {
+		name = "installed MCP tool"
+	}
+	return fmt.Sprintf(
+		"Error: tool %q already ran earlier in this request. That result still stands. Do not call it again in this response, do not tell the user a quota was used up, and do not ask them to send another message.",
+		name,
+	)
+}
+
+// renderedNameForSelection is the stable function name of a selection that
+// has just left the live grant map, or the name it still holds.
+func (c *sharedAgentLoopCallbacks) renderedNameForSelection(selectionID string) string {
+	if c == nil || c.semanticSurface == nil {
+		return ""
+	}
+	selectionID = strings.TrimSpace(selectionID)
+	if selectionID == "" {
+		return ""
+	}
+	for name, grant := range c.semanticSurface.retiredGrants {
+		if grant.SelectionID == selectionID {
+			return name
+		}
+	}
+	for name, grant := range c.semanticSurface.grants {
+		if grant.SelectionID == selectionID {
+			return name
+		}
+	}
+	return ""
+}
+
 func (c *sharedAgentLoopCallbacks) discoveredMCPGrantNamed(name string) bool {
 	if c == nil || c.discoveredMCPSurface == nil {
 		return false
@@ -3854,6 +4383,21 @@ func (c *sharedAgentLoopCallbacks) discoveredMCPGrantNamed(name string) bool {
 		return true
 	}
 	_, ok := c.discoveredMCPSurface.retiredGrants[name]
+	return ok
+}
+
+// liveInstalledMCPSidecarGrant reports a server__tool grant the sidecar
+// published for this request. The managed plan does not have to select the
+// tool first. A name that is only retired is not a call.
+func (c *sharedAgentLoopCallbacks) liveInstalledMCPSidecarGrant(name string) bool {
+	if c == nil || c.discoveredMCPSurface == nil {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	_, ok := c.discoveredMCPSurface.grants[name]
 	return ok
 }
 
@@ -3874,18 +4418,47 @@ func (c *sharedAgentLoopCallbacks) appendDiscoveredMCPDefs(defs []map[string]int
 		if name == "" || present[name] {
 			continue
 		}
+		// The managed call is still awaiting its receipt. Listing the sidecar
+		// grant would offer a second tools/call of the same name.
+		if c.managedInstalledMCPSpentThisRequest(name) {
+			continue
+		}
 		present[name] = true
 		combined = append(combined, definition)
+		if c.semanticSurface != nil && c.semanticSurface.rendered != nil {
+			c.semanticSurface.rendered[name] = true
+		}
 	}
 	c.tools = combined
 }
 
-// attachDiscoveredMCPBindings plans the loop's discovered MCP binds and
-// appends only those grants to the current legacy list. The same bind set
-// reuses the published surface; a new publish of one turn id would be a child
-// revision and is not a discovery bind.
+// publishReadyInstalledMCPTools lists every ready installed MCP tool on
+// this request. The model calls server__tool directly. discover_tool is
+// not the path that makes an installed server usable.
+// attachDiscoveredMCPBindings plans the loop's MCP binds and appends those
+// grants to the current list. The same bind set reuses the published
+// surface. A managed surface does not hide these tools.
+func (c *sharedAgentLoopCallbacks) publishReadyInstalledMCPTools() {
+	if c == nil || c.handler == nil || c.loopCtx == nil || c.foregroundHandoffOnly() {
+		return
+	}
+	ctx, cancel := semanticRoutingContext(c.loopCtx)
+	defer cancel()
+	inventory, err := c.handler.semanticInstalledMCPInventory(ctx)
+	if err != nil {
+		log.Printf("[semantic-routing] installed MCP inventory was not listed: %v", err)
+	} else {
+		for _, bind := range readyInstalledMCPBinds(inventory) {
+			c.loopCtx.rememberDiscoveredMCPBind(bind.ServerID, bind.ToolName)
+		}
+	}
+	if err := c.attachDiscoveredMCPBindings(); err != nil {
+		log.Printf("[semantic-routing] installed MCP tools were not published: %v", err)
+	}
+}
+
 func (c *sharedAgentLoopCallbacks) attachDiscoveredMCPBindings() error {
-	if c == nil || c.handler == nil || c.loopCtx == nil || c.semanticSurface != nil {
+	if c == nil || c.handler == nil || c.loopCtx == nil {
 		return nil
 	}
 	// A folded alias is not a new bind. Drop it before reuse is decided, or
@@ -3904,6 +4477,7 @@ func (c *sharedAgentLoopCallbacks) attachDiscoveredMCPBindings() error {
 			return err
 		}
 		c.appendDiscoveredMCPDefs(defs)
+		c.adoptInstalledMCPRequestEpoch()
 		return nil
 	}
 	if c.discoveredMCPSurface != nil {
@@ -3931,6 +4505,7 @@ func (c *sharedAgentLoopCallbacks) attachDiscoveredMCPBindings() error {
 	c.discoveredMCPBinds = discoveredMCPPublishedBinds(surface)
 	dropDiscoveredMCPFoldedAliases(c.loopCtx, c.discoveredMCPBinds)
 	c.appendDiscoveredMCPDefs(defs)
+	c.adoptInstalledMCPRequestEpoch()
 	return nil
 }
 
@@ -3998,7 +4573,7 @@ func cancelSemanticCallSurface(surface *semanticCallSurface) {
 // response whose epoch was superseded by a new request or a child plan cannot
 // resolve its function name against the current surface, even when both
 // revisions expose the same stable adapter name (for example web_search).
-// The single exception is the same-family batch continuation: one model
+// One exception is the same-family batch continuation: one model
 // response may carry several calls of one repeat family, drained sequentially
 // by the core loop, and an earlier sibling's success retires the epoch while
 // issuing the next sibling under the same stable name. That late call
@@ -4008,11 +4583,19 @@ func cancelSemanticCallSurface(surface *semanticCallSurface) {
 // construction: the discovery meta-tool holds no grant and consumes no
 // authority (its budget is a callback counter), so a stale epoch is
 // meaningless for it — rejecting it (production 2026-08-28 PPT turn batched
-// send_file + tools_search) is pure churn.
+// send_file + tools_search) is pure churn. An installed MCP sidecar call is
+// not exempt. It shares this request's epoch, and a late response binds the
+// stable server__tool name only when that sidecar epoch is still current or
+// the call is the same family's batch continuation. A name the managed
+// surface retired in this request, and did not reissue, is rejected before
+// that epoch check so the sidecar grant cannot run a second tools/call.
 func (c *sharedAgentLoopCallbacks) ExecuteToolCallWithContext(name, argsJSON, callID string, execution agent.ToolCallExecutionContext) agent.ToolExecutionResult {
 	if c != nil {
+		if spent, ok := c.rejectManagedInstalledMCPSpent(name); ok {
+			return spent
+		}
 		if c.semanticSurface != nil && !c.semanticSurface.epochIsCurrent(execution.SurfaceEpoch) {
-			if name != semanticToolsSearchName && !c.legacyPetitionAllows(name) && !c.semanticSurface.staleEpochSameFamilyContinuation(execution.SurfaceEpoch, name) {
+			if name != semanticToolsSearchName && !c.chatTaskHostTool(name) && !c.legacyPetitionAllows(name) && !c.semanticSurface.staleEpochSameFamilyContinuation(execution.SurfaceEpoch, name) && !c.installedMCPSidecarEpochAdmits(execution.SurfaceEpoch, name) {
 				return semanticAgentToolExecutionResult(semanticGrantRejectMessage("stale_surface"))
 			}
 		}
@@ -4320,6 +4903,9 @@ func semanticToolsSearchLinesSeen(shown map[string]struct{}, lines []string) boo
 // turn's signed grant. In particular, it does not accept provider, skill, MCP
 // server, implementation, or selection identity from model arguments.
 func (c *sharedAgentLoopCallbacks) executeSemanticTool(functionName, argsJSON string) string {
+	if c != nil && c.chatTaskHostTool(functionName) {
+		return c.executeToolWithoutSemanticSurface(functionName, argsJSON)
+	}
 	if c == nil || c.handler == nil || c.semanticSurface == nil || c.semanticSurface.issuer == nil || c.semanticSurface.executor == nil {
 		return "[system rejected] semantic tool surface is unavailable"
 	}
@@ -4447,6 +5033,9 @@ func hostCallAcquireModelText(result tool.SelectionExecutionResult) string {
 }
 
 func (c *sharedAgentLoopCallbacks) executeSemanticToolCallWithEpoch(functionName, argsJSON, callID, surfaceEpoch string) string {
+	if c != nil && c.chatTaskHostTool(functionName) {
+		return c.executeToolWithoutSemanticSurface(functionName, argsJSON)
+	}
 	if c == nil || c.handler == nil || c.semanticSurface == nil || c.semanticSurface.issuer == nil || c.semanticSurface.executor == nil || c.semanticSurface.hostCalls == nil {
 		return "[system rejected] semantic tool surface is unavailable"
 	}
@@ -4623,24 +5212,7 @@ func (c *sharedAgentLoopCallbacks) executeCoordinatedSemanticToolCall(functionNa
 		// plan execution atomically with the operation state. Completing it
 		// again through the generic path would corrupt the one-way state
 		// transition or turn an awaiting receipt into a false success.
-		delete(c.semanticSurface.pendingArtifacts, selected.ID)
-		if c.replanAfterSemanticLifecycleFailure(result.ReasonCode) {
-			return result.Result
-		}
-		if result.Succeeded && !result.AwaitingReceipt && !result.Unknown {
-			// A synchronous MCP or Skill observation is already succeeded.
-			// Advance the local closure so a dependant can run. Retire-only
-			// would leave the DAG waiting for a receipt that was just settled.
-			note, err := c.advanceSemanticToolSurface(selected.ID)
-			if err != nil {
-				return semanticAdvanceAfterSuccess(result.Result, err)
-			}
-			return result.Result + note
-		}
-		if err := c.retireSemanticToolSurface(functionName, selected.ID); err != nil {
-			return "[system rejected] semantic_plan_retire_failed"
-		}
-		return result.Result
+		return c.finishCoordinatedDynamicDispatch(functionName, selected, result)
 	}
 	state, result := tool.PlanExecutionStateFromResult(result)
 	if strings.TrimSpace(result.ReasonCode) == "" {
@@ -4817,6 +5389,59 @@ func removeToolDefinitionByName(definitions []map[string]interface{}, functionNa
 	return agentruntime.FilterToolDefinitionsByName(definitions, functionName)
 }
 
+// finishCoordinatedDynamicDispatch closes a dynamic dispatch the coordinator
+// already committed. A finished tools/call error lists the next installed
+// call before the grant is retired, so a later call in this same response
+// can correct the arguments. Success still advances. An awaiting or unknown
+// effect stays retire-only: that call may still be in flight.
+func (c *sharedAgentLoopCallbacks) finishCoordinatedDynamicDispatch(functionName string, selected tool.PlannedSelection, result tool.SelectionExecutionResult) string {
+	if c == nil || c.semanticSurface == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	delete(c.semanticSurface.pendingArtifacts, selected.ID)
+	if c.replanAfterSemanticLifecycleFailure(result.ReasonCode) {
+		return result.Result
+	}
+	if result.Succeeded && !result.AwaitingReceipt && !result.Unknown {
+		// A synchronous MCP or Skill observation is already succeeded.
+		// Advance the local closure so a dependant can run. Retire-only
+		// would leave the DAG waiting for a receipt that was just settled.
+		note, err := c.advanceSemanticToolSurface(selected.ID)
+		if err != nil {
+			return semanticAdvanceAfterSuccess(result.Result, err)
+		}
+		return result.Result + note
+	}
+	if settledInstalledMCPToolRejection(result) {
+		text := c.retireRejectedSemanticTool(functionName, selected.ID, result.Result, result.ReasonCode)
+		if _, live := c.semanticSurface.grants[strings.TrimSpace(functionName)]; live {
+			text = installedMCPRejectedCallStillListed(text)
+		}
+		return text
+	}
+	if err := c.retireSemanticToolSurface(functionName, selected.ID); err != nil {
+		return "[system rejected] semantic_plan_retire_failed"
+	}
+	return result.Result
+}
+
+// settledInstalledMCPToolRejection reports a tools/call the server finished
+// by refusing it. The attempt is spent. The effect did not stay in flight.
+func settledInstalledMCPToolRejection(result tool.SelectionExecutionResult) bool {
+	if result.Succeeded || result.AwaitingReceipt || result.Unknown {
+		return false
+	}
+	return strings.TrimSpace(result.ReasonCode) == "mcp_tool_error"
+}
+
+func installedMCPRejectedCallStillListed(result string) string {
+	const note = " The server rejected this call. This tool is still listed: call it again with corrected arguments."
+	if strings.Contains(result, note) {
+		return result
+	}
+	return result + note
+}
+
 // retireRejectedSemanticTool closes a terminal model invocation without
 // projecting plan success. It serves adapter-failure paths only: the grant
 // was admitted and the adapter ran, so the attempt had observable I/O and
@@ -4836,9 +5461,7 @@ func (c *sharedAgentLoopCallbacks) retireRejectedSemanticTool(functionName, sele
 	// node issued, and a second ensure would append another call that no
 	// grant has been given yet.
 	if repeatSelectionSpent(c.semanticSurface, selectionID) && tool.SettledIterativeListingAllowed(tool.SelectionExecutionResult{ReasonCode: reasonCode}) {
-		c.ensureNextObligationFileWrite(selectionID)
-		c.ensureNextIterativeRemoteCommand(selectionID)
-		c.ensureNextIterativeInstalledMCP(selectionID)
+		c.ensureNextContinuableWork(selectionID)
 	}
 	if err := c.retireSemanticToolSurface(functionName, selectionID); err != nil {
 		return "[system rejected] semantic_plan_retire_failed"
@@ -4890,7 +5513,11 @@ func (c *sharedAgentLoopCallbacks) retireSemanticToolSurface(functionName, selec
 		}
 	}
 	c.tools = removeToolDefinitionByName(c.tools, functionName)
-	if _, err := retireSemanticCallSurfaceSelection(c.semanticSurface, selectionID); err != nil {
+	_, err := retireSemanticCallSurfaceSelection(c.semanticSurface, selectionID)
+	// Record the name even when refresh fails. The grant may already have
+	// left the live map, and the sidecar must not run it in this request.
+	c.noteManagedInstalledMCPSpent(functionName)
+	if err != nil {
 		log.Printf("[semantic-routing] retire selection %q failed: %v", selectionID, err)
 		return err
 	}
@@ -4907,14 +5534,16 @@ func (c *sharedAgentLoopCallbacks) advanceSemanticToolSurface(selectionID string
 	if c == nil || c.semanticSurface == nil {
 		return "", fmt.Errorf("semantic tool surface is unavailable")
 	}
+	// A schedule list is an observation. When the utterance still owes a
+	// change, the host that saw the list mints one write. That follow-up
+	// is not a published budget.
+	c.ensureScheduleObservationFollowUp(selectionID)
 	// A successful file edit leaves the next write on the following request.
 	// A settled remote command or installed MCP call leaves the next call the
 	// same way. Waiting for the model to call a name that has already left
 	// the surface is the usage-limit denial: the tool vanished, the model
 	// called it, and the reply said this turn was finished.
-	c.ensureNextObligationFileWrite(selectionID)
-	c.ensureNextIterativeRemoteCommand(selectionID)
-	c.ensureNextIterativeInstalledMCP(selectionID)
+	c.ensureNextContinuableWork(selectionID)
 	var err error
 	if c.semanticHoldDependantIssue {
 		// Hold only the host-owned generate unlock. Same-family repeats
@@ -4929,6 +5558,10 @@ func (c *sharedAgentLoopCallbacks) advanceSemanticToolSurface(selectionID string
 	} else {
 		_, err = advanceSemanticCallSurface(c.semanticSurface, selectionID)
 	}
+	// A sibling reissued under the same name clears the mark. A retirement
+	// that leaves the name off the managed surface keeps the sidecar from
+	// running a second tools/call in this request.
+	c.noteManagedInstalledMCPSpent(c.renderedNameForSelection(selectionID))
 	if err != nil {
 		log.Printf("[semantic] plan advance failed selection=%q err=%v", selectionID, err)
 		return "", err
@@ -4943,10 +5576,52 @@ func (c *sharedAgentLoopCallbacks) advanceSemanticToolSurface(selectionID string
 	return semanticSpentBudgetNote(c.semanticSurface, selectionID), nil
 }
 
+// ensureScheduleObservationFollowUp appends one schedule.administer.local
+// sibling after a successful list, and only when the utterance still asks
+// for a change. The sibling is minted here, by the host that saw the list,
+// not by a published invocation budget. A mutation, a list-only utterance,
+// and a family that already has an unissued sibling do not grow. An
+// advance of any other capability leaves the list flag untouched.
+func (c *sharedAgentLoopCallbacks) ensureScheduleObservationFollowUp(selectionID string) {
+	if c == nil || c.semanticSurface == nil {
+		return
+	}
+	selection, found := semanticSelectionByID(c.semanticSurface.plan, selectionID)
+	if !found || selection.FitProof.MatchedCapability != tool.CapabilityScheduleAdministerLocal {
+		return
+	}
+	listed := c.scheduleAdministerListed
+	c.scheduleAdministerListed = false
+	if !listed || !scheduleUtteranceObligesMutation(c.userText) {
+		return
+	}
+	if familyHasUnissuedSibling(c.semanticSurface, selection, selectionID) {
+		return
+	}
+	updated, err := c.storeNextRepeatSibling(selectionID, true)
+	if err != nil {
+		log.Printf("[semantic] schedule observation follow-up was not listed: %v", err)
+		return
+	}
+	c.semanticSurface.plan = updated
+}
+
+// ensureNextContinuableWork lists the next call of a task-owned work tool
+// after the one that just settled. A call count is not a quota. One-shot
+// sends, companion floors, and unsettled attempts are not listed here.
+func (c *sharedAgentLoopCallbacks) ensureNextContinuableWork(selectionID string) {
+	c.ensureNextIterativeSibling(selectionID, obligationContinuableWork, "work call")
+}
+
 // ensureNextObligationFileWrite appends one fs.write.local sibling when the
 // call that just succeeded spent the published wave. The following refresh
 // lists it. A baseline or archetype companion stays at the wave it was given.
 // An unissued sibling already in the plan is left to that refresh.
+
+func obligationContinuableWork(plan tool.ToolPlan, selection tool.PlannedSelection) bool {
+	return obligationIterativeFamily(plan, selection, tool.IterativeRepeatCapability(selection))
+}
+
 func (c *sharedAgentLoopCallbacks) ensureNextObligationFileWrite(selectionID string) {
 	c.ensureNextIterativeSibling(selectionID, obligationLocalFileWrite, "file write")
 }
@@ -4978,17 +5653,7 @@ func (c *sharedAgentLoopCallbacks) ensureNextIterativeSibling(selectionID string
 	if familyHasUnissuedSibling(c.semanticSurface, selection, selectionID) {
 		return
 	}
-	var updated tool.ToolPlan
-	var err error
-	if c.semanticSurface.coordinator != nil {
-		updated, err = c.semanticSurface.coordinator.AppendRepeatSibling(c.semanticSurface.scope, selectionID, time.Now().UTC())
-	} else {
-		var opened bool
-		updated, _, opened = tool.AppendRepeatSibling(c.semanticSurface.plan, selectionID)
-		if !opened {
-			err = fmt.Errorf("repeat sibling unavailable")
-		}
-	}
+	updated, err := c.storeNextRepeatSibling(selectionID, false)
 	if err != nil {
 		log.Printf("[semantic] next %s was not listed: %v", kind, err)
 		return
@@ -5295,8 +5960,8 @@ func semanticHostObservedExternalSelection(selection tool.PlannedSelection) bool
 // that invoke the adapter directly.
 //
 // A dynamic MCP or Skill selection is not missing that boundary. Its receipt
-// is the dynamic effect coordinator, and an unreviewed MCP write also stops
-// for per-server confirmation, both inside executeSemanticDynamicProvider.
+// is the dynamic effect coordinator inside executeSemanticDynamicProvider.
+// An installed MCP write is not a chat confirmation.
 // Applying the legacy host allow-list here rejected the call before either
 // could run, so an installed external-effect tool never executed.
 func (c *sharedAgentLoopCallbacks) semanticReceiptIntakeRejection(functionName string) string {
@@ -6499,6 +7164,9 @@ func (c *sharedAgentLoopCallbacks) executeTrustedSession(_ tool.PlannedSelection
 }
 
 func (c *sharedAgentLoopCallbacks) executeTrustedSchedule(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if c != nil {
+		c.scheduleAdministerListed = false
+	}
 	if reason := c.rejectGroupLocalAdmin(); reason != "" {
 		return reason
 	}
@@ -6513,6 +7181,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedSchedule(_ tool.PlannedSelectio
 	if err != nil {
 		return "[system rejected] " + err.Error()
 	}
+	op, _ := semanticTrustedScheduleDispatch(parsed)
 	text, err := c.handler.administerTrustedSchedule(c.semanticPrincipalID(), parsed)
 	if err != nil {
 		return "[system rejected] " + err.Error()
@@ -6520,6 +7189,9 @@ func (c *sharedAgentLoopCallbacks) executeTrustedSchedule(_ tool.PlannedSelectio
 	out, err := semanticTrustedScheduleResultProjection(text)
 	if err != nil {
 		return "[system rejected] " + err.Error()
+	}
+	if op == "list" {
+		c.scheduleAdministerListed = true
 	}
 	return out
 }
@@ -8067,14 +8739,9 @@ func (c *sharedAgentLoopCallbacks) maybeEscalateAfterTools() {
 	if !light {
 		return
 	}
-	before := c.llmCfg.Model
-	upgraded := c.handler.routeLLMConfig(llm.TaskReasoning)
-	if upgraded.Model == "" || (upgraded.Model == before &&
-		upgraded.URL == c.llmCfg.URL &&
-		upgraded.Key == c.llmCfg.Key &&
-		upgraded.Protocol == c.llmCfg.Protocol &&
-		upgraded.ProviderName == c.llmCfg.ProviderName &&
-		upgraded.ContextLength == c.llmCfg.ContextLength) {
+	before := c.llmCfg
+	upgraded := c.handler.escalateRoleConfig(c.roleBase, c.llmCfg)
+	if !llmRoleEscalationChanged(before, upgraded) {
 		return
 	}
 	c.llmCfg = upgraded
@@ -8085,11 +8752,16 @@ func (c *sharedAgentLoopCallbacks) maybeEscalateAfterTools() {
 	c.route.Reason = "tools requested after light turn (shared loop)"
 	c.route.Escalated = true
 	c.escalated = true
-	c.surfaceRefreshPending = true
+	// Rebuilding the system prompt on a hint-only Hub upgrade swapped the
+	// full-agent prompt into a turn that was still on the same endpoint.
+	if llmRoleRequestIdentityChanged(before, upgraded) {
+		c.surfaceRefreshPending = true
+	}
 	if c.handler.app != nil {
 		c.handler.app.recordLastModelRoute(c.route)
 	}
-	log.Printf("[model-route] shared escalate %s→%s", before, upgraded.Model)
+	log.Printf("[model-route] shared escalate provider=%s model=%s→%s hint=%s→%s",
+		upgraded.ProviderName, before.Model, upgraded.Model, before.TaskTypeHint, upgraded.TaskTypeHint)
 }
 
 // RefreshAfterToolExecution records that the next request must observe updated

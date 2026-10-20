@@ -191,7 +191,6 @@ func buildUserContentWithPreparedLocalAttachments(userText string, attachments [
 	// states whether those pages are attached or still need OCR. This note is
 	// appended after that transcript, so leaving it in would invite another
 	// OCR pass on a scan the model can already see.
-	const visionFirstInstruction = "[Host note: image(s) are attached as vision input. Analyze the image directly before calling tools. Use OCR only for exact transcription, tables, or when direct visual reading is insufficient; do not use read_file to inspect image bytes.]"
 	if !agent.PicturePDFTranscriptOwnsVisionPolicy(fullText) {
 		if fullText != "" {
 			fullText += "\n\n"
@@ -205,6 +204,11 @@ func buildUserContentWithPreparedLocalAttachments(userText string, attachments [
 	}
 	return buildOpenAIVisionContent(fullText, imageAttachments)
 }
+
+// visionFirstInstruction is appended to a vision turn's text block. It refers
+// to image bytes stored beside that text. A continuation prompt copies the
+// text only, so it removes this note.
+const visionFirstInstruction = "[Host note: image(s) are attached as vision input. Analyze the image directly before calling tools. Use OCR only for exact transcription, tables, or when direct visual reading is insufficient; do not use read_file to inspect image bytes.]"
 
 // formatIMVoiceAttachmentDescription builds the agent-facing voice note.
 // When transcript is non-empty (ASR succeeded), put the text first so the agent

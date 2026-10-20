@@ -11,7 +11,7 @@ function compactAttachmentLabel(fileName: string, extension: string): string {
     return raw ? raw.slice(0, 4).toUpperCase() : "FILE";
 }
 
-/** Document pages render beside the text bubble so the 76% text width cannot shrink them. */
+/** Document shots render beside the text bubble so the 76% text width cannot shrink them. */
 export function partitionUserAttachments(attachments: readonly ChatAttachment[]): { inline: ChatAttachment[]; documents: ChatAttachment[] } {
     const inline: ChatAttachment[] = [];
     const documents: ChatAttachment[] = [];
@@ -98,6 +98,7 @@ export function UserAttachmentChip({ attachment, theme, lang }: { attachment: No
                 extension={attachment.extension}
                 theme={theme}
                 lang={lang}
+                variant="shot"
                 onFail={() => setDocumentFailed(true)}
             />
         );

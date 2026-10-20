@@ -1205,18 +1205,17 @@ func (s *coreDynamicSemanticSurface) withSpentBudgetNote(result coretool.Selecti
 	}
 	// List the next iterative call before the note. The new node is not
 	// issued yet, so the note stays empty instead of promising a call the
-	// next request does not show. Downloads and search keep the note: they
-	// are not iterative, and this function does not append them.
+	// next request does not show. Continuable work is listed here. A one-shot
+	// family is not, and still gets the note when its wave is spent.
 	s.listNextSettledIterativeSibling(selectionID, result)
 	return coretool.ApplySpentBudgetNote(result, s.plan, selectionID, s.issued, s.grants)
 }
 
 // listNextSettledIterativeSibling appends one iterative sibling after a
 // settled attempt, when the published wave has no sibling still waiting to
-// be issued: a local file write, a remote command, or an installed MCP call.
-// The following Definitions call issues it.
-// Unknown and awaiting-receipt outcomes stay put: the command may still
-// be running. A companion-only family stays at the wave it was given.
+// be issued. Continuable work keeps going. The following Definitions call
+// issues it. Unknown and awaiting-receipt outcomes stay put: the attempt
+// may still be running. A companion-only family stays at the wave it was given.
 func (s *coreDynamicSemanticSurface) listNextSettledIterativeSibling(selectionID string, result coretool.SelectionExecutionResult) {
 	if s == nil || !coretool.SettledIterativeListingAllowed(result) {
 		return
@@ -1234,6 +1233,8 @@ func (s *coreDynamicSemanticSurface) listNextSettledIterativeSibling(selectionID
 	var err error
 	if s.routing.Coordinator != nil {
 		updated, err = s.routing.Coordinator.AppendRepeatSibling(s.scope, selectionID, time.Now().UTC())
+	} else if s.routeState != nil {
+		updated, err = coretool.PersistRepeatSibling(s.routeState, s.scope, selectionID, time.Now().UTC(), false)
 	} else {
 		var opened bool
 		updated, _, opened = coretool.AppendRepeatSibling(s.plan, selectionID)

@@ -806,6 +806,47 @@ func TestUserDataMigrationRewriteTargetPathsArePreserved(t *testing.T) {
 	}
 }
 
+func TestUserDataMigrationKeepsSkillMarketSessionWithItsIssuer(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	target := corelib.AppConfig{
+		Language:                  "en",
+		SkillMarketSessionToken:   "sm2.target",
+		SkillMarketSessionBaseURL: "https://issuer.example",
+		RemoteUserID:              "u_target",
+	}
+	if err := app.SaveConfig(target); err != nil {
+		t.Fatalf("save target config: %v", err)
+	}
+	incoming, _, err := userDataMigrationExportableConfig(corelib.AppConfig{
+		Language:                  "zh-CN",
+		SkillMarketSessionToken:   "sm2.source",
+		SkillMarketSessionBaseURL: "https://other.example",
+		RemoteUserID:              "u_source",
+	})
+	if err != nil {
+		t.Fatalf("build source config: %v", err)
+	}
+	if _, ok := incoming["skill_market_session_token"]; ok {
+		t.Fatal("session token must not be exported")
+	}
+	if _, ok := incoming["skill_market_session_base_url"]; ok {
+		t.Fatal("session issuer must stay with the token and must not be exported")
+	}
+	if _, _, _, err := app.applyUserDataMigrationConfig(incoming); err != nil {
+		t.Fatalf("apply source config: %v", err)
+	}
+	restored, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("load restored config: %v", err)
+	}
+	if restored.Language != "zh-CN" {
+		t.Fatalf("portable language was not restored: %q", restored.Language)
+	}
+	if restored.SkillMarketSessionToken != target.SkillMarketSessionToken || restored.SkillMarketSessionBaseURL != target.SkillMarketSessionBaseURL || restored.RemoteUserID != target.RemoteUserID {
+		t.Fatalf("target session was detached: token=%q base=%q user=%q", restored.SkillMarketSessionToken, restored.SkillMarketSessionBaseURL, restored.RemoteUserID)
+	}
+}
+
 func TestUserDataMigrationRejectsUnknownConfigFields(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	_, _, _, err := app.applyUserDataMigrationConfig(map[string]interface{}{
@@ -995,6 +1036,33 @@ func TestUserDataMigrationPlaintextDirectoriesArePrivate(t *testing.T) {
 		t.Fatalf("unzip migration package: %v", err)
 	}
 	assertUserDataMigrationPrivateDir(t, filepath.Join(dest, "config"))
+}
+
+func TestUserDataMigrationConfigMetadataAcceptsPackageExportedBeforeSessionIssuer(t *testing.T) {
+	payloadDir := t.TempDir()
+	configDir := filepath.Join(payloadDir, "config")
+	legacyPreserve := userDataMigrationOmitPath(userDataMigrationPreserveTargetConfigPaths, "skill_market_session_base_url")
+	if err := userDataMigrationWriteJSONFile(filepath.Join(configDir, "migration_policy.json"), userDataMigrationConfigPolicy{
+		SchemaVersion:  userDataMigrationConfigSchema,
+		Restore:        "all_fields_except_explicit_exclusions",
+		PreserveTarget: legacyPreserve,
+		RewriteTarget:  append([]string(nil), userDataMigrationRewriteTargetConfigPaths...),
+		SkipRuntime:    append([]string(nil), userDataMigrationSkipRuntimeConfigPaths...),
+	}); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	if err := userDataMigrationWriteJSONFile(filepath.Join(configDir, "secret_inventory.json"), userDataMigrationSecretInventory{
+		SchemaVersion: userDataMigrationConfigSchema,
+	}); err != nil {
+		t.Fatalf("write inventory: %v", err)
+	}
+	err := validateUserDataMigrationConfigMetadata(payloadDir, userDataMigrationManifest{
+		SecretCount:    0,
+		ExcludedConfig: userDataMigrationLegacyExcludedConfigPaths(),
+	}, map[string]interface{}{})
+	if err != nil {
+		t.Fatalf("package exported before the session issuer was stored should still restore: %v", err)
+	}
 }
 
 func TestUserDataMigrationConfigMetadataRejectsIncompatiblePolicy(t *testing.T) {

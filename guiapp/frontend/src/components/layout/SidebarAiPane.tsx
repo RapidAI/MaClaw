@@ -157,7 +157,7 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
         presets?: Array<{ id: string; display_name?: string; ref_count?: number; enabled?: boolean }>;
     };
     onToggleMoASticky?: (on: boolean, presetId?: string) => void;
-    profileSummaries?: { assistant?: LLMProfileStatusSummary; coding?: LLMProfileStatusSummary } | null;
+    profileSummaries?: { assistant?: LLMProfileStatusSummary; coding?: LLMProfileStatusSummary; foreground?: { provider_name?: string; providerName?: string; model?: string } | null } | null;
     activeProfile?: 'assistant' | 'coding' | 'none';
     codingInheritsAssistant?: boolean;
 };

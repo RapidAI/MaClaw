@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
-import type { SidebarCreditDisplayFormatters, SidebarCurrentProviderTokenUsage, SidebarHubCredits, SidebarLLMProviderSummary } from '../../types/appShell';
+import type { SidebarCreditDisplayFormatters, SidebarCurrentProviderTokenUsage, SidebarHubCredits, SidebarLLMProviderSummary, SidebarTokenMeter } from '../../types/appShell';
 import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
 import { localizeText } from '../../i18n';
 import {
@@ -17,7 +17,7 @@ import {
     type ProviderDropdownPos,
 } from './sidebarProviderDropdownPos';
 import { formatWorkbenchTaskCountLine, type WorkbenchTaskCounts } from './backgroundTaskCount';
-import { contactedProfileForExecution, contactedProfileModel, contactedProfileProviderName } from '../../utils/contactedModelRoute';
+import { contactedProfileForExecution, contactedProfileModel, contactedProfileProviderName, foregroundRoleSeparatesTurn, type ContactedProfileSummary } from '../../utils/contactedModelRoute';
 import { capabilityBandName, capabilityModelMenuLabel, capabilityMultiplierFor, orderCapabilityModels } from '../../utils/capabilityModelLabel';
 
 export type LLMProfileStatusSummary = {
@@ -102,7 +102,7 @@ type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
     /** Toggle sticky multi-model council for this session (optional preset id). */
     onToggleMoASticky?: (on: boolean, presetId?: string) => void;
     /** Both profiles remain visible even while quick controls focus one scope. */
-    profileSummaries?: { assistant?: LLMProfileStatusSummary; coding?: LLMProfileStatusSummary } | null;
+    profileSummaries?: { assistant?: LLMProfileStatusSummary; coding?: LLMProfileStatusSummary; foreground?: ContactedProfileSummary | null } | null;
     activeProfile?: 'assistant' | 'coding' | 'none';
     codingInheritsAssistant?: boolean;
     providerSelectionPending?: boolean;
@@ -131,7 +131,7 @@ function workbenchTokenPeriodText(period: WorkbenchTokenPeriod, lang: string): s
     }
 }
 
-function workbenchTokenAmount(period: WorkbenchTokenPeriod, usage: SidebarCurrentProviderTokenUsage): number {
+function workbenchTokenAmount(period: WorkbenchTokenPeriod, usage: SidebarTokenMeter): number {
     switch (period) {
         case 'today':
             return Number(usage.today || 0);
@@ -297,6 +297,10 @@ export const SidebarSystemStatus = ({
         : '';
     const providerLabel = moaBadge ? `${baseProviderLabel} · ${moaBadge}` : baseProviderLabel;
     const isOfficialProvider = !!sidebarCurrentProviderTokenUsage.isHubService;
+    // The quick switcher edits the assistant or coding assignment. The card
+    // meter follows the role that assignment does not name.
+    const workbenchUsage = sidebarCurrentProviderTokenUsage.contacted ?? sidebarCurrentProviderTokenUsage;
+    const workbenchIsOfficial = !!workbenchUsage.isHubService;
     // The icon is a positive capability signal. Never infer it from a model
     // name or an unknown probe result: false/undefined must stay text-only.
     const supportsVision = sidebarCurrentProviderTokenUsage.supportsVision === true;
@@ -555,7 +559,7 @@ export const SidebarSystemStatus = ({
     const spendableCredits = sidebarHubCredits?.showPeriodAvailable
         ? sidebarHubCredits.available
         : (sidebarHubCredits?.remaining ?? 0);
-    const lowCreditWarning = isOfficialProvider && !!sidebarHubCredits && sidebarHubCredits.authorized && !sidebarHubCredits.unlimited && spendableCredits < 1000;
+    const lowCreditWarning = workbenchIsOfficial && !!sidebarHubCredits && sidebarHubCredits.authorized && !sidebarHubCredits.unlimited && spendableCredits < 1000;
     const isPeriodLimited = !!sidebarHubCredits && String(sidebarHubCredits.status || '').toLowerCase() === 'period_limited';
     const isPeriodLimitedStopped = isPeriodLimited && sidebarHubCredits!.serviceActive === false;
     const lowCreditTitle = isPeriodLimitedStopped
@@ -765,16 +769,22 @@ export const SidebarSystemStatus = ({
     // legacy provider label.
     const routedSummary = contactedProfileForExecution(activeProfile, profileSummaries);
     const routedProviderName = contactedProfileProviderName(routedSummary);
-    const configuredModel = String(currentModel || contactedProfileModel(routedSummary) || '').trim();
+    const routedModel = contactedProfileModel(routedSummary);
+    // Desktop chat contacts the foreground role, which can be Hub auto while
+    // the composer still edits the assistant assignment. The card names that
+    // role only when it differs from the assistant summary. When they match,
+    // the quick picker is the live model on that same assignment.
+    const foregroundSeparatesTurn = foregroundRoleSeparatesTurn(activeProfile, profileSummaries);
+    const configuredModel = String((foregroundSeparatesTurn ? routedModel : currentModel) || routedModel || currentModel || '').trim();
     const workbenchProviderLabel = routedProviderName || baseProviderLabel;
     const configuredModelLabel = configuredModel
-        ? modelFeeLabel(configuredModel, menuShowsCapabilityFee || isOfficialProvider)
+        ? modelFeeLabel(configuredModel, menuShowsCapabilityFee || workbenchIsOfficial || profileShowsCapabilityFee(workbenchProviderLabel))
         : '';
     const workbenchModelLabel = configuredModelLabel
         ? `${workbenchProviderLabel}：${configuredModelLabel}`
         : textForLang(lang, 'Not configured', '未配置', '未設定');
     const openModelSettingsLabel = textForLang(lang, 'Open model settings', '打开大模型设置', '開啟大模型設定');
-    const workbenchTokenValue = workbenchTokenAmount(tokenPeriod, sidebarCurrentProviderTokenUsage);
+    const workbenchTokenValue = workbenchTokenAmount(tokenPeriod, workbenchUsage);
     const workbenchTokenPeriodLabel = workbenchTokenPeriodText(tokenPeriod, lang);
     const workbenchTokenLabel = formatSidebarTokens(workbenchTokenValue);
     const workbenchTokenHint = textForLang(
@@ -783,10 +793,10 @@ export const SidebarSystemStatus = ({
         '点击切换：本日、本周、本月、累计',
         '點擊切換：本日、本週、本月、累計',
     );
-    const tokenWindowsEmpty = Number(sidebarCurrentProviderTokenUsage.today || 0) <= 0
-        && Number(sidebarCurrentProviderTokenUsage.week || 0) <= 0
-        && Number(sidebarCurrentProviderTokenUsage.month || 0) <= 0
-        && Number(sidebarCurrentProviderTokenUsage.total || 0) > 0;
+    const tokenWindowsEmpty = Number(workbenchUsage.today || 0) <= 0
+        && Number(workbenchUsage.week || 0) <= 0
+        && Number(workbenchUsage.month || 0) <= 0
+        && Number(workbenchUsage.total || 0) > 0;
     const workbenchTokenEmptyWindow = tokenPeriod !== 'total' && tokenWindowsEmpty
         ? textForLang(
             lang,
@@ -856,13 +866,13 @@ export const SidebarSystemStatus = ({
                     <span>{workbenchTokenPeriodLabel}</span>
                     <strong>{workbenchTokenLabel}</strong>
                 </button>
-                {isOfficialProvider && (
+                {workbenchIsOfficial && (
                     <button type="button" className="mc-workbench-status-card__row" onClick={openHubCardStorePage ?? openHubCreditAction} disabled={!showHubCreditAction && !openHubCardStorePage}>
                         <span>{textForLang(lang, 'Card balance', '点卡余额', '點卡餘額')}</span>
                         <strong aria-label={String(remainingCredit ?? '')}>{workbenchRemainingLabel}</strong>
                     </button>
                 )}
-                {isOfficialProvider && newUserLimitCardLines.length > 0 && (
+                {workbenchIsOfficial && newUserLimitCardLines.length > 0 && (
                     <button
                         type="button"
                         className="mc-workbench-status-card__row"

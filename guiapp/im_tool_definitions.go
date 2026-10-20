@@ -241,27 +241,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 		toolDefFromCore("web_fetch", "抓取指定 URL 的网页内容并提取正文文本。支持 HTTP/HTTPS/FTP 协议，自动编码检测（GBK/UTF-8 等）、HTML 正文提取。可选 JS 渲染（需本机安装 Chrome）。也可用 save_path 下载文件到本地。长页面支持续读：当返回 has_more=true 时，请使用 offset=next_offset 继续读取后续内容。", nil),
 	)
 
-	defs = append(defs,
-		toolDef("dispatch_background_task", "Hand long work off and return immediately. Use this for multi-step work, long tool sequences, computer use, files, research, office documents, and batch edits, and whenever the job would take more than two tool rounds. After it succeeds, tell the user in one plain sentence and stop. Do not keep doing the work in this turn. Do not mention ids or tool names.",
-			map[string]interface{}{
-				"request": map[string]string{"type": "string", "description": "Self-contained task, including the user's goal and any constraints already known."},
-				"title":   map[string]string{"type": "string", "description": "Short title the user can recognize. Optional."},
-			}, []string{"request"}),
-		toolDef("steer_background_task", "Send a follow-up or correction to work that is already running. Use this instead of starting another task. Omit task_id when only one piece of work is running.",
-			map[string]interface{}{
-				"note":    map[string]string{"type": "string", "description": "What changed, in the user's words."},
-				"title":   map[string]string{"type": "string", "description": "Title of the running work when more than one is open. Optional."},
-				"task_id": map[string]string{"type": "string", "description": "Internal id. Leave empty when title or the only running item is enough."},
-			}, []string{"note"}),
-		toolDef("stop_all_work", "Stop every running task, desktop run, and foreground loop for this chat. Call this whenever the user wants that work stopped, cancelled, or held, in any language or phrasing, and call it before you say it stopped. Do not call it to change the content of the work, such as stopping bold text or stopping music inside a video being edited. If you are unsure whether they mean the running work, call it with intent pause rather than continuing. The result has idle and say. Tell the user only say. Claim the work stopped only when idle is true.",
-			map[string]interface{}{
-				"intent": map[string]string{"type": "string", "description": "stop or pause. pause holds the work and asks what they meant. Omit it to stop."},
-			}, nil),
-		toolDef("chat_task_request_input", "Ask the user one question and wait. Only background work may call this, and only when a wrong guess would delete, send, purchase, or submit something, or when ambiguity would materially change the result. Otherwise decide and proceed. The answer continues the same work.",
-			map[string]interface{}{
-				"question": map[string]string{"type": "string", "description": "The one question the user must answer before the work can continue."},
-			}, []string{"question"}),
-	)
+	defs = append(defs, chatTaskControlToolDefinitions()...)
 
 	return filterDisabledExternalCodingSessionToolDefs(defs)
 }

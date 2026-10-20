@@ -3,6 +3,7 @@ import {
     ChooseFileCompanionFiles,
     CancelFileCompanionTurn,
     CancelFileCompanionWebTurn,
+    StopFileCompanionWebNote,
     FileCompanionDiscardWebNote,
     FileCompanionWebPlayerLeft,
     ClearFileCompanionChat,
@@ -48,6 +49,8 @@ import { isHistoryResetCommandText } from "../ai/composeAction";
 import { cleanReasoningTrailForBody, resolveVisibleAssistantReply } from "../ai/assistantReasoningBody";
 import { stripAssistantToolCallMarkers } from "../ai/assistantToolCall";
 import { useAssistantOutputScroll } from "../ai/useAssistantOutputScroll";
+import { CompanionStatus } from "./CompanionNoteStatus";
+import { noteClockFor, noteMediaFromKind, type NoteMedia } from "./noteStatusModel";
 import { FileCompanionComposer } from "./FileCompanionComposer";
 import { CompanionFigureStrip, type CompanionFigure } from "./CompanionFigureStrip";
 import { companionVisibleText, finishCompanionReply, splitCompanionStreamDelta } from "./companionReasoning";
@@ -308,6 +311,8 @@ type CompanionTab = {
     messages: ChatMessage[];
     readOnlyReason: string;
     status: string;
+    noteStartedAt?: number;
+    phaseStartedAt?: number;
     dirty: boolean;
     conflict: boolean;
     diskHash: string;
@@ -318,6 +323,10 @@ type CompanionTab = {
     kind?: "web";
     frameUrl?: string;
 };
+
+function tabNoteKind(tab: { kind?: "web"; name: string }): NoteMedia {
+    return tab.kind === "web" ? "web" : noteMediaFromKind(filePreviewKindFromName(tab.name), tab.name);
+}
 
 type RuntimeAPI = {
     EventsOn?: (name: string, cb: (payload: unknown) => void) => void;
@@ -1594,7 +1603,11 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             if (!companionEventCurrent(chatEpochRef.current, requestEpochRef.current, parsed.sessionId, parsed.requestID)) return;
             const text = eventString(parsed.body, "text", "Text");
             if (!text || text === "__heartbeat__") return;
-            setTabs((current) => current.map((tab) => tab.sessionId === parsed.sessionId ? { ...tab, status: text } : tab));
+            setTabs((current) => current.map((tab) => {
+                if (tab.sessionId !== parsed.sessionId) return tab;
+                const clock = noteClockFor(tab.status, tabNoteKind(tab), tab.noteStartedAt, tab.phaseStartedAt, text, Date.now());
+                return { ...tab, status: text, noteStartedAt: clock.noteStartedAt, phaseStartedAt: clock.phaseStartedAt };
+            }));
         };
         const onToken = (payload: unknown) => {
             const parsed = parsedSession(payload);
@@ -1703,11 +1716,16 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             if (reloadPath) void openPath(reloadPath, false, true);
         };
         const windowIsEmpty = () => opensInFlight.current === 0 && !tabCommittedRef.current && tabsRef.current.length === 0;
+        const showOpenPanel = () => {
+            // Empty history opens this panel. The system file dialog is the
+            // 打开文件 row inside it, not this click.
+            setOpenMenu(true);
+        };
         const onShow = () => {
             // Boot paths are applied after this listener exists. A show in that
             // gap must not treat "tabs not rendered yet" as an empty window.
             if (!bootSettledRef.current || !windowIsEmpty()) return;
-            void chooseFilesRef.current();
+            showOpenPanel();
         };
         runtime?.EventsOn?.("file-companion:open", onOpen);
         runtime?.EventsOn?.("file-companion:show", onShow);
@@ -1769,11 +1787,11 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         void (async () => {
             const askIfEmpty = () => {
                 if (cancelled || !windowIsEmpty()) return;
-                void chooseFilesRef.current();
+                showOpenPanel();
             };
             // Ready returns paths queued after the boot read. Applying them
-            // here, before the empty check, keeps the file dialog from opening
-            // on top of a file the event would only deliver later.
+            // here, before the empty check, keeps the open panel from covering
+            // a file the event would only deliver later.
             const finishBoot = async () => {
                 const delivered = readyPaths(await Promise.resolve(FileCompanionUIReady()).catch(() => undefined));
                 for (const path of delivered) {
@@ -1789,8 +1807,8 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                 const boot = await bootPromise;
                 if (cancelled) return;
                 // A launch with no documents is "show the companion". The files
-                // it had open last time are the session. The dialog runs only
-                // when that session is empty.
+                // it had open last time are the session. The 打开 panel, not
+                // the system file dialog, runs only when that session is empty.
                 let paths = bootPaths(boot as { paths?: unknown; Paths?: unknown });
                 if (paths.length === 0) {
                     paths = readyPaths(await Promise.resolve(FileCompanionResumePaths()).catch(() => undefined));
@@ -2422,7 +2440,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         if (noteBusy) {
             // The turn that started the note clears noteBusy when it returns.
             // Clearing it here labels the button 生成笔记 while that turn is still writing.
-            if (activeTab.kind === "web") await CancelFileCompanionWebTurn(activeTab.sessionId, noteEpochRef.current);
+            if (activeTab.kind === "web") await StopFileCompanionWebNote(activeTab.sessionId, noteEpochRef.current);
             else await CancelFileCompanionTurn(activeTab.path);
             return;
         }
@@ -2845,7 +2863,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                 closeOpenMenu(false);
                             }}
                         />
-                        <div className="file-companion-open-menu" id="file-companion-open-menu" data-testid="file-companion-open-menu" role="group" aria-label="打开方式">
+                        <div className={playerHost === "native" && playerTab ? "file-companion-open-menu file-companion-open-menu--beside-player" : "file-companion-open-menu"} id="file-companion-open-menu" data-testid="file-companion-open-menu" role="group" aria-label="打开方式">
                             <button
                                 type="button"
                                 className="file-companion-open-item"
@@ -2925,7 +2943,6 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                             className="file-companion-tool"
                             data-testid="file-companion-video-note"
                             disabled={noteBusy ? false : Boolean(activeTab.error) || sendBusy}
-                            aria-busy={noteBusy}
                             onClick={() => { void sendNote(); }}
                         >
                             <CompanionActionIcon name="paper" />
@@ -3111,7 +3128,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                         }}
                     />
                     <section className="file-companion-chat" data-testid="file-companion-chat" style={{ width: chatWidth }}>
-                        {activeTab.status ? <div data-testid="file-companion-progress" style={{ padding: "8px 12px", color: "#64748b" }}>{activeTab.status}</div> : null}
+                        {activeTab.status ? <CompanionStatus text={activeTab.status} kind={tabNoteKind(activeTab)} noteStartedAt={activeTab.noteStartedAt} phaseStartedAt={activeTab.phaseStartedAt} /> : null}
                         <div
                             ref={outputContainerRef}
                             data-testid="file-companion-chat-log"

@@ -4,6 +4,7 @@ import {
     ATTACHMENT_PREVIEW_TEXT_PAGE_LINES,
     attachmentPreviewPageIsSparse,
     openingPreviewPageCount,
+    openingPreviewShotPageIndex,
     openingPreviewTexts,
     splitTextIntoPreviewPages,
 } from "./attachmentOpeningPreview";
@@ -35,5 +36,13 @@ describe("opening preview pages", () => {
         const pages = splitTextIntoPreviewPages(`封面\f${"正文".repeat(40)}`);
         expect(pages).toHaveLength(2);
         expect(openingPreviewPageCount(pages)).toBe(2);
+    });
+
+    it("picks the first page with enough text for a chat shot", () => {
+        const dense = "正".repeat(80);
+        expect(openingPreviewShotPageIndex(["封面", dense, "后面"])).toBe(1);
+        expect(openingPreviewShotPageIndex([dense, "封面"])).toBe(0);
+        expect(openingPreviewShotPageIndex(["", ""])).toBe(0);
+        expect(openingPreviewShotPageIndex([])).toBe(0);
     });
 });

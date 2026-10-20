@@ -33,6 +33,7 @@ type agentLoopStartOptions struct {
 
 type agentLoopStartState struct {
 	Config                        corelib.MaclawLLMConfig
+	RoleBase                      corelib.MaclawLLMConfig
 	RouteDecision                 modelRouteDecision
 	TrialState                    *trialReflectState
 	MaxIterations                 int
@@ -112,6 +113,7 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 	}
 	configStart := h.prepareAgentLoopConfig(ctx)
 	cfg := configStart.Config
+	roleBase := cfg
 	if telemetry != nil {
 		telemetry.PreLLMConfigElapsed = configStart.Elapsed
 	}
@@ -215,7 +217,10 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 		hostGoalContinuation = hostGoalContinuation || goalContinuationTurn(opts.UserText, ctx.Platform)
 	}
 	if !semanticHandled {
-		if !hostGoalContinuation {
+		// A background chat task already left the semantic planner. Treating
+		// that as a routing miss chat-projects the inherited label and strips
+		// the tools the foreground turn was using.
+		if !hostGoalContinuation && !chatTaskWorkerLoop(ctx) {
 			markClassifierTimeoutLookup(ctx)
 			applySemanticChatProjection(ctx)
 			applySemanticRoutingMissFallback(ctx)
@@ -320,6 +325,7 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 
 	return agentLoopStartState{
 		Config:                        cfg,
+		RoleBase:                      roleBase,
 		RouteDecision:                 routeDecision,
 		TrialState:                    configStart.TrialState,
 		MaxIterations:                 configStart.MaxIterations,

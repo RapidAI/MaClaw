@@ -29,50 +29,100 @@ import (
 
 const tokenBankClientTimeout = 20 * time.Second
 
-// tokenBankPubKeyCache memoizes the HubCenter public key for the process
-// lifetime. The key pair is generated once per deployment and does not rotate,
-// so a per-share fetch would only add latency. Guarded because data-plane
-// bindings can be invoked from more than one goroutine.
+// tokenBankPubKeyCache memoizes one HubCenter public key for this process.
+// The key pair is generated once per deployment and does not rotate, so a
+// per-share fetch would only add latency. The cached center is part of the
+// same record: a key fetched for another center is not reused. Guarded
+// because data-plane bindings can be invoked from more than one goroutine.
 var (
-	tokenBankPubKeyMu sync.Mutex
-	tokenBankPubKey   []byte
+	tokenBankPubKeyMu   sync.Mutex
+	tokenBankPubKey     []byte
+	tokenBankPubKeyBase string
 )
 
+// errTokenBankCenterMoved means the provider key was encrypted for one
+// HubCenter and the live session is now on another. The ciphertext is not
+// posted. The replacement session is already stored, so the next submission
+// encrypts for that center.
+var errTokenBankCenterMoved = errors.New("the HubCenter session is on another center; submit the share again so the provider key is encrypted for that center")
+
 // tokenBankClientDo issues an authenticated HubCenter request and decodes a
-// JSON object response.
+// JSON object response. The session is derived from Hub enrollment, the same
+// way a bug report obtains one. A cached token is used only when it still
+// belongs to the current Hub user.
 //
 // Every path that can fail returns a message safe to show the user: the raw
 // HubCenter body is included because it carries the server's own error code
 // (`token_bank_unavailable`, `identity_not_verified`, ...), which is far more
-// actionable than "request failed". It is never used to decide control flow.
+// actionable than "request failed". The status code is the only part of that
+// response that selects a retry.
 func (a *App) tokenBankClientDo(method, path string, body any) (map[string]interface{}, error) {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return nil, err
-	}
-	base := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubCenterURL), "/")
-	token := strings.TrimSpace(cfg.SkillMarketSessionToken)
-	if base == "" || token == "" {
-		return nil, fmt.Errorf("please sign in to HubCenter to use the Token Bank")
-	}
+	return a.tokenBankClientCall(method, path, body, "")
+}
 
-	var reader io.Reader
+// tokenBankClientCall presents the derived SkillMarket session. encryptedFor
+// is the center whose public key wrapped body. That ciphertext stays on that
+// center. An empty encryptedFor is a request any center that issued the
+// replacement session can accept, so a 401 retries there.
+func (a *App) tokenBankClientCall(method, path string, body any, encryptedFor string) (map[string]interface{}, error) {
+	session, err := a.hubCenterSessionForReport(false)
+	if err != nil {
+		return nil, tokenBankSignInError(err)
+	}
+	var payload []byte
 	if body != nil {
-		payload, err := json.Marshal(body)
+		payload, err = json.Marshal(body)
 		if err != nil {
 			return nil, err
 		}
-		reader = bytes.NewReader(payload)
 	}
-	req, err := http.NewRequest(method, base+path, reader)
+	if encryptedFor != "" && session.Base != encryptedFor {
+		return nil, errTokenBankCenterMoved
+	}
+	result, err := tokenBankClientOnce(session, method, path, payload)
+	if !tokenBankUnauthorized(err) {
+		return result, err
+	}
+	next, mintErr := a.hubCenterSessionForReport(true)
+	if mintErr != nil {
+		return nil, tokenBankSignInError(mintErr)
+	}
+	if encryptedFor != "" && next.Base != encryptedFor {
+		return nil, errTokenBankCenterMoved
+	}
+	return tokenBankClientOnce(next, method, path, payload)
+}
+
+func tokenBankSignInError(err error) error {
+	if errors.Is(err, errHubCenterSignInRequired) {
+		return fmt.Errorf("please sign in to HubCenter to use the Token Bank")
+	}
+	return err
+}
+
+func tokenBankUnauthorized(err error) bool {
+	var httpErr *tokenBankHTTPError
+	return errors.As(err, &httpErr) && httpErr.Status == http.StatusUnauthorized
+}
+
+func tokenBankClientOnce(session skillMarketSession, method, path string, payload []byte) (map[string]interface{}, error) {
+	endpoint, err := tokenBankCenterRequestURL(session.Base, path)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	if body != nil {
+	var reader io.Reader
+	if payload != nil {
+		reader = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequest(method, endpoint, reader)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+session.Token)
+	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := (&http.Client{Timeout: tokenBankClientTimeout}).Do(req)
+	resp, err := tokenBankHTTPClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -93,6 +143,37 @@ func (a *App) tokenBankClientDo(method, path string, body any) (map[string]inter
 		return nil, fmt.Errorf("HubCenter returned an unreadable response")
 	}
 	return result, nil
+}
+
+// tokenBankCenterRequestURL keeps a Token Bank call on the center that holds
+// the session. The path string is appended unchanged so an encoded share id
+// survives. An absolute or protocol-relative path is rejected.
+func tokenBankCenterRequestURL(base, path string) (string, error) {
+	parsed, err := url.Parse(base)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil ||
+		(parsed.Scheme != "http" && parsed.Scheme != "https") ||
+		(parsed.Path != "" && parsed.Path != "/") {
+		return "", fmt.Errorf("HubCenter URL must be an absolute HTTP(S) URL")
+	}
+	if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
+		return "", fmt.Errorf("invalid Token Bank request path")
+	}
+	rel, err := url.Parse(path)
+	if err != nil || rel.IsAbs() || rel.Host != "" || rel.Path == "" || !strings.HasPrefix(rel.Path, "/") {
+		return "", fmt.Errorf("invalid Token Bank request path")
+	}
+	return strings.TrimRight(base, "/") + path, nil
+}
+
+// tokenBankHTTPClient does not follow redirects. A 302 would carry the session
+// bearer to whatever host the center names.
+func tokenBankHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: tokenBankClientTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 // TokenBankSummary returns the caller's credit balance card.
@@ -357,7 +438,7 @@ func (a *App) TokenBankCreateShare(input TokenBankShareInput) (map[string]interf
 		return nil, err
 	}
 
-	publicKey, err := a.tokenBankPublicKey()
+	publicKey, keyCenter, err := a.tokenBankSessionPublicKey()
 	if err != nil {
 		return nil, err
 	}
@@ -385,7 +466,7 @@ func (a *App) TokenBankCreateShare(input TokenBankShareInput) (map[string]interf
 	if visibility == "private" {
 		body["audiences"] = audiences
 	}
-	return a.tokenBankClientDo(http.MethodPost, "/api/v1/token-bank/shares", body)
+	return a.tokenBankClientCall(http.MethodPost, "/api/v1/token-bank/shares", body, keyCenter)
 }
 
 // TokenBankSyncShareModels updates which models an existing share publishes.
@@ -430,7 +511,7 @@ func (a *App) TokenBankAddShareKey(shareID, apiURL, apiKey, protocol, keyFingerp
 	if fingerprint == "" {
 		return nil, fmt.Errorf("key fingerprint is required")
 	}
-	publicKey, err := a.tokenBankPublicKey()
+	publicKey, keyCenter, err := a.tokenBankSessionPublicKey()
 	if err != nil {
 		return nil, err
 	}
@@ -442,10 +523,10 @@ func (a *App) TokenBankAddShareKey(shareID, apiURL, apiKey, protocol, keyFingerp
 	if err != nil {
 		return nil, err
 	}
-	return a.tokenBankClientDo(http.MethodPost, "/api/v1/token-bank/shares/"+url.PathEscape(shareID)+"/keys", map[string]any{
+	return a.tokenBankClientCall(http.MethodPost, "/api/v1/token-bank/shares/"+url.PathEscape(shareID)+"/keys", map[string]any{
 		"encrypted_payload": encrypted,
 		"key_fingerprint":   fingerprint,
-	})
+	}, keyCenter)
 }
 
 // TokenBankSetShareVisibility changes who may call a share.
@@ -727,7 +808,7 @@ func (a *App) TokenBankRotateShareKey(shareID, apiURL, apiKey, protocol, keyFing
 	if fingerprint == "" {
 		return nil, fmt.Errorf("key fingerprint is required")
 	}
-	publicKey, err := a.tokenBankPublicKey()
+	publicKey, keyCenter, err := a.tokenBankSessionPublicKey()
 	if err != nil {
 		return nil, err
 	}
@@ -739,63 +820,140 @@ func (a *App) TokenBankRotateShareKey(shareID, apiURL, apiKey, protocol, keyFing
 	if err != nil {
 		return nil, err
 	}
-	return a.tokenBankClientDo(http.MethodPut, "/api/v1/token-bank/shares/"+url.PathEscape(shareID)+"/key", map[string]any{
+	return a.tokenBankClientCall(http.MethodPut, "/api/v1/token-bank/shares/"+url.PathEscape(shareID)+"/key", map[string]any{
 		"encrypted_payload": encrypted,
 		"key_fingerprint":   fingerprint,
 		"api_url":           apiURL,
 		"protocol":          strings.TrimSpace(protocol),
-	})
+	}, keyCenter)
 }
 
-// tokenBankPublicKey returns the HubCenter RSA public key PEM.
+// tokenBankPublicKey returns the RSA public key of the HubCenter that stores
+// this session. Share secrets are encrypted for that center and then posted
+// to it, so a key fetched or cached for another center cannot be reused.
+// The key pair is generated once per deployment and does not rotate.
 //
 // GET /api/v1/crypto/pubkey
-//
-// Cached in memory for the process lifetime and on disk next to the
-// skillmarket key: the key pair is generated once per deployment and does not
-// rotate, so re-fetching per share would be pure latency. A failure to read the
-// cache falls through to a fresh fetch rather than failing.
 func (a *App) tokenBankPublicKey() ([]byte, error) {
+	key, _, err := a.tokenBankSessionPublicKey()
+	return key, err
+}
+
+// tokenBankSessionPublicKey derives the SkillMarket session before reading
+// the key. The returned center is the one that owns the key, and the
+// ciphertext built from it must be posted there.
+func (a *App) tokenBankSessionPublicKey() ([]byte, string, error) {
+	session, err := a.hubCenterSessionForReport(false)
+	if err != nil {
+		return nil, "", tokenBankSignInError(err)
+	}
+	base := session.Base
+	endpoint, err := tokenBankCenterRequestURL(base, "/api/v1/crypto/pubkey")
+	if err != nil {
+		return nil, "", err
+	}
+
 	tokenBankPubKeyMu.Lock()
 	defer tokenBankPubKeyMu.Unlock()
-	if len(tokenBankPubKey) > 0 {
-		return tokenBankPubKey, nil
+	if tokenBankPubKeyBase == base && len(tokenBankPubKey) > 0 {
+		return tokenBankPubKey, base, nil
 	}
 
-	cachePath := filepath.Join(a.GetDataDir(), "hubcenter_pubkey.pem")
-	if data, err := os.ReadFile(cachePath); err == nil && len(bytes.TrimSpace(data)) > 0 {
+	cachePath := filepath.Join(a.GetDataDir(), tokenBankPubKeyCacheName)
+	if data := readTokenBankPubKeyCache(cachePath, base); len(data) > 0 {
 		tokenBankPubKey = data
-		return data, nil
+		tokenBankPubKeyBase = base
+		return data, base, nil
 	}
 
-	cfg, err := a.LoadConfig()
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	base := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubCenterURL), "/")
-	if base == "" {
-		return nil, fmt.Errorf("please sign in to HubCenter to use the Token Bank")
-	}
-	req, err := http.NewRequest(http.MethodGet, base+"/api/v1/crypto/pubkey", nil)
+	resp, err := tokenBankHTTPClient().Do(req)
 	if err != nil {
-		return nil, err
-	}
-	resp, err := (&http.Client{Timeout: tokenBankClientTimeout}).Do(req)
-	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("could not load the HubCenter public key (%s)", resp.Status)
+		return nil, "", fmt.Errorf("could not load the HubCenter public key (%s)", resp.Status)
 	}
 	if block, _ := pem.Decode(data); block == nil {
-		return nil, fmt.Errorf("HubCenter returned an unreadable public key")
+		return nil, "", fmt.Errorf("HubCenter returned an unreadable public key")
 	}
-	_ = os.MkdirAll(filepath.Dir(cachePath), 0o755)
-	_ = os.WriteFile(cachePath, data, 0o644)
+	// The center and the key share one file. A separate base file could be
+	// left behind naming a center whose key was already overwritten.
+	_ = writeTokenBankPubKeyCache(cachePath, base, data)
 	tokenBankPubKey = data
-	return data, nil
+	tokenBankPubKeyBase = base
+	return data, base, nil
+}
+
+const tokenBankPubKeyCacheName = "hubcenter_pubkey.pem"
+const tokenBankPubKeyCachePrefix = "# hubcenter "
+
+// readTokenBankPubKeyCache returns the PEM only when the file names this
+// center. A bare pem from before the center was recorded is ignored.
+func readTokenBankPubKeyCache(path, base string) []byte {
+	if strings.TrimSpace(base) == "" || strings.ContainsAny(base, "\r\n") {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	line, rest, ok := bytes.Cut(data, []byte("\n"))
+	if !ok {
+		return nil
+	}
+	line = bytes.TrimRight(line, "\r")
+	prefix := []byte(tokenBankPubKeyCachePrefix)
+	if !bytes.HasPrefix(line, prefix) || strings.TrimSpace(string(line[len(prefix):])) != base {
+		return nil
+	}
+	if block, _ := pem.Decode(rest); block == nil {
+		return nil
+	}
+	return rest
+}
+
+// writeTokenBankPubKeyCache replaces the cache in one rename so a crash cannot
+// leave this center's name next to another center's key.
+func writeTokenBankPubKeyCache(path, base string, pemBytes []byte) error {
+	if strings.TrimSpace(base) == "" || strings.ContainsAny(base, "\r\n") {
+		return fmt.Errorf("invalid hubcenter url")
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	payload := make([]byte, 0, len(tokenBankPubKeyCachePrefix)+len(base)+1+len(pemBytes))
+	payload = append(payload, tokenBankPubKeyCachePrefix...)
+	payload = append(payload, base...)
+	payload = append(payload, '\n')
+	payload = append(payload, pemBytes...)
+	tmp, err := os.CreateTemp(dir, "hubcenter_pubkey-*.pem")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(payload); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		// Windows rejects a rename over an existing file.
+		_ = os.Remove(path)
+		if err := os.Rename(tmpName, path); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // TokenBankWithdraw pulls credits into this Hub's grant pool. This is the
@@ -1030,6 +1188,10 @@ func (a *App) tokenBankAuthorizeManualPull(requestID string, amountMicro int64, 
 // annotateGiftClaimLinks adds the two claim targets from §3.6 onto a payload
 // that still carries the code. A list payload has no code, so this is a no-op
 // and cannot put the secret back onto a refreshed row.
+//
+// The https link opens the center that holds the session. Gift rows live on
+// that cluster's clearing node, and the landing page proxies there. The
+// preferred center is only used when it is that session center.
 func (a *App) annotateGiftClaimLinks(result map[string]interface{}) {
 	if result == nil {
 		return
@@ -1045,11 +1207,15 @@ func (a *App) annotateGiftClaimLinks(result map[string]interface{}) {
 	if err != nil {
 		return
 	}
-	base := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubCenterURL), "/")
+	base := skillMarketSessionBase(cfg)
 	if base == "" {
 		return
 	}
-	result["claim_url"] = base + "/c/" + escaped
+	claim, err := tokenBankCenterRequestURL(base, "/c/"+escaped)
+	if err != nil {
+		return
+	}
+	result["claim_url"] = claim
 }
 
 // giftCodeFromInput accepts the three shapes a person can paste: the bare

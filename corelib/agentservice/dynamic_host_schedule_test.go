@@ -65,7 +65,7 @@ func TestReviewedHostScheduleExecutesWithoutCoordinatorAndRejectsDispatchMapping
 		t.Fatalf("schedule list result=%#v admin=%#v", listed, admin)
 	}
 	deleted := catalog.ExecuteSelection(context.Background(), principal, nil, nil, plan.Selections[0], `{"id":"task-1"}`)
-	if !deleted.Succeeded || admin.args.ID != "task-1" || admin.args.hasUpdateExtras() {
+	if !deleted.Succeeded || admin.args.ID != "task-1" || admin.args.HasUpdateFields() {
 		t.Fatalf("schedule delete result=%#v admin=%#v", deleted, admin)
 	}
 	paused := catalog.ExecuteSelection(context.Background(), principal, nil, nil, plan.Selections[0], `{"id":"task-1","status":"paused"}`)
@@ -187,6 +187,83 @@ func TestReviewedHostScheduleUsesTrustedPrincipalAndStore(t *testing.T) {
 	services := (&coreAgentCallbacks{principal: principal}).reviewedHostOwnedServices()
 	if services.Schedule != nil {
 		t.Fatal("host without a schedule store must not attach schedule.administer.local")
+	}
+}
+
+func TestReviewedHostScheduleCreateKeepsInitialStatus(t *testing.T) {
+	if op, ok := reviewedHostScheduleDispatch(reviewedHostScheduleArgs{
+		Name: "hourly", TaskAction: "clear", HasInterval: true, IntervalMinutes: 60,
+		HasMinute: true, Minute: 0, Status: "active",
+	}); !ok || op != "create" {
+		t.Fatalf("interval create with status dispatch=%q ok=%v", op, ok)
+	}
+	if _, ok := reviewedHostScheduleDispatch(reviewedHostScheduleArgs{Status: "active"}); ok {
+		t.Fatal("status without a record must not select an operation")
+	}
+	if op, ok := reviewedHostScheduleDispatch(reviewedHostScheduleArgs{ID: "task-1", Status: "paused"}); !ok || op != "update" {
+		t.Fatalf("id plus status dispatch=%q ok=%v", op, ok)
+	}
+
+	store, err := scheduler.NewManager(filepath.Join(t.TempDir(), "schedules.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := Principal{TenantID: "tenant", UserID: "user"}
+	cb := &coreAgentCallbacks{principal: principal, schedules: store}
+	paused, err := cb.AdministerReviewedHostSchedule(context.Background(), principal, reviewedHostScheduleArgs{
+		Name: "held", TaskAction: "wait", HasHour: true, Hour: 9, Status: "pause",
+	})
+	if err != nil || !strings.Contains(paused, "[paused]") {
+		t.Fatalf("paused create=%q err=%v", paused, err)
+	}
+	tasks := store.List()
+	if len(tasks) != 1 || tasks[0].Status != "paused" || tasks[0].NextRunAt != nil {
+		t.Fatalf("stored=%#v", tasks)
+	}
+	hourly, err := cb.AdministerReviewedHostSchedule(context.Background(), principal, reviewedHostScheduleArgs{
+		Name: "hourly", TaskAction: "clear", HasInterval: true, IntervalMinutes: 60,
+		HasMinute: true, Minute: 0, Status: "active",
+	})
+	if err != nil || !strings.Contains(hourly, "[active]") || !strings.Contains(hourly, "每1小时") {
+		t.Fatalf("interval create=%q err=%v", hourly, err)
+	}
+	var stored *scheduler.ScheduledTask
+	for i := range store.List() {
+		item := store.List()[i]
+		if item.Name == "hourly" {
+			stored = &item
+		}
+	}
+	if stored == nil || stored.Status != "active" || stored.IntervalMinutes != 60 || stored.Hour != 0 || stored.Minute != 0 || stored.NextRunAt == nil {
+		t.Fatalf("hourly record=%#v", stored)
+	}
+	updated, err := cb.AdministerReviewedHostSchedule(context.Background(), principal, reviewedHostScheduleArgs{
+		ID: stored.ID, TaskAction: "hold", Status: "paused",
+	})
+	if err != nil || !strings.Contains(updated, "[paused]") || !strings.Contains(updated, "hold") {
+		t.Fatalf("update=%q err=%v", updated, err)
+	}
+	changed := store.Get(stored.ID)
+	if changed == nil || changed.Status != "paused" || changed.Action != "hold" || changed.NextRunAt != nil {
+		t.Fatalf("updated=%#v", changed)
+	}
+	if _, err := cb.AdministerReviewedHostSchedule(context.Background(), principal, reviewedHostScheduleArgs{
+		Name: "bad", TaskAction: "clear", HasInterval: true, IntervalMinutes: -1,
+	}); err == nil || !strings.Contains(err.Error(), "host_schedule_interval_rejected") {
+		t.Fatalf("negative interval err=%v", err)
+	}
+	if _, err := cb.AdministerReviewedHostSchedule(context.Background(), principal, reviewedHostScheduleArgs{
+		Name: "bad", TaskAction: "clear", HasHour: true, Hour: 8, EndDate: "2026/10/20",
+	}); err == nil || !strings.Contains(err.Error(), "host_schedule_end_date_rejected") {
+		t.Fatalf("end date err=%v", err)
+	}
+	if _, err := cb.AdministerReviewedHostSchedule(context.Background(), principal, reviewedHostScheduleArgs{
+		Name: "bad", TaskAction: "clear", HasHour: true, Hour: 8, Status: "disabled",
+	}); err == nil || !strings.Contains(err.Error(), "host_schedule_status_rejected") {
+		t.Fatalf("invented status on a create err=%v", err)
+	}
+	if len(store.List()) != 2 {
+		t.Fatal("rejected status must not leave a record")
 	}
 }
 

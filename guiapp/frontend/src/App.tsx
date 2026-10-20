@@ -141,7 +141,7 @@ import { reportBillingTimezoneOnAuthenticatedLaunch } from './utils/reportBillin
 import { restoreCloudWorkspaceTasksShared } from './utils/cloudWorkspaceTaskRestore';
 import { inferProviderModelFetchProtocol } from './utils/providerModelFetchProtocol';
 import { normalizeSidebarHubCredits } from './utils/sidebarHubCredits';
-import { getSidebarUsageForProvider, selectSidebarCurrentProvider } from './utils/sidebarProviderSelection';
+import { getSidebarUsageForProvider, selectSidebarCurrentProvider, sidebarEditorUsageProfile, sidebarTurnUsageProfile, sumSidebarProfileUsage, sumSidebarProviderProfiles } from './utils/sidebarProviderSelection';
 import { buildSidebarModelOptions } from './utils/sidebarModelOptions';
 import { capabilityBandName, hubOfficialModelAliases, multipliersFromModelItems } from './utils/capabilityModelLabel';
 
@@ -3980,36 +3980,36 @@ function App() {
                 normalizedProviderState.current || selectedProvider || providers[0]?.name || '',
                 normalizedMap,
             );
-            const activeSummary = activeExecutionProfile === 'assistant'
-                ? llmProfilePanelState?.assistant
-                : activeExecutionProfile === 'coding' ? llmProfilePanelState?.coding : null;
-            const activeProviderID = String(activeSummary?.provider_id ?? activeSummary?.providerID ?? '').trim();
-            const currentProviderName = String(activeSummary?.provider_name ?? activeSummary?.providerName ?? '').trim() || legacyCurrentProviderName;
-            const activeProfileSupportsVision = activeSummary?.supports_vision === true || activeSummary?.supportsVision === true;
-            const profileTotals = Object.values(profileUsage).reduce<Omit<SidebarCurrentProviderTokenUsage, 'provider' | 'isHubService'>>((total, item) => {
-                if (!activeSummary || !item || item.profile !== activeExecutionProfile || item.provider_id !== activeProviderID) return total;
-                total.input += Number(item.input_tokens ?? 0);
-                total.output += Number(item.output_tokens ?? 0);
-                total.total += Number(item.total_tokens ?? 0);
-                total.cachedInput = (total.cachedInput ?? 0) + Number(item.cached_input_tokens ?? 0);
-                total.cacheWrite = (total.cacheWrite ?? 0) + Number(item.cache_write_tokens ?? 0);
-                total.requests = (total.requests ?? 0) + Number(item.requests ?? 0);
-                total.cachedRequests = (total.cachedRequests ?? 0) + Number(item.cached_requests ?? 0);
-                total.localCacheRequests = (total.localCacheRequests ?? 0) + Number(item.local_cache_requests ?? 0);
-                total.localCacheHits = (total.localCacheHits ?? 0) + Number(item.local_cache_hits ?? 0);
-                total.today = (total.today ?? 0) + Number(item.today_tokens ?? item.TodayTokens ?? 0);
-                total.week = (total.week ?? 0) + Number(item.week_tokens ?? item.WeekTokens ?? 0);
-                total.month = (total.month ?? 0) + Number(item.month_tokens ?? item.MonthTokens ?? 0);
-                return total;
-            }, { input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0, localCacheRequests: 0, localCacheHits: 0, today: 0, week: 0, month: 0 });
-            const currentProviderUsage = activeSummary ? profileTotals : getSidebarUsageForProvider(normalizedMap, currentProviderName);
-            // Names are editable and therefore not stable identifiers. Prefer
-            // the active profile's provider ID so its vision state cannot be
-            // taken from another provider that happens to share the same name.
-            const currentProvider = activeProviderID
-                ? providerSummaries.find((provider) => provider.id === activeProviderID)
-                    ?? providerSummaries.find((provider) => provider.name === currentProviderName)
-                : providerSummaries.find((provider) => provider.name === currentProviderName);
+            const turnSummaries = llmProfilePanelState ? {
+                assistant: llmProfilePanelState.assistant,
+                coding: llmProfilePanelState.coding,
+                foreground: llmProfilePanelState.foreground,
+            } : null;
+            const usageForProfile = (profile: '' | 'assistant' | 'coding' | 'foreground') => {
+                const summary = profile === 'coding'
+                    ? llmProfilePanelState?.coding
+                    : profile === 'foreground'
+                        ? llmProfilePanelState?.foreground
+                        : profile === 'assistant'
+                            ? llmProfilePanelState?.assistant
+                            : null;
+                const providerID = String(summary?.provider_id ?? summary?.providerID ?? '').trim();
+                const providerName = String(summary?.provider_name ?? summary?.providerName ?? '').trim() || legacyCurrentProviderName;
+                const numbers = summary && providerID && profile
+                    ? (profile === 'foreground'
+                        ? sumSidebarProviderProfiles(profileUsage, providerID, ['foreground', 'assistant'])
+                        : sumSidebarProfileUsage(profileUsage, profile, providerID))
+                    : getSidebarUsageForProvider(normalizedMap, providerName);
+                return { summary, providerID, providerName, numbers };
+            };
+            // The switcher writes the assistant or coding assignment. The card
+            // meter follows the role that actually recorded the calls.
+            const editorProfile = sidebarEditorUsageProfile(activeExecutionProfile);
+            const editor = usageForProfile(editorProfile);
+            const workbenchProfile = sidebarTurnUsageProfile(activeExecutionProfile, turnSummaries);
+            const contacted = workbenchProfile !== '' && workbenchProfile !== editorProfile
+                ? usageForProfile(workbenchProfile)
+                : null;
             let hubStatus: Awaited<ReturnType<typeof GetHubLLMServiceStatus>> | null = null;
             try {
                 hubStatus = await callBackend(() => GetHubLLMServiceStatus());
@@ -4017,17 +4017,28 @@ function App() {
                 hubStatus = null;
             }
             const hubServiceURL = normalizeProviderURL(hubStatus?.hub_llm_base_url);
-            const currentProviderURL = normalizeProviderURL(currentProvider?.url);
-            const currentProviderIsHubService = !!currentProvider?.isHubService || (!!hubServiceURL && !!currentProviderURL && hubServiceURL === currentProviderURL);
+            const describeUsage = (picked: ReturnType<typeof usageForProfile>) => {
+                // Names are editable and therefore not stable identifiers. Prefer
+                // the profile's provider ID so vision state cannot be taken from
+                // another provider that happens to share the same name.
+                const provider = picked.providerID
+                    ? providerSummaries.find((item) => item.id === picked.providerID)
+                        ?? providerSummaries.find((item) => item.name === picked.providerName)
+                    : providerSummaries.find((item) => item.name === picked.providerName);
+                const providerURL = normalizeProviderURL(provider?.url);
+                const summaryVision = picked.summary?.supports_vision === true || picked.summary?.supportsVision === true;
+                return {
+                    provider: picked.providerName,
+                    isHubService: !!provider?.isHubService || (!!hubServiceURL && !!providerURL && hubServiceURL === providerURL),
+                    supportsVision: picked.summary ? summaryVision : provider?.supportsVision === true,
+                    ...picked.numbers,
+                };
+            };
             const hubCredits = normalizeSidebarHubCredits(hubStatus);
             if (refreshSeq !== sidebarTokenUsageSeqRef.current) return;
             setSidebarCurrentProviderTokenUsage({
-                provider: currentProviderName,
-                isHubService: currentProviderIsHubService,
-                // The effective profile is authoritative: a profile can use a
-                // different model than the provider's default model.
-                supportsVision: activeSummary ? activeProfileSupportsVision : currentProvider?.supportsVision === true,
-                ...currentProviderUsage,
+                ...describeUsage(editor),
+                ...(contacted ? { contacted: describeUsage(contacted) } : {}),
             });
             setSidebarHubCredits(hubCredits);
             setSidebarProviderSummaries(providerSummaries);
@@ -5763,7 +5774,7 @@ ${instruction}`;
                 onDismissModelMenu={dismissQuickProfileProviderDraft}
                 providerSelectionPending={!!quickDraftProvider && quickDraftProvider.profile === activeExecutionProfile}
                 profileSavePending={quickProfileSavePending}
-                profileSummaries={llmProfilePanelState ? { assistant: llmProfilePanelState.assistant, coding: llmProfilePanelState.coding } : null}
+                profileSummaries={llmProfilePanelState ? { assistant: llmProfilePanelState.assistant, coding: llmProfilePanelState.coding, foreground: llmProfilePanelState.foreground } : null}
                 activeProfile={activeExecutionProfile}
                 codingInheritsAssistant={activeProfileSummary?.inherit_assistant === true}
                 moaSticky={moaSession}

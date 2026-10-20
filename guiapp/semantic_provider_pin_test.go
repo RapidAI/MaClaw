@@ -164,6 +164,21 @@ func TestSemanticUnmetPinnedProviderDetection(t *testing.T) {
 	}
 }
 
+func TestSemanticUnmetAllowsSelectedTurn(t *testing.T) {
+	mcp := tool.UnmetNeed{NeedID: "need:~named:x:mcp:tengyun:post_work_log_delete", ReasonCode: tool.UnmetReasonPinnedProviderUnavailable}
+	budget := tool.UnmetNeed{NeedID: "need:artifact.deliver.current_channel", ReasonCode: "budget_exceeded"}
+	worklog := tool.UnmetNeed{NeedID: "need:record.update.worklog:abc", ReasonCode: tool.CatalogCoverageReasonNotReady}
+	if !semanticUnmetAllowsSelectedTurn([]tool.UnmetNeed{mcp}) {
+		t.Fatal("an installed MCP miss must leave a turn that already selected a tool")
+	}
+	if !semanticUnmetAllowsSelectedTurn([]tool.UnmetNeed{budget, mcp}) {
+		t.Fatal("a budget cut beside an installed MCP miss must leave the selected turn")
+	}
+	if semanticUnmetAllowsSelectedTurn(nil) || semanticUnmetAllowsSelectedTurn([]tool.UnmetNeed{worklog}) || semanticUnmetAllowsSelectedTurn([]tool.UnmetNeed{mcp, worklog}) {
+		t.Fatal("a required host need must still fail the turn")
+	}
+}
+
 // The refusal is the whole point of the pin: the user must not be told the
 // catalog cannot cover the request when the real fact is that their named
 // implementation is unavailable.

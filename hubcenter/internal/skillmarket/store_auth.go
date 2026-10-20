@@ -129,6 +129,10 @@ type Session struct {
 	Email     string
 	ExpiresAt time.Time
 	CreatedAt time.Time
+	// signatureOnly is true when ValidateSession accepted a signed token and
+	// this node has no sm_sessions row. A database session whose user was
+	// deleted must not be rebuilt from that row.
+	signatureOnly bool
 }
 
 type SessionRevocation struct {

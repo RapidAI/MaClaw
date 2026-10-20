@@ -198,6 +198,8 @@ func captureProcessAudio(ctx context.Context) ([]byte, bool) {
 	return wav, false
 }
 
+func capturePlaybackEnded(context.Context) bool { return false }
+
 // recordPipeWirePID runs pw-record against the output node whose
 // application.process.id is this process. It does not open a sink monitor.
 func recordPipeWirePID(ctx context.Context, pid int) ([]byte, error) {

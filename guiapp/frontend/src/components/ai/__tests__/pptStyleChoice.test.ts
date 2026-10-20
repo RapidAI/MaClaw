@@ -14,6 +14,7 @@ describe('recommendPPTStyle', () => {
         expect(localizedStyleLabel({ id: 'warm', label: '温馨纪念', label_en: 'Warm Keepsake', label_hant: '溫馨紀念' }, 'en')).toBe('Warm Keepsake');
         expect(localizedStyleLabel({ id: 'warm', label: '温馨纪念', label_en: 'Warm Keepsake', label_hant: '溫馨紀念' }, 'zh-Hant')).toBe('溫馨紀念');
         expect(recommendPPTStyle(styles, '开题答辩')).toBe('academic');
+        expect(recommendPPTStyle(styles, '请用发布路演风格做一份PPT')).toBe('launch');
         expect(recommendPPTStyle(styles, '随便做一页')).toBe('business');
         const prefixed = withConfirmedPPTStyle('做一份生日 ppt', { id: 'warm', label: '温馨纪念' });
         expect(prefixed.startsWith('若本条是在制作或修改演示文稿，请使用风格「温馨纪念」（theme=warm）。')).toBe(true);

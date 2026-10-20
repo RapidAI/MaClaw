@@ -26,8 +26,8 @@ func TestPrepareAgentLoopConfigSelectsRole(t *testing.T) {
 	h := &IMMessageHandler{app: app}
 
 	fg := h.prepareAgentLoopConfig(&LoopContext{Kind: LoopKindChat})
-	if fg.Config.Model != "fg-model" || fg.Config.Profile != maclawLLMRoleForeground {
-		t.Fatalf("foreground config = model %q profile %q", fg.Config.Model, fg.Config.Profile)
+	if fg.Config.Model != "assistant-model" || fg.Config.Profile != maclawLLMRoleForeground || fg.Config.ProviderID != "local" {
+		t.Fatalf("foreground config = model %q profile %q provider %q", fg.Config.Model, fg.Config.Profile, fg.Config.ProviderID)
 	}
 
 	bg := h.prepareAgentLoopConfig(&LoopContext{Kind: LoopKindBackground})
@@ -49,8 +49,8 @@ func TestPrepareAgentLoopConfigSelectsRole(t *testing.T) {
 		ComputerUseActive:      true,
 		ComputerUseGateSettled: true,
 	})
-	if cu.Config.Model != "fg-model" || cu.Config.Profile != maclawLLMRoleForeground {
-		t.Fatalf("the chat loop does not drive the computer: model %q profile %q", cu.Config.Model, cu.Config.Profile)
+	if cu.Config.Model != "assistant-model" || cu.Config.Profile != maclawLLMRoleForeground || cu.Config.ProviderID != "local" {
+		t.Fatalf("the chat loop does not drive the computer: model %q profile %q provider %q", cu.Config.Model, cu.Config.Profile, cu.Config.ProviderID)
 	}
 
 	helper := h.prepareAgentLoopConfig(&LoopContext{

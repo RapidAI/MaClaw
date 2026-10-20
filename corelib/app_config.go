@@ -91,10 +91,14 @@ type AppConfig struct {
 	RemoteMachineToken            string `json:"remote_machine_token"`
 	RemoteViewerToken             string `json:"remote_viewer_token,omitempty"`
 	SkillMarketSessionToken       string `json:"skill_market_session_token,omitempty"`
-	RemoteHeartbeatSec            int    `json:"remote_heartbeat_sec"`
-	RemoteNickname                string `json:"remote_nickname,omitempty"`
-	RemoteClientID                string `json:"remote_client_id"`
-	DefaultLaunchMode             string `json:"default_launch_mode"`
+	// SkillMarketSessionBaseURL is the HubCenter that issued SkillMarketSessionToken.
+	// Later calls use that center. The preferred center is only the fallback
+	// when this value is empty or no longer configured.
+	SkillMarketSessionBaseURL string `json:"skill_market_session_base_url,omitempty"`
+	RemoteHeartbeatSec        int    `json:"remote_heartbeat_sec"`
+	RemoteNickname            string `json:"remote_nickname,omitempty"`
+	RemoteClientID            string `json:"remote_client_id"`
+	DefaultLaunchMode         string `json:"default_launch_mode"`
 	// MaClaw LLM configuration
 	MaclawLLMUrl             string              `json:"maclaw_llm_url"`
 	MaclawLLMKey             string              `json:"maclaw_llm_key"`

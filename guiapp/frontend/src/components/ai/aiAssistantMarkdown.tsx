@@ -54,6 +54,7 @@ import {
     reasoningCodeBlockStyle,
     reasoningCodeLangStyle,
 } from "./assistantCodeFence";
+import { ATTACHMENT_DOC_SHOT_WIDTH } from "./attachmentOpeningPreview";
 import { partitionUserAttachments, UserAttachmentChip } from "./UserAttachmentChip";
 import { AssistantReasoningPanel } from "./AssistantReasoningPanel";
 import { isSafeKBImageDataURL, KB_IMAGE_MARKER_RE } from "./kbImageValidation";
@@ -1625,7 +1626,7 @@ export function renderMessage(
                     </ChatBubbleFrame>
                     )}
                     {userAttachments.documents.length > 0 && (
-                        <div aria-label={lang === "en" ? "Attached files" : "已附加文件"} data-testid={`assistant-chat-document-previews-${msg.id}`} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8, width: "min(100%, 640px)", maxWidth: "100%", marginTop: 8 }}>
+                        <div aria-label={lang === "en" ? "Attached files" : "已附加文件"} data-testid={`assistant-chat-document-previews-${msg.id}`} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8, width: ATTACHMENT_DOC_SHOT_WIDTH, maxWidth: "100%", minWidth: 0, overflow: "hidden", marginTop: 8 }}>
                             {userAttachments.documents.map((attachment, index) => <UserAttachmentChip key={`${attachment.filePath}-${index}`} attachment={attachment} theme={t} lang={lang} />)}
                         </div>
                     )}

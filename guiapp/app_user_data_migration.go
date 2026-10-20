@@ -127,7 +127,7 @@ var userDataMigrationPreserveTargetConfigPaths = []string{
 	"remote_hub_id", "remote_hub_url", "remote_hubcenter_url", "remote_hubcenter_urls",
 	"remote_enabled", "remote_email", "remote_mobile", "remote_sn", "remote_user_id", "remote_tenant_id",
 	"remote_tenant_name", "remote_machine_id", "remote_machine_name", "remote_machine_token",
-	"remote_viewer_token", "skill_market_session_token", "remote_nickname", "remote_client_id",
+	"remote_viewer_token", "skill_market_session_token", "skill_market_session_base_url", "remote_nickname", "remote_client_id",
 	"hub_security_centralized",
 	// These values identify local projects, devices, permissions or model files
 	// and cannot safely be reused on another machine.
@@ -1607,16 +1607,48 @@ func userDataMigrationHasSecretValue(value interface{}) bool {
 	}
 }
 
+func userDataMigrationOmitPath(paths []string, omit string) []string {
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if path != omit {
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+// userDataMigrationLegacyExcludedConfigPaths is the exclusion list exported
+// before the session issuer was stored with the token. Those packages still
+// restore. Apply uses the current list, so an issuer carried in an older
+// package cannot replace the one that belongs to this machine's token.
+func userDataMigrationLegacyExcludedConfigPaths() []string {
+	paths := make([]string, 0, len(userDataMigrationPreserveTargetConfigPaths)+len(userDataMigrationRewriteTargetConfigPaths)+len(userDataMigrationSkipRuntimeConfigPaths))
+	paths = append(paths, userDataMigrationOmitPath(userDataMigrationPreserveTargetConfigPaths, "skill_market_session_base_url")...)
+	paths = append(paths, userDataMigrationRewriteTargetConfigPaths...)
+	paths = append(paths, userDataMigrationSkipRuntimeConfigPaths...)
+	return paths
+}
+
+func userDataMigrationPolicyCompatible(policy userDataMigrationConfigPolicy) bool {
+	if policy.SchemaVersion != userDataMigrationConfigSchema || policy.Restore != "all_fields_except_explicit_exclusions" {
+		return false
+	}
+	if !userDataMigrationStringSlicesEqual(policy.RewriteTarget, userDataMigrationRewriteTargetConfigPaths) ||
+		!userDataMigrationStringSlicesEqual(policy.SkipRuntime, userDataMigrationSkipRuntimeConfigPaths) {
+		return false
+	}
+	if userDataMigrationStringSlicesEqual(policy.PreserveTarget, userDataMigrationPreserveTargetConfigPaths) {
+		return true
+	}
+	return userDataMigrationStringSlicesEqual(policy.PreserveTarget, userDataMigrationOmitPath(userDataMigrationPreserveTargetConfigPaths, "skill_market_session_base_url"))
+}
+
 func validateUserDataMigrationConfigMetadata(payloadDir string, manifest userDataMigrationManifest, incomingConfig map[string]interface{}) error {
 	var policy userDataMigrationConfigPolicy
 	if err := userDataMigrationReadJSONFileLimited(filepath.Join(payloadDir, "config", "migration_policy.json"), &policy, userDataMigrationMaxManifest); err != nil {
 		return fmt.Errorf("read migration configuration policy: %w", err)
 	}
-	if policy.SchemaVersion != userDataMigrationConfigSchema ||
-		policy.Restore != "all_fields_except_explicit_exclusions" ||
-		!userDataMigrationStringSlicesEqual(policy.PreserveTarget, userDataMigrationPreserveTargetConfigPaths) ||
-		!userDataMigrationStringSlicesEqual(policy.RewriteTarget, userDataMigrationRewriteTargetConfigPaths) ||
-		!userDataMigrationStringSlicesEqual(policy.SkipRuntime, userDataMigrationSkipRuntimeConfigPaths) {
+	if !userDataMigrationPolicyCompatible(policy) {
 		return fmt.Errorf("migration configuration policy is incompatible with this version")
 	}
 
@@ -1631,7 +1663,8 @@ func validateUserDataMigrationConfigMetadata(payloadDir string, manifest userDat
 		!userDataMigrationStringSlicesEqual(inventory.Paths, actualSecretPaths) {
 		return fmt.Errorf("migration secret inventory is inconsistent")
 	}
-	if !userDataMigrationStringSlicesEqual(manifest.ExcludedConfig, actualExcludedPaths) {
+	if !userDataMigrationStringSlicesEqual(manifest.ExcludedConfig, actualExcludedPaths) &&
+		!userDataMigrationStringSlicesEqual(manifest.ExcludedConfig, userDataMigrationLegacyExcludedConfigPaths()) {
 		return fmt.Errorf("migration excluded configuration metadata is inconsistent")
 	}
 	return nil

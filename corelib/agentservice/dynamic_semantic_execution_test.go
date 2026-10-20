@@ -25,6 +25,30 @@ func dynamicSemanticExecutionPlan(t *testing.T, catalog DynamicSemanticCatalog) 
 	return plan, registry
 }
 
+func TestBuildDynamicSemanticCatalogKeepsTheFirstDuplicateAdapter(t *testing.T) {
+	schema := map[string]interface{}{"type": "object", "properties": map[string]interface{}{"q": map[string]interface{}{"type": "string"}}, "required": []string{"q"}}
+	lookup := MCPToolEntry{ServerID: "server", ToolName: "lookup", InputSchema: schema, Contract: testDynamicCapabilityContract()}
+	other := lookup
+	other.ToolName = "other"
+	catalog, err := BuildDynamicSemanticCatalog([]MCPToolEntry{lookup, lookup, other}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Providers) != 2 {
+		t.Fatalf("duplicate adapter wiped the catalog: providers=%d", len(catalog.Providers))
+	}
+	seen := map[string]bool{}
+	for _, provider := range catalog.Providers {
+		if _, ok := catalog.Definitions[provider.AdapterName]; !ok {
+			t.Fatalf("definition missing for %s", provider.AdapterName)
+		}
+		seen[provider.Binding.ImplementationID] = true
+	}
+	if !seen["lookup"] || !seen["other"] {
+		t.Fatalf("providers=%v", seen)
+	}
+}
+
 func TestDynamicSemanticCatalogExecutesSelectedMCPBindingOnly(t *testing.T) {
 	entry := MCPToolEntry{ServerID: "server", ToolName: "lookup", InputSchema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"q": map[string]interface{}{"type": "string"}}, "required": []string{"q"}}, Contract: testDynamicCapabilityContract()}
 	provider := &boundMCPProviderStub{entries: []MCPToolEntry{entry}}

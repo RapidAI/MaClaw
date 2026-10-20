@@ -50,6 +50,7 @@ func BuildLightPrompt(request LightPromptRequest) string {
 			RoleName:                  roleName,
 			RoleDescription:           roleDescription,
 			PromptProfile:             agent.PromptProfileLight,
+			LiveDataFactTurn:          strings.TrimSpace(request.ExecutionTask) == "live_data",
 			DiagramRenderingSupported: request.DiagramRenderingSupported,
 		},
 	}, request.UserText, true)
@@ -61,9 +62,22 @@ func BuildLightPrompt(request LightPromptRequest) string {
 	var b strings.Builder
 	b.WriteString(prompt)
 	b.WriteString("\n")
-	b.WriteString("Use the smallest sufficient action. Prefer one listed lookup tool when live data is needed, then answer immediately.\n")
+	liveData := strings.TrimSpace(request.ExecutionTask) == "live_data"
+	if liveData {
+		b.WriteString("Use the smallest sufficient action.\n")
+	} else {
+		b.WriteString("Use the smallest sufficient action. Prefer one listed lookup tool when live data is needed, then answer immediately.\n")
+	}
 	b.WriteString("Do not inspect local files, run shell commands, manage projects, start group discussions, change memory, create tasks, or generate files.\n")
-	b.WriteString("Do not ask the user to re-authorize tools. If a listed lookup already returned evidence, answer from that evidence.\n")
+	if liveData {
+		// The generic "any evidence is an answer" line treats an encyclopedia
+		// snippet as success. The fact rule replaces it, and the GUI repeats
+		// the same sentence after the grant fence.
+		b.WriteString("Do not ask the user to re-authorize tools.\n")
+		b.WriteString(LiveDataFactReadPrompt())
+	} else {
+		b.WriteString("Do not ask the user to re-authorize tools. If a listed lookup already returned evidence, answer from that evidence.\n")
+	}
 	b.WriteString("If the request needs code, files, project context, or multi-step planning, say those tools are not in this turn instead of improvising.\n")
 	b.WriteString(fmt.Sprintf("Execution profile: layer=%s task=%s confidence=%.2f reason=%s\n", strings.TrimSpace(request.ExecutionLayer), strings.TrimSpace(request.ExecutionTask), request.ExecutionConfidence, strings.TrimSpace(request.ExecutionReason)))
 	if clientContext := agent.BuildClientCapabilityPrompt(request.ClientCapabilities); clientContext != "" {
@@ -85,6 +99,15 @@ func BuildLightPrompt(request LightPromptRequest) string {
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+// LiveDataFactReadPrompt is the current-fact rule for a light live_data turn.
+// A listed result that already states the fact is the answer. Fetching the
+// page is how a turn recovers when the result only names an encyclopedia,
+// a portal, or a title. The shared Chinese principles use the same rule on
+// this turn. The GUI repeats this English sentence after the grant fence.
+func LiveDataFactReadPrompt() string {
+	return "When a listed result already states the current fact, answer from it. When it does not, call web_fetch on a result page that should state the fact. Do not fetch a search-engine results page.\n"
 }
 
 // DesktopWorkflowDocumentDeliveryPrompt and IMWorkflowDocumentDeliveryPrompt
@@ -124,7 +147,7 @@ func IMWorkflowDocumentDeliveryPrompt() string {
 `
 }
 
-const lightSemanticGrantPromptFence = "\nGoverned tools: the live tool list is the ground truth. Call a listed name only, one tool per response; every result may change the next list. If a needed capability is unlisted, query tools_search for its exact name instead of inventing a tool. Do not fetch a search-engine page. truncated=true is a host budget cut, not a parse failure.\n"
+const lightSemanticGrantPromptFence = "\nGoverned tools: the live tool list is the ground truth. Call a listed name only, one tool per response; every result may change the next list. If a needed capability is unlisted, query tools_search for its exact name instead of inventing a tool. Do not fetch a search-engine page. truncated=true is a host budget cut, not a parse failure. Do not tell the user a quota or 额度 is used up. If the task still needs a listed tool, call it in this turn. Answer when the task is done.\n"
 
 // EnsureLightSemanticGrantPromptFence appends the compact semantic-routing
 // contract used by light turns. Full governed turns retain their richer
@@ -140,7 +163,7 @@ func EnsureLightSemanticGrantPromptFence(prompt string) string {
 // SemanticGrantPromptFence is the full governed-turn contract. Light turns
 // use EnsureLightSemanticGrantPromptFence; every host's full managed surface
 // must append this same fence so petition/replan guidance cannot drift.
-const SemanticGrantPromptFence = "\nGoverned tools: the live tool list is the ground truth — call any listed name, and call it again while it stays listed. After a successful call a name may briefly leave the list and reappear for a later step in this same turn; lookup tools (search, fetch) are expected to be used several times. Call ONE tool per response: the list is a state machine, not a static catalog — every result changes what is listed next, so a batched second call races the first call's outcome and is rejected. Unlisted capability? Query tools_search for the exact name; a name it marks 可请愿 (petitionable) — for example an unlisted web_search, web_fetch, bash, or office — may be called once even though unlisted: the host may authorize it on the spot. A name it marks planned or unavailable stays invalid. A name marked 等待用户确认 is waiting for the user; do not call it and do not perform that action with another tool. Later steps such as PDF or image render unlock after the current step succeeds, in this same reply; when a render or delivery tool is listed, call it immediately and do not say please wait; do not tell the user a tool is missing. An untried petitionable name is available: call it instead of explaining the tool list. Do not narrate tool limits or availability mechanics to the user; just do the work or state plainly what could not be done. Do not invent previous_turn_tool or reuse leftover invoke_* names. Do not fetch a search-engine page. If auto_extract is truncated=true, that is a host budget cut, not a parse failure — do not tell the user the document could not be extracted; continue with a listed office/read_document using next_offset, or answer from the injected prefix and # tail:.\n"
+const SemanticGrantPromptFence = "\nGoverned tools: the live tool list is the ground truth — call a listed name when the task needs it. A name that stays listed can be called again in this same turn. After a successful call a name may briefly leave the list and reappear for a later step in this same turn; lookup tools (search, fetch) are expected to be used several times. Call ONE tool per response: the list is a state machine, not a static catalog — every result changes what is listed next, so a batched second call races the first call's outcome and is rejected. Unlisted capability? Query tools_search for the exact name; a name it marks 可请愿 (petitionable) — for example an unlisted web_search, web_fetch, bash, or office — may be called once even though unlisted: the host may authorize it on the spot. A name it marks planned or unavailable stays invalid. A name marked 等待用户确认 is waiting for the user; do not call it and do not perform that action with another tool. Later steps such as PDF or image render unlock after the current step succeeds, in this same reply; when a render or delivery tool is listed, call it immediately and do not say please wait; do not tell the user a tool is missing. An untried petitionable name is available: call it instead of explaining the tool list. Do not narrate tool limits, call counts, or a used-up quota (额度) to the user. If the task still needs a listed tool, call it in this turn. When the task is done, answer. Just do the work or state plainly what could not be done. Do not invent previous_turn_tool or reuse leftover invoke_* names. Do not fetch a search-engine page. If auto_extract is truncated=true, that is a host budget cut, not a parse failure — do not tell the user the document could not be extracted; continue with a listed office/read_document using next_offset, or answer from the injected prefix and # tail:.\n"
 
 // EnsureSemanticGrantPromptFence appends the full governed-turn fence when
 // the prompt does not already contain one (light or full).

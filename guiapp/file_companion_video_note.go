@@ -703,6 +703,66 @@ func wavPCMLayout(data []byte) (format, rate, channels, bits, dataOff, dataLen i
 	return 0, 0, 0, 0, 0, 0, errors.New("bad wav")
 }
 
+// fileCompanionCaptureSpan is how long the capture ran: the later of the
+// last kept frame and a parsed waveform, including silence. Callers drop
+// black frames first. A waveform that does not parse does not invent a
+// minute. Chapter lines use fileCompanionNoteClock, so this silence is
+// not itself a timeline of events.
+func fileCompanionCaptureSpan(audio []byte, frames []videoNoteFrame) time.Duration {
+	var span time.Duration
+	for _, frame := range frames {
+		if frame.At > span {
+			span = frame.At
+		}
+	}
+	format, rate, channels, bits, _, dataLen, err := wavPCMLayout(audio)
+	if err != nil || format != 1 || rate <= 0 || channels <= 0 || bits < 8 || dataLen <= 0 {
+		return span
+	}
+	if d := pieceDuration(audio); d > span {
+		span = d
+	}
+	return span
+}
+
+// fileCompanionNoteClock is the timeline chapter lines may use.
+// Speech keeps the capture span, so a sentence can outlast the last
+// picture. Silence has no such events: the only times are the kept
+// frames. A silent tail after the last picture, including a black
+// stretch already dropped before the span was measured, is not a chapter.
+func fileCompanionNoteClock(noAudio bool, capture time.Duration, frames []videoNoteFrame) time.Duration {
+	if !noAudio {
+		return capture
+	}
+	var clock time.Duration
+	for _, frame := range frames {
+		if frame.At > clock {
+			clock = frame.At
+		}
+	}
+	return clock
+}
+
+// wavPCMSilent reports a 16-bit PCM recording whose samples are all zero.
+// Process loopback writes that buffer when the device marks the packet silent.
+// It is not speech: a quiet voice still moves the samples.
+func wavPCMSilent(wav []byte) bool {
+	format, _, channels, bits, dataOff, dataLen, err := wavPCMLayout(wav)
+	if err != nil || format != 1 || channels <= 0 || bits != 16 || dataLen < 2 {
+		return false
+	}
+	end := dataOff + dataLen
+	if end > len(wav) {
+		return false
+	}
+	for i := dataOff; i+1 < end; i += 2 {
+		if wav[i] != 0 || wav[i+1] != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func wavWrap(format, rate, channels, bits int, pcm []byte) []byte {
 	block := channels * bits / 8
 	hdr := make([]byte, 44)
@@ -745,6 +805,16 @@ func buildNoteModelPrompt(name, kind string, ev videoNoteEvidence) string {
 	b.WriteString(name)
 	b.WriteString("\n用 Markdown，只写这五个二级标题，不要增删：\n\n## 概要\n## 章节\n## 要点\n## 金句\n## 不确定的地方\n\n")
 	b.WriteString("章节的每一条以 mm:ss、h:mm:ss 或 0:00–2:00 这种范围开头，一段内容一行，不要为每个画面各写一行。金句以时间开头，用「」短引一句原话。要点只写几条结论，不要为结论标时间，也不要按分钟复述口播。口播是中文就用中文写，是英文就用英文写。不要声称已经生成了笔记或 PDF。\n")
+	if sec := int(ev.Duration / time.Second); sec > 0 {
+		// The rewrite can only drop a clock past this span. A progress bar
+		// painted on the frame is a different clock and still looks legal
+		// when that number happens to fall inside the span.
+		b.WriteString("这次记录从 0:00 到 ")
+		b.WriteString(formatNoteStamp(ev.Duration))
+		b.WriteString("（")
+		b.WriteString(itoaNote(sec))
+		b.WriteString(" 秒）。章节和金句用这个钟。画面 t= 后面的数字是这个钟的秒。画面上另印的进度、总时长和时钟不是这个钟。\n")
+	}
 	b.WriteString("用自己的话整理。不要把转写或 OCR 原文抄进笔记。\n")
 	if ev.Vision {
 		b.WriteString("看得见的公式写成 $...$ 或独立成行的 $$...$$。板书写成普通文字。没有在画面里看见的式子放进「不确定的地方」。\n")
@@ -1148,6 +1218,164 @@ func fileCompanionLeadingStamp(token string) (time.Duration, bool) {
 	}
 	start, _, ok := splitNoteStamp(token)
 	return start, ok
+}
+
+// fileCompanionRangeClock is the later clock of a chapter range, and the
+// words after that clock. Frame order still uses the start. A line
+// 0:00–13:32, 0:00 – 13:32, or 0:27–2:04，检查 is past a recording that
+// ended before that end. An illegal end such as 99:99 is broken, and the
+// words glued to it stay. A dash before ordinary words is prose, not a range.
+func fileCompanionRangeClock(line string) (end time.Duration, prose string, found, broken bool) {
+	trim := strings.TrimSpace(line)
+	for strings.HasPrefix(trim, fileCompanionErrTimeUnknown) {
+		trim = strings.TrimSpace(strings.TrimPrefix(trim, fileCompanionErrTimeUnknown))
+	}
+	trim = strings.TrimLeft(trim, "-*• ")
+	if trim == "" {
+		return 0, "", false, false
+	}
+	token, rest, _ := strings.Cut(trim, " ")
+	for _, sep := range []string{"–", "—", "~", "～", "-"} {
+		head, tail, ok := strings.Cut(token, sep)
+		if !ok || head == "" || tail == "" {
+			continue
+		}
+		if _, _, headOK := splitNoteStamp(head); !headOK {
+			continue
+		}
+		end, prose, found, broken, isClock := fileCompanionClockTail(tail, rest)
+		if !isClock {
+			continue
+		}
+		return end, prose, found, broken
+	}
+	_, after, startOK := splitNoteStamp(trim)
+	if !startOK {
+		return 0, "", false, false
+	}
+	rest, ok := fileCompanionTrimRangeSep(after)
+	if !ok {
+		return 0, "", false, false
+	}
+	end, prose, found, broken, isClock := fileCompanionClockTail(rest, "")
+	if !isClock {
+		return 0, "", false, false
+	}
+	return end, prose, found, broken
+}
+
+// fileCompanionClockTail reads the end of a range. Words glued to that
+// clock, including after a Chinese comma, are the sentence. A tail that
+// is not a clock at all is left for the caller.
+func fileCompanionClockTail(tail, outer string) (end time.Duration, prose string, found, broken, isClock bool) {
+	if d, tailRest, ok := splitNoteStamp(tail); ok {
+		return d, fileCompanionJoinClockProse(tailRest, outer), true, false, true
+	}
+	if d, glued, ok := noteStampPrefix(tail); ok {
+		if more, sep := fileCompanionTrimRangeSep(glued); sep {
+			d2, prose2, found2, broken2, clock2 := fileCompanionClockTail(more, outer)
+			if clock2 {
+				if broken2 {
+					return 0, prose2, false, true, true
+				}
+				if found2 && d2 > d {
+					d = d2
+				}
+				return d, prose2, true, false, true
+			}
+			return d, fileCompanionJoinClockProse(more, outer), true, false, true
+		}
+		return d, fileCompanionJoinClockProse(glued, outer), true, false, true
+	}
+	if left, bad := invalidClockPrefix(tail); bad {
+		if more, sep := fileCompanionTrimRangeSep(left); sep {
+			_, prose2, _, _, clock2 := fileCompanionClockTail(more, outer)
+			if clock2 {
+				return 0, prose2, false, true, true
+			}
+		}
+		return 0, fileCompanionJoinClockProse(left, outer), false, true, true
+	}
+	return 0, "", false, false, false
+}
+
+func fileCompanionJoinClockProse(glued, outer string) string {
+	glued = strings.TrimSpace(glued)
+	outer = strings.TrimSpace(outer)
+	switch {
+	case glued == "" && outer == "":
+		return ""
+	case glued == "":
+		return fileCompanionClockProse(outer)
+	case outer == "":
+		return fileCompanionClockProse(glued)
+	default:
+		return fileCompanionClockProse(glued + " " + outer)
+	}
+}
+
+func fileCompanionClockProse(s string) string {
+	return strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(s), "，,、：:；;。．. "))
+}
+
+// noteStampPrefix reads a leading mm:ss or h:mm:ss. Digits stop at the
+// first non-digit, so 2:04，检查 is 2:04 and the comma stays in the rest.
+func noteStampPrefix(s string) (time.Duration, string, bool) {
+	raw, rest := takeStampToken(s)
+	if raw == "" {
+		return 0, "", false
+	}
+	d, _, ok := splitNoteStamp(raw)
+	if !ok {
+		return 0, "", false
+	}
+	return d, rest, true
+}
+
+func invalidClockPrefix(s string) (string, bool) {
+	raw, rest := takeStampToken(s)
+	if raw == "" {
+		return "", false
+	}
+	if _, _, ok := splitNoteStamp(raw); ok {
+		return "", false
+	}
+	return rest, true
+}
+
+func takeStampToken(s string) (raw, rest string) {
+	i := 0
+	readDigits := func() bool {
+		start := i
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+		}
+		return i > start
+	}
+	if !readDigits() || i >= len(s) || s[i] != ':' {
+		return "", s
+	}
+	i++
+	if !readDigits() {
+		return "", s
+	}
+	if i < len(s) && s[i] == ':' {
+		i++
+		if !readDigits() {
+			return "", s
+		}
+	}
+	return s[:i], s[i:]
+}
+
+func fileCompanionTrimRangeSep(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	for _, sep := range []string{"–", "—", "~", "～", "-"} {
+		if strings.HasPrefix(s, sep) {
+			return strings.TrimSpace(strings.TrimPrefix(s, sep)), true
+		}
+	}
+	return "", false
 }
 
 func fileCompanionPlaceFrameBlocks(markdown string, blocks []noteFrameBlock) string {

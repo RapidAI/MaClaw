@@ -208,6 +208,12 @@ func projectPathFromSessionOwnerID(ownerID string) string {
 	if strings.HasPrefix(rest, "expert:") || strings.HasPrefix(rest, "acp:") || strings.HasPrefix(rest, "task:") {
 		return ""
 	}
+	// A background chat task runs as desktop-user:<project>:task:<id>. The
+	// worker must stay in that project. Windows paths use a colon only for the
+	// drive letter, so ":task:" is the delimiter.
+	if cut := strings.LastIndex(rest, ":task:"); cut >= 0 {
+		rest = rest[:cut]
+	}
 	return normalizeProjectSessionPath(rest)
 }
 

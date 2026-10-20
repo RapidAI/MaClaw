@@ -166,6 +166,34 @@ func TestWorklogUpdateUtterancePlansReviewedMCPWriter(t *testing.T) {
 	}
 }
 
+// TestWorklogUpdateUtterancePlansInstalledAddTool is the installed server the
+// user actually has: post_work_log_add, not the reviewed name work_log_update.
+// Installation has to make that write reachable. The turn must not die as an
+// uncovered record.update.worklog before the model is called.
+func TestWorklogUpdateUtterancePlansInstalledAddTool(t *testing.T) {
+	tools := []MCPToolView{{
+		Name: "post_work_log_add", Description: "append a work log", InputSchema: discoveredMCPObjectSchema(),
+	}}
+	h, _ := newDiscoveredMCPHandler(t, "tengyun", tools, true)
+	stored := &intent.ClassificationResult{Primary: intent.LabelTaskTrack, Confidence: .98}
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+		"desktop-user", worklogProductionUtterance, "desktop", "root-worklog-add", "turn-worklog-add", stored,
+	)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("handled=%v surface=%v err=%v", handled, surface != nil, err)
+	}
+	found := false
+	for _, selection := range surface.plan.Selections {
+		if selection.Provider.ImplementationID == "post_work_log_add" && selection.Provider.ProviderID == "tengyun" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("installed write was not selected: selections=%+v unmet=%+v", surface.plan.Selections, surface.plan.Unmet)
+	}
+}
+
 func TestTodoUtteranceStillPlansLocalTask(t *testing.T) {
 	h := &IMMessageHandler{registry: NewToolRegistry()}
 	stored := &intent.ClassificationResult{Primary: intent.LabelTaskTrack, Confidence: .98}

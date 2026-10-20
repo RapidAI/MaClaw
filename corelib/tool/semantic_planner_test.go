@@ -466,6 +466,54 @@ func TestToolPlannerPhase4MutatingProviderStaysFailClosedOnIncomplete(t *testing
 	}
 }
 
+func TestToolPlannerReadyMCPMutationSurvivesPartialCatalogWhenHostAllowsIt(t *testing.T) {
+	registry := semanticRegistry(t)
+	mut := semanticProvider("mcp_mut_deliver", "artifact.deliver.current_channel", map[string]string{"format": "image"}, EffectExternalEffect)
+	mut.Binding.Kind = "mcp"
+	mut.Ready = true
+	down := mut
+	down.AdapterName = "mcp_mut_down"
+	down.Ready = false
+	catalog := NewToolCatalog(registry)
+	snapshot, err := catalog.PublishWithCoverage([]ProviderSpec{mut}, CatalogCoverage{
+		State:      CatalogCoverageIncomplete,
+		ReasonCode: CatalogCoverageReasonNotReady,
+		Families:   []CatalogCoverageFamily{{Kind: "mcp", State: CatalogCoverageIncomplete, ReasonCode: CatalogCoverageReasonNotReady}},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	need := []CapabilityNeed{{ID: "deliver", Capability: "artifact.deliver.current_channel", Qualifiers: map[string]string{"format": "image"}, Required: true}}
+	plan, err := NewToolPlanner(registry).Plan(RouteRequest{
+		RootTaskID: "root", TurnID: "turn", Snapshot: snapshot, Needs: need,
+		ReadyMCPMutationsOnPartialCatalog: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Selections) != 1 || len(plan.Unmet) != 0 || plan.Selections[0].AdapterName != "mcp_mut_deliver" {
+		t.Fatalf("ready MCP write stayed blocked on a partial catalog: %+v", plan)
+	}
+	blockedSnapshot, err := catalog.PublishWithCoverage([]ProviderSpec{down}, CatalogCoverage{
+		State:      CatalogCoverageIncomplete,
+		ReasonCode: CatalogCoverageReasonNotReady,
+		Families:   []CatalogCoverageFamily{{Kind: "mcp", State: CatalogCoverageIncomplete, ReasonCode: CatalogCoverageReasonNotReady}},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := NewToolPlanner(registry).Plan(RouteRequest{
+		RootTaskID: "root", TurnID: "turn-down", Snapshot: blockedSnapshot, Needs: need,
+		ReadyMCPMutationsOnPartialCatalog: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocked.Selections) != 0 || len(blocked.Unmet) != 1 || blocked.Unmet[0].ReasonCode != CatalogCoverageReasonNotReady {
+		t.Fatalf("unready MCP write was selected: %+v", blocked)
+	}
+}
+
 func TestToolPlannerClosedNegativeProviderDoesNotHideReadySibling(t *testing.T) {
 	registry := semanticRegistry(t)
 	ready := semanticProvider("ready_capture", "visual.capture.desktop", map[string]string{"display": "primary"}, EffectReadOnly)

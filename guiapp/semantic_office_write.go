@@ -51,7 +51,7 @@ func semanticTrustedOfficeWriteDefinition() map[string]interface{} {
 		"type": "function",
 		"function": map[string]interface{}{
 			"name":        semanticTrustedOfficeWriteAdapter,
-			"description": "Write a spreadsheet or a presentation deck into a workspace path. Spreadsheet: path + sheets. Presentation (.pptx): path + title + optional subtitle/theme + slides. theme is business (default professional), academic, or warm. Each slide takes title, optional kicker, optional layout (auto/bullets/cards/section/agenda/kpi/quote/closing), bullets, notes, optional images, and optional native editable charts (bar/column/bar_h/line/radar/pie/area — PowerPoint chart objects, not pictures). The deck is rendered with a cover, accent rail, cards, and page footer; do not expect a plain white title-and-bullets template. Content and destination are bound by the host. Pass either sheets or slides, never both; omit the unused key entirely.",
+			"description": "Write a spreadsheet or a presentation deck into a workspace path. Spreadsheet: path + sheets. Presentation (.pptx): path + title + optional subtitle/theme/purpose + slides. theme is clean, magazine, eink, dashboard, retro, sketch, whiteboard, handmade, research, mckinsey, official, course, a custom style id, or auto (when the user or prompt specifies a style or theme=<id>, pass that exact id in theme). Each slide takes title, optional kicker, optional layout (auto/bullets/cards/timeline/comparison/section/agenda/kpi/quote/closing), bullets, notes, optional images, and optional native editable charts (bar/column/bar_h/line/radar/pie/area — PowerPoint chart objects, not pictures). Mix layouts across slides (agenda, section, cards, timeline, comparison, kpi, charts, quote, closing) so the deck has visual rhythm and follows the chosen style's motif. Pass either sheets or slides, never both; omit the unused key entirely.",
 			"parameters":  semanticTrustedOfficeWriteInvocationSchema(),
 		},
 	}
@@ -85,11 +85,11 @@ func semanticTrustedOfficeWriteInvocationSchema() map[string]interface{} {
 			"subtitle": map[string]interface{}{"type": "string"},
 			"theme": map[string]interface{}{
 				"type":        "string",
-				"description": "Style id: business, academic, warm, launch, tech, education, ceremony, minimal, or auto. An explicit id wins. auto (or omitted) selects from purpose, title, and subtitle. Aliases: 商务, 学术, 温馨, 发布, 技术, 教学, 典礼, 极简.",
+				"description": "Style id: clean, magazine, eink, dashboard, retro, sketch, whiteboard, handmade, research, mckinsey, official, course, any custom style id, or auto. Legacy aliases (business, academic, warm, launch, tech, education, ceremony, minimal, modern, consulting) and Chinese labels also resolve. An explicit id wins; when the user specifies a style or theme=<id>, pass that exact id.",
 			},
 			"purpose": map[string]interface{}{
 				"type":        "string",
-				"description": "What the deck is for, in the user's words (答辩, 生日, 季度汇报, 产品发布, 课件, 年会, 个人介绍). Required for a good automatic style choice when theme is auto.",
+				"description": "What the deck is for, in the user's words (答辩, 生日, 季度汇报, 产品发布, 课件, 年会, 战略汇报, 数据看板, 党政汇报, 技术分享, 头脑风暴). Used for automatic style choice when theme is auto.",
 			},
 			"slides": map[string]interface{}{
 				"type":        "array",
@@ -104,7 +104,7 @@ func semanticTrustedOfficeWriteInvocationSchema() map[string]interface{} {
 						},
 						"layout": map[string]interface{}{
 							"type":        "string",
-							"description": "auto (default), bullets, cards (2-6 short points), section, agenda, kpi (bullets as \"value | label\"), quote, or closing. Photos and charts stay on the bullet layout.",
+							"description": "auto (default), bullets, cards (2-6 points as \"heading：detail\"), timeline (2-6 steps/stages), comparison (2-6 side-by-side contrast points), section, agenda, kpi (bullets as \"value | label\"), quote, or closing. Vary layouts across slides. Photos and charts stay on the bullet layout.",
 						},
 						"bullets": map[string]interface{}{
 							"type":  "array",

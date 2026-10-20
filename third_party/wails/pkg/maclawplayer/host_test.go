@@ -2,6 +2,9 @@ package maclawplayer
 
 import (
 	"math"
+	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/wailsapp/wails/v2/pkg/maclawcapture"
@@ -145,5 +148,118 @@ func TestClearingTheHostDropsAWaitingPage(t *testing.T) {
 	Set(host)
 	if len(host.places) != 0 {
 		t.Fatalf("places = %d", len(host.places))
+	}
+}
+
+func TestAPlaceHiddenBeforeTheHostDoesNotPaint(t *testing.T) {
+	Set(nil)
+	host := &recordHost{}
+	Set(host)
+	t.Cleanup(func() {
+		testBeforeApply = nil
+		Set(nil)
+	})
+	testBeforeApply = Hide
+	if err := Place("https://www.youtube.com/embed/abc", Bounds{W: 10, H: 10}); err != nil {
+		t.Fatal(err)
+	}
+	if len(host.places) != 0 || host.hides != 1 {
+		t.Fatalf("places=%d hides=%d", len(host.places), host.hides)
+	}
+}
+
+func TestAReplacedPlaceDoesNotPaintTheOldPage(t *testing.T) {
+	Set(nil)
+	host := &recordHost{}
+	Set(host)
+	t.Cleanup(func() {
+		testBeforeApply = nil
+		Set(nil)
+	})
+	bounds := Bounds{W: 10, H: 10}
+	testBeforeApply = func() {
+		testBeforeApply = nil
+		if err := Place("https://example.com/next", bounds); err != nil {
+			t.Errorf("next place: %v", err)
+		}
+	}
+	if err := Place("https://www.youtube.com/embed/abc", bounds); err != nil {
+		t.Fatal(err)
+	}
+	if host.hides != 0 || len(host.places) != 1 || host.places[0].URL != "https://example.com/next" {
+		t.Fatalf("places=%+v hides=%d", host.places, host.hides)
+	}
+}
+
+// blockingHost holds Place inside the host until release is closed.
+// hides counts host Hide calls.
+type blockingHost struct {
+	entered chan struct{}
+	release chan struct{}
+	hides   atomic.Int32
+	once    sync.Once
+}
+
+func (h *blockingHost) Place(string, Bounds) error {
+	h.once.Do(func() { close(h.entered) })
+	<-h.release
+	return nil
+}
+
+func (h *blockingHost) Hide()                    { h.hides.Add(1) }
+func (h *blockingHost) Showing() bool            { return false }
+func (h *blockingHost) View() maclawcapture.View { return nil }
+
+func TestHideDoesNotCallTheHostWhilePlaceHoldsIt(t *testing.T) {
+	Set(nil)
+	testBeforeApply = nil
+	host := &blockingHost{entered: make(chan struct{}), release: make(chan struct{})}
+	Set(host)
+	var releaseOnce sync.Once
+	unlock := func() { releaseOnce.Do(func() { close(host.release) }) }
+	placeDone := make(chan struct{})
+	hideDone := make(chan struct{})
+	t.Cleanup(func() {
+		unlock()
+		<-placeDone
+		<-hideDone
+		testBeforeApply = nil
+		Set(nil)
+	})
+	go func() {
+		defer close(placeDone)
+		if err := Place("https://www.youtube.com/embed/abc", Bounds{W: 10, H: 10}); err != nil {
+			t.Errorf("place: %v", err)
+		}
+	}()
+	<-host.entered
+	go func() {
+		defer close(hideDone)
+		Hide()
+	}()
+	hidden := false
+	for i := 0; i < 100000; i++ {
+		mu.Lock()
+		vis := wanted != nil && wanted.Visible
+		mu.Unlock()
+		if !vis {
+			hidden = true
+			break
+		}
+		runtime.Gosched()
+	}
+	if !hidden {
+		t.Fatal("Hide did not record the page as hidden")
+	}
+	for i := 0; i < 256; i++ {
+		if host.hides.Load() != 0 {
+			t.Fatal("Hide called the host while Place still held it")
+		}
+		runtime.Gosched()
+	}
+	unlock()
+	<-hideDone
+	if host.hides.Load() != 1 {
+		t.Fatalf("hides=%d", host.hides.Load())
 	}
 }

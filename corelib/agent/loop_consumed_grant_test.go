@@ -49,6 +49,31 @@ func (m *renewingSurfaceCallbacks) OpenNextRepeatWave(string) bool {
 	return true
 }
 
+func TestLatestToolResultUnsettledUsesTheHostStatusLine(t *testing.T) {
+	if !LatestToolResultUnsettled([]ConversationEntry{{Role: "tool", ToolName: "ssh", Content: "[system unknown] trusted_ssh_outcome_unobserved"}}) {
+		t.Fatal("unknown status was settled")
+	}
+	if !LatestToolResultUnsettled([]ConversationEntry{{Role: "tool", ToolName: "send_file", Content: "[system rejected] dynamic_effect_awaiting_receipt"}}) {
+		t.Fatal("parked receipt was settled")
+	}
+	if LatestToolResultUnsettled([]ConversationEntry{{Role: "tool", ToolName: "read_file", Content: "stays awaiting_receipt\nreturn \"[system unknown] lost\""}}) {
+		t.Fatal("a quoted marker was in flight")
+	}
+	if LatestToolResultUnsettled([]ConversationEntry{{Role: "tool", ToolName: "ssh", Content: "[system rejected] selection_execution_not_awaiting_receipt"}}) {
+		t.Fatal("a settled rejection was in flight")
+	}
+	if LatestToolResultUnsettled([]ConversationEntry{{Role: "tool", ToolName: "ssh", Content: "trusted_ssh_outcome_unobserved"}}) {
+		t.Fatal("a bare error name was in flight")
+	}
+	if LatestToolResultUnsettled([]ConversationEntry{
+		{Role: "tool", ToolName: "ssh", Content: "[system unknown] trusted_ssh_outcome_unobserved"},
+		{Role: "tool", ToolName: "tools_search", Content: "[system unknown] ignored"},
+		{Role: "tool", ToolName: "ssh", Content: "EXIT=0"},
+	}) {
+		t.Fatal("a later settled result stayed in flight")
+	}
+}
+
 func TestSpentRepeatHandoffDetectsUserContinueAsk(t *testing.T) {
 	if !answerHandsWorkBackToUser("请再发一次「继续」，我读取结果。") {
 		t.Fatal("explicit continue ask was ignored")
@@ -224,6 +249,150 @@ func TestRunLoopSpentRepeatWaveContinuesWithoutUser(t *testing.T) {
 	}
 	if !cb.opened || callCount < 5 {
 		t.Fatalf("opened=%v calls=%d", cb.opened, callCount)
+	}
+}
+
+func TestRunLoopQuotaHandoffContinuesWithoutASpentNote(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		body, _ := io.ReadAll(r.Body)
+		var resp map[string]interface{}
+		switch callCount {
+		case 1:
+			resp = map[string]interface{}{"choices": []map[string]interface{}{{
+				"message": map[string]interface{}{
+					"role": "assistant", "content": "",
+					"tool_calls": []map[string]interface{}{{
+						"id": "call_ssh", "type": "function",
+						"function": map[string]interface{}{"name": "ssh", "arguments": `{"command":"check bg_1792484853_1"}`},
+					}},
+				},
+				"finish_reason": "tool_calls",
+			}}}
+		case 2:
+			resp = map[string]interface{}{"choices": []map[string]interface{}{{
+				"message":       map[string]interface{}{"role": "assistant", "content": "本轮操作额度已用完，因此结果还没取到，下一轮我再整理 MAE。"},
+				"finish_reason": "stop",
+			}}}
+		case 3:
+			if !strings.Contains(string(body), "已再次列入") || !strings.Contains(string(body), "不要说额度已用完") {
+				t.Errorf("quota handoff was accepted as the final answer: %s", body)
+			}
+			resp = map[string]interface{}{"choices": []map[string]interface{}{{
+				"message":       map[string]interface{}{"role": "assistant", "content": "MAE 已整理。"},
+				"finish_reason": "stop",
+			}}}
+		default:
+			t.Errorf("unexpected model call %d", callCount)
+			resp = map[string]interface{}{"choices": []map[string]interface{}{{
+				"message":       map[string]interface{}{"role": "assistant", "content": "MAE 已整理。"},
+				"finish_reason": "stop",
+			}}}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+	cb := &renewingSurfaceCallbacks{consumedGrantSurfaceCallbacks: consumedGrantSurfaceCallbacks{mockCallbacks: mockCallbacks{
+		config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:    6,
+		sysPrompt:  "sys",
+		toolResult: "bg_1792484853_1 running",
+		tools: []map[string]interface{}{{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":        "ssh",
+				"description": "Remote command",
+				"parameters":  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+			},
+		}},
+	}}}
+	result := RunLoop(cb, "整理评测结果", nil, nil)
+	if result.Error != "" {
+		t.Fatal(result.Error)
+	}
+	if result.Text != "MAE 已整理。" {
+		t.Fatalf("text=%q calls=%d opened=%v", result.Text, callCount, cb.opened)
+	}
+	if !cb.opened {
+		t.Fatal("quota handoff did not list the next call")
+	}
+}
+
+// listedClosedWaveCallbacks keeps the tool on every request and refuses to
+// publish another semantic sibling. A handback still has to continue.
+type listedClosedWaveCallbacks struct {
+	mockCallbacks
+}
+
+func (m *listedClosedWaveCallbacks) OpenNextRepeatWave(string) bool { return false }
+
+func TestRunLoopListedToolContinuesWhenTheWaveStaysClosed(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		body, _ := io.ReadAll(r.Body)
+		var resp map[string]interface{}
+		switch callCount {
+		case 1:
+			resp = map[string]interface{}{"choices": []map[string]interface{}{{
+				"message": map[string]interface{}{
+					"role": "assistant", "content": "",
+					"tool_calls": []map[string]interface{}{{
+						"id": "call_ssh", "type": "function",
+						"function": map[string]interface{}{"name": "ssh", "arguments": `{"command":"check bg_1792484853_1"}`},
+					}},
+				},
+				"finish_reason": "tool_calls",
+			}}}
+		case 2:
+			resp = map[string]interface{}{"choices": []map[string]interface{}{{
+				"message":       map[string]interface{}{"role": "assistant", "content": "本轮操作额度已用完，因此结果还没取到，下一轮我再整理 MAE。"},
+				"finish_reason": "stop",
+			}}}
+		case 3:
+			if !strings.Contains(string(body), "已再次列入") {
+				t.Errorf("a listed tool was treated as finished: %s", body)
+			}
+			resp = map[string]interface{}{"choices": []map[string]interface{}{{
+				"message":       map[string]interface{}{"role": "assistant", "content": "MAE 已整理。"},
+				"finish_reason": "stop",
+			}}}
+		default:
+			t.Errorf("unexpected model call %d", callCount)
+			resp = map[string]interface{}{"choices": []map[string]interface{}{{
+				"message":       map[string]interface{}{"role": "assistant", "content": "MAE 已整理。"},
+				"finish_reason": "stop",
+			}}}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+	cb := &listedClosedWaveCallbacks{mockCallbacks: mockCallbacks{
+		config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:    6,
+		sysPrompt:  "sys",
+		toolResult: "bg_1792484853_1 running",
+		tools: []map[string]interface{}{{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":        "ssh",
+				"description": "Remote command",
+				"parameters":  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+			},
+		}},
+	}}
+	result := RunLoop(cb, "整理评测结果", nil, nil)
+	if result.Error != "" {
+		t.Fatal(result.Error)
+	}
+	if result.Text != "MAE 已整理。" {
+		t.Fatalf("text=%q calls=%d", result.Text, callCount)
+	}
+	if callCount < 3 {
+		t.Fatalf("calls=%d", callCount)
 	}
 }
 

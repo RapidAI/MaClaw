@@ -298,6 +298,7 @@ func (a *AuthService) ValidateSession(ctx context.Context, token string) (*Sessi
 	if err != nil {
 		return nil, ErrTokenExpired
 	}
+	sess.signatureOnly = true
 	return sess, nil
 }
 
@@ -364,12 +365,48 @@ func (a *AuthService) SendPasswordReset(ctx context.Context, email string) error
 }
 
 // CurrentUser returns the authenticated SkillMarket user for a session token.
+// A signed session is authentication on every node that shares the signing
+// secret. If that node has not replicated the user row yet, the principal in
+// the token is materialized here. A database session whose user row is gone
+// is not rebuilt: deletion must stay deleted. An email owned by a different
+// user is not adopted.
 func (a *AuthService) CurrentUser(ctx context.Context, sessionToken string) (*SkillMarketUser, error) {
 	sess, err := a.ValidateSession(ctx, sessionToken)
 	if err != nil {
 		return nil, err
 	}
-	return a.store.GetUserByID(ctx, sess.UserID)
+	user, err := a.store.GetUserByID(ctx, sess.UserID)
+	if err == nil {
+		return user, nil
+	}
+	if !errors.Is(err, ErrNotFound) || !sess.signatureOnly {
+		return nil, err
+	}
+	return a.materializeSignedSessionUser(ctx, sess)
+}
+
+// materializeSignedSessionUser inserts the principal carried by a verified
+// signed session. CreatedAt/UpdatedAt/VerifiedAt stay at the Unix epoch, the
+// same stub clock as machine-login account creation, so a newer HA snapshot
+// replaces the stub instead of the stub winning on updated_at and wiping
+// credits. If the contact already belongs to another user id, this returns
+// ErrNotFound so the client derives a session with machine-login rather than
+// this node impersonating that account.
+func (a *AuthService) materializeSignedSessionUser(ctx context.Context, sess *Session) (*SkillMarketUser, error) {
+	if a == nil || a.store == nil || sess == nil || strings.TrimSpace(sess.UserID) == "" {
+		return nil, ErrNotFound
+	}
+	user, err := NewUserService(a.store, a.mailer).ensureAccountWithID(ctx, sess.UserID, sess.Email, false)
+	if err != nil {
+		if errors.Is(err, ErrEmailBoundToAnotherUser) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if user == nil || user.ID != sess.UserID {
+		return nil, ErrNotFound
+	}
+	return user, nil
 }
 
 // ChangePassword verifies the current password and stores a new password.

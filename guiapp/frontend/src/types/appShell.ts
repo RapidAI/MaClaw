@@ -39,11 +39,7 @@ export interface SidebarTokenUsageStat {
     MonthTokens?: number;
 }
 
-export interface SidebarCurrentProviderTokenUsage {
-    provider: string;
-    isHubService: boolean;
-    /** The active provider's currently configured model accepts image input. */
-    supportsVision?: boolean;
+export interface SidebarTokenMeter {
     input: number;
     output: number;
     total: number;
@@ -56,6 +52,23 @@ export interface SidebarCurrentProviderTokenUsage {
     today?: number;
     week?: number;
     month?: number;
+}
+
+export interface SidebarCurrentProviderTokenUsage extends SidebarTokenMeter {
+    provider: string;
+    isHubService: boolean;
+    /** The active provider's currently configured model accepts image input. */
+    supportsVision?: boolean;
+    /**
+     * Meter for the role named on the workbench model line when that role is
+     * not the provider the quick switcher edits. The switcher keeps `provider`
+     * and the totals above.
+     */
+    contacted?: SidebarTokenMeter & {
+        provider: string;
+        isHubService: boolean;
+        supportsVision?: boolean;
+    };
 }
 
 export interface SidebarHubPeriodLimits {

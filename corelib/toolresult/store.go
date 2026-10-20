@@ -371,6 +371,11 @@ func compactPreviewToBudget(s string, budget int) string {
 	if len(s) <= budget {
 		return s
 	}
+	// A second cut must not turn a per-hit search preview back into a byte
+	// window. That window deletes the middle hits the first cut kept.
+	if strings.HasPrefix(strings.TrimSpace(s), "Public web results for ") {
+		return previewWebSearch(s, budget)
+	}
 	head, marker, tail, ok := splitFirstTruncationMarker(s)
 	if !ok || len(marker) >= budget {
 		return DefaultPreview(s, budget)

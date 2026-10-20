@@ -2960,7 +2960,7 @@ func (h *IMMessageHandler) toolListScheduledTasks() string {
 		// Schedule description
 		var sched string
 		if t.IntervalMinutes > 0 {
-			sched = fmt.Sprintf("每%s（首次 %02d:%02d）", scheduler.FormatInterval(t.IntervalMinutes), t.Hour, t.Minute)
+			sched = scheduler.FormatSchedule(t)
 		} else {
 			sched = fmt.Sprintf("每天 %02d:%02d", t.Hour, t.Minute)
 			if t.DayOfWeek >= 0 && t.DayOfWeek <= 6 {

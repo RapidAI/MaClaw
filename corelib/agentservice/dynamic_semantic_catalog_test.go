@@ -51,8 +51,12 @@ func TestProjectMCPDynamicProviderUsesVerifiedBindingAndClosedSchema(t *testing.
 	if params["additionalProperties"] != false {
 		t.Fatalf("dynamic schema is not closed: %#v", params)
 	}
-	if strings.Contains(provider.AdapterName, "accounting") || strings.Contains(provider.AdapterName, "submit") {
-		t.Fatalf("provider adapter leaks discovery identity: %q", provider.AdapterName)
+	rendered := coretool.RenderedSemanticFunctionName(provider.AdapterName, "invoke_token")
+	if rendered != "accounting__submit_payment" {
+		t.Fatalf("installed MCP rendered as %q, adapter %q", rendered, provider.AdapterName)
+	}
+	if strings.Contains(provider.AdapterName, "Ignore") || strings.Contains(rendered, "Ignore") {
+		t.Fatalf("untrusted prose entered the adapter: %q", provider.AdapterName)
 	}
 	if got := definition["function"].(map[string]interface{})["description"]; got != "" {
 		t.Fatalf("untrusted discovery description entered renderer source: %q", got)

@@ -17,6 +17,31 @@ describe('resolveFinalRoundContent — reasoning-trail collapse', () => {
         timestamp: Date.now(),
     });
 
+    it('shows the host handoff note instead of the longer streamed reply', () => {
+        const note = '剩余工作已继续处理，完成后会发到这个对话。';
+        const streamed = '后台执行通道没有启动成功。配图还没准备好，你再说一句继续做配图版我就去抓九张有授权的照片。\n\n<!--maclaw-tool:call-1-->\n\n这一步先停在这里。';
+        const message = {
+            ...makeMessage(streamed, 'dispatch was not in the tool list'),
+            toolCalls: [{ id: 'call-1', name: 'bash', action: '执行命令', detail: 'curl' }],
+        };
+        expect(resolveFinalRoundContent(message, { text: note, response_source: 'chat_task_handoff' })).toBe(note);
+    });
+
+    it('keeps the host handoff note when the same turn also delivers a file', () => {
+        const note = '剩余工作已继续处理，完成后会发到这个对话。';
+        const streamed = '后台执行通道没有启动成功。\n\n<!--maclaw-tool:call-1-->\n\n配图还没准备好。';
+        const message = {
+            ...makeMessage(streamed),
+            toolCalls: [{ id: 'call-1', name: 'bash', action: '执行命令', detail: 'curl' }],
+        };
+        expect(resolveFinalRoundContent(message, {
+            text: note,
+            response_source: 'chat_task_handoff',
+            local_file_path: 'C:\\artifacts\\deck.pptx',
+            local_file_paths: ['C:\\artifacts\\deck.pptx'],
+        })).toBe(note);
+    });
+
     it('keeps tool-call markers when the official answer replaces the running transcript', () => {
         const finalText = '接口需要登录，这一步已经改走浏览器。后面补上完整说明，避免被当成短片段而整段保留中间过程。';
         const streamed = '先用命令试一次。\n\n<!--maclaw-tool:call-1-->\n\n命令被拦住了。';

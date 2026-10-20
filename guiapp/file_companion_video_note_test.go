@@ -769,6 +769,23 @@ func TestFileCompanionVideoNoteQuietDropOmitsTranscript(t *testing.T) {
 	}
 }
 
+func TestFileCompanionNoteClockIgnoresSilentTail(t *testing.T) {
+	frames := []videoNoteFrame{{At: 3 * time.Second}}
+	if got := fileCompanionNoteClock(true, time.Minute, frames); got != 3*time.Second {
+		t.Fatalf("silent tail clock = %s", got)
+	}
+	if got := fileCompanionNoteClock(true, time.Minute, nil); got != 0 {
+		t.Fatalf("no frame clock = %s", got)
+	}
+	if got := fileCompanionNoteClock(false, time.Minute, frames); got != time.Minute {
+		t.Fatalf("speech clock = %s", got)
+	}
+	long := []videoNoteFrame{{At: 0}, {At: 200 * time.Second}}
+	if got := fileCompanionNoteClock(true, 0, long); got != 200*time.Second {
+		t.Fatalf("frame clock = %s", got)
+	}
+}
+
 func TestFileCompanionRangeStampStaysOrganized(t *testing.T) {
 	in := "## 概要\n讲过了\n## 章节\n- 0:00–2:00 机器翻译的几个时代（推断）\n- 3:00–4:00 Transformer 编码器（推断）\n没有时间的一句\n## 要点\n- 0:30 一点\n## 金句\n- 0:00 「原话」\n## 不确定的地方\n画面里的人名没看清\n"
 	out := fileCompanionRewriteNoteTimestamps(in, 30*time.Minute)
@@ -797,6 +814,42 @@ func TestFileCompanionRangeStampStaysOrganized(t *testing.T) {
 	late := fileCompanionRewriteNoteTimestamps("## 章节\n45:00 太晚\n## 不确定的地方\n无\n", 30*time.Minute)
 	if !strings.Contains(late, "时间不明 太晚") || strings.Contains(late, "45:00") {
 		t.Fatalf("late = %s", late)
+	}
+	empty := fileCompanionRewriteNoteTimestamps("## 章节\n0:00 开头\n0:00–13:32 整段\n5:01 黑板\n## 金句\n05:01 「话」\n## 不确定的地方\n无\n", 0)
+	if !strings.Contains(empty, "0:00 开头") || !strings.Contains(empty, "时间不明 整段") || !strings.Contains(empty, "时间不明 黑板") || !strings.Contains(empty, "时间不明 「话」") || strings.Contains(empty, "13:32") || strings.Contains(empty, "5:01") {
+		t.Fatalf("empty recording = %s", empty)
+	}
+	lateRange := fileCompanionRewriteNoteTimestamps("## 章节\n0:00–45:00 超出\n## 不确定的地方\n无\n", 30*time.Minute)
+	if !strings.Contains(lateRange, "时间不明 超出") || strings.Contains(lateRange, "45:00") {
+		t.Fatalf("range end = %s", lateRange)
+	}
+	unknown := fileCompanionRewriteNoteTimestamps("## 章节\n5:01 保留\n## 不确定的地方\n无\n", -1)
+	if !strings.Contains(unknown, "5:01 保留") || strings.Contains(unknown, "时间不明 保留") {
+		t.Fatalf("unmeasured length = %s", unknown)
+	}
+	spaced := fileCompanionRewriteNoteTimestamps("## 章节\n0:00 – 13:32 整段\n0:30 - 检查接口\n## 不确定的地方\n无\n", time.Minute)
+	if !strings.Contains(spaced, "时间不明 整段") || strings.Contains(spaced, "13:32") || strings.Contains(spaced, "时间不明 检查接口") || !strings.Contains(spaced, "00:30 - 检查接口") {
+		t.Fatalf("spaced range = %s", spaced)
+	}
+	spacedKept := fileCompanionRewriteNoteTimestamps("## 章节\n0:00 – 2:00 仍在\n## 不确定的地方\n无\n", 30*time.Minute)
+	if strings.Contains(spacedKept, "时间不明 仍在") || !strings.Contains(spacedKept, "2:00") || !strings.Contains(spacedKept, "仍在") {
+		t.Fatalf("in-range spaced = %s", spacedKept)
+	}
+	broken := fileCompanionRewriteNoteTimestamps("## 章节\n0:00–99:99 坏范围\n0:00–99:99粘在一起\n## 不确定的地方\n无\n", 30*time.Minute)
+	if !strings.Contains(broken, "时间不明 坏范围") || !strings.Contains(broken, "时间不明 粘在一起") || strings.Contains(broken, "99:99") {
+		t.Fatalf("broken range = %s", broken)
+	}
+	glued := fileCompanionRewriteNoteTimestamps("## 章节\n0:27–2:04，检查显卡\n## 不确定的地方\n无\n", 0)
+	if !strings.Contains(glued, "时间不明 检查显卡") || strings.Contains(glued, "2:04") || strings.Contains(glued, "0:27") {
+		t.Fatalf("glued range = %s", glued)
+	}
+	gluedKept := fileCompanionRewriteNoteTimestamps("## 章节\n0:27–2:04，检查显卡\n## 不确定的地方\n无\n", 30*time.Minute)
+	if !strings.Contains(gluedKept, "0:27–2:04，检查显卡") || strings.Contains(gluedKept, "时间不明 检查") {
+		t.Fatalf("in-range glued = %s", gluedKept)
+	}
+	word := fileCompanionRewriteNoteTimestamps("## 章节\n0:00-废卡 说明\n## 不确定的地方\n无\n", 30*time.Minute)
+	if strings.Contains(word, "时间不明") || !strings.Contains(word, "0:00-废卡 说明") {
+		t.Fatalf("hyphenated word = %s", word)
 	}
 	for _, line := range strings.Split(late, "\n") {
 		if strings.TrimSpace(line) == "无" {
@@ -945,6 +998,20 @@ func TestFileCompanionNotePromptAsksForChaptersNotFrameLog(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "画面 t=30s") || !strings.Contains(prompt, "识别不确定：E=mc") {
 		t.Fatalf("evidence dropped:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "这次记录从") || strings.Contains(prompt, "另印的进度") {
+		t.Fatalf("unmeasured prompt invented a clock:\n%s", prompt)
+	}
+	timed := buildNoteModelPrompt("talk.mp4", "video", videoNoteEvidence{
+		Duration: 10 * time.Minute,
+		Vision:   true,
+		Frames:   []videoNoteFrame{{At: 30 * time.Second}},
+	})
+	if !strings.Contains(timed, "这次记录从 0:00 到 10:00（600 秒）") || !strings.Contains(timed, "画面 t= 后面的数字是这个钟的秒") || !strings.Contains(timed, "画面上另印的进度、总时长和时钟不是这个钟") {
+		t.Fatalf("timed prompt = %s", timed)
+	}
+	if !strings.Contains(timed, "画面 t=30s") {
+		t.Fatalf("timed prompt dropped the frame clock:\n%s", timed)
 	}
 }
 

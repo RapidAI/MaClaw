@@ -169,14 +169,15 @@ type App struct {
 	// semanticEffectReceiptWorker is the generic reconciliation loop for
 	// receipt-bound dynamic effects. It owns no sources yet; channel/provider
 	// integrations register their binding-specific receipt source here.
-	semanticEffectReceiptWorker *agentservice.DynamicEffectReceiptWorker
-	semanticInvocationKey       []byte
-	testHomeDir                 string // For testing purposes
-	downloadCancelers           map[string]*downloadCanceler
-	downloadMutex               sync.Mutex
-	skillInstallConfirm         sync.Map
-	IsInitMode                  bool
-	IsAutoStart                 bool
+	semanticEffectReceiptWorker        *agentservice.DynamicEffectReceiptWorker
+	semanticInvocationKey              []byte
+	testHomeDir                        string // For testing purposes
+	testSkillMarketLoginAttemptTimeout time.Duration
+	downloadCancelers                  map[string]*downloadCanceler
+	downloadMutex                      sync.Mutex
+	skillInstallConfirm                sync.Map
+	IsInitMode                         bool
+	IsAutoStart                        bool
 	// fileCompanion is the open-file process and the Darwin document latch.
 	// processHooks replaces exec, exit, and main startup at the process boundary.
 	fileCompanion   *fileCompanionRuntime
@@ -746,6 +747,9 @@ func (a *App) initCoreInfra() {
 		}
 		if err := a.reloadPPTStyles(); err != nil {
 			log.Printf("[ppt-style] load: %v", err)
+		}
+		if err := a.reloadPDFStyles(); err != nil {
+			log.Printf("[pdf-style] load: %v", err)
 		}
 	}
 
@@ -6425,6 +6429,7 @@ func preserveBackendOwnedFields(incoming *corelib.AppConfig, ondisk *corelib.App
 	incoming.RemoteNickname = ondisk.RemoteNickname
 	incoming.RemoteMachineName = ondisk.RemoteMachineName
 	incoming.SkillMarketSessionToken = ondisk.SkillMarketSessionToken
+	incoming.SkillMarketSessionBaseURL = ondisk.SkillMarketSessionBaseURL
 
 	// Hardware enablement is system-owned. The IM gateway fields intentionally
 	// do not belong here: an IM token change must never be overwritten because
@@ -12007,9 +12012,9 @@ func (a *App) AIAssistantAttachmentFullDataURL(path string) (string, error) {
 	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(out.Bytes()), nil
 }
 
-// SubmitBugReport makes a diagnostics archive and posts it to HubCenter using
-// the existing authenticated SkillMarket session. The local archive is retained
-// for a retry if the request fails.
+// SubmitBugReport makes a diagnostics archive and posts it to HubCenter.
+// The SkillMarket session is derived from the current Hub principal. The local
+// archive is retained for a retry if the request fails.
 func (a *App) SubmitBugReport(osVersion, description string, screenshots []string) (map[string]interface{}, error) {
 	a.bugReportUploadMu.Lock()
 	defer a.bugReportUploadMu.Unlock()
@@ -12021,8 +12026,8 @@ func (a *App) SubmitBugReport(osVersion, description string, screenshots []strin
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(cfg.RemoteHubCenterURL) == "" || strings.TrimSpace(cfg.SkillMarketSessionToken) == "" {
-		return nil, fmt.Errorf("please sign in to HubCenter before submitting a report")
+	if !bugReportCanReachHubCenter(cfg) {
+		return nil, errHubCenterSignInRequired
 	}
 	zipPath := filepath.Join(a.GetTempDir(), fmt.Sprintf("maclaw-diagnostics-%d.zip", time.Now().UnixNano()))
 	out, err := os.Create(zipPath)
@@ -12235,12 +12240,9 @@ func (a *App) uploadBugReportArchive(zipPath string, includedFiles int, osVersio
 	if osVersion == "" || description == "" {
 		return nil, fmt.Errorf("operating system and problem description are required")
 	}
-	cfg, err := a.LoadConfig()
+	session, err := a.hubCenterSessionForReport(false)
 	if err != nil {
 		return nil, err
-	}
-	if strings.TrimSpace(cfg.RemoteHubCenterURL) == "" || strings.TrimSpace(cfg.SkillMarketSessionToken) == "" {
-		return nil, fmt.Errorf("please sign in to HubCenter before submitting a report")
 	}
 	file, err := os.Open(zipPath)
 	if err != nil {
@@ -12292,19 +12294,23 @@ func (a *App) uploadBugReportArchive(zipPath string, includedFiles int, osVersio
 	if err := mw.Close(); err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(cfg.RemoteHubCenterURL, "/")+"/api/v1/problem-reports", &body)
+	contentType := mw.FormDataContentType()
+	payload := body.Bytes()
+	status, data, err := postHubCenterBugReport(session, contentType, payload)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+cfg.SkillMarketSessionToken)
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	resp, err := (&http.Client{Timeout: 90 * time.Second}).Do(req)
-	if err != nil {
-		return nil, err
+	if status == http.StatusUnauthorized {
+		session, err = a.hubCenterSessionForReport(true)
+		if err != nil {
+			return nil, err
+		}
+		status, data, err = postHubCenterBugReport(session, contentType, payload)
+		if err != nil {
+			return nil, err
+		}
 	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("HubCenter rejected report: %s", strings.TrimSpace(string(data)))
 	}
 	var result map[string]interface{}
@@ -12341,25 +12347,31 @@ func (a *App) uploadBugReportArchive(zipPath string, includedFiles int, osVersio
 
 // ListMyBugReports returns only reports owned by the signed-in HubCenter user.
 func (a *App) ListMyBugReports() (map[string]interface{}, error) {
-	cfg, err := a.LoadConfig()
+	session, err := a.hubCenterSessionForReport(false)
+	if err != nil {
+		if errors.Is(err, errHubCenterSignInRequired) {
+			return nil, fmt.Errorf("please sign in to HubCenter to view your reports")
+		}
+		return nil, err
+	}
+	status, data, err := getHubCenterBugReports(session)
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(cfg.RemoteHubCenterURL) == "" || strings.TrimSpace(cfg.SkillMarketSessionToken) == "" {
-		return nil, fmt.Errorf("please sign in to HubCenter to view your reports")
+	if status == http.StatusUnauthorized {
+		session, err = a.hubCenterSessionForReport(true)
+		if err != nil {
+			if errors.Is(err, errHubCenterSignInRequired) {
+				return nil, fmt.Errorf("please sign in to HubCenter to view your reports")
+			}
+			return nil, err
+		}
+		status, data, err = getHubCenterBugReports(session)
+		if err != nil {
+			return nil, err
+		}
 	}
-	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(cfg.RemoteHubCenterURL, "/")+"/api/v1/problem-reports/mine", nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+cfg.SkillMarketSessionToken)
-	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("HubCenter rejected report lookup: %s", strings.TrimSpace(string(data)))
 	}
 	var result map[string]interface{}
@@ -12367,6 +12379,49 @@ func (a *App) ListMyBugReports() (map[string]interface{}, error) {
 		return nil, err
 	}
 	return result, nil
+}
+
+func (a *App) hubCenterSessionForReport(force bool) (skillMarketSession, error) {
+	ctx, cancel := newSkillMarketDeriveContext()
+	defer cancel()
+	return a.ensureSkillMarketSession(ctx, force, skillMarketPrincipal{})
+}
+
+func postHubCenterBugReport(session skillMarketSession, contentType string, body []byte) (int, []byte, error) {
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(session.Base, "/")+"/api/v1/problem-reports", bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+session.Token)
+	req.Header.Set("Content-Type", contentType)
+	resp, err := (&http.Client{Timeout: 90 * time.Second}).Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, data, err
+	}
+	return resp.StatusCode, data, nil
+}
+
+func getHubCenterBugReports(session skillMarketSession) (int, []byte, error) {
+	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(session.Base, "/")+"/api/v1/problem-reports/mine", nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+session.Token)
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, data, err
+	}
+	return resp.StatusCode, data, nil
 }
 
 func (a *App) convertBugReportBMPToPNG(source string) (string, error) {

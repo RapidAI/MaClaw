@@ -45,22 +45,21 @@ type rectLTRB struct {
 }
 
 type playerHost struct {
-	mu           sync.Mutex
-	win          *Window
-	chromium     *edge.Chromium
-	env          *edge.ICoreWebView2Environment
-	parent       uintptr
-	notify       func(bool)
-	ctrl         *edge.ICoreWebView2Controller
-	wv           *edge.ICoreWebView2
-	creating     bool
-	fullscreenOn bool
-	epoch        int64
-	surface      uintptr
-	childBefore  map[uintptr]struct{}
-	placement    maclawplayer.Placement
-	completed    *comHandler
-	fullscreen   *comHandler
+	mu          sync.Mutex
+	win         *Window
+	chromium    *edge.Chromium
+	env         *edge.ICoreWebView2Environment
+	parent      uintptr
+	notify      func(bool)
+	ctrl        *edge.ICoreWebView2Controller
+	wv          *edge.ICoreWebView2
+	creating    bool
+	epoch       int64
+	surface     uintptr
+	childBefore map[uintptr]struct{}
+	placement   maclawplayer.Placement
+	completed   *comHandler
+	fullscreen  *comHandler
 }
 
 func installCompanionPlayer(f *Frontend) {
@@ -208,7 +207,6 @@ func (h *playerHost) placeUI(url string, bounds maclawplayer.Bounds) error {
 func (h *playerHost) hideUI() {
 	h.mu.Lock()
 	h.placement.Visible = false
-	h.fullscreenOn = false
 	ctrl := h.ctrl
 	wv := h.wv
 	h.mu.Unlock()
@@ -224,6 +222,12 @@ func (h *playerHost) hideUI() {
 }
 
 func (h *playerHost) unloadDocument(wv *edge.ICoreWebView2) {
+	// Place's Navigate returns before the next document commits. Source can
+	// still be the previous page, including about:blank. Reading it first
+	// then skips this unload, and the hidden WebView plays the page. Stop
+	// cancels that navigation. A document that has already committed is left
+	// in place, so an http(s) page still goes to about:blank below.
+	_ = callSlot(unsafe.Pointer(wv), webviewStopSlot)
 	current, err := wv.GetSource()
 	if err != nil || !maclawplayer.ShouldUnload(current) {
 		return
@@ -286,12 +290,11 @@ func (h *playerHost) applyUI(p maclawplayer.Placement, navigate bool) {
 	h.mu.Lock()
 	ctrl := h.ctrl
 	wv := h.wv
-	full := h.fullscreenOn
 	h.mu.Unlock()
 	if ctrl == nil || wv == nil {
 		return
 	}
-	h.paint(ctrl, p.Bounds, full)
+	h.paint(ctrl, p.Bounds)
 	if err := ctrl.PutIsVisible(true); err != nil {
 		log.Printf("[companion-player] show: %v", err)
 	}
@@ -374,13 +377,10 @@ func (h *playerHost) useHostScale(ctrl *edge.ICoreWebView2Controller) {
 	}
 }
 
-func (h *playerHost) paint(ctrl *edge.ICoreWebView2Controller, slot maclawplayer.Bounds, full bool) {
-	if full {
-		if r, ok := h.mainRect(); ok {
-			h.putRect(ctrl, r)
-			return
-		}
-	}
+func (h *playerHost) paint(ctrl *edge.ICoreWebView2Controller, slot maclawplayer.Bounds) {
+	// The slot is the left preview column. A fullscreen element fills this
+	// WebView, so it stays in that column. Growing to the companion window
+	// covers the chat.
 	h.putBounds(ctrl, slot)
 }
 
@@ -449,13 +449,12 @@ func (h *playerHost) restack() {
 	h.mu.Lock()
 	ctrl := h.ctrl
 	visible := h.placement.Visible
-	full := h.fullscreenOn
 	bounds := h.placement.Bounds
 	h.mu.Unlock()
 	if ctrl == nil || !visible {
 		return
 	}
-	h.paint(ctrl, bounds, full)
+	h.paint(ctrl, bounds)
 }
 
 func closeController(ctrl *edge.ICoreWebView2Controller) {
@@ -713,16 +712,15 @@ func fullscreenInvoke(this, _, _ uintptr) uintptr {
 	if err != nil {
 		return 0
 	}
-	// The element fills this WebView. Give it the companion window while it
-	// is fullscreen, and the slot again when it leaves. The flag itself is
-	// the page's.
+	// The element fills this WebView. Keep the WebView on the left preview
+	// slot so the chat stays visible. The signal is still the page's.
 	h.mu.Lock()
-	h.fullscreenOn = on
 	ctrl := h.ctrl
 	bounds := h.placement.Bounds
+	visible := h.placement.Visible
 	h.mu.Unlock()
-	if ctrl != nil {
-		h.paint(ctrl, bounds, on)
+	if ctrl != nil && visible {
+		h.paint(ctrl, bounds)
 	}
 	if h.notify != nil {
 		h.notify(on)

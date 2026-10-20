@@ -34,6 +34,11 @@ type SystemPromptConfig struct {
 	// gate rules conflict with phase-specific output constraints.
 	SuppressCodingGateRules bool
 
+	// LiveDataFactTurn replaces the shared one-lookup stop. That sentence treats
+	// any returned snippet as a successful live query. A current-fact turn still
+	// reads the result page when the snippet does not state the fact.
+	LiveDataFactTurn bool
+
 	// DiagramRenderingSupported marks reply surfaces that actually draw
 	// ```mermaid fences as diagrams (the GUI markdown pipeline renders them
 	// via AssistantMermaidDiagram). Default false, deliberately: hosts whose

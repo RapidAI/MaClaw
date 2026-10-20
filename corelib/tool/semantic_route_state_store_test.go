@@ -952,3 +952,62 @@ func TestRouteArtifactHasCurrentConsumerAcceptsKindOnlyFileDeliver(t *testing.T)
 		t.Fatal("document consumer must not accept an image artifact")
 	}
 }
+
+// A host with no coordinator still has to publish the next sibling on the
+// route. Materializing it against the original plan is the binding mismatch
+// that dropped web_fetch after the published wave.
+func TestMemoryRoutePersistsContinuableSiblingForMaterialization(t *testing.T) {
+	readBase := "need:fs.read.local:abc123def456"
+	plan := ToolPlan{
+		RootTaskID: "task", ID: "plan-read", SnapshotDigest: "snap",
+		Selections: []PlannedSelection{{
+			ID: "selection:" + readBase, NeedID: readBase, AdapterName: "read_file",
+			FitProof: FitProof{MatchedCapability: CapabilityFSReadLocal, Digest: "fit-read"},
+		}},
+	}
+	scope := InvocationScope{RootTaskID: plan.RootTaskID, PlanID: plan.ID, SessionID: "session", TurnID: "turn", PrincipalID: "principal"}
+	store := NewMemoryRouteStateStore()
+	now := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	if _, err := store.PublishRevision(RouteRevisionPublishRequest{Scope: scope, Plan: plan, SnapshotDigest: plan.SnapshotDigest}, now); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := PersistRepeatSibling(store, scope, plan.Selections[0].ID, now.Add(time.Second), false)
+	if err != nil || len(stored.Selections) != 2 {
+		t.Fatalf("stored=%d err=%v", len(stored.Selections), err)
+	}
+	published, err := store.PublishedPlan(scope)
+	if err != nil || len(published.Selections) != 2 {
+		t.Fatalf("published=%d err=%v", len(published.Selections), err)
+	}
+	sibling, ok := PlanSelectionByID(published, stored.Selections[1].ID)
+	if !ok {
+		t.Fatalf("sibling %s missing from published plan", stored.Selections[1].ID)
+	}
+	issuer, err := NewInvocationIssuer([]byte(strings.Repeat("r", 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	grants, err := issuer.IssueReady(PlanWithSelections(published, map[string]bool{sibling.ID: true}), scope, time.Minute, map[string]bool{plan.Selections[0].ID: true})
+	if err != nil || len(grants) != 1 || grants[0].SelectionID != sibling.ID {
+		t.Fatalf("grants=%#v err=%v", grants, err)
+	}
+	if _, err := store.RecordMaterialization(scope, plan.ID, RouteMaterialization{FunctionName: grants[0].Token, Grant: grants[0], State: RouteMaterializationExposed}, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("materialize continued read: %v", err)
+	}
+	send := plan
+	send.RootTaskID = "task-send"
+	send.ID = "plan-send"
+	send.Selections = []PlannedSelection{{
+		ID: "selection:need:message.send.mailbox:abc123def456", NeedID: "need:message.send.mailbox:abc123def456", AdapterName: "send_mail",
+		FitProof: FitProof{MatchedCapability: CapabilityMessageSendMailbox, Digest: "fit-send"},
+	}}
+	sendScope := scope
+	sendScope.RootTaskID = send.RootTaskID
+	sendScope.PlanID = send.ID
+	if _, err := store.PublishRevision(RouteRevisionPublishRequest{Scope: sendScope, Plan: send, SnapshotDigest: send.SnapshotDigest}, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PersistRepeatSibling(store, sendScope, send.Selections[0].ID, now, false); err == nil {
+		t.Fatal("a one-shot send was stored as another call")
+	}
+}

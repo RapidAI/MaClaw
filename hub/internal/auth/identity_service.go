@@ -1498,7 +1498,24 @@ func (s *IdentityService) BindVerifiedEmailToUser(ctx context.Context, user *sto
 	return nil
 }
 
+// CanProveVerifiedEmailForUser checks local uniqueness before a verification
+// code is sent. Sending the code proves the caller controls the mailbox. It
+// does not ask HubCenter which hub owns the address: that round trip is not
+// required to deliver mail, and a HubCenter timeout must not be reported as a
+// failure to send the code. Route ownership is enforced by CanBindVerifiedEmailToUser
+// when the code is consumed.
+func (s *IdentityService) CanProveVerifiedEmailForUser(ctx context.Context, user *store.User, email string) error {
+	return s.canBindVerifiedEmail(ctx, user, email, false)
+}
+
+// CanBindVerifiedEmailToUser is the full bind policy: local uniqueness plus
+// Hub route ownership. Call it before consuming a verification code or writing
+// the identity.
 func (s *IdentityService) CanBindVerifiedEmailToUser(ctx context.Context, user *store.User, email string) error {
+	return s.canBindVerifiedEmail(ctx, user, email, true)
+}
+
+func (s *IdentityService) canBindVerifiedEmail(ctx context.Context, user *store.User, email string, checkRoute bool) error {
 	if s == nil || s.users == nil || user == nil {
 		return nil
 	}
@@ -1521,6 +1538,9 @@ func (s *IdentityService) CanBindVerifiedEmailToUser(ctx context.Context, user *
 		if hasEmailIdentity {
 			return fmt.Errorf("user identity email:%s already belongs to another user", email)
 		}
+	}
+	if !checkRoute {
+		return nil
 	}
 	// Tenant email-domain rules govern creating a new account. A user that is
 	// already authenticated in this tenant (for example through a verified

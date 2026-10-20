@@ -64,15 +64,96 @@ func mcpRuntimeSyncStatePath() string {
 	return filepath.Join(corelib.MaclawBaseDir(), "skill_evolution", "mcp_runtime_sync.json")
 }
 
+// mcpRuntimeSyncCache remembers one parsed sync file. ListServers reads it
+// once per server per model request. The cache is keyed by path because
+// tests change MaclawBaseDir, and it is dropped when the file's size or
+// modification time changes so a direct write of the JSON stays visible.
+// Callers mutate the map they receive, so every return is a clone.
+// This lock is not mcpRuntimeSyncStateMu: production callers already hold
+// that mutex, and taking it again would deadlock.
+var (
+	mcpRuntimeSyncCacheMu sync.Mutex
+	mcpRuntimeSyncCached  mcpRuntimeSyncCache
+)
+
+type mcpRuntimeSyncCache struct {
+	path    string
+	modTime time.Time
+	size    int64
+	missing bool
+	states  map[string]MCPRuntimeSyncState
+}
+
+func (c mcpRuntimeSyncCache) hit(path string, info os.FileInfo) bool {
+	return c.path == path && !c.missing && c.size == info.Size() && c.modTime.Equal(info.ModTime())
+}
+
+func cloneMCPRuntimeSyncStates(states map[string]MCPRuntimeSyncState) map[string]MCPRuntimeSyncState {
+	out := make(map[string]MCPRuntimeSyncState, len(states))
+	for id, state := range states {
+		out[id] = state
+	}
+	return out
+}
+
+func forgetMCPRuntimeSyncCache(path string) {
+	mcpRuntimeSyncCacheMu.Lock()
+	defer mcpRuntimeSyncCacheMu.Unlock()
+	if mcpRuntimeSyncCached.path == path {
+		mcpRuntimeSyncCached = mcpRuntimeSyncCache{}
+	}
+}
+
+func rememberMCPRuntimeSyncCache(path string, info os.FileInfo, states map[string]MCPRuntimeSyncState) {
+	mcpRuntimeSyncCacheMu.Lock()
+	defer mcpRuntimeSyncCacheMu.Unlock()
+	cached := mcpRuntimeSyncCache{path: path, states: cloneMCPRuntimeSyncStates(states)}
+	if info != nil {
+		cached.modTime = info.ModTime()
+		cached.size = info.Size()
+	} else {
+		cached.missing = true
+	}
+	mcpRuntimeSyncCached = cached
+}
+
 func readMCPRuntimeSyncStates() (map[string]MCPRuntimeSyncState, error) {
 	path := mcpRuntimeSyncStatePath()
+	info, statErr := os.Stat(path)
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return nil, statErr
+	}
+	if os.IsNotExist(statErr) {
+		rememberMCPRuntimeSyncCache(path, nil, nil)
+		return map[string]MCPRuntimeSyncState{}, nil
+	}
+	mcpRuntimeSyncCacheMu.Lock()
+	if mcpRuntimeSyncCached.hit(path, info) {
+		cloned := cloneMCPRuntimeSyncStates(mcpRuntimeSyncCached.states)
+		mcpRuntimeSyncCacheMu.Unlock()
+		return cloned, nil
+	}
+	mcpRuntimeSyncCacheMu.Unlock()
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
+		rememberMCPRuntimeSyncCache(path, nil, nil)
 		return map[string]MCPRuntimeSyncState{}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	states, err := decodeMCPRuntimeSyncStates(data)
+	if err != nil {
+		forgetMCPRuntimeSyncCache(path)
+		return nil, err
+	}
+	if again, statErr := os.Stat(path); statErr == nil && again.Size() == info.Size() && again.ModTime().Equal(info.ModTime()) {
+		rememberMCPRuntimeSyncCache(path, again, states)
+	}
+	return cloneMCPRuntimeSyncStates(states), nil
+}
+
+func decodeMCPRuntimeSyncStates(data []byte) (map[string]MCPRuntimeSyncState, error) {
 	var states map[string]MCPRuntimeSyncState
 	if err := json.Unmarshal(data, &states); err != nil {
 		return nil, fmt.Errorf("decode MCP runtime sync state: %w", err)
@@ -108,11 +189,23 @@ func writeMCPRuntimeSyncStates(states map[string]MCPRuntimeSyncState) error {
 	path := mcpRuntimeSyncStatePath()
 	if len(states) == 0 {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			forgetMCPRuntimeSyncCache(path)
 			return err
 		}
+		rememberMCPRuntimeSyncCache(path, nil, nil)
 		return nil
 	}
-	return configfile.AtomicWriteJSON(path, states)
+	if err := configfile.AtomicWriteJSON(path, states); err != nil {
+		forgetMCPRuntimeSyncCache(path)
+		return err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		forgetMCPRuntimeSyncCache(path)
+		return nil
+	}
+	rememberMCPRuntimeSyncCache(path, info, states)
+	return nil
 }
 
 func (a *App) mcpRuntimeSyncPending(serverID string) bool {

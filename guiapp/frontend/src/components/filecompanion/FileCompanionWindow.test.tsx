@@ -47,6 +47,7 @@ const sendWeb = vi.fn();
 const clearWeb = vi.fn();
 const cancelTurn = vi.fn();
 const cancelWeb = vi.fn();
+const stopWeb = vi.fn();
 const playerLeft = vi.fn();
 const playerSupported = vi.fn(async (..._args: any[]): Promise<any> => true);
 const playerPlace = vi.fn(async (..._args: any[]): Promise<any> => undefined);
@@ -77,6 +78,7 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     ClearFileCompanionWebChat: (...args: unknown[]) => clearWeb(...args),
     CancelFileCompanionTurn: (...args: unknown[]) => cancelTurn(...args),
     CancelFileCompanionWebTurn: (...args: unknown[]) => cancelWeb(...args),
+    StopFileCompanionWebNote: (...args: unknown[]) => stopWeb(...args),
     FileCompanionWebPlayerLeft: (...args: unknown[]) => playerLeft(...args),
     FileCompanionDiscardWebNote: (...args: unknown[]) => discardWeb(...args),
     FileCompanionWebHistory: vi.fn(async () => []),
@@ -119,8 +121,12 @@ function renderWindow(options?: { askOnOpen?: boolean }) {
 }
 
 // 打开 is a menu now: the 打开文件 row is what reaches the system dialog.
+// An empty boot already has the menu open, so a click on the trigger would
+// close it before the row is reached.
 function pickLocalFile() {
-    fireEvent.click(screen.getByTestId("file-companion-choose"));
+    if (!screen.queryByTestId("file-companion-open-menu")) {
+        fireEvent.click(screen.getByTestId("file-companion-choose"));
+    }
     fireEvent.click(screen.getByTestId("file-companion-open-local"));
 }
 
@@ -217,6 +223,8 @@ beforeEach(() => {
     cancelTurn.mockResolvedValue(undefined);
     cancelWeb.mockReset();
     cancelWeb.mockResolvedValue(undefined);
+    stopWeb.mockReset();
+    stopWeb.mockResolvedValue(undefined);
     playerLeft.mockReset();
     playerLeft.mockResolvedValue(undefined);
     playerSupported.mockReset();
@@ -474,30 +482,30 @@ describe("FileCompanionWindow", () => {
         });
     });
 
-    it("asks for a file when the window opens empty, and again when shown with no tab", async () => {
+    it("opens the companion chooser when the window is empty, and again when shown with no tab", async () => {
         boot.mockResolvedValue({ paths: [] });
         const runtime = installRuntime();
         renderWindow();
-        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
-        await act(async () => {
-            await Promise.resolve();
-        });
+        await screen.findByTestId("file-companion-open-menu");
+        expect(choose).not.toHaveBeenCalled();
         expect(screen.getByTestId("file-companion-empty")).toBeTruthy();
         expect(screen.getByTestId("file-companion-choose").textContent).toBe("打开");
-        choose.mockClear();
+        expect(screen.getByTestId("file-companion-arxiv-input")).toBeTruthy();
+        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
         runtime.emit("file-companion:show", null);
-        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
+        await screen.findByTestId("file-companion-open-menu");
+        expect(choose).not.toHaveBeenCalled();
     });
 
     it("opens a menu with a local-file row and an arXiv row", async () => {
         boot.mockResolvedValue({ paths: [] });
         installRuntime();
         renderWindow();
-        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
-        expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
-        fireEvent.click(screen.getByTestId("file-companion-choose"));
-        const menu = screen.getByTestId("file-companion-open-menu");
-        expect(menu).toBeTruthy();
+        const menu = await screen.findByTestId("file-companion-open-menu");
+        expect(choose).not.toHaveBeenCalled();
+        // No native player is on screen, so the panel stays centred.
+        expect(menu.className).not.toContain("file-companion-open-menu--beside-player");
         expect(screen.getByTestId("file-companion-open-local").textContent).toContain("打开文件");
         const input = screen.getByTestId("file-companion-arxiv-input") as HTMLInputElement;
         expect(input.placeholder).toBe("如 2510.16079、arxiv.org/abs/…，或 youtube 等视频页面地址");
@@ -529,9 +537,8 @@ describe("FileCompanionWindow", () => {
         boot.mockResolvedValue({ paths: [] });
         installRuntime();
         renderWindow();
-        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
-        choose.mockClear();
-        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        await screen.findByTestId("file-companion-open-menu");
+        expect(choose).not.toHaveBeenCalled();
         fireEvent.click(screen.getByTestId("file-companion-open-local"));
         await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
         expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
@@ -542,8 +549,8 @@ describe("FileCompanionWindow", () => {
         open.mockImplementation(async (path: string) => doc(path, { editable: false, readOnly: true }));
         installRuntime();
         renderWindow();
-        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
-        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        await screen.findByTestId("file-companion-open-menu");
+        expect(choose).not.toHaveBeenCalled();
         fireEvent.change(screen.getByTestId("file-companion-arxiv-input"), {
             target: { value: "https://arxiv.org/abs/2510.16079v2" },
         });
@@ -559,8 +566,8 @@ describe("FileCompanionWindow", () => {
         openArxiv.mockRejectedValueOnce(new Error("下载失败：找不到这篇论文（404）"));
         installRuntime();
         renderWindow();
-        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
-        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        await screen.findByTestId("file-companion-open-menu");
+        expect(choose).not.toHaveBeenCalled();
         fireEvent.change(screen.getByTestId("file-companion-arxiv-input"), { target: { value: "2510.99999" } });
         fireEvent.click(screen.getByTestId("file-companion-arxiv-go"));
         await waitFor(() => {
@@ -581,9 +588,9 @@ describe("FileCompanionWindow", () => {
         openArxiv.mockReturnValueOnce(new Promise<string>((resolve) => { release = resolve; }));
         installRuntime();
         renderWindow();
-        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
-        fireEvent.click(screen.getByTestId("file-companion-choose"));
-        expect(document.activeElement).toBe(screen.getByTestId("file-companion-arxiv-input"));
+        await screen.findByTestId("file-companion-open-menu");
+        expect(choose).not.toHaveBeenCalled();
+        await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("file-companion-arxiv-input")));
         fireEvent.change(screen.getByTestId("file-companion-arxiv-input"), { target: { value: "2510.16079" } });
         fireEvent.click(screen.getByTestId("file-companion-arxiv-go"));
         await waitFor(() => expect(screen.getByTestId("file-companion-arxiv-go").textContent).toBe("下载中…"));
@@ -609,10 +616,9 @@ describe("FileCompanionWindow", () => {
         boot.mockResolvedValue({ paths: [] });
         installRuntime();
         renderWindow();
-        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
+        await screen.findByTestId("file-companion-open-menu");
         const trigger = screen.getByTestId("file-companion-choose");
-        fireEvent.click(trigger);
-        expect(document.activeElement).toBe(screen.getByTestId("file-companion-arxiv-input"));
+        await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("file-companion-arxiv-input")));
         fireEvent.keyDown(document, { key: "Escape" });
         expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
         expect(document.activeElement).toBe(trigger);
@@ -635,10 +641,10 @@ describe("FileCompanionWindow", () => {
         open.mockImplementation(async (path: string) => doc(path, { editable: false, readOnly: true }));
         installRuntime();
         renderWindow();
-        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
+        await screen.findByTestId("file-companion-open-menu");
         const trigger = screen.getByTestId("file-companion-choose");
-        fireEvent.click(trigger);
         const input = screen.getByTestId("file-companion-arxiv-input") as HTMLInputElement;
+        await waitFor(() => expect(document.activeElement).toBe(input));
         expect(document.activeElement).toBe(input);
         fireEvent.change(input, { target: { value: "2510.16079" } });
         fireEvent.keyDown(input, { key: "Enter" });
@@ -656,8 +662,7 @@ describe("FileCompanionWindow", () => {
         openArxiv.mockReturnValueOnce(new Promise<string>((resolve) => { release = resolve; }));
         installRuntime();
         renderWindow();
-        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
-        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        await screen.findByTestId("file-companion-open-menu");
         const input = screen.getByTestId("file-companion-arxiv-input") as HTMLInputElement;
         fireEvent.change(input, { target: { value: "2510.16079" } });
         fireEvent.click(screen.getByTestId("file-companion-arxiv-go"));
@@ -679,8 +684,7 @@ describe("FileCompanionWindow", () => {
         boot.mockResolvedValue({ paths: [] });
         installRuntime();
         renderWindow();
-        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
-        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        await screen.findByTestId("file-companion-open-menu");
         fireEvent.keyDown(screen.getByTestId("file-companion-arxiv-input"), { key: "Enter" });
         await waitFor(() => {
             expect(screen.getByTestId("file-companion-arxiv-hint").textContent).toContain("请填写");
@@ -752,7 +756,8 @@ describe("FileCompanionWindow", () => {
         runtime.emit("file-companion:show", null);
         expect(choose).not.toHaveBeenCalled();
         await act(async () => { releaseBoot({ paths: [] }); });
-        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
+        await screen.findByTestId("file-companion-open-menu");
+        expect(choose).not.toHaveBeenCalled();
         expect(screen.getByTestId("file-companion-empty")).toBeTruthy();
     });
 
@@ -794,7 +799,8 @@ describe("FileCompanionWindow", () => {
         });
         installRuntime();
         renderWindow();
-        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
+        await screen.findByTestId("file-companion-open-menu");
+        expect(choose).not.toHaveBeenCalled();
         await screen.findByTestId("file-companion-empty");
         choose.mockResolvedValue(["C:/notes/a.md", "C:/notes/b.md"]);
         pickLocalFile();
@@ -837,8 +843,10 @@ describe("FileCompanionWindow", () => {
         fireEvent.click(screen.getByLabelText("关闭 a.md"));
         await screen.findByTestId("file-companion-empty");
         expect(choose).not.toHaveBeenCalled();
+        expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
         runtime.emit("file-companion:show", null);
-        await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
+        await screen.findByTestId("file-companion-open-menu");
+        expect(choose).not.toHaveBeenCalled();
     });
 
     it("keeps the empty window usable when the file dialog fails", async () => {
@@ -848,7 +856,11 @@ describe("FileCompanionWindow", () => {
         installRuntime();
         renderWindow();
         await screen.findByTestId("file-companion-empty");
+        await screen.findByTestId("file-companion-open-menu");
+        expect(choose).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByTestId("file-companion-open-local"));
         await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
+        expect(screen.getByTestId("file-companion-empty")).toBeTruthy();
         choose.mockResolvedValue(["C:/notes/a.md"]);
         pickLocalFile();
         await screen.findByTestId("file-companion-tab-a.md");
@@ -1106,6 +1118,7 @@ describe("FileCompanionWindow", () => {
         fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "问 B" } });
         const sendButton = screen.getByTestId("file-companion-send");
         expect(sendButton.getAttribute("aria-busy")).toBe("true");
+        expect(sendButton.textContent).toBe("处理中");
         expect((screen.getByTestId("file-companion-paper") as HTMLButtonElement).disabled).toBe(true);
         fireEvent.click(sendButton);
         fireEvent.keyDown(screen.getByTestId("file-companion-input"), { key: "Enter" });
@@ -1126,15 +1139,18 @@ describe("FileCompanionWindow", () => {
         fireEvent.click(screen.getByTestId("file-companion-send"));
         await waitFor(() => {
             expect(screen.getByTestId("file-companion-send").getAttribute("aria-busy")).toBe("true");
+            expect(screen.getByTestId("file-companion-send").textContent).toBe("处理中");
         });
         await act(async () => { release(); await Promise.resolve(); });
         runtime.emit("ai-assistant-progress", JSON.stringify({ session_key: "file-companion:a.md", text: "正在整理上下文并准备模型请求", request_id: "r1" }));
         await waitFor(() => {
             expect(screen.getByTestId("file-companion-send").getAttribute("aria-busy")).toBe("true");
+            expect(screen.getByTestId("file-companion-send").textContent).toBe("处理中");
         });
         runtime.emit("ai-assistant-response", JSON.stringify({ session_key: "file-companion:a.md", text: "好的", request_id: "r1" }));
         await waitFor(() => {
             expect(screen.getByTestId("file-companion-send").getAttribute("aria-busy")).not.toBe("true");
+            expect(screen.getByTestId("file-companion-send").textContent).toBe("发送");
         });
     });
 
@@ -1364,6 +1380,7 @@ describe("FileCompanionWindow", () => {
             expect(screen.getByTestId("file-companion-chat").textContent).toContain("answer for a");
         });
         expect(screen.queryByTestId("file-companion-progress")).toBeNull();
+        expect(screen.queryByRole("progressbar")).toBeNull();
         expect(screen.getByTestId("file-companion-chat").textContent ?? "").not.toContain("临时进度");
         fireEvent.click(screen.getByTestId("file-companion-tab-b.md"));
         expect(screen.getByTestId("file-companion-chat").textContent ?? "").not.toContain("answer for a");
@@ -1374,6 +1391,60 @@ describe("FileCompanionWindow", () => {
         fireEvent.click(screen.getByTestId("file-companion-tab-a.md"));
         expect(screen.getByTestId("file-companion-chat").textContent).toContain("answer for a");
         expect(screen.getByTestId("file-companion-chat").textContent ?? "").not.toContain("answer for b");
+    });
+
+    it("shows the note stages and moves the bar when speech segments arrive", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.md");
+        runtime.emit("ai-assistant-progress", JSON.stringify({ session_key: "file-companion:a.md", text: "正在记录声音", request_id: "r1" }));
+        const panel = await screen.findByTestId("file-companion-progress");
+        expect(panel.textContent).toContain("正在记录声音");
+        expect(panel.textContent).toContain("声音");
+        expect(screen.getByTestId("file-companion-note-elapsed").textContent).toBe("00:00");
+        const listening = Number(screen.getByRole("progressbar").getAttribute("aria-valuenow"));
+        expect(listening).toBeGreaterThan(10);
+        runtime.emit("ai-assistant-progress", JSON.stringify({ session_key: "file-companion:a.md", text: "正在识别语音（第 2/4 段）", request_id: "r1" }));
+        await waitFor(() => {
+            expect(screen.getByTestId("file-companion-progress").textContent).toContain("第 2/4 段");
+            expect(Number(screen.getByRole("progressbar").getAttribute("aria-valuenow"))).toBeGreaterThan(listening);
+        });
+        expect(screen.getByTestId("file-companion-note-elapsed").textContent).toBe("00:00");
+    });
+
+    it("keeps each document's note clock when the visible tab changes", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md", "C:/notes/b.md"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-b.md");
+        const now = { t: Date.now() };
+        const clock = vi.spyOn(Date, "now").mockImplementation(() => now.t);
+        try {
+            act(() => {
+                runtime.emit("ai-assistant-progress", JSON.stringify({ session_key: "file-companion:a.md", text: "正在记录声音", request_id: "r1" }));
+            });
+            expect(screen.getByTestId("file-companion-progress").textContent).toContain("正在记录声音");
+            expect(screen.getByTestId("file-companion-note-elapsed").textContent).toBe("00:00");
+            now.t += 5 * 60 * 1000;
+            fireEvent.click(screen.getByTestId("file-companion-tab-b.md"));
+            expect(screen.queryByTestId("file-companion-progress")).toBeNull();
+            fireEvent.click(screen.getByTestId("file-companion-tab-a.md"));
+            expect(screen.getByTestId("file-companion-note-elapsed").textContent).toBe("05:00");
+            act(() => {
+                runtime.emit("ai-assistant-progress", JSON.stringify({ session_key: "file-companion:b.md", text: "正在检查文件", request_id: "r2" }));
+            });
+            fireEvent.click(screen.getByTestId("file-companion-tab-b.md"));
+            expect(screen.getByTestId("file-companion-note-elapsed").textContent).toBe("00:00");
+            expect(screen.getByTestId("file-companion-progress").textContent).toContain("正在检查文件");
+            fireEvent.click(screen.getByTestId("file-companion-tab-a.md"));
+            expect(screen.getByTestId("file-companion-note-elapsed").textContent).toBe("05:00");
+            expect(screen.getByTestId("file-companion-progress").textContent).toContain("正在记录声音");
+        } finally {
+            clock.mockRestore();
+        }
     });
 
     it("renders assistant markdown and leaves the user bubble as typed text", async () => {
@@ -3464,15 +3535,19 @@ describe("FileCompanionWindow", () => {
             text: "生成笔记",
             purpose: "video-note",
         })));
-        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").getAttribute("aria-busy")).toBe("false"));
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("生成笔记"));
         let releaseNote: () => void = () => undefined;
         send.mockImplementationOnce(() => new Promise<void>((resolve) => { releaseNote = resolve; }));
         fireEvent.click(screen.getByTestId("file-companion-video-note"));
         await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("取消"));
-        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        const stopping = screen.getByTestId("file-companion-video-note") as HTMLButtonElement;
+        expect(stopping.getAttribute("aria-busy")).not.toBe("true");
+        expect(stopping.disabled).toBe(false);
+        fireEvent.click(stopping);
         await waitFor(() => expect(cancelTurn).toHaveBeenCalledWith("C:/media/clip.mp4"));
         expect(screen.getByTestId("file-companion-video-note").textContent).toContain("取消");
         expect((screen.getByTestId("file-companion-video-note") as HTMLButtonElement).disabled).toBe(false);
+        expect(screen.getByTestId("file-companion-video-note").getAttribute("aria-busy")).not.toBe("true");
         releaseNote();
         await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("生成笔记"));
         fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "不要做笔记" } });
@@ -3525,11 +3600,45 @@ describe("FileCompanionWindow", () => {
         expect(discardWeb).not.toHaveBeenCalled();
     });
 
+    it("stops a web note from the title button without the busy cursor", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        renderWindow();
+        await screen.findByTestId("file-companion-open-menu");
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-input"), { target: { value: "https://www.youtube.com/watch?v=abc" } });
+        openWeb.mockResolvedValue({
+            kind: "web",
+            frameUrl: "https://www.youtube.com/embed/abc",
+            sessionId: "web-abc",
+        });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-go"));
+        await screen.findByTestId("file-companion-web-frame");
+        let release: () => void = () => undefined;
+        sendWeb.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("停止"));
+        // The centred menu would hang under the player HWND. While that
+        // player is up, including during the note, it hangs over the chat.
+        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        expect(screen.getByTestId("file-companion-open-menu").className).toContain("file-companion-open-menu--beside-player");
+        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        const stopping = screen.getByTestId("file-companion-video-note") as HTMLButtonElement;
+        expect(stopping.getAttribute("aria-busy")).not.toBe("true");
+        expect(stopping.disabled).toBe(false);
+        fireEvent.click(stopping);
+        await waitFor(() => expect(stopWeb).toHaveBeenCalledWith("web-abc", expect.any(Number)));
+        expect(cancelWeb).not.toHaveBeenCalled();
+        expect(stopping.textContent).toContain("停止");
+        expect(stopping.disabled).toBe(false);
+        expect(stopping.getAttribute("aria-busy")).not.toBe("true");
+        release();
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("记笔记"));
+    });
+
     it("opens a video page without the local-file path and notes from the player", async () => {
         boot.mockResolvedValue({ paths: [] });
         const runtime = installRuntime();
         renderWindow();
-        await waitFor(() => expect(choose).toHaveBeenCalled());
+        await screen.findByTestId("file-companion-open-menu");
         const openField = async (value: string) => {
             if (!screen.queryByTestId("file-companion-open-menu")) {
                 fireEvent.click(screen.getByTestId("file-companion-choose"));
@@ -3988,6 +4097,33 @@ describe("companion titlebar keeps its controls out of the window drag region", 
 
     it("declares no-drag on the trigger wrapper, which the panel inherits", () => {
         expect(css()).toMatch(/\.file-companion-open\s*\{[^}]*--wails-draggable:\s*no-drag/);
+    });
+
+    it("hangs the open menu over the chat when a native player would cover the centre", () => {
+        expect(css()).toMatch(/\.file-companion-open-menu--beside-player\s*\{[^}]*left:\s*auto/);
+        expect(css()).toMatch(/\.file-companion-open-menu--beside-player\s*\{[^}]*right:\s*8px/);
+    });
+
+    // jsdom never runs Wails' drop filter. OnFileDrop is registered with
+    // useDropTarget, and that filter keeps the file only when the element
+    // under the pointer has this property. The empty hint is inside the
+    // window, and the property inherits, so a drop there has to open.
+    it("marks the companion window as the Wails file-drop target", () => {
+        expect(css()).toMatch(/\.file-companion-window\s*\{[^}]*--wails-drop-target:\s*drop/);
+    });
+
+    it("registers the drop on that target", async () => {
+        let useDropTarget: boolean | undefined;
+        (window as unknown as { runtime: unknown }).runtime = {
+            EventsOn: () => {},
+            EventsOff: () => {},
+            OnFileDrop: (_cb: DropCb, flag?: boolean) => { useDropTarget = flag; },
+            OnFileDropOff: () => {},
+        };
+        boot.mockResolvedValue({ paths: [] });
+        renderWindow();
+        await screen.findByTestId("file-companion-empty");
+        expect(useDropTarget).toBe(true);
     });
 
     // The open panel hangs over the document. The PDF preview is an iframe in

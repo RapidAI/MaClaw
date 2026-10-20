@@ -181,6 +181,209 @@ func TestSearchWithProvider_Serper(t *testing.T) {
 	}
 }
 
+func TestSearchWithProvider_SerperKeepsDirectAnswerAheadOfOrganic(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"answerBox": {
+				"title": "Beijing",
+				"temperature": 18,
+				"unit": "Celsius",
+				"humidity": "40%",
+				"wind": "12 km/h",
+				"weather": "Clear",
+				"air_quality": {"text": "Good"},
+				"link": "https://weather.example/beijing",
+				"thumbnail": "https://example.com/thumb.png"
+			},
+			"knowledgeGraph": {
+				"title": "Beijing",
+				"description": "Beijing is a city.",
+				"descriptionLink": "https://example.com/baike",
+				"attributes": {"Population": "21 million"}
+			},
+			"organic": [
+				{"title": "北京百科", "link": "https://example.com/baike", "snippet": "北京是首都"}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	results, err := SearchWithProvider("北京天气", 5, corelib.WebSearchProvider{Type: "serper", Key: "serper-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("SearchWithProvider() error = %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results = %+v, want the direct answer and the attribute card", results)
+	}
+	first := results[0]
+	if first.URL != "https://weather.example/beijing" {
+		t.Fatalf("direct answer URL = %q", first.URL)
+	}
+	for _, want := range []string{"temperature: 18", "wind: 12 km/h", "humidity: 40%", "air_quality.text: Good"} {
+		if !strings.Contains(first.Snippet, want) {
+			t.Fatalf("direct answer snippet %q missing %q", first.Snippet, want)
+		}
+	}
+	if strings.Contains(first.Snippet, "thumb.png") {
+		t.Fatalf("direct answer kept a thumbnail: %q", first.Snippet)
+	}
+	if !strings.Contains(results[1].Snippet, "attributes.Population: 21 million") || strings.Contains(results[1].Snippet, "Beijing is a city.") {
+		t.Fatalf("knowledge graph = %+v", results[1])
+	}
+	// The organic page shares the knowledge-graph descriptionLink. A second
+	// row would be dropped by canonical-URL merge, so the page fact stays on
+	// the earlier result and the encyclopedia description stays out.
+	if results[1].URL != "https://example.com/baike" || !strings.Contains(results[1].Snippet, "北京是首都") {
+		t.Fatalf("same-URL organic fact = %+v", results[1])
+	}
+	for _, result := range results {
+		if result.Title == "北京百科" {
+			t.Fatalf("organic row stayed separate: %+v", results)
+		}
+	}
+}
+
+func TestSearchWithProvider_SerperFoldsOrganicSnippetOntoSameCanonicalURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"answerBox": {"title":"Forecast","snippet":"forecast page","link":"https://weather.example/beijing/"},
+			"organic": [
+				{"title":"北京天气预报","link":"https://weather.example/beijing","snippet":"小雨 13/2℃"},
+				{"title":"重复","link":"https://weather.example/beijing?utm_source=x","snippet":"forecast page"},
+				{"title":"Other","link":"https://example.com/other","snippet":"unrelated"}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	provider := corelib.WebSearchProvider{Type: "serper", Key: "serper-key", BaseURL: server.URL}
+	results, err := SearchWithProvider("forecast", 5, provider)
+	if err != nil {
+		t.Fatalf("SearchWithProvider() error = %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results = %+v, want the folded page and the other hit", results)
+	}
+	if results[0].URL != "https://weather.example/beijing/" || results[0].Title != "Forecast" {
+		t.Fatalf("direct answer identity = %+v", results[0])
+	}
+	if !strings.Contains(results[0].Snippet, "forecast page") || !strings.Contains(results[0].Snippet, "小雨 13/2℃") {
+		t.Fatalf("folded snippet = %q", results[0].Snippet)
+	}
+	if strings.Count(results[0].Snippet, "forecast page") != 1 {
+		t.Fatalf("folded snippet repeated the answer box: %q", results[0].Snippet)
+	}
+	if results[1].URL != "https://example.com/other" || results[1].Snippet != "unrelated" {
+		t.Fatalf("other page = %+v", results[1])
+	}
+
+	capped, err := SearchWithProvider("forecast", 1, provider)
+	if err != nil {
+		t.Fatalf("SearchWithProvider() error = %v", err)
+	}
+	if len(capped) != 1 || !strings.Contains(capped[0].Snippet, "小雨 13/2℃") {
+		t.Fatalf("row budget dropped the same-URL fact: %+v", capped)
+	}
+}
+
+func TestSearchWithProvider_SerperFeaturedSnippetIsADirectAnswer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"answerBox":{"title":"Capital","snippet":"Beijing is the capital.","link":"https://example.com/wiki"}}`))
+	}))
+	defer server.Close()
+
+	results, err := SearchWithProvider("capital", 5, corelib.WebSearchProvider{Type: "serper", Key: "serper-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("SearchWithProvider() error = %v", err)
+	}
+	if len(results) != 1 || results[0].Title != "Capital" || results[0].Snippet != "Beijing is the capital." || results[0].URL != "https://example.com/wiki" {
+		t.Fatalf("featured snippet = %+v", results)
+	}
+}
+
+func TestJoinSearchSnippetsKeepsShortFactWhenLeadFillsTheCap(t *testing.T) {
+	lead := strings.Repeat("甲", serperSnippetLimit)
+	got := joinSearchSnippets(lead, "小雨 13/2℃")
+	if !strings.Contains(got, "小雨 13/2℃") {
+		t.Fatalf("folded fact was cut: %q", got)
+	}
+	if len([]rune(got)) > serperSnippetLimit {
+		t.Fatalf("joined len = %d", len([]rune(got)))
+	}
+
+	page := strings.Repeat("乙", serperSnippetLimit)
+	kept := joinSearchSnippets("temperature: 18", page)
+	if !strings.Contains(kept, "temperature: 18") || !strings.Contains(kept, "乙") {
+		t.Fatalf("short direct answer was replaced by the page: %q", kept)
+	}
+	if len([]rune(kept)) > serperSnippetLimit {
+		t.Fatalf("joined len = %d", len([]rune(kept)))
+	}
+}
+
+func TestSearchWithProvider_SerperFoldsAttributeCardOntoSameCanonicalURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"answerBox": {"title":"Forecast","snippet":"forecast page","link":"https://weather.example/beijing"},
+			"knowledgeGraph": {
+				"title":"Beijing",
+				"description":"Beijing is a city.",
+				"descriptionLink":"https://weather.example/beijing/",
+				"attributes":{"Wind":"3 m/s"}
+			},
+			"organic": [
+				{"title":"百科","link":"https://weather.example/beijing?utm_source=s","snippet":"小雨 13/2℃"}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	results, err := SearchWithProvider("forecast", 5, corelib.WebSearchProvider{Type: "serper", Key: "serper-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("SearchWithProvider() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results = %+v, want one row for the shared page", results)
+	}
+	snippet := results[0].Snippet
+	for _, want := range []string{"forecast page", "attributes.Wind: 3 m/s", "小雨 13/2℃"} {
+		if !strings.Contains(snippet, want) {
+			t.Fatalf("snippet %q missing %q", snippet, want)
+		}
+	}
+	if strings.Contains(snippet, "Beijing is a city.") {
+		t.Fatalf("encyclopedia description was projected: %q", snippet)
+	}
+}
+
+func TestMergeKeepsDirectAnswerWithoutURL(t *testing.T) {
+	got := mergeSearchResultsPrefer(nil, []SearchResult{
+		{Title: "Direct answer", Snippet: "temperature: 18; wind: 3 m/s"},
+		{Title: "百科", URL: "https://example.com/baike", Snippet: "北京是首都"},
+		{Title: "Unsafe", URL: "javascript:alert(1)", Snippet: "bad"},
+	}, 5, "")
+	if len(got) != 2 {
+		t.Fatalf("merged = %+v, want the urlless fact and the organic page", got)
+	}
+	if got[0].Snippet != "temperature: 18; wind: 3 m/s" || got[1].URL != "https://example.com/baike" {
+		t.Fatalf("merged = %+v", got)
+	}
+}
+
+func TestMergeKeepsFirstSnippetForSameCanonicalURL(t *testing.T) {
+	got := mergeSearchResultsPrefer(nil, []SearchResult{
+		{Title: "Direct", URL: "https://weather.example/beijing/", Snippet: "forecast page"},
+		{Title: "Organic", URL: "https://weather.example/beijing", Snippet: "小雨 13/2℃"},
+	}, 5, "")
+	if len(got) != 1 || got[0].Snippet != "forecast page" {
+		t.Fatalf("merged = %+v, want the first row only", got)
+	}
+}
+
 func TestSearchWithProvider_DuckDuckGo(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")

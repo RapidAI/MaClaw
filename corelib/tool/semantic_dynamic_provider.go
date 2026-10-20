@@ -73,6 +73,14 @@ func (d DynamicProviderDescriptor) Project() (ProviderSpec, map[string]interface
 		return ProviderSpec{}, nil, fmt.Errorf("authorize dynamic invocation schema: %w", err)
 	}
 	adapterName := "dynamic_" + d.Kind + "_" + SchemaDigest([]byte(strings.Join([]string{d.Kind, d.ProviderID, d.ImplementationID, bindingSchemaDigest}, "\x00")))[:24]
+	// A reviewed binding that already has a sealed prompt spelling keeps that
+	// spelling. Every other installed MCP tool gets a stable server__tool name
+	// instead of a rotating grant token.
+	if d.Kind == "mcp" && strings.TrimSpace(d.ModelFunction) == "" {
+		if stable := InstalledMCPModelFunctionName(d.ProviderID, d.ImplementationID); stable != "" {
+			adapterName = installedMCPAdapterPrefix + stable + ":" + adapterName
+		}
+	}
 	if function := strings.TrimSpace(d.ModelFunction); function != "" {
 		if !AllowReviewedDynamicPrompt(function) {
 			return ProviderSpec{}, nil, fmt.Errorf("dynamic provider prompt %q is not a reviewed model function", function)

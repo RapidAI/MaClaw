@@ -23,40 +23,29 @@ type reviewedHostScheduleAdministrator interface {
 	AdministerReviewedHostSchedule(ctx context.Context, principal Principal, args reviewedHostScheduleArgs) (string, error)
 }
 
-type reviewedHostScheduleArgs struct {
-	Name            string
-	TaskAction      string
-	ID              string
-	Status          string
-	StartDate       string
-	EndDate         string
-	Hour            int
-	Minute          int
-	DayOfWeek       int
-	DayOfMonth      int
-	IntervalMinutes int
-	HasHour         bool
-	HasMinute       bool
-	HasDayOfWeek    bool
-	HasDayOfMonth   bool
-	HasInterval     bool
-}
+// reviewedHostScheduleArgs is the shared admission record. The GUI aliases
+// the same struct, so a field cannot exist on only one surface.
+type reviewedHostScheduleArgs = scheduler.AdmitFields
 
 func reviewedHostScheduleInvocationSchema() map[string]interface{} {
 	return map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
-			"name":             map[string]interface{}{"type": "string"},
-			"task_action":      map[string]interface{}{"type": "string"},
-			"id":               map[string]interface{}{"type": "string"},
-			"status":           map[string]interface{}{"type": "string", "enum": coretool.ScheduleStatusOptions()},
+			"name":        map[string]interface{}{"type": "string"},
+			"task_action": map[string]interface{}{"type": "string"},
+			"id":          map[string]interface{}{"type": "string"},
+			"status": map[string]interface{}{
+				"type":        "string",
+				"enum":        coretool.ScheduleStatusOptions(),
+				"description": "Record state, not an operation. On create this is the initial state: omit it or send active for a running record, or paused to store it paused. An existing record changes status only together with its id.",
+			},
 			"hour":             map[string]interface{}{"type": "integer"},
 			"minute":           map[string]interface{}{"type": "integer"},
 			"day_of_week":      map[string]interface{}{"type": "integer"},
 			"day_of_month":     map[string]interface{}{"type": "integer"},
 			"interval_minutes": map[string]interface{}{"type": "integer"},
-			"start_date":       map[string]interface{}{"type": "string"},
-			"end_date":         map[string]interface{}{"type": "string"},
+			"start_date":       map[string]interface{}{"type": "string", "description": "Inclusive first day, YYYY-MM-DD."},
+			"end_date":         map[string]interface{}{"type": "string", "description": "Inclusive last day, YYYY-MM-DD. The next day is past the window. A paused record keeps a passed end date until it is made active."},
 		},
 		"required":             []string{},
 		"additionalProperties": false,
@@ -67,28 +56,8 @@ func reviewedHostScheduleContractDigest() string {
 	return coretool.SchemaDigest([]byte("schedule.administer.local:v1:host-schedule-administer"))
 }
 
-func (a reviewedHostScheduleArgs) hasCreateFields() bool {
-	return a.Name != "" && a.TaskAction != "" && a.HasHour
-}
-
-func (a reviewedHostScheduleArgs) hasUpdateExtras() bool {
-	return a.Name != "" || a.TaskAction != "" || a.HasHour || a.HasMinute || a.HasDayOfWeek || a.HasDayOfMonth || a.HasInterval || a.Status != "" || a.StartDate != "" || a.EndDate != ""
-}
-
 func reviewedHostScheduleDispatch(a reviewedHostScheduleArgs) (string, bool) {
-	if a.ID == "" {
-		if a.hasCreateFields() && a.Status == "" {
-			return "create", true
-		}
-		if a.Name == "" && a.TaskAction == "" && !a.HasHour && !a.hasUpdateExtras() {
-			return "list", true
-		}
-		return "", false
-	}
-	if a.hasUpdateExtras() {
-		return "update", true
-	}
-	return "delete", true
+	return scheduler.AdmitOperation(a)
 }
 
 // reviewedHostScheduleStatus maps what the model sent to the canonical value
@@ -199,62 +168,30 @@ func executeReviewedHostSchedule(admin reviewedHostScheduleAdministrator) func(c
 		if err != nil {
 			return "", err
 		}
-		if _, ok := reviewedHostScheduleDispatch(parsed); !ok {
-			return "", fmt.Errorf("host_schedule_field_presence_rejected")
+		if _, err := screenReviewedHostSchedule(parsed); err != nil {
+			return "", err
 		}
 		return admin.AdministerReviewedHostSchedule(ctx, principal, parsed)
 	}
 }
 
 func parseReviewedHostScheduleArgs(args map[string]interface{}) (reviewedHostScheduleArgs, error) {
-	var parsed reviewedHostScheduleArgs
-	if len(args) > 11 {
+	parsed, err := scheduler.ParseAdmit(args)
+	if err != nil {
 		return parsed, fmt.Errorf("host_schedule_arguments_rejected")
 	}
-	for key, raw := range args {
-		switch key {
-		case "name", "task_action", "id", "status", "start_date", "end_date":
-			value, ok := raw.(string)
-			if !ok {
-				return parsed, fmt.Errorf("host_schedule_arguments_rejected")
-			}
-			value = strings.TrimSpace(value)
-			switch key {
-			case "name":
-				parsed.Name = value
-			case "task_action":
-				parsed.TaskAction = value
-			case "id":
-				parsed.ID = value
-			case "status":
-				parsed.Status = value
-			case "start_date":
-				parsed.StartDate = value
-			case "end_date":
-				parsed.EndDate = value
-			}
-		case "hour", "minute", "day_of_week", "day_of_month", "interval_minutes":
-			n, ok := reviewedHostScheduleInt(raw)
-			if !ok {
-				return parsed, fmt.Errorf("host_schedule_arguments_rejected")
-			}
-			switch key {
-			case "hour":
-				parsed.Hour, parsed.HasHour = n, true
-			case "minute":
-				parsed.Minute, parsed.HasMinute = n, true
-			case "day_of_week":
-				parsed.DayOfWeek, parsed.HasDayOfWeek = n, true
-			case "day_of_month":
-				parsed.DayOfMonth, parsed.HasDayOfMonth = n, true
-			case "interval_minutes":
-				parsed.IntervalMinutes, parsed.HasInterval = n, true
-			}
-		default:
-			return parsed, fmt.Errorf("host_schedule_arguments_rejected")
-		}
-	}
 	return parsed, nil
+}
+
+func screenReviewedHostSchedule(args reviewedHostScheduleArgs) (string, error) {
+	op, field, ok := scheduler.AdmitScreen(args)
+	if field != "" {
+		return "", fmt.Errorf("host_schedule_%s_rejected", field)
+	}
+	if !ok {
+		return "", fmt.Errorf("host_schedule_field_presence_rejected")
+	}
+	return op, nil
 }
 
 func (c *coreAgentCallbacks) AdministerReviewedHostSchedule(ctx context.Context, principal Principal, args reviewedHostScheduleArgs) (string, error) {
@@ -265,30 +202,15 @@ func (c *coreAgentCallbacks) AdministerReviewedHostSchedule(ctx context.Context,
 		strings.TrimSpace(principal.UserID) != strings.TrimSpace(c.principal.UserID) {
 		return "", fmt.Errorf("host_schedule_principal_mismatch")
 	}
-	op, ok := reviewedHostScheduleDispatch(args)
-	if !ok {
-		return "", fmt.Errorf("host_schedule_field_presence_rejected")
+	op, err := screenReviewedHostSchedule(args)
+	if err != nil {
+		return "", err
 	}
 	if !reviewedHostTemplateTokenOK(args.Name, reviewedHostScheduleNameMax) {
 		return "", fmt.Errorf("host_schedule_name_rejected")
 	}
 	if !reviewedHostTemplateTokenOK(args.TaskAction, reviewedHostScheduleActionMax) {
 		return "", fmt.Errorf("host_schedule_task_action_rejected")
-	}
-	if args.HasHour && (args.Hour < 0 || args.Hour > 23) {
-		return "", fmt.Errorf("host_schedule_hour_rejected")
-	}
-	if args.HasMinute && (args.Minute < 0 || args.Minute > 59) {
-		return "", fmt.Errorf("host_schedule_minute_rejected")
-	}
-	if args.HasDayOfWeek && (args.DayOfWeek < -1 || args.DayOfWeek > 6) {
-		return "", fmt.Errorf("host_schedule_day_of_week_rejected")
-	}
-	if args.HasDayOfMonth && args.DayOfMonth != -1 && (args.DayOfMonth < 1 || args.DayOfMonth > 31) {
-		return "", fmt.Errorf("host_schedule_day_of_month_rejected")
-	}
-	if args.HasInterval && args.IntervalMinutes < 0 {
-		return "", fmt.Errorf("host_schedule_interval_rejected")
 	}
 	status, statusOK := reviewedHostScheduleStatus(args.Status)
 	if !statusOK {
@@ -309,32 +231,11 @@ func (c *coreAgentCallbacks) AdministerReviewedHostSchedule(ctx context.Context,
 	}
 	switch op {
 	case "create":
-		task := scheduler.ScheduledTask{
-			Name:            args.Name,
-			Action:          args.TaskAction,
-			Hour:            args.Hour,
-			Minute:          0,
-			DayOfWeek:       -1,
-			DayOfMonth:      -1,
-			IntervalMinutes: 0,
-			StartDate:       args.StartDate,
-			EndDate:         args.EndDate,
-			InstanceID:      strings.TrimSpace(c.instance.ID),
-			OwnerTenantID:   strings.TrimSpace(c.principal.TenantID),
-			OwnerUserID:     strings.TrimSpace(c.principal.UserID),
-		}
-		if args.HasMinute {
-			task.Minute = args.Minute
-		}
-		if args.HasDayOfWeek {
-			task.DayOfWeek = args.DayOfWeek
-		}
-		if args.HasDayOfMonth {
-			task.DayOfMonth = args.DayOfMonth
-		}
-		if args.HasInterval {
-			task.IntervalMinutes = args.IntervalMinutes
-		}
+		task := scheduler.AdmitTask(args)
+		task.Status = status
+		task.InstanceID = strings.TrimSpace(c.instance.ID)
+		task.OwnerTenantID = strings.TrimSpace(c.principal.TenantID)
+		task.OwnerUserID = strings.TrimSpace(c.principal.UserID)
 		id, err := c.schedules.Add(task)
 		if err != nil {
 			return "", err
@@ -353,48 +254,8 @@ func (c *coreAgentCallbacks) AdministerReviewedHostSchedule(ctx context.Context,
 		if _, ok := c.visibleSchedule(args.ID); !ok {
 			return "", fmt.Errorf("host_schedule_not_found")
 		}
-		patch := map[string]interface{}{}
-		if args.Name != "" {
-			patch["name"] = args.Name
-		}
-		if args.TaskAction != "" {
-			patch["action"] = args.TaskAction
-		}
-		if args.HasHour {
-			patch["hour"] = args.Hour
-		}
-		if args.HasMinute {
-			patch["minute"] = args.Minute
-		}
-		if args.HasDayOfWeek {
-			patch["day_of_week"] = args.DayOfWeek
-		}
-		if args.HasDayOfMonth {
-			patch["day_of_month"] = args.DayOfMonth
-		}
-		if args.HasInterval {
-			patch["interval_minutes"] = args.IntervalMinutes
-		}
-		if args.StartDate != "" {
-			patch["start_date"] = args.StartDate
-		}
-		if args.EndDate != "" {
-			patch["end_date"] = args.EndDate
-		}
-		if len(patch) > 0 {
-			if err := c.schedules.Update(args.ID, patch); err != nil {
-				return "", err
-			}
-		}
-		if status == "paused" {
-			if err := c.schedules.Pause(args.ID); err != nil {
-				return "", err
-			}
-		}
-		if status == "active" {
-			if err := c.schedules.Resume(args.ID); err != nil {
-				return "", err
-			}
+		if err := c.schedules.UpdateState(args.ID, scheduler.AdmitPatch(args), status); err != nil {
+			return "", err
 		}
 		updated := c.schedules.Get(args.ID)
 		if updated == nil {
@@ -483,6 +344,6 @@ func reviewedHostScheduleLine(task scheduler.ScheduledTask) string {
 	if task.NextRunAt != nil {
 		next = task.NextRunAt.Format("2006-01-02 15:04")
 	}
-	return fmt.Sprintf("%s [%s] ID=%s 时间=%02d:%02d 操作=%s 下次=%s",
-		task.Name, task.Status, task.ID, task.Hour, task.Minute, task.Action, next)
+	return fmt.Sprintf("%s [%s] ID=%s 时间=%s 操作=%s 下次=%s",
+		task.Name, task.Status, task.ID, scheduler.FormatSchedule(task), task.Action, next)
 }

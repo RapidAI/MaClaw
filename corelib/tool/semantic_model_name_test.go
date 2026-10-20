@@ -47,6 +47,16 @@ func TestSemanticModelFunctionNameIsStableAndIgnoresGrantTokens(t *testing.T) {
 	if got := RenderedSemanticFunctionName("mcp.acme.ping", "invoke_token"); got != "invoke_token" {
 		t.Fatalf("dynamic render=%q", got)
 	}
+	installed := "installed-mcp:tengyun__post_work_log_add:dynamic_mcp_abc"
+	if got := RenderedSemanticFunctionName(installed, "invoke_turn_a"); got != "tengyun__post_work_log_add" {
+		t.Fatalf("installed mcp rendered as %q", got)
+	}
+	if got := RenderedSemanticFunctionName(installed, "invoke_turn_b"); got != "tengyun__post_work_log_add" {
+		t.Fatalf("installed mcp name changed with the grant token: %q", got)
+	}
+	if got := InstalledMCPModelFunctionName("tengyun-mt0y9cwv", "post_work_log_add"); got != "tengyun-mt0y9cwv__post_work_log_add" {
+		t.Fatalf("installed mcp function = %q", got)
+	}
 	if got := RenderedSemanticFunctionName("reviewed-prompt:web_search:dynamic_mcp_abc", "invoke_token"); got != "web_search" {
 		t.Fatalf("reviewed search render=%q", got)
 	}

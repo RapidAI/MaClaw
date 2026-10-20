@@ -181,6 +181,51 @@ func TestSQLiteDynamicCapabilityRegistryPersistsScopesAndRevokes(t *testing.T) {
 	}
 }
 
+func TestDynamicCapabilityContractSnapshotKindOmitsSkills(t *testing.T) {
+	p := Principal{TenantID: "tenant", UserID: "user"}
+	contract := testDynamicCapabilityContract()
+	memory := NewDynamicCapabilityRegistry()
+	if err := memory.PublishMCPContract(p, "server", "lookup", contract); err != nil {
+		t.Fatal(err)
+	}
+	if err := memory.PublishSkillContract(p, "acme.lookup", contract); err != nil {
+		t.Fatal(err)
+	}
+	filtered, err := DynamicCapabilityContractSnapshotKind(memory, p, "mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := filtered.ResolveMCPDynamicContract(context.Background(), p, "server", "lookup"); !ok {
+		t.Fatal("mcp snapshot dropped the mcp contract")
+	}
+	if _, ok := filtered.ResolveSkillDynamicContract(context.Background(), p, "acme.lookup"); ok {
+		t.Fatal("mcp snapshot included a skill contract")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "contracts.db")
+	sqliteReg, err := NewSQLiteDynamicCapabilityRegistry(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqliteReg.Close()
+	if err := sqliteReg.PublishMCPContract(p, "server", "lookup", contract); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqliteReg.PublishSkillContract(p, "acme.lookup", contract); err != nil {
+		t.Fatal(err)
+	}
+	sqliteFiltered, err := DynamicCapabilityContractSnapshotKind(sqliteReg, p, "mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := sqliteFiltered.ResolveMCPDynamicContract(context.Background(), p, "server", "lookup"); !ok {
+		t.Fatal("sqlite mcp snapshot dropped the mcp contract")
+	}
+	if _, ok := sqliteFiltered.ResolveSkillDynamicContract(context.Background(), p, "acme.lookup"); ok {
+		t.Fatal("sqlite mcp snapshot included a skill contract")
+	}
+}
+
 func TestSQLiteDynamicCapabilityContractSnapshotQuarantinesCorruptRows(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "contracts.db")
 	p := Principal{TenantID: "tenant", UserID: "user"}

@@ -274,6 +274,13 @@ type RouteRequest struct {
 	Pins   []ProviderPin
 	Budget PlanningBudget
 	Now    time.Time
+	// ReadyMCPMutationsOnPartialCatalog lets a Ready MCP provider run while
+	// its kind coverage is still incomplete. The host sets it for an
+	// installed server whose own tools/list finished. A sibling that is
+	// still starting keeps the family watermark and must not hide this
+	// call. The default leaves mutating providers fail-closed. A provider
+	// that is not Ready stays ineligible either way.
+	ReadyMCPMutationsOnPartialCatalog bool
 }
 
 type FitProof struct {
@@ -1619,12 +1626,14 @@ func providerLifecycleEligible(req RouteRequest, candidate ProviderSpec) bool {
 	case CatalogCoverageIncomplete:
 		// Phase 4: a partial inventory is no longer a basis for failing the
 		// whole kind. A provider that observed positive (Ready) and is
-		// read-only can still serve; a mutating provider still requires
-		// complete, fresh coverage, so it stays fail-closed. The read-only
-		// candidate is additionally bounded by its own ReadyUntil so it cannot
-		// serve on a permanently stale claim.
+		// read-only can still serve. A mutating provider stays fail-closed
+		// unless the host set ReadyMCPMutationsOnPartialCatalog for an
+		// installed MCP server whose own observation already succeeded.
+		// ReadyUntil still bounds the call.
 		if !effectsAreReadOnly(candidate.Effects) {
-			return false
+			if !req.ReadyMCPMutationsOnPartialCatalog || !strings.EqualFold(strings.TrimSpace(candidate.Binding.Kind), "mcp") {
+				return false
+			}
 		}
 		return candidate.ReadyUntil.IsZero() || !req.Now.After(candidate.ReadyUntil)
 	default:

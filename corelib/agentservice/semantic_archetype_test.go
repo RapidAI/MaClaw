@@ -147,3 +147,35 @@ func TestExpandBaselineWorkspaceNeedsDoesNotDuplicateShellPrimary(t *testing.T) 
 		t.Fatalf("shell family must keep its iterative budget, got %d", shellTotal)
 	}
 }
+
+func TestLiveDataBundlePlansPageFetch(t *testing.T) {
+	if LatentArchetypeCapability(coretool.CapabilityInformationFetchWeb, intent.LabelLiveData) {
+		t.Fatal("page fetch must not be latent on a live_data bundle")
+	}
+	if !LatentArchetypeCapability(coretool.CapabilityInformationFetchWeb, intent.LabelSearch) {
+		t.Fatal("reference search must keep page fetch latent")
+	}
+	registry := coretool.NewCapabilityRegistry("live-data-fetch")
+	for _, id := range []coretool.CapabilityID{CapabilityInformationSearchWeb, coretool.CapabilityInformationFetchWeb} {
+		if err := registry.Register(coretool.CapabilityDescriptor{
+			ID: id, Version: "v1", Effects: []coretool.EffectClass{coretool.EffectReadOnly}, Owner: "test",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: .98}
+	resolved, err := resolveIntentLabelCapabilityNeeds(registry, IMSemanticIntentCapabilityNeedRules(), ReviewedIntentMinimumConfidence, result)
+	if err != nil || !resolved.Managed {
+		t.Fatalf("resolved=%#v err=%v", resolved, err)
+	}
+	got := ExpandArchetypeBundleNeeds(registry, IMSemanticIntentCapabilityNeedRules(), result, true, resolved.Needs, intent.LabelLiveData)
+	fetch := 0
+	for _, need := range got {
+		if need.Capability == coretool.CapabilityInformationFetchWeb {
+			fetch++
+		}
+	}
+	if fetch != 5 {
+		t.Fatalf("live_data fetch siblings=%d, want 5; needs=%#v", fetch, got)
+	}
+}

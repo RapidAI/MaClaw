@@ -247,6 +247,7 @@ func remoteActivate(args []string) error {
 		smCancel()
 		if smErr == nil && smResult.SessionToken != "" {
 			cfg.SkillMarketSessionToken = smResult.SessionToken
+			cfg.SkillMarketSessionBaseURL = strings.TrimRight(strings.TrimSpace(smBaseURL), "/")
 			_ = store.SaveConfig(cfg)
 			Println("  SkillMarket: 已自动登录")
 		}
@@ -264,6 +265,20 @@ func remoteActivate(args []string) error {
 	return nil
 }
 
+// ClearSkillMarketSessionForHubUser drops the derived HubCenter session when
+// the Hub user id changes. The same user keeps the cache. Callers that remove
+// enrollment entirely must clear the token and issuer themselves: an already
+// empty user id compares equal and would otherwise leave the old session.
+func ClearSkillMarketSessionForHubUser(cfg *corelib.AppConfig, nextUserID string) {
+	if cfg == nil {
+		return
+	}
+	if strings.TrimSpace(cfg.RemoteUserID) != strings.TrimSpace(nextUserID) {
+		cfg.SkillMarketSessionToken = ""
+		cfg.SkillMarketSessionBaseURL = ""
+	}
+}
+
 func applyRemoteEnrollResultToConfig(cfg corelib.AppConfig, result *remote.EnrollResult) corelib.AppConfig {
 	if result == nil {
 		return cfg
@@ -272,6 +287,7 @@ func applyRemoteEnrollResultToConfig(cfg corelib.AppConfig, result *remote.Enrol
 		cfg.RemoteEmail = strings.TrimSpace(result.Email)
 	}
 	cfg.RemoteSN = result.SN
+	ClearSkillMarketSessionForHubUser(&cfg, result.UserID)
 	cfg.RemoteUserID = result.UserID
 	cfg.RemoteMachineID = result.MachineID
 	cfg.RemoteMachineToken = result.MachineToken
@@ -481,6 +497,8 @@ func remoteDeactivate(args []string) error {
 	cfg.RemoteEmail = ""
 	cfg.RemoteSN = ""
 	cfg.RemoteUserID = ""
+	cfg.SkillMarketSessionToken = ""
+	cfg.SkillMarketSessionBaseURL = ""
 	cfg.RemoteEnabled = false
 	cfg.OnboardingDone = false
 	if strings.EqualFold(strings.TrimSpace(cfg.DefaultLaunchMode), "remote") {
@@ -501,5 +519,6 @@ func remoteHasAnyCredential(cfg corelib.AppConfig) bool {
 		strings.TrimSpace(cfg.RemoteHubURL) != "" ||
 		strings.TrimSpace(cfg.RemoteEmail) != "" ||
 		strings.TrimSpace(cfg.RemoteSN) != "" ||
-		strings.TrimSpace(cfg.RemoteUserID) != ""
+		strings.TrimSpace(cfg.RemoteUserID) != "" ||
+		strings.TrimSpace(cfg.SkillMarketSessionToken) != ""
 }

@@ -2703,6 +2703,7 @@ func (m *tuiModel) verifyCodeFromTUI(identity, verifyCode, method, hubURL, hubID
 			cfg.RemoteMobile = normalizeOnboardingPhoneForTUI(identity)
 		}
 		cfg.RemoteSN = enrollResult.SN
+		commands.ClearSkillMarketSessionForHubUser(&cfg, enrollResult.UserID)
 		cfg.RemoteUserID = enrollResult.UserID
 		cfg.RemoteTenantID = enrollResult.TenantID
 		cfg.RemoteTenantName = enrollResult.TenantName

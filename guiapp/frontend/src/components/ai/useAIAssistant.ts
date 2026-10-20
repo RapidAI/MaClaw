@@ -2654,6 +2654,7 @@ function hasRenderableTerminalPayload(response: any): boolean {
 /** Sources whose response.text is semantically unrelated to streamed content. */
 const SPECIAL_RESPONSE_SOURCES: ReadonlySet<string> = new Set([
     'ask_user', 'record_audio', 'cancel', 'file_delivery', 'screenshot',
+    'chat_task_handoff',
 ]);
 
 function canonicalResponseSource(source: unknown): string {
@@ -2685,6 +2686,8 @@ function canonicalResponseSource(source: unknown): string {
             return 'agent_view_submit';
         case 'agentviewdismiss':
             return 'agent_view_dismiss';
+        case 'chattaskhandoff':
+            return 'chat_task_handoff';
         default:
             return trimmed.toLowerCase();
     }
@@ -2836,6 +2839,12 @@ function preserveEmbeddedToolCalls(chosen: string, streamed: string): string {
 }
 
 export function resolveFinalRoundContent(message: ChatMessage, response: any): string {
+    // The host replaced this turn's reply. The streamed sentence is not a
+    // fragment of that reply, and tool-call markers must not glue it back on.
+    if (resolveResponseSource(response) === 'chat_task_handoff') {
+        const raw = typeof response?.text === 'string' ? response.text : '';
+        return stripRolePrefixFrontend(raw);
+    }
     return preserveEmbeddedToolCalls(selectFinalRoundContent(message, response), message.content || "");
 }
 

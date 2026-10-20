@@ -141,9 +141,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	loopCtx.NoWorkflowInterception = msg.NoWorkflowInterception
 	if loopCtx.ChatTaskID == "" && h.chatTurnMayDispatch(msg, opts.WorkflowAgentLoop, codingWorkbench) {
 		loopCtx.OfferChatTaskDispatch = true
-		if loopCtx.ForegroundChatBudget == 0 {
-			loopCtx.ForegroundChatBudget = desktopChatForegroundIterationBudget
-		}
+		// A call count is not an iteration ceiling. Dead-loop stops still apply.
 		// Captured before this turn publishes itself as the session loop, so
 		// the loop is not counted as work that was already running.
 		loopCtx.WorkLiveAtStart = h.sessionWorkLive(msg.UserID)
@@ -379,10 +377,14 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 			executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
 			log.Printf("[semantic-routing] explicit knowledge-write request user=%q", msg.UserID)
 		}
-		if rewritten := semanticMailboxDeletePlanningRewrite(semanticIntent, msg.Text); rewritten != nil {
+		if rewritten := semanticGovernedEffectPlanningRewrite(semanticIntent, msg.Text); rewritten != nil {
 			semanticIntent = rewritten
 			executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
-			log.Printf("[semantic-routing] mailbox delete planning user=%q", msg.UserID)
+			if strings.Contains(rewritten.Reason, "schedule payload planning") {
+				log.Printf("[semantic-routing] schedule payload planning user=%q", msg.UserID)
+			} else {
+				log.Printf("[semantic-routing] mailbox delete planning user=%q", msg.UserID)
+			}
 		}
 		semanticIntent = projectStoredTurnIntent(msg.UserID, msg.Text, msg.NoWorkflowInterception, semanticIntent)
 		loopCtx.Runtime.Execution = h.continuationKeepsParentExecution(executionProfile, msg.UserID, msg.Text, semanticIntent)
@@ -394,6 +396,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		return resp
 	}
 	applyStagedImageUnderstandRuntime(loopCtx, msg.Text, msg.Attachments)
+	applyChatTaskWorkerExecutionProfile(loopCtx)
 	loopCtxElapsed := time.Since(loopCtxStart)
 	if opts.OnProgress != nil && !codingWorkbench {
 		if loopCtx.Runtime.Execution.IsDirect() {

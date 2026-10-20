@@ -311,11 +311,66 @@ func mailboxDraftAwaitingConfirmation(reason string) bool {
 	}
 }
 
+// semanticGovernedEffectPlanningRewrite applies the governing act before an
+// immediate mailbox delete. A schedule whose body is a mail delete plans
+// schedule administration. An immediate mail delete still plans mailbox_delete.
+// File delete is decided by the caller first; both rewrites also leave it alone.
+func semanticGovernedEffectPlanningRewrite(current *intent.ClassificationResult, userText string) *intent.ClassificationResult {
+	if lifted := semanticSchedulePayloadPlanningRewrite(current, userText); lifted != nil {
+		return lifted
+	}
+	return semanticMailboxDeletePlanningRewrite(current, userText)
+}
+
+// semanticSchedulePayloadPlanningRewrite projects a mail delete that is only
+// the body of a schedule onto schedule_manage. A settled schedule
+// administration verdict is already that act and is left alone, including
+// schedule_dispatch. The projection is schedule administration, not dispatch.
+func semanticSchedulePayloadPlanningRewrite(current *intent.ClassificationResult, userText string) *intent.ClassificationResult {
+	if current == nil {
+		return nil
+	}
+	query := acpInnerUserRequest(userText)
+	if tool.QueryWantsLocalFileDelete(query) || !mailbox.QuerySchedulesMessageDelete(query) {
+		return nil
+	}
+	if scheduleAdministrationSettled(*current) {
+		return nil
+	}
+	out := semanticSchedulePayloadPlanningClassification(*current)
+	return &out
+}
+
+func scheduleAdministrationSettled(result intent.ClassificationResult) bool {
+	if result.Degraded || result.Confidence < imSemanticMinimumConfidence {
+		return false
+	}
+	return result.Primary == intent.LabelScheduleManage || result.Primary == intent.LabelScheduleDispatch
+}
+
+func semanticSchedulePayloadPlanningClassification(result intent.ClassificationResult) intent.ClassificationResult {
+	out := semanticLookupClassificationForPlanning(result)
+	out.Primary = intent.LabelScheduleManage
+	out.Secondary = nil
+	out.ToolNames = nil
+	if out.Layer != 23 && out.Layer < 3 {
+		out.Layer = 3
+	}
+	if !strings.Contains(out.Reason, "schedule payload planning") {
+		if strings.TrimSpace(out.Reason) != "" {
+			out.Reason += "; "
+		}
+		out.Reason += "schedule payload planning"
+	}
+	return out
+}
+
 // semanticMailboxDeletePlanningRewrite lifts a mail-deletion sentence onto
 // mailbox_delete before the profile and the plan floor see it. A local file
-// delete stays a file delete. A tree score already at the resolver floor is
-// left alone. A non-degraded tree pick below that floor is raised so the
-// plan can publish the tool.
+// delete stays a file delete. A settled schedule administration verdict is
+// the governing act, so a mail verb in its payload does not replace it. A
+// tree score already at the resolver floor is left alone. A non-degraded
+// tree pick below that floor is raised so the plan can publish the tool.
 func semanticMailboxDeletePlanningRewrite(current *intent.ClassificationResult, userText string) *intent.ClassificationResult {
 	if current == nil {
 		return nil
@@ -325,7 +380,7 @@ func semanticMailboxDeletePlanningRewrite(current *intent.ClassificationResult, 
 		return nil
 	}
 	if mailbox.QueryWantsMessageDelete(query) {
-		if mailboxDeletePlanningSettled(*current) {
+		if mailboxDeletePlanningSettled(*current) || scheduleAdministrationSettled(*current) {
 			return nil
 		}
 		out := semanticMailboxDeletePlanningClassification(*current)

@@ -53,7 +53,7 @@ type ScheduledTask struct {
 	Minute          int    `json:"minute"`                     // 0-59
 	DayOfWeek       int    `json:"day_of_week"`                // -1=every day, 0=Sun..6=Sat
 	DayOfMonth      int    `json:"day_of_month"`               // -1=any, 1-31
-	IntervalMinutes int    `json:"interval_minutes,omitempty"` // >0: repeat every N minutes (overrides Hour/Minute for scheduling)
+	IntervalMinutes int    `json:"interval_minutes,omitempty"` // >0: repeat every N minutes on a grid anchored at Hour:Minute
 	StartDate       string `json:"start_date,omitempty"`       // "2006-01-02", empty=no limit
 	EndDate         string `json:"end_date,omitempty"`         // "2006-01-02", empty=no limit
 	TaskType        string `json:"task_type,omitempty"`        // "reminder" (default) or "process"
@@ -142,7 +142,7 @@ func (m *Manager) finishNew() {
 	now := time.Now()
 	var active []ScheduledTask
 	for i := range m.tasks {
-		if m.tasks[i].Status == "expired" || m.isExpired(&m.tasks[i], now) {
+		if m.closedWindow(&m.tasks[i], now) {
 			continue
 		}
 		if m.tasks[i].Status == "active" {
@@ -292,47 +292,56 @@ func (m *Manager) Inflight() int {
 	return len(m.runningTasks)
 }
 
-func (m *Manager) fireDue(now time.Time) {
-	m.mu.RLock()
-	var dueIDs []string
-	for _, t := range m.tasks {
-		if t.Status == "active" && t.NextRunAt != nil && !now.Before(*t.NextRunAt) {
-			dueIDs = append(dueIDs, t.ID)
+// dueTaskIDs is the ticker's selection. A row fires only when it is active,
+// it has a next run, that run is due, and its end date has not passed.
+// Paused rows store a nil next run, so they are not selectable. An active
+// row can still show a due time after the clock has moved past its end
+// date; that row is closed and must not start. fireDue and tests share
+// this function.
+func dueTaskIDs(tasks []ScheduledTask, now time.Time) []string {
+	var ids []string
+	for _, t := range tasks {
+		if t.Status == "active" && t.NextRunAt != nil && !now.Before(*t.NextRunAt) && !endDatePassed(t.EndDate, now) {
+			ids = append(ids, t.ID)
 		}
 	}
+	return ids
+}
+
+func (m *Manager) fireDue(now time.Time) {
+	// Drop a closed window before selecting. The same tick must not start
+	// the row it is about to remove.
+	m.purgeExpired(now)
+	m.mu.RLock()
+	dueIDs := dueTaskIDs(m.tasks, now)
 	executor := m.executor
 	m.mu.RUnlock()
 
 	for _, id := range dueIDs {
 		go m.fireByID(id, executor, now)
 	}
-
-	// Auto-delete expired tasks so they don't clutter the list.
-	m.purgeExpired(now)
 }
 
-// purgeExpired removes tasks whose status is "expired" or whose EndDate has
-// passed while they were active/paused. Returns true if any tasks were removed.
+// purgeExpired drops rows closedWindow rejects. A paused row with a passed
+// end_date stays. A failed save leaves the previous list in place.
+// Returns true when a removal was saved.
 func (m *Manager) purgeExpired(now time.Time) bool {
 	m.mu.Lock()
-	n := 0
+	next := make([]ScheduledTask, 0, len(m.tasks))
 	for i := range m.tasks {
-		expired := m.tasks[i].Status == "expired"
-		if !expired && m.isExpired(&m.tasks[i], now) {
-			expired = true
+		if m.closedWindow(&m.tasks[i], now) {
+			continue
 		}
-		if !expired {
-			m.tasks[n] = m.tasks[i]
-			n++
-		}
+		next = append(next, m.tasks[i])
 	}
-	removed := len(m.tasks) - n
-	if removed == 0 {
+	if len(next) == len(m.tasks) {
 		m.mu.Unlock()
 		return false
 	}
-	m.tasks = m.tasks[:n]
-	_ = m.save()
+	if err := m.replaceTasks(next); err != nil {
+		m.mu.Unlock()
+		return false
+	}
 	cb := m.onChange
 	m.mu.Unlock()
 	if cb != nil {
@@ -360,18 +369,20 @@ func computeExecutionTimeout(task *ScheduledTask) time.Duration {
 }
 
 func (m *Manager) fireByID(id string, executor TaskExecutor, now time.Time) {
-	// Atomically claim the task. Manual runs retain NextRunAt, so checking it
-	// alone is insufficient: use runningTasks as the common execution lease.
+	// Atomically claim the task. The lease is runningTasks, held until this
+	// call returns. NextRunAt stays at the saved time through the run: clearing
+	// it here would be published by the next save, and a failed completion
+	// save would leave an active row the ticker can never select. A nil
+	// NextRunAt is a row that is not due.
 	m.mu.Lock()
 	var taskCopy *ScheduledTask
-	for i, t := range m.tasks {
+	for _, t := range m.tasks {
 		if t.ID == id {
 			if _, running := m.runningTasks[id]; running {
 				m.mu.Unlock()
 				return
 			}
-			if t.NextRunAt == nil {
-				// Already claimed by another goroutine.
+			if t.NextRunAt == nil || endDatePassed(t.EndDate, now) {
 				m.mu.Unlock()
 				return
 			}
@@ -380,7 +391,6 @@ func (m *Manager) fireByID(id string, executor TaskExecutor, now time.Time) {
 			// mutate the persisted task (and concurrent Update stays isolated).
 			cp.Delivery = CloneTaskDelivery(t.Delivery)
 			taskCopy = &cp
-			m.tasks[i].NextRunAt = nil // prevent double-fire
 			break
 		}
 	}
@@ -427,7 +437,10 @@ func (m *Manager) fireByID(id string, executor TaskExecutor, now time.Time) {
 	errStr = annotateExecErrStr(ctx, errStr, timeout)
 
 	// The next run is after the clock that discovered this one was due.
+	// Edit after a snapshot. A failed save puts that snapshot back, including
+	// the due time the claim left in place, so the ticker can select it again.
 	m.mu.Lock()
+	prev := append([]ScheduledTask(nil), m.tasks...)
 	for i := range m.tasks {
 		if m.tasks[i].ID != id {
 			continue
@@ -437,19 +450,22 @@ func (m *Manager) fireByID(id string, executor TaskExecutor, now time.Time) {
 		m.tasks[i].LastResult = TruncateLastResult(result)
 		m.tasks[i].LastError = errStr
 
-		if m.isExpired(&m.tasks[i], now) {
-			// Remove the expired task in-place instead of keeping it around.
-			m.tasks = append(m.tasks[:i], m.tasks[i+1:]...)
+		if m.tasks[i].Status == "paused" {
+			// A paused row keeps a passed end_date until an active transition.
+			// Completion records the result and must not delete or revive it.
+			m.tasks[i].NextRunAt = nil
+		} else if m.tasks[i].Status == "expired" || m.isExpired(&m.tasks[i], now) {
+			m.tasks = withoutTask(m.tasks, i)
 		} else if m.tasks[i].Status == "active" {
 			m.tasks[i].NextRunAt = m.calcNext(&m.tasks[i], now)
 		} else {
-			// A task can be paused while its executor is still unwinding. Keep
-			// it paused; completion may record the result but must not revive it.
 			m.tasks[i].NextRunAt = nil
 		}
 		break
 	}
-	_ = m.save()
+	if err := m.save(); err != nil {
+		m.tasks = prev
+	}
 	cb := m.onChange
 	m.mu.Unlock()
 
@@ -482,6 +498,17 @@ func (m *Manager) Add(t ScheduledTask) (string, error) {
 	if t.IntervalMinutes < 0 {
 		return "", fmt.Errorf("scheduler: interval_minutes must be >= 0")
 	}
+	t.StartDate = strings.TrimSpace(t.StartDate)
+	t.EndDate = strings.TrimSpace(t.EndDate)
+	if !scheduleDateOK(t.StartDate) {
+		return "", fmt.Errorf("scheduler: start_date must be YYYY-MM-DD")
+	}
+	if !scheduleDateOK(t.EndDate) {
+		return "", fmt.Errorf("scheduler: end_date must be YYYY-MM-DD")
+	}
+	if t.StartDate != "" && t.EndDate != "" && t.StartDate > t.EndDate {
+		return "", fmt.Errorf("scheduler: start_date must be on or before end_date")
+	}
 	if t.Delivery != nil {
 		t.Delivery.Normalize()
 		if err := t.Delivery.Validate(); err != nil {
@@ -495,15 +522,28 @@ func (m *Manager) Add(t ScheduledTask) (string, error) {
 			t.Delivery = nil
 		}
 	}
+	switch t.Status {
+	case "", "active", "paused":
+	default:
+		return "", fmt.Errorf("scheduler: status must be active or paused")
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	now := time.Now()
 	t.ID = generateID()
-	t.Status = "active"
 	t.CreatedAt = now
-	t.NextRunAt = m.calcNext(&t, now)
+	// The row becomes visible to the ticker only after this save succeeds and
+	// releases the lock. Initial status is part of that save: publishing an
+	// active NextRunAt and clearing it afterwards lets a due tick fire first.
+	// A failed save drops the row again.
+	if t.Status == "paused" {
+		t.NextRunAt = nil
+	} else {
+		t.Status = "active"
+		t.NextRunAt = m.calcNext(&t, now)
+	}
 
 	if m.isExpired(&t, now) {
 		return "", fmt.Errorf("scheduler: end_date is already in the past")
@@ -511,6 +551,7 @@ func (m *Manager) Add(t ScheduledTask) (string, error) {
 
 	m.tasks = append(m.tasks, t)
 	if err := m.save(); err != nil {
+		m.tasks = m.tasks[:len(m.tasks)-1]
 		return "", err
 	}
 	return t.ID, nil
@@ -544,7 +585,8 @@ func (m *Manager) Get(id string) *ScheduledTask {
 	return nil
 }
 
-// Delete removes a task by ID.
+// Delete removes a task by ID. The shorter list is visible to the ticker
+// only after save succeeds. A failed save leaves the previous list.
 func (m *Manager) Delete(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -554,16 +596,16 @@ func (m *Manager) Delete(id string) error {
 				cancel()
 				return fmt.Errorf("scheduler: task %q is running; cancellation requested", id)
 			}
-			m.tasks = append(m.tasks[:i], m.tasks[i+1:]...)
-			return m.save()
+			return m.replaceTasks(withoutTask(m.tasks, i))
 		}
 	}
 	return fmt.Errorf("scheduler: task %q not found", id)
 }
 
 // ForceDelete removes a task even while it is running. The running call is
-// cancelled. The task is not started again. Delete leaves a running task in
-// place; this is the path that still takes it off the list.
+// cancelled only after that removal is saved. A failed save leaves the run
+// going and the row in place. Delete leaves a running task in place; this
+// is the path that still takes it off the list.
 func (m *Manager) ForceDelete(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -571,11 +613,13 @@ func (m *Manager) ForceDelete(id string) error {
 		if t.ID != id {
 			continue
 		}
+		if err := m.replaceTasks(withoutTask(m.tasks, i)); err != nil {
+			return err
+		}
 		if cancel, running := m.runningTasks[id]; running {
 			cancel()
 		}
-		m.tasks = append(m.tasks[:i], m.tasks[i+1:]...)
-		return m.save()
+		return nil
 	}
 	return fmt.Errorf("scheduler: task %q not found", id)
 }
@@ -586,49 +630,23 @@ func (m *Manager) DeleteByName(name string) error {
 	defer m.mu.Unlock()
 	for i, t := range m.tasks {
 		if t.Name == name {
-			m.tasks = append(m.tasks[:i], m.tasks[i+1:]...)
-			return m.save()
+			return m.replaceTasks(withoutTask(m.tasks, i))
 		}
 	}
 	return fmt.Errorf("scheduler: task named %q not found", name)
 }
 
-// Pause pauses a task.
+// Pause pauses a task. It is the status write with an empty field patch:
+// an in-flight run is cancelled and NextRunAt is cleared in the same save
+// the ticker observes.
 func (m *Manager) Pause(id string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for i := range m.tasks {
-		if m.tasks[i].ID == id {
-			if cancel, running := m.runningTasks[id]; running {
-				cancel()
-			}
-			m.tasks[i].Status = "paused"
-			m.tasks[i].NextRunAt = nil
-			return m.save()
-		}
-	}
-	return fmt.Errorf("scheduler: task %q not found", id)
+	return m.UpdateState(id, nil, "paused")
 }
 
-// Resume resumes a paused task.
+// Resume resumes a paused task. It is the status write with an empty field
+// patch. A row whose end_date has passed is removed instead of scheduled.
 func (m *Manager) Resume(id string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	now := time.Now()
-	for i := range m.tasks {
-		if m.tasks[i].ID == id {
-			if m.isExpired(&m.tasks[i], now) {
-				// Task has expired while paused — remove it.
-				m.tasks = append(m.tasks[:i], m.tasks[i+1:]...)
-				_ = m.save()
-				return fmt.Errorf("scheduler: task %q has expired (end_date passed) and was removed", id)
-			}
-			m.tasks[i].Status = "active"
-			m.tasks[i].NextRunAt = m.calcNext(&m.tasks[i], now)
-			return m.save()
-		}
-	}
-	return fmt.Errorf("scheduler: task %q not found", id)
+	return m.UpdateState(id, nil, "active")
 }
 
 // ClearAll removes all tasks.
@@ -639,75 +657,136 @@ func (m *Manager) ClearAll() error {
 	return m.save()
 }
 
-// Update modifies a task by ID. Only non-zero/non-empty fields in args are applied.
+// Update patches fields and leaves the stored status unchanged. Callers that
+// pass a whole tool-argument map, including a status key, keep that key as
+// data. UpdateState is the write that changes fields and status together.
 func (m *Manager) Update(id string, args map[string]interface{}) error {
+	return m.writeTask(id, args, "")
+}
+
+// UpdateState writes a field patch and the record status in one save.
+// status is "", "active", or "paused". Empty leaves the stored status.
+// The ticker sees the new row only after that save succeeds. A rejected
+// edit or a failed save leaves the previous row in place. Pause cancels an
+// in-flight run only after the paused row is saved. Making a row active
+// schedules the next run, or removes it when end_date has passed. A paused
+// row keeps a passed end_date. An active row whose window has already
+// closed is removed in this same save.
+func (m *Manager) UpdateState(id string, args map[string]interface{}, status string) error {
+	switch status {
+	case "", "active", "paused":
+	default:
+		return fmt.Errorf("scheduler: status must be active or paused")
+	}
+	return m.writeTask(id, args, status)
+}
+
+func (m *Manager) writeTask(id string, args map[string]interface{}, status string) error {
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	if iv, ok := coerceInt(args["interval_minutes"]); ok && iv < 0 {
+		return fmt.Errorf("scheduler: interval_minutes must be >= 0")
+	}
+	if v, ok := args["task_type"].(string); ok && v != "" && v != TaskTypeReminder && v != TaskTypeProcess {
+		return fmt.Errorf("scheduler: task_type must be %q or %q", TaskTypeReminder, TaskTypeProcess)
+	}
+	if v, ok := args["start_date"].(string); ok && !scheduleDateOK(v) {
+		return fmt.Errorf("scheduler: start_date must be YYYY-MM-DD")
+	}
+	if v, ok := args["end_date"].(string); ok && !scheduleDateOK(v) {
+		return fmt.Errorf("scheduler: end_date must be YYYY-MM-DD")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	now := time.Now()
 	for i := range m.tasks {
 		if m.tasks[i].ID != id {
 			continue
 		}
+		// Edit a copy. The slice the ticker reads changes only after save.
+		prev := m.tasks[i]
+		next := prev
 		if v, ok := args["name"].(string); ok && v != "" {
-			m.tasks[i].Name = v
+			next.Name = v
 		}
 		if v, ok := args["action"].(string); ok && v != "" {
-			m.tasks[i].Action = v
+			next.Action = v
 		}
 		// Accept float64 (JSON) and int (Go tooling / re-marshaled maps).
 		if h, ok := coerceInt(args["hour"]); ok && h >= 0 && h <= 23 {
-			m.tasks[i].Hour = h
+			next.Hour = h
 		}
 		if mn, ok := coerceInt(args["minute"]); ok && mn >= 0 && mn <= 59 {
-			m.tasks[i].Minute = mn
+			next.Minute = mn
 		}
 		if dow, ok := coerceInt(args["day_of_week"]); ok {
-			m.tasks[i].DayOfWeek = dow
+			next.DayOfWeek = dow
 		}
 		if dom, ok := coerceInt(args["day_of_month"]); ok {
-			m.tasks[i].DayOfMonth = dom
+			next.DayOfMonth = dom
 		}
 		if iv, ok := coerceInt(args["interval_minutes"]); ok {
-			if iv < 0 {
-				return fmt.Errorf("scheduler: interval_minutes must be >= 0")
-			}
-			m.tasks[i].IntervalMinutes = iv
+			next.IntervalMinutes = iv
 		}
 		if v, ok := args["start_date"].(string); ok {
-			m.tasks[i].StartDate = v
+			next.StartDate = strings.TrimSpace(v)
 		}
 		if v, ok := args["end_date"].(string); ok {
-			m.tasks[i].EndDate = v
+			next.EndDate = strings.TrimSpace(v)
 		}
 		if v, ok := args["task_type"].(string); ok {
-			if v != "" && v != TaskTypeReminder && v != TaskTypeProcess {
-				return fmt.Errorf("scheduler: task_type must be %q or %q", TaskTypeReminder, TaskTypeProcess)
-			}
-			m.tasks[i].TaskType = v
+			next.TaskType = v
 		}
 		if raw, ok := args["delivery"]; ok {
 			// Explicit null / empty clears delivery.
 			if raw == nil {
-				m.tasks[i].Delivery = nil
+				next.Delivery = nil
 			} else {
 				d, err := ParseDeliveryFromAny(raw)
 				if err != nil {
 					return err
 				}
 				if d == nil || !d.Enabled {
-					m.tasks[i].Delivery = nil
+					next.Delivery = nil
 				} else {
 					if err := d.EnsureResolved(); err != nil {
 						return err
 					}
-					m.tasks[i].Delivery = d
+					next.Delivery = d
 				}
 			}
 		}
-		now := time.Now()
-		if m.tasks[i].Status == "active" {
-			m.tasks[i].NextRunAt = m.calcNext(&m.tasks[i], now)
+		if next.StartDate != "" && next.EndDate != "" && next.StartDate > next.EndDate {
+			return fmt.Errorf("scheduler: start_date must be on or before end_date")
 		}
-		return m.save()
+		switch status {
+		case "paused":
+			next.Status = "paused"
+			next.NextRunAt = nil
+		case "active":
+			next.Status = "active"
+		}
+		// A paused row keeps a passed end_date until this transition. An
+		// active row does not stay stored once the window has closed.
+		// Check before calcNext so a closed window does not scan for a run.
+		if next.Status != "paused" && m.isExpired(&next, now) {
+			return m.removeSaved(i, id)
+		}
+		if next.Status == "active" {
+			next.NextRunAt = m.calcNext(&next, now)
+		}
+		m.tasks[i] = next
+		if err := m.save(); err != nil {
+			m.tasks[i] = prev
+			return err
+		}
+		if status == "paused" {
+			if cancel, running := m.runningTasks[id]; running {
+				cancel()
+			}
+		}
+		return nil
 	}
 	return fmt.Errorf("scheduler: task %q not found", id)
 }
@@ -791,6 +870,7 @@ func (m *Manager) fireManual(taskCopy *ScheduledTask, executor TaskExecutor, ctx
 
 	now := time.Now()
 	m.mu.Lock()
+	prev := append([]ScheduledTask(nil), m.tasks...)
 	for i := range m.tasks {
 		if m.tasks[i].ID != id {
 			continue
@@ -801,7 +881,9 @@ func (m *Manager) fireManual(taskCopy *ScheduledTask, executor TaskExecutor, ctx
 		m.tasks[i].LastError = errStr
 		break
 	}
-	_ = m.save()
+	if err := m.save(); err != nil {
+		m.tasks = prev
+	}
 	cb := m.onChange
 	m.mu.Unlock()
 
@@ -1008,11 +1090,61 @@ func (m *Manager) inDateRange(t *ScheduledTask, d time.Time) bool {
 }
 
 func (m *Manager) isExpired(t *ScheduledTask, now time.Time) bool {
-	if t.EndDate == "" {
+	return endDatePassed(t.EndDate, now)
+}
+
+// endDatePassed reports that the calendar day of now is after end.
+// The end date itself is still a run day. An empty end does not pass.
+func endDatePassed(end string, now time.Time) bool {
+	if end == "" {
 		return false
 	}
-	today := now.Format("2006-01-02")
-	return today > t.EndDate
+	return now.Format("2006-01-02") > end
+}
+
+// closedWindow is the row a reload and the ticker drop. A legacy expired
+// status is not a record. An active row whose end date has passed is not
+// runnable. A paused row keeps that date until an active transition removes
+// it, so a restart does not erase the record Resume is supposed to refuse.
+func (m *Manager) closedWindow(t *ScheduledTask, now time.Time) bool {
+	if t.Status == "expired" {
+		return true
+	}
+	if t.Status == "paused" {
+		return false
+	}
+	return m.isExpired(t, now)
+}
+
+// withoutTask omits tasks[i]. The result does not share the backing array,
+// so restoring the previous header cannot see this edit.
+func withoutTask(tasks []ScheduledTask, i int) []ScheduledTask {
+	next := make([]ScheduledTask, 0, len(tasks)-1)
+	next = append(next, tasks[:i]...)
+	next = append(next, tasks[i+1:]...)
+	return next
+}
+
+// replaceTasks publishes next. Caller holds m.mu. The ticker sees next only
+// after save succeeds. next must not alias the current backing array.
+func (m *Manager) replaceTasks(next []ScheduledTask) error {
+	prev := m.tasks
+	m.tasks = next
+	if err := m.save(); err != nil {
+		m.tasks = prev
+		return err
+	}
+	return nil
+}
+
+// removeSaved drops one row because its window is closed. A failed save
+// restores the list and returns that error. A successful save reports the
+// removal, which is the outcome of the write.
+func (m *Manager) removeSaved(i int, id string) error {
+	if err := m.replaceTasks(withoutTask(m.tasks, i)); err != nil {
+		return err
+	}
+	return fmt.Errorf("scheduler: task %q has expired (end_date passed) and was removed", id)
 }
 
 // ---------------------------------------------------------------------------
@@ -1142,4 +1274,94 @@ func FormatInterval(minutes int) string {
 		return fmt.Sprintf("%.1f小时", float64(minutes)/60.0)
 	}
 	return fmt.Sprintf("%d分钟", minutes)
+}
+
+// FormatSchedule is the cadence calcNext will run. A positive interval repeats
+// on a grid anchored at Hour:Minute. That anchor is not a first run, and it
+// is not a separate fact when it lands on the same instants as midnight.
+// Day of week, day of month, and the date window are the same filter
+// matchesDay and inDateRange apply, so a Monday-only task cannot read as
+// every day.
+func FormatSchedule(t ScheduledTask) string {
+	cadence := formatScheduleCadence(t)
+	day := formatScheduleDay(t)
+	date := formatScheduleDate(t)
+	if t.IntervalMinutes > 0 {
+		if day != "" {
+			cadence += " " + day
+		}
+		if date != "" {
+			cadence += " " + date
+		}
+		return cadence
+	}
+	if day != "" {
+		cadence = day + " " + cadence
+	}
+	if date != "" {
+		cadence += " " + date
+	}
+	return cadence
+}
+
+func formatScheduleCadence(t ScheduledTask) string {
+	if t.IntervalMinutes <= 0 {
+		return fmt.Sprintf("%02d:%02d", t.Hour, t.Minute)
+	}
+	cadence := "每" + FormatInterval(t.IntervalMinutes)
+	if !intervalAnchorVisible(t.Hour, t.Minute, t.IntervalMinutes) {
+		return cadence
+	}
+	clock := fmt.Sprintf("%02d:%02d", t.Hour, t.Minute)
+	if t.IntervalMinutes%1440 == 0 {
+		return cadence + " " + clock
+	}
+	return fmt.Sprintf("%s（从 %s 起）", cadence, clock)
+}
+
+func formatScheduleDay(t ScheduledTask) string {
+	var parts []string
+	if t.DayOfMonth > 0 {
+		parts = append(parts, fmt.Sprintf("每月%d号", t.DayOfMonth))
+	}
+	if t.DayOfWeek >= 0 && t.DayOfWeek <= 6 {
+		name := [...]string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}[t.DayOfWeek]
+		if t.IntervalMinutes <= 0 && t.DayOfMonth <= 0 {
+			name = "每" + name
+		}
+		parts = append(parts, name)
+	}
+	return strings.Join(parts, " ")
+}
+
+func formatScheduleDate(t ScheduledTask) string {
+	if t.StartDate == "" && t.EndDate == "" {
+		return ""
+	}
+	start, end := t.StartDate, t.EndDate
+	if start == "" {
+		start = "..."
+	}
+	if end == "" {
+		end = "..."
+	}
+	return start + "~" + end
+}
+
+// intervalAnchorVisible reports that Hour:Minute changes the instants
+// calcNextInterval will choose. A sub-day interval hides an anchor that is a
+// multiple of the interval away from midnight. A multiple of a day always
+// shows the time of day.
+func intervalAnchorVisible(hour, minute, interval int) bool {
+	if interval <= 0 {
+		return false
+	}
+	if interval%1440 == 0 {
+		return true
+	}
+	minutes := hour*60 + minute
+	if minutes < 0 {
+		return true
+	}
+	return minutes%interval != 0
 }

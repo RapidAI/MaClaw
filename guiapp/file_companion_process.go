@@ -98,11 +98,16 @@ type fileCompanionRuntime struct {
 	// webStopGen is the capture attempt stored in webStop.
 	// webStopAt is the newest attempt the user already stopped. A stop that
 	// arrives before webStop is stored still ends that attempt.
-	noteMu     sync.Mutex
-	noteCancel map[string]context.CancelFunc
-	webStop    map[string]context.CancelFunc
-	webStopGen map[string]int64
-	webStopAt  map[string]int64
+	// webNotePhase is recording through capture and recognition. It becomes
+	// writing when the status changes to 正在整理笔记, and stays there until
+	// the note function returns. webStop is still registered during both,
+	// so the phase is what tells 停止 to write the note or cancel it.
+	noteMu       sync.Mutex
+	noteCancel   map[string]context.CancelFunc
+	webStop      map[string]context.CancelFunc
+	webStopGen   map[string]int64
+	webStopAt    map[string]int64
+	webNotePhase map[string]int
 	// webPlayerGen is the player on screen. Leaving that player advances it.
 	// 停止 and leaving fullscreen do not: the in-flight preview is still this one.
 	webPlayerGen atomic.Uint64
@@ -429,9 +434,11 @@ func (a *App) startCompanionProcess(argv []string) error {
 //
 // open-file in the argument vector is the process mode, not a document. A
 // fresh companion with no document arguments restores the last open files
-// itself. This process only picks files when there is nothing to restore.
-// A companion that is already running is revealed and is not given the list
-// again, so a second click does not reload a tab the user is editing.
+// itself. Nothing remembered is still that launch: the window opens its own
+// 打开 panel, with a local file row and an arXiv or page address. This
+// process does not open the system file dialog. A companion that is already
+// running is revealed and is not given the list again, so a second click
+// does not reload a tab the user is editing.
 func (a *App) ShowFileCompanion() error {
 	if a == nil {
 		return errors.New("app unavailable")
@@ -440,10 +447,6 @@ func (a *App) ShowFileCompanion() error {
 		a.revealFileCompanionWindow()
 		a.notifyFileCompanionShow()
 		return nil
-	}
-	if len(a.fileCompanionResumePaths()) == 0 {
-		_, err := a.ChooseFileCompanionFiles()
-		return err
 	}
 	exe, err := companionExecutable()
 	if err != nil {
@@ -604,8 +607,9 @@ func (a *App) onFileCompanionSecondInstance(data options.SecondInstanceData) {
 	}
 }
 
-// notifyFileCompanionShow tells the open window to ask for a file when it has
-// no tab. A launch that has not subscribed yet asks from its own empty boot.
+// notifyFileCompanionShow tells the open window to show its 打开 panel when
+// it has no tab. A launch that has not subscribed yet does that from its own
+// empty boot. The system file dialog stays behind the panel's 打开文件 row.
 func (a *App) notifyFileCompanionShow() {
 	if a == nil {
 		return

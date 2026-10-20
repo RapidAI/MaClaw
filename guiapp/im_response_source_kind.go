@@ -14,6 +14,9 @@ const (
 	imResponseSourceAgentLoop        imResponseSourceKind = "agent_loop"
 	imResponseSourceAgentViewSubmit  imResponseSourceKind = "agent_view_submit"
 	imResponseSourceAgentViewDismiss imResponseSourceKind = "agent_view_dismiss"
+	// imResponseSourceChatTaskHandoff is the host continuation note. It is the
+	// reply, even when this turn also attaches a file or a screenshot.
+	imResponseSourceChatTaskHandoff imResponseSourceKind = "chat_task_handoff"
 )
 
 func (k imResponseSourceKind) String() string {
@@ -32,7 +35,8 @@ func (k imResponseSourceKind) IsKnownPreservedSource() bool {
 		imResponseSourceRecordAudio,
 		imResponseSourceCancel,
 		imResponseSourceAgentViewSubmit,
-		imResponseSourceAgentViewDismiss:
+		imResponseSourceAgentViewDismiss,
+		imResponseSourceChatTaskHandoff:
 		return true
 	default:
 		return false
@@ -62,6 +66,8 @@ func canonicalIMResponseSourceKind(source string) imResponseSourceKind {
 		return imResponseSourceAgentViewSubmit
 	case "agentviewdismiss":
 		return imResponseSourceAgentViewDismiss
+	case "chattaskhandoff":
+		return imResponseSourceChatTaskHandoff
 	default:
 		return imResponseSourceKind(source)
 	}

@@ -70,6 +70,19 @@ func TestNormalizeArtifactResponseSourceOverridesAgentLoopArtifactSource(t *test
 	}
 }
 
+func TestNormalizeArtifactResponseSourceKeepsChatTaskHandoff(t *testing.T) {
+	note := "剩余工作已继续处理，完成后会发到这个对话。"
+	resp := &IMAgentResponse{
+		Text:           note,
+		ResponseSource: " Chat_Task_Handoff ",
+		LocalFilePath:  `C:\tmp\deck.pptx`,
+	}
+	normalizeArtifactResponseSource(resp)
+	if resp.ResponseSource != imResponseSourceChatTaskHandoff.String() || resp.Text != note || resp.LocalFilePath == "" {
+		t.Fatalf("handoff reclassified: %+v", resp)
+	}
+}
+
 func TestNormalizeArtifactResponseSourcePreservesNonAgentLoopExplicitSource(t *testing.T) {
 	resp := &IMAgentResponse{ResponseSource: "ask_user", LocalFilePath: `C:\tmp\report.pdf`}
 	normalizeArtifactResponseSource(resp)

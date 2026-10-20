@@ -27,3 +27,5 @@ func captureProcessAudio(ctx context.Context) ([]byte, bool) {
 	}
 	return nil, true
 }
+
+func capturePlaybackEnded(context.Context) bool { return false }

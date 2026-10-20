@@ -454,6 +454,40 @@ func TestRemoteMCPMemberOpen(t *testing.T) {
 	}
 }
 
+func TestHealthyRemoteStaysListedWhileLocalLaunchSetIsOpen(t *testing.T) {
+	schema := map[string]interface{}{
+		"type":                 "object",
+		"properties":           map[string]interface{}{},
+		"additionalProperties": false,
+	}
+	app := &App{testHomeDir: t.TempDir()}
+	defer app.closeSemanticInvocationStore()
+	if err := app.SaveConfig(corelib.AppConfig{
+		MCPServers: []corelib.MCPServerEntry{{ID: "tengyun", Name: "tengyun", EndpointURL: "https://example.invalid/mcp"}},
+		LocalMCPServers: []corelib.LocalMCPServerEntry{
+			{ID: "launch-unstarted", Name: "launch-unstarted", Command: "unused", AutoStart: true},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.mcpRegistry = NewMCPRegistry(app)
+	app.mcpRegistry.health["tengyun"] = &mcpHealthState{Status: mcpHealthStatusHealthy}
+	app.mcpRegistry.toolsCache["tengyun"] = []MCPToolView{{Name: "work_log_query", InputSchema: schema}}
+	app.localMCPManager = NewLocalMCPManager(app.mcpRegistry)
+	t.Cleanup(func() { app.localMCPManager.cancel() })
+	inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	coverage := inventory.coverage.ForProviderKind("mcp")
+	if coverage.State != tool.CatalogCoverageIncomplete || coverage.ReasonCode != tool.CatalogCoverageReasonNotReady {
+		t.Fatalf("coverage=%+v", coverage)
+	}
+	if len(inventory.mcpEntries) != 1 || inventory.mcpEntries[0].ServerID != "tengyun" || inventory.mcpEntries[0].ToolName != "work_log_query" || inventory.mcpEntries[0].RuntimeBlocked {
+		t.Fatalf("observed remote was hidden by the unstarted local server: %#v", inventory.mcpEntries)
+	}
+}
+
 func withIsolatedMaclawBase(t *testing.T) string {
 	t.Helper()
 	base := t.TempDir()

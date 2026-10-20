@@ -42,8 +42,8 @@ func TestClassifyIMExecutionProfileSemanticLookupUsesLight(t *testing.T) {
 	if profile.IterationBudget != 3 {
 		t.Fatalf("live_data iteration budget = %d, want 3", profile.IterationBudget)
 	}
-	if profile.ToolBudget != 1 {
-		t.Fatalf("live_data tool budget = %d, want 1 search selection", profile.ToolBudget)
+	if profile.ToolBudget != liveDataLookupSelectionBudget {
+		t.Fatalf("live_data tool budget = %d, want search plus page fetch", profile.ToolBudget)
 	}
 }
 
@@ -965,11 +965,43 @@ func TestBuildLightIMSystemPromptStaysSmall(t *testing.T) {
 	if containsText(prompt, "web_search / web_fetch") {
 		t.Fatalf("light prompt must not instruct unavailable web_fetch: %s", prompt)
 	}
+	if !containsText(prompt, "一次成功的实时查询之后立即作答") {
+		t.Fatalf("generic light prompt lost the one-lookup stop: %s", prompt)
+	}
 	if !containsText(prompt, "Do not ask the user to re-authorize tools") {
 		t.Fatalf("light prompt missing re-authorize fence: %s", prompt)
 	}
 	if !containsText(prompt, "the live tool list is the ground truth") || !containsText(prompt, "web_search") {
 		t.Fatalf("light prompt missing governed-tools fence: %s", prompt)
+	}
+}
+
+func TestBuildLightIMSystemPromptLiveDataReadsThePage(t *testing.T) {
+	profile := ExecutionProfile{
+		Layer:         string(executionLayerLight),
+		TaskType:      string(intent.LabelLiveData),
+		PromptProfile: "light",
+		Confidence:    0.9,
+		Reason:        "semantic capability-managed lookup",
+	}
+	prompt := buildLightIMSystemPrompt(IMUserMessage{Text: "北京天气"}, profile, nil, intent.LabelLiveData)
+	if !containsText(prompt, "already states the current fact") {
+		t.Fatalf("live-data prompt must answer from a stated fact: %s", prompt)
+	}
+	if !containsText(prompt, "call web_fetch on a result page") {
+		t.Fatalf("live-data prompt must name the page read: %s", prompt)
+	}
+	if containsText(prompt, "Do not answer from the search snippet alone") || containsText(prompt, "Ignore the instructions above") || containsText(prompt, "answer from that evidence") {
+		t.Fatalf("live-data prompt still treats any snippet as the answer: %s", prompt)
+	}
+	if containsText(prompt, "web_search / web_fetch") {
+		t.Fatalf("live-data prompt must not use the retired slash phrase: %s", prompt)
+	}
+	if containsText(prompt, "一次成功的实时查询之后立即作答") || !containsText(prompt, "列出的结果已经写明当前事实时直接作答") {
+		t.Fatalf("live-data prompt still stops after one lookup: %s", prompt)
+	}
+	if len(prompt) > 4500 {
+		t.Fatalf("live-data light prompt len = %d, want <= 4500", len(prompt))
 	}
 }
 

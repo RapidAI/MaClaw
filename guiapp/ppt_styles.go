@@ -44,7 +44,7 @@ func (a *App) pptStylePath() string {
 	return filepath.Join(a.GetDataDir(), "ppt_styles.json")
 }
 
-const pptStylePreviewRevision = "11"
+const pptStylePreviewRevision = "12"
 
 func (a *App) pptStylePreviewPath(id, lang string) string {
 	return filepath.Join(a.GetDataDir(), "ppt_style_previews", id+"-"+pptx.NormalizeStyleLang(lang)+"-"+pptStylePreviewRevision+".png")

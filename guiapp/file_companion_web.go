@@ -54,12 +54,18 @@ type webNoteShot struct {
 var fileCompanionWebCaptureHook func() (shots []webNoteShot, audio []byte, refused bool)
 
 // audclntStreamFlagsLoopback is AUDCLNT_STREAMFLAGS_LOOPBACK.
-// Process loopback must not set it: that flag records every process.
+// The activation below leaves it unset. Opening the default render endpoint
+// with this flag records every process. Initialize of the virtual device
+// VAD\Process_Loopback must set it; that device is already limited to the
+// target process tree. Zero Initialize flags fail with 0x88890021.
 const audclntStreamFlagsLoopback = 0x00020000
 
 // processAudioActivate is the Windows process-loopback activation.
-// TargetPID is this process, IncludeProcessTree is required, and StreamFlags
-// must not contain AUDCLNT_STREAMFLAGS_LOOPBACK.
+// TargetPID is the WebView2 browser when this process has one, otherwise
+// this process. IncludeProcessTree is required, and StreamFlags stays 0.
+// The LOOPBACK bit is applied later, only to IAudioClient.Initialize.
+// Include-tree does not hear a grandchild. The audio service that plays the
+// page is a child of the browser, so the host PID records silence.
 type processAudioActivate struct {
 	TargetPID          uint32
 	IncludeProcessTree bool
@@ -135,6 +141,9 @@ func fileCompanionWebFrameURL(raw string) (string, error) {
 		parsed.RawQuery = q.Encode()
 		// The watch page sends X-Frame-Options: SAMEORIGIN. An iframe then
 		// shows 「拒绝连接」. The embed URL is the page YouTube allows others to frame.
+		// The Windows top-level player does not load it. That player has no parent
+		// page, so the embed endpoint answers 错误 153. FileCompanionPlayerPlace
+		// opens the watch page instead.
 		if embed := fileCompanionYouTubeEmbed(parsed); embed != "" {
 			return embed, nil
 		}
@@ -168,7 +177,10 @@ func fileCompanionYouTubeEmbed(parsed *url.URL) string {
 		id = id[:cut]
 	}
 	id = strings.TrimSpace(id)
-	if !fileCompanionYouTubeID(id) {
+	// videoseries and live_stream are embed endpoints, not video ids.
+	// Treating them as an id drops list or channel. The iframe keeps this
+	// URL. The Windows player opens the playlist or the channel live page.
+	if id == "videoseries" || id == "live_stream" || !fileCompanionYouTubeID(id) {
 		return ""
 	}
 	return "https://www.youtube.com/embed/" + id
@@ -185,6 +197,54 @@ func fileCompanionYouTubeID(id string) bool {
 		return false
 	}
 	return true
+}
+
+// fileCompanionTopLevelPlaybackURL is the document the Windows player navigates to.
+// The session and the iframe stay on the embed URL. The embed player, on
+// youtube.com and on youtube-nocookie.com, requires an HTTP Referer from a
+// parent page. A top-level Navigate starts at about:blank and sends none, so
+// YouTube shows 「视频播放器配置错误」(错误 153). The watch page is the document
+// YouTube serves for a visit, and this WebView is not framed. youtu.be and
+// m.youtube.com are already rewritten to www.youtube.com/embed before this runs.
+// embed/videoseries and embed/live_stream are not video ids. They open the
+// playlist page or the channel live page. The iframe keeps the embed URL.
+func fileCompanionTopLevelPlaybackURL(frame string) string {
+	parsed, err := url.Parse(frame)
+	if err != nil || parsed == nil {
+		return frame
+	}
+	switch strings.ToLower(parsed.Hostname()) {
+	case "www.youtube.com", "youtube.com", "www.youtube-nocookie.com", "youtube-nocookie.com":
+	default:
+		return frame
+	}
+	path := strings.Trim(parsed.EscapedPath(), "/")
+	const prefix = "embed/"
+	if !strings.HasPrefix(path, prefix) {
+		return frame
+	}
+	id := path[len(prefix):]
+	if strings.ContainsAny(id, "/?") {
+		return frame
+	}
+	switch id {
+	case "videoseries":
+		list := parsed.Query().Get("list")
+		if !fileCompanionYouTubeID(list) {
+			return frame
+		}
+		return "https://www.youtube.com/playlist?list=" + list
+	case "live_stream":
+		channel := parsed.Query().Get("channel")
+		if !fileCompanionYouTubeID(channel) {
+			return frame
+		}
+		return "https://www.youtube.com/channel/" + channel + "/live"
+	}
+	if !fileCompanionYouTubeID(id) {
+		return frame
+	}
+	return "https://www.youtube.com/watch?v=" + id
 }
 
 // FileCompanionWebNote writes a note from the visible web player.
@@ -229,9 +289,15 @@ func (a *App) FileCompanionWebNote(req FileCompanionWebNoteRequest) error {
 	}
 	clearGen := a.fileCompanionCaptureChatGen(userID)
 	noteCtx, noteCancel := a.fileCompanionBeginNote(sessionID, parent)
+	// The shared transcriber reads these ids, as a local note does.
+	// Without them it never replaces 正在记录声音, so the status stays on
+	// recording after the pictures have already stopped.
+	noteCtx = context.WithValue(noteCtx, noteTurnIDsKey{}, noteTurnIDs{RequestID: requestID, UserID: userID})
 	defer a.fileCompanionEndNote(sessionID, noteCancel)
-	// Stopping the web note ends capture only. The note context stays alive
-	// so the recording is written up before the work directory is removed.
+	// 停止 during capture or recognition ends capture only, so the note is
+	// written. Recognition shows 正在识别语音 and is still that phase.
+	// 停止 once the status is 正在整理笔记 cancels noteCtx.
+	// Leaving the player still ends capture only.
 	captureCtx, captureCancel := a.fileCompanionBeginWebCapture(sessionID, noteCtx, req.CaptureEpoch)
 	defer a.fileCompanionEndWebCapture(sessionID, captureCancel)
 	work := filepath.Join(a.GetDataDir(), "file-companion", "work", sessionID)
@@ -241,9 +307,13 @@ func (a *App) FileCompanionWebNote(req FileCompanionWebNoteRequest) error {
 	a.fileCompanionEmitNoteProgress(requestID, userID, fileCompanionNoteProgressWatch)
 	a.fileCompanionEmitNoteProgress(requestID, userID, fileCompanionNoteProgressListen)
 	// playerWatch is the player this recording started on. Leaving that
-	// player cancels it. noteCtx ends on close and /clear. 停止 cancels
-	// captureCtx only, so a preview already started is still this player.
+	// player cancels it. Close and /clear cancel noteCtx. 停止 cancels
+	// noteCtx only once the status is 正在整理笔记. Until then, including
+	// 正在识别语音, it cancels captureCtx only, so a preview already
+	// started is still this player.
 	playerWatch := a.fileCompanionPlayerWatch()
+	a.fileCompanionSetWebNotePhase(sessionID, webNotePhaseRecording)
+	defer a.fileCompanionSetWebNotePhase(sessionID, webNotePhaseIdle)
 	shots, audio, refused := fileCompanionCaptureWeb(captureCtx, fileCompanionWebRect(req.RectX, req.RectY, req.RectW, req.RectH), noteCtx, playerWatch)
 	if noteCtx.Err() != nil {
 		return a.fileCompanionFailNote(requestID, userID, fileCompanionErrNoteCancelled)
@@ -263,21 +333,28 @@ func (a *App) FileCompanionWebNote(req FileCompanionWebNoteRequest) error {
 	if len(frames) == 0 {
 		ev.Notes = append(ev.Notes, fileCompanionErrBlackFrame)
 	}
-	if refused || len(audio) == 0 {
+	// Measured length, including a silent waveform. The log keeps this.
+	// Chapter lines use fileCompanionNoteClock instead.
+	ev.Duration = fileCompanionCaptureSpan(audio, frames)
+	noAudio := refused || len(audio) == 0 || wavPCMSilent(audio)
+	if noAudio {
+		// A zero buffer is the device's silent flag, not a transcript.
+		// Sending it to ASR lets the model invent the lecture from the frames.
 		ev.Notes = append(ev.Notes, fileCompanionErrNoAudio)
 	} else if !a.fileCompanionASRReady() {
 		// Captured speech with no subtitle and no local ASR must fail the note.
 		// Treating that as an empty transcript lets the model invent the lecture.
 		return a.fileCompanionFailNote(requestID, userID, fileCompanionErrASRNotReady)
 	} else {
-		ev.Duration = pieceDuration(audio)
 		text, _ := a.fileCompanionTranscribeWebAudio(noteCtx, work, audio)
 		if noteCtx.Err() != nil {
 			return a.fileCompanionFailNote(requestID, userID, fileCompanionErrNoteCancelled)
 		}
 		ev.Text = strings.TrimSpace(text)
 	}
-	if fileCompanionSlideSpoken(ev.Text, ev.Duration, frames) {
+	// 口播很少 is captured speech that is still too thin for the frames.
+	// No waveform is 没有录到声音, not a sparse narration.
+	if !noAudio && fileCompanionSlideSpoken(ev.Text, ev.Duration, frames) {
 		ev.Notes = append([]string{fileCompanionErrSlideSpoken}, ev.Notes...)
 	}
 	ev.Vision = fileCompanionNoteVision(a)
@@ -298,8 +375,14 @@ func (a *App) FileCompanionWebNote(req FileCompanionWebNoteRequest) error {
 	if fileCompanionNoteContextTokens(a) < fileCompanionVideoNoteMinWindow {
 		return a.fileCompanionFailNote(requestID, userID, fileCompanionErrWindowTooSmall)
 	}
+	// 正在整理笔记 is the stage a 停止 click cancels. Recognition before
+	// this line is still the recording: 停止 there writes the note.
+	a.fileCompanionSetWebNotePhase(sessionID, webNotePhaseWriting)
 	a.fileCompanionEmitNoteProgress(requestID, userID, fileCompanionNoteProgressWrite)
-	prompt := buildNoteModelPrompt(frame, "video", ev)
+	noteClock := fileCompanionNoteClock(noAudio, ev.Duration, frames)
+	promptEv := ev
+	promptEv.Duration = noteClock
+	prompt := buildNoteModelPrompt(frame, "video", promptEv)
 	msg := IMUserMessage{
 		RequestID:              requestID,
 		UserID:                 userID,
@@ -335,7 +418,7 @@ func (a *App) FileCompanionWebNote(req FileCompanionWebNoteRequest) error {
 		}
 		reply = head.String() + reply
 	}
-	reply = fileCompanionRewriteNoteTimestamps(reply, ev.Duration)
+	reply = fileCompanionRewriteNoteTimestamps(reply, noteClock)
 	var embed []videoNoteFrame
 	if !ev.Vision {
 		embed = frames
@@ -552,7 +635,8 @@ func (a *App) ClearFileCompanionWebChat(sessionID string) error {
 // FileCompanionWebPlayerLeft records that the visible player changed and
 // ends capture. The watch is cancelled in this call, before the stop, so a
 // wait that 停止 already started is woken and drops the raster. The note is
-// still written. 停止 and leaving fullscreen use CancelFileCompanionWebTurn.
+// still written. Leaving fullscreen uses CancelFileCompanionWebTurn.
+// The title-bar 停止 uses StopFileCompanionWebNote.
 func (a *App) FileCompanionWebPlayerLeft(sessionID string, epoch int64) error {
 	if a == nil {
 		return errors.New("app unavailable")
@@ -605,6 +689,8 @@ func (st *fileCompanionRuntime) currentPlayerWatchLocked() context.Context {
 
 // CancelFileCompanionWebTurn ends capture and lets the note be written.
 // It does not cancel the note context and does not bump chatGen.
+// Leaving the player and leaving fullscreen use this, including while the
+// note is already being written. The title-bar 停止 uses StopFileCompanionWebNote.
 // The player generation stays, so the preview already in flight is kept.
 // Local cancel and /clear still discard the note.
 // epoch is the attempt the page started. The same number must be passed
@@ -619,6 +705,49 @@ func (a *App) CancelFileCompanionWebTurn(sessionID string, epoch int64) error {
 	}
 	a.fileCompanionStopWebCapture(sessionID, epoch)
 	return nil
+}
+
+const (
+	webNotePhaseIdle = iota
+	webNotePhaseRecording
+	webNotePhaseWriting
+)
+
+// StopFileCompanionWebNote is the title-bar 停止.
+// While the note is still recording or recognizing, this ends that
+// recording and the note is written. Recognition shows 正在识别语音.
+// Once the note is 正在整理笔记, this cancels it.
+// Leaving the player stays on CancelFileCompanionWebTurn and still writes.
+func (a *App) StopFileCompanionWebNote(sessionID string, epoch int64) error {
+	if a == nil {
+		return errors.New("app unavailable")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || a.fileCompanionWebFrame(sessionID) == "" {
+		return nil
+	}
+	phase, matched := a.fileCompanionStopWebCapture(sessionID, epoch)
+	if matched && phase == webNotePhaseWriting {
+		a.fileCompanionCancelNote(sessionID)
+	}
+	return nil
+}
+
+func (a *App) fileCompanionSetWebNotePhase(sessionID string, phase int) {
+	if a == nil || sessionID == "" {
+		return
+	}
+	st := a.companionRuntime()
+	st.noteMu.Lock()
+	defer st.noteMu.Unlock()
+	if st.webNotePhase == nil {
+		st.webNotePhase = map[string]int{}
+	}
+	if phase == webNotePhaseIdle {
+		delete(st.webNotePhase, sessionID)
+		return
+	}
+	st.webNotePhase[sessionID] = phase
 }
 
 // FileCompanionDiscardWebNote cancels the in-flight web note when its tab closes.
@@ -695,9 +824,14 @@ func (a *App) fileCompanionEndWebCapture(sessionID string, cancel context.Cancel
 	st.noteMu.Unlock()
 }
 
-func (a *App) fileCompanionStopWebCapture(sessionID string, epoch int64) {
+// fileCompanionStopWebCapture cancels the recording for epoch when that
+// attempt is the one registered. phase is what this session was doing.
+// matched is false when epoch names a different attempt, so the caller
+// must not cancel that other note. A registered cancel func is not itself
+// proof that the capture loop is still running.
+func (a *App) fileCompanionStopWebCapture(sessionID string, epoch int64) (phase int, matched bool) {
 	if a == nil {
-		return
+		return webNotePhaseIdle, false
 	}
 	st := a.companionRuntime()
 	st.noteMu.Lock()
@@ -714,15 +848,22 @@ func (a *App) fileCompanionStopWebCapture(sessionID string, epoch int64) {
 	if st.webStopGen != nil {
 		live = st.webStopGen[sessionID]
 	}
+	if st.webNotePhase != nil {
+		phase = st.webNotePhase[sessionID]
+	}
 	// A numbered stop belongs to one attempt. Zero is the unnumbered
 	// capture used by tests that stop whatever is already registered.
 	if epoch > 0 && live != epoch {
 		cancel = nil
+		matched = false
+	} else {
+		matched = cancel != nil || phase != webNotePhaseIdle
 	}
 	st.noteMu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
+	return phase, matched
 }
 
 // FileCompanionWebHistory returns the web tab transcript. It does not call fileCompanionGrant.

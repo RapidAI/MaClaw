@@ -84,10 +84,14 @@ func (h *IMMessageHandler) handleBackgroundIMRoute(msg IMUserMessage, providedLo
 		executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
 		log.Printf("[semantic-routing] explicit knowledge-write request user=%q", msg.UserID)
 	}
-	if rewritten := semanticMailboxDeletePlanningRewrite(semanticIntent, msg.Text); rewritten != nil {
+	if rewritten := semanticGovernedEffectPlanningRewrite(semanticIntent, msg.Text); rewritten != nil {
 		semanticIntent = rewritten
 		executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
-		log.Printf("[semantic-routing] mailbox delete planning user=%q", msg.UserID)
+		if strings.Contains(rewritten.Reason, "schedule payload planning") {
+			log.Printf("[semantic-routing] schedule payload planning user=%q", msg.UserID)
+		} else {
+			log.Printf("[semantic-routing] mailbox delete planning user=%q", msg.UserID)
+		}
 	}
 	semanticIntent = projectStoredTurnIntent(msg.UserID, msg.Text, msg.NoWorkflowInterception, semanticIntent)
 	loopCtx.Runtime.Execution = h.continuationKeepsParentExecution(executionProfile, msg.UserID, msg.Text, semanticIntent)

@@ -530,7 +530,7 @@ func (c *SkillMarketClient) refreshSkillMarketSession(ctx context.Context, bases
 			continue
 		}
 		if err := c.app.PatchConfig(func(cfg *corelib.AppConfig) {
-			cfg.SkillMarketSessionToken = strings.TrimSpace(result.SessionToken)
+			storeSkillMarketSession(cfg, result.SessionToken, baseURL)
 		}); err != nil {
 			return false, err
 		}

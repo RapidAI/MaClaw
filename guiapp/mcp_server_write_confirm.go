@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
-	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/mailbox"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -34,9 +33,10 @@ type pendingMCPServerWrite struct {
 	Nonce string
 }
 
-// mcpServerWriteAwaitingConfirmation is the SelectionExecutionResult reason
-// code for an unreviewed external-effect call paused on its per-server grant.
-// It is not a failure: the ask_user pause carries the confirmation card.
+// mcpServerWriteAwaitingConfirmation is the historical reason code for a
+// chat confirmation that paused an unreviewed external-effect call. New
+// installed calls do not emit it. A replayed result from an older turn can
+// still carry the code.
 const mcpServerWriteAwaitingConfirmation = "mcp_server_write_awaiting_confirmation"
 
 // mcpServerWriteAskContext is the sentinel prefix on the AskUserRequest.Context
@@ -407,16 +407,22 @@ func forgetMCPServerWriteGrants(serverID string) {
 }
 
 // pauseUnconfirmedMCPServerWrite returns a pre-admission outcome for an
-// external-effect MCP call. A confirmation question and a catalog refusal
-// are not executions. Admit consumes the one-shot grant and leaves a running
-// execution for a tool that never ran; a later retry of that same grant is
-// already consumed. Read-only calls, reviewed bindings, and calls the durable
-// server grant already allows return false so admission proceeds.
+// external-effect MCP call. A catalog refusal is not an execution. Admit
+// consumes the one-shot grant and leaves a running execution for a tool that
+// never ran; a later retry of that same grant is already consumed.
 //
-// Inventory is loaded even when that server grant already exists. Incomplete
-// coverage is the same non-execution, and skipping the load would admit it.
-// The executor loads the inventory again when it actually dispatches; that
-// second load is the binding revalidation.
+// An installed server is not paused here. Installing it is the authorization,
+// the same way Codex treats an enabled MCP server as callable (approval_mode
+// approve or auto) and Pi runs a server added with `pi mcp add` without a
+// per-call popup. MaClaw security settings still govern the transport
+// (network, sandbox, outbound). A chat confirmation does not run the tool:
+// it ends the turn, the one-shot grant dies, and the model has to discover
+// the name again.
+//
+// Inventory is still loaded. Incomplete coverage is the same non-execution,
+// and skipping the load would admit it. The executor loads the inventory
+// again when it actually dispatches; that second load is the binding
+// revalidation.
 func (c *sharedAgentLoopCallbacks) pauseUnconfirmedMCPServerWrite(selection tool.PlannedSelection) (tool.SelectionExecutionResult, bool) {
 	if c == nil || c.handler == nil || c.semanticSurface == nil {
 		return tool.SelectionExecutionResult{}, false
@@ -427,19 +433,17 @@ func (c *sharedAgentLoopCallbacks) pauseUnconfirmedMCPServerWrite(selection tool
 	ctx, cancel := c.semanticDynamicExecutionContext()
 	defer cancel()
 	inventory, err := c.handler.semanticDynamicInventoryForPrincipal(ctx, semanticDesktopContractPrincipal())
-	if rejected, ok := semanticDynamicCatalogRejection(inventory, err, "mcp"); ok {
+	if rejected, ok := semanticDynamicCatalogRejectionForSelection(inventory, err, selection); ok {
 		return rejected, true
 	}
 	return c.mcpServerWriteGateForSelection(selection, inventory.mcpEntries)
 }
 
-// mcpServerWriteGateForSelection decides whether a selected unreviewed MCP
-// binding may run an external-effect call. Read-only dynamic calls never
-// reach here (the receipt check upstream filters them); reviewed/trusted
-// providers keep their own confirmation path — the gate fires only when the
-// resolved contract classifies the binding as TrustTierUnreviewed. The gate
-// emits the ask_user marker as the selection result — the shared loop turns
-// it into the same interactive pause any ask_user question produces.
+// mcpServerWriteGateForSelection used to pause an unreviewed external-effect
+// call on a chat confirmation. Installed tools no longer take that path:
+// the call proceeds, and security settings are the only policy gate. The
+// function remains so a catalog-complete installed write is distinguishable
+// from a refusal, and so callers keep one place that says "do not ask".
 func (c *sharedAgentLoopCallbacks) mcpServerWriteGateForSelection(selection tool.PlannedSelection, mcpEntries []agentservice.MCPToolEntry) (tool.SelectionExecutionResult, bool) {
 	if c == nil || c.handler == nil || c.semanticSurface == nil {
 		return tool.SelectionExecutionResult{}, false
@@ -450,96 +454,13 @@ func (c *sharedAgentLoopCallbacks) mcpServerWriteGateForSelection(selection tool
 	if !tool.SelectionRequiresExternalReceipt(selection) {
 		return tool.SelectionExecutionResult{}, false
 	}
-	serverID := strings.TrimSpace(selection.Provider.ProviderID)
-	toolName := strings.TrimSpace(selection.Provider.ImplementationID)
-	if serverID == "" {
+	if strings.TrimSpace(selection.Provider.ProviderID) == "" {
 		return tool.SelectionExecutionResult{}, false
 	}
-	// Only an unreviewed contract is gated. A reviewed binding keeps the
-	// confirmation machinery its reviewed contract already carries; and a
-	// binding with no matching inventory entry fails closed downstream
-	// without ever asking the user about a call that cannot execute anyway.
-	unreviewed := false
-	for _, entry := range mcpEntries {
-		if strings.TrimSpace(entry.ServerID) != serverID || strings.TrimSpace(entry.ToolName) != toolName {
-			continue
-		}
-		// Gate on "not approved" rather than == Unreviewed: a contract whose
-		// tier is empty or a tier this build does not know must still confirm
-		// before an external effect runs. Only a reviewed/approved binding
-		// may pass ungated — it carries its own confirmation path.
-		unreviewed = entry.Contract.TrustTier != tool.TrustTierApproved
-		break
-	}
-	if !unreviewed {
-		return tool.SelectionExecutionResult{}, false
-	}
-	ownerID := strings.TrimSpace(c.userID)
-	if ownerID == "" {
-		ownerID = strings.TrimSpace(c.semanticSurface.scope.PrincipalID)
-	}
-	if ownerID == "" {
-		// No confirmable principal: the gate cannot bind a question to
-		// anyone, so the unreviewed write must not pass. Failing open here
-		// would let an anonymous loop skip the confirmation entirely.
-		return tool.SelectionExecutionResult{
-			Result:     "[system rejected] unreviewed MCP write confirmation requires a session owner",
-			Succeeded:  false,
-			ReasonCode: "mcp_server_write_unconfirmable",
-		}, true
-	}
-	if c.handler.mcpServerWriteConfirmed(ownerID, serverID) {
-		return tool.SelectionExecutionResult{}, false
-	}
-	serverLabel := serverID
-	// Prefer the server display name the user installed under when the
-	// inventory has one; the id stays the question's authoritative subject.
-	for _, entry := range mcpServerDisplayNameCandidates(c.handler, serverID) {
-		serverLabel = entry
-		break
-	}
-	nonce := c.handler.noteMCPServerWrite(ownerID, pendingMCPServerWrite{
-		ServerID:   serverID,
-		ServerName: serverLabel,
-		ToolName:   toolName,
-	})
-	ask := &agent.AskUserRequest{
-		Question: fmt.Sprintf(
-			"MCP 服务器 %q 的工具 %q 将执行对外部系统生效的操作（写入、发送或修改）。是否允许此后对 %q 的此类调用？授权会保留到该服务器被移除。",
-			serverLabel, toolName, serverLabel,
-		),
-		Options:   []string{"确认", "取消"},
-		InputType: "confirm",
-		// The nonce binds this card to the pending note. Nothing after it is
-		// user-facing: the question already says how long the grant lasts.
-		Context: mcpServerWriteAskContext + nonce + ";",
-	}
-	return tool.SelectionExecutionResult{
-		Result:     agent.AskUserResultMarker(ask),
-		Paused:     true,
-		ReasonCode: mcpServerWriteAwaitingConfirmation,
-	}, true
-}
-
-// mcpServerDisplayNameCandidates yields a friendlier server label for the
-// confirmation card when the registry knows one.
-func mcpServerDisplayNameCandidates(h *IMMessageHandler, serverID string) []string {
-	if h == nil {
-		return nil
-	}
-	if registry := h.getMCPRegistry(); registry != nil {
-		for _, server := range registry.ListServers() {
-			if strings.TrimSpace(server.ID) == serverID && strings.TrimSpace(server.Name) != "" {
-				return []string{strings.TrimSpace(server.Name)}
-			}
-		}
-		for _, server := range registry.ListLocalServers() {
-			if strings.TrimSpace(server.ID) == serverID && strings.TrimSpace(server.Name) != "" {
-				return []string{strings.TrimSpace(server.Name)}
-			}
-		}
-	}
-	return nil
+	// mcpEntries is the installed inventory observed by the caller. A match
+	// and a miss both proceed: a miss fails closed when the executor
+	// revalidates the binding, and a match is the server the user installed.
+	return tool.SelectionExecutionResult{}, false
 }
 
 // finishMCPServerWriteAskUser settles a paused server-write confirmation.
@@ -586,18 +507,16 @@ func (h *IMMessageHandler) finishMCPServerWriteAskUser(userID, text string, writ
 	return "", false
 }
 
-// mcpServerWriteApprovedHint points at the function this turn will list.
-// Unreviewed MCP renders as invoke_<grant>. That token dies with the turn.
-// The description prefix is stable, and it is the same sentence the renderer
-// puts on the successor. Naming the old function would send the model at a
-// token this turn rejects.
+// mcpServerWriteApprovedHint names the stable function. The same spelling is
+// listed on the next request and on later calls. An older invoke_* token is
+// not a name the model should hunt for.
 func mcpServerWriteApprovedHint(serverLabel, serverID, toolName string) string {
-	match := "Call the function listed in this turn whose description names that installed MCP tool."
-	if summary := agentservice.InstalledMCPToolPromptSummary(serverID, toolName); summary != "" {
-		match = fmt.Sprintf("Call the function listed in this turn whose description starts with %q.", summary)
+	name := tool.InstalledMCPModelFunctionName(serverID, toolName)
+	if name == "" {
+		name = "the installed MCP function whose description names that tool"
 	}
 	return fmt.Sprintf(
-		"[Context hint] The user explicitly approved external-effect calls through installed MCP server %q until that server is removed. %s Do not reuse a function name from an earlier turn. The approval applies only to server %q, and the grant does not cover other servers or tools outside it.",
-		serverLabel, match, serverID,
+		"[Context hint] Installed MCP server %q is authorized. Call %s. That name stays the same for later calls. Do not ask the user to continue. The call applies only to server %q.",
+		serverLabel, name, serverID,
 	)
 }

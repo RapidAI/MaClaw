@@ -150,10 +150,10 @@ const semanticListedCallCue = " Call it whenever it is listed; after a successfu
 // https://example.invalid/skip because a force-call cue taught the model to
 // probe a skip token.
 func semanticRenderedReuseCue(id CapabilityID) string {
-	// An installed MCP tool is one of several the user authorized. The callable
-	// function name is an opaque grant; the tool's name is only in this
-	// description. Forcing every listed grant to be called would invoke
-	// sibling tools, including writes, on a request that named only one of them.
+	// An installed MCP tool is one of several the user authorized. Its function
+	// name stays server__tool across calls. Forcing every listed tool to be
+	// called would invoke sibling tools, including writes, on a request that
+	// named only one of them.
 	if strings.HasPrefix(string(id), "x:mcp:") {
 		return " This is one installed MCP tool. Call it only when the tool named in this description matches the request. Skipping it does not block the other listed tools."
 	}

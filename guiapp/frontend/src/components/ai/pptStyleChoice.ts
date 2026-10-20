@@ -32,18 +32,40 @@ export function isPPTMakerExpert(expertId?: string | null): boolean {
     return String(expertId || "").trim() === PPT_EXPERT_ID;
 }
 
+export function styleMatchTerms(style: PPTStyleChoiceOption): string[] {
+    const raw = [
+        ...(style.keywords || []),
+        style.label,
+        style.label_en,
+        style.label_hant,
+    ];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const item of raw) {
+        const kw = String(item || "").trim().toLowerCase();
+        if (!kw || Array.from(kw).length < 2 || seen.has(kw)) continue;
+        seen.add(kw);
+        out.push(kw);
+    }
+    return out;
+}
+
 /** Longest matching keyword wins, then total length, then catalog order. */
 export function recommendPPTStyle(styles: PPTStyleChoiceOption[], text: string): string {
     const hint = String(text || "").toLowerCase();
+    const explicitTag = hint.match(/theme=([a-z0-9_-]+)/);
+    if (explicitTag?.[1]) {
+        const matchedById = styles.find((s) => s.id.toLowerCase() === explicitTag[1]);
+        if (matchedById) return matchedById.id;
+    }
     let best = styles[0]?.id || "business";
     let bestLen = 0;
     let bestScore = 0;
     styles.forEach((style) => {
         let score = 0;
         let longest = 0;
-        for (const keyword of style.keywords || []) {
-            const kw = String(keyword || "").trim().toLowerCase();
-            if (Array.from(kw).length < 2 || !hint.includes(kw)) continue;
+        for (const kw of styleMatchTerms(style)) {
+            if (!hint.includes(kw)) continue;
             const n = Array.from(kw).length;
             score += n;
             if (n > longest) longest = n;

@@ -1303,6 +1303,10 @@ export function CancelFileCompanionWebTurn(arg1, arg2) {
   return window['go']['main']['App']['CancelFileCompanionWebTurn'](arg1, arg2);
 }
 
+export function StopFileCompanionWebNote(arg1, arg2) {
+  return window['go']['main']['App']['StopFileCompanionWebNote'](arg1, arg2);
+}
+
 export function FileCompanionWebPlayerLeft(arg1, arg2) {
   return window['go']['main']['App']['FileCompanionWebPlayerLeft'](arg1, arg2);
 }

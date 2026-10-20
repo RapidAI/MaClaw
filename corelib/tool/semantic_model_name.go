@@ -111,13 +111,87 @@ func reviewedDynamicPromptName(adapter string) (string, bool) {
 	return name, true
 }
 
+// installedMCPAdapterPrefix marks an installed MCP adapter whose model-visible
+// name is the stable server__tool spelling. The suffix stays the internal
+// dynamic adapter id. The grant token is still the one-shot consume identity;
+// it is not the name the model calls.
+const installedMCPAdapterPrefix = "installed-mcp:"
+
+// InstalledMCPModelFunctionName is the stable function an installed MCP tool
+// keeps across turns and across repeat calls. Rotating invoke_* tokens made
+// the model call a name that had already left the list.
+func InstalledMCPModelFunctionName(serverID, toolName string) string {
+	server := sanitizeInstalledMCPNamePart(serverID)
+	toolName = sanitizeInstalledMCPNamePart(toolName)
+	if server == "" || toolName == "" {
+		return ""
+	}
+	name := server + "__" + toolName
+	if validRenderedFunctionName(name) {
+		return name
+	}
+	sum := SchemaDigest([]byte(server + "\x00" + toolName))
+	if len(sum) > 8 {
+		sum = sum[:8]
+	}
+	keep := 64 - len(sum) - 1
+	if keep < 1 {
+		keep = 1
+	}
+	if len(name) > keep {
+		name = name[:keep]
+	}
+	name = strings.Trim(name, "_-")
+	if name == "" {
+		name = "mcp"
+	}
+	candidate := name + "_" + sum
+	if !validRenderedFunctionName(candidate) {
+		return ""
+	}
+	return candidate
+}
+
+func sanitizeInstalledMCPNamePart(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(value))
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return strings.Trim(b.String(), "_-")
+}
+
+func installedMCPPromptName(adapter string) (string, bool) {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(adapter), installedMCPAdapterPrefix)
+	if !ok {
+		return "", false
+	}
+	name, suffix, ok := strings.Cut(rest, ":")
+	if !ok || !strings.HasPrefix(suffix, "dynamic_mcp_") || !validRenderedFunctionName(name) {
+		return "", false
+	}
+	return name, true
+}
+
 // RenderedSemanticFunctionName is the model-visible function for a selection.
-// Known host adapters use a stable prompt name. A dynamic adapter uses that
-// same prompt name only when its reviewed binding opted into the sealed
-// prompt set. Every other dynamic MCP/Skill adapter keeps the rotating grant
-// token so provider identity does not leak.
+// Known host adapters use a stable prompt name. An installed MCP adapter uses
+// server__tool, which does not change when the one-shot grant is replaced.
+// A reviewed dynamic binding uses its sealed prompt spelling. Every other
+// dynamic adapter keeps the rotating grant token.
 func RenderedSemanticFunctionName(adapter, grantToken string) string {
 	if name := SemanticModelFunctionName(adapter); name != "" {
+		return name
+	}
+	if name, ok := installedMCPPromptName(adapter); ok {
 		return name
 	}
 	return strings.TrimSpace(grantToken)

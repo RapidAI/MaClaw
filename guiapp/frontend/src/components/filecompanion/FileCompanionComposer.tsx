@@ -176,7 +176,7 @@ export function FileCompanionComposer({ path, value, onChange, onSubmit, busy = 
                     onKeyDown={onKeyDown}
                     style={{ flex: 1, minHeight: 44, maxHeight: 160, border: "none", outline: "none", resize: "none", padding: "6px 4px", font: "inherit", fontSize: 14, lineHeight: 1.5, background: "transparent", color: "#1e293b" }}
                 />
-                <button type="submit" className="file-companion-send" data-testid="file-companion-send" disabled={!busy && !value.trim()} aria-busy={busy}>发送</button>
+                <button type="submit" className="file-companion-send" data-testid="file-companion-send" disabled={!busy && !value.trim()} aria-busy={busy}>{busy ? "处理中" : "发送"}</button>
             </div>
             <p style={{ margin: "6px 2px 0", fontSize: 12, color: "#94a3b8" }}>Enter 发送，Shift+Enter 换行，↑↓ 翻看已发送的内容，/clear 清空</p>
         </form>

@@ -3,12 +3,14 @@ package guiapp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"image"
 	"image/color"
 	"image/draw"
 	"image/jpeg"
 	"image/png"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -16,6 +18,21 @@ import (
 )
 
 const fileCompanionWebCaptureEvery = 3 * time.Second
+
+// fileCompanionPlaybackPoll is how often a recording asks the player whether
+// this video has finished. The frame grab stays on fileCompanionWebCaptureEvery.
+const fileCompanionPlaybackPoll = time.Second
+
+// webPlaybackEndedScript reads the showing player. It does not navigate,
+// download, or change the page. YouTube's end screen puts ended-mode on
+// #movie_player. ad-showing is an advertisement. A live stream has a
+// non-finite duration. webPlaybackHasEnded decides from the JSON.
+const webPlaybackEndedScript = `(function(){try{var root=document.getElementById("movie_player");if(!root){var found=document.getElementsByClassName("html5-video-player");if(found&&found.length)root=found[0];}var player=!!root;var ad=!!(root&&root.classList&&root.classList.contains("ad-showing"));var endedMode=!!(root&&root.classList&&root.classList.contains("ended-mode"));var v=document.querySelector("video.html5-main-video")||document.querySelector("video");var ended=false,finite=false,nearEnd=false;if(v){var d=v.duration;finite=typeof d==="number"&&isFinite(d)&&d>0;ended=!!v.ended;nearEnd=finite&&typeof v.currentTime==="number"&&(v.currentTime+1.5)>=d;}return {player:player,ad:ad,endedMode:endedMode,ended:ended,finite:finite,nearEnd:nearEnd};}catch(e){return {player:false,ad:false,endedMode:false,ended:false,finite:false,nearEnd:false};}})()`
+
+// fileCompanionPlaybackEndedHook replaces the player probe in tests.
+// A nil hook asks the showing player. A true result ends the recording the
+// same way 停止 does during capture: frames already taken stay, and the note is written.
+var fileCompanionPlaybackEndedHook func(ctx context.Context) bool
 
 // errCompanionWebViewUnbound means this process has no live Wails WebView.
 // Capture returns immediately and does not open a sound device.
@@ -98,9 +115,11 @@ func captureLeft(ctx context.Context) bool {
 	return drop.note != nil && drop.note.Err() != nil
 }
 
-// fileCompanionCaptureWeb records the WebView until ctx ends or 10800 seconds.
-// note and player stay open while this player is still the one on screen.
-// Cancelling either one drops the raster in flight and does not wait for it.
+// fileCompanionCaptureWeb records the WebView until ctx ends, the video
+// finishes, or 10800 seconds. note and player stay open while this player
+// is still the one on screen. Cancelling either one drops the raster in
+// flight and does not wait for it. A finished video stops like 停止 during
+// capture: frames already taken stay and the note is written.
 // A non-nil fileCompanionWebCaptureHook replaces the whole recording for tests.
 // A nil hook calls captureCompanionWebViewPNG and captureProcessAudio.
 func fileCompanionCaptureWeb(ctx context.Context, rect image.Rectangle, note, player context.Context) (shots []webNoteShot, audio []byte, refused bool) {
@@ -127,18 +146,26 @@ func fileCompanionCaptureWeb(ctx context.Context, rect image.Rectangle, note, pl
 	var frames []videoNoteFrame
 	playerDone, noteDone := captureDropChans(ctx)
 	for ctx.Err() == nil && !captureLeft(ctx) && time.Since(start) < fileCompanionNoteMaxDuration {
+		// This video finished. Stop the same way 停止 does during capture:
+		// keep the frames already taken and write the note. Do not grab the
+		// end screen or the next autoplayed video.
+		if fileCompanionPlaybackEnded(ctx) {
+			break
+		}
 		pngBytes, err := captureCompanionWebViewPNG(ctx, rect)
 		// Leaving the player drops this raster: it can already be the next page.
-		// 停止 only ends the loop below, so a finished frame of this player stays.
+		// 停止 keeps a finished frame of this player. Playback that ended
+		// during the grab does not: that picture is the end screen.
 		if captureLeft(ctx) {
 			break
 		}
-		if err == nil && len(pngBytes) > 0 {
+		ended := fileCompanionPlaybackEnded(ctx)
+		if !ended && err == nil && len(pngBytes) > 0 {
 			if shot, ok := webShotFromPNG(pngBytes, time.Since(start)); ok && !grayFrameBlack(shot.Gray) {
 				frames = fileCompanionKeepWebShot(frames, videoNoteFrame{At: shot.At, Gray: shot.Gray, JPEG: shot.JPEG})
 			}
 		}
-		if ctx.Err() != nil || captureLeft(ctx) {
+		if ctx.Err() != nil || captureLeft(ctx) || ended {
 			break
 		}
 		wait := fileCompanionWebCaptureEvery
@@ -148,15 +175,8 @@ func fileCompanionCaptureWeb(ctx context.Context, rect image.Rectangle, note, pl
 		if wait <= 0 {
 			break
 		}
-		timer := time.NewTimer(wait)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-		case <-playerDone:
-			timer.Stop()
-		case <-noteDone:
-			timer.Stop()
-		case <-timer.C:
+		if fileCompanionWaitCapture(ctx, wait, playerDone, noteDone) {
+			break
 		}
 	}
 	audioCancel()
@@ -166,6 +186,80 @@ func fileCompanionCaptureWeb(ctx context.Context, rect image.Rectangle, note, pl
 		shots = append(shots, webNoteShot{At: frame.At, Gray: frame.Gray, JPEG: frame.JPEG})
 	}
 	return shots, got.pcm, got.refused
+}
+
+// fileCompanionWaitCapture waits out the gap between frames.
+// A true result means this video has finished, so the caller stops recording.
+func fileCompanionWaitCapture(ctx context.Context, wait time.Duration, playerDone, noteDone <-chan struct{}) bool {
+	if wait <= 0 {
+		return false
+	}
+	deadline := time.NewTimer(wait)
+	defer deadline.Stop()
+	pulse := time.NewTimer(fileCompanionPlaybackPoll)
+	defer pulse.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-playerDone:
+			return false
+		case <-noteDone:
+			return false
+		case <-deadline.C:
+			return false
+		case <-pulse.C:
+			if fileCompanionPlaybackEnded(ctx) {
+				return true
+			}
+			pulse.Reset(fileCompanionPlaybackPoll)
+		}
+	}
+}
+
+func fileCompanionPlaybackEnded(ctx context.Context) bool {
+	if ctx != nil && ctx.Err() != nil {
+		return false
+	}
+	if fileCompanionPlaybackEndedHook != nil {
+		return fileCompanionPlaybackEndedHook(ctx)
+	}
+	return capturePlaybackEnded(ctx)
+}
+
+// webPlaybackProbe is the player fact the page script reports.
+type webPlaybackProbe struct {
+	Player    bool `json:"player"`
+	Ad        bool `json:"ad"`
+	EndedMode bool `json:"endedMode"`
+	Ended     bool `json:"ended"`
+	Finite    bool `json:"finite"`
+	NearEnd   bool `json:"nearEnd"`
+}
+
+// webPlaybackHasEnded is true when the content video has finished.
+// YouTube's end screen is ended-mode on #movie_player. The same video
+// element reports ended when an advertisement finishes, so that flag is
+// not the end while the YouTube player is on the page. An advertisement
+// is not the end. A page without that player uses a finite video that has
+// ended on its duration. A live stream has no finite duration and no
+// ended-mode, so it is not the end.
+func webPlaybackHasEnded(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" || len(raw) > 512 {
+		return false
+	}
+	var probe webPlaybackProbe
+	if err := json.Unmarshal([]byte(raw), &probe); err != nil {
+		return false
+	}
+	if probe.Ad {
+		return false
+	}
+	if probe.Player {
+		return probe.EndedMode
+	}
+	return probe.Ended && probe.Finite && probe.NearEnd
 }
 
 func webShotFromPNG(raw []byte, at time.Duration) (webNoteShot, bool) {

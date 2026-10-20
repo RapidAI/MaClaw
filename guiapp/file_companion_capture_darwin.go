@@ -440,3 +440,5 @@ func captureProcessAudio(ctx context.Context) ([]byte, bool) {
 	defer C.free(unsafe.Pointer(out))
 	return pcm16MonoWAV(C.GoBytes(unsafe.Pointer(out), n), 16000), false
 }
+
+func capturePlaybackEnded(context.Context) bool { return false }

@@ -41,10 +41,11 @@ type OutlineSlide struct {
 	Charts  []OutlineChart `json:"charts,omitempty"`
 	// Kicker is the small eyebrow above the title.
 	Kicker string `json:"kicker,omitempty"`
-	// Layout is auto, bullets, cards, section, agenda, kpi, quote, or closing.
-	// Empty means auto: a title-only page becomes a section divider, and two
-	// to four short points become cards. Photos and charts keep the split
-	// bullet layout so their geometry stays readable.
+	// Layout is auto, bullets, cards, section, agenda, kpi, quote, or closing
+	// (timeline and comparison aliases route to structured cards). Empty means
+	// auto: a title-only page becomes a section divider, and two to six short
+	// points become cards. Photos and charts keep the split bullet layout so
+	// their geometry stays readable.
 	Layout string `json:"layout,omitempty"`
 }
 

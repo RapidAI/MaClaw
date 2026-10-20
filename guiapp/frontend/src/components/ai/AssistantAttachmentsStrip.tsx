@@ -1,11 +1,8 @@
 import { useEffect, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
 import { AIAssistantAttachmentPreviewDataURL } from "../../../wailsjs/go/main/App";
-import { attachmentHasDocumentPreview } from "../preview/filePreviewKind";
-import { AttachmentDocumentPreview } from "./AttachmentDocumentPreview";
 import { AttachmentImageThumbnail } from "./AttachmentImagePreview";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { isImageFilePath } from "./useAIAssistant";
-import { ATTACHMENT_DOC_PREVIEW_MAX_HEIGHT } from "./attachmentOpeningPreview";
 import { type Theme } from "./aiAssistantPanelTheme";
 import "./ensureAIAssistantPanelStyles";
 
@@ -25,10 +22,6 @@ function attachmentKindLabel(fileName: string, extension: string): string {
     const raw = (extension || fileName.match(/\.[^./\\]+$/)?.[0] || "").replace(/^\./, "").trim();
     if (!raw) return "FILE";
     return raw.slice(0, 4).toUpperCase();
-}
-
-function showDocumentRow(isImage: boolean, name: string): boolean {
-    return !isImage && attachmentHasDocumentPreview(name);
 }
 
 function attachmentFileName(filePath: string): string {
@@ -111,13 +104,6 @@ function AttachmentVisual({ filePath, fileName, isImage, lang, theme }: {
 }) {
     const [preview, setPreview] = useState("");
     const [previewFailed, setPreviewFailed] = useState(false);
-    const [documentFailed, setDocumentFailed] = useState(false);
-    const showDocument = !isImage && attachmentHasDocumentPreview(fileName || filePath) && !documentFailed;
-
-    useEffect(() => {
-        setDocumentFailed(false);
-    }, [filePath, fileName]);
-
     useEffect(() => {
         if (!isImage) {
             setPreview("");
@@ -141,18 +127,6 @@ function AttachmentVisual({ filePath, fileName, isImage, lang, theme }: {
         return () => { active = false; };
     }, [filePath, isImage]);
 
-    if (showDocument) {
-        return (
-            <AttachmentDocumentPreview
-                filePath={filePath}
-                fileName={fileName}
-                theme={theme}
-                lang={lang}
-                onFail={() => setDocumentFailed(true)}
-            />
-        );
-    }
-
     if (preview) {
         // Resolved bytes can still fail to decode in the <img>; fall back to
         // the type badge instead of a broken-image glyph.
@@ -168,26 +142,8 @@ function attachmentRemoveLabel(lang: string, fileName: string): string {
     return lang.startsWith("en") ? `Remove ${fileName}` : `移除 ${fileName}`;
 }
 
-function attachmentItemStyle(theme: Theme, documentRow: boolean): CSSProperties {
-    const row = attachmentRowStyle(theme);
-    if (!documentRow) return { ...row, alignItems: "flex-start" };
-    // Hug the card so the remove button stays on its corner. max-content can
-    // still shrink to the composer width; a 1fr track would pin the button to
-    // the far edge once the preview falls back to a small badge.
-    return {
-        ...row,
-        alignItems: "start",
-        width: "max-content",
-        maxWidth: "100%",
-        minWidth: 0,
-        boxSizing: "border-box",
-        padding: 0,
-        background: "transparent",
-        border: "none",
-        display: "grid",
-        gridTemplateColumns: "minmax(0, max-content) auto",
-        gap: 6,
-    };
+function attachmentItemStyle(theme: Theme): CSSProperties {
+    return { ...attachmentRowStyle(theme), alignItems: "flex-start" };
 }
 
 function attachmentRowStyle(theme: Theme): CSSProperties {
@@ -238,8 +194,6 @@ export function AssistantAttachmentsStrip({
     theme: t,
 }: AssistantAttachmentsStripProps) {
     const hasAttachments = pendingAttachments.length > 0 || selectedFilePaths.length > 0;
-    const hasDocumentPreview = pendingAttachments.some((att) => !att.isImage && attachmentHasDocumentPreview(att.fileName || att.filePath))
-        || selectedFilePaths.some((filePath) => !isImageFilePath(filePath) && attachmentHasDocumentPreview(filePath));
 
     if (!hasAttachments) return null;
 
@@ -250,13 +204,10 @@ export function AssistantAttachmentsStrip({
             role="list"
             aria-label={lang.startsWith("en") ? "Attached files" : "已附加文件"}
             style={{
-                display: hasDocumentPreview ? "flex" : undefined,
-                flexDirection: hasDocumentPreview ? "column" : undefined,
-                width: hasDocumentPreview ? "min(100%, 680px)" : undefined,
                 gap: "5px",
                 alignSelf: "flex-start",
                 minWidth: 0,
-                maxHeight: hasDocumentPreview ? `${ATTACHMENT_DOC_PREVIEW_MAX_HEIGHT + 48}px` : "120px",
+                maxHeight: "120px",
                 overflowY: "auto",
                 overscrollBehavior: "contain",
                 paddingRight: "4px",
@@ -271,7 +222,7 @@ export function AssistantAttachmentsStrip({
                     const fileName = att.fileName || attachmentFileName(att.filePath);
                     const displayName = abbreviateAttachmentFileName(fileName);
                     return (
-                        <div key={att.filePath + "-" + index} className="ai-attachment-row" role="listitem" title={att.filePath} style={attachmentItemStyle(t, showDocumentRow(att.isImage, att.fileName || att.filePath))}>
+                        <div key={att.filePath + "-" + index} className="ai-attachment-row" role="listitem" title={att.filePath} style={attachmentItemStyle(t)}>
                             <AttachmentVisual filePath={att.filePath} fileName={fileName} isImage={att.isImage} lang={lang} theme={t} />
                             <span title={att.filePath} aria-label={fileName} style={visuallyHiddenStyle}>{displayName}</span>
                             <button
@@ -294,7 +245,7 @@ export function AssistantAttachmentsStrip({
                     const fileName = attachmentFileName(filePath);
                     const displayName = abbreviateAttachmentFileName(fileName);
                     return (
-                        <div key={filePath + index} className="ai-attachment-row" role="listitem" title={filePath} style={attachmentItemStyle(t, showDocumentRow(isImageFilePath(filePath), filePath))}>
+                        <div key={filePath + index} className="ai-attachment-row" role="listitem" title={filePath} style={attachmentItemStyle(t)}>
                             <AttachmentVisual filePath={filePath} fileName={fileName} isImage={isImageFilePath(filePath)} lang={lang} theme={t} />
                             <span title={filePath} aria-label={fileName} style={visuallyHiddenStyle}>{displayName}</span>
                             <button

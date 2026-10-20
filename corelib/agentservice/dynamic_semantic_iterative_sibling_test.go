@@ -62,7 +62,7 @@ func TestWithSpentBudgetNoteListsSettledIterativeSiblings(t *testing.T) {
 		grants:    map[string]coretool.InvocationGrant{},
 	}
 	noted := download.withSpentBudgetNote(coretool.SelectionExecutionResult{Result: "saved", Succeeded: true}, secondID)
-	if len(download.plan.Selections) != 2 || !strings.Contains(noted.Result, coretool.RepeatWaveListedMarker) {
+	if len(download.plan.Selections) != 3 || strings.Contains(noted.Result, coretool.RepeatWaveListedMarker) || noted.Result != "saved" {
 		t.Fatalf("download selections=%d result=%q", len(download.plan.Selections), noted.Result)
 	}
 

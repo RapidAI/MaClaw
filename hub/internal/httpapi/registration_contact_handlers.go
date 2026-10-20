@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -51,34 +50,28 @@ func RegistrationContactSendCodeHandler(identity *auth.IdentityService, mailer *
 		kind := normalizeRegistrationContactKind(req.Kind)
 		switch kind {
 		case "email":
+			startedAt := time.Now()
 			email := strings.TrimSpace(strings.ToLower(req.Email))
+			emailLog := registrationEmailLogIdentity(email)
 			if !looksLikeRegistrationContactEmail(email) {
+				log.Printf("[registration-contact] email send_code_rejected tenant_id=%s user_id=%s email=%s code=INVALID_EMAIL elapsed=%s", principal.TenantID, user.ID, emailLog, time.Since(startedAt))
 				writeError(w, http.StatusBadRequest, "INVALID_EMAIL", "Valid email is required")
 				return
 			}
-			existing, err := lookupEmailIdentityUser(r.Context(), identity, principal.TenantID, email)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "EMAIL_LOOKUP_FAILED", err.Error())
-				return
-			}
-			if existing != nil && existing.ID != user.ID {
-				writeError(w, http.StatusConflict, "EMAIL_ALREADY_REGISTERED", "Email is already registered")
-				return
-			}
-			if err := identity.CanBindVerifiedEmailToUser(auth.WithTenant(r.Context(), principal.TenantID), user, email); err != nil {
-				switch {
-				case errors.Is(err, auth.ErrRoutedToAnotherHub):
-					writeError(w, http.StatusConflict, "EMAIL_ROUTED_TO_ANOTHER_HUB", err.Error())
-					return
-				case errors.Is(err, auth.ErrEmailDomainNotAllowed):
-					writeError(w, http.StatusForbidden, "EMAIL_DOMAIN_NOT_ALLOWED", err.Error())
-					return
-				default:
-					writeError(w, http.StatusInternalServerError, "EMAIL_BIND_CHECK_FAILED", err.Error())
+			// Proving the mailbox is local. Hub route ownership is checked when
+			// the code is verified, so a HubCenter outage cannot block delivery.
+			if err := identity.CanProveVerifiedEmailForUser(auth.WithTenant(r.Context(), principal.TenantID), user, email); err != nil {
+				if isRegistrationContactIdentityConflict(err) {
+					log.Printf("[registration-contact] email send_code_rejected tenant_id=%s user_id=%s email=%s code=EMAIL_ALREADY_REGISTERED elapsed=%s", principal.TenantID, user.ID, emailLog, time.Since(startedAt))
+					writeError(w, http.StatusConflict, "EMAIL_ALREADY_REGISTERED", "Email is already registered")
 					return
 				}
+				log.Printf("[registration-contact] email send_code_rejected tenant_id=%s user_id=%s email=%s code=EMAIL_BIND_CHECK_FAILED elapsed=%s err=%v", principal.TenantID, user.ID, emailLog, time.Since(startedAt), err)
+				writeError(w, http.StatusInternalServerError, "EMAIL_BIND_CHECK_FAILED", err.Error())
+				return
 			}
 			if mailer == nil {
+				log.Printf("[registration-contact] email send_code_rejected tenant_id=%s user_id=%s email=%s code=MAIL_NOT_CONFIGURED elapsed=%s", principal.TenantID, user.ID, emailLog, time.Since(startedAt))
 				writeError(w, http.StatusServiceUnavailable, "MAIL_NOT_CONFIGURED", "Mail delivery is not configured")
 				return
 			}
@@ -96,12 +89,14 @@ func RegistrationContactSendCodeHandler(identity *auth.IdentityService, mailer *
 			body := fmt.Sprintf("您的注册资料验证码是: %s\r\n\r\n验证码 %d 分钟内有效。如非本人操作，请忽略此消息。", code, int(verifyCodeTTL.Minutes()))
 			if err := mailer.Send(auth.WithTenant(r.Context(), principal.TenantID), []string{email}, "MaClaw 注册资料验证码", body); err != nil {
 				if !rollbackVerifyCode(principal.TenantID, key, code, previousCode) {
-					log.Printf("[registration-contact] send code rollback skipped tenant_id=%s user_id=%s email=%s reason=code_replaced", principal.TenantID, user.ID, registrationEmailLogIdentity(email))
+					log.Printf("[registration-contact] send code rollback skipped tenant_id=%s user_id=%s email=%s reason=code_replaced", principal.TenantID, user.ID, emailLog)
 				}
 				status, deliveryCode := registrationEmailDeliveryError(err)
+				log.Printf("[registration-contact] email send_code_failed tenant_id=%s user_id=%s email=%s code=%s elapsed=%s err=%v", principal.TenantID, user.ID, emailLog, deliveryCode, time.Since(startedAt), err)
 				writeError(w, status, deliveryCode, err.Error())
 				return
 			}
+			log.Printf("[registration-contact] email send_code_succeeded tenant_id=%s user_id=%s email=%s elapsed=%s", principal.TenantID, user.ID, emailLog, time.Since(startedAt))
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": "email", "expires_min": int(verifyCodeTTL.Minutes()), "code_length": 6})
 		case "phone":
 			forwardRegistrationContactSMS(w, r, RegistrationSMSSendCodeRequest{
@@ -133,13 +128,6 @@ func RegistrationContactVerifyHandler(identity *auth.IdentityService, system sto
 			email := strings.TrimSpace(strings.ToLower(req.Email))
 			if !looksLikeRegistrationContactEmail(email) {
 				writeError(w, http.StatusBadRequest, "INVALID_EMAIL", "Valid email is required")
-				return
-			}
-			if existing, err := lookupEmailIdentityUser(r.Context(), identity, principal.TenantID, email); err != nil {
-				writeError(w, http.StatusInternalServerError, "EMAIL_LOOKUP_FAILED", err.Error())
-				return
-			} else if existing != nil && existing.ID != user.ID {
-				writeError(w, http.StatusConflict, "EMAIL_ALREADY_REGISTERED", "Email is already registered")
 				return
 			}
 			key := registrationContactEmailKey(user.ID, email)
@@ -264,13 +252,6 @@ func authenticateRegistrationContactUser(w http.ResponseWriter, r *http.Request,
 		return nil, nil, false
 	}
 	return principal, user, true
-}
-
-func lookupEmailIdentityUser(ctx context.Context, identity *auth.IdentityService, tenantID, email string) (*store.User, error) {
-	if identity == nil || identity.UsersRepo() == nil {
-		return nil, nil
-	}
-	return identity.UsersRepo().GetByTenantIdentity(auth.WithTenant(ctx, tenantID), tenantID, "email", email)
 }
 
 func isRegistrationContactIdentityConflict(err error) bool {

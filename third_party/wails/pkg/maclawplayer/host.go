@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/wailsapp/wails/v2/pkg/maclawcapture"
 )
@@ -49,12 +50,28 @@ var (
 	// wanted is the page the slot asked for. It is recorded before a host
 	// exists, because the document must be requested in that host's profile
 	// and not framed while the controller is still being created.
+	// Each Place publishes a new pointer. Hide clears Visible on that pointer.
 	wanted *Placement
+	// applyMu serializes host Place and Hide. The slot calls arrive on
+	// different goroutines, and a host call waits for the UI thread. mu stays
+	// free across that wait: Set runs on the UI thread and also locks mu.
+	applyMu sync.Mutex
+	// testBeforeApply runs after a request is published and before the host
+	// call. Tests hide or replace the page in that window. Production leaves it nil.
+	testBeforeApply func()
+	// skipPlace drops the next Place before it is published. The Windows
+	// binding queue sets it when a newer Place or Hide is already waiting.
+	// The binding goroutines can run out of receive order, so the queue is
+	// what keeps a later leave from losing to an earlier Place.
+	skipPlace atomic.Bool
 )
 
 // Set installs the process host. Nil clears it. A page requested before the
 // host existed is shown then, so the first request is not dropped and later
 // framed under the app origin.
+// The replay calls the host directly and does not take applyMu. Set runs on
+// the UI thread, and a Place goroutine may already hold applyMu while it
+// waits for that thread.
 func Set(h Host) {
 	mu.Lock()
 	current = h
@@ -83,12 +100,25 @@ func Available() bool {
 	return current != nil
 }
 
+// SkipNextPlace drops the next Place before it changes the wanted page.
+// A newer Place or Hide is already queued behind it.
+func SkipNextPlace() { skipPlace.Store(true) }
+
+// ConsumeSkipPlace reports that this Place was dropped, and clears the mark.
+func ConsumeSkipPlace() bool { return skipPlace.CompareAndSwap(true, false) }
+
+// ClearSkipPlace clears a mark the dropped call did not consume.
+func ClearSkipPlace() { skipPlace.Store(false) }
+
 // Place asks the host to show url at bounds. The request is kept when the
 // host is not installed yet and applied from Set.
+// A Place that is no longer the wanted page does not call the host. The slot
+// can leave, or a newer Place can replace it, while this call is still on
+// the way to the host.
 func Place(url string, bounds Bounds) error {
 	mu.Lock()
-	next := Placement{URL: url, Bounds: bounds, Visible: true}
-	wanted = &next
+	next := &Placement{URL: url, Bounds: bounds, Visible: true}
+	wanted = next
 	h := current
 	mu.Unlock()
 	if h == nil {
@@ -97,12 +127,25 @@ func Place(url string, bounds Bounds) error {
 		}
 		return errNoHost
 	}
+	if testBeforeApply != nil {
+		testBeforeApply()
+	}
+	applyMu.Lock()
+	defer applyMu.Unlock()
+	mu.Lock()
+	still := wanted == next && next.Visible
+	mu.Unlock()
+	if !still {
+		return nil
+	}
 	return h.Place(url, bounds)
 }
 
 // Hide removes the player page from the window. A request that arrived before
 // the host is forgotten, so installing the host does not open a page the slot
 // has already left.
+// A Hide that lost to a newer Place does not call the host, so it cannot
+// cover the page that Place is about to show.
 func Hide() {
 	mu.Lock()
 	if wanted != nil {
@@ -110,9 +153,18 @@ func Hide() {
 	}
 	h := current
 	mu.Unlock()
-	if h != nil {
-		h.Hide()
+	if h == nil {
+		return
 	}
+	applyMu.Lock()
+	defer applyMu.Unlock()
+	mu.Lock()
+	show := wanted != nil && wanted.Visible
+	mu.Unlock()
+	if show {
+		return
+	}
+	h.Hide()
 }
 
 // Showing reports whether the player page is supposed to be on screen.

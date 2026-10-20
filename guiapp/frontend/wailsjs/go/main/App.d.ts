@@ -655,6 +655,8 @@ export function CancelFileCompanionTurn(arg1:string):Promise<void>;
 
 export function CancelFileCompanionWebTurn(arg1:string,arg2:number):Promise<void>;
 
+export function StopFileCompanionWebNote(arg1:string,arg2:number):Promise<void>;
+
 export function FileCompanionWebPlayerLeft(arg1:string,arg2:number):Promise<void>;
 
 export function FileCompanionDiscardWebNote(arg1:string):Promise<void>;

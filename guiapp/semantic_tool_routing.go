@@ -207,6 +207,30 @@ func (s *semanticCallSurface) epochIsCurrent(epoch string) bool {
 	return epoch == s.activeEpoch
 }
 
+// adoptRequestEpoch binds this surface to an epoch the loop already minted
+// for the current model request. The installed-MCP sidecar does not mint a
+// second epoch: one response carries one epoch, and a late call from the
+// previous response must fail against this snapshot. An empty epoch leaves
+// the surface unchanged so a publish that runs before BeginToolSurfaceEpoch
+// cannot wipe a fence that was already issued.
+func (s *semanticCallSurface) adoptRequestEpoch(epoch string) {
+	if s == nil {
+		return
+	}
+	epoch = strings.TrimSpace(epoch)
+	if epoch == "" {
+		return
+	}
+	s.epochMu.Lock()
+	defer s.epochMu.Unlock()
+	s.activeEpoch = epoch
+	families := make(map[string]string, len(s.grants))
+	for name, grant := range s.grants {
+		families[name] = tool.RepeatFamilyKey(grant.SelectionID)
+	}
+	s.epochSnapshot = semanticEpochSnapshot{epoch: epoch, planID: s.plan.ID, families: families}
+}
+
 // retireEpochSnapshots drops the continuation evidence together with the
 // epoch. Cancellation/replacement is terminal: no late call may bind anything
 // on this surface afterwards, so the snapshot must not outlive the fence.
@@ -888,6 +912,11 @@ func loopContextBlocksLegacyToolRouter(ctx *LoopContext) bool {
 	if discoveredMCPContinuationTurn(ctx) {
 		return false
 	}
+	// The worker already left the semantic lookup surface. A managed label
+	// copied from the host prompt must not leave it with an empty tool list.
+	if ctx != nil && strings.TrimSpace(ctx.ChatTaskID) != "" {
+		return false
+	}
 	if loopContextTurnAnswerOnly(ctx) {
 		return true
 	}
@@ -1280,13 +1309,14 @@ func semanticLocalFileDeletePlanningClassification(result intent.ClassificationR
 }
 
 // semanticPlanningClassification applies query evidence before the resolver
-// floor. File delete wins, then a mailbox-message delete, then a markdown
-// file write, then a worklog record.
+// floor. File delete wins, then a schedule whose body is a mailbox delete,
+// then an immediate mailbox-message delete, then a markdown file write, then
+// a worklog record.
 func semanticPlanningClassification(classification intent.ClassificationResult, planningQuery string) intent.ClassificationResult {
 	if tool.QueryWantsLocalFileDelete(planningQuery) {
 		return semanticLocalFileDeletePlanningClassification(classification)
 	}
-	if rewritten := semanticMailboxDeletePlanningRewrite(&classification, planningQuery); rewritten != nil {
+	if rewritten := semanticGovernedEffectPlanningRewrite(&classification, planningQuery); rewritten != nil {
 		return *rewritten
 	}
 	if tool.QueryWantsMarkdownFile(planningQuery) {
@@ -2213,6 +2243,13 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndAttachm
 		log.Printf("[semantic-routing] goal continuation keeps lifecycle goal tool user=%q channel=%q platform=%q", userID, channel, loopPlatform)
 		return nil, nil, false, nil
 	}
+	// A background chat task is the rest of a turn the foreground loop already
+	// refused to finish inline. Classifying the host prompt again often yields
+	// one lookup family and the same short budget.
+	if ctx != nil && strings.TrimSpace(ctx.ChatTaskID) != "" {
+		log.Printf("[semantic-routing] background chat task keeps the full tool surface user=%q", userID)
+		return nil, nil, false, nil
+	}
 	// The reply that approves an installed MCP write already has that tool
 	// on the loop. Task-context merge classifies the short answer from the
 	// surrounding task and would publish a different surface, or HostReject
@@ -3104,20 +3141,31 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 		return nil, true, fmt.Errorf("build GUI dynamic semantic catalog: %w", err)
 	}
 	for _, provider := range dynamicCatalog.Providers {
+		// One MCP or skill definition the host cannot authorize must not
+		// hide the clock, the mailbox, or the sibling that already projected.
 		definition, ok := dynamicCatalog.Definitions[provider.AdapterName]
 		if !ok {
+			if dynamicProviderLeftUnpublished(provider, fmt.Errorf("dynamic semantic definition missing for %q", provider.AdapterName)) {
+				continue
+			}
 			return nil, true, fmt.Errorf("dynamic semantic definition missing for %q", provider.AdapterName)
 		}
 		invocationSchema, err := semanticInvocationSchema(definition)
 		if err != nil {
+			if dynamicProviderLeftUnpublished(provider, fmt.Errorf("validate dynamic semantic invocation schema for %q: %w", provider.AdapterName, err)) {
+				continue
+			}
 			return nil, true, fmt.Errorf("validate dynamic semantic invocation schema for %q: %w", provider.AdapterName, err)
+		}
+		authorization, err := tool.NewParameterAuthorization(invocationSchema)
+		if err != nil {
+			if dynamicProviderLeftUnpublished(provider, fmt.Errorf("authorize dynamic semantic invocation schema for %q: %w", provider.AdapterName, err)) {
+				continue
+			}
+			return nil, true, fmt.Errorf("authorize dynamic semantic invocation schema for %q: %w", provider.AdapterName, err)
 		}
 		defsByName[provider.AdapterName] = definition
 		semanticSchemas[provider.AdapterName] = invocationSchema
-		authorization, err := tool.NewParameterAuthorization(invocationSchema)
-		if err != nil {
-			return nil, true, fmt.Errorf("authorize dynamic semantic invocation schema for %q: %w", provider.AdapterName, err)
-		}
 		provider.ParameterAuthorization = authorization
 		providers = append(providers, provider)
 	}
@@ -3617,14 +3665,17 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// publisher registered at observation time. Seed the vocabulary from this
 	// turn's provider set BEFORE snapshot validation — PublishWithCoverage
 	// rejects a provider whose provisions name a capability the registry does
-	// not know.
-	if err := agentservice.EnsureExternalCapabilityVocabulary(registry, semanticExternalCapabilityVocabulary(providers)); err != nil {
+	// not know. One MCP or skill contract that cannot be seeded or published
+	// is left out. A host, builtin, or channel provider still fails the turn.
+	providers, err = seedExternalVocabularyDroppingDynamic(registry, providers)
+	if err != nil {
 		return nil, true, fmt.Errorf("seed external capability vocabulary: %w", err)
 	}
-	snapshot, err := catalog.PublishWithCoverage(providers, coverage, time.Now().UTC())
+	snapshot, providers, err := publishCatalogDroppingDynamicProviders(catalog, providers, coverage)
 	if err != nil {
 		return nil, true, fmt.Errorf("publish IM semantic catalog: %w", err)
 	}
+	retainDiscoveredMCPDefinitions(providers, defsByName, semanticSchemas)
 	if policy.Enabled {
 		if !policy.AllowsExecutableScope() {
 			return nil, true, fmt.Errorf("semantic_routing_policy_mode_%s", policy.Mode)
@@ -3690,12 +3741,17 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	needs = semanticNeedsWithContractOnlyGraft(needs, providers, providerPins, registry)
 	plan, err := tool.NewToolPlanner(registry).Plan(tool.RouteRequest{
 		RootTaskID: rootTaskID, SessionID: sessionID, TurnID: turnID, ChannelScope: semanticChannelScope(channel), Snapshot: snapshot, Needs: needs, Facts: facts, Constraints: policyConstraints,
-		Pins:   providerPins,
-		Budget: semanticHostPlanningBudget(maxSelections, maxSchemaTokens),
+		Pins:                              providerPins,
+		Budget:                            semanticHostPlanningBudget(maxSelections, maxSchemaTokens),
+		ReadyMCPMutationsOnPartialCatalog: true,
 	})
 	if err != nil {
 		return nil, true, fmt.Errorf("plan IM semantic route: %w", err)
 	}
+	// An installed MCP tool is callable because the user installed it. A
+	// confirmation dependency on that selection used to reject the whole turn
+	// before any tool was listed.
+	releaseInstalledMCPConfirmation(&plan)
 	scopePlan, scopeResult := validateSemanticToolScope(plan, defsByName, rootTaskID, sessionID, turnID)
 	preparation := &semanticPlanPreparation{
 		registry: registry, plan: plan, scopePlan: scopePlan, definitions: defsByName, schemas: semanticSchemas,
@@ -3709,8 +3765,13 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// A selection budget that keeps an earlier required wave and only cuts
 	// later ones is not a catalog miss. Refusing the whole turn made 「北京天气」
 	// show "当前能力目录未覆盖这项请求" when render and deliver merely exceeded
-	// the selection cap.
-	if len(plan.Unmet) > 0 && !(len(plan.Selections) > 0 && semanticUnmetOnlyBudget(plan.Unmet)) {
+	// the selection cap. An installed MCP need is the same shape: the tool the
+	// user named may be unpublished, and the selections that did fit must still
+	// open so the model loop can list the tools that published. A required
+	// host need, including record.update.worklog with no ready writer, still
+	// stops the turn.
+	selectedDespiteUnmet := len(plan.Selections) > 0 && semanticUnmetAllowsSelectedTurn(plan.Unmet)
+	if len(plan.Unmet) > 0 && !selectedDespiteUnmet {
 		// Record what WAS installed at the moment a need went unserved.
 		//
 		// A no_feasible_provider row says "no provider was selectable", which is
@@ -3731,6 +3792,9 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 		}
 		return preparation, true, semanticUnmetNeedsError{Unmet: plan.Unmet}
 	}
+	if selectedDespiteUnmet && !semanticUnmetOnlyBudget(plan.Unmet) {
+		logSemanticUnmetWithInventory(plan.Unmet, dynamicInventory)
+	}
 	if err := semanticScopeSurfaceError(scopePlan, scopeResult); err != nil {
 		return preparation, true, err
 	}
@@ -3743,6 +3807,139 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 		}
 	}
 	return preparation, true, nil
+}
+
+// dynamicProviderKindDroppable reports an installed MCP or skill provider.
+// A failure of one of those is that tool's contract. Host, builtin, and
+// channel providers stay fatal: they are the turn.
+func dynamicProviderKindDroppable(provider tool.ProviderSpec) bool {
+	switch strings.ToLower(strings.TrimSpace(provider.Binding.Kind)) {
+	case "mcp", "skill":
+		return true
+	default:
+		return false
+	}
+}
+
+func dynamicProviderLeftUnpublished(provider tool.ProviderSpec, err error) bool {
+	if err == nil || !dynamicProviderKindDroppable(provider) {
+		return false
+	}
+	log.Printf("[semantic-routing] dynamic provider %s left unpublished: %v", strings.TrimSpace(provider.AdapterName), err)
+	return true
+}
+
+func providersWithoutAdapter(providers []tool.ProviderSpec, adapter string) []tool.ProviderSpec {
+	adapter = strings.TrimSpace(adapter)
+	next := make([]tool.ProviderSpec, 0, len(providers))
+	for _, provider := range providers {
+		if strings.TrimSpace(provider.AdapterName) == adapter {
+			continue
+		}
+		next = append(next, provider)
+	}
+	return next
+}
+
+func providerDeclaresCapability(provider tool.ProviderSpec, capID tool.CapabilityID) bool {
+	for _, provision := range provider.Provides {
+		if provision.Capability == capID {
+			return true
+		}
+	}
+	return false
+}
+
+// seedExternalVocabularyDroppingDynamic registers one external capability at
+// a time. A capability only an MCP or skill provider declares, and that the
+// registry rejects, drops those providers. A host provider that declares the
+// same capability still fails the turn.
+func seedExternalVocabularyDroppingDynamic(registry *tool.CapabilityRegistry, providers []tool.ProviderSpec) ([]tool.ProviderSpec, error) {
+	kept := providers
+	for _, capID := range semanticExternalCapabilityVocabulary(providers) {
+		if !providersDeclareCapability(kept, capID) {
+			continue
+		}
+		err := agentservice.EnsureExternalCapabilityVocabulary(registry, []tool.CapabilityID{capID})
+		if err == nil {
+			continue
+		}
+		if !dynamicProvidersDeclareCapability(kept, capID) || providersHaveNonDynamicCapability(kept, capID) {
+			return kept, err
+		}
+		next := providersWithoutDynamicCapability(kept, capID)
+		if len(next) == 0 || len(next) == len(kept) {
+			return kept, err
+		}
+		log.Printf("[semantic-routing] dynamic capability %s left unseeded: %v", capID, err)
+		kept = next
+	}
+	return kept, nil
+}
+
+func providersDeclareCapability(providers []tool.ProviderSpec, capID tool.CapabilityID) bool {
+	for _, provider := range providers {
+		if providerDeclaresCapability(provider, capID) {
+			return true
+		}
+	}
+	return false
+}
+
+func dynamicProvidersDeclareCapability(providers []tool.ProviderSpec, capID tool.CapabilityID) bool {
+	for _, provider := range providers {
+		if dynamicProviderKindDroppable(provider) && providerDeclaresCapability(provider, capID) {
+			return true
+		}
+	}
+	return false
+}
+
+func providersHaveNonDynamicCapability(providers []tool.ProviderSpec, capID tool.CapabilityID) bool {
+	for _, provider := range providers {
+		if dynamicProviderKindDroppable(provider) {
+			continue
+		}
+		if providerDeclaresCapability(provider, capID) {
+			return true
+		}
+	}
+	return false
+}
+
+func providersWithoutDynamicCapability(providers []tool.ProviderSpec, capID tool.CapabilityID) []tool.ProviderSpec {
+	next := make([]tool.ProviderSpec, 0, len(providers))
+	for _, provider := range providers {
+		if dynamicProviderKindDroppable(provider) && providerDeclaresCapability(provider, capID) {
+			continue
+		}
+		next = append(next, provider)
+	}
+	return next
+}
+
+// publishCatalogDroppingDynamicProviders publishes the managed catalog. One
+// MCP or skill provider the catalog rejects is removed and the rest are
+// published again. An error that names a host provider, names nobody, or
+// would leave the catalog empty still fails the turn.
+func publishCatalogDroppingDynamicProviders(catalog *tool.ToolCatalog, providers []tool.ProviderSpec, coverage tool.CatalogCoverage) (tool.ToolCatalogSnapshot, []tool.ProviderSpec, error) {
+	kept := providers
+	for {
+		snapshot, err := catalog.PublishWithCoverage(kept, coverage, time.Now().UTC())
+		if err == nil {
+			return snapshot, kept, nil
+		}
+		dropped, ok := discoveredMCPProviderNamedInError(err, kept)
+		if !ok || !dynamicProviderKindDroppable(dropped) {
+			return tool.ToolCatalogSnapshot{}, kept, err
+		}
+		next := providersWithoutAdapter(kept, dropped.AdapterName)
+		if len(next) == 0 || len(next) == len(kept) {
+			return tool.ToolCatalogSnapshot{}, kept, err
+		}
+		log.Printf("[semantic-routing] dynamic provider %s left unpublished: %v", strings.TrimSpace(dropped.AdapterName), err)
+		kept = next
+	}
 }
 
 // semanticInvocationSchema converts either a full JSON Schema definition or a

@@ -361,17 +361,53 @@ func TestApplyRemoteEnrollResultMarksOnboardingDoneWhenViewerReady(t *testing.T)
 	}
 }
 
+func TestApplyRemoteEnrollResultDropsSkillMarketSessionWhenHubUserChanges(t *testing.T) {
+	changed := applyRemoteEnrollResultToConfig(corelib.AppConfig{
+		RemoteUserID:              "u_old",
+		SkillMarketSessionToken:   "sm2.old",
+		SkillMarketSessionBaseURL: "https://issuer.example",
+	}, &remote.EnrollResult{
+		UserID:       "u_new",
+		Email:        "user@example.com",
+		MachineID:    "machine-1",
+		MachineToken: "machine-token",
+		ViewerToken:  "viewer-token",
+		HubURL:       "https://hub.example",
+	})
+	if changed.RemoteUserID != "u_new" || changed.SkillMarketSessionToken != "" || changed.SkillMarketSessionBaseURL != "" {
+		t.Fatalf("derived session survived hub user change: user=%q token=%q base=%q", changed.RemoteUserID, changed.SkillMarketSessionToken, changed.SkillMarketSessionBaseURL)
+	}
+
+	kept := applyRemoteEnrollResultToConfig(corelib.AppConfig{
+		RemoteUserID:              "u_same",
+		SkillMarketSessionToken:   "sm2.kept",
+		SkillMarketSessionBaseURL: "https://issuer.example",
+	}, &remote.EnrollResult{
+		UserID:       "u_same",
+		Email:        "user@example.com",
+		MachineID:    "machine-1",
+		MachineToken: "machine-token",
+		ViewerToken:  "viewer-token",
+		HubURL:       "https://hub.example",
+	})
+	if kept.SkillMarketSessionToken != "sm2.kept" || kept.SkillMarketSessionBaseURL != "https://issuer.example" {
+		t.Fatalf("same hub user lost session: token=%q base=%q", kept.SkillMarketSessionToken, kept.SkillMarketSessionBaseURL)
+	}
+}
+
 func TestRemoteDeactivateClearsServiceReadyCredentialsWithoutMachineID(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("MACLAW_DATA_DIR", dataDir)
 	store := NewFileConfigStore(dataDir)
 	if err := store.SaveConfig(corelib.AppConfig{
-		OnboardingDone:    true,
-		DefaultLaunchMode: "remote",
-		RemoteEnabled:     true,
-		RemoteEmail:       "user@example.com",
-		RemoteHubURL:      "https://hub.example",
-		RemoteViewerToken: "viewer-token",
+		OnboardingDone:            true,
+		DefaultLaunchMode:         "remote",
+		RemoteEnabled:             true,
+		RemoteEmail:               "user@example.com",
+		RemoteHubURL:              "https://hub.example",
+		RemoteViewerToken:         "viewer-token",
+		SkillMarketSessionToken:   "sm2.leftover",
+		SkillMarketSessionBaseURL: "https://issuer.example",
 	}); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
@@ -389,7 +425,7 @@ func TestRemoteDeactivateClearsServiceReadyCredentialsWithoutMachineID(t *testin
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if cfg.RemoteHubURL != "" || cfg.RemoteViewerToken != "" || cfg.RemoteEmail != "" || cfg.RemoteEnabled || cfg.OnboardingDone || cfg.DefaultLaunchMode == "remote" {
+	if cfg.RemoteHubURL != "" || cfg.RemoteViewerToken != "" || cfg.RemoteEmail != "" || cfg.RemoteEnabled || cfg.OnboardingDone || cfg.DefaultLaunchMode == "remote" || cfg.SkillMarketSessionToken != "" || cfg.SkillMarketSessionBaseURL != "" {
 		t.Fatalf("remote service credentials were not fully cleared: %#v", cfg)
 	}
 }

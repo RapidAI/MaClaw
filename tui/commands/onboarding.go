@@ -218,6 +218,7 @@ func activateRemoteForOnboarding(ctx context.Context, store *FileConfigStore, cf
 
 	cfg.RemoteEmail = result.Email
 	cfg.RemoteSN = result.SN
+	ClearSkillMarketSessionForHubUser(&cfg, result.UserID)
 	cfg.RemoteUserID = result.UserID
 	cfg.RemoteMachineID = result.MachineID
 	cfg.RemoteMachineToken = result.MachineToken

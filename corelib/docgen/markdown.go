@@ -333,6 +333,10 @@ func markdownToHTML(md string) string {
 // that have none (in-package HTML assertions), where a data-URL image then
 // resolves to nothing rather than being written somewhere unmanaged.
 func markdownToHTMLWithScratch(scratch *dataURLScratch, md string, colorful bool) string {
+	return markdownToHTMLStyled(scratch, md, colorful, Style{})
+}
+
+func markdownToHTMLStyled(scratch *dataURLScratch, md string, colorful bool, style Style) string {
 	lines := strings.Split(md, "\n")
 	var sb strings.Builder
 	listType := ""
@@ -344,6 +348,13 @@ func markdownToHTMLWithScratch(scratch *dataURLScratch, md string, colorful bool
 			sb.WriteString("</ul>")
 		case "ol":
 			sb.WriteString("</ol>")
+		default:
+			return
+		}
+		// The marker is painted from the state that reaches <ul>/<ol>.
+		// Those tags ignore their own style, so the ink has to sit on a parent.
+		if style.ID != "" {
+			sb.WriteString("</span>")
 		}
 		listType = ""
 	}
@@ -353,6 +364,9 @@ func markdownToHTMLWithScratch(scratch *dataURLScratch, md string, colorful bool
 		}
 		if listType != "" {
 			closeList()
+		}
+		if style.ID != "" {
+			sb.WriteString(`<span style="color:` + cssHex(style.Colors.Ink) + `">`)
 		}
 		sb.WriteString("<" + nextType + ">")
 		listType = nextType
@@ -371,7 +385,7 @@ func markdownToHTMLWithScratch(scratch *dataURLScratch, md string, colorful bool
 			if listType != "" {
 				closeList()
 			}
-			sb.WriteString("<hr/>")
+			sb.WriteString(styledRuleHTML(style))
 			continue
 		}
 		if prefix, ok := markdownHeadingPrefix(trimmed); ok {
@@ -379,23 +393,33 @@ func markdownToHTMLWithScratch(scratch *dataURLScratch, md string, colorful bool
 				closeList()
 			}
 			size, color := markdownHeadingPresentation(prefix, colorful, h2)
+			align := ""
+			mark := ""
+			if styledSize, styledColor, styledAlign := style.headingLook(prefix); styledSize != "" {
+				size, color, align = styledSize, styledColor, styledAlign
+				mark = headingMark(style, prefix)
+			}
 			if prefix == "## " {
 				if colorful {
 					sectionBody = paperSectionBodyColor(strings.TrimSpace(strings.TrimPrefix(trimmed, prefix)))
 				}
 				h2++
 			}
-			sb.WriteString(fmt.Sprintf(`<p style="font-size:%s; color:%s"><b>%s</b></p>`, size, color, renderInlineHTMLMode(strings.TrimPrefix(trimmed, prefix), colorful)))
+			alignAttr := ""
+			if align == "center" {
+				alignAttr = "text-align:center; "
+			}
+			sb.WriteString(fmt.Sprintf(`<p style="%sfont-size:%s; color:%s"><b>%s%s</b></p>`, alignAttr, size, color, mark, renderInlineHTMLMode(strings.TrimPrefix(trimmed, prefix), colorful, style)))
 			continue
 		}
-		if imageHTML, ok := markdownImageToHTML(scratch, trimmed, colorful); ok {
+		if imageHTML, ok := markdownImageToHTML(scratch, trimmed, colorful, style); ok {
 			if listType != "" {
 				closeList()
 			}
 			sb.WriteString(imageHTML)
 			continue
 		}
-		if tableHTML, nextIdx, ok := markdownTableToHTML(lines, i); ok {
+		if tableHTML, nextIdx, ok := markdownTableToHTML(lines, i, style); ok {
 			if listType != "" {
 				closeList()
 			}
@@ -407,9 +431,12 @@ func markdownToHTMLWithScratch(scratch *dataURLScratch, md string, colorful bool
 			if listType != "" {
 				closeList()
 			}
-			if colorful {
+			switch {
+			case colorful:
 				sb.WriteString(fmt.Sprintf(`<p style="text-align:center; font-size:12pt; color:#6d28d9">%s</p>`, text))
-			} else {
+			case style.ID != "":
+				sb.WriteString(fmt.Sprintf(`<p style="text-align:center; color:%s">%s</p>`, cssHex(style.Colors.Ink), text))
+			default:
 				sb.WriteString(fmt.Sprintf(`<p style="text-align:center">%s</p>`, text))
 			}
 			i = nextIdx
@@ -442,7 +469,11 @@ func markdownToHTMLWithScratch(scratch *dataURLScratch, md string, colorful bool
 				escaped = strings.ReplaceAll(escaped, "\t", "&nbsp;&nbsp;&nbsp;&nbsp;")
 				codeHTML.WriteString(escaped)
 			}
-			sb.WriteString(fmt.Sprintf(`<p style="font-size:8.5pt; font-family:monospace; background-color:#f3f4f6; color:#1f2937; padding:8px; border-radius:4px">%s</p>`, codeHTML.String()))
+			codeColor := "#1f2937"
+			if style.ID != "" {
+				codeColor = cssHex(style.Colors.Ink)
+			}
+			sb.WriteString(fmt.Sprintf(`<p style="font-size:8.5pt; font-family:monospace; background-color:#f3f4f6; color:%s; padding:8px; border-radius:4px">%s</p>`, codeColor, codeHTML.String()))
 			continue
 		}
 		if strings.HasPrefix(trimmed, ">") {
@@ -479,15 +510,22 @@ func markdownToHTMLWithScratch(scratch *dataURLScratch, md string, colorful bool
 				if bqHTML.Len() > 0 {
 					bqHTML.WriteString("<br/>")
 				}
-				bqHTML.WriteString(renderInlineHTMLMode(line, colorful))
+				bqHTML.WriteString(renderInlineHTMLMode(line, colorful, style))
 			}
-			sb.WriteString(fmt.Sprintf(`<p style="border-left:3px solid #d1d5db; padding-left:10px; color:#4b5563; margin-left:6px">%s</p>`, bqHTML.String()))
+			quoteColor, barColor := "#4b5563", "#d1d5db"
+			if style.ID != "" {
+				quoteColor = cssHex(style.Colors.Quote)
+				barColor = cssHex(style.Colors.Accent)
+				sb.WriteString(fmt.Sprintf(`<p style="color:%s"><span style="color:%s">%s </span>%s</p>`, quoteColor, barColor, styleMarkGlyph, bqHTML.String()))
+				continue
+			}
+			sb.WriteString(fmt.Sprintf(`<p style="border-left:3px solid %s; padding-left:10px; color:%s; margin-left:6px">%s</p>`, barColor, quoteColor, bqHTML.String()))
 			continue
 		}
 		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
 			ensureList("ul")
 			text := strings.TrimPrefix(strings.TrimPrefix(trimmed, "- "), "* ")
-			sb.WriteString(fmt.Sprintf("<li%s>%s</li>", paperBodyStyle(colorful, sectionBody), renderInlineHTMLMode(text, colorful)))
+			sb.WriteString(fmt.Sprintf("<li%s>%s</li>", paperBodyStyle(colorful, sectionBody, style), renderInlineHTMLMode(text, colorful, style)))
 			continue
 		}
 		if markdownOrderedListRe.MatchString(trimmed) {
@@ -496,23 +534,27 @@ func markdownToHTMLWithScratch(scratch *dataURLScratch, md string, colorful bool
 			if idx := strings.Index(text, ". "); idx > 0 {
 				text = text[idx+2:]
 			}
-			sb.WriteString(fmt.Sprintf("<li%s>%s</li>", paperBodyStyle(colorful, sectionBody), renderInlineHTMLMode(text, colorful)))
+			sb.WriteString(fmt.Sprintf("<li%s>%s</li>", paperBodyStyle(colorful, sectionBody, style), renderInlineHTMLMode(text, colorful, style)))
 			continue
 		}
 		if listType != "" {
 			closeList()
 		}
 		if colorful && paperCaptionLine(trimmed) {
-			sb.WriteString(fmt.Sprintf(`<p style="font-size:10pt; color:#0f766e"><i>%s</i></p>`, renderInlineHTMLMode(trimmed, true)))
+			caption := "#0f766e"
+			if style.ID != "" {
+				caption = cssHex(style.Colors.Meta)
+			}
+			sb.WriteString(fmt.Sprintf(`<p style="font-size:10pt; color:%s"><i>%s</i></p>`, caption, renderInlineHTMLMode(trimmed, true, style)))
 			continue
 		}
 		if colorful {
-			if mixed, ok := renderColorfulFormulaLine(trimmed, sectionBody); ok {
+			if mixed, ok := renderColorfulFormulaLine(trimmed, sectionBody, style); ok {
 				sb.WriteString(mixed)
 				continue
 			}
 		}
-		sb.WriteString(fmt.Sprintf("<p%s>%s</p>", paperBodyStyle(colorful, sectionBody), renderInlineHTMLMode(trimmed, colorful)))
+		sb.WriteString(fmt.Sprintf("<p%s>%s</p>", paperBodyStyle(colorful, sectionBody, style), renderInlineHTMLMode(trimmed, colorful, style)))
 	}
 	if listType != "" {
 		closeList()
@@ -520,7 +562,7 @@ func markdownToHTMLWithScratch(scratch *dataURLScratch, md string, colorful bool
 	return sb.String()
 }
 
-func markdownImageToHTML(scratch *dataURLScratch, line string, colorful bool) (string, bool) {
+func markdownImageToHTML(scratch *dataURLScratch, line string, colorful bool, style Style) (string, bool) {
 	matches := markdownImageRe.FindStringSubmatch(strings.TrimSpace(line))
 	if len(matches) != 3 {
 		return "", false
@@ -529,7 +571,9 @@ func markdownImageToHTML(scratch *dataURLScratch, line string, colorful bool) (s
 	rawPath := strings.TrimSpace(matches[2])
 	imagePath, ok := resolveMarkdownImagePath(scratch, rawPath)
 	captionColor := "#666"
-	if colorful {
+	if style.ID != "" {
+		captionColor = cssHex(style.Colors.Meta)
+	} else if colorful {
 		captionColor = "#0f766e"
 	}
 	if ok {
@@ -540,10 +584,11 @@ func markdownImageToHTML(scratch *dataURLScratch, line string, colorful bool) (s
 		width, height := fittedMarkdownImageSize(imagePath)
 		return fmt.Sprintf(`<p><img src="%s" width="%d" height="%d"/></p>%s`, escapeHTMLAttr(imagePath), width, height, caption), true
 	}
+	label := fmt.Sprintf("<p%s><b>图片：</b>%s</p>", paperBodyStyle(false, "", style), inlineMD(escapeHTML(fallbackText(alt, "未命名图片"))))
 	if isRemoteURL(rawPath) {
-		return fmt.Sprintf(`<p><b>图片：</b>%s</p><p style="font-size:9pt; color:#666"><i>暂不支持远程图片：%s</i></p>`, inlineMD(escapeHTML(fallbackText(alt, "未命名图片"))), inlineMD(escapeHTML(rawPath))), true
+		return label + fmt.Sprintf(`<p style="font-size:9pt; color:%s"><i>暂不支持远程图片：%s</i></p>`, captionColor, inlineMD(escapeHTML(rawPath))), true
 	}
-	return fmt.Sprintf(`<p><b>图片：</b>%s</p><p style="font-size:9pt; color:#666"><i>图片未找到：%s</i></p>`, inlineMD(escapeHTML(fallbackText(alt, "未命名图片"))), inlineMD(escapeHTML(rawPath))), true
+	return label + fmt.Sprintf(`<p style="font-size:9pt; color:%s"><i>图片未找到：%s</i></p>`, captionColor, inlineMD(escapeHTML(rawPath))), true
 }
 
 // fittedMarkdownImageSize keeps a chart inside the area above the footer on
@@ -665,7 +710,7 @@ func isRemoteURL(path string) bool {
 	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
 }
 
-func markdownTableToHTML(lines []string, start int) (string, int, bool) {
+func markdownTableToHTML(lines []string, start int, style Style) (string, int, bool) {
 	if start+1 >= len(lines) {
 		return "", start, false
 	}
@@ -681,6 +726,10 @@ func markdownTableToHTML(lines []string, start int) (string, int, bool) {
 	var sb strings.Builder
 	sb.WriteString(`<table><thead><tr>`)
 	for _, header := range headers {
+		if style.ID != "" {
+			sb.WriteString(fmt.Sprintf(`<td style="color:%s; text-align:center"><b>%s</b></td>`, cssHex(style.Colors.Navy), inlineMD(escapeHTML(header))))
+			continue
+		}
 		sb.WriteString(fmt.Sprintf(`<th>%s</th>`, inlineMD(escapeHTML(header))))
 	}
 	sb.WriteString(`</tr></thead><tbody>`)
@@ -702,7 +751,11 @@ func markdownTableToHTML(lines []string, start int) (string, int, bool) {
 			if i < len(cells) {
 				value = cells[i]
 			}
-			sb.WriteString(fmt.Sprintf(`<td>%s</td>`, inlineMD(escapeHTML(value))))
+			if style.ID != "" {
+				sb.WriteString(fmt.Sprintf(`<td style="color:%s">%s</td>`, cssHex(style.Colors.Ink), inlineMD(escapeHTML(value))))
+			} else {
+				sb.WriteString(fmt.Sprintf(`<td>%s</td>`, inlineMD(escapeHTML(value))))
+			}
 		}
 		sb.WriteString(`</tr>`)
 		next++
@@ -804,10 +857,10 @@ func markdownDisplayMathToHTML(lines []string, idx int, colorful bool) (string, 
 }
 
 func renderInlineHTML(text string) string {
-	return renderInlineHTMLMode(text, false)
+	return renderInlineHTMLMode(text, false, Style{})
 }
 
-func renderInlineHTMLMode(text string, colorful bool) string {
+func renderInlineHTMLMode(text string, colorful bool, style Style) string {
 	// Step 1: Extract inline code spans before any other processing.
 	// This prevents math ($...$) and bold/italic from parsing inside code.
 	var codePlaceholders []string
@@ -829,7 +882,7 @@ func renderInlineHTMLMode(text string, colorful bool) string {
 				return match
 			}
 			idx := len(urlPlaceholders)
-			urlPlaceholders = append(urlPlaceholders, fmt.Sprintf(`<a href="%s">%s</a>`, escapeHTMLAttr(target), escapeHTML(target)))
+			urlPlaceholders = append(urlPlaceholders, anchorHTML(escapeHTMLAttr(target), escapeHTML(target), style))
 			return fmt.Sprintf("\x1aURL%d\x1a%s", idx, match[len(target):])
 		})
 	}
@@ -847,7 +900,7 @@ func renderInlineHTMLMode(text string, colorful bool) string {
 	text = restoreMathHTML(text)
 
 	// Step 5: Process bold and italic
-	text = applyInlineEmphasis(text)
+	text = applyInlineEmphasis(text, style)
 
 	// Step 6: Restore code span placeholders
 	for idx, rendered := range codePlaceholders {
@@ -857,13 +910,20 @@ func renderInlineHTMLMode(text string, colorful bool) string {
 		text = strings.Replace(text, fmt.Sprintf("\x1aURL%d\x1a", idx), rendered, 1)
 	}
 	if colorful {
-		text = strings.ReplaceAll(text, "（可能）", `<span style="color:#c2410c"><b>（可能）</b></span>`)
+		markColor := "#c2410c"
+		if style.ID != "" {
+			markColor = cssHex(style.Colors.Accent)
+		}
+		text = strings.ReplaceAll(text, "（可能）", `<span style="color:`+markColor+`"><b>（可能）</b></span>`)
 	}
 
 	return text
 }
 
-func paperBodyStyle(colorful bool, color string) string {
+func paperBodyStyle(colorful bool, color string, style Style) string {
+	if style.ID != "" {
+		return ` style="color:` + cssHex(style.Colors.Ink) + `"`
+	}
 	if !colorful || color == "" {
 		return ""
 	}
@@ -926,7 +986,7 @@ func paperPrepareMath(text string) string {
 	return paperInlineSubscript(text)
 }
 
-func renderColorfulFormulaLine(line, bodyColor string) (string, bool) {
+func renderColorfulFormulaLine(line, bodyColor string, style Style) (string, bool) {
 	// Recognition looks for → and ≠. A line written with \to or \neq stays
 	// ordinary prose unless those commands are glyphs first.
 	line = paperNormalizeLatexLine(line)
@@ -948,10 +1008,10 @@ func renderColorfulFormulaLine(line, bodyColor string) (string, bool) {
 			continue
 		}
 		if part.formula {
-			b.WriteString(fmt.Sprintf(`<p style="text-align:center; font-size:12pt; color:#6d28d9">%s</p>`, renderInlineHTMLMode(text, true)))
+			b.WriteString(fmt.Sprintf(`<p style="text-align:center; font-size:12pt; color:#6d28d9">%s</p>`, renderInlineHTMLMode(text, true, style)))
 			continue
 		}
-		b.WriteString(fmt.Sprintf("<p%s>%s</p>", paperBodyStyle(true, bodyColor), renderInlineHTMLMode(text, true)))
+		b.WriteString(fmt.Sprintf("<p%s>%s</p>", paperBodyStyle(true, bodyColor, style), renderInlineHTMLMode(text, true, style)))
 	}
 	return b.String(), true
 }
@@ -1428,7 +1488,7 @@ func inlineMD(text string) string {
 		codes = append(codes, fmt.Sprintf(`<span style="font-family:monospace; background-color:#f3f4f6; padding:1px 3px; font-size:9pt">%s</span>`, inner))
 		return fmt.Sprintf("\x1aC%d\x1a", len(codes)-1)
 	})
-	text = applyInlineEmphasis(text)
+	text = applyInlineEmphasis(text, Style{})
 	for i, rendered := range codes {
 		text = strings.Replace(text, fmt.Sprintf("\x1aC%d\x1a", i), rendered, 1)
 	}
@@ -1439,7 +1499,7 @@ func inlineMD(text string) string {
 //
 // Star bold runs before underscore bold, so __**粗**__ does not keep the
 // stars. A single "_" is left alone: file_name and Qwen2.5 are not emphasis.
-func applyInlineEmphasis(text string) string {
+func applyInlineEmphasis(text string, style Style) string {
 	text = inlineStarBoldRe.ReplaceAllString(text, "<b>$1</b>")
 	text = inlineUnderscoreBoldRe.ReplaceAllString(text, "<b>$1</b>")
 	text = inlineItalicRe.ReplaceAllString(text, "<i>$1</i>")
@@ -1448,9 +1508,19 @@ func applyInlineEmphasis(text string) string {
 		if len(parts) != 4 {
 			return match
 		}
-		href := strings.ReplaceAll(parts[3], `"`, "&quot;")
-		return parts[1] + `<a href="` + href + `">` + parts[2] + `</a>`
+		return parts[1] + anchorHTML(parts[3], parts[2], style)
 	})
+}
+
+// anchorHTML keeps the link annotation. GoPDF2 paints every <a> in pure blue
+// and ignores the anchor's own color; a child span replaces that blue.
+// Table cells use one color for the whole cell, so they do not take this span.
+func anchorHTML(href, label string, style Style) string {
+	href = strings.ReplaceAll(href, `"`, "&quot;")
+	if style.ID != "" {
+		label = `<span style="color:` + cssHex(style.Colors.Link) + `">` + label + `</span>`
+	}
+	return `<a href="` + href + `">` + label + `</a>`
 }
 
 func escapeHTML(s string) string {

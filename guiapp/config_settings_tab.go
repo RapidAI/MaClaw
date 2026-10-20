@@ -107,6 +107,7 @@ var settingsTabFieldKeys = map[string][]string{
 	"llm":              {"codex"}, // models list for optional codexModels prop
 	"llmCache":         {"llm_prompt_cache"},
 	"pptStyles":        {},
+	"pdfStyles":        {},
 	"tokenBank":        {},
 	"email":            {},
 	"virtualEmployee":  {"remote_machine_id", "favorite_employees", "favorite_employee_names"},

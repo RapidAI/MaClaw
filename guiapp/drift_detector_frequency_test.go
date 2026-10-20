@@ -72,6 +72,34 @@ func TestFrequencyAnomaly_BashDifferentCommands_NotDetected(t *testing.T) {
 	}
 }
 
+func TestQuietSuccessfulPollIsNotADeadLoop(t *testing.T) {
+	d := NewDriftDetector(8, 0.8)
+	for i := 0; i < 6; i++ {
+		d.Record(ToolCallRecord{
+			ToolName: "ssh", ArgsHash: "bg_status", ResultHash: "running",
+			ResultHint: "RUNNING", Succeeded: true,
+		})
+	}
+	if result := d.DetectDrift(); result.Drifted || result.NeedHumanHelp {
+		t.Fatalf("quiet successful poll drifted: %+v", result)
+	}
+	if preview := d.PreviewDrift(); preview.Drifted || preview.NeedHumanHelp {
+		t.Fatalf("preview drifted: %+v", preview)
+	}
+
+	failed := NewDriftDetector(8, 0.8)
+	for i := 0; i < 3; i++ {
+		failed.Record(ToolCallRecord{
+			ToolName: "ssh", ArgsHash: "same", ResultHash: "refused",
+			ResultHint: "connection refused", Succeeded: false,
+		})
+	}
+	result := failed.DetectDrift()
+	if !result.Drifted || result.Pattern != "loop" || result.NeedHumanHelp {
+		t.Fatalf("failed streak = %+v", result)
+	}
+}
+
 func TestFrequencyAnomaly_PollingExcluded(t *testing.T) {
 	// check_task called 4 times with the SAME ArgsHash (polling same task).
 	// This is polling behavior — all calls have the same args.

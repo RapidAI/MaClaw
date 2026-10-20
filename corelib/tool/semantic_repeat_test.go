@@ -149,21 +149,21 @@ func TestIsRepeatCeilingIDSplitsOnlyMintedSiblings(t *testing.T) {
 }
 
 func TestRepeatFamilySpentBudgetNoteRequiresABudgetedExhaustedFamily(t *testing.T) {
-	base := "need:fs.read.local:abc123def456"
+	base := "need:message.send.mailbox:abc123def456"
 	sibling := RepeatSiblingNeedID(base, 1)
 	plan := ToolPlan{Selections: []PlannedSelection{
-		{ID: base, FitProof: FitProof{MatchedCapability: "fs.read.local"}},
-		{ID: sibling, FitProof: FitProof{MatchedCapability: "fs.read.local"}},
+		{ID: base, FitProof: FitProof{MatchedCapability: CapabilityMessageSendMailbox}},
+		{ID: sibling, FitProof: FitProof{MatchedCapability: CapabilityMessageSendMailbox}},
 	}}
 	materialized := map[string]bool{base: true, sibling: true}
 	note := RepeatFamilySpentBudgetNote(plan, sibling, materialized, nil)
-	if note == "" || !strings.Contains(note, "fs.read.local") || !strings.Contains(note, "(2)") || !strings.Contains(note, "Do not narrate tool limits") {
+	if note == "" || !strings.Contains(note, string(CapabilityMessageSendMailbox)) || !strings.Contains(note, "(2)") || !strings.Contains(note, "Do not narrate tool limits") || !strings.Contains(note, "quota") {
 		t.Fatalf("exhausted budget note = %q", note)
 	}
 	if got := RepeatFamilySpentBudgetNote(plan, sibling, materialized, []string{base}); got != "" {
 		t.Fatalf("live sibling must suppress the notice, got %q", got)
 	}
-	if got := RepeatFamilySpentBudgetNote(ToolPlan{Selections: []PlannedSelection{{ID: base, FitProof: FitProof{MatchedCapability: "fs.read.local"}}}}, base, map[string]bool{base: true}, nil); got != "" {
+	if got := RepeatFamilySpentBudgetNote(ToolPlan{Selections: []PlannedSelection{{ID: base, FitProof: FitProof{MatchedCapability: CapabilityMessageSendMailbox}}}}, base, map[string]bool{base: true}, nil); got != "" {
 		t.Fatalf("single-invocation family must stay silent, got %q", got)
 	}
 	got := ApplySpentBudgetNote(SelectionExecutionResult{Result: "ok", Succeeded: true}, plan, sibling, materialized, nil)
@@ -327,18 +327,19 @@ func TestAppendRepeatSiblingContinuesPastPublishedWave(t *testing.T) {
 	if len(updated.Selections) != RepeatSiblingBudgetLimit+1 {
 		t.Fatalf("selections=%d", len(updated.Selections))
 	}
-	if !updated.Selections[len(updated.Selections)-1].Continuation {
-		t.Fatal("the sibling past the published wave was not marked as the one continuation")
+	if updated.Selections[len(updated.Selections)-1].Continuation {
+		t.Fatal("the next download was marked as a one-shot continuation")
 	}
-	if _, _, again := AppendRepeatSibling(updated, updated.Selections[0].ID); again {
-		t.Fatal("a continuation renewed the budget")
+	againPlan, _, again := AppendRepeatSibling(updated, updated.Selections[0].ID)
+	if !again || len(againPlan.Selections) != RepeatSiblingBudgetLimit+2 {
+		t.Fatal("a download stopped after one extra call")
 	}
 	materialized := map[string]bool{}
-	for _, selection := range updated.Selections {
+	for _, selection := range againPlan.Selections {
 		materialized[selection.ID] = true
 	}
-	if note := RepeatFamilySpentBudgetNote(updated, updated.Selections[len(updated.Selections)-1].ID, materialized, nil); note != "" {
-		t.Fatalf("continuation result promised another call: %q", note)
+	if note := RepeatFamilySpentBudgetNote(againPlan, againPlan.Selections[len(againPlan.Selections)-1].ID, materialized, nil); note != "" {
+		t.Fatalf("download note promised a quota: %q", note)
 	}
 	gapped := ToolPlan{Selections: []PlannedSelection{
 		{ID: "selection:" + base, NeedID: base, AdapterName: "download_file"},
@@ -358,6 +359,34 @@ func TestAppendRepeatSiblingContinuesPastPublishedWave(t *testing.T) {
 	oneShot := ToolPlan{Selections: []PlannedSelection{{ID: "selection:once", NeedID: "need:once"}}}
 	if _, _, opened := AppendRepeatSibling(oneShot, "selection:once"); opened {
 		t.Fatal("a one-shot tool opened another invocation")
+	}
+	if _, _, opened := AppendObservationFollowUp(oneShot, "selection:once"); opened {
+		t.Fatal("an observation follow-up opened a non-schedule one-shot")
+	}
+	scheduleBase := "need:schedule.administer.local:abc123"
+	schedulePlan := ToolPlan{Selections: []PlannedSelection{{
+		ID:       "selection:" + scheduleBase,
+		NeedID:   scheduleBase,
+		FitProof: FitProof{MatchedCapability: CapabilityScheduleAdministerLocal},
+	}}}
+	if _, _, opened := AppendRepeatSibling(schedulePlan, schedulePlan.Selections[0].ID); opened {
+		t.Fatal("a schedule administration one-shot opened another write")
+	}
+	followed, followID, openedFollow := AppendObservationFollowUp(schedulePlan, schedulePlan.Selections[0].ID)
+	if !openedFollow || len(followed.Selections) != 2 || !strings.Contains(followID, "#02") {
+		t.Fatalf("schedule list follow-up id=%q selections=%d opened=%v", followID, len(followed.Selections), openedFollow)
+	}
+	if !followed.Selections[1].Continuation || followed.Selections[1].FitProof.MatchedCapability != CapabilityScheduleAdministerLocal {
+		t.Fatalf("follow-up=%+v", followed.Selections[1])
+	}
+	if _, _, again := AppendObservationFollowUp(followed, followed.Selections[0].ID); again {
+		t.Fatal("a schedule list follow-up opened a second write")
+	}
+	if _, _, again := AppendRepeatSibling(followed, followed.Selections[0].ID); again {
+		t.Fatal("a strict append grew the schedule family after the observation follow-up")
+	}
+	if _, _, opened := AppendObservationFollowUp(plan, plan.Selections[0].ID); opened {
+		t.Fatal("an observation follow-up raised a published download wave")
 	}
 	writeBase := "need:fs.write.local:abc123def456"
 	singleWrite := ToolPlan{Selections: []PlannedSelection{{
@@ -418,8 +447,8 @@ func TestAppendRepeatSiblingContinuesPastPublishedWave(t *testing.T) {
 			FitProof: FitProof{MatchedCapability: CapabilityFSWriteLocal},
 		})
 	}
-	if _, _, openedCap := AppendRepeatSibling(capped, capped.Selections[0].ID); openedCap {
-		t.Fatal("file write extended past the turn cap")
+	if _, _, openedCap := AppendRepeatSibling(capped, capped.Selections[0].ID); !openedCap {
+		t.Fatal("file write stopped because a call count was reached")
 	}
 	remoteBase := "need:shell.execute.remote_host:abc123def456"
 	remotePlan := ToolPlan{Selections: []PlannedSelection{
@@ -457,19 +486,33 @@ func TestAppendRepeatSiblingContinuesPastPublishedWave(t *testing.T) {
 	if _, _, openedSingle := AppendRepeatSibling(singleRemote, singleRemote.Selections[0].ID); !openedSingle {
 		t.Fatal("a single remote command must extend when the task is unfinished")
 	}
+	localBase := "need:shell.execute.local:abc123def456"
 	localProof := ToolPlan{Selections: []PlannedSelection{{
-		ID: "selection:" + remoteBase, NeedID: remoteBase, FitProof: FitProof{MatchedCapability: CapabilityShellExecuteLocal},
+		ID: "selection:" + localBase, NeedID: localBase, FitProof: FitProof{MatchedCapability: CapabilityShellExecuteLocal},
 	}}}
-	if _, _, openedLocal := AppendRepeatSibling(localProof, localProof.Selections[0].ID); openedLocal {
-		t.Fatal("a local-shell proof must not extend because its id mentions the remote capability")
+	if _, _, openedLocal := AppendRepeatSibling(localProof, localProof.Selections[0].ID); !openedLocal {
+		t.Fatal("a single local shell must extend when the task is unfinished")
+	}
+	sendProof := ToolPlan{Selections: []PlannedSelection{{
+		ID: "selection:" + remoteBase, NeedID: remoteBase, FitProof: FitProof{MatchedCapability: CapabilityMessageSendMailbox},
+	}}}
+	if _, _, openedSend := AppendRepeatSibling(sendProof, sendProof.Selections[0].ID); openedSend {
+		t.Fatal("a one-shot send must not extend because its id mentions a remote command")
+	}
+	readBase := "need:fs.read.local:abc123def456"
+	readProof := ToolPlan{Selections: []PlannedSelection{{
+		ID: "selection:" + readBase, NeedID: readBase, FitProof: FitProof{MatchedCapability: CapabilityFSReadLocal},
+	}}}
+	if _, _, openedRead := AppendRepeatSibling(readProof, readProof.Selections[0].ID); !openedRead {
+		t.Fatal("a single file read must extend when the task is unfinished")
 	}
 	mismatched := ToolPlan{Selections: []PlannedSelection{{
 		ID:       "selection:" + writeBase,
 		NeedID:   writeBase,
-		FitProof: FitProof{MatchedCapability: CapabilityFSReadLocal},
+		FitProof: FitProof{MatchedCapability: CapabilityMessageSendMailbox},
 	}}}
 	if _, _, openedMismatch := AppendRepeatSibling(mismatched, mismatched.Selections[0].ID); openedMismatch {
-		t.Fatal("a read proof must not extend because its id mentions fs.write.local")
+		t.Fatal("a send proof must not extend because its id mentions fs.write.local")
 	}
 	unproven := ToolPlan{Selections: []PlannedSelection{{
 		ID:     "selection:" + writeBase,
@@ -548,6 +591,14 @@ func TestInstalledMCPRepeatExtendsUntilItsCeiling(t *testing.T) {
 	if _, _, opened := AppendRepeatSibling(kindOnly, kindOnly.Selections[0].ID); !opened {
 		t.Fatal("an installed MCP provider with no fit proof must extend")
 	}
+	openLookup := ToolPlan{Selections: []PlannedSelection{{
+		ID: "selection:need:lookup-worklog", NeedID: "need:lookup-worklog",
+		Provider: ProviderBinding{Kind: "mcp", ProviderID: "tengyun", ImplementationID: "post_work_log_add"},
+		FitProof: FitProof{MatchedCapability: "information.lookup"},
+	}}}
+	if _, _, opened := AppendRepeatSibling(openLookup, openLookup.Selections[0].ID); !opened {
+		t.Fatal("an installed MCP tool classified as information.lookup must extend")
+	}
 	idOnly := ToolPlan{Selections: []PlannedSelection{{
 		ID: "selection:need:~installed-mcp:tool", NeedID: "need:~installed-mcp:tool",
 	}}}
@@ -573,7 +624,7 @@ func TestInstalledMCPRepeatExtendsUntilItsCeiling(t *testing.T) {
 			FitProof: FitProof{MatchedCapability: "x:mcp:tengyun:post_work_log_add"},
 		})
 	}
-	if _, _, opened := AppendRepeatSibling(capped, capped.Selections[0].ID); opened {
-		t.Fatal("installed MCP extended past its ceiling")
+	if _, _, opened := AppendRepeatSibling(capped, capped.Selections[0].ID); !opened {
+		t.Fatal("installed MCP stopped because a call count was reached")
 	}
 }

@@ -3,6 +3,7 @@ package toolresult
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -19,6 +20,12 @@ func StructuredPreview(toolName, content string, limit int) string {
 	}
 	if len(content) <= limit {
 		return content
+	}
+	// A search listing is one fact per hit. A head/tail byte window deletes
+	// the middle hits, which is where the page that states the fact often
+	// sits once a long direct answer leads the list.
+	if strings.HasPrefix(strings.TrimSpace(content), "Public web results for ") {
+		return previewWebSearch(content, limit)
 	}
 
 	tool := strings.ToLower(strings.TrimSpace(toolName))
@@ -360,6 +367,283 @@ func sampleLinesHeadTail(lines []string, budget int) []string {
 		tailRev[i], tailRev[j] = tailRev[j], tailRev[i]
 	}
 	return append(head, tailRev...)
+}
+
+type webSearchHit struct {
+	title   string
+	url     string
+	snippet string
+}
+
+func previewWebSearch(s string, limit int) string {
+	preamble, hits, ok := splitWebSearchHits(s)
+	if !ok {
+		return DefaultPreview(s, limit)
+	}
+	full := make([]string, len(hits))
+	longest := 0
+	for i := range hits {
+		full[i] = hits[i].snippet
+		if len(full[i]) > longest {
+			longest = len(full[i])
+		}
+	}
+	best := renderWebSearch(preamble, hits, nil)
+	if len(best) > limit {
+		return DefaultPreview(s, limit)
+	}
+	lo, hi := 0, longest
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		snippets := make([]string, len(hits))
+		for i := range full {
+			snippets[i] = shrinkWebSnippet(full[i], mid)
+		}
+		rendered := renderWebSearch(preamble, hits, snippets)
+		if len(rendered) <= limit {
+			best = rendered
+			lo = mid + 1
+			continue
+		}
+		hi = mid - 1
+	}
+	return best
+}
+
+func splitWebSearchHits(s string) (string, []webSearchHit, bool) {
+	lines := strings.Split(s, "\n")
+	start := -1
+	for i, line := range lines {
+		if webSearchHitTitle(line) {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return "", nil, false
+	}
+	preamble := strings.Join(lines[:start], "\n")
+	var hits []webSearchHit
+	var cur *webSearchHit
+	flush := func() {
+		if cur == nil {
+			return
+		}
+		hits = append(hits, *cur)
+		cur = nil
+	}
+	for _, line := range lines[start:] {
+		if webSearchHitTitle(line) {
+			flush()
+			cur = &webSearchHit{title: strings.TrimSpace(line)}
+			continue
+		}
+		if cur == nil {
+			continue
+		}
+		trim := strings.TrimSpace(line)
+		if trim == "" {
+			continue
+		}
+		if cur.url == "" && strings.Contains(trim, "://") {
+			cur.url = trim
+			continue
+		}
+		if cur.snippet != "" {
+			cur.snippet += "\n" + trim
+			continue
+		}
+		cur.snippet = trim
+	}
+	flush()
+	if len(hits) < 2 {
+		return "", nil, false
+	}
+	return preamble, hits, true
+}
+
+func webSearchHitTitle(line string) bool {
+	trim := strings.TrimSpace(line)
+	i := 0
+	for i < len(trim) && trim[i] >= '0' && trim[i] <= '9' {
+		i++
+	}
+	return i > 0 && i+2 <= len(trim) && trim[i] == '.' && trim[i+1] == ' '
+}
+
+func renderWebSearch(preamble string, hits []webSearchHit, snippets []string) string {
+	var b strings.Builder
+	if text := strings.TrimSpace(preamble); text != "" {
+		b.WriteString(text)
+		b.WriteString("\n\n")
+	}
+	for i, hit := range hits {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(hit.title)
+		b.WriteByte('\n')
+		if hit.url != "" {
+			b.WriteString("   ")
+			b.WriteString(hit.url)
+			b.WriteByte('\n')
+		}
+		snippet := ""
+		if i < len(snippets) {
+			snippet = snippets[i]
+		}
+		if snippet != "" {
+			b.WriteString("   ")
+			b.WriteString(snippet)
+			b.WriteByte('\n')
+		}
+		b.WriteByte('\n')
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// webSnippetFactFieldMax is the largest "; "-separated piece treated as a
+// measured field rather than a paragraph. Direct answers emit prose first
+// and the fields after it; folding appends the page fact last.
+const webSnippetFactFieldMax = 160
+
+// shrinkWebSnippet keeps measured fields and both ends of a folded snippet.
+// A byte window on the whole string keeps the opening paragraph and the
+// closing paragraph, and drops the fields that sit between them. Spending
+// the entire remainder on the last paragraph drops the answer at the start
+// of the lead.
+func shrinkWebSnippet(s string, max int) string {
+	if max <= 0 || s == "" {
+		return ""
+	}
+	if len(s) <= max {
+		return s
+	}
+	if parts := strings.Split(s, "; "); len(parts) > 1 {
+		if kept := shrinkWebSnippetFields(parts, max); kept != "" {
+			return kept
+		}
+	}
+	return shrinkWebSnippetEdges(s, max)
+}
+
+type webSnippetPiece struct {
+	idx  int
+	text string
+}
+
+func shrinkWebSnippetFields(parts []string, max int) string {
+	chosen := make([]webSnippetPiece, 0, len(parts))
+	for i := len(parts) - 1; i >= 0; i-- {
+		part := parts[i]
+		if part == "" || len(part) > webSnippetFactFieldMax {
+			continue
+		}
+		trial := append(append([]webSnippetPiece(nil), chosen...), webSnippetPiece{idx: i, text: part})
+		if len(joinWebSnippetPieces(trial)) > max {
+			continue
+		}
+		chosen = trial
+	}
+	var longs []webSnippetPiece
+	for i, part := range parts {
+		if part == "" || len(part) <= webSnippetFactFieldMax {
+			continue
+		}
+		longs = append(longs, webSnippetPiece{idx: i, text: part})
+	}
+	if len(longs) == 0 {
+		return joinWebSnippetPieces(chosen)
+	}
+	// The lead keeps its head, where a direct answer starts. The last piece
+	// keeps its own head and tail, where a folded page fact lands. Middle
+	// paragraphs are the blurb between those two.
+	ends := []webSnippetPiece{longs[0]}
+	if len(longs) > 1 {
+		ends = append(ends, longs[len(longs)-1])
+	}
+	room := max - len(joinWebSnippetPieces(chosen))
+	if len(chosen) > 0 {
+		room -= len(ends) * len("; ")
+	} else if len(ends) == 2 {
+		room -= len("; ")
+	}
+	if room <= 0 {
+		return joinWebSnippetPieces(chosen)
+	}
+	firstKeep, lastKeep := room, room
+	if len(ends) == 2 {
+		lastKeep = room * 2 / 3
+		firstKeep = room - lastKeep
+	}
+	placed := append([]webSnippetPiece(nil), chosen...)
+	if text := cutWebSnippetPiece(ends[0].text, firstKeep, len(ends) == 1); text != "" {
+		placed = append(placed, webSnippetPiece{idx: ends[0].idx, text: text})
+	}
+	if len(ends) == 2 {
+		if text := cutWebSnippetPiece(ends[1].text, lastKeep, true); text != "" {
+			placed = append(placed, webSnippetPiece{idx: ends[1].idx, text: text})
+		}
+	}
+	if joined := joinWebSnippetPieces(placed); len(joined) <= max {
+		return joined
+	}
+	// Rune boundaries can leave the lead one byte over. The fields and the
+	// folded page outrank it.
+	leadIdx := ends[0].idx
+	kept := make([]webSnippetPiece, 0, len(placed))
+	for _, piece := range placed {
+		if piece.idx == leadIdx {
+			continue
+		}
+		kept = append(kept, piece)
+	}
+	if joined := joinWebSnippetPieces(kept); len(joined) <= max {
+		return joined
+	}
+	return joinWebSnippetPieces(chosen)
+}
+
+func cutWebSnippetPiece(text string, budget int, edges bool) string {
+	if budget <= 0 || text == "" {
+		return ""
+	}
+	if len(text) <= budget {
+		return text
+	}
+	if edges {
+		return shrinkWebSnippetEdges(text, budget)
+	}
+	return utf8Prefix(text, budget)
+}
+
+func joinWebSnippetPieces(pieces []webSnippetPiece) string {
+	ordered := append([]webSnippetPiece(nil), pieces...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].idx < ordered[j].idx })
+	parts := make([]string, len(ordered))
+	for i := range ordered {
+		parts[i] = ordered[i].text
+	}
+	return strings.Join(parts, "; ")
+}
+
+func shrinkWebSnippetEdges(s string, max int) string {
+	if max <= 0 || s == "" {
+		return ""
+	}
+	if len(s) <= max {
+		return s
+	}
+	const mark = " … "
+	tail := max / 3
+	if tail < len(mark)+4 {
+		return utf8Suffix(s, max)
+	}
+	head := max - tail - len(mark)
+	if head < 4 {
+		return utf8Suffix(s, max)
+	}
+	return utf8Prefix(s, head) + mark + utf8Suffix(s, tail)
 }
 
 // previewWebFetch prefers keeping trailing integrity markers when present.

@@ -87,6 +87,44 @@ func TestOpenNextRepeatWaveExtendsSingleFileWrite(t *testing.T) {
 	}
 }
 
+// The handoff path used to append the next call only in process memory.
+// The route still held the published wave, so issuing that call failed
+// route_state_grant_binding_mismatch and the tool left the list.
+func TestOpenNextRepeatWavePersistsSiblingOnTheRoute(t *testing.T) {
+	base := "need:fs.read.local:abc123def456"
+	plan := tool.ToolPlan{
+		RootTaskID: "task", ID: "plan-read", SnapshotDigest: "snap",
+		Selections: []tool.PlannedSelection{{
+			ID: "selection:" + base, NeedID: base, AdapterName: "read_file",
+			FitProof: tool.FitProof{MatchedCapability: tool.CapabilityFSReadLocal, Digest: "fit"},
+		}},
+	}
+	scope := tool.InvocationScope{RootTaskID: plan.RootTaskID, PlanID: plan.ID, SessionID: "session", TurnID: "turn", PrincipalID: "principal"}
+	store := tool.NewMemoryRouteStateStore()
+	if _, err := store.PublishRevision(tool.RouteRevisionPublishRequest{Scope: scope, Plan: plan, SnapshotDigest: plan.SnapshotDigest}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	published, err := store.PublishedPlan(scope)
+	if err != nil || len(published.Selections) != 1 {
+		t.Fatalf("published=%d err=%v", len(published.Selections), err)
+	}
+	selectionID := published.Selections[0].ID
+	cb := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		plan: published, scope: scope, routeState: store,
+		completed:     map[string]bool{selectionID: true},
+		materialized:  map[string]bool{},
+		grants:        map[string]tool.InvocationGrant{},
+		retiredGrants: map[string]tool.InvocationGrant{"read_file": {SelectionID: selectionID, Token: "spent"}},
+	}}
+	if cb.OpenNextRepeatWave("read_file") {
+		t.Fatal("refresh cannot issue a grant without a surface issuer")
+	}
+	stored, err := store.PublishedPlan(scope)
+	if err != nil || len(stored.Selections) != 2 || len(cb.semanticSurface.plan.Selections) != 2 {
+		t.Fatalf("route=%d memory=%d err=%v", len(stored.Selections), len(cb.semanticSurface.plan.Selections), err)
+	}
+}
+
 func TestEnsureNextObligationFileWriteListsTheFollowingEdit(t *testing.T) {
 	base := "need:fs.write.local:abc123def456"
 	selectionID := "selection:" + base
@@ -206,6 +244,62 @@ func TestRetireRejectedSemanticToolListsSettledIterativeWorkBeforeRefresh(t *tes
 	if got := mcpCall.retireRejectedSemanticTool("invoke_old", mcpID, "[system rejected] mcp_tool_error", "selection_execution_failed"); !strings.Contains(got, "semantic_plan_retire_failed") || len(mcpCall.semanticSurface.plan.Selections) != 2 || mcpCall.semanticSurface.plan.Selections[1].Continuation {
 		t.Fatalf("settled installed MCP before refresh = %q selections=%d", got, len(mcpCall.semanticSurface.plan.Selections))
 	}
+}
+
+func TestVendorMCPRejectionListsTheNextCallBeforeRetire(t *testing.T) {
+	base := "need:~installed-mcp:x:mcp:tengyun:post_work_log_add"
+	selectionID := "selection:" + base
+	selection := tool.PlannedSelection{
+		ID: selectionID, NeedID: base,
+		Provider: tool.ProviderBinding{Kind: "mcp", ProviderID: "tengyun", ImplementationID: "post_work_log_add"},
+		FitProof: tool.FitProof{MatchedCapability: "x:mcp:tengyun:post_work_log_add"},
+	}
+	rejected := newFailedInstalledMCPDispatch(t, selection)
+	got := rejected.finishCoordinatedDynamicDispatch("tengyun__post_work_log_add", selection, tool.SelectionExecutionResult{
+		Result: "Error: time must be HH:mm:ss", ReasonCode: "mcp_tool_error",
+	})
+	if !strings.Contains(got, "semantic_plan_retire_failed") || len(rejected.semanticSurface.plan.Selections) != 2 {
+		t.Fatalf("vendor rejection did not list the next call: %q selections=%d", got, len(rejected.semanticSurface.plan.Selections))
+	}
+	awaiting := newFailedInstalledMCPDispatch(t, selection)
+	awaitingResult := awaiting.finishCoordinatedDynamicDispatch("tengyun__post_work_log_add", selection, tool.SelectionExecutionResult{
+		Result: "wrote", AwaitingReceipt: true, ReasonCode: "dynamic_effect_awaiting_receipt",
+	})
+	if !strings.Contains(awaitingResult, "semantic_plan_retire_failed") || len(awaiting.semanticSurface.plan.Selections) != 1 {
+		t.Fatalf("awaiting receipt listed another call: %q selections=%d", awaitingResult, len(awaiting.semanticSurface.plan.Selections))
+	}
+	unknown := newFailedInstalledMCPDispatch(t, selection)
+	unknownResult := unknown.finishCoordinatedDynamicDispatch("tengyun__post_work_log_add", selection, tool.SelectionExecutionResult{
+		Result: "[system unknown] lost", Unknown: true, ReasonCode: "mcp_tool_error",
+	})
+	if len(unknown.semanticSurface.plan.Selections) != 1 {
+		t.Fatalf("unknown transport listed another call: %q selections=%d", unknownResult, len(unknown.semanticSurface.plan.Selections))
+	}
+}
+
+func newFailedInstalledMCPDispatch(t *testing.T, selection tool.PlannedSelection) *sharedAgentLoopCallbacks {
+	t.Helper()
+	issuer, err := tool.NewInvocationIssuer([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := tool.NewMemoryPlanExecutionStore()
+	executor, err := tool.NewPlanExecutor(issuer, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := tool.InvocationScope{RootTaskID: "root", PlanID: "plan", SessionID: "session", TurnID: "turn", PrincipalID: "user"}
+	if _, _, err := store.Acquire(tool.PlanExecutionRecord{Scope: scope, SelectionID: selection.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Complete(scope, selection.ID, tool.PlanExecutionFailed, "digest", "mcp_tool_error", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	return &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		plan:     tool.ToolPlan{Selections: []tool.PlannedSelection{selection}},
+		scope:    scope,
+		executor: executor,
+	}}
 }
 
 func TestEnsureNextIterativeInstalledMCPListsTheFollowingCall(t *testing.T) {
@@ -693,6 +787,49 @@ func legacySurfaceTestNames(definitions []map[string]interface{}) []string {
 	return names
 }
 
+func TestAttachSharedLoopArtifactsKeepsChatTaskHandoffBesideFiles(t *testing.T) {
+	note := "剩余工作已继续处理，完成后会发到这个对话。"
+	cb := &sharedAgentLoopCallbacks{
+		deliveredPaths: []string{`C:\artifacts\deck.pptx`},
+		filesForwarded: 1,
+		userText:       "做一份北京建城五百年的正式演示文稿",
+	}
+	resp := &IMAgentResponse{Text: note, ResponseSource: imResponseSourceChatTaskHandoff.String()}
+	attachSharedLoopArtifacts(resp, cb)
+	if resp.ResponseSource != imResponseSourceChatTaskHandoff.String() || resp.Text != note {
+		t.Fatalf("handoff reply = source %q text %q", resp.ResponseSource, resp.Text)
+	}
+	if resp.LocalFilePath != `C:\artifacts\deck.pptx` || len(resp.LocalFilePaths) != 1 {
+		t.Fatalf("file card dropped: %+v", resp)
+	}
+
+	shot := &IMAgentResponse{Text: note, ResponseSource: "chat_task_handoff"}
+	attachSharedLoopArtifacts(shot, &sharedAgentLoopCallbacks{
+		deliveredPaths:     []string{`C:\artifacts\deck.pptx`},
+		filesForwarded:     1,
+		screenshotImageKey: testOnePixelPNGBase64,
+	})
+	if shot.ResponseSource != imResponseSourceChatTaskHandoff.String() || shot.Text != note || shot.ImageKey != testOnePixelPNGBase64 {
+		t.Fatalf("screenshot relabeled the handoff: %+v", shot)
+	}
+
+	pdf := &IMAgentResponse{
+		Text:           note,
+		ResponseSource: "Chat_Task_Handoff",
+		FileName:       "report.pdf",
+		FileMimeType:   "application/pdf",
+	}
+	attachSharedLoopArtifacts(pdf, &sharedAgentLoopCallbacks{
+		deliveredPaths:   []string{`C:\artifacts\report.pdf`},
+		filesForwarded:   1,
+		turnPublishedPDF: true,
+		userText:         "北京天气",
+	})
+	if pdf.ResponseSource != imResponseSourceChatTaskHandoff.String() || pdf.Text != note || pdf.LocalFilePath != `C:\artifacts\report.pdf` {
+		t.Fatalf("PDF receipt replaced the handoff note: %+v", pdf)
+	}
+}
+
 func TestAttachSharedLoopArtifactsKeepsFileDeliveryResponseSource(t *testing.T) {
 	cb := &sharedAgentLoopCallbacks{
 		deliveredPaths:       []string{"C:\\artifacts\\report.pdf"},
@@ -1126,6 +1263,258 @@ func TestSharedAgentLoopEscalatesForContextOnlyReasoningRoute(t *testing.T) {
 	}
 	if got, want := cb.llmCfg.EffectiveContextTokens(), 320_000; got != want {
 		t.Fatalf("effective context = %d, want %d", got, want)
+	}
+}
+
+func TestSharedEscalateKeepsForegroundHubRole(t *testing.T) {
+	hub := corelib.MaclawLLMConfig{
+		URL:          "https://hub.mypapers.top/api/llm/v1",
+		Model:        "auto",
+		ProviderName: "MaClaw官方",
+		ProviderID:   "hub",
+		Profile:      maclawLLMRoleForeground,
+		HubManaged:   true,
+		TaskTypeHint: string(llm.TaskFast),
+	}
+	assistant := corelib.MaclawLLMConfig{
+		URL:          "https://www.workbuddy.ai/v2",
+		Model:        "deepseek-v4.1-flash",
+		ProviderName: "WorkBuddy 国际版",
+		ProviderID:   "workbuddy",
+		Profile:      maclawLLMProfileAssistant,
+	}
+	h := &IMMessageHandler{
+		app: &App{},
+		standaloneConfig: &StandaloneConfig{LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			t.Fatal("post-tool escalation reread the assistant profile")
+			return assistant
+		}},
+	}
+	cb := &sharedAgentLoopCallbacks{
+		handler:   h,
+		llmCfg:    hub,
+		roleBase:  hub,
+		route:     modelRouteDecision{Task: string(llm.TaskFast), Source: "primary", Model: hub.Model, Provider: hub.ProviderName},
+		toolCalls: 1,
+	}
+	cb.maybeEscalateAfterTools()
+	if cb.llmCfg.URL != hub.URL || cb.llmCfg.Model != "auto" || cb.llmCfg.ProviderID != "hub" || cb.llmCfg.ProviderName != "MaClaw官方" {
+		t.Fatalf("left the foreground hub role: %+v", cb.llmCfg)
+	}
+	if cb.llmCfg.TaskTypeHint != string(llm.TaskReasoning) {
+		t.Fatalf("hub workload hint = %q", cb.llmCfg.TaskTypeHint)
+	}
+	if cb.surfaceRefreshPending {
+		t.Fatal("hint-only hub upgrade rebuilt the system prompt")
+	}
+	if !cb.escalated || cb.route.Source != "escalate" || cb.route.Model != "auto" || cb.route.Provider != "MaClaw官方" {
+		t.Fatalf("route=%+v escalated=%v", cb.route, cb.escalated)
+	}
+}
+
+func TestSharedEscalateAppliesReasoningRouteOnRoleProvider(t *testing.T) {
+	role := corelib.MaclawLLMConfig{
+		URL:           "https://role.example/v1",
+		Model:         "fast-role",
+		ProviderName:  "RoleProvider",
+		ProviderID:    "role",
+		Profile:       maclawLLMRoleForeground,
+		ContextLength: 32_000,
+	}
+	app := &App{}
+	app.ohModules.modelRouter = llm.NewModelRouter(map[string]llm.ModelRoute{
+		string(llm.TaskReasoning): {Model: "reason-role", ContextLength: 400_000},
+	})
+	h := &IMMessageHandler{
+		app: app,
+		standaloneConfig: &StandaloneConfig{LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			t.Fatal("post-tool escalation reread the assistant profile")
+			return corelib.MaclawLLMConfig{URL: "https://assistant.example/v1", Model: "assistant-model", ProviderName: "Assistant"}
+		}},
+	}
+	cb := &sharedAgentLoopCallbacks{
+		handler:   h,
+		llmCfg:    role,
+		roleBase:  role,
+		route:     modelRouteDecision{Task: string(llm.TaskFast), Source: "primary", Model: role.Model},
+		toolCalls: 1,
+	}
+	cb.maybeEscalateAfterTools()
+	if cb.llmCfg.URL != role.URL || cb.llmCfg.ProviderID != "role" || cb.llmCfg.Model != "reason-role" || cb.llmCfg.ContextLength != 400_000 {
+		t.Fatalf("reasoning route left the role provider: %+v", cb.llmCfg)
+	}
+	if !cb.surfaceRefreshPending {
+		t.Fatal("a model change must refresh the prompt built for the previous endpoint")
+	}
+}
+
+func TestSharedEscalateReturnsAuxiliaryToRoleBase(t *testing.T) {
+	base := corelib.MaclawLLMConfig{
+		URL:          "https://assistant.example/v1",
+		Model:        "assistant-model",
+		ProviderName: "Assistant",
+		ProviderID:   "assistant",
+		Profile:      maclawLLMProfileAssistant,
+	}
+	aux := corelib.MaclawLLMConfig{URL: "https://aux.example/v1", Model: "aux-flash"}
+	h := &IMMessageHandler{
+		app: &App{},
+		standaloneConfig: &StandaloneConfig{LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			t.Fatal("post-tool escalation reread the assistant profile")
+			return corelib.MaclawLLMConfig{}
+		}},
+	}
+	cb := &sharedAgentLoopCallbacks{
+		handler:   h,
+		llmCfg:    aux,
+		roleBase:  base,
+		route:     modelRouteDecision{Task: string(llm.TaskFast), Source: "aux", Model: aux.Model},
+		toolCalls: 1,
+	}
+	cb.maybeEscalateAfterTools()
+	if cb.llmCfg.URL != base.URL || cb.llmCfg.Model != base.Model || cb.llmCfg.ProviderID != base.ProviderID {
+		t.Fatalf("auxiliary turn did not return to its role: %+v", cb.llmCfg)
+	}
+}
+
+func TestSharedEscalateKeepsInheritedHubRoleHint(t *testing.T) {
+	assistant := corelib.MaclawLLMConfig{
+		URL:          "https://www.workbuddy.ai/v2",
+		Model:        "deepseek-v4.1-flash",
+		ProviderName: "WorkBuddy 国际版",
+		ProviderID:   "workbuddy",
+	}
+	for _, profile := range []string{maclawLLMRoleBackground, maclawLLMRoleComputerUse} {
+		t.Run(profile, func(t *testing.T) {
+			hub := corelib.MaclawLLMConfig{
+				URL:          "https://hub.mypapers.top/api/llm/v1",
+				Model:        "auto",
+				ProviderName: "MaClaw官方",
+				ProviderID:   "hub",
+				Profile:      profile,
+				HubManaged:   true,
+				TaskTypeHint: string(llm.TaskFast),
+			}
+			h := &IMMessageHandler{
+				app: &App{},
+				standaloneConfig: &StandaloneConfig{LLMConfigFunc: func() corelib.MaclawLLMConfig {
+					t.Fatal("post-tool escalation reread the assistant profile")
+					return assistant
+				}},
+			}
+			cb := &sharedAgentLoopCallbacks{
+				handler:   h,
+				llmCfg:    hub,
+				roleBase:  hub,
+				route:     modelRouteDecision{Task: string(llm.TaskFast), Source: "primary", Model: hub.Model, Provider: hub.ProviderName},
+				toolCalls: 1,
+			}
+			cb.maybeEscalateAfterTools()
+			if cb.escalated || cb.surfaceRefreshPending || cb.llmCfg.TaskTypeHint != string(llm.TaskFast) {
+				t.Fatalf("inherited hub role was rewritten: escalated=%v pending=%v hint=%q", cb.escalated, cb.surfaceRefreshPending, cb.llmCfg.TaskTypeHint)
+			}
+			if cb.llmCfg.URL != hub.URL || cb.llmCfg.Model != "auto" || cb.llmCfg.ProviderID != "hub" || cb.llmCfg.ProviderName != "MaClaw官方" {
+				t.Fatalf("left the hub role: %+v", cb.llmCfg)
+			}
+		})
+	}
+}
+
+func TestSharedEscalateDoesNotLetHubActiveReplaceRoleBase(t *testing.T) {
+	role := corelib.MaclawLLMConfig{
+		URL:           "https://role.example/v1",
+		Model:         "fast-role",
+		ProviderName:  "RoleProvider",
+		ProviderID:    "role",
+		Profile:       maclawLLMRoleForeground,
+		ContextLength: 32_000,
+	}
+	active := corelib.MaclawLLMConfig{
+		URL:          "https://hub.mypapers.top/api/llm/v1",
+		Model:        "auto",
+		ProviderName: "MaClaw官方",
+		ProviderID:   "hub",
+		Profile:      maclawLLMRoleForeground,
+		HubManaged:   true,
+		TaskTypeHint: string(llm.TaskFast),
+	}
+	app := &App{}
+	app.ohModules.modelRouter = llm.NewModelRouter(map[string]llm.ModelRoute{
+		string(llm.TaskReasoning): {Model: "reason-role", ContextLength: 400_000},
+	})
+	h := &IMMessageHandler{
+		app: app,
+		standaloneConfig: &StandaloneConfig{LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			t.Fatal("post-tool escalation reread the assistant profile")
+			return corelib.MaclawLLMConfig{}
+		}},
+	}
+	cb := &sharedAgentLoopCallbacks{
+		handler:   h,
+		llmCfg:    active,
+		roleBase:  role,
+		route:     modelRouteDecision{Task: string(llm.TaskFast), Source: "primary", Model: active.Model},
+		toolCalls: 1,
+	}
+	cb.maybeEscalateAfterTools()
+	if cb.llmCfg.URL != role.URL || cb.llmCfg.ProviderID != "role" || cb.llmCfg.Model != "reason-role" {
+		t.Fatalf("hub-looking active config replaced the role: %+v", cb.llmCfg)
+	}
+}
+
+func TestSharedEscalateKeepsPinnedBackgroundModel(t *testing.T) {
+	background := corelib.MaclawLLMConfig{
+		URL:          "https://bg.example/v1",
+		Model:        "bg-model",
+		ProviderName: "Background",
+		ProviderID:   "bg",
+		Profile:      maclawLLMRoleBackground,
+	}
+	app := &App{}
+	app.ohModules.modelRouter = llm.NewModelRouter(map[string]llm.ModelRoute{
+		string(llm.TaskReasoning): {Model: "reason", URL: "https://other.example/v1"},
+	})
+	h := &IMMessageHandler{app: app}
+	cb := &sharedAgentLoopCallbacks{
+		handler:   h,
+		llmCfg:    background,
+		roleBase:  background,
+		route:     modelRouteDecision{Task: string(llm.TaskFast), Source: "primary", Model: background.Model},
+		toolCalls: 1,
+	}
+	cb.maybeEscalateAfterTools()
+	if cb.escalated || cb.llmCfg.Model != "bg-model" || cb.llmCfg.URL != background.URL {
+		t.Fatalf("background role was replaced: escalated=%v cfg=%+v", cb.escalated, cb.llmCfg)
+	}
+}
+
+func TestLegacyEscalateKeepsForegroundHubRole(t *testing.T) {
+	hub := corelib.MaclawLLMConfig{
+		URL:          "https://hub.mypapers.top/api/llm/v1",
+		Model:        "auto",
+		ProviderName: "MaClaw官方",
+		ProviderID:   "hub",
+		Profile:      maclawLLMRoleForeground,
+		TaskTypeHint: string(llm.TaskFast),
+	}
+	h := &IMMessageHandler{
+		app: &App{},
+		standaloneConfig: &StandaloneConfig{LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			t.Fatal("post-tool escalation reread the assistant profile")
+			return corelib.MaclawLLMConfig{URL: "https://www.workbuddy.ai/v2", Model: "deepseek-v4.1-flash", ProviderName: "WorkBuddy 国际版"}
+		}},
+	}
+	run := newAgentLoopRunState(hub)
+	run.RoleBase = hub
+	run.RouteTask = string(llm.TaskFast)
+	run.RouteSource = "primary"
+	run.RouteModel = hub.Model
+	h.escalateRunStateToReasoning(run, "tools requested after light turn")
+	if !run.RouteEscalated || run.ActiveConfig.Model != "auto" || run.ActiveConfig.ProviderName != "MaClaw官方" || run.ActiveConfig.URL != hub.URL {
+		t.Fatalf("legacy escalate left hub: %+v", run.ActiveConfig)
+	}
+	if run.ActiveConfig.TaskTypeHint != string(llm.TaskReasoning) {
+		t.Fatalf("hub workload hint = %q", run.ActiveConfig.TaskTypeHint)
 	}
 }
 

@@ -231,6 +231,41 @@ func TestProjectTaskSearchContinuationSurvivesSpentLookupCeiling(t *testing.T) {
 	}
 }
 
+// A current-fact turn plans the page read. Budget 1 keeps only the search
+// family and drops fetch; the live-data cap keeps both.
+func TestLiveDataColdSurfacePublishesWebFetch(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	h.semanticTrustedWebSearch = func(_, query string) (string, error) { return "found: " + query, nil }
+	registerBuiltinTools(h.registry, h)
+	live := &intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.98}
+	tight := withSemanticPlanningBudget(context.Background(), 1)
+	_, tightSurface, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndIdentityAndClassificationAndAttachments(
+		tight, "user-1", "北京天气", "desktop", "root-weather-tight", "turn-weather-tight", live, nil,
+	)
+	if err != nil || !handled || tightSurface == nil {
+		t.Fatalf("handled=%v err=%v", handled, err)
+	}
+	if semanticGrantNameForAdapter(tightSurface, semanticTrustedWebFetchAdapter) != "" {
+		t.Fatal("selection budget 1 must omit the page-fetch family")
+	}
+	open := withSemanticPlanningBudget(context.Background(), liveDataLookupSelectionBudget)
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndIdentityAndClassificationAndAttachments(
+		open, "user-1", "北京天气", "desktop", "root-weather", "turn-weather", live, nil,
+	)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("handled=%v err=%v", handled, err)
+	}
+	if semanticGrantNameForAdapter(surface, semanticTrustedWebSearchAdapter) == "" {
+		t.Fatal("live data must still publish web_search")
+	}
+	if semanticGrantNameForAdapter(surface, semanticTrustedWebFetchAdapter) == "" {
+		t.Fatal("live data must publish web_fetch")
+	}
+	if semanticGrantNameForAdapter(surface, semanticTrustedShellAdapter) != "" {
+		t.Fatal("live data must not grow a shell")
+	}
+}
+
 // A pure retrieval turn does not pull the other half of the pair onto the
 // cold surface. Search and fetch are latent companions.
 func TestSemanticArchetypeBundleSearchOffersWebFetch(t *testing.T) {
@@ -376,6 +411,19 @@ func TestSemanticArchetypeBundleLiveDataSearchBudgetIsSingleFamilyArchetypeMax(t
 	}
 	if len(searchNeeds) != 5 {
 		t.Fatalf("live_data search siblings=%d, want the archetype ceiling 5; needs=%#v", len(searchNeeds), needs)
+	}
+	fetchNeeds := 0
+	for _, need := range needs {
+		if need.Capability != tool.CapabilityInformationFetchWeb {
+			continue
+		}
+		fetchNeeds++
+		if need.Required {
+			t.Fatalf("live_data page fetch must stay optional: %#v", need)
+		}
+	}
+	if fetchNeeds != 5 {
+		t.Fatalf("live_data fetch siblings=%d, want 5; needs=%#v", fetchNeeds, needs)
 	}
 	family := tool.RepeatFamilyID(searchNeeds[0].ID)
 	for index, need := range searchNeeds {

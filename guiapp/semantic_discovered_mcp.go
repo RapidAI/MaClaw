@@ -27,10 +27,70 @@ const (
 	// request a managed semantic replan: that request has no implementation.
 	// They also must not name the removed gateway: discovery tests treat that
 	// name as an instruction to invoke it.
-	discoveredMCPBoundSentence   = "The host bound the named installed MCP tool for the next request. Call the new function whose description names that tool. Do not use the removed MCP gateway. Do not rediscover the same name."
+	discoveredMCPBoundSentence   = "Call the installed MCP function named above. That name stays the same for later calls. Do not use the removed MCP gateway. Do not rediscover the same name. Do not ask the user to continue."
 	discoveredMCPUnboundSentence = "Installed MCP matches stay unbound until this lookup names one compound tool, or the lookup has exactly one compound match. Pass that exact tool name to discover_tool once. The host binds it. Do not use the removed MCP gateway."
 	discoveredMCPNoLoopSentence  = "The host identified an installed MCP tool, but this lookup has no loop to attach the bind. Do not use the removed MCP gateway."
 )
+
+// constraintsWithoutChatConfirmation drops require_confirmation. An installed
+// server is already the user's authorization. Deny constraints stay.
+func constraintsWithoutChatConfirmation(in []tool.RoutingConstraint) []tool.RoutingConstraint {
+	if len(in) == 0 {
+		return in
+	}
+	out := make([]tool.RoutingConstraint, 0, len(in))
+	for _, constraint := range in {
+		if constraint.Effect == "require_confirmation" {
+			continue
+		}
+		out = append(out, constraint)
+	}
+	return out
+}
+
+// releaseInstalledMCPConfirmation removes chat-confirmation dependencies from
+// installed MCP selections. Other tools keep theirs. The tool is then ready
+// to call; a confirmation flag here used to reject the whole turn.
+func releaseInstalledMCPConfirmation(plan *tool.ToolPlan) {
+	if plan == nil {
+		return
+	}
+	for i := range plan.Selections {
+		selection := &plan.Selections[i]
+		if !strings.EqualFold(strings.TrimSpace(selection.Provider.Kind), "mcp") {
+			continue
+		}
+		selection.RequiresConfirm = false
+		selection.ConfirmationID = ""
+		kept := selection.Requires[:0]
+		for _, requirement := range selection.Requires {
+			if strings.HasPrefix(strings.TrimSpace(requirement), "confirmation:") {
+				continue
+			}
+			kept = append(kept, requirement)
+		}
+		selection.Requires = kept
+	}
+}
+
+// readyInstalledMCPBinds is every observed MCP tool the host can publish.
+// Installation is enough; the model does not have to discover the name first.
+func readyInstalledMCPBinds(inventory semanticDynamicInventory) []discoveredMCPBind {
+	seen := make(map[string]bool, len(inventory.mcpEntries))
+	binds := make([]discoveredMCPBind, 0, len(inventory.mcpEntries))
+	for _, entry := range inventory.mcpEntries {
+		if assessDiscoveredMCPBind(inventory, entry.ServerID, entry.ToolName) != "" {
+			continue
+		}
+		key := discoveredMCPBindKey(entry.ServerID, entry.ToolName)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		binds = append(binds, discoveredMCPBind{ServerID: entry.ServerID, ToolName: entry.ToolName})
+	}
+	return discoveredMCPDistinctBinds(binds)
+}
 
 // discoveredMCPToolNameIsCompound mirrors the unexported compound-reference
 // rule: a bare word such as "search" is not a vendor tool address.
@@ -196,10 +256,8 @@ func assessDiscoveredMCPBind(inventory semanticDynamicInventory, serverID, toolN
 	if !provisioned {
 		return fmt.Sprintf("%s/%s was observed by discovery but is not a published semantic provider. The host cannot bind it.", serverID, toolName)
 	}
-	readOnly := len(entry.Contract.Effects) == 1 && entry.Contract.Effects[0] == tool.EffectReadOnly
-	if !readOnly && inventory.coverage.ForProviderKind("mcp").State != tool.CatalogCoverageComplete {
-		return fmt.Sprintf("%s/%s cannot be bound until the MCP catalog observation is complete.", serverID, toolName)
-	}
+	// This entry's own observation finished. A sibling that is still starting
+	// leaves the mcp family not_ready and must not hide this tool.
 	return ""
 }
 
@@ -319,9 +377,12 @@ func (h *IMMessageHandler) semanticSurfaceForDiscoveredMCP(ctx context.Context, 
 	if err != nil {
 		return nil, nil, err
 	}
-	inventory, err := h.semanticDynamicInventory(ctx)
+	// The sidecar lists installed MCP tools only. The skill catalog is not
+	// an input to this plan, and loading it on every new bind set made the
+	// request wait on a family this surface does not publish.
+	inventory, err := h.semanticInstalledMCPInventory(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("load GUI dynamic semantic inventory: %w", err)
+		return nil, nil, fmt.Errorf("load installed MCP inventory: %w", err)
 	}
 	planned := make([]discoveredMCPBind, 0, len(binds))
 	seen := make(map[string]bool, len(binds))
@@ -381,34 +442,49 @@ func (h *IMMessageHandler) semanticSurfaceForDiscoveredMCP(ctx context.Context, 
 	schemas := make(map[string]map[string]interface{}, len(dynamicCatalog.Providers))
 	providers := make([]tool.ProviderSpec, 0, len(dynamicCatalog.Providers))
 	for _, provider := range dynamicCatalog.Providers {
+		// One definition the host cannot authorize must not hide the tools
+		// whose schemas already projected.
 		definition, ok := dynamicCatalog.Definitions[provider.AdapterName]
 		if !ok {
-			return nil, nil, fmt.Errorf("dynamic semantic definition missing for %q", provider.AdapterName)
+			log.Printf("[semantic-routing] discovered MCP definition missing for %q", provider.AdapterName)
+			continue
 		}
 		invocationSchema, err := semanticInvocationSchema(definition)
 		if err != nil {
-			return nil, nil, fmt.Errorf("validate dynamic semantic invocation schema for %q: %w", provider.AdapterName, err)
+			log.Printf("[semantic-routing] discovered MCP schema rejected for %q: %v", provider.AdapterName, err)
+			continue
 		}
 		authorization, err := tool.NewParameterAuthorization(invocationSchema)
 		if err != nil {
-			return nil, nil, fmt.Errorf("authorize dynamic semantic invocation schema for %q: %w", provider.AdapterName, err)
+			log.Printf("[semantic-routing] discovered MCP authorization rejected for %q: %v", provider.AdapterName, err)
+			continue
 		}
 		provider.ParameterAuthorization = authorization
 		defsByName[provider.AdapterName] = definition
 		schemas[provider.AdapterName] = invocationSchema
 		providers = append(providers, provider)
 	}
-	if len(providers) != len(wanted) {
+	planned, wanted, names = alignDiscoveredMCPBinds(planned, providers)
+	if len(providers) == 0 || len(planned) == 0 {
 		return nil, nil, fmt.Errorf("discovered MCP bind is not a published semantic provider")
 	}
 	// Coverage is the inventory's observation watermark. Do not mark builtin
 	// or channel complete: this catalog does not publish those providers.
-	if err := agentservice.EnsureExternalCapabilityVocabulary(registry, semanticExternalCapabilityVocabulary(providers)); err != nil {
-		return nil, nil, fmt.Errorf("seed external capability vocabulary: %w", err)
+	// One capability that cannot be seeded is that tool's problem. The tools
+	// whose vocabulary registered still publish.
+	for _, capID := range semanticExternalCapabilityVocabulary(providers) {
+		if err := agentservice.EnsureExternalCapabilityVocabulary(registry, []tool.CapabilityID{capID}); err != nil {
+			log.Printf("[semantic-routing] installed MCP capability %s was not seeded: %v", capID, err)
+		}
 	}
-	snapshot, err := catalog.PublishWithCoverage(providers, inventory.coverage, time.Now().UTC())
+	snapshot, providers, err := publishDiscoveredMCPProviders(catalog, providers, inventory.coverage)
 	if err != nil {
 		return nil, nil, fmt.Errorf("publish IM semantic catalog: %w", err)
+	}
+	planned, wanted, names = alignDiscoveredMCPBinds(planned, providers)
+	retainDiscoveredMCPDefinitions(providers, defsByName, schemas)
+	if len(providers) == 0 || len(planned) == 0 {
+		return nil, nil, fmt.Errorf("discovered MCP bind is not a published semantic provider")
 	}
 	if routingPolicy.Enabled {
 		if !routingPolicy.AllowsExecutableScope() {
@@ -429,41 +505,46 @@ func (h *IMMessageHandler) semanticSurfaceForDiscoveredMCP(ctx context.Context, 
 	}
 	host := semanticHostContextFromRequest(ctx, channel)
 	policyConstraints = append(policyConstraints, semanticHostContextConstraints(host)...)
+	// Installation is the authorization. A chat confirmation constraint
+	// would leave the tool unpublished, which is the loop the user cannot
+	// finish. Deny constraints stay.
+	policyConstraints = constraintsWithoutChatConfirmation(policyConstraints)
+	// The turn's selection cap is for the managed plan. Every ready
+	// installed tool has to be listable; a cap of eight hid the rest.
 	maxSelections, maxSchemaTokens := 0, 0
-	if routingPolicy.Enabled {
-		maxSelections, maxSchemaTokens = routingPolicy.MaxSelections, routingPolicy.MaxSchemaTokens
-	}
 	turnID := identity.TurnID + ":mcp-discover:" + tool.SchemaDigest([]byte(discoveredMCPBindDigestText(binds))) + ":" + strconv.FormatUint(generation, 10)
 	plan, err := tool.NewToolPlanner(registry).Plan(tool.RouteRequest{
-		RootTaskID:   identity.RootTaskID,
-		SessionID:    identity.SessionID,
-		TurnID:       turnID,
-		ChannelScope: semanticChannelScope(channel),
-		Snapshot:     snapshot,
-		Needs:        namedNeeds,
-		Constraints:  policyConstraints,
-		Pins:         namedPins,
-		Budget:       semanticHostPlanningBudget(maxSelections, maxSchemaTokens),
+		RootTaskID:                        identity.RootTaskID,
+		SessionID:                         identity.SessionID,
+		TurnID:                            turnID,
+		ChannelScope:                      semanticChannelScope(channel),
+		Snapshot:                          snapshot,
+		Needs:                             namedNeeds,
+		Constraints:                       policyConstraints,
+		Pins:                              namedPins,
+		Budget:                            semanticHostPlanningBudget(maxSelections, maxSchemaTokens),
+		ReadyMCPMutationsOnPartialCatalog: true,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("plan discovered MCP route: %w", err)
 	}
+	releaseInstalledMCPConfirmation(&plan)
 	if len(plan.Unmet) > 0 && !(len(plan.Selections) > 0 && semanticUnmetOnlyBudget(plan.Unmet)) {
 		logSemanticUnmetWithInventory(plan.Unmet, inventory)
-		if semanticUnmetPinnedProvider(plan.Unmet) {
-			labels := semanticPinnedProviderLabels(namedPins, providers, entries)
-			return nil, nil, semanticPinnedProviderUnavailableError{Providers: labels, Unmet: plan.Unmet}
+		// A pinned tool the planner cannot select stays off this list. The
+		// tools it did select still render. Refusing the set hid every
+		// installed server behind one rejected sibling.
+		if len(plan.Selections) == 0 {
+			if semanticUnmetPinnedProvider(plan.Unmet) {
+				labels := semanticPinnedProviderLabels(namedPins, providers, entries)
+				return nil, nil, semanticPinnedProviderUnavailableError{Providers: labels, Unmet: plan.Unmet}
+			}
+			return nil, nil, semanticUnmetNeedsError{Unmet: plan.Unmet}
 		}
-		return nil, nil, semanticUnmetNeedsError{Unmet: plan.Unmet}
 	}
 	scopePlan, scopeResult := validateSemanticToolScope(plan, defsByName, identity.RootTaskID, identity.SessionID, turnID)
 	if err := semanticScopeSurfaceError(scopePlan, scopeResult); err != nil {
 		return nil, nil, err
-	}
-	for _, selection := range plan.Selections {
-		if selection.RequiresConfirm {
-			return nil, nil, errSemanticAwaitingConfirmation
-		}
 	}
 	prepared := &semanticPlanPreparation{
 		registry: registry, plan: plan, scopePlan: scopePlan, definitions: defsByName, schemas: schemas,
@@ -483,6 +564,103 @@ func (h *IMMessageHandler) semanticSurfaceForDiscoveredMCP(ctx context.Context, 
 		return nil, nil, fmt.Errorf("discovered MCP plan did not render the bound tool")
 	}
 	return rendered, surface, nil
+}
+
+// alignDiscoveredMCPBinds keeps the binds whose providers are still in the
+// set about to be planned. A sibling that failed projection or publication
+// stays on the loop and is omitted here, so the next request can try it
+// again without withholding the tools that are ready.
+func alignDiscoveredMCPBinds(planned []discoveredMCPBind, providers []tool.ProviderSpec) ([]discoveredMCPBind, map[string]discoveredMCPBind, []string) {
+	built := make(map[string]bool, len(providers))
+	for _, provider := range providers {
+		built[discoveredMCPBindKey(provider.Binding.ProviderID, provider.Binding.ImplementationID)] = true
+	}
+	next := make([]discoveredMCPBind, 0, len(planned))
+	wanted := make(map[string]discoveredMCPBind, len(planned))
+	names := make([]string, 0, len(planned))
+	dropped := make([]string, 0)
+	for _, bind := range planned {
+		key := discoveredMCPBindKey(bind.ServerID, bind.ToolName)
+		if !built[key] {
+			dropped = append(dropped, strings.TrimSpace(bind.ServerID)+"/"+strings.TrimSpace(bind.ToolName))
+			continue
+		}
+		next = append(next, bind)
+		wanted[key] = bind
+		names = append(names, strings.TrimSpace(bind.ToolName))
+	}
+	if len(dropped) > 0 {
+		log.Printf("[semantic-routing] discovered MCP bind left unpublished: %s", strings.Join(dropped, "; "))
+	}
+	return next, wanted, names
+}
+
+// retainDiscoveredMCPDefinitions drops schemas for providers that were not
+// published. Scope validation only has to close the tools that will render.
+func retainDiscoveredMCPDefinitions(providers []tool.ProviderSpec, defs, schemas map[string]map[string]interface{}) {
+	keep := make(map[string]bool, len(providers))
+	for _, provider := range providers {
+		keep[strings.TrimSpace(provider.AdapterName)] = true
+	}
+	for name := range defs {
+		if keep[name] {
+			continue
+		}
+		delete(defs, name)
+		delete(schemas, name)
+	}
+}
+
+// publishDiscoveredMCPProviders publishes the installed set. One provider the
+// catalog rejects is removed and the rest are published again. The rejection
+// is that tool's contract, not a reason to hide every other installed tool.
+func publishDiscoveredMCPProviders(catalog *tool.ToolCatalog, providers []tool.ProviderSpec, coverage tool.CatalogCoverage) (tool.ToolCatalogSnapshot, []tool.ProviderSpec, error) {
+	kept := providers
+	for {
+		snapshot, err := catalog.PublishWithCoverage(kept, coverage, time.Now().UTC())
+		if err == nil {
+			return snapshot, kept, nil
+		}
+		dropped, ok := discoveredMCPProviderNamedInError(err, kept)
+		if !ok || len(kept) <= 1 {
+			return tool.ToolCatalogSnapshot{}, kept, err
+		}
+		log.Printf("[semantic-routing] installed MCP provider %s left unpublished: %v", dropped.AdapterName, err)
+		next := make([]tool.ProviderSpec, 0, len(kept)-1)
+		for _, provider := range kept {
+			if provider.AdapterName == dropped.AdapterName {
+				continue
+			}
+			next = append(next, provider)
+		}
+		if len(next) == len(kept) {
+			return tool.ToolCatalogSnapshot{}, kept, err
+		}
+		kept = next
+	}
+}
+
+func discoveredMCPProviderNamedInError(err error, providers []tool.ProviderSpec) (tool.ProviderSpec, bool) {
+	if err == nil {
+		return tool.ProviderSpec{}, false
+	}
+	msg := err.Error()
+	var found tool.ProviderSpec
+	foundLen := 0
+	for _, provider := range providers {
+		name := strings.TrimSpace(provider.AdapterName)
+		if name == "" || len(name) <= foundLen {
+			continue
+		}
+		if strings.Contains(msg, `"`+name+`"`) {
+			found = provider
+			foundLen = len(name)
+		}
+	}
+	if foundLen == 0 {
+		return tool.ProviderSpec{}, false
+	}
+	return found, true
 }
 
 // discoveredMCPGrantDefinitions keeps only the rendered grants for this bind

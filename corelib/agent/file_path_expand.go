@@ -30,6 +30,11 @@ const (
 	// AutoExtractNotice is placed once after the path list when any document was expanded.
 	AutoExtractNotice = "[系统已自动解析文档正文 — 优先基于下列内容回答；仅当 truncated=true 或解析失败时，再 office(read_document) 分页]"
 
+	// AttachedImageReadHint is the picker note for images sent on this message.
+	// It tells the model to look at those images. A text-only copy does not
+	// include the bytes, so that note does not travel with the copy.
+	AttachedImageReadHint = "For image files, the host sends them directly to a vision-capable model when available. Analyze attached images first; do not re-capture them or use read_file on image bytes. Use OCR only for exact text when needed."
+
 	// AutoExtractBeginMarker prefixes each injected document body.
 	// Full form: --- auto_extract: begin path="..." format="..." ... ---
 	AutoExtractBeginMarker = "--- auto_extract: begin "
@@ -1339,7 +1344,7 @@ func filterLegacyPathInstructions(rest string) string {
 	if rest == "" {
 		return ""
 	}
-	const imageHint = "For image files, the host sends them directly to a vision-capable model when available. Analyze attached images first; do not re-capture them or use read_file on image bytes. Use OCR only for exact text when needed."
+	imageHint := AttachedImageReadHint
 	hasImageHint := strings.Contains(rest, "For image files") ||
 		strings.Contains(rest, "do not re-capture via screenshot") ||
 		strings.Contains(rest, "do not call screenshot")

@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/intent"
@@ -89,6 +90,53 @@ func TestMailboxDeletePlanningOrderStaysBehindFileDelete(t *testing.T) {
 	direct := semanticWorklogPlanningClassification(intent.ClassificationResult{Primary: intent.LabelUnknown, Confidence: 0.2}, classifyWorklogRecord(worklogText))
 	if worklog.Primary != direct.Primary || worklog.Primary == intent.LabelMailboxDelete {
 		t.Fatalf("worklog=%s direct=%s", worklog.Primary, direct.Primary)
+	}
+}
+
+func TestSchedulePayloadPlanningKeepsTheGoverningAct(t *testing.T) {
+	incident := "创建定时任务，每小时清除一下rapidai邮箱。"
+	settled := intent.ClassificationResult{Primary: intent.LabelScheduleManage, Confidence: 0.94, Layer: 3, Reason: "tree-after-embedding"}
+	if got := semanticMailboxDeletePlanningRewrite(&settled, incident); got != nil {
+		t.Fatalf("settled schedule was rewritten: %+v", got)
+	}
+	planned := semanticPlanningClassification(settled, incident)
+	if planned.Primary != intent.LabelScheduleManage || strings.Contains(planned.Reason, "mailbox delete planning") {
+		t.Fatalf("planned=%+v", planned)
+	}
+	for _, primary := range []intent.IntentLabel{intent.LabelMailboxRead, intent.LabelMailboxDelete} {
+		raw := intent.ClassificationResult{Primary: primary, Confidence: 0.60, Layer: 3, Reason: "tree-after-embedding"}
+		got := semanticPlanningClassification(raw, incident)
+		if got.Primary != intent.LabelScheduleManage || got.Degraded || got.Confidence < imSemanticMinimumConfidence || !strings.Contains(got.Reason, "schedule payload planning") {
+			t.Fatalf("from %s: %+v", primary, got)
+		}
+		if len(got.Secondary) != 0 || len(got.ToolNames) != 0 || strings.Contains(got.Reason, "mailbox delete planning") {
+			t.Fatalf("companions %+v", got)
+		}
+	}
+	hourly := "每小时清除一下rapidai邮箱"
+	if got := semanticPlanningClassification(settled, hourly); got.Primary != intent.LabelScheduleManage {
+		t.Fatalf("hourly settled=%+v", got)
+	}
+	if got := semanticMailboxDeletePlanningRewrite(&settled, hourly); got != nil {
+		t.Fatalf("hourly settled rewrite=%+v", got)
+	}
+	dispatch := intent.ClassificationResult{Primary: intent.LabelScheduleDispatch, Confidence: 0.94, Layer: 2}
+	if got := semanticMailboxDeletePlanningRewrite(&dispatch, hourly); got != nil {
+		t.Fatalf("settled dispatch rewrite=%+v", got)
+	}
+	weak := intent.ClassificationResult{Primary: intent.LabelScheduleManage, Confidence: 0.60, Layer: 3, Degraded: true}
+	if got := semanticMailboxDeletePlanningRewrite(&weak, hourly); got == nil || got.Primary != intent.LabelMailboxDelete {
+		t.Fatalf("sub-floor schedule guess=%+v", got)
+	}
+	for _, text := range []string{"清空邮箱，另外创建一个定时任务提醒我", "把定时任务的通知邮件删了"} {
+		got := semanticPlanningClassification(intent.ClassificationResult{Primary: intent.LabelMailboxRead, Confidence: 0.60, Layer: 3}, text)
+		if got.Primary != intent.LabelMailboxDelete || !strings.Contains(got.Reason, "mailbox delete planning") {
+			t.Fatalf("%q planned=%+v", text, got)
+		}
+	}
+	file := semanticPlanningClassification(settled, "删除邮件.md")
+	if file.Primary != intent.LabelFileDelete {
+		t.Fatalf("file primary=%s", file.Primary)
 	}
 }
 

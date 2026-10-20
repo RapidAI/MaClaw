@@ -9,6 +9,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/mailbox"
 )
 
@@ -231,28 +232,166 @@ func chatTaskProgressMilestone(text string) (string, bool) {
 	return truncateChatTaskText(text, 240), true
 }
 
+const (
+	chatTaskToolDispatch     = "dispatch_background_task"
+	chatTaskToolSteer        = "steer_background_task"
+	chatTaskToolStop         = "stop_all_work"
+	chatTaskToolRequestInput = "chat_task_request_input"
+	// chatTaskHandoffRequiredMessage is the admission text once a desktop chat
+	// turn has spent its inline lookups and has not handed the work off yet.
+	chatTaskHandoffRequiredMessage = "This chat turn already did its quick lookups. Call dispatch_background_task with the remaining work, reply with one plain sentence, and stop."
+	// chatTaskAlreadyHandedOffMessage is the admission text after dispatch or
+	// steer has already succeeded. Telling the model to dispatch again starts
+	// a second task.
+	chatTaskAlreadyHandedOffMessage = "This chat turn already handed the work off. Reply with one plain sentence and stop."
+	// chatTaskComputerUseHandoffMessage refuses desktop control on the chat
+	// loop. The computer-use gate starts the helper. This refusal must not
+	// close the rest of the turn.
+	chatTaskComputerUseHandoffMessage = "Desktop control does not run in this chat turn. A desktop helper starts on its own when the request needs it. Keep doing the rest of the task here. Do not stop, and do not start another task for this refusal."
+)
+
+func (c *LoopContext) markChatTaskHandoffSent() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.ChatTaskHandoffSent = true
+	c.mu.Unlock()
+}
+
+func (c *LoopContext) chatTaskHandoffSent() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.ChatTaskHandoffSent
+}
+
+func foregroundChatContinuationNote(userText string) string {
+	for _, r := range userText {
+		if unicode.Is(unicode.Han, r) {
+			return "剩余工作已继续处理，完成后会发到这个对话。"
+		}
+	}
+	return "The remaining work is continuing. The result will appear in this chat."
+}
+
+// foregroundChatNeedsHostHandoff is true when this desktop chat turn was
+// closed on purpose and never started, steered, or stopped a task.
+// A call count does not close it. A refused desktop-control call does not
+// close it either: the computer-use gate starts that helper.
+func (c *LoopContext) foregroundChatNeedsHostHandoff() bool {
+	if c == nil || !c.OfferChatTaskDispatch || strings.TrimSpace(c.ChatTaskID) != "" {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return !c.ChatTaskHandoffSent && c.ForegroundHandoffNeeded
+}
+
+// foregroundChatEndedUnfinished is a desktop chat turn that stopped while the
+// task was still open. A full turn's iteration ceiling is that stop. A light
+// lookup's ceiling is the end of the lookup. A reply that asks the user to
+// send another message is unfinished on either profile. A worker does not
+// start another worker.
+func (c *LoopContext) foregroundChatEndedUnfinished(result agent.LoopResult) bool {
+	if c == nil || !c.OfferChatTaskDispatch || strings.TrimSpace(c.ChatTaskID) != "" || c.chatTaskHandoffSent() {
+		return false
+	}
+	if strings.TrimSpace(result.Error) == "max iterations reached" && !c.Runtime.Execution.IsLight() {
+		if text := strings.TrimSpace(result.Text); text == "" || agent.AnswerHandsWorkBack(text) {
+			return true
+		}
+	}
+	return agent.AnswerHandsWorkBack(result.Text)
+}
+
+// chatTaskControlToolDefinitions is the conversation-control surface. These
+// names are host actions, not capability grants, so a semantic plan must not
+// be the thing that decides whether the model can see them.
+func chatTaskControlToolDefinitions() []map[string]interface{} {
+	return []map[string]interface{}{
+		toolDef(chatTaskToolDispatch, "Hand work to a background task when it should keep running after this reply. After it succeeds, tell the user in one plain sentence and stop. A count of tool calls is not a reason to call this or to stop. Do not mention ids or tool names.",
+			map[string]interface{}{
+				"request": map[string]string{"type": "string", "description": "Self-contained task, including the user's goal and any constraints already known."},
+				"title":   map[string]string{"type": "string", "description": "Short title the user can recognize. Optional."},
+			}, []string{"request"}),
+		toolDef(chatTaskToolSteer, "Send a follow-up or correction to work that is already running. Use this instead of starting another task. Omit task_id when only one piece of work is running.",
+			map[string]interface{}{
+				"note":    map[string]string{"type": "string", "description": "What changed, in the user's words."},
+				"title":   map[string]string{"type": "string", "description": "Title of the running work when more than one is open. Optional."},
+				"task_id": map[string]string{"type": "string", "description": "Internal id. Leave empty when title or the only running item is enough."},
+			}, []string{"note"}),
+		toolDef(chatTaskToolStop, "Stop every running task, desktop run, and foreground loop for this chat. Call this whenever the user wants that work stopped, cancelled, or held, in any language or phrasing, and call it before you say it stopped. Do not call it to change the content of the work, such as stopping bold text or stopping music inside a video being edited. If you are unsure whether they mean the running work, call it with intent pause rather than continuing. The result has idle and say. Tell the user only say. Claim the work stopped only when idle is true.",
+			map[string]interface{}{
+				"intent": map[string]string{"type": "string", "description": "stop or pause. pause holds the work and asks what they meant. Omit it to stop."},
+			}, nil),
+		toolDef(chatTaskToolRequestInput, "Ask the user one question and wait. Only background work may call this, and only when a wrong guess would delete, send, purchase, or submit something, or when ambiguity would materially change the result. Otherwise decide and proceed. The answer continues the same work.",
+			map[string]interface{}{
+				"question": map[string]string{"type": "string", "description": "The one question the user must answer before the work can continue."},
+			}, []string{"question"}),
+	}
+}
+
+func chatTaskForegroundHandoffDefinitions() []map[string]interface{} {
+	all := chatTaskControlToolDefinitions()
+	out := make([]map[string]interface{}, 0, len(all))
+	for _, def := range all {
+		if extractToolName(def) == chatTaskToolRequestInput {
+			continue
+		}
+		out = append(out, def)
+	}
+	return out
+}
+
+func chatTaskWorkerControlDefinitions() []map[string]interface{} {
+	for _, def := range chatTaskControlToolDefinitions() {
+		if extractToolName(def) == chatTaskToolRequestInput {
+			return []map[string]interface{}{def}
+		}
+	}
+	return nil
+}
+
+// chatTaskAfterHandoffDefinitions is the surface after this turn has already
+// dispatched or steered. A second dispatch is closed. Steer and stop stay,
+// so a correction to the running work still has a call.
+func chatTaskAfterHandoffDefinitions() []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, 2)
+	for _, def := range chatTaskForegroundHandoffDefinitions() {
+		if extractToolName(def) == chatTaskToolDispatch {
+			continue
+		}
+		out = append(out, def)
+	}
+	return out
+}
+
 func (h *IMMessageHandler) rejectForegroundWorkTool(policyUserID, name string) string {
 	if h == nil {
 		return ""
 	}
 	name = strings.TrimSpace(name)
 	switch name {
-	case "dispatch_background_task", "steer_background_task", "chat_task_request_input", "stop_all_work":
+	case chatTaskToolDispatch, chatTaskToolSteer, chatTaskToolRequestInput, chatTaskToolStop:
 		return ""
 	}
 	loop := h.getSessionLoopCtx(policyUserID)
 	if loop == nil || !loop.OfferChatTaskDispatch || strings.TrimSpace(loop.ChatTaskID) != "" {
 		return ""
 	}
-	if isComputerUseToolDefinition(name) {
-		return "Desktop or vision work cannot run in this chat turn. Call dispatch_background_task with the user's goal, reply with one plain sentence, and stop."
-	}
 	loop.mu.Lock()
-	loop.ForegroundToolRounds++
-	rounds := loop.ForegroundToolRounds
+	handedOff := loop.ChatTaskHandoffSent
 	loop.mu.Unlock()
-	if rounds > desktopChatInlineToolRounds {
-		return "This chat turn already did its quick lookups. Call dispatch_background_task with the remaining work, reply with one plain sentence, and stop."
+	if handedOff {
+		return chatTaskAlreadyHandedOffMessage
+	}
+	// The desktop gate already starts the helper. Closing this turn here
+	// rejects the later real tool calls and starts a second worker.
+	if isComputerUseToolDefinition(name) {
+		return chatTaskComputerUseHandoffMessage
 	}
 	return ""
 }

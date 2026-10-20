@@ -3,7 +3,9 @@
 # Update with UPDATE_SEMANTIC_BEHAVIOR_SNAPSHOT=1 after reviewing a face change.
 im	search	managed	information.search.web|require|freshness=reference|req=1|opt=4
 srv	search	managed	information.search.web|require|freshness=reference|req=1|opt=4
+im	live_data	managed	information.fetch.web|require|-|req=0|opt=5
 im	live_data	managed	information.search.web|require|freshness=current|req=1|opt=4
+srv	live_data	managed	information.fetch.web|require|-|req=0|opt=5
 srv	live_data	managed	information.search.web|require|freshness=current|req=1|opt=4
 im	office	managed	artifact.acquire.remote|require|-|req=0|opt=32
 im	office	managed	artifact.deliver.current_channel|require|format=file|req=0|opt=1

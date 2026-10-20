@@ -546,13 +546,20 @@ func TestShowFileCompanionLaunchesWithoutAPath(t *testing.T) {
 		argv = append([]string(nil), got...)
 		return nil
 	}
-	// Nothing is remembered, and the dialog is cancelled. No process starts:
-	// an empty companion used to treat the launch verb as a file tab.
-	app.processHooks.chooseFiles = func() ([]string, error) { return nil, nil }
+	// Nothing is remembered. The companion still starts, and the window shows
+	// its own open panel. open-file stays the mode token, not a document.
+	asked := false
+	app.processHooks.chooseFiles = func() ([]string, error) {
+		asked = true
+		return nil, nil
+	}
 	if err := app.ShowFileCompanion(); err != nil {
 		t.Fatal(err)
 	}
-	if len(argv) != 0 {
+	if asked {
+		t.Fatal("empty history opened the system file dialog")
+	}
+	if len(argv) != 2 || argv[1] != "open-file" {
 		t.Fatalf("argv = %#v", argv)
 	}
 }

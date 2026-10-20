@@ -1,6 +1,6 @@
 import { localizeText } from '../i18n';
 
-export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'pet' | 'programmingTools' | 'latex' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'pptStyles' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'virtualEmployee' | 'im' | 'email' | 'tokenBank' | 'security' | 'migration' | 'system' | 'hardware' | 'assetManagement';
+export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'pet' | 'programmingTools' | 'latex' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'pptStyles' | 'pdfStyles' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'virtualEmployee' | 'im' | 'email' | 'tokenBank' | 'security' | 'migration' | 'system' | 'hardware' | 'assetManagement';
 
 /**
  * Tabs that actually render a settings body panel (rail + SettingsActiveContent).
@@ -14,6 +14,7 @@ export const SETTINGS_CONTENT_TAB_IDS = [
     'programmingTools',
     'latex',
     'pptStyles',
+    'pdfStyles',
     'searchEngine',
     'llm',
     'llmCache',
@@ -79,6 +80,7 @@ const settingsTabGroupById: Partial<Record<SettingsTabId, SettingsTabGroupId>> =
     programmingTools: 'essentials',
     latex: 'essentials',
     pptStyles: 'essentials',
+    pdfStyles: 'essentials',
     searchEngine: 'ai',
     llm: 'ai',
     llmCache: 'ai',
@@ -123,6 +125,7 @@ const settingsTabIcons: Record<SettingsTabId, string> = {
     llm: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="10" height="10" rx="2"/><circle cx="6" cy="7" r="1"/><circle cx="10" cy="7" r="1"/><path d="M6 10.5c.5.6 1.2 1 2 1s1.5-.4 2-1"/></svg>',
     llmCache: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="8" cy="4" rx="5" ry="2"/><path d="M3 4v4c0 1.1 2.2 2 5 2s5-.9 5-2V4"/><path d="M3 8v4c0 1.1 2.2 2 5 2s5-.9 5-2V8"/></svg>',
     pptStyles: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="8" rx="1.2"/><path d="M2 6h12"/><circle cx="4.5" cy="4.5" r="0.6" fill="currentColor" stroke="none"/><path d="M5 9.5h6"/></svg>',
+    pdfStyles: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M4 1.5h5l3 3V14.5H4z"/><path d="M9 1.5V4.5h3"/><path d="M6 8h4M6 10.5h4"/><path d="M4 6.2h8" stroke-width="2"/></svg>',
     embedding: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="3.5" r="2"/><circle cx="4" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><path d="M8 5.5v2.5L4 10M8 8l4 2"/></svg>',
     memory: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="2" width="9" height="12" rx="1.5"/><path d="M5.5 5h5M5.5 7.5h5M5.5 10h3"/><path d="M3.5 5H2M3.5 8H2M3.5 11H2M12.5 5H14M12.5 8H14M12.5 11H14"/></svg>',
     knowledge: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2 2.5h5L8 3.5l1-1h5v10h-5l-1 1-1-1H2z"/><path d="M8 3.5v10"/></svg>',
@@ -183,6 +186,12 @@ export const getSettingsTabOptions = (lang: string, options: { hideVirtualEmploy
             label: textForLang(lang, 'PPT Styles', 'PPT 风格', 'PPT 風格'),
             desc: textForLang(lang, 'Built-in decks styles, previews, and styles generated from a description', '内置风格、预览，以及按描述生成的风格', '內置風格、預覽，以及按描述生成的風格'),
             icon: settingsTabIcons.pptStyles,
+        },
+        {
+            id: 'pdfStyles' as const,
+            label: textForLang(lang, 'PDF Styles', 'PDF 风格', 'PDF 風格'),
+            desc: textForLang(lang, 'Five document layouts, plus styles generated from a description', '五套文档版式，以及按描述生成的风格', '五套文件版式，以及按描述生成的風格'),
+            icon: settingsTabIcons.pdfStyles,
         },
         {
             id: 'searchEngine' as const,

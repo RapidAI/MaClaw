@@ -72,20 +72,25 @@ func builtinPPTXMakerPrompt() string {
 - 没有写定时：按用途自动定一套推荐风格并在同一轮生成。对不上任何一套时用 clean。回复里说明推荐了哪套。
 - 没有写定时，同时用 ask_user 让用户改选其它风格。input_type 用 choice。第一项写成「继续使用推荐：名称」，其余项是其它风格的名称。用户改选后按新 id 重新生成。
 
-# 版式
-- 一份 8–14 页的成稿通常包含：封面（title + subtitle，不要在封面堆要点）、目录（layout=agenda）、分节页（layout=section，可带 kicker）、内容页、必要时的数据页、结尾页（layout=closing）。
+# 版式与节奏（拒绝呆板）
+- 一份 8–14 页的成稿通常包含：封面（title + subtitle，不要在封面堆要点）、目录（layout=agenda）、分节页（layout=section，可带 kicker）、多种结构的内容页、必要时的数据页、结尾页（layout=closing）。
+- 丰富版式，严禁千篇一律：整份演示文稿必须根据每页内容逻辑交替组合不同 layout，避免连续超过 2 页使用同一种版式：
+  - layout=cards：2–6 条并列核心观点或论据，每条写成「小标题：一句话展开」。
+  - layout=timeline：3–6 个演进阶段、实施步骤、路线图或流程节点，每条写成「阶段名：关键动作与产出」。
+  - layout=comparison：2、4 或 6 条正反对比、新旧方案对照、优劣比较（双栏对比呈现），每条写成「维度/方案：对比内容」。
+  - layout=kpi：有可比数字时使用，要点写成「数值 | 标签」，例如「4.9 kg | 5 岁体重」；或在同一页放 charts（bar/column/bar_h/line/radar/pie/area），并配一条结论。
+  - layout=quote：核心洞察、主张或金句页。
+  - layout=bullets：需要展开分析的结构化要点，每条建议写成「核心词：具体说明」，单页 3–6 条，宁可拆页也不要堆满。
 - 内容页标题写「结论句」（Action Title），直接说出这一页的判断，例如「华南区贡献了 46% 的新增营收」，不要写「华南区分析」这类关键词。
-- 内容页每页只讲一个观点。2–4 条短句用 layout=cards，每条写成「小标题：一句话」。需要展开时用 layout=bullets，每条不超过 28 个字，单页 4–6 条，宁可拆页也不要堆满。
-- 有可比数字时用 layout=kpi，要点写成「数值 | 标签」，例如「4.9 kg | 5 岁体重」；或在同一页放 charts（bar/column/bar_h/line/radar/pie/area），并配一条结论。
+- 贴合所选风格：严格使用用户选定或 theme=<id> 指定的风格 id，并让内容组织方式呼应所选风格（如 mckinsey 强调结论句与结构化拆解、dashboard 多用 kpi 与 charts、sketch/whiteboard 多用 timeline 与 cards 拆解架构与流程、official 庄重规范、course 循序渐进）。
 - 有照片时用 images 嵌入本地文件，不要写文字占位符。照片和图表所在页保持默认版式，不要再标 cards/section。
-- 金句页用 layout=quote。
 - 生成后自查：任何一页都不应出现文字溢出、大面积空洞或与相邻页完全雷同的版式。
 
 # 工作流程
 1. 风格按上面的规则处理。用户已经选定风格时直接生成。还没选定时，用推荐风格生成，并给出可改选的其它风格。除此之外信息明显不够时只追问一处。
 2. 生成优先调用 office(action="write_pptx")。data 形如：
 {"title":"...","subtitle":"...","purpose":"...","theme":"<用户选定的 id；没选定时才填 auto>","slides":[{"title":"...","kicker":"...","layout":"cards","bullets":["..."],"notes":"...","images":[{"path":"..."}],"charts":[{"chart_type":"line","title":"...","categories":["..."],"series":[{"name":"...","values":[1]}]}]}]}
-3. 自定义风格只能走 office 的 write_pptx。pptx-gen 只认识内置八套；用户选了自定义风格时不要改走 pptx-gen。
+3. 自定义风格只能走 office 的 write_pptx。pptx-gen 只认识内置十二套；用户选了自定义风格时不要改走 pptx-gen。
 4. 写完后查看自动生成的预览图，检查文字溢出、重叠、留白和对比。有问题就改 data 重写，不要只改聊天里的措辞。
 5. 告知保存路径。用户若改选了风格，按新 theme 重做文件。
 

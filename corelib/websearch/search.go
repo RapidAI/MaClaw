@@ -7,8 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -572,7 +575,9 @@ func searchSerper(ctx context.Context, provider corelib.WebSearchProvider, query
 		return nil, fmt.Errorf("Serper returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 	var payload struct {
-		Organic []struct {
+		AnswerBox      json.RawMessage `json:"answerBox"`
+		KnowledgeGraph json.RawMessage `json:"knowledgeGraph"`
+		Organic        []struct {
 			Title   string `json:"title"`
 			Link    string `json:"link"`
 			Snippet string `json:"snippet"`
@@ -581,17 +586,289 @@ func searchSerper(ctx context.Context, provider corelib.WebSearchProvider, query
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 2*1024*1024)).Decode(&payload); err != nil {
 		return nil, err
 	}
-	results := make([]SearchResult, 0, len(payload.Organic))
+	// The answer box is the engine's direct answer. Organic hits are often
+	// encyclopedia and portal pages, so dropping the box left titles and no fact.
+	// The knowledge-graph description is that encyclopedia blurb and stays out
+	// of this lead; only its attribute card is kept.
+	// Strategy merge keeps the first row for a canonical URL. Fold a later
+	// organic snippet into that row, or the page text that states the fact
+	// is dropped when the answer box only names the page.
+	results := serperDirectAnswers(payload.AnswerBox, payload.KnowledgeGraph)
 	for _, item := range payload.Organic {
 		if item.Link == "" || item.Title == "" {
 			continue
 		}
-		results = append(results, SearchResult{Title: item.Title, URL: item.Link, Snippet: item.Snippet})
-		if len(results) >= maxResults {
+		if foldSerperSameURLSnippet(results, item.Link, item.Snippet) {
+			continue
+		}
+		if maxResults > 0 && len(results) >= maxResults {
 			break
 		}
+		results = append(results, SearchResult{Title: item.Title, URL: item.Link, Snippet: item.Snippet})
+	}
+	if maxResults > 0 && len(results) > maxResults {
+		results = results[:maxResults]
 	}
 	return results, nil
+}
+
+// serperSnippetLimit is the rune cap for one projected Serper snippet,
+// including a same-URL organic snippet folded onto a direct answer.
+const serperSnippetLimit = 600
+
+// foldSerperSameURLSnippet writes the organic snippet onto the earlier result
+// that shares its canonical URL and reports whether that row exists. Raw URL
+// equality is not enough: the canonical key drops a trailing slash and
+// tracking parameters, which is the key mergeSearchResultsPrefer uses.
+func foldSerperSameURLSnippet(results []SearchResult, rawURL, snippet string) bool {
+	key := canonicalSearchResultURL(rawURL)
+	if key == "" {
+		return false
+	}
+	for i := range results {
+		if canonicalSearchResultURL(results[i].URL) != key {
+			continue
+		}
+		results[i].Snippet = joinSearchSnippets(results[i].Snippet, snippet)
+		return true
+	}
+	return false
+}
+
+func joinSearchSnippets(existing, extra string) string {
+	existing = strings.TrimSpace(existing)
+	extra = strings.TrimSpace(extra)
+	if extra == "" || strings.Contains(existing, extra) {
+		return existing
+	}
+	if existing == "" {
+		return capSearchSnippet(extra)
+	}
+	// A longer page that already contains the lead can replace it only while
+	// it still fits. Left-capping that page would keep its opening and drop
+	// the lead when the shared phrase sits later.
+	if strings.Contains(extra, existing) && len([]rune(extra)) <= serperSnippetLimit {
+		return extra
+	}
+	sep := "; "
+	lead := []rune(existing)
+	tail := []rune(extra)
+	budget := serperSnippetLimit - len([]rune(sep))
+	if len(lead)+len(tail) <= budget {
+		return existing + sep + extra
+	}
+	// The tail is the row a same-URL merge would drop. A left cap on the
+	// joined string deletes it whenever the direct answer already filled
+	// the budget. Keep the shorter side intact, then fill from the other.
+	half := budget / 2
+	if len(tail) <= half {
+		room := budget - len(tail)
+		if len(lead) > room {
+			lead = lead[:room]
+		}
+		return string(lead) + sep + string(tail)
+	}
+	if len(lead) <= half {
+		room := budget - len(lead)
+		if len(tail) > room {
+			tail = tail[:room]
+		}
+		return string(lead) + sep + string(tail)
+	}
+	return string(lead[:half]) + sep + string(tail[:budget-half])
+}
+
+func capSearchSnippet(snippet string) string {
+	runes := []rune(snippet)
+	if len(runes) <= serperSnippetLimit {
+		return snippet
+	}
+	return string(runes[:serperSnippetLimit]) + "…"
+}
+
+func serperDirectAnswers(answerBox, knowledgeGraph json.RawMessage) []SearchResult {
+	var out []SearchResult
+	seen := make(map[string]bool, 2)
+	add := func(item SearchResult, ok bool) {
+		if !ok {
+			return
+		}
+		// The answer box and the attribute card can name one page. Emitting
+		// both lets canonical-URL merge keep the first snippet and drop the
+		// card. Fold before the row exists.
+		if foldSerperSameURLSnippet(out, item.URL, item.Snippet) {
+			return
+		}
+		key := item.URL + "\n" + item.Snippet
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, item)
+	}
+	add(serperDirectAnswerResult(decodeJSONObject(answerBox)))
+	add(serperKnowledgeFact(decodeJSONObject(knowledgeGraph)))
+	return out
+}
+
+// serperKnowledgeFact keeps the entity attribute card and leaves the
+// encyclopedia description to organic results. Leading with that description
+// made a current-fact query look answered by a city biography.
+func serperKnowledgeFact(obj map[string]any) (SearchResult, bool) {
+	if len(obj) == 0 {
+		return SearchResult{}, false
+	}
+	attrs, _ := obj["attributes"].(map[string]any)
+	if len(attrs) == 0 {
+		return SearchResult{}, false
+	}
+	fact := map[string]any{"attributes": attrs}
+	for _, key := range []string{"title", "link", "url", "website", "descriptionLink", "source"} {
+		if value, ok := obj[key]; ok {
+			fact[key] = value
+		}
+	}
+	return serperDirectAnswerResult(fact)
+}
+
+func decodeJSONObject(raw json.RawMessage) map[string]any {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return nil
+	}
+	if raw[0] == '[' {
+		var items []map[string]any
+		if err := json.Unmarshal(raw, &items); err != nil || len(items) == 0 {
+			return nil
+		}
+		return items[0]
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil
+	}
+	return obj
+}
+
+func serperDirectAnswerResult(obj map[string]any) (SearchResult, bool) {
+	if len(obj) == 0 {
+		return SearchResult{}, false
+	}
+	snippet := flattenAnswerFields(obj)
+	if snippet == "" {
+		return SearchResult{}, false
+	}
+	title := scalarString(obj["title"])
+	if title == "" {
+		title = scalarString(obj["location"])
+	}
+	if title == "" {
+		title = "Direct answer"
+	}
+	return SearchResult{
+		Title:   title,
+		URL:     firstHTTPURL(obj, "link", "url", "website", "source", "descriptionLink", "source_link", "sourceLink"),
+		Snippet: snippet,
+	}, true
+}
+
+func flattenAnswerFields(obj map[string]any) string {
+	var prose []string
+	var facts []string
+	for _, key := range sortedMapKeys(obj) {
+		if serperAnswerSkipKey(key) {
+			continue
+		}
+		appendAnswerValue(key, obj[key], &prose, &facts)
+	}
+	return capSearchSnippet(strings.TrimSpace(strings.Join(append(prose, facts...), "; ")))
+}
+
+func appendAnswerValue(key string, value any, prose, facts *[]string) {
+	if text := scalarString(value); text != "" {
+		if serperURLKey(key) && normalizeSearchResultURL(text) != "" {
+			return
+		}
+		switch key {
+		case "answer", "snippet", "description":
+			*prose = append(*prose, text)
+		default:
+			*facts = append(*facts, key+": "+text)
+		}
+		return
+	}
+	nested, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	for _, child := range sortedMapKeys(nested) {
+		if serperAnswerSkipKey(child) {
+			continue
+		}
+		if text := scalarString(nested[child]); text != "" {
+			*facts = append(*facts, key+"."+child+": "+text)
+		}
+	}
+}
+
+func sortedMapKeys(obj map[string]any) []string {
+	keys := make([]string, 0, len(obj))
+	for key := range obj {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func serperAnswerSkipKey(key string) bool {
+	switch key {
+	case "title", "snippetHighlighted", "imageUrl", "thumbnail", "image", "images", "favicon", "position":
+		return true
+	default:
+		return false
+	}
+}
+
+func serperURLKey(key string) bool {
+	switch key {
+	case "link", "url", "website", "source", "descriptionLink", "source_link", "sourceLink":
+		return true
+	default:
+		return false
+	}
+}
+
+func firstHTTPURL(obj map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if text := scalarString(obj[key]); text != "" {
+			if href := normalizeSearchResultURL(text); href != "" {
+				return href
+			}
+		}
+	}
+	return ""
+}
+
+func scalarString(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case float64:
+		if math.IsNaN(typed) || math.IsInf(typed, 0) {
+			return ""
+		}
+		if typed == math.Trunc(typed) && typed >= math.MinInt64 && typed <= math.MaxInt64 {
+			return strconv.FormatInt(int64(typed), 10)
+		}
+		return strconv.FormatFloat(typed, 'f', -1, 64)
+	case bool:
+		if typed {
+			return "true"
+		}
+		return "false"
+	default:
+		return ""
+	}
 }
 
 func searchTinyFish(ctx context.Context, provider corelib.WebSearchProvider, query string, maxResults int) ([]SearchResult, error) {

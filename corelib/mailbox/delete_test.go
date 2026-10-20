@@ -256,6 +256,12 @@ func TestQueryWantsMessageDelete(t *testing.T) {
 		"把不怎么重要的邮件删了",
 		"有没有主题的邮件都删了",
 		"这封邮件删不删，把另一封邮件删了",
+		"清空邮箱，另外创建一个定时任务提醒我",
+		"把定时任务的通知邮件删了",
+		"添加附件，删除这封邮件，看看定时任务",
+		"empty my mailbox and create a scheduled task",
+		"每小时清除一下rapidai邮箱",
+		"定时器响了就清除邮箱",
 	}
 	for _, msg := range want {
 		if !QueryWantsMessageDelete(msg) {
@@ -319,10 +325,50 @@ func TestQueryWantsMessageDelete(t *testing.T) {
 		"how do I delete this email",
 		"how to delete all mail",
 		"how can I delete this message",
+		"创建定时任务，每小时清除一下rapidai邮箱。",
+		"创建一个每小时清空邮箱的定时任务",
+		"create a scheduled task to empty my mailbox",
+		"set up a scheduled task to empty my mailbox",
+		"建立一个每小时清除rapidai邮箱的定時任務",
 	}
 	for _, msg := range skip {
 		if QueryWantsMessageDelete(msg) {
 			t.Errorf("do not delete: %s", msg)
+		}
+	}
+}
+
+func TestQuerySchedulesMessageDelete(t *testing.T) {
+	payload := []string{
+		"创建定时任务，每小时清除一下rapidai邮箱。",
+		"创建一个每小时清空邮箱的定时任务",
+		"create a scheduled task to empty my mailbox",
+		"set up a scheduled task to empty my mailbox",
+		"建立一个每小时清除rapidai邮箱的定時任務",
+		"设置一个定时提醒，去清空邮箱",
+		"create scheduled tasks to delete all mail",
+	}
+	for _, msg := range payload {
+		if !QuerySchedulesMessageDelete(msg) || QueryWantsMessageDelete(msg) {
+			t.Errorf("scheduled payload: %s schedules=%v wants=%v", msg, QuerySchedulesMessageDelete(msg), QueryWantsMessageDelete(msg))
+		}
+	}
+	immediate := []string{
+		"清空邮箱，另外创建一个定时任务提醒我",
+		"把定时任务的通知邮件删了",
+		"添加附件，删除这封邮件，看看定时任务",
+		"empty my mailbox and create a scheduled task",
+		"每小时清除一下rapidai邮箱",
+		"定时器响了就清除邮箱",
+		"删除邮箱中的所有邮件",
+		"创建定时任务提醒我开会",
+		"列出定时任务",
+		"每小时",
+		"不要创建定时任务去清空邮箱",
+	}
+	for _, msg := range immediate {
+		if QuerySchedulesMessageDelete(msg) {
+			t.Errorf("not a scheduled mail delete: %s", msg)
 		}
 	}
 }

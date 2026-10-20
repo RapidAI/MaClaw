@@ -937,7 +937,26 @@ func (a *App) GetMaclawLLMProviders() struct {
 			Current   string                      `json:"current"`
 		}{Providers: defaults, Current: defaults[0].Name}
 	}
-	rawProviders := a.syncedMaclawLLMProviders(cfg)
+	return a.maclawLLMProvidersFromConfig(&cfg)
+}
+
+// maclawLLMProvidersFromConfig folds a Hub status refresh into cfg, then
+// normalizes that same snapshot. Callers must keep using cfg afterwards:
+// profiles and role models stay with the provider rows. A failed refresh
+// leaves cfg unchanged instead of substituting the default catalog.
+func (a *App) maclawLLMProvidersFromConfig(cfg *corelib.AppConfig) struct {
+	Providers []corelib.MaclawLLMProvider `json:"providers"`
+	Current   string                      `json:"current"`
+} {
+	if cfg == nil {
+		defaults := defaultMaclawLLMProviders()
+		return struct {
+			Providers []corelib.MaclawLLMProvider `json:"providers"`
+			Current   string                      `json:"current"`
+		}{Providers: defaults, Current: defaults[0].Name}
+	}
+	a.syncHubLLMServiceStatusIntoConfig(cfg)
+	rawProviders := append([]corelib.MaclawLLMProvider(nil), cfg.MaclawLLMProviders...)
 	missingTimeout := make(map[string]bool, len(rawProviders))
 	for _, provider := range rawProviders {
 		if provider.TimeoutSec <= 0 {
@@ -1155,7 +1174,7 @@ func (a *App) GetMaclawLLMPanelState() struct {
 			TrialReflectEnabled: false,
 		}
 	}
-	providerState := a.GetMaclawLLMProviders()
+	providerState := a.maclawLLMProvidersFromConfig(&cfg)
 	// Use the single source of truth for configured → effective conversion.
 	maxIter := config.EffectiveMaxIterations(cfg.MaclawAgentMaxIterations)
 	return struct {
@@ -1710,10 +1729,27 @@ func (a *App) ResolveMaclawLLMProfile(profile string) (corelib.MaclawLLMConfig, 
 	if err != nil {
 		return corelib.MaclawLLMConfig{}, err
 	}
-	state := a.GetMaclawLLMProviders()
-	profiles, err := effectiveMaclawLLMProfiles(cfg, state.Providers, state.Current)
+	state := a.maclawLLMProvidersFromConfig(&cfg)
+	return a.resolveMaclawLLMProfileFromConfig(profile, cfg, state.Providers, state.Current)
+}
+
+// resolveMaclawLLMProfileFromConfig resolves one profile from the config and
+// provider rows the caller already loaded.
+func (a *App) resolveMaclawLLMProfileFromConfig(profile string, cfg corelib.AppConfig, providers []corelib.MaclawLLMProvider, current string) (corelib.MaclawLLMConfig, error) {
+	profiles, err := effectiveMaclawLLMProfiles(cfg, providers, current)
 	if err != nil {
 		return corelib.MaclawLLMConfig{}, err
+	}
+	resolved, _, err := a.materializeEffectiveMaclawLLMProfile(profile, cfg, providers, current, profiles)
+	return resolved, err
+}
+
+// effectiveMaclawLLMProfileSelection finds the provider and model for one
+// profile without opening credentials. Role resolution uses it to decide
+// whether the assistant assignment wins before paying for materialize.
+func effectiveMaclawLLMProfileSelection(profile string, cfg corelib.AppConfig, providers []corelib.MaclawLLMProvider, current string, profiles *corelib.MaclawLLMProfiles) (corelib.MaclawLLMProvider, string, error) {
+	if profiles == nil {
+		return corelib.MaclawLLMProvider{}, "", fmt.Errorf("LLM profile %q is not configured", profile)
 	}
 	selected := profiles.Assistant
 	switch profile {
@@ -1723,35 +1759,52 @@ func (a *App) ResolveMaclawLLMProfile(profile string) (corelib.MaclawLLMConfig, 
 		}
 	case maclawLLMProfileCaption:
 		if !maclawLLMProfileAssigned(profiles.Caption) {
-			return corelib.MaclawLLMConfig{}, fmt.Errorf("caption LLM profile is not configured")
+			return corelib.MaclawLLMProvider{}, "", fmt.Errorf("caption LLM profile is not configured")
 		}
 		selected = profiles.Caption
 	}
-	provider, ok := resolveMaclawLLMProviderByID(state.Providers, selected.ProviderID)
+	provider, ok := resolveMaclawLLMProviderByID(providers, selected.ProviderID)
 	if !ok && cfg.MaclawLLMProfiles == nil && profile != maclawLLMProfileCaption {
 		// Old files do not yet have provider IDs. Coding follows that legacy
 		// assistant selection, so the name fallback also applies to coding.
-		for _, candidate := range state.Providers {
-			if corelib.MaclawLLMProviderNameEqual(candidate.Name, state.Current) {
+		for _, candidate := range providers {
+			if corelib.MaclawLLMProviderNameEqual(candidate.Name, current) {
 				provider, ok = candidate, true
 				break
 			}
 		}
 	}
 	if !ok {
-		return corelib.MaclawLLMConfig{}, fmt.Errorf("LLM profile %q references unavailable provider", profile)
+		return corelib.MaclawLLMProvider{}, "", fmt.Errorf("LLM profile %q references unavailable provider", profile)
 	}
 	model := constrainOpenCodeModel(provider, corelib.MigrateZhipuCodingModel(provider.Name, selected.Model))
 	if model == "" {
-		return corelib.MaclawLLMConfig{}, fmt.Errorf("LLM profile %q has no model", profile)
+		return corelib.MaclawLLMProvider{}, "", fmt.Errorf("LLM profile %q has no model", profile)
 	}
+	return provider, model, nil
+}
+
+// materializeEffectiveMaclawLLMProfile resolves one profile from config that
+// the caller already loaded. Role resolution uses it so a foreground decision
+// cannot observe a second, newer snapshot.
+func (a *App) materializeEffectiveMaclawLLMProfile(profile string, cfg corelib.AppConfig, providers []corelib.MaclawLLMProvider, current string, profiles *corelib.MaclawLLMProfiles) (corelib.MaclawLLMConfig, corelib.MaclawLLMProvider, error) {
+	provider, model, err := effectiveMaclawLLMProfileSelection(profile, cfg, providers, current, profiles)
+	if err != nil {
+		return corelib.MaclawLLMConfig{}, corelib.MaclawLLMProvider{}, err
+	}
+	return a.materializeMaclawLLMSelection(profile, provider, model), provider, nil
+}
+
+// materializeMaclawLLMSelection builds a request config from a provider and
+// model that were already chosen. Callers that have the selection skip a
+// second lookup.
+func (a *App) materializeMaclawLLMSelection(profile string, provider corelib.MaclawLLMProvider, model string) corelib.MaclawLLMConfig {
 	resolved := a.materializeMaclawLLMProvider(provider)
 	resolved.Model = model
 	resolved.SupportsVision = providerSupportsVisionForModel(provider, model)
 	resolved.Profile = profile
 	resolved.RouteSource = "base"
-	resolved = applyOpenCodeResponsesWire(resolved)
-	return resolved, nil
+	return applyOpenCodeResponsesWire(resolved)
 }
 
 // applyOpenCodeResponsesWire points models that reject Chat Completions at
@@ -2134,6 +2187,7 @@ func (a *App) GetMaclawLLMProfilePanelState() (MaclawLLMProfilePanelState, error
 	if err != nil {
 		return MaclawLLMProfilePanelState{}, err
 	}
+	loaded := a.maclawLLMProvidersFromConfig(&cfg)
 	providers := normalizeMaclawLLMProviders(cfg.MaclawLLMProviders)
 	if len(providers) == 0 {
 		providers = defaultMaclawLLMProviders()
@@ -2162,13 +2216,13 @@ func (a *App) GetMaclawLLMProfilePanelState() (MaclawLLMProfilePanelState, error
 			AuthType:           provider.AuthType,
 		})
 	}
-	assistant, assistantErr := a.ResolveMaclawLLMProfile(maclawLLMProfileAssistant)
+	assistant, assistantErr := a.resolveMaclawLLMProfileFromConfig(maclawLLMProfileAssistant, cfg, loaded.Providers, loaded.Current)
 	state.Assistant = profileSummaryFromResolved(a, maclawLLMProfileAssistant, false, assistant, assistantErr)
 	state.Assistant.SupportsVision = profileSupportsVisionForModel(providers, state.Assistant.ProviderID, state.Assistant.Model)
 	if state.Assistant.ProviderID == "" {
 		state.Assistant.ProviderID = profiles.Assistant.ProviderID
 	}
-	coding, codingErr := a.ResolveMaclawLLMProfile(maclawLLMProfileCoding)
+	coding, codingErr := a.resolveMaclawLLMProfileFromConfig(maclawLLMProfileCoding, cfg, loaded.Providers, loaded.Current)
 	state.Coding = profileSummaryFromResolved(a, maclawLLMProfileCoding, profiles.Coding.InheritAssistant, coding, codingErr)
 	state.Coding.SupportsVision = profileSupportsVisionForModel(providers, state.Coding.ProviderID, state.Coding.Model)
 	if profiles.Coding.InheritAssistant {
@@ -2189,16 +2243,16 @@ func (a *App) GetMaclawLLMProfilePanelState() (MaclawLLMProfilePanelState, error
 	if !maclawLLMProfileAssigned(profiles.Caption) {
 		state.Caption = MaclawLLMProfileEffectiveSummary{Profile: maclawLLMProfileCaption}
 	} else {
-		caption, captionErr := a.ResolveMaclawLLMProfile(maclawLLMProfileCaption)
+		caption, captionErr := a.resolveMaclawLLMProfileFromConfig(maclawLLMProfileCaption, cfg, loaded.Providers, loaded.Current)
 		state.Caption = profileSummaryFromResolved(a, maclawLLMProfileCaption, false, caption, captionErr)
 		state.Caption.SupportsVision = profileSupportsVisionForModel(providers, state.Caption.ProviderID, state.Caption.Model)
 		if state.Caption.ProviderID == "" {
 			state.Caption.ProviderID = profiles.Caption.ProviderID
 		}
 	}
-	state.Foreground = a.maclawLLMRoleSummary(maclawLLMRoleForeground, profiles.Foreground)
-	state.Background = a.maclawLLMRoleSummary(maclawLLMRoleBackground, profiles.Background)
-	state.ComputerUse = a.maclawLLMRoleSummary(maclawLLMRoleComputerUse, profiles.ComputerUse)
+	state.Foreground = a.maclawLLMRoleSummary(maclawLLMRoleForeground, profiles.Foreground, cfg, loaded.Providers, loaded.Current)
+	state.Background = a.maclawLLMRoleSummary(maclawLLMRoleBackground, profiles.Background, cfg, loaded.Providers, loaded.Current)
+	state.ComputerUse = a.maclawLLMRoleSummary(maclawLLMRoleComputerUse, profiles.ComputerUse, cfg, loaded.Providers, loaded.Current)
 	return state, nil
 }
 

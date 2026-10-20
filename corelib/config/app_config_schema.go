@@ -327,7 +327,7 @@ var userWebHiddenConfigKeys = map[string]struct{}{
 	"skill_hub_urls": {}, "external_skill_dirs": {}, "skill_sources_allowed": {},
 	"remote_user_id": {}, "remote_tenant_id": {}, "remote_tenant_name": {}, "remote_machine_id": {},
 	"remote_machine_name": {}, "remote_machine_token": {}, "remote_viewer_token": {},
-	"skill_market_session_token": {}, "remote_client_id": {}, "remote_sn": {}, "env_check_done": {},
+	"skill_market_session_token": {}, "skill_market_session_base_url": {}, "remote_client_id": {}, "remote_sn": {}, "env_check_done": {},
 	"last_env_check_time": {}, "onboarding_done": {}, "floating_btn_x": {}, "floating_btn_y": {},
 	"floating_btn_position_set": {}, "noise_floor_calibrated": {}, "speech_level_calibrated": {},
 }

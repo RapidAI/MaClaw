@@ -229,7 +229,10 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 			}
 			label := "installed MCP tool"
 			if mcpBound[discoveredMCPBindKey(mcp.serverID, mcp.toolName)] {
-				label = "installed MCP tool, bound for the next request"
+				label = "installed MCP tool"
+				if stable := tool.InstalledMCPModelFunctionName(mcp.serverID, mcp.toolName); stable != "" {
+					label = "call " + stable
+				}
 			}
 			b.WriteString(fmt.Sprintf("%d. **%s** (%s/%s) - %s\n", i+1, label, mcp.serverID, mcp.toolName, desc))
 			continue

@@ -82,8 +82,8 @@ var styleCatalog = []styleSpec{
 		id: "clean", label: "清爽专业", summary: "白底蓝条，结论式标题和证据卡片。适合工作汇报。",
 		labelEn: "Clean Professional", labelHant: "清爽專業",
 		summaryEn: "White field, blue rule, evidence cards.", summaryHant: "白底藍條，結論式標題和證據卡片。",
-		aliases: []string{"clean", "business", "商务", "商务汇报", "汇报", "business briefing", "清爽专业"}, motif: motifReport,
-		keywords: []string{"经营汇报", "工作总结", "项目复盘", "晋升述职", "季度汇报", "客户提案", "工作复盘", "quarterly review", "business review", "client proposal"},
+		aliases: []string{"clean", "business", "商务", "商务汇报", "汇报", "business briefing", "清爽专业", "clean professional"}, motif: motifReport,
+		keywords: []string{"经营汇报", "工作总结", "项目复盘", "晋升述职", "季度汇报", "客户提案", "工作复盘", "清爽专业", "商务汇报", "quarterly review", "business review", "client proposal"},
 		paper:    "FFFFFF", ink: "0F172A", navy: "1E3A8A", navy2: "0F766E",
 		accent: "2563EB", gold: "F59E0B", white: "FFFFFF", mute: "64748B",
 		slate: "334155", card: "F8FAFC", onDark: "F8FAFC", onDarkMute: "CBD5E1",
@@ -92,8 +92,8 @@ var styleCatalog = []styleSpec{
 		id: "magazine", label: "创意杂志", summary: "黑白对半，一根洋红色条。适合发布和创意提案。",
 		labelEn: "Editorial Magazine", labelHant: "創意雜誌",
 		summaryEn: "Black and white split, one magenta bar.", summaryHant: "黑白對半，一根洋紅色條。",
-		aliases: []string{"magazine", "launch", "发布", "发布路演", "路演", "modern", "现代", "现代品牌", "品牌", "product launch"}, motif: motifSplit,
-		keywords: []string{"品牌发布", "创意提案", "设计作品集", "时尚发布", "产品发布", "产品介绍", "product launch", "pitch deck", "fundraising", "brand deck"},
+		aliases: []string{"magazine", "launch", "发布", "发布路演", "路演", "modern", "现代", "现代品牌", "品牌", "product launch", "创意杂志", "editorial magazine"}, motif: motifSplit,
+		keywords: []string{"品牌发布", "创意提案", "设计作品集", "时尚发布", "产品发布", "产品介绍", "创意杂志", "发布路演", "product launch", "pitch deck", "fundraising", "brand deck"},
 		paper:    "FFFFFF", ink: "111111", navy: "111111", navy2: "2A2A2A",
 		accent: "FF006E", gold: "FFED00", white: "FFFFFF", mute: "6B7280",
 		slate: "374151", card: "FFFFFF", onDark: "FFFFFF", onDarkMute: "E5E7EB",
@@ -102,8 +102,8 @@ var styleCatalog = []styleSpec{
 		id: "eink", label: "电子墨水", summary: "米纸大标题，页脚一句论点。适合主题演讲。",
 		labelEn: "E-ink Magazine", labelHant: "電子墨水",
 		summaryEn: "Warm paper, oversized type, one thesis line.", summaryHant: "米紙大標題，頁腳一句論點。",
-		aliases: []string{"eink", "minimal", "极简", "ceremony", "年会", "典礼", "e-ink"}, motif: motifInk,
-		keywords: []string{"主题演讲", "观点分享", "个人介绍", "年会致辞", "颁奖典礼", "demo day", "personal introduction"},
+		aliases: []string{"eink", "minimal", "极简", "ceremony", "年会", "典礼", "e-ink", "电子墨水", "e-ink magazine"}, motif: motifInk,
+		keywords: []string{"主题演讲", "观点分享", "个人介绍", "年会致辞", "颁奖典礼", "电子墨水", "极简风格", "demo day", "personal introduction"},
 		paper:    "F7F4EA", ink: "111111", navy: "1E2A78", navy2: "163B2F",
 		accent: "C2410C", gold: "D9C29E", white: "FFFCF5", mute: "6B6560",
 		slate: "3F3A36", card: "FBF8F1", onDark: "F7F4EA", onDarkMute: "D6D0C4",
@@ -112,8 +112,8 @@ var styleCatalog = []styleSpec{
 		id: "dashboard", label: "数据仪表盘", summary: "浅底指标卡和细状态条。适合看板和 KPI。",
 		labelEn: "Data Dashboard", labelHant: "數據儀表盤",
 		summaryEn: "Mist field, metric cards, thin status bars.", summaryHant: "淺底指標卡和細狀態條。",
-		aliases: []string{"dashboard", "数据仪表盘", "看板"}, motif: motifDashboard,
-		keywords: []string{"数据看板", "运营分析", "业绩展示", "商业智能", "KPI汇报", "看板", "analytics dashboard"},
+		aliases: []string{"dashboard", "数据仪表盘", "看板", "data dashboard"}, motif: motifDashboard,
+		keywords: []string{"数据看板", "运营分析", "业绩展示", "商业智能", "KPI汇报", "数据仪表盘", "看板", "analytics dashboard"},
 		paper:    "F5F8FC", ink: "0F172A", navy: "1D4ED8", navy2: "0891B2",
 		accent: "2563EB", gold: "10B981", white: "FFFFFF", mute: "64748B",
 		slate: "334155", card: "FFFFFF", onDark: "F8FAFC", onDarkMute: "C7D2FE",
@@ -122,8 +122,8 @@ var styleCatalog = []styleSpec{
 		id: "retro", label: "复古扁平", summary: "奶油纸、色块横条、描边卡片。适合品牌故事。",
 		labelEn: "Retro Flat", labelHant: "復古扁平",
 		summaryEn: "Cream paper, flat color band, outlined cards.", summaryHant: "奶油紙、色塊橫條、描邊卡片。",
-		aliases: []string{"retro", "复古", "扁平插画"}, motif: motifPoster,
-		keywords: []string{"品牌故事", "生活方式", "旅游介绍", "文化创意", "复古插画", "brand story"},
+		aliases: []string{"retro", "复古", "扁平插画", "复古扁平", "retro flat"}, motif: motifPoster,
+		keywords: []string{"品牌故事", "生活方式", "旅游介绍", "文化创意", "复古插画", "复古扁平", "复古风格", "brand story"},
 		paper:    "F5F3E8", ink: "34495E", navy: "2C3E50", navy2: "6C7A89",
 		accent: "FF6B6B", gold: "F9CA24", white: "FFFFFF", mute: "6C7A89",
 		slate: "34495E", card: "FFFDF6", onDark: "2C3E50", onDarkMute: "95A5A6",
@@ -132,8 +132,8 @@ var styleCatalog = []styleSpec{
 		id: "sketch", label: "手绘技术", summary: "近白纸、石墨角标、淡彩标记。适合技术解释。",
 		labelEn: "Sketch Explainer", labelHant: "手繪技術",
 		summaryEn: "Near-white paper, graphite corners, pastel marks.", summaryHant: "近白紙、石墨角標、淡彩標記。",
-		aliases: []string{"sketch", "tech", "技术", "技术分享", "手绘技术"}, motif: motifSketch,
-		keywords: []string{"技术分享", "系统架构", "技术架构", "概念解释", "开源项目", "技术方案", "engineering talk", "system architecture"},
+		aliases: []string{"sketch", "tech", "技术", "技术分享", "手绘技术", "sketch explainer"}, motif: motifSketch,
+		keywords: []string{"技术分享", "系统架构", "技术架构", "概念解释", "开源项目", "技术方案", "手绘技术", "engineering talk", "system architecture"},
 		paper:    "FCFBF7", ink: "2F3437", navy: "2F3437", navy2: "7A8490",
 		accent: "BFD7F1", gold: "F4C7B8", white: "FFFFFF", mute: "8A9096",
 		slate: "4A5158", card: "FFFFFF", onDark: "2F3437", onDarkMute: "8A9096",
@@ -143,7 +143,7 @@ var styleCatalog = []styleSpec{
 		labelEn: "Whiteboard", labelHant: "手繪白板",
 		summaryEn: "Whiteboard, marker underline, sticky notes.", summaryHant: "白板底、麥克筆下劃線、彩色便簽。",
 		aliases: []string{"whiteboard", "白板", "手绘白板"}, motif: motifBoard,
-		keywords: []string{"头脑风暴", "内部研讨", "白板讲解", "概念梳理", "brainstorm"},
+		keywords: []string{"头脑风暴", "内部研讨", "白板讲解", "概念梳理", "手绘白板", "白板风格", "brainstorm"},
 		paper:    "FAFAF5", ink: "1A1A1A", navy: "1A1A1A", navy2: "3498DB",
 		accent: "E74C3C", gold: "F39C12", white: "FFFFFF", mute: "6B7280",
 		slate: "374151", card: "FFF9C4", onDark: "FFFFFF", onDarkMute: "D1D5DB",
@@ -153,7 +153,7 @@ var styleCatalog = []styleSpec{
 		labelEn: "Handmade", labelHant: "溫暖手工",
 		summaryEn: "Warm paper and note cards. For keepsakes.", summaryHant: "暖紙和便簽卡。適合紀念、親子和公益。",
 		aliases: []string{"handmade", "warm", "温馨", "温馨纪念", "温暖手工"}, motif: motifCraft,
-		keywords: []string{"生日纪念", "生日", "温馨纪念", "儿童教育", "亲子活动", "社区公益", "birthday", "wedding", "family gathering"},
+		keywords: []string{"生日纪念", "生日", "温馨纪念", "儿童教育", "亲子活动", "社区公益", "温暖手工", "birthday", "wedding", "family gathering"},
 		paper:    "F5F1E8", ink: "5C4033", navy: "5C4033", navy2: "A67C52",
 		accent: "F5C4B8", gold: "B8D4A8", white: "FFFCF8", mute: "8A7568",
 		slate: "6B5344", card: "FFFCF7", onDark: "5C4033", onDarkMute: "A67C52",
@@ -162,8 +162,8 @@ var styleCatalog = []styleSpec{
 		id: "research", label: "科研答辩", summary: "白底学术蓝，红色只用来标结论。适合答辩。",
 		labelEn: "Research Defense", labelHant: "科研答辯",
 		summaryEn: "White field, academic blue, red for conclusions.", summaryHant: "白底學術藍，紅色只用來標結論。",
-		aliases: []string{"research", "academic", "学术", "学术答辩", "科研答辩"}, motif: motifDefense,
-		keywords: []string{"论文答辩", "开题答辩", "毕业答辩", "课题申报", "基金申请", "文献综述", "答辩", "thesis defense", "dissertation"},
+		aliases: []string{"research", "academic", "学术", "学术答辩", "科研答辩", "research defense"}, motif: motifDefense,
+		keywords: []string{"论文答辩", "开题答辩", "毕业答辩", "课题申报", "基金申请", "文献综述", "科研答辩", "学术答辩", "答辩", "thesis defense", "dissertation"},
 		paper:    "FFFFFF", ink: "111111", navy: "003F8F", navy2: "0B5CAD",
 		accent: "B5121B", gold: "F3DFA2", white: "FFFFFF", mute: "4B5563",
 		slate: "333333", card: "F3F6FA", onDark: "FFFFFF", onDarkMute: "D6E4F0",
@@ -173,7 +173,7 @@ var styleCatalog = []styleSpec{
 		labelEn: "McKinsey", labelHant: "麥肯錫",
 		summaryEn: "Pale field, hairlines, large type, no navy blocks.", summaryHant: "淺灰細線、大字留白，沒有大色塊。",
 		aliases: []string{"mckinsey", "consulting", "咨询", "咨询顾问", "麦肯锡", "executive", "高管", "高管汇报"}, motif: motifConsulting,
-		keywords: []string{"战略咨询", "商业分析", "行业分析", "尽职调查", "竞对分析", "增长战略", "战略汇报", "董事会汇报", "due diligence", "strategy consulting"},
+		keywords: []string{"战略咨询", "商业分析", "行业分析", "尽职调查", "竞对分析", "增长战略", "战略汇报", "董事会汇报", "麦肯锡", "咨询风格", "due diligence", "strategy consulting"},
 		paper:    "F6F8FA", ink: "243447", navy: "243447", navy2: "5B7C99",
 		accent: "5B7C99", gold: "8AA0B5", white: "FFFFFF", mute: "6B7280",
 		slate: "475569", card: "FFFFFF", onDark: "243447", onDarkMute: "6B7280",
@@ -182,8 +182,8 @@ var styleCatalog = []styleSpec{
 		id: "official", label: "党政红", summary: "象牙底、中国红与哑光金。适合正式工作汇报。",
 		labelEn: "Official Red", labelHant: "黨政紅",
 		summaryEn: "Ivory field, Chinese red, matte gold.", summaryHant: "象牙底、中國紅與啞光金。",
-		aliases: []string{"official", "党政", "党政红"}, motif: motifOfficial,
-		keywords: []string{"党建学习", "政策宣讲", "工作部署", "党政汇报", "国企汇报"},
+		aliases: []string{"official", "党政", "党政红", "official red"}, motif: motifOfficial,
+		keywords: []string{"党建学习", "政策宣讲", "工作部署", "党政汇报", "国企汇报", "党政红", "党建汇报"},
 		paper:    "FFF9F2", ink: "262626", navy: "9E1530", navy2: "C41E3A",
 		accent: "C41E3A", gold: "D6A84B", white: "FFFFFF", mute: "6B6560",
 		slate: "4A4A4A", card: "FFFCF8", onDark: "FFF9F2", onDarkMute: "F3E6C8",
@@ -461,11 +461,14 @@ func FormatDeckStyleCatalog() string {
 
 func lookupStyle(name string) (styleSpec, bool) {
 	key := strings.ToLower(strings.TrimSpace(name))
+	key = strings.TrimSpace(strings.TrimPrefix(key, "theme="))
 	if key == "" || isAutoTheme(key) {
 		return styleSpec{}, false
 	}
 	for _, spec := range allStyles() {
-		if key == spec.id {
+		if key == spec.id || key == strings.ToLower(spec.label) ||
+			(spec.labelEn != "" && key == strings.ToLower(spec.labelEn)) ||
+			(spec.labelHant != "" && key == strings.ToLower(spec.labelHant)) {
 			return spec, true
 		}
 		for _, alias := range spec.aliases {
@@ -475,6 +478,20 @@ func lookupStyle(name string) (styleSpec, bool) {
 		}
 	}
 	return styleSpec{}, false
+}
+
+func extractExplicitThemeTag(text string) (styleSpec, bool) {
+	lower := strings.ToLower(text)
+	idx := strings.Index(lower, "theme=")
+	if idx < 0 {
+		return styleSpec{}, false
+	}
+	rest := lower[idx+len("theme="):]
+	end := strings.IndexAny(rest, " \t\r\n)）」,，;；\"'`")
+	if end >= 0 {
+		rest = rest[:end]
+	}
+	return lookupStyle(rest)
 }
 
 func isAutoTheme(name string) bool {
@@ -490,17 +507,29 @@ func isAutoTheme(name string) bool {
 // ones, so "生日纪念" stays handmade and "年会致辞" stays eink. Equal scores
 // keep the earlier catalog entry.
 func matchStyle(hint string) (styleSpec, bool) {
+	if spec, ok := extractExplicitThemeTag(hint); ok {
+		return spec, true
+	}
 	hint = strings.ToLower(hint)
 	styles := allStyles()
 	best := -1
 	bestScore, bestLen := 0, 0
 	for i, spec := range styles {
 		score, longest := 0, 0
-		for _, keyword := range spec.keywords {
-			kw := strings.ToLower(keyword)
-			if len([]rune(kw)) < 2 || !strings.Contains(hint, kw) {
+		candidates := make([]string, 0, len(spec.keywords)+3)
+		candidates = append(candidates, spec.keywords...)
+		for _, name := range []string{spec.label, spec.labelEn, spec.labelHant} {
+			if strings.TrimSpace(name) != "" {
+				candidates = append(candidates, name)
+			}
+		}
+		seen := map[string]bool{}
+		for _, keyword := range candidates {
+			kw := strings.ToLower(strings.TrimSpace(keyword))
+			if seen[kw] || len([]rune(kw)) < 2 || !strings.Contains(hint, kw) {
 				continue
 			}
+			seen[kw] = true
 			n := len([]rune(kw))
 			score += n
 			if n > longest {
@@ -677,8 +706,12 @@ func normalizeSlideLayout(raw string) string {
 		return "auto"
 	case "bullets", "bullet", "list", "要点", "列表":
 		return "bullets"
-	case "cards", "card", "卡片":
+	case "cards", "card", "卡片", "grid", "网格":
 		return "cards"
+	case "timeline", "process", "steps", "flow", "roadmap", "时间线", "流程", "步骤", "路线图", "阶段":
+		return "timeline"
+	case "comparison", "compare", "versus", "vs", "split", "two_column", "two-column", "columns", "对比", "对照", "双栏", "比较":
+		return "comparison"
 	case "section", "divider", "分节", "章节":
 		return "section"
 	case "agenda", "toc", "目录", "议程":
@@ -696,9 +729,9 @@ func normalizeSlideLayout(raw string) string {
 
 // effectiveLayout picks a designed page. Media (photos or charts) stays on
 // the split bullet layout so the image and chart geometry is unchanged.
-// Short point lists become cards; a title with no body becomes a section
-// divider. Explicit layouts that cannot hold the text fall back to bullets
-// so a point is never dropped on the floor.
+// Short point lists, timelines, and comparisons become cards; a title with no
+// body becomes a section divider. Explicit layouts that cannot hold the text
+// fall back to bullets so a point is never dropped on the floor.
 func effectiveLayout(spec OutlineSlide) string {
 	asked := normalizeSlideLayout(spec.Layout)
 	texts := nonemptyBullets(spec.Bullets)
@@ -708,6 +741,11 @@ func effectiveLayout(spec OutlineSlide) string {
 	switch asked {
 	case "cards":
 		if len(texts) == 0 || len(texts) > 6 {
+			return "bullets"
+		}
+		return "cards"
+	case "timeline", "comparison":
+		if len(texts) < 2 || len(texts) > 6 {
 			return "bullets"
 		}
 		return "cards"
@@ -725,7 +763,7 @@ func effectiveLayout(spec OutlineSlide) string {
 		if len(texts) == 0 {
 			return "section"
 		}
-		if cardCandidate(texts) {
+		if timelineCandidate(spec, texts) || comparisonCandidate(spec, texts) || cardCandidate(texts) {
 			return "cards"
 		}
 		return "bullets"
@@ -735,15 +773,70 @@ func effectiveLayout(spec OutlineSlide) string {
 }
 
 func cardCandidate(texts []string) bool {
-	if len(texts) < 2 || len(texts) > 4 {
+	if len(texts) >= 2 && len(texts) <= 4 {
+		for _, text := range texts {
+			if len([]rune(text)) > 52 {
+				return false
+			}
+		}
+		return true
+	}
+	if len(texts) >= 5 && len(texts) <= 6 {
+		for _, text := range texts {
+			head, _ := splitCardLine(text)
+			if head == "" || len([]rune(text)) > 48 {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func timelineCandidate(spec OutlineSlide, texts []string) bool {
+	if len(texts) < 3 || len(texts) > 6 {
 		return false
 	}
 	for _, text := range texts {
-		if len([]rune(text)) > 36 {
+		if len([]rune(text)) > 64 {
 			return false
 		}
 	}
-	return true
+	header := strings.ToLower(spec.Title + " " + spec.Kicker)
+	for _, kw := range []string{"流程", "时间线", "路线图", "步骤", "演进", "阶段", "路径", "roadmap", "timeline", "workflow"} {
+		if strings.Contains(header, kw) {
+			return true
+		}
+	}
+	stepPrefixes := 0
+	for _, text := range texts {
+		lower := strings.ToLower(strings.TrimSpace(text))
+		for _, pfx := range []string{"第1", "第2", "第3", "第4", "第一", "第二", "第三", "第四", "阶段一", "阶段二", "阶段三", "阶段 1", "阶段 2", "step ", "phase "} {
+			if strings.HasPrefix(lower, pfx) {
+				stepPrefixes++
+				break
+			}
+		}
+	}
+	return stepPrefixes >= 3
+}
+
+func comparisonCandidate(spec OutlineSlide, texts []string) bool {
+	if len(texts) != 2 && len(texts) != 4 && len(texts) != 6 {
+		return false
+	}
+	for _, text := range texts {
+		if len([]rune(text)) > 64 {
+			return false
+		}
+	}
+	header := strings.ToLower(spec.Title + " " + spec.Kicker)
+	for _, kw := range []string{"对比", "对照", "比较", "优劣", "差异", " vs ", "versus"} {
+		if strings.Contains(header, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 func splitCardLine(text string) (head, body string) {
@@ -972,6 +1065,41 @@ func buildBulletBody(slide *ppt.Slide, region contentBox, bullets []string, them
 	if len(texts) == 0 {
 		return
 	}
+	if len(texts) >= 2 && len(texts) <= 6 && region.w >= emuIn(4.2) {
+		maxRowH := emuIn(0.94)
+		textWIn := float64(region.w-emuIn(0.45)) / float64(deckInchEMU)
+		for _, text := range texts {
+			if coverTitleLines(text, 18, textWIn) > 1 {
+				maxRowH = emuIn(1.16)
+				break
+			}
+		}
+		rowH, gap := fitSpan(region.h, int64(len(texts)), emuIn(0.12), maxRowH)
+		stack := rowH*int64(len(texts)) + gap*int64(len(texts)-1)
+		y0 := region.y
+		if stack < region.h {
+			y0 = region.y + (region.h-stack)/2
+		}
+		for i, text := range texts {
+			y := y0 + int64(i)*(rowH+gap)
+			bg, padLeft := paintBulletRowChrome(slide, theme, region.x, y, region.w, rowH, i)
+			lines := coverTitleLines(text, 18, float64(region.w-padLeft-emuIn(0.18))/float64(deckInchEMU))
+			estH := emuIn(float64(lines)*0.34 + 0.08)
+			padTop := (rowH - estH) / 2
+			if padTop < emuIn(0.06) {
+				padTop = emuIn(0.06)
+			}
+			rowBox := slide.CreateRichTextShape()
+			rowBox.SetOffsetX(region.x + padLeft).SetOffsetY(y + padTop).SetWidth(region.w - padLeft - emuIn(0.18)).SetHeight(rowH - padTop)
+			rowBox.SetWordWrap(true)
+			para := rowBox.GetActiveParagraph()
+			para.SetBullet(ppt.NewBullet().SetCharBullet("•", defaultDeckFont).SetColor(readableAccent(theme, bg)))
+			run := para.CreateTextRun(text)
+			font := run.GetFont().SetSize(18).SetName(defaultDeckFont).SetColor(textOn(theme.ink, bg, theme))
+			font.NameEA = defaultDeckFont
+		}
+		return
+	}
 	body := slide.CreateRichTextShape()
 	body.SetOffsetX(region.x).SetOffsetY(region.y).SetWidth(region.w).SetHeight(region.h)
 	body.SetWordWrap(true)
@@ -1128,8 +1256,9 @@ func buildQuoteSlide(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, foote
 	if markY < box.y {
 		markY = box.y
 	}
-	deckText(slide, box.x, markY, emuIn(1.4), emuIn(0.9), "“", 64, true, textOn(theme.accent, theme.paper, theme), ppt.HorizontalLeft)
-	deckLines(slide, box.x, textY, box.w, box.h-(textY-box.y)-emuIn(0.1), lines, quoteSize, false, textOn(theme.navy, theme.paper, theme), ppt.HorizontalLeft, 80)
+	quoteBg, padX := paintQuoteFrame(slide, theme, box, markY, blockH+emuIn(0.35))
+	deckText(slide, box.x+padX, markY, emuIn(1.4), emuIn(0.9), "“", 64, true, textOn(theme.accent, quoteBg, theme), ppt.HorizontalLeft)
+	deckLines(slide, box.x+padX, textY, box.w-2*padX, box.h-(textY-box.y)-emuIn(0.1), lines, quoteSize, false, textOn(theme.navy, quoteBg, theme), ppt.HorizontalLeft, 80)
 }
 
 func gridSpec(n, maxCols int) (cols, rows int) {
@@ -1218,15 +1347,36 @@ func buildCards(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, box conten
 	if len(texts) == 0 {
 		return
 	}
-	switch motifBody(theme.motif) {
-	case bodyOpen:
+	asked := normalizeSlideLayout(spec.Layout)
+	if asked == "timeline" || (asked == "auto" && timelineCandidate(spec, texts)) {
+		buildTimeline(slide, spec, theme, box)
+		return
+	}
+	if asked == "comparison" || (asked == "auto" && comparisonCandidate(spec, texts)) {
+		buildComparison(slide, spec, theme, box)
+		return
+	}
+	switch theme.motif {
+	case motifInk, motifConsulting:
 		buildOpenPoints(slide, theme, box, texts)
-	case bodyOutline:
+	case motifSketch:
+		buildSketchCards(slide, theme, box, texts)
+	case motifPoster:
 		buildOutlineCards(slide, theme, box, texts)
-	case bodyNotes:
+	case motifBoard:
+		buildBoardCards(slide, theme, box, texts)
+	case motifCraft:
 		buildNoteCards(slide, theme, box, texts)
-	case bodyRail:
+	case motifSplit:
 		buildRailCards(slide, theme, box, texts)
+	case motifDashboard:
+		buildDashboardCards(slide, theme, box, texts)
+	case motifDefense:
+		buildDefenseCards(slide, theme, box, texts)
+	case motifOfficial:
+		buildOfficialCards(slide, theme, box, texts)
+	case motifLesson:
+		buildLessonCards(slide, theme, box, texts)
 	default:
 		buildFilledCards(slide, theme, box, texts)
 	}
@@ -1246,24 +1396,38 @@ func chartSeriesColors(theme deckTheme, i int) ppt.Color {
 
 func buildOpenPoints(slide *ppt.Slide, theme deckTheme, box contentBox, texts []string) {
 	n := len(texts)
-	rowH, gap := fitSpan(box.h, int64(n), emuIn(0.1), emuIn(1.05))
+	rowH, gap := fitSpan(box.h, int64(n), emuIn(0.1), emuIn(1.08))
 	numH := emuIn(0.36)
 	if numH > rowH {
 		numH = rowH
 	}
 	for i, text := range texts {
 		y := box.y + int64(i)*(rowH+gap)
-		deckText(slide, box.x, y, emuIn(0.7), numH, fmt.Sprintf("%02d", i+1), 16, true, readableAccent(theme, theme.paper), ppt.HorizontalLeft)
+		if theme.motif == motifInk {
+			rect(slide, box.x, y+emuIn(0.06), emuIn(0.045), rowH-emuIn(0.18), theme.accent)
+			deckText(slide, box.x+emuIn(0.14), y, emuIn(0.65), numH, fmt.Sprintf("%02d", i+1), 16, true, readableAccent(theme, theme.paper), ppt.HorizontalLeft)
+		} else {
+			deckText(slide, box.x, y, emuIn(0.7), numH, fmt.Sprintf("%02d", i+1), 16, true, readableAccent(theme, theme.paper), ppt.HorizontalLeft)
+			if rowH > emuIn(0.24) {
+				rect(slide, box.x+emuIn(0.72), y+emuIn(0.06), emuIn(0.012), rowH-emuIn(0.18), openPointRule(theme))
+			}
+			if i == n-1 {
+				rect(slide, box.x+box.w-emuIn(0.18), y+emuIn(0.08), emuIn(0.14), emuIn(0.14), theme.accent)
+			}
+		}
 		head, body := splitCardLine(text)
 		if head != "" {
-			deckText(slide, box.x+emuIn(0.85), y, box.w-emuIn(0.9), numH, head, 18, true, textOn(theme.navy, theme.paper, theme), ppt.HorizontalLeft)
+			deckText(slide, box.x+emuIn(0.88), y, box.w-emuIn(1.1), numH, head, 18, true, textOn(theme.navy, theme.paper, theme), ppt.HorizontalLeft)
 			bodyTop := y + emuIn(0.38)
-			deckText(slide, box.x+emuIn(0.85), bodyTop, box.w-emuIn(0.9), remain(bodyTop, y, rowH, emuIn(0.06)), body, 15, false, textOn(theme.slate, theme.paper, theme), ppt.HorizontalLeft)
+			deckText(slide, box.x+emuIn(0.88), bodyTop, box.w-emuIn(1.1), remain(bodyTop, y, rowH, emuIn(0.06)), body, 15, false, textOn(theme.slate, theme.paper, theme), ppt.HorizontalLeft)
 		} else {
-			deckText(slide, box.x+emuIn(0.85), y, box.w-emuIn(0.9), remain(y, y, rowH, emuIn(0.08)), text, 18, false, textOn(theme.ink, theme.paper, theme), ppt.HorizontalLeft)
+			deckText(slide, box.x+emuIn(0.88), y, box.w-emuIn(1.1), remain(y, y, rowH, emuIn(0.08)), text, 18, false, textOn(theme.ink, theme.paper, theme), ppt.HorizontalLeft)
 		}
 		if rowH > emuIn(0.04) {
 			rect(slide, box.x, y+rowH-emuIn(0.015), box.w, emuIn(0.015), openPointRule(theme))
+			if theme.motif == motifInk {
+				rect(slide, box.x, y+rowH-emuIn(0.025), emuIn(0.85), emuIn(0.025), theme.accent)
+			}
 		}
 	}
 }
@@ -1290,11 +1454,14 @@ func buildAgenda(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, box conte
 	}
 	for i, text := range texts {
 		y := y0 + int64(i)*(rowH+gap)
-		rect(slide, box.x, y, box.w, rowH, theme.card)
 		numY := y + (rowH-chipH)/2
-		rect(slide, box.x+emuIn(0.16), numY, emuIn(0.72), chipH, theme.accent)
-		deckText(slide, box.x+emuIn(0.16), numY, emuIn(0.72), chipH, fmt.Sprintf("%02d", i+1), 14, true, agendaNumberColor(theme), ppt.HorizontalCenter)
-		deckText(slide, box.x+emuIn(1.08), numY, box.w-emuIn(1.3), chipH, text, 16, false, textOn(theme.ink, theme.card, theme), ppt.HorizontalLeft)
+		rowBg, chipColor := paintAgendaRow(slide, theme, box.x, y, box.w, rowH, numY, chipH, i, n)
+		numTextColor := bestContrast(chipColor, theme.navy, theme.ink, theme.white)
+		if chipColor == theme.accent {
+			numTextColor = agendaNumberColor(theme)
+		}
+		deckText(slide, box.x+emuIn(0.16), numY, emuIn(0.72), chipH, fmt.Sprintf("%02d", i+1), 14, true, numTextColor, ppt.HorizontalCenter)
+		deckText(slide, box.x+emuIn(1.08), numY, box.w-emuIn(1.3), chipH, text, 16, false, textOn(theme.ink, rowBg, theme), ppt.HorizontalLeft)
 	}
 }
 
@@ -1334,7 +1501,7 @@ func buildKPI(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, box contentB
 		row := i / cols
 		x := box.x + int64(col)*(cardW+gap)
 		y := y0 + int64(row)*(cardH+gap)
-		rect(slide, x, y, cardW, cardH, theme.card)
+		bg, accentColor := paintKPICardFrame(slide, theme, x, y, cardW, cardH, i, n)
 		value, label := splitKPI(text)
 		// Big-number principle: the value is the visual anchor, so it takes
 		// most of the card and the label stays small and quiet. Both sit on
@@ -1354,9 +1521,127 @@ func buildKPI(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, box contentB
 			blockH += emuIn(0.55)
 		}
 		valueY := y + (cardH-blockH)/2
-		deckText(slide, x+emuIn(0.22), valueY, cardW-emuIn(0.4), emuIn(0.85), value, valueSize, true, textOn(theme.navy, theme.card, theme), ppt.HorizontalLeft)
+		valColor := textOn(theme.navy, bg, theme)
+		if theme.motif == motifSplit || (theme.motif == motifDefense && i == n-1) {
+			valColor = textOn(accentColor, bg, theme)
+		}
+		deckText(slide, x+emuIn(0.22), valueY, cardW-emuIn(0.4), emuIn(0.85), value, valueSize, true, valColor, ppt.HorizontalLeft)
 		if label != "" {
-			deckText(slide, x+emuIn(0.22), valueY+emuIn(0.86), cardW-emuIn(0.4), emuIn(0.55), label, 13, false, textOn(theme.slate, theme.card, theme), ppt.HorizontalLeft)
+			if cardH >= emuIn(1.7) {
+				rect(slide, x+emuIn(0.22), valueY+emuIn(0.80), emuIn(0.85), emuIn(0.025), blend(accentColor, bg, 0.35))
+			}
+			deckText(slide, x+emuIn(0.22), valueY+emuIn(0.86), cardW-emuIn(0.4), emuIn(0.55), label, 13, false, textOn(theme.slate, bg, theme), ppt.HorizontalLeft)
+		}
+	}
+}
+
+func buildTimeline(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, box contentBox) {
+	texts := nonemptyBullets(spec.Bullets)
+	n := len(texts)
+	if n == 0 {
+		return
+	}
+	cols, rows := n, 1
+	if n > 4 {
+		cols = 3
+		rows = 2
+	}
+	gap := emuIn(0.18)
+	cardW, _ := fitSpan(box.w, int64(cols), gap, 0)
+	maxRowH := emuIn(3.30)
+	if rows > 1 {
+		maxRowH = emuIn(2.25)
+	}
+	rowH, vGap := fitSpan(box.h, int64(rows), emuIn(0.22), maxRowH)
+	stack := rowH*int64(rows) + vGap*int64(rows-1)
+	y0 := box.y
+	if stack < box.h {
+		y0 = box.y + (box.h-stack)/2
+	}
+	nodeD := emuIn(0.46)
+	cardTopPad := emuIn(0.62)
+	for r := 0; r < rows; r++ {
+		rowY := y0 + int64(r)*(rowH+vGap)
+		rowCount := cols
+		if r == rows-1 && n-r*cols < cols {
+			rowCount = n - r*cols
+		}
+		if rowCount > 1 {
+			trackX := box.x + cardW/2
+			trackW := int64(rowCount-1) * (cardW + gap)
+			rect(slide, trackX, rowY+nodeD/2-emuIn(0.025), trackW, emuIn(0.05), blend(theme.accent, theme.paper, 0.45))
+		}
+	}
+	for i, text := range texts {
+		col := i % cols
+		row := i / cols
+		x := box.x + int64(col)*(cardW+gap)
+		rowY := y0 + int64(row)*(rowH+vGap)
+		stepColor := motifStepColor(theme, i, n)
+		nodeX := x + (cardW-nodeD)/2
+		paintTimelineNode(slide, theme, nodeX, rowY, nodeD, stepColor, i)
+		cardY := rowY + cardTopPad
+		cardH := rowH - cardTopPad
+		if cardH < emuIn(0.9) {
+			cardH = emuIn(0.9)
+		}
+		bg := paintTimelineCardFrame(slide, theme, x, cardY, cardW, cardH, stepColor, i)
+		head, body := splitCardLine(text)
+		titleSize, bodySize := 17, 15
+		if rows > 1 {
+			titleSize, bodySize = 15, 14
+		}
+		if head != "" {
+			deckText(slide, x+emuIn(0.18), cardY+emuIn(0.16), cardW-emuIn(0.36), emuIn(0.42), head, titleSize, true, textOn(theme.navy, bg, theme), ppt.HorizontalLeft)
+			bodyTop := cardY + emuIn(0.62)
+			deckText(slide, x+emuIn(0.18), bodyTop, cardW-emuIn(0.36), remain(bodyTop, cardY, cardH, emuIn(0.1)), body, bodySize, false, textOn(theme.slate, bg, theme), ppt.HorizontalLeft)
+		} else {
+			deckText(slide, x+emuIn(0.18), cardY+emuIn(0.18), cardW-emuIn(0.36), remain(cardY+emuIn(0.18), cardY, cardH, emuIn(0.1)), text, bodySize+1, false, textOn(theme.ink, bg, theme), ppt.HorizontalLeft)
+		}
+	}
+}
+
+func buildComparison(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, box contentBox) {
+	texts := nonemptyBullets(spec.Bullets)
+	n := len(texts)
+	if n == 0 {
+		return
+	}
+	colGap := emuIn(0.34)
+	colW := (box.w - colGap) / 2
+	rows := (n + 1) / 2
+	maxH := emuIn(3.40)
+	if rows > 1 {
+		maxH = emuIn(1.95)
+	}
+	cardH, vGap := fitSpan(box.h, int64(rows), emuIn(0.16), maxH)
+	stack := cardH*int64(rows) + vGap*int64(rows-1)
+	y0 := box.y
+	if stack < box.h {
+		y0 = box.y + (box.h-stack)/2
+	}
+	// Central divider line between the two comparison columns.
+	midX := box.x + colW + colGap/2
+	rect(slide, midX-emuIn(0.01), y0, emuIn(0.02), stack, blend(theme.accent, theme.paper, 0.55))
+	oval(slide, midX-emuIn(0.11), y0+stack/2-emuIn(0.11), emuIn(0.22), emuIn(0.22), theme.accent)
+	for i, text := range texts {
+		col := i % 2
+		row := i / 2
+		x := box.x + int64(col)*(colW+colGap)
+		y := y0 + int64(row)*(cardH+vGap)
+		sideColor := theme.navy
+		if col == 1 {
+			sideColor = theme.accent
+		}
+		bg := paintComparisonCardFrame(slide, theme, x, y, colW, cardH, sideColor, col, i)
+		deckText(slide, x+emuIn(0.20), y+emuIn(0.16), colW-emuIn(0.40), emuIn(0.28), fmt.Sprintf("%02d", i+1), 12, true, textOn(sideColor, bg, theme), ppt.HorizontalLeft)
+		head, body := splitCardLine(text)
+		if head != "" {
+			deckText(slide, x+emuIn(0.20), y+emuIn(0.46), colW-emuIn(0.40), emuIn(0.44), head, 18, true, textOn(sideColor, bg, theme), ppt.HorizontalLeft)
+			bodyTop := y + emuIn(0.94)
+			deckText(slide, x+emuIn(0.20), bodyTop, colW-emuIn(0.40), remain(bodyTop, y, cardH, emuIn(0.12)), body, 15, false, textOn(theme.slate, bg, theme), ppt.HorizontalLeft)
+		} else {
+			deckText(slide, x+emuIn(0.20), y+emuIn(0.48), colW-emuIn(0.40), remain(y+emuIn(0.48), y, cardH, emuIn(0.12)), text, 17, false, textOn(theme.ink, bg, theme), ppt.HorizontalLeft)
 		}
 	}
 }

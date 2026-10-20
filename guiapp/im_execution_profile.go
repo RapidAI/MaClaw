@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -471,6 +472,16 @@ func lookupContinuationCarriedGrant(profile ExecutionProfile, carried []string, 
 		}
 	}
 	return false
+}
+
+// liveDataLookupSelectionBudget keeps the current-fact search family and the
+// page-fetch family. One slot publishes only web_search.
+const liveDataLookupSelectionBudget = 2
+
+// liveDataPageReadPrompt is the same current-fact rule as the light prompt,
+// repeated after the grant fence so it is the last word on the turn.
+func liveDataPageReadPrompt() string {
+	return "\n" + agentruntime.LiveDataFactReadPrompt()
 }
 
 // lookupContinuationToolPrompt tells a project-task lookup to open the page
@@ -1220,6 +1231,15 @@ func executionProfileFromSemanticIntent(result *intent.ClassificationResult, con
 			return fullExecutionProfile("semantic capability-managed mutating intent")
 		}
 		if result.Primary == intent.LabelSearch || result.Primary == intent.LabelLiveData {
+			// The cap counts families, not repeat siblings. Search keeps one
+			// family. Live data also plans the page-fetch family; a cap of 1
+			// records that companion as optional_budget_omitted, so the model
+			// never sees web_fetch and the light prompt tells it to answer
+			// from the snippet.
+			budget := 1
+			if result.Primary == intent.LabelLiveData {
+				budget = liveDataLookupSelectionBudget
+			}
 			return ExecutionProfile{
 				Layer:                string(executionLayerLight),
 				TaskType:             string(result.Primary),
@@ -1227,7 +1247,7 @@ func executionProfileFromSemanticIntent(result *intent.ClassificationResult, con
 				Confidence:           result.Confidence,
 				Reason:               "semantic capability-managed lookup",
 				RequiredCapabilities: []string{"information.search.web"},
-				ToolBudget:           1,
+				ToolBudget:           budget,
 				IterationBudget:      3,
 			}
 		}

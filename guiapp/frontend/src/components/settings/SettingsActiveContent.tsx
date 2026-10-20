@@ -42,6 +42,7 @@ import type { AssistantLightSchemeId } from '../ai/assistantLightSchemes';
 import type { VirtualEmployeeEntry } from '../ai/VirtualEmployeeTab';
 import { FavoriteEmployeeSettingsPanel } from './FavoriteEmployeeSettingsPanel';
 import { PPTStylesSettingsPanel } from './PPTStylesSettingsPanel';
+import { PDFStylesSettingsPanel } from './PDFStylesSettingsPanel';
 import { GeneralAdvancedSettingsPanel } from './GeneralAdvancedSettingsPanel';
 import { GeneralSettingsPanel } from './GeneralSettingsPanel';
 import { IMSettingsPanel } from './IMSettingsPanel';
@@ -442,6 +443,9 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
             break;
         case 'pptStyles':
             body = wrapPanel('settings-content settings-panel', <PPTStylesSettingsPanel lang={lang} />);
+            break;
+        case 'pdfStyles':
+            body = wrapPanel('settings-content settings-panel', <PDFStylesSettingsPanel lang={lang} />);
             break;
         case 'redeem':
             body = wrapPanel('settings-content settings-panel', <HubServiceRedeemPanel lang={lang} />);

@@ -59,6 +59,10 @@ vi.mock("../../../wailsjs/runtime", () => ({
     BrowserOpenURL: vi.fn(),
 }));
 
+vi.mock("./pdfShotRaster", () => ({
+    rasterizePdfShot: vi.fn(async (_src: string, page: number) => `data:image/png;base64,SHOT${page}`),
+}));
+
 describe("renderContentWithCodeBlocks", () => {
     beforeEach(() => {
         openFileOrShowInFolderMock.mockClear();
@@ -1927,7 +1931,7 @@ describe("renderMessage user attachment chips", () => {
         });
     });
 
-    it("previews an attached PDF at reading size and keeps a sparse second page", async () => {
+    it("shows an attached PDF as a static quarter-size shot", async () => {
         render(<div>{renderMessage({
             id: "with-pdf",
             role: "user",
@@ -1941,31 +1945,42 @@ describe("renderMessage user attachment chips", () => {
             timestamp: Date.now(),
         }, vi.fn(), lightTheme, false, "Saved file", "zh", false)}</div>);
 
-        await screen.findAllByTestId("attachment-document-pdf");
+        const shot = await screen.findByTestId("attachment-document-shot");
+        expect(shot.getAttribute("data-shot-width")).toBe("160");
+        expect(shot.getAttribute("data-shot-height")).toBe("120");
+        expect(shot.style.width).toBe("160px");
+        expect(shot.style.height).toBe("120px");
+        expect(shot.style.pointerEvents).toBe("none");
+        expect(shot.style.overflow).toBe("hidden");
+        expect(shot.style.minWidth).toBe("0px");
+        expect(shot.style.minHeight).toBe("0px");
+        expect(shot.getAttribute("inert")).toBe("");
+        expect(shot.querySelector("[style*='scale']")).toBeNull();
         const preview = screen.getByTestId("attachment-document-preview");
         expect(preview.getAttribute("data-state")).toBe("ready");
         expect(preview.getAttribute("data-preview-kind")).toBe("pdf");
-        expect(preview.getAttribute("data-page-count")).toBe("2");
-        expect(preview.getAttribute("data-preview-max-width")).toBe("640");
-        expect(preview.getAttribute("data-preview-max-height")).toBe("480");
-        expect(preview.style.width).toBe("640px");
-        expect(preview.style.height).toBe("480px");
-        expect(preview.style.maxHeight).toBe("480px");
-        const frames = screen.getAllByTestId("attachment-document-pdf");
-        expect(frames).toHaveLength(2);
-        expect(frames[0].getAttribute("src")).toContain("p=1");
-        expect(frames[0].getAttribute("src")).toContain("#page=1");
-        expect(frames[0].getAttribute("src")).toContain("toolbar=0");
-        expect(frames[0].getAttribute("src")).toContain("view=FitH");
-        expect(frames[1].getAttribute("src")).toContain("#page=2");
-        expect((frames[0] as HTMLIFrameElement).style.height).toBe("225px");
-        expect((frames[1] as HTMLIFrameElement).style.height).toBe("225px");
-        expect((frames[1] as HTMLIFrameElement).style.pointerEvents).toBe("none");
+        expect(preview.getAttribute("data-page-count")).toBe("1");
+        expect(preview.getAttribute("data-preview-max-width")).toBe("160");
+        expect(preview.getAttribute("data-preview-max-height")).toBe("120");
+        expect(preview.style.width).toBe("160px");
+        expect(preview.style.height).toBe("120px");
+        expect(preview.style.overflow).toBe("hidden");
+        expect(preview.textContent || "").not.toContain("第 1");
+        const image = await screen.findByTestId("attachment-document-pdf-shot");
+        expect(image.getAttribute("src")).toBe("data:image/png;base64,SHOT1");
+        expect(image.getAttribute("data-shot-page")).toBe("1");
+        expect((image as HTMLImageElement).style.objectFit).toBe("contain");
+        expect((image as HTMLImageElement).style.width).toBe("100%");
+        expect((image as HTMLImageElement).style.height).toBe("100%");
+        expect((image as HTMLImageElement).style.pointerEvents).toBe("none");
+        expect(screen.queryByTestId("attachment-document-pdf")).toBeNull();
         const bubble = screen.getByTestId("assistant-chat-user-bubble-with-pdf");
         expect(bubble.style.maxWidth).toBe("76%");
-        expect(bubble.contains(preview)).toBe(false);
-        expect(preview.textContent).toContain("第 1–2 页");
-        expect(screen.queryByText("PDF")).toBeNull();
+        expect(bubble.contains(shot)).toBe(false);
+        const stack = screen.getByTestId("assistant-chat-document-previews-with-pdf");
+        expect(stack.style.width).toBe("160px");
+        expect(stack.style.overflow).toBe("hidden");
+        expect(stack.style.minWidth).toBe("0px");
         expect(attachmentOpeningPreviewMock).toHaveBeenCalledWith("D:\\docs\\ZJ-3528.pdf");
     });
 });

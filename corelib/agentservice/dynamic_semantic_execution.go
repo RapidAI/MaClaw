@@ -239,6 +239,9 @@ func BuildDynamicSemanticCatalog(mcpEntries []MCPToolEntry, skillEntries []Skill
 		if err != nil {
 			continue // Invalid/unpublished contract is quarantined, not inferred.
 		}
+		if dynamicSemanticAdapterAlreadyProjected(&result, provider.AdapterName) {
+			continue // A repeated tools/list row keeps the first projection.
+		}
 		if err := result.add(provider, definition, dynamicSemanticRuntimeBinding{provider: provider.Binding, mcp: &binding}); err != nil {
 			return DynamicSemanticCatalog{}, err
 		}
@@ -248,11 +251,25 @@ func BuildDynamicSemanticCatalog(mcpEntries []MCPToolEntry, skillEntries []Skill
 		if err != nil {
 			continue // See MCP path: discovery alone cannot produce a capability.
 		}
+		if dynamicSemanticAdapterAlreadyProjected(&result, provider.AdapterName) {
+			continue
+		}
 		if err := result.add(provider, definition, dynamicSemanticRuntimeBinding{provider: provider.Binding, skill: &binding}); err != nil {
 			return DynamicSemanticCatalog{}, err
 		}
 	}
 	return result, nil
+}
+
+// dynamicSemanticAdapterAlreadyProjected reports that this adapter was already
+// accepted. A second row for the same adapter must not fail the catalog:
+// returning an error here used to discard every provider added before it.
+func dynamicSemanticAdapterAlreadyProjected(catalog *DynamicSemanticCatalog, adapter string) bool {
+	if catalog == nil {
+		return false
+	}
+	_, exists := catalog.bindings[strings.TrimSpace(adapter)]
+	return exists
 }
 
 func (c *DynamicSemanticCatalog) add(provider coretool.ProviderSpec, definition map[string]interface{}, binding dynamicSemanticRuntimeBinding) error {

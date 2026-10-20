@@ -4,7 +4,9 @@
 # Update with UPDATE_SEMANTIC_BEHAVIOR_SNAPSHOT=1 after reviewing a face change.
 srv	search	sel	information.search.web|freshness=reference|host_information_search_web|execution|n=5
 srv	search	first	information.search.web|freshness=reference|host_information_search_web
+srv	live_data	sel	information.fetch.web|-|host_information_fetch_web|execution|n=5
 srv	live_data	sel	information.search.web|freshness=current|host_information_search_web|execution|n=5
+srv	live_data	first	information.fetch.web|-|host_information_fetch_web
 srv	live_data	first	information.search.web|freshness=current|host_information_search_web
 srv	office	sel	artifact.acquire.remote|-|host_artifact_acquire_remote|execution|n=32
 srv	office	sel	document.write.office|format=spreadsheet|host_document_write_office|execution|n=8

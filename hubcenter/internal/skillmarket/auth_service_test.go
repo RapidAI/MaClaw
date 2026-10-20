@@ -38,6 +38,88 @@ func TestAuthServiceSignedSessionValidatesWithoutLocalSessionRow(t *testing.T) {
 	}
 }
 
+func TestCurrentUserMaterializesSignedSessionWithoutLocalUser(t *testing.T) {
+	ctx := context.Background()
+	issuer := NewAuthService(newTestStore(t), nil, "")
+	issuer.SetSessionSigningSecret("cluster-secret")
+	user := &SkillMarketUser{ID: "u_phone_hub", Email: "phone:13301168516", Status: "verified"}
+	token := issuer.newSessionToken(user, time.Now().Add(-time.Minute), time.Now().Add(time.Hour))
+
+	validatorStore := newTestStore(t)
+	validator := NewAuthService(validatorStore, nil, "")
+	validator.SetSessionSigningSecret("cluster-secret")
+	got, err := validator.CurrentUser(ctx, token)
+	if err != nil {
+		t.Fatalf("CurrentUser() error = %v", err)
+	}
+	if got.ID != user.ID || got.Email != "phone:13301168516" || got.Status != "verified" || got.VerifyMethod != "session" {
+		t.Fatalf("materialized user = %+v", got)
+	}
+	if !got.UpdatedAt.Equal(time.Unix(0, 0).UTC()) || !got.CreatedAt.Equal(time.Unix(0, 0).UTC()) {
+		t.Fatalf("stub timestamps = created %s updated %s, want unix epoch so HA snapshot wins", got.CreatedAt, got.UpdatedAt)
+	}
+}
+
+func TestCurrentUserDoesNotImpersonateEmailOwner(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	owner := createTestUser(t, store, "phone:13301168516", 42)
+	issuer := NewAuthService(newTestStore(t), nil, "")
+	issuer.SetSessionSigningSecret("cluster-secret")
+	token := issuer.newSessionToken(&SkillMarketUser{ID: "u_other", Email: "phone:13301168516"}, time.Now(), time.Now().Add(time.Hour))
+
+	auth := NewAuthService(store, nil, "")
+	auth.SetSessionSigningSecret("cluster-secret")
+	if _, err := auth.CurrentUser(ctx, token); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("CurrentUser() error = %v, want ErrNotFound", err)
+	}
+	if _, err := store.GetUserByID(ctx, "u_other"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("foreign principal was created: %v", err)
+	}
+	kept, err := store.GetUserByID(ctx, owner.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID(owner) error = %v", err)
+	}
+	if kept.Credits != 42 {
+		t.Fatalf("owner credits = %d, want 42", kept.Credits)
+	}
+}
+
+func TestCurrentUserDoesNotResurrectDeletedDatabaseSession(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	user := createTestUser(t, store, "uploader@example.com", 7)
+	auth := NewAuthService(store, nil, "")
+	auth.SetSessionSigningSecret("cluster-secret")
+	sess, err := auth.createSession(ctx, user)
+	if err != nil {
+		t.Fatalf("createSession() error = %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM sm_users WHERE id = ?`, user.ID); err != nil {
+		t.Fatalf("delete user: %v", err)
+	}
+	if _, err := auth.CurrentUser(ctx, sess.Token); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("CurrentUser() error = %v, want ErrNotFound", err)
+	}
+	if _, err := store.GetUserByID(ctx, user.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted user was resurrected: %v", err)
+	}
+}
+
+func TestCurrentUserExpiredSignedSessionDoesNotMaterialize(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	auth := NewAuthService(store, nil, "")
+	auth.SetSessionSigningSecret("cluster-secret")
+	token := auth.newSessionToken(&SkillMarketUser{ID: "u_expired", Email: "gone@example.com"}, time.Now().Add(-2*time.Hour), time.Now().Add(-time.Hour))
+	if _, err := auth.CurrentUser(ctx, token); err == nil {
+		t.Fatal("CurrentUser() succeeded for expired signed token")
+	}
+	if _, err := store.GetUserByID(ctx, "u_expired"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expired token materialized a user: %v", err)
+	}
+}
+
 func TestAuthServiceSignedSessionRejectsWrongSecretAndExpiredToken(t *testing.T) {
 	user := createTestUser(t, newTestStore(t), "uploader@example.com", 0)
 	issuer := NewAuthService(newTestStore(t), nil, "")

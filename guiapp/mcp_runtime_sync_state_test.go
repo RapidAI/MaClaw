@@ -193,6 +193,36 @@ func TestMCPRuntimeSyncPersistenceFailureFenceBlocksStaleReady(t *testing.T) {
 	}
 }
 
+func TestMCPRuntimeSyncCacheClonesAndSeesDirectWrites(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	if err := writeMCPRuntimeSyncStates(map[string]MCPRuntimeSyncState{
+		"srv": {ServerID: "srv", Status: "ready", UpdatedAt: time.Now().UTC().Format(time.RFC3339)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := readMCPRuntimeSyncStates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	first["srv"] = MCPRuntimeSyncState{ServerID: "srv", Status: "needs_review"}
+	second, err := readMCPRuntimeSyncStates()
+	if err != nil || second["srv"].Status != "ready" {
+		t.Fatalf("cached state=%+v err=%v", second["srv"], err)
+	}
+	path := mcpRuntimeSyncStatePath()
+	payload := `{"srv":{"server_id":"srv","status":"pending","attempts":1,"updated_at":"2026-08-31T00:00:00Z"}}`
+	if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	third, err := readMCPRuntimeSyncStates()
+	if err != nil || third["srv"].Status != "pending" || third["srv"].Attempts != 1 {
+		t.Fatalf("direct write stayed cached: %+v err=%v", third["srv"], err)
+	}
+}
+
 func TestMCPRuntimeSyncStateCorruptionFailsClosed(t *testing.T) {
 	base := t.TempDir()
 	oldBase := corelib.MaclawBaseDir()

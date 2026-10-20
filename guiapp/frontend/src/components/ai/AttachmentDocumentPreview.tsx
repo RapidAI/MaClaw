@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactElement } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactElement, type ReactNode } from "react";
 import { AIAssistantAttachmentOpeningPreview, PreviewTaskResultFile } from "../../../wailsjs/go/main/App";
 import { attachmentHasDocumentPreview, filePreviewKindFromName } from "../preview/filePreviewKind";
 import type { CodePreviewTheme } from "./FileTabBar";
@@ -8,11 +8,16 @@ import type { Theme } from "./aiAssistantPanelTheme";
 import {
     ATTACHMENT_DOC_PREVIEW_MAX_HEIGHT,
     ATTACHMENT_DOC_PREVIEW_MAX_WIDTH,
+    ATTACHMENT_DOC_SHOT_HEIGHT,
+    ATTACHMENT_DOC_SHOT_SCALE,
+    ATTACHMENT_DOC_SHOT_WIDTH,
     attachmentPreviewRuneCount,
     openingPreviewPageCount,
+    openingPreviewShotPageIndex,
     openingPreviewTexts,
     splitTextIntoPreviewPages,
 } from "./attachmentOpeningPreview";
+import { rasterizePdfShot } from "./pdfShotRaster";
 import { isTaskResultPdfPreviewURL, type TaskResultPreviewPayload } from "./taskResultPreview";
 
 const FOOTER_HEIGHT = 28;
@@ -41,10 +46,17 @@ type OpeningPayload = {
 
 type SheetPage = { name: string; rows: string[][] };
 
+type PdfPageMeta = {
+    index: number;
+    text: string;
+    width: number;
+    height: number;
+};
+
 type PreviewReady =
-    | { mode: "pdf"; src: string; pageCount: number }
+    | { mode: "pdf"; src: string; pageCount: number; pages: PdfPageMeta[] }
     | { mode: "docx"; previewURL: string }
-    | { mode: "images"; pages: { index: number; src: string }[] }
+    | { mode: "images"; pages: { index: number; src: string; text: string }[] }
     | { mode: "sheets"; sheets: SheetPage[] }
     | { mode: "html"; markup: string; pageCount: number }
     | { mode: "text"; pages: string[]; rich: boolean; mono: boolean };
@@ -56,6 +68,7 @@ export function AttachmentDocumentPreview({
     theme,
     lang,
     onFail,
+    variant = "card",
 }: {
     filePath: string;
     fileName: string;
@@ -63,6 +76,8 @@ export function AttachmentDocumentPreview({
     theme: Theme;
     lang: string;
     onFail: () => void;
+    /** card is the reading window. shot fits one whole page into the chat thumbnail. */
+    variant?: "card" | "shot";
 }) {
     const isZh = lang.startsWith("zh");
     const onFailRef = useRef(onFail);
@@ -70,13 +85,28 @@ export function AttachmentDocumentPreview({
     const [ready, setReady] = useState<PreviewReady | null>(null);
     const [docxPages, setDocxPages] = useState(1);
     const [near, setNear] = useState(false);
+    // File key of a shot that has been on screen. The plugin stays mounted
+    // for that file after it scrolls away. A separate reset effect used to
+    // clear this on every path change and did not pin it again unless `near`
+    // also changed, so the next scroll destroyed the thumbnail and loaded
+    // the viewer again.
+    const [pinnedKey, setPinnedKey] = useState("");
     const frameRef = useRef<HTMLDivElement>(null);
     const loadedFor = useRef("");
     const name = fileName || filePath;
-    const reservesWindow = previewReservesWindow(name);
+    const shot = variant === "shot";
+    const fileKey = `${filePath}\0${name}`;
+    // Chromium's PDF viewer will not zoom below 25%. A page at that floor is
+    // larger than this 160×120 box, so the plugin crops it and draws
+    // scrollbars. The shot is a raster of the whole page instead.
+    const kind = filePreviewKindFromName(name);
+    const pinPdf = shot && (kind === "pdf" || ready?.mode === "pdf");
+    const reservesWindow = !shot && previewReservesWindow(name);
+    const showPdfFrame = pinPdf ? near || pinnedKey === fileKey : near;
 
     useEffect(() => {
         const node = frameRef.current;
+        if (node && shot) node.setAttribute("inert", "");
         if (!node || typeof IntersectionObserver === "undefined") {
             setNear(true);
             return;
@@ -90,7 +120,11 @@ export function AttachmentDocumentPreview({
         }, { root, rootMargin: "480px" });
         observer.observe(node);
         return () => observer.disconnect();
-    }, [filePath, name]);
+    }, [filePath, name, shot]);
+
+    useEffect(() => {
+        if (near && pinPdf) setPinnedKey(fileKey);
+    }, [near, pinPdf, fileKey]);
 
     useEffect(() => {
         if (!near) return;
@@ -120,6 +154,43 @@ export function AttachmentDocumentPreview({
             cancelled = true;
         };
     }, [near, filePath, name]);
+
+    if (shot) {
+        const pdfPage = ready?.mode === "pdf" ? pdfShotMeta(ready.pages) : null;
+        return (
+            <div
+                ref={frameRef}
+                data-testid="attachment-document-shot"
+                data-shot-width={ATTACHMENT_DOC_SHOT_WIDTH}
+                data-shot-height={ATTACHMENT_DOC_SHOT_HEIGHT}
+                aria-label={isZh ? `预览 ${name}` : `Preview ${name}`}
+                title={filePath}
+                style={shotFrameStyle(theme)}
+            >
+                <div
+                    data-testid="attachment-document-preview"
+                    data-state={ready ? "ready" : "loading"}
+                    data-preview-kind={ready?.mode}
+                    data-page-count={ready ? 1 : undefined}
+                    data-preview-max-width={ATTACHMENT_DOC_SHOT_WIDTH}
+                    data-preview-max-height={ATTACHMENT_DOC_SHOT_HEIGHT}
+                    aria-hidden="true"
+                    style={shotCanvasStyle()}
+                >
+                    {pdfPage && showPdfFrame ? (
+                        <PdfShotImage
+                            src={ready && ready.mode === "pdf" ? ready.src : ""}
+                            page={pdfPage.index}
+                            onFail={() => onFailRef.current()}
+                        />
+                    ) : null}
+                    {ready && ready.mode !== "pdf" ? (
+                        <DocumentContentShot ready={ready} isZh={isZh} title={name} onFail={() => onFailRef.current()} />
+                    ) : null}
+                </div>
+            </div>
+        );
+    }
 
     let card: ReactElement;
     if (!ready) {
@@ -157,17 +228,15 @@ export function AttachmentDocumentPreview({
                 style={cardStyle(theme, fixedWindow ? "window" : "content")}
             >
                 <div style={pageViewportStyle(fixedWindow)}>
-                    {ready.mode === "pdf" && near ? <PdfPageFrame src={ready.src} title={name} pageCount={ready.pageCount} /> : null}
+                    {ready.mode === "pdf" && showPdfFrame ? (
+                        <PdfPageFrame src={ready.src} title={name} pageCount={ready.pageCount} />
+                    ) : null}
                     {ready.mode === "docx" ? (
-                        <DocxPageFrame
-                            previewURL={ready.previewURL}
-                            onPages={setDocxPages}
-                            onFail={() => onFailRef.current()}
-                        />
+                        <DocxPageFrame previewURL={ready.previewURL} onPages={setDocxPages} onFail={() => onFailRef.current()} />
                     ) : null}
                     {ready.mode === "images" ? <ImagePages pages={ready.pages} /> : null}
                     {ready.mode === "sheets" ? <SheetPages sheets={ready.sheets} /> : null}
-                    {ready.mode === "html" && near ? <HtmlPageFrame markup={ready.markup} title={name} /> : null}
+                    {ready.mode === "html" && showPdfFrame ? <HtmlPageFrame markup={ready.markup} title={name} /> : null}
                     {ready.mode === "text" ? <TextPages pages={ready.pages} rich={ready.rich} mono={ready.mono} isZh={isZh} /> : null}
                 </div>
                 <div style={footerStyle(theme)}>
@@ -183,6 +252,29 @@ export function AttachmentDocumentPreview({
             {card}
         </div>
     );
+}
+
+function shotFrameStyle(theme: Theme): CSSProperties {
+    return {
+        display: "flex",
+        flexDirection: "column",
+        width: ATTACHMENT_DOC_SHOT_WIDTH,
+        height: ATTACHMENT_DOC_SHOT_HEIGHT,
+        minWidth: 0,
+        minHeight: 0,
+        boxSizing: "border-box",
+        overflow: "hidden",
+        // min-width/min-height 0 stop a scaled reading card from becoming
+        // the flex item's minimum and opening the chat row back up.
+        // An inset line keeps the content box at 160×120; a real border
+        // would shrink it and clip the plugin.
+        pointerEvents: "none",
+        borderRadius: 8,
+        border: "none",
+        boxShadow: `inset 0 0 0 1px ${theme.codeBlockBorder}`,
+        background: "#fff",
+        flexShrink: 0,
+    };
 }
 
 function cardStyle(theme: Theme, layout: "loading" | "window" | "content"): CSSProperties {
@@ -247,12 +339,58 @@ function compactAttachmentLabel(fileName: string, extension: string): string {
     return base || extension || fileName;
 }
 
-function PdfPageFrame({ src, title, pageCount }: { src: string; title: string; pageCount: number }) {
+/** One whole PDF page, fitted in the shot box, with no viewer chrome. */
+function PdfShotImage({ src, page, onFail }: { src: string; page: number; onFail: () => void }) {
+    const [url, setUrl] = useState("");
+    const onFailRef = useRef(onFail);
+    onFailRef.current = onFail;
+    useEffect(() => {
+        let cancelled = false;
+        setUrl("");
+        void rasterizePdfShot(src, page).then(
+            (next) => {
+                if (!cancelled) setUrl(next);
+            },
+            () => {
+                if (!cancelled) onFailRef.current();
+            },
+        );
+        return () => {
+            cancelled = true;
+        };
+    }, [src, page]);
+    if (!url) return null;
+    return (
+        <img
+            data-testid="attachment-document-pdf-shot"
+            data-shot-page={page}
+            alt=""
+            src={url}
+            draggable={false}
+            style={{
+                width: "100%",
+                height: "100%",
+                objectFit: "contain",
+                objectPosition: "center",
+                display: "block",
+                background: "#fff",
+                pointerEvents: "none",
+            }}
+        />
+    );
+}
+
+function PdfPageFrame({ src, title, pageCount }: {
+    src: string;
+    title: string;
+    pageCount: number;
+}) {
     const count = Math.max(1, pageCount);
     // One page uses the whole window and can scroll inside it. Extra pages,
     // pulled in because earlier pages had little text, share that same window
     // so each top stays visible. Those frames ignore the pointer so the wheel
     // moves the card instead of getting stuck inside one PDF plugin.
+    // A flex item with height 100% collapses this plugin back to the UA 300×150 box.
     const each = Math.max(160, Math.floor(PAGE_VIEW_HEIGHT / count));
     return (
         <div style={{ display: "flex", flexDirection: "column", minHeight: "100%" }}>
@@ -275,7 +413,7 @@ function PdfPageFrame({ src, title, pageCount }: { src: string; title: string; p
                             borderTop: index === 0 ? "none" : "1px solid #e7e5e4",
                             background: "#fff",
                             display: "block",
-                            pointerEvents: count === 1 ? "auto" : "none",
+                            pointerEvents: count !== 1 ? "none" : "auto",
                         }}
                     />
                 );
@@ -334,7 +472,14 @@ function HtmlPageFrame({ markup, title }: { markup: string; title: string }) {
             title={title}
             sandbox=""
             srcDoc={markup}
-            style={{ width: "100%", height: "100%", minHeight: PAGE_VIEW_HEIGHT, border: "none", background: "#fff", display: "block" }}
+            style={{
+                width: "100%",
+                height: "100%",
+                minHeight: PAGE_VIEW_HEIGHT,
+                border: "none",
+                background: "#fff",
+                display: "block",
+            }}
         />
     );
 }
@@ -435,10 +580,12 @@ function DocxPageFrame({
     previewURL,
     onPages,
     onFail,
+    frozen = false,
 }: {
     previewURL: string;
     onPages: (count: number) => void;
     onFail: () => void;
+    frozen?: boolean;
 }) {
     const hostRef = useRef<HTMLDivElement>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
@@ -484,6 +631,34 @@ function DocxPageFrame({
                     onFailRef.current();
                     return;
                 }
+                if (frozen) {
+                    // The shot is the first page with enough text, at its own
+                    // height, so a later scale can show the whole page.
+                    const sections = [...target.querySelectorAll("section.maclaw-docx")].filter((node): node is HTMLElement => node instanceof HTMLElement);
+                    const index = openingPreviewShotPageIndex(sections.map((section) => section.textContent || ""));
+                    sections.forEach((section, sectionIndex) => {
+                        if (sectionIndex !== index) section.remove();
+                    });
+                    const kept = target.querySelector("section.maclaw-docx");
+                    if (kept instanceof HTMLElement) {
+                        kept.style.margin = "0";
+                        kept.style.boxShadow = "none";
+                        kept.style.borderTop = "none";
+                        const width = kept.offsetWidth || kept.scrollWidth;
+                        const height = kept.offsetHeight || kept.scrollHeight;
+                        const scroll = scrollRef.current;
+                        if (width > 0) {
+                            target.style.width = `${width}px`;
+                            if (scroll) scroll.style.width = `${width}px`;
+                        }
+                        if (height > 0) {
+                            target.style.height = `${height}px`;
+                            if (scroll) scroll.style.height = `${height}px`;
+                        }
+                    }
+                    onPagesRef.current(1);
+                    return;
+                }
                 clipDocxPreviewPages(target, count);
                 onPagesRef.current(count);
                 fitDocxToPane(scrollRef.current, bodyHost);
@@ -494,7 +669,7 @@ function DocxPageFrame({
         })();
         const scroll = scrollRef.current;
         let fittedWidth = scroll?.clientWidth ?? -1;
-        const observer = scroll && typeof ResizeObserver !== "undefined"
+        const observer = !frozen && scroll && typeof ResizeObserver !== "undefined"
             ? new ResizeObserver(() => {
                 const pane = scrollRef.current;
                 const host = hostRef.current;
@@ -507,8 +682,8 @@ function DocxPageFrame({
                 const top = pane.scrollTop;
                 const body = host.querySelector(":scope > div:last-child");
                 if (body instanceof HTMLElement) fitDocxToPane(pane, body);
-                const kept = host.querySelectorAll("section.maclaw-docx").length;
-                if (kept > 1) clipDocxPreviewPages(host, kept);
+                const sections = [...host.querySelectorAll("section.maclaw-docx")];
+                if (sections.length > 1) clipDocxPreviewPages(host, sections.length);
                 if (top > 0) pane.scrollTop = top;
             })
             : null;
@@ -517,10 +692,10 @@ function DocxPageFrame({
             cancelled = true;
             observer?.disconnect();
         };
-    }, [previewURL]);
+    }, [previewURL, frozen]);
 
     return (
-        <div ref={scrollRef} data-testid="attachment-document-docx" style={{ width: "100%", height: "100%", minHeight: PAGE_VIEW_HEIGHT, overflow: "auto", background: "#f5f5f4" }}>
+        <div ref={scrollRef} data-testid="attachment-document-docx" style={frozen ? { width: "max-content", height: "auto", overflow: "visible", background: "#fff" } : { width: "100%", height: "100%", minHeight: PAGE_VIEW_HEIGHT, overflow: "auto", background: "#f5f5f4" }}>
             <div ref={hostRef} />
         </div>
     );
@@ -553,14 +728,28 @@ function readyFromOpening(kind: string, payload: OpeningPayload): PreviewReady |
     const pages = Array.isArray(payload?.pages) ? payload.pages : [];
     const previewURL = String(payload?.preview_url || "").trim();
     if (kind === "pdf" && isTaskResultPdfPreviewURL(previewURL)) {
-        return { mode: "pdf", src: previewURL, pageCount: Math.max(1, pages.length) };
+        return {
+            mode: "pdf",
+            src: previewURL,
+            pageCount: Math.max(1, pages.length),
+            pages: pages.map((page, index) => ({
+                index: page.index || index + 1,
+                text: String(page.text || ""),
+                width: Number(page.width) || 0,
+                height: Number(page.height) || 0,
+            })),
+        };
     }
     if (kind === "docx" && isTaskResultPdfPreviewURL(previewURL)) {
         return { mode: "docx", previewURL };
     }
     if (kind === "pptx") {
         const images = pages
-            .map((page, index) => ({ index: page.index || index + 1, src: String(page.image_data_url || "").trim() }))
+            .map((page, index) => ({
+                index: page.index || index + 1,
+                src: String(page.image_data_url || "").trim(),
+                text: String(page.text || ""),
+            }))
             .filter((page) => page.src.startsWith("data:image/"));
         if (images.length > 0) return { mode: "images", pages: images };
         const texts = openingPreviewTexts(pages.map((page) => String(page.text || "")));
@@ -677,11 +866,135 @@ function pdfFrameSrc(src: string, page: number, single: boolean): string {
     const base = src.split("#")[0];
     const joiner = base.includes("?") ? "&" : "?";
     // A distinct query keeps each page's PDF plugin from sharing one document.
-    // The preview server only reads the token.
+    // The preview server only reads the token. The reading card fits the width.
+    // The chat shot does not use this plugin.
     const hash = single
         ? `#page=${page}&toolbar=0&navpanes=0&view=FitH`
         : `#page=${page}&toolbar=0&navpanes=0&scrollbar=0&view=FitH`;
     return `${base}${joiner}p=${page}${hash}`;
+}
+
+function pdfShotMeta(pages: readonly PdfPageMeta[]): PdfPageMeta {
+    const index = openingPreviewShotPageIndex(pages.map((page) => page.text));
+    return pages[index] || { index: 1, text: "", width: 0, height: 0 };
+}
+
+function shotCanvasStyle(): CSSProperties {
+    return {
+        width: ATTACHMENT_DOC_SHOT_WIDTH,
+        height: ATTACHMENT_DOC_SHOT_HEIGHT,
+        minWidth: 0,
+        minHeight: 0,
+        overflow: "hidden",
+        background: "#fff",
+        flexShrink: 0,
+    };
+}
+
+/** Scale one page's natural size so the whole page sits in the shot box. */
+function FitContentShot({ children, contentWidth }: { children: ReactNode; contentWidth?: number }) {
+    const innerRef = useRef<HTMLDivElement>(null);
+    const [scale, setScale] = useState(1);
+    useLayoutEffect(() => {
+        const node = innerRef.current;
+        if (!node) return;
+        const measure = () => {
+            const width = node.scrollWidth;
+            const height = node.scrollHeight;
+            if (width <= 0 || height <= 0) return;
+            const next = Math.round(Math.min(ATTACHMENT_DOC_SHOT_WIDTH / width, ATTACHMENT_DOC_SHOT_HEIGHT / height) * 1000) / 1000;
+            setScale((prev) => (prev === next ? prev : next));
+        };
+        measure();
+        if (typeof ResizeObserver === "undefined") return;
+        const observer = new ResizeObserver(measure);
+        observer.observe(node);
+        return () => observer.disconnect();
+    }, [contentWidth]);
+    return (
+        <div style={shotCanvasStyle()}>
+            <div
+                ref={innerRef}
+                style={{
+                    width: contentWidth && contentWidth > 0 ? contentWidth : "max-content",
+                    transform: `scale(${scale})`,
+                    transformOrigin: "top left",
+                }}
+            >
+                {children}
+            </div>
+        </div>
+    );
+}
+
+const HTML_SHOT_SCROLLBARS = "<style>html,body{margin:0;overflow:hidden!important;background:#fff;}</style>";
+
+function HtmlContentShot({ markup, title }: { markup: string; title: string }) {
+    const scale = ATTACHMENT_DOC_SHOT_SCALE;
+    return (
+        <div style={shotCanvasStyle()}>
+            <iframe
+                data-testid="attachment-document-html"
+                title={title}
+                sandbox=""
+                srcDoc={HTML_SHOT_SCROLLBARS + markup}
+                scrolling="no"
+                tabIndex={-1}
+                style={{
+                    width: ATTACHMENT_DOC_PREVIEW_MAX_WIDTH,
+                    height: ATTACHMENT_DOC_PREVIEW_MAX_HEIGHT,
+                    border: "none",
+                    background: "#fff",
+                    display: "block",
+                    pointerEvents: "none",
+                    transform: `scale(${scale})`,
+                    transformOrigin: "top left",
+                }}
+            />
+        </div>
+    );
+}
+
+/** One qualifying page, fitted whole, with no viewer chrome. */
+function DocumentContentShot({ ready, isZh, title, onFail }: { ready: Exclude<PreviewReady, { mode: "pdf" }>; isZh: boolean; title: string; onFail: () => void }) {
+    if (ready.mode === "images") {
+        const index = openingPreviewShotPageIndex(ready.pages.map((page) => page.text));
+        const page = ready.pages[index] || ready.pages[0];
+        if (!page) return null;
+        return (
+            <div style={{ ...shotCanvasStyle(), display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <img data-testid="attachment-document-page" alt="" src={page.src} style={{ width: "100%", height: "100%", objectFit: "contain", display: "block", background: "#fff" }} />
+            </div>
+        );
+    }
+    if (ready.mode === "sheets") {
+        const texts = ready.sheets.map((sheet) => sheet.rows.map((row) => row.join(" ")).join("\n"));
+        const index = openingPreviewShotPageIndex(texts);
+        const sheet = ready.sheets[index] || ready.sheets[0];
+        if (!sheet) return null;
+        return (
+            <FitContentShot>
+                <SheetPages sheets={[sheet]} />
+            </FitContentShot>
+        );
+    }
+    if (ready.mode === "html") {
+        return <HtmlContentShot markup={ready.markup} title={title} />;
+    }
+    if (ready.mode === "text") {
+        const index = openingPreviewShotPageIndex(ready.pages);
+        const page = ready.pages[index] ?? ready.pages[0] ?? "";
+        return (
+            <FitContentShot contentWidth={ATTACHMENT_DOC_PREVIEW_MAX_WIDTH}>
+                <TextPages pages={[page]} rich={ready.rich} mono={ready.mono} isZh={isZh} />
+            </FitContentShot>
+        );
+    }
+    return (
+        <FitContentShot>
+            <DocxPageFrame previewURL={ready.previewURL} onPages={() => {}} onFail={onFail} frozen />
+        </FitContentShot>
+    );
 }
 
 function looksLikeHtmlDocument(value: string): boolean {

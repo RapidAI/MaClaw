@@ -419,6 +419,7 @@ func (a *App) ActivateReferralRemoteEmail(hubURL string, email string, tenantID 
 		next.RemoteEmail = enrollResult.Email
 		next.RemoteMobile = normalizeRemoteRegistrationPhoneNumber(enrollResult.PhoneNumber)
 		next.RemoteSN = enrollResult.SN
+		clearSkillMarketSessionForHubUser(next, enrollResult.UserID)
 		next.RemoteUserID = enrollResult.UserID
 		next.RemoteTenantID = enrollResult.TenantID
 		next.RemoteTenantName = enrollResult.TenantName
@@ -504,6 +505,7 @@ func (a *App) ActivateReferralRemotePhone(hubURL string, phoneNumber string, ten
 		next.RemoteEmail = enrollResult.Email
 		next.RemoteMobile = phoneNumber
 		next.RemoteSN = enrollResult.SN
+		clearSkillMarketSessionForHubUser(next, enrollResult.UserID)
 		next.RemoteUserID = enrollResult.UserID
 		next.RemoteTenantID = enrollResult.TenantID
 		next.RemoteTenantName = enrollResult.TenantName
@@ -716,6 +718,7 @@ func (a *App) GetRemoteRegistrationProfile() (RemoteRegistrationProfileResult, e
 				cfg.RemoteTenantName = tenantName
 			}
 			if userID != "" {
+				clearSkillMarketSessionForHubUser(cfg, userID)
 				cfg.RemoteUserID = userID
 			}
 			if email != "" && strings.TrimSpace(cfg.RemoteEmail) == "" {
@@ -1026,14 +1029,17 @@ func (a *App) SendRemoteRegistrationContactCode(kind string, value string) (Remo
 	}
 	resp, err := hubHTTPClient.Post(hubURL+"/api/enroll/profile/send-code", "application/json", bytes.NewReader(data))
 	if err != nil {
+		log.Printf("[registration-contact] email send failed endpoint=/api/enroll/profile/send-code tenant=%s machine=%s email=%s err=%v", strings.TrimSpace(cfg.RemoteTenantID), strings.TrimSpace(cfg.RemoteMachineID), remoteRegistrationEmailLogIdentity(value), err)
 		return RemoteRegistrationContactResult{}, err
 	}
 	defer resp.Body.Close()
 	var result RemoteRegistrationContactResult
 	if err := remote.DecodeHTTPJSONResponse(resp, &result, "send registration contact code"); err != nil {
+		log.Printf("[registration-contact] email send decode failed endpoint=/api/enroll/profile/send-code tenant=%s machine=%s email=%s status=%d err=%v", strings.TrimSpace(cfg.RemoteTenantID), strings.TrimSpace(cfg.RemoteMachineID), remoteRegistrationEmailLogIdentity(value), resp.StatusCode, err)
 		return RemoteRegistrationContactResult{}, err
 	}
 	if resp.StatusCode >= 300 {
+		log.Printf("[registration-contact] email send rejected endpoint=/api/enroll/profile/send-code tenant=%s machine=%s email=%s status=%d code=%s", strings.TrimSpace(cfg.RemoteTenantID), strings.TrimSpace(cfg.RemoteMachineID), remoteRegistrationEmailLogIdentity(value), resp.StatusCode, result.Code)
 		return RemoteRegistrationContactResult{}, remoteRegistrationContactError(result, "send contact code failed: "+resp.Status)
 	}
 	return result, nil
@@ -1100,14 +1106,17 @@ func (a *App) VerifyRemoteRegistrationContactCode(kind string, value string, ver
 	}
 	resp, err := hubHTTPClient.Post(hubURL+"/api/enroll/profile/verify", "application/json", bytes.NewReader(data))
 	if err != nil {
+		log.Printf("[registration-contact] email verify failed endpoint=/api/enroll/profile/verify tenant=%s machine=%s email=%s err=%v", strings.TrimSpace(cfg.RemoteTenantID), strings.TrimSpace(cfg.RemoteMachineID), remoteRegistrationEmailLogIdentity(value), err)
 		return RemoteRegistrationContactResult{}, err
 	}
 	defer resp.Body.Close()
 	var result RemoteRegistrationContactResult
 	if err := remote.DecodeHTTPJSONResponse(resp, &result, "verify registration contact code"); err != nil {
+		log.Printf("[registration-contact] email verify decode failed endpoint=/api/enroll/profile/verify tenant=%s machine=%s email=%s status=%d err=%v", strings.TrimSpace(cfg.RemoteTenantID), strings.TrimSpace(cfg.RemoteMachineID), remoteRegistrationEmailLogIdentity(value), resp.StatusCode, err)
 		return RemoteRegistrationContactResult{}, err
 	}
 	if resp.StatusCode >= 300 {
+		log.Printf("[registration-contact] email verify rejected endpoint=/api/enroll/profile/verify tenant=%s machine=%s email=%s status=%d code=%s", strings.TrimSpace(cfg.RemoteTenantID), strings.TrimSpace(cfg.RemoteMachineID), remoteRegistrationEmailLogIdentity(value), resp.StatusCode, result.Code)
 		return RemoteRegistrationContactResult{}, remoteRegistrationContactError(result, "verify contact code failed: "+resp.Status)
 	}
 	patch := map[string]interface{}{}
@@ -1349,6 +1358,7 @@ func (a *App) activateRemoteEmail(email string, verifyCode string, invitationCod
 	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
 		cfg.RemoteEmail = enrollResult.Email
 		cfg.RemoteSN = enrollResult.SN
+		clearSkillMarketSessionForHubUser(cfg, enrollResult.UserID)
 		cfg.RemoteUserID = enrollResult.UserID
 		cfg.RemoteTenantID = enrollResult.TenantID
 		cfg.RemoteTenantName = enrollResult.TenantName
@@ -1571,6 +1581,7 @@ func (a *App) ActivateRemoteSMS(hubURL string, phoneNumber string, verifyCode st
 		cfg.RemoteEmail = enrollResult.Email
 		cfg.RemoteMobile = phoneNumber
 		cfg.RemoteSN = enrollResult.SN
+		clearSkillMarketSessionForHubUser(cfg, enrollResult.UserID)
 		cfg.RemoteUserID = enrollResult.UserID
 		cfg.RemoteTenantID = enrollResult.TenantID
 		cfg.RemoteTenantName = enrollResult.TenantName
@@ -1776,6 +1787,7 @@ func (a *App) clearMachineCredentials() {
 	_ = a.PatchConfig(func(cfg *corelib.AppConfig) {
 		cfg.RemoteSN = ""
 		cfg.RemoteUserID = ""
+		storeSkillMarketSession(cfg, "", "")
 		cfg.RemoteTenantID = ""
 		cfg.RemoteTenantName = ""
 		cfg.RemoteMachineID = ""
@@ -1799,6 +1811,7 @@ func (a *App) ClearRemoteActivation() error {
 		cfg.RemoteMobile = ""
 		cfg.RemoteSN = ""
 		cfg.RemoteUserID = ""
+		storeSkillMarketSession(cfg, "", "")
 		cfg.RemoteTenantID = ""
 		cfg.RemoteTenantName = ""
 		cfg.RemoteMachineID = ""
@@ -1891,7 +1904,7 @@ func (a *App) acquireSkillMarketTokenAfterEnroll(userID, contact, machineID, vie
 	}
 	defer a.skillMarketAutoLoginRunning.Store(false)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := newSkillMarketDeriveContext()
 	defer cancel()
 
 	cfg, err := a.LoadConfig()
@@ -1904,40 +1917,18 @@ func (a *App) acquireSkillMarketTokenAfterEnroll(userID, contact, machineID, vie
 		log.Printf("[skillmarket-auto-login] registered Hub ID is unavailable")
 		return
 	}
-	// Skip if user already has a valid SkillMarket token.
-	if strings.TrimSpace(cfg.SkillMarketSessionToken) != "" {
-		return
+	// The session has to belong to this Hub principal. A non-empty cached
+	// token from a previous user, or an expired signed token, is not a login.
+	principal := skillMarketPrincipal{
+		HubID:       strings.TrimSpace(cfg.RemoteHubID),
+		UserID:      strings.TrimSpace(userID),
+		Contact:     strings.TrimSpace(contact),
+		MachineID:   strings.TrimSpace(machineID),
+		ViewerToken: strings.TrimSpace(viewerToken),
 	}
-
-	// Machine login is a machine-to-machine API call, not a display surface:
-	// use the dynamically resolved HubCenter URL like every other SkillMarket
-	// API caller (submit/purchase/gossip). The display-only baseURL()
-	// deliberately hides explicitly configured loopback/private hubs, which
-	// would silently disable auto-login for self-hosted single-hub installs.
-	baseURL, _, err := NewSkillMarketClient(a).selectBaseURL(ctx)
-	if err != nil || strings.TrimSpace(baseURL) == "" {
-		a.deferSkillMarketAutoLoginRetry(skillMarketAutoLoginRetryDelay)
-		log.Printf("[skillmarket-auto-login] no dynamically confirmed HubCenter URL available: %v", err)
-		return
-	}
-	client := remote.NewSkillMarketAuthClient()
-	result, err := client.MachineLogin(ctx, baseURL, cfg.RemoteHubID, userID, contact, machineID, viewerToken)
-	if err != nil {
+	if _, err := a.ensureSkillMarketSession(ctx, false, principal); err != nil {
 		a.deferSkillMarketAutoLoginRetry(skillMarketAutoLoginRetryDelay)
 		log.Printf("[skillmarket-auto-login] machine-login failed (non-fatal): %v", err)
-		return
-	}
-	if result.SessionToken == "" {
-		a.deferSkillMarketAutoLoginRetry(skillMarketAutoLoginRetryDelay)
-		log.Printf("[skillmarket-auto-login] empty token returned")
-		return
-	}
-
-	// Persist token.
-	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
-		cfg.SkillMarketSessionToken = result.SessionToken
-	}); err != nil {
-		log.Printf("[skillmarket-auto-login] save token failed: %v", err)
 		return
 	}
 	a.skillMarketAutoLoginNextAttempt.Store(time.Time{})

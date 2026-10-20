@@ -178,8 +178,30 @@ func (d *DriftDetector) detectArgsHashDrift() DriftResult {
 	if resultsAreChanging(window, consecutiveCount) {
 		return DriftResult{}
 	}
+	// An unchanged successful result is a stable observation: a quiet status
+	// poll, not a tool that cannot finish. Ending that streak tells the model
+	// the turn is limited, which it repeats as a used-up quota. A streak that
+	// did not succeed is the dead loop this layer exists for.
+	if consecutiveSuccesses(window, consecutiveCount) {
+		return DriftResult{}
+	}
 
 	return d.buildDriftResult(consecutiveCount, lastRec.ToolName, lastRec.ResultHint, "loop")
+}
+
+// consecutiveSuccesses reports that every call in the same-args streak
+// finished successfully. Missing outcome data is not success.
+func consecutiveSuccesses(window []ToolCallRecord, consecutiveCount int) bool {
+	if consecutiveCount <= 0 || consecutiveCount > len(window) {
+		return false
+	}
+	start := len(window) - consecutiveCount
+	for i := start; i < len(window); i++ {
+		if !window[i].Succeeded {
+			return false
+		}
+	}
+	return true
 }
 
 // buildDriftResult constructs a DriftResult with the appropriate prompt.
@@ -540,7 +562,7 @@ func (d *DriftDetector) PreviewDrift() DriftResult {
 		startIdx := len(window) - consecutiveCount
 		timeSpan := window[lastIdx].Timestamp.Sub(window[startIdx].Timestamp)
 		if !(timeSpan > slowPollTimeSpan && consecutiveCount < slowPollMinRepeat) {
-			if !resultsAreChanging(window, consecutiveCount) {
+			if !resultsAreChanging(window, consecutiveCount) && !consecutiveSuccesses(window, consecutiveCount) {
 				return DriftResult{
 					Drifted:       true,
 					Pattern:       "loop",

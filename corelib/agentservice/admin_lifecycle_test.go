@@ -202,6 +202,43 @@ func TestImportServiceStateMaskedConfigDoesNotPersistPlaceholders(t *testing.T) 
 		t.Fatalf("expected masked import to preserve existing secrets on overwrite: %#v", preserved.AppConfig)
 	}
 }
+func TestMergeSecretPreservingKeepsSkillMarketIssuerWithToken(t *testing.T) {
+	current := testDeleteLLMConfig()
+	current.SkillMarketSessionToken = "sm2.current"
+	current.SkillMarketSessionBaseURL = "https://issuer.example"
+	masked := testDeleteLLMConfig()
+	masked.SkillMarketSessionToken = "******"
+	masked.SkillMarketSessionBaseURL = "https://other-machine.example"
+	kept := mergeSecretPreserving(current, masked)
+	if kept.SkillMarketSessionToken != "sm2.current" || kept.SkillMarketSessionBaseURL != "https://issuer.example" {
+		t.Fatalf("masked token round-trip detached the issuer: token=%q base=%q", kept.SkillMarketSessionToken, kept.SkillMarketSessionBaseURL)
+	}
+
+	cleared := testDeleteLLMConfig()
+	cleared.SkillMarketSessionToken = ""
+	cleared.SkillMarketSessionBaseURL = "https://other.example"
+	dropped := mergeSecretPreserving(current, cleared)
+	if dropped.SkillMarketSessionToken != "" || dropped.SkillMarketSessionBaseURL != "" {
+		t.Fatalf("clearing the token left an issuer: token=%q base=%q", dropped.SkillMarketSessionToken, dropped.SkillMarketSessionBaseURL)
+	}
+
+	replaced := testDeleteLLMConfig()
+	replaced.SkillMarketSessionToken = "sm2.replacement"
+	replaced.SkillMarketSessionBaseURL = "https://replacement.example"
+	moved := mergeSecretPreserving(current, replaced)
+	if moved.SkillMarketSessionToken != "sm2.replacement" || moved.SkillMarketSessionBaseURL != "https://replacement.example" {
+		t.Fatalf("replacement session was rewritten: token=%q base=%q", moved.SkillMarketSessionToken, moved.SkillMarketSessionBaseURL)
+	}
+
+	sameToken := testDeleteLLMConfig()
+	sameToken.SkillMarketSessionToken = current.SkillMarketSessionToken
+	sameToken.SkillMarketSessionBaseURL = "https://other-machine.example"
+	retained := mergeSecretPreserving(current, sameToken)
+	if retained.SkillMarketSessionToken != current.SkillMarketSessionToken || retained.SkillMarketSessionBaseURL != current.SkillMarketSessionBaseURL {
+		t.Fatalf("same token adopted another issuer: token=%q base=%q", retained.SkillMarketSessionToken, retained.SkillMarketSessionBaseURL)
+	}
+}
+
 func TestMergeSecretPreservingAllowsClearingOptionalSecrets(t *testing.T) {
 	current := testDeleteLLMConfig()
 	current.DefaultProxyPassword = "proxy-password-secret"

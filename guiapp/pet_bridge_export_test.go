@@ -270,6 +270,45 @@ func TestIsAnonymousMarketGETAllowsPublicCatalogueOnly(t *testing.T) {
 	}
 }
 
+func TestMarketRequestPresentsSessionToItsIssuer(t *testing.T) {
+	preferredHits := 0
+	preferred := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		preferredHits++
+		http.Error(w, "preferred center", http.StatusInternalServerError)
+	}))
+	defer preferred.Close()
+	issuerHits := 0
+	issuer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		issuerHits++
+		if r.Header.Get("Authorization") != "Bearer market-token" {
+			t.Errorf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer issuer.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubCenterURL:        preferred.URL,
+		RemoteHubCenterURLs:       []string{issuer.URL},
+		SkillMarketSessionToken:   "market-token",
+		SkillMarketSessionBaseURL: issuer.URL,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := app.expertMarketRequest(http.MethodGet, "/api/v1/expert-market/experts/listed-1/download", nil, "")
+	if err != nil {
+		t.Fatalf("market request: %v", err)
+	}
+	if !strings.Contains(string(data), `"ok":true`) {
+		t.Fatalf("body = %s", data)
+	}
+	if preferredHits != 0 || issuerHits != 1 {
+		t.Fatalf("preferred hits = %d issuer hits = %d", preferredHits, issuerHits)
+	}
+}
+
 func TestMarketRequestDoesNotRefreshSessionOnForbidden(t *testing.T) {
 	var machineLoginCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -1903,9 +1903,21 @@ func coordinatedHostCallFingerprint(tx *sql.Tx, key string, grant InvocationGran
 
 // AppendRepeatSibling persists one more invocation of a repeat family onto
 // the published plan. The plan ID stays the same. The next ready-surface
-// materialization can issue the new node. One-shot tools and a family that
-// is already at the turn cap return an error.
+// materialization can issue the new node. One-shot tools return an error.
+// A count of calls does not.
 func (c *SQLiteSemanticExecutionCoordinator) AppendRepeatSibling(scope InvocationScope, prototypeSelectionID string, now time.Time) (ToolPlan, error) {
+	return c.storeRepeatSibling(scope, prototypeSelectionID, now, false)
+}
+
+// AppendObservationFollowUp persists the one schedule write minted after a
+// list. It uses the same published plan as AppendRepeatSibling and does not
+// open a second write. A family that is not exactly one schedule
+// administration node returns an error.
+func (c *SQLiteSemanticExecutionCoordinator) AppendObservationFollowUp(scope InvocationScope, prototypeSelectionID string, now time.Time) (ToolPlan, error) {
+	return c.storeRepeatSibling(scope, prototypeSelectionID, now, true)
+}
+
+func (c *SQLiteSemanticExecutionCoordinator) storeRepeatSibling(scope InvocationScope, prototypeSelectionID string, now time.Time, observation bool) (ToolPlan, error) {
 	if c == nil || c.db == nil {
 		return ToolPlan{}, fmt.Errorf("semantic execution coordinator is unavailable")
 	}
@@ -1922,7 +1934,13 @@ func (c *SQLiteSemanticExecutionCoordinator) AppendRepeatSibling(scope Invocatio
 	if err != nil {
 		return ToolPlan{}, err
 	}
-	updated, _, ok := AppendRepeatSibling(plan, prototypeSelectionID)
+	var updated ToolPlan
+	var ok bool
+	if observation {
+		updated, _, ok = AppendObservationFollowUp(plan, prototypeSelectionID)
+	} else {
+		updated, _, ok = AppendRepeatSibling(plan, prototypeSelectionID)
+	}
 	if !ok {
 		return ToolPlan{}, fmt.Errorf("repeat sibling unavailable")
 	}

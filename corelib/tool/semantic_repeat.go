@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // A turn whose outcome is a single fact — one search, one screenshot, one
@@ -28,20 +29,18 @@ const repeatSiblingSeparator = "#"
 // record built from it.
 const RepeatSiblingBudgetLimit = 32
 
-// MaxRepeatFamilyInvocations is the absolute ceiling on nodes one family may
-// hold. For a budgeted family the published wave is the budget. After it is
-// spent the host may open one continuation sibling, and that sibling does not
-// raise the budget again. A note that says "call this tool again" must not
-// mint the next node forever (production 2026-10-08: bash #02 through #23,
-// each success echoing a petition for knowledge_save_text). An iterative
-// local file write is not that promise: the next edit is listed because the
-// write succeeded, and it may continue until this ceiling.
+// MaxRepeatFamilyInvocations is the old turn-wide node cap. It is not a stop.
+// A family grows one sibling per settled call. The agent loop stops a dead
+// loop (the same arguments and result, repeated failures, or no progress).
+// A fixed call count must not end an unfinished task or be told to the user
+// as a used-up quota. Companion-only families still stay at the wave they
+// were given: that is what kept a knowledge-save petition re-running bash.
 const MaxRepeatFamilyInvocations = 256
 
-// InstalledMCPRepeatCeiling is how many times one installed MCP tool may run
-// in a turn. Each sibling is an external side effect, so the ceiling is the
-// published repeat budget. Local file writes and remote commands keep the
-// larger turn ceiling above.
+// InstalledMCPRepeatCeiling matches the upfront published wave for one
+// installed MCP tool. It is not a runtime stop. A settled MCP call lists the
+// next one, the same way a remote command does, until the work is done or
+// the loop detects a dead loop.
 const InstalledMCPRepeatCeiling = RepeatSiblingBudgetLimit
 
 // RepeatSiblingNeedID names the index-th invocation of a repeatable need.
@@ -92,12 +91,11 @@ func SelectionRepeatFamily(selection PlannedSelection) string {
 
 // repeatSiblingIndex reports whether the suffix is one this package minted.
 // A capability, adapter, or qualifier value is free to contain "#", so the
-// suffix only splits a family when it is exactly the generated shape: the
-// zero-padded index RepeatSiblingNeedID emits, at most MaxRepeatFamilyInvocations
-// (so two or three digits, value between 2 and that ceiling). Longer digit
-// runs cannot be minted and must stay intact.
+// suffix only splits a family when it is the zero-padded index
+// RepeatSiblingNeedID emits: two to six digits, value at least 2. There is
+// no call-count ceiling inside that width.
 func repeatSiblingIndex(suffix string) bool {
-	if len(suffix) != 2 && len(suffix) != 3 {
+	if len(suffix) < 2 || len(suffix) > 6 {
 		return false
 	}
 	for _, r := range suffix {
@@ -106,17 +104,47 @@ func repeatSiblingIndex(suffix string) bool {
 		}
 	}
 	value, err := strconv.Atoi(suffix)
-	return err == nil && value >= 2 && value <= MaxRepeatFamilyInvocations
+	return err == nil && value >= 2
 }
 
-// AppendRepeatSibling adds one more optional invocation of a repeat family
-// that has already published at least two siblings. One-shot tools stay
-// unchanged. A local file write or a remote command continues from a single
-// sibling: the session ceiling can publish just one, and that one is not a
-// one-shot. The new node is ready on its own; the host issues it when the
-// previous call settles. False when the family is missing, is not
-// repeatable, or the turn cap is already reached.
+// AppendRepeatSibling adds one more optional invocation of a repeat family.
+// One-shot tools stay unchanged, including schedule.administer.local.
+// Continuable work continues from a single sibling: the session can publish
+// just one, and that one is not a one-shot. The new node is ready on its
+// own; the host issues it when the previous call settles. False when the
+// family is missing, is not repeatable, or a non-iterative family already
+// has its one extra call. A count of calls is not a reason to return false.
 func AppendRepeatSibling(plan ToolPlan, prototypeSelectionID string) (ToolPlan, string, bool) {
+	return appendRepeatSibling(plan, prototypeSelectionID, false)
+}
+
+// PersistRepeatSibling stores the next sibling on a route that has no
+// coordinator transaction. The plan ID stays the same, so grants already
+// issued still bind. A coordinator host uses
+// SQLiteSemanticExecutionCoordinator.AppendRepeatSibling instead. A store
+// that cannot persist the plan returns an error; the caller must not treat
+// an in-memory copy as published, or the next materialization is rejected.
+func PersistRepeatSibling(store RouteStateStore, scope InvocationScope, prototypeSelectionID string, now time.Time, observation bool) (ToolPlan, error) {
+	writer, ok := store.(interface {
+		storeRepeatSiblingPlan(InvocationScope, string, time.Time, bool) (ToolPlan, error)
+	})
+	if !ok || writer == nil {
+		return ToolPlan{}, fmt.Errorf("repeat sibling unavailable")
+	}
+	return writer.storeRepeatSiblingPlan(scope, prototypeSelectionID, now, observation)
+}
+
+// AppendObservationFollowUp mints the one schedule write a list left undone.
+// The host that saw the list calls it, and only when the utterance still asks
+// for a change. It is not a published budget: a second call is refused, and
+// AppendRepeatSibling still refuses the one-shot family, so a create cannot
+// grow another write. False unless the family is exactly one
+// schedule.administer.local node and has no continuation yet.
+func AppendObservationFollowUp(plan ToolPlan, prototypeSelectionID string) (ToolPlan, string, bool) {
+	return appendRepeatSibling(plan, prototypeSelectionID, true)
+}
+
+func appendRepeatSibling(plan ToolPlan, prototypeSelectionID string, allowObservationFollowUp bool) (ToolPlan, string, bool) {
 	prototypeSelectionID = strings.TrimSpace(prototypeSelectionID)
 	var prototype PlannedSelection
 	found := false
@@ -135,26 +163,36 @@ func AppendRepeatSibling(plan ToolPlan, prototypeSelectionID string) (ToolPlan, 
 		return plan, "", false
 	}
 	count, nextIndex := repeatFamilyNextIndex(plan, family)
-	// A published wave of one is a one-shot: screenshot, send, generate.
-	// Local file write and remote command are not. A session ceiling can
-	// leave a single node (production 2026-10-04: references.bib stopped
-	// after one append; 2026-10-09: file-cn install stopped after a wave of
-	// two ssh calls plus one continuation, and the model was told ssh had
-	// reached this turn's usage limit). That node is still the iterative
-	// capability, so the next call appends a sibling instead of ending the
-	// task.
-	// A continuation already in a budgeted non-iterative family is that one
-	// extra call. Opening another would make the spent-budget note and this
-	// append feed each other. File writes and remote commands do not take
-	// that flag: each settled call lists the next one, up to the turn ceiling.
-	// The host lists the node. It does not promise another call in prose and
-	// then refuse it.
+	// A published wave of one is a one-shot: send, delete, deliver.
+	// Work the task may still need (a command, a read, a search, a file
+	// write) is not. A session that published one node, or that spent its
+	// upfront wave, still gets the next call. Production 2026-10-09: a
+	// file-cn install stopped after two ssh calls and the model was told
+	// the usage limit had been reached. A count of calls is not that stop.
+	// A continuation already in a non-iterative family is its one extra
+	// call. Opening another would make the spent-budget note and this
+	// append feed each other. Iterative work does not take that flag:
+	// each settled call lists the next one. The host lists the node. It
+	// does not promise another call in prose and then refuse it.
 	iterative := IterativeRepeatCapability(prototype)
+	// A schedule list is an observation. The host that saw it asks for exactly
+	// one follow-up when the utterance still owes a change. Passing the flag
+	// does not open any other one-shot, and it does not raise a published wave.
+	observation := false
+	if allowObservationFollowUp {
+		observation = scheduleAdministerObservation(prototype, count, plan, family)
+		if !observation {
+			return plan, "", false
+		}
+	}
 	// A companion family is the workspace floor, not the task. Its published
 	// nodes are the whole allowance. Promising another call and then appending
 	// it is how a knowledge-save turn keeps executing bash after the save tool
 	// is already listed.
-	if count < 1 || count >= iterativeRepeatCeiling(prototype) || nextIndex < 1 || (count < 2 && !iterative) || repeatFamilyIsCompanionOnly(plan, family) || (!iterative && repeatFamilyHasContinuation(plan, family)) {
+	// No call-count ceiling. Dead loops are stopped in the agent loop, not
+	// by refusing the next sibling. One-shot and companion families stay
+	// closed here.
+	if count < 1 || nextIndex < 1 || (count < 2 && !iterative && !observation) || repeatFamilyIsCompanionOnly(plan, family) || (!iterative && repeatFamilyHasContinuation(plan, family)) {
 		return plan, "", false
 	}
 	needID := RepeatSiblingNeedID(family, nextIndex)
@@ -187,6 +225,17 @@ func AppendRepeatSibling(plan ToolPlan, prototypeSelectionID string) (ToolPlan, 
 	return plan, sibling.ID, true
 }
 
+// scheduleAdministerObservation is the one case a published wave of one may
+// grow without being iterative: schedule.administer.local, exactly one node,
+// and no continuation yet. The new node carries Continuation, so a later
+// append is refused.
+func scheduleAdministerObservation(prototype PlannedSelection, count int, plan ToolPlan, family string) bool {
+	if count != 1 || prototype.FitProof.MatchedCapability != CapabilityScheduleAdministerLocal {
+		return false
+	}
+	return !repeatFamilyHasContinuation(plan, family)
+}
+
 // repeatFamilyNextIndex reports how many selections belong to family and the
 // next free sibling index. Counting alone collides when a suffix is missing
 // or a selection is only recognizable by its selection ID, and AppendRepeatSibling
@@ -214,34 +263,63 @@ func repeatFamilyNextIndex(plan ToolPlan, family string) (count, nextIndex int) 
 }
 
 // IterativeRepeatCapability reports a selection the same user task keeps
-// calling until the work is done. Local file mutation, remote command, and
-// an installed MCP tool are that class. A download, search, or send is a
-// published wave plus at most one continuation: another node after that
-// would feed the spent-budget note. A recorded fit proof is the authority.
-// The need id is only a fallback when that proof was not copied onto the
-// selection.
+// calling until the work is done. A recorded fit proof is the authority.
+// The need id is only a fallback for file write, remote command, and
+// installed MCP, and only when that proof was not copied onto the selection.
+// Send, delete, deliver, and schedule stay one-shot: repeating them is a
+// new external effect, not unfinished work.
 func IterativeRepeatCapability(selection PlannedSelection) bool {
-	return IterativeLocalFileWrite(selection) || IterativeRemoteCommand(selection) || IterativeInstalledMCP(selection)
+	if IterativeLocalFileWrite(selection) || IterativeRemoteCommand(selection) || IterativeInstalledMCP(selection) {
+		return true
+	}
+	recorded := strings.TrimSpace(string(selection.FitProof.MatchedCapability))
+	if recorded == "" {
+		return false
+	}
+	return continuableRepeatCapability(selection.FitProof.MatchedCapability)
 }
 
-// iterativeRepeatCeiling is the hard cap for one iterative family. Installed
-// MCP stops at InstalledMCPRepeatCeiling. Every other iterative family keeps
-// the turn ceiling. A one-shot family still stops after its continuation;
-// this cap does not raise that family.
-func iterativeRepeatCeiling(selection PlannedSelection) int {
-	if IterativeInstalledMCP(selection) {
-		return InstalledMCPRepeatCeiling
+// continuableRepeatCapability is the work a turn may keep doing. A fixed
+// invocation count is not a reason to stop. The proof must already have
+// been recorded; this does not infer a capability from an id that merely
+// contains the text.
+func continuableRepeatCapability(capability CapabilityID) bool {
+	switch capability {
+	case CapabilityShellExecuteLocal,
+		CapabilityFSReadLocal,
+		CapabilityFSReadRemote,
+		CapabilityFSDeleteLocal,
+		CapabilityBuildVerifyLocal,
+		CapabilityRepoInspectVCS,
+		CapabilityRepoInspectRemote,
+		CapabilityDocumentWriteOffice,
+		CapabilityInformationFetchWeb,
+		CapabilityArtifactAcquireRemote,
+		CapabilityComputerControlDesktop,
+		CapabilityBrowserControlWeb,
+		CapabilityBusinessDataRead,
+		CapabilityMessageReadMailbox,
+		CapabilityKnowledgeReadLocal,
+		CapabilityMemoryRecallAgent,
+		CapabilityTaskTrackLocal:
+		return true
+	default:
+		return strings.HasPrefix(string(capability), "information.search.")
 	}
-	return MaxRepeatFamilyInvocations
 }
 
 // IterativeInstalledMCP reports a selection that calls one installed MCP
 // tool. A record edit is several calls, and each settled call must leave the
-// next grant on the surface. The fit proof is the authority: a proof that is
-// not an x:mcp: capability stays one-shot even when the need id mentions mcp.
-// An empty proof falls back to an mcp provider, or to a need id that carries
-// the host address or the installed-mcp marker.
+// next grant on the surface. A real MCP provider binding is enough: open
+// lookup records information.lookup, and treating that proof as one-shot
+// retired the tool after a single call. A proof or need id that merely
+// mentions mcp, with no provider binding, stays one-shot.
 func IterativeInstalledMCP(selection PlannedSelection) bool {
+	if strings.EqualFold(strings.TrimSpace(selection.Provider.Kind), "mcp") &&
+		strings.TrimSpace(selection.Provider.ProviderID) != "" &&
+		strings.TrimSpace(selection.Provider.ImplementationID) != "" {
+		return true
+	}
 	if recorded := strings.TrimSpace(string(selection.FitProof.MatchedCapability)); recorded != "" {
 		return strings.HasPrefix(recorded, "x:mcp:")
 	}
@@ -646,7 +724,7 @@ func RepeatFamilySpentBudgetNote(plan ToolPlan, selectionID string, materialized
 			return ""
 		}
 	}
-	return fmt.Sprintf("\n\n[system] Planned invocations for %s in this turn (%d) are complete. If this task is unfinished, call this tool again on the next request in this same turn; %s. Do not ask the user to send another message. Do not narrate tool limits.", capability, budget, RepeatWaveListedMarker)
+	return fmt.Sprintf("\n\n[system] Planned invocations for %s in this turn (%d) are complete. If this task is unfinished, call this tool again on the next request in this same turn; %s. Do not ask the user to send another message. Do not narrate tool limits or say a quota was used up.", capability, budget, RepeatWaveListedMarker)
 }
 
 // RepeatFamilyHasUnissuedSibling reports a same-family node, other than

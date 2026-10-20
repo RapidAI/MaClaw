@@ -267,8 +267,15 @@ const maxArchetypeCompanionFamilies = 2
 // put it on the plan.
 func LatentArchetypeCapability(id coretool.CapabilityID, bundleKey intent.IntentLabel) bool {
 	switch id {
-	case CapabilityInformationSearchWeb, coretool.CapabilityInformationFetchWeb, CapabilityVisualCapture:
+	case CapabilityInformationSearchWeb, CapabilityVisualCapture:
 		return true
+	case coretool.CapabilityInformationFetchWeb:
+		// Reference search can answer from a snippet, so fetch stays latent
+		// until the turn asks. A current-fact turn cannot: the value is on
+		// the page, and leaving fetch latent made 「北京天气」 stop after an
+		// encyclopedia snippet. The live-data bundle is the only key that
+		// already declared that current search.
+		return bundleKey != intent.LabelLiveData
 	case coretool.CapabilityArtifactAcquireRemote:
 		return bundleKey != intent.LabelOffice && bundleKey != intent.LabelDocumentGenerate
 	default:

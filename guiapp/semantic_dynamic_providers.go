@@ -26,6 +26,17 @@ type semanticDynamicInventory struct {
 }
 
 func (h *IMMessageHandler) semanticDynamicInventory(ctx context.Context) (semanticDynamicInventory, error) {
+	return h.semanticDynamicInventoryFamilies(ctx, true)
+}
+
+// semanticInstalledMCPInventory is the per-request listing of ready MCP
+// tools. It does not load the skill catalog. Publishing an installed server
+// on every model request was paying for both families.
+func (h *IMMessageHandler) semanticInstalledMCPInventory(ctx context.Context) (semanticDynamicInventory, error) {
+	return h.semanticDynamicInventoryFamilies(ctx, false)
+}
+
+func (h *IMMessageHandler) semanticDynamicInventoryFamilies(ctx context.Context, includeSkills bool) (semanticDynamicInventory, error) {
 	contracts, err := h.semanticDynamicCapabilityContracts()
 	if err != nil {
 		return semanticDynamicInventory{}, fmt.Errorf("load dynamic capability contracts: %w", err)
@@ -42,15 +53,26 @@ func (h *IMMessageHandler) semanticDynamicInventory(ctx context.Context) (semant
 	// session principal stays on the invocation scope instead. One snapshot
 	// keeps every entry in the same control-plane generation.
 	principal := semanticDesktopContractPrincipal()
-	resolver, err := agentservice.DynamicCapabilityContractSnapshot(contracts, principal)
+	var resolver agentservice.DynamicCapabilityContractResolver
+	if includeSkills {
+		resolver, err = agentservice.DynamicCapabilityContractSnapshot(contracts, principal)
+	} else {
+		resolver, err = agentservice.DynamicCapabilityContractSnapshotKind(contracts, principal, "mcp")
+	}
 	if err != nil {
 		return semanticDynamicInventory{}, fmt.Errorf("snapshot dynamic capability contracts: %w", err)
 	}
 	mcpEntries, mcpCoverage := h.semanticMCPInventory(ctx, principal, resolver)
-	skillEntries, skillCoverage := h.semanticSkillInventory(ctx, principal, resolver)
+	families := []tool.CatalogCoverageFamily{mcpCoverage}
+	var skillEntries []agentservice.SkillToolEntry
+	if includeSkills {
+		var skillCoverage tool.CatalogCoverageFamily
+		skillEntries, skillCoverage = h.semanticSkillInventory(ctx, principal, resolver)
+		families = append(families, skillCoverage)
+	}
 	return semanticDynamicInventory{
 		mcpEntries: mcpEntries, skillEntries: skillEntries,
-		coverage: tool.CatalogCoverage{State: tool.CatalogCoverageComplete, Families: []tool.CatalogCoverageFamily{mcpCoverage, skillCoverage}},
+		coverage: tool.CatalogCoverage{State: tool.CatalogCoverageComplete, Families: families},
 	}, nil
 }
 
@@ -105,6 +127,9 @@ func (h *IMMessageHandler) semanticMCPInventory(ctx context.Context, principal a
 
 	entries := make([]agentservice.MCPToolEntry, 0)
 	localCapability := map[string]*corelib.MCPServerCapabilityRef{}
+	// familyOpen means some member still owes an observation. That keeps the
+	// mcp family not_ready. It must not discard a member that already finished.
+	familyOpen := false
 	notReady := semanticCoverageFamily("mcp", tool.CatalogCoverageIncomplete, tool.CatalogCoverageReasonNotReady)
 	if registry != nil {
 		for _, server := range registry.ListServers() {
@@ -126,10 +151,12 @@ func (h *IMMessageHandler) semanticMCPInventory(ctx context.Context, principal a
 			}
 			retryDue := h.app != nil && h.app.mcpRuntimeSyncShouldRetry(server.ID)
 			if remoteMCPMemberOpen(status, observed, server.RuntimeSyncStatus, retryDue) {
-				// This process has not finished looking at a server the
-				// lifecycle still owes an observation. Publish nothing from
-				// this pass, and do not probe from the turn.
-				return nil, notReady
+				// This server still owes tools/list. Leave it out of the
+				// entries. A sibling whose observation already finished stays
+				// listed; the family watermark stays not_ready so a write on
+				// that sibling still waits. Do not probe from the turn.
+				familyOpen = true
+				continue
 			}
 			// Finished negative observation, or a stale in-memory success that
 			// a durable pending/needs_review record has already superseded.
@@ -189,7 +216,10 @@ func (h *IMMessageHandler) semanticMCPInventory(ctx context.Context, principal a
 			}
 			if !running {
 				if localMCPStartStillOwed(h.app, configured, local) {
-					return nil, notReady
+					// Startup still owes this process a look at this server.
+					// Keep every server that already finished observation.
+					familyOpen = true
+					continue
 				}
 				continue
 			}
@@ -232,6 +262,9 @@ func (h *IMMessageHandler) semanticMCPInventory(ctx context.Context, principal a
 		}
 		return entries[i].ToolName < entries[j].ToolName
 	})
+	if familyOpen {
+		return entries, notReady
+	}
 	return entries, semanticCoverageFamily("mcp", tool.CatalogCoverageComplete, "")
 }
 
@@ -363,6 +396,41 @@ func semanticDynamicCatalogRejection(inventory semanticDynamicInventory, err err
 	return tool.SelectionExecutionResult{}, false
 }
 
+// semanticDynamicCatalogRejectionForSelection applies the catalog gate to one
+// bound call. A sibling that still owes tools/list leaves the mcp family
+// not_ready. A call whose own server already observed successfully, read or
+// write, does not wait on that sibling. A blocked or missing server still waits.
+func semanticDynamicCatalogRejectionForSelection(inventory semanticDynamicInventory, err error, selection tool.PlannedSelection) (tool.SelectionExecutionResult, bool) {
+	kind := strings.ToLower(strings.TrimSpace(selection.Provider.Kind))
+	rejected, ok := semanticDynamicCatalogRejection(inventory, err, kind)
+	if !ok || observedMCPCallSurvivesSiblingNotReady(selection, inventory, rejected) {
+		return tool.SelectionExecutionResult{}, false
+	}
+	return rejected, true
+}
+
+func observedMCPCallSurvivesSiblingNotReady(selection tool.PlannedSelection, inventory semanticDynamicInventory, rejected tool.SelectionExecutionResult) bool {
+	if rejected.ReasonCode != tool.CatalogCoverageReasonNotReady {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(selection.Provider.Kind), "mcp") {
+		return false
+	}
+	serverID := strings.TrimSpace(selection.Provider.ProviderID)
+	toolName := strings.TrimSpace(selection.Provider.ImplementationID)
+	if serverID == "" || toolName == "" {
+		return false
+	}
+	for i := range inventory.mcpEntries {
+		entry := &inventory.mcpEntries[i]
+		if strings.TrimSpace(entry.ServerID) != serverID || strings.TrimSpace(entry.ToolName) != toolName {
+			continue
+		}
+		return !entry.RuntimeBlocked
+	}
+	return false
+}
+
 func semanticCoverageFamily(kind string, state tool.CatalogCoverageState, reason string) tool.CatalogCoverageFamily {
 	return tool.CatalogCoverageFamily{Kind: kind, State: state, ReasonCode: reason, ObservedAt: time.Now().UTC()}
 }
@@ -395,7 +463,7 @@ func (c *sharedAgentLoopCallbacks) executeSemanticDynamicProviderWithContext(exe
 	// was admitted under; the session principal is kept only as the call
 	// owner for the eventual bound dispatch.
 	inventory, err := c.handler.semanticDynamicInventoryForPrincipal(ctx, semanticDesktopContractPrincipal())
-	if rejected, ok := semanticDynamicCatalogRejection(inventory, err, kind); ok {
+	if rejected, ok := semanticDynamicCatalogRejectionForSelection(inventory, err, selection); ok {
 		return rejected, true
 	}
 	catalog, err := agentservice.BuildDynamicSemanticCatalog(inventory.mcpEntries, inventory.skillEntries)
@@ -404,10 +472,9 @@ func (c *sharedAgentLoopCallbacks) executeSemanticDynamicProviderWithContext(exe
 	}
 	var coordinator agentservice.DynamicExternalEffectCoordinator
 	if semanticDynamicSelectionRequiresReceipt(selection) {
-		// Unreviewed external-effect calls settle through the receipt boundary
-		// AND through a per-server session confirmation: an installed vendor
-		// tool must not gain silent write authority merely by being installed.
-		// Read-only selections skip this gate entirely.
+		// Unreviewed external-effect calls settle through the receipt boundary.
+		// Installation is the authorization; this gate does not open a chat
+		// confirmation. Read-only selections skip the receipt entirely.
 		if gated, ok := c.mcpServerWriteGateForSelection(selection, inventory.mcpEntries); ok {
 			return gated, true
 		}

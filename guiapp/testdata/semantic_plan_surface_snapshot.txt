@@ -4,7 +4,9 @@
 # Update with UPDATE_SEMANTIC_BEHAVIOR_SNAPSHOT=1 after reviewing a face change.
 im	search	sel	information.search.web|freshness=reference|semantic_search_trusted_web|execution|n=5
 im	search	first	information.search.web|freshness=reference|semantic_search_trusted_web
+im	live_data	sel	information.fetch.web|-|semantic_fetch_trusted_web|execution|n=5
 im	live_data	sel	information.search.web|freshness=current|semantic_search_trusted_web|execution|n=5
+im	live_data	first	information.fetch.web|-|semantic_fetch_trusted_web
 im	live_data	first	information.search.web|freshness=current|semantic_search_trusted_web
 im	office	sel	artifact.acquire.remote|-|semantic_acquire_trusted_remote|execution|n=32
 im	office	sel	artifact.deliver.current_channel|format=file|semantic_deliver_current_file|delivery

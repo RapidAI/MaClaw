@@ -76,7 +76,7 @@ func normalizeArtifactResponseSource(resp *IMAgentResponse) {
 	rawSource := strings.TrimSpace(resp.ResponseSource)
 	source := canonicalIMResponseSourceKind(rawSource)
 	switch source {
-	case imResponseSourceFileDelivery, imResponseSourceScreenshot, imResponseSourceAskUser, imResponseSourceCancel, imResponseSourceAgentViewSubmit, imResponseSourceAgentViewDismiss:
+	case imResponseSourceFileDelivery, imResponseSourceScreenshot, imResponseSourceAskUser, imResponseSourceCancel, imResponseSourceAgentViewSubmit, imResponseSourceAgentViewDismiss, imResponseSourceChatTaskHandoff:
 		resp.ResponseSource = source.String()
 		return
 	case imResponseSourceUnknown:
@@ -98,6 +98,20 @@ func normalizeArtifactResponseSource(resp *IMAgentResponse) {
 
 func canonicalIMResponseSource(source string) string {
 	return canonicalIMResponseSourceKind(source).String()
+}
+
+// setSharedLoopArtifactSource labels a file or screenshot reply. A chat-task
+// handoff note already owns the text, so the artifact fields attach and the
+// label stays chat_task_handoff.
+func setSharedLoopArtifactSource(resp *IMAgentResponse, source imResponseSourceKind) {
+	if resp == nil {
+		return
+	}
+	if canonicalIMResponseSourceKind(resp.ResponseSource) == imResponseSourceChatTaskHandoff {
+		resp.ResponseSource = imResponseSourceChatTaskHandoff.String()
+		return
+	}
+	resp.ResponseSource = source.String()
 }
 
 func hasNonEmptyString(values []string) bool {

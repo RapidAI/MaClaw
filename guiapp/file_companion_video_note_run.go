@@ -508,7 +508,13 @@ func (a *App) fileCompanionRunVideoNote(path, canonical string, req FileCompanio
 		}
 		reply = head.String() + reply
 	}
-	reply = fileCompanionRewriteNoteTimestamps(reply, duration)
+	// Zero from the container means the length was not measured. An empty
+	// web recording passes 0 itself, and that length does drop late clocks.
+	stampLimit := duration
+	if duration <= 0 {
+		stampLimit = -1
+	}
+	reply = fileCompanionRewriteNoteTimestamps(reply, stampLimit)
 	var embed []videoNoteFrame
 	if !ev.Vision {
 		embed = ev.Frames
@@ -1646,8 +1652,31 @@ func fileCompanionRewriteNoteTimestamps(markdown string, duration time.Duration)
 		}
 		// A bullet or a 0:00–2:00 range is still a real time. A chapter or
 		// quote with no time, or a time past the recording, is 时间不明.
-		// A takeaway with no clock stays in 要点.
+		// A takeaway with no clock stays in 要点. A range is judged by its
+		// later clock, including when a space sits around the dash. The
+		// words kept after 时间不明 must not still carry that clock.
 		stamp, normalized, prose, ok := fileCompanionCanonicalStampLine(trim)
+		end, endProse, found, broken := fileCompanionRangeClock(trim)
+		if broken {
+			text := strings.TrimSpace(endProse)
+			if text == "" {
+				lines[i] = fileCompanionErrTimeUnknown
+			} else {
+				lines[i] = fileCompanionErrTimeUnknown + " " + text
+			}
+			uncertain = append(uncertain, lines[i])
+			continue
+		}
+		if found {
+			if !ok || end > stamp {
+				stamp = end
+			}
+			prose = endProse
+			if normalized == "" {
+				normalized = trim
+			}
+			ok = true
+		}
 		if !ok {
 			if section == "## 要点" {
 				continue
@@ -1656,11 +1685,18 @@ func fileCompanionRewriteNoteTimestamps(markdown string, duration time.Duration)
 			uncertain = append(uncertain, lines[i])
 			continue
 		}
-		if duration > 0 && stamp > duration+2*time.Second {
-			if strings.TrimSpace(prose) == "" {
-				prose = trim
+		// duration < 0 means the length was not measured. Zero is an empty
+		// recording, so a stamp past the slack is 时间不明.
+		if duration >= 0 && stamp > duration+2*time.Second {
+			text := strings.TrimSpace(prose)
+			if text == "" && !found {
+				text = trim
 			}
-			lines[i] = fileCompanionErrTimeUnknown + " " + prose
+			if text == "" {
+				lines[i] = fileCompanionErrTimeUnknown
+			} else {
+				lines[i] = fileCompanionErrTimeUnknown + " " + text
+			}
 			uncertain = append(uncertain, lines[i])
 			continue
 		}

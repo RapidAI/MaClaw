@@ -225,6 +225,112 @@ describe('SidebarSystemStatus Hub credits', () => {
         expect(modelButton.getAttribute('title')).toContain('Custom1：deepseek-v4.1-flash');
     });
 
+    it('names the foreground hub role on the status card instead of the assistant picker', () => {
+        render(
+            <SidebarSystemStatus
+                lang="zh-Hans" maclawLLMOnline remoteActivationStatus={{}} qqBotStatus="" telegramStatus="" weixinStatus="" lansengerStatus=""
+                sidebarCurrentProviderTokenUsage={{ provider: 'WorkBuddy 国际版', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }} sidebarHubCredits={null}
+                formatSidebarTokens={String} formatSidebarHubExpiry={() => ''} formatSidebarHubTotalCredits={() => ''} formatSidebarHubUsedCredits={() => ''} formatSidebarCredit={String}
+                unlimitedHubCreditText="无限" noHubAuthorizationText="无" showHubCreditAction={false} openHubCreditsPage={vi.fn()} openLLMSettingsPage={vi.fn()}
+                activeProfile="none"
+                currentModel="deepseek-v4.1-flash"
+                profileSummaries={{
+                    assistant: { profile: 'assistant', provider_name: 'WorkBuddy 国际版', model: 'deepseek-v4.1-flash', health: 'configured' },
+                    coding: { profile: 'coding', provider_name: 'WorkBuddy 国际版', model: 'deepseek-v4.1-flash', health: 'configured' },
+                    foreground: { provider_name: 'MaClaw官方', model: 'auto' },
+                }}
+            />,
+        );
+        const modelButton = screen.getByRole('button', { name: '打开大模型设置' });
+        expect(modelButton.textContent).toContain('MaClaw官方');
+        expect(modelButton.textContent).toContain('auto');
+        expect(modelButton.textContent).not.toContain('WorkBuddy');
+        expect(modelButton.textContent).not.toContain('deepseek-v4.1-flash');
+    });
+
+    it('keeps the quick-picker model when the foreground role matches the assistant assignment', () => {
+        render(
+            <SidebarSystemStatus
+                lang="zh-Hans" maclawLLMOnline remoteActivationStatus={{}} qqBotStatus="" telegramStatus="" weixinStatus="" lansengerStatus=""
+                sidebarCurrentProviderTokenUsage={{ provider: 'Custom1', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }} sidebarHubCredits={null}
+                formatSidebarTokens={String} formatSidebarHubExpiry={() => ''} formatSidebarHubTotalCredits={() => ''} formatSidebarHubUsedCredits={() => ''} formatSidebarCredit={String}
+                unlimitedHubCreditText="无限" noHubAuthorizationText="无" showHubCreditAction={false} openHubCreditsPage={vi.fn()} openLLMSettingsPage={vi.fn()}
+                activeProfile="none"
+                currentModel="deepseek-v4.1-flash"
+                profileSummaries={{
+                    assistant: { profile: 'assistant', provider_name: 'Custom1', model: 'old-model', health: 'configured' },
+                    coding: { profile: 'coding', provider_name: 'Custom1', model: 'old-model', health: 'configured' },
+                    foreground: { provider_name: 'Custom1', model: 'old-model' },
+                }}
+            />,
+        );
+        const modelButton = screen.getByRole('button', { name: '打开大模型设置' });
+        expect(modelButton.textContent).toContain('Custom1：deepseek-v4.1-flash');
+        expect(modelButton.textContent).not.toContain('old-model');
+    });
+
+    it('counts the foreground role on the card and keeps the switcher on the assistant provider', () => {
+        render(
+            <SidebarSystemStatus
+                lang="zh-Hans" maclawLLMOnline remoteActivationStatus={{}} qqBotStatus="" telegramStatus="" weixinStatus="" lansengerStatus=""
+                sidebarCurrentProviderTokenUsage={{
+                    provider: 'WorkBuddy 国际版', isHubService: false, input: 0, output: 0, total: 52000000, today: 1, week: 2, month: 3,
+                    contacted: { provider: 'MaClaw官方', isHubService: true, input: 10, output: 5, total: 1280, today: 30, week: 40, month: 50 },
+                }}
+                sidebarHubCredits={null}
+                formatSidebarTokens={String} formatSidebarHubExpiry={() => ''} formatSidebarHubTotalCredits={() => ''} formatSidebarHubUsedCredits={() => ''} formatSidebarCredit={String}
+                unlimitedHubCreditText="无限" noHubAuthorizationText="无" showHubCreditAction={false} openHubCreditsPage={vi.fn()} openLLMSettingsPage={vi.fn()}
+                activeProfile="none"
+                currentModel="deepseek-v4.1-flash"
+                availableProviders={[
+                    { id: 'wb', name: 'WorkBuddy 国际版', url: 'https://www.workbuddy.ai/v2', isHubService: false },
+                    { id: 'hub', name: 'MaClaw官方', url: 'https://hub.example/api/llm/v1', isHubService: true },
+                ]}
+                profileSummaries={{
+                    assistant: { profile: 'assistant', provider_name: 'WorkBuddy 国际版', model: 'deepseek-v4.1-flash', health: 'configured' },
+                    coding: { profile: 'coding', provider_name: 'WorkBuddy 国际版', model: 'deepseek-v4.1-flash', health: 'configured' },
+                    foreground: { provider_name: 'MaClaw官方', model: 'auto' },
+                }}
+            />,
+        );
+        const modelButton = screen.getByRole('button', { name: '打开大模型设置' });
+        expect(modelButton.textContent).toContain('MaClaw官方');
+        expect(modelButton.textContent).toContain('auto ×1');
+        expect(modelButton.textContent).not.toContain('WorkBuddy');
+        const tokenRow = screen.getByTestId('workbench-token-period');
+        expect(tokenRow.textContent).toContain('1280');
+        expect(tokenRow.textContent).not.toContain('52000000');
+        expect(document.querySelector('.sidebar-system-status__provider')?.textContent).toContain('WorkBuddy 国际版');
+        expect(document.querySelector('.sidebar-system-status__tokens strong')?.getAttribute('aria-label')).toBe('52000000');
+    });
+
+    it('counts foreground rows when that role uses the assistant provider', () => {
+        render(
+            <SidebarSystemStatus
+                lang="zh-Hans" maclawLLMOnline remoteActivationStatus={{}} qqBotStatus="" telegramStatus="" weixinStatus="" lansengerStatus=""
+                sidebarCurrentProviderTokenUsage={{
+                    provider: 'Custom1', isHubService: false, input: 0, output: 0, total: 9,
+                    contacted: { provider: 'Custom1', isHubService: false, input: 4, output: 6, total: 70, today: 1, week: 2, month: 3 },
+                }}
+                sidebarHubCredits={null}
+                formatSidebarTokens={String} formatSidebarHubExpiry={() => ''} formatSidebarHubTotalCredits={() => ''} formatSidebarHubUsedCredits={() => ''} formatSidebarCredit={String}
+                unlimitedHubCreditText="无限" noHubAuthorizationText="无" showHubCreditAction={false} openHubCreditsPage={vi.fn()} openLLMSettingsPage={vi.fn()}
+                activeProfile="assistant"
+                currentModel="deepseek-v4.1-flash"
+                profileSummaries={{
+                    assistant: { profile: 'assistant', provider_name: 'Custom1', model: 'old-model', health: 'configured' },
+                    coding: { profile: 'coding', provider_name: 'Custom1', model: 'old-model', health: 'configured' },
+                    foreground: { provider_name: 'Custom1', model: 'old-model' },
+                }}
+            />,
+        );
+        const modelButton = screen.getByRole('button', { name: '打开大模型设置' });
+        expect(modelButton.textContent).toContain('Custom1：deepseek-v4.1-flash');
+        const tokenRow = screen.getByTestId('workbench-token-period');
+        expect(tokenRow.textContent).toContain('70');
+        expect(tokenRow.textContent).not.toContain('9');
+    });
+
     it('derives the LLM headline from the active profile instead of assistant-only online state', () => {
         render(
             <SidebarSystemStatus

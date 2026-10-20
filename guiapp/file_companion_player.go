@@ -19,10 +19,17 @@ func (a *App) FileCompanionPlayerSupported() bool {
 }
 
 // FileCompanionPlayerPlace shows url in the top-level player.
-// The address is the same document the open field already accepted. A slot
-// that does not cover a pixel hides the page instead of leaving it over the
-// companion window.
+// YouTube's embed address stays the session identity. This WebView loads the
+// watch page: the embed player requires a parent Referer, and a top-level
+// navigation has none (错误 153). A slot that does not cover a pixel hides
+// the page instead of leaving it over the companion window.
 func (a *App) FileCompanionPlayerPlace(url string, x, y, w, h float64) error {
+	// A newer Place or Hide was already received. Binding calls run on
+	// separate goroutines, so this older call can start last and would paint
+	// over the page the user has already left.
+	if maclawplayer.ConsumeSkipPlace() {
+		return nil
+	}
 	if a == nil {
 		return errors.New("app unavailable")
 	}
@@ -38,7 +45,7 @@ func (a *App) FileCompanionPlayerPlace(url string, x, y, w, h float64) error {
 		maclawplayer.Hide()
 		return nil
 	}
-	return maclawplayer.Place(frame, bounds)
+	return maclawplayer.Place(fileCompanionTopLevelPlaybackURL(frame), bounds)
 }
 
 // FileCompanionPlayerHide removes the top-level player page.

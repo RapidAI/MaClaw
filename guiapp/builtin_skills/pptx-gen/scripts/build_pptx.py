@@ -5,7 +5,7 @@ matching the native office write_pptx renderer. Input JSON:
 
     {"title": "...", "subtitle": "...", "theme": "clean|magazine|eink|dashboard|retro|sketch|whiteboard|handmade|research|mckinsey|official|course",
      "slides": [{"title": "...", "kicker": "...",
-                 "layout": "auto|bullets|cards|section|agenda|kpi|quote|closing",
+                 "layout": "auto|bullets|cards|timeline|comparison|section|agenda|kpi|quote|closing",
                  "bullets": ["..."], "notes": "...",
                  "images": [{"path": "..."}],
                  "charts": [{"chart_type": "line", "title": "...",
@@ -32,40 +32,40 @@ _DEFAULT_FONT = "Microsoft YaHei"
 
 # Keep ids, aliases, keywords, colors, and motif aligned with corelib/pptx/write_style.go.
 _STYLES = [
-    {"id": "clean", "motif": "report", "aliases": ["clean", "business", "商务", "商务汇报", "汇报", "清爽专业"],
-     "keywords": ["经营汇报", "工作总结", "项目复盘", "晋升述职", "季度汇报", "客户提案", "工作复盘", "quarterly review", "business review", "client proposal"],
+    {"id": "clean", "motif": "report", "aliases": ["clean", "business", "商务", "商务汇报", "汇报", "清爽专业", "clean professional"],
+     "keywords": ["经营汇报", "工作总结", "项目复盘", "晋升述职", "季度汇报", "客户提案", "工作复盘", "清爽专业", "商务汇报", "quarterly review", "business review", "client proposal"],
      "colors": {"paper": "FFFFFF", "ink": "0F172A", "navy": "1E3A8A", "navy2": "0F766E", "accent": "2563EB", "gold": "F59E0B", "white": "FFFFFF", "mute": "64748B", "slate": "334155", "card": "F8FAFC", "on_dark": "F8FAFC", "on_dark_mute": "CBD5E1"}},
-    {"id": "magazine", "motif": "split", "aliases": ["magazine", "launch", "发布", "发布路演", "路演", "modern", "现代", "现代品牌", "品牌"],
-     "keywords": ["品牌发布", "创意提案", "设计作品集", "时尚发布", "产品发布", "产品介绍", "product launch", "pitch deck", "fundraising", "brand deck"],
-     "colors": {"paper": "FFFFFF", "ink": "111111", "navy": "111111", "navy2": "2A2A2A", "accent": "FF006E", "gold": "FFED00", "white": "FFFFFF", "mute": "6B7280", "slate": "374151", "card": "FFFFFF", "on_dark": "FFFFFF", "on_dark_mute": "E5E7EB"}},
-    {"id": "eink", "motif": "ink", "aliases": ["eink", "minimal", "极简", "ceremony", "年会", "典礼"],
-     "keywords": ["主题演讲", "观点分享", "个人介绍", "年会致辞", "颁奖典礼", "demo day", "personal introduction"],
+    {"id": "magazine", "motif": "split", "aliases": ["magazine", "launch", "发布", "发布路演", "路演", "modern", "现代", "现代品牌", "品牌", "创意杂志", "editorial magazine"],
+     "keywords": ["品牌发布", "创意提案", "设计作品集", "时尚发布", "产品发布", "产品介绍", "创意杂志", "发布路演", "product launch", "pitch deck", "fundraising", "brand deck"],
+     "colors": {"paper": "FFFFFF", "ink": "111111", "navy": "111111", "navy2": "2A2A2A", "accent": "FF006E", "gold": "FFED00", "white": "FFFFFF", "mute": "6B7280", "slate": "374151", "card": "F4F4F5", "on_dark": "FFFFFF", "on_dark_mute": "E5E7EB"}},
+    {"id": "eink", "motif": "ink", "aliases": ["eink", "minimal", "极简", "ceremony", "年会", "典礼", "e-ink", "电子墨水", "e-ink magazine"],
+     "keywords": ["主题演讲", "观点分享", "个人介绍", "年会致辞", "颁奖典礼", "电子墨水", "极简风格", "demo day", "personal introduction"],
      "colors": {"paper": "F7F4EA", "ink": "111111", "navy": "1E2A78", "navy2": "163B2F", "accent": "C2410C", "gold": "D9C29E", "white": "FFFCF5", "mute": "6B6560", "slate": "3F3A36", "card": "FBF8F1", "on_dark": "F7F4EA", "on_dark_mute": "D6D0C4"}},
-    {"id": "dashboard", "motif": "dashboard", "aliases": ["dashboard", "数据仪表盘", "看板"],
-     "keywords": ["数据看板", "运营分析", "业绩展示", "商业智能", "KPI汇报", "看板", "analytics dashboard"],
+    {"id": "dashboard", "motif": "dashboard", "aliases": ["dashboard", "数据仪表盘", "看板", "data dashboard"],
+     "keywords": ["数据看板", "运营分析", "业绩展示", "商业智能", "KPI汇报", "数据仪表盘", "看板", "analytics dashboard"],
      "colors": {"paper": "F5F8FC", "ink": "0F172A", "navy": "1D4ED8", "navy2": "0891B2", "accent": "2563EB", "gold": "10B981", "white": "FFFFFF", "mute": "64748B", "slate": "334155", "card": "FFFFFF", "on_dark": "F8FAFC", "on_dark_mute": "C7D2FE"}},
-    {"id": "retro", "motif": "poster", "aliases": ["retro", "复古", "扁平插画"],
-     "keywords": ["品牌故事", "生活方式", "旅游介绍", "文化创意", "复古插画", "brand story"],
+    {"id": "retro", "motif": "poster", "aliases": ["retro", "复古", "扁平插画", "复古扁平", "retro flat"],
+     "keywords": ["品牌故事", "生活方式", "旅游介绍", "文化创意", "复古插画", "复古扁平", "复古风格", "brand story"],
      "colors": {"paper": "F5F3E8", "ink": "34495E", "navy": "2C3E50", "navy2": "6C7A89", "accent": "FF6B6B", "gold": "F9CA24", "white": "FFFFFF", "mute": "6C7A89", "slate": "34495E", "card": "FFFDF6", "on_dark": "2C3E50", "on_dark_mute": "95A5A6"}},
-    {"id": "sketch", "motif": "sketch", "aliases": ["sketch", "tech", "技术", "技术分享", "手绘技术"],
-     "keywords": ["技术分享", "系统架构", "技术架构", "概念解释", "开源项目", "技术方案", "engineering talk", "system architecture"],
+    {"id": "sketch", "motif": "sketch", "aliases": ["sketch", "tech", "技术", "技术分享", "手绘技术", "sketch explainer"],
+     "keywords": ["技术分享", "系统架构", "技术架构", "概念解释", "开源项目", "技术方案", "手绘技术", "engineering talk", "system architecture"],
      "colors": {"paper": "FCFBF7", "ink": "2F3437", "navy": "2F3437", "navy2": "7A8490", "accent": "BFD7F1", "gold": "F4C7B8", "white": "FFFFFF", "mute": "8A9096", "slate": "4A5158", "card": "FFFFFF", "on_dark": "2F3437", "on_dark_mute": "8A9096"}},
     {"id": "whiteboard", "motif": "board", "aliases": ["whiteboard", "白板", "手绘白板"],
-     "keywords": ["头脑风暴", "内部研讨", "白板讲解", "概念梳理", "brainstorm"],
+     "keywords": ["头脑风暴", "内部研讨", "白板讲解", "概念梳理", "手绘白板", "白板风格", "brainstorm"],
      "colors": {"paper": "FAFAF5", "ink": "1A1A1A", "navy": "1A1A1A", "navy2": "3498DB", "accent": "E74C3C", "gold": "F39C12", "white": "FFFFFF", "mute": "6B7280", "slate": "374151", "card": "FFF9C4", "on_dark": "FFFFFF", "on_dark_mute": "D1D5DB"}},
     {"id": "handmade", "motif": "craft", "aliases": ["handmade", "warm", "温馨", "温馨纪念", "温暖手工"],
-     "keywords": ["生日纪念", "生日", "温馨纪念", "儿童教育", "亲子活动", "社区公益", "birthday", "wedding", "family gathering"],
+     "keywords": ["生日纪念", "生日", "温馨纪念", "儿童教育", "亲子活动", "社区公益", "温暖手工", "birthday", "wedding", "family gathering"],
      "colors": {"paper": "F5F1E8", "ink": "5C4033", "navy": "5C4033", "navy2": "A67C52", "accent": "F5C4B8", "gold": "B8D4A8", "white": "FFFCF8", "mute": "8A7568", "slate": "6B5344", "card": "FFFCF7", "on_dark": "5C4033", "on_dark_mute": "A67C52"}},
-    {"id": "research", "motif": "defense", "aliases": ["research", "academic", "学术", "学术答辩", "科研答辩"],
-     "keywords": ["论文答辩", "开题答辩", "毕业答辩", "课题申报", "基金申请", "文献综述", "答辩", "thesis defense", "dissertation"],
+    {"id": "research", "motif": "defense", "aliases": ["research", "academic", "学术", "学术答辩", "科研答辩", "research defense"],
+     "keywords": ["论文答辩", "开题答辩", "毕业答辩", "课题申报", "基金申请", "文献综述", "科研答辩", "学术答辩", "答辩", "thesis defense", "dissertation"],
      "colors": {"paper": "FFFFFF", "ink": "111111", "navy": "003F8F", "navy2": "0B5CAD", "accent": "B5121B", "gold": "F3DFA2", "white": "FFFFFF", "mute": "4B5563", "slate": "333333", "card": "F3F6FA", "on_dark": "FFFFFF", "on_dark_mute": "D6E4F0"}},
     {"id": "mckinsey", "motif": "consulting", "aliases": ["mckinsey", "consulting", "咨询", "咨询顾问", "麦肯锡", "executive", "高管", "高管汇报"],
-     "keywords": ["战略咨询", "商业分析", "行业分析", "尽职调查", "竞对分析", "增长战略", "战略汇报", "董事会汇报", "due diligence", "strategy consulting"],
+     "keywords": ["战略咨询", "商业分析", "行业分析", "尽职调查", "竞对分析", "增长战略", "战略汇报", "董事会汇报", "麦肯锡", "咨询风格", "due diligence", "strategy consulting"],
      "colors": {"paper": "F6F8FA", "ink": "243447", "navy": "243447", "navy2": "5B7C99", "accent": "5B7C99", "gold": "8AA0B5", "white": "FFFFFF", "mute": "6B7280", "slate": "475569", "card": "FFFFFF", "on_dark": "243447", "on_dark_mute": "6B7280"}},
-    {"id": "official", "motif": "official", "aliases": ["official", "党政", "党政红"],
-     "keywords": ["党建学习", "政策宣讲", "工作部署", "党政汇报", "国企汇报"],
+    {"id": "official", "motif": "official", "aliases": ["official", "党政", "党政红", "official red"],
+     "keywords": ["党建学习", "政策宣讲", "工作部署", "党政汇报", "国企汇报", "党政红", "党建汇报"],
      "colors": {"paper": "FFF9F2", "ink": "262626", "navy": "9E1530", "navy2": "C41E3A", "accent": "C41E3A", "gold": "D6A84B", "white": "FFFFFF", "mute": "6B6560", "slate": "4A4A4A", "card": "FFFCF8", "on_dark": "FFF9F2", "on_dark_mute": "F3E6C8"}},
-    {"id": "course", "motif": "lesson", "aliases": ["course", "education", "教学", "课件", "教学课件"],
+    {"id": "course", "motif": "lesson", "aliases": ["course", "education", "教学", "课件", "教学课件", "lesson deck"],
      "keywords": ["教学课件", "培训课程", "培训课件", "课堂教案", "新员工培训", "课件", "教案", "lesson plan", "classroom"],
      "colors": {"paper": "FFFBF5", "ink": "1F2937", "navy": "1E3A5F", "navy2": "0F766E", "accent": "F59E0B", "gold": "FDE68A", "white": "FFFFFF", "mute": "6B7280", "slate": "374151", "card": "FFFCF7", "on_dark": "FFFBF5", "on_dark_mute": "E5E7EB"}},
 ]
@@ -139,6 +139,8 @@ def _resolve_output_path(output, title):
 
 def _lookup_style(name):
     key = str(name or "").strip().lower()
+    if key.startswith("theme="):
+        key = key[len("theme="):].strip()
     if key in ("", "auto", "自动", "default", "默认"):
         return None
     for style in _STYLES:
@@ -150,6 +152,11 @@ def _lookup_style(name):
 
 def _match_style(hint):
     hint = str(hint or "").lower()
+    m = re.search(r"theme=([a-z0-9_-]+)", hint)
+    if m:
+        found = _lookup_style(m.group(1))
+        if found:
+            return found
     best = None
     best_len = 0
     best_score = 0
@@ -202,19 +209,23 @@ def _layout(item):
     aliases = {
         "": "auto", "自动": "auto",
         "bullet": "bullets", "list": "bullets", "要点": "bullets", "列表": "bullets",
-        "card": "cards", "卡片": "cards",
+        "card": "cards", "卡片": "cards", "grid": "cards", "网格": "cards",
+        "process": "timeline", "steps": "timeline", "flow": "timeline", "roadmap": "timeline", "时间线": "timeline", "流程": "timeline", "步骤": "timeline", "路线图": "timeline", "阶段": "timeline",
+        "compare": "comparison", "versus": "comparison", "vs": "comparison", "split": "comparison", "two_column": "comparison", "two-column": "comparison", "columns": "comparison", "对比": "comparison", "对照": "comparison", "双栏": "comparison", "比较": "comparison",
         "divider": "section", "分节": "section", "章节": "section",
         "toc": "agenda", "目录": "agenda", "议程": "agenda",
         "metrics": "kpi", "指标": "kpi",
         "引述": "quote", "金句": "quote",
         "close": "closing", "end": "closing", "结尾": "closing", "结束": "closing",
     }
-    kind = aliases.get(raw, raw if raw in ("auto", "bullets", "cards", "section", "agenda", "kpi", "quote", "closing") else "auto")
+    kind = aliases.get(raw, raw if raw in ("auto", "bullets", "cards", "timeline", "comparison", "section", "agenda", "kpi", "quote", "closing") else "auto")
     texts = _texts(item.get("bullets"))
     has_media = bool(item.get("images") or item.get("charts"))
     if has_media:
         return "bullets"
     if kind == "cards" and (not texts or len(texts) > 6):
+        return "bullets"
+    if kind in ("timeline", "comparison") and (len(texts) < 2 or len(texts) > 6):
         return "bullets"
     if kind == "agenda" and (not texts or len(texts) > 8):
         return "bullets"
@@ -224,7 +235,14 @@ def _layout(item):
         return kind
     if not texts:
         return "section"
-    if 2 <= len(texts) <= 4 and all(len(text) <= 36 for text in texts):
+    header = f"{item.get('title') or ''} {item.get('kicker') or ''}".lower()
+    if 3 <= len(texts) <= 6 and all(len(t) <= 64 for t in texts):
+        if any(kw in header for kw in ("流程", "时间线", "路线图", "步骤", "演进", "阶段", "路径", "roadmap", "timeline", "workflow")):
+            return "timeline"
+    if len(texts) in (2, 4, 6) and all(len(t) <= 64 for t in texts):
+        if any(kw in header for kw in ("对比", "对照", "比较", "优劣", "差异", " vs ", "versus")):
+            return "comparison"
+    if 2 <= len(texts) <= 4 and all(len(text) <= 52 for text in texts):
         return "cards"
     return "bullets"
 
@@ -420,7 +438,7 @@ def _split_kpi(text):
     return text, ""
 
 
-def _cards(slide, inches, pt, theme, bullets, top):
+def _cards(slide, inches, pt, theme, bullets, top, motif="report"):
     texts = _texts(bullets)
     n = len(texts)
     cols, rows = (2, 2) if n == 4 else ((n, 1) if n <= 3 else (3, 2))
@@ -429,19 +447,92 @@ def _cards(slide, inches, pt, theme, bullets, top):
     card_w = (usable_w - gap * (cols - 1)) / cols
     card_h = (usable_h - gap * (rows - 1)) / rows
     card_h = min(card_h, 2.70 if rows == 1 else 2.40)
+    ladder = [theme["accent"], theme["navy2"], theme["gold"], theme["navy"]]
     for index, text in enumerate(texts):
         col, row = index % cols, index // cols
         x = 0.48 + col * (card_w + gap)
         y = top + row * (card_h + gap)
-        _rect(slide, inches, x, y, card_w, card_h, theme["card"], rounded=True)
-        _rect(slide, inches, x, y, card_w, 0.07, theme["accent"])
-        _tb(slide, inches, pt, x + 0.18, y + 0.18, card_w - 0.36, 0.32, f"{index + 1:02d}", 12, theme["accent"], bold=True)
+        cap = ladder[index % len(ladder)]
+        if motif == "defense":
+            cap = theme["accent"] if (n > 1 and index == n - 1) else theme["navy"]
+        elif motif == "official":
+            cap = theme["accent"]
+        rounded = motif in ("craft", "board", "lesson")
+        _rect(slide, inches, x, y, card_w, card_h, theme["card"], rounded=rounded)
+        if motif == "split":
+            _rect(slide, inches, x, y, 0.10, card_h, cap)
+        elif motif not in ("ink", "consulting"):
+            _rect(slide, inches, x, y, card_w, 0.075, cap)
+            if motif == "official":
+                _rect(slide, inches, x, y + 0.075, card_w, 0.025, theme["gold"])
+        else:
+            _rect(slide, inches, x, y + card_h - 0.02, card_w, 0.02, theme["accent"])
+        _tb(slide, inches, pt, x + 0.18, y + 0.18, card_w - 0.36, 0.32, f"{index + 1:02d}", 12, cap, bold=True)
         head, body = _split_card(text)
         if head:
             _tb(slide, inches, pt, x + 0.18, y + 0.52, card_w - 0.36, 0.6, head, 16, theme["navy"], bold=True)
             _tb(slide, inches, pt, x + 0.18, y + 1.14, card_w - 0.36, card_h - 1.35, body, 14, theme["slate"])
         else:
             _tb(slide, inches, pt, x + 0.18, y + 0.52, card_w - 0.36, card_h - 0.75, text, 15, theme["ink"])
+
+
+def _timeline(slide, inches, pt, theme, bullets, top):
+    texts = _texts(bullets)
+    n = len(texts)
+    cols = n if n <= 4 else 3
+    rows = 1 if n <= 4 else 2
+    gap = 0.18
+    usable_w, usable_h = 12.43, 6.90 - top
+    card_w = (usable_w - gap * (cols - 1)) / cols
+    row_h = min(3.10 if rows == 1 else 2.20, (usable_h - gap * (rows - 1)) / rows)
+    ladder = [theme["accent"], theme["navy2"], theme["gold"], theme["navy"]]
+    for r in range(rows):
+        ry = top + r * (row_h + gap)
+        rc = cols if r < rows - 1 else min(cols, n - r * cols)
+        if rc > 1:
+            _rect(slide, inches, 0.48 + card_w / 2, ry + 0.20, (rc - 1) * (card_w + gap), 0.04, theme["accent"])
+    for index, text in enumerate(texts):
+        col, row = index % cols, index // cols
+        x = 0.48 + col * (card_w + gap)
+        ry = top + row * (row_h + gap)
+        cap = ladder[index % len(ladder)]
+        _rect(slide, inches, x + (card_w - 0.46) / 2, ry, 0.46, 0.44, cap, rounded=True)
+        _tb(slide, inches, pt, x + (card_w - 0.46) / 2, ry + 0.04, 0.46, 0.36, f"{index + 1:02d}", 12, theme["white"], bold=True, align="center")
+        cy = ry + 0.58
+        ch = max(0.9, row_h - 0.58)
+        _rect(slide, inches, x, cy, card_w, ch, theme["card"], rounded=True)
+        _rect(slide, inches, x, cy, card_w, 0.07, cap)
+        head, body = _split_card(text)
+        if head:
+            _tb(slide, inches, pt, x + 0.16, cy + 0.16, card_w - 0.32, 0.48, head, 15, theme["navy"], bold=True)
+            _tb(slide, inches, pt, x + 0.16, cy + 0.66, card_w - 0.32, ch - 0.76, body, 13, theme["slate"])
+        else:
+            _tb(slide, inches, pt, x + 0.16, cy + 0.18, card_w - 0.32, ch - 0.30, text, 14, theme["ink"])
+
+
+def _comparison(slide, inches, pt, theme, bullets, top):
+    texts = _texts(bullets)
+    n = len(texts)
+    col_gap = 0.34
+    col_w = (12.43 - col_gap) / 2
+    rows = (n + 1) // 2
+    gap = 0.16
+    card_h = min(3.20 if rows == 1 else 1.90, (6.90 - top - gap * (rows - 1)) / rows)
+    _rect(slide, inches, 0.48 + col_w + col_gap / 2 - 0.01, top, 0.02, rows * card_h + (rows - 1) * gap, theme["accent"])
+    for index, text in enumerate(texts):
+        col, row = index % 2, index // 2
+        x = 0.48 + col * (col_w + col_gap)
+        y = top + row * (card_h + gap)
+        side = theme["navy"] if col == 0 else theme["accent"]
+        _rect(slide, inches, x, y, col_w, card_h, theme["card"], rounded=True)
+        _rect(slide, inches, x, y, 0.10, card_h, side)
+        _tb(slide, inches, pt, x + 0.20, y + 0.14, col_w - 0.36, 0.28, f"{index + 1:02d}", 12, side, bold=True)
+        head, body = _split_card(text)
+        if head:
+            _tb(slide, inches, pt, x + 0.20, y + 0.44, col_w - 0.36, 0.46, head, 16, side, bold=True)
+            _tb(slide, inches, pt, x + 0.20, y + 0.94, col_w - 0.36, card_h - 1.06, body, 14, theme["slate"])
+        else:
+            _tb(slide, inches, pt, x + 0.20, y + 0.46, col_w - 0.36, card_h - 0.60, text, 15, theme["ink"])
 
 
 def _agenda(slide, inches, pt, theme, bullets, top):
@@ -622,7 +713,11 @@ def build_pptx(outline, output_path):
         else:
             top = _light_chrome(slide, Inches, Pt, theme, kicker, slide_title, footer, index, total, motif)
             if kind == "cards":
-                _cards(slide, Inches, Pt, theme, bullets, top)
+                _cards(slide, Inches, Pt, theme, bullets, top, motif)
+            elif kind == "timeline":
+                _timeline(slide, Inches, Pt, theme, bullets, top)
+            elif kind == "comparison":
+                _comparison(slide, Inches, Pt, theme, bullets, top)
             elif kind == "agenda":
                 _agenda(slide, Inches, Pt, theme, bullets, top)
             elif kind == "kpi":

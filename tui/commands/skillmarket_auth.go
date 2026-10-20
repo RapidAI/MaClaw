@@ -58,7 +58,7 @@ func smAuthLogin(args []string) error {
 	}
 
 	// 保存 token 到 config
-	if err := saveSkillMarketToken(result.SessionToken); err != nil {
+	if err := saveSkillMarketToken(result.SessionToken, baseURL); err != nil {
 		return fmt.Errorf("登录成功但保存 token 失败: %w", err)
 	}
 
@@ -149,7 +149,7 @@ func smAuthVerify(args []string) error {
 		return fmt.Errorf("验证失败: %w", err)
 	}
 
-	if err := saveSkillMarketToken(result.SessionToken); err != nil {
+	if err := saveSkillMarketToken(result.SessionToken, baseURL); err != nil {
 		return fmt.Errorf("验证成功但保存 token 失败: %w", err)
 	}
 
@@ -205,12 +205,16 @@ func smAuthWhoami(args []string) error {
 
 // saveSkillMarketToken persists the session token to config.json.
 // Uses load-then-merge pattern to avoid overwriting concurrent config changes.
-func saveSkillMarketToken(token string) error {
+func saveSkillMarketToken(token, baseURL string) error {
 	store := NewFileConfigStore(ResolveDataDir())
 	cfg, err := store.LoadConfig()
 	if err != nil {
 		cfg = corelib.AppConfig{}
 	}
-	cfg.SkillMarketSessionToken = token
+	cfg.SkillMarketSessionToken = strings.TrimSpace(token)
+	cfg.SkillMarketSessionBaseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if cfg.SkillMarketSessionToken == "" {
+		cfg.SkillMarketSessionBaseURL = ""
+	}
 	return store.SaveConfig(cfg)
 }

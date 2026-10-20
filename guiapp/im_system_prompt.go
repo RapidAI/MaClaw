@@ -192,6 +192,9 @@ func buildLightIMSystemPrompt(msg IMUserMessage, profile ExecutionProfile, carri
 	}))
 	if lookupContinuationProfile(profile) {
 		prompt += lookupContinuationToolPrompt(carried, primary)
+	} else if profile.TaskType == string(intent.LabelLiveData) || primary == intent.LabelLiveData {
+		// After the grant fence, so the page-read step is the last word.
+		prompt += liveDataPageReadPrompt()
 	}
 	return appendPinnedAgentsMD(msg.UserID, prompt)
 }

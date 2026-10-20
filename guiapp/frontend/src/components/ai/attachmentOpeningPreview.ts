@@ -13,12 +13,19 @@ export const ATTACHMENT_PREVIEW_SPARSE_RUNES = 80;
 export const ATTACHMENT_PREVIEW_MAX_PAGES = 8;
 
 /**
- * Visible card. Wide enough that a page scaled to the card keeps body text
- * near reading size, and short enough that one attachment does not take over
- * the chat. Further pages scroll inside the card.
+ * Reading-size card. The assistant composer does not mount it. A chat shot
+ * fits one whole page into the quarter-size box instead of cropping this card.
  */
 export const ATTACHMENT_DOC_PREVIEW_MAX_WIDTH = 640;
 export const ATTACHMENT_DOC_PREVIEW_MAX_HEIGHT = 480;
+
+/**
+ * Chat transcript shot. One quarter of the reading card on each side.
+ * One whole page is fitted inside this box.
+ */
+export const ATTACHMENT_DOC_SHOT_SCALE = 0.25;
+export const ATTACHMENT_DOC_SHOT_WIDTH = ATTACHMENT_DOC_PREVIEW_MAX_WIDTH * ATTACHMENT_DOC_SHOT_SCALE;
+export const ATTACHMENT_DOC_SHOT_HEIGHT = ATTACHMENT_DOC_PREVIEW_MAX_HEIGHT * ATTACHMENT_DOC_SHOT_SCALE;
 
 /** Lines that make one virtual page for text, source, and extracts. */
 export const ATTACHMENT_PREVIEW_TEXT_PAGE_LINES = 28;
@@ -72,4 +79,17 @@ export function splitTextIntoPreviewPages(text: string): string[] {
 
 export function openingPreviewTexts(pageTexts: readonly string[]): string[] {
     return pageTexts.slice(0, openingPreviewPageCount(pageTexts));
+}
+
+/**
+ * 0-based index of the page a chat shot shows.
+ * Leading pages with little text are covers. The shot is the first page
+ * with enough text. When every page is sparse, the shot stays on page 1.
+ */
+export function openingPreviewShotPageIndex(pageTexts: readonly string[]): number {
+    const limit = Math.min(pageTexts.length, ATTACHMENT_PREVIEW_MAX_PAGES);
+    for (let index = 0; index < limit; index += 1) {
+        if (!attachmentPreviewPageIsSparse(pageTexts[index] || "")) return index;
+    }
+    return 0;
 }

@@ -10,7 +10,9 @@ import (
 	"image"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -64,7 +66,9 @@ type waveFormatExtensible struct {
 }
 
 // processLoopbackPlan is the activation passed to ActivateAudioInterfaceAsync.
-// StreamFlags stays 0: AUDCLNT_STREAMFLAGS_LOOPBACK would record every process.
+// StreamFlags stays 0. The machine-wide render endpoint is a different
+// device. AUDCLNT_STREAMFLAGS_LOOPBACK belongs on IAudioClient.Initialize
+// of this virtual device, which the activation already limits to TargetPID.
 type processLoopbackPlan struct {
 	DeviceID       string
 	ActivationType uint32
@@ -123,12 +127,96 @@ func captureCompanionWebViewPNG(ctx context.Context, rect image.Rectangle) ([]by
 
 var errCompanionPlayerNotReady = errors.New("player page is not ready")
 
-// captureProcessAudio records this process tree as 16 kHz mono WAV.
-// It uses process loopback, not AUDCLNT_STREAMFLAGS_LOOPBACK.
+// loopbackProcess is one row from a process snapshot.
+type loopbackProcess struct {
+	PID   uint32
+	PPID  uint32
+	Image string
+}
+
+// webViewLoopbackPID is the process whose direct children render the player.
+//
+// Include-tree captures the target and its direct children, not grandchildren.
+// This host's child is the WebView2 browser. The browser's child is
+// msedgewebview2 --type=utility --utility-sub-type=audio.mojom.AudioService,
+// and that utility is what plays YouTube and Bilibili. Capturing the host
+// therefore records a zero waveform while the picture still moves.
+// The browser is chosen because it is that utility's parent. A service that
+// starts when playback starts is a new direct child and is included.
+// Several direct WebView2 children are not expected; the one with the most
+// children is the browser. No such child keeps the host.
+func webViewLoopbackPID(host uint32, rows []loopbackProcess) uint32 {
+	if host == 0 {
+		return 0
+	}
+	children := make(map[uint32]int, len(rows))
+	for _, row := range rows {
+		if row.PPID != 0 {
+			children[row.PPID]++
+		}
+	}
+	best := uint32(0)
+	bestChildren := -1
+	for _, row := range rows {
+		if row.PPID != host || !strings.EqualFold(row.Image, "msedgewebview2.exe") {
+			continue
+		}
+		n := children[row.PID]
+		if n > bestChildren || (n == bestChildren && (best == 0 || row.PID < best)) {
+			best = row.PID
+			bestChildren = n
+		}
+	}
+	if best == 0 {
+		return host
+	}
+	return best
+}
+
+func loopbackProcessSnapshot() ([]loopbackProcess, error) {
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer windows.CloseHandle(snap)
+	var entry windows.ProcessEntry32
+	entry.Size = uint32(unsafe.Sizeof(entry))
+	if err := windows.Process32First(snap, &entry); err != nil {
+		return nil, err
+	}
+	rows := make([]loopbackProcess, 0, 64)
+	for {
+		rows = append(rows, loopbackProcess{
+			PID:   entry.ProcessID,
+			PPID:  entry.ParentProcessID,
+			Image: windows.UTF16ToString(entry.ExeFile[:]),
+		})
+		if err := windows.Process32Next(snap, &entry); err != nil {
+			break
+		}
+	}
+	return rows, nil
+}
+
+func companionLoopbackPID(host uint32) uint32 {
+	rows, err := loopbackProcessSnapshot()
+	if err != nil {
+		return host
+	}
+	return webViewLoopbackPID(host, rows)
+}
+
+// captureProcessAudio records the WebView2 browser tree as 16 kHz mono WAV.
+// The activation plan keeps StreamFlags at 0. Initialize of
+// VAD\Process_Loopback sets AUDCLNT_STREAMFLAGS_LOOPBACK and
+// AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM on that already process-scoped device.
+// Those flags do not open the machine-wide render endpoint.
 // No bound WebView returns refused immediately and does not open a device.
 func captureProcessAudio(ctx context.Context) ([]byte, bool) {
 	fileCompanionCaptureAudioCalls.Add(1)
-	act := companionProcessAudioActivate(uint32(os.Getpid()))
+	host := uint32(os.Getpid())
+	target := companionLoopbackPID(host)
+	act := companionProcessAudioActivate(target)
 	if act.StreamFlags&audclntStreamFlagsLoopback != 0 || !act.IncludeProcessTree || act.TargetPID == 0 {
 		return nil, true
 	}
@@ -138,9 +226,16 @@ func captureProcessAudio(ctx context.Context) ([]byte, bool) {
 	if !companionCaptureViewBound() {
 		return nil, true
 	}
+	if target != host {
+		logFileCompanion("process loopback browser=%d host=%d", target, host)
+	}
 	plan := windowsProcessLoopbackPlan(act)
 	wav, err := activateProcessLoopback(ctx, plan)
 	if err != nil || len(wav) < 44 {
+		// Stopping the note cancels this context. That is not a device failure.
+		if err != nil && ctx.Err() == nil {
+			logFileCompanion("process loopback pid=%d: %v", plan.TargetPID, err)
+		}
 		return nil, true
 	}
 	return wav, false
@@ -315,6 +410,193 @@ func finishedCapturePreview(ctx context.Context, ch <-chan previewResult, timeou
 	case <-timeout:
 		return nil, errors.New("CapturePreview timed out")
 	}
+}
+
+// iCoreWebView2ExecuteScript is ICoreWebView2.ExecuteScript.
+// IUnknown occupies slots 0-2. CapturePreview is the next slot, 30.
+const iCoreWebView2ExecuteScript = 29
+
+// capturePlaybackEnded asks the showing player whether this video has finished.
+// No player page returns false and does not run a script. A script failure
+// is not the end of the video.
+func capturePlaybackEnded(ctx context.Context) bool {
+	if !maclawplayer.Showing() {
+		return false
+	}
+	view := maclawplayer.View()
+	if view == nil || view.Pointer() == 0 || !maclawcapture.HasUIRunner() {
+		return false
+	}
+	raw, err := executePlayerScript(ctx, unsafe.Pointer(view.Pointer()), webPlaybackEndedScript)
+	if err != nil || raw == "" {
+		return false
+	}
+	return webPlaybackHasEnded(raw)
+}
+
+type playbackScriptResult struct {
+	raw string
+	err error
+}
+
+// playbackScriptHandler is an ICoreWebView2ExecuteScriptCompletedHandler.
+// The first field is the vtable so the COM this pointer can be cast back.
+// Callbacks stay package-level: the generated go-webview2 handler panics in this process.
+type playbackScriptHandler struct {
+	vtbl    *playbackScriptVtbl
+	ch      chan playbackScriptResult
+	refs    uintptr
+	creator sync.Once
+}
+
+type playbackScriptVtbl struct {
+	query uintptr
+	add   uintptr
+	rel   uintptr
+	done  uintptr
+}
+
+var (
+	playbackScriptVtblOnce sync.Once
+	playbackScriptV        playbackScriptVtbl
+	playbackScriptHandlers sync.Map
+)
+
+func playbackScriptCallbacks() *playbackScriptVtbl {
+	playbackScriptVtblOnce.Do(func() {
+		playbackScriptV.query = syscall.NewCallback(playbackScriptQuery)
+		playbackScriptV.add = syscall.NewCallback(playbackScriptAddRef)
+		playbackScriptV.rel = syscall.NewCallback(playbackScriptRelease)
+		playbackScriptV.done = syscall.NewCallback(playbackScriptDone)
+	})
+	return &playbackScriptV
+}
+
+// guidPlaybackIUnknown is IUnknown. guidExecuteScriptCompleted is
+// ICoreWebView2ExecuteScriptCompletedHandler {49511172-CC67-4BCA-9923-137112F4C4CC}.
+// Accepting any other IID would claim IAgileObject, and WebView2 could
+// then call Invoke off the UI thread.
+var (
+	guidPlaybackIUnknown = windows.GUID{
+		Data1: 0x00000000, Data2: 0x0000, Data3: 0x0000,
+		Data4: [8]byte{0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46},
+	}
+	guidExecuteScriptCompleted = windows.GUID{
+		Data1: 0x49511172, Data2: 0xCC67, Data3: 0x4BCA,
+		Data4: [8]byte{0x99, 0x23, 0x13, 0x71, 0x12, 0xF4, 0xC4, 0xCC},
+	}
+)
+
+func playbackScriptQuery(this, riid, object uintptr) uintptr {
+	if this == 0 || riid == 0 || object == 0 {
+		return uintptr(windows.E_POINTER)
+	}
+	*(*uintptr)(unsafe.Pointer(object)) = 0
+	id := *(*windows.GUID)(unsafe.Pointer(riid))
+	if id != guidPlaybackIUnknown && id != guidExecuteScriptCompleted {
+		return uintptr(windows.E_NOINTERFACE)
+	}
+	*(*uintptr)(unsafe.Pointer(object)) = this
+	playbackScriptAddRef(this)
+	return uintptr(windows.S_OK)
+}
+
+func playbackScriptAddRef(this uintptr) uintptr {
+	if this == 0 {
+		return 1
+	}
+	h := (*playbackScriptHandler)(unsafe.Pointer(this))
+	return atomic.AddUintptr(&h.refs, 1)
+}
+
+func playbackScriptRelease(this uintptr) uintptr {
+	if this == 0 {
+		return 0
+	}
+	h := (*playbackScriptHandler)(unsafe.Pointer(this))
+	refs := atomic.AddUintptr(&h.refs, ^uintptr(0))
+	if refs == 0 {
+		playbackScriptHandlers.Delete(this)
+	}
+	return refs
+}
+
+func (h *playbackScriptHandler) releaseCreator() {
+	h.creator.Do(func() {
+		playbackScriptRelease(uintptr(unsafe.Pointer(h)))
+	})
+}
+
+func playbackScriptDone(this, errorCode, resultPtr uintptr) uintptr {
+	h := (*playbackScriptHandler)(unsafe.Pointer(this))
+	defer h.releaseCreator()
+	raw := ""
+	var err error
+	if int32(errorCode) < 0 {
+		err = fmt.Errorf("ExecuteScript completed 0x%x", uint32(errorCode))
+	} else if resultPtr != 0 {
+		raw = windows.UTF16PtrToString((*uint16)(unsafe.Pointer(resultPtr)))
+	}
+	select {
+	case h.ch <- playbackScriptResult{raw: raw, err: err}:
+	default:
+	}
+	return 0
+}
+
+func executePlayerScript(ctx context.Context, this unsafe.Pointer, js string) (string, error) {
+	if this == nil {
+		return "", errCompanionWebViewUnbound
+	}
+	script, err := windows.UTF16PtrFromString(js)
+	if err != nil {
+		return "", err
+	}
+	ch := make(chan playbackScriptResult, 1)
+	handler := &playbackScriptHandler{
+		vtbl: playbackScriptCallbacks(),
+		ch:   ch,
+		refs: 1,
+	}
+	key := uintptr(unsafe.Pointer(handler))
+	playbackScriptHandlers.Store(key, handler)
+	started := make(chan error, 1)
+	ok := maclawcapture.PostUI(func() {
+		started <- callExecuteScript(uintptr(this), script, key)
+		runtime.KeepAlive(script)
+	})
+	if !ok {
+		playbackScriptHandlers.Delete(key)
+		return "", errCompanionWebViewUnbound
+	}
+	if callErr := <-started; callErr != nil {
+		playbackScriptHandlers.Delete(key)
+		return "", callErr
+	}
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	select {
+	case got := <-ch:
+		return got.raw, got.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-timer.C:
+		return "", errors.New("ExecuteScript timed out")
+	}
+}
+
+// callExecuteScript calls ICoreWebView2.ExecuteScript at vtable slot 29.
+func callExecuteScript(webview uintptr, script *uint16, handler uintptr) error {
+	if webview == 0 || script == nil {
+		return errCompanionWebViewUnbound
+	}
+	vtbl := *(*uintptr)(unsafe.Pointer(webview))
+	proc := *(*uintptr)(unsafe.Pointer(vtbl + iCoreWebView2ExecuteScript*unsafe.Sizeof(uintptr(0))))
+	hr, _, _ := syscall.SyscallN(proc, webview, uintptr(unsafe.Pointer(script)), handler)
+	if int32(hr) < 0 {
+		return fmt.Errorf("ExecuteScript 0x%x", uint32(hr))
+	}
+	return nil
 }
 
 // callCapturePreview calls ICoreWebView2.CapturePreview at vtable slot 30.
@@ -673,6 +955,26 @@ func initializeProcessLoopbackClient(client uintptr) (*waveFormatExtensible, err
 	return nil, last
 }
 
+// audclntStreamFlagsAutoConvertPCM is AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM.
+// The process-loopback device converts into the format passed to Initialize.
+const audclntStreamFlagsAutoConvertPCM uint32 = 0x80000000
+
+// audclntStreamFlagsEventCallback is AUDCLNT_STREAMFLAGS_EVENTCALLBACK.
+// The capture loop polls GetNextPacketSize and never calls SetEventHandle.
+// Setting this bit makes Start fail with AUDCLNT_E_EVENTHANDLE_NOT_SET.
+const audclntStreamFlagsEventCallback uint32 = 0x00040000
+
+// processLoopbackInit is the IAudioClient.Initialize pair for VAD\Process_Loopback.
+// The virtual device rejects a zero stream-flag word with
+// AUDCLNT_E_INVALID_STREAM_FLAG (0x88890021), so capture never starts and a
+// web note keeps only pictures. LOOPBACK here opens a capture buffer on this
+// already process-scoped render device. It is not the default render endpoint,
+// so it does not record other programs. Buffer duration 0 lets the engine
+// choose the period. Event callbacks are not used; the capture loop polls.
+func processLoopbackInit() (flags uint32, duration uintptr) {
+	return audclntStreamFlagsLoopback | audclntStreamFlagsAutoConvertPCM, 0
+}
+
 func audioClientInitialize(client uintptr, format *waveFormatExtensible) error {
 	if client == 0 || format == nil || format.FormatTag != waveFormatExtensibleTag || format.Size < 22 || guidZero(format.SubFormat) {
 		return errors.New("process loopback format is not WAVEFORMATEXTENSIBLE")
@@ -681,10 +983,17 @@ func audioClientInitialize(client uintptr, format *waveFormatExtensible) error {
 	if len(encoded) < 40 {
 		return errors.New("process loopback format dropped the extensible tail")
 	}
+	flags, duration := processLoopbackInit()
+	if flags&audclntStreamFlagsLoopback == 0 || flags&audclntStreamFlagsAutoConvertPCM == 0 {
+		return errors.New("process loopback Initialize is missing AUDCLNT_STREAMFLAGS_LOOPBACK or AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM")
+	}
+	if flags&audclntStreamFlagsEventCallback != 0 {
+		return errors.New("process loopback Initialize set AUDCLNT_STREAMFLAGS_EVENTCALLBACK without an event handle")
+	}
 	vtbl := *(*uintptr)(unsafe.Pointer(client))
-	// IAudioClient::Initialize is vtable slot 3. Stream flags stay 0.
+	// IAudioClient::Initialize is vtable slot 3.
 	proc := *(*uintptr)(unsafe.Pointer(vtbl + 3*unsafe.Sizeof(uintptr(0))))
-	hr, _, _ := syscall.SyscallN(proc, client, 0, 0, 10000000, 0, uintptr(unsafe.Pointer(&encoded[0])), 0)
+	hr, _, _ := syscall.SyscallN(proc, client, 0, uintptr(flags), duration, 0, uintptr(unsafe.Pointer(&encoded[0])), 0)
 	runtime.KeepAlive(encoded)
 	if int32(hr) < 0 {
 		return fmt.Errorf("IAudioClient.Initialize 0x%x", hr)

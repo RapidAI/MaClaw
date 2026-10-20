@@ -56,6 +56,16 @@ func (p PromptBundle) TokenStats() PromptBundleTokenStats {
 	}
 }
 
+// lightCorePrinciples keeps the generic one-lookup stop, and swaps that one
+// clause when the turn is a current-fact lookup. The rest of the light block,
+// including the file and command prohibitions, stays shared.
+func lightCorePrinciples(liveDataFact bool) string {
+	if !liveDataFact {
+		return PromptCorePrinciplesLight
+	}
+	return strings.Replace(PromptCorePrinciplesLight, PromptLightOneLookupClause, PromptLightLiveDataFactClause, 1)
+}
+
 // BuildPromptBundle builds the system prompt as cache-friendly segments.
 // When Config.PromptProfile is light, bulk policy (coding gate, SSH, MCP,
 // skill catalog, long evidence rules) is omitted to cut token cost on simple turns.
@@ -85,7 +95,7 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 	if light {
 		fmt.Fprintf(&stable, "You are %s, %s: %s. Handle this as a low-complexity turn; prefer a concise answer and only use tools when necessary.\n", roleName, roleTitle, roleDesc)
 		stable.WriteString(PromptOutputFormatRules)
-		stable.WriteString(PromptCorePrinciplesLight)
+		stable.WriteString(lightCorePrinciples(cfg.LiveDataFactTurn))
 		if EnableDiagramRendering(cfg) {
 			stable.WriteString(PromptVisualizationRulesLight)
 		}

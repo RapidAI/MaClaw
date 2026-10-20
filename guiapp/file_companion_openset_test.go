@@ -158,43 +158,26 @@ func TestFileCompanionResumePathsMigratesSessionsOnce(t *testing.T) {
 	}
 }
 
-func TestShowFileCompanionAsksInThisProcessWhenNothingIsRemembered(t *testing.T) {
+func TestShowFileCompanionStartsWhenNothingIsRemembered(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
-	file := filepath.Join(t.TempDir(), "notes.md")
-	if err := os.WriteFile(file, []byte("hi"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	var argv []string
 	app.processHooks.startProcess = func(got []string) error {
 		argv = append([]string(nil), got...)
 		return nil
 	}
+	asked := false
 	app.processHooks.chooseFiles = func() ([]string, error) {
-		return []string{file, "open-file", filepath.Join(t.TempDir(), "missing.md")}, nil
-	}
-	if err := app.ShowFileCompanion(); err != nil {
-		t.Fatal(err)
-	}
-	if len(argv) != 3 || argv[1] != "open-file" || argv[2] != file {
-		t.Fatalf("argv = %#v", argv)
-	}
-}
-
-func TestShowFileCompanionDoesNotStartWhenTheDialogIsCancelled(t *testing.T) {
-	app := &App{testHomeDir: t.TempDir()}
-	started := false
-	app.processHooks.startProcess = func(got []string) error {
-		started = true
-		return nil
-	}
-	app.processHooks.chooseFiles = func() ([]string, error) {
+		asked = true
 		return nil, nil
 	}
 	if err := app.ShowFileCompanion(); err != nil {
 		t.Fatal(err)
 	}
-	if started {
-		t.Fatal("cancel started a companion")
+	if asked {
+		t.Fatal("empty history opened the system file dialog")
+	}
+	if len(argv) != 2 || argv[1] != "open-file" {
+		t.Fatalf("argv = %#v", argv)
 	}
 }
 

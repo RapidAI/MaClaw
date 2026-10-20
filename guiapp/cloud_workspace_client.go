@@ -685,8 +685,9 @@ func (a *App) recoverCloudWorkspaceMachineAuthorization(rejectedToken string) bo
 		if strings.TrimSpace(result.Email) != "" {
 			next.RemoteEmail = result.Email
 		}
-		if strings.TrimSpace(result.UserID) != "" {
-			next.RemoteUserID = result.UserID
+		if userID := strings.TrimSpace(result.UserID); userID != "" {
+			clearSkillMarketSessionForHubUser(next, userID)
+			next.RemoteUserID = userID
 		}
 		if strings.TrimSpace(result.TenantID) != "" {
 			next.RemoteTenantID = result.TenantID

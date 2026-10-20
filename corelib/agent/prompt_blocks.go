@@ -88,6 +88,17 @@ const PromptCorePrinciplesManaged = `
 - 需要向用户提问时只输出问题，不要同一轮自问自答并执行。
 `
 
+// PromptLightOneLookupClause is the generic light stop: one successful live
+// lookup is the answer. A current-fact turn must not use it. There, a returned
+// encyclopedia snippet is not success; PromptLightLiveDataFactClause is.
+const PromptLightOneLookupClause = "一次成功的实时查询之后立即作答。"
+
+// PromptLightLiveDataFactClause is that same bullet once the turn is live_data.
+// The page read is web_fetch, named here so the Chinese principles and the
+// English fact rule agree. Generic light prompts keep the one-lookup clause
+// and do not name that tool.
+const PromptLightLiveDataFactClause = "列出的结果已经写明当前事实时直接作答；没有写明时调用 web_fetch 读取应包含该事实的结果页，不要抓搜索引擎结果页。"
+
 // PromptCorePrinciplesLight is a trimmed principles block for simple turns
 // (greetings, short Q&A, summaries). Full enterprise/coding/SSH policy is omitted.
 const PromptCorePrinciplesLight = `

@@ -1391,6 +1391,9 @@ func (h *IMMessageHandler) hostKeepToolsForTurnScoped(ctx *LoopContext, userMess
 	if ctx != nil && includeDiscoveryGrants {
 		names = append(names, ctx.discoveredConditionalToolNames()...)
 	}
+	if chatTaskWorkerLoop(ctx) {
+		names = append(names, chatTaskPromptToolNames(userMessage)...)
+	}
 	return names
 }
 

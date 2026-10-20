@@ -111,11 +111,61 @@ func (a *App) initOpenHumanModules() {
 
 // --- Model Router Integration ---
 
-// routeLLMConfig applies model routing to the primary LLM config based on task type.
-// Falls back to auxiliary LLM for lightweight tasks when no explicit route exists.
+// routeLLMConfig applies model routing to the assistant profile.
+// A turn that already resolved a loop role must not call this: the assistant
+// assignment can name a different provider than that role. Use
+// escalateRoleConfig for a post-tool upgrade.
 func (h *IMMessageHandler) routeLLMConfig(task cllm.TaskType) corelib.MaclawLLMConfig {
 	primary := h.getMaclawLLMConfig()
 	return h.routeLLMConfigFromBase(task, primary)
+}
+
+// escalateRoleConfig upgrades a light turn without leaving the role that
+// started it. Background and computer-use keep the model and hint they
+// already pinned: a Hub inherit must not be rewritten to reasoning, and a
+// local cost-route must not replace them. A foreground Hub role stays on
+// Hub and only raises the workload hint. Any other role applies its own
+// reasoning route. A Hub-looking active config does not abandon a non-Hub
+// role. The assistant profile is not reread.
+func (h *IMMessageHandler) escalateRoleConfig(roleBase, active corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
+	base := roleBase
+	if strings.TrimSpace(base.Model) == "" && strings.TrimSpace(base.URL) == "" {
+		base = active
+	}
+	if maclawLLMRoleSkipsLocalRoute(base.Profile) {
+		return active
+	}
+	if isHubManagedTurnConfig(h, base) {
+		src := active
+		if !isHubManagedTurnConfig(h, src) {
+			src = base
+		}
+		return src.WithHubWorkloadHints(string(cllm.TaskReasoning), src.WorkflowTypeHint, src.PhaseKindHint)
+	}
+	return h.routeLLMConfigFromBase(cllm.TaskReasoning, base)
+}
+
+// llmRoleRequestIdentityChanged reports a change the next request's endpoint,
+// credentials, or context budget must observe. A Hub TaskTypeHint change is
+// not one of those.
+func llmRoleRequestIdentityChanged(before, after corelib.MaclawLLMConfig) bool {
+	return after.Model != before.Model ||
+		after.URL != before.URL ||
+		after.Key != before.Key ||
+		after.Protocol != before.Protocol ||
+		after.ProviderName != before.ProviderName ||
+		after.ProviderID != before.ProviderID ||
+		after.ContextLength != before.ContextLength
+}
+
+// llmRoleEscalationChanged reports a post-tool upgrade the next request must
+// observe. A Hub hint change counts: the provider and model id stay put while
+// Hub selects a stronger upstream model.
+func llmRoleEscalationChanged(before, after corelib.MaclawLLMConfig) bool {
+	if strings.TrimSpace(after.Model) == "" {
+		return false
+	}
+	return llmRoleRequestIdentityChanged(before, after) || after.TaskTypeHint != before.TaskTypeHint
 }
 
 // routeCodingLLMConfig applies a request-level route to an already resolved
@@ -631,11 +681,10 @@ func isHubManagedTurnConfig(h *IMMessageHandler, cfg corelib.MaclawLLMConfig) bo
 
 // escalateRunStateToReasoning upgrades a light turn to the reasoning model after
 // tools appear. No-op when already on reasoning/primary-strong config.
+// The upgrade starts from the role captured before light routing. It does not
+// reread the assistant profile, which may name a different provider.
 func (h *IMMessageHandler) escalateRunStateToReasoning(run *agentLoopRunState, why string) {
 	if h == nil || run == nil || run.RouteEscalated {
-		return
-	}
-	if isHubManagedTurnConfig(h, run.ActiveConfig) {
 		return
 	}
 	// Already on a non-light path — skip.
@@ -656,18 +705,9 @@ func (h *IMMessageHandler) escalateRunStateToReasoning(run *agentLoopRunState, w
 	if !light {
 		return
 	}
-	before := run.ActiveConfig.Model
-	upgraded := h.routeLLMConfig(cllm.TaskReasoning)
-	if upgraded.Model == "" {
-		return
-	}
-	if upgraded.Model == before &&
-		upgraded.URL == run.ActiveConfig.URL &&
-		upgraded.Key == run.ActiveConfig.Key &&
-		upgraded.Protocol == run.ActiveConfig.Protocol &&
-		upgraded.ProviderName == run.ActiveConfig.ProviderName &&
-		upgraded.ContextLength == run.ActiveConfig.ContextLength {
-		// No stronger model available — keep light path.
+	before := run.ActiveConfig
+	upgraded := h.escalateRoleConfig(run.RoleBase, run.ActiveConfig)
+	if !llmRoleEscalationChanged(before, upgraded) {
 		return
 	}
 	run.ActiveConfig = upgraded
@@ -684,7 +724,8 @@ func (h *IMMessageHandler) escalateRunStateToReasoning(run *agentLoopRunState, w
 	if h.app != nil {
 		h.app.recordLastModelRoute(run.routeDecision())
 	}
-	log.Printf("[model-route] escalate %s→%s reason=%q", before, upgraded.Model, why)
+	log.Printf("[model-route] escalate provider=%s model=%s→%s hint=%s→%s reason=%q",
+		upgraded.ProviderName, before.Model, upgraded.Model, before.TaskTypeHint, upgraded.TaskTypeHint, why)
 }
 
 // --- Tool Memory Integration ---

@@ -86,8 +86,34 @@ func dynamicContractSnapshotPrincipalMatches(a, b Principal) bool {
 // supports snapshots. Resolvers without snapshot support pass through
 // unchanged, and a nil resolver stays nil.
 func DynamicCapabilityContractSnapshot(resolver DynamicCapabilityContractResolver, p Principal) (DynamicCapabilityContractResolver, error) {
+	return dynamicCapabilityContractSnapshotOf(resolver, p, "")
+}
+
+// DynamicCapabilityContractSnapshotKind is the MCP-only catalog snapshot.
+// The installed-tool listing does not read Skill contracts. Registries this
+// process does not know fall back to the full snapshot.
+func DynamicCapabilityContractSnapshotKind(resolver DynamicCapabilityContractResolver, p Principal, kind string) (DynamicCapabilityContractResolver, error) {
+	return dynamicCapabilityContractSnapshotOf(resolver, p, kind)
+}
+
+func dynamicCapabilityContractSnapshotOf(resolver DynamicCapabilityContractResolver, p Principal, kind string) (DynamicCapabilityContractResolver, error) {
 	if resolver == nil {
 		return nil, nil
+	}
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	switch registry := resolver.(type) {
+	case *DynamicCapabilityRegistry:
+		snapshot, err := registry.snapshotDynamicCapabilityContracts(p, kind)
+		if err != nil {
+			return nil, err
+		}
+		return snapshot, nil
+	case *SQLiteDynamicCapabilityRegistry:
+		snapshot, err := registry.snapshotDynamicCapabilityContracts(p, kind)
+		if err != nil {
+			return nil, err
+		}
+		return snapshot, nil
 	}
 	provider, ok := resolver.(dynamicCapabilityContractSnapshotProvider)
 	if !ok {
@@ -274,13 +300,23 @@ func (r *DynamicCapabilityRegistry) resolve(key string) (DynamicCapabilityContra
 // view for a catalog generation. It never exposes contracts from another
 // tenant or user, and a later publication cannot alter this value.
 func (r *DynamicCapabilityRegistry) SnapshotDynamicCapabilityContracts(p Principal) (dynamicCapabilityContractSnapshot, error) {
+	return r.snapshotDynamicCapabilityContracts(p, "")
+}
+
+func (r *DynamicCapabilityRegistry) snapshotDynamicCapabilityContracts(p Principal, kind string) (dynamicCapabilityContractSnapshot, error) {
 	if r == nil {
 		return dynamicCapabilityContractSnapshot{}, fmt.Errorf("dynamic capability registry is unavailable")
 	}
 	if err := validateDynamicContractScope(p); err != nil {
 		return dynamicCapabilityContractSnapshot{}, err
 	}
+	kind = strings.ToLower(strings.TrimSpace(kind))
 	prefix := dynamicContractRegistryPrincipalPrefix(p)
+	if kind != "" {
+		// Keys are tenant, user, kind, then identities. The trailing NUL keeps
+		// kind "mcp" from matching a longer kind that shares that prefix.
+		prefix = dynamicContractRegistryKey(p, kind) + "\x00"
+	}
 	contracts := make(map[string]DynamicCapabilityContract)
 	r.mu.RLock()
 	for key, contract := range r.contracts {
@@ -538,13 +574,24 @@ func (r *SQLiteDynamicCapabilityRegistry) resolve(p Principal, kind, bindingKey 
 // in the returned snapshot; a database error rejects the whole inventory so a
 // catalog never quietly joins a partial control-plane read to live discovery.
 func (r *SQLiteDynamicCapabilityRegistry) SnapshotDynamicCapabilityContracts(p Principal) (dynamicCapabilityContractSnapshot, error) {
+	return r.snapshotDynamicCapabilityContracts(p, "")
+}
+
+func (r *SQLiteDynamicCapabilityRegistry) snapshotDynamicCapabilityContracts(p Principal, kind string) (dynamicCapabilityContractSnapshot, error) {
 	if r == nil || r.db == nil {
 		return dynamicCapabilityContractSnapshot{}, fmt.Errorf("dynamic capability registry is unavailable")
 	}
 	if err := validateDynamicContractScope(p); err != nil {
 		return dynamicCapabilityContractSnapshot{}, err
 	}
-	rows, err := r.db.Query(`SELECT provider_kind, binding_key, contract_json, contract_digest FROM dynamic_capability_contracts WHERE tenant_id = ? AND user_id = ?`, dynamicContractScopeValue(p.TenantID), dynamicContractScopeValue(p.UserID))
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	query := `SELECT provider_kind, binding_key, contract_json, contract_digest FROM dynamic_capability_contracts WHERE tenant_id = ? AND user_id = ?`
+	args := []interface{}{dynamicContractScopeValue(p.TenantID), dynamicContractScopeValue(p.UserID)}
+	if kind != "" {
+		query += ` AND provider_kind = ?`
+		args = append(args, kind)
+	}
+	rows, err := r.db.Query(query, args...)
 	if err != nil {
 		return dynamicCapabilityContractSnapshot{}, fmt.Errorf("load dynamic capability contracts: %w", err)
 	}

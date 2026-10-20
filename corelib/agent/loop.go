@@ -1163,9 +1163,10 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 
 	// Drift detection: track recent tool calls to detect loops.
 	type toolCallRecord struct {
-		name   string
-		args   string
-		result string
+		name    string
+		args    string
+		result  string
+		success bool
 	}
 	var recentCalls []toolCallRecord
 	// succeededToolNames records tools that completed successfully at least
@@ -1269,7 +1270,6 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	// the end of the user task; the loop continues once the tool is listed.
 	repeatWaveName := ""
 	repeatAutoContinues := 0
-	repeatAutoTotal := 0
 	var toolBatchSequence uint64
 	// Visible tokens already sent to the chat bubble for the current model
 	// call. A later nameless tool call can clear the stored message content
@@ -2828,31 +2828,40 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			attached := ShouldAttachWorkingState(loopPromptProfile(cb), WorkingStateDisabled(), workingState)
 			// Do not spend the last iteration on a nudge — that turns a
 			// deliverable answer into "max iterations reached".
-			// The model stopped after a spent command wave was reopened, or
-			// it answered by asking the user to continue while a command
-			// result says another call will be listed. Discovery calls such
-			// as tools_search do not hide that result. Keep the same user
-			// turn going.
-			if repeatWaveName == "" && answerHandsWorkBackToUser(content) && repeatAutoContinues < 2 && repeatAutoTotal < 8 && iteration+1 < maxIter {
-				if name := spentRepeatToolName(historyDelta); name != "" {
-					if opener, ok := cb.(RepeatWaveOpener); ok && opener.OpenNextRepeatWave(name) {
-						repeatWaveName = name
-						repeatAutoTotal++
+			// A reply that hands the rest of the task back ("额度已用完",
+			// "下一轮再") is not a finished answer. List the tool and keep
+			// this turn going. A count of earlier calls is not a quota.
+			// Two such replies in a row, with no tool call between them,
+			// are a deferral loop: the model was told to call and did not.
+			if answerHandsWorkBackToUser(content) && repeatAutoContinues < 2 && iteration+1 < maxIter {
+				// An unknown or still-running attempt must not be followed by
+				// another call. The command may already have run.
+				if repeatWaveName == "" && !LatestToolResultUnsettled(historyDelta) {
+					if name := lastRepeatToolName(historyDelta); name != "" {
+						// A spent wave is republished when the host can.
+						// A tool still on this request does not need that
+						// publication: the model can call it now. A tool the
+						// host removed, including a consumed one-shot, is not.
+						listed := toolCallNameWasRendered(tools, name)
+						if opener, ok := cb.(RepeatWaveOpener); ok && opener.OpenNextRepeatWave(name) {
+							listed = true
+						}
+						if listed {
+							repeatWaveName = name
+						}
 					}
 				}
-			}
-			// The publish above already counted. This reminder must still run
-			// after the last allowed publish, and must not spend a second slot.
-			if repeatWaveName != "" && answerHandsWorkBackToUser(content) && repeatAutoContinues < 2 && iteration+1 < maxIter {
-				repeatAutoContinues++
-				disposeSurface(ToolSurfaceResponseSettled)
-				nudge := fmt.Sprintf("[系统] %s 已再次列入本轮工具列表。当前任务还要继续用它，请直接调用，不要要求用户再发消息。", repeatWaveName)
-				conversation = append(conversation, map[string]interface{}{
-					"role":    "user",
-					"content": nudge,
-				})
-				historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: nudge})
-				continue
+				if repeatWaveName != "" {
+					repeatAutoContinues++
+					disposeSurface(ToolSurfaceResponseSettled)
+					nudge := fmt.Sprintf("[系统] %s 已再次列入本轮工具列表。当前任务还要继续用它，请直接调用，不要要求用户再发消息，也不要说额度已用完。", repeatWaveName)
+					conversation = append(conversation, map[string]interface{}{
+						"role":    "user",
+						"content": nudge,
+					})
+					historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: nudge})
+					continue
+				}
 			}
 			// A full turn that stops before any tool call still has memory or
 			// knowledge_search unused. One nudge, then the model's next
@@ -3117,7 +3126,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				// listing before inspecting the result, so a failed or
 				// unsettled command cannot later be described as still waiting
 				// on the tool list. A success also clears the consecutive
-				// deferral count. The turn-wide nudge cap is unchanged.
+				// deferral count. There is no turn-wide cap on continuations.
 				repeatWaveName = ""
 				if execResult.Outcome == ToolExecutionOutcomeOK {
 					repeatAutoContinues = 0
@@ -3258,7 +3267,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			// Drift detection deliberately tracks the raw result. Projection is a
 			// model-context concern and must not make distinct runtime outputs look
 			// identical to the loop detector.
-			record := toolCallRecord{name: tc.Function.Name, args: argsJSON, result: result}
+			record := toolCallRecord{name: tc.Function.Name, args: argsJSON, result: result, success: toolSuccess}
 			recentCalls = append(recentCalls, record)
 			if len(recentCalls) > driftWindow*2 {
 				recentCalls = recentCalls[len(recentCalls)-driftWindow*2:]
@@ -3459,13 +3468,25 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					allSameResult = false
 				}
 			}
-			if allSame && allSameResult {
+			allSucceeded := allSame && allSameResult
+			if allSucceeded {
+				for i := range tail {
+					if !tail[i].success {
+						allSucceeded = false
+						break
+					}
+				}
+			}
+			// A quiet successful poll is not a dead loop. Telling the model to
+			// stop and explain a limit is what it repeats as a used-up quota
+			// while the job is still running. A streak that did not succeed
+			// still gets one hint.
+			if allSame && allSameResult && !allSucceeded {
 				consecutiveSame++
-				if consecutiveSame >= 2 {
+				if consecutiveSame == 2 {
 					driftTool := tail[0].name
-					log.Printf("[agent-loop] drift detected: tool %q called %d times with same args+result, stopping", driftTool, driftWindow*consecutiveSame)
-					// Inject a message telling the LLM to stop and explain.
-					driftMsg := fmt.Sprintf("[系统] 检测到重复调用 %s 且结果相同，请停止重试并直接告诉用户当前的限制或问题。", driftTool)
+					log.Printf("[agent-loop] drift detected: tool %q called %d times with same args+result", driftTool, driftWindow*consecutiveSame)
+					driftMsg := fmt.Sprintf("[系统] 检测到重复调用 %s 且结果相同、调用没有成功。请停止用相同参数重试。如果任务还要继续，换一种做法；如果做不了，向用户说明工具返回的具体错误。", driftTool)
 					conversation = append(conversation, map[string]interface{}{
 						"role":    "user",
 						"content": driftMsg,
@@ -3478,9 +3499,10 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		}
 		// A remote-command result promised that another call will be listed on
 		// the next request. Publish it after this batch is committed, so the
-		// next model request in the same turn sees it. Other families stay on
-		// the explicit handoff path. Publishing is not a deferral and does not
-		// spend repeatAutoTotal; the family cap and identical-poll drift do.
+		// next model request in the same turn sees it. Other families continue
+		// when the model hands the task back. Publishing is not a deferral.
+		// A quiet successful poll does not inject a stop hint. A failed
+		// identical streak still gets one hint above.
 		if repeatWaveName == "" && iteration+1 < maxIter {
 			if name := spentRemoteCommandName(historyDelta); name != "" {
 				if opener, ok := cb.(RepeatWaveOpener); ok && opener.OpenNextRepeatWave(name) {
@@ -3695,6 +3717,12 @@ type RepeatWaveOpener interface {
 	OpenNextRepeatWave(name string) bool
 }
 
+// AnswerHandsWorkBack reports a closing reply that leaves the task for the
+// user to restart. The loop uses the same check before it keeps the turn open.
+func AnswerHandsWorkBack(content string) bool {
+	return answerHandsWorkBackToUser(content)
+}
+
 func answerHandsWorkBackToUser(content string) bool {
 	text := strings.TrimSpace(content)
 	if text == "" {
@@ -3730,6 +3758,69 @@ func remoteCommandWaveSpent(result string) bool {
 	// listing) and must not publish another remote command.
 	return strings.Contains(result, "Planned invocations for "+string(tool.CapabilityShellExecuteRemoteHost)) &&
 		strings.Contains(result, tool.RepeatWaveListedMarker)
+}
+
+// LatestToolResultUnsettled reports that the latest real tool result has not
+// been observed. The command may already be running, so this turn must not
+// issue it again, and a host continuation must not start a worker that would.
+// tools_search only discovers names and is skipped.
+func LatestToolResultUnsettled(history []ConversationEntry) bool {
+	for i := len(history) - 1; i >= 0; i-- {
+		entry := history[i]
+		if entry.Role != "tool" && entry.Role != "tool_result" {
+			continue
+		}
+		name := strings.TrimSpace(entry.ToolName)
+		if name == "" || name == "tools_search" {
+			continue
+		}
+		return toolResultUnobserved(fmt.Sprint(entry.Content))
+	}
+	return false
+}
+
+// toolResultUnobserved is the host status line for an effect that may already
+// have landed. agentruntime.SelectionOutcomeUnknown is the same "[system unknown]"
+// prefix; this package cannot import agentruntime. A parked receipt is the
+// rejection whose reason is selection_awaiting_receipt or
+// dynamic_effect_awaiting_receipt. A settled read or command that quotes those
+// words is not in flight, and neither is selection_execution_not_awaiting_receipt.
+func toolResultUnobserved(text string) bool {
+	text = strings.TrimSpace(text)
+	if strings.HasPrefix(text, "[system unknown]") {
+		return true
+	}
+	if !strings.HasPrefix(text, "[system rejected]") {
+		return false
+	}
+	reason := strings.TrimSpace(strings.TrimPrefix(text, "[system rejected]"))
+	if i := strings.IndexAny(reason, " \n\r\t"); i >= 0 {
+		reason = reason[:i]
+	}
+	switch reason {
+	case "selection_awaiting_receipt", "dynamic_effect_awaiting_receipt":
+		return true
+	default:
+		return false
+	}
+}
+
+// lastRepeatToolName is the latest real tool in this turn. A handoff that
+// says the quota is used up continues that tool. tools_search only discovers
+// names and cannot be the task that still needs to run.
+func lastRepeatToolName(history []ConversationEntry) string {
+	for i := len(history) - 1; i >= 0; i-- {
+		entry := history[i]
+		if entry.Role != "tool" && entry.Role != "tool_result" {
+			continue
+		}
+		name := strings.TrimSpace(entry.ToolName)
+		if name == "" || name == "tools_search" {
+			continue
+		}
+		return name
+	}
+	return ""
 }
 
 func spentRepeatToolName(history []ConversationEntry) string {
@@ -3778,7 +3869,7 @@ func consumedGrantToolCallDeniedMessage(name string) string {
 	if name == "" {
 		name = "(unknown)"
 	}
-	return fmt.Sprintf("Error: tool %q is not in this request's rendered tool surface because it already ran successfully earlier in this turn and has reached this turn's usage limit. That earlier result still stands (e.g. an artifact was already generated or delivered); do not retry %q, do not ask the user to re-authorize tools, and do not report that action as failed, consumed, or undelivered.", name, name)
+	return fmt.Sprintf("Error: tool %q already ran successfully earlier in this turn. That result still stands (e.g. an artifact was already generated or delivered). If the name is listed, call it and continue the unfinished task. Do not tell the user that a quota or usage limit was used up, do not ask them to send another message, do not retry %q when it is not listed, and do not report that action as failed, consumed, or undelivered.", name, name)
 }
 
 // moaReferenceToolSurfaceDisposition converts only the locally observable

@@ -51,16 +51,16 @@ func TestSemanticStaleEpochSameFamilyBatchContinuationExecutes(t *testing.T) {
 			t.Fatalf("batched fetch %d did not execute: %#v", i+1, got)
 		}
 	}
-	// The continuation spent real siblings: after five executions the family
-	// is exhausted and the stable name is gone from the live surface.
+	// The published wave is not a quota. After these fetches the name stays
+	// listed so another URL can still be fetched in this turn.
 	for i, url := range []string{"https://example.com/4", "https://example.com/5"} {
 		got := cb.ExecuteToolCallWithContext("web_fetch", `{"url":"`+url+`"}`, "call-batch-"+string(rune('4'+i)), agent.ToolCallExecutionContext{SurfaceEpoch: epoch})
 		if !strings.Contains(got.Result, "Fetched web evidence.") {
 			t.Fatalf("batched fetch %d did not execute: %#v", i+4, got)
 		}
 	}
-	if _, live := surface.grants["web_fetch"]; live {
-		t.Fatal("web_fetch must leave the live surface once the family budget is spent")
+	if _, live := surface.grants["web_fetch"]; !live {
+		t.Fatal("web_fetch must stay listed after the published wave so the task can continue")
 	}
 }
 

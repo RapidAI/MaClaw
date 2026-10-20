@@ -485,86 +485,86 @@ func SearchWithStrategyCtx(parent context.Context, query string, maxResults int,
 			return response, nil
 		}
 	} else {
-	htmlUnavailable := 0
-	for _, engine := range strategy.Engines {
-		if !engine.Enabled {
-			continue
-		}
-		if builtinWebSearchEngines[engine.ID].NeedsKey && engine.APIKey == "" {
-			response.Diagnostics = append(response.Diagnostics, SearchAttempt{EngineID: engine.ID, Transport: engine.Transport, Outcome: "skipped", Detail: "missing API key"})
-			continue
-		}
-		if strategy.Mode == corelib.WebSearchModeSmart && webSearchCircuitOpen(engine.ID) {
-			// The smart scheduler honors the user's order but skips engines whose
-			// recent window shows nothing but failures, timeouts or empty results.
-			attempt := SearchAttempt{EngineID: engine.ID, Transport: engine.Transport, Outcome: "skipped", Detail: "circuit open: no successful attempts in the recent window"}
-			response.Diagnostics = append(response.Diagnostics, attempt)
-			logSearchAttempt(query, attempt)
-			continue
-		}
-		if shouldSkipToPreserveBrowserBudget(ctx, engine, strategy, attemptedBrowserEngines, hint) {
-			attempt := SearchAttempt{EngineID: engine.ID, Transport: engine.Transport, Outcome: "skipped", Detail: "reserved remaining time for browser fallback"}
-			response.Diagnostics = append(response.Diagnostics, attempt)
-			logSearchAttempt(query, attempt)
-			continue
-		}
-		if shouldSkipHTMLAfterConsecutiveMisses(engine, htmlUnavailable, strategy, attemptedBrowserEngines, hint) {
-			attempt := SearchAttempt{EngineID: engine.ID, Transport: engine.Transport, Outcome: "skipped", Detail: "prior HTML engines missed the query; using browser fallback"}
-			response.Diagnostics = append(response.Diagnostics, attempt)
-			logSearchAttempt(query, attempt)
-			continue
-		}
-		if engine.Transport == corelib.WebSearchTransportBrowser {
-			attemptedBrowserEngines[engine.ID] = true
-		}
-		preserve := time.Duration(0)
-		if stillNeedsBrowserAttempt(strategy, attemptedBrowserEngines, hint) && engine.Transport != corelib.WebSearchTransportBrowser {
-			preserve = browserAttemptTimeout(strategy)
-		}
-		results, attemptErr, elapsed, retryCount := searchStrategyEnginePreserving(ctx, query, maxResults, engine, strategy.BrowserHumanAssistEnabled, preserve)
-		validResults := mergeSearchResultsPrefer(nil, results, maxResults, hint)
-		attempt := SearchAttempt{EngineID: engine.ID, Transport: engine.Transport, DurationMS: elapsed.Milliseconds(), ResultCount: len(validResults), RetryCount: retryCount}
-		if attemptErr != nil {
-			attempt.Outcome = classifySearchError(attemptErr)
-			attempt.Detail = safeSearchErrorDetail(attemptErr)
-			failures = append(failures, fmt.Sprintf("%s: %s", engine.ID, attempt.Detail))
-		} else if len(validResults) == 0 {
-			attempt.Outcome = "no_results"
-			if len(results) > 0 {
-				failures = append(failures, engine.ID+": no valid results")
+		htmlUnavailable := 0
+		for _, engine := range strategy.Engines {
+			if !engine.Enabled {
+				continue
+			}
+			if builtinWebSearchEngines[engine.ID].NeedsKey && engine.APIKey == "" {
+				response.Diagnostics = append(response.Diagnostics, SearchAttempt{EngineID: engine.ID, Transport: engine.Transport, Outcome: "skipped", Detail: "missing API key"})
+				continue
+			}
+			if strategy.Mode == corelib.WebSearchModeSmart && webSearchCircuitOpen(engine.ID) {
+				// The smart scheduler honors the user's order but skips engines whose
+				// recent window shows nothing but failures, timeouts or empty results.
+				attempt := SearchAttempt{EngineID: engine.ID, Transport: engine.Transport, Outcome: "skipped", Detail: "circuit open: no successful attempts in the recent window"}
+				response.Diagnostics = append(response.Diagnostics, attempt)
+				logSearchAttempt(query, attempt)
+				continue
+			}
+			if shouldSkipToPreserveBrowserBudget(ctx, engine, strategy, attemptedBrowserEngines, hint) {
+				attempt := SearchAttempt{EngineID: engine.ID, Transport: engine.Transport, Outcome: "skipped", Detail: "reserved remaining time for browser fallback"}
+				response.Diagnostics = append(response.Diagnostics, attempt)
+				logSearchAttempt(query, attempt)
+				continue
+			}
+			if shouldSkipHTMLAfterConsecutiveMisses(engine, htmlUnavailable, strategy, attemptedBrowserEngines, hint) {
+				attempt := SearchAttempt{EngineID: engine.ID, Transport: engine.Transport, Outcome: "skipped", Detail: "prior HTML engines missed the query; using browser fallback"}
+				response.Diagnostics = append(response.Diagnostics, attempt)
+				logSearchAttempt(query, attempt)
+				continue
+			}
+			if engine.Transport == corelib.WebSearchTransportBrowser {
+				attemptedBrowserEngines[engine.ID] = true
+			}
+			preserve := time.Duration(0)
+			if stillNeedsBrowserAttempt(strategy, attemptedBrowserEngines, hint) && engine.Transport != corelib.WebSearchTransportBrowser {
+				preserve = browserAttemptTimeout(strategy)
+			}
+			results, attemptErr, elapsed, retryCount := searchStrategyEnginePreserving(ctx, query, maxResults, engine, strategy.BrowserHumanAssistEnabled, preserve)
+			validResults := mergeSearchResultsPrefer(nil, results, maxResults, hint)
+			attempt := SearchAttempt{EngineID: engine.ID, Transport: engine.Transport, DurationMS: elapsed.Milliseconds(), ResultCount: len(validResults), RetryCount: retryCount}
+			if attemptErr != nil {
+				attempt.Outcome = classifySearchError(attemptErr)
+				attempt.Detail = safeSearchErrorDetail(attemptErr)
+				failures = append(failures, fmt.Sprintf("%s: %s", engine.ID, attempt.Detail))
+			} else if len(validResults) == 0 {
+				attempt.Outcome = "no_results"
+				if len(results) > 0 {
+					failures = append(failures, engine.ID+": no valid results")
+				} else {
+					failures = append(failures, engine.ID+": no results")
+				}
 			} else {
-				failures = append(failures, engine.ID+": no results")
+				attempt.Outcome = "success"
+				candidates = mergeSearchResultsPrefer(candidates, validResults, maxResults, hint)
 			}
-		} else {
-			attempt.Outcome = "success"
-			candidates = mergeSearchResultsPrefer(candidates, validResults, maxResults, hint)
-		}
-		if engine.Transport == corelib.WebSearchTransportHTTPHTML {
-			uncovered := hint != "" && !resultsCoverSiteHint(validResults, hint)
-			if attemptErr != nil || len(validResults) == 0 || uncovered {
-				htmlUnavailable++
-			} else {
-				htmlUnavailable = 0
+			if engine.Transport == corelib.WebSearchTransportHTTPHTML {
+				uncovered := hint != "" && !resultsCoverSiteHint(validResults, hint)
+				if attemptErr != nil || len(validResults) == 0 || uncovered {
+					htmlUnavailable++
+				} else {
+					htmlUnavailable = 0
+				}
+			} else if engine.Transport == corelib.WebSearchTransportBrowser && hint != "" {
+				// A real browser that missed the named site will not be beaten by
+				// another HTML scrape; skip remaining HTTP engines and keep the
+				// other browser fallback.
+				if attemptErr != nil || len(validResults) == 0 || !resultsCoverSiteHint(validResults, hint) {
+					htmlUnavailable = htmlMissSkipThreshold(hint)
+				}
 			}
-		} else if engine.Transport == corelib.WebSearchTransportBrowser && hint != "" {
-			// A real browser that missed the named site will not be beaten by
-			// another HTML scrape; skip remaining HTTP engines and keep the
-			// other browser fallback.
-			if attemptErr != nil || len(validResults) == 0 || !resultsCoverSiteHint(validResults, hint) {
-				htmlUnavailable = htmlMissSkipThreshold(hint)
+			response.Diagnostics = append(response.Diagnostics, attempt)
+			logSearchAttempt(query, attempt)
+			if len(candidates) >= minInt(maxResults, strategy.MinResultsBeforeHedge) && (resultsCoverSiteHint(candidates, hint) || !stillNeedsBrowserAttempt(strategy, attemptedBrowserEngines, hint)) {
+				response.Results = candidates
+				response.Degraded = len(response.Diagnostics) > 1 || retryCount > 0
+				return response, nil
+			}
+			if ctx.Err() != nil {
+				break
 			}
 		}
-		response.Diagnostics = append(response.Diagnostics, attempt)
-		logSearchAttempt(query, attempt)
-		if len(candidates) >= minInt(maxResults, strategy.MinResultsBeforeHedge) && (resultsCoverSiteHint(candidates, hint) || !stillNeedsBrowserAttempt(strategy, attemptedBrowserEngines, hint)) {
-			response.Results = candidates
-			response.Degraded = len(response.Diagnostics) > 1 || retryCount > 0
-			return response, nil
-		}
-		if ctx.Err() != nil {
-			break
-		}
-	}
 	}
 
 	if getBrowserSearchProvider() != nil {
@@ -1068,8 +1068,24 @@ func mergeSearchResultsPrefer(existing, incoming []SearchResult, limit int, hint
 	var covering, rest []SearchResult
 	seen := make(map[string]bool, len(existing)+len(incoming))
 	add := func(result SearchResult) {
-		key := canonicalSearchResultURL(result.URL)
-		if key == "" || seen[key] {
+		// Organic parsers always carry an http URL. A direct answer from the
+		// engine can state the fact with no page URL; dropping that row is how
+		// a current-fact search came back as encyclopedia titles only.
+		rawURL := strings.TrimSpace(result.URL)
+		var key string
+		if rawURL == "" {
+			snippet := strings.TrimSpace(result.Snippet)
+			if snippet == "" {
+				return
+			}
+			key = "text:" + snippet
+		} else {
+			key = canonicalSearchResultURL(rawURL)
+			if key == "" {
+				return
+			}
+		}
+		if seen[key] {
 			return
 		}
 		seen[key] = true

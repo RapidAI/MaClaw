@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { localizeText } from '../../i18n';
-import { localizedStyleLabel, recommendPPTStyle, type PPTStyleChoice, type PPTStyleChoiceOption } from './pptStyleChoice';
+import { localizedStyleLabel, recommendPPTStyle, styleMatchTerms, type PPTStyleChoice, type PPTStyleChoiceOption } from './pptStyleChoice';
 import './PPTStyleChooser.css';
 
 type ChoiceBridge = {
@@ -52,10 +52,7 @@ export function PPTStyleChooser({
 
     const recommended = recommendPPTStyle(styles, inputValue);
     const selected = manualId && styles.some((item) => item.id === manualId) ? manualId : recommended;
-    const matched = styles.some((item) => (item.keywords || []).some((keyword) => {
-        const kw = String(keyword || "").trim().toLowerCase();
-        return Array.from(kw).length >= 2 && inputValue.toLowerCase().includes(kw);
-    }));
+    const matched = styles.some((item) => styleMatchTerms(item).some((kw) => inputValue.toLowerCase().includes(kw)));
 
     useEffect(() => {
         const found = styles.find((item) => item.id === selected);

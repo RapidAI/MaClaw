@@ -77,6 +77,33 @@ func PicturePDFTranscriptOwnsVisionPolicy(text string) bool {
 	return false
 }
 
+// StripAttachedImageInstructions removes host lines that are true only while
+// this message still carries the image bytes. Those lines tell the model to
+// look at the attached pages and not to read them with tools. The auto-extract
+// notice says the same thing when the body under it is that vision transcript.
+// A text extract keeps the notice. The picker note that says to analyze
+// images on this message is removed from every copy. A text-only copy must
+// not keep those instructions.
+func StripAttachedImageInstructions(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	visionTranscript := PicturePDFTranscriptOwnsVisionPolicy(text)
+	for _, lead := range []string{
+		imageOnlyPDFVisionLead,
+		imageOnlyPDFVisionLeadTruncated,
+		imageOnlyPDFVisionLeadMixed,
+		imageOnlyPDFVisionLeadUnresolved,
+	} {
+		text = strings.ReplaceAll(text, lead, "")
+	}
+	if visionTranscript {
+		text = strings.ReplaceAll(text, AutoExtractNotice, "")
+	}
+	text = strings.ReplaceAll(text, AttachedImageReadHint, "")
+	return strings.TrimSpace(text)
+}
+
 // errOfficeImageOCRUnavailable means the host has not wired a local OCR
 // engine, or the engine is switched off. Callers keep the existing
 // scan/OCR failure instead of inventing text.

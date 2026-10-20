@@ -27,6 +27,7 @@ type testInvitationCodeValidator struct {
 type testUserRouteSyncer struct {
 	allowed      bool
 	targetHubID  string
+	allowCalls   int
 	syncCalls    int
 	replaceCalls int
 	accounts     []string
@@ -91,6 +92,7 @@ func (s *testUserRouteSyncer) SyncUserRouteReplaceAll(_ context.Context, account
 }
 
 func (s *testUserRouteSyncer) AllowsUserRoute(context.Context, string, ...string) (bool, string, error) {
+	s.allowCalls++
 	return s.allowed, s.targetHubID, nil
 }
 
@@ -359,6 +361,54 @@ func TestIdentityServiceBindVerifiedEmailAllowsDirtyDuplicatePrimaryAccount(t *t
 	}
 	if resolved == nil || resolved.ID != phoneUser.ID {
 		t.Fatalf("bound email should resolve to phone user, got %+v", resolved)
+	}
+}
+
+func TestIdentityServiceProveVerifiedEmailDoesNotConsultHubRoute(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		nil,
+		"open",
+		true,
+		nil,
+		"http://hub.local",
+	)
+	route := &testUserRouteSyncer{allowed: false, targetHubID: "other-hub"}
+	svc.SetUserRouteSyncer(route)
+	now := time.Now().UTC()
+	phoneUser := &store.User{
+		ID:               "user_prove_email_phone",
+		TenantID:         store.DefaultTenantID,
+		Email:            "phone:13301168516",
+		SN:               "SN-prove-email-phone",
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := deps.store.Users.Create(context.Background(), phoneUser); err != nil {
+		t.Fatalf("create phone user: %v", err)
+	}
+
+	if err := svc.CanProveVerifiedEmailForUser(context.Background(), phoneUser, "13301168516@189.cn"); err != nil {
+		t.Fatalf("CanProveVerifiedEmailForUser() error = %v", err)
+	}
+	if route.allowCalls != 0 {
+		t.Fatalf("prove consulted hub route %d times", route.allowCalls)
+	}
+	err := svc.CanBindVerifiedEmailToUser(context.Background(), phoneUser, "13301168516@189.cn")
+	if !errors.Is(err, ErrRoutedToAnotherHub) {
+		t.Fatalf("CanBindVerifiedEmailToUser() error = %v, want routed to another hub", err)
+	}
+	if route.allowCalls != 1 {
+		t.Fatalf("bind route checks = %d, want 1", route.allowCalls)
 	}
 }
 

@@ -167,6 +167,7 @@ describe("FileCompanionComposer", () => {
 
     it("does not store a question while a turn is in flight", () => {
         render(<Harness busy />);
+        expect(screen.getByTestId("file-companion-send").textContent).toBe("处理中");
         fireEvent.change(input(), { target: { value: "先别发出去" } });
         fireEvent.keyDown(input(), { key: "Enter" });
         fireEvent.click(screen.getByTestId("file-companion-send"));

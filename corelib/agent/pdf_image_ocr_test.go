@@ -13,6 +13,35 @@ import (
 	"testing"
 )
 
+func TestStripAttachedImageInstructionsKeepsTheTask(t *testing.T) {
+	raw := "把配图版讲稿做完\n\n" + AutoExtractNotice + "\n\n" + imageOnlyPDFVisionLead + "\n\n## Page 1\n" + pdfVisionPageMarker
+	got := StripAttachedImageInstructions(raw)
+	if !strings.Contains(got, "把配图版讲稿做完") || !strings.Contains(got, pdfVisionPageMarker) || strings.Contains(got, AutoExtractNotice) {
+		t.Fatalf("stripped = %q", got)
+	}
+	plain := "摘要\n\n" + AutoExtractNotice + "\n\n正文"
+	if !strings.Contains(StripAttachedImageInstructions(plain), AutoExtractNotice) {
+		t.Fatal("a text extract lost the auto-extract notice")
+	}
+	for _, lead := range []string{
+		imageOnlyPDFVisionLead,
+		imageOnlyPDFVisionLeadTruncated,
+		imageOnlyPDFVisionLeadMixed,
+		imageOnlyPDFVisionLeadUnresolved,
+	} {
+		if strings.Contains(StripAttachedImageInstructions("任务\n"+lead), lead) {
+			t.Fatalf("lead remained: %s", lead)
+		}
+	}
+	if StripAttachedImageInstructions("  "+imageOnlyPDFVisionLead+"  ") != "" {
+		t.Fatal("a message that is only the attached-image instruction was kept")
+	}
+	withHint := "把配图版讲稿做完\n\n" + AttachedImageReadHint
+	if got := StripAttachedImageInstructions(withHint); !strings.Contains(got, "把配图版讲稿做完") || strings.Contains(got, "Analyze attached images first") {
+		t.Fatalf("image hint = %q", got)
+	}
+}
+
 func TestExtractPDFTextOCRsEmbeddedPageImage(t *testing.T) {
 	restoreOfficeImagePDFOCR(t)
 	setImageOnlyPDFOCRPageLimitForTest(t, 16)

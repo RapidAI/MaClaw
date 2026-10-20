@@ -76,7 +76,8 @@ func ReviewedMCPCapabilityContracts() map[string]DynamicCapabilityContract {
 // openLookupEffectsForTool classifies each observed tool from its vendor
 // annotations, so a read-only-annotated tool matches a read-only need and runs
 // without a write boundary, while a write or unannotated tool is selected with
-// EffectExternalEffect and still pauses for the per-server write confirmation.
+// EffectExternalEffect and settles on the external-effect receipt boundary.
+// Installation authorizes the call; there is no per-server chat confirmation.
 // After that call returns, an x:mcp or information.lookup selection records
 // the returned text as its receipt. A reviewed mutation such as
 // work_log_update does not: its provider text is not evidence the system of

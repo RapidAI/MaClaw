@@ -63,7 +63,7 @@ func (a *App) marketRequest(method, path string, body io.Reader, contentType str
 	// The Pet Store API is served only by HubCenter. RemoteHubURL hosts no
 	// /api/v1/pet-store/* routes, so there is deliberately no hub fallback:
 	// fail fast with a clear message instead of a stream of 404s.
-	if strings.TrimSpace(cfg.RemoteHubCenterURL) == "" {
+	if skillMarketSessionBase(cfg) == "" {
 		return nil, errPetStoreHubCenterMissing
 	}
 	staleToken := strings.TrimSpace(cfg.SkillMarketSessionToken)
@@ -143,7 +143,7 @@ func (a *App) marketRequestOnce(method, path string, payload []byte, contentType
 	if err != nil {
 		return nil, 0, err
 	}
-	baseURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubCenterURL), "/")
+	baseURL := skillMarketSessionBase(cfg)
 	if baseURL == "" {
 		return nil, 0, errPetStoreHubCenterMissing
 	}
@@ -215,8 +215,9 @@ func (a *App) marketRequestOnce(method, path string, payload []byte, contentType
 }
 
 // refreshPetStoreSession exchanges the existing Hub enrollment credentials for
-// a fresh SkillMarket session and persists only that session token. The
-// enrollment viewer token remains native-only and is never returned to React.
+// a fresh SkillMarket session and persists that session with the HubCenter
+// that issued it. The enrollment viewer token remains native-only and is
+// never returned to React.
 func (a *App) refreshPetStoreSession(staleToken string) error {
 	if a == nil {
 		return errString("app unavailable")
@@ -237,7 +238,7 @@ func (a *App) refreshPetStoreSession(staleToken string) error {
 	if (staleToken == "" && currentToken != "") || (staleToken != "" && currentToken != staleToken) {
 		return nil
 	}
-	baseURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubCenterURL), "/")
+	baseURL := skillMarketSessionBase(cfg)
 	if baseURL == "" {
 		// No hub fallback: the machine-login endpoint is HubCenter-only, and
 		// petStoreRequest already fails fast on this configuration. Returning
@@ -267,7 +268,7 @@ func (a *App) refreshPetStoreSession(staleToken string) error {
 		return errString("HubCenter machine login returned no session")
 	}
 	return a.PatchConfig(func(cfg *corelib.AppConfig) {
-		cfg.SkillMarketSessionToken = strings.TrimSpace(result.SessionToken)
+		storeSkillMarketSession(cfg, result.SessionToken, baseURL)
 	})
 }
 

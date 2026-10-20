@@ -232,6 +232,40 @@ function formatInterval(minutes: number, lang: string): string {
     return isZh ? `${minutes}分钟` : `${minutes} min`;
 }
 
+// A sub-day interval hides an anchor that hits the same instants as midnight.
+// Hour 9 with a 60-minute interval is still every hour. A whole number of
+// days keeps the clock, because every run is that time of day.
+function intervalAnchorVisible(hour: number, minute: number, intervalMinutes: number): boolean {
+    if (intervalMinutes <= 0) return false;
+    if (intervalMinutes % 1440 === 0) return true;
+    const minutes = hour * 60 + minute;
+    if (minutes < 0) return true;
+    return minutes % intervalMinutes !== 0;
+}
+
+function intervalScheduleText(intervalMinutes: number, hour: number, minute: number, lang: string): string {
+    const isZh = lang === 'zh-Hans' || lang === 'zh-Hant';
+    const cadence = isZh ? `每${formatInterval(intervalMinutes, lang)}` : `Every ${formatInterval(intervalMinutes, lang)}`;
+    if (!intervalAnchorVisible(hour, minute, intervalMinutes)) return cadence;
+    const time = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+    if (intervalMinutes % 1440 === 0) {
+        return isZh ? `${cadence} ${time}` : `${cadence} at ${time}`;
+    }
+    return isZh ? `${cadence}（从 ${time} 起）` : `${cadence} (from ${time})`;
+}
+
+function scheduleDayText(t: ScheduledTask, lang: string): string {
+    const isZh = lang === 'zh-Hans' || lang === 'zh-Hant';
+    const parts: string[] = [];
+    if (t.day_of_month > 0) {
+        parts.push(isZh ? `每月${t.day_of_month}号` : `day ${t.day_of_month}`);
+    }
+    if (t.day_of_week >= 0 && t.day_of_week <= 6) {
+        parts.push(getWeekdays(lang)[t.day_of_week]);
+    }
+    return parts.join(" ");
+}
+
 function scheduleDesc(t: ScheduledTask, lang: string): string {
     const isZh = lang === 'zh-Hans' || lang === 'zh-Hant';
     const weekdays = getWeekdays(lang);
@@ -242,9 +276,9 @@ function scheduleDesc(t: ScheduledTask, lang: string): string {
 
     // Interval mode: repeat every N minutes
     if (t.interval_minutes > 0) {
-        const ivStr = formatInterval(t.interval_minutes, lang);
-        let desc = isZh ? `每${ivStr}` : `Every ${ivStr}`;
-        desc += isZh ? `（首次 ${time}）` : ` (first at ${time})`;
+        let desc = intervalScheduleText(t.interval_minutes, t.hour, t.minute, lang);
+        const day = scheduleDayText(t, lang);
+        if (day) desc += ` ${day}`;
         if (t.start_date || t.end_date) {
             desc += ` (${t.start_date || "..."} ~ ${t.end_date || "..."})`;
         }
@@ -1101,7 +1135,7 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
                                     </div>
                                     {fIntervalMin > 0 && (
                                         <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginTop: -4, marginBottom: 6 }}>
-                                            ≈ {t("every", "每")}{formatInterval(fIntervalMin, lang)}{t(`, first at ${String(fHour).padStart(2,"0")}:${String(fMinute).padStart(2,"0")}`, `，首次 ${String(fHour).padStart(2,"0")}:${String(fMinute).padStart(2,"0")}`)}
+                                            ≈ {intervalScheduleText(fIntervalMin, fHour, fMinute, lang)}
                                         </div>
                                     )}
                                 </>

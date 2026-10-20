@@ -50,94 +50,53 @@ func mcpWriteGateCallbacks(userID string) *sharedAgentLoopCallbacks {
 	}
 }
 
-func TestMCPServerWriteGatePausesOnlyUnreviewedExternalEffect(t *testing.T) {
+func TestInstalledMCPWriteDoesNotAsk(t *testing.T) {
 	cb := mcpWriteGateCallbacks("user-1")
-	result, ok := cb.mcpServerWriteGateForSelection(mcpWriteGateSelection(), mcpWriteGateEntries(tool.TrustTierUnreviewed))
-	if !ok || !result.Paused || result.ReasonCode != mcpServerWriteAwaitingConfirmation || !agent.IsAskUserResult(result.Result) {
-		t.Fatalf("gate=%#v ok=%v", result, ok)
+	// An installed server is authorized by installation. Trust tier, a missing
+	// owner, and a sibling server do not open a chat confirmation.
+	for _, entries := range [][]agentservice.MCPToolEntry{
+		mcpWriteGateEntries(tool.TrustTierUnreviewed),
+		mcpWriteGateEntries(tool.TrustTierApproved),
+		nil,
+	} {
+		if result, ok := cb.mcpServerWriteGateForSelection(mcpWriteGateSelection(), entries); ok || result.ReasonCode == mcpServerWriteAwaitingConfirmation {
+			t.Fatalf("installed write paused: %#v entries=%v", result, entries)
+		}
 	}
-	if strings.Contains(result.Result, "本会话") || !strings.Contains(result.Result, "该服务器被移除") {
-		t.Fatalf("question copy=%q", result.Result)
-	}
-	raw, found := cb.handler.mcpServerWriteNotes.Load("user-1")
-	if !found || raw.(pendingMCPServerWrite).ServerID != "srv-1" {
-		t.Fatalf("pending note=%v found=%v", raw, found)
-	}
-	note := raw.(pendingMCPServerWrite)
-	parsed, parsedOK := ParseAskUserResult(result.Result)
-	if !parsedOK {
-		t.Fatal("question marker did not parse")
-	}
-	display := FormatAskUserForDisplay(parsed)
-	if strings.Contains(display, note.Nonce) || strings.Contains(display, mcpServerWriteAskContext) || strings.Contains(display, "unreviewed") {
-		t.Fatalf("card shows the binding context: %q", display)
-	}
-	if !strings.Contains(display, "该服务器被移除") {
-		t.Fatalf("card dropped the question: %q", display)
-	}
-	if strings.Contains(display, "\n  1. ") {
-		t.Fatalf("confirm card pre-listed options the channel numbers again: %q", display)
-	}
-	if !strings.Contains(display, "请输入：确认 或 取消") {
-		t.Fatalf("confirm hint missing: %q", display)
-	}
-	shown := cb.handler.handleAgentLoopAskUserToolResult("user-1", "lansenger", "", result.Result, false, "call-1", nil, nil, nil, nil, false)
-	if shown.Response == nil || strings.Contains(shown.Response.Text, note.Nonce) || strings.Contains(shown.Response.Text, mcpServerWriteAskContext) {
-		t.Fatalf("response shows the binding: %#v", shown.Response)
-	}
-	if len(shown.Response.Actions) != 2 || shown.Response.Actions[0].Label != "确认" || shown.Response.Actions[0].Command != "confirm" || shown.Response.Actions[1].Label != "取消" || shown.Response.Actions[1].Command != "cancel" {
-		t.Fatalf("confirm actions=%#v", shown.Response.Actions)
-	}
-	if len(shown.History) == 0 {
-		t.Fatal("question was not recorded in history")
-	}
-	historyText, _ := shown.History[len(shown.History)-1].Content.(string)
-	if strings.Contains(historyText, note.Nonce) || strings.Contains(historyText, mcpServerWriteAskContext) {
-		t.Fatalf("history shows the binding: %q", historyText)
-	}
-
-	// Read-only selections never reach the per-server write gate.
 	readOnly := mcpWriteGateSelection()
 	readOnly.Effects = []tool.EffectClass{tool.EffectReadOnly}
 	if _, ok := cb.mcpServerWriteGateForSelection(readOnly, mcpWriteGateEntries(tool.TrustTierUnreviewed)); ok {
 		t.Fatal("read-only selection was gated")
 	}
-	// Reviewed bindings keep their own confirmation path.
-	if _, ok := cb.mcpServerWriteGateForSelection(mcpWriteGateSelection(), mcpWriteGateEntries(tool.TrustTierApproved)); ok {
-		t.Fatal("reviewed selection was gated by the unreviewed gate")
-	}
-	// A binding absent from the inventory fails closed downstream, not here.
-	if _, ok := cb.mcpServerWriteGateForSelection(mcpWriteGateSelection(), nil); ok {
-		t.Fatal("unknown selection was gated")
-	}
-	// No confirmable principal: the call must be refused, not passed — an
-	// anonymous loop must not skip the confirmation by having no owner.
 	anon := mcpWriteGateCallbacks("")
-	rejected, ok := anon.mcpServerWriteGateForSelection(mcpWriteGateSelection(), mcpWriteGateEntries(tool.TrustTierUnreviewed))
-	if !ok || rejected.Paused || rejected.Succeeded || rejected.ReasonCode != "mcp_server_write_unconfirmable" {
-		t.Fatalf("ownerless call result=%#v ok=%v", rejected, ok)
+	if result, ok := anon.mcpServerWriteGateForSelection(mcpWriteGateSelection(), mcpWriteGateEntries(tool.TrustTierUnreviewed)); ok {
+		t.Fatalf("ownerless installed write paused: %#v", result)
+	}
+	if _, found := cb.handler.mcpServerWriteNotes.Load("user-1"); found {
+		t.Fatal("a call that was not asked left a confirmation note")
 	}
 }
 
 func TestMCPServerWriteGrantIsPerServerPerSession(t *testing.T) {
 	isolateMCPServerWriteGrants(t)
 	cb := mcpWriteGateCallbacks("user-1")
-	if _, ok := cb.mcpServerWriteGateForSelection(mcpWriteGateSelection(), mcpWriteGateEntries(tool.TrustTierUnreviewed)); !ok {
-		t.Fatal("first call was not gated")
+	if _, ok := cb.mcpServerWriteGateForSelection(mcpWriteGateSelection(), mcpWriteGateEntries(tool.TrustTierUnreviewed)); ok {
+		t.Fatal("installed server was asked before any grant existed")
 	}
 	cb.handler.confirmMCPServerWrite("user-1", "srv-1")
 	if _, ok := cb.mcpServerWriteGateForSelection(mcpWriteGateSelection(), mcpWriteGateEntries(tool.TrustTierUnreviewed)); ok {
-		t.Fatal("granted server was gated again")
+		t.Fatal("granted server was asked")
 	}
-	// A sibling server must not ride the grant.
+	// A sibling server is also installed. It runs without borrowing the grant
+	// and without a chat confirmation. The grant record itself stays per user.
 	other := mcpWriteGateSelection()
 	other.Provider.ProviderID = "srv-2"
 	otherEntries := []agentservice.MCPToolEntry{{
 		ServerID: "srv-2", ToolName: "write_thing",
 		Contract: agentservice.DynamicCapabilityContract{TrustTier: tool.TrustTierUnreviewed},
 	}}
-	if _, ok := cb.mcpServerWriteGateForSelection(other, otherEntries); !ok {
-		t.Fatal("grant leaked to another server")
+	if _, ok := cb.mcpServerWriteGateForSelection(other, otherEntries); ok {
+		t.Fatal("sibling installed server was asked")
 	}
 	// Another user must not ride the grant either.
 	if !cb.handler.mcpServerWriteConfirmed("user-1", "srv-1") || cb.handler.mcpServerWriteConfirmed("user-2", "srv-1") {
@@ -282,7 +241,7 @@ func TestMCPServerWriteGrantReconfirmKeepsTheStoredFile(t *testing.T) {
 	hint, handled := h.finishMCPServerWriteAskUser("user-1", "确认", &pendingMCPServerWrite{
 		ServerID: "srv-1", ServerName: "Vendor Box", ToolName: "write_thing",
 	})
-	if !handled || !strings.Contains(hint, "Do not reuse a function name") || !strings.Contains(hint, "Installed MCP tool write_thing on server srv-1.") || strings.Contains(hint, "was not stored") {
+	if !handled || !strings.Contains(hint, "srv-1__write_thing") || !strings.Contains(hint, "That name stays the same") || strings.Contains(hint, "was not stored") {
 		t.Fatalf("existing grant hint=%q handled=%v", hint, handled)
 	}
 	same, err := os.ReadFile(path)
@@ -384,7 +343,7 @@ func TestMCPServerWriteNumberedReplyStoresTheGrant(t *testing.T) {
 		History: entries, Timestamp: time.Now(), MCPServerWrite: write,
 	})
 	hint, _, ok, settled := h.consumePendingAskUserAnswer("user-1", "1", entries)
-	if !ok || settled || !h.mcpServerWriteConfirmed("user-1", "srv-1") || !strings.Contains(hint, "Do not reuse a function name") || !strings.Contains(hint, "Installed MCP tool post_work_log_add on server srv-1.") {
+	if !ok || settled || !h.mcpServerWriteConfirmed("user-1", "srv-1") || !strings.Contains(hint, "srv-1__post_work_log_add") || !strings.Contains(hint, "That name stays the same") {
 		t.Fatalf("numbered approve hint=%q ok=%v granted=%v settled=%v", hint, ok, h.mcpServerWriteConfirmed("user-1", "srv-1"), settled)
 	}
 	h.pendingAskUser.Store("user-1", &pendingAskUserState{
@@ -539,10 +498,10 @@ func TestPendingAskUserContextStripsConfirmBinding(t *testing.T) {
 	}
 }
 
-// The confirmation question has to come back before Admit. Admit consumes the
-// one-shot invocation grant, so a question asked afterwards leaves the
-// approved re-issue with nothing to run.
-func TestMCPServerWriteQuestionPrecedesGrantAdmission(t *testing.T) {
+// An observed installed server must not be replaced by a chat confirmation
+// before admission. The question used to consume the one-shot grant and the
+// tool never ran.
+func TestInstalledMCPWriteIsNotAQuestionBeforeAdmission(t *testing.T) {
 	isolateMCPServerWriteGrants(t)
 	app := &App{testHomeDir: t.TempDir()}
 	defer app.closeSemanticInvocationStore()
@@ -552,51 +511,23 @@ func TestMCPServerWriteQuestionPrecedesGrantAdmission(t *testing.T) {
 		"additionalProperties": false,
 	}
 	seedObservedRemoteMCP(t, app, "srv-1", []MCPToolView{{Name: "write_thing", Description: "write a record", InputSchema: schema}})
-	auth, err := tool.NewParameterAuthorization(schema)
-	if err != nil {
-		t.Fatal(err)
-	}
 	selection := mcpWriteGateSelection()
 	selection.ID = "selection:write"
 	selection.AdapterName = "write_thing"
-	selection.ParameterAuthorization = auth
-	issuer, err := tool.NewInvocationIssuer([]byte(strings.Repeat("k", 32)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	executor, err := tool.NewPlanExecutor(issuer, tool.NewMemoryPlanExecutionStore())
-	if err != nil {
-		t.Fatal(err)
-	}
-	coordinator, err := tool.NewSQLiteSemanticExecutionCoordinator(filepath.Join(t.TempDir(), "semantic-execution.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer coordinator.Close()
-	h := &IMMessageHandler{app: app}
 	cb := &sharedAgentLoopCallbacks{
-		handler: h,
+		handler: &IMMessageHandler{app: app},
 		userID:  "user-1",
 		semanticSurface: &semanticCallSurface{
-			scope:            tool.InvocationScope{PrincipalID: "user-1"},
-			plan:             tool.ToolPlan{Selections: []tool.PlannedSelection{selection}},
-			parameterSchemas: map[string]map[string]interface{}{"write_thing": schema},
-			issuer:           issuer,
-			executor:         executor,
-			coordinator:      coordinator,
+			scope: tool.InvocationScope{PrincipalID: "user-1"},
+			plan:  tool.ToolPlan{Selections: []tool.PlannedSelection{selection}},
 		},
 	}
-	grant := tool.InvocationGrant{SelectionID: selection.ID}
-	first := cb.executeCoordinatedSemanticToolCall("invoke_test", "{}", "call-1", "", grant)
-	if !agent.IsAskUserResult(first) || !strings.Contains(first, "该服务器被移除") {
-		t.Fatalf("question was not asked before admission: %q", first)
+	gated, handled := cb.pauseUnconfirmedMCPServerWrite(selection)
+	if agent.IsAskUserResult(gated.Result) || strings.Contains(gated.Result, "是否允许") || strings.Contains(gated.Result, "该服务器被移除") {
+		t.Fatalf("installed write asked before admission: %#v handled=%v", gated, handled)
 	}
-	if !h.confirmMCPServerWrite("user-1", "srv-1") {
-		t.Fatal("approval was not stored")
-	}
-	second := cb.executeCoordinatedSemanticToolCall("invoke_test", "{}", "call-2", "", grant)
-	if agent.IsAskUserResult(second) || strings.Contains(second, "是否允许") {
-		t.Fatalf("approved server asked again: %q", second)
+	if handled {
+		t.Fatalf("installed observed server did not proceed: %#v", gated)
 	}
 }
 
@@ -615,6 +546,44 @@ func TestSemanticDynamicCatalogRejectionMatchesTheExecutor(t *testing.T) {
 	}}}
 	if _, ok := semanticDynamicCatalogRejection(complete, nil, "mcp"); ok {
 		t.Fatal("complete catalog was rejected")
+	}
+}
+
+func TestObservedReadOnlyMCPSurvivesSiblingNotReady(t *testing.T) {
+	inventory := semanticDynamicInventory{
+		mcpEntries: []agentservice.MCPToolEntry{{ServerID: "tengyun", ToolName: "work_log_query"}},
+		coverage: tool.CatalogCoverage{
+			State: tool.CatalogCoverageComplete,
+			Families: []tool.CatalogCoverageFamily{{
+				Kind: "mcp", State: tool.CatalogCoverageIncomplete, ReasonCode: tool.CatalogCoverageReasonNotReady,
+			}},
+		},
+	}
+	read := tool.PlannedSelection{
+		Provider: tool.ProviderBinding{Kind: "mcp", ProviderID: "tengyun", ImplementationID: "work_log_query"},
+		Effects:  []tool.EffectClass{tool.EffectReadOnly},
+	}
+	if rejected, ok := semanticDynamicCatalogRejectionForSelection(inventory, nil, read); ok {
+		t.Fatalf("observed read waited on a sibling: %#v", rejected)
+	}
+	write := read
+	write.Effects = []tool.EffectClass{tool.EffectExternalEffect}
+	if rejected, ok := semanticDynamicCatalogRejectionForSelection(inventory, nil, write); ok {
+		t.Fatalf("observed write waited on a sibling: %#v", rejected)
+	}
+	missing := write
+	missing.Provider.ImplementationID = "post_work_log_add"
+	rejected, ok := semanticDynamicCatalogRejectionForSelection(inventory, nil, missing)
+	if !ok || rejected.ReasonCode != tool.CatalogCoverageReasonNotReady {
+		t.Fatalf("missing tool was admitted while the family is not ready: %#v ok=%v", rejected, ok)
+	}
+	blocked := inventory
+	blocked.mcpEntries = []agentservice.MCPToolEntry{{ServerID: "tengyun", ToolName: "work_log_query", RuntimeBlocked: true}}
+	if _, ok := semanticDynamicCatalogRejectionForSelection(blocked, nil, read); !ok {
+		t.Fatal("blocked read was admitted")
+	}
+	if _, ok := semanticDynamicCatalogRejectionForSelection(inventory, errors.New("boom"), read); !ok {
+		t.Fatal("inventory error was admitted")
 	}
 }
 
@@ -683,10 +652,10 @@ func TestMCPServerWriteCatalogRefusalPrecedesAdmission(t *testing.T) {
 	}
 }
 
-// A standalone host has no coordinator. The question must be returned before
-// the host-call journal records it, or the same call id replays the question
-// after the user approves and the tool never runs.
-func TestMCPServerWriteJournalDoesNotReplayTheQuestion(t *testing.T) {
+// A journaled call must not be a chat confirmation. The old question was
+// stored as the call result, so the same call id replayed the question after
+// the user approved and the MCP tool never ran.
+func TestInstalledMCPWriteIsNotJournaledAsAQuestion(t *testing.T) {
 	isolateMCPServerWriteGrants(t)
 	app := &App{testHomeDir: t.TempDir()}
 	defer app.closeSemanticInvocationStore()
@@ -696,48 +665,20 @@ func TestMCPServerWriteJournalDoesNotReplayTheQuestion(t *testing.T) {
 		"additionalProperties": false,
 	}
 	seedObservedRemoteMCP(t, app, "srv-1", []MCPToolView{{Name: "write_thing", Description: "write a record", InputSchema: schema}})
-	auth, err := tool.NewParameterAuthorization(schema)
-	if err != nil {
-		t.Fatal(err)
-	}
 	selection := mcpWriteGateSelection()
 	selection.ID = "selection:write"
 	selection.AdapterName = "write_thing"
-	selection.ParameterAuthorization = auth
-	issuer, err := tool.NewInvocationIssuer([]byte(strings.Repeat("k", 32)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	executor, err := tool.NewPlanExecutor(issuer, tool.NewMemoryPlanExecutionStore())
-	if err != nil {
-		t.Fatal(err)
-	}
-	grant := tool.InvocationGrant{SelectionID: selection.ID}
-	h := &IMMessageHandler{app: app}
 	cb := &sharedAgentLoopCallbacks{
-		handler: h,
+		handler: &IMMessageHandler{app: app},
 		userID:  "user-1",
 		semanticSurface: &semanticCallSurface{
-			scope:            tool.InvocationScope{PrincipalID: "user-1"},
-			plan:             tool.ToolPlan{Selections: []tool.PlannedSelection{selection}},
-			parameterSchemas: map[string]map[string]interface{}{"write_thing": schema},
-			issuer:           issuer,
-			executor:         executor,
-			hostCalls:        tool.NewMemoryHostCallJournal(),
-			hostConnectionID: "conn-1",
-			grants:           map[string]tool.InvocationGrant{"invoke_test": grant},
+			scope: tool.InvocationScope{PrincipalID: "user-1"},
+			plan:  tool.ToolPlan{Selections: []tool.PlannedSelection{selection}},
 		},
 	}
-	first := cb.executeSemanticToolCallWithEpoch("invoke_test", "{}", "call-1", "")
-	if !agent.IsAskUserResult(first) || !strings.Contains(first, "该服务器被移除") {
-		t.Fatalf("question=%q", first)
-	}
-	if !h.confirmMCPServerWrite("user-1", "srv-1") {
-		t.Fatal("approval was not stored")
-	}
-	second := cb.executeSemanticToolCallWithEpoch("invoke_test", "{}", "call-1", "")
-	if agent.IsAskUserResult(second) || strings.Contains(second, "是否允许") {
-		t.Fatalf("approved call replayed the question: %q", second)
+	gated, handled := cb.pauseUnconfirmedMCPServerWrite(selection)
+	if handled || agent.IsAskUserResult(gated.Result) || strings.Contains(gated.Result, "是否允许") {
+		t.Fatalf("installed write became a question: %#v handled=%v", gated, handled)
 	}
 }
 

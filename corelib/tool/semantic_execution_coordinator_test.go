@@ -173,6 +173,72 @@ func TestSemanticExecutionCoordinatorMaterializesNextPhaseAtomically(t *testing.
 	}
 }
 
+// A schedule list is one observation. The host that saw it appends exactly
+// one write to the published plan, and the next materialization must issue
+// that write against the stored plan. A second append stays refused, so a
+// create cannot open another write.
+func TestSemanticExecutionCoordinatorObservationFollowUpMaterializesOneWrite(t *testing.T) {
+	coordinator, err := NewSQLiteSemanticExecutionCoordinator(filepath.Join(t.TempDir(), "semantic-execution.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinator.Close()
+	registry := NewCapabilityRegistry("v1")
+	if err := registry.Register(CapabilityDescriptor{ID: CapabilityScheduleAdministerLocal, Version: "v1", Effects: []EffectClass{EffectLocalMutation}}); err != nil {
+		t.Fatal(err)
+	}
+	provider := semanticProvider("schedule_administer", CapabilityScheduleAdministerLocal, nil, EffectLocalMutation)
+	plan, err := NewToolPlanner(registry).Plan(RouteRequest{
+		RootTaskID: "schedule-follow-root", SessionID: "session", TurnID: "turn",
+		Snapshot: semanticSnapshot(t, registry, []ProviderSpec{provider}),
+		Needs:    []CapabilityNeed{{ID: "administer", Capability: CapabilityScheduleAdministerLocal, Required: true}},
+	})
+	if err != nil || len(plan.Selections) != 1 || plan.Selections[0].FitProof.Digest == "" {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+	scope := InvocationScope{RootTaskID: plan.RootTaskID, PlanID: plan.ID, SessionID: "session", TurnID: "turn", PrincipalID: "principal"}
+	issuer, err := NewInvocationIssuerWithStore([]byte(strings.Repeat("s", 32)), coordinator.Grants)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, initial, err := coordinator.PublishSurface(SurfacePublishRequest{Revision: RouteRevisionPublishRequest{Scope: scope, Plan: plan, SnapshotDigest: plan.SnapshotDigest}, Issuer: issuer, GrantTTL: time.Minute, Now: time.Now().UTC()})
+	if err != nil || len(initial) != 1 {
+		t.Fatalf("initial=%#v err=%v", initial, err)
+	}
+	followed, err := coordinator.AppendObservationFollowUp(scope, initial[0].SelectionID, time.Now().UTC())
+	if err != nil || len(followed.Selections) != 2 {
+		t.Fatalf("followed=%d err=%v", len(followed.Selections), err)
+	}
+	sibling := followed.Selections[1]
+	if !sibling.Continuation || !strings.HasSuffix(sibling.ID, "#02") || sibling.FitProof.Digest != plan.Selections[0].FitProof.Digest {
+		t.Fatalf("sibling=%+v", sibling)
+	}
+	if _, err := coordinator.AppendObservationFollowUp(scope, initial[0].SelectionID, time.Now().UTC()); err == nil {
+		t.Fatal("a second observation follow-up was stored")
+	}
+	if _, err := coordinator.AppendRepeatSibling(scope, sibling.ID, time.Now().UTC()); err == nil {
+		t.Fatal("strict repeat append stored a second schedule write")
+	}
+	stored, err := coordinator.Routes.PublishedPlan(scope)
+	if err != nil || len(stored.Selections) != 2 || stored.Selections[1].ID != sibling.ID || stored.Selections[1].FitProof.Digest != sibling.FitProof.Digest {
+		t.Fatalf("stored=%#v err=%v", stored.Selections, err)
+	}
+	if _, err := coordinator.Routes.RecordSelectionCompletion(scope, plan.ID, initial[0].SelectionID, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := coordinator.Routes.CompletedSelections(scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, next, err := coordinator.MaterializeReadySurface(scope, issuer, time.Minute, completed, map[string]bool{sibling.ID: true}, time.Now().UTC())
+	if err != nil || len(next) != 1 || next[0].SelectionID != sibling.ID {
+		t.Fatalf("next=%#v stateSelections=%d err=%v", next, len(state.Plan.Selections), err)
+	}
+	if _, _, err := coordinator.MaterializeReadySurface(scope, issuer, time.Minute, completed, map[string]bool{sibling.ID: true}, time.Now().UTC()); err == nil || err.Error() != "semantic surface selection already materialized" {
+		t.Fatalf("second materialize err=%v", err)
+	}
+}
+
 func TestSemanticExecutionCoordinatorDoesNotRematerializeExposedSelection(t *testing.T) {
 	coordinator, err := NewSQLiteSemanticExecutionCoordinator(filepath.Join(t.TempDir(), "semantic-execution.db"))
 	if err != nil {

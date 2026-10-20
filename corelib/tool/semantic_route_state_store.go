@@ -917,6 +917,78 @@ func (s *memoryRouteStateStore) PublishedPlan(scope InvocationScope) (ToolPlan, 
 	return cloneRouteStatePlan(state.Plan), nil
 }
 
+// storeRepeatSiblingPlan keeps the next sibling on this route. Hosts without
+// a coordinator transaction used to append only in process memory, so the
+// following materialization was checked against the original published plan
+// and rejected as a binding mismatch. The plan ID and revision stay put.
+// Grants already issued still bind because existing selections are unchanged.
+func (s *memoryRouteStateStore) storeRepeatSiblingPlan(scope InvocationScope, prototypeSelectionID string, now time.Time, observation bool) (ToolPlan, error) {
+	if s == nil {
+		return ToolPlan{}, fmt.Errorf("route state store is unavailable")
+	}
+	now = now.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := routeStateKey(scope)
+	state, ok := s.states[key]
+	if !ok || state.Plan.ID != scope.PlanID || state.Plan.RootTaskID != scope.RootTaskID {
+		return ToolPlan{}, fmt.Errorf("route_state_not_found")
+	}
+	if changed, err := ensureMemoryRouteScope(&state, &scope); err != nil {
+		return ToolPlan{}, err
+	} else if changed {
+		s.states[key] = state
+	}
+	if state.Revision != nil {
+		current, ok := s.lineages[routeLineageKey(scope)]
+		if !ok || !sameRouteRevisionRef(*state.Revision, current) {
+			return ToolPlan{}, fmt.Errorf("route_revision_superseded")
+		}
+	}
+	var updated ToolPlan
+	var opened bool
+	if observation {
+		updated, _, opened = AppendObservationFollowUp(state.Plan, prototypeSelectionID)
+	} else {
+		updated, _, opened = AppendRepeatSibling(state.Plan, prototypeSelectionID)
+	}
+	if !opened {
+		return ToolPlan{}, fmt.Errorf("repeat sibling unavailable")
+	}
+	_, digest, err := canonicalRoutePlan(updated)
+	if err != nil {
+		return ToolPlan{}, err
+	}
+	for _, materialization := range state.Materializations {
+		if !routeMaterializationMatchesPlan(updated, state.Scope, materialization) {
+			return ToolPlan{}, fmt.Errorf("route_state_grant_binding_mismatch")
+		}
+	}
+	for _, completed := range state.Completed {
+		if !completedSelectionMatchesPlan(completed, updated) {
+			return ToolPlan{}, fmt.Errorf("route_state_corrupt")
+		}
+	}
+	for _, confirmation := range state.Confirmations {
+		if !confirmationMatchesPlan(confirmation, updated, now) && (confirmation.ValidUntil.IsZero() || now.Before(confirmation.ValidUntil)) {
+			return ToolPlan{}, fmt.Errorf("route_state_corrupt")
+		}
+	}
+	for _, artifact := range state.Artifacts {
+		if !routeArtifactUsableInPlan(artifact, updated) {
+			return ToolPlan{}, fmt.Errorf("route_state_corrupt")
+		}
+	}
+	state.Plan = cloneRouteStatePlan(updated)
+	state.PlanDigest = digest
+	state.UpdatedAt = now
+	s.states[key] = state
+	return cloneRouteStatePlan(state.Plan), nil
+}
+
 func (s *memoryRouteStateStore) RecordSelectionCompletion(scope InvocationScope, planID, selectionID string, now time.Time) (RouteState, error) {
 	if s == nil {
 		return RouteState{}, fmt.Errorf("route state store is unavailable")

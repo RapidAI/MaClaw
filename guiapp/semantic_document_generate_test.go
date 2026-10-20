@@ -940,6 +940,39 @@ func TestIMSemanticWeatherPDFHostGeneratesWhenModelStopsAfterSearch(t *testing.T
 	}
 }
 
+func TestHostAutoGeneratePDFSkippedOnChatTaskHandoff(t *testing.T) {
+	cb := weatherPDFDesktopReadyAfterSearch(t)
+	name, grant := soleLiveSemanticGrantByAdapter(cb.semanticSurface, "generate_pdf")
+	if name == "" || grant.Token == "" {
+		t.Fatal("generate_pdf grant missing after search")
+	}
+	note := "剩余工作已继续处理，完成后会发到这个对话。"
+	resp := &IMAgentResponse{Text: note, ResponseSource: imResponseSourceChatTaskHandoff.String()}
+	attachSharedLoopArtifacts(resp, cb)
+	if _, ok := cb.semanticSurface.grants[name]; !ok {
+		t.Fatal("chat-task handoff must not consume generate_pdf")
+	}
+	if cb.turnPublishedPDF || resp.LocalFilePath != "" || resp.FileData != "" || resp.FileMimeType != "" {
+		t.Fatalf("handoff must not publish a report from lookup evidence: %+v", resp)
+	}
+	if resp.Text != note || resp.ResponseSource != imResponseSourceChatTaskHandoff.String() {
+		t.Fatalf("handoff reply changed: source=%q text=%q", resp.ResponseSource, resp.Text)
+	}
+}
+
+func TestChatTaskHandoffStillDeliversAnAlreadyPublishedPDF(t *testing.T) {
+	cb, _ := weatherPDFDesktopReadyForHostDeliver(t)
+	note := "剩余工作已继续处理，完成后会发到这个对话。"
+	resp := &IMAgentResponse{Text: note, ResponseSource: imResponseSourceChatTaskHandoff.String()}
+	attachSharedLoopArtifacts(resp, cb)
+	if resp.Text != note || resp.ResponseSource != imResponseSourceChatTaskHandoff.String() {
+		t.Fatalf("handoff reply changed: source=%q text=%q", resp.ResponseSource, resp.Text)
+	}
+	if resp.LocalFilePath == "" && resp.FileData == "" {
+		t.Fatalf("an already published PDF must still attach: %+v", resp)
+	}
+}
+
 func TestHostAutoGeneratePDFSkippedOnInteractivePause(t *testing.T) {
 	cb := weatherPDFDesktopReadyAfterSearch(t)
 	name, grant := soleLiveSemanticGrantByAdapter(cb.semanticSurface, "generate_pdf")

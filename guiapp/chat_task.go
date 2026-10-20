@@ -20,8 +20,8 @@ const (
 	chatTaskResultSource = "chat_task_result"
 	chatTaskEventName    = "ai-assistant-task"
 	chatTaskStoreFile    = "chat-tasks.json"
-	// A short reply, at most two inline lookups, then the closing sentence.
-	// A third tool call is rejected and has to be handed off.
+	// Kept so a test can still prove an explicit budget clamps. Desktop chat
+	// does not assign it: a call count is not a stop.
 	desktopChatForegroundIterationBudget = 4
 	desktopChatInlineToolRounds          = 2
 	chatTaskPerSessionLimit              = 3
@@ -67,6 +67,8 @@ type AIAssistantChatTaskDispatchRequest struct {
 	ProjectPath string `json:"project_path,omitempty"`
 	SessionKey  string `json:"session_key,omitempty"`
 	Lang        string `json:"lang,omitempty"`
+	// Title is the label the person sees. Empty uses the start of Text.
+	Title string `json:"title,omitempty"`
 	// Computer marks the one computer-use helper for Screen.
 	Computer bool   `json:"-"`
 	Screen   string `json:"-"`
@@ -210,7 +212,7 @@ func (r *chatTaskRegistry) Dispatch(req AIAssistantChatTaskDispatchRequest) (AIA
 		ID:         id,
 		SessionKey: sessionKey,
 		MemoryKey:  chatTaskMemoryOwner(sessionKey, id),
-		Title:      chatTaskTitle(prompt),
+		Title:      chatTaskDispatchTitle(req.Title, prompt),
 		Prompt:     prompt,
 		Status:     chatTaskQueued,
 		CreatedAt:  now,
@@ -329,19 +331,84 @@ func (r *chatTaskRegistry) Steer(taskID, text string) error {
 	loop := task.loop
 	memoryKey := task.MemoryKey
 	r.mu.Unlock()
-	note := "[用户补充] " + text
-	if loop != nil {
-		loop.TryRequestReplan(func() {
-			if r.handler != nil {
-				r.handler.accumulateInjection(memoryKey, note)
-			}
-		})
-		return nil
-	}
-	if r.handler != nil {
-		r.handler.accumulateInjection(memoryKey, note)
+	if !r.deliverSteer(loop, memoryKey, text) {
+		return fmt.Errorf("chat task is not running")
 	}
 	return nil
+}
+
+type chatTaskOpenContinue int
+
+const (
+	// chatTaskOpenContinueNone means the caller may start a task. Nothing is
+	// running, or the only open task has already committed its reply and
+	// will not read a steer.
+	chatTaskOpenContinueNone chatTaskOpenContinue = iota
+	// chatTaskOpenContinueSteered means the single running task received
+	// the continuation.
+	chatTaskOpenContinueSteered
+	// chatTaskOpenContinueHeld means the host must not guess: more than
+	// one task is open, or the only one is waiting for the user.
+	chatTaskOpenContinueHeld
+)
+
+// continueOpenChatTask attaches a host continuation to the single running
+// task. A task that is waiting for the user is not answered. The person's
+// steer path still answers that question; this one must not.
+func (r *chatTaskRegistry) continueOpenChatTask(sessionKey, text string) (chatTaskOpenContinue, error) {
+	if r == nil {
+		return chatTaskOpenContinueHeld, fmt.Errorf("chat tasks are unavailable")
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return chatTaskOpenContinueHeld, fmt.Errorf("steer text is empty")
+	}
+	sessionKey = strings.TrimSpace(sessionKey)
+	r.mu.Lock()
+	var open []*chatTaskRecord
+	for _, task := range r.tasks {
+		if task.SessionKey == sessionKey && !task.Status.terminal() {
+			open = append(open, task)
+		}
+	}
+	if len(open) == 0 {
+		r.mu.Unlock()
+		return chatTaskOpenContinueNone, nil
+	}
+	if len(open) != 1 || open[0].Status == chatTaskNeedsInput {
+		r.mu.Unlock()
+		return chatTaskOpenContinueHeld, nil
+	}
+	task := open[0]
+	loop := task.loop
+	memoryKey := task.MemoryKey
+	r.mu.Unlock()
+	// A loop that has committed its final reply will not read a steer. Tell
+	// the caller nothing took the note, so it can start a task. Returning
+	// success here would tell the user the work is continuing after the note
+	// was dropped.
+	if !r.deliverSteer(loop, memoryKey, text) {
+		return chatTaskOpenContinueNone, nil
+	}
+	return chatTaskOpenContinueSteered, nil
+}
+
+func (r *chatTaskRegistry) deliverSteer(loop *LoopContext, memoryKey, text string) bool {
+	if r == nil || r.handler == nil {
+		return false
+	}
+	note := "[用户补充] " + text
+	if loop == nil {
+		r.handler.accumulateInjection(memoryKey, note)
+		return true
+	}
+	if loop.IsCancelled() {
+		return false
+	}
+	_, accepted := loop.TryRequestReplan(func() {
+		r.handler.accumulateInjection(memoryKey, note)
+	})
+	return accepted
 }
 
 func (r *chatTaskRegistry) requestInput(taskID, question string) (string, error) {
@@ -908,7 +975,7 @@ func (h *IMMessageHandler) chatTaskDispatchGuidance(sessionKey string) string {
 	b.WriteString("\n\n[Chat]\n")
 	b.WriteString("You are the conversation. Match the user's language. Be concise and warm. Lead with the answer. Never show task ids, tool names, or internal lane names.\n")
 	b.WriteString("The first thing the user sees in this turn is a short reply, before any tool call: the answer when it is quick, otherwise one sentence that names the first step.\n")
-	b.WriteString("Answer quick questions and at most two trivial lookups here. Multi-step work, long tool sequences, computer use, files, research, office documents, and batch edits go to dispatch_background_task. After it starts, one plain sentence and stop. Do not keep doing that work here.\n")
+	b.WriteString("Do the work in this turn. Keep calling tools until it is verified or you are actually blocked. A count of tool calls is not a reason to stop, and it is not a reason to ask the user for another message. Desktop control does not run here; a helper starts on its own when the request needs it. Keep doing the rest of the task here.\n")
 	b.WriteString("A follow-up or correction to work already running goes to steer_background_task for that same work. Do not start a second one for it. If more than one is running and it is unclear which, ask which one.\n")
 	b.WriteString("If the user wants running work stopped, cancelled, or held, in any language or phrasing, call stop_all_work before you answer. Do not start new work in that turn. You may say the work stopped only by repeating the tool's say field, and only when idle is true. If idle is false, repeat say and do not claim it has stopped. Never say the work stopped without calling the tool. A change to the content (\"stop using bold\", \"stop the music in the video\") is not a request to stop the work. If you are unsure, call stop_all_work with intent pause instead of continuing silently.\n")
 	b.WriteString("Ask only when a wrong guess would delete, send, purchase, or submit something, or when ambiguity would materially change the result. Otherwise decide and proceed.\n")
@@ -1003,6 +1070,9 @@ func (h *IMMessageHandler) dispatchBackgroundTaskTool(policyUserID string, args 
 	if loop == nil || !loop.OfferChatTaskDispatch {
 		return chatTaskToolRejected("dispatch_background_task", "this turn cannot hand work to a background chat task")
 	}
+	if loop.chatTaskHandoffSent() {
+		return chatTaskToolRejected("dispatch_background_task", "this turn already handed the work off")
+	}
 	request := chatTaskArg(args, "request", "task", "text", "prompt")
 	if request == "" {
 		return chatTaskToolRejected("dispatch_background_task", "request is required")
@@ -1019,16 +1089,314 @@ func (h *IMMessageHandler) dispatchBackgroundTaskTool(policyUserID string, args 
 	if err != nil {
 		return chatTaskToolRejected("dispatch_background_task", err.Error())
 	}
-	next := loop.Iteration() + 1
-	if next < 1 {
-		next = 1
-	}
-	loop.SetMaxIterations(next)
+	// The handoff flag closes the rest of this turn, including later calls
+	// in the same response. The semantic loop snapshots its ceiling at
+	// start, and a desktop chat round restores ForegroundChatBudget, so
+	// lowering MaxIterations here would not stop anything.
+	loop.markChatTaskHandoffSent()
 	return toolExecutionResult{
 		Text:     "Started: " + snap.Title + ". Tell the user in one plain sentence, then stop. Do not continue the work in this turn. Do not mention ids, tool names, or lanes.",
 		ToolName: "dispatch_background_task",
 		Outcome:  toolOutcomeSucceeded,
 	}
+}
+
+// continueSpentForegroundChat continues work a desktop chat turn refused to
+// keep inline, when the model stopped without calling dispatch or steer.
+// One open task gets the continuation. Several open tasks, or one that is
+// waiting for the user, are left alone. Nothing running starts a task.
+// The worker does not see this chat, so the prompt carries the workspace,
+// the user text, and the endings of this turn's recent tool results.
+// A dead-loop stop is left alone.
+func (h *IMMessageHandler) continueSpentForegroundChat(loop *LoopContext, sessionKey, userText string, result agent.LoopResult) (string, bool) {
+	if h == nil || loop == nil || result.HardExit {
+		return "", false
+	}
+	// The flag is the explicit close. A turn that ran out of iterations, or
+	// that ended by asking the user to send another message, is the same
+	// unfinished work. A dead-loop stop is neither.
+	if !loop.foregroundChatNeedsHostHandoff() && !loop.foregroundChatEndedUnfinished(result) {
+		return "", false
+	}
+	// The same-turn nudge already refuses another call while this result is
+	// unobserved. Starting a worker here would issue that command again.
+	if agent.LatestToolResultUnsettled(result.HistoryDelta) {
+		return "", false
+	}
+	if errText := strings.TrimSpace(result.Error); errText != "" && errText != "max iterations reached" {
+		return "", false
+	}
+	reg := h.ensureChatTasks()
+	if reg == nil {
+		return "", false
+	}
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" && loop != nil {
+		sessionKey = strings.TrimSpace(loop.UserID)
+	}
+	prompt := foregroundChatContinuationPrompt(h.foregroundChatContinuationWorkspace(sessionKey), userText, h.chatTaskEarlierUserRequest(sessionKey, userText), result.HistoryDelta)
+	switch kind, err := reg.continueOpenChatTask(sessionKey, prompt); {
+	case err != nil:
+		log.Printf("[chat-task] inline handoff failed session=%q err=%v", sessionKey, err)
+		return "", false
+	case kind == chatTaskOpenContinueSteered:
+		loop.markChatTaskHandoffSent()
+		return foregroundChatContinuationNote(userText), true
+	case kind == chatTaskOpenContinueHeld:
+		log.Printf("[chat-task] inline handoff left the running work session=%q", sessionKey)
+		return "", false
+	}
+	if _, err := reg.Dispatch(AIAssistantChatTaskDispatchRequest{
+		Text:       prompt,
+		SessionKey: sessionKey,
+		Title:      foregroundChatContinuationTitle(sessionKey, userText),
+	}); err != nil {
+		log.Printf("[chat-task] inline handoff failed session=%q err=%v", sessionKey, err)
+		return "", false
+	}
+	loop.markChatTaskHandoffSent()
+	return foregroundChatContinuationNote(userText), true
+}
+
+// foregroundChatContinuationWorkspace is the directory the background worker's
+// tools will use. A managed task keeps task.md at the session project path
+// and runs tools in workspace/ (or its working_dir tag). The prompt has to
+// name that execution directory.
+func (h *IMMessageHandler) foregroundChatContinuationWorkspace(sessionKey string) string {
+	if h != nil {
+		if dir := strings.TrimSpace(h.projectTabWorkDirForOwner(sessionKey)); dir != "" {
+			return dir
+		}
+	}
+	return projectPathFromSessionOwnerID(sessionKey)
+}
+
+func foregroundChatContinuationPrompt(workspace, userText, earlier string, delta []agent.ConversationEntry) string {
+	var b strings.Builder
+	b.WriteString("Continue the user's task in this workspace. Finish the remaining work here. Do not ask the user to send another message.\n")
+	if workspace = strings.TrimSpace(workspace); workspace != "" {
+		b.WriteString("\nWorkspace:\n")
+		b.WriteString(workspace)
+		b.WriteString("\n")
+	}
+	request := chatTaskUserRequestText(userText)
+	if earlier = strings.TrimSpace(earlier); earlier != "" && earlier != request {
+		b.WriteString("\nEarlier request:\n")
+		b.WriteString(truncateChatTaskText(earlier, 1200))
+		b.WriteString("\n")
+	}
+	b.WriteString("\nUser request:\n")
+	b.WriteString(truncateChatTaskText(request, 1200))
+	b.WriteString("\n\nTool results from this turn:\n")
+	var kept []agent.ConversationEntry
+	for _, entry := range delta {
+		if entry.Role != "tool" {
+			continue
+		}
+		body := strings.TrimSpace(chatTaskContentText(entry.Content))
+		if body == "" || foregroundLookupDenial(body) {
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	if len(kept) > 6 {
+		kept = kept[len(kept)-6:]
+	}
+	if len(kept) == 0 {
+		b.WriteString("(none)\n")
+	}
+	for _, entry := range kept {
+		name := strings.TrimSpace(entry.ToolName)
+		if name == "" {
+			name = "tool"
+		}
+		fmt.Fprintf(&b, "- %s (%s): %s\n", name, strings.TrimSpace(entry.ToolOutcome), chatTaskResultExcerpt(chatTaskContentText(entry.Content), 480))
+	}
+	b.WriteString("\nDo not repeat a send, delete, deliver, or schedule action that a tool result already shows succeeded.\n")
+	return placeContinuationFileGrant(b.String(), earlier)
+}
+
+// placeContinuationFileGrant puts the live picker marker last. Expansion keeps
+// the briefing before that marker and treats the text after it as leftover
+// picker instructions. A marker left in the middle would drop tool results
+// that mention read_document. A follow-up that attaches no file still grants
+// the earlier file, so the worker reads it again. A new file stays the grant.
+func placeContinuationFileGrant(prompt, earlier string) string {
+	paths := agent.SelectedLocalFilePathsFromPrompt(prompt)
+	if len(paths) == 0 {
+		paths = selectedPathsUnderHistoricalMarker(earlier)
+	}
+	idx := agent.CurrentLocalFilePathPromptIndex(prompt)
+	if idx < 0 && len(paths) == 0 {
+		return prompt
+	}
+	if idx >= 0 {
+		prompt = prompt[:idx] + prompt[idx+len(agent.FilePathPromptPrefix):]
+	}
+	if len(paths) == 0 {
+		return prompt
+	}
+	var b strings.Builder
+	b.WriteString(strings.TrimRight(prompt, "\n"))
+	b.WriteString("\n\n")
+	b.WriteString(agent.FilePathPromptPrefix)
+	b.WriteByte('\n')
+	for _, p := range paths {
+		b.WriteString(p)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// selectedPathsUnderHistoricalMarker reads the reference-only path list. The
+// shared picker parser ignores that marker, and this continuation is the host
+// granting the same file again when the user did not attach a new one.
+func selectedPathsUnderHistoricalMarker(text string) []string {
+	if !strings.Contains(text, agent.FilePathPromptPrefixHistorical) {
+		return nil
+	}
+	swapped := strings.Replace(text, agent.FilePathPromptPrefixHistorical, agent.FilePathPromptPrefix, 1)
+	return agent.SelectedLocalFilePathsFromPrompt(swapped)
+}
+
+// chatTaskResultExcerpt keeps the start and the end of a tool result.
+// Command output puts the outcome on the last lines, so a head-only cut
+// drops the fact the worker needs.
+func chatTaskResultExcerpt(text string, maxRunes int) string {
+	text = strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	if maxRunes <= 0 || utf8.RuneCountInString(text) <= maxRunes {
+		return text
+	}
+	const joiner = " … "
+	joinLen := utf8.RuneCountInString(joiner)
+	budget := maxRunes - joinLen
+	if budget < 8 {
+		return truncateChatTaskText(text, maxRunes)
+	}
+	head := budget / 4
+	if head < 40 && budget >= 80 {
+		head = 40
+	}
+	if head < 1 {
+		head = 1
+	}
+	if head >= budget {
+		head = budget / 2
+		if head < 1 {
+			head = 1
+		}
+	}
+	tail := budget - head
+	runes := []rune(text)
+	if head+tail >= len(runes) {
+		return text
+	}
+	return string(runes[:head]) + joiner + string(runes[len(runes)-tail:])
+}
+
+// chatTaskContentText keeps the text of a stored message. Desktop chat saves
+// an image-bearing turn as content blocks, and the image payload stays out of
+// the worker prompt.
+func chatTaskContentText(content interface{}) string {
+	return conversationContentText(content)
+}
+
+// chatTaskUserRequestText is the user wording stored on a turn. Host lines
+// that point at image bytes on the original message do not apply to this
+// text-only prompt. A message that is only those lines is not a request.
+func chatTaskUserRequestText(content interface{}) string {
+	text := strings.TrimSpace(chatTaskContentText(content))
+	if text == "" {
+		return ""
+	}
+	text = strings.ReplaceAll(text, visionFirstInstruction, "")
+	return agent.StripAttachedImageInstructions(text)
+}
+
+// chatTaskPromptToolNames reads the tool names this host wrote into a
+// continuation prompt. Those calls already ran; the worker keeps them.
+func chatTaskPromptToolNames(prompt string) []string {
+	var names []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(prompt, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "- ") {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(line, "- "))
+		open := strings.IndexByte(rest, '(')
+		if open <= 0 {
+			continue
+		}
+		name := strings.TrimSpace(rest[:open])
+		if name == "" || name == "tool" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	return names
+}
+
+// chatTaskEarlierUserRequest is the latest real user message before a short
+// follow-up. The worker does not see this chat, and a line such as a bare
+// continuation is not the task.
+func (h *IMMessageHandler) chatTaskEarlierUserRequest(sessionKey, current string) string {
+	if h == nil || h.memory == nil || !continuationCarriesEarlierRequest(current) {
+		return ""
+	}
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" {
+		return ""
+	}
+	return chatTaskEarlierUserRequest(h.memory.Load(sessionKey), current)
+}
+
+// continuationCarriesEarlierRequest reports that this message does not state
+// a new task. Only the user's own words count. The picker file block and the
+// image note are not part of that length.
+func continuationCarriesEarlierRequest(current string) bool {
+	return shortContinuationText(continuationWording(current))
+}
+
+func continuationWording(current string) string {
+	text := chatTaskUserRequestText(current)
+	if i := agent.CurrentLocalFilePathPromptIndex(text); i >= 0 {
+		text = text[:i]
+	}
+	return strings.TrimSpace(text)
+}
+
+func chatTaskEarlierUserRequest(entries []agent.ConversationEntry, current string) string {
+	currentRequest := chatTaskUserRequestText(current)
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if entry.Role != "user" {
+			continue
+		}
+		text := chatTaskUserRequestText(entry.Content)
+		if text == "" || text == currentRequest {
+			continue
+		}
+		if strings.HasPrefix(text, "[系统]") || strings.HasPrefix(text, "[用户补充]") {
+			continue
+		}
+		// This line is history for the worker. A current picker marker here is
+		// the first selected upload, ahead of a file on this message, and the
+		// extract body is not attached to the worker.
+		return agent.AnnotateHistoryAttachmentText(text)
+	}
+	return ""
+}
+
+func chatTaskWorkerLoop(ctx *LoopContext) bool {
+	return ctx != nil && strings.TrimSpace(ctx.ChatTaskID) != ""
+}
+
+func foregroundLookupDenial(body string) bool {
+	return strings.Contains(body, chatTaskHandoffRequiredMessage) ||
+		strings.Contains(body, chatTaskAlreadyHandedOffMessage) ||
+		strings.Contains(body, chatTaskComputerUseHandoffMessage)
 }
 
 func (h *IMMessageHandler) steerBackgroundTaskTool(policyUserID string, args map[string]interface{}) toolExecutionResult {
@@ -1058,11 +1426,8 @@ func (h *IMMessageHandler) steerBackgroundTaskTool(policyUserID string, args map
 	if err := reg.Steer(task.ID, note); err != nil {
 		return chatTaskToolRejected("steer_background_task", err.Error())
 	}
-	next := loop.Iteration() + 1
-	if next < 1 {
-		next = 1
-	}
-	loop.SetMaxIterations(next)
+	// Same stop as dispatch: the flag, not the iteration ceiling.
+	loop.markChatTaskHandoffSent()
 	return toolExecutionResult{
 		Text:     "Update sent to \"" + task.Title + "\". Tell the user in one plain sentence, then stop. Do not start another task and do not mention ids, tool names, or lanes.",
 		ToolName: "steer_background_task",
@@ -1237,6 +1602,37 @@ func firstProgressLine(text string) string {
 		text = text[:i]
 	}
 	return truncateChatTaskText(text, 200)
+}
+
+func chatTaskDispatchTitle(title, prompt string) string {
+	if strings.TrimSpace(title) != "" {
+		return chatTaskTitle(title)
+	}
+	return chatTaskTitle(prompt)
+}
+
+// foregroundChatContinuationTitle names the handed-off work. A managed task
+// folder is the original goal; the latest line is often only a short reply.
+// The host boilerplate is not a title.
+func foregroundChatContinuationTitle(sessionKey, userText string) string {
+	if title := managedTaskTitleFromSessionPath(projectPathFromSessionOwnerID(sessionKey)); title != "" {
+		return title
+	}
+	if text := chatTaskUserRequestText(userText); text != "" {
+		return text
+	}
+	return strings.TrimSpace(userText)
+}
+
+// applyChatTaskWorkerExecutionProfile keeps a background chat task on the
+// full agent. The worker prompt is host text plus tool results, and a lookup
+// label would give it the same short budget the foreground turn just left.
+func applyChatTaskWorkerExecutionProfile(ctx *LoopContext) {
+	if ctx == nil || strings.TrimSpace(ctx.ChatTaskID) == "" {
+		return
+	}
+	ctx.Runtime.Execution = fullExecutionProfile("background chat task")
+	ctx.semanticTurnAnswerOnly = false
 }
 
 func chatTaskTitle(prompt string) string {

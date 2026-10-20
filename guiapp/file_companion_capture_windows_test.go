@@ -12,7 +12,36 @@ import (
 	"testing"
 	"time"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
+
+func TestExecuteScriptSlotSitsBeforeCapturePreview(t *testing.T) {
+	if iCoreWebView2ExecuteScript != 29 {
+		t.Fatalf("ExecuteScript slot = %d", iCoreWebView2ExecuteScript)
+	}
+}
+
+func TestPlaybackScriptQueryRejectsAgile(t *testing.T) {
+	h := &playbackScriptHandler{vtbl: playbackScriptCallbacks(), refs: 1}
+	this := uintptr(unsafe.Pointer(h))
+	playbackScriptHandlers.Store(this, h)
+	t.Cleanup(func() { playbackScriptHandlers.Delete(this) })
+	agile := windows.GUID{
+		Data1: 0x94EA2B94, Data2: 0xE9CC, Data3: 0x49E0,
+		Data4: [8]byte{0xC0, 0xFF, 0xEE, 0x64, 0xCA, 0x8F, 0x5B, 0x90},
+	}
+	var out uintptr = 1
+	hr := playbackScriptQuery(this, uintptr(unsafe.Pointer(&agile)), uintptr(unsafe.Pointer(&out)))
+	if hr == uintptr(windows.S_OK) || out != 0 {
+		t.Fatalf("agile query hr=0x%x out=%x", hr, out)
+	}
+	out = 0
+	hr = playbackScriptQuery(this, uintptr(unsafe.Pointer(&guidExecuteScriptCompleted)), uintptr(unsafe.Pointer(&out)))
+	if hr != uintptr(windows.S_OK) || out != this {
+		t.Fatalf("handler query hr=0x%x out=%x", hr, out)
+	}
+}
 
 func TestFinishedCapturePreviewKeepsAReadyFrameWhenStopWins(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -137,6 +166,46 @@ func TestWindowsProcessLoopbackPlan(t *testing.T) {
 	}
 	if unsafe.Sizeof(params) != 12 {
 		t.Fatalf("activation params size = %d", unsafe.Sizeof(params))
+	}
+}
+
+func TestWebViewLoopbackPIDIsTheBrowserNotTheHost(t *testing.T) {
+	rows := []loopbackProcess{
+		{PID: 10, Image: "MaClaw.exe"},
+		{PID: 20, PPID: 10, Image: "msedgewebview2.exe"},
+		{PID: 21, PPID: 20, Image: "msedgewebview2.exe"},
+		{PID: 22, PPID: 20, Image: "msedgewebview2.exe"},
+	}
+	if got := webViewLoopbackPID(10, rows); got != 20 {
+		t.Fatalf("browser pid = %d", got)
+	}
+	if got := webViewLoopbackPID(10, nil); got != 10 {
+		t.Fatalf("no browser = %d", got)
+	}
+	if got := webViewLoopbackPID(0, rows); got != 0 {
+		t.Fatalf("host 0 = %d", got)
+	}
+	unrelated := []loopbackProcess{
+		{PID: 10, Image: "MaClaw.exe"},
+		{PID: 20, PPID: 99, Image: "msedgewebview2.exe"},
+		{PID: 21, PPID: 20, Image: "MSEdgeWebView2.EXE"},
+	}
+	if got := webViewLoopbackPID(10, unrelated); got != 10 {
+		t.Fatalf("unrelated browser = %d", got)
+	}
+	two := []loopbackProcess{
+		{PID: 10, Image: "MaClaw.exe"},
+		{PID: 30, PPID: 10, Image: "msedgewebview2.exe"},
+		{PID: 31, PPID: 30, Image: "msedgewebview2.exe"},
+		{PID: 40, PPID: 10, Image: "msedgewebview2.exe"},
+		{PID: 41, PPID: 40, Image: "msedgewebview2.exe"},
+		{PID: 42, PPID: 40, Image: "msedgewebview2.exe"},
+	}
+	if got := webViewLoopbackPID(10, two); got != 40 {
+		t.Fatalf("busiest browser = %d", got)
+	}
+	if got := companionLoopbackPID(uint32(os.Getpid())); got != uint32(os.Getpid()) {
+		t.Fatalf("test process loopback pid = %d, want itself", got)
 	}
 }
 
@@ -319,6 +388,26 @@ func TestCapturePreviewCreatorRefDropsWhenInvokeFinishes(t *testing.T) {
 		default:
 			t.Fatalf("code 0x%x did not deliver a result", code)
 		}
+	}
+}
+
+func TestProcessLoopbackInitializeArmsTheVirtualDevice(t *testing.T) {
+	flags, duration := processLoopbackInit()
+	if flags&audclntStreamFlagsLoopback == 0 {
+		t.Fatal("Initialize must set AUDCLNT_STREAMFLAGS_LOOPBACK on the process-loopback device")
+	}
+	if flags&audclntStreamFlagsAutoConvertPCM == 0 {
+		t.Fatal("Initialize must set AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM so the engine accepts the capture format")
+	}
+	if flags&audclntStreamFlagsEventCallback != 0 {
+		t.Fatal("polling capture must not require an event handle")
+	}
+	if duration != 0 {
+		t.Fatalf("buffer duration = %d, want the engine default", duration)
+	}
+	plan := windowsProcessLoopbackPlan(companionProcessAudioActivate(uint32(os.Getpid())))
+	if plan.StreamFlags != 0 || plan.Mode != processLoopbackModeIncludeTargetProcessTree {
+		t.Fatalf("activation = %+v", plan)
 	}
 }
 

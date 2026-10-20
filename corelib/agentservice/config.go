@@ -631,6 +631,18 @@ func mergeSecretPreserving(current, next corelib.AppConfig) corelib.AppConfig {
 	preserveMaskedSecretString(&next.RemoteMachineToken, current.RemoteMachineToken)
 	preserveMaskedSecretString(&next.RemoteViewerToken, current.RemoteViewerToken)
 	preserveMaskedSecretString(&next.SkillMarketSessionToken, current.SkillMarketSessionToken)
+	// The issuer belongs to the token. A save that keeps the token, including a
+	// masked round-trip or a service import whose token was redacted, keeps the
+	// current center even when the payload names a different one. A replacement
+	// token keeps only the issuer sent with it. Clearing the token drops both.
+	switch strings.TrimSpace(next.SkillMarketSessionToken) {
+	case "":
+		next.SkillMarketSessionBaseURL = ""
+	default:
+		if strings.TrimSpace(next.SkillMarketSessionToken) == strings.TrimSpace(current.SkillMarketSessionToken) {
+			next.SkillMarketSessionBaseURL = current.SkillMarketSessionBaseURL
+		}
+	}
 	preserveMaskedSecretString(&next.MISData.Token, current.MISData.Token)
 	preserveSecretString(&next.MaclawLLMKey, current.MaclawLLMKey)
 	preserveMaclawLLMProviderSecrets(current.MaclawLLMProviders, next.MaclawLLMProviders)

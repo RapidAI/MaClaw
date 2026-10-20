@@ -26,6 +26,7 @@ export const SETTINGS_TABS_SELF_LOADING = [
     'searchEngine',
     'latex',
     'pptStyles',
+    'pdfStyles',
     'redeem',
     'memory',
     'knowledge',

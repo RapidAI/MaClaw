@@ -73,6 +73,113 @@ func TestStructuredPreview_Diff(t *testing.T) {
 	}
 }
 
+func TestStructuredPreview_WebSearchKeepsMiddleHitFact(t *testing.T) {
+	long := strings.Repeat("百科简介没有气温。", 200)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Public web results for \"北京天气\" (5):\n\n")
+	fmt.Fprintf(&b, "1. 北京百科\n   https://example.com/baike\n   %s\n\n", long)
+	fmt.Fprintf(&b, "2. 旅游攻略\n   https://example.com/tour\n   %s\n\n", long)
+	fmt.Fprintf(&b, "3. 北京天气\n   https://weather.example/beijing\n   小雨 13/2℃ 东北风\n\n")
+	fmt.Fprintf(&b, "4. 政府门户\n   https://example.com/gov\n   %s\n\n", long)
+	fmt.Fprintf(&b, "5. 空气质量\n   https://example.com/aq\n   空气质量 良\n")
+	raw := b.String()
+	if len(raw) <= 4096 {
+		t.Fatalf("fixture len = %d, want a result list past the default cap", len(raw))
+	}
+	window := DefaultPreview(raw, 4096)
+	if strings.Contains(window, "小雨 13/2℃") {
+		t.Fatalf("byte window already kept the middle fact:\n%s", window)
+	}
+	preview := StructuredPreview("web_search", raw, 4096)
+	if len(preview) > 4096 {
+		t.Fatalf("preview len = %d", len(preview))
+	}
+	for _, want := range []string{"小雨 13/2℃", "https://weather.example/beijing", "空气质量 良", "https://example.com/baike"} {
+		if !strings.Contains(preview, want) {
+			t.Fatalf("preview missing %q:\n%s", want, preview)
+		}
+	}
+}
+
+func TestStructuredPreview_WebSearchKeepsFactFoldedOntoSnippetTail(t *testing.T) {
+	lead := strings.Repeat("甲", 800)
+	snippet := lead + "小雨 13/2℃"
+	raw := fmt.Sprintf("Public web results for \"q\" (3):\n\n1. A\n   https://a.example/a\n   %s\n\n2. B\n   https://b.example/b\n   %s\n\n3. C\n   https://c.example/c\n   %s\n", snippet, snippet, snippet)
+	preview := StructuredPreview("web_search", raw, 1200)
+	if len(preview) > 1200 {
+		t.Fatalf("preview len = %d", len(preview))
+	}
+	if !strings.Contains(preview, "小雨 13/2℃") || !strings.Contains(preview, "https://b.example/b") {
+		t.Fatalf("folded fact or middle page was cut:\n%s", preview)
+	}
+}
+
+func TestStructuredPreview_WebSearchKeepsFieldsBetweenLongParagraphs(t *testing.T) {
+	lead := strings.Repeat("城市简介。", 80)
+	tail := strings.Repeat("旅游攻略。", 80)
+	snippet := lead + "; temperature: 18; wind: 3 m/s; " + tail
+	if strings.Contains(shrinkWebSnippetEdges(snippet, 480), "temperature: 18") {
+		t.Fatal("byte head/tail already kept the middle field")
+	}
+	raw := fmt.Sprintf("Public web results for \"q\" (4):\n\n1. A\n   https://a.example/a\n   %s\n\n2. B\n   https://b.example/b\n   %s\n\n3. C\n   https://c.example/c\n   %s\n\n4. D\n   https://d.example/d\n   %s\n", snippet, snippet, snippet, snippet)
+	preview := StructuredPreview("web_search", raw, 1500)
+	if len(preview) > 1500 {
+		t.Fatalf("preview len = %d", len(preview))
+	}
+	for _, want := range []string{"temperature: 18", "wind: 3 m/s", "https://c.example/c"} {
+		if !strings.Contains(preview, want) {
+			t.Fatalf("preview missing %q:\n%s", want, preview)
+		}
+	}
+}
+
+func TestStructuredPreview_WebSearchKeepsLeadFactBesideFoldedPage(t *testing.T) {
+	lead := "LEAD_FACT " + strings.Repeat("城", 500)
+	tail := strings.Repeat("页", 500)
+	snippet := lead + "; temperature: 18; " + tail
+	raw := fmt.Sprintf("Public web results for \"q\" (2):\n\n1. A\n   https://a.example/a\n   %s\n\n2. B\n   https://b.example/b\n   %s\n", snippet, snippet)
+	preview := StructuredPreview("web_search", raw, 1600)
+	if len(preview) > 1600 {
+		t.Fatalf("preview len = %d", len(preview))
+	}
+	for _, want := range []string{"LEAD_FACT", "temperature: 18", "https://b.example/b"} {
+		if !strings.Contains(preview, want) {
+			t.Fatalf("preview missing %q:\n%s", want, preview)
+		}
+	}
+}
+
+func TestProject_WebSearchPreviewKeepsMiddleFact(t *testing.T) {
+	long := strings.Repeat("百科简介没有气温。", 200)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Public web results for \"北京天气\" (5):\n\n")
+	fmt.Fprintf(&b, "1. 北京百科\n   https://example.com/baike\n   %s\n\n", long)
+	fmt.Fprintf(&b, "2. 旅游攻略\n   https://example.com/tour\n   %s\n\n", long)
+	fmt.Fprintf(&b, "3. 北京天气\n   https://weather.example/beijing\n   小雨 13/2℃ 东北风\n\n")
+	fmt.Fprintf(&b, "4. 政府门户\n   https://example.com/gov\n   %s\n\n", long)
+	fmt.Fprintf(&b, "5. 空气质量\n   https://example.com/aq\n   空气质量 良\n")
+	raw := b.String()
+	proj, err := Project(ProjectOptions{
+		ToolName:   "web_search",
+		SessionKey: "user-1",
+		Content:    raw,
+		Root:       t.TempDir(),
+		Limit:      4096,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(proj.Preview) > 4096 {
+		t.Fatalf("projection len = %d", len(proj.Preview))
+	}
+	if !strings.Contains(proj.Preview, "[tool_result_handle]") {
+		t.Fatalf("projection missing handle:\n%s", proj.Preview)
+	}
+	if !strings.Contains(proj.Preview, "小雨 13/2℃") || !strings.Contains(proj.Preview, "https://weather.example/beijing") {
+		t.Fatalf("projection dropped the middle fact:\n%s", proj.Preview)
+	}
+}
+
 func TestStructuredPreview_WebFetchIntegrity(t *testing.T) {
 	body := strings.Repeat("page ", 2000) + "\n\n--- 完整性信号 ---\nok=true\n"
 	p := StructuredPreview("web_fetch", body, 300)

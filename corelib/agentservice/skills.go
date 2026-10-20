@@ -622,6 +622,7 @@ func (s *Service) skillMarketAuthToken(ctx context.Context, p Principal, cfg Use
 		return ""
 	}
 	cfg.AppConfig.SkillMarketSessionToken = strings.TrimSpace(result.SessionToken)
+	cfg.AppConfig.SkillMarketSessionBaseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if cfg.TenantID == "" {
 		cfg.TenantID = p.TenantID
 	}

@@ -279,11 +279,38 @@ func semanticUnmetOnlyBudget(unmet []tool.UnmetNeed) bool {
 		return false
 	}
 	for _, item := range unmet {
-		if item.ReasonCode != "budget_exceeded" && item.ReasonCode != "planning_budget_exceeded" {
+		if !semanticUnmetIsBudget(item) {
 			return false
 		}
 	}
 	return true
+}
+
+// semanticUnmetAllowsSelectedTurn reports that every unmet row is a budget
+// cut or an installed MCP need. A turn that already selected a tool keeps
+// going: one named MCP contract the catalog dropped must not host-reject the
+// clock, the sibling that published, or any other selection. A required host
+// need such as record.update.worklog still fails the turn.
+func semanticUnmetAllowsSelectedTurn(unmet []tool.UnmetNeed) bool {
+	if len(unmet) == 0 {
+		return false
+	}
+	for _, item := range unmet {
+		if semanticUnmetIsBudget(item) || semanticUnmetIsInstalledMCP(item) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func semanticUnmetIsBudget(item tool.UnmetNeed) bool {
+	return item.ReasonCode == "budget_exceeded" || item.ReasonCode == "planning_budget_exceeded"
+}
+
+func semanticUnmetIsInstalledMCP(item tool.UnmetNeed) bool {
+	id := item.NeedID
+	return strings.Contains(id, "x:mcp:") || strings.Contains(id, "installed-mcp:")
 }
 
 func semanticUnmetOnlyReasons(unmet []tool.UnmetNeed, reasons ...string) bool {

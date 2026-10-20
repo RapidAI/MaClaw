@@ -69,6 +69,9 @@ type Frontend struct {
 	// playerInstalled is the companion top-level page host. It is created
 	// once the app WebView environment exists and is not a second profile.
 	playerInstalled bool
+	// playerCalls keeps companion Place and Hide in the order the page sent
+	// them. Each binding call otherwise starts its own goroutine.
+	playerCalls playerCallQueue
 
 	originValidator *originvalidator.OriginValidator
 
@@ -779,6 +782,10 @@ func (f *Frontend) processMessage(message string, sender *edge.ICoreWebView2, ar
 		return
 	}
 
+	if place, ok := companionPlayerCall(message); ok {
+		f.enqueueCompanionPlayerCall(message, place)
+		return
+	}
 	go f.dispatchMessage(message)
 }
 

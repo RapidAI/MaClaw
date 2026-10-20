@@ -212,6 +212,20 @@ func TestPreserveBackendOwnedFieldsAllowsInitialHubCenterCandidates(t *testing.T
 	}
 }
 
+func TestPreserveBackendOwnedFieldsKeepsSkillMarketSessionIssuer(t *testing.T) {
+	ondisk := corelib.AppConfig{
+		SkillMarketSessionToken:   "sm2.kept",
+		SkillMarketSessionBaseURL: "https://issuer.example",
+	}
+	incoming := corelib.AppConfig{}
+
+	preserveBackendOwnedFields(&incoming, &ondisk)
+
+	if incoming.SkillMarketSessionToken != "sm2.kept" || incoming.SkillMarketSessionBaseURL != "https://issuer.example" {
+		t.Fatalf("settings save dropped the SkillMarket session issuer: token=%q base=%q", incoming.SkillMarketSessionToken, incoming.SkillMarketSessionBaseURL)
+	}
+}
+
 func TestPreserveBackendOwnedFieldsKeepsPersistedHubCenterCandidates(t *testing.T) {
 	// Once the backend has a persisted list, stale frontend snapshots must not
 	// overwrite failover state maintained by discovery/selection workers.

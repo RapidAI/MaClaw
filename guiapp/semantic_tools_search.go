@@ -1108,8 +1108,9 @@ func semanticToolsSearchCatalog(cb *sharedAgentLoopCallbacks) []semanticToolsSea
 		for _, selection := range surface.plan.Selections {
 			selectionByID[selection.ID] = selection
 			// Stable host adapters have a deterministic model name even before
-			// their first grant is materialized. Dynamic adapters deliberately do
-			// not: their model name is the opaque token in surface.grants.
+			// their first grant. Installed MCP uses server__tool once its
+			// grant is in the table below; other dynamic adapters stay on
+			// the grant token.
 			if name := strings.TrimSpace(tool.SemanticModelFunctionName(selection.AdapterName)); name != "" {
 				semanticToolsSearchUpsertSelection(byName, surface, name, selection)
 			}
@@ -1249,7 +1250,31 @@ func semanticToolsSearchStatus(cb *sharedAgentLoopCallbacks, name string) string
 		if _, ok := surface.grants[name]; ok {
 			return "[已在当前工具面]"
 		}
+	}
+	// The sidecar grant is a second tools/call while the managed write is
+	// still awaiting its receipt. Do not describe that name as callable.
+	if cb.managedInstalledMCPSpentThisRequest(name) && surface != nil {
 		if grant, ok := surface.retiredGrants[name]; ok {
+			if awaiting, reason := semanticRetiredAwaitingReceipt(surface, grant.SelectionID); awaiting {
+				if mailboxDraftAwaitingConfirmation(reason) {
+					return "[等待用户确认：不要再次调用]"
+				}
+				return "[结果未定：不要再次调用]"
+			}
+		}
+	}
+	// An installed server stays callable under server__tool. A retired
+	// managed token with the same spelling must not hide the live sidecar.
+	if cb.discoveredMCPSurface != nil {
+		if _, ok := cb.discoveredMCPSurface.grants[name]; ok {
+			return "[已在当前工具面]"
+		}
+	}
+	if surface != nil {
+		if grant, ok := surface.retiredGrants[name]; ok {
+			if strings.HasPrefix(strings.TrimSpace(grant.AdapterName), "installed-mcp:") {
+				return "[已安装的 MCP 工具，继续用这个名字调用]"
+			}
 			if awaiting, reason := semanticRetiredAwaitingReceipt(surface, grant.SelectionID); awaiting {
 				if mailboxDraftAwaitingConfirmation(reason) {
 					return "[等待用户确认：不要再次调用]"

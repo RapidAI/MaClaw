@@ -26,9 +26,13 @@ type MaclawLLMRoleSummary struct {
 }
 
 // ResolveMaclawLLMRole resolves one loop role.
-// A local pin (inherit_hub false plus a model) wins. Otherwise a non-empty
-// Hub role snapshot is used on the Hub provider, even when assistant points
-// at a third-party provider. Anything else uses the assistant profile.
+// A local pin (inherit_hub false plus a model) wins and stays on the Hub
+// provider when one exists. Otherwise the interactive assistant (foreground)
+// uses the assistant profile whenever that profile is not MaClaw official, and
+// uses an explicit official model the user selected over the Hub band.
+// Background and computer-use keep the Hub role snapshot. An official
+// assistant left on auto still takes that snapshot. Anything else uses the
+// assistant profile.
 func (a *App) ResolveMaclawLLMRole(role string) (corelib.MaclawLLMConfig, error) {
 	role = strings.ToLower(strings.TrimSpace(role))
 	switch role {
@@ -43,8 +47,15 @@ func (a *App) ResolveMaclawLLMRole(role string) (corelib.MaclawLLMConfig, error)
 	if err != nil {
 		return corelib.MaclawLLMConfig{}, err
 	}
-	state := a.GetMaclawLLMProviders()
-	profiles, profilesErr := effectiveMaclawLLMProfiles(cfg, state.Providers, state.Current)
+	state := a.maclawLLMProvidersFromConfig(&cfg)
+	return a.resolveMaclawLLMRoleFromConfig(role, cfg, state.Providers, state.Current)
+}
+
+// resolveMaclawLLMRoleFromConfig resolves one role from the config and provider
+// rows the caller already loaded. The settings panel uses this so the
+// effective model line cannot observe a later snapshot than the draft.
+func (a *App) resolveMaclawLLMRoleFromConfig(role string, cfg corelib.AppConfig, providers []corelib.MaclawLLMProvider, current string) (corelib.MaclawLLMConfig, error) {
+	profiles, profilesErr := effectiveMaclawLLMProfiles(cfg, providers, current)
 	assignment := corelib.MaclawLLMRoleAssignment{}
 	if profiles != nil {
 		assignment = maclawLLMRoleAssignment(*profiles, role)
@@ -54,26 +65,38 @@ func (a *App) ResolveMaclawLLMRole(role string) (corelib.MaclawLLMConfig, error)
 		if model == "" {
 			return corelib.MaclawLLMConfig{}, fmt.Errorf("LLM role %q has no model", role)
 		}
-		resolved, pinErr := a.materializePinnedRole(role, model, state.Providers, profiles)
+		resolved, pinErr := a.materializePinnedRole(role, model, providers, profiles)
 		if pinErr != nil {
 			return corelib.MaclawLLMConfig{}, pinErr
 		}
 		return resolved, nil
 	}
-	if hubModel := normalizeDesktopRoleModel(hubRoleModel(cfg.HubRoleModels, role)); hubModel != "" {
-		if provider, ok := findHubServiceProvider(state.Providers); ok {
-			return a.materializeResolvedRole(role, provider, hubModel), nil
+	snapshot := normalizeDesktopRoleModel(hubRoleModel(cfg.HubRoleModels, role))
+	if role == maclawLLMRoleForeground && profiles != nil {
+		provider, model, selErr := effectiveMaclawLLMProfileSelection(maclawLLMProfileAssistant, cfg, providers, current, profiles)
+		if selErr == nil && foregroundUsesAssistantSelection(provider, model, snapshot) {
+			// Official auto borrows vision. A third-party auto model keeps the
+			// probe stored on its provider.
+			assistant := a.materializeMaclawLLMSelection(role, provider, model)
+			return ensureHubAutoRoleVision(assistant, providerIsHubService(provider)), nil
+		}
+	}
+	if snapshot != "" {
+		if provider, ok := findHubServiceProvider(providers); ok {
+			return a.materializeResolvedRole(role, provider, snapshot), nil
 		}
 	}
 	if profilesErr != nil {
 		return corelib.MaclawLLMConfig{}, profilesErr
 	}
-	assistant, err := a.ResolveMaclawLLMProfile(maclawLLMProfileAssistant)
+	assistant, provider, err := a.materializeEffectiveMaclawLLMProfile(maclawLLMProfileAssistant, cfg, providers, current, profiles)
 	if err != nil {
 		return corelib.MaclawLLMConfig{}, err
 	}
 	assistant.Profile = role
-	return ensureHubAutoRoleVision(assistant), nil
+	// Lost entitlement clears the Hub snapshot, so every role falls back here.
+	// Only the official provider borrows vision for auto.
+	return ensureHubAutoRoleVision(assistant, providerIsHubService(provider)), nil
 }
 
 func maclawLLMRoleAssignment(profiles corelib.MaclawLLMProfiles, role string) corelib.MaclawLLMRoleAssignment {
@@ -106,9 +129,59 @@ func normalizeDesktopRoleModel(model string) string {
 	return model
 }
 
+// providerIsHubService reports the MaClaw official catalog row. A third-party
+// URL that merely contains /api/llm/v1 is not official: that path shape is
+// also how IsHubManagedLLMEndpoint recognizes Hub routing.
+func providerIsHubService(provider corelib.MaclawLLMProvider) bool {
+	return provider.IsHubService || isHubServiceProviderName(provider.Name)
+}
+
+// foregroundUsesAssistantSelection reports that interactive chat should call
+// the assistant assignment. Any non-official provider wins. On the official
+// provider, an explicit model other than auto wins over the Hub band. Auto
+// keeps the band so an untouched assistant profile still follows Hub.
+// mid and official-mid are the same band: the assignment UI stores the short
+// name, while Hub's snapshot stores the official-* id.
+func foregroundUsesAssistantSelection(provider corelib.MaclawLLMProvider, model, snapshot string) bool {
+	if !providerIsHubService(provider) {
+		return true
+	}
+	chosen := normalizeDesktopRoleModel(model)
+	if chosen == "" || chosen == hubServiceAutoModel {
+		return false
+	}
+	return !sameDesktopRoleModel(chosen, snapshot)
+}
+
+func sameDesktopRoleModel(a, b string) bool {
+	left := normalizeDesktopRoleModel(a)
+	right := normalizeDesktopRoleModel(b)
+	if strings.EqualFold(left, right) {
+		return true
+	}
+	leftBand := canonicalOfficialBand(left)
+	rightBand := canonicalOfficialBand(right)
+	return leftBand != "" && leftBand == rightBand
+}
+
+func canonicalOfficialBand(model string) string {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "low", "official-low":
+		return "official-low"
+	case "mid", "official-mid":
+		return "official-mid"
+	case "high", "official-high":
+		return "official-high"
+	case "auto", "default":
+		return hubServiceAutoModel
+	default:
+		return ""
+	}
+}
+
 func findHubServiceProvider(providers []corelib.MaclawLLMProvider) (corelib.MaclawLLMProvider, bool) {
 	for _, provider := range providers {
-		if provider.IsHubService || isHubServiceProviderName(provider.Name) {
+		if providerIsHubService(provider) {
 			return provider, true
 		}
 	}
@@ -131,30 +204,24 @@ func (a *App) materializePinnedRole(role, model string, providers []corelib.Macl
 }
 
 func (a *App) materializeResolvedRole(role string, provider corelib.MaclawLLMProvider, model string) corelib.MaclawLLMConfig {
-	model = normalizeDesktopRoleModel(model)
-	resolved := a.materializeMaclawLLMProvider(provider)
-	resolved.Model = constrainOpenCodeModel(provider, corelib.MigrateZhipuCodingModel(provider.Name, model))
-	resolved.SupportsVision = providerSupportsVisionForModel(provider, resolved.Model)
-	resolved.Profile = role
-	resolved.RouteSource = "base"
-	return ensureHubAutoRoleVision(resolved)
+	model = constrainOpenCodeModel(provider, corelib.MigrateZhipuCodingModel(provider.Name, normalizeDesktopRoleModel(model)))
+	return ensureHubAutoRoleVision(a.materializeMaclawLLMSelection(role, provider, model), providerIsHubService(provider))
 }
 
-// ensureHubAutoRoleVision attaches images when Hub will choose the model.
-// Picture-PDF pages and screenshots are sent only after SupportsVision is set;
-// Hub's auto route then sees the image parts and can stay on a vision model.
-// A pinned model keeps the probed flag, including a pinned text model.
-func ensureHubAutoRoleVision(cfg corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
-	if cfg.SupportsVision {
+// ensureHubAutoRoleVision attaches images when the MaClaw official provider
+// will choose the model. Picture-PDF pages and screenshots are sent only after
+// SupportsVision is set; Hub's auto route then sees the image parts and can
+// stay on a vision model. A third-party auto model keeps its probed flag,
+// including one whose URL contains /api/llm/v1. A pinned text model does too.
+func ensureHubAutoRoleVision(cfg corelib.MaclawLLMConfig, official bool) corelib.MaclawLLMConfig {
+	if cfg.SupportsVision || !official {
 		return cfg
 	}
 	model := strings.TrimSpace(cfg.Model)
 	if !strings.EqualFold(model, "auto") && !strings.EqualFold(model, "default") {
 		return cfg
 	}
-	if isHubServiceProviderName(cfg.ProviderName) || corelib.IsHubManagedLLMEndpoint(cfg.URL, model) {
-		cfg.SupportsVision = true
-	}
+	cfg.SupportsVision = true
 	return cfg
 }
 
@@ -181,9 +248,9 @@ func validateMaclawLLMRoleAssignment(name string, role corelib.MaclawLLMRoleAssi
 	return nil
 }
 
-func (a *App) maclawLLMRoleSummary(role string, assignment corelib.MaclawLLMRoleAssignment) MaclawLLMRoleSummary {
+func (a *App) maclawLLMRoleSummary(role string, assignment corelib.MaclawLLMRoleAssignment, cfg corelib.AppConfig, providers []corelib.MaclawLLMProvider, current string) MaclawLLMRoleSummary {
 	summary := MaclawLLMRoleSummary{Role: role, InheritHub: assignment.InheritsHub()}
-	resolved, err := a.ResolveMaclawLLMRole(role)
+	resolved, err := a.resolveMaclawLLMRoleFromConfig(role, cfg, providers, current)
 	if err != nil || strings.TrimSpace(resolved.Model) == "" {
 		return summary
 	}

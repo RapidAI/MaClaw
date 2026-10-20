@@ -654,3 +654,80 @@ func TestModernBodyBoxTracksBadgeGeometry(t *testing.T) {
 			gap, float64(gap)/float64(deckInchEMU))
 	}
 }
+
+func TestStyleLabelAndExplicitThemeTagMatching(t *testing.T) {
+	for _, tc := range []struct {
+		theme, hint, want string
+		explicit          bool
+	}{
+		{"创意杂志", "", "magazine", true},
+		{"电子墨水", "", "eink", true},
+		{"复古扁平", "", "retro", true},
+		{"数据仪表盘", "", "dashboard", true},
+		{"手绘白板", "", "whiteboard", true},
+		{"党政红", "", "official", true},
+		{"麦肯锡", "", "mckinsey", true},
+		{"theme=retro", "季度汇报", "retro", true},
+		{"auto", "若本条是在制作或修改演示文稿，请使用风格「复古扁平」（theme=retro）。\n做一份季度总结", "retro", false},
+		{"auto", "请使用党政红风格做一份汇报", "official", false},
+		{"auto", "请使用麦肯锡风格做一份分析", "mckinsey", false},
+		{"auto", "请使用手绘白板风格", "whiteboard", false},
+	} {
+		id, explicit := ChooseDeckStyle(tc.theme, tc.hint)
+		if id != tc.want || explicit != tc.explicit {
+			t.Errorf("ChooseDeckStyle(%q, %q) = %s explicit=%v, want %s explicit=%v", tc.theme, tc.hint, id, explicit, tc.want, tc.explicit)
+		}
+	}
+}
+
+func TestTimelineAndComparisonLayoutsRenderMotifSpecificSlides(t *testing.T) {
+	cases := []struct {
+		spec OutlineSlide
+		want string
+	}{
+		{OutlineSlide{Title: "实施路线图", Bullets: []string{"阶段一：完成底座", "阶段二：灰度试点", "阶段三：全量推广"}}, "cards"},
+		{OutlineSlide{Title: "新旧方案对比", Bullets: []string{"传统方案：人工耗时", "智能方案：自动闭环"}}, "cards"},
+		{OutlineSlide{Title: "显式流程", Layout: "timeline", Bullets: []string{"第一步：调研", "第二步：设计"}}, "cards"},
+		{OutlineSlide{Title: "显式对比", Layout: "comparison", Bullets: []string{"左栏：现状", "右栏：目标"}}, "cards"},
+		{OutlineSlide{Title: "五条结构化卡片", Bullets: []string{"一：说明", "二：说明", "三：说明", "四：说明", "五：说明"}}, "cards"},
+	}
+	for _, tc := range cases {
+		if got := effectiveLayout(tc.spec); got != tc.want {
+			t.Errorf("effectiveLayout(%q) = %q, want %q", tc.spec.Title, got, tc.want)
+		}
+	}
+
+	dir := t.TempDir()
+	for _, style := range ListStyleInfo() {
+		if !style.Builtin {
+			continue
+		}
+		path := filepath.Join(dir, style.ID+".pptx")
+		outline := Outline{
+			Title:    style.Label,
+			Subtitle: style.Summary,
+			Theme:    style.ID,
+			Slides: []OutlineSlide{
+				{Title: "目录总览", Layout: "agenda", Bullets: []string{"背景：现状梳理", "路径：核心阶段", "结论：核心指标"}},
+				{Title: "第一部分", Layout: "section", Kicker: "PART 01", Bullets: []string{"从概念到落地"}},
+				{Title: "核心能力矩阵", Layout: "cards", Bullets: []string{"架构：高内聚低耦合", "体验：端到端流畅", "安全：零信任边界"}},
+				{Title: "演进路线图", Layout: "timeline", Bullets: []string{"Q1：原型验证", "Q2：小范围试点", "Q3：全面推广"}},
+				{Title: "架构方案对比", Layout: "comparison", Bullets: []string{"旧方案：人工串联", "新方案：自动编排", "旧成本：高昂维护", "新成本：按需弹性"}},
+				{Title: "关键业务指标", Layout: "kpi", Bullets: []string{"99.9% | 可用性", "3.2x | 交付提速", "-42% | 运维成本"}},
+				{Title: "深度分析要点", Layout: "bullets", Bullets: []string{"第一条：长文本展开说明业务背景与约束条件", "第二条：通过自动化流水线降低人为失误率", "第三条：建立多维度监控与回滚机制"}},
+				{Title: "核心主张", Layout: "quote", Bullets: []string{"好设计让复杂消失，让重点自己说话。"}},
+				{Title: "感谢聆听", Layout: "closing", Bullets: []string{"欢迎交流与探讨"}},
+			},
+		}
+		if err := WriteFile(path, outline); err != nil {
+			t.Fatalf("WriteFile(%s): %v", style.ID, err)
+		}
+		pres, err := Read(path)
+		if err != nil {
+			t.Fatalf("Read(%s): %v", style.ID, err)
+		}
+		if pres.SlideCount != 10 {
+			t.Fatalf("%s slide count = %d, want 10", style.ID, pres.SlideCount)
+		}
+	}
+}

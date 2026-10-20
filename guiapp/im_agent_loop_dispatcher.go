@@ -196,6 +196,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 	runState := newAgentLoopRunState(cfg)
 	trajRunState = runState
+	runState.RoleBase = startState.RoleBase
 	runState.Telemetry = telemetry
 	runState.applyRouteDecision(startState.RouteDecision, cfg)
 	telemetry.Route = startState.RouteDecision
