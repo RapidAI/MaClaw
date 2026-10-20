@@ -383,12 +383,29 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 	step := desktopbot.Step{
 		RunID: scope.RunID,
 		Tool:  action,
-		Key:   desktopbot.StepKey(scope.RunID, agentruntime.ToolCallID(ctx), 0),
+		Key:   desktopStepKey(scope.RunID, agentruntime.ToolCallID(ctx)),
 	}
 	text, _, err := steps.RunDesktopStep(step, command, func() (string, error) {
 		return operateDesktopBody(ctx, scope, args)
 	})
 	return text, err
+}
+
+// desktopStepKey is the journal key of one side effect. The journal table is
+// keyed by this string alone, across runs. A tool_call_id by itself is not
+// unique there: local models and recovered tool-call markup reuse ids such as
+// call_0, so a later run's install or git push would get the earlier run's
+// result without running. The run id scopes it. No call id, no journal.
+func desktopStepKey(runID, toolCallID string) string {
+	toolCallID = strings.TrimSpace(toolCallID)
+	if toolCallID == "" {
+		return ""
+	}
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return desktopbot.StepKey("", toolCallID, 0)
+	}
+	return runID + ":" + toolCallID
 }
 
 func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {

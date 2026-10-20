@@ -17,7 +17,7 @@ func TestDesktopBotDurableCases(t *testing.T) {
 		t.Setenv(desktopHubTokenEnv, "")
 		db := openSrvDurableDB(t)
 		if _, err := db.SaveDesktopStep(desktopbot.Step{
-			RunID: "run-1", Number: 1, Tool: "install", Key: "call-install", Result: "已安装", Done: true,
+			RunID: "run-1", Number: 1, Tool: "install", Key: "run-1:call-install", Result: "已安装", Done: true,
 		}); err != nil {
 			t.Fatal(err)
 		}
