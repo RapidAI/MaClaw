@@ -214,6 +214,11 @@ func spillDesktopToolText(ctx context.Context, scope agentruntime.Scope, body st
 	if utf8.RuneCountInString(body) <= desktopbot.ToolResultSpillRunes {
 		return body
 	}
+	// A deliver record stays whole in the conversation: the outcome check
+	// reads it to know a file already reached the person.
+	if strings.HasPrefix(strings.TrimSpace(body), "Delivered ") {
+		return body
+	}
 	taskID := strings.TrimSpace(scope.SessionID)
 	if taskID == "" {
 		taskID = strings.TrimSpace(scope.RunID)

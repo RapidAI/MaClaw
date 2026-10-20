@@ -63,3 +63,29 @@ func TestDesktopOutcomeEvidenceKeepsEveryDelivery(t *testing.T) {
 		t.Fatalf("delivery dropped: %s", text)
 	}
 }
+
+func TestDesktopOutcomeSeesSpilledDeliveryAndSendToUser(t *testing.T) {
+	spilled := []agent.ConversationEntry{
+		{Role: "tool", ToolName: "desktop", Content: "/home/desktop/tasks/s1/out/1.txt\nDelivered big.docx (90000 bytes) on this chat reply."},
+		{Role: "tool", ToolName: "desktop", Content: "window list"},
+	}
+	if !desktopOutcomeDelivered(spilled) {
+		t.Fatal("a delivery moved to a file was not seen")
+	}
+	sent := []agent.ConversationEntry{
+		{Role: "tool", ToolName: "send_to_user", Content: "报告在 /home/desktop/Desktop/r.docx"},
+		{Role: "tool", ToolName: "desktop", Content: "window list"},
+	}
+	if !desktopOutcomeDelivered(sent) {
+		t.Fatal("a send_to_user record was not seen")
+	}
+	if desktopOutcomeDelivered([]agent.ConversationEntry{{Role: "tool", ToolName: "desktop", Content: "/tmp/x\nDelivered nothing"}}) {
+		t.Fatal("a non-spill path line counted as a delivery")
+	}
+	cb := judgeCallbacks(t, `{"ok":false,"gap":"没有截图"}`)
+	cb.desktopOutcomeMissContinues = desktopOutcomeContinueMax
+	cb.connectorAsk.Text = "要发这封邮件吗？"
+	if d := cb.ReviewDesktopOutcome("发邮件", "草稿", spilled[1:], nil); d.Replace != "" {
+		t.Fatalf("a run whose send_to_user is set was replaced: %+v", d)
+	}
+}

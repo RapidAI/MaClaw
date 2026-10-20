@@ -60,7 +60,9 @@ func (c *coreAgentCallbacks) ReviewDesktopOutcome(userText, draft string, histor
 			gap = "当前结果还没有对照桌面确认。"
 		}
 		if c.desktopOutcomeMissContinues >= desktopOutcomeContinueMax {
-			if desktopOutcomeDelivered(history) {
+			if desktopOutcomeDelivered(history) || strings.TrimSpace(c.connectorAsk.Text) != "" {
+				// PR-1: the person sees send_to_user (here the connector
+				// ask that fills it) and the delivered files, not the draft.
 				// Files already reached the person; a gap text in place
 				// of the report would hide what was sent.
 				log.Printf("[desktop-outcome] replace=skipped delivered=true misses=%d gap=%q", c.desktopOutcomeMissContinues, desktopOutcomeGapForLog(gap))
@@ -108,7 +110,7 @@ func desktopOutcomeEvidence(history []agent.ConversationEntry) (used, ask, remot
 				ask = true
 				continue
 			}
-			if strings.HasPrefix(body, "Delivered ") {
+			if desktopOutcomeDeliverBody(body) {
 				deliverIndexes = append(deliverIndexes, len(desktopParts))
 			}
 			desktopParts = append(desktopParts, formatDesktopOutcomeEvidence("desktop", body))
@@ -257,10 +259,32 @@ func desktopOutcomeGapForLog(gap string) string {
 // desktopOutcomeDelivered reports a successful desktop deliver in the run.
 func desktopOutcomeDelivered(history []agent.ConversationEntry) bool {
 	for _, entry := range history {
-		if entry.Role == "tool" && strings.TrimSpace(entry.ToolName) == "desktop" &&
-			strings.HasPrefix(strings.TrimSpace(fmt.Sprint(entry.Content)), "Delivered ") {
-			return true
+		if entry.Role != "tool" {
+			continue
+		}
+		switch strings.TrimSpace(entry.ToolName) {
+		case "desktop":
+			if desktopOutcomeDeliverBody(strings.TrimSpace(fmt.Sprint(entry.Content))) {
+				return true
+			}
+		case "send_to_user":
+			// PR-1's single exit: a sentence already reached the person.
+			if strings.TrimSpace(fmt.Sprint(entry.Content)) != "" {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// desktopOutcomeDeliverBody reports a deliver result. A long result moved to
+// a container file keeps the path on the first line and the result's first
+// line after it, so "Delivered " can be on the second line.
+func desktopOutcomeDeliverBody(body string) bool {
+	if strings.HasPrefix(body, "Delivered ") {
+		return true
+	}
+	first, rest, ok := strings.Cut(body, "\n")
+	return ok && strings.HasPrefix(strings.TrimSpace(first), "/home/desktop/tasks/") &&
+		strings.HasPrefix(strings.TrimSpace(rest), "Delivered ")
 }
