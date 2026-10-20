@@ -348,6 +348,9 @@ type desktopRoundWake struct {
 	woken    bool
 	have     bool
 	endpoint desktopEndpoint
+	// userKey is the desktop (owner, or owner plus bot when isolated) whose
+	// browser binding this round used. finishDesktopRound drops only that one.
+	userKey string
 }
 
 func desktopBlockedByPerson(scope agentruntime.Scope) error {
@@ -2003,6 +2006,9 @@ func ensureDesktopRound(ctx context.Context, scope agentruntime.Scope, userKey s
 		wake = value.(*desktopRoundWake)
 		wake.mu.Lock()
 		defer wake.mu.Unlock()
+		if strings.TrimSpace(userKey) != "" {
+			wake.userKey = strings.TrimSpace(userKey)
+		}
 		if wake.have {
 			return wake.endpoint, nil
 		}
@@ -2028,18 +2034,57 @@ func ensureDesktopRound(ctx context.Context, scope agentruntime.Scope, userKey s
 	return endpoint, nil
 }
 
-// finishDesktopRound drops this round's wake and the user's browser session.
+// finishDesktopRound drops this round's wake and the browser session of the
+// desktop this round used. That is the bot's own display for an isolated bot,
+// or the shared owner desktop otherwise. A binding another running round
+// still uses is kept, so one bot finishing does not cut another bot's browser.
 // The next tool after the computer sleeps calls Ensure again.
 func finishDesktopRound(tenantID, userID, runID string) {
-	if strings.TrimSpace(runID) != "" {
-		desktopRoundWakes.Delete(strings.TrimSpace(runID))
-		dropDesktopToolResults(runID)
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		// No round to scope by: keep the old per-user behavior.
+		if key, err := desktop.UserKey(tenantID, userID); err == nil {
+			dropDesktopBinding(key)
+		}
+		return
 	}
-	key, err := desktop.UserKey(tenantID, userID)
-	if err != nil {
+	var key string
+	if value, ok := desktopRoundWakes.LoadAndDelete(runID); ok {
+		if wake, _ := value.(*desktopRoundWake); wake != nil {
+			wake.mu.Lock()
+			key = wake.userKey
+			wake.mu.Unlock()
+		}
+	}
+	dropDesktopToolResults(runID)
+	if key == "" {
+		// A round that never recorded its desktop: the owner's desktop.
+		key, _ = desktop.UserKey(tenantID, userID)
+	}
+	if key == "" || desktopBindingInUse(key) {
 		return
 	}
 	dropDesktopBinding(key)
+}
+
+// desktopBindingInUse reports another open round on the same desktop.
+func desktopBindingInUse(userKey string) bool {
+	inUse := false
+	desktopRoundWakes.Range(func(_, value any) bool {
+		wake, _ := value.(*desktopRoundWake)
+		if wake == nil {
+			return true
+		}
+		wake.mu.Lock()
+		same := wake.userKey == userKey
+		wake.mu.Unlock()
+		if same {
+			inUse = true
+			return false
+		}
+		return true
+	})
+	return inUse
 }
 
 func dropDesktopBinding(userKey string) {
