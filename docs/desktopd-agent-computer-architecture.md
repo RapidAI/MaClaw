@@ -3246,6 +3246,8 @@ agent 进程和电脑分开睡（第 30 节）。一条消息或一个到点的�
 
 ### 29.6 PR-6 主 agent 放下键鼠（已落地）
 
+现状补记（2026-10）：MaClawSrv 读消息元数据 `main_agent="1"` 才收起驱动动作（`desktopMainAgentTurn`），但 Hub 目前不写这个键，所以收起和 `MainDropsTool` 在线上不会触发。计划阶段靠 `PlanPhaseNextStep` 拦住写动作，效果相同。没有接上的原因：给计划回合单独收起 schema 会让计划和执行的工具定义不同（与 PR-3 同一份定义、PR-2 前缀缓存相冲突），而无阶段的回合今天仍会直接操作桌面。要接时在 `hub/internal/botmgmt/access.go` 对 `phase == "plan"` 写 `main_agent=1`，并先确认缓存命中率可以接受。
+
 硬规则落到代码：主 agent 不操作电脑。截图、点击、输入、浏览器和桌面控制只在操作电脑的帮手上。帮手用 `computer_use`，自己的上下文，一块屏幕一个，交回第 27.3 节的三行结论和路径。主 agent 至多一个只读截图。
 
 动这些：
@@ -3418,7 +3420,11 @@ shell、对外发送、删除、付款在执行前由另一个模型看一次。
 - `screenshot_retries_on_new_executor`
 - `schedule_fires_without_gui`
 
+落地补记（2026-10）：只有文件、`bash`、`install`、`http` 走上面那条单次机器调用。`app_open`、`app_run`、`computer`、浏览器动作和截图仍在 MaClawSrv 的守卫路径上执行：先取这一轮的屏幕（隔离 bot 的 `desktop_mode=isolated` 是它自己的屏幕），再做 app_open 后的窗口抬起、输入前的密码框检查、验证码/页面需求判断和浏览器会话，机器动作经 Hub 的 `session`、`app`、`open`、`ctl`、`screenshot` 路由到达电脑。Hub 的 `/tool` 收到带 `steps`/`actions` 批次的 `computer`/`app_run` 时直接报错，不再静默丢掉步骤。一轮结束只断开这一轮用过的那块桌面的浏览器连接；同一桌面上另一轮还在跑时不断开。
+
 ### 29.14 PR-14 耐久工作流（部分：sqlite 已落地）
+
+落地补记（2026-10）：幂等键是 `run_id:tool_call_id`。日记表按这一个键去重、跨 run 共用，单用 `tool_call_id` 时本地模型或修复出来的 `call_0` 会让后一轮的副作用直接拿到前一轮的结果。没有 `tool_call_id` 的调用不记日记。
 
 第 3 步失败，不重做第 1、2 步。落实第 31 节。不自研一套工作流引擎。
 
