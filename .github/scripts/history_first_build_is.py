@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Exit 0 when stable-history.json's first release build equals the given tag.
 
-Used by the release workflow's rollback publisher: a fetched catalogue that
-does not start with the current build is stale (with the COS mirror paused
-its updater never ran) and must be re-seeded instead of republished.
+The release workflow no longer uses this gate to discard older builds. A
+catalogue whose first build is the previous tag is history, not stale.
+update_stable_history.py prepends the release being published and keeps up
+to five formal builds. This script remains for callers that still want the
+same-tag size and hash comparison.
 
 A catalogue can also carry the right build while describing different bytes:
 re-running the same tag produces fresh binaries, so a first entry that still
 lists the previous run's sizes/hashes would make verify_update_mirror reject
 the published assets. When the local release-assets directory is available,
-compare sizes and hashes against it and re-seed on any mismatch.
+compare sizes and hashes against it and exit non-zero on any mismatch.
 """
 
 import hashlib
@@ -73,7 +75,7 @@ def main():
             return 1
 
     # Same tag, different bytes: a re-run rebuilt the binaries. Compare
-    # against the assets this run is publishing and re-seed on any drift.
+    # against the assets this run is publishing and exit non-zero on any drift.
     expected = local_assets()
     if expected:
         for name, (size, digest) in expected.items():

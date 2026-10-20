@@ -24,12 +24,20 @@ function cssRgb(hex: string): string {
 // outside jsdom's scope.
 const safeKBImageJPEG = "/9j/2wCEAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDIBCQkJDAsMGA0NGDIhHCEyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMv/AABEIAAEAAQMBIgACEQEDEQH/xAGiAAABBQEBAQEBAQAAAAAAAAAAAQIDBAUGBwgJCgsQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+gEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoLEQACAQIEBAMEBwUEBAABAncAAQIDEQQFITEGEkFRB2FxEyIygQgUQpGhscEJIzNS8BVictEKFiQ04SXxFxgZGiYnKCkqNTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqCg4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2dri4+Tl5ufo6ery8/T19vf4+fr/2gAMAwEAAhEDEQA/AOLooor5k/cT/9k=";
 
-const { openFileOrShowInFolderMock, showItemInFolderMock, knowledgeOpenImageAssetMock, attachmentPreviewDataURLMock, attachmentFullDataURLMock, importMobileDocumentFromPathMock, exportTaskResultFileMock, exportLatexSourceBundleMock } = vi.hoisted(() => ({
+const { openFileOrShowInFolderMock, showItemInFolderMock, knowledgeOpenImageAssetMock, attachmentPreviewDataURLMock, attachmentFullDataURLMock, attachmentOpeningPreviewMock, importMobileDocumentFromPathMock, exportTaskResultFileMock, exportLatexSourceBundleMock } = vi.hoisted(() => ({
     openFileOrShowInFolderMock: vi.fn(async () => undefined),
     showItemInFolderMock: vi.fn(async () => undefined),
     knowledgeOpenImageAssetMock: vi.fn(async () => undefined),
     attachmentPreviewDataURLMock: vi.fn(async () => "data:image/png;base64,HOSTTHUMB"),
     attachmentFullDataURLMock: vi.fn(async () => "data:image/png;base64,HOSTFULL"),
+    attachmentOpeningPreviewMock: vi.fn(async () => ({
+        kind: "pdf",
+        preview_url: "/maclaw-preview/v1/file?t=0123456789abcdef0123456789abcdef",
+        pages: [
+            { index: 1, text: "封面", width: 595, height: 842 },
+            { index: 2, text: "正文", width: 595, height: 842 },
+        ],
+    })),
     importMobileDocumentFromPathMock: vi.fn(async (_path: string) => ({ id: "draft-1" })),
     exportTaskResultFileMock: vi.fn(async () => "D:\\export\\copy.docx"),
     exportLatexSourceBundleMock: vi.fn(async () => "D:\\export\\paper-source.zip"),
@@ -41,6 +49,7 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     KnowledgeOpenImageAsset: knowledgeOpenImageAssetMock,
     AIAssistantAttachmentPreviewDataURL: attachmentPreviewDataURLMock,
     AIAssistantAttachmentFullDataURL: attachmentFullDataURLMock,
+    AIAssistantAttachmentOpeningPreview: attachmentOpeningPreviewMock,
     ImportMobileDocumentFromPath: importMobileDocumentFromPathMock,
     ExportTaskResultFile: exportTaskResultFileMock,
     ExportLatexSourceBundle: exportLatexSourceBundleMock,
@@ -1916,6 +1925,48 @@ describe("renderMessage user attachment chips", () => {
         await waitFor(() => {
             expect(screen.getByTestId("attachment-image-preview-image").getAttribute("src")).toBe("data:image/png;base64,HOSTFULL");
         });
+    });
+
+    it("previews an attached PDF at reading size and keeps a sparse second page", async () => {
+        render(<div>{renderMessage({
+            id: "with-pdf",
+            role: "user",
+            content: "看看规格书",
+            attachments: [{
+                filePath: "D:\\docs\\ZJ-3528.pdf",
+                fileName: "ZJ-3528.pdf",
+                extension: ".pdf",
+                isImage: false,
+            }],
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "zh", false)}</div>);
+
+        await screen.findAllByTestId("attachment-document-pdf");
+        const preview = screen.getByTestId("attachment-document-preview");
+        expect(preview.getAttribute("data-state")).toBe("ready");
+        expect(preview.getAttribute("data-preview-kind")).toBe("pdf");
+        expect(preview.getAttribute("data-page-count")).toBe("2");
+        expect(preview.getAttribute("data-preview-max-width")).toBe("640");
+        expect(preview.getAttribute("data-preview-max-height")).toBe("480");
+        expect(preview.style.width).toBe("640px");
+        expect(preview.style.height).toBe("480px");
+        expect(preview.style.maxHeight).toBe("480px");
+        const frames = screen.getAllByTestId("attachment-document-pdf");
+        expect(frames).toHaveLength(2);
+        expect(frames[0].getAttribute("src")).toContain("p=1");
+        expect(frames[0].getAttribute("src")).toContain("#page=1");
+        expect(frames[0].getAttribute("src")).toContain("toolbar=0");
+        expect(frames[0].getAttribute("src")).toContain("view=FitH");
+        expect(frames[1].getAttribute("src")).toContain("#page=2");
+        expect((frames[0] as HTMLIFrameElement).style.height).toBe("225px");
+        expect((frames[1] as HTMLIFrameElement).style.height).toBe("225px");
+        expect((frames[1] as HTMLIFrameElement).style.pointerEvents).toBe("none");
+        const bubble = screen.getByTestId("assistant-chat-user-bubble-with-pdf");
+        expect(bubble.style.maxWidth).toBe("76%");
+        expect(bubble.contains(preview)).toBe(false);
+        expect(preview.textContent).toContain("第 1–2 页");
+        expect(screen.queryByText("PDF")).toBeNull();
+        expect(attachmentOpeningPreviewMock).toHaveBeenCalledWith("D:\\docs\\ZJ-3528.pdf");
     });
 });
 

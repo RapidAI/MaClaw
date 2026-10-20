@@ -4412,7 +4412,11 @@ function App() {
         : quickModelRaw;
     const contactedProfileSummary = contactedProfileForExecution(
         activeExecutionProfile,
-        llmProfilePanelState ? { assistant: llmProfilePanelState.assistant, coding: llmProfilePanelState.coding } : null,
+        llmProfilePanelState ? {
+            assistant: llmProfilePanelState.assistant,
+            coding: llmProfilePanelState.coding,
+            foreground: llmProfilePanelState.foreground,
+        } : null,
     );
     const contactedProviderID = contactedProfileProviderID(contactedProfileSummary);
     const contactedProviderName = contactedProfileProviderName(contactedProfileSummary);

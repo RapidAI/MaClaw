@@ -3,6 +3,7 @@ package guiapp
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -202,6 +203,50 @@ func assessDiscoveredMCPBind(inventory semanticDynamicInventory, serverID, toolN
 	return ""
 }
 
+// discoveredMCPSpellIsAddress reports that the stored server and tool
+// spelling is the capability address itself. A folded name such as "Foo Bar"
+// and the spelling "foo_bar" publish one x:mcp id. The planner can require
+// that id once.
+func discoveredMCPSpellIsAddress(bind discoveredMCPBind, address tool.CapabilityID) bool {
+	rest := strings.TrimPrefix(string(address), "x:mcp:")
+	serverSlug, toolSlug, ok := strings.Cut(rest, ":")
+	if !ok || serverSlug == "" || toolSlug == "" {
+		return false
+	}
+	return strings.TrimSpace(bind.ServerID) == serverSlug && strings.TrimSpace(bind.ToolName) == toolSlug
+}
+
+// discoveredMCPDistinctBinds keeps one bind per x:mcp address. The spelling
+// that already is the address wins. Claiming every folded name makes the
+// next request reject the whole set, so none of the functions are listed.
+func discoveredMCPDistinctBinds(binds []discoveredMCPBind) []discoveredMCPBind {
+	best := make(map[tool.CapabilityID]int, len(binds))
+	order := make([]discoveredMCPBind, 0, len(binds))
+	for _, bind := range binds {
+		address := agentservice.AutoMCPCapabilityIDForBinding(bind.ServerID, bind.ToolName)
+		if address == "" {
+			continue
+		}
+		order = append(order, bind)
+		index := len(order) - 1
+		prev, ok := best[address]
+		if !ok || (!discoveredMCPSpellIsAddress(order[prev], address) && discoveredMCPSpellIsAddress(bind, address)) {
+			best[address] = index
+		}
+	}
+	keep := make(map[int]bool, len(best))
+	for _, index := range best {
+		keep[index] = true
+	}
+	out := make([]discoveredMCPBind, 0, len(best))
+	for index, bind := range order {
+		if keep[index] {
+			out = append(out, bind)
+		}
+	}
+	return out
+}
+
 func (h *IMMessageHandler) assessDiscoveredMCPBinds(ctx context.Context, selected []discoverableMCPTool) (bindable []discoverableMCPTool, reasons []string) {
 	if h == nil || len(selected) == 0 {
 		return nil, nil
@@ -224,7 +269,29 @@ func (h *IMMessageHandler) assessDiscoveredMCPBinds(ctx context.Context, selecte
 		}
 		bindable = append(bindable, item)
 	}
-	return bindable, reasons
+	candidates := make([]discoveredMCPBind, len(bindable))
+	for i, item := range bindable {
+		candidates[i] = discoveredMCPBind{ServerID: item.serverID, ToolName: item.toolName}
+	}
+	keep := make(map[string]bool, len(candidates))
+	for _, bind := range discoveredMCPDistinctBinds(candidates) {
+		keep[discoveredMCPBindKey(bind.ServerID, bind.ToolName)] = true
+	}
+	kept := bindable[:0]
+	emitted := map[string]bool{}
+	for _, item := range bindable {
+		key := discoveredMCPBindKey(item.serverID, item.toolName)
+		if keep[key] {
+			if emitted[key] {
+				continue
+			}
+			emitted[key] = true
+			kept = append(kept, item)
+			continue
+		}
+		reasons = append(reasons, fmt.Sprintf("%s/%s uses the same installed MCP address as another tool. The host cannot bind it.", strings.TrimSpace(item.serverID), strings.TrimSpace(item.toolName)))
+	}
+	return kept, reasons
 }
 
 // semanticSurfaceForDiscoveredMCP plans and publishes x:mcp grants for the
@@ -256,26 +323,53 @@ func (h *IMMessageHandler) semanticSurfaceForDiscoveredMCP(ctx context.Context, 
 	if err != nil {
 		return nil, nil, fmt.Errorf("load GUI dynamic semantic inventory: %w", err)
 	}
-	wanted := make(map[string]discoveredMCPBind, len(binds))
 	planned := make([]discoveredMCPBind, 0, len(binds))
-	names := make([]string, 0, len(binds))
+	seen := make(map[string]bool, len(binds))
+	skipped := make([]string, 0)
 	for _, bind := range binds {
 		key := discoveredMCPBindKey(bind.ServerID, bind.ToolName)
-		if _, ok := wanted[key]; ok {
+		if seen[key] {
 			continue
 		}
+		seen[key] = true
+		// One bind that cannot be planned must not hide the others.
+		// Discovery already reports that tool on its own.
 		if reason := assessDiscoveredMCPBind(inventory, bind.ServerID, bind.ToolName); reason != "" {
-			return nil, nil, fmt.Errorf("%s", reason)
+			skipped = append(skipped, reason)
+			continue
 		}
-		wanted[key] = bind
 		planned = append(planned, bind)
+	}
+	// One address is one need. A stored pair that folds together still
+	// publishes the spelling that is the address, instead of rejecting
+	// every tool in the set.
+	planned = discoveredMCPDistinctBinds(planned)
+	wanted := make(map[string]discoveredMCPBind, len(planned))
+	names := make([]string, 0, len(planned))
+	for _, bind := range planned {
+		wanted[discoveredMCPBindKey(bind.ServerID, bind.ToolName)] = bind
 		names = append(names, strings.TrimSpace(bind.ToolName))
 	}
-	entries := make([]agentservice.MCPToolEntry, 0, len(wanted))
-	for _, entry := range inventory.mcpEntries {
-		if _, ok := wanted[discoveredMCPBindKey(entry.ServerID, entry.ToolName)]; ok {
-			entries = append(entries, entry)
+	if len(planned) == 0 {
+		if len(skipped) > 0 {
+			return nil, nil, fmt.Errorf("%s", strings.Join(skipped, "; "))
 		}
+		return nil, nil, fmt.Errorf("discovered MCP bind did not mint an x:mcp need")
+	}
+	if len(skipped) > 0 {
+		log.Printf("[semantic-routing] discovered MCP bind left unpublished: %s", strings.Join(skipped, "; "))
+	}
+	// Keep the first tools/list row for each bind. A repeated name projects
+	// to the same adapter, and that collision fails the whole catalog.
+	entries := make([]agentservice.MCPToolEntry, 0, len(wanted))
+	seenEntry := make(map[string]bool, len(wanted))
+	for _, entry := range inventory.mcpEntries {
+		key := discoveredMCPBindKey(entry.ServerID, entry.ToolName)
+		if _, ok := wanted[key]; !ok || seenEntry[key] {
+			continue
+		}
+		seenEntry[key] = true
+		entries = append(entries, entry)
 	}
 	dynamicCatalog, err := agentservice.BuildDynamicSemanticCatalog(entries, nil)
 	if err != nil {
@@ -379,7 +473,7 @@ func (h *IMMessageHandler) semanticSurfaceForDiscoveredMCP(ctx context.Context, 
 	if err != nil {
 		return nil, nil, err
 	}
-	rendered, err := discoveredMCPGrantDefinitions(surface, binds)
+	rendered, err := discoveredMCPGrantDefinitions(surface, planned)
 	if err != nil {
 		cancelSemanticCallSurface(surface)
 		return nil, nil, err
@@ -428,6 +522,84 @@ func discoveredMCPGrantDefinitions(surface *semanticCallSurface, binds []discove
 		out = append(out, definition)
 	}
 	return out, nil
+}
+
+// discoveredMCPPublishedBinds is the bind set the surface actually selected.
+// Reuse compares this with the loop list. A sibling that failed assess stays
+// on the loop, so the next request builds again instead of reusing a surface
+// that omitted it.
+func discoveredMCPPublishedBinds(surface *semanticCallSurface) []discoveredMCPBind {
+	if surface == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]discoveredMCPBind, 0, len(surface.plan.Selections))
+	for _, selection := range surface.plan.Selections {
+		serverID := strings.TrimSpace(selection.Provider.ProviderID)
+		toolName := strings.TrimSpace(selection.Provider.ImplementationID)
+		capability := agentservice.AutoMCPCapabilityIDForBinding(serverID, toolName)
+		if capability == "" || selection.FitProof.MatchedCapability != capability {
+			continue
+		}
+		key := discoveredMCPBindKey(serverID, toolName)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, discoveredMCPBind{ServerID: serverID, ToolName: toolName})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ServerID != out[j].ServerID {
+			return out[i].ServerID < out[j].ServerID
+		}
+		return out[i].ToolName < out[j].ToolName
+	})
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// dropDiscoveredMCPFoldedAliases removes loop binds that publish the same
+// x:mcp address as a bind this surface already selected. A second spelling
+// cannot become another grant. Leaving it on the loop makes the next request
+// cancel the live surface and mint a replacement for the same tool.
+// An alias is kept when the published spelling is no longer on the loop, so
+// the next publish still has one name for that address.
+func dropDiscoveredMCPFoldedAliases(loop *LoopContext, published []discoveredMCPBind) {
+	if loop == nil || len(published) == 0 {
+		return
+	}
+	keepByAddress := make(map[tool.CapabilityID]string, len(published))
+	for _, bind := range published {
+		address := agentservice.AutoMCPCapabilityIDForBinding(bind.ServerID, bind.ToolName)
+		if address == "" {
+			continue
+		}
+		keepByAddress[address] = discoveredMCPBindKey(bind.ServerID, bind.ToolName)
+	}
+	if len(keepByAddress) == 0 {
+		return
+	}
+	stored := loop.discoveredMCPBindList()
+	present := make(map[string]bool, len(stored))
+	for _, bind := range stored {
+		present[discoveredMCPBindKey(bind.ServerID, bind.ToolName)] = true
+	}
+	forget := make(map[string]bool)
+	for _, bind := range stored {
+		address := agentservice.AutoMCPCapabilityIDForBinding(bind.ServerID, bind.ToolName)
+		keep, ok := keepByAddress[address]
+		if !ok {
+			continue
+		}
+		key := discoveredMCPBindKey(bind.ServerID, bind.ToolName)
+		if key == keep || !present[keep] {
+			continue
+		}
+		forget[key] = true
+	}
+	loop.forgetDiscoveredMCPBinds(forget)
 }
 
 func discoveredMCPResultNeedsFreshPlan(result string) bool {

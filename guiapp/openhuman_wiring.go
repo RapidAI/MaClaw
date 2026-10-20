@@ -253,19 +253,35 @@ func (h *IMMessageHandler) applyTurnModelRoute(primary corelib.MaclawLLMConfig, 
 			}
 		}
 	}
-	// Tightening HasAttachments to image bytes must not send a PDF/zip/voice
-	// turn to the fast model. ToolHeavy is checked before HasAttachments, so
-	// only set it when this turn has no image to see. A desktop picker PDF is
-	// not a MessageAttachment yet — picture pages are attached after this
-	// route — so a path-marker document has to count the same way.
-	if !hasImage && (len(attachments) > 0 || promptHasSelectedDocument(userText)) {
+	// Zip, voice, and other non-document files still need a strong model.
+	// A selected PDF or office file must not: ToolHeavy becomes TaskReasoning,
+	// Hub maps that to the code workload, and a datasheet question then sits
+	// on "正在整理上下文并准备模型请求" for the thinking model's whole
+	// time-to-first-token (production 2026-10-20: 35,366 tokens, 23.9s, no
+	// tool call).
+	heavyAttachment := !hasImage && attachmentForcesHeavyModel(attachments)
+	if heavyAttachment {
 		hints.ToolHeavy = true
 	}
 	// Classify the user's request, not host staging/OCR/failure notes. The
 	// English word "image" in "[Host note: selected image …]" would otherwise
 	// force TaskVision after a failed picker load.
 	routeText := semanticUserIntentText(userText)
+	var history []agent.ConversationEntry
+	if ctx != nil {
+		history = ctx.History
+	}
+	// 接口 and 终端 on a datasheet are pin names. This flag does not grant a
+	// file read; it only keeps the turn off the code-tier thinking model.
+	if !hasImage && !hints.ToolHeavy && !hints.ForceReasoning && turnHasNativeDocument(userText, attachments, history) {
+		hints.DocumentRead = true
+	}
 	classified := cllm.ClassifyTurn(routeText, hints)
+	// TaskDefault and TaskVision are not Hub workload classes. The heuristic
+	// then reads 代码 in the system prompt and selects the code-tier thinking
+	// model, which is the stall on a datasheet question (including 「然后」
+	// and 「图片」 with no image attached).
+	classified = keepDocumentReadOnChat(classified, hints)
 	cost := cllm.DecideCostRoute(classified.Task, hints, classified.Reason)
 	// Background and computer-use already picked their role model. Desktop
 	// cost routing must not replace it. Hub auto still receives workload hints.
@@ -354,11 +370,202 @@ func (h *IMMessageHandler) applyTurnModelRoute(primary corelib.MaclawLLMConfig, 
 	return cfg, decision
 }
 
+// keepDocumentReadOnChat pins a plain PDF or office question to chat.
+// Coding cues, workflow/background turns, and a real image stay put.
+// DocumentRead is set only when those are already false.
+func keepDocumentReadOnChat(classified cllm.ClassifyResult, hints cllm.ClassifyHints) cllm.ClassifyResult {
+	if !hints.DocumentRead {
+		return classified
+	}
+	switch classified.Task {
+	case cllm.TaskDefault, cllm.TaskVision:
+		classified.Task = cllm.TaskFast
+		classified.Reason += "; document question stays on chat"
+	}
+	return classified
+}
+
+// attachmentForcesHeavyModel is true for zip, audio, and other files that are
+// not a native document. A PDF or office attachment is classified from the
+// user's question instead of being forced onto the reasoning workload.
+func attachmentForcesHeavyModel(attachments []MessageAttachment) bool {
+	for _, item := range attachments {
+		if strings.EqualFold(strings.TrimSpace(item.Type), "image") {
+			continue
+		}
+		if attachmentIsNativeDocument(item) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// turnHasNativeDocument reports a document the user is still asking about.
+// That is the current picker, a document attachment, the historical picker
+// marker in this same text, or a user history entry that still carries either
+// marker. Images do not count. This is a model-tier signal, not a file grant.
+func turnHasNativeDocument(userText string, attachments []MessageAttachment, history []agent.ConversationEntry) bool {
+	// The current picker wins over an older datasheet. A historical marker in
+	// this same text is only an echo of a previous selection.
+	if promptHasSelectedDocument(userText) {
+		return true
+	}
+	for _, item := range attachments {
+		if attachmentIsNativeDocument(item) {
+			return true
+		}
+	}
+	if currentPickerHasOnlyNonDocuments(userText) {
+		return false
+	}
+	if markerSectionHasDocument(userText, agent.FilePathPromptPrefixHistorical) {
+		return true
+	}
+	return historyHasNativeDocument(history)
+}
+
+func currentPickerHasOnlyNonDocuments(userText string) bool {
+	paths := agent.SelectedLocalFilePathsFromPrompt(userText)
+	if len(paths) == 0 {
+		return false
+	}
+	for _, path := range paths {
+		if agent.IsDocumentFilePath(path) {
+			return false
+		}
+	}
+	return true
+}
+
+func attachmentIsNativeDocument(item MessageAttachment) bool {
+	if strings.EqualFold(strings.TrimSpace(item.Type), "image") {
+		return false
+	}
+	if agent.IsDocumentFilePath(item.FileName) {
+		return true
+	}
+	return mimeIsNativeDocument(item.MimeType)
+}
+
+func mimeIsNativeDocument(mime string) bool {
+	switch strings.ToLower(strings.TrimSpace(mime)) {
+	case "application/pdf",
+		"application/msword",
+		"application/vnd.ms-excel",
+		"application/vnd.ms-powerpoint",
+		"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+		"text/plain",
+		"text/markdown",
+		"text/csv",
+		"application/json",
+		"application/xml",
+		"text/xml":
+		return true
+	default:
+		return false
+	}
+}
+
 // promptHasSelectedDocument reports a current picker document, such as a PDF.
-// Image paths are not documents. Historical picker markers are ignored.
+// Image paths are not documents. Historical picker markers are ignored here
+// because that helper must not look like a renewed local-file grant.
 func promptHasSelectedDocument(userText string) bool {
 	for _, path := range agent.SelectedLocalFilePathsFromPrompt(userText) {
 		if agent.IsDocumentFilePath(path) {
+			return true
+		}
+	}
+	return false
+}
+
+// promptHasReferencedDocument reports a current or historical picker document
+// in this text. The historical marker still does not authorize a file read.
+func promptHasReferencedDocument(userText string) bool {
+	if promptHasSelectedDocument(userText) {
+		return true
+	}
+	return markerSectionHasDocument(userText, agent.FilePathPromptPrefixHistorical)
+}
+
+func historyHasNativeDocument(history []agent.ConversationEntry) bool {
+	for _, entry := range history {
+		if !strings.EqualFold(strings.TrimSpace(entry.Role), "user") {
+			continue
+		}
+		if promptHasReferencedDocument(historyEntryText(entry.Content)) {
+			return true
+		}
+	}
+	return false
+}
+
+func historyEntryText(content interface{}) string {
+	switch v := content.(type) {
+	case string:
+		return v
+	case []interface{}:
+		var b strings.Builder
+		for _, block := range v {
+			m, ok := block.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if kind, _ := m["type"].(string); kind != "text" && kind != "" {
+				continue
+			}
+			if text, ok := m["text"].(string); ok {
+				if b.Len() > 0 {
+					b.WriteByte('\n')
+				}
+				b.WriteString(text)
+			}
+		}
+		return b.String()
+	default:
+		return ""
+	}
+}
+
+// markerSectionHasDocument reads only the path block after marker. A non-path
+// line ends the block, so an injected document body cannot invent a hit.
+func markerSectionHasDocument(text, marker string) bool {
+	idx := strings.Index(text, marker)
+	if idx < 0 {
+		return false
+	}
+	rest := text[idx+len(marker):]
+	rest = strings.TrimPrefix(rest, "\r\n")
+	rest = strings.TrimPrefix(rest, "\n")
+	for _, line := range strings.Split(rest, "\n") {
+		trimmed := strings.TrimSpace(line)
+		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "-"))
+		if trimmed == "" {
+			continue
+		}
+		if !routingPathLine(trimmed) {
+			break
+		}
+		if agent.IsDocumentFilePath(trimmed) {
+			return true
+		}
+	}
+	return false
+}
+
+func routingPathLine(s string) bool {
+	if agent.IsDocumentFilePath(s) || agent.IsImageFilePath(s) {
+		return true
+	}
+	if strings.HasPrefix(s, "/") || strings.HasPrefix(s, "~/") || strings.HasPrefix(s, `\\`) {
+		return true
+	}
+	if len(s) >= 3 {
+		r0 := s[0]
+		letter := (r0 >= 'A' && r0 <= 'Z') || (r0 >= 'a' && r0 <= 'z')
+		if letter && s[1] == ':' && (s[2] == '\\' || s[2] == '/') {
 			return true
 		}
 	}

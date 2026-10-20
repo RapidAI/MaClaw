@@ -2,8 +2,10 @@ package guiapp
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -34,10 +36,281 @@ func TestDecodeGitHubReleaseSummariesAcceptsLargeCatalogue(t *testing.T) {
 	}
 }
 
+type prefixThenFailReader struct {
+	data []byte
+	off  int
+	fail error
+}
+
+func (r *prefixThenFailReader) Read(p []byte) (int, error) {
+	if r.off >= len(r.data) {
+		return 0, r.fail
+	}
+	n := copy(p, r.data[r.off:])
+	r.off += n
+	return n, nil
+}
+
+func TestDecodeGitHubReleaseSummariesKeepsACompletePrefixWhenTheReadFails(t *testing.T) {
+	sha := "sha256:" + strings.Repeat("a", 64)
+	object := `{"tag_name":"V2","published_at":"2026-10-02T00:00:00Z","assets":[{"name":"TigerClaw-Setup.exe","browser_download_url":"https://github.com/RapidAI/MaClaw/releases/download/V2/TigerClaw-Setup.exe","digest":"` + sha + `"}]}`
+	got, err := decodeGitHubReleaseSummaries(&prefixThenFailReader{data: []byte("[" + object + ","), fail: context.DeadlineExceeded})
+	if !errors.Is(err, errGitHubReleasePageTruncated) {
+		t.Fatalf("decodeGitHubReleaseSummaries() error = %v", err)
+	}
+	if len(got) != 1 || got[0].TagName != "V2" || len(got[0].Assets) != 1 {
+		t.Fatalf("prefix = %+v", got)
+	}
+	if _, err := decodeGitHubReleaseSummaries(&prefixThenFailReader{data: []byte("["), fail: context.DeadlineExceeded}); errors.Is(err, errGitHubReleasePageTruncated) {
+		t.Fatal("a cut-off array with no complete release was kept")
+	}
+}
+
+func TestDecodeGitHubReleaseSummariesKeepsACompletePrefixWhenTheJSONEndsEarly(t *testing.T) {
+	sha := "sha256:" + strings.Repeat("a", 64)
+	object := `{"tag_name":"V2","published_at":"2026-10-02T00:00:00Z","assets":[{"name":"MetaStaff-Setup.exe","browser_download_url":"https://github.com/RapidAI/MaClaw/releases/download/V2/MetaStaff-Setup.exe","digest":"` + sha + `"}]}`
+	got, err := decodeGitHubReleaseSummaries(strings.NewReader("[" + object + ","))
+	if !errors.Is(err, errGitHubReleasePageTruncated) {
+		t.Fatalf("decodeGitHubReleaseSummaries() error = %v", err)
+	}
+	if len(got) != 1 || got[0].TagName != "V2" || got[0].Assets[0].Name != "MetaStaff-Setup.exe" {
+		t.Fatalf("prefix = %+v", got)
+	}
+	if _, err := decodeGitHubReleaseSummaries(strings.NewReader(`{"message":"no"}`)); errors.Is(err, errGitHubReleasePageTruncated) {
+		t.Fatal("a non-array body was treated as a truncated release page")
+	}
+}
+
+func TestCollectGitHubRollbackPagesRetriesATruncatedPageOnce(t *testing.T) {
+	sha := "sha256:" + strings.Repeat("d", 64)
+	calls := 0
+	got, err := collectGitHubRollbackSummaries(context.Background(), func(ctx context.Context, page int) ([]githubReleaseSummary, error) {
+		calls++
+		if calls == 1 {
+			return []githubReleaseSummary{rollbackGitHubSummary("V1", "2026-10-01T00:00:00Z", "TigerClaw-Setup.exe", sha, false)}, errGitHubReleasePageTruncated
+		}
+		summaries := make([]githubReleaseSummary, githubRollbackPageSize)
+		for i := range summaries {
+			summaries[i] = rollbackGitHubSummary(fmt.Sprintf("V%d", i+1), fmt.Sprintf("2026-10-%02dT00:00:00Z", i+1), "TigerClaw-Setup.exe", sha, false)
+		}
+		return summaries, nil
+	}, "TigerClaw-Setup.exe")
+	if err != nil || calls != 2 || len(got) != githubRollbackPageSize || got[0].TagName != "V1" {
+		t.Fatalf("err=%v calls=%d summaries=%d", err, calls, len(got))
+	}
+}
+
+func TestCollectGitHubRollbackPagesKeepsATruncatedPrefixWhenTheRetryFails(t *testing.T) {
+	sha := "sha256:" + strings.Repeat("e", 64)
+	calls := 0
+	got, err := collectGitHubRollbackSummaries(context.Background(), func(ctx context.Context, page int) ([]githubReleaseSummary, error) {
+		calls++
+		if calls == 1 {
+			return []githubReleaseSummary{
+				rollbackGitHubSummary("V9", "2026-10-09T00:00:00Z", "TigerClaw-Setup.exe", sha, false),
+				rollbackGitHubSummary("V8", "2026-10-08T00:00:00Z", "TigerClaw-Setup.exe", sha, false),
+			}, errGitHubReleasePageTruncated
+		}
+		if calls == 2 {
+			return nil, context.DeadlineExceeded
+		}
+		t.Fatalf("fetched page %d after the truncated prefix was already kept", page)
+		return nil, nil
+	}, "TigerClaw-Setup.exe")
+	if err != nil || calls != 2 || len(got) != 2 || got[0].TagName != "V9" || got[1].TagName != "V8" {
+		t.Fatalf("err=%v calls=%d got=%+v", err, calls, got)
+	}
+}
+
+func TestCollectGitHubRollbackPagesKeepsATruncatedPrefixWhenTheDeadlineWins(t *testing.T) {
+	sha := "sha256:" + strings.Repeat("9", 64)
+	ctx := &errAfter{Context: context.Background(), after: 3}
+	calls := 0
+	got, err := collectGitHubRollbackSummaries(ctx, func(context.Context, int) ([]githubReleaseSummary, error) {
+		calls++
+		return []githubReleaseSummary{
+			rollbackGitHubSummary("V9", "2026-10-09T00:00:00Z", "MetaStaff-Universal.pkg", sha, false),
+		}, errGitHubReleasePageTruncated
+	}, "MetaStaff-Universal.pkg")
+	if err != nil || calls != 1 || len(got) != 1 || got[0].TagName != "V9" {
+		t.Fatalf("err=%v calls=%d got=%+v", err, calls, got)
+	}
+}
+
+// errAfter fails Err after after calls. collectGitHubRollbackSummaries checks
+// it at the start of a page and once more before retrying a truncated page,
+// so the third check is a deadline that fires before that retry starts.
+type errAfter struct {
+	context.Context
+	checks int
+	after  int
+}
+
+func (c *errAfter) Err() error {
+	c.checks++
+	if c.checks >= c.after {
+		return context.DeadlineExceeded
+	}
+	return c.Context.Err()
+}
+
+func TestCollectGitHubRollbackPagesKeepsTheLongerTruncatedPrefix(t *testing.T) {
+	sha := "sha256:" + strings.Repeat("f", 64)
+	calls := 0
+	longer := []githubReleaseSummary{
+		rollbackGitHubSummary("V9", "2026-10-09T00:00:00Z", "TigerClaw-Setup.exe", sha, false),
+		rollbackGitHubSummary("V8", "2026-10-08T00:00:00Z", "TigerClaw-Setup.exe", sha, false),
+	}
+	got, err := collectGitHubRollbackSummaries(context.Background(), func(ctx context.Context, page int) ([]githubReleaseSummary, error) {
+		calls++
+		if calls == 1 {
+			return longer, errGitHubReleasePageTruncated
+		}
+		if calls == 2 {
+			return longer[:1], errGitHubReleasePageTruncated
+		}
+		t.Fatalf("fetched page %d after a truncated page was kept", page)
+		return nil, nil
+	}, "TigerClaw-Setup.exe")
+	if err != nil || calls != 2 || len(got) != 2 || got[0].TagName != "V9" || got[1].TagName != "V8" {
+		t.Fatalf("err=%v calls=%d got=%+v", err, calls, got)
+	}
+}
+
 func TestDecodeGitHubReleaseSummariesRejectsOversizedResponse(t *testing.T) {
 	data := bytes.Repeat([]byte("x"), githubReleaseListMaxBytes+1)
 	if _, err := decodeGitHubReleaseSummaries(bytes.NewReader(data)); err == nil {
 		t.Fatal("expected oversized response to be rejected")
+	}
+}
+
+func rollbackGitHubSummary(tag, published, name, digest string, draft bool) githubReleaseSummary {
+	return githubReleaseSummary{
+		TagName:     tag,
+		PublishedAt: published,
+		Draft:       draft,
+		Assets: []struct {
+			Name               string `json:"name"`
+			BrowserDownloadURL string `json:"browser_download_url"`
+			Digest             string `json:"digest"`
+		}{{
+			Name:               name,
+			BrowserDownloadURL: "https://github.com/RapidAI/MaClaw/releases/download/" + tag + "/" + name,
+			Digest:             digest,
+		}},
+	}
+}
+
+func TestGitHubRollbackReleasesURLUsesAShortPage(t *testing.T) {
+	got := githubRollbackReleasesURL(2)
+	want := "https://api.github.com/repos/RapidAI/MaClaw/releases?per_page=10&page=2"
+	if got != want {
+		t.Fatalf("githubRollbackReleasesURL(2) = %q", got)
+	}
+}
+
+func TestCollectGitHubRollbackPagesStopsOnceFiveDigestBuildsArePresent(t *testing.T) {
+	sha := "sha256:" + strings.Repeat("a", 64)
+	calls := 0
+	got, err := collectGitHubRollbackSummaries(context.Background(), func(ctx context.Context, page int) ([]githubReleaseSummary, error) {
+		calls++
+		if page != 1 {
+			t.Fatalf("fetched page %d after five digest builds were already available", page)
+		}
+		summaries := make([]githubReleaseSummary, 0, githubRollbackPageSize)
+		for i := 0; i < githubRollbackPageSize; i++ {
+			tag := fmt.Sprintf("V%02d", i)
+			summaries = append(summaries, rollbackGitHubSummary(tag, fmt.Sprintf("2026-10-%02dT00:00:00Z", i+1), "TigerClaw-Setup.exe", sha, false))
+		}
+		return summaries, nil
+	}, "TigerClaw-Setup.exe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || len(got) != githubRollbackPageSize {
+		t.Fatalf("calls=%d summaries=%d", calls, len(got))
+	}
+}
+
+func TestCollectGitHubRollbackPagesReadsPastAFullPageOfDrafts(t *testing.T) {
+	sha := "sha256:" + strings.Repeat("b", 64)
+	calls := 0
+	got, err := collectGitHubRollbackSummaries(context.Background(), func(ctx context.Context, page int) ([]githubReleaseSummary, error) {
+		calls++
+		if page == 1 {
+			summaries := make([]githubReleaseSummary, githubRollbackPageSize)
+			for i := range summaries {
+				summaries[i] = rollbackGitHubSummary(fmt.Sprintf("D%d", i), "2026-10-20T00:00:00Z", "TigerClaw-Setup.exe", sha, true)
+			}
+			return summaries, nil
+		}
+		if page != 2 {
+			t.Fatalf("fetched page %d", page)
+		}
+		summaries := make([]githubReleaseSummary, 5)
+		for i := range summaries {
+			summaries[i] = rollbackGitHubSummary(fmt.Sprintf("V%d", i), fmt.Sprintf("2026-10-%02dT00:00:00Z", i+1), "TigerClaw-Setup.exe", sha, false)
+		}
+		return summaries, nil
+	}, "TigerClaw-Setup.exe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || len(got) != githubRollbackPageSize+5 {
+		t.Fatalf("calls=%d summaries=%d", calls, len(got))
+	}
+}
+
+func TestCollectGitHubRollbackPagesKeepsAnEarlierPageWhenTheNextFails(t *testing.T) {
+	sha := "sha256:" + strings.Repeat("c", 64)
+	got, err := collectGitHubRollbackSummaries(context.Background(), func(ctx context.Context, page int) ([]githubReleaseSummary, error) {
+		if page != 1 {
+			return nil, fmt.Errorf("page failed")
+		}
+		summaries := make([]githubReleaseSummary, githubRollbackPageSize)
+		for i := range summaries {
+			name, digest := "notes.txt", ""
+			if i < 2 {
+				name, digest = "TigerClaw-Setup.exe", sha
+			}
+			summaries[i] = rollbackGitHubSummary(fmt.Sprintf("V%d", i), fmt.Sprintf("2026-10-%02dT00:00:00Z", i+1), name, digest, false)
+		}
+		return summaries, nil
+	}, "TigerClaw-Setup.exe")
+	if err != nil || len(got) != githubRollbackPageSize {
+		t.Fatalf("err=%v summaries=%d", err, len(got))
+	}
+}
+
+func TestCollectGitHubRollbackPagesStopsWhenTheDeadlineExpires(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	got, err := collectGitHubRollbackSummaries(ctx, func(context.Context, int) ([]githubReleaseSummary, error) {
+		calls++
+		summaries := make([]githubReleaseSummary, githubRollbackPageSize)
+		for i := range summaries {
+			summaries[i] = rollbackGitHubSummary(fmt.Sprintf("V%d", i), fmt.Sprintf("2026-10-%02dT00:00:00Z", i+1), "notes.txt", "", false)
+		}
+		cancel()
+		return summaries, nil
+	}, "TigerClaw-Setup.exe")
+	if err != nil || calls != 1 || len(got) != githubRollbackPageSize {
+		t.Fatalf("err=%v calls=%d summaries=%d", err, calls, len(got))
+	}
+}
+
+func TestFetchGitHubRollbackPageRejectsNonOK(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Accept") != "application/vnd.github+json" {
+			t.Errorf("Accept = %q", r.Header.Get("Accept"))
+		}
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+	_, err := fetchGitHubRollbackPage(context.Background(), updateHTTPClient(time.Second), server.URL)
+	if err == nil || !strings.Contains(err.Error(), "status 403") {
+		t.Fatalf("fetchGitHubRollbackPage() error = %v", err)
 	}
 }
 
@@ -446,6 +719,202 @@ func TestRollbackReleasesFromManifestLimitsAndDeduplicates(t *testing.T) {
 	}
 	if releases[0].Build != "6" || releases[4].Build != "2" {
 		t.Fatalf("unexpected retained builds: %+v", releases)
+	}
+}
+
+func TestRollbackReleasesFromManifestKeepsNewestWhenCatalogueIsOldestFirst(t *testing.T) {
+	assets := func(build string) map[string]updateManifestAsset {
+		return map[string]updateManifestAsset{"TigerClaw-Setup.exe": {URLs: []string{
+			"https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/releases/" + build + "/TigerClaw-Setup.exe",
+		}, SHA256: strings.Repeat("b", 64)}}
+	}
+	manifest := stableHistoryManifest{Releases: []stableHistoryRelease{
+		{Build: "1", PublishedAt: "2026-08-01T00:00:00Z", Assets: assets("1")},
+		{Build: "6", PublishedAt: "2026-08-01T00:00:00Z", Assets: assets("6")},
+		{Build: "2", PublishedAt: "2026-08-02T00:00:00Z", Assets: assets("2")},
+		{Build: "3", PublishedAt: "2026-08-03T00:00:00Z", Assets: assets("3")},
+		{Build: "4", PublishedAt: "2026-08-04T00:00:00Z", Assets: assets("4")},
+		{Build: "5", PublishedAt: "2026-08-05T00:00:00Z", Assets: assets("5")},
+		{Build: "6", PublishedAt: "2026-08-06T00:00:00Z", Assets: assets("6")},
+	}}
+	releases := rollbackReleasesFromManifest(manifest, "TigerClaw-Setup.exe")
+	if len(releases) != 5 || releases[0].Build != "6" || releases[0].PublishedAt != "2026-08-06T00:00:00Z" || releases[4].Build != "2" {
+		t.Fatalf("oldest-first catalogue retained %+v", releases)
+	}
+}
+
+func TestGitHubDigestSHA256(t *testing.T) {
+	want := strings.Repeat("ab", 32)
+	got, ok := githubDigestSHA256("sha256:" + want)
+	if !ok || got != want {
+		t.Fatalf("githubDigestSHA256() = %q %v", got, ok)
+	}
+	if _, ok := githubDigestSHA256("sha256:" + strings.Repeat("a", 63)); ok {
+		t.Fatal("accepted a short digest")
+	}
+	if _, ok := githubDigestSHA256(want); ok {
+		t.Fatal("accepted a digest without the sha256 prefix")
+	}
+}
+
+func TestRollbackReleasesFromGitHubSummariesKeepsOlderOEMInstallers(t *testing.T) {
+	sha := strings.Repeat("c", 64)
+	older := strings.Repeat("d", 64)
+	summaries := []githubReleaseSummary{
+		{
+			TagName: "V8.1.0.3", PublishedAt: "2026-10-19T15:37:47Z",
+			Assets: []struct {
+				Name               string `json:"name"`
+				BrowserDownloadURL string `json:"browser_download_url"`
+				Digest             string `json:"digest"`
+			}{
+				{Name: "MaClaw-Setup.exe", BrowserDownloadURL: "https://github.com/RapidAI/MaClaw/releases/download/V8.1.0.3/MaClaw-Setup.exe", Digest: "sha256:" + sha},
+				{Name: "TigerClaw-Setup.exe", BrowserDownloadURL: "https://github.com/RapidAI/MaClaw/releases/download/V8.1.0.3/TigerClaw-Setup.exe", Digest: "sha256:" + sha},
+			},
+		},
+		{
+			TagName: "V8.1.0.2", PublishedAt: "2026-10-18T15:37:47Z", Draft: true,
+			Assets: []struct {
+				Name               string `json:"name"`
+				BrowserDownloadURL string `json:"browser_download_url"`
+				Digest             string `json:"digest"`
+			}{
+				{Name: "TigerClaw-Setup.exe", BrowserDownloadURL: "https://github.com/RapidAI/MaClaw/releases/download/V8.1.0.2/TigerClaw-Setup.exe", Digest: "sha256:" + older},
+			},
+		},
+		{
+			TagName: "V8.1.0.1", PublishedAt: "2026-10-17T15:37:47Z",
+			Assets: []struct {
+				Name               string `json:"name"`
+				BrowserDownloadURL string `json:"browser_download_url"`
+				Digest             string `json:"digest"`
+			}{
+				{Name: "TigerClaw-Setup.exe", BrowserDownloadURL: "https://github.com/RapidAI/MaClaw/releases/download/V8.1.0.1/TigerClaw-Setup.exe", Digest: "sha256:" + older},
+			},
+		},
+		{
+			TagName: "V8.0.0.9", PublishedAt: "2026-10-16T15:37:47Z",
+			Assets: []struct {
+				Name               string `json:"name"`
+				BrowserDownloadURL string `json:"browser_download_url"`
+				Digest             string `json:"digest"`
+			}{
+				{Name: "MaClaw-Setup.exe", BrowserDownloadURL: "https://github.com/RapidAI/MaClaw/releases/download/V8.0.0.9/MaClaw-Setup.exe", Digest: "sha256:" + sha},
+			},
+		},
+	}
+	releases := rollbackReleasesFromGitHubSummaries(summaries, "TigerClaw-Setup.exe")
+	if len(releases) != 2 || releases[0].Build != "V8.1.0.3" || releases[1].Build != "V8.1.0.1" {
+		t.Fatalf("OEM rollback releases = %+v, want current and older TigerClaw builds", releases)
+	}
+	if releases[1].SHA256 != older || !strings.Contains(releases[1].DownloadUrl, "/V8.1.0.1/TigerClaw-Setup.exe") {
+		t.Fatalf("older OEM release was not downloadable: %+v", releases[1])
+	}
+	maclaw := rollbackReleasesFromGitHubSummaries(summaries, "MaClaw-Setup.exe")
+	if len(maclaw) != 2 || maclaw[0].Build != "V8.1.0.3" || maclaw[1].Build != "V8.0.0.9" {
+		t.Fatalf("MaClaw rollback releases = %+v", maclaw)
+	}
+}
+
+func TestRollbackReleasesFromGitHubSummariesKeepsNewestFiveWhenPageIsOldestFirst(t *testing.T) {
+	sha := strings.Repeat("a", 64)
+	summaries := make([]githubReleaseSummary, 0, 6)
+	for i := 1; i <= 6; i++ {
+		tag := fmt.Sprintf("V8.0.0.%d", i)
+		summaries = append(summaries, githubReleaseSummary{
+			TagName:     tag,
+			PublishedAt: fmt.Sprintf("2026-10-%02dT00:00:00Z", i),
+			Assets: []struct {
+				Name               string `json:"name"`
+				BrowserDownloadURL string `json:"browser_download_url"`
+				Digest             string `json:"digest"`
+			}{{
+				Name:               "TigerClaw-Setup.exe",
+				BrowserDownloadURL: "https://github.com/RapidAI/MaClaw/releases/download/" + tag + "/TigerClaw-Setup.exe",
+				Digest:             "sha256:" + sha,
+			}},
+		})
+	}
+	releases := rollbackReleasesFromGitHubSummaries(summaries, "TigerClaw-Setup.exe")
+	if len(releases) != 5 || releases[0].Build != "V8.0.0.6" || releases[4].Build != "V8.0.0.2" {
+		t.Fatalf("oldest-first GitHub page retained %+v", releases)
+	}
+}
+
+func TestRollbackReleaseCanEnterLeavesRoomForANewerBuild(t *testing.T) {
+	sha := strings.Repeat("a", 64)
+	accepted := make([]RollbackRelease, 0, 5)
+	for i := 5; i >= 1; i-- {
+		accepted = append(accepted, RollbackRelease{
+			Build:       fmt.Sprintf("%d", i),
+			PublishedAt: fmt.Sprintf("2026-10-%02dT00:00:00Z", i),
+			DownloadUrl: "https://example.invalid",
+			SHA256:      sha,
+		})
+	}
+	if !rollbackReleaseCanEnter(accepted, "2026-10-06T00:00:00Z") {
+		t.Fatal("a newer build must be able to enter a full catalogue")
+	}
+	if rollbackReleaseCanEnter(accepted, "2026-09-01T00:00:00Z") {
+		t.Fatal("an older build must not displace the five newest")
+	}
+	if !rollbackReleaseCanEnter(accepted[:3], "2026-09-01T00:00:00Z") {
+		t.Fatal("fewer than five builds still have room")
+	}
+}
+
+func TestRollbackManifestCandidatesWalkNewestFirst(t *testing.T) {
+	sha := strings.Repeat("ab", 32)
+	summary := func(tag string, day int, draft, withDigest bool) githubReleaseSummary {
+		digest := ""
+		if withDigest {
+			digest = "sha256:" + sha
+		}
+		return githubReleaseSummary{
+			TagName:     tag,
+			PublishedAt: fmt.Sprintf("2026-10-%02dT00:00:00Z", day),
+			Draft:       draft,
+			Assets: []struct {
+				Name               string `json:"name"`
+				BrowserDownloadURL string `json:"browser_download_url"`
+				Digest             string `json:"digest"`
+			}{
+				{Name: "TigerClaw-Setup.exe", BrowserDownloadURL: "https://github.com/RapidAI/MaClaw/releases/download/" + tag + "/TigerClaw-Setup.exe", Digest: digest},
+				{Name: "latest.json", BrowserDownloadURL: "https://github.com/RapidAI/MaClaw/releases/download/" + tag + "/latest.json"},
+			},
+		}
+	}
+	summaries := []githubReleaseSummary{
+		summary("V1", 1, false, false),
+		summary("V2", 2, true, false),
+		summary("V3", 3, false, false),
+		summary("V4", 4, false, true),
+		summary("V5", 5, false, false),
+	}
+	got := rollbackManifestCandidates(summaries, "TigerClaw-Setup.exe", []RollbackRelease{{
+		Build: "V3", PublishedAt: "2026-10-03T00:00:00Z",
+	}})
+	if len(got) != 2 || got[0].TagName != "V5" || got[1].TagName != "V1" {
+		t.Fatalf("manifest candidates = %+v, want newest digest-less builds only", got)
+	}
+}
+
+func TestMergeRollbackReleasesKeepsOlderMirrorBuilds(t *testing.T) {
+	sha := strings.Repeat("a", 64)
+	release := func(build, published string) RollbackRelease {
+		return RollbackRelease{Build: build, PublishedAt: published, DownloadUrl: "https://github.com/RapidAI/MaClaw/releases/download/" + build + "/TigerClaw-Setup.exe", SHA256: sha}
+	}
+	merged := mergeRollbackReleases(
+		[]RollbackRelease{release("V8.1.0.3", "2026-10-19T00:00:00Z")},
+		[]RollbackRelease{
+			release("V8.1.0.3", "2026-10-19T00:00:00Z"),
+			release("V8.1.0.2", "2026-10-18T00:00:00Z"),
+			release("V8.1.0.1", "2026-10-17T00:00:00Z"),
+		},
+		5,
+	)
+	if len(merged) != 3 || merged[0].Build != "V8.1.0.3" || merged[2].Build != "V8.1.0.1" {
+		t.Fatalf("merged rollback releases = %+v", merged)
 	}
 }
 func TestUpdateResultVersionKey(t *testing.T) {

@@ -53,6 +53,8 @@ interface AssistantPreviewPaneProps {
     /** Bumped when the user asks for the directory tree. A newer value wins. */
     treeFocusNonce?: number;
     cloudWorkspaceName?: string;
+    /** Welcome/cover is up. The overlay sits above the body, so hide it without unmounting. */
+    concealed?: boolean;
 }
 
 type PreviewPaneMode = "workflow" | "code" | "agent" | "conflict";
@@ -331,6 +333,7 @@ export function AssistantPreviewPane({
     fileFocusNonce = 0,
     treeFocusNonce = 0,
     cloudWorkspaceName,
+    concealed = false,
 }: AssistantPreviewPaneProps) {
     const [activeMode, setActiveMode] = useState<PreviewPaneMode>("workflow");
     const previousShowCodeRef = useRef(showCodePreview);
@@ -710,14 +713,15 @@ export function AssistantPreviewPane({
                     transition: `opacity ${slideMs}ms ease`,
                     // Already invisible while sliding out — let clicks fall
                     // through to the chat instead of swallowing them.
-                    pointerEvents: entered && !closing ? "auto" : "none",
+                    pointerEvents: concealed || !(entered && !closing) ? "none" : "auto",
+                    ...(concealed ? { display: "none" } : {}),
                 }}
                 {...backdropProps}
             />
             <div
                 className="mc-assistant-preview-pane"
                 data-preview-mode={renderedMode}
-                style={{ ...paneStyle, ...previewSurfaceVars(theme, codeTheme) }}
+                style={{ ...paneStyle, ...previewSurfaceVars(theme, codeTheme), ...(concealed ? { display: "none" } : {}) }}
             >
                 {renderedBody}
             </div>

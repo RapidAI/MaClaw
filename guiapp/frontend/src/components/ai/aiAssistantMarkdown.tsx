@@ -54,7 +54,7 @@ import {
     reasoningCodeBlockStyle,
     reasoningCodeLangStyle,
 } from "./assistantCodeFence";
-import { UserAttachmentChip } from "./UserAttachmentChip";
+import { partitionUserAttachments, UserAttachmentChip } from "./UserAttachmentChip";
 import { AssistantReasoningPanel } from "./AssistantReasoningPanel";
 import { isSafeKBImageDataURL, KB_IMAGE_MARKER_RE } from "./kbImageValidation";
 
@@ -1575,6 +1575,7 @@ export function renderMessage(
             // carry become the attachment previews shown beside the bubble.
             const userTurn = userTurnDisplayView(msg.content || "", msg.attachments);
             const userTurnText = userTurn.text;
+            const userAttachments = partitionUserAttachments(userTurn.attachments);
             return (
                 <div key={msg.id} role="group" data-testid={`assistant-chat-user-${msg.id}`} aria-label={isGuideInjection ? (lang === "en" ? "Your injected guidance" : "我已注入的引导") : (lang === "en" ? "Your message" : "我的消息")} className="aamd-msg-user">
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, margin: `0 4px ${CHAT_SPEAKER_LABEL_GAP}px`, color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}>
@@ -1597,6 +1598,7 @@ export function renderMessage(
                             </span>
                         )}
                     </span>
+                    {(userTurnText || userAttachments.inline.length > 0) && (
                     <ChatBubbleFrame
                         side="right"
                         tailPlacement="side"
@@ -1615,12 +1617,18 @@ export function renderMessage(
                         }}
                     >
                         {userTurnText && <div>{userTurnText}</div>}
-                        {!!userTurn.attachments.length && (
+                        {userAttachments.inline.length > 0 && (
                             <div aria-label={lang === "en" ? "Attached files" : "已附加文件"} style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 6, marginTop: userTurnText ? 7 : 0 }}>
-                                {userTurn.attachments.map((attachment, index) => <UserAttachmentChip key={`${attachment.filePath}-${index}`} attachment={attachment} theme={t} lang={lang} />)}
+                                {userAttachments.inline.map((attachment, index) => <UserAttachmentChip key={`${attachment.filePath}-${index}`} attachment={attachment} theme={t} lang={lang} />)}
                             </div>
                         )}
                     </ChatBubbleFrame>
+                    )}
+                    {userAttachments.documents.length > 0 && (
+                        <div aria-label={lang === "en" ? "Attached files" : "已附加文件"} data-testid={`assistant-chat-document-previews-${msg.id}`} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8, width: "min(100%, 640px)", maxWidth: "100%", marginTop: 8 }}>
+                            {userAttachments.documents.map((attachment, index) => <UserAttachmentChip key={`${attachment.filePath}-${index}`} attachment={attachment} theme={t} lang={lang} />)}
+                        </div>
+                    )}
                 </div>
             );
         case "assistant": {

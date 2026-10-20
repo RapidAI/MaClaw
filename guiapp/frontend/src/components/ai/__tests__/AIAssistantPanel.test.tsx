@@ -8885,7 +8885,10 @@ describe('new-task wizard page (task-pane 新建任务 button)', () => {
         await waitFor(() => {
             expect(screen.getByTestId('welcome-task-config')).toBeTruthy();
         });
-        expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('execution');
+        // The cover uses the startup home chrome, not the execution composer.
+        expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('welcome');
+        expect(screen.getByRole('heading', { level: 2, name: 'What do you want to finish today?' })).toBeTruthy();
+        expect(screen.getByTestId('ai-execution-secondary-titlebar').getAttribute('aria-hidden')).toBeNull();
         expect(screen.getByTestId('new-task-wizard-running-banner')).toBeTruthy();
         expect(screen.getByText('Chongzhou weather').closest('[hidden]')).toBeTruthy();
         expect(clearHistory).not.toHaveBeenCalled();

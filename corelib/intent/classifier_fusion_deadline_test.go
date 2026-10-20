@@ -176,6 +176,66 @@ func TestClassifyShortWeakLookupDoesNotCallLLM(t *testing.T) {
 	}
 }
 
+func TestClassifyEmptyTextDoesNotCallLLM(t *testing.T) {
+	emb := &queryCountingEmbedder{staticEmbedder: staticEmbedder{vec: []float32{1, 0}}, query: ""}
+	llmCalls := 0
+	uic := New(Config{
+		Embedder: emb,
+		LLMFunc: func(_, _ string) (string, error) {
+			llmCalls++
+			return `{"top":[{"skill":"live_data","score":0.99}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{{0.61, 0.792}}},
+		{Label: LabelSearch, Vecs: [][]float32{{0.50, 0.866}}},
+	}
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "  "})
+	if llmCalls != 0 {
+		t.Fatalf("LLM calls = %d, want 0 for empty classification text", llmCalls)
+	}
+	if !strings.Contains(result.Reason, "empty classification text skipped tree") {
+		t.Fatalf("reason=%q, want empty text to skip L3", result.Reason)
+	}
+	again := uic.Classify(MessageContext{Text: "  "})
+	if again.Reason != result.Reason || llmCalls != 0 {
+		t.Fatalf("cached=%+v llmCalls=%d, want the same skip without a tree call", again, llmCalls)
+	}
+}
+
+func TestClassifyEmptyTextSkipsConfidentEmbedding(t *testing.T) {
+	llmCalls := 0
+	uic := New(Config{
+		Embedder: &staticEmbedder{vec: []float32{1, 0}},
+		LLMFunc: func(_, _ string) (string, error) {
+			llmCalls++
+			return `{"top":[{"skill":"coding","score":0.99}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = []intentAnchor{
+		{Label: LabelCoding, Vecs: [][]float32{{1, 0}}},
+		{Label: LabelSearch, Vecs: [][]float32{{0, 1}}},
+	}
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: ""})
+	if llmCalls != 0 {
+		t.Fatalf("LLM calls = %d, want 0 when empty text embeds confidently", llmCalls)
+	}
+	if !strings.Contains(result.Reason, "empty classification text skipped tree") {
+		t.Fatalf("reason=%q, want empty text to skip L3", result.Reason)
+	}
+	if !result.Degraded || result.Primary == LabelCoding {
+		t.Fatalf("empty text must not confirm the embedding hit: %+v", result)
+	}
+}
+
 func TestFusionTreeDeadlineCancelsContextAwareLLM(t *testing.T) {
 	emb := &staticEmbedder{vec: []float32{1, 0, 0}}
 	canceled := make(chan struct{})

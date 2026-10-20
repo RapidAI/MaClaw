@@ -1547,6 +1547,91 @@ func TestRenderPDFPageExtractsKeepsEmptyPagesAndErrors(t *testing.T) {
 	}
 }
 
+func TestCollapsePDFGlyphSpacesJoinsSingleGlyphLines(t *testing.T) {
+	glyph := "传 真 ( F a x ) : 0 7 5 2 1 2 3 4"
+	if got := collapsePDFGlyphSpaces(glyph); got != "传真(Fax):07521234" {
+		t.Fatalf("glyph line = %q", got)
+	}
+	prose := "The resistor value and the lux reading stay in this sentence as normal words."
+	if got := collapsePDFGlyphSpaces(prose); got != prose {
+		t.Fatalf("ordinary prose changed: %q", got)
+	}
+	chinese := "这是一段正常的规格说明，电阻值和照度需要分开计算。"
+	if got := collapsePDFGlyphSpaces(chinese); got != chinese {
+		t.Fatalf("Chinese prose changed: %q", got)
+	}
+	short := "传 真 ( Fax )"
+	if got := collapsePDFGlyphSpaces(short); got != short {
+		t.Fatalf("short glyph line changed: %q", got)
+	}
+	names := "谭 起 富 丁 杰 彭 超"
+	if got := collapsePDFGlyphSpaces(names); got != "谭起富丁杰彭超" {
+		t.Fatalf("name line = %q", got)
+	}
+	nbsp := "传\u00a0真\u00a0(\u00a0F\u00a0a\u00a0x\u00a0)\u00a0:\u00a00\u00a07\u00a05\u00a02\u00a01\u00a02\u00a03\u00a04"
+	if got := collapsePDFGlyphSpaces(nbsp); got != "传真(Fax):07521234" {
+		t.Fatalf("nbsp glyph line = %q", got)
+	}
+	mixed := "电 阻 10kΩ 的 典 型 值 为 1 0 0 欧 请 看 曲 线"
+	if got := collapsePDFGlyphSpaces(mixed); got != "电阻 10kΩ 的典型值为100欧请看曲线" {
+		t.Fatalf("mixed glyph line = %q", got)
+	}
+	proseLetters := "Hello a b c d e"
+	if got := collapsePDFGlyphSpaces(proseLetters); got != proseLetters {
+		t.Fatalf("short mixed line changed: %q", got)
+	}
+	columns := "1 0 k Ω  2 0 k Ω"
+	if got := collapsePDFGlyphSpaces(columns); got != "10kΩ 20kΩ" {
+		t.Fatalf("column gap = %q", got)
+	}
+	tabbed := "1 0 k Ω\t2 0 k Ω"
+	if got := collapsePDFGlyphSpaces(tabbed); got != "10kΩ 20kΩ" {
+		t.Fatalf("tab column = %q", got)
+	}
+	logo := "鑫         永         诚       光         电"
+	if got := collapsePDFGlyphSpaces(logo); got != "鑫永诚光电" {
+		t.Fatalf("logo tracking = %q", got)
+	}
+	light := "L i g h t   S o u r c e   W h i t e   L E D"
+	if got := collapsePDFGlyphSpaces(light); got != "Light Source White LED" {
+		t.Fatalf("word gap = %q", got)
+	}
+	wave := "波 长     W a v e l e n g t h ( n m )"
+	if got := collapsePDFGlyphSpaces(wave); got != "波长 Wavelength(nm)" {
+		t.Fatalf("bilingual gap = %q", got)
+	}
+	tel := "T e l ： 0 7 5 2 - 7 9 8 7 2 2 2       F a x ： 0 7 5 2 - 7 9 8 7 0 0 0"
+	if got := collapsePDFGlyphSpaces(tel); got != "Tel：0752-7987222 Fax：0752-7987000" {
+		t.Fatalf("tel gap = %q", got)
+	}
+	shortLetters := "a b c d"
+	if got := collapsePDFGlyphSpaces(shortLetters); got != shortLetters {
+		t.Fatalf("short letters changed: %q", got)
+	}
+	digitCols := "1        2        3        4"
+	if got := collapsePDFGlyphSpaces(digitCols); got != digitCols {
+		t.Fatalf("digit columns changed: %q", got)
+	}
+	digitRow := "1        2        3        4        5        6"
+	if got := collapsePDFGlyphSpaces(digitRow); got != "1 2 3 4 5 6" {
+		t.Fatalf("wide digit row = %q", got)
+	}
+	letterCols := "A        B        C        D"
+	if got := collapsePDFGlyphSpaces(letterCols); got != letterCols {
+		t.Fatalf("letter columns changed: %q", got)
+	}
+	uneven := "鑫    永                    诚    光"
+	if got := collapsePDFGlyphSpaces(uneven); got != uneven {
+		t.Fatalf("uneven Han gaps changed: %q", got)
+	}
+	text, gotAny := renderPDFPageExtracts(1, func(int) (string, error) {
+		return "  " + glyph + "  ", nil
+	})
+	if !gotAny || !strings.Contains(text, "## Page 1\n传真(Fax):07521234") {
+		t.Fatalf("page extract did not collapse:\n%s", text)
+	}
+}
+
 func TestExtractOfficeTextWithFormatPDFRejectsNonPDFAfterSnapshot(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

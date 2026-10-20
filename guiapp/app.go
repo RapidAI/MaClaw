@@ -10032,32 +10032,37 @@ func (a *App) fetchR2LatestRelease(timeout time.Duration) (latestReleaseInfo, er
 // from a beta manifest.
 func (a *App) ListRollbackReleases() ([]RollbackRelease, error) {
 	// GitHub Releases is the canonical public catalogue and is also the
-	// preferred download path (its egress is free for this use case). Try it
-	// first; object-storage history remains a fast fallback for installations
-	// that cannot reach the GitHub API.
-	var githubErr error
+	// preferred download path (its egress is free for this use case). A short
+	// GitHub answer must not hide older builds that the object-storage
+	// catalogue still lists: OEM installers are sometimes absent from one
+	// source while the other still has them.
+	var failures []string
+	var github []RollbackRelease
 	if releases, err := fetchGitHubStableHistory(20 * time.Second); err == nil {
-		a.log(a.tr("ListRollbackReleases: using github releases history"))
-		return releases, nil
+		github = releases
+		a.log(a.tr("ListRollbackReleases: using github releases history (%d)", len(releases)))
 	} else {
-		githubErr = err
+		failures = append(failures, fmt.Sprintf("github: %v", err))
 		a.log(a.tr("ListRollbackReleases: github releases history failed, trying mirrors: %v", err))
 	}
-	failures := []string{fmt.Sprintf("github: %v", githubErr)}
-	for _, source := range []struct {
-		name string
-		url  string
-	}{
-		{name: "r2", url: r2StableHistoryURL},
-	} {
-		releases, err := fetchStableHistory(source.name, source.url, 6*time.Second)
-		if err == nil {
-			a.log(a.tr("ListRollbackReleases: using %s stable history", source.name))
-			return releases, nil
+	var mirror []RollbackRelease
+	if len(github) < 5 {
+		releases, err := fetchStableHistory("r2", r2StableHistoryURL, 6*time.Second)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("r2: %v", err))
+		} else {
+			mirror = releases
+			a.log(a.tr("ListRollbackReleases: using r2 stable history (%d)", len(releases)))
 		}
-		failures = append(failures, fmt.Sprintf("%s: %v", source.name, err))
 	}
-	return nil, fmt.Errorf("all stable history checks failed: %s", strings.Join(failures, "; "))
+	merged := mergeRollbackReleases(github, mirror, 5)
+	if len(merged) == 0 {
+		if len(failures) == 0 {
+			failures = append(failures, "no valid rollback releases")
+		}
+		return nil, fmt.Errorf("all stable history checks failed: %s", strings.Join(failures, "; "))
+	}
+	return merged, nil
 }
 
 type githubReleaseSummary struct {
@@ -10068,48 +10073,142 @@ type githubReleaseSummary struct {
 	Assets      []struct {
 		Name               string `json:"name"`
 		BrowserDownloadURL string `json:"browser_download_url"`
+		Digest             string `json:"digest"`
 	} `json:"assets"`
 }
 
 const githubReleaseListMaxBytes = 16 * 1024 * 1024
 
+// A release page includes every platform asset, so thirty releases are large
+// enough to miss the desktop deadline. The client then keeps only the mirror
+// catalogue. Pages of ten stay inside that deadline, and three pages still
+// cover the same thirty newest releases when drafts or missing installers
+// mean the first page has fewer than five usable builds.
+const (
+	githubRollbackPageSize = 10
+	githubRollbackMaxPages = 3
+)
+
+var errGitHubReleasePageTruncated = errors.New("github releases page truncated")
+
 // decodeGitHubReleaseSummaries keeps the response bounded while allowing for
-// the large platform-asset catalogue attached to each release.
+// the large platform-asset catalogue attached to each release. The array is
+// newest-first. A read error, or a body that is not a complete JSON array,
+// still returns every release object that was fully present at the start.
+// A deadline or a short body then cannot discard builds already in hand.
 func decodeGitHubReleaseSummaries(r io.Reader) ([]githubReleaseSummary, error) {
 	// Read one byte past the cap so an oversized response cannot be mistaken
 	// for a successfully decoded prefix when the JSON value happens to end at
 	// the limit.
-	data, err := io.ReadAll(io.LimitReader(r, githubReleaseListMaxBytes+1))
-	if err != nil {
-		return nil, err
-	}
+	data, readErr := io.ReadAll(io.LimitReader(r, githubReleaseListMaxBytes+1))
 	if len(data) > githubReleaseListMaxBytes {
 		return nil, fmt.Errorf("github releases response exceeds %d bytes", githubReleaseListMaxBytes)
 	}
-	var summaries []githubReleaseSummary
-	if err := json.Unmarshal(data, &summaries); err != nil {
-		return nil, err
+	if readErr == nil {
+		var summaries []githubReleaseSummary
+		if err := json.Unmarshal(data, &summaries); err != nil {
+			readErr = err
+		} else {
+			return summaries, nil
+		}
 	}
-	return summaries, nil
+	if summaries, ok := githubReleaseSummaryPrefix(data); ok {
+		return summaries, errGitHubReleasePageTruncated
+	}
+	return nil, readErr
 }
 
-// fetchGitHubStableHistory derives rollback metadata from public, non-draft,
-// non-prerelease GitHub releases. Checksums still come from each release's
-// server-published latest.json; no checksum is inferred locally.
-func fetchGitHubStableHistory(timeout time.Duration) ([]RollbackRelease, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	// Request enough history to survive drafts, prereleases, or incomplete
-	// platform assets being skipped. The bounded decoder below prevents an
-	// unexpectedly large API response from exhausting memory.
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/RapidAI/MaClaw/releases?per_page=30", nil)
+// githubReleaseSummaryPrefix returns release objects that were fully present
+// at the start of a newest-first JSON array. A value cut off mid-object is
+// not returned.
+func githubReleaseSummaryPrefix(data []byte) ([]githubReleaseSummary, bool) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	token, err := dec.Token()
+	if err != nil {
+		return nil, false
+	}
+	delim, ok := token.(json.Delim)
+	if !ok || delim != '[' {
+		return nil, false
+	}
+	summaries := make([]githubReleaseSummary, 0)
+	for dec.More() {
+		var summary githubReleaseSummary
+		if err := dec.Decode(&summary); err != nil {
+			break
+		}
+		summaries = append(summaries, summary)
+	}
+	return summaries, len(summaries) > 0
+}
+
+func githubRollbackReleasesURL(page int) string {
+	return fmt.Sprintf("https://api.github.com/repos/RapidAI/MaClaw/releases?per_page=%d&page=%d", githubRollbackPageSize, page)
+}
+
+// collectGitHubRollbackSummaries reads newest-first pages until this brand
+// has five digest-backed builds, the catalogue ends, or the deadline is
+// exhausted. A later page is older, so it cannot add a build newer than five
+// already accepted. A failed later page keeps the earlier pages. A page cut
+// off before its closing bracket is read once more; the complete releases
+// already decoded are kept when that retry fails or is shorter. The next
+// page is not read after that, because it would skip the unread tail.
+func collectGitHubRollbackSummaries(ctx context.Context, fetchPage func(context.Context, int) ([]githubReleaseSummary, error), targetFileName string) ([]githubReleaseSummary, error) {
+	var combined []githubReleaseSummary
+	var truncatedPrefix []githubReleaseSummary
+	retriedTruncation := false
+	for page := 1; page <= githubRollbackMaxPages; page++ {
+		if err := ctx.Err(); err != nil {
+			if len(truncatedPrefix) > 0 {
+				combined = append(combined, truncatedPrefix...)
+			}
+			if len(combined) == 0 {
+				return nil, err
+			}
+			return combined, nil
+		}
+		summaries, err := fetchPage(ctx, page)
+		if errors.Is(err, errGitHubReleasePageTruncated) {
+			if !retriedTruncation && ctx.Err() == nil {
+				retriedTruncation = true
+				truncatedPrefix = summaries
+				page--
+				continue
+			}
+			if len(summaries) < len(truncatedPrefix) {
+				summaries = truncatedPrefix
+			}
+			combined = append(combined, summaries...)
+			break
+		}
+		if err != nil {
+			if len(truncatedPrefix) > 0 {
+				combined = append(combined, truncatedPrefix...)
+			}
+			if len(combined) == 0 {
+				return nil, err
+			}
+			return combined, nil
+		}
+		retriedTruncation = false
+		truncatedPrefix = nil
+		combined = append(combined, summaries...)
+		if len(summaries) < githubRollbackPageSize || len(rollbackReleasesFromGitHubSummaries(combined, targetFileName)) >= 5 {
+			break
+		}
+	}
+	return combined, nil
+}
+
+func fetchGitHubRollbackPage(ctx context.Context, client *http.Client, pageURL string) ([]githubReleaseSummary, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", brand.Current().DisplayName)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := updateHTTPClient(timeout).Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -10120,52 +10219,284 @@ func fetchGitHubStableHistory(timeout time.Duration) ([]RollbackRelease, error) 
 	if resp.ContentLength > githubReleaseListMaxBytes {
 		return nil, fmt.Errorf("github releases response exceeds %d bytes", githubReleaseListMaxBytes)
 	}
-	summaries, err := decodeGitHubReleaseSummaries(resp.Body)
+	return decodeGitHubReleaseSummaries(resp.Body)
+}
+
+// fetchGitHubStableHistory derives rollback metadata from public, non-draft,
+// non-prerelease GitHub releases. The checksum is the digest GitHub publishes
+// on the brand installer itself. latest.json is only a fallback when that
+// digest is missing, so one slow manifest download cannot stop the walk after
+// the newest build and hide every older OEM package.
+func fetchGitHubStableHistory(timeout time.Duration) ([]RollbackRelease, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	client := updateHTTPClient(timeout)
+	defer client.CloseIdleConnections()
+	target := updateTargetFileName()
+	summaries, err := collectGitHubRollbackSummaries(ctx, func(ctx context.Context, page int) ([]githubReleaseSummary, error) {
+		return fetchGitHubRollbackPage(ctx, client, githubRollbackReleasesURL(page))
+	}, target)
 	if err != nil {
 		return nil, err
 	}
-	target := updateTargetFileName()
-	result := make([]RollbackRelease, 0, 5)
-	seen := make(map[string]bool, 5)
-	for _, summary := range summaries {
-		if len(result) >= 5 || summary.Draft || summary.Prerelease {
-			continue
-		}
-		build := strings.TrimSpace(summary.TagName)
-		publishedAt := strings.TrimSpace(summary.PublishedAt)
-		if build == "" || seen[build] || !validRollbackPublishedAt(publishedAt) {
-			continue
-		}
-		var installerURL, manifestURL string
-		for _, asset := range summary.Assets {
-			switch asset.Name {
-			case target:
-				installerURL = strings.TrimSpace(asset.BrowserDownloadURL)
-			case "latest.json":
-				manifestURL = strings.TrimSpace(asset.BrowserDownloadURL)
-			}
-		}
-		if !validGitHubReleaseAssetURL(installerURL, build, target) || !validGitHubReleaseAssetURL(manifestURL, build, "latest.json") {
-			continue
-		}
-		sha, err := fetchGitHubReleaseSHA256(ctx, manifestURL, target)
-		if err != nil || !validSHA256Digest(sha) {
-			continue
-		}
-		result = append(result, RollbackRelease{Build: build, PublishedAt: publishedAt, DownloadUrl: combineDownloadURLList(githubReleaseAssetURL(build, target), immutableReleaseAssetURL(r2PublicBaseURL, build, target)), SHA256: sha})
-		seen[build] = true
+	result := rollbackReleasesFromGitHubSummaries(summaries, target)
+	// Five digest-backed builds are not always the five newest. A newer
+	// formal release can lack an asset digest and still publish latest.json.
+	// The fill skips builds that cannot enter that newest-five window, so a
+	// full digest result does not download manifests for older releases.
+	filled, fillErr := rollbackReleasesFromGitHubManifests(ctx, summaries, target, result)
+	if fillErr != nil && len(result) == 0 {
+		return nil, fillErr
 	}
-	// GitHub normally returns newest-first, but the API does not promise that
-	// ordering forever. Sort explicitly so the five entries are deterministic.
-	sort.SliceStable(result, func(i, j int) bool {
-		left, _ := time.Parse(time.RFC3339, result[i].PublishedAt)
-		right, _ := time.Parse(time.RFC3339, result[j].PublishedAt)
-		return left.After(right)
-	})
+	result = mergeRollbackReleases(result, filled, 5)
 	if len(result) == 0 {
 		return nil, fmt.Errorf("github releases contain no valid rollback releases")
 	}
 	return result, nil
+}
+
+// githubDigestSHA256 accepts the digest GitHub attaches to a release asset
+// (`sha256:` plus 64 hex characters). Anything else is refused so a missing
+// or non-sha256 digest cannot be stored as an installer checksum.
+func githubDigestSHA256(digest string) (string, bool) {
+	digest = strings.TrimSpace(digest)
+	const prefix = "sha256:"
+	if len(digest) <= len(prefix) || !strings.EqualFold(digest[:len(prefix)], prefix) {
+		return "", false
+	}
+	hexPart := digest[len(prefix):]
+	if !validSHA256Digest(hexPart) {
+		return "", false
+	}
+	return strings.ToLower(hexPart), true
+}
+
+// rollbackReleasesFromGitHubSummaries lists formal builds whose brand
+// installer is attached to the release and carries a GitHub sha256 digest.
+// It does not download latest.json and does not invent a checksum. The page
+// is not trusted to be newest-first: every matching build is kept, then the
+// five newest are returned.
+func rollbackReleasesFromGitHubSummaries(summaries []githubReleaseSummary, targetFileName string) []RollbackRelease {
+	const limit = 5
+	result := make([]RollbackRelease, 0, limit)
+	index := make(map[string]int)
+	for _, summary := range summaries {
+		if summary.Draft || summary.Prerelease {
+			continue
+		}
+		build := strings.TrimSpace(summary.TagName)
+		publishedAt := strings.TrimSpace(summary.PublishedAt)
+		if build == "" || !validRollbackPublishedAt(publishedAt) {
+			continue
+		}
+		var installerURL, digest string
+		for _, asset := range summary.Assets {
+			if asset.Name != targetFileName {
+				continue
+			}
+			installerURL = strings.TrimSpace(asset.BrowserDownloadURL)
+			digest = asset.Digest
+			break
+		}
+		sha, ok := githubDigestSHA256(digest)
+		if !ok || !validGitHubReleaseAssetURL(installerURL, build, targetFileName) {
+			continue
+		}
+		candidate := RollbackRelease{
+			Build:       build,
+			PublishedAt: publishedAt,
+			DownloadUrl: combineDownloadURLList(githubReleaseAssetURL(build, targetFileName), immutableReleaseAssetURL(r2PublicBaseURL, build, targetFileName)),
+			SHA256:      sha,
+		}
+		if pos, exists := index[build]; exists {
+			if !rollbackPublishedAfter(publishedAt, result[pos].PublishedAt) {
+				continue
+			}
+			result[pos] = candidate
+			continue
+		}
+		index[build] = len(result)
+		result = append(result, candidate)
+	}
+	sortRollbackReleases(result)
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result
+}
+
+// rollbackManifestCandidates lists formal releases whose brand installer has
+// no usable GitHub digest, newest first. Drafts, releases the digest pass
+// already accepted, and releases without a valid latest.json attachment are
+// omitted. The page order is not trusted: spending the shared deadline on an
+// older manifest can cancel the walk before a newer digest-less build is read.
+func rollbackManifestCandidates(summaries []githubReleaseSummary, targetFileName string, digested []RollbackRelease) []githubReleaseSummary {
+	already := make(map[string]bool, len(digested))
+	for _, release := range digested {
+		already[strings.TrimSpace(release.Build)] = true
+	}
+	ordered := make([]githubReleaseSummary, 0, len(summaries))
+	for _, summary := range summaries {
+		if summary.Draft || summary.Prerelease {
+			continue
+		}
+		build := strings.TrimSpace(summary.TagName)
+		publishedAt := strings.TrimSpace(summary.PublishedAt)
+		if build == "" || already[build] || !validRollbackPublishedAt(publishedAt) {
+			continue
+		}
+		var installerURL, manifestURL, digest string
+		for _, asset := range summary.Assets {
+			switch asset.Name {
+			case targetFileName:
+				installerURL = strings.TrimSpace(asset.BrowserDownloadURL)
+				digest = asset.Digest
+			case "latest.json":
+				manifestURL = strings.TrimSpace(asset.BrowserDownloadURL)
+			}
+		}
+		if _, ok := githubDigestSHA256(digest); ok && validGitHubReleaseAssetURL(installerURL, build, targetFileName) {
+			continue
+		}
+		if !validGitHubReleaseAssetURL(installerURL, build, targetFileName) || !validGitHubReleaseAssetURL(manifestURL, build, "latest.json") {
+			continue
+		}
+		ordered = append(ordered, summary)
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return rollbackPublishedAfter(ordered[i].PublishedAt, ordered[j].PublishedAt)
+	})
+	return ordered
+}
+
+// rollbackReleasesFromGitHubManifests is the digest-less fallback. Each
+// release still has to publish latest.json with the brand installer's
+// checksum. digested is the newest-first digest pass. Candidates are walked
+// newest first, and the walk stops once a build can no longer be one of the
+// five newest, so an older manifest is not downloaded once the window is full.
+func rollbackReleasesFromGitHubManifests(ctx context.Context, summaries []githubReleaseSummary, targetFileName string, digested []RollbackRelease) ([]RollbackRelease, error) {
+	const limit = 5
+	accepted := append([]RollbackRelease(nil), digested...)
+	sortRollbackReleases(accepted)
+	if len(accepted) > limit {
+		accepted = accepted[:limit]
+	}
+	result := make([]RollbackRelease, 0, limit)
+	seen := make(map[string]bool, limit)
+	for _, summary := range rollbackManifestCandidates(summaries, targetFileName, digested) {
+		build := strings.TrimSpace(summary.TagName)
+		publishedAt := strings.TrimSpace(summary.PublishedAt)
+		if build == "" || seen[build] {
+			continue
+		}
+		if !rollbackReleaseCanEnter(accepted, publishedAt) {
+			break
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		var manifestURL string
+		for _, asset := range summary.Assets {
+			if asset.Name == "latest.json" {
+				manifestURL = strings.TrimSpace(asset.BrowserDownloadURL)
+				break
+			}
+		}
+		sha, err := fetchGitHubReleaseSHA256(ctx, manifestURL, targetFileName)
+		if err != nil || !validSHA256Digest(sha) {
+			continue
+		}
+		candidate := RollbackRelease{
+			Build:       build,
+			PublishedAt: publishedAt,
+			DownloadUrl: combineDownloadURLList(githubReleaseAssetURL(build, targetFileName), immutableReleaseAssetURL(r2PublicBaseURL, build, targetFileName)),
+			SHA256:      strings.ToLower(strings.TrimSpace(sha)),
+		}
+		result = append(result, candidate)
+		seen[build] = true
+		accepted = append(accepted, candidate)
+		sortRollbackReleases(accepted)
+		if len(accepted) > limit {
+			accepted = accepted[:limit]
+		}
+	}
+	sortRollbackReleases(result)
+	if len(result) == 0 {
+		if len(digested) > 0 {
+			return nil, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("github releases contain no valid rollback releases")
+	}
+	return result, nil
+}
+
+// rollbackReleaseCanEnter reports whether publishedAt can be one of the five
+// newest formal builds. accepted is newest-first. Fewer than five accepted
+// builds still leave an open slot.
+func rollbackReleaseCanEnter(accepted []RollbackRelease, publishedAt string) bool {
+	const limit = 5
+	if len(accepted) < limit {
+		return true
+	}
+	return rollbackPublishedAfter(publishedAt, accepted[limit-1].PublishedAt)
+}
+
+// mergeRollbackReleases keeps the newest formal builds. primary wins when the
+// same build appears in both sources, so a GitHub digest is not replaced by a
+// mirror copy of the same release.
+func mergeRollbackReleases(primary, extra []RollbackRelease, limit int) []RollbackRelease {
+	if limit <= 0 {
+		return nil
+	}
+	byBuild := make(map[string]RollbackRelease, len(primary)+len(extra))
+	order := make([]string, 0, len(primary)+len(extra))
+	add := func(release RollbackRelease, overwrite bool) {
+		build := strings.TrimSpace(release.Build)
+		if build == "" || (byBuild[build].Build != "" && !overwrite) {
+			return
+		}
+		if !validRollbackPublishedAt(release.PublishedAt) || !validSHA256Digest(release.SHA256) || strings.TrimSpace(release.DownloadUrl) == "" {
+			return
+		}
+		if _, ok := byBuild[build]; !ok {
+			order = append(order, build)
+		}
+		release.Build = build
+		byBuild[build] = release
+	}
+	for _, release := range extra {
+		add(release, false)
+	}
+	for _, release := range primary {
+		add(release, true)
+	}
+	releases := make([]RollbackRelease, 0, len(order))
+	for _, build := range order {
+		releases = append(releases, byBuild[build])
+	}
+	sortRollbackReleases(releases)
+	if len(releases) > limit {
+		releases = releases[:limit]
+	}
+	return releases
+}
+
+func sortRollbackReleases(releases []RollbackRelease) {
+	sort.SliceStable(releases, func(i, j int) bool {
+		return rollbackPublishedAfter(releases[i].PublishedAt, releases[j].PublishedAt)
+	})
+}
+
+func rollbackPublishedAfter(left, right string) bool {
+	leftTime, leftErr := time.Parse(time.RFC3339, strings.TrimSpace(left))
+	rightTime, rightErr := time.Parse(time.RFC3339, strings.TrimSpace(right))
+	if leftErr != nil || rightErr != nil {
+		return strings.TrimSpace(left) > strings.TrimSpace(right)
+	}
+	return leftTime.After(rightTime)
 }
 
 func validGitHubReleaseAssetURL(rawURL, build, fileName string) bool {
@@ -10232,16 +10563,13 @@ func fetchStableHistory(source, historyURL string, timeout time.Duration) ([]Rol
 
 func rollbackReleasesFromManifest(manifest stableHistoryManifest, targetFileName string) []RollbackRelease {
 	const limit = 5
-	seen := make(map[string]bool, limit)
-	releases := make([]RollbackRelease, 0, limit)
+	releases := make([]RollbackRelease, 0, len(manifest.Releases))
+	index := make(map[string]int, len(manifest.Releases))
 	for _, release := range manifest.Releases {
-		if len(releases) == limit {
-			break
-		}
 		build := strings.TrimSpace(release.Build)
 		publishedAt := strings.TrimSpace(release.PublishedAt)
 		asset, ok := release.Assets[targetFileName]
-		if build == "" || !validRollbackPublishedAt(publishedAt) || !ok || seen[build] || !validSHA256Digest(asset.SHA256) {
+		if build == "" || !validRollbackPublishedAt(publishedAt) || !ok || !validSHA256Digest(asset.SHA256) {
 			continue
 		}
 		// Use only URLs that correspond to this build's fixed, immutable public
@@ -10254,14 +10582,28 @@ func rollbackReleasesFromManifest(manifest stableHistoryManifest, targetFileName
 		// Prefer GitHub's release attachment for rollback downloads so the
 		// project mirrors carry less egress, then retain R2 as a verified
 		// fallback when GitHub is unavailable.
-		downloadURL := combineDownloadURLList(githubReleaseAssetURL(build, targetFileName), r2URL)
-		releases = append(releases, RollbackRelease{
+		candidate := RollbackRelease{
 			Build:       build,
 			PublishedAt: publishedAt,
-			DownloadUrl: downloadURL,
+			DownloadUrl: combineDownloadURLList(githubReleaseAssetURL(build, targetFileName), r2URL),
 			SHA256:      strings.TrimSpace(asset.SHA256),
-		})
-		seen[build] = true
+		}
+		if pos, exists := index[build]; exists {
+			if !rollbackPublishedAfter(publishedAt, releases[pos].PublishedAt) {
+				continue
+			}
+			releases[pos] = candidate
+			continue
+		}
+		index[build] = len(releases)
+		releases = append(releases, candidate)
+	}
+	// The catalogue is defined as the five newest formal builds. File order
+	// is not that order: a prepend failure or a hand-edited history must not
+	// hide a newer build behind the first five rows.
+	sortRollbackReleases(releases)
+	if len(releases) > limit {
+		releases = releases[:limit]
 	}
 	return releases
 }

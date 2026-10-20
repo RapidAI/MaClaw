@@ -466,6 +466,26 @@ func (u *UnifiedIntentClassifier) classifyContext(ctx context.Context, msg Messa
 			qe.AnchorMaxCos = anchorMaxCos
 			treeCtx = WithQueryEmbedding(ctx, qe)
 		}
+		if strings.TrimSpace(msg.Text) == "" {
+			// A picker path is stripped before classification, so this turn has
+			// no sentence. An empty string can still sit near a short anchor
+			// such as continuation; that cosine is not an intent, and the
+			// remote tree cannot name one either. Waiting on it is the pause
+			// before "已选择完整执行路径" (production 2026-10-20: text_len=0,
+			// 1.7s, verdict contradicted).
+			log.Printf("[UnifiedIntentClassifier] empty classification text skipped tree: primary=%s conf=%.2f", l2Result.Primary, l2Result.Confidence)
+			result := lookupHintOrUnknownFromL2(l2Result, false)
+			result.Reason = fmt.Sprintf("empty classification text skipped tree (l2=%s conf=%.2f)", l2Result.Primary, l2Result.Confidence)
+			if st != nil {
+				st.outcome = "skipped_empty_text"
+			}
+			if !u.cacheStoreSuppressed(cacheKey) {
+				u.cache.Store(cacheKey, &result)
+				u.cacheSource.Store(cacheKey, CacheSourceL2)
+			}
+			u.cacheAndLog(cacheKey, msg.Text, &result)
+			return result
+		}
 		if confident {
 			NormalizeDeclaredComposite(&l2Result)
 			if hintFix && headProbe != nil && isDeclaredCompositeResult(l2Result) {
@@ -509,7 +529,11 @@ func (u *UnifiedIntentClassifier) classifyContext(ctx context.Context, msg Messa
 	}
 
 	// L3 is reached only when embedding is unavailable or cannot separate the
-	// candidate intents with enough confidence.
+	// candidate intents with enough confidence. Empty text has nothing for
+	// the tree to read; the L2 branch above already returned when it ran.
+	if strings.TrimSpace(msg.Text) == "" {
+		canTree = false
+	}
 	// treeSkippedSlowEndpoint records that this turn's escalation went straight
 	// to the L2 fallback because a recent tree endpoint failure is still fresh;
 	// the fallback section below reads it to skip the speculative late-verdict

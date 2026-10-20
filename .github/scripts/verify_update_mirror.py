@@ -77,11 +77,11 @@ def read_json(url):
         raise RuntimeError(f"GET {url}: response is not valid JSON") from exc
 
 
-def public_content_length(url):
+def public_content_length(url, timeout=HTTP_TIMEOUT_SECONDS):
     """Prove public read access and return the object's declared size."""
     request = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "MaClaw-update-mirror-gate/1"})
     try:
-        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             if response.status != 200:
                 raise RuntimeError(f"HEAD {url}: HTTP {response.status}")
             value = response.headers.get("Content-Length")
@@ -93,7 +93,7 @@ def public_content_length(url):
             url,
             headers={"User-Agent": "MaClaw-update-mirror-gate/1", "Range": "bytes=0-0"},
         )
-        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             if response.status not in (200, 206):
                 raise RuntimeError(f"GET {url}: HTTP {response.status}")
             body = response.read(2)

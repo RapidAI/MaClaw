@@ -103,6 +103,14 @@ type fileCompanionRuntime struct {
 	webStop    map[string]context.CancelFunc
 	webStopGen map[string]int64
 	webStopAt  map[string]int64
+	// webPlayerGen is the player on screen. Leaving that player advances it.
+	// 停止 and leaving fullscreen do not: the in-flight preview is still this one.
+	webPlayerGen atomic.Uint64
+	// webPlayerWatch is cancelled when that player leaves. noteMu guards the pair.
+	// The capture wait selects on the context copied at note start, so a leave
+	// that arrives after 停止 has already begun waiting still wakes it.
+	webPlayerWatch       context.Context
+	webPlayerWatchCancel context.CancelFunc
 
 	// webSessions maps a web playback session id to its normalized page URL.
 	// Those tabs have no filesystem grant.

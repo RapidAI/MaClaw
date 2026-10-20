@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Seed stable-history.json from the current release when no catalogue exists.
+"""Build one stable-history.json release entry from local release assets.
 
-The rollback catalogue lives on the Cloudflare R2 mirror. The R2 publisher
-falls back to this script when no remote history is reachable yet (first
-stable release or a prior job failure), building a single-entry catalogue
-from the local release assets.
+update_stable_history.py is what the release workflow runs. It prepends the
+current release onto the existing catalogue and keeps the five newest formal
+builds. Invoking this module directly still writes a single-entry catalogue.
+The workflow shares the URL and hash helpers defined here.
 """
 
 import hashlib
@@ -41,44 +41,49 @@ def release_asset_paths(asset_dir):
     return names
 
 
-def main():
-    tag = required_env("RELEASE_TAG")
-    asset_dir = pathlib.Path(required_env("RELEASE_ASSETS_DIR"))
+def r2_public_base():
+    r2_base = os.environ.get("R2_PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if not r2_base:
+        raise RuntimeError("R2_PUBLIC_BASE_URL is required")
+    return r2_base
+
+
+def immutable_release_url(r2_base, tag, name):
+    # Mirror URLs must match verify_update_mirror's MIRROR_BASES exactly.
+    # The Tencent COS mirror is retired, so the catalogue advertises the
+    # single R2 root and "url" mirrors urls[-1].
     build_path = urllib.parse.quote(tag, safe=GO_PATH_SEGMENT_SAFE)
+    asset_path = urllib.parse.quote(name, safe=GO_PATH_SEGMENT_SAFE)
+    return f"{r2_base}/releases/{build_path}/{asset_path}"
+
+
+def build_release_entry(tag, asset_paths, r2_base, published_at):
     assets = {}
-    for path in release_asset_paths(asset_dir):
-        asset_path = urllib.parse.quote(path.name, safe=GO_PATH_SEGMENT_SAFE)
+    for path in asset_paths:
         digest = hashlib.sha256()
         with path.open("rb") as source:
             for chunk in iter(lambda: source.read(1024 * 1024), b""):
                 digest.update(chunk)
-        # Mirror URLs must match verify_update_mirror's MIRROR_BASES exactly.
-        # The Tencent COS mirror is retired, so the catalogue advertises the
-        # single R2 root and "url" mirrors urls[-1].
-        r2_base = os.environ.get("R2_PUBLIC_BASE_URL", "").strip().rstrip("/")
-        if not r2_base:
-            raise RuntimeError("R2_PUBLIC_BASE_URL is required")
-        urls = [f"{r2_base}/releases/{build_path}/{asset_path}"]
+        url = immutable_release_url(r2_base, tag, path.name)
         assets[path.name] = {
             "name": path.name,
             "size": path.stat().st_size,
             "sha256": digest.hexdigest(),
-            "urls": urls,
-            "url": urls[-1],
+            "urls": [url],
+            "url": url,
         }
+    return {"build": tag, "published_at": published_at, "assets": assets}
+
+
+def main():
+    tag = required_env("RELEASE_TAG")
+    asset_dir = pathlib.Path(required_env("RELEASE_ASSETS_DIR"))
     published_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    history = {
-        "releases": [
-            {
-                "build": tag,
-                "published_at": published_at,
-                "assets": assets,
-            }
-        ]
-    }
+    entry = build_release_entry(tag, release_asset_paths(asset_dir), r2_public_base(), published_at)
+    history = {"releases": [entry]}
     out = pathlib.Path("stable-history.json")
     out.write_text(json.dumps(history, indent=2), encoding="utf-8")
-    print(f"seeded {out} from release {tag}: assets={len(assets)}")
+    print(f"seeded {out} from release {tag}: assets={len(entry['assets'])}")
 
 
 if __name__ == "__main__":

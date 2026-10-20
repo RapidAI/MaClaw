@@ -150,13 +150,25 @@ func previewTaskResultPDF(path string, size int64, out *TaskResultPreview) (*Tas
 }
 
 func issueTaskResultPreviewToken(path string) string {
+	return issueTaskResultPreviewLease(path, taskResultPreviewTokenTTL)
+}
+
+// issueTaskResultPreviewLease mints or refreshes the short-lived file URL.
+// A longer ttl, used by chat attachment previews, is kept: a later request
+// never shortens a lease that still has more time left.
+func issueTaskResultPreviewLease(path string, ttl time.Duration) string {
+	if ttl <= 0 {
+		ttl = taskResultPreviewTokenTTL
+	}
 	now := time.Now()
 	taskResultPreviewMu.Lock()
 	defer taskResultPreviewMu.Unlock()
 	for id, lease := range taskResultPreviewLeases {
 		if lease.path == path && now.Before(lease.expires) {
-			lease.expires = now.Add(taskResultPreviewTokenTTL)
-			taskResultPreviewLeases[id] = lease
+			if until := now.Add(ttl); until.After(lease.expires) {
+				lease.expires = until
+				taskResultPreviewLeases[id] = lease
+			}
 			return id
 		}
 	}
@@ -184,7 +196,7 @@ func issueTaskResultPreviewToken(path string) string {
 		}
 		delete(taskResultPreviewLeases, oldest)
 	}
-	taskResultPreviewLeases[token] = taskResultPreviewLease{path: path, expires: now.Add(taskResultPreviewTokenTTL)}
+	taskResultPreviewLeases[token] = taskResultPreviewLease{path: path, expires: now.Add(ttl)}
 	return token
 }
 
@@ -206,8 +218,10 @@ func lookupTaskResultPreviewPath(token string) (string, bool) {
 		}
 		return "", false
 	}
-	lease.expires = now.Add(taskResultPreviewTokenTTL)
-	taskResultPreviewLeases[token] = lease
+	if until := now.Add(taskResultPreviewTokenTTL); until.After(lease.expires) {
+		lease.expires = until
+		taskResultPreviewLeases[token] = lease
+	}
 	return lease.path, true
 }
 

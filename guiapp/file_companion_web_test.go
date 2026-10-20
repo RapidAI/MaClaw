@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -253,6 +254,42 @@ func TestFileCompanionWebNoteUsesFakeCapture(t *testing.T) {
 	}
 	if app.FileCompanionWebViewContainsFullscreen() {
 		t.Fatal("unbound webview reported fullscreen")
+	}
+}
+
+func TestFileCompanionWebPlayerLeftAdvancesGeneration(t *testing.T) {
+	app := newVideoNoteTestApp(t)
+	opened, err := app.FileCompanionOpenWebPage("https://example.com/left")
+	if err != nil {
+		t.Fatal(err)
+	}
+	watch := app.fileCompanionPlayerWatch()
+	before := app.fileCompanionWebPlayerGen()
+	if err := app.FileCompanionWebPlayerLeft(opened.SessionID, 8); err != nil {
+		t.Fatal(err)
+	}
+	if app.fileCompanionWebPlayerGen() == before {
+		t.Fatal("player generation did not move")
+	}
+	if watch.Err() == nil {
+		t.Fatal("player watch still open")
+	}
+	st := app.companionRuntime()
+	st.noteMu.Lock()
+	stopped := st.webStopAt[opened.SessionID]
+	next := st.webPlayerWatch
+	st.noteMu.Unlock()
+	if stopped != 8 {
+		t.Fatalf("stop epoch = %d", stopped)
+	}
+	if next == nil || next.Err() != nil {
+		t.Fatal("next player watch was not installed")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx = withCaptureDrop(ctx, nil, watch)
+	if !captureLeft(ctx) {
+		t.Fatal("capture still belongs to the player that left")
 	}
 }
 

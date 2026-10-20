@@ -998,6 +998,19 @@ func (c *LoopContext) clearDiscoveredMCPBinds() {
 	c.discoveredMCPBinds = nil
 }
 
+// forgetDiscoveredMCPBinds drops specific binds. The caller decides which
+// keys share an address that is already published; this only mutates the map.
+func (c *LoopContext) forgetDiscoveredMCPBinds(keys map[string]bool) {
+	if c == nil || len(keys) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key := range keys {
+		delete(c.discoveredMCPBinds, key)
+	}
+}
+
 func (c *LoopContext) discoveredMCPBindList() []discoveredMCPBind {
 	if c == nil {
 		return nil

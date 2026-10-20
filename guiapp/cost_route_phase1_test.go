@@ -200,13 +200,30 @@ func TestApplyTurnModelRoute_HostImageNotesDoNotForceVision(t *testing.T) {
 	if fileTurn.Task == string(cllm.TaskVision) {
 		t.Fatalf("a PDF attachment must not route as vision: %+v", fileTurn)
 	}
-	if fileTurn.Task != string(cllm.TaskReasoning) {
-		t.Fatalf("a PDF attachment should prefer a heavy model, got %+v", fileTurn)
+	if fileTurn.Task != string(cllm.TaskFast) {
+		t.Fatalf("a short PDF question should stay fast, got %+v", fileTurn)
 	}
 	picked := "建议几个标题\n" + agent.FilePathPromptPrefix + "\nC:\\paper.pdf\n"
 	_, pathTurn := h.applyTurnModelRoute(primary, picked, &LoopContext{Kind: LoopKindChat}, nil)
-	if pathTurn.Task != string(cllm.TaskReasoning) {
-		t.Fatalf("a picked PDF should prefer a heavy model, got %+v", pathTurn)
+	if pathTurn.Task != string(cllm.TaskFast) {
+		t.Fatalf("a short picked-PDF question should stay fast, got %+v", pathTurn)
+	}
+	coding := "帮我修一下这个 bug\n" + agent.FilePathPromptPrefix + "\nC:\\paper.pdf\n"
+	_, codingTurn := h.applyTurnModelRoute(primary, coding, &LoopContext{Kind: LoopKindChat}, nil)
+	if codingTurn.Task != string(cllm.TaskReasoning) {
+		t.Fatalf("a coding question with a PDF should stay reasoning, got %+v", codingTurn)
+	}
+	_, zipTurn := h.applyTurnModelRoute(primary, "请看这个", &LoopContext{Kind: LoopKindChat}, []MessageAttachment{
+		{Type: "file", FileName: "pack.zip"},
+	})
+	if zipTurn.Task != string(cllm.TaskReasoning) {
+		t.Fatalf("a zip attachment should stay reasoning, got %+v", zipTurn)
+	}
+	_, voiceTurn := h.applyTurnModelRoute(primary, "请听一下", &LoopContext{Kind: LoopKindChat}, []MessageAttachment{
+		{Type: "audio", FileName: "memo.mp3"},
+	})
+	if voiceTurn.Task != string(cllm.TaskReasoning) {
+		t.Fatalf("a voice attachment should stay reasoning, got %+v", voiceTurn)
 	}
 	_, titleOnly := h.applyTurnModelRoute(primary, "建议几个标题", &LoopContext{Kind: LoopKindChat}, nil)
 	if titleOnly.Task != string(cllm.TaskFast) {
@@ -221,5 +238,135 @@ func TestApplyTurnModelRoute_HostImageNotesDoNotForceVision(t *testing.T) {
 	_, oldPath := h.applyTurnModelRoute(primary, historical, &LoopContext{Kind: LoopKindChat}, nil)
 	if oldPath.Task != string(cllm.TaskFast) {
 		t.Fatalf("a historical PDF path must not keep the turn heavy, got %+v", oldPath)
+	}
+}
+
+func TestApplyTurnModelRoute_DocumentQuestionPrefersFast(t *testing.T) {
+	t.Setenv(cllm.CostRouteEnvKey, "off")
+	h := &IMMessageHandler{}
+	primary := corelib.MaclawLLMConfig{URL: "https://x", Model: "m1"}
+	question := strings.Repeat("请根据规格书计算照度与电阻。", 4)
+	_, plain := h.applyTurnModelRoute(primary, question, &LoopContext{Kind: LoopKindChat}, nil)
+	if plain.Task != string(cllm.TaskDefault) {
+		t.Fatalf("a medium question without a document should stay default, got %+v", plain)
+	}
+	picked := question + "\n" + agent.FilePathPromptPrefix + "\nC:\\paper.pdf\n"
+	_, withPDF := h.applyTurnModelRoute(primary, picked, &LoopContext{Kind: LoopKindChat}, nil)
+	if withPDF.Task != string(cllm.TaskFast) {
+		t.Fatalf("a medium datasheet question should stay fast, got %+v", withPDF)
+	}
+	hist := question + "\n" + agent.FilePathPromptPrefixHistorical + "\nC:\\old.pdf\n"
+	_, oldPath := h.applyTurnModelRoute(primary, hist, &LoopContext{Kind: LoopKindChat}, nil)
+	if oldPath.Task != string(cllm.TaskFast) {
+		t.Fatalf("a historical PDF question should stay on chat, got %+v", oldPath)
+	}
+	_, histCode := h.applyTurnModelRoute(primary, "帮我修一下这个 bug\n"+agent.FilePathPromptPrefixHistorical+"\nC:\\old.pdf\n", &LoopContext{Kind: LoopKindChat}, nil)
+	if histCode.Task != string(cllm.TaskReasoning) {
+		t.Fatalf("a coding question with a historical PDF should stay reasoning, got %+v", histCode)
+	}
+	imgHist := question + "\n" + agent.FilePathPromptPrefixHistorical + "\nC:\\old.png\n"
+	_, imgOld := h.applyTurnModelRoute(primary, imgHist, &LoopContext{Kind: LoopKindChat}, nil)
+	if imgOld.Task != string(cllm.TaskDefault) {
+		t.Fatalf("a historical image must not pin the question to chat, got %+v", imgOld)
+	}
+	_, pinTurn := h.applyTurnModelRoute(primary, "这个传感器的接口电压是多少\n"+agent.FilePathPromptPrefix+"\nC:\\paper.pdf\n", &LoopContext{Kind: LoopKindChat}, nil)
+	if pinTurn.Task != string(cllm.TaskFast) {
+		t.Fatalf("接口 on a datasheet should stay fast, got %+v", pinTurn)
+	}
+	_, pinPlain := h.applyTurnModelRoute(primary, "这个传感器的接口电压是多少", &LoopContext{Kind: LoopKindChat}, nil)
+	if pinPlain.Task != string(cllm.TaskReasoning) {
+		t.Fatalf("接口 without a document should stay reasoning, got %+v", pinPlain)
+	}
+	_, follow := h.applyTurnModelRoute(primary, "这个传感器的接口电压是多少", &LoopContext{
+		Kind: LoopKindChat,
+		History: []agent.ConversationEntry{{
+			Role:    "user",
+			Content: agent.FilePathPromptPrefix + "\nC:\\paper.pdf\n请根据规格书计算照度",
+		}},
+	}, nil)
+	if follow.Task != string(cllm.TaskFast) {
+		t.Fatalf("a datasheet follow-up should stay fast, got %+v", follow)
+	}
+	_, followCode := h.applyTurnModelRoute(primary, "帮我修一下这个 bug", &LoopContext{
+		Kind: LoopKindChat,
+		History: []agent.ConversationEntry{{
+			Role:    "user",
+			Content: agent.FilePathPromptPrefix + "\nC:\\paper.pdf\n",
+		}},
+	}, nil)
+	if followCode.Task != string(cllm.TaskReasoning) {
+		t.Fatalf("a coding follow-up should stay reasoning, got %+v", followCode)
+	}
+	codePick := question + "\n" + agent.FilePathPromptPrefix + "\nC:\\main.go\n"
+	_, codeTurn := h.applyTurnModelRoute(primary, codePick, &LoopContext{
+		Kind: LoopKindChat,
+		History: []agent.ConversationEntry{{
+			Role:    "user",
+			Content: agent.FilePathPromptPrefix + "\nC:\\paper.pdf\n",
+		}},
+	}, nil)
+	if codeTurn.Task != string(cllm.TaskDefault) {
+		t.Fatalf("a new source file must not keep the old datasheet chat pin, got %+v", codeTurn)
+	}
+	echoed := question + "\n" + agent.FilePathPromptPrefixHistorical + "\nC:\\old.pdf\n" + agent.FilePathPromptPrefix + "\nC:\\main.go\n"
+	_, echoedTurn := h.applyTurnModelRoute(primary, echoed, &LoopContext{Kind: LoopKindChat}, nil)
+	if echoedTurn.Task != string(cllm.TaskDefault) {
+		t.Fatalf("a new source file must not keep an echoed datasheet on chat, got %+v", echoedTurn)
+	}
+	steps := question + "然后给出第一步和第二步\n" + agent.FilePathPromptPrefix + "\nC:\\paper.pdf\n"
+	_, multi := h.applyTurnModelRoute(primary, steps, &LoopContext{Kind: LoopKindChat}, nil)
+	if multi.Task != string(cllm.TaskFast) {
+		t.Fatalf("a multi-step datasheet question should stay fast, got %+v", multi)
+	}
+	longQ := strings.Repeat("请根据规格书计算照度与电阻。", 15)
+	_, longTurn := h.applyTurnModelRoute(primary, longQ+"\n"+agent.FilePathPromptPrefix+"\nC:\\paper.pdf\n", &LoopContext{Kind: LoopKindChat}, nil)
+	if longTurn.Task != string(cllm.TaskFast) {
+		t.Fatalf("a long datasheet question should stay fast, got %+v", longTurn)
+	}
+	picture := "看一下规格书里的图片和曲线\n" + agent.FilePathPromptPrefix + "\nC:\\paper.pdf\n"
+	_, pictureTurn := h.applyTurnModelRoute(primary, picture, &LoopContext{Kind: LoopKindChat}, nil)
+	if pictureTurn.Task != string(cllm.TaskFast) {
+		t.Fatalf("图片 in a datasheet question must not become vision, got %+v", pictureTurn)
+	}
+	_, workflowTurn := h.applyTurnModelRoute(primary, picked, &LoopContext{Kind: LoopKindChat, WorkflowAgentLoop: true}, nil)
+	if workflowTurn.Task != string(cllm.TaskReasoning) {
+		t.Fatalf("a workflow document turn should stay reasoning, got %+v", workflowTurn)
+	}
+	_, mimeTurn := h.applyTurnModelRoute(primary, "请看这个", &LoopContext{Kind: LoopKindChat}, []MessageAttachment{
+		{Type: "file", FileName: "blob", MimeType: "application/pdf"},
+	})
+	if mimeTurn.Task != string(cllm.TaskFast) {
+		t.Fatalf("a PDF mime without an extension should stay fast, got %+v", mimeTurn)
+	}
+	_, unnamed := h.applyTurnModelRoute(primary, "请看这个", &LoopContext{Kind: LoopKindChat}, []MessageAttachment{
+		{Type: "file"},
+	})
+	if unnamed.Task != string(cllm.TaskReasoning) {
+		t.Fatalf("an unnamed non-document attachment should stay reasoning, got %+v", unnamed)
+	}
+	hub := corelib.MaclawLLMConfig{URL: "https://hub.example.com/api/llm/v1", Model: "auto"}
+	cfg, hubTurn := h.applyTurnModelRoute(hub, picked, &LoopContext{Kind: LoopKindChat}, nil)
+	if hubTurn.Task != string(cllm.TaskFast) || cfg.TaskTypeHint != string(cllm.TaskFast) || cfg.WorkloadClassHint != "" {
+		t.Fatalf("hub datasheet hint: cfg=%+v decision=%+v", cfg, hubTurn)
+	}
+}
+
+func TestApplyTurnModelRoute_HubPathOnlyPDFUsesFastHint(t *testing.T) {
+	t.Setenv(cllm.CostRouteEnvKey, "on")
+	h := &IMMessageHandler{}
+	primary := corelib.MaclawLLMConfig{URL: "https://hub.example.com/api/llm/v1", Model: "auto", ProviderName: "hub"}
+	picked := agent.FilePathPromptPrefix + "\nC:\\paper.pdf\n"
+	cfg, d := h.applyTurnModelRoute(primary, picked, &LoopContext{Kind: LoopKindChat}, nil)
+	if d.Task != string(cllm.TaskFast) {
+		t.Fatalf("path-only PDF should classify fast, got %+v", d)
+	}
+	if cfg.TaskTypeHint != string(cllm.TaskFast) {
+		t.Fatalf("hub task hint=%q, want fast", cfg.TaskTypeHint)
+	}
+	if cfg.WorkloadClassHint != "" {
+		t.Fatalf("desktop must not invent P0 class: %+v", cfg)
+	}
+	if cfg.Model != "auto" {
+		t.Fatalf("hub-managed must keep auto, got %s", cfg.Model)
 	}
 }

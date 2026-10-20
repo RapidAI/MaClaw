@@ -80,6 +80,26 @@ export function filePreviewKindFromName(name: string, language?: string): FilePr
     return 'code';
 }
 
+/**
+ * True when an assistant attachment should show a document preview instead of
+ * a type badge. Images keep their own thumbnail. Video and audio have no page.
+ * Unknown binaries stay a badge; source files the preview already understands
+ * (the language map) count as documents.
+ */
+export function attachmentHasDocumentPreview(name: string): boolean {
+    const kind = filePreviewKindFromName(name);
+    switch (kind) {
+        case 'image':
+        case 'video':
+        case 'audio':
+            return false;
+        case 'code':
+            return Boolean(LANGUAGE_BY_EXT[fileExtFromName(name)]);
+        default:
+            return true;
+    }
+}
+
 /** Previewers that own scrolling / paging and should hide the code minimap. */
 export function isChromeLessPreviewKind(kind: FilePreviewKind): boolean {
     return kind === 'pptx' || kind === 'docx' || kind === 'pdf' || kind === 'xlsx' || kind === 'latex' || kind === 'image' || kind === 'video' || kind === 'audio' || kind === 'html';

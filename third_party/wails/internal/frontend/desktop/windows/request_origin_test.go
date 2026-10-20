@@ -4,6 +4,7 @@ package windows
 
 import (
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -27,6 +28,7 @@ func TestRequestIsAppOrigin(t *testing.T) {
 	}
 	for _, raw := range []string{
 		"https://www.youtube.com/embed/ILGxXoQjPEU",
+		"https://www.youtube.com/embed/ILGxXoQjPEU?origin=http://wails.localhost/",
 		"https://www.youtube-nocookie.com/embed/ILGxXoQjPEU",
 		"https://i.ytimg.com/vi/ILGxXoQjPEU/hqdefault.jpg",
 		"http://wails.localhost:34115/index.html",
@@ -39,5 +41,36 @@ func TestRequestIsAppOrigin(t *testing.T) {
 	}
 	if requestIsAppOrigin(nil, "http://wails.localhost/") {
 		t.Fatal("nil start matched")
+	}
+}
+
+func TestAppOriginRequestFilter(t *testing.T) {
+	start, err := url.Parse("http://wails.localhost/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev, err := url.Parse("http://wails.localhost:34115/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	upper, err := url.Parse("HTTP://Wails.LocalHost/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := appOriginRequestFilter(start); got != "http://wails.localhost/*" {
+		t.Fatalf("app filter %q", got)
+	}
+	if got := appOriginRequestFilter(dev); got != "http://wails.localhost:34115/*" {
+		t.Fatalf("dev filter %q", got)
+	}
+	if got := appOriginRequestFilter(upper); got != "http://wails.localhost/*" {
+		t.Fatalf("case filter %q", got)
+	}
+	if got := appOriginRequestFilter(nil); got != "" {
+		t.Fatalf("nil filter %q", got)
+	}
+	embed := "https://www.youtube.com/embed/ILGxXoQjPEU"
+	if strings.Contains(embed, strings.TrimSuffix(appOriginRequestFilter(start), "*")) {
+		t.Fatal("app filter is a prefix of the YouTube embed")
 	}
 }

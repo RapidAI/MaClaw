@@ -1,7 +1,6 @@
 import type { ChatMessage } from "./useAIAssistant";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { AssistantWelcomeView, type WelcomeComposerProps, type WelcomePromptSubmitMeta, type WelcomeTaskConfig } from "./AssistantWelcomeView";
-import { NewTaskWizardRunningBanner } from "./NewTaskWizardRunningBanner";
 
 type Props = {
     lang: string;
@@ -11,8 +10,6 @@ type Props = {
     hidden?: boolean;
     /** Draw over the live transcript instead of replacing it. The first click paints this layer; the in-panel page mounts after that frame. */
     cover?: boolean;
-    showRunningBanner?: boolean;
-    onBack: () => void;
     onPromptSelect: (text: string, meta?: WelcomePromptSubmitMeta) => void;
     onPromptSend?: (text: string, meta?: WelcomePromptSubmitMeta) => void;
     pinnedNews?: ChatMessage[];
@@ -25,7 +22,7 @@ type Props = {
  * cover so the click does not unmount a tall conversation before the page shows.
  */
 export function NewTaskWizardWelcomePane({
-    lang, theme: t, themeMode, active, hidden, cover, showRunningBanner, onBack,
+    lang, theme: t, themeMode, active, hidden, cover,
     onPromptSelect, onPromptSend, pinnedNews, taskConfig, composer,
 }: Props) {
     return (
@@ -41,7 +38,6 @@ export function NewTaskWizardWelcomePane({
                 ...(cover ? { position: "absolute" as const, inset: 0, zIndex: 40 } : {}),
             }}
         >
-            {showRunningBanner && <NewTaskWizardRunningBanner lang={lang} theme={t} onBack={onBack} />}
             <AssistantWelcomeView
                 lang={lang}
                 theme={t}

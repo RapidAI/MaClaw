@@ -38,6 +38,10 @@ export function AIAssistantAttachmentPreviewDataURL(arg1) {
   return window['go']['main']['App']['AIAssistantAttachmentPreviewDataURL'](arg1);
 }
 
+export function AIAssistantAttachmentOpeningPreview(arg1) {
+  return window['go']['main']['App']['AIAssistantAttachmentOpeningPreview'](arg1);
+}
+
 export function ClaimReferralHandoff(arg1, arg2) {
   return window['go']['main']['App']['ClaimReferralHandoff'](arg1, arg2);
 }
@@ -1271,6 +1275,18 @@ export function FileCompanionOpenWebPage(arg1) {
   return window['go']['main']['App']['FileCompanionOpenWebPage'](arg1);
 }
 
+export function FileCompanionPlayerSupported() {
+  return window['go']['main']['App']['FileCompanionPlayerSupported']();
+}
+
+export function FileCompanionPlayerPlace(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['FileCompanionPlayerPlace'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function FileCompanionPlayerHide() {
+  return window['go']['main']['App']['FileCompanionPlayerHide']();
+}
+
 export function SendFileCompanionWebMessage(arg1) {
   return window['go']['main']['App']['SendFileCompanionWebMessage'](arg1);
 }
@@ -1285,6 +1301,10 @@ export function CancelFileCompanionTurn(arg1) {
 
 export function CancelFileCompanionWebTurn(arg1, arg2) {
   return window['go']['main']['App']['CancelFileCompanionWebTurn'](arg1, arg2);
+}
+
+export function FileCompanionWebPlayerLeft(arg1, arg2) {
+  return window['go']['main']['App']['FileCompanionWebPlayerLeft'](arg1, arg2);
 }
 
 export function FileCompanionDiscardWebNote(arg1) {

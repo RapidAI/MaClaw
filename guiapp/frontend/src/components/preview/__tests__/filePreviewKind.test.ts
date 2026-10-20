@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
     cloudDriveCompanionAvailable,
     companionSupportsFileName,
+    attachmentHasDocumentPreview,
     filePreviewKindFromName,
     previewSourceName,
     isChromeLessPreviewKind,
@@ -39,6 +40,24 @@ describe('filePreviewKindFromName', () => {
         expect(filePreviewKindFromName('x.bin', 'pdf')).toBe('pdf');
         expect(filePreviewKindFromName('brief.docx', 'markdown')).toBe('docx');
         expect(filePreviewKindFromName('deck.pptx', 'markdown')).toBe('pptx');
+    });
+});
+
+describe('attachmentHasDocumentPreview', () => {
+    it('includes previewable documents and source files, not pictures or unknown binaries', () => {
+        expect(attachmentHasDocumentPreview('spec.pdf')).toBe(true);
+        expect(attachmentHasDocumentPreview('规格书.PDF')).toBe(true);
+        expect(attachmentHasDocumentPreview('note.docx')).toBe(true);
+        expect(attachmentHasDocumentPreview('old.doc')).toBe(true);
+        expect(attachmentHasDocumentPreview('deck.pptx')).toBe(true);
+        expect(attachmentHasDocumentPreview('sheet.xlsx')).toBe(true);
+        expect(attachmentHasDocumentPreview('readme.md')).toBe(true);
+        expect(attachmentHasDocumentPreview('page.html')).toBe(true);
+        expect(attachmentHasDocumentPreview('main.go')).toBe(true);
+        expect(attachmentHasDocumentPreview('photo.png')).toBe(false);
+        expect(attachmentHasDocumentPreview('clip.mp4')).toBe(false);
+        expect(attachmentHasDocumentPreview('voice.m4a')).toBe(false);
+        expect(attachmentHasDocumentPreview('blob.bin')).toBe(false);
     });
 });
 

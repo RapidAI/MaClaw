@@ -66,6 +66,10 @@ type Frontend struct {
 
 	hasStarted bool
 
+	// playerInstalled is the companion top-level page host. It is created
+	// once the app WebView environment exists and is not a second profile.
+	playerInstalled bool
+
 	originValidator *originvalidator.OriginValidator
 
 	// Windows build number
@@ -205,10 +209,12 @@ func (f *Frontend) Run(ctx context.Context) error {
 			f.resizeDebouncer(func() {
 				f.mainWindow.Invoke(func() {
 					f.chromium.Resize()
+					restackCompanionPlayer()
 				})
 			})
 		} else {
 			f.chromium.Resize()
+			restackCompanionPlayer()
 		}
 	})
 
@@ -627,7 +633,13 @@ func (f *Frontend) setupChromium() {
 	f.WindowSetBackgroundColour(f.frontendOptions.BackgroundColour)
 
 	chromium.SetGlobalPermission(edge.CoreWebView2PermissionStateAllow)
-	chromium.AddWebResourceRequestedFilter("*", edge.COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL)
+	// Serve only the app origin. "*" delivers every main-frame request here.
+	// The source-kinds API with "*" also delivers a cross-origin iframe
+	// document, including a YouTube embed. Reading or rewriting that request's
+	// headers drops the Referer the player requires.
+	if filter := appOriginRequestFilter(f.startURL); filter != "" {
+		chromium.AddWebResourceRequestedFilter(filter, edge.COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL)
+	}
 	chromium.Navigate(f.startURL.String())
 }
 
@@ -947,6 +959,9 @@ func (f *Frontend) navigationCompleted(sender *edge.ICoreWebView2, args *edge.IC
 	if sender != nil {
 		maclawcapture.Bind(coreWebView{wv: sender})
 	}
+	// The player page uses this environment, so its cookies live in the
+	// companion profile rather than a framed partition of wails.localhost.
+	installCompanionPlayer(f)
 	if f.frontendOptions.OnDomReady != nil {
 		go f.frontendOptions.OnDomReady(f.ctx)
 	}

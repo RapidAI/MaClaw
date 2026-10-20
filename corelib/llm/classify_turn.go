@@ -19,6 +19,9 @@ type ClassifyHints struct {
 	ForceReasoning bool
 	// PreferFast biases short, simple turns toward TaskFast when ambiguous.
 	PreferFast bool
+	// DocumentRead is a native PDF or office turn. The words 接口 and 终端
+	// are then pin names, not a coding task, unless another reasoning cue hits.
+	DocumentRead bool
 }
 
 // ClassifyResult is the outcome of rule-based turn classification.
@@ -55,12 +58,14 @@ func ClassifyTurn(userText string, hints ClassifyHints) ClassifyResult {
 	}
 
 	// Coding / debugging / complex work → strong model.
-	if containsAny(lower, reasoningCues...) {
+	if containsReasoningCue(lower, hints.DocumentRead) {
 		return ClassifyResult{Task: TaskReasoning, Reason: "coding or complex analysis cues"}
 	}
 
-	// Short chit-chat / simple Q&A → fast.
-	if runes <= 48 && !looksLikeMultiStep(lower) {
+	// Short chit-chat / simple Q&A → fast. "然后" in a short follow-up is not
+	// a plan: blocking it made 「然后告诉我阻值」 TaskDefault, and Hub does not
+	// map default, so the system-prompt heuristic picked the code tier.
+	if runes <= 48 {
 		if containsAny(lower, intentCues...) {
 			return ClassifyResult{Task: TaskIntent, Reason: "short intent/classification style question"}
 		}
@@ -89,6 +94,20 @@ func looksLikeMultiStep(lower string) bool {
 func containsAny(haystack string, needles ...string) bool {
 	for _, n := range needles {
 		if cueMatches(haystack, n) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsReasoningCue reports a coding cue. On a document turn the bare
+// words 接口 and 终端 are electrical pins; 打开终端 and 帮我修 still match.
+func containsReasoningCue(lower string, documentRead bool) bool {
+	for _, n := range reasoningCues {
+		if documentRead && (n == "接口" || n == "终端") {
+			continue
+		}
+		if cueMatches(lower, n) {
 			return true
 		}
 	}

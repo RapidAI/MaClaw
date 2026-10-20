@@ -26,7 +26,7 @@ const importKnowledge = vi.fn();
 const uploadCloud = vi.fn();
 const ready = vi.fn();
 const choose = vi.fn();
-const openArxiv = vi.fn();
+const openArxiv = vi.fn(async (..._args: any[]): Promise<any> => undefined);
 const replaceOffice = vi.fn();
 const clearChat = vi.fn();
 const quit = vi.fn();
@@ -42,11 +42,15 @@ const exportWebPdf = vi.fn();
 const exportWebChatPdf = vi.fn();
 const exportWebTex = vi.fn();
 const exportWebChatTex = vi.fn();
-const openWeb = vi.fn();
+const openWeb = vi.fn(async (..._args: any[]): Promise<any> => undefined);
 const sendWeb = vi.fn();
 const clearWeb = vi.fn();
 const cancelTurn = vi.fn();
 const cancelWeb = vi.fn();
+const playerLeft = vi.fn();
+const playerSupported = vi.fn(async (..._args: any[]): Promise<any> => true);
+const playerPlace = vi.fn(async (..._args: any[]): Promise<any> => undefined);
+const playerHide = vi.fn(async (..._args: any[]): Promise<any> => undefined);
 const discardWeb = vi.fn();
 const getBrandInfo = vi.fn();
 const clipboardWrite = vi.fn();
@@ -66,10 +70,14 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     ChooseFileCompanionFiles: (...args: unknown[]) => choose(...args),
     FileCompanionOpenArxiv: (...args: unknown[]) => openArxiv(...args),
     FileCompanionOpenWebPage: (...args: unknown[]) => openWeb(...args),
+    FileCompanionPlayerSupported: (...args: unknown[]) => playerSupported(...args),
+    FileCompanionPlayerPlace: (...args: unknown[]) => playerPlace(...args),
+    FileCompanionPlayerHide: (...args: unknown[]) => playerHide(...args),
     SendFileCompanionWebMessage: (...args: unknown[]) => sendWeb(...args),
     ClearFileCompanionWebChat: (...args: unknown[]) => clearWeb(...args),
     CancelFileCompanionTurn: (...args: unknown[]) => cancelTurn(...args),
     CancelFileCompanionWebTurn: (...args: unknown[]) => cancelWeb(...args),
+    FileCompanionWebPlayerLeft: (...args: unknown[]) => playerLeft(...args),
     FileCompanionDiscardWebNote: (...args: unknown[]) => discardWeb(...args),
     FileCompanionWebHistory: vi.fn(async () => []),
     FileCompanionExportTeX: (...args: unknown[]) => exportTex(...args),
@@ -209,6 +217,14 @@ beforeEach(() => {
     cancelTurn.mockResolvedValue(undefined);
     cancelWeb.mockReset();
     cancelWeb.mockResolvedValue(undefined);
+    playerLeft.mockReset();
+    playerLeft.mockResolvedValue(undefined);
+    playerSupported.mockReset();
+    playerSupported.mockResolvedValue(true);
+    playerPlace.mockReset();
+    playerPlace.mockResolvedValue(undefined);
+    playerHide.mockReset();
+    playerHide.mockResolvedValue(undefined);
     discardWeb.mockReset();
     discardWeb.mockResolvedValue(undefined);
     clipboardWrite.mockReset();
@@ -3528,12 +3544,17 @@ describe("FileCompanionWindow", () => {
         });
         await openField("https://www.youtube.com/watch?v=abc&t=120");
         const frame = await screen.findByTestId("file-companion-web-frame");
-        expect(frame.getAttribute("src")).toBe("https://www.youtube.com/embed/abc");
-        expect(frame.getAttribute("allow")).toContain("encrypted-media");
-        expect(frame.getAttribute("allow")).toContain("fullscreen");
-        expect(frame.getAttribute("referrerpolicy")).toBe("strict-origin-when-cross-origin");
-        expect(frame.hasAttribute("allowfullscreen")).toBe(true);
-        expect(frame.getAttribute("src")).not.toContain("t=");
+        expect(frame.tagName).toBe("DIV");
+        expect(frame.querySelector("iframe")).toBeNull();
+        expect(frame.getAttribute("data-url")).toBe("https://www.youtube.com/embed/abc");
+        expect(frame.getAttribute("data-url")).not.toContain("t=");
+        await waitFor(() => expect(playerPlace).toHaveBeenCalledWith(
+            "https://www.youtube.com/embed/abc",
+            expect.any(Number),
+            expect.any(Number),
+            expect.any(Number),
+            expect.any(Number),
+        ));
         expect(open).not.toHaveBeenCalled();
         expect(openArxiv).not.toHaveBeenCalled();
         expect(send).not.toHaveBeenCalled();
@@ -3581,6 +3602,7 @@ describe("FileCompanionWindow", () => {
         })));
         act(() => { runtime.emit("file-companion:webview-fullscreen", [{ fullscreen: false }]); });
         await waitFor(() => expect(cancelWeb).toHaveBeenCalledWith("web-abc", expect.any(Number)));
+        expect(playerLeft).not.toHaveBeenCalled();
         release();
         await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("记笔记"));
         sendWeb.mockClear();
@@ -3596,6 +3618,7 @@ describe("FileCompanionWindow", () => {
         })));
         act(() => { runtime.emit("file-companion:webview-fullscreen", { fullscreen: false }); });
         await waitFor(() => expect(cancelWeb).toHaveBeenCalledWith("web-abc", expect.any(Number)));
+        expect(playerLeft).not.toHaveBeenCalled();
         release();
         await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("记笔记"));
 
@@ -3608,15 +3631,15 @@ describe("FileCompanionWindow", () => {
         openWeb.mockResolvedValue({ kind: "web", frameUrl: "https://example.com/other", sessionId: "web-other" });
         await openField("https://example.com/other");
         await screen.findByTestId("file-companion-tab-example.com");
+        await waitFor(() => expect(playerLeft).toHaveBeenCalledWith("web-abc", expect.any(Number)));
         act(() => { runtime.emit("file-companion:webview-fullscreen", { fullscreen: false }); });
-        await waitFor(() => expect(cancelWeb).toHaveBeenCalledWith("web-abc", expect.any(Number)));
-        expect(cancelWeb.mock.calls.some((call) => call[0] === "web-other")).toBe(false);
+        expect(cancelWeb).not.toHaveBeenCalled();
+        expect(playerLeft.mock.calls.some((call) => call[0] === "web-other")).toBe(false);
         release();
         await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("记笔记"));
 
-        // Leaving every web tab unmounts the iframe. Another web tab keeps one,
-        // so this opens a local file. A fullscreenchange with no element must
-        // still stop the recording. The tab switch itself must not.
+        // Leaving the player stops the recording and still writes the note.
+        // A later fullscreenchange must not retarget another session.
         sendWeb.mockClear();
         cancelWeb.mockClear();
         sendWeb.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
@@ -3633,10 +3656,11 @@ describe("FileCompanionWindow", () => {
             runtime.emit("file-companion:open", ["C:/notes/a.md"]);
             await screen.findByTestId("file-companion-tab-a.md");
             await waitFor(() => expect(screen.queryByTestId("file-companion-web-frame")).toBeNull());
-            expect(cancelWeb).not.toHaveBeenCalled();
+            await waitFor(() => expect(playerLeft).toHaveBeenCalledWith("web-abc", expect.any(Number)));
             currentFull = null;
             act(() => { document.dispatchEvent(new Event("fullscreenchange")); });
-            await waitFor(() => expect(cancelWeb).toHaveBeenCalledWith("web-abc", expect.any(Number)));
+            expect(cancelWeb).not.toHaveBeenCalled();
+            expect(playerLeft.mock.calls.some((call) => call[0] === "web-other")).toBe(false);
         } finally {
             if (priorFull) Object.defineProperty(document, "fullscreenElement", priorFull);
             else Reflect.deleteProperty(document, "fullscreenElement");
@@ -3655,12 +3679,225 @@ describe("FileCompanionWindow", () => {
         })));
         await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("记笔记"));
 
-        // The Windows fullscreen flag can stay true after the iframe is gone.
-        // Leaving the page must still stop this attempt. Opening the page again
-        // starts a note from the visible player; the leftover flag must not
-        // keep the previous recording running.
+        // A note that never entered fullscreen still stops when the player
+        // leaves the screen. The capture must not keep photographing the file
+        // that replaced it.
         sendWeb.mockClear();
         cancelWeb.mockClear();
+        playerLeft.mockClear();
+        sendWeb.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(sendWeb).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: "web-abc",
+            fullscreen: false,
+        })));
+        open.mockImplementation(async (path: string) => doc(path));
+        let releaseLeave: () => void = () => undefined;
+        playerLeft.mockImplementation(() => new Promise<void>((resolve) => { releaseLeave = resolve; }));
+        runtime.emit("file-companion:open", ["C:/notes/leave.md"]);
+        await screen.findByTestId("file-companion-tab-leave.md");
+        const held = await screen.findByTestId("file-companion-web-frame");
+        expect(held.getAttribute("data-url")).toBe("https://www.youtube.com/embed/abc");
+        await waitFor(() => expect(playerLeft).toHaveBeenCalledWith("web-abc", expect.any(Number)));
+        expect(screen.getByTestId("file-companion-web-frame").getAttribute("data-url")).toBe("https://www.youtube.com/embed/abc");
+        expect(cancelWeb).not.toHaveBeenCalled();
+        await act(async () => { releaseLeave(); });
+        await waitFor(() => expect(screen.queryByTestId("file-companion-web-frame")).toBeNull());
+        playerLeft.mockResolvedValue(undefined);
+        release();
+        fireEvent.click(screen.getByTestId("file-companion-tab-www.youtube.com"));
+        await screen.findByTestId("file-companion-web-frame");
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("记笔记"));
+
+        // A rejected leave has not retired the watch. The next page stays
+        // unpainted, and the failed call is not retried. The picture drops
+        // when the note call returns, because capture has finished.
+        sendWeb.mockClear();
+        cancelWeb.mockClear();
+        playerLeft.mockClear();
+        sendWeb.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(sendWeb).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: "web-abc",
+            fullscreen: false,
+        })));
+        open.mockImplementation(async (path: string) => doc(path));
+        playerLeft.mockRejectedValue(new Error("bridge"));
+        runtime.emit("file-companion:open", ["C:/notes/reject.md"]);
+        await screen.findByTestId("file-companion-tab-reject.md");
+        const rejected = await screen.findByTestId("file-companion-web-frame");
+        expect(rejected.getAttribute("data-url")).toBe("https://www.youtube.com/embed/abc");
+        await waitFor(() => expect(playerLeft).toHaveBeenCalledTimes(1));
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+        expect(screen.getByTestId("file-companion-web-frame").getAttribute("data-url")).toBe("https://www.youtube.com/embed/abc");
+        expect(playerLeft).toHaveBeenCalledTimes(1);
+        expect(cancelWeb).not.toHaveBeenCalled();
+        await act(async () => { release(); });
+        await waitFor(() => expect(screen.queryByTestId("file-companion-web-frame")).toBeNull());
+
+        // A leave that never settles holds the same way. Fulfilling it after
+        // the note has returned, and after a later recording has pinned,
+        // must not release that later picture.
+        fireEvent.click(screen.getByTestId("file-companion-tab-www.youtube.com"));
+        await screen.findByTestId("file-companion-web-frame");
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("记笔记"));
+        sendWeb.mockClear();
+        cancelWeb.mockClear();
+        playerLeft.mockClear();
+        sendWeb.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(sendWeb).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "web-abc" })));
+        let releaseHung: () => void = () => undefined;
+        playerLeft.mockImplementation(() => new Promise<void>((resolve) => { releaseHung = resolve; }));
+        runtime.emit("file-companion:open", ["C:/notes/hung.md"]);
+        await screen.findByTestId("file-companion-tab-hung.md");
+        const hung = await screen.findByTestId("file-companion-web-frame");
+        expect(hung.getAttribute("data-url")).toBe("https://www.youtube.com/embed/abc");
+        await waitFor(() => expect(playerLeft).toHaveBeenCalledTimes(1));
+        await act(async () => { release(); });
+        await waitFor(() => expect(screen.queryByTestId("file-companion-web-frame")).toBeNull());
+        fireEvent.click(screen.getByTestId("file-companion-tab-www.youtube.com"));
+        await screen.findByTestId("file-companion-web-frame");
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("记笔记"));
+        sendWeb.mockClear();
+        playerLeft.mockClear();
+        sendWeb.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(sendWeb).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "web-abc" })));
+        let releaseNext: () => void = () => undefined;
+        playerLeft.mockImplementation(() => new Promise<void>((resolve) => { releaseNext = resolve; }));
+        runtime.emit("file-companion:open", ["C:/notes/later.md"]);
+        await screen.findByTestId("file-companion-tab-later.md");
+        const later = await screen.findByTestId("file-companion-web-frame");
+        expect(later.getAttribute("data-url")).toBe("https://www.youtube.com/embed/abc");
+        await waitFor(() => expect(playerLeft).toHaveBeenCalledTimes(1));
+        await act(async () => { releaseHung(); });
+        expect(screen.getByTestId("file-companion-web-frame").getAttribute("data-url")).toBe("https://www.youtube.com/embed/abc");
+        expect(playerLeft).toHaveBeenCalledTimes(1);
+        await act(async () => { releaseNext(); });
+        await waitFor(() => expect(screen.queryByTestId("file-companion-web-frame")).toBeNull());
+        await act(async () => { release(); });
+        playerLeft.mockResolvedValue(undefined);
+        fireEvent.click(screen.getByTestId("file-companion-tab-www.youtube.com"));
+        await screen.findByTestId("file-companion-web-frame");
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("记笔记"));
+
+        // A card from another note is not this capture finishing. The held
+        // player stays. This attempt's own reply is after capture, so the
+        // picture can change.
+        sendWeb.mockClear();
+        cancelWeb.mockClear();
+        playerLeft.mockClear();
+        sendWeb.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(sendWeb).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "web-abc" })));
+        const liveRequest = (sendWeb.mock.calls[sendWeb.mock.calls.length - 1][0] as { requestId: string }).requestId;
+        let releaseCardLeave: () => void = () => undefined;
+        playerLeft.mockImplementation(() => new Promise<void>((resolve) => { releaseCardLeave = resolve; }));
+        open.mockImplementation(async (path: string) => doc(path));
+        runtime.emit("file-companion:open", ["C:/notes/card.md"]);
+        await screen.findByTestId("file-companion-tab-card.md");
+        expect(screen.getByTestId("file-companion-web-frame").getAttribute("data-url")).toBe("https://www.youtube.com/embed/abc");
+        await waitFor(() => expect(playerLeft).toHaveBeenCalledTimes(1));
+        act(() => {
+            runtime.emit("ai-assistant-response", JSON.stringify({
+                session_key: "file-companion:web-abc",
+                text: "上一份笔记",
+                request_id: "stale-card",
+                note_card_path: "C:/data/stale.pdf",
+            }));
+        });
+        expect(screen.getByTestId("file-companion-web-frame").getAttribute("data-url")).toBe("https://www.youtube.com/embed/abc");
+        act(() => {
+            runtime.emit("ai-assistant-response", JSON.stringify({
+                session_key: "file-companion:web-abc",
+                text: "这一份笔记",
+                request_id: liveRequest,
+                note_card_path: "C:/data/live.pdf",
+            }));
+        });
+        await waitFor(() => expect(screen.queryByTestId("file-companion-web-frame")).toBeNull());
+        await act(async () => { releaseCardLeave(); });
+        expect(screen.queryByTestId("file-companion-web-frame")).toBeNull();
+        await act(async () => { release(); });
+        playerLeft.mockResolvedValue(undefined);
+        fireEvent.click(screen.getByTestId("file-companion-tab-www.youtube.com"));
+        await screen.findByTestId("file-companion-web-frame");
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("记笔记"));
+
+        // Once this leave has been accepted, capture has stopped. Looking
+        // back at the player and leaving again must show the selected page
+        // without waiting on another leave.
+        sendWeb.mockClear();
+        cancelWeb.mockClear();
+        playerLeft.mockClear();
+        sendWeb.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(sendWeb).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "web-abc" })));
+        let releaseAccepted: () => void = () => undefined;
+        playerLeft.mockImplementation(() => new Promise<void>((resolve) => { releaseAccepted = resolve; }));
+        open.mockImplementation(async (path: string) => doc(path));
+        runtime.emit("file-companion:open", ["C:/notes/stay.md"]);
+        await screen.findByTestId("file-companion-tab-stay.md");
+        expect(screen.getByTestId("file-companion-web-frame").getAttribute("data-url")).toBe("https://www.youtube.com/embed/abc");
+        await waitFor(() => expect(playerLeft).toHaveBeenCalledTimes(1));
+        await act(async () => { releaseAccepted(); });
+        await waitFor(() => expect(screen.queryByTestId("file-companion-web-frame")).toBeNull());
+        fireEvent.click(screen.getByTestId("file-companion-tab-www.youtube.com"));
+        await screen.findByTestId("file-companion-web-frame");
+        const acceptedLeaves = playerLeft.mock.calls.length;
+        let releaseAgain: () => void = () => undefined;
+        playerLeft.mockImplementation(() => new Promise<void>((resolve) => { releaseAgain = resolve; }));
+        runtime.emit("file-companion:open", ["C:/notes/again.md"]);
+        await screen.findByTestId("file-companion-tab-again.md");
+        await waitFor(() => expect(screen.queryByTestId("file-companion-web-frame")).toBeNull());
+        expect(playerLeft).toHaveBeenCalledTimes(acceptedLeaves);
+        releaseAgain();
+        await act(async () => { release(); });
+        playerLeft.mockResolvedValue(undefined);
+        fireEvent.click(screen.getByTestId("file-companion-tab-www.youtube.com"));
+        await screen.findByTestId("file-companion-web-frame");
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("记笔记"));
+
+        // The Windows flag belongs to the player that entered fullscreen.
+        // Leaving that player drops it even when no fullscreen event arrives,
+        // so the next note is not marked fullscreen.
+        sendWeb.mockClear();
+        cancelWeb.mockClear();
+        playerLeft.mockClear();
+        sendWeb.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        act(() => { runtime.emit("file-companion:webview-fullscreen", { fullscreen: true }); });
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(sendWeb).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: "web-abc",
+            fullscreen: true,
+        })));
+        open.mockImplementation(async (path: string) => doc(path));
+        runtime.emit("file-companion:open", ["C:/notes/flag.md"]);
+        await screen.findByTestId("file-companion-tab-flag.md");
+        await waitFor(() => expect(playerLeft).toHaveBeenCalledWith("web-abc", expect.any(Number)));
+        expect(cancelWeb).not.toHaveBeenCalled();
+        release();
+        fireEvent.click(screen.getByTestId("file-companion-tab-www.youtube.com"));
+        await screen.findByTestId("file-companion-web-frame");
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("记笔记"));
+        sendWeb.mockClear();
+        sendWeb.mockResolvedValue(undefined);
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(sendWeb).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: "web-abc",
+            text: "记笔记",
+            fullscreen: false,
+        })));
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("记笔记"));
+
+        // The Windows fullscreen flag can stay true after the iframe is gone.
+        // Leaving the player stops this attempt. Opening the page again starts
+        // a note from the visible player; the leftover flag must not keep the
+        // previous recording running.
+        sendWeb.mockClear();
+        cancelWeb.mockClear();
+        playerLeft.mockClear();
         sendWeb.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
         fireEvent.click(screen.getByTestId("file-companion-tab-www.youtube.com"));
         await screen.findByTestId("file-companion-web-frame");
@@ -3675,12 +3912,13 @@ describe("FileCompanionWindow", () => {
         runtime.emit("file-companion:open", ["C:/notes/b.md"]);
         await screen.findByTestId("file-companion-tab-b.md");
         await waitFor(() => expect(screen.queryByTestId("file-companion-web-frame")).toBeNull());
-        expect(cancelWeb).not.toHaveBeenCalled();
+        await waitFor(() => expect(playerLeft).toHaveBeenCalledWith("web-abc", stuckEpoch));
         const priorStuck = Object.getOwnPropertyDescriptor(document, "fullscreenElement");
         Object.defineProperty(document, "fullscreenElement", { configurable: true, get: () => null });
         try {
             act(() => { document.dispatchEvent(new Event("fullscreenchange")); });
-            await waitFor(() => expect(cancelWeb).toHaveBeenCalledWith("web-abc", stuckEpoch));
+            expect(playerLeft).toHaveBeenCalledWith("web-abc", stuckEpoch);
+            expect(cancelWeb).not.toHaveBeenCalled();
         } finally {
             if (priorStuck) Object.defineProperty(document, "fullscreenElement", priorStuck);
             else Reflect.deleteProperty(document, "fullscreenElement");
@@ -3717,9 +3955,11 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(openWeb).toHaveBeenCalledWith("https://youtu.be/xyz"));
         expect(openArxiv).not.toHaveBeenCalled();
         cancelWeb.mockClear();
+        playerLeft.mockClear();
         fireEvent.click(screen.getByLabelText("关闭 youtu.be"));
         await waitFor(() => expect(discardWeb).toHaveBeenCalledWith("web-xyz"));
         expect(cancelWeb).not.toHaveBeenCalled();
+        expect(playerLeft).not.toHaveBeenCalled();
         await openField("2510.16079");
         await waitFor(() => expect(openArxiv).toHaveBeenCalledWith("2510.16079"));
     });

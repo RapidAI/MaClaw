@@ -4,13 +4,110 @@ package guiapp
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
+	"errors"
 	"math"
 	"os"
 	"testing"
 	"time"
 	"unsafe"
 )
+
+func TestFinishedCapturePreviewKeepsAReadyFrameWhenStopWins(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	ch := make(chan previewResult, 1)
+	ch <- previewResult{png: []byte{1, 2, 3}}
+	png, err := finishedCapturePreview(ctx, ch, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(png, []byte{1, 2, 3}) {
+		t.Fatalf("png = %v", png)
+	}
+}
+
+func TestFinishedCapturePreviewWaitsForTheFrameWhenThePlayerStays(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	ch := make(chan previewResult, 1)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		ch <- previewResult{png: []byte{7}}
+	}()
+	png, err := finishedCapturePreview(ctx, ch, time.After(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(png, []byte{7}) {
+		t.Fatalf("png = %v", png)
+	}
+}
+
+func TestFinishedCapturePreviewDoesNotWaitWhenThePlayerLeft(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	gone, cancelGone := context.WithCancel(context.Background())
+	cancelGone()
+	ctx = withCaptureDrop(ctx, nil, gone)
+	ch := make(chan previewResult, 1)
+	ch <- previewResult{png: []byte{7}}
+	start := time.Now()
+	_, err := finishedCapturePreview(ctx, ch, nil)
+	if time.Since(start) > 200*time.Millisecond {
+		t.Fatal("waited for a preview after the player left")
+	}
+	if !errors.Is(err, errCompanionPlayerLeft) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestFinishedCapturePreviewLeavesDuringTheStopWait(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	player, playerCancel := context.WithCancel(context.Background())
+	defer playerCancel()
+	ctx = withCaptureDrop(ctx, nil, player)
+	ch := make(chan previewResult, 1)
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		playerCancel()
+	}()
+	timeout := time.NewTimer(5 * time.Second)
+	defer timeout.Stop()
+	start := time.Now()
+	_, err := finishedCapturePreview(ctx, ch, timeout.C)
+	if time.Since(start) > 500*time.Millisecond {
+		t.Fatal("kept waiting after the player left")
+	}
+	if !errors.Is(err, errCompanionPlayerLeft) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestFinishedCapturePreviewNoteClosesDuringTheStopWait(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	note, noteCancel := context.WithCancel(context.Background())
+	defer noteCancel()
+	ctx = withCaptureDrop(ctx, note, nil)
+	ch := make(chan previewResult, 1)
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		noteCancel()
+	}()
+	timeout := time.NewTimer(5 * time.Second)
+	defer timeout.Stop()
+	start := time.Now()
+	_, err := finishedCapturePreview(ctx, ch, timeout.C)
+	if time.Since(start) > 500*time.Millisecond {
+		t.Fatal("kept waiting after the note closed")
+	}
+	if !errors.Is(err, errCompanionPlayerLeft) {
+		t.Fatalf("err = %v", err)
+	}
+}
 
 func TestWindowsProcessLoopbackPlan(t *testing.T) {
 	act := companionProcessAudioActivate(uint32(os.Getpid()))

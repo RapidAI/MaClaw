@@ -1,12 +1,25 @@
 import React from "react";
 import { AIAssistantAttachmentPreviewDataURL } from "../../../wailsjs/go/main/App";
-import type { ChatMessage } from "./useAIAssistant";
+import { attachmentHasDocumentPreview } from "../preview/filePreviewKind";
+import type { ChatAttachment, ChatMessage } from "./useAIAssistant";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { AttachmentDocumentPreview } from "./AttachmentDocumentPreview";
 import { AttachmentImageThumbnail } from "./AttachmentImagePreview";
 
 function compactAttachmentLabel(fileName: string, extension: string): string {
     const raw = (extension || fileName.match(/\.[^./\\]+$/)?.[0] || "").replace(/^\./, "").trim();
     return raw ? raw.slice(0, 4).toUpperCase() : "FILE";
+}
+
+/** Document pages render beside the text bubble so the 76% text width cannot shrink them. */
+export function partitionUserAttachments(attachments: readonly ChatAttachment[]): { inline: ChatAttachment[]; documents: ChatAttachment[] } {
+    const inline: ChatAttachment[] = [];
+    const documents: ChatAttachment[] = [];
+    for (const attachment of attachments) {
+        if (!attachment.isImage && attachmentHasDocumentPreview(attachment.fileName || attachment.filePath)) documents.push(attachment);
+        else inline.push(attachment);
+    }
+    return { inline, documents };
 }
 
 export function UserAttachmentChip({ attachment, theme, lang }: { attachment: NonNullable<ChatMessage["attachments"]>[number]; theme: Theme; lang: string }) {
@@ -15,6 +28,12 @@ export function UserAttachmentChip({ attachment, theme, lang }: { attachment: No
     // saved local attachment for reliable rendering and history restoration.
     const [thumbnail, setThumbnail] = React.useState("");
     const [previewFailed, setPreviewFailed] = React.useState(false);
+    const [documentFailed, setDocumentFailed] = React.useState(false);
+    const showDocument = !attachment.isImage && attachmentHasDocumentPreview(attachment.fileName || attachment.filePath) && !documentFailed;
+
+    React.useEffect(() => {
+        setDocumentFailed(false);
+    }, [attachment.filePath, attachment.fileName]);
 
     React.useEffect(() => {
         if (!attachment.isImage) {
@@ -41,7 +60,7 @@ export function UserAttachmentChip({ attachment, theme, lang }: { attachment: No
 
     // An attached picture is user content, not metadata: the transcript shows a
     // readable preview (click zooms to the full image) instead of a file badge.
-    // Non-images keep the compact type badge below.
+    // A document that cannot be previewed keeps the compact type badge.
     const previewStyle: React.CSSProperties = {
         display: "inline-flex",
         maxWidth: "100%",
@@ -70,6 +89,19 @@ export function UserAttachmentChip({ attachment, theme, lang }: { attachment: No
         fontWeight: 800,
         lineHeight: 1,
     };
+
+    if (showDocument) {
+        return (
+            <AttachmentDocumentPreview
+                filePath={attachment.filePath}
+                fileName={attachment.fileName}
+                extension={attachment.extension}
+                theme={theme}
+                lang={lang}
+                onFail={() => setDocumentFailed(true)}
+            />
+        );
+    }
 
     if (thumbnail) {
         return (

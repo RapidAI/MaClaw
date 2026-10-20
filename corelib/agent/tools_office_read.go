@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/excel"
@@ -1206,6 +1208,9 @@ func extractPDFText(filePath string, settings officeReadSettings) (text string, 
 	if err != nil {
 		return "", fmt.Errorf("解析 PDF 失败: %v", err)
 	}
+	// Page extracts already collapse. This fallback is the only other native
+	// text path, and a glyph-spaced dump is what inflated the model request.
+	text = collapsePDFGlyphSpaces(text)
 	if strings.TrimSpace(text) == "" {
 		// Picture PDFs (one JPEG per page, no text layer) fail native
 		// extraction on purpose. A model that can see images gets the page
@@ -1224,6 +1229,163 @@ func extractPDFText(filePath string, settings officeReadSettings) (text string, 
 		return "", fmt.Errorf("PDF 中没有可读取的文本内容（可能是扫描件，需 OCR）")
 	}
 	return text, nil
+}
+
+// collapsePDFGlyphSpaces joins a line whose words are almost all single
+// glyphs. Positioned PDF text often arrives as "传 真 ( F a x ) : 0 7 5 2",
+// which spent about twice the tokens of the real sentence and slowed the
+// following model request. Ordinary prose stays spaced.
+func collapsePDFGlyphSpaces(text string) string {
+	if !containsUnicodeSpace(text) {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	changed := false
+	for i, line := range lines {
+		collapsed := collapsePDFGlyphSpaceLine(line)
+		if collapsed != line {
+			lines[i] = collapsed
+			changed = true
+		}
+	}
+	if !changed {
+		return text
+	}
+	return strings.Join(lines, "\n")
+}
+
+func containsUnicodeSpace(text string) bool {
+	for _, r := range text {
+		if unicode.IsSpace(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func collapsePDFGlyphSpaceLine(line string) string {
+	fields, wideBefore, gapWidth := splitPDFGlyphFields(line)
+	// A logo such as "鑫         永         诚       光         电" is five
+	// glyphs with only wide tracking. There is no narrower gap to treat as a
+	// column, so the floor of 6 used to leave the spaces in place.
+	if uniformWideGlyphTracking(fields, gapWidth) {
+		return strings.Join(fields, "")
+	}
+	// Six single glyphs is enough. The production datasheet had name lines
+	// such as "谭 起 富 丁 杰 彭 超" under the old 12-field floor.
+	if len(fields) < 6 {
+		return line
+	}
+	single := 0
+	for _, field := range fields {
+		if utf8.RuneCountInString(field) == 1 {
+			single++
+		}
+	}
+	// Under 12 fields, one real word keeps the line. "Hello a b c d e" is
+	// 5/6 single and used to collapse. Longer lines still use 80% so a
+	// datasheet unit such as 10kΩ can sit inside an otherwise glyph-spaced line.
+	if len(fields) < 12 {
+		if single != len(fields) {
+			return line
+		}
+	} else if single*5 < len(fields)*4 {
+		return line
+	}
+	// Keep a space around a real word, and keep one space where the PDF left
+	// a column gap. Joining across that gap turned "1 0 k Ω  2 0 k Ω" into
+	// "10kΩ20kΩ".
+	var b strings.Builder
+	b.Grow(len(line))
+	for i, field := range fields {
+		if i > 0 && (wideBefore[i] || utf8.RuneCountInString(field) > 1 || utf8.RuneCountInString(fields[i-1]) > 1) {
+			b.WriteByte(' ')
+		}
+		b.WriteString(field)
+	}
+	return b.String()
+}
+
+// splitPDFGlyphFields returns tokens, whether the whitespace before each
+// token is a column break, and that gap's width. wideBefore[0] and
+// gapWidth[0] are unused. A column break is two or more ASCII spaces or
+// NBSP, a tab, or any other single Unicode space. Width counts space runes;
+// a tab counts as at least 2.
+func splitPDFGlyphFields(line string) (fields []string, wideBefore []bool, gapWidth []int) {
+	var cur strings.Builder
+	inGap := false
+	gapRunes := 0
+	gapWide := false
+	pendingWide := false
+	pendingWidth := 0
+	flush := func() {
+		if cur.Len() == 0 {
+			return
+		}
+		fields = append(fields, cur.String())
+		wideBefore = append(wideBefore, pendingWide)
+		gapWidth = append(gapWidth, pendingWidth)
+		cur.Reset()
+		pendingWide = false
+		pendingWidth = 0
+	}
+	for _, r := range line {
+		if !unicode.IsSpace(r) {
+			if inGap {
+				pendingWide = gapRunes >= 2 || gapWide
+				pendingWidth = gapRunes
+				if gapWide && pendingWidth < 2 {
+					pendingWidth = 2
+				}
+				inGap = false
+				gapRunes = 0
+				gapWide = false
+			}
+			cur.WriteRune(r)
+			continue
+		}
+		if cur.Len() > 0 {
+			flush()
+		}
+		inGap = true
+		gapRunes++
+		if r == '\t' || (r != ' ' && r != '\u00a0') {
+			gapWide = true
+		}
+	}
+	flush()
+	return fields, wideBefore, gapWidth
+}
+
+// uniformWideGlyphTracking reports Han glyphs separated only by wide tracking,
+// such as a PDF logo. ASCII letters and digits stay put: a pin or value row
+// uses the same wide pitch and must not become one token. The widest gap also
+// has to stay within twice the narrowest, so a real column is not swallowed.
+func uniformWideGlyphTracking(fields []string, gapWidth []int) bool {
+	if len(fields) < 4 || len(gapWidth) != len(fields) {
+		return false
+	}
+	minGap, maxGap := 0, 0
+	for i, field := range fields {
+		r, size := utf8.DecodeRuneInString(field)
+		if size == 0 || size != len(field) || !unicode.Is(unicode.Han, r) {
+			return false
+		}
+		if i == 0 {
+			continue
+		}
+		w := gapWidth[i]
+		if w < 4 {
+			return false
+		}
+		if minGap == 0 || w < minGap {
+			minGap = w
+		}
+		if w > maxGap {
+			maxGap = w
+		}
+	}
+	return maxGap <= minGap*2
 }
 
 // renderPDFPageExtracts keeps every page in document order. Empty pages and
@@ -1245,7 +1407,7 @@ func renderPDFPageExtracts(numPages int, extract func(pageIndex int) (string, er
 			fmt.Fprintf(&b, "[page extract error: %v]", pErr)
 			continue
 		}
-		pageText = strings.TrimSpace(pageText)
+		pageText = collapsePDFGlyphSpaces(strings.TrimSpace(pageText))
 		if pageText == "" {
 			b.WriteString(pdfEmptyPageMarker)
 			continue

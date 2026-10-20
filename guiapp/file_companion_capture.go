@@ -47,10 +47,64 @@ func fileCompanionWebRect(x, y, w, h float64) image.Rectangle {
 	return image.Rect(x0, y0, x1, y1)
 }
 
+// captureDrop is the pair of contexts that mean this preview is not the note.
+// player ends when the recorded player leaves the screen.
+// note ends when the tab closes or /clear runs.
+// 停止 cancels the capture context and neither of these.
+type captureDrop struct {
+	note   context.Context
+	player context.Context
+}
+
+type captureDropKey struct{}
+
+// errCompanionPlayerLeft means this raster is not part of the note.
+// The recorded player left, or the note itself was cancelled.
+var errCompanionPlayerLeft = errors.New("player left")
+
+func withCaptureDrop(ctx, note, player context.Context) context.Context {
+	if ctx == nil || (note == nil && player == nil) {
+		return ctx
+	}
+	return context.WithValue(ctx, captureDropKey{}, captureDrop{note: note, player: player})
+}
+
+func captureDropOf(ctx context.Context) captureDrop {
+	if ctx == nil {
+		return captureDrop{}
+	}
+	drop, _ := ctx.Value(captureDropKey{}).(captureDrop)
+	return drop
+}
+
+// captureDropChans are selectable. A nil channel never fires.
+// A polled predicate cannot wake a select that is already waiting.
+func captureDropChans(ctx context.Context) (playerDone, noteDone <-chan struct{}) {
+	drop := captureDropOf(ctx)
+	if drop.player != nil {
+		playerDone = drop.player.Done()
+	}
+	if drop.note != nil {
+		noteDone = drop.note.Done()
+	}
+	return playerDone, noteDone
+}
+
+func captureLeft(ctx context.Context) bool {
+	drop := captureDropOf(ctx)
+	if drop.player != nil && drop.player.Err() != nil {
+		return true
+	}
+	return drop.note != nil && drop.note.Err() != nil
+}
+
 // fileCompanionCaptureWeb records the WebView until ctx ends or 10800 seconds.
+// note and player stay open while this player is still the one on screen.
+// Cancelling either one drops the raster in flight and does not wait for it.
 // A non-nil fileCompanionWebCaptureHook replaces the whole recording for tests.
 // A nil hook calls captureCompanionWebViewPNG and captureProcessAudio.
-func fileCompanionCaptureWeb(ctx context.Context, rect image.Rectangle) (shots []webNoteShot, audio []byte, refused bool) {
+func fileCompanionCaptureWeb(ctx context.Context, rect image.Rectangle, note, player context.Context) (shots []webNoteShot, audio []byte, refused bool) {
+	ctx = withCaptureDrop(ctx, note, player)
 	if ctx != nil && ctx.Err() != nil {
 		return nil, nil, false
 	}
@@ -71,12 +125,21 @@ func fileCompanionCaptureWeb(ctx context.Context, rect image.Rectangle) (shots [
 
 	start := time.Now()
 	var frames []videoNoteFrame
-	for ctx.Err() == nil && time.Since(start) < fileCompanionNoteMaxDuration {
+	playerDone, noteDone := captureDropChans(ctx)
+	for ctx.Err() == nil && !captureLeft(ctx) && time.Since(start) < fileCompanionNoteMaxDuration {
 		pngBytes, err := captureCompanionWebViewPNG(ctx, rect)
+		// Leaving the player drops this raster: it can already be the next page.
+		// 停止 only ends the loop below, so a finished frame of this player stays.
+		if captureLeft(ctx) {
+			break
+		}
 		if err == nil && len(pngBytes) > 0 {
 			if shot, ok := webShotFromPNG(pngBytes, time.Since(start)); ok && !grayFrameBlack(shot.Gray) {
 				frames = fileCompanionKeepWebShot(frames, videoNoteFrame{At: shot.At, Gray: shot.Gray, JPEG: shot.JPEG})
 			}
+		}
+		if ctx.Err() != nil || captureLeft(ctx) {
+			break
 		}
 		wait := fileCompanionWebCaptureEvery
 		if remain := fileCompanionNoteMaxDuration - time.Since(start); remain < wait {
@@ -88,6 +151,10 @@ func fileCompanionCaptureWeb(ctx context.Context, rect image.Rectangle) (shots [
 		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
+		case <-playerDone:
+			timer.Stop()
+		case <-noteDone:
 			timer.Stop()
 		case <-timer.C:
 		}

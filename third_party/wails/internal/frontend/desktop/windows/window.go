@@ -225,6 +225,7 @@ func (w *Window) WndProc(msg uint32, wparam, lparam uintptr) uintptr {
 		w32.SetFocus(w.Handle())
 	case w32.WM_MOVE, w32.WM_MOVING:
 		w.chromium.NotifyParentWindowPositionChanged()
+		notifyCompanionPlayerParentMoved()
 	case w32.WM_ACTIVATE:
 		//if !w.frontendOptions.Frameless {
 		w.themeChanged = true

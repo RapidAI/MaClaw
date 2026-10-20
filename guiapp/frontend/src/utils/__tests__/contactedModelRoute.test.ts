@@ -21,8 +21,29 @@ describe('contactedProfileForExecution', () => {
     });
 
     it('uses the coding route only for a coding task', () => {
-        const route = contactedProfileForExecution('coding', summaries);
+        const route = contactedProfileForExecution('coding', {
+            ...summaries,
+            foreground: { provider_name: 'MaClaw官方', model: 'auto' },
+        });
         expect(contactedProfileProviderName(route)).toBe('智谱编程');
         expect(contactedProfileModel(route)).toBe('glm-5.3-flash');
+    });
+
+    it('names the foreground Hub role instead of the assistant profile', () => {
+        const route = contactedProfileForExecution('none', {
+            ...summaries,
+            foreground: { provider_id: 'hub', provider_name: 'MaClaw官方', model: 'auto' },
+        });
+        expect(contactedProfileProviderName(route)).toBe('MaClaw官方');
+        expect(contactedProfileModel(route)).toBe('auto');
+    });
+
+    it('keeps the assistant profile when the foreground role is unresolved', () => {
+        const route = contactedProfileForExecution('assistant', {
+            ...summaries,
+            foreground: { provider_name: '', model: '' },
+        });
+        expect(contactedProfileProviderName(route)).toBe('Custom1');
+        expect(contactedProfileModel(route)).toBe('deepseek-v4.1-flash');
     });
 });

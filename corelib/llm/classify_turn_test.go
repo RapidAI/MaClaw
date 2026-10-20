@@ -11,6 +11,38 @@ func TestClassifyTurn_ShortFast(t *testing.T) {
 	if got.Task != TaskFast {
 		t.Fatalf("got %s (%s)", got.Task, got.Reason)
 	}
+	got = ClassifyTurn("然后告诉我10lux下的阻值", ClassifyHints{})
+	if got.Task != TaskFast {
+		t.Fatalf("short follow-up got %s (%s)", got.Task, got.Reason)
+	}
+	got = ClassifyTurn("然后帮我编译一下", ClassifyHints{})
+	if got.Task != TaskReasoning {
+		t.Fatalf("short coding follow-up got %s (%s)", got.Task, got.Reason)
+	}
+}
+
+func TestClassifyTurn_DocumentReadIgnoresPinWords(t *testing.T) {
+	hints := ClassifyHints{DocumentRead: true}
+	got := ClassifyTurn("这个传感器的接口电压是多少", hints)
+	if got.Task != TaskFast {
+		t.Fatalf("datasheet 接口 got %s (%s)", got.Task, got.Reason)
+	}
+	got = ClassifyTurn("请比较接口电压和终端定义", hints)
+	if got.Task != TaskFast {
+		t.Fatalf("datasheet 终端 got %s (%s)", got.Task, got.Reason)
+	}
+	got = ClassifyTurn("帮我修这个接口", hints)
+	if got.Task != TaskReasoning {
+		t.Fatalf("repair cue got %s (%s)", got.Task, got.Reason)
+	}
+	got = ClassifyTurn("打开终端看一下日志", hints)
+	if got.Task != TaskReasoning {
+		t.Fatalf("打开终端 got %s (%s)", got.Task, got.Reason)
+	}
+	got = ClassifyTurn("这个传感器的接口电压是多少", ClassifyHints{})
+	if got.Task != TaskReasoning {
+		t.Fatalf("接口 without a document got %s (%s)", got.Task, got.Reason)
+	}
 }
 
 func TestClassifyTurn_Summary(t *testing.T) {

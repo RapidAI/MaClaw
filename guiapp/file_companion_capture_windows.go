@@ -16,6 +16,7 @@ import (
 	"unsafe"
 
 	"github.com/wailsapp/wails/v2/pkg/maclawcapture"
+	"github.com/wailsapp/wails/v2/pkg/maclawplayer"
 	"golang.org/x/sys/windows"
 )
 
@@ -92,13 +93,22 @@ type audioClientActivationParams struct {
 	ProcessLoopbackMode uint32
 }
 
-// captureCompanionWebViewPNG captures one PNG of this process's Wails WebView
-// with ICoreWebView2.CapturePreview and crops it to rect.
+// captureCompanionWebViewPNG captures one PNG of the visible player.
+// A top-level player page is already the video, so the companion-window
+// rectangle is not a crop of that picture. Otherwise the app WebView is
+// captured and cropped to rect.
 // No bound view returns immediately and does not call CapturePreview.
 func captureCompanionWebViewPNG(ctx context.Context, rect image.Rectangle) ([]byte, error) {
 	fileCompanionCaptureViewCalls.Add(1)
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
+	}
+	if maclawplayer.Showing() {
+		view := maclawplayer.View()
+		if view == nil || view.Pointer() == 0 || !maclawcapture.HasUIRunner() {
+			return nil, errCompanionPlayerNotReady
+		}
+		return captureWebView2CapturePreview(ctx, unsafe.Pointer(view.Pointer()))
 	}
 	view := maclawcapture.Current()
 	if view == nil || view.Pointer() == 0 || !maclawcapture.HasUIRunner() {
@@ -110,6 +120,8 @@ func captureCompanionWebViewPNG(ctx context.Context, rect image.Rectangle) ([]by
 	}
 	return cropCompanionPNG(raw, rect)
 }
+
+var errCompanionPlayerNotReady = errors.New("player page is not ready")
 
 // captureProcessAudio records this process tree as 16 kHz mono WAV.
 // It uses process loopback, not AUDCLNT_STREAMFLAGS_LOOPBACK.
@@ -259,12 +271,48 @@ func captureWebView2CapturePreview(ctx context.Context, this unsafe.Pointer) ([]
 		releaseCOM(stream)
 		return nil, callErr
 	}
+	timer := time.NewTimer(8 * time.Second)
+	defer timer.Stop()
+	return finishedCapturePreview(ctx, ch, timer.C)
+}
+
+// finishedCapturePreview returns one preview.
+// 停止 cancels ctx while the recorded player is still on screen, so the
+// preview already started is waited for. player and note are the drop
+// signals copied onto ctx. They stay open across that stop. A leave or a
+// note cancel that arrives during the wait is selected here, including
+// after ctx is already done, so the raster is not held until the bitmap
+// or the timeout.
+func finishedCapturePreview(ctx context.Context, ch <-chan previewResult, timeout <-chan time.Time) ([]byte, error) {
+	playerDone, noteDone := captureDropChans(ctx)
 	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
 	case got := <-ch:
+		if captureLeft(ctx) {
+			return nil, errCompanionPlayerLeft
+		}
 		return got.png, got.err
-	case <-time.After(8 * time.Second):
+	case <-playerDone:
+		return nil, errCompanionPlayerLeft
+	case <-noteDone:
+		return nil, errCompanionPlayerLeft
+	case <-ctx.Done():
+		if captureLeft(ctx) {
+			return nil, errCompanionPlayerLeft
+		}
+		select {
+		case got := <-ch:
+			if captureLeft(ctx) {
+				return nil, errCompanionPlayerLeft
+			}
+			return got.png, got.err
+		case <-playerDone:
+			return nil, errCompanionPlayerLeft
+		case <-noteDone:
+			return nil, errCompanionPlayerLeft
+		case <-timeout:
+			return nil, errors.New("CapturePreview timed out")
+		}
+	case <-timeout:
 		return nil, errors.New("CapturePreview timed out")
 	}
 }

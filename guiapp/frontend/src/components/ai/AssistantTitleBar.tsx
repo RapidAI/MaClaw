@@ -12,6 +12,7 @@ import { AssistantUpdateNotice, type AssistantUpdatePayload } from "./AssistantU
 import { AssistantMobileDocsControl } from "./AssistantMobileDocsControl";
 import { AssistantTitleBarNotifications } from "./AssistantTitleBarNotifications";
 import { TitleBarToolIcon } from "./AssistantTitleBarIcons";
+import { NewTaskWizardRunningBanner } from "./NewTaskWizardRunningBanner";
 type WailsDragStyle = WindowDragStyle;
 
 type CardStoreConfig = {
@@ -74,13 +75,15 @@ interface AssistantTitleBarProps {
     onOptimizeExpert?: () => void;
     /** When true, the optimize button is disabled and shows an in-progress label. */
     optimizeExpertBusy?: boolean;
+    /** Cover over a live conversation. Renders 返回当前对话 in the header, not on the home canvas. */
+    onReturnToCoveredConversation?: () => void;
 }
 const stopMouse = (handler: () => void) => (e: MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     handler();
 };
-export function AssistantTitleBar({ active = true, clearHistory, clearHistoryDisabled, hideNotifications, inline, lang, maximized, onClose, onDismissAppUpdate, onHideWindow, onOpenAppReleaseNotes, onOpenAppUpdate, onOpenKnowledge, onOpenTutorial, onOptimizeExpert, onSaveCurrentTask, onToggleMaximize, onTogglePreviewPanel, optimizeExpertBusy, previewPanelOpen, previewAvailable, refreshNews, showMaximizeToggle, theme: t, themeMode, title, trialReflectEnabled, updateAvailable, workflowActive }: AssistantTitleBarProps) {
+export function AssistantTitleBar({ active = true, clearHistory, clearHistoryDisabled, hideNotifications, inline, lang, maximized, onClose, onDismissAppUpdate, onHideWindow, onOpenAppReleaseNotes, onOpenAppUpdate, onOpenKnowledge, onOpenTutorial, onOptimizeExpert, onReturnToCoveredConversation, onSaveCurrentTask, onToggleMaximize, onTogglePreviewPanel, optimizeExpertBusy, previewPanelOpen, previewAvailable, refreshNews, showMaximizeToggle, theme: t, themeMode, title, trialReflectEnabled, updateAvailable, workflowActive }: AssistantTitleBarProps) {
     // Keep title-bar state controls on the active shell palette in both schemes.
     const themeSuccess = "var(--theme-success, #4f7f6f)";
     const rootStyle: WailsDragStyle = {
@@ -134,6 +137,7 @@ export function AssistantTitleBar({ active = true, clearHistory, clearHistoryDis
                     <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(() => { void openCurrentTenantCardStore(); }) } : { onClick: () => { void openCurrentTenantCardStore(); } })} style={getTitleBarToolButtonStyle(t)} title={localizeText(lang, "Buy service redemption cards", "\u8d2d\u4e70\u670d\u52a1\u5151\u6362\u5361")}><TitleBarToolIcon name="cart" /></button>
                     <VEAuthorizationRequestCenter theme={t} lang={lang} inline={inline} />
                     {onOpenKnowledge && <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(onOpenKnowledge) } : { onClick: onOpenKnowledge })} style={getTitleBarToolButtonStyle(t)} title={lang === "en" ? "Knowledge Base" : "\u77e5\u8bc6\u5e93"}><TitleBarToolIcon name="book" /></button>}
+                    {onReturnToCoveredConversation ? <NewTaskWizardRunningBanner inline={inline} lang={lang} theme={t} onBack={onReturnToCoveredConversation} /> : null}
                     <button className="ai-titlebar-tool" data-testid="open-file-companion" aria-label={lang === "en" ? "Open with companion" : "用伴读打开"} {...(inline ? { onMouseDown: stopMouse(() => { void ChooseFileCompanionFiles(); }) } : { onClick: () => { void ChooseFileCompanionFiles(); } })} style={{ ...getTitleBarToolButtonStyle(t), width: "auto", padding: "0 10px", gap: 6 }} title={lang === "en" ? "Open with companion" : "用伴读打开"}><TitleBarToolIcon name="guide" /><span>{lang === "en" ? "Open with companion" : "用伴读打开"}</span></button>
                     {onOpenTutorial && <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: onOpenTutorial } : { onClick: onOpenTutorial })} style={getTitleBarToolButtonStyle(t)} title={lang === "en" ? "Tutorial" : "\u6559\u7a0b"}><TitleBarToolIcon name="guide" /></button>}
                     <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: refreshNews } : { onClick: refreshNews })} style={getTitleBarToolButtonStyle(t)} title={lang === "en" ? "Refresh news" : "\u5237\u65b0\u6d88\u606f"}><TitleBarToolIcon name="refresh" /></button>

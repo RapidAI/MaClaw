@@ -3888,6 +3888,11 @@ func (c *sharedAgentLoopCallbacks) attachDiscoveredMCPBindings() error {
 	if c == nil || c.handler == nil || c.loopCtx == nil || c.semanticSurface != nil {
 		return nil
 	}
+	// A folded alias is not a new bind. Drop it before reuse is decided, or
+	// the next request cancels a surface that already lists this tool.
+	if c.discoveredMCPSurface != nil {
+		dropDiscoveredMCPFoldedAliases(c.loopCtx, c.discoveredMCPBinds)
+	}
 	binds := c.loopCtx.discoveredMCPBindList()
 	if len(binds) == 0 {
 		c.dropDiscoveredMCPSidecar()
@@ -3919,7 +3924,12 @@ func (c *sharedAgentLoopCallbacks) attachDiscoveredMCPBindings() error {
 		return err
 	}
 	c.discoveredMCPSurface = surface
-	c.discoveredMCPBinds = append([]discoveredMCPBind(nil), binds...)
+	// Remember the binds this surface actually published. A sibling that
+	// failed assess stays on the loop, so the next request builds again
+	// instead of reusing a surface that omitted it. A folded alias of a
+	// published bind cannot, and must not, force that rebuild.
+	c.discoveredMCPBinds = discoveredMCPPublishedBinds(surface)
+	dropDiscoveredMCPFoldedAliases(c.loopCtx, c.discoveredMCPBinds)
 	c.appendDiscoveredMCPDefs(defs)
 	return nil
 }

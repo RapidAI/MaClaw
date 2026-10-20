@@ -5451,10 +5451,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         showAlert,
     });
     dismissCoveredNewTaskRef.current = taskConfigWiring.wizardOverlay ? taskConfigWiring.dismissWizardOverlay : null;
-    // Hidden transcript does no layout work while the new-task screen is up.
     wizardScrollSuspendRef.current = taskConfigWiring.wizardOverlay;
     const showWelcomeView = showWelcomeViewBase;
     const wizardScreen = taskConfigWiring.wizardOverlay && ready && !showWelcomeViewBase;
+    const newTaskHome = showWelcomeView || wizardScreen;
     const separateGuide = wizardScreen && !isLocalTabActive;
     const warmupChrome = !ready && !onboardingIncomplete && !showWelcomeView;
     const startupWarmup = warmupChrome && isLocalTabActive;
@@ -6154,33 +6154,31 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             updateInputValue: guideDraft.updateGuideDraft,
         } : {}),
     };
-    const newTaskWelcome = (showWelcomeView || wizardScreen) ? (
+    const newTaskWelcome = newTaskHome ? (
         <NewTaskWizardWelcomePane
             active={panelActive}
             composer={newTaskWelcomeComposer}
             cover={wizardScreen}
             hidden={projectSearch.open}
             lang={lang}
-            onBack={taskConfigWiring.dismissWizardOverlay}
             onPromptSelect={handleWelcomePromptSelect}
             onPromptSend={taskConfigWiring.handleWelcomePromptSendWithTaskConfig}
             pinnedNews={pinnedNews}
-            showRunningBanner={wizardComposerUnlocked && !showWelcomeViewBase}
             taskConfig={taskConfigWiring.taskConfig}
             theme={t}
             themeMode={themeMode}
         />
     ) : null;
     return (
-        <div data-testid="ai-panel-root" data-ai-view={showWelcomeView ? "welcome" : "execution"} style={containerStyle}>
+        <div data-testid="ai-panel-root" data-ai-view={newTaskHome ? "welcome" : "execution"} style={containerStyle}>
             <style>{`.branch-hover-container:hover .branch-btn { opacity: 0.7 !important; } .branch-hover-container .branch-btn:hover { opacity: 1 !important; background: ${t.fieldBg} !important; }`}</style>
-            {inline && showWelcomeView && <AssistantDragHandle />}
+            {inline && newTaskHome && <AssistantDragHandle />}
             <div
                 data-testid="ai-execution-secondary-titlebar"
-                aria-hidden={!showWelcomeView ? true : undefined}
-                style={!showWelcomeView ? executionSecondaryChromeStyle : undefined}
+                aria-hidden={!newTaskHome ? true : undefined}
+                style={!newTaskHome ? executionSecondaryChromeStyle : undefined}
             >
-                <AssistantTitleBar active={panelActive} clearHistory={clearActiveHistory} clearHistoryDisabled={inputLocked} hideNotifications={!showWelcomeView} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppReleaseNotes={onOpenAppReleaseNotes} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onOptimizeExpert={isExpertTabActive && activeTab.expertId && !showWelcomeView ? handleOptimizeExpert : undefined} onSaveCurrentTask={isLocalTabActive && !showWelcomeView ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} optimizeExpertBusy={expertOptimizeBusy} previewPanelOpen={showWorkflowPreview || showCodePreview || showCodingConflictPanel} previewAvailable={isPureCodingEnvironment || isCloudWorkspaceEnvironment || latexPaperTab || hasTaskResult} refreshNews={refreshNews} showMaximizeToggle={showMaximizeToggle} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} />
+                <AssistantTitleBar active={panelActive} clearHistory={clearActiveHistory} clearHistoryDisabled={inputLocked} hideNotifications={!newTaskHome} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppReleaseNotes={onOpenAppReleaseNotes} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onReturnToCoveredConversation={wizardScreen ? taskConfigWiring.dismissWizardOverlay : undefined} onOptimizeExpert={isExpertTabActive && activeTab.expertId && !newTaskHome ? handleOptimizeExpert : undefined} onSaveCurrentTask={isLocalTabActive && !newTaskHome ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} optimizeExpertBusy={expertOptimizeBusy} previewPanelOpen={showWorkflowPreview || showCodePreview || showCodingConflictPanel} previewAvailable={isPureCodingEnvironment || isCloudWorkspaceEnvironment || latexPaperTab || hasTaskResult} refreshNews={refreshNews} showMaximizeToggle={showMaximizeToggle} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} />
             </div>
             {/* Column shell: chat|preview row on top, full-bleed bottom chrome under both (quick-settings / status strip spans into the code-preview column). */}
             <div className="aap-panel-main" data-testid="ai-panel-main">
@@ -6889,7 +6887,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             </div>
             {(!showWelcomeView && !projectSearch.open && previewPaneEverOpened) ? (
                 <Suspense fallback={null}>
-                    <AssistantPreviewPane
+                    <AssistantPreviewPane concealed={newTaskHome}
                         agentView={agentView}
                         codePreviewState={codePreviewState}
                         closeCodePreview={closeCodePreview}

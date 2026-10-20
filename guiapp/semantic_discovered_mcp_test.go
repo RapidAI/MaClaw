@@ -162,6 +162,194 @@ func TestShortCompoundMCPBindReachesTheNextRequest(t *testing.T) {
 	}
 }
 
+func TestSharedMCPAddressBindsTheRoundTripSpelling(t *testing.T) {
+	separate := discoveredMCPDistinctBinds([]discoveredMCPBind{
+		{ServerID: "tengyun", ToolName: "post_work_log_add"},
+		{ServerID: "other", ToolName: "post_work_log_add"},
+	})
+	if len(separate) != 2 {
+		t.Fatalf("different servers collapsed: %+v", separate)
+	}
+	folded := discoveredMCPDistinctBinds([]discoveredMCPBind{
+		{ServerID: "tengyun", ToolName: "Foo Bar"},
+		{ServerID: "tengyun", ToolName: "foo_bar"},
+	})
+	if len(folded) != 1 || folded[0].ToolName != "foo_bar" {
+		t.Fatalf("folded names=%+v", folded)
+	}
+
+	tools := []MCPToolView{
+		{Name: "Foo Bar", Description: "folded spelling", InputSchema: discoveredMCPObjectSchema()},
+		{Name: "foo_bar", Description: "round trip spelling", InputSchema: discoveredMCPObjectSchema()},
+	}
+	h, loop := newDiscoveredMCPHandler(t, "tengyun", tools, true)
+	h.registry = nil
+	out := h.toolDiscoverToolForOwner("desktop-user", map[string]interface{}{"need": "Foo Bar foo_bar"})
+	if strings.Contains(out, "managed replan") || strings.Contains(out, "call call_mcp_tool") || !strings.Contains(out, "bound for the next request** (tengyun/foo_bar)") || strings.Contains(out, "bound for the next request** (tengyun/Foo Bar)") || !strings.Contains(out, "tengyun/Foo Bar uses the same installed MCP address") {
+		t.Fatalf("shared address was claimed twice: %s", out)
+	}
+	binds := loop.discoveredMCPBindList()
+	if len(binds) != 1 || binds[0].ServerID != "tengyun" || binds[0].ToolName != "foo_bar" {
+		t.Fatalf("binds=%+v", binds)
+	}
+	readFile := map[string]interface{}{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name": "read_file", "description": "Read a file",
+			"parameters": map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "additionalProperties": false},
+		},
+	}
+	cb := &sharedAgentLoopCallbacks{
+		handler: h, loopCtx: loop, userID: "desktop-user", platform: "desktop",
+		tools: []map[string]interface{}{readFile},
+	}
+	if err := cb.attachDiscoveredMCPBindings(); err != nil {
+		t.Fatal(err)
+	}
+	grants := 0
+	sawRead := false
+	for _, def := range cb.tools {
+		fn, _ := def["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		desc, _ := fn["description"].(string)
+		if name == "read_file" {
+			sawRead = true
+		}
+		if strings.HasPrefix(name, "invoke_") {
+			grants++
+			if !strings.Contains(desc, "foo_bar") || !strings.Contains(desc, "tengyun") {
+				t.Fatalf("grant description=%q", desc)
+			}
+		}
+	}
+	if !sawRead || grants != 1 || cb.semanticSurface != nil {
+		t.Fatalf("read=%v grants=%d semantic=%v tools=%#v", sawRead, grants, cb.semanticSurface != nil, cb.tools)
+	}
+	loop.rememberDiscoveredMCPBind("tengyun", "Foo Bar")
+	cb.tools = []map[string]interface{}{readFile}
+	if err := cb.attachDiscoveredMCPBindings(); err != nil {
+		t.Fatal(err)
+	}
+	grants = 0
+	for _, def := range cb.tools {
+		fn, _ := def["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		if strings.HasPrefix(name, "invoke_") {
+			grants++
+		}
+	}
+	if grants != 1 || cb.semanticSurface != nil {
+		t.Fatalf("stored collision published %d grants", grants)
+	}
+}
+
+func TestFoldedAliasDoesNotCancelThePublishedSurface(t *testing.T) {
+	tools := []MCPToolView{
+		{Name: "Foo Bar", Description: "folded spelling", InputSchema: discoveredMCPObjectSchema()},
+		{Name: "foo_bar", Description: "round trip spelling", InputSchema: discoveredMCPObjectSchema()},
+	}
+	h, loop := newDiscoveredMCPHandler(t, "tengyun", tools, true)
+	if !loop.rememberDiscoveredMCPBind("tengyun", "Foo Bar") || !loop.rememberDiscoveredMCPBind("tengyun", "foo_bar") {
+		t.Fatal("binds were not stored")
+	}
+	readFile := map[string]interface{}{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name": "read_file", "description": "Read a file",
+			"parameters": map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "additionalProperties": false},
+		},
+	}
+	cb := &sharedAgentLoopCallbacks{
+		handler: h, loopCtx: loop, userID: "desktop-user", platform: "desktop",
+		tools: []map[string]interface{}{readFile},
+	}
+	if err := cb.attachDiscoveredMCPBindings(); err != nil {
+		t.Fatal(err)
+	}
+	if binds := loop.discoveredMCPBindList(); len(binds) != 1 || binds[0].ServerID != "tengyun" || binds[0].ToolName != "foo_bar" {
+		t.Fatalf("folded alias stayed on the loop: %+v", binds)
+	}
+	if cb.semanticSurface != nil || cb.discoveredMCPSurface == nil {
+		t.Fatalf("semantic=%v sidecar=%v", cb.semanticSurface != nil, cb.discoveredMCPSurface != nil)
+	}
+	first := ""
+	sawRead := false
+	grants := 0
+	for _, def := range cb.tools {
+		name := extractToolName(def)
+		fn, _ := def["function"].(map[string]interface{})
+		desc, _ := fn["description"].(string)
+		if name == "read_file" {
+			sawRead = true
+		}
+		if strings.HasPrefix(name, "invoke_") {
+			grants++
+			if !strings.Contains(desc, "foo_bar") || !strings.Contains(desc, "tengyun") {
+				t.Fatalf("grant description=%q", desc)
+			}
+			first = name
+		}
+	}
+	selectionID := ""
+	for _, selection := range cb.discoveredMCPSurface.plan.Selections {
+		if selection.FitProof.MatchedCapability == agentservice.AutoMCPCapabilityIDForBinding("tengyun", "foo_bar") {
+			selectionID = selection.ID
+			break
+		}
+	}
+	if !sawRead || grants != 1 || first == "" || selectionID == "" {
+		t.Fatalf("grant=%q selection=%q grants=%d read=%v", first, selectionID, grants, sawRead)
+	}
+	savedSurface := cb.semanticSurface
+	savedTools := cb.tools
+	cb.semanticSurface = cb.discoveredMCPSurface
+	note, err := cb.advanceSemanticToolSurface(selectionID)
+	successor := cb.semanticSurface
+	cb.semanticSurface = savedSurface
+	cb.tools = savedTools
+	if successor != nil && successor != cb.discoveredMCPSurface {
+		cb.discoveredMCPSurface = successor
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := cb.discoveredMCPSurface
+	if !loop.rememberDiscoveredMCPBind("tengyun", "Foo Bar") {
+		t.Fatal("alias was not stored again")
+	}
+	cb.tools = []map[string]interface{}{readFile}
+	if err := cb.attachDiscoveredMCPBindings(); err != nil {
+		t.Fatal(err)
+	}
+	if cb.discoveredMCPSurface != kept || cb.semanticSurface != nil {
+		t.Fatal("folded alias cancelled the published surface")
+	}
+	if binds := loop.discoveredMCPBindList(); len(binds) != 1 || binds[0].ToolName != "foo_bar" {
+		t.Fatalf("alias returned: %+v", binds)
+	}
+	second := ""
+	sawRead = false
+	grants = 0
+	for _, def := range cb.tools {
+		name := extractToolName(def)
+		fn, _ := def["function"].(map[string]interface{})
+		desc, _ := fn["description"].(string)
+		if name == "read_file" {
+			sawRead = true
+		}
+		if strings.HasPrefix(name, "invoke_") && strings.Contains(desc, "foo_bar") && strings.Contains(desc, "tengyun") {
+			grants++
+			second = name
+		}
+	}
+	if !sawRead || grants != 1 || second == "" || second == first {
+		t.Fatalf("next grant=%q first=%q read=%v grants=%d note=%q", second, first, sawRead, grants, note)
+	}
+	if _, ok := cb.discoveredMCPSurface.retiredGrants[first]; !ok {
+		t.Fatal("spent grant was not retired")
+	}
+}
+
 // A settled installed-MCP call spends its grant. The next model request in the
 // same turn has to list a new token for that same tool, beside the legacy
 // tools. Two work-log entries are two calls; the second one cannot reuse the
@@ -325,6 +513,72 @@ func TestUnprojectableMCPDiscoveryDoesNotClaimABind(t *testing.T) {
 	if binds := loop.discoveredMCPBindList(); len(binds) != 0 {
 		t.Fatalf("binds=%+v", binds)
 	}
+}
+
+func TestUnprojectableSiblingDoesNotHideABindableTool(t *testing.T) {
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"action": map[string]interface{}{"enum": []interface{}{"list"}},
+		},
+		"additionalProperties": false,
+	}
+	tools := []MCPToolView{
+		{Name: "post_work_log_add", Description: "append a work log", InputSchema: discoveredMCPObjectSchema()},
+		{Name: "bad_enum", Description: "unprojectable sibling", InputSchema: schema},
+	}
+	h, loop := newDiscoveredMCPHandler(t, "tengyun", tools, true)
+	if !loop.rememberDiscoveredMCPBind("tengyun", "bad_enum") || !loop.rememberDiscoveredMCPBind("tengyun", "post_work_log_add") {
+		t.Fatal("binds were not stored")
+	}
+	readFile := map[string]interface{}{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name": "read_file", "description": "Read a file",
+			"parameters": map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "additionalProperties": false},
+		},
+	}
+	cb := &sharedAgentLoopCallbacks{
+		handler: h, loopCtx: loop, userID: "desktop-user", platform: "desktop",
+		tools: []map[string]interface{}{readFile},
+	}
+	assertOneBindableGrant := func() {
+		t.Helper()
+		if err := cb.attachDiscoveredMCPBindings(); err != nil {
+			t.Fatal(err)
+		}
+		if cb.semanticSurface != nil {
+			t.Fatal("sidecar replaced the legacy surface")
+		}
+		if len(cb.discoveredMCPBinds) != 1 || cb.discoveredMCPBinds[0].ServerID != "tengyun" || cb.discoveredMCPBinds[0].ToolName != "post_work_log_add" {
+			t.Fatalf("published binds=%+v", cb.discoveredMCPBinds)
+		}
+		grants := 0
+		sawRead := false
+		for _, def := range cb.tools {
+			fn, _ := def["function"].(map[string]interface{})
+			name, _ := fn["name"].(string)
+			desc, _ := fn["description"].(string)
+			if name == "read_file" {
+				sawRead = true
+			}
+			if strings.HasPrefix(name, "invoke_") {
+				grants++
+				if !strings.Contains(desc, "post_work_log_add") || !strings.Contains(desc, "tengyun") || strings.Contains(desc, "bad_enum") {
+					t.Fatalf("grant description=%q", desc)
+				}
+			}
+		}
+		if !sawRead || grants != 1 {
+			t.Fatalf("read=%v grants=%d tools=%#v", sawRead, grants, cb.tools)
+		}
+	}
+	assertOneBindableGrant()
+	if binds := loop.discoveredMCPBindList(); len(binds) != 2 {
+		t.Fatalf("skipped sibling left the loop: %+v", binds)
+	}
+	cb.tools = []map[string]interface{}{readFile}
+	assertOneBindableGrant()
 }
 
 func TestOpenLookupWithoutExactMCPAddressDoesNotClaimABind(t *testing.T) {

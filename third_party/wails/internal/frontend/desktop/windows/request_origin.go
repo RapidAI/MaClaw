@@ -27,3 +27,21 @@ func appOriginMatches(start, parsed *url.URL) bool {
 	}
 	return strings.EqualFold(parsed.Scheme, start.Scheme) && strings.EqualFold(parsed.Host, start.Host)
 }
+
+// appOriginRequestFilter is the WebResourceRequested URI glob for start.
+// This handler serves that origin and appends the dev-server user-agent token
+// only there. "*" delivers every main-frame request. Registering "*" through
+// AddWebResourceRequestedFilterWithRequestSourceKinds also delivers a
+// cross-origin iframe document. Reading or rewriting those headers drops the
+// Referer an embedded player requires.
+func appOriginRequestFilter(start *url.URL) string {
+	if start == nil {
+		return ""
+	}
+	scheme := strings.ToLower(strings.TrimSpace(start.Scheme))
+	host := strings.ToLower(strings.TrimSpace(start.Host))
+	if scheme == "" || host == "" {
+		return ""
+	}
+	return scheme + "://" + host + "/*"
+}

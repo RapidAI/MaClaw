@@ -18,10 +18,20 @@ export function quickModelWriteProfile(activeProfile: string | undefined): "assi
 /** Profile-less local tasks still run on the assistant route. */
 export function contactedProfileForExecution(
     activeProfile: string | undefined,
-    summaries: { assistant?: ContactedProfileSummary | null; coding?: ContactedProfileSummary | null } | null | undefined,
+    summaries: {
+        assistant?: ContactedProfileSummary | null;
+        coding?: ContactedProfileSummary | null;
+        /** Resolved foreground loop role. Hub auto overrides the assistant profile. */
+        foreground?: ContactedProfileSummary | null;
+    } | null | undefined,
 ): ContactedProfileSummary | null {
     if (!summaries) return null;
     if (activeProfile === "coding") return summaries.coding ?? null;
+    // Desktop chat calls ResolveMaclawLLMRole("foreground"). A Hub role
+    // snapshot such as auto replaces the assistant profile for that call.
+    if (contactedProfileProviderName(summaries.foreground) || contactedProfileModel(summaries.foreground)) {
+        return summaries.foreground ?? null;
+    }
     return summaries.assistant ?? null;
 }
 

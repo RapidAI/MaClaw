@@ -4,6 +4,7 @@ import {
     CancelFileCompanionTurn,
     CancelFileCompanionWebTurn,
     FileCompanionDiscardWebNote,
+    FileCompanionWebPlayerLeft,
     ClearFileCompanionChat,
     ClearFileCompanionWebChat,
     FileCompanionExportChatPDF,
@@ -19,6 +20,9 @@ import {
     FileCompanionOpen,
     FileCompanionOpenArxiv,
     FileCompanionOpenWebPage,
+    FileCompanionPlayerHide,
+    FileCompanionPlayerPlace,
+    FileCompanionPlayerSupported,
     FileCompanionReplaceOffice,
     FileCompanionResumePaths,
     FileCompanionSaveText,
@@ -1409,10 +1413,24 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     const domFullRef = useRef(false);
     const winFullRef = useRef(false);
     const noteBusyRef = useRef("");
+    const noteBusyRequestRef = useRef("");
     const webCaptureEpochRef = useRef(0);
     const noteEpochRef = useRef(0);
+    // While a web note is recording, the preview stays on that player until
+    // FileCompanionWebPlayerLeft fulfills. CapturePreview reads whatever is
+    // already composited. The leave call is asynchronous, so changing the
+    // iframe first lets the next page into the note. A rejection has not
+    // retired the watch, so the picture stays. It drops when the note call
+    // returns, because capture has finished. The failed call is not retried.
+    const [pinnedPlayerPath, setPinnedPlayerPath] = useState("");
+    const releasedPlayerRef = useRef("");
+    const leaveSentRef = useRef("");
+    const leaveTicketRef = useRef(0);
     const setNoteBusyRef = useRef<(path: string) => void>(() => undefined);
-    const webFrameRef = useRef<HTMLIFrameElement | null>(null);
+    const webFrameRef = useRef<HTMLElement | null>(null);
+    // pending until the process says it can host a top-level page. An iframe
+    // painted in that gap would load the video under wails.localhost.
+    const [playerHost, setPlayerHost] = useState<"pending" | "native" | "iframe">("pending");
     const webCaptureFields = () => {
         const frame = webFrameRef.current;
         const ratio = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
@@ -1525,6 +1543,15 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     // must not take part in the boot-settled bookkeeping that decides whether
     // an empty window opens the file dialog.
     useEffect(() => {
+        let live = true;
+        void Promise.resolve(FileCompanionPlayerSupported()).then(
+            (ok) => { if (live) setPlayerHost(ok ? "native" : "iframe"); },
+            () => { if (live) setPlayerHost("iframe"); },
+        );
+        return () => { live = false; };
+    }, []);
+
+    useEffect(() => {
         let cancelled = false;
         void Promise.resolve(GetBrandInfo())
             .then((info) => {
@@ -1614,8 +1641,15 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             if (paper) paperRequestIds.current.delete(parsed.requestID);
             if (videoNote) {
                 videoNoteRequestIds.current.delete(parsed.requestID);
-                noteBusyRef.current = "";
-                setNoteBusyRef.current("");
+                // The card still belongs to this reply. Only the attempt that
+                // is recording may end here. Another note's card must not
+                // clear that attempt, or the held player is painted over
+                // while its capture is still running.
+                if (noteBusyRequestRef.current === parsed.requestID) {
+                    noteBusyRequestRef.current = "";
+                    noteBusyRef.current = "";
+                    setNoteBusyRef.current("");
+                }
             }
             const resultPath = paper && !videoNote && !errText && localPath ? localPath : "";
             const matched = tabsRef.current.find((tab) => tab.sessionId === parsed.sessionId);
@@ -1683,9 +1717,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         const syncWebFull = () => {
             const frame = webFrameRef.current;
             if (frame == null) {
-                // The Windows flag is about this page. Once the iframe is
-                // gone, a leftover true would keep the recording running
-                // and would let the next 记笔记 start without fullscreen.
+                // The Windows flag belongs to the page that had the player.
+                // A leftover true would mark the next note fullscreen after
+                // that player is gone.
                 domFullRef.current = false;
                 winFullRef.current = false;
             }
@@ -1981,6 +2015,79 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         scrollToBottom("auto", true, 1);
     }, [active, scrollToBottom]);
     const isWebTab = activeTab?.kind === "web";
+    // The note records the player on screen. This commit is the moment that
+    // player changes, before the replacement is painted. Closing the tab
+    // removes it first, and that path discards the note instead.
+    const webPlayerPath = isWebTab && activeTab?.frameUrl ? activeTab.path : "";
+    const pinnedPlayer = tabs.find((item) => item.kind === "web" && item.frameUrl && item.path === pinnedPlayerPath) ?? null;
+    const mountedPlayerPath = pinnedPlayer ? pinnedPlayer.path : webPlayerPath;
+    const playerTab = tabs.find((item) => item.kind === "web" && item.frameUrl && item.path === mountedPlayerPath) ?? null;
+    const holdPlayer = Boolean(playerTab && playerTab.path !== active);
+    useLayoutEffect(() => {
+        const shown = mountedPlayerPath;
+        if (!shown) return;
+        // The Windows flag stays true until an event says otherwise, including
+        // after this player is gone. It belongs to the page that entered
+        // fullscreen. DOM fullscreen is the element now on screen. A later
+        // event can mark this page. This follows the mounted player, so a
+        // held recording does not drop the flag before the picture changes.
+        const frame = webFrameRef.current;
+        const doc = document as Document & { webkitFullscreenElement?: Element | null };
+        const fullscreenEl = document.fullscreenElement || doc.webkitFullscreenElement || null;
+        domFullRef.current = frame != null && fullscreenEl === frame;
+        winFullRef.current = false;
+        webFullscreenRef.current = domFullRef.current;
+        return () => {
+            domFullRef.current = false;
+            winFullRef.current = false;
+            webFullscreenRef.current = false;
+        };
+    }, [mountedPlayerPath]);
+    const playerURL = playerTab?.frameUrl ?? "";
+    useLayoutEffect(() => {
+        if (playerHost !== "native") return;
+        const slot = webFrameRef.current;
+        if (!playerURL || !slot) {
+            void FileCompanionPlayerHide();
+            return;
+        }
+        let dead = false;
+        const place = () => {
+            if (dead) return;
+            const ratio = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+            const box = slot.getBoundingClientRect();
+            void FileCompanionPlayerPlace(playerURL, box.left * ratio, box.top * ratio, box.width * ratio, box.height * ratio);
+        };
+        place();
+        const observed = typeof ResizeObserver === "function" ? new ResizeObserver(place) : null;
+        observed?.observe(slot);
+        window.addEventListener("resize", place);
+        return () => {
+            dead = true;
+            observed?.disconnect();
+            window.removeEventListener("resize", place);
+        };
+    }, [playerHost, playerURL]);
+    useLayoutEffect(() => {
+        const pinned = pinnedPlayerPath;
+        if (!pinned || leaveSentRef.current === pinned) return;
+        const tab = tabsRef.current.find((item) => item.kind === "web" && item.frameUrl && item.path === pinned);
+        if (!tab) return;
+        leaveSentRef.current = pinned;
+        const ticket = leaveTicketRef.current + 1;
+        leaveTicketRef.current = ticket;
+        const epoch = noteEpochRef.current;
+        // Fulfillment is the moment Go has retired this player. A rejection
+        // leaves the watch live, so the next page must stay unpainted.
+        // Retrying spins when the binding is missing. A note that has already
+        // returned invalidates this ticket, because capture has finished.
+        void FileCompanionWebPlayerLeft(tab.sessionId, epoch).then(() => {
+            if (leaveTicketRef.current !== ticket) return;
+            leaveSentRef.current = "";
+            releasedPlayerRef.current = pinned;
+            setPinnedPlayerPath((current) => (current === pinned ? "" : current));
+        }, () => undefined);
+    }, [pinnedPlayerPath]);
     const kind: FilePreviewKind = activeTab && !isWebTab ? filePreviewKindFromName(activeTab.name) : "text";
     const textEditorKind = kind === "markdown" || kind === "text" || kind === "code" || kind === "html";
     const showEditor = Boolean(activeTab && !isWebTab && !activeTab.error && textEditorKind && (activeTab.editable || activeTab.content || activeTab.readOnlyReason));
@@ -2210,6 +2317,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         let captureEpoch = 0;
         if (accepted && (notePhrase || webNotePhrase)) {
             videoNoteRequestIds.current.add(requestID);
+            noteBusyRequestRef.current = requestID;
             noteBusyRef.current = tabPath;
             setNoteBusyPath(tabPath);
             if (webNotePhrase) {
@@ -2253,7 +2361,10 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                 sendingRef.current = false;
                 setSendingPath((current) => current === tabPath ? "" : current);
                 if (notePhrase || webNotePhrase) {
-                    noteBusyRef.current = "";
+                    if (noteBusyRequestRef.current === requestID) {
+                        noteBusyRequestRef.current = "";
+                        noteBusyRef.current = "";
+                    }
                     setNoteBusyPath((current) => current === tabPath ? "" : current);
                 }
                 drainIntroRef.current();
@@ -2328,9 +2439,10 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         scrollToBottom("auto", true);
         sendingRef.current = true;
         setSendingPath(tabPath);
+        const requestID = `file-companion-${Date.now()}`;
+        noteBusyRequestRef.current = requestID;
         noteBusyRef.current = tabPath;
         setNoteBusyPath(tabPath);
-        const requestID = `file-companion-${Date.now()}`;
         bindCompanionRequest(sessionId, requestID);
         videoNoteRequestIds.current.add(requestID);
         const message: ChatMessage = { id: `${requestID}:user`, role: "user", text: label };
@@ -2367,7 +2479,10 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         } finally {
             sendingRef.current = false;
             setSendingPath((current) => current === tabPath ? "" : current);
-            noteBusyRef.current = "";
+            if (noteBusyRequestRef.current === requestID) {
+                noteBusyRequestRef.current = "";
+                noteBusyRef.current = "";
+            }
             setNoteBusyPath((current) => current === tabPath ? "" : current);
             drainIntroRef.current();
         }
@@ -2590,6 +2705,27 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             setArxivBusy(false);
         }
     };
+
+    // Pin during render so the committed tree never shows the next page
+    // before Go has retired this player. Closing the tab removes it; that
+    // path discards the note and does not hold the picture. Once the note
+    // call has returned, capture is finished, so a leave that never settled
+    // must not keep the old player on screen or release a later note.
+    // Coming back does not undo that retirement. Capture has stopped, so
+    // the next switch shows the page that was selected.
+    if (!noteBusyPath) releasedPlayerRef.current = "";
+    const recordingWeb = tabs.some((item) => item.kind === "web" && item.frameUrl && item.path === noteBusyPath);
+    const shouldPin = recordingWeb && webPlayerPath !== noteBusyPath && releasedPlayerRef.current !== noteBusyPath;
+    let nextPin = shouldPin ? noteBusyPath : pinnedPlayerPath;
+    if (!noteBusyPath) {
+        nextPin = "";
+        if (leaveSentRef.current) {
+            leaveSentRef.current = "";
+            leaveTicketRef.current += 1;
+        }
+    }
+    if (nextPin && !tabs.some((item) => item.kind === "web" && item.frameUrl && item.path === nextPin)) nextPin = "";
+    if (nextPin !== pinnedPlayerPath) setPinnedPlayerPath(nextPin);
 
     return (
         <div data-testid="file-companion-window" className="file-companion-window" style={{ display: "flex", flexDirection: "column", height: "100vh", background: "#f3f5f7", color: "#1e293b" }}>
@@ -2844,8 +2980,8 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             ) : (
                 <div className="file-companion-split" data-testid="file-companion-split" ref={splitRef}>
                     <section className="file-companion-split-preview">
-                        {activeTab.error ? <div data-testid="file-companion-file-error">{fileErrorText(activeTab.error)}</div> : null}
-                        {kind === "html" && !activeTab.error ? (
+                        {holdPlayer || !activeTab.error ? null : <div data-testid="file-companion-file-error">{fileErrorText(activeTab.error)}</div>}
+                        {!holdPlayer && kind === "html" && !activeTab.error ? (
                             <button
                                 type="button"
                                 className="file-companion-tool"
@@ -2855,7 +2991,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                 {activeTab.htmlPreview ? "源码" : "预览"}
                             </button>
                         ) : null}
-                        {showSource && kind === "markdown" ? (
+                        {!holdPlayer && showSource && kind === "markdown" ? (
                             <MarkdownSourceEditor
                                 key={activeTab.path}
                                 value={activeTab.content}
@@ -2864,7 +3000,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                 onSelect={rememberSelection}
                             />
                         ) : null}
-                        {showSource && kind !== "markdown" ? (
+                        {!holdPlayer && showSource && kind !== "markdown" ? (
                             <textarea
                                 data-testid="file-companion-editor"
                                 value={activeTab.content}
@@ -2885,33 +3021,45 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                 style={{ flex: 1, minHeight: 180, border: "1px solid #e2e8f0", borderRadius: 8, padding: 12 }}
                             />
                         ) : null}
-                        {activeTab.readOnlyReason === "permission" ? <p data-testid="file-companion-readonly-note">没有写入权限</p> : null}
-                        {activeTab.readOnlyReason === "too-large" ? <p data-testid="file-companion-readonly-note">文件过大，为避免截断写回，已禁止保存</p> : null}
-                        {emptyFile ? <div data-testid="file-companion-empty-file">文件是空的</div> : null}
-                        {unsupported ? (
+                        {!holdPlayer && activeTab.readOnlyReason === "permission" ? <p data-testid="file-companion-readonly-note">没有写入权限</p> : null}
+                        {!holdPlayer && activeTab.readOnlyReason === "too-large" ? <p data-testid="file-companion-readonly-note">文件过大，为避免截断写回，已禁止保存</p> : null}
+                        {!holdPlayer && emptyFile ? <div data-testid="file-companion-empty-file">文件是空的</div> : null}
+                        {!holdPlayer && unsupported ? (
                             <div data-testid="file-companion-unsupported">
                                 <p>此文件类型暂不支持预览</p>
                                 <p>{activeTab.name}</p>
                                 <p>{activeTab.size} 字节</p>
                             </div>
                         ) : null}
-                        {isWebTab && activeTab.frameUrl ? (
+                        {playerTab && playerHost !== "pending" ? (
                             <div data-testid="file-companion-web" style={{ flex: 1, minHeight: 160 }}>
-                                <iframe
-                                    ref={webFrameRef}
-                                    data-testid="file-companion-web-frame"
-                                    src={activeTab.frameUrl}
-                                    title={activeTab.name}
-                                    // YouTube's embed contract. The player stays on the poster
-                                    // unless this frame sends the parent origin as Referer.
-                                    referrerPolicy="strict-origin-when-cross-origin"
-                                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
-                                    allowFullScreen
-                                    style={{ width: "100%", height: "100%", border: 0 }}
-                                />
+                                {playerHost === "native" ? (
+                                    // The native WebView paints the page here. The page is the
+                                    // top-level document of the companion profile, not a frame
+                                    // inside wails.localhost, so its sign-in cookies stay with it.
+                                    <div
+                                        ref={(node) => { webFrameRef.current = node; }}
+                                        data-testid="file-companion-web-frame"
+                                        data-url={playerTab.frameUrl}
+                                        role="region"
+                                        aria-label={playerTab.name}
+                                        style={{ width: "100%", height: "100%", background: "#000" }}
+                                    />
+                                ) : (
+                                    <iframe
+                                        ref={(node) => { webFrameRef.current = node; }}
+                                        data-testid="file-companion-web-frame"
+                                        src={playerTab.frameUrl}
+                                        title={playerTab.name}
+                                        referrerPolicy="strict-origin-when-cross-origin"
+                                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
+                                        allowFullScreen
+                                        style={{ width: "100%", height: "100%", border: 0 }}
+                                    />
+                                )}
                             </div>
                         ) : null}
-                        {showPreviewPane ? (
+                        {!holdPlayer && showPreviewPane ? (
                             <div data-testid="file-companion-preview" style={{ flex: 1, minHeight: 160 }}>
                                 <FilePreviewView
                                     key={`${activeTab.path}:${activeTab.previewEpoch}`}
@@ -2921,8 +3069,8 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                 />
                             </div>
                         ) : null}
-                        {activeTab.saveError ? <p data-testid="file-companion-save-error">{turnErrorText(activeTab.saveError)}</p> : null}
-                        {activeTab.conflict ? (
+                        {!holdPlayer && activeTab.saveError ? <p data-testid="file-companion-save-error">{turnErrorText(activeTab.saveError)}</p> : null}
+                        {!holdPlayer && activeTab.conflict ? (
                             <div data-testid="file-companion-conflict">
                                 文件在磁盘上已被修改
                                 <button type="button" className="file-companion-tool" onClick={() => { void openPath(activeTab.path, false); }}>重新加载</button>

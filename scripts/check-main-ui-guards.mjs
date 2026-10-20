@@ -635,7 +635,9 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/ai/useAssistantInputHistory.ts', 170],
   ['guiapp/frontend/src/components/ai/usePastedImageAttachments.ts', 340],
   ['guiapp/frontend/src/components/ai/useGroupDiscussionControls.ts', 90],
-  ['guiapp/frontend/src/components/ai/AssistantAttachmentsStrip.tsx', 280],
+  // Refreshed 280 -> 335 (2026-10-20): document preview row added for
+  // non-image attachments (guard counts 318).
+  ['guiapp/frontend/src/components/ai/AssistantAttachmentsStrip.tsx', 335],
   ['guiapp/frontend/src/components/ai/AttachmentImagePreview.tsx', 340],
   ['guiapp/frontend/src/components/ai/AssistantPinnedNewsCards.tsx', 80],
   ['guiapp/frontend/src/components/ai/AssistantConversationBody.tsx', 250],

@@ -12,6 +12,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/wailsapp/wails/v2/pkg/maclawcapture"
+	"github.com/wailsapp/wails/v2/pkg/maclawplayer"
 )
 
 // FileCompanionOpenResult is one open-field result. Web pages are not files.
@@ -239,7 +240,11 @@ func (a *App) FileCompanionWebNote(req FileCompanionWebNoteRequest) error {
 
 	a.fileCompanionEmitNoteProgress(requestID, userID, fileCompanionNoteProgressWatch)
 	a.fileCompanionEmitNoteProgress(requestID, userID, fileCompanionNoteProgressListen)
-	shots, audio, refused := fileCompanionCaptureWeb(captureCtx, fileCompanionWebRect(req.RectX, req.RectY, req.RectW, req.RectH))
+	// playerWatch is the player this recording started on. Leaving that
+	// player cancels it. noteCtx ends on close and /clear. 停止 cancels
+	// captureCtx only, so a preview already started is still this player.
+	playerWatch := a.fileCompanionPlayerWatch()
+	shots, audio, refused := fileCompanionCaptureWeb(captureCtx, fileCompanionWebRect(req.RectX, req.RectY, req.RectW, req.RectH), noteCtx, playerWatch)
 	if noteCtx.Err() != nil {
 		return a.fileCompanionFailNote(requestID, userID, fileCompanionErrNoteCancelled)
 	}
@@ -544,8 +549,63 @@ func (a *App) ClearFileCompanionWebChat(sessionID string) error {
 	return nil
 }
 
+// FileCompanionWebPlayerLeft records that the visible player changed and
+// ends capture. The watch is cancelled in this call, before the stop, so a
+// wait that 停止 already started is woken and drops the raster. The note is
+// still written. 停止 and leaving fullscreen use CancelFileCompanionWebTurn.
+func (a *App) FileCompanionWebPlayerLeft(sessionID string, epoch int64) error {
+	if a == nil {
+		return errors.New("app unavailable")
+	}
+	a.retireFileCompanionPlayer()
+	return a.CancelFileCompanionWebTurn(sessionID, epoch)
+}
+
+func (a *App) fileCompanionWebPlayerGen() uint64 {
+	if a == nil {
+		return 0
+	}
+	return a.companionRuntime().webPlayerGen.Load()
+}
+
+// fileCompanionPlayerWatch is the player currently on screen.
+// A note copies it at start. Retire cancels that copy.
+func (a *App) fileCompanionPlayerWatch() context.Context {
+	if a == nil {
+		return context.Background()
+	}
+	st := a.companionRuntime()
+	st.noteMu.Lock()
+	defer st.noteMu.Unlock()
+	return st.currentPlayerWatchLocked()
+}
+
+// retireFileCompanionPlayer closes the watch the in-flight note is holding
+// and installs the next player. Generation and watch move together.
+func (a *App) retireFileCompanionPlayer() {
+	if a == nil {
+		return
+	}
+	st := a.companionRuntime()
+	st.noteMu.Lock()
+	defer st.noteMu.Unlock()
+	if st.webPlayerWatchCancel != nil {
+		st.webPlayerWatchCancel()
+	}
+	st.webPlayerWatch, st.webPlayerWatchCancel = context.WithCancel(context.Background())
+	st.webPlayerGen.Add(1)
+}
+
+func (st *fileCompanionRuntime) currentPlayerWatchLocked() context.Context {
+	if st.webPlayerWatch == nil {
+		st.webPlayerWatch, st.webPlayerWatchCancel = context.WithCancel(context.Background())
+	}
+	return st.webPlayerWatch
+}
+
 // CancelFileCompanionWebTurn ends capture and lets the note be written.
 // It does not cancel the note context and does not bump chatGen.
+// The player generation stays, so the preview already in flight is kept.
 // Local cancel and /clear still discard the note.
 // epoch is the attempt the page started. The same number must be passed
 // on the note request. Zero stops only a capture that is already registered.
@@ -579,6 +639,11 @@ func (a *App) FileCompanionDiscardWebNote(sessionID string) error {
 // FileCompanionWebViewContainsFullscreen reads the Windows WebView flag.
 // macOS and Linux stay on the page fullscreenElement signal, so this is false there.
 func (a *App) FileCompanionWebViewContainsFullscreen() bool {
+	// The video page is its own WebView. Fullscreen inside that document is
+	// not visible on the companion page.
+	if view := maclawplayer.View(); view != nil {
+		return view.ContainsFullScreen()
+	}
 	view := maclawcapture.Current()
 	if view == nil {
 		return false

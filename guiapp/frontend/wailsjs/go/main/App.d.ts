@@ -641,6 +641,12 @@ export function FileCompanionOpenArxiv(arg1:string):Promise<string>;
 
 export function FileCompanionOpenWebPage(arg1:string):Promise<Record<string, any>>;
 
+export function FileCompanionPlayerSupported():Promise<boolean>;
+
+export function FileCompanionPlayerPlace(arg1:string,arg2:number,arg3:number,arg4:number,arg5:number):Promise<void>;
+
+export function FileCompanionPlayerHide():Promise<void>;
+
 export function SendFileCompanionWebMessage(arg1:Record<string, any>):Promise<void>;
 
 export function ClearFileCompanionWebChat(arg1:string):Promise<void>;
@@ -648,6 +654,8 @@ export function ClearFileCompanionWebChat(arg1:string):Promise<void>;
 export function CancelFileCompanionTurn(arg1:string):Promise<void>;
 
 export function CancelFileCompanionWebTurn(arg1:string,arg2:number):Promise<void>;
+
+export function FileCompanionWebPlayerLeft(arg1:string,arg2:number):Promise<void>;
 
 export function FileCompanionDiscardWebNote(arg1:string):Promise<void>;
 
@@ -2849,6 +2857,12 @@ export function WriteCodingWorkbenchConflictFileContent(arg1:string,arg2:string,
 export function AIAssistantAttachmentPreviewDataURL(arg1:string):Promise<string>;
 
 export function AIAssistantAttachmentFullDataURL(arg1:string):Promise<string>;
+
+export function AIAssistantAttachmentOpeningPreview(arg1:string):Promise<{
+    kind?: string;
+    preview_url?: string;
+    pages?: Array<{ index?: number; text?: string; width?: number; height?: number; image_data_url?: string }>;
+}>;
 
 // LaTeX paper template library (hand-added: guiapp/latex_templates.go).
 export function ListLatexTemplates():Promise<string>;
