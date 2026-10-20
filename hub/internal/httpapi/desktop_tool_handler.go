@@ -178,6 +178,12 @@ func dispatchDesktopTool(ctx context.Context, pool *desktoppool.Pool, call deskt
 		text, err := pool.RunOpen(ctx, call.Tenant, call.User, call.Display, toolArgString(call.Args, "program"), toolArgStrings(call.Args, "args"))
 		return text, "", err
 	case "app":
+		// A steps/actions batch is expanded by the worker (paste guard, one
+		// xdotool call per step). RunApp only takes args, so a batch here
+		// would run nothing and still report success.
+		if desktopToolHasBatch(call.Args) {
+			return "", "", fmt.Errorf("desktop %s steps run on the worker; send app args, not a steps batch", call.Action)
+		}
 		text, err := pool.RunApp(ctx, call.Tenant, call.User, call.Display, toolArgStrings(call.Args, "args"))
 		return text, "", err
 	case "session":
@@ -241,4 +247,17 @@ func toolArgStrings(args map[string]any, key string) []string {
 	default:
 		return nil
 	}
+}
+
+// desktopToolHasBatch reports a steps or actions list without plain args.
+func desktopToolHasBatch(args map[string]any) bool {
+	if len(toolArgStrings(args, "args")) > 0 {
+		return false
+	}
+	for _, key := range []string{"steps", "actions"} {
+		if list, ok := args[key].([]any); ok && len(list) > 0 {
+			return true
+		}
+	}
+	return false
 }
