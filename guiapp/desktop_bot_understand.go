@@ -55,6 +55,10 @@ type DesktopBotUnderstanding struct {
 	// another bot something or hands it work. It is not a pace. A non-primary
 	// reading may still carry one; the client drops it and does not post.
 	Cross *DesktopBotCross `json:"cross,omitempty"`
+	// Fallback is set when no reading could be made and the person's own
+	// words were passed on as the order, the same as "send my own words".
+	// It names the failure that caused it: unreachable or unread.
+	Fallback string `json:"fallback,omitempty"`
 }
 
 // The reading of a message is a helper for the turn, not the turn itself, so a
@@ -117,7 +121,7 @@ const (
 	desktopBotReadBudget = 90 * time.Second
 	// desktopBotReadAttempts is how many calls one reading gets. A second try
 	// is spent only on a failure that passing time is likely to clear.
-	desktopBotReadAttempts = 2
+	desktopBotReadAttempts = 3
 )
 
 var (
@@ -132,6 +136,9 @@ type desktopBotUnderstandRequest struct {
 	systemPrompt string
 	userPrompt   string
 	timeoutSec   int
+	// fallback asks for the other model: the lightweight profile, then the
+	// background role, instead of the assistant profile that just failed.
+	fallback bool
 }
 
 // desktopBotUnderstandFunc is the no-tool model call. Tests replace it.
@@ -179,7 +186,7 @@ Do not ask this person to choose a method. Do not reuse a stock sentence except 
 `
 
 func desktopBotUnderstandClassifyRequest(req desktopBotUnderstandRequest) LLMClassifyRequest {
-	return LLMClassifyRequest{
+	out := LLMClassifyRequest{
 		SystemPrompt:      req.systemPrompt,
 		UserMessage:       req.userPrompt,
 		TimeoutSec:        req.timeoutSec,
@@ -188,6 +195,12 @@ func desktopBotUnderstandClassifyRequest(req desktopBotUnderstandRequest) LLMCla
 		NoThinking:        true,
 		MaxOutputTokens:   desktopBotUnderstandMaxOutputTokens,
 	}
+	if req.fallback {
+		out.Tag = "desktop-bot-understand-fallback"
+		out.PreferLightweight = true
+		out.Role = "background"
+	}
+	return out
 }
 
 func callDesktopBotUnderstandLLM(ctx context.Context, app *App, req desktopBotUnderstandRequest) (string, error) {
@@ -265,6 +278,12 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 	deadline := started.Add(desktopBotReadBudget)
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
+	// useFallback switches the next attempt to the other model. It is set by
+	// an answer that came back but did not parse (the 2026-10-20 field case:
+	// deepseek-v4.1-flash returned 200 with an empty body), and by a second
+	// network failure on the primary model.
+	useFallback := false
+	lastClass, lastOutcome := desktopBotReadingUnreachable, "budget spent"
 	for attempt := 1; attempt <= desktopBotReadAttempts; attempt++ {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
@@ -283,6 +302,7 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 			systemPrompt: systemPrompt,
 			userPrompt:   userPrompt,
 			timeoutSec:   timeoutSec,
+			fallback:     useFallback,
 		})
 		if err != nil {
 			log.Printf("[desktop-bot-understand] phase=%s attempt=%d elapsed=%s earlier=%d text_len=%d err=%v",
@@ -292,20 +312,32 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 			// seconds of generation is not going to be answered in the
 			// remainder either. An upstream that named a wait is given that
 			// wait first, capped so the next attempt still has room.
+			lastClass, lastOutcome = desktopBotReadingUnreachable, "no answer"
 			if attempt < desktopBotReadAttempts && desktopBotReadFaultClears(err) && time.Until(deadline)*2 > desktopBotReadBudget {
 				if wait := desktopBotReadRetryWait(err, deadline); wait > 0 {
 					log.Printf("[desktop-bot-understand] phase=%s attempt=%d waiting=%s for upstream retry hint", phase, attempt, wait.Round(time.Millisecond))
 					desktopBotReadSleep(ctx, wait)
 				}
+				if attempt >= 2 {
+					useFallback = true
+				}
 				continue
 			}
-			return desktopBotConfirmOrLost(desktopBotReadingUnreachable, "no answer", text, phase, earlier), nil
+			break
 		}
 		understood, parseErr := parseDesktopBotUnderstanding(raw)
 		if parseErr != nil {
 			log.Printf("[desktop-bot-understand] phase=%s attempt=%d elapsed=%s earlier=%d text_len=%d result_len=%d parse_err=%v",
 				phase, attempt, time.Since(started).Round(time.Millisecond), len(earlier), utf8.RuneCountInString(text), utf8.RuneCountInString(raw), parseErr)
-			return desktopBotConfirmOrLost(desktopBotReadingUnread, "answer was not a reading", text, phase, earlier), nil
+			lastClass, lastOutcome = desktopBotReadingUnread, "answer was not a reading"
+			// An empty or cut answer is often a one-off on a fast model. Ask
+			// once more, on the other model, while the budget allows.
+			if attempt < desktopBotReadAttempts && !useFallback && time.Until(deadline) > 5*time.Second {
+				useFallback = true
+				log.Printf("[desktop-bot-understand] phase=%s attempt=%d retrying on fallback model after parse failure", phase, attempt)
+				continue
+			}
+			break
 		}
 		rawPace := strings.ToLower(strings.TrimSpace(understood.Pace))
 		understood.Pace = desktopBotPace(understood.Pace, phase)
@@ -331,14 +363,35 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 		if err := desktopBotEmptyOrder(understood, phase); err != nil {
 			log.Printf("[desktop-bot-understand] phase=%s pace=%s attempt=%d elapsed=%s earlier=%d text_len=%d empty_order=%v",
 				phase, understood.Pace, attempt, time.Since(started).Round(time.Millisecond), len(earlier), utf8.RuneCountInString(text), err)
-			return desktopBotConfirmOrLost(desktopBotReadingUnread, "order was empty", text, phase, earlier), nil
+			lastClass, lastOutcome = desktopBotReadingUnread, "order was empty"
+			if attempt < desktopBotReadAttempts && !useFallback && time.Until(deadline) > 5*time.Second {
+				useFallback = true
+				log.Printf("[desktop-bot-understand] phase=%s attempt=%d retrying on fallback model after empty order", phase, attempt)
+				continue
+			}
+			break
 		}
 		log.Printf("[desktop-bot-understand] phase=%s pace=%s lang=%s attempt=%d elapsed=%s earlier=%d text_len=%d told_len=%d instruction_len=%d persona_len=%d",
 			phase, understood.Pace, lang, attempt, time.Since(started).Round(time.Millisecond), len(earlier),
 			utf8.RuneCountInString(text), utf8.RuneCountInString(understood.Told), utf8.RuneCountInString(understood.Instruction), utf8.RuneCountInString(understood.Persona))
 		return understood, nil
 	}
-	return desktopBotConfirmOrLost(desktopBotReadingUnreachable, "budget spent", text, phase, earlier), nil
+	return desktopBotVerbatimFallback(lastClass, lastOutcome, text, phase, earlier), nil
+}
+
+// desktopBotVerbatimFallback is what happens when every attempt failed on a
+// real message: the person's own words go to the bot as the order, exactly
+// as the "send my own words" button would, instead of parking the turn
+// behind a red line and two buttons. Told stays empty so the client shows
+// the person's words, not an invented sentence. The client still holds a
+// destructive order for one confirmation (desktopBotDestructive).
+func desktopBotVerbatimFallback(class, outcome, text, phase string, earlier []string) *DesktopBotUnderstanding {
+	log.Printf("[desktop-bot-understand] verbatim fallback class=%s outcome=%s phase=%s earlier=%d text_len=%d", class, outcome, phase, len(earlier), utf8.RuneCountInString(text))
+	return &DesktopBotUnderstanding{
+		Instruction: clipRunes(text, desktopBotUnderstandOrderMax),
+		Pace:        "direct",
+		Fallback:    class,
+	}
 }
 
 // desktopBotConfirmOrLost reports a reading that was not made. It does not
@@ -630,7 +683,7 @@ func lastDesktopBotUnderstanding(raw string) (*DesktopBotUnderstanding, bool) {
 		// sees is the query result, and a made-up told would be a status nobody
 		// checked. An empty instruction stays in the reading; pace decides
 		// whether it is a reply, a status question, or a missing order.
-		if parsed.Told == "" && !strings.EqualFold(strings.TrimSpace(parsed.Pace), "status") {
+		if parsed.Told == "" && parsed.Instruction == "" && !strings.EqualFold(strings.TrimSpace(parsed.Pace), "status") {
 			continue
 		}
 		if parsed.Told == "..." && parsed.Instruction == "..." {

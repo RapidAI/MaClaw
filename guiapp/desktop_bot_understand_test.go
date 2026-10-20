@@ -289,11 +289,11 @@ func TestDesktopBotEmptyOrderIsNotAReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a missing order took the turn down with it: %v", err)
 	}
-	if got.Reading != desktopBotReadingUnread {
-		t.Fatalf("a direct reading with no order was not reported unread: %#v", got)
+	if got.Fallback != desktopBotReadingUnread || got.Reading != "" {
+		t.Fatalf("a direct reading with no order did not fall back: %#v", got)
 	}
-	if got.Told != "" || got.Instruction != "" || got.Pace != "" || got.Persona != "" {
-		t.Fatalf("an unread result carried an order: %#v", got)
+	if got.Told != "" || got.Instruction != "打开百度" || got.Pace != "direct" || got.Persona != "" {
+		t.Fatalf("the fallback did not carry the person's own words: %#v", got)
 	}
 
 	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
@@ -303,8 +303,8 @@ func TestDesktopBotEmptyOrderIsNotAReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a missing order took the turn down with it: %v", err)
 	}
-	if got.Reading != desktopBotReadingUnread {
-		t.Fatalf("a confirm reading with no order was not reported unread: %#v", got)
+	if got.Fallback != desktopBotReadingUnread || got.Instruction != "打开百度" {
+		t.Fatalf("a confirm reading with no order did not fall back: %#v", got)
 	}
 
 	called := false
@@ -352,11 +352,11 @@ func TestDesktopBotReadingReportsInsteadOfStoppingTheTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prose took the turn down with it: %v", err)
 	}
-	if got.Reading != desktopBotReadingUnread {
-		t.Fatalf("prose was accepted as a reading: %#v", got)
+	if got.Fallback != desktopBotReadingUnread || got.Told != "" || got.Pace != "direct" {
+		t.Fatalf("prose was not turned into the verbatim fallback: %#v", got)
 	}
-	if got.Told != "" || got.Instruction != "" {
-		t.Fatalf("an unread result carried an order: %#v", got)
+	if got.Instruction != "开发个c++版的hello world程序，运行后发我运行屏幕截图" {
+		t.Fatalf("the fallback did not carry the person's own words: %#v", got)
 	}
 
 	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
@@ -366,8 +366,8 @@ func TestDesktopBotReadingReportsInsteadOfStoppingTheTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a statement with no sentence took the turn down with it: %v", err)
 	}
-	if got.Reading != desktopBotReadingUnread {
-		t.Fatalf("an empty statement was accepted: %#v", got)
+	if got.Reading != "" || got.Fallback != "" || got.Instruction != "去做" {
+		t.Fatalf("an order without a sentence was not kept: %#v", got)
 	}
 
 	calls := 0
@@ -379,11 +379,8 @@ func TestDesktopBotReadingReportsInsteadOfStoppingTheTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an unreachable model took the turn down with it: %v", err)
 	}
-	if got.Reading != desktopBotReadingUnreachable {
-		t.Fatalf("an unreachable model was not reported: %#v", got)
-	}
-	if got.Told != "" || got.Instruction != "" || got.Pace != "" {
-		t.Fatalf("an unreachable reading carried an order: %#v", got)
+	if got.Fallback != desktopBotReadingUnreachable || got.Instruction != "打开百度" || got.Pace != "direct" || got.Told != "" {
+		t.Fatalf("an unreachable model did not fall back to the person's words: %#v", got)
 	}
 	// A misconfiguration is not the kind waiting fixes, so it is not retried
 	// against the same missing configuration.
@@ -422,8 +419,8 @@ func TestDesktopBotReadingSpendsOneBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a slow reading took the turn down with it: %v", err)
 	}
-	if got.Reading != desktopBotReadingUnreachable {
-		t.Fatalf("class=%q", got.Reading)
+	if got.Fallback != desktopBotReadingUnreachable {
+		t.Fatalf("fallback=%q", got.Fallback)
 	}
 	if len(seen) != desktopBotReadAttempts {
 		t.Fatalf("a blip was not given one second try: %v", seen)
@@ -450,8 +447,8 @@ func TestDesktopBotReadingDoesNotRetryItsOwnDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a timed-out reading took the turn down with it: %v", err)
 	}
-	if got.Reading != desktopBotReadingUnreachable {
-		t.Fatalf("class=%q", got.Reading)
+	if got.Fallback != desktopBotReadingUnreachable {
+		t.Fatalf("fallback=%q", got.Fallback)
 	}
 	if calls != 1 {
 		t.Fatalf("a spent deadline was retried %d times", calls)
@@ -753,5 +750,59 @@ func TestDesktopBotReplyDropsAStraySchedule(t *testing.T) {
 	}
 	if got.Pace != "reply" || got.Schedule != nil {
 		t.Fatalf("a reply kept a schedule: %#v", got)
+	}
+}
+
+// The 2026-10-20 field case: deepseek-v4.1-flash answered 200 with an empty
+// body (result_len=0 output=140) for "去小红书上给大家打个招呼，说maclaw bot来了:)".
+// The reading then parked the turn behind "这句没整理成可执行的安排". Now
+// the empty answer is retried once on the fallback model; when that one
+// answers, its reading is used.
+func TestDesktopBotEmptyAnswerRetriesOnFallbackModel(t *testing.T) {
+	t.Cleanup(func() { desktopBotUnderstandLLM = callDesktopBotUnderstandLLM })
+	const msg = "去小红书上给大家打个招呼，说maclaw bot来了:)"
+	var fallbacks []bool
+	desktopBotUnderstandLLM = func(_ context.Context, _ *App, req desktopBotUnderstandRequest) (string, error) {
+		fallbacks = append(fallbacks, req.fallback)
+		if !req.fallback {
+			return "", nil
+		}
+		return `{"told":"我去小红书发一条打招呼的帖子。","instruction":"打开小红书，发一条帖子向大家打招呼，内容说 maclaw bot 来了 :)","pace":"direct"}`, nil
+	}
+	got, err := (&App{}).UnderstandDesktopBotTask(msg, "plan", "zh-Hans", nil, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fallbacks) != 2 || fallbacks[0] || !fallbacks[1] {
+		t.Fatalf("attempts=%v, want primary then fallback", fallbacks)
+	}
+	if got.Reading != "" || got.Fallback != "" || got.Pace != "direct" || !strings.Contains(got.Instruction, "小红书") {
+		t.Fatalf("fallback model reading was not used: %#v", got)
+	}
+	req := desktopBotUnderstandClassifyRequest(desktopBotUnderstandRequest{fallback: true})
+	if !req.PreferLightweight || req.Role != "background" {
+		t.Fatalf("fallback request does not switch model: %#v", req)
+	}
+}
+
+// When both models fail on a clear instruction, the turn is not blocked:
+// the person's words go out as the order, exactly as the button would.
+func TestDesktopBotBothModelsEmptySendsOwnWords(t *testing.T) {
+	t.Cleanup(func() { desktopBotUnderstandLLM = callDesktopBotUnderstandLLM })
+	const msg = "去小红书上给大家打个招呼，说maclaw bot来了:)"
+	calls := 0
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
+		calls++
+		return "", nil
+	}
+	got, err := (&App{}).UnderstandDesktopBotTask(msg, "plan", "zh-Hans", nil, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls=%d, want primary + fallback", calls)
+	}
+	if got.Reading != "" || got.Fallback != desktopBotReadingUnread || got.Instruction != msg || got.Pace != "direct" || got.Told != "" {
+		t.Fatalf("the turn was blocked instead of sending the person's words: %#v", got)
 	}
 }
