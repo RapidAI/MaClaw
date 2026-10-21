@@ -395,6 +395,23 @@ func (s *Service) UploadFile(ctx context.Context, tenantID, userID, filePath str
 	if counted.n != size {
 		return "", fmt.Errorf("%w: upload was cut short (%d of %d bytes)", ErrInvalid, counted.n, size)
 	}
+	// docker exec runs as root, so the write leaves root-owned folders and
+	// files the desktop user (and its bots) cannot rename, replace or delete.
+	// Hand ~/素材, every folder down to the file, and the file to that user.
+	err = s.withUser(spec.TenantID, spec.UserID, func() error {
+		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{
+			Kind: ExecFile,
+			Args: materialChownArgs(containerName(spec.TenantID, spec.UserID), filePath),
+		})
+		output, exitCode = result.Out, result.Exit
+		return runErr
+	})
+	if err != nil {
+		return "", err
+	}
+	if exitCode != 0 {
+		return "", fmt.Errorf("%w: %s", ErrDocker, commandFailure(output, exitCode))
+	}
 	return fmt.Sprintf("Wrote %s (%d bytes).", filePath, counted.n), nil
 }
 
@@ -407,4 +424,24 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	c.n += int64(n)
 	return n, err
+}
+
+// MaterialOwner is the desktop user (uid 1000) that owns uploaded materials.
+const MaterialOwner = "desktop:desktop"
+
+// materialChownArgs gives desktop.MaterialsRoot, each folder below it on the
+// way to filePath, and filePath itself to MaterialOwner. Nothing above
+// MaterialsRoot is touched.
+func materialChownArgs(container, filePath string) []string {
+	paths := []string{desktop.MaterialsRoot}
+	rest := strings.TrimPrefix(filePath, desktop.MaterialsRoot+"/")
+	cur := desktop.MaterialsRoot
+	for _, part := range strings.Split(rest, "/") {
+		if part == "" {
+			continue
+		}
+		cur += "/" + part
+		paths = append(paths, cur)
+	}
+	return append([]string{"exec", container, "chown", MaterialOwner, "--"}, paths...)
 }

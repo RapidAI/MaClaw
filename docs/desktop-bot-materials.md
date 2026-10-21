@@ -38,6 +38,7 @@ Hub  POST /api/v1/bots/{id}/desktop/files      (the person's normal login; owner
      last chunk ─▶ desktoppool.UploadFile ─▶
 desktopd POST /v1/desktops/upload?tenant_id&user_id&path   (raw bytes, Content-Length)
      ─▶ docker exec -i … desktop_supervisor.py file write <path>   (existing supervisor op)
+     ─▶ docker exec … chown desktop:desktop -- ~/素材 ~/素材/<bot> <file>   (exec runs as root)
 ```
 
 Chunk request: `{"upload_id","name","offset","total","data":<base64>}`. The
@@ -84,7 +85,7 @@ finishes are swept after an hour.
 
 ## Deployment
 
-The image does not need a rebuild: the upload reuses the supervisor's
+The image does not need a rebuild (the ownership fix is a desktopd-side chown): the upload reuses the supervisor's
 existing `file write` op.
 
 1. **desktopd** (each Docker host): deploy the new binary. On the host's
