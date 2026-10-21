@@ -163,7 +163,7 @@ const desktopBotUnderstandSystem = `You are the foreground agent for one cloud-d
 told is the sentence this person sees at once. Write it in the language named below, in your own words for this message. For direct, confirm, and ask, say what you understood they want and what happens next. For reply, told is the answer itself, not a plan of what happens next. For schedule, told says the timed work is set or stopped, and does not do that work. One or two sentences. Do not ask them to confirm work you are already doing.
 
 instruction is a card for the computer helper, not a driving script. The helper follows this card and does not see the kept persona except through this card. The card has three parts in this order: goal, constraints, and success criteria. goal is the outcome in one sentence. constraints are what must not be done. success criteria say how the three-line report is checked. Do not name click, type, or computer. Do not say what the chat reply must contain. The foreground agent sends the chat reply. Write the card in the same language as told. Leave it an empty string when there is no desktop work. For schedule, the card is the order for one later run. A repeated greeting is still a card: the goal is that greeting.
-When the message ends with a [素材] list, those are files the person uploaded; they are already on the desktop at the listed ~/素材/ paths. The card names every listed path exactly and says to use them as the materials (in a file picker, type or paste the full path). Do not ask for files that are listed.
+When the message ends with a [素材] list, those are files the person uploaded; they are already on the desktop at the listed ~/素材/ paths. The card names every listed path exactly and says to use them as the materials (in a file picker, type or paste the full path). Do not ask for files that are listed. told names the files in 《》 and says in a few words what you will use them for.
 
 goal is a short verb phrase (under 20 characters) naming the job in the language named below, such as 去小红书打个招呼. Empty when there is no desktop work.
 unclear and assumption: when pace is direct but part of the request is ambiguous, unclear names that part briefly and assumption says how you will proceed anyway. Still do the work; do not switch to ask or confirm for this. Leave both empty when the request is clear.
@@ -389,6 +389,17 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 		if understood.Pace == "direct" {
 			understood.Told = desktopBotAcceptTold(understood, text, lang)
 		}
+		if names := desktopBotMaterialNames(text); len(names) > 0 {
+			en := desktopBotEnglish(lang) || (lang == "" && desktopBotLooksEnglish(desktopBotWordsBeforeMaterials(text)))
+			switch understood.Pace {
+			case "direct":
+				understood.Told = desktopBotMaterialAcceptTold(understood, names, en, understood.Told)
+			case "reply":
+				if understood.Told != "STOP_WORK" {
+					understood.Told = desktopBotMaterialKeepTold(understood.Told, names, en)
+				}
+			}
+		}
 		log.Printf("[desktop-bot-understand] phase=%s pace=%s lang=%s attempt=%d elapsed=%s earlier=%d text_len=%d told_len=%d instruction_len=%d persona_len=%d",
 			phase, understood.Pace, lang, attempt, time.Since(started).Round(time.Millisecond), len(earlier),
 			utf8.RuneCountInString(text), utf8.RuneCountInString(understood.Told), utf8.RuneCountInString(understood.Instruction), utf8.RuneCountInString(understood.Persona))
@@ -396,6 +407,9 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 	}
 	fb := desktopBotVerbatimFallback(lastClass, lastOutcome, text, phase, earlier)
 	fb.Told = desktopBotAcceptTold(fb, text, lang)
+	if names := desktopBotMaterialNames(text); len(names) > 0 {
+		fb.Told = desktopBotMaterialAcceptTold(fb, names, desktopBotEnglish(lang), fb.Told)
+	}
 	return fb, nil
 }
 

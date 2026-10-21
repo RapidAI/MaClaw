@@ -879,7 +879,11 @@ func (a *App) AppendDesktopBotSupplement(botID, runID, supplement string) (*Desk
 		return nil, err
 	}
 	botlog.Write(botID, "gui.supplement_dispatched", nil, "run", target.RunID, "supplement", sent.SupplementID)
-	return &DesktopBotSupplementReceipt{Accepted: true, Stage: desktopBotSupplementQueued, RunID: target.RunID, SupplementID: sent.SupplementID, Message: desktopbot.SteerOnIt}, nil
+	message := desktopbot.SteerOnIt
+	if names := desktopBotMaterialNames(supplement); len(names) > 0 {
+		message = desktopBotMaterialSupplementAck(names, target.TaskText, desktopBotLooksEnglish(desktopBotWordsBeforeMaterials(supplement)))
+	}
+	return &DesktopBotSupplementReceipt{Accepted: true, Stage: desktopBotSupplementQueued, RunID: target.RunID, SupplementID: sent.SupplementID, Message: message}, nil
 }
 
 // PersistDesktopBotPreference writes a preference to the user's instance on the
