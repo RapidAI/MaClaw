@@ -781,11 +781,11 @@ func TestDesktopBotEmptyAnswerRetriesOnFallbackModel(t *testing.T) {
 		t.Fatalf("fallback model reading was not used: %#v", got)
 	}
 	req := desktopBotUnderstandClassifyRequest(desktopBotUnderstandRequest{fallback: true})
-	if !req.PreferLightweight || req.Role != "" {
-		t.Fatalf("fallback must stay on the person's own provider: %#v", req)
+	if !req.PreferLightweight || req.Role != "foreground" || req.HubOnly {
+		t.Fatalf("fallback must stay on the person's own understanding model: %#v", req)
 	}
 	hub := desktopBotUnderstandClassifyRequest(desktopBotUnderstandRequest{hub: true})
-	if !hub.PreferLightweight || hub.Role != "background" || hub.Tag != "desktop-bot-understand-hub" {
+	if !hub.PreferLightweight || !hub.HubOnly || hub.Tag != "desktop-bot-understand-hub" {
 		t.Fatalf("hub request: %#v", hub)
 	}
 }

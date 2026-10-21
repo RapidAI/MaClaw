@@ -161,12 +161,18 @@ template sets.
 
 ### Which model
 
-GUI-side calls (understand, its fallback, acks) use the person's own model
-settings (assistant profile; an unset profile resolves to the Hub service).
-The understand fallback used to resolve role `background`, which inherits
-the Hub's shared `auto` model even for a custom-model user (observed
-2026-10-21: 78.6s on `hub.mypapers.top auto` after the custom
-`deepseek-v4.1-flash` returned empty). It now stays on the person's provider
-(lightweight sibling); the Hub `background` role is the third, last attempt.
-The desktop run itself is resolved by MaClawSrv from the account's server-side
-config (`agentservice.ResolveLLMConfig`), not from the GUI's local providers.
+guiapp has three model roles (设置 → 模型 → 角色: 前台交互 / 后台执行 / 电脑操作).
+An empty role follows the person's current (assistant) model; the Hub
+snapshot applies only when that model is MaClaw official on auto, or (for
+电脑操作) when the current model cannot see images.
+
+- Understand step, its fallback, supplement check, and `WriteDesktopBotAck`
+  use the **前台交互 (foreground)** role, then that model's lightweight
+  sibling on the same provider, then the Hub's shared foreground model
+  (`HubOnly`) as the last attempt.
+- GUI background loops use 后台执行; the computer helper uses 电脑操作.
+  Before 2026-10-21 both kept the Hub snapshot even for a custom-model user.
+- The desktop bot run itself happens on MaClawSrv. Hub pushes one model to
+  that MaClaw user (`hub/internal/botmgmt/owner_llm.go`): an admin-set
+  per-owner override, else the tenant's selected provider, else Hub official
+  `auto`. guiapp roles and local providers are not sent to the server.

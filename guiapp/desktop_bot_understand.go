@@ -220,10 +220,12 @@ func desktopBotUnderstandClassifyRequest(req desktopBotUnderstandRequest) LLMCla
 	if req.tag != "" {
 		out.Tag = req.tag
 	}
-	// The fallback stays on the person's own provider (its lightweight
-	// model). Role background resolves to the Hub's shared model whenever
-	// the role inherits the Hub, which put a custom-model user on the Hub
-	// auto model for 78.6s on 2026-10-21; that is now the hub attempt only.
+	// The understanding role (foreground, "前台交互") is the base: an empty
+	// role follows the person's current model. The fallback is that base's
+	// lightweight sibling on the same provider. The Hub's shared model is
+	// only the last attempt (before 2026-10-21 the fallback resolved role
+	// background, i.e. Hub auto, even for a custom-model user).
+	out.Role = maclawLLMRoleForeground
 	if req.fallback {
 		out.Tag = out.Tag + "-fallback"
 		out.PreferLightweight = true
@@ -231,7 +233,7 @@ func desktopBotUnderstandClassifyRequest(req desktopBotUnderstandRequest) LLMCla
 	if req.hub {
 		out.Tag = out.Tag + "-hub"
 		out.PreferLightweight = true
-		out.Role = "background"
+		out.HubOnly = true
 	}
 	return out
 }
@@ -931,6 +933,7 @@ func (a *App) EvaluateDesktopTaskSupplement(activeTask, newMessage, lang string)
 					TimeoutSec:        12,
 					Tag:               "desktop-bot-eval-supplement",
 					PreferLightweight: true,
+					Role:              maclawLLMRoleForeground,
 				})
 				if err == nil && res != nil {
 					content := desktopBotUnderstandText(res.Text, res.Reasoning)

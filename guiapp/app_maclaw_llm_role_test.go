@@ -61,15 +61,46 @@ func TestResolveMaclawLLMRoleForegroundFollowsThirdPartyAssistant(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bg.Model != "worker-model" || bg.ProviderID != "hub" || bg.Profile != maclawLLMRoleBackground || bg.SupportsVision {
+	// An empty background role follows the person's current model.
+	if bg.Model != "assistant-model" || bg.ProviderID != "local" || bg.Profile != maclawLLMRoleBackground {
 		t.Fatalf("background = %+v", bg)
 	}
 	cu, err := app.ResolveMaclawLLMRole(maclawLLMRoleComputerUse)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cu.Model != "auto" || !cu.SupportsVision || cu.Profile != maclawLLMRoleComputerUse {
+	// The assistant sees images, so an empty computer-use role follows it.
+	if cu.Model != "assistant-model" || !cu.SupportsVision || cu.Profile != maclawLLMRoleComputerUse {
 		t.Fatalf("computer_use = model %q vision %v profile %q", cu.Model, cu.SupportsVision, cu.Profile)
+	}
+	hub, err := app.ResolveHubLLMRole(maclawLLMRoleForeground)
+	if err != nil || hub.ProviderID != "hub" || hub.Model != "auto" {
+		t.Fatalf("hub foreground = %+v err %v", hub, err)
+	}
+}
+
+// A text-only assistant leaves an empty computer-use role on the Hub.
+func TestResolveMaclawLLMRoleComputerUseTextAssistantKeepsHub(t *testing.T) {
+	providers := roleTestProviders()
+	providers[1].SupportsVision = false
+	providers[1].VisionModels = nil
+	app := newRoleTestApp(t, corelib.AppConfig{
+		MaclawLLMProviders:       providers,
+		MaclawLLMCurrentProvider: "Local",
+		HubRoleModels:            corelib.MaclawLLMHubRoleModels{Foreground: "auto", Background: "auto", ComputerUse: "auto"},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "local", Model: "assistant-model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	cu, err := app.ResolveMaclawLLMRole(maclawLLMRoleComputerUse)
+	if err != nil || cu.ProviderID != "hub" || cu.Model != "auto" {
+		t.Fatalf("computer_use = %+v err %v", cu, err)
+	}
+	bg, err := app.ResolveMaclawLLMRole(maclawLLMRoleBackground)
+	if err != nil || bg.ProviderID != "local" {
+		t.Fatalf("background = %+v err %v", bg, err)
 	}
 }
 

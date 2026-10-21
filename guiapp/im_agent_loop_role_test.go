@@ -24,6 +24,9 @@ func TestPrepareAgentLoopConfigSelectsRole(t *testing.T) {
 		},
 	})
 	h := &IMMessageHandler{app: app}
+	// Empty roles follow the person's custom (vision) assistant; the Hub
+	// snapshots apply only to an official assistant. The profile still
+	// names the role each loop selected.
 
 	fg := h.prepareAgentLoopConfig(&LoopContext{Kind: LoopKindChat})
 	if fg.Config.Model != "assistant-model" || fg.Config.Profile != maclawLLMRoleForeground || fg.Config.ProviderID != "local" {
@@ -31,7 +34,7 @@ func TestPrepareAgentLoopConfigSelectsRole(t *testing.T) {
 	}
 
 	bg := h.prepareAgentLoopConfig(&LoopContext{Kind: LoopKindBackground})
-	if bg.Config.Model != "bg-model" || bg.Config.Profile != maclawLLMRoleBackground {
+	if bg.Config.Model != "assistant-model" || bg.Config.Profile != maclawLLMRoleBackground {
 		t.Fatalf("background config = model %q profile %q", bg.Config.Model, bg.Config.Profile)
 	}
 
@@ -40,7 +43,7 @@ func TestPrepareAgentLoopConfigSelectsRole(t *testing.T) {
 		ComputerUseActive:      true,
 		ComputerUseGateSettled: true,
 	})
-	if bgVision.Config.Model != "bg-model" || bgVision.Config.Profile != maclawLLMRoleBackground {
+	if bgVision.Config.Model != "assistant-model" || bgVision.Config.Profile != maclawLLMRoleBackground {
 		t.Fatalf("a background loop does not drive the computer: model %q profile %q", bgVision.Config.Model, bgVision.Config.Profile)
 	}
 
@@ -59,7 +62,7 @@ func TestPrepareAgentLoopConfigSelectsRole(t *testing.T) {
 		ComputerUseActive:      true,
 		ComputerUseGateSettled: true,
 	})
-	if helper.Config.Model != "cu-model" || helper.Config.Profile != maclawLLMRoleComputerUse {
+	if helper.Config.Model != "assistant-model" || helper.Config.Profile != maclawLLMRoleComputerUse {
 		t.Fatalf("computer helper config = model %q profile %q", helper.Config.Model, helper.Config.Profile)
 	}
 
@@ -70,7 +73,7 @@ func TestPrepareAgentLoopConfigSelectsRole(t *testing.T) {
 		Kind:       LoopKindChat,
 		ChatTaskID: "task-1",
 	})
-	if chatTask.Config.Model != "bg-model" || chatTask.Config.Profile != maclawLLMRoleBackground {
+	if chatTask.Config.Model != "assistant-model" || chatTask.Config.Profile != maclawLLMRoleBackground {
 		t.Fatalf("chat task config = model %q profile %q", chatTask.Config.Model, chatTask.Config.Profile)
 	}
 	chatTaskVision := h.prepareAgentLoopConfig(&LoopContext{
@@ -80,7 +83,7 @@ func TestPrepareAgentLoopConfigSelectsRole(t *testing.T) {
 		ComputerUseActive:      true,
 		ComputerUseGateSettled: true,
 	})
-	if chatTaskVision.Config.Model != "cu-model" || chatTaskVision.Config.Profile != maclawLLMRoleComputerUse {
+	if chatTaskVision.Config.Model != "assistant-model" || chatTaskVision.Config.Profile != maclawLLMRoleComputerUse {
 		t.Fatalf("computer helper task config = model %q profile %q", chatTaskVision.Config.Model, chatTaskVision.Config.Profile)
 	}
 }

@@ -72,13 +72,17 @@ func (a *App) resolveMaclawLLMRoleFromConfig(role string, cfg corelib.AppConfig,
 		return resolved, nil
 	}
 	snapshot := normalizeDesktopRoleModel(hubRoleModel(cfg.HubRoleModels, role))
-	if role == maclawLLMRoleForeground && profiles != nil {
+	if profiles != nil {
 		provider, model, selErr := effectiveMaclawLLMProfileSelection(maclawLLMProfileAssistant, cfg, providers, current, profiles)
-		if selErr == nil && foregroundUsesAssistantSelection(provider, model, snapshot) {
+		if selErr == nil && roleUsesAssistantSelection(role, provider, model, snapshot) {
 			// Official auto borrows vision. A third-party auto model keeps the
 			// probe stored on its provider.
-			assistant := a.materializeMaclawLLMSelection(role, provider, model)
-			return ensureHubAutoRoleVision(assistant, providerIsHubService(provider)), nil
+			assistant := ensureHubAutoRoleVision(a.materializeMaclawLLMSelection(role, provider, model), providerIsHubService(provider))
+			// Computer use needs a model that sees the screenshots; a
+			// text-only assistant leaves that role on the Hub snapshot.
+			if role != maclawLLMRoleComputerUse || assistant.SupportsVision || snapshot == "" {
+				return assistant, nil
+			}
 		}
 	}
 	if snapshot != "" {
@@ -134,6 +138,43 @@ func normalizeDesktopRoleModel(model string) string {
 // also how IsHubManagedLLMEndpoint recognizes Hub routing.
 func providerIsHubService(provider corelib.MaclawLLMProvider) bool {
 	return provider.IsHubService || isHubServiceProviderName(provider.Name)
+}
+
+// roleUsesAssistantSelection: an empty role follows the person's current
+// (assistant) model, and the Hub snapshot only when that model is MaClaw
+// official on auto. Foreground always follows a custom assistant. Background
+// follows it too (before 2026-10-21 it kept the Hub snapshot, so a
+// custom-model user's worker loops ran on Hub auto). Computer use follows it
+// only when that model can see images (checked by the caller after
+// materializing); a text-only assistant keeps the Hub snapshot there.
+func roleUsesAssistantSelection(role string, provider corelib.MaclawLLMProvider, model, snapshot string) bool {
+	if !foregroundUsesAssistantSelection(provider, model, snapshot) {
+		return false
+	}
+	return role == maclawLLMRoleForeground || role == maclawLLMRoleBackground || role == maclawLLMRoleComputerUse
+}
+
+// ResolveHubLLMRole is the Hub's shared model for one role, ignoring the
+// person's own settings. Callers use it only as the last attempt after the
+// person's own model failed.
+func (a *App) ResolveHubLLMRole(role string) (corelib.MaclawLLMConfig, error) {
+	if a == nil {
+		return corelib.MaclawLLMConfig{}, fmt.Errorf("app is nil")
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return corelib.MaclawLLMConfig{}, err
+	}
+	state := a.maclawLLMProvidersFromConfig(&cfg)
+	provider, ok := findHubServiceProvider(state.Providers)
+	if !ok {
+		return corelib.MaclawLLMConfig{}, fmt.Errorf("no Hub service provider")
+	}
+	model := normalizeDesktopRoleModel(hubRoleModel(cfg.HubRoleModels, role))
+	if model == "" {
+		model = hubServiceAutoModel
+	}
+	return a.materializeResolvedRole(role, provider, model), nil
 }
 
 // foregroundUsesAssistantSelection reports that interactive chat should call

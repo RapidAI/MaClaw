@@ -64,6 +64,11 @@ type LLMClassifyRequest struct {
 	// computer_use) instead of the assistant profile. An unresolved role keeps
 	// the assistant config.
 	Role string
+
+	// HubOnly calls the Hub's shared model for Role (foreground when Role is
+	// empty), ignoring the person's own settings. Use it only as a last
+	// attempt after their own model failed.
+	HubOnly bool
 }
 
 // LLMClassifyResult holds the response from a lightweight LLM call.
@@ -111,21 +116,35 @@ func (h *IMMessageHandler) LLMClassify(ctx context.Context, req LLMClassifyReque
 	}
 	ctx = llm.WithRequestTraceIfMissing(ctx, req.Tag)
 
+	// The role (or the assistant profile) is the base; the lightweight
+	// sibling is taken from that base, so a fallback stays on the same
+	// provider the person chose for this role.
 	cfg := h.getMaclawLLMConfig()
+	if role := strings.TrimSpace(req.Role); role != "" && h.app != nil && !req.HubOnly {
+		if resolved, err := h.app.ResolveMaclawLLMRole(role); err == nil && strings.TrimSpace(resolved.Model) != "" {
+			cfg = resolved
+		} else if err != nil {
+			log.Printf("[%s] role %s resolve failed, using assistant: %v", req.Tag, role, err)
+		}
+	}
+	if req.HubOnly && h.app != nil {
+		role := strings.TrimSpace(req.Role)
+		if role == "" {
+			role = maclawLLMRoleForeground
+		}
+		resolved, err := h.app.ResolveHubLLMRole(role)
+		if err != nil {
+			return nil, fmt.Errorf("%s hub model unavailable: %w", req.Tag, err)
+		}
+		cfg = resolved
+	}
 	// When PreferLightweight is set, try to use a non-reasoning model for
 	// classification tasks. Reasoning models (deepseek-reasoner, o1, etc.)
 	// generate chain-of-thought before answering, adding 1-2s latency for
 	// simple classification tasks that only need "continue" or "new".
 	if req.PreferLightweight {
-		if lightCfg := h.getLightweightLLMConfig(); lightCfg.URL != "" && lightCfg.Model != "" {
+		if lightCfg := h.getLightweightLLMConfigFromBase(cfg); lightCfg.URL != "" && lightCfg.Model != "" {
 			cfg = lightCfg
-		}
-	}
-	if role := strings.TrimSpace(req.Role); role != "" && h.app != nil {
-		if resolved, err := h.app.ResolveMaclawLLMRole(role); err == nil && strings.TrimSpace(resolved.Model) != "" {
-			cfg = resolved
-		} else if err != nil {
-			log.Printf("[%s] role %s resolve failed, using assistant: %v", req.Tag, role, err)
 		}
 	}
 	if req.NoThinking {
