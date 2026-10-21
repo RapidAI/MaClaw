@@ -109,6 +109,7 @@ func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, l
 		if state := wf.machine.GetActive(ownerID); state != nil {
 			if p := state.ActivePhase(); p != nil && p.Output != "" {
 				log.Printf("[workflow-v2] post-loop doc capture skipped: phase already has output (len=%d)", len([]rune(p.Output)))
+				h.acceptUnattendedWorkflowConfirm(ownerID, state)
 				return
 			} else if p != nil {
 				completedPhaseID = p.ID

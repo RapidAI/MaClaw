@@ -352,6 +352,24 @@ func (h *IMMessageHandler) assessDiscoveredMCPBinds(ctx context.Context, selecte
 	return kept, reasons
 }
 
+// semanticMCPSidecarSessionID is the route lineage for installed MCP tools
+// listed beside a managed plan. routeLineageKey is root, session, and
+// principal. The :mcp-discover turn suffix does not isolate the sidecar, so
+// publishing it as a child of the managed session retires that plan's grants
+// and every later call on the managed surface returns route_revision_superseded.
+// The sidecar supersedes only an earlier sidecar.
+func semanticMCPSidecarSessionID(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ""
+	}
+	const mark = ":mcp-sidecar"
+	if strings.HasSuffix(sessionID, mark) {
+		return sessionID
+	}
+	return sessionID + mark
+}
+
 // semanticSurfaceForDiscoveredMCP plans and publishes x:mcp grants for the
 // binds discovery already identified. It does not classify the user text and
 // does not enter semanticPlanForTurn: a legacy turn has no managed label, and
@@ -513,9 +531,10 @@ func (h *IMMessageHandler) semanticSurfaceForDiscoveredMCP(ctx context.Context, 
 	// installed tool has to be listable; a cap of eight hid the rest.
 	maxSelections, maxSchemaTokens := 0, 0
 	turnID := identity.TurnID + ":mcp-discover:" + tool.SchemaDigest([]byte(discoveredMCPBindDigestText(binds))) + ":" + strconv.FormatUint(generation, 10)
+	sessionID := semanticMCPSidecarSessionID(identity.SessionID)
 	plan, err := tool.NewToolPlanner(registry).Plan(tool.RouteRequest{
 		RootTaskID:                        identity.RootTaskID,
-		SessionID:                         identity.SessionID,
+		SessionID:                         sessionID,
 		TurnID:                            turnID,
 		ChannelScope:                      semanticChannelScope(channel),
 		Snapshot:                          snapshot,
@@ -542,7 +561,7 @@ func (h *IMMessageHandler) semanticSurfaceForDiscoveredMCP(ctx context.Context, 
 			return nil, nil, semanticUnmetNeedsError{Unmet: plan.Unmet}
 		}
 	}
-	scopePlan, scopeResult := validateSemanticToolScope(plan, defsByName, identity.RootTaskID, identity.SessionID, turnID)
+	scopePlan, scopeResult := validateSemanticToolScope(plan, defsByName, identity.RootTaskID, sessionID, turnID)
 	if err := semanticScopeSurfaceError(scopePlan, scopeResult); err != nil {
 		return nil, nil, err
 	}
@@ -550,7 +569,7 @@ func (h *IMMessageHandler) semanticSurfaceForDiscoveredMCP(ctx context.Context, 
 		registry: registry, plan: plan, scopePlan: scopePlan, definitions: defsByName, schemas: schemas,
 		rootTaskID: identity.RootTaskID, turnID: turnID, policy: routingPolicy,
 	}
-	_, surface, err := h.openPreparedSemanticCallSurface(ctx, userID, joined, channel, identity.SessionID, nil, nil, prepared)
+	_, surface, err := h.openPreparedSemanticCallSurface(ctx, userID, joined, channel, sessionID, nil, nil, prepared)
 	if err != nil {
 		return nil, nil, err
 	}

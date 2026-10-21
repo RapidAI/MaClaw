@@ -38,6 +38,23 @@ func waitForCredentialCard(t *testing.T, h *IMMessageHandler, userID string) *pe
 
 const credentialGateSecretArgs = `{"text":"驱网服务器 www.driverdevelop.com root Dummy_Pw2026"}`
 
+func TestCredentialGateUnattendedFailsClosed(t *testing.T) {
+	var called int32
+	h := credentialGateTestHandler(t, &called)
+	publishUnattendedLoop(h, "u1", LoopKindBackground, "scheduler")
+	proceed, result := h.credentialGateBlock(context.Background(), "u1", "knowledge_save_text", credentialGateSecretArgs, "")
+	if proceed || result.Outcome != toolOutcomeFailed || result.FailureKind != toolFailurePolicyRejected || atomic.LoadInt32(&called) != 0 {
+		t.Fatalf("proceed=%v called=%d result=%+v", proceed, called, result)
+	}
+	if !strings.Contains(result.Text, "敏感") && !strings.Contains(result.Text, "sensitive") {
+		t.Fatalf("text=%q", result.Text)
+	}
+	clean, cleanResult := h.credentialGateBlock(context.Background(), "u1", "knowledge_save_text", `{"text":"普通的知识库笔记内容"}`, "")
+	if !clean || cleanResult.Outcome == toolOutcomeFailed {
+		t.Fatalf("clean payload blocked: %+v", cleanResult)
+	}
+}
+
 func TestCredentialGateToolMatcher(t *testing.T) {
 	for _, name := range []string{
 		"knowledge_save_text", "knowledge_save_url", "knowledge_save_urls",

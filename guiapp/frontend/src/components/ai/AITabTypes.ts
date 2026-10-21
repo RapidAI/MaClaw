@@ -46,8 +46,13 @@ export interface AITab {
     role?: string;
     /** Bound project path (required when type="project") */
     projectPath?: string;
-    /** Stable cloud-workspace identity; projectPath is only the local cache path. */
+    /** Stable cloud-workspace identity. Tabs that share it are one conversation. */
     cloudWorkspaceId?: string;
+    /**
+     * File set for a second chat on a workspace that already has a conversation.
+     * It must not collapse this tab into that conversation.
+     */
+    fileWorkspaceId?: string;
     /** Exact external ACP owner. It is unique even when projectPath is shared. */
     sessionKey?: string;
     /** AI expert ID (required when type="expert"); title carries the expert name. */

@@ -33,6 +33,26 @@ func TestRecordAudioUserFacingRejectText(t *testing.T) {
 	}
 }
 
+func TestUnattendedRecordAudioDoesNotOpenSession(t *testing.T) {
+	const userID = "sched-record"
+	h := &IMMessageHandler{app: &App{}}
+	h.app.runWindowManager = &runWindowManager{tasks: []RunWindowTask{{
+		Status: runWindowRunning, SessionUserID: userID,
+	}}}
+	raw := agent.ToolRecordAudio(map[string]interface{}{"title": "周会"})
+	out := h.handleAgentLoopRecordAudioToolResult(userID, "desktop", "", raw, false, "call-1", nil, nil, nil, nil, false)
+	if out.Response != nil || strings.Contains(out.Result, "__RECORD_AUDIO__") || !strings.Contains(out.Result, "无法录音") {
+		t.Fatalf("response=%v result=%s", out.Response, out.Result)
+	}
+	if _, ok := h.pendingRecordAudio.Load(userID); ok {
+		t.Fatal("unattended recording stored a session")
+	}
+	interactive := h.handleAgentLoopRecordAudioToolResult("desktop-user", "desktop", "", raw, false, "call-2", nil, nil, nil, nil, false)
+	if interactive.Response == nil || strings.Contains(interactive.Result, "无法录音") {
+		t.Fatalf("interactive response=%v result=%s", interactive.Response, interactive.Result)
+	}
+}
+
 func TestRewriteRecordAudioMarkerForSharedLoop_DesktopOK(t *testing.T) {
 	h := &IMMessageHandler{}
 	raw := agent.ToolRecordAudio(map[string]interface{}{"title": "周会"})

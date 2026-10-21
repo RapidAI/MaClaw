@@ -201,11 +201,13 @@ function isCloudWorkspaceLeaseCancelled(message: string): boolean {
 
 export function cloudWorkspaceIdFromTab(tab?: {
     cloudWorkspaceId?: string | null;
+    fileWorkspaceId?: string | null;
     projectPath?: string | null;
     workingDir?: string | null;
 } | null): string {
     return (
         String(tab?.cloudWorkspaceId || "").trim()
+        || String(tab?.fileWorkspaceId || "").trim()
         || cloudWorkspaceIdFromPath(tab?.workingDir)
         || cloudWorkspaceIdFromPath(tab?.projectPath)
         || ""

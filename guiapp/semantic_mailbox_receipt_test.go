@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -15,6 +16,19 @@ func closeSemanticSurface(t *testing.T, surface *semanticCallSurface) {
 			_ = surface.coordinator.Close()
 		}
 	})
+}
+
+func TestTrustedMailboxSendAutoConfirmsWhenUnattended(t *testing.T) {
+	sender := &statusMailSender{}
+	h, userID := newMailboxToolFixture(t, sender)
+	publishUnattendedLoop(h, userID, LoopKindBackground, "scheduler")
+	cb := &sharedAgentLoopCallbacks{handler: h, userID: userID}
+	got := cb.executeTrustedMailboxSend(context.Background(), tool.CanonicalRequest{Values: map[string]interface{}{
+		"action": "send", "to": []any{"a@ex.com"}, "subject": "状态", "text": "在线",
+	}})
+	if !got.Succeeded || got.AwaitingReceipt || got.Result != "邮件已发送" || got.ReasonCode != "" || sender.calls != 1 {
+		t.Fatalf("got=%+v calls=%d", got, sender.calls)
+	}
 }
 
 func TestMailboxSendPlanMaterializesOnlyTheTrustedSendAdapter(t *testing.T) {

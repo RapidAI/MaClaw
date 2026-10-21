@@ -47,6 +47,53 @@ func TestSharedAskUserCheckpointConflictFailsClosed(t *testing.T) {
 	}
 }
 
+func TestUnattendedAskUserDoesNotPauseLegacyLoop(t *testing.T) {
+	h := &IMMessageHandler{}
+	const userID = "sched-legacy-ask"
+	publishUnattendedLoop(h, userID, LoopKindBackground, "scheduler")
+	history := []agent.ConversationEntry{{Role: "user", Content: "send the report"}}
+	marker := agent.AskUserResultMarker(&agent.AskUserRequest{
+		Question:  "发送吗",
+		InputType: "confirm",
+		Options:   []string{"确认", "取消"},
+	})
+	out := h.handleAgentLoopAskUserToolResult(userID, "desktop", "send the report", marker, false, "call-1", nil, history, nil, nil, false)
+	if out.Response != nil || strings.HasPrefix(out.Result, "__ASK_USER__") || !strings.Contains(out.Result, "已确认") {
+		t.Fatalf("response=%v result=%s", out.Response, out.Result)
+	}
+	if _, ok := h.pendingAskUser.Load(userID); ok {
+		t.Fatal("unattended ask stored a pending card")
+	}
+	if len(out.History) != len(history) {
+		t.Fatalf("history len=%d", len(out.History))
+	}
+	secret := agent.AskUserResultMarker(&agent.AskUserRequest{Question: "密码", InputType: "secret", SecretName: "SITE_PASSWORD"})
+	secretOut := h.handleAgentLoopAskUserToolResult(userID, "scheduler", "", secret, false, "call-2", nil, history, nil, nil, false)
+	if secretOut.Response != nil || !strings.Contains(secretOut.Result, "无法填写密码") {
+		t.Fatalf("secret response=%v result=%s", secretOut.Response, secretOut.Result)
+	}
+	interactive := h.handleAgentLoopAskUserToolResult("other-user", "desktop", "send", marker, false, "call-3", nil, history, nil, nil, false)
+	if interactive.Response == nil {
+		t.Fatal("interactive ask must still pause")
+	}
+}
+
+func TestUnattendedWorkflowContinuationCapStops(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := "cap-" + strings.ReplaceAll(t.Name(), "/", "-")
+	t.Cleanup(func() { resetUnattendedWorkflowContinuations(userID) })
+	unattendedWorkflowContinuationMu.Lock()
+	unattendedWorkflowContinuations.Store(userID, unattendedWorkflowContinuationCap)
+	unattendedWorkflowContinuationMu.Unlock()
+	if h.scheduleUnattendedWorkflowContinuation(userID) {
+		t.Fatal("cap must not schedule another continuation")
+	}
+	resetUnattendedWorkflowContinuations(userID)
+	if _, ok := unattendedWorkflowContinuations.Load(userID); ok {
+		t.Fatal("counter survived reset")
+	}
+}
+
 func TestAskUserToolResultKeepsResumeTaskID(t *testing.T) {
 	h := &IMMessageHandler{}
 	history := []agent.ConversationEntry{

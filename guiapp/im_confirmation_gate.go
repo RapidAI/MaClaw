@@ -122,6 +122,11 @@ func shouldRequireExecutionConfirmation(msg IMUserMessage, pending *pendingConfi
 }
 
 func (h *IMMessageHandler) handleExecutionConfirmationGate(freshTask bool, msg IMUserMessage, trimmed string, httpClient *http.Client) (*IMAgentResponse, bool) {
+	// A scheduled or run-window turn has already been authorized by creating
+	// the task. Waiting here would leave that run unfinished.
+	if h.unattendedTurn(msg.UserID) {
+		return nil, false
+	}
 	if !shouldConsiderExecutionConfirmation(freshTask, msg, trimmed) {
 		return nil, false
 	}

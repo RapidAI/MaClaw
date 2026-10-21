@@ -196,6 +196,15 @@ describe("codingTaskMode", () => {
             projectPath: "D:/tasks/math",
             workingDir: "C:/data/cloud-workspaces/tenant/cws_dir",
         })).toBe("cws_dir");
+        expect(cloudWorkspaceIdFromTab({
+            fileWorkspaceId: "cws_files",
+            projectPath: "D:/tasks/math-copy",
+        })).toBe("cws_files");
+        expect(cloudWorkspaceIdFromTab({
+            cloudWorkspaceId: "cws_tab",
+            fileWorkspaceId: "cws_files",
+            projectPath: "D:/tasks/math",
+        })).toBe("cws_tab");
         expect(cloudWorkspaceIdFromTab({ projectPath: "D:/tasks/local" })).toBe("");
     });
 

@@ -79,7 +79,8 @@ func (h *IMMessageHandler) toolAskUser(args map[string]interface{}) string {
 	// Return a special marker that the agent loop can detect.
 	// The loop will pause and wait for user input, then inject the
 	// user's response as the tool_result.
-	return fmt.Sprintf("__ASK_USER__%s", string(data))
+	marker := fmt.Sprintf("__ASK_USER__%s", string(data))
+	return marker
 }
 
 // IsAskUserResult checks if a tool result is an ask_user structured question.
@@ -159,6 +160,17 @@ func (h *IMMessageHandler) handleAgentLoopAskUserToolResult(userID, platform, ms
 		Conversation: conversation,
 		History:      history,
 		ToolResults:  toolResults,
+	}
+	// Workflow phases and canary-skipped turns still use the legacy loop.
+	// Resolve here so that loop continues instead of parking on the card.
+	// The shared loop rewrites the same marker before corelib can pause.
+	if resolved, resolvedOK := unattendedResolvedAsk(h.resolveUnattendedAsk(userID, result)); resolvedOK {
+		out.Result = resolved
+		return out
+	}
+	if h != nil && strings.HasPrefix(result, "__ASK_USER__") && h.unattendedTurn(userID) {
+		out.Result = "ask_user is unavailable in scheduled tasks; choose the next action directly and continue."
+		return out
 	}
 	askReq, ok := ParseAskUserResult(result)
 	if !ok {

@@ -174,10 +174,18 @@ func (h *IMMessageHandler) applyBonusRoundChoice(conversation []interface{}, his
 			opts.MilestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, true)
 		}
 		if IsAskUserResult(toolResult) {
-			toolResult = "ask_user is unavailable in background tasks; choose the next action directly."
+			if resolved, ok := unattendedResolvedAsk(h.resolveUnattendedAsk(opts.UserID, toolResult)); ok {
+				toolResult = resolved
+			} else {
+				toolResult = "ask_user is unavailable in background tasks; choose the next action directly."
+			}
 		}
 		if agent.IsRecordAudioResult(toolResult) {
-			toolResult = "record_audio is unavailable in background tasks; choose the next action directly."
+			if h != nil && h.unattendedTurn(opts.UserID) {
+				toolResult = unattendedRecordAudioRejected
+			} else {
+				toolResult = "record_audio is unavailable in background tasks; choose the next action directly."
+			}
 		}
 		if IsSubAgentContext(toolResult) {
 			toolResult = ExtractSubAgentContext(toolResult)

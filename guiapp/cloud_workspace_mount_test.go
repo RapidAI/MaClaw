@@ -1576,6 +1576,132 @@ func TestHideTaskKeepsLeaseWhenPushFails(t *testing.T) {
 	}
 }
 
+func TestCreateTaskUnifiedCloudWorkspaceStartsAnotherTask(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	first, err := app.CreateTaskUnified(TaskCreateOptions{Name: "整理讲义", Mode: "cloud", CloudWorkspaceID: "cws_two"})
+	if err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	if first.OwnConversation {
+		t.Fatal("first task on a workspace is the transcript owner")
+	}
+	second, err := app.CreateTaskUnified(TaskCreateOptions{Name: "再出一份习题", Mode: "cloud", CloudWorkspaceID: "cws_two"})
+	if err != nil {
+		t.Fatalf("second create: %v", err)
+	}
+	if !second.OwnConversation {
+		t.Fatal("second launch must be its own conversation")
+	}
+	if second.ProjectPath == "" || second.ProjectPath == first.ProjectPath {
+		t.Fatalf("second path = %q, first = %q", second.ProjectPath, first.ProjectPath)
+	}
+	pi := app.memoryStore.ProjectIndex()
+	if pi == nil {
+		t.Fatal("project index missing")
+	}
+	if pi.IsHidden(first.ProjectPath) || pi.IsArchived(first.ProjectPath) {
+		t.Fatal("original task must stay visible")
+	}
+	if pi.IsHidden(second.ProjectPath) || pi.IsArchived(second.ProjectPath) {
+		t.Fatal("new task must stay visible")
+	}
+	owner := app.findCanonicalCloudWorkspaceTask("cws_two", false)
+	if owner.ProjectPath != first.ProjectPath {
+		t.Fatalf("transcript owner = %q, want %q", owner.ProjectPath, first.ProjectPath)
+	}
+	if projectResultIsTaskCopy(owner) {
+		t.Fatal("transcript owner must not be the extra task")
+	}
+	again := mustCreateCloudWorkspaceTask(t, app, "云端任务重复", "", "", "cws_two")
+	if again.ProjectPath != first.ProjectPath {
+		t.Fatalf("public create must still reuse the owner, got %q want %q", again.ProjectPath, first.ProjectPath)
+	}
+	created := pi.Get(second.ProjectPath)
+	if created == nil || !projectRecordHasTag(*created, taskCopyTag) {
+		t.Fatalf("second task tags = %+v", created)
+	}
+	if got := app.EffectiveWorkingDirForOwner(projectSessionOwnerID(second.ProjectPath)); got != firstPathWorkingDir(t, app, first.ProjectPath) {
+		t.Fatalf("second task dir = %q, want the shared cache", got)
+	}
+}
+
+func TestCreateTaskUnifiedReadShareDoesNotTakeWriterLease(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	prepared, err := app.PrepareCloudWorkspaceReadOnly("cws_roshare")
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := app.createTaskRecordWithWorkingDir("分享材料", "", []string{
+		taskManagementTag,
+		taskUserCreatedTag,
+		cloudWorkspaceTag("cws_roshare"),
+		cloudWorkspaceShareReadTagPrefix,
+	}, prepared.LocalPath, true)
+	if strings.TrimSpace(owner.ProjectPath) == "" {
+		t.Fatal("read-share owner was not created")
+	}
+	hub.mu.Lock()
+	before := hub.leaseAcquires
+	hub.mu.Unlock()
+
+	second, err := app.CreateTaskUnified(TaskCreateOptions{Name: "再出一份", Mode: "cloud", CloudWorkspaceID: "cws_roshare"})
+	if err != nil {
+		t.Fatalf("second create: %v", err)
+	}
+	if !second.OwnConversation || second.ProjectPath == "" || second.ProjectPath == owner.ProjectPath {
+		t.Fatalf("second = %+v, owner = %q", second, owner.ProjectPath)
+	}
+	hub.mu.Lock()
+	after := hub.leaseAcquires
+	hub.mu.Unlock()
+	if after != before {
+		t.Fatalf("read-share task requested a writer lease, before=%d after=%d", before, after)
+	}
+	mount := lookupHeldCloudWorkspace("cws_roshare")
+	if mount == nil {
+		t.Fatal("read-share mount was dropped")
+	}
+	mount.mu.Lock()
+	readOnly := mount.ReadOnly
+	localPath := mount.LocalPath
+	mount.mu.Unlock()
+	if !readOnly {
+		t.Fatal("read-share mount was upgraded to a writer")
+	}
+	if got := app.EffectiveWorkingDirForOwner(projectSessionOwnerID(second.ProjectPath)); normalizeProjectSessionPath(got) != normalizeProjectSessionPath(localPath) {
+		t.Fatalf("second task dir = %q, want shared reader cache %q", got, localPath)
+	}
+	rec := app.memoryStore.ProjectIndex().Get(second.ProjectPath)
+	if rec == nil || !projectRecordHasTag(*rec, taskCopyTag) || !projectRecordHasTag(*rec, cloudWorkspaceShareReadTagPrefix) {
+		t.Fatalf("second task tags = %+v", rec)
+	}
+
+	again, err := app.CreateTaskWithCloudWorkspace("重复", "", "", "cws_roshare")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ProjectPath != owner.ProjectPath {
+		t.Fatalf("public create = %q, want owner %q", again.ProjectPath, owner.ProjectPath)
+	}
+	hub.mu.Lock()
+	final := hub.leaseAcquires
+	hub.mu.Unlock()
+	if final != before {
+		t.Fatalf("reopening the read share requested a writer lease, before=%d after=%d", before, final)
+	}
+}
+
+func firstPathWorkingDir(t *testing.T, app *App, projectPath string) string {
+	t.Helper()
+	got := app.EffectiveWorkingDirForOwner(projectSessionOwnerID(projectPath))
+	if got == "" {
+		t.Fatal("first task has no working dir")
+	}
+	return got
+}
+
 func TestCreateTaskWithCloudWorkspaceReturnsPrepareError(t *testing.T) {
 	hub := &fakeCloudWorkspaceHub{conflictUntilForce: true, acquired: cloudWorkspaceAcquiredGranted}
 	app := newCloudWorkspaceMountTestApp(t, hub)

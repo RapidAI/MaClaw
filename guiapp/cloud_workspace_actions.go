@@ -1001,33 +1001,60 @@ func (a *App) sanitizeCloudWorkspaceTaskIdentity(result ProjectSearchResult) Pro
 
 // CreateTaskWithCloudWorkspace prepares the cache mount then creates a task tagged cloud_workspace:{id}.
 // workingDir is ignored: PrepareCloudWorkspace returns LocalPath as the working directory.
+// A workspace keeps one transcript owner. Calling this again returns that task.
 func (a *App) CreateTaskWithCloudWorkspace(name, workingDir, mode, workspaceID string) (ProjectSearchResult, error) {
 	return a.createTaskWithCloudWorkspace(name, workingDir, mode, workspaceID, false)
 }
 
 func (a *App) createTaskWithCloudWorkspace(name, workingDir, mode, workspaceID string, keepExplicit bool) (ProjectSearchResult, error) {
+	result, _, err := a.createCloudWorkspaceTask(name, workingDir, mode, workspaceID, keepExplicit, false)
+	return result, err
+}
+
+// createCloudWorkspaceTask prepares the cache and returns the task for this
+// request. separateConversation adds a chat when the workspace already has
+// its transcript owner; the bool is true only for that extra task. The public
+// create path passes false and still returns the owner.
+func (a *App) createCloudWorkspaceTask(name, workingDir, mode, workspaceID string, keepExplicit, separateConversation bool) (ProjectSearchResult, bool, error) {
 	workspaceID = strings.TrimSpace(workspaceID)
 	if !validCloudWorkspaceCacheID(workspaceID) {
-		return ProjectSearchResult{}, fmt.Errorf("workspace id is required")
+		return ProjectSearchResult{}, false, fmt.Errorf("workspace id is required")
 	}
-	prepared, err := a.PrepareCloudWorkspace(workspaceID)
+	// A read share already owns this workspace. Preparing for a writer here
+	// would detach that mount and ask Hub for a lease the reader does not have.
+	prior := a.findCanonicalCloudWorkspaceTask(workspaceID, false)
+	readShare := strings.TrimSpace(prior.ProjectPath) != "" && cloudWorkspaceTaskIsReadShare(prior)
+	var prepared PreparedCloudWorkspace
+	var err error
+	if readShare {
+		prepared, err = a.PrepareCloudWorkspaceReadOnly(workspaceID)
+	} else {
+		prepared, err = a.PrepareCloudWorkspace(workspaceID)
+	}
 	if err != nil {
 		log.Printf("[cloud_workspace] prepare failed id=%s err=%v", workspaceID, err)
-		return ProjectSearchResult{}, err
+		return ProjectSearchResult{}, false, err
 	}
 	if strings.TrimSpace(prepared.LocalPath) == "" {
-		return ProjectSearchResult{}, fmt.Errorf("cloud workspace cache path is empty")
+		return ProjectSearchResult{}, false, fmt.Errorf("cloud workspace cache path is empty")
 	}
 	if existing := a.findCanonicalCloudWorkspaceTask(workspaceID, false); strings.TrimSpace(existing.ProjectPath) != "" {
+		if separateConversation {
+			created, createErr := a.createSeparateCloudWorkspaceTask(name, mode, workspaceID, existing, prepared.LocalPath, keepExplicit)
+			if createErr != nil {
+				return ProjectSearchResult{}, false, createErr
+			}
+			return created, true, nil
+		}
 		bound := a.bindPreparedCloudWorkspaceTask(workspaceID, existing, prepared.LocalPath)
 		a.hideOtherLocalCloudWorkspaceTasks(workspaceID, bound.ProjectPath)
 		a.refreshCloudWorkspaceSidecars(workspaceID, bound.ProjectPath)
-		return bound, nil
+		return bound, false, nil
 	}
 	name, mode = a.cloudWorkspaceTaskIdentity(workspaceID, name, mode)
 	taskName := taskNameForCreate(name, keepExplicit)
 	if taskName == "" {
-		return ProjectSearchResult{}, fmt.Errorf("task name is required")
+		return ProjectSearchResult{}, false, fmt.Errorf("task name is required")
 	}
 	tags := []string{taskManagementTag, taskUserCreatedTag, cloudWorkspaceTag(workspaceID)}
 	if normalized := normalizeCloudWorkspaceTaskMode(mode); normalized != "" {
@@ -1040,9 +1067,50 @@ func (a *App) createTaskWithCloudWorkspace(name, workingDir, mode, workspaceID s
 		a.hideOtherLocalCloudWorkspaceTasks(workspaceID, bound.ProjectPath)
 		a.applyCloudWorkspaceSidecars(workspaceID, bound.ProjectPath)
 		a.flushCloudWorkspaceTaskSidecarBestEffort(workspaceID)
-		return bound, nil
+		return bound, false, nil
 	}
-	return result, fmt.Errorf("创建云端工作区任务失败")
+	return result, false, fmt.Errorf("创建云端工作区任务失败")
+}
+
+// createSeparateCloudWorkspaceTask adds a task that shares workspaceID's files
+// and does not become the transcript owner. The existing task stays visible.
+func (a *App) createSeparateCloudWorkspaceTask(name, mode, workspaceID string, existing ProjectSearchResult, localPath string, keepExplicit bool) (ProjectSearchResult, error) {
+	taskName := taskNameForCreate(name, keepExplicit)
+	if taskName == "" {
+		return ProjectSearchResult{}, fmt.Errorf("task name is required")
+	}
+	tags := []string{taskManagementTag, taskUserCreatedTag, cloudWorkspaceTag(workspaceID), taskCopyTag}
+	tags = append(tags, cloudWorkspaceShareTags(existing.Tags)...)
+	if normalized := normalizeCloudWorkspaceTaskMode(mode); normalized != "" {
+		tags = append(tags, normalized)
+	}
+	result := a.createTaskRecordWithWorkingDir(taskName, "", tags, localPath, false)
+	if strings.TrimSpace(result.ProjectPath) == "" {
+		return result, fmt.Errorf("创建云端工作区任务失败")
+	}
+	bound := a.bindPreparedCloudWorkspaceTask(workspaceID, result, localPath)
+	a.hideOtherLocalCloudWorkspaceTasks(workspaceID, bound.ProjectPath)
+	return bound, nil
+}
+
+func cloudWorkspaceShareTags(tags []string) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			continue
+		}
+		if tag != cloudWorkspaceShareReadTagPrefix && tag != cloudWorkspaceShareWriteTagPrefix && !strings.HasPrefix(tag, cloudWorkspaceSharedFromPrefix) {
+			continue
+		}
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		out = append(out, tag)
+	}
+	return out
 }
 
 // ResumeCloudWorkspaceTask returns the 1:1 task for workspaceID after

@@ -18,6 +18,9 @@ type SecurityCallContext struct {
 	// FullControl is the input-box 「完全控制」 grant. It skips interactive
 	// PolicyAsk prompts. Hard PolicyDeny is unchanged.
 	FullControl bool
+	// UnattendedConfirm skips PolicyAsk for this call only. It does not
+	// store a session grant, and PolicyDeny stays denied.
+	UnattendedConfirm bool
 }
 
 // SecurityRiskAnalyzer performs regex-based risk analysis on tool calls.
@@ -188,4 +191,3 @@ func (a *SecurityRiskAnalyzer) LoadCustomPatterns(path string) error {
 	}
 	return nil
 }
-

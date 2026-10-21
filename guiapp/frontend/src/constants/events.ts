@@ -193,6 +193,7 @@ export const EVENT_NEW_TASK_WIZARD_BLOCKED = "maclaw:new-task-wizard-blocked";
  *   initialMessage?: string;        // 输入框原文，作为首条消息发送
  *   agentMode?: 'coding_dev' | 'remote_coding_dev';
  *   cloudWorkspaceId?: string;
+ *   fileWorkspaceId?: string;      // 同一工作区的额外会话：只标文件，不并入已有页签
  *   remoteHost?: string;
  *   remoteSafety?: 'diagnosis';
  *   remoteNeedsReconnect?: boolean; // 远程武装失败：首条消息延迟到 SSH 重连后
@@ -209,6 +210,8 @@ export type OpenTaskLaunchDetail = {
     initialMessage?: string;
     agentMode?: "coding_dev" | "remote_coding_dev";
     cloudWorkspaceId?: string;
+    /** Extra chat on a workspace. Names the files without joining the existing tab. */
+    fileWorkspaceId?: string;
     remoteHost?: string;
     remoteSafety?: "diagnosis";
     remoteNeedsReconnect?: boolean;

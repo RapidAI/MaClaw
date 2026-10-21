@@ -24,7 +24,7 @@ import {
 import type { Mock } from 'vitest';
 
 type MockBindings = {
-    createTaskUnified: Mock<(opts: UnifiedTaskCreateOptions) => Promise<{ projectPath: string; warning?: string }>>;
+    createTaskUnified: Mock<(opts: UnifiedTaskCreateOptions) => Promise<{ projectPath: string; warning?: string; ownConversation?: boolean }>>;
     ensureCodingArmed: Mock<(projectPath: string) => Promise<unknown>>;
     openTaskLaunch: Mock<(nav: TaskLaunchNavigation) => void>;
     openExpert: Mock<(nav: ExpertNavigation) => void>;
@@ -32,7 +32,7 @@ type MockBindings = {
 
 function makeBindings(overrides?: Partial<TaskConfigSendBindings>): MockBindings {
     return {
-        createTaskUnified: vi.fn<(opts: UnifiedTaskCreateOptions) => Promise<{ projectPath: string; warning?: string }>>().mockResolvedValue({ projectPath: 'D:/tasks/unified-task' }),
+        createTaskUnified: vi.fn<(opts: UnifiedTaskCreateOptions) => Promise<{ projectPath: string; warning?: string; ownConversation?: boolean }>>().mockResolvedValue({ projectPath: 'D:/tasks/unified-task' }),
         ensureCodingArmed: vi.fn<(projectPath: string) => Promise<unknown>>().mockResolvedValue(undefined),
         openTaskLaunch: vi.fn<(nav: TaskLaunchNavigation) => void>(),
         openExpert: vi.fn<(nav: ExpertNavigation) => void>(),
@@ -77,6 +77,38 @@ describe('draftToTaskCreateOptions', () => {
         expect(opts.mode).toBe('coding_dev');
         expect(opts.workingDir).toBe('D:/repo/app');
         expect(opts.remote).toBeUndefined();
+    });
+
+    it('opens the first cloud task on the workspace tab', async () => {
+        const bindings = makeBindings();
+        const draft = withCloudWorkspace(defaultTaskDraft(), 'cws-math', '数学');
+        const result = await runTaskConfigSend({ text: '整理讲义', draft, bindings });
+        expect(result.ok).toBe(true);
+        expect(bindings.openTaskLaunch).toHaveBeenCalledWith(expect.objectContaining({
+            projectPath: 'D:/tasks/unified-task',
+            cloudWorkspaceId: 'cws-math',
+            initialMessage: '整理讲义',
+        }));
+        const nav = bindings.openTaskLaunch.mock.calls[0][0];
+        expect(nav.fileWorkspaceId).toBeUndefined();
+    });
+
+    it('opens a second task on the same cloud workspace as its own chat', async () => {
+        const bindings = makeBindings();
+        bindings.createTaskUnified.mockResolvedValue({
+            projectPath: 'D:/tasks/second-cloud',
+            ownConversation: true,
+        });
+        const draft = withCloudWorkspace(defaultTaskDraft(), 'cws-math', '数学');
+        const result = await runTaskConfigSend({ text: '再出一份习题', draft, bindings });
+        expect(result.ok).toBe(true);
+        expect(bindings.openTaskLaunch).toHaveBeenCalledWith(expect.objectContaining({
+            projectPath: 'D:/tasks/second-cloud',
+            initialMessage: '再出一份习题',
+        }));
+        const nav = bindings.openTaskLaunch.mock.calls[0][0];
+        expect(nav.cloudWorkspaceId).toBeUndefined();
+        expect(nav.fileWorkspaceId).toBe('cws-math');
     });
 
     it('maps chat × cloud to cloud mode with CloudWorkspaceID', () => {

@@ -133,6 +133,67 @@ func setupWorkflowTestHandler(llmCaller v2.LLMCaller) (*IMMessageHandler, *mockE
 	return handler, cb
 }
 
+func TestUnattendedContinuationConfirmsWaitingPhase(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "unattended-waiting"
+	publishUnattendedLoop(h, userID, LoopKindChat, unattendedWorkflowPlatform)
+	if _, err := h.app.workflowV2.machine.Create(userID, "testing", t.TempDir(), "qa"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.app.workflowV2.machine.RecordOutput(userID, "strategy"); err != nil {
+		t.Fatal(err)
+	}
+	state := h.app.workflowV2.machine.GetActive(userID)
+	if state == nil || !state.IsWaitingConfirm() {
+		t.Fatalf("expected a waiting phase, got %#v", state)
+	}
+	got := h.handleWorkflowV2Action(IMUserMessage{UserID: userID, Platform: unattendedWorkflowPlatform, Text: "确认并继续"}, &v2.HandleResult{Action: v2.ActionReviewPending, State: state})
+	if got.Response != nil && strings.Contains(got.Response.Text, "等待") {
+		t.Fatalf("continuation parked on the review barrier: %+v", got.Response)
+	}
+	fresh := h.app.workflowV2.machine.GetActive(userID)
+	if fresh == nil || fresh.IsWaitingConfirm() {
+		t.Fatalf("waiting phase was not confirmed: %#v", fresh)
+	}
+}
+
+func TestUnattendedAutoPhaseRecordsAndFinishes(t *testing.T) {
+	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "unattended-auto"
+	publishUnattendedLoop(h, userID, LoopKindChat, unattendedWorkflowPlatform)
+	if _, err := h.app.workflowV2.machine.Create(userID, "testing", t.TempDir(), "qa"); err != nil {
+		t.Fatal(err)
+	}
+	h.app.workflowV2.machine.SetActivePhaseForTest(userID, 4)
+	state := h.app.workflowV2.machine.GetActive(userID)
+	phase := state.ActivePhase()
+	if phase == nil || phase.ExecMode != v2.ExecModeAutoFromPrev {
+		t.Fatalf("phase=%+v", phase)
+	}
+	got := h.handleWorkflowV2Action(IMUserMessage{UserID: userID, Platform: unattendedWorkflowPlatform, Text: "确认并继续"}, &v2.HandleResult{Action: v2.ActionRunPhase, Phase: phase, State: state})
+	if got.Response == nil || !strings.Contains(got.Response.Text, "工作流已完成") {
+		t.Fatalf("resp=%+v", got.Response)
+	}
+	if h.app.workflowV2.machine.GetActive(userID) != nil {
+		t.Fatal("auto phase left the workflow active")
+	}
+
+	other := "interactive-auto"
+	if _, err := h.app.workflowV2.machine.Create(other, "testing", t.TempDir(), "qa"); err != nil {
+		t.Fatal(err)
+	}
+	h.app.workflowV2.machine.SetActivePhaseForTest(other, 4)
+	interactiveState := h.app.workflowV2.machine.GetActive(other)
+	interactivePhase := interactiveState.ActivePhase()
+	interactive := h.handleWorkflowV2Action(IMUserMessage{UserID: other, Platform: "desktop", Text: "继续"}, &v2.HandleResult{Action: v2.ActionRunPhase, Phase: interactivePhase, State: interactiveState})
+	if interactive.Response == nil || !strings.Contains(interactive.Response.Text, "工作流已完成") {
+		t.Fatalf("interactive resp=%+v", interactive.Response)
+	}
+	if h.app.workflowV2.machine.GetActive(other) == nil {
+		t.Fatal("interactive auto phase must stay active until the person continues")
+	}
+}
+
 func TestResolveIMEntryContextRoutesPendingRemoteTemplate(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "test-remote-template-disabled-toggle"

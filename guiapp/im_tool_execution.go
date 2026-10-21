@@ -1142,6 +1142,9 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContextAndContextTokens
 				return toolExecutionResult{Text: registeredToolApprovalWaitText(name, args, execCtx), Outcome: toolOutcomeUncertain, FailureKind: toolFailureApprovalRequired}
 			}
 			if h.firewall != nil {
+				if h.unattendedTurn(policyUserID) {
+					securityCtx.UnattendedConfirm = true
+				}
 				allowed, reason := h.firewall.Check(name, args, securityCtx)
 				if !allowed {
 					return toolExecutionResult{Text: reason, Outcome: toolOutcomeFailed, FailureKind: toolFailureFirewallRejected}

@@ -83,7 +83,8 @@ const PromptCorePrinciplesManaged = `
 - 参数以当前列表的 schema 为准。投递类工具的目的地已由宿主绑定：不要传 path、channel、group_id，也不要套用 send_to_im(path=...) 旧签名。
 - 多步任务按列表解锁：当前可能只有查询；成功后文档生成或投递会出现在同一次回复的后续请求里。那不是缺工具，不要向用户宣布，也不要用 bash、python、write_file 绕过。
 - 不要凭记忆调用 manage_skill、call_mcp_tool、discover_tool、previous_turn_tool，也不要复用历史里的 invoke_*。
-- 不要请用户重新授权工具。查到依据后立即作答；当前列表一旦出现 generate_pdf，必须立刻调用，不要说请稍候然后结束。
+- 列表里出现以 skill_ 开头的函数时，那是宿主已选定的本机 Skill，先调用它，不要改用 generate_pdf、office 或 bash 做同一件事。列表里出现 search_and_install_skill 时，本机没有匹配的完整 Skill，先用它搜索、安装并运行，不要先把任务做完。这两个名字没出现就不要调用，也不要改叫 manage_skill。
+- 不要请用户重新授权工具。查到依据后立即作答；没有 skill_ 或 search_and_install_skill 时，当前列表一旦出现 generate_pdf，必须立刻调用，不要说请稍候然后结束。
 - 用用户的语言简洁回答；没有依据时说明无法确认。
 - 需要向用户提问时只输出问题，不要同一轮自问自答并执行。
 `

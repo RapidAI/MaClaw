@@ -154,18 +154,34 @@ type searchAndInstallSkillResult struct {
 }
 
 func (h *IMMessageHandler) executeSkillSearchInstall(args map[string]interface{}, onProgress tool.ProgressCallback) searchAndInstallSkillResult {
+	return h.executeSkillSearchInstallAdmitted(args, onProgress, false)
+}
+
+// executeSkillSearchInstallAdmitted is the host path. hostAdmitted is not an
+// argument the model can set: a complex task with no local skill must still
+// be searched when its wording would otherwise look like a lookup.
+func (h *IMMessageHandler) executeSkillSearchInstallAdmitted(args map[string]interface{}, onProgress tool.ProgressCallback, hostAdmitted bool) searchAndInstallSkillResult {
 	if h != nil && h.skillSearchInstallHandler != nil {
 		return h.skillSearchInstallHandler(args, onProgress)
 	}
-	return h.toolSearchAndInstallSkillResult(args, onProgress)
+	return h.toolSearchAndInstallSkillResultAdmitted(args, onProgress, hostAdmitted)
 }
 
 func (h *IMMessageHandler) toolSearchAndInstallSkillResult(args map[string]interface{}, onProgress tool.ProgressCallback) searchAndInstallSkillResult {
+	return h.toolSearchAndInstallSkillResultAdmitted(args, onProgress, false)
+}
+
+func (h *IMMessageHandler) toolSearchAndInstallSkillResultAdmitted(args map[string]interface{}, onProgress tool.ProgressCallback, hostAdmitted bool) searchAndInstallSkillResult {
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	// A model-supplied flag is not host admission.
+	delete(args, "host_admitted")
 	query, _ := args["query"].(string)
 	if strings.TrimSpace(query) == "" {
 		return searchAndInstallSkillResult{Text: "Missing query parameter.", Success: false}
 	}
-	if !shouldExecuteSearchAndInstallSkillQuery(query) {
+	if !skillSearchQueryAllowed(query, hostAdmitted) {
 		return searchAndInstallSkillResult{Text: fmt.Sprintf("Skill search skipped: query %q is an information lookup, not a missing capability request.", strings.TrimSpace(query)), Success: false}
 	}
 	if h == nil || h.app == nil {
@@ -254,6 +270,19 @@ func dropSkillSearchWrapperStopWords(fields []string) []string {
 		}
 	}
 	return out
+}
+
+// skillSearchQueryAllowed is the market-search gate. hostAdmitted is only
+// for the task the host already selected. The caller must put that task in
+// query. A model-invented lookup is not host admission and stays skipped.
+func skillSearchQueryAllowed(query string, hostAdmitted bool) bool {
+	if strings.TrimSpace(query) == "" {
+		return false
+	}
+	if hostAdmitted {
+		return true
+	}
+	return shouldExecuteSearchAndInstallSkillQuery(query)
 }
 
 func shouldExecuteSearchAndInstallSkillQuery(query string) bool {

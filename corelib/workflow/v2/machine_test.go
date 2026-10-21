@@ -98,6 +98,54 @@ func TestRecordOutputAndAdvanceRestoreStateWhenSaveFails(t *testing.T) {
 	}
 }
 
+func TestConfirmIfWaitingLeavesRunningPhase(t *testing.T) {
+	store := NewMemoryStore()
+	m := NewStateMachine(store, NewTemplateRegistry())
+	state := &WorkflowState{
+		ID:     "wf-wait",
+		UserID: "user-wait",
+		Type:   "coding",
+		Status: StatusActive,
+		Phases: []Phase{
+			{ID: "requirements", Status: PhaseRunning},
+			{ID: "next", Status: PhasePending},
+		},
+	}
+	if err := store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	result, err := m.ConfirmIfWaiting(state.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || result.Action != ActionReviewPending {
+		t.Fatalf("running action=%v", result)
+	}
+	loaded, err := store.Load(state.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.CurrentPhase != 0 || loaded.Phases[0].Status != PhaseRunning {
+		t.Fatalf("running phase advanced: %#v", loaded)
+	}
+
+	loaded.Phases[0].Status = PhaseWaitingConfirm
+	loaded.Phases[0].Output = "done"
+	if err := store.Save(loaded); err != nil {
+		t.Fatal(err)
+	}
+	result, err = m.ConfirmIfWaiting(state.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || result.Action != ActionRunPhase || result.State == nil {
+		t.Fatalf("waiting action=%v", result)
+	}
+	if result.State.CurrentPhase != 1 || result.State.Phases[0].Status != PhaseCompleted || result.State.Phases[1].Status != PhaseRunning {
+		t.Fatalf("waiting phase did not advance: %#v", result.State)
+	}
+}
+
 func TestCreate(t *testing.T) {
 	m := setupTestMachine()
 	state, err := m.Create("user1", "coding", "d:\\game2", "开发贪吃蛇")

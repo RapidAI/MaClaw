@@ -96,8 +96,9 @@ func appendManagedSemanticSurfaceRules(b *strings.Builder) {
 ## 本回合的工具面
 - 本回合的工具是按你要做的事预先授权的。**工具列表就是全部可用工具**（仅限此刻列表里出现的名字），名称就是普通工具名（如 web_search、generate_pdf、send_file）。
 - 工具列表之外还有**可请愿能力**（如 web_search、web_fetch、download_file、bash、office 等）：它们此刻不在列表里，但都是真实工具。需要时先用 tools_search 查确切名字和状态——标记「可请愿」的名字，把它当普通工具**单独**调用一次（download_file 用 url+save_path，bash 用 command），这表示向主机请求授权：获批后名字会加入列表，按提示重新发起即真正执行；标记「已列入本轮计划/已用尽/不可用/此名请愿未通过」的名字不要重试。此名请愿未通过只关掉这一个名字，同类其它「可请愿」名字仍可调用。工具结果里点名建议的工具（如反爬提示里的 download_file）按此办理：那是主机指的路，不是缺工具。请愿每轮每类限一次，留给真正需要的能力。
-- 不要凭记忆调用 manage_skill、call_mcp_tool、discover_tool、craft_tool、search_and_install_skill、previous_turn_tool，也不要复用历史里的 invoke_* 名称：它们在本回合不存在，调用只会被拒绝，并且浪费一轮。
-- 多步任务会按顺序解锁：当前列表可能只有查询；查询成功后，文档生成或投递会出现在**同一次回复**的下一次请求列表里。那不是「没有 PDF 工具」，不要向用户宣布缺工具，也不要用 python、bash、write_file 绕过。工具一旦出现在当前列表（例如 generate_pdf、database），必须立刻调用；禁止说「请稍候」然后结束，也不要等用户再发一条消息。
+- 不要凭记忆调用 manage_skill、call_mcp_tool、discover_tool、craft_tool、previous_turn_tool，也不要复用历史里的 invoke_* 名称：它们在本回合不存在，调用只会被拒绝，并且浪费一轮。
+- 复杂任务会由宿主先查本机 Skill。列表里出现以 skill_ 开头的函数时，先调用它，不要改用 generate_pdf、office 或 bash 做同一件事。列表里出现 search_and_install_skill 时，说明本机没有匹配的完整 Skill：先调用它搜索、安装并运行，不要先用 generate_pdf、office 或 bash 把任务做完，也不要改叫 manage_skill。这两个名字没出现在列表里就不要调用。
+- 多步任务会按顺序解锁：当前列表可能只有查询；查询成功后，文档生成或投递会出现在**同一次回复**的下一次请求列表里。那不是「没有 PDF 工具」，不要向用户宣布缺工具，也不要用 python、bash、write_file 绕过。没有 skill_ 或 search_and_install_skill 时，工具一旦出现在当前列表（例如 generate_pdf、database），必须立刻调用；禁止说「请稍候」然后结束，也不要等用户再发一条消息。
 - 数据库必须走 database / database_query：禁止把 mysql/psql/sqlcmd 写进回复或交给 bash，禁止在命令里带密码。多个数据源先 list_connections，按主机/库名选 profile_id；没有匹配时 propose_profile（只传 host/username/database）。
 - 同一个工具可能有调用次数上限。用完之后它会从列表里消失——这是本轮计划步骤用完，不是故障，也不代表这件事做不了。下一步授权出现时，再按新列表里的同名工具继续。根据已经拿到的结果往下说；需要执行时自己调用列表里的工具，不要把命令交给用户去跑，也不要让用户另开对话。
 - 参数以当前列表的 schema 为准。投递类工具的目的地已由宿主绑定：不要传 path、channel、group_id，也不要套用旧的 send_to_im(path=...) 签名。
@@ -461,13 +462,16 @@ func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGu
 	knowledgeElapsed = time.Since(knowledgeStart)
 
 	// Skill docs and repair hints teach manage_skill. ConsumeRepairNotifications
-	// is one-shot, so skip the whole family on managed turns and leave the
-	// notification for the next unmanaged turn.
+	// is one-shot, so the catalog stays off managed turns. A complex task that
+	// matched an agent-guided workflow still receives that one workflow's
+	// instructions; the host tools for it are published with the request.
 	if !loopContextIsSemanticManaged(loopCtx) {
 		h.appendKnowledgeSkillSection(b, msg, agentGuidedSkillOwnerID(loopCtx, userID))
 		h.appendSkillRepairNotifications(b)
 		h.appendMaintenanceExperienceHints(b)
 		h.appendBundleContextBanner(b)
+	} else {
+		h.appendAdmittedAgentGuidedSkillDocs(b, msg, loopCtx)
 	}
 
 	// Overlay tails must stay last. RunLoop restrips every known marker then

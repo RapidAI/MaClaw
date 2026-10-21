@@ -277,6 +277,15 @@ func (h *IMMessageHandler) credentialGateBlock(execCtx context.Context, policyUs
 		userID = "desktop-user"
 	}
 	lang := h.getWorkflowLang()
+	if h.unattendedTurn(userID) {
+		// A scheduled run cannot invent or store a detected secret. Fail the
+		// write so the task finishes instead of waiting on the card.
+		log.Printf("[credential-gate] blocked %s for unattended user=%q: secrets are not written", toolName, userID)
+		okResult.Text = "[system rejected] " + i18n.T(i18n.MsgCredentialBlocked, lang)
+		okResult.Outcome = toolOutcomeFailed
+		okResult.FailureKind = toolFailurePolicyRejected
+		return false, okResult
+	}
 	if h.confirmationStore == nil || h.app == nil {
 		// No confirmation channel: fail closed rather than write unreviewed
 		// credentials into the store.

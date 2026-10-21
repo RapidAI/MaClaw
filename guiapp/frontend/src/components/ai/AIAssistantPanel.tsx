@@ -3399,7 +3399,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // sends all pass through here; the helper dedups repeat calls once
             // the lease is held (or while one resume is still in flight).
             // Returning false keeps the caller's draft/queue entry intact.
-            const leaseWorkspaceId = cloudWorkspaceIdFromTab({ cloudWorkspaceId: resolvedTab?.cloudWorkspaceId, projectPath: resolvedProjectPath });
+            const leaseWorkspaceId = cloudWorkspaceIdFromTab({
+                cloudWorkspaceId: resolvedTab?.cloudWorkspaceId,
+                fileWorkspaceId: resolvedTab?.fileWorkspaceId,
+                projectPath: resolvedProjectPath,
+            });
             if (leaseWorkspaceId) {
                 const lease = await ensureCloudWorkspaceLeaseBeforeSend({
                     workspaceId: leaseWorkspaceId,

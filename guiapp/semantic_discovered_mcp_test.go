@@ -1238,3 +1238,141 @@ func TestDiscoveredMCPContinuationKeepsTheLegacySurface(t *testing.T) {
 		t.Fatalf("planner owned the continuation handled=%v err=%v defs=%d surface=%v", handled, err, len(defs), surface != nil)
 	}
 }
+
+// The installed-MCP list is a parallel authority. Publishing it must not
+// advance the managed route lineage or retire the grants that plan already
+// issued. A later sidecar generation supersedes only the previous sidecar.
+func TestInstalledMCPSidecarDoesNotSupersedeManagedRoute(t *testing.T) {
+	// web_search_prime without the product identity is revoked after publish,
+	// so it never becomes a sidecar. An ordinary installed tool takes the same
+	// semanticSurfaceForDiscoveredMCP path that retired the live-data grants.
+	tools := []MCPToolView{{Name: "post_work_log_add", Description: "append a work log", InputSchema: discoveredMCPObjectSchema()}}
+	h, loop := newDiscoveredMCPHandler(t, "tengyun", tools, true)
+	plan, managedScope := publishManagedRouteBesideSidecar(t, h, loop)
+	routes, err := h.semanticRouteStateStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb := &sharedAgentLoopCallbacks{
+		handler: h, loopCtx: loop, userID: "desktop-user", platform: "desktop",
+		semanticSurface: &semanticCallSurface{rendered: map[string]bool{}, scope: managedScope, plan: plan},
+		tools:           []map[string]interface{}{},
+	}
+	cb.publishReadyInstalledMCPTools()
+	if cb.discoveredMCPSurface == nil {
+		t.Fatal("installed MCP sidecar was not published")
+	}
+	if cb.semanticSurface.scope != managedScope {
+		t.Fatalf("sidecar replaced the managed surface: %+v", cb.semanticSurface.scope)
+	}
+	if got, want := cb.discoveredMCPSurface.scope.SessionID, semanticMCPSidecarSessionID(managedScope.SessionID); got != want || got == managedScope.SessionID {
+		t.Fatalf("sidecar session=%q managed=%q want %q", got, managedScope.SessionID, want)
+	}
+	if err := routes.IsCurrent(managedScope); err != nil {
+		t.Fatalf("managed route after sidecar publish: %v", err)
+	}
+	assertManagedGrantStillExposed(t, routes, managedScope, plan)
+	current, err := routes.CurrentRevision(managedScope)
+	if err != nil || current.PlanID != plan.ID {
+		t.Fatalf("managed revision=%+v err=%v", current, err)
+	}
+	sidecarCurrent, err := routes.CurrentRevision(cb.discoveredMCPSurface.scope)
+	if err != nil || sidecarCurrent.PlanID != cb.discoveredMCPSurface.plan.ID || sidecarCurrent.PlanID == plan.ID {
+		t.Fatalf("sidecar revision=%+v err=%v", sidecarCurrent, err)
+	}
+
+	firstSidecar := cb.discoveredMCPSurface.scope
+	cb.dropDiscoveredMCPSidecar()
+	cb.publishReadyInstalledMCPTools()
+	if err := routes.IsCurrent(managedScope); err != nil {
+		t.Fatalf("managed route after sidecar replacement: %v", err)
+	}
+	assertManagedGrantStillExposed(t, routes, managedScope, plan)
+	if err := routes.IsCurrent(firstSidecar); err == nil || (err.Error() != "route_revision_cancelled" && err.Error() != "route_revision_superseded") {
+		t.Fatalf("replaced sidecar still current: %v", err)
+	}
+	if cb.discoveredMCPSurface == nil || cb.discoveredMCPSurface.scope.SessionID != firstSidecar.SessionID {
+		t.Fatal("replacement sidecar left its lineage")
+	}
+	if err := routes.IsCurrent(cb.discoveredMCPSurface.scope); err != nil {
+		t.Fatalf("replacement sidecar: %v", err)
+	}
+	replaced, err := routes.CurrentRevision(cb.discoveredMCPSurface.scope)
+	if err != nil || replaced.PlanID == sidecarCurrent.PlanID || replaced.Revision <= sidecarCurrent.Revision {
+		t.Fatalf("replacement revision=%+v previous=%+v err=%v", replaced, sidecarCurrent, err)
+	}
+}
+
+func publishManagedRouteBesideSidecar(t *testing.T, h *IMMessageHandler, loop *LoopContext) (tool.ToolPlan, tool.InvocationScope) {
+	t.Helper()
+	identity := semanticLoopInvocationFor(loop)
+	registry := tool.NewCapabilityRegistry("managed-beside-sidecar-v1")
+	if err := registry.Register(tool.CapabilityDescriptor{
+		ID: "artifact.deliver.current_channel", Version: "v1",
+		Effects: []tool.EffectClass{tool.EffectExternalEffect},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	authorization, err := tool.NewParameterAuthorization(map[string]interface{}{
+		"type": "object", "properties": map[string]interface{}{"message": map[string]interface{}{"type": "string"}},
+		"required": []interface{}{"message"}, "additionalProperties": false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := tool.NewToolCatalog(registry).Publish([]tool.ProviderSpec{{
+		AdapterName:            "managed_lookup",
+		Binding:                tool.ProviderBinding{Kind: "builtin", ProviderID: "host", ImplementationID: "lookup", SchemaDigest: "schema-managed"},
+		ParameterAuthorization: authorization,
+		Provides:               []tool.CapabilityProvision{{Capability: "artifact.deliver.current_channel", Quality: 1}},
+		Effects:                []tool.EffectClass{tool.EffectExternalEffect},
+		Ready:                  true,
+	}}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := tool.NewToolPlanner(registry).Plan(tool.RouteRequest{
+		RootTaskID: identity.RootTaskID, SessionID: identity.SessionID, TurnID: identity.TurnID, Snapshot: snapshot,
+		Needs: []tool.CapabilityNeed{{ID: "need-managed", Capability: "artifact.deliver.current_channel", Required: true}},
+	})
+	if err != nil || len(plan.Selections) != 1 {
+		t.Fatalf("managed plan selections=%d err=%v", len(plan.Selections), err)
+	}
+	scope := tool.InvocationScope{
+		RootTaskID: identity.RootTaskID, PlanID: plan.ID, SessionID: identity.SessionID,
+		TurnID: identity.TurnID, PrincipalID: "desktop-user", ToolSnapshotID: plan.SnapshotDigest,
+	}
+	routes, err := h.semanticRouteStateStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := routes.PublishRevision(tool.RouteRevisionPublishRequest{Scope: scope, Plan: plan, SnapshotDigest: plan.SnapshotDigest}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	issuer, err := tool.NewInvocationIssuer([]byte(strings.Repeat("r", 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	grants, err := issuer.Issue(plan, scope, time.Minute)
+	if err != nil || len(grants) != 1 {
+		t.Fatalf("managed grants=%d err=%v", len(grants), err)
+	}
+	if _, err := routes.RecordMaterialization(scope, plan.ID, tool.RouteMaterialization{FunctionName: grants[0].Token, Grant: grants[0], State: tool.RouteMaterializationExposed}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	return plan, scope
+}
+
+func assertManagedGrantStillExposed(t *testing.T, routes tool.RouteStateStore, scope tool.InvocationScope, plan tool.ToolPlan) {
+	t.Helper()
+	state, err := routes.Open(scope, plan, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Materializations) != 1 || state.Materializations[0].State != tool.RouteMaterializationExposed {
+		t.Fatalf("managed materializations=%+v", state.Materializations)
+	}
+}

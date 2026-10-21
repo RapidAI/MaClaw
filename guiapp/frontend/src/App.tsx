@@ -161,7 +161,7 @@ import { OPEN_FILE_LIBRARY_EVENT } from './utils/fileLibraryNavigation';
 import { OPEN_EXPERT_CONVERSATION_EVENT } from './utils/expertConversationNavigation';
 import { SettingsPage } from './components/settings/SettingsPage';
 import { AppSidebarShell } from './components/layout/AppSidebarShell';
-import { isProjectTabOpen } from './components/layout/SidebarTaskManagement';
+import { isProjectTabOpen, type TaskContextMenu } from './components/layout/SidebarTaskManagement';
 import { coerceActiveAssistantTask, expertIDFromTaskTags, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, type ActiveAssistantTaskIdentity } from './components/ai/aiAssistantPanelSessionUtils';
 import { FavoriteEmployeeReplacePicker } from './components/layout/FavoriteEmployeeReplacePicker';
 import { countActiveBackgroundLoops, countLiveAISessions, countPassthroughCommands, countVisibleScheduledTasks } from './components/layout/backgroundTaskCount';
@@ -466,7 +466,7 @@ function App() {
     const taskManagementResizeStartWidth = useRef(308);
     const taskManagementResizePointerId = useRef<number | null>(null);
     const [toolDropdownOpen, setToolDropdownOpen] = useState(false);
-    const [taskContextMenu, setTaskContextMenu] = useState<{ x: number; y: number; projectPath: string; name: string; pinned: boolean; isRemoteCoding?: boolean; tags?: string[] } | null>(null);
+    const [taskContextMenu, setTaskContextMenu] = useState<TaskContextMenu>(null);
     /** Project paths with an open AI assistant tab — used to block task-list remove. */
     const [openProjectTabPaths, setOpenProjectTabPaths] = useState<string[]>([]);
     /** Stable identities for open project tabs; cloud tabs may be rebound to a new cache path. */
@@ -3398,6 +3398,7 @@ function App() {
                 prepareMode: 'new-agent',
                 agentMode: detail?.agentMode,
                 cloudWorkspaceId: String(detail?.cloudWorkspaceId || '').trim() || undefined,
+                fileWorkspaceId: String(detail?.fileWorkspaceId || '').trim() || undefined,
                 remoteHost: String(detail?.remoteHost || '').trim() || undefined,
                 remoteSafety: detail?.remoteSafety === 'diagnosis' ? 'diagnosis' : undefined,
                 remoteNeedsReconnect: detail?.remoteNeedsReconnect === true,
@@ -3635,6 +3636,9 @@ function App() {
                 remoteHost,
                 remoteSafety,
                 remoteNeedsReconnect: agentMode === 'remote_coding_dev' ? remoteNeedsReconnect : undefined,
+                // A copy shares the files. The workspace id stays off the tab
+                // identity so this reopen does not focus the original chat.
+                ...(copiedTask && cloudWorkspaceId ? { fileWorkspaceId: cloudWorkspaceId } : {}),
             });
         } catch (error) {
             console.error("resumeTask failed:", error);

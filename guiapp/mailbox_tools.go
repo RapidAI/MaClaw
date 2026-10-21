@@ -236,7 +236,7 @@ func (h *IMMessageHandler) toolMailboxDelete(ctx context.Context, args map[strin
 		return mailbox.MsgNotConfigured
 	}
 	text := host.Delete(ctx, args)
-	return h.bindFrozenMailboxDraft(userID, host, text)
+	return h.finishMailboxToolCall(ctx, userID, host, text)
 }
 
 func (h *IMMessageHandler) toolMailboxSend(ctx context.Context, args map[string]interface{}) string {
@@ -249,7 +249,7 @@ func (h *IMMessageHandler) toolMailboxSend(ctx context.Context, args map[string]
 		return mailbox.MsgNotConfigured
 	}
 	text := host.Send(ctx, args)
-	return h.bindFrozenMailboxDraft(userID, host, text)
+	return h.finishMailboxToolCall(ctx, userID, host, text)
 }
 
 // bindFrozenMailboxDraft stamps the confirmation card so only that question
@@ -435,12 +435,19 @@ func mailboxDraftKind(host *mailbox.Host, draftID string) string {
 }
 
 func (h *IMMessageHandler) approveMailboxDraft(userID, draftID string) string {
+	return h.approveMailboxDraftCtx(context.Background(), userID, draftID)
+}
+
+func (h *IMMessageHandler) approveMailboxDraftCtx(ctx context.Context, userID, draftID string) string {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	host := h.mailboxHost(userID)
 	if host == nil {
 		return mailbox.MsgExpired
 	}
 	kind := mailboxDraftKind(host, draftID)
-	result, class := host.Approve(context.Background(), draftID)
+	result, class := host.Approve(ctx, draftID)
 	if class == "uncertain" {
 		h.noteMailboxUncertain(userID, mailbox.Draft{ID: draftID, Kind: kind})
 	}

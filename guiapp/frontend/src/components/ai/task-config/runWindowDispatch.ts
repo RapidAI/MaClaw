@@ -112,7 +112,7 @@ export async function launchRunWindowTask(task: RunWindowTaskRecord, lang = "zh-
                 // paper that is still running. The open path clears it later.
                 const created = await CreateTaskUnified({ ...opts, keepExpertSession: true } as unknown as Parameters<typeof CreateTaskUnified>[0]);
                 projectPath = String(created?.projectPath || "").trim();
-                return { projectPath, warning: created?.warning };
+                return { projectPath, warning: created?.warning, ownConversation: created?.ownConversation === true };
             },
             abandonFreshLatexTask: (path) => AbandonUnopenedFreshLatexTask(path),
             ensureCodingArmed: (path) => EnsureCodingWorkbenchArmed(path),
@@ -124,6 +124,7 @@ export async function launchRunWindowTask(task: RunWindowTaskRecord, lang = "zh-
                     initialMessage: nav.initialMessage,
                     agentMode: nav.agentMode,
                     cloudWorkspaceId: nav.cloudWorkspaceId,
+                    fileWorkspaceId: nav.fileWorkspaceId,
                     remoteHost: nav.remoteHost,
                     remoteSafety: nav.remoteSafety,
                     remoteNeedsReconnect: nav.remoteNeedsReconnect,

@@ -1273,6 +1273,27 @@ func (m *StateMachine) ApplyReviewIntent(userID string, intent string, feedback 
 	}
 }
 
+// ConfirmIfWaiting advances only when the loaded active phase is waiting
+// for confirmation. A running phase is left unchanged so an unattended turn
+// cannot skip work that has not reached the review gate.
+func (m *StateMachine) ConfirmIfWaiting(userID string) (*HandleResult, error) {
+	if m == nil {
+		return nil, fmt.Errorf("no workflow machine")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	state, err := m.store.Load(userID)
+	if err != nil || state == nil || state.Status != StatusActive {
+		return nil, fmt.Errorf("no active workflow for user %s", userID)
+	}
+	phase := state.ActivePhase()
+	if phase == nil || phase.Status != PhaseWaitingConfirm {
+		return &HandleResult{Action: ActionReviewPending, State: state}, nil
+	}
+	return m.advanceLocked(state)
+}
+
 // advanceLocked moves to the next phase. Caller must hold m.mu.
 // Preserves PhaseSkipped status (set by ApplyReviewIntent "skip") rather than
 // unconditionally overwriting to PhaseCompleted.

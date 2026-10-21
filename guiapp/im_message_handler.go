@@ -69,7 +69,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// Notify goal continuation engine that a user message arrived.
 	// This cancels any pending continuation (user takes priority) and resets
 	// the no-tool counter. Skip for goal-continuation self-messages.
-	if msg.Platform != "goal-continuation" && h.app != nil && h.app.goalContinuation != nil {
+	if msg.Platform != "goal-continuation" && msg.Platform != unattendedWorkflowPlatform && h.app != nil && h.app.goalContinuation != nil {
 		h.app.goalContinuation.OnUserMessage(msg.UserID)
 	}
 	// P0-1 (0b-i): any new inbound message for the user immediately

@@ -675,6 +675,14 @@ type RequiredEffectGuard interface {
 	RequiredEffectUnsettled() bool
 }
 
+// SkillObligationNudger is an optional host callback. A tool-less stop is not
+// completion while the host has already selected a skill, or a market search
+// that must run before generic tools improvise the task. The loop injects the
+// prompt once. The next tool-less answer stands.
+type SkillObligationNudger interface {
+	SkillObligationPrompt() string
+}
+
 // ErrChecklistUnsettled is the hard-exit code when the model stops with prose
 // while a checklist it published still has non-terminal items. A written
 // summary does not close that checklist. A nameless tool call that already
@@ -1261,6 +1269,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	freeReplans := 0
 	malformedReprompts := 0
 	storedFactNudges := 0
+	skillObligationNudges := 0
 	// preNudgeAnswer is the user-facing reply written before the one-shot
 	// stored-fact nudge. A follow-up that only acknowledges that instruction
 	// must not replace it.
@@ -2861,6 +2870,24 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					})
 					historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: nudge})
 					continue
+				}
+			}
+			// The host already chose a skill, or already decided the market has
+			// to be searched. One reminder, then the model's next answer
+			// stands. This is not the mailbox hard exit: a skill the model
+			// will not call must not discard the reply.
+			if iteration+1 < maxIter && skillObligationNudges < 1 {
+				if nudger, ok := cb.(SkillObligationNudger); ok {
+					if prompt := strings.TrimSpace(nudger.SkillObligationPrompt()); prompt != "" {
+						skillObligationNudges++
+						disposeSurface(ToolSurfaceResponseSettled)
+						conversation = append(conversation, map[string]interface{}{
+							"role":    "user",
+							"content": prompt,
+						})
+						historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: prompt})
+						continue
+					}
 				}
 			}
 			// A full turn that stops before any tool call still has memory or

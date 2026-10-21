@@ -76,6 +76,9 @@ type WorkflowTemplateSummary struct {
 type UnifiedTaskCreateResult struct {
 	ProjectPath string `json:"projectPath"`
 	Warning     string `json:"warning,omitempty"`
+	// OwnConversation is true for an extra chat on a workspace that already
+	// has its transcript owner. The two tasks share that workspace's files.
+	OwnConversation bool `json:"ownConversation,omitempty"`
 }
 
 // CreateTaskUnified creates a task record (and, where applicable, arms its
@@ -183,12 +186,14 @@ func (a *App) createTaskUnified(opts TaskCreateOptions) (UnifiedTaskCreateResult
 		// workspace task: CreateTaskWithMode does not understand mode "cloud",
 		// so route the record creation through the cloud branch.
 		projectPath := ""
+		ownConversation := false
 		if opts.Mode == "cloud" {
-			result, err := a.createTaskWithCloudWorkspace(opts.Name, opts.WorkingDir, "", opts.CloudWorkspaceID, true)
+			created, err := a.unifiedCloudWorkspaceTask(opts)
 			if err != nil {
 				return zero, err
 			}
-			projectPath = result.ProjectPath
+			projectPath = created.ProjectPath
+			ownConversation = created.OwnConversation
 		} else {
 			result := a.createTaskWithMode(opts.Name, opts.WorkingDir, opts.Mode, true)
 			projectPath = result.ProjectPath
@@ -202,11 +207,12 @@ func (a *App) createTaskUnified(opts TaskCreateOptions) (UnifiedTaskCreateResult
 			// so the GUI can still open the task. It degrades to an ordinary
 			// chat task.
 			return UnifiedTaskCreateResult{
-				ProjectPath: projectPath,
-				Warning:     err.Error(),
+				ProjectPath:     projectPath,
+				Warning:         err.Error(),
+				OwnConversation: ownConversation,
 			}, nil
 		}
-		return UnifiedTaskCreateResult{ProjectPath: projectPath}, nil
+		return UnifiedTaskCreateResult{ProjectPath: projectPath, OwnConversation: ownConversation}, nil
 	}
 
 	switch opts.Mode {
@@ -225,16 +231,23 @@ func (a *App) createTaskUnified(opts TaskCreateOptions) (UnifiedTaskCreateResult
 	case "remote_coding_dev":
 		return a.createUnifiedRemoteTask(opts)
 	case "cloud":
-		result, err := a.createTaskWithCloudWorkspace(opts.Name, opts.WorkingDir, "", opts.CloudWorkspaceID, true)
-		if err != nil {
-			return zero, err
-		}
-		if strings.TrimSpace(result.ProjectPath) == "" {
-			return zero, fmt.Errorf("cloud workspace task creation failed")
-		}
-		return UnifiedTaskCreateResult{ProjectPath: result.ProjectPath}, nil
+		return a.unifiedCloudWorkspaceTask(opts)
 	}
 	return zero, fmt.Errorf("unknown task mode: %s", opts.Mode)
+}
+
+// unifiedCloudWorkspaceTask creates the cloud task for a new-task launch.
+// The first task on a workspace stays the transcript owner. A later launch
+// gets its own chat and still executes against the shared cache.
+func (a *App) unifiedCloudWorkspaceTask(opts TaskCreateOptions) (UnifiedTaskCreateResult, error) {
+	result, separate, err := a.createCloudWorkspaceTask(opts.Name, opts.WorkingDir, "", opts.CloudWorkspaceID, true, true)
+	if err != nil {
+		return UnifiedTaskCreateResult{}, err
+	}
+	if strings.TrimSpace(result.ProjectPath) == "" {
+		return UnifiedTaskCreateResult{}, fmt.Errorf("cloud workspace task creation failed")
+	}
+	return UnifiedTaskCreateResult{ProjectPath: result.ProjectPath, OwnConversation: separate}, nil
 }
 
 // createUnifiedRemoteTask creates the remote task record then arms the SSH

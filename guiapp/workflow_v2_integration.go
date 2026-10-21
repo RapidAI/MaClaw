@@ -654,6 +654,7 @@ func (h *IMMessageHandler) startNewWorkflowV2(msg IMUserMessage, routeResult *v2
 	}
 
 	log.Printf("[workflow-v2] started: user=%s type=%s project=%s id=%s", msg.UserID, state.Type, state.ProjectPath, state.ID)
+	resetUnattendedWorkflowContinuations(msg.UserID)
 
 	// Run the first phase and return its output directly as the response.
 	// The phase runs as a single agent loop call — loop ends, output returned.
@@ -669,6 +670,18 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 	}
 	switch hr.Action {
 	case v2.ActionShowForm:
+		if h.unattendedTurn(msg.UserID) {
+			if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
+				if err := wf.machine.SkipPhaseForm(msg.UserID); err != nil {
+					log.Printf("[workflow-v2] unattended form skip failed: user=%s err=%v", msg.UserID, err)
+				}
+				if fresh := wf.machine.GetActive(msg.UserID); fresh != nil {
+					hr.State = fresh
+				}
+			}
+			log.Printf("[workflow-v2] unattended form skipped user=%s", msg.UserID)
+			return h.runWorkflowV2Phase(msg.UserID, hr.State, "")
+		}
 		if hr.Phase != nil && hr.Phase.InputSchema != nil {
 			prefilled := h.prefillWorkflowFormFields(msg.UserID, hr.Phase, msg.Text)
 			hr.PrefilledData = prefilled
@@ -713,6 +726,9 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 				log.Printf("[workflow-v2] RemoteExperimentOrchestrator launch failed, falling back to agent loop")
 			case v2.ExecModeAutoFromPrev:
 				log.Printf("[workflow-v2] ActionRunPhase: ExecMode=auto_from_prev for phase=%s, auto-completing", hr.Phase.ID)
+				if h.unattendedTurn(msg.UserID) {
+					return h.finishUnattendedAutoFromPrev(msg, hr)
+				}
 				if wf := h.getWorkflowV2(); wf != nil {
 					if updatedState := wf.machine.GetActive(msg.UserID); updatedState != nil {
 						h.emitWorkflowV2Progress(msg.UserID, updatedState)
@@ -758,6 +774,9 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 		}
 		return workflowIMRouteResult{SkipNeedsConfirmGate: true}
 	case v2.ActionReviewPending:
+		if strings.EqualFold(strings.TrimSpace(msg.Platform), unattendedWorkflowPlatform) && h.unattendedTurn(msg.UserID) {
+			return h.continueUnattendedWaitingPhase(msg)
+		}
 		if resp := h.workflowReviewBarrierFromState(hr.State); resp != nil {
 			return workflowIMRouteResult{Response: resp}
 		}
@@ -787,14 +806,35 @@ func (h *IMMessageHandler) runWorkflowV2Phase(userID string, state *v2.WorkflowS
 		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "工作流已完成"}}
 	}
 	if phase.InputSchema != nil && phase.FormData == nil {
-		prefilled := h.prefillWorkflowFormFields(userID, phase, "")
-		h.emitWorkflowV2PhaseForm(userID, state, phase, prefilled)
-		h.emitWorkflowV2Progress(userID, state)
-		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "请在右侧面板填写信息后提交。"}}
+		if h.unattendedTurn(userID) {
+			if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
+				if err := wf.machine.SkipPhaseForm(userID); err != nil {
+					log.Printf("[workflow-v2] unattended form skip failed: user=%s err=%v", userID, err)
+				} else if fresh := wf.machine.GetActive(userID); fresh != nil {
+					state = fresh
+					phase = state.ActivePhase()
+				}
+			}
+			if phase == nil {
+				return workflowIMRouteResult{Response: &IMAgentResponse{Text: "工作流已完成"}}
+			}
+			if phase.InputSchema != nil && phase.FormData == nil {
+				log.Printf("[workflow-v2] unattended form still blocking user=%s", userID)
+				return h.stopUnattendedWorkflow(userID, "定时任务无法填写这个阶段的表单，工作流已停止。")
+			}
+		} else {
+			prefilled := h.prefillWorkflowFormFields(userID, phase, "")
+			h.emitWorkflowV2PhaseForm(userID, state, phase, prefilled)
+			h.emitWorkflowV2Progress(userID, state)
+			return workflowIMRouteResult{Response: &IMAgentResponse{Text: "请在右侧面板填写信息后提交。"}}
+		}
 	}
 	if missing := v2.MissingFullDependencies(state); len(missing) > 0 {
 		errText := fmt.Sprintf("阶段 %s 缺少已确认的前序产出物：%s", phase.ID, strings.Join(missing, "、"))
 		log.Printf("[workflow-v2] phase blocked by missing dependencies: user=%s type=%s phase=%s missing=%v", userID, state.Type, phase.ID, missing)
+		if h.unattendedTurn(userID) {
+			return h.stopUnattendedWorkflow(userID, errText+"。定时任务无法补齐前序产出，工作流已停止。")
+		}
 		h.emitWorkflowV2Progress(userID, state)
 		return workflowIMRouteResult{Response: &IMAgentResponse{Text: errText + "。请恢复或重新执行缺失阶段后再继续。", Error: errText}}
 	}
@@ -1524,6 +1564,219 @@ func (h *IMMessageHandler) recordWorkflowV2Output(userID, output string) {
 			h.emitDocUpdateV2(userID, prevPhase.ID, prevPhase.Output)
 		}
 	}
+	h.acceptUnattendedWorkflowConfirm(userID, state)
+}
+
+// acceptUnattendedWorkflowConfirm approves a review phase when the turn has
+// nobody present. The phase output is already recorded. A following phase is
+// started by a continuation turn after this one releases the session.
+func (h *IMMessageHandler) acceptUnattendedWorkflowConfirm(userID string, state *v2.WorkflowState) {
+	if h == nil || state == nil || !state.IsWaitingConfirm() || !h.unattendedTurn(userID) {
+		return
+	}
+	wf := h.getWorkflowV2()
+	if wf == nil || wf.machine == nil {
+		return
+	}
+	result, err := wf.machine.ConfirmIfWaiting(userID)
+	if err != nil {
+		log.Printf("[workflow-v2] unattended confirm failed: user=%s err=%v", userID, err)
+		if fresh := wf.machine.GetActive(userID); fresh != nil && fresh.IsWaitingConfirm() {
+			if h.cancelUnattendedWorkflow(userID) {
+				log.Printf("[workflow-v2] unattended workflow stopped after confirm failure user=%s", userID)
+			}
+		}
+		return
+	}
+	if result == nil || (result.Action != v2.ActionRunPhase && result.Action != v2.ActionConfirmed) {
+		return
+	}
+	log.Printf("[workflow-v2] unattended confirm user=%s", userID)
+	if result.State != nil && h.app != nil && h.app.workflowEngine != nil {
+		h.app.workflowEngine.StoreActiveState(userID, mapV2StateToV1(result.State))
+	}
+	if result.Action == v2.ActionRunPhase {
+		if h.scheduleUnattendedWorkflowContinuation(userID) {
+			return
+		}
+		// The next phase is already running, and nothing will start it.
+		// Cancel so a scheduled run can finish instead of waiting forever.
+		if h.cancelUnattendedWorkflow(userID) {
+			log.Printf("[workflow-v2] unattended workflow stopped at continuation cap user=%s", userID)
+		}
+		return
+	}
+	resetUnattendedWorkflowContinuations(userID)
+}
+
+// cancelUnattendedWorkflow ends a workflow that would otherwise wait for a
+// person. A failed cancel leaves the continuation counter in place.
+func (h *IMMessageHandler) cancelUnattendedWorkflow(userID string) bool {
+	if h == nil {
+		return false
+	}
+	userID = strings.TrimSpace(userID)
+	wf := h.getWorkflowV2()
+	if wf == nil || wf.machine == nil {
+		return false
+	}
+	if wf.machine.GetActive(userID) == nil {
+		resetUnattendedWorkflowContinuations(userID)
+		return true
+	}
+	if err := wf.machine.Cancel(userID); err != nil {
+		log.Printf("[workflow-v2] unattended cancel failed: user=%s err=%v", userID, err)
+		return false
+	}
+	if h.app != nil && h.app.workflowEngine != nil && wf.store != nil {
+		if cancelled, loadErr := wf.store.Load(userID); loadErr == nil && cancelled != nil {
+			h.app.workflowEngine.StoreActiveState(userID, mapV2StateToV1(cancelled))
+		}
+	}
+	resetUnattendedWorkflowContinuations(userID)
+	return true
+}
+
+func (h *IMMessageHandler) stopUnattendedWorkflow(userID, text string) workflowIMRouteResult {
+	if !h.cancelUnattendedWorkflow(userID) {
+		log.Printf("[workflow-v2] unattended stop left the workflow active user=%s", userID)
+	}
+	if strings.TrimSpace(text) == "" {
+		text = "定时任务无法继续这个工作流，已停止。"
+	}
+	return workflowIMRouteResult{Response: &IMAgentResponse{Text: text}}
+}
+
+// finishUnattendedAutoFromPrev records the acceptance phase. Saying the
+// workflow is done while leaving it active keeps a scheduled run open.
+func (h *IMMessageHandler) finishUnattendedAutoFromPrev(msg IMUserMessage, hr *v2.HandleResult) workflowIMRouteResult {
+	userID := strings.TrimSpace(msg.UserID)
+	wf := h.getWorkflowV2()
+	if wf == nil || wf.machine == nil {
+		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "工作流已完成"}}
+	}
+	state := wf.machine.GetActive(userID)
+	if state == nil && hr != nil {
+		state = hr.State
+	}
+	output := "自动验收"
+	phaseID := ""
+	if state != nil {
+		if phase := state.ActivePhase(); phase != nil {
+			phaseID = phase.ID
+		}
+		if state.CurrentPhase > 0 && state.CurrentPhase <= len(state.Phases) {
+			if prev := strings.TrimSpace(state.Phases[state.CurrentPhase-1].Output); prev != "" {
+				output = prev
+			}
+		}
+	}
+	if err := wf.machine.RecordOutput(userID, output); err != nil {
+		log.Printf("[workflow-v2] unattended auto phase record failed: user=%s phase=%s err=%v", userID, phaseID, err)
+		return h.stopUnattendedWorkflow(userID, "定时任务没能完成自动验收，工作流已停止。")
+	}
+	fresh := wf.machine.GetActive(userID)
+	if fresh == nil {
+		if h.app != nil && h.app.workflowEngine != nil && wf.store != nil {
+			if done, loadErr := wf.store.Load(userID); loadErr == nil && done != nil {
+				h.app.workflowEngine.StoreActiveState(userID, mapV2StateToV1(done))
+			}
+		}
+		resetUnattendedWorkflowContinuations(userID)
+		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "工作流已完成"}}
+	}
+	if fresh.IsWaitingConfirm() {
+		h.acceptUnattendedWorkflowConfirm(userID, fresh)
+		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "已确认，继续执行。"}}
+	}
+	phase := fresh.ActivePhase()
+	if phase == nil {
+		resetUnattendedWorkflowContinuations(userID)
+		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "工作流已完成"}}
+	}
+	if phase.ID == phaseID {
+		return h.stopUnattendedWorkflow(userID, "定时任务没能完成自动验收，工作流已停止。")
+	}
+	action := v2.ActionRunPhase
+	if phase.InputSchema != nil && phase.FormData == nil {
+		action = v2.ActionShowForm
+	}
+	return h.handleWorkflowV2Action(msg, &v2.HandleResult{Action: action, Phase: phase, State: fresh})
+}
+
+// continueUnattendedWaitingPhase confirms a review gate without asking the
+// classifier. The continuation turn then runs the next phase itself.
+func (h *IMMessageHandler) continueUnattendedWaitingPhase(msg IMUserMessage) workflowIMRouteResult {
+	wf := h.getWorkflowV2()
+	if wf == nil || wf.machine == nil {
+		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "工作流已结束。"}}
+	}
+	result, err := wf.machine.ConfirmIfWaiting(msg.UserID)
+	if err != nil || result == nil {
+		log.Printf("[workflow-v2] unattended waiting confirm failed: user=%s err=%v", msg.UserID, err)
+		return h.stopUnattendedWorkflow(msg.UserID, "定时任务无法继续确认这个阶段，工作流已停止。")
+	}
+	if result.State != nil && h.app != nil && h.app.workflowEngine != nil {
+		h.app.workflowEngine.StoreActiveState(msg.UserID, mapV2StateToV1(result.State))
+	}
+	switch result.Action {
+	case v2.ActionRunPhase:
+		if result.Phase != nil && result.Phase.InputSchema != nil && result.Phase.FormData == nil {
+			return h.handleWorkflowV2Action(msg, &v2.HandleResult{Action: v2.ActionShowForm, Phase: result.Phase, State: result.State})
+		}
+		return h.handleWorkflowV2Action(msg, result)
+	case v2.ActionConfirmed:
+		resetUnattendedWorkflowContinuations(msg.UserID)
+		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "所有阶段已完成！工作流结束。"}}
+	default:
+		if fresh := wf.machine.GetActive(msg.UserID); fresh != nil && fresh.ActivePhase() != nil && !fresh.IsWaitingConfirm() {
+			phase := fresh.ActivePhase()
+			action := v2.ActionRunPhase
+			if phase.InputSchema != nil && phase.FormData == nil {
+				action = v2.ActionShowForm
+			}
+			return h.handleWorkflowV2Action(msg, &v2.HandleResult{Action: action, Phase: phase, State: fresh})
+		}
+		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "已确认，继续执行。"}}
+	}
+}
+
+func (h *IMMessageHandler) scheduleUnattendedWorkflowContinuation(userID string) bool {
+	if h == nil {
+		return false
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return false
+	}
+	unattendedWorkflowContinuationMu.Lock()
+	next := 1
+	if raw, ok := unattendedWorkflowContinuations.Load(userID); ok {
+		if n, ok := raw.(int); ok {
+			next = n + 1
+		}
+	}
+	if next > unattendedWorkflowContinuationCap {
+		unattendedWorkflowContinuationMu.Unlock()
+		log.Printf("[workflow-v2] unattended confirm stopped: continuation cap user=%s", userID)
+		return false
+	}
+	unattendedWorkflowContinuations.Store(userID, next)
+	unattendedWorkflowContinuationMu.Unlock()
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("[workflow-v2] unattended continuation panic: user=%s err=%v", userID, rec)
+			}
+		}()
+		h.HandleIMMessage(IMUserMessage{
+			RequestID: fmt.Sprintf("unattended-wf-%s-%d", userID, next),
+			UserID:    userID,
+			Platform:  unattendedWorkflowPlatform,
+			Text:      "确认并继续",
+		})
+	}()
+	return true
 }
 
 // emitDocUpdateV2 sends document update to frontend preview panel.

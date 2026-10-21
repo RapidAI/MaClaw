@@ -443,7 +443,7 @@ func TestCreateTaskUnifiedWorkflowParams(t *testing.T) {
 	}
 	state := app.workflowV2.machine.GetActive(projectSessionOwnerID(full.ProjectPath))
 	if state == nil || state.ActivePhase() == nil {
-		t.Fatalf("no active workflow/phase for %q", full)
+		t.Fatalf("no active workflow/phase for %q", full.ProjectPath)
 	}
 	if state.ActivePhase().FormData == nil {
 		t.Fatal("FormData should be prefilled from Params")

@@ -18043,6 +18043,8 @@ export namespace main {
 	export class UnifiedTaskCreateResult {
 	    projectPath: string;
 	    warning?: string;
+	    /** Second task on a cloud workspace that already has one. Own chat, shared files. */
+	    ownConversation?: boolean;
 
 	    static createFrom(source: any = {}) {
 	        return new UnifiedTaskCreateResult(source);
@@ -18052,6 +18054,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.projectPath = source["projectPath"];
 	        this.warning = source["warning"];
+	        this.ownConversation = source["ownConversation"];
 	    }
 	}
 	export class UpdateResult {

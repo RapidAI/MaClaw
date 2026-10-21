@@ -156,6 +156,62 @@ describe('useTaskConfigWiring cloud workspace name', () => {
         });
     });
 
+    it('opens the first cloud task on that workspace conversation', async () => {
+        const create = CreateTaskUnified as unknown as ReturnType<typeof vi.fn>;
+        create.mockResolvedValue({ projectPath: 'D:/tasks/first-cloud' });
+        const launches: CustomEvent[] = [];
+        const listener = (event: Event) => launches.push(event as CustomEvent);
+        window.addEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+        try {
+            const { result } = renderHook(() => useTaskConfigWiring(makeOptions({
+                localGuideVisible: true,
+                inputValue: '整理讲义',
+            })));
+            act(() => {
+                result.current.taskConfig.onDraftChange(withCloudWorkspace(defaultTaskDraft(), 'cws-math', '数学'));
+            });
+            await act(async () => {
+                result.current.handleSendWithTaskConfig();
+            });
+            await waitFor(() => expect(launches.length).toBeGreaterThan(0));
+            const detail = launches.at(-1)?.detail as { projectPath?: string; cloudWorkspaceId?: string; fileWorkspaceId?: string };
+            expect(detail.projectPath).toBe('D:/tasks/first-cloud');
+            expect(detail.cloudWorkspaceId).toBe('cws-math');
+            expect(detail.fileWorkspaceId).toBeUndefined();
+        } finally {
+            window.removeEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+            create.mockReset();
+        }
+    });
+
+    it('keeps a second cloud task on its own tab and still names the shared files', async () => {
+        const create = CreateTaskUnified as unknown as ReturnType<typeof vi.fn>;
+        create.mockResolvedValue({ projectPath: 'D:/tasks/second-cloud', ownConversation: true });
+        const launches: CustomEvent[] = [];
+        const listener = (event: Event) => launches.push(event as CustomEvent);
+        window.addEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+        try {
+            const { result } = renderHook(() => useTaskConfigWiring(makeOptions({
+                localGuideVisible: true,
+                inputValue: '再出一份习题',
+            })));
+            act(() => {
+                result.current.taskConfig.onDraftChange(withCloudWorkspace(defaultTaskDraft(), 'cws-math', '数学'));
+            });
+            await act(async () => {
+                result.current.handleSendWithTaskConfig();
+            });
+            await waitFor(() => expect(launches.length).toBeGreaterThan(0));
+            const detail = launches.at(-1)?.detail as { projectPath?: string; cloudWorkspaceId?: string; fileWorkspaceId?: string };
+            expect(detail.projectPath).toBe('D:/tasks/second-cloud');
+            expect(detail.cloudWorkspaceId).toBeUndefined();
+            expect(detail.fileWorkspaceId).toBe('cws-math');
+        } finally {
+            window.removeEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+            create.mockReset();
+        }
+    });
+
     it('keeps a created workspace visible when the entitlement refresh omits it', async () => {
         vi.mocked(CreateCloudWorkspace).mockResolvedValue({ id: 'cws-new', name: '标书项目' } as never);
         vi.mocked(CloudWorkspaceEntitlement).mockResolvedValue({ workspaces: [] } as never);

@@ -69,6 +69,10 @@ export type TaskContextMenu = {
     isRemoteCoding?: boolean;
     tags?: string[];
     workingDir?: string;
+    /** Stable list identity, so archive survives a rename of the visible title. */
+    orderKey?: string;
+    /** True when the row already lives in the Archive folder. */
+    archived?: boolean;
 } | null;
 
 /** Re-export for task sidebar consumers that already import from this module. */
@@ -637,7 +641,14 @@ export function sortTaskManagementItems(items: TaskManagementItem[]): TaskManage
 export const TASK_LIST_ORDER_STORAGE_KEY = 'maclaw.sidebar-task-order.v1';
 
 /** Identity that stays put when opening a task rewrites its path or activity time. */
-export function taskOrderKey(task: Pick<TaskManagementItem, 'id' | 'name' | 'project_path' | 'tags' | 'working_dir' | 'preview'>): string {
+export function taskOrderKey(task: {
+    id?: string;
+    name?: string;
+    project_path?: string;
+    tags?: string[];
+    working_dir?: string;
+    preview?: string;
+}): string {
     // Copies share a cloud workspace or expert with the source. Keying them
     // the same way drops one row once the user has a saved list order.
     if (isExplicitTaskCopy(task.tags)) {
@@ -895,10 +906,12 @@ function matchesActiveTaskRowContext(
     if (copied) return false;
     const workDir = normalizeProjectSessionPath(proj.working_dir);
     if (workDir && workDir === ctx.activePath) return true;
-    // Cloud resume rebinds the tab onto a cache path that may differ from the
-    // durable list row; match by workspace id so the highlight still lands.
+    // Resume points the tab at the cache, or at a file inside it. That path
+    // is this workspace. A second task has its own directory, so the shared
+    // cache must not select this row.
     const rowWorkspaceId = cloudWorkspaceIdFromTaskFields(proj);
-    return !!rowWorkspaceId && !!ctx.activeWorkspaceId && rowWorkspaceId === ctx.activeWorkspaceId;
+    const activeCacheId = cloudWorkspaceIdFromPath(ctx.activePath);
+    return !!rowWorkspaceId && !!activeCacheId && rowWorkspaceId === activeCacheId;
 }
 
 /** True when this durable task row is the currently visible AI assistant tab. */
@@ -980,23 +993,29 @@ export function countRunningTaskRows(tasks: TaskManagementItem[], signals?: Live
 
 const textForLang = localizeText;
 
-/** Task-list folders: ordinary chats stay in 会话, pure-coding environments in 编程. */
-export type TaskListFolderKind = 'session' | 'coding';
+/** Task-list folders: chats stay in 会话, pure-coding environments in 编程.
+ * Archive is a view over those tasks and is always rendered after them. */
+export type TaskListFolderKind = 'session' | 'coding' | 'archive';
+type MovableTaskListFolderKind = Exclude<TaskListFolderKind, 'archive'>;
 
 export const TASK_FOLDER_COLLAPSE_STORAGE_KEY = 'maclaw.sidebar-task-folders.v1';
 export const TASK_FOLDER_ORDER_STORAGE_KEY = 'maclaw.sidebar-task-folder-order.v1';
+/** Task order keys the user moved into the Archive folder. */
+export const TASK_ARCHIVE_STORAGE_KEY = 'maclaw.sidebar-task-archive.v1';
+/** '1' once the user has expanded Archive. Absent means it stays collapsed. */
+export const TASK_ARCHIVE_EXPANDED_STORAGE_KEY = 'maclaw.sidebar-task-archive-expanded.v1';
 
-const TASK_LIST_FOLDER_KINDS: readonly TaskListFolderKind[] = ['session', 'coding'];
+const TASK_LIST_FOLDER_KINDS: readonly MovableTaskListFolderKind[] = ['session', 'coding'];
 
-const isTaskListFolderKind = (kind: unknown): kind is TaskListFolderKind =>
+const isMovableTaskFolderKind = (kind: unknown): kind is MovableTaskListFolderKind =>
     kind === 'session' || kind === 'coding';
 
-/** Saved order first, then any folder the save omitted, without duplicates. */
-export function normalizeTaskFolderOrder(order: readonly unknown[]): TaskListFolderKind[] {
-    const next: TaskListFolderKind[] = [];
-    const seen = new Set<TaskListFolderKind>();
+/** Saved order of 会话 and 编程. Archive is never part of this order. */
+export function normalizeTaskFolderOrder(order: readonly unknown[]): MovableTaskListFolderKind[] {
+    const next: MovableTaskListFolderKind[] = [];
+    const seen = new Set<MovableTaskListFolderKind>();
     for (const kind of order) {
-        if (!isTaskListFolderKind(kind) || seen.has(kind)) continue;
+        if (!isMovableTaskFolderKind(kind) || seen.has(kind)) continue;
         seen.add(kind);
         next.push(kind);
     }
@@ -1006,13 +1025,14 @@ export function normalizeTaskFolderOrder(order: readonly unknown[]): TaskListFol
     return next;
 }
 
-/** Move one folder onto another. Hidden folders keep their saved slot. */
+/** Move one folder onto another. Archive stays last and cannot be reordered. */
 export function reorderTaskListFolders(
     order: readonly TaskListFolderKind[],
     from: TaskListFolderKind,
     to: TaskListFolderKind,
-): TaskListFolderKind[] {
+): MovableTaskListFolderKind[] {
     const base = normalizeTaskFolderOrder(order);
+    if (from === 'archive' || to === 'archive') return base;
     const fromIndex = base.indexOf(from);
     const toIndex = base.indexOf(to);
     if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return base;
@@ -1022,7 +1042,7 @@ export function reorderTaskListFolders(
     return next;
 }
 
-export function readTaskFolderOrder(): TaskListFolderKind[] {
+export function readTaskFolderOrder(): MovableTaskListFolderKind[] {
     if (typeof localStorage === 'undefined') return [...TASK_LIST_FOLDER_KINDS];
     try {
         const parsed = JSON.parse(localStorage.getItem(TASK_FOLDER_ORDER_STORAGE_KEY) || '[]');
@@ -1040,20 +1060,58 @@ export function writeTaskFolderOrder(order: readonly TaskListFolderKind[]) {
     }
 }
 
-export function taskListFolderKind(task: Pick<TaskManagementItem, 'tags'>): TaskListFolderKind {
+type TaskFolderSource = {
+    id?: string;
+    name?: string;
+    project_path?: string;
+    tags?: string[];
+    working_dir?: string;
+    preview?: string;
+};
+
+/** Folder a task returns to when it leaves Archive. Tags decide; archive does not. */
+export function taskHomeFolderKind(task: Pick<TaskManagementItem, 'tags'>): MovableTaskListFolderKind {
     return isPureCodingTaskTags(task.tags) ? 'coding' : 'session';
+}
+
+export function taskListFolderKind(task: TaskFolderSource, archivedKeys?: ReadonlySet<string>): TaskListFolderKind {
+    // The usual list has nothing archived, so skip the key build on that path.
+    if (archivedKeys && archivedKeys.size > 0 && archivedKeys.has(taskOrderKey(task))) return 'archive';
+    return taskHomeFolderKind(task);
+}
+
+export function readArchivedTaskKeys(): Set<string> {
+    if (typeof localStorage === 'undefined') return new Set();
+    try {
+        const parsed = JSON.parse(localStorage.getItem(TASK_ARCHIVE_STORAGE_KEY) || '[]');
+        if (!Array.isArray(parsed)) return new Set();
+        return new Set(parsed.filter((key): key is string => typeof key === 'string' && key.length > 0));
+    } catch {
+        return new Set();
+    }
+}
+
+export function writeArchivedTaskKeys(keys: ReadonlySet<string>) {
+    try {
+        localStorage.setItem(TASK_ARCHIVE_STORAGE_KEY, JSON.stringify([...keys]));
+    } catch {
+        // Private mode or a full quota should not block the in-memory archive.
+    }
 }
 
 export type TaskListFolderGroup<T> = { kind: TaskListFolderKind; tasks: T[] };
 
-/** Preserve task order inside each folder. Empty folders are omitted. */
-export function groupTasksIntoFolders<T extends Pick<TaskManagementItem, 'tags'>>(
+/** Preserve task order inside each folder. Empty folders are omitted.
+ * Archive, when present, is always the last folder. */
+export function groupTasksIntoFolders<T extends TaskFolderSource>(
     tasks: T[],
     order: readonly TaskListFolderKind[] = TASK_LIST_FOLDER_KINDS,
+    archivedKeys?: ReadonlySet<string>,
 ): TaskListFolderGroup<T>[] {
-    const buckets: Record<TaskListFolderKind, T[]> = { session: [], coding: [] };
-    for (const task of tasks) buckets[taskListFolderKind(task)].push(task);
-    return normalizeTaskFolderOrder(order)
+    const buckets: Record<TaskListFolderKind, T[]> = { session: [], coding: [], archive: [] };
+    for (const task of tasks) buckets[taskListFolderKind(task, archivedKeys)].push(task);
+    const kinds: TaskListFolderKind[] = [...normalizeTaskFolderOrder(order), 'archive'];
+    return kinds
         .filter(kind => buckets[kind].length > 0)
         .map(kind => ({ kind, tasks: buckets[kind] }));
 }
@@ -1269,24 +1327,45 @@ export function writeCollapsedWorkdirFolders(keys: ReadonlySet<string>) {
 }
 
 export function taskListFolderLabel(kind: TaskListFolderKind, lang: string): string {
+    if (kind === 'archive') return textForLang(lang, 'Archive', '归档', '歸檔');
     if (kind === 'coding') return textForLang(lang, 'Coding', '编程', '程式');
     return textForLang(lang, 'Sessions', '会话', '工作階段');
 }
 
-export function readCollapsedTaskFolders(): Set<TaskListFolderKind> {
-    if (typeof localStorage === 'undefined') return new Set();
+const isArchiveFolderExpanded = (): boolean => {
+    if (typeof localStorage === 'undefined') return false;
     try {
-        const parsed = JSON.parse(localStorage.getItem(TASK_FOLDER_COLLAPSE_STORAGE_KEY) || '[]');
-        if (!Array.isArray(parsed)) return new Set();
-        return new Set(parsed.filter(isTaskListFolderKind));
+        return localStorage.getItem(TASK_ARCHIVE_EXPANDED_STORAGE_KEY) === '1';
     } catch {
-        return new Set();
+        return false;
     }
+};
+
+export function readCollapsedTaskFolders(): Set<TaskListFolderKind> {
+    const collapsed = new Set<TaskListFolderKind>();
+    if (typeof localStorage !== 'undefined') {
+        try {
+            const parsed = JSON.parse(localStorage.getItem(TASK_FOLDER_COLLAPSE_STORAGE_KEY) || '[]');
+            if (Array.isArray(parsed)) {
+                for (const kind of parsed) {
+                    if (isMovableTaskFolderKind(kind)) collapsed.add(kind);
+                }
+            }
+        } catch {
+            // Ignore a broken value and keep 会话 and 编程 open.
+        }
+    }
+    // Archive stays collapsed until the user expands it. The older collapse
+    // list never recorded that choice, so a missing flag means collapsed.
+    if (!isArchiveFolderExpanded()) collapsed.add('archive');
+    return collapsed;
 }
 
 export function writeCollapsedTaskFolders(kinds: ReadonlySet<TaskListFolderKind>) {
     try {
-        localStorage.setItem(TASK_FOLDER_COLLAPSE_STORAGE_KEY, JSON.stringify([...kinds]));
+        const movable = [...kinds].filter(isMovableTaskFolderKind);
+        localStorage.setItem(TASK_FOLDER_COLLAPSE_STORAGE_KEY, JSON.stringify(movable));
+        localStorage.setItem(TASK_ARCHIVE_EXPANDED_STORAGE_KEY, kinds.has('archive') ? '0' : '1');
     } catch {
         // Private mode or a full quota should not block the in-memory collapse.
     }
@@ -1298,7 +1377,7 @@ const newCloudWorkspaceActionLabel = (lang: string, creating: boolean) => (
         : textForLang(lang, 'New cloud workspace', '新建云端工作区', '新建雲端工作區')
 );
 
-type TaskContextMenuIconName = 'rename' | 'copy' | 'browse' | 'share' | 'ssh' | 'cloud' | 'local' | 'pin' | 'remove';
+type TaskContextMenuIconName = 'rename' | 'copy' | 'browse' | 'share' | 'ssh' | 'cloud' | 'local' | 'pin' | 'archive' | 'restore' | 'remove';
 
 type TaskContextMenuItem = {
     label: string;
@@ -1369,6 +1448,21 @@ const TaskContextMenuIcon = ({ name }: { name: TaskContextMenuIconName }) => (
                 <path {...TASK_ICON_PROPS} d="M10 4 20 14" />
             </>
         )}
+        {name === 'archive' && (
+            <>
+                <path {...TASK_ICON_PROPS} d="M4 7.5h16" />
+                <path {...TASK_ICON_PROPS} d="M6 7.5V18a1.5 1.5 0 0 0 1.5 1.5h9A1.5 1.5 0 0 0 18 18V7.5" />
+                <path {...TASK_ICON_PROPS} d="M9.5 11.5h5" />
+                <path {...TASK_ICON_PROPS} d="M4.5 4.5h15v3h-15z" />
+            </>
+        )}
+        {name === 'restore' && (
+            <>
+                <path {...TASK_ICON_PROPS} d="M4 14.5V19a1.5 1.5 0 0 0 1.5 1.5h13A1.5 1.5 0 0 0 20 19v-4.5" />
+                <path {...TASK_ICON_PROPS} d="M12 15.5V4.5" />
+                <path {...TASK_ICON_PROPS} d="m8 8.2 4-3.7 4 3.7" />
+            </>
+        )}
         {name === 'remove' && (
             <>
                 <path {...TASK_ICON_PROPS} d="M4.5 7h15" />
@@ -1381,15 +1475,15 @@ const TaskContextMenuIcon = ({ name }: { name: TaskContextMenuIconName }) => (
     </svg>
 );
 
-const contextMenuPosition = (x: number, y: number): { left: number; top: number } => {
+const contextMenuPosition = (x: number, y: number, itemCount: number): { left: number; top: number } => {
     const viewportWidth = typeof window === 'undefined' ? 1280 : Math.max(0, window.innerWidth || 1280);
     const viewportHeight = typeof window === 'undefined' ? 720 : Math.max(0, window.innerHeight || 720);
-    // Keep a small safe margin while reserving enough room for the menu's
-    // compact action list. The browser can still reposition it naturally when
-    // a future menu grows beyond this estimate.
+    // Size the reserve from the items actually shown. Archive's single Restore
+    // entry would otherwise be pushed a full menu-height above the pointer.
+    const menuHeight = Math.min(viewportHeight - 16, 8 + Math.max(1, itemCount) * 32);
     return {
         left: Math.max(8, Math.min(Number(x) || 8, Math.max(8, viewportWidth - 184))),
-        top: Math.max(8, Math.min(Number(y) || 8, Math.max(8, viewportHeight - 320))),
+        top: Math.max(8, Math.min(Number(y) || 8, Math.max(8, viewportHeight - menuHeight))),
     };
 };
 
@@ -1412,11 +1506,27 @@ function buildTaskContextMenuItems(opts: {
      * workspace, cloud workspace rows move onto this computer.
      */
     onTransferTask?: (menu: NonNullable<TaskContextMenu>, direction: TaskTransferDirection) => void;
+    /** Moves the task into or out of the Archive folder. */
+    onArchiveTask?: (menu: NonNullable<TaskContextMenu>, archived: boolean) => void;
 }): TaskContextMenuItem[] {
     const {
         lang, menu, setRenamingTaskPath, setRenameValue,
-        setTaskContextMenu, pinTask, onDuplicateTask, confirmRemoveTask, refreshTasks, openEditRemoteDialog, browseCloudWorkspace, allowCloudWorkspaceBrowse, onShareCloudWorkspace, onTransferTask,
+        setTaskContextMenu, pinTask, onDuplicateTask, confirmRemoveTask, refreshTasks, openEditRemoteDialog, browseCloudWorkspace, allowCloudWorkspaceBrowse, onShareCloudWorkspace, onTransferTask, onArchiveTask,
     } = opts;
+    // An archived row only offers the way back. Its home folder is still the
+    // one its tags decide (会话 or 编程).
+    if (menu.archived) {
+        return [{
+            label: textForLang(lang, 'Restore', '恢复', '恢復'),
+            icon: 'restore',
+            testId: 'task-context-restore',
+            title: textForLang(lang, 'Move this task back to its original folder', '把该任务恢复到原来的文件夹', '把該任務恢復到原來的資料夾'),
+            action: () => {
+                setTaskContextMenu(null);
+                onArchiveTask?.(menu, false);
+            },
+        }];
+    }
     const items: TaskContextMenuItem[] = [
         {
             label: textForLang(lang, 'Rename', '重命名', '重命名'),
@@ -1505,6 +1615,16 @@ function buildTaskContextMenuItems(opts: {
             await pinTask(menu.projectPath, !menu.pinned);
             refreshTasks();
             setTaskContextMenu(null);
+        },
+    });
+    items.push({
+        label: textForLang(lang, 'Archive', '归档', '歸檔'),
+        icon: 'archive',
+        testId: 'task-context-archive',
+        title: textForLang(lang, 'Move this task into the Archive folder', '把该任务移到归档文件夹', '把該任務移到歸檔資料夾'),
+        action: () => {
+            setTaskContextMenu(null);
+            onArchiveTask?.(menu, true);
         },
     });
     items.push({
@@ -2505,7 +2625,10 @@ export const SidebarTaskManagement = ({
     const [taskListOrder, setTaskListOrder] = useState<string[]>(readTaskListOrder);
     const [collapsedTaskFolders, setCollapsedTaskFolders] = useState<ReadonlySet<TaskListFolderKind>>(readCollapsedTaskFolders);
     const [collapsedWorkdirFolders, setCollapsedWorkdirFolders] = useState<ReadonlySet<string>>(readCollapsedWorkdirFolders);
-    const [taskFolderOrder, setTaskFolderOrder] = useState<TaskListFolderKind[]>(readTaskFolderOrder);
+    const [taskFolderOrder, setTaskFolderOrder] = useState<MovableTaskListFolderKind[]>(readTaskFolderOrder);
+    const [archivedTaskKeys, setArchivedTaskKeys] = useState<ReadonlySet<string>>(readArchivedTaskKeys);
+    // Scroll the restored row, or the Archive header, after that membership commits.
+    const pendingListScrollRef = useRef<{ kind: 'task' | 'folder'; key: string } | null>(null);
     const toggleWorkdirFolder = (key: string) => {
         if (!key) return;
         setCollapsedWorkdirFolders(prev => {
@@ -2524,6 +2647,68 @@ export const SidebarTaskManagement = ({
             writeCollapsedTaskFolders(next);
             return next;
         });
+    };
+    const revealTaskFolder = (kind: MovableTaskListFolderKind) => {
+        setCollapsedTaskFolders(prev => {
+            if (!prev.has(kind)) return prev;
+            const next = new Set(prev);
+            next.delete(kind);
+            writeCollapsedTaskFolders(next);
+            return next;
+        });
+    };
+    // A restored task that shares a directory with a home-folder row lands
+    // inside that directory folder. Open it when the user had closed it.
+    const revealTaskWorkdir = (kind: MovableTaskListFolderKind, task: TaskDirectorySource & { pinned?: boolean }) => {
+        const identity = taskWorkingDirectoryIdentity(task);
+        if (!identity) return;
+        const pinned = !!task.pinned;
+        const sharesDirectory = tasks.some(item => item !== task
+            && !!item.pinned === pinned
+            && taskListFolderKind(item, archivedTaskKeys) === kind
+            && taskWorkingDirectoryIdentity(item)?.key === identity.key);
+        if (!sharesDirectory) return;
+        const collapseKey = taskWorkdirCollapseKey(kind, pinned, identity.key);
+        setCollapsedWorkdirFolders(prev => {
+            if (!prev.has(collapseKey)) return prev;
+            const next = new Set(prev);
+            next.delete(collapseKey);
+            writeCollapsedWorkdirFolders(next);
+            return next;
+        });
+    };
+    const setTaskArchived = (menu: NonNullable<TaskContextMenu>, archived: boolean) => {
+        // Prefer the key captured when the menu opened. Otherwise use the live
+        // row, so a cloud or expert task is not stored under a path-only key.
+        const listed = tasks.find(task => menu.orderKey
+            ? taskOrderKey(task) === menu.orderKey
+            : task.project_path === menu.projectPath);
+        const key = menu.orderKey || (listed ? taskOrderKey(listed) : '');
+        if (!key) return;
+        setArchivedTaskKeys(prev => {
+            if (prev.has(key) === archived) return prev;
+            const next = new Set(prev);
+            if (archived) next.add(key);
+            else next.delete(key);
+            writeArchivedTaskKeys(next);
+            // Archive leaves the row inside a collapsed folder at the bottom.
+            // Restore puts it back up the list. Scroll once that render commits.
+            pendingListScrollRef.current = { kind: archived ? 'folder' : 'task', key };
+            return next;
+        });
+        // Archive stays collapsed. Restore opens the home folder and, when
+        // the task joins a closed directory, that directory too.
+        if (!archived) {
+            const homeTask = listed || {
+                tags: menu.tags,
+                working_dir: menu.workingDir,
+                project_path: menu.projectPath,
+                pinned: menu.pinned,
+            };
+            const homeKind = taskHomeFolderKind(homeTask);
+            revealTaskFolder(homeKind);
+            revealTaskWorkdir(homeKind, homeTask);
+        }
     };
     const visibleTasks = useMemo(
         // The backend list is recency-ordered. Opening a task rewrites
@@ -2616,6 +2801,14 @@ export const SidebarTaskManagement = ({
     }, []);
     const [taskFilter, setTaskFilter] = useState<TaskStatusFilter>('all');
     const [workspaceFilter, setWorkspaceFilter] = useState<'all' | TaskWorkspaceKind>('all');
+    // A filter that leaves only a still-collapsed Archive shows those rows
+    // without saving the folder as expanded. Dismiss and reopen stay on this
+    // view. The snapshot is whether Archive was collapsed when the filter
+    // changed, so a folder the user had already opened still toggles for real.
+    const [archiveFilterDismissed, setArchiveFilterDismissed] = useState(false);
+    const [archiveFilterStartedCollapsed, setArchiveFilterStartedCollapsed] = useState(
+        () => collapsedTaskFolders.has('archive'),
+    );
     const workspaceFilterCounts = useMemo(() => {
         const counts: Record<TaskWorkspaceKind, number> = { local: 0, cloud: 0, remote: 0 };
         for (const task of visibleTasks) counts[workspaceKindForTask(task)] += 1;
@@ -2644,11 +2837,11 @@ export const SidebarTaskManagement = ({
         return base.filter(task => !isLiveRunningRow(task) && taskStatusBucketFor(task) === taskFilter);
     }, [visibleTasks, taskFilter, workspaceFilter, isLiveRunningRow]);
     const taskFolders = useMemo(
-        () => groupTasksIntoFolders(filteredTasks, taskFolderOrder).map(folder => ({
+        () => groupTasksIntoFolders(filteredTasks, taskFolderOrder, archivedTaskKeys).map(folder => ({
             ...folder,
             entries: groupTasksByWorkingDirectory(folder.tasks),
         })),
-        [filteredTasks, taskFolderOrder],
+        [filteredTasks, taskFolderOrder, archivedTaskKeys],
     );
     const workdirGroupIdByTaskKey = useMemo(() => {
         const map = new Map<string, string>();
@@ -2684,7 +2877,7 @@ export const SidebarTaskManagement = ({
     };
     const rememberTaskDrag = (proj: TaskManagementItem) => {
         taskDragKeyRef.current = taskOrderKey(proj);
-        taskDragFolderRef.current = taskListFolderKind(proj);
+        taskDragFolderRef.current = taskListFolderKind(proj, archivedTaskKeys);
         taskDragPinnedRef.current = !!proj.pinned;
     };
     const forgetTaskDrag = () => {
@@ -2697,7 +2890,7 @@ export const SidebarTaskManagement = ({
     // not advertise a target while the pointer is still moving.
     const canDropTaskOn = (target: TaskManagementItem) => {
         if (!taskDragKeyRef.current || taskDragKeyRef.current === taskOrderKey(target)) return false;
-        if (taskDragFolderRef.current !== taskListFolderKind(target)) return false;
+        if (taskDragFolderRef.current !== taskListFolderKind(target, archivedTaskKeys)) return false;
         if (taskDragPinnedRef.current !== !!target.pinned) return false;
         return true;
     };
@@ -2713,7 +2906,7 @@ export const SidebarTaskManagement = ({
         folderDropTargetRef.current = section;
     };
     const commitFolderDrag = (from: TaskListFolderKind, to: TaskListFolderKind) => {
-        if (from === to) return;
+        if (from === to || from === 'archive' || to === 'archive') return;
         setTaskFolderOrder(prev => {
             const next = reorderTaskListFolders(prev, from, to);
             writeTaskFolderOrder(next);
@@ -2729,7 +2922,7 @@ export const SidebarTaskManagement = ({
         if (!fromTask || !toTask || !!fromTask.pinned !== !!toTask.pinned) return;
         // A drop cannot change a task's folder. Session and coding rows stay
         // in the folder their tags decide, so a cross-folder drop is ignored.
-        if (taskListFolderKind(fromTask) !== taskListFolderKind(toTask)) return;
+        if (taskListFolderKind(fromTask, archivedTaskKeys) !== taskListFolderKind(toTask, archivedTaskKeys)) return;
         const visibleKeys = filteredTasks.map(taskOrderKey);
         // Start from the list the user is looking at. A task created after the
         // last drag is shown at the top but is not in the saved keys yet;
@@ -2780,6 +2973,12 @@ export const SidebarTaskManagement = ({
         if (taskFilter === 'paused' && taskFilterCounts.paused === 0) setTaskFilter('all');
         if (taskFilter === 'shared' && taskFilterCounts.shared === 0) setTaskFilter('all');
     }, [taskFilter, taskFilterCounts]);
+    useEffect(() => {
+        setArchiveFilterDismissed(false);
+        // Read the collapse set at the filter change only. Toggling 会话 or
+        // 编程 later must not recapture it.
+        setArchiveFilterStartedCollapsed(collapsedTaskFolders.has('archive'));
+    }, [taskFilter, workspaceFilter]);
     // Dock theme toggle mirrors the quick-settings theme chip; fall back to the
     // App root attribute when the caller does not pass themeMode explicitly.
     const headerThemeMode: 'light' | 'dark' = getPortalThemeMode(themeMode) === 'dark' ? 'dark' : 'light';
@@ -2814,7 +3013,7 @@ export const SidebarTaskManagement = ({
         if (!activeRowContext) return null;
         return visibleTasks.find(proj => matchesActiveTaskRowContext(proj, activeRowContext)) ?? null;
     }, [visibleTasks, activeRowContext]);
-    const activeFolderKind = activeListedTask ? taskListFolderKind(activeListedTask) : null;
+    const activeFolderKind = activeListedTask ? taskListFolderKind(activeListedTask, archivedTaskKeys) : null;
     const activeRowPresent = activeListedTask != null;
     // Identity of the task whose folder we already revealed. A fresh object for
     // the same task must not pop a folder the user just collapsed back open.
@@ -2824,6 +3023,9 @@ export const SidebarTaskManagement = ({
     const revealedFolderTaskKeyRef = useRef('');
     useEffect(() => {
         if (!activeFolderExpandKey || !activeFolderKind) return;
+        // Archive stays collapsed until the user opens it, including when the
+        // task they just archived is the one on screen.
+        if (activeFolderKind === 'archive') return;
         if (revealedFolderTaskKeyRef.current === activeFolderExpandKey) return;
         revealedFolderTaskKeyRef.current = activeFolderExpandKey;
         setCollapsedTaskFolders(prev => {
@@ -2865,6 +3067,28 @@ export const SidebarTaskManagement = ({
         if (!el || typeof el.scrollIntoView !== 'function') return;
         el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }, [taskListVisible, activeRowPresent, activeAssistantTask, activeFolderExpanded, activeWorkdirExpanded]);
+    // Archive scrolls the collapsed 归档 header into view. Restore scrolls the
+    // row once it is mounted back in 会话 or 编程.
+    useEffect(() => {
+        const pending = pendingListScrollRef.current;
+        if (!pending) return;
+        pendingListScrollRef.current = null;
+        const root = taskListRef.current;
+        if (!root) return;
+        const scroll = (el: HTMLElement | null) => {
+            if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        };
+        const rows = root.querySelectorAll<HTMLElement>('[data-task-order-key]');
+        for (const row of rows) {
+            if (row.getAttribute('data-task-order-key') !== pending.key) continue;
+            scroll(row);
+            return;
+        }
+        // A collapsed Archive does not mount the row. Show its header.
+        if (pending.kind === 'folder') {
+            scroll(root.querySelector<HTMLElement>('[data-testid="task-folder-toggle-archive"]'));
+        }
+    }, [archivedTaskKeys, collapsedTaskFolders, collapsedWorkdirFolders]);
     useEffect(() => {
         const ids = pendingRestoreWorkspaceIdsRef.current;
         if (!ids || ids.size === 0) return;
@@ -4224,7 +4448,7 @@ export const SidebarTaskManagement = ({
         }
     };
 
-    const handleRemoveTask = async (projectPath: string, tags?: string[]) => {
+    const handleRemoveTask = async (projectPath: string, tags?: string[], orderKey?: string) => {
         if (removingTaskPathsRef.current.has(projectPath)) return;
         removingTaskPathsRef.current.add(projectPath);
         setRemovingTaskPaths(new Set(removingTaskPathsRef.current));
@@ -4246,6 +4470,18 @@ export const SidebarTaskManagement = ({
             refreshTasks();
             const targetPath = normalizeProjectSessionPath(projectPath);
             const listed = tasks.find(item => normalizeProjectSessionPath(item.project_path) === targetPath);
+            // A deleted task must not stay archived. A later row with the same
+            // identity would otherwise reappear in 归档.
+            const archiveKey = orderKey || (listed ? taskOrderKey(listed) : '');
+            if (archiveKey) {
+                setArchivedTaskKeys(prev => {
+                    if (!prev.has(archiveKey)) return prev;
+                    const next = new Set(prev);
+                    next.delete(archiveKey);
+                    writeArchivedTaskKeys(next);
+                    return next;
+                });
+            }
             const workspaceId = cloudWorkspaceIdFromTaskFields({
                 tags,
                 project_path: projectPath,
@@ -4317,7 +4553,7 @@ export const SidebarTaskManagement = ({
             removeTaskConfirmOpenRef.current = false;
         }
         if (!confirmed || !mountedRef.current) return;
-        await handleRemoveTask(projectPath, expertID ? menu.tags : undefined);
+        await handleRemoveTask(projectPath, expertID ? menu.tags : undefined, menu.orderKey);
     };
 
     /** Copies a task's settings into a new empty task and opens it. */
@@ -4530,6 +4766,22 @@ export const SidebarTaskManagement = ({
     };
 
     const taskSearchFieldLabel = textForLang(lang, 'Search tasks, cloud, knowledge…', '搜索任务、云盘、知识库等', '搜尋任務、雲端硬碟、知識庫等');
+    // A narrowed filter whose only hits sit in a collapsed Archive would
+    // otherwise show a header and no rows. Open it for this view. Collapse
+    // and expand then stay on the view: the saved flag is unchanged.
+    const archiveOnlyFilter = (taskFilter !== 'all' || workspaceFilter !== 'all')
+        && taskFolders.length === 1
+        && taskFolders[0]?.kind === 'archive';
+    const temporaryArchive = archiveOnlyFilter && archiveFilterStartedCollapsed;
+    const showArchivedMatches = temporaryArchive && !archiveFilterDismissed;
+    const toggleVisibleTaskFolder = (kind: TaskListFolderKind) => {
+        if (folderDidDragRef.current) return;
+        if (kind === 'archive' && temporaryArchive) {
+            setArchiveFilterDismissed(prev => !prev);
+            return;
+        }
+        toggleTaskFolder(kind);
+    };
 
     return (
     <div className="mc-task-pane stsm-pane" data-execution-sidebar={activeAssistantTask ? 'true' : 'false'} data-sidebar-mode={activeAssistantTask ? 'execution' : 'home'}>
@@ -4750,14 +5002,19 @@ export const SidebarTaskManagement = ({
                     : textForLang(lang, 'No tasks in this group', '\u8be5\u5206\u7ec4\u6682\u65e0\u4efb\u52a1', '\u8a72\u5206\u7d44\u66ab\u7121\u4efb\u52d9')}
             </div>
         ) : taskFolders.map(folder => {
-            const folderExpanded = !collapsedTaskFolders.has(folder.kind);
+            const folderExpanded = folder.kind === 'archive' && showArchivedMatches
+                ? true
+                : !collapsedTaskFolders.has(folder.kind);
             const folderLabel = taskListFolderLabel(folder.kind, lang);
             const folderToggleLabel = folderExpanded
                 ? textForLang(lang, `Collapse ${folderLabel}`, `折叠${folderLabel}`, `摺疊${folderLabel}`)
                 : textForLang(lang, `Expand ${folderLabel}`, `展开${folderLabel}`, `展開${folderLabel}`);
-            const foldersDraggable = taskFolders.length > 1;
+            // Archive is pinned under 会话 and 编程. It is not a drag source,
+            // and a drop onto it must not pull another folder beneath it.
+            const movableFolderCount = taskFolders.filter(item => item.kind !== 'archive').length;
+            const folderCanDrag = folder.kind !== 'archive' && movableFolderCount > 1;
             const folderDragLabel = textForLang(lang, 'Drag to reorder folders', '拖动调整文件夹顺序', '拖動調整資料夾順序');
-            const folderTitle = foldersDraggable ? `${folderDragLabel} · ${folderToggleLabel}` : folderToggleLabel;
+            const folderTitle = folderCanDrag ? `${folderDragLabel} · ${folderToggleLabel}` : folderToggleLabel;
             return (
             <section
                 key={folder.kind}
@@ -4767,7 +5024,7 @@ export const SidebarTaskManagement = ({
                 aria-label={folderLabel}
                 onDragOver={e => {
                     const from = folderDragKindRef.current;
-                    if (!from || from === folder.kind) return;
+                    if (!from || from === 'archive' || folder.kind === 'archive' || from === folder.kind) return;
                     e.preventDefault();
                     e.stopPropagation();
                     if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
@@ -4780,7 +5037,7 @@ export const SidebarTaskManagement = ({
                 }}
                 onDrop={e => {
                     const from = folderDragKindRef.current;
-                    if (!from) return;
+                    if (!from || from === 'archive' || folder.kind === 'archive') return;
                     e.preventDefault();
                     e.stopPropagation();
                     folderDragKindRef.current = null;
@@ -4791,14 +5048,14 @@ export const SidebarTaskManagement = ({
             <div
                 role="button"
                 tabIndex={0}
-                className={`stsm-task-folder__head stsm-task-folder__toggle${foldersDraggable ? ' is-draggable' : ''}`}
+                className={`stsm-task-folder__head stsm-task-folder__toggle${folderCanDrag ? ' is-draggable' : ''}`}
                 data-testid={`task-folder-toggle-${folder.kind}`}
-                draggable={foldersDraggable}
+                draggable={folderCanDrag}
                 aria-expanded={folderExpanded}
                 aria-controls={`task-folder-items-${folder.kind}`}
                 title={folderTitle}
                 onDragStart={e => {
-                    if (!foldersDraggable || taskDragKeyRef.current) { e.preventDefault(); return; }
+                    if (!folderCanDrag || taskDragKeyRef.current) { e.preventDefault(); return; }
                     e.stopPropagation();
                     folderDidDragRef.current = true;
                     folderDragKindRef.current = folder.kind;
@@ -4812,12 +5069,11 @@ export const SidebarTaskManagement = ({
                     clearFolderDropMarks();
                     window.setTimeout(() => { folderDidDragRef.current = false; }, 0);
                 }}
-                onClick={() => { if (folderDidDragRef.current) return; toggleTaskFolder(folder.kind); }}
+                onClick={() => toggleVisibleTaskFolder(folder.kind)}
                 onKeyDown={e => {
                     if (e.key !== 'Enter' && e.key !== ' ') return;
                     e.preventDefault();
-                    if (folderDidDragRef.current) return;
-                    toggleTaskFolder(folder.kind);
+                    toggleVisibleTaskFolder(folder.kind);
                 }}
             >
                 <TaskFolderChevron />
@@ -4937,8 +5193,9 @@ export const SidebarTaskManagement = ({
                     boxShadow: 'inset 3px 0 0 var(--theme-primary), inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border))',
                 } : {}),
             };
-            return <div key={proj.id || proj.project_path} data-task-kind={taskIconKind} data-pure-coding={pureCoding ? 'true' : 'false'} data-status={durableKind === 'idle' ? undefined : durableKind} data-testid="sidebar-task-row" data-active={isActive ? 'true' : 'false'} data-open={isOpen ? 'true' : 'false'} data-task-path={proj.project_path}>
-                <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} draggable={!isBusy} onMouseDown={e => { taskDragFromControlRef.current = !!(e.target as HTMLElement | null)?.closest('button, a, input, textarea'); }} onDragStart={e => { if (isBusy || taskDragFromControlRef.current) { e.preventDefault(); return; } taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); taskDragFromControlRef.current = false; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }} onDragOver={e => { if (!canDropTaskOn(proj)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; markTaskDropTarget(e.currentTarget); }} onDrop={e => { if (!canDropTaskOn(proj)) return; e.preventDefault(); const fromKey = taskDragKeyRef.current; forgetTaskDrag(); clearTaskDropMarks(); if (fromKey) commitTaskDrag(fromKey, taskOrderKey(proj)); }} onDragLeave={e => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; if (taskDropTargetRef.current === e.currentTarget) taskDropTargetRef.current = null; e.currentTarget.removeAttribute('data-task-drop-target'); }} onClick={(e) => { if (e.detail > 1 || taskRowDidDragRef.current) return; handleTaskRowClick(proj); }} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; e.preventDefault(); if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, statusHover, codingBadge, createdAtLabel, identitySubtitle, textForLang(lang, 'Click to open. Drag to reorder.', '单击打开，拖动排序', '單擊開啟，拖動排序'))} aria-current={isActive ? 'true' : undefined}>
+            const orderKey = taskOrderKey(proj);
+            return <div key={proj.id || proj.project_path} data-task-kind={taskIconKind} data-pure-coding={pureCoding ? 'true' : 'false'} data-status={durableKind === 'idle' ? undefined : durableKind} data-testid="sidebar-task-row" data-active={isActive ? 'true' : 'false'} data-open={isOpen ? 'true' : 'false'} data-task-path={proj.project_path} data-task-order-key={orderKey}>
+                <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} draggable={!isBusy} onMouseDown={e => { taskDragFromControlRef.current = !!(e.target as HTMLElement | null)?.closest('button, a, input, textarea'); }} onDragStart={e => { if (isBusy || taskDragFromControlRef.current) { e.preventDefault(); return; } taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); taskDragFromControlRef.current = false; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }} onDragOver={e => { if (!canDropTaskOn(proj)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; markTaskDropTarget(e.currentTarget); }} onDrop={e => { if (!canDropTaskOn(proj)) return; e.preventDefault(); const fromKey = taskDragKeyRef.current; forgetTaskDrag(); clearTaskDropMarks(); if (fromKey) commitTaskDrag(fromKey, taskOrderKey(proj)); }} onDragLeave={e => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; if (taskDropTargetRef.current === e.currentTarget) taskDropTargetRef.current = null; e.currentTarget.removeAttribute('data-task-drop-target'); }} onClick={(e) => { if (e.detail > 1 || taskRowDidDragRef.current) return; handleTaskRowClick(proj); }} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; e.preventDefault(); if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir, orderKey, archived: archivedTaskKeys.has(orderKey) }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, statusHover, codingBadge, createdAtLabel, identitySubtitle, textForLang(lang, 'Click to open. Drag to reorder.', '单击打开，拖动排序', '單擊開啟，拖動排序'))} aria-current={isActive ? 'true' : undefined}>
                     <TaskStatusMark kind={statusKind} label={statusMarkLabel} />
                     <span className="stsm-drag-handle-wrap"><span role="button" className="stsm-drag-handle" data-testid="task-drag-handle" aria-label={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} title={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()} onMouseDown={e => { taskDragFromControlRef.current = false; e.stopPropagation(); }} onDragStart={e => { e.stopPropagation(); taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }}>⋮⋮</span></span>
                     <span className="stsm-row-body">
@@ -5347,6 +5604,7 @@ export const SidebarTaskManagement = ({
                                                                     pinned: !!task.pinned,
                                                                     tags: task.tags,
                                                                     workingDir: task.working_dir,
+                                                                    orderKey: taskOrderKey(task),
                                                                 });
                                                             }}
                                                         >{textForLang(lang, 'Delete', '删除', '刪除')}</button>
@@ -5796,7 +6054,37 @@ export const SidebarTaskManagement = ({
             document.body,
         )}
 
-        {taskContextMenu && (<>
+        {taskContextMenu && (() => {
+            const menu = taskContextMenu;
+            if (!menu) return null;
+            const items = buildTaskContextMenuItems({
+                lang,
+                menu,
+                setRenamingTaskPath,
+                setRenameValue,
+                setTaskContextMenu,
+                onDuplicateTask: duplicateTask,
+                pinTask: async (projectPath, pinned) => {
+                    await pinTask(projectPath, pinned);
+                    placePinnedTaskOrder(menu.orderKey || taskOrderKey({
+                        project_path: menu.projectPath,
+                        name: menu.name,
+                        tags: menu.tags,
+                        working_dir: menu.workingDir,
+                    }), pinned);
+                },
+                confirmRemoveTask,
+                refreshTasks,
+                openEditRemoteDialog,
+                browseCloudWorkspace,
+                allowCloudWorkspaceBrowse: showCloudWorkspaceManagement || showCloudWorkspaceCreation,
+                onShareCloudWorkspace: (workspaceId, name) => {
+                    setShareTask({ name, workspaceId });
+                },
+                onTransferTask: openTaskTransfer,
+                onArchiveTask: setTaskArchived,
+            });
+            return <>
             <div
                 className="stsm-menu-scrim"
                 onClick={() => setTaskContextMenu(null)}
@@ -5806,35 +6094,9 @@ export const SidebarTaskManagement = ({
                 data-testid="task-context-menu"
                 role="menu"
                 onContextMenu={event => event.preventDefault()}
-                style={{ position: 'fixed', ...contextMenuPosition(taskContextMenu.x, taskContextMenu.y), zIndex: 9999, background: 'var(--theme-page-bg)', border: '1px solid var(--theme-border)', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.18)', padding: '4px 0', minWidth: '168px', userSelect: 'none' }}
+                style={{ position: 'fixed', ...contextMenuPosition(menu.x, menu.y, items.length), zIndex: 9999, background: 'var(--theme-page-bg)', border: '1px solid var(--theme-border)', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.18)', padding: '4px 0', minWidth: '168px', userSelect: 'none' }}
             >
-                {buildTaskContextMenuItems({
-                    lang,
-                    menu: taskContextMenu,
-                    setRenamingTaskPath,
-                    setRenameValue,
-                    setTaskContextMenu,
-                    onDuplicateTask: duplicateTask,
-                    pinTask: async (projectPath, pinned) => {
-                        await pinTask(projectPath, pinned);
-                        const menu = taskContextMenu;
-                        placePinnedTaskOrder(menu ? taskOrderKey({
-                            project_path: menu.projectPath,
-                            name: menu.name,
-                            tags: menu.tags,
-                            working_dir: menu.workingDir,
-                        }) : '', pinned);
-                    },
-                    confirmRemoveTask,
-                    refreshTasks,
-                    openEditRemoteDialog,
-                    browseCloudWorkspace,
-                    allowCloudWorkspaceBrowse: showCloudWorkspaceManagement || showCloudWorkspaceCreation,
-                    onShareCloudWorkspace: (workspaceId, name) => {
-                        setShareTask({ name, workspaceId });
-                    },
-                    onTransferTask: openTaskTransfer,
-                }).map(item => (
+                {items.map(item => (
                     <div
                         key={item.label}
                         data-testid={item.testId}
@@ -5873,7 +6135,8 @@ export const SidebarTaskManagement = ({
                     </div>
                 ))}
             </div>
-        </>)}
+            </>;
+        })()}
 
         {editRemoteOpen && createPortal(
             <div

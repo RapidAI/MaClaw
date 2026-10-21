@@ -36,6 +36,11 @@ export interface CodingTaskLaunch {
     openIntent?: "activate" | "restore";
     /** Stable cloud identity; never infer task identity from a cache path when present. */
     cloudWorkspaceId?: string;
+    /**
+     * Workspace files for an extra chat. Kept off cloudWorkspaceId so the tab
+     * stays on its own project path.
+     */
+    fileWorkspaceId?: string;
     agentMode?: CodingTaskAgentMode;
     remoteHost?: string;
     /** Evidence-only first SSH turn for a remote incident diagnosis. */
@@ -101,6 +106,7 @@ export function normalizeCodingTaskLaunch(input: Partial<CodingTaskLaunch> | nul
         prepareMode: input?.prepareMode === "restore-context" ? "restore-context" : "new-agent",
         openIntent: input?.openIntent === "activate" ? "activate" : "restore",
         cloudWorkspaceId: String(input?.cloudWorkspaceId || "").trim() || undefined,
+        fileWorkspaceId: String(input?.fileWorkspaceId || "").trim() || undefined,
         agentMode,
         remoteHost,
         remoteSafety: agentMode === "remote_coding_dev" && input?.remoteSafety === "diagnosis"

@@ -461,6 +461,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
                             initialMessage: nav.initialMessage,
                             agentMode: nav.agentMode,
                             cloudWorkspaceId: nav.cloudWorkspaceId,
+                            fileWorkspaceId: nav.fileWorkspaceId,
                             remoteHost: nav.remoteHost,
                             remoteSafety: nav.remoteSafety,
                             remoteNeedsReconnect: nav.remoteNeedsReconnect,

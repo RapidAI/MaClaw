@@ -153,7 +153,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedMailboxSend(ctx context.Context
 	case text == mailbox.MsgUncertain || strings.HasPrefix(strings.TrimSpace(text), "[system unknown]"):
 		return mailboxTypedFailure(text, "mailbox_send_uncertain", true)
 	default:
-		return mailboxTypedFailure(text, "mailbox_send_not_sent", false)
+		return mailboxTypedSendResult(text)
 	}
 }
 
@@ -175,7 +175,34 @@ func (c *sharedAgentLoopCallbacks) executeTrustedMailboxDelete(ctx context.Conte
 	case text == mailbox.MsgDeleteUncertain || strings.HasPrefix(strings.TrimSpace(text), "[system unknown]"):
 		return mailboxTypedFailure(text, "mailbox_delete_uncertain", true)
 	default:
-		return mailboxTypedFailure(text, "mailbox_delete_not_deleted", false)
+		return mailboxTypedDeleteResult(text)
+	}
+}
+
+func mailboxTypedSendResult(text string) tool.SelectionExecutionResult {
+	if mailboxSendSucceeded(text) {
+		return tool.SelectionExecutionResult{Result: strings.TrimSpace(text), Succeeded: true}
+	}
+	return mailboxTypedFailure(text, "mailbox_send_not_sent", false)
+}
+
+func mailboxTypedDeleteResult(text string) tool.SelectionExecutionResult {
+	if mailboxDeleteSucceeded(text) {
+		return tool.SelectionExecutionResult{Result: strings.TrimSpace(text), Succeeded: true}
+	}
+	return mailboxTypedFailure(text, "mailbox_delete_not_deleted", false)
+}
+
+func mailboxSendSucceeded(text string) bool {
+	return strings.TrimSpace(text) == "邮件已发送"
+}
+
+func mailboxDeleteSucceeded(text string) bool {
+	switch strings.TrimSpace(text) {
+	case mailbox.MsgDeleteMoved, mailbox.MsgDeletePurged, mailbox.MsgDeleteMovedAndPurged:
+		return true
+	default:
+		return false
 	}
 }
 

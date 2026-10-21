@@ -106,6 +106,11 @@ func (h *IMMessageHandler) handleAgentLoopRecordAudioToolResult(
 		}
 		return out
 	}
+	if h != nil && h.unattendedTurn(userID) {
+		log.Printf("[record-audio] skipped for unattended user=%s title=%q", userID, req.Title)
+		out.Result = unattendedRecordAudioRejected
+		return out
+	}
 	// Product decision: meeting/long-form recording is desktop-only. IM native
 	// voice is typically tens of seconds and is not a substitute for this feature.
 	if !normalizeIMMessagePlatformKind(platform).IsDesktop() {

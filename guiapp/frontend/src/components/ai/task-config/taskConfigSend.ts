@@ -35,6 +35,8 @@ export interface TaskLaunchNavigation {
     initialMessage: string;
     agentMode?: "coding_dev" | "remote_coding_dev";
     cloudWorkspaceId?: string;
+    /** Extra chat: files live in this workspace, and the tab is not that conversation. */
+    fileWorkspaceId?: string;
     remoteHost?: string;
     remoteSafety?: "diagnosis";
     /**
@@ -133,7 +135,7 @@ export interface TaskConfigSendBindings {
      * CreateTaskUnified 包装。硬失败 reject；次级步骤失败（工作流启动/远程
      * 武装）时 resolve {projectPath, warning}——任务已建、可打开、已降级。
      */
-    createTaskUnified: (opts: UnifiedTaskCreateOptions) => Promise<{ projectPath: string; warning?: string }>;
+    createTaskUnified: (opts: UnifiedTaskCreateOptions) => Promise<{ projectPath: string; warning?: string; ownConversation?: boolean }>;
     /** coding_dev 本地任务的后端统一创建不预置环境，这里补一次武装（幂等）。 */
     ensureCodingArmed?: (projectPath: string) => Promise<unknown>;
     openTaskLaunch: (nav: TaskLaunchNavigation) => void;
@@ -199,10 +201,12 @@ export async function runTaskConfigSend(args: {
     const opts = draftToTaskCreateOptions(trimmed, draft);
     let projectPath = "";
     let warning = "";
+    let ownConversation = false;
     try {
         const created = await bindings.createTaskUnified(opts);
         projectPath = (created.projectPath || "").trim();
         warning = (created.warning || "").trim();
+        ownConversation = created.ownConversation === true;
     } catch (err) {
         return { ok: false, error: errorMessage(err) || (isZh ? "创建任务失败" : "Failed to create task") };
     }
@@ -259,7 +263,10 @@ export async function runTaskConfigSend(args: {
             ...(opts.mode === "coding_dev" || opts.mode === "remote_coding_dev"
                 ? { agentMode: opts.mode as TaskLaunchNavigation["agentMode"] }
                 : {}),
-            ...(opts.mode === "cloud" ? { cloudWorkspaceId: opts.cloudWorkspaceId } : {}),
+            // Extra chat: the workspace id would reuse the existing conversation tab.
+            // fileWorkspaceId still names the shared files so a later send can renew the lease.
+            ...(opts.mode === "cloud" && !ownConversation ? { cloudWorkspaceId: opts.cloudWorkspaceId } : {}),
+            ...(opts.mode === "cloud" && ownConversation ? { fileWorkspaceId: opts.cloudWorkspaceId } : {}),
             ...(opts.remote ? { remoteHost: opts.remote.host } : {}),
             // 远程武装失败：首条消息延迟到 SSH 重连成功再发。
             ...(opts.mode === "remote_coding_dev" && warning ? { remoteNeedsReconnect: true } : {}),

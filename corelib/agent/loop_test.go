@@ -8238,3 +8238,54 @@ func TestRunLoop_DropsEmptyNameButExecutesNamedSibling(t *testing.T) {
 		t.Fatalf("assistant declaration still contains the empty call: %#v", batch[0].ToolCalls)
 	}
 }
+
+type skillObligationCallbacks struct {
+	mockCallbacks
+}
+
+func (m *skillObligationCallbacks) SkillObligationPrompt() string {
+	return "[系统] 请先调用 search_and_install_skill，再继续这个任务。"
+}
+
+func TestRunLoop_SkillObligationNudgeOnceThenTheAnswerStands(t *testing.T) {
+	var n atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		round := n.Add(1)
+		content := "先这样。"
+		if round >= 2 {
+			if !strings.Contains(string(body), "search_and_install_skill") {
+				t.Errorf("second request missed the skill obligation: %s", body)
+			}
+			content = "没有合适的 Skill，改用现有工具完成。"
+		}
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{{
+				"message":       map[string]interface{}{"role": "assistant", "content": content},
+				"finish_reason": "stop",
+			}},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cb := &skillObligationCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:   4,
+		sysPrompt: "You are a helpful assistant.",
+	}}
+	result := RunLoop(cb, "把这份表格做成带目录的手册", nil, nil)
+	if result.Error != "" {
+		t.Fatalf("unexpected error: %s", result.Error)
+	}
+	if result.Iterations != 2 {
+		t.Fatalf("iterations=%d text=%q", result.Iterations, result.Text)
+	}
+	if result.Text != "没有合适的 Skill，改用现有工具完成。" {
+		t.Fatalf("text=%q", result.Text)
+	}
+	if n.Load() != 2 {
+		t.Fatalf("requests=%d", n.Load())
+	}
+}

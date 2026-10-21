@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { __resetWorkspaceDirectoryCacheForTests } from '../../ai/CodePreviewWorkspace';
-import { abbreviateTaskFolderLabel, applyTaskListOrder, cloudWorkspaceNameMapFromEntitlement, countRunningTaskRows, groupTasksByWorkingDirectory, groupTasksIntoFolders, isActiveTaskRow, isProjectTabOpen, localWorkspaceFolderName, normalizeTaskFolderOrder, reorderTaskBlocks, reorderTaskListFolders, SidebarTaskManagement, sortTaskManagementItems, TASK_FOLDER_COLLAPSE_STORAGE_KEY, TASK_FOLDER_ORDER_STORAGE_KEY, TASK_LIST_ORDER_STORAGE_KEY, TASK_WORKDIR_COLLAPSE_STORAGE_KEY, taskCreationLabel, taskListFolderKind, taskListStatusKind, taskOrderKey, taskSecondaryLabelFor, taskStatusBucketFor, taskWorkingDirectoryIdentity, workflowStatusForTask, workflowStatusForTaskRow } from '../SidebarTaskManagement';
+import { abbreviateTaskFolderLabel, applyTaskListOrder, cloudWorkspaceNameMapFromEntitlement, countRunningTaskRows, groupTasksByWorkingDirectory, groupTasksIntoFolders, isActiveTaskRow, isProjectTabOpen, localWorkspaceFolderName, normalizeTaskFolderOrder, reorderTaskBlocks, reorderTaskListFolders, SidebarTaskManagement, sortTaskManagementItems, TASK_ARCHIVE_EXPANDED_STORAGE_KEY, TASK_ARCHIVE_STORAGE_KEY, TASK_FOLDER_COLLAPSE_STORAGE_KEY, TASK_FOLDER_ORDER_STORAGE_KEY, TASK_LIST_ORDER_STORAGE_KEY, TASK_WORKDIR_COLLAPSE_STORAGE_KEY, taskCreationLabel, taskHomeFolderKind, taskListFolderKind, taskListStatusKind, taskOrderKey, taskSecondaryLabelFor, taskStatusBucketFor, taskWorkdirCollapseKey, taskWorkingDirectoryIdentity, workflowStatusForTask, workflowStatusForTaskRow } from '../SidebarTaskManagement';
 import type { ComponentProps, ReactElement } from 'react';
 import { GetProjectScene, OpenFileOrShowInFolder, OpenProjectDirectory, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../../wailsjs/runtime';
@@ -260,6 +260,9 @@ afterEach(async () => {
     __resetCloudWorkspaceTaskRestoreForTests();
     localStorage.removeItem(TASK_FOLDER_COLLAPSE_STORAGE_KEY);
     localStorage.removeItem(TASK_FOLDER_ORDER_STORAGE_KEY);
+    localStorage.removeItem(TASK_ARCHIVE_STORAGE_KEY);
+    localStorage.removeItem(TASK_ARCHIVE_EXPANDED_STORAGE_KEY);
+    localStorage.removeItem(TASK_WORKDIR_COLLAPSE_STORAGE_KEY);
     document.getElementById('App')?.remove();
 });
 
@@ -321,6 +324,9 @@ describe('isActiveTaskRow', () => {
         const copyOnCache = { ...cloudCopy, working_dir: cachePath };
         expect(isActiveTaskRow(cloudOnCache, { projectPath: cachePath, cloudWorkspaceId: 'cws_a' })).toBe(true);
         expect(isActiveTaskRow(copyOnCache, { projectPath: cachePath, cloudWorkspaceId: 'cws_a' })).toBe(false);
+        const extraOpen = { projectPath: 'D:/tasks/cloud-copy', cloudWorkspaceId: 'cws_a' };
+        expect(isActiveTaskRow(copyOnCache, extraOpen)).toBe(true);
+        expect(isActiveTaskRow(cloudOnCache, extraOpen)).toBe(false);
     });
 
     it('highlights a cloud workspace row even when resume rebound the tab onto a cache path', () => {
@@ -413,6 +419,10 @@ describe('countRunningTaskRows', () => {
         };
         expect(countRunningTaskRows([cloudRow, copy], {
             busyTaskRuns: { projectPaths: [cache], expertIds: [] },
+        })).toBe(1);
+        expect(countRunningTaskRows([cloudRow, copy], {
+            activeAssistantTaskRunning: true,
+            activeAssistantTask: { projectPath: 'D:/work/tasks/math-book-copy', cloudWorkspaceId: 'cws_math' },
         })).toBe(1);
     });
 
@@ -6159,5 +6169,412 @@ describe('task list folders', () => {
         expect(screen.queryByTestId('task-workdir-folder')).toBeNull();
         expect(screen.getByText('编程开发测试')).toBeTruthy();
         expect(JSON.parse(localStorage.getItem(TASK_WORKDIR_COLLAPSE_STORAGE_KEY) || '[]')).toEqual([collapseKey]);
+    });
+
+    it('moves a task into a collapsed Archive folder and restores it to its home folder', () => {
+        expect(taskHomeFolderKind(chat)).toBe('session');
+        expect(taskHomeFolderKind(coding)).toBe('coding');
+        expect(normalizeTaskFolderOrder(['archive', 'coding', 'nope', 'coding'])).toEqual(['coding', 'session']);
+        expect(reorderTaskListFolders(['archive', 'session', 'coding'], 'archive', 'session')).toEqual(['session', 'coding']);
+        expect(reorderTaskListFolders(['session', 'coding'], 'coding', 'archive')).toEqual(['session', 'coding']);
+        const archived = new Set([taskOrderKey(coding)]);
+        expect(taskListFolderKind(coding, archived)).toBe('archive');
+        expect(taskListFolderKind(chat, archived)).toBe('session');
+        expect(groupTasksIntoFolders([coding, chat, remote], ['coding', 'session'], archived).map(folder => folder.kind)).toEqual(['coding', 'session', 'archive']);
+
+        const codingMenu = {
+            x: 12,
+            y: 24,
+            projectPath: coding.project_path,
+            name: coding.name,
+            pinned: false,
+            tags: coding.tags,
+            orderKey: taskOrderKey(coding),
+            archived: false,
+        };
+        const view = renderTaskManagement({
+            lang: 'zh',
+            tasks: [chat, coding, remote],
+            taskContextMenu: codingMenu,
+        });
+
+        const menuItems = () => [...screen.getByTestId('task-context-menu').querySelectorAll('[role="menuitem"]')].map(item => item.getAttribute('data-testid'));
+        expect(menuItems()).toContain('task-context-archive');
+        expect(menuItems()).toContain('task-context-remove');
+        fireEvent.click(screen.getByTestId('task-context-archive'));
+
+        expect(screen.queryByText('Coding feature')).toBeNull();
+        expect(within(screen.getByTestId('task-folder-coding')).getByText('Remote fix')).toBeTruthy();
+        expect(within(screen.getByTestId('task-folder-session')).getByText('Design a site')).toBeTruthy();
+        const archive = screen.getByTestId('task-folder-archive');
+        expect(archive.getAttribute('data-expanded')).toBe('false');
+        expect(within(archive).getByText('归档')).toBeTruthy();
+        expect(archive.querySelector('.stsm-task-folder__count')?.textContent).toBe('1');
+        expect(folderOrder()).toEqual(['task-folder-session', 'task-folder-coding', 'task-folder-archive']);
+        expect(screen.getByTestId('task-folder-toggle-archive').getAttribute('draggable')).toBe('false');
+        expect(JSON.parse(localStorage.getItem(TASK_ARCHIVE_STORAGE_KEY) || '[]')).toEqual([taskOrderKey(coding)]);
+        expect(JSON.parse(localStorage.getItem(TASK_FOLDER_ORDER_STORAGE_KEY) || '[]')).toEqual([]);
+
+        fireEvent.click(screen.getByTestId('task-folder-toggle-archive'));
+        expect(archive.getAttribute('data-expanded')).toBe('true');
+        expect(within(archive).getByText('Coding feature')).toBeTruthy();
+        expect(localStorage.getItem(TASK_ARCHIVE_EXPANDED_STORAGE_KEY)).toBe('1');
+
+        view.rerenderWith({
+            taskContextMenu: { ...codingMenu, archived: true },
+        });
+        expect(menuItems()).toEqual(['task-context-restore']);
+        fireEvent.click(screen.getByTestId('task-context-restore'));
+        expect(screen.queryByTestId('task-folder-archive')).toBeNull();
+        expect(within(screen.getByTestId('task-folder-coding')).getByText('Coding feature')).toBeTruthy();
+        expect(within(screen.getByTestId('task-folder-coding')).getByText('Remote fix')).toBeTruthy();
+        expect(JSON.parse(localStorage.getItem(TASK_ARCHIVE_STORAGE_KEY) || '[]')).toEqual([]);
+    });
+
+    it('keeps Archive collapsed, last, and immovable across a reload', () => {
+        const extra = { ...chat, id: 'chat-2', name: 'Notes', project_path: 'D:/work/tasks/notes' };
+        localStorage.setItem(TASK_ARCHIVE_STORAGE_KEY, JSON.stringify([taskOrderKey(chat)]));
+        localStorage.setItem(TASK_FOLDER_ORDER_STORAGE_KEY, JSON.stringify(['archive', 'session', 'coding']));
+        const setTaskContextMenu = vi.fn();
+        renderTaskManagement({ lang: 'zh', tasks: [chat, extra, coding], setTaskContextMenu });
+
+        expect(folderOrder()).toEqual(['task-folder-session', 'task-folder-coding', 'task-folder-archive']);
+        expect(screen.getByTestId('task-folder-archive').getAttribute('data-expanded')).toBe('false');
+        expect(screen.queryByText('Design a site')).toBeNull();
+        expect(screen.getByTestId('task-folder-toggle-archive').getAttribute('draggable')).toBe('false');
+        expect(screen.getByTestId('task-folder-toggle-session').getAttribute('draggable')).toBe('true');
+
+        fireEvent.click(screen.getByTestId('task-folder-toggle-archive'));
+        const archivedRow = within(screen.getByTestId('task-folder-archive')).getByText('Design a site').closest('.sidebar-task-row') as HTMLElement;
+        fireEvent.contextMenu(archivedRow, { clientX: 30, clientY: 40 });
+        expect(setTaskContextMenu).toHaveBeenCalledWith(expect.objectContaining({
+            archived: true,
+            orderKey: taskOrderKey(chat),
+            projectPath: chat.project_path,
+        }));
+
+        const sessionRow = within(screen.getByTestId('task-folder-session')).getByText('Notes').closest('.sidebar-task-row') as HTMLElement;
+        fireEvent.contextMenu(sessionRow, { clientX: 32, clientY: 48 });
+        expect(setTaskContextMenu).toHaveBeenLastCalledWith(expect.objectContaining({
+            archived: false,
+            orderKey: taskOrderKey(extra),
+        }));
+
+        fireEvent.dragStart(screen.getByTestId('task-folder-toggle-archive'));
+        fireEvent.dragOver(screen.getByTestId('task-folder-session'));
+        fireEvent.drop(screen.getByTestId('task-folder-session'));
+        expect(folderOrder()).toEqual(['task-folder-session', 'task-folder-coding', 'task-folder-archive']);
+
+        fireEvent.dragStart(screen.getByTestId('task-folder-toggle-coding'));
+        fireEvent.dragOver(screen.getByTestId('task-folder-archive'));
+        expect(screen.getByTestId('task-folder-archive').hasAttribute('data-folder-drop-target')).toBe(false);
+        fireEvent.drop(screen.getByTestId('task-folder-archive'));
+        expect(folderOrder()).toEqual(['task-folder-session', 'task-folder-coding', 'task-folder-archive']);
+
+        fireEvent.dragStart(screen.getByTestId('task-folder-toggle-coding'));
+        fireEvent.dragOver(screen.getByTestId('task-folder-session'));
+        fireEvent.drop(screen.getByTestId('task-folder-session'));
+        expect(folderOrder()).toEqual(['task-folder-coding', 'task-folder-session', 'task-folder-archive']);
+        expect(JSON.parse(localStorage.getItem(TASK_FOLDER_ORDER_STORAGE_KEY) || '[]')).toEqual(['coding', 'session']);
+    });
+
+    it('opens a collapsed home folder when a task is restored into it', () => {
+        const extra = { ...chat, id: 'chat-2', name: 'Notes', project_path: 'D:/work/tasks/notes' };
+        localStorage.setItem(TASK_FOLDER_COLLAPSE_STORAGE_KEY, JSON.stringify(['session']));
+        localStorage.setItem(TASK_ARCHIVE_STORAGE_KEY, JSON.stringify([taskOrderKey(chat)]));
+        renderTaskManagement({
+            lang: 'zh',
+            tasks: [chat, extra, coding],
+            taskContextMenu: {
+                x: 8,
+                y: 16,
+                projectPath: chat.project_path,
+                name: chat.name,
+                pinned: false,
+                tags: chat.tags,
+                orderKey: taskOrderKey(chat),
+                archived: true,
+            },
+        });
+        expect(screen.getByTestId('task-folder-session').getAttribute('data-expanded')).toBe('false');
+        expect(screen.queryByText('Notes')).toBeNull();
+
+        fireEvent.click(screen.getByTestId('task-context-restore'));
+
+        expect(screen.getByTestId('task-folder-session').getAttribute('data-expanded')).toBe('true');
+        expect(within(screen.getByTestId('task-folder-session')).getByText('Design a site')).toBeTruthy();
+        expect(within(screen.getByTestId('task-folder-session')).getByText('Notes')).toBeTruthy();
+        expect(screen.queryByTestId('task-folder-archive')).toBeNull();
+        expect(JSON.parse(localStorage.getItem(TASK_FOLDER_COLLAPSE_STORAGE_KEY) || '[]')).toEqual([]);
+    });
+
+    it('opens a collapsed directory when a task is restored into it', () => {
+        const archivedChat = { ...chat, working_dir: 'D:/work/site' };
+        const extra = { ...chat, id: 'chat-2', name: 'Notes', project_path: 'D:/work/tasks/notes', working_dir: 'D:/work/site' };
+        const identity = taskWorkingDirectoryIdentity(archivedChat);
+        const collapseKey = taskWorkdirCollapseKey('session', false, identity?.key || '');
+        localStorage.setItem(TASK_WORKDIR_COLLAPSE_STORAGE_KEY, JSON.stringify([collapseKey]));
+        localStorage.setItem(TASK_ARCHIVE_STORAGE_KEY, JSON.stringify([taskOrderKey(archivedChat)]));
+        renderTaskManagement({
+            lang: 'zh',
+            tasks: [archivedChat, extra, coding],
+            taskContextMenu: {
+                x: 8,
+                y: 16,
+                projectPath: archivedChat.project_path,
+                name: archivedChat.name,
+                pinned: false,
+                tags: archivedChat.tags,
+                workingDir: archivedChat.working_dir,
+                orderKey: taskOrderKey(archivedChat),
+                archived: true,
+            },
+        });
+        expect(screen.queryByTestId('task-workdir-folder')).toBeNull();
+        expect(screen.queryByText('Design a site')).toBeNull();
+        expect(screen.getByText('Notes')).toBeTruthy();
+
+        fireEvent.click(screen.getByTestId('task-context-restore'));
+
+        const workdir = screen.getByTestId('task-workdir-folder');
+        expect(workdir.getAttribute('data-expanded')).toBe('true');
+        expect(within(workdir).getByText('Design a site')).toBeTruthy();
+        expect(within(workdir).getByText('Notes')).toBeTruthy();
+        expect(JSON.parse(localStorage.getItem(TASK_WORKDIR_COLLAPSE_STORAGE_KEY) || '[]')).toEqual([]);
+    });
+
+    it('keeps the one-item Archive menu next to the pointer', () => {
+        const previousHeight = window.innerHeight;
+        Object.defineProperty(window, 'innerHeight', { configurable: true, value: 480 });
+        try {
+            renderTaskManagement({
+                lang: 'zh',
+                tasks: [chat],
+                taskContextMenu: {
+                    x: 24,
+                    y: 460,
+                    projectPath: chat.project_path,
+                    name: chat.name,
+                    pinned: false,
+                    tags: chat.tags,
+                    orderKey: taskOrderKey(chat),
+                    archived: true,
+                },
+            });
+            const top = Number.parseFloat(screen.getByTestId('task-context-menu').style.top);
+            expect(top).toBeGreaterThan(400);
+        } finally {
+            Object.defineProperty(window, 'innerHeight', { configurable: true, value: previousHeight });
+        }
+    });
+
+    it('scrolls the Archive folder into view without opening it', () => {
+        const original = HTMLElement.prototype.scrollIntoView;
+        const scrollIntoView = vi.fn();
+        HTMLElement.prototype.scrollIntoView = scrollIntoView;
+        try {
+            renderTaskManagement({
+                lang: 'zh',
+                tasks: [chat, coding],
+                taskContextMenu: {
+                    x: 8,
+                    y: 16,
+                    projectPath: chat.project_path,
+                    name: chat.name,
+                    pinned: false,
+                    tags: chat.tags,
+                    orderKey: taskOrderKey(chat),
+                },
+            });
+            fireEvent.click(screen.getByTestId('task-context-archive'));
+            const archive = screen.getByTestId('task-folder-archive');
+            expect(archive.getAttribute('data-expanded')).toBe('false');
+            const scrolled = scrollIntoView.mock.instances.find(node => (
+                node instanceof HTMLElement && node.getAttribute('data-testid') === 'task-folder-toggle-archive'
+            ));
+            expect(scrolled).toBeTruthy();
+        } finally {
+            HTMLElement.prototype.scrollIntoView = original;
+        }
+    });
+
+    it('scrolls the archived row when Archive is already open', () => {
+        const original = HTMLElement.prototype.scrollIntoView;
+        const scrollIntoView = vi.fn();
+        HTMLElement.prototype.scrollIntoView = scrollIntoView;
+        try {
+            localStorage.setItem(TASK_ARCHIVE_EXPANDED_STORAGE_KEY, '1');
+            renderTaskManagement({
+                lang: 'zh',
+                tasks: [chat, coding],
+                taskContextMenu: {
+                    x: 8,
+                    y: 16,
+                    projectPath: chat.project_path,
+                    name: chat.name,
+                    pinned: false,
+                    tags: chat.tags,
+                    orderKey: taskOrderKey(chat),
+                },
+            });
+            fireEvent.click(screen.getByTestId('task-context-archive'));
+            const scrolled = scrollIntoView.mock.instances.find(node => (
+                node instanceof HTMLElement && node.getAttribute('data-task-order-key') === taskOrderKey(chat)
+            ));
+            expect(scrolled).toBeTruthy();
+            expect(screen.getByTestId('task-folder-archive').getAttribute('data-expanded')).toBe('true');
+        } finally {
+            HTMLElement.prototype.scrollIntoView = original;
+        }
+    });
+
+    it('shows archived tasks when a filter leaves only Archive', () => {
+        const done = { ...chat, has_output: true };
+        const doneCoding = { ...coding, has_output: true };
+        localStorage.setItem(TASK_ARCHIVE_STORAGE_KEY, JSON.stringify([taskOrderKey(done)]));
+        const view = renderTaskManagement({ lang: 'zh', tasks: [done, doneCoding] });
+        fireEvent.click(screen.getByTestId('task-filter-completed'));
+        expect(screen.getByTestId('task-folder-coding')).toBeTruthy();
+        expect(screen.getByTestId('task-folder-archive').getAttribute('data-expanded')).toBe('false');
+        expect(screen.queryByText('Design a site')).toBeNull();
+
+        view.rerenderWith({ tasks: [done, coding] });
+        const archive = screen.getByTestId('task-folder-archive');
+        expect(archive.getAttribute('data-expanded')).toBe('true');
+        expect(within(archive).getByText('Design a site')).toBeTruthy();
+        expect(screen.queryByTestId('task-folder-coding')).toBeNull();
+        expect(localStorage.getItem(TASK_ARCHIVE_EXPANDED_STORAGE_KEY)).not.toBe('1');
+
+        fireEvent.click(screen.getByTestId('task-folder-toggle-archive'));
+        expect(screen.getByTestId('task-folder-archive').getAttribute('data-expanded')).toBe('false');
+        expect(screen.queryByText('Design a site')).toBeNull();
+        expect(localStorage.getItem(TASK_ARCHIVE_EXPANDED_STORAGE_KEY)).not.toBe('1');
+
+        fireEvent.click(screen.getByTestId('task-folder-toggle-archive'));
+        expect(screen.getByTestId('task-folder-archive').getAttribute('data-expanded')).toBe('true');
+        expect(screen.getByText('Design a site')).toBeTruthy();
+        expect(localStorage.getItem(TASK_ARCHIVE_EXPANDED_STORAGE_KEY)).not.toBe('1');
+
+        fireEvent.click(screen.getByTestId('task-filter-all'));
+        expect(screen.getByTestId('task-folder-archive').getAttribute('data-expanded')).toBe('false');
+        expect(within(screen.getByTestId('task-folder-coding')).getByText('Coding feature')).toBeTruthy();
+    });
+
+    it('collapses an already open Archive for real when a filter leaves only Archive', () => {
+        const done = { ...chat, has_output: true };
+        localStorage.setItem(TASK_ARCHIVE_STORAGE_KEY, JSON.stringify([taskOrderKey(done)]));
+        localStorage.setItem(TASK_ARCHIVE_EXPANDED_STORAGE_KEY, '1');
+        renderTaskManagement({ lang: 'zh', tasks: [done, coding] });
+        fireEvent.click(screen.getByTestId('task-filter-completed'));
+        expect(screen.getByTestId('task-folder-archive').getAttribute('data-expanded')).toBe('true');
+        expect(screen.getByText('Design a site')).toBeTruthy();
+
+        fireEvent.click(screen.getByTestId('task-folder-toggle-archive'));
+        expect(screen.getByTestId('task-folder-archive').getAttribute('data-expanded')).toBe('false');
+        expect(screen.queryByText('Design a site')).toBeNull();
+        expect(localStorage.getItem(TASK_ARCHIVE_EXPANDED_STORAGE_KEY)).toBe('0');
+
+        fireEvent.click(screen.getByTestId('task-folder-toggle-archive'));
+        expect(screen.getByTestId('task-folder-archive').getAttribute('data-expanded')).toBe('true');
+        expect(screen.getByText('Design a site')).toBeTruthy();
+        expect(localStorage.getItem(TASK_ARCHIVE_EXPANDED_STORAGE_KEY)).toBe('1');
+    });
+
+    it('scrolls the restored task into view', () => {
+        const original = HTMLElement.prototype.scrollIntoView;
+        const scrollIntoView = vi.fn();
+        HTMLElement.prototype.scrollIntoView = scrollIntoView;
+        try {
+            localStorage.setItem(TASK_ARCHIVE_STORAGE_KEY, JSON.stringify([taskOrderKey(chat)]));
+            renderTaskManagement({
+                lang: 'zh',
+                tasks: [chat, coding],
+                taskContextMenu: {
+                    x: 8,
+                    y: 16,
+                    projectPath: chat.project_path,
+                    name: chat.name,
+                    pinned: false,
+                    tags: chat.tags,
+                    orderKey: taskOrderKey(chat),
+                    archived: true,
+                },
+            });
+            fireEvent.click(screen.getByTestId('task-context-restore'));
+            const scrolled = scrollIntoView.mock.instances.find(node => (
+                node instanceof HTMLElement && node.getAttribute('data-task-order-key') === taskOrderKey(chat)
+            ));
+            expect(scrolled).toBeTruthy();
+        } finally {
+            HTMLElement.prototype.scrollIntoView = original;
+        }
+    });
+
+    it('drops archive membership when that task is deleted', async () => {
+        const hideTask = vi.fn().mockResolvedValue(undefined);
+        localStorage.setItem(TASK_ARCHIVE_STORAGE_KEY, JSON.stringify([taskOrderKey(chat), taskOrderKey(coding)]));
+        renderTaskManagement({
+            tasks: [chat, coding],
+            hideTask,
+            taskContextMenu: {
+                x: 8,
+                y: 16,
+                projectPath: chat.project_path,
+                name: chat.name,
+                pinned: false,
+                tags: chat.tags,
+                orderKey: taskOrderKey(chat),
+            },
+        });
+        fireEvent.click(screen.getByTestId('task-context-remove'));
+        await confirmRemoveDialog();
+        await waitFor(() => expect(hideTask).toHaveBeenCalledWith(chat.project_path, undefined, true));
+        expect(JSON.parse(localStorage.getItem(TASK_ARCHIVE_STORAGE_KEY) || '[]')).toEqual([taskOrderKey(coding)]);
+    });
+
+    it('keeps archive membership when deletion is refused', async () => {
+        const hideTask = vi.fn().mockResolvedValue(false);
+        localStorage.setItem(TASK_ARCHIVE_STORAGE_KEY, JSON.stringify([taskOrderKey(chat)]));
+        renderTaskManagement({
+            tasks: [chat, coding],
+            hideTask,
+            taskContextMenu: {
+                x: 8,
+                y: 16,
+                projectPath: chat.project_path,
+                name: chat.name,
+                pinned: false,
+                tags: chat.tags,
+                orderKey: taskOrderKey(chat),
+            },
+        });
+        fireEvent.click(screen.getByTestId('task-context-remove'));
+        await confirmRemoveDialog();
+        await waitFor(() => expect(hideTask).toHaveBeenCalled());
+        expect(JSON.parse(localStorage.getItem(TASK_ARCHIVE_STORAGE_KEY) || '[]')).toEqual([taskOrderKey(chat)]);
+    });
+
+    it('restores a chat from Archive into Sessions', () => {
+        const menu = {
+            x: 8,
+            y: 16,
+            projectPath: chat.project_path,
+            name: chat.name,
+            pinned: false,
+            tags: chat.tags,
+            orderKey: taskOrderKey(chat),
+            archived: true,
+        };
+        localStorage.setItem(TASK_ARCHIVE_STORAGE_KEY, JSON.stringify([taskOrderKey(chat)]));
+        renderTaskManagement({
+            lang: 'zh',
+            tasks: [chat, coding],
+            taskContextMenu: menu,
+        });
+        expect([...screen.getByTestId('task-context-menu').querySelectorAll('[role="menuitem"]')].map(item => item.textContent)).toEqual(['恢复']);
+        fireEvent.click(screen.getByTestId('task-context-restore'));
+        expect(screen.queryByTestId('task-folder-archive')).toBeNull();
+        expect(within(screen.getByTestId('task-folder-session')).getByText('Design a site')).toBeTruthy();
+        expect(within(screen.getByTestId('task-folder-coding')).getByText('Coding feature')).toBeTruthy();
     });
 });

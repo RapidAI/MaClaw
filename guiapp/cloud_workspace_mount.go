@@ -523,6 +523,20 @@ func cloudWorkspaceCacheDirectoryExistsAndSafe(root, target string) error {
 	return nil
 }
 
+// cloudWorkspaceDirFollowsReaderMount is true when dir is the live mount or
+// sits in the read-only cache. Those trees are the shared files for a reader.
+func (a *App) cloudWorkspaceDirFollowsReaderMount(workspaceID, dir string) bool {
+	dir = normalizeProjectSessionPath(dir)
+	if a == nil || dir == "" {
+		return false
+	}
+	if held, ok := heldCloudWorkspacePath(workspaceID); ok && cloudWorkspacePathInsideRoot(held, dir) {
+		return true
+	}
+	root := normalizeProjectSessionPath(filepath.Join(a.GetDataDir(), "cloud-workspaces-readonly"))
+	return cloudWorkspacePathInsideRoot(root, dir)
+}
+
 func (a *App) isAppCloudWorkspaceCachePath(path string) bool {
 	if a == nil {
 		return false
@@ -547,11 +561,17 @@ func (a *App) cloudWorkspaceExecutionDir(projectPath string) string {
 			return dir
 		}
 	}
+	wd := normalizeProjectSessionPath(a.recentTaskWorkingDir(projectPath))
 	canonical := ""
 	if id := a.lookupCloudWorkspaceIDForProject(projectPath); id != "" {
+		// A read share keeps its files in the reader cache. That directory is
+		// outside the writer cache, so it must not be rewritten to the writer path.
+		if wd != "" && a.cloudWorkspaceDirFollowsReaderMount(id, wd) {
+			return wd
+		}
 		canonical = normalizeProjectSessionPath(a.cloudWorkspaceCachePath(a.cloudWorkspaceTenantID(), id))
 	}
-	if wd := a.recentTaskWorkingDir(projectPath); canonical != "" && cloudWorkspacePathInsideRoot(canonical, wd) {
+	if canonical != "" && cloudWorkspacePathInsideRoot(canonical, wd) {
 		return wd
 	}
 	if canonical != "" {

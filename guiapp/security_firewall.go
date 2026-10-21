@@ -81,6 +81,10 @@ func (f *SecurityFirewall) Check(toolName string, args map[string]interface{}, c
 		action = security.PolicyAudit
 		resultNote = "full_control_auto_allow"
 	}
+	if action == security.PolicyAsk && securityCallUnattendedConfirm(ctx) {
+		action = security.PolicyAudit
+		resultNote = "unattended_auto_confirm"
+	}
 
 	// 4. Record audit.
 	f.recordAudit(toolName, args, risk, action, resultNote, sessionID, userID)
@@ -153,6 +157,10 @@ func (f *SecurityFirewall) confirmOrAllowWithoutChannel(toolName string, risk se
 
 func securityCallHasFullControl(ctx *SecurityCallContext) bool {
 	return ctx != nil && ctx.FullControl
+}
+
+func securityCallUnattendedConfirm(ctx *SecurityCallContext) bool {
+	return ctx != nil && ctx.UnattendedConfirm
 }
 
 // securityApprovalSessionID keeps a "remember this tool" grant inside one task.

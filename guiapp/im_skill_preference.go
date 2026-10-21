@@ -100,6 +100,7 @@ func matchPreferredLocalSkillMode(exec *SkillExecutor, userText, agentDomain str
 	bestName := ""
 	bestReason := ""
 	bestScore := 0
+	bestIdentity := 0
 	bestGuided := false
 	for _, sk := range candidates {
 		if strings.TrimSpace(sk.Name) == "" {
@@ -109,7 +110,7 @@ func matchPreferredLocalSkillMode(exec *SkillExecutor, userText, agentDomain str
 		if st != skillEntryStatusActive && st != skillEntryStatusUnknown {
 			continue
 		}
-		score, identity := preferredLocalSkillScore(sk, lower)
+		score, identity, identityScore := preferredLocalSkillScore(sk, lower)
 		if score <= 0 {
 			continue
 		}
@@ -119,12 +120,15 @@ func matchPreferredLocalSkillMode(exec *SkillExecutor, userText, agentDomain str
 		if !identity && !isIntentCategoryCompatibleWithSkill(userIntent, sk.Description) {
 			continue
 		}
-		if score > bestScore {
-			bestScore = score
-			bestName = sk.Name
-			bestReason = firstNonEmptyTraceText(sk.Description, strings.Join(sk.Triggers, ", "))
-			bestGuided = nlSkillIsAgentGuided(sk)
+		guided := nlSkillIsAgentGuided(sk)
+		if !skillMatchOutranks(identityScore, score, guided, bestIdentity, bestScore, bestGuided) {
+			continue
 		}
+		bestIdentity = identityScore
+		bestScore = score
+		bestName = sk.Name
+		bestReason = firstNonEmptyTraceText(sk.Description, strings.Join(sk.Triggers, ", "))
+		bestGuided = guided
 	}
 	if bestScore <= 0 {
 		return "", "", skillPreferenceNone
@@ -140,21 +144,21 @@ func matchPreferredLocalSkillMode(exec *SkillExecutor, userText, agentDomain str
 // so "book-pdf skill" cannot lose to a learned weather-PDF recipe. Agent-guided
 // workflows only score on identity: volunteering them because SKILL.md mentions
 // "pdf" is how an unrelated "生成pdf报告" hijacks Book-PDF.
-func preferredLocalSkillScore(sk NLSkillDefinition, msgLower string) (score int, identity bool) {
+func preferredLocalSkillScore(sk NLSkillDefinition, msgLower string) (score int, identity bool, identityScore int) {
 	if skillDocNameAliasOccurs(sk.Name, msgLower) {
-		score += 20
-		identity = true
+		identityScore += 20
 	}
 	if countTriggerMatches(sk.Triggers, msgLower) > 0 {
-		score += 10
-		identity = true
+		identityScore += 10
 	}
+	score = identityScore
+	identity = identityScore > 0
 	if nlSkillIsAgentGuided(sk) {
-		return score, identity
+		return score, identity, identityScore
 	}
 	desc := strings.ToLower(strings.TrimSpace(sk.Description))
 	if desc == "" {
-		return score, identity
+		return score, identity, identityScore
 	}
 	for _, token := range []string{"pdf", "报告", "文档", "综述", "markdown", "daily papers"} {
 		if strings.Contains(msgLower, token) && strings.Contains(desc, token) {
@@ -168,7 +172,21 @@ func preferredLocalSkillScore(sk NLSkillDefinition, msgLower string) (score int,
 			}
 		}
 	}
-	return score, identity
+	return score, identity, identityScore
+}
+
+// skillMatchOutranks reports whether a candidate should replace the current
+// best. Identity weight is the user naming the skill. Weak document tokens are
+// added only to runnable recipes, so a total-score comparison lets one extra
+// "paper" or "pdf" hide an agent-guided workflow named just as strongly.
+func skillMatchOutranks(identityScore, score int, guided bool, bestIdentity, bestScore int, bestGuided bool) bool {
+	if identityScore != bestIdentity {
+		return identityScore > bestIdentity
+	}
+	if guided != bestGuided {
+		return guided
+	}
+	return score > bestScore
 }
 
 func skillDocNameAliasOccurs(name, msgLower string) bool {

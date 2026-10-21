@@ -63,6 +63,8 @@ export interface CreateProjectTabOptions {
     /** UI handoff hint: existing tabs may be focused without transcript recovery. */
     openIntent?: "activate" | "restore";
     cloudWorkspaceId?: string;
+    /** Files for an extra chat. Not a tab-collapse key. */
+    fileWorkspaceId?: string;
     /** When set, stamp the project tab as a coding-development agent session. */
     agentMode?: "coding_dev" | "remote_coding_dev";
     remoteHost?: string;
@@ -401,6 +403,7 @@ function persistProjectTabs(tabs: AITab[]) {
                 title: t.title,
                 projectPath: t.projectPath,
                 cloudWorkspaceId: t.cloudWorkspaceId,
+                fileWorkspaceId: t.fileWorkspaceId,
                 agentMode: t.agentMode,
                 remoteHost: t.remoteHost,
                 remoteSafety: t.remoteSafety,
@@ -425,7 +428,7 @@ function loadPersistedProjectTabs(): AITab[] {
     try {
         const raw = localStorage.getItem(PROJECT_TABS_STORAGE_KEY);
         if (!raw) return [];
-        const parsed = JSON.parse(raw) as Array<{ id: string; type?: string; title: string; projectPath: string; latexRelativePath?: string; sessionFloorMs?: number; cloudWorkspaceId?: string; agentMode?: string; remoteHost?: string; remoteSafety?: string; expertId?: string; expertIcon?: string; expertDescription?: string; executionProfile?: string }>;
+        const parsed = JSON.parse(raw) as Array<{ id: string; type?: string; title: string; projectPath: string; latexRelativePath?: string; sessionFloorMs?: number; cloudWorkspaceId?: string; fileWorkspaceId?: string; agentMode?: string; remoteHost?: string; remoteSafety?: string; expertId?: string; expertIcon?: string; expertDescription?: string; executionProfile?: string }>;
         if (!Array.isArray(parsed)) return [];
         const tabs = parsed
             .filter(t => t.id && !String(t.id).startsWith("acp-") && (t.projectPath || (t.type === "expert" && t.expertId)))
@@ -460,6 +463,7 @@ function loadPersistedProjectTabs(): AITab[] {
                     title: sanitizeProjectTabTitle(t.title || projectPath, projectPath),
                     projectPath,
                     cloudWorkspaceId: String(t.cloudWorkspaceId || "").trim() || cloudWorkspaceIdFromPath(projectPath) || undefined,
+                    fileWorkspaceId: String(t.fileWorkspaceId || "").trim() || undefined,
                     agentMode,
                     remoteHost,
                     remoteSafety,
@@ -471,6 +475,8 @@ function loadPersistedProjectTabs(): AITab[] {
         const seenCloudWorkspaceIds = new Set<string>();
         return tabs.filter(tab => {
             if (tab.type !== "project") return true;
+            // fileWorkspaceId is the shared file set for an extra chat. It must
+            // not drop that tab when the transcript owner is already stored.
             const cloudWorkspaceId = String(tab.cloudWorkspaceId || '').trim() || cloudWorkspaceIdFromPath(tab.projectPath);
             if (!cloudWorkspaceId) return true;
             if (seenCloudWorkspaceIds.has(cloudWorkspaceId)) return false;
@@ -1247,6 +1253,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         // not pass one; otherwise the same workspace opened via a different path
         // (renamed/re-mounted cache) spawns duplicate tabs.
         const cloudWorkspaceId = String(options?.cloudWorkspaceId || "").trim() || cloudWorkspaceIdFromPath(projectPath);
+        const fileWorkspaceId = String(options?.fileWorkspaceId || "").trim();
         const existing = sessionKey
             ? prev.tabs.find(t => t.type === "project" && t.sessionKey === sessionKey)
             : cloudWorkspaceId
@@ -1263,6 +1270,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             }
             const nextAgentMode = options?.agentMode ?? existing.agentMode;
             const nextCloudWorkspaceId = cloudWorkspaceId || existing.cloudWorkspaceId;
+            const nextFileWorkspaceId = fileWorkspaceId || existing.fileWorkspaceId;
             const nextRemoteHost = options?.remoteHost ?? existing.remoteHost;
             const nextRemoteSafety = options?.remoteSafety ?? existing.remoteSafety;
             const nextNeedsReconnect = options?.remoteNeedsReconnect ?? existing.remoteNeedsReconnect;
@@ -1271,11 +1279,12 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             const safetyChanged = nextRemoteSafety !== existing.remoteSafety;
             const reconnectChanged = nextNeedsReconnect !== existing.remoteNeedsReconnect;
             const cloudIdentityChanged = nextCloudWorkspaceId !== existing.cloudWorkspaceId;
+            const fileWorkspaceChanged = nextFileWorkspaceId !== existing.fileWorkspaceId;
             const pathChanged = existing.projectPath !== effectiveProjectPath;
             const incomingTitle = String(taskTitle || "").trim() ? sanitizeProjectTabTitle(taskTitle, effectiveProjectPath) : "";
             const titleChanged = shouldReplaceCollapsedProjectTabTitle(existing.title, incomingTitle, effectiveProjectPath);
-            if (modeChanged || hostChanged || safetyChanged || reconnectChanged || cloudIdentityChanged || pathChanged || titleChanged) {
-                const patched = { ...existing, projectPath: effectiveProjectPath, title: titleChanged ? incomingTitle : existing.title, cloudWorkspaceId: nextCloudWorkspaceId, agentMode: nextAgentMode, remoteHost: nextRemoteHost, remoteSafety: nextRemoteSafety, remoteNeedsReconnect: nextNeedsReconnect, executionProfile: executionProfileForProjectMode(nextAgentMode) };
+            if (modeChanged || hostChanged || safetyChanged || reconnectChanged || cloudIdentityChanged || fileWorkspaceChanged || pathChanged || titleChanged) {
+                const patched = { ...existing, projectPath: effectiveProjectPath, title: titleChanged ? incomingTitle : existing.title, cloudWorkspaceId: nextCloudWorkspaceId, fileWorkspaceId: nextFileWorkspaceId || undefined, agentMode: nextAgentMode, remoteHost: nextRemoteHost, remoteSafety: nextRemoteSafety, remoteNeedsReconnect: nextNeedsReconnect, executionProfile: executionProfileForProjectMode(nextAgentMode) };
                 const existingState = tabStatesRef.current.get(existing.id);
                 if (existingState) existingState.projectPath = effectiveProjectPath;
                 updateTabState(() => ({
@@ -1306,6 +1315,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             title: sanitizeProjectTabTitle(taskTitle, projectPath),
             projectPath,
             cloudWorkspaceId: cloudWorkspaceId || undefined,
+            fileWorkspaceId: fileWorkspaceId || undefined,
             sessionKey: sessionKey || undefined,
             agentMode: options?.agentMode,
             remoteHost: options?.remoteHost,

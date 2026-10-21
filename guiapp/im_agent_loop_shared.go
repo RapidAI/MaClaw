@@ -1503,6 +1503,19 @@ type sharedAgentLoopCallbacks struct {
 	// Running it in this same request would be a second tools/call. The next
 	// BeginToolSurfaceEpoch clears the set, so that later request can call it.
 	managedMCPSpentThisRequest map[string]struct{}
+	// admittedSkillBindings are host-selected local skills for this complex
+	// task. The alias is the only name the model may call. Identity stays here.
+	admittedSkillBindings map[string]admittedSkillBinding
+	// skillRemoteSearchOffered lists search_and_install_skill because no
+	// complete local skill matched. It is not the manage_skill gateway.
+	skillRemoteSearchOffered bool
+	// agentGuidedHostTools keeps bash and the file tools for a matched
+	// agent-guided workflow when the managed plan did not grant them.
+	agentGuidedHostTools bool
+	// admittedSkillSettled is this turn, not this model request. Publishing
+	// the next request clears the bindings and selects again; it must not
+	// clear this, or a skill the model already called is demanded again.
+	admittedSkillSettled bool
 	// legacyPetitionTools are host tool names admitted onto the visible
 	// surface through a governed overlay: live SQL database adapters after a
 	// semantic petition for database / database_query could not expand a
@@ -2031,6 +2044,13 @@ func (c *sharedAgentLoopCallbacks) IsToolAllowed(name string) bool {
 	if name == semanticToolsSearchName || c.chatTaskHostTool(name) {
 		return true
 	}
+	// A complex task's admitted skill, its remote search, or the host tools
+	// an agent-guided workflow needs are part of this request. They are not
+	// grants the planner issued, and a light misroute must not hide a skill
+	// the user named.
+	if c.admittedSkillHostCall(name) {
+		return true
+	}
 	if c.legacyPetitionAllows(name) {
 		return true
 	}
@@ -2227,6 +2247,15 @@ func (c *sharedAgentLoopCallbacks) IsToolCallAllowed(name, argsJSON string) (boo
 	resolved := c.semanticSurface.resolveFunctionName(name)
 	if resolved == semanticToolsSearchName || c.chatTaskHostTool(resolved) {
 		return true, ""
+	}
+	// The planner never grants an admitted skill. Leaving the name to the
+	// grant check rejected the call after the tool list had offered it, so
+	// the model fell through to generate_pdf or bash and the skill never ran.
+	if c.admittedSkillHostCall(resolved) {
+		return true, ""
+	}
+	if blocked, reason := c.skillSubstituteBlocked(resolved); blocked {
+		return false, reason
 	}
 	if c.legacyPetitionAllows(resolved) {
 		return true, ""
@@ -2903,6 +2932,7 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 		if !c.foregroundHandoffOnly() {
 			c.publishReadyInstalledMCPTools()
 		}
+		c.publishAdmittedSkillTools(userText)
 		return c.tools
 	}
 	if c.handler == nil {
@@ -2927,6 +2957,10 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 	if !c.foregroundHandoffOnly() {
 		c.publishReadyInstalledMCPTools()
 	}
+	// This surface already has its own skill preference. Publishing the
+	// managed admission here appended a second search tool and could run a
+	// stale skill_* alias. Drop that state instead.
+	c.clearSkillAdmission()
 	c.legacySurface = c.legacySurface.replaceDefinitions(c.tools, toolSet.ClientToolNames)
 	return c.tools
 }
@@ -4030,6 +4064,9 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 		}
 		return c.executeToolWithoutSemanticSurface(name, c.continuationOverlayArgsJSON(name, argsJSON))
 	}
+	if text, handled, _ := c.executeAdmittedSkillHostCall(name, argsJSON); handled {
+		return text
+	}
 	if c.semanticSurface != nil {
 		if spent, ok := c.rejectManagedInstalledMCPSpent(name); ok {
 			return spent.Result
@@ -4037,7 +4074,9 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 		if c.installedMCPSidecarCall(name) {
 			return c.executeDiscoveredMCPGrant(name, argsJSON, "", "")
 		}
-		return c.executeSemanticTool(name, argsJSON)
+		text := c.executeSemanticTool(name, argsJSON)
+		c.noteGuidedSkillUseResult(name, text)
+		return text
 	}
 	if c.discoveredMCPGrantNamed(name) {
 		return c.executeDiscoveredMCPGrant(name, argsJSON, "", "")
@@ -4102,12 +4141,19 @@ func (c *sharedAgentLoopCallbacks) executeToolCallWithExecutionContext(name, arg
 		result = agent.ToolExecutionResult{Result: text, Outcome: outcome}
 	} else if c != nil && c.legacyPetitionAllows(name) {
 		result = c.ExecuteToolStructured(name, argsJSON)
+	} else if text, handled, ok := c.executeAdmittedSkillHostCall(name, argsJSON); handled {
+		outcome := agent.ToolExecutionOutcomeOK
+		if !ok {
+			outcome = agent.ToolExecutionOutcomeError
+		}
+		result = agent.ToolExecutionResult{Result: text, Outcome: outcome}
 	} else if spent, ok := c.rejectManagedInstalledMCPSpent(name); ok {
 		result = spent
 	} else if c != nil && c.semanticSurface != nil && c.installedMCPSidecarCall(name) {
 		result = semanticAgentToolExecutionResult(c.executeDiscoveredMCPGrant(name, argsJSON, callID, execution.SurfaceEpoch))
 	} else if c != nil && c.semanticSurface != nil {
 		result = semanticAgentToolExecutionResult(c.executeSemanticToolCallWithEpoch(name, argsJSON, callID, execution.SurfaceEpoch))
+		c.noteGuidedSkillUseResult(name, result.Result)
 	} else if c != nil && c.discoveredMCPGrantNamed(name) {
 		result = semanticAgentToolExecutionResult(c.executeDiscoveredMCPGrant(name, argsJSON, callID, execution.SurfaceEpoch))
 	} else {
@@ -4756,8 +4802,8 @@ func (c *sharedAgentLoopCallbacks) executeToolWithoutSemanticSurface(name, argsJ
 		// Keep interactive markers intact: never run size/semantic compression on them
 		// (core early-stops only when the prefix survives into RunLoop).
 		// Background has no desktop waveform host — match bonus-round policy.
-		if c.loopCtx != nil && c.loopCtx.Kind == LoopKindBackground {
-			outText = "record_audio is unavailable in background tasks; choose the next action directly."
+		if (c.handler != nil && c.handler.unattendedTurn(c.userID)) || (c.loopCtx != nil && c.loopCtx.Kind == LoopKindBackground) {
+			outText = unattendedRecordAudioRejected
 			ok = false
 		} else if rewritten := c.handler.rewriteRecordAudioMarkerForSharedLoop(c.userID, platform, mat.Text); rewritten != "" {
 			outText = rewritten
@@ -4766,7 +4812,13 @@ func (c *sharedAgentLoopCallbacks) executeToolWithoutSemanticSurface(name, argsJ
 			outText = mat.Text
 		}
 	} else if agent.IsAskUserResult(mat.Text) {
-		outText = mat.Text
+		if resolved, ok := unattendedResolvedAsk(c.handler.resolveUnattendedAsk(c.userID, mat.Text)); ok {
+			outText = resolved
+		} else if c.handler != nil && c.handler.unattendedTurn(c.userID) {
+			outText = "ask_user is unavailable in scheduled tasks; choose the next action directly and continue."
+		} else {
+			outText = mat.Text
+		}
 	} else {
 		// Keep raw output through UI/ACP reporting, hooks and drift detection.
 		// RunLoop invokes ProjectToolResult exactly once before model commit.
