@@ -1,7 +1,7 @@
 # 桌面 H.264 观看与接管（maclaw-h264/1）
 
 人类查看/接管桌面不再依赖 VNC：desktopd 容器内 supervisor 的 noVNC gate（6080）在
-`MACLAW_DESKTOP_H264=on` 时提供 H.264 播放器 `h264.html` 和同路径的 `/h264` WebSocket，
+默认（未设置 `MACLAW_DESKTOP_H264`，或设为 `off`/`0`/`false`/`no` 以外的值）提供 H.264 播放器 `h264.html` 和同路径的 `/h264` WebSocket，
 视频下行与键鼠/剪贴板上行走**同一条 WebSocket**，因此 Hub handoff 代理、desktopd 隧道与
 nginx（maclaw.top）无需新增端口或路由。noVNC 保留为备用。
 
@@ -14,7 +14,7 @@ nginx（maclaw.top）无需新增端口或路由。noVNC 保留为备用。
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `MACLAW_DESKTOP_H264` | 关 | `on` 时 gate 提供 `h264.html` / `/h264`。关闭时 `h264.html` 302 到 `?vnc=` 指定的 noVNC 页 |
+| `MACLAW_DESKTOP_H264` | 开 | 默认 gate 提供 `h264.html` / `/h264`；`off`/`0`/`false`/`no` 关闭。关闭时 `h264.html` 302 到 `?vnc=` 指定的 noVNC 页 |
 | `MACLAW_DESKTOP_H264_FPS` | 15 | 5..30 |
 
 每个容器最多 4 路；镜像没有 ffmpeg 时 `/h264` 返回 503（播放器重试 3 次后回退 noVNC）。

@@ -5,16 +5,17 @@ import (
 	"testing"
 )
 
-// The H.264 view stream is off unless MACLAW_DESKTOP_H264 is on, and then
+// The H.264 view stream is on unless MACLAW_DESKTOP_H264 is off/0/false/no, and
 // only answers /h264 and /h264.html on the noVNC gate.
 func TestSupervisorH264IsBehindItsFlag(t *testing.T) {
 	out := runSupervisorPython(t, `
 head = b"GET /h264 HTTP/1.1\r\nHost: x\r\n\r\n"
-print(sup.h264_requested(head, {}), sup.h264_requested(head, {"MACLAW_DESKTOP_H264": "on"}))
+print(sup.h264_requested(head, {"MACLAW_DESKTOP_H264": "off"}), sup.h264_requested(head, {}))
+print([sup.h264_enabled({"MACLAW_DESKTOP_H264": v}) for v in ("", "on", "1", "off", "0", "false", "no", " OFF ")])
 print(sup.h264_requested(b"GET /vnc.html HTTP/1.1\r\n\r\n", {"MACLAW_DESKTOP_H264": "on"}), sup.h264_requested(b"GET /v1/desktops/tunnel/k/vnc/h264.html HTTP/1.1\r\n\r\n", {"MACLAW_DESKTOP_H264": "on"}))
 print(sup.ws_accept_key("dGhlIHNhbXBsZSBub25jZQ=="))
 `)
-	want := "False True\nFalse True\ns3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+	want := "False True\n[True, True, True, False, False, False, False, False]\nFalse True\ns3pPLMBiTxaQ9kYGzzhZRbK+xOo="
 	if out != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
 	}
@@ -211,12 +212,12 @@ print(argv[argv.index("-i") + 1], "mpdecimate" in argv[argv.index("-vf") + 1], a
 	}
 }
 
-// With the flag off the gate answers the new player URL with a redirect to
+// With the flag explicitly off the gate answers the new player URL with a redirect to
 // the noVNC page the GUI named, so the picture still opens.
 func TestSupervisorH264FlagOffRedirectsToVNC(t *testing.T) {
 	out := runSupervisorPython(t, `
 import socket
-os.environ.pop("MACLAW_DESKTOP_H264", None)
+os.environ["MACLAW_DESKTOP_H264"] = "off"
 a, b = socket.socketpair()
 b.sendall(b"GET /api/v1/desktop-handoff/t/h264.html?view_only=0&vnc=vnc.html%3Fautoconnect%3D1 HTTP/1.1\r\nHost: x\r\n\r\n")
 sup.gate_connection(a, sup.VNC_GATE_PORT, 1, "aa" * 16)

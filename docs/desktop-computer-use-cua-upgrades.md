@@ -41,9 +41,9 @@ desktopd 在 `/mcp` 提供 Streamable HTTP MCP（复用 `corelib/desktop/desktop
 允许 bash，不允许安装。`DESKTOPD_MCP=off` 关闭（404），`DESKTOPD_MCP_TAKEOVER=off`
 关闭接管工具。说明见 `docs/desktop-mcp.md`。
 
-## 4. H.264 观看流（实验，默认关闭）
+## 4. H.264 观看流（默认开启）
 
-- 容器环境变量 `MACLAW_DESKTOP_H264=on` 时，supervisor 的 noVNC gate（6080）在路径最后一段为
+- 除非容器环境变量 `MACLAW_DESKTOP_H264=off`（或 `0`/`false`/`no`），supervisor 的 noVNC gate（6080）在路径最后一段为
   `/h264.html`（MSE 播放器）或 `/h264`（WebSocket）时接管连接；其他路径照旧转给 websockify。
   Hub handoff 代理与 desktopd 隧道带的前缀不影响匹配。
 - 编码：`ffmpeg -f x11grab … -vf mpdecimate -fps_mode vfr -c:v libx264 -preset ultrafast
@@ -62,4 +62,4 @@ desktopd 在 `/mcp` 提供 Streamable HTTP MCP（复用 `corelib/desktop/desktop
 | 1 | MaClawSrv + Hub 部署（Hub 下发素材文件夹 metadata）；截图保留同时随 guiapp 发版生效 |
 | 2 | guiapp 发版（UI 与 `computer_click target`）；MaClawSrv 部署并设置 `MACLAW_DESKTOP_GROUNDER_*` |
 | 3 | desktopd 部署 |
-| 4 | 重建 `maclaw-gui:2` 镜像并在容器设置 `MACLAW_DESKTOP_H264=on` |
+| 4 | 重建 `maclaw-gui:2` 镜像（H.264 默认开启；需要关闭时容器设置 `MACLAW_DESKTOP_H264=off`） |

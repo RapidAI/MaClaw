@@ -62,7 +62,7 @@ noVNC、xdotool、ImageMagick/scrot。纯 CPU 软件渲染,不需要 GPU。默�
 屏幕固定 `1440x900x24`,可用容器环境变量 `MACLAW_DESKTOP_GEOMETRY` 覆盖;
 supervisor 在没有 XFCE 的旧镜像(`maclaw-gui:1`)上自动回退 fluxbox。
 
-H.264 观看与接管(默认关闭,noVNC 仍可用):容器环境变量 `MACLAW_DESKTOP_H264=on` 时,
+H.264 观看与接管(默认开启,noVNC 仍可用):除非容器环境变量 `MACLAW_DESKTOP_H264=off`(或 `0`/`false`/`no`),
 noVNC gate(6080)响应 `GET /h264.html`(WebCodecs 播放器,缺 WebCodecs 时用 MSE,再不行回退 noVNC)
 和 `/h264` 的 WebSocket(ffmpeg x11grab → H.264 → Annex B 长度前缀帧;同一连接上传键鼠、剪贴板,
 XTEST 注入;输入租约 5s)。只有 owner 自己的屏幕或 takeover 中的 bot 屏幕接受输入。

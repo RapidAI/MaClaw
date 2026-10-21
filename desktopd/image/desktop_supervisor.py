@@ -3774,9 +3774,9 @@ def request_authorized(head, token):
 
 
 # ---------------------------------------------------------------------------
-# H.264 desktop stream with input (experimental, off by default).
+# H.264 desktop stream with input (on by default).
 #
-# MACLAW_DESKTOP_H264=on in the container lets the noVNC gate (6080) answer
+# Unless MACLAW_DESKTOP_H264=off (or 0/false/no), the noVNC gate (6080) answers
 # GET /h264.html (the player) and a WebSocket upgrade on /h264. A Hub or
 # desktopd tunnel prefix is kept in front of the path; only the last segment
 # counts. The gate token is the same one noVNC uses (Authorization: Bearer,
@@ -3825,7 +3825,8 @@ _h264_streams = threading.BoundedSemaphore(H264_MAX_STREAMS)
 
 def h264_enabled(env=None):
     env = os.environ if env is None else env
-    return str(env.get("MACLAW_DESKTOP_H264", "")).strip().lower() in ("1", "on", "true", "yes")
+    # On unless explicitly disabled (off/0/false/no).
+    return str(env.get("MACLAW_DESKTOP_H264", "")).strip().lower() not in ("0", "off", "false", "no")
 
 
 def h264_fps(env=None):
