@@ -52,6 +52,9 @@ type computerUseRuntime struct {
 	// pendingModelImage is a PNG (base64) captured by computer_observe in
 	// vision mode; the agent loop attaches it as a model-facing screenshot.
 	pendingModelImage string
+	// lastModelImage is the newest screenshot sent to the model; the
+	// optional grounding model reads it for computer_click target.
+	lastModelImage string
 	// taskStates holds the slim per-owner CU MEA contract (P0). Empty
 	// Acceptance means computer_done keeps today's self-reported completion.
 	taskStates map[string]*computerUseTaskState
@@ -245,7 +248,8 @@ func registerComputerUseTools(registry *ToolRegistry, app *App) {
 	registry.Register(RegisteredTool{
 		Name: "computer_click",
 		Description: "Click a desktop UI element. After computer_observe: vision models pass x,y in screenshot pixels; " +
-			"text-only models pass ref=eN. button=left|right (default left), count=1|2 (2=double-click).",
+			"text-only models pass ref=eN. When a grounding model is configured, target (the element described in words) may replace x,y. " +
+			"button=left|right (default left), count=1|2 (2=double-click).",
 		Category: ToolCategoryBuiltin,
 		Tags:     []string{"computer", "gui", "desktop", "click"},
 		Priority: 8,
@@ -254,6 +258,7 @@ func registerComputerUseTools(registry *ToolRegistry, app *App) {
 			"ref":    map[string]interface{}{"type": "string", "description": "Element ref from last computer_observe, e.g. e3"},
 			"x":      map[string]interface{}{"type": "integer", "description": "Raw X (discouraged; needs allow_pixel_click)"},
 			"y":      map[string]interface{}{"type": "integer", "description": "Raw Y (discouraged)"},
+			"target": map[string]interface{}{"type": "string", "description": "Optional: the element to click described in words (e.g. \"the blue Send button\"); a grounding model finds it in the last screenshot. Ignored when ref or x,y is given."},
 			"button": map[string]interface{}{"type": "string", "description": "left (default) or right"},
 			"count":  map[string]interface{}{"type": "integer", "description": "1=single (default), 2=double-click"},
 		},
@@ -1191,6 +1196,13 @@ func cuHandleClick(args map[string]interface{}) string {
 		}
 		x = guiIntArg(args, "x", 0)
 		y = guiIntArg(args, "y", 0)
+		if target := strings.TrimSpace(guiStrArg(args, "target", "")); target != "" && !cuHasArg(args, "x") && !cuHasArg(args, "y") {
+			gx, gy, note := cuGroundTarget(target)
+			if note != "" {
+				return "computer_click: " + note
+			}
+			x, y = gx, gy
+		}
 		x, y = sess.MapVisionClick(x, y)
 		x, y = sess.MapCaptureClick(x, y)
 		detail = fmt.Sprintf("pixel (%d,%d) button=%s count=%d", x, y, button, count)

@@ -48,6 +48,9 @@ func setComputerUseTurnVision(supports bool) {
 func setPendingComputerUseModelImage(pngB64 string) {
 	globalComputerUse.mu.Lock()
 	globalComputerUse.pendingModelImage = strings.TrimSpace(pngB64)
+	if globalComputerUse.pendingModelImage != "" {
+		globalComputerUse.lastModelImage = globalComputerUse.pendingModelImage
+	}
 	globalComputerUse.mu.Unlock()
 }
 

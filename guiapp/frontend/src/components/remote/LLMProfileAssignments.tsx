@@ -8,7 +8,7 @@ import { capabilityBandName, hubOfficialModelAliases, officialModelAlias } from 
 
 type Profile = { provider_id?: string; model?: string; inherit_assistant?: boolean };
 type RoleAssignment = { model?: string; inherit_hub?: boolean };
-type RoleKey = "foreground" | "background" | "computer_use";
+type RoleKey = "foreground" | "background" | "computer_use" | "grounder";
 type Provider = { id: string; name: string; model?: string; models?: string[]; connection_test_passed?: boolean; is_hub_service?: boolean; supports_vision?: boolean; vision_models?: string[]; vision_tested_models?: string[] };
 type Summary = { provider_id?: string; provider_name?: string; model?: string; inherit_assistant?: boolean; health?: string };
 type RoleSummary = { model?: string; inherit_hub?: boolean; provider_id?: string; provider_name?: string; configured?: boolean };
@@ -38,6 +38,9 @@ type PanelState = {
         foreground?: RoleAssignment;
         background?: RoleAssignment;
         computer_use?: RoleAssignment;
+        // Optional grounding model for Computer Use: turns a target described
+        // in words into a click point. Unset (inherit_hub) means not used.
+        grounder?: RoleAssignment;
         horizon?: unknown;
     };
     hub_role_models?: { foreground?: string; background?: string; computer_use?: string };
@@ -47,6 +50,7 @@ type PanelState = {
     foreground?: RoleSummary;
     background?: RoleSummary;
     computer_use?: RoleSummary;
+    grounder?: RoleSummary;
     revision: string;
 };
 
@@ -73,6 +77,7 @@ const cloneProfiles = (profiles: PanelState["profiles"]): PanelState["profiles"]
     foreground: { ...(profiles.foreground || {}) },
     background: { ...(profiles.background || {}) },
     computer_use: { ...(profiles.computer_use || {}) },
+    grounder: { ...(profiles.grounder || {}) },
 });
 
 const roleInheritsHub = (role?: RoleAssignment) => role?.inherit_hub !== false;
@@ -433,7 +438,7 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
             current.inherit_hub = inherit;
             if (!inherit && !String(current.model || "").trim()) {
                 const hub = state?.hub_role_models;
-                const hubModel = role === "computer_use" ? hub?.computer_use : hub?.[role];
+                const hubModel = role === "grounder" ? "" : role === "computer_use" ? hub?.computer_use : hub?.[role];
                 current.model = String(hubModel || "auto");
             }
             return { ...prev, [role]: current };
@@ -664,12 +669,14 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
                 ["foreground", t("Foreground", "前台交互", "前台互動"), t("Planning and chat", "规划与对话", "規劃與對話"), t("Foreground follows Hub", "前台跟随 Hub", "前台跟隨 Hub")],
                 ["background", t("Background", "后台执行", "後台執行"), t("Worker loops", "后台任务循环", "後台任務循環"), t("Background follows Hub", "后台跟随 Hub", "後台跟隨 Hub")],
                 ["computer_use", t("Computer use", "电脑操作", "電腦操作"), t("Screenshots and clicks", "截图与点击", "截圖與點擊"), t("Computer use follows Hub", "电脑操作跟随 Hub", "電腦操作跟隨 Hub")],
+                ["grounder", t("Grounding model", "定位模型", "定位模型"), t("Optional. Finds the click point when Computer Use names a target in words (e.g. UI-TARS, Qwen-VL). If unset or it fails, the Computer Use model clicks by itself.", "可选。电脑操作用文字描述点击目标时，由它给出坐标（如 UI-TARS、Qwen-VL）。不设置或定位失败时，由电脑操作模型自己点击。", "可選。電腦操作用文字描述點擊目標時，由它給出座標（如 UI-TARS、Qwen-VL）。不設定或定位失敗時，由電腦操作模型自己點擊。"), t("Grounding model not used", "不使用定位模型", "不使用定位模型")],
             ] as const).map(([key, title, hint, aria]) => {
                 const assignment = draft[key] || {};
                 const inherits = roleInheritsHub(assignment);
-                const summary = key === "foreground" ? state.foreground : key === "background" ? state.background : state.computer_use;
-                const hubModel = state.hub_role_models?.[key];
-                const shown = String(summary?.model || hubModel || "auto");
+                const summary = key === "foreground" ? state.foreground : key === "background" ? state.background : key === "grounder" ? state.grounder : state.computer_use;
+                const isGrounder = key === "grounder";
+                const hubModel = isGrounder ? undefined : state.hub_role_models?.[key];
+                const shown = isGrounder ? t("Not used (single model)", "不使用（单模型）", "不使用（單模型）") : String(summary?.model || hubModel || "auto");
                 const hubProvider = providers.find(provider => provider.is_hub_service);
                 const summaryProviderID = String(summary?.provider_id || "").trim();
                 const foregroundUsesAssistant = key === "foreground" && inherits && summaryProviderID !== "" && summaryProviderID !== String(hubProvider?.id || "").trim();
@@ -679,10 +686,10 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
                         <div style={{ minWidth: 0 }}>
                             <label style={{ display: "inline-flex", gap: 7, alignItems: "center", cursor: "pointer", fontSize: "0.75rem", color: colors.text, marginBottom: inherits ? 6 : 10 }}>
                                 <input type="checkbox" aria-label={aria} checked={inherits} onChange={e => setRoleInherit(key, e.target.checked)} />
-                                {foregroundUsesAssistant ? t("Follow AI assistant", "跟随普通 AI 助手", "跟隨普通 AI 助手") : t("Follow Hub", "跟随 Hub", "跟隨 Hub")}
+                                {isGrounder ? t("Not used", "不使用", "不使用") : foregroundUsesAssistant ? t("Follow AI assistant", "跟随普通 AI 助手", "跟隨普通 AI 助手") : t("Follow Hub", "跟随 Hub", "跟隨 Hub")}
                             </label>
                             {inherits
-                                ? <div aria-live="polite" style={{ color: colors.textSecondary, fontSize: "0.74rem" }}>{t("Effective now: ", "当前生效：", "目前生效：")}{summary?.provider_name ? `${summary.provider_name} · ` : ""}{shown}</div>
+                                ? <div aria-live="polite" style={{ color: colors.textSecondary, fontSize: "0.74rem" }}>{t("Effective now: ", "当前生效：", "目前生效：")}{!isGrounder && summary?.provider_name ? `${summary.provider_name} · ` : ""}{shown}</div>
                                 : <SuggestCombobox
                                     listboxId={`${key}-role-models`}
                                     ariaLabel={aria}

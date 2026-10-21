@@ -711,6 +711,26 @@ func bindComputerUseApp(app *App) {
 		}
 		return cfg.SupportsVision
 	}
+	computerUseGrounderFn = func() (corelib.MaclawLLMConfig, bool) {
+		cfg, err := app.ResolveMaclawLLMGrounder()
+		if err != nil || strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
+			return corelib.MaclawLLMConfig{}, false
+		}
+		if id := strings.TrimSpace(cfg.ProviderID); id != "" {
+			if err := app.ensureOAuthTokenForProvider(id); err != nil {
+				log.Printf("[computer-use] grounder oauth: %v", err)
+				return corelib.MaclawLLMConfig{}, false
+			}
+			if err := app.ensureCodeGenTokenForProvider(id); err != nil {
+				log.Printf("[computer-use] grounder token: %v", err)
+				return corelib.MaclawLLMConfig{}, false
+			}
+			if refreshed, err := app.ResolveMaclawLLMGrounder(); err == nil {
+				cfg = refreshed
+			}
+		}
+		return cfg, true
+	}
 	computerUseCaptionConfigFn = func() (corelib.MaclawLLMConfig, bool) {
 		cfg := app.GetCaptionLLMConfig()
 		if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {

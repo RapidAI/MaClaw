@@ -124,6 +124,7 @@ type MaclawLLMProfilePanelState struct {
 	Foreground    MaclawLLMRoleSummary              `json:"foreground"`
 	Background    MaclawLLMRoleSummary              `json:"background"`
 	ComputerUse   MaclawLLMRoleSummary              `json:"computer_use"`
+	Grounder      MaclawLLMRoleSummary              `json:"grounder"`
 	Revision      string                            `json:"revision"`
 }
 
@@ -1881,6 +1882,7 @@ func validateMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, providers []c
 		{"foreground", profiles.Foreground},
 		{"background", profiles.Background},
 		{"computer use", profiles.ComputerUse},
+		{"grounder", profiles.Grounder},
 	} {
 		if err := validateMaclawLLMRoleAssignment(role.name, role.assignment); err != nil {
 			return err
@@ -2253,6 +2255,7 @@ func (a *App) GetMaclawLLMProfilePanelState() (MaclawLLMProfilePanelState, error
 	state.Foreground = a.maclawLLMRoleSummary(maclawLLMRoleForeground, profiles.Foreground, cfg, loaded.Providers, loaded.Current)
 	state.Background = a.maclawLLMRoleSummary(maclawLLMRoleBackground, profiles.Background, cfg, loaded.Providers, loaded.Current)
 	state.ComputerUse = a.maclawLLMRoleSummary(maclawLLMRoleComputerUse, profiles.ComputerUse, cfg, loaded.Providers, loaded.Current)
+	state.Grounder = a.maclawLLMGrounderSummary(*profiles, loaded.Providers)
 	return state, nil
 }
 
@@ -2514,6 +2517,7 @@ func (a *App) SaveMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, revision
 	normalizeMaclawLLMRoleAssignment(&profiles.Foreground)
 	normalizeMaclawLLMRoleAssignment(&profiles.Background)
 	normalizeMaclawLLMRoleAssignment(&profiles.ComputerUse)
+	normalizeMaclawLLMRoleAssignment(&profiles.Grounder)
 	revision = strings.TrimSpace(revision)
 	if revision == "" {
 		return fmt.Errorf("LLM profile revision is required")

@@ -334,6 +334,10 @@ func desktopStepsInsertIntoFocus(raw any) bool {
 // operateDesktopSteps runs app_run steps with the new step kinds, or a
 // computer batch, and reports every step.
 func operateDesktopSteps(ctx context.Context, scope agentruntime.Scope, display, action string, args map[string]any, raw any, beforeInsert func() error, browserRaises func() bool) (string, error) {
+	raw, groundNotes, groundErr := groundDesktopSteps(ctx, scope, display, raw)
+	if groundErr != nil {
+		return "", fmt.Errorf("desktop %s: %w", action, groundErr)
+	}
 	steps, err := computeruse.ParseSteps(raw)
 	if err != nil {
 		return "", fmt.Errorf("desktop %s: %w", action, err)
@@ -368,6 +372,9 @@ func operateDesktopSteps(ctx context.Context, scope agentruntime.Scope, display,
 	}
 	results, image, runErr := computeruse.Run(env, steps, action == "computer")
 	text := computeruse.ResultsText(steps, results, runErr)
+	for _, note := range groundNotes {
+		text = note + "\n" + text
+	}
 	if image != "" {
 		text += "\n" + image
 	}

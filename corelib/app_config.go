@@ -851,6 +851,11 @@ type MaclawLLMProfiles struct {
 	Foreground  MaclawLLMRoleAssignment  `json:"foreground,omitempty"`
 	Background  MaclawLLMRoleAssignment  `json:"background,omitempty"`
 	ComputerUse MaclawLLMRoleAssignment  `json:"computer_use,omitempty"`
+	// Grounder is the optional Computer Use grounding model: it turns a
+	// click target named in words into a point. It never follows Hub; it is
+	// used only when pinned (inherit_hub false plus a model). Unset keeps the
+	// single-model behaviour.
+	Grounder MaclawLLMRoleAssignment `json:"grounder,omitempty"`
 }
 
 // MaclawLLMHorizonProfiles holds optional per-role model overrides for the
