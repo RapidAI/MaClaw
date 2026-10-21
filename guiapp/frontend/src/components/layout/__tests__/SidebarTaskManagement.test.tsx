@@ -6223,7 +6223,7 @@ describe('task list folders', () => {
         view.rerenderWith({
             taskContextMenu: { ...codingMenu, archived: true },
         });
-        expect(menuItems()).toEqual(['task-context-restore']);
+        expect(menuItems()).toEqual(['task-context-restore', 'task-context-remove']);
         fireEvent.click(screen.getByTestId('task-context-restore'));
         expect(screen.queryByTestId('task-folder-archive')).toBeNull();
         expect(within(screen.getByTestId('task-folder-coding')).getByText('Coding feature')).toBeTruthy();
@@ -6343,7 +6343,7 @@ describe('task list folders', () => {
         expect(JSON.parse(localStorage.getItem(TASK_WORKDIR_COLLAPSE_STORAGE_KEY) || '[]')).toEqual([]);
     });
 
-    it('keeps the one-item Archive menu next to the pointer', () => {
+    it('keeps the Archive menu next to the pointer', () => {
         const previousHeight = window.innerHeight;
         Object.defineProperty(window, 'innerHeight', { configurable: true, value: 480 });
         try {
@@ -6510,6 +6510,43 @@ describe('task list folders', () => {
         }
     });
 
+    it('deletes an archived task from its menu', async () => {
+        const hideTask = vi.fn().mockResolvedValue(undefined);
+        localStorage.setItem(TASK_ARCHIVE_STORAGE_KEY, JSON.stringify([taskOrderKey(chat)]));
+        localStorage.setItem(TASK_ARCHIVE_EXPANDED_STORAGE_KEY, '1');
+        const view = renderTaskManagement({
+            tasks: [chat, coding],
+            hideTask,
+            taskContextMenu: {
+                x: 8,
+                y: 16,
+                projectPath: chat.project_path,
+                name: chat.name,
+                pinned: false,
+                tags: chat.tags,
+                orderKey: taskOrderKey(chat),
+                archived: true,
+            },
+        });
+        expect([...screen.getByTestId('task-context-menu').querySelectorAll('[role="menuitem"]')].map(item => item.getAttribute('data-testid'))).toEqual([
+            'task-context-restore',
+            'task-context-remove',
+        ]);
+        expect(screen.getByText('Design a site')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('task-context-remove'));
+        await confirmRemoveDialog();
+        await waitFor(() => expect(hideTask).toHaveBeenCalledWith(chat.project_path, undefined, true));
+        expect(JSON.parse(localStorage.getItem(TASK_ARCHIVE_STORAGE_KEY) || '[]')).toEqual([taskOrderKey(chat)]);
+        expect(screen.queryByTestId('task-folder-archive')).toBeNull();
+        expect(screen.queryByText('Design a site')).toBeNull();
+        expect(screen.getByText('Coding feature')).toBeTruthy();
+
+        view.rerenderWith({ tasks: [coding] });
+        expect(JSON.parse(localStorage.getItem(TASK_ARCHIVE_STORAGE_KEY) || '[]')).toEqual([]);
+        view.rerenderWith({ tasks: [chat, coding] });
+        expect(within(screen.getByTestId('task-folder-session')).getByText('Design a site')).toBeTruthy();
+    });
+
     it('drops archive membership when that task is deleted', async () => {
         const hideTask = vi.fn().mockResolvedValue(undefined);
         localStorage.setItem(TASK_ARCHIVE_STORAGE_KEY, JSON.stringify([taskOrderKey(chat), taskOrderKey(coding)]));
@@ -6529,7 +6566,8 @@ describe('task list folders', () => {
         fireEvent.click(screen.getByTestId('task-context-remove'));
         await confirmRemoveDialog();
         await waitFor(() => expect(hideTask).toHaveBeenCalledWith(chat.project_path, undefined, true));
-        expect(JSON.parse(localStorage.getItem(TASK_ARCHIVE_STORAGE_KEY) || '[]')).toEqual([taskOrderKey(coding)]);
+        expect(JSON.parse(localStorage.getItem(TASK_ARCHIVE_STORAGE_KEY) || '[]')).toEqual([taskOrderKey(chat), taskOrderKey(coding)]);
+        expect(screen.queryByText('Design a site')).toBeNull();
     });
 
     it('keeps archive membership when deletion is refused', async () => {
@@ -6571,7 +6609,7 @@ describe('task list folders', () => {
             tasks: [chat, coding],
             taskContextMenu: menu,
         });
-        expect([...screen.getByTestId('task-context-menu').querySelectorAll('[role="menuitem"]')].map(item => item.textContent)).toEqual(['恢复']);
+        expect([...screen.getByTestId('task-context-menu').querySelectorAll('[role="menuitem"]')].map(item => item.textContent)).toEqual(['恢复', '删除']);
         fireEvent.click(screen.getByTestId('task-context-restore'));
         expect(screen.queryByTestId('task-folder-archive')).toBeNull();
         expect(within(screen.getByTestId('task-folder-session')).getByText('Design a site')).toBeTruthy();

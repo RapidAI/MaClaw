@@ -1478,8 +1478,8 @@ const TaskContextMenuIcon = ({ name }: { name: TaskContextMenuIconName }) => (
 const contextMenuPosition = (x: number, y: number, itemCount: number): { left: number; top: number } => {
     const viewportWidth = typeof window === 'undefined' ? 1280 : Math.max(0, window.innerWidth || 1280);
     const viewportHeight = typeof window === 'undefined' ? 720 : Math.max(0, window.innerHeight || 720);
-    // Size the reserve from the items actually shown. Archive's single Restore
-    // entry would otherwise be pushed a full menu-height above the pointer.
+    // Size the reserve from the items actually shown. Archive's short menu
+    // would otherwise be pushed a full menu-height above the pointer.
     const menuHeight = Math.min(viewportHeight - 16, 8 + Math.max(1, itemCount) * 32);
     return {
         left: Math.max(8, Math.min(Number(x) || 8, Math.max(8, viewportWidth - 184))),
@@ -1513,7 +1513,18 @@ function buildTaskContextMenuItems(opts: {
         lang, menu, setRenamingTaskPath, setRenameValue,
         setTaskContextMenu, pinTask, onDuplicateTask, confirmRemoveTask, refreshTasks, openEditRemoteDialog, browseCloudWorkspace, allowCloudWorkspaceBrowse, onShareCloudWorkspace, onTransferTask, onArchiveTask,
     } = opts;
-    // An archived row only offers the way back. Its home folder is still the
+    // Delete matches the other rows: confirm, then hide the task and drop its
+    // archive key. The menu close lives in confirmRemoveTask.
+    const removeItem: TaskContextMenuItem = {
+        label: textForLang(lang, 'Remove', '删除', '刪除'),
+        icon: 'remove',
+        danger: true,
+        testId: 'task-context-remove',
+        action: () => {
+            void confirmRemoveTask(menu);
+        },
+    };
+    // An archived row can go back or be deleted. Its home folder is still the
     // one its tags decide (会话 or 编程).
     if (menu.archived) {
         return [{
@@ -1525,7 +1536,7 @@ function buildTaskContextMenuItems(opts: {
                 setTaskContextMenu(null);
                 onArchiveTask?.(menu, false);
             },
-        }];
+        }, removeItem];
     }
     const items: TaskContextMenuItem[] = [
         {
@@ -1627,17 +1638,7 @@ function buildTaskContextMenuItems(opts: {
             onArchiveTask?.(menu, true);
         },
     });
-    items.push({
-        label: textForLang(lang, 'Remove', '删除', '刪除'),
-        icon: 'remove',
-        danger: true,
-        testId: 'task-context-remove',
-        action: () => {
-            // The confirm dialog (and menu close) lives in confirmRemoveTask so
-            // deletion stays available even while the task's tab is open.
-            void confirmRemoveTask(menu);
-        },
-    });
+    items.push(removeItem);
     return items;
 }
 // Must sit above existing fixed dropdowns/overlays that use z-index 99999.
@@ -2627,6 +2628,12 @@ export const SidebarTaskManagement = ({
     const [collapsedWorkdirFolders, setCollapsedWorkdirFolders] = useState<ReadonlySet<string>>(readCollapsedWorkdirFolders);
     const [taskFolderOrder, setTaskFolderOrder] = useState<MovableTaskListFolderKind[]>(readTaskFolderOrder);
     const [archivedTaskKeys, setArchivedTaskKeys] = useState<ReadonlySet<string>>(readArchivedTaskKeys);
+    const archivedTaskKeysRef = useRef(archivedTaskKeys);
+    archivedTaskKeysRef.current = archivedTaskKeys;
+    // hideTask finishes before ListTasks drops the row. Hide that identity
+    // until then, and keep the archive key so a restart in the gap does not
+    // put the row back into 会话 or 编程.
+    const [suppressedTaskKeys, setSuppressedTaskKeys] = useState<ReadonlySet<string>>(() => new Set());
     // Scroll the restored row, or the Archive header, after that membership commits.
     const pendingListScrollRef = useRef<{ kind: 'task' | 'folder'; key: string } | null>(null);
     const toggleWorkdirFolder = (key: string) => {
@@ -2710,12 +2717,46 @@ export const SidebarTaskManagement = ({
             revealTaskWorkdir(homeKind, homeTask);
         }
     };
+    useEffect(() => {
+        if (suppressedTaskKeys.size === 0) return;
+        const live = new Set(tasks.map(task => taskOrderKey(task)));
+        const gone: string[] = [];
+        for (const key of suppressedTaskKeys) {
+            if (!live.has(key)) gone.push(key);
+        }
+        if (gone.length === 0) return;
+        // The refreshed list has dropped the deleted row. Archive membership
+        // can go with it; a loading list must not clear keys that are still shown.
+        setSuppressedTaskKeys(prev => {
+            let changed = false;
+            const next = new Set(prev);
+            for (const key of gone) {
+                if (!next.delete(key)) continue;
+                changed = true;
+            }
+            return changed ? next : prev;
+        });
+        setArchivedTaskKeys(prev => {
+            let changed = false;
+            const next = new Set(prev);
+            for (const key of gone) {
+                if (!next.delete(key)) continue;
+                changed = true;
+            }
+            if (!changed) return prev;
+            writeArchivedTaskKeys(next);
+            return next;
+        });
+    }, [tasks, suppressedTaskKeys]);
     const visibleTasks = useMemo(
         // The backend list is recency-ordered. Opening a task rewrites
         // last_activity and would otherwise move that row. Default order is
         // pin, then creation time. A drag order, once saved, replaces that.
-        () => applyTaskListOrder(sortTaskManagementItems(visibleTaskRows(tasks)), taskListOrder),
-        [tasks, taskListOrder],
+        () => applyTaskListOrder(
+            sortTaskManagementItems(visibleTaskRows(tasks).filter(task => !suppressedTaskKeys.has(taskOrderKey(task)))),
+            taskListOrder,
+        ),
+        [tasks, taskListOrder, suppressedTaskKeys],
     );
     // A pure agent loop run leaves no running snapshot on the durable row
     // (has_output stays true from earlier runs), so while the assistant panel
@@ -4470,15 +4511,18 @@ export const SidebarTaskManagement = ({
             refreshTasks();
             const targetPath = normalizeProjectSessionPath(projectPath);
             const listed = tasks.find(item => normalizeProjectSessionPath(item.project_path) === targetPath);
-            // A deleted task must not stay archived. A later row with the same
-            // identity would otherwise reappear in 归档.
+            // Keep the archive key until the refreshed list drops this identity.
+            // Clearing it now would put the still-listed row back into 会话 or
+            // 编程 if the process restarts before ListTasks returns.
             const archiveKey = orderKey || (listed ? taskOrderKey(listed) : '');
-            if (archiveKey) {
-                setArchivedTaskKeys(prev => {
-                    if (!prev.has(archiveKey)) return prev;
+            // Read the ref after the await. The menu closure can be older than
+            // the latest archive set.
+
+            if (archiveKey && archivedTaskKeysRef.current.has(archiveKey)) {
+                setSuppressedTaskKeys(prev => {
+                    if (prev.has(archiveKey)) return prev;
                     const next = new Set(prev);
-                    next.delete(archiveKey);
-                    writeArchivedTaskKeys(next);
+                    next.add(archiveKey);
                     return next;
                 });
             }
