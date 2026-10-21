@@ -97,6 +97,7 @@ import {
     saveBotPersona,
     botMessageStartedAt,
     pendingBotReplyIsStale,
+    orphanedPendingReply,
     sideNote,
     userRequestBefore,
 
@@ -773,6 +774,7 @@ function copy(lang: string) {
             unavailable: 'The backend agent is unavailable.',
             orderMissing: 'That message did not become an order, so it was not sent.',
             scheduleMissing: 'That message did not become a schedule, so none was set.',
+            restartLost: 'This one had not gone out yet when the app restarted. You can send your own words as they are, or have me read it again.',
             readingLost: 'I could not turn that into an arrangement — the service that reads your messages did not answer. You can send your own words as they are, or have me read it again.',
             readingAgain: 'Read it again',
             readingVerbatim: 'Send my own words',
@@ -897,6 +899,7 @@ function copy(lang: string) {
             unavailable: '後台 agent 不可用。',
             orderMissing: '這句沒整理成可執行的安排，沒有發出。',
             scheduleMissing: '這句沒有整理成定時安排，沒有設定。',
+            restartLost: '這句在應用重啟時還沒發出去。可以照你的原話發過去，或讓我再讀一次。',
             readingLost: '這句沒讀成安排——幫我讀話的服務暫時沒回應。可以照你的原話發過去，或讓我再讀一次。',
             readingAgain: '再讀一次',
             readingVerbatim: '照原話發出',
@@ -1020,6 +1023,7 @@ function copy(lang: string) {
         unavailable: '后台 agent 不可用。',
             orderMissing: '这句没整理成可执行的安排，没有发出。',
             scheduleMissing: '这句没有整理成定时安排，没有设定。',
+            restartLost: '这句在应用重启时还没发出去。可以照你的原话发过去，或者让我再读一次。',
             readingLost: '这句没读成安排——帮我读话的服务暂时没有回应。可以照你的原话发过去，或者让我再读一次。',
             readingAgain: '再读一次',
             readingVerbatim: '照原话发出',
@@ -1796,6 +1800,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const noteQueuedRef = useRef<(botId: string) => void>(() => undefined);
     const langRef = useRef(lang);
     langRef.current = lang;
+    const recoverOrphansRef = useRef<(botId: string) => Promise<void>>(async () => undefined);
+    // Opening a bot after a restart clears bubbles that never left the app.
+    useEffect(() => {
+        if (selectedId) void recoverOrphansRef.current(selectedId);
+    }, [userId, selectedId]);
     // Files waiting to go with the next message, per bot. Each uploads to the
     // bot's ~/素材/<bot>/ folder as soon as it is attached.
     const [materialsByBot, setMaterialsByBot] = useState<Record<string, MaterialItem[]>>({});
@@ -4285,6 +4294,13 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 queueRef.current.set(botId, queued);
                 return;
             }
+            {
+                // From here the order is MaClawSrv's. A restart before this
+                // line leaves an orphan the next session offers to resend.
+                const marked = messagesForBot(ownerId, botId).map(item => item.id === assistantMessage.id ? { ...item, dispatched: true } : item);
+                if (ownerLeft()) saveBotMessages(ownerId, botId, marked);
+                else commit(botId, marked);
+            }
             try {
                 const response = await SendDesktopBotTask(botId, instruction, sendPhase) as { request_id?: string; RequestID?: string; deferred?: boolean; Deferred?: boolean; text?: string; Text?: string; error?: string; Error?: string; send_to_user?: string; SendToUser?: string };
                 if (ownerLeft()) {
@@ -4410,6 +4426,43 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const slot = id ? pendingRef.current.get(id) : undefined;
             return !(slot && slot.botId === botId && slot.admitted && !slot.settled);
         });
+    // A bubble left pending by an app restart while its line was still being
+    // read never reached MaClawSrv. It must not hold the queue or show
+    // "working" forever: once the server confirms no run is live, it becomes
+    // a no-reading bubble with the person's words parked for one-click resend,
+    // and the lines parked behind it go out.
+    const recoverOrphanedTurns = async (botId: string) => {
+        const liveIds = new Set([...pendingRef.current.values()].filter(value => value.botId === botId && !value.settled).map(value => value.messageId));
+        const orphans = messagesForBot(userId, botId).filter(message => orphanedPendingReply(message, liveIds));
+        if (orphans.length === 0) return;
+        try {
+            const runs = (await GetActiveDesktopRuns(botId) as Array<{ run_id?: string }>) || [];
+            if (runs.some(run => String(run?.run_id || '').trim() !== '')) return;
+        } catch {
+            return;
+        }
+        const ids = new Set(orphans.map(message => message.id));
+        const stored = messagesForBot(userId, botId);
+        const fixed = stored.map((item, index) => {
+            if (!ids.has(item.id) || !orphanedPendingReply(item, liveIds)) return item;
+            let words = '';
+            for (let i = index - 1; i >= 0; i--) {
+                if (stored[i].role === 'user') { words = stored[i].content || ''; break; }
+            }
+            clearLiveBotTurn(userId, botId, item.id);
+            return {
+                ...item,
+                pending: false,
+                failed: true,
+                content: text.restartLost,
+                phase: undefined,
+                noReading: { text: words, phase: item.phase || 'plan', kind: 'unreachable' as NoReading },
+            };
+        });
+        commit(botId, fixed);
+        drainIfIdle(botId);
+    };
+    recoverOrphansRef.current = recoverOrphanedTurns;
     const drainIfIdle = (botId: string, fromList = false) => {
         if (stopHoldRef.current.has(botId)) return;
         const queue = queueRef.current.get(botId);

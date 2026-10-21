@@ -465,6 +465,16 @@ export function botMessageStartedAt(id: string): number {
     return Number.isFinite(started) && started > 0 ? started : 0;
 }
 
+// orphanedPendingReply is a pending bubble from an earlier app session that
+// was still being read when the app went away: its order never reached
+// MaClawSrv, so no reply will ever settle it. liveIds are the bubbles this
+// page is still working on.
+export function orphanedPendingReply(message: Pick<DesktopBotMessage, 'id' | 'role' | 'pending' | 'dispatched' | 'requestId'>, liveIds: ReadonlySet<string>): boolean {
+    if (message.role !== 'assistant' || !message.pending || message.dispatched) return false;
+    if (liveIds.has(message.id)) return false;
+    return String(message.requestId || '').startsWith('local:');
+}
+
 export function pendingBotReplyIsStale(message: Pick<DesktopBotMessage, 'id' | 'pending'>, now = Date.now()): boolean {
     if (!message.pending) return false;
     const started = botMessageStartedAt(message.id);
@@ -824,6 +834,9 @@ export interface DesktopBotMessage {
     askUser?: DesktopBotAsk;
     askResolved?: boolean;
     requestId?: string;
+    // Set just before the order goes to SendDesktopBotTask. A pending bubble
+    // without it never left this app: after a restart nothing will answer it.
+    dispatched?: boolean;
     // The worker order for a confirm arrangement. The visible content is the
     // short plan; this is what the accept button sends. It is not a user bubble.
     workOrder?: string;
