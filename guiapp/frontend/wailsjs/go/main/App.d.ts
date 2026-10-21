@@ -2919,3 +2919,5 @@ export function RecallBotSecret(arg1:string):Promise<boolean>;
 export function FillBotSecret(arg1:string,arg2:string):Promise<void>;
 
 export function FileCompanionFigureDataURL(arg1:string):Promise<string>;
+
+export function WriteDesktopBotAck(arg1:{kind:string,message:string,lang:string,persona?:string,goal?:string,instruction?:string,unclear?:string,assumption?:string,options?:Array<string>,files?:Array<string>,running_task?:string,fallback?:boolean}):Promise<string>;

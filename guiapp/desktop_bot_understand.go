@@ -150,6 +150,13 @@ type desktopBotUnderstandRequest struct {
 	// fallback asks for the other model: the lightweight profile, then the
 	// background role, instead of the assistant profile that just failed.
 	fallback bool
+	// tag names the call in LLM logs; empty is the understand step.
+	tag string
+	// hub is the last resort: the Hub's shared background model. It is used
+	// only after the person's own model (assistant profile, then its
+	// lightweight sibling) has failed. An unset own model already resolves
+	// to the Hub service through the assistant profile.
+	hub bool
 }
 
 // desktopBotUnderstandFunc is the no-tool model call. Tests replace it.
@@ -167,7 +174,7 @@ When the message ends with a [素材] list, those are files the person uploaded;
 
 goal is a short verb phrase (under 20 characters) naming the job in the language named below, such as 去小红书打个招呼. Empty when there is no desktop work.
 unclear and assumption: when pace is direct but part of the request is ambiguous, unclear names that part briefly and assumption says how you will proceed anyway. Still do the work; do not switch to ask or confirm for this. Leave both empty when the request is clear.
-options: when the request has several plausible readings, list 2 to 4 short phrases (under 15 characters each) naming them, most likely first. The work proceeds with the first one now; the others are offered as one-tap corrections. Omit options when the request is clear.
+options: when the request has several plausible readings, list 2 to 4 short phrases (under 15 characters each) naming them, most likely first. The work proceeds with the first one now; the others are offered as one-tap corrections. told then says, in your own words, that you are starting with the first reading and that they can tap another or add a line. Omit options when the request is clear.
 pace is direct, confirm, ask, reply, schedule, or status.
 - direct: the request is clear and this turn can finish it. A lookup, a screenshot, opening or reading a named page, writing or revising a file they already described, a small change they spelled out. told says you are doing it now. instruction is the concrete work. A document they asked for uses desktop action=deliver. A file already on the desktop, including a pdf, uses path so the chat receives that file. Text to send uses name and content. Do not leave a confirmation. A request that names a later time or a repeat is schedule, not direct.
 - confirm: the change is large or hard to undo, and they have not already approved it. Installing or removing software, deleting, paying, sending on their behalf, wiping, or a long procedure. told is the one arrangement, in one or two sentences. instruction is the concrete work the worker will do after they approve: the goal, the constraints, and the success criteria. Do not tell the helper what the chat reply must contain. Do not tell the worker to only describe the arrangement, to skip the change, or to wait for another confirmation. There is no second confirmation. A large or hard-to-undo change that also names a time stays confirm, and schedule is omitted. After they approve, the execute reading is direct and instruction is that concrete work. It is schedule only when the confirmed work itself names a later time or a repeat.
@@ -210,8 +217,19 @@ func desktopBotUnderstandClassifyRequest(req desktopBotUnderstandRequest) LLMCla
 		NoThinking:        true,
 		MaxOutputTokens:   desktopBotUnderstandMaxOutputTokens,
 	}
+	if req.tag != "" {
+		out.Tag = req.tag
+	}
+	// The fallback stays on the person's own provider (its lightweight
+	// model). Role background resolves to the Hub's shared model whenever
+	// the role inherits the Hub, which put a custom-model user on the Hub
+	// auto model for 78.6s on 2026-10-21; that is now the hub attempt only.
 	if req.fallback {
-		out.Tag = "desktop-bot-understand-fallback"
+		out.Tag = out.Tag + "-fallback"
+		out.PreferLightweight = true
+	}
+	if req.hub {
+		out.Tag = out.Tag + "-hub"
 		out.PreferLightweight = true
 		out.Role = "background"
 	}
@@ -297,7 +315,7 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 	// an answer that came back but did not parse (the 2026-10-20 field case:
 	// deepseek-v4.1-flash returned 200 with an empty body), and by a second
 	// network failure on the primary model.
-	useFallback := false
+	useFallback, useHub := false, false
 	lastClass, lastOutcome := desktopBotReadingUnreachable, "budget spent"
 	for attempt := 1; attempt <= desktopBotReadAttempts; attempt++ {
 		remaining := time.Until(deadline)
@@ -317,7 +335,8 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 			systemPrompt: systemPrompt,
 			userPrompt:   userPrompt,
 			timeoutSec:   timeoutSec,
-			fallback:     useFallback,
+			fallback:     useFallback && !useHub,
+			hub:          useHub,
 		})
 		if err != nil {
 			log.Printf("[desktop-bot-understand] phase=%s attempt=%d elapsed=%s earlier=%d text_len=%d err=%v",
@@ -334,6 +353,7 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 					desktopBotReadSleep(ctx, wait)
 				}
 				if attempt >= 2 {
+					useHub = useFallback
 					useFallback = true
 				}
 				continue
@@ -347,9 +367,10 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 			lastClass, lastOutcome = desktopBotReadingUnread, "answer was not a reading"
 			// An empty or cut answer is often a one-off on a fast model. Ask
 			// once more, on the other model, while the budget allows.
-			if attempt < desktopBotReadAttempts && !useFallback && time.Until(deadline) > 5*time.Second {
+			if attempt < desktopBotReadAttempts && !useHub && time.Until(deadline) > 5*time.Second {
+				useHub = useFallback
 				useFallback = true
-				log.Printf("[desktop-bot-understand] phase=%s attempt=%d retrying on fallback model after parse failure", phase, attempt)
+				log.Printf("[desktop-bot-understand] phase=%s attempt=%d retrying on fallback model after parse failure hub=%v", phase, attempt, useHub)
 				continue
 			}
 			break
@@ -389,27 +410,13 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 		if understood.Pace == "direct" {
 			understood.Told = desktopBotAcceptTold(understood, text, lang)
 		}
-		if names := desktopBotMaterialNames(text); len(names) > 0 {
-			en := desktopBotEnglish(lang) || (lang == "" && desktopBotLooksEnglish(desktopBotWordsBeforeMaterials(text)))
-			switch understood.Pace {
-			case "direct":
-				understood.Told = desktopBotMaterialAcceptTold(understood, names, en, understood.Told)
-			case "reply":
-				if understood.Told != "STOP_WORK" {
-					understood.Told = desktopBotMaterialKeepTold(understood.Told, names, en)
-				}
-			}
-		}
 		log.Printf("[desktop-bot-understand] phase=%s pace=%s lang=%s attempt=%d elapsed=%s earlier=%d text_len=%d told_len=%d instruction_len=%d persona_len=%d",
 			phase, understood.Pace, lang, attempt, time.Since(started).Round(time.Millisecond), len(earlier),
 			utf8.RuneCountInString(text), utf8.RuneCountInString(understood.Told), utf8.RuneCountInString(understood.Instruction), utf8.RuneCountInString(understood.Persona))
 		return understood, nil
 	}
 	fb := desktopBotVerbatimFallback(lastClass, lastOutcome, text, phase, earlier)
-	fb.Told = desktopBotAcceptTold(fb, text, lang)
-	if names := desktopBotMaterialNames(text); len(names) > 0 {
-		fb.Told = desktopBotMaterialAcceptTold(fb, names, desktopBotEnglish(lang), fb.Told)
-	}
+	fb.Told = "" // the GUI asks WriteDesktopBotAck for the sentence
 	return fb, nil
 }
 
@@ -997,50 +1004,25 @@ func desktopBotSameWords(a, b string) bool {
 	return na == "" || na == nb || (len(nb) > 0 && strings.Contains(nb, na) && utf8.RuneCountInString(na)*10 >= utf8.RuneCountInString(nb)*8)
 }
 
-// desktopBotAcceptTold is the first line the person sees when a job is
-// taken. It never echoes their raw words and never asks for confirmation.
+// desktopBotAcceptTold keeps the model's own sentence for a job it took,
+// and clears it when there is nothing worth showing: empty, a parrot of the
+// message or the card, a verbatim fallback, or files the sentence does not
+// name. An empty told tells the GUI to start the job now and ask
+// WriteDesktopBotAck for the sentence. There is no stock sentence here;
+// options stay structured for the chips.
 func desktopBotAcceptTold(u *DesktopBotUnderstanding, text, lang string) string {
-	en := desktopBotEnglish(lang)
-	if u.Fallback != "" {
-		if en {
-			return "OK, I'll try it exactly as you put it. Stop me anytime if I've got it wrong."
-		}
-		return "好的，我先照你的原话去试试，哪里理解偏了随时叫停我。"
-	}
 	u.Options = desktopBotOptions(u.Options)
-	if len(u.Options) >= 2 {
-		if en {
-			return fmt.Sprintf("OK, I'll go with \"%s\" for now. Did you mean: %s? Tap one, or pick \"Other\" and tell me, and I'll adjust.", u.Options[0], strings.Join(u.Options, " / "))
-		}
-		return fmt.Sprintf("好的，我先按「%s」去做。你要的是不是：%s？点一下，或选「其它」写给我，我按你说的改。", u.Options[0], strings.Join(u.Options, " / "))
-	}
-	unclear := strings.TrimRight(strings.TrimSpace(u.Unclear), "。.，, ")
-	assume := strings.TrimRight(strings.TrimSpace(u.Assumption), "。.，, ")
-	if unclear != "" && assume != "" {
-		if en {
-			return fmt.Sprintf("OK, I'll go with \"%s\" for now; I'm not sure about %s, so tell me anytime if that's off.", clipRunes(assume, 60), clipRunes(unclear, 60))
-		}
-		return fmt.Sprintf("好的，我先按「%s」去做；%s这点我不太确定，不对的话随时告诉我。", clipRunes(assume, 40), clipRunes(unclear, 40))
-	}
 	told := strings.TrimSpace(u.Told)
-	if told != "" && told != "STOP_WORK" && !desktopBotSameWords(told, text) && !desktopBotSameWords(told, u.Instruction) {
-		return told
-	}
 	if told == "STOP_WORK" {
 		return told
 	}
-	goal := strings.TrimRight(strings.TrimSpace(u.Goal), "。.!！ ")
-	if goal != "" && !desktopBotSameWords(goal, text) && utf8.RuneCountInString(goal) <= 30 {
-		if en {
-			return fmt.Sprintf("Sure, I'll %s now and keep you posted.", goal)
-		}
-		goal = strings.TrimPrefix(goal, "去")
-		return fmt.Sprintf("好的，我这就去%s，有进展告诉你。", goal)
+	if u.Fallback != "" || told == "" || desktopBotSameWords(told, text) || desktopBotSameWords(told, u.Instruction) || desktopBotSameWords(told, desktopBotWordsBeforeMaterials(text)) {
+		return ""
 	}
-	if en {
-		return "Sure, I'm on it and will keep you posted."
+	if names := desktopBotMaterialNames(text); len(names) > 0 && !desktopBotMentionsAny(told, names) {
+		return ""
 	}
-	return "好的，我这就开始弄，弄完告诉你。"
+	return told
 }
 
 // desktopBotOptions keeps 2 to 4 distinct, short, non-empty choices, or none.

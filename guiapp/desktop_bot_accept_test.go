@@ -1,53 +1,49 @@
 package guiapp
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
 
-func TestDesktopBotAcceptTold(t *testing.T) {
+func TestDesktopBotAcceptToldKeepsOnlyTheModelsOwnSentence(t *testing.T) {
 	in := "去小红书上给大家打个招呼，说maclaw bot来了:)"
 	cases := []struct {
 		name string
 		u    DesktopBotUnderstanding
+		text string
 		want string
 	}{
-		{"clear goal, echo told", DesktopBotUnderstanding{Told: in, Goal: "去小红书打个招呼"}, "好的，我这就去小红书打个招呼，有进展告诉你。"},
-		{"clear goal, empty told", DesktopBotUnderstanding{Goal: "小红书打个招呼"}, "好的，我这就去小红书打个招呼，有进展告诉你。"},
-		{"unclear", DesktopBotUnderstanding{Told: in, Unclear: "发笔记还是评论", Assumption: "发一条新笔记"}, "好的，我先按「发一条新笔记」去做；发笔记还是评论这点我不太确定，不对的话随时告诉我。"},
-		{"model failed", DesktopBotUnderstanding{Instruction: in, Fallback: "unreachable"}, "好的，我先照你的原话去试试，哪里理解偏了随时叫停我。"},
-		{"natural told kept", DesktopBotUnderstanding{Told: "好的，这就去小红书打个招呼。", Goal: "x"}, "好的，这就去小红书打个招呼。"},
-		{"nothing", DesktopBotUnderstanding{Told: in}, "好的，我这就开始弄，弄完告诉你。"},
+		{"natural told kept", DesktopBotUnderstanding{Told: "好嘞，这就去小红书打招呼。"}, in, "好嘞，这就去小红书打招呼。"},
+		{"echo cleared", DesktopBotUnderstanding{Told: in}, in, ""},
+		{"empty cleared", DesktopBotUnderstanding{}, in, ""},
+		{"echo of card cleared", DesktopBotUnderstanding{Told: "目标：打招呼", Instruction: "目标：打招呼"}, in, ""},
+		{"verbatim fallback cleared", DesktopBotUnderstanding{Told: "x", Fallback: "unread"}, in, ""},
+		{"stop kept", DesktopBotUnderstanding{Told: "STOP_WORK"}, "停", "STOP_WORK"},
+		{"files not named cleared", DesktopBotUnderstanding{Told: "好的，开始写摘要。"}, ackPDF, ""},
+		{"files named kept", DesktopBotUnderstanding{Told: "拿《2608.06216-回答.pdf》做素材，这就写。"}, ackPDF, "拿《2608.06216-回答.pdf》做素材，这就写。"},
 	}
 	for _, c := range cases {
-		got := desktopBotAcceptTold(&c.u, in, "zh")
-		if got != c.want {
+		if got := desktopBotAcceptTold(&c.u, c.text, "zh"); got != c.want {
 			t.Errorf("%s: got %q want %q", c.name, got, c.want)
 		}
-		if strings.Contains(got, "maclaw bot来了") {
-			t.Errorf("%s: echoed raw text", c.name)
-		}
-	}
-	if got := desktopBotAcceptTold(&DesktopBotUnderstanding{Fallback: "unread"}, "post hi", "en"); !strings.HasPrefix(got, "OK, I'll try") {
-		t.Errorf("en fallback: %q", got)
 	}
 }
 
-func TestDesktopBotAcceptOptions(t *testing.T) {
-	in := "去小红书上给大家打个招呼"
-	u := DesktopBotUnderstanding{Told: in, Options: []string{" 发一条新笔记 ", "在评论区留言", "发一条新笔记", "", "私信粉丝", "改个人简介"}, Unclear: "x", Assumption: "y"}
-	got := desktopBotAcceptTold(&u, in, "zh")
-	want := "好的，我先按「发一条新笔记」去做。你要的是不是：发一条新笔记 / 在评论区留言 / 私信粉丝 / 改个人简介？点一下，或选「其它」写给我，我按你说的改。"
-	if got != want {
-		t.Fatalf("got %q", got)
+func TestDesktopBotAcceptOptionsStayStructured(t *testing.T) {
+	u := DesktopBotUnderstanding{Told: "先发笔记，想要别的点一下。", Options: []string{" 发一条新笔记 ", "在评论区留言", "发一条新笔记", "", "私信粉丝", "改个人简介"}}
+	if got := desktopBotAcceptTold(&u, "去小红书打个招呼", "zh"); got != "先发笔记，想要别的点一下。" {
+		t.Fatalf("told %q", got)
 	}
 	if len(u.Options) != 4 || u.Options[0] != "发一条新笔记" {
 		t.Fatalf("options %v", u.Options)
 	}
-	one := DesktopBotUnderstanding{Goal: "小红书打个招呼", Options: []string{"only"}}
-	if got := desktopBotAcceptTold(&one, in, "zh"); got != "好的，我这就去小红书打个招呼，有进展告诉你。" || one.Options != nil {
-		t.Fatalf("single option should be dropped: %q %v", got, one.Options)
+	one := DesktopBotUnderstanding{Options: []string{"only"}}
+	desktopBotAcceptTold(&one, "x", "zh")
+	if one.Options != nil {
+		t.Fatalf("single option kept: %v", one.Options)
 	}
 	var parsed DesktopBotUnderstanding
 	if err := json.Unmarshal([]byte(`{"told":"t","options":["A","B"]}`), &parsed); err != nil || len(parsed.Options) != 2 {
@@ -63,6 +59,58 @@ func TestDesktopBotHasMaterials(t *testing.T) {
 	for _, no := range []string{"普通消息", "x[素材]\n- ~/素材/a", "t\n[素材]\n- /etc/passwd", "t\n[素材]\nhello"} {
 		if desktopBotHasMaterials(no) {
 			t.Fatalf("false positive %q", no)
+		}
+	}
+}
+
+func TestWriteDesktopBotAckRetriesOnFallbackAndRejectsEcho(t *testing.T) {
+	prev, prevAttempts := desktopBotUnderstandLLM, desktopBotAckAttempts
+	defer func() { desktopBotUnderstandLLM, desktopBotAckAttempts = prev, prevAttempts }()
+	var seen []desktopBotUnderstandRequest
+	answers := []string{"附件是文档。", "收到《2608.06216-回答.pdf》，拿来写知乎摘要。"}
+	desktopBotUnderstandLLM = func(_ context.Context, _ *App, req desktopBotUnderstandRequest) (string, error) {
+		seen = append(seen, req)
+		out := answers[0]
+		answers = answers[1:]
+		return out, nil
+	}
+	line, err := (&App{}).WriteDesktopBotAck(DesktopBotAckRequest{Kind: "accept", Message: ackPDF, Lang: "zh-Hans", Goal: "写知乎摘要", Persona: "码卡龙"})
+	if err != nil || line != "收到《2608.06216-回答.pdf》，拿来写知乎摘要。" {
+		t.Fatalf("line %q err %v", line, err)
+	}
+	if len(seen) != 2 || seen[0].fallback || seen[0].hub || !seen[1].fallback || seen[1].hub || seen[0].tag != "desktop-bot-ack" || seen[0].timeoutSec > 10 || seen[1].timeoutSec > 12 {
+		t.Fatalf("attempts %+v", seen)
+	}
+	for _, want := range []string{"files: 2608.06216-回答.pdf", "goal: 写知乎摘要", "persona: 码卡龙", "kind: accept"} {
+		if !strings.Contains(seen[0].userPrompt, want) {
+			t.Fatalf("prompt lacks %q:\n%s", want, seen[0].userPrompt)
+		}
+	}
+	var tries []desktopBotUnderstandRequest
+	desktopBotUnderstandLLM = func(_ context.Context, _ *App, req desktopBotUnderstandRequest) (string, error) {
+		tries = append(tries, req)
+		return "", errors.New("timeout")
+	}
+	if _, err := (&App{}).WriteDesktopBotAck(DesktopBotAckRequest{Kind: "supplement", Message: "x"}); err == nil {
+		t.Fatal("all-failed ack returned no error")
+	}
+	if len(tries) != 3 || !tries[2].hub {
+		t.Fatalf("hub must be the last attempt only: %+v", tries)
+	}
+}
+
+func TestDesktopBotAckLineCleansAnswers(t *testing.T) {
+	req := DesktopBotAckRequest{Message: "做摘要"}
+	cases := map[string]string{
+		"“好，这就开始。”":              "好，这就开始。",
+		"好的\n第二行":                "好的",
+		`{"told":"x"}`:           "",
+		"做摘要":                    "",
+		strings.Repeat("长", 200): "",
+	}
+	for in, want := range cases {
+		if got := desktopBotAckLine(in, req); got != want {
+			t.Errorf("%q -> %q want %q", in, got, want)
 		}
 	}
 }

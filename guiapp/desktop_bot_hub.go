@@ -881,7 +881,12 @@ func (a *App) AppendDesktopBotSupplement(botID, runID, supplement string) (*Desk
 	botlog.Write(botID, "gui.supplement_dispatched", nil, "run", target.RunID, "supplement", sent.SupplementID)
 	message := desktopbot.SteerOnIt
 	if names := desktopBotMaterialNames(supplement); len(names) > 0 {
-		message = desktopBotMaterialSupplementAck(names, target.TaskText, desktopBotLooksEnglish(desktopBotWordsBeforeMaterials(supplement)))
+		// The GUI replaces this with a WriteDesktopBotAck sentence when it arrives.
+		_ = names
+		message = "收到。"
+		if desktopBotLooksEnglish(desktopBotWordsBeforeMaterials(supplement)) {
+			message = "Got it."
+		}
 	}
 	return &DesktopBotSupplementReceipt{Accepted: true, Stage: desktopBotSupplementQueued, RunID: target.RunID, SupplementID: sent.SupplementID, Message: message}, nil
 }

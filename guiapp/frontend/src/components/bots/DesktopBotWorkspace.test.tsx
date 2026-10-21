@@ -112,6 +112,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     GetActiveDesktopRuns: (botId: string) => listActiveRuns(botId),
     GetDesktopBotBusy: (owner: string) => getDesktopBusy(owner),
     EvaluateDesktopTaskSupplement: (taskText: string, content: string, lang: string) => evaluateSupplement(taskText, content, lang),
+    WriteDesktopBotAck: () => Promise.resolve("好，这就去办。"),
     AppendDesktopBotSupplement: (botId: string, runId: string, instruction: string) => appendSupplement(botId, runId, instruction),
     GetDesktopBotSupplements: (botId: string, runId: string) => getSupplements(botId, runId),
     SetDesktopBotPrimary: (id: string) => setPrimary(id),
@@ -5338,7 +5339,7 @@ describe('DesktopBotWorkspace', () => {
         expect(sup?.content).toBe('补充已生效。');
     });
 
-    it('shows one line of the request when a direct reading has no sentence', async () => {
+    it('starts the work at once and shows a model-written line when a direct reading has no sentence', async () => {
         listBots.mockResolvedValue([{ id: 'bot_1', title: 'Bot 1', description: '共用桌面', instance_id: 'inst_1' }]);
         const ask = '打开示例网站\n再把标题记下来';
         understandTask.mockImplementation(async () => ({ told: '', instruction: '打开示例网站并记下标题', pace: 'direct' as const }));
@@ -5347,8 +5348,9 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(await screen.findByText('Bot 1'));
         fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: ask } });
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
-        const line = await screen.findByText('打开示例网站');
+        const line = await screen.findByText('好，这就去办。');
         expect(line.closest('[data-message-role]')?.getAttribute('data-message-role')).toBe('assistant');
+        expect(screen.queryByText('打开示例网站')).toBeNull();
         expect(document.querySelector('[data-message-role="user"]')?.textContent).toContain('再把标题记下来');
         await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', '打开示例网站并记下标题', 'execute'));
         const working = screen.getByTestId('desktop-bot-processing');

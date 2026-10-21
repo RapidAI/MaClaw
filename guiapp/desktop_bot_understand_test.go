@@ -781,8 +781,12 @@ func TestDesktopBotEmptyAnswerRetriesOnFallbackModel(t *testing.T) {
 		t.Fatalf("fallback model reading was not used: %#v", got)
 	}
 	req := desktopBotUnderstandClassifyRequest(desktopBotUnderstandRequest{fallback: true})
-	if !req.PreferLightweight || req.Role != "background" {
-		t.Fatalf("fallback request does not switch model: %#v", req)
+	if !req.PreferLightweight || req.Role != "" {
+		t.Fatalf("fallback must stay on the person's own provider: %#v", req)
+	}
+	hub := desktopBotUnderstandClassifyRequest(desktopBotUnderstandRequest{hub: true})
+	if !hub.PreferLightweight || hub.Role != "background" || hub.Tag != "desktop-bot-understand-hub" {
+		t.Fatalf("hub request: %#v", hub)
 	}
 }
 
@@ -800,8 +804,8 @@ func TestDesktopBotBothModelsEmptySendsOwnWords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 2 {
-		t.Fatalf("calls=%d, want primary + fallback", calls)
+	if calls != 3 {
+		t.Fatalf("calls=%d, want own model, own lightweight, then hub", calls)
 	}
 	if got.Reading != "" || got.Fallback != desktopBotReadingUnread || got.Instruction != msg || got.Pace != "direct" || got.Told != "" {
 		t.Fatalf("the turn was blocked instead of sending the person's words: %#v", got)

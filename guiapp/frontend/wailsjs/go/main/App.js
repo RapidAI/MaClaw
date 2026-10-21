@@ -5893,3 +5893,7 @@ export function FillBotSecret(arg1, arg2) {
 export function FileCompanionFigureDataURL(arg1) {
   return window['go']['main']['App']['FileCompanionFigureDataURL'](arg1);
 }
+
+export function WriteDesktopBotAck(arg1) {
+  return window['go']['main']['App']['WriteDesktopBotAck'](arg1);
+}

@@ -135,3 +135,38 @@ pieces; until then that write still buffers the partial, not the live file.
    `$TMPDIR` has room for in-flight uploads, or set `MaterialStageDir`.
 3. **guiapp**: release last. An older Hub answers 404 on the new route, so
    the chips show "上传失败".
+
+## Acknowledgements (what the bot says when it takes work or files)
+
+Every acknowledgement sentence is written by a model; there are no stock
+template sets.
+
+- **Accept (new job, with or without files, with options or unclear parts).**
+  The understand step's own `told` is kept when it is a real sentence: not
+  empty, not a parrot of the message or the work card, and naming the files
+  when files came along. `options`/`unclear`/`assumption` stay structured
+  fields (the chips come from `options`); the prompt asks `told` to mention
+  them in its own words. When `told` is unusable, the job is **sent at once**
+  and the GUI calls `WriteDesktopBotAck` (kind `accept`) in the background;
+  the line is placed above the working bubble when it arrives.
+- **Files added to a running job.** The supplement is delivered first (Hub
+  receipt `收到。`/`Got it.` is a placeholder), then `WriteDesktopBotAck`
+  (kind `supplement`, with the running task text and file names) replaces it.
+- **Files with no job.** The understand reply (`pace=reply`) writes the line.
+- `WriteDesktopBotAck` attempts: the person's assistant model (8s), its
+  lightweight sibling on the same provider (10s), then the Hub shared model
+  (10s) only if both failed. If every attempt fails the GUI shows one
+  neutral line: `好，我先做着。` / `收到。` (English `OK, I'm on it.` /
+  `Got it.`). Nothing waits on these calls.
+
+### Which model
+
+GUI-side calls (understand, its fallback, acks) use the person's own model
+settings (assistant profile; an unset profile resolves to the Hub service).
+The understand fallback used to resolve role `background`, which inherits
+the Hub's shared `auto` model even for a custom-model user (observed
+2026-10-21: 78.6s on `hub.mypapers.top auto` after the custom
+`deepseek-v4.1-flash` returned empty). It now stays on the person's provider
+(lightweight sibling); the Hub `background` role is the third, last attempt.
+The desktop run itself is resolved by MaClawSrv from the account's server-side
+config (`agentservice.ResolveLLMConfig`), not from the GUI's local providers.

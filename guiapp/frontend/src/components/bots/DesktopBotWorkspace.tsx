@@ -52,6 +52,8 @@ import {
     ClassifyDesktopWorkStop,
     WatchDesktopBot,
 } from '../../../wailsjs/go/main/App';
+import { desktopBotAck, type DesktopBotAckContext } from './desktopBotAck';
+import { splitMaterials as splitAckMaterials } from './desktopBotMaterials';
 import { desktopModeOf, effectiveScreenPick, mineScreenURL, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
 import { desktopTurnFromPayload, isDesktopBotFiller } from './visibleDesktopTurn';
 import {
@@ -3944,10 +3946,22 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             clearLiveBotTurn(ownerId, botId, assistantMessage.id);
             return true;
         };
+        // A line written after the work started goes above the wait bubble,
+        // or at the end when that bubble has already settled.
+        const postLaterAck = (botId: string, anchorId: string, ctx: DesktopBotAckContext, chips?: string[]) => {
+            void desktopBotAck(ctx).then(line => {
+                if (userIdRef.current !== ownerId) return;
+                const stored = messagesForBot(ownerId, botId);
+                const ack: DesktopBotMessage = { id: messageID(), role: 'assistant', content: line, ack: true, understood: true, options: chips };
+                const at = stored.findIndex(item => item.id === anchorId);
+                commit(botId, at >= 0 ? [...stored.slice(0, at), ack, ...stored.slice(at)] : [...stored, ack]);
+            });
+        };
         void (async () => {
             let instruction = '';
             let told = '';
             let options: string[] = [];
+            let understoodForAck: Record<string, unknown> = {};
             let sendPhase: BotPhase = turnPhase;
             if (verbatim) {
                 // No reading was made. The person asked for their own words,
@@ -3989,6 +4003,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         return;
                     }
                     understood = reading.understood;
+                    understoodForAck = understood;
                     told = reading.told;
                     options = desktopBotOptionsOf(reading.understood);
                     instruction = reading.instruction;
@@ -4197,11 +4212,29 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 return;
             }
             if (bubbleGone()) return;
-            // direct with no sentence still owes one line of the person's words.
-            // A button accept is verbatim and must not grow another bubble.
-            let sentence = told.trim();
-            if (!sentence && !verbatim && sendPhase === 'execute') sentence = oneLine(content);
-            if (sentence && (sentence !== content.trim() || !told.trim())) {
+            // The model's own sentence goes in now. With none, the work still
+            // starts now and a model-written line is placed above the wait
+            // bubble when it arrives (WriteDesktopBotAck). A button accept is
+            // verbatim and must not grow another bubble.
+            const sentence = told.trim();
+            if (!sentence && !verbatim && sendPhase === 'execute') {
+                const u = understoodForAck;
+                const str = (a: unknown, b: unknown) => String(a ?? b ?? '').trim();
+                postLaterAck(botId, assistantMessage.id, {
+                    kind: 'accept',
+                    message: content,
+                    lang,
+                    persona: personaForBot(ownerId, botId),
+                    goal: str(u.goal, u.Goal),
+                    instruction,
+                    unclear: str(u.unclear, u.Unclear),
+                    assumption: str(u.assumption, u.Assumption),
+                    options: options.length >= 2 ? options : undefined,
+                    files: splitAckMaterials(content).paths.map(item => item.split('/').pop() || item),
+                    fallback: !!str(u.fallback, u.Fallback),
+                }, options.length >= 2 ? options : undefined);
+            }
+            if (sentence && sentence !== content.trim()) {
                 const stored = messagesForBot(ownerId, botId);
                 const at = stored.findIndex(item => item.id === assistantMessage.id);
                 if (at >= 0) {
@@ -4231,6 +4264,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         const targetID = matches.length === 1 ? String(matches[0].candidate.run_id || '') : '';
                         const receipt = await AppendDesktopBotSupplement(botId, targetID, String(matches[0].verdict?.instruction || content.trim())) as { accepted?: boolean; stage?: string; message?: string; supplement_id?: string } | null;
                         const note = String(receipt?.message || (String(lang).toLowerCase().startsWith('en') ? 'On it' : '在办'));
+                        const supplementFiles = splitAckMaterials(content).paths;
                         if (receipt?.stage === 'queued') {
                             // Only the receipt's ids go on the bubble. The
                             // terminal answer (applied / missed) arrives later
@@ -4255,6 +4289,21 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             pending.settled = true;
                             pendingRef.current.delete(ticket);
                             drainIfIdle(botId);
+                            if (supplementFiles.length) {
+                                // The files are already with the run; the
+                                // receipt's word is swapped for a written line.
+                                void desktopBotAck({
+                                    kind: 'supplement',
+                                    message: content,
+                                    lang,
+                                    persona: personaForBot(ownerId, botId),
+                                    files: supplementFiles.map(item => item.split('/').pop() || item),
+                                    running_task: String(matches[0].candidate.task_text || ''),
+                                }).then(line => {
+                                    if (userIdRef.current !== ownerId) return;
+                                    commit(botId, messagesForBot(ownerId, botId).map(item => item.id === assistantMessage.id ? { ...item, content: line } : item));
+                                });
+                            }
                             return;
                         }
                         // Several runs matched and the server will not guess.
