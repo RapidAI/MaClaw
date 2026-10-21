@@ -55,6 +55,7 @@ import {
 import { desktopBotAck, type DesktopBotAckContext } from './desktopBotAck';
 import { splitMaterials as splitAckMaterials } from './desktopBotMaterials';
 import { desktopModeOf, effectiveScreenPick, mineScreenURL, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
+import { desktopViewerSrc, loadDesktopViewer, saveDesktopViewer, type DesktopViewer } from './desktopViewer';
 import { desktopTurnFromPayload, isDesktopBotFiller } from './visibleDesktopTurn';
 import {
     appendDesktopBotReport,
@@ -760,6 +761,9 @@ function copy(lang: string) {
             viewOnly: 'View only',
             takeControl: 'Take control',
             screenMode: 'Screen mode',
+            viewerH264: 'H.264',
+            viewerVnc: 'VNC',
+            viewerHint: 'Switch the desktop player: H.264 (smooth, low latency) or VNC (fallback).',
             watchLockedHint: 'The bot handed you the keyboard — finish the login, then press "Login done, continue".',
             expandScreen: 'Expand',
             restoreScreen: 'Restore',
@@ -885,6 +889,9 @@ function copy(lang: string) {
             viewOnly: '僅觀看',
             takeControl: '取得控制權',
             screenMode: '螢幕模式',
+            viewerH264: 'H.264',
+            viewerVnc: 'VNC',
+            viewerHint: '切換桌面播放器：H.264（流暢、低延遲）或 VNC（備用）。',
             watchLockedHint: 'Bot 已把鍵盤交給你，完成登入後點「登入完成，繼續」。',
             expandScreen: '放大',
             restoreScreen: '恢復',
@@ -1009,6 +1016,9 @@ function copy(lang: string) {
         viewOnly: '仅观看',
         takeControl: '取得控制权',
         screenMode: '屏幕模式',
+        viewerH264: 'H.264',
+        viewerVnc: 'VNC',
+        viewerHint: '切换桌面播放器：H.264（流畅、低延迟）或 VNC（备用）。',
         watchLockedHint: 'Bot 已把键盘交给你，完成登录后点“登录完成，继续”。',
         expandScreen: '放大',
         restoreScreen: '恢复',
@@ -1785,6 +1795,13 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [handBackError, setHandBackError] = useState('');
     const [modeError, setModeError] = useState('');
     const [takeoverByBot, setTakeoverByBot] = useState<Record<string, boolean>>({});
+    // H.264 player by default; noVNC stays one click away as the fallback.
+    const [desktopViewer, setDesktopViewer] = useState<DesktopViewer>(() => loadDesktopViewer());
+    const switchDesktopViewer = () => {
+        const next: DesktopViewer = desktopViewer === 'h264' ? 'vnc' : 'h264';
+        saveDesktopViewer(next);
+        setDesktopViewer(next);
+    };
     // A handoff the person accepted from the chat. The bot asked them to take
     // the computer, so a still-open run must not take the keyboard back.
     const [takeoverHoldByBot, setTakeoverHoldByBot] = useState<Record<string, boolean>>({});
@@ -6019,13 +6036,15 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     </div>
                                     <div className="desktop-bot-stage__frame">
                                         <iframe
-                                            key={frameMode}
+                                            key={frameMode + ':' + desktopViewer}
                                             ref={handoffRef}
                                             className="desktop-bot-chat__handoff"
                                             data-testid="desktop-bot-handoff"
                                             data-input={frameMode}
                                             title="desktop"
-                                            src={desktopFrameSrc(shownDesktopUrl, stageInteractive)}
+                                            data-viewer={desktopViewer}
+                                            allow="clipboard-read; clipboard-write"
+                                            src={desktopViewerSrc(desktopFrameSrc(shownDesktopUrl, stageInteractive), desktopViewer)}
                                             tabIndex={screenExpanded && !stageInteractive ? -1 : undefined}
                                             onFocus={screenExpanded && !stageInteractive ? () => { restoreBtnRef.current?.focus({ preventScroll: true }); } : undefined}
                                         />
@@ -6070,6 +6089,15 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                                 {text.takeControl}
                                             </button>
                                         </div>
+                                        <button
+                                            type="button"
+                                            className="desktop-bot-stage__mode-btn desktop-bot-stage__viewer"
+                                            data-testid="desktop-bot-viewer-switch"
+                                            title={text.viewerHint}
+                                            onClick={switchDesktopViewer}
+                                        >
+                                            {desktopViewer === 'h264' ? text.viewerH264 : text.viewerVnc}
+                                        </button>
                                     </div>
                                 </div>
                             ) : ownerDesktopMissing && !ownPictureDown ? (

@@ -172,6 +172,8 @@ async function confirmBotDelete(label = '删除') {
 
 beforeEach(() => {
     localStorage.clear();
+    // Most cases check the noVNC URL; the H.264 player has its own case.
+    localStorage.setItem('maclaw.desktop.viewer', 'vnc');
     sendTask.mockReset();
     getSupplements.mockReset();
     getSupplements.mockResolvedValue([]);
@@ -4239,6 +4241,27 @@ describe('DesktopBotWorkspace', () => {
         } finally {
             vi.useRealTimers();
         }
+    });
+
+    it('frames the H.264 player by default and switches back to noVNC', async () => {
+        localStorage.removeItem('maclaw.desktop.viewer');
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        const cached = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
+        getScreen.mockResolvedValue({ novnc_url: cached, user_control: false, desktop_mode: 'shared' });
+        watchBot.mockResolvedValue({ novnc_url: cached, user_control: false, desktop_mode: 'shared' });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        const frame = await screen.findByTestId('desktop-bot-handoff');
+        const src = frame.getAttribute('src') || '';
+        expect(src).toContain('/abc/h264.html?view_only=1&vnc=');
+        expect(new URL(src).searchParams.get('vnc')).toBe('vnc.html?autoconnect=1&view_only=1');
+        expect(frame.getAttribute('allow')).toContain('clipboard-write');
+        fireEvent.click(screen.getByTestId('desktop-bot-viewer-switch'));
+        await waitFor(() => {
+            expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src')).toBe(cached + '&view_only=1');
+        });
+        expect(localStorage.getItem('maclaw.desktop.viewer')).toBe('vnc');
     });
 
     it('shows a retry when the watch fails even if the screen list still has a picture', async () => {
