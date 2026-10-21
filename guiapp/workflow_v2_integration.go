@@ -483,6 +483,13 @@ func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string
 		log.Printf("[workflow-v2] routing bypassed (no_workflow_interception): user=%s", msg.UserID)
 		return workflowIMRouteResult{}
 	}
+	// The session wave repeats the chat task. It is not a review reply, a retry
+	// command, or phase input. The state machine would otherwise confirm, revise,
+	// or cancel an open workflow, or replace the wave with a form or a barrier.
+	if sessionRoundTurn(msg.Text, msg.Platform) || sessionRoundTurn(trimmed, msg.Platform) {
+		log.Printf("[workflow-v2] routing bypassed (session round continuation): user=%s", msg.UserID)
+		return workflowIMRouteResult{}
+	}
 	wf := h.getWorkflowV2()
 	if wf == nil {
 		log.Printf("[workflow-v2] routeWithWorkflowV2: wf is nil, app=%v app.workflowV2=%v", h.app != nil, h.app != nil && h.app.workflowV2 != nil)
@@ -3371,6 +3378,12 @@ func goalContinuationCodingHostError(userText string, cancelled bool, results []
 	}
 	for _, result := range results {
 		if result.Status != v2.TaskFailed {
+			continue
+		}
+		// The iteration budget ends this turn. The continuation engine
+		// schedules the same step again. Closing the goal here is what
+		// made a long execute step stop after one budget.
+		if codingLoopIterationExhausted(result.Error) {
 			continue
 		}
 		if text := strings.TrimSpace(result.Error); text != "" {

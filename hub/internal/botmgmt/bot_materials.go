@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -46,7 +47,24 @@ var materialUploadID = regexp.MustCompile(`^[A-Za-z0-9_-]{8,64}$`)
 // materialStageTTL drops a staged part nobody finished.
 const materialStageTTL = time.Hour
 
-var materialStageMu sync.Mutex
+// One mutex per upload id. A 200 MB desktop put must not block every other
+// user's chunk append, and two chunks of the same id must not interleave.
+var (
+	materialLockMu sync.Mutex
+	materialLocks  = map[string]*sync.Mutex{}
+)
+
+func lockMaterialUpload(key string) *sync.Mutex {
+	materialLockMu.Lock()
+	mu := materialLocks[key]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		materialLocks[key] = mu
+	}
+	materialLockMu.Unlock()
+	mu.Lock()
+	return mu
+}
 
 func (s *Service) materialStageDir() string {
 	if s != nil && strings.TrimSpace(s.MaterialStageDir) != "" {
@@ -83,53 +101,88 @@ func (s *Service) UploadMaterialChunk(ctx context.Context, tenantID, userID, bot
 		return nil, ErrNotFound
 	}
 	bot := rec.Bots[index]
-	var others []string
+	var peers []desktop.MaterialPeer
 	for i, other := range rec.Bots {
 		if i != index && other.OwnerUserID == userID {
-			others = append(others, other.Name)
+			peers = append(peers, desktop.MaterialPeer{ID: other.ID, Name: other.Name})
 		}
 	}
-	target, err := desktop.MaterialPath(desktop.MaterialsFolder(bot.ID, bot.Name, others), name)
+	stored := desktop.MaterialStoredName(name, chunk.UploadID)
+	if stored == "" {
+		return nil, fmt.Errorf("%w: file name is invalid", ErrInvalidInput)
+	}
+	target, err := desktop.MaterialPath(desktop.MaterialsFolder(bot.ID, bot.Name, peers), stored)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
 	}
 	owner, _ := desktop.SplitDesktopUser(userID)
 
-	materialStageMu.Lock()
-	defer materialStageMu.Unlock()
 	dir := filepath.Join(s.materialStageDir(), safeStageKey(tenantID), safeStageKey(owner), safeStageKey(bot.ID))
+	unlock := lockMaterialUpload(dir + "/" + chunk.UploadID)
+	defer unlock.Unlock()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrSrv, err.Error())
 	}
 	sweepMaterialStage(dir, time.Now())
 	part := filepath.Join(dir, chunk.UploadID+".part")
+	meta := filepath.Join(dir, chunk.UploadID+".meta")
+	donePath := filepath.Join(dir, chunk.UploadID+".done")
+	// The upload id is the idempotency key. A lost success response retries
+	// the same chunk; answer with the path already on the desktop instead of
+	// treating the missing part as a different upload.
+	if finished, ok := readMaterialDone(donePath); ok && finished.Name == stored && finished.Total == chunk.Total {
+		_ = os.Remove(part)
+		_ = os.Remove(meta)
+		finished.UploadID = chunk.UploadID
+		return &finished, nil
+	}
+	if chunk.Offset == 0 {
+		_ = os.Remove(meta)
+		_ = os.Remove(donePath)
+		if err := writeMaterialMeta(meta, stored, chunk.Total); err != nil {
+			return nil, fmt.Errorf("%w: %s", ErrSrv, err.Error())
+		}
+	} else if pinned, total, ok := readMaterialMeta(meta); !ok || pinned != stored || total != chunk.Total {
+		return nil, fmt.Errorf("%w: upload changed", ErrInvalidInput)
+	}
 	have := int64(0)
-	if info, err := os.Stat(part); err == nil {
-		have = info.Size()
+	if chunk.Offset != 0 {
+		if info, err := os.Stat(part); err == nil {
+			have = info.Size()
+		}
 	}
-	if chunk.Offset == 0 && have > 0 {
-		have = 0 // a restart from zero replaces the stale part
-		_ = os.Remove(part)
+	out := &MaterialUpload{UploadID: chunk.UploadID, Name: stored, Received: have, Total: chunk.Total}
+	switch {
+	case chunk.Offset == 0:
+		// Truncate. Unlink-then-append leaves the previous bytes in place
+		// when the name is still open or locked, and the new chunk is
+		// written onto the end of the old file.
+		wrote, err := replaceMaterialChunk(part, chunk.Data)
+		if err != nil {
+			return nil, err
+		}
+		have = wrote
+		out.Received = have
+		if have < chunk.Total {
+			return out, nil
+		}
+	case chunk.Offset == have:
+		wrote, err := appendMaterialChunk(part, chunk.Data)
+		if err != nil {
+			return nil, err
+		}
+		have += wrote
+		out.Received = have
+		if have < chunk.Total {
+			return out, nil
+		}
+	case have == chunk.Total && chunk.Offset < have:
+		// The desktop put failed after the bytes were staged. Retry that put
+		// and leave the part in place until it succeeds.
+		out.Received = have
+	default:
+		return out, fmt.Errorf("%w: expected offset %d", ErrInvalidInput, have)
 	}
-	if chunk.Offset != have {
-		return &MaterialUpload{UploadID: chunk.UploadID, Name: name, Received: have, Total: chunk.Total}, fmt.Errorf("%w: expected offset %d", ErrInvalidInput, have)
-	}
-	f, err := os.OpenFile(part, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrSrv, err.Error())
-	}
-	_, werr := f.Write(chunk.Data)
-	cerr := f.Close()
-	if werr != nil || cerr != nil {
-		_ = os.Remove(part)
-		return nil, fmt.Errorf("%w: staging failed", ErrSrv)
-	}
-	have += int64(len(chunk.Data))
-	out := &MaterialUpload{UploadID: chunk.UploadID, Name: name, Received: have, Total: chunk.Total}
-	if have < chunk.Total {
-		return out, nil
-	}
-	defer os.Remove(part)
 	up, ok := s.Desktop.(DesktopUploader)
 	if !ok || up == nil {
 		return nil, fmt.Errorf("%w: desktop uploads are unavailable", ErrSrv)
@@ -138,13 +191,91 @@ func (s *Service) UploadMaterialChunk(ctx context.Context, tenantID, userID, bot
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrSrv, err.Error())
 	}
-	defer src.Close()
-	if _, err := up.UploadFile(ctx, tenantID, owner, target, src, have); err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrSrv, err.Error())
+	_, putErr := up.UploadFile(ctx, tenantID, owner, target, src, have)
+	_ = src.Close()
+	if putErr != nil {
+		return nil, fmt.Errorf("%w: %s", ErrSrv, putErr.Error())
 	}
 	out.Done = true
 	out.Path = desktop.MaterialDisplayPath(target)
+	out.Name = stored
+	if err := writeMaterialDone(donePath, stored, out.Path, have); err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrSrv, err.Error())
+	}
+	_ = os.Remove(part)
+	_ = os.Remove(meta)
 	return out, nil
+}
+
+func appendMaterialChunk(part string, data []byte) (int64, error) {
+	return writeMaterialChunk(part, data, false)
+}
+
+// replaceMaterialChunk is an offset-0 restart. The new bytes replace the
+// part; they are not appended to whatever unlink left behind.
+func replaceMaterialChunk(part string, data []byte) (int64, error) {
+	return writeMaterialChunk(part, data, true)
+}
+
+func writeMaterialChunk(part string, data []byte, truncate bool) (int64, error) {
+	flag := os.O_CREATE | os.O_WRONLY
+	if truncate {
+		flag |= os.O_TRUNC
+	} else {
+		flag |= os.O_APPEND
+	}
+	f, err := os.OpenFile(part, flag, 0o600)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %s", ErrSrv, err.Error())
+	}
+	n, werr := f.Write(data)
+	cerr := f.Close()
+	if werr != nil || cerr != nil || n != len(data) {
+		_ = os.Remove(part)
+		return 0, fmt.Errorf("%w: staging failed", ErrSrv)
+	}
+	return int64(n), nil
+}
+
+func writeMaterialMeta(path, name string, total int64) error {
+	return os.WriteFile(path, []byte(name+"\n"+strconv.FormatInt(total, 10)+"\n"), 0o600)
+}
+
+func writeMaterialDone(path, name, display string, total int64) error {
+	body := name + "\n" + strconv.FormatInt(total, 10) + "\n" + display + "\n"
+	return os.WriteFile(path, []byte(body), 0o600)
+}
+
+func readMaterialDone(path string) (MaterialUpload, bool) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return MaterialUpload{}, false
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if len(lines) != 3 || lines[0] == "" || lines[2] == "" {
+		return MaterialUpload{}, false
+	}
+	total, err := strconv.ParseInt(lines[1], 10, 64)
+	if err != nil {
+		return MaterialUpload{}, false
+	}
+	return MaterialUpload{Name: lines[0], Total: total, Received: total, Done: true, Path: lines[2]}, true
+}
+
+func readMaterialMeta(path string) (string, int64, bool) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", 0, false
+	}
+	name, total, ok := strings.Cut(strings.TrimRight(string(raw), "\n"), "\n")
+	if !ok || name == "" {
+		return "", 0, false
+	}
+	n, err := strconv.ParseInt(total, 10, 64)
+	if err != nil {
+		return "", 0, false
+	}
+	return name, n, true
 }
 
 func safeStageKey(s string) string {

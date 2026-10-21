@@ -2026,6 +2026,16 @@ describe("renderMessage assistant display guard", () => {
         expect(codingTimelineThoughtStep(timeline, 0)).toBe(1);
         expect(codingTimelineThoughtStep(timeline, 1)).toBeUndefined();
         expect(codingTimelineThoughtStep(timeline, 2)).toBe(2);
+        const withBlank = [
+            { kind: "thinking", content: "First." },
+            { kind: "thinking", content: "---" },
+            { kind: "thinking", content: "\n\n---\n### T3: title\n" },
+            { kind: "thinking", content: "Second." },
+        ];
+        expect(codingTimelineThoughtStep(withBlank, 0)).toBe(1);
+        expect(codingTimelineThoughtStep(withBlank, 1)).toBeUndefined();
+        expect(codingTimelineThoughtStep(withBlank, 2)).toBeUndefined();
+        expect(codingTimelineThoughtStep(withBlank, 3)).toBe(2);
         render(<div>{renderCodingAgentThinkingTimelineItem({
             id: "thought-ordinal",
             sequence: 131,
@@ -2035,6 +2045,57 @@ describe("renderMessage assistant display guard", () => {
         }, lightTheme, "zh", 2)}</div>);
         expect(screen.getByText("#2")).toBeTruthy();
         expect(screen.queryByText("#131")).toBeNull();
+    });
+
+    it("hides a coding thought that is only a rule or a step banner", () => {
+        const { rerender } = render(<div>{renderCodingAgentThinkingTimelineItem({
+            id: "thought-rule",
+            sequence: 43,
+            kind: "thinking",
+            content: "---",
+            timestamp: 1,
+        }, lightTheme, "zh", 43)}</div>);
+        expect(screen.queryByTestId("assistant-reasoning-panel")).toBeNull();
+        expect(screen.queryByText("思考过程")).toBeNull();
+
+        rerender(<div>{renderCodingAgentThinkingTimelineItem({
+            id: "thought-banner",
+            sequence: 1,
+            kind: "thinking",
+            content: "\n\n---\n### T3: title\n",
+            timestamp: 1,
+        }, lightTheme, "zh", 1)}</div>);
+        expect(screen.queryByTestId("assistant-reasoning-panel")).toBeNull();
+
+        rerender(<div>{renderCodingAgentThinkingTimelineItem({
+            id: "thought-dash",
+            sequence: 158,
+            kind: "thinking",
+            content: "-",
+            timestamp: 1,
+        }, lightTheme, "zh", 158)}</div>);
+        expect(screen.queryByTestId("assistant-reasoning-panel")).toBeNull();
+
+        rerender(<div>{renderCodingAgentThinkingTimelineItem({
+            id: "thought-prose",
+            sequence: 44,
+            kind: "thinking",
+            content: "- Let me look at the kernel.",
+            timestamp: 1,
+        }, lightTheme, "zh", 44)}</div>);
+        expect(screen.getByText("思考过程")).toBeTruthy();
+        expect(screen.getByText(/Let me look at the kernel/)).toBeTruthy();
+
+        rerender(<div>{renderCodingAgentThinkingTimelineItem({
+            id: "thought-banner-prose",
+            sequence: 45,
+            kind: "thinking",
+            content: "\n\n---\n### T3: title\n\nLook at the kernel.",
+            timestamp: 1,
+        }, lightTheme, "zh", 45)}</div>);
+        expect(screen.getByText("思考过程")).toBeTruthy();
+        expect(screen.getByText(/Look at the kernel/)).toBeTruthy();
+        expect(screen.queryByText("T3: title")).toBeNull();
     });
 
     it("opens a coding thought while it is live and collapses it when thinking finishes", () => {

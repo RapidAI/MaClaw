@@ -477,6 +477,10 @@ func (h *IMMessageHandler) handlePendingExecutionConfirmation(msg *IMUserMessage
 	if h == nil || msg == nil || trimmed == nil || h.confirmationStore == nil {
 		return pendingExecutionConfirmationResult{}
 	}
+	// The host wave is not the user's approval, cancellation, or revision.
+	if sessionRoundTurn(*trimmed, msg.Platform) {
+		return pendingExecutionConfirmationResult{}
+	}
 	action, confirmationID, hasConfirmationAction := parseConfirmationActionCommand(*trimmed)
 	pending := h.confirmationStore.get(msg.UserID)
 	lang := h.getWorkflowLang()

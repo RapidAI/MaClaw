@@ -213,14 +213,18 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 	// selects the lifecycle goal tool, and the name router skips intent
 	// classification for that turn on its own.
 	hostGoalContinuation := goalContinuationTurn(opts.UserText, opts.Platform) || goalContinuationTurn(userText, "")
+	hostSessionRound := sessionRoundTurn(opts.UserText, opts.Platform) || sessionRoundTurn(userText, "")
 	if ctx != nil {
 		hostGoalContinuation = hostGoalContinuation || goalContinuationTurn(opts.UserText, ctx.Platform)
+		hostSessionRound = hostSessionRound || sessionRoundTurn(opts.UserText, ctx.Platform)
 	}
 	if !semanticHandled {
 		// A background chat task already left the semantic planner. Treating
 		// that as a routing miss chat-projects the inherited label and strips
-		// the tools the foreground turn was using.
-		if !hostGoalContinuation && !chatTaskWorkerLoop(ctx) {
+		// the tools the foreground turn was using. A session wave is the same
+		// kind of host turn: the miss fallback would replace the tools the
+		// previous round was using.
+		if !hostGoalContinuation && !hostSessionRound && !chatTaskWorkerLoop(ctx) {
 			markClassifierTimeoutLookup(ctx)
 			applySemanticChatProjection(ctx)
 			applySemanticRoutingMissFallback(ctx)
@@ -251,7 +255,7 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 		tools = toolSet.Tools
 		baseTools = toolSet.BaseTools
 	}
-	if !semanticHandled && !hostGoalContinuation {
+	if !semanticHandled && !hostGoalContinuation && !hostSessionRound {
 		if diagnostic := h.semanticRouteDiagnosticForTurnWithContext(ctx, opts.UserID, toolRoutingText, opts.Platform, attachments); diagnostic.Handled {
 			log.Printf("[semantic-routing] shadow plan=%q user=%q outcome=%s", diagnostic.PlanID, opts.UserID, diagnostic.Reason)
 		}

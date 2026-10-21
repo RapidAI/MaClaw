@@ -1947,6 +1947,12 @@ func (c *sharedAgentLoopCallbacks) IsToolAllowedForPromptProfile(name string, pr
 	}
 	if c != nil && c.semanticSurface != nil {
 		resolved := c.semanticSurface.resolveFunctionName(name)
+		// Admitted skill tools are not light-safe grants. The list already
+		// contains them; refusing here is the "set PROFILE=full" reply
+		// after the prompt told the model to call the skill.
+		if c.skillAdmissionToolVisible(resolved) {
+			return true
+		}
 		if resolved == semanticToolsSearchName {
 			// The discovery meta-tool is host-executed and read-only; it has no
 			// grant by design, so the grant lookup below can never admit it.
@@ -2044,11 +2050,11 @@ func (c *sharedAgentLoopCallbacks) IsToolAllowed(name string) bool {
 	if name == semanticToolsSearchName || c.chatTaskHostTool(name) {
 		return true
 	}
-	// A complex task's admitted skill, its remote search, or the host tools
-	// an agent-guided workflow needs are part of this request. They are not
-	// grants the planner issued, and a light misroute must not hide a skill
-	// the user named.
-	if c.admittedSkillHostCall(name) {
+	// Admitted skill tools are part of this request, including a file tool
+	// the planner already granted. The light allowlist would otherwise drop
+	// bash after the prompt required that workflow. A lookup that did not
+	// admit a skill still fails the light grant check below.
+	if c.skillAdmissionToolVisible(name) {
 		return true
 	}
 	if c.legacyPetitionAllows(name) {

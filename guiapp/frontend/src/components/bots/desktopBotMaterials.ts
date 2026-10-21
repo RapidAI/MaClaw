@@ -51,7 +51,9 @@ export function materialTooLarge(size: number): boolean {
 }
 
 // uploadMaterial sends one file chunk by chunk and reports bytes sent after
-// each chunk. It resolves to the remote ~/素材/… path.
+// each chunk. It resolves to the remote ~/素材/… path. A reply's received
+// is the byte the server actually has; a thrown error retries that same
+// chunk. alive() false, or a cancelled error, stops without another try.
 export async function uploadMaterial(
     file: Blob & { name: string },
     botId: string,
@@ -59,22 +61,46 @@ export async function uploadMaterial(
     onProgress: (sent: number) => void,
     uploadId = materialUploadId(),
     chunkBytes = MATERIAL_CHUNK_BYTES,
+    alive?: () => boolean,
 ): Promise<string> {
     const total = file.size;
     if (total <= 0) throw new Error('empty');
     if (materialTooLarge(total)) throw new Error('too_large');
     let offset = 0;
+    let stalls = 0;
     while (offset < total) {
+        if (alive && !alive()) throw new Error('cancelled');
         const end = Math.min(total, offset + chunkBytes);
         const data = toBase64(await blobBytes(file.slice(offset, end)));
-        const reply = await upload(botId, uploadId, file.name, offset, total, data);
-        offset = end;
-        onProgress(offset);
+        let reply: MaterialChunkReply | null = null;
+        let attempt = 0;
+        for (;;) {
+            if (alive && !alive()) throw new Error('cancelled');
+            try {
+                reply = await upload(botId, uploadId, file.name, offset, total, data);
+                break;
+            } catch (error) {
+                const message = String((error as Error)?.message || error);
+                if (message === 'cancelled' || (alive && !alive())) throw new Error('cancelled');
+                attempt += 1;
+                if (attempt >= 3) throw error;
+            }
+        }
+        const received = typeof reply?.received === 'number' ? reply.received : end;
         if (reply?.done) {
             const path = String(reply.path || '').trim();
             if (!path) throw new Error('no_path');
+            onProgress(Math.min(Math.max(received, 0), total));
             return path;
         }
+        if (received < offset || received === offset) {
+            stalls += 1;
+            if (stalls >= 3) throw new Error('stalled');
+        } else {
+            stalls = 0;
+        }
+        offset = received > total ? total : received;
+        onProgress(Math.max(offset, 0));
     }
     throw new Error('no_path');
 }
@@ -119,6 +145,39 @@ export function formatMaterialSize(bytes: number): string {
     if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
     if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
     return `${bytes} B`;
+}
+
+interface TransferFileSource {
+    files?: ArrayLike<File> | null;
+    items?: ArrayLike<{ kind?: string; getAsFile?: () => File | null }> | null;
+}
+
+// filesFromTransfer reads a paste or drop. Items of kind file come first,
+// because a Windows screenshot is often absent from the FileList, then the
+// FileList. The same file on both sides is kept once.
+export function filesFromTransfer(data: TransferFileSource | null | undefined): File[] {
+    if (!data) return [];
+    const seen = new Set<string>();
+    const out: File[] = [];
+    const push = (file: File | null | undefined) => {
+        if (!file) return;
+        const key = `${file.name}\0${file.size}\0${file.lastModified}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        out.push(file);
+    };
+    const items = data.items;
+    if (items) {
+        for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            if (item && item.kind === 'file' && item.getAsFile) push(item.getAsFile());
+        }
+    }
+    const files = data.files;
+    if (files) {
+        for (let i = 0; i < files.length; i++) push(files[i]);
+    }
+    return out;
 }
 
 // Files from a paste or drop event; plain text pastes give none.

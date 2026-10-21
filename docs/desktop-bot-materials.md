@@ -13,14 +13,18 @@ with is told where they are.
 can open it (type or paste the full path).
 
 * `<bot folder>` is the bot's name, sanitized (`corelib/desktop.SafeMaterialName`:
-  no `/ \ :`, control characters or leading dots, at most 120 runes). It falls
-  back to the bot id when the name is unusable or another bot of the same
-  owner sanitizes to the same folder (`MaterialsFolder`).
+  no `/ \ :`, control characters or leading dots, at most 120 runes).
+  `MaterialsFolder` keeps a name that exactly one of this owner's bots wants.
+  A shared name falls back to each bot's id. A bot whose name sanitizes away
+  still occupies its id, so a later bot does not share that folder. If the id
+  is taken too, a stable suffix is added.
 * Hub derives the folder from the bot record. The client only sends a file
-  name, and that is sanitized too. desktopd refuses any upload path outside
-  `~/素材/`.
-* One file is at most 200 MB (`desktop.UploadMax`). A file with the same name
-  is replaced.
+  name. The stored file name is that sanitized name plus `-<upload id>`
+  (`MaterialStoredName`), capped at 120 runes, so two attachments that both
+  arrive as `image.png` stay two files. The chip still shows the original
+  name. The message uses the path Hub returns. desktopd refuses any upload
+  path outside `~/素材/`.
+* One file is at most 200 MB (`desktop.UploadMax`).
 
 **Not a security boundary.** Every bot of one person, isolated or shared, runs
 in that person's one container as the same Linux user `desktop`, and has a
@@ -37,37 +41,67 @@ Hub  POST /api/v1/bots/{id}/desktop/files      (the person's normal login; owner
      stages chunks in $TMPDIR/maclaw-bot-materials/<tenant>/<owner>/<bot>/<upload_id>.part
      last chunk ─▶ desktoppool.UploadFile ─▶
 desktopd POST /v1/desktops/upload?tenant_id&user_id&path   (raw bytes, Content-Length)
-     ─▶ docker exec -i … desktop_supervisor.py file write <path>   (existing supervisor op)
-     ─▶ docker exec … chown desktop:desktop -- ~/素材 ~/素材/<bot> <file>   (exec runs as root)
+     ─▶ docker exec -i … desktop_supervisor.py file write <path>.partial
+     ─▶ docker exec … mv -f -- <path>.partial <path>
+     ─▶ docker exec … chown desktop:desktop -- ~/素材 ~/素材/<bot> <file>
 ```
+
+The supervisor write still truncates the path it is given, and a fifth
+argument is rejected by the image that is already running. desktopd therefore
+writes a sibling `.partial` (still under `~/素材/`) and `mv`s it onto the
+final path only after the byte count matches. A short body or a failed write
+runs `rm -f` on the partial and leaves the previous file alone. `mv` and `rm`
+run inside the same per-user lock as the write. `chown` of the folders and
+the finished file runs in that same lock, because `docker exec` is root and
+the desktop user must be able to replace the file. Once the byte count
+matches, `mv` and `chown` finish even if the caller has canceled, so a
+disconnect cannot leave the file owned by root. A failed write still
+`chown`s the folders it created, and does not `chown` the previous file.
 
 Chunk request: `{"upload_id","name","offset","total","data":<base64>}`. The
 answer is `{"upload_id","name","received","total","done","path"}`, and `path`
-(`~/素材/…`) is set on the last chunk. A wrong offset answers 409 with
-`received`, so a client can resume. Offset 0 restarts. Staged parts nobody
-finishes are swept after an hour.
+(`~/素材/…`) is set on the last chunk. A wrong offset answers 409 with the
+usual error envelope (`code` `MATERIAL_OFFSET`, `message`) plus `received`,
+`upload_id`, `name`, and `total`. The GUI returns that struct instead of
+throwing, and the page sends the next chunk from `received`. A thrown error
+retries the same chunk. Offset 0 replaces the staged bytes (it truncates
+the part; a failed unlink must not leave the new chunk appended to the old
+file). The name and
+the total are pinned on the first chunk. The staged part is kept when the
+desktop put fails, so the same last chunk retries the put. After the file is
+on the desktop, the same upload id answers with that path again, including a
+retry of offset 0, so a lost success response does not look like a different
+upload. A new attachment uses a new upload id. One mutex per
+upload id: a 200 MB put does not block every other upload. Staged parts
+nobody finishes are swept after an hour.
 
 ## In the chat
 
 * There is a paperclip button in the composer, and files can be dropped on
-  or pasted into the composer. Each file uploads at once and shows a
-  percentage, its size when done, or an error ("超过 200 MB" / "上传失败"). ×
-  removes it. Send waits while a file is uploading, and files can be sent
-  without text.
+  or pasted into the composer. Paste and drop read clipboard or drag items
+  of kind `file` first, then the file list, so a Windows screenshot that
+  never appears in `clipboardData.files` is still attached. Each file uploads
+  at once and shows a percentage, its size when done, or an error ("超过 200
+  MB" / "上传失败"). × removes it and cancels that upload. Send waits while
+  any chip is still uploading or has failed; a failed chip stays until it is
+  dismissed. Files can be sent without text. A secret prompt blocks this
+  send the same way it blocks a typed send.
 * The sent message is the typed text plus a trailing list:
 
   ```
   用这些图发一篇小红书
 
   [素材]
-  - ~/素材/小红书助手/封面.png
-  - ~/素材/小红书助手/vlog.mp4
+  - ~/素材/小红书助手/封面-<upload id>.png
+  - ~/素材/小红书助手/vlog-<upload id>.mp4
   ```
 
   The bubble hides the list and shows file chips instead (`splitMaterials`).
 * **New task:** the understand prompt says a trailing `[素材]` list holds files
   already on the desktop. The work card must name every path and say to use
-  them. The verbatim fallback carries the list too.
+  them. When an order is clipped (the card, the verbatim fallback, or an
+  earlier message in the prompt), the trailing `[素材]` list is kept and the
+  prose in front of it is what gets shortened.
 * **Running task:** `EvaluateDesktopTaskSupplement` treats a message with a
   `[素材]` list as a supplement and passes it whole, so the paths are not
   clipped. It then goes through `AppendDesktopBotSupplement` like any other
@@ -85,8 +119,10 @@ finishes are swept after an hour.
 
 ## Deployment
 
-The image does not need a rebuild (the ownership fix is a desktopd-side chown): the upload reuses the supervisor's
-existing `file write` op.
+The image does not need a rebuild for the upload path. desktopd still calls
+the existing 4-argument `file write`, then `mv` and `chown` on the container.
+An image rebuild is only needed for the supervisor to copy stdin in 1 MiB
+pieces; until then that write still buffers the partial, not the live file.
 
 1. **desktopd** (each Docker host): deploy the new binary. On the host's
    nginx, add the `location = /v1/desktops/upload` block from

@@ -19,6 +19,10 @@ type UpdateModalProps = {
     activeDownloadSource?: string;
     installerPath: string;
     downloadError: string;
+    // The installer has been handed off and the app is about to quit. The
+    // window closes on its own, so the modal says so instead of leaving the
+    // user on a "download complete" screen with nothing happening.
+    isInstalling?: boolean;
     preferBetaChannel?: boolean;
     t: (key: string) => string;
     onCancelDownload: () => void;
@@ -100,6 +104,7 @@ export const UpdateModal = ({
     activeDownloadSource,
     installerPath,
     downloadError,
+    isInstalling = false,
     preferBetaChannel,
     t,
     onCancelDownload,
@@ -342,8 +347,26 @@ export const UpdateModal = ({
                                         {t("cancelDownload")}
                                     </button>
                                 </div>
+                            ) : isInstalling ? (
+                                <div className="update-modal__complete" aria-live="polite">
+                                    <p>{t("installingUpdate")}</p>
+                                    <p className="update-modal__message">{t("installingUpdateHint")}</p>
+                                </div>
                             ) : installerPath ? (
                                 <div className="update-modal__complete">
+                                    {/* A failed automatic launch leaves the
+                                        installer on disk: say why it stopped
+                                        and let the user try again by hand.
+                                        The message is already a complete
+                                        sentence from the caller, so it is not
+                                        wrapped in the installLaunchError
+                                        template (that would read as
+                                        "Failed to launch: it did not take over"). */}
+                                    {downloadError && (
+                                        <p className="update-modal__error-message" role="alert">
+                                            {downloadError}
+                                        </p>
+                                    )}
                                     <p>{t("downloadComplete")}</p>
                                     <button className="btn-primary update-modal__full-button" onClick={onInstall}>
                                         {t("installNow")}
@@ -388,8 +411,10 @@ export const UpdateModal = ({
                     </div>
                 )}
                 <div className="update-modal__actions">
-                    {!rollbackOpen && <button type="button" className="btn-link" disabled={isDownloading || betaLoading} onClick={showRollback}>{t('rollback')}</button>}
-                    <button className="btn-primary" disabled={isDownloading} onClick={onClose}>{t("close")}</button>
+                    {!rollbackOpen && <button type="button" className="btn-link" disabled={isDownloading || betaLoading || isInstalling} onClick={showRollback}>{t('rollback')}</button>}
+                    {/* While installing, the app is about to quit; closing the
+                        modal would only hide the reason the window disappears. */}
+                    <button className="btn-primary" disabled={isDownloading || isInstalling} onClick={onClose}>{t("close")}</button>
                 </div>
             </div>
         </div>

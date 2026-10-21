@@ -553,42 +553,59 @@ func (h *IMMessageHandler) executeChatTaskAgentLoop(task *chatTaskRecord) chatTa
 		return chatTaskRunResult{Err: fmt.Errorf("chat task handler is missing")}
 	}
 	h.openHelperMemory(task, false)
-	maxIter := h.getMaclawAgentMaxIterations()
-	if maxIter <= 0 {
-		maxIter = 30
-	}
-	loop := NewLoopContext("chat-task-"+task.ID, maxIter, h.taskClient)
-	loop.LLMCaller = chatTaskLLMCaller
-	loop.ChatTaskID = task.ID
-	if task.Computer {
-		loop.ComputerHelper = true
-		loop.ComputerUseActive = true
-		loop.ComputerUseGateSettled = true
-		loop.ComputerUseFresh = true
-		loop.ComputerUseRoutingText = task.Prompt
-	}
-	loop.UserID = task.MemoryKey
-	loop.Platform = desktopPlatform
-	loop.Description = task.Title
-	h.bindChatTaskLoop(task.ID, loop)
-	resp := h.HandleIMMessageWithExistingLoop(IMUserMessage{
-		RequestID: "chat-task-" + task.ID,
-		UserID:    task.MemoryKey,
-		Platform:  desktopPlatform,
-		Text:      task.Prompt,
-	}, loop, func(text string) {
-		milestone, ok := chatTaskProgressMilestone(text)
-		if !ok {
-			return
+	text := task.Prompt
+	var lastLoop *LoopContext
+	var lastResp *IMAgentResponse
+	for wave := 0; wave < sessionRoundContinuationMaxWaves; wave++ {
+		if wave > 0 {
+			h.bindPendingMaxRoundsSlot(task.MemoryKey)
+			text = sessionRoundContinuationPrompt(task.Prompt)
 		}
-		if reg := h.ensureChatTasks(); reg != nil {
-			reg.noteProgress(task.ID, milestone)
+		maxIter := h.getMaclawAgentMaxIterations()
+		if maxIter <= 0 {
+			maxIter = 30
 		}
-	}, nil, nil, nil)
-	if loop.IsCancelled() {
-		return chatTaskRunResult{Err: fmt.Errorf("canceled")}
+		loop := NewLoopContext(fmt.Sprintf("chat-task-%s-%d", task.ID, wave), maxIter, h.taskClient)
+		loop.LLMCaller = chatTaskLLMCaller
+		loop.ChatTaskID = task.ID
+		if task.Computer {
+			loop.ComputerHelper = true
+			loop.ComputerUseActive = true
+			loop.ComputerUseGateSettled = true
+			loop.ComputerUseFresh = true
+			loop.ComputerUseRoutingText = task.Prompt
+		}
+		loop.UserID = task.MemoryKey
+		loop.Platform = desktopPlatform
+		loop.Description = task.Title
+		h.bindChatTaskLoop(task.ID, loop)
+		lastLoop = loop
+		lastResp = h.HandleIMMessageWithExistingLoop(IMUserMessage{
+			RequestID: fmt.Sprintf("chat-task-%s-%d", task.ID, wave),
+			UserID:    task.MemoryKey,
+			Platform:  desktopPlatform,
+			Text:      text,
+		}, loop, func(progress string) {
+			milestone, ok := chatTaskProgressMilestone(progress)
+			if !ok {
+				return
+			}
+			if reg := h.ensureChatTasks(); reg != nil {
+				reg.noteProgress(task.ID, milestone)
+			}
+		}, nil, nil, nil)
+		if loop.IsCancelled() {
+			return chatTaskRunResult{Err: fmt.Errorf("canceled")}
+		}
+		if lastResp == nil || !lastResp.sessionRoundContinue {
+			return chatTaskResultFromAgentResponse(lastResp, loop)
+		}
 	}
-	return chatTaskResultFromAgentResponse(resp, loop)
+	if lastResp != nil {
+		lastResp.sessionRoundContinue = false
+		lastResp.Text = sessionRoundManualContinueText
+	}
+	return chatTaskResultFromAgentResponse(lastResp, lastLoop)
 }
 
 func chatTaskResultFromAgentResponse(resp *IMAgentResponse, loop *LoopContext) chatTaskRunResult {

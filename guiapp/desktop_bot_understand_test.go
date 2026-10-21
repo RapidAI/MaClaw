@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -804,5 +805,29 @@ func TestDesktopBotBothModelsEmptySendsOwnWords(t *testing.T) {
 	}
 	if got.Reading != "" || got.Fallback != desktopBotReadingUnread || got.Instruction != msg || got.Pace != "direct" || got.Told != "" {
 		t.Fatalf("the turn was blocked instead of sending the person's words: %#v", got)
+	}
+}
+
+func TestClipDesktopBotOrderKeepsTheMaterialsList(t *testing.T) {
+	path := "- ~/素材/小红书助手/封面-up-12345678.png"
+	list := "\n\n[素材]\n" + path
+	got := clipDesktopBotOrder(strings.Repeat("甲", 100)+list, 40)
+	if !desktopBotHasMaterials(got) || !strings.Contains(got, path) {
+		t.Fatalf("materials dropped: %q", got)
+	}
+	if n := utf8.RuneCountInString(got); n > 40 {
+		t.Fatalf("order is %d runes", n)
+	}
+	if plain := clipDesktopBotOrder(strings.Repeat("甲", 50), 40); plain != strings.Repeat("甲", 40) {
+		t.Fatalf("plain clip: %q", plain)
+	}
+	// The verbatim fallback is the order the worker gets when the reading fails.
+	long := strings.Repeat("甲", desktopBotUnderstandOrderMax) + list
+	fallback := desktopBotVerbatimFallback("unread", "x", long, "plan", nil)
+	if !desktopBotHasMaterials(fallback.Instruction) || !strings.Contains(fallback.Instruction, path) {
+		t.Fatalf("fallback dropped the list: %q", fallback.Instruction)
+	}
+	if n := utf8.RuneCountInString(fallback.Instruction); n > desktopBotUnderstandOrderMax {
+		t.Fatalf("fallback is %d runes", n)
 	}
 }

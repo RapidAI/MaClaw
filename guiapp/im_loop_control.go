@@ -45,6 +45,9 @@ func (h *IMMessageHandler) CancelSessionForUser(userID string) (string, error) {
 	if userID == "" {
 		return "", fmt.Errorf("missing userID")
 	}
+	// The next session wave is armed only after the previous loop has exited.
+	// A stop in that gap finds no LoopContext; it still has to drop the timer.
+	stoppedRound := h.cancelSessionRoundContinuation(userID)
 	cancelledHorizon := h.cancelHorizonSessionWithReason(userID, "session")
 	ctx, taskText, published := h.loopContextForCancel(userID)
 	if ctx == nil {
@@ -58,6 +61,9 @@ func (h *IMMessageHandler) CancelSessionForUser(userID string) (string, error) {
 		}
 		if cancelledHorizon {
 			return "horizon", nil
+		}
+		if stoppedRound {
+			return "", nil
 		}
 		return "", fmt.Errorf("no active session to cancel")
 	}
@@ -99,6 +105,9 @@ func (h *IMMessageHandler) RequestCancelSessionForUser(userID string) (string, e
 	if userID == "" {
 		return "", fmt.Errorf("missing userID")
 	}
+	// Same gap as CancelSessionForUser: /stop and the interrupt path arrive
+	// here without a live loop while the next session wave is still queued.
+	stoppedRound := h.cancelSessionRoundContinuation(userID)
 	cancelledHorizon := h.cancelHorizonSessionWithReason(userID, "session")
 	ctx, taskText, published := h.loopContextForCancel(userID)
 	if ctx == nil {
@@ -109,6 +118,9 @@ func (h *IMMessageHandler) RequestCancelSessionForUser(userID string) (string, e
 		}
 		if cancelledHorizon {
 			return "horizon", nil
+		}
+		if stoppedRound {
+			return "", nil
 		}
 		return "", fmt.Errorf("no active session to cancel")
 	}

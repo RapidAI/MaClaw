@@ -5,6 +5,7 @@ import { useInputHistoryAutocomplete } from '../ai/useInputHistoryAutocomplete';
 import { useTextCompositionGuard } from '../ai/useTextCompositionGuard';
 import { lightTheme } from '../ai/aiAssistantPanelTheme';
 import { botInputHistory, rememberBotInput } from './desktopBotInputHistory';
+import { filesFromTransfer } from './desktopBotMaterials';
 
 interface DesktopBotComposerProps {
     userId: string;
@@ -24,10 +25,6 @@ interface DesktopBotComposerProps {
     onFiles?: (files: File[]) => void;
     readyWithoutText?: boolean;
     holdSend?: boolean;
-}
-
-function droppedFiles(list: FileList | null | undefined): File[] {
-    return list ? Array.from(list) : [];
 }
 
 // The popup borrows the assistant list. These colors follow the bot surface
@@ -158,13 +155,13 @@ export function DesktopBotComposer({
             onDragLeave={onFiles ? () => setDragging(false) : undefined}
             onDrop={onFiles ? event => {
                 setDragging(false);
-                const files = droppedFiles(event.dataTransfer?.files);
+                const files = filesFromTransfer(event.dataTransfer);
                 if (files.length === 0) return;
                 event.preventDefault();
                 onFiles(files);
             } : undefined}
             onPasteCapture={onFiles ? event => {
-                const files = droppedFiles(event.clipboardData?.files);
+                const files = filesFromTransfer(event.clipboardData);
                 if (files.length === 0) return;
                 event.preventDefault();
                 onFiles(files);

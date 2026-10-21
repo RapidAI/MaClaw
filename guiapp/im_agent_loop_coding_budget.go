@@ -42,7 +42,10 @@ func (h *IMMessageHandler) enforceAgentLoopCodingBudget(
 		if phase != nil {
 			phase.Stage = agentStageFinalize
 		}
-		finalResp := &IMAgentResponse{Text: fmt.Sprintf("Coding execution reached the %d-iteration limit. Completed work has been saved. Send 'continue' to keep going.", hardLimit)}
+		finalResp, continued := h.beginSessionRoundContinuation(ctx, userID, "", history, result.Count)
+		if !continued {
+			finalResp = &IMAgentResponse{Text: fmt.Sprintf("Coding execution reached the %d-iteration limit. Completed work has been saved. Send 'continue' to keep going.", hardLimit)}
+		}
 		if voiceData != "" {
 			finalResp.VoiceData = voiceData
 			finalResp.VoiceFileName = voiceFileName
@@ -59,7 +62,7 @@ func (h *IMMessageHandler) enforceAgentLoopCodingBudget(
 		systemMessagesStart := len(conversation)
 		conversation = append(conversation, map[string]string{
 			"role":    "system",
-			"content": fmt.Sprintf("[system hint] You have executed %d consecutive coding iterations. Finish the current file, report progress, and wait for user confirmation before continuing.", result.Count),
+			"content": fmt.Sprintf("[system hint] You have executed %d consecutive coding iterations. Keep working on the same task. Do not ask the user to send another message.", result.Count),
 		})
 		recordSystemMessages(systemMessagesStart, conversation)
 		result.Conversation = conversation

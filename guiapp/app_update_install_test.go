@@ -34,15 +34,19 @@ func testDigest(content string) string {
 	return sha256Hex([]byte(content))
 }
 
-func TestWindowsInstallerSilentArgsAnswerEveryPrompt(t *testing.T) {
-	for _, want := range []string{"/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"} {
-		if !strings.Contains(windowsInstallerSilentArgs, want) {
-			t.Fatalf("silent args %q missing %q", windowsInstallerSilentArgs, want)
+func TestWindowsInstallerSilentArgsUseNSISSwitches(t *testing.T) {
+	// The release installer is built by NSIS, which understands exactly one
+	// silent switch: /S. The Inno Setup family (/VERYSILENT, /SUPPRESSMSGBOXES,
+	// /NOCANCEL, /NORESTART) is silently ignored by NSIS, so passing it ran the
+	// full interactive wizard on every online update.
+	for _, innoOnly := range []string{"/VERYSILENT", "/SUPPRESSMSGBOXES", "/NOCANCEL", "/NORESTART", "/SP-"} {
+		if strings.Contains(windowsInstallerSilentArgs, innoOnly) {
+			t.Fatalf("silent args %q contain the Inno Setup switch %q, which NSIS ignores", windowsInstallerSilentArgs, innoOnly)
 		}
 	}
 	args := windowsInstallerSilentArgList
-	if len(args) == 0 || args[0] != "/VERYSILENT" {
-		t.Fatalf("unexpected arg split: %#v", args)
+	if len(args) != 1 || args[0] != "/S" {
+		t.Fatalf("silent args = %#v, want exactly [\"/S\"]", args)
 	}
 }
 

@@ -771,9 +771,13 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		log.Printf("[coding-subagent] task T%d stopped with an open checklist: %s", taskDisplayNumber(task), errMsg)
 	} else {
 		if result.Error != "" {
-			status = TaskExecFailed
-			errMsg = compactSubAgentErrorSummary(result.Error)
-			log.Printf("[coding-subagent] task T%d agent loop failed: %s", taskDisplayNumber(task), errMsg)
+			if goalTurn && codingLoopIterationExhausted(result.Error) {
+				log.Printf("[coding-subagent] task T%d goal turn reached the iteration budget; the next continuation keeps this step", taskDisplayNumber(task))
+			} else {
+				status = TaskExecFailed
+				errMsg = compactSubAgentErrorSummary(result.Error)
+				log.Printf("[coding-subagent] task T%d agent loop failed: %s", taskDisplayNumber(task), errMsg)
+			}
 		}
 		if result.HardExit {
 			status = TaskExecFailed
@@ -5668,6 +5672,11 @@ func (c *codingSubAgentCallbacks) refreshTaskCommandAllowance() {
 // prompt from a later guardrail.
 func (c *codingSubAgentCallbacks) guardCodingShellCommand(command, workingDir string) string {
 	c.refreshTaskCommandAllowance()
+	// cmd.exe does not treat single quotes as quotes. This host runs unquoted
+	// || and vcvars recipes with cmd.exe, so a single-quoted & or | is a
+	// second command by the time the process starts. Judge that command.
+	// Remote bash keeps the original text; it honors single quotes.
+	command = codingCommandJudgedForHost(command)
 	// A repository inquiry stays a hard block. Its run report states
 	// "只读检查：未修改任何文件" purely from the request kind, so approving a command
 	// past this guardrail would make the report claim something untrue.
@@ -5675,6 +5684,14 @@ func (c *codingSubAgentCallbacks) guardCodingShellCommand(command, workingDir st
 	if codingTaskLooksInquiry(c.task) {
 		if msg := rejectCodingInquiryShellCommand(command); msg != "" {
 			return msg
+		}
+		// cmd.exe expands %NAME% and %NAME:modifier% before it parses & and |,
+		// including inside double quotes. A space after the colon is still
+		// the modifier. Judge that only when this host actually hands the
+		// line to cmd.exe. PowerShell keeps %H%n%s literal, and remote bash
+		// never reaches this check.
+		if _, ok := windowsCodingCmdLine(command); ok && codingCmdPercentExpansion(command) {
+			return "cmd percent expansion is unavailable for a read-only repository inquiry"
 		}
 	}
 	// A run/build/demo guardrail decides what runs without asking, not what may

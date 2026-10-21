@@ -1645,11 +1645,25 @@ def file_read(path, limit):
 
 
 def file_write(path, body):
+    """Write body to path, creating the parent folder.
+
+    A file-like body is copied in 1 MiB pieces so a large upload is not held
+    twice. Plain bytes are written as they are. This still truncates path
+    before the copy; desktopd writes a sibling .partial and renames it.
+    """
     parent = posixpath.dirname(path)
     if parent not in ("", "/"):
         os.makedirs(parent, exist_ok=True)
     with open(path, "wb") as handle:
-        handle.write(body)
+        read = getattr(body, "read", None)
+        if read is None:
+            handle.write(body)
+        else:
+            while True:
+                chunk = read(1 << 20)
+                if not chunk:
+                    break
+                handle.write(chunk)
     return b""
 
 
@@ -1698,7 +1712,7 @@ def run_file(argv):
         if op == "list":
             return file_list(path)
         if op == "write":
-            payload = file_write(path, sys.stdin.buffer.read())
+            payload = file_write(path, sys.stdin.buffer)
         elif op == "bytes":
             payload = file_bytes(path, limit)
         else:

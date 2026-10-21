@@ -638,7 +638,6 @@ func (a *App) LaunchInstallerAndExit(installerPath string, targetVersion string)
 		a.log(fmt.Sprintf("[update-install] refusing silent install: %v", err))
 		return err
 	}
-	a.recordPendingUpdate(targetVersion, verifiedPath)
 
 	// Linux has no single unattended install path (deb/rpm/AppImage each need
 	// their own handling and usually root), so hand the package to the desktop
@@ -647,6 +646,10 @@ func (a *App) LaunchInstallerAndExit(installerPath string, targetVersion string)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	// Only arm the notice once the handler actually started: a failed launch
+	// installs nothing, so reporting it as an incomplete update would describe
+	// a failure the user already saw.
+	a.recordPendingUpdate(targetVersion, verifiedPath)
 	wails_runtime.Quit(a.ctx)
 	return nil
 }

@@ -2,6 +2,8 @@ package guiapp
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"testing"
 	"time"
 )
@@ -27,5 +29,23 @@ func TestUploadDesktopBotMaterialChunkPostsDecodedBytes(t *testing.T) {
 	}
 	if _, err := (&App{}).UploadDesktopBotMaterialChunk("b", "u", "n", 0, 1, "!!"); err == nil {
 		t.Fatal("bad base64 accepted")
+	}
+}
+
+func TestUploadDesktopBotMaterialChunkResumesAConflict(t *testing.T) {
+	prev := desktopBotExchangeOverride
+	desktopBotExchangeOverride = func(_ context.Context, _, _ string, _ any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+		if d, ok := dest.(*DesktopBotMaterialUpload); ok {
+			d.UploadID = "up-12345678"
+			d.Received = 4
+			d.Total = 8
+			d.Name = "a.png"
+		}
+		return http.StatusConflict, errors.New("MaClawSrv 不可达")
+	}
+	defer func() { desktopBotExchangeOverride = prev }()
+	out, err := (&App{}).UploadDesktopBotMaterialChunk("b", "up-12345678", "a.png", 4, 8, "YWJj")
+	if err != nil || out == nil || out.Done || out.Received != 4 || out.UploadID != "up-12345678" || out.Name != "a.png" || out.Total != 8 {
+		t.Fatalf("%v %+v", err, out)
 	}
 }

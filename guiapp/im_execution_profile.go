@@ -98,6 +98,11 @@ func (h *IMMessageHandler) classifyIMExecutionProfileAndSemanticContext(ctx cont
 	if goalContinuationTurn(msg.Text, msg.Platform) {
 		return fullExecutionProfile("goal continuation"), nil
 	}
+	// The session wave repeats the original request. Classifying that echo
+	// publishes a fresh grant and can drop the tools the task was using.
+	if sessionRoundTurn(msg.Text, msg.Platform) {
+		return fullExecutionProfile("session round continuation"), nil
+	}
 	structuralProfile, structurallyForced := hardStructuralFullExecutionProfile(msg, workflowAgentLoop, isAskUserResponse)
 	if h.getUnifiedClassifier() == nil && structurallyForced {
 		return structuralProfile, nil
@@ -236,6 +241,12 @@ func hardStructuralFullExecutionProfile(msg IMUserMessage, workflowAgentLoop, is
 		return fullExecutionProfile("background task"), true
 	case len(msg.Attachments) > 0:
 		return fullExecutionProfile("attachments present"), true
+	case explicitSkillInvocationForProfile(text):
+		// Admission already treats a named skill as a complex task, including
+		// when the classifier called the sentence a lookup. The loop budget
+		// and the prompt are chosen here. Leaving them light caps the workflow
+		// at a handful of iterations after the tool list has required it.
+		return fullExecutionProfile("explicit skill invocation"), true
 	case hasStructuralFullExecutionSignal(text):
 		return fullExecutionProfile("structural execution signal"), true
 	default:
@@ -252,13 +263,24 @@ func lengthFullExecutionProfile(msg IMUserMessage) (ExecutionProfile, bool) {
 
 const shortContinuationReason = "short continuation keeps parent execution tools"
 
+// explicitSkillInvocationForProfile uses the same task text as skill
+// admission. A skill named only inside an attached document is not a request
+// to leave the lookup budget.
+func explicitSkillInvocationForProfile(text string) bool {
+	return intent.ExplicitSkillInvocation(skillAdmissionTaskText(text))
+}
+
 // continuationKeepsParentExecution stops a short reply from being reclassified
 // as a light lookup. What stays available is the previous full turn's tool
 // list, not a guess from the wording of this message. A confident live-data
 // or clock lookup still starts clean. A project-task follow-up that is only
 // a search or a page fetch keeps the parent surface: that is how "does this
 // repo have SSO?" retains web_fetch after the GUI process restarts.
+
 func (h *IMMessageHandler) continuationKeepsParentExecution(profile ExecutionProfile, userID, text string, semantic *intent.ClassificationResult) ExecutionProfile {
+	if explicitSkillInvocationForProfile(text) {
+		return fullExecutionProfile("explicit skill invocation")
+	}
 	if h == nil {
 		return profile
 	}

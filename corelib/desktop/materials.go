@@ -3,6 +3,7 @@ package desktop
 import (
 	"fmt"
 	"path"
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -52,21 +53,134 @@ func SafeMaterialName(name string) string {
 	return out
 }
 
-// MaterialsFolder picks the folder name of one bot: its sanitized name, or
-// its id when the name is unusable or another bot of the same owner would
-// get the same folder. others are the names of that owner's other bots.
-func MaterialsFolder(botID, botName string, others []string) string {
-	id := SafeMaterialName(botID)
-	name := SafeMaterialName(botName)
-	if name == "" || name == id {
-		return id
+// MaterialPeer is another bot of the same owner. The folder is resolved from
+// both the id and the name, so a bot whose name sanitizes away still occupies
+// its id folder.
+type MaterialPeer struct {
+	ID   string
+	Name string
+}
+
+// MaterialsFolder picks one bot's directory under ~/素材. A usable name that
+// no other bot wants is kept. A shared name, or a name that is another bot's
+// id folder, falls back to this bot's id. If that id is taken too, a stable
+// suffix is added. Two bots with the same display name both get their ids.
+func MaterialsFolder(botID, botName string, others []MaterialPeer) string {
+	all := make([]MaterialPeer, 0, 1+len(others))
+	all = append(all, MaterialPeer{ID: botID, Name: botName})
+	all = append(all, others...)
+	preferred := make(map[string]string, len(all))
+	counts := map[string]int{}
+	for _, peer := range all {
+		folder := preferredMaterialFolder(peer.ID, peer.Name)
+		preferred[peer.ID] = folder
+		counts[strings.ToLower(folder)]++
 	}
-	for _, other := range others {
-		if strings.EqualFold(SafeMaterialName(other), name) {
-			return id
+	taken := map[string]struct{}{}
+	assigned := map[string]string{}
+	for _, peer := range all {
+		folder := preferred[peer.ID]
+		if counts[strings.ToLower(folder)] != 1 {
+			continue
+		}
+		assigned[peer.ID] = folder
+		taken[strings.ToLower(folder)] = struct{}{}
+	}
+	rest := make([]MaterialPeer, 0, len(all))
+	for _, peer := range all {
+		if _, ok := assigned[peer.ID]; !ok {
+			rest = append(rest, peer)
 		}
 	}
+	sort.Slice(rest, func(i, j int) bool { return rest[i].ID < rest[j].ID })
+	for _, peer := range rest {
+		folder := safeMaterialID(peer.ID)
+		if _, ok := taken[strings.ToLower(folder)]; ok {
+			folder = suffixedMaterialFolder(folder, peer.ID, taken)
+		}
+		assigned[peer.ID] = folder
+		taken[strings.ToLower(folder)] = struct{}{}
+	}
+	if folder := assigned[botID]; folder != "" {
+		return folder
+	}
+	return safeMaterialID(botID)
+}
+
+func preferredMaterialFolder(botID, botName string) string {
+	id := safeMaterialID(botID)
+	name := SafeMaterialName(botName)
+	if name == "" || strings.EqualFold(name, id) {
+		return id
+	}
 	return name
+}
+
+func safeMaterialID(botID string) string {
+	if id := SafeMaterialName(botID); id != "" {
+		return id
+	}
+	return "bot"
+}
+
+func suffixedMaterialFolder(base, raw string, taken map[string]struct{}) string {
+	extra := SafeMaterialName(raw)
+	if extra == "" || strings.EqualFold(extra, base) {
+		extra = "2"
+	}
+	candidate := fitMaterialName(base+"-"+extra, "")
+	if candidate != "" && !materialFolderTaken(candidate, taken) {
+		return candidate
+	}
+	for n := 2; n < 100; n++ {
+		candidate = fitMaterialName(fmt.Sprintf("%s-%d", base, n), "")
+		if candidate != "" && !materialFolderTaken(candidate, taken) {
+			return candidate
+		}
+	}
+	return fitMaterialName(base+"-x", "")
+}
+
+func materialFolderTaken(folder string, taken map[string]struct{}) bool {
+	_, ok := taken[strings.ToLower(folder)]
+	return ok
+}
+
+// MaterialStoredName keeps a sanitized display name from colliding with
+// another file in the same folder. The upload id is unique per attachment,
+// so two screenshots that both arrive as image.png stay two files.
+func MaterialStoredName(name, uploadID string) string {
+	name = SafeMaterialName(name)
+	uploadID = SafeMaterialName(uploadID)
+	if name == "" || uploadID == "" {
+		return ""
+	}
+	ext := path.Ext(name)
+	if utf8.RuneCountInString(ext) > 16 {
+		ext = ""
+	}
+	suffix := "-" + uploadID
+	room := materialNameMax - utf8.RuneCountInString(ext) - utf8.RuneCountInString(suffix)
+	if room < 1 {
+		return fitMaterialName(uploadID, ext)
+	}
+	stem := []rune(strings.TrimSuffix(name, ext))
+	if len(stem) > room {
+		stem = stem[:room]
+	}
+	return SafeMaterialName(string(stem) + suffix + ext)
+}
+
+func fitMaterialName(stem, ext string) string {
+	room := materialNameMax - utf8.RuneCountInString(ext)
+	if room < 1 {
+		return SafeMaterialName(ext)
+	}
+	runes := []rune(stem)
+	if len(runes) > room {
+		runes = runes[:room]
+	}
+	return SafeMaterialName(string(runes) + ext)
 }
 
 // MaterialPath is the container path of one uploaded file.

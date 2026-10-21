@@ -1847,7 +1847,7 @@
     gap: 8px;
     flex: 0 0 auto;
     margin: 8px var(--desktop-bot-gutter, 8%) 0;
-    padding: 8px 8px 8px 14px;
+    padding: 8px;
     border: 1px solid var(--theme-border, #e6e6e8);
     border-radius: 28px;
     background: var(--theme-surface, #fff);
@@ -2472,8 +2472,8 @@
     min-width: 0;
 }
 
-/* Inside the composer form: the paperclip sits left of the text box and the
-   attached files wrap onto a row above it. */
+/* Inside the composer form: chips take a row above the field, the paperclip
+   stays on the text row. display:contents lets both join the form flex. */
 .desktop-bot-chat__form {
     flex-wrap: wrap;
 }
@@ -2482,13 +2482,78 @@
     display: contents;
 }
 
-.desktop-bot-materials__attach {
-    flex: 0 0 auto;
-    align-self: center;
+.desktop-bot-materials__strip {
+    order: -1;
+    flex: 1 0 100%;
+    align-self: stretch;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: flex-start;
+    min-width: 0;
+    max-height: 120px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
 }
 
-.desktop-bot-materials > .desktop-bot-materials__item {
-    order: -1;
+.desktop-bot-materials__attach {
+    appearance: none;
+    flex: 0 0 auto;
+    align-self: center;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 28px;
+    margin: 0;
+    padding: 0;
+    border-radius: 10px;
+    border: 1px solid color-mix(in srgb, var(--mc-accent, #2f6fbc) 28%, var(--theme-border, #d9e1ec));
+    background: color-mix(in srgb, var(--mc-accent, #2f6fbc) 8%, var(--theme-surface, #fff));
+    color: var(--mc-accent, #2f6fbc);
+    box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-accent, #2f6fbc) 12%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    cursor: pointer;
+    transition: background 120ms ease, transform 120ms ease;
+}
+
+.desktop-bot-materials__attach:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--mc-accent, #2f6fbc) 14%, var(--theme-surface, #fff));
+}
+
+.desktop-bot-materials__attach:focus-visible {
+    outline: 2px solid var(--mc-accent, #2f6fbc);
+    outline-offset: 2px;
+}
+
+.desktop-bot-materials__attach:active:not(:disabled) {
+    transform: scale(0.96);
+}
+
+.desktop-bot-materials__attach:disabled {
+    cursor: default;
+    opacity: 0.45;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .desktop-bot-materials__attach {
+        transition: none;
+    }
+
+    .desktop-bot-materials__attach:active:not(:disabled),
+    .desktop-bot-materials__strip .desktop-bot-materials__remove:active {
+        transform: none;
+    }
+}
+
+@media (forced-colors: active) {
+    .desktop-bot-materials__attach,
+    .desktop-bot-materials__strip .desktop-bot-materials__item {
+        border-color: ButtonText;
+        background: ButtonFace;
+        color: ButtonText;
+        box-shadow: none;
+    }
 }
 
 .desktop-bot-materials__item {
@@ -2502,9 +2567,42 @@
     font-size: 12px;
 }
 
+.desktop-bot-materials__strip .desktop-bot-materials__item {
+    position: relative;
+    align-items: center;
+    gap: 5px;
+    width: fit-content;
+    max-width: none;
+    padding: 3px;
+    border-radius: 6px;
+    border: 1px solid var(--theme-border, #d9e1ec);
+    background: var(--theme-surface-muted, #f0f4f9);
+    color: var(--theme-text-primary, #1c2733);
+}
+
+.desktop-bot-materials__badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    flex-shrink: 0;
+    border-radius: 5px;
+    background: var(--theme-border, #d9e1ec);
+    color: var(--theme-text-secondary, #546479);
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0;
+    line-height: 1;
+}
+
+.desktop-bot-materials__badge.is-long {
+    font-size: 8px;
+}
+
 .desktop-bot-materials__item.is-error {
-    border-color: #d33;
-    color: #d33;
+    border-color: var(--theme-danger, #b42318);
+    color: var(--theme-danger, #b42318);
 }
 
 .desktop-bot-materials__name {
@@ -2513,8 +2611,32 @@
     white-space: nowrap;
 }
 
+.desktop-bot-materials__strip .desktop-bot-materials__name,
+.desktop-bot-materials__strip .desktop-bot-materials__meta.is-quiet {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
 .desktop-bot-materials__meta {
     opacity: 0.7;
+}
+
+.desktop-bot-materials__strip .desktop-bot-materials__meta {
+    padding-right: 2px;
+    color: var(--theme-text-muted, #667085);
+    font-size: 11px;
+    opacity: 1;
+}
+
+.desktop-bot-materials__strip .desktop-bot-materials__item.is-error .desktop-bot-materials__meta {
+    color: var(--theme-danger, #b42318);
 }
 
 .desktop-bot-materials__remove {
@@ -2522,6 +2644,34 @@
     background: none;
     cursor: pointer;
     padding: 0 2px;
+}
+
+.desktop-bot-materials__strip .desktop-bot-materials__remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
+    padding: 0;
+    border-radius: 4px;
+    color: var(--theme-text-muted, #667085);
+    font-size: 17px;
+    line-height: 1;
+}
+
+.desktop-bot-materials__strip .desktop-bot-materials__remove:hover {
+    background: color-mix(in srgb, var(--theme-danger, #b42318) 12%, transparent);
+    color: var(--theme-danger, #b42318);
+}
+
+.desktop-bot-materials__strip .desktop-bot-materials__remove:focus-visible {
+    outline: 2px solid var(--mc-accent, #2f6fbc);
+    outline-offset: 1px;
+}
+
+.desktop-bot-materials__strip .desktop-bot-materials__remove:active {
+    transform: scale(0.94);
 }
 
 .desktop-bot-materials__sent {
@@ -2532,6 +2682,6 @@
 }
 
 .desktop-bot-chat__form.is-dragging {
-    outline: 2px dashed rgba(80, 140, 255, 0.7);
+    outline: 2px dashed color-mix(in srgb, var(--mc-accent, #2f6fbc) 70%, transparent);
     outline-offset: -4px;
 }

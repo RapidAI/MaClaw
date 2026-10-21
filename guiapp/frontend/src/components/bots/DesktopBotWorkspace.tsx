@@ -1808,6 +1808,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // Files waiting to go with the next message, per bot. Each uploads to the
     // bot's ~/素材/<bot>/ folder as soon as it is attached.
     const [materialsByBot, setMaterialsByBot] = useState<Record<string, MaterialItem[]>>({});
+    // A removed chip stops its upload. The id is recorded before the chip
+    // leaves the list, so a late reply cannot put the chip back.
+    const materialStop = useRef<Set<string>>(new Set());
     const patchMaterial = useCallback((botId: string, id: string, patch: Partial<MaterialItem> | null) => {
         setMaterialsByBot(current => {
             const list = current[botId] || [];
@@ -1825,9 +1828,17 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             }
             setMaterialsByBot(current => ({ ...current, [botId]: [...(current[botId] || []), item] }));
             if (item.status === 'error') continue;
-            void uploadMaterial(file, botId, async (bot, uploadId, name, offset, total, data) => await UploadDesktopBotMaterialChunk(bot, uploadId, name, offset, total, data), sent => patchMaterial(botId, id, { sent }), id)
-                .then(path => patchMaterial(botId, id, { status: 'done', path, sent: file.size }))
-                .catch(error => patchMaterial(botId, id, { status: 'error', error: String((error as Error)?.message || error) }));
+            void uploadMaterial(file, botId, async (bot, uploadId, name, offset, total, data) => await UploadDesktopBotMaterialChunk(bot, uploadId, name, offset, total, data), sent => patchMaterial(botId, id, { sent }), id, undefined, () => !materialStop.current.has(id))
+                .then(path => {
+                    if (materialStop.current.has(id)) return;
+                    patchMaterial(botId, id, { status: 'done', path, sent: file.size });
+                })
+                .catch(error => {
+                    if (materialStop.current.has(id)) return;
+                    const message = String((error as Error)?.message || error);
+                    if (message === 'cancelled') return;
+                    patchMaterial(botId, id, { status: 'error', error: message });
+                });
         }
     }, [patchMaterial]);
     // Seq is the process-wide hold generation. A snapshot older than the last
@@ -5772,13 +5783,17 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             value={command}
                             onChange={setCommand}
                             onSubmit={() => {
+                                if (secretOpenRef.current) return;
                                 const pending = materialsByBot[selected.id] || [];
-                                if (pending.some(item => item.status === 'uploading')) return;
+                                if (pending.some(item => item.status === 'uploading' || item.status === 'error')) return;
                                 const paths = pending.filter(item => item.status === 'done' && item.path).map(item => item.path as string);
                                 if (paths.length === 0) { void send(); return; }
                                 const content = withMaterials(command, paths, lang);
                                 setCommand('');
-                                setMaterialsByBot(current => ({ ...current, [selected.id]: [] }));
+                                setMaterialsByBot(current => ({
+                                    ...current,
+                                    [selected.id]: (current[selected.id] || []).filter(item => item.status !== 'done'),
+                                }));
                                 void send(content);
                             }}
                             disabled={!!secretForSelected}
@@ -5791,12 +5806,15 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     lang={lang}
                                     disabled={!!secretForSelected}
                                     onAttach={files => attachMaterials(selected.id, files)}
-                                    onRemove={id => patchMaterial(selected.id, id, null)}
+                                    onRemove={id => {
+                                        materialStop.current.add(id);
+                                        patchMaterial(selected.id, id, null);
+                                    }}
                                 />
                             )}
                             onFiles={files => attachMaterials(selected.id, files)}
                             readyWithoutText={(materialsByBot[selected.id] || []).some(item => item.status === 'done')}
-                            holdSend={(materialsByBot[selected.id] || []).some(item => item.status === 'uploading')}
+                            holdSend={(materialsByBot[selected.id] || []).some(item => item.status === 'uploading' || item.status === 'error')}
                         />
                         <p className="desktop-bot-chat__hint">{secretForSelected ? text.secretHint : text.composerHint}</p>
                     </>

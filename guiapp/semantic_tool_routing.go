@@ -2243,6 +2243,10 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndAttachm
 		log.Printf("[semantic-routing] goal continuation keeps lifecycle goal tool user=%q channel=%q platform=%q", userID, channel, loopPlatform)
 		return nil, nil, false, nil
 	}
+	if sessionRoundTurn(userText, channel) || sessionRoundTurn(userText, loopPlatform) {
+		log.Printf("[semantic-routing] session round keeps the current tool surface user=%q channel=%q platform=%q", userID, channel, loopPlatform)
+		return nil, nil, false, nil
+	}
 	// A background chat task is the rest of a turn the foreground loop already
 	// refused to finish inline. Classifying the host prompt again often yields
 	// one lookup family and the same short budget.
@@ -2744,6 +2748,9 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// direct planner call must not classify a continuation as goal_manage
 	// and publish the closed adapter beside the lifecycle tool.
 	if goalContinuationTurn(userText, channel) {
+		return nil, false, nil
+	}
+	if sessionRoundTurn(userText, channel) {
 		return nil, false, nil
 	}
 	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(userID) == "" {

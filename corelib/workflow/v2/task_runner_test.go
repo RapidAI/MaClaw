@@ -99,6 +99,108 @@ func TestTaskRunner_AllPass(t *testing.T) {
 	}
 }
 
+func TestTaskRunner_FailureStopsLaterStepsWithoutDeps(t *testing.T) {
+	calls := 0
+	sub := func(ctx context.Context, task *TaskItem, config TaskRunnerConfig, onToken func(string), onProgress func(string)) *TaskRunResult {
+		calls++
+		if task.Index == 2 {
+			return &TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: TaskFailed, Error: "semantic mismatch"}
+		}
+		return &TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: TaskPassed}
+	}
+	tasks := []*TaskItem{
+		{Index: 1, Title: "baseline"},
+		{Index: 2, Title: "winograd"},
+		{Index: 3, Title: "lasx"},
+	}
+	runner := NewTaskRunner(TaskRunnerConfig{MaxRetries: 0}, sub)
+	results := runner.RunAll(context.Background(), tasks, nil, nil)
+	if calls != 2 {
+		t.Fatalf("subagent calls=%d, want 2", calls)
+	}
+	if results[0].Status != TaskPassed || results[1].Status != TaskFailed {
+		t.Fatalf("head results=%+v", results[:2])
+	}
+	if results[2].Status != TaskSkipped || results[2].Error != "skipped: prior step failed" {
+		t.Fatalf("T3=%+v, want skipped after the failure", results[2])
+	}
+}
+
+func TestTaskRunner_SerializedWaveStopsAfterFailure(t *testing.T) {
+	calls := 0
+	sub := func(ctx context.Context, task *TaskItem, config TaskRunnerConfig, onToken func(string), onProgress func(string)) *TaskRunResult {
+		calls++
+		if config.WaveSize != 1 {
+			t.Errorf("desktop wave size=%d, want 1", config.WaveSize)
+		}
+		if task.Index == 2 {
+			return &TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: TaskFailed, Error: "semantic mismatch"}
+		}
+		return &TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: TaskPassed}
+	}
+	tasks := []*TaskItem{
+		{Index: 1, Title: "baseline"},
+		{Index: 2, Title: "winograd"},
+		{Index: 3, Title: "lasx"},
+	}
+	runner := NewTaskRunner(TaskRunnerConfig{
+		MaxParallel:        2,
+		MaxRetries:         0,
+		CanRunParallelWave: func([]*TaskItem) bool { return false },
+	}, sub)
+	results := runner.RunAll(context.Background(), tasks, nil, nil)
+	if calls != 2 {
+		t.Fatalf("subagent calls=%d, want 2", calls)
+	}
+	if results[2].Status != TaskSkipped || results[2].Error != "skipped: prior step failed" {
+		t.Fatalf("T3=%+v, want skipped after the serialized failure", results[2])
+	}
+}
+
+func TestTaskRunner_ParallelWaveDoesNotStartNextAfterFailure(t *testing.T) {
+	var calls int32
+	sub := func(ctx context.Context, task *TaskItem, config TaskRunnerConfig, onToken func(string), onProgress func(string)) *TaskRunResult {
+		atomic.AddInt32(&calls, 1)
+		if task.Index == 2 {
+			return &TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: TaskFailed, Error: "semantic mismatch"}
+		}
+		return &TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: TaskPassed}
+	}
+	tasks := []*TaskItem{
+		{Index: 1, Title: "baseline"},
+		{Index: 2, Title: "winograd"},
+		{Index: 3, Title: "lasx"},
+	}
+	runner := NewTaskRunner(TaskRunnerConfig{MaxParallel: 2, MaxRetries: 0}, sub)
+	results := runner.RunAll(context.Background(), tasks, nil, nil)
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("subagent calls=%d, want the in-flight wave only", got)
+	}
+	if results[2].Status != TaskSkipped || results[2].Error != "skipped: prior step failed" {
+		t.Fatalf("T3=%+v, want skipped after the parallel wave failed", results[2])
+	}
+}
+
+func TestTaskRunner_SkippedStepDoesNotStopLaterSteps(t *testing.T) {
+	calls := 0
+	sub := func(ctx context.Context, task *TaskItem, config TaskRunnerConfig, onToken func(string), onProgress func(string)) *TaskRunResult {
+		calls++
+		if task.Index == 1 {
+			return &TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: TaskSkipped, Error: "waiting_child"}
+		}
+		return &TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: TaskPassed}
+	}
+	tasks := []*TaskItem{
+		{Index: 1, Title: "red"},
+		{Index: 2, Title: "green"},
+	}
+	runner := NewTaskRunner(TaskRunnerConfig{MaxRetries: 0}, sub)
+	results := runner.RunAll(context.Background(), tasks, nil, nil)
+	if calls != 2 || results[0].Status != TaskSkipped || results[1].Status != TaskPassed {
+		t.Fatalf("calls=%d results=%+v, a skip must not cancel the next step", calls, results)
+	}
+}
+
 func TestTaskRunner_DependencySkip(t *testing.T) {
 	tasks := []*TaskItem{
 		{Index: 1, Title: "Init"},

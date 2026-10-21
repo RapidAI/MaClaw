@@ -150,4 +150,33 @@ describe('DesktopBotComposer', () => {
         view.rerender(<Harness botId="bot_2" />);
         await waitFor(() => expect(input().value).toBe('草稿'));
     });
+
+    it('accepts a pasted file that only the clipboard item list carries', () => {
+        const got: File[] = [];
+        render(
+            <DesktopBotComposer
+                userId="alice"
+                botId="bot_1"
+                lang="zh-Hans"
+                value=""
+                onChange={() => undefined}
+                onSubmit={() => undefined}
+                placeholder="给 值班 发消息"
+                ariaLabel="给 值班 发消息"
+                sendLabel="发送"
+                onFiles={files => got.push(...files)}
+            />,
+        );
+        const file = new File(['png'], 'shot.png', { type: 'image/png' });
+        const form = input().closest('form');
+        if (!form) throw new Error('form missing');
+        const pasted = fireEvent.paste(form, {
+            clipboardData: {
+                files: { length: 0 },
+                items: [{ kind: 'file', getAsFile: () => file }],
+            },
+        });
+        expect(pasted).toBe(false);
+        expect(got).toEqual([file]);
+    });
 });

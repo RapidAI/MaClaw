@@ -10,26 +10,27 @@ import (
 // Installer silent-install switches.
 //
 // Online update is the only caller: the app downloads the installer, quits,
-// and lets the installer run unattended. Every interactive question the
-// installer can ask is answered up front:
+// and lets the installer run unattended.
 //
-//	/VERYSILENT        no wizard, no progress dialog, no questions
-//	/SP-               suppress the "installing" splash window
-//	/SUPPRESSMSGBOXES  never show a MessageBox; the /SD default is used
-//	/NOCANCEL          hide the cancel button (no UI in silent mode anyway)
-//	/NORESTART         never ask to reboot; apply files and exit
+// The release installer is built by NSIS (build/windows/installer/multiarch.nsi),
+// and NSIS has exactly one silent switch: /S. The Inno Setup family of switches
+// (/VERYSILENT, /SUPPRESSMSGBOXES, /NOCANCEL, /NORESTART) is not recognised
+// here — NSIS ignores them and runs the full interactive wizard, which is why
+// an online update used to show the welcome/directory/finish pages. Do not
+// reintroduce them.
 //
-// The installer script declares /SD IDYES on every MessageBox (see
-// build/windows/installer/multiarch.nsi), so "suppressed" resolves to "yes"
-// for the two questions that matter: stop the running app, and uninstall the
-// previous version before installing the new one. Without that, a silent
-// upgrade over an existing install aborts instead of replacing it.
+// With /S the installer script declares /SD IDYES on every MessageBox it can
+// reach (see multiarch.nsi), so those questions resolve to "yes" instead of
+// blocking: stop the running app, and replace the previous build. The script
+// also skips the uninstall-then-install dance for silent runs and installs in
+// place, so an update never deletes the WebView2 profile that holds the user's
+// session and UI state.
 //
-// These are NSIS switches. They are only ever passed to a file this process
-// downloaded and hash-verified in the same session (see
-// authorizeInstallerLaunch), so an unknown installer silently ignoring them
-// degrades to a normal install rather than to an unchecked elevated launch.
-const windowsInstallerSilentArgs = "/VERYSILENT /SP- /SUPPRESSMSGBOXES /NOCANCEL /NORESTART"
+// These switches are only ever passed to a file this process downloaded and
+// hash-verified in the same session (see authorizeInstallerLaunch), so an
+// unknown installer silently ignoring them degrades to a normal install rather
+// than to an unchecked elevated launch.
+const windowsInstallerSilentArgs = "/S"
 
 // Deliberately no /D= switch: the installer must keep the directory it reads
 // from the existing uninstall key (custom install paths are preserved there).

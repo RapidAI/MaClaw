@@ -29,6 +29,14 @@ func weeklyDigestTestSkill() corelib.NLSkillEntry {
 	}
 }
 
+func lightLookupLoop(primary intent.IntentLabel) *LoopContext {
+	ctx := fullDocumentLoop(primary)
+	ctx.Runtime.Execution.Layer = string(executionLayerLight)
+	ctx.Runtime.Execution.PromptProfile = "light"
+	ctx.Runtime.Execution.Reason = "lookup"
+	return ctx
+}
+
 func fullDocumentLoop(primary intent.IntentLabel) *LoopContext {
 	return &LoopContext{
 		UserID: "user-1",
@@ -252,6 +260,177 @@ func TestHostAdmittedSkillSearchKeepsAComplexTaskQuery(t *testing.T) {
 	}
 	if !skillSearchQueryAllowed(query, true) {
 		t.Fatal("host-admitted complex task was dropped by the lookup filter")
+	}
+}
+
+func TestSkillAdmissionExplicitInvocationLeavesTheLightProfile(t *testing.T) {
+	live := &intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.98}
+	named := classifyIMExecutionProfileWithSemantic(IMUserMessage{
+		Text: "使用 book-pdf skill 编写教程", Platform: "desktop",
+	}, false, false, live)
+	if named.IsLight() || named.PromptIsLight() || named.IterationBudget != 0 || named.Reason != "explicit skill invocation" {
+		t.Fatalf("named skill stayed on the lookup budget: %+v", named)
+	}
+	weather := classifyIMExecutionProfileWithSemantic(IMUserMessage{
+		Text: "南京天气", Platform: "desktop",
+	}, false, false, live)
+	if !weather.IsLight() || !weather.PromptIsLight() || weather.IterationBudget != 3 {
+		t.Fatalf("lookup changed budget: %+v", weather)
+	}
+	report := classifyIMExecutionProfileWithSemantic(IMUserMessage{
+		Text: "南京天气，生成pdf报告", Platform: "desktop",
+	}, false, false, live)
+	if !report.IsLight() || !report.PromptIsLight() {
+		t.Fatalf("weather report left the lookup: %+v", report)
+	}
+	attached := "南京天气\n" + agent.AutoExtractNotice + "\n" +
+		"--- auto_extract: begin path=\"paper.pdf\" format=\"pdf\" ---\n" +
+		"使用 book-pdf skill 编写教程\n" +
+		"--- auto_extract: end path=\"paper.pdf\" ---"
+	fromAttachment := classifyIMExecutionProfileWithSemantic(IMUserMessage{
+		Text: attached, Platform: "desktop",
+	}, false, false, live)
+	if !fromAttachment.IsLight() || !fromAttachment.PromptIsLight() {
+		t.Fatalf("a skill named only in an attachment left the lookup: %+v", fromAttachment)
+	}
+	if got := (&IMMessageHandler{}).continuationKeepsParentExecution(weather, "user-1", "使用 book-pdf skill 编写教程", live); got.IsLight() || got.Reason != "explicit skill invocation" {
+		t.Fatalf("continuation kept the lookup budget: %+v", got)
+	}
+}
+
+func TestSkillAdmissionLightPromptRunsTheAdmittedTools(t *testing.T) {
+	lightSurface := func() *semanticCallSurface {
+		return &semanticCallSurface{
+			grants: map[string]tool.InvocationGrant{
+				"bash":         {},
+				"generate_pdf": {},
+				"web_search":   {},
+			},
+		}
+	}
+	assertVisible := func(t *testing.T, cb *sharedAgentLoopCallbacks, name string, want bool) {
+		t.Helper()
+		if got := cb.IsToolAllowed(name); got != want {
+			t.Fatalf("IsToolAllowed(%s)=%v, want %v", name, got, want)
+		}
+		if got := cb.IsToolAllowedForPromptProfile(name, agent.PromptProfileLight); got != want {
+			t.Fatalf("IsToolAllowedForPromptProfile(%s)=%v, want %v", name, got, want)
+		}
+	}
+
+	t.Run("guided", func(t *testing.T) {
+		app, _ := newSkillExecutorWithEntries(t, bookPDFTestSkill())
+		cb := &sharedAgentLoopCallbacks{
+			handler:         &IMMessageHandler{app: app},
+			userID:          "user-1",
+			userText:        "使用 book-pdf skill 编写教程",
+			loopCtx:         lightLookupLoop(intent.LabelLiveData),
+			semanticSurface: lightSurface(),
+		}
+		cb.publishAdmittedSkillTools(cb.userText)
+		if !cb.agentGuidedHostTools {
+			t.Fatal("named workflow was not admitted on the light prompt")
+		}
+		assertVisible(t, cb, "bash", true)
+		assertVisible(t, cb, "read_file", true)
+		if ok, reason := cb.IsToolCallAllowed("bash", `{"command":"echo"}`); !ok {
+			t.Fatalf("guided bash rejected: %s", reason)
+		}
+		assertVisible(t, cb, "generate_pdf", false)
+		if ok, reason := cb.IsToolCallAllowed("generate_pdf", `{"content":"# t"}`); ok {
+			t.Fatalf("light guided turn allowed generate_pdf: %s", reason)
+		}
+	})
+
+	t.Run("lookup", func(t *testing.T) {
+		app, _ := newSkillExecutorWithEntries(t, bookPDFTestSkill())
+		cb := &sharedAgentLoopCallbacks{
+			handler:         &IMMessageHandler{app: app},
+			userID:          "user-1",
+			userText:        "南京天气",
+			loopCtx:         lightLookupLoop(intent.LabelLiveData),
+			semanticSurface: lightSurface(),
+		}
+		cb.publishAdmittedSkillTools(cb.userText)
+		if cb.agentGuidedHostTools || cb.skillRemoteSearchOffered || len(cb.admittedSkillBindings) > 0 {
+			t.Fatal("light lookup admitted a skill")
+		}
+		assertVisible(t, cb, "bash", false)
+		assertVisible(t, cb, "read_file", false)
+	})
+
+	t.Run("bound", func(t *testing.T) {
+		app, _ := newSkillExecutorWithEntries(t, paperTranslatorTestSkill())
+		cb := &sharedAgentLoopCallbacks{
+			handler:         &IMMessageHandler{app: app},
+			userID:          "user-1",
+			userText:        "使用 paper-translator skill 翻译这篇论文",
+			loopCtx:         lightLookupLoop(intent.LabelLiveData),
+			semanticSurface: lightSurface(),
+		}
+		cb.publishAdmittedSkillTools(cb.userText)
+		assertVisible(t, cb, "skill_paper_translator", true)
+		assertVisible(t, cb, "bash", false)
+		if ok, reason := cb.IsToolCallAllowed("skill_paper_translator", `{"topic":"rust"}`); !ok {
+			t.Fatalf("bound skill rejected on the light prompt: %s", reason)
+		}
+		if ok, reason := cb.IsToolCallAllowed("bash", `{"command":"echo"}`); ok {
+			t.Fatalf("bound admission opened bash: %s", reason)
+		}
+		if ok, reason := cb.IsToolCallAllowed("generate_pdf", `{"content":"# t"}`); ok {
+			t.Fatalf("bound admission opened generate_pdf: %s", reason)
+		}
+	})
+
+	t.Run("remote", func(t *testing.T) {
+		app, _ := newSkillExecutorWithEntries(t)
+		cb := &sharedAgentLoopCallbacks{
+			handler:         &IMMessageHandler{app: app},
+			userID:          "user-1",
+			userText:        "使用 weekly-digest skill 做周报",
+			loopCtx:         lightLookupLoop(intent.LabelLiveData),
+			semanticSurface: lightSurface(),
+		}
+		cb.publishAdmittedSkillTools(cb.userText)
+		if !cb.skillRemoteSearchOffered {
+			t.Fatal("named miss did not offer market search")
+		}
+		assertVisible(t, cb, "search_and_install_skill", true)
+		assertVisible(t, cb, "bash", false)
+		if ok, reason := cb.IsToolCallAllowed("bash", `{"command":"echo"}`); ok {
+			t.Fatalf("remote admission opened bash before search: %s", reason)
+		}
+	})
+}
+
+func TestLightPromptStillCarriesANamedGuidedSkill(t *testing.T) {
+	app, _ := newSkillExecutorWithEntries(t, bookPDFTestSkill(), weatherPDFTestSkill())
+	h := &IMMessageHandler{app: app}
+	ctx := &LoopContext{
+		UserID: "user-1",
+		Runtime: RuntimeContext{
+			Execution: ExecutionProfile{
+				Layer:         string(executionLayerLight),
+				PromptProfile: "light",
+				Reason:        "lookup",
+			},
+			SemanticIntent: &intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.98},
+		},
+	}
+	prompt := h.buildIMEntrySystemPrompt(IMUserMessage{
+		UserID: "user-1", Text: "使用 book-pdf skill 编写教程", Platform: "desktop",
+	}, nil, ctx, false, "", "", "", "")
+	if !strings.Contains(prompt, "## Skill 使用文档") || !strings.Contains(prompt, "五个阶段") {
+		t.Fatal("light prompt dropped the named workflow")
+	}
+	if strings.Contains(prompt, `manage_skill(action="run"`) {
+		t.Fatal("light prompt sent the workflow through manage_skill")
+	}
+	weather := h.buildIMEntrySystemPrompt(IMUserMessage{
+		UserID: "user-1", Text: "南京天气", Platform: "desktop",
+	}, nil, ctx, false, "", "", "", "")
+	if strings.Contains(weather, "## Skill 使用文档") || strings.Contains(weather, "五个阶段") {
+		t.Fatal("light lookup injected a skill document")
 	}
 }
 

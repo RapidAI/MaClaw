@@ -320,6 +320,12 @@ func (h *IMMessageHandler) correctUnbackedStopClaim(msg IMUserMessage, loop *Loo
 	if h == nil || resp == nil || loop == nil || !h.desktopChatTurn(msg) {
 		return resp
 	}
+	// This note is the host saying the same task continues. It is not the
+	// model claiming the work stopped. Classifying it would cancel the wave
+	// that was just armed, and any other work that was live at the start.
+	if resp.sessionRoundContinue || strings.TrimSpace(resp.ResponseSource) == sessionRoundContinuationSource {
+		return resp
+	}
 	if strings.TrimSpace(loop.ChatTaskID) != "" || loop.WorkflowAgentLoop {
 		return resp
 	}

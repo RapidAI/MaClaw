@@ -1153,6 +1153,60 @@ func TestGoalContinuationCodingHostErrorClosesTheGoal(t *testing.T) {
 	}
 }
 
+func TestGoalContinuationKeepsWorkingWhenTheIterationBudgetIsSpent(t *testing.T) {
+	userText := "[系统续接][execute] 按步骤执行目标"
+	if got := goalContinuationCodingHostError(userText, false, []v2.TaskRunResult{{
+		Status: v2.TaskFailed,
+		Error:  "max iterations reached",
+	}}); got != "" {
+		t.Fatalf("iteration budget = %q, want the goal to stay open", got)
+	}
+	if got := goalContinuationCodingHostError(userText, false, []v2.TaskRunResult{{
+		Status: v2.TaskFailed,
+		Error:  "max iterations reached after the final check",
+	}}); got != "" {
+		t.Fatalf("late iteration budget = %q, want the goal to stay open", got)
+	}
+
+	userID := "goal-iteration-handoff"
+	store := goal.NewStore("")
+	g, err := store.Set(userID, "龙芯文本优化", goal.WithMaxTurns(8))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SavePlan(userID, g.GoalID, "先测基线", []goal.Step{{Title: "测量基线"}}, []string{"有基线数字"}); err != nil {
+		t.Fatal(err)
+	}
+	engine := NewGoalContinuationEngine(store, nil)
+	engine.cooldown = time.Hour
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	engine.noteContinuationExpect(userID, store.Get(userID))
+	owned := engine.peekContinuationExpect(userID)
+	handler := &IMMessageHandler{app: &App{goalContinuation: engine}, goalStore: store}
+	handler.maybeScheduleGoalContinuationOwned(userID, &IMAgentResponse{
+		Text:            "第 1 步完成。",
+		TraceEventCount: 4,
+	}, "goal-continuation", owned, true)
+	stored := store.Get(userID)
+	if stored == nil || stored.Status != goal.StatusActive {
+		t.Fatalf("goal = %+v", stored)
+	}
+	if !goalTimerScheduled(t, engine, userID) {
+		t.Fatal("a spent iteration budget must schedule the same step again")
+	}
+
+	cb := &remoteCodingCallbacks{
+		agent: &RemoteCodingSubAgent{},
+		task:  userText,
+	}
+	remote := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status: "failed", Error: "max iterations reached", Summary: "第 1 步完成。", ToolCalls: 4,
+	})
+	if remote == nil || remote.Status != "success" || remote.Error != "" {
+		t.Fatalf("remote goal turn = %#v", remote)
+	}
+}
+
 func TestGoalContinuationKeepsRecordedPlanWhenTurnErrors(t *testing.T) {
 	userID := "goal-plan-kept"
 	store := goal.NewStore("")

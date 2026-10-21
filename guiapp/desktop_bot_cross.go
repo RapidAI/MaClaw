@@ -97,7 +97,7 @@ func finishDesktopBotCross(understood *DesktopBotUnderstanding, roster *desktopB
 	cross.Kind = strings.ToLower(strings.TrimSpace(cross.Kind))
 	cross.Target = strings.TrimSpace(cross.Target)
 	cross.Text = clipRunes(strings.TrimSpace(cross.Text), desktopBotUnderstandToldMax)
-	cross.Order = clipRunes(strings.TrimSpace(cross.Order), desktopBotUnderstandOrderMax)
+	cross.Order = clipDesktopBotOrder(strings.TrimSpace(cross.Order), desktopBotUnderstandOrderMax)
 	if cross.Kind != "notify" && cross.Kind != "delegate" {
 		understood.Cross = nil
 		return
@@ -377,7 +377,7 @@ func (a *App) PostDesktopBotCross(botID, kind, target, text, order, replyTo stri
 	botID = strings.TrimSpace(botID)
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	text = clipRunes(strings.TrimSpace(text), desktopBotUnderstandToldMax)
-	order = clipRunes(strings.TrimSpace(order), desktopBotUnderstandOrderMax)
+	order = clipDesktopBotOrder(strings.TrimSpace(order), desktopBotUnderstandOrderMax)
 	replyTo = strings.TrimSpace(replyTo)
 	if botID == "" {
 		return nil, errDesktopBotID

@@ -297,6 +297,13 @@ if /i "%~1"=="compile-only" goto copy_binaries
 echo [Step 12/14] Creating NSIS installer...
 if not exist "%NSIS_PATH%" goto nsis_missing
 
+REM A concurrent build_win*.bat run (another session, or compile-only) cleans
+REM dist\ in its Step 1 and can delete the binaries this run just produced.
+REM Fail here with an actionable message instead of letting NSIS report a
+REM cryptic "no files found" for whichever file it happens to read first.
+if not exist "%OUTPUT_DIR%\%APP_NAME%_amd64.exe" goto :missing_build_outputs
+if not exist "%OUTPUT_DIR%\%APP_NAME%_arm64.exe" goto :missing_build_outputs
+
 "%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\write_installer_params.ps1" -Root "%~dp0."
 if errorlevel 1 goto :error
 "%NSIS_PATH%" "%~dp0build\windows\installer\multiarch.nsi"
@@ -478,6 +485,12 @@ goto :go_build_datasrv_retry
 
 :nsis_missing
 echo [ERROR] NSIS not found at "%NSIS_PATH%". Please install NSIS.
+goto :error
+
+:missing_build_outputs
+echo [ERROR] Compiled GUI binaries disappeared before packaging.
+echo [ERROR] Another build_win*.bat run (e.g. compile-only) cleaned dist\ concurrently.
+echo [ERROR] Wait for that run to finish, then rerun this script.
 goto :error
 
 :release_build_lock

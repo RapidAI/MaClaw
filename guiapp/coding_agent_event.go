@@ -226,23 +226,135 @@ func wrapCodingAgentReasoningToken(onToken func(string)) func(string) {
 	if onToken == nil {
 		return nil
 	}
+	var fence codingThoughtFenceStream
 	return func(delta string) {
 		if delta == "" {
 			return
 		}
-		if strings.HasPrefix(delta, "\x01") {
+		body := delta
+		prefixed := strings.HasPrefix(body, "\x01")
+		if prefixed {
+			body = strings.TrimPrefix(body, "\x01")
+		}
+		if body == "" {
+			return
+		}
+		// A finished rule inside an open fence is code, not a step banner.
+		// Replace any other finished banner with one newline so the next chunk
+		// does not glue onto the previous line.
+		if !fence.inside() && codingThoughtSeparatorDelta(body) {
+			fence.feed("\n")
+			onToken("\x01\n")
+			return
+		}
+		if !prefixed {
+			if strings.HasPrefix(body, "Browser:") || strings.HasPrefix(body, "Browser：") {
+				body = strings.TrimPrefix(strings.TrimPrefix(body, "Browser:"), "Browser：")
+				body = strings.TrimLeft(body, " ")
+				if body == "" {
+					return
+				}
+			}
+		}
+		fence.feed(body)
+		if prefixed {
 			onToken(delta)
 			return
 		}
-		if strings.HasPrefix(delta, "Browser:") || strings.HasPrefix(delta, "Browser：") {
-			delta = strings.TrimPrefix(strings.TrimPrefix(delta, "Browser:"), "Browser：")
-			delta = strings.TrimLeft(delta, " ")
-			if delta == "" {
-				return
-			}
-		}
-		onToken("\x01" + delta)
+		onToken("\x01" + body)
 	}
+}
+
+// codingThoughtFenceStream remembers an unclosed ``` or ~~~ across deltas.
+type codingThoughtFenceStream struct {
+	open    bool
+	pending string
+}
+
+func (s *codingThoughtFenceStream) inside() bool {
+	if s.open {
+		return true
+	}
+	return codingThoughtFenceLine(strings.TrimSpace(s.pending))
+}
+
+func (s *codingThoughtFenceStream) feed(delta string) {
+	delta = strings.ReplaceAll(delta, "\r\n", "\n")
+	for {
+		nl := strings.IndexByte(delta, '\n')
+		if nl < 0 {
+			s.pending += delta
+			return
+		}
+		line := s.pending + delta[:nl]
+		s.pending = ""
+		if codingThoughtFenceLine(strings.TrimSpace(line)) {
+			s.open = !s.open
+		}
+		delta = delta[nl+1:]
+	}
+}
+
+func codingThoughtFenceLine(line string) bool {
+	return strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~")
+}
+
+// codingThoughtSeparatorDelta is a finished step banner or markdown rule with
+// no prose. The chunk must end on a newline: a bare "-" can still grow into
+// "-3" or "- item". TaskRunner sends "\n\n---\n### T3: title\n\n". A newline
+// on its own is a paragraph break and is not a banner.
+func codingThoughtSeparatorDelta(delta string) bool {
+	if strings.HasPrefix(delta, "\x01") {
+		delta = strings.TrimPrefix(delta, "\x01")
+	}
+	delta = strings.ReplaceAll(delta, "\r\n", "\n")
+	if delta == "" || (!strings.HasSuffix(delta, "\n") && !strings.HasSuffix(delta, "\r")) {
+		return false
+	}
+	sawChrome := false
+	for _, line := range strings.Split(delta, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		switch line {
+		case "-", "--", "---", "*", "**", "***", "_", "__", "___", "•", "·":
+			sawChrome = true
+			continue
+		}
+		if codingStepHeadingLine(line) {
+			sawChrome = true
+			continue
+		}
+		return false
+	}
+	return sawChrome
+}
+
+func codingStepHeadingLine(line string) bool {
+	if !strings.HasPrefix(line, "###") {
+		return false
+	}
+	rest := strings.TrimLeft(line[len("###"):], " \t")
+	if !strings.HasPrefix(rest, "T") {
+		return false
+	}
+	rest = rest[1:]
+	if rest == "" || rest[0] < '0' || rest[0] > '9' {
+		return false
+	}
+	i := 0
+	for i < len(rest) && rest[i] >= '0' && rest[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return false
+	}
+	tail := rest[i:]
+	if tail == "" {
+		return true
+	}
+	return strings.HasPrefix(tail, ":") || strings.HasPrefix(tail, "：") || strings.HasPrefix(tail, " ") || strings.HasPrefix(tail, "\t")
 }
 
 func emitCodingAgentEvent(onProgress func(string), event CodingAgentEvent) {

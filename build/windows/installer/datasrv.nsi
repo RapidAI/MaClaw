@@ -127,7 +127,7 @@ Section
         DetailPrint "Detected AMD64 Architecture"
         File "/oname=${PRODUCT_EXECUTABLE}" "${ARG_DATASRV_AMD64_BINARY}"
     ${Else}
-        MessageBox MB_OK|MB_ICONSTOP "Unsupported architecture."
+        MessageBox MB_OK|MB_ICONSTOP "Unsupported architecture." /SD IDOK
         Abort
     ${EndIf}
 
@@ -146,7 +146,7 @@ Section
     Sleep 1000
     ExecWait 'sc.exe create "${SERVICE_NAME}" binPath= "$INSTDIR\${PRODUCT_EXECUTABLE}" start= auto DisplayName= "${INFO_PRODUCTNAME}"' $R1
     ${If} $R1 != 0
-        MessageBox MB_OK|MB_ICONSTOP "Failed to create ${SERVICE_NAME} Windows service. sc.exe exited with code $R1."
+        MessageBox MB_OK|MB_ICONSTOP "Failed to create ${SERVICE_NAME} Windows service. sc.exe exited with code $R1." /SD IDOK
         Abort
     ${EndIf}
     ExecWait 'sc.exe description "${SERVICE_NAME}" "MaClawDataSrv structured data HTTP service"'
@@ -154,7 +154,7 @@ Section
     ${If} $R1 != 0
         ExecWait 'sc.exe stop "${SERVICE_NAME}"'
         ExecWait 'sc.exe delete "${SERVICE_NAME}"'
-        MessageBox MB_OK|MB_ICONSTOP "Installed ${SERVICE_NAME}, but failed to start it. sc.exe exited with code $R1."
+        MessageBox MB_OK|MB_ICONSTOP "Installed ${SERVICE_NAME}, but failed to start it. sc.exe exited with code $R1." /SD IDOK
         Abort
     ${EndIf}
 

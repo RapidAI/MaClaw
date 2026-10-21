@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"io"
 	"net/http"
@@ -158,7 +159,12 @@ func PostBotDesktopMaterialHandler(svc *botmgmt.Service, identity botAuthenticat
 		})
 		if err != nil {
 			if up != nil && errors.Is(err, botmgmt.ErrInvalidInput) {
-				writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "received": up.Received, "upload_id": up.UploadID})
+				writeErrorWithFields(w, http.StatusConflict, "MATERIAL_OFFSET", fmt.Sprintf("expected offset %d", up.Received), map[string]any{
+					"received":  up.Received,
+					"upload_id": up.UploadID,
+					"name":      up.Name,
+					"total":     up.Total,
+				})
 				return
 			}
 			writeBotUserError(w, r, principal, err, "")

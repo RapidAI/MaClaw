@@ -940,6 +940,17 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 	result.CommandsRun = append([]CodingSubAgentCommandResult(nil), commandsRun...)
 	result.RecalledExperienceIDs = c.snapshotRecalledExperienceIDs()
 
+	// A goal turn that spends the iteration budget still has its step open.
+	// Hand that turn back as a normal continuation instead of a failed task.
+	// The next fire stays on the same step.
+	if c != nil && codingLoopIterationExhausted(result.Error) &&
+		(goalContinuationPhase(c.task) != "" || goalContinuationPhase(c.taskContext) != "") {
+		result.Status = "success"
+		result.Error = ""
+		result.QualityStatus = codingSubAgentQualityNotNeeded
+		result.QualitySummary = "goal continuation: iteration budget handed to the next turn"
+	}
+
 	// Programming settings leave the quality gate off unless the user opts in.
 	// Skip the audit for every status: a successful turn keeps its own summary,
 	// and a real loop failure is not rewritten into a quality-audit failure.
@@ -1207,7 +1218,7 @@ func remoteCodingCanRecoverVerifiedCompletion(
 }
 
 func remoteCodingMaxIterationsReached(errText string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(errText)), "max iterations reached")
+	return codingLoopIterationExhausted(errText)
 }
 
 func remoteCodingPostEditEvidenceIsConclusive(confirmationStatus, verificationStatus, diffStatus codingSubAgentQualityStatus) bool {
@@ -4197,6 +4208,9 @@ func (c *remoteCodingCallbacks) guardRemoteShellCommand(command, workDir string)
 	// turn modified nothing purely from the request kind, so approving a
 	// command past this guardrail would make the report claim something untrue.
 	if c != nil && c.agent != nil && c.agent.readOnlyInquiry {
+		// The remote shell is bash. Single quotes hide & and |, so this check
+		// stays on the original text. The local Windows guard rewrites a
+		// command only when that host will run it with cmd.exe.
 		if msg := rejectCodingInquiryShellCommand(command); msg != "" {
 			return msg, true
 		}

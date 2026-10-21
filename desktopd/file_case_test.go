@@ -122,6 +122,16 @@ func TestDesktopBotFileCases(t *testing.T) {
 		out := runSupervisorPython(t, `
 dest = (tmp / "desk" / "sub" / "a.c").as_posix()
 sup.file_write(dest, b"int main(){}\n")
+class Chunks:
+    def __init__(self):
+        self.left = [b"ab", b"c"]
+    def read(self, n):
+        if not self.left:
+            return b""
+        return self.left.pop(0)
+stream = (tmp / "desk" / "stream.bin").as_posix()
+sup.file_write(stream, Chunks())
+print("stream " + open(stream, "rb").read().decode())
 print("home " + sup.container_path("~/Desktop/a.c"))
 print("rel " + sup.container_path("notes.txt"))
 print("root " + sup.container_path("/root/Desktop/a.c"))
@@ -153,6 +163,7 @@ print("registry " + ("1" if (sup.ROOT / "registry.json").exists() else "0"))
 			"short 2",
 			"cut int ",
 			"body int main(){}\n",
+			"stream abc",
 			"b64 " + base64.StdEncoding.EncodeToString([]byte("int main(){}\n")),
 			"parent 1",
 			"registry 0",

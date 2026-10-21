@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
@@ -355,9 +356,23 @@ func commandFailure(output string, exitCode int) string {
 	return desktop.CapTail(text, 4000)
 }
 
+// materialPublishTimeout is how long mv and chown may take after the bytes
+// are in the partial. Those calls ignore the caller's cancel: skipping them
+// leaves the finished file owned by root. A stuck docker exec still has to
+// return the per-user lock.
+const materialPublishTimeout = 60 * time.Second
+
 // UploadFile streams one material file of size bytes into the user's desktop
 // container through the supervisor's file write, which creates the folder.
 // Unlike WriteFile it is binary and bounded by desktop.UploadMax.
+//
+// The running image's file write truncates the path it is given before the
+// body arrives, and it has no rename operation. A fifth supervisor argument
+// is rejected by that image, so this writes a sibling .partial and then
+// mv's it onto filePath. A short body deletes the partial and leaves the
+// previous file in place. mv, rm, and chown stay inside the write's withUser
+// callback: that lock is not re-entrant. Once the byte count matches, mv and
+// chown finish even if the caller has canceled.
 func (s *Service) UploadFile(ctx context.Context, tenantID, userID, filePath string, body io.Reader, size int64) (string, error) {
 	filePath, err := desktop.ContainerPath(filePath)
 	if err != nil {
@@ -365,6 +380,10 @@ func (s *Service) UploadFile(ctx context.Context, tenantID, userID, filePath str
 	}
 	if !strings.HasPrefix(filePath, desktop.MaterialsRoot+"/") {
 		return "", fmt.Errorf("%w: uploads go under %s", ErrInvalid, desktop.MaterialsRoot)
+	}
+	partial, err := desktop.ContainerPath(filePath + ".partial")
+	if err != nil || !strings.HasPrefix(partial, desktop.MaterialsRoot+"/") {
+		return "", fmt.Errorf("%w: path is too long", ErrInvalid)
 	}
 	if size < 0 || size > desktop.UploadMax {
 		return "", fmt.Errorf("%w: file is too large", ErrInvalid)
@@ -374,45 +393,93 @@ func (s *Service) UploadFile(ctx context.Context, tenantID, userID, filePath str
 		return "", err
 	}
 	counted := &countingReader{r: io.LimitReader(body, desktop.UploadMax+1)}
-	var exitCode int
-	var output string
+	container := containerName(spec.TenantID, spec.UserID)
 	err = s.withUser(spec.TenantID, spec.UserID, func() error {
+		// A failed write still creates ~/素材 as root. Give those folders
+		// back even when the file itself is discarded.
+		abandon := func(cause error) error {
+			s.removeMaterialPartial(ctx, spec, container, partial)
+			s.chownMaterialDirs(ctx, spec, container, filePath)
+			return cause
+		}
 		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{
 			Kind:  ExecFile,
-			Args:  fileServiceArgs(containerName(spec.TenantID, spec.UserID), "write", filePath, 0),
+			Args:  fileServiceArgs(container, "write", partial, 0),
 			Stdin: counted,
 		})
-		output, exitCode = result.Out, result.Exit
-		return runErr
+		if runErr != nil {
+			return abandon(runErr)
+		}
+		if result.Exit != 0 {
+			return abandon(fmt.Errorf("%w: %s", ErrDocker, commandFailure(result.Out, result.Exit)))
+		}
+		if counted.n != size {
+			return abandon(fmt.Errorf("%w: upload was cut short (%d of %d bytes)", ErrInvalid, counted.n, size))
+		}
+		// The bytes are durable in the partial. Publish them even when the
+		// HTTP client has already gone: a canceled mv or chown releases this
+		// lock while the file is still root-owned.
+		parent := ctx
+		if parent == nil {
+			parent = context.Background()
+		}
+		publishCtx, publishCancel := context.WithTimeout(context.WithoutCancel(parent), materialPublishTimeout)
+		defer publishCancel()
+		moved, moveErr := s.runtime().Exec(publishCtx, spec, ExecRequest{
+			Kind: ExecFile,
+			Args: []string{"exec", container, "mv", "-f", "--", partial, filePath},
+		})
+		if moveErr != nil {
+			return abandon(moveErr)
+		}
+		if moved.Exit != 0 {
+			return abandon(fmt.Errorf("%w: %s", ErrDocker, commandFailure(moved.Out, moved.Exit)))
+		}
+		// docker exec runs as root. Hand ~/素材, the bot folder, and the
+		// finished file to the desktop user before this lock is released,
+		// so another operation cannot observe a root-owned file.
+		owned, ownErr := s.runtime().Exec(publishCtx, spec, ExecRequest{
+			Kind: ExecFile,
+			Args: materialChownArgs(container, filePath, true),
+		})
+		if ownErr != nil {
+			return ownErr
+		}
+		if owned.Exit != 0 {
+			return fmt.Errorf("%w: %s", ErrDocker, commandFailure(owned.Out, owned.Exit))
+		}
+		return nil
 	})
 	if err != nil {
 		return "", err
 	}
 	s.noteComputerActivity(spec.TenantID, spec.UserID)
-	if exitCode != 0 {
-		return "", fmt.Errorf("%w: %s", ErrDocker, commandFailure(output, exitCode))
-	}
-	if counted.n != size {
-		return "", fmt.Errorf("%w: upload was cut short (%d of %d bytes)", ErrInvalid, counted.n, size)
-	}
-	// docker exec runs as root, so the write leaves root-owned folders and
-	// files the desktop user (and its bots) cannot rename, replace or delete.
-	// Hand ~/素材, every folder down to the file, and the file to that user.
-	err = s.withUser(spec.TenantID, spec.UserID, func() error {
-		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{
-			Kind: ExecFile,
-			Args: materialChownArgs(containerName(spec.TenantID, spec.UserID), filePath),
-		})
-		output, exitCode = result.Out, result.Exit
-		return runErr
-	})
-	if err != nil {
-		return "", err
-	}
-	if exitCode != 0 {
-		return "", fmt.Errorf("%w: %s", ErrDocker, commandFailure(output, exitCode))
-	}
 	return fmt.Sprintf("Wrote %s (%d bytes).", filePath, counted.n), nil
+}
+
+// removeMaterialPartial deletes a short or failed upload. It does not take
+// withUser: the caller already holds that lock.
+func (s *Service) removeMaterialPartial(ctx context.Context, spec Spec, container, partial string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_, _ = s.runtime().Exec(context.WithoutCancel(ctx), spec, ExecRequest{
+		Kind: ExecFile,
+		Args: []string{"exec", container, "rm", "-f", "--", partial},
+	})
+}
+
+// chownMaterialDirs gives the folders a failed write created back to the
+// desktop user. The finished file is not included: it was not replaced.
+// Missing folders are ignored. It does not take withUser.
+func (s *Service) chownMaterialDirs(ctx context.Context, spec Spec, container, filePath string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_, _ = s.runtime().Exec(context.WithoutCancel(ctx), spec, ExecRequest{
+		Kind: ExecFile,
+		Args: materialChownArgs(container, filePath, false),
+	})
 }
 
 type countingReader struct {
@@ -429,18 +496,22 @@ func (c *countingReader) Read(p []byte) (int, error) {
 // MaterialOwner is the desktop user (uid 1000) that owns uploaded materials.
 const MaterialOwner = "desktop:desktop"
 
-// materialChownArgs gives desktop.MaterialsRoot, each folder below it on the
-// way to filePath, and filePath itself to MaterialOwner. Nothing above
+// materialChownArgs gives desktop.MaterialsRoot and each folder below it to
+// MaterialOwner. includeFile also names filePath. Nothing above
 // MaterialsRoot is touched.
-func materialChownArgs(container, filePath string) []string {
+func materialChownArgs(container, filePath string, includeFile bool) []string {
 	paths := []string{desktop.MaterialsRoot}
 	rest := strings.TrimPrefix(filePath, desktop.MaterialsRoot+"/")
 	cur := desktop.MaterialsRoot
-	for _, part := range strings.Split(rest, "/") {
+	parts := strings.Split(rest, "/")
+	for i, part := range parts {
 		if part == "" {
 			continue
 		}
 		cur += "/" + part
+		if !includeFile && i == len(parts)-1 {
+			continue
+		}
 		paths = append(paths, cur)
 	}
 	return append([]string{"exec", container, "chown", MaterialOwner, "--"}, paths...)

@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -1011,7 +1012,32 @@ func TestCodingInquiryShellCommandsRejectWritesAndAllowInspection(t *testing.T) 
 	for _, command := range []string{
 		"git status --short && git diff --stat",
 		"rg -n 'authentication' . | sort",
+		"rg --pretty TODO .",
+		"rg --pre-glob '*.md' TODO .",
 		"find . -maxdepth 2 -type f",
+		"sort -r list.txt",
+		"sort /R list.txt",
+		"sort /opt/list.txt",
+		"sort --check list.txt",
+		"sort -Property Name",
+		"sort -r --output-delimiter=, list.txt",
+		"ack --nopager TODO",
+		"ack --passthru TODO",
+		"git --no-pager log -1",
+		"time git status",
+		"timeout 5 git status",
+		"git.exe status --short",
+		"tree -L 2",
+		"tree /F",
+		"tree D:\\repo",
+		"hostname",
+		"hostname --fqdn",
+		"hostname -d",
+		"hostname -s",
+		"hostname --short",
+		"hostname -i",
+		"hostname -I",
+		"hostname --ip-address",
 		"codegraph explore authentication",
 		"codegraph.cmd node AuthenticationService",
 	} {
@@ -1026,12 +1052,152 @@ func TestCodingInquiryShellCommandsRejectWritesAndAllowInspection(t *testing.T) 
 		"git config user.name test",
 		"sed 'w generated.txt' README.md",
 		"find . -exec touch changed \\;",
+		"find . -delete",
+		"find . -fprint0 files.list",
+		"find . -fprint listing.txt",
+		"find . -fls listing.txt",
+		"find . -fprintf listing.txt %f",
+		"sort -o out.txt list.txt",
+		"sort -ro out.txt list.txt",
+		"sort -ofile list.txt",
+		"sort --output=out.txt list.txt",
+		"sort --output out.txt list.txt",
+		"sort --compress-program=touch list.txt",
+		"sort --compress-program touch list.txt",
+		"sort --compress=touch list.txt",
+		"sort /O out.txt list.txt",
+		"sort /OUTPUT out.txt list.txt",
+		"sort /Oout.txt list.txt",
+		"sort.exe /o out.txt list.txt",
+		"rg --pre cat TODO .",
+		"rg --pre=cat TODO .",
+		"ack --pager=less TODO",
+		"ack --pag=less TODO",
+		"ag --pager less TODO",
+		"ag --pag less TODO",
+		"GIT_PAGER=touch git status",
+		"GIT_EXTERNAL_DIFF=touch git diff",
+		"PATH=/tmp git status",
+		"env GIT_PAGER=touch git log",
+		"/usr/bin/env git status",
+		"cross-env CI=1 git status",
+		"time GIT_EXTERNAL_DIFF=id git diff",
+		"timeout 5 GIT_PAGER=id git --paginate log",
+		"LC_ALL=C git status",
+		"/tmp/git status",
+		"./git status",
+		".\\git.exe status",
+		"C:\\temp\\git.exe status",
+		"/tmp/time git status",
+		"time /tmp/git status",
+		"/tmp/timeout 5 git status",
+		"timeout 5 /tmp/git status",
+		"../sort list.txt",
+		"tree -o out.txt",
+		"tree -oout.txt",
+		"tree --output=out.txt",
+		"hostname pwned",
+		"hostname -F /etc/hostname",
+		"hostname --file /etc/hostname",
+		"hostname -b",
+		"hostname --boot",
+		"hostname -f",
 		"ls $(touch changed)",
 		"cat <(touch changed)",
 		"rg todo > findings.txt",
 	} {
 		if msg := rejectCodingInquiryShellCommand(command); msg == "" {
 			t.Fatalf("read-only inquiry command should be rejected: %q", command)
+		}
+	}
+}
+
+func TestCodingInquiryShellAllowsWindowsPowerShellInspection(t *testing.T) {
+	// The bash tool on Windows is powershell.exe. These are the read-only
+	// commands an inquiry actually emits; the Unix allow-list used to reject
+	// them before the process started.
+	for _, command := range []string{
+		`git -C E:\workprj\mousika\ocr\QmUniOCRLite status --short --branch | Select-Object -First 20`,
+		`Get-Command rg, codegraph, git, cmake, cl -ErrorAction SilentlyContinue | Format-Table Name, Version, Source -AutoSize`,
+		`Get-ChildItem -Name`,
+		`Get-ChildItem -Force | Select-Object Mode, Length, Name`,
+		`Get-Content README.md | Select-Object -First 40`,
+		`Select-String -Path README.md -Pattern authentication`,
+		`Select-String -Path README.md -Pattern '{'`,
+		`Select-String -Path README.md -Pattern '$_'`,
+		`Get-ChildItem -Filter '*.{cs,go}' -Name`,
+		`findstr /s /n authentication *.md`,
+		`Where-Object Name -eq README.md`,
+		`? Name -eq README.md`,
+		`git -C repo status --short`,
+		`git -C "E:\Program Files\repo" status --short`,
+		`git -C repo diff -C --stat`,
+		`git -Crepo log -1 --oneline`,
+	} {
+		if msg := rejectCodingInquiryShellCommand(command); msg != "" {
+			t.Fatalf("windows read-only inquiry command should pass: %q: %s", command, msg)
+		}
+	}
+	for _, command := range []string{
+		`Remove-Item src\a.go`,
+		`Get-ChildItem | Remove-Item`,
+		`Get-ChildItem | ForEach-Object { Remove-Item $_ }`,
+		`Where-Object { $_.Name -eq 'secret' }`,
+		`Where-Object { Remove-Item x }`,
+		`? { Remove-Item x }`,
+		`Select-Object @{Name='n';Expression={$_.Length}}`,
+		`sort { Remove-Item x }`,
+		`ls | sort { Remove-Item $_ }`,
+		`Get-ChildItem | Sort-Object { $_.Name }`,
+		`Select-String -Pattern "$_" README.md`,
+		`Set-Content out.txt data`,
+		`New-Item out.txt`,
+		`Invoke-Expression whoami`,
+		`Get-ChildItem > listing.txt`,
+		`git -C repo -c core.pager=whoami status`,
+		`git -c core.pager=whoami -C repo status`,
+		`git -C repo branch -D stale`,
+		`git -C=repo status`,
+	} {
+		if msg := rejectCodingInquiryShellCommand(command); msg == "" {
+			t.Fatalf("windows inquiry command should stay rejected: %q", command)
+		}
+	}
+}
+
+func TestCodingInquiryShellTreatsNewlineAsStatementSeparator(t *testing.T) {
+	for _, command := range []string{
+		"git status --short\ngit diff --stat",
+		"Get-ChildItem -Name\nGet-Content README.md -TotalCount 5",
+		"Get-ChildItem -Name\r\nSelect-Object -First 5",
+		"Get-ChildItem C:\\repo\\\nGet-Location",
+		"Get-ChildItem -Name\n# note\nGet-Location",
+		"Select-String -Pattern \"line1\nline2\" README.md",
+	} {
+		if msg := rejectCodingInquiryShellCommand(command); msg != "" {
+			t.Fatalf("read-only multiline inquiry command should pass: %q: %s", command, msg)
+		}
+	}
+	for _, command := range []string{
+		"Get-ChildItem -Name\nRemove-Item secret.txt",
+		"ls\nrm -rf /",
+		"git status\ngit reset --hard",
+		"Get-ChildItem -Name\r\nSet-Content out.txt data",
+		"Get-ChildItem C:\\repo\\\nRemove-Item x",
+		"git status\n# keep\nRemove-Item x",
+		"Select-String -Pattern \"$( \" README.md",
+		"ls $(touch changed)",
+	} {
+		if msg := rejectCodingInquiryShellCommand(command); msg == "" {
+			t.Fatalf("newline-separated mutation should be rejected: %q", command)
+		}
+	}
+	for _, command := range []string{
+		"Select-String -Pattern '$(' README.md",
+		"Get-ChildItem -Filter '$(literal)'",
+	} {
+		if msg := rejectCodingInquiryShellCommand(command); msg != "" {
+			t.Fatalf("single-quoted expansion text should stay literal: %q: %s", command, msg)
 		}
 	}
 }
@@ -1284,6 +1450,142 @@ func TestGuardCodingShellCommandOrdersHardBlocksBeforeApproval(t *testing.T) {
 	}
 }
 
+func TestCodingCmdPercentExpansion(t *testing.T) {
+	hits := []string{
+		`%EVIL%`,
+		`%CD%`,
+		`%H%n%s`,
+		`"%EVIL%"`,
+		`%ProgramFiles(x86)%`,
+		`%VAR:~1,2%`,
+		`%CMDCMDLINE:*&=echo PWNED%`,
+		`%%CD%%`,
+		`%EVIL:~0, 80%`,
+		"%EVIL:~0,\t80%",
+		`%CD:~0, 1%`,
+		`"%EVIL:~0, 80%"`,
+	}
+	for _, command := range hits {
+		if !codingCmdPercentExpansion(command) {
+			t.Fatalf("expected a cmd percent expansion in %q", command)
+		}
+	}
+	misses := []string{
+		``,
+		`%`,
+		`%%`,
+		`%H`,
+		`"%H %s"`,
+		`FORMAT_%H_END`,
+		`SPACE_%H %s_END`,
+		`--sort=-%mem`,
+		`100%`,
+		`%CD :~0,1%`,
+		`%CD:~0,1`,
+		`DELAY_!EVIL!_END`,
+	}
+	for _, command := range misses {
+		if codingCmdPercentExpansion(command) {
+			t.Fatalf("expected no cmd percent expansion in %q", command)
+		}
+	}
+}
+
+func TestCodingCmdHostExposesSingleQuotedCommands(t *testing.T) {
+	prompts := 0
+	newGuard := func(kind codingRequestKind, decide ScopeApprovalDecision) *codingSubAgentCallbacks {
+		prompts = 0
+		return &codingSubAgentCallbacks{
+			task: &TaskItem{RequestKind: kind},
+			subagent: &CodingSubAgent{scopeApproval: newScopeApprovalState(func(ScopeApprovalRequest) ScopeApprovalDecision {
+				prompts++
+				return decide
+			}, false)},
+		}
+	}
+
+	// cmd.exe runs unquoted || and any line that mentions vcvars. Single
+	// quotes do not hide & or | from that parser. PowerShell lines, double
+	// quotes, and the unix-inspect rewrite stay available.
+	inquiry := newGuard(codingRequestInquiry, ScopeApprovalAllowOnce)
+	rejected := []string{
+		`git rev-parse --verify missing || git status 'x & Remove-Item y'`,
+		`findstr a nul || findstr b 'x | Remove-Item y'`,
+		`git grep 'x & Remove-Item y' vcvars64.bat`,
+		`findstr a nul || findstr %EVIL% nul`,
+		`findstr a nul || findstr "%EVIL%" nul`,
+		`findstr a nul || findstr '%EVIL%' nul`,
+		`git rev-parse --verify no || git log --format=%H%n%s`,
+		`git grep vcvars64.bat %CD%`,
+		`findstr a nul || findstr %EVIL:~0, 80% nul`,
+	}
+	for _, command := range rejected {
+		prompts = 0
+		if msg := inquiry.guardCodingShellCommand(command, `D:\repo`); msg == "" {
+			t.Fatalf("inquiry must reject %q", command)
+		}
+		if prompts != 0 {
+			t.Fatalf("inquiry must not offer approval for %q, prompts = %d", command, prompts)
+		}
+	}
+	allowed := []string{
+		`git status --short || git diff --stat`,
+		`git status --short || git grep "foo & bar"`,
+		`git status --short || git diff "it's & fine"`,
+		`git diff 'std::vector'`,
+		`dir || dir 'x & name'`,
+		`git grep vcvars64.bat`,
+		`git log --format=%H%n%s`,
+		`git log --format=%H || git status --short`,
+		`git log --pretty=format:"%H %s" || git status --short`,
+		`ps aux --sort=-%mem`,
+	}
+	for _, command := range allowed {
+		if msg := inquiry.guardCodingShellCommand(command, `D:\repo`); msg != "" {
+			t.Fatalf("inquiry must allow %q: %s", command, msg)
+		}
+	}
+
+	operational := newGuard(codingRequestOperational, ScopeApprovalDeny)
+	if msg := operational.guardCodingShellCommand(`git status --short || git diff 'x & del y'`, `D:\repo`); msg == "" {
+		t.Fatal("operational mode must see del hidden in a cmd.exe single-quoted &")
+	}
+	if prompts != 1 {
+		t.Fatalf("operational prompts = %d, want one approval", prompts)
+	}
+
+	implementation := newGuard(codingRequestImplementation, ScopeApprovalDeny)
+	if msg := implementation.guardCodingShellCommand(`git status --short || echo x 'y & del /s z'`, `D:\repo`); msg == "" {
+		t.Fatal("a recursive delete hidden from PowerShell quotes must stay high-risk")
+	}
+	if prompts != 1 {
+		t.Fatalf("implementation prompts = %d, want one high-risk approval", prompts)
+	}
+
+	operationalAllow := newGuard(codingRequestOperational, ScopeApprovalDeny)
+	if msg := operationalAllow.guardCodingShellCommand(`git status --short || git diff %CD%`, `D:\repo`); msg != "" {
+		t.Fatalf("operational mode keeps cmd percent variables: %s", msg)
+	}
+	if prompts != 0 {
+		t.Fatalf("operational percent prompts = %d, want none", prompts)
+	}
+
+	for _, command := range []string{
+		`git status --short || git diff --stat`,
+		`dir || dir 'x & name'`,
+		`git status --short`,
+		`findstr a nul || findstr b x`,
+		`git grep vcvars64.bat`,
+	} {
+		prog, _ := windowsCodingBashInvocation(command)
+		_, usesCmd := windowsCodingCmdLine(command)
+		gotCmd := strings.EqualFold(filepath.Base(prog), "cmd.exe")
+		if usesCmd != gotCmd {
+			t.Fatalf("cmd decision drifted for %q: line=%v invocation=%v (%s)", command, usesCmd, gotCmd, prog)
+		}
+	}
+}
+
 func TestGuardRemoteShellCommandMirrorsTheLocalGuardOrdering(t *testing.T) {
 	prompts := 0
 	newGuard := func(inquiry, operational bool, decide ScopeApprovalDecision) *remoteCodingCallbacks {
@@ -1311,6 +1613,14 @@ func TestGuardRemoteShellCommandMirrorsTheLocalGuardOrdering(t *testing.T) {
 	}
 	if msg, _ = guard.guardRemoteShellCommand("git status --short", "/srv/repo"); msg != "" {
 		t.Fatalf("a read-only inspection should pass an inquiry: %s", msg)
+	}
+	// Remote bash honors single quotes. The same text is a second command
+	// only when the local Windows host runs it with cmd.exe.
+	if msg, _ = guard.guardRemoteShellCommand(`git status --short || git grep 'foo & bar'`, "/srv/repo"); msg != "" {
+		t.Fatalf("remote bash should keep a single-quoted &: %s", msg)
+	}
+	if msg, _ = guard.guardRemoteShellCommand(`git log --format=%H%n%s || git status --short`, "/srv/repo"); msg != "" {
+		t.Fatalf("remote bash should keep a percent format: %s", msg)
 	}
 
 	guard = newGuard(false, true, ScopeApprovalAllowOnce)
@@ -1471,6 +1781,9 @@ func TestCodingGitInspectionSubcommandsStayAvailable(t *testing.T) {
 		"git remote get-url origin",
 		"git remote get-url --push origin",
 		"git branch --show-current",
+		"git -C repo status --short",
+		"git -C repo diff --stat",
+		"git -Crepo log -1 --oneline",
 		"git branch --merged main",
 		"git branch --no-merged main",
 		"git branch --contains HEAD",
@@ -1482,6 +1795,21 @@ func TestCodingGitInspectionSubcommandsStayAvailable(t *testing.T) {
 		"git branch -av",
 		"git branch -avv",
 		"git tag -ln9",
+		// Prefix matching of the unsafe long options must leave these reads.
+		"git diff --exit-code",
+		"git diff --unified=3",
+		"git diff -U3",
+		"git diff --textconv",
+		"git log --oneline -5",
+		"git log --encoding=UTF-8 -1",
+		"git cat-file -p HEAD:README.md",
+		"git cat-file --batch-check",
+		"git cat-file --filter=blob:none HEAD",
+		"git rev-list --filter=blob:none HEAD",
+		// -o and -O fold together, so the read form is the long option.
+		"git grep --only-matching pattern",
+		"git grep --only pattern",
+		"git grep --or pattern",
 	} {
 		if msg := rejectCodingInquiryShellCommand(command); msg != "" {
 			t.Fatalf("read-only git command should pass an inquiry: %q: %s", command, msg)
@@ -1554,6 +1882,18 @@ func TestCodingGitInspectionSubcommandsStayAvailable(t *testing.T) {
 		// helper programs from, and it must not be mistaken for --exec.
 		"git --exec-path=/tmp/evil ls-remote origin",
 		"git --exec-path=/tmp/evil status",
+		"git diff --ext-diff",
+		"git diff --ext-d",
+		"git diff --ext",
+		"git show --ext-diff HEAD",
+		"git diff --out=leak.txt",
+		"git show --out leak.txt HEAD",
+		"git ls-remote --upload=whoami origin",
+		"git cat-file --filters HEAD:README.md",
+		"git cat-file --textconv HEAD:README.md",
+		"git cat-file --text HEAD:README.md",
+		"git grep --open=whoami pattern",
+		"git grep --open whoami pattern",
 	} {
 		if msg := rejectCodingInquiryShellCommand(command); msg == "" {
 			t.Fatalf("git transport execution vector should be rejected by an inquiry: %q", command)
@@ -1573,6 +1913,9 @@ func TestCodingGitInspectionSubcommandsStayAvailable(t *testing.T) {
 		"git -c core.pager=whoami log",
 		"git -c protocol.ext.allow=always ls-remote origin",
 		"git --config-env=core.pager=LEAK log",
+		"git -C repo -c core.pager=whoami status",
+		"git -c core.pager=whoami -C repo log",
+		"git -C repo branch -D stale",
 	} {
 		if msg := rejectCodingInquiryShellCommand(command); msg == "" {
 			t.Fatalf("git config injection should be rejected by an inquiry: %q", command)
@@ -1584,6 +1927,29 @@ func TestCodingGitInspectionSubcommandsStayAvailable(t *testing.T) {
 	// `-c` after the subcommand is git's combined-diff flag, not config.
 	if msg := rejectCodingInquiryShellCommand("git log -c --oneline"); msg != "" {
 		t.Fatalf("combined-diff flag should stay available: %s", msg)
+	}
+	// --no-ext-diff turns the helper off. --no-pager is the read-only way to
+	// skip a pager without assigning GIT_PAGER.
+	for _, command := range []string{
+		"git diff --no-ext-diff",
+		"git --no-pager log -1",
+	} {
+		if msg := rejectCodingInquiryShellCommand(command); msg != "" {
+			t.Fatalf("read-only git flag should stay available: %q: %s", command, msg)
+		}
+		if msg := rejectCodingOperationalShellCommand(command); msg != "" {
+			t.Fatalf("read-only git flag should stay available for a run/build request: %q: %s", command, msg)
+		}
+	}
+	// A run/build may still prefix ordinary environment variables. Inquiry
+	// rejects that prefix because the same slot carries GIT_EXTERNAL_DIFF.
+	if msg := rejectCodingOperationalShellCommand("LC_ALL=C git status"); msg != "" {
+		t.Fatalf("a run/build request may set a locale: %s", msg)
+	}
+	// A run/build may name git by path. An inquiry may not: the same form
+	// with a stand-in binary is how /tmp/git passes a basename check.
+	if msg := rejectCodingOperationalShellCommand("/usr/bin/git status"); msg != "" {
+		t.Fatalf("a run/build request may name git by path: %s", msg)
 	}
 	// An inline shell script must not become a way to run the git commands the
 	// gate just rejected.
@@ -1909,23 +2275,59 @@ func TestEmitCodingAgentUserProgressDropsBoardBanners(t *testing.T) {
 func TestWrapCodingAgentReasoningTokenPrefixesThinking(t *testing.T) {
 	var got []string
 	wrapped := wrapCodingAgentReasoningToken(func(s string) { got = append(got, s) })
-	wrapped("Created hello.cpp.")
-	wrapped("\x01already thinking")
-	wrapped("Browser: leaked")
+	for _, delta := range []string{
+		"\n\n---\n### T3: title\n\n",
+		"-",
+		"---",
+		"\n\n",
+		"###  T3: title",
+		"-\n",
+		"---\n",
+		"###  T3: title\n",
+		"### T3. The kernel is slow.\n",
+		"Created hello.cpp.",
+		"\x01already thinking",
+		"Browser: leaked",
+		"- Let me look at the kernel.",
+		"\n\n---\n### T3: title\n\nLook at the kernel.\n",
+		"```\n",
+		"---\n",
+		"```\n",
+		"---\n",
+		"~~~markdown\n",
+		"### T1: inside\n",
+		"~~~\n",
+	} {
+		wrapped(delta)
+	}
 	if wrapCodingAgentReasoningToken(nil) != nil {
 		t.Fatal("nil callback should stay nil")
 	}
-	if len(got) != 3 {
-		t.Fatalf("unexpected tokens: %#v", got)
+	want := []string{
+		"\x01\n", // finished step banner keeps a break, not the banner
+		"\x01-",  // unfinished sign can still grow into -3
+		"\x01---",
+		"\x01\n\n",
+		"\x01###  T3: title", // unterminated heading can still grow
+		"\x01\n",             // finished rule
+		"\x01\n",
+		"\x01\n", // finished heading
+		"\x01### T3. The kernel is slow.\n",
+		"\x01Created hello.cpp.",
+		"\x01already thinking",
+		"\x01leaked",
+		"\x01- Let me look at the kernel.",
+		"\x01\n\n---\n### T3: title\n\nLook at the kernel.\n",
+		"\x01```\n",
+		"\x01---\n", // rule inside the fence
+		"\x01```\n",
+		"\x01\n", // rule after the fence closed
+		"\x01~~~markdown\n",
+		"\x01### T1: inside\n",
+		"\x01~~~\n",
 	}
-	if got[0] != "\x01Created hello.cpp." {
-		t.Fatalf("live model prose should fold into thinking: %q", got[0])
-	}
-	if got[1] != "\x01already thinking" {
-		t.Fatalf("already-prefixed thinking should pass through: %q", got[1])
-	}
-	if got[2] != "\x01leaked" {
-		t.Fatalf("Browser prefix should be stripped into thinking: %q", got[2])
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("tokens:\n got %#v\nwant %#v", got, want)
 	}
 }
 

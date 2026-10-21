@@ -1,4 +1,4 @@
-Unicode true
+﻿Unicode true
 
 !include /NONFATAL "maclawsrv_build_params.nsh.tmp"
 
@@ -81,10 +81,21 @@ Function .onInit
 
     ReadRegStr $R0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "UninstallString"
     StrCmp $R0 "" notInstalled
-    MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(AlreadyInstalled)" IDYES uninstall
+    # A silent run (fleet install, unattended upgrade) has nobody to answer this
+    # question. Default it to "yes" so the silent install replaces the old build
+    # instead of blocking forever on a dialog nobody can see.
+    MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(AlreadyInstalled)" /SD IDYES IDYES uninstall
     Abort
 
     uninstall:
+    # $R0 already carries the quotes written by the install section. Wrapping
+    # it in another pair produced ""path"" (an empty executable name), so the
+    # uninstaller never actually ran. Strip them, then quote exactly once.
+    StrCpy $R1 $R0 1
+    StrCmp $R1 '$\"' 0 uninstallExec
+        StrCpy $R1 $R0 '' 1
+        StrCpy $R0 $R1 -1
+    uninstallExec:
     ExecWait '"$R0" /S _?=$INSTDIR'
     Delete "$INSTDIR\uninstall.exe"
     RMDir "$INSTDIR"
@@ -103,7 +114,7 @@ Section
         DetailPrint "Detected AMD64 Architecture"
         File "/oname=${PRODUCT_EXECUTABLE}" "${ARG_MACLAWSRV_AMD64_BINARY}"
     ${Else}
-        MessageBox MB_OK|MB_ICONSTOP "Unsupported architecture."
+        MessageBox MB_OK|MB_ICONSTOP "Unsupported architecture." /SD IDOK
         Abort
     ${EndIf}
 

@@ -86,7 +86,7 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	// The continuation's tool contract is the phase. The name router does not
 	// classify this turn. The worker keeps the classification already bound
 	// on the loop; dropping it fail-closes the tools that label named.
-	skipUnifiedClassifier := loopContextHasChatProjection(ctx) || loopContextHasRoutingMissFallback(ctx) || goalContinuationTurn(userText, platform)
+	skipUnifiedClassifier := loopContextHasChatProjection(ctx) || loopContextHasRoutingMissFallback(ctx) || goalContinuationTurn(userText, platform) || sessionRoundTurn(userText, platform)
 	baseTools, routerRankedNames := h.routeSessionToolsWithRanking(userID, userText, allTools, skipUnifiedClassifier, preResolved, ctx, phase)
 	tools := baseTools
 

@@ -19,6 +19,13 @@ func isGoalSystemContinuation(text string) bool {
 	return strings.HasPrefix(strings.TrimSpace(text), "[系统续接]")
 }
 
+// codingLoopIterationExhausted reports the agent loop stopped because its
+// iteration budget was spent. A goal continuation treats that as the end of
+// one turn. The next turn stays on the same step. The goal itself stays open.
+func codingLoopIterationExhausted(errText string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(errText)), "max iterations reached")
+}
+
 // goalContinuationPhase is the host phase encoded in the continuation text.
 // "plan" must not edit files. "execute" does one step and then reports it.
 func goalContinuationPhase(text string) string {
@@ -1175,6 +1182,14 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuationOwned(userID string, res
 	if h.hasCancelledTaskBoundary(userID) {
 		engine.CancelPending(userID)
 		log.Printf("[goal-continuation] skipping: task cancelled by user user=%s", userID)
+		return
+	}
+	// The session task is still running. A second host turn would take the
+	// same session. A session-round failure is not a failed goal step.
+	if resp != nil && resp.sessionRoundContinue {
+		return
+	}
+	if strings.TrimSpace(platform) == sessionRoundContinuationPlatform && resp != nil && strings.TrimSpace(resp.Error) != "" {
 		return
 	}
 	if resp != nil && resp.runWindowPaused {

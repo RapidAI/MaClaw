@@ -422,7 +422,7 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 func desktopBotVerbatimFallback(class, outcome, text, phase string, earlier []string) *DesktopBotUnderstanding {
 	log.Printf("[desktop-bot-understand] verbatim fallback class=%s outcome=%s phase=%s earlier=%d text_len=%d", class, outcome, phase, len(earlier), utf8.RuneCountInString(text))
 	return &DesktopBotUnderstanding{
-		Instruction: clipRunes(text, desktopBotUnderstandOrderMax),
+		Instruction: clipDesktopBotOrder(text, desktopBotUnderstandOrderMax),
 		Pace:        "direct",
 		Fallback:    class,
 	}
@@ -635,7 +635,7 @@ func desktopBotUnderstandUser(text, phase, lang string, earlier []string, person
 			continue
 		}
 		kept++
-		fmt.Fprintf(&b, "%d. %s\n", kept, clipRunes(line, desktopBotUnderstandLineMax))
+		fmt.Fprintf(&b, "%d. %s\n", kept, clipDesktopBotOrder(line, desktopBotUnderstandLineMax))
 	}
 	if kept == 0 {
 		b.WriteString("(none)\n")
@@ -727,7 +727,7 @@ func lastDesktopBotUnderstanding(raw string) (*DesktopBotUnderstanding, bool) {
 			continue
 		}
 		parsed.Told = clipRunes(parsed.Told, desktopBotUnderstandToldMax)
-		parsed.Instruction = clipRunes(parsed.Instruction, desktopBotUnderstandOrderMax)
+		parsed.Instruction = clipDesktopBotOrder(parsed.Instruction, desktopBotUnderstandOrderMax)
 		found = &parsed
 	}
 	if found == nil {
@@ -801,6 +801,62 @@ func clipRunes(s string, max int) string {
 	}
 	runes := []rune(s)
 	return string(runes[:max])
+}
+
+// clipDesktopBotOrder is clipRunes for a work order. A trailing [素材] list
+// is kept whole, and the prose in front of it is what gets shortened. Cutting
+// the list off the end would drop the paths the worker has to open.
+func clipDesktopBotOrder(s string, max int) string {
+	if max <= 0 || utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	suffix := desktopBotMaterialsSuffix(s)
+	if suffix == "" {
+		return clipRunes(s, max)
+	}
+	if utf8.RuneCountInString(suffix) >= max {
+		if kept := clipMaterialLines(suffix, max); desktopBotHasMaterials(kept) && utf8.RuneCountInString(kept) <= max {
+			return kept
+		}
+		return clipRunes(s, max)
+	}
+	prose := strings.TrimRight(strings.TrimSuffix(s, suffix), "\n")
+	head := clipRunes(prose, max-utf8.RuneCountInString(suffix))
+	if strings.TrimSpace(head) == "" {
+		return suffix
+	}
+	return head + suffix
+}
+
+// desktopBotMaterialsSuffix is the trailing [素材] list, including the newline
+// before the marker when the list is not the whole message.
+func desktopBotMaterialsSuffix(message string) string {
+	if !desktopBotHasMaterials(message) {
+		return ""
+	}
+	at := strings.LastIndex(message, "[素材]\n")
+	if at > 0 {
+		at--
+	}
+	return message[at:]
+}
+
+// clipMaterialLines keeps the marker and as many whole path lines as fit.
+// A path cut in the middle is not a path.
+func clipMaterialLines(suffix string, max int) string {
+	body := strings.TrimLeft(suffix, "\n")
+	var b strings.Builder
+	for _, line := range strings.Split(body, "\n") {
+		next := line
+		if b.Len() > 0 {
+			next = "\n" + line
+		}
+		if utf8.RuneCountInString(b.String()+next) > max {
+			break
+		}
+		b.WriteString(next)
+	}
+	return b.String()
 }
 
 // DesktopTaskSupplementEval is the verdict on whether a new user message is

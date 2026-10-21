@@ -693,12 +693,141 @@ export function codingShownLiveLabel(
     return liveLabel;
 }
 
-/** True when the latest coding timeline row is the thought. Undefined with no timeline. */
+const CODING_THOUGHT_SEPARATOR_LINE = /^(?:[-*_]{1,3}|•|·)$/;
+// Same tail rule as Go codingStepHeadingLine. A period or letter after the
+// digits is prose ("### T3. The kernel"), not a step banner.
+const CODING_THOUGHT_STEP_HEADING = /^###[ \t]*T\d+(?:$|[:： \t])/;
+
+function codingThoughtLineIsChrome(line: string): boolean {
+    return CODING_THOUGHT_SEPARATOR_LINE.test(line) || CODING_THOUGHT_STEP_HEADING.test(line);
+}
+
+function codingThoughtFenceLine(line: string): boolean {
+    return line.startsWith("```") || line.startsWith("~~~");
+}
+
+/**
+ * Visit each line once. Stops when onLine returns false.
+ * A hit on the first prose line does not split the rest of a long thought.
+ */
+function walkCodingThoughtLines(
+    text: string,
+    onLine: (raw: string, trimmed: string) => boolean | void,
+): void {
+    const n = text.length;
+    let start = 0;
+    for (let p = 0; p <= n; p++) {
+        const atEnd = p === n;
+        const code = atEnd ? 10 : text.charCodeAt(p);
+        if (!atEnd && code !== 10 && code !== 13) continue;
+        const raw = text.slice(start, p);
+        if (!atEnd && code === 13 && p + 1 < n && text.charCodeAt(p + 1) === 10) p += 1;
+        start = p + 1;
+        if (atEnd && raw === "" && p !== 0) break;
+        if (onLine(raw, raw.trim()) === false) return;
+        if (atEnd) break;
+    }
+}
+
+function classifyCodingThoughtLines(text: string): "empty" | "chrome" | "prose" {
+    let lead = 0;
+    while (lead < text.length && text.charCodeAt(lead) === 1) lead += 1;
+    let sawChrome = false;
+    let sawProse = false;
+    walkCodingThoughtLines(lead === 0 ? text : text.slice(lead), (_raw, trimmed) => {
+        if (!trimmed) return;
+        if (codingThoughtLineIsChrome(trimmed)) {
+            sawChrome = true;
+            return;
+        }
+        sawProse = true;
+        return false;
+    });
+    if (sawProse) return "prose";
+    return sawChrome ? "chrome" : "empty";
+}
+
+/**
+ * A stream delta that is only a finished markdown rule or a `### T<n>` banner.
+ * The chunk must end on a newline. An unterminated "-" or "---" can still grow
+ * into "-3" or "- item", so it is not chrome. Whitespace-only deltas are
+ * paragraph breaks. Absent text is not chrome.
+ */
+export function codingThoughtDeltaIsChrome(text: string | undefined | null): boolean {
+    if (!text) return false;
+    const end = text.charCodeAt(text.length - 1);
+    if (end !== 10 && end !== 13) return false;
+    return classifyCodingThoughtLines(text) === "chrome";
+}
+
+/** True when a later rule line is still inside an unclosed ``` or ~~~ fence. */
+export function codingThoughtHasOpenFence(text: string | undefined | null): boolean {
+    if (!text) return false;
+    let lead = 0;
+    while (lead < text.length && text.charCodeAt(lead) === 1) lead += 1;
+    const body = lead === 0 ? text : text.slice(lead);
+    let fence = false;
+    walkCodingThoughtLines(body, (_raw, trimmed) => {
+        if (codingThoughtFenceLine(trimmed)) fence = !fence;
+    });
+    return fence;
+}
+
+/**
+ * A coding thought with nothing to read: whitespace, a markdown rule (`-`, `---`),
+ * or the runner step banner (`---\\n### T3: title`). Those were opening their own
+ * 思考过程 row. Absent content is not blank — kind-only rows still count.
+ */
+export function codingThoughtTextIsBlank(text: string | undefined | null): boolean {
+    if (text == null) return false;
+    const kind = classifyCodingThoughtLines(text);
+    return kind === "empty" || kind === "chrome";
+}
+
+/** Drop rule and step-banner lines outside fenced code. Prose on the other lines stays. */
+export function stripCodingThoughtChrome(text: string): string {
+    if (!text) return "";
+    let lead = 0;
+    while (lead < text.length && text.charCodeAt(lead) === 1) lead += 1;
+    const body = lead === 0 ? text : text.slice(lead);
+    let fence = false;
+    let changed = false;
+    walkCodingThoughtLines(body, (_raw, trimmed) => {
+        if (codingThoughtFenceLine(trimmed)) {
+            fence = !fence;
+            return;
+        }
+        if (!fence && trimmed && codingThoughtLineIsChrome(trimmed)) {
+            changed = true;
+            return false;
+        }
+    });
+    if (!changed) return body;
+    fence = false;
+    const kept: string[] = [];
+    walkCodingThoughtLines(body, (raw, trimmed) => {
+        if (codingThoughtFenceLine(trimmed)) {
+            fence = !fence;
+            kept.push(raw);
+            return;
+        }
+        if (!fence && trimmed && codingThoughtLineIsChrome(trimmed)) return;
+        kept.push(raw);
+    });
+    return kept.join("\n").replace(/^\n+|\n+$/g, "");
+}
+
+/** True when the latest visible coding timeline row is a thought. Undefined with no timeline. */
 export function codingTimelineThoughtIsCurrent(
-    timeline: Array<{ kind?: string }> | undefined,
+    timeline: Array<{ kind?: string; content?: string }> | undefined,
 ): boolean | undefined {
     if (!timeline?.length) return undefined;
-    return timeline[timeline.length - 1]?.kind === "thinking";
+    for (let index = timeline.length - 1; index >= 0; index--) {
+        const item = timeline[index];
+        if (item?.kind === "thinking" && codingThoughtTextIsBlank(item.content)) continue;
+        return item?.kind === "thinking";
+    }
+    return false;
 }
 
 /**
@@ -714,7 +843,7 @@ export function codingTimelineLiveThoughtIndex(
 ): number {
     if (!ownsLive || !timeline?.length) return -1;
     const last = timeline.length - 1;
-    if (timeline[last]?.kind === "thinking") return last;
+    if (timeline[last]?.kind === "thinking" && !codingThoughtTextIsBlank(timeline[last]?.content)) return last;
     // "正在调用工具" has no trail row of its own. Keep that status as the
     // thinking-panel title instead of a second bar under the transcript.
     if (liveKind === "calling_tool") return codingTimelineLastThoughtIndex(timeline);
@@ -728,8 +857,7 @@ export function codingTimelineLastThoughtIndex(
     if (!timeline?.length) return -1;
     for (let index = timeline.length - 1; index >= 0; index--) {
         const item = timeline[index];
-        if (item?.kind !== "thinking") continue;
-        if (typeof item.content === "string" && !item.content.trim()) continue;
+        if (item?.kind !== "thinking" || codingThoughtTextIsBlank(item.content)) continue;
         return index;
     }
     return -1;

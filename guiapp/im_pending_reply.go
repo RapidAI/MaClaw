@@ -208,8 +208,9 @@ func conversationExtensionHasUserMessage(current []agent.ConversationEntry, pref
 		return true
 	}
 	for _, entry := range current[prefixLen:] {
-		// A host continuation is the goal engine's next phase. It is stored
-		// as a user row, but it is not the person moving on from a question.
+		// A host continuation is the goal engine's next phase, or the session
+		// agent's next wave. It is stored as a user row, but it is not the
+		// person moving on from a question.
 		if entry.Role == "user" && !isHostGoalContinuationEntry(entry) {
 			return true
 		}
@@ -225,7 +226,7 @@ func isHostGoalContinuationEntry(entry agent.ConversationEntry) bool {
 	if !ok {
 		return false
 	}
-	return isGoalSystemContinuation(text)
+	return isGoalSystemContinuation(text) || isSessionRoundContinuation(text)
 }
 
 func formatPendingReplyHistoryExtension(current, prefix []agent.ConversationEntry) string {
@@ -330,7 +331,7 @@ func (h *IMMessageHandler) bindPendingUserReplyAnswer(msg IMUserMessage, trimmed
 	}
 	// The goal engine speaks next. That message is not the user's answer, so
 	// it must not consume a question that is still waiting for them.
-	if goalContinuationTurn(trimmed, msg.Platform) {
+	if goalContinuationTurn(trimmed, msg.Platform) || sessionRoundTurn(trimmed, msg.Platform) {
 		return "", false
 	}
 	// Structured internal commands (button clicks) are never "answers" to pending
@@ -427,7 +428,7 @@ func (h *IMMessageHandler) consumePendingAskUserAnswer(userID, trimmed string, e
 	}
 	// The goal engine speaks next. That message is not the user's answer, so
 	// it must not resume the question that is still waiting for them.
-	if goalContinuationTurn(trimmed, "") {
+	if goalContinuationTurn(trimmed, "") || isSessionRoundContinuation(trimmed) {
 		return "", nil, false, false
 	}
 	// Structured internal commands (button clicks such as

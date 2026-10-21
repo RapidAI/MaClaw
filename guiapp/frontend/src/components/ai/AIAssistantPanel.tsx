@@ -70,7 +70,7 @@ import { useAssistantThemeMode } from "./useAssistantThemeMode";
 import { activeCodingAgentProgress, codingAgentComposerStatusText, codingAgentMessagesHavePlainTrail, codingAgentToolOperandText, isCodingAgentProgressContent, latestCodingAgentTurnSnapshot, openCodingAgentToolProgress, renderCodingAgentWorkingTrail } from "./CodingAgentProgressStatus";
 import { isToolProgressMessage } from "./aiAssistantProgressUtils";
 import { isTranscriptToolCallText, transcriptAlreadyShowsToolCall } from "./assistantToolCall";
-import { assistantLiveActivityLabel, assistantLiveActivityObject, assistantMessageOwnsLiveActivityAt, codingBubbleHostsLiveTitle, codingLiveAnswerStarted, codingLiveReasoningCue, codingShownLiveLabel, codingTimelineLastThoughtIndex, codingTimelineLiveThoughtIndex, codingTimelineThoughtIsCurrent, extractInFlightToolName, resolveAssistantLiveActivity, resolveLiveModelTarget, resolveStandaloneLiveActivityLabel } from "./assistantLiveActivity";
+import { assistantLiveActivityLabel, assistantLiveActivityObject, assistantMessageOwnsLiveActivityAt, codingBubbleHostsLiveTitle, codingLiveAnswerStarted, codingLiveReasoningCue, codingShownLiveLabel, codingThoughtTextIsBlank, codingTimelineLastThoughtIndex, codingTimelineLiveThoughtIndex, codingTimelineThoughtIsCurrent, extractInFlightToolName, resolveAssistantLiveActivity, resolveLiveModelTarget, resolveStandaloneLiveActivityLabel } from "./assistantLiveActivity";
 import { IconBranch, IconRocket } from "./WorkbenchIcons";
 import { AITabBar } from "./AITabBar";
 import { localAssistantTabTitle } from "./aiAssistantI18n";
@@ -5963,6 +5963,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     <Fragment key={msg.id}>
                         <div data-testid="coding-agent-interleaved-timeline">
                             {codingTimeline.map((item, index) => {
+                                if (item.kind === "thinking" && codingThoughtTextIsBlank(item.content)) return null;
                                 const step = item.kind === "thinking" ? ++thoughtStep : undefined;
                                 const thoughtOwnsLive = index === lastThinkingIndex;
                                 return (

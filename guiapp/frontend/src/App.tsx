@@ -1685,6 +1685,10 @@ function App() {
     const [activeDownloadSource, setActiveDownloadSource] = useState("");
     const [downloadError, setDownloadError] = useState("");
     const [installerPath, setInstallerPath] = useState("");
+    // True between a successful download and the app quitting for the
+    // installer. The window closes on its own, so the modal has to say what is
+    // happening instead of leaving the user on a "download complete" screen.
+    const [isInstallingUpdate, setIsInstallingUpdate] = useState(false);
     const isWindows = /window/i.test(navigator.userAgent);
     const [hasWindowsTerminal, setHasWindowsTerminal] = useState(false);
     const [lang, setLang] = useState("en");
@@ -1874,6 +1878,10 @@ function App() {
     const handleOpenAppUpdate = useCallback(() => {
         if (!appUpdateAvailable) return;
         setUpdateResult(appUpdateAvailable);
+        // Opening the dialog is a fresh attempt: never inherit an "installing"
+        // state from a launch that never quit the app, or the dialog would
+        // reopen with its buttons disabled.
+        setIsInstallingUpdate(false);
         setShowUpdateModal(true);
     }, [appUpdateAvailable]);
 
@@ -1902,6 +1910,61 @@ function App() {
     // same key the backend registered; rebuilding it from the brand can miss.
     const activeDownloadFileNameRef = useRef("");
 
+    // Hands a downloaded installer to the backend and quits the app.
+    //
+    // Shared by the automatic path (download finished) and the manual fallback
+    // button, so both report failures the same way. Returns true when the
+    // installer was launched; the app is about to exit in that case.
+    //
+    // `t` is read through a ref: it is rebuilt on every render, so depending on
+    // it directly would give this callback a new identity each time and defeat
+    // the point of memoising it.
+    const translateRef = useRef(translate);
+    translateRef.current = translate;
+    const startInstaller = useCallback(async (path: string): Promise<boolean> => {
+        if (!path) return false;
+        setIsInstallingUpdate(true);
+        // Clear the previous failure: a retry should not show the old reason
+        // while it is in progress.
+        setDownloadError("");
+        try {
+            // The target version lets the app detect on the next start
+            // whether this silent install actually landed.
+            const targetVersion = String(updateResult?.latest_version || "").trim();
+            await LaunchInstallerAndExit(path, targetVersion);
+            return true;
+        } catch (err) {
+            console.error("Install launch error:", err);
+            // The app stays open (the backend refuses to quit when the
+            // installer did not start), so surface why and fall back to the
+            // manual button instead of leaving the user on a dead screen.
+            // The message goes in the dialog, which is already open: a toast
+            // would show the same text twice.
+            setIsInstallingUpdate(false);
+            setDownloadError(err instanceof Error ? err.message : String(err));
+            return false;
+        }
+    }, [updateResult]);
+
+    // Escape hatch for a launch that reported success but never quit the app.
+    //
+    // The backend quits ~500ms after handing off to the installer, so if this
+    // component is still alive well past that the quit did not happen (a
+    // browser/dev session, a blocked shutdown). The modal disables Close while
+    // installing, which would otherwise leave the user with a window they
+    // cannot dismiss and no way to retry.
+    //
+    // translateRef rather than t: t is rebuilt every render, so listing it as a
+    // dependency would restart this timer on each render and it would never fire.
+    useEffect(() => {
+        if (!isInstallingUpdate) return;
+        const timer = setTimeout(() => {
+            setIsInstallingUpdate(false);
+            setDownloadError((previous) => previous || translateRef.current("installStillPending"));
+        }, 20000);
+        return () => clearTimeout(timer);
+    }, [isInstallingUpdate]);
+
     const handleDownload = async () => {
         if (!updateResult) return;
         // Use download_url if available (added in backend update), fallback to release_url
@@ -1913,6 +1976,7 @@ function App() {
         setActiveDownloadSource("");
         setDownloadError("");
         setInstallerPath("");
+        setIsInstallingUpdate(false);
 
         // Keep the installer name aligned with the active OEM brand. The
         // backend selects the same target when building rollback URLs.
@@ -1934,6 +1998,11 @@ function App() {
             // and may be unavailable in browser-based development sessions.
             setDownloadProgress(100);
             setIsDownloading(false);
+            // "Download and Update" is a single action: the user already asked
+            // for the update, so installing is not a second decision. The modal
+            // switches to an "installing" state and the app quits for the
+            // installer; a failure falls back to the manual button.
+            void startInstaller(path);
         } catch (err: any) {
             console.error("Download error:", err);
             // Some failures (for example, an unavailable Downloads folder) happen
@@ -1949,6 +2018,7 @@ function App() {
         setInstallerPath("");
         setDownloadError("");
         setDownloadProgress(0);
+        setIsInstallingUpdate(false);
     };
     const handleCancelDownload = () => {
         const installerBrand = String(brandInfo?.displayName || "MaClaw").trim() || "MaClaw";
@@ -1958,18 +2028,11 @@ function App() {
         activeDownloadFileNameRef.current = "";
     };
 
+    // Manual fallback: only reachable when the automatic launch failed, or when
+    // a download finished before this change and the button is still shown.
     const handleInstall = async () => {
-        if (installerPath) {
-            try {
-                // The target version lets the app detect on the next start
-                // whether this silent install actually landed.
-                const targetVersion = String(updateResult?.latest_version || "").trim();
-                await LaunchInstallerAndExit(installerPath, targetVersion);
-            } catch (err) {
-                console.error("Install launch error:", err);
-                showToastMessage(t("installLaunchError").replace("{error}", err as string));
-            }
-        }
+        if (!installerPath) return;
+        await startInstaller(installerPath);
     };
 
     const handleAIPanelMaximizeToggle = async () => {
@@ -6131,6 +6194,10 @@ ${instruction}`;
                             onOpenWebsite={() => safeBrowserOpenURL(brandInfo?.websiteURL || "https://maclaw.top")}
                             onCheckUpdate={() => {
                                 setStatus(t("checkingUpdate"));
+                                // A manual re-check is a fresh attempt: drop any
+                                // stale "installing" state left by a launch that
+                                // never quit, so the dialog is usable.
+                                setIsInstallingUpdate(false);
                                 const preferBeta = Boolean(config?.prefer_beta_channel);
                                 checkAppUpdate(APP_VERSION, preferBeta).then((res: any) => {
                                     console.log(preferBeta ? "CheckUpdateBeta result:" : "CheckUpdate result:", res);
@@ -6480,6 +6547,7 @@ ${instruction}`;
                     activeDownloadSource={activeDownloadSource}
                     installerPath={installerPath}
                     downloadError={downloadError}
+                    isInstalling={isInstallingUpdate}
                     preferBetaChannel={config?.prefer_beta_channel}
                     t={t}
                     onCancelDownload={handleCancelDownload}

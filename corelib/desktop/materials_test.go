@@ -29,17 +29,40 @@ func TestSafeMaterialName(t *testing.T) {
 }
 
 func TestMaterialsFolder(t *testing.T) {
-	if got := MaterialsFolder("bot-1", "小红书助手", []string{"写作"}); got != "小红书助手" {
+	if got := MaterialsFolder("bot-1", "小红书助手", []MaterialPeer{{ID: "bot-2", Name: "写作"}}); got != "小红书助手" {
 		t.Fatalf("got %q", got)
 	}
-	if got := MaterialsFolder("bot-1", "小红书助手", []string{"小红书助手"}); got != "bot-1" {
+	if got := MaterialsFolder("bot-1", "小红书助手", []MaterialPeer{{ID: "bot-2", Name: "小红书助手"}}); got != "bot-1" {
 		t.Fatalf("collision: %q", got)
+	}
+	if got := MaterialsFolder("bot-2", "小红书助手", []MaterialPeer{{ID: "bot-1", Name: "小红书助手"}}); got != "bot-2" {
+		t.Fatalf("other side of a shared name: %q", got)
 	}
 	if got := MaterialsFolder("bot-1", "../", nil); got != "bot-1" {
 		t.Fatalf("invalid: %q", got)
 	}
 	if got := MaterialsFolder("bot-1", "a/b", nil); got != "a_b" {
 		t.Fatalf("sanitized: %q", got)
+	}
+	// An unusable name occupies the id folder. A later bot must not reuse it
+	// just because the first bot's display name sanitizes to empty.
+	if got := MaterialsFolder("bot_b", "bot_a", []MaterialPeer{{ID: "bot_a", Name: "..."}}); got != "bot_b" {
+		t.Fatalf("id folder taken by a nameless bot: %q", got)
+	}
+	if got := MaterialsFolder("bot_a", "...", []MaterialPeer{{ID: "bot_b", Name: "bot_a"}}); got != "bot_a" {
+		t.Fatalf("nameless bot lost its id folder: %q", got)
+	}
+}
+
+func TestMaterialStoredNameKeepsTheUploadID(t *testing.T) {
+	a := MaterialStoredName("image.png", "up-aaaaaaaa")
+	b := MaterialStoredName("image.png", "up-bbbbbbbb")
+	if a == b || a == "image.png" || !strings.HasSuffix(a, "-up-aaaaaaaa.png") {
+		t.Fatalf("stored names %q %q", a, b)
+	}
+	long := MaterialStoredName(strings.Repeat("长", 300)+".mp4", "up-12345678")
+	if !strings.HasSuffix(long, "-up-12345678.mp4") || len([]rune(long)) > 120 {
+		t.Fatalf("long stored name %d %q", len([]rune(long)), long)
 	}
 }
 

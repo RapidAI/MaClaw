@@ -41,6 +41,9 @@ type IMMessageHandler struct {
 	sharedRuntimeMu sync.Mutex
 	sharedRuntime   agentruntime.Runtime
 	memory          *agent.ConversationMemory
+	// sessionRounds queues the next session-agent wave after the iteration
+	// budget is spent and the task is still open.
+	sessionRounds sessionRoundState
 	// Populated only on a private Lansenger profile runtime; not sourced from
 	// model tool arguments.
 	lansengerBotProfileID string

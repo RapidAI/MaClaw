@@ -5,6 +5,7 @@ import { createReasoningTrailCleanCache, rememberReasoningTrailClean } from "./r
 import { AssistantReasoningPanel } from "./AssistantReasoningPanel";
 import { createIncrementalRenderState, renderContentIncremental, streamingMarkdownUsesIncremental, type IncrementalRenderState } from "./IncrementalMarkdownRenderer";
 import { reasoningTrailMarkdownOptions, renderContentWithCodeBlocks } from "./aiAssistantMarkdown";
+import { codingThoughtTextIsBlank, stripCodingThoughtChrome } from "./assistantLiveActivity";
 import type { CodingAgentTimelineItem } from "./useAIAssistant";
 
 function reasoningPreviewText(text: string, maxLength = 96): string | undefined {
@@ -62,21 +63,27 @@ export const CodingAgentThinkingTimelineItem = React.memo(function CodingAgentTh
     expanded?: boolean;
 }) {
     const trailCleanRef = React.useRef(createReasoningTrailCleanCache());
+    // The audit cleaner cuts a thought at ### T and would drop prose that
+    // shared a row with the step banner. Remove those lines first.
+    const readable = React.useMemo(() => stripCodingThoughtChrome(item.content || ""), [item.content]);
     const displayReasoning = React.useMemo(
-        () => rememberReasoningTrailClean(trailCleanRef.current, item.id, item.content || ""),
-        [item.content, item.id],
+        () => rememberReasoningTrailClean(trailCleanRef.current, item.id, readable),
+        [readable, item.id],
     );
     const live = !!liveLabel;
     const previousTextRef = React.useRef("");
     const renderedRef = React.useRef<React.ReactNode>(null);
     const trailStateRef = React.useRef(createIncrementalRenderState());
+    const blank = codingThoughtTextIsBlank(item.content);
     const body = React.useMemo(
-        () => displayReasoning.trim()
+        () => !blank && displayReasoning.trim()
             ? renderGrowingThought(displayReasoning.trim(), t, expanded, previousTextRef, renderedRef, trailStateRef)
             : null,
-        [displayReasoning, expanded, t],
+        [blank, displayReasoning, expanded, t],
     );
-    if (!displayReasoning.trim() && !live) return null;
+    // A settled rule or step banner is not a thought. A live label still needs
+    // its header while the model has not written anything yet.
+    if (!live && (blank || !displayReasoning.trim())) return null;
     const preview = live ? undefined : reasoningPreviewText(displayReasoning);
     return (
         <AssistantReasoningPanel

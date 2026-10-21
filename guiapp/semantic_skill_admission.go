@@ -464,12 +464,30 @@ func (c *sharedAgentLoopCallbacks) admittedSkillHostCall(name string) bool {
 	if c.agentGuidedHostTools && isAgentGuidedHostToolName(name) {
 		if c.semanticSurface != nil {
 			if _, granted := c.semanticSurface.grants[name]; granted {
+				// The semantic executor owns a name it already granted.
+				// Visibility on a light prompt is skillAdmissionToolVisible.
 				return false
 			}
 		}
 		return true
 	}
 	return false
+}
+
+// skillAdmissionToolVisible is the prompt-profile view of an admitted skill.
+// admittedSkillHostCall returns false for a guided file tool the planner
+// already granted, so the semantic executor owns that call. The light
+// allowlist would then hide bash and write_file. This predicate keeps those
+// workflow tools callable. Bound and remote admission do not open them.
+// generate_pdf stays a substitute.
+func (c *sharedAgentLoopCallbacks) skillAdmissionToolVisible(name string) bool {
+	if c == nil {
+		return false
+	}
+	if c.admittedSkillHostCall(name) {
+		return true
+	}
+	return c.skillAdmissionIsGuided() && isAgentGuidedHostToolName(name)
 }
 
 func (c *sharedAgentLoopCallbacks) executeAdmittedSkillHostCall(name, argsJSON string) (string, bool, bool) {

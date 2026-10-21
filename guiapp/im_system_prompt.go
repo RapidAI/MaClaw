@@ -141,6 +141,16 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 		systemPrompt += workflowDocDeliverySection(msg.UserID, msg.Platform)
 	}
 
+	// A light lookup prompt does not go through the full epilogue. Naming a
+	// skill is still a complex task, and the tool list will require that
+	// workflow. The instructions have to be in the prompt the model sees.
+	if profile.IsLight() && h != nil && loopContextIsSemanticManaged(loopCtx) {
+		var guided strings.Builder
+		guided.WriteString(systemPrompt)
+		h.appendAdmittedAgentGuidedSkillDocs(&guided, promptMessage, loopCtx)
+		systemPrompt = guided.String()
+	}
+
 	totalPromptBuild := time.Since(promptBuildStart)
 	if totalPromptBuild > 500*time.Millisecond {
 		log.Printf("[buildIMEntrySystemPrompt] slow: base_prompt=%v resume_trace=%v total=%v prompt_len=%d user=%s",
@@ -307,6 +317,14 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 	// Adaptive short-text classification must not flip the prompt back to
 	// light. An explicit env override below still wins.
 	if loopCtx != nil && operationalExecutionProfile(loopCtx.Runtime.Execution) {
+		promptProfile = agent.PromptProfileFull
+		promptABSample = false
+		promptSoftFull = false
+	}
+	// A named skill is not a short lookup. Adaptive classification must not
+	// write the prompt profile back to light after the execution layer left
+	// that budget.
+	if explicitSkillInvocationForProfile(msg) {
 		promptProfile = agent.PromptProfileFull
 		promptABSample = false
 		promptSoftFull = false

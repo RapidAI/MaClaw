@@ -221,6 +221,48 @@ Function TrimTrailingBackslash
     Exch $2
 FunctionEnd
 
+; Resolve the install directory of an existing installation before anything can
+; Abort. $INSTDIR still holds the default path that early, so a custom install
+; directory would make the silent-abort relaunch look in the wrong folder.
+; Read-only: it only copies InstallLocation over $INSTDIR when present.
+Function ResolveExistingInstallDir
+    ; New installers write to the 64-bit view; the 32-bit fallback finds builds
+    ; made before that handling was made explicit. Without it an upgrade from an
+    ; old 32-bit-view install would relaunch the default path.
+    SetRegView 64
+    ReadRegStr $R2 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "InstallLocation"
+    StrCmp $R2 "" 0 resolveExistingInstallDirApply
+    SetRegView 32
+    ReadRegStr $R2 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "InstallLocation"
+    StrCmp $R2 "" resolveExistingInstallDirDone
+    resolveExistingInstallDirApply:
+        StrCpy $INSTDIR $R2
+    resolveExistingInstallDirDone:
+    ; Restore the view the rest of .onInit expects to start from.
+    SetRegView 64
+FunctionEnd
+
+; Relaunch the installed app through explorer: it runs as the logged-on user, so
+; the app does not inherit the installer's elevation. Used both after a
+; successful silent install and after a silent run that had to Abort — the
+; in-app updater quit before launching us, so leaving nothing running after a
+; silent abort looks like a crash.
+Function SilentRelaunchApp
+    IfFileExists "$INSTDIR\${PRODUCT_EXECUTABLE}" 0 silentRelaunchDone
+    Exec '"$WINDIR\explorer.exe" "$INSTDIR\${PRODUCT_EXECUTABLE}"'
+    silentRelaunchDone:
+FunctionEnd
+
+; Stop a console process without flashing a console window. taskkill is a
+; console program, and ExecWait on it would paint a black window over a silent
+; install. nsExec::Exec runs it hidden and leaves the exit code on the stack.
+Function SilentTaskKill
+    Exch $0
+    nsExec::Exec 'taskkill /F /IM "$0"'
+    Pop $1
+    Pop $0
+FunctionEnd
+
 Function .onInstSuccess
     IfSilent onInstSuccessRunCheck onInstSuccessDone
     onInstSuccessRunCheck:
@@ -231,11 +273,31 @@ Function .onInstSuccess
     ${GetOptions} $CMDLINE "/NORUN" $R0
     IfErrors onInstSuccessRelaunch onInstSuccessDone
     onInstSuccessRelaunch:
-    # Relaunch through explorer: it runs as the logged-on user, so the app does
-    # not inherit the installer's elevation. A failure here only costs the
-    # auto-relaunch — the update itself is already installed.
-    Exec '"$WINDIR\explorer.exe" "$INSTDIR\${PRODUCT_EXECUTABLE}"'
+    # A failure here only costs the auto-relaunch — the update itself is
+    # already installed.
+    Call SilentRelaunchApp
     onInstSuccessDone:
+FunctionEnd
+
+; An aborted silent run would otherwise leave the user with no window at all
+; (the in-app updater already quit) and no message explaining it, which reads as
+; a crash. Bring the still-installed build back instead.
+Function .onInstFailed
+    IfSilent onInstFailedRelaunch onInstFailedDone
+    onInstFailedRelaunch:
+    Call SilentRelaunchApp
+    onInstFailedDone:
+FunctionEnd
+
+; Abort the current silent run after putting the installed build back, so a
+; silent failure never ends with nothing running. Interactive runs keep the
+; normal Abort behaviour (the wizard just closes).
+Function AbortSilentOrExit
+    IfSilent abortSilentOrExitRelaunch abortSilentOrExitDone
+    abortSilentOrExitRelaunch:
+    Call SilentRelaunchApp
+    abortSilentOrExitDone:
+    Abort
 FunctionEnd
 
 Function .onInit
@@ -281,6 +343,10 @@ Function .onInit
         StrCpy $LANGUAGE ${LANG_ENGLISH}
     lang_done:
 
+    # Resolve an existing installation's directory before any Abort path can
+    # reach SilentRelaunchApp; $INSTDIR is still the default until here.
+    Call ResolveExistingInstallDir
+
     # Stop old running GUI only after user confirms; otherwise exit.
     nsExec::ExecToStack 'cmd /c tasklist /FI "IMAGENAME eq ${PRODUCT_EXECUTABLE}" /NH | find /I "${PRODUCT_EXECUTABLE}" >nul'
     Pop $R1
@@ -291,10 +357,13 @@ Function .onInit
     # update): the updater has already quit the app, and any old process still
     # around must be stopped or the upgrade cannot replace its files.
     MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(AppIsRunning)" /SD IDYES IDYES stopApp
-    Abort
+    Call AbortSilentOrExit
 
     stopApp:
-    ExecWait 'taskkill /F /IM ${PRODUCT_EXECUTABLE}'
+    # nsExec keeps taskkill's console window hidden; ExecWait would flash a
+    # black window in the middle of a silent install.
+    Push "${PRODUCT_EXECUTABLE}"
+    Call SilentTaskKill
     Sleep 1000
     nsExec::ExecToStack 'cmd /c tasklist /FI "IMAGENAME eq ${PRODUCT_EXECUTABLE}" /NH | find /I "${PRODUCT_EXECUTABLE}" >nul'
     Pop $R1
@@ -302,14 +371,16 @@ Function .onInit
 
     appStillRunning:
     MessageBox MB_OK|MB_ICONSTOP "$(AppStillRunning)" /SD IDOK
-    Abort
+    Call AbortSilentOrExit
 
     appNotRunning:
     # Stop helper CLI if a long-running watch/poll is active before upgrade.
-    ExecWait 'taskkill /F /IM ${CLI_EXECUTABLE}'
+    Push "${CLI_EXECUTABLE}"
+    Call SilentTaskKill
     # VS Code owns the ACP bridge process, so it can still be running when
     # MaClaw itself is closed. Stop it before replacing the bundled binary.
-    ExecWait 'taskkill /F /IM ${ACP_BRIDGE_EXECUTABLE}'
+    Push "${ACP_BRIDGE_EXECUTABLE}"
+    Call SilentTaskKill
 
     # New installers write their registry entries to the 64-bit view. Check it
     # first, but retain a 32-bit fallback so upgrades can find installers built
@@ -322,7 +393,10 @@ Function .onInit
     StrCmp $R0 "" notInstalled
 
     installed:
-    # Preserve user's original install directory if they chose a custom path
+    # Preserve user's original install directory if they chose a custom path.
+    # Re-read here rather than relying on ResolveExistingInstallDir: the
+    # UninstallString lookup above may have fallen back to the 32-bit view, and
+    # InstallLocation has to be read from the same view that found the entry.
     ReadRegStr $R1 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "InstallLocation"
     StrCmp $R1 "" +2
         StrCpy $INSTDIR $R1
@@ -330,13 +404,24 @@ Function .onInit
     # resolving its actual install directory. This avoids changing a PATH that
     # merely happens to equal the default directory on a clean machine.
     Call RestoreCorruptedMachinePath
-    # /SD answers "yes" silently: an online update always replaces the
-    # installed build. Without it a silent upgrade over an existing install
-    # would Abort here instead of upgrading.
+    # A silent run is the in-app online update: install over the existing build
+    # in place instead of uninstalling first. Uninstalling would empty $INSTDIR,
+    # so a failure part-way through the new install would leave the user with no
+    # application at all; the install section replaces every file it ships, and
+    # the WebView2 profile lives outside $INSTDIR, so nothing needs removing.
+    IfSilent notInstalled
     MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(AlreadyInstalled)" /SD IDYES IDYES uninstall
     Abort
     
     uninstall:
+    # $R0 already carries the quotes written by the install section. Wrapping it
+    # in another pair produced ""path"" — an empty executable name — so the
+    # uninstaller never actually ran. Strip them, then quote exactly once.
+    StrCpy $R1 $R0 1
+    StrCmp $R1 '$\"' 0 uninstallExec
+        StrCpy $R1 $R0 '' 1
+        StrCpy $R0 $R1 -1
+    uninstallExec:
     ExecWait '"$R0" /S _?=$INSTDIR'
     Delete "$INSTDIR\uninstall.exe"
     RMDir "$INSTDIR"
@@ -514,13 +599,24 @@ Section "uninstall"
     # Matches the registry view used by the installer for app-owned entries.
     SetRegView 64
     
-    # Kill app if running
-    ExecWait "taskkill /F /IM ${PRODUCT_EXECUTABLE}"
-    ExecWait "taskkill /F /IM ${CLI_EXECUTABLE}"
-    ExecWait "taskkill /F /IM ${ACP_BRIDGE_EXECUTABLE}"
+    # Kill app if running. The uninstaller runs from a separate un.* code block,
+    # so it cannot Call the installer's SilentTaskKill helper; nsExec is used
+    # inline for the same reason — it keeps taskkill's console window hidden.
+    nsExec::Exec 'taskkill /F /IM "${PRODUCT_EXECUTABLE}"'
+    Pop $0
+    nsExec::Exec 'taskkill /F /IM "${CLI_EXECUTABLE}"'
+    Pop $0
+    nsExec::Exec 'taskkill /F /IM "${ACP_BRIDGE_EXECUTABLE}"'
+    Pop $0
 
-    # Remove WebView2 user data directory (Wails stores it in %APPDATA%\<exe_name>)
+    # Remove the WebView2 profile only on an interactive uninstall, where the
+    # user is present to accept the loss. A silent uninstall (the QuietUninstall
+    # String, or an upgrade script) must keep it: that profile holds the
+    # logged-in session, layout and other local UI state, and wiping it turns an
+    # unattended maintenance run into a forced sign-in.
+    IfSilent skipWebviewProfile
     RMDir /r "$APPDATA\${PRODUCT_EXECUTABLE}"
+    skipWebviewProfile:
 
     Delete "$INSTDIR\${PRODUCT_EXECUTABLE}"
     Delete "$INSTDIR\${CLI_EXECUTABLE}"
@@ -546,12 +642,12 @@ Section "uninstall"
     DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}"
     DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${AUTOSTART_REG_NAME}"
 
-    # Ask user if they want to delete user data
-    # In silent mode (/S), skip user data deletion — silent uninstall is typically
-    # triggered by the installer during upgrade, where we must preserve user data.
+    # Ask user if they want to delete user data.
+    # A silent uninstall has nobody to ask, and its two callers — the
+    # QuietUninstallString and any fleet/maintenance script — must never destroy
+    # user data on an unattended run. In-app upgrades no longer uninstall at all
+    # (see .onInit), so this only ever guards a deliberate silent removal.
     IfSilent skipUserData
-    # /SD IDNO is the second belt for the silent uninstall the upgrade runs:
-    # a silent uninstall must never delete user data.
     MessageBox MB_YESNO|MB_ICONQUESTION "$(DeleteUserData)" /SD IDNO IDYES deleteUserData IDNO skipUserData
     
     deleteUserData:

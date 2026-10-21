@@ -6693,6 +6693,43 @@ describe('useAIAssistant property tests', () => {
         expect(assistantMessages(result.current.messages)[0].codingTimeline?.at(-1)?.content).toBe('Finally verify the completed edit.');
     });
 
+    it('keeps a dash prefix and a fenced rule, and drops a finished step banner', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('keep real thought text');
+            await Promise.resolve();
+        });
+
+        const req = requestEvent();
+        const tool = 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","task_id":"T1","title":"Inspect source","turn_id":"turn-1","detail":"Read"}';
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 10, text: '\x01Latency is ' });
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 11, text: '\x01-' });
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 12, text: '\x013 ms' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 20, text: tool });
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 21, text: '\x01```\n' });
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 22, text: '\x01---\n' });
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 23, text: '\x01```\n' });
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 24, text: '\x01\n\n---\n### T3: title\n\n' });
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 25, text: '\x01Next sentence.' });
+            await new Promise((resolve) => setTimeout(resolve, 40));
+        });
+
+        const timeline = assistantMessages(result.current.messages)[0].codingTimeline;
+        expect(timeline?.map(item => item.kind)).toEqual(['thinking', 'progress', 'thinking']);
+        expect(timeline?.[0].content).toBe('Latency is -3 ms');
+        expect(timeline?.[2].content).toBe('```\n---\n```\nNext sentence.');
+        expect(timeline?.some(item => item.content.includes('### T3'))).toBe(false);
+
+        await act(async () => {
+            pending.resolve({ text: 'Done.', error: '', fields: null, actions: null, request_id: req.request_id || '' });
+            await pending.promise;
+        });
+    });
+
     it('does not interleave leaked reasoning-lane assistant notes into the coding timeline', async () => {
         const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
         (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);

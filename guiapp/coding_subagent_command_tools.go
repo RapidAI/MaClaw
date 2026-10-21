@@ -283,21 +283,11 @@ func windowsCodingBashInvocation(command string) (string, []string) {
 		return passthroughRuntimeProgram("powershell.exe"), []string{"-NoProfile", "-NonInteractive", "-Command",
 			"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + wrappedPS}
 	}
+	if cmdLine, ok := windowsCodingCmdLine(command); ok {
+		return passthroughRuntimeProgram("cmd.exe"), []string{"/d", "/s", "/c", cmdLine}
+	}
 	command = mapPython3ToWindows(command)
-	if repaired, ok := normalizeWindowsMSVCCompileCommand(command); ok {
-		// vcvars+cl must share a cmd.exe environment. Nested
-		// `cmd /c "call \"...\" && cl"` loses quotes in PowerShell.
-		// Rewrite after unwrap so `; .\hello.exe` inside cmd /c '...' still
-		// short-circuits a failed compile.
-		repaired = rewriteWindowsCompileThenRunSemicolon(repaired)
-		return passthroughRuntimeProgram("cmd.exe"), []string{"/d", "/s", "/c", repaired}
-	}
 	command = rewriteWindowsCompileThenRunSemicolon(command)
-	if hasUnquotedWindowsCmdSyntax(command) {
-		// Commands using cmd.exe control operators (for example `||` or
-		// `2>nul`) must not be parsed by Windows PowerShell 5.1.
-		return passthroughRuntimeProgram("cmd.exe"), []string{"/d", "/s", "/c", command}
-	}
 	// PowerShell 5.1 has no &&. Translating it to bare `;` would let a failed
 	// compile plus a leftover hello.exe look like success. Keep short-circuit.
 	psCommand := convertUnquotedAndAndForPowerShell(command)
@@ -309,6 +299,35 @@ func windowsCodingBashInvocation(command string) (string, []string) {
 	wrappedPS := wrapCodingPowerShellCommand(psCommand)
 	return passthroughRuntimeProgram("powershell.exe"), []string{"-NoProfile", "-NonInteractive", "-Command",
 		"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + wrappedPS}
+}
+
+// windowsCodingCmdLine is the command line cmd.exe will parse, when this
+// host runs the string with cmd.exe instead of PowerShell. Unix and python
+// inspect rewrites stay on PowerShell: their generated scripts quote paths.
+// Callers that judge a command with PowerShell quote rules must re-read this
+// line, because cmd.exe does not treat single quotes as quotes.
+func windowsCodingCmdLine(command string) (string, bool) {
+	if _, ok := adaptWindowsUnixInspectCommand(command); ok {
+		return "", false
+	}
+	if _, ok := adaptWindowsPythonInspectCommand(command); ok {
+		return "", false
+	}
+	command = mapPython3ToWindows(command)
+	if repaired, ok := normalizeWindowsMSVCCompileCommand(command); ok {
+		// vcvars+cl must share a cmd.exe environment. Nested
+		// `cmd /c "call \"...\" && cl"` loses quotes in PowerShell.
+		// Rewrite after unwrap so `; .\hello.exe` inside cmd /c '...' still
+		// short-circuits a failed compile.
+		return rewriteWindowsCompileThenRunSemicolon(repaired), true
+	}
+	command = rewriteWindowsCompileThenRunSemicolon(command)
+	if hasUnquotedWindowsCmdSyntax(command) {
+		// Commands using cmd.exe control operators (for example `||` or
+		// `2>nul`) must not be parsed by Windows PowerShell 5.1.
+		return command, true
+	}
+	return "", false
 }
 
 func hasUnquotedWindowsCmdSyntax(command string) bool {

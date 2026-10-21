@@ -17,6 +17,7 @@ import { appendToolCallMarker, contentHasAssistantToolCall, isProgressOnlyToolAc
 import { cleanReasoningTrailForBody, parkReplacedStreamInReasoning } from "./assistantReasoningBody";
 import { answerDesktopChatTask, appendChatTaskResultMessage, cancelDesktopChatTask, chatTaskCardMessage, chatTaskEventName, chatTasksToRestore, dispatchDesktopChatTask, isChatTaskResultResponse, listDesktopChatTasks, parseChatTaskEvent, steerDesktopChatTask, upsertChatTaskCard, upsertChatTaskList, type ChatTaskView } from "./chatTaskModel";
 import { takeAssistantStreamToken } from "../bots/visibleDesktopTurn";
+import { codingThoughtDeltaIsChrome, codingThoughtHasOpenFence, codingThoughtTextIsBlank } from "./assistantLiveActivity";
 
 export interface CancelAIAssistantResult {
     canceledText: string;
@@ -1602,6 +1603,64 @@ function insertCodingTimelineItem(timeline: CodingAgentTimelineItem[], item: Cod
     return [...timeline.slice(0, insertAt), item, ...timeline.slice(insertAt)];
 }
 
+/**
+ * A markdown rule or step banner must not open its own 思考过程. When it
+ * arrives next to the current thought, keep the sequence so the following
+ * prose stays on that thought. The banner text itself is discarded.
+ */
+function noteBlankCodingThought(
+    timeline: CodingAgentTimelineItem[],
+    sequence: number,
+): CodingAgentTimelineItem[] | undefined {
+    const last = timeline[timeline.length - 1];
+    const lastSequence = last?.lastSequence || last?.sequence || 0;
+    if (last?.kind !== 'thinking' || lastSequence + 1 !== sequence) return undefined;
+    if ((last.lastSequence || last.sequence) === sequence) return timeline;
+    const content = last.content.endsWith('\n') ? last.content : `${last.content}\n`;
+    return [...timeline.slice(0, -1), { ...last, content, lastSequence: sequence }];
+}
+
+function reasoningKeepingBreak(reasoning: string | undefined): string | undefined {
+    if (!reasoning || reasoning.endsWith('\n')) return reasoning;
+    return `${reasoning}\n`;
+}
+
+/**
+ * A finished rule or step banner is dropped, except when it continues a thought
+ * that still has an open code fence. An unfinished "-" stays; it may be a sign
+ * or the start of a list.
+ */
+function codingReasoningDeltaIsBanner(
+    timeline: CodingAgentTimelineItem[] | undefined,
+    delta: string,
+    sequence: number,
+    continueOwned: boolean,
+): boolean {
+    if (!codingThoughtDeltaIsChrome(delta)) return false;
+    return !codingThoughtHasOpenFence(codingFenceHostContent(timeline, sequence, continueOwned));
+}
+
+function codingFenceHostContent(
+    timeline: CodingAgentTimelineItem[] | undefined,
+    sequence: number,
+    continueOwned: boolean,
+): string {
+    if (!timeline?.length) return '';
+    if (continueOwned && sequence > 0) {
+        for (let i = timeline.length - 1; i >= 0; i--) {
+            const item = timeline[i];
+            if (item.kind !== 'thinking') continue;
+            const end = item.lastSequence || item.sequence;
+            if (sequence >= item.sequence && sequence <= end) return item.content || '';
+        }
+    }
+    const last = timeline[timeline.length - 1];
+    if (last?.kind !== 'thinking') return '';
+    const lastSequence = last.lastSequence || last.sequence || 0;
+    if (lastSequence + 1 === sequence) return last.content || '';
+    return '';
+}
+
 function appendAdjacentCodingThought(
     timeline: CodingAgentTimelineItem[],
     content: string,
@@ -1794,7 +1853,7 @@ function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence
             const pendingCodingThoughts = message.pendingCodingThoughts || [];
             const preferredSequence = normalizeCodingTimelineSequence(eventSequence);
             if (preferredSequence && codingTimelineSequenceIsTaken(pendingCodingThoughts, preferredSequence)) {
-                if (!continueOwnedSequence) return message;
+                if (!continueOwnedSequence || codingReasoningDeltaIsBanner(pendingCodingThoughts, reasoningDelta, preferredSequence, true)) return message;
                 const extended = extendOwnedCodingThought(pendingCodingThoughts, reasoningDelta, preferredSequence);
                 return {
                     ...message,
@@ -1809,6 +1868,16 @@ function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence
                 };
             }
             const sequence = nextCodingTimelineSequence(pendingCodingThoughts, eventSequence);
+            if (codingReasoningDeltaIsBanner(pendingCodingThoughts, reasoningDelta, sequence, false)) {
+                const noted = noteBlankCodingThought(pendingCodingThoughts, sequence);
+                if (!noted) return message;
+                return {
+                    ...message,
+                    reasoning: noted === pendingCodingThoughts ? message.reasoning : reasoningKeepingBreak(message.reasoning),
+                    reasoningLive: true,
+                    pendingCodingThoughts: noted,
+                };
+            }
             const adjacentThoughts = appendAdjacentCodingThought(pendingCodingThoughts, reasoningDelta, sequence, Date.now());
             const thought: CodingAgentTimelineItem = {
                 id: nextId(),
@@ -1830,7 +1899,7 @@ function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence
         const baseTimeline = timeline;
         const preferredSequence = normalizeCodingTimelineSequence(eventSequence);
         if (preferredSequence && codingTimelineSequenceIsTaken(baseTimeline, preferredSequence)) {
-            if (!continueOwnedSequence) return message;
+            if (!continueOwnedSequence || codingReasoningDeltaIsBanner(baseTimeline, reasoningDelta, preferredSequence, true)) return message;
             const extended = extendOwnedCodingThought(baseTimeline, reasoningDelta, preferredSequence);
             return {
                 ...message,
@@ -1840,6 +1909,16 @@ function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence
             };
         }
         const sequence = nextCodingTimelineSequence(baseTimeline, eventSequence);
+        if (codingReasoningDeltaIsBanner(baseTimeline, reasoningDelta, sequence, false)) {
+            const noted = noteBlankCodingThought(baseTimeline, sequence);
+            if (!noted) return message;
+            return {
+                ...message,
+                reasoning: noted === baseTimeline ? message.reasoning : reasoningKeepingBreak(message.reasoning),
+                reasoningLive: true,
+                codingTimeline: noted,
+            };
+        }
         const nextTimeline = appendAdjacentCodingThought(baseTimeline, reasoningDelta, sequence, Date.now()) || insertCodingTimelineItem(baseTimeline, {
             id: nextId(),
             sequence,
@@ -4551,7 +4630,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             if (!preferredSequence && last?.kind === 'progress' && last.content === progressText) return message;
             const openingReasoning = timeline.length === 0 && message.pendingCodingThoughts?.length
                 ? message.pendingCodingThoughts
-                : timeline.length === 0 && message.reasoning?.trim()
+                : timeline.length === 0 && message.reasoning?.trim() && !codingThoughtTextIsBlank(message.reasoning)
                     ? [{
                     id: nextId(),
                     sequence: nextCodingTimelineSequence(timeline, message.reasoningStartSequence),

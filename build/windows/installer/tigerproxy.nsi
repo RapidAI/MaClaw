@@ -1,4 +1,4 @@
-Unicode true
+﻿Unicode true
 
 !ifndef INFO_PROJECTNAME
 !define INFO_PROJECTNAME "TigerProxy"
@@ -97,18 +97,23 @@ Function .onInit
     StrCmp $R1 "0" appRunning appNotRunning
 
     appRunning:
-    MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(AppIsRunning)" IDYES stopApp
+    # /SD answers "yes" when the installer runs silently: nobody can see this
+    # dialog, and an old process must be stopped or the files cannot be replaced.
+    MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(AppIsRunning)" /SD IDYES IDYES stopApp
     Abort
 
     stopApp:
-    ExecWait 'taskkill /F /IM ${PRODUCT_EXECUTABLE}'
+    # nsExec keeps taskkill's console window hidden; ExecWait would flash a
+    # black window in the middle of a silent install.
+    nsExec::Exec 'taskkill /F /IM "${PRODUCT_EXECUTABLE}"'
+    Pop $0
     Sleep 1000
     nsExec::ExecToStack 'cmd /c tasklist /FI "IMAGENAME eq ${PRODUCT_EXECUTABLE}" /NH | find /I "${PRODUCT_EXECUTABLE}" >nul'
     Pop $R1
     StrCmp $R1 "0" appStillRunning appNotRunning
 
     appStillRunning:
-    MessageBox MB_OK|MB_ICONSTOP "$(AppStillRunning)"
+    MessageBox MB_OK|MB_ICONSTOP "$(AppStillRunning)" /SD IDOK
     Abort
 
     appNotRunning:
@@ -118,6 +123,14 @@ Function .onInit
     ReadRegStr $R1 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "InstallLocation"
     StrCmp $R1 "" +2
         StrCpy $INSTDIR $R1
+    # $R0 already carries the quotes written by the install section. Wrapping
+    # it in another pair produced ""path"" (an empty executable name), so the
+    # uninstaller never actually ran. Strip them, then quote exactly once.
+    StrCpy $R1 $R0 1
+    StrCmp $R1 '$\"' 0 uninstallExec
+        StrCpy $R1 $R0 '' 1
+        StrCpy $R0 $R1 -1
+    uninstallExec:
     ExecWait '"$R0" /S _?=$INSTDIR'
     Delete "$INSTDIR\uninstall.exe"
     RMDir "$INSTDIR"
@@ -135,7 +148,7 @@ Section
         DetailPrint "Detected AMD64 Architecture"
         File "/oname=${PRODUCT_EXECUTABLE}" "${ARG_WAILS_AMD64_BINARY}"
     ${Else}
-        MessageBox MB_OK|MB_ICONSTOP "Unsupported architecture."
+        MessageBox MB_OK|MB_ICONSTOP "Unsupported architecture." /SD IDOK
         Abort
     ${EndIf}
 
@@ -163,10 +176,16 @@ SectionEnd
 Section "uninstall"
     SetShellVarContext all
 
-    ExecWait "taskkill /F /IM ${PRODUCT_EXECUTABLE}"
+    nsExec::Exec 'taskkill /F /IM "${PRODUCT_EXECUTABLE}"'
+    Pop $0
     Sleep 500
 
+    # Keep the profile on a silent uninstall (QuietUninstallString, fleet
+    # scripts, and the upgrade this installer runs): it holds the signed-in
+    # session and local UI state, and an unattended run must not wipe it.
+    IfSilent skipWebviewProfile
     RMDir /r "$APPDATA\${PRODUCT_EXECUTABLE}"
+    skipWebviewProfile:
 
     Delete "$INSTDIR\${PRODUCT_EXECUTABLE}"
     Delete "$INSTDIR\uninstall.exe"

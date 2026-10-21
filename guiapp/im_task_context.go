@@ -10,6 +10,12 @@ func (h *IMMessageHandler) applyUnifiedTaskContextDecision(msg IMUserMessage, tr
 	if h == nil || msg.IsBackground {
 		return askUserContext, freshTask, false
 	}
+	// The continuation prompt repeats the original request, and the max-rounds
+	// slot makes the recovery classifier treat that echo as a new task. Clearing
+	// here deletes the work the next wave is supposed to resume.
+	if sessionRoundTurn(trimmed, msg.Platform) {
+		return askUserContext, false, false
+	}
 	if h.consumeCancelledTaskBoundary(msg.UserID) {
 		if len(entries) >= 2 {
 			h.archiveCurrentTask(msg.UserID, entries, agent.ArchivedTaskStatusInterrupted)

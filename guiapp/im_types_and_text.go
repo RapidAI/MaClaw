@@ -96,16 +96,20 @@ type IMAgentResponse struct {
 	WebNote bool `json:"web_note,omitempty"`
 	// ToolCallsInTurn is internal cache-safety metadata. It is never sent to
 	// clients; answer caching must not replay responses produced via tools.
-	ToolCallsInTurn int    `json:"-"`
-	Deferred        bool   `json:"deferred,omitempty"`
-	KeepPanel       bool   `json:"keep_panel,omitempty"` // when true, frontend should NOT dismiss the AG view panel after successful submit
-	ConfirmedResume bool   `json:"confirmed_resume,omitempty"`
-	HardExit        bool   `json:"-"` // set when agent loop exits due to consecutive empty responses; suppresses doc capture
-	JobID           string `json:"job_id,omitempty"`
-	RunID           string `json:"run_id,omitempty"`
-	RequestID       string `json:"request_id,omitempty"`
-	SessionKey      string `json:"session_key,omitempty"` // userID for per-tab event routing (desktop only)
-	EventScopeID    string `json:"event_scope_id,omitempty"`
+	ToolCallsInTurn int  `json:"-"`
+	Deferred        bool `json:"deferred,omitempty"`
+	KeepPanel       bool `json:"keep_panel,omitempty"` // when true, frontend should NOT dismiss the AG view panel after successful submit
+	ConfirmedResume bool `json:"confirmed_resume,omitempty"`
+	HardExit        bool `json:"-"` // set when agent loop exits due to consecutive empty responses; suppresses doc capture
+	// sessionRoundContinue tells the chat-task worker to run another wave.
+	// The foreground scheduler reads the same flag so a finished wave does
+	// not clear the continuation it just armed.
+	sessionRoundContinue bool   `json:"-"`
+	JobID                string `json:"job_id,omitempty"`
+	RunID                string `json:"run_id,omitempty"`
+	RequestID            string `json:"request_id,omitempty"`
+	SessionKey           string `json:"session_key,omitempty"` // userID for per-tab event routing (desktop only)
+	EventScopeID         string `json:"event_scope_id,omitempty"`
 	// DesktopHandoffURL is the noVNC page for this user's cloud desktop.
 	DesktopHandoffURL string `json:"desktop_handoff_url,omitempty"`
 	// DesktopUserControl is true when the bot paused and the person operates the desktop.

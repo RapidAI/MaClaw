@@ -11,6 +11,10 @@ import {
     codingLiveAnswerStarted,
     codingLiveReasoningCue,
     codingShownLiveLabel,
+    codingThoughtDeltaIsChrome,
+    codingThoughtHasOpenFence,
+    codingThoughtTextIsBlank,
+    stripCodingThoughtChrome,
     codingTimelineLastThoughtIndex,
     codingTimelineLiveThoughtIndex,
     extractInFlightToolName,
@@ -282,6 +286,41 @@ describe('assistantLiveActivity', () => {
         ])).toBe(0);
         expect(codingTimelineLastThoughtIndex([{ kind: 'progress' }])).toBe(-1);
         expect(codingTimelineLastThoughtIndex(undefined)).toBe(-1);
+        expect(codingTimelineLastThoughtIndex([
+            { kind: 'thinking', content: 'Earlier.' },
+            { kind: 'thinking', content: '-' },
+        ])).toBe(0);
+        expect(codingTimelineLastThoughtIndex([
+            { kind: 'thinking', content: 'Earlier.' },
+            { kind: 'thinking', content: '\n\n---\n### T3: title\n' },
+        ])).toBe(0);
+        expect(codingThoughtTextIsBlank(undefined)).toBe(false);
+        expect(codingThoughtTextIsBlank('- Let me look at the kernel.')).toBe(false);
+        expect(codingThoughtTextIsBlank('---')).toBe(true);
+        expect(codingThoughtTextIsBlank('\n\n')).toBe(true);
+        expect(codingThoughtDeltaIsChrome('\n\n')).toBe(false);
+        expect(codingThoughtDeltaIsChrome('\n\n---\n### T3: title\n')).toBe(true);
+        expect(codingThoughtDeltaIsChrome('-')).toBe(false);
+        expect(codingThoughtDeltaIsChrome('---')).toBe(false);
+        expect(codingThoughtDeltaIsChrome('-\n')).toBe(true);
+        expect(codingThoughtDeltaIsChrome('### T3: title')).toBe(false);
+        expect(codingThoughtDeltaIsChrome('### T3. The kernel is slow.\n')).toBe(false);
+        expect(codingThoughtDeltaIsChrome('### T3：标题\n')).toBe(true);
+        expect(codingThoughtDeltaIsChrome('- Let me look at the kernel.')).toBe(false);
+        expect(codingThoughtTextIsBlank('### T3. The kernel is slow.')).toBe(false);
+        expect(stripCodingThoughtChrome('### T3. The kernel is slow.')).toBe('### T3. The kernel is slow.');
+        expect(stripCodingThoughtChrome('\n\n---\n### T3: title\n\nLook at the kernel.\n')).toBe('Look at the kernel.');
+        expect(stripCodingThoughtChrome('```\n---\n### T3: title\n```\nAfter.')).toBe('```\n---\n### T3: title\n```\nAfter.');
+        expect(stripCodingThoughtChrome('Intro\n---\n```\n---\n```\nAfter.')).toBe('Intro\n```\n---\n```\nAfter.');
+        expect(codingThoughtTextIsBlank(`${'Later prose. '.repeat(40)}\n---`)).toBe(false);
+        expect(codingThoughtDeltaIsChrome('```\n---\n```')).toBe(false);
+        expect(codingThoughtHasOpenFence('```\ncode')).toBe(true);
+        expect(codingThoughtHasOpenFence('```\ncode\n```')).toBe(false);
+        expect(codingThoughtHasOpenFence('```')).toBe(true);
+        expect(codingTimelineLiveThoughtIndex([
+            { kind: 'thinking', content: 'Earlier.' },
+            { kind: 'thinking', content: '-' },
+        ], true)).toBe(-1);
     });
 
     it('keeps a trailing live header for coding tools and ordinary follow-ups', () => {

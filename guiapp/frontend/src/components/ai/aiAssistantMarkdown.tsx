@@ -59,7 +59,7 @@ import { partitionUserAttachments, UserAttachmentChip } from "./UserAttachmentCh
 import { AssistantReasoningPanel } from "./AssistantReasoningPanel";
 import { isSafeKBImageDataURL, KB_IMAGE_MARKER_RE } from "./kbImageValidation";
 
-import { assistantLiveActivityLabel } from "./assistantLiveActivity";
+import { assistantLiveActivityLabel, codingThoughtTextIsBlank } from "./assistantLiveActivity";
 
 export type { Theme } from "./aiAssistantPanelTheme";
 export type { RecordingCompleteResult } from "./RecordingSessionCard";
@@ -1475,11 +1475,11 @@ function renderGuideReceipt(msg: ChatMessage, t: Theme): React.ReactNode {
 /* Render a single ChatMessage */
 
 /** 1-based thought index in an interleaved coding timeline, or undefined. */
-export function codingTimelineThoughtStep(timeline: Array<{ kind: string }>, index: number): number | undefined {
-    if (timeline[index]?.kind !== "thinking") return undefined;
+export function codingTimelineThoughtStep(timeline: Array<{ kind: string; content?: string }>, index: number): number | undefined {
+    if (timeline[index]?.kind !== "thinking" || codingThoughtTextIsBlank(timeline[index]?.content)) return undefined;
     let step = 0;
     for (let i = 0; i <= index; i++) {
-        if (timeline[i]?.kind === "thinking") step += 1;
+        if (timeline[i]?.kind === "thinking" && !codingThoughtTextIsBlank(timeline[i]?.content)) step += 1;
     }
     return step;
 }

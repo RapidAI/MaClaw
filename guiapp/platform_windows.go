@@ -2342,7 +2342,6 @@ func (a *App) LaunchInstallerAndExit(installerPath string, targetVersion string)
 		a.log(fmt.Sprintf("[update-install] refusing silent install: %v", err))
 		return err
 	}
-	a.recordPendingUpdate(targetVersion, verifiedPath)
 
 	// The installer targets Program Files and HKLM, so it declares
 	// RequestExecutionLevel admin. When this process is already elevated,
@@ -2413,6 +2412,12 @@ func (a *App) LaunchInstallerAndExit(installerPath string, targetVersion string)
 			return fmt.Errorf("failed to launch installer: ShellExecute error code %d, direct launch: %w", lastCode, err)
 		}
 	}
+
+	// Record only after the installer is actually running. A declined elevation
+	// prompt or a failed launch never installs anything, and arming the
+	// "update did not apply" notice for those would report a failure the user
+	// already saw and chose.
+	a.recordPendingUpdate(targetVersion, verifiedPath)
 
 	go func() {
 		time.Sleep(500 * time.Millisecond)

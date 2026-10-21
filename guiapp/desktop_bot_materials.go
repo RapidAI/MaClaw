@@ -42,7 +42,13 @@ func (a *App) UploadDesktopBotMaterialChunk(botID, uploadID, name string, offset
 	body := map[string]any{"upload_id": uploadID, "name": name, "offset": offset, "total": total, "data": data}
 	var out DesktopBotMaterialUpload
 	// The last chunk waits for the whole file to reach the desktop.
-	if err := a.desktopBotCall(context.Background(), http.MethodPost, "/api/v1/bots/"+url.PathEscape(botID)+"/desktop/files", body, &out, 10*time.Minute); err != nil {
+	// A 409 still names the bytes Hub already has. Return that struct so the
+	// page can resume; a thrown error would drop the body.
+	status, err := a.desktopBotExchange(context.Background(), http.MethodPost, "/api/v1/bots/"+url.PathEscape(botID)+"/desktop/files", body, &out, 10*time.Minute, nil)
+	if status == http.StatusConflict && out.UploadID != "" {
+		return &out, nil
+	}
+	if err != nil {
 		return nil, err
 	}
 	return &out, nil

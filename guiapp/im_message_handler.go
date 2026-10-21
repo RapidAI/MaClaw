@@ -49,6 +49,27 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		}
 		imPerfLog("im_message_total", msgReceivedAt, requestID, msg.UserID, "status", status, "text_len", len([]rune(msg.Text)), "platform", msg.Platform)
 	}()
+	defer func() {
+		if result == nil || !result.sessionRoundContinue {
+			h.resetSessionRoundWaves(msg.UserID)
+		}
+	}()
+	// A user message bumps the epoch. This wave may already be inside the
+	// loop, and arming the next wave increments only the timer generation.
+	// Drop that timer when the epoch no longer matches the one this wave started with.
+	sessionRoundEpoch := uint64(0)
+	if msg.Platform == sessionRoundContinuationPlatform {
+		sessionRoundEpoch = h.sessionRoundEpoch(msg.UserID)
+	}
+	defer func() {
+		if msg.Platform != sessionRoundContinuationPlatform || h.sessionRoundEpochCurrent(msg.UserID, sessionRoundEpoch) {
+			return
+		}
+		if result != nil {
+			result.sessionRoundContinue = false
+		}
+		h.cancelSessionRoundContinuation(msg.UserID)
+	}()
 	lifecycle := h.beginIMMessageLifecycle(msg, &result)
 	defer lifecycle.Cleanup()
 	trimmed := lifecycle.Trimmed
@@ -69,8 +90,16 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// Notify goal continuation engine that a user message arrived.
 	// This cancels any pending continuation (user takes priority) and resets
 	// the no-tool counter. Skip for goal-continuation self-messages.
-	if msg.Platform != "goal-continuation" && msg.Platform != unattendedWorkflowPlatform && h.app != nil && h.app.goalContinuation != nil {
-		h.app.goalContinuation.OnUserMessage(msg.UserID)
+	// A session-round wave is the same kind of host message: it must not
+	// cancel the timer that just started it.
+	if msg.Platform != "goal-continuation" && msg.Platform != unattendedWorkflowPlatform && msg.Platform != sessionRoundContinuationPlatform {
+		if h.app != nil && h.app.goalContinuation != nil {
+			h.app.goalContinuation.OnUserMessage(msg.UserID)
+		}
+		h.cancelSessionRoundContinuation(msg.UserID)
+	}
+	if msg.Platform == sessionRoundContinuationPlatform {
+		h.bindPendingMaxRoundsSlot(msg.UserID)
 	}
 	// P0-1 (0b-i): any new inbound message for the user immediately
 	// invalidates a pending degraded-turn recovery (the continuation would

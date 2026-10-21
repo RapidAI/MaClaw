@@ -352,6 +352,91 @@ func isRemoteCodingInquiryTool(name string) bool {
 	}
 }
 
+// codingCommandJudgedForHost returns the text the local Windows host will
+// parse. PowerShell honors single quotes. cmd.exe does not, and
+// windowsCodingCmdLine is the string that host actually hands to cmd.exe.
+// Dropping those single quotes lets the existing gates see the & and |
+// commands cmd would run. A line that stays on PowerShell is returned as-is,
+// including a single-quoted pattern such as git diff 'std::vector'.
+func codingCommandJudgedForHost(command string) string {
+	cmdLine, ok := windowsCodingCmdLine(command)
+	if !ok {
+		return command
+	}
+	exposed := codingCmdExposeSingleQuotes(cmdLine)
+	if exposed == cmdLine {
+		return command
+	}
+	return exposed
+}
+
+// codingCmdExposeSingleQuotes removes single quotes that sit outside double
+// quotes. cmd.exe treats those marks as ordinary characters, so the text they
+// appeared to quote is parsed as syntax. Double quotes stay: cmd honors them.
+func codingCmdExposeSingleQuotes(command string) string {
+	var b strings.Builder
+	b.Grow(len(command))
+	inDouble := false
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		if inDouble {
+			b.WriteByte(ch)
+			if ch == '"' {
+				inDouble = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inDouble = true
+			b.WriteByte(ch)
+		case '\'':
+		default:
+			b.WriteByte(ch)
+		}
+	}
+	return b.String()
+}
+
+// codingCmdPercentExpansion reports a cmd.exe %NAME% or %NAME:modifier%
+// substitution. cmd expands it before parsing & and |, including inside double
+// quotes, so a value that contains & is a second command. A space or tab stops
+// a bare name, which keeps %H and "%H %s" literal. After a colon the modifier
+// runs through spaces until the closing %, which is how %EVIL:~0, 80% still
+// expands. %% has an empty name. A newline ends the modifier. PowerShell does
+// not reparse %NAME%.
+func codingCmdPercentExpansion(command string) bool {
+	for i := 0; i < len(command); i++ {
+		if command[i] != '%' {
+			continue
+		}
+		j := i + 1
+		for j < len(command) {
+			ch := command[j]
+			if ch == '%' || ch == ':' || ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' {
+				break
+			}
+			j++
+		}
+		if j == i+1 || j >= len(command) {
+			continue
+		}
+		switch command[j] {
+		case '%':
+			return true
+		case ':':
+			k := j + 1
+			for k < len(command) && command[k] != '%' && command[k] != '\r' && command[k] != '\n' {
+				k++
+			}
+			if k < len(command) && command[k] == '%' {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // rejectCodingInquiryShellCommand provides the second half of the read-only
 // inquiry boundary.  Keeping bash/ssh_bash available is useful for CodeGraph,
 // git history, and targeted searches, but the tool allow-list alone cannot
@@ -364,22 +449,276 @@ func rejectCodingInquiryShellCommand(command string) string {
 	if command == "" {
 		return "a repository inquiry shell command must not be empty"
 	}
+	// Newline is a statement separator in both PowerShell and bash. The
+	// segment parser collapses it to a space, so
+	// "Get-ChildItem\nRemove-Item x" would be read as one allowed listing
+	// and the delete would still run. Check each statement on its own.
+	// A trailing backslash is not a continuation here: PowerShell uses it
+	// as a path separator, and joining the next line would hide it.
+	switch statements := codingInquiryShellStatements(command); len(statements) {
+	case 0:
+		return ""
+	case 1:
+		command = statements[0]
+	default:
+		for _, statement := range statements {
+			if msg := rejectCodingInquiryShellCommand(statement); msg != "" {
+				return msg
+			}
+		}
+		return ""
+	}
 	if codingInquiryShellCommandHasOutputRedirect(command) {
 		return "shell output redirection is unavailable for a read-only repository inquiry"
 	}
-	if strings.Contains(command, "$(") || strings.Contains(command, "${") || strings.Contains(command, "`") || strings.Contains(command, "<(") {
+	// $( ${ ` <( expand in bash, and in PowerShell outside single quotes.
+	// A single-quoted pattern such as Select-String -Pattern '$(' is literal.
+	if codingInquiryShellExpansion(command) {
 		return "shell expansion is unavailable for a read-only repository inquiry"
 	}
 	_, segments := normalizeShellCommandSegments(command)
 	if len(segments) == 0 {
 		return "the shell command is unavailable for a read-only repository inquiry"
 	}
+	// Where-Object, Select-Object, Format-* and PowerShell's sort alias execute
+	// a script block. The segment parser trims braces, so this looks at the
+	// original text. Braces and $_ inside quotes are patterns, not blocks:
+	// Get-ChildItem -Filter '*.{cs,go}' and Select-String -Pattern '{'.
+	script := codingInquiryPowerShellScript(command)
 	for _, segment := range segments {
+		// The allowlist strips NAME=value, env, and cross-env before it
+		// looks at the program. That hides PATH, GIT_EXTERNAL_DIFF, and
+		// GIT_PAGER from the check, so the prefix is judged on its own.
+		if codingInquiryEnvOverride(segment) {
+			return "environment overrides are unavailable for a read-only repository inquiry"
+		}
+		// Basename checks treat /tmp/git as git and /tmp/time as the time
+		// prefix. The program that actually starts would be the path.
+		if codingInquiryQualifiedCommand(segment) {
+			return "path-qualified commands are unavailable for a read-only repository inquiry"
+		}
+		stripped := stripVerificationCommandPrefixes(segment)
+		if script && len(stripped) > 0 && codingInquiryScriptBlockHost(commandNameBase(stripped[0])) {
+			return "powershell script blocks are unavailable for a read-only repository inquiry"
+		}
 		if !codingInquiryShellSegmentAllowed(segment) {
 			return fmt.Sprintf("a repository inquiry runs only read-only inspection commands without approval: %s", command)
 		}
 	}
 	return ""
+}
+
+// codingInquiryEnvOverride reports a prefix that changes the environment of
+// an otherwise allowed command. time and timeout are skipped the same way
+// the allowlist skips them; the assignment after `timeout 5` still counts.
+// A run/build request may set ordinary variables. An inquiry may not, because
+// the report claims the command only read the repository.
+func codingInquiryEnvOverride(segment []string) bool {
+	for i := 0; i < len(segment); i++ {
+		raw := normalizeShellExecutableToken(normalizeShellCommandToken(segment[i]))
+		if raw == "" {
+			continue
+		}
+		if isShellEnvAssignment(raw) {
+			return true
+		}
+		switch commandNameBase(raw) {
+		case "env", "cross-env", "cross-env-shell":
+			return true
+		case "time":
+			continue
+		case "timeout", "gtimeout":
+			return codingInquiryEnvOverride(stripTimeoutCommandPrefix(segment[i+1:]))
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// codingInquiryQualifiedCommand reports a program token that is not a bare
+// name. time and timeout may precede the real program, and a path in either
+// place is still some other executable. Arguments are not inspected: git -C
+// E:\repo status stays a bare git.
+func codingInquiryQualifiedCommand(segment []string) bool {
+	for i := 0; i < len(segment); i++ {
+		raw := normalizeShellExecutableToken(normalizeShellCommandToken(segment[i]))
+		if raw == "" {
+			continue
+		}
+		if codingInquiryPathQualified(raw) {
+			return true
+		}
+		switch commandNameBase(raw) {
+		case "time":
+			continue
+		case "timeout", "gtimeout":
+			return codingInquiryQualifiedCommand(stripTimeoutCommandPrefix(segment[i+1:]))
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+func codingInquiryPathQualified(token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+	if strings.HasPrefix(token, ".") {
+		return true
+	}
+	return strings.ContainsAny(token, `/\:`)
+}
+
+// codingInquiryShellStatements splits on unquoted newlines. Comment-only
+// lines are dropped. A newline inside quotes stays in the statement.
+func codingInquiryShellStatements(command string) []string {
+	var statements []string
+	var b strings.Builder
+	var quote byte
+	flush := func() {
+		line := strings.TrimSpace(b.String())
+		b.Reset()
+		if line == "" || strings.HasPrefix(line, "#") {
+			return
+		}
+		statements = append(statements, line)
+	}
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		if quote != 0 {
+			b.WriteByte(ch)
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"':
+			quote = ch
+			b.WriteByte(ch)
+		case '\n', '\r':
+			if ch == '\r' && i+1 < len(command) && command[i+1] == '\n' {
+				i++
+			}
+			flush()
+		default:
+			b.WriteByte(ch)
+		}
+	}
+	flush()
+	return statements
+}
+
+// codingInquiryShellExpansion reports command substitution, process
+// substitution, or a PowerShell/bash escape that is still active. Single
+// quotes suppress all of them. Double quotes still expand $( ${ and backticks.
+func codingInquiryShellExpansion(command string) bool {
+	var quote byte
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		switch quote {
+		case '\'':
+			if ch == '\'' && i+1 < len(command) && command[i+1] == '\'' {
+				i++
+				continue
+			}
+			if ch == '\'' {
+				quote = 0
+			}
+			continue
+		case '"':
+			if codingInquiryExpansionAt(command, i) {
+				return true
+			}
+			if ch == '"' {
+				quote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"':
+			quote = ch
+		default:
+			if codingInquiryExpansionAt(command, i) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func codingInquiryExpansionAt(command string, i int) bool {
+	rest := command[i:]
+	return strings.HasPrefix(rest, "$(") || strings.HasPrefix(rest, "${") || strings.HasPrefix(rest, "<(") || strings.HasPrefix(rest, "`")
+}
+
+// codingInquiryPowerShellScript reports an unquoted PowerShell script block.
+// $_ inside double quotes still expands, so that form counts too. Single-quoted
+// text is literal and stays available for filters and search patterns.
+func codingInquiryPowerShellScript(command string) bool {
+	var quote byte
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		if quote == '"' && ch == '$' && i+1 < len(command) && command[i+1] == '_' {
+			return true
+		}
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"':
+			quote = ch
+		case '{', '}':
+			return true
+		case '$':
+			if i+1 < len(command) && command[i+1] == '_' {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// codingInquiryScriptBlockHost is a command PowerShell will invoke a block on.
+// sort stays in the Unix inspection list below; on this host it is Sort-Object.
+func codingInquiryScriptBlockHost(cmd string) bool {
+	if codingInquiryPowerShellCommands[cmd] {
+		return true
+	}
+	return cmd == "sort"
+}
+
+// codingInquiryPowerShellCommands are the read-only PowerShell cmdlets that
+// correspond to the Unix inspection vocabulary. The bash tool on Windows is
+// powershell.exe, so Get-ChildItem / Select-Object are the forms an inquiry
+// actually emits. Names are lowercase because the segment parser folds case.
+// Mutating cmdlets (Remove-Item, Set-Content, Out-File, ForEach-Object,
+// Invoke-Expression) stay absent.
+var codingInquiryPowerShellCommands = map[string]bool{
+	"get-childitem": true, "gci": true,
+	"get-item": true, "gi": true,
+	"get-content": true, "gc": true,
+	"get-location": true, "gl": true,
+	"get-command": true, "gcm": true,
+	"test-path":     true,
+	"resolve-path":  true,
+	"select-object": true, "select": true,
+	"select-string": true, "sls": true,
+	"sort-object":    true,
+	"measure-object": true, "measure": true,
+	"group-object": true,
+	"where-object": true, "where": true,
+	"format-table": true, "ft": true,
+	"format-list": true, "fl": true,
+	"format-wide": true, "fw": true,
+	"out-string": true,
+	"?":          true,
 }
 
 func codingInquiryShellCommandHasOutputRedirect(command string) bool {
@@ -402,11 +741,34 @@ func codingInquiryShellSegmentAllowed(segment []string) bool {
 	}
 	cmd := commandNameBase(segment[0])
 	args := segment[1:]
-	switch cmd {
-	case "ls", "dir", "pwd", "cat", "head", "tail", "rg", "grep", "egrep", "fgrep", "ag", "ack",
-		"wc", "sort", "uniq", "cut", "tr", "stat", "file", "readlink", "realpath", "basename", "dirname",
-		"which", "type", "uname", "id", "whoami", "hostname", "nproc", "getconf", "arch", "tree", "du":
+	if codingInquiryPowerShellCommands[cmd] {
 		return true
+	}
+	switch cmd {
+	case "ls", "dir", "pwd", "cat", "head", "tail", "grep", "egrep", "fgrep", "findstr",
+		"wc", "uniq", "cut", "tr", "stat", "file", "readlink", "realpath", "basename", "dirname",
+		"which", "type", "uname", "id", "whoami", "nproc", "getconf", "arch", "du":
+		return true
+	case "tree":
+		// GNU tree -o/--output writes the listing to a file. Windows tree /F
+		// does not use that flag.
+		return codingInquiryTreeReadOnly(args)
+	case "hostname":
+		// A positional name, -b/--boot, and -F/--file set the hostname.
+		// -f and -F arrive as the same short flag, so both stay closed;
+		// --fqdn is the read-only spelling.
+		return codingInquiryHostnameReadOnly(args)
+	case "rg":
+		// --pre runs a command on every file. --pretty and --pre-glob do not.
+		return !codingInquiryRgRunsCommand(args)
+	case "ack", "ag":
+		// --pager=COMMAND pipes matches through an arbitrary program.
+		// --nopager only selects the printer.
+		return !codingInquiryForcedPager(args)
+	case "sort":
+		// GNU sort -o/--output writes a file. Sort-Object parameters such as
+		// -Property stay available; they are not a one-letter -o.
+		return codingInquirySortReadOnly(args)
 	// Host-status programs. The plain forms only print state. Forms that
 	// repeat, sync, follow, or write are checked below: free -s and free -c,
 	// df --sync, vmstat/iostat/mpstat with a delay and no count, netstat -c,
@@ -439,13 +801,10 @@ func codingInquiryShellSegmentAllowed(segment []string) bool {
 		// and -d. The read-only names of those letters are refused with them.
 		return !codingInquirySSUnsafe(args)
 	case "find":
-		for _, arg := range args {
-			switch strings.ToLower(strings.TrimSpace(normalizeShellCommandToken(arg))) {
-			case "-delete", "-exec", "-execdir", "-ok", "-okdir":
-				return false
-			}
-		}
-		return true
+		// The high-risk gate already treats -fprint*/-fls as writes. The
+		// inquiry copy of that list had stopped at -delete/-exec/-ok, so
+		// `find . -fprint0 files.list` created a file with no redirect.
+		return !hasFindWritePrimary(strings.Join(append([]string{"find"}, args...), " "))
 	case "test", "[":
 		return true
 	case "command":
@@ -1009,9 +1368,19 @@ var gitReadOnlySubcommands = map[string]bool{
 // codingInquiryGitSubcommand returns the git subcommand (the first non-flag
 // token) together with the arguments that follow it.
 func codingInquiryGitSubcommand(args []string) (string, []string) {
-	for i, arg := range args {
-		arg = strings.TrimSpace(normalizeShellCommandToken(arg))
-		if arg == "" || strings.HasPrefix(arg, "-") {
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(normalizeShellCommandToken(args[i]))
+		if arg == "" {
+			continue
+		}
+		// -C <path> is chdir. The gate lowercases first, so the path would
+		// otherwise be read as the subcommand. A key=value operand is config,
+		// not a directory, and stays in place for the injection check.
+		if value, skip, ok := gitLoweredCOperand(arg, args, i); ok && !strings.Contains(value, "=") {
+			i += skip
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
 			continue
 		}
 		return strings.ToLower(arg), args[i+1:]
@@ -1038,14 +1407,30 @@ func codingInquiryGitSubcommandAllowed(args []string) bool {
 			}
 		}
 		return true
+	case "cat-file":
+		// --filters runs smudge filters and --textconv runs the helper.
+		// --text is --textconv here. --filter (no s) is a different option,
+		// object filtering, the same kind of read as rev-list --filter.
+		// A prefix of both is ambiguous and git rejects it.
+		for _, raw := range rest {
+			name := gitFlagName(strings.TrimSpace(normalizeShellCommandToken(raw)))
+			if codingInquiryLongMatch(name, []string{"--filters", "--filter"}) == "--filters" ||
+				codingInquiryLongExtends(name, "--textconv") {
+				return false
+			}
+		}
+		return true
 	case "grep":
-		// `git grep -O<pager>` opens the matching files with an arbitrary
-		// command.  The gate sees lowercased text, so the unrelated `-o` of
-		// other subcommands cannot be told apart from `-O` and this check is
-		// kept scoped to grep, which has no `-o` of its own.
+		// -O / --open-files-in-pager runs a pager. The gate has lowercased
+		// the line, so that short flag is the same token as -o /
+		// --only-matching. The short form stays closed. --open is still the
+		// pager. --only-matching and --or do not extend that name.
 		for _, raw := range rest {
 			arg := strings.TrimSpace(normalizeShellCommandToken(raw))
-			if strings.HasPrefix(arg, "-o") || gitFlagName(arg) == "--open-files-in-pager" {
+			if strings.HasPrefix(arg, "-o") && !strings.HasPrefix(arg, "--") {
+				return false
+			}
+			if codingInquiryLongExtends(gitFlagName(arg), "--open-files-in-pager") {
 				return false
 			}
 		}
@@ -1078,45 +1463,245 @@ func gitFlagName(arg string) string {
 // subcommand into a file write or a command execution.  `--output` writes a
 // path without ever using a shell redirect, so the redirect guard cannot see
 // it; `--upload-pack`/`--exec`/`--receive-pack` name a program for git to run;
-// and `--exec-path` moves the directory git resolves its helper programs from,
-// including the `git-remote-*` transport helpers.
+// `--exec-path` moves the directory git resolves its helper programs from,
+// including the `git-remote-*` transport helpers; and `--ext-diff` runs the
+// external diff helper configured for the path. `--no-ext-diff` does not match.
+//
+// Git accepts a unique prefix, so `--ext-d` is `--ext-diff` and `--out=file`
+// is `--output`. Spelled-out reads do not extend these names: --oneline,
+// --exit-code, --encoding, --unified.
 func gitArgsHaveUnsafeOption(args []string) bool {
 	for _, raw := range args {
 		arg := strings.TrimSpace(normalizeShellCommandToken(raw))
 		if !strings.HasPrefix(arg, "-") {
 			continue
 		}
-		switch gitFlagName(arg) {
-		case "--output", "--upload-pack", "--exec", "--receive-pack", "--exec-path":
+		if codingInquiryGitUnsafeLongOption(gitFlagName(arg)) {
 			return true
 		}
 	}
 	return false
 }
 
-// gitHasConfigInjectionOption reports whether a git command carries a
-// pre-subcommand `-c key=value` or `--config-env`.  Both let a caller point git
-// at an arbitrary pager, alias, or transport helper, which is command
-// execution.  The scan stops at the subcommand so that `git log -c`, where `-c`
-// merely asks for a combined diff, stays available.
-//
-// The shell text reaching this gate has already been lowercased, so `-c` and
-// git's unrelated `-C <path>` cannot be told apart here and both are refused.
-func gitHasConfigInjectionOption(args []string) bool {
+// codingInquiryGitUnsafeLong are the long options matched by prefix in
+// gitArgsHaveUnsafeOption.
+var codingInquiryGitUnsafeLong = []string{
+	"--output", "--upload-pack", "--exec", "--receive-pack", "--exec-path", "--ext-diff",
+}
+
+func codingInquiryGitUnsafeLongOption(name string) bool {
+	if !strings.HasPrefix(name, "--") {
+		return false
+	}
+	for _, full := range codingInquiryGitUnsafeLong {
+		if codingInquiryLongExtends(name, full) {
+			return true
+		}
+	}
+	return false
+}
+
+// codingInquiryRgRunsCommand reports ripgrep's file preprocessor. --pre names
+// a program. --pretty is a printer and --pre-glob is only a glob, so neither
+// matches --pre or --pre=.
+func codingInquiryRgRunsCommand(args []string) bool {
 	for _, raw := range args {
 		arg := strings.TrimSpace(normalizeShellCommandToken(raw))
 		if arg == "" {
 			continue
 		}
-		if !strings.HasPrefix(arg, "-") {
-			return false
+		if arg == "--" {
+			break
 		}
-		switch gitFlagName(arg) {
-		case "-c", "--config-env":
+		if arg == "--pre" || strings.HasPrefix(arg, "--pre=") {
 			return true
 		}
 	}
 	return false
+}
+
+// codingInquiryForcedPager reports ack/ag --pager, including --pager=COMMAND.
+// --nopager is a different option and stays a print.
+func codingInquiryForcedPager(args []string) bool {
+	for _, raw := range args {
+		arg := strings.TrimSpace(normalizeShellCommandToken(raw))
+		if arg == "" {
+			continue
+		}
+		if arg == "--" {
+			break
+		}
+		// --pag is still --pager. --passthru and --nopager do not extend it.
+		if codingInquiryLongExtends(codingInquiryLongName(arg), "--pager") {
+			return true
+		}
+	}
+	return false
+}
+
+// codingInquirySortReadOnly rejects GNU sort's file output. -o may be glued
+// to the filename (-ofile) or clustered with other short flags (-ro). Letters
+// before that o must themselves be sort short flags, so PowerShell
+// -Property / -InputObject are not mistaken for -o.
+func codingInquirySortReadOnly(args []string) bool {
+	for _, raw := range args {
+		arg := strings.TrimSpace(normalizeShellCommandToken(raw))
+		if arg == "" {
+			continue
+		}
+		if arg == "--" {
+			break
+		}
+		name := codingInquiryLongName(arg)
+		// --compress-program runs a program on spill files. --check does not
+		// extend that name. Windows sort.exe writes with /O[UTPUT].
+		if codingInquiryLongExtends(name, "--output") ||
+			codingInquiryLongExtends(name, "--compress-program") ||
+			codingInquirySortSlashOutput(arg) {
+			return false
+		}
+		if codingInquirySortShortOutput(arg) {
+			return false
+		}
+	}
+	return true
+}
+
+func codingInquirySortShortOutput(arg string) bool {
+	if len(arg) < 2 || !strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "--") {
+		return false
+	}
+	body := arg[1:]
+	o := strings.IndexByte(body, 'o')
+	if o < 0 {
+		return false
+	}
+	const shorts = "bcdfghikmnrstuvz"
+	for _, r := range body[:o] {
+		if !strings.ContainsRune(shorts, r) {
+			return false
+		}
+	}
+	return true
+}
+
+// codingInquirySortSlashOutput reports Windows sort.exe /O[UTPUT]. The
+// filename may be a separate argument or glued on. A later slash means an
+// absolute path to read, such as /opt/list.
+func codingInquirySortSlashOutput(arg string) bool {
+	if len(arg) < 2 || !strings.HasPrefix(arg, "/") || strings.Contains(arg[1:], "/") {
+		return false
+	}
+	return arg[1] == 'o'
+}
+
+// codingInquiryTreeReadOnly rejects GNU tree's file output. -o may be glued
+// to the filename. No other tree short flag starts with o.
+func codingInquiryTreeReadOnly(args []string) bool {
+	for _, raw := range args {
+		arg := strings.TrimSpace(normalizeShellCommandToken(raw))
+		if arg == "" {
+			continue
+		}
+		if arg == "--" {
+			break
+		}
+		if codingInquiryLongExtends(codingInquiryLongName(arg), "--output") {
+			return false
+		}
+		if strings.HasPrefix(arg, "-o") && !strings.HasPrefix(arg, "--") {
+			return false
+		}
+	}
+	return true
+}
+
+// codingInquiryHostnameReadOnly allows the print forms only. The gate has
+// already lowercased the line, so -F (set from a file) cannot be told apart
+// from -f (print the FQDN) and both are refused.
+func codingInquiryHostnameReadOnly(args []string) bool {
+	for _, raw := range args {
+		arg := strings.TrimSpace(normalizeShellCommandToken(raw))
+		if arg == "" {
+			continue
+		}
+		if arg == "--" || !strings.HasPrefix(arg, "-") {
+			return false
+		}
+		if strings.HasPrefix(arg, "--") {
+			switch codingInquiryLongMatch(codingInquiryLongName(arg), []string{
+				"--alias", "--domain", "--fqdn", "--all-fqdns",
+				"--ip-address", "--all-ip-addresses", "--short",
+				"--yp", "--nis", "--verbose", "--help", "--version",
+			}) {
+			case "":
+				return false
+			default:
+				continue
+			}
+		}
+		body := arg[1:]
+		if body == "" || strings.ContainsAny(body, "fb") {
+			return false
+		}
+		// -i and -I both print addresses. They fold to the same short flag,
+		// and neither sets the name.
+		for _, r := range body {
+			if !strings.ContainsRune("adisivy", r) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// gitHasConfigInjectionOption reports whether a git command carries a
+// pre-subcommand `-c key=value` or `--config-env`. Both let a caller point git
+// at an arbitrary pager, alias, or transport helper, which is command
+// execution. The scan stops at the subcommand so that `git log -c`, where `-c`
+// merely asks for a combined diff, stays available.
+//
+// The shell text reaching this gate has already been lowercased, so chdir
+// `-C <path>` arrives as `-c`. Git config's operand always contains `=`.
+// An operand without `=` is the directory and is not injection.
+func gitHasConfigInjectionOption(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(normalizeShellCommandToken(args[i]))
+		if arg == "" {
+			continue
+		}
+		if value, skip, ok := gitLoweredCOperand(arg, args, i); ok {
+			if strings.Contains(value, "=") {
+				return true
+			}
+			i += skip
+			continue
+		}
+		if !strings.HasPrefix(arg, "-") {
+			return false
+		}
+		if gitFlagName(arg) == "--config-env" {
+			return true
+		}
+	}
+	return false
+}
+
+// gitLoweredCOperand matches pre-subcommand -C/-c after the gate has
+// lowercased the line. skip is the extra operand argument to step over.
+// The attached form (-Cpath or -ckey=value) keeps skip at 0 and returns the
+// suffix. --config-env is not this option.
+func gitLoweredCOperand(arg string, args []string, i int) (value string, skip int, ok bool) {
+	if arg == "-c" {
+		if i+1 < len(args) {
+			return strings.TrimSpace(normalizeShellCommandToken(args[i+1])), 1, true
+		}
+		return "", 0, true
+	}
+	if strings.HasPrefix(arg, "-c") && !strings.HasPrefix(arg, "--") && len(arg) > 2 {
+		return arg[2:], 0, true
+	}
+	return "", 0, false
 }
 
 // gitTransportHelperURL reports whether an argument is a `helper::payload`

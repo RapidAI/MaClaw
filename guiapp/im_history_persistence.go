@@ -498,6 +498,11 @@ func (h *IMMessageHandler) updatePendingUserReplyFromHistory(userID string, hist
 	if savedTurnIsGoalContinuation(history) {
 		return
 	}
+	// The max-rounds note is host status. It is not a question, and failing
+	// the question check would delete a reply that is still waiting.
+	if resp.sessionRoundContinue || strings.TrimSpace(resp.ResponseSource) == sessionRoundContinuationSource {
+		return
+	}
 	assistantText := sanitizePendingUserReplyQuestion(firstNonEmptyTraceText(resp.Text, latestAssistantText(history)))
 	if assistantText == "" {
 		h.pendingUserReply.Delete(userID)

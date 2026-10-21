@@ -150,6 +150,12 @@ func (r *TaskRunner) runAllSequential(ctx context.Context, tasks []*TaskItem, on
 			}
 			onProgress(fmt.Sprintf("%s T%d: %s — %s", mark, task.Index, task.Title, result.Status))
 		}
+		// A failed step ends the sequence. Later steps have no license to run
+		// just because they forgot depends_on.
+		if result.Status == TaskFailed {
+			r.skipUnstartedAfterFailure(tasks)
+			return r.results
+		}
 	}
 	return r.results
 }
@@ -262,6 +268,10 @@ func (r *TaskRunner) runAllWaves(ctx context.Context, tasks []*TaskItem, onToken
 				}
 				onProgress(fmt.Sprintf("%s T%d: %s — %s", mark, task.Index, task.Title, result.Status))
 			}
+			if result.Status == TaskFailed {
+				r.skipUnstartedAfterFailure(tasks)
+				return r.results
+			}
 			continue
 		}
 
@@ -309,19 +319,51 @@ func (r *TaskRunner) runAllWaves(ctx context.Context, tasks []*TaskItem, onToken
 				r.results[i] = result
 				done[i] = true
 				remaining--
-				if onProgress != nil {
+				mu.Unlock()
+				// Progress can emit UI work. Keep it off the result lock so it
+				// cannot re-enter safeToken while this wave still holds mu.
+				if safeProgress != nil {
 					mark := "[OK]"
 					if result.Status == TaskFailed {
 						mark = "[ERR]"
 					}
-					onProgress(fmt.Sprintf("%s T%d: %s — %s", mark, task.Index, task.Title, result.Status))
+					safeProgress(fmt.Sprintf("%s T%d: %s — %s", mark, task.Index, task.Title, result.Status))
 				}
-				mu.Unlock()
 			}()
 		}
 		wg.Wait()
+		for _, i := range ready {
+			if r.results[i].Status == TaskFailed {
+				r.skipUnstartedAfterFailure(tasks)
+				return r.results
+			}
+		}
 	}
 	return r.results
+}
+
+// skipUnstartedAfterFailure marks every step that has not already finished.
+// A parallel wave already in flight is left alone; the next step does not start.
+func (r *TaskRunner) skipUnstartedAfterFailure(tasks []*TaskItem) {
+	for i, task := range tasks {
+		if r.results[i].Status != "" {
+			continue
+		}
+		index := i + 1
+		title := ""
+		if task != nil {
+			title = task.Title
+			if task.Index > 0 {
+				index = task.Index
+			}
+		}
+		r.results[i] = TaskRunResult{
+			TaskIndex: index,
+			Title:     title,
+			Status:    TaskSkipped,
+			Error:     "skipped: prior step failed",
+		}
+	}
 }
 
 // dependenciesFailed is true when any declared dependency finished as failed/skipped.

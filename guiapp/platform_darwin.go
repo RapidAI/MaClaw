@@ -621,7 +621,6 @@ func (a *App) LaunchInstallerAndExit(installerPath string, targetVersion string)
 		a.log(fmt.Sprintf("[update-install] refusing silent install: %v", err))
 		return err
 	}
-	a.recordPendingUpdate(targetVersion, verifiedPath)
 
 	// A .pkg can be installed without any UI by the system installer, but it
 	// requires root. Only take that path when this process already has it —
@@ -636,6 +635,7 @@ func (a *App) LaunchInstallerAndExit(installerPath string, targetVersion string)
 			a.log(fmt.Sprintf("[update-install] silent pkg install failed: %v output=%s", err, strings.TrimSpace(string(out))))
 		} else {
 			a.log(fmt.Sprintf("[update-install] silent pkg install finished: %s", verifiedPath))
+			a.recordPendingUpdate(targetVersion, verifiedPath)
 			wails_runtime.Quit(a.ctx)
 			return nil
 		}
@@ -645,6 +645,10 @@ func (a *App) LaunchInstallerAndExit(installerPath string, targetVersion string)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	// Only arm the notice once the installer is actually running: a failed
+	// launch installs nothing, and reporting it as an incomplete update would
+	// describe a failure the user already saw.
+	a.recordPendingUpdate(targetVersion, verifiedPath)
 	wails_runtime.Quit(a.ctx)
 	return nil
 }

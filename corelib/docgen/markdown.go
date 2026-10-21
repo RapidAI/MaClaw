@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 var markdownHorizontalRuleDashRe = regexp.MustCompile(`^-{3,}$`)
@@ -559,7 +560,296 @@ func markdownToHTMLStyled(scratch *dataURLScratch, md string, colorful bool, sty
 	if listType != "" {
 		closeList()
 	}
-	return sb.String()
+	return breakInlineTails(sb.String())
+}
+
+// inlineTailBreakRun is the longest spaceless run left as one word after an
+// inline tag. GoPDF2 wraps on spaces only, and a run that does not fit the
+// rest of the line moves to the next line as a whole. A colon sitting just
+// after </b> or </span> is the first character of that run, so it starts the
+// next line whenever the explanation is long. Short tails still fit and stay
+// put, which is why only some colons break.
+const inlineTailBreakRun = 8
+
+// breakInlineTails splits a long spaceless tail that follows inline markup so
+// the PDF can wrap it one cluster at a time. Table cells flatten tags into one
+// string and would show a space between spans, so they are left alone.
+func breakInlineTails(html string) string {
+	var b strings.Builder
+	b.Grow(len(html))
+	pending := false
+	cell := 0
+	for i := 0; i < len(html); {
+		if html[i] != '<' {
+			j := strings.IndexByte(html[i:], '<')
+			if j < 0 {
+				j = len(html) - i
+			}
+			text := html[i : i+j]
+			if pending && cell == 0 && strings.TrimSpace(text) != "" {
+				b.WriteString(spanBreakLongRun(text))
+				pending = false
+			} else {
+				b.WriteString(text)
+				if strings.TrimSpace(text) != "" {
+					pending = false
+				}
+			}
+			i += j
+			continue
+		}
+		j := strings.IndexByte(html[i:], '>')
+		if j < 0 {
+			b.WriteString(html[i:])
+			break
+		}
+		tag := html[i : i+j+1]
+		name, closing := htmlTagName(tag)
+		switch name {
+		case "td", "th":
+			if closing {
+				if cell > 0 {
+					cell--
+				}
+			} else {
+				cell++
+			}
+		}
+		if closing && isInlineTailTag(name) {
+			pending = true
+		} else {
+			pending = false
+		}
+		b.WriteString(tag)
+		i += j + 1
+	}
+	return b.String()
+}
+
+func htmlTagName(tag string) (name string, closing bool) {
+	s := strings.TrimSpace(tag)
+	if len(s) < 3 || s[0] != '<' {
+		return "", false
+	}
+	s = s[1:]
+	if s[0] == '/' {
+		closing = true
+		s = s[1:]
+	}
+	s = strings.TrimLeft(s, " \t\r\n")
+	end := 0
+	for end < len(s) {
+		c := s[end]
+		if c == ' ' || c == '>' || c == '/' || c == '\t' || c == '\r' || c == '\n' {
+			break
+		}
+		end++
+	}
+	return strings.ToLower(s[:end]), closing
+}
+
+func isInlineTailTag(name string) bool {
+	switch name {
+	case "b", "strong", "i", "em", "span", "a", "sub", "sup", "u", "s", "font", "strike", "del", "ins":
+		return true
+	default:
+		return false
+	}
+}
+
+func spanBreakLongRun(text string) string {
+	if !hasLongUnbrokenRun(text, inlineTailBreakRun) {
+		return text
+	}
+	groups := packInlineAtoms(glueInlinePunct(tokenizeInlineRun(text)))
+	if len(groups) <= 1 {
+		return text
+	}
+	var b strings.Builder
+	for _, g := range groups {
+		if g == "" {
+			continue
+		}
+		b.WriteString("<span>")
+		b.WriteString(g)
+		b.WriteString("</span>")
+	}
+	return b.String()
+}
+
+func hasLongUnbrokenRun(s string, n int) bool {
+	count := 0
+	for i := 0; i < len(s); {
+		if strings.HasPrefix(s[i:], "&nbsp;") {
+			count = 0
+			i += len("&nbsp;")
+			continue
+		}
+		if s[i] == '&' {
+			if semi := strings.IndexByte(s[i:], ';'); semi > 0 && semi <= 8 {
+				count++
+				if count >= n {
+					return true
+				}
+				i += semi + 1
+				continue
+			}
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if isInlineSpace(r) {
+			count = 0
+		} else {
+			count++
+			if count >= n {
+				return true
+			}
+		}
+		i += size
+	}
+	return false
+}
+
+type inlineAtom struct {
+	text  string
+	space bool
+	open  bool
+}
+
+func tokenizeInlineRun(s string) []inlineAtom {
+	var atoms []inlineAtom
+	for i := 0; i < len(s); {
+		if strings.HasPrefix(s[i:], "&nbsp;") {
+			j := i + len("&nbsp;")
+			for j < len(s) && (isInlineSpacePrefix(s[j:]) || strings.HasPrefix(s[j:], "&nbsp;")) {
+				if strings.HasPrefix(s[j:], "&nbsp;") {
+					j += len("&nbsp;")
+					continue
+				}
+				_, size := utf8.DecodeRuneInString(s[j:])
+				j += size
+			}
+			atoms = append(atoms, inlineAtom{text: s[i:j], space: true})
+			i = j
+			continue
+		}
+		if s[i] == '&' {
+			if semi := strings.IndexByte(s[i:], ';'); semi > 0 && semi <= 8 {
+				atoms = append(atoms, inlineAtom{text: s[i : i+semi+1]})
+				i += semi + 1
+				continue
+			}
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if isInlineSpace(r) {
+			j := i + size
+			for j < len(s) {
+				if strings.HasPrefix(s[j:], "&nbsp;") {
+					break
+				}
+				rr, sz := utf8.DecodeRuneInString(s[j:])
+				if !isInlineSpace(rr) {
+					break
+				}
+				j += sz
+			}
+			atoms = append(atoms, inlineAtom{text: s[i:j], space: true})
+			i = j
+			continue
+		}
+		if isLatinWordRune(r) {
+			j := i + size
+			for j < len(s) {
+				if s[j] == '&' {
+					break
+				}
+				rr, sz := utf8.DecodeRuneInString(s[j:])
+				if !isLatinWordRune(rr) {
+					break
+				}
+				j += sz
+			}
+			atoms = append(atoms, inlineAtom{text: s[i:j]})
+			i = j
+			continue
+		}
+		atoms = append(atoms, inlineAtom{text: s[i : i+size]})
+		i += size
+	}
+	return atoms
+}
+
+func isInlineSpacePrefix(s string) bool {
+	r, _ := utf8.DecodeRuneInString(s)
+	return isInlineSpace(r)
+}
+
+func isInlineSpace(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\u00a0'
+}
+
+func isLatinWordRune(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || strings.ContainsRune("._-+/#@%':", r)
+}
+
+func isOpeningPunctToken(token string) bool {
+	r, size := utf8.DecodeRuneInString(token)
+	return size == len(token) && strings.ContainsRune("（(【［〔〈《「『“‘", r)
+}
+
+func isClosingPunctToken(token string) bool {
+	r, size := utf8.DecodeRuneInString(token)
+	return size == len(token) && strings.ContainsRune("：:，,。．、；;！!？?）)】］〕〉》」』”’…·～~％%", r)
+}
+
+func glueInlinePunct(atoms []inlineAtom) []inlineAtom {
+	out := make([]inlineAtom, 0, len(atoms))
+	for _, a := range atoms {
+		if a.space {
+			out = append(out, a)
+			continue
+		}
+		if isOpeningPunctToken(a.text) {
+			a.open = true
+			out = append(out, a)
+			continue
+		}
+		if len(out) > 0 && out[len(out)-1].open && !out[len(out)-1].space {
+			out[len(out)-1].text += a.text
+			out[len(out)-1].open = false
+			continue
+		}
+		if isClosingPunctToken(a.text) && len(out) > 0 && !out[len(out)-1].space {
+			out[len(out)-1].text += a.text
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+func packInlineAtoms(atoms []inlineAtom) []string {
+	var groups []string
+	var cur strings.Builder
+	flush := func() {
+		if cur.Len() == 0 {
+			return
+		}
+		groups = append(groups, cur.String())
+		cur.Reset()
+	}
+	for i, a := range atoms {
+		if a.space {
+			cur.WriteString(a.text)
+			continue
+		}
+		cur.WriteString(a.text)
+		if i+1 < len(atoms) && atoms[i+1].space {
+			continue
+		}
+		flush()
+	}
+	flush()
+	return groups
 }
 
 func markdownImageToHTML(scratch *dataURLScratch, line string, colorful bool, style Style) (string, bool) {
