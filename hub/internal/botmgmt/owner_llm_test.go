@@ -343,7 +343,7 @@ func TestRepeatedMessageSkipsUnchangedInstanceMetadata(t *testing.T) {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/auth/token":
 			_, _ = w.Write([]byte(`{"access_token":"bearer-alice","principal":{"user_id":"user_alice"}}`))
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/instances/"):
-			_, _ = w.Write([]byte(`{"id":"inst_alice","metadata":{"hub_bot":"1","hub_user_id":"alice","hub_tenant_id":"tenant-a","llm_service_group_id":"maclaw_official_group","keep":"yes"}}`))
+			_, _ = w.Write([]byte(`{"id":"inst_alice","metadata":{"hub_bot":"1","hub_user_id":"alice","hub_tenant_id":"tenant-a","llm_service_group_id":"maclaw_official_group","hub_materials_folder":"duty","keep":"yes"}}`))
 		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/instances/"):
 			mu.Lock()
 			patches++

@@ -834,6 +834,21 @@ func (s *Service) desktopIdentityMetadata(ctx context.Context, rec *record, toke
 	metadata["hub_bot"] = "1"
 	metadata["hub_user_id"] = userID
 	metadata["hub_tenant_id"] = tenantID
+	// The bot's materials folder (~/素材/<folder>) is decided here, the same
+	// way uploads pick it, so MaClawSrv files run trajectories next to them.
+	var peers []desktop.MaterialPeer
+	if rec != nil {
+		for _, other := range rec.Bots {
+			if other.ID != bot.ID && other.OwnerUserID == bot.OwnerUserID {
+				peers = append(peers, desktop.MaterialPeer{ID: other.ID, Name: other.Name})
+			}
+		}
+	}
+	if folder := desktop.MaterialsFolder(bot.ID, bot.Name, peers); folder != "" {
+		metadata[desktopMaterialsMetadataKey] = folder
+	} else {
+		delete(metadata, desktopMaterialsMetadataKey)
+	}
 	// MaClawSrv gives an isolated bot its own desktop user (and display).
 	if botIsolated(bot) {
 		metadata[desktopBotMetadataKey] = bot.ID

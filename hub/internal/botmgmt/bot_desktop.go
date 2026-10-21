@@ -13,6 +13,10 @@ import (
 // owner's desktop.
 const desktopBotMetadataKey = "hub_desktop_bot"
 
+// desktopMaterialsMetadataKey names the bot's folder under ~/素材 on the
+// desktop (desktop.MaterialsFolder), for MaClawSrv's run trajectories.
+const desktopMaterialsMetadataKey = "hub_materials_folder"
+
 func botIsolated(bot Bot) bool {
 	return strings.TrimSpace(bot.DesktopMode) == desktop.BotDesktopModeIsolated
 }

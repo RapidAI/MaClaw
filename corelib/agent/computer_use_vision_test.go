@@ -120,6 +120,7 @@ func TestRunLoopDropsComputerUseScreenshotWithoutVision(t *testing.T) {
 }
 
 func TestPruneComputerUseVisionImagesKeepsLatest(t *testing.T) {
+	t.Setenv("MACLAW_COMPUTER_USE_KEEP_IMAGES", "1")
 	old := buildComputerUseVisionMessage("openai", []ToolModelImage{{Base64: "oldpng"}})
 	convo := []interface{}{
 		map[string]interface{}{"role": "user", "content": "hi"},
@@ -133,5 +134,44 @@ func TestPruneComputerUseVisionImagesKeepsLatest(t *testing.T) {
 	text, _ := msg["content"].(string)
 	if !strings.Contains(text, "previous screenshot omitted") {
 		t.Fatalf("stale image not pruned: %#v", msg["content"])
+	}
+}
+
+func TestComputerUseVisionKeepsNewestThreeByDefault(t *testing.T) {
+	t.Setenv("MACLAW_COMPUTER_USE_KEEP_IMAGES", "")
+	var convo []interface{}
+	for _, id := range []string{"img1", "img2", "img3", "img4", "img5"} {
+		convo = pruneComputerUseVisionImages(convo)
+		convo = append(convo, buildComputerUseVisionMessage("openai", []ToolModelImage{{Base64: id, MIME: "image/png"}}))
+	}
+	live := ""
+	for _, raw := range convo {
+		mm := raw.(map[string]interface{})
+		if blocks, ok := mm["content"].([]interface{}); ok && computerUseVisionMessage(blocks) {
+			blob, _ := json.Marshal(blocks)
+			live += string(blob)
+		}
+	}
+	for _, id := range []string{"img3", "img4", "img5"} {
+		if !strings.Contains(live, id) {
+			t.Fatalf("%s must stay in context", id)
+		}
+	}
+	for _, id := range []string{"img1", "img2"} {
+		if strings.Contains(live, id) {
+			t.Fatalf("%s must be omitted", id)
+		}
+	}
+	if len(convo) != 5 {
+		t.Fatalf("len=%d", len(convo))
+	}
+}
+
+func TestComputerUseKeepImagesEnv(t *testing.T) {
+	for raw, want := range map[string]int{"": 3, "1": 1, "7": 7, "99": 10, "0": 3, "x": 3} {
+		t.Setenv("MACLAW_COMPUTER_USE_KEEP_IMAGES", raw)
+		if got := ComputerUseKeepImages(); got != want {
+			t.Fatalf("%q: got %d want %d", raw, got, want)
+		}
 	}
 }

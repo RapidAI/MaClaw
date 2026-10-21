@@ -35,7 +35,6 @@ const desktopToolName = "desktop"
 const desktopCDPEnv = "MACLAW_DESKTOP_CDP"
 const desktopContainerEnv = "MACLAW_DESKTOP_CONTAINER"
 const desktopSessionOwner = "maclawsrv-desktop"
-const desktopMaxSteps = 16
 
 // The desktop tool's action vocabulary is one list. Plan and execute advertise
 // that same list. The plan allow-list is only the phase gate: a mutating call
@@ -179,6 +178,11 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	if err != nil {
 		return "", err
 	}
+	if inst, ok := turnInstance(request); ok && inst.Metadata != nil {
+		if folder := strings.TrimSpace(inst.Metadata[desktopMaterialsMetadataKey]); folder != "" {
+			ctx = context.WithValue(ctx, desktopMaterialsFolderKey{}, folder)
+		}
+	}
 	if cloud {
 		ctx = context.WithValue(ctx, desktopCloudKey{}, true)
 		ctx = context.WithValue(ctx, desktopPersonKey{}, desktopAccount{TenantID: scope.TenantID, UserID: scope.UserID})
@@ -195,15 +199,21 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 		return "", fmt.Errorf("这一步由操作电脑的帮手做")
 	}
 	desktopTidyOnce(ctx, desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))))
+	if err := desktopBudgetCheck(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))); err != nil {
+		log.Print(desktopStepLogLine(scope.UserID, args, "", err, 0))
+		return "", err
+	}
 	started := time.Now()
 	out, err := operateDesktop(ctx, scope, args)
 	noteDesktopPageNeed(scope, out)
 	err = desktopDeliverSizeHint(args, err)
 	err = desktopbot.ModelFacingError(err)
+	took := time.Since(started)
+	desktopRecordStep(ctx, desktopOwner(scope), args, out, err, took)
 	if err == nil {
 		out = spillDesktopToolText(ctx, scope, out)
 	}
-	log.Print(desktopStepLogLine(scope.UserID, args, out, err, time.Since(started)))
+	log.Print(desktopStepLogLine(scope.UserID, args, out, err, took))
 	return out, err
 }
 
@@ -1953,8 +1963,8 @@ func desktopBrowserSteps(raw any) ([]browser.StepSpec, error) {
 	if err := json.Unmarshal(encoded, &loose); err != nil {
 		return nil, fmt.Errorf("desktop steps must be an array")
 	}
-	if len(loose) == 0 || len(loose) > desktopMaxSteps {
-		return nil, fmt.Errorf("desktop task_run accepts 1 to %d steps", desktopMaxSteps)
+	if len(loose) == 0 || len(loose) > desktopMaxBatchSteps() {
+		return nil, fmt.Errorf("desktop task_run accepts 1 to %d steps", desktopMaxBatchSteps())
 	}
 	steps := make([]browser.StepSpec, 0, len(loose))
 	for _, step := range loose {
@@ -3168,8 +3178,8 @@ func desktopAppSteps(raw any) ([][]string, error) {
 	if err := json.Unmarshal(encoded, &loose); err != nil {
 		return nil, fmt.Errorf("desktop app steps must be an array")
 	}
-	if len(loose) == 0 || len(loose) > desktopMaxSteps {
-		return nil, fmt.Errorf("desktop app_run accepts 1 to %d steps", desktopMaxSteps)
+	if len(loose) == 0 || len(loose) > desktopMaxBatchSteps() {
+		return nil, fmt.Errorf("desktop app_run accepts 1 to %d steps", desktopMaxBatchSteps())
 	}
 	steps := make([][]string, 0, len(loose))
 	for _, step := range loose {

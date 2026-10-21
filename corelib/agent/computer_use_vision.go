@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"os"
+	"strconv"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -10,6 +12,29 @@ import (
 // computer_observe screenshot so later observes can drop stale images.
 const ComputerUseVisionImageMarker = "[computer_observe screenshot]"
 
+// DefaultComputerUseKeepImages is how many computer-use screenshots stay in
+// the model context. Older ones are replaced by a short marker, the same
+// idea as cua's ImageRetentionCallback (only_n_most_recent_images, MIT,
+// https://github.com/trycua/cua). Override with
+// MACLAW_COMPUTER_USE_KEEP_IMAGES (1 to 10).
+const DefaultComputerUseKeepImages = 3
+
+// ComputerUseKeepImages is the effective screenshot retention.
+func ComputerUseKeepImages() int {
+	raw := strings.TrimSpace(os.Getenv("MACLAW_COMPUTER_USE_KEEP_IMAGES"))
+	if raw == "" {
+		return DefaultComputerUseKeepImages
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return DefaultComputerUseKeepImages
+	}
+	if n > 10 {
+		return 10
+	}
+	return n
+}
+
 func appendComputerUseVisionImages(conversation []interface{}, cfg corelib.MaclawLLMConfig, images []ToolModelImage) []interface{} {
 	if len(images) == 0 || !cfg.SupportsVision {
 		return conversation
@@ -18,30 +43,47 @@ func appendComputerUseVisionImages(conversation []interface{}, cfg corelib.Macla
 	return append(conversation, buildComputerUseVisionMessage(cfg.Protocol, images))
 }
 
+// pruneComputerUseVisionImages makes room for one more screenshot: it keeps
+// the newest ComputerUseKeepImages()-1 images.
 func pruneComputerUseVisionImages(conversation []interface{}) []interface{} {
-	return replaceComputerUseVisionImages(conversation, -1)
+	return keepNewestComputerUseVisionImages(conversation, ComputerUseKeepImages()-1)
 }
 
+// pruneOlderComputerUseVisionImages keeps the newest ComputerUseKeepImages()
+// screenshots and omits the rest.
 func pruneOlderComputerUseVisionImages(conversation []interface{}) []interface{} {
-	last := -1
+	return keepNewestComputerUseVisionImages(conversation, ComputerUseKeepImages())
+}
+
+func keepNewestComputerUseVisionImages(conversation []interface{}, keep int) []interface{} {
+	var idx []int
 	for i, raw := range conversation {
 		msg, ok := raw.(map[string]interface{})
 		if !ok {
+			continue
+		}
+		if role, _ := msg["role"].(string); role != "user" {
 			continue
 		}
 		blocks, ok := msg["content"].([]interface{})
 		if !ok || !computerUseVisionMessage(blocks) {
 			continue
 		}
-		last = i
+		idx = append(idx, i)
 	}
-	if last < 0 {
+	if len(idx) <= keep {
 		return conversation
 	}
-	return replaceComputerUseVisionImages(conversation, last)
+	kept := map[int]bool{}
+	if keep > 0 {
+		for _, i := range idx[len(idx)-keep:] {
+			kept[i] = true
+		}
+	}
+	return replaceComputerUseVisionImages(conversation, kept)
 }
 
-func replaceComputerUseVisionImages(conversation []interface{}, keep int) []interface{} {
+func replaceComputerUseVisionImages(conversation []interface{}, kept map[int]bool) []interface{} {
 	out := make([]interface{}, 0, len(conversation))
 	for i, raw := range conversation {
 		msg, ok := raw.(map[string]interface{})
@@ -59,7 +101,7 @@ func replaceComputerUseVisionImages(conversation []interface{}, keep int) []inte
 			out = append(out, raw)
 			continue
 		}
-		if i == keep {
+		if kept[i] {
 			out = append(out, raw)
 			continue
 		}

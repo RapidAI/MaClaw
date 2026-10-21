@@ -195,6 +195,7 @@ func TestFoldComputerUseObservesPrefersWindowsOverCrop(t *testing.T) {
 }
 
 func TestFoldComputerUseObservesKeepsLastVisionImage(t *testing.T) {
+	t.Setenv("MACLAW_COMPUTER_USE_KEEP_IMAGES", "1")
 	msgs := sampleComputerObserveConversation(sampleComputerObserveDump("A"), sampleComputerObserveDump("B"))
 	msgs = append(msgs,
 		buildComputerUseVisionMessage("openai", []ToolModelImage{{Base64: "oldimg", MIME: "image/png"}}),
