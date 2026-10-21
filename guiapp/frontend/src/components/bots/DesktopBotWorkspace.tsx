@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { DesktopBotOptionChips } from './DesktopBotOptionChips';
 import { createPortal } from 'react-dom';
 import { useDialog } from '../CustomDialog';
 import { EventsOn } from '../../../wailsjs/runtime';
@@ -4611,15 +4612,16 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // A tapped option redirects the run already underway through the
     // supplement path. It never starts, holds, or stops a job. With no live
     // run left the chips are gone, so this only hides them.
-    const pickDesktopBotOption = async (messageId: string, option: string) => {
+    const pickDesktopBotOption = async (messageId: string, option: string, shown: string, typed = false) => {
         if (!selected) return;
         const botId = selected.id;
         const ownerId = userId;
         const hide = () => commit(botId, messagesForBot(ownerId, botId).map(item => item.id === messageId ? { ...item, optionsUsed: true } : item));
         hide();
         const en = String(langRef.current).toLowerCase().startsWith('en');
-        const order = en ? `Change of plan: do "${option}" instead.` : `改成：${option}`;
-        commit(botId, [...messagesForBot(ownerId, botId), { id: messageID(), role: 'user', content: option }]);
+        // A typed "Other" line goes in as written, like any typed supplement.
+        const order = typed ? option : en ? `Change of plan: do "${option}" instead.` : `改成：${option}`;
+        commit(botId, [...messagesForBot(ownerId, botId), { id: messageID(), role: 'user', content: shown }]);
         try {
             const activeRuns = (await GetActiveDesktopRuns(botId) as Array<{ run_id?: string; waiting_for_user?: boolean }>) || [];
             const live = activeRuns.filter(item => item && String(item.run_id || '').trim() !== '');
@@ -5553,20 +5555,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                         )) : null}
                                     </div>
                                     {message.role === 'assistant' && message.options && message.options.length >= 2 && !message.optionsUsed && running ? (
-                                        <div className="desktop-bot-chat__options" data-testid="desktop-bot-options">
-                                            {message.options.map((option, index) => (
-                                                <button
-                                                    type="button"
-                                                    key={option}
-                                                    className={`desktop-bot-chat__action desktop-bot-chat__option${index === 0 ? ' is-default' : ''}`}
-                                                    data-testid="desktop-bot-option"
-                                                    disabled={index === 0}
-                                                    onClick={() => { void pickDesktopBotOption(message.id, option); }}
-                                                >
-                                                    {option}
-                                                </button>
-                                            ))}
-                                        </div>
+                                        <DesktopBotOptionChips
+                                            options={message.options}
+                                            lang={lang}
+                                            onPick={option => { void pickDesktopBotOption(message.id, option, option); }}
+                                            onOther={typed => { void pickDesktopBotOption(message.id, typed, typed, true); }}
+                                        />
                                     ) : null}
                                     {confirmMessage && confirmMessage.id === message.id ? (
                                         <button type="button" className="desktop-bot-chat__action" data-testid="desktop-bot-confirm" disabled={confirmMessage.disabled} onClick={() => {

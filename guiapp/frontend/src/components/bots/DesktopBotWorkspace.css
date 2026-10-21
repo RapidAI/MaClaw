@@ -2460,3 +2460,14 @@
 .desktop-bot-chat__option.is-default {
     opacity: 0.6;
 }
+
+.desktop-bot-chat__other {
+    display: flex;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.desktop-bot-chat__other-input {
+    flex: 1;
+    min-width: 0;
+}

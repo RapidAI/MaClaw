@@ -38,7 +38,7 @@ func TestDesktopBotAcceptOptions(t *testing.T) {
 	in := "去小红书上给大家打个招呼"
 	u := DesktopBotUnderstanding{Told: in, Options: []string{" 发一条新笔记 ", "在评论区留言", "发一条新笔记", "", "私信粉丝", "改个人简介"}, Unclear: "x", Assumption: "y"}
 	got := desktopBotAcceptTold(&u, in, "zh")
-	want := "好的，我先按「发一条新笔记」去做。你要的是不是：发一条新笔记 / 在评论区留言 / 私信粉丝 / 改个人简介？点一下或补充一句，我按你说的改。"
+	want := "好的，我先按「发一条新笔记」去做。你要的是不是：发一条新笔记 / 在评论区留言 / 私信粉丝 / 改个人简介？点一下，或选「其它」写给我，我按你说的改。"
 	if got != want {
 		t.Fatalf("got %q", got)
 	}

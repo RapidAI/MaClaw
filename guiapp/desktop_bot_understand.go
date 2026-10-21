@@ -934,9 +934,9 @@ func desktopBotAcceptTold(u *DesktopBotUnderstanding, text, lang string) string 
 	u.Options = desktopBotOptions(u.Options)
 	if len(u.Options) >= 2 {
 		if en {
-			return fmt.Sprintf("OK, I'll go with \"%s\" for now. Did you mean: %s? Tap one or add a line and I'll adjust.", u.Options[0], strings.Join(u.Options, " / "))
+			return fmt.Sprintf("OK, I'll go with \"%s\" for now. Did you mean: %s? Tap one, or pick \"Other\" and tell me, and I'll adjust.", u.Options[0], strings.Join(u.Options, " / "))
 		}
-		return fmt.Sprintf("好的，我先按「%s」去做。你要的是不是：%s？点一下或补充一句，我按你说的改。", u.Options[0], strings.Join(u.Options, " / "))
+		return fmt.Sprintf("好的，我先按「%s」去做。你要的是不是：%s？点一下，或选「其它」写给我，我按你说的改。", u.Options[0], strings.Join(u.Options, " / "))
 	}
 	unclear := strings.TrimRight(strings.TrimSpace(u.Unclear), "。.，, ")
 	assume := strings.TrimRight(strings.TrimSpace(u.Assumption), "。.，, ")
