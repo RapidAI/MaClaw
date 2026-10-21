@@ -62,6 +62,13 @@ noVNC、xdotool、ImageMagick/scrot。纯 CPU 软件渲染,不需要 GPU。默�
 屏幕固定 `1440x900x24`,可用容器环境变量 `MACLAW_DESKTOP_GEOMETRY` 覆盖;
 supervisor 在没有 XFCE 的旧镜像(`maclaw-gui:1`)上自动回退 fluxbox。
 
+实验性 H.264 观看流(默认关闭,noVNC 仍是默认查看器):容器环境变量
+`MACLAW_DESKTOP_H264=on` 时,noVNC gate(6080)额外响应 `GET /h264.html`(MSE 播放器)
+和 `/h264` 的 WebSocket(ffmpeg x11grab → H.264 baseline 分片 MP4,`mpdecimate`
+丢弃未变化的帧,静止画面几乎不发数据)。鉴权与选屏都用同一个 gate token,只读不收输入;
+每个容器最多 4 路。需要镜像里有 ffmpeg(`Dockerfile.v2` 已加入),没有时返回 503。
+详见 `docs/desktop-computer-use-cua-upgrades.md`。
+
 构建(在 Docker 主机上,构建上下文是 `desktopd/image`):
 
 ```sh

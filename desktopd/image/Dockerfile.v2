@@ -65,7 +65,7 @@ RUN set -eux; \
       fcitx5 fcitx5-chinese-addons fcitx5-frontend-gtk3 fcitx5-frontend-gtk4 fcitx5-frontend-qt5 \
       sudo ca-certificates curl wget gnupg git unzip xz-utils less nano procps psmisc iproute2 \
       xauth x11-utils x11-xserver-utils xclip xsel libfuse2 file xxd \
-      scrot imagemagick at-spi2-core python3-pyatspi wmctrl \
+      scrot imagemagick at-spi2-core python3-pyatspi wmctrl ffmpeg \
       plank picom feh arc-theme papirus-icon-theme dconf-cli dconf-gsettings-backend \
       libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-gtk3 libreoffice-l10n-zh-cn libreoffice-style-breeze fonts-noto-core; \
     sed -i 's/^# *\(zh_CN.UTF-8\)/\1/; s/^# *\(en_US.UTF-8\)/\1/' /etc/locale.gen; \

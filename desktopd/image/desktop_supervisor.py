@@ -3664,6 +3664,9 @@ def gate_connection(client, listen_port, target_port, token):
     reap_children()
     try:
         head = read_request_head(client)
+        if head is not None and listen_port == VNC_GATE_PORT and h264_requested(head):
+            serve_h264(client, head, token)
+            return
         route = None
         if head is not None:
             if request_authorized(head, token):
@@ -3763,6 +3766,235 @@ def request_authorized(head, token):
         return hmac.compare_digest(credential.strip(), token)
     return False
 
+
+
+# ---------------------------------------------------------------------------
+# H.264 view stream (experimental, off by default).
+#
+# MACLAW_DESKTOP_H264=on in the container lets the noVNC gate (6080) answer a
+# WebSocket upgrade on /h264 with the screen as fragmented MP4 (H.264
+# baseline, one fragment per frame) for a Media Source Extensions player; GET
+# /h264.html is that player. The token is the same gate token noVNC uses
+# (Authorization: Bearer, attached by desktopd/Hub), and it selects the
+# screen: the owner's display or a bot's display. The stream is view-only;
+# input stays on noVNC, which remains the default viewer.
+#
+# Damage-driven: ffmpeg's mpdecimate drops frames that did not change, and
+# variable frame rate output means an idle screen sends nothing but rare
+# keyframes. This approximates an XDamage-driven encoder without new native
+# code. Written for MaClaw; the idea of a damage-driven H.264 desktop stream
+# follows trycua/cua (MIT), no code was taken from it.
+
+H264_MAX_STREAMS = 4
+H264_FPS = 30
+_h264_streams = threading.BoundedSemaphore(H264_MAX_STREAMS)
+
+
+def h264_enabled(env=None):
+    env = os.environ if env is None else env
+    return str(env.get("MACLAW_DESKTOP_H264", "")).strip().lower() in ("1", "on", "true", "yes")
+
+
+def request_target(head):
+    """(method, path) of an HTTP request head."""
+    try:
+        line = head.decode("latin-1").split("\n", 1)[0].strip()
+    except UnicodeDecodeError:
+        return "", ""
+    parts = line.split(" ")
+    if len(parts) < 2:
+        return "", ""
+    return parts[0].upper(), urlsplit(parts[1]).path
+
+
+def request_header(head, wanted):
+    try:
+        text = head.decode("latin-1")
+    except UnicodeDecodeError:
+        return ""
+    for line in text.split("\n")[1:]:
+        if line.strip() == "":
+            break
+        name, _, value = line.partition(":")
+        if name.strip().lower() == wanted:
+            return value.strip()
+    return ""
+
+
+def h264_requested(head, env=None):
+    if not h264_enabled(env):
+        return False
+    return h264_path(head) != ""
+
+
+def h264_path(head):
+    """"/h264", "/h264.html" or "". A Hub or desktopd tunnel prefix is kept
+    in front of the path, so only the last segment counts."""
+    _, path = request_target(head)
+    last = "/" + path.rsplit("/", 1)[-1]
+    return last if last in ("/h264", "/h264.html") else ""
+
+
+def h264_display(credential, owner_token):
+    """The display a gate token may watch, or None."""
+    if not credential:
+        return None
+    users = load_registry().get("users", {}) or {}
+    for key, entry in users.items():
+        entry = entry or {}
+        token = str(entry.get("token") or "")
+        if not token or not hmac.compare_digest(token, credential):
+            continue
+        try:
+            display = int(entry.get("display") or 0)
+        except (TypeError, ValueError):
+            return None
+        return display if DISPLAY_MIN <= display <= DISPLAY_MAX else None
+    if owner_token and hmac.compare_digest(credential, owner_token):
+        return DISPLAY_MIN
+    return None
+
+
+def h264_ffmpeg_argv(display, size, fps=H264_FPS):
+    return [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+        "-f", "x11grab", "-draw_mouse", "1", "-framerate", str(fps),
+        "-video_size", size, "-i", ":%d" % display,
+        "-vf", "mpdecimate=hi=768:lo=320:frac=0.33,format=yuv420p",
+        "-fps_mode", "vfr",
+        "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+        "-profile:v", "baseline", "-level", "4.1", "-g", str(fps * 4), "-bf", "0",
+        "-crf", "28", "-maxrate", "6M", "-bufsize", "3M",
+        "-movflags", "empty_moov+default_base_moof+frag_every_frame",
+        "-f", "mp4", "pipe:1",
+    ]
+
+
+def ws_server_frame(payload, opcode=0x82):
+    length = len(payload)
+    header = bytearray([opcode])
+    if length < 126:
+        header.append(length)
+    elif length < 65536:
+        header.append(126)
+        header.extend(struct.pack(">H", length))
+    else:
+        header.append(127)
+        header.extend(struct.pack(">Q", length))
+    return bytes(header) + payload
+
+
+def ws_accept_key(key):
+    digest = hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("latin-1")).digest()
+    return base64.b64encode(digest).decode("ascii")
+
+
+H264_PLAYER = r"""<!doctype html><meta charset=utf-8><title>desktop</title>
+<style>html,body{margin:0;height:100%;background:#111}video{width:100%;height:100%;object-fit:contain}</style>
+<video id=v autoplay muted playsinline></video>
+<script>
+// View-only H.264 player for the MaClaw desktop gate (MACLAW_DESKTOP_H264=on).
+const v=document.getElementById("v"),ms=new MediaSource(),q=[];let sb;
+v.src=URL.createObjectURL(ms);
+ms.addEventListener("sourceopen",()=>{
+ sb=ms.addSourceBuffer('video/mp4; codecs="avc1.42E029"');sb.mode="sequence";
+ sb.addEventListener("updateend",pump);
+ const ws=new WebSocket(location.href.replace(/^http/,"ws").replace(/h264\.html.*$/,"h264"));
+ ws.binaryType="arraybuffer";
+ ws.onmessage=e=>{q.push(e.data);pump();};
+});
+function pump(){
+ if(!sb||sb.updating||!q.length)return;
+ sb.appendBuffer(q.shift());
+ const b=sb.buffered;if(b.length&&v.currentTime<b.end(0)-0.3)v.currentTime=b.end(0)-0.05;
+ if(b.length&&b.end(0)-b.start(0)>30&&!sb.updating){try{sb.remove(b.start(0),b.end(0)-10)}catch(_){}}
+}
+</script>"""
+
+
+def serve_h264(client, head, owner_token):
+    """Serve the player page, or stream one display as fMP4 over WebSocket."""
+    method, _ = request_target(head)
+    path = h264_path(head)
+    display = h264_display(request_bearer(head), owner_token)
+    try:
+        if display is None or method != "GET":
+            client.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            return
+        if path == "/h264.html":
+            body = H264_PLAYER.encode("utf-8")
+            client.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\n"
+                           b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(body) + body)
+            return
+        key = request_header(head, "sec-websocket-key")
+        if request_header(head, "upgrade").lower() != "websocket" or not key:
+            client.sendall(b"HTTP/1.1 426 Upgrade Required\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            return
+        if shutil.which("ffmpeg") is None or not _h264_streams.acquire(blocking=False):
+            client.sendall(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            return
+        try:
+            stream_h264(client, key, display)
+        finally:
+            _h264_streams.release()
+    except OSError:
+        pass
+    finally:
+        try:
+            client.close()
+        except OSError:
+            pass
+
+
+def stream_h264(client, key, display):
+    width, height = desktop_geometry().split("x")[:2]
+    client.settimeout(None)
+    client.sendall(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                    "Sec-WebSocket-Accept: %s\r\n\r\n" % ws_accept_key(key)).encode("latin-1"))
+    env = dict(os.environ, DISPLAY=":%d" % display)
+    proc = subprocess.Popen(h264_ffmpeg_argv(display, "%sx%s" % (width, height)), stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, env=env)
+    closed = threading.Event()
+
+    def watch_client():
+        # The viewer sends nothing but pings and a close; any read end stops
+        # the encoder so a closed tab does not keep ffmpeg running.
+        pending = bytearray()
+        try:
+            while not closed.is_set():
+                _, opcode, data = ws_frame(client, pending)
+                if opcode == 8:
+                    break
+                if opcode == 9:
+                    client.sendall(ws_server_frame(data, 0x8A))
+        except (OSError, ValueError, struct.error):
+            pass
+        closed.set()
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+    threading.Thread(target=watch_client, daemon=True).start()
+    note_gate_activity()
+    try:
+        while not closed.is_set():
+            chunk = proc.stdout.read1(256 * 1024) if hasattr(proc.stdout, "read1") else proc.stdout.read(65536)
+            if not chunk:
+                break
+            client.sendall(ws_server_frame(chunk))
+    finally:
+        closed.set()
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        proc.wait()
+        # Wakes watch_client's blocked read; close alone does not.
+        try:
+            client.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
