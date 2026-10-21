@@ -3928,7 +3928,10 @@ def h264_screen(credential, owner_token):
             return None
         if not DISPLAY_MIN <= display <= DISPLAY_MAX:
             return None
-        return display, str(key), False
+        # ensure_gates stores the owner's gate token in the registry too, so
+        # the owner's own entry matches here and must keep owner rights.
+        owner = owner_key()
+        return display, str(key), bool(owner) and str(key) == owner
     if owner_token and hmac.compare_digest(credential, owner_token):
         return DISPLAY_MIN, owner_key(), True
     return None

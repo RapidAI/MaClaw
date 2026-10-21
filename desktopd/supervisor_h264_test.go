@@ -33,6 +33,21 @@ print(sup.h264_display("b0" * 16, "aa" * 16), sup.h264_display("aa" * 16, "aa" *
 	}
 }
 
+// The owner's own registry entry (ensure_gates writes its gate token there)
+// still selects the owner screen with input rights; a bot token does not.
+func TestSupervisorH264OwnerRegistryEntryKeepsInput(t *testing.T) {
+	out := runSupervisorPython(t, `
+os.environ["MACLAW_DESKTOP_KEY"] = "ab" * 8
+bot = "ab" * 8 + "cd" * 8
+(sup.ROOT / "registry.json").write_text(json.dumps({"users": {"ab" * 8: {"token": "aa" * 16, "display": 20}, bot: {"token": "b0" * 16, "display": 23}}}))
+o, b = sup.h264_screen("aa" * 16, "aa" * 16), sup.h264_screen("b0" * 16, "aa" * 16)
+print(o[0], o[1] == "ab" * 8, o[2], b[0], b[1] == bot, b[2])
+`)
+	if out != "20 True True 23 True False" {
+		t.Fatalf("got %q", out)
+	}
+}
+
 // End to end over a socket pair with a stand-in ffmpeg: a wrong token is
 // refused, the player page is served, and the stream upgrades, says hello
 // and relays the encoder's bytes. ?mse=1 keeps the raw fragmented MP4.
