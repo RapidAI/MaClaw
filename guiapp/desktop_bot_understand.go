@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
@@ -59,6 +60,12 @@ type DesktopBotUnderstanding struct {
 	// words were passed on as the order, the same as "send my own words".
 	// It names the failure that caused it: unreachable or unread.
 	Fallback string `json:"fallback,omitempty"`
+	// Goal is a short verb phrase naming the job ("去小红书打个招呼"), used to
+	// phrase the acceptance line. Unclear names what is ambiguous and
+	// Assumption how the work proceeds anyway; neither ever blocks the job.
+	Goal       string `json:"goal,omitempty"`
+	Unclear    string `json:"unclear,omitempty"`
+	Assumption string `json:"assumption,omitempty"`
 }
 
 // The reading of a message is a helper for the turn, not the turn itself, so a
@@ -153,6 +160,8 @@ told is the sentence this person sees at once. Write it in the language named be
 
 instruction is a card for the computer helper, not a driving script. The helper follows this card and does not see the kept persona except through this card. The card has three parts in this order: goal, constraints, and success criteria. goal is the outcome in one sentence. constraints are what must not be done. success criteria say how the three-line report is checked. Do not name click, type, or computer. Do not say what the chat reply must contain. The foreground agent sends the chat reply. Write the card in the same language as told. Leave it an empty string when there is no desktop work. For schedule, the card is the order for one later run. A repeated greeting is still a card: the goal is that greeting.
 
+goal is a short verb phrase (under 20 characters) naming the job in the language named below, such as 去小红书打个招呼. Empty when there is no desktop work.
+unclear and assumption: when pace is direct but part of the request is ambiguous, unclear names that part briefly and assumption says how you will proceed anyway. Still do the work; do not switch to ask or confirm for this. Leave both empty when the request is clear.
 pace is direct, confirm, ask, reply, schedule, or status.
 - direct: the request is clear and this turn can finish it. A lookup, a screenshot, opening or reading a named page, writing or revising a file they already described, a small change they spelled out. told says you are doing it now. instruction is the concrete work. A document they asked for uses desktop action=deliver. A file already on the desktop, including a pdf, uses path so the chat receives that file. Text to send uses name and content. Do not leave a confirmation. A request that names a later time or a repeat is schedule, not direct.
 - confirm: the change is large or hard to undo, and they have not already approved it. Installing or removing software, deleting, paying, sending on their behalf, wiping, or a long procedure. told is the one arrangement, in one or two sentences. instruction is the concrete work the worker will do after they approve: the goal, the constraints, and the success criteria. Do not tell the helper what the chat reply must contain. Do not tell the worker to only describe the arrangement, to skip the change, or to wait for another confirmation. There is no second confirmation. A large or hard-to-undo change that also names a time stays confirm, and schedule is omitted. After they approve, the execute reading is direct and instruction is that concrete work. It is schedule only when the confirmed work itself names a later time or a repeat.
@@ -371,12 +380,17 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 			}
 			break
 		}
+		if understood.Pace == "direct" {
+			understood.Told = desktopBotAcceptTold(understood, text, lang)
+		}
 		log.Printf("[desktop-bot-understand] phase=%s pace=%s lang=%s attempt=%d elapsed=%s earlier=%d text_len=%d told_len=%d instruction_len=%d persona_len=%d",
 			phase, understood.Pace, lang, attempt, time.Since(started).Round(time.Millisecond), len(earlier),
 			utf8.RuneCountInString(text), utf8.RuneCountInString(understood.Told), utf8.RuneCountInString(understood.Instruction), utf8.RuneCountInString(understood.Persona))
 		return understood, nil
 	}
-	return desktopBotVerbatimFallback(lastClass, lastOutcome, text, phase, earlier), nil
+	fb := desktopBotVerbatimFallback(lastClass, lastOutcome, text, phase, earlier)
+	fb.Told = desktopBotAcceptTold(fb, text, lang)
+	return fb, nil
 }
 
 // desktopBotVerbatimFallback is what happens when every attempt failed on a
@@ -879,4 +893,64 @@ func heuristicDesktopTaskSupplement(activeTask, newMessage string) *DesktopTaskS
 		}
 	}
 	return &DesktopTaskSupplementEval{IsSupplement: false, Reason: "not classified as supplement"}
+}
+
+// desktopBotEnglish reports whether the acceptance line should be English.
+func desktopBotEnglish(lang string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(lang)), "en")
+}
+
+// desktopBotSameWords compares two lines ignoring spaces and punctuation, so
+// a told that only parrots the person's message is caught.
+func desktopBotSameWords(a, b string) bool {
+	norm := func(s string) string {
+		var out []rune
+		for _, r := range s {
+			if unicode.IsLetter(r) || unicode.IsNumber(r) {
+				out = append(out, unicode.ToLower(r))
+			}
+		}
+		return string(out)
+	}
+	na, nb := norm(a), norm(b)
+	return na == "" || na == nb || (len(nb) > 0 && strings.Contains(nb, na) && utf8.RuneCountInString(na)*10 >= utf8.RuneCountInString(nb)*8)
+}
+
+// desktopBotAcceptTold is the first line the person sees when a job is
+// taken. It never echoes their raw words and never asks for confirmation.
+func desktopBotAcceptTold(u *DesktopBotUnderstanding, text, lang string) string {
+	en := desktopBotEnglish(lang)
+	if u.Fallback != "" {
+		if en {
+			return "OK, I'll try it exactly as you put it. Stop me anytime if I've got it wrong."
+		}
+		return "好的，我先照你的原话去试试，哪里理解偏了随时叫停我。"
+	}
+	unclear := strings.TrimRight(strings.TrimSpace(u.Unclear), "。.，, ")
+	assume := strings.TrimRight(strings.TrimSpace(u.Assumption), "。.，, ")
+	if unclear != "" && assume != "" {
+		if en {
+			return fmt.Sprintf("OK, I'll go with \"%s\" for now; I'm not sure about %s, so tell me anytime if that's off.", clipRunes(assume, 60), clipRunes(unclear, 60))
+		}
+		return fmt.Sprintf("好的，我先按「%s」去做；%s这点我不太确定，不对的话随时告诉我。", clipRunes(assume, 40), clipRunes(unclear, 40))
+	}
+	told := strings.TrimSpace(u.Told)
+	if told != "" && told != "STOP_WORK" && !desktopBotSameWords(told, text) && !desktopBotSameWords(told, u.Instruction) {
+		return told
+	}
+	if told == "STOP_WORK" {
+		return told
+	}
+	goal := strings.TrimRight(strings.TrimSpace(u.Goal), "。.!！ ")
+	if goal != "" && !desktopBotSameWords(goal, text) && utf8.RuneCountInString(goal) <= 30 {
+		if en {
+			return fmt.Sprintf("Sure, I'll %s now and keep you posted.", goal)
+		}
+		goal = strings.TrimPrefix(goal, "去")
+		return fmt.Sprintf("好的，我这就去%s，有进展告诉你。", goal)
+	}
+	if en {
+		return "Sure, I'm on it and will keep you posted."
+	}
+	return "好的，我这就开始弄，弄完告诉你。"
 }
