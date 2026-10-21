@@ -4754,6 +4754,10 @@ export function EvaluateDesktopTaskSupplement(arg1, arg2, arg3) {
   return window['go']['main']['App']['EvaluateDesktopTaskSupplement'](arg1, arg2, arg3);
 }
 
+export function UploadDesktopBotMaterialChunk(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['UploadDesktopBotMaterialChunk'](arg1, arg2, arg3, arg4, arg5, arg6);
+}
+
 export function AppendDesktopBotSupplement(arg1, arg2, arg3) {
   return window['go']['main']['App']['AppendDesktopBotSupplement'](arg1, arg2, arg3);
 }

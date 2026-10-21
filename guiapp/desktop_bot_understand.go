@@ -163,6 +163,7 @@ const desktopBotUnderstandSystem = `You are the foreground agent for one cloud-d
 told is the sentence this person sees at once. Write it in the language named below, in your own words for this message. For direct, confirm, and ask, say what you understood they want and what happens next. For reply, told is the answer itself, not a plan of what happens next. For schedule, told says the timed work is set or stopped, and does not do that work. One or two sentences. Do not ask them to confirm work you are already doing.
 
 instruction is a card for the computer helper, not a driving script. The helper follows this card and does not see the kept persona except through this card. The card has three parts in this order: goal, constraints, and success criteria. goal is the outcome in one sentence. constraints are what must not be done. success criteria say how the three-line report is checked. Do not name click, type, or computer. Do not say what the chat reply must contain. The foreground agent sends the chat reply. Write the card in the same language as told. Leave it an empty string when there is no desktop work. For schedule, the card is the order for one later run. A repeated greeting is still a card: the goal is that greeting.
+When the message ends with a [素材] list, those are files the person uploaded; they are already on the desktop at the listed ~/素材/ paths. The card names every listed path exactly and says to use them as the materials (in a file picker, type or paste the full path). Do not ask for files that are listed.
 
 goal is a short verb phrase (under 20 characters) naming the job in the language named below, such as 去小红书打个招呼. Empty when there is no desktop work.
 unclear and assumption: when pace is direct but part of the request is ambiguous, unclear names that part briefly and assumption says how you will proceed anyway. Still do the work; do not switch to ask or confirm for this. Leave both empty when the request is clear.
@@ -834,6 +835,11 @@ func (a *App) EvaluateDesktopTaskSupplement(activeTask, newMessage, lang string)
 	if desktopSupplementDisabled() {
 		return &DesktopTaskSupplementEval{IsSupplement: false, Reason: "supplement disabled"}, nil
 	}
+	// Files attached while a job runs are materials for that job. The words
+	// go in whole so the ~/素材/ paths reach the worker unchanged.
+	if desktopBotHasMaterials(newMessage) {
+		return &DesktopTaskSupplementEval{IsSupplement: true, Reason: "materials attached", Instruction: newMessage}, nil
+	}
 
 	if a != nil {
 		if hub := a.hubClient(); hub != nil {
@@ -986,4 +992,20 @@ func desktopBotOptions(in []string) []string {
 		return nil
 	}
 	return out
+}
+
+// desktopBotHasMaterials reports a trailing [素材] list of ~/素材/ paths, as
+// the GUI appends when files are attached to a message.
+func desktopBotHasMaterials(message string) bool {
+	at := strings.LastIndex(message, "[素材]\n")
+	if at < 0 || (at > 0 && message[at-1] != '\n') {
+		return false
+	}
+	lines := strings.Split(strings.TrimSpace(message[at+len("[素材]\n"):]), "\n")
+	for _, line := range lines {
+		if !strings.HasPrefix(strings.TrimSpace(line), "- ~/素材/") {
+			return false
+		}
+	}
+	return len(lines) > 0
 }

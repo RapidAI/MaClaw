@@ -1,5 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { DesktopBotOptionChips } from './DesktopBotOptionChips';
+import { DesktopBotMaterialChips, DesktopBotMaterialStrip } from './DesktopBotMaterialStrip';
+import { materialTooLarge, materialUploadId, splitMaterials, uploadMaterial, withMaterials, type MaterialItem } from './desktopBotMaterials';
 import { createPortal } from 'react-dom';
 import { useDialog } from '../CustomDialog';
 import { EventsOn } from '../../../wailsjs/runtime';
@@ -11,6 +13,7 @@ import {
     CreateDesktopBot,
     CancelDesktopBotRun,
     AppendDesktopBotSupplement,
+    UploadDesktopBotMaterialChunk,
     DeleteDesktopBot,
     DeleteDesktopBotSchedule,
     DesktopBotDesktopAdmin,
@@ -1793,6 +1796,31 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const noteQueuedRef = useRef<(botId: string) => void>(() => undefined);
     const langRef = useRef(lang);
     langRef.current = lang;
+    // Files waiting to go with the next message, per bot. Each uploads to the
+    // bot's ~/素材/<bot>/ folder as soon as it is attached.
+    const [materialsByBot, setMaterialsByBot] = useState<Record<string, MaterialItem[]>>({});
+    const patchMaterial = useCallback((botId: string, id: string, patch: Partial<MaterialItem> | null) => {
+        setMaterialsByBot(current => {
+            const list = current[botId] || [];
+            const next = patch === null ? list.filter(item => item.id !== id) : list.map(item => item.id === id ? { ...item, ...patch } : item);
+            return { ...current, [botId]: next };
+        });
+    }, []);
+    const attachMaterials = useCallback((botId: string, files: File[]) => {
+        for (const file of files) {
+            const id = materialUploadId();
+            const item: MaterialItem = { id, name: file.name || 'file', size: file.size, sent: 0, status: 'uploading' };
+            if (materialTooLarge(file.size) || file.size <= 0) {
+                item.status = 'error';
+                item.error = file.size <= 0 ? 'empty' : 'too_large';
+            }
+            setMaterialsByBot(current => ({ ...current, [botId]: [...(current[botId] || []), item] }));
+            if (item.status === 'error') continue;
+            void uploadMaterial(file, botId, async (bot, uploadId, name, offset, total, data) => await UploadDesktopBotMaterialChunk(bot, uploadId, name, offset, total, data), sent => patchMaterial(botId, id, { sent }), id)
+                .then(path => patchMaterial(botId, id, { status: 'done', path, sent: file.size }))
+                .catch(error => patchMaterial(botId, id, { status: 'error', error: String((error as Error)?.message || error) }));
+        }
+    }, [patchMaterial]);
     // Seq is the process-wide hold generation. A snapshot older than the last
     // applied event must not put a finished schedule back on the keyboard.
     const busySeqRef = useRef(0);
@@ -5512,13 +5540,15 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 <p className="desktop-bot-chat__pick" data-testid="desktop-bot-pick">{text.pickEmpty}</p>
                             ) : null}
                             {messages.filter(message => !message.pending).map(message => {
-                                const rawBody = desktopBotBubbleBody(message.content, message.failed === true, message.askUser?.question || '', lang);
+                                const sentMaterials = message.role === 'user' ? splitMaterials(message.content || '') : { text: message.content, paths: [] as string[] };
+                                const rawBody = desktopBotBubbleBody(sentMaterials.text, message.failed === true, message.askUser?.question || '', lang);
                                 const body = message.role === 'assistant' ? stripConfirmedOrderLead(rawBody) : rawBody;
                                 const structured = message.role === 'assistant' && !message.failed && botMessageIsStructured(body);
                                 return (
                                 <div key={message.id} className={`desktop-bot-chat__entry desktop-bot-chat__entry--${message.role}`} data-message-role={message.role}>
                                     <div className={`desktop-bot-chat__bubble desktop-bot-chat__bubble--${message.role}${message.failed ? ' is-failed' : ''}${structured ? '' : ' is-plain'}`}>
                                         {structured ? <BotMessageBody text={body} /> : body}
+                                        {sentMaterials.paths.length ? <DesktopBotMaterialChips paths={sentMaterials.paths} /> : null}
                                         {message.role === 'assistant' && message.noticeBots && message.noticeBots.length > 0 ? (
                                             <span className="desktop-bot-chat__notice-bots" data-testid="desktop-bot-notice-bots">
                                                 {message.noticeBots.map(bot => (
@@ -5688,11 +5718,32 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             lang={lang}
                             value={command}
                             onChange={setCommand}
-                            onSubmit={() => { void send(); }}
+                            onSubmit={() => {
+                                const pending = materialsByBot[selected.id] || [];
+                                if (pending.some(item => item.status === 'uploading')) return;
+                                const paths = pending.filter(item => item.status === 'done' && item.path).map(item => item.path as string);
+                                if (paths.length === 0) { void send(); return; }
+                                const content = withMaterials(command, paths, lang);
+                                setCommand('');
+                                setMaterialsByBot(current => ({ ...current, [selected.id]: [] }));
+                                void send(content);
+                            }}
                             disabled={!!secretForSelected}
                             placeholder={text.messageTo(selected.title)}
                             ariaLabel={text.messageTo(selected.title)}
                             sendLabel={text.send}
+                            leading={(
+                                <DesktopBotMaterialStrip
+                                    items={materialsByBot[selected.id] || []}
+                                    lang={lang}
+                                    disabled={!!secretForSelected}
+                                    onAttach={files => attachMaterials(selected.id, files)}
+                                    onRemove={id => patchMaterial(selected.id, id, null)}
+                                />
+                            )}
+                            onFiles={files => attachMaterials(selected.id, files)}
+                            readyWithoutText={(materialsByBot[selected.id] || []).some(item => item.status === 'done')}
+                            holdSend={(materialsByBot[selected.id] || []).some(item => item.status === 'uploading')}
                         />
                         <p className="desktop-bot-chat__hint">{secretForSelected ? text.secretHint : text.composerHint}</p>
                     </>

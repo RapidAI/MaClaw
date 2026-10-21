@@ -2376,6 +2376,8 @@ export function ClassifyDesktopWorkStop(arg1:string,arg2:string):Promise<string>
 
 export function EvaluateDesktopTaskSupplement(arg1:string,arg2:string,arg3:string):Promise<{is_supplement:boolean,reason?:string,instruction?:string}>;
 
+export function UploadDesktopBotMaterialChunk(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number,arg6:string):Promise<{upload_id:string,name:string,received:number,total:number,done:boolean,path?:string}>;
+
 export function AppendDesktopBotSupplement(arg1:string,arg2:string,arg3:string):Promise<{accepted:boolean,run_id?:string,stage:string,message:string,supplement_id?:string,candidates?:Array<string>}>;
 
 export function GetDesktopBotSupplements(arg1:string,arg2:string):Promise<Array<{id:string,state:string,content?:string}>>;

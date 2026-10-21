@@ -2471,3 +2471,67 @@
     flex: 1;
     min-width: 0;
 }
+
+/* Inside the composer form: the paperclip sits left of the text box and the
+   attached files wrap onto a row above it. */
+.desktop-bot-chat__form {
+    flex-wrap: wrap;
+}
+
+.desktop-bot-materials {
+    display: contents;
+}
+
+.desktop-bot-materials__attach {
+    flex: 0 0 auto;
+    align-self: center;
+}
+
+.desktop-bot-materials > .desktop-bot-materials__item {
+    order: -1;
+}
+
+.desktop-bot-materials__item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 240px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid rgba(127, 127, 127, 0.35);
+    font-size: 12px;
+}
+
+.desktop-bot-materials__item.is-error {
+    border-color: #d33;
+    color: #d33;
+}
+
+.desktop-bot-materials__name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.desktop-bot-materials__meta {
+    opacity: 0.7;
+}
+
+.desktop-bot-materials__remove {
+    border: 0;
+    background: none;
+    cursor: pointer;
+    padding: 0 2px;
+}
+
+.desktop-bot-materials__sent {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.desktop-bot-chat__form.is-dragging {
+    outline: 2px dashed rgba(80, 140, 255, 0.7);
+    outline-offset: -4px;
+}

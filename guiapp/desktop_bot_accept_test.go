@@ -54,3 +54,15 @@ func TestDesktopBotAcceptOptions(t *testing.T) {
 		t.Fatalf("parse %v %v", err, parsed.Options)
 	}
 }
+
+func TestDesktopBotHasMaterials(t *testing.T) {
+	yes := "用这些图发小红书\n\n[素材]\n- ~/素材/小红书助手/a.png\n- ~/素材/小红书助手/b.mp4"
+	if !desktopBotHasMaterials(yes) || !desktopBotHasMaterials("[素材]\n- ~/素材/x/a.png") {
+		t.Fatal("materials not seen")
+	}
+	for _, no := range []string{"普通消息", "x[素材]\n- ~/素材/a", "t\n[素材]\n- /etc/passwd", "t\n[素材]\nhello"} {
+		if desktopBotHasMaterials(no) {
+			t.Fatalf("false positive %q", no)
+		}
+	}
+}

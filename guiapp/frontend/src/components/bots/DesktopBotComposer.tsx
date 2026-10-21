@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { InputHistoryAutocomplete } from '../ai/InputHistoryAutocomplete';
 import { useAssistantInputHistory } from '../ai/useAssistantInputHistory';
 import { useInputHistoryAutocomplete } from '../ai/useInputHistoryAutocomplete';
@@ -17,6 +17,17 @@ interface DesktopBotComposerProps {
     placeholder: string;
     ariaLabel: string;
     sendLabel: string;
+    // Attached materials: shown at the top of the form. Files dropped or
+    // pasted onto the form go to onFiles. readyWithoutText lets the files
+    // go alone; holdSend keeps the send off while one still uploads.
+    leading?: ReactNode;
+    onFiles?: (files: File[]) => void;
+    readyWithoutText?: boolean;
+    holdSend?: boolean;
+}
+
+function droppedFiles(list: FileList | null | undefined): File[] {
+    return list ? Array.from(list) : [];
 }
 
 // The popup borrows the assistant list. These colors follow the bot surface
@@ -43,7 +54,12 @@ export function DesktopBotComposer({
     placeholder,
     ariaLabel,
     sendLabel,
+    leading,
+    onFiles,
+    readyWithoutText = false,
+    holdSend = false,
 }: DesktopBotComposerProps) {
+    const [dragging, setDragging] = useState(false);
     const inputRef = useRef<HTMLTextAreaElement>(null);
     const textComposition = useTextCompositionGuard();
     const [isComposing, setIsComposing] = useState(false);
@@ -99,8 +115,8 @@ export function DesktopBotComposer({
 
     const submitTyped = () => {
         const text = value.trim();
-        if (!text || disabled) return;
-        setHistory(rememberBotInput(userId, text));
+        if ((!text && !readyWithoutText) || disabled || holdSend) return;
+        if (text) setHistory(rememberBotInput(userId, text));
         resetHistoryBrowsing();
         onSubmit();
     };
@@ -133,12 +149,28 @@ export function DesktopBotComposer({
 
     return (
         <form
-            className="desktop-bot-chat__form"
+            className={`desktop-bot-chat__form${dragging ? ' is-dragging' : ''}`}
             onSubmit={event => {
                 event.preventDefault();
                 submitTyped();
             }}
+            onDragOver={onFiles ? event => { if (Array.from(event.dataTransfer?.types || []).includes('Files')) { event.preventDefault(); setDragging(true); } } : undefined}
+            onDragLeave={onFiles ? () => setDragging(false) : undefined}
+            onDrop={onFiles ? event => {
+                setDragging(false);
+                const files = droppedFiles(event.dataTransfer?.files);
+                if (files.length === 0) return;
+                event.preventDefault();
+                onFiles(files);
+            } : undefined}
+            onPasteCapture={onFiles ? event => {
+                const files = droppedFiles(event.clipboardData?.files);
+                if (files.length === 0) return;
+                event.preventDefault();
+                onFiles(files);
+            } : undefined}
         >
+            {leading}
             <InputHistoryAutocomplete
                 open={autocomplete.open}
                 matches={autocomplete.matches}
@@ -176,7 +208,7 @@ export function DesktopBotComposer({
                 }}
                 onKeyDown={onKeyDown}
             />
-            <button type="submit" className="desktop-bot-chat__send" data-testid="desktop-bot-send" disabled={!value.trim() || disabled}>{sendLabel}</button>
+            <button type="submit" className="desktop-bot-chat__send" data-testid="desktop-bot-send" disabled={(!value.trim() && !readyWithoutText) || disabled || holdSend}>{sendLabel}</button>
         </form>
     );
 }
