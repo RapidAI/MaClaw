@@ -142,6 +142,10 @@ type GoalContinuationEngine struct {
 	// time.AfterFunc can still run after Stop, and that callback must not
 	// dispatch or delete the successor entry.
 	scheduleGen map[string]uint64
+	// stopSuperseded is the cancel fence an explicit continue already re-armed.
+	// The dying turn must not pause or fail that goal, and a host continuation
+	// of the same fence may enter. A later stop stores a new fence.
+	stopSuperseded map[string]cancelledTaskFence
 	// expectGen identifies one note of pendingExpect. It only increases.
 	// Two notes of an unchanged step must stay distinct, or a late post-loop
 	// would retire the successor's note.
@@ -287,6 +291,155 @@ func (e *GoalContinuationEngine) finishContinuationTurn(userID, goalID string, t
 	e.scheduleDelayed(userID, goalID)
 }
 
+// pauseGoalForUnarmedRemote records that this goal cannot run on the desktop.
+// The session's machine is a remote host and its SSH engine is down. The goal
+// stays paused with the reconnect text so the bar can offer continue.
+// A connected or local session returns false and is left unchanged.
+func (h *IMMessageHandler) pauseGoalForUnarmedRemote(userID string) (string, bool) {
+	if h == nil {
+		return "", false
+	}
+	text, blocked := h.unarmedRemoteCodingDesktopTurn(userID)
+	if !blocked {
+		return "", false
+	}
+	if h.app == nil || h.app.goalContinuation == nil || h.app.goalContinuation.store == nil {
+		return text, true
+	}
+	engine := h.app.goalContinuation
+	g := engine.store.Get(userID)
+	if g == nil || g.Status == goal.StatusComplete {
+		return text, true
+	}
+	engine.store.UpdateStatus(userID, g.GoalID, goal.StatusPaused, text)
+	engine.CancelPending(userID)
+	if updated := engine.store.Get(userID); updated != nil {
+		engine.emitGoalStateChanged(userID, updated)
+	}
+	return text, true
+}
+
+// goalUserStopSummary is the bar reason after the user stops the current turn.
+// It must not look like a dead SSH session or a no-tool stall.
+const goalUserStopSummary = "用户已停止当前回合。"
+
+// noteGoalContinuePastUserStop records that the bar or /goal resume is
+// re-arming this same goal. The stop fence stays, so the next ordinary
+// message still starts a new task. Only a host continuation of this fence
+// is allowed to enter.
+func (h *IMMessageHandler) noteGoalContinuePastUserStop(userID string) {
+	if h == nil || h.app == nil || h.app.goalContinuation == nil {
+		return
+	}
+	fence, ok := h.currentCancelledTaskFence(userID)
+	if !ok {
+		return
+	}
+	h.app.goalContinuation.noteStopSuperseded(userID, fence)
+}
+
+func (e *GoalContinuationEngine) noteStopSuperseded(userID string, fence cancelledTaskFence) {
+	if e == nil || strings.TrimSpace(userID) == "" {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.stopSuperseded == nil {
+		e.stopSuperseded = map[string]cancelledTaskFence{}
+	}
+	e.stopSuperseded[userID] = fence
+}
+
+func (e *GoalContinuationEngine) stopSupersededLocked(userID string, fence cancelledTaskFence) bool {
+	if e == nil || e.stopSuperseded == nil {
+		return false
+	}
+	noted, ok := e.stopSuperseded[userID]
+	return ok && sameCancelledTaskFence(noted, fence)
+}
+
+// goalContinuationAdmittedPastStop reports a host continuation that an
+// explicit continue already re-armed past the current user-stop fence.
+// An ordinary message is never admitted.
+func (h *IMMessageHandler) goalContinuationAdmittedPastStop(msg IMUserMessage) bool {
+	if h == nil || msg.Platform != "goal-continuation" || h.app == nil || h.app.goalContinuation == nil {
+		return false
+	}
+	fence, ok := h.currentCancelledTaskFence(msg.UserID)
+	if !ok {
+		return false
+	}
+	engine := h.app.goalContinuation
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	return engine.stopSupersededLocked(msg.UserID, fence)
+}
+
+// rejectCancelledTaskTurn stops a turn that is still inside a user cancel.
+// An explicit goal continue admits only the host continuation.
+func (h *IMMessageHandler) rejectCancelledTaskTurn(msg IMUserMessage) *IMAgentResponse {
+	if h == nil || !h.hasCancelledTaskBoundary(msg.UserID) || h.goalContinuationAdmittedPastStop(msg) {
+		return nil
+	}
+	return &IMAgentResponse{Text: cancelledTaskReplyText(msg.Text)}
+}
+
+// closeGoalTurnForUserStop pauses the goal when this turn was stopped by the
+// user, unless an explicit continue already re-armed that same fence.
+// True means the caller must not schedule and must not fail the goal.
+// The decision and the pause share the engine lock, so a continue that arms
+// the next timer cannot be cancelled by the dying turn.
+func (h *IMMessageHandler) closeGoalTurnForUserStop(userID string, resp *IMAgentResponse) bool {
+	if h == nil || h.app == nil || h.app.goalContinuation == nil {
+		return false
+	}
+	fence, ok := h.currentCancelledTaskFence(userID)
+	if !ok {
+		return false
+	}
+	engine := h.app.goalContinuation
+	engine.mu.Lock()
+	if engine.stopSupersededLocked(userID, fence) {
+		engine.mu.Unlock()
+		if resp != nil && resp.userStopped {
+			log.Printf("[goal-continuation] skipping user-stop pause: continue already re-armed user=%s", userID)
+			return true
+		}
+		return false
+	}
+	paused := engine.pauseForUserStopLocked(userID)
+	var updated *goal.Goal
+	if paused && engine.store != nil {
+		updated = engine.store.Get(userID)
+	}
+	engine.mu.Unlock()
+	if updated != nil {
+		engine.emitGoalStateChanged(userID, updated)
+	}
+	if paused {
+		log.Printf("[goal-continuation] paused: user stopped the turn user=%s", userID)
+	}
+	return true
+}
+
+// pauseForUserStopLocked records the stop and drops the queued turn.
+// Caller holds e.mu. An in-flight loop is not stopped.
+func (e *GoalContinuationEngine) pauseForUserStopLocked(userID string) bool {
+	if e == nil {
+		return false
+	}
+	e.cancelPendingLocked(userID)
+	if e.store == nil {
+		return false
+	}
+	g := e.store.Get(userID)
+	if g == nil || g.Status == goal.StatusComplete {
+		return false
+	}
+	e.store.UpdateStatus(userID, g.GoalID, goal.StatusPaused, goalUserStopSummary)
+	return true
+}
+
 // CancelPending cancels any pending continuation for a user (e.g. on user cancel).
 // A corrective plan turn that has not fired is refunded with the timer.
 // An in-flight loop is not stopped.
@@ -296,6 +449,14 @@ func (e *GoalContinuationEngine) CancelPending(userID string) {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.cancelPendingLocked(userID)
+}
+
+// cancelPendingLocked retires the timer. Caller holds e.mu.
+func (e *GoalContinuationEngine) cancelPendingLocked(userID string) {
+	if e == nil {
+		return
+	}
 	if timer, ok := e.scheduledTimers[userID]; ok {
 		timer.Stop()
 		delete(e.scheduledTimers, userID)
@@ -1120,6 +1281,10 @@ func (e *GoalContinuationEngine) emitGoalStateChanged(userID string, g *goal.Goa
 	if e == nil || e.app == nil || e.app.ctx == nil || g == nil {
 		return
 	}
+	awaiting := false
+	if e.app.imHandler != nil {
+		awaiting = e.app.imHandler.freshPendingAskUser(userID)
+	}
 	e.app.emitEvent("goal-state-changed", map[string]interface{}{
 		"user_id":       userID,
 		"goal_id":       g.GoalID,
@@ -1133,6 +1298,38 @@ func (e *GoalContinuationEngine) emitGoalStateChanged(userID string, g *goal.Goa
 		"tokens_used":   g.TokensUsed,
 		"token_budget":  g.TokenBudget,
 		"summary":       g.Summary,
+		"awaiting_user": awaiting,
+		"visible":       g.Status != goal.StatusComplete,
+		"created_at":    goalCreatedUnix(g),
+	})
+}
+
+func goalCreatedUnix(g *goal.Goal) int64 {
+	if g == nil || g.CreatedAt.IsZero() {
+		return 0
+	}
+	return g.CreatedAt.Unix()
+}
+
+// emitGoalCleared tells the chat bar this session no longer has a goal.
+// The transcript checklist is left as it was: an empty record does not
+// replace that card.
+func (e *GoalContinuationEngine) emitGoalCleared(userID string) {
+	if e == nil || e.app == nil {
+		return
+	}
+	e.app.emitEvent("goal-state-changed", map[string]interface{}{
+		"user_id":       userID,
+		"goal_id":       "",
+		"objective":     "",
+		"status":        "cleared",
+		"phase":         "",
+		"steps":         nil,
+		"turns_used":    0,
+		"max_turns":     0,
+		"summary":       "",
+		"awaiting_user": false,
+		"visible":       false,
 	})
 }
 
@@ -1179,9 +1376,10 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuationOwned(userID string, res
 	if g == nil || g.IsTerminal() || g.Status != goal.StatusActive {
 		return
 	}
-	if h.hasCancelledTaskBoundary(userID) {
-		engine.CancelPending(userID)
-		log.Printf("[goal-continuation] skipping: task cancelled by user user=%s", userID)
+	// A user stop pauses the goal. The bar can continue it. The dying turn
+	// must not fail the goal, and must not cancel a continue that already
+	// armed the next timer. The fence itself stays for the next ordinary message.
+	if h.closeGoalTurnForUserStop(userID, resp) {
 		return
 	}
 	// The session task is still running. A second host turn would take the
@@ -1216,16 +1414,11 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuationOwned(userID string, res
 
 	// Keep pure-coding sticky routing armed across multi-turn /goal loops.
 	h.ensurePureCodingArmedForGoalContinuation(userID)
-	// Remote pure coding with dead SSH: do not schedule into the general agent.
-	// A leftover local project path is not an SSH session. Scheduling that
-	// turn re-enters the desktop pipeline for a task whose machine is the
-	// remote host.
-	if h.isPureCodingWorkbenchSession(userID) && !h.remoteCodingSSHEnginePending(userID) {
-		mem := h.getStickyCodingWorkbenchMemory(userID)
-		if h.codingSessionIsRemote(userID, mem) {
-			log.Printf("[goal-continuation] skip schedule: remote pure coding not armed (SSH reconnect required) user=%s", userID)
-			return
-		}
+	// Dead SSH must not leave the goal looking active. The bar stays up with
+	// the reconnect reason, and continue retries this same goal later.
+	if text, blocked := h.pauseGoalForUnarmedRemote(userID); blocked {
+		log.Printf("[goal-continuation] paused: remote SSH is not connected user=%s reason=%s", userID, text)
+		return
 	}
 
 	// ask_user owns the next message. A continuation must not run in its place.
@@ -1248,6 +1441,9 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuationOwned(userID string, res
 			} else {
 				engine.takeContinuationExpect(userID)
 			}
+		}
+		if updated := engine.store.Get(userID); updated != nil {
+			engine.emitGoalStateChanged(userID, updated)
 		}
 		return
 	}

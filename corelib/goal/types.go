@@ -99,6 +99,10 @@ type Goal struct {
 
 	// Budget constraints (0 = unlimited)
 	TokenBudget int `json:"token_budget,omitempty"`
+	// TokenWindow is the fixed number of tokens added each time the user
+	// continues past a filled token cap. Zero means it has not been chosen
+	// yet, and the configured budget is that window.
+	TokenWindow int `json:"token_window,omitempty"`
 	MaxTurns    int `json:"max_turns,omitempty"`
 
 	// Usage accounting

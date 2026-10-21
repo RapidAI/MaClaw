@@ -271,6 +271,14 @@ func (h *IMMessageHandler) sessionLoopTaskText(userID string) string {
 type cancelledTaskFence struct {
 	at  time.Time
 	gen uint64
+	seq uint64
+}
+
+func sameCancelledTaskFence(a, b cancelledTaskFence) bool {
+	if a.seq != 0 || b.seq != 0 {
+		return a.seq == b.seq
+	}
+	return a.gen == b.gen && a.at.Equal(b.at)
 }
 
 func (h *IMMessageHandler) markTaskCancelledByUser(userID string) {
@@ -280,6 +288,7 @@ func (h *IMMessageHandler) markTaskCancelledByUser(userID string) {
 	h.cancelledTaskBoundary.Store(userID, cancelledTaskFence{
 		at:  time.Now(),
 		gen: h.pendingForegroundGen(userID),
+		seq: h.cancelFenceSeq.Add(1),
 	})
 	h.pendingInjection.Delete(userID)
 	h.pendingPreLoopGuide.Delete(userID)
@@ -289,11 +298,19 @@ func (h *IMMessageHandler) markTaskCancelledByUser(userID string) {
 }
 
 func (h *IMMessageHandler) hasCancelledTaskBoundary(userID string) bool {
-	if h == nil || strings.TrimSpace(userID) == "" {
-		return false
-	}
-	_, ok := h.cancelledTaskBoundary.Load(userID)
+	_, ok := h.currentCancelledTaskFence(userID)
 	return ok
+}
+
+func (h *IMMessageHandler) currentCancelledTaskFence(userID string) (cancelledTaskFence, bool) {
+	if h == nil || strings.TrimSpace(userID) == "" {
+		return cancelledTaskFence{}, false
+	}
+	raw, ok := h.cancelledTaskBoundary.Load(userID)
+	if !ok {
+		return cancelledTaskFence{}, false
+	}
+	return cancelledTaskFenceFrom(raw)
 }
 
 func cancelledTaskFenceFrom(raw any) (cancelledTaskFence, bool) {

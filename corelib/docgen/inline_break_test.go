@@ -35,14 +35,67 @@ func TestBreakInlineTails_KeepsLatinWordAndSpaces(t *testing.T) {
 	}
 }
 
-func TestBreakInlineTails_LeavesShortTailAndPlainProse(t *testing.T) {
+func TestBreakInlineTails_DetachesShortColonAndKeepsPlainProse(t *testing.T) {
+	// The tail is shorter than a line, but a label that already fills the
+	// line would still drag "：实况" down as one word.
 	short := markdownToHTML("- **图片**：实况")
-	if !strings.Contains(short, "</b>：实况") || strings.Contains(short, "<span>：</span>") {
-		t.Fatalf("short tail should stay in the text node: %s", short)
+	if !strings.Contains(short, "</b><span>：</span>实况") {
+		t.Fatalf("short colon tail should detach only the colon: %s", short)
+	}
+	plainText := strings.ReplaceAll(strings.ReplaceAll(short, "<span>", ""), "</span>", "")
+	if !strings.Contains(plainText, "</b>：实况") {
+		t.Fatalf("detaching the colon rewrote the tail: %s", short)
+	}
+	noColon := markdownToHTML("- **图片**实况")
+	if strings.Contains(noColon, "<span>") {
+		t.Fatalf("a short tail with no leading colon stays one word: %s", noColon)
+	}
+	inside := markdownToHTML("- **图片：**实况")
+	if !strings.Contains(inside, "<b>图片：</b>实况") || strings.Contains(inside, "<span>：</span>") {
+		t.Fatalf("a colon inside the bold label stays in the label: %s", inside)
+	}
+	half := markdownToHTML("- **指标**:" + strings.Repeat("论文不定义自己的指标", 3))
+	if !strings.Contains(half, "</b><span>:</span>") {
+		t.Fatalf("halfwidth colon was not detached: %s", half)
+	}
+	italic := markdownToHTML("- *指标*：" + strings.Repeat("论文不定义自己的指标", 3))
+	if !strings.Contains(italic, "</i><span>：</span>") {
+		t.Fatalf("italic label did not detach the colon: %s", italic)
 	}
 	plain := markdownToHTML("三条虚线：" + strings.Repeat("展开本文要考察的三个扩展方向", 4))
 	if strings.Contains(plain, "<span>") {
 		t.Fatalf("a plain paragraph is one run and must not be split: %s", plain)
+	}
+	id := markdownToHTML("- **见**:2510" + strings.Repeat("论文不定义", 3))
+	if strings.Contains(id, "<span>:</span>") {
+		t.Fatalf("a colon that starts an id was detached: %s", id)
+	}
+	spaced := markdownToHTML("- **指标**: The paper")
+	if strings.Contains(spaced, "<span>") || !strings.Contains(spaced, "</b>: The paper") {
+		t.Fatalf("a space after the colon was rewritten: %s", spaced)
+	}
+	fullSpaced := markdownToHTML("- **指标**： 短说明")
+	if strings.Contains(fullSpaced, "<span>") || !strings.Contains(fullSpaced, "</b>： 短说明") {
+		t.Fatalf("a space after the fullwidth colon was rewritten: %s", fullSpaced)
+	}
+	longSpaced := markdownToHTML("- **指标**： " + strings.Repeat("论文不定义自己的指标", 3))
+	if !strings.Contains(longSpaced, "： ") || strings.Contains(longSpaced, "<span>：</span>") {
+		t.Fatalf("a long tail dropped the space after the colon: %s", longSpaced)
+	}
+	paren := markdownToHTML("- **见**）：" + strings.Repeat("论文", 2))
+	if !strings.Contains(paren, "</b><span>）：</span>论文论文") {
+		t.Fatalf("closing marks before a short tail were not kept together: %s", paren)
+	}
+}
+
+func TestBreakInlineTails_LeavesLinkLabelsWhole(t *testing.T) {
+	inside := markdownToHTML("[**指标**：" + strings.Repeat("论文不定义自己的指标", 3) + "](https://example.com/a)")
+	if strings.Contains(inside, "<span>") || !strings.Contains(inside, `<a href="https://example.com/a"><b>指标</b>：`) {
+		t.Fatalf("link label was split: %s", inside)
+	}
+	after := markdownToHTML("见 [指标](https://example.com/a)：" + strings.Repeat("论文不定义自己的指标", 3))
+	if !strings.Contains(after, `</a><span>：</span>`) {
+		t.Fatalf("colon after a link was not detached: %s", after)
 	}
 }
 
@@ -84,9 +137,37 @@ func TestGeneratePDF_ColonStaysOnLabelLine(t *testing.T) {
 		compact := strings.ReplaceAll(strings.ReplaceAll(line, " ", ""), "\uFFFD", "")
 		idx := strings.Index(compact, marker)
 		after := compact[idx+len(marker):]
-		if !strings.HasPrefix(after, "：") && !strings.HasPrefix(after, "）：") {
-			t.Fatalf("%s colon is not on the label line: %q", marker, after)
+		want := map[string]string{
+			"实线":   "）：描绘",
+			"指标":   "：论文",
+			"三条虚线": "：展开",
+		}[marker]
+		if !strings.HasPrefix(after, want) {
+			t.Fatalf("%s line should continue %q, got %q", marker, want, after)
 		}
+	}
+}
+
+func TestGeneratePDF_ShortColonStaysWhenLabelFillsTheLine(t *testing.T) {
+	gen := New()
+	if !gen.HasFont() {
+		t.Skip("跳过：系统未找到中文字体")
+	}
+	// 46 ems leaves only a few columns. "：短说明文字" does not fit there,
+	// and used to move to the next line together with the colon.
+	md := "- **" + strings.Repeat("名", 46) + "终**：短说明文字"
+	data, err := gen.Generate(Spec{Title: "短尾冒号", Content: md})
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	texts, err := gopdf.ExtractTextFromPage(data, 0)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	line := pdfLineContaining(pdfLines(texts), "终")
+	compact := strings.ReplaceAll(strings.ReplaceAll(line, " ", ""), "\uFFFD", "")
+	if !strings.Contains(compact, "终：") {
+		t.Fatalf("colon left the label line: %q", compact)
 	}
 }
 

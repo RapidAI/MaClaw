@@ -88,11 +88,11 @@ func TestHandleGoalCommandUsesMessageUserID(t *testing.T) {
 	if !handled || create == nil || create.Error != "" {
 		t.Fatalf("create handled=%v resp=%+v", handled, create)
 	}
-	if !strings.Contains(create.Text, "目标已创建") {
+	if create.Text != "目标已开始：implement auth module" {
 		t.Fatalf("create text = %q", create.Text)
 	}
-	if !strings.Contains(create.Text, "编程工作台") {
-		t.Fatalf("pure coding create should mention workbench binding: %q", create.Text)
+	if strings.Contains(create.Text, "编程工作台") || strings.Contains(create.Text, "/goal pause") || strings.Contains(create.Text, "最大轮次") {
+		t.Fatalf("create ack should not repeat the command card: %q", create.Text)
 	}
 
 	g := h.getGoalStore().Get(userID)

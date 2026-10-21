@@ -437,7 +437,16 @@ func (h *IMMessageHandler) goalClearForUser(userID string) string {
 		h.app.goalContinuation.CancelPending(userID)
 	}
 	store := h.getGoalStore()
-	if store.Clear(userID) {
+	cleared := store.Clear(userID)
+	if h.app != nil && h.app.goalContinuation != nil && h.app.goalContinuation.store != nil && h.app.goalContinuation.store != store {
+		if h.app.goalContinuation.store.Clear(userID) {
+			cleared = true
+		}
+	}
+	if h.app != nil && h.app.goalContinuation != nil {
+		h.app.goalContinuation.emitGoalCleared(userID)
+	}
+	if cleared {
 		return "目标已清除。"
 	}
 	return "当前没有目标。"

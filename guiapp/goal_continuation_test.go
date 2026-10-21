@@ -452,13 +452,20 @@ func TestMaybeScheduleGoalContinuationSkipsAfterUserCancel(t *testing.T) {
 	if scheduled {
 		t.Fatal("cancelled task must not schedule another goal continuation")
 	}
-	if got := store.Get("desktop-user"); got == nil || got.GoalID != g.GoalID || got.Status != goal.StatusActive {
-		t.Fatalf("goal state changed unexpectedly: %+v", got)
+	got := store.Get("desktop-user")
+	if got == nil || got.GoalID != g.GoalID || got.Status != goal.StatusPaused {
+		t.Fatalf("user stop should pause the same goal: %+v", got)
+	}
+	if !strings.Contains(got.Summary, "停止") || strings.Contains(got.Summary, "SSH") || strings.Contains(got.Summary, "远程") || strings.Contains(got.Summary, "工具") {
+		t.Fatalf("user-stop summary = %q", got.Summary)
+	}
+	if !handler.hasCancelledTaskBoundary("desktop-user") {
+		t.Fatal("user stop must keep the cancel fence")
 	}
 }
 
 func TestMaybeScheduleGoalContinuationSkipsUnarmedRemoteEvenWithLocalPending(t *testing.T) {
-	userID := "remote-goal-local-pending"
+	userID := stickyTestUserID(t)
 	store := goal.NewStore("")
 	if _, err := store.Set(userID, "开发 clamav 检测工具", goal.WithMaxTurns(3)); err != nil {
 		t.Fatalf("Set goal: %v", err)
@@ -480,8 +487,9 @@ func TestMaybeScheduleGoalContinuationSkipsUnarmedRemoteEvenWithLocalPending(t *
 	engine.mu.Lock()
 	_, scheduled := engine.scheduledTimers[userID]
 	engine.mu.Unlock()
-	if scheduled {
-		t.Fatal("unarmed remote coding must not schedule a desktop goal continuation")
+	got := store.Get(userID)
+	if scheduled || got == nil || got.Status != goal.StatusPaused || !strings.Contains(got.Summary, "SSH") {
+		t.Fatalf("unarmed remote must stay paused without a desktop turn: scheduled=%v goal=%+v", scheduled, got)
 	}
 }
 
@@ -1439,7 +1447,7 @@ func TestGoalResumeKeepsPausedWhenRemoteSSHIsDown(t *testing.T) {
 	engine.mu.Lock()
 	_, scheduled := engine.scheduledTimers[userID]
 	engine.mu.Unlock()
-	if resp == nil || !strings.Contains(resp.Text, "目标仍处于暂停") || !strings.Contains(resp.Text, "SSH") || got == nil || got.Status != goal.StatusPaused || scheduled {
+	if resp == nil || !strings.Contains(resp.Text, "目标仍处于暂停") || !strings.Contains(resp.Text, "SSH") || got == nil || got.Status != goal.StatusPaused || !strings.Contains(got.Summary, "SSH") || scheduled {
 		t.Fatalf("remote resume = %+v goal=%+v scheduled=%v", resp, got, scheduled)
 	}
 

@@ -45,6 +45,9 @@ type IMAgentResponse struct {
 	// runWindowPaused tells follow-up schedulers not to start another model
 	// request after the run window ends. It stays on the host.
 	runWindowPaused bool `json:"-"`
+	// userStopped is set when this turn's loop was stopped by the user.
+	// The goal scheduler pauses on that stop unless continue already re-armed it.
+	userStopped bool `json:"-"`
 	// trayTaskName is the short label for the completion balloon when the
 	// session key is not a task directory. It stays on the host.
 	trayTaskName   string                    `json:"-"`

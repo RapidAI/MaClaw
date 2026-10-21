@@ -94,6 +94,11 @@ func (h *IMMessageHandler) handleBackgroundIMRoute(msg IMUserMessage, providedLo
 		}
 	}
 	semanticIntent = projectStoredTurnIntent(msg.UserID, msg.Text, msg.NoWorkflowInterception, semanticIntent)
+	if rewritten := semanticExplicitSkillPlanningRewrite(semanticIntent, msg.Text); rewritten != nil {
+		semanticIntent = rewritten
+		executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+		log.Printf("[semantic-routing] explicit skill invocation planning user=%q primary=%s", msg.UserID, rewritten.Primary)
+	}
 	loopCtx.Runtime.Execution = h.continuationKeepsParentExecution(executionProfile, msg.UserID, msg.Text, semanticIntent)
 	markAnswerOnlySocialTurn(loopCtx, loopCtx.Runtime.Execution, msg.Text)
 	loopCtx.Runtime.ClassificationMessage = classificationMessage(msg.UserID, msg.Text, history)

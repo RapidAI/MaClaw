@@ -153,6 +153,89 @@ func skillTaskLabel(primary intent.IntentLabel) bool {
 	}
 }
 
+// semanticLookupPlanningLabel is a label that can finish the turn by answering.
+// An explicit skill request must not keep that plan: web_search would satisfy
+// the classifier and the skill the user named would never run.
+func semanticLookupPlanningLabel(label intent.IntentLabel) bool {
+	switch label {
+	case intent.LabelSearch, intent.LabelLiveData, intent.LabelLiveDataVisual, intent.LabelWebFetch, intent.LabelCurrentTime:
+		return true
+	default:
+		return false
+	}
+}
+
+// semanticExplicitSkillPlanningRewrite is the capability plan for a sentence
+// that names a skill. A lookup label publishes web_search, and calling that
+// tool is enough for the model to stop. Any other capability already on the
+// verdict stays, including mailbox, knowledge write, and computer use; the
+// lookup labels beside it are removed. A lookup-only verdict becomes shell,
+// which is the capability an agent-guided workflow actually runs. Replacing
+// those other capabilities with shell would drop the tools the sentence
+// already asked for, and would undo the knowledge-write and mailbox-delete
+// retargets that run before this one.
+func semanticExplicitSkillPlanningRewrite(current *intent.ClassificationResult, userText string) *intent.ClassificationResult {
+	if current == nil || !explicitSkillInvocationForProfile(userText) {
+		return nil
+	}
+	kept := make([]intent.IntentLabel, 0, len(current.Labels()))
+	hasLookup := false
+	for _, label := range current.Labels() {
+		if semanticLookupPlanningLabel(label) {
+			hasLookup = true
+			continue
+		}
+		if label.IsNonCapabilityLabel() {
+			continue
+		}
+		kept = append(kept, label)
+	}
+	if len(kept) > 0 {
+		if !hasLookup {
+			return nil
+		}
+		out := *current
+		out.Primary = kept[0]
+		if len(kept) == 1 {
+			out.Secondary = nil
+		} else {
+			out.Secondary = kept[1:]
+		}
+		out.ToolNames = nil
+		return semanticExplicitSkillPlanningNote(&out)
+	}
+	if !hasLookup {
+		return nil
+	}
+	if !imSemanticIntentIsManaged(*current) && !semanticLookupHalf(*current) {
+		return nil
+	}
+	out := semanticLookupClassificationForPlanning(*current)
+	out.Primary = intent.LabelShellCommand
+	out.Secondary = nil
+	out.ToolNames = nil
+	out.WorkflowType = ""
+	out.Degraded = false
+	out.ControlPlaneFailure = false
+	out.CreationOriented = false
+	out.RunnerUp = ""
+	out.RunnerUpScore = 0
+	if out.Layer != 23 && out.Layer < 3 {
+		out.Layer = 3
+	}
+	return semanticExplicitSkillPlanningNote(&out)
+}
+
+func semanticExplicitSkillPlanningNote(out *intent.ClassificationResult) *intent.ClassificationResult {
+	const note = "explicit skill invocation planning"
+	if out.Reason == "" {
+		out.Reason = note
+	} else if !strings.Contains(out.Reason, note) {
+		out.Reason = strings.TrimSpace(out.Reason + "; " + note)
+	}
+	return out
+}
+
 func admitLocalSkills(exec *SkillExecutor, userText, domain string) ([]admittedSkillBinding, []NLSkillDefinition) {
 	if exec == nil {
 		return nil, nil
@@ -608,10 +691,16 @@ func (c *sharedAgentLoopCallbacks) skillAdmissionIsGuided() bool {
 // open for an agent-guided workflow, because those tools are how it runs.
 // generate_pdf, office, and craft_tool stay closed for that whole turn.
 func (c *sharedAgentLoopCallbacks) skillSubstituteBlocked(name string) (bool, string) {
-	if !c.skillSurfaceAdmitted() || !skillAdmissionSubstitute(name, c.skillAdmissionIsGuided()) {
+	if !c.skillSurfaceAdmitted() {
 		return false, ""
 	}
-	if c.skillAdmissionIsGuided() || !c.admittedSkillSettled {
+	if skillAdmissionSubstitute(name, c.skillAdmissionIsGuided()) {
+		if c.skillAdmissionIsGuided() || !c.admittedSkillSettled {
+			return true, c.skillObligationReason()
+		}
+		return false, ""
+	}
+	if skillAdmissionLookupSubstitute(name) && !c.admittedSkillSettled {
 		return true, c.skillObligationReason()
 	}
 	return false, ""
@@ -628,19 +717,32 @@ func skillAdmissionSubstitute(name string, guided bool) bool {
 	}
 }
 
+// skillAdmissionLookupSubstitute is a tool that can answer the turn without
+// the skill. It stays closed until that skill or the market search has run,
+// then opens, so a guided workflow can still look something up after it starts.
+// generate_pdf stays closed for the whole guided turn; a lookup does not.
+func skillAdmissionLookupSubstitute(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "web_search", "web_fetch", "current_datetime":
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *sharedAgentLoopCallbacks) skillObligationReason() string {
 	if c.skillAdmissionIsGuided() {
-		return "这个 Skill 要按使用文档用 bash、read_file、write_file、edit_file、list_directory 完成，不要改用 generate_pdf、office 或 craft_tool。"
+		return "这个 Skill 要按使用文档用 bash、read_file、write_file、edit_file、list_directory 完成，不要改用 generate_pdf、office、craft_tool 或 web_search。"
 	}
 	if c.skillRemoteSearchOffered && len(c.admittedSkillBindings) == 0 {
-		return "本机没有匹配的完整 Skill。请先调用 search_and_install_skill，query 用当前任务原文。不要先用 generate_pdf、office 或 bash 把任务做完。"
+		return "本机没有匹配的完整 Skill。请先调用 search_and_install_skill，query 用当前任务原文。不要先用 generate_pdf、office、bash 或 web_search 把任务做完。"
 	}
 	names := make([]string, 0, len(c.admittedSkillBindings))
 	for alias := range c.admittedSkillBindings {
 		names = append(names, alias)
 	}
 	sort.Strings(names)
-	return "本机已有匹配的完整 Skill。请先调用 " + strings.Join(names, "、") + "，不要改用 generate_pdf、office 或 bash 完成同一件事。"
+	return "本机已有匹配的完整 Skill。请先调用 " + strings.Join(names, "、") + "，不要改用 generate_pdf、office、bash 或 web_search 完成同一件事。"
 }
 
 // SkillObligationPrompt is the one reminder when the model stops before using

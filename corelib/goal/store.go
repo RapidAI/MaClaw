@@ -202,6 +202,63 @@ func (s *Store) Resume(userID, goalID string) bool {
 	return true
 }
 
+// UpdateObjective replaces the command text of the current goal. Progress,
+// status, and goal id stay. A completed goal is left finished.
+func (s *Store) UpdateObjective(userID, goalID, objective string) bool {
+	objective = strings.TrimSpace(objective)
+	if objective == "" {
+		return false
+	}
+	s.mu.Lock()
+	g := s.goals[userID]
+	if g == nil || g.GoalID != goalID || g.Status == StatusComplete {
+		s.mu.Unlock()
+		return false
+	}
+	if g.Objective == objective {
+		s.mu.Unlock()
+		return true
+	}
+	g.Objective = objective
+	g.UpdatedAt = time.Now()
+	data := s.marshalLocked(g)
+	s.mu.Unlock()
+
+	s.persistBytes(userID, data)
+	return true
+}
+
+// ReleaseForContinue re-arms a goal after the user explicitly chooses to keep
+// going. A completed goal stays finished. Pause, failure, and an exhausted
+// turn or token cap all become active again, with another window so the next
+// turn is allowed to run.
+func (s *Store) ReleaseForContinue(userID, goalID string) bool {
+	s.mu.Lock()
+	g := s.goals[userID]
+	if g == nil || g.GoalID != goalID || g.Status == StatusComplete {
+		s.mu.Unlock()
+		return false
+	}
+	g.Status = StatusActive
+	g.ConsecutiveNoToolTurns = 0
+	g.Summary = ""
+	if g.MaxTurns > 0 && g.TurnsUsed >= g.MaxTurns {
+		g.MaxTurns = g.TurnsUsed + DefaultMaxTurns
+	}
+	if g.TokenBudget > 0 && g.TokensUsed >= g.TokenBudget {
+		if g.TokenWindow < 1 {
+			g.TokenWindow = g.TokenBudget
+		}
+		g.TokenBudget = g.TokensUsed + g.TokenWindow
+	}
+	g.UpdatedAt = time.Now()
+	data := s.marshalLocked(g)
+	s.mu.Unlock()
+
+	s.persistBytes(userID, data)
+	return true
+}
+
 // SavePlan records the planning turn and switches the goal to execution.
 // The goal_id must match. Steps and criteria are copied.
 func (s *Store) SavePlan(userID, goalID, understanding string, steps []Step, criteria []string) error {

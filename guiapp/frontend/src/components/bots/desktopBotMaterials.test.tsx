@@ -130,6 +130,10 @@ describe('DesktopBotMaterialStrip', () => {
         expect(attach).toContain('height: 28px');
         expect(attach).toMatch(/background:\s*color-mix/);
         expect(attach).not.toMatch(/background:\s*var\(--mc-accent/);
+        expect(attach).not.toMatch(/rgba\(255,\s*255,\s*255/);
+        expect(attach).toContain('box-sizing: border-box');
+        expect(css).toMatch(/\.desktop-bot-chat__form\s*\{[^}]*padding:\s*12px 12px 10px/);
+        expect(css).toMatch(/\.desktop-bot-chat__form textarea\s*\{[^}]*min-width:\s*0/);
         expect(css).toMatch(/\.desktop-bot-materials__strip\s*\{[^}]*flex:\s*1 0 100%/);
         expect(css).toMatch(/\.desktop-bot-materials__strip\s*\{[^}]*max-height:\s*120px/);
         expect(css).toMatch(/\.desktop-bot-materials__strip \.desktop-bot-materials__name\s*,[\s\S]*?clip:\s*rect/);

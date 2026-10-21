@@ -50,6 +50,9 @@ func (h *IMMessageHandler) schedulePostLoopSideEffects(msg IMUserMessage, loopCt
 	if resp != nil {
 		respSnapshot = *resp
 	}
+	if loopCtx != nil && loopCtx.UserCancelled() {
+		respSnapshot.userStopped = true
+	}
 
 	// V2 workflow doc phase: capture output SYNCHRONOUSLY before returning to the caller.
 	// If captured asynchronously in the goroutine, the next user message ("确认") may

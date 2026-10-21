@@ -666,8 +666,12 @@ type IMMessageHandler struct {
 	// current task. The next normal user message must start a new task instead
 	// of being merged into or classified as a continuation of the cancelled
 	// task's history.
-	// Keyed by userID, value is time.Time.
+	// Keyed by userID, value is cancelledTaskFence.
 	cancelledTaskBoundary sync.Map
+	// cancelFenceSeq gives each user stop its own identity. An explicit goal
+	// continue records that identity and must not treat a later stop as the
+	// same one. The clock is not unique enough for that.
+	cancelFenceSeq atomic.Uint64
 
 	// inFlightTurns tracks a request that has prepared a LoopContext but has
 	// not yet published it via beginAgentLoopRuntime (the UIC / pre-loop

@@ -178,6 +178,115 @@ func TestPauseResume(t *testing.T) {
 	}
 }
 
+func TestUpdateObjectiveKeepsProgress(t *testing.T) {
+	s := NewStore("")
+	g, err := s.Set("user1", "old command")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Pause("user1", g.GoalID)
+	if !s.UpdateObjective("user1", g.GoalID, "  new command ") {
+		t.Fatal("expected the command to update")
+	}
+	got := s.Get("user1")
+	if got.GoalID != g.GoalID || got.Objective != "new command" || got.Status != StatusPaused {
+		t.Fatalf("updated = %+v", got)
+	}
+	if s.UpdateObjective("user1", g.GoalID, " ") {
+		t.Fatal("empty command must not replace the goal")
+	}
+	s.UpdateStatus("user1", g.GoalID, StatusComplete, "done")
+	if s.UpdateObjective("user1", g.GoalID, "after done") {
+		t.Fatal("a completed goal stays finished")
+	}
+}
+
+func TestReleaseForContinueKeepsGoingAfterAnyStop(t *testing.T) {
+	s := NewStore("")
+	g, err := s.Set("user1", "ship it")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s.UpdateStatus("user1", g.GoalID, StatusPaused, "Auto-paused: agent produced no tool calls for 2 consecutive turns")
+	if !s.ReleaseForContinue("user1", g.GoalID) {
+		t.Fatal("paused goal should continue")
+	}
+	got := s.Get("user1")
+	if got.Status != StatusActive || got.ConsecutiveNoToolTurns != 0 || got.Summary != "" {
+		t.Fatalf("paused continue = %+v", got)
+	}
+
+	s.UpdateStatus("user1", g.GoalID, StatusFailed, "目标失败")
+	if !s.ReleaseForContinue("user1", g.GoalID) {
+		t.Fatal("failed goal should continue")
+	}
+	if got = s.Get("user1"); got.Status != StatusActive {
+		t.Fatalf("failed continue status = %s", got.Status)
+	}
+
+	s.UpdateStatus("user1", g.GoalID, StatusBudgetLimit, "Turn limit reached")
+	s.mu.Lock()
+	s.goals["user1"].TurnsUsed = s.goals["user1"].MaxTurns
+	s.goals["user1"].TokensUsed = 40
+	s.goals["user1"].TokenBudget = 40
+	usedTurns := s.goals["user1"].TurnsUsed
+	s.mu.Unlock()
+	if !s.ReleaseForContinue("user1", g.GoalID) {
+		t.Fatal("budget stop should continue")
+	}
+	got = s.Get("user1")
+	if got.Status != StatusActive {
+		t.Fatalf("budget continue status = %s", got.Status)
+	}
+	if got.TurnsUsed != usedTurns || got.MaxTurns != usedTurns+DefaultMaxTurns {
+		t.Fatalf("turn window = used %d max %d", got.TurnsUsed, got.MaxTurns)
+	}
+	if got.TokenBudget != 80 || got.TokenWindow != 40 {
+		t.Fatalf("token window = budget %d window %d", got.TokenBudget, got.TokenWindow)
+	}
+
+	s.UpdateStatus("user1", g.GoalID, StatusComplete, "done")
+	if s.ReleaseForContinue("user1", g.GoalID) {
+		t.Fatal("a completed goal stays finished")
+	}
+	if got = s.Get("user1"); got.Status != StatusComplete {
+		t.Fatalf("complete status = %s", got.Status)
+	}
+}
+
+func TestReleaseForContinueTokenWindowIsConstant(t *testing.T) {
+	s := NewStore("")
+	g, err := s.Set("user1", "ship it", WithTokenBudget(100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.goals["user1"].TokensUsed = 100
+	s.goals["user1"].Status = StatusBudgetLimit
+	s.mu.Unlock()
+
+	if !s.ReleaseForContinue("user1", g.GoalID) {
+		t.Fatal("first continue")
+	}
+	got := s.Get("user1")
+	if got.TokenWindow != 100 || got.TokenBudget != 200 || !got.ShouldContinue() {
+		t.Fatalf("first window = %+v", got)
+	}
+
+	s.mu.Lock()
+	s.goals["user1"].TokensUsed = 200
+	s.goals["user1"].Status = StatusBudgetLimit
+	s.mu.Unlock()
+	if !s.ReleaseForContinue("user1", g.GoalID) {
+		t.Fatal("second continue")
+	}
+	got = s.Get("user1")
+	if got.TokenWindow != 100 || got.TokenBudget != 300 || !got.ShouldContinue() {
+		t.Fatalf("second window = %+v", got)
+	}
+}
+
 func TestResume_OnlyFromPaused(t *testing.T) {
 	s := NewStore("")
 	g, _ := s.Set("user1", "Test")

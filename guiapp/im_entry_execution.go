@@ -51,8 +51,13 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	if resp, handled := h.handleBackgroundIMRoute(msg, opts.ProvidedLoopContext, opts.HTTPClient, opts.OnProgress); handled {
 		return resp
 	}
-	if h.hasCancelledTaskBoundary(msg.UserID) {
-		return &IMAgentResponse{Text: cancelledTaskReplyText(msg.Text)}
+	if resp := h.rejectCancelledTaskTurn(msg); resp != nil {
+		// This turn never reaches post-loop. Pause the goal here, or the bar
+		// stays on "running" with nothing queued.
+		stopped := *resp
+		stopped.userStopped = true
+		h.closeGoalTurnForUserStop(msg.UserID, &stopped)
+		return resp
 	}
 	// Dedicated local/remote coding is already an armed workbench. Do not
 	// open the legacy confirmation card, unfinished-slot recover prompt, or
@@ -148,9 +153,17 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	}
 	h.beginInFlightTurn(msg.UserID, msg.Text, loopCtx)
 	defer h.endInFlightTurn(msg.UserID, loopCtx)
-	if loopCtx.IsCancelled() || h.hasCancelledTaskBoundary(msg.UserID) {
+	// A cancelled loop still stops. The user-stop fence does not: an explicit
+	// goal continue already admitted this host turn, and the fence remains for
+	// the next ordinary message.
+	if loopCtx.IsCancelled() || (h.hasCancelledTaskBoundary(msg.UserID) && !h.goalContinuationAdmittedPastStop(msg)) {
 		hist, _ := drainHistory()
 		if resp := h.preLoopCancelResponse(msg, loopCtx, hist, msg.Text); resp != nil {
+			if h.hasCancelledTaskBoundary(msg.UserID) {
+				stopped := *resp
+				stopped.userStopped = true
+				h.closeGoalTurnForUserStop(msg.UserID, &stopped)
+			}
 			return resp
 		}
 	}
@@ -387,6 +400,11 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 			}
 		}
 		semanticIntent = projectStoredTurnIntent(msg.UserID, msg.Text, msg.NoWorkflowInterception, semanticIntent)
+		if rewritten := semanticExplicitSkillPlanningRewrite(semanticIntent, msg.Text); rewritten != nil {
+			semanticIntent = rewritten
+			executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+			log.Printf("[semantic-routing] explicit skill invocation planning user=%q primary=%s", msg.UserID, rewritten.Primary)
+		}
 		loopCtx.Runtime.Execution = h.continuationKeepsParentExecution(executionProfile, msg.UserID, msg.Text, semanticIntent)
 		markAnswerOnlySocialTurn(loopCtx, loopCtx.Runtime.Execution, msg.Text)
 		loopCtx.Runtime.ClassificationMessage = classifyMsg

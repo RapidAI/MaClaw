@@ -48,9 +48,10 @@ func (h *IMMessageHandler) handleGoalCommand(msg IMUserMessage, trimmed string) 
 		// a leftover local project path is not an SSH session.
 		if wasPaused {
 			h.ensurePureCodingArmedForGoalContinuation(userID)
-			if text, blocked := h.unarmedRemoteCodingDesktopTurn(userID); blocked {
+			if text, blocked := h.pauseGoalForUnarmedRemote(userID); blocked {
 				return &IMAgentResponse{Text: "目标仍处于暂停。\n" + text}
 			}
+			h.noteGoalContinuePastUserStop(userID)
 		}
 		respText := h.goalResumeForUser(userID)
 		// Schedule only when this command actually resumed a paused goal.
@@ -129,20 +130,9 @@ func (h *IMMessageHandler) handleGoalCreate(msg IMUserMessage, objective string)
 		h.app.goalContinuation.scheduleDelayed(userID, g.GoalID)
 	}
 
-	var b strings.Builder
-	b.WriteString("目标已创建，系统将先分解任务，再按步骤自动执行")
-	b.WriteString("\n\n")
-	b.WriteString(fmt.Sprintf("目标: %s\n", g.Objective))
-	b.WriteString(fmt.Sprintf("最大轮次: %d\n", g.MaxTurns))
-	if h.isPureCodingWorkbenchSession(userID) {
-		b.WriteString("\n本目标已绑定到当前编程工作台，续接轮次将在编程环境中执行。\n")
-		b.WriteString("会话目标（Session plan）已同步更新。\n")
-	}
-	b.WriteString("\n命令:\n")
-	b.WriteString("  /goal status — 查看进度\n")
-	b.WriteString("  /goal pause  — 暂停\n")
-	b.WriteString("  /goal cancel — 取消\n")
-	return &IMAgentResponse{Text: b.String()}
+	// Progress, pause, continue, and cancel live on the chat goal bar.
+	// The transcript keeps the goal checklist; this reply is only the ack.
+	return &IMAgentResponse{Text: "目标已开始：" + strings.TrimSpace(g.Objective)}
 }
 
 func goalCommandHelp() string {

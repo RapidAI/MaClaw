@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -563,22 +564,29 @@ func markdownToHTMLStyled(scratch *dataURLScratch, md string, colorful bool, sty
 	return breakInlineTails(sb.String())
 }
 
-// inlineTailBreakRun is the longest spaceless run left as one word after an
-// inline tag. GoPDF2 wraps on spaces only, and a run that does not fit the
-// rest of the line moves to the next line as a whole. A colon sitting just
-// after </b> or </span> is the first character of that run, so it starts the
-// next line whenever the explanation is long. Short tails still fit and stay
-// put, which is why only some colons break.
+// inlineTailBreakRun is the spaceless run length that starts cluster wrapping.
+// A run of this many runes or more is split. GoPDF2 wraps on spaces only, and
+// a run that does not fit the rest of the line moves to the next line as a
+// whole. A colon sitting just after </b> or </span> is the first character of
+// that run, so it starts the next line whenever the explanation is longer
+// than the space left beside the label. A long run is broken into clusters so
+// the sentence keeps filling the line. A shorter run only detaches that
+// leading colon when it is glued to the next character. A colon already
+// followed by a space is its own word, and wrapping it would drop the space.
 const inlineTailBreakRun = 8
 
 // breakInlineTails splits a long spaceless tail that follows inline markup so
 // the PDF can wrap it one cluster at a time. Table cells flatten tags into one
-// string and would show a space between spans, so they are left alone.
+// string and would show a space between spans, so they are left alone. Link
+// text is left alone too: the annotation is one rectangle from the start of
+// the <a> to the cursor after its children, and a wrap inside the label makes
+// that width land on the wrong line.
 func breakInlineTails(html string) string {
 	var b strings.Builder
 	b.Grow(len(html))
 	pending := false
 	cell := 0
+	anchor := 0
 	for i := 0; i < len(html); {
 		if html[i] != '<' {
 			j := strings.IndexByte(html[i:], '<')
@@ -586,7 +594,7 @@ func breakInlineTails(html string) string {
 				j = len(html) - i
 			}
 			text := html[i : i+j]
-			if pending && cell == 0 && strings.TrimSpace(text) != "" {
+			if pending && cell == 0 && anchor == 0 && strings.TrimSpace(text) != "" {
 				b.WriteString(spanBreakLongRun(text))
 				pending = false
 			} else {
@@ -613,6 +621,14 @@ func breakInlineTails(html string) string {
 				}
 			} else {
 				cell++
+			}
+		case "a":
+			if closing {
+				if anchor > 0 {
+					anchor--
+				}
+			} else {
+				anchor++
 			}
 		}
 		if closing && isInlineTailTag(name) {
@@ -658,23 +674,126 @@ func isInlineTailTag(name string) bool {
 }
 
 func spanBreakLongRun(text string) string {
-	if !hasLongUnbrokenRun(text, inlineTailBreakRun) {
+	if hasLongUnbrokenRun(text, inlineTailBreakRun) {
+		groups := packInlineAtoms(glueInlinePunct(tokenizeInlineRun(text)))
+		if len(groups) <= 1 {
+			return text
+		}
+		var b strings.Builder
+		b.Grow(len(text) + len(groups)*13)
+		for _, g := range groups {
+			if g == "" {
+				continue
+			}
+			b.WriteString("<span>")
+			b.WriteString(g)
+			b.WriteString("</span>")
+		}
+		return b.String()
+	}
+	if !leadingClosingPunct(text) {
 		return text
 	}
-	groups := packInlineAtoms(glueInlinePunct(tokenizeInlineRun(text)))
-	if len(groups) <= 1 {
-		return text
+	if peeled, ok := peelLeadingClosingPunct(glueInlinePunct(tokenizeInlineRun(text))); ok {
+		return peeled
 	}
-	var b strings.Builder
-	for _, g := range groups {
-		if g == "" {
+	return text
+}
+
+// leadingClosingPunct reports a tail whose first visible marks cannot start a
+// line and are glued to the following text, such as "：说明". A halfwidth
+// colon that begins a token ("https://" or ":2510") is not that mark. A mark
+// followed by whitespace is already its own word: GoPDF2 splits on spaces,
+// and putting the mark in its own span would leave the space at the edge of
+// the next text node, where it is trimmed away.
+func leadingClosingPunct(s string) bool {
+	i := 0
+	for i < len(s) {
+		if strings.HasPrefix(s[i:], "&nbsp;") {
+			i += len("&nbsp;")
 			continue
 		}
-		b.WriteString("<span>")
-		b.WriteString(g)
-		b.WriteString("</span>")
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if unicode.IsSpace(r) {
+			i += size
+			continue
+		}
+		break
 	}
-	return b.String()
+	if i >= len(s) {
+		return false
+	}
+	r, size := utf8.DecodeRuneInString(s[i:])
+	if r == ':' {
+		next, _ := utf8.DecodeRuneInString(s[i+size:])
+		if isLatinWordRune(next) {
+			return false
+		}
+	} else if !isClosingPunctRune(r) {
+		return false
+	}
+	i += size
+	for i < len(s) {
+		if strings.HasPrefix(s[i:], "&nbsp;") {
+			return false
+		}
+		r, size = utf8.DecodeRuneInString(s[i:])
+		if unicode.IsSpace(r) {
+			return false
+		}
+		if r == ':' {
+			next, _ := utf8.DecodeRuneInString(s[i+size:])
+			if isLatinWordRune(next) {
+				return false
+			}
+		}
+		if !isClosingPunctRune(r) {
+			return true
+		}
+		i += size
+	}
+	return false
+}
+
+// peelLeadingClosingPunct wraps a leading colon (or a run of closing marks)
+// in its own span and leaves the short remainder as one word.
+func peelLeadingClosingPunct(atoms []inlineAtom) (string, bool) {
+	i := 0
+	var lead strings.Builder
+	for i < len(atoms) && atoms[i].space {
+		lead.WriteString(atoms[i].text)
+		i++
+	}
+	if i >= len(atoms) || !isBareClosingPunct(atoms[i].text) {
+		return "", false
+	}
+	var rest strings.Builder
+	for _, a := range atoms[i+1:] {
+		rest.WriteString(a.text)
+	}
+	if rest.Len() == 0 {
+		return "", false
+	}
+	var b strings.Builder
+	b.Grow(lead.Len() + rest.Len() + len(atoms[i].text) + 13)
+	b.WriteString(lead.String())
+	b.WriteString("<span>")
+	b.WriteString(atoms[i].text)
+	b.WriteString("</span>")
+	b.WriteString(rest.String())
+	return b.String(), true
+}
+
+func isBareClosingPunct(token string) bool {
+	if token == "" {
+		return false
+	}
+	for _, r := range token {
+		if !isClosingPunctRune(r) {
+			return false
+		}
+	}
+	return true
 }
 
 func hasLongUnbrokenRun(s string, n int) bool {
@@ -798,7 +917,11 @@ func isOpeningPunctToken(token string) bool {
 
 func isClosingPunctToken(token string) bool {
 	r, size := utf8.DecodeRuneInString(token)
-	return size == len(token) && strings.ContainsRune("：:，,。．、；;！!？?）)】］〕〉》」』”’…·～~％%", r)
+	return size == len(token) && isClosingPunctRune(r)
+}
+
+func isClosingPunctRune(r rune) bool {
+	return strings.ContainsRune("：:，,。．、；;！!？?）)】］〕〉》」』”’…·～~％%—–－", r)
 }
 
 func glueInlinePunct(atoms []inlineAtom) []inlineAtom {

@@ -1847,7 +1847,8 @@
     gap: 8px;
     flex: 0 0 auto;
     margin: 8px var(--desktop-bot-gutter, 8%) 0;
-    padding: 8px;
+    /* 28px radius: 8px inset puts the chip's corner outside the curve. */
+    padding: 12px 12px 10px;
     border: 1px solid var(--theme-border, #e6e6e8);
     border-radius: 28px;
     background: var(--theme-surface, #fff);
@@ -1865,6 +1866,7 @@
 .desktop-bot-chat__form textarea {
     flex: 1;
     width: 100%;
+    min-width: 0;
     box-sizing: border-box;
     min-height: 38px;
     max-height: 120px;
@@ -2504,6 +2506,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    box-sizing: border-box;
     width: 30px;
     height: 28px;
     margin: 0;
@@ -2512,7 +2515,7 @@
     border: 1px solid color-mix(in srgb, var(--mc-accent, #2f6fbc) 28%, var(--theme-border, #d9e1ec));
     background: color-mix(in srgb, var(--mc-accent, #2f6fbc) 8%, var(--theme-surface, #fff));
     color: var(--mc-accent, #2f6fbc);
-    box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-accent, #2f6fbc) 12%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    box-shadow: 0 1px 2px color-mix(in srgb, var(--mc-accent, #2f6fbc) 12%, transparent);
     cursor: pointer;
     transition: background 120ms ease, transform 120ms ease;
 }
@@ -2548,7 +2551,8 @@
 
 @media (forced-colors: active) {
     .desktop-bot-materials__attach,
-    .desktop-bot-materials__strip .desktop-bot-materials__item {
+    .desktop-bot-materials__strip .desktop-bot-materials__item,
+    .desktop-bot-materials__badge {
         border-color: ButtonText;
         background: ButtonFace;
         color: ButtonText;
@@ -2572,7 +2576,7 @@
     align-items: center;
     gap: 5px;
     width: fit-content;
-    max-width: none;
+    max-width: 100%;
     padding: 3px;
     border-radius: 6px;
     border: 1px solid var(--theme-border, #d9e1ec);
@@ -2622,6 +2626,7 @@
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
     border: 0;
+    pointer-events: none;
 }
 
 .desktop-bot-materials__meta {
@@ -2629,7 +2634,11 @@
 }
 
 .desktop-bot-materials__strip .desktop-bot-materials__meta {
+    min-width: 0;
     padding-right: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     color: var(--theme-text-muted, #667085);
     font-size: 11px;
     opacity: 1;

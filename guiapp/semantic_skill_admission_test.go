@@ -298,6 +298,85 @@ func TestSkillAdmissionExplicitInvocationLeavesTheLightProfile(t *testing.T) {
 	}
 }
 
+func TestSkillAdmissionExplicitInvocationRetargetsLookupPlan(t *testing.T) {
+	named := "使用 book-pdf skill 编写教程"
+	live := &intent.ClassificationResult{
+		Primary: intent.LabelLiveData, Confidence: 0.62, Reason: "lookup",
+		ToolNames: []string{"web_search"}, Layer: 2, Degraded: true,
+	}
+	rewritten := semanticExplicitSkillPlanningRewrite(live, named)
+	if rewritten == nil || rewritten.Primary != intent.LabelShellCommand || rewritten.HasLabel(intent.LabelLiveData) {
+		t.Fatalf("lookup plan stayed: %+v", rewritten)
+	}
+	if len(rewritten.ToolNames) != 0 || rewritten.Degraded || !strings.Contains(rewritten.Reason, "explicit skill invocation planning") {
+		t.Fatalf("shell plan: %+v", rewritten)
+	}
+	if live.Primary != intent.LabelLiveData || !live.Degraded || len(live.ToolNames) != 1 {
+		t.Fatalf("rewrite mutated the classifier verdict: %+v", live)
+	}
+	profile := executionProfileFromSemanticIntent(rewritten, nil)
+	if profile.IsLight() || profile.PromptIsLight() || profile.IterationBudget != 0 {
+		t.Fatalf("shell plan stayed on the lookup budget: %+v", profile)
+	}
+	clock := semanticExplicitSkillPlanningRewrite(&intent.ClassificationResult{Primary: intent.LabelCurrentTime, Confidence: 0.9}, named)
+	if clock == nil || clock.Primary != intent.LabelShellCommand {
+		t.Fatalf("current time stayed a lookup: %+v", clock)
+	}
+
+	if semanticExplicitSkillPlanningRewrite(live, "南京天气") != nil {
+		t.Fatal("weather was retargeted")
+	}
+	weatherPDF := &intent.ClassificationResult{
+		Primary: intent.LabelLiveData, Secondary: []intent.IntentLabel{intent.LabelDocumentGenerate}, Confidence: 0.9,
+	}
+	if semanticExplicitSkillPlanningRewrite(weatherPDF, "南京天气，生成pdf报告") != nil {
+		t.Fatal("weather report was retargeted")
+	}
+	attached := "南京天气\n" + agent.AutoExtractNotice + "\n" +
+		"--- auto_extract: begin path=\"paper.pdf\" format=\"pdf\" ---\n" +
+		named + "\n" +
+		"--- auto_extract: end path=\"paper.pdf\" ---"
+	if semanticExplicitSkillPlanningRewrite(live, attached) != nil {
+		t.Fatal("attachment skill name retargeted the lookup")
+	}
+	doc := &intent.ClassificationResult{Primary: intent.LabelDocumentGenerate, Confidence: 0.9, ToolNames: []string{"generate_pdf"}}
+	if semanticExplicitSkillPlanningRewrite(doc, named) != nil {
+		t.Fatal("document plan was replaced")
+	}
+	if got := semanticExplicitSkillPlanningRewrite(doc, "不要使用 book-pdf skill 编写教程"); got != nil {
+		t.Fatalf("negated skill was retargeted: %+v", got)
+	}
+	if semanticExplicitSkillPlanningRewrite(live, "使用 book-pdf 编写教程") != nil {
+		t.Fatal("a hyphenated name without skill was treated as an invocation")
+	}
+	stripped := semanticExplicitSkillPlanningRewrite(weatherPDF, named)
+	if stripped == nil || stripped.Primary != intent.LabelDocumentGenerate || stripped.HasLabel(intent.LabelLiveData) || len(stripped.ToolNames) != 0 {
+		t.Fatalf("composite: %+v", stripped)
+	}
+	mail := &intent.ClassificationResult{Primary: intent.LabelMailboxRead, Confidence: 0.9, ToolNames: []string{"mailbox_read"}}
+	if semanticExplicitSkillPlanningRewrite(mail, "使用 mailbox skill 查看未读") != nil {
+		t.Fatal("mailbox plan was replaced with shell")
+	}
+	mixed := &intent.ClassificationResult{
+		Primary: intent.LabelLiveData, Secondary: []intent.IntentLabel{intent.LabelMailboxRead}, Confidence: 0.9,
+		ToolNames: []string{"web_search"},
+	}
+	keptMail := semanticExplicitSkillPlanningRewrite(mixed, "使用 mailbox skill 查看未读")
+	if keptMail == nil || keptMail.Primary != intent.LabelMailboxRead || keptMail.HasLabel(intent.LabelLiveData) || len(keptMail.ToolNames) != 0 {
+		t.Fatalf("mailbox composite: %+v", keptMail)
+	}
+	knowledge := &intent.ClassificationResult{Primary: intent.LabelKnowledgeWrite, Confidence: 0.95}
+	if semanticExplicitSkillPlanningRewrite(knowledge, "使用 weekly-digest skill 记住本周结论") != nil {
+		t.Fatal("knowledge-write plan was replaced with shell")
+	}
+	if semanticExplicitSkillPlanningRewrite(&intent.ClassificationResult{Primary: intent.LabelComputerUse, Confidence: 0.9}, named) != nil {
+		t.Fatal("computer use was replaced with shell")
+	}
+	if semanticExplicitSkillPlanningRewrite(&intent.ClassificationResult{Primary: intent.LabelShellCommand, Confidence: 0.9}, named) != nil {
+		t.Fatal("shell plan was rewritten again")
+	}
+}
+
 func TestSkillAdmissionLightPromptRunsTheAdmittedTools(t *testing.T) {
 	lightSurface := func() *semanticCallSurface {
 		return &semanticCallSurface{
@@ -340,6 +419,16 @@ func TestSkillAdmissionLightPromptRunsTheAdmittedTools(t *testing.T) {
 		if ok, reason := cb.IsToolCallAllowed("generate_pdf", `{"content":"# t"}`); ok {
 			t.Fatalf("light guided turn allowed generate_pdf: %s", reason)
 		}
+		if ok, reason := cb.IsToolCallAllowed("web_search", `{"query":"教程"}`); ok {
+			t.Fatalf("guided turn answered with web_search: %s", reason)
+		}
+		cb.noteGuidedSkillUseResult("bash", "ok")
+		if ok, reason := cb.IsToolCallAllowed("web_search", `{"query":"教程"}`); !ok {
+			t.Fatalf("web_search stayed closed after the workflow started: %s", reason)
+		}
+		if ok, reason := cb.IsToolCallAllowed("generate_pdf", `{"content":"# t"}`); ok {
+			t.Fatalf("guided workflow reopened generate_pdf: %s", reason)
+		}
 	})
 
 	t.Run("lookup", func(t *testing.T) {
@@ -357,6 +446,9 @@ func TestSkillAdmissionLightPromptRunsTheAdmittedTools(t *testing.T) {
 		}
 		assertVisible(t, cb, "bash", false)
 		assertVisible(t, cb, "read_file", false)
+		if ok, reason := cb.IsToolCallAllowed("web_search", `{"query":"南京天气"}`); !ok {
+			t.Fatalf("lookup web_search rejected: %s", reason)
+		}
 	})
 
 	t.Run("bound", func(t *testing.T) {
@@ -380,6 +472,9 @@ func TestSkillAdmissionLightPromptRunsTheAdmittedTools(t *testing.T) {
 		if ok, reason := cb.IsToolCallAllowed("generate_pdf", `{"content":"# t"}`); ok {
 			t.Fatalf("bound admission opened generate_pdf: %s", reason)
 		}
+		if ok, reason := cb.IsToolCallAllowed("web_search", `{"query":"论文"}`); ok {
+			t.Fatalf("bound admission answered with web_search: %s", reason)
+		}
 	})
 
 	t.Run("remote", func(t *testing.T) {
@@ -399,6 +494,9 @@ func TestSkillAdmissionLightPromptRunsTheAdmittedTools(t *testing.T) {
 		assertVisible(t, cb, "bash", false)
 		if ok, reason := cb.IsToolCallAllowed("bash", `{"command":"echo"}`); ok {
 			t.Fatalf("remote admission opened bash before search: %s", reason)
+		}
+		if ok, reason := cb.IsToolCallAllowed("web_search", `{"query":"周报"}`); ok {
+			t.Fatalf("remote admission answered with web_search: %s", reason)
 		}
 	})
 }

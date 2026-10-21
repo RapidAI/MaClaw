@@ -51,6 +51,18 @@ func (h *IMMessageHandler) adoptLateTreeSemanticIntent(ctx *LoopContext, userID,
 	if !lateTreeCurrentTurnAdoptAllowed(copied) {
 		return false
 	}
+	// A late lookup must not become the plan after the user named a skill.
+	// Inventing shell here is the mutation that HostRejects a timeout turn,
+	// so that verdict is left for the next request instead.
+	if explicitSkillInvocationForProfile(userText) {
+		if rewritten := semanticExplicitSkillPlanningRewrite(&copied, userText); rewritten != nil {
+			inventedShell := rewritten.Primary == intent.LabelShellCommand && !copied.HasLabel(intent.LabelShellCommand)
+			if inventedShell {
+				return false
+			}
+			copied = *rewritten
+		}
+	}
 	from := current.Primary
 	bindLoopSemanticIntent(ctx, &copied)
 	if executionProfileCausedByDegradedIntent(ctx.Runtime.Execution) {

@@ -16,6 +16,12 @@ func (h *IMMessageHandler) applyUnifiedTaskContextDecision(msg IMUserMessage, tr
 	if sessionRoundTurn(trimmed, msg.Platform) {
 		return askUserContext, false, false
 	}
+	// The bar's continue is the same goal. Consuming the stop fence here would
+	// archive the conversation and start a new task. The fence stays so the
+	// next ordinary message still starts clean.
+	if h.goalContinuationAdmittedPastStop(msg) {
+		return askUserContext, false, false
+	}
 	if h.consumeCancelledTaskBoundary(msg.UserID) {
 		if len(entries) >= 2 {
 			h.archiveCurrentTask(msg.UserID, entries, agent.ArchivedTaskStatusInterrupted)
