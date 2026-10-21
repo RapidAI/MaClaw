@@ -63,7 +63,10 @@ func desktopBotYield(ctx context.Context, scope agentruntime.Scope) error {
 	if err != nil {
 		return nil // older supervisor or no display yet: the action itself will tell
 	}
-	if yield, _ := out["yield"].(bool); !yield {
+	// lease is the supervisor's input lease between the person and the bot
+	// ("human" or "bot"); an older supervisor only reports yield.
+	lease, _ := out["lease"].(string)
+	if yield, _ := out["yield"].(bool); !yield && lease != "human" {
 		return nil
 	}
 	if takeover, _ := out["takeover"].(bool); takeover {

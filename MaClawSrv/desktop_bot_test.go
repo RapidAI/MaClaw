@@ -65,3 +65,22 @@ func TestRequestTakeoverMarksTheBotDisplayAndYields(t *testing.T) {
 		t.Fatalf("shared %v %v", err, ops)
 	}
 }
+
+// The supervisor's input lease alone makes the bot yield: a person holding
+// the H.264 viewer's lease stops the bot even if yield is not set.
+func TestDesktopBotYieldFollowsInputLease(t *testing.T) {
+	lease := "bot"
+	old := desktopRemoteCtl
+	desktopRemoteCtl = func(_ context.Context, _, _, _ string, request map[string]any) (map[string]any, error) {
+		return map[string]any{"yield": false, "lease": lease}, nil
+	}
+	defer func() { desktopRemoteCtl = old }()
+	scope := agentruntime.Scope{TenantID: "t", UserID: desktop.BotDesktopUser("alice", "bot_1")}
+	if err := desktopBotYield(context.Background(), scope); err != nil {
+		t.Fatalf("bot lease: %v", err)
+	}
+	lease = "human"
+	if err := desktopBotYield(context.Background(), scope); err == nil {
+		t.Fatal("bot kept acting while the person held the lease")
+	}
+}
