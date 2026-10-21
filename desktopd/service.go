@@ -348,6 +348,9 @@ func (s *Service) Stop(ctx context.Context, tenantID, userID string) (Desktop, e
 	if err != nil {
 		return Desktop{}, err
 	}
+	// The container's screens are gone; their gate tokens must not open
+	// /mcp for whatever runs there next.
+	desktopGates.forget(spec.TenantID, spec.UserID)
 	var out Desktop
 	err = s.withUser(spec.TenantID, spec.UserID, func() error {
 		var stopErr error
@@ -478,6 +481,7 @@ func (s *Service) openSessionUnlocked(ctx context.Context, spec Spec) (Session, 
 	// is not copied into meta.json. Opening the session is CDP and noVNC activity.
 	s.noteComputerScreen(spec, status.Display)
 	s.noteComputerActivity(spec.TenantID, spec.UserID)
+	s.rememberGate(spec, status.Token, status.Display)
 	return session, nil
 }
 

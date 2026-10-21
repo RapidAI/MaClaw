@@ -106,3 +106,30 @@ desktopd 后端打开会话时用 `MACLAW_MCP_IMAGE`、`MACLAW_MCP_MEMORY`、`MA
 | cursor_position | | `getmouselocation`,换算成截图坐标 |
 | wait(duration ≤30s) | wait | `sleep` |
 | screenshot / zoom(region) | screenshot | 截图(zoom 不改变坐标系) |
+
+## desktopd `/mcp`(按屏幕的 gate token)
+
+除了 Hub 的 `/mcp`,desktopd 自己也挂了一个 `/mcp`(源码 `desktopd/mcp.go`),给已经拿到某个桌面会话的
+agent 直接用,不经过 Hub:
+
+- **鉴权**:`Authorization: Bearer <gate token>`。gate token 就是 `POST /v1/desktops/session` 返回的 CDP / noVNC
+  URL 里 userinfo 那段(`desktop:<token>@…`),每块屏幕(用户桌面或隔离 bot 的显示器)一个。desktopd 在打开会话时
+  记下 token → (tenant, user, bot, display);`/v1/desktops/stop` 后作废;desktopd 重启后要重新打开一次会话,
+  旧 token 才会重新生效(在那之前返回 401,不会猜)。
+- **权限**:`control` 范围,只能操作这个 token 对应的那块屏幕;允许 `desktop_bash` / `desktop_file_upload`
+  (持有者本来就能通过 CDP 驱动这块屏幕的浏览器),**不允许** `desktop_install`。
+- **工具与协议**:和 Hub `/mcp` 完全相同(`corelib/desktop/desktopmcp`):截图 `desktop_screenshot`;点击、输入、
+  按键、滚动、拖拽都走 `desktop_computer`(Anthropic / OpenAI / MaClaw 三种动作格式);`desktop_bash`;
+  `desktop_file_read` / `desktop_file_write` / `desktop_file_list` / `desktop_file_download`,以及窗口、剪贴板、
+  无障碍树等。Streamable HTTP,`POST /mcp` 返回 `application/json`。
+- **人工接管**:默认和 Hub 一样,有人在 noVNC 里看/操作时拒绝控制类调用;`DESKTOPD_MCP_TAKEOVER=off` 关闭这个检查。
+- **关闭**:`DESKTOPD_MCP=off`(返回 404)。
+- **暴露面**:`/mcp` 挂在 desktopd 的 API 监听端口上,和 `/v1/*` 同一个端口,但不接受 desktopd 的服务 token,
+  只接受 gate token。对外仍推荐 Hub 的 `/mcp`(有 `mcpd_` token、read/control 范围和吊销)。
+
+示例(Claude Code):
+
+```sh
+claude mcp add --transport http maclaw-screen http://<desktopd>:<port>/mcp \
+  --header "Authorization: Bearer <gate token>"
+```

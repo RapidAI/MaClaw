@@ -27,6 +27,7 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		return admin.tokenAccepted(bearerToken(r))
 	}
 	mux := http.NewServeMux()
+	mux.Handle("/mcp", mcpHandler(svc))
 	mux.Handle("GET /admin", admin)
 	mux.Handle("/admin/", admin)
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
