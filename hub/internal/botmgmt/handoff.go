@@ -172,6 +172,18 @@ func (s *Service) ProxyDesktopHandoff(w http.ResponseWriter, r *http.Request, to
 		},
 		FlushInterval: -1,
 		ModifyResponse: func(resp *http.Response) error {
+			// A desktop whose supervisor predates the H.264 player (or
+			// has it off without the redirect) answers h264.html with
+			// websockify's 404. Send the person to the noVNC page the
+			// GUI named in ?vnc= instead of a blank frame.
+			if resp.StatusCode == http.StatusNotFound && path.Base(rest) == "h264.html" {
+				if location := h264FallbackLocation(r.URL.Query().Get("vnc")); location != "" {
+					resp.StatusCode = http.StatusFound
+					resp.Status = "302 Found"
+					resp.Header.Set("Location", location)
+					resp.Header.Set("Cache-Control", "no-store")
+				}
+			}
 			resp.Header.Del("X-Frame-Options")
 			resp.Header.Set("Content-Security-Policy", "frame-ancestors *")
 			return nil
@@ -200,4 +212,13 @@ func ParseHandoffPath(raw string) (token, rest string, err error) {
 		return "", "", fmt.Errorf("not a desktop handoff")
 	}
 	return token, rest, nil
+}
+
+// h264FallbackLocation accepts only a sibling noVNC page ("vnc.html?..."),
+// so the H.264 player's fallback is never an open redirect.
+func h264FallbackLocation(target string) string {
+	if !strings.HasPrefix(target, "vnc.html") || strings.ContainsAny(target, "\r\n\\") || strings.Contains(target, "//") {
+		return ""
+	}
+	return target
 }
