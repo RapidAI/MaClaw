@@ -70,6 +70,14 @@ func (c botDesktopControl) Open(ctx context.Context, tenantID, userID string) (s
 	return session.Novnc, nil
 }
 
+// UploadFile streams one material file into the owner's desktop container.
+func (c botDesktopControl) UploadFile(ctx context.Context, tenantID, userID, filePath string, body io.Reader, size int64) (string, error) {
+	if c.pool == nil {
+		return "", desktoppool.ErrNotAssigned
+	}
+	return c.pool.UploadFile(ctx, tenantID, userID, filePath, body, size)
+}
+
 // Ctl runs one supervisor control op on the desktop user's display (an
 // isolated bot's takeover state).
 func (c botDesktopControl) Ctl(ctx context.Context, tenantID, userID string, request map[string]any) (map[string]any, error) {

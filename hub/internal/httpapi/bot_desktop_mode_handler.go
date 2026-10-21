@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"io"
 	"net/http"
 	"strings"
@@ -122,5 +124,46 @@ func PutBotDesktopModeUserHandler(svc *botmgmt.Service, identity botAuthenticato
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"id": bot.ID, "desktop_mode": bot.DesktopMode})
+	}
+}
+
+// PostBotDesktopMaterialHandler POST /api/v1/bots/{id}/desktop/files
+// The bot's owner uploads one material file in chunks:
+// {"upload_id":"...","name":"封面.png","offset":0,"total":12345,"data":"<base64>"}.
+// Each answer says how much arrived; the last one carries "path" (~/素材/<bot>/<name>).
+// The folder comes from the bot, never from the request.
+func PostBotDesktopMaterialHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		var in struct {
+			UploadID string `json:"upload_id"`
+			Name     string `json:"name"`
+			Offset   int64  `json:"offset"`
+			Total    int64  `json:"total"`
+			Data     []byte `json:"data"`
+		}
+		limit := int64(desktop.UploadChunkMax)*4/3 + 64<<10
+		if err := json.NewDecoder(io.LimitReader(r.Body, limit)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_UPLOAD", "invalid upload chunk")
+			return
+		}
+		up, err := svc.UploadMaterialChunk(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), botmgmt.MaterialChunk{
+			UploadID: in.UploadID, Name: in.Name, Offset: in.Offset, Total: in.Total, Data: in.Data,
+		})
+		if err != nil {
+			if up != nil && errors.Is(err, botmgmt.ErrInvalidInput) {
+				writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "received": up.Received, "upload_id": up.UploadID})
+				return
+			}
+			writeBotUserError(w, r, principal, err, "")
+			return
+		}
+		writeJSON(w, http.StatusOK, up)
 	}
 }

@@ -124,8 +124,10 @@ type Service struct {
 	System    store.SystemSettingsRepository
 	Directory Directory
 	Desktop   DesktopControl
-	HTTP      *http.Client
-	Now       func() time.Time
+	// MaterialStageDir holds partial material uploads; empty is a temp dir.
+	MaterialStageDir string
+	HTTP             *http.Client
+	Now              func() time.Time
 	// messageTimeout overrides the wait for one bot command. Tests use it.
 	// A timed-out command must not stop the desktop: the instance may already
 	// have handed that browser to the person.

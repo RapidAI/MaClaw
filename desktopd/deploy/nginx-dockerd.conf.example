@@ -29,6 +29,19 @@ server {
     # Screenshots (PNG) come back through this proxy.
     client_max_body_size 32m;
 
+    # Bot material uploads (one file up to 200 MB, streamed from Hub).
+    location = /v1/desktops/upload {
+        client_max_body_size 210m;
+        proxy_pass http://127.0.0.1:18081;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Authorization $http_authorization;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        proxy_buffering off;
+        proxy_request_buffering off;
+    }
+
     location / {
         proxy_pass http://127.0.0.1:18081;
         proxy_http_version 1.1;

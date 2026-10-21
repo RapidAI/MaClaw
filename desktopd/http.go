@@ -212,6 +212,27 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		}
 		writeOp(w, text, err)
 	})
+	// Binary upload of one material file. Identity and path ride in the
+	// query; the body is the raw bytes (Content-Length required).
+	mux.HandleFunc("POST /v1/desktops/upload", func(w http.ResponseWriter, r *http.Request) {
+		if !authOK(r) {
+			writeErr(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		q := r.URL.Query()
+		tenantID, userID := q.Get("tenant_id"), q.Get("user_id")
+		if r.ContentLength < 0 || r.ContentLength > desktop.UploadMax {
+			writeOp(w, "", fmt.Errorf("%w: file size is missing or too large", ErrInvalid))
+			return
+		}
+		if err := svc.Ensure(r.Context(), Spec{TenantID: tenantID, UserID: userID}); err != nil {
+			writeServiceErr(w, err)
+			return
+		}
+		body := http.MaxBytesReader(w, r.Body, desktop.UploadMax)
+		text, err := svc.UploadFile(r.Context(), tenantID, userID, q.Get("path"), body, r.ContentLength)
+		writeOp(w, text, err)
+	})
 	mux.HandleFunc("POST /v1/desktops/bash", func(w http.ResponseWriter, r *http.Request) {
 		if !authOK(r) {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")

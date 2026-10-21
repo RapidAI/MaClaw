@@ -102,7 +102,8 @@ func withBotID(next http.Handler) http.Handler {
 			q.Del("bot_id")
 			r.URL.RawQuery = q.Encode()
 		}
-		if r.Method == http.MethodPost && r.Body != nil {
+		// An upload body is file bytes, not JSON; its bot rides in the query.
+		if r.Method == http.MethodPost && r.Body != nil && r.URL.Path != "/v1/desktops/upload" {
 			raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBotRewriteBody))
 			if err != nil {
 				writeErr(w, http.StatusBadRequest, "invalid desktop request")

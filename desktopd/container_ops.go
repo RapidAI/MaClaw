@@ -354,3 +354,57 @@ func commandFailure(output string, exitCode int) string {
 	}
 	return desktop.CapTail(text, 4000)
 }
+
+// UploadFile streams one material file of size bytes into the user's desktop
+// container through the supervisor's file write, which creates the folder.
+// Unlike WriteFile it is binary and bounded by desktop.UploadMax.
+func (s *Service) UploadFile(ctx context.Context, tenantID, userID, filePath string, body io.Reader, size int64) (string, error) {
+	filePath, err := desktop.ContainerPath(filePath)
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(filePath, desktop.MaterialsRoot+"/") {
+		return "", fmt.Errorf("%w: uploads go under %s", ErrInvalid, desktop.MaterialsRoot)
+	}
+	if size < 0 || size > desktop.UploadMax {
+		return "", fmt.Errorf("%w: file is too large", ErrInvalid)
+	}
+	spec, err := normalize(Spec{TenantID: tenantID, UserID: userID})
+	if err != nil {
+		return "", err
+	}
+	counted := &countingReader{r: io.LimitReader(body, desktop.UploadMax+1)}
+	var exitCode int
+	var output string
+	err = s.withUser(spec.TenantID, spec.UserID, func() error {
+		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{
+			Kind:  ExecFile,
+			Args:  fileServiceArgs(containerName(spec.TenantID, spec.UserID), "write", filePath, 0),
+			Stdin: counted,
+		})
+		output, exitCode = result.Out, result.Exit
+		return runErr
+	})
+	if err != nil {
+		return "", err
+	}
+	s.noteComputerActivity(spec.TenantID, spec.UserID)
+	if exitCode != 0 {
+		return "", fmt.Errorf("%w: %s", ErrDocker, commandFailure(output, exitCode))
+	}
+	if counted.n != size {
+		return "", fmt.Errorf("%w: upload was cut short (%d of %d bytes)", ErrInvalid, counted.n, size)
+	}
+	return fmt.Sprintf("Wrote %s (%d bytes).", filePath, counted.n), nil
+}
+
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}

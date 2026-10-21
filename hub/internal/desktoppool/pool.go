@@ -659,6 +659,54 @@ func (p *Pool) RunFile(ctx context.Context, tenantID, userID, action, filePath, 
 	return out.Output, nil
 }
 
+// UploadFile streams one material file of size bytes to the user's desktop
+// container. filePath must already be a desktop.MaterialPath.
+func (p *Pool) UploadFile(ctx context.Context, tenantID, userID, filePath string, body io.Reader, size int64) (string, error) {
+	resolved, err := desktop.ContainerPath(filePath)
+	if err != nil || !strings.HasPrefix(resolved, desktop.MaterialsRoot+"/") {
+		return "", fmt.Errorf("%w: upload path is invalid", ErrInvalidInput)
+	}
+	if size < 0 || size > desktop.UploadMax {
+		return "", fmt.Errorf("%w: file is too large", ErrInvalidInput)
+	}
+	if err := p.ensureOp(ctx, tenantID, userID, WakeFile); err != nil {
+		return "", err
+	}
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return "", err
+	}
+	q := url.Values{}
+	q.Set("tenant_id", store.NormalizeTenantID(tenantID))
+	q.Set("user_id", strings.TrimSpace(userID))
+	q.Set("path", resolved)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(server.BaseURL, "/")+"/v1/desktops/upload?"+q.Encode(), body)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", ErrService, err.Error())
+	}
+	req.ContentLength = size
+	req.Header.Set("Authorization", "Bearer "+server.AccessToken)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	client := &http.Client{Timeout: 10 * time.Minute}
+	if p.HTTP != nil && p.HTTP.Transport != nil {
+		client.Transport = p.HTTP.Transport
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", ErrService, err.Error())
+	}
+	defer resp.Body.Close()
+	payload, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", upstream.NewStatusError(ErrService, resp.StatusCode, payload)
+	}
+	var out struct {
+		Output string `json:"output"`
+	}
+	_ = json.Unmarshal(payload, &out)
+	return out.Output, nil
+}
+
 // RunBash runs one command in the user's desktop container.
 func (p *Pool) RunBash(ctx context.Context, tenantID, userID, command string) (string, error) {
 	if _, err := desktop.BashArgs("container", command); err != nil {
