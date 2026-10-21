@@ -30,7 +30,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from urllib.parse import quote, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 ROOT = Path("/desktops")
 PROC = Path("/proc")
@@ -3664,9 +3664,14 @@ def gate_connection(client, listen_port, target_port, token):
     reap_children()
     try:
         head = read_request_head(client)
-        if head is not None and listen_port == VNC_GATE_PORT and h264_requested(head):
-            serve_h264(client, head, token)
-            return
+        if head is not None and listen_port == VNC_GATE_PORT and h264_path(head):
+            if h264_enabled():
+                serve_h264(client, head, token)
+                return
+            if h264_path(head) == "/h264.html":
+                # Flag off: hand the GUI's new-player URL its noVNC page.
+                h264_redirect_to_vnc(client, head)
+                return
         route = None
         if head is not None:
             if request_authorized(head, token):
@@ -3769,30 +3774,67 @@ def request_authorized(head, token):
 
 
 # ---------------------------------------------------------------------------
-# H.264 view stream (experimental, off by default).
+# H.264 desktop stream with input (experimental, off by default).
 #
-# MACLAW_DESKTOP_H264=on in the container lets the noVNC gate (6080) answer a
-# WebSocket upgrade on /h264 with the screen as fragmented MP4 (H.264
-# baseline, one fragment per frame) for a Media Source Extensions player; GET
-# /h264.html is that player. The token is the same gate token noVNC uses
-# (Authorization: Bearer, attached by desktopd/Hub), and it selects the
-# screen: the owner's display or a bot's display. The stream is view-only;
-# input stays on noVNC, which remains the default viewer.
+# MACLAW_DESKTOP_H264=on in the container lets the noVNC gate (6080) answer
+# GET /h264.html (the player) and a WebSocket upgrade on /h264. A Hub or
+# desktopd tunnel prefix is kept in front of the path; only the last segment
+# counts. The gate token is the same one noVNC uses (Authorization: Bearer,
+# attached by desktopd/Hub) and selects the screen: the owner's display or a
+# bot's display. With the flag off, /h264.html redirects to the noVNC page
+# named in its "vnc" query value, so a GUI that asks for the new player still
+# gets a picture.
 #
-# Damage-driven: ffmpeg's mpdecimate drops frames that did not change, and
-# variable frame rate output means an idle screen sends nothing but rare
-# keyframes. This approximates an XDamage-driven encoder without new native
-# code. Written for MaClaw; the idea of a damage-driven H.264 desktop stream
-# follows trycua/cua (MIT), no code was taken from it.
+# Wire format ("maclaw-h264/1", one WebSocket, docs/desktop-h264-takeover.md):
+#   server -> client binary: u32 BE header length, u32 BE payload length,
+#     JSON header {seq, key, ts, codec, w, h}, H.264 Annex B access unit
+#     (SPS/PPS in front of every IDR). With ?mse=1 the binary messages are
+#     fragmented MP4 instead, for a Media Source player (one frame later).
+#   server -> client text: hello, lease, clipboard, input_error.
+#   client -> server text: input {seq, events}, frame_ack, request_keyframe,
+#     clipboard_set, clipboard_get.
+#
+# Every viewer gets its own ffmpeg, so its first frame is an IDR. ffmpeg's
+# mpdecimate drops frames that did not change and the output is variable
+# frame rate, so an idle screen sends almost nothing. The encoder writes FLV,
+# whose tags carry exact frame sizes with no muxer delay. When the viewer falls
+# behind (queued frames or unacknowledged frames pile up) deltas are dropped
+# until the next IDR; an encoder restart forces one when it does not come.
+#
+# Input is injected through one XTEST connection per display, spoken directly
+# over the X11 socket (no python-xlib needed, so older images work too).
+# Input is accepted only on the owner's own screen, or on a bot's screen while
+# a takeover is open. One viewer holds the input lease at a time; the lease
+# lapses INPUT_LEASE_SECONDS after that viewer's last input, and keys and
+# buttons it left pressed are released when the lease moves or lapses. A
+# person's input marks the screen's human_input file, which ctl bot_state
+# reports as lease "human" so the bot yields.
+#
+# Written for MaClaw. Ideas from trycua/cua's public protocol docs
+# (MEDIA.md, PRESENCE.md); no cua code was used.
 
 H264_MAX_STREAMS = 4
-H264_FPS = 30
+H264_DEFAULT_FPS = 15
+H264_GOP_SECONDS = 2
+H264_MAX_QUEUED = 3
+H264_MAX_INFLIGHT = 8
+H264_IDR_WAIT_SECONDS = 1.0
+INPUT_LEASE_SECONDS = 5
 _h264_streams = threading.BoundedSemaphore(H264_MAX_STREAMS)
 
 
 def h264_enabled(env=None):
     env = os.environ if env is None else env
     return str(env.get("MACLAW_DESKTOP_H264", "")).strip().lower() in ("1", "on", "true", "yes")
+
+
+def h264_fps(env=None):
+    env = os.environ if env is None else env
+    try:
+        value = int(str(env.get("MACLAW_DESKTOP_H264_FPS", "")).strip() or H264_DEFAULT_FPS)
+    except ValueError:
+        value = H264_DEFAULT_FPS
+    return max(5, min(30, value))
 
 
 def request_target(head):
@@ -3805,6 +3847,17 @@ def request_target(head):
     if len(parts) < 2:
         return "", ""
     return parts[0].upper(), urlsplit(parts[1]).path
+
+
+def request_query(head):
+    try:
+        line = head.decode("latin-1").split("\n", 1)[0].strip()
+    except UnicodeDecodeError:
+        return {}
+    parts = line.split(" ")
+    if len(parts) < 2:
+        return {}
+    return {key: values[-1] for key, values in parse_qs(urlsplit(parts[1]).query).items()}
 
 
 def request_header(head, wanted):
@@ -3835,8 +3888,32 @@ def h264_path(head):
     return last if last in ("/h264", "/h264.html") else ""
 
 
-def h264_display(credential, owner_token):
-    """The display a gate token may watch, or None."""
+def h264_fallback_location(head):
+    """The sibling noVNC page named by ?vnc=, or "" when it is not one.
+
+    Only a relative "vnc.html?..." is accepted, so this is never an open
+    redirect."""
+    target = str(request_query(head).get("vnc") or "")
+    if not target.startswith("vnc.html") or any(ch in target for ch in "\r\n\\") or "//" in target:
+        return ""
+    return target
+
+
+def h264_redirect_to_vnc(client, head):
+    location = h264_fallback_location(head) or "vnc.html?autoconnect=1&resize=scale"
+    try:
+        client.sendall(("HTTP/1.1 302 Found\r\nLocation: %s\r\nCache-Control: no-store\r\n"
+                        "Content-Length: 0\r\nConnection: close\r\n\r\n" % location).encode("latin-1"))
+    except OSError:
+        pass
+    try:
+        client.close()
+    except OSError:
+        pass
+
+
+def h264_screen(credential, owner_token):
+    """(display, key, owner) a gate token may watch, or None."""
     if not credential:
         return None
     users = load_registry().get("users", {}) or {}
@@ -3849,25 +3926,48 @@ def h264_display(credential, owner_token):
             display = int(entry.get("display") or 0)
         except (TypeError, ValueError):
             return None
-        return display if DISPLAY_MIN <= display <= DISPLAY_MAX else None
+        if not DISPLAY_MIN <= display <= DISPLAY_MAX:
+            return None
+        return display, str(key), False
     if owner_token and hmac.compare_digest(credential, owner_token):
-        return DISPLAY_MIN
+        return DISPLAY_MIN, owner_key(), True
     return None
 
 
-def h264_ffmpeg_argv(display, size, fps=H264_FPS):
+def h264_display(credential, owner_token):
+    """The display a gate token may watch, or None."""
+    screen = h264_screen(credential, owner_token)
+    return screen[0] if screen else None
+
+
+def h264_input_allowed(key, owner):
+    """The owner's own screen takes input; a bot's only while the person has
+    it (takeover)."""
+    if owner:
+        return True
+    return bool(key) and takeover_state(key) is not None
+
+
+def h264_ffmpeg_argv(display, size, fps=H264_DEFAULT_FPS, mse=False):
+    # mpdecimate max: at most 2 s of dropped frames in a row, so an idle
+    # screen still emits a tiny frame now and then and a lost viewer resyncs.
+    # FLV for the Annex B stream (no muxer delay, see FlvToAnnexB); the MSE
+    # fallback needs fragmented MP4, which arrives one frame late.
+    if mse:
+        container = ["-movflags", "empty_moov+default_base_moof+frag_every_frame", "-f", "mp4"]
+    else:
+        container = ["-f", "flv"]
     return [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
         "-f", "x11grab", "-draw_mouse", "1", "-framerate", str(fps),
         "-video_size", size, "-i", ":%d" % display,
-        "-vf", "mpdecimate=hi=768:lo=320:frac=0.33,format=yuv420p",
+        "-vf", "mpdecimate=hi=768:lo=320:frac=0.33:max=%d,format=yuv420p" % (fps * 2),
         "-fps_mode", "vfr",
         "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-        "-profile:v", "baseline", "-level", "4.1", "-g", str(fps * 4), "-bf", "0",
+        "-profile:v", "baseline", "-level", "4.1", "-g", str(fps * H264_GOP_SECONDS), "-bf", "0",
         "-crf", "28", "-maxrate", "6M", "-bufsize", "3M",
-        "-movflags", "empty_moov+default_base_moof+frag_every_frame",
-        "-f", "mp4", "pipe:1",
-    ]
+        "-flush_packets", "1",
+    ] + container + ["pipe:1"]
 
 
 def ws_server_frame(payload, opcode=0x82):
@@ -3889,36 +3989,820 @@ def ws_accept_key(key):
     return base64.b64encode(digest).decode("ascii")
 
 
-H264_PLAYER = r"""<!doctype html><meta charset=utf-8><title>desktop</title>
-<style>html,body{margin:0;height:100%;background:#111}video{width:100%;height:100%;object-fit:contain}</style>
-<video id=v autoplay muted playsinline></video>
-<script>
-// View-only H.264 player for the MaClaw desktop gate (MACLAW_DESKTOP_H264=on).
-const v=document.getElementById("v"),ms=new MediaSource(),q=[];let sb;
-v.src=URL.createObjectURL(ms);
-ms.addEventListener("sourceopen",()=>{
- sb=ms.addSourceBuffer('video/mp4; codecs="avc1.42E029"');sb.mode="sequence";
- sb.addEventListener("updateend",pump);
- const ws=new WebSocket(location.href.replace(/^http/,"ws").replace(/h264\.html.*$/,"h264"));
- ws.binaryType="arraybuffer";
- ws.onmessage=e=>{q.push(e.data);pump();};
-});
-function pump(){
- if(!sb||sb.updating||!q.length)return;
- sb.appendBuffer(q.shift());
- const b=sb.buffered;if(b.length&&v.currentTime<b.end(0)-0.3)v.currentTime=b.end(0)-0.05;
- if(b.length&&b.end(0)-b.start(0)>30&&!sb.updating){try{sb.remove(b.start(0),b.end(0)-10)}catch(_){}}
+def h264_video_message(header, payload):
+    """One binary video message: u32 BE header length, u32 BE payload length,
+    JSON header, payload."""
+    head = json.dumps(header, separators=(",", ":")).encode("utf-8")
+    return struct.pack(">II", len(head), len(payload)) + head + payload
+
+
+# --- FLV -> Annex B ------------------------------------------------------------
+#
+# The encoder's output container is FLV: every video tag is one access unit
+# with its size up front, and the muxer writes it the moment it is encoded.
+# (Fragmented MP4 holds each frame until the next one arrives, because the
+# sample duration is part of the fragment; with an idle, variable frame rate
+# screen that delayed every change by up to two seconds.)
+
+
+def avcc_config(avcc):
+    """(codec string, length size, [SPS..], [PPS..]) of an avcC record."""
+    if len(avcc) < 7:
+        raise ValueError("short avcC")
+    codec = "avc1.%02X%02X%02X" % (avcc[1], avcc[2], avcc[3])
+    length_size = (avcc[4] & 3) + 1
+    offset = 5
+    sps = []
+    for _ in range(avcc[offset] & 0x1F):
+        size = struct.unpack_from(">H", avcc, offset + 1)[0]
+        sps.append(bytes(avcc[offset + 3:offset + 3 + size]))
+        offset += 2 + size
+    offset += 1
+    pps = []
+    count = avcc[offset]
+    offset += 1
+    for _ in range(count):
+        size = struct.unpack_from(">H", avcc, offset)[0]
+        pps.append(bytes(avcc[offset + 2:offset + 2 + size]))
+        offset += 2 + size
+    return codec, length_size, sps, pps
+
+
+class FlvToAnnexB:
+    """Turns the encoder's FLV stream into Annex B access units, each
+    complete the moment its tag is."""
+
+    def __init__(self):
+        self.buffer = bytearray()
+        self.header_done = False
+        self.codec = ""
+        self.length_size = 4
+        self.parameter_sets = b""
+
+    def feed(self, data):
+        """Append encoder bytes; returns [(annexb, keyframe)] completed."""
+        self.buffer.extend(data)
+        frames = []
+        if not self.header_done:
+            if len(self.buffer) < 9:
+                return frames
+            if bytes(self.buffer[:3]) != b"FLV":
+                raise ValueError("not FLV")
+            skip = struct.unpack_from(">I", self.buffer, 5)[0] + 4
+            if len(self.buffer) < skip:
+                return frames
+            del self.buffer[:skip]
+            self.header_done = True
+        while len(self.buffer) >= 11:
+            kind = self.buffer[0]
+            size = int.from_bytes(self.buffer[1:4], "big")
+            if len(self.buffer) < 11 + size + 4:
+                break
+            body = bytes(self.buffer[11:11 + size])
+            del self.buffer[:11 + size + 4]
+            if kind == 9 and len(body) >= 5 and body[0] & 0x0F == 7:
+                frame = self._video(body)
+                if frame is not None:
+                    frames.append(frame)
+        return frames
+
+    def _video(self, body):
+        packet = body[1]
+        if packet == 0:
+            codec, self.length_size, sps, pps = avcc_config(body[5:])
+            self.codec = codec
+            self.parameter_sets = b"".join(b"\x00\x00\x00\x01" + nal for nal in sps + pps)
+            return None
+        if packet != 1 or not self.codec:
+            return None
+        annexb, key, has_ps = self._annexb(body[5:])
+        if not annexb:
+            return None
+        if key and not has_ps:
+            annexb = self.parameter_sets + annexb
+        return annexb, key
+
+    def _annexb(self, sample):
+        out = bytearray()
+        key = False
+        has_ps = False
+        offset = 0
+        size_len = self.length_size
+        while offset + size_len <= len(sample):
+            size = int.from_bytes(sample[offset:offset + size_len], "big")
+            offset += size_len
+            nal = sample[offset:offset + size]
+            offset += size
+            if not nal:
+                continue
+            kind = nal[0] & 0x1F
+            if kind == 5:
+                key = True
+            elif kind in (7, 8):
+                has_ps = True
+            out += b"\x00\x00\x00\x01" + nal
+        return bytes(out), key, has_ps
+
+
+# --- XTEST over the raw X11 socket -------------------------------------------
+
+# KeyboardEvent.code -> X keysym. Physical keys only: the person's layout and
+# IME stay on their side, the guest's (fcitx) on the desktop.
+KEYSYM_BY_CODE = {
+    "Escape": 0xFF1B, "Tab": 0xFF09, "CapsLock": 0xFFE5, "Enter": 0xFF0D,
+    "Backspace": 0xFF08, "Space": 0x20, "Minus": 0x2D, "Equal": 0x3D,
+    "BracketLeft": 0x5B, "BracketRight": 0x5D, "Backslash": 0x5C,
+    "Semicolon": 0x3B, "Quote": 0x27, "Backquote": 0x60, "Comma": 0x2C,
+    "Period": 0x2E, "Slash": 0x2F, "IntlBackslash": 0x3C,
+    "ShiftLeft": 0xFFE1, "ShiftRight": 0xFFE2, "ControlLeft": 0xFFE3,
+    "ControlRight": 0xFFE4, "AltLeft": 0xFFE9, "AltRight": 0xFFEA,
+    "MetaLeft": 0xFFEB, "MetaRight": 0xFFEC, "ContextMenu": 0xFF67,
+    "PrintScreen": 0xFF61, "ScrollLock": 0xFF14, "Pause": 0xFF13,
+    "Insert": 0xFF63, "Home": 0xFF50, "PageUp": 0xFF55, "Delete": 0xFFFF,
+    "End": 0xFF57, "PageDown": 0xFF56, "ArrowLeft": 0xFF51, "ArrowUp": 0xFF52,
+    "ArrowRight": 0xFF53, "ArrowDown": 0xFF54, "NumLock": 0xFF7F,
+    "NumpadDivide": 0xFFAF, "NumpadMultiply": 0xFFAA, "NumpadSubtract": 0xFFAD,
+    "NumpadAdd": 0xFFAB, "NumpadEnter": 0xFF8D, "NumpadDecimal": 0xFFAE,
 }
+for _index in range(26):
+    KEYSYM_BY_CODE["Key%s" % chr(65 + _index)] = 0x61 + _index
+for _index in range(10):
+    KEYSYM_BY_CODE["Digit%d" % _index] = 0x30 + _index
+    KEYSYM_BY_CODE["Numpad%d" % _index] = 0xFFB0 + _index
+for _index in range(12):
+    KEYSYM_BY_CODE["F%d" % (_index + 1)] = 0xFFBE + _index
+# Keypad digits are only on the keypad keysyms with NumLock; fall back to
+# the plain digit when the server map has no keypad entry.
+KEYSYM_FALLBACK = {0xFFB0 + i: 0x30 + i for i in range(10)}
+KEYSYM_FALLBACK.update({0xFF8D: 0xFF0D, 0xFFAE: 0x2E, 0xFFAB: 0x2B, 0xFFAD: 0x2D, 0xFFAA: 0x2A, 0xFFAF: 0x2F, 0xFFEC: 0xFFEB, 0xFFEA: 0xFFE9})
+
+X_KEY_PRESS, X_KEY_RELEASE, X_BUTTON_PRESS, X_BUTTON_RELEASE, X_MOTION = 2, 3, 4, 5, 6
+
+
+def _pad4(size):
+    return (4 - size % 4) % 4
+
+
+class X11Input:
+    """A minimal X11 client that speaks just enough to inject XTEST input:
+    connection setup, QueryExtension, GetKeyboardMapping and FakeInput.
+    The desktop's Xvfb runs with -ac, so no authorization is sent."""
+
+    def __init__(self, display, socket_dir="/tmp/.X11-unix"):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(5)
+        self.sock.connect("%s/X%d" % (socket_dir, display))
+        self.sequence = 0
+        self.sock.sendall(struct.pack("<BxHHHHxx", 0x6C, 11, 0, 0, 0))
+        head = self._recv(8)
+        body = self._recv(struct.unpack_from("<H", head, 6)[0] * 4)
+        if head[0] != 1:
+            raise OSError("X11 connection refused")
+        vendor_len = struct.unpack_from("<H", body, 16)[0]
+        formats = body[21]
+        self.min_keycode, self.max_keycode = body[26], body[27]
+        screen = 32 + vendor_len + _pad4(vendor_len) + 8 * formats
+        self.root = struct.unpack_from("<I", body, screen)[0]
+        self.width, self.height = struct.unpack_from("<HH", body, screen + 20)
+        self.xtest = self._query_extension(b"XTEST")
+        if not self.xtest:
+            raise OSError("XTEST is not available")
+        self.keycodes = self._keyboard_map()
+
+    def _recv(self, count):
+        data = bytearray()
+        while len(data) < count:
+            chunk = self.sock.recv(count - len(data))
+            if not chunk:
+                raise OSError("X11 connection closed")
+            data.extend(chunk)
+        return bytes(data)
+
+    def _request(self, data):
+        self.sequence = (self.sequence + 1) & 0xFFFF
+        self.sock.sendall(data)
+        return self.sequence
+
+    def _reply(self, sequence):
+        while True:
+            packet = self._recv(32)
+            kind = packet[0] & 0x7F
+            if kind == 1:
+                extra = self._recv(struct.unpack_from("<I", packet, 4)[0] * 4)
+                if struct.unpack_from("<H", packet, 2)[0] == sequence:
+                    return packet + extra
+            elif kind == 0 and struct.unpack_from("<H", packet, 2)[0] == sequence:
+                raise OSError("X11 error %d" % packet[1])
+
+    def _query_extension(self, name):
+        data = struct.pack("<BxHHxx", 98, 2 + (len(name) + _pad4(len(name))) // 4, len(name)) + name + b"\x00" * _pad4(len(name))
+        reply = self._reply(self._request(data))
+        return reply[9] if reply[8] else 0
+
+    def _keyboard_map(self):
+        count = self.max_keycode - self.min_keycode + 1
+        reply = self._reply(self._request(struct.pack("<BxHBBxx", 101, 2, self.min_keycode, count)))
+        per = reply[1]
+        keycodes = {}
+        for index in range(count):
+            for column in range(per):
+                keysym = struct.unpack_from("<I", reply, 32 + (index * per + column) * 4)[0]
+                # Prefer the unshifted column: the person's Shift arrives as
+                # its own key event.
+                if keysym and (keysym not in keycodes or column < keycodes[keysym][1]):
+                    keycodes[keysym] = (self.min_keycode + index, column)
+        return {keysym: value[0] for keysym, value in keycodes.items()}
+
+    def keycode(self, keysym):
+        code = self.keycodes.get(keysym)
+        if code is None and keysym in KEYSYM_FALLBACK:
+            code = self.keycodes.get(KEYSYM_FALLBACK[keysym])
+        return code
+
+    def fake(self, kind, detail, x=0, y=0):
+        self._request(struct.pack("<BBHBBHIIIIhhIHBB", self.xtest, 2, 9, kind, detail, 0, 0,
+                                  self.root if kind == X_MOTION else 0, 0, 0, x, y, 0, 0, 0, 0))
+
+    def drain(self):
+        """Discard errors the server queued for FakeInput requests."""
+        try:
+            self.sock.setblocking(False)
+            while self.sock.recv(65536):
+                pass
+        except (BlockingIOError, InterruptedError):
+            pass
+        finally:
+            self.sock.settimeout(5)
+
+    def close(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
+class ScreenInput:
+    """Input state of one display inside this gate process: the XTEST
+    connection, the lease holder and what that holder has pressed."""
+
+    def __init__(self, display):
+        self.display = display
+        self.lock = threading.Lock()
+        self.x11 = None
+        self.holder = None
+        self.holder_at = 0.0
+        self.keys = set()
+        self.buttons = set()
+
+    def _conn(self):
+        if self.x11 is None:
+            self.x11 = X11Input(self.display)
+        return self.x11
+
+    def holder_now(self, now=None):
+        now = time.monotonic() if now is None else now
+        if self.holder is not None and now - self.holder_at >= INPUT_LEASE_SECONDS:
+            return None
+        return self.holder
+
+    def _release_locked(self):
+        if not self.keys and not self.buttons:
+            return
+        try:
+            conn = self._conn()
+            for code in list(self.keys):
+                conn.fake(X_KEY_RELEASE, code)
+            for button in list(self.buttons):
+                conn.fake(X_BUTTON_RELEASE, button)
+            conn.drain()
+        except OSError:
+            self._drop_conn()
+        self.keys.clear()
+        self.buttons.clear()
+
+    def _drop_conn(self):
+        if self.x11 is not None:
+            self.x11.close()
+        self.x11 = None
+
+    def release(self, viewer=None):
+        """Release held keys/buttons (of viewer, when given) and, for a lapsed
+        or leaving holder, the lease itself."""
+        with self.lock:
+            if viewer is not None and self.holder is not viewer:
+                return
+            self._release_locked()
+            if viewer is not None:
+                self.holder = None
+
+    def expire(self):
+        """Release what a lapsed holder left pressed. Returns True if it did."""
+        with self.lock:
+            if self.holder is None or self.holder_now() is not None:
+                return False
+            self._release_locked()
+            self.holder = None
+            return True
+
+    def apply(self, viewer, events):
+        """Inject events for viewer. Returns "" or an input_error code."""
+        with self.lock:
+            now = time.monotonic()
+            current = self.holder_now(now)
+            if current is not None and current is not viewer:
+                return "lease_busy"
+            if self.holder is not viewer:
+                # The lease moves: nothing the previous holder pressed may
+                # stay down under the new one.
+                self._release_locked()
+                self.holder = viewer
+            self.holder_at = now
+            try:
+                conn = self._conn()
+                for event in events:
+                    self._inject(conn, event)
+                conn.drain()
+            except OSError:
+                self._drop_conn()
+                return "inject_failed"
+            return ""
+
+    def _point(self, conn, event):
+        try:
+            x = float(event.get("x"))
+            y = float(event.get("y"))
+        except (TypeError, ValueError):
+            return None
+        x = min(max(x, 0.0), 1.0)
+        y = min(max(y, 0.0), 1.0)
+        return int(round(x * (conn.width - 1))), int(round(y * (conn.height - 1)))
+
+    def _inject(self, conn, event):
+        if not isinstance(event, dict):
+            return
+        kind = event.get("t")
+        if kind in ("move", "down", "up", "wheel"):
+            point = self._point(conn, event)
+            if point is not None:
+                conn.fake(X_MOTION, 0, point[0], point[1])
+        if kind in ("down", "up"):
+            button = event.get("b")
+            if button not in (1, 2, 3, 8, 9):
+                return
+            if kind == "down":
+                conn.fake(X_BUTTON_PRESS, button)
+                self.buttons.add(button)
+            else:
+                conn.fake(X_BUTTON_RELEASE, button)
+                self.buttons.discard(button)
+        elif kind == "wheel":
+            for amount, minus, plus in ((event.get("dy"), 4, 5), (event.get("dx"), 6, 7)):
+                try:
+                    steps = int(amount or 0)
+                except (TypeError, ValueError):
+                    continue
+                button = plus if steps > 0 else minus
+                for _ in range(min(abs(steps), 20)):
+                    conn.fake(X_BUTTON_PRESS, button)
+                    conn.fake(X_BUTTON_RELEASE, button)
+        elif kind == "key":
+            keysym = KEYSYM_BY_CODE.get(str(event.get("code") or ""))
+            code = conn.keycode(keysym) if keysym is not None else None
+            if code is None:
+                return
+            if event.get("down"):
+                conn.fake(X_KEY_PRESS, code)
+                self.keys.add(code)
+            else:
+                conn.fake(X_KEY_RELEASE, code)
+                self.keys.discard(code)
+        elif kind == "release":
+            self._release_locked()
+
+
+_screen_inputs = {}
+_screen_inputs_lock = threading.Lock()
+
+
+def screen_input(display):
+    with _screen_inputs_lock:
+        entry = _screen_inputs.get(display)
+        if entry is None:
+            entry = _screen_inputs[display] = ScreenInput(display)
+        return entry
+
+
+def screen_lease(key, screen, viewer):
+    """What the viewer is told: "you", "human" (another viewer), "bot" or "".
+    The bot's side is its bot_input mark (ctl bot_state when it acts)."""
+    holder = screen.holder_now()
+    if holder is viewer and holder is not None:
+        return "you"
+    if holder is not None:
+        return "human"
+    if key:
+        age = bot_file_age(key, "bot_input")
+        human = bot_file_age(key, "human_input")
+        if age is not None and age < INPUT_LEASE_SECONDS and (human is None or human > age):
+            return "bot"
+    return ""
+
+
+def clipboard_tool():
+    return shutil.which("xclip")
+
+
+def clipboard_set(display, text):
+    tool = clipboard_tool()
+    if tool is None:
+        return False
+    env = dict(os.environ, DISPLAY=":%d" % display)
+    try:
+        # xclip forks to keep serving the selection; the parent exits once it
+        # has read stdin.
+        subprocess.run([tool, "-selection", "clipboard", "-i"], input=text.encode("utf-8"), env=env,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3, check=False)
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def clipboard_get(display):
+    tool = clipboard_tool()
+    if tool is None:
+        return None
+    env = dict(os.environ, DISPLAY=":%d" % display)
+    try:
+        out = subprocess.run([tool, "-selection", "clipboard", "-o"], env=env, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, timeout=2, check=False).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out[:1024 * 1024].decode("utf-8", "replace")
+
+
+H264_PLAYER = r"""<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>desktop</title>
+<style>html,body{margin:0;height:100%;background:#111;overflow:hidden}#s{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;outline:none;touch-action:none;cursor:default}
+#b{position:absolute;top:8px;right:8px;padding:3px 10px;border-radius:12px;font:12px/18px system-ui,sans-serif;color:#fff;background:rgba(0,0,0,.55);pointer-events:none;z-index:2}
+#b.you{background:rgba(22,128,61,.85)}#b.bot{background:rgba(180,83,9,.85)}</style>
+<canvas id=s tabindex=0></canvas><div id=b>连接中…</div>
+<script>
+// MaClaw desktop player (maclaw-h264/1, see docs/desktop-h264-takeover.md).
+"use strict";
+const Q=new URLSearchParams(location.search),WANT_INPUT=Q.get("view_only")==="0",VNC=Q.get("vnc")||"";
+const MAC=/Mac|iPhone|iPad/.test(navigator.platform||"");
+const HAS_WC=typeof VideoDecoder!=="undefined"&&typeof EncodedVideoChunk!=="undefined";
+const HAS_MSE=typeof MediaSource!=="undefined"&&MediaSource.isTypeSupported('video/mp4; codecs="avc1.42E029"');
+const badge=document.getElementById("b");
+let surface=document.getElementById("s"),ctx=null,ws=null,decoder=null,needKey=true,lastKeyReq=0,fails=0,gotFrame=false;
+let seq=Math.floor(Math.random()*1e6),pending=[],flushQueued=false,inputOn=false,lease="",held=new Map(),pasteHold=null,wheelAcc=[0,0];
+function fallback(){if(VNC){location.replace(VNC);return true}badge.textContent="此浏览器不支持 H.264 播放";return false}
+function show(){let t,c="";if(!ws||ws.readyState!==1)t="连接中…";else if(lease==="you"){t="你在控制";c="you"}else if(lease==="bot"){t="Bot 正在操作";c="bot"}else if(lease==="human")t="其他人在控制";else t=inputOn?"可以操作":"仅观看";badge.textContent=t;badge.className=c;try{parent.postMessage({type:"maclaw-desktop-lease",holder:lease,input:inputOn},"*")}catch(_){}}
+function send(type,payload){if(ws&&ws.readyState===1)ws.send(JSON.stringify(Object.assign({type},payload||{})))}
+function requestKey(){const n=performance.now();if(n-lastKeyReq<500)return;lastKeyReq=n;send("request_keyframe")}
+// ---- video
+function parseVideo(buf){const dv=new DataView(buf),hl=dv.getUint32(0),pl=dv.getUint32(4);const h=JSON.parse(new TextDecoder().decode(new Uint8Array(buf,8,hl)));return{h,data:new Uint8Array(buf,8+hl,pl)}}
+function resetDecoder(){try{decoder&&decoder.state!=="closed"&&decoder.close()}catch(_){}decoder=null;needKey=true}
+function onVideo(buf){const{h,data}=parseVideo(buf);gotFrame=true;fails=0;
+ if(!decoder||decoder.state==="closed"){if(!h.key){requestKey();return}
+  decoder=new VideoDecoder({output:f=>{try{if(surface.width!==f.displayWidth)surface.width=f.displayWidth;if(surface.height!==f.displayHeight)surface.height=f.displayHeight;ctx.drawImage(f,0,0)}finally{f.close()}},error:()=>{resetDecoder();requestKey()}});
+  decoder.configure({codec:h.codec||"avc1.42C029",optimizeForLatency:true});needKey=true}
+ if(needKey&&!h.key){requestKey();return}
+ if(decoder.decodeQueueSize>4&&!h.key){needKey=true;requestKey();return}
+ if(h.key)needKey=false;
+ try{decoder.decode(new EncodedVideoChunk({type:h.key?"key":"delta",timestamp:h.ts||0,data}))}catch(_){resetDecoder();requestKey();return}
+ send("frame_ack",{seq:h.seq})}
+let ms=null,sb=null,mq=[];
+function setupMSE(){const v=document.createElement("video");v.id="s";v.autoplay=v.muted=v.playsInline=true;v.tabIndex=0;v.style.cssText=surface.style.cssText;surface.replaceWith(v);surface=v;ms=new MediaSource();v.src=URL.createObjectURL(ms);
+ return new Promise(r=>ms.addEventListener("sourceopen",()=>{sb=ms.addSourceBuffer('video/mp4; codecs="avc1.42E029"');sb.mode="sequence";sb.addEventListener("updateend",pump);r()}))}
+function pump(){if(!sb||sb.updating||!mq.length)return;sb.appendBuffer(mq.shift());const b=sb.buffered,v=surface;if(b.length&&v.currentTime<b.end(0)-0.3)v.currentTime=b.end(0)-0.05;if(b.length&&b.end(0)-b.start(0)>30&&!sb.updating){try{sb.remove(b.start(0),b.end(0)-10)}catch(_){}}}
+// ---- connection
+function connect(){const url=location.href.split("#")[0].replace(/^http/,"ws").replace(/h264\.html.*$/,"h264")+(HAS_WC?"":"?mse=1");
+ ws=new WebSocket(url);ws.binaryType="arraybuffer";show();
+ ws.onmessage=e=>{if(typeof e.data==="string"){control(JSON.parse(e.data));return}if(HAS_WC)onVideo(e.data);else{gotFrame=true;fails=0;mq.push(e.data);pump()}};
+ ws.onclose=()=>{ws=null;resetDecoder();releaseLocal();show();fails++;if(!gotFrame&&fails>=3&&fallback())return;setTimeout(connect,Math.min(5000,500*fails))}}
+function control(m){if(m.type==="hello"){inputOn=WANT_INPUT&&!!m.input;show()}else if(m.type==="lease"){const was=lease;lease=m.holder||"";inputOn=WANT_INPUT&&!!m.input;if(was==="you"&&lease!=="you")releaseLocal();show()}
+ else if(m.type==="clipboard"&&typeof m.text==="string"){if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(m.text).catch(()=>{})}
+ else if(m.type==="input_error"){if(m.code==="sequence_gap"&&typeof m.expected==="number")seq=m.expected}}
+// ---- input
+function queue(ev){if(!inputOn)return;const last=pending[pending.length-1];if(ev.t==="move"&&last&&last.t==="move")pending[pending.length-1]=ev;else pending.push(ev);if(!flushQueued){flushQueued=true;queueMicrotask(flush)}}
+function flush(){flushQueued=false;if(!pending.length)return;const events=pending;pending=[];send("input",{seq,events});seq+=1}
+function point(e){const r=surface.getBoundingClientRect(),w=surface.videoWidth||surface.width||1,h=surface.videoHeight||surface.height||1,s=Math.min(r.width/w,r.height/h)||1,ox=(r.width-w*s)/2,oy=(r.height-h*s)/2;
+ return{x:Math.min(1,Math.max(0,(e.clientX-r.left-ox)/(w*s))),y:Math.min(1,Math.max(0,(e.clientY-r.top-oy)/(h*s)))}}
+const BUTTONS={0:1,1:2,2:3,3:8,4:9};
+function mapCode(code){if(MAC&&code==="MetaLeft")return"ControlLeft";if(MAC&&code==="MetaRight")return"ControlRight";return code}
+function releaseLocal(){held.clear();pasteHold=null}
+function bind(){const el=surface;
+ el.addEventListener("pointerdown",e=>{if(!inputOn)return;el.focus();try{el.setPointerCapture(e.pointerId)}catch(_){}const b=BUTTONS[e.button];if(b)queue(Object.assign({t:"down",b},point(e)));e.preventDefault()});
+ el.addEventListener("pointermove",e=>{if(inputOn)queue(Object.assign({t:"move"},point(e)))});
+ el.addEventListener("pointerup",e=>{if(!inputOn)return;const b=BUTTONS[e.button];if(b)queue(Object.assign({t:"up",b},point(e)));e.preventDefault()});
+ el.addEventListener("contextmenu",e=>e.preventDefault());
+ el.addEventListener("wheel",e=>{if(!inputOn)return;e.preventDefault();const k=e.deltaMode===1?33:e.deltaMode===2?400:1;wheelAcc[0]+=e.deltaX*k;wheelAcc[1]+=e.deltaY*k;const dx=Math.trunc(wheelAcc[0]/100),dy=Math.trunc(wheelAcc[1]/100);if(dx||dy){wheelAcc[0]-=dx*100;wheelAcc[1]-=dy*100;queue(Object.assign({t:"wheel",dx,dy},point(e)))}},{passive:false});
+ window.addEventListener("keydown",e=>{if(!inputOn)return;const code=mapCode(e.code);if(!code)return;
+  if((e.ctrlKey||e.metaKey)&&e.code==="KeyV"){held.set(code,true);pasteHold={code,timer:setTimeout(()=>{if(pasteHold){pasteHold=null;queue({t:"key",code,down:true})}},300)};return}
+  e.preventDefault();held.set(code,true);queue({t:"key",code,down:true})});
+ window.addEventListener("keyup",e=>{if(!inputOn)return;const code=mapCode(e.code);if(!code)return;e.preventDefault();
+  if(pasteHold&&pasteHold.code===code){clearTimeout(pasteHold.timer);pasteHold=null;queue({t:"key",code,down:true})}
+  held.delete(code);queue({t:"key",code,down:false});
+  if((e.ctrlKey||e.metaKey||code.startsWith("Control"))&&(e.code==="KeyC"||e.code==="KeyX"))setTimeout(()=>send("clipboard_get"),250)});
+ window.addEventListener("paste",e=>{if(!inputOn)return;const text=(e.clipboardData&&e.clipboardData.getData("text/plain"))||"";e.preventDefault();if(text)send("clipboard_set",{text});
+  if(pasteHold){clearTimeout(pasteHold.timer);const code=pasteHold.code;pasteHold=null;queue({t:"key",code,down:true})}});
+ window.addEventListener("blur",()=>{if(held.size||pasteHold){releaseLocal();queue({t:"release"})}})}
+async function start(){if(!HAS_WC&&!HAS_MSE){fallback();return}if(HAS_WC)ctx=surface.getContext("2d");else await setupMSE();bind();if(WANT_INPUT)surface.focus();connect()}
+start();
 </script>"""
 
 
+class H264Viewer:
+    """One /h264 WebSocket: an encoder for this viewer, the video sender,
+    the control reader and the lease ticker."""
+
+    def __init__(self, client, display, key, owner, mse=False, fps=H264_DEFAULT_FPS):
+        self.client = client
+        self.display = display
+        self.key = key
+        self.owner = owner
+        self.mse = mse
+        self.fps = fps
+        self.closed = threading.Event()
+        self.send_lock = threading.Lock()
+        self.cond = threading.Condition()
+        self.queue = []
+        self.need_idr = False
+        self.need_idr_since = 0.0
+        self.restart = threading.Event()
+        self.finished = False
+        self.last_restart = 0.0
+        self.proc = None
+        self.sequence = 0
+        self.sent = 0
+        self.acked = None
+        self.input_seq = None
+        self.screen = screen_input(display)
+        self.lease_sent = None
+        width, height = desktop_geometry().split("x")[:2]
+        self.width, self.height = int(width), int(height)
+
+    # -- sending
+    def send_raw(self, payload, opcode=0x82):
+        with self.send_lock:
+            self.client.sendall(ws_server_frame(payload, opcode))
+
+    def send_json(self, message):
+        self.send_raw(json.dumps(message, separators=(",", ":")).encode("utf-8"), 0x81)
+
+    def input_allowed(self):
+        return h264_input_allowed(self.key, self.owner)
+
+    # -- frames from the encoder
+    def offer(self, frame, key):
+        """Queue one access unit, dropping deltas while the viewer is behind."""
+        with self.cond:
+            self.sequence += 1
+            behind = len(self.queue) >= H264_MAX_QUEUED
+            if self.acked is not None and self.sent - self.acked > H264_MAX_INFLIGHT:
+                behind = True
+            if behind and not key:
+                self.queue = [item for item in self.queue if item[2]]
+                self._want_idr()
+            if self.need_idr and not key:
+                if time.monotonic() - self.need_idr_since > H264_IDR_WAIT_SECONDS:
+                    self._restart_encoder()
+                return
+            if key:
+                # Everything queued before an IDR is useless after it.
+                self.queue = []
+                self.need_idr = False
+            self.queue.append((self.sequence, frame, key))
+            self.cond.notify()
+
+    def _want_idr(self):
+        if not self.need_idr:
+            self.need_idr = True
+            self.need_idr_since = time.monotonic()
+
+    def _restart_encoder(self):
+        now = time.monotonic()
+        if now - self.last_restart < H264_IDR_WAIT_SECONDS:
+            return
+        self.last_restart = now
+        self.need_idr_since = now
+        self.restart.set()
+        proc = self.proc
+        if proc is not None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
+    def encoder_loop(self):
+        failures = 0
+        env = dict(os.environ, DISPLAY=":%d" % self.display)
+        argv = h264_ffmpeg_argv(self.display, "%dx%d" % (self.width, self.height), self.fps, self.mse)
+        while not self.closed.is_set():
+            self.restart.clear()
+            started = time.monotonic()
+            try:
+                proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                        stdin=subprocess.DEVNULL, env=env)
+            except OSError:
+                break
+            self.proc = proc
+            splitter = FlvToAnnexB()
+            try:
+                while not self.closed.is_set():
+                    chunk = proc.stdout.read1(256 * 1024) if hasattr(proc.stdout, "read1") else proc.stdout.read(65536)
+                    if not chunk:
+                        break
+                    if self.mse:
+                        with self.cond:
+                            self.queue.append((0, chunk, True))
+                            self.cond.notify()
+                        continue
+                    for frame, key in splitter.feed(chunk):
+                        self.offer(frame, key)
+            except (OSError, ValueError):
+                pass
+            finally:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+                proc.wait()
+                self.proc = None
+            if self.closed.is_set() or self.mse:
+                break
+            if self.restart.is_set():
+                continue
+            failures = failures + 1 if time.monotonic() - started < 5 else 1
+            if failures >= 3:
+                break
+            time.sleep(0.5)
+        # Let the sender drain what the encoder already produced, then end.
+        with self.cond:
+            self.finished = True
+            self.cond.notify_all()
+
+    def sender_loop(self):
+        while not self.closed.is_set():
+            with self.cond:
+                while not self.queue and not self.closed.is_set() and not self.finished:
+                    self.cond.wait(1)
+                if self.closed.is_set() or not self.queue:
+                    return
+                sequence, frame, key = self.queue.pop(0)
+            if self.mse:
+                self.send_raw(frame)
+                continue
+            header = {"seq": sequence, "key": key, "ts": int(time.monotonic() * 1000000),
+                      "codec": self._codec(frame), "w": self.width, "h": self.height}
+            self.send_raw(h264_video_message(header, frame))
+            with self.cond:
+                self.sent = sequence
+
+    @staticmethod
+    def _codec(frame):
+        # profile/compat/level straight from the SPS in front of an IDR.
+        marker = frame.find(b"\x00\x00\x01\x67")
+        if marker >= 0 and len(frame) >= marker + 7:
+            return "avc1.%02X%02X%02X" % (frame[marker + 4], frame[marker + 5], frame[marker + 6])
+        return ""
+
+    # -- control from the viewer
+    def handle(self, message):
+        kind = message.get("type")
+        if kind == "frame_ack":
+            try:
+                value = int(message.get("seq"))
+            except (TypeError, ValueError):
+                return
+            with self.cond:
+                self.acked = value if self.acked is None else max(self.acked, value)
+        elif kind == "request_keyframe":
+            with self.cond:
+                self._want_idr()
+                self._restart_encoder()
+        elif kind == "input":
+            self.handle_input(message)
+        elif kind == "clipboard_set":
+            text = message.get("text")
+            if not isinstance(text, str) or len(text) > 1024 * 1024:
+                return
+            if not self.input_allowed():
+                self.send_json({"type": "input_error", "code": "view_only"})
+                return
+            if not clipboard_set(self.display, text):
+                self.send_json({"type": "input_error", "code": "clipboard_unavailable"})
+        elif kind == "clipboard_get":
+            if not self.input_allowed():
+                return
+            text = clipboard_get(self.display)
+            if text is not None:
+                self.send_json({"type": "clipboard", "text": text})
+
+    def handle_input(self, message):
+        try:
+            first = int(message.get("seq"))
+        except (TypeError, ValueError):
+            return
+        events = message.get("events")
+        if not isinstance(events, list) or len(events) > 512:
+            return
+        if self.input_seq is not None and first != self.input_seq:
+            self.send_json({"type": "input_error", "code": "sequence_gap", "expected": self.input_seq})
+            return
+        self.input_seq = first + 1
+        if not self.input_allowed():
+            self.screen.release(self)
+            self.send_json({"type": "input_error", "code": "view_only"})
+            return
+        error = self.screen.apply(self, events)
+        if error:
+            self.send_json({"type": "input_error", "code": error})
+            return
+        if self.key:
+            touch_bot_file(self.key, "human_input")
+        self.tick_lease()
+
+    def reader_loop(self):
+        pending = bytearray()
+        try:
+            while not self.closed.is_set():
+                _, opcode, data = ws_frame(self.client, pending)
+                if opcode == 8:
+                    break
+                if opcode == 9:
+                    self.send_raw(data, 0x8A)
+                elif opcode == 1:
+                    try:
+                        message = json.loads(data.decode("utf-8"))
+                    except (UnicodeDecodeError, ValueError):
+                        continue
+                    if isinstance(message, dict):
+                        self.handle(message)
+        except (OSError, ValueError, struct.error):
+            pass
+        self.close()
+
+    def tick_lease(self):
+        allowed = self.input_allowed()
+        if not allowed:
+            self.screen.release(self)
+        holder = screen_lease(self.key, self.screen, self)
+        state = (holder, allowed)
+        if state != self.lease_sent:
+            self.lease_sent = state
+            self.send_json({"type": "lease", "holder": holder, "input": allowed,
+                            "takeover": bool(self.key) and takeover_state(self.key) is not None})
+
+    def lease_loop(self):
+        try:
+            while not self.closed.wait(0.5):
+                self.screen.expire()
+                self.tick_lease()
+        except OSError:
+            self.close()
+
+    def close(self):
+        if self.closed.is_set():
+            return
+        self.closed.set()
+        with self.cond:
+            self.cond.notify_all()
+        proc = self.proc
+        if proc is not None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        self.screen.release(self)
+        # Wakes a blocked read; close alone does not.
+        try:
+            self.client.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def run(self):
+        allowed = self.input_allowed()
+        self.send_json({"type": "hello", "proto": "maclaw-h264/1", "width": self.width, "height": self.height,
+                        "fps": self.fps, "mode": "fmp4" if self.mse else "annexb", "input": allowed,
+                        "clipboard": clipboard_tool() is not None})
+        for target in (self.reader_loop, self.encoder_loop, self.lease_loop):
+            threading.Thread(target=target, daemon=True).start()
+        try:
+            self.sender_loop()
+        except OSError:
+            pass
+        finally:
+            self.close()
+
+
 def serve_h264(client, head, owner_token):
-    """Serve the player page, or stream one display as fMP4 over WebSocket."""
+    """Serve the player page, or stream one display over WebSocket."""
     method, _ = request_target(head)
     path = h264_path(head)
-    display = h264_display(request_bearer(head), owner_token)
+    screen = h264_screen(request_bearer(head), owner_token)
     try:
-        if display is None or method != "GET":
+        if screen is None or method != "GET":
             client.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             return
         if path == "/h264.html":
@@ -3934,7 +4818,7 @@ def serve_h264(client, head, owner_token):
             client.sendall(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             return
         try:
-            stream_h264(client, key, display)
+            stream_h264(client, key, screen, mse=request_query(head).get("mse") == "1")
         finally:
             _h264_streams.release()
     except OSError:
@@ -3946,55 +4830,13 @@ def serve_h264(client, head, owner_token):
             pass
 
 
-def stream_h264(client, key, display):
-    width, height = desktop_geometry().split("x")[:2]
+def stream_h264(client, key, screen, mse=False):
+    display, screen_key, owner = screen
     client.settimeout(None)
     client.sendall(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
                     "Sec-WebSocket-Accept: %s\r\n\r\n" % ws_accept_key(key)).encode("latin-1"))
-    env = dict(os.environ, DISPLAY=":%d" % display)
-    proc = subprocess.Popen(h264_ffmpeg_argv(display, "%sx%s" % (width, height)), stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, env=env)
-    closed = threading.Event()
-
-    def watch_client():
-        # The viewer sends nothing but pings and a close; any read end stops
-        # the encoder so a closed tab does not keep ffmpeg running.
-        pending = bytearray()
-        try:
-            while not closed.is_set():
-                _, opcode, data = ws_frame(client, pending)
-                if opcode == 8:
-                    break
-                if opcode == 9:
-                    client.sendall(ws_server_frame(data, 0x8A))
-        except (OSError, ValueError, struct.error):
-            pass
-        closed.set()
-        try:
-            proc.kill()
-        except OSError:
-            pass
-
-    threading.Thread(target=watch_client, daemon=True).start()
     note_gate_activity()
-    try:
-        while not closed.is_set():
-            chunk = proc.stdout.read1(256 * 1024) if hasattr(proc.stdout, "read1") else proc.stdout.read(65536)
-            if not chunk:
-                break
-            client.sendall(ws_server_frame(chunk))
-    finally:
-        closed.set()
-        try:
-            proc.kill()
-        except OSError:
-            pass
-        proc.wait()
-        # Wakes watch_client's blocked read; close alone does not.
-        try:
-            client.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
+    H264Viewer(client, display, screen_key, owner, mse=mse, fps=h264_fps()).run()
 
 
 # ---------------------------------------------------------------------------
@@ -4687,13 +5529,22 @@ def ctl_bot_state(request):
     human = bot_file_age(key, "human_input")
     state = takeover_state(key)
     yield_limit = env_int("MACLAW_BOT_HUMAN_YIELD_SECONDS", BOT_HUMAN_YIELD_SECONDS)
+    # The input lease between the person and the bot. A takeover or input
+    # within INPUT_LEASE_SECONDS is the person's; otherwise the bot, which is
+    # asking because it is about to act, takes it (bot_input), and an H.264
+    # viewer shows "Bot 正在操作".
+    should_yield = state is not None or (human is not None and human < max(yield_limit, INPUT_LEASE_SECONDS))
+    if not should_yield:
+        touch_bot_file(key, "bot_input", force=True)
     return {
         "ok": True,
         "running": desktop_running(key),
         "takeover": state is not None,
         "reason": str((state or {}).get("reason") or ""),
         "human_input_age": int(human) if human is not None else -1,
-        "yield": state is not None or (human is not None and human < yield_limit),
+        "lease": "human" if should_yield else "bot",
+        "lease_ttl": INPUT_LEASE_SECONDS,
+        "yield": should_yield,
     }
 
 

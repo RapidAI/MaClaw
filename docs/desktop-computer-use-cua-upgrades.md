@@ -1,7 +1,8 @@
 # 桌面 Computer Use：参考 trycua/cua 的四项改进
 
-对照对象：[trycua/cua](https://github.com/trycua/cua)（MIT；其中 `spacesd` 为 FSL-1.1-MIT，
-未参考、未复制其代码）。下面四项都是 MaClaw 自己的实现，只借鉴思路。
+对照对象：[trycua/cua](https://github.com/trycua/cua)（仓库根目录 MIT；`libs/cua-spacesd` 及
+`cua-media-*`、`cua-spacesd-html5`、`cua-viewer` 等媒体/查看器 crate 为 FSL-1.1-MIT）。
+只借鉴其公开协议文档的思路，未复制其代码。下面四项都是 MaClaw 自己的实现，只借鉴思路。
 
 ## 1. 轨迹记录 + 运行预算 + 截图保留（MaClawSrv / corelib）
 
@@ -50,7 +51,8 @@ desktopd 在 `/mcp` 提供 Streamable HTTP MCP（复用 `corelib/desktop/desktop
   静止画面几乎不发数据——这是「按损伤驱动」的近似，没有新增 XDamage 原生代码。
 - 鉴权/选屏与 noVNC 相同（gate token；bot token 只能看自己的屏）。只读，输入仍走 noVNC。
   每容器最多 4 路；镜像无 ffmpeg 时返回 503。`Dockerfile.v2` 已加入 `ffmpeg` 包。
-- 未做：前端/Hub 还没有切换到该播放器的开关；WebCodecs/WebRTC 低延迟路径；真实容器内的
+- 后续已完成：WebCodecs 播放、同一 WebSocket 上的输入/剪贴板/租约与 GUI 接入，见
+  [desktop-h264-takeover.md](desktop-h264-takeover.md)。
   延迟与带宽测量。noVNC 保持默认。
 
 ## 生效条件
