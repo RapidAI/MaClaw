@@ -830,6 +830,11 @@ export interface DesktopBotMessage {
     // Instant "colleague accepted the task" reply. It never carries a handoff
     // or a result, so result lookups skip it.
     ack?: boolean;
+    // Readings of an ambiguous order offered as one-tap corrections under the
+    // acceptance line. The first is what the run already does. They never
+    // hold the run; optionsUsed hides them once one is picked.
+    options?: string[];
+    optionsUsed?: boolean;
     // The foreground reading of this turn, shown while the worker writes the
     // arrangement. A queue note and a side note are acks too, and they stay.
     // foldPlanConfirmation drops only this reading once that arrangement arrives.

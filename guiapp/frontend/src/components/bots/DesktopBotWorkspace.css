@@ -2449,3 +2449,14 @@
     color: var(--theme-text-muted, #667085);
     font-size: 12px;
 }
+
+.desktop-bot-chat__options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.desktop-bot-chat__option.is-default {
+    opacity: 0.6;
+}

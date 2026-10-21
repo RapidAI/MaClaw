@@ -234,6 +234,19 @@ const CONFIRM_COMMAND = BOT_CONFIRM_TASK;
 // Composer text starts as a plan. A clear request is then sent as execute.
 // A large change stays a plan until the confirm button. Typing the confirm
 // sentence stays a plan; only that button passes execute.
+// The reading's one-tap corrections: 2 to 4 distinct short strings, or none.
+export function desktopBotOptionsOf(understood: Record<string, unknown> | undefined): string[] {
+    const raw = understood?.options ?? understood?.Options;
+    if (!Array.isArray(raw)) return [];
+    const out: string[] = [];
+    for (const item of raw) {
+        const option = String(item ?? '').trim();
+        if (option && !out.includes(option) && option.length <= 30) out.push(option);
+        if (out.length === 4) break;
+    }
+    return out.length >= 2 ? out : [];
+}
+
 function oneLine(text: string): string {
     const line = text.trim().split(/\r?\n/).find(part => part.trim()) || '';
     const chars = Array.from(line.trim());
@@ -3885,6 +3898,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         void (async () => {
             let instruction = '';
             let told = '';
+            let options: string[] = [];
             let sendPhase: BotPhase = turnPhase;
             if (verbatim) {
                 // No reading was made. The person asked for their own words,
@@ -3927,6 +3941,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     }
                     understood = reading.understood;
                     told = reading.told;
+                    options = desktopBotOptionsOf(reading.understood);
                     instruction = reading.instruction;
                     pace = reading.pace;
                     keepIdentity = reading.persona;
@@ -4141,7 +4156,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 const stored = messagesForBot(ownerId, botId);
                 const at = stored.findIndex(item => item.id === assistantMessage.id);
                 if (at >= 0) {
-                    const ackMessage: DesktopBotMessage = { id: messageID(), role: 'assistant', content: sentence, ack: true, understood: true };
+                    const ackMessage: DesktopBotMessage = { id: messageID(), role: 'assistant', content: sentence, ack: true, understood: true, options: options.length >= 2 ? options : undefined };
                     commit(botId, [...stored.slice(0, at), ackMessage, ...stored.slice(at)]);
                 }
             }
@@ -4593,6 +4608,32 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // verbatim starts the turn from the person's own words, skipping the
     // reading. The reading is a helper for the turn, not a gate on it: once it
     // has failed and this person chose their own words, that choice is the order.
+    // A tapped option redirects the run already underway through the
+    // supplement path. It never starts, holds, or stops a job. With no live
+    // run left the chips are gone, so this only hides them.
+    const pickDesktopBotOption = async (messageId: string, option: string) => {
+        if (!selected) return;
+        const botId = selected.id;
+        const ownerId = userId;
+        const hide = () => commit(botId, messagesForBot(ownerId, botId).map(item => item.id === messageId ? { ...item, optionsUsed: true } : item));
+        hide();
+        const en = String(langRef.current).toLowerCase().startsWith('en');
+        const order = en ? `Change of plan: do "${option}" instead.` : `改成：${option}`;
+        commit(botId, [...messagesForBot(ownerId, botId), { id: messageID(), role: 'user', content: option }]);
+        try {
+            const activeRuns = (await GetActiveDesktopRuns(botId) as Array<{ run_id?: string; waiting_for_user?: boolean }>) || [];
+            const live = activeRuns.filter(item => item && String(item.run_id || '').trim() !== '');
+            if (live.length === 0) return;
+            const runId = live.length === 1 ? String(live[0].run_id || '') : '';
+            const receipt = await AppendDesktopBotSupplement(botId, runId, order) as { stage?: string; message?: string; supplement_id?: string } | null;
+            const note = String(receipt?.message || (en ? 'On it' : '在办'));
+            const supplementId = String(receipt?.supplement_id || '').trim();
+            commit(botId, [...messagesForBot(ownerId, botId), { id: messageID(), role: 'assistant', content: note, ack: true, supplementId: supplementId || undefined, supplementRunId: runId || undefined }]);
+        } catch {
+            commit(botId, [...messagesForBot(ownerId, botId), { id: messageID(), role: 'assistant', content: en ? "Couldn't pass that on. Type it and I'll adjust." : '没能转给正在做的任务，你直接打一句，我按你说的改。', ack: true }]);
+        }
+    };
+
     const send = async (preset?: string, phase: BotPhase = 'plan', verbatim = false, prepared?: PreparedTurn, literal = false) => {
         if (!selected) return;
         if (!preset && secretOpenRef.current) return;
@@ -5511,6 +5552,22 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             </button>
                                         )) : null}
                                     </div>
+                                    {message.role === 'assistant' && message.options && message.options.length >= 2 && !message.optionsUsed && running ? (
+                                        <div className="desktop-bot-chat__options" data-testid="desktop-bot-options">
+                                            {message.options.map((option, index) => (
+                                                <button
+                                                    type="button"
+                                                    key={option}
+                                                    className={`desktop-bot-chat__action desktop-bot-chat__option${index === 0 ? ' is-default' : ''}`}
+                                                    data-testid="desktop-bot-option"
+                                                    disabled={index === 0}
+                                                    onClick={() => { void pickDesktopBotOption(message.id, option); }}
+                                                >
+                                                    {option}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    ) : null}
                                     {confirmMessage && confirmMessage.id === message.id ? (
                                         <button type="button" className="desktop-bot-chat__action" data-testid="desktop-bot-confirm" disabled={confirmMessage.disabled} onClick={() => {
                                             if (!selected || confirmMessage.disabled) return;

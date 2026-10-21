@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -30,5 +31,26 @@ func TestDesktopBotAcceptTold(t *testing.T) {
 	}
 	if got := desktopBotAcceptTold(&DesktopBotUnderstanding{Fallback: "unread"}, "post hi", "en"); !strings.HasPrefix(got, "OK, I'll try") {
 		t.Errorf("en fallback: %q", got)
+	}
+}
+
+func TestDesktopBotAcceptOptions(t *testing.T) {
+	in := "去小红书上给大家打个招呼"
+	u := DesktopBotUnderstanding{Told: in, Options: []string{" 发一条新笔记 ", "在评论区留言", "发一条新笔记", "", "私信粉丝", "改个人简介"}, Unclear: "x", Assumption: "y"}
+	got := desktopBotAcceptTold(&u, in, "zh")
+	want := "好的，我先按「发一条新笔记」去做。你要的是不是：发一条新笔记 / 在评论区留言 / 私信粉丝 / 改个人简介？点一下或补充一句，我按你说的改。"
+	if got != want {
+		t.Fatalf("got %q", got)
+	}
+	if len(u.Options) != 4 || u.Options[0] != "发一条新笔记" {
+		t.Fatalf("options %v", u.Options)
+	}
+	one := DesktopBotUnderstanding{Goal: "小红书打个招呼", Options: []string{"only"}}
+	if got := desktopBotAcceptTold(&one, in, "zh"); got != "好的，我这就去小红书打个招呼，有进展告诉你。" || one.Options != nil {
+		t.Fatalf("single option should be dropped: %q %v", got, one.Options)
+	}
+	var parsed DesktopBotUnderstanding
+	if err := json.Unmarshal([]byte(`{"told":"t","options":["A","B"]}`), &parsed); err != nil || len(parsed.Options) != 2 {
+		t.Fatalf("parse %v %v", err, parsed.Options)
 	}
 }

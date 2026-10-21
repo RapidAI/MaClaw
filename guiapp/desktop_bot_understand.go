@@ -66,6 +66,10 @@ type DesktopBotUnderstanding struct {
 	Goal       string `json:"goal,omitempty"`
 	Unclear    string `json:"unclear,omitempty"`
 	Assumption string `json:"assumption,omitempty"`
+	// Options are 2 to 4 short readings of an ambiguous request; the first is
+	// the one the work already proceeds with. They are offered as one-tap
+	// corrections and never hold the job.
+	Options []string `json:"options,omitempty"`
 }
 
 // The reading of a message is a helper for the turn, not the turn itself, so a
@@ -162,6 +166,7 @@ instruction is a card for the computer helper, not a driving script. The helper 
 
 goal is a short verb phrase (under 20 characters) naming the job in the language named below, such as 去小红书打个招呼. Empty when there is no desktop work.
 unclear and assumption: when pace is direct but part of the request is ambiguous, unclear names that part briefly and assumption says how you will proceed anyway. Still do the work; do not switch to ask or confirm for this. Leave both empty when the request is clear.
+options: when the request has several plausible readings, list 2 to 4 short phrases (under 15 characters each) naming them, most likely first. The work proceeds with the first one now; the others are offered as one-tap corrections. Omit options when the request is clear.
 pace is direct, confirm, ask, reply, schedule, or status.
 - direct: the request is clear and this turn can finish it. A lookup, a screenshot, opening or reading a named page, writing or revising a file they already described, a small change they spelled out. told says you are doing it now. instruction is the concrete work. A document they asked for uses desktop action=deliver. A file already on the desktop, including a pdf, uses path so the chat receives that file. Text to send uses name and content. Do not leave a confirmation. A request that names a later time or a repeat is schedule, not direct.
 - confirm: the change is large or hard to undo, and they have not already approved it. Installing or removing software, deleting, paying, sending on their behalf, wiping, or a long procedure. told is the one arrangement, in one or two sentences. instruction is the concrete work the worker will do after they approve: the goal, the constraints, and the success criteria. Do not tell the helper what the chat reply must contain. Do not tell the worker to only describe the arrangement, to skip the change, or to wait for another confirmation. There is no second confirmation. A large or hard-to-undo change that also names a time stays confirm, and schedule is omitted. After they approve, the execute reading is direct and instruction is that concrete work. It is schedule only when the confirmed work itself names a later time or a repeat.
@@ -926,6 +931,13 @@ func desktopBotAcceptTold(u *DesktopBotUnderstanding, text, lang string) string 
 		}
 		return "好的，我先照你的原话去试试，哪里理解偏了随时叫停我。"
 	}
+	u.Options = desktopBotOptions(u.Options)
+	if len(u.Options) >= 2 {
+		if en {
+			return fmt.Sprintf("OK, I'll go with \"%s\" for now. Did you mean: %s? Tap one or add a line and I'll adjust.", u.Options[0], strings.Join(u.Options, " / "))
+		}
+		return fmt.Sprintf("好的，我先按「%s」去做。你要的是不是：%s？点一下或补充一句，我按你说的改。", u.Options[0], strings.Join(u.Options, " / "))
+	}
 	unclear := strings.TrimRight(strings.TrimSpace(u.Unclear), "。.，, ")
 	assume := strings.TrimRight(strings.TrimSpace(u.Assumption), "。.，, ")
 	if unclear != "" && assume != "" {
@@ -953,4 +965,25 @@ func desktopBotAcceptTold(u *DesktopBotUnderstanding, text, lang string) string 
 		return "Sure, I'm on it and will keep you posted."
 	}
 	return "好的，我这就开始弄，弄完告诉你。"
+}
+
+// desktopBotOptions keeps 2 to 4 distinct, short, non-empty choices, or none.
+func desktopBotOptions(in []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, o := range in {
+		o = strings.TrimSpace(strings.Trim(strings.TrimSpace(o), "「」\"'。.，,"))
+		if o == "" || seen[o] || utf8.RuneCountInString(o) > 30 {
+			continue
+		}
+		seen[o] = true
+		out = append(out, o)
+		if len(out) == 4 {
+			break
+		}
+	}
+	if len(out) < 2 {
+		return nil
+	}
+	return out
 }
