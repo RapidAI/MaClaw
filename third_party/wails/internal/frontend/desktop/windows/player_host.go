@@ -77,10 +77,18 @@ func installCompanionPlayer(f *Frontend) {
 		env:      env,
 		parent:   uintptr(f.mainWindow.Handle()),
 		notify: func(on bool) {
-			f.Notify("file-companion:webview-fullscreen", map[string]bool{"fullscreen": on})
+			f.notifyCompanionFullscreenFrom(true, on)
 		},
 	}
 	companionPlayer = host
+	// A zero slot while this window is hiding must not unload the document.
+	// Minimize resizes the webview before the page knows it is hidden.
+	maclawplayer.SetHostShown(func() bool {
+		if f.mainWindow == nil {
+			return true
+		}
+		return f.mainWindow.contentShown()
+	})
 	// Set applies a page that was requested before this environment existed.
 	maclawplayer.Set(host)
 	f.playerInstalled = true
@@ -175,6 +183,27 @@ func (h *playerHost) View() maclawcapture.View {
 		return nil
 	}
 	return coreWebView{wv: h.wv}
+}
+
+// fullscreenElement reads ContainsFullScreenElement on this document.
+// ok is false when the WebView does not exist yet or the COM call fails.
+// The caller is the window thread. The last fullscreen callback is not this
+// value: that flag stays true until the exit event is delivered.
+func (h *playerHost) fullscreenElement() (on, ok bool) {
+	if h == nil {
+		return false, false
+	}
+	h.mu.Lock()
+	wv := h.wv
+	h.mu.Unlock()
+	if wv == nil {
+		return false, false
+	}
+	contains, err := wv.GetContainsFullScreenElement()
+	if err != nil {
+		return false, false
+	}
+	return contains, true
 }
 
 func (h *playerHost) onUI(fn func()) bool {

@@ -46,6 +46,13 @@ func (h *IMMessageHandler) schedulePostLoopSideEffects(msg IMUserMessage, loopCt
 	if h == nil {
 		return
 	}
+	// This turn now owns the next goal arm. Set the inbound park flag before
+	// the goroutine so the caller's defer leaves the parked continuation
+	// where it is. A return that never reaches here leaves the flag false
+	// and puts that continuation back.
+	if loopCtx != nil && loopCtx.queuedGoalTurnHold != nil {
+		*loopCtx.queuedGoalTurnHold = true
+	}
 	respSnapshot := IMAgentResponse{}
 	if resp != nil {
 		respSnapshot = *resp

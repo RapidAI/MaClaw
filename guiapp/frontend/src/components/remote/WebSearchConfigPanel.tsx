@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import { GetWebSearchStrategy, ResetWebSearchStrategy, SaveWebSearchStrategy, TestWebSearchEngine } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
 import { useDialog } from "../CustomDialog";
@@ -44,9 +45,11 @@ const testWebSearchEngine = TestWebSearchEngine as unknown as (
 	request: TestWebSearchEngineRequest,
 ) => ReturnType<typeof TestWebSearchEngine>;
 const PRESET_ORDER: Record<Exclude<Preset, "custom">, string[]> = {
-	mainland: ["bing_cn", "baidu", "duckduckgo", "google", "brave", "serper", "tinyfish", "tavily", "maclaw_hub"],
-	international: ["google", "duckduckgo", "bing_cn", "baidu", "brave", "serper", "tinyfish", "tavily", "maclaw_hub"],
+	mainland: ["yuanbao", "bing_cn", "baidu", "duckduckgo", "google", "brave", "serper", "tinyfish", "tavily", "maclaw_hub"],
+	international: ["yuanbao", "google", "duckduckgo", "bing_cn", "baidu", "brave", "serper", "tinyfish", "tavily", "maclaw_hub"],
 };
+const ALLOW_ENABLED_WITHOUT_KEY = new Set(["yuanbao"]);
+const YUANBAO_API_KEY_URL = "https://console.cloud.tencent.com/wsapi/activity";
 const RETIRED_ENGINE_IDS = new Set(["mojeek"]);
 const MACLAW_HUB_TEST_QUERY = "golang http server";
 
@@ -244,7 +247,12 @@ export function WebSearchConfigPanel({ lang }: Props) {
 		applyStrategyUpdate(current => current ? markCustom({
 			...current,
 			engines: current.engines.map(engine => engine.id === id
-				? { ...engine, enabled: false, has_api_key: false, api_key: "" }
+				? {
+					...engine,
+					enabled: ALLOW_ENABLED_WITHOUT_KEY.has(engine.id) ? engine.enabled : false,
+					has_api_key: false,
+					api_key: "",
+				}
 				: engine),
 		}) : current);
 	}, [applyClearedAPIKeyUpdate, applyStrategyUpdate, busy, invalidateEngineTest, markCustom, markEdited]);
@@ -355,7 +363,7 @@ export function WebSearchConfigPanel({ lang }: Props) {
 	    const save = useCallback(async () => {
 		const submittedStrategy = strategyRef.current;
 		        if (!submittedStrategy || mutationInFlight.current || testInFlightEngineIDs.current.size > 0) return;
-	        const invalid = submittedStrategy.engines.find(engine => engine.enabled && engine.needs_api_key && !engine.has_api_key && !engine.api_key?.trim());
+	        const invalid = submittedStrategy.engines.find(engine => engine.enabled && engine.needs_api_key && !ALLOW_ENABLED_WITHOUT_KEY.has(engine.id) && !engine.has_api_key && !engine.api_key?.trim());
         if (invalid) {
             setError(t(`${invalid.name} requires an API key before it can be enabled.`, `${invalid.name} 需要填写 API Key 后才能启用。`));
             return;
@@ -585,9 +593,29 @@ export function WebSearchConfigPanel({ lang }: Props) {
                                         <span data-transport={engine.transport}>{engine.transport === "api" ? "API" : engine.transport === "browser" ? t("Browser", "浏览器") : t("Direct web", "网页直连")}</span>
                                     </div>
                                     <p>{engine.needs_api_key
-                                        ? engine.has_api_key ? t("API key saved", "API Key 已保存") : t("API key required", "需要 API Key")
+                                        ? engine.has_api_key
+                                            ? t("API key saved", "API Key 已保存")
+                                            : ALLOW_ENABLED_WITHOUT_KEY.has(engine.id)
+                                                ? t("Skipped until an API key is saved", "未保存 API Key 时跳过", "未儲存 API Key 時跳過")
+                                                : t("API key required", "需要 API Key")
                                         : engine.id === "maclaw_hub" ? t("Uses signed-in MaClaw Hub account", "使用已登录的 MaClaw Hub 账号", "使用已登入的 MaClaw Hub 帳號")
                                         : engine.id === "google" ? t("Free · availability depends on network", "免费 · 可用性取决于网络") : t("Free · no key needed", "免费 · 无需 Key")}</p>
+                                    {engine.id === "yuanbao" && (
+                                        <a
+                                            className="web-search-config__key-link"
+                                            href={YUANBAO_API_KEY_URL}
+                                            onClick={event => {
+                                                event.preventDefault();
+                                                try {
+                                                    BrowserOpenURL(YUANBAO_API_KEY_URL);
+                                                } catch {
+                                                    window.open(YUANBAO_API_KEY_URL, "_blank", "noopener,noreferrer");
+                                                }
+                                            }}
+                                        >
+                                            {t("Get API key", "获取 API Key", "取得 API Key")}
+                                        </a>
+                                    )}
                                     {test.state !== "idle" && <div className="web-search-config__test-result" data-state={test.state} role="status">
                                         {test.state === "testing"
                                             ? engine.id === "maclaw_hub"

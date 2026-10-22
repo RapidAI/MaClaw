@@ -680,6 +680,13 @@ func importGlobMatches(pattern, rel, base string) bool {
 	if pattern == "" {
 		return false
 	}
+	// Windows paths are case-insensitive. A glob computed from the configured
+	// data directory must still match the casing ReadDir returns.
+	if runtime.GOOS == "windows" {
+		pattern = strings.ToLower(pattern)
+		rel = strings.ToLower(rel)
+		base = strings.ToLower(base)
+	}
 	if strings.HasSuffix(pattern, "/**") {
 		prefix := strings.TrimSuffix(pattern, "/**")
 		if rel == prefix || strings.HasPrefix(rel, prefix+"/") {

@@ -797,7 +797,7 @@ function MarkdownSourceEditor({
     );
 }
 
-function CompanionActionIcon({ name, size = 14 }: { name: "paper" | "knowledge" | "cloud" | "close" | "markdown" | "latex" | "pdf" | "check" | "file"; size?: number }) {
+function CompanionActionIcon({ name, size = 14 }: { name: "paper" | "knowledge" | "cloud" | "hide" | "markdown" | "latex" | "pdf" | "check" | "file"; size?: number }) {
     const common = {
         fill: "none",
         stroke: "currentColor",
@@ -861,10 +861,11 @@ function CompanionActionIcon({ name, size = 14 }: { name: "paper" | "knowledge" 
                     <path {...common} d="m9.3 19 2.7-2.7 2.7 2.7" />
                 </>
             )}
-            {name === "close" && (
+            {name === "hide" && (
                 <>
-                    <path {...common} d="M7.2 7.2 16.8 16.8" />
-                    <path {...common} d="m16.8 7.2-9.6 9.6" />
+                    <path {...common} d="M3.2 12s3.4-5 8.8-5 8.8 5 8.8 5-3.4 5-8.8 5-8.8-5-8.8-5Z" />
+                    <circle {...common} cx="12" cy="12" r="2.1" />
+                    <path {...common} d="M5.2 18.8 18.8 5.2" />
                 </>
             )}
         </svg>
@@ -1394,16 +1395,46 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     tabsRef.current = tabs;
     const activeRef = useRef(active);
     activeRef.current = active;
-    const sendingRef = useRef(false);
+    // Each open file is its own agent. This set is which of those turns are
+    // still in flight. It is not a window-wide lock.
+    const sendingPathsRef = useRef(new Set<string>());
+    const noteBusyPathsRef = useRef(new Set<string>());
+    const noteRequestPathRef = useRef(new Map<string, string>());
+    // Set before WindowHide, and when the document itself is hidden (Alt+F4,
+    // the title-bar control, minimize). A hide collapses the player slot and
+    // can drop fullscreen. Neither one is the user leaving the video, so a
+    // note keeps running. A positive slot while this is set does not clear
+    // it: the click happens before the document is hidden, and placing that
+    // box would let the collapse unload the page. windowRevealRef is the
+    // show that arrived before the slot had a pixel. The visibility listener
+    // arms it even when no web player is mounted; that layout effect is the
+    // only other code that hears the show, and it is absent until a page
+    // opens. The next real slot places the player. A focus event does not
+    // clear this.
+    // hostWindowShownRef is the Win32 fact from file-companion:window-shown.
+    // null means that event has not arrived, and visibilityState still counts.
+    // A reported show outranks a document that is still hidden, and a reported
+    // hide outranks a document that is already visible.
+    const windowHiddenRef = useRef(false);
+    const windowRevealRef = useRef(false);
+    const hostWindowShownRef = useRef<boolean | null>(null);
+    const companionShownPlaceRef = useRef<() => void>(() => undefined);
+    const requestSerialRef = useRef(0);
     const askOnOpenRef = useRef(askOnOpen);
     askOnOpenRef.current = askOnOpen;
     // Paths already given the opening question, or waiting for it. Cleared when
     // that tab closes, so a later empty open can ask again. /clear does not.
     const introArmedRef = useRef(new Set<string>());
     const introQueueRef = useRef<string[]>([]);
-    const introDrainingRef = useRef(false);
-    const introSerialRef = useRef(0);
     const drainIntroRef = useRef<() => void>(() => undefined);
+    // One counter for every companion turn. Date.now() alone collides when
+    // two tabs send in the same millisecond, and the epoch map is keyed by
+    // that id, so the later turn would steal the earlier one's events.
+    const nextCompanionRequestID = (kind = "") => {
+        requestSerialRef.current += 1;
+        const prefix = kind ? `file-companion-${kind}` : "file-companion";
+        return `${prefix}-${Date.now()}-${requestSerialRef.current}`;
+    };
     const armIntro = (path: string) => {
         if (!askOnOpenRef.current || !path || introArmedRef.current.has(path)) return;
         introArmedRef.current.add(path);
@@ -1435,7 +1466,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     const releasedPlayerRef = useRef("");
     const leaveSentRef = useRef("");
     const leaveTicketRef = useRef(0);
-    const setNoteBusyRef = useRef<(path: string) => void>(() => undefined);
+    const setNoteBusyRef = useRef<(requestID: string) => void>(() => undefined);
     const webFrameRef = useRef<HTMLElement | null>(null);
     // pending until the process says it can host a top-level page. An iframe
     // painted in that gap would load the video under wails.localhost.
@@ -1654,15 +1685,12 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             if (paper) paperRequestIds.current.delete(parsed.requestID);
             if (videoNote) {
                 videoNoteRequestIds.current.delete(parsed.requestID);
-                // The card still belongs to this reply. Only the attempt that
-                // is recording may end here. Another note's card must not
-                // clear that attempt, or the held player is painted over
-                // while its capture is still running.
+                // The card still belongs to this reply. Only this attempt's
+                // path is cleared. Another tab's note keeps its own agent.
                 if (noteBusyRequestRef.current === parsed.requestID) {
                     noteBusyRequestRef.current = "";
-                    noteBusyRef.current = "";
-                    setNoteBusyRef.current("");
                 }
+                setNoteBusyRef.current(parsed.requestID);
             }
             const resultPath = paper && !videoNote && !errText && localPath ? localPath : "";
             const matched = tabsRef.current.find((tab) => tab.sessionId === parsed.sessionId);
@@ -1732,7 +1760,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         runtime?.EventsOn?.("file-companion:preview-reload", onReload);
         runtime?.EventsOn?.("ai-assistant-progress", onProgress);
         runtime?.EventsOn?.("ai-assistant-token", onToken);
-        const syncWebFull = () => {
+        const syncWebFull = (windowOnScreen = false, hideExit = false) => {
             const frame = webFrameRef.current;
             if (frame == null) {
                 // The Windows flag belongs to the page that had the player.
@@ -1744,7 +1772,21 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             const on = frame != null && (domFullRef.current || winFullRef.current);
             const was = webFullscreenRef.current;
             webFullscreenRef.current = on;
-            if (was && !on && noteBusyRef.current) {
+            // A hidden window drops fullscreen on its own. That is not the
+            // reader leaving the video. windowOnScreen is the fullscreen
+            // event's own Win32 fact: the host has put the window back, so
+            // this exit stops the note even when visibilityState is still
+            // hidden and the latch is only waiting for a slot. A DOM
+            // fullscreen change has no such fact. Host false is a hide the
+            // page has already recorded.
+            const hostHidden = hostWindowShownRef.current === false && !windowOnScreen;
+            const latched = windowHiddenRef.current && !windowOnScreen;
+            const visibilityBlocks = document.visibilityState === "hidden" && !windowOnScreen;
+            // hideExit is a fullscreen drop caused by hiding the window.
+            // The callback can arrive after the window is shown again.
+            // windowVisible is still the real shown state, so this must not
+            // be treated as the reader leaving the video.
+            if (was && !on && noteBusyRef.current && !latched && !hostHidden && !visibilityBlocks && !hideExit) {
                 // The recording tab is the one that started the note. Switching
                 // files unmounts the iframe and exits fullscreen after active
                 // already points at the other file.
@@ -1767,12 +1809,72 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             // runtime emits the object itself. Both have to set the flag.
             const raw = Array.isArray(payload) ? payload[0] : payload;
             const body = eventBody(raw);
+            // The host sets windowVisible from the window procedure, before
+            // ShowWindow or a minimize returns. visibilityState is still
+            // "visible" at that moment. A missing field is a real exit only
+            // while the document is visible. windowVisible true means this
+            // exit is on screen now, so the latch must not swallow it.
+            // Clearing the latch here is what made the next place send a
+            // zero box, and that unloads the page once the window is shown.
+            // The reveal stays armed until the slot covers a pixel.
+            const hostShown = Boolean(body && (body.windowVisible === true || body.WindowVisible === true));
+            // The exit belongs to a hide. It does not itself say the window
+            // is hidden: windowVisible does. A late callback after the show
+            // keeps the window visible, and latching it here would leave the
+            // player off the slot.
+            const hideExit = Boolean(body && (body.hideExit === true || body.HideExit === true));
+            const wasLatched = windowHiddenRef.current;
+            if (body && (body.windowVisible === false || body.WindowVisible === false)) {
+                windowHiddenRef.current = true;
+                windowRevealRef.current = false;
+            } else if (hostShown) {
+                hostWindowShownRef.current = true;
+                if (wasLatched) windowRevealRef.current = true;
+            }
             winFullRef.current = Boolean(body && (body.fullscreen === true || body.Fullscreen === true));
-            syncWebFull();
+            syncWebFull(hostShown, hideExit);
+            if (hostShown && wasLatched) companionShownPlaceRef.current();
+        };
+        const onCompanionVisibility = () => {
+            if (document.visibilityState === "hidden") {
+                // The host already said this window is on screen. A late
+                // hidden visibility is the hide catching up, not a new one.
+                if (hostWindowShownRef.current === true) return;
+                windowHiddenRef.current = true;
+                windowRevealRef.current = false;
+                return;
+            }
+            if (hostWindowShownRef.current === false) return;
+            // The player effect is mounted only while a web page is open.
+            // A show while it is absent must still arm the next place.
+            // Clearing the hidden flag here has no slot to measure, so a
+            // later empty box would unload the page.
+            if (!windowHiddenRef.current) return;
+            windowRevealRef.current = true;
+            companionShownPlaceRef.current();
+        };
+        const onHostWindow = (payload: unknown) => {
+            const raw = Array.isArray(payload) ? payload[0] : payload;
+            const body = eventBody(raw);
+            if (!body) return;
+            const shown = body.shown === true || body.Shown === true;
+            const hidden = body.shown === false || body.Shown === false;
+            if (!shown && !hidden) return;
+            hostWindowShownRef.current = shown;
+            if (!shown) {
+                windowHiddenRef.current = true;
+                windowRevealRef.current = false;
+                return;
+            }
+            if (!windowHiddenRef.current) return;
+            windowRevealRef.current = true;
+            companionShownPlaceRef.current();
         };
         document.addEventListener("fullscreenchange", onDomFull);
         document.addEventListener("webkitfullscreenchange", onDomFull);
+        document.addEventListener("visibilitychange", onCompanionVisibility);
         runtime?.EventsOn?.("file-companion:webview-fullscreen", onWinFull);
+        runtime?.EventsOn?.("file-companion:window-shown", onHostWindow);
         runtime?.EventsOn?.("ai-assistant-response", onResponse);
         runtime?.OnFileDrop?.((_x, _y, paths) => {
             paths.forEach((path) => { void openPath(path, true); });
@@ -1833,8 +1935,10 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             runtime?.EventsOff?.("ai-assistant-token");
             runtime?.EventsOff?.("ai-assistant-response");
             runtime?.EventsOff?.("file-companion:webview-fullscreen");
+            runtime?.EventsOff?.("file-companion:window-shown");
             document.removeEventListener("fullscreenchange", onDomFull);
             document.removeEventListener("webkitfullscreenchange", onDomFull);
+            document.removeEventListener("visibilitychange", onCompanionVisibility);
             runtime?.OnFileDropOff?.();
         };
     }, []);
@@ -2072,18 +2176,53 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         let dead = false;
         const place = () => {
             if (dead) return;
+            // A hidden document, or a hide that has not reached the document
+            // yet, must not be placed. An empty box unloads the page and
+            // stops a YouTube note. The slot is often still full in the
+            // moment after the click, so a positive box does not mean the
+            // window is shown. Only a show that is waiting for a real slot
+            // may place, and only once that slot covers a pixel.
+            // The host's shown notice outranks a document that is still
+            // hidden. Folding that notice back into the latch here would
+            // drop the player until a visibility event that never arrives.
+            if (windowHiddenRef.current) {
+                if (!windowRevealRef.current) return;
+                const waiting = slot.getBoundingClientRect();
+                if (waiting.width < 1 || waiting.height < 1) return;
+                windowHiddenRef.current = false;
+                windowRevealRef.current = false;
+            } else if (document.visibilityState === "hidden" && hostWindowShownRef.current !== true) {
+                windowHiddenRef.current = true;
+                windowRevealRef.current = false;
+                return;
+            }
             const ratio = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
             const box = slot.getBoundingClientRect();
             void FileCompanionPlayerPlace(playerURL, box.left * ratio, box.top * ratio, box.width * ratio, box.height * ratio);
         };
+        const onVisibility = () => {
+            if (document.visibilityState === "hidden") {
+                if (hostWindowShownRef.current === true) return;
+                windowHiddenRef.current = true;
+                windowRevealRef.current = false;
+                return;
+            }
+            if (hostWindowShownRef.current === false) return;
+            if (windowHiddenRef.current) windowRevealRef.current = true;
+            place();
+        };
+        companionShownPlaceRef.current = place;
         place();
+        document.addEventListener("visibilitychange", onVisibility);
         const observed = typeof ResizeObserver === "function" ? new ResizeObserver(place) : null;
         observed?.observe(slot);
         window.addEventListener("resize", place);
         return () => {
             dead = true;
+            companionShownPlaceRef.current = () => undefined;
             observed?.disconnect();
             window.removeEventListener("resize", place);
+            document.removeEventListener("visibilitychange", onVisibility);
         };
     }, [playerHost, playerURL]);
     useLayoutEffect(() => {
@@ -2119,12 +2258,66 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     const [importBusyPath, setImportBusyPath] = useState("");
     const [uploadBusyPath, setUploadBusyPath] = useState("");
     const [uploadedPaths, setUploadedPaths] = useState<ReadonlySet<string>>(() => new Set());
-    const [sendingPath, setSendingPath] = useState("");
-    const [paperBusyPath, setPaperBusyPath] = useState("");
-    const [noteBusyPath, setNoteBusyPath] = useState("");
+    const [sendingPaths, setSendingPaths] = useState<ReadonlySet<string>>(() => new Set());
+    const [paperBusyPaths, setPaperBusyPaths] = useState<ReadonlySet<string>>(() => new Set());
+    const paperBusyPathsRef = useRef<ReadonlySet<string>>(paperBusyPaths);
+    const [noteBusyPaths, setNoteBusyPaths] = useState<ReadonlySet<string>>(() => new Set());
     const [chatTexOpen, setChatTexOpen] = useState(false);
-    noteBusyRef.current = noteBusyPath;
-    setNoteBusyRef.current = setNoteBusyPath;
+    const publishNoteBusy = (next: Set<string>) => {
+        noteBusyPathsRef.current = next;
+        setNoteBusyPaths(next);
+        const web = tabsRef.current.find((tab) => tab.kind === "web" && next.has(tab.path));
+        noteBusyRef.current = web?.path ?? "";
+    };
+    const markNoteBusy = (path: string, requestID: string, on: boolean) => {
+        const next = new Set(noteBusyPathsRef.current);
+        if (on) {
+            next.add(path);
+            if (requestID) noteRequestPathRef.current.set(requestID, path);
+            publishNoteBusy(next);
+            return;
+        }
+        // This attempt is done. A newer attempt on the same file keeps the
+        // button on 停止 / 取消. Releasing by path alone would clear that one.
+        if (requestID) noteRequestPathRef.current.delete(requestID);
+        if (requestID) {
+            for (const owner of noteRequestPathRef.current.values()) {
+                if (owner === path) return;
+            }
+        }
+        if (!next.delete(path)) return;
+        publishNoteBusy(next);
+    };
+    setNoteBusyRef.current = (requestID: string) => {
+        const path = noteRequestPathRef.current.get(requestID);
+        if (!path) return;
+        markNoteBusy(path, requestID, false);
+    };
+    const markPaperBusy = (path: string, on: boolean) => {
+        if (paperBusyPathsRef.current.has(path) === on) return;
+        const next = new Set(paperBusyPathsRef.current);
+        if (on) next.add(path);
+        else next.delete(path);
+        paperBusyPathsRef.current = next;
+        setPaperBusyPaths(next);
+    };
+    const markSending = (path: string, on: boolean) => {
+        if (sendingPathsRef.current.has(path) === on) return;
+        const next = new Set(sendingPathsRef.current);
+        if (on) next.add(path);
+        else next.delete(path);
+        sendingPathsRef.current = next;
+        setSendingPaths(next);
+    };
+    const tabIsSending = (path: string) => sendingPathsRef.current.has(path);
+    const otherWebNoteRunning = (path: string) => {
+        for (const busy of noteBusyPathsRef.current) {
+            if (busy === path) continue;
+            const tab = tabsRef.current.find((item) => item.path === busy);
+            if (tab?.kind === "web") return true;
+        }
+        return false;
+    };
     const [chatExportBusyPath, setChatExportBusyPath] = useState("");
     const [chatWidth, setChatWidth] = useState(360);
     const chatWidthRef = useRef(chatWidth);
@@ -2136,25 +2329,24 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     const importBusy = Boolean(activeTab && importBusyPath === activeTab.path);
     const uploadBusy = Boolean(activeTab && uploadBusyPath === activeTab.path);
     const uploaded = Boolean(activeTab && uploadedPaths.has(activeTab.path));
-    // One handler serves every open file, so the send lock is the whole window.
-    // A per-file busy flag left the other file looking idle; its click then
-    // returned before a turn existed.
-    const sendBusy = Boolean(sendingPath || (activeTab && activeTab.status.trim()));
-    const paperBusy = Boolean(activeTab && paperBusyPath === activeTab.path);
-    const noteBusy = Boolean(activeTab && noteBusyPath === activeTab.path);
+    // The button follows the file on screen. Another file's agent does not
+    // mark this one 处理中, and a click here starts this file's own turn.
+    const sendBusy = Boolean(activeTab && (sendingPaths.has(activeTab.path) || activeTab.status.trim()));
+    const paperBusy = Boolean(activeTab && paperBusyPaths.has(activeTab.path));
+    const noteBusy = Boolean(activeTab && noteBusyPaths.has(activeTab.path));
     const chatExportBusy = Boolean(activeTab && chatExportBusyPath === activeTab.path);
     // Computed on demand, not at render time: whether a turn is still arriving
-    // depends on sendingPath, which is declared further down. Reading it later
+    // depends on which files are still sending. Reading it later
     // than the buttons would let a reply that finished streaming into the
     // transcript be judged still-writing, or the reverse.
     const buildChatTurns = useCallback(async (): Promise<CompanionChatExport> => {
         if (!activeTab) return EMPTY_CHAT_EXPORT;
         return companionChatExportTurns(
             activeTab.messages,
-            Boolean(activeTab.status) || sendingPath === activeTab.path,
+            Boolean(activeTab.status) || sendingPaths.has(activeTab.path),
             lightTheme,
         );
-    }, [activeTab, sendingPath]);
+    }, [activeTab, sendingPaths]);
     const hasChatHistory = Boolean(activeTab && activeTab.messages.some((message) => message.text.trim() !== ""));
     const canExportChat = hasChatHistory && !chatExportBusy;
     const resizeChat = (next: number) => {
@@ -2293,21 +2485,22 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         const text = activeTab.draft.trim();
         if (!text) return false;
         if (isHistoryResetCommandText(text)) return clearCompanionChat(activeTab, text);
-        if (sendingRef.current || activeTab.status.trim() || sendingPath === activeTab.path) return false;
         const tabPath = activeTab.path;
+        if (tabIsSending(tabPath) || activeTab.status.trim()) return false;
         const sessionId = activeTab.sessionId;
         const selection = activeTab.selection;
         const selectionStart = activeTab.selectionStart;
-        // A new question always re-arms the follow, even if the reader had
-        // scrolled away during the previous answer.
-        scrollToBottom("auto", true);
-        sendingRef.current = true;
-        setSendingPath(tabPath);
-        const requestID = `file-companion-${Date.now()}`;
-        bindCompanionRequest(sessionId, requestID);
         const mediaKind = filePreviewKindFromName(activeTab.name);
         const notePhrase = !isWebTab && (mediaKind === "video" || mediaKind === "audio") && companionVideoNotePhrase(text);
         const webNotePhrase = isWebTab && (text === "记笔记" || companionVideoNotePhrase(text));
+        // One player. A second web note would record over the one already running.
+        if (webNotePhrase && otherWebNoteRunning(tabPath)) return false;
+        // A new question always re-arms the follow, even if the reader had
+        // scrolled away during the previous answer.
+        scrollToBottom("auto", true);
+        markSending(tabPath, true);
+        const requestID = nextCompanionRequestID();
+        bindCompanionRequest(sessionId, requestID);
         let accepted = false;
         try {
             if (activeTab.dirty && activeTab.editable && !activeTab.readOnly) {
@@ -2325,8 +2518,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             accepted = true;
         } finally {
             if (!accepted) {
-                sendingRef.current = false;
-                setSendingPath((current) => current === tabPath ? "" : current);
+                markSending(tabPath, false);
                 drainIntroRef.current();
             }
         }
@@ -2335,9 +2527,8 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         let captureEpoch = 0;
         if (accepted && (notePhrase || webNotePhrase)) {
             videoNoteRequestIds.current.add(requestID);
-            noteBusyRequestRef.current = requestID;
-            noteBusyRef.current = tabPath;
-            setNoteBusyPath(tabPath);
+            if (webNotePhrase) noteBusyRequestRef.current = requestID;
+            markNoteBusy(tabPath, requestID, true);
             if (webNotePhrase) {
                 captureEpoch = webCaptureEpochRef.current + 1;
                 webCaptureEpochRef.current = captureEpoch;
@@ -2376,14 +2567,10 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                     return { ...tab, status: "", messages: [...tab.messages, { id: assistantID, role: "assistant", text: note }] };
                 }));
             } finally {
-                sendingRef.current = false;
-                setSendingPath((current) => current === tabPath ? "" : current);
+                markSending(tabPath, false);
                 if (notePhrase || webNotePhrase) {
-                    if (noteBusyRequestRef.current === requestID) {
-                        noteBusyRequestRef.current = "";
-                        noteBusyRef.current = "";
-                    }
-                    setNoteBusyPath((current) => current === tabPath ? "" : current);
+                    if (noteBusyRequestRef.current === requestID) noteBusyRequestRef.current = "";
+                    markNoteBusy(tabPath, requestID, false);
                 }
                 drainIntroRef.current();
             }
@@ -2392,14 +2579,13 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     };
 
     const sendPaper = async () => {
-        if (!activeTab || activeTab.error || sendingRef.current || activeTab.status.trim() || sendingPath === activeTab.path) return;
+        if (!activeTab || activeTab.error || tabIsSending(activeTab.path) || activeTab.status.trim()) return;
         const tabPath = activeTab.path;
         const sessionId = activeTab.sessionId;
         scrollToBottom("auto", true);
-        sendingRef.current = true;
-        setSendingPath(tabPath);
-        setPaperBusyPath(tabPath);
-        const requestID = `file-companion-${Date.now()}`;
+        markSending(tabPath, true);
+        markPaperBusy(tabPath, true);
+        const requestID = nextCompanionRequestID();
         bindCompanionRequest(sessionId, requestID);
         try {
             if (activeTab.dirty && activeTab.editable && !activeTab.readOnly) {
@@ -2428,9 +2614,8 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                 }));
             }
         } finally {
-            sendingRef.current = false;
-            setSendingPath((current) => current === tabPath ? "" : current);
-            setPaperBusyPath((current) => current === tabPath ? "" : current);
+            markSending(tabPath, false);
+            markPaperBusy(tabPath, false);
             drainIntroRef.current();
         }
     };
@@ -2444,10 +2629,11 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             else await CancelFileCompanionTurn(activeTab.path);
             return;
         }
-        if (sendingRef.current || activeTab.status.trim() || sendingPath === activeTab.path) return;
+        if (tabIsSending(activeTab.path) || activeTab.status.trim()) return;
         const tabPath = activeTab.path;
         const sessionId = activeTab.sessionId;
         const web = activeTab.kind === "web";
+        if (web && otherWebNoteRunning(tabPath)) return;
         const label = web ? "记笔记" : "生成笔记";
         const captureEpoch = web ? (webCaptureEpochRef.current + 1) : 0;
         if (web) {
@@ -2455,12 +2641,10 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             noteEpochRef.current = captureEpoch;
         }
         scrollToBottom("auto", true);
-        sendingRef.current = true;
-        setSendingPath(tabPath);
-        const requestID = `file-companion-${Date.now()}`;
-        noteBusyRequestRef.current = requestID;
-        noteBusyRef.current = tabPath;
-        setNoteBusyPath(tabPath);
+        markSending(tabPath, true);
+        const requestID = nextCompanionRequestID();
+        if (web) noteBusyRequestRef.current = requestID;
+        markNoteBusy(tabPath, requestID, true);
         bindCompanionRequest(sessionId, requestID);
         videoNoteRequestIds.current.add(requestID);
         const message: ChatMessage = { id: `${requestID}:user`, role: "user", text: label };
@@ -2495,20 +2679,16 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                 return { ...tab, status: "", messages: [...tab.messages, { id: assistantID, role: "assistant", text: note }] };
             }));
         } finally {
-            sendingRef.current = false;
-            setSendingPath((current) => current === tabPath ? "" : current);
-            if (noteBusyRequestRef.current === requestID) {
-                noteBusyRequestRef.current = "";
-                noteBusyRef.current = "";
-            }
-            setNoteBusyPath((current) => current === tabPath ? "" : current);
+            markSending(tabPath, false);
+            if (noteBusyRequestRef.current === requestID) noteBusyRequestRef.current = "";
+            markNoteBusy(tabPath, requestID, false);
             drainIntroRef.current();
         }
     };
 
-    // One turn at a time. A new empty file asks what it is; further files wait
-    // until that turn releases the lock. The question is not typed, so it is
-    // not stored in the composer's input history, and it carries no selection.
+    // Each new empty file asks what it is on its own agent. The question is
+    // not typed, so it is not stored in the composer's input history, and it
+    // carries no selection. Another file's turn does not hold this one back.
     const startIntro = (tab: CompanionTab): Promise<void> => {
         const tabPath = tab.path;
         const sessionId = tab.sessionId;
@@ -2517,8 +2697,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             const sentence = mediaKind === "audio"
                 ? "这个音频还没有笔记。点「生成笔记」，或发送「生成笔记」。"
                 : "这个视频还没有笔记。点「生成笔记」，或发送「生成笔记」。";
-            introSerialRef.current += 1;
-            const requestID = `file-companion-intro-local-${Date.now()}-${introSerialRef.current}`;
+            const requestID = nextCompanionRequestID("intro-local");
             const message: ChatMessage = { id: `${requestID}:assistant`, role: "assistant", text: sentence };
             setTabs((current) => current.map((item) => {
                 if (item.path !== tabPath || item.messages.length > 0) return item;
@@ -2527,10 +2706,8 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             return Promise.resolve();
         }
         const text = FILE_COMPANION_INTRO;
-        sendingRef.current = true;
-        setSendingPath(tabPath);
-        introSerialRef.current += 1;
-        const requestID = `file-companion-intro-${Date.now()}-${introSerialRef.current}`;
+        markSending(tabPath, true);
+        const requestID = nextCompanionRequestID("intro");
         bindCompanionRequest(sessionId, requestID);
         if (activeRef.current === tabPath) scrollToBottom("auto", true);
         const message: ChatMessage = { id: `${requestID}:user`, role: "user", text };
@@ -2551,36 +2728,37 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                     return { ...item, status: "", messages: [...item.messages, { id: assistantID, role: "assistant", text: note }] };
                 }));
             } finally {
-                sendingRef.current = false;
-                setSendingPath((current) => current === tabPath ? "" : current);
+                markSending(tabPath, false);
             }
         })();
     };
 
     const drainIntro = () => {
-        if (introDrainingRef.current) return;
-        while (introQueueRef.current.length > 0) {
-            const path = introQueueRef.current[0];
+        const queued = introQueueRef.current;
+        if (queued.length === 0) return;
+        const stay: string[] = [];
+        const start: CompanionTab[] = [];
+        for (const path of queued) {
             const tab = tabsRef.current.find((item) => item.path === path);
-            if (!tab || tab.error || tab.messages.length > 0) {
-                introQueueRef.current.shift();
+            if (!tab || tab.error || tab.messages.length > 0) continue;
+            if (tabIsSending(path) || tab.status.trim()) {
+                stay.push(path);
                 continue;
             }
-            if (sendingRef.current || tab.status.trim()) return;
-            introQueueRef.current.shift();
-            introDrainingRef.current = true;
+            start.push(tab);
+        }
+        introQueueRef.current = stay;
+        for (const tab of start) {
             void startIntro(tab).finally(() => {
-                introDrainingRef.current = false;
                 drainIntroRef.current();
             });
-            return;
         }
     };
     drainIntroRef.current = drainIntro;
 
     useEffect(() => {
         drainIntroRef.current();
-    }, [tabs, sendingPath]);
+    }, [tabs, sendingPaths]);
 
     const chooseFiles = async () => {
         if (choosingRef.current) return;
@@ -2731,11 +2909,12 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     // must not keep the old player on screen or release a later note.
     // Coming back does not undo that retirement. Capture has stopped, so
     // the next switch shows the page that was selected.
-    if (!noteBusyPath) releasedPlayerRef.current = "";
-    const recordingWeb = tabs.some((item) => item.kind === "web" && item.frameUrl && item.path === noteBusyPath);
-    const shouldPin = recordingWeb && webPlayerPath !== noteBusyPath && releasedPlayerRef.current !== noteBusyPath;
-    let nextPin = shouldPin ? noteBusyPath : pinnedPlayerPath;
-    if (!noteBusyPath) {
+    const webNotePath = tabs.find((item) => item.kind === "web" && item.frameUrl && noteBusyPaths.has(item.path))?.path ?? "";
+    if (!webNotePath) releasedPlayerRef.current = "";
+    const recordingWeb = webNotePath !== "";
+    const shouldPin = recordingWeb && webPlayerPath !== webNotePath && releasedPlayerRef.current !== webNotePath;
+    let nextPin = shouldPin ? webNotePath : pinnedPlayerPath;
+    if (!webNotePath) {
         nextPin = "";
         if (leaveSentRef.current) {
             leaveSentRef.current = "";
@@ -2987,7 +3166,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                     </div>
                 ) : null}
                 {/* runtime WindowHide. App.WindowHide also shows the tray pet. */}
-                <button type="button" className="file-companion-tool file-companion-tool--close" data-testid="file-companion-close" title="隐藏窗口，已打开的文件会保留" onClick={() => { WindowHide(); }}><CompanionActionIcon name="close" />关闭</button>
+                <button type="button" className="file-companion-tool file-companion-tool--close" data-testid="file-companion-close" title="隐藏窗口，已打开的文件会保留" onClick={() => { windowHiddenRef.current = true; windowRevealRef.current = false; WindowHide(); }}><CompanionActionIcon name="hide" />隐藏</button>
             </div>
             {dropMessage ? <div data-testid="file-companion-drop-error" style={{ padding: "8px 12px", color: "#9a3412" }}>{dropMessage}</div> : null}
             {!activeTab ? (
@@ -3141,7 +3320,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                             {activeTab.messages.length === 0 ? <p data-testid="file-companion-chat-empty" style={{ margin: 0, color: "#94a3b8", fontSize: 13 }}>针对当前文件提问</p> : null}
                             {activeTab.messages.map((message, index) => {
                                 const mine = message.role === "user";
-                                const turnLive = Boolean(activeTab.status) || sendingPath === activeTab.path;
+                                const turnLive = Boolean(activeTab.status) || sendingPaths.has(activeTab.path);
                                 const streaming = !mine && turnLive && index === activeTab.messages.length - 1;
                                 const cleanedReasoning = mine ? "" : cleanReasoningTrailForBody(message.reasoning || "");
                                 const visibleReply = mine

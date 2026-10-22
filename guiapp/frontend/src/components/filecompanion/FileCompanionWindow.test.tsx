@@ -1005,7 +1005,8 @@ describe("FileCompanionWindow", () => {
         const choose = screen.getByTestId("file-companion-choose");
         const close = screen.getByTestId("file-companion-close");
         const bar = screen.getByTestId("file-companion-titlebar");
-        expect(close.textContent).toBe("关闭");
+        expect(close.textContent).toBe("隐藏");
+        expect(close.querySelector("svg.file-companion-tool-icon")?.getAttribute("data-icon")).toBe("hide");
         expect(close.querySelector("svg.file-companion-tool-icon")?.getAttribute("aria-hidden")).toBe("true");
         expect(close.getAttribute("title")).toBe("隐藏窗口，已打开的文件会保留");
         expect(close.parentElement).toBe(bar);
@@ -1022,6 +1023,358 @@ describe("FileCompanionWindow", () => {
         expect(quit).not.toHaveBeenCalled();
         expect(screen.getByTestId("file-companion-tab-a.md")).toBeTruthy();
         expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("alpha");
+    });
+
+    it("hides the window without stopping a web note", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-open-menu");
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-input"), { target: { value: "https://www.youtube.com/watch?v=abc" } });
+        openWeb.mockResolvedValue({
+            kind: "web",
+            frameUrl: "https://www.youtube.com/embed/abc",
+            sessionId: "web-abc",
+        });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-go"));
+        await screen.findByTestId("file-companion-web-frame");
+        let release: () => void = () => undefined;
+        sendWeb.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        act(() => { runtime.emit("file-companion:webview-fullscreen", { fullscreen: true }); });
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(sendWeb).toHaveBeenCalledTimes(1));
+        expect(screen.getByTestId("file-companion-video-note").textContent).toContain("停止");
+        playerPlace.mockClear();
+        playerHide.mockClear();
+        cancelWeb.mockClear();
+        playerLeft.mockClear();
+        discardWeb.mockClear();
+        fireEvent.click(screen.getByTestId("file-companion-close"));
+        expect(hideWindow).toHaveBeenCalledTimes(1);
+        act(() => { runtime.emit("file-companion:webview-fullscreen", { fullscreen: false }); });
+        window.dispatchEvent(new Event("focus"));
+        window.dispatchEvent(new Event("resize"));
+        expect(cancelWeb).not.toHaveBeenCalled();
+        expect(playerLeft).not.toHaveBeenCalled();
+        expect(discardWeb).not.toHaveBeenCalled();
+        expect(playerHide).not.toHaveBeenCalled();
+        expect(playerPlace).not.toHaveBeenCalled();
+        expect(screen.getByTestId("file-companion-tab-www.youtube.com")).toBeTruthy();
+        expect(screen.getByTestId("file-companion-video-note").textContent).toContain("停止");
+        release();
+        await waitFor(() => expect(screen.getByTestId("file-companion-video-note").textContent).toContain("记笔记"));
+    });
+
+    it("treats a hidden document as a hide, then places the player once the slot is real", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-open-menu");
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-input"), { target: { value: "https://www.youtube.com/watch?v=abc" } });
+        openWeb.mockResolvedValue({
+            kind: "web",
+            frameUrl: "https://www.youtube.com/embed/abc",
+            sessionId: "web-abc",
+        });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-go"));
+        const frame = await screen.findByTestId("file-companion-web-frame");
+        let release: () => void = () => undefined;
+        sendWeb.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        act(() => { runtime.emit("file-companion:webview-fullscreen", { fullscreen: true }); });
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(sendWeb).toHaveBeenCalledTimes(1));
+        playerPlace.mockClear();
+        playerHide.mockClear();
+        cancelWeb.mockClear();
+        const prior = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState")
+            ?? Object.getOwnPropertyDescriptor(document, "visibilityState");
+        let state: DocumentVisibilityState = "hidden";
+        Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+        try {
+            act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+            act(() => { runtime.emit("file-companion:webview-fullscreen", { fullscreen: false }); });
+            window.dispatchEvent(new Event("focus"));
+            window.dispatchEvent(new Event("resize"));
+            expect(cancelWeb).not.toHaveBeenCalled();
+            expect(playerHide).not.toHaveBeenCalled();
+            expect(playerPlace).not.toHaveBeenCalled();
+            expect(hideWindow).not.toHaveBeenCalled();
+            state = "visible";
+            act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+            window.dispatchEvent(new Event("resize"));
+            expect(playerPlace).not.toHaveBeenCalled();
+            const ratio = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+            frame.getBoundingClientRect = () => ({
+                x: 8, y: 12, left: 8, top: 12, width: 640, height: 360, right: 648, bottom: 372, toJSON() { return {}; },
+            }) as DOMRect;
+            window.dispatchEvent(new Event("resize"));
+            expect(playerPlace).toHaveBeenCalledTimes(1);
+            expect(playerPlace).toHaveBeenCalledWith("https://www.youtube.com/embed/abc", 8 * ratio, 12 * ratio, 640 * ratio, 360 * ratio);
+            expect(screen.getByTestId("file-companion-video-note").textContent).toContain("停止");
+        } finally {
+            if (prior) Object.defineProperty(document, "visibilityState", prior);
+            release();
+        }
+    });
+
+    it("a fullscreen exit marked windowVisible false does not stop the note while the document is still visible", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-open-menu");
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-input"), { target: { value: "https://www.youtube.com/watch?v=abc" } });
+        openWeb.mockResolvedValue({
+            kind: "web",
+            frameUrl: "https://www.youtube.com/embed/abc",
+            sessionId: "web-abc",
+        });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-go"));
+        const frame = await screen.findByTestId("file-companion-web-frame");
+        let release: () => void = () => undefined;
+        sendWeb.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        act(() => { runtime.emit("file-companion:webview-fullscreen", [{ fullscreen: true, windowVisible: true }]); });
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(sendWeb).toHaveBeenCalledTimes(1));
+        playerPlace.mockClear();
+        playerHide.mockClear();
+        cancelWeb.mockClear();
+        // Alt+F4 / minimize: the host reports the window going away on the
+        // same fullscreen event. visibilityState has not flipped, and the
+        // title-bar button was not clicked.
+        expect(document.visibilityState).not.toBe("hidden");
+        act(() => { runtime.emit("file-companion:webview-fullscreen", [{ fullscreen: false, windowVisible: false }]); });
+        window.dispatchEvent(new Event("resize"));
+        expect(cancelWeb).not.toHaveBeenCalled();
+        expect(playerHide).not.toHaveBeenCalled();
+        expect(playerPlace).not.toHaveBeenCalled();
+        expect(hideWindow).not.toHaveBeenCalled();
+        expect(screen.getByTestId("file-companion-video-note").textContent).toContain("停止");
+        const prior = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState")
+            ?? Object.getOwnPropertyDescriptor(document, "visibilityState");
+        Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+        try {
+            act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+            window.dispatchEvent(new Event("resize"));
+            expect(playerPlace).not.toHaveBeenCalled();
+            const ratio = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+            frame.getBoundingClientRect = () => ({
+                x: 8, y: 12, left: 8, top: 12, width: 640, height: 360, right: 648, bottom: 372, toJSON() { return {}; },
+            }) as DOMRect;
+            window.dispatchEvent(new Event("resize"));
+            expect(playerPlace).toHaveBeenCalledTimes(1);
+            expect(playerPlace).toHaveBeenCalledWith("https://www.youtube.com/embed/abc", 8 * ratio, 12 * ratio, 640 * ratio, 360 * ratio);
+            expect(cancelWeb).not.toHaveBeenCalled();
+            expect(screen.getByTestId("file-companion-video-note").textContent).toContain("停止");
+        } finally {
+            if (prior) Object.defineProperty(document, "visibilityState", prior);
+            release();
+        }
+    });
+
+    it("arms the next player place when the window is shown with no web page open", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha" }));
+        choose.mockResolvedValue(["C:/notes/a.md"]);
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-open-menu");
+        pickLocalFile();
+        await screen.findByTestId("file-companion-tab-a.md");
+        fireEvent.click(screen.getByTestId("file-companion-close"));
+        expect(hideWindow).toHaveBeenCalledTimes(1);
+        const prior = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState")
+            ?? Object.getOwnPropertyDescriptor(document, "visibilityState");
+        let state: DocumentVisibilityState = "hidden";
+        Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+        let release: () => void = () => undefined;
+        sendWeb.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        try {
+            act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+            state = "visible";
+            act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+            playerPlace.mockClear();
+            playerHide.mockClear();
+            fireEvent.click(screen.getByTestId("file-companion-choose"));
+            fireEvent.change(screen.getByTestId("file-companion-arxiv-input"), { target: { value: "https://www.youtube.com/watch?v=abc" } });
+            openWeb.mockResolvedValue({
+                kind: "web",
+                frameUrl: "https://www.youtube.com/embed/abc",
+                sessionId: "web-abc",
+            });
+            fireEvent.click(screen.getByTestId("file-companion-arxiv-go"));
+            const frame = await screen.findByTestId("file-companion-web-frame");
+            // The slot is still empty. The armed reveal must wait for a real box.
+            window.dispatchEvent(new Event("resize"));
+            expect(playerPlace).not.toHaveBeenCalled();
+            expect(playerHide).not.toHaveBeenCalled();
+            const ratio = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+            frame.getBoundingClientRect = () => ({
+                x: 8, y: 12, left: 8, top: 12, width: 640, height: 360, right: 648, bottom: 372, toJSON() { return {}; },
+            }) as DOMRect;
+            window.dispatchEvent(new Event("resize"));
+            expect(playerPlace).toHaveBeenCalledTimes(1);
+            expect(playerPlace).toHaveBeenCalledWith("https://www.youtube.com/embed/abc", 8 * ratio, 12 * ratio, 640 * ratio, 360 * ratio);
+            act(() => { runtime.emit("file-companion:webview-fullscreen", { fullscreen: true }); });
+            fireEvent.click(screen.getByTestId("file-companion-video-note"));
+            await waitFor(() => expect(sendWeb).toHaveBeenCalledTimes(1));
+            act(() => { runtime.emit("file-companion:webview-fullscreen", { fullscreen: false }); });
+            expect(cancelWeb).toHaveBeenCalledTimes(1);
+            expect(screen.getByTestId("file-companion-video-note").textContent).toContain("停止");
+        } finally {
+            if (prior) Object.defineProperty(document, "visibilityState", prior);
+            release();
+        }
+    });
+
+    it("a host show places the player while the document never becomes hidden", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-open-menu");
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-input"), { target: { value: "https://www.youtube.com/watch?v=abc" } });
+        openWeb.mockResolvedValue({
+            kind: "web",
+            frameUrl: "https://www.youtube.com/embed/abc",
+            sessionId: "web-abc",
+        });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-go"));
+        const frame = await screen.findByTestId("file-companion-web-frame");
+        let release: () => void = () => undefined;
+        sendWeb.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        act(() => { runtime.emit("file-companion:webview-fullscreen", { fullscreen: true }); });
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(sendWeb).toHaveBeenCalledTimes(1));
+        playerPlace.mockClear();
+        playerHide.mockClear();
+        cancelWeb.mockClear();
+        const prior = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState")
+            ?? Object.getOwnPropertyDescriptor(document, "visibilityState");
+        try {
+            expect(document.visibilityState).not.toBe("hidden");
+            act(() => { runtime.emit("file-companion:window-shown", [{ shown: false }]); });
+            act(() => { runtime.emit("file-companion:webview-fullscreen", { fullscreen: false }); });
+            window.dispatchEvent(new Event("resize"));
+            expect(cancelWeb).not.toHaveBeenCalled();
+            expect(playerHide).not.toHaveBeenCalled();
+            expect(playerPlace).not.toHaveBeenCalled();
+            expect(screen.getByTestId("file-companion-video-note").textContent).toContain("停止");
+            act(() => { runtime.emit("file-companion:window-shown", { shown: true }); });
+            window.dispatchEvent(new Event("resize"));
+            expect(playerPlace).not.toHaveBeenCalled();
+            const ratio = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+            frame.getBoundingClientRect = () => ({
+                x: 8, y: 12, left: 8, top: 12, width: 640, height: 360, right: 648, bottom: 372, toJSON() { return {}; },
+            }) as DOMRect;
+            window.dispatchEvent(new Event("resize"));
+            expect(playerPlace).toHaveBeenCalledTimes(1);
+            expect(playerPlace).toHaveBeenCalledWith("https://www.youtube.com/embed/abc", 8 * ratio, 12 * ratio, 640 * ratio, 360 * ratio);
+            playerPlace.mockClear();
+            act(() => { runtime.emit("file-companion:webview-fullscreen", { fullscreen: true }); });
+            let state: DocumentVisibilityState = "hidden";
+            Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+            act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+            window.dispatchEvent(new Event("resize"));
+            expect(playerPlace).toHaveBeenCalledTimes(1);
+            expect(document.visibilityState).toBe("hidden");
+            act(() => { runtime.emit("file-companion:webview-fullscreen", { fullscreen: false, windowVisible: true }); });
+            expect(cancelWeb).toHaveBeenCalledTimes(1);
+            expect(playerPlace).toHaveBeenCalledTimes(1);
+            expect(playerHide).not.toHaveBeenCalled();
+            expect(screen.getByTestId("file-companion-video-note").textContent).toContain("停止");
+        } finally {
+            if (prior) Object.defineProperty(document, "visibilityState", prior);
+            release();
+        }
+    });
+
+    it("a visible fullscreen exit stops the note without placing an empty slot", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-open-menu");
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-input"), { target: { value: "https://www.youtube.com/watch?v=abc" } });
+        openWeb.mockResolvedValue({
+            kind: "web",
+            frameUrl: "https://www.youtube.com/embed/abc",
+            sessionId: "web-abc",
+        });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-go"));
+        const frame = await screen.findByTestId("file-companion-web-frame");
+        let release: () => void = () => undefined;
+        sendWeb.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        act(() => { runtime.emit("file-companion:webview-fullscreen", { fullscreen: true }); });
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(sendWeb).toHaveBeenCalledTimes(1));
+        playerPlace.mockClear();
+        playerHide.mockClear();
+        cancelWeb.mockClear();
+        const prior = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState")
+            ?? Object.getOwnPropertyDescriptor(document, "visibilityState");
+        Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+        try {
+            act(() => { runtime.emit("file-companion:window-shown", { shown: false }); });
+            act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+            act(() => { runtime.emit("file-companion:webview-fullscreen", { fullscreen: false, windowVisible: true }); });
+            expect(cancelWeb).toHaveBeenCalledTimes(1);
+            expect(playerPlace).not.toHaveBeenCalled();
+            expect(playerHide).not.toHaveBeenCalled();
+            expect(screen.getByTestId("file-companion-video-note").textContent).toContain("停止");
+            const ratio = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+            frame.getBoundingClientRect = () => ({
+                x: 8, y: 12, left: 8, top: 12, width: 640, height: 360, right: 648, bottom: 372, toJSON() { return {}; },
+            }) as DOMRect;
+            window.dispatchEvent(new Event("resize"));
+            expect(playerPlace).toHaveBeenCalledTimes(1);
+            expect(playerPlace).toHaveBeenCalledWith("https://www.youtube.com/embed/abc", 8 * ratio, 12 * ratio, 640 * ratio, 360 * ratio);
+            expect(playerHide).not.toHaveBeenCalled();
+            expect(cancelWeb).toHaveBeenCalledTimes(1);
+        } finally {
+            if (prior) Object.defineProperty(document, "visibilityState", prior);
+            release();
+        }
+    });
+
+    it("a hide-owned fullscreen exit after the window is shown keeps the note and the slot", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-open-menu");
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-input"), { target: { value: "https://www.youtube.com/watch?v=abc" } });
+        openWeb.mockResolvedValue({
+            kind: "web",
+            frameUrl: "https://www.youtube.com/embed/abc",
+            sessionId: "web-abc",
+        });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-go"));
+        const frame = await screen.findByTestId("file-companion-web-frame");
+        let release: () => void = () => undefined;
+        sendWeb.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        act(() => { runtime.emit("file-companion:webview-fullscreen", { fullscreen: true }); });
+        fireEvent.click(screen.getByTestId("file-companion-video-note"));
+        await waitFor(() => expect(sendWeb).toHaveBeenCalledTimes(1));
+        playerPlace.mockClear();
+        playerHide.mockClear();
+        cancelWeb.mockClear();
+        act(() => { runtime.emit("file-companion:window-shown", { shown: false }); });
+        act(() => { runtime.emit("file-companion:window-shown", { shown: true }); });
+        expect(playerPlace).not.toHaveBeenCalled();
+        // The callback for the hide's fullscreen drop runs after the show.
+        // The window is on screen. Treating that as a hide would drop the
+        // reveal, and the slot would never be placed.
+        act(() => { runtime.emit("file-companion:webview-fullscreen", { fullscreen: false, windowVisible: true, hideExit: true }); });
+        expect(cancelWeb).not.toHaveBeenCalled();
+        expect(playerHide).not.toHaveBeenCalled();
+        expect(playerPlace).not.toHaveBeenCalled();
+        const ratio = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+        frame.getBoundingClientRect = () => ({
+            x: 8, y: 12, left: 8, top: 12, width: 640, height: 360, right: 648, bottom: 372, toJSON() { return {}; },
+        }) as DOMRect;
+        window.dispatchEvent(new Event("resize"));
+        expect(playerPlace).toHaveBeenCalledTimes(1);
+        expect(playerPlace).toHaveBeenCalledWith("https://www.youtube.com/embed/abc", 8 * ratio, 12 * ratio, 640 * ratio, 360 * ratio);
+        expect(cancelWeb).not.toHaveBeenCalled();
+        expect(screen.getByTestId("file-companion-video-note").textContent).toContain("停止");
+        release();
     });
 
     it("the two buttons invoke knowledge import and ImportMobileDocumentFromPath with the current tab path", async () => {
@@ -1102,7 +1455,7 @@ describe("FileCompanionWindow", () => {
         expect(uploadCloud).toHaveBeenCalledTimes(1);
     });
 
-    it("does not send from another file while a reply is running", async () => {
+    it("sends from another file while a reply is running", async () => {
         let release: () => void = () => undefined;
         send.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
         boot.mockResolvedValue({ paths: ["C:/notes/a.md", "C:/notes/b.md"] });
@@ -1114,18 +1467,51 @@ describe("FileCompanionWindow", () => {
         fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "问 A" } });
         fireEvent.click(screen.getByTestId("file-companion-send"));
         await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+        expect(screen.getByTestId("file-companion-send").textContent).toBe("处理中");
         fireEvent.click(screen.getByTestId("file-companion-tab-b.md"));
         fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "问 B" } });
         const sendButton = screen.getByTestId("file-companion-send");
-        expect(sendButton.getAttribute("aria-busy")).toBe("true");
-        expect(sendButton.textContent).toBe("处理中");
-        expect((screen.getByTestId("file-companion-paper") as HTMLButtonElement).disabled).toBe(true);
+        expect(sendButton.getAttribute("aria-busy")).not.toBe("true");
+        expect(sendButton.textContent).toBe("发送");
+        expect((screen.getByTestId("file-companion-paper") as HTMLButtonElement).disabled).toBe(false);
         fireEvent.click(sendButton);
-        fireEvent.keyDown(screen.getByTestId("file-companion-input"), { key: "Enter" });
-        expect(send).toHaveBeenCalledTimes(1);
-        expect((screen.getByTestId("file-companion-input") as HTMLTextAreaElement).value).toBe("问 B");
-        expect(localStorage.getItem("maclaw.fileCompanionInputHistory.v1") || "").not.toContain("问 B");
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+        const second = send.mock.calls[1][0] as { path?: string; text?: string };
+        expect(second.path).toBe("C:/notes/b.md");
+        expect(second.text).toBe("问 B");
+        expect(localStorage.getItem("maclaw.fileCompanionInputHistory.v1") || "").toContain("问 B");
+        fireEvent.click(screen.getByTestId("file-companion-tab-a.md"));
+        expect(screen.getByTestId("file-companion-send").textContent).toBe("处理中");
+        expect(screen.getByTestId("file-companion-send").getAttribute("aria-busy")).toBe("true");
         await act(async () => { release(); });
+    });
+
+    it("keeps 正在解读 on each file and gives concurrent turns different request ids", async () => {
+        const now = Date.now();
+        const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+        const pending: Array<() => void> = [];
+        send.mockImplementation(() => new Promise<void>((resolve) => { pending.push(resolve); }));
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md", "C:/notes/b.md"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-b.md");
+        fireEvent.click(screen.getByTestId("file-companion-tab-a.md"));
+        fireEvent.click(screen.getByTestId("file-companion-paper"));
+        await waitFor(() => expect(screen.getByTestId("file-companion-paper").textContent).toBe("正在解读…"));
+        fireEvent.click(screen.getByTestId("file-companion-tab-b.md"));
+        expect(screen.getByTestId("file-companion-paper").textContent).toBe("论文解读");
+        expect((screen.getByTestId("file-companion-paper") as HTMLButtonElement).disabled).toBe(false);
+        fireEvent.click(screen.getByTestId("file-companion-paper"));
+        await waitFor(() => expect(screen.getByTestId("file-companion-paper").textContent).toBe("正在解读…"));
+        fireEvent.click(screen.getByTestId("file-companion-tab-a.md"));
+        expect(screen.getByTestId("file-companion-paper").textContent).toBe("正在解读…");
+        expect((screen.getByTestId("file-companion-paper") as HTMLButtonElement).disabled).toBe(true);
+        const ids = send.mock.calls.map((call) => String((call[0] as { request_id?: string }).request_id));
+        expect(ids).toHaveLength(2);
+        expect(new Set(ids).size).toBe(2);
+        clock.mockRestore();
+        await act(async () => { pending.forEach((release) => release()); });
     });
 
     it("spins the send button while a reply is running", async () => {
@@ -2474,39 +2860,34 @@ describe("FileCompanionWindow", () => {
         expect(send).not.toHaveBeenCalled();
     });
 
-    it("asks the next new document only after the first reply finishes", async () => {
-        let release: () => void = () => undefined;
-        send.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+    it("asks each new document on its own, without waiting for the other reply", async () => {
+        const pending: Array<() => void> = [];
+        send.mockImplementation(() => new Promise<void>((resolve) => { pending.push(resolve); }));
         boot.mockResolvedValue({ paths: ["C:/notes/a.md", "C:/notes/b.md"] });
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha" }));
         installRuntime();
         renderWindow({ askOnOpen: true });
         await screen.findByTestId("file-companion-tab-a.md");
         await screen.findByTestId("file-companion-tab-b.md");
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+        const paths = send.mock.calls.map((call) => (call[0] as { path?: string }).path);
+        expect(paths).toEqual(["C:/notes/a.md", "C:/notes/b.md"]);
+        for (const call of send.mock.calls) {
+            const sent = call[0] as Record<string, unknown>;
+            expect(sent.text).toBe("这篇文档是什么？");
+            expect(sent.selection).toBeUndefined();
+        }
         fireEvent.click(screen.getByTestId("file-companion-tab-a.md"));
-        await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
-        const first = send.mock.calls[0][0] as Record<string, unknown>;
-        expect(first.path).toBe("C:/notes/a.md");
-        expect(first.text).toBe("这篇文档是什么？");
-        expect(first.selection).toBeUndefined();
         const input = screen.getByTestId("file-companion-input") as HTMLTextAreaElement;
         fireEvent.change(input, { target: { value: "我的问题" } });
         expect(input.value).toBe("我的问题");
         expect(localStorage.getItem("maclaw.fileCompanionInputHistory.v1")).toBeNull();
+        expect(screen.getByTestId("file-companion-send").textContent).toBe("处理中");
         fireEvent.click(screen.getByTestId("file-companion-tab-b.md"));
-        expect(screen.getByTestId("file-companion-chat-empty")).toBeTruthy();
-        expect(screen.queryByText("这篇文档是什么？")).toBeNull();
-        expect(send).toHaveBeenCalledTimes(1);
-        await act(async () => { release(); await Promise.resolve(); });
-        await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
-        const second = send.mock.calls[1][0] as Record<string, unknown>;
-        expect(second.path).toBe("C:/notes/b.md");
-        expect(second.text).toBe("这篇文档是什么？");
-        expect(second.selection).toBeUndefined();
-        await waitFor(() => {
-            expect(screen.getByTestId("file-companion-message-user").textContent).toBe("这篇文档是什么？");
-        });
+        expect(screen.getByTestId("file-companion-message-user").textContent).toBe("这篇文档是什么？");
+        expect(screen.getByTestId("file-companion-send").textContent).toBe("处理中");
         expect(screen.queryByTestId("file-companion-chat-empty")).toBeNull();
+        await act(async () => { pending.forEach((release) => release()); await Promise.resolve(); });
         fireEvent.click(screen.getByTestId("file-companion-tab-a.md"));
         expect((screen.getByTestId("file-companion-input") as HTMLTextAreaElement).value).toBe("我的问题");
     });

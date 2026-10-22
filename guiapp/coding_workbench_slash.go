@@ -52,6 +52,11 @@ func (h *IMMessageHandler) handleCodingWorkbenchIMCommand(
 	onProgress func(string),
 	onToken func(string),
 ) *IMAgentResponse {
+	// Park the goal timer for the slash, including help text. The cooldown
+	// starts again when this call returns, and only if that same goal should
+	// still continue.
+	resumeGoalTurn := h.suspendQueuedGoalTurn(strings.TrimSpace(msg.UserID))
+	defer resumeGoalTurn()
 	userID := strings.TrimSpace(msg.UserID)
 	mem := stickyCodingWorkbenchMemory{}
 	if h != nil {

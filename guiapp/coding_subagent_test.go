@@ -2029,7 +2029,7 @@ func TestResolveCodingPlanStepFocusPrefersPlanHeader(t *testing.T) {
 创建 src/ include/
 
 You are executing plan step T2/6: 初始化C++项目结构
-Plan outline:
+Plan outline (titles only; later steps are separate remote tasks — do not execute them now):
 - T3: 实现系统信息查看程序
 `
 	title, desc := resolveCodingPlanStepFocus("ignored", "ignored desc", full)

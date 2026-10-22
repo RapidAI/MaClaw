@@ -87,6 +87,9 @@ type App struct {
 	cloudWorkspaceShareMu      sync.Mutex
 	pendingCloudWorkspaceShare CloudWorkspaceShareLaunch
 	watcher                    *fsnotify.Watcher
+	// knowledgeFolderWatch tracks user-selected folders and imports document changes.
+	knowledgeFolderWatchOnce sync.Once
+	knowledgeFolderWatch     *knowledgeFolderWatchState
 	// llmProfileHealth holds only non-sensitive, effective-profile probe
 	// results. It is deliberately separate from AppConfig: connection health is
 	// ephemeral and must never be persisted alongside credentials.
@@ -2640,6 +2643,12 @@ func (a *App) startup(ctx context.Context) {
 	a.credentialStore = oauth.NewFileCredentialStore(oauth.DefaultCredentialStorePath())
 	// Migrate data to custom data_dir if configured and not yet migrated.
 	a.migrateToCustomDataDir()
+	// Resume folder watches after the data directory is final.
+	go func() {
+		if err := a.ensureKnowledgeFolderWatch(); err != nil {
+			log.Printf("[knowledge-watch] start failed: %v", err)
+		}
+	}()
 	// Platform specific initialization
 	a.platformStartup()
 	a.startConfigWatcher()
@@ -3069,6 +3078,7 @@ func (a *App) shutdown(ctx context.Context) {
 	// server run. The person saying stop is what posts cancel.
 	abandonDesktopSurface()
 	closeKnowledgeEmbeddingRefresh()
+	a.stopKnowledgeFolderWatch()
 	a.releaseAllCloudWorkspaces()
 	if a.screenDimCancel != nil {
 		a.screenDimCancel()

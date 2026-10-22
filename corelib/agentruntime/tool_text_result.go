@@ -2,6 +2,7 @@ package agentruntime
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
@@ -92,5 +93,45 @@ func ToolTextFailure(text string) bool {
 		strings.Contains(text, "执行失败") || strings.Contains(text, "参数解析失败") ||
 		strings.Contains(text, "未找到可用的中文字体") || strings.Contains(text, "无法生成 PDF") ||
 		strings.Contains(text, "PDF 生成失败:") || strings.Contains(text, "缺少 content 参数") ||
-		(strings.Contains(text, "保存") && strings.Contains(text, "失败"))
+		textReportsSaveFailure(text)
+}
+
+// textReportsSaveFailure reports a save that failed. "已保存" is the success
+// form ("计划已保存", "已保存到密钥环") and does not count. 失败 has to follow
+// that 保存 inside the same short clause, which is how handlers phrase
+// "保存配置失败" and "保存 bad.pdf 失败". A later sentence, or the next line,
+// that only discusses 失败 is not a failed save.
+func textReportsSaveFailure(text string) bool {
+	const window = 40
+	rest := text
+	for {
+		i := strings.Index(rest, "保存")
+		if i < 0 {
+			return false
+		}
+		if i == 0 || !strings.HasSuffix(rest[:i], "已") {
+			after := rest[i+len("保存"):]
+			if strings.Contains(saveFailureClause(after, window), "失败") {
+				return true
+			}
+		}
+		rest = rest[i+len("保存"):]
+	}
+}
+
+// saveFailureClause is the text that still belongs to the save phrase.
+// Newline, a Chinese sentence end, or a Chinese comma starts another statement.
+func saveFailureClause(after string, maxRunes int) string {
+	n := 0
+	end := 0
+	for end < len(after) && n < maxRunes {
+		r, size := utf8.DecodeRuneInString(after[end:])
+		switch r {
+		case '\n', '\r', '。', '！', '？', '；', '，':
+			return after[:end]
+		}
+		end += size
+		n++
+	}
+	return after[:end]
 }

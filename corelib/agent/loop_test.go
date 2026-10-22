@@ -2613,6 +2613,119 @@ func TestRunLoopSSEIdleTimeoutUsesOuterRetry(t *testing.T) {
 	}
 }
 
+// unexpectedEOFRetryCallbacks is the coding-host shape: a dropped stream must
+// not send an immediate non-stream fallback, and it still retries on backoff.
+type unexpectedEOFRetryCallbacks struct {
+	mockCallbacks
+}
+
+func (*unexpectedEOFRetryCallbacks) ContainToolSurfaceAmbiguousDelivery() bool { return true }
+
+type unexpectedEOFTransport struct {
+	mu       sync.Mutex
+	arrivals []time.Time
+	partial  bool
+}
+
+func (s *unexpectedEOFTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	s.mu.Lock()
+	s.arrivals = append(s.arrivals, time.Now())
+	n := len(s.arrivals)
+	partial := s.partial
+	s.mu.Unlock()
+	header := make(http.Header)
+	if n == 1 {
+		header.Set("Content-Type", "text/event-stream")
+		var body io.Reader = unexpectedEOFReader{}
+		if partial {
+			body = &prefixThenErrReader{
+				rest: []byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"),
+				err:  io.ErrUnexpectedEOF,
+			}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Proto:      "HTTP/1.1",
+			Header:     header,
+			Body:       io.NopCloser(body),
+			Request:    req,
+		}, nil
+	}
+	const success = `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`
+	header.Set("Content-Type", "application/json")
+	return &http.Response{
+		StatusCode:    http.StatusOK,
+		Status:        "200 OK",
+		Proto:         "HTTP/1.1",
+		Header:        header,
+		Body:          io.NopCloser(strings.NewReader(success)),
+		ContentLength: int64(len(success)),
+		Request:       req,
+	}, nil
+}
+
+type unexpectedEOFReader struct{}
+
+func (unexpectedEOFReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+
+type prefixThenErrReader struct {
+	rest []byte
+	err  error
+}
+
+func (r *prefixThenErrReader) Read(p []byte) (int, error) {
+	if len(r.rest) == 0 {
+		return 0, r.err
+	}
+	n := copy(p, r.rest)
+	r.rest = r.rest[n:]
+	return n, nil
+}
+
+func TestRunLoopUnexpectedEOFUsesOuterRetry(t *testing.T) {
+	useLLMRetryBackoff(t, 200*time.Millisecond)
+	transport := &unexpectedEOFTransport{}
+	cb := &unexpectedEOFRetryCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "qax-codegen/Auto"},
+		maxIter:   1,
+		sysPrompt: "sys",
+	}}
+	result := RunLoop(cb, "test", nil, &http.Client{Transport: transport})
+	if result.Error != "" || result.Text != "done" {
+		t.Fatalf("result=%+v", result)
+	}
+	transport.mu.Lock()
+	got := append([]time.Time(nil), transport.arrivals...)
+	transport.mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("requests=%d, want the dropped stream plus one outer retry", len(got))
+	}
+	if gap := got[1].Sub(got[0]); gap < 150*time.Millisecond {
+		t.Fatalf("retry gap %s, want the outer backoff rather than an immediate fallback", gap)
+	}
+}
+
+func TestRunLoopPartialUnexpectedEOFDoesNotRetry(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	transport := &unexpectedEOFTransport{partial: true}
+	cb := &unexpectedEOFRetryCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "qax-codegen/Auto"},
+		maxIter:   1,
+		sysPrompt: "sys",
+	}}
+	result := RunLoop(cb, "test", nil, &http.Client{Transport: transport})
+	if result.Error == "" || !strings.Contains(result.Error, "unexpected EOF") {
+		t.Fatalf("result=%+v, want the partial stream error", result)
+	}
+	transport.mu.Lock()
+	n := len(transport.arrivals)
+	transport.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("requests=%d, want no retry after visible stream output", n)
+	}
+}
+
 func TestRunLoopOuterRetryUsesFrozenSurfaceBeforeInputBreakdownObserver(t *testing.T) {
 	useLLMRetryBackoff(t, time.Millisecond)
 	var requests atomic.Int64

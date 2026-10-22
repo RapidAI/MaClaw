@@ -8323,10 +8323,21 @@ func (c *sharedAgentLoopCallbacks) ExecuteToolStructured(name, argsJSON string) 
 		setComputerUseOwner(computerUseOwnerFromLoop(c.loopCtx, c.userID))
 	}
 	text := c.ExecuteTool(name, argsJSON)
-	return attachPendingComputerUseModelImage(classifySharedLoopToolText(text))
+	return attachPendingComputerUseModelImage(classifySharedLoopToolResult(name, text))
 }
 
 func classifySharedLoopToolText(text string) agent.ToolExecutionResult {
+	return classifySharedLoopToolResult("", text)
+}
+
+// classifySharedLoopToolResult keeps a landed goal result successful when the
+// body quotes 执行失败 or an approval sentence. System rejections and
+// unknown-tool text still use the generic classifier. The approval check stays
+// behind the goal name so a saved plan can quote that sentence.
+func classifySharedLoopToolResult(name, text string) agent.ToolExecutionResult {
+	if strings.EqualFold(strings.TrimSpace(name), "goal") {
+		return agentruntime.GoalToolExecutionResult(text)
+	}
 	if isRegisteredToolApprovalWaitText(text) {
 		return agent.ToolExecutionResult{Result: text, Outcome: agent.ToolExecutionOutcomeError}
 	}

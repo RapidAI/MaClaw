@@ -2890,6 +2890,12 @@ func (c *remoteCodingCallbacks) executeRemoteToolStructuredCanonical(name, argsJ
 // agent loop and the UI event stream. Knowledge recall is optional: its fixed
 // unavailable envelope is useful guidance, rather than an execution failure.
 func remoteCodingExecutionOutcome(name, result string) string {
+	if strings.EqualFold(strings.TrimSpace(name), "goal") {
+		if goalToolCallFailed(result) {
+			return "failed"
+		}
+		return "success"
+	}
 	if remoteCodingKnowledgeUnavailableResult(name, result) {
 		return "success"
 	}

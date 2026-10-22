@@ -14,6 +14,17 @@ import (
 type playerCall struct {
 	message string
 	place   bool
+	// showGen is the generation when this Place was received. A show can
+	// land while the call waits behind another one. The generation at run
+	// time is already the next one, and this box is still the previous layout.
+	showGen uint64
+	genSet  bool
+	// receipt is the order this Place or Hide was queued. It is assigned under
+	// the queue lock. A counter taken before that lock can invert run order,
+	// and the call that runs last would not count as the latest. The running
+	// call arms empty-hide only while this is still the latest receipt.
+	receipt    uint64
+	receiptSet bool
 }
 
 // playerCallQueue runs companion player calls one at a time, in receive order.
@@ -63,8 +74,22 @@ func (q *playerCallQueue) bind(run func(string, bool)) {
 }
 
 func (q *playerCallQueue) Add(message string, place bool) {
+	call := playerCall{message: message, place: place}
+	if place {
+		// Before the call can wait on the queue lock. NoteHostVisible runs
+		// on the window thread and can land while this Place is still queued.
+		// Sampling after the lock would stamp a show that happened during
+		// that wait onto the previous layout.
+		call.showGen = maclawplayer.ShowGeneration()
+		call.genSet = true
+	}
 	q.mu.Lock()
-	q.q = append(q.q, playerCall{message: message, place: place})
+	// Same lock as append, so the last call in the queue holds the latest
+	// receipt. Taken outside the lock, two Adds can append in the opposite
+	// order and the one that runs last never arms.
+	call.receipt = maclawplayer.NextPlaceReceipt()
+	call.receiptSet = true
+	q.q = append(q.q, call)
 	start := !q.running
 	if start {
 		q.running = true
@@ -90,7 +115,19 @@ func (q *playerCallQueue) drain() {
 		skip := call.place && len(q.q) > 0
 		run := q.run
 		q.mu.Unlock()
+		if call.genSet {
+			maclawplayer.PinPlaceShowGeneration(call.showGen)
+		}
+		if call.receiptSet {
+			maclawplayer.PinPlaceReceipt(call.receipt)
+		}
 		q.safeRun(run, call.message, skip)
+		if call.genSet {
+			maclawplayer.ClearPlaceShowGeneration()
+		}
+		if call.receiptSet {
+			maclawplayer.ClearPlaceReceipt()
+		}
 	}
 }
 

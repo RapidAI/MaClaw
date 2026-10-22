@@ -61,8 +61,8 @@ func TestStandaloneWebSearchStrategyDefaultsToMainland(t *testing.T) {
 	if strategy.Preset != corelib.WebSearchPresetMainland {
 		t.Fatalf("preset = %q, want %q", strategy.Preset, corelib.WebSearchPresetMainland)
 	}
-	if len(strategy.Engines) == 0 || strategy.Engines[0].ID != "bing_cn" {
-		t.Fatalf("first engine = %#v, want bing_cn", strategy.Engines)
+	if len(strategy.Engines) < 2 || strategy.Engines[0].ID != "yuanbao" || strategy.Engines[1].ID != "bing_cn" {
+		t.Fatalf("first engines = %#v, want yuanbao then bing_cn", strategy.Engines)
 	}
 }
 

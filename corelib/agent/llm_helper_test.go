@@ -423,6 +423,22 @@ func TestShouldRetrySimpleLLMError_ForbiddenBackoff(t *testing.T) {
 	}
 }
 
+func TestShouldRetrySimpleLLMError_UnexpectedEOF(t *testing.T) {
+	dropped := fmt.Errorf("[https://codegen.qianxin-inc.cn/api/v1/chat/completions] SSE stream read: %w", io.ErrUnexpectedEOF)
+	if !shouldRetrySimpleLLMError(dropped) {
+		t.Fatal("a dropped SSE frame should wait on the outer backoff")
+	}
+	if shouldRetrySimpleLLMError(errors.New("SSE stream read: unexpected EOF")) {
+		t.Fatal("the same words without io.ErrUnexpectedEOF are not a dropped stream")
+	}
+	if shouldRetrySimpleLLMError(io.EOF) {
+		t.Fatal("a clean EOF is not a dropped stream")
+	}
+	if shouldRetrySimpleLLMError(errors.New("unexpected end of JSON input")) {
+		t.Fatal("a JSON parse error stays on the immediate fallback path")
+	}
+}
+
 func TestShouldRetrySimpleLLMError_OAuthTokenValidation(t *testing.T) {
 	oauthErr := &llm.HTTPStatusError{
 		StatusCode: http.StatusForbidden,

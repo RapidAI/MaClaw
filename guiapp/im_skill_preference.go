@@ -110,6 +110,9 @@ func matchPreferredLocalSkillMode(exec *SkillExecutor, userText, agentDomain str
 		if st != skillEntryStatusActive && st != skillEntryStatusUnknown {
 			continue
 		}
+		if !nlSkillIsAgentGuided(sk) && learnedSkillMissingParameterContract(sk.Source, sk.Steps) {
+			continue
+		}
 		score, identity, identityScore := preferredLocalSkillScore(sk, lower)
 		if score <= 0 {
 			continue
@@ -148,7 +151,11 @@ func preferredLocalSkillScore(sk NLSkillDefinition, msgLower string) (score int,
 	if skillDocNameAliasOccurs(sk.Name, msgLower) {
 		identityScore += 20
 	}
-	if countTriggerMatches(sk.Triggers, msgLower) > 0 {
+	triggers := sk.Triggers
+	if learnedSkillSource(sk.Source) {
+		triggers = learnedSkillIdentityTriggers(sk.Description, sk.Triggers)
+	}
+	if countTriggerMatches(triggers, msgLower) > 0 {
 		identityScore += 10
 	}
 	score = identityScore

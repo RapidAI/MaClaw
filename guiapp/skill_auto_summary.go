@@ -121,27 +121,37 @@ func DraftSkill(session *TrajectorySession) (*skill.SkillYAMLFile, error) {
 	// Merge consecutive identical tool calls.
 	mergedSteps := mergeConsecutiveSteps(rawSteps)
 
-	// The first user message states what the run was for, but it is a one-off
-	// request, not a capability. Store a redacted gist instead: the raw text is
-	// rendered into other agents' prompts as a capability line, where an
-	// unredacted request reads as a standing instruction for the current turn.
-	description := redactLearnedSkillIntent(extractUserDescription(session))
+	// The recorded user message is the prompt the host sent. The skill's
+	// identity is the task inside that prompt. Store a redacted gist: the raw
+	// text is rendered into other agents' prompts as a capability line.
+	description := redactLearnedSkillIntent(learnedSkillTaskFromHostPrompt(extractUserDescription(session)))
 	if description == "" {
 		// SessionID is the loop ID ("chat"), which would name and describe the
-		// skill after the transport rather than the work.
+		// skill after the transport rather than the work. A host checklist
+		// with no task left is the same absence.
 		return nil, fmt.Errorf("no user request found to describe the skill")
+	}
+
+	// Session operands stay out of the procedure. The runner fills
+	// {{placeholders}} from required_args on a later run; a literal path,
+	// URL, or email would replay the session that produced the draft.
+	boundSteps, params, requiredArgs, err := bindLearnedSkillOperands(mergedSteps)
+	if err != nil {
+		return nil, err
 	}
 
 	name := tool.GenerateSkillName(description)
 	triggers := tool.ExtractTriggerKeywords(description)
 
 	return &skill.SkillYAMLFile{
-		Name:        name,
-		Description: description,
-		Triggers:    triggers,
-		Steps:       mergedSteps,
-		Status:      "active",
-		Source:      "learned",
+		Name:         name,
+		Description:  description,
+		Triggers:     triggers,
+		Steps:        boundSteps,
+		Params:       params,
+		RequiredArgs: requiredArgs,
+		Status:       "active",
+		Source:       "learned",
 		// Keep the skill in the pool it was learned from. Coding tasks share
 		// what other coding tasks learned; a chat never contributes a
 		// capability to a coding turn.
@@ -177,17 +187,37 @@ func redactLearnedSkillIntent(intent string) string {
 	if s == "" {
 		return ""
 	}
-	// URLs first: their scheme separator also matches the path patterns.
-	s = learnedSkillURLRe.ReplaceAllString(s, "<链接>")
-	s = learnedSkillEmailRe.ReplaceAllString(s, "<邮箱>")
-	s = learnedSkillWinPathRe.ReplaceAllString(s, "<路径>")
-	s = learnedSkillUnixPathRe.ReplaceAllString(s, "<路径>")
+	// The gist is the skill's identity and is rendered into other agents'
+	// prompts. A spaced path is one operand under the same continuation a
+	// command uses, so the tail cannot become a trigger. Quote-interior
+	// expansion stays on commands: the words after a path are the task.
+	// The document-title rule then removes a quoted title. Spans are taken
+	// once; replacing from the end keeps the earlier indexes valid.
+	spans := learnedSkillProseOperandSpans(s)
+	for i := len(spans) - 1; i >= 0; i-- {
+		span := spans[i]
+		if span.start < 0 || span.end > len(s) || span.start >= span.end {
+			continue
+		}
+		s = s[:span.start] + learnedSkillIntentRedaction(span.class) + s[span.end:]
+	}
 	s = learnedSkillQuotedRe.ReplaceAllString(s, "<文档>")
 	s = strings.TrimSpace(learnedSkillWhitespaceRe.ReplaceAllString(s, " "))
 	if runes := []rune(s); len(runes) > learnedSkillIntentMaxRunes {
 		s = strings.TrimSpace(string(runes[:learnedSkillIntentMaxRunes])) + "…"
 	}
 	return s
+}
+
+func learnedSkillIntentRedaction(class string) string {
+	switch class {
+	case "url":
+		return "<链接>"
+	case "email":
+		return "<邮箱>"
+	default:
+		return "<路径>"
+	}
 }
 
 // buildToolResultMap builds a map from tool_call_id to the content string
@@ -383,11 +413,11 @@ func trajectoryUserContentText(content interface{}) string {
 	}
 }
 
-// filterAutoSummaryOrchestrationSteps removes control-plane actions that start,
-// install, or route skills rather than perform the user's task.  A learned
-// skill is an executable task recipe, not a recording of how the agent chose
-// that recipe. Keep this list deliberately small and explicit; normal task
-// actions continue through the runner compatibility gate below.
+// filterAutoSummaryOrchestrationSteps removes steps that are not the task's
+// procedure. Control-plane calls choose or install a skill. todo_write,
+// ssh_read_file, and ssh_list_dir only observe the session that recorded them.
+// The learned skill is the effect that remains. Keep the list explicit;
+// every other action continues through the runner compatibility gate below.
 func filterAutoSummaryOrchestrationSteps(steps []skill.SkillYAMLStep) []skill.SkillYAMLStep {
 	if len(steps) == 0 {
 		return nil
@@ -404,7 +434,8 @@ func filterAutoSummaryOrchestrationSteps(steps []skill.SkillYAMLStep) []skill.Sk
 
 func isAutoSummaryOrchestrationAction(action string) bool {
 	switch skill.NormalizeStepActionName(action) {
-	case "manage_skill", "run_skill", "search_skill_hub", "install_skill_hub", "search_and_install_skill":
+	case "manage_skill", "run_skill", "search_skill_hub", "install_skill_hub", "search_and_install_skill",
+		"todo_write", "ssh_read_file", "ssh_list_dir":
 		return true
 	default:
 		return false
@@ -1020,6 +1051,10 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 		log.Printf("[skill-auto-summary] session=%s no runner-executable steps after adapting host tool calls, skipping", sid)
 		return
 	}
+	// Dropping a host-only step must not leave a required argument that no
+	// remaining step consumes. The runner would then demand a value it cannot
+	// place.
+	pruneLearnedSkillUnusedContract(draft)
 
 	// Validate before similarity matching or disk mutation. Previously a draft
 	// could reach VersionedUpdate before its structure and security policy were

@@ -3,6 +3,8 @@ package agentruntime
 import (
 	"slices"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // SkillDocMatchScore scores how strongly a skill (by name and triggers) is
@@ -155,11 +157,12 @@ func SkillDocMatchLooksLikePathOperand(msg []rune, start, end int) bool {
 // CountTriggerMatches counts how many of the skill's triggers match the user
 // message as bounded phrases (hyphen/space/dash variants allowed). Returns 0
 // if none match. Substring matching would treat trigger "git" as a hit inside
-// "github".
+// "github". Generic fragments are not phrases either: a learned trigger 将 or
+// 工作区 matches ordinary sentences and would force that skill onto the turn.
 func CountTriggerMatches(triggers []string, msgLower string) int {
 	count := 0
 	for _, t := range triggers {
-		if t == "" {
+		if !tool.TriggerIsSpecific(t) {
 			continue
 		}
 		if SkillDocPhraseOccurs(msgLower, t) {

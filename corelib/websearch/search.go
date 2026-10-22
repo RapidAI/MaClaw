@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -25,6 +26,7 @@ const (
 	defaultTinyFishSearchURL    = "https://api.search.tinyfish.ai"
 	defaultTinyFishFetchURL     = "https://api.fetch.tinyfish.ai"
 	defaultTavilySearchURL      = "https://api.tavily.com/search"
+	defaultYuanbaoSearchURL     = "https://api.wsa.cloud.tencent.com/SearchPro"
 	defaultMaclawHubSearchURL   = "https://hub.maclaw.top/searchproxy/search"
 	defaultMaclawHubDownloadURL = "https://hub.maclaw.top/searchproxy/download"
 )
@@ -112,13 +114,17 @@ func SearchWithProviderCtx(parent context.Context, query string, maxResults int,
 // search. It is intended for configuration validation where provider-specific
 // failures must be surfaced instead of being hidden by the runtime fallback chain.
 func TestProvider(parent context.Context, provider corelib.WebSearchProvider) error {
-	query, maxResults, ctx, cancel, err := prepareSearch(parent, "MaClaw web search configuration test", 3)
+	provider = normalizeProvider(provider)
+	probe := "MaClaw web search configuration test"
+	if provider.Type == "yuanbao" {
+		probe = "北京天气"
+	}
+	query, maxResults, ctx, cancel, err := prepareSearch(parent, probe, 3)
 	if err != nil {
 		return err
 	}
 	defer cancel()
 
-	provider = normalizeProvider(provider)
 	results, err := runProviderSearch(ctx, query, maxResults, provider, true)
 	if err != nil {
 		return err
@@ -174,6 +180,14 @@ func runProviderSearchWithTimeout(parent context.Context, query string, maxResul
 			return searchDirectFallbackChain(parent, query, maxResults, "")
 		}
 		return searchTavily(providerCtx, provider, query, maxResults)
+	case "yuanbao":
+		if provider.Key == "" {
+			if strict {
+				return nil, fmt.Errorf("Yuanbao API key is not configured")
+			}
+			return searchDirectFallbackChain(parent, query, maxResults, "")
+		}
+		return searchYuanbao(providerCtx, provider, query, maxResults)
 	case WebSearchEngineMaclawHub:
 		if provider.Key == "" {
 			if strict {
@@ -246,7 +260,7 @@ func searchDuckDuckGo(ctx context.Context, provider corelib.WebSearchProvider, q
 
 func providerUsedDirectChain(provider corelib.WebSearchProvider) bool {
 	switch provider.Type {
-	case "brave", "serper", "tinyfish", "tavily":
+	case "brave", "serper", "tinyfish", "tavily", "yuanbao":
 		return strings.TrimSpace(provider.Key) == ""
 	case "duckduckgo":
 		return false
@@ -476,6 +490,8 @@ func providerFailureDomain(provider corelib.WebSearchProvider) string {
 		return "tinyfish"
 	case "tavily":
 		return "tavily"
+	case "yuanbao":
+		return "yuanbao"
 	case WebSearchEngineMaclawHub:
 		return WebSearchEngineMaclawHub
 	default:
@@ -1012,6 +1028,164 @@ func searchTavily(ctx context.Context, provider corelib.WebSearchProvider, query
 		if len(results) >= maxResults {
 			break
 		}
+	}
+	return results, nil
+}
+
+const yuanbaoQueryMaxBytes = 1500
+
+type yuanbaoSearchRequest struct {
+	Query string `json:"Query"`
+	Site  string `json:"Site,omitempty"`
+}
+
+type yuanbaoEnvelope struct {
+	Response struct {
+		Pages []string `json:"Pages"`
+		Error *struct {
+			Code    string `json:"Code"`
+			Message string `json:"Message"`
+		} `json:"Error"`
+	} `json:"Response"`
+}
+
+type yuanbaoPage struct {
+	Title   string `json:"title"`
+	URL     string `json:"url"`
+	Passage string `json:"passage"`
+	Content string `json:"content"`
+	Site    string `json:"site"`
+}
+
+func truncateUTF8Bytes(s string, maxBytes int) string {
+	if maxBytes < 0 || len(s) <= maxBytes {
+		return s
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
+// yuanbaoSiteFilter returns the host captured by siteHintDomainPattern.
+// searchQuerySiteHint returns a label such as "arxiv", which is not a Yuanbao
+// Site value. A match that stops inside a longer host (people.com.cn) is omitted.
+func yuanbaoSiteFilter(query string) string {
+	loc := siteHintDomainPattern.FindStringSubmatchIndex(query)
+	if loc == nil || len(loc) < 4 {
+		return ""
+	}
+	host := strings.ToLower(query[loc[2]:loc[3]])
+	end := loc[1]
+	if end < len(query) && query[end] == '.' {
+		return ""
+	}
+	if host == "" || strings.ContainsAny(host, " /|") {
+		return ""
+	}
+	return host
+}
+
+func yuanbaoAuthError(code string) bool {
+	folded := strings.ToLower(strings.TrimSpace(code))
+	return folded == "unauthorizedoperation" || folded == "authfailure" || strings.HasPrefix(folded, "authfailure.") || strings.Contains(folded, "unauthorized")
+}
+
+// yuanbaoAuthorization sends one Bearer scheme. A key pasted from a header
+// already starts with "Bearer "; storing that text is left unchanged.
+func yuanbaoAuthorization(key string) string {
+	key = strings.TrimSpace(key)
+	const prefix = "bearer "
+	if len(key) >= len(prefix) && strings.EqualFold(key[:len(prefix)], prefix) {
+		key = strings.TrimSpace(key[len(prefix):])
+	}
+	return "Bearer " + key
+}
+
+func searchYuanbao(ctx context.Context, provider corelib.WebSearchProvider, query string, maxResults int) ([]SearchResult, error) {
+	baseURL := provider.BaseURL
+	if baseURL == "" {
+		baseURL = defaultYuanbaoSearchURL
+	}
+	sentQuery := truncateUTF8Bytes(strings.TrimSpace(query), yuanbaoQueryMaxBytes)
+	body := yuanbaoSearchRequest{Query: sentQuery}
+	if site := yuanbaoSiteFilter(query); site != "" {
+		body.Site = site
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", pickUserAgent())
+	req.Header.Set("Authorization", yuanbaoAuthorization(provider.Key))
+
+	resp, err := httpClient().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 2048))
+		return nil, fmt.Errorf("Yuanbao search returned HTTP %d", resp.StatusCode)
+	}
+
+	var envelope yuanbaoEnvelope
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 2*1024*1024)).Decode(&envelope); err != nil {
+		return nil, fmt.Errorf("Yuanbao search: failed to parse response")
+	}
+	if envelope.Response.Error != nil {
+		code := strings.TrimSpace(envelope.Response.Error.Code)
+		switch {
+		case yuanbaoAuthError(code):
+			return nil, fmt.Errorf("Yuanbao search rejected the API key")
+		case code == "RequestLimitExceeded":
+			return nil, fmt.Errorf("Yuanbao search was rate limited")
+		default:
+			return nil, fmt.Errorf("Yuanbao search failed")
+		}
+	}
+
+	results := make([]SearchResult, 0, len(envelope.Response.Pages))
+	for _, raw := range envelope.Response.Pages {
+		var page yuanbaoPage
+		if err := json.Unmarshal([]byte(raw), &page); err != nil {
+			continue
+		}
+		snippet := strings.TrimSpace(page.Content)
+		if snippet == "" {
+			snippet = strings.TrimSpace(page.Passage)
+		}
+		snippet = capSearchSnippet(snippet)
+		title := strings.TrimSpace(page.Title)
+		if title == "" {
+			title = strings.TrimSpace(page.Site)
+		}
+		pageURL := strings.TrimSpace(page.URL)
+		if title == "" {
+			title = pageURL
+		}
+		if pageURL == "" && snippet == "" {
+			continue
+		}
+		// A passage-only page is a documented result. Numbered tool output and
+		// the forecast compactor both drop a row whose title is empty.
+		if title == "" {
+			title = snippet
+		}
+		results = append(results, SearchResult{Title: title, URL: pageURL, Snippet: snippet})
+		if maxResults > 0 && len(results) >= maxResults {
+			break
+		}
+	}
+	if len(results) == 0 {
+		return nil, nil
 	}
 	return results, nil
 }

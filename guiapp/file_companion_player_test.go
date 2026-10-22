@@ -119,6 +119,157 @@ func TestFileCompanionPlayerPlaceLeavesOtherPages(t *testing.T) {
 	}
 }
 
+func TestFileCompanionPlayerPlaceKeepsThePageWhenTheWindowIsNotShown(t *testing.T) {
+	host := &fakePlayerHost{}
+	maclawplayer.Set(host)
+	maclawplayer.SetHostShown(func() bool { return false })
+	t.Cleanup(func() {
+		maclawplayer.SetHostShown(nil)
+		maclawplayer.Set(nil)
+	})
+	app := &App{}
+	if err := app.FileCompanionPlayerPlace("https://www.youtube.com/watch?v=abc123", 0, 0, 0, 40); err != nil {
+		t.Fatal(err)
+	}
+	if len(host.places) != 0 || host.hides != 0 {
+		t.Fatalf("a hidden window unloaded the player: places=%d hides=%d", len(host.places), host.hides)
+	}
+	if err := app.FileCompanionPlayerPlace("https://www.youtube.com/watch?v=abc123", 8, 16, 640, 360); err != nil {
+		t.Fatal(err)
+	}
+	if len(host.places) != 1 || host.hides != 0 {
+		t.Fatalf("a real slot was dropped: places=%d hides=%d", len(host.places), host.hides)
+	}
+	maclawplayer.SetHostShown(func() bool { return true })
+	if err := app.FileCompanionPlayerPlace("https://www.youtube.com/watch?v=abc123", 0, 0, 0, 40); err != nil {
+		t.Fatal(err)
+	}
+	if host.hides != 1 {
+		t.Fatalf("a shown window left the empty slot up: hides=%d", host.hides)
+	}
+}
+
+func TestFileCompanionPlayerPlaceKeepsThePageAcrossShow(t *testing.T) {
+	host := &fakePlayerHost{}
+	maclawplayer.Set(host)
+	maclawplayer.SetHostShown(func() bool { return true })
+	t.Cleanup(func() {
+		maclawplayer.ResetShowPlacement()
+		maclawplayer.SetHostShown(nil)
+		maclawplayer.Set(nil)
+	})
+	app := &App{}
+	if err := app.FileCompanionPlayerPlace("https://www.youtube.com/watch?v=abc123", 8, 16, 640, 360); err != nil {
+		t.Fatal(err)
+	}
+	// The window procedure records the show before the page measures. The
+	// box is still the minimized size. A place that started before this
+	// show must not arm the following empty hide.
+	started := maclawplayer.ShowGeneration()
+	maclawplayer.NoteHostVisible()
+	maclawplayer.NoteSlotPlaced(started)
+	if err := app.FileCompanionPlayerPlace("https://www.youtube.com/watch?v=abc123", 0, 0, 0, 40); err != nil {
+		t.Fatal(err)
+	}
+	if host.hides != 0 || len(host.places) != 1 {
+		t.Fatalf("show unloaded the minimized slot: places=%d hides=%d", len(host.places), host.hides)
+	}
+	if err := app.FileCompanionPlayerPlace("https://www.youtube.com/watch?v=abc123", 8, 16, 640, 360); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.FileCompanionPlayerPlace("https://www.youtube.com/watch?v=abc123", 0, 0, 0, 40); err != nil {
+		t.Fatal(err)
+	}
+	if host.hides != 1 {
+		t.Fatalf("a slot that left after it was placed stayed up: hides=%d", host.hides)
+	}
+}
+
+func TestFileCompanionPlayerPlaceKeepsThePageWhenTheCallWaited(t *testing.T) {
+	host := &fakePlayerHost{}
+	maclawplayer.Set(host)
+	maclawplayer.SetHostShown(func() bool { return true })
+	t.Cleanup(func() {
+		maclawplayer.ResetShowPlacement()
+		maclawplayer.SetHostShown(nil)
+		maclawplayer.Set(nil)
+	})
+	maclawplayer.ResetShowPlacement()
+	app := &App{}
+	// Received while the previous layout was still on screen, then left
+	// waiting until the window procedure had already recorded the show.
+	received := maclawplayer.ShowGeneration()
+	maclawplayer.NoteHostVisible()
+	maclawplayer.PinPlaceShowGeneration(received)
+	if err := app.FileCompanionPlayerPlace("https://www.youtube.com/watch?v=abc123", 8, 16, 640, 360); err != nil {
+		t.Fatal(err)
+	}
+	maclawplayer.ClearPlaceShowGeneration()
+	if err := app.FileCompanionPlayerPlace("https://www.youtube.com/watch?v=abc123", 0, 0, 0, 40); err != nil {
+		t.Fatal(err)
+	}
+	if host.hides != 0 || len(host.places) != 1 {
+		t.Fatalf("a place received before the show unloaded the minimized slot: places=%d hides=%d", len(host.places), host.hides)
+	}
+	maclawplayer.PinPlaceShowGeneration(maclawplayer.ShowGeneration())
+	if err := app.FileCompanionPlayerPlace("https://www.youtube.com/watch?v=abc123", 8, 16, 640, 360); err != nil {
+		t.Fatal(err)
+	}
+	maclawplayer.ClearPlaceShowGeneration()
+	if err := app.FileCompanionPlayerPlace("https://www.youtube.com/watch?v=abc123", 0, 0, 0, 40); err != nil {
+		t.Fatal(err)
+	}
+	if host.hides != 1 {
+		t.Fatalf("a slot that left after the restored place stayed up: hides=%d", host.hides)
+	}
+}
+
+func TestFileCompanionPlayerPlaceDoesNotArmWhileANewerCallIsWaiting(t *testing.T) {
+	host := &fakePlayerHost{}
+	maclawplayer.Set(host)
+	maclawplayer.SetHostShown(func() bool { return true })
+	t.Cleanup(func() {
+		maclawplayer.ResetShowPlacement()
+		maclawplayer.ClearPlaceReceipt()
+		maclawplayer.SetHostShown(nil)
+		maclawplayer.Set(nil)
+	})
+	maclawplayer.ResetShowPlacement()
+	app := &App{}
+	maclawplayer.NoteHostVisible()
+	maclawplayer.PinPlaceShowGeneration(maclawplayer.ShowGeneration())
+	// This place is already on the UI thread. The minimized box was received
+	// before the host returned, so it must not find empty-hide armed.
+	mine := maclawplayer.NextPlaceReceipt()
+	maclawplayer.PinPlaceReceipt(mine)
+	_ = maclawplayer.NextPlaceReceipt()
+	if err := app.FileCompanionPlayerPlace("https://www.youtube.com/watch?v=abc123", 8, 16, 640, 360); err != nil {
+		t.Fatal(err)
+	}
+	maclawplayer.ClearPlaceShowGeneration()
+	maclawplayer.ClearPlaceReceipt()
+	if err := app.FileCompanionPlayerPlace("https://www.youtube.com/watch?v=abc123", 0, 0, 0, 40); err != nil {
+		t.Fatal(err)
+	}
+	if host.hides != 0 || len(host.places) != 1 {
+		t.Fatalf("a place that waited unloaded the minimized slot: places=%d hides=%d", len(host.places), host.hides)
+	}
+	maclawplayer.PinPlaceShowGeneration(maclawplayer.ShowGeneration())
+	latest := maclawplayer.NextPlaceReceipt()
+	maclawplayer.PinPlaceReceipt(latest)
+	if err := app.FileCompanionPlayerPlace("https://www.youtube.com/watch?v=abc123", 8, 16, 640, 360); err != nil {
+		t.Fatal(err)
+	}
+	maclawplayer.ClearPlaceShowGeneration()
+	maclawplayer.ClearPlaceReceipt()
+	if err := app.FileCompanionPlayerPlace("https://www.youtube.com/watch?v=abc123", 0, 0, 0, 40); err != nil {
+		t.Fatal(err)
+	}
+	if host.hides != 1 {
+		t.Fatalf("a slot that left after the latest place stayed up: hides=%d", host.hides)
+	}
+}
+
 func TestFileCompanionPlayerPlaceHidesAnEmptySlot(t *testing.T) {
 	host := &fakePlayerHost{}
 	maclawplayer.Set(host)

@@ -372,6 +372,18 @@
     font-size: .8125rem;
     cursor: pointer;
 }
+.web-search-config__key-link {
+    display: inline-block;
+    max-width: 100%;
+    margin-top: 2px;
+    color: var(--theme-primary);
+    font-size: .8125rem;
+    line-height: 1.4;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+.web-search-config__key-link:hover { color: var(--theme-primary-strong, var(--theme-primary)); }
+.web-search-config__key-link:focus-visible { outline: 2px solid var(--theme-primary); outline-offset: 2px; }
 .web-search-config__key-field button:hover { background: var(--theme-surface-muted); color: var(--theme-text-primary); }
 .web-search-config__key-field button:focus-visible { outline: 2px solid var(--theme-primary); outline-offset: 2px; }
 

@@ -4,6 +4,7 @@ package windows
 
 import (
 	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/wailsapp/go-webview2/pkg/edge"
@@ -45,6 +46,115 @@ type Window struct {
 	// 此标志用于防止无边框窗口在最小化/恢复过程中的不必要重绘
 	// Reference: https://github.com/wailsapp/wails/issues/3951
 	isMinimizing bool
+
+	// contentObscured is set from the window procedure before DefWindowProc
+	// hides or minimizes. The player can drop its fullscreen element inside
+	// that call, while Win32 still reports the window visible and the page
+	// has not yet flipped visibilityState. Place reads it from a binding
+	// goroutine, so it is atomic.
+	contentObscured atomic.Bool
+	// visibilityGen advances every time contentObscured changes. The page
+	// notice is posted after this procedure returns, and a notice that is no
+	// longer the latest generation is dropped.
+	visibilityGen atomic.Uint64
+	// onContentVisibility reports that change. shown is the new state.
+	// The callback runs on the window procedure thread and must not wait for
+	// the UI thread. A nil callback leaves the flag as the only record.
+	onContentVisibility func(shown bool, gen uint64)
+	// releaseFullscreenOnShow asks WndProc to run afterShowFullscreen once
+	// DefWindowProc for this show message has returned. The fullscreen exit
+	// that belongs to a hide may run inside that call, or after it returns.
+	releaseFullscreenOnShow bool
+	// afterShowFullscreen runs after that DefWindowProc. It drops a hide-owned
+	// fullscreen exit only when a live ContainsFullScreenElement read says
+	// the element is still up, so a later reader exit still stops the note.
+	afterShowFullscreen func()
+}
+
+// WM_SYSCOMMAND stores internal bits in the low nibble. 0xFFF0 is the command.
+const (
+	scMinimize = 0xF020
+	scRestore  = 0xF120
+)
+
+type obscureUpdate int
+
+const (
+	obscureKeep obscureUpdate = iota
+	obscureNow
+	obscureClear
+	obscureClearIfShown
+)
+
+// contentObscuredUpdate classifies a window message that is about to be
+// dispatched. Hide and minimize are recorded before DefWindowProc so a
+// fullscreen exit nested inside that call is still the window going away.
+func contentObscuredUpdate(msg uint32, wparam uintptr) obscureUpdate {
+	switch msg {
+	case w32.WM_SHOWWINDOW:
+		if wparam == 0 {
+			return obscureNow
+		}
+		return obscureClear
+	case w32.WM_SYSCOMMAND:
+		switch wparam & 0xFFF0 {
+		case scMinimize:
+			return obscureNow
+		case scRestore:
+			return obscureClear
+		}
+	case w32.WM_SIZE:
+		switch wparam {
+		case uintptr(w32.SIZE_MINIMIZED):
+			return obscureNow
+		case uintptr(w32.SIZE_RESTORED), uintptr(w32.SIZE_MAXIMIZED):
+			return obscureClearIfShown
+		}
+	}
+	return obscureKeep
+}
+
+func (w *Window) noteContentObscured(msg uint32, wparam uintptr) {
+	if w == nil {
+		return
+	}
+	prev := w.contentObscured.Load()
+	switch contentObscuredUpdate(msg, wparam) {
+	case obscureNow:
+		w.contentObscured.Store(true)
+	case obscureClear:
+		w.contentObscured.Store(false)
+	case obscureClearIfShown:
+		// A restored or maximized size also arrives for an ordinary resize.
+		// Clear only once Win32 already shows the window, so a hide that has
+		// not cleared WS_VISIBLE yet keeps the flag.
+		if w.Handle() != 0 && !w.IsMinimised() && w.IsVisible() {
+			w.contentObscured.Store(false)
+		}
+	}
+	next := w.contentObscured.Load()
+	if prev == next || w.onContentVisibility == nil {
+		return
+	}
+	// The page hears the same transition Place already reads. Posting the
+	// script from this call would run it before DefWindowProc returns.
+	w.onContentVisibility(!next, w.visibilityGen.Add(1))
+}
+
+// contentShown is false when this window is hiding, minimized, or already not
+// visible. A nil window or a window with no handle stays "shown": there is no
+// Win32 hide to attribute a fullscreen exit to.
+func (w *Window) contentShown() bool {
+	if w == nil {
+		return true
+	}
+	if w.contentObscured.Load() {
+		return false
+	}
+	if w.Handle() == 0 {
+		return true
+	}
+	return !w.IsMinimised() && w.IsVisible()
 }
 
 func NewWindow(parent winc.Controller, appoptions *options.App, versionInfo *operatingsystem.WindowsVersionInfo, chromium *edge.Chromium) *Window {
@@ -201,6 +311,18 @@ func (w *Window) IsVisible() bool {
 }
 
 func (w *Window) WndProc(msg uint32, wparam, lparam uintptr) uintptr {
+	// Before DefWindowProc. ShowWindow and SC_MINIMIZE nest the player's
+	// fullscreen exit inside this call, ahead of the page visibility event.
+	w.noteContentObscured(msg, wparam)
+	// Captured after the show callback set it. A nested procedure must not
+	// take this message's check, and an early return still runs it.
+	releaseFullscreen := w.releaseFullscreenOnShow
+	w.releaseFullscreenOnShow = false
+	defer func() {
+		if releaseFullscreen && w.afterShowFullscreen != nil {
+			w.afterShowFullscreen()
+		}
+	}()
 
 	switch msg {
 	case win32.WM_POWERBROADCAST:

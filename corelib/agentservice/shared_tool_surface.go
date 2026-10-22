@@ -189,7 +189,7 @@ func (c *coreAgentCallbacks) executeSharedHostTool(name string, args map[string]
 		return toolTextResult(c.configureMailbox(args)), true
 	case "goal":
 		out := agent.ToolGoal(c.goals, args)
-		return toolTextResult(out), true
+		return agentruntime.GoalToolExecutionResult(out), true
 	case "delegate_task":
 		return c.executeDelegateTask(args), true
 	case "asr":

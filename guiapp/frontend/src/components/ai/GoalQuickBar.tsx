@@ -1,8 +1,9 @@
 /**
  * Goal controls on the composer, for both chat sessions and the coding agent.
  * The 目标清单 card in the transcript is unchanged. This bar stays until the
- * goal succeeds or the user confirms 中止. Continue re-runs the same goal
- * after any other stop.
+ * goal succeeds or the user confirms delete. Continue re-runs the same goal
+ * after any other stop. Pause and delete also stop the live turn. Edit writes
+ * the new command into that turn when one is still running.
  */
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { EventsOn } from "../../../wailsjs/runtime";
@@ -34,15 +35,36 @@ function goalApp(): GoalApp | null {
     return app ?? null;
 }
 
-async function callGoal(name: keyof GoalApp, sessionKey: string, extra?: string): Promise<GoalBarSnapshot | null> {
+type GoalCallResult = { snap: GoalBarSnapshot | null; failed: boolean };
+
+// applied: the snapshot matches the click. rejected: the call failed or the
+// snapshot does not. stale: a newer click, or a goal that already finished,
+// owns the bar. A stale save must not reopen the editor or start another action.
+type GoalRunResult = "applied" | "rejected" | "stale";
+
+async function callGoal(name: keyof GoalApp, sessionKey: string, extra?: string): Promise<GoalCallResult> {
     const fn = goalApp()?.[name];
-    if (typeof fn !== "function") return null;
+    if (typeof fn !== "function") return { snap: null, failed: true };
     try {
         const snap = extra === undefined ? await fn(sessionKey) : await fn(sessionKey, extra);
-        return snap && typeof snap === "object" ? snap : null;
+        if (!snap || typeof snap !== "object") return { snap: null, failed: true };
+        return { snap, failed: false };
     } catch {
-        return null;
+        return { snap: null, failed: true };
     }
+}
+
+function goalActionApplied(name: keyof GoalApp, snap: GoalBarSnapshot, extra?: string): boolean {
+    const status = String(snap.status || "").toLowerCase();
+    if (name === "CancelSessionGoal") return snap.visible === false;
+    if (name === "PauseSessionGoal") return status !== "" && status !== "active";
+    if (name === "ContinueSessionGoal") {
+        if (status === "active") return true;
+        const summary = String(snap.summary || "");
+        return status === "paused" && (summary.toLowerCase().includes("ssh") || summary.includes("远程"));
+    }
+    if (name === "UpdateSessionGoal") return String(snap.objective || "").trim() === String(extra || "").trim();
+    return true;
 }
 
 function sameGoalSession(eventUser: unknown, sessionKey: string): boolean {
@@ -61,12 +83,17 @@ export function GoalQuickBar({ lang, theme: t, sessionKey }: Props) {
     const [confirming, setConfirming] = useState(false);
     const [editing, setEditing] = useState(false);
     const [draft, setDraft] = useState("");
+    const [notice, setNotice] = useState("");
     const pollTicket = useRef(0);
     const actionTicket = useRef(0);
     const actionInflight = useRef(false);
     const hideEpoch = useRef(0);
     const sessionKeyRef = useRef(sessionKey);
+    const editingRef = useRef(false);
+    const draftRef = useRef("");
+    const commitFlight = useRef<Promise<boolean> | null>(null);
     sessionKeyRef.current = sessionKey;
+    draftRef.current = draft;
 
     const refresh = useCallback(async () => {
         const key = sessionKeyRef.current;
@@ -80,13 +107,15 @@ export function GoalQuickBar({ lang, theme: t, sessionKey }: Props) {
         // click can still observe the pre-click goal, so that read is dropped.
         if (actionAtStart !== actionTicket.current || inflightAtStart || actionInflight.current) return;
         if (hideAtStart !== hideEpoch.current) return;
-        if (next) setSnap(next);
+        if (next.snap) setSnap(next.snap);
     }, []);
 
     useEffect(() => {
         setSnap(null);
         setConfirming(false);
+        editingRef.current = false;
         setEditing(false);
+        setNotice("");
         void refresh();
         const id = window.setInterval(() => void refresh(), 4000);
         const onGoal = (payload: GoalBarSnapshot) => {
@@ -96,7 +125,9 @@ export function GoalQuickBar({ lang, theme: t, sessionKey }: Props) {
                 hideEpoch.current += 1;
                 setSnap({ ...payload, visible: false });
                 setConfirming(false);
+                editingRef.current = false;
                 setEditing(false);
+                setNotice("");
                 void refresh();
                 return;
             }
@@ -117,6 +148,12 @@ export function GoalQuickBar({ lang, theme: t, sessionKey }: Props) {
         return () => window.clearTimeout(id);
     }, [confirming]);
 
+    useEffect(() => {
+        if (!notice) return;
+        const id = window.setTimeout(() => setNotice(""), 5000);
+        return () => window.clearTimeout(id);
+    }, [notice]);
+
     const view = goalBarView(snap);
     const [now, setNow] = useState(() => Date.now());
     useEffect(() => {
@@ -126,22 +163,29 @@ export function GoalQuickBar({ lang, theme: t, sessionKey }: Props) {
     }, [view.visible, snap?.created_at]);
     if (!view.visible) return null;
 
-    const run = async (name: keyof GoalApp, extra?: string) => {
+    const failedNotice = () => tr("That action did not take effect. Try again.", "操作未生效，请重试。", "操作未生效，請重試。");
+
+    const run = async (name: keyof GoalApp, extra?: string): Promise<GoalRunResult> => {
         const action = ++actionTicket.current;
         const hideAtStart = hideEpoch.current;
         actionInflight.current = true;
         setBusy(true);
         setConfirming(false);
+        setNotice("");
         try {
             const next = await callGoal(name, sessionKeyRef.current, extra);
-            if (action !== actionTicket.current || hideAtStart !== hideEpoch.current) return;
-            if (next) {
-                setSnap(next);
-                return;
+            if (action !== actionTicket.current || hideAtStart !== hideEpoch.current) return "stale";
+            if (next.failed || !next.snap) {
+                setNotice(failedNotice());
+                const fetched = await callGoal("GetSessionGoalBar", sessionKeyRef.current);
+                if (action !== actionTicket.current || hideAtStart !== hideEpoch.current) return "stale";
+                if (fetched.snap) setSnap(fetched.snap);
+                return "rejected";
             }
-            const fetched = await callGoal("GetSessionGoalBar", sessionKeyRef.current);
-            if (action !== actionTicket.current || hideAtStart !== hideEpoch.current) return;
-            if (fetched) setSnap(fetched);
+            const applied = goalActionApplied(name, next.snap, extra);
+            if (!applied) setNotice(failedNotice());
+            setSnap(next.snap);
+            return applied ? "applied" : "rejected";
         } finally {
             if (action === actionTicket.current) {
                 actionInflight.current = false;
@@ -151,12 +195,35 @@ export function GoalQuickBar({ lang, theme: t, sessionKey }: Props) {
         }
     };
 
-    const saveDraft = async () => {
-        if (!editing) return;
-        const next = draft.trim();
+    const commitEdit = (): Promise<boolean> => {
+        if (commitFlight.current) return commitFlight.current;
+        if (!editingRef.current) return Promise.resolve(true);
+        const next = draftRef.current.trim();
+        editingRef.current = false;
         setEditing(false);
-        if (!next || next === view.objective) return;
-        await run("UpdateSessionGoal", next);
+        if (!next || next === view.objective.trim()) return Promise.resolve(true);
+        const flight = run("UpdateSessionGoal", next).then(result => {
+            if (result === "rejected" && commitFlight.current === flight) {
+                editingRef.current = true;
+                draftRef.current = next;
+                setDraft(next);
+                setEditing(true);
+                return false;
+            }
+            // A newer click or a finished goal owns the bar. The editor stays
+            // closed, and pause or continue must not start on top of that.
+            return result === "applied";
+        }).finally(() => {
+            if (commitFlight.current === flight) commitFlight.current = null;
+        });
+        commitFlight.current = flight;
+        return flight;
+    };
+
+    const runAfterEdit = (name: "PauseSessionGoal" | "ContinueSessionGoal") => {
+        void commitEdit().then(saved => {
+            if (saved) void run(name);
+        });
     };
 
     const labels: Record<typeof view.label, string> = {
@@ -189,15 +256,15 @@ export function GoalQuickBar({ lang, theme: t, sessionKey }: Props) {
     return (
         <div
             data-testid="goal-quick-bar"
+            className="mc-goal-quick-bar"
             style={{
                 display: "flex",
                 alignItems: "center",
                 gap: 8,
-                margin: "0 10px 6px",
+                marginBottom: 6,
                 padding: "4px 6px 4px 12px",
                 minHeight: 36,
                 minWidth: 0,
-                boxSizing: "border-box",
                 borderRadius: 14,
                 border: `1.5px solid ${t.inputBarBorder || t.divider}`,
                 background: t.inputBarBg || t.bg,
@@ -214,18 +281,30 @@ export function GoalQuickBar({ lang, theme: t, sessionKey }: Props) {
             >
                 {label}
             </span>
+            <span
+                data-testid="goal-bar-icon"
+                aria-hidden="true"
+                style={{ display: "inline-flex", flex: "0 0 auto", color: t.headingColor || t.text }}
+            >
+                <GoalIcon />
+            </span>
             {editing ? (
                 <input
                     data-testid="goal-bar-edit-input"
                     value={draft}
                     aria-label={tr("Goal command", "目标命令", "目標命令")}
-                    onChange={event => setDraft(event.target.value)}
+                    onChange={event => {
+                        draftRef.current = event.target.value;
+                        setDraft(event.target.value);
+                    }}
+                    onBlur={() => { void commitEdit(); }}
                     onKeyDown={event => {
                         if (event.key === "Enter") {
                             event.preventDefault();
-                            void saveDraft();
+                            void commitEdit();
                         } else if (event.key === "Escape") {
                             event.preventDefault();
+                            editingRef.current = false;
                             setEditing(false);
                         }
                     }}
@@ -260,11 +339,17 @@ export function GoalQuickBar({ lang, theme: t, sessionKey }: Props) {
             {elapsed ? (
                 <span data-testid="goal-bar-elapsed" style={{ flex: "0 0 auto", whiteSpace: "nowrap" }}>· {elapsed}</span>
             ) : null}
+            {notice ? (
+                <span data-testid="goal-bar-notice" style={{ flex: "0 1 140px", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#d4534b" }}>
+                    {notice}
+                </span>
+            ) : null}
             <span style={{ display: "inline-flex", alignItems: "center", gap: 2, flex: "0 0 auto" }}>
                 <button
                     type="button"
                     data-testid="goal-bar-cancel"
                     disabled={busy}
+                    onMouseDown={event => event.preventDefault()}
                     aria-label={confirming
                         ? tr("Confirm delete", "确认删除", "確認刪除")
                         : tr("Delete goal", "删除目标", "刪除目標")}
@@ -272,11 +357,12 @@ export function GoalQuickBar({ lang, theme: t, sessionKey }: Props) {
                         ? tr("Click again to delete this goal", "再点一次删除这个目标", "再點一次刪除這個目標")
                         : tr("Delete goal", "删除目标", "刪除目標")}
                     onClick={() => {
-                        setEditing(false);
                         if (!confirming) {
                             setConfirming(true);
                             return;
                         }
+                        editingRef.current = false;
+                        setEditing(false);
                         void run("CancelSessionGoal");
                     }}
                     style={iconBtn(confirming ? "danger" : "idle")}
@@ -288,9 +374,10 @@ export function GoalQuickBar({ lang, theme: t, sessionKey }: Props) {
                         type="button"
                         data-testid="goal-bar-pause"
                         disabled={busy}
+                        onMouseDown={event => event.preventDefault()}
                         aria-label={tr("Pause", "暂停", "暫停")}
                         title={tr("Pause this goal", "暂停这个目标", "暫停這個目標")}
-                        onClick={() => { void saveDraft().then(() => run("PauseSessionGoal")); }}
+                        onClick={() => runAfterEdit("PauseSessionGoal")}
                         style={iconBtn()}
                     >
                         <PauseIcon />
@@ -300,9 +387,10 @@ export function GoalQuickBar({ lang, theme: t, sessionKey }: Props) {
                         type="button"
                         data-testid="goal-bar-continue"
                         disabled={busy}
+                        onMouseDown={event => event.preventDefault()}
                         aria-label={tr("Continue", "继续", "繼續")}
                         title={tr("Continue this goal", "继续执行这个目标", "繼續執行這個目標")}
-                        onClick={() => { void saveDraft().then(() => run("ContinueSessionGoal")); }}
+                        onClick={() => runAfterEdit("ContinueSessionGoal")}
                         style={iconBtn()}
                     >
                         <PlayIcon />
@@ -312,16 +400,19 @@ export function GoalQuickBar({ lang, theme: t, sessionKey }: Props) {
                     type="button"
                     data-testid="goal-bar-edit"
                     disabled={busy}
+                    onMouseDown={event => event.preventDefault()}
                     aria-label={editing ? tr("Save goal", "保存目标", "儲存目標") : tr("Edit goal", "编辑目标", "編輯目標")}
                     title={editing ? tr("Save goal command", "保存目标命令", "儲存目標命令") : tr("Edit goal command", "编辑目标命令", "編輯目標命令")}
                     aria-pressed={editing}
                     onClick={() => {
                         setConfirming(false);
-                        if (editing) {
-                            void saveDraft();
+                        if (editingRef.current) {
+                            void commitEdit();
                             return;
                         }
                         setDraft(view.objective);
+                        draftRef.current = view.objective;
+                        editingRef.current = true;
                         setEditing(true);
                     }}
                     style={iconBtn(editing ? "active" : "idle")}
@@ -330,6 +421,16 @@ export function GoalQuickBar({ lang, theme: t, sessionKey }: Props) {
                 </button>
             </span>
         </div>
+    );
+}
+
+function GoalIcon() {
+    return (
+        <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" strokeWidth="1.3" />
+            <circle cx="8" cy="8" r="3.2" fill="none" stroke="currentColor" strokeWidth="1.3" />
+            <circle cx="8" cy="8" r="1.15" fill="currentColor" />
+        </svg>
     );
 }
 

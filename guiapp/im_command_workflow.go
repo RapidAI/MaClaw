@@ -61,6 +61,11 @@ var workflowTypeAliases = map[string]string{
 // - /workflow         → list available workflows
 // - /workflow <type>  → force-start the specified workflow (bypasses toggle)
 func (h *IMMessageHandler) handleWorkflowCommand(msg IMUserMessage, trimmed, lang string) (*IMAgentResponse, bool) {
+	// Park the goal timer while /workflow runs. A list or an unknown type
+	// returns at once and the same goal is put back. A force-start keeps the
+	// timer down until this call returns.
+	resumeGoalTurn := h.suspendQueuedGoalTurn(msg.UserID)
+	defer resumeGoalTurn()
 	arg := ""
 	if len(trimmed) > len("/workflow") {
 		arg = strings.TrimSpace(trimmed[len("/workflow"):])

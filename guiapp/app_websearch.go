@@ -48,7 +48,7 @@ type SaveWebSearchStrategyRequest struct {
 }
 
 var allowedWebSearchAPIKeyClearIDs = map[string]bool{
-	"brave": true, "serper": true, "tinyfish": true, "tavily": true,
+	"brave": true, "serper": true, "tinyfish": true, "tavily": true, "yuanbao": true,
 }
 
 var retiredWebSearchEngineIDs = map[string]bool{"mojeek": true}
@@ -167,6 +167,8 @@ func webSearchEngineName(id string) string {
 		return "TinyFish"
 	case "tavily":
 		return "Tavily"
+	case "yuanbao":
+		return "元宝搜索"
 	case websearch.WebSearchEngineMaclawHub:
 		return "MaClaw Hub / RapidSearch"
 	default:
@@ -182,12 +184,17 @@ func webSearchEngineTestQuery(engineID, query string) string {
 	if engineID == websearch.WebSearchEngineMaclawHub {
 		return "golang http server"
 	}
+	// SearchPro's documented example. The English product sentence can return
+	// no pages for a working mainland key and fail the settings probe.
+	if engineID == "yuanbao" {
+		return "北京天气"
+	}
 	return "MaClaw web search configuration test"
 }
 
 func webSearchEngineNeedsKey(id string) bool {
 	switch id {
-	case "brave", "serper", "tinyfish", "tavily":
+	case "brave", "serper", "tinyfish", "tavily", "yuanbao":
 		return true
 	}
 	return false
@@ -434,7 +441,7 @@ func (a *App) SaveWebSearchProviders(providers []corelib.WebSearchProvider, curr
 
 func (a *App) TestWebSearchProvider(provider corelib.WebSearchProvider) error {
 	provider = normalizeWebSearchProvider(provider)
-	if provider.Type == "brave" || provider.Type == "serper" || provider.Type == "tinyfish" || provider.Type == "tavily" {
+	if provider.Type == "brave" || provider.Type == "serper" || provider.Type == "tinyfish" || provider.Type == "tavily" || provider.Type == "yuanbao" {
 		if strings.TrimSpace(provider.Key) == "" || strings.Contains(provider.Key, "******") {
 			return fmt.Errorf("%s API key is not configured", webSearchEngineName(provider.Type))
 		}

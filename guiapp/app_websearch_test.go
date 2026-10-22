@@ -444,6 +444,18 @@ func TestSaveWebSearchStrategyRejectsUnknownKeyClearID(t *testing.T) {
 	}
 }
 
+func TestYuanbaoWebSearchEngineUsesCallerAPIKey(t *testing.T) {
+	if webSearchEngineName("yuanbao") != "元宝搜索" {
+		t.Fatalf("name = %q", webSearchEngineName("yuanbao"))
+	}
+	if !webSearchEngineNeedsKey("yuanbao") {
+		t.Fatal("yuanbao must ask for the caller's API key")
+	}
+	if !allowedWebSearchAPIKeyClearIDs["yuanbao"] {
+		t.Fatal("yuanbao API key clear is not allowed")
+	}
+}
+
 func TestTestWebSearchEngineIgnoresRequestBaseURL(t *testing.T) {
 	strategy := websearch.DefaultWebSearchStrategy(corelib.WebSearchPresetMainland)
 	request := corelib.WebSearchEngineConfig{
@@ -880,5 +892,11 @@ func TestWebSearchEngineTestQueryDefaults(t *testing.T) {
 	}
 	if got := webSearchEngineTestQuery("brave", ""); got != "MaClaw web search configuration test" {
 		t.Fatalf("other default = %q", got)
+	}
+	if got := webSearchEngineTestQuery("yuanbao", ""); got != "北京天气" {
+		t.Fatalf("yuanbao default = %q", got)
+	}
+	if got := webSearchEngineTestQuery("yuanbao", "  explicit query  "); got != "explicit query" {
+		t.Fatalf("yuanbao explicit = %q", got)
 	}
 }

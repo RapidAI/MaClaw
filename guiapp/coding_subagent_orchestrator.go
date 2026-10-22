@@ -967,7 +967,7 @@ func subAgentRetryRecoveryHint(errSummary string) string {
 		(strings.Contains(normalized, "not recognized as an internal or external command") ||
 			strings.Contains(normalized, "command not found") ||
 			strings.Contains(normalized, "cannot find the path specified")):
-		return "cl.exe is already on PATH for coding bash. Run `cl /utf-8 /EHsc /Fe:app.exe file.cpp && .\\app.exe` without wrapping vcvars. Do not retry cmd /c quoting."
+		return codingClMissingRecoveryHint()
 	case strings.Contains(normalized, "command not found") ||
 		strings.Contains(normalized, "executable file not found") ||
 		strings.Contains(normalized, "not recognized as an internal or external command") ||

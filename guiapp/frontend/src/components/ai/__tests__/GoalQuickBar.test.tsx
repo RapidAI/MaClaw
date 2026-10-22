@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GoalQuickBar } from "../GoalQuickBar";
@@ -56,11 +58,40 @@ afterEach(() => {
 });
 
 describe("GoalQuickBar", () => {
+    it("stays within the composer card width", async () => {
+        installApp();
+        const view = render(<GoalQuickBar lang="zh-Hans" theme={theme} sessionKey="desktop-user" />);
+        await waitFor(() => expect(view.getByTestId("goal-quick-bar")).toBeTruthy());
+        const bar = view.getByTestId("goal-quick-bar") as HTMLElement;
+        expect(bar.className).toContain("mc-goal-quick-bar");
+        expect(bar.style.marginLeft).toBe("");
+        expect(bar.style.marginRight).toBe("");
+        expect(bar.style.width).toBe("");
+        expect(bar.style.maxWidth).toBe("");
+
+        const partial = readFileSync(resolve(process.cwd(), "src/styles/partials/100-pet-store-mc.css"), "utf8");
+        const assembled = readFileSync(resolve(process.cwd(), "src/App.css"), "utf8");
+        for (const css of [partial, assembled]) {
+            expect(css).toContain("--mc-composer-inset-x: 24px");
+            expect(css).toContain("margin: 0 var(--mc-composer-inset-x, 24px) 18px !important");
+            expect(css).toContain("width: calc(100% - (2 * var(--mc-composer-inset-x, 24px)))");
+            expect(css).toContain("max-width: calc(100% - (2 * var(--mc-composer-inset-x, 24px)))");
+            expect(css).toContain("--mc-composer-inset-x: 12px");
+            expect(css).toContain("margin: 0 var(--mc-composer-inset-x, 12px) 12px !important");
+        }
+    });
+
     it("shows pause while the goal is running and continue after it stops", async () => {
         const api = installApp();
         const view = render(<GoalQuickBar lang="zh-Hans" theme={theme} sessionKey="desktop-user" />);
         await waitFor(() => expect(view.getByTestId("goal-quick-bar")).toBeTruthy());
         expect(view.getByTestId("goal-bar-label").textContent).toBe("进行中");
+        expect(view.getByTestId("goal-bar-icon")).toBeTruthy();
+        const bar = view.getByTestId("goal-quick-bar");
+        const icon = view.getByTestId("goal-bar-icon");
+        const objective = view.getByTestId("goal-bar-objective");
+        expect(bar.compareDocumentPosition(icon) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(icon.compareDocumentPosition(objective) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         expect(view.getByTestId("goal-bar-objective").textContent).toContain("提升20%");
         const buttons = view.getByTestId("goal-quick-bar").querySelectorAll("button");
         expect(Array.from(buttons).map(button => button.getAttribute("data-testid"))).toEqual([
@@ -224,6 +255,78 @@ describe("GoalQuickBar", () => {
         });
         await waitFor(() => expect(api.GetSessionGoalBar.mock.calls.length).toBeGreaterThan(1));
         expect(view.queryByTestId("goal-quick-bar")).toBeNull();
+    });
+
+    it("saves a goal edit when the field loses focus", async () => {
+        const api = installApp();
+        const view = render(<GoalQuickBar lang="zh-Hans" theme={theme} sessionKey="desktop-user" />);
+        await waitFor(() => expect(view.getByTestId("goal-bar-edit")).toBeTruthy());
+        fireEvent.click(view.getByTestId("goal-bar-edit"));
+        const input = view.getByTestId("goal-bar-edit-input") as HTMLInputElement;
+        fireEvent.change(input, { target: { value: "改成新的目标" } });
+        fireEvent.blur(input);
+        await waitFor(() => expect(api.UpdateSessionGoal).toHaveBeenCalledWith("desktop-user", "改成新的目标"));
+        await waitFor(() => expect(view.getByTestId("goal-bar-objective").textContent).toBe("改成新的目标"));
+    });
+
+    it("says when pause does not change the goal", async () => {
+        installApp({
+            PauseSessionGoal: vi.fn().mockResolvedValue(active),
+        });
+        const view = render(<GoalQuickBar lang="zh-Hans" theme={theme} sessionKey="desktop-user" />);
+        await waitFor(() => expect(view.getByTestId("goal-bar-pause")).toBeTruthy());
+        fireEvent.click(view.getByTestId("goal-bar-pause"));
+        await waitFor(() => expect(view.getByTestId("goal-bar-notice").textContent).toContain("未生效"));
+        expect(view.getByTestId("goal-bar-pause")).toBeTruthy();
+    });
+
+    it("saves an edit before pause, and does not pause when the save does not land", async () => {
+        const saved = installApp();
+        const view = render(<GoalQuickBar lang="zh-Hans" theme={theme} sessionKey="desktop-user" />);
+        await waitFor(() => expect(view.getByTestId("goal-bar-edit")).toBeTruthy());
+        fireEvent.click(view.getByTestId("goal-bar-edit"));
+        fireEvent.change(view.getByTestId("goal-bar-edit-input"), { target: { value: "改成新的目标" } });
+        fireEvent.click(view.getByTestId("goal-bar-pause"));
+        await waitFor(() => expect(saved.UpdateSessionGoal).toHaveBeenCalledWith("desktop-user", "改成新的目标"));
+        await waitFor(() => expect(saved.PauseSessionGoal).toHaveBeenCalledWith("desktop-user"));
+
+        cleanup();
+        const rejected = installApp({
+            UpdateSessionGoal: vi.fn().mockResolvedValue(active),
+        });
+        const again = render(<GoalQuickBar lang="zh-Hans" theme={theme} sessionKey="desktop-user" />);
+        await waitFor(() => expect(again.getByTestId("goal-bar-edit")).toBeTruthy());
+        fireEvent.click(again.getByTestId("goal-bar-edit"));
+        fireEvent.change(again.getByTestId("goal-bar-edit-input"), { target: { value: "改成新的目标" } });
+        fireEvent.click(again.getByTestId("goal-bar-pause"));
+        await waitFor(() => expect(rejected.UpdateSessionGoal).toHaveBeenCalledWith("desktop-user", "改成新的目标"));
+        await waitFor(() => expect(again.getByTestId("goal-bar-notice").textContent).toContain("未生效"));
+        expect(rejected.PauseSessionGoal).not.toHaveBeenCalled();
+        expect((again.getByTestId("goal-bar-edit-input") as HTMLInputElement).value).toBe("改成新的目标");
+    });
+
+    it("keeps an open edit until delete is confirmed", async () => {
+        const api = installApp();
+        const view = render(<GoalQuickBar lang="zh-Hans" theme={theme} sessionKey="desktop-user" />);
+        await waitFor(() => expect(view.getByTestId("goal-bar-edit")).toBeTruthy());
+        fireEvent.click(view.getByTestId("goal-bar-edit"));
+        fireEvent.change(view.getByTestId("goal-bar-edit-input"), { target: { value: "先别删" } });
+        fireEvent.click(view.getByTestId("goal-bar-cancel"));
+        expect(api.CancelSessionGoal).not.toHaveBeenCalled();
+        expect(api.UpdateSessionGoal).not.toHaveBeenCalled();
+        expect((view.getByTestId("goal-bar-edit-input") as HTMLInputElement).value).toBe("先别删");
+        fireEvent.click(view.getByTestId("goal-bar-cancel"));
+        await waitFor(() => expect(api.CancelSessionGoal).toHaveBeenCalledWith("desktop-user"));
+    });
+
+    it("offers pause while the goal is waiting for a reply", async () => {
+        installApp({
+            GetSessionGoalBar: vi.fn().mockResolvedValue({ ...active, awaiting_user: true }),
+        });
+        const view = render(<GoalQuickBar lang="zh-Hans" theme={theme} sessionKey="desktop-user" />);
+        await waitFor(() => expect(view.getByTestId("goal-bar-label").textContent).toBe("等待回复"));
+        expect(view.getByTestId("goal-bar-pause").getAttribute("aria-label")).toBe("暂停");
+        expect(view.queryByTestId("goal-bar-continue")).toBeNull();
     });
 
     it("labels a dead remote session apart from an ordinary pause", async () => {

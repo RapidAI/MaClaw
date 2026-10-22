@@ -64,3 +64,16 @@ func TestCountTriggerMatchesSkipsEmpty(t *testing.T) {
 		t.Fatal("bounded trigger must count")
 	}
 }
+
+func TestCountTriggerMatchesSkipsGenericFragments(t *testing.T) {
+	msg := "宝塔将在官方修复版本发布后同步跟进更新。当前设备使用的是本地工作区。"
+	if got := CountTriggerMatches([]string{"将", "•", "<路径>", "工作区", "from"}, msg); got != 0 {
+		t.Fatalf("generic fragments must not match, got %d", got)
+	}
+	if got := CountTriggerMatches([]string{"将", "工作区", "复制到当前"}, "请把手册复制到当前工作区"); got != 1 {
+		t.Fatalf("a distinctive phrase must still match, got %d", got)
+	}
+	if got := CountTriggerMatches([]string{"git"}, "git 提交代码"); got != 1 {
+		t.Fatal("a short author trigger must still match")
+	}
+}

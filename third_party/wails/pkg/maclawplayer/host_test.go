@@ -263,3 +263,157 @@ func TestHideDoesNotCallTheHostWhilePlaceHoldsIt(t *testing.T) {
 		t.Fatalf("hides=%d", host.hides.Load())
 	}
 }
+
+func TestShowGenerationKeepsTheMinimizedBox(t *testing.T) {
+	ResetShowPlacement()
+	t.Cleanup(ResetShowPlacement)
+	if !EmptyHideReady() {
+		t.Fatal("before any show, an empty slot still leaves")
+	}
+	started := ShowGeneration()
+	NoteHostVisible()
+	if EmptyHideReady() {
+		t.Fatal("the show still treats the next empty box as the slot leaving")
+	}
+	NoteSlotPlaced(started)
+	if EmptyHideReady() {
+		t.Fatal("a place that started before the show re-armed empty-hide")
+	}
+	NoteSlotPlaced(ShowGeneration())
+	if !EmptyHideReady() {
+		t.Fatal("a place that started after the show did not arm empty-hide")
+	}
+}
+
+func TestPlaceShowGenerationStaysAtReceive(t *testing.T) {
+	ResetShowPlacement()
+	t.Cleanup(func() {
+		ResetShowPlacement()
+		ClearPlaceShowGeneration()
+	})
+	received := ShowGeneration()
+	PinPlaceShowGeneration(received)
+	NoteHostVisible()
+	if PlaceShowGeneration() != received {
+		t.Fatalf("gen = %d, received %d", PlaceShowGeneration(), received)
+	}
+	ClearPlaceShowGeneration()
+	if PlaceShowGeneration() != ShowGeneration() {
+		t.Fatal("cleared pin did not follow the show")
+	}
+}
+
+func TestPlaceReceiptStillLatestRequiresTheRunningCall(t *testing.T) {
+	ResetShowPlacement()
+	t.Cleanup(func() {
+		ResetShowPlacement()
+		ClearPlaceReceipt()
+	})
+	if !PlaceReceiptStillLatest() {
+		t.Fatal("a direct call is the latest")
+	}
+	mine := NextPlaceReceipt()
+	PinPlaceReceipt(mine)
+	if !PlaceReceiptStillLatest() {
+		t.Fatal("the only receipt was not latest")
+	}
+	_ = NextPlaceReceipt()
+	if PlaceReceiptStillLatest() {
+		t.Fatal("a newer receipt was ignored")
+	}
+}
+
+func TestFullscreenExitOwnedByHide(t *testing.T) {
+	ResetShowPlacement()
+	t.Cleanup(ResetShowPlacement)
+	visible, hideExit := false, false
+	SetFullscreenSource(true, true)
+	SetFullscreenSource(true, false)
+	visible, hideExit = FullscreenNotifyVisible(false, true)
+	if !visible || hideExit {
+		t.Fatal("an exit with the window shown was owned by a hide")
+	}
+	SetFullscreenSource(true, true)
+	NoteFullscreenHidden()
+	SetFullscreenSource(true, false)
+	visible, hideExit = FullscreenNotifyVisible(false, true)
+	if !visible || !hideExit {
+		t.Fatalf("hide exit after show visible=%v hideExit=%v", visible, hideExit)
+	}
+	SetFullscreenSource(true, false)
+	visible, hideExit = FullscreenNotifyVisible(false, true)
+	if !visible || hideExit {
+		t.Fatal("a later exit was still owned by the hide")
+	}
+	SetFullscreenSource(true, true)
+	SetFullscreenSource(false, true)
+	NoteFullscreenHidden()
+	SetFullscreenSource(false, false)
+	visible, hideExit = FullscreenNotifyVisible(false, true)
+	if !visible || hideExit {
+		t.Fatal("the app page consumed the player's hide exit")
+	}
+	SetFullscreenSource(true, false)
+	visible, hideExit = FullscreenNotifyVisible(false, true)
+	if !visible || !hideExit {
+		t.Fatal("the player exit after the hide was not marked")
+	}
+	SetFullscreenSource(true, true)
+	NoteFullscreenHidden()
+	ClearFullscreenHideExit()
+	SetFullscreenSource(true, false)
+	visible, hideExit = FullscreenNotifyVisible(false, true)
+	if !visible || hideExit {
+		t.Fatal("fullscreen that survived the show did not stay a reader exit")
+	}
+	NoteFullscreenHidden()
+	SetFullscreenSource(true, true)
+	visible, hideExit = FullscreenNotifyVisible(true, true)
+	if !visible || hideExit {
+		t.Fatal("a fullscreen true while a hide exit is pending was itself a hide exit")
+	}
+	SetFullscreenSource(true, false)
+	visible, hideExit = FullscreenNotifyVisible(false, true)
+	if !visible || !hideExit {
+		t.Fatal("the fullscreen true cleared the pending hide exit")
+	}
+	NoteFullscreenHidden()
+	SetFullscreenSource(true, false)
+	visible, hideExit = FullscreenNotifyVisible(false, false)
+	if visible || !hideExit {
+		t.Fatal("a hide exit while the window is still hidden was reported shown")
+	}
+}
+
+func TestFullscreenSurvivedShowUsesTheLiveRead(t *testing.T) {
+	ResetShowPlacement()
+	t.Cleanup(ResetShowPlacement)
+	NoteFullscreenHidden()
+	NoteFullscreenSurvivedShow(true, false)
+	SetFullscreenSource(true, false)
+	visible, hideExit := FullscreenNotifyVisible(false, true)
+	if !visible || !hideExit {
+		t.Fatal("a failed live read cleared the hide exit")
+	}
+	NoteFullscreenHidden()
+	NoteFullscreenSurvivedShow(false, true)
+	SetFullscreenSource(true, false)
+	visible, hideExit = FullscreenNotifyVisible(false, true)
+	if !visible || !hideExit {
+		t.Fatal("a live read of fullscreen down cleared the hide exit")
+	}
+	NoteFullscreenHidden()
+	NoteFullscreenSurvivedShow(false, false)
+	SetFullscreenSource(true, false)
+	visible, hideExit = FullscreenNotifyVisible(false, true)
+	if !visible || !hideExit {
+		t.Fatal("a missing live read cleared the hide exit")
+	}
+	NoteFullscreenHidden()
+	NoteFullscreenSurvivedShow(true, true)
+	SetFullscreenSource(true, false)
+	visible, hideExit = FullscreenNotifyVisible(false, true)
+	if !visible || hideExit {
+		t.Fatal("fullscreen that the live read still sees did not become a reader exit")
+	}
+}

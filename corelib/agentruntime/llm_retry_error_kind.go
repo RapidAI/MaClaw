@@ -60,6 +60,9 @@ func IsNetworkLLMRetryError(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
+	if llm.IsUnexpectedStreamEOF(err) {
+		return true
+	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return true

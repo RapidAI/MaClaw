@@ -87,15 +87,12 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		return resp
 	}
 
-	// Notify goal continuation engine that a user message arrived.
-	// This cancels any pending continuation (user takes priority) and resets
-	// the no-tool counter. Skip for goal-continuation self-messages.
+	// Record a /goal look without dropping the queued turn. The cancel waits
+	// until this message is known to take the session. Skip host self-messages.
 	// A session-round wave is the same kind of host message: it must not
 	// cancel the timer that just started it.
 	if msg.Platform != "goal-continuation" && msg.Platform != unattendedWorkflowPlatform && msg.Platform != sessionRoundContinuationPlatform {
-		if h.app != nil && h.app.goalContinuation != nil {
-			h.app.goalContinuation.OnUserMessage(msg.UserID)
-		}
+		h.noteInboundUserMessageForGoal(msg, trimmed)
 		h.cancelSessionRoundContinuation(msg.UserID)
 	}
 	if msg.Platform == sessionRoundContinuationPlatform {
@@ -177,6 +174,18 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		return resp
 	}
 
+	// This message passed every immediate reply. Park the queued goal turn
+	// while preflight, the session lock, and entry run. A return before
+	// schedulePostLoopSideEffects puts the same turn back, including a
+	// confirmation card, a direct reply, or a reconnect pause inside
+	// executePreparedIMEntry. Joining a loop that is already running keeps
+	// the park: that loop schedules the next turn. An immediate command,
+	// chit-chat, or direct schedule/status reply already returned and left
+	// the timer queued.
+	keepQueuedGoalTurn := false
+	endQueuedGoalTurnHold := h.beginQueuedGoalTurnHold(msg)
+	defer func() { endQueuedGoalTurnHold(keepQueuedGoalTurn) }()
+
 	// Emit immediate progress feedback before any preflight work. In particular,
 	// preflight reads conversation state and may process a typed confirmation, so
 	// it cannot be allowed to leave the user staring at an empty placeholder.
@@ -242,9 +251,21 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 
 	serialization := h.enterIMMessageSerializationBoundary(msg, providedLoopCtx, entriesBeforeClear, unfinishedSlot, decision)
 	if serialization.Handled {
+		// A status reply or a pending interrupt confirm leaves the active
+		// loop running. That loop schedules the next goal turn. A lock
+		// timeout has no such loop, so the park is restored on return.
+		keepQueuedGoalTurn = serialization.ActiveLoopOwnsNextTurn
 		return serialization.Response
 	}
 	defer serialization.Unlock()
+	// Pause can land after dispatch admitted this continuation and while
+	// preflight still holds the turn. The admit generation is what pause
+	// revokes. An empty result closes the round and does not fence chat or
+	// consume a question. The continuation emits that close once.
+	if msg.Platform == "goal-continuation" && h.app != nil && h.app.goalContinuation != nil && h.app.goalContinuation.continuationAdmitRevoked(msg.RequestID) {
+		log.Printf("[goal-continuation] dropped turn before entry user=%s request_id=%s", msg.UserID, msg.RequestID)
+		return &IMAgentResponse{}
+	}
 	if onProgress != nil && !codingWorkbench {
 		onProgress("[Status] 会话已就绪，正在确定执行方式")
 	}
@@ -303,6 +324,8 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if finishCacheFlight != nil {
 		defer finishCacheFlight()
 	}
+	// keep stays false until schedulePostLoopSideEffects runs. A return
+	// before that puts the parked continuation back.
 	result = h.executePreparedIMEntry(preparedIMEntryExecutionOptions{
 		Message:                   msg,
 		Trimmed:                   trimmed,
@@ -326,6 +349,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		OnToken:                   onToken,
 		OnNewRound:                onNewRound,
 		OnStreamDone:              onStreamDone,
+		queuedGoalTurnHold:        &keepQueuedGoalTurn,
 	})
 	h.storeAnswerCacheResult(msg, cacheKey, bindingScope, result)
 	return result

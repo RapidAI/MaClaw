@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/goal"
@@ -138,6 +139,9 @@ type GoalContinuationEngine struct {
 	// planCorrection is the goal whose next fire must ask for the missing plan
 	// instead of repeating the original planning prompt.
 	planCorrection map[string]string
+	// queuedTurn is the goal id closed over by the cooldown timer. A side
+	// command reads it before cancelPendingLocked deletes the timer.
+	queuedTurn map[string]queuedGoalTurn
 	// scheduleGen invalidates a timer that was already replaced or cancelled.
 	// time.AfterFunc can still run after Stop, and that callback must not
 	// dispatch or delete the successor entry.
@@ -146,6 +150,17 @@ type GoalContinuationEngine struct {
 	// The dying turn must not pause or fail that goal, and a host continuation
 	// of the same fence may enter. A later stop stores a new fence.
 	stopSuperseded map[string]cancelledTaskFence
+	// barHold marks a turn the goal bar stopped. The dying post-loop consumes
+	// it and must not fail or re-arm the goal, even if continue already ran.
+	barHold map[string]struct{}
+	// continuationAdmit is the generation that may still enter. A bar pause
+	// or delete bumps it. A continuation that already passed the cooldown
+	// check carries the old generation and must not start. Continue does not
+	// bump it; the next fire mints a newer one.
+	continuationAdmit map[string]uint64
+	// continuationTicket is one dispatched request. The admit map is what
+	// makes that request stale. Keyed by request ID.
+	continuationTicket map[string]continuationAdmitTicket
 	// expectGen identifies one note of pendingExpect. It only increases.
 	// Two notes of an unchanged step must stay distinct, or a late post-loop
 	// would retire the successor's note.
@@ -338,6 +353,42 @@ func (h *IMMessageHandler) noteGoalContinuePastUserStop(userID string) {
 	h.app.goalContinuation.noteStopSuperseded(userID, fence)
 }
 
+// noteGoalBarHold records that this session's live turn was stopped from the
+// goal bar. The matching post-loop consumes it.
+func (e *GoalContinuationEngine) noteGoalBarHold(userID string) {
+	if e == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.barHold == nil {
+		e.barHold = map[string]struct{}{}
+	}
+	e.barHold[userID] = struct{}{}
+}
+
+// consumeGoalBarHold reports and clears a bar stop for this session.
+func (e *GoalContinuationEngine) consumeGoalBarHold(userID string) bool {
+	if e == nil {
+		return false
+	}
+	userID = strings.TrimSpace(userID)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.barHold == nil {
+		return false
+	}
+	if _, ok := e.barHold[userID]; !ok {
+		return false
+	}
+	delete(e.barHold, userID)
+	return true
+}
+
 func (e *GoalContinuationEngine) noteStopSuperseded(userID string, fence cancelledTaskFence) {
 	if e == nil || strings.TrimSpace(userID) == "" {
 		return
@@ -462,9 +513,92 @@ func (e *GoalContinuationEngine) cancelPendingLocked(userID string) {
 		delete(e.scheduledTimers, userID)
 		log.Printf("[goal-continuation] cancelled pending continuation: user=%s", userID)
 	}
+	delete(e.queuedTurn, userID)
 	delete(e.planCorrection, userID)
 	delete(e.planMiss, userID)
 	e.bumpScheduleGen(userID)
+}
+
+// queuedGoalTurn is the continuation waiting out the cooldown.
+type queuedGoalTurn struct {
+	goalID         string
+	planCorrection bool
+}
+
+// suspendedGoalTurn is that continuation parked for one side command.
+// gen is the schedule generation after the park, so a later cancel or a
+// newer timer is not overwritten when the command returns.
+type suspendedGoalTurn struct {
+	goalID         string
+	planCorrection bool
+	planMiss       goalPlanMiss
+	hadPlanMiss    bool
+	gen            uint64
+}
+
+// suspendQueuedTurn stops the cooldown timer and remembers which goal it
+// belonged to. CancelPending deletes that record, so the caller keeps the
+// returned copy. No queued timer returns false and changes nothing.
+func (e *GoalContinuationEngine) suspendQueuedTurn(userID string) (suspendedGoalTurn, bool) {
+	if e == nil {
+		return suspendedGoalTurn{}, false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	turn, ok := e.queuedTurn[userID]
+	if !ok || turn.goalID == "" {
+		return suspendedGoalTurn{}, false
+	}
+	if _, pending := e.scheduledTimers[userID]; !pending {
+		delete(e.queuedTurn, userID)
+		return suspendedGoalTurn{}, false
+	}
+	suspended := suspendedGoalTurn{
+		goalID:         turn.goalID,
+		planCorrection: e.planCorrection[userID] == turn.goalID,
+	}
+	if miss, exists := e.planMiss[userID]; exists && miss.goalID == turn.goalID {
+		suspended.planMiss = miss
+		suspended.hadPlanMiss = true
+	}
+	e.cancelPendingLocked(userID)
+	suspended.gen = e.scheduleGen[userID]
+	return suspended, true
+}
+
+// restoreSuspendedGoalTurn re-arms the parked turn. A pause, cancel, reset,
+// or a timer scheduled while the command ran moves the generation or leaves
+// the goal unable to continue, and this leaves that newer state alone.
+func (e *GoalContinuationEngine) restoreSuspendedGoalTurn(userID string, turn suspendedGoalTurn) {
+	if e == nil || turn.goalID == "" {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.scheduleGen[userID] != turn.gen {
+		return
+	}
+	if _, pending := e.scheduledTimers[userID]; pending {
+		return
+	}
+	if e.store == nil {
+		return
+	}
+	g := e.store.Get(userID)
+	if g == nil || g.GoalID != turn.goalID || !g.ShouldContinue() {
+		return
+	}
+	if turn.planCorrection && turn.hadPlanMiss {
+		if e.planMiss == nil {
+			e.planMiss = map[string]goalPlanMiss{}
+		}
+		e.planMiss[userID] = turn.planMiss
+	}
+	kind := goalCorrectionNone
+	if turn.planCorrection {
+		kind = goalCorrectionPlan
+	}
+	e.scheduleAfterCooldownLocked(userID, turn.goalID, kind)
 }
 
 // blocksRunWindowCompletion keeps a scheduled row in progress while this
@@ -486,8 +620,11 @@ func (e *GoalContinuationEngine) blocksRunWindowCompletion(userID string) bool {
 	return g != nil && g.ShouldContinue()
 }
 
-// OnUserMessage is called when a user sends a new message. It cancels any
-// pending continuation (user takes priority) and resets no-tool counter.
+// OnUserMessage is called when a user message is about to take the session.
+// It cancels any pending continuation (user takes priority) and resets the
+// no-tool counter. An immediate reply does not come here, so a rejected
+// /goal, /help, or a short greeting leaves the queued turn in place.
+// Pause and cancel stop the timer themselves.
 func (e *GoalContinuationEngine) OnUserMessage(userID string) {
 	if e == nil {
 		return
@@ -495,8 +632,15 @@ func (e *GoalContinuationEngine) OnUserMessage(userID string) {
 	// CancelPending refunds an unsent plan correction. The next empty plan
 	// can ask once, because this message interrupted the previous attempt.
 	e.CancelPending(userID)
+	e.resetActiveGoalNoToolCounter(userID)
+}
 
-	// User message resets no-tool counter (user interaction = external trigger)
+// resetActiveGoalNoToolCounter records that the user touched an active goal
+// without preempting its next turn.
+func (e *GoalContinuationEngine) resetActiveGoalNoToolCounter(userID string) {
+	if e == nil || e.store == nil {
+		return
+	}
 	g := e.store.Get(userID)
 	if g != nil && g.Status == goal.StatusActive {
 		e.store.ResetNoToolCounter(userID, g.GoalID)
@@ -527,8 +671,29 @@ func (e *GoalContinuationEngine) scheduleAfterCooldown(userID, goalID string, ki
 	e.scheduleAfterCooldownLocked(userID, goalID, kind)
 }
 
+// goalStillContinuable reports whether this goal may arm another turn.
+// A nil store keeps the old arming behavior for callers that have no row.
+// Caller may hold e.mu. Store lock is taken and released inside Get.
+func (e *GoalContinuationEngine) goalStillContinuable(userID, goalID string) bool {
+	if e == nil || e.store == nil {
+		return true
+	}
+	g := e.store.Get(userID)
+	if g == nil || strings.TrimSpace(goalID) == "" || g.GoalID != goalID {
+		return false
+	}
+	return g.ShouldContinue()
+}
+
 // scheduleAfterCooldownLocked arms the next timer. Caller holds e.mu.
+// A pause, delete, or failed goal that lands before this lock refuses the arm,
+// so a dying turn cannot put the timer back.
 func (e *GoalContinuationEngine) scheduleAfterCooldownLocked(userID, goalID string, kind goalCorrectionKind) {
+	if !e.goalStillContinuable(userID, goalID) {
+		e.cancelPendingLocked(userID)
+		log.Printf("[goal-continuation] not scheduling; goal is not continuable user=%s goal_id=%s", userID, goalID)
+		return
+	}
 	// Cancel any existing timer for this user
 	if existing, ok := e.scheduledTimers[userID]; ok {
 		existing.Stop()
@@ -551,6 +716,13 @@ func (e *GoalContinuationEngine) scheduleAfterCooldownLocked(userID, goalID stri
 		e.runScheduledContinuation(userID, goalID, gen)
 	})
 	e.scheduledTimers[userID] = timer
+	if e.queuedTurn == nil {
+		e.queuedTurn = map[string]queuedGoalTurn{}
+	}
+	e.queuedTurn[userID] = queuedGoalTurn{
+		goalID:         goalID,
+		planCorrection: kind == goalCorrectionPlan,
+	}
 	log.Printf("[goal-continuation] scheduled next turn in %s: user=%s goal_id=%s", e.cooldown, userID, goalID)
 }
 
@@ -617,6 +789,7 @@ func (e *GoalContinuationEngine) claimScheduledContinuation(userID, goalID strin
 		return goalCorrectionNone, false
 	}
 	delete(e.scheduledTimers, userID)
+	delete(e.queuedTurn, userID)
 	return e.takeScheduledCorrectionLocked(userID, goalID), true
 }
 
@@ -628,15 +801,136 @@ func (e *GoalContinuationEngine) runScheduledContinuation(userID, goalID string,
 	e.dispatchContinuation(userID, goalID, corrective)
 }
 
+// continuationAdmitTicket is the generation a dispatched continuation must
+// still match when it enters. Pause bumps the session generation, so this
+// ticket no longer matches and the turn does not start.
+type continuationAdmitTicket struct {
+	userID string
+	gen    uint64
+}
+
+// admitContinuationIfContinuable records one continuation that may enter.
+// The continuable check and the mint share the engine lock, so a pause that
+// bumps the generation cannot land between them. A false result means this
+// fire must not start a turn.
+func (e *GoalContinuationEngine) admitContinuationIfContinuable(userID, goalID, requestID string) bool {
+	if e == nil {
+		return false
+	}
+	userID = strings.TrimSpace(userID)
+	requestID = strings.TrimSpace(requestID)
+	if userID == "" || requestID == "" {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.goalStillContinuable(userID, goalID) {
+		return false
+	}
+	if e.continuationAdmit == nil {
+		e.continuationAdmit = map[string]uint64{}
+	}
+	if e.continuationTicket == nil {
+		e.continuationTicket = map[string]continuationAdmitTicket{}
+	}
+	e.continuationAdmit[userID]++
+	e.continuationTicket[requestID] = continuationAdmitTicket{
+		userID: userID,
+		gen:    e.continuationAdmit[userID],
+	}
+	return true
+}
+
+// revokeContinuationAdmit invalidates every continuation already admitted for
+// this session. The next fire mints a newer generation.
+func (e *GoalContinuationEngine) revokeContinuationAdmit(userID string) {
+	if e == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.continuationAdmit == nil {
+		e.continuationAdmit = map[string]uint64{}
+	}
+	e.continuationAdmit[userID]++
+}
+
+// continuationAdmitRevoked reports that this dispatched request must not
+// enter. An unknown request is not a goal continuation and is left alone.
+func (e *GoalContinuationEngine) continuationAdmitRevoked(requestID string) bool {
+	if e == nil {
+		return false
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	ticket, ok := e.continuationTicket[requestID]
+	if !ok || ticket.gen == 0 {
+		return false
+	}
+	return e.continuationAdmit[ticket.userID] != ticket.gen
+}
+
+func (e *GoalContinuationEngine) finishContinuationAdmit(requestID string) {
+	if e == nil {
+		return
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return
+	}
+	e.mu.Lock()
+	delete(e.continuationTicket, requestID)
+	e.mu.Unlock()
+}
+
+// goalContinuationRequestSeq keeps admit tickets unique. The map fail-opens
+// for an unknown request, so two fires that shared a millisecond would drop
+// each other's ticket and the paused one could still enter.
+var goalContinuationRequestSeq atomic.Uint64
+
+// admittedContinuationGoal is the row a fire may still address after admit
+// has released the engine lock. Delete and pause both land in that gap.
+// A removed or stopped row retires the ticket. Continue arms a new timer
+// and a new admit; this fire must not stay around to run beside it.
+func (e *GoalContinuationEngine) admittedContinuationGoal(userID, goalID, requestID string) *goal.Goal {
+	if e == nil {
+		return nil
+	}
+	var g *goal.Goal
+	if e.store != nil {
+		g = e.store.Get(userID)
+	}
+	if g == nil || g.GoalID != goalID || !g.ShouldContinue() {
+		e.finishContinuationAdmit(requestID)
+		return nil
+	}
+	return g
+}
+
 // fireContinuation dispatches the self-message that triggers the next agent loop turn.
 func (e *GoalContinuationEngine) fireContinuation(userID, goalID string) {
 	e.dispatchContinuation(userID, goalID, e.takeScheduledCorrection(userID, goalID))
 }
 
 func (e *GoalContinuationEngine) dispatchContinuation(userID, goalID string, kind goalCorrectionKind) {
-	// Re-check goal is still active (may have been cancelled during cooldown)
-	g := e.store.Get(userID)
-	if g == nil || g.GoalID != goalID || !g.ShouldContinue() {
+	// Re-check goal is still active (may have been cancelled during cooldown).
+	// Admitting under the same lock closes the gap where pause lands after
+	// this check and before the turn enters the session.
+	idPrefix := goalID
+	if len(idPrefix) > 8 {
+		idPrefix = idPrefix[:8]
+	}
+	requestID := fmt.Sprintf("goal-cont-%s-%d-%d", idPrefix, time.Now().UnixMilli(), goalContinuationRequestSeq.Add(1))
+	if !e.admitContinuationIfContinuable(userID, goalID, requestID) {
+		g := e.store.Get(userID)
 		if kind == goalCorrectionPlan {
 			e.abandonUnsentPlanCorrection(userID, goalID, g)
 		}
@@ -644,6 +938,11 @@ func (e *GoalContinuationEngine) dispatchContinuation(userID, goalID string, kin
 		return
 	}
 
+	g := e.admittedContinuationGoal(userID, goalID, requestID)
+	if g == nil {
+		log.Printf("[goal-continuation] skipping fire: goal no longer continuable user=%s", userID)
+		return
+	}
 	prompt := e.buildContinuationPrompt(g)
 	display := buildContinuationDisplayText(g)
 	if kind == goalCorrectionPlan && g.EffectivePhase() == goal.PhasePlan && len(g.Steps) == 0 {
@@ -657,28 +956,27 @@ func (e *GoalContinuationEngine) dispatchContinuation(userID, goalID string, kin
 	// We cannot use continueAIAssistantWorkflowMessage because it sets
 	// Platform="desktop", which would bypass our platform-based accounting
 	// and trigger OnUserMessage (cancelling our own continuation).
+	// A fire that never starts its goroutine retires the ticket. Leaving it
+	// would make a later check of this request fail open once the entry is gone.
 	if e.app == nil {
+		e.finishContinuationAdmit(requestID)
 		e.failGoal(userID, goalID, "目标失败：助手通道未就绪", false)
 		return
 	}
 	hubClient := e.app.ensureHubClient()
 	if hubClient == nil {
 		log.Printf("[goal-continuation] fire failed: hubClient nil user=%s", userID)
+		e.finishContinuationAdmit(requestID)
 		e.failGoal(userID, goalID, "目标失败：助手通道未就绪", true)
 		return
 	}
 	handler := hubClient.ensureIMHandler()
 	if handler == nil {
 		log.Printf("[goal-continuation] fire failed: handler nil user=%s", userID)
+		e.finishContinuationAdmit(requestID)
 		e.failGoal(userID, goalID, "目标失败：助手通道未就绪", true)
 		return
 	}
-
-	idPrefix := goalID
-	if len(idPrefix) > 8 {
-		idPrefix = idPrefix[:8]
-	}
-	requestID := fmt.Sprintf("goal-cont-%s-%d", idPrefix, time.Now().UnixMilli())
 
 	e.emitForegroundRoundStarted(requestID, userID, prompt, display)
 
@@ -708,6 +1006,7 @@ func (e *GoalContinuationEngine) runForegroundContinuation(handler *IMMessageHan
 		responseEmitted = e.app.emitAIAssistantResponse(msg.RequestID, resp)
 	}
 	defer func() {
+		e.finishContinuationAdmit(msg.RequestID)
 		if r := recover(); r != nil {
 			log.Printf("[goal-continuation] foreground request %s panicked: %v", msg.RequestID, r)
 			emitFinalResponse(&IMAgentResponse{Error: fmt.Sprintf("Goal continuation failed: %v", r)})
@@ -720,6 +1019,14 @@ func (e *GoalContinuationEngine) runForegroundContinuation(handler *IMMessageHan
 			log.Printf("[goal-continuation] foreground request %s final response could not be emitted", msg.RequestID)
 		}
 	}()
+	// Pause may have landed after dispatch admitted this turn. Do not enter
+	// the session. An empty final response closes the round the dispatch
+	// already opened and does not fail the goal or fence chat.
+	if e.continuationAdmitRevoked(msg.RequestID) {
+		log.Printf("[goal-continuation] dropped dispatched turn after the goal stopped user=%s request_id=%s", msg.UserID, msg.RequestID)
+		emitFinalResponse(&IMAgentResponse{})
+		return
+	}
 	emitEvent := func(name, value string) {
 		e.emitAssistantStreamEvent(name, msg.RequestID, msg.UserID, value)
 	}
@@ -1208,7 +1515,9 @@ func (e *GoalContinuationEngine) failGoal(userID, goalID, reason string, announc
 	if goalID == "" {
 		goalID = g.GoalID
 	}
-	if g.GoalID != goalID || g.IsTerminal() {
+	// Pause and delete own the row. A dying turn's error must not replace them
+	// with a failure. Budget and complete are already terminal.
+	if g.GoalID != goalID || g.Status != goal.StatusActive {
 		return
 	}
 	e.store.UpdateStatus(userID, goalID, goal.StatusFailed, reason)
@@ -1373,6 +1682,12 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuationOwned(userID string, res
 	}
 	engine := h.app.goalContinuation
 	g := engine.store.Get(userID)
+	// A bar pause or delete stopped this turn. Continue may already have made
+	// the goal active again. Leave that timer alone, and do not fail the row.
+	if resp != nil && resp.userStopped && engine.consumeGoalBarHold(userID) {
+		log.Printf("[goal-continuation] dying turn ignored after goal bar stop user=%s", userID)
+		return
+	}
 	if g == nil || g.IsTerminal() || g.Status != goal.StatusActive {
 		return
 	}

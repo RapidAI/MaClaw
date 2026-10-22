@@ -3700,7 +3700,7 @@ input.cwshare-url {
    the names. The row shrinks and does not grow, so free space stays after
    打开文件 instead of between the last filename and that button. 打开文件
    is the next title-bar item and keeps its own width. The gap after it
-   holds the document actions and 关闭 on the right. */
+   holds the document actions and 隐藏 on the right. */
 .file-companion-window {
   width: 100%;
   max-width: 100%;
@@ -3805,7 +3805,7 @@ input.cwshare-url {
   flex: 0 0 auto;
 }
 /* The mark plus the 6px gap widens each action. Two pixels less padding
-   on each side keeps 关闭 from being the first control the title bar clips. */
+   on each side keeps 隐藏 from being the first control the title bar clips. */
 .file-companion-tool:has(.file-companion-tool-icon) {
   padding: 0 10px;
 }
@@ -3825,11 +3825,6 @@ input.cwshare-url {
 }
 .file-companion-tool--close {
   margin-left: 8px;
-}
-.file-companion-tool--close:hover:not(:disabled) {
-  border-color: color-mix(in srgb, #b42318 28%, var(--theme-border, #d9e1ec));
-  background: rgba(180, 35, 24, 0.08);
-  color: #9a3412;
 }
 .file-companion-tab {
   flex: 0 1 220px;

@@ -47,7 +47,6 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
-	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/codingagent"
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/config"
@@ -2942,10 +2941,11 @@ func (c *codingSubAgentCallbacks) executeGoalTool(args map[string]interface{}) c
 		}
 	}
 	text := c.subagent.handler.toolGoalForUser(userID, args)
-	// A rejected plan/step is not a finished phase. Reporting it as success
-	// lets the model end the turn, and the host then fails the goal.
+	// The goal handler already wrote the lifecycle result. Its body may quote
+	// 失败 or start with 计划已保存. Classifying that prose as a failed save
+	// makes the model abandon complete, and the row stays active.
 	outcome := codingToolOutcomeSuccess
-	if agentruntime.ToolTextFailure(text) {
+	if goalToolCallFailed(text) {
 		outcome = codingToolOutcomeFailed
 	}
 	return codingToolExecutionResult{Text: text, Outcome: outcome}
@@ -10980,7 +10980,8 @@ func extractPlanStepFocusFromTaskText(taskText string) (title, description strin
 	if taskText == "" {
 		return "", "", false
 	}
-	lower := strings.ToLower(taskText)
+	// foldASCIILower keeps the byte length, so idx is an index into taskText.
+	lower := foldASCIILower(taskText)
 	const marker = "[plan step "
 	idx := strings.Index(lower, marker)
 	if idx < 0 {
@@ -11006,12 +11007,12 @@ func extractPlanStepFocusFromTaskText(taskText string) (title, description strin
 		return "", "", false
 	}
 	// Description ends at the standard plan-step instruction block or next section.
-	bodyLower := strings.ToLower(body)
+	bodyLower := foldASCIILower(body)
 	best := -1
 	for _, m := range []string{
 		"you are executing plan step ",
 		"## overall user request",
-		"plan outline ",
+		learnedSkillPlanOutlineMarker,
 		"[session continuity",
 	} {
 		if i := strings.Index(bodyLower, m); i >= 0 && (best < 0 || i < best) {
@@ -17747,7 +17748,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 		if normalizedRemotePlatform() == "windows" {
 			b.WriteString(fmt.Sprintf("平台: %s\n", normalizedRemotePlatform()))
 			b.WriteString("Windows shell contract: bash 工具默认经 PowerShell 执行；互相独立的命令用 `;` 分隔；编译/测试后立刻运行必须用 `&&`（宿主会保留失败短路）；需要 cmd 语义时用 `cmd /c \"...\"`，并用 working_dir 指定目录。\n")
-			b.WriteString(formatWindowsMSVCToolchainHint(detectWindowsMSVCToolchain()))
+			b.WriteString(codingWindowsToolchainPrompt())
 			b.WriteString("\n")
 		} else {
 			b.WriteString(fmt.Sprintf("平台: %s\n", normalizedRemotePlatform()))
@@ -17832,7 +17833,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 		b.WriteString("Windows shell contract: bash 工具默认经 PowerShell 执行；互相独立的命令用 `;` 分隔，避免 bash-only 语法如 `mkdir -p`；编译/测试后立刻运行必须用 `&&`（宿主会保留失败短路）；需要 cmd 语义（`||`、`2>nul`）时用 `cmd /c \"...\"`，并用 working_dir 指定目录；不要在既有 build 目录中切换 CMake generators。不要再包一层 vcvars。仅含 ls/file/stat 或 python -c os.listdir 的探活由宿主改写成 Get-ChildItem；不要用 python3 列目录，也不要把 Unix file(1) 或坏掉的 pythoncore 当成验收。\n")
 		// Host-side vswhere detection — stop the agent from claiming VS is missing
 		// when only cl.exe is absent from the default PATH (normal for MSVC).
-		b.WriteString(formatWindowsMSVCToolchainHint(detectWindowsMSVCToolchain()))
+		b.WriteString(codingWindowsToolchainPrompt())
 		b.WriteString("\n")
 	}
 

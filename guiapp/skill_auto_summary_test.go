@@ -283,12 +283,21 @@ func TestSkillAutoSummary_DraftSkill_ExcludesAgentOrchestrationCalls(t *testing.
 		},
 	}
 
+	session.Entries = append(session.Entries,
+		TrajectoryEntry{Role: "assistant", ToolCalls: makeToolCallsWithID("c3", "todo_write", `{"todos":[]}`)},
+		TrajectoryEntry{Role: "tool", ToolCallID: "c3", Content: "ok"},
+		TrajectoryEntry{Role: "assistant", ToolCalls: makeToolCallsWithID("c4", "ssh_read_file", `{"path":"/home/project/a"}`)},
+		TrajectoryEntry{Role: "tool", ToolCallID: "c4", Content: "src"},
+		TrajectoryEntry{Role: "assistant", ToolCalls: makeToolCallsWithID("c5", "bash", `{"command":"printf inspect"}`)},
+		TrajectoryEntry{Role: "tool", ToolCallID: "c5", Content: "inspect"},
+	)
+
 	draft, err := DraftSkill(session)
 	if err != nil {
 		t.Fatalf("DraftSkill: %v", err)
 	}
-	if len(draft.Steps) != 1 || draft.Steps[0].Action != "ssh_list_dir" {
-		t.Fatalf("steps=%#v, want only ssh_list_dir", draft.Steps)
+	if len(draft.Steps) != 1 || draft.Steps[0].Action != "bash" {
+		t.Fatalf("steps=%#v, want only the bash procedure", draft.Steps)
 	}
 }
 
@@ -305,6 +314,25 @@ func TestSkillAutoSummary_DraftSkill_RejectsOrchestrationOnlyTrajectory(t *testi
 	_, err := DraftSkill(session)
 	if err == nil || !strings.Contains(err.Error(), "no reusable task steps") {
 		t.Fatalf("DraftSkill error=%v, want orchestration-only rejection", err)
+	}
+}
+
+func TestSkillAutoSummary_DraftSkill_RejectsObservationOnlyTrajectory(t *testing.T) {
+	session := &TrajectorySession{
+		SessionID: "observation-only",
+		Entries: []TrajectoryEntry{
+			{Role: "user", Content: "look at the workspace"},
+			{Role: "assistant", ToolCalls: makeToolCallsWithID("c1", "todo_write", `{"todos":[]}`)},
+			{Role: "tool", ToolCallID: "c1", Content: "ok"},
+			{Role: "assistant", ToolCalls: makeToolCallsWithID("c2", "ssh_list_dir", `{"path":"/home/project"}`)},
+			{Role: "tool", ToolCallID: "c2", Content: "src"},
+			{Role: "assistant", ToolCalls: makeToolCallsWithID("c3", "ssh_read_file", `{"path":"/home/project/a"}`)},
+			{Role: "tool", ToolCallID: "c3", Content: "src"},
+		},
+	}
+	_, err := DraftSkill(session)
+	if err == nil || !strings.Contains(err.Error(), "no reusable task steps") {
+		t.Fatalf("DraftSkill error=%v, want observation-only rejection", err)
 	}
 }
 
@@ -469,14 +497,28 @@ func autoSummaryDurableMutationSession(id string) *TrajectorySession {
 		SessionID: id,
 		Entries: []TrajectoryEntry{
 			{Role: "user", Content: "summarize the repeatable remote workspace inspection"},
-			{Role: "assistant", ToolCalls: makeToolCallsWithID("auto-summary-1", "ssh_read_file", `{"path":"/workspace/config.json"}`)},
-			{Role: "tool_result", ToolCallID: "auto-summary-1", Content: "{}"},
-			{Role: "assistant", ToolCalls: makeToolCallsWithID("auto-summary-2", "ssh_list_dir", `{"path":"/workspace"}`)},
-			{Role: "tool_result", ToolCallID: "auto-summary-2", Content: "config.json"},
-			{Role: "assistant", ToolCalls: makeToolCallsWithID("auto-summary-3", "ssh_write_file", `{"path":"/workspace/report.txt","content":"checked"}`)},
-			{Role: "tool_result", ToolCallID: "auto-summary-3", Content: "ok"},
+			{Role: "assistant", ToolCalls: makeToolCallsWithID("auto-summary-1", "bash", `{"command":"printf inspect"}`)},
+			{Role: "tool_result", ToolCallID: "auto-summary-1", Content: "inspect"},
+			{Role: "assistant", ToolCalls: makeToolCallsWithID("auto-summary-2", "ssh_bash", `{"command":"printf report"}`)},
+			{Role: "tool_result", ToolCallID: "auto-summary-2", Content: "report"},
+			{Role: "assistant", ToolCalls: makeToolCallsWithID("auto-summary-3", "bash", `{"command":"printf checked"}`)},
+			{Role: "tool_result", ToolCallID: "auto-summary-3", Content: "checked"},
 		},
 	}
+}
+
+func autoSummaryCommandTranscriptSession(id string) *TrajectorySession {
+	session := autoSummaryDurableMutationSession(id)
+	session.Entries[0].Content = "请执行以下编码任务：\n\n**Before editing**:\n1. Use code_navigation\n"
+	session.Entries[1].ToolCalls = makeToolCallsWithID("auto-summary-1", "bash", `{"command":"Get-ChildItem C:\\Users\\ma139\\.maclaw"}`)
+	return session
+}
+
+func autoSummaryParameterizedPathSession(id string) *TrajectorySession {
+	session := autoSummaryDurableMutationSession(id)
+	session.Entries[0].Content = "列出指定目录里的文件"
+	session.Entries[1].ToolCalls = makeToolCallsWithID("auto-summary-1", "bash", `{"command":"Get-ChildItem C:\\Users\\ma139\\.maclaw","working_dir":"C:\\Users\\ma139\\.maclaw"}`)
+	return session
 }
 
 func TestSkillAutoSummaryPipelineDefaultsToNoDurableMutation(t *testing.T) {
@@ -568,6 +610,64 @@ func TestSkillAutoSummaryPipelineCommitsStagedDefinition(t *testing.T) {
 		t.Fatalf("committed auto-summary left staging entries: %#v", entries)
 	} else if err != nil && !os.IsNotExist(err) {
 		t.Fatalf("read staging root: %v", err)
+	}
+}
+
+func TestSkillAutoSummaryPipelineLiftsSessionOperands(t *testing.T) {
+	app := setupNLSkillTransactionApp(t)
+	cfg := corelib.AppConfig{}
+	cfg.SetSkillEvolutionEnabled(true)
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	p := NewSkillAutoSummaryPipeline(nil, allowAllChecker(), app.skillExecutor, nil)
+	p.RunPipeline(autoSummaryParameterizedPathSession("auto-summary-parameterized"))
+
+	loaded := app.skillExecutor.loadSkills()
+	if len(loaded) != 1 {
+		t.Fatalf("installed skills=%#v, want the parameterized skill", loaded)
+	}
+	data, err := os.ReadFile(filepath.Join(loaded[0].SkillDir, "skill.yaml"))
+	if err != nil {
+		t.Fatalf("read skill.yaml: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "{{path_1}}") || !strings.Contains(text, "path_1") {
+		t.Fatalf("skill.yaml lost the path parameter:\n%s", text)
+	}
+	if strings.Contains(text, `C:\Users`) || strings.Contains(text, ".maclaw") {
+		t.Fatalf("skill.yaml still embeds the session path:\n%s", text)
+	}
+	if len(loaded[0].RequiredArgs) != 1 || loaded[0].RequiredArgs[0] != "path_1" {
+		t.Fatalf("required_args = %#v, want [path_1]", loaded[0].RequiredArgs)
+	}
+}
+
+func TestSkillAutoSummaryPipelineSkipsHostScaffoldWithoutATask(t *testing.T) {
+	app := setupNLSkillTransactionApp(t)
+	cfg := corelib.AppConfig{}
+	cfg.SetSkillEvolutionEnabled(true)
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	p := NewSkillAutoSummaryPipeline(nil, allowAllChecker(), app.skillExecutor, nil)
+	p.RunPipeline(autoSummaryCommandTranscriptSession("auto-summary-transcript"))
+
+	loaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.NLSkills) != 0 {
+		t.Fatalf("host scaffold was registered: %#v", loaded.NLSkills)
+	}
+	root, err := app.primarySkillsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries, err := os.ReadDir(root); err == nil && len(entries) != 0 {
+		t.Fatalf("host scaffold created durable skill entries: %#v", entries)
+	} else if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read primary skills root: %v", err)
 	}
 }
 
@@ -732,9 +832,9 @@ func TestSkillAutoSummary_DraftSkill_DoesNotMergeDifferentStepParameters(t *test
 		SessionID: "preserve-distinct-read-paths",
 		Entries: []TrajectoryEntry{
 			{Role: "user", Content: "read both source files"},
-			{Role: "assistant", ToolCalls: makeToolCallsWithID("c1", "ssh_read_file", `{"path":"/project/a.cpp"}`)},
+			{Role: "assistant", ToolCalls: makeToolCallsWithID("c1", "ssh_bash", `{"command":"printf alpha"}`)},
 			{Role: "tool", ToolCallID: "c1", Content: "source a"},
-			{Role: "assistant", ToolCalls: makeToolCallsWithID("c2", "ssh_read_file", `{"path":"/project/b.cpp"}`)},
+			{Role: "assistant", ToolCalls: makeToolCallsWithID("c2", "ssh_bash", `{"command":"printf beta"}`)},
 			{Role: "tool", ToolCallID: "c2", Content: "source b"},
 		},
 	}
@@ -744,11 +844,11 @@ func TestSkillAutoSummary_DraftSkill_DoesNotMergeDifferentStepParameters(t *test
 		t.Fatalf("DraftSkill: %v", err)
 	}
 	if len(draft.Steps) != 2 {
-		t.Fatalf("steps=%#v, want two distinct reads", draft.Steps)
+		t.Fatalf("steps=%#v, want two distinct commands", draft.Steps)
 	}
-	for i, wantPath := range []string{"/project/a.cpp", "/project/b.cpp"} {
-		if got := draft.Steps[i].Params["path"]; got != wantPath {
-			t.Errorf("step[%d].params.path=%#v, want %q", i, got, wantPath)
+	for i, wantCommand := range []string{"printf alpha", "printf beta"} {
+		if got := draft.Steps[i].Params["command"]; got != wantCommand {
+			t.Errorf("step[%d].params.command=%#v, want %q", i, got, wantCommand)
 		}
 		if _, repeated := draft.Steps[i].Params["_repeat_count"]; repeated {
 			t.Errorf("step[%d] unexpectedly became a repeated call", i)
@@ -792,7 +892,7 @@ func TestSkillAutoSummary_DraftSkill_ExcludesExplicitlyFailedToolCalls(t *testin
 			{Role: "user", Content: "inspect the remote project"},
 			{Role: "assistant", ToolCalls: makeToolCallsWithID("c1", "ssh_bash", `{"command":"false"}`)},
 			{Role: "tool_result", ToolCallID: "c1", ToolOutcome: "failed", Content: "exit status 1"},
-			{Role: "assistant", ToolCalls: makeToolCallsWithID("c2", "ssh_list_dir", `{"path":"/project"}`)},
+			{Role: "assistant", ToolCalls: makeToolCallsWithID("c2", "ssh_bash", `{"command":"printf ok"}`)},
 			{Role: "tool_result", ToolCallID: "c2", ToolOutcome: "succeeded", Content: "src"},
 		},
 	}
@@ -801,8 +901,8 @@ func TestSkillAutoSummary_DraftSkill_ExcludesExplicitlyFailedToolCalls(t *testin
 	if err != nil {
 		t.Fatalf("DraftSkill: %v", err)
 	}
-	if len(draft.Steps) != 1 || draft.Steps[0].Action != "ssh_list_dir" {
-		t.Fatalf("steps=%#v, want only the successful ssh_list_dir call", draft.Steps)
+	if len(draft.Steps) != 1 || draft.Steps[0].Action != "ssh_bash" {
+		t.Fatalf("steps=%#v, want only the successful ssh_bash call", draft.Steps)
 	}
 }
 
@@ -872,7 +972,14 @@ func TestRedactLearnedSkillIntent(t *testing.T) {
 	}{
 		{"plain request kept", "deploy the application", "deploy the application"},
 		{"windows path", `对比评分表 C:\Users\ma139\Desktop\bid.xlsx 的技术分`, "对比评分表 <路径> 的技术分"},
+		{"spaced windows path", `打开 C:\Program Files\app 写报告`, "打开 <路径> 写报告"},
+		{"spaced path split by a newline", "打开 C:\\Program\nFiles\\app 写报告", "打开 <路径> 写报告"},
+		{"spaced path stops before the clause", `打开 C:\Program Files\app，写报告`, "打开 <路径>，写报告"},
+		{"next token without a slash stays outside the path", `打开 C:\Program Files 写报告`, "打开 <路径> Files 写报告"},
+		{"single-quoted sentence keeps the task", `'C:\Program Files\app 请写发布说明'`, `'<路径> 请写发布说明'`},
+		{"quoted path title leaves the surrounding task", `打开 "C:\Program Files\app" 写报告`, "打开 <文档> 写报告"},
 		{"unix path", "read /home/ma139/proj/main.go and fix it", "read <路径> and fix it"},
+		{"spaced unix path", "read /home/ma139/My Documents/file and fix it", "read <路径> and fix it"},
 		{"url", "抓取 https://example.com/a/b?q=1 的内容", "抓取 <链接> 的内容"},
 		{"email", "把结果发给 ma139@example.com", "把结果发给 <邮箱>"},
 		{"quoted document title", `请修改 "一代智慧零信任安全管理平台软件设计报告" 的章节`, "请修改 <文档> 的章节"},
@@ -923,6 +1030,42 @@ func TestSkillAutoSummary_DraftSkill_RedactsRequestDetails(t *testing.T) {
 	}
 	if !strings.Contains(draft.Description, "汇总") {
 		t.Fatalf("description %q lost the task gist", draft.Description)
+	}
+}
+
+func TestSkillAutoSummary_DraftSkill_BindsSessionOperands(t *testing.T) {
+	draft, err := DraftSkill(autoSummaryParameterizedPathSession("bind-operands"))
+	if err != nil {
+		t.Fatalf("DraftSkill: %v", err)
+	}
+	command, _ := draft.Steps[0].Params["command"].(string)
+	work, _ := draft.Steps[0].Params["working_dir"].(string)
+	if command != "Get-ChildItem {{path_1}}" || work != "{{path_1}}" {
+		t.Fatalf("command=%q working_dir=%q", command, work)
+	}
+	if len(draft.RequiredArgs) != 1 || draft.RequiredArgs[0] != "path_1" {
+		t.Fatalf("required_args=%#v", draft.RequiredArgs)
+	}
+	if !strings.Contains(draft.Description, "列出指定目录") {
+		t.Fatalf("description=%q", draft.Description)
+	}
+	for _, step := range draft.Steps {
+		for _, value := range step.Params {
+			text, _ := value.(string)
+			if strings.Contains(text, `C:\Users`) || strings.Contains(text, ".maclaw") {
+				t.Fatalf("step still embeds the session path: %#v", step.Params)
+			}
+		}
+	}
+}
+
+func TestSkillAutoSummary_DraftSkill_SkipsHostScaffold(t *testing.T) {
+	draft, err := DraftSkill(autoSummaryCommandTranscriptSession("scaffold-only"))
+	if err == nil {
+		t.Fatalf("DraftSkill published a scaffold with no task: %#v", draft)
+	}
+	if !strings.Contains(err.Error(), "no user request") {
+		t.Fatalf("error = %v, want a missing-user-request rejection", err)
 	}
 }
 

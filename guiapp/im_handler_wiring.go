@@ -680,6 +680,29 @@ type IMMessageHandler struct {
 	// Keyed by userID, value is *inFlightTurn.
 	inFlightTurns sync.Map
 
+	// goalBarStopGen is the pending-turn generation a goal-bar pause or delete
+	// must stop before that turn publishes a loop. It is not a chat fence:
+	// the next message uses a newer generation and is left alone.
+	// Keyed by userID, value is uint64.
+	goalBarStopGen sync.Map
+
+	// goalBarSteer is a rewritten goal command for the turn that already
+	// holds the session but has not published a loop. Publishing moves it
+	// into pendingInjection. Ending the session without publishing drops it,
+	// so the next message does not inherit the stopped turn's command.
+	// Keyed by userID, value is string.
+	goalBarSteer sync.Map
+
+	// goalBarNoQuestionGen is the newest foreground generation whose turn the
+	// goal bar stopped. That generation, and any older one still finishing,
+	// must not publish a question. Taking goalBarStopGen does not clear this.
+	// It is not a chat fence: the next message uses a newer generation.
+	// Keyed by userID, value is uint64.
+	goalBarNoQuestionGen sync.Map
+	// goalBarQuestionMu orders that mark with a question publish or delete.
+	// A publish either completes before the mark or sees the mark and does not write.
+	goalBarQuestionMu sync.Mutex
+
 	// interruptHandler bridges IM gateways to the running agent loop's
 	// cancel/merge/status mechanisms. Set during construction.
 	interruptHandler *imInterruptHandler

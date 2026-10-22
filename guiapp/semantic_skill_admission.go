@@ -24,10 +24,16 @@ import (
 //
 //  1. On a complex task, score installed skills in this experience pool.
 //     A match is used only when it is the right skill (its name or a trigger
-//     is in the request) and it is complete (the runner can execute it, or
-//     it is an agent-guided workflow with its instructions).
-//  2. A runnable match is published as a closed skill_* function. The model
-//     supplies business arguments. The host keeps the skill identity.
+//     is in the request) and it is complete (the runner can execute it, or it
+//     is an agent-guided workflow with its instructions). A learned skill
+//     whose steps still embed a session path, URL, or email is not complete:
+//     those values are parameters, and the draft that failed to bind them is
+//     not a skill. When the name and every trigger miss, one reusable learned
+//     recipe can still match by its description embedding, unless the user
+//     named a skill. A named miss stays on search and install.
+//  2. A runnable match is published as a closed skill_* function. Its
+//     parameters are that skill's parameter contract, so a required path is
+//     required on the first call. The host keeps the skill identity.
 //  3. An agent-guided match injects its instructions and the host tools those
 //     instructions need. It is not a manage_skill run.
 //  4. When nothing qualifies, the request lists search_and_install_skill.
@@ -64,6 +70,10 @@ type admittedSkillBinding struct {
 	Version       string
 	ContentDigest string
 	Description   string
+	// Params is the runner parameter contract: declared params completed
+	// from placeholders and required_args. The admitted function schema is
+	// this list.
+	Params []corelib.NLSkillParam
 }
 
 type skillAdmissionDecision struct {
@@ -94,7 +104,16 @@ func (h *IMMessageHandler) skillAdmissionForTurn(ctx *LoopContext, userText stri
 	if ctx != nil {
 		owner = ctx.UserID
 	}
-	bound, guided := admitLocalSkills(exec, text, h.skillExperienceDomainForOwner(owner))
+	domain := h.skillExperienceDomainForOwner(owner)
+	bound, guided := admitLocalSkills(exec, text, domain)
+	// A named skill that is not installed has to be searched and installed.
+	// Vector recall would force some other learned recipe and never reach
+	// that search. Paraphrases that do not name a skill still use the vector.
+	if len(guided) == 0 && len(bound) == 0 && !intent.ExplicitSkillInvocation(text) {
+		if extra := admitLearnedSkillByVector(exec, text, domain, getSubAgentEmbedder(h)); extra != nil {
+			bound = []admittedSkillBinding{*extra}
+		}
+	}
 	switch {
 	case len(guided) > 0:
 		log.Printf("[skill-admission] mode=guided task=%q skill=%s", truncateLogText(text, 60), guided[0].Name)
@@ -335,7 +354,8 @@ func admitLocalSkills(exec *SkillExecutor, userText, domain string) ([]admittedS
 			StableID:      agentservice.DynamicSkillStableID(pick.entry),
 			Version:       strings.TrimSpace(pick.entry.Version),
 			ContentDigest: agentservice.DynamicSkillContentDigest(pick.entry),
-			Description:   strings.TrimSpace(pick.def.Description),
+			Description:   skillAdmissionPublishedDescription(pick.entry.Source, pick.def.Description),
+			Params:        skill.CompleteParamsForRunner(pick.entry.Params, pick.entry.Steps, pick.entry.RequiredArgs),
 		}
 		bound = append(bound, binding)
 	}
@@ -388,6 +408,11 @@ func skillCompleteForAdmission(entry corelib.NLSkillEntry) (guided, runnable boo
 	}
 	if skill.IsAgentGuidedWorkflowSkill(&entry) && strings.TrimSpace(skill.AgentGuidedWorkflowInstructions(&entry)) != "" {
 		return true, false
+	}
+	// A learned procedure that still names a session path, URL, or email has
+	// no parameter for the runner to fill. It is the trace of one run.
+	if learnedSkillMissingParameterContract(entry.Source, entry.Steps) {
+		return false, false
 	}
 	if skill.IsKnowledgeSkillType(entry.Type) || skill.IsInstructionOnlySkillType(entry.Type) {
 		return false, false
@@ -442,6 +467,16 @@ func skillAdmissionToolDefinition(binding admittedSkillBinding) map[string]inter
 	desc := "执行宿主已选定的本机 Skill「" + binding.Name + "」。这个函数只运行这一个 Skill，不要传 Skill 名称，不要再搜索或安装，也不要改叫 manage_skill。"
 	if binding.Description != "" {
 		desc += " " + truncateTraceText(binding.Description, 160)
+	}
+	// The function parameters are the skill's own contract. A required path
+	// is required here, so the first call can supply it. A skill with no
+	// parameters keeps a free-form args object.
+	if schema := skill.ParamSchemaJSONObject(binding.Params); schema != nil {
+		props, _ := schema["properties"].(map[string]interface{})
+		required, _ := schema["required"].([]string)
+		if len(props) > 0 {
+			return toolDef(binding.Alias, desc, props, required)
+		}
 	}
 	return toolDef(binding.Alias, desc, map[string]interface{}{
 		"args": map[string]interface{}{

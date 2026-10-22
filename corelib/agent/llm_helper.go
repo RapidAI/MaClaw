@@ -305,6 +305,12 @@ func shouldRetrySimpleLLMError(err error) bool {
 	if llm.IsSSEIdleTimeoutError(err) {
 		return true
 	}
+	// The upstream closed the SSE body mid-frame. Coding hosts suppress the
+	// immediate non-stream fallback, so this has to enter the same backoff
+	// or the turn ends on the first dropped connection.
+	if llm.IsUnexpectedStreamEOF(err) {
+		return true
+	}
 	var netErr net.Error
 	return errors.As(err, &netErr)
 }

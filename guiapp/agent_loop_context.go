@@ -183,6 +183,11 @@ type LoopContext struct {
 	// codeSessionID scopes source-preview events emitted by nested coding
 	// SubAgents to the same UI code session opened by the workflow runner.
 	codeSessionID string
+	// queuedGoalTurnHold is the inbound message's park flag. It stays false
+	// until schedulePostLoopSideEffects runs and this loop will arm the next
+	// goal turn. A return before that leaves the flag false, and the message
+	// handler puts the parked continuation back.
+	queuedGoalTurnHold *bool
 
 	// SkipNeedsConfirmGate is set only for non-review continuations that have
 	// their own interaction state, such as attachment bypasses or ask_user

@@ -10,12 +10,13 @@ import (
 )
 
 type imMessageSerializationResult struct {
-	EntriesBeforeClear []agent.ConversationEntry
-	UnfinishedSlot     *agent.UnfinishedTaskSlot
-	Decision           explicitTaskSlotDecision
-	Response           *IMAgentResponse
-	Handled            bool
-	Unlock             func()
+	EntriesBeforeClear     []agent.ConversationEntry
+	UnfinishedSlot         *agent.UnfinishedTaskSlot
+	Decision               explicitTaskSlotDecision
+	Response               *IMAgentResponse
+	Handled                bool
+	ActiveLoopOwnsNextTurn bool
+	Unlock                 func()
 }
 
 func (h *IMMessageHandler) enterIMMessageSerializationBoundary(msg IMUserMessage, providedLoopCtx *LoopContext, entries []agent.ConversationEntry, unfinishedSlot *agent.UnfinishedTaskSlot, decision explicitTaskSlotDecision) imMessageSerializationResult {
@@ -34,10 +35,16 @@ func (h *IMMessageHandler) enterIMMessageSerializationBoundary(msg IMUserMessage
 	// Only attempt interrupt/merge if the active loop belongs to the SAME
 	// userID. Project tabs use a different userID ("desktop-user:{path}"),
 	// so their messages must NOT be merged into the local tab's loop.
-	if h.interruptHandler != nil && msg.Text != "" && !h.hasCancelledTaskBoundary(msg.UserID) && h.hasActiveLoopForUser(msg.UserID) {
+	// A goal continuation is the engine's own next turn. It waits on the
+	// session lock, and the admit generation then drops it if pause already
+	// won. The continuation text says "不要…". The interrupt scheduler reads
+	// that as the person cancelling or merging, which fences chat or leaves
+	// the prompt on the next message after pause.
+	if h.interruptHandler != nil && msg.Text != "" && msg.Platform != "goal-continuation" && !h.hasCancelledTaskBoundary(msg.UserID) && h.hasActiveLoopForUser(msg.UserID) {
 		interrupt := h.interruptHandler.TryInterrupt(msg.UserID, msg.Text)
 		if interrupt.PendingConfirm || interrupt.Handled {
 			result.Handled = true
+			result.ActiveLoopOwnsNextTurn = true
 			result.Response = &IMAgentResponse{
 				Text:        interrupt.Reply,
 				Corrections: interrupt.Corrections,
@@ -101,6 +108,9 @@ func (h *IMMessageHandler) enterIMMessageSerializationBoundary(msg IMUserMessage
 		unlockOnce.Do(func() {
 			log.Printf("[IM serialization] release user=%q held=%v background=%v", msg.UserID, time.Since(waitStartedAt).Round(time.Millisecond), msg.IsBackground)
 			h.setPendingForegroundText(msg.UserID, "")
+			// This turn did not publish, or it already took the command.
+			// Either way the held note must not ride into the next message.
+			h.dropGoalCommandSteer(msg.UserID)
 			state.mu.Unlock()
 		})
 	}

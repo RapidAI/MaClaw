@@ -4,8 +4,11 @@ import { KnowledgeSettingsPanel } from '../KnowledgeSettingsPanel';
 import {
     KnowledgeCapabilities,
     KnowledgeExportSnapshotWithOptions,
+    KnowledgeBrowseAddFolderWatch,
     KnowledgeHealth,
+    KnowledgeListFolderWatches,
     KnowledgeListImportBatches,
+    KnowledgeRemoveFolderWatch,
     KnowledgeListSources,
     KnowledgeSaveText,
     KnowledgeShareToHub,
@@ -43,6 +46,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => {
         'PatchConfigFields',
         'KnowledgeCapabilities',
         'KnowledgeBackfillSourceAutoLabels',
+        'KnowledgeBrowseAddFolderWatch',
         'KnowledgeDeleteSource',
         'KnowledgeDeleteFragment',
         'KnowledgeDiscoverURLs',
@@ -85,6 +89,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => {
         'KnowledgeListCardsBySource',
         'KnowledgeListDuplicateCards',
         'KnowledgeListFactsBySource',
+        'KnowledgeListFolderWatches',
         'KnowledgeListSuppressedCards',
         'KnowledgeListSources',
         'KnowledgeLinkSources',
@@ -104,6 +109,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => {
         'KnowledgeRefreshSources',
         'KnowledgeRefreshSourcesByFilter',
         'KnowledgeRetryImportBatch',
+        'KnowledgeRemoveFolderWatch',
         'KnowledgeRestoreSuppressedCards',
         'KnowledgeSaveURL',
         'KnowledgeSaveURLs',
@@ -161,6 +167,9 @@ vi.mock('../../../../wailsjs/go/main/App', () => {
         LoadConfig: vi.fn(async () => ({})),
         PatchConfigFields: vi.fn(async (patch: Record<string, unknown>) => patch || {}),
         KnowledgeListSources: arrayResult,
+        KnowledgeListFolderWatches: vi.fn(async () => []),
+        KnowledgeBrowseAddFolderWatch: vi.fn(async () => ({})),
+        KnowledgeRemoveFolderWatch: vi.fn(async () => undefined),
         KnowledgeSearch: arrayResult,
         KnowledgeSearchStructured: arrayResult,
         KnowledgeStructuredCatalog: vi.fn(async () => ({
@@ -257,9 +266,47 @@ describe('KnowledgeSettingsPanel component', () => {
         expect(screen.getByRole('tab', { name: 'Search' })).toBeTruthy();
         expect(screen.getByRole('tab', { name: 'Sources' })).toBeTruthy();
         expect(screen.getByRole('tab', { name: 'Quality' })).toBeTruthy();
+        const tabNames = screen.getAllByRole('tab').map(tab => tab.textContent);
+        expect(tabNames.indexOf('Watch')).toBe(tabNames.indexOf('Quality') - 1);
 
         await waitFor(() => expect(KnowledgeHealth).toHaveBeenCalled());
         expect(KnowledgeCapabilities).toHaveBeenCalled();
+    });
+
+    it('adds and removes a watched folder before the quality tab', async () => {
+        const watches: Array<Record<string, unknown>> = [];
+        vi.mocked(KnowledgeListFolderWatches).mockImplementation(async () => watches.slice());
+        vi.mocked(KnowledgeBrowseAddFolderWatch).mockImplementation(async () => {
+            const added = { id: 'kfw_notes', path: 'D:\\Notes', status: 'watching', imported_files: 1, skipped_files: 0, failed_files: 0, last_import_at: '2026-10-22T00:00:00Z', last_error: 'stopped watching new directories after 2000' };
+            watches.splice(0, watches.length, added);
+            return added;
+        });
+        vi.mocked(KnowledgeRemoveFolderWatch).mockImplementation(async () => {
+            watches.splice(0, watches.length);
+        });
+
+        try {
+            render(<KnowledgeSettingsPanel lang="zh-Hans" />);
+            const tabs = screen.getAllByRole('tab').map(tab => tab.textContent);
+            expect(tabs.indexOf('监控')).toBe(tabs.indexOf('质量') - 1);
+
+            fireEvent.click(screen.getByRole('tab', { name: '监控' }));
+            expect(await screen.findByText('还没有监控文件夹。')).toBeTruthy();
+            expect(screen.getByText(/从列表移除文件夹只会停止监控/)).toBeTruthy();
+
+            fireEvent.click(screen.getByRole('button', { name: '添加文件夹' }));
+            expect(await screen.findByText('D:\\Notes')).toBeTruthy();
+            expect(screen.getByText(/已停止监控新的子目录（上限 2000）/)).toBeTruthy();
+            expect(KnowledgeBrowseAddFolderWatch).toHaveBeenCalled();
+
+            fireEvent.click(screen.getByRole('button', { name: '移除监控 D:\\Notes' }));
+            expect(await screen.findByText('还没有监控文件夹。')).toBeTruthy();
+            expect(KnowledgeRemoveFolderWatch).toHaveBeenCalledWith('kfw_notes');
+        } finally {
+            vi.mocked(KnowledgeListFolderWatches).mockResolvedValue([]);
+            vi.mocked(KnowledgeBrowseAddFolderWatch).mockResolvedValue({});
+            vi.mocked(KnowledgeRemoveFolderWatch).mockResolvedValue(undefined);
+        }
     });
 
     it('labels the GUI entry as Enterprise digital assets and explains a skipped sync', async () => {

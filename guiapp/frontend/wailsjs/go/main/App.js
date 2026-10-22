@@ -2855,6 +2855,10 @@ export function KnowledgeBackfillSourceAutoLabels(arg1) {
   return window['go']['main']['App']['KnowledgeBackfillSourceAutoLabels'](arg1);
 }
 
+export function KnowledgeBrowseAddFolderWatch() {
+  return window['go']['main']['App']['KnowledgeBrowseAddFolderWatch']();
+}
+
 export function KnowledgeCancelImportIndexing(arg1) {
   return window['go']['main']['App']['KnowledgeCancelImportIndexing'](arg1);
 }
@@ -3011,6 +3015,10 @@ export function KnowledgeListFactsBySource(arg1, arg2) {
   return window['go']['main']['App']['KnowledgeListFactsBySource'](arg1, arg2);
 }
 
+export function KnowledgeListFolderWatches() {
+  return window['go']['main']['App']['KnowledgeListFolderWatches']();
+}
+
 export function KnowledgeListImportBatches(arg1) {
   return window['go']['main']['App']['KnowledgeListImportBatches'](arg1);
 }
@@ -3129,6 +3137,10 @@ export function KnowledgeRefreshSources(arg1) {
 
 export function KnowledgeRefreshSourcesByFilter(arg1) {
   return window['go']['main']['App']['KnowledgeRefreshSourcesByFilter'](arg1);
+}
+
+export function KnowledgeRemoveFolderWatch(arg1) {
+  return window['go']['main']['App']['KnowledgeRemoveFolderWatch'](arg1);
 }
 
 export function KnowledgeRestoreSuppressedCards(arg1) {

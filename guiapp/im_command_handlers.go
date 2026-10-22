@@ -736,6 +736,11 @@ func (h *IMMessageHandler) handleBtwCommand(msg IMUserMessage, query string, onP
 	if isBtwMainAgentStatusQuery(query) {
 		return h.btwMainAgentStatusResponse(msg.UserID, h.imCommandResponseLang(msg.Lang))
 	}
+	// Park the goal timer for the subagent. Status above is a direct reply
+	// and leaves the queued turn alone. Restore refuses a goal that /cancel
+	// or /reset stopped while this query ran.
+	resumeGoalTurn := h.suspendQueuedGoalTurn(msg.UserID)
+	defer resumeGoalTurn()
 	responseLang := h.imCommandResponseLang(msg.Lang)
 	cfg := h.getMaclawLLMConfig()
 	httpClient := h.client

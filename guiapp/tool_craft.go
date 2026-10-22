@@ -1486,22 +1486,11 @@ func generateSkillName(task string) string {
 	return "craft_" + strings.ToLower(name)
 }
 
-// extractTriggerKeywords extracts simple trigger keywords from a task description.
+// extractTriggerKeywords keeps distinctive phrases from a task description.
+// Generic fragments are dropped by the shared extractor so a learned skill
+// cannot later bind on 工作区 or "from" alone.
 func extractTriggerKeywords(task string) []string {
-	words := strings.Fields(task)
-	var triggers []string
-	seen := make(map[string]bool)
-	for _, w := range words {
-		w = strings.ToLower(strings.Trim(w, "，。！？、"))
-		if len(w) > 1 && !seen[w] {
-			triggers = append(triggers, w)
-			seen[w] = true
-		}
-		if len(triggers) >= 5 {
-			break
-		}
-	}
-	return triggers
+	return coretool.ExtractTriggerKeywords(task)
 }
 
 // buildRunCommand returns the shell command to execute a saved script.

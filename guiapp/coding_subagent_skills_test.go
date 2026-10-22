@@ -125,6 +125,53 @@ func TestSelectRelevantSkillsForTaskFullEnvDoesNotPadWithUnrelatedSkills(t *test
 	}
 }
 
+func TestSelectRelevantSkillsForTaskIgnoresALearnedHostWrapper(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+	stored := strings.Join([]string{
+		"请执行以下编码任务：",
+		"",
+		"## T1: 修复 eslint 报错",
+		"",
+		"**Before editing**:",
+		"1. Use code_navigation",
+	}, "\n")
+	if err := app.SaveConfig(corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{{
+		Name: "craft_fix_eslint", Status: "active", Source: "learned",
+		ExperienceDomain: corelib.SkillDomainCoding,
+		Description:      stored,
+		Triggers:         []string{"请执行以下编码任务：", "##", "修复", "eslint"},
+		Steps:            []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo eslint"}}},
+	}}}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{
+		handler:         &IMMessageHandler{app: app},
+		fullEnvironment: true,
+	}}
+	wrapper := strings.Join([]string{
+		"请执行以下编码任务：",
+		"",
+		"## T9: 写一份发布说明",
+		"",
+		"**Before editing**:",
+		"1. Use code_navigation",
+	}, "\n")
+	if matched := cb.selectRelevantSkillsForTask(wrapper); len(matched) != 0 {
+		t.Fatalf("host wrapper selected a learned skill: %#v", matched)
+	}
+	matched := cb.selectRelevantSkillsForTask("修复 eslint 报错")
+	if len(matched) != 1 || matched[0].Name != "craft_fix_eslint" {
+		t.Fatalf("task match = %#v", matched)
+	}
+	if strings.Contains(matched[0].Description, "Before editing") || !strings.Contains(matched[0].Description, "eslint") {
+		t.Fatalf("summary = %q", matched[0].Description)
+	}
+}
+
 // Relevance scoring is not the isolation boundary. A skill learned from a
 // general chat is excluded from a coding turn even when its text scores well,
 // while the coding pool itself keeps accumulating across coding tasks.

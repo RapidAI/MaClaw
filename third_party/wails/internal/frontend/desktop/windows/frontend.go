@@ -33,6 +33,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/assetserver/webview"
 	"github.com/wailsapp/wails/v2/pkg/maclawcapture"
+	"github.com/wailsapp/wails/v2/pkg/maclawplayer"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
 	w "golang.org/x/sys/windows"
@@ -171,6 +172,7 @@ func (f *Frontend) Run(ctx context.Context) error {
 
 	mainWindow := NewWindow(nil, f.frontendOptions, f.versionInfo, f.chromium)
 	f.mainWindow = mainWindow
+	f.bindCompanionWindowVisibility(mainWindow)
 
 	var _debug = ctx.Value("debug")
 	var _devtoolsEnabled = ctx.Value("devtoolsEnabled")
@@ -516,7 +518,7 @@ func (f *Frontend) setupChromium() {
 				on = contains
 			}
 		}
-		f.Notify("file-companion:webview-fullscreen", map[string]bool{"fullscreen": on})
+		f.notifyCompanionFullscreenFrom(false, on)
 	}
 	maclawcapture.SetUIRunner(func(fn func()) {
 		if f.mainWindow != nil {
@@ -649,6 +651,125 @@ func (f *Frontend) setupChromium() {
 type EventNotify struct {
 	Name string        `json:"name"`
 	Data []interface{} `json:"data"`
+}
+
+// companionFullscreenStillUp reads ContainsFullScreenElement on the player
+// and on the app page. The callback flag is the last event, and the hide's
+// exit can be posted after the show procedure returns. A failed read does
+// not count as down: the caller leaves the hide mark set.
+func companionFullscreenStillUp() (on, ok bool) {
+	playerOn, playerOK := false, false
+	if companionPlayer != nil {
+		playerOn, playerOK = companionPlayer.fullscreenElement()
+	}
+	appOn, appOK := appFullscreenElement()
+	if (playerOK && playerOn) || (appOK && appOn) {
+		return true, true
+	}
+	if playerOK || appOK {
+		return false, true
+	}
+	return false, false
+}
+
+func appFullscreenElement() (on, ok bool) {
+	view := maclawcapture.Current()
+	page, is := view.(coreWebView)
+	if !is || page.wv == nil {
+		return false, false
+	}
+	contains, err := page.wv.GetContainsFullScreenElement()
+	if err != nil {
+		return false, false
+	}
+	return contains, true
+}
+
+// clearFullscreenHideIfStillUp runs after the show's DefWindowProc.
+// The callback flag can still say the element is up, because the hide's
+// exit event may be posted after that procedure. Only a live read that
+// says the element is still up drops the mark. A failed read leaves the
+// mark, so that late exit does not stop the note.
+func clearFullscreenHideIfStillUp() {
+	on, ok := companionFullscreenStillUp()
+	maclawplayer.NoteFullscreenSurvivedShow(on, ok)
+}
+
+// bindCompanionWindowVisibility tells the companion page when this window is
+// actually shown or hidden. The main window does not hide on close, and it
+// does not host the player, so it does not emit the event.
+func (f *Frontend) bindCompanionWindowVisibility(w *Window) {
+	if f == nil || w == nil || f.frontendOptions == nil || !f.frontendOptions.HideWindowOnClose {
+		return
+	}
+	w.onContentVisibility = func(shown bool, gen uint64) {
+		// This runs on the window thread, before DefWindowProc resizes the
+		// page. The minimized box is measured in that resize, after the
+		// obscured flag is already clear. Recording the show first is what
+		// keeps that box from unloading the player.
+		if shown {
+			maclawplayer.NoteHostVisible()
+			w.releaseFullscreenOnShow = true
+		} else if maclawplayer.FullscreenElementUp() {
+			// The exit callback is nested in DefWindowProc, or it is delayed
+			// until the window is shown again. Either way it belongs to this
+			// hide, not to the reader leaving the video.
+			maclawplayer.NoteFullscreenHidden()
+		}
+		go w.Invoke(func() {
+			if gen != w.visibilityGen.Load() {
+				return
+			}
+			f.notifyCompanionWindowShown(shown)
+		})
+	}
+	w.afterShowFullscreen = clearFullscreenHideIfStillUp
+}
+
+// notifyCompanionWindowShown is the show half of the hide latch. Fullscreen
+// already carries windowVisible false while the window is going away.
+// Becoming visible again does not change fullscreen, so the page never heard
+// it and the latch stayed set.
+func (f *Frontend) notifyCompanionWindowShown(shown bool) {
+	if f == nil {
+		return
+	}
+	f.Notify("file-companion:window-shown", map[string]bool{"shown": shown})
+}
+
+// notifyCompanionFullscreen tells the page whether the fullscreen element is
+// up, and whether the host window is actually shown. The player drops
+// fullscreen while Alt+F4 or a minimize is still inside DefWindowProc, before
+// document.visibilityState becomes hidden. windowVisible is that Win32 fact.
+func (f *Frontend) notifyCompanionFullscreen(on bool) {
+	f.notifyCompanionFullscreenFrom(false, on)
+}
+
+// notifyCompanionFullscreenFrom tells the page whether the fullscreen element
+// is up, and whether the host window is actually shown. player is the
+// top-level player document; the app page is the other source.
+// The player drops fullscreen while Alt+F4 or a minimize is still inside
+// DefWindowProc, before document.visibilityState becomes hidden.
+// windowVisible is that Win32 fact. An exit that started while the window
+// was hiding is hideExit, including when the callback runs after the show.
+// windowVisible stays the real shown state so that late exit does not latch.
+func (f *Frontend) notifyCompanionFullscreenFrom(player, on bool) {
+	visible := true
+	if f != nil && f.mainWindow != nil {
+		visible = f.mainWindow.contentShown()
+	}
+	// Record this document before the decision. A false from the app page
+	// must not consume an exit that still belongs to the player.
+	maclawplayer.SetFullscreenSource(player, on)
+	visible, hideExit := maclawplayer.FullscreenNotifyVisible(on, visible)
+	if f == nil {
+		return
+	}
+	f.Notify("file-companion:webview-fullscreen", map[string]bool{
+		"fullscreen":    on,
+		"windowVisible": visible,
+		"hideExit":      hideExit,
+	})
 }
 
 func (f *Frontend) Notify(name string, data ...interface{}) {

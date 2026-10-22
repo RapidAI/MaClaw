@@ -1343,6 +1343,363 @@ func TestStaleGoalContinuationTimerDoesNotReplaceTheSuccessor(t *testing.T) {
 	}
 }
 
+func TestGoalSlashKeepsTheQueuedTurn(t *testing.T) {
+	userID := "goal-slash-keeps-queue"
+	store := goal.NewStore("")
+	g, err := store.Set(userID, "以现有性能为基础，提升20%")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewGoalContinuationEngine(store, &App{})
+	engine.cooldown = time.Hour
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	handler := &IMMessageHandler{app: &App{goalContinuation: engine}, goalStore: store}
+	engine.schedulePlanCorrection(userID, g.GoalID)
+
+	msg := IMUserMessage{UserID: userID, Platform: "desktop"}
+	handler.noteInboundUserMessageForGoal(msg, "/goal 优化indra模型")
+	resp := handler.handleGoalCommand(msg, "/goal 优化indra模型")
+	if resp == nil || !strings.Contains(resp.Error, "已有活跃目标") {
+		t.Fatalf("create = %+v", resp)
+	}
+	handler.noteInboundUserMessageForGoal(IMUserMessage{UserID: userID, Platform: "goal-continuation"}, "下一轮")
+	handler.noteInboundUserMessageForGoal(msg, "／goal status")
+	resumed := handler.handleGoalCommand(msg, "/goal resume")
+	if resumed == nil || !strings.Contains(resumed.Text, "目标不在暂停状态") {
+		t.Fatalf("resume = %+v", resumed)
+	}
+	engine.mu.Lock()
+	_, scheduled := engine.scheduledTimers[userID]
+	correction := engine.planCorrection[userID]
+	engine.mu.Unlock()
+	if !scheduled || correction != g.GoalID {
+		t.Fatalf("slash dropped the queued plan correction scheduled=%v correction=%q", scheduled, correction)
+	}
+	if stored := store.Get(userID); stored == nil || stored.Status != goal.StatusActive {
+		t.Fatalf("status = %+v", stored)
+	}
+
+	handler.preemptQueuedGoalTurn(IMUserMessage{UserID: userID, Platform: "goal-continuation"})
+	if resp, handled := handler.handleImmediateIMCommandWithLoop(msg, "/help", nil, nil, nil); !handled || resp == nil || strings.TrimSpace(resp.Text) == "" {
+		t.Fatalf("help = %+v handled=%v", resp, handled)
+	}
+	if resp, handled := handler.handleImmediateIMCommandWithLoop(msg, "你好", nil, nil, nil); !handled || resp == nil {
+		t.Fatalf("greeting = %+v handled=%v", resp, handled)
+	}
+	if resp, handled := handler.handleImmediateIMCommandWithLoop(msg, "谢谢", nil, nil, nil); !handled || resp == nil {
+		t.Fatalf("thanks = %+v handled=%v", resp, handled)
+	}
+	engine.mu.Lock()
+	_, scheduled = engine.scheduledTimers[userID]
+	correction = engine.planCorrection[userID]
+	engine.mu.Unlock()
+	if !scheduled || correction != g.GoalID {
+		t.Fatalf("immediate reply dropped the queued plan correction scheduled=%v correction=%q", scheduled, correction)
+	}
+
+	// A reply after the immediate gates, such as a cache hit or an LLM
+	// configuration error, parks the turn and puts the same correction back.
+	endHold := handler.beginQueuedGoalTurnHold(msg)
+	endHold(false)
+	handler.beginQueuedGoalTurnHold(IMUserMessage{UserID: userID, Platform: "goal-continuation"})(false)
+	engine.mu.Lock()
+	_, scheduled = engine.scheduledTimers[userID]
+	correction = engine.planCorrection[userID]
+	engine.mu.Unlock()
+	if !scheduled || correction != g.GoalID {
+		t.Fatalf("short session reply dropped the queued plan correction scheduled=%v correction=%q", scheduled, correction)
+	}
+
+	handler.noteInboundUserMessageForGoal(msg, "/goal pause")
+	if text := handler.goalPauseForUser(userID); !strings.Contains(text, "目标已暂停") {
+		t.Fatalf("pause = %q", text)
+	}
+	engine.mu.Lock()
+	_, scheduled = engine.scheduledTimers[userID]
+	correction = engine.planCorrection[userID]
+	engine.mu.Unlock()
+	if scheduled || correction != "" {
+		t.Fatalf("pause left the queue scheduled=%v correction=%q", scheduled, correction)
+	}
+
+	chatID := "goal-slash-chat-preempts"
+	g, err = store.Set(chatID, "另一个目标")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { engine.CancelPending(chatID) })
+	engine.scheduleDelayed(chatID, g.GoalID)
+	chatMsg := IMUserMessage{UserID: chatID, Platform: "desktop"}
+	handler.noteInboundUserMessageForGoal(chatMsg, "继续做")
+	if _, handled := handler.handleImmediateIMCommandWithLoop(chatMsg, "继续做", nil, nil, nil); handled {
+		t.Fatal("chat was consumed as an immediate command")
+	}
+	engine.mu.Lock()
+	_, scheduled = engine.scheduledTimers[chatID]
+	engine.mu.Unlock()
+	if !scheduled {
+		t.Fatal("ingress of a session message dropped the queued turn before it took the session")
+	}
+	endChat := handler.beginQueuedGoalTurnHold(chatMsg)
+	endChat(true)
+	endChat(false)
+	engine.mu.Lock()
+	_, scheduled = engine.scheduledTimers[chatID]
+	engine.mu.Unlock()
+	if scheduled {
+		t.Fatal("chat message left the queued turn in place")
+	}
+}
+
+func TestQueuedGoalTurnHoldRestoresUntilTheLoopKeepsIt(t *testing.T) {
+	userID := "goal-hold-restores"
+	store := goal.NewStore("")
+	g, err := store.Set(userID, "以现有性能为基础，提升20%")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewGoalContinuationEngine(store, &App{})
+	engine.cooldown = time.Hour
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	handler := &IMMessageHandler{app: &App{goalContinuation: engine}, goalStore: store}
+	if engine.consumePlanMiss(userID, g.GoalID) {
+		t.Fatal("first plan miss was already spent")
+	}
+	engine.schedulePlanCorrection(userID, g.GoalID)
+	msg := IMUserMessage{UserID: userID, Platform: "desktop"}
+
+	end := handler.beginQueuedGoalTurnHold(msg)
+	engine.mu.Lock()
+	_, parked := engine.scheduledTimers[userID]
+	engine.mu.Unlock()
+	if parked {
+		t.Fatal("hold left the timer live")
+	}
+	end(false)
+	engine.mu.Lock()
+	_, scheduled := engine.scheduledTimers[userID]
+	correction := engine.planCorrection[userID]
+	miss := engine.planMiss[userID]
+	engine.mu.Unlock()
+	if !scheduled || correction != g.GoalID || !miss.retried || miss.goalID != g.GoalID {
+		t.Fatalf("short reply lost the plan correction scheduled=%v correction=%q miss=%+v", scheduled, correction, miss)
+	}
+
+	end = handler.beginQueuedGoalTurnHold(msg)
+	end(true)
+	engine.mu.Lock()
+	_, scheduled = engine.scheduledTimers[userID]
+	correction = engine.planCorrection[userID]
+	_, missSet := engine.planMiss[userID]
+	engine.mu.Unlock()
+	if scheduled || correction != "" || missSet {
+		t.Fatalf("loop kept a parked turn scheduled=%v correction=%q miss=%v", scheduled, correction, missSet)
+	}
+}
+
+func TestPostLoopKeepsTheQueuedGoalHold(t *testing.T) {
+	keep := false
+	loopCtx := &LoopContext{}
+	loopCtx.queuedGoalTurnHold = &keep
+	handler := &IMMessageHandler{}
+	handler.schedulePostLoopSideEffects(IMUserMessage{UserID: "goal-post-loop-hold", Platform: "desktop"}, loopCtx, &IMAgentResponse{Text: "好的"}, false)
+	if !keep {
+		t.Fatal("post-loop schedule left the parked goal turn to be restored")
+	}
+}
+
+func TestPreparedEntryReturnRestoresTheQueuedGoal(t *testing.T) {
+	userID := "goal-entry-restores"
+	store := goal.NewStore("")
+	g, err := store.Set(userID, "以现有性能为基础，提升20%")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewGoalContinuationEngine(store, &App{})
+	engine.cooldown = time.Hour
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	handler := &IMMessageHandler{app: &App{goalContinuation: engine}, goalStore: store}
+	if engine.consumePlanMiss(userID, g.GoalID) {
+		t.Fatal("first plan miss was already spent")
+	}
+	engine.schedulePlanCorrection(userID, g.GoalID)
+	msg := IMUserMessage{UserID: userID, Platform: "desktop", Text: "发到微信"}
+
+	end := handler.beginQueuedGoalTurnHold(msg)
+	keep := false
+	resp := handler.executePreparedIMEntry(preparedIMEntryExecutionOptions{
+		Message:            msg,
+		Trimmed:            msg.Text,
+		queuedGoalTurnHold: &keep,
+	})
+	if keep {
+		t.Fatal("a return before post-loop kept the parked goal turn")
+	}
+	if resp == nil || resp.ResponseSource != "semantic_host_reject" {
+		t.Fatalf("resp=%#v", resp)
+	}
+	end(keep)
+	engine.mu.Lock()
+	_, scheduled := engine.scheduledTimers[userID]
+	correction := engine.planCorrection[userID]
+	miss := engine.planMiss[userID]
+	engine.mu.Unlock()
+	got := store.Get(userID)
+	if got == nil || got.Status != goal.StatusActive || !scheduled || correction != g.GoalID || !miss.retried || miss.goalID != g.GoalID {
+		t.Fatalf("early return lost the plan correction status=%v scheduled=%v correction=%q miss=%+v", got, scheduled, correction, miss)
+	}
+}
+
+func TestUnarmedRemoteReturnPausesTheQueuedGoal(t *testing.T) {
+	userID := "goal-unarmed-hold"
+	store := goal.NewStore("")
+	g, err := store.Set(userID, "以现有性能为基础，提升20%")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{Response: "DESKTOP_LOOP_RAN"})
+	engine := NewGoalContinuationEngine(store, handler.app)
+	engine.cooldown = time.Hour
+	t.Cleanup(func() {
+		engine.CancelPending(userID)
+		handler.clearStickyCodingEnvironment(userID)
+	})
+	handler.app.goalContinuation = engine
+	handler.goalStore = store
+	handler.clearStickyCodingEnvironment(userID)
+	handler.storeStickyCodingWorkbenchMemory(userID, stickyCodingWorkbenchMemory{
+		Kind:          "remote",
+		RemoteHost:    "home.rapidaltech",
+		RemoteUser:    "ra",
+		RemoteWorkDir: "/home/ra/clamav",
+	})
+	engine.schedulePlanCorrection(userID, g.GoalID)
+	msg := IMUserMessage{UserID: userID, Platform: "desktop", Text: "继续优化"}
+
+	end := handler.beginQueuedGoalTurnHold(msg)
+	keep := false
+	resp := handler.executePreparedIMEntry(preparedIMEntryExecutionOptions{
+		Message:            msg,
+		Trimmed:            msg.Text,
+		FreshTask:          true,
+		queuedGoalTurnHold: &keep,
+	})
+	if keep {
+		t.Fatal("unarmed remote return kept the parked goal turn")
+	}
+	if resp == nil || resp.ResponseSource != "remote_coding_reconnect" || strings.Contains(resp.Text, "DESKTOP_LOOP_RAN") {
+		t.Fatalf("resp=%#v", resp)
+	}
+	got := store.Get(userID)
+	if got == nil || got.Status != goal.StatusPaused {
+		t.Fatalf("unarmed return left status=%v", got)
+	}
+	end(keep)
+	engine.mu.Lock()
+	_, scheduled := engine.scheduledTimers[userID]
+	correction := engine.planCorrection[userID]
+	engine.mu.Unlock()
+	if scheduled || correction != "" {
+		t.Fatalf("paused remote goal was re-armed scheduled=%v correction=%q", scheduled, correction)
+	}
+}
+
+func TestSideCommandRestoresTheQueuedGoalTurn(t *testing.T) {
+	userID := "goal-side-restores-queue"
+	store := goal.NewStore("")
+	g, err := store.Set(userID, "以现有性能为基础，提升20%")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewGoalContinuationEngine(store, &App{})
+	engine.cooldown = time.Hour
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	handler := &IMMessageHandler{app: &App{goalContinuation: engine}, goalStore: store}
+	if engine.consumePlanMiss(userID, g.GoalID) {
+		t.Fatal("first plan miss was already spent")
+	}
+	engine.schedulePlanCorrection(userID, g.GoalID)
+
+	resume := handler.suspendQueuedGoalTurn(userID)
+	engine.mu.Lock()
+	_, parked := engine.scheduledTimers[userID]
+	parkedCorrection := engine.planCorrection[userID]
+	_, parkedMiss := engine.planMiss[userID]
+	engine.mu.Unlock()
+	if parked || parkedCorrection != "" || parkedMiss {
+		t.Fatalf("side command left the timer live scheduled=%v correction=%q miss=%v", parked, parkedCorrection, parkedMiss)
+	}
+	resume()
+	engine.mu.Lock()
+	_, scheduled := engine.scheduledTimers[userID]
+	correction := engine.planCorrection[userID]
+	miss := engine.planMiss[userID]
+	engine.mu.Unlock()
+	if !scheduled || correction != g.GoalID || !miss.retried || miss.goalID != g.GoalID {
+		t.Fatalf("restore lost the plan correction scheduled=%v correction=%q miss=%+v", scheduled, correction, miss)
+	}
+
+	engine.mu.Lock()
+	timer := engine.scheduledTimers[userID]
+	gen := engine.scheduleGen[userID]
+	engine.mu.Unlock()
+	if timer != nil {
+		timer.Stop()
+	}
+	kind, claimed := engine.claimScheduledContinuation(userID, g.GoalID, gen)
+	if !claimed || kind != goalCorrectionPlan {
+		t.Fatalf("claim = %v kind=%v", claimed, kind)
+	}
+	engine.mu.Lock()
+	genAfterClaim := engine.scheduleGen[userID]
+	engine.mu.Unlock()
+	noop := handler.suspendQueuedGoalTurn(userID)
+	noop()
+	engine.mu.Lock()
+	_, scheduled = engine.scheduledTimers[userID]
+	genAfterEmpty := engine.scheduleGen[userID]
+	engine.mu.Unlock()
+	if scheduled || genAfterEmpty != genAfterClaim {
+		t.Fatal("a claimed turn was parked again")
+	}
+	if !engine.consumePlanMiss(userID, g.GoalID) {
+		t.Fatal("restored plan miss was no longer spent")
+	}
+	engine.schedulePlanCorrection(userID, g.GoalID)
+	resume = handler.suspendQueuedGoalTurn(userID)
+	if !store.Pause(userID, g.GoalID) {
+		t.Fatal("pause")
+	}
+	resume()
+	engine.mu.Lock()
+	_, scheduled = engine.scheduledTimers[userID]
+	correction = engine.planCorrection[userID]
+	engine.mu.Unlock()
+	got := store.Get(userID)
+	if got == nil || got.Status != goal.StatusPaused || scheduled || correction != "" {
+		t.Fatalf("paused goal was re-armed status=%v scheduled=%v correction=%q", got, scheduled, correction)
+	}
+
+	if !store.Resume(userID, g.GoalID) {
+		t.Fatal("resume store")
+	}
+	engine.scheduleDelayed(userID, g.GoalID)
+	resume = handler.suspendQueuedGoalTurn(userID)
+	engine.scheduleDelayed(userID, g.GoalID)
+	engine.mu.Lock()
+	newerGen := engine.scheduleGen[userID]
+	engine.mu.Unlock()
+	resume()
+	engine.mu.Lock()
+	gotGen := engine.scheduleGen[userID]
+	_, scheduled = engine.scheduledTimers[userID]
+	correction = engine.planCorrection[userID]
+	engine.mu.Unlock()
+	if !scheduled || gotGen != newerGen || correction != "" {
+		t.Fatalf("restore replaced the newer timer gen=%d/%d scheduled=%v correction=%q", newerGen, gotGen, scheduled, correction)
+	}
+}
+
 func TestGoalPauseStopsTheQueuedTurnAndResumeRestartsIt(t *testing.T) {
 	userID := "goal-pause-queued"
 	store := goal.NewStore("")

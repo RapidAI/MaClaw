@@ -349,9 +349,28 @@ func (h *IMMessageHandler) consumeCancelledTaskBoundary(userID string) bool {
 // InjectSupplementary stores a supplementary message for the running agent
 // loop to consume at the start of its next iteration. Returns true if a loop
 // is currently active (injection accepted), false otherwise.
+// A user-stop fence refuses the supplement: the next ordinary message starts
+// a new task, and this text must not ride into it.
 func (h *IMMessageHandler) InjectSupplementary(userID, text string) bool {
 	text = strings.TrimSpace(text)
 	if text == "" || h.hasCancelledTaskBoundary(userID) {
+		return false
+	}
+	return h.acceptLiveLoopSteer(userID, "[用户补充] "+text)
+}
+
+// acceptLiveLoopSteer queues text for the loop that is running now.
+// True means that loop is guaranteed to observe it. A sealed or cancelled
+// loop returns false and stores nothing. The user-stop fence is not checked:
+// a goal the user already continued is still this loop, and a rewritten
+// command belongs to it. Ordinary chat supplements stay on InjectSupplementary.
+func (h *IMMessageHandler) acceptLiveLoopSteer(userID, text string) bool {
+	if h == nil {
+		return false
+	}
+	userID = strings.TrimSpace(userID)
+	text = strings.TrimSpace(text)
+	if userID == "" || text == "" {
 		return false
 	}
 	// Queue under the same finalization lock used by TrySealReplans. This keeps
@@ -359,7 +378,7 @@ func (h *IMMessageHandler) InjectSupplementary(userID, text string) bool {
 	// the supplement; a final answer that already committed returns false and no
 	// orphaned injection is left behind.
 	accepted := h.tryInjectActiveReplan(userID, func() {
-		h.accumulateInjection(userID, "[用户补充] "+text)
+		h.accumulateInjection(userID, text)
 	})
 	if !accepted {
 		return false
@@ -1079,6 +1098,9 @@ func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userT
 	state.userText = userText
 	state.endedAt = time.Time{}
 	state.stateMu.Unlock()
+	// The edit may have arrived before this loop was visible. Take it now,
+	// before the first iteration, and before a later cleanup can miss it.
+	h.adoptGoalCommandSteer(userID)
 	h.endInFlightTurn(userID, ctx)
 	// A guide can be accepted while the session mutex is held during preflight,
 	// before loopCtx is visible. Drain that pre-loop handoff only after publishing

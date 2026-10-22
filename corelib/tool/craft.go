@@ -231,17 +231,57 @@ func GenerateSkillName(task string) string {
 	return "craft_" + strings.ToLower(name)
 }
 
-// ExtractTriggerKeywords extracts simple trigger keywords from a task description.
+// genericTriggerFragments are sentence pieces that ExtractTriggerKeywords
+// used to store as identity triggers. One hit on 工作区 or "from" bound an
+// unrelated learned skill and forced the model to run it.
+var genericTriggerFragments = map[string]struct{}{
+	"工作区": {}, "当前": {}, "以下": {}, "信息": {}, "文件": {}, "路径": {}, "目录": {},
+	"本地": {}, "云端": {}, "一个": {}, "这个": {}, "那个": {}, "进行": {}, "通过": {},
+	"使用": {}, "可以": {}, "需要": {}, "以及": {}, "我们": {}, "如果": {}, "然后": {},
+	"已经": {}, "没有": {}, "不是": {}, "就是": {}, "或者": {}, "并且": {}, "关于": {},
+	"根据": {}, "建议": {}, "the": {}, "and": {}, "or": {}, "to": {}, "from": {},
+	"for": {}, "with": {}, "into": {}, "of": {}, "in": {}, "on": {}, "at": {},
+	"by": {}, "as": {}, "is": {}, "be": {}, "this": {}, "that": {}, "it": {},
+	"file": {}, "data": {}, "path": {}, "copy": {}, "current": {}, "workspace": {},
+	"save": {}, "a": {}, "an": {},
+}
+
+// TriggerIsSpecific reports whether a stored trigger is distinctive enough to
+// count as naming a skill. One-rune pieces and redaction placeholders are not:
+// CJK has no ASCII word boundary, so 将 matches 宝塔将在, and 工作区 matches
+// every sentence about the local workspace.
+func TriggerIsSpecific(phrase string) bool {
+	phrase = strings.ToLower(strings.TrimSpace(phrase))
+	if phrase == "" {
+		return false
+	}
+	if strings.HasPrefix(phrase, "<") && strings.HasSuffix(phrase, ">") {
+		return false
+	}
+	phrase = strings.Trim(phrase, "，。！？、,.!?;；:：\"'“”「」()（）[]【】<>•· \t")
+	if phrase == "" || len([]rune(phrase)) < 2 {
+		return false
+	}
+	if _, generic := genericTriggerFragments[phrase]; generic {
+		return false
+	}
+	return true
+}
+
+// ExtractTriggerKeywords extracts distinctive trigger phrases from a task
+// description. Whitespace tokens that are placeholders, one rune, or generic
+// fragments are dropped, so they cannot later force the skill onto another turn.
 func ExtractTriggerKeywords(task string) []string {
 	words := strings.Fields(task)
 	var triggers []string
 	seen := make(map[string]bool)
 	for _, w := range words {
-		w = strings.ToLower(strings.Trim(w, "，。！？、"))
-		if len(w) > 1 && !seen[w] {
-			triggers = append(triggers, w)
-			seen[w] = true
+		w = strings.ToLower(strings.Trim(w, "，。！？、,.!?;；:："))
+		if !TriggerIsSpecific(w) || seen[w] {
+			continue
 		}
+		triggers = append(triggers, w)
+		seen[w] = true
 		if len(triggers) >= 5 {
 			break
 		}

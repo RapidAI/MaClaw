@@ -43,11 +43,12 @@ var (
 var searchHTTPStatusPattern = regexp.MustCompile(`(?i)\bHTTP\s+([1-5][0-9]{2})\b`)
 
 var builtinWebSearchEngines = map[string]struct {
-	Transport string
-	Name      string
-	BaseURL   string
-	NeedsKey  bool
-	OptIn     bool
+	Transport              string
+	Name                   string
+	BaseURL                string
+	NeedsKey               bool
+	OptIn                  bool
+	AllowEnabledWithoutKey bool
 }{
 	"bing_cn":                {Transport: corelib.WebSearchTransportHTTPHTML, Name: "Bing", BaseURL: defaultBingSearchURL},
 	"baidu":                  {Transport: corelib.WebSearchTransportHTTPHTML, Name: "百度", BaseURL: defaultBaiduSearchURL},
@@ -57,6 +58,7 @@ var builtinWebSearchEngines = map[string]struct {
 	"serper":                 {Transport: corelib.WebSearchTransportAPI, Name: "Serper（Google API）", BaseURL: defaultSerperSearchURL, NeedsKey: true},
 	"tinyfish":               {Transport: corelib.WebSearchTransportAPI, Name: "TinyFish", BaseURL: defaultTinyFishSearchURL, NeedsKey: true},
 	"tavily":                 {Transport: corelib.WebSearchTransportAPI, Name: "Tavily", BaseURL: defaultTavilySearchURL, NeedsKey: true},
+	"yuanbao":                {Transport: corelib.WebSearchTransportAPI, Name: "元宝搜索", BaseURL: defaultYuanbaoSearchURL, NeedsKey: true, AllowEnabledWithoutKey: true},
 	WebSearchEngineMaclawHub: {Transport: corelib.WebSearchTransportAPI, Name: "MaClaw Hub / RapidSearch", BaseURL: defaultMaclawHubSearchURL, OptIn: true},
 }
 
@@ -93,16 +95,20 @@ func DefaultWebSearchStrategy(preset string) corelib.WebSearchStrategy {
 	preset = normalizePreset(preset)
 	var order []string
 	if preset == corelib.WebSearchPresetInternational {
-		order = []string{"google", "duckduckgo", "bing_cn", "baidu", "brave", "serper", "tinyfish", "tavily", WebSearchEngineMaclawHub}
+		order = []string{"yuanbao", "google", "duckduckgo", "bing_cn", "baidu", "brave", "serper", "tinyfish", "tavily", WebSearchEngineMaclawHub}
 	} else {
 		preset = corelib.WebSearchPresetMainland
-		order = []string{"bing_cn", "baidu", "duckduckgo", "google", "brave", "serper", "tinyfish", "tavily", WebSearchEngineMaclawHub}
+		order = []string{"yuanbao", "bing_cn", "baidu", "duckduckgo", "google", "brave", "serper", "tinyfish", "tavily", WebSearchEngineMaclawHub}
 	}
 	engines := make([]corelib.WebSearchEngineConfig, 0, len(order))
 	for i, id := range order {
 		meta := builtinWebSearchEngines[id]
+		enabled := !meta.NeedsKey && !meta.OptIn
+		if meta.AllowEnabledWithoutKey {
+			enabled = true
+		}
 		engines = append(engines, corelib.WebSearchEngineConfig{
-			ID: id, Enabled: !meta.NeedsKey && !meta.OptIn, Priority: i + 1,
+			ID: id, Enabled: enabled, Priority: i + 1,
 			Transport: meta.Transport, BaseURL: meta.BaseURL,
 		})
 	}
@@ -193,10 +199,19 @@ func NormalizeWebSearchStrategy(strategy corelib.WebSearchStrategy) (corelib.Web
 				return corelib.WebSearchStrategy{}, fmt.Errorf("engine %s base URL: %w", engine.ID, err)
 			}
 		}
-		if engine.Enabled && meta.NeedsKey && engine.APIKey == "" {
+		if engine.Enabled && meta.NeedsKey && engine.APIKey == "" && !meta.AllowEnabledWithoutKey {
 			return corelib.WebSearchStrategy{}, fmt.Errorf("engine %s requires an API key", engine.ID)
 		}
 		out = append(out, engine)
+	}
+	if !seen["yuanbao"] && catalogCompleteExcept(seen, "yuanbao") {
+		meta := builtinWebSearchEngines["yuanbao"]
+		inserted := corelib.WebSearchEngineConfig{
+			ID: "yuanbao", Enabled: true,
+			Transport: meta.Transport, BaseURL: meta.BaseURL,
+		}
+		out = insertEngine(out, yuanbaoDefaultIndex(strategy.Preset), inserted)
+		seen["yuanbao"] = true
 	}
 	defaults := DefaultWebSearchStrategy(strategy.Preset)
 	for _, engine := range defaults.Engines {
@@ -213,6 +228,37 @@ func NormalizeWebSearchStrategy(strategy corelib.WebSearchStrategy) (corelib.Web
 	}
 	strategy.Engines = out
 	return strategy, nil
+}
+
+func catalogCompleteExcept(seen map[string]bool, except string) bool {
+	for id := range builtinWebSearchEngines {
+		if id == except {
+			continue
+		}
+		if !seen[id] {
+			return false
+		}
+	}
+	return true
+}
+
+func yuanbaoDefaultIndex(preset string) int {
+	for i, engine := range DefaultWebSearchStrategy(preset).Engines {
+		if engine.ID == "yuanbao" {
+			return i
+		}
+	}
+	return 0
+}
+
+func insertEngine(engines []corelib.WebSearchEngineConfig, index int, engine corelib.WebSearchEngineConfig) []corelib.WebSearchEngineConfig {
+	if index < 0 || index > len(engines) {
+		index = len(engines)
+	}
+	engines = append(engines, corelib.WebSearchEngineConfig{})
+	copy(engines[index+1:], engines[index:])
+	engines[index] = engine
+	return engines
 }
 
 func validateWebSearchBaseURL(raw string) error {
@@ -481,7 +527,7 @@ func SearchWithStrategyCtx(parent context.Context, query string, maxResults int,
 		}
 		if len(candidates) >= minInt(maxResults, strategy.MinResultsBeforeHedge) && (resultsCoverSiteHint(candidates, hint) || !stillNeedsBrowserAttempt(strategy, attemptedBrowserEngines, hint)) {
 			response.Results = finalizeResults(candidates)
-			response.Degraded = len(response.Diagnostics) > 1
+			response.Degraded = degradedByDiagnostics(response.Diagnostics, false)
 			return response, nil
 		}
 	} else {
@@ -558,7 +604,7 @@ func SearchWithStrategyCtx(parent context.Context, query string, maxResults int,
 			logSearchAttempt(query, attempt)
 			if len(candidates) >= minInt(maxResults, strategy.MinResultsBeforeHedge) && (resultsCoverSiteHint(candidates, hint) || !stillNeedsBrowserAttempt(strategy, attemptedBrowserEngines, hint)) {
 				response.Results = candidates
-				response.Degraded = len(response.Diagnostics) > 1 || retryCount > 0
+				response.Degraded = degradedByDiagnostics(response.Diagnostics, retryCount > 0)
 				return response, nil
 			}
 			if ctx.Err() != nil {
@@ -619,6 +665,9 @@ func SearchWithStrategyCtx(parent context.Context, query string, maxResults int,
 	}
 	if ctx.Err() != nil {
 		return response, fmt.Errorf("web search interrupted: %w", ctx.Err())
+	}
+	if ids, only := missingAPIKeySkipIDs(response.Diagnostics); only {
+		return response, fmt.Errorf("%s API key is not configured", ids)
 	}
 	return response, fmt.Errorf("no enabled web search engines are available")
 }
@@ -1003,6 +1052,49 @@ func searchBrowserEngine(ctx context.Context, engineID, query string, maxResults
 	return results, nil
 }
 
+// missingAPIKeySkipIDs reports engines that were enabled but never called
+// because the key was empty. only is true when every diagnostic is that skip,
+// so the search did not fail for lack of an enabled engine.
+func missingAPIKeySkipIDs(diagnostics []SearchAttempt) (string, bool) {
+	if len(diagnostics) == 0 {
+		return "", false
+	}
+	ids := make([]string, 0, len(diagnostics))
+	for _, attempt := range diagnostics {
+		if attempt.Outcome != "skipped" || attempt.Detail != "missing API key" {
+			return "", false
+		}
+		if attempt.EngineID != "" {
+			ids = append(ids, attempt.EngineID)
+		}
+	}
+	if len(ids) == 0 {
+		return "", false
+	}
+	return strings.Join(ids, ", "), true
+}
+
+// degradedByDiagnostics reports a result set that did not come from one clean
+// engine attempt. A missing-key skip never called the network: the default
+// strategy leaves 元宝搜索 enabled before a key is saved, and counting that
+// skip would mark every later success as degraded.
+func degradedByDiagnostics(diagnostics []SearchAttempt, extra bool) bool {
+	if extra {
+		return true
+	}
+	n := 0
+	for _, attempt := range diagnostics {
+		if attempt.Outcome == "skipped" && attempt.Detail == "missing API key" {
+			continue
+		}
+		n++
+		if n > 1 {
+			return true
+		}
+	}
+	return false
+}
+
 func classifySearchError(err error) string {
 	if err == nil {
 		return "success"
@@ -1040,6 +1132,12 @@ func SafeSearchErrorDetail(err error) string {
 		}
 		if strings.Contains(text, "maclaw hub search returned") && (strings.Contains(text, "unavailable") || strings.Contains(text, "offline") || strings.Contains(text, "failed to parse")) {
 			return "MaClaw Hub search is unavailable"
+		}
+		// This sentence is emitted before any request. classifySearchError treats
+		// every "api key" phrase as invalid_key, which would describe a missing
+		// key as a rejected credential.
+		if strings.Contains(text, "api key is not configured") {
+			return "API key is not configured"
 		}
 	}
 	switch classifySearchError(err) {

@@ -15925,6 +15925,18 @@ button.tbk-pill {
     font-size: .8125rem;
     cursor: pointer;
 }
+.web-search-config__key-link {
+    display: inline-block;
+    max-width: 100%;
+    margin-top: 2px;
+    color: var(--theme-primary);
+    font-size: .8125rem;
+    line-height: 1.4;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+.web-search-config__key-link:hover { color: var(--theme-primary-strong, var(--theme-primary)); }
+.web-search-config__key-link:focus-visible { outline: 2px solid var(--theme-primary); outline-offset: 2px; }
 .web-search-config__key-field button:hover { background: var(--theme-surface-muted); color: var(--theme-text-primary); }
 .web-search-config__key-field button:focus-visible { outline: 2px solid var(--theme-primary); outline-offset: 2px; }
 
@@ -25547,9 +25559,14 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 [data-testid^='coding-step-'][data-status='completed'] { color: var(--mc-done, #64748b) !important; }
 [data-testid^='coding-step-'][data-status='running'] { color: var(--theme-warning) !important; }
 
-/* Floating composer from reference design */
+/* Floating composer from reference design.
+   --mc-composer-inset-x is the shared side inset for the input card and the
+   goal bar above it. The goal bar reads the same variable so it cannot drift. */
+[data-testid='ai-panel-root'] {
+  --mc-composer-inset-x: 24px;
+}
 .mc-input-stack {
-  margin: 0 24px 18px !important;
+  margin: 0 var(--mc-composer-inset-x, 24px) 18px !important;
   padding: 10px 12px 8px;
   border: 1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)) !important;
   border-radius: 16px !important;
@@ -25561,8 +25578,25 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 [data-ai-theme='dark'] .mc-input-stack textarea,
 [data-ai-theme='dark'] .mc-input-stack input { border: 0 !important; box-shadow: none !important; background: transparent !important; }
 .mc-input-stack button { border-radius: 9px !important; }
+/* Border box matches the input card: parent width minus the same side inset.
+   A definite width stops a long goal title from growing the bar past the card.
+   overflow clips any child that still paints outside that box. */
+.mc-goal-quick-bar {
+  box-sizing: border-box;
+  width: calc(100% - (2 * var(--mc-composer-inset-x, 24px)));
+  max-width: calc(100% - (2 * var(--mc-composer-inset-x, 24px)));
+  min-width: 0;
+  margin-left: auto;
+  margin-right: auto;
+  align-self: center;
+  overflow: hidden;
+}
 @media (max-width: 720px) {
-  .mc-input-stack { margin: 0 12px 12px !important; }
+  [data-testid='ai-panel-root'],
+  .mc-input-stack {
+    --mc-composer-inset-x: 12px;
+  }
+  .mc-input-stack { margin: 0 var(--mc-composer-inset-x, 12px) 12px !important; }
 }
 
 /* Reference top bar proportions */
@@ -30156,7 +30190,7 @@ input.cwshare-url {
    the names. The row shrinks and does not grow, so free space stays after
    打开文件 instead of between the last filename and that button. 打开文件
    is the next title-bar item and keeps its own width. The gap after it
-   holds the document actions and 关闭 on the right. */
+   holds the document actions and 隐藏 on the right. */
 .file-companion-window {
   width: 100%;
   max-width: 100%;
@@ -30261,7 +30295,7 @@ input.cwshare-url {
   flex: 0 0 auto;
 }
 /* The mark plus the 6px gap widens each action. Two pixels less padding
-   on each side keeps 关闭 from being the first control the title bar clips. */
+   on each side keeps 隐藏 from being the first control the title bar clips. */
 .file-companion-tool:has(.file-companion-tool-icon) {
   padding: 0 10px;
 }
@@ -30281,11 +30315,6 @@ input.cwshare-url {
 }
 .file-companion-tool--close {
   margin-left: 8px;
-}
-.file-companion-tool--close:hover:not(:disabled) {
-  border-color: color-mix(in srgb, #b42318 28%, var(--theme-border, #d9e1ec));
-  background: rgba(180, 35, 24, 0.08);
-  color: #9a3412;
 }
 .file-companion-tab {
   flex: 0 1 220px;

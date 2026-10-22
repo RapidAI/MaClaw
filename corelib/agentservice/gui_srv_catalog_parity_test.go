@@ -665,6 +665,19 @@ func TestGoalUnknownActionIsError(t *testing.T) {
 	}
 }
 
+func TestGoalPlanProseThatMentionsFailureStaysSuccess(t *testing.T) {
+	cb := fullyWiredSharedCatalogCallbacks(t)
+	created := cb.ExecuteToolStructured("goal", `{"action":"create","objective":"提升20%"}`)
+	if created.Outcome != agent.ToolExecutionOutcomeOK || !strings.Contains(created.Result, "目标已创建") {
+		t.Fatalf("create = %#v", created)
+	}
+	plan := `{"action":"plan","understanding":"上一轮执行失败，日志里有 error: unavailable","steps":[{"title":"定位热点"}],"acceptance_criteria":["性能提升20%"]}`
+	out := cb.ExecuteToolStructured("goal", plan)
+	if out.Outcome != agent.ToolExecutionOutcomeOK || !strings.HasPrefix(out.Result, "计划已保存") {
+		t.Fatalf("plan = %#v", out)
+	}
+}
+
 func TestCommandOutputToolResultDoesNotTreatStdoutAsFailure(t *testing.T) {
 	if got := commandOutputToolResult("Error: printed by the script"); got.Outcome != agent.ToolExecutionOutcomeOK {
 		t.Fatalf("successful stdout starting with Error: = %#v", got)

@@ -79,7 +79,9 @@ export function goalBarView(input: GoalBarSnapshot | null | undefined): GoalBarV
     if (!objective && !goalID) return empty;
     const summary = goalText(input.summary);
     const awaiting = input.awaiting_user === true;
-    const running = status === "active" && !awaiting;
+    // Waiting for a reply is still an active goal. Pause must stay available.
+    // Continue is only for a goal that has already stopped.
+    const running = status === "active";
     let label: GoalBarLabel = "paused";
     let reason = "";
     if (awaiting) {

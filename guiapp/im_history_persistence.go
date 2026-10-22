@@ -503,13 +503,17 @@ func (h *IMMessageHandler) updatePendingUserReplyFromHistory(userID string, hist
 	if resp.sessionRoundContinue || strings.TrimSpace(resp.ResponseSource) == sessionRoundContinuationSource {
 		return
 	}
-	assistantText := sanitizePendingUserReplyQuestion(firstNonEmptyTraceText(resp.Text, latestAssistantText(history)))
-	if assistantText == "" {
-		h.pendingUserReply.Delete(userID)
+	// Capture the generation before the classifier runs. Cleanup clears the
+	// loop, and the next message replaces this generation, so a later read
+	// would no longer name the turn that wrote this answer. A generation the
+	// bar already stopped must not publish or erase a question.
+	turnGen := h.pendingForegroundGen(userID)
+	if h.goalBarQuestionBlocked(userID, turnGen) {
 		return
 	}
-	if looksLikeBrowserDebugInstruction(assistantText) {
-		h.pendingUserReply.Delete(userID)
+	assistantText := sanitizePendingUserReplyQuestion(firstNonEmptyTraceText(resp.Text, latestAssistantText(history)))
+	if assistantText == "" || looksLikeBrowserDebugInstruction(assistantText) {
+		h.forgetPendingUserReply(userID, turnGen)
 		return
 	}
 	// Run classification in the background after returning the visible answer.
@@ -517,12 +521,17 @@ func (h *IMMessageHandler) updatePendingUserReplyFromHistory(userID string, hist
 	// the foreground Agent or linger for a 30-second timeout.
 	historyCopy := cloneConversationEntries(history)
 	go func() {
-		if !h.classifyPendingUserReplyPrompt(userID, assistantText) {
-			h.pendingUserReply.Delete(userID)
+		if h.goalBarQuestionBlocked(userID, turnGen) {
 			return
 		}
-		h.pendingUserReply.Store(userID, &pendingUserReplyState{Question: truncateRunes(assistantText, 500), History: historyCopy, Timestamp: time.Now()})
-		log.Printf("[PendingUserReply] stored pending text reply context for user=%s historyLen=%d question_len=%d", userID, len(historyCopy), len([]rune(assistantText)))
+		positive := h.classifyPendingUserReplyPrompt(userID, assistantText)
+		if !positive {
+			h.forgetPendingUserReply(userID, turnGen)
+			return
+		}
+		if h.rememberPendingUserReply(userID, turnGen, &pendingUserReplyState{Question: truncateRunes(assistantText, 500), History: historyCopy, Timestamp: time.Now()}) {
+			log.Printf("[PendingUserReply] stored pending text reply context for user=%s historyLen=%d question_len=%d", userID, len(historyCopy), len([]rune(assistantText)))
+		}
 	}()
 }
 

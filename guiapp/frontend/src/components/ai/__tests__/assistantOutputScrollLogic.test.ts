@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+    pinAssistantOutputToBottom,
     pinNestedScrollToBottom,
     shouldIgnoreNestedScrollIntent,
     tryPinNestedScroll,
@@ -18,6 +19,19 @@ describe("shouldIgnoreNestedScrollIntent", () => {
         expect(shouldIgnoreNestedScrollIntent({ type: "wheel", deltaY: -40 })).toBe(false);
         expect(shouldIgnoreNestedScrollIntent({ type: "pointerdown", currentTarget: scroller, target: scroller })).toBe(false);
         expect(shouldIgnoreNestedScrollIntent({ type: "touchmove" })).toBe(false);
+    });
+});
+
+describe("pinAssistantOutputToBottom", () => {
+    it("restores scrollHeight after scrollIntoView leaves the padding below the fold", () => {
+        const container = { scrollTop: 0, scrollHeight: 1000 } as HTMLElement;
+        const end = {
+            scrollIntoView() {
+                container.scrollTop = container.scrollHeight - 16;
+            },
+        } as HTMLElement;
+        pinAssistantOutputToBottom(container, end, "auto");
+        expect(container.scrollTop).toBe(1000);
     });
 });
 

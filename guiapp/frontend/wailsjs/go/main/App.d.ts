@@ -1432,6 +1432,8 @@ export function KillRemoteSession(arg1:string):Promise<void>;
 
 export function KnowledgeBackfillSourceAutoLabels(arg1:knowledge.SourceAutoLabelBackfillRequest):Promise<knowledge.SourceLabelUpdateResult>;
 
+export function KnowledgeBrowseAddFolderWatch():Promise<Record<string, any>>;
+
 export function KnowledgeCancelImportIndexing(arg1:string):Promise<void>;
 
 export function KnowledgeCapabilities():Promise<knowledge.KnowledgeCapabilities>;
@@ -1510,6 +1512,8 @@ export function KnowledgeListDuplicateCards(arg1:number):Promise<Array<knowledge
 
 export function KnowledgeListFactsBySource(arg1:string,arg2:number):Promise<Array<knowledge.Fact>>;
 
+export function KnowledgeListFolderWatches():Promise<Array<Record<string, any>>>;
+
 export function KnowledgeListImportBatches(arg1:number):Promise<Array<knowledge.ImportBatch>>;
 
 export function KnowledgeListImportItems(arg1:string,arg2:number):Promise<Array<knowledge.ImportItem>>;
@@ -1569,6 +1573,8 @@ export function KnowledgeRefreshSourceTopicLinksByFilter(arg1:knowledge.ListSour
 export function KnowledgeRefreshSources(arg1:Array<string>):Promise<knowledge.SourceRefreshResult>;
 
 export function KnowledgeRefreshSourcesByFilter(arg1:knowledge.ListSourcesOptions):Promise<knowledge.SourceRefreshResult>;
+
+export function KnowledgeRemoveFolderWatch(arg1:string):Promise<void>;
 
 export function KnowledgeRestoreSuppressedCards(arg1:Array<string>):Promise<knowledge.CardSuppressionResult>;
 

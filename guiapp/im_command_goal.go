@@ -7,6 +7,86 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 )
 
+// noteInboundUserMessageForGoal runs before an immediate command or the
+// agent loop. It does not cancel the queued continuation. /goal only resets
+// the active goal's no-tool counter. Pause and cancel stop the timer
+// themselves. A rejected create, /help, and a short greeting leave the
+// queued turn, including an unsent plan correction, in place. A message that
+// passes the immediate replies parks that turn in beginQueuedGoalTurnHold.
+func (h *IMMessageHandler) noteInboundUserMessageForGoal(msg IMUserMessage, trimmed string) {
+	if h == nil || h.app == nil || h.app.goalContinuation == nil {
+		return
+	}
+	if msg.Platform == "goal-continuation" || msg.Platform == unattendedWorkflowPlatform || msg.Platform == sessionRoundContinuationPlatform {
+		return
+	}
+	if classifyImmediateIMCommand(trimmed) == imCommandGoal {
+		h.app.goalContinuation.resetActiveGoalNoToolCounter(msg.UserID)
+	}
+}
+
+// preemptQueuedGoalTurn drops the queued continuation when the caller already
+// knows this message keeps the session. The message handler parks first and
+// restores on a reply that never enters the loop.
+func (h *IMMessageHandler) preemptQueuedGoalTurn(msg IMUserMessage) {
+	if h == nil || h.app == nil || h.app.goalContinuation == nil {
+		return
+	}
+	if msg.Platform == "goal-continuation" || msg.Platform == unattendedWorkflowPlatform || msg.Platform == sessionRoundContinuationPlatform {
+		return
+	}
+	h.app.goalContinuation.OnUserMessage(msg.UserID)
+}
+
+// suspendQueuedGoalTurn parks the cooldown timer for one side command.
+// The returned function puts that turn back when the same goal should still
+// continue. /cancel and /reset move the schedule generation, so the parked
+// turn is not re-armed over the stop.
+func (h *IMMessageHandler) suspendQueuedGoalTurn(userID string) func() {
+	if h == nil || h.app == nil || h.app.goalContinuation == nil {
+		return func() {}
+	}
+	turn, ok := h.app.goalContinuation.suspendQueuedTurn(userID)
+	if !ok {
+		return func() {}
+	}
+	engine := h.app.goalContinuation
+	return func() { engine.restoreSuspendedGoalTurn(userID, turn) }
+}
+
+// beginQueuedGoalTurnHold parks the cooldown timer once a message has passed
+// the immediate replies. The returned function puts that turn back unless
+// keep is true. keep is true when schedulePostLoopSideEffects runs, or when
+// this message joined a loop that will schedule the next turn itself.
+// A preflight reply, a cache hit, a lock timeout, or any return before that
+// schedule passes keep false, so the same goal, including an unsent plan
+// correction, is armed again.
+func (h *IMMessageHandler) beginQueuedGoalTurnHold(msg IMUserMessage) func(keep bool) {
+	if h == nil || h.app == nil || h.app.goalContinuation == nil {
+		return func(bool) {}
+	}
+	if msg.Platform == "goal-continuation" || msg.Platform == unattendedWorkflowPlatform || msg.Platform == sessionRoundContinuationPlatform {
+		return func(bool) {}
+	}
+	engine := h.app.goalContinuation
+	engine.resetActiveGoalNoToolCounter(msg.UserID)
+	turn, ok := engine.suspendQueuedTurn(msg.UserID)
+	if !ok {
+		return func(bool) {}
+	}
+	ended := false
+	return func(keep bool) {
+		if ended {
+			return
+		}
+		ended = true
+		if keep {
+			return
+		}
+		engine.restoreSuspendedGoalTurn(msg.UserID, turn)
+	}
+}
+
 // handleGoalCommand processes /goal slash commands.
 //
 // Usage:

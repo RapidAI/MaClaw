@@ -141,6 +141,17 @@ func TestExtractTriggerKeywords(t *testing.T) {
 	if len(triggers) > 5 {
 		t.Errorf("expected at most 5 triggers, got %d", len(triggers))
 	}
+	for _, word := range []string{"from", "data", "file", "to", "save"} {
+		for _, got := range triggers {
+			if got == word {
+				t.Errorf("generic fragment %q was kept in %v", word, triggers)
+			}
+		}
+	}
+	learned := extractTriggerKeywords("将 • <路径> 复制到当前 工作区")
+	if len(learned) != 1 || learned[0] != "复制到当前" {
+		t.Fatalf("learned fragments = %v, want [复制到当前]", learned)
+	}
 }
 
 func TestStripScriptCodeFences(t *testing.T) {

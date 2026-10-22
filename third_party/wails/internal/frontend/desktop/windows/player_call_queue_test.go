@@ -4,6 +4,8 @@ package windows
 
 import (
 	"testing"
+
+	"github.com/wailsapp/wails/v2/pkg/maclawplayer"
 )
 
 func TestCompanionPlayerCallRecognizesPlaceAndHide(t *testing.T) {
@@ -67,5 +69,82 @@ func TestQueuedPlaceIsSkippedWhenANewerCallIsWaiting(t *testing.T) {
 	q.drain()
 	if len(got) != 2 || got[0] != "place" || !skips[0] || got[1] != "hide" || skips[1] {
 		t.Fatalf("got=%v skips=%v", got, skips)
+	}
+}
+
+func TestPlaceGenerationIsTheOneAtReceive(t *testing.T) {
+	maclawplayer.ResetShowPlacement()
+	t.Cleanup(func() {
+		maclawplayer.ResetShowPlacement()
+		maclawplayer.ClearPlaceShowGeneration()
+	})
+	var q playerCallQueue
+	started := maclawplayer.ShowGeneration()
+	var first, second uint64
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+	q.bind(func(message string, skip bool) {
+		switch message {
+		case "first":
+			first = maclawplayer.PlaceShowGeneration()
+			close(entered)
+			<-release
+		case "second":
+			second = maclawplayer.PlaceShowGeneration()
+		case "tail":
+			if maclawplayer.PlaceShowGeneration() != maclawplayer.ShowGeneration() {
+				t.Errorf("receive generation leaked: pin=%d show=%d", maclawplayer.PlaceShowGeneration(), maclawplayer.ShowGeneration())
+			}
+			close(done)
+		}
+	})
+	q.Add("first", true)
+	<-entered
+	maclawplayer.NoteHostVisible()
+	close(release)
+	q.Add("second", true)
+	q.Add("tail", false)
+	<-done
+	if first != started {
+		t.Fatalf("queued place gen = %d, received at %d", first, started)
+	}
+	if second != maclawplayer.ShowGeneration() {
+		t.Fatalf("place received after the show gen = %d, show = %d", second, maclawplayer.ShowGeneration())
+	}
+}
+
+func TestPlaceReceiptStaysBehindACallThatArrivedWhileItRan(t *testing.T) {
+	maclawplayer.ResetShowPlacement()
+	t.Cleanup(func() {
+		maclawplayer.ResetShowPlacement()
+		maclawplayer.ClearPlaceReceipt()
+	})
+	var q playerCallQueue
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+	var during, after bool
+	q.bind(func(message string, skip bool) {
+		switch message {
+		case "first":
+			close(entered)
+			<-release
+			during = maclawplayer.PlaceReceiptStillLatest()
+		case "second":
+			after = maclawplayer.PlaceReceiptStillLatest()
+			close(done)
+		}
+	})
+	q.Add("first", true)
+	<-entered
+	q.Add("second", true)
+	close(release)
+	<-done
+	if during {
+		t.Fatal("the running place was still the latest after a newer call was received")
+	}
+	if !after {
+		t.Fatal("the newer place was not current")
 	}
 }

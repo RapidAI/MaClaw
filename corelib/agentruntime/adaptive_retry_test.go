@@ -2,6 +2,8 @@ package agentruntime
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"testing"
 )
 
@@ -54,5 +56,15 @@ func TestClassifyAdaptiveRetryFailureMapsNetworkKind(t *testing.T) {
 	// falling through to unknown.
 	if got := ClassifyAdaptiveRetryFailure(errors.New("read: connection reset by peer")); got != FailureNetwork {
 		t.Fatalf("connection reset classified as %v", got)
+	}
+	dropped := fmt.Errorf("[https://codegen.qianxin-inc.cn/api/v1/chat/completions] SSE stream read: %w", io.ErrUnexpectedEOF)
+	if got := ClassifyAdaptiveRetryFailure(dropped); got != FailureNetwork {
+		t.Fatalf("unexpected EOF classified as %v", got)
+	}
+	if !IsRetryableLLMError(dropped) {
+		t.Fatal("unexpected EOF should be a retryable network failure")
+	}
+	if IsRetryableLLMError(errors.New("SSE stream read: unexpected EOF")) {
+		t.Fatal("text without io.ErrUnexpectedEOF is not a transport retry")
 	}
 }

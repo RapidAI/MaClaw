@@ -825,9 +825,14 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 [data-testid^='coding-step-'][data-status='completed'] { color: var(--mc-done, #64748b) !important; }
 [data-testid^='coding-step-'][data-status='running'] { color: var(--theme-warning) !important; }
 
-/* Floating composer from reference design */
+/* Floating composer from reference design.
+   --mc-composer-inset-x is the shared side inset for the input card and the
+   goal bar above it. The goal bar reads the same variable so it cannot drift. */
+[data-testid='ai-panel-root'] {
+  --mc-composer-inset-x: 24px;
+}
 .mc-input-stack {
-  margin: 0 24px 18px !important;
+  margin: 0 var(--mc-composer-inset-x, 24px) 18px !important;
   padding: 10px 12px 8px;
   border: 1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)) !important;
   border-radius: 16px !important;
@@ -839,8 +844,25 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 [data-ai-theme='dark'] .mc-input-stack textarea,
 [data-ai-theme='dark'] .mc-input-stack input { border: 0 !important; box-shadow: none !important; background: transparent !important; }
 .mc-input-stack button { border-radius: 9px !important; }
+/* Border box matches the input card: parent width minus the same side inset.
+   A definite width stops a long goal title from growing the bar past the card.
+   overflow clips any child that still paints outside that box. */
+.mc-goal-quick-bar {
+  box-sizing: border-box;
+  width: calc(100% - (2 * var(--mc-composer-inset-x, 24px)));
+  max-width: calc(100% - (2 * var(--mc-composer-inset-x, 24px)));
+  min-width: 0;
+  margin-left: auto;
+  margin-right: auto;
+  align-self: center;
+  overflow: hidden;
+}
 @media (max-width: 720px) {
-  .mc-input-stack { margin: 0 12px 12px !important; }
+  [data-testid='ai-panel-root'],
+  .mc-input-stack {
+    --mc-composer-inset-x: 12px;
+  }
+  .mc-input-stack { margin: 0 var(--mc-composer-inset-x, 12px) 12px !important; }
 }
 
 /* Reference top bar proportions */

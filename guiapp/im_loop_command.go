@@ -141,6 +141,10 @@ func (h *IMMessageHandler) handleLoopCommand(
 	onProgress coretool.ProgressCallback,
 	onToken llm.TokenCallback,
 ) *IMAgentResponse {
+	// Park the goal timer for the whole /loop run, including a parse or
+	// config refusal. Those return immediately and the same goal is put back.
+	resumeGoalTurn := h.suspendQueuedGoalTurn(msg.UserID)
+	defer resumeGoalTurn()
 	responseLang := h.imCommandResponseLang(msg.Lang)
 	cfg, err := parseLoopCommandWithLang(text, responseLang)
 	if err != nil {

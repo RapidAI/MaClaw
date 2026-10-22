@@ -27,8 +27,9 @@ describe("goalBarView", () => {
         expect(remote.reason).toBe(remoteReason);
         expect(goalBarView({ ...base, status: "budget_limited" }).label).toBe("budget");
         expect(goalBarView({ ...base, status: "failed", summary: "编译失败" }).reason).toBe("编译失败");
-        expect(goalBarView({ ...base, status: "active", awaiting_user: true }).running).toBe(false);
-        expect(goalBarView({ ...base, status: "active", awaiting_user: true }).label).toBe("waiting");
+        const waiting = goalBarView({ ...base, status: "active", awaiting_user: true });
+        expect(waiting.running).toBe(true);
+        expect(waiting.label).toBe("waiting");
         for (const status of ["paused", "budget_limited", "failed"]) {
             expect(goalBarView({ ...base, status }).running).toBe(false);
         }

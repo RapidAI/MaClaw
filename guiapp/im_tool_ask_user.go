@@ -249,6 +249,15 @@ func (h *IMMessageHandler) commitPendingAskUser(userID string, askReq *AskUserRe
 	if h == nil || askReq == nil {
 		return
 	}
+	// The bar may already have deleted this turn's question. Publishing again
+	// would capture the next message. The generation check and the store are
+	// one critical section, so the delete cannot land between them.
+	turnGen := h.pendingForegroundGen(userID)
+	h.goalBarQuestionMu.Lock()
+	defer h.goalBarQuestionMu.Unlock()
+	if h.goalBarTurnMustNotAsk(userID, turnGen) {
+		return
+	}
 	h.pendingAskUser.Store(userID, &pendingAskUserState{
 		Question:       askReq.Question,
 		Options:        askReq.Options,

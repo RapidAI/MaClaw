@@ -217,7 +217,25 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 			skippedByRunnerCompatibility++
 			continue
 		}
-		doc := s.Name + " " + s.Description + " " + strings.Join(s.Triggers, " ")
+		if learnedSkillMissingParameterContract(s.Source, s.Steps) {
+			skippedByTaskFit++
+			continue
+		}
+		// A learned description is often the host wrapper shared by every
+		// coding turn. Score and summarize the task inside it. The wrapper
+		// is not the skill.
+		descText := s.Description
+		triggerList := s.Triggers
+		if learnedSkillSource(s.Source) {
+			if task, kept := learnedSkillScoringText(s.Description, s.Triggers); task != "" {
+				descText = task
+				triggerList = kept
+			} else {
+				descText = strings.TrimSpace(s.Name)
+				triggerList = nil
+			}
+		}
+		doc := s.Name + " " + descText + " " + strings.Join(triggerList, " ")
 		if !c.scopeBasedSelection && !codingSubAgentSkillFitsTask(taskDescription, doc) {
 			skippedByTaskFit++
 			continue
@@ -225,7 +243,7 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 		candidates = append(candidates, candidate{
 			name:           s.Name,
 			qualifiedID:    codingSubAgentSkillQualifiedID(s),
-			description:    s.Description,
+			description:    descText,
 			doc:            doc,
 			requiredArgs:   s.RequiredArgs,
 			stableID:       codingSubAgentSkillQualifiedID(s),

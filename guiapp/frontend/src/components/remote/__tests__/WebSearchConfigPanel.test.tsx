@@ -7,6 +7,7 @@ const saveMock = vi.fn();
 const resetMock = vi.fn();
 const testMock = vi.fn();
 const showConfirmMock = vi.fn();
+const browserOpenURLMock = vi.fn();
 
 vi.mock("../../../../wailsjs/go/main/App", () => ({
     GetWebSearchStrategy: (...args: unknown[]) => getMock(...args),
@@ -17,6 +18,10 @@ vi.mock("../../../../wailsjs/go/main/App", () => ({
 
 vi.mock("../../CustomDialog", () => ({
     useDialog: () => ({ showConfirm: (...args: unknown[]) => showConfirmMock(...args) }),
+}));
+
+vi.mock("../../../../wailsjs/runtime", () => ({
+    BrowserOpenURL: (...args: unknown[]) => browserOpenURLMock(...args),
 }));
 
 import { WebSearchConfigPanel } from "../WebSearchConfigPanel";
@@ -264,6 +269,50 @@ describe("WebSearchConfigPanel", () => {
 
         expect((await screen.findByRole("alert")).textContent).toContain("requires an API key");
         expect(saveMock).not.toHaveBeenCalled();
+    });
+
+    it("saves enabled Yuanbao without a key and links to the Tencent console", async () => {
+        getMock.mockResolvedValue({
+            ...strategy,
+            preset: "custom",
+            engines: [
+                ...strategy.engines,
+                { id: "yuanbao", name: "元宝搜索", enabled: true, priority: 5, transport: "api", needs_api_key: true, has_api_key: false },
+            ],
+        });
+        render(<WebSearchConfigPanel lang="zh-Hans" />);
+        const link = await screen.findByRole("link", { name: "获取 API Key" });
+        expect(link.closest("li")?.textContent).toContain("未保存 API Key 时跳过");
+        expect(link.getAttribute("href")).toBe("https://console.cloud.tencent.com/wsapi/activity");
+        expect(link.closest(".web-search-config__key-field")).toBeNull();
+        fireEvent.click(link);
+        expect(browserOpenURLMock).toHaveBeenCalledWith("https://console.cloud.tencent.com/wsapi/activity");
+        fireEvent.change(screen.getAllByRole("combobox")[0], { target: { value: "mainland" } });
+        fireEvent.click(screen.getByRole("button", { name: "保存策略" }));
+        await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(1));
+        expect(screen.queryByRole("alert")).toBeNull();
+        expect(saveMock.mock.calls[0][0].engines.map((engine: { id: string }) => engine.id)[0]).toBe("yuanbao");
+    });
+
+    it("clears a saved Yuanbao key and leaves the engine enabled", async () => {
+        getMock.mockResolvedValue({
+            ...strategy,
+            engines: [
+                ...strategy.engines,
+                { id: "yuanbao", name: "元宝搜索", enabled: true, priority: 5, transport: "api", needs_api_key: true, has_api_key: true },
+            ],
+        });
+        render(<WebSearchConfigPanel lang="zh-Hans" />);
+        const toggle = await screen.findByRole("checkbox", { name: "启用 元宝搜索" });
+        const row = toggle.closest("li")!;
+        fireEvent.click(within(row).getByRole("button", { name: "移除" }));
+        expect((toggle as HTMLInputElement).checked).toBe(true);
+        fireEvent.click(screen.getByRole("button", { name: "保存策略" }));
+        await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(1));
+        expect(saveMock.mock.calls[0][0].clear_api_key_engine_ids).toEqual(["yuanbao"]);
+        const yuanbao = saveMock.mock.calls[0][0].engines.find((engine: { id: string }) => engine.id === "yuanbao");
+        expect(yuanbao.enabled).toBe(true);
+        expect(yuanbao.api_key).toBe("");
     });
 
 	it("removes a saved API key explicitly and disables that engine", async () => {

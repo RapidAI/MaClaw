@@ -1191,7 +1191,7 @@ func TestSubAgentRetryRecoveryHintCoversQualityGateTiming(t *testing.T) {
 		{err: "failed command evidence: swift test -> swift: command not found", want: "environment/tooling blocker"},
 		{err: `failed command evidence: npm test -> exec: "npm": executable file not found in %PATH%`, want: "project toolchain"},
 		{err: "failed command evidence: go test ./gui -> 'go' is not recognized as an internal or external command", want: "available package-manager wrapper"},
-		{err: `failed command evidence: cmd /c call vcvars64.bat && cl /utf-8 hello.cpp -> 'vcvars64.bat' is not recognized as an internal or external command`, want: "already on PATH"},
+		{err: `failed command evidence: cmd /c call vcvars64.bat && cl /utf-8 hello.cpp -> 'vcvars64.bat' is not recognized as an internal or external command`, want: "Do not retry cmd /c quoting"},
 		{err: "quality gate failed; failed command evidence: go test ./gui -> compile failed", want: "failing command output"},
 		{err: `Error: call_mcp_tool target "Wiki/get_page_children" is missing required MCP argument "parent_id" in arguments.`, want: "arguments.parent_id"},
 		{err: `Error: manage_skill target "ui-ux-pro-max" is missing required skill argument "input" in args.`, want: "args.input"},

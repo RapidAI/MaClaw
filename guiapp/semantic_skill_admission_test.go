@@ -63,6 +63,162 @@ func TestSkillAdmissionBindsACompleteLocalSkill(t *testing.T) {
 	}
 }
 
+func TestSkillAdmissionIgnoresAOneRuneLearnedTrigger(t *testing.T) {
+	app, _ := newSkillExecutorWithEntries(t, corelib.NLSkillEntry{
+		Name:        "craft_copy_path_to_workspace",
+		Status:      "active",
+		Source:      "learned",
+		Description: "将 • <路径> 复制到当前 工作区",
+		Triggers:    []string{"将", "•", "<路径>", "复制到当前", "工作区"},
+		Steps:       []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo copy"}}},
+	})
+	h := &IMMessageHandler{app: app}
+	msg := "宝塔将在官方修复版本发布后同步跟进更新。建议提前备份并修改 php.ini。"
+	decision := h.skillAdmissionForTurn(fullDocumentLoop(intent.LabelDocumentGenerate), msg)
+	if decision.Mode == skillAdmissionBound {
+		t.Fatalf("one-rune trigger bound %#v", decision.Bound)
+	}
+	workspace := h.skillAdmissionForTurn(fullDocumentLoop(intent.LabelDocumentGenerate), "查询本地工作区里的服务器信息")
+	if workspace.Mode == skillAdmissionBound {
+		t.Fatalf("generic 工作区 trigger bound %#v", workspace.Bound)
+	}
+	specific := h.skillAdmissionForTurn(fullDocumentLoop(intent.LabelDocumentGenerate), "把这份手册复制到当前工作区")
+	if specific.Mode != skillAdmissionBound || len(specific.Bound) != 1 || specific.Bound[0].Name != "craft_copy_path_to_workspace" {
+		t.Fatalf("distinctive phrase decision=%#v", specific)
+	}
+}
+
+func TestSkillAdmissionIgnoresHostWrapperTriggers(t *testing.T) {
+	const stored = "请执行以下编码任务： ## T1: 生成helloworld c++版本 生成helloworld c++版本 **当前…"
+	entry := corelib.NLSkillEntry{
+		Name:        "craft_generate_hello_world_cpp",
+		Status:      "active",
+		Source:      "learned",
+		Description: stored,
+		Triggers:    []string{"请执行以下编码任务：", "##", "t1:", "生成helloworld", "c++版本"},
+		Steps:       []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo hello"}}},
+	}
+	app, _ := newSkillExecutorWithEntries(t, entry)
+	h := &IMMessageHandler{app: app}
+	wrapper := h.skillAdmissionForTurn(fullDocumentLoop(intent.LabelDocumentGenerate), "请把这段说明改成 ## 标题")
+	if wrapper.Mode == skillAdmissionBound {
+		t.Fatalf("wrapper trigger bound %#v", wrapper.Bound)
+	}
+	named := h.skillAdmissionForTurn(fullDocumentLoop(intent.LabelDocumentGenerate), "生成helloworld 的程序")
+	if named.Mode != skillAdmissionBound || len(named.Bound) != 1 || named.Bound[0].Name != entry.Name {
+		t.Fatalf("task trigger decision=%#v", named)
+	}
+	if strings.Contains(named.Bound[0].Description, "**当前") || strings.Contains(named.Bound[0].Description, "请执行以下") {
+		t.Fatalf("published description = %q", named.Bound[0].Description)
+	}
+}
+
+func TestSkillAdmissionDoesNotBindAParaphrasedLearnedRecipe(t *testing.T) {
+	app, _ := newSkillExecutorWithEntries(t, weatherPDFTestSkill())
+	h := &IMMessageHandler{app: app}
+	decision := h.skillAdmissionForTurn(fullDocumentLoop(intent.LabelDocumentGenerate), "帮我做一份东莞天气的格式化pdf报告")
+	if decision.Mode != skillAdmissionRemote {
+		t.Fatalf("paraphrase mode=%v, want remote", decision.Mode)
+	}
+	_, identity, identityScore := preferredLocalSkillScore(admissionSkillView(weatherPDFTestSkill()), strings.ToLower("帮我做一份东莞天气的格式化pdf报告"))
+	if identity || identityScore != 0 {
+		t.Fatalf("paraphrase identity=%v score=%d, want no identity", identity, identityScore)
+	}
+}
+
+func TestSkillAdmissionDoesNotReplayACommandTranscript(t *testing.T) {
+	transcript := corelib.NLSkillEntry{
+		Name:        "craft_layout_dump",
+		Status:      "active",
+		Source:      "learned",
+		Description: "排版紧凑点，好多页下部空白",
+		Triggers:    []string{"排版紧凑点"},
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command":     "python -c \"print('layout')\"",
+				"working_dir": `C:\Users\ma139\.maclaw\workspace\book`,
+			},
+		}},
+	}
+	app, exec := newSkillExecutorWithEntries(t, transcript)
+	h := &IMMessageHandler{app: app}
+	msg := "排版紧凑点，好多页下部空白"
+	decision := h.skillAdmissionForTurn(fullDocumentLoop(intent.LabelDocumentGenerate), msg)
+	if decision.Mode == skillAdmissionBound {
+		t.Fatalf("command transcript was bound: %#v", decision.Bound)
+	}
+	if name, _ := matchPreferredLocalSkill(exec, msg, ""); name != "" {
+		t.Fatalf("unmanaged preference selected %s", name)
+	}
+
+	parameterized := transcript
+	parameterized.Steps = []corelib.NLSkillStep{{
+		Action: "bash",
+		Params: map[string]interface{}{
+			"command":     "python -c \"print('layout')\"",
+			"working_dir": "{{path_1}}",
+		},
+	}}
+	parameterized.RequiredArgs = []string{"path_1"}
+	app, exec = newSkillExecutorWithEntries(t, parameterized)
+	h = &IMMessageHandler{app: app}
+	decision = h.skillAdmissionForTurn(fullDocumentLoop(intent.LabelDocumentGenerate), msg)
+	if decision.Mode != skillAdmissionBound || len(decision.Bound) != 1 || decision.Bound[0].Name != transcript.Name {
+		t.Fatalf("parameterized skill decision=%#v", decision)
+	}
+	if len(decision.Bound[0].Params) != 1 || decision.Bound[0].Params[0].Name != "path_1" || !decision.Bound[0].Params[0].Required {
+		t.Fatalf("binding params = %#v", decision.Bound[0].Params)
+	}
+	if name, _ := matchPreferredLocalSkill(exec, msg, ""); name != transcript.Name {
+		t.Fatalf("unmanaged preference selected %q, want %s", name, transcript.Name)
+	}
+	parameterized.Params = []corelib.NLSkillParam{{
+		Name:        "path_1",
+		Type:        "string",
+		Required:    true,
+		Description: "Path supplied when the skill runs",
+	}}
+	app, _ = newSkillExecutorWithEntries(t, parameterized)
+	h = &IMMessageHandler{app: app}
+	cb := &sharedAgentLoopCallbacks{
+		handler:         h,
+		loopCtx:         fullDocumentLoop(intent.LabelDocumentGenerate),
+		semanticSurface: &semanticCallSurface{},
+	}
+	cb.publishAdmittedSkillTools(msg)
+	var schema map[string]interface{}
+	for _, def := range cb.tools {
+		if extractToolName(def) == "skill_craft_layout_dump" {
+			schema = def
+			break
+		}
+	}
+	if schema == nil {
+		t.Fatalf("parameterized skill was not published: %v", toolNames(cb.tools))
+	}
+	props, required := admittedToolParameterSchema(schema)
+	pathProp, _ := props["path_1"].(map[string]interface{})
+	if pathProp["type"] != "string" || pathProp["description"] != "Path supplied when the skill runs" {
+		t.Fatalf("path_1 schema = %#v", pathProp)
+	}
+	if len(required) != 1 || required[0] != "path_1" {
+		t.Fatalf("required = %#v", required)
+	}
+	if _, hidden := props["args"]; hidden {
+		t.Fatal("parameter contract was wrapped in a second args object")
+	}
+
+	authored := transcript
+	authored.Source = "manual"
+	app, _ = newSkillExecutorWithEntries(t, authored)
+	h = &IMMessageHandler{app: app}
+	decision = h.skillAdmissionForTurn(fullDocumentLoop(intent.LabelDocumentGenerate), msg)
+	if decision.Mode != skillAdmissionBound || len(decision.Bound) != 1 || decision.Bound[0].Name != transcript.Name {
+		t.Fatalf("authored skill with its own path decision=%#v", decision)
+	}
+}
+
 func TestSkillAdmissionIgnoresAWeakDocumentOverlap(t *testing.T) {
 	app, _ := newSkillExecutorWithEntries(t, weatherPDFTestSkill())
 	h := &IMMessageHandler{app: app}
@@ -118,8 +274,14 @@ func TestSkillAdmissionPublishesTheBoundFunctionAndRunsThatIdentity(t *testing.T
 	}
 	found := false
 	for _, def := range cb.tools {
-		if extractToolName(def) == "skill_paper_translator" {
-			found = true
+		if extractToolName(def) != "skill_paper_translator" {
+			continue
+		}
+		found = true
+		props, required := admittedToolParameterSchema(def)
+		args, ok := props["args"].(map[string]interface{})
+		if !ok || args["type"] != "object" || len(required) != 0 {
+			t.Fatalf("parameter-free schema props=%#v required=%#v", props, required)
 		}
 	}
 	if !found {
@@ -604,6 +766,27 @@ func TestSkillAdmissionBadArgumentsDoNotCountAsUsingTheSkill(t *testing.T) {
 	}
 }
 
+func admittedToolParameterSchema(def map[string]interface{}) (map[string]interface{}, []string) {
+	fn, _ := def["function"].(map[string]interface{})
+	params, _ := fn["parameters"].(map[string]interface{})
+	props, _ := params["properties"].(map[string]interface{})
+	if props == nil {
+		props = map[string]interface{}{}
+	}
+	var required []string
+	switch raw := params["required"].(type) {
+	case []string:
+		required = append(required, raw...)
+	case []interface{}:
+		for _, item := range raw {
+			if name, ok := item.(string); ok {
+				required = append(required, name)
+			}
+		}
+	}
+	return props, required
+}
+
 func TestSkillAdmissionDoesNotOfferAWeakerOverlapBesideANamedSkill(t *testing.T) {
 	app, exec := newSkillExecutorWithEntries(t, paperTranslatorTestSkill(), weeklyDigestTestSkill())
 	h := &IMMessageHandler{app: app}
@@ -683,5 +866,69 @@ func TestSkillAdmissionPrefersGuidedWorkflowOnAScoreTie(t *testing.T) {
 	decision := h.skillAdmissionForTurn(fullDocumentLoop(intent.LabelDocumentGenerate), msg)
 	if decision.Mode != skillAdmissionGuided || len(decision.Guided) != 1 || decision.Guided[0].Name != bookPDFTestSkill().Name {
 		t.Fatalf("decision=%#v", decision)
+	}
+}
+
+func TestSkillAdmissionPublishedDescriptionFollowsSource(t *testing.T) {
+	const stored = "请执行以下编码任务： ## T3: Add runVisualPolishChecks self-test"
+	const task = "Add runVisualPolishChecks self-test"
+	if got := skillAdmissionPublishedDescription("learned", stored); got != task {
+		t.Fatalf("learned published = %q", got)
+	}
+	if got := skillAdmissionPublishedDescription("market", stored); got != stored {
+		t.Fatalf("market published = %q", got)
+	}
+	const wrapped = "继续 [Session continuity note]"
+	if skillAdmissionDocText(wrapped) != "" {
+		t.Fatal("a task under 4 runes was embedded")
+	}
+	if got := skillAdmissionPublishedDescription("learned", wrapped); got != "继续" {
+		t.Fatalf("published short task = %q", got)
+	}
+	const bare = "请执行以下编码任务："
+	if got := skillAdmissionPublishedDescription("learned", bare); got != bare {
+		t.Fatalf("empty task published = %q", got)
+	}
+}
+
+func TestSkillAdmissionPublishedKeepsAHandWrittenDescription(t *testing.T) {
+	const stored = "请执行以下编码任务： ## T3: Add runVisualPolishChecks self-test"
+	entry := corelib.NLSkillEntry{
+		Name:        "craft_visual_polish_selftest",
+		Status:      "active",
+		Source:      "market",
+		Description: stored,
+		Triggers:    []string{stored},
+		Steps:       []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo polish"}}},
+	}
+	app, _ := newSkillExecutorWithEntries(t, entry)
+	h := &IMMessageHandler{app: app}
+	decision := h.skillAdmissionForTurn(fullDocumentLoop(intent.LabelDocumentGenerate), "use the craft_visual_polish_selftest skill")
+	if decision.Mode != skillAdmissionBound || len(decision.Bound) != 1 || decision.Bound[0].Name != "craft_visual_polish_selftest" {
+		t.Fatalf("hand-written decision=%#v", decision)
+	}
+	if decision.Bound[0].Description != stored {
+		t.Fatalf("hand-written description = %q", decision.Bound[0].Description)
+	}
+}
+
+func TestSkillAdmissionPublishedShortLearnedTask(t *testing.T) {
+	const stored = "继续 [Session continuity note]"
+	entry := corelib.NLSkillEntry{
+		Name:        "craft_continue_task",
+		Status:      "active",
+		Source:      "learned",
+		Description: stored,
+		Triggers:    []string{stored},
+		Steps:       []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo continue"}}},
+	}
+	app, _ := newSkillExecutorWithEntries(t, entry)
+	h := &IMMessageHandler{app: app}
+	decision := h.skillAdmissionForTurn(fullDocumentLoop(intent.LabelDocumentGenerate), "use the craft_continue_task skill")
+	if decision.Mode != skillAdmissionBound || len(decision.Bound) != 1 || decision.Bound[0].Name != "craft_continue_task" {
+		t.Fatalf("short task decision=%#v", decision)
+	}
+	if decision.Bound[0].Description != "继续" {
+		t.Fatalf("published short task = %q", decision.Bound[0].Description)
 	}
 }

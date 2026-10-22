@@ -365,21 +365,32 @@ func codingCommandEnv() []string {
 	if gitPath := passthroughRuntimeProgram("git"); filepath.IsAbs(gitPath) {
 		gitDir = filepath.Dir(gitPath)
 	}
-	env = mergeWindowsToolchainEnviron(env, windowsMSVCInjectedEnviron())
+	// Detected compilers go in front of the process PATH so a WindowsApps
+	// alias cannot shadow them. MSVC is merged after that and prepends
+	// cl.exe, so link.exe from the toolset stays ahead of MinGW.
+	var compilers []string
 	if mingw := detectWindowsMinGWBin(); mingw != "" {
-		env = appendWindowsPathEntries(env, mingw)
+		compilers = append(compilers, mingw)
 	}
 	if cmake := detectWindowsCMakeBin(); cmake != "" {
-		env = appendWindowsPathEntries(env, cmake)
+		compilers = append(compilers, cmake)
 	}
 	if ninja := detectWindowsNinjaBin(); ninja != "" {
-		env = appendWindowsPathEntries(env, ninja)
+		compilers = append(compilers, ninja)
 	}
-	return appendWindowsPathEntries(env,
+	if len(compilers) > 0 {
+		env = prependWindowsPathEntries(env, compilers...)
+	}
+	env = mergeWindowsToolchainEnviron(env, windowsMSVCInjectedEnviron())
+	entries := []string{
 		filepath.Join(systemRoot, "System32"),
 		filepath.Join(systemRoot, "System32", "WindowsPowerShell", "v1.0"),
 		gitDir,
-	)
+	}
+	// Machine and user Path from the registry. Tools installed after this
+	// process started are not in os.Environ, but a logon shell would see them.
+	entries = append(entries, windowsLogonPathDirs()...)
+	return appendWindowsPathEntries(env, entries...)
 }
 
 func appendWindowsPathEntries(env []string, entries ...string) []string {
@@ -397,17 +408,26 @@ func appendWindowsPathEntries(env []string, entries ...string) []string {
 		parts = strings.Split(pathValue, string(os.PathListSeparator))
 	}
 	seen := map[string]struct{}{}
+	deduped := make([]string, 0, len(parts))
 	for _, part := range parts {
-		if key := strings.ToLower(strings.TrimSpace(part)); key != "" {
-			seen[key] = struct{}{}
-		}
-	}
-	for _, entry := range entries {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
+		part = strings.TrimSpace(part)
+		key := windowsPathListKey(part)
+		if key == "" {
 			continue
 		}
-		key := strings.ToLower(entry)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		deduped = append(deduped, part)
+	}
+	parts = deduped
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		key := windowsPathListKey(entry)
+		if key == "" {
+			continue
+		}
 		if _, ok := seen[key]; ok {
 			continue
 		}
@@ -415,6 +435,27 @@ func appendWindowsPathEntries(env []string, entries ...string) []string {
 		seen[key] = struct{}{}
 	}
 	newPath := "Path=" + strings.Join(parts, string(os.PathListSeparator))
+	if pathIdx >= 0 {
+		env[pathIdx] = newPath
+		return env
+	}
+	return append(env, newPath)
+}
+
+// prependWindowsPathEntries puts entries at the front of PATH and drops a
+// later copy of the same directory. The first spelling is kept.
+func prependWindowsPathEntries(env []string, entries ...string) []string {
+	pathIdx := -1
+	pathValue := ""
+	for i, item := range env {
+		if strings.HasPrefix(strings.ToLower(item), "path=") {
+			pathIdx = i
+			pathValue = item[len("Path="):]
+			break
+		}
+	}
+	merged := joinUniqueWindowsPath(strings.Join(entries, string(os.PathListSeparator)), pathValue)
+	newPath := "Path=" + merged
 	if pathIdx >= 0 {
 		env[pathIdx] = newPath
 		return env

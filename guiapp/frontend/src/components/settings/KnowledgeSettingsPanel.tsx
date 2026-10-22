@@ -1,11 +1,12 @@
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { EventsOn } from '../../../wailsjs/runtime';
 import { KnowledgeImportDialog } from './KnowledgeImportDialog';
 import { KNOWLEDGE_IMPORT_EXPAND_EVENT, consumeKnowledgeImportExpandFlag, useKnowledgeImportOptional } from './KnowledgeImportContext';
 import { consumePendingKnowledgeSearch, KNOWLEDGE_SEARCH_EVENT, peekPendingKnowledgeSearch, type KnowledgeSearchOpenDetail } from '../../utils/knowledgeSearchNavigation';
 import { ConfirmDialog } from '../modals/ConfirmDialog';
 import { DeepCrawlConfig, DeepCrawlPanel, DeepCrawlPreviewResult, DeepCrawlRunResult } from './DeepCrawlPanel';
 import { buildHubCardStoreURL } from '../../utils/hubCredits';
-import { EnterpriseKnowledgeListLibraries, EnterpriseKnowledgeSetLibraryUserSync, EnterprisePurgeRevokedLibrary, EnterpriseSetSyncPaused, EnterpriseSyncNow, EnterpriseSyncStatus, GetHubLLMServiceStatus, KnowledgeBackfillSourceAutoLabels, KnowledgeCapabilities, KnowledgeClearAll, KnowledgeContextPack, KnowledgeDeepCrawl, KnowledgeDeepCrawlPreview, KnowledgeDeleteHubShare, KnowledgeDeleteFragment, KnowledgeDeleteSource, KnowledgeDisableSensitiveSources, KnowledgeDisableSource, KnowledgeDisableSources, KnowledgeDisableSourcesByFilter, KnowledgeDiscoverURLs, KnowledgeDoctor, KnowledgeEnableSource, KnowledgeEnableSourcesByFilter, KnowledgeEntityProfile, KnowledgeExecuteSourceQualityMaintenancePlan, KnowledgeExplain, KnowledgeExportSnapshotWithOptions, KnowledgeFactGraph, KnowledgeFactIndex, KnowledgeGetImageAssetPaths, KnowledgeHealth, KnowledgeImportDirectory, KnowledgeImportFiles, KnowledgeImportHubShare, KnowledgeImportJobStatus, KnowledgeImportSnapshot, KnowledgeLinkSources, KnowledgeListCardsBySource, KnowledgeListDuplicateCards, KnowledgeListFactsBySource, KnowledgeListImportBatches, KnowledgeListImportItems, KnowledgeListMyHubShares, KnowledgeListSourceLabels, KnowledgeListSourceLinkEvents, KnowledgeListSourceLinks, KnowledgeListSourceVersions, KnowledgeListSources, KnowledgeListSuppressedCards, KnowledgeListURLDomainPolicies, KnowledgeMaintain, KnowledgeOpenImageAsset, KnowledgePreviewNodesBySource, KnowledgePreviewSourceRefresh, KnowledgePreviewSourceTopicLinks, KnowledgePreviewSourcesRefreshByFilter, KnowledgeQualityMaintenancePolicies, KnowledgeRebuildSourceDerived, KnowledgeRebuildSourcesDerived, KnowledgeRebuildSourcesDerivedByFilter, KnowledgeRefreshChangedSources, KnowledgeRefreshChangedSourcesByFilter, KnowledgeRefreshSource, KnowledgeRefreshSourceTopicLinks, KnowledgeRefreshSourceTopicLinksByFilter, KnowledgeRefreshSources, KnowledgeRefreshSourcesByFilter, KnowledgeRestoreSuppressedCards, KnowledgeRetryImportBatch, KnowledgeSaveText, KnowledgeSaveURL, KnowledgeSaveURLs, KnowledgeScanDirectory, KnowledgeScanFiles, KnowledgeScanSensitiveContent, KnowledgeSearch, KnowledgeSearchFacets, KnowledgeSearchStructured, DigitalAssetListContributableLibraries, DigitalAssetListMySubmissions, DigitalAssetWithdrawSubmission, KnowledgeContributeToOrg, KnowledgeShareToHub, KnowledgeSourceDigest, KnowledgeSourceGraph, KnowledgeSourceNeighborhood, KnowledgeSourcePath, KnowledgeSourceQualityMaintenancePlan, KnowledgeSourceQualityReport, KnowledgeSourceTimeline, KnowledgeStartImportDirectory, KnowledgeStructuredCatalog, KnowledgeSuggest, KnowledgeSuppressDuplicateCards, KnowledgeSyncDelete, KnowledgeSyncDownload, KnowledgeSyncStatus, KnowledgeSyncUpload, KnowledgeSyncVerifyPassword, KnowledgeTopicRelevance, KnowledgeUnlinkSources, KnowledgeUpdateHubShare, KnowledgeUpdateSourceLabels, KnowledgeUpdateSourceMetadata, KnowledgeUpdateURLDomainPolicies, LoadConfig, OpenFileOrShowInFolder, OpenSystemUrl, SelectKnowledgeDirectory, SelectKnowledgeFiles, SelectKnowledgeSnapshotExportPath, SelectKnowledgeSnapshotFile } from '../../../wailsjs/go/main/App';
+import { EnterpriseKnowledgeListLibraries, EnterpriseKnowledgeSetLibraryUserSync, EnterprisePurgeRevokedLibrary, EnterpriseSetSyncPaused, EnterpriseSyncNow, EnterpriseSyncStatus, GetHubLLMServiceStatus, KnowledgeBackfillSourceAutoLabels, KnowledgeBrowseAddFolderWatch, KnowledgeCapabilities, KnowledgeClearAll, KnowledgeContextPack, KnowledgeDeepCrawl, KnowledgeDeepCrawlPreview, KnowledgeDeleteHubShare, KnowledgeDeleteFragment, KnowledgeDeleteSource, KnowledgeDisableSensitiveSources, KnowledgeDisableSource, KnowledgeDisableSources, KnowledgeDisableSourcesByFilter, KnowledgeDiscoverURLs, KnowledgeDoctor, KnowledgeEnableSource, KnowledgeEnableSourcesByFilter, KnowledgeEntityProfile, KnowledgeExecuteSourceQualityMaintenancePlan, KnowledgeExplain, KnowledgeExportSnapshotWithOptions, KnowledgeFactGraph, KnowledgeFactIndex, KnowledgeGetImageAssetPaths, KnowledgeHealth, KnowledgeImportDirectory, KnowledgeImportFiles, KnowledgeImportHubShare, KnowledgeImportJobStatus, KnowledgeImportSnapshot, KnowledgeLinkSources, KnowledgeListCardsBySource, KnowledgeListDuplicateCards, KnowledgeListFactsBySource, KnowledgeListFolderWatches, KnowledgeListImportBatches, KnowledgeListImportItems, KnowledgeListMyHubShares, KnowledgeListSourceLabels, KnowledgeListSourceLinkEvents, KnowledgeListSourceLinks, KnowledgeListSourceVersions, KnowledgeListSources, KnowledgeListSuppressedCards, KnowledgeListURLDomainPolicies, KnowledgeMaintain, KnowledgeOpenImageAsset, KnowledgePreviewNodesBySource, KnowledgePreviewSourceRefresh, KnowledgePreviewSourceTopicLinks, KnowledgePreviewSourcesRefreshByFilter, KnowledgeQualityMaintenancePolicies, KnowledgeRebuildSourceDerived, KnowledgeRebuildSourcesDerived, KnowledgeRebuildSourcesDerivedByFilter, KnowledgeRefreshChangedSources, KnowledgeRefreshChangedSourcesByFilter, KnowledgeRefreshSource, KnowledgeRefreshSourceTopicLinks, KnowledgeRefreshSourceTopicLinksByFilter, KnowledgeRefreshSources, KnowledgeRefreshSourcesByFilter, KnowledgeRemoveFolderWatch, KnowledgeRestoreSuppressedCards, KnowledgeRetryImportBatch, KnowledgeSaveText, KnowledgeSaveURL, KnowledgeSaveURLs, KnowledgeScanDirectory, KnowledgeScanFiles, KnowledgeScanSensitiveContent, KnowledgeSearch, KnowledgeSearchFacets, KnowledgeSearchStructured, DigitalAssetListContributableLibraries, DigitalAssetListMySubmissions, DigitalAssetWithdrawSubmission, KnowledgeContributeToOrg, KnowledgeShareToHub, KnowledgeSourceDigest, KnowledgeSourceGraph, KnowledgeSourceNeighborhood, KnowledgeSourcePath, KnowledgeSourceQualityMaintenancePlan, KnowledgeSourceQualityReport, KnowledgeSourceTimeline, KnowledgeStartImportDirectory, KnowledgeStructuredCatalog, KnowledgeSuggest, KnowledgeSuppressDuplicateCards, KnowledgeSyncDelete, KnowledgeSyncDownload, KnowledgeSyncStatus, KnowledgeSyncUpload, KnowledgeSyncVerifyPassword, KnowledgeTopicRelevance, KnowledgeUnlinkSources, KnowledgeUpdateHubShare, KnowledgeUpdateSourceLabels, KnowledgeUpdateSourceMetadata, KnowledgeUpdateURLDomainPolicies, LoadConfig, OpenFileOrShowInFolder, OpenSystemUrl, SelectKnowledgeDirectory, SelectKnowledgeFiles, SelectKnowledgeSnapshotExportPath, SelectKnowledgeSnapshotFile } from '../../../wailsjs/go/main/App';
 import { knowledge } from '../../../wailsjs/go/models';
 import { SuggestCombobox } from '../ui/SuggestCombobox';
 import { knowledgeEnterpriseLabel, knowledgeHitPreview, knowledgeHitTitle, knowledgeResultKey } from '../ai/unifiedHeaderSearch';
@@ -1316,7 +1317,19 @@ export function knowledgeSearchFragmentMatchesDeleted(item: SearchResult, delete
     return false;
 }
 
-type KnowledgeSubTab = 'overview' | 'ingest' | 'export' | 'sync' | 'enterprise' | 'search' | 'sources' | 'quality';
+type KnowledgeSubTab = 'overview' | 'ingest' | 'export' | 'sync' | 'enterprise' | 'search' | 'sources' | 'watch' | 'quality';
+
+type KnowledgeFolderWatch = {
+    id?: string;
+    path?: string;
+    status?: string;
+    last_import_at?: string;
+    last_error?: string;
+    last_file?: string;
+    imported_files?: number;
+    skipped_files?: number;
+    failed_files?: number;
+};
 
 type EnterpriseLibrary = {
     library_id?: string;
@@ -1746,6 +1759,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         { id: 'enterprise' as const, label: t('Enterprise digital assets', '企业数字资产'), desc: t('Synced tenant digital assets from Hub', '从 Hub 同步的租户企业数字资产') },
         { id: 'search' as const, label: t('Search', '检索'), desc: t('Query and facets', '查询与分面') },
         { id: 'sources' as const, label: t('Sources', '来源'), desc: t('Inspect and manage source records', '查看并管理来源') },
+        { id: 'watch' as const, label: t('Watch', '监控'), desc: t('Watch folders and import changes', '监控文件夹并导入变化') },
         { id: 'quality' as const, label: t('Quality', '质量'), desc: t('Reports and maintenance plans', '报告与维护计划') },
     ]), [t]);
     // Invalidate stale results when the query payload changes (filter or capabilities update).
@@ -4059,6 +4073,10 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                 </div>
             )}
 
+            {activeTab === 'watch' && (
+                <FolderWatchPanel t={t} />
+            )}
+
             {activeTab === 'quality' && (
                 <div className="knowledge-stack" role="tabpanel" id="knowledge-panel-quality" aria-labelledby="knowledge-tab-quality">
                     <SourceFilters t={t} filter={qualityFilter} coverageOptions={qualityCoverageOptions} onChange={setQualityFilter} />
@@ -4409,6 +4427,184 @@ function ImportJobSummary({ t, job }: {
                 <Stat label={t('Skipped', '已跳过')} value={job.result?.skipped_files || 0} />
                 <Stat label={t('Failed', '失败')} value={job.result?.failed_files || 0} />
             </div>
+        </div>
+    );
+}
+
+function knowledgeFolderWatchError(t: (en: string, zhHans: string, zhHant?: string) => string, err: any) {
+    const message = String(err?.message || err || '');
+    const covered = message.match(/already covered by\s+(.+)$/);
+    if (covered) {
+        return t(`That folder is already covered by ${covered[1]}.`, `该文件夹已在监控范围内：${covered[1]}`);
+    }
+    if (message.includes('application data directory')) {
+        return t('Choose a folder outside the application data directory.', '请选择应用数据目录以外的文件夹。');
+    }
+    if (message.includes('too many watched folders')) {
+        return t('You can watch up to 16 folders. Remove one to add another.', '最多监控 16 个文件夹。请先移除一个再添加。');
+    }
+    if (message.includes('does not exist')) {
+        return t('That folder does not exist.', '文件夹不存在。');
+    }
+    if (message.includes('not a folder')) {
+        return t('Choose a folder.', '请选择文件夹。');
+    }
+    return message;
+}
+
+function knowledgeFolderWatchStatusLabel(t: (en: string, zhHans: string, zhHant?: string) => string, status?: string) {
+    switch (status) {
+        case 'importing':
+            return t('Importing', '导入中');
+        case 'error':
+            return t('Failed', '失败');
+        case 'missing':
+            return t('Folder missing', '文件夹不存在');
+        default:
+            return t('Watching', '监控中');
+    }
+}
+
+function knowledgeFolderWatchNotice(t: (en: string, zhHans: string, zhHant?: string) => string, watch: KnowledgeFolderWatch) {
+    const message = String(watch.last_error || '');
+    if (!message) return '';
+    if (watch.status === 'missing' && message === 'folder does not exist') return '';
+    const limited = message.match(/^stopped watching new directories after (\d+)$/);
+    if (limited) {
+        return t(
+            `Stopped watching new directories after ${limited[1]}.`,
+            `已停止监控新的子目录（上限 ${limited[1]}）。`,
+        );
+    }
+    if (message === 'folder does not exist') {
+        return t('That folder does not exist.', '文件夹不存在。');
+    }
+    const failed = message.match(/^failed (\d+) file\(s\)$/);
+    if (failed) {
+        return t(`Failed to import ${failed[1]} file(s).`, `${failed[1]} 个文件导入失败。`);
+    }
+    return message;
+}
+
+function knowledgeFolderWatchTime(value?: string) {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime()) || date.getFullYear() < 2000) return '';
+    return date.toLocaleString();
+}
+
+function FolderWatchPanel({ t }: { t: (en: string, zhHans: string, zhHant?: string) => string }) {
+    const [watches, setWatches] = useState<KnowledgeFolderWatch[]>([]);
+    const [error, setError] = useState('');
+    const [busy, setBusy] = useState('');
+    const watchLoadGen = useRef(0);
+
+    const loadWatches = useCallback(async () => {
+        const gen = ++watchLoadGen.current;
+        const items = await KnowledgeListFolderWatches();
+        if (gen !== watchLoadGen.current) return;
+        setWatches(Array.isArray(items) ? items as KnowledgeFolderWatch[] : []);
+    }, []);
+
+    useEffect(() => {
+        let cancelled = false;
+        void loadWatches().catch((err: any) => {
+            if (!cancelled) setError(knowledgeFolderWatchError(t, err));
+        });
+        const off = EventsOn('knowledge:folder-watch', (items: KnowledgeFolderWatch[]) => {
+            watchLoadGen.current += 1;
+            if (Array.isArray(items)) setWatches(items);
+        });
+        return () => {
+            cancelled = true;
+            watchLoadGen.current += 1;
+            if (typeof off === 'function') off();
+        };
+    }, [loadWatches, t]);
+
+    const addFolder = async () => {
+        setBusy('add');
+        setError('');
+        try {
+            const added = await KnowledgeBrowseAddFolderWatch();
+            if (added && (added as KnowledgeFolderWatch).path) {
+                await loadWatches();
+            }
+        } catch (err: any) {
+            setError(knowledgeFolderWatchError(t, err));
+        } finally {
+            setBusy('');
+        }
+    };
+
+    const removeFolder = async (watch: KnowledgeFolderWatch) => {
+        const id = String(watch.id || '').trim();
+        if (!id) return;
+        setBusy(id);
+        setError('');
+        try {
+            await KnowledgeRemoveFolderWatch(id);
+            await loadWatches();
+        } catch (err: any) {
+            setError(knowledgeFolderWatchError(t, err));
+        } finally {
+            setBusy('');
+        }
+    };
+
+    return (
+        <div className="knowledge-stack" role="tabpanel" id="knowledge-panel-watch" aria-labelledby="knowledge-tab-watch" data-testid="knowledge-watch-panel">
+            <PanelBlock title={t('Watched folders', '监控文件夹')}>
+                <p className="knowledge-muted-line">
+                    {t(
+                        'Add folders to import their documents into the knowledge base. Existing files are imported when a folder is added, and new or changed files are imported afterwards. Removing a folder stops watching it and keeps documents that were already imported.',
+                        '添加文件夹后，现有文档会导入知识库，之后的新增和修改也会导入。从列表移除文件夹只会停止监控，已导入的内容会保留。',
+                    )}
+                </p>
+                <div className="knowledge-inline-actions">
+                    <button type="button" className="knowledge-button knowledge-button--primary" disabled={busy === 'add'} onClick={() => void addFolder()}>
+                        {busy === 'add' ? t('Choosing...', '选择中...') : t('Add folder', '添加文件夹')}
+                    </button>
+                </div>
+                {error ? <div className="knowledge-alert knowledge-alert--error">{error}</div> : null}
+                {watches.length ? (
+                    <div className="knowledge-list" data-testid="knowledge-watch-list">
+                        {watches.map(watch => {
+                            const id = String(watch.id || watch.path || '');
+                            const importedAt = knowledgeFolderWatchTime(watch.last_import_at);
+                            const detail = [
+                                knowledgeFolderWatchStatusLabel(t, watch.status),
+                                importedAt ? `${t('Last import', '上次导入')} ${importedAt}` : '',
+                                importedAt ? t(
+                                    `${watch.imported_files || 0} imported, ${watch.skipped_files || 0} skipped, ${watch.failed_files || 0} failed`,
+                                    `导入 ${watch.imported_files || 0}，跳过 ${watch.skipped_files || 0}，失败 ${watch.failed_files || 0}`,
+                                ) : '',
+                                watch.last_file || '',
+                                knowledgeFolderWatchNotice(t, watch),
+                            ].filter(Boolean).join(' · ');
+                            return (
+                                <div key={id} className="knowledge-row">
+                                    <div className="knowledge-row-main">
+                                        <strong>{watch.path}</strong>
+                                        <span className="knowledge-muted-line">{detail}</span>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        className="knowledge-button knowledge-button--secondary knowledge-row-delete"
+                                        disabled={!!busy}
+                                        aria-label={t(`Remove watch ${watch.path}`, `移除监控 ${watch.path}`)}
+                                        onClick={() => void removeFolder(watch)}
+                                    >
+                                        {t('Remove', '移除')}
+                                    </button>
+                                </div>
+                            );
+                        })}
+                    </div>
+                ) : (
+                    <div className="knowledge-empty">{t('No folders are being watched.', '还没有监控文件夹。')}</div>
+                )}
+            </PanelBlock>
         </div>
     );
 }

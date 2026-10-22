@@ -1168,7 +1168,10 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContextAndContextTokens
 			// turn owner is already on the context.
 			if name == "goal" {
 				text := h.toolGoalForUser(goalExecutionOwner(execCtx, h.lastUserID), args)
-				return registeredToolExecutionResult(text)
+				if goalToolCallFailed(text) {
+					return toolExecutionResult{Text: text, Outcome: toolOutcomeFailed, FailureKind: toolFailureHandlerReported}
+				}
+				return toolExecutionResult{Text: text, Outcome: toolOutcomeSucceeded}
 			}
 			if tool.HandlerCtx != nil {
 				text := tool.HandlerCtx(execCtx, args, onProgress)

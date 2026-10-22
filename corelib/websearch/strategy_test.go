@@ -26,11 +26,25 @@ func engineIDs(strategy corelib.WebSearchStrategy) []string {
 func TestDefaultWebSearchStrategyPresets(t *testing.T) {
 	mainland := DefaultWebSearchStrategy(corelib.WebSearchPresetMainland)
 	international := DefaultWebSearchStrategy(corelib.WebSearchPresetInternational)
-	if got := engineIDs(mainland)[:4]; !reflect.DeepEqual(got, []string{"bing_cn", "baidu", "duckduckgo", "google"}) {
+	if got := engineIDs(mainland); !reflect.DeepEqual(got, []string{"yuanbao", "bing_cn", "baidu", "duckduckgo", "google", "brave", "serper", "tinyfish", "tavily", WebSearchEngineMaclawHub}) {
 		t.Fatalf("mainland order = %v", got)
 	}
-	if got := engineIDs(international)[:4]; !reflect.DeepEqual(got, []string{"google", "duckduckgo", "bing_cn", "baidu"}) {
+	if got := engineIDs(international); !reflect.DeepEqual(got, []string{"yuanbao", "google", "duckduckgo", "bing_cn", "baidu", "brave", "serper", "tinyfish", "tavily", WebSearchEngineMaclawHub}) {
 		t.Fatalf("international order = %v", got)
+	}
+	for _, strategy := range []corelib.WebSearchStrategy{mainland, international} {
+		for _, engine := range strategy.Engines {
+			switch engine.ID {
+			case "yuanbao":
+				if !engine.Enabled || engine.APIKey != "" || engine.Transport != corelib.WebSearchTransportAPI || engine.BaseURL != defaultYuanbaoSearchURL {
+					t.Fatalf("yuanbao default = %#v", engine)
+				}
+			case "brave", "serper", "tinyfish", "tavily", WebSearchEngineMaclawHub:
+				if engine.Enabled {
+					t.Fatalf("%s enabled by default: %#v", engine.ID, engine)
+				}
+			}
+		}
 	}
 	if mainland.BrowserHumanAssistEnabled || international.BrowserHumanAssistEnabled {
 		t.Fatal("human verification assistance must require explicit opt-in")
@@ -652,6 +666,21 @@ func TestSafeSearchErrorDetailClassifiesKeylessHTTP403AntiBotAsBlocked(t *testin
 	}
 }
 
+func TestSafeSearchErrorDetailDistinguishesMissingKeyFromRejectedKey(t *testing.T) {
+	if got := SafeSearchErrorDetail(errors.New("Yuanbao API key is not configured")); got != "API key is not configured" {
+		t.Fatalf("missing key = %q", got)
+	}
+	if got := SafeSearchErrorDetail(errors.New("yuanbao API key is not configured")); got != "API key is not configured" {
+		t.Fatalf("strategy missing key = %q", got)
+	}
+	if got := SafeSearchErrorDetail(errors.New("Yuanbao search rejected the API key")); got != "credentials were rejected" {
+		t.Fatalf("rejected key = %q", got)
+	}
+	if got := SafeSearchErrorDetail(errors.New("Yuanbao search returned HTTP 401")); got != "credentials were rejected" {
+		t.Fatalf("http 401 = %q", got)
+	}
+}
+
 func TestMergeSearchResultsCanonicalizesTrackingURLs(t *testing.T) {
 	results := mergeSearchResults([]SearchResult{{Title: "A", URL: "https://Example.com/doc/?utm_source=x"}}, []SearchResult{{Title: "B", URL: "https://example.com/doc"}, {Title: "C", URL: "https://example.net/"}}, 8)
 	if len(results) != 2 || results[1].Title != "C" {
@@ -1125,5 +1154,175 @@ func TestSearchWithStrategySecondBrowserGetsFreshBudgetAfterFirst(t *testing.T) 
 	}
 	if len(response.Results) == 0 || response.Results[0].URL != "https://openreview.net/forum?id=budget" {
 		t.Fatalf("results = %#v", response.Results)
+	}
+}
+
+func TestNormalizeWebSearchStrategyAcceptsEnabledYuanbaoWithoutKey(t *testing.T) {
+	strategy := DefaultWebSearchStrategy(corelib.WebSearchPresetMainland)
+	normalized, err := NormalizeWebSearchStrategy(strategy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normalized.Engines[0].ID != "yuanbao" || !normalized.Engines[0].Enabled || normalized.Engines[0].APIKey != "" {
+		t.Fatalf("yuanbao = %#v", normalized.Engines[0])
+	}
+}
+
+func preYuanbaoStrategy(preset string) corelib.WebSearchStrategy {
+	strategy := DefaultWebSearchStrategy(preset)
+	engines := make([]corelib.WebSearchEngineConfig, 0, len(strategy.Engines))
+	for _, engine := range strategy.Engines {
+		if engine.ID == "yuanbao" {
+			continue
+		}
+		engines = append(engines, engine)
+	}
+	for i := range engines {
+		engines[i].Priority = i + 1
+	}
+	strategy.Engines = engines
+	return strategy
+}
+
+func TestNormalizeWebSearchStrategyInsertsYuanbaoOnPreviouslyCompleteCatalog(t *testing.T) {
+	for _, preset := range []string{corelib.WebSearchPresetMainland, corelib.WebSearchPresetInternational} {
+		previous := preYuanbaoStrategy(preset)
+		wantNext := previous.Engines[0].ID
+		withMojeek := previous
+		withMojeek.Engines = append([]corelib.WebSearchEngineConfig{{
+			ID: "mojeek", Enabled: true, Priority: 0, Transport: corelib.WebSearchTransportHTTPHTML,
+		}}, previous.Engines...)
+		for _, strategy := range []corelib.WebSearchStrategy{previous, withMojeek} {
+			normalized, err := NormalizeWebSearchStrategy(strategy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(normalized.Engines) != 10 || normalized.Engines[0].ID != "yuanbao" || !normalized.Engines[0].Enabled || normalized.Engines[0].APIKey != "" || normalized.Engines[0].BaseURL != defaultYuanbaoSearchURL {
+				t.Fatalf("preset %s insert = %#v", preset, normalized.Engines[0])
+			}
+			if normalized.Engines[1].ID != wantNext {
+				t.Fatalf("preset %s previous first = %s, want %s", preset, normalized.Engines[1].ID, wantNext)
+			}
+			oldIDs := engineIDs(preYuanbaoStrategy(preset))
+			if !reflect.DeepEqual(engineIDs(normalized)[1:], oldIDs) {
+				t.Fatalf("preset %s relative order = %v, want %v", preset, engineIDs(normalized)[1:], oldIDs)
+			}
+			for i, engine := range normalized.Engines {
+				if engine.Priority != i+1 {
+					t.Fatalf("priority %d = %d", i, engine.Priority)
+				}
+			}
+			again, err := NormalizeWebSearchStrategy(normalized)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if engineIDs(again)[0] != "yuanbao" || countEngineID(again, "yuanbao") != 1 {
+				t.Fatalf("second normalize = %v", engineIDs(again))
+			}
+			for i := range again.Engines {
+				if again.Engines[i].ID == "yuanbao" {
+					again.Engines[i].Enabled = false
+				}
+			}
+			disabled, err := NormalizeWebSearchStrategy(again)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, engine := range disabled.Engines {
+				if engine.ID == "yuanbao" && engine.Enabled {
+					t.Fatal("second normalize forced yuanbao back on")
+				}
+			}
+		}
+	}
+}
+
+func countEngineID(strategy corelib.WebSearchStrategy, id string) int {
+	n := 0
+	for _, engine := range strategy.Engines {
+		if engine.ID == id {
+			n++
+		}
+	}
+	return n
+}
+
+func TestNormalizeWebSearchStrategyBackfillsYuanbaoDisabledOnPartialStrategy(t *testing.T) {
+	strategy := corelib.WebSearchStrategy{
+		Version: 1, Preset: corelib.WebSearchPresetCustom, Mode: corelib.WebSearchModePriority,
+		Engines:                 []corelib.WebSearchEngineConfig{{ID: "google", Enabled: true, Priority: 1, Transport: corelib.WebSearchTransportBrowser}},
+		BrowserFallbackEngineID: "bing_cn",
+	}
+	normalized, err := NormalizeWebSearchStrategy(strategy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normalized.Engines[0].ID == "yuanbao" {
+		t.Fatalf("partial strategy put yuanbao first: %#v", normalized.Engines)
+	}
+	var found bool
+	for _, engine := range normalized.Engines {
+		if engine.ID != "yuanbao" {
+			continue
+		}
+		found = true
+		if engine.Enabled {
+			t.Fatalf("backfilled yuanbao was enabled: %#v", engine)
+		}
+	}
+	if !found {
+		t.Fatal("partial strategy did not backfill yuanbao")
+	}
+}
+
+func TestSearchWithStrategySkipsYuanbaoWhenKeyMissing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "SearchPro") || r.Header.Get("Authorization") != "" {
+			t.Errorf("yuanbao host was contacted: %s %s", r.Method, r.URL.String())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"organic":[{"title":"Next engine","link":"https://example.com/next","snippet":"ok"}]}`))
+	}))
+	defer server.Close()
+	strategy := corelib.WebSearchStrategy{
+		Version: 1, Preset: corelib.WebSearchPresetCustom, Mode: corelib.WebSearchModePriority,
+		Engines: []corelib.WebSearchEngineConfig{
+			{ID: "yuanbao", Enabled: true, Priority: 1, Transport: corelib.WebSearchTransportAPI, BaseURL: defaultYuanbaoSearchURL},
+			{ID: "serper", Enabled: true, Priority: 2, Transport: corelib.WebSearchTransportAPI, APIKey: "secret", BaseURL: server.URL},
+		},
+		BrowserFallbackEnabled: false, BrowserFallbackEngineID: "bing_cn", MinResultsBeforeHedge: 1,
+	}
+	response, err := SearchWithStrategyCtx(context.Background(), "golang generics", 3, strategy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 1 || response.Results[0].Title != "Next engine" {
+		t.Fatalf("results = %#v", response.Results)
+	}
+	var skipped bool
+	for _, attempt := range response.Diagnostics {
+		if attempt.EngineID == "yuanbao" {
+			skipped = attempt.Outcome == "skipped" && attempt.Detail == "missing API key"
+		}
+	}
+	if !skipped {
+		t.Fatalf("diagnostics = %#v", response.Diagnostics)
+	}
+	if response.Degraded {
+		t.Fatalf("missing API key skip marked the search degraded: %#v", response.Diagnostics)
+	}
+}
+
+func TestSearchWithStrategyReportsMissingKeyWhenYuanbaoIsTheOnlyEngine(t *testing.T) {
+	strategy := corelib.WebSearchStrategy{
+		Version: 1, Preset: corelib.WebSearchPresetCustom, Mode: corelib.WebSearchModePriority,
+		Engines: []corelib.WebSearchEngineConfig{
+			{ID: "yuanbao", Enabled: true, Priority: 1, Transport: corelib.WebSearchTransportAPI, BaseURL: defaultYuanbaoSearchURL},
+		},
+		BrowserFallbackEnabled: false, BrowserFallbackEngineID: "bing_cn",
+	}
+	_, err := SearchWithStrategyCtx(context.Background(), "golang generics", 3, strategy)
+	if err == nil || !strings.Contains(err.Error(), "yuanbao API key is not configured") || strings.Contains(err.Error(), "no enabled") {
+		t.Fatalf("error = %v", err)
 	}
 }

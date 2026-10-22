@@ -48,6 +48,14 @@ export function shouldIgnoreUserScrollIntent(event?: AssistantScrollIntentEvent)
     return shouldIgnoreNestedScrollIntent(event);
 }
 
+function assignScrollTop(container: HTMLElement, behavior: ScrollBehavior): void {
+    if (behavior === "smooth" && typeof container.scrollTo === "function") {
+        container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+        return;
+    }
+    container.scrollTop = container.scrollHeight;
+}
+
 export function pinAssistantOutputToBottom(
     container: HTMLElement | null,
     endEl: HTMLElement | null,
@@ -57,13 +65,14 @@ export function pinAssistantOutputToBottom(
         // Pin the conversation scroller itself. scrollIntoView can also
         // walk ancestor scrollports and is kept as a fallback for the
         // end sentinel after layout settles.
-        if (behavior === "smooth" && typeof container.scrollTo === "function") {
-            container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
-        } else {
-            container.scrollTop = container.scrollHeight;
-        }
+        assignScrollTop(container, behavior);
     }
     endEl?.scrollIntoView({ behavior, block: "end" });
+    // scrollIntoView aligns the sentinel with the padding edge, so the
+    // transcript's padding-bottom (16px on the execution view) stays below
+    // the fold. Measured distance stays ~15px and the last line sits under
+    // the composer. Put the scroller back on scrollHeight.
+    if (container && behavior !== "smooth") assignScrollTop(container, behavior);
 }
 
 export function pinAssistantOutputToTop(container: HTMLElement): void {

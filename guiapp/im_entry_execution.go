@@ -41,6 +41,9 @@ type preparedIMEntryExecutionOptions struct {
 	OnToken                   llm.TokenCallback
 	OnNewRound                NewRoundCallback
 	OnStreamDone              StreamDoneCallback
+	// queuedGoalTurnHold points at the inbound park flag. It stays false
+	// until schedulePostLoopSideEffects runs.
+	queuedGoalTurnHold *bool
 }
 
 func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionOptions) *IMAgentResponse {
@@ -140,6 +143,9 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		opts.SkipNeedsConfirmGate,
 		opts.AskUserContext != "" || opts.PendingUserReplyContext != "",
 	)
+	// A reused loop must not keep the previous message's park flag. This
+	// turn's flag is set only when post-loop scheduling actually runs.
+	loopCtx.queuedGoalTurnHold = opts.queuedGoalTurnHold
 	// Copied on every inbound message. A reused loop must not keep a previous
 	// wizard opt-out, and the semantic planner reads this field rather than
 	// the workflow router (a cold message never enters that router).
@@ -155,8 +161,10 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	defer h.endInFlightTurn(msg.UserID, loopCtx)
 	// A cancelled loop still stops. The user-stop fence does not: an explicit
 	// goal continue already admitted this host turn, and the fence remains for
-	// the next ordinary message.
-	if loopCtx.IsCancelled() || (h.hasCancelledTaskBoundary(msg.UserID) && !h.goalContinuationAdmittedPastStop(msg)) {
+	// the next ordinary message. A goal-bar pause that landed before this
+	// loop existed stops only this generation.
+	barStopped := h.takeGoalBarStop(msg.UserID, loopCtx)
+	if loopCtx.IsCancelled() || barStopped || (h.hasCancelledTaskBoundary(msg.UserID) && !h.goalContinuationAdmittedPastStop(msg)) {
 		hist, _ := drainHistory()
 		if resp := h.preLoopCancelResponse(msg, loopCtx, hist, msg.Text); resp != nil {
 			if h.hasCancelledTaskBoundary(msg.UserID) {
@@ -706,6 +714,12 @@ func (h *IMMessageHandler) finishUnarmedRemoteCodingTurn(msg IMUserMessage, clea
 	text, blocked := h.unarmedRemoteCodingDesktopTurn(msg.UserID)
 	if !blocked {
 		return nil, false
+	}
+	// This return never reaches post-loop scheduling. Pause the goal here so
+	// the bar can continue after reconnect. CancelPending moves the schedule
+	// generation, and the inbound hold does not arm the timer again.
+	if pausedText, paused := h.pauseGoalForUnarmedRemote(msg.UserID); paused && strings.TrimSpace(pausedText) != "" {
+		text = pausedText
 	}
 	log.Printf("[coding-env] remote workbench has no SSH session; not running the desktop agent user=%s", msg.UserID)
 	runtime := runtimeContextFromIMMessage(msg)

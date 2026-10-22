@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 )
 
@@ -389,13 +391,17 @@ func (h *IMMessageHandler) goalPauseForUser(userID string) string {
 	// The queued continuation must stop with the goal. Cancel after the
 	// status flip so a callback that already claimed the timer sees paused
 	// and does not dispatch. CancelPending also refunds an unsent plan
-	// correction and retires the timer generation.
+	// correction and retires the timer generation. The live turn stops too,
+	// without fencing the next chat message.
 	if h.app != nil && h.app.goalContinuation != nil {
 		h.app.goalContinuation.CancelPending(userID)
 		updated := store.Get(userID)
 		if updated != nil {
 			h.app.goalContinuation.emitGoalStateChanged(userID, updated)
 		}
+	}
+	if h.app != nil {
+		h.app.stopGoalBarLoops(userID)
 	}
 	return fmt.Sprintf("目标已暂停: %s\n使用 goal(action=\"resume\") 或发送 /goal resume 恢复。", g.Objective)
 }
@@ -431,8 +437,12 @@ func (h *IMMessageHandler) goalClear() string {
 
 func (h *IMMessageHandler) goalClearForUser(userID string) string {
 	userID = h.resolveGoalUserID(userID)
-	// Drop the queued turn before the row disappears. A leftover timer keeps
-	// the run window open and can still claim a generation after clear.
+	// Stop the live turn before the row disappears, then drop the timer.
+	// A leftover timer keeps the run window open and can still claim a
+	// generation after clear.
+	if h.app != nil {
+		h.app.stopGoalBarLoops(userID)
+	}
 	if h.app != nil && h.app.goalContinuation != nil {
 		h.app.goalContinuation.CancelPending(userID)
 	}
@@ -496,6 +506,13 @@ func (h *IMMessageHandler) cancelGoalContinuation(userID string) {
 		return
 	}
 	h.app.goalContinuation.CancelPending(userID)
+}
+
+// goalToolCallFailed is the outcome the model should see. Handler success
+// lines stay success. Anything else, including a bare [ERR] line, uses
+// GoalToolExecutionResult so it is not treated as a landed get.
+func goalToolCallFailed(text string) bool {
+	return agentruntime.GoalToolExecutionResult(text).Outcome != agent.ToolExecutionOutcomeOK
 }
 
 func formatGoalPlanSavedText(g *goal.Goal) string {

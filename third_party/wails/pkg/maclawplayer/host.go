@@ -64,6 +64,35 @@ var (
 	// The binding goroutines can run out of receive order, so the queue is
 	// what keeps a later leave from losing to an earlier Place.
 	skipPlace atomic.Bool
+	// hostShown reports whether the companion window is on screen. Nil means
+	// there is no window fact, and an empty slot still hides the player.
+	hostShownFn func() bool
+	// showGen advances when the companion window becomes visible. placedGen
+	// records the show generation of a positive Place that was received after
+	// that transition. An empty box is the minimized size until those match:
+	// the show flag is cleared before the page measures, so that box must not
+	// unload the document.
+	showGen   atomic.Uint64
+	placedGen atomic.Uint64
+	// placeShowGen is the generation when the Place now running was received.
+	// The call can wait in the queue until after the next show. Sampling
+	// showGen when it starts would treat the previous layout as the new slot,
+	// and the minimized box that follows would unload the page.
+	placeShowGen    atomic.Uint64
+	placeShowGenSet atomic.Bool
+	// placeSeq counts Place and Hide receipts. placeSeqPin is the receipt of
+	// the call now running. A positive Place arms empty-hide only when that
+	// pin is still the latest receipt after the host returns. The minimized
+	// box is posted while the host call waits on the UI thread.
+	placeSeq       atomic.Uint64
+	placeSeqPin    atomic.Uint64
+	placeSeqPinned atomic.Bool
+	// fullscreenHideExit is set when the companion window hides while a
+	// fullscreen element is up. The exit callback can run after the window
+	// is shown again. That exit is the hide, not the reader leaving the video.
+	fullscreenHideExit atomic.Bool
+	fullscreenApp      atomic.Bool
+	fullscreenPlayer   atomic.Bool
 )
 
 // Set installs the process host. Nil clears it. A page requested before the
@@ -109,6 +138,174 @@ func ConsumeSkipPlace() bool { return skipPlace.CompareAndSwap(true, false) }
 
 // ClearSkipPlace clears a mark the dropped call did not consume.
 func ClearSkipPlace() { skipPlace.Store(false) }
+
+// SetHostShown installs the window-shown check. Nil clears it. The check is
+// read from the binding goroutine that places the player.
+func SetHostShown(fn func() bool) {
+	mu.Lock()
+	hostShownFn = fn
+	mu.Unlock()
+}
+
+// HostShown is false only when a checker was installed and reports that the
+// companion window is hiding, minimized, or not visible. Without a checker
+// the window counts as shown, so an empty slot still removes the player.
+func HostShown() bool {
+	mu.RLock()
+	fn := hostShownFn
+	mu.RUnlock()
+	if fn == nil {
+		return true
+	}
+	return fn()
+}
+
+// NoteHostVisible marks the companion window shown. The caller is the window
+// procedure, before DefWindowProc delivers the resize. The page's next box
+// can still be the minimized size, and that box is not the slot leaving.
+func NoteHostVisible() {
+	showGen.Add(1)
+}
+
+// ShowGeneration is the latest NoteHostVisible. The player queue records it
+// when a Place is received, not when that call later starts.
+func ShowGeneration() uint64 {
+	return showGen.Load()
+}
+
+// PinPlaceShowGeneration keeps the generation from when this Place was
+// received. The queue sets it for the call it is about to run.
+func PinPlaceShowGeneration(gen uint64) {
+	placeShowGen.Store(gen)
+	placeShowGenSet.Store(true)
+}
+
+// PlaceShowGeneration is the generation this Place was received at.
+// A call that did not come through the queue uses the current generation.
+func PlaceShowGeneration() uint64 {
+	if placeShowGenSet.Load() {
+		return placeShowGen.Load()
+	}
+	return showGen.Load()
+}
+
+// ClearPlaceShowGeneration drops the receive-time generation after the call.
+func ClearPlaceShowGeneration() {
+	placeShowGenSet.Store(false)
+}
+
+// NextPlaceReceipt records one Place or Hide the page sent.
+func NextPlaceReceipt() uint64 {
+	return placeSeq.Add(1)
+}
+
+// PinPlaceReceipt selects the receipt the call about to run was given.
+func PinPlaceReceipt(seq uint64) {
+	placeSeqPin.Store(seq)
+	placeSeqPinned.Store(true)
+}
+
+// ClearPlaceReceipt drops the running receipt after the call.
+func ClearPlaceReceipt() {
+	placeSeqPinned.Store(false)
+}
+
+// PlaceReceiptStillLatest reports that nothing newer was received after the
+// running call. A direct call has no receipt and is the latest.
+func PlaceReceiptStillLatest() bool {
+	if !placeSeqPinned.Load() {
+		return true
+	}
+	return placeSeqPin.Load() == placeSeq.Load()
+}
+
+// NoteSlotPlaced records that a positive Place was received at gen and the
+// window was shown when it was applied. A gen from before the latest show
+// does not arm empty-hide; that place measured the previous layout.
+func NoteSlotPlaced(gen uint64) {
+	if gen == showGen.Load() {
+		placedGen.Store(gen)
+	}
+}
+
+// EmptyHideReady reports that an empty slot is the page leaving, not the
+// first measurement after a show. Before any show the two generations are
+// equal, so an empty slot still removes the player.
+func EmptyHideReady() bool {
+	return placedGen.Load() == showGen.Load()
+}
+
+// ResetShowPlacement restores the generations tests share. Production does
+// not call it.
+func ResetShowPlacement() {
+	showGen.Store(0)
+	placedGen.Store(0)
+	placeShowGenSet.Store(false)
+	placeSeqPinned.Store(false)
+	fullscreenHideExit.Store(false)
+	fullscreenApp.Store(false)
+	fullscreenPlayer.Store(false)
+}
+
+// SetFullscreenSource records which WebView currently contains a fullscreen
+// element. The app page and the player page are separate documents.
+func SetFullscreenSource(player, on bool) {
+	if player {
+		fullscreenPlayer.Store(on)
+		return
+	}
+	fullscreenApp.Store(on)
+}
+
+// FullscreenElementUp reports that a fullscreen element was still up the
+// last time either WebView told us. Hide reads it before DefWindowProc.
+func FullscreenElementUp() bool {
+	return fullscreenApp.Load() || fullscreenPlayer.Load()
+}
+
+// NoteFullscreenHidden marks the next fullscreen exit as belonging to this
+// hide. The callback can run after the window is already shown.
+func NoteFullscreenHidden() {
+	fullscreenHideExit.Store(true)
+}
+
+// ClearFullscreenHideExit drops that mark. The show path calls it when a
+// live read says fullscreen is still up after DefWindowProc, so a later
+// exit is the reader's. The last callback flag is not that read.
+func ClearFullscreenHideExit() {
+	fullscreenHideExit.Store(false)
+}
+
+// NoteFullscreenSurvivedShow clears the hide mark when a live
+// ContainsFullScreenElement read says an element is still up. ok is false
+// when that read failed or no WebView exists. The callback flag stays true
+// until the exit event is delivered, and that event can run after the show
+// procedure returns, so the flag must not clear the mark. A failed read
+// leaves the mark set: stopping the note on a hide is worse than one
+// swallowed reader exit.
+func NoteFullscreenSurvivedShow(stillUp, ok bool) {
+	if ok && stillUp {
+		ClearFullscreenHideExit()
+	}
+}
+
+// FullscreenNotifyVisible reports the windowVisible bit and whether this
+// exit belongs to a hide. The caller records this event's source first.
+// windowVisible stays the real shown state. Forcing it false after the
+// window is shown again makes the page latch that hide, and the player
+// then stops following the slot. hideExit is why the note is not stopped.
+// A false from the other WebView does not consume the mark. A true does
+// not clear it either. The hide's false may still be waiting, and clearing
+// on the true makes that false stop the note.
+func FullscreenNotifyVisible(on, contentShown bool) (visible, hideExit bool) {
+	if on {
+		return contentShown, false
+	}
+	if !FullscreenElementUp() && fullscreenHideExit.CompareAndSwap(true, false) {
+		return contentShown, true
+	}
+	return contentShown, false
+}
 
 // Place asks the host to show url at bounds. The request is kept when the
 // host is not installed yet and applied from Set.

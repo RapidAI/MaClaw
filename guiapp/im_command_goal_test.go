@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 )
 
@@ -354,5 +355,88 @@ func TestGoalContinuationExposesGoalTool(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("continuation turn should expose the goal tool")
+	}
+}
+
+func TestGoalPlanSuccessStaysSuccessWhenTheBodyMentionsFailure(t *testing.T) {
+	h := &IMMessageHandler{goalStore: goal.NewStore("")}
+	userID := "desktop-user:D:/goal-plan-outcome"
+	h.toolGoalForUser(userID, map[string]interface{}{
+		"action":    "create",
+		"objective": "以现有性能为基础，提升20%",
+	})
+	sa := &CodingSubAgent{
+		handler:         h,
+		fullEnvironment: true,
+		loopCtx:         &LoopContext{UserID: userID},
+		exposeGoalTool:  true,
+	}
+	cb := &codingSubAgentCallbacks{subagent: sa}
+	res := cb.executeGoalTool(map[string]interface{}{
+		"action":        "plan",
+		"understanding": "目标本身没有失败。上一轮执行失败，日志里有 error: unavailable，只是被复核。",
+		"steps": []interface{}{
+			map[string]interface{}{"title": "定位热点"},
+		},
+		"acceptance_criteria": []interface{}{"性能提升20%"},
+	})
+	if res.Outcome != codingToolOutcomeSuccess {
+		t.Fatalf("saved plan was reported as %s: %s", res.Outcome, res.Text)
+	}
+	if !strings.HasPrefix(res.Text, "计划已保存") {
+		t.Fatalf("text = %q", res.Text)
+	}
+	if goalToolCallFailed(res.Text) {
+		t.Fatalf("goal success classified as failure: %q", res.Text)
+	}
+	stored := h.getGoalStore().Get(userID)
+	if stored == nil || stored.Status != goal.StatusActive || len(stored.Steps) != 1 {
+		t.Fatalf("plan was not stored: %+v", stored)
+	}
+
+	refused := cb.executeGoalTool(map[string]interface{}{
+		"action":  "complete",
+		"summary": "做完了",
+	})
+	if refused.Outcome != codingToolOutcomeFailed || !strings.Contains(refused.Text, "不能完成目标") {
+		t.Fatalf("refused complete = %s %q", refused.Outcome, refused.Text)
+	}
+	if got := h.getGoalStore().Get(userID); got == nil || got.Status != goal.StatusActive {
+		t.Fatalf("refused complete changed status: %+v", got)
+	}
+	if remoteCodingExecutionOutcome("goal", res.Text) != "success" {
+		t.Fatalf("remote plan outcome = failed for %q", res.Text)
+	}
+	if shared := classifySharedLoopToolResult("goal", res.Text); shared.Outcome != agent.ToolExecutionOutcomeOK {
+		t.Fatalf("shared loop reclassified plan: %s", shared.Outcome)
+	}
+	if rejected := classifySharedLoopToolResult("goal", "[system rejected] tool not permitted"); rejected.Outcome != agent.ToolExecutionOutcomeError {
+		t.Fatalf("shared loop hid a goal rejection: %s", rejected.Outcome)
+	}
+	quoted := res.Text + "\nAn approval panel has been opened"
+	if quotedGoal := classifySharedLoopToolResult("goal", quoted); quotedGoal.Outcome != agent.ToolExecutionOutcomeOK {
+		t.Fatalf("shared loop treated a quoted approval sentence as a failed plan: %s", quotedGoal.Outcome)
+	}
+	if quotedOther := classifySharedLoopToolResult("database_query", quoted); quotedOther.Outcome != agent.ToolExecutionOutcomeError {
+		t.Fatalf("approval sentence = %s", quotedOther.Outcome)
+	}
+	if generic := classifySharedLoopToolResult("bash", res.Text); generic.Outcome == agent.ToolExecutionOutcomeOK {
+		t.Fatal("generic classifier should still flag 执行失败 inside a plan body")
+	}
+	if remoteCodingExecutionOutcome("goal", "goal unavailable: remote coding session owner is missing") != "failed" {
+		t.Fatal("missing goal session owner was reported as success")
+	}
+
+	resumeActive := cb.executeGoalTool(map[string]interface{}{"action": "resume"})
+	if resumeActive.Outcome != codingToolOutcomeFailed || !strings.Contains(resumeActive.Text, "目标不在暂停状态") {
+		t.Fatalf("resume of active = %s %q", resumeActive.Outcome, resumeActive.Text)
+	}
+	paused := cb.executeGoalTool(map[string]interface{}{"action": "pause"})
+	if paused.Outcome != codingToolOutcomeSuccess || !strings.HasPrefix(paused.Text, "目标已暂停") {
+		t.Fatalf("pause = %s %q", paused.Outcome, paused.Text)
+	}
+	pauseAgain := cb.executeGoalTool(map[string]interface{}{"action": "pause"})
+	if pauseAgain.Outcome != codingToolOutcomeFailed || !strings.Contains(pauseAgain.Text, "目标不在活跃状态") {
+		t.Fatalf("second pause = %s %q", pauseAgain.Outcome, pauseAgain.Text)
 	}
 }
