@@ -3195,6 +3195,29 @@ describe('DesktopBotWorkspace', () => {
         expect(cancelRun).toHaveBeenCalledWith('bot_1', 'run-xhs');
     });
 
+    it('stops a run this window did not start, found on Hub, once per tap burst', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '码卡龙本龙', description: '共用桌面', instance_id: 'inst_1' }]);
+        understandTask.mockResolvedValue({ told: '好的，这就去知乎。', instruction: '做摘要发知乎', pace: 'direct' });
+        sendTask.mockResolvedValue({ request_id: 'desktop-bot-zh', deferred: true, session_key: 'alice:bot_1' });
+        listActiveRuns.mockResolvedValue([]);
+        listTaskRuns.mockImplementation(async () => (
+            cancelRun.mock.calls.length > 0 ? [] : [{ run_id: 'run_eafb6f42', bot_id: 'bot_1', source: 'desktop', status: 'running', task: '做摘要发知乎' }]
+        ));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('码卡龙本龙'));
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '做今天的摘要发知乎' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalled());
+        const pause = await screen.findByTestId('desktop-bot-pause');
+        fireEvent.click(pause);
+        fireEvent.click(pause);
+        fireEvent.click(pause);
+        await waitFor(() => expect(cancelRun).toHaveBeenCalledWith('bot_1', 'run_eafb6f42'));
+        expect(await screen.findByText('停了。做摘要发知乎 不再继续。')).toBeTruthy();
+        expect(cancelRun).toHaveBeenCalledTimes(1);
+        expect(screen.queryByText(/nothing|Say plainly/i)).toBeNull();
+    });
+
     it('takes over by stopping the desktop run instead of locking the button', async () => {
         listBots.mockResolvedValue([{ id: 'bot_1', title: '码卡龙本龙', description: '共用桌面', instance_id: 'inst_1' }]);
         const liveDesktop = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1&resize=scale&view_only=1';

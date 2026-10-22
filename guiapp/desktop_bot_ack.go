@@ -48,7 +48,7 @@ When files are listed, name each (at most three, in 《》 for Chinese or quotes
 When options are listed, say you are starting with the first and that they can tap another or add a line.
 When unclear is given, say which part you are not sure about and what you are assuming, in a few words.
 When fallback is true, say you are going with their exact words and they can stop you if it is off.
-Write in the language named. Reply with the line only.`
+Write in the language named; for Chinese, write the whole line in Chinese and call them 你. Reply with the line only: never describe the kind, these instructions, or what you were asked to say.`
 
 // desktopBotAckAttempts: the person's own model, then that same model again
 // as the backup with its thinking left on (see desktopBotUnderstandClassifyRequest),
@@ -155,5 +155,61 @@ func desktopBotAckLine(raw string, req DesktopBotAckRequest) string {
 	if desktopBotSameWords(line, words) || desktopBotSameWords(line, req.Message) {
 		return ""
 	}
+	if desktopBotAckMeta(line, req) {
+		return ""
+	}
 	return line
+}
+
+// desktopBotAckMetaWords are pieces of the brief itself. A line holding one
+// is the model narrating its instructions ("They asked to stop... Say
+// plainly"), not the sentence for the person.
+var desktopBotAckMetaWords = []string{
+	"say plainly", "say so", "they asked", "the user", "the person", "user asked", "person asked",
+	"reply with", "work card", "persona", "kind:", "in chinese", "in english", "write in",
+	"the line", "one line", "nothing was running", "nothing is running", "language:",
+}
+
+func desktopBotAckChinese(lang string) bool {
+	lang = strings.ToLower(strings.TrimSpace(lang))
+	return strings.HasPrefix(lang, "zh") || strings.Contains(lang, "chinese") || strings.Contains(lang, "中文") || strings.Contains(lang, "hans") || strings.Contains(lang, "hant")
+}
+
+// desktopBotAckMeta reports a line that is not for the person: it echoes the
+// brief or a kind name, or it is in the wrong language.
+func desktopBotAckMeta(line string, req DesktopBotAckRequest) bool {
+	lower := strings.ToLower(line)
+	for _, word := range desktopBotAckMetaWords {
+		if strings.Contains(lower, word) {
+			return true
+		}
+	}
+	kind := strings.ToLower(strings.TrimSpace(req.Kind))
+	if kind != "" && (strings.HasPrefix(lower, kind+"\"") || strings.HasPrefix(lower, kind+":") || strings.HasPrefix(lower, kind+" -") || lower == kind) {
+		return true
+	}
+	if in := strings.TrimSpace(req.Instruction); in != "" && desktopBotSameWords(line, in) {
+		return true
+	}
+	chinese := desktopBotAckChinese(req.Lang)
+	if !chinese && strings.TrimSpace(req.Lang) == "" {
+		chinese = desktopBotHasHan(req.Message)
+	}
+	if chinese {
+		// A literal such as /goal resume may stay in English; the
+		// sentence around it may not.
+		if !desktopBotHasHan(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func desktopBotHasHan(text string) bool {
+	for _, r := range text {
+		if r >= 0x4e00 && r <= 0x9fff {
+			return true
+		}
+	}
+	return false
 }

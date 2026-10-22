@@ -1188,6 +1188,15 @@ function friendlyFailure(raw: string, lang: string): string {
         }
         return '你的 Credits 已过期。请充值，或把这个 Bot 改成自己的模型。';
     }
+    if (/interrupted: service restarted|service restarted while the run|run interrupted/i.test(detail)) {
+        if (lang === 'en') {
+            return 'My server restarted while I was on this, so it stopped partway. Ask me again if you still need it.';
+        }
+        if (lang === 'zh-Hant') {
+            return '剛才伺服器重啟，這個任務做到一半停了。還需要的話跟我說一聲，我再做一次。';
+        }
+        return '刚才服务器重启，这个任务做到一半停了。还需要的话跟我说一声，我再做一次。';
+    }
     if (/unavailable|不可达/i.test(detail)) {
         if (lang === 'en') {
             return 'This one did not go through — I cannot reach my server right now. Please try sending it again in a moment.';
@@ -1873,6 +1882,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [taskNotice, setTaskNotice] = useState('');
     const [taskBusy, setTaskBusy] = useState<Record<string, boolean>>({});
     const taskLoadGen = useRef(0);
+    const stopInFlightRef = useRef<Set<string>>(new Set());
     const taskReload = useRef<() => void>(() => {});
     const [personaByBot, setPersonaByBot] = useState<Record<string, string>>({});
     const [liveDesktop, setLiveDesktop] = useState<Record<string, LiveDesktop | undefined>>({});
@@ -3748,11 +3758,22 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             GetActiveDesktopRuns(botId) as Promise<Array<{ run_id?: string; task_text?: string; waiting_for_user?: boolean }> | null>,
             200,
         );
-        if (!rows) return undefined;
-        return rows.flatMap(item => {
+        const local = (rows || []).flatMap(item => {
             const runId = String(item?.run_id || '').trim();
             if (!runId) return [];
             const title = oneLine(stripConfirmedOrderLead(String(item?.task_text || ''))) || runId;
+            return [{ runId, title, waiting: item?.waiting_for_user === true }];
+        });
+        if (local.length > 0) return local;
+        // This window only knows runs it started. A run from a schedule, an
+        // earlier session of the app, or another device is still on Hub, the
+        // same list the 任务 tab reads.
+        const remote = await withinBudget(ListDesktopBotActiveRuns(botId) as Promise<DesktopBotActiveRunRow[] | null>, 5000);
+        if (!remote) return rows ? local : undefined;
+        return remote.flatMap(item => {
+            const runId = String(item?.run_id || '').trim();
+            if (!runId || item?.status !== 'running') return [];
+            const title = oneLine(stripConfirmedOrderLead(String(item?.task || ''))) || runId;
             return [{ runId, title, waiting: item?.waiting_for_user === true }];
         });
     };
@@ -3967,14 +3988,22 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             commit(botId, [...prior, { id: messageID(), role: 'user', content }]);
         }
         const ownerId = userId;
+        // One stop at a time per bot. Repeated taps while the first stop is
+        // still resolving would each add a reply for the same stop.
+        if ((control === 'stop' || control === 'pause') && stopInFlightRef.current.has(botId)) return;
+        if (control === 'stop' || control === 'pause') stopInFlightRef.current.add(botId);
         const held = control === 'stop' || control === 'pause' ? holdFollowUps(botId) : undefined;
         void (async () => {
+          try {
             const answer = (control === 'stop' || control === 'pause') && held
                 ? await stopSpokenRun(ownerId, botId, held, control === 'pause' ? 'pause' : 'stop', source !== 'takeover', content)
                 : await statusSpokenRun(ownerId, botId);
             if (userIdRef.current !== ownerId || !answer) return;
             const stored = messagesForBot(ownerId, botId);
             commit(botId, [...stored, { id: messageID(), role: 'assistant', content: answer, chat: true }]);
+          } finally {
+            if (control === 'stop' || control === 'pause') stopInFlightRef.current.delete(botId);
+          }
         })();
     };
     stopForTakeoverRef.current = (botId: string) => answerDesktopControl(botId, '', 'stop', 'quiet', 'takeover');
