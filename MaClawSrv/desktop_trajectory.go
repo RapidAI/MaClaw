@@ -118,6 +118,28 @@ type desktopRunState struct {
 	repeat      int    // identical consecutive calls ending with lastSig
 	failures    map[string]int    // intent|error class -> count in this run
 	blocked     map[string]string // intent class -> error class that blocked it
+	site        string            // host of the page the last browser step was on
+}
+
+func desktopRunNoteSite(scope agentruntime.Scope, site string) {
+	if site == "" {
+		return
+	}
+	if st := desktopRunFor(scope); st != nil {
+		st.mu.Lock()
+		st.site = site
+		st.mu.Unlock()
+	}
+}
+
+func desktopRunSite(scope agentruntime.Scope) string {
+	st := desktopRunFor(scope)
+	if st == nil {
+		return ""
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.site
 }
 
 type desktopTrajectoryStep struct {

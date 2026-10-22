@@ -27,10 +27,11 @@ func TestDesktopWithReadback(t *testing.T) {
 	if err != nil || !strings.Contains(out, desktopNotAppliedMarker) || !strings.Contains(out, "Ctrl+V") {
 		t.Fatalf("not applied must be reported: %q %v", out, err)
 	}
-	for _, v := range []string{browser.ReadbackApplied, browser.ReadbackUnknown} {
-		if out, _ := desktopWithReadback("type", "ok", nil, v); out != "ok" {
-			t.Fatalf("%s changed result: %q", v, out)
-		}
+	if out, _ := desktopWithReadback("type", "ok", nil, browser.ReadbackUnknown); out != "ok" {
+		t.Fatalf("unknown changed result: %q", out)
+	}
+	if out, _ := desktopWithReadback("type", "ok", nil, browser.ReadbackApplied); !strings.Contains(out, desktopAppliedMarker) {
+		t.Fatalf("applied must be marked: %q", out)
 	}
 	if _, err := desktopWithReadback("type", "", errors.New("x"), browser.ReadbackNotApplied); err == nil {
 		t.Fatal("error must pass through")

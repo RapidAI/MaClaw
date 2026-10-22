@@ -21,6 +21,9 @@ const desktopVerifyEnv = "MACLAW_DESKTOP_VERIFY"
 
 const desktopNotAppliedMarker = "未生效 (not applied)"
 
+// desktopAppliedMarker follows a result whose text was read back in place.
+const desktopAppliedMarker = "(read back: the text is in the field)"
+
 func desktopVerifyEnabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(desktopVerifyEnv))) {
 	case "0", "off", "false", "no":
@@ -31,6 +34,9 @@ func desktopVerifyEnabled() bool {
 
 // desktopWithReadback appends the not-applied advice to a successful result.
 func desktopWithReadback(kind, text string, err error, verdict string) (string, error) {
+	if err == nil && verdict == browser.ReadbackApplied {
+		return strings.TrimRight(text, "\n") + "\n" + desktopAppliedMarker, nil
+	}
 	if err != nil || verdict != browser.ReadbackNotApplied {
 		return text, err
 	}

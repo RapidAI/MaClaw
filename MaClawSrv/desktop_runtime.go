@@ -222,6 +222,7 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	err = desktopbot.ModelFacingError(err)
 	took := time.Since(started)
 	desktopRecordStep(ctx, desktopOwner(scope), args, out, err, took)
+	desktopExperienceRecord(scope, desktopRunSite(desktopOwner(scope)), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args, out, err)
 	failWarn := desktopFailClassRecord(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args, out, err)
 	if err == nil {
 		out = spillDesktopToolText(ctx, scope, out)
@@ -300,6 +301,9 @@ func (desktopRuntimeModule) ContributePrompt(_ context.Context, request agentrun
 			"This user's bots share this desktop. Other users have separate desktops.", nil
 	}
 	prompt := "The current user has one cloud desktop through the desktop tool. "
+	if scope, _, err := desktopScopeForTurn(request); err == nil {
+		prompt += desktopExperienceText(scope, "")
+	}
 	return prompt +
 		"Carry out the arrangement. Return three conclusion lines and one file path. Do not write the person's chat reply. " +
 		"When the user asked for a file, action=deliver. A file already on this desktop, including a pdf, uses path, and the chat receives that file. name and content send the supplied text under that name. A name ending in .docx is a Word file built from that text. Say that it is attached to this message, or say what failed. Do not ask the user to choose a delivery method or to save the file themselves. Do not refuse a file because of its type. " +
@@ -681,6 +685,9 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 			if binding == nil || binding.session == nil || binding.addr != endpoint.CDP || !desktopSessionConnected(binding.session) {
 				return nil
 			}
+			if site := binding.session.PageHost(); site != "" {
+				desktopRunNoteSite(desktopOwner(scope), site)
+			}
 			return binding.session
 		}
 		if action == "computer" || !desktopAppStepsLegacy(scope, args["steps"]) {
@@ -801,6 +808,15 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		text, err = withDesktopPages(text, err, endpoint.CDP, session.TargetID)
 	default:
 		return "", fmt.Errorf("desktop action must be navigate, probe, click, type, or press")
+	}
+	if site := desktopSiteOf(action, args, session); site != "" {
+		desktopRunNoteSite(desktopOwner(scope), site)
+		desktopExperienceNoteSite(scope, site)
+		if action == "navigate" && err == nil {
+			if lesson := desktopExperienceText(scope, site); lesson != "" {
+				text = strings.TrimRight(text, "\n") + "\n" + lesson
+			}
+		}
 	}
 	phase := "execute"
 	if value, keyed := desktopPhase(ctx); keyed {

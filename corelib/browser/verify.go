@@ -170,3 +170,32 @@ func (s *BrowserAgentSession) readBack(expected string, wide, needFocus bool) st
 
 // NotAppliedAdvice is the model-facing explanation for a not_applied verdict.
 const NotAppliedAdvice = "未生效 (not applied): the text was sent but reading the field back does not show it — this editor keeps its own state and ignored a scripted/DOM write. Do not repeat the same method. Use real input instead: click into the editor, then app_run with a real Ctrl+V after clipboard_set (clipboard + real paste), or real keystrokes via app_run type (xdotool). Then read back with probe or a screenshot."
+
+// PageHost is the attached page's host name, or "".
+func (s *BrowserAgentSession) PageHost() string {
+	raw, err := s.pageURL()
+	if err != nil || raw == "" {
+		return ""
+	}
+	return HostOfURL(raw)
+}
+
+// HostOfURL returns the lower-case host of a URL without "www.", or "".
+func HostOfURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if i := strings.Index(raw, "://"); i >= 0 {
+		raw = raw[i+3:]
+	} else {
+		return ""
+	}
+	if i := strings.IndexAny(raw, "/?#"); i >= 0 {
+		raw = raw[:i]
+	}
+	if i := strings.LastIndex(raw, "@"); i >= 0 {
+		raw = raw[i+1:]
+	}
+	if i := strings.LastIndex(raw, ":"); i >= 0 && !strings.Contains(raw[i:], "]") {
+		raw = raw[:i]
+	}
+	return strings.TrimPrefix(strings.ToLower(raw), "www.")
+}
