@@ -278,6 +278,7 @@ var desktopSeedNotes = map[string][]string{
 		"after 发布: the page moves to zhuanlan.zhihu.com/p/<id> (not /edit); open that URL again and probe that the title and the full body text are there before you report the link as published",
 		"verify the published article in the browser tab (navigate to /p/<id>, then a page script that returns document.title, the h1 text and the article body text length) — never with curl/wget/python from the shell: zhihu answers those with a ~650-byte anti-bot page, which says nothing about the article; make that browser read your last desktop action before the reply, and quote its title, body length and URL",
 		"once /p/<id> shows the title and body, the article is published: do not open /edit, select-all or paste again, and do not press 更新",
+		"each request to publish (发到知乎/发布到知乎) means a NEW article made in this task at /write, even if a tab, the 创作中心 list or your notes already show a published article with the same or a similar title: that page is from an earlier task, not this one — never report it as this task's result; only open an existing article's /edit when the person asks to update/修改/更新 that article",
 	},
 }
 
