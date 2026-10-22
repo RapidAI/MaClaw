@@ -94,6 +94,25 @@ func desktopFailClassRecord(scope agentruntime.Scope, action string, args map[st
 	if st == nil || desktopRepeatExempt[action] {
 		return ""
 	}
+	if action == "navigate" && desktopErrorClass(out, err) == "" {
+		// A new page is a new place: a script or ref that failed on the
+		// editor says nothing about the published article page. run_ebb07460
+		// had two topic scripts fail on /edit, so the read-back script on
+		// /p/<id> was refused and the reply had no read-back.
+		st.mu.Lock()
+		for key := range st.failures {
+			if desktopPageBoundIntent(strings.SplitN(key, "|", 2)[0]) {
+				delete(st.failures, key)
+			}
+		}
+		for intent := range st.blocked {
+			if desktopPageBoundIntent(intent) {
+				delete(st.blocked, intent)
+			}
+		}
+		st.mu.Unlock()
+		return ""
+	}
 	class := desktopErrorClass(out, err)
 	if class == "" {
 		return ""
@@ -120,6 +139,15 @@ func desktopFailClassRecord(scope agentruntime.Scope, action string, args map[st
 		return ""
 	}
 	return fmt.Sprintf("\n\nMethod blocked: %s has now failed with %s %d times in this run. Further %s calls will be refused. %s", intent, class, n, intent, desktopFailClassAdvice(class))
+}
+
+// desktopPageBoundIntent is a method whose failures belong to one page.
+func desktopPageBoundIntent(intent string) bool {
+	switch intent {
+	case "script", "probe", "type", "press", "click:ref", "click:text", "rich_fill":
+		return true
+	}
+	return false
 }
 
 func desktopFailClassAdvice(class string) string {

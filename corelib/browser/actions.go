@@ -665,7 +665,9 @@ func (s *BrowserAgentSession) TypeContentAppend(snapshotID, ref, selector, text,
 	resolvedSelector, attempts, err := s.typeWithCandidates(candidates, text, contentFormat, appendText, modelTypeRefForInsert(s.modelPasswordTypingBlocked(), resolvedRef))
 	if err != nil {
 		if ref != "" {
-			return nil, fmt.Errorf("ref %s is stale; run probe again to get fresh refs", ref)
+			// Keep the cause: "stale" alone hid why typing into a fresh
+			// ref failed (run_ebb07460, 知乎 topic input, twice).
+			return nil, fmt.Errorf("ref %s is stale; run probe again to get fresh refs (%v)", ref, err)
 		}
 		return nil, err
 	}

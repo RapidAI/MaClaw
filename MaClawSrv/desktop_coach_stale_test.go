@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -71,5 +72,23 @@ func TestAfterPublishRefusesUnaskedDocument(t *testing.T) {
 func TestRichFocusScriptNotAWrite(t *testing.T) {
 	if desktopScriptWritesRichBody(desktopRichFocusScript) || desktopScriptClicksPublish(desktopRichFocusScript) || desktopScriptSubmits(desktopRichFocusScript) {
 		t.Fatal("rich focus script is refused by the guard")
+	}
+}
+
+func TestNavigateClearsPageBoundBlocks(t *testing.T) {
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u", RunID: "run_failnav"}
+	st := desktopRunFor(scope)
+	if st == nil {
+		t.Skip("no run state in this build")
+	}
+	for i := 0; i < 2; i++ {
+		desktopFailClassRecord(scope, "script", map[string]any{"script": "x"}, "", errors.New("page script failed: not found"))
+	}
+	if desktopFailClassCheck(scope, "script", map[string]any{"script": "y"}) == nil {
+		t.Fatal("script not blocked after two failures")
+	}
+	desktopFailClassRecord(scope, "navigate", map[string]any{"url": "https://e.com/p/1"}, "navigated", nil)
+	if err := desktopFailClassCheck(scope, "script", map[string]any{"script": "y"}); err != nil {
+		t.Fatalf("script still blocked after navigate: %v", err)
 	}
 }
