@@ -210,6 +210,10 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 		log.Print(desktopStepLogLine(scope.UserID, args, "", repeatErr, 0) + " model=" + desktopModelLabel(request) + " " + desktopBudgetLogFields(desktopOwner(scope)) + " repeat=refused")
 		return "", repeatErr
 	}
+	if failErr := desktopFailClassCheck(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args); failErr != nil {
+		log.Print(desktopStepLogLine(scope.UserID, args, "", failErr, 0) + " model=" + desktopModelLabel(request) + " " + desktopBudgetLogFields(desktopOwner(scope)) + " failclass=refused")
+		return "", failErr
+	}
 	started := time.Now()
 	out, err := operateDesktop(ctx, scope, args)
 	noteDesktopPageNeed(scope, out)
@@ -217,9 +221,12 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	err = desktopbot.ModelFacingError(err)
 	took := time.Since(started)
 	desktopRecordStep(ctx, desktopOwner(scope), args, out, err, took)
+	failWarn := desktopFailClassRecord(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args, out, err)
 	if err == nil {
 		out = spillDesktopToolText(ctx, scope, out)
-		out += repeatWarn
+		out += repeatWarn + failWarn
+	} else if failWarn != "" {
+		err = fmt.Errorf("%w%s", err, failWarn)
 	}
 	log.Print(desktopStepLogLine(scope.UserID, args, out, err, took) + " model=" + desktopModelLabel(request) + " " + desktopBudgetLogFields(desktopOwner(scope)))
 	return out, err

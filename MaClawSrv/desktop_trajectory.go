@@ -116,6 +116,8 @@ type desktopRunState struct {
 	cloud       bool
 	lastSig     string // signature of the previous desktop call
 	repeat      int    // identical consecutive calls ending with lastSig
+	failures    map[string]int    // intent|error class -> count in this run
+	blocked     map[string]string // intent class -> error class that blocked it
 }
 
 type desktopTrajectoryStep struct {
