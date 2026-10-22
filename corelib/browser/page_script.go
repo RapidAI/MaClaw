@@ -635,6 +635,7 @@ func wrapPageScript(script, siteHost string) string {
       if (idc.indexOf('captcha') >= 0) captchaEl = true;
     }
     const frameSrc = srcs.join(' ');
+    const payFrameSrc = srcs.filter(u => !/js\.stripe\.com\/v3\/(m-outer|m-inner|controller|metrics)/.test(String(u).toLowerCase())).join(' ');
     const signedIn = text.indexOf('退出登录') >= 0 || text.indexOf('已登录') >= 0;
     const qr = /扫码登录|扫描二维码|扫一扫登录|qr code/.test(text);
     const phone = nodes.some(el => {
@@ -652,7 +653,7 @@ func wrapPageScript(script, siteHost string) string {
       login_qr: !signedIn && qr && !typeable,
       mfa: /verification code|2fa|one-time|otp|authenticator|验证码/.test(text),
       captcha_widget: text.indexOf('拖动滑块') >= 0 || /recaptcha|hcaptcha|funcaptcha/.test(frameSrc) || (captchaEl && frameSrc.indexOf('captcha') >= 0),
-      payment_confirm: card || /js\.stripe\.com|paypal\.com/.test(frameSrc) || frameSrc.indexOf('checkout') >= 0,
+      payment_confirm: card || /js\.stripe\.com|paypal\.com/.test(payFrameSrc) || payFrameSrc.indexOf('checkout') >= 0,
       consent_dialog: dialog && /consent|隐私政策|privacy policy|同意并继续/.test(text) && !cookieAccept
     };
   }

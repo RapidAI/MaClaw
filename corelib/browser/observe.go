@@ -103,12 +103,16 @@ const browserObserveScript = `(function () {
     }
     return scan(document);
   }
-  function anyIframeSrc(needle) {
+  function anyIframeSrc(needle, pay) {
     const n = String(needle || '').toLowerCase();
     function scan(d) {
       for (const f of queryIframes(d)) {
         try {
-          if (String(f.src || '').toLowerCase().includes(n)) return true;
+          const src = String(f.src || '').toLowerCase();
+          // Stripe.js loads hidden fraud/metrics frames on every page that
+          // includes it (huggingface.co); they are not a checkout.
+          if (pay && (/js\.stripe\.com\/v3\/(m-outer|m-inner|controller|metrics)/.test(src) || (f.offsetWidth < 3 && f.offsetHeight < 3))) continue;
+          if (src.includes(n)) return true;
           if (f.contentDocument && scan(f.contentDocument)) return true;
         } catch (e) {}
       }

@@ -31,7 +31,7 @@ const browserPageFlagsCollectJS = `
     login_qr: !signedInChrome && qrLogin && !typeableLogin,
     mfa: /verification code|2fa|one-time|otp|authenticator|验证码/.test(lower),
     canvas: anySelector('canvas'),
-    payment_confirm: anySelector('input[autocomplete="cc-number"], input[name*="cardnumber" i], input[id*="cardnumber" i], input[autocomplete="cc-exp"]') || anyIframeSrc('checkout') || anyIframeSrc('js.stripe.com') || anyIframeSrc('paypal.com'),
+    payment_confirm: anySelector('input[autocomplete="cc-number"], input[name*="cardnumber" i], input[id*="cardnumber" i], input[autocomplete="cc-exp"]') || anyIframeSrc('checkout', true) || anyIframeSrc('js.stripe.com', true) || anyIframeSrc('paypal.com', true),
     consent_dialog: anySelector('[role="dialog"], [aria-modal="true"]') && /consent|隐私政策|privacy policy|同意并继续/.test(fullText) && !(anySelector('[class*="cookie"], [id*="cookie"]') && /accept cookies|接受.*cookie|同意.*cookie/.test(lower))
   };
 `
@@ -103,12 +103,16 @@ const browserPageFlagsScript = `(function () {
     }
     return scan(document);
   }
-  function anyIframeSrc(needle) {
+  function anyIframeSrc(needle, pay) {
     const n = String(needle || '').toLowerCase();
     function scan(d) {
       for (const f of queryIframes(d)) {
         try {
-          if (String(f.src || '').toLowerCase().includes(n)) return true;
+          const src = String(f.src || '').toLowerCase();
+          // Stripe.js loads hidden fraud/metrics frames on every page that
+          // includes it (huggingface.co); they are not a checkout.
+          if (pay && (/js\.stripe\.com\/v3\/(m-outer|m-inner|controller|metrics)/.test(src) || (f.offsetWidth < 3 && f.offsetHeight < 3))) continue;
+          if (src.includes(n)) return true;
           if (f.contentDocument && scan(f.contentDocument)) return true;
         } catch (e) {}
       }
