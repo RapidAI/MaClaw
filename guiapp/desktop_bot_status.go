@@ -293,3 +293,39 @@ func (a *App) emitDesktopBotDelivery(owner string, item desktopBotDelivery) bool
 	a.emitEvent("desktop-bot-report", string(raw))
 	return true
 }
+
+// DesktopBotActiveRun is one ongoing run for the 任务 tab. Source "server" is
+// a run MaClawSrv still marks running that Hub does not follow; Stale marks
+// one whose process is probably gone. Status "queued" has no run id yet.
+type DesktopBotActiveRun struct {
+	RunID          string `json:"run_id"`
+	BotID          string `json:"bot_id"`
+	Source         string `json:"source"`
+	Status         string `json:"status"`
+	Task           string `json:"task"`
+	Step           string `json:"step"`
+	NextStep       string `json:"next_step"`
+	Phase          string `json:"phase"`
+	WaitingForUser bool   `json:"waiting_for_user"`
+	Stale          bool   `json:"stale"`
+	StartedAt      string `json:"started_at"`
+}
+
+// ListDesktopBotActiveRuns reads this bot's ongoing runs from Hub.
+func (a *App) ListDesktopBotActiveRuns(botID string) ([]DesktopBotActiveRun, error) {
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return nil, fmt.Errorf("bot id is required")
+	}
+	var out struct {
+		Items []DesktopBotActiveRun `json:"items"`
+	}
+	path := "/api/v1/bots/" + url.PathEscape(botID) + "/runs/active"
+	if err := a.desktopBotCall(context.Background(), http.MethodGet, path, nil, &out, 20*time.Second); err != nil {
+		return nil, err
+	}
+	if out.Items == nil {
+		return []DesktopBotActiveRun{}, nil
+	}
+	return out.Items, nil
+}

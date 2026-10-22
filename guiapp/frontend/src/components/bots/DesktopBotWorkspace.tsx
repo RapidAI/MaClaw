@@ -34,6 +34,7 @@ import {
     ListDesktopBots,
     ListDesktopBotSchedules,
     ListDesktopBotTasks,
+    ListDesktopBotActiveRuns,
     PostDesktopBotCross,
     PullDesktopBotCrossNotes,
     SetDesktopBotPrimary,
@@ -557,6 +558,40 @@ function scheduleWhen(task: DesktopBotScheduleInfo, lang: string): string {
     return `${name} ${clock}`;
 }
 
+type DesktopBotActiveRunRow = {
+    run_id: string;
+    bot_id: string;
+    source: string;
+    status: string;
+    task: string;
+    step: string;
+    next_step: string;
+    phase: string;
+    waiting_for_user: boolean;
+    stale: boolean;
+    started_at: string;
+};
+
+// Started time is always shown in Asia/Shanghai, the owner's zone.
+export function taskStartedStamp(iso: string): string {
+    if (!iso) return '';
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return '';
+    try {
+        const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(date);
+        const get = (type: string) => parts.find(part => part.type === type)?.value || '';
+        return `${get('month')}-${get('day')} ${get('hour') === '24' ? '00' : get('hour')}:${get('minute')}`;
+    } catch {
+        return '';
+    }
+}
+
+export function taskExcerpt(task: string, limit = 80): string {
+    const flat = (task || '').replace(/\s+/g, ' ').trim();
+    const chars = Array.from(flat);
+    return chars.length > limit ? `${chars.slice(0, limit).join('')}…` : flat;
+}
+
 function scheduleNext(iso: string, lang: string): string {
     if (!iso) return '';
     const date = new Date(iso);
@@ -793,6 +828,19 @@ function copy(lang: string) {
             scheduleSet: 'The schedule is set. The result will be reported here.',
             scheduleStopped: 'The schedule is stopped.',
             schedules: 'Schedules',
+            tasks: 'Tasks',
+            tasksEmpty: 'No ongoing tasks.',
+            taskRunning: 'Running',
+            taskQueued: 'Queued',
+            taskWaiting: 'Waiting for you',
+            taskStale: 'Possibly interrupted',
+            taskStarted: 'Started',
+            taskStop: 'Stop',
+            taskCancel: 'Cancel',
+            taskStopped: 'Stopped.',
+            taskCancelled: 'Cancelled.',
+            taskStaleHint: 'Not tracked by this app; its process may be gone. Cancel closes the record.',
+            taskUntitled: 'Untitled run',
             scheduleEmpty: 'No schedules yet.',
             scheduleRemoveTitle: 'Delete schedule',
             scheduleRemoveAsk: (name: string) => `Delete schedule "${name}"?`,
@@ -921,6 +969,19 @@ function copy(lang: string) {
             scheduleSet: '定時安排已設定。到時會在這裡匯報。',
             scheduleStopped: '定時安排已停止。',
             schedules: '定時任務',
+            tasks: '任務',
+            tasksEmpty: '目前沒有進行中的任務。',
+            taskRunning: '進行中',
+            taskQueued: '排隊中',
+            taskWaiting: '等你回覆',
+            taskStale: '可能已中斷',
+            taskStarted: '開始',
+            taskStop: '停止',
+            taskCancel: '取消',
+            taskStopped: '已停止。',
+            taskCancelled: '已取消。',
+            taskStaleHint: '這條記錄仍標為進行中，但可能已沒有在跑。取消會關閉它。',
+            taskUntitled: '未命名任務',
             scheduleEmpty: '還沒有定時任務。',
             scheduleRemoveTitle: '刪除定時任務',
             scheduleRemoveAsk: (name: string) => `確定刪除定時任務「${name}」？`,
@@ -1048,6 +1109,19 @@ function copy(lang: string) {
         scheduleSet: '定时安排已设定。到时会在这里汇报。',
         scheduleStopped: '定时安排已停止。',
         schedules: '定时任务',
+        tasks: '任务',
+        tasksEmpty: '目前没有进行中的任务。',
+        taskRunning: '进行中',
+        taskQueued: '排队中',
+        taskWaiting: '等你回复',
+        taskStale: '可能已中断',
+        taskStarted: '开始',
+        taskStop: '停止',
+        taskCancel: '取消',
+        taskStopped: '已停止。',
+        taskCancelled: '已取消。',
+        taskStaleHint: '这条记录仍标为进行中，但可能已没有在跑。取消会关闭它。',
+        taskUntitled: '未命名任务',
         scheduleEmpty: '还没有定时任务。',
         scheduleRemoveTitle: '删除定时任务',
         scheduleRemoveAsk: (name: string) => `确定删除定时任务「${name}」？`,
@@ -1547,7 +1621,7 @@ type PendingSend = { botId: string; messageId: string; settled: boolean; admitte
 // so the stage stops flashing away, 'user' by the identity chip / 接管, and
 // 'off' by 收起 — an auto event never reopens a panel the person collapsed.
 type DesktopPanelState = 'auto' | 'user' | 'off' | undefined;
-type PanelSection = 'details' | 'computer' | 'schedules';
+type PanelSection = 'details' | 'computer' | 'schedules' | 'tasks';
 
 function requestOwnsStoredMessage(userId: string, sessionKey: string, requestId: string): boolean {
     if (!requestId) return false;
@@ -1788,6 +1862,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [sectionByBot, setSectionByBot] = useState<Record<string, PanelSection>>({});
     const [schedulesByBot, setSchedulesByBot] = useState<Record<string, DesktopBotScheduleInfo[]>>({});
     const [scheduleNotice, setScheduleNotice] = useState('');
+    const [activeRunsByBot, setActiveRunsByBot] = useState<Record<string, DesktopBotActiveRunRow[]>>({});
+    const [taskNotice, setTaskNotice] = useState('');
+    const [taskBusy, setTaskBusy] = useState<Record<string, boolean>>({});
+    const taskLoadGen = useRef(0);
+    const taskReload = useRef<() => void>(() => {});
     const [personaByBot, setPersonaByBot] = useState<Record<string, string>>({});
     const [liveDesktop, setLiveDesktop] = useState<Record<string, LiveDesktop | undefined>>({});
     const [screenByBot, setScreenByBot] = useState<Record<string, BotScreen>>({});
@@ -2083,7 +2162,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // not missing.
     const ownerDesktopMissing = screenPickNow === 'mine' && !!selected && screenByBot[selected.id]?.mode === 'isolated' && !holdBotId && bots.length > 0 && bots.every(bot => !!screenByBot[bot.id]) && mineScreenURL(bots, screenByBot) === '';
     const storedSection = selected ? sectionByBot[selected.id] : undefined;
-    const panelSection: PanelSection = storedSection === 'details' || storedSection === 'schedules' ? storedSection : 'computer';
+    const panelSection: PanelSection = storedSection === 'details' || storedSection === 'schedules' || storedSection === 'tasks' ? storedSection : 'computer';
     const retryForSelected = !!selected && retryByBot[selected.id] === true;
     // Voluntary viewing stays view-only while this bot is using its desktop.
     // A handoff keeps the keyboard when this bot is not using it.
@@ -3129,6 +3208,58 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if (typeof off === 'function') off();
         };
     }, [selectedId, panelSection, showDesktop, text.unavailable]);
+
+    useEffect(() => {
+        if (!selectedId || panelSection !== 'tasks' || !showDesktop) return;
+        const botId = selectedId;
+        let live = true;
+        const load = () => {
+            const gen = ++taskLoadGen.current;
+            void ListDesktopBotActiveRuns(botId).then(list => {
+                if (!live || gen !== taskLoadGen.current) return;
+                setActiveRunsByBot(prev => ({ ...prev, [botId]: Array.isArray(list) ? list as DesktopBotActiveRunRow[] : [] }));
+                setTaskNotice('');
+            }).catch((error: unknown) => {
+                if (!live || gen !== taskLoadGen.current) return;
+                setTaskNotice(error instanceof Error && error.message ? error.message : text.unavailable);
+            });
+        };
+        taskReload.current = load;
+        load();
+        const timer = window.setInterval(load, 5000);
+        const off = EventsOn('desktop-bot-report', load);
+        return () => {
+            live = false;
+            taskReload.current = () => {};
+            window.clearInterval(timer);
+            if (typeof off === 'function') off();
+        };
+    }, [selectedId, panelSection, showDesktop, text.unavailable]);
+
+    // Stop and cancel use the same Hub routes as the chat stop: a run with an
+    // id goes through CancelDesktopBotRun, an admission still being posted
+    // through ArmDesktopBotAdmitCancel. The row note is fixed UI text.
+    const stopActiveRun = async (botId: string, row: DesktopBotActiveRunRow) => {
+        const key = row.run_id || `queued:${botId}`;
+        if (taskBusy[key]) return;
+        setTaskBusy(prev => ({ ...prev, [key]: true }));
+        try {
+            if (row.run_id) await CancelDesktopBotRun(botId, row.run_id);
+            else await ArmDesktopBotAdmitCancel(botId);
+            if (userIdRef.current !== userId) return;
+            setActiveRunsByBot(prev => ({ ...prev, [botId]: (prev[botId] || []).filter(item => (item.run_id || `queued:${botId}`) !== key) }));
+            setTaskNotice(row.status === 'running' && !row.stale ? text.taskStopped : text.taskCancelled);
+        } catch (error) {
+            setTaskNotice(friendlyFailure(failureMessage(error), lang) || text.unavailable);
+        } finally {
+            setTaskBusy(prev => {
+                const next = { ...prev };
+                delete next[key];
+                return next;
+            });
+            taskReload.current();
+        }
+    };
 
     const removeSchedule = async (botId: string, task: DesktopBotScheduleInfo) => {
         if (scheduleDeleteLock.current) return;
@@ -5956,6 +6087,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     <div className="desktop-bot-panel__tabs" role="tablist">
                         <button type="button" role="tab" id="desktop-bot-tab-details" aria-selected={panelSection === 'details'} aria-controls="desktop-bot-details" data-testid="desktop-bot-tab-details" onClick={() => setSectionByBot(prev => prev[selected.id] === 'details' ? prev : { ...prev, [selected.id]: 'details' })}>{text.details}</button>
                         <button type="button" role="tab" id="desktop-bot-tab-schedules" aria-selected={panelSection === 'schedules'} aria-controls="desktop-bot-schedules" data-testid="desktop-bot-tab-schedules" onClick={() => setSectionByBot(prev => prev[selected.id] === 'schedules' ? prev : { ...prev, [selected.id]: 'schedules' })}>{text.schedules}</button>
+                        <button type="button" role="tab" id="desktop-bot-tab-tasks" aria-selected={panelSection === 'tasks'} aria-controls="desktop-bot-tasks" data-testid="desktop-bot-tab-tasks" onClick={() => setSectionByBot(prev => prev[selected.id] === 'tasks' ? prev : { ...prev, [selected.id]: 'tasks' })}>{text.tasks}</button>
                         <button type="button" role="tab" id="desktop-bot-tab-computer" aria-selected={panelSection === 'computer'} aria-controls="desktop-bot-computer" data-testid="desktop-bot-tab-computer" onClick={() => showComputer(selected.id)}>{text.computer}</button>
                     </div>
                     {panelSection === 'details' ? (
@@ -6018,6 +6150,35 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 onClick={() => { void makePrimary(selected.id); }}
                             >{selected.primary ? text.primaryNow : text.makePrimary}</button>
                             <p className="desktop-bot-panel__note"><SharedDesktopIcon /><span>{text.shared}</span></p>
+                        </div>
+                    ) : panelSection === 'tasks' ? (
+                        <div className="desktop-bot-panel__schedules" id="desktop-bot-tasks" data-testid="desktop-bot-tasks" role="tabpanel" aria-labelledby="desktop-bot-tab-tasks">
+                            {taskNotice ? <p className="desktop-bot-panel__empty" data-testid="desktop-bot-task-notice" role="status">{taskNotice}</p> : null}
+                            {(activeRunsByBot[selected.id] || []).length === 0 ? (
+                                taskNotice ? null : <p className="desktop-bot-panel__empty" data-testid="desktop-bot-task-empty">{text.tasksEmpty}</p>
+                            ) : (
+                                <ul className="desktop-bot-schedule-list">
+                                    {(activeRunsByBot[selected.id] || []).map(row => {
+                                        const key = row.run_id || `queued:${selected.id}`;
+                                        const queued = row.status === 'queued';
+                                        const state = queued ? text.taskQueued : row.stale ? text.taskStale : row.waiting_for_user ? text.taskWaiting : text.taskRunning;
+                                        const started = taskStartedStamp(row.started_at);
+                                        const title = taskExcerpt(row.task) || text.taskUntitled;
+                                        const step = taskExcerpt(row.step || row.next_step || '', 120);
+                                        return (
+                                            <li key={key} className="desktop-bot-schedule" data-testid="desktop-bot-task-row">
+                                                <div className="desktop-bot-schedule__body">
+                                                    <div className="desktop-bot-schedule__name" title={row.task || row.run_id}>{title}</div>
+                                                    <div className="desktop-bot-schedule__when">{state}{started ? ` · ${text.taskStarted} ${started}` : ''}{row.run_id ? ` · ${row.run_id}` : ''}</div>
+                                                    {step ? <p className="desktop-bot-schedule__action">{step}</p> : null}
+                                                    {row.stale ? <p className="desktop-bot-schedule__action">{text.taskStaleHint}</p> : null}
+                                                </div>
+                                                <button type="button" className="desktop-bot-schedule__delete" disabled={!!taskBusy[key]} data-testid={`desktop-bot-task-stop-${row.run_id || 'queued'}`} onClick={() => { void stopActiveRun(selected.id, row); }}>{queued || row.stale ? text.taskCancel : text.taskStop}</button>
+                                            </li>
+                                        );
+                                    })}
+                                </ul>
+                            )}
                         </div>
                     ) : panelSection === 'schedules' ? (
                         <div className="desktop-bot-panel__schedules" id="desktop-bot-schedules" data-testid="desktop-bot-schedules" role="tabpanel" aria-labelledby="desktop-bot-tab-schedules">

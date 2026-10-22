@@ -55,6 +55,7 @@ const persistPreference = vi.hoisted(() => vi.fn(async (_botId?: string, _person
 const queryTaskStatus = vi.hoisted(() => vi.fn(async (_botId?: string, _hint?: string, _lang?: string) => '「下载报表」还在进行。'));
 const listBotTasks = vi.hoisted(() => vi.fn(async (_botId?: string) => [] as Array<{ run_id?: string; bot_id?: string; status?: string; task?: string }>));
 const listActiveRuns = vi.hoisted(() => vi.fn(async (_botId?: string): Promise<Array<Record<string, unknown>>> => []));
+const listTaskRuns = vi.hoisted(() => vi.fn(async (_botId?: string) => [] as Array<Record<string, unknown>>));
 const cancelRun = vi.hoisted(() => vi.fn(async (_botId?: string, _runId?: string) => undefined));
 const armAdmitCancel = vi.hoisted(() => vi.fn(async (_botId?: string) => undefined));
 type DesktopBusyMock = { seq: number; marks: Array<{ owner_id?: string; bot_id: string; count: number }>; runs?: string[] };
@@ -78,6 +79,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     ClassifyDesktopWorkStop: (text: string, lang: string) => classifyWorkStop(text, lang),
     ArmDesktopBotSchedule: (...args: unknown[]) => armSchedule(...(args as [])) || 'task-1',
     ListDesktopBotSchedules: (botId: string) => listSchedules(botId),
+    ListDesktopBotActiveRuns: (botId: string) => listTaskRuns(botId),
     DeleteDesktopBotSchedule: (botId: string, taskId: string) => deleteSchedule(botId, taskId),
     WatchDesktopBot: (arg: string, epoch?: number) => watchBot(arg, epoch),
     ReleaseDesktopBotWatch: (arg: string, epoch?: number) => releaseWatch(arg, epoch),
@@ -195,6 +197,8 @@ beforeEach(() => {
     armSchedule.mockResolvedValue('task-1');
     listSchedules.mockReset();
     listSchedules.mockResolvedValue([]);
+    listTaskRuns.mockReset();
+    listTaskRuns.mockResolvedValue([]);
     deleteSchedule.mockReset();
     deleteSchedule.mockResolvedValue(undefined);
     understandTask.mockImplementation(async (content: string, phase: string, _lang: string, earlier: string[] = []) => {
@@ -3465,6 +3469,35 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.getByText('周一 08:30')).toBeTruthy();
     });
 
+    it('lists ongoing tasks and stops, cancels queued and closes stale ones', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: 'Bot 2', description: '共用桌面', instance_id: 'inst_1' }]);
+        listTaskRuns.mockResolvedValue([
+            { run_id: 'run_a', bot_id: 'bot_1', source: 'desktop', status: 'running', task: '打开知乎发文章', step: '正在打开网页', started_at: '2026-10-22T07:05:00Z' },
+            { run_id: 'run_old', bot_id: 'bot_1', source: 'server', status: 'running', task: '', stale: true, started_at: '2026-10-22T01:00:00Z' },
+            { run_id: '', bot_id: 'bot_1', source: 'desktop', status: 'queued', task: '下一件事' },
+        ]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('Bot 2'));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-tab-tasks'));
+        expect(await screen.findByText('打开知乎发文章')).toBeTruthy();
+        expect(screen.getByText('正在打开网页')).toBeTruthy();
+        expect(screen.getByText(/进行中 · 开始 10-22 15:05 · run_a/)).toBeTruthy();
+        expect(screen.getByText(/可能已中断 · 开始 10-22 09:00/)).toBeTruthy();
+        expect(screen.getByText(/排队中/)).toBeTruthy();
+        expect(screen.getByTestId('desktop-bot-task-stop-run_a').textContent).toBe('停止');
+        expect(screen.getByTestId('desktop-bot-task-stop-run_old').textContent).toBe('取消');
+        expect(screen.getByTestId('desktop-bot-task-stop-queued').textContent).toBe('取消');
+
+        fireEvent.click(screen.getByTestId('desktop-bot-task-stop-run_a'));
+        await waitFor(() => expect(cancelRun).toHaveBeenCalledWith('bot_1', 'run_a'));
+        fireEvent.click(screen.getByTestId('desktop-bot-task-stop-run_old'));
+        await waitFor(() => expect(cancelRun).toHaveBeenCalledWith('bot_1', 'run_old'));
+        fireEvent.click(screen.getByTestId('desktop-bot-task-stop-queued'));
+        await waitFor(() => expect(armAdmitCancel).toHaveBeenCalledWith('bot_1'));
+        expect(listTaskRuns).toHaveBeenCalledWith('bot_1');
+    });
+
     it('shows a failure when a direct reading has no work order', async () => {
         listBots.mockResolvedValue([{ id: 'bot_1', title: 'Bot 2', description: '共用桌面', instance_id: 'inst_1' }]);
         understandTask.mockImplementation(async () => ({
@@ -4110,7 +4143,8 @@ describe('DesktopBotWorkspace', () => {
         expect(panel.querySelector('.desktop-bot-panel__avatar')?.textContent).toBe('值');
         expect(panel.querySelector('.desktop-bot-panel__avatar')?.className).toContain('desktop-bot-panel__avatar');
         expect(panel.textContent).toContain('远程电脑上的7x24小时数字助理。');
-        expect(screen.getAllByRole('tab')).toHaveLength(3);
+        expect(screen.getAllByRole('tab')).toHaveLength(4);
+        expect(screen.getByRole('tab', { name: '任务' })).toBeTruthy();
         expect(screen.getByRole('tab', { name: '定时任务' })).toBeTruthy();
         expect(screen.queryByRole('tab', { name: '资料库' })).toBeNull();
         expect(screen.getByTestId('desktop-bot-computer')).toBeTruthy();

@@ -641,3 +641,26 @@ func botDesktopModeOf(r *http.Request, svc *botmgmt.Service, tenantID, userID, b
 	}
 	return mode
 }
+
+// GetBotActiveRunsHandler GET /api/v1/bots/{id}/runs/active
+// The bot's ongoing runs for the GUI 任务 tab.
+func GetBotActiveRunsHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		items, err := svc.ActiveDesktopRuns(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"))
+		if err != nil {
+			writeBotUserError(w, r, principal, err, "")
+			return
+		}
+		if items == nil {
+			items = []botmgmt.ActiveDesktopRun{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}

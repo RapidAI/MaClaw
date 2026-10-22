@@ -459,6 +459,7 @@ func NewRouter(
 	mux.HandleFunc("DELETE /api/v1/bots/{id}/preference", DeleteBotPreferenceHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/{id}/runs/{runID}", GetBotRunHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/{id}/tasks", GetBotTasksHandler(botSvc, identity))
+	mux.HandleFunc("GET /api/v1/bots/{id}/runs/active", GetBotActiveRunsHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/runs/{runID}/ack", PostBotRunAckHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/secret-fill", PostBotSecretFillHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/{id}/desktop", GetBotDesktopHandler(botSvc, identity))

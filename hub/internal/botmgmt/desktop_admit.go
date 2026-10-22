@@ -810,9 +810,6 @@ func (s *Service) CancelDesktopRun(ctx context.Context, tenantID, userID, botID,
 	s.mu.Lock()
 	_, admitted := s.desktopAdmits[desktopAdmitKey(tenantID, userID, botID, runID)]
 	s.mu.Unlock()
-	if !admitted {
-		return ErrNotFound
-	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	fresh, token, err := s.ownerToken(ctx, tenantID, userID)
@@ -823,7 +820,14 @@ func (s *Service) CancelDesktopRun(ctx context.Context, tenantID, userID, botID,
 		Status string `json:"status"`
 	}
 	path := "/api/v1/instances/" + url.PathEscape(instanceID) + "/runs/" + url.PathEscape(runID) + "/cancel"
-	return s.authAsOwner(ctx, tenantID, userID, &fresh, &token, http.MethodPost, path, nil, &out)
+	err = s.authAsOwner(ctx, tenantID, userID, &fresh, &token, http.MethodPost, path, nil, &out)
+	if err != nil && !admitted {
+		// A run this Hub does not follow (left running by a restart) is
+		// closed on MaClawSrv under the owner's own principal and the bot's
+		// own instance. Anything MaClawSrv refuses is not this bot's run.
+		return ErrNotFound
+	}
+	return err
 }
 
 // SaveBotPreference stores a durable preference on the user's own instance.

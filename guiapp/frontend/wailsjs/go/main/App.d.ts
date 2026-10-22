@@ -2408,6 +2408,8 @@ export function ListDesktopBotSchedules(arg1:string):Promise<Array<{id:string,na
 
 export function ListDesktopBotTasks(arg1:string):Promise<Array<{run_id:string,bot_id:string,status:string,task:string}>>;
 
+export function ListDesktopBotActiveRuns(arg1:string):Promise<Array<{run_id:string,bot_id:string,source:string,status:string,task:string,step:string,next_step:string,phase:string,waiting_for_user:boolean,stale:boolean,started_at:string}>>;
+
 export function DeleteDesktopBotSchedule(arg1:string,arg2:string):Promise<void>;
 
 export function DesktopBotAccess():Promise<{enabled:boolean,message?:string}>;

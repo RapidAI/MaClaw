@@ -4818,6 +4818,10 @@ export function ListDesktopBotTasks(arg1) {
   return window['go']['main']['App']['ListDesktopBotTasks'](arg1);
 }
 
+export function ListDesktopBotActiveRuns(arg1) {
+  return window['go']['main']['App']['ListDesktopBotActiveRuns'](arg1);
+}
+
 export function DeleteDesktopBotSchedule(arg1, arg2) {
   return window['go']['main']['App']['DeleteDesktopBotSchedule'](arg1, arg2);
 }
