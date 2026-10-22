@@ -558,6 +558,10 @@ def main(argv):
         return open_shared_browser(argv[2:])
     if len(argv) == 3 and argv[1] == "ctl":
         return run_ctl(argv[2])
+    if len(argv) == 3 and argv[1] == "restore-login":
+        if not valid_key(argv[2]):
+            return 2
+        return run_restore_login(argv[2])
     if len(argv) == 3 and argv[1] == "a11y":
         return run_a11y(argv[2])
     if len(argv) == 2 and argv[1] == "install-browser":
@@ -1348,10 +1352,7 @@ def start_desktop(key, display):
     # still leaves a session the next ensure reuses instead of duplicating.
     write_pids(key, pids)
     start_browser(key, profile, env, log, chrome_port)
-    try:
-        restore_page_login(key)
-    except (OSError, ValueError, TypeError):
-        pass
+    restore_page_login_background(key)
     proxy = None
     if token:
         proxy = spawn([sys.executable, __file__, "gate", str(proxy_port(display)), str(chrome_port), token], env, log)
@@ -1372,10 +1373,7 @@ def restart_browser(key, display, profile, env, log, chrome_port, pids):
         env.setdefault("XDG_SESSION_TYPE", "x11")
         env.setdefault("XDG_CURRENT_DESKTOP", "XFCE")
     start_browser(key, profile, env, log, chrome_port)
-    try:
-        restore_page_login(key)
-    except (OSError, ValueError, TypeError):
-        pass
+    restore_page_login_background(key)
     pids["chromium"] = browser_pid(profile)
     write_pids(key, pids)
     ensure_vnc(key, display)
@@ -2339,16 +2337,107 @@ def saved_page_origins(saved):
     return origins
 
 
+_page_login_timings = {}
+
+
 def restore_page_login(key):
     """Put the tab login back into the browser this profile just opened.
-    Timed: a page_login_restore event records how long the start waited."""
+    Timed: a page_login_restore event records how long it took, per site."""
     started = time.time()
+    _page_login_timings[key] = []
     try:
         return _restore_page_login(key)
     finally:
         took = time.time() - started
-        if took >= 0.5:
-            log_event("page_login_restore", key=key, seconds=round(took, 2))
+        sites = [{"origin": o, "seconds": t, "result": r} for o, t, r in _page_login_timings.pop(key, [])]
+        if took >= 0.5 or sites:
+            log_event("page_login_restore", key=key, seconds=round(took, 2), sites=sites)
+
+
+def _apply_page_login_bounded(key, pages, item, reloaded):
+    """apply_page_login with a per-site time limit (MACLAW_PAGE_LOGIN_SITE_SECONDS,
+    default 6). A site that does not answer (a 502 behind the proxy, a page
+    that never loads) is left for the next start. Returns (applied, finished)."""
+    limit = env_int("MACLAW_PAGE_LOGIN_SITE_SECONDS", 6)
+    box = {}
+
+    def run():
+        try:
+            box["ok"] = apply_page_login(key, pages, item, reloaded)
+        except Exception:  # a broken site never stops the others
+            box["ok"] = False
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(limit if limit > 0 else None)
+    if worker.is_alive():
+        return False, False
+    return bool(box.get("ok")), True
+
+
+# First connect. Restoring the saved tab logins took 32-40 s (10-22), and it
+# ran inside the display start, so the viewer waited for it. It now runs in
+# its own process after the browser is up: the screen and the stream start
+# at once, the person sees the page while logins are put back, and bot
+# actions wait (bot_state, at most MACLAW_RESTORE_WAIT_SECONDS) for it.
+
+
+def restore_pending_path(key):
+    return ROOT / key / "restore_pending"
+
+
+def restore_pending(key, max_age=90):
+    try:
+        return time.time() - restore_pending_path(key).stat().st_mtime < max_age
+    except OSError:
+        return False
+
+
+def restore_page_login_background(key):
+    if not page_login_path(key).exists():
+        return
+    if os.environ.get("MACLAW_PAGE_LOGIN_BACKGROUND", "1").strip() == "0":
+        try:
+            restore_page_login(key)
+        except (OSError, ValueError, TypeError):
+            pass
+        return
+    try:
+        restore_pending_path(key).parent.mkdir(mode=0o700, exist_ok=True)
+        restore_pending_path(key).write_text(str(time.time()), encoding="utf-8")
+        log = open(ROOT / key / "desktop.log", "ab")
+        subprocess.Popen([sys.executable, __file__, "restore-login", key], stdout=log, stderr=subprocess.STDOUT,
+                         stdin=subprocess.DEVNULL, start_new_session=True)
+        log_event("page_login_restore_started", key=key)
+    except OSError:
+        try:
+            restore_pending_path(key).unlink()
+        except OSError:
+            pass
+
+
+def run_restore_login(key):
+    try:
+        restore_page_login(key)
+    except (OSError, ValueError, TypeError):
+        pass
+    finally:
+        try:
+            restore_pending_path(key).unlink()
+        except OSError:
+            pass
+    return 0
+
+
+def wait_restore_done(key):
+    """Bot actions wait for the background login restore (capped)."""
+    cap = env_int("MACLAW_RESTORE_WAIT_SECONDS", 20)
+    end = time.time() + cap
+    waited = False
+    while restore_pending(key) and time.time() < end:
+        waited = True
+        time.sleep(0.25)
+    return waited
 
 
 def _restore_page_login(key):
@@ -2398,6 +2487,8 @@ def _restore_page_login(key):
         time.sleep(0.25)
     if not pages or not settled:
         return
+    deadline = time.time() + env_int("MACLAW_PAGE_LOGIN_TOTAL_SECONDS", 25)
+    timings = _page_login_timings.setdefault(key, [])
     reloaded = set()
     applied = False
     left = []
@@ -2412,9 +2503,18 @@ def _restore_page_login(key):
                 pages = fresh
         except (OSError, ValueError, TypeError):
             pass
-        if apply_page_login(key, pages, item, reloaded):
+        origin = page_origin(item.get("url") or "")
+        if time.time() > deadline:
+            if origin:
+                left.append(item)
+                timings.append((origin, 0.0, "skipped"))
+            continue
+        site_started = time.time()
+        ok, done = _apply_page_login_bounded(key, pages, item, reloaded)
+        timings.append((origin, round(time.time() - site_started, 2), "ok" if ok else ("timeout" if not done else "no")))
+        if ok:
             applied = True
-        elif page_origin(item.get("url") or ""):
+        elif origin:
             left.append(item)
     if not applied:
         return
@@ -5133,10 +5233,7 @@ def start_bot_desktop(key, display):
     write_pids(key, pids)
     ensure_bot_panel(key, display, pids, log)
     start_browser(key, profile, env, log, chrome_port, bot=True)
-    try:
-        restore_page_login(key)
-    except (OSError, ValueError, TypeError):
-        pass
+    restore_page_login_background(key)
     pids["chromium"] = browser_pid(profile)
     write_pids(key, pids)
 
@@ -5776,6 +5873,7 @@ def srv_ids(key):
 def ctl_bot_state(request):
     key = ctl_bot_key(request)
     note_srv_ids(key, request)
+    wait_restore_done(key)
     touch_bot_file(key, "activity")
     human = bot_file_age(key, "human_input")
     state = takeover_state(key)

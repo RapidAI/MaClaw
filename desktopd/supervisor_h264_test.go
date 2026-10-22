@@ -416,3 +416,37 @@ print(first, second, third, rec["event"], rec["source"], "windowactivate" in cal
 		t.Fatalf("got %q", out)
 	}
 }
+
+func TestSupervisorPageLoginRestoreRunsInBackground(t *testing.T) {
+	out := runSupervisorPython(t, `
+os.environ["MACLAW_DESKTOP_KEY"] = "ab" * 8
+key = "ab" * 8 + "cd" * 8
+(sup.ROOT / key).mkdir(parents=True, exist_ok=True)
+sup.page_login_path(key).write_text("[]")
+started = []
+class P:
+    def __init__(self, argv, **kw): started.append(argv[-2:])
+sup.subprocess.Popen = P
+sup.restore_page_login_background(key)
+pending = sup.restore_pending(key)
+os.environ["MACLAW_RESTORE_WAIT_SECONDS"] = "1"
+t0 = sup.time.time(); sup.wait_restore_done(key); waited = sup.time.time() - t0
+sup.run_restore_login(key)
+print(started[0], pending, waited >= 0.9, sup.restore_pending(key))
+`)
+	if out != "['restore-login', '"+strings.Repeat("ab", 8)+strings.Repeat("cd", 8)+"'] True True False" {
+		t.Fatalf("got %q", out)
+	}
+}
+
+func TestSupervisorPageLoginSiteBounded(t *testing.T) {
+	out := runSupervisorPython(t, `
+os.environ["MACLAW_PAGE_LOGIN_SITE_SECONDS"] = "1"
+sup.apply_page_login = lambda k, p, i, r: sup.time.sleep(3) or True
+t0 = sup.time.time()
+print(sup._apply_page_login_bounded("k", [], {}, set()), sup.time.time() - t0 < 2)
+`)
+	if out != "(False, False) True" {
+		t.Fatalf("got %q", out)
+	}
+}
