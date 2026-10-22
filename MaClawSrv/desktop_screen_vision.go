@@ -55,11 +55,7 @@ func installDesktopScreenVision(m *srvAIModelManager) {
 		if m == nil || len(img) == 0 || !m.ocrTierReady() {
 			return nil
 		}
-		provider := m.ocrProvider()
-		if provider == nil || !provider.IsAvailable() {
-			return nil
-		}
-		found, err := provider.Recognize(base64.StdEncoding.EncodeToString(img))
+		found, err := m.recognizeOCR(ctx, base64.StdEncoding.EncodeToString(img))
 		if err != nil {
 			return nil
 		}
@@ -130,16 +126,7 @@ func (m *srvAIModelManager) screenVision(ctx context.Context, png []byte, clickP
 			if ctx != nil && ctx.Err() != nil {
 				return
 			}
-			parser := m.omniParser()
-			if parser == nil || !parser.IsAvailable() {
-				return
-			}
-			release, ok := desktopAcquireYOLO(ctx)
-			if !ok {
-				return
-			}
-			found, err := parser.Parse(encoded)
-			release()
+			found, err := m.detectUI(ctx, encoded)
 			if err != nil {
 				log.Printf("[desktop-vision] omniparser: %v", err)
 				return
@@ -157,11 +144,7 @@ func (m *srvAIModelManager) screenVision(ctx context.Context, png []byte, clickP
 			if ctx != nil && ctx.Err() != nil {
 				return
 			}
-			provider := m.ocrProvider()
-			if provider == nil || !provider.IsAvailable() {
-				return
-			}
-			found, err := provider.Recognize(encoded)
+			found, err := m.recognizeOCR(ctx, encoded)
 			if err != nil {
 				log.Printf("[desktop-vision] ocr: %v", err)
 				return

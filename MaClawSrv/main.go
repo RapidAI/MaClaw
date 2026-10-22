@@ -41,6 +41,12 @@ func srvLog() *slog.Logger {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "model-serve" {
+		if err := modelServeMain(); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "runs" {
 		os.Exit(desktopRunsMain(os.Args[2:], os.Stdout))
 	}

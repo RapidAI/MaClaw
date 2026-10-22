@@ -130,6 +130,7 @@ type srvAIModelManager struct {
 	ocrMgr                 *browser.NativeOCRProvider
 	yoloParser             *guiautomation.YOLOScreenParser
 	embeddingReadyHook     func()
+	remote                 *modelRemote
 }
 
 type srvASRTranscriber interface {
@@ -167,7 +168,7 @@ type srvAIModelStatus struct {
 }
 
 func newSrvAIModelManager(dataRoot string) *srvAIModelManager {
-	return &srvAIModelManager{dataRoot: dataRoot, done: make(chan struct{}), tasks: map[string]*srvAIModelTask{}}
+	return &srvAIModelManager{dataRoot: dataRoot, done: make(chan struct{}), tasks: map[string]*srvAIModelTask{}, remote: newModelRemoteFromEnv()}
 }
 
 func (m *srvAIModelManager) setDownloadConfigProvider(provider func() corelib.AppConfig) {
@@ -809,6 +810,12 @@ func (m *srvAIModelManager) embedBatch(ctx context.Context, cfg corelib.AppConfi
 	if len(cleaned) == 0 {
 		return [][]float32{}, nil
 	}
+	if m.remote != nil {
+		v, err := m.remote.embed(ctx, cleaned)
+		if !m.remote.useLocal(err) {
+			return v, err
+		}
+	}
 	modelPath := m.modelPath(srvEmbeddingModelFilename())
 	if exists, _ := modelFileReady(modelPath); !exists {
 		return nil, fmt.Errorf("%w: embedding model is missing", errSrvAIModelNotReady)
@@ -854,7 +861,12 @@ func (m *srvAIModelManager) embedBatch(ctx context.Context, cfg corelib.AppConfi
 }
 
 func (m *srvAIModelManager) transcribeWAV(ctx context.Context, cfg corelib.AppConfig, wav []byte) (string, error) {
-	_ = ctx
+	if m.remote != nil {
+		t, err := m.remote.asr(ctx, wav)
+		if !m.remote.useLocal(err) {
+			return t, err
+		}
+	}
 	if _, exists := asr.ModelFileStatus(m.modelPath(srvASRModelFilename)); !exists {
 		return "", fmt.Errorf("%w: asr model is missing", errSrvAIModelNotReady)
 	}
@@ -884,6 +896,15 @@ func (m *srvAIModelManager) synthesizeTextWithVoice(ctx context.Context, cfg cor
 	voiceID := normalizeSrvTTSVoiceID(requestedVoiceID)
 	if strings.TrimSpace(requestedVoiceID) == "" {
 		voiceID = normalizeSrvTTSVoiceID(cfg.TTSVoiceID)
+	}
+	if m.remote != nil {
+		wav, v, err := m.remote.tts(ctx, voiceID, text)
+		if !m.remote.useLocal(err) {
+			if v == "" {
+				v = voiceID
+			}
+			return wav, v, err
+		}
 	}
 	if exists, _ := modelFileReady(m.modelPath(tts.TTSModelFilename)); !exists || !m.ttsVoiceReady(voiceID) {
 		return nil, "", fmt.Errorf("%w: tts model is missing", errSrvAIModelNotReady)

@@ -36,3 +36,9 @@ func desktopAcquireYOLO(ctx context.Context) (func(), bool) {
 		<-desktopYOLOSem
 	}, true
 }
+
+// releaseModelScratch hands inference scratch memory back to the OS.
+func releaseModelScratch() {
+	onnxrt.ReleaseScratch()
+	debug.FreeOSMemory()
+}

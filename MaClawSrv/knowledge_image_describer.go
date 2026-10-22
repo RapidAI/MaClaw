@@ -80,17 +80,24 @@ type srvKnowledgeOCRPool struct {
 	dataRoot string
 	mu       sync.Mutex
 	byTier   map[string]*browser.NativeOCRProvider
+	remote   *modelRemote
 }
 
 type srvKnowledgeOCRAdapter struct {
 	runtime *browser.NativeOCRProvider
+	remote  *modelRemote
 }
 
 func (a srvKnowledgeOCRAdapter) Recognize(imageBase64 string) ([]knowledge.OCRResult, error) {
-	if a.runtime == nil {
+	var results []browser.OCRResult
+	var err error
+	if a.remote != nil {
+		results, err = a.remote.ocr(context.Background(), imageBase64)
+	} else if a.runtime == nil {
 		return nil, fmt.Errorf("OCR provider unavailable")
+	} else {
+		results, err = a.runtime.Recognize(imageBase64)
 	}
-	results, err := a.runtime.Recognize(imageBase64)
 	if err != nil {
 		return nil, err
 	}
@@ -106,17 +113,24 @@ func (a srvKnowledgeOCRAdapter) Recognize(imageBase64 string) ([]knowledge.OCRRe
 }
 
 func (a srvKnowledgeOCRAdapter) IsAvailable() bool {
+	if a.remote != nil {
+		return true
+	}
 	return a.runtime != nil && a.runtime.IsAvailable()
 }
 func (srvKnowledgeOCRAdapter) Close() {}
 
 func newSrvKnowledgeOCRPool(dataRoot string) *srvKnowledgeOCRPool {
-	return &srvKnowledgeOCRPool{dataRoot: dataRoot, byTier: make(map[string]*browser.NativeOCRProvider)}
+	return &srvKnowledgeOCRPool{dataRoot: dataRoot, byTier: make(map[string]*browser.NativeOCRProvider), remote: newModelRemoteFromEnv()}
 }
 
 func (p *srvKnowledgeOCRPool) provider(tier string) knowledge.OCRProvider {
 	if p == nil {
 		return nil
+	}
+	if p.remote != nil {
+		// The shared model service owns the one OCR instance on this host.
+		return srvKnowledgeOCRAdapter{remote: p.remote}
 	}
 	tier = corelib.NormalizeOCRModelTier(tier)
 	p.mu.Lock()
