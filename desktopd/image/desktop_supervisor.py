@@ -4809,6 +4809,11 @@ def serve_h264(client, head, owner_token):
         if screen is None or method != "GET":
             client.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             return
+        if path == "/h264.html" and shutil.which("ffmpeg") is None:
+            # Old per-user state images can lack ffmpeg; 404 lets the Hub
+            # redirect straight to noVNC instead of a player that cannot stream.
+            client.sendall(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            return
         if path == "/h264.html":
             body = H264_PLAYER.encode("utf-8")
             client.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\n"
