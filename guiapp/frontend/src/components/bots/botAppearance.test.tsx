@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { BotEditDialog } from './BotEditDialog';
-import { BOT_COLORS, appearancesForUser, botNameTaken, defaultAppearance, nextAppearance, saveBotAppearance } from './botAppearance';
+import { BOT_COLORS, appearancesForUser, botNameTaken, defaultAppearance, hubAppearance, looksToMigrate, markLookMigrated, mergeLooks, nextAppearance, saveBotAppearance } from './botAppearance';
 
 const labels = { title: 'New', name: 'Name', description: 'Desc', save: 'Save', cancel: 'Cancel', close: 'Close', nameTaken: 'taken' };
 
@@ -45,5 +45,34 @@ describe('bot appearance', () => {
         expect(screen.getByTestId('bot-edit-preview').getAttribute('data-shape')).toBe('leaf');
         fireEvent.click(screen.getByTestId('bot-edit-save'));
         expect(onSubmit).toHaveBeenCalledWith('写手', '', { color: BOT_COLORS[3], shape: 'leaf' });
+    });
+});
+
+describe('Hub-stored bot look', () => {
+    beforeEach(() => window.localStorage.clear());
+
+    it('reads a valid Hub look and ignores missing or unknown fields', () => {
+        expect(hubAppearance({ color: '#2563eb', shape: 'cloud' })).toEqual({ color: '#2563eb', shape: 'cloud' });
+        expect(hubAppearance({})).toBeNull();
+        expect(hubAppearance({ color: '#2563eb' })).toBeNull();
+        expect(hubAppearance({ color: 'red', shape: 'cloud' })).toBeNull();
+        expect(hubAppearance({ color: '#2563eb', shape: 'hexagon' })).toBeNull();
+    });
+
+    it('prefers the Hub look and falls back to local storage when Hub echoes none', () => {
+        const local = { a: { color: '#16a34a', shape: 'leaf' as const }, b: { color: '#7c3aed', shape: 'pill' as const } };
+        const merged = mergeLooks(local, [{ id: 'a', color: '#dc2626', shape: 'square' }, { id: 'b' }]);
+        expect(merged.a).toEqual({ color: '#dc2626', shape: 'square' });
+        expect(merged.b).toEqual(local.b);
+    });
+
+    it('migrates local looks only for bots without a Hub look, once', () => {
+        saveBotAppearance('u1', 'a', { color: '#16a34a', shape: 'leaf' });
+        saveBotAppearance('u1', 'b', { color: '#7c3aed', shape: 'pill' });
+        const items = [{ id: 'a' }, { id: 'b', color: '#dc2626', shape: 'square' }, { id: 'c' }];
+        expect(looksToMigrate('u1', items)).toEqual([{ id: 'a', look: { color: '#16a34a', shape: 'leaf' } }]);
+        markLookMigrated('u1', 'a');
+        expect(looksToMigrate('u1', items)).toEqual([]);
+        expect(looksToMigrate('u2', items)).toEqual([]);
     });
 });

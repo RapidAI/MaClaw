@@ -1,5 +1,7 @@
-// Per-bot badge look (color + shape), kept on this machine per account.
-// Hub stores name/description only; the badge look is a client preference.
+// Per-bot badge look (color + shape). Hub stores it per bot (color/shape on the
+// bot list, PUT /api/v1/bots/{id}/appearance). Local storage is the fallback
+// for an older Hub that does not echo the fields, and the source of a one-time
+// move of looks saved before Hub kept them.
 
 export const BOT_COLORS = [
     '#16a34a', '#2563eb', '#7c3aed', '#db2777', '#ea580c',
@@ -87,4 +89,55 @@ export function botNameTaken(name: string, bots: { id: string; title: string }[]
     const want = norm(name);
     if (!want) return false;
     return bots.some(bot => bot.id !== exceptId && norm(bot.title) === want);
+}
+
+/** The look Hub echoed for a bot, or null when Hub sent none (or an unknown shape). */
+export function hubAppearance(item: { color?: string; shape?: string } | null | undefined): BotAppearance | null {
+    const color = String(item?.color || '').trim();
+    const shape = String(item?.shape || '').trim();
+    return isBotColor(color) && isBotShape(shape) ? { color, shape } : null;
+}
+
+/** Hub look wins; local storage fills bots Hub has no look for. */
+export function mergeLooks(local: Record<string, BotAppearance>, items: { id: string; color?: string; shape?: string }[]): Record<string, BotAppearance> {
+    const out: Record<string, BotAppearance> = { ...local };
+    for (const item of items) {
+        const look = hubAppearance(item);
+        if (look) out[item.id] = look;
+    }
+    return out;
+}
+
+const MIGRATED_KEY = 'maclaw.desktopBotAppearance.v1.migrated';
+
+function readMigrated(): Record<string, string[]> {
+    const store = storage();
+    if (!store) return {};
+    try {
+        const parsed = JSON.parse(store.getItem(MIGRATED_KEY) || '{}');
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+/** Bots listed without a Hub look that have a local look not yet moved to Hub. */
+export function looksToMigrate(userId: string, items: { id: string; color?: string; shape?: string }[]): { id: string; look: BotAppearance }[] {
+    const local = appearancesForUser(userId);
+    const done = new Set(readMigrated()[userKey(userId)] || []);
+    return items
+        .filter(item => !hubAppearance(item) && local[item.id] && !done.has(item.id))
+        .map(item => ({ id: item.id, look: local[item.id] }));
+}
+
+/** Record that a bot's local look was sent to Hub, so it is moved only once. */
+export function markLookMigrated(userId: string, botId: string) {
+    const store = storage();
+    if (!store || !botId) return;
+    const all = readMigrated();
+    const key = userKey(userId);
+    const mine = new Set(all[key] || []);
+    mine.add(botId);
+    all[key] = [...mine];
+    store.setItem(MIGRATED_KEY, JSON.stringify(all));
 }

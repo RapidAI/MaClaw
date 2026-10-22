@@ -2417,9 +2417,9 @@ export function DeleteDesktopBotSchedule(arg1:string,arg2:string):Promise<void>;
 
 export function DesktopBotAccess():Promise<{enabled:boolean,message?:string}>;
 
-export function ListDesktopBots():Promise<Array<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean}>>;
+export function ListDesktopBots():Promise<Array<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string}>>;
 
-export function SetDesktopBotPrimary(arg1:string):Promise<Array<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean}>>;
+export function SetDesktopBotPrimary(arg1:string):Promise<Array<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string}>>;
 
 export function PostDesktopBotCross(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string):Promise<{posted:boolean,ask?:string,primary_line?:string,names?:Array<string>,notes?:Array<{id:string,from?:string,target?:string,kind?:string,text?:string,order?:string,reply_to?:string}>}>;
 
@@ -2429,9 +2429,11 @@ export function ClaimDesktopBotCrossStart(arg1:string,arg2:string):Promise<{clai
 
 export function ArmDesktopBotCrossRun(arg1:string,arg2:string):Promise<void>;
 
-export function CreateDesktopBot(arg1:string,arg2:string):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string}>;
+export function CreateDesktopBot(arg1:string,arg2:string,arg3:string,arg4:string):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string}>;
 
-export function RenameDesktopBot(arg1:string,arg2:string,arg3:string):Promise<void>;
+export function RenameDesktopBot(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string}>;
+
+export function SetDesktopBotAppearance(arg1:string,arg2:string,arg3:string):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string}>;
 
 export function DeleteDesktopBot(arg1:string):Promise<void>;
 

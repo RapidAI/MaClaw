@@ -4859,12 +4859,16 @@ export function ArmDesktopBotCrossRun(arg1, arg2) {
   return window['go']['main']['App']['ArmDesktopBotCrossRun'](arg1, arg2);
 }
 
-export function CreateDesktopBot(arg1, arg2) {
-  return window['go']['main']['App']['CreateDesktopBot'](arg1, arg2);
+export function CreateDesktopBot(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['CreateDesktopBot'](arg1, arg2, arg3, arg4);
 }
 
-export function RenameDesktopBot(arg1, arg2, arg3) {
-  return window['go']['main']['App']['RenameDesktopBot'](arg1, arg2, arg3);
+export function RenameDesktopBot(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['RenameDesktopBot'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function SetDesktopBotAppearance(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetDesktopBotAppearance'](arg1, arg2, arg3);
 }
 
 export function DeleteDesktopBot(arg1) {

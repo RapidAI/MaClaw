@@ -115,6 +115,10 @@ type DesktopBotInfo struct {
 	CreatedAt   string `json:"created_at"`
 	// Primary is copied from the list item. The client does not recompute it.
 	Primary bool `json:"primary,omitempty"`
+	// Color/Shape are the badge look stored on Hub. Empty when the Hub is
+	// older or the bot has no saved look; the GUI then falls back locally.
+	Color string `json:"color,omitempty"`
+	Shape string `json:"shape,omitempty"`
 }
 
 // DesktopBotWatch is one watch poll result: the live noVNC page for this
@@ -294,6 +298,8 @@ type hubBot struct {
 	InstanceID  string `json:"instance_id"`
 	CreatedAt   string `json:"created_at"`
 	Primary     bool   `json:"primary,omitempty"`
+	Color       string `json:"color,omitempty"`
+	Shape       string `json:"shape,omitempty"`
 }
 
 func (a *App) DesktopBotAccess() (*DesktopBotAccess, error) {
@@ -325,12 +331,22 @@ func (a *App) ListDesktopBots() ([]DesktopBotInfo, error) {
 	return items, nil
 }
 
-func (a *App) CreateDesktopBot(name, description string) (*DesktopBotInfo, error) {
+// desktopBotSettingsBody carries name/description plus the badge look when set.
+// An older Hub ignores the extra fields.
+func desktopBotSettingsBody(name, description, color, shape string) map[string]string {
+	body := map[string]string{"name": name, "description": description}
+	if c := strings.TrimSpace(color); c != "" {
+		body["color"] = c
+	}
+	if sh := strings.TrimSpace(shape); sh != "" {
+		body["shape"] = sh
+	}
+	return body
+}
+
+func (a *App) CreateDesktopBot(name, description, color, shape string) (*DesktopBotInfo, error) {
 	var bot hubBot
-	err := a.desktopBotCall(context.Background(), http.MethodPost, "/api/v1/bots", map[string]string{
-		"name":        name,
-		"description": description,
-	}, &bot, 30*time.Second)
+	err := a.desktopBotCall(context.Background(), http.MethodPost, "/api/v1/bots", desktopBotSettingsBody(name, description, color, shape), &bot, 30*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -338,11 +354,32 @@ func (a *App) CreateDesktopBot(name, description string) (*DesktopBotInfo, error
 	return &info, nil
 }
 
-func (a *App) RenameDesktopBot(botID, name, description string) error {
-	return a.desktopBotCall(context.Background(), http.MethodPatch, "/api/v1/bots/"+url.PathEscape(strings.TrimSpace(botID)), map[string]string{
-		"name":        name,
-		"description": description,
-	}, nil, 30*time.Second)
+// RenameDesktopBot updates name/description and, when given, the badge look.
+// It returns the bot as Hub echoes it so the GUI can tell whether the Hub
+// stored the look (an older Hub omits color/shape).
+func (a *App) RenameDesktopBot(botID, name, description, color, shape string) (*DesktopBotInfo, error) {
+	var bot hubBot
+	err := a.desktopBotCall(context.Background(), http.MethodPatch, "/api/v1/bots/"+url.PathEscape(strings.TrimSpace(botID)), desktopBotSettingsBody(name, description, color, shape), &bot, 30*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	info := desktopBotInfo(bot)
+	return &info, nil
+}
+
+// SetDesktopBotAppearance stores only the badge look (PUT .../appearance).
+// Used for the one-time move of looks kept in local storage.
+func (a *App) SetDesktopBotAppearance(botID, color, shape string) (*DesktopBotInfo, error) {
+	var bot hubBot
+	err := a.desktopBotCall(context.Background(), http.MethodPut, "/api/v1/bots/"+url.PathEscape(strings.TrimSpace(botID))+"/appearance", map[string]string{
+		"color": strings.TrimSpace(color),
+		"shape": strings.TrimSpace(shape),
+	}, &bot, 30*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	info := desktopBotInfo(bot)
+	return &info, nil
 }
 
 func (a *App) DeleteDesktopBot(botID string) error {
@@ -2402,5 +2439,7 @@ func desktopBotInfo(bot hubBot) DesktopBotInfo {
 		InstanceID:  bot.InstanceID,
 		CreatedAt:   strings.TrimSpace(bot.CreatedAt),
 		Primary:     bot.Primary,
+		Color:       strings.TrimSpace(bot.Color),
+		Shape:       strings.TrimSpace(bot.Shape),
 	}
 }

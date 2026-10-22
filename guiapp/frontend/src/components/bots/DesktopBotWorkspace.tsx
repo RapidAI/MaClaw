@@ -45,6 +45,7 @@ import {
     ReleaseDesktopBotWatch,
     RefreshHubLLMServiceStatus,
     RenameDesktopBot,
+    SetDesktopBotAppearance,
     SaveDesktopBotLLM,
     OpenFileOrShowInFolder,
     ReadDesktopBotShot,
@@ -130,7 +131,7 @@ import { botChatIsNearBottom, botChatLogStamp, pinBotChatToBottom } from './botC
 import { DesktopBotComposer } from './DesktopBotComposer';
 import { BotEditDialog } from './BotEditDialog';
 import { BotAvatar } from './BotAvatar';
-import { appearancesForUser, botNameTaken, defaultAppearance, nextAppearance, saveBotAppearance, type BotAppearance } from './botAppearance';
+import { appearancesForUser, botNameTaken, defaultAppearance, hubAppearance, looksToMigrate, markLookMigrated, mergeLooks, nextAppearance, saveBotAppearance, type BotAppearance } from './botAppearance';
 import { BotLLMSettingsDialog, type BotLLMProviderOption, type BotLLMSettingsSubmit } from './BotLLMSettingsDialog';
 import { TaskResultArtifacts } from '../ai/assistantTaskArtifacts';
 import { BotFilePreview } from './BotFilePreview';
@@ -1921,9 +1922,23 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [looks, setLooks] = useState<Record<string, BotAppearance>>(() => appearancesForUser(userId));
     useEffect(() => { setLooks(appearancesForUser(userId)); }, [userId]);
     const lookOf = (bot: { id: string; title: string }): BotAppearance => looks[bot.id] || defaultAppearance(bot.title);
+    // Hub is the store for the look; local storage keeps a copy for an older
+    // Hub that does not echo color/shape.
     const rememberLook = (botId: string, look: BotAppearance) => {
         saveBotAppearance(userId, botId, look);
         setLooks(prev => ({ ...prev, [botId]: look }));
+    };
+    const migratingLooks = useRef(new Set<string>());
+    const applyHubLooks = (items: { id: string; color?: string; shape?: string }[]) => {
+        setLooks(prev => mergeLooks(prev, items));
+        // One-time move of looks saved before Hub kept them.
+        for (const { id, look } of looksToMigrate(userId, items)) {
+            if (migratingLooks.current.has(id)) continue;
+            migratingLooks.current.add(id);
+            SetDesktopBotAppearance(id, look.color, look.shape)
+                .then(() => markLookMigrated(userId, id))
+                .catch(() => { /* older Hub or offline: keep the local look */ });
+        }
     };
     // Model dialog. The choice is per account, not per bot, which is why it is
     // opened from the list header rather than from a row.
@@ -3130,6 +3145,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 createdAt: createdMillis(item.created_at),
                 primary: item.primary === true,
             }));
+            applyHubLooks(items || []);
             const merged = mergeListed(list);
             botsRef.current = merged;
             setBots(merged);
@@ -3604,7 +3620,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         setCreateSaving(true);
         const desc = description || text.defaultDescription;
         try {
-            const created = await CreateDesktopBot(title, desc);
+            const created = await CreateDesktopBot(title, desc, look.color, look.shape);
             if (gen !== loadGen.current) return;
             const bot: DesktopBot = {
                 id: created.id,
@@ -3612,7 +3628,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 description: created.description || desc,
                 createdAt: createdMillis(created.created_at),
             };
-            rememberLook(bot.id, look);
+            rememberLook(bot.id, hubAppearance(created) || look);
             pendingBots.current = [...pendingBots.current.filter(item => item.id !== bot.id), bot];
             setBots(prev => prev.some(item => item.id === bot.id) ? prev : [...prev, bot]);
             setCreateOpen(false);
@@ -3633,8 +3649,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const gen = loadGen.current;
         setEditSaving(true);
         setEditNotice('');
+        let echoed: BotAppearance | null = null;
         try {
-            await RenameDesktopBot(botId, title, description);
+            const updated = await RenameDesktopBot(botId, title, description, look?.color || '', look?.shape || '');
+            echoed = hubAppearance(updated);
         } catch (error) {
             if (gen !== loadGen.current) return;
             setEditNotice(error instanceof Error && error.message ? error.message : text.unavailable);
@@ -3643,7 +3661,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             setEditSaving(false);
         }
         if (gen !== loadGen.current) return;
-        if (look) rememberLook(botId, look);
+        if (look) rememberLook(botId, echoed || look);
         renamedBots.current.set(botId, { title, description });
         setBots(prev => prev.map(bot => bot.id === botId ? { ...bot, title, description } : bot));
         setEditBot(null);
