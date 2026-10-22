@@ -791,6 +791,8 @@ function copy(lang: string) {
             exitTakeover: 'Release',
             takeoverHint: 'Fullscreen the desktop and take the keyboard from the bot.',
             takeoverBusyHint: 'This bot is using its desktop. Take over to stop it and take the keyboard.',
+            botDrivingNote: 'The bot is using the desktop. Stop it first if you need the computer.',
+            stopBot: 'Stop',
             stopWork: 'Stop',
             takeoverActive: 'You have the desktop. Release it to hand the keyboard back.',
             myDesktop: 'My desktop',
@@ -932,6 +934,8 @@ function copy(lang: string) {
             exitTakeover: '退出接管',
             takeoverHint: '全螢幕顯示桌面，並把鍵盤交給你。',
             takeoverBusyHint: '這個 Bot 正在操作桌面。接管會先停下它。',
+            botDrivingNote: 'Bot 正在操作桌面，需要的話可以先停止它。',
+            stopBot: '停止',
             stopWork: '停下',
             takeoverActive: '你已接管桌面。完成後退出接管，把鍵盤交還。',
             myDesktop: '我的桌面',
@@ -1072,6 +1076,8 @@ function copy(lang: string) {
         exitTakeover: '退出接管',
         takeoverHint: '全屏显示桌面，并把键盘交给你。',
         takeoverBusyHint: '这个 Bot 正在操作桌面。接管会先停下它。',
+        botDrivingNote: 'Bot 正在操作桌面，需要的话可以先停止它。',
+        stopBot: '停止',
         stopWork: '停下',
         takeoverActive: '你已接管桌面。完成后退出接管，把键盘交回。',
         myDesktop: '我的桌面',
@@ -2143,6 +2149,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     };
     const agentOperating = !!selected && botUsingDesktop(selected.id);
     const takeoverHeld = !!selected && !!takeoverHoldByBot[selected.id];
+    // While the bot drives, a person cannot take the keyboard: the panel only
+    // offers 停止 (the same stop as the chat pause) and the player stays
+    // view-only. The takeover controls return once the run is gone.
+    const botDriving = agentOperating && !takeoverHeld;
     const takeover = !!selected && (takeoverHeld || (!!takeoverByBot[selected.id] && !agentOperating));
     const screenExpanded = !!selected && !!screenExpandedByBot[selected.id] && !takeover;
     const panelState = selected ? desktopPanels[selected.id] : undefined;
@@ -6025,7 +6035,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             )}
                                         </div>
                                     ) : null}
-                                    {takeoverMessage && takeoverMessage.id === message.id && !takeover ? (
+                                    {takeoverMessage && takeoverMessage.id === message.id && !takeover && !botUsingDesktop(selected.id) ? (
                                         <button
                                             type="button"
                                             className="desktop-bot-chat__action"
@@ -6336,7 +6346,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                                 <ScreenWatchIcon />
                                                 {text.viewOnly}
                                             </button>
-                                            <button
+                                            {botDriving ? null : <button
                                                 type="button"
                                                 className="desktop-bot-stage__mode-btn"
                                                 data-testid="desktop-bot-take-control"
@@ -6347,7 +6357,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             >
                                                 <ScreenControlIcon />
                                                 {text.takeControl}
-                                            </button>
+                                            </button>}
                                         </div>
                                         <button
                                             type="button"
@@ -6379,10 +6389,17 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             )}
                             <p className="desktop-bot-screen__caption">{text.screenOf(selected.title)}</p>
                             <div className="desktop-bot-chat__ops" data-testid="desktop-bot-ops" aria-label={text.ops}>
-                                {agentOperating ? (
-                                    <span className="desktop-bot-chat__ops-note" role="status">{text.takeoverBusyHint}</span>
-                                ) : null}
-                                <button
+                                {botDriving ? (
+                                    <>
+                                        <span className="desktop-bot-chat__ops-note" role="status">{text.botDrivingNote}</span>
+                                        <button
+                                            type="button"
+                                            data-testid="desktop-bot-panel-stop"
+                                            className="desktop-bot-chat__takeover"
+                                            onClick={() => answerDesktopControl(selected.id, '', 'stop', 'quiet', 'panel-stop')}
+                                        >{text.stopBot}</button>
+                                    </>
+                                ) : <button
                                     type="button"
                                     data-testid="desktop-bot-takeover"
                                     className={'desktop-bot-chat__takeover' + (takeover ? ' is-active' : '')}
@@ -6391,7 +6408,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     onClick={toggleTakeover}
                                 >
                                     {takeover ? text.exitTakeover : text.takeover}
-                                </button>
+                                </button>}
                             </div>
                         </div>
                     )}

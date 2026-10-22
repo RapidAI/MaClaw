@@ -164,6 +164,13 @@ function told(text: string, phase: BotPhase = 'plan'): string {
     return `表述:${text}`;
 }
 
+// While the bot drives, the panel offers only 停止: no takeover controls.
+function expectStopOnly() {
+    expect(screen.queryByTestId('desktop-bot-takeover')).toBeNull();
+    expect(screen.queryByTestId('desktop-bot-take-control')).toBeNull();
+    expect(screen.getByTestId('desktop-bot-panel-stop')).toBeTruthy();
+}
+
 function renderBots(ui: ReactElement) {
     return render(<DialogProvider>{ui}</DialogProvider>);
 }
@@ -876,9 +883,9 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
         expect(screen.queryByRole('button', { name: '查看桌面' })).toBeNull();
         fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
-        const takeover = await screen.findByTestId('desktop-bot-takeover');
-        expect((takeover as HTMLButtonElement).disabled).toBe(false);
-        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('Bot 正在操作桌面');
+        await screen.findByTestId('desktop-bot-panel-stop');
+        expectStopOnly();
+        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('Bot 正在操作桌面，需要的话可以先停止它');
         const chatWhileDriving = screen.getByTestId('desktop-bot-chat');
         const panelWhileDriving = screen.getByTestId('desktop-bot-panel');
         const drivingSrc = (await screen.findByTestId('desktop-bot-handoff')).getAttribute('src') || '';
@@ -888,7 +895,7 @@ describe('DesktopBotWorkspace', () => {
         expect(drivingSrc).toContain('view_only=1');
         expect(drivingSrc.split('view_only=').length - 1).toBe(1);
         expect(screen.getByTestId('desktop-bot-screen-shield')).toBeTruthy();
-        expect((screen.getByTestId('desktop-bot-takeover') as HTMLButtonElement).disabled).toBe(false);
+        expectStopOnly();
         responseListeners.byEvent['ai-assistant-response']?.({
             request_id: 'desktop-bot-operating',
             session_key: 'alice:bot_1',
@@ -956,8 +963,8 @@ describe('DesktopBotWorkspace', () => {
             novnc_url: liveDesktop,
         });
         fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
-        expect((await screen.findByTestId('desktop-bot-takeover') as HTMLButtonElement).disabled).toBe(false);
-        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('这个 Bot 正在操作桌面');
+        await screen.findByTestId('desktop-bot-panel-stop'); expectStopOnly();
+        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('Bot 正在操作桌面，需要的话可以先停止它');
 
         openRow('bot_2');
         fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
@@ -1037,9 +1044,9 @@ describe('DesktopBotWorkspace', () => {
         await act(async () => {
             responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_2', busy: true });
         });
-        expect((screen.getByTestId('desktop-bot-takeover') as HTMLButtonElement).disabled).toBe(false);
+        expectStopOnly();
         expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1');
-        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('这个 Bot 正在操作桌面');
+        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('Bot 正在操作桌面，需要的话可以先停止它');
 
         await act(async () => {
             responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_2', busy: false });
@@ -1068,14 +1075,14 @@ describe('DesktopBotWorkspace', () => {
             responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', busy: true });
             responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_2', owner_id: 'alice', busy: true });
         });
-        expect(takeover().disabled).toBe(false);
+        expectStopOnly();
 
         await act(async () => {
             responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'bob', busy: false });
             responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', busy: false });
             responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_2', owner_id: 'alice', busy: false });
         });
-        expect(takeover().disabled).toBe(false);
+        expectStopOnly();
 
         await act(async () => {
             responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', busy: false });
@@ -1107,14 +1114,14 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(await screen.findByText('日报'));
         fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
         const takeover = () => screen.getByTestId('desktop-bot-takeover') as HTMLButtonElement;
-        await screen.findByTestId('desktop-bot-takeover');
-        await waitFor(() => expect(takeover().disabled).toBe(false));
+        await screen.findByTestId('desktop-bot-panel-stop');
+        expectStopOnly();
         expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1');
 
         await act(async () => {
             responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_2', owner_id: 'alice', busy: false, count: 0, seq: 3 });
         });
-        expect(takeover().disabled).toBe(false);
+        expectStopOnly();
 
         await act(async () => {
             responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_2', owner_id: 'alice', busy: false, count: 0, seq: 5 });
@@ -1151,13 +1158,13 @@ describe('DesktopBotWorkspace', () => {
 
         openRow('bot_1');
         fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
-        await waitFor(() => expect(takeover().disabled).toBe(false));
+        await waitFor(() => expectStopOnly());
         expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1');
 
         await act(async () => {
             responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', run_driving: false });
         });
-        expect(takeover().disabled).toBe(false);
+        await waitFor(() => expect(takeover().disabled).toBe(false));
     });
 
     it('does not treat an older login handoff as the keyboard while that bot is driving', async () => {
@@ -1175,8 +1182,8 @@ describe('DesktopBotWorkspace', () => {
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(await screen.findByText('值班'));
         fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
-        const takeover = await screen.findByTestId('desktop-bot-takeover');
-        expect((takeover as HTMLButtonElement).disabled).toBe(false);
+        await screen.findByTestId('desktop-bot-panel-stop');
+        expectStopOnly();
         expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('watch');
         expect(screen.queryByTestId('desktop-bot-return-control')).toBeNull();
     });
@@ -1198,8 +1205,8 @@ describe('DesktopBotWorkspace', () => {
         await act(async () => {
             responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', busy: true });
         });
-        expect(takeover().disabled).toBe(false);
-        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('这个 Bot 正在操作桌面');
+        expectStopOnly();
+        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('Bot 正在操作桌面，需要的话可以先停止它');
     });
 
     it('keeps a login handoff when another bot is using its own desktop', async () => {
@@ -3218,7 +3225,7 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.queryByText(/nothing|Say plainly/i)).toBeNull();
     });
 
-    it('takes over by stopping the desktop run instead of locking the button', async () => {
+    it('offers only 停止 while the bot drives and brings takeover back after the stop', async () => {
         listBots.mockResolvedValue([{ id: 'bot_1', title: '码卡龙本龙', description: '共用桌面', instance_id: 'inst_1' }]);
         const liveDesktop = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1&resize=scale&view_only=1';
         watchBot.mockResolvedValue({ novnc_url: liveDesktop, user_control: false });
@@ -3232,13 +3239,13 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
         await waitFor(() => expect(sendTask).toHaveBeenCalled());
         fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
-        const takeover = await screen.findByTestId('desktop-bot-takeover');
-        expect((takeover as HTMLButtonElement).disabled).toBe(false);
-        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('接管会先停下它');
-        fireEvent.click(takeover);
+        const stop = await screen.findByTestId('desktop-bot-panel-stop');
+        expectStopOnly();
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('watch');
+        fireEvent.click(stop);
         await waitFor(() => expect(cancelRun).toHaveBeenCalledWith('bot_1', 'run-xhs'));
-        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('live');
-        expect(screen.queryByTestId('desktop-bot-screen-shield')).toBeNull();
+        // Once the run is gone the takeover controls come back.
+        expect(await screen.findByTestId('desktop-bot-takeover')).toBeTruthy();
     });
 
     it('cancels the live run and does not start the order that was waiting on a reading', async () => {
