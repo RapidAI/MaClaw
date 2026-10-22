@@ -204,15 +204,18 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	desktopTidyOnce(ctx, desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))))
 	if err := desktopBudgetCheck(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))); err != nil {
 		log.Print(desktopStepLogLine(scope.UserID, args, "", err, 0) + " model=" + desktopModelLabel(request) + " " + desktopBudgetLogFields(desktopOwner(scope)))
+		desktopEmitStep(scope, desktopOwner(scope), args, desktopModelLabel(request), "", err, 0, "budget")
 		return "", err
 	}
 	repeatWarn, repeatErr := desktopRepeatCheck(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args)
 	if repeatErr != nil {
 		log.Print(desktopStepLogLine(scope.UserID, args, "", repeatErr, 0) + " model=" + desktopModelLabel(request) + " " + desktopBudgetLogFields(desktopOwner(scope)) + " repeat=refused")
+		desktopEmitStep(scope, desktopOwner(scope), args, desktopModelLabel(request), "", repeatErr, 0, "refused")
 		return "", repeatErr
 	}
 	if failErr := desktopFailClassCheck(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args); failErr != nil {
 		log.Print(desktopStepLogLine(scope.UserID, args, "", failErr, 0) + " model=" + desktopModelLabel(request) + " " + desktopBudgetLogFields(desktopOwner(scope)) + " failclass=refused")
+		desktopEmitStep(scope, desktopOwner(scope), args, desktopModelLabel(request), "", failErr, 0, "guard")
 		return "", failErr
 	}
 	started := time.Now()
@@ -231,6 +234,7 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 		err = fmt.Errorf("%w%s", err, failWarn)
 	}
 	log.Print(desktopStepLogLine(scope.UserID, args, out, err, took) + " model=" + desktopModelLabel(request) + " " + desktopBudgetLogFields(desktopOwner(scope)))
+	desktopEmitStep(scope, desktopOwner(scope), args, desktopModelLabel(request), out, err, took, "")
 	return out, err
 }
 

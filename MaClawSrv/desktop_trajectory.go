@@ -105,20 +105,22 @@ func desktopImageTokens(b64 string) int {
 }
 
 type desktopRunState struct {
-	mu          sync.Mutex
-	actions     int
-	imageTokens int
-	seq         int
-	lastSeen    time.Time
-	queue       chan desktopTrajectoryStep
-	dir         string
-	scope       agentruntime.Scope
-	cloud       bool
-	lastSig     string // signature of the previous desktop call
-	repeat      int    // identical consecutive calls ending with lastSig
-	failures    map[string]int    // intent|error class -> count in this run
-	blocked     map[string]string // intent class -> error class that blocked it
-	site        string            // host of the page the last browser step was on
+	mu           sync.Mutex
+	actions      int
+	imageTokens  int
+	seq          int
+	lastSeen     time.Time
+	queue        chan desktopTrajectoryStep
+	dir          string
+	scope        agentruntime.Scope
+	cloud        bool
+	lastSig      string            // signature of the previous desktop call
+	repeat       int               // identical consecutive calls ending with lastSig
+	failures     map[string]int    // intent|error class -> count in this run
+	blocked      map[string]string // intent class -> error class that blocked it
+	site         string            // host of the page the last browser step was on
+	lastEventEnd time.Time         // end of the previous desktop call (event think_ms)
+	lastLease    string            // last lease reported by bot_state (event stream)
 }
 
 func desktopRunNoteSite(scope agentruntime.Scope, site string) {

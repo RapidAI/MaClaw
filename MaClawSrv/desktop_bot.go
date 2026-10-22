@@ -46,6 +46,7 @@ func requestDesktopTakeover(ctx context.Context, scope agentruntime.Scope, reaso
 			return "", fmt.Errorf("request_takeover failed: %w", err)
 		}
 	}
+	desktopEmitNote(scope, "takeover_request", "human", reason)
 	noteDesktopAttention(scope.TenantID, scope.UserID, scope.InstanceID, reason)
 	noteDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID)
 	return "Takeover requested. The person now sees this desktop with your reason: " + reason +
@@ -66,6 +67,7 @@ func desktopBotYield(ctx context.Context, scope agentruntime.Scope) error {
 	// lease is the supervisor's input lease between the person and the bot
 	// ("human" or "bot"); an older supervisor only reports yield.
 	lease, _ := out["lease"].(string)
+	desktopNoteLease(scope, lease, out)
 	if yield, _ := out["yield"].(bool); !yield && lease != "human" {
 		return nil
 	}

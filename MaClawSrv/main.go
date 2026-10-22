@@ -41,6 +41,9 @@ func srvLog() *slog.Logger {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "runs" {
+		os.Exit(desktopRunsMain(os.Args[2:], os.Stdout))
+	}
 	if err := servicehost.Run("MaClawSrv", runServer); err != nil {
 		log.Fatal(err)
 	}
