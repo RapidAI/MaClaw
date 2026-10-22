@@ -30,9 +30,11 @@ import (
 //    verify once and stop.
 
 var (
-	desktopURLRe       = regexp.MustCompile(`https?://[^\s;)'"]+`)
-	desktopBodyCountRe = regexp.MustCompile(`editor body has (\d+) chars|字数[:：]\s*(\d+)`)
-	desktopPublishedRe = regexp.MustCompile(`发布成功|已发布|zhuanlan\.zhihu\.com/p/\d+(?:[?#\s;]|$)`)
+	desktopURLRe            = regexp.MustCompile(`https?://[^\s;)'"]+`)
+	desktopBodyCountRe      = regexp.MustCompile(`editor body has (\d+) chars|字数[:：]\s*(\d+)`)
+	desktopArticleURLRe     = regexp.MustCompile(`zhuanlan\.zhihu\.com/p/\d+`)
+	desktopPublishAttemptRe = regexp.MustCompile(`发布成功|zhuanlan\.zhihu\.com/write|clicked\s*(发布|更新|发布中|确认发布)`)
+	desktopPublishedRe      = regexp.MustCompile(`发布成功|已发布|zhuanlan\.zhihu\.com/p/\d+(?:[?#\s;]|$)`)
 )
 
 var desktopReadOnlyActions = map[string]bool{
@@ -48,6 +50,10 @@ type desktopProgress struct {
 	warned70    bool
 	warned90    bool
 	publishSeen bool
+	// publishTried: this run pressed 发布/更新 (or saw 发布成功). An article
+	// URL seen before that is a page left open by an earlier task.
+	publishTried bool
+	staleWarned  bool
 }
 
 func desktopEnvIntDefault(name string, def int) int {
@@ -156,7 +162,14 @@ func desktopProgressNote(scope agentruntime.Scope, action string, out string, er
 		}
 	}
 
-	if err == nil && !p.publishSeen && desktopPublishedRe.MatchString(out) && !strings.Contains(out, "/edit") {
+	if err == nil && desktopPublishAttemptRe.MatchString(out) {
+		p.publishTried = true
+	}
+	if err == nil && !p.publishTried && !p.staleWarned && desktopArticleURLRe.MatchString(out) && !strings.Contains(out, "/edit") {
+		p.staleWarned = true
+		notes = append(notes, "That zhuanlan.zhihu.com/p/ article was already open before this task pressed 发布: it is an earlier article, not this task's result. Do not report it. If this task asks to publish, open https://zhuanlan.zhihu.com/write and make a new article.")
+	}
+	if err == nil && p.publishTried && !p.publishSeen && desktopPublishedRe.MatchString(out) && !strings.Contains(out, "/edit") {
 		p.publishSeen = true
 		notes = append(notes, "The article appears published. Verify once (open the article URL and check title and body length), then stop operating the desktop and report the URL. Do not keep editing the published article.")
 	}
@@ -238,4 +251,26 @@ func desktopRichFill(ctx context.Context, scope agentruntime.Scope, args map[str
 		return res + "\n" + out[strings.Index(out, desktopNotAppliedMarker):], nil
 	}
 	return res + "\n" + out, nil
+}
+
+// desktopNotePublishAttempt marks the run as having pressed publish when the
+// step itself is a publish click or a script that clicks publish.
+func desktopNotePublishAttempt(scope agentruntime.Scope, action string, args map[string]any) {
+	hit := false
+	switch action {
+	case "script":
+		hit = desktopScriptClicksPublish(desktopArg(args, "script"))
+	case "click":
+		hit = desktopIsPublishLabel(desktopArg(args, "text"))
+	}
+	if !hit {
+		return
+	}
+	st, p := desktopProgressFor(scope)
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+	p.publishTried = true
+	st.mu.Unlock()
 }

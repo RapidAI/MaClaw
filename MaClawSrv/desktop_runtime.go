@@ -249,6 +249,7 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	desktopRecordStep(ctx, desktopOwner(scope), args, out, err, took)
 	desktopExperienceRecord(scope, desktopRunSite(desktopOwner(scope)), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args, out, err)
 	failWarn := desktopFailClassRecord(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args, out, err)
+	desktopNotePublishAttempt(desktopOwner(scope), actionName, args)
 	coach := desktopProgressNote(desktopOwner(scope), actionName, out, err)
 	if err == nil {
 		out = spillDesktopToolText(ctx, scope, out)
