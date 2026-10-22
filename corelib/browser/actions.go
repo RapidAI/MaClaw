@@ -98,6 +98,7 @@ func (s *BrowserAgentSession) Navigate(url string) (*BrowserActionResult, error)
 			return policyBlockResult(s, "browser_navigate", err)
 		}
 		tabNote = note
+		s.adoptSwitchedTab()
 	} else if _, err := s.session.Navigate(url); err != nil {
 		return policyBlockResult(s, "browser_navigate", err)
 	}
@@ -1337,4 +1338,35 @@ func (s *BrowserAgentSession) SetFilesOn(snapshotID, ref, selector string, files
 		"target": target,
 		"files":  len(files),
 	}, false)), nil
+}
+
+// adoptSwitchedTab makes the tab openTargetInOwnTab moved to the agent's
+// page everywhere: it raises it so a screenshot shows it, records it as the
+// attached target, drops refs from the previous tab, and restarts the event
+// pump on the new connection. Without this the session kept the old tab id,
+// the closed client looked like a gone target, and recovery re-attached to
+// the previous site (run_ddcd9539: probe on 知乎 /write, then "ref not
+// found", then a script on huggingface.co).
+func (s *BrowserAgentSession) adoptSwitchedTab() {
+	if s == nil {
+		return
+	}
+	s.mu.RLock()
+	session := s.session
+	s.mu.RUnlock()
+	if session == nil {
+		return
+	}
+	_ = activateVisiblePage(session)
+	id := activeTargetID(session)
+	s.mu.Lock()
+	if id != "" {
+		s.TargetID = id
+	}
+	s.snapshots = map[string]*BrowserSnapshot{}
+	s.lastSnapshotID = ""
+	s.resetTargetGone()
+	s.UpdatedAt = time.Now()
+	s.mu.Unlock()
+	s.startEventPump()
 }

@@ -297,3 +297,38 @@ func desktopNotePublishAttempt(scope agentruntime.Scope, action string, args map
 	p.publishTried = true
 	st.mu.Unlock()
 }
+
+var desktopOfficeFileRe = regexp.MustCompile(`(?i)\.(docx?|odt|pdf|pptx?|xlsx?)\b|python-docx|\b(libreoffice|lowriter|soffice|pandoc)\b`)
+
+// desktopAfterPublishCheck stops a run that has already published and read
+// back its article from starting a side job: writing a Word/PDF copy, opening
+// LibreOffice, and closing its recovery dialogs (run_ddcd9539 spent its last
+// minutes on that after /p/2096841432191575571 was verified). A file the
+// person asked for still goes out with action=deliver, which stays allowed.
+func desktopAfterPublishCheck(scope agentruntime.Scope, action string, args map[string]any) error {
+	st, p := desktopProgressFor(scope)
+	if st == nil {
+		return nil
+	}
+	st.mu.Lock()
+	done := p.publishSeen
+	st.mu.Unlock()
+	if !done {
+		return nil
+	}
+	text := ""
+	switch action {
+	case "app_open":
+		text = desktopArg(args, "program") + " " + desktopArg(args, "args")
+	case "bash":
+		text = desktopArg(args, "command")
+	case "file_write":
+		text = desktopArg(args, "path")
+	default:
+		return nil
+	}
+	if !desktopOfficeFileRe.MatchString(text) {
+		return nil
+	}
+	return fmt.Errorf("refused: already_published — the article is published and read back; this task did not need a document copy. Give the final answer now (title, /p/<id> link, date used). Only if the person asked for a file in this task, send it with action=deliver")
+}

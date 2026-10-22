@@ -28,8 +28,11 @@ func ValidatePageScript(script string) error {
 	if len(script) > pageScriptMaxBytes {
 		return fmt.Errorf("page script is longer than %d bytes", pageScriptMaxBytes)
 	}
-	if pageScriptDenied.MatchString(script) {
-		return fmt.Errorf("page script cannot read cookies, storage, or passwords, and cannot navigate or call the network")
+	if hit := pageScriptDenied.FindString(script); hit != "" {
+		if strings.Contains(strings.ToLower(hit), "inserttext") || strings.Contains(strings.ToLower(hit), "execcommand") || strings.Contains(strings.ToLower(hit), "getownpropertydescriptor") || strings.Contains(strings.ToLower(hit), "prototype") {
+			return fmt.Errorf("page script refused %q: fill a field with the helper instead, e.g. await type('textarea[placeholder^=\"标题\"]', text), then await click(...) / press('Enter')", strings.TrimSpace(hit))
+		}
+		return fmt.Errorf("page script cannot read cookies, storage, or passwords, and cannot navigate or call the network (refused %q)", strings.TrimSpace(hit))
 	}
 	return nil
 }

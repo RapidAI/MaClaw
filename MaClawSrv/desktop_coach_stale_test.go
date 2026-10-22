@@ -41,3 +41,29 @@ func TestNoProgressStillLetsApprovedPublishThrough(t *testing.T) {
 		t.Fatal("unapproved publish passed")
 	}
 }
+
+func TestAfterPublishRefusesUnaskedDocument(t *testing.T) {
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u-afterpub", RunID: "run_afterpub"}
+	if err := desktopAfterPublishCheck(scope, "app_open", map[string]any{"program": "libreoffice"}); err != nil {
+		t.Fatalf("before publish: %v", err)
+	}
+	st, p := desktopProgressFor(scope)
+	if st == nil {
+		t.Skip("no run state")
+	}
+	st.mu.Lock()
+	p.publishSeen = true
+	st.mu.Unlock()
+	if err := desktopAfterPublishCheck(scope, "app_open", map[string]any{"program": "libreoffice"}); err == nil {
+		t.Fatal("libreoffice after publish allowed")
+	}
+	if err := desktopAfterPublishCheck(scope, "bash", map[string]any{"command": "python3 make.py out.docx"}); err == nil {
+		t.Fatal("docx bash after publish allowed")
+	}
+	if err := desktopAfterPublishCheck(scope, "deliver", map[string]any{"path": "a.docx"}); err != nil {
+		t.Fatalf("deliver refused: %v", err)
+	}
+	if err := desktopAfterPublishCheck(scope, "bash", map[string]any{"command": "ls"}); err != nil {
+		t.Fatalf("plain bash refused: %v", err)
+	}
+}
