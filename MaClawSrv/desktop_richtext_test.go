@@ -8,6 +8,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/browser"
 )
 
 func TestDesktopScriptWritesRichBody(t *testing.T) {
@@ -66,5 +67,33 @@ func TestDesktopRichErrorClasses(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(desktopSeedNotes["zhihu.com"], " "), "铪") {
 		t.Fatal("topic rule seeded")
+	}
+}
+
+func TestDesktopPublishSideGuards(t *testing.T) {
+	ctx := context.Background()
+	if desktopPublishSideCheck(ctx, "app_run", map[string]any{"steps": []any{map[string]any{"key": "ctrl+Return"}}}) == nil {
+		t.Fatal("ctrl+enter must be refused")
+	}
+	if desktopPublishSideCheck(ctx, "app_run", map[string]any{"steps": []any{map[string]any{"key": "Return"}}}) != nil {
+		t.Fatal("plain enter allowed")
+	}
+	if desktopPublishSideCheck(ctx, "bash", map[string]any{"command": "python3 cdp.py --port 9222 click 发布"}) == nil {
+		t.Fatal("bash automation publish refused")
+	}
+	if desktopPublishSideCheck(ctx, "bash", map[string]any{"command": "ls ~/Desktop"}) != nil {
+		t.Fatal("plain bash allowed")
+	}
+	if !desktopIsPublishLabel("更新") || desktopIsPublishLabel("发布设置") {
+		t.Fatal("labels")
+	}
+	if desktopRichPreCheck(ctx, nil, "script", map[string]any{"script": `document.querySelector('form').requestSubmit()`}) == nil {
+		t.Fatal("script submit refused")
+	}
+	if !desktopBodyLooksEmpty(browser.RichBody{Count: 30, Body: "zHF Daily Papers 每日速读 2026-10-22：记忆与验证", Title: "HF Daily Papers 每日速读 2026-10-22：记忆与验证z"}) {
+		t.Fatal("body ~= title is empty")
+	}
+	if desktopBodyLooksEmpty(browser.RichBody{Count: 2593, Body: "今天的 Hugging Face Daily Papers 共 12 篇，主线很清晰", Title: "HF Daily Papers"}) {
+		t.Fatal("real body")
 	}
 }

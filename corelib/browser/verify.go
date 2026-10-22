@@ -245,13 +245,17 @@ const roots=new Set();
 document.querySelectorAll("[contenteditable=''],[contenteditable=true],[contenteditable=plaintext-only]").forEach(e=>{let r=e;while(r.parentElement&&r.parentElement.closest("[contenteditable=''],[contenteditable=true]"))r=r.parentElement.closest("[contenteditable=''],[contenteditable=true]");roots.add(r)});
 let max=0;roots.forEach(r=>{const n=(r.innerText||r.textContent||"").replace(/\s+/g,"").length;if(n>max)max=n});
 let count=-1;const m=(document.body&&document.body.innerText||"").match(/字数[:：]\s*(\d+)/);if(m)count=parseInt(m[1],10);
-return JSON.stringify({editors:roots.size,max:max,count:count})})()`
+let body="";roots.forEach(r=>{const t=(r.innerText||r.textContent||"");if(t.replace(/\s+/g,"").length===max)body=t});
+let title="";for(const el of document.querySelectorAll("textarea,input")){const ph=(el.getAttribute("placeholder")||"")+(el.getAttribute("aria-label")||"");if(/标题|title/i.test(ph)){title=el.value||"";break}}
+return JSON.stringify({editors:roots.size,max:max,count:count,body:body.slice(0,400),title:title.slice(0,200)})})()`
 
 // RichBody is the measured rich-text body of the attached page.
 type RichBody struct {
 	Editors int `json:"editors"`
 	Max     int `json:"max"`
-	Count   int `json:"count"`
+	Count   int    `json:"count"`
+	Body    string `json:"body"`
+	Title   string `json:"title"`
 }
 
 // Len is the best body length: the editor's own counter when shown, else

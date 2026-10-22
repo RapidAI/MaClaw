@@ -13,6 +13,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/browser"
+	"github.com/RapidAI/CodeClaw/corelib/desktop/computeruse"
 )
 
 // Rich-text editor rules (seen live 10-22 on zhuanlan.zhihu.com: page
@@ -35,7 +36,7 @@ var (
 	desktopRichTargetRe = regexp.MustCompile(`(?i)contenteditable|DraftEditor|public-DraftEditor|ProseMirror|ql-editor|notranslate|w-e-text|ne-viewer|editor-body|RichText`)
 	desktopRichWriteRe  = regexp.MustCompile(`(?i)innerHTML|innerText|textContent|outerHTML|insertAdjacent|appendChild|\.append\(|createTextNode|ClipboardEvent|DataTransfer|dispatchEvent|\btype\s*\(|\bfill\s*\(|setText|\.value\s*=`)
 	desktopPasteRe      = regexp.MustCompile(`(?i)paste|ctrl\+v|control\+v|ctrl-v|clipboard`)
-	desktopPublishRe    = regexp.MustCompile(`(?i)^\s*(发布|发表|立即发布|确认发布|发布文章|发布笔记|发布动态|发布回答|发送|确认发送|提交|publish|publish now|post|submit|send)\s*$`)
+	desktopPublishRe    = regexp.MustCompile(`(?i)^\s*(发布|发表|立即发布|确认发布|发布文章|发布笔记|发布动态|发布回答|发送|确认发送|提交|更新|发布更新|确认更新|立即更新|保存并发布|publish|publish now|update|post|submit|send)\s*$`)
 	desktopScriptLitRe  = regexp.MustCompile("[\"'`]([^\"'`\\n]{1,20})[\"'`]")
 	desktopPreapproveRe = regexp.MustCompile(`(?i)直接发布|直接发表|直接发出|无需确认|不用确认|不需要确认|不必确认|自动发布|发布前不用问|publish (it )?directly|without (asking|confirmation)|no need to confirm`)
 )
@@ -111,14 +112,14 @@ func desktopRichPreCheck(ctx context.Context, session *browser.BrowserAgentSessi
 			log.Printf("[desktop-guard] refused rich_text_dom_write")
 			return fmt.Errorf("%s", desktopRichWriteRefusal)
 		}
-		if desktopScriptClicksPublish(script) && !desktopPublishAllowed(ctx) {
-			log.Printf("[desktop-guard] refused publish_needs_confirmation (script)")
-			return fmt.Errorf("%s", desktopPublishRefusal)
+		if desktopScriptClicksPublish(script) || desktopScriptSubmits(script) {
+			if !desktopPublishAllowed(ctx) {
+				log.Printf("[desktop-guard] refused publish_needs_confirmation (script)")
+				return fmt.Errorf("%s", desktopPublishRefusal)
+			}
+			return desktopPublishBodyCheck(session)
 		}
 	case "click":
-		if desktopPublishAllowed(ctx) {
-			return nil
-		}
 		label := desktopArg(args, "text")
 		if ref := desktopArg(args, "ref"); ref != "" && session != nil {
 			if el, err := session.ResolveRef(desktopArg(args, "snapshot_id"), ref); err == nil && el != nil {
@@ -128,8 +129,15 @@ func desktopRichPreCheck(ctx context.Context, session *browser.BrowserAgentSessi
 				}
 			}
 		}
+		if desktopIsPublishLabel(label) && desktopPublishAllowed(ctx) {
+			return desktopPublishBodyCheck(session)
+		}
 		if desktopIsPublishLabel(label) {
 			log.Printf("[desktop-guard] refused publish_needs_confirmation (click %q)", label)
+			return fmt.Errorf("%s", desktopPublishRefusal)
+		}
+	case "press":
+		if desktopPublishKeyRe.MatchString(desktopArg(args, "key")) && !desktopPublishAllowed(ctx) {
 			return fmt.Errorf("%s", desktopPublishRefusal)
 		}
 	}
@@ -211,3 +219,138 @@ func desktopExperienceOnFirstVisit(scope agentruntime.Scope, site string) string
 	}
 	return desktopExperienceText(scope, site)
 }
+
+var (
+	desktopPublishKeyRe  = regexp.MustCompile(`(?i)(ctrl|control|cmd|command|meta|super)\s*[+-]\s*(enter|return|kp_enter)`)
+	desktopBashAutomRe   = regexp.MustCompile(`(?i)xdotool|:9222|devtools|Runtime\.evaluate|playwright|puppeteer|selenium|chrome-remote|cdp|websocat`)
+	desktopBashPublishRe = regexp.MustCompile(`(?i)发布|发表|更新|publish|submit`)
+)
+
+// desktopPublishSideCheck refuses the other ways to press publish: keyboard
+// submit shortcuts and shell-driven browser automation. Runs before any
+// desktop action.
+func desktopPublishSideCheck(ctx context.Context, action string, args map[string]any) error {
+	if desktopPublishAllowed(ctx) {
+		return nil
+	}
+	switch action {
+	case "app_run", "computer", "press", "task_run":
+		raw, _ := json.Marshal(args)
+		if desktopPublishKeyRe.Match(raw) {
+			log.Printf("[desktop-guard] refused publish_needs_confirmation (submit shortcut via %s)", action)
+			return fmt.Errorf("%s (Ctrl/Cmd+Enter submits the form.)", desktopPublishRefusal)
+		}
+	case "bash":
+		cmd := desktopArg(args, "command")
+		if desktopBashAutomRe.MatchString(cmd) && desktopBashPublishRe.MatchString(cmd) {
+			log.Printf("[desktop-guard] refused publish_needs_confirmation (bash automation)")
+			return fmt.Errorf("%s (Driving the browser from the shell to publish is the same click.)", desktopPublishRefusal)
+		}
+	}
+	return nil
+}
+
+const desktopPublishEmptyRefusal = "refused: publish_body_empty — the editor body is empty or only repeats the title, so publishing would post a blank/broken article. Put the real body in first (click the body, clipboard_set, app_run key ctrl+v), check 字数, then hand over with request_takeover."
+
+// desktopPublishBodyCheck refuses publishing a body that is empty or ≈ title,
+// even when publishing was pre-approved.
+func desktopPublishBodyCheck(session *browser.BrowserAgentSession) error {
+	if session == nil {
+		return nil
+	}
+	b, ok := session.RichBodyLen()
+	if !ok {
+		return nil
+	}
+	if desktopBodyLooksEmpty(b) {
+		log.Printf("[desktop-guard] refused publish_body_empty len=%d", b.Len())
+		return fmt.Errorf("%s", desktopPublishEmptyRefusal)
+	}
+	return nil
+}
+
+func desktopBodyLooksEmpty(b browser.RichBody) bool {
+	norm := func(s string) string { return strings.ToLower(strings.Join(strings.Fields(s), "")) }
+	body, title := norm(b.Body), norm(b.Title)
+	if b.Len() < 20 && utf8.RuneCountInString(body) < 20 {
+		return true
+	}
+	if title != "" && utf8.RuneCountInString(body) <= utf8.RuneCountInString(title)+10 {
+		short := utf8.RuneCountInString(title)
+		if n := utf8.RuneCountInString(body); n < short {
+			short = n
+		}
+		if short > 0 && desktopLongestCommon(body, title)*10 >= short*8 {
+			return true
+		}
+	}
+	return false
+}
+
+func desktopLongestCommon(a, b string) int {
+	ra, rb := []rune(a), []rune(b)
+	prev := make([]int, len(rb)+1)
+	best := 0
+	for i := 1; i <= len(ra); i++ {
+		cur := make([]int, len(rb)+1)
+		for j := 1; j <= len(rb); j++ {
+			if ra[i-1] == rb[j-1] {
+				cur[j] = prev[j-1] + 1
+				if cur[j] > best {
+					best = cur[j]
+				}
+			}
+		}
+		prev = cur
+	}
+	return best
+}
+
+// desktopClickHitsPublish OCRs the screen and reports a coordinate click
+// step that lands on a publish label.
+func desktopClickHitsPublish(ctx context.Context, scope agentruntime.Scope, display string, raw any) (string, bool) {
+	if desktopPublishAllowed(ctx) || desktopOCRLines == nil {
+		return "", false
+	}
+	steps, err := computeruse.ParseSteps(raw)
+	if err != nil {
+		return "", false
+	}
+	var pts [][2]float64
+	for _, st := range steps {
+		if (st.Kind == "click" || st.Kind == "mouse_down") && st.HasXY {
+			pts = append(pts, [2]float64{st.X, st.Y})
+		}
+	}
+	if len(pts) == 0 {
+		return "", false
+	}
+	frame := desktopFrameFor(scope)
+	_, opts := frame.get()
+	shot, err := desktopGroundShot(ctx, scope, display, opts)
+	if err != nil || len(shot.Data) == 0 {
+		return "", false
+	}
+	scale := shot.Scale
+	if scale <= 0 {
+		scale = 1
+	}
+	lines := desktopOCRLines(ctx, shot.Data)
+	for _, p := range pts {
+		for _, q := range [][2]float64{p, {p[0] * scale, p[1] * scale}} {
+			for _, l := range lines {
+				b := l.BBox
+				if desktopIsPublishLabel(l.Text) && q[0] >= float64(b[0]-6) && q[0] <= float64(b[0]+b[2]+6) && q[1] >= float64(b[1]-6) && q[1] <= float64(b[1]+b[3]+6) {
+					return l.Text, true
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+var desktopScriptSubmitRe = regexp.MustCompile(`(?i)\.submit\s*\(|requestSubmit|(ctrl|control|meta)\s*[+-]?\s*(enter|return)|ctrlKey\s*:\s*true[^}]*Enter|Enter[^}]*ctrlKey\s*:\s*true`)
+
+// desktopScriptSubmits reports a script that submits a form or sends the
+// submit shortcut.
+func desktopScriptSubmits(script string) bool { return desktopScriptSubmitRe.MatchString(script) }

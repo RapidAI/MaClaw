@@ -214,6 +214,11 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 		desktopEmitStep(scope, desktopOwner(scope), args, desktopModelLabel(request), "", repeatErr, 0, "refused")
 		return "", repeatErr
 	}
+	if pubErr := desktopPublishSideCheck(ctx, strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args); pubErr != nil {
+		log.Print(desktopStepLogLine(scope.UserID, args, "", pubErr, 0) + " model=" + desktopModelLabel(request) + " publish=refused")
+		desktopEmitStep(scope, desktopOwner(scope), args, desktopModelLabel(request), "", pubErr, 0, "guard")
+		return "", pubErr
+	}
 	if failErr := desktopFailClassCheck(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args); failErr != nil {
 		log.Print(desktopStepLogLine(scope.UserID, args, "", failErr, 0) + " model=" + desktopModelLabel(request) + " " + desktopBudgetLogFields(desktopOwner(scope)) + " failclass=refused")
 		desktopEmitStep(scope, desktopOwner(scope), args, desktopModelLabel(request), "", failErr, 0, "guard")
@@ -698,6 +703,10 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 				desktopRunNoteSite(desktopOwner(scope), site)
 			}
 			return binding.session
+		}
+		if label, hit := desktopClickHitsPublish(ctx, scope, endpoint.Display, stepsArg); hit {
+			log.Printf("[desktop-guard] refused publish_needs_confirmation (coordinate click on %q)", label)
+			return "", fmt.Errorf("%s (That point is the %q button.)", desktopPublishRefusal, label)
 		}
 		if action == "computer" || !desktopAppStepsLegacy(scope, args["steps"]) {
 			text, stepErr := operateDesktopSteps(ctx, scope, endpoint.Display, action, args, stepsArg, beforeInsert, browserRaises)
