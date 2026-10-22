@@ -3482,7 +3482,8 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(await screen.findByTestId('desktop-bot-tab-tasks'));
         expect(await screen.findByText('打开知乎发文章')).toBeTruthy();
         expect(screen.getByText('正在打开网页')).toBeTruthy();
-        expect(screen.getByText(/进行中 · 开始 10-22 15:05 · run_a/)).toBeTruthy();
+        expect(screen.getByText(/进行中 · 开始 10-22 15:05/)).toBeTruthy();
+        expect(screen.getByTitle('run_a').textContent).toBe('a');
         expect(screen.getByText(/可能已中断 · 开始 10-22 09:00/)).toBeTruthy();
         expect(screen.getByText(/排队中/)).toBeTruthy();
         expect(screen.getByTestId('desktop-bot-task-stop-run_a').textContent).toBe('停止');

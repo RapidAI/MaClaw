@@ -586,6 +586,13 @@ export function taskStartedStamp(iso: string): string {
     }
 }
 
+// A run id is shown as its first 8 characters after the run_ prefix; the
+// full id stays in the tooltip.
+export function shortRunId(id: string): string {
+    const body = (id || '').replace(/^run_/, '');
+    return body.length > 8 ? body.slice(0, 8) : body;
+}
+
 export function taskExcerpt(task: string, limit = 80): string {
     const flat = (task || '').replace(/\s+/g, ' ').trim();
     const chars = Array.from(flat);
@@ -6169,7 +6176,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             <li key={key} className="desktop-bot-schedule" data-testid="desktop-bot-task-row">
                                                 <div className="desktop-bot-schedule__body">
                                                     <div className="desktop-bot-schedule__name" title={row.task || row.run_id}>{title}</div>
-                                                    <div className="desktop-bot-schedule__when">{state}{started ? ` · ${text.taskStarted} ${started}` : ''}{row.run_id ? ` · ${row.run_id}` : ''}</div>
+                                                    <div className="desktop-bot-schedule__when">{state}{started ? ` · ${text.taskStarted} ${started}` : ''}{row.run_id ? <> · <span className="desktop-bot-task__run" title={row.run_id}>{shortRunId(row.run_id)}</span></> : null}</div>
                                                     {step ? <p className="desktop-bot-schedule__action">{step}</p> : null}
                                                     {row.stale ? <p className="desktop-bot-schedule__action">{text.taskStaleHint}</p> : null}
                                                 </div>
