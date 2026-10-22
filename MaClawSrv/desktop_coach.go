@@ -346,7 +346,7 @@ func desktopAfterPublishCheck(scope agentruntime.Scope, action string, args map[
 	if !desktopOfficeFileRe.MatchString(text) {
 		return nil
 	}
-	return fmt.Errorf("refused: already_published — the article is published and read back; this task did not need a document copy. Give the final answer now (title, /p/<id> link, date used). Only if the person asked for a file in this task, send it with action=deliver")
+	return fmt.Errorf("refused: already_published — the article is published and read back; this task did not need a document copy. If your last desktop action is not already a page script on /p/<id> returning the h1 and the article body text length, run exactly that one script now (it is the proof the result check reads; no screenshot, OCR or probe); then give the final answer (title, /p/<id> link, date used). Only if the person asked for a file in this task, send it with action=deliver")
 }
 
 // desktopRichFocusScript focuses the largest visible contenteditable (the
