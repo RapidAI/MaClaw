@@ -9,7 +9,7 @@ Request (Daniel, 2026-10-23 06:01–06:05 UTC+8): like Grok Bot, the main bot in
 | Bot definition / CRUD | Hub `hub/internal/botmgmt` (`service.go`, `Bot{ID,Name,Description,InstanceID,CreatedAt,Primary}`), routes in `hub/internal/httpapi/router.go` `/api/v1/bots*` | One Hub account owns N desktop bots; exactly one may be `primary` (`desktop_primary.go`). |
 | GUI client for bots | `guiapp/desktop_bot_hub.go` (`ListDesktopBots`, `CreateDesktopBot`, `RenameDesktopBot`, `DeleteDesktopBot`, relay/admit, supplements, watch/takeover) | Every call goes through `desktopBotCall` with the person's Hub login. |
 | Run state | Hub `desktop_active_runs.go` / `desktop_task_status.go`; GUI `ListDesktopBotActiveRuns` (`run_id,status,task,step,next_step,phase,waiting_for_user,stale`), `ListDesktopBotTasks`, `QueryDesktopBotTaskStatus`, in-process `activeDesktopRuns` map | MaClawSrv executes the run on a desktop; Hub follows it. |
-| Stop | `CancelDesktopBotRun` → `POST /bots/{id}/runs/{run}/cancel` | No pause on Hub. |
+| Stop / pause | `CancelDesktopBotRun` → `POST /bots/{id}/runs/{run}/cancel`; `PauseDesktopBotRun` / `ResumeDesktopBotRun` → `POST /bots/{id}/runs/{run}/pause|resume` | Pause added 2026-10-23, see §2.8. |
 | Cross-bot messaging | `guiapp/desktop_bot_cross.go` + Hub `/bots/{id}/cross`, `/cross-notes`, `/start`, `/run` | Primary only. `notify` (seen next turn) and `delegate` (claimed once, becomes a run). The persona "understand" reading can already emit a `cross` object. |
 | Results to GUI | `PullDesktopBotDeliveries` / `emitDesktopBotDelivery` (reply text, images, **files as base64**) | |
 | Files to a remote desktop | `UploadDesktopBotMaterialChunk` → `POST /bots/{id}/desktop/files` (4 MB chunks, returns desktop path) | |
@@ -27,7 +27,7 @@ Gap: nothing gave the local main bot a *team view* — a registry with location/
 * Capabilities: local = `file_read, file_write, shell, http_fetch` (+ `coordinator` for the main bot); remote = `browser, desktop, publish, http_fetch`. The main bot routes by these.
 * **The main bot is an entry** (`local:main`, Self, Primary, Location local). Its state follows its own agent turns (`noteMainBotTurn` wraps `runAgentLoop`; overlapping turns counted), so it reports its own task like any other bot.
 * Transition events → inbox (bounded 200) + subscribers: `started, finished, needs_user, failed, stopped, paused, resumed, message, artifact, appeared, disappeared`.
-* Pause/resume is registry-side (Hub has no pause): a paused bot finishes its current run; new assignments are **held** and dispatched on resume.
+* Pause/resume: the registry always **holds** new assignments for a paused bot and dispatches them on resume. On a Hub that supports it, the running remote run is also paused for real at a step boundary (§2.8); on an older Hub only the soft hold applies and the current run finishes.
 
 ### 2.2 Sources of truth
 * Remote bots: Hub (`/api/v1/bots`, `/runs/active`) — the registry is a cache refreshed on demand (≤5 s reuse) and by a background watcher (10 s while anything is running/queued, 60 s otherwise). No Hub/MaClawSrv change needed.
@@ -42,7 +42,7 @@ Gap: nothing gave the local main bot a *team view* — a registry with location/
 | `send_to_bot(bot,text,confirm?)` | Cross `notify`; seen at the bot's next turn, never interrupts. |
 | `assign_task(bot,task,note?,artifact_ids?,local_paths?,confirm?)` | Uploads files to the remote desktop first, then cross `delegate` with the desktop paths in the order. Returns immediately (non-blocking). Paused bot → held. Self → "do it with your own tools". |
 | `stop_bot(bot,run_id?,confirm?)` | Cancels active run(s). |
-| `pause_bot(bot)` / `resume_bot(bot)` | Hold / release new work. |
+| `pause_bot(bot)` / `resume_bot(bot)` | Pause running remote runs at the next step boundary (Hub) and hold new work; resume releases the same runs and the held orders. Falls back to the hold only on an older Hub. |
 | `bot_events(peek?)` | Unread inbox, marked read unless peek. |
 | `share_file_with_bot(path,bot?,note?,confirm?)` | Registers a local file as an artifact and optionally copies it to a bot's desktop. |
 | `list_bot_artifacts` | Files passed between bots, with ids/local paths. |
@@ -67,6 +67,15 @@ Gap: nothing gave the local main bot a *team view* — a registry with location/
 ### 2.7 Responsiveness
 Remote work is asynchronous on Hub; `assign_task` returns at once; the watcher runs in its own goroutine; the main bot's own turns are just registry state. Nothing in the main loop waits on a teammate.
 
+### 2.8 Run pause semantics (MaClawSrv `corelib/agentservice/run_pause.go`, Hub `botmgmt/desktop_pause.go`, GUI `desktop_bot_pause.go`)
+
+* Routes: MaClawSrv `POST|GET /api/v1/instances/{instanceId}/runs/{runId}/pause`, `POST .../resume`; Hub proxies as the owner `POST /api/v1/bots/{id}/runs/{runID}/pause|resume`. Pause body is optional: `{"reason":"…","timeout_sec":n}`.
+* Step boundary: the step under way (one model call or one tool) finishes, then the loop waits before the next step. State reports `paused` (requested, until resume/cancel/timeout) and `held` (the loop has actually reached the boundary and is waiting). Hub's active-run list shows paused runs, and the GUI shows the bot as `paused`, not running.
+* Resume continues the **same** run with its conversation intact; it is not a new run.
+* Timeout: a pause that is not resumed cancels the run with a clear reason after 30 min (`MACLAW_RUN_PAUSE_TIMEOUT_SEC` overrides; caller `timeout_sec` is capped). This stops a paused run from holding a desktop and session forever.
+* In-process only, like supplements: a MaClawSrv restart ends the run, and the pause with it. Deploys wait for idle desktops for this reason.
+* Older Hub/MaClawSrv: an unknown route (bare 404/405) means unsupported; the GUI falls back to the registry soft hold.
+
 ## 3. End-to-end example: local file → remote publish
 Person: 「把 D:\稿子\周报.md 整理一下，用发布员发到公司博客，发好告诉我」
 1. Main bot (`running`, task=整理周报): `read_file D:\稿子\周报.md` (local), edits, `write_file D:\稿子\周报-定稿.md` (permission prompt as today).
@@ -76,11 +85,11 @@ Person: 「把 D:\稿子\周报.md 整理一下，用发布员发到公司博客
 5. Run ends; delivery has `screenshot.png` → artifact `art_…` + `artifact` event; state → `idle` → `finished` event. Main bot: 「发好了，链接 …，截图在 ~/.maclaw/data/bot_artifacts/art_…/screenshot.png」 and could pass that artifact on to another bot with `assign_task(..., artifact_ids=[...])`.
 
 ## 4. GUI: Bot 管理 create/edit dialog
-「新建」 opens a dialog (name prefilled `Bot N`, description, color palette of 10, 6 shapes — blob, cloud, leaf, rounded square, pill, circle — drawn as inline SVG with two white eyes; defaults to the next unused color). Empty and duplicate (case/space-insensitive) names are blocked. The pencil edit dialog changes name/description/color/shape. Look is persisted per account in localStorage (`maclaw.desktopBotAppearance.v1`) and rendered in the list, chat header, side panel and cross-notice chips. Hub stores name/description only.
+「新建」 opens a dialog (name prefilled `Bot N`, description, color palette of 10, 6 shapes — blob, cloud, leaf, rounded square, pill, circle — drawn as inline SVG with two white eyes; defaults to the next unused color). Empty and duplicate (case/space-insensitive) names are blocked. The pencil edit dialog changes name/description/color/shape. Look storage (2026-10-23): Hub stores `color` (`#rrggbb`) and `shape` (short lowercase id) on the bot and returns them in the bot list. Create (`POST /api/v1/bots`) and edit (`PATCH /api/v1/bots/{id}`) accept them, and `PUT /api/v1/bots/{id}/appearance` sets only the look. The GUI sends the look through `CreateDesktopBot(name, description, color, shape)` / `RenameDesktopBot(id, name, description, color, shape)`, and reads it from `ListDesktopBots`. The Hub look wins. localStorage (`maclaw.desktopBotAppearance.v1`) is still written as a copy and is the fallback when the Hub does not echo the fields (older Hub); a bot with neither gets a stable default from its title. One-time move: after a list load, every bot with no Hub look and a local look is sent once through `SetDesktopBotAppearance` (PUT appearance); successes are recorded per account in `maclaw.desktopBotAppearance.v1.migrated` so they are not re-sent, while failures (older Hub, offline) keep the local look and are retried on a later launch. The look is rendered in the list, chat header, side panel and cross-notice chips.
 
 ## 5. Open questions
-1. Persist color/shape on Hub (add `appearance` to Bot) so it follows the account across machines? Needs a Hub deploy.
+1. ~~Persist color/shape on Hub~~ — done 2026-10-23 (§4).
 2. Should unread team events be pushed proactively into the main bot's chat (a synthetic turn) rather than read via `bot_events`?
 3. Local sub-bots (several bots inside one GUI with separate loops) — the registry supports `Location=local`, but only the main bot exists locally today.
-4. True pause of an in-flight remote run would need a MaClawSrv/Hub "suspend" route.
+4. ~~True pause of an in-flight remote run~~ — done 2026-10-23 (§2.8, step-boundary pause; not durable across a MaClawSrv restart).
 5. Should Hub's primary bot and the local main bot be unified in the UI (today Hub primary is the relay identity for cross notes)?
