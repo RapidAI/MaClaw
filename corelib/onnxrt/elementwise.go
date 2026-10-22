@@ -484,3 +484,12 @@ func unaryOpTensor(rc *runCtx, n *Node, t *Tensor, code unOp, p0, p1 float32) (*
 	}
 	return out, nil
 }
+
+// ReleaseScratch drops the retained big scratch buffers so a long-lived
+// process can hand their memory back between inference bursts.
+func ReleaseScratch() {
+	scratchBig.Lock()
+	scratchBig.bufs = nil
+	scratchBig.elems = 0
+	scratchBig.Unlock()
+}
