@@ -274,7 +274,8 @@ var desktopSeedNotes = map[string][]string{
 		"the body is a rich-text editor: never write it with a page script or DOM (innerHTML/textContent/dispatchEvent paste are dropped and refused); only real click + clipboard_set + app_run key ctrl+v, or 导入文档",
 		"the editor footer shows 字数: N — 字数 0 after a paste means it did not land; do not go on to topics or publishing",
 		"topics (添加话题): choose topics that match what the article is about (for AI/ML paper digests: 人工智能, 机器学习, 深度学习, 大语言模型, 计算机视觉, 论文); never pick a topic because it shares a literal token (e.g. Hf → 铪 is wrong)",
-		"publishing is public: clicking 发布 is refused unless the person said to publish without asking; when ready, call request_takeover so the person checks and presses 发布",
+		"publishing is public: when the person asked in this task to publish it (发到知乎/发布到知乎/直接发布), click 发布 yourself once 字数 > 0 and the title is set — then, if a 发布设置/话题 dialog appears, finish it and confirm; otherwise (no such request) call request_takeover so the person checks and presses 发布",
+		"after 发布: the page moves to zhuanlan.zhihu.com/p/<id> (not /edit); open that URL again and probe that the title and the full body text are there before you report the link as published",
 	},
 }
 

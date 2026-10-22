@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"image/png"
 	"log"
+	"runtime/debug"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/browser"
@@ -101,16 +103,29 @@ func (m *srvAIModelManager) screenVision(ctx context.Context, png []byte, clickP
 	if desktopPNGTooLarge(png) {
 		return ""
 	}
+	// One inference at a time. A step that timed out leaves its inference
+	// running; stacking another OCR+OmniParser pass on top of it holds two
+	// sets of im2col buffers and pushed papers (8 GB) into the OOM killer.
+	// A screenshot taken while one is still running goes without vision.
+	if !acquireDesktopVision(ctx) {
+		log.Printf("[desktop-vision] skipped: another screen_vision is still running")
+		return ""
+	}
 	encoded := desktopVisionEncodedPNG(ctx, png)
 	var (
 		wg       sync.WaitGroup
 		elements []taskengine.UIElement
 		lines    []taskengine.OCRResult
 	)
+	// OmniParser and OCR run one after the other, not side by side: the two
+	// passes together peak near 1 GB, more than the service limit allows on
+	// top of the loaded models.
+	yoloDone := make(chan struct{})
 	if yoloReady {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer close(yoloDone)
 			if ctx != nil && ctx.Err() != nil {
 				return
 			}
@@ -125,11 +140,14 @@ func (m *srvAIModelManager) screenVision(ctx context.Context, png []byte, clickP
 			}
 			elements = found
 		}()
+	} else {
+		close(yoloDone)
 	}
 	if ocrReady {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			<-yoloDone
 			if ctx != nil && ctx.Err() != nil {
 				return
 			}
@@ -147,11 +165,13 @@ func (m *srvAIModelManager) screenVision(ctx context.Context, png []byte, clickP
 	}
 	if ctx == nil {
 		wg.Wait()
+		releaseDesktopVision()
 		return finishScreenVision(elements, lines, png, clickPixels)
 	}
 	finished := make(chan struct{})
 	go func() {
 		wg.Wait()
+		releaseDesktopVision()
 		close(finished)
 	}()
 	select {
@@ -477,4 +497,44 @@ func visionOCRExcerpt(lines []taskengine.OCRResult, maxChars int) string {
 		runes += n
 	}
 	return b.String()
+}
+
+// desktopVisionSlot admits one screen_vision inference process-wide.
+var desktopVisionSlot = make(chan struct{}, 1)
+
+// desktopVisionWait is how long a screenshot waits for the slot before it
+// goes without vision.
+var desktopVisionWait = 15 * time.Second
+
+func acquireDesktopVision(ctx context.Context) bool {
+	select {
+	case desktopVisionSlot <- struct{}{}:
+		return true
+	default:
+	}
+	timer := time.NewTimer(desktopVisionWait)
+	defer timer.Stop()
+	var done <-chan struct{}
+	if ctx != nil {
+		done = ctx.Done()
+	}
+	select {
+	case desktopVisionSlot <- struct{}{}:
+		return true
+	case <-timer.C:
+		return false
+	case <-done:
+		return false
+	}
+}
+
+// releaseDesktopVision frees the slot and hands the inference buffers
+// (hundreds of MB of im2col scratch) back to the OS at once, so a desktop
+// run does not sit near the service memory limit between screenshots.
+func releaseDesktopVision() {
+	select {
+	case <-desktopVisionSlot:
+	default:
+	}
+	debug.FreeOSMemory()
 }
