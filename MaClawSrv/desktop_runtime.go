@@ -111,6 +111,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			"action=clipboard_set then a paste step (or app_run paste{text}) inserts long or Chinese text without the input method. clipboard_get reads it. window_list, window (activate, maximize, minimize, restore, move, resize, close), screen_info, and wait (for screen change or a window) manage windows. " +
 			"action=screenshot accepts region (zoom), format jpeg/webp, quality, and cursor. Full screenshots always come at one fixed size, so coordinates keep the same scale from shot to shot. " +
 			"navigate to another site keeps the current tab and opens the target in its own tab (or switches to a tab already on that site); do not retry a navigate that was refused, and do not detour through redirect links. " +
+			desktopAXFirstPrompt() +
 			"Rich-text editors (Zhihu, WeChat, Xiaohongshu, Draft.js/ProseMirror boxes): script- or DOM-set text and synthetic paste are often ignored. Click inside the editor first, put the text on the clipboard with clipboard_set, then paste with a real key event (app_run steps [click{x,y}, key{key:\"ctrl+v\"}] or paste{text}), then check that the text shows and that the publish (发布) button is enabled. If the same method fails twice, switch to another method instead of retrying it. " +
 			"When a site needs a login, password, 2FA/SMS code, or a captcha, do not try to get past it yourself: call action=request_takeover with reason, then stop and end your turn, telling the person what to do on the desktop and to press hand back (交还) when done. You resume after the hand back.",
 		Parameters: map[string]any{
@@ -723,6 +724,9 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		shot, _, shotErr := desktopCaptureShot(ctx, scope, endpoint.Display, name, opts, opts.Region.Empty())
 		if shotErr != nil {
 			return "", shotErr
+		}
+		if name == "" && opts.Region.Empty() {
+			shot = desktopAXFirstElements(ctx, scope, endpoint.Display) + shot
 		}
 		return withDesktopPages(shot, nil, endpoint.CDP, attached)
 	}
