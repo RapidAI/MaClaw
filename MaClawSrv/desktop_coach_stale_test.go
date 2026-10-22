@@ -23,3 +23,21 @@ func TestStaleZhihuArticleIsNotThisRunsResult(t *testing.T) {
 		t.Fatalf("own article note = %q", n)
 	}
 }
+
+func TestNoProgressStillLetsApprovedPublishThrough(t *testing.T) {
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u-np", InstanceID: "i", SessionID: "s", RunID: "run-np"}
+	st, p := desktopProgressFor(scope)
+	if st == nil {
+		t.Skip("no run state")
+	}
+	p.idle, p.lastBody = 99, 2822
+	if err := desktopNoProgressCheckFull(scope, "script", true, false); err == nil || !strings.Contains(err.Error(), "press 发布 now") {
+		t.Fatalf("side step err = %v", err)
+	}
+	if err := desktopNoProgressCheckFull(scope, "script", true, true); err != nil {
+		t.Fatalf("publish step refused: %v", err)
+	}
+	if err := desktopNoProgressCheckFull(scope, "script", false, true); err == nil {
+		t.Fatal("unapproved publish passed")
+	}
+}

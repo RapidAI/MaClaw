@@ -78,7 +78,7 @@ func desktopProgressFor(scope agentruntime.Scope) (*desktopRunState, *desktopPro
 }
 
 // desktopNoProgressCheck refuses work after a long stretch without change.
-func desktopNoProgressCheck(scope agentruntime.Scope, action string) error {
+func desktopNoProgressCheckFull(scope agentruntime.Scope, action string, publishOK, publishStep bool) error {
 	stop := desktopNoProgressStop()
 	if stop <= 0 || action == "request_takeover" || action == "deliver" {
 		return nil
@@ -90,9 +90,32 @@ func desktopNoProgressCheck(scope agentruntime.Scope, action string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if p.idle >= stop {
+		if publishOK && p.lastBody > 0 && !p.publishTried {
+			if publishStep {
+				return nil
+			}
+			return fmt.Errorf("no progress: the last %d desktop actions changed nothing visible. The editor already has the body (%d) and the person asked to publish: stop the side work (topics, formatting, checks) and press 发布 now — one click on the 发布 button or one script that clicks it; then open the /p/<id> page and report it", p.idle, p.lastBody)
+		}
 		return fmt.Errorf("no progress: the last %d desktop actions changed nothing visible (same page, same editor length, nothing read back). Stop operating the desktop: tell the person what is done and what is stuck, or call request_takeover", p.idle)
 	}
 	return nil
+}
+
+// desktopNoProgressCheckStep is desktopNoProgressCheck that still lets an
+// approved publish through once the body is in.
+func desktopNoProgressCheckStep(ctx context.Context, scope agentruntime.Scope, action string, args map[string]any) error {
+	publishStep := false
+	switch action {
+	case "script":
+		publishStep = desktopScriptClicksPublish(desktopArg(args, "script"))
+	case "click":
+		publishStep = desktopIsPublishLabel(desktopArg(args, "text"))
+	}
+	return desktopNoProgressCheckFull(scope, action, desktopPublishAllowed(ctx), publishStep)
+}
+
+func desktopNoProgressCheck(scope agentruntime.Scope, action string) error {
+	return desktopNoProgressCheckFull(scope, action, false, false)
 }
 
 // desktopProgressNote updates progress after a step and returns coaching text

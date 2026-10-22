@@ -229,7 +229,7 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	started := time.Now()
 	desktopEmitStepStart(scope, desktopOwner(scope), args, desktopModelLabel(request))
 	actionName := strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))
-	if npErr := desktopNoProgressCheck(desktopOwner(scope), actionName); npErr != nil {
+	if npErr := desktopNoProgressCheckStep(ctx, desktopOwner(scope), actionName, args); npErr != nil {
 		desktopEmitStep(scope, desktopOwner(scope), args, desktopModelLabel(request), "", npErr, 0, "guard")
 		return "", npErr
 	}
