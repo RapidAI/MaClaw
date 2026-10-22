@@ -259,12 +259,23 @@ func modelServeMain() error {
 	}
 	_ = os.Chmod(socket, 0o660)
 	log.Printf("[model-service] listening on %s data_root=%s", socket, m.dataRoot)
-	return http.Serve(ln, newModelServiceHandler(m))
+	res := newModelResidencyFromEnv(m)
+	log.Printf("[model-service] idle_unload=%s one_model=%v", res.idle, res.oneModel)
+	var lock sync.Mutex
+	go res.run(&lock)
+	return http.Serve(ln, newModelServiceHandlerWith(m, res, &lock))
 }
 
 func newModelServiceHandler(m *srvAIModelManager) http.Handler {
-	var mu sync.Mutex // one inference at a time across every model
+	var mu sync.Mutex
+	return newModelServiceHandlerWith(m, nil, &mu)
+}
+
+// newModelServiceHandlerWith serves the model APIs; mu serializes every
+// inference across all models, res (optional) manages residency.
+func newModelServiceHandlerWith(m *srvAIModelManager, res *modelResidency, mu *sync.Mutex) http.Handler {
 	mux := http.NewServeMux()
+	models := map[string]string{"/v1/embed": srvAIModelEmbedding, "/v1/asr": srvAIModelASR, "/v1/tts": srvAIModelTTS, "/v1/ocr": srvAIModelOCR, "/v1/detect": srvAIModelOmniParser}
 	handle := func(path string, fn func(r *http.Request) (any, error)) {
 		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPost {
@@ -272,7 +283,13 @@ func newModelServiceHandler(m *srvAIModelManager) http.Handler {
 				return
 			}
 			mu.Lock()
+			if res != nil {
+				res.before(models[path])
+			}
 			out, err := fn(r)
+			if res != nil {
+				res.after(models[path])
+			}
 			mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			if err != nil {
