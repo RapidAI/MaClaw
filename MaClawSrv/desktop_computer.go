@@ -349,6 +349,7 @@ func operateDesktopSteps(ctx context.Context, scope agentruntime.Scope, display,
 	} else if changed {
 		// New screenshot options apply from this batch's first shot on.
 		opts.Region = desktop.ShotRegion{}
+		opts = desktopPinShotSize(opts)
 		frame.mu.Lock()
 		frame.opts = opts
 		frame.mu.Unlock()

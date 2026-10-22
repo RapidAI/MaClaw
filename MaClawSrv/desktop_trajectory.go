@@ -114,6 +114,8 @@ type desktopRunState struct {
 	dir         string
 	scope       agentruntime.Scope
 	cloud       bool
+	lastSig     string // signature of the previous desktop call
+	repeat      int    // identical consecutive calls ending with lastSig
 }
 
 type desktopTrajectoryStep struct {

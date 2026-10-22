@@ -109,7 +109,9 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			"For non-browser windows: action=app_probe lists the accessible elements (role, name, states, bounds) of the focused window with numbered ids; app_run or computer steps then target {\"id\":N} (click, focus, set_text). marks=true adds a screenshot with those numbers drawn. " +
 			"action=computer runs a batch of computer-use actions (Anthropic or OpenAI names) and reports each step; it stops at the first failure. " +
 			"action=clipboard_set then a paste step (or app_run paste{text}) inserts long or Chinese text without the input method. clipboard_get reads it. window_list, window (activate, maximize, minimize, restore, move, resize, close), screen_info, and wait (for screen change or a window) manage windows. " +
-			"action=screenshot accepts max_width/max_height (scaled image; your coordinates stay in that image), region (zoom), format jpeg/webp, quality, and cursor. " +
+			"action=screenshot accepts region (zoom), format jpeg/webp, quality, and cursor. Full screenshots always come at one fixed size, so coordinates keep the same scale from shot to shot. " +
+			"navigate to another site keeps the current tab and opens the target in its own tab (or switches to a tab already on that site); do not retry a navigate that was refused, and do not detour through redirect links. " +
+			"Rich-text editors (Zhihu, WeChat, Xiaohongshu, Draft.js/ProseMirror boxes): script- or DOM-set text and synthetic paste are often ignored. Click inside the editor first, put the text on the clipboard with clipboard_set, then paste with a real key event (app_run steps [click{x,y}, key{key:\"ctrl+v\"}] or paste{text}), then check that the text shows and that the publish (发布) button is enabled. If the same method fails twice, switch to another method instead of retrying it. " +
 			"When a site needs a login, password, 2FA/SMS code, or a captcha, do not try to get past it yourself: call action=request_takeover with reason, then stop and end your turn, telling the person what to do on the desktop and to press hand back (交还) when done. You resume after the hand back.",
 		Parameters: map[string]any{
 			"type": "object",
@@ -134,7 +136,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"script":      map[string]any{"type": "string", "description": "Statements for action=script. click(\"保存\") or click(\"button.primary\") clicks. type(\"#q\", \"weather\") types. select(\"状态\", \"完成\") chooses an option. press(\"Enter\"), scroll(600), and waitFor(\"下一步\", 3000) run in the same script. Do not read cookies, storage, or passwords."},
 				"steps":       map[string]any{"type": "array", "description": "task_run or app_run steps. Browser step: {action, params:{url,ref,text,key}}. App step: {action, ...} with action focus{name|id}, type{text}, key{key, repeat}, click{x,y | id, button left|right|middle, clicks 1-3, modifiers \"ctrl+shift\"}, right_click, double_click, triple_click, middle_click, move{x,y}, mouse_down, mouse_up, drag{from_x,from_y,to_x,to_y}, scroll{x,y,direction up|down|left|right, amount}, cursor_position, wait{duration}, hold_key{key,duration}, paste{text} (clipboard + Ctrl+V, best for long or Chinese text), set_text{id,text}, screenshot, zoom{region:[x0,y0,x1,y1]}. x,y are pixels of the last screenshot.", "items": map[string]any{"type": "object"}},
 				"actions":     map[string]any{"type": "array", "description": "action=computer: a batch run in order that stops at the first failure. Each item is an Anthropic computer-use action ({action:left_click, coordinate:[x,y], text:modifiers}, left_click_drag with start_coordinate, scroll with scroll_direction/scroll_amount, key/hold_key with text, type, cursor_position, wait, screenshot, zoom with region), an OpenAI computer-use action ({type:click|double_click|scroll|type|keypress|wait|screenshot|move|drag, x, y, button, scroll_x, scroll_y, keys, path}), or an app_run step. A click may give target (words, e.g. \"the blue 发送 button\") instead of x,y as the first step of a batch: a grounding model places it when one is configured; otherwise give x,y.", "items": map[string]any{"type": "object"}},
-				"max_width":   map[string]any{"type": "integer", "description": "action=screenshot (and later shots): shrink the image to at most this width. Coordinates you give are then pixels of that smaller image and are converted back."},
+				"max_width":   map[string]any{"type": "integer", "description": "Ignored for full screenshots, which use one fixed size (MACLAW_DESKTOP_SHOT_WIDTH, default native). Kept for compatibility."},
 				"max_height":  map[string]any{"type": "integer", "description": "Like max_width for the height."},
 				"format":      map[string]any{"type": "string", "description": "Screenshot format: png (default), jpeg, or webp.", "enum": []string{"png", "jpeg", "webp"}},
 				"quality":     map[string]any{"type": "integer", "description": "jpeg/webp quality 1-100 (default 80)."},
@@ -200,8 +202,13 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	}
 	desktopTidyOnce(ctx, desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))))
 	if err := desktopBudgetCheck(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))); err != nil {
-		log.Print(desktopStepLogLine(scope.UserID, args, "", err, 0))
+		log.Print(desktopStepLogLine(scope.UserID, args, "", err, 0) + " model=" + desktopModelLabel(request) + " " + desktopBudgetLogFields(desktopOwner(scope)))
 		return "", err
+	}
+	repeatWarn, repeatErr := desktopRepeatCheck(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args)
+	if repeatErr != nil {
+		log.Print(desktopStepLogLine(scope.UserID, args, "", repeatErr, 0) + " model=" + desktopModelLabel(request) + " " + desktopBudgetLogFields(desktopOwner(scope)) + " repeat=refused")
+		return "", repeatErr
 	}
 	started := time.Now()
 	out, err := operateDesktop(ctx, scope, args)
@@ -212,8 +219,9 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	desktopRecordStep(ctx, desktopOwner(scope), args, out, err, took)
 	if err == nil {
 		out = spillDesktopToolText(ctx, scope, out)
+		out += repeatWarn
 	}
-	log.Print(desktopStepLogLine(scope.UserID, args, out, err, took))
+	log.Print(desktopStepLogLine(scope.UserID, args, out, err, took) + " model=" + desktopModelLabel(request) + " " + desktopBudgetLogFields(desktopOwner(scope)))
 	return out, err
 }
 
@@ -694,6 +702,7 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		if optErr != nil {
 			return "", optErr
 		}
+		opts = desktopPinShotSize(opts)
 		shot, _, shotErr := desktopCaptureShot(ctx, scope, endpoint.Display, name, opts, opts.Region.Empty())
 		if shotErr != nil {
 			return "", shotErr
