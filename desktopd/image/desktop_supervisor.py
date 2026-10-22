@@ -5875,9 +5875,81 @@ def srv_ids(key):
         return {}
 
 
+def http_devtools(port, method, path):
+    """One request to Chromium's DevTools HTTP endpoint (served by the
+    browser process, so it answers even when a tab's renderer is hung)."""
+    sock = socket.create_connection(("127.0.0.1", port), 3)
+    try:
+        sock.settimeout(3)
+        sock.sendall(("%s %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nContent-Length: 0\r\nConnection: close\r\n\r\n" % (method, path, port)).encode("ascii"))
+        buf = bytearray()
+        while True:
+            try:
+                chunk = sock.recv(65536)
+            except (TimeoutError, socket.timeout):
+                break
+            if not chunk:
+                break
+            buf += chunk
+    finally:
+        sock.close()
+    return bytes(buf)
+
+
+def pick_hung_page(pages, url):
+    """The tab a timed-out step was on: same URL, else same origin, else the
+    first listed page (Chromium lists the most recently active first)."""
+    want = str(url or "").strip()
+    origin = page_origin(want)
+    for item in pages:
+        if want and str(item.get("url") or "").rstrip("/") == want.rstrip("/"):
+            return item
+    for item in pages:
+        if origin and page_origin(item.get("url") or "") == origin:
+            return item
+    return pages[0] if pages else None
+
+
+def page_unstick(key, url):
+    """Close a tab whose renderer stopped answering and open its URL again.
+    Seen live 10-22: zhuanlan.zhihu.com/write hung while loading, and every
+    later screenshot / probe / app_list timed out at 90 s for 8 minutes.
+    MaClawSrv asks for this (bot_state unstick=<url>) after a step timeout."""
+    if os.environ.get("MACLAW_BOT_PAGE_UNSTICK", "1").strip() == "0":
+        return {"done": False, "why": "disabled"}
+    port = chrome_debug_port(key)
+    try:
+        pages = browser_pages(http_json_any("127.0.0.1", port, "/json/list"))
+    except (OSError, ValueError, TypeError) as exc:
+        return {"done": False, "why": "devtools list failed: %s" % exc}
+    target = pick_hung_page(pages, url)
+    if target is None:
+        return {"done": False, "why": "no page"}
+    reopen = str(url or "").strip() or str(target.get("url") or "")
+    if not reopen.startswith(("http://", "https://")):
+        reopen = str(target.get("url") or "")
+    try:
+        http_devtools(port, "GET", "/json/close/%s" % quote(str(target.get("id") or ""), safe=""))
+        new_id = ""
+        if reopen.startswith(("http://", "https://")):
+            raw = http_devtools(port, "PUT", "/json/new?%s" % quote(reopen, safe=":/?&=%#@+,;~"))
+            try:
+                new_id = str(json.loads(http_message_body(raw).decode("utf-8")).get("id") or "")
+            except (ValueError, UnicodeError, AttributeError):
+                new_id = ""
+            if new_id:
+                http_devtools(port, "GET", "/json/activate/%s" % quote(new_id, safe=""))
+    except OSError as exc:
+        return {"done": False, "why": "devtools call failed: %s" % exc}
+    log_event("page_unstick", key=key, closed=str(target.get("url") or "")[:200], reopened=reopen[:200])
+    return {"done": True, "closed": str(target.get("url") or "")[:200], "reopened": reopen[:200]}
+
+
 def ctl_bot_state(request):
     key = ctl_bot_key(request)
     note_srv_ids(key, request)
+    if "unstick" in request:
+        return {"ok": True, "unstick": page_unstick(key, str(request.get("unstick") or ""))}
     wait_restore_done(key)
     touch_bot_file(key, "activity")
     human = bot_file_age(key, "human_input")

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
 // Hard timeout per desktop tool call. A step that never returns (seen live
@@ -82,6 +83,10 @@ func operateDesktopWithTimeout(ctx context.Context, scope agentruntime.Scope, ar
 			return "", ctx.Err()
 		}
 		log.Printf("[desktop-step] action=%s timed out after %s (hard step timeout)", action, limit)
+		desktopDropStuckBinding(scope)
+		if note := desktopUnstickAfterTimeout(scope, action, args); note != "" {
+			return "", fmt.Errorf("desktop %s timed out after %ds (hard step timeout); %s", action, int(limit.Seconds()), note)
+		}
 		return "", fmt.Errorf("desktop %s timed out after %ds (hard step timeout); take a screenshot to see the real state, use a different action, or call request_takeover", action, int(limit.Seconds()))
 	}
 }
@@ -103,4 +108,73 @@ func desktopEmitStepStart(scope, owner agentruntime.Scope, args map[string]any, 
 		st.mu.Unlock()
 	}
 	desktopEmit(scope, ev)
+}
+
+// desktopUnstickFunc is swapped in tests.
+var desktopUnstickFunc = func(ctx context.Context, scope agentruntime.Scope, url string) (map[string]any, error) {
+	return desktopCtlCall(ctx, scope, "", map[string]any{"op": desktop.CtlBotState, "unstick": url})
+}
+
+// desktopUnstickAfterTimeout: a browser step that hit the hard timeout most
+// often sits on a tab whose renderer hung (10-22: zhuanlan.zhihu.com/write
+// kept loading and every later screenshot, probe and app_list timed out at
+// 90 s for 8 minutes). The supervisor closes that tab through the browser's
+// DevTools endpoint and opens its URL again; the model is told so.
+// Isolated bot displays only. MACLAW_DESKTOP_UNSTICK=off disables it.
+func desktopUnstickAfterTimeout(scope agentruntime.Scope, action string, args map[string]any) string {
+	if desktopStepLongActions[action] || !desktopIsolatedBot(scope) {
+		return ""
+	}
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("MACLAW_DESKTOP_UNSTICK"))); v == "off" || v == "0" || v == "false" {
+		return ""
+	}
+	url := ""
+	if action == "navigate" {
+		url = strings.TrimSpace(desktopArg(args, "url"))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	out, err := desktopUnstickFunc(ctx, scope, url)
+	if err != nil {
+		log.Printf("[desktop-step] unstick after %s timeout failed: %v", action, err)
+		return ""
+	}
+	res, _ := out["unstick"].(map[string]any)
+	if done, _ := res["done"].(bool); !done {
+		log.Printf("[desktop-step] unstick after %s timeout not done: %v", action, res["why"])
+		return ""
+	}
+	reopened, _ := res["reopened"].(string)
+	closed, _ := res["closed"].(string)
+	log.Printf("[desktop-step] unstick after %s timeout: closed=%s reopened=%s", action, closed, reopened)
+	desktopEmitNote(scope, "page_unstick", "bot", "closed "+closed+" reopened "+reopened)
+	return "the browser tab had stopped responding (" + closed + "); it was closed and opened again at " + reopened + ". Take one screenshot now and continue from what it shows; do not repeat the same navigate"
+}
+
+// desktopDropStuckBinding: the step that timed out is still running and
+// still holds its desktop binding's lock (10-22 run_d28648ae / run_5c2a8086:
+// a navigate hung on a CDP call that ignores the context, and every later
+// screenshot, probe and app_list waited on that lock until its own 90 s
+// timeout, run after run). The stuck binding is taken out of the map so the
+// next step opens a fresh one; the old goroutine drops it when it returns.
+func desktopDropStuckBinding(scope agentruntime.Scope) {
+	userKey, err := desktopUserKey(scope)
+	if err != nil {
+		return
+	}
+	value, ok := desktopBindings.Load(userKey)
+	if !ok {
+		return
+	}
+	binding, _ := value.(*desktopBinding)
+	if binding == nil {
+		return
+	}
+	if binding.mu.TryLock() {
+		binding.mu.Unlock()
+		return
+	}
+	if desktopBindings.CompareAndDelete(userKey, value) {
+		log.Printf("[desktop-step] dropped a desktop binding held by a hung step user=%s", userKey)
+	}
 }

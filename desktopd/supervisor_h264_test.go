@@ -450,3 +450,25 @@ print(sup._apply_page_login_bounded("k", [], {}, set()), sup.time.time() - t0 < 
 		t.Fatalf("got %q", out)
 	}
 }
+
+func TestSupervisorPageUnstickClosesAndReopens(t *testing.T) {
+	out := runSupervisorPython(t, `
+pages = [{"id":"A","type":"page","url":"https://www.zhihu.com/","webSocketDebuggerUrl":"ws://x/a"},
+         {"id":"B","type":"page","url":"https://zhuanlan.zhihu.com/write","webSocketDebuggerUrl":"ws://x/b"}]
+sup.http_json_any = lambda h, p, path: pages
+sup.chrome_debug_port = lambda k: 18030
+calls = []
+def dev(port, method, path):
+    calls.append(method + " " + path)
+    return b"HTTP/1.1 200 OK\r\n\r\n{\"id\":\"C\"}"
+sup.http_devtools = dev
+sup.log_event = lambda *a, **k: None
+r = sup.page_unstick("k", "https://zhuanlan.zhihu.com/write")
+print(r["done"], calls)
+print(sup.pick_hung_page(pages, "")["id"], sup.pick_hung_page(pages, "https://zhuanlan.zhihu.com/p/1")["id"])
+`)
+	want := "True ['GET /json/close/B', 'PUT /json/new?https://zhuanlan.zhihu.com/write', 'GET /json/activate/C']\nA B"
+	if out != want {
+		t.Fatalf("got %q", out)
+	}
+}

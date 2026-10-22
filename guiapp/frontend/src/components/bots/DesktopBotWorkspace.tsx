@@ -3384,11 +3384,34 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             setTakeoverByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
             setTakeoverHoldByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
         } catch (error) {
-            setHandBackError(failureMessage(error).trim() || text.handBackFailed);
+            const detail = failureMessage(error).trim();
+            // Hub hands the desktop back first and only then admits the
+            // continuation; MaClawSrv answering late (a slow desktop open)
+            // timed out here while the hand-back had already happened and
+            // the task did continue (10-22 17:59 / 18:01). Treat a timeout
+            // as handed back: drop the takeover overlay, no red error.
+            if (/没有在时限内|timed? ?out|超时|逾時|deadline exceeded|context canceled/i.test(detail)) {
+                const stored = messagesForBot(userId, botId).map(item => (
+                    item.userControl || item.attentionReason ? { ...item, userControl: false, attentionReason: '' } : item
+                ));
+                commit(botId, stored);
+                setHandoffNotice(prev => prev?.botId === botId ? null : prev);
+                clearLiveFlags(botId);
+                latchRef.current[botId] = false;
+                delete latchRequestRef.current[botId];
+                setTakeoverByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
+                setTakeoverHoldByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
+            } else {
+                setHandBackError(detail || text.handBackFailed);
+            }
         } finally {
             setHandingBack(false);
         }
     };
+    // A stale hand-back error goes once the bot drives again.
+    useEffect(() => {
+        if (handBackError && agentOperating) setHandBackError('');
+    }, [handBackError, agentOperating]);
 
     const saveDesktopMode = async (botId: string, mode: 'isolated' | 'shared') => {
         setModeSaving(true);
