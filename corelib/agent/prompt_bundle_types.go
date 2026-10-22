@@ -307,6 +307,6 @@ If the user message contains one of these expressions, skip all confirmation sta
 // user writes without a year ("10.18") was resolved to a year from training
 // data (run_c81b467d summarised the 2024-10-18 papers in 2026).
 func promptCurrentDateLine(now time.Time) string {
-	return fmt.Sprintf("Current date: %s (%s, %s). A date written without a year means its most recent occurrence on or before today; if the source has nothing for that day, say so and name the day you used instead.\n",
+	return fmt.Sprintf("Current date: %s (%s, %s). A date written without a year means its most recent occurrence on or before today; if the source has nothing for that day, use the nearest earlier day that has data, and say in the answer that the requested day had none and which day you used.\n",
 		now.Format("2006-01-02"), now.Weekday(), now.Format("MST -07:00"))
 }

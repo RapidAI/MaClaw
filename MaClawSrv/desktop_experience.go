@@ -268,7 +268,8 @@ func desktopExperienceText(scope agentruntime.Scope, site string) string {
 var desktopSeedNotes = map[string][]string{
 	"zhihu.com": {
 		"write articles at https://zhuanlan.zhihu.com/write; if it shows a sign-in form, 安全验证 or stays blank, call request_takeover at once (do not wait)",
-		"title: probe for the title textbox (placeholder 请输入标题) and click it by its AX/DOM ref, then type the title; verify by read-back",
+		"title FIRST, before the body: the title is a plain <textarea placeholder=\"请输入标题（最多 100 个字）\"> (not the Draft.js body). Fill it with one page script: const t=document.querySelector('textarea[placeholder^=\"请输入标题\"]'); t.scrollIntoView(); t.focus(); t.select(); document.execCommand('insertText', false, TITLE); return t.value — and check the returned value equals the title. Do not click it by pixels, OCR it, or paste into it with app_run",
+		"topics: type only into the 搜索话题 input (by its ref) and click the suggested topic; never send keys or paste while the title may have focus. Right before 发布 re-read document.querySelector('textarea[placeholder^=\"请输入标题\"]').value; if it is not exactly the title (e.g. a topic name got appended), set it again with the title script",
 		"body: the editor is Draft.js — do not type long text key by key. Prefer the toolbar import (导入 → 导入文档) and upload the .docx; else click into the body, clipboard_set the article text and paste with a real key event (app_run key ctrl+v); never DOM-set or script the body",
 		"after paste/import, probe the body and check its text length is close to the source length before going on",
 		"the body is a rich-text editor: never write it with a page script or DOM (innerHTML/textContent/dispatchEvent paste are dropped and refused); only real click + clipboard_set + app_run key ctrl+v, or 导入文档",
