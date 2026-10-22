@@ -224,6 +224,9 @@ func desktopRichFill(ctx context.Context, scope agentruntime.Scope, args map[str
 		return "", fmt.Errorf("rich_fill needs text")
 	}
 	var parts []string
+	if note := desktopRaiseBrowser(ctx, scope); note != "" {
+		parts = append(parts, "raised the browser ("+note+")")
+	}
 	step := func(sub map[string]any) error {
 		out, err := operateDesktopWithTimeout(ctx, scope, sub)
 		if err != nil {
@@ -235,7 +238,17 @@ func desktopRichFill(ctx context.Context, scope agentruntime.Scope, args map[str
 		_ = out
 		return nil
 	}
+	// Focus the page's main rich editor through the page first. A pixel
+	// click needs screen coordinates, and the model often passes the
+	// viewport ones a script reported (run_bcc21d49 clicked y=356 for an
+	// editor at viewport y=343: the browser toolbar, so the body stayed 0).
+	focused := false
+	if out, err := operateDesktopWithTimeout(ctx, scope, map[string]any{"action": "script", "script": desktopRichFocusScript}); err == nil && strings.Contains(out, "RICH_FOCUSED") {
+		focused = true
+		parts = append(parts, "focused the editor")
+	}
 	switch {
+	case focused:
 	case desktopArg(args, "ref") != "":
 		click := map[string]any{"action": "click", "ref": desktopArg(args, "ref")}
 		if sid := desktopArg(args, "snapshot_id"); sid != "" {
@@ -271,6 +284,9 @@ func desktopRichFill(ctx context.Context, scope agentruntime.Scope, args map[str
 	}
 	res := "rich_fill: " + strings.Join(parts, "; ")
 	if strings.Contains(out, desktopNotAppliedMarker) {
+		if !focused {
+			res += "; the page editor could not be focused by script, so the paste went elsewhere — call rich_fill again with only text and replace=true (no x,y); do not type the body in chunks"
+		}
 		return res + "\n" + out[strings.Index(out, desktopNotAppliedMarker):], nil
 	}
 	return res + "\n" + out, nil
@@ -332,3 +348,15 @@ func desktopAfterPublishCheck(scope agentruntime.Scope, action string, args map[
 	}
 	return fmt.Errorf("refused: already_published — the article is published and read back; this task did not need a document copy. Give the final answer now (title, /p/<id> link, date used). Only if the person asked for a file in this task, send it with action=deliver")
 }
+
+// desktopRichFocusScript focuses the largest visible contenteditable (the
+// article body of Draft.js / ProseMirror / Quill editors) and reports whether
+// keyboard focus is in it.
+const desktopRichFocusScript = `const eds = [...document.querySelectorAll('[contenteditable="true"]')].filter(e => { const r = e.getBoundingClientRect(); return r.width > 200 && r.height > 20; });
+eds.sort((a, b) => { const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect(); return rb.width * rb.height - ra.width * ra.height; });
+const ed = eds[0];
+if (!ed) return 'RICH_NONE';
+ed.scrollIntoView({block: 'center'});
+ed.focus();
+const ae = document.activeElement;
+return (ae === ed || ed.contains(ae)) ? 'RICH_FOCUSED' : 'RICH_NOFOCUS';`

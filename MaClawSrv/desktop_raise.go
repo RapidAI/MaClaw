@@ -140,3 +140,33 @@ func operateDesktopBashGUI(ctx context.Context, scope agentruntime.Scope, args m
 	}
 	return text, nil
 }
+
+// desktopRaiseBrowser puts the Chromium window in front before real
+// keystrokes meant for a web editor. A LibreOffice window left by an earlier
+// task kept focus in run_bcc21d49, so rich_fill's real Ctrl+V landed there
+// and the 知乎 body stayed at 0 chars. Returns "" when nothing changed.
+func desktopRaiseBrowser(ctx context.Context, scope agentruntime.Scope) string {
+	userKey, err := desktopUserKey(scope)
+	if err != nil {
+		return ""
+	}
+	endpoint, err := ensureDesktopRound(ctx, scope, userKey, true)
+	if err != nil || validateDesktopEndpoint(endpoint) != nil || endpoint.Display == "" {
+		return ""
+	}
+	windows, err := desktopWindowsNow(ctx, scope, endpoint.Display)
+	if err != nil {
+		return ""
+	}
+	for i := len(windows) - 1; i >= 0; i-- {
+		w := windows[i]
+		if !desktopIsBrowserClass(w.class) {
+			continue
+		}
+		if w.active {
+			return ""
+		}
+		return desktopActivateWindow(ctx, scope, endpoint.Display, w)
+	}
+	return ""
+}

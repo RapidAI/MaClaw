@@ -105,7 +105,7 @@ func TestDesktopZhihuSeedExperience(t *testing.T) {
 	scope := agentruntime.Scope{TenantID: "t1", UserID: "u-zh", RunID: "run-zh"}
 	for _, site := range []string{"zhuanlan.zhihu.com", "www.zhihu.com", "zhihu.com"} {
 		text := desktopExperienceText(scope, site)
-		for _, want := range []string{"Site playbook for " + site, "导入文档", "ctrl+v", "text length", "发布", "request_takeover"} {
+		for _, want := range []string{"Site playbook for " + site, "rich_fill", "Ctrl+V", "text length", "发布", "request_takeover"} {
 			if !strings.Contains(text, want) {
 				t.Fatalf("%s: missing %q in %q", site, want, text)
 			}

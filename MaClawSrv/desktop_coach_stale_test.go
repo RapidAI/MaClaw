@@ -67,3 +67,9 @@ func TestAfterPublishRefusesUnaskedDocument(t *testing.T) {
 		t.Fatalf("plain bash refused: %v", err)
 	}
 }
+
+func TestRichFocusScriptNotAWrite(t *testing.T) {
+	if desktopScriptWritesRichBody(desktopRichFocusScript) || desktopScriptClicksPublish(desktopRichFocusScript) || desktopScriptSubmits(desktopRichFocusScript) {
+		t.Fatal("rich focus script is refused by the guard")
+	}
+}
