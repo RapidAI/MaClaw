@@ -1,6 +1,6 @@
 import { WriteDesktopBotAck } from '../../../wailsjs/go/main/App';
 
-export type DesktopBotAckKind = 'accept' | 'supplement' | 'files';
+export type DesktopBotAckKind = 'accept' | 'supplement' | 'files' | 'stopping';
 
 export interface DesktopBotAckContext {
     kind: DesktopBotAckKind;
@@ -38,4 +38,25 @@ export async function desktopBotAck(ctx: DesktopBotAckContext, write: DesktopBot
         // falls through to the neutral line
     }
     return desktopBotNeutralAck(ctx);
+}
+
+// The minimal line used only when every model attempt for a still-stopping
+// update failed. It is said only after the person asked for the stop.
+export function desktopBotStoppingFallback(lang: string): string {
+    const value = String(lang || '');
+    if (value.toLowerCase().startsWith('en')) return 'Still stopping.';
+    if (value.includes('Hant')) return '還在停。';
+    return '还在停。';
+}
+
+// desktopBotStoppingLine writes the "still stopping" update in the bot's own
+// voice. It never rejects.
+export async function desktopBotStoppingLine(ctx: { lang: string; message?: string; persona?: string; running_task?: string }, write: DesktopBotAckWriter = WriteDesktopBotAck): Promise<string> {
+    try {
+        const line = String(await write({ kind: 'stopping', message: ctx.message || '', lang: ctx.lang, persona: ctx.persona, running_task: ctx.running_task }) || '').trim();
+        if (line) return line;
+    } catch {
+        // falls through to the minimal line
+    }
+    return desktopBotStoppingFallback(ctx.lang);
 }

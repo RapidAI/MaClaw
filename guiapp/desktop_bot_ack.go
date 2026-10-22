@@ -13,7 +13,7 @@ import (
 // it takes a job, adds files to a running job, or keeps files for later.
 // The GUI has already started the work; this sentence only follows it.
 type DesktopBotAckRequest struct {
-	// Kind is accept, supplement, or files.
+	// Kind is accept, supplement, files, or stopping.
 	Kind        string   `json:"kind"`
 	Message     string   `json:"message"`
 	Lang        string   `json:"lang"`
@@ -36,20 +36,21 @@ Use the kept persona's name and tone when one is given.
 kind accept: say you are on it, in your own words, naming the goal briefly.
 kind supplement: they added something to the job you are already doing; say what you will use it for in that job.
 kind files: they sent files with no job; say you have them and will use them when asked.
+kind stopping: they asked you to stop and the work is still winding down; say plainly that it is still stopping and you will tell them once nothing is running. Do not say it has stopped.
 When files are listed, name each (at most three, in 《》 for Chinese or quotes for English) and say what they are for.
 When options are listed, say you are starting with the first and that they can tap another or add a line.
 When unclear is given, say which part you are not sure about and what you are assuming, in a few words.
 When fallback is true, say you are going with their exact words and they can stop you if it is off.
 Write in the language named. Reply with the line only.`
 
-// desktopBotAckAttempts: the person's own assistant model, then its
-// lightweight sibling on the same provider, then the Hub's shared model only
-// if both failed. Each is short; the work never waits on them.
+// desktopBotAckAttempts: the person's own model, then that same model again
+// as the backup with its thinking left on (see desktopBotUnderstandClassifyRequest),
+// then the Hub's shared model only if both failed. Each is short; the work never waits on them.
 var desktopBotAckAttempts = []struct {
 	fallback   bool
 	hub        bool
 	timeoutSec int
-}{{false, false, 8}, {true, false, 10}, {false, true, 10}}
+}{{false, false, 8}, {true, false, 15}, {false, true, 10}}
 
 // WriteDesktopBotAck writes that line with the person's own model setup
 // (the same one the understand step uses). An error means every attempt
@@ -73,7 +74,11 @@ func (a *App) WriteDesktopBotAck(req DesktopBotAckRequest) (string, error) {
 				log.Printf("[desktop-bot-ack] kind=%s attempt=%d len=%d", req.Kind, i+1, utf8.RuneCountInString(line))
 				return line, nil
 			}
-			err = fmt.Errorf("ack was empty or repeated the message")
+			if strings.TrimSpace(desktopBotWithoutThink(raw)) == "" {
+				err = fmt.Errorf("ack was empty (raw_len=%d)", utf8.RuneCountInString(raw))
+			} else {
+				err = fmt.Errorf("ack was unusable or repeated the message (raw_len=%d)", utf8.RuneCountInString(raw))
+			}
 		}
 		lastErr = err
 		log.Printf("[desktop-bot-ack] kind=%s attempt=%d err=%v", req.Kind, i+1, err)

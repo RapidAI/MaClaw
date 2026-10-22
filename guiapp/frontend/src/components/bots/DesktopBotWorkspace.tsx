@@ -10,6 +10,7 @@ import { openSettingsTab } from '../../utils/settingsNavigation';
 import {
     ArmDesktopBotSchedule,
     ArmDesktopBotAdmitCancel,
+    LogFrontendDiagnostic,
     CreateDesktopBot,
     CancelDesktopBotRun,
     AppendDesktopBotSupplement,
@@ -52,7 +53,7 @@ import {
     ClassifyDesktopWorkStop,
     WatchDesktopBot,
 } from '../../../wailsjs/go/main/App';
-import { desktopBotAck, type DesktopBotAckContext } from './desktopBotAck';
+import { desktopBotAck, desktopBotStoppingLine, type DesktopBotAckContext } from './desktopBotAck';
 import { splitMaterials as splitAckMaterials } from './desktopBotMaterials';
 import { desktopModeOf, effectiveScreenPick, mineScreenURL, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
 import { desktopViewerSrc, loadDesktopViewer, saveDesktopViewer, type DesktopViewer } from './desktopViewer';
@@ -80,7 +81,6 @@ import {
     desktopBotStatusUnreachableSentence,
     desktopBotStopFailedSentence,
     desktopBotStopIdleSentence,
-    desktopBotStillStoppingSentence,
     desktopBotStoppedSentence,
     desktopBotTypedConfirmSentence,
     desktopBotWaitingSentence,
@@ -133,6 +133,10 @@ import { BotFilePreview } from './BotFilePreview';
 import { BotRailIcon } from '../layout/SidebarNavIcons';
 import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
 import './DesktopBotWorkspace.css';
+
+
+// 150 ms per check: two minutes covers a slow admit before the watch gives up.
+const DESKTOP_STOP_WATCH_TRIES = 800;
 
 // noVNC copies the query value straight onto viewOnly. The string "0" is
 // truthy there, so an empty value is what forces the keyboard and pointer on.
@@ -243,6 +247,7 @@ const CONFIRM_COMMAND = BOT_CONFIRM_TASK;
 // A large change stays a plan until the confirm button. Typing the confirm
 // sentence stays a plan; only that button passes execute.
 // The reading's one-tap corrections: 2 to 4 distinct short strings, or none.
+
 export function desktopBotOptionsOf(understood: Record<string, unknown> | undefined): string[] {
     const raw = understood?.options ?? understood?.Options;
     if (!Array.isArray(raw)) return [];
@@ -3645,7 +3650,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (userIdRef.current !== ownerId) return '';
         return remote || desktopBotStatusUnreachableSentence(lang);
     };
-    const stopSpokenRun = async (ownerId: string, botId: string, held: { hadNext: boolean; release: (keepDropped: boolean) => void }, kind: 'stop' | 'pause' = 'stop'): Promise<string> => {
+    const stopSpokenRun = async (ownerId: string, botId: string, held: { hadNext: boolean; release: (keepDropped: boolean) => void }, kind: 'stop' | 'pause' = 'stop', asked = true, said = ''): Promise<string> => {
         const local = await runsOnThisDesktop(botId);
         if (userIdRef.current !== ownerId) {
             held.release(false);
@@ -3666,7 +3671,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 }
                 if (userIdRef.current !== ownerId) return '';
                 if (reason) return desktopBotStopFailedSentence(reason, lang);
-                return finishStop(ownerId, botId, [], held.hadNext, kind);
+                return finishStop(ownerId, botId, [], held.hadNext, kind, asked, said);
             }
             held.release(false);
             if (!local) return desktopBotStatusUnreachableSentence(lang);
@@ -3685,7 +3690,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         }
         if (userIdRef.current !== ownerId) return '';
         if (reason) return desktopBotStopFailedSentence(reason, lang);
-        return finishStop(ownerId, botId, local.map(run => run.title), hadNext, kind);
+        return finishStop(ownerId, botId, local.map(run => run.title), hadNext, kind, asked, said);
     };
     const desktopOperating = (botId: string, rows: Array<{ runId: string }> | undefined) => {
         if (!rows) return true;
@@ -3749,11 +3754,18 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     stopWatchRef.current.delete(botId);
                     return;
                 }
-                if (desktopOperating(botId, rows) && attempt < 40) return;
+                if (desktopOperating(botId, rows) && attempt < DESKTOP_STOP_WATCH_TRIES) return;
                 settled = true;
                 window.clearInterval(timer);
                 if (stopWatchRef.current.get(botId) === timer) stopWatchRef.current.delete(botId);
-                if (userIdRef.current !== ownerId || desktopOperating(botId, rows)) return;
+                if (userIdRef.current !== ownerId) return;
+                if (desktopOperating(botId, rows)) {
+                    // The admit can outlast the watch. The stop was still
+                    // asked for, so the working row must not stay up; no
+                    // sentence claims it has stopped.
+                    commit(botId, releaseStoppedTurns(ownerId, botId));
+                    return;
+                }
                 const stored = releaseStoppedTurns(ownerId, botId);
                 commit(botId, [...stored, { id: messageID(), role: 'assistant', content: confirmedStopSentence(titles, hadNext, kind), chat: true }]);
             })();
@@ -3764,12 +3776,19 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // the run list or the driving flag is still stopping, and the confirmation
     // arrives only after that check comes back empty. The cleared bubbles are
     // written before that sentence, so 「工作中」 and 「正在看屏幕」 leave with it.
-    const finishStop = async (ownerId: string, botId: string, titles: string[], hadNext: boolean, kind: 'stop' | 'pause' = 'stop') => {
+    // asked is true only when the person asked for this stop (typed it, said
+    // it, or pressed pause). A stop made for a takeover says nothing until
+    // the run is idle. The still-stopping update is written by the model in
+    // the bot's voice; the minimal line is used only when that fails.
+    const finishStop = async (ownerId: string, botId: string, titles: string[], hadNext: boolean, kind: 'stop' | 'pause' = 'stop', asked = true, said = '') => {
         const rows = await runsOnThisDesktop(botId);
         if (userIdRef.current !== ownerId) return '';
         if (desktopOperating(botId, rows)) {
             watchUntilIdle(ownerId, botId, titles, hadNext, kind);
-            return desktopBotStillStoppingSentence(lang);
+            if (!asked) return '';
+            const line = await desktopBotStoppingLine({ lang, message: said, persona: personaForBot(ownerId, botId), running_task: titles.join(' / ') });
+            if (userIdRef.current !== ownerId || !stopWatchRef.current.has(botId)) return '';
+            return line;
         }
         commit(botId, releaseStoppedTurns(ownerId, botId));
         return confirmedStopSentence(titles, hadNext, kind);
@@ -3777,7 +3796,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // No pending bubble, so this answer is not the working row
     // 「正在一点点推进」. The question itself is an ordinary user line.
     // A queued copy is already in the thread.
-    const answerDesktopControl = (botId: string, content: string, control: 'status' | 'stop' | 'pause', mode: 'now' | 'fromQueue' | 'quiet') => {
+    const answerDesktopControl = (botId: string, content: string, control: 'status' | 'stop' | 'pause', mode: 'now' | 'fromQueue' | 'quiet', source = 'person') => {
+        if (control !== 'status') {
+            try {
+                void Promise.resolve(LogFrontendDiagnostic({ tag: 'desktop-bot-stop', ev: control, source, mode, bot: botId })).catch(() => undefined);
+            } catch {
+                // diagnostics never block a stop
+            }
+        }
         if (mode === 'now') {
             const prior = messagesForBot(userId, botId);
             commit(botId, [...prior, { id: messageID(), role: 'user', content }]);
@@ -3786,14 +3812,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const held = control === 'stop' || control === 'pause' ? holdFollowUps(botId) : undefined;
         void (async () => {
             const answer = (control === 'stop' || control === 'pause') && held
-                ? await stopSpokenRun(ownerId, botId, held, control === 'pause' ? 'pause' : 'stop')
+                ? await stopSpokenRun(ownerId, botId, held, control === 'pause' ? 'pause' : 'stop', source !== 'takeover', content)
                 : await statusSpokenRun(ownerId, botId);
             if (userIdRef.current !== ownerId || !answer) return;
             const stored = messagesForBot(ownerId, botId);
             commit(botId, [...stored, { id: messageID(), role: 'assistant', content: answer, chat: true }]);
         })();
     };
-    stopForTakeoverRef.current = (botId: string) => answerDesktopControl(botId, '', 'stop', 'quiet');
+    stopForTakeoverRef.current = (botId: string) => answerDesktopControl(botId, '', 'stop', 'quiet', 'takeover');
 
     const deliverCross = async (botId: string, cross: { kind: string; target: string; text: string; order: string }) => {
         const self = botsRef.current.find(item => item.id === botId);
@@ -3832,6 +3858,13 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         commit(botId, [...prior, { id: messageID(), role: 'assistant', content: desktopBotTypedConfirmSentence(lang), chat: true }]);
     };
     const startTask = (botId: string, content: string, phase: BotPhase, mode: 'now' | 'fromQueue', verbatim = false, prepared?: PreparedTurn, literal = false) => {
+        // A stop watch left from an earlier stop belongs to that stop. It
+        // must not release or answer for the job starting now.
+        const leftover = stopWatchRef.current.get(botId);
+        if (leftover && !desktopBotLocalControl(content)) {
+            window.clearInterval(leftover);
+            stopWatchRef.current.delete(botId);
+        }
         // A choice is the words on the button. 停下 is one of those words,
         // not the stop command, and it is not read again as a new order.
         if (literal) verbatim = true;
@@ -4032,12 +4065,13 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     }
                     if (bubbleGone()) return;
                     const classified = stopClassRef.current.get(`${botId}\0${content.trim()}`) || 'skip';
+                    stopClassRef.current.delete(`${botId}\0${content.trim()}`);
                     if (desktopFalseStopClaim(classified, told)) {
                         pending.settled = true;
                         pendingRef.current.delete(ticket);
                         clearLiveBotTurn(ownerId, botId, assistantMessage.id);
                         commit(botId, messagesForBot(ownerId, botId).filter(item => item.id !== assistantMessage.id));
-                        answerDesktopControl(botId, '', 'stop', 'quiet');
+                        answerDesktopControl(botId, content, 'stop', 'quiet', 'reading-stop');
                         return;
                     }
                     if ((told || '').trim() === 'STOP_WORK') {
@@ -4882,7 +4916,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         stopClassRef.current.set(`${botId}\0${content}`, intent);
                         if (intent === 'stop' || intent === 'pause') {
                             slot.drop = true;
-                            answerDesktopControl(botId, '', intent, 'quiet');
+                            answerDesktopControl(botId, content, intent, 'quiet', 'classified');
                             return;
                         }
                     } else {
@@ -4912,9 +4946,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         instruction = reading.instruction;
                         pace = reading.pace;
                         const classified = stopClassRef.current.get(`${botId}\0${content.trim()}`) || 'skip';
+                    stopClassRef.current.delete(`${botId}\0${content.trim()}`);
                         if (desktopFalseStopClaim(classified, told)) {
                             slot.drop = true;
-                            answerDesktopControl(botId, '', 'stop', 'quiet');
+                            answerDesktopControl(botId, content, 'stop', 'quiet', 'reading-stop');
                             return;
                         }
                         if ((told || '').trim() === 'STOP_WORK') {
@@ -5838,7 +5873,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         ) : null}
                         {botPending(selected.id) ? (
                             <p className="desktop-bot-chat__processing" data-testid="desktop-bot-processing" role="status">
-                                <button type="button" className="desktop-bot-chat__processing-mark" data-testid="desktop-bot-pause" aria-label={text.stopWork} onClick={() => answerDesktopControl(selected.id, '', 'stop', 'quiet')} />
+                                <button type="button" className="desktop-bot-chat__processing-mark" data-testid="desktop-bot-pause" aria-label={text.stopWork} onClick={() => answerDesktopControl(selected.id, '', 'stop', 'quiet', 'pause-button')} />
                                 <span className="desktop-bot-chat__processing-label">{desktopBotWorkingLabel(askingByBot[selected.id] || '', activityByBot[selected.id]?.text || '')}</span>
                             </p>
                         ) : null}

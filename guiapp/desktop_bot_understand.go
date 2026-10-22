@@ -227,8 +227,16 @@ func desktopBotUnderstandClassifyRequest(req desktopBotUnderstandRequest) LLMCla
 	// background, i.e. Hub auto, even for a custom-model user).
 	out.Role = maclawLLMRoleForeground
 	if req.fallback {
+		// The backup is the same model the person chose, asked again with
+		// its thinking left on. The guessed lightweight sibling is not used:
+		// on 2026-10-22 it resolved to deepseek-chat on WorkBuddy, which
+		// answers HTTP 400 "service info not found", while the primary with
+		// thinking disabled came back 200 with no usable text. Both failed
+		// and the person saw the stock line.
 		out.Tag = out.Tag + "-fallback"
-		out.PreferLightweight = true
+		out.PreferLightweight = false
+		out.NoThinking = false
+		out.MaxOutputTokens = 0
 	}
 	if req.hub {
 		out.Tag = out.Tag + "-hub"

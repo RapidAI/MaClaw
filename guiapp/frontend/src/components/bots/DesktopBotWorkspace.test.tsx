@@ -112,7 +112,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     GetActiveDesktopRuns: (botId: string) => listActiveRuns(botId),
     GetDesktopBotBusy: (owner: string) => getDesktopBusy(owner),
     EvaluateDesktopTaskSupplement: (taskText: string, content: string, lang: string) => evaluateSupplement(taskText, content, lang),
-    WriteDesktopBotAck: () => Promise.resolve("好，这就去办。"),
+    WriteDesktopBotAck: (ctx?: { kind?: string }) => Promise.resolve(ctx?.kind === 'stopping' ? '还在收尾，停稳了告诉你。' : "好，这就去办。"),
     AppendDesktopBotSupplement: (botId: string, runId: string, instruction: string) => appendSupplement(botId, runId, instruction),
     GetDesktopBotSupplements: (botId: string, runId: string) => getSupplements(botId, runId),
     SetDesktopBotPrimary: (id: string) => setPrimary(id),
@@ -3164,7 +3164,7 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(await screen.findByText('码卡龙本龙'));
         fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '停下，不干了。' } });
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
-        expect(await screen.findByText('还在停。停稳了再跟你说。')).toBeTruthy();
+        expect(await screen.findByText('还在收尾，停稳了告诉你。')).toBeTruthy();
         expect(screen.queryByText('停了。去小红书上给大家打个招呼 不再继续。')).toBeNull();
         expect(cancelRun).toHaveBeenCalledWith('bot_1', 'run-xhs');
         listActiveRuns.mockResolvedValue([]);
@@ -3285,7 +3285,7 @@ describe('DesktopBotWorkspace', () => {
         expect(sendTask).not.toHaveBeenCalled();
         fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '停' } });
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
-        expect(await screen.findByText('还在停。停稳了再跟你说。')).toBeTruthy();
+        expect(await screen.findByText('还在收尾，停稳了告诉你。')).toBeTruthy();
         expect(screen.queryByText('没停下来：还在交给后台。')).toBeNull();
         expect(armAdmitCancel).toHaveBeenCalledWith('bot_1');
         act(() => {
