@@ -388,3 +388,31 @@ print(rec["event"], rec["seconds"] >= 0.5)
 		t.Fatalf("got %q", out)
 	}
 }
+
+func TestSupervisorHealsHiddenBrowserWindow(t *testing.T) {
+	out := runSupervisorPython(t, `
+os.environ["MACLAW_DESKTOP_KEY"] = "ab" * 8
+key = "ab" * 8 + "cd" * 8
+calls = []
+state = {"map": "IsUnMapped"}
+def xdo(display, *args, timeout=3):
+    calls.append(args[0])
+    if args[0] == "search": return 0, "111\n222\n"
+    if args[0] == "getwindowname": return 0, "知乎 - Chromium\n"
+    if args[0] == "windowmap": state["map"] = "IsViewable"
+    return 0, ""
+sup._xdo = xdo
+sup._window_state = lambda d, w: (state["map"], 1280 if w == "222" else 10)
+sup.shutil.which = lambda n: "/usr/bin/" + n
+real_exists = sup.Path.exists
+sup.Path.exists = lambda self: True if str(self).startswith("/tmp/.X11-unix") else real_exists(self)
+first = sup.heal_browser_window(key, 30, "watch", wait_ticks=1)
+second = sup.heal_browser_window(key, 30, "watch", wait_ticks=1)
+third = sup.heal_browser_window(key, 30, "watch", wait_ticks=1)
+rec = json.loads((sup.ROOT / "events.jsonl").read_text().splitlines()[-1])
+print(first, second, third, rec["event"], rec["source"], "windowactivate" in calls)
+`)
+	if out != "False True False window_restored watch True" {
+		t.Fatalf("got %q", out)
+	}
+}

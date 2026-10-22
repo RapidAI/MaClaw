@@ -4858,6 +4858,10 @@ class H264Viewer:
         self.close_reason = ""
         log_event("h264_open", key=self.key, display=self.display, interactive=self.want_input,
                   takeover=self.takes_over, input=allowed, mse=self.mse, fps=self.fps)
+        try:
+            heal_browser_window(self.key, self.display, "viewer_open")
+        except Exception:
+            pass
         self.send_json({"type": "hello", "proto": "maclaw-h264/1", "width": self.width, "height": self.height,
                         "fps": self.fps, "mode": "fmp4" if self.mse else "annexb", "input": allowed,
                         "clipboard": clipboard_tool() is not None})
@@ -5627,6 +5631,82 @@ class BotTraffic:
         self.rfb = data
 
 
+# Browser window self-heal (seen live 10-22: the bot display's Chromium window
+# was minimized during a takeover; the viewer showed only the wallpaper and
+# nobody could bring it back). On a bot display, a Chromium top-level window
+# that exists but is not viewable (minimized / unmapped) while no Chromium
+# window is viewable is mapped and activated again. Checked by the bot
+# watcher (after it was seen hidden on two ticks), on viewer open, and on
+# hand-back. MACLAW_BOT_WINDOW_HEAL=0 disables it.
+
+_heal_hidden_since = {}
+
+
+def _xdo(display, *args, timeout=3):
+    try:
+        out = subprocess.run(["xdotool"] + list(args), env=dict(os.environ, DISPLAY=":%d" % display),
+                             capture_output=True, text=True, timeout=timeout)
+        return out.returncode, out.stdout
+    except (OSError, subprocess.SubprocessError):
+        return 1, ""
+
+
+def _window_state(display, wid):
+    try:
+        out = subprocess.run(["xwininfo", "-id", wid], env=dict(os.environ, DISPLAY=":%d" % display),
+                             capture_output=True, text=True, timeout=3).stdout
+    except (OSError, subprocess.SubprocessError):
+        return "", 0
+    state, width = "", 0
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("Map State:"):
+            state = line.split(":", 1)[1].strip()
+        elif line.startswith("Width:"):
+            try:
+                width = int(line.split(":", 1)[1])
+            except ValueError:
+                pass
+    return state, width
+
+
+def heal_browser_window(key, display, source="watch", wait_ticks=0):
+    """Map and activate a hidden Chromium window on a bot display. Returns True
+    when a window was restored."""
+    if os.environ.get("MACLAW_BOT_WINDOW_HEAL", "1").strip() == "0" or shutil.which("xdotool") is None:
+        return False
+    if not is_bot_key(key) or not Path("/tmp/.X11-unix/X%d" % display).exists():
+        return False
+    code, out = _xdo(display, "search", "--class", "chromium")
+    if code != 0 or not out.strip():
+        _heal_hidden_since.pop(key, None)
+        return False
+    hidden = []
+    for wid in out.split():
+        state, width = _window_state(display, wid)
+        if width < 200:
+            continue  # helper / tooltip windows
+        if state == "IsViewable":
+            _heal_hidden_since.pop(key, None)
+            return False
+        _, name = _xdo(display, "getwindowname", wid)
+        if name.strip():
+            hidden.append((width, wid, name.strip()))
+    if not hidden:
+        return False
+    ticks = _heal_hidden_since.get(key, 0) + 1
+    _heal_hidden_since[key] = ticks
+    if ticks <= wait_ticks:
+        return False
+    hidden.sort(reverse=True)
+    _, wid, name = hidden[0]
+    _xdo(display, "windowmap", wid)
+    _xdo(display, "windowactivate", wid)
+    _heal_hidden_since.pop(key, None)
+    log_event("window_restored", key=key, display=display, source=source, title=name[:80])
+    return True
+
+
 def watch_bot(key, display):
     idle_limit = env_int("MACLAW_BOT_IDLE_SECONDS", BOT_IDLE_SECONDS)
     while desktop_running(key):
@@ -5636,6 +5716,10 @@ def watch_bot(key, display):
                 ensure_gates()
                 keep_screen_awake(display)
                 ensure_bot_panel(key, display)
+                try:
+                    heal_browser_window(key, display, "watch", wait_ticks=1)
+                except Exception as exc:  # never break the watcher
+                    print("window heal: %s" % exc, file=sys.stderr)
                 if takeover_state(key) is None and time.time() - bot_last_activity(key) >= idle_limit:
                     print("bot display %s idle, stopping" % key, file=sys.stderr)
                     log_event("display_idle_timeout", key=key, idle_limit=idle_limit)
@@ -5735,6 +5819,10 @@ def ctl_takeover_begin(request):
 def ctl_takeover_end(request):
     key = ctl_bot_key(request)
     log_event("takeover_end", key=key, source="handback")
+    try:
+        heal_browser_window(key, display_of(key), "handback")
+    except Exception:
+        pass
     try:
         (ROOT / key / "takeover.json").unlink()
     except OSError:

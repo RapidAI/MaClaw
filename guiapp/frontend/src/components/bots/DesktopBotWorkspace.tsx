@@ -5483,7 +5483,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             ? text.takeoverActive
             : personAtKeyboard
                 ? text.userControl
-                : (statusPhase ? text.botControl : text.watching);
+                // Only a bot that is really driving the desktop (a desktop
+                // step running, a run lease on this bot) is "operating"; a
+                // turn still pending in the transcript (e.g. a run that died
+                // with a service restart) is not.
+                : (statusPhase && agentOperating ? text.botControl : text.watching);
 
     const secretForSelected = secretPrompt && selected && secretPrompt.botId === selected.id ? secretPrompt : null;
 
