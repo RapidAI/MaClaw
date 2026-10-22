@@ -3815,6 +3815,7 @@ def request_authorized(head, token):
 
 H264_MAX_STREAMS = 4
 H264_DEFAULT_FPS = 15
+H264_INTERACTIVE_FPS = 30
 H264_GOP_SECONDS = 2
 H264_MAX_QUEUED = 3
 H264_MAX_INFLIGHT = 8
@@ -3952,7 +3953,7 @@ def h264_input_allowed(key, owner):
     return bool(key) and takeover_state(key) is not None
 
 
-def h264_ffmpeg_argv(display, size, fps=H264_DEFAULT_FPS, mse=False):
+def h264_ffmpeg_argv(display, size, fps=H264_DEFAULT_FPS, mse=False, interactive=False):
     # mpdecimate max: at most 2 s of dropped frames in a row, so an idle
     # screen still emits a tiny frame now and then and a lost viewer resyncs.
     # FLV for the Annex B stream (no muxer delay, see FlvToAnnexB); the MSE
@@ -3965,7 +3966,9 @@ def h264_ffmpeg_argv(display, size, fps=H264_DEFAULT_FPS, mse=False):
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
         "-f", "x11grab", "-draw_mouse", "1", "-framerate", str(fps),
         "-video_size", size, "-i", ":%d" % display,
-        "-vf", "mpdecimate=hi=768:lo=320:frac=0.33:max=%d,format=yuv420p" % (fps * 2),
+        # A person driving the screen needs every frame: mpdecimate drops
+        # small changes (a moving pointer, a caret), which reads as lag.
+        "-vf", "format=yuv420p" if interactive else "mpdecimate=hi=768:lo=320:frac=0.33:max=%d,format=yuv420p" % (fps * 2),
         "-fps_mode", "vfr",
         "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
         "-profile:v", "baseline", "-level", "4.1", "-g", str(fps * H264_GOP_SECONDS), "-bf", "0",
@@ -4526,6 +4529,7 @@ class H264Viewer:
         self.key = key
         self.owner = owner
         # An interactive player on a bot's screen is the person taking over.
+        self.want_input = bool(want_input)
         self.takes_over = bool(want_input) and not owner and bool(key)
         if self.takes_over:
             touch_viewer_takeover(key)
@@ -4605,7 +4609,9 @@ class H264Viewer:
     def encoder_loop(self):
         failures = 0
         env = dict(os.environ, DISPLAY=":%d" % self.display)
-        argv = h264_ffmpeg_argv(self.display, "%dx%d" % (self.width, self.height), self.fps, self.mse)
+        interactive = self.want_input and self.input_allowed()
+        fps = max(self.fps, H264_INTERACTIVE_FPS) if interactive else self.fps
+        argv = h264_ffmpeg_argv(self.display, "%dx%d" % (self.width, self.height), fps, self.mse, interactive)
         while not self.closed.is_set():
             self.restart.clear()
             started = time.monotonic()
@@ -4767,6 +4773,10 @@ class H264Viewer:
             while not self.closed.wait(0.5):
                 if self.takes_over:
                     touch_viewer_takeover(self.key)
+                if self.key and not self.owner:
+                    # A watched bot screen is in use: it must not idle-stop
+                    # under the viewer (noVNC marks this in BotTraffic).
+                    touch_bot_file(self.key, "activity")
                 self.screen.expire()
                 self.tick_lease()
         except OSError:
@@ -4846,7 +4856,26 @@ def serve_h264(client, head, owner_token):
             pass
 
 
+def h264_wake_bot(screen):
+    """A bot screen that stopped (idle) starts again when a person opens it,
+    so the player never streams a display that no longer exists (black)."""
+    display, key, owner = screen
+    if owner or not key or not is_bot_key(key) or desktop_running(key):
+        return screen
+    try:
+        with desktop_lock():
+            if not desktop_running(key):
+                print("bot display %s opened by a viewer, starting" % key, file=sys.stderr)
+                result = ensure_bot(key)
+                display = int(str(result.get("display") or ":%d" % display).lstrip(":"))
+        reap_children()
+    except (OSError, ValueError, SystemExit) as exc:
+        print("bot display %s: start for viewer failed: %s" % (key, exc), file=sys.stderr)
+    return display, key, owner
+
+
 def stream_h264(client, key, screen, mse=False, want_input=False):
+    screen = h264_wake_bot(screen)
     display, screen_key, owner = screen
     client.settimeout(None)
     client.sendall(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
