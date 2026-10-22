@@ -276,6 +276,8 @@ var desktopSeedNotes = map[string][]string{
 		"topics (添加话题): choose topics that match what the article is about (for AI/ML paper digests: 人工智能, 机器学习, 深度学习, 大语言模型, 计算机视觉, 论文); never pick a topic because it shares a literal token (e.g. Hf → 铪 is wrong)",
 		"publishing is public: when the person asked in this task to publish it (发到知乎/发布到知乎/直接发布), click 发布 yourself once 字数 > 0 and the title is set — then, if a 发布设置/话题 dialog appears, finish it and confirm; otherwise (no such request) call request_takeover so the person checks and presses 发布",
 		"after 发布: the page moves to zhuanlan.zhihu.com/p/<id> (not /edit); open that URL again and probe that the title and the full body text are there before you report the link as published",
+		"verify the published article in the browser tab (navigate to /p/<id>, then a page script that returns document.title, the h1 text and the article body text length) — never with curl/wget/python from the shell: zhihu answers those with a ~650-byte anti-bot page, which says nothing about the article; make that browser read your last desktop action before the reply, and quote its title, body length and URL",
+		"once /p/<id> shows the title and body, the article is published: do not open /edit, select-all or paste again, and do not press 更新",
 	},
 }
 
