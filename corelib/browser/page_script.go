@@ -91,10 +91,15 @@ func (s *BrowserAgentSession) RunPageScriptForSite(script, siteHost string) (*Br
 	}
 	// One guard read. A probe from this turn already has the flags, so a
 	// script that follows it does not walk the page before it clicks.
-	// A failed read is treated as a captcha: the script must not click
-	// through a page it could not classify.
+	// A failed read stops the script (it must not click through a page it
+	// could not classify), but it is not a captcha: a slow or busy tab
+	// (a large editor) fails the read too, and calling that a captcha handed
+	// an unpublished Zhihu draft to a person (run_ab72be42).
 	flags, guardErr := s.scriptGuardFlags()
-	if guardErr != nil || flags.CaptchaWidget {
+	if guardErr != nil {
+		return nil, fmt.Errorf("page script not run: the page did not answer the pre-script state check (%v). This is not a captcha; probe or screenshot the page, reload the tab if it stays unresponsive, then retry", guardErr)
+	}
+	if flags.CaptchaWidget {
 		return s.captchaAskResult("script"), nil
 	}
 	if blocked := pageScriptPersonResult(flags); blocked != nil {
