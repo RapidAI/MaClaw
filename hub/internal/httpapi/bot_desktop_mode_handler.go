@@ -81,7 +81,13 @@ func PostBotDesktopHandBackHandler(svc *botmgmt.Service, identity botAuthenticat
 		if message == "" {
 			message = "我已经在桌面上完成了需要我做的操作（登录/验证），桌面交还给你，请继续刚才的任务。"
 		}
-		admission, err := svc.AdmitDesktopMessage(r.Context(), principal.TenantID, principal.UserID, botID, message, in.Phase, "")
+		// A hand-back continues a task already under way: without a phase
+		// MaClawSrv treated the turn as plan (look only) and the task stopped.
+		phase := strings.TrimSpace(in.Phase)
+		if phase == "" {
+			phase = "execute"
+		}
+		admission, err := svc.AdmitDesktopMessage(r.Context(), principal.TenantID, principal.UserID, botID, message, phase, "")
 		if err != nil {
 			writeBotUserError(w, r, principal, err, "")
 			return

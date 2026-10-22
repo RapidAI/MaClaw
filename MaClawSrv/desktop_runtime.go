@@ -176,10 +176,10 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	}
 	// A missing phase is not execution. Direct operateDesktop calls omit this
 	// key and keep today's behavior; a bot turn always sets it.
-	ctx = context.WithValue(ctx, desktopPhaseKey{}, botPhaseFromTurn(request))
+	ctx = context.WithValue(ctx, desktopPhaseKey{}, desktopTurnPhase(request))
 	ctx = context.WithValue(ctx, desktopLLMSeesImagesKey{}, desktopTurnSeesImages(request))
 	ctx = context.WithValue(ctx, desktopComputerHelperKey{}, strings.TrimSpace(desktopMessageMeta(request)["computer_helper"]) == "1")
-	ctx = context.WithValue(ctx, desktopPublishApprovedKey{}, desktopPublishPreapproved(request))
+	ctx = context.WithValue(ctx, desktopPublishApprovedKey{}, desktopTurnPublishApproved(request))
 	scope, cloud, err := desktopScopeForTurn(request)
 	if err != nil {
 		return "", err
