@@ -2340,7 +2340,18 @@ def saved_page_origins(saved):
 
 
 def restore_page_login(key):
-    """Put the tab login back into the browser this profile just opened."""
+    """Put the tab login back into the browser this profile just opened.
+    Timed: a page_login_restore event records how long the start waited."""
+    started = time.time()
+    try:
+        return _restore_page_login(key)
+    finally:
+        took = time.time() - started
+        if took >= 0.5:
+            log_event("page_login_restore", key=key, seconds=round(took, 2))
+
+
+def _restore_page_login(key):
     path = page_login_path(key)
     try:
         saved = json.loads(path.read_text(encoding="utf-8"))

@@ -319,3 +319,18 @@ print(rec["bot"], rec["srv_bot"], rec["srv_run"])
 		t.Fatalf("got %q", out)
 	}
 }
+
+// restore_page_login records how long a start waited for it.
+func TestSupervisorPageLoginRestoreTimed(t *testing.T) {
+	out := runSupervisorPython(t, `
+os.environ["MACLAW_DESKTOP_KEY"] = "ab" * 8
+key = "ab" * 8 + "cd" * 8
+sup._restore_page_login = lambda k: sup.time.sleep(0.6)
+sup.restore_page_login(key)
+rec = json.loads((sup.ROOT / "events.jsonl").read_text().splitlines()[-1])
+print(rec["event"], rec["seconds"] >= 0.5)
+`)
+	if out != "page_login_restore True" {
+		t.Fatalf("got %q", out)
+	}
+}
