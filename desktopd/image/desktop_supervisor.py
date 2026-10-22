@@ -1262,6 +1262,10 @@ def log_event(event, **fields):
         owner = owner_key()
         if key and owner and key.startswith(owner) and len(key) > len(owner):
             record["bot"] = key[len(owner):]
+        if key:
+            for name, value in srv_ids(key).items():
+                if name in ("srv_bot", "srv_run") and name not in record:
+                    record[name] = value
         line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
         path = ROOT / "events.jsonl"
         try:
@@ -5640,8 +5644,43 @@ def ctl_bot_key(request):
     return key
 
 
+SRV_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
+
+
+def note_srv_ids(key, request):
+    """Remember MaClawSrv's bot and run id for this screen key, so later
+    supervisor events carry srv_bot / srv_run and join the run file."""
+    ids = {}
+    for name in ("srv_bot", "srv_run"):
+        value = str(request.get(name) or "").strip()
+        if value and SRV_ID_RE.match(value):
+            ids[name] = value
+    if not ids or not key:
+        return
+    path = ROOT / key / "srv_ids.json"
+    try:
+        if json.loads(path.read_text(encoding="utf-8")) == ids:
+            return
+    except (OSError, ValueError):
+        pass
+    try:
+        path.parent.mkdir(mode=0o700, exist_ok=True)
+        path.write_text(json.dumps(ids), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def srv_ids(key):
+    try:
+        data = json.loads((ROOT / key / "srv_ids.json").read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def ctl_bot_state(request):
     key = ctl_bot_key(request)
+    note_srv_ids(key, request)
     touch_bot_file(key, "activity")
     human = bot_file_age(key, "human_input")
     state = takeover_state(key)

@@ -70,3 +70,21 @@ docker exec $C sh -c 'grep -E "takeover|lease" /desktops/events.jsonl | tail -20
 
 - `journalctl -u maclawsrv | grep '\[desktop-step\]'` shows the same steps as one-line logs. `[desktop-guard]` shows failure-class guard decisions.
 - Trajectory files: `docker exec $C ls ~/素材/<bot>/runs/<run_id>/` (`step-NNN.json` and `step-NNN.png`).
+
+## Zhihu / navigate hardening (2026-10-22)
+
+- `step_start` is written before every desktop call (step number, action, site). A start
+  without its `step` is a call still running or hung; `runs list` shows it as `step_start=1`.
+- Hard timeout per desktop call: `MACLAW_DESKTOP_STEP_TIMEOUT` (seconds, default 90; 0 off);
+  bash/install/task_run/skill_run/deliver/app_run/computer/file_write use
+  `MACLAW_DESKTOP_STEP_TIMEOUT_LONG` (default 900). A timed-out step has result `timeout`.
+- navigate waits for `document.readyState=complete` and at least one visible interactive
+  element (`MACLAW_BROWSER_NAV_READY_TIMEOUT`, default 18 s), reloads a blank page once and
+  reports the final URL. A sign-in URL/form, captcha / 安全验证 text, or a page still blank
+  after `MACLAW_BROWSER_BLANK_WALL` (default 20 s) adds `[login_wall]`; the step result is
+  `login_wall` and the model is told to call `request_takeover` at once.
+- Site experience: seeded playbook for zhihu.com (and subdomains). Every use logs
+  `[desktop-experience] hit site=… source=seed|learned|seed+learned` and writes an
+  `experience_hit` event; every learned note writes `experience_write`.
+- Supervisor `/desktops/events.jsonl` lines carry `srv_bot` / `srv_run` (MaClawSrv bot and
+  run id, sent with ctl `bot_state`) so they join the run file.

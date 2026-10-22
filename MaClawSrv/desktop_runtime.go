@@ -219,7 +219,8 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 		return "", failErr
 	}
 	started := time.Now()
-	out, err := operateDesktop(ctx, scope, args)
+	desktopEmitStepStart(scope, desktopOwner(scope), args, desktopModelLabel(request))
+	out, err := operateDesktopWithTimeout(ctx, scope, args)
 	noteDesktopPageNeed(scope, out)
 	err = desktopDeliverSizeHint(args, err)
 	err = desktopbot.ModelFacingError(err)

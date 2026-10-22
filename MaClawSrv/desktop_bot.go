@@ -60,7 +60,15 @@ func desktopBotYield(ctx context.Context, scope agentruntime.Scope) error {
 	if !desktopIsolatedBot(scope) {
 		return nil
 	}
-	out, err := desktopCtlCall(ctx, scope, "", map[string]any{"op": desktop.CtlBotState})
+	req := map[string]any{"op": desktop.CtlBotState}
+	// The supervisor tags its events with these so they join the run file.
+	if _, bot := desktop.SplitDesktopUser(scope.UserID); bot != "" {
+		req["srv_bot"] = bot
+	}
+	if scope.RunID != "" {
+		req["srv_run"] = scope.RunID
+	}
+	out, err := desktopCtlCall(ctx, scope, "", req)
 	if err != nil {
 		return nil // older supervisor or no display yet: the action itself will tell
 	}

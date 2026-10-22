@@ -13,6 +13,10 @@ import (
 func TestDesktopExperienceLearnsOnlyValidatedOutcomes(t *testing.T) {
 	desktopExperienceRoot = t.TempDir()
 	t.Cleanup(func() { desktopExperienceRoot = "" })
+	// Learned notes only; seeded playbooks are covered in desktop_zhihu_test.go.
+	seeds := desktopSeedNotes
+	desktopSeedNotes = nil
+	t.Cleanup(func() { desktopSeedNotes = seeds })
 	scope := agentruntime.Scope{TenantID: "t", UserID: "u-exp"}
 	script := map[string]any{"action": "script", "script": "el.innerText='secret body 123'"}
 	paste := map[string]any{"action": "app_run", "steps": []any{map[string]any{"action": "paste", "text": "secret body 123"}}}

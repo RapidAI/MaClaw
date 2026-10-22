@@ -303,3 +303,19 @@ print(rec["event"], rec["display"], rec["bot"], "skip" in rec, "ts" in rec)
 		t.Fatalf("got %q", out)
 	}
 }
+
+// ctl bot_state with MaClawSrv ids tags later events with srv_bot / srv_run.
+func TestSupervisorLogEventSrvIDs(t *testing.T) {
+	out := runSupervisorPython(t, `
+os.environ["MACLAW_DESKTOP_KEY"] = "ab" * 8
+key = "ab" * 8 + "cd" * 8
+sup.note_srv_ids(key, {"srv_bot": "bot_625eda1bbe86a157", "srv_run": "run_x-1", "op": "bot_state"})
+sup.note_srv_ids(key, {"srv_bot": "bad id; rm", "srv_run": ""})
+sup.log_event("lease_change", key=key, display=30, holder="bot")
+rec = json.loads((sup.ROOT / "events.jsonl").read_text().splitlines()[-1])
+print(rec["bot"], rec["srv_bot"], rec["srv_run"])
+`)
+	if out != strings.Repeat("cd", 8)+" bot_625eda1bbe86a157 run_x-1" {
+		t.Fatalf("got %q", out)
+	}
+}

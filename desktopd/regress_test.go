@@ -20,7 +20,7 @@ print(r.verdict("Hello  world, 你好", ["hello world,\u00a0你好 more"]), r.ve
 	if err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
-	if got := strings.TrimSpace(string(out)); got != "applied not_applied unknown 5" {
+	if got := strings.TrimSpace(string(out)); got != "applied not_applied unknown 6" {
 		t.Fatalf("got %q", got)
 	}
 }

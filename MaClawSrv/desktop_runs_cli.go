@@ -222,6 +222,10 @@ func desktopSummarizeRun(path string) desktopRunSummary {
 		if ev.Event == "step" {
 			s.steps++
 			s.byRes[ev.Result]++
+			delete(s.byRes, "step_start")
+		} else if ev.Event == "step_start" {
+			// Only a start without its step (a hung or running call) counts.
+			s.byRes["step_start"] = 1
 		} else {
 			s.byRes[ev.Event]++
 		}
@@ -237,6 +241,9 @@ func desktopEventPretty(line string) string {
 	ts := ev.TS
 	if t, err := time.Parse(time.RFC3339Nano, ev.TS); err == nil {
 		ts = t.Format("01-02 15:04:05")
+	}
+	if ev.Event == "step_start" {
+		return fmt.Sprintf("%s #%d %-12s started site=%s model=%s", ts, ev.Step, ev.Action, ev.Site, ev.Model)
 	}
 	if ev.Event != "step" {
 		return fmt.Sprintf("%s %s run=%s bot=%s lease=%s %s", ts, ev.Event, ev.RunID, ev.Bot, ev.Lease, ev.Reason)

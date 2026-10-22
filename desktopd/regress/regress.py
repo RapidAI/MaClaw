@@ -13,6 +13,9 @@ Tasks:
   editor_clipboard_paste     xclip + real Ctrl+V reaches the editor model
   form_fill                  CDP insertText + click fills and submits a form
   cross_origin_navigation    a second origin opens in its own tab
+  nav_ready_and_login_wall   navigate readiness probe: a normal page is ready,
+                             a sign-in form / 安全验证 page / blank page are
+                             classified as walls (login_form, captcha, blank)
 """
 import base64, http.server, json, os, socket, socketserver, struct, subprocess, sys, threading, time, urllib.request
 
@@ -50,6 +53,31 @@ FORM = """<!doctype html><meta charset=utf-8><title>form</title>
 <form id=f onsubmit="event.preventDefault();document.getElementById('result').textContent='ok:'+n.value+':'+m.value">
 <input id=n name=n placeholder=name><input id=m name=m placeholder=email><button id=go>提交</button></form>
 <div id=result></div>"""
+
+SIGNIN = """<!doctype html><meta charset=utf-8><title>登录 - 知乎</title>
+<form><input name=u placeholder=手机号><input type=password name=p><button>登录</button></form>"""
+
+CAPTCHA = """<!doctype html><meta charset=utf-8><title>知乎</title><div>系统检测到您的帐号或IP存在异常流量，请进行安全验证</div><button>验证</button>"""
+
+BLANK = """<!doctype html><meta charset=utf-8><title>知乎 - 知乎</title><div id=root></div>"""
+
+# Same expression as corelib/browser/navigate_ready.go pageReadyExpr.
+PAGE_READY_JS = r"""(() => {
+  const sel = 'a[href],button,input:not([type=hidden]),textarea,select,[contenteditable=""],[contenteditable=true],[role=button],[role=textbox],[role=link],[tabindex]:not([tabindex="-1"])';
+  let n = 0;
+  try {
+    for (const el of document.querySelectorAll(sel)) {
+      const r = el.getBoundingClientRect();
+      if (r.width > 1 && r.height > 1) { n++; if (n >= 50) break; }
+    }
+  } catch (e) {}
+  const body = document.body ? (document.body.innerText || '') : '';
+  const head = body.slice(0, 4000);
+  let wall = '';
+  if (/安全验证|请完成验证|人机验证|滑动验证|拖动滑块|captcha|are you a robot|verify you are human/i.test(head)) wall = 'captcha';
+  else if (document.querySelector('input[type=password]') && /登录|注册|sign ?in|log ?in/i.test(head + ' ' + document.title)) wall = 'login_form';
+  return JSON.stringify({rs: document.readyState, n, url: location.href, title: document.title || '', tl: body.length, wall});
+})()"""
 
 OTHER = """<!doctype html><meta charset=utf-8><title>other-origin</title><h1 id=h>second origin</h1>"""
 
@@ -270,12 +298,29 @@ def task_cross_origin_navigation():
             close_tab(b)
 
 
-TASKS = [task_editor_dom_write_detected, task_editor_real_typing, task_editor_clipboard_paste, task_form_fill, task_cross_origin_navigation]
+def task_nav_ready_and_login_wall():
+    got = {}
+    for path in ("/form", "/signin", "/captcha", "/blank"):
+        t, c = new_tab("http://127.0.0.1:%d%s" % (PORT_A, path))
+        try:
+            time.sleep(0.5)
+            st = json.loads(c.eval(PAGE_READY_JS))
+            wall = st["wall"] or ("blank" if st["n"] == 0 and st["tl"] < 20 else "")
+            got[path] = {"rs": st["rs"], "n": st["n"], "wall": wall}
+        finally:
+            close_tab(t)
+    ok = (got["/form"]["wall"] == "" and got["/form"]["n"] > 0 and got["/form"]["rs"] == "complete"
+          and got["/signin"]["wall"] == "login_form" and got["/captcha"]["wall"] == "captcha" and got["/blank"]["wall"] == "blank")
+    return {"ok": ok, "pages": got}
+
+
+TASKS = [task_editor_dom_write_detected, task_editor_real_typing, task_editor_clipboard_paste, task_form_fill, task_cross_origin_navigation,
+         task_nav_ready_and_login_wall]
 
 
 def main():
     global PORT_A, PORT_B
-    PORT_A = serve(0, {"/editor": EDITOR, "/form": FORM})
+    PORT_A = serve(0, {"/editor": EDITOR, "/form": FORM, "/signin": SIGNIN, "/captcha": CAPTCHA, "/blank": BLANK})
     PORT_B = serve(0, {"/other": OTHER})
     cdp_json("/json/version")
     report, passed = [], 0

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"fmt"
 	"log"
 	"strings"
@@ -46,6 +47,8 @@ func desktopErrorClass(out string, err error) string {
 		msg = strings.ToLower(err.Error())
 	}
 	switch {
+	case strings.Contains(out, browser.LoginWallMarker) || strings.Contains(msg, strings.ToLower(browser.LoginWallMarker)):
+		return "login_wall"
 	case strings.Contains(out, desktopNotAppliedMarker) || strings.Contains(msg, "not applied") || strings.Contains(msg, "未生效"):
 		return "not_applied"
 	case strings.Contains(msg, "cross-origin") || strings.Contains(msg, "cross_origin"):
@@ -103,6 +106,10 @@ func desktopFailClassRecord(scope agentruntime.Scope, action string, args map[st
 	}
 	st.mu.Unlock()
 	log.Printf("[desktop-guard] intent=%s error_class=%s count=%d", intent, class, n)
+	if class == "login_wall" {
+		// A wall is not fixed by retrying: ask for the person at once.
+		return "\n\nLogin wall: " + desktopFailClassAdvice(class)
+	}
 	if n < desktopFailClassLimit {
 		return ""
 	}
@@ -117,6 +124,8 @@ func desktopFailClassAdvice(class string) string {
 		return "Switch interface: navigate explicitly to the target site in its own tab (navigate with the full URL), use the site's own link/button, or call request_takeover."
 	case "element_not_found":
 		return "Switch interface: probe again for fresh refs, use a screenshot and click by position (app_run/computer), or the accessibility tree — or call request_takeover."
+	case "login_wall":
+		return "The site shows a sign-in form, a captcha/安全验证 check, or stays blank. Do not wait or retry: call request_takeover so the person signs in or passes the check, then continue."
 	case "timeout":
 		return "Switch interface: take a screenshot to see the real state and use a different action, or call request_takeover."
 	}

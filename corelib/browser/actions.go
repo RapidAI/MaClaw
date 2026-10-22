@@ -101,13 +101,18 @@ func (s *BrowserAgentSession) Navigate(url string) (*BrowserActionResult, error)
 	} else if _, err := s.session.Navigate(url); err != nil {
 		return policyBlockResult(s, "browser_navigate", err)
 	}
+	readyNote := ""
+	if rep, ok := s.session.waitPageReady(); ok {
+		readyNote = rep.Note()
+		log.Printf("[browser] navigate ready url=%q final=%q rs=%s n=%d reloaded=%t wall=%s waited=%s", url, rep.State.URL, rep.State.ReadyState, rep.State.Interactive, rep.Reloaded, rep.Wall, rep.Waited.Round(100*time.Millisecond))
+	}
 	followed := s.followAction("browser_navigate", 3*time.Second, 300*time.Millisecond, true, 0, 0, "navigate")
 	if blocked, ferr := followed.fail(); blocked != nil || ferr != nil {
 		return blocked, ferr
 	}
 	obs := followed.obs
 	s.appendActionTrace("navigate", fmt.Sprintf("navigate to %s", url))
-	return followed.stamp(s.completeAction("browser_navigate", fmt.Sprintf("navigated to %s%s", url, tabNote), url, obs, map[string]interface{}{
+	return followed.stamp(s.completeAction("browser_navigate", fmt.Sprintf("navigated to %s%s%s", url, tabNote, readyNote), url, obs, map[string]interface{}{
 		"url":   obs.Snapshot.URL,
 		"title": obs.Snapshot.Title,
 	}, true)), nil
