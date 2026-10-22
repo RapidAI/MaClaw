@@ -4,6 +4,9 @@ package tensor
 
 import (
 	"math"
+	"runtime"
+	"time"
+	"weak"
 	"sync"
 	"testing"
 )
@@ -166,7 +169,7 @@ func TestQ8ZStrippedConcurrentBuild(t *testing.T) {
 	const N, K = 2048, 512
 	_, bData, _ := q8K512TestData(4, N, K)
 	b := QuantizeToQ8(bData, N, K)
-	q8StrippedCache.Delete(b)
+	q8StrippedCache.Delete(weak.Make(b))
 	const workers = 16
 	results := make([]*q8Stripped, workers)
 	var wg sync.WaitGroup
@@ -183,4 +186,30 @@ func TestQ8ZStrippedConcurrentBuild(t *testing.T) {
 			t.Fatalf("worker %d got a distinct stripped copy", i)
 		}
 	}
+}
+
+// TestQ8ZStrippedFreedWithTensor asserts the sidecar does not outlive its
+// tensor (model unload must free it).
+func TestQ8ZStrippedFreedWithTensor(t *testing.T) {
+	const N, K = 64, 512
+	_, bData, _ := q8K512TestData(4, N, K)
+	func() {
+		b := QuantizeToQ8(bData, N, K)
+		PrewarmQ8Stripped(b)
+	}()
+	for i := 0; i < 20; i++ {
+		runtime.GC()
+		n := 0
+		q8StrippedCache.Range(func(k, _ any) bool {
+			if k.(weak.Pointer[Q8Tensor]).Value() == nil {
+				n++
+			}
+			return true
+		})
+		if n == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("sidecar of a collected tensor is still cached")
 }

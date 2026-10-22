@@ -3,7 +3,9 @@
 package tensor
 
 import (
+	"runtime"
 	"sync"
+	"weak"
 	"unsafe"
 )
 
@@ -42,7 +44,11 @@ type q8Stripped struct {
 	q []byte // N×K row-major
 }
 
-var q8StrippedCache sync.Map // *Q8Tensor → *q8Stripped
+// q8StrippedCache maps weak.Pointer[Q8Tensor] → *q8Stripped. The key is weak
+// and a cleanup drops the entry when the tensor is collected, so unloading a
+// model frees its sidecars too (a strong *Q8Tensor key leaked a full copy of
+// every Q8 weight per model load).
+var q8StrippedCache sync.Map
 
 // q8StrippedBuildMu serializes cold builds so concurrent pool workers don't
 // each build a full duplicate copy on first inference.
@@ -51,12 +57,13 @@ var q8StrippedBuildMu sync.Mutex
 // q8StrippedFor returns the scale-stripped contiguous rows of t, building the
 // copy lazily once per tensor. Values are identical to the Q8_0 blocks.
 func q8StrippedFor(t *Q8Tensor, nBlocks int) *q8Stripped {
-	if v, ok := q8StrippedCache.Load(t); ok {
+	key := weak.Make(t)
+	if v, ok := q8StrippedCache.Load(key); ok {
 		return v.(*q8Stripped)
 	}
 	q8StrippedBuildMu.Lock()
 	defer q8StrippedBuildMu.Unlock()
-	if v, ok := q8StrippedCache.Load(t); ok {
+	if v, ok := q8StrippedCache.Load(key); ok {
 		return v.(*q8Stripped)
 	}
 	n, k := t.Rows, t.Cols
@@ -71,7 +78,8 @@ func q8StrippedFor(t *Q8Tensor, nBlocks int) *q8Stripped {
 			*dst32 = *src32
 		}
 	}
-	q8StrippedCache.Store(t, s)
+	q8StrippedCache.Store(key, s)
+	runtime.AddCleanup(t, func(k weak.Pointer[Q8Tensor]) { q8StrippedCache.Delete(k) }, key)
 	return s
 }
 

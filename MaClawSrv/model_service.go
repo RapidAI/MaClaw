@@ -15,6 +15,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -355,6 +356,8 @@ func newModelServiceHandlerWith(m *srvAIModelManager, res *modelResidency, mu *s
 		res, err := m.detectUI(r.Context(), in.PNGBase64)
 		return modelServiceDetectResp{Elements: res}, err
 	})
+	// Heap profile for memory diagnosis; only reachable through the 0660 socket.
+	mux.Handle("/debug/pprof/heap", pprof.Handler("heap"))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})

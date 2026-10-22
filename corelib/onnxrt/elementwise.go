@@ -492,4 +492,7 @@ func ReleaseScratch() {
 	scratchBig.bufs = nil
 	scratchBig.elems = 0
 	scratchBig.Unlock()
+	arenaPool.Lock()
+	arenaPool.list = nil // pooled Run arenas held ~90MB after an OCR pass
+	arenaPool.Unlock()
 }
