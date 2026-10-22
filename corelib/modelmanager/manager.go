@@ -71,7 +71,7 @@ func New[T any](cfg Config[T]) *Manager[T] {
 		name:        name,
 		load:        cfg.Load,
 		close:       cfg.Close,
-		unloadDelay: cfg.UnloadDelay,
+		unloadDelay: IdleUnloadDelay(cfg.UnloadDelay),
 	}
 }
 
@@ -184,6 +184,7 @@ func (m *Manager[T]) unloadLocked() {
 		m.unloadTimer.Stop()
 		m.unloadTimer = nil
 	}
+	releaseAfterUnload()
 }
 
 // Loaded returns true if the model is currently in memory.

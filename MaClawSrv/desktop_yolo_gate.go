@@ -6,7 +6,8 @@ import (
 	"runtime/debug"
 	"strings"
 
-	"github.com/RapidAI/CodeClaw/corelib/onnxrt"
+	"github.com/RapidAI/CodeClaw/corelib/modelmanager"
+	_ "github.com/RapidAI/CodeClaw/corelib/onnxrt"
 )
 
 // One YOLO pass at the 1280 input size needs about 1 GB of scratch, so
@@ -30,8 +31,7 @@ func desktopAcquireYOLO(ctx context.Context) (func(), bool) {
 		return nil, false
 	}
 	return func() {
-		onnxrt.ReleaseScratch()
-		debug.FreeOSMemory()
+		modelmanager.ReleaseMemory()
 		debug.FreeOSMemory()
 		<-desktopYOLOSem
 	}, true
@@ -39,6 +39,5 @@ func desktopAcquireYOLO(ctx context.Context) (func(), bool) {
 
 // releaseModelScratch hands inference scratch memory back to the OS.
 func releaseModelScratch() {
-	onnxrt.ReleaseScratch()
-	debug.FreeOSMemory()
+	modelmanager.ReleaseMemory() // onnxrt scratch + FreeOSMemory, shared with guiapp
 }
