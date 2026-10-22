@@ -97,6 +97,7 @@ func (m *srvAIModelManager) screenVision(ctx context.Context, png []byte, clickP
 	}
 	ocrReady := m.ocrTierReady()
 	yoloReady, _ := yolowFileReady(m.modelPath(srvOmniParserFilename))
+	yoloReady = yoloReady && desktopScreenYOLOEnabled()
 	if !ocrReady && !yoloReady {
 		return ""
 	}
@@ -133,7 +134,12 @@ func (m *srvAIModelManager) screenVision(ctx context.Context, png []byte, clickP
 			if parser == nil || !parser.IsAvailable() {
 				return
 			}
+			release, ok := desktopAcquireYOLO(ctx)
+			if !ok {
+				return
+			}
 			found, err := parser.Parse(encoded)
+			release()
 			if err != nil {
 				log.Printf("[desktop-vision] omniparser: %v", err)
 				return
