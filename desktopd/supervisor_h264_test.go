@@ -256,3 +256,36 @@ print(reply.split("\r\n")[0], "Location: vnc.html?autoconnect=1" in reply)
 		t.Fatalf("got %q", out)
 	}
 }
+
+// verify-after-act: the focused AT-SPI element's text is read back.
+func TestSupervisorA11yFocusedText(t *testing.T) {
+	out := runSupervisorPython(t, `
+class St:
+    def __init__(self, f): self.f = f
+    def contains(self, s): return self.f and s == "F"
+class T:
+    characterCount = 5
+    def getText(self, a, b): return "hello"
+class N:
+    def __init__(self, f, kids=(), name=""): self.f, self.kids, self.name = f, list(kids), name
+    def getState(self): return St(self.f)
+    @property
+    def childCount(self): return len(self.kids)
+    def getChildAtIndex(self, i): return self.kids[i]
+    def queryText(self): return T()
+    def getRoleName(self): return "entry"
+class P:
+    STATE_FOCUSED = "F"
+    class Registry:
+        @staticmethod
+        def getDesktop(i): return None
+win = N(False, [N(False), N(True)])
+sup.a11y_windows = lambda d, s, p: [([0, 0], "app", win)]
+print(sup.a11y_focused_text({}, P))
+sup.a11y_windows = lambda d, s, p: [([0, 0], "app", N(False))]
+print(sup.a11y_focused_text({}, P))
+`)
+	if out != "{'ok': True, 'focused_text': 'hello', 'role': 'entry'}\n{'ok': True, 'focused_text': ''}" {
+		t.Fatalf("got:\n%s", out)
+	}
+}

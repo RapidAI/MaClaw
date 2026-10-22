@@ -667,15 +667,25 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		browserRaises := func() bool {
 			return desktopAppBrowserRaises(binding, scope, endpoint.CDP)
 		}
+		verifySession := func() *browser.BrowserAgentSession {
+			// Only a browser already attached is read; verifying must not
+			// attach (and raise) Chromium over the window that was typed in.
+			if binding == nil || binding.session == nil || binding.addr != endpoint.CDP || !desktopSessionConnected(binding.session) {
+				return nil
+			}
+			return binding.session
+		}
 		if action == "computer" || !desktopAppStepsLegacy(scope, args["steps"]) {
-			return operateDesktopSteps(ctx, scope, endpoint.Display, action, args, stepsArg, beforeInsert, browserRaises)
+			text, stepErr := operateDesktopSteps(ctx, scope, endpoint.Display, action, args, stepsArg, beforeInsert, browserRaises)
+			return desktopVerifySteps(ctx, scope, endpoint.Display, stepsArg, verifySession, text, stepErr)
 		}
 		text, appErr := desktopAppRun(ctx, scope, endpoint.Display, action, args, beforeInsert, browserRaises)
 		if appErr != nil || !appStepsIncludeInput(args["steps"]) {
 			return text, appErr
 		}
 		setDesktopActivity(scope.RunID, "正在看屏幕")
-		return desktopAppRunWithShot(ctx, scope, endpoint.Display, text)
+		text, appErr = desktopAppRunWithShot(ctx, scope, endpoint.Display, text)
+		return desktopVerifySteps(ctx, scope, endpoint.Display, stepsArg, verifySession, text, appErr)
 	}
 	if action == "screenshot" {
 		// The shot is the whole display. A network-error window left in front
@@ -762,6 +772,7 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		defer beginDesktopActivity(scope.RunID, "正在输入")()
 		result, callErr := session.Type(desktopArg(args, "snapshot_id"), desktopArg(args, "ref"), "", desktopArg(args, "text"))
 		text, err = desktopActionText(result, callErr)
+		text, err = desktopVerifyBrowserType(session, desktopArg(args, "text"), text, err)
 	case "press":
 		defer beginDesktopActivity(scope.RunID, desktopKeyPhrase(desktopArg(args, "key")))()
 		result, callErr := session.Press(desktopArg(args, "key"))
@@ -770,6 +781,7 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		defer beginDesktopActivity(scope.RunID, desktopScriptPhrase(desktopArg(args, "script")))()
 		result, callErr := browser.RunPageScriptBatch(session, desktopArg(args, "script"), desktopArg(args, "name"), userKey, desktopBrowserSkillRoot)
 		text, err = desktopActionText(result, callErr)
+		text, err = desktopVerifyBrowserScript(session, desktopArg(args, "script"), text, err)
 		text, err = withDesktopPages(text, err, endpoint.CDP, session.TargetID)
 	case "skill_run":
 		defer beginDesktopActivity(scope.RunID, "正在操作网页")()

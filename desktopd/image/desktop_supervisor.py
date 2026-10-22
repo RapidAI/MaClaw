@@ -5992,6 +5992,43 @@ def a11y_act(request, pyatspi):
     raise ValueError("unknown a11y action %r" % op)
 
 
+def a11y_focused_text(request, pyatspi):
+    """Text of the focused element in the active window, for MaClawSrv's
+    verify-after-act. "" when nothing focused exposes text."""
+    desktop = pyatspi.Registry.getDesktop(0)
+    visited = 0
+    for _, _, win in a11y_windows(desktop, "focused", pyatspi):
+        stack = [win]
+        while stack and visited < 5000:
+            node = stack.pop()
+            visited += 1
+            try:
+                state = node.getState()
+                focused = state.contains(pyatspi.STATE_FOCUSED)
+            except Exception:
+                continue
+            if focused:
+                text = ""
+                try:
+                    iface = node.queryText()
+                    text = iface.getText(0, min(iface.characterCount, 20000))
+                except Exception:
+                    text = a11y_clean(node.name, 20000)
+                return {"ok": True, "focused_text": text or "", "role": node.getRoleName()}
+            try:
+                count = min(node.childCount, 500)
+            except Exception:
+                count = 0
+            for i in range(count):
+                try:
+                    child = node.getChildAtIndex(i)
+                except Exception:
+                    continue
+                if child is not None:
+                    stack.append(child)
+    return {"ok": True, "focused_text": ""}
+
+
 def run_a11y(raw):
     try:
         request = json.loads(base64.b64decode(raw.encode("ascii"), validate=True).decode("utf-8"))
@@ -6007,7 +6044,9 @@ def run_a11y(raw):
         print(json.dumps({"ok": False, "error": "pyatspi is not installed in this desktop image"}))
         return 1
     try:
-        if request.get("op") == "act":
+        if request.get("focused_text"):
+            result = a11y_focused_text(request, pyatspi)
+        elif request.get("op") == "act":
             result = a11y_act(request, pyatspi)
         else:
             result = a11y_probe(request, pyatspi)
