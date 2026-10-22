@@ -102,7 +102,15 @@ jobs:
       # 4.1 + build tag on 24.04/26.04) or the compile step dies on pkg-config.
       - name: Install GTK for GUI host compile
         run: |
-          sudo apt-get update
+          # Ubuntu mirrors occasionally accept the connection and never
+          # answer, which used to hang a job indefinitely. Bound each
+          # attempt and retry a few times before giving up.
+          for attempt in 1 2 3; do
+            sudo timeout 180 apt-get update -o Acquire::Retries=2 && break
+            echo "apt-get update failed (attempt $attempt/3); retrying in 10s"
+            sleep 10
+          done
+          sudo timeout 300 apt-get install -y --no-install-recommends ca-certificates curl 2>/dev/null || true
           if sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev 2>/dev/null; then
             echo "GUIHOST_TAGS=" >> $GITHUB_ENV
           else

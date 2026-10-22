@@ -41,6 +41,7 @@ jobs:
   # Runtime composition root or transport-owned Agent behavior blocks publish.
   verify-agent-architecture:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
 
@@ -67,11 +68,18 @@ jobs:
       # 4.1 + build tag on 24.04/26.04) or the compile step dies on pkg-config.
       - name: Install GTK for GUI host compile
         run: |
-          sudo apt-get update
-          if sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev 2>/dev/null; then
+          # Ubuntu mirrors occasionally accept the connection and never
+          # answer, which used to hang a job indefinitely. Bound each
+          # attempt and retry a few times before giving up.
+          for attempt in 1 2 3; do
+            sudo timeout 180 apt-get update -o Acquire::Retries=2 && break
+            echo "apt-get update failed (attempt $attempt/3); retrying in 10s"
+            sleep 10
+          done
+          if sudo timeout 420 apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev 2>/dev/null; then
             echo "GUIHOST_TAGS=" >> $GITHUB_ENV
           else
-            sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+            sudo timeout 420 apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
             echo "GUIHOST_TAGS=webkit2_41" >> $GITHUB_ENV
           fi
 
@@ -1045,7 +1053,15 @@ jobs:
       - name: Install TigerProxy Linux GUI build dependencies
         if: matrix.goos == 'linux'
         run: |
-          sudo apt-get update
+          # Ubuntu mirrors occasionally accept the connection and never
+          # answer, which used to hang a job indefinitely. Bound each
+          # attempt and retry a few times before giving up.
+          for attempt in 1 2 3; do
+            sudo timeout 180 apt-get update -o Acquire::Retries=2 && break
+            echo "apt-get update failed (attempt $attempt/3); retrying in 10s"
+            sleep 10
+          done
+          sudo timeout 300 apt-get install -y --no-install-recommends ca-certificates curl 2>/dev/null || true
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
 
       - name: Build TigerProxy Linux
@@ -1708,7 +1724,15 @@ jobs:
 
       - name: Install Linux GUI dependencies
         run: |
-          sudo apt-get update
+          # Ubuntu mirrors occasionally accept the connection and never
+          # answer, which used to hang a job indefinitely. Bound each
+          # attempt and retry a few times before giving up.
+          for attempt in 1 2 3; do
+            sudo timeout 180 apt-get update -o Acquire::Retries=2 && break
+            echo "apt-get update failed (attempt $attempt/3); retrying in 10s"
+            sleep 10
+          done
+          sudo timeout 300 apt-get install -y --no-install-recommends ca-certificates curl 2>/dev/null || true
           # Try 4.0 first (Ubuntu 22.04), fall back to 4.1 (Ubuntu 24.04/26.04)
           if sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev 2>/dev/null; then
             TAGS="desktop,production"
@@ -1949,7 +1973,15 @@ jobs:
 
       - name: Install Linux GUI dependencies
         run: |
-          sudo apt-get update
+          # Ubuntu mirrors occasionally accept the connection and never
+          # answer, which used to hang a job indefinitely. Bound each
+          # attempt and retry a few times before giving up.
+          for attempt in 1 2 3; do
+            sudo timeout 180 apt-get update -o Acquire::Retries=2 && break
+            echo "apt-get update failed (attempt $attempt/3); retrying in 10s"
+            sleep 10
+          done
+          sudo timeout 300 apt-get install -y --no-install-recommends ca-certificates curl 2>/dev/null || true
           if sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev 2>/dev/null; then
             TAGS="desktop,production"
             echo "WEBKIT_SONAME=libwebkit2gtk-4.0.so.37" >> $GITHUB_ENV
@@ -2358,7 +2390,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
+          # Ubuntu mirrors occasionally accept the connection and never
+          # answer, which used to hang a job indefinitely. Bound each
+          # attempt and retry a few times before giving up.
+          for attempt in 1 2 3; do
+            sudo timeout 180 apt-get update -o Acquire::Retries=2 && break
+            echo "apt-get update failed (attempt $attempt/3); retrying in 10s"
+            sleep 10
+          done
+          sudo timeout 300 apt-get install -y --no-install-recommends ca-certificates curl 2>/dev/null || true
           # Wails v2 defaults to WebKitGTK 4.0, but current Ubuntu runners may
           # expose only 4.1. Keep the installed development package and Wails
           # build tag in lockstep so CGO asks pkg-config for the right API.
