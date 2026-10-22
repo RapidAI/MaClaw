@@ -28,6 +28,10 @@ type ActiveDesktopRun struct {
 	WaitingForUser bool       `json:"waiting_for_user,omitempty"`
 	Stale          bool       `json:"stale,omitempty"`
 	StartedAt      *time.Time `json:"started_at,omitempty"`
+	// Paused is set while the run is held at a step boundary by pause.
+	Paused         bool       `json:"paused,omitempty"`
+	PausedAt       *time.Time `json:"paused_at,omitempty"`
+	PauseExpiresAt *time.Time `json:"pause_expires_at,omitempty"`
 }
 
 type srvRunRow struct {
@@ -136,6 +140,7 @@ func (s *Service) ActiveDesktopRuns(ctx context.Context, tenantID, userID, botID
 			}
 		}
 	}
+	s.markPausedRuns(tenantID, userID, botID, items)
 	sort.SliceStable(items, func(i, j int) bool {
 		if (items[i].Status == "running") != (items[j].Status == "running") {
 			return items[i].Status == "running"

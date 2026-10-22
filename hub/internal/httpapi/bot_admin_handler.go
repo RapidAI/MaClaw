@@ -90,6 +90,10 @@ func writeBotUserError(w http.ResponseWriter, r *http.Request, principal *auth.M
 		status, code, message = http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings"
 	case errors.Is(err, botmgmt.ErrDisabled):
 		status, code, message = http.StatusForbidden, "BOT_DISABLED", botmgmt.DisabledMessage
+	case errors.Is(err, botmgmt.ErrRunNotRunning):
+		status, code, message = http.StatusConflict, "RUN_NOT_RUNNING", botmgmt.ErrRunNotRunning.Error()
+	case errors.Is(err, botmgmt.ErrPauseUnsupported):
+		status, code, message = http.StatusNotImplemented, "PAUSE_UNSUPPORTED", botmgmt.ErrPauseUnsupported.Error()
 	case errors.Is(err, botmgmt.ErrDesktopBusy):
 		status, code, message = http.StatusConflict, "DESKTOP_BUSY", botmgmt.ErrDesktopBusy.Error()
 	case errors.Is(err, botmgmt.ErrNotPrimary):

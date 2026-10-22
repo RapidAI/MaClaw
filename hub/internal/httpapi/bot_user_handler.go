@@ -131,17 +131,28 @@ func PostBotUserHandler(svc *botmgmt.Service, identity botAuthenticator) http.Ha
 			return
 		}
 		var in struct {
-			Name        string `json:"name"`
-			Description string `json:"description"`
+			Name        string  `json:"name"`
+			Description string  `json:"description"`
+			Color       *string `json:"color"`
+			Shape       *string `json:"shape"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
+			return
+		}
+		if _, _, err := botmgmt.NormalizeBotAppearance(deref(in.Color), deref(in.Shape)); err != nil {
+			writeBotUserError(w, r, principal, err, "")
 			return
 		}
 		bot, err := svc.CreateBotForUser(r.Context(), principal.TenantID, principal.UserID, in.Name, in.Description)
 		if err != nil {
 			writeBotUserError(w, r, principal, err, "")
 			return
+		}
+		if in.Color != nil || in.Shape != nil {
+			if styled, err := svc.SetBotAppearanceForUser(r.Context(), principal.TenantID, principal.UserID, bot.ID, in.Color, in.Shape); err == nil {
+				bot = styled
+			}
 		}
 		writeJSON(w, http.StatusCreated, bot)
 	}
@@ -158,17 +169,30 @@ func PatchBotUserHandler(svc *botmgmt.Service, identity botAuthenticator) http.H
 			return
 		}
 		var in struct {
-			Name        string `json:"name"`
-			Description string `json:"description"`
+			Name        string  `json:"name"`
+			Description string  `json:"description"`
+			Color       *string `json:"color"`
+			Shape       *string `json:"shape"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
+			return
+		}
+		if _, _, err := botmgmt.NormalizeBotAppearance(deref(in.Color), deref(in.Shape)); err != nil {
+			writeBotUserError(w, r, principal, err, "")
 			return
 		}
 		bot, err := svc.UpdateBotForUser(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.Name, in.Description)
 		if err != nil {
 			writeBotUserError(w, r, principal, err, "")
 			return
+		}
+		if in.Color != nil || in.Shape != nil {
+			bot, err = svc.SetBotAppearanceForUser(r.Context(), principal.TenantID, principal.UserID, bot.ID, in.Color, in.Shape)
+			if err != nil {
+				writeBotUserError(w, r, principal, err, "")
+				return
+			}
 		}
 		writeJSON(w, http.StatusOK, bot)
 	}

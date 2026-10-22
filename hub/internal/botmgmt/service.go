@@ -74,6 +74,11 @@ type Bot struct {
 	// in the owner's desktop container; empty or "shared" is the owner's
 	// desktop, as before.
 	DesktopMode string `json:"desktop_mode,omitempty"`
+	// Color and Shape are the bot's badge look chosen in the GUI, stored
+	// here so it follows the account across computers. Empty is "not set";
+	// the GUI then derives a default. See bot_appearance.go.
+	Color string `json:"color,omitempty"`
+	Shape string `json:"shape,omitempty"`
 }
 
 type record struct {
@@ -205,6 +210,8 @@ type Service struct {
 	// desktopAdmits is the reply of a run that was accepted and is still
 	// executing, or has finished, after the admitting call returned.
 	desktopAdmits map[string]*desktopAdmitState
+	// runPauses records runs this Hub paused on MaClawSrv (desktop_pause.go).
+	runPauses sync.Map
 }
 
 // asyncPreferKey marks one MaClawSrv call as Prefer: respond-async.
