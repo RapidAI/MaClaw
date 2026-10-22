@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
@@ -133,6 +134,8 @@ const (
 	// desktopBotReadAttempts is how many calls one reading gets. A second try
 	// is spent only on a failure that passing time is likely to clear.
 	desktopBotReadAttempts = 3
+	// desktopBotHubReadCapSec bounds the Hub's last-resort reading.
+	desktopBotHubReadCapSec = 35
 )
 
 var (
@@ -341,13 +344,22 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 		if timeoutSec < 1 {
 			timeoutSec = 1
 		}
-		raw, err := desktopBotUnderstandLLM(ctx, a, desktopBotUnderstandRequest{
+		// The Hub attempt is the last resort after the person's model gave
+		// nothing usable; it hung 80s on 2026-10-22. Past this cap the
+		// person's own words go to the bot instead.
+		callCtx, callCancel := ctx, context.CancelFunc(func() {})
+		if useHub && timeoutSec > desktopBotHubReadCapSec {
+			timeoutSec = desktopBotHubReadCapSec
+			callCtx, callCancel = context.WithTimeout(ctx, time.Duration(desktopBotHubReadCapSec)*time.Second)
+		}
+		raw, err := desktopBotUnderstandLLM(callCtx, a, desktopBotUnderstandRequest{
 			systemPrompt: systemPrompt,
 			userPrompt:   userPrompt,
 			timeoutSec:   timeoutSec,
 			fallback:     useFallback && !useHub,
 			hub:          useHub,
 		})
+		callCancel()
 		if err != nil {
 			log.Printf("[desktop-bot-understand] phase=%s attempt=%d elapsed=%s earlier=%d text_len=%d err=%v",
 				phase, attempt, time.Since(started).Round(time.Millisecond), len(earlier), utf8.RuneCountInString(text), err)
@@ -357,6 +369,16 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 			// remainder either. An upstream that named a wait is given that
 			// wait first, capped so the next attempt still has room.
 			lastClass, lastOutcome = desktopBotReadingUnreachable, "no answer"
+			// The person's provider is out of quota: asking it again is the
+			// same 429. Go straight to the Hub's shared model, once.
+			if llm.IsQuotaExhaustedError(err) {
+				if !useHub && attempt < desktopBotReadAttempts {
+					log.Printf("[desktop-bot-understand] phase=%s attempt=%d quota exhausted, switching to hub model", phase, attempt)
+					useHub, useFallback = true, true
+					continue
+				}
+				break
+			}
 			if attempt < desktopBotReadAttempts && desktopBotReadFaultClears(err) && time.Until(deadline)*2 > desktopBotReadBudget {
 				if wait := desktopBotReadRetryWait(err, deadline); wait > 0 {
 					log.Printf("[desktop-bot-understand] phase=%s attempt=%d waiting=%s for upstream retry hint", phase, attempt, wait.Round(time.Millisecond))
@@ -374,6 +396,7 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 		if parseErr != nil {
 			log.Printf("[desktop-bot-understand] phase=%s attempt=%d elapsed=%s earlier=%d text_len=%d result_len=%d parse_err=%v",
 				phase, attempt, time.Since(started).Round(time.Millisecond), len(earlier), utf8.RuneCountInString(text), utf8.RuneCountInString(raw), parseErr)
+			log.Printf("[desktop-bot-understand] phase=%s attempt=%d unparsed_tail=%q", phase, attempt, desktopBotRedactedSnippet(raw, 240))
 			lastClass, lastOutcome = desktopBotReadingUnread, "answer was not a reading"
 			// An empty or cut answer is often a one-off on a fast model. Ask
 			// once more, on the other model, while the budget allows.
@@ -703,6 +726,69 @@ func parseDesktopBotUnderstanding(raw string) (*DesktopBotUnderstanding, error) 
 // lastDesktopBotUnderstanding keeps the last balanced object that has both
 // fields. A model may mention a brace, or repeat an empty placeholder, before
 // the object it means. The placeholder with both fields set to "..." is skipped.
+// desktopBotUnderstandingAliases fills told and instruction from the names a
+// model uses instead (reply / say / message, order / task / work_order), and
+// from a string that is not a string field (a list of steps) in instruction.
+func desktopBotUnderstandingAliases(body string, parsed *DesktopBotUnderstanding) {
+	if strings.TrimSpace(parsed.Told) != "" && strings.TrimSpace(parsed.Instruction) != "" {
+		return
+	}
+	var loose map[string]any
+	if json.Unmarshal([]byte(body), &loose) != nil {
+		return
+	}
+	pick := func(keys ...string) string {
+		for _, key := range keys {
+			for name, value := range loose {
+				if !strings.EqualFold(name, key) {
+					continue
+				}
+				switch v := value.(type) {
+				case string:
+					if t := strings.TrimSpace(v); t != "" {
+						return t
+					}
+				case []any:
+					var parts []string
+					for _, item := range v {
+						if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
+							parts = append(parts, strings.TrimSpace(text))
+						}
+					}
+					if len(parts) > 0 {
+						return strings.Join(parts, "\n")
+					}
+				}
+			}
+		}
+		return ""
+	}
+	if strings.TrimSpace(parsed.Told) == "" {
+		parsed.Told = pick("told", "reply", "say", "message", "response")
+	}
+	if strings.TrimSpace(parsed.Instruction) == "" {
+		parsed.Instruction = pick("instruction", "order", "task", "work_order", "workorder", "instructions", "steps")
+	}
+}
+
+// desktopBotRedactedSnippet is the tail of a raw answer for a parse-failure
+// log: whitespace folded, long digit runs and anything key-like masked.
+func desktopBotRedactedSnippet(raw string, max int) string {
+	text := strings.Join(strings.Fields(raw), " ")
+	text = desktopBotSnippetDigits.ReplaceAllString(text, "#")
+	text = desktopBotSnippetKeys.ReplaceAllString(text, "***")
+	runes := []rune(text)
+	if len(runes) > max {
+		runes = runes[len(runes)-max:]
+	}
+	return string(runes)
+}
+
+var (
+	desktopBotSnippetDigits = regexp.MustCompile(`\d{6,}`)
+	desktopBotSnippetKeys   = regexp.MustCompile(`(?i)(sk-|bearer\s+)[A-Za-z0-9._\-]{8,}`)
+)
+
 func lastDesktopBotUnderstanding(raw string) (*DesktopBotUnderstanding, bool) {
 	var found *DesktopBotUnderstanding
 	for _, body := range desktopBotJSONObjects(raw) {
@@ -710,6 +796,7 @@ func lastDesktopBotUnderstanding(raw string) (*DesktopBotUnderstanding, bool) {
 		if err := json.Unmarshal([]byte(body), &parsed); err != nil {
 			continue
 		}
+		desktopBotUnderstandingAliases(body, &parsed)
 		parsed.Told = strings.TrimSpace(parsed.Told)
 		parsed.Instruction = strings.TrimSpace(parsed.Instruction)
 		parsed.Persona = strings.TrimSpace(parsed.Persona)

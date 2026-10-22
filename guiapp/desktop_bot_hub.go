@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -168,7 +169,7 @@ func (a *App) WatchDesktopBot(botID string, epoch int) (*DesktopBotWatch, error)
 	}
 	// 60s matches the Hub watch-open budget. The poll used to give up at 15s
 	// and the panel showed a disconnect while the container was still starting.
-	err := a.desktopBotCall(context.Background(), http.MethodPost, "/api/v1/bots/"+url.PathEscape(botID)+"/desktop", body, &out, 60*time.Second)
+	err := a.desktopBotCallRetryingGateway(context.Background(), http.MethodPost, "/api/v1/bots/"+url.PathEscape(botID)+"/desktop", body, &out, 60*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -283,7 +284,7 @@ func (a *App) ReleaseDesktopBotWatch(botID string, epoch int) error {
 	if epoch > 0 {
 		payload["epoch"] = epoch
 	}
-	return a.desktopBotCall(context.Background(), http.MethodPost, "/api/v1/bots/"+url.PathEscape(botID)+"/desktop", payload, nil, 15*time.Second)
+	return a.desktopBotCallRetryingGateway(context.Background(), http.MethodPost, "/api/v1/bots/"+url.PathEscape(botID)+"/desktop", payload, nil, 15*time.Second)
 }
 
 type hubBot struct {
@@ -2215,6 +2216,40 @@ func desktopBotResponseLimit(path string) int64 {
 		return 1<<20 + 1_200_000
 	}
 	return 1 << 20
+}
+
+// desktopBotGatewayRetryWaits are the pauses before each retry of a call
+// that Hub answered 502/503/504 or could not reach MaClawSrv for: a
+// MaClawSrv restart (2026-10-22 20:08:58) takes a few seconds.
+var desktopBotGatewayRetryWaits = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
+
+func desktopBotGatewayRetryable(status int, err error) bool {
+	if err == nil {
+		return false
+	}
+	if status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout {
+		return true
+	}
+	return status == 0 && strings.Contains(err.Error(), "不可达")
+}
+
+// desktopBotCallRetryingGateway is desktopBotCall for an idempotent desktop
+// open/release: a gateway failure is tried again a few times before it is
+// reported.
+func (a *App) desktopBotCallRetryingGateway(ctx context.Context, method, path string, body any, dest any, timeout time.Duration) error {
+	status, err := a.desktopBotExchange(ctx, method, path, body, dest, timeout, nil)
+	for i := 0; i < len(desktopBotGatewayRetryWaits) && desktopBotGatewayRetryable(status, err); i++ {
+		timer := time.NewTimer(desktopBotGatewayRetryWaits[i])
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return err
+		case <-timer.C:
+		}
+		log.Printf("[desktop-bot] %s %s retry %d after status=%d err=%v", method, path, i+1, status, err)
+		status, err = a.desktopBotExchange(ctx, method, path, body, dest, timeout, nil)
+	}
+	return err
 }
 
 func (a *App) desktopBotCall(ctx context.Context, method, path string, body any, dest any, timeout time.Duration) error {

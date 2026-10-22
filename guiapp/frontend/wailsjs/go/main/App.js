@@ -5918,3 +5918,11 @@ export function FileCompanionFigureDataURL(arg1) {
 export function WriteDesktopBotAck(arg1) {
   return window['go']['main']['App']['WriteDesktopBotAck'](arg1);
 }
+
+export function GetHubConnectionState() {
+  return window['go']['main']['App']['GetHubConnectionState']();
+}
+
+export function ReconnectHub(arg1) {
+  return window['go']['main']['App']['ReconnectHub'](arg1);
+}

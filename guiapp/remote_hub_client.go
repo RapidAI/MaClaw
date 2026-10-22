@@ -81,6 +81,14 @@ type RemoteHubClient struct {
 	// to the new Hub instance.
 	reconnectImmediate atomic.Bool
 
+	// Reconnect state shown to the UI: when the next attempt is due, how
+	// many attempts failed in a row, and whether "ready" still owes the
+	// app after starting degraded.
+	nextRetryAt     atomic.Int64
+	retryAttempts   atomic.Int32
+	degradedAtStart atomic.Bool
+	watchOnce       sync.Once
+
 	// Preview delta batching: accumulate lines per session and flush periodically
 	// to reduce WebSocket message frequency for PWA viewers.
 	previewMu      sync.Mutex
@@ -825,6 +833,11 @@ func (c *RemoteHubClient) ConnectAuthOnly() error {
 		// lastError already set by connectAuthOnlyLocked
 		c.mu.Unlock()
 		log.Printf("[asyncHubConnect] ConnectAuthOnly failed total=%s err=%v", time.Since(start), err)
+		// A Hub restarting at startup (bad handshake, 502) must not leave
+		// the app offline until it is restarted: keep retrying.
+		c.allowReconnect.Store(true)
+		c.degradedAtStart.Store(true)
+		c.triggerReconnect()
 		return err
 	}
 
@@ -3661,8 +3674,14 @@ func (c *RemoteHubClient) reconnectLoop() {
 	}()
 	defer c.reconnecting.Store(false)
 
-	backoff := 500 * time.Millisecond
-	maxBackoff := 30 * time.Second
+	defer c.nextRetryAt.Store(0)
+	// Drain a stale wake so it does not cut the first wait short.
+	select {
+	case <-c.reconnectCh:
+	default:
+	}
+	backoff := hubReconnectMinBackoff
+	maxBackoff := hubReconnectMaxBackoff
 	// Fast reconnect: when Hub sent close(1001) indicating planned shutdown,
 	// use minimal backoff so the client reconnects within ~100-200ms of the
 	// new Hub instance becoming available.
@@ -3674,32 +3693,20 @@ func (c *RemoteHubClient) reconnectLoop() {
 	consecutiveAuthFailures := 0
 	const maxAuthFailuresBeforeClear = 3 // require 3 consecutive definitive rejections before clearing
 
-	// Cap total reconnect duration. After this, stop retrying and let the next
-	// user-initiated action (message send, UI interaction) trigger a fresh connect.
-	// This prevents an idle client from burning CPU/network forever on a down Hub.
-	reconnectStart := time.Now()
-	const maxReconnectDuration = 10 * time.Minute
-
+	// Retry forever: backoff is capped at a minute with jitter, so a down
+	// Hub costs one dial a minute, and the app comes back by itself.
 	for c.allowReconnect.Load() {
 		if c.IsConnected() {
 			return
 		}
 
-		// Give up after maxReconnectDuration. The next user action will trigger
-		// a fresh Connect() attempt. Credentials remain intact.
-		if time.Since(reconnectStart) > maxReconnectDuration {
-			log.Printf("[hub-client] reconnectLoop giving up after %s (credentials preserved, will retry on next action)", time.Since(reconnectStart))
-			c.mu.Lock()
-			c.lastError = "Hub reconnection timed out, will retry on next action"
-			c.mu.Unlock()
-			c.app.emitRemoteStateChanged()
-			return
-		}
-
 		err := c.Connect()
 		if err == nil {
+			c.onHubReconnected()
 			return
 		}
+		c.retryAttempts.Add(1)
+		c.app.emitHubConnectionState()
 
 		// Definitive auth rejection: Hub explicitly says credentials are invalid.
 		// Require multiple consecutive rejections to rule out transient server issues
@@ -3736,13 +3743,22 @@ func (c *RemoteHubClient) reconnectLoop() {
 		// Sleep with early-exit check: break the backoff into 500ms chunks so
 		// we can respond quickly when allowReconnect is set to false (e.g.,
 		// user clicks "Clear" / ClearRemoteActivation).
-		remaining := backoff
+		wait := hubReconnectJitter(backoff)
+		c.nextRetryAt.Store(time.Now().Add(wait).UnixMilli())
+		c.app.emitHubConnectionState()
+		remaining := wait
+	sleep:
 		for remaining > 0 && c.allowReconnect.Load() {
 			chunk := 500 * time.Millisecond
 			if chunk > remaining {
 				chunk = remaining
 			}
-			time.Sleep(chunk)
+			select {
+			case <-c.reconnectCh:
+				// Network came back, the app resumed, or the person asked.
+				break sleep
+			case <-time.After(chunk):
+			}
 			remaining -= chunk
 		}
 

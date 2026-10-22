@@ -5,6 +5,7 @@ import { materialTooLarge, materialUploadId, splitMaterials, uploadMaterial, wit
 import { createPortal } from 'react-dom';
 import { useDialog } from '../CustomDialog';
 import { EventsOn } from '../../../wailsjs/runtime';
+import { HubConnectionBadge } from './HubConnectionBadge';
 import { normalizeSidebarHubCredits } from '../../utils/sidebarHubCredits';
 import { openSettingsTab } from '../../utils/settingsNavigation';
 import {
@@ -4655,9 +4656,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             try {
                 const activeRuns = (await GetActiveDesktopRuns(botId) as Array<{ run_id?: string; task_text?: string; waiting_for_user?: boolean }>) || [];
                 const candidates = activeRuns.filter(item => item && !item.waiting_for_user && String(item.run_id || '').trim() !== '');
-                if (candidates.length > 0 && content) {
+                // The reading already failed (model down or unparseable): the
+                // supplement check uses the same model, so it would only hold
+                // the person's words back. Send them as their own job.
+                const readingFailed = !!String(understoodForAck.fallback ?? understoodForAck.Fallback ?? '').trim();
+                if (candidates.length > 0 && content && !readingFailed) {
                     const checked = await Promise.all(candidates.map(async candidate => {
-                        const verdict = await EvaluateDesktopTaskSupplement(String(candidate.task_text || ''), content.trim(), lang) as { is_supplement?: boolean; instruction?: string } | null;
+                        // A slow or hung model must not keep the message from going out.
+                        const verdict = await withinBudget(EvaluateDesktopTaskSupplement(String(candidate.task_text || ''), content.trim(), lang) as Promise<{ is_supplement?: boolean; instruction?: string } | null>, 8000);
                         return { candidate, verdict };
                     }));
                     const matches = checked.filter(item => item.verdict && item.verdict.is_supplement);
@@ -5967,6 +5973,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     <div className="desktop-bot-workspace__bar-head">
                         <h1><BotRailIcon size={20} testId="desktop-bot-title-icon" className="desktop-bot-workspace__title-icon" />{text.listTitle}</h1>
                         <div className="desktop-bot-workspace__bar-actions">
+                            <HubConnectionBadge lang={lang} />
                             {customModelMark ? (
                                 <span
                                     className="desktop-bot-workspace__custom-model"

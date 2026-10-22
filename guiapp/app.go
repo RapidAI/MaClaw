@@ -2394,6 +2394,7 @@ func (a *App) asyncHubConnect() {
 		log.Printf("[asyncHubConnect] no hub client available, skipping")
 		return
 	}
+	hubClient.watchOnce.Do(func() { go hubClient.watchHubConnection(nil) })
 
 	// ConnectAuthOnly performs WebSocket dial + sendMachineAuth + read auth response
 	// without calling sendMachineHelloLocked(). This allows us to emit "ready"

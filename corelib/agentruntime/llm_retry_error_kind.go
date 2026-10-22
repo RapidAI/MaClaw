@@ -224,6 +224,10 @@ func IsTransientServerError(err error) bool {
 	if IsHubPeriodLimitError(err) {
 		return false
 	}
+	// An exhausted account quota is a 429 that waiting does not fix.
+	if llm.IsQuotaExhaustedError(err) {
+		return false
+	}
 	// Client/parent canceled while Hub was pacing — do not auto-retry as if the server is busy.
 	if IsHubRateLimitWaitCanceledError(err) {
 		return false

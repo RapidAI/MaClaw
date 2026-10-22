@@ -245,6 +245,11 @@ func hubDenialForbidsRetry(err error) bool {
 // Markers match Hub's JSON body and the desktop classifier in agentruntime.
 // This package cannot import agentruntime, because that package imports agent.
 func hubDenialTextForbidsRetry(text string) bool {
+	// A provider whose quota is used up answers the same 429 until it is
+	// topped up: stop instead of retrying for minutes.
+	if llm.IsQuotaExhaustedText(text) {
+		return true
+	}
 	text = strings.ToLower(text)
 	return strings.Contains(text, "llm_service_period_limited") ||
 		strings.Contains(text, "llm_endpoint_user_rate_limit_wait_canceled") ||

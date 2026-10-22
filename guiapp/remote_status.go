@@ -344,6 +344,7 @@ func (a *App) ListValidProviders(toolName string) ([]ProviderView, error) {
 
 func (a *App) emitRemoteStateChanged() {
 	a.emitEvent("remote-state-changed")
+	a.emitHubConnectionState()
 }
 
 func (a *App) ensureWorkflowAllowsRemoteToolCall(toolName string, args map[string]interface{}) error {

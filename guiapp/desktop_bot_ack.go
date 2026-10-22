@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 // DesktopBotAckRequest asks for the one chat line a desktop bot says when
@@ -94,9 +96,14 @@ func (a *App) WriteDesktopBotAck(req DesktopBotAckRequest) (string, error) {
 func (a *App) writeDesktopBotAck(parent context.Context, req DesktopBotAckRequest) (string, error) {
 	user := desktopBotAckUser(req)
 	var lastErr error
+	quotaOut := false
 	for i, attempt := range desktopBotAckAttempts {
 		if parent.Err() != nil {
 			return "", parent.Err()
+		}
+		// Out of quota on the person's model: only the Hub attempt can answer.
+		if quotaOut && !attempt.hub {
+			continue
 		}
 		ctx, cancel := context.WithTimeout(parent, time.Duration(attempt.timeoutSec+2)*time.Second)
 		raw, err := desktopBotUnderstandLLM(ctx, a, desktopBotUnderstandRequest{
@@ -120,6 +127,12 @@ func (a *App) writeDesktopBotAck(parent context.Context, req DesktopBotAckReques
 			}
 		}
 		lastErr = err
+		if llm.IsQuotaExhaustedError(err) {
+			if attempt.hub {
+				break
+			}
+			quotaOut = true
+		}
 		log.Printf("[desktop-bot-ack] kind=%s attempt=%d err=%v", req.Kind, i+1, err)
 	}
 	return "", lastErr
