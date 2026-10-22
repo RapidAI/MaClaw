@@ -242,6 +242,14 @@ func (s *BrowserAgentSession) clickWithCandidates(candidates []string, resolved 
 			lastErr = err
 		}
 	}
+	if resolved != nil && resolved.BackendNodeID == 0 && attempts == 0 {
+		attempts++
+		used, err := s.clickRefFallback(resolved)
+		if err == nil {
+			return used, attempts, nil
+		}
+		lastErr = err
+	}
 	if lastErr != nil {
 		return "", attempts, lastErr
 	}

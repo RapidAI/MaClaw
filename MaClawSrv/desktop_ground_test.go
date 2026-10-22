@@ -60,7 +60,7 @@ func TestGroundDesktopStepsUsesGrounder(t *testing.T) {
 	}))
 	defer srv.Close()
 	shots := stubDesktopGround(t, corelib.MaclawLLMConfig{URL: srv.URL, Model: "qwen3-vl", Protocol: "openai"}, true)
-	raw := []any{map[string]any{"action": "left_click", "target": "发送"}, map[string]any{"action": "type", "text": "hi"}}
+	raw := []any{map[string]any{"action": "left_click", "target": "确定"}, map[string]any{"action": "type", "text": "hi"}}
 	out, notes, err := groundDesktopSteps(context.Background(), agentruntime.Scope{RunID: "g4"}, ":1", raw)
 	if err != nil {
 		t.Fatal(err)
@@ -69,7 +69,7 @@ func TestGroundDesktopStepsUsesGrounder(t *testing.T) {
 	if step["x"] != 300 || step["y"] != 200 || step["target"] != nil {
 		t.Fatalf("step=%v", step)
 	}
-	if raw[0].(map[string]any)["target"] != "发送" {
+	if raw[0].(map[string]any)["target"] != "确定" {
 		t.Fatal("caller's step must not be mutated")
 	}
 	if *shots != 1 || len(notes) != 1 || !strings.Contains(notes[0], "(300,200)") {

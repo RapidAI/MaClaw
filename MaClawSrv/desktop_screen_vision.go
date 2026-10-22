@@ -44,7 +44,25 @@ func desktopPNGTooLarge(data []byte) bool {
 // the chat model cannot see images. Nil leaves the screenshot caption unchanged.
 var desktopScreenVision func(ctx context.Context, png []byte, clickPixels bool) string
 
+// desktopOCRLines reads the text lines of one screenshot with local OCR
+// (no grounding model fallback). Nil when OCR is not installed.
+var desktopOCRLines func(ctx context.Context, img []byte) []taskengine.OCRResult
+
 func installDesktopScreenVision(m *srvAIModelManager) {
+	desktopOCRLines = func(ctx context.Context, img []byte) []taskengine.OCRResult {
+		if m == nil || len(img) == 0 || !m.ocrTierReady() {
+			return nil
+		}
+		provider := m.ocrProvider()
+		if provider == nil || !provider.IsAvailable() {
+			return nil
+		}
+		found, err := provider.Recognize(base64.StdEncoding.EncodeToString(img))
+		if err != nil {
+			return nil
+		}
+		return taskOCRFromBrowser(found)
+	}
 	desktopScreenVision = func(ctx context.Context, png []byte, clickPixels bool) string {
 		if m == nil {
 			return ""

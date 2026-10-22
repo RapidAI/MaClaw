@@ -19,6 +19,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/corelib/grounding"
+	"github.com/RapidAI/CodeClaw/corelib/taskengine"
 )
 
 var desktopGroundHTTP = &http.Client{Timeout: grounding.CallTimeout}
@@ -107,10 +109,15 @@ func groundDesktopSteps(ctx context.Context, scope agentruntime.Scope, display s
 	if len(need) == 0 {
 		return raw, nil, nil
 	}
-	cfg, ok := desktopGrounderConfig()
-	if !ok {
-		return raw, nil, fmt.Errorf("step %d names a target but no grounding model is configured; give x,y from the last screenshot (or an id from app_probe) instead of target", need[0]+1)
+	for _, i := range need {
+		t, _ := desktopStepNeedsGround(list[i].(map[string]any))
+		for _, label := range desktopTargetLabels(t) {
+			if desktopIsPublishLabel(label) && !desktopPublishAllowed(ctx) {
+				return raw, nil, fmt.Errorf("%s", desktopPublishRefusal)
+			}
+		}
 	}
+	cfg, ok := desktopGrounderConfig()
 	if len(need) > 1 || need[0] != 0 {
 		// The screen changes after each step, so only a leading target can be
 		// grounded on the screenshot taken now.
@@ -128,6 +135,16 @@ func groundDesktopSteps(ctx context.Context, scope agentruntime.Scope, display s
 	frame.set(shot, opts)
 	m := list[0].(map[string]any)
 	target, _ := desktopStepNeedsGround(m)
+	if !ok {
+		// No grounding model: find the target's label with local OCR on
+		// this screenshot and click its center.
+		x, y, label, found := desktopLocalGround(ctx, shot.Data, target)
+		if !found {
+			return raw, nil, fmt.Errorf("step 1 names a target but no grounding model is configured and local OCR did not find %q on screen; give x,y from the last screenshot (or an id from app_probe), or use a browser probe ref", target)
+		}
+		log.Printf("[desktop-ground] local ocr target_len=%d label=%q at %d,%d", len(target), label, x, y)
+		return desktopGroundedSteps(list, m, x, y), []string{fmt.Sprintf("target %q found by local OCR as %q at (%d,%d) in a %dx%d screenshot", target, label, x, y, shot.ImageWidth, shot.ImageHeight)}, nil
+	}
 	mime := shot.MIME
 	if mime == "" {
 		mime = "image/png"
@@ -152,4 +169,72 @@ func groundDesktopSteps(ctx context.Context, scope agentruntime.Scope, display s
 	out[0] = step
 	note := fmt.Sprintf("target %q grounded at (%d,%d) in a %dx%d screenshot by %s", target, res.X, res.Y, shot.ImageWidth, shot.ImageHeight, cfg.Model)
 	return out, []string{note}, nil
+}
+
+func desktopGroundedSteps(list []any, m map[string]any, x, y int) []any {
+	out := make([]any, len(list))
+	copy(out, list)
+	step := map[string]any{}
+	for k, v := range m {
+		step[k] = v
+	}
+	delete(step, "target")
+	step["x"], step["y"] = x, y
+	out[0] = step
+	return out
+}
+
+var desktopQuotedLabelRe = regexp.MustCompile("[\"'“”‘’「」『』《》]([^\"'“”‘’「」『』《》]{1,30})[\"'“”‘’「」『』《》]")
+var desktopCJKRunRe = regexp.MustCompile(`[\p{Han}]{1,12}`)
+
+// desktopTargetLabels are the visible words a target names: a quoted label,
+// else its CJK runs, else the whole target.
+func desktopTargetLabels(target string) []string {
+	var out []string
+	for _, m := range desktopQuotedLabelRe.FindAllStringSubmatch(target, -1) {
+		out = append(out, strings.TrimSpace(m[1]))
+	}
+	if len(out) == 0 {
+		out = append(out, desktopCJKRunRe.FindAllString(target, -1)...)
+	}
+	if len(out) == 0 {
+		out = append(out, strings.TrimSpace(target))
+	}
+	return out
+}
+
+// desktopLocalGround finds a target's label in the screenshot by OCR. An
+// exact line match wins; else the shortest line containing the label.
+func desktopLocalGround(ctx context.Context, img []byte, target string) (int, int, string, bool) {
+	if desktopOCRLines == nil {
+		return 0, 0, "", false
+	}
+	lines := desktopOCRLines(ctx, img)
+	return desktopPickOCR(lines, desktopTargetLabels(target))
+}
+
+func desktopPickOCR(lines []taskengine.OCRResult, labels []string) (int, int, string, bool) {
+	norm := func(s string) string { return strings.ToLower(strings.Join(strings.Fields(s), "")) }
+	for _, label := range labels {
+		want := norm(label)
+		if want == "" {
+			continue
+		}
+		best, bestLen := -1, 1<<30
+		for i, l := range lines {
+			got := norm(l.Text)
+			if got == want {
+				best, bestLen = i, 0
+				break
+			}
+			if strings.Contains(got, want) && len([]rune(got)) <= len([]rune(want))+6 && len(got) < bestLen {
+				best, bestLen = i, len(got)
+			}
+		}
+		if best >= 0 {
+			b := lines[best].BBox
+			return b[0] + b[2]/2, b[1] + b[3]/2, lines[best].Text, true
+		}
+	}
+	return 0, 0, "", false
 }

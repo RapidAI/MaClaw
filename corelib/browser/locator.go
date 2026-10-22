@@ -112,7 +112,7 @@ func (s *BrowserAgentSession) locatorCandidates(snapshotID, ref, selector string
 			return nil, nil, err
 		}
 		candidates := uniqueSelectorCandidates(append([]string{resolved.Selector}, resolved.SelectorCandidates...))
-		if len(candidates) == 0 && resolved.BackendNodeID == 0 {
+		if len(candidates) == 0 && resolved.BackendNodeID == 0 && !refFindableAgain(resolved) {
 			return nil, resolved, fmt.Errorf("ref %s has no selector candidates; run probe again", resolved.Ref)
 		}
 		return candidates, resolved, nil
