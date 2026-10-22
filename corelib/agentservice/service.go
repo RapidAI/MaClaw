@@ -405,6 +405,9 @@ func NewService(cfg Config, store Store, executor Executor) (*Service, error) {
 	if _, pending, recoverErr := service.recoverAgentSkillInstallCompensations(); recoverErr != nil || pending > 0 {
 		service.skillInstallRecoveryBlocked = true
 	}
+	if n := service.reconcileOrphanRuns(); n > 0 {
+		log.Printf("[agentservice] marked %d orphaned running run(s) interrupted at startup", n)
+	}
 	if setter, ok := executor.(interface{ SetDynamicOperationLedger(DynamicOperationLedger) }); ok {
 		setter.SetDynamicOperationLedger(dynamicOperations)
 	}

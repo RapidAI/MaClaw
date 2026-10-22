@@ -38,6 +38,14 @@ func (s *Service) takeRunCancel(runID string) (context.CancelFunc, bool) {
 	return cancel, ok
 }
 
+// peekRunCancel reports whether this process holds runID's cancel func.
+func (s *Service) peekRunCancel(runID string) (context.CancelFunc, bool) {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	cancel, ok := s.runningRuns[runID]
+	return cancel, ok
+}
+
 func (s *Service) clearRunCancel(runID string) {
 	if strings.TrimSpace(runID) == "" {
 		return
@@ -82,6 +90,13 @@ func (s *Service) CancelRun(ctx context.Context, p Principal, instanceID, runID 
 		return nil, err
 	}
 	cancel, ok := s.takeRunCancel(run.ID)
+	if !ok && run.Status == RunStatusRunning && s.now().Sub(run.StartedAt) > orphanCancelGrace {
+		// No executor in this process holds the run (it died with an earlier
+		// process). Stop means stop: record it cancelled so it no longer
+		// blocks the session. A just-admitted run (cancel not registered
+		// yet) is inside the grace window and keeps the old answer.
+		cancel, ok = func() {}, true
+	}
 	if !ok || run.Status != RunStatusRunning {
 		if run.Status == RunStatusCancelled {
 			enriched, enrichErr := s.enrichRun(run)
