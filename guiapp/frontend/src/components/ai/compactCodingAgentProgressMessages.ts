@@ -1,5 +1,6 @@
 import type { ChatMessage } from "./useAIAssistant";
 import { isCodingAgentBoardProgressContent } from "./codingAgentUserFinish";
+import { isTranscriptToolCallText, transcriptAlreadyShowsToolCall, type AssistantToolCall } from "./assistantToolCall";
 import {
     codingAgentFeedStableKey,
     codingAgentProgressLooksCritical,
@@ -277,6 +278,80 @@ function sameCodingProgressTurn(a: CodingAgentProgress, b: CodingAgentProgress):
     if (b.taskID) return a.taskID === b.taskID;
     // Latest has no turn/task/run: only match similarly unscoped peers (legacy stream).
     return !a.turnID && !a.taskID && !a.runID;
+}
+
+/**
+ * Progress texts already painted on this timeline.
+ * Built once per render. An earlier turn's timeline must not swallow the
+ * next continuation: after that turn writes its answer, the new tool rows
+ * live in the progress feed until this turn paints them on its own timeline.
+ */
+export function codingTimelineOwnedProgressTexts(
+    timeline: Array<{ kind?: string; content?: string }> | undefined,
+): ReadonlySet<string> {
+    const owned = new Set<string>();
+    if (!timeline?.length) return owned;
+    for (const item of timeline) {
+        if (item?.kind !== "progress") continue;
+        const content = item.content || "";
+        if (!content || !isCodingAgentProgressContent(content)) continue;
+        owned.add(content);
+    }
+    return owned;
+}
+
+export function codingProgressOwnedByTimeline(
+    timeline: Array<{ kind?: string; content?: string }> | undefined,
+    text: string,
+): boolean {
+    return codingTimelineOwnedProgressTexts(timeline).has(text);
+}
+
+function codingToolTrailEvent(content: string): boolean {
+    const progress = parseCodingAgentProgress(content);
+    if (!progress) return false;
+    const event = (progress.event || "").trim().toLowerCase();
+    return event === "tool_started" || event === "tool_finished";
+}
+
+/**
+ * Latest Read/Edit/$ time on the live timeline or in this feed.
+ * A 工具 · card is an earlier copy of one of those rows. A card newer than
+ * every painted tool is the next command and stays; older cards leave.
+ */
+export function latestCodingToolTrailAt(
+    timeline: Array<{ kind?: string; content?: string; timestamp?: number }> | undefined,
+    feed: Array<{ role?: string; content?: string; timestamp?: number }>,
+): number {
+    let latest = 0;
+    const note = (content: string, timestamp: number | undefined) => {
+        if (!codingToolTrailEvent(content)) return;
+        const at = timestamp || 0;
+        if (at > latest) latest = at;
+    };
+    if (timeline) {
+        for (const item of timeline) {
+            if (item?.kind !== "progress") continue;
+            note(item.content || "", item.timestamp);
+        }
+    }
+    for (const message of feed) {
+        if (message?.role && message.role !== "progress") continue;
+        note(message.content || "", message.timestamp);
+    }
+    return latest;
+}
+
+export function retainAssistantProgressText(
+    text: string,
+    ownedProgress: ReadonlySet<string>,
+    latestToolAt: number,
+    textAt: number,
+    messages: Array<{ role?: string; toolCalls?: AssistantToolCall[] }>,
+): boolean {
+    if (ownedProgress.has(text)) return false;
+    if (latestToolAt > 0 && isTranscriptToolCallText(text) && (textAt || 0) <= latestToolAt) return false;
+    return !transcriptAlreadyShowsToolCall(messages, text);
 }
 
 /** Group consecutive coding-agent progress messages for feed-style rendering. */

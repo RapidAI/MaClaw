@@ -32,7 +32,7 @@ expires_at 用 RFC3339，或只写日期 YYYY-MM-DD（按 Asia/Shanghai 当天 2
 
 列出阵列和成员。需要 read。
 
-每个成员返回 id、name、api_url、protocol、models、enabled、priority、dispatch_weight、requests_per_minute、requests_per_day、rate_limit_cooldown_sec、model_map、allowed_node_ids、capability_tags。api_key_configured 表示是否已配置上游密钥；已配置且长度超过 4 时附带 api_key_last4。allowed_node_ids 为空数组表示全部节点都可以调用该成员。
+每个成员返回 id、name、api_url、protocol、models、enabled、priority、dispatch_weight、requests_per_minute、requests_per_day、rate_limit_cooldown_sec、model_map、allowed_node_ids、capability_tags。已设置时还会返回 extra_body 和 drop_fields。extra_body_priority 只有是 downstream 时才出现；不出现表示 member，成员配置覆盖同名字段。未设置的额外参数不会出现。api_key_configured 表示是否已配置上游密钥；已配置且长度超过 4 时附带 api_key_last4。allowed_node_ids 为空数组表示全部节点都可以调用该成员。
 
 health 是当前进程内的最近窗口（最多 50 次）：success_rate、status_429、status_5xx、avg_latency_ms、last_error、last_error_at，以及按成员时区（缺省 Asia/Shanghai）统计的 today_requests、today_input_tokens、today_output_tokens、minute_requests。cooldown_until 是故障或 429 冷却结束时间，quota_until 是分钟或每日上限恢复时间。进程重启后这个窗口从零开始，也看不到其他节点。要看按节点保存的每日趋势，用 GET /api/admin/llm/member-health。响应里的 health_scope 固定为 process。
 
@@ -122,7 +122,10 @@ dry_run 为 true 时只校验并返回将要创建或更新的 id，不写库。
           "rate_limit_cooldown_sec": 120,
           "model_map": {"free-llama-70b": "meta-llama/Llama-3.3-70B-Instruct"},
           "allowed_nodes": "hc-1, hc-2,hc-3",
-          "capability_tags": ["tools", "vision", "reasoning"]
+          "capability_tags": ["tools", "vision", "reasoning"],
+          "extra_body": {"reasoning_effort": "none"},
+          "extra_body_priority": "member",
+          "drop_fields": ["thinking"]
         }
       ]
     }
@@ -140,6 +143,7 @@ dry_run 为 true 时只校验并返回将要创建或更新的 id，不写库。
 - 省略的计费字段：新阵列会把第一个成员的计费套到全体；已有阵列保持当前共用计费。
 - providers[].protocol：openai 或 anthropic，默认 openai。
 - providers[].models：省略表示保留原列表；传 [] 表示清空。
+- providers[].extra_body：JSON 对象，转发时合并进上游请求。省略表示保留；传 {} 表示清空。extra_body_priority 省略表示保留，传 member 或 downstream 才会改。drop_fields 省略表示保留；传 [] 表示清空。不能改 model、messages、stream。
 - capability_tags：该成员的能力标签，和编辑服务商时的选项一致：chat、streaming、json、tools、reasoning、vision、document、code、search、audio、embedding、rerank。也可以写逗号分隔的字符串，例如 "tools, vision, reasoning"。省略表示保留原标签；传 [] 表示清空。大小写不区分，重复的会去掉。调度时，服务组路线上单独填写的标签优先。路线没填时，成员标签会加到模型标签上，不会拿掉模型已有的能力。同一质量档内挑选模型时也按这个并集判断。成员也没填时仍只用模型标签。
 
 ### 成功
@@ -152,7 +156,7 @@ dry_run 只在试跑时出现。
 
 ## PATCH /api/admin/llm/providers/{id}
 
-暂停、恢复，或修改限额、权重、模型映射、节点和能力标签。需要 write。只发送要改的字段。批量导入里不要带 paused 或 enabled，带了会返回 400，整批不写入。已有成员的暂停状态保持不变。暂停和恢复只用这个接口。
+暂停、恢复，或修改限额、权重、模型映射、节点、能力标签，以及转发给上游时合并的额外请求参数。需要 write。只发送要改的字段。批量导入里不要带 paused 或 enabled，带了会返回 400，整批不写入。已有成员的暂停状态保持不变。暂停和恢复只用这个接口。
 
 暂停分发：
 
@@ -182,6 +186,18 @@ enabled 为 false 时不再向该成员转发，密钥、配置和路由都保�
 {"token_bank_tier": "high"}
 ` + "```" + `
 
+额外请求参数在思考字段写完之后合并进真正发给上游的 JSON。OpenAI 兼容 chat、Anthropic 兼容和 Responses 都生效。先合并 extra_body，再按 drop_fields 删除字段，所以要删的字段优先。测试接口用的是已保存的这份配置，请求体不能临场覆盖这三项。
+
+` + "```" + `json
+{"extra_body": {"reasoning_effort": "none"}, "extra_body_priority": "member", "drop_fields": ["thinking"]}
+` + "```" + `
+
+- extra_body：JSON 对象。同名字段默认用成员配置覆盖下游请求。嵌套对象会逐层合并。传 {} 或 null 会清空。省略则保留。不能设置 model、messages、stream。对象不超过 16 KiB，嵌套不超过 8 层。
+- extra_body_priority：member 或 downstream。member 是默认，成员配置覆盖同名字段。downstream 保留下游请求里已经有的字段，只补缺失的。要改回默认必须显式传 member。空字符串视为未传，保留原优先级。
+- drop_fields：字符串数组，合并之后删除这些顶层字段，包括 Hub 自动加上的 thinking。传 [] 或 null 会清空。省略则保留。不能删除 model、messages、stream。最多 32 个名字。
+- dry_run：true 时只校验并返回将要保存的 member，不写注册表，也不改 Token Bank 档位。请求里只有 dry_run、没有其它字段时返回 400。
+- 成功时，这次改过的 extra_body、extra_body_priority、drop_fields 会按规范化之后的值回显。优先级存成默认时，响应里的 extra_body_priority 是 member。清单接口则省略这个默认值。dry_run 为 true 时响应里的 member 是将要保存的完整成员，密钥仍然不明文。
+
 array_id 把该成员移到指定阵列，密钥、配置和模型列表都保留，只换阵列；阵列不存在返回 400。
 token_bank_tier 是 array_id 的简便写法，只接受 low / mid / high，对应 token_bank_low /
 token_bank_mid / token_bank_high 三个平台阵列（见上一节）。两者不要同时发送。
@@ -202,7 +218,7 @@ token_bank_mid / token_bank_high 三个平台阵列（见上一节）。两者�
 - model：可选。省略时用成员的第一个模型。名字会先走该成员的 model_map。
 - node：可选。指定从哪一台 HubCenter 节点向外发请求，例如 hc-2。节点名来自 GET /api/admin/llm/access-nodes。省略时，若当前节点在成员的可用范围内，就从当前节点发；否则转到一台允许且可达的节点。节点必须在集群名单里，并且落在该成员的 allowed_node_ids 内（空名单表示全部节点）。未知节点，或节点不在成员范围内，返回 400。指定了 node 时，上游的 429 或 5xx 记在这次探测结果里，不会改去试另一台节点。探测等待的是该成员自己的超时；从另一台节点发起时，额外留一小段时间把结果送回来。
 - tools：可选，OpenAI chat tools 数组，1 到 8 个。带上之后探测会要求模型调用工具，响应里的 tool_calls 是模型实际返回的调用。tool_choice 可选，必须和 tools 一起出现。
-- 不要在请求里带 api_url 或 api_key。地址和密钥只用库里的那一份。
+- 不要在请求里带 api_url 或 api_key。地址和密钥只用库里的那一份。extra_body、extra_body_priority、drop_fields 也只用已保存的成员配置，测试请求不能临场覆盖。
 
 成员不存在返回 404。配置缺地址或缺模型时 HTTP 200，success 为 false，member 里仍是当前配置。上游失败同样是 HTTP 200、success 为 false，并带上 error 和 latency_ms。
 
@@ -210,7 +226,7 @@ token_bank_mid / token_bank_high 三个平台阵列（见上一节）。两者�
 
 - success、error、reply、model、latency_ms、node：这一次探测的结果。model 是实际发给上游的名字。node 是真正向外发请求的节点。
 - tool_calls：仅当请求带了 tools 时出现。每一项含 name 和 arguments。模型只回了工具调用、没有正文时，success 仍可为 true。
-- member：当前配置和进程内健康。含 id、name、api_url、models、enabled、限额、权重、model_map、allowed_node_ids、capability_tags、api_key_configured、api_key_last4，以及 health（近期成功率、429、5xx、平均延迟、上次错误、今日请求和 token、冷却与限额截止时间）。密钥不明文返回。
+- member：当前配置和进程内健康。含 id、name、api_url、models、enabled、限额、权重、model_map、allowed_node_ids、capability_tags、extra_body、extra_body_priority、drop_fields、api_key_configured、api_key_last4，以及 health（近期成功率、429、5xx、平均延迟、上次错误、今日请求和 token、冷却与限额截止时间）。密钥不明文返回。未设置的额外参数不会出现。
 - 这次探测不计入每分钟、每日限额，也不写入 health 窗口或 member-health。那些数字反映的是真实转发流量。
 
 停用的成员仍会按保存的配置探测一次，member.enabled 为 false，方便确认上游本身是否还通。
@@ -293,6 +309,9 @@ curl -sS -X PATCH "$ORIGIN/api/admin/llm/providers/pool-a-1" \
 curl -sS -X PATCH "$ORIGIN/api/admin/llm/providers/pool-a-1" \
   -H "Authorization: Bearer hck_..." -H "Content-Type: application/json" \
   -d '{"enabled":true}'
+curl -sS -X PATCH "$ORIGIN/api/admin/llm/providers/pool-a-1" \
+  -H "Authorization: Bearer hck_..." -H "Content-Type: application/json" \
+  -d '{"extra_body":{"reasoning_effort":"none"},"extra_body_priority":"member","drop_fields":["thinking"],"dry_run":true}'
 curl -sS "$ORIGIN/api/admin/llm/member-health?day=2026-09-30" -H "Authorization: Bearer hck_..."
 curl -sS -X POST "$ORIGIN/api/admin/llm/providers/pool-a-1/test" \
   -H "Authorization: Bearer hck_..." -H "Content-Type: application/json" \
@@ -315,7 +334,7 @@ func llmAdminAPIOpenAPI() map[string]any {
 		"openapi": "3.0.3",
 		"info": map[string]any{
 			"title":       "HubCenter LLM admin API",
-			"version":     "1.3.1",
+			"version":     "1.4.0",
 			"description": "Manage provider arrays with an automation API key. Human doc: /api/llm/admin-api.md",
 		},
 		"servers": []any{map[string]any{"url": "/"}},
@@ -326,7 +345,7 @@ func llmAdminAPIOpenAPI() map[string]any {
 					"summary":     "List arrays and members without upstream secrets",
 					"security":    []any{map[string]any{"adminApiKey": []any{}}},
 					"responses": map[string]any{
-						"200": map[string]any{"description": "Arrays, redacted members, and process-local health. Each member includes enabled."},
+						"200": map[string]any{"description": "Arrays, redacted members, and process-local health. Each member includes enabled. extra_body and drop_fields appear only when set. extra_body_priority appears only when it is downstream; a missing priority means member."},
 						"401": map[string]any{"description": "Missing or invalid API key"},
 						"403": map[string]any{"description": "Key is missing the read scope"},
 					},
@@ -499,8 +518,8 @@ func llmAdminAPIOpenAPI() map[string]any {
 			"/api/admin/llm/providers/{id}": map[string]any{
 				"patch": map[string]any{
 					"operationId": "patchProviderMember",
-					"summary":     "Pause or resume a member, or update weight, quota, model map, nodes, and tags",
-					"description": "Send only the fields to change. enabled false pauses dispatch and keeps the stored key, configuration, and routes. enabled true resumes dispatch. Omit enabled to leave the current pause state. Batch import does not change it. The list and test payloads return this state as enabled.",
+					"summary":     "Pause or resume a member, or update weight, quota, model map, nodes, tags, and upstream extra_body",
+					"description": "Send only the fields to change. enabled false pauses dispatch and keeps the stored key, configuration, and routes. enabled true resumes dispatch. Omit enabled to leave the current pause state. Batch import does not change it. The list and test payloads return this state as enabled. extra_body, extra_body_priority, and drop_fields change the JSON merged into the upstream request after reasoning stamps. OpenAI-compatible chat, Anthropic-compatible, and Responses forwarding all apply them. Merge extra_body first, then remove drop_fields, so a dropped name wins. {} or null clears extra_body. [] or null clears drop_fields. Omit a field to keep it. member (the default) replaces the same key. downstream keeps a key the request already has. Send member to switch back. An empty priority string is ignored. model, messages, and stream are rejected. extra_body is at most 16 KiB and 8 levels deep. drop_fields has at most 32 names. dry_run true validates and returns the member that would be stored. Nothing is written, including a Token Bank tier change. A body that is only dry_run returns 400.",
 					"security":    []any{map[string]any{"adminApiKey": []any{}}},
 					"parameters":  []any{map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}},
 					"requestBody": map[string]any{
@@ -512,7 +531,7 @@ func llmAdminAPIOpenAPI() map[string]any {
 						},
 					},
 					"responses": map[string]any{
-						"200": map[string]any{"description": "Member updated. When enabled was sent, the body echoes it."},
+						"200": map[string]any{"description": "Member updated. The body echoes enabled when it was sent, and echoes normalized extra_body, extra_body_priority, and drop_fields when those were sent. A stored default priority is echoed as member. dry_run true returns that member and writes nothing."},
 						"400": map[string]any{"description": "Validation error"},
 						"401": map[string]any{"description": "Missing or invalid API key"},
 						"403": map[string]any{"description": "Key is missing the write scope"},
@@ -537,7 +556,7 @@ func llmAdminAPIOpenAPI() map[string]any {
 				"post": map[string]any{
 					"operationId": "testProviderMember",
 					"summary":     "Probe one saved member and return its current configuration status",
-					"description": "Uses the stored URL and key only. Optional body fields are model, node, tools, and tool_choice. node selects which HubCenter node sends the probe. tools is an OpenAI tools array and the response includes tool_calls. Caller-supplied api_url or api_key is rejected. A failed probe is HTTP 200 with success false. A missing member is 404. The probe does not consume request quota or persisted health.",
+					"description": "Uses the stored URL, key, extra_body, extra_body_priority, and drop_fields. The test body cannot override those three. Optional body fields are model, node, tools, and tool_choice. node selects which HubCenter node sends the probe. tools is an OpenAI tools array and the response includes tool_calls. Caller-supplied api_url or api_key is rejected. A failed probe is HTTP 200 with success false. A missing member is 404. The probe does not consume request quota or persisted health.",
 					"security":    []any{map[string]any{"adminApiKey": []any{}}},
 					"parameters":  []any{map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}},
 					"responses": map[string]any{
@@ -630,6 +649,10 @@ func llmAdminAPIOpenAPI() map[string]any {
 						"capability_tags":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "example": []string{"tools", "vision", "reasoning"}, "description": "A comma-separated string is also accepted. Empty array clears the tags. Omit to keep the stored tags."},
 						"array_id":                map[string]any{"type": "string", "description": "Move this member into an existing array. The member keeps its key, configuration, and models. For a Token Bank member, token_bank_low, token_bank_mid, and token_bank_high also store the settlement tier and retarget that model's routes. Do not send this together with token_bank_tier."},
 						"token_bank_tier":         map[string]any{"type": "string", "enum": []string{"low", "mid", "high"}, "description": "Mark a Token Bank model as low, mid, or high. Stores the tier and settlement multiplier (0.5, 1, 2) and moves routes that name this member's current array onto token_bank_low, token_bank_mid, or token_bank_high. A service group that uses only another tier stays there. Array credit multiplier stays 1.0. The id must be a Token Bank member. Do not send this together with array_id."},
+						"extra_body":              map[string]any{"type": "object", "description": "JSON object merged into the upstream request after reasoning stamps. Member values replace the same key unless extra_body_priority is downstream. {} or null clears the stored object. Omit to keep it. model, messages, and stream are rejected."},
+						"extra_body_priority":     map[string]any{"type": "string", "enum": []string{"member", "downstream"}, "description": "member (default) lets extra_body replace the same key. downstream keeps a key the request already has. Send member to switch back from downstream. An empty string keeps the stored priority."},
+						"drop_fields":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Top-level field names removed after extra_body is merged, including fields this hub added. [] or null clears the list. Omit to keep it. model, messages, and stream are rejected."},
+						"dry_run":                 map[string]any{"type": "boolean", "description": "Validate and return the member that would be stored. Nothing is written, including a Token Bank tier change."},
 					},
 				},
 				"ProviderMember": map[string]any{
@@ -652,6 +675,9 @@ func llmAdminAPIOpenAPI() map[string]any {
 						"allowed_nodes":           map[string]any{"type": "string", "example": "hc-1, hc-2, hc-3", "description": "Comma-separated node ids. Folded into allowed_node_ids and not stored."},
 						"serve_windows":           map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/ServeWindow"}, "description": "When this provider may answer requests. Windows are a union: one match opens the provider, an empty list means always available. A dial gate only; it never changes the price."},
 						"capability_tags":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "example": []string{"tools", "vision", "reasoning"}, "description": "Member capability tags. A comma-separated string is also accepted. Empty array clears them. Omit to keep the stored tags. A service-group route tag list overrides these. When the route list is empty, dispatch adds these tags to the model tags, including when choosing a model inside one quality band."},
+						"extra_body":              map[string]any{"type": "object", "description": "JSON object merged into the upstream request after reasoning stamps. Nested objects merge. {} clears it. Omit on update to keep the stored object. model, messages, and stream are rejected. At most 16 KiB and 8 levels deep. Omitted from list responses when empty."},
+						"extra_body_priority":     map[string]any{"type": "string", "enum": []string{"member", "downstream"}, "description": "member (default) lets extra_body replace the same key. downstream keeps a key the request already has. Omit on update to keep the stored priority. A new member with this omitted uses member. List responses omit this field unless it is downstream; a missing priority means member."},
+						"drop_fields":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Top-level names removed after extra_body is merged, including fields this hub added such as thinking. [] clears the list. Omit on update to keep it. model, messages, and stream are rejected. At most 32 names. Omitted from list responses when empty."},
 					},
 				},
 				"ServeWindow": map[string]any{

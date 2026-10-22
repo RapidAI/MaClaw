@@ -116,7 +116,7 @@ func qoderMaclawConfig(provider *llmpool.ProviderConfig, model string) (corelib.
 		QoderUserID:    strings.TrimSpace(provider.QoderUserID),
 	}
 	cfg.AuthType = "oauth"
-	return cfg, true
+	return WithMemberUpstreamOverrides(cfg, provider), true
 }
 
 // qoderProfile selects the edition whose signed gateway this provider must use.

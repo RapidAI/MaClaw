@@ -1462,6 +1462,13 @@
             </div>
             <div id="llmProviderResilienceHint" class="hint" style="margin-top:10px"></div>
             <div class="hint" id="llmProviderAgentTypeHint" style="margin-top:10px"></div>
+            <div class="grid2" style="margin-top:10px">
+              <div style="grid-column:1 / -1"><label id="llmProviderExtraBodyLabel"></label><textarea id="llmProviderExtraBody" rows="3" placeholder='{"reasoning_effort":"none"}'></textarea></div>
+              <div><label id="llmProviderExtraBodyPriorityLabel"></label><select id="llmProviderExtraBodyPriority"><option id="llmProviderExtraPriorityMember" value="member"></option><option id="llmProviderExtraPriorityDownstream" value="downstream"></option></select></div>
+              <div><label id="llmProviderDropFieldsLabel"></label><input id="llmProviderDropFields" placeholder="thinking"></div>
+            </div>
+            <div class="hint" id="llmProviderExtraBodyHint" style="margin-top:10px"></div>
+            <div class="hint" id="llmProviderDropFieldsHint" style="margin-top:6px"></div>
             <div class="actions" style="margin-top:10px"><button class="btn-ghost" onclick="closeLLMProviderDialog()" id="llmProviderCancelBtn"></button><button class="btn-primary" onclick="saveLLMProviders()" id="llmProviderSaveBtn"></button><button class="btn-ghost" onclick="testSelectedLLMProvider()" id="llmProviderTestBtn"></button></div>
             <div id="llmProviderTestResult" class="hint hidden" style="margin-top:10px"></div>
           </div>

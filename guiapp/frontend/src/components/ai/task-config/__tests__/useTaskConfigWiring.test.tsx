@@ -1,8 +1,8 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CloudWorkspaceEntitlement, CreateCloudWorkspace, CreateLatexDocument, CreateRunWindowTask, CreateTaskUnified, ListLatexTemplates, RenameCloudWorkspace, SetTabWorkingDir } from '../../../../../wailsjs/go/main/App';
+import { CloudWorkspaceEntitlement, CreateCloudWorkspace, CreateLatexDocument, CreateRunWindowTask, CreateTaskUnified, ListLatexTemplates, RenameCloudWorkspace, SetTabWorkingDir, SuggestNewTaskType } from '../../../../../wailsjs/go/main/App';
 import { useTaskConfigWiring, type TaskConfigWiringOptions } from '../useTaskConfigWiring';
-import { defaultTaskDraft, withCloudWorkspace, withExpert, withLocalWorkspace, withRunWindow } from '../taskDraft';
+import { defaultTaskDraft, withCloudWorkspace, withExpert, withLocalWorkspace, withRemoteWorkspace, withRunWindow } from '../taskDraft';
 import { LATEX_EXPERT_ID } from '../../../../utils/latexTemplates';
 import { EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH } from '../../../../constants/events';
 
@@ -16,6 +16,7 @@ vi.mock('../../../../../wailsjs/go/main/App', () => ({
     CreateCloudWorkspace: vi.fn(),
     RenameCloudWorkspace: vi.fn(),
     CreateTaskUnified: vi.fn(),
+    SuggestNewTaskType: vi.fn().mockResolvedValue({ suggested: '', confident: false }),
     CreateRunWindowTask: vi.fn(),
     ListRunWindowTasks: vi.fn().mockResolvedValue([]),
     ClaimRunWindowTask: vi.fn(),
@@ -969,5 +970,259 @@ describe('useTaskConfigWiring new-task wizard opening', () => {
         } finally {
             window.removeEventListener(EVENT_NEW_TASK_WIZARD_BLOCKED, blockedSpy);
         }
+    });
+});
+
+describe('useTaskConfigWiring task type suggestion', () => {
+    const suggest = SuggestNewTaskType as unknown as ReturnType<typeof vi.fn>;
+
+    afterEach(() => {
+        cleanup();
+        suggest.mockReset();
+        suggest.mockResolvedValue({ suggested: '', confident: false });
+        vi.mocked(CreateTaskUnified).mockReset();
+        vi.mocked(CreateRunWindowTask).mockReset();
+    });
+
+    function guide(overrides?: Partial<TaskConfigWiringOptions>) {
+        return makeOptions({
+            localGuideVisible: true,
+            inputValue: '修复登录空指针',
+            ...overrides,
+        });
+    }
+
+    it('creates a coding task when the user accepts the switch', async () => {
+        suggest.mockResolvedValue({ suggested: 'coding', confident: true, source: 'local' });
+        const showConfirm = vi.fn().mockResolvedValue(true);
+        const create = vi.mocked(CreateTaskUnified);
+        create.mockResolvedValue({ projectPath: 'D:/tasks/fix' } as never);
+        const { result } = renderHook(() => useTaskConfigWiring(guide({ showConfirm })));
+        await act(async () => {
+            result.current.handleSendWithTaskConfig();
+        });
+        await waitFor(() => expect(create).toHaveBeenCalled());
+        expect(suggest).toHaveBeenCalledWith('修复登录空指针');
+        expect(showConfirm).toHaveBeenCalledWith(
+            expect.stringContaining('「编程」'),
+            '改为编程任务？',
+            expect.objectContaining({ confirmText: '改为编程', cancelText: '保持会话' }),
+        );
+        expect(create.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ mode: 'coding_dev' }));
+    });
+
+    it('keeps the selected type and still creates when the user refuses', async () => {
+        suggest.mockResolvedValue({ suggested: 'coding', confident: true, source: 'llm' });
+        const showConfirm = vi.fn().mockResolvedValue(false);
+        const create = vi.mocked(CreateTaskUnified);
+        create.mockResolvedValue({ projectPath: 'D:/tasks/chat' } as never);
+        const { result } = renderHook(() => useTaskConfigWiring(guide({ showConfirm })));
+        await act(async () => {
+            result.current.handleSendWithTaskConfig();
+        });
+        await waitFor(() => expect(create).toHaveBeenCalled());
+        expect(create.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ mode: 'chat' }));
+    });
+
+    it('does not ask when the command already matches the selected type', async () => {
+        suggest.mockResolvedValue({ suggested: 'chat', confident: true, source: 'local' });
+        const showConfirm = vi.fn();
+        const create = vi.mocked(CreateTaskUnified);
+        create.mockResolvedValue({ projectPath: 'D:/tasks/chat' } as never);
+        const { result } = renderHook(() => useTaskConfigWiring(guide({
+            inputValue: '总结会议纪要',
+            showConfirm,
+        })));
+        await act(async () => {
+            result.current.handleSendWithTaskConfig();
+        });
+        await waitFor(() => expect(create).toHaveBeenCalled());
+        expect(showConfirm).not.toHaveBeenCalled();
+        expect(create.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ mode: 'chat' }));
+    });
+
+    it('still creates the selected type when classification fails', async () => {
+        suggest.mockRejectedValue(new Error('classifier down'));
+        const showConfirm = vi.fn();
+        const create = vi.mocked(CreateTaskUnified);
+        create.mockResolvedValue({ projectPath: 'D:/tasks/chat' } as never);
+        const { result } = renderHook(() => useTaskConfigWiring(guide({ showConfirm })));
+        await act(async () => {
+            result.current.handleSendWithTaskConfig();
+        });
+        await waitFor(() => expect(create).toHaveBeenCalled());
+        expect(showConfirm).not.toHaveBeenCalled();
+        expect(create.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ mode: 'chat' }));
+    });
+
+    it('drops the cloud workspace when a coding switch is accepted', async () => {
+        suggest.mockResolvedValue({ suggested: 'coding', confident: true, source: 'local' });
+        const showConfirm = vi.fn().mockResolvedValue(true);
+        const create = vi.mocked(CreateTaskUnified);
+        create.mockResolvedValue({ projectPath: 'D:/tasks/code' } as never);
+        const { result } = renderHook(() => useTaskConfigWiring(guide({ showConfirm })));
+        act(() => {
+            result.current.taskConfig.onDraftChange(withCloudWorkspace(defaultTaskDraft(), 'cws-1', '讲义'));
+        });
+        await act(async () => {
+            result.current.handleSendWithTaskConfig();
+        });
+        await waitFor(() => expect(create).toHaveBeenCalled());
+        expect(showConfirm.mock.calls[0]?.[0]).toContain('云端工作区');
+        expect(create.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
+            mode: 'coding_dev',
+            cloudWorkspaceId: '',
+        }));
+    });
+
+    it('switches a coding draft to chat and keeps the chosen directory', async () => {
+        suggest.mockResolvedValue({ suggested: 'chat', confident: true, source: 'local' });
+        const showConfirm = vi.fn().mockResolvedValue(true);
+        const create = vi.mocked(CreateTaskUnified);
+        create.mockResolvedValue({ projectPath: 'D:/tasks/mail' } as never);
+        const { result } = renderHook(() => useTaskConfigWiring(guide({
+            inputValue: '写一封请假邮件',
+            showConfirm,
+        })));
+        act(() => {
+            result.current.taskConfig.onDraftChange(withLocalWorkspace(
+                { ...defaultTaskDraft(), taskType: 'coding' },
+                'D:/repo',
+            ));
+        });
+        await act(async () => {
+            result.current.handleSendWithTaskConfig();
+        });
+        await waitFor(() => expect(create).toHaveBeenCalled());
+        expect(showConfirm).toHaveBeenCalledWith(
+            expect.stringContaining('「会话」'),
+            '改为会话任务？',
+            expect.objectContaining({ confirmText: '改为会话', cancelText: '保持编程' }),
+        );
+        expect(create.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
+            mode: 'chat',
+            workingDir: 'D:/repo',
+        }));
+    });
+
+    it('classifies the objective of a /goal command', async () => {
+        suggest.mockResolvedValue({ suggested: 'coding', confident: true, source: 'local' });
+        const showConfirm = vi.fn().mockResolvedValue(true);
+        const create = vi.mocked(CreateTaskUnified);
+        create.mockResolvedValue({ projectPath: 'D:/tasks/goal' } as never);
+        const { result } = renderHook(() => useTaskConfigWiring(guide({
+            inputValue: '/goal 修复登录空指针',
+            showConfirm,
+        })));
+        await act(async () => {
+            result.current.handleSendWithTaskConfig();
+        });
+        await waitFor(() => expect(create).toHaveBeenCalled());
+        expect(suggest).toHaveBeenCalledWith('修复登录空指针');
+        expect(create.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ mode: 'coding_dev' }));
+    });
+
+    it('does not retype an expert task or a remote workspace', async () => {
+        suggest.mockResolvedValue({ suggested: 'coding', confident: true, source: 'local' });
+        const showConfirm = vi.fn().mockResolvedValue(true);
+        const create = vi.mocked(CreateTaskUnified);
+        create.mockResolvedValue({ projectPath: 'D:/tasks/expert' } as never);
+        const { result } = renderHook(() => useTaskConfigWiring(guide({
+            inputValue: '修复登录空指针',
+            showConfirm,
+        })));
+        act(() => {
+            result.current.taskConfig.onDraftChange(withExpert(defaultTaskDraft(), 'expert-1', '通用'));
+        });
+        await act(async () => {
+            result.current.handleSendWithTaskConfig();
+        });
+        await waitFor(() => expect(create).toHaveBeenCalled());
+        expect(suggest).not.toHaveBeenCalled();
+        expect(showConfirm).not.toHaveBeenCalled();
+
+        await waitFor(() => expect(result.current.taskConfig.sending).toBe(false));
+        suggest.mockClear();
+        create.mockClear();
+        act(() => {
+            result.current.taskConfig.onDraftChange(withRemoteWorkspace(defaultTaskDraft(), {
+                host: 'dev.example',
+                port: 22,
+                user: 'me',
+                password: 'secret',
+                workDir: '/src',
+            }));
+        });
+        await act(async () => {
+            result.current.handleSendWithTaskConfig();
+        });
+        await waitFor(() => expect(create).toHaveBeenCalled());
+        expect(suggest).not.toHaveBeenCalled();
+        expect(create.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ mode: 'remote_coding_dev' }));
+    });
+
+    it('does not classify a filename standing in for an empty composer', async () => {
+        const create = vi.mocked(CreateTaskUnified);
+        create.mockResolvedValue({ projectPath: 'D:/tasks/file' } as never);
+        const { result } = renderHook(() => useTaskConfigWiring(guide({
+            inputValue: '',
+            pendingAttachments: [{ filePath: 'D:/cases/contract.pdf' }],
+        })));
+        await act(async () => {
+            result.current.handleSendWithTaskConfig();
+        });
+        await waitFor(() => expect(create).toHaveBeenCalled());
+        expect(suggest).not.toHaveBeenCalled();
+    });
+
+    it('stores the switched type on a scheduled task', async () => {
+        suggest.mockResolvedValue({ suggested: 'coding', confident: true, source: 'llm' });
+        const showConfirm = vi.fn().mockResolvedValue(true);
+        const schedule = vi.mocked(CreateRunWindowTask);
+        schedule.mockResolvedValue('rw-1' as never);
+        const { result } = renderHook(() => useTaskConfigWiring(guide({
+            showConfirm,
+            showAlert: vi.fn(),
+        })));
+        act(() => {
+            result.current.taskConfig.onDraftChange(withRunWindow(defaultTaskDraft(), {
+                mode: 'scheduled',
+                startAt: '2099-01-02T01:00',
+                endAt: '',
+            }));
+        });
+        await act(async () => {
+            result.current.handleSendWithTaskConfig();
+        });
+        await waitFor(() => expect(schedule).toHaveBeenCalled());
+        expect(vi.mocked(CreateTaskUnified)).not.toHaveBeenCalled();
+        expect(schedule.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+            draft: expect.objectContaining({ taskType: 'coding' }),
+        }));
+    });
+
+    it('does not create a second task while the type question is open', async () => {
+        suggest.mockResolvedValue({ suggested: 'coding', confident: true, source: 'local' });
+        let answer: (accepted: boolean) => void = () => {};
+        const showConfirm = vi.fn(() => new Promise<boolean>((resolve) => {
+            answer = resolve;
+        }));
+        const create = vi.mocked(CreateTaskUnified);
+        create.mockResolvedValue({ projectPath: 'D:/tasks/one' } as never);
+        const { result } = renderHook(() => useTaskConfigWiring(guide({ showConfirm })));
+        await act(async () => {
+            result.current.handleSendWithTaskConfig();
+        });
+        await waitFor(() => expect(showConfirm).toHaveBeenCalledTimes(1));
+        expect(create).not.toHaveBeenCalled();
+        act(() => {
+            result.current.handleSendWithTaskConfig();
+        });
+        expect(showConfirm).toHaveBeenCalledTimes(1);
+        await act(async () => {
+            answer(true);
+        });
+        await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+        expect(create.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ mode: 'coding_dev' }));
     });
 });

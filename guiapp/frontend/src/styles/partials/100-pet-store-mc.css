@@ -826,8 +826,9 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 [data-testid^='coding-step-'][data-status='running'] { color: var(--theme-warning) !important; }
 
 /* Floating composer from reference design.
-   --mc-composer-inset-x is the shared side inset for the input card and the
-   goal bar above it. The goal bar reads the same variable so it cannot drift. */
+   --mc-composer-inset-x is the shared side inset for the input card, the
+   goal bar, and the coding plan checklist above it. They read the same
+   variable so the checklist cannot drift wider than the input. */
 [data-testid='ai-panel-root'] {
   --mc-composer-inset-x: 24px;
 }
@@ -845,10 +846,12 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 [data-ai-theme='dark'] .mc-input-stack input { border: 0 !important; box-shadow: none !important; background: transparent !important; }
 .mc-input-stack button { border-radius: 9px !important; }
 /* Same side inset as .mc-input-stack. Stretch plus this max-width keeps a long
-   goal title from growing the border box past the input card. The resize grip
-   sits in the gap under the bar and must use the same inset. */
+   goal title, or a long step title, from growing the border box past the input
+   card. The plan checklist and the resize grip sit in the same column and must
+   use the same inset. */
 .mc-goal-quick-bar,
-[data-testid='ai-input-resize-handle'] {
+[data-testid='ai-input-resize-handle'],
+[data-testid='coding-agent-plan-checklist'] {
   box-sizing: border-box;
   min-width: 0;
   max-width: calc(100% - (2 * var(--mc-composer-inset-x, 24px)));

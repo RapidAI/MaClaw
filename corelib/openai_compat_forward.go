@@ -483,6 +483,9 @@ func sanitizeOpenAICompatForwardBodyWithOptions(cfg MaclawLLMConfig, body map[st
 	// Kimi rejects a caller temperature. Drop the locked sampling fields after
 	// the other normalizers have finished.
 	OmitKimiLockedSampling(cfg, body)
+	// Member extra_body and drop_fields run last, so they survive reasoning
+	// stamps and can still remove a field those stamps added.
+	cfg.applyMemberUpstreamBody(body)
 }
 
 func sanitizeOpenAICompatForwardStructuredFields(body map[string]interface{}, dropOrphanedToolHistory bool, preserveStandaloneToolResults bool) {
@@ -1457,6 +1460,9 @@ func forwardAnthropicCompatRequest(ctx context.Context, cfg MaclawLLMConfig, bod
 	}
 	ApplyReasoningControls(cfg, body, ReasoningAPIAnthropic)
 	anthropicReq := openaiToAnthropic(body, cfg.UpstreamModel())
+	// Conversion rebuilds the body and drops unknown keys. Apply the member
+	// overrides on the Anthropic map that the SDK sends.
+	cfg.applyMemberUpstreamBody(anthropicReq)
 	respBody, statusCode, err := forwardAnthropicMessageWithSDK(ctx, cfg, anthropicReq, client)
 	if err != nil {
 		if statusCode >= 400 {
@@ -1846,6 +1852,7 @@ func forwardResponsesCompat(ctx context.Context, cfg MaclawLLMConfig, body map[s
 	sanitizeOpenAICompatForwardBodyForResponses(cfg, fwd)
 	responsesReq := openaiToResponses(fwd, cfg.UpstreamModel())
 	ApplyReasoningControls(cfg, responsesReq, ReasoningAPIResponses)
+	cfg.applyMemberUpstreamBody(responsesReq)
 	jsonBody, err := json.Marshal(responsesReq)
 	if err != nil {
 		return nil, 0, fmt.Errorf("marshal responses request: %w", err)

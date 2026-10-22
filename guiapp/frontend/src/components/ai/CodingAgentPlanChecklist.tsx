@@ -62,7 +62,9 @@ export function CodingAgentPlanChecklist({
             data-testid="coding-agent-plan-checklist"
             aria-label={title}
             style={{
-                margin: "0 10px 8px",
+                // Horizontal inset comes from --mc-composer-inset-x (same rule as
+                // the composer card). An inline margin shorthand would override it.
+                marginBottom: 8,
                 padding: "10px 12px",
                 borderRadius: 8,
                 border: `1px solid ${chrome.border}`,

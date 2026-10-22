@@ -70,6 +70,7 @@ func BuildAnthropicMessagesRequestBody(
 	corelib.ApplyReasoningControls(cfg, reqBody, corelib.ReasoningAPIAnthropic)
 	ensureAnthropicThinkingFitsOutputLimit(reqBody)
 	applyConfigTemperature(reqBody, cfg)
+	corelib.ApplyMemberUpstreamBody(reqBody, cfg.MemberExtraBody, cfg.MemberExtraBodyPriority, cfg.MemberDropFields)
 	return reqBody
 }
 

@@ -67,9 +67,8 @@ import {
 } from "./welcomeTaskMemory";
 import { AssistantWorkflowMaximizeSuggestion } from "./AssistantWorkflowMaximizeSuggestion";
 import { useAssistantThemeMode } from "./useAssistantThemeMode";
-import { activeCodingAgentProgress, codingAgentComposerStatusText, codingAgentMessagesHavePlainTrail, codingAgentToolOperandText, isCodingAgentProgressContent, latestCodingAgentTurnSnapshot, openCodingAgentToolProgress, renderCodingAgentWorkingTrail } from "./CodingAgentProgressStatus";
+import { activeCodingAgentProgress, codingAgentComposerStatusText, codingAgentMessagesHavePlainTrail, codingAgentToolOperandText, latestCodingAgentTurnSnapshot, openCodingAgentToolProgress, renderCodingAgentWorkingTrail } from "./CodingAgentProgressStatus";
 import { isToolProgressMessage } from "./aiAssistantProgressUtils";
-import { isTranscriptToolCallText, transcriptAlreadyShowsToolCall } from "./assistantToolCall";
 import { assistantLiveActivityLabel, assistantLiveActivityObject, assistantMessageOwnsLiveActivityAt, codingBubbleHostsLiveTitle, codingLiveAnswerStarted, codingLiveReasoningCue, codingShownLiveLabel, codingThoughtTextIsBlank, codingTimelineLastThoughtIndex, codingTimelineLiveThoughtIndex, codingTimelineThoughtIsCurrent, extractInFlightToolName, resolveAssistantLiveActivity, resolveLiveModelTarget, resolveStandaloneLiveActivityLabel } from "./assistantLiveActivity";
 import { IconBranch, IconRocket } from "./WorkbenchIcons";
 import { AITabBar } from "./AITabBar";
@@ -91,7 +90,7 @@ import { usePendingAssistantTabOpen } from "./usePendingAssistantTabOpen";
 import type { PendingProjectTabOpen } from "./usePendingAssistantTabOpen";
 import type { AIAssistantPanelProps } from "./aiAssistantPanelTypes";
 import { collapseDuplicatePendingUnfinishedSlots, latestPendingUnfinishedStatus, loadProjectTabMsgIds, mergeChatMessages, PROJECT_TAB_MSG_IDS_KEY, withoutProjectContextMessages } from "./aiAssistantProjectTabState";
-import { compactCodingAgentProgressMessages } from "./compactCodingAgentProgressMessages";
+import { codingTimelineOwnedProgressTexts, compactCodingAgentProgressMessages, latestCodingToolTrailAt, retainAssistantProgressText } from "./compactCodingAgentProgressMessages";
 import { CodingAgentPreviewFocusContext, CodingAgentTimelineProgressItem } from "./CodingAgentProgressStatus";
 
 import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
@@ -5453,7 +5452,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         guidePendingAttachments: guideDraft.guideAttachments, guideSelectedFilePaths: guideDraft.guidePaths, clearGuideDraft: guideDraft.clearGuideDraft,
         getTabs, getTabState, saveTabState,
         activateTab, setQueueInteractionStarted, setQueueEditDraftActive, setEditingEntryId,
-        showAlert,
+        showAlert, showConfirm,
     });
     dismissCoveredNewTaskRef.current = taskConfigWiring.wizardOverlay ? taskConfigWiring.dismissWizardOverlay : null;
     wizardScrollSuspendRef.current = taskConfigWiring.wizardOverlay;
@@ -6083,20 +6082,18 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (coveredNodes.length > 0) coveredOtherNodesRef.current = coveredNodes;
         return coveredNodes;
     }, [otherMessages, panelExecuteAction, t, lastAssistantIdx, lastAssistantOwnsLiveActivity, savedFileLabel, lang, isBusy, activeSessionHasWork, activeSessionIsStreaming, liveReasoningKind, liveReasoningLabel, liveReasoningObject, branchPointByDisplayIndex, handleRecordingComplete, isPureCodingEnvironment, activeTab.expertId, taskConfigWiring.wizardOverlay]);
-    // A coding turn with an ordered timeline owns its coding progress rows.
-    // Retain the legacy progress feed for non-coding and older in-flight turns.
+    // Only rows already on the live assistant's timeline leave the feed.
+    // A previous answer's timeline must not hide the next continuation.
     const renderedProgressMessages = useMemo(() => {
         const coveredProgress = taskConfigWiring.wizardOverlay ? coveredProgressNodesRef.current : null;
         if (coveredProgress && coveredProgress.length > 0) return coveredProgress;
-        const hasTimeline = isPureCodingEnvironment && otherMessages.some((message) => message.role === "assistant" && message.codingTimeline?.length);
-        const visibleProgress = (hasTimeline
-            ? compactProgressMessages.filter((message) => !isCodingAgentProgressContent(message.content || ""))
-            : compactProgressMessages
-        ).filter((message) => {
-            const text = message.content || "";
-            if (hasTimeline && isTranscriptToolCallText(text)) return false;
-            return !transcriptAlreadyShowsToolCall(otherMessages, text);
-        });
+        const liveTimeline = isPureCodingEnvironment ? lastAssistantTimeline : undefined;
+        const ownedProgress = codingTimelineOwnedProgressTexts(liveTimeline);
+        // 工具 · cards older than the newest Read/Edit/$ are already painted.
+        // A later card is the next command, including after a concluded timeline.
+        const latestToolAt = isPureCodingEnvironment ? latestCodingToolTrailAt(liveTimeline, compactProgressMessages) : 0;
+        const visibleProgress = compactProgressMessages.filter((message) =>
+            retainAssistantProgressText(message.content || "", ownedProgress, latestToolAt, message.timestamp || 0, otherMessages));
         const progressNodes = visibleProgress.map((message) => (
             <Fragment key={message.id}>
                 {renderMessage(suppressWorkflowReviewActions(message), panelExecuteAction, t, false, savedFileLabel, lang, false, undefined, undefined, isPureCodingEnvironment)}
@@ -6104,7 +6101,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         ));
         if (progressNodes.length > 0) coveredProgressNodesRef.current = progressNodes;
         return progressNodes;
-    }, [compactProgressMessages, panelExecuteAction, t, savedFileLabel, lang, isPureCodingEnvironment, otherMessages, taskConfigWiring.wizardOverlay]);
+    }, [compactProgressMessages, lastAssistantTimeline, panelExecuteAction, t, savedFileLabel, lang, isPureCodingEnvironment, otherMessages, taskConfigWiring.wizardOverlay]);
     // maximizedInlineStyle uses inset:0 (not 100vw/100vh) so UI scale transform cannot clip chrome.
     const containerStyle: React.CSSProperties = !inline
         ? overlayStyle
@@ -6132,11 +6129,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const skillRecordingElsewhere = !!skillRecordingTabId && !skillRecordingHere;
     const skillRecordingAwaitingDecision = !!skillRecordingCard && (skillRecordingCard.type === "skill_recording_preparing" || skillRecordingCard.type === "skill_recording_done");
     const wizardComposerUnlocked = taskConfigWiring.wizardOverlay;
+    const creatingTask = taskConfigWiring.taskConfig.sending;
     const newTaskWelcomeComposer: WelcomeComposerProps = {
-        browseFile, canSend, cancelPending: wizardComposerUnlocked ? false : cancelPending, cancelSession, clearSelectedFile, composeAction,
+        browseFile, canSend: creatingTask ? false : canSend, cancelPending: wizardComposerUnlocked ? false : cancelPending, cancelSession: creatingTask ? undefined : cancelSession, clearSelectedFile, composeAction,
         exitHistoryBrowsing, finishVoicePointer, handleCancel, handleClearInput, handleDragOver, handleDrop, handlePaste,
         handleSend: taskConfigWiring.handleSendWithTaskConfig, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave,
-        inputLocked: wizardComposerUnlocked ? false : inputLocked, inputRef, inputValue, isBusy: wizardComposerUnlocked ? false : inputVisualBusy,
+        hardLockInput: creatingTask, inputLocked: creatingTask || (wizardComposerUnlocked ? false : inputLocked), inputRef, inputValue, isBusy: creatingTask || (wizardComposerUnlocked ? false : inputVisualBusy),
         isSelectionCollapsedAtBoundary, onComposeActionChange: handleComposeActionChange, onFireSlashCommand: handleFireSlashCommand, onInsertTemplate: handleInsertTemplate,
         onPlusMenuAction: (actionId) => {
             // The cover already is the new-task page. "New conversation" would clear the turn underneath.
@@ -6149,7 +6147,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         onHistoryTextAccepted: acceptHistoryText, updateInputValue, voiceInput,
         ...(separateGuide ? {
             browseFile: guideDraft.browseGuideFile,
-            canSend: ready && (!!draftInputValue.trim() || guideDraft.guideAttachments.length > 0 || guideDraft.guidePaths.length > 0),
+            canSend: creatingTask ? false : ready && (!!draftInputValue.trim() || guideDraft.guideAttachments.length > 0 || guideDraft.guidePaths.length > 0),
             clearSelectedFile: guideDraft.clearGuideFiles,
             inputRef: guideDraft.guideInputRef,
             inputValue: draftInputValue,

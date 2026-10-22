@@ -19,8 +19,18 @@ func TestLLMAdminAPIDocsArePublic(t *testing.T) {
 		t.Fatalf("markdown status=%d type=%s", rec.Code, rec.Header().Get("Content-Type"))
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "/api/admin/llm/provider-arrays/batch") || !strings.Contains(body, "dry_run") || !strings.Contains(body, "/api/admin/llm/access-nodes") || !strings.Contains(body, "member") || !strings.Contains(body, "/api/admin/llm/member-health") || !strings.Contains(body, "tools") || !strings.Contains(body, `"node"`) || !strings.Contains(body, "capability_tags") || !strings.Contains(body, `"enabled": false`) || !strings.Contains(body, `"enabled": true`) {
+	if !strings.Contains(body, "/api/admin/llm/provider-arrays/batch") || !strings.Contains(body, "dry_run") || !strings.Contains(body, "/api/admin/llm/access-nodes") || !strings.Contains(body, "member") || !strings.Contains(body, "/api/admin/llm/member-health") || !strings.Contains(body, "tools") || !strings.Contains(body, `"node"`) || !strings.Contains(body, "capability_tags") || !strings.Contains(body, "extra_body") || !strings.Contains(body, "drop_fields") || !strings.Contains(body, `"enabled": false`) || !strings.Contains(body, `"enabled": true`) {
 		t.Fatalf("markdown missing catalog, dry-run, nodes, or member status: %s", body)
+	}
+	for _, want := range []string{
+		"extra_body_priority 只有是 downstream",
+		"OpenAI 兼容 chat、Anthropic 兼容和 Responses",
+		"先合并 extra_body，再按 drop_fields 删除字段",
+		`"extra_body":{"reasoning_effort":"none"}`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("markdown missing upstream override doc %q", want)
+		}
 	}
 	// §6.3 Token Bank automation section: the paths, the three scopes, and the
 	// fact that a key is never returned must all be documented.
@@ -44,8 +54,19 @@ func TestLLMAdminAPIDocsArePublic(t *testing.T) {
 	rec = httptest.NewRecorder()
 	llmAdminAPIOpenAPIDoc(rec, httptest.NewRequest(http.MethodGet, "/api/llm/admin-api.json", nil))
 	openapi := rec.Body.String()
-	if rec.Code != http.StatusOK || !strings.Contains(openapi, "provider-arrays/batch") || !strings.Contains(openapi, "ProviderMemberPatch") || !strings.Contains(openapi, `"enabled"`) {
+	if rec.Code != http.StatusOK || !strings.Contains(openapi, "provider-arrays/batch") || !strings.Contains(openapi, "ProviderMemberPatch") || !strings.Contains(openapi, `"enabled"`) || !strings.Contains(openapi, "extra_body") || !strings.Contains(openapi, "extra_body_priority") || !strings.Contains(openapi, "drop_fields") {
 		t.Fatalf("openapi status=%d body=%s", rec.Code, openapi)
+	}
+	for _, want := range []string{
+		"a missing priority means member",
+		"dry_run true validates",
+		"The test body cannot override those three",
+		"At most 16 KiB",
+		"OpenAI-compatible chat, Anthropic-compatible, and Responses",
+	} {
+		if !strings.Contains(openapi, want) {
+			t.Fatalf("openapi missing upstream override doc %q", want)
+		}
 	}
 	for _, want := range []string{
 		"listTokenBankShares",

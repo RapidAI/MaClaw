@@ -271,6 +271,7 @@ func adminPatchLLMProviderMember(svc *llmservice.Service, bank *SkillMarketHandl
 			}
 		}
 		patch := llmservice.ProviderMemberPatch{}
+		dryRun := false
 		for key, value := range raw {
 			switch key {
 			case "enabled":
@@ -351,6 +352,39 @@ func adminPatchLLMProviderMember(svc *llmservice.Service, bank *SkillMarketHandl
 				}
 				patch.ArrayIDSet = true
 				patch.ArrayID = arrayID
+			case "extra_body":
+				body, err := parseMemberExtraBodyPatch(value)
+				if err != nil {
+					writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+					return
+				}
+				patch.ExtraBodySet = true
+				patch.ExtraBody = body
+			case "extra_body_priority":
+				var priority string
+				if err := json.Unmarshal(value, &priority); err != nil {
+					writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "extra_body_priority must be a string"})
+					return
+				}
+				priority = strings.TrimSpace(priority)
+				if priority == "" {
+					break
+				}
+				patch.ExtraBodyPrioritySet = true
+				patch.ExtraBodyPriority = priority
+			case "drop_fields":
+				fields, err := parseMemberDropFieldsPatch(value)
+				if err != nil {
+					writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+					return
+				}
+				patch.DropFieldsSet = true
+				patch.DropFields = fields
+			case "dry_run":
+				if err := json.Unmarshal(value, &dryRun); err != nil {
+					writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "dry_run must be a boolean"})
+					return
+				}
 			default:
 				writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "unknown field " + key})
 				return
@@ -365,6 +399,19 @@ func adminPatchLLMProviderMember(svc *llmservice.Service, bank *SkillMarketHandl
 				writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "token_bank_tier applies to a token bank member"})
 				return
 			}
+		}
+		if providerMemberPatchEmpty(patch) {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "no changes"})
+			return
+		}
+		if dryRun {
+			preview, err := svc.PreviewProviderMember(r.Context(), id, patch)
+			if err != nil {
+				writeLLMProviderError(w, err)
+				return
+			}
+			writeLLMAdminJSON(w, http.StatusOK, memberUpstreamPatchPayload(id, patch, true, &preview))
+			return
 		}
 		if tier, arrayID, ok := tokenBankTierPatchTarget(id, patch); ok {
 			patch.ArrayID = arrayID
@@ -396,7 +443,7 @@ func adminPatchLLMProviderMember(svc *llmservice.Service, bank *SkillMarketHandl
 			writeLLMProviderError(w, err)
 			return
 		}
-		payload := map[string]any{"status": "ok", "id": id}
+		payload := memberUpstreamPatchPayload(id, patch, false, nil)
 		if patch.Enabled != nil {
 			payload["enabled"] = *patch.Enabled
 		}
@@ -462,7 +509,68 @@ func providerMemberPatchEmpty(patch llmservice.ProviderMemberPatch) bool {
 		!patch.ModelMapSet &&
 		!patch.AllowedNodeIDsSet &&
 		!patch.CapabilityTagsSet &&
-		!patch.ArrayIDSet
+		!patch.ArrayIDSet &&
+		!patch.ExtraBodySet &&
+		!patch.ExtraBodyPrioritySet &&
+		!patch.DropFieldsSet
+}
+
+func parseMemberExtraBodyPatch(value json.RawMessage) (map[string]any, error) {
+	var body map[string]any
+	if err := json.Unmarshal(value, &body); err != nil {
+		return nil, fmt.Errorf("extra_body must be a JSON object")
+	}
+	return body, nil
+}
+
+func parseMemberDropFieldsPatch(value json.RawMessage) ([]string, error) {
+	var fields []string
+	if err := json.Unmarshal(value, &fields); err != nil {
+		return nil, fmt.Errorf("drop_fields must be an array of strings")
+	}
+	return fields, nil
+}
+
+func memberUpstreamPatchPayload(id string, patch llmservice.ProviderMemberPatch, dryRun bool, preview *llmpool.ProviderConfig) map[string]any {
+	payload := map[string]any{"status": "ok", "id": id}
+	if dryRun {
+		payload["dry_run"] = true
+	}
+	if preview != nil {
+		payload["member"] = llmservice.MemberStatusView(*preview, time.Now())
+		return payload
+	}
+	if patch.ExtraBodySet {
+		extra, _, _, err := llmpool.NormalizeMemberUpstreamOverrides(patch.ExtraBody, "", nil)
+		if err == nil {
+			if extra == nil {
+				payload["extra_body"] = map[string]any{}
+			} else {
+				payload["extra_body"] = extra
+			}
+		}
+	}
+	if patch.ExtraBodyPrioritySet {
+		_, priority, _, err := llmpool.NormalizeMemberUpstreamOverrides(nil, patch.ExtraBodyPriority, nil)
+		if err == nil {
+			if priority == "" {
+				payload["extra_body_priority"] = llmpool.MemberExtraBodyPriorityMember
+			} else {
+				payload["extra_body_priority"] = priority
+			}
+		}
+	}
+	if patch.DropFieldsSet {
+		_, _, drop, err := llmpool.NormalizeMemberUpstreamOverrides(nil, "", patch.DropFields)
+		if err == nil {
+			if drop == nil {
+				payload["drop_fields"] = []string{}
+			} else {
+				payload["drop_fields"] = drop
+			}
+		}
+	}
+	return payload
 }
 
 // storeTokenBankMemberTier writes the share model's tier, settlement rate, and

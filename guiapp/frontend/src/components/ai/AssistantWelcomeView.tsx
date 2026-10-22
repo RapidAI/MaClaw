@@ -407,6 +407,8 @@ export interface WelcomeComposerProps {
     handleVoiceClick: () => void;
     handleVoicePointerDown: (event: React.PointerEvent<HTMLButtonElement>) => void;
     handleVoicePointerLeave: (event: React.PointerEvent<HTMLButtonElement>) => void;
+    /** Hard-disables the composer (read-only) while a task is being created. */
+    hardLockInput?: boolean;
     inputLocked: boolean;
     inputRef: React.Ref<HTMLTextAreaElement>;
     inputValue: string;

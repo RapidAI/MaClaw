@@ -58,7 +58,7 @@
 .sg-form-dialog label{margin-bottom:4px;letter-spacing:.02em;text-transform:none;font-size:12px;font-weight:700;color:#667085}
 .sg-form-dialog input:not([type=checkbox]),.sg-form-dialog select,.sg-form-dialog textarea{height:36px;padding:0 10px;border-radius:8px}
 .sg-form-dialog textarea{height:auto;min-height:64px;padding:8px 10px}
-.sg-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px}
+.sg-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px}.sg-form-grid textarea{width:100%;min-height:72px;box-sizing:border-box;font:inherit}.sg-form-grid .grid-span-all{grid-column:1 / -1}
 .sg-form-grid .provider-ua-custom{margin-top:8px}
 .sg-form-grid .provider-ua-custom[hidden]{display:none}
 .sg-form-grid .provider-ua-hint{margin-top:6px;padding:0;border:0;background:none;border-radius:0;color:#707684;font-size:12px;line-height:1.45}

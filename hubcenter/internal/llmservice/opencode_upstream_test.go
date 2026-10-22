@@ -11,6 +11,29 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 )
 
+func TestPlanOpenCodeStreamAppliesMemberExtraAfterZenRewrite(t *testing.T) {
+	plan, ok, err := planOpenCodeStream(&llmpool.ProviderConfig{
+		APIURL:     "https://opencode.ai/zen/v1",
+		ExtraBody:  map[string]any{"reasoning_effort": "none", "max_tokens": 128},
+		DropFields: []string{"thinking"},
+	}, map[string]any{
+		"model":      "space-bunny-free",
+		"max_tokens": 65536,
+		"thinking":   map[string]any{"type": "enabled"},
+		"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
+	}, "space-bunny-free")
+	if err != nil || !ok || plan.responses {
+		t.Fatalf("ok=%v responses=%v err=%v", ok, plan.responses, err)
+	}
+	payload := string(plan.payload)
+	if !strings.Contains(payload, `"reasoning_effort":"none"`) || !strings.Contains(payload, `"max_tokens":128`) {
+		t.Fatalf("payload = %s", payload)
+	}
+	if strings.Contains(payload, "thinking") {
+		t.Fatalf("thinking survived: %s", payload)
+	}
+}
+
 func TestTryForwardOpenCodeKeepsPaidOnChatGateway(t *testing.T) {
 	var sawPath, sawAuth, sawBody string
 	client := openCodeTestClient(t, func(w http.ResponseWriter, r *http.Request) {

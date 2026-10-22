@@ -46,6 +46,7 @@ if (typeof I18N_ZH !== 'undefined') {
       uaDefault: 'openclaw (default)', uaCustom: 'Custom', uaCustomPlaceholder: 'Type a User-Agent',
       fieldModels: 'Models (comma-separated)', fieldCapabilities: 'Capabilities',
       fieldPriority: 'Priority', fieldConcurrency: 'Max Concurrency', fieldTimeout: 'Timeout (sec)',
+      fieldExtraBody: 'Extra request fields', fieldExtraBodyHint: 'JSON object merged into the upstream request after reasoning fields are written. Example: {"reasoning_effort":"none"}. Leave empty to clear.', fieldExtraBodyPriority: 'Merge priority', extraPriorityMember: 'Member config wins', extraPriorityDownstream: 'Downstream request wins', fieldDropFields: 'Fields removed before forward', fieldDropFieldsHint: 'Comma-separated top-level fields, for example thinking', extraBodyInvalid: 'Extra request fields must be a JSON object',
       fieldSequence: 'Sequence', sequenceHint: 'Lower numbers are tried first. 0 means unset.',
       accessScope: 'Access scope', accessScopeAll: 'All nodes', accessScopeSelected: 'Selected nodes',
       accessScopeHint: 'Default: every HubCenter node may call this provider. Restricting the list makes upstream calls leave only from allowed nodes, to avoid regional model limits.',
@@ -267,6 +268,7 @@ if (typeof I18N_ZH !== 'undefined') {
       uaDefault: 'openclaw\uff08\u9ed8\u8ba4\uff09', uaCustom: '\u81ea\u5b9a\u4e49', uaCustomPlaceholder: '\u8f93\u5165 User-Agent',
       fieldModels: '\u6a21\u578b\uff08\u9017\u53f7\u5206\u9694\uff09', fieldCapabilities: '\u80fd\u529b\u6807\u7b7e',
       fieldPriority: '\u4f18\u5148\u7ea7', fieldConcurrency: '\u6700\u5927\u5e76\u53d1', fieldTimeout: '\u8d85\u65f6\uff08\u79d2\uff09',
+      fieldExtraBody: '\u989d\u5916\u8bf7\u6c42\u53c2\u6570', fieldExtraBodyHint: 'JSON \u5bf9\u8c61\uff0c\u5728\u601d\u8003\u5b57\u6bb5\u5199\u5b8c\u4e4b\u540e\u5408\u5e76\u8fdb\u4e0a\u6e38\u8bf7\u6c42\u3002\u4f8b\u5982 {"reasoning_effort":"none"}\u3002\u7559\u7a7a\u8868\u793a\u6e05\u7a7a\u3002', fieldExtraBodyPriority: '\u5408\u5e76\u4f18\u5148\u7ea7', extraPriorityMember: '\u6210\u5458\u914d\u7f6e\u8986\u76d6\u540c\u540d\u5b57\u6bb5', extraPriorityDownstream: '\u4e0b\u6e38\u8bf7\u6c42\u4fdd\u7559\u540c\u540d\u5b57\u6bb5', fieldDropFields: '\u8f6c\u53d1\u524d\u5220\u9664\u7684\u5b57\u6bb5', fieldDropFieldsHint: '\u9017\u53f7\u5206\u9694\u7684\u9876\u5c42\u5b57\u6bb5\uff0c\u4f8b\u5982 thinking', extraBodyInvalid: '\u989d\u5916\u8bf7\u6c42\u53c2\u6570\u5fc5\u987b\u662f JSON \u5bf9\u8c61',
       fieldSequence: '\u5e8f\u5217', sequenceHint: '\u6570\u5b57\u8d8a\u5c0f\u8d8a\u5148\u8bd5\u30020 \u8868\u793a\u672a\u8bbe\u3002',
       accessScope: '\u63a5\u5165\u8303\u56f4', accessScopeAll: '\u5168\u90e8\u8282\u70b9', accessScopeSelected: '\u6307\u5b9a\u8282\u70b9',
       accessScopeHint: '\u9ed8\u8ba4\u5168\u90e8 HubCenter \u8282\u70b9\u53ef\u8c03\u7528\u8be5\u670d\u52a1\u5546\u3002\u6307\u5b9a\u8282\u70b9\u540e\uff0c\u4e0a\u6e38\u8bf7\u6c42\u4ece\u5141\u8bb8\u7684\u8282\u70b9\u53d1\u51fa\uff0c\u4ee5\u907f\u5f00\u6a21\u578b\u533a\u57df\u9650\u5236\u3002',
@@ -2345,6 +2347,17 @@ if (typeof I18N_ZH !== 'undefined') {
       })
     };
   }
+  function providerExtraBodyText(p) {
+    if (!p || !p.extra_body || typeof p.extra_body !== 'object' || Array.isArray(p.extra_body)) return '';
+    try { return JSON.stringify(p.extra_body, null, 2); } catch (e) { return ''; }
+  }
+  function providerExtraBodyFields(p) {
+    var priority = p && p.extra_body_priority === 'downstream' ? 'downstream' : 'member';
+    var drop = p && Array.isArray(p.drop_fields) ? p.drop_fields.join(', ') : '';
+    return '<div class="grid-span-all"><label for="llmPrvExtraBody">' + esc(t('fieldExtraBody')) + '</label><textarea id="llmPrvExtraBody" rows="3" placeholder="{&quot;reasoning_effort&quot;:&quot;none&quot;}">' + esc(providerExtraBodyText(p)) + '</textarea><div class="provider-ua-hint">' + esc(t('fieldExtraBodyHint')) + '</div></div>'
+      + '<div><label for="llmPrvExtraPriority">' + esc(t('fieldExtraBodyPriority')) + '</label><select id="llmPrvExtraPriority"><option value="member"' + (priority === 'member' ? ' selected' : '') + '>' + esc(t('extraPriorityMember')) + '</option><option value="downstream"' + (priority === 'downstream' ? ' selected' : '') + '>' + esc(t('extraPriorityDownstream')) + '</option></select></div>'
+      + '<div><label for="llmPrvDropFields">' + esc(t('fieldDropFields')) + '</label><input id="llmPrvDropFields" value="' + esc(drop) + '" placeholder="thinking"><div class="provider-ua-hint">' + esc(t('fieldDropFieldsHint')) + '</div></div>';
+  }
   function copyProviderExtraFields(src) {
     if (!src) return {};
     var out = {};
@@ -2954,6 +2967,7 @@ if (typeof I18N_ZH !== 'undefined') {
       + field('llmPrvURL', t('fieldURL'), p ? p.api_url : '')
       + providerKeyField(p)
       + '<div><label>' + esc(t('fieldProtocol')) + '</label><select id="llmPrvProtocol"><option value="openai"' + ((!p||p.protocol==='openai')?' selected':'') + '>OpenAI</option><option value="anthropic"' + (p&&p.protocol==='anthropic'?' selected':'') + '>Anthropic</option></select></div>'
+      + providerExtraBodyFields(p)
       + providerUserAgentField(p)
       + providerModelsField(p ? (p.models||[]).join(', ') : '')
       + providerCapabilitiesField(p ? (p.capability_tags||[]).join(', ') : '')
@@ -3369,6 +3383,16 @@ if (typeof I18N_ZH !== 'undefined') {
     payload.name = val('llmPrvName');
     payload.api_url = val('llmPrvURL');
     payload.protocol = val('llmPrvProtocol');
+    var extraRaw = val('llmPrvExtraBody');
+    if (!extraRaw) payload.extra_body = {};
+    else {
+      var extraParsed = null;
+      try { extraParsed = JSON.parse(extraRaw); } catch (err) { extraParsed = null; }
+      if (!extraParsed || typeof extraParsed !== 'object' || Array.isArray(extraParsed)) { toast(t('extraBodyInvalid'), 'error'); return; }
+      payload.extra_body = extraParsed;
+    }
+    payload.extra_body_priority = val('llmPrvExtraPriority') === 'downstream' ? 'downstream' : 'member';
+    payload.drop_fields = csv('llmPrvDropFields');
     payload.agent_type = providerUserAgentValue();
     payload.models = csv('llmPrvModels');
     payload.capability_tags = csv('llmPrvCaps');
@@ -5340,6 +5364,7 @@ if (typeof I18N_ZH !== 'undefined') {
     var snap = {
       id: val('llmPrvID'), name: val('llmPrvName'), url: val('llmPrvURL'), key: val('llmPrvKey'),
       protocol: val('llmPrvProtocol'), userAgent: val('llmPrvUserAgent'), userAgentCustom: val('llmPrvUserAgentCustom'),
+      extraBody: val('llmPrvExtraBody'), extraPriority: val('llmPrvExtraPriority'), dropFields: val('llmPrvDropFields'),
       models: val('llmPrvModels'), caps: val('llmPrvCaps'),
       priority: val('llmPrvPriority'), sequence: val('llmPrvSequence'), conc: val('llmPrvConc'), timeout: val('llmPrvTimeout'),
       timezone: val('llmPrvTimezone'), multiplier: val('llmPrvMultiplier'),
@@ -5358,6 +5383,7 @@ if (typeof I18N_ZH !== 'undefined') {
       function set(id, value) { var node = document.getElementById(id); if (node && value != null) node.value = value; }
       set('llmPrvID', snap.id); set('llmPrvName', snap.name); set('llmPrvURL', snap.url); set('llmPrvKey', snap.key);
       set('llmPrvProtocol', snap.protocol); set('llmPrvUserAgent', snap.userAgent); set('llmPrvUserAgentCustom', snap.userAgentCustom);
+      set('llmPrvExtraBody', snap.extraBody); set('llmPrvExtraPriority', snap.extraPriority); set('llmPrvDropFields', snap.dropFields);
       if (typeof window.onProviderUserAgentChange === 'function') window.onProviderUserAgentChange(false);
       set('llmPrvModels', snap.models); set('llmPrvCaps', snap.caps);
       set('llmPrvPriority', snap.priority); set('llmPrvSequence', snap.sequence); set('llmPrvConc', snap.conc); set('llmPrvTimeout', snap.timeout);

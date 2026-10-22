@@ -803,6 +803,11 @@ export function CreateTaskUnified(arg1) {
   return window['go']['main']['App']['CreateTaskUnified'](arg1);
 }
 
+// MANUAL SYNC: mirrors guiapp/task_type_suggest.go SuggestNewTaskType.
+export function SuggestNewTaskType(arg1) {
+  return window['go']['main']['App']['SuggestNewTaskType'](arg1);
+}
+
 export function ProvisionCloudWorkspaceTask(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['ProvisionCloudWorkspaceTask'](arg1, arg2, arg3, arg4);
 }

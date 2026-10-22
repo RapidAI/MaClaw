@@ -52,6 +52,13 @@ type LLMProvider struct {
 	Timezone                 string                           `json:"timezone,omitempty"`
 	CreditMultiplier         float64                          `json:"credit_multiplier,omitempty"`
 	CreditMultiplierSchedule []llmpool.CreditMultiplierWindow `json:"credit_multiplier_schedule,omitempty"`
+	// ExtraBody is merged into the upstream request after reasoning stamps.
+	// A full provider save that omits it clears the stored object.
+	// extra_body_priority "" means the member value wins. "downstream" keeps a
+	// key the caller already set. DropFields are removed after the merge.
+	ExtraBody         map[string]any `json:"extra_body,omitempty"`
+	ExtraBodyPriority string         `json:"extra_body_priority,omitempty"`
+	DropFields        []string       `json:"drop_fields,omitempty"`
 }
 
 type LLMProviderRegistry struct {
@@ -149,9 +156,32 @@ func normalizeLLMProviderRegistry(reg *LLMProviderRegistry) *LLMProviderRegistry
 		reg.Providers[i].Timezone = policy.Timezone
 		reg.Providers[i].CreditMultiplier = policy.CreditMultiplier
 		reg.Providers[i].CreditMultiplierSchedule = policy.CreditMultiplierSchedule
+		reg.Providers[i].canonicalizeUpstreamOverrides()
 	}
 	return reg
 }
+
+// NormalizeUpstreamOverrides rejects an extra_body, priority, or drop_fields
+// value that cannot be stored. A valid value is rewritten to its canonical
+// form: "member" becomes "", and an empty object or list becomes nil.
+func (p *LLMProvider) NormalizeUpstreamOverrides() error {
+	if p == nil {
+		return nil
+	}
+	extra, priority, drop, err := llmpool.NormalizeMemberUpstreamOverrides(p.ExtraBody, p.ExtraBodyPriority, p.DropFields)
+	if err != nil {
+		return err
+	}
+	p.ExtraBody = extra
+	p.ExtraBodyPriority = priority
+	p.DropFields = drop
+	return nil
+}
+
+func (p *LLMProvider) canonicalizeUpstreamOverrides() {
+	_ = p.NormalizeUpstreamOverrides()
+}
+
 
 func (p LLMProvider) BillingPolicy() llmpool.ProviderBillingPolicy {
 	return llmpool.ProviderBillingPolicy{
@@ -176,6 +206,13 @@ func LoadLLMProviderRegistry(ctx context.Context, system store.SystemSettingsRep
 
 func SaveLLMProviderRegistry(ctx context.Context, system store.SystemSettingsRepository, reg *LLMProviderRegistry) error {
 	reg = normalizeLLMProviderRegistry(reg)
+	if reg != nil {
+		for i := range reg.Providers {
+			if err := reg.Providers[i].NormalizeUpstreamOverrides(); err != nil {
+				return err
+			}
+		}
+	}
 	data, err := json.Marshal(reg)
 	if err != nil {
 		return err

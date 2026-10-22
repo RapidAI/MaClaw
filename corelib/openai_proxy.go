@@ -1300,6 +1300,7 @@ func ForwardOpenAIResponsesRawRequest(ctx context.Context, cfg MaclawLLMConfig, 
 		fwd["model"] = model
 	}
 	ApplyReasoningControls(cfg, fwd, ReasoningAPIResponses)
+	cfg.applyMemberUpstreamBody(fwd)
 	jsonBody, err := json.Marshal(fwd)
 	if err != nil {
 		return nil, 0, fmt.Errorf("marshal responses request: %w", err)

@@ -7,6 +7,7 @@ import {
     CreateRunWindowTask,
     CreateTaskUnified,
     RenameCloudWorkspace,
+    SuggestNewTaskType,
     EnsureCodingWorkbenchArmed,
     ListExperts,
     ListLatexTemplates,
@@ -29,7 +30,8 @@ import { expertTabId, parseExpertListJSON, parseInstalledManagedIndustryExpertsJ
 import { extractErrorMessage } from "../participantAddError";
 import { applyComposeActionToText, goalCreateCommand, isBtwCommandText, isHistoryResetCommandText, normalizeInstallCommandText, type ComposeAction } from "../composeAction";
 import { buildOutgoingMessageMulti } from "../useAIAssistant";
-import { defaultTaskDraft, draftFromWizardSeed, isDraftDefault, withCloudWorkspace, type NewTaskWizardSeed, type TaskDraft } from "./taskDraft";
+import { defaultTaskDraft, draftFromWizardSeed, isDraftDefault, withCloudWorkspace, withTaskType, type NewTaskWizardSeed, type TaskDraft } from "./taskDraft";
+import { mismatchedTaskType, taskTypeMismatchCopy, type NewTaskTypeSuggestion } from "./taskTypeSuggest";
 import { isRunWindowScheduled, runWindowCreatedNotice, runWindowCreateRequest, validateRunWindow } from "./runWindow";
 import { dispatchDueRunWindows, launchRunWindowTask } from "./runWindowDispatch";
 import { setNewTaskCoverHeld } from "./newTaskCoverHold";
@@ -129,6 +131,12 @@ export interface TaskConfigWiringOptions {
     setEditingEntryId: (value: string | null) => void;
     /** App dialog. A scheduled create confirms the start time here. */
     showAlert?: (message: string, title?: string) => Promise<void> | void;
+    /**
+     * Asks whether a command that does not match the selected type should
+     * switch. Confirm switches. Cancel keeps the selected type. Both still
+     * create the task. Missing means keep the selected type.
+     */
+    showConfirm?: (message: string, title?: string, options?: { confirmText?: string; cancelText?: string }) => Promise<boolean> | boolean;
 }
 
 /** The object AssistantWelcomeView consumes through its `taskConfig` prop. */
@@ -172,7 +180,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         handleSend, handleWelcomePromptSend, clearComposerDraft,
         getTabs, getTabState, saveTabState,
         setQueueInteractionStarted, setQueueEditDraftActive, setEditingEntryId,
-        showAlert,
+        showAlert, showConfirm,
     } = options;
 
     // --- New-task wizard (TaskConfigBar) wiring ---
@@ -430,8 +438,48 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         if (covered?.selectedPaths?.length) replaceSelectedFilePaths?.(covered.selectedPaths);
     }, [clearComposerDraft, clearGuideDraft, isLocalTabActive, replacePendingAttachments, replaceSelectedFilePaths, retireLocalWizardFlag, showComposerText]);
 
-    const runConfiguredTaskSend = useCallback(async (rawText: string, sendOptions?: { force?: boolean; initialMessage?: string }): Promise<boolean> => {
-        const draft = taskConfigDraftRef.current;
+    // A confident local or LLM reading that disagrees with the selected type
+    // asks once. Agreeing updates the draft (coding drops a cloud workspace).
+    // Refusing, a classifier failure, or no dialog keeps the selected type.
+    // Experts ignore the type, and a remote workspace already runs as remote
+    // coding for both types, so those creates are not asked.
+    const alignTaskTypeWithCommand = useCallback(async (command: string, draft: TaskDraft): Promise<TaskDraft> => {
+        const text = (command || "").trim();
+        if (!text || (draft.expertId || "").trim() || draft.workspace.kind === "remote") return draft;
+        let suggestion: NewTaskTypeSuggestion | null = null;
+        try {
+            suggestion = await SuggestNewTaskType(text) as NewTaskTypeSuggestion;
+        } catch (err) {
+            console.warn("[task-type] classify failed", err);
+            return draft;
+        }
+        const next = mismatchedTaskType(draft.taskType, suggestion);
+        if (!next) return draft;
+        const isZh = !lang?.startsWith("en");
+        const copy = taskTypeMismatchCopy({
+            current: draft.taskType,
+            suggested: next,
+            dropsCloud: draft.workspace.kind === "cloud" && next === "coding",
+            isZh,
+        });
+        let accepted = false;
+        try {
+            accepted = await Promise.resolve(showConfirm?.(copy.message, copy.title, {
+                confirmText: copy.confirmText,
+                cancelText: copy.cancelText,
+            }) ?? false);
+        } catch (err) {
+            console.warn("[task-type] confirm failed", err);
+            accepted = false;
+        }
+        if (!accepted) return draft;
+        const updated = withTaskType(draft, next);
+        taskConfigDraftRef.current = updated;
+        setTaskConfigDraft(updated);
+        return updated;
+    }, [lang, showConfirm]);
+
+    const runConfiguredTaskSend = useCallback(async (rawText: string, sendOptions?: { force?: boolean; initialMessage?: string; classifyText?: string }): Promise<boolean> => {
         const force = sendOptions?.force === true;
         const initialMessage = (sendOptions?.initialMessage || "").trim();
         // In-flight guard covers the force path too: a wizard tab with an
@@ -444,6 +492,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         setTaskConfigSending(true);
         setTaskConfigError("");
         try {
+            const draft = await alignTaskTypeWithCommand(sendOptions?.classifyText ?? rawText, taskConfigDraftRef.current);
             const result = await runTaskConfigSend({
                 text: rawText,
                 draft,
@@ -524,7 +573,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             taskConfigSendingRef.current = false;
             setTaskConfigSending(false);
         }
-    }, [handoffComposer, lang]);
+    }, [alignTaskTypeWithCommand, handoffComposer, lang]);
 
     // The local assistant guide is the new-task page. There is no default
     // task: a send from that page creates a task even when every chip stays
@@ -551,10 +600,9 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         return paths.map((path) => path.trim()).filter((path, index, all) => path.length > 0 && all.indexOf(path) === index);
     }, [guidePendingAttachments, guideSelectedFilePaths, isLocalTabActive, pendingAttachments, selectedFilePaths, wizardOverlay]);
 
-    const scheduleConfiguredTask = useCallback(async (named: string, initialMessage: string): Promise<boolean> => {
-        const draft = taskConfigDraftRef.current;
+    const scheduleConfiguredTask = useCallback(async (named: string, initialMessage: string, classifyText = ""): Promise<boolean> => {
         const isZh = !lang?.startsWith("en");
-        const check = validateRunWindow(draft.runWindow, new Date(), isZh);
+        const check = validateRunWindow(taskConfigDraftRef.current.runWindow, new Date(), isZh);
         if (!check.ok) {
             setTaskConfigError(check.error);
             return false;
@@ -567,10 +615,13 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         taskConfigSendingRef.current = true;
         setTaskConfigSending(true);
         setTaskConfigError("");
-        const startAt = draft.runWindow?.startAt || "";
-        const endAt = draft.runWindow?.endAt;
         let created = false;
+        let startAt = "";
+        let endAt: string | undefined;
         try {
+            const draft = await alignTaskTypeWithCommand(classifyText, taskConfigDraftRef.current);
+            startAt = draft.runWindow?.startAt || "";
+            endAt = draft.runWindow?.endAt;
             await CreateRunWindowTask(runWindowCreateRequest(named, named, initialMessage, draft) as unknown as Parameters<typeof CreateRunWindowTask>[0]);
             created = true;
         } catch (err) {
@@ -603,20 +654,23 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             console.warn("[run-window] dispatch after create failed", err);
         });
         return true;
-    }, [handoffComposer, lang, showAlert]);
+    }, [alignTaskTypeWithCommand, handoffComposer, lang, showAlert]);
 
     // Name stays the typed text. A file with no text uses the filename so the
     // guide still creates a task instead of falling into a nameless session.
     const startGuideTask = useCallback((text: string, wizardActive: boolean, taskName?: string) => {
         const filePaths = collectGuideFilePaths();
         const fileName = filePaths[0] ? (filePaths[0].split(/[/\\]/).pop() || filePaths[0]) : "";
-        const named = (taskName || text || fileName).trim();
+        const typed = (text || "").trim();
+        const named = (taskName || typed || fileName).trim();
         if (!named) return Promise.resolve(false);
         const initialMessage = filePaths.length > 0 ? buildOutgoingMessageMulti(text, filePaths) : text || named;
+        // Classify the instruction, not a filename standing in for an empty composer.
+        const classifyText = (taskName || typed).trim();
         if (isRunWindowScheduled(taskConfigDraftRef.current)) {
-            return scheduleConfiguredTask(named, initialMessage);
+            return scheduleConfiguredTask(named, initialMessage, classifyText);
         }
-        return runConfiguredTaskSend(named, { force: wizardActive, initialMessage });
+        return runConfiguredTaskSend(named, { force: wizardActive, initialMessage, classifyText });
     }, [collectGuideFilePaths, runConfiguredTaskSend, scheduleConfiguredTask]);
 
     // Composer Enter on the local guide always creates a task. A default

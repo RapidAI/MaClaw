@@ -714,7 +714,7 @@ func providerTestConfig(cfg corelib.MaclawLLMConfig, provider *llmpool.ProviderC
 	if strings.TrimSpace(cfg.AgentType) == "" {
 		cfg.AgentType = llmservice.RequestAgentType(provider.AgentType)
 	}
-	return cfg
+	return llmservice.WithMemberUpstreamOverrides(cfg, provider)
 }
 
 // runLLMProviderChatTest executes one availability probe against cfg and
@@ -808,6 +808,9 @@ func runOpenCodeProviderChatTest(ctx context.Context, cfg corelib.MaclawLLMConfi
 		WireAPI:            cfg.WireAPI,
 		AgentType:          cfg.AgentType,
 		UpstreamTimeoutSec: cfg.TimeoutSec,
+		ExtraBody:          cfg.MemberExtraBody,
+		ExtraBodyPriority:  cfg.MemberExtraBodyPriority,
+		DropFields:         append([]string(nil), cfg.MemberDropFields...),
 	}
 	start := time.Now()
 	status, respBody, err := llmservice.ForwardProviderCompletion(ctx, corelib.NewLLMEndpointHTTPClient(cfg), provider, body, cfg.Model)
@@ -849,7 +852,7 @@ func newLLMProviderTestRequest(ctx context.Context, cfg corelib.MaclawLLMConfig,
 		if err != nil {
 			return nil, err
 		}
-		body = injectProviderTestTools(body, parsedTools, toolChoiceValue, true)
+		body = injectProviderTestTools(body, parsedTools, toolChoiceValue, true, cfg.MemberDropFields)
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(body)))
 		if err != nil {
 			return nil, err
@@ -947,7 +950,7 @@ func anthropicProbeToolChoice(choice interface{}) interface{} {
 	return nil
 }
 
-func injectProviderTestTools(body []byte, tools []map[string]interface{}, toolChoice interface{}, anthropic bool) []byte {
+func injectProviderTestTools(body []byte, tools []map[string]interface{}, toolChoice interface{}, anthropic bool, drop []string) []byte {
 	if len(tools) == 0 {
 		return body
 	}
@@ -955,6 +958,9 @@ func injectProviderTestTools(body []byte, tools []map[string]interface{}, toolCh
 	if err := json.Unmarshal(body, &doc); err != nil {
 		return body
 	}
+	// Member drop_fields already ran. A tool probe must not put a listed key
+	// back, and a probe tool_choice is meaningless once tools stay dropped.
+	changed := false
 	if anthropic {
 		converted := make([]map[string]interface{}, 0, len(tools))
 		for _, tool := range tools {
@@ -974,21 +980,45 @@ func injectProviderTestTools(body []byte, tools []map[string]interface{}, toolCh
 			}
 			converted = append(converted, item)
 		}
-		doc["tools"] = converted
-		if choice := anthropicProbeToolChoice(toolChoice); choice != nil {
-			doc["tool_choice"] = choice
+		if !memberTestDropListed(drop, "tools") {
+			doc["tools"] = converted
+			changed = true
 		}
-	} else {
+		if changed {
+			if !memberTestDropListed(drop, "tool_choice") {
+				if choice := anthropicProbeToolChoice(toolChoice); choice != nil {
+					doc["tool_choice"] = choice
+				}
+			}
+		}
+	} else if !memberTestDropListed(drop, "tools") {
 		doc["tools"] = tools
-		if toolChoice != nil {
+		changed = true
+		if toolChoice != nil && !memberTestDropListed(drop, "tool_choice") {
 			doc["tool_choice"] = toolChoice
 		}
+	}
+	if !changed {
+		return body
 	}
 	out, err := json.Marshal(doc)
 	if err != nil {
 		return body
 	}
 	return out
+}
+
+func memberTestDropListed(drop []string, field string) bool {
+	field = strings.TrimSpace(field)
+	if field == "" {
+		return false
+	}
+	for _, item := range drop {
+		if strings.TrimSpace(item) == field {
+			return true
+		}
+	}
+	return false
 }
 
 func llmProviderTestTimeout(cfg corelib.MaclawLLMConfig) time.Duration {

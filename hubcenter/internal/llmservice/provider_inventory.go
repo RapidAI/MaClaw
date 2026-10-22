@@ -2,6 +2,7 @@ package llmservice
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -27,6 +28,9 @@ type ProviderArrayMemberView struct {
 	ModelMap             map[string]string `json:"model_map,omitempty"`
 	AllowedNodeIDs       []string          `json:"allowed_node_ids"`
 	CapabilityTags       []string          `json:"capability_tags"`
+	ExtraBody            map[string]any    `json:"extra_body,omitempty"`
+	ExtraBodyPriority    string            `json:"extra_body_priority,omitempty"`
+	DropFields           []string          `json:"drop_fields,omitempty"`
 	Health               MemberHealth      `json:"health"`
 }
 
@@ -62,6 +66,12 @@ type ProviderMemberPatch struct {
 	CapabilityTags       []string
 	ArrayIDSet           bool
 	ArrayID              string
+	ExtraBodySet         bool
+	ExtraBody            map[string]any
+	ExtraBodyPrioritySet bool
+	ExtraBodyPriority    string
+	DropFieldsSet        bool
+	DropFields           []string
 }
 
 // ListProviderArrayInventory returns arrays and members without upstream secrets.
@@ -140,6 +150,9 @@ func memberView(provider llmpool.ProviderConfig, now time.Time) ProviderArrayMem
 		ModelMap:             cloneStringMap(provider.ModelMap),
 		AllowedNodeIDs:       nodes,
 		CapabilityTags:       tags,
+		ExtraBody:            cloneAnyMap(provider.ExtraBody),
+		ExtraBodyPriority:    provider.ExtraBodyPriority,
+		DropFields:           append([]string(nil), provider.DropFields...),
 		Health:               memberHealthSnapshot(&provider, now),
 	}
 }
@@ -175,49 +188,9 @@ func (s *Service) PatchProviderMember(ctx context.Context, id string, patch Prov
 		if idx < 0 {
 			return false, fmt.Errorf("%w: %s", ErrProviderNotFound, id)
 		}
-		provider := reg.Providers[idx]
-		before := provider
-		if patch.Enabled != nil {
-			provider.Paused = !*patch.Enabled
-		}
-		if patch.DispatchWeight != nil {
-			provider.DispatchWeight = *patch.DispatchWeight
-		}
-		if patch.Priority != nil {
-			provider.Priority = *patch.Priority
-		}
-		if patch.RequestsPerMinute != nil {
-			provider.RequestsPerMinute = *patch.RequestsPerMinute
-		}
-		if patch.RequestsPerDay != nil {
-			provider.RequestsPerDay = *patch.RequestsPerDay
-		}
-		if patch.RateLimitCooldownSec != nil {
-			provider.RateLimitCooldownSec = *patch.RateLimitCooldownSec
-		}
-		if patch.ModelMapSet {
-			provider.ModelMap = cloneStringMap(patch.ModelMap)
-		}
-		if patch.AllowedNodeIDsSet {
-			provider.AllowedNodeIDs = append([]string(nil), patch.AllowedNodeIDs...)
-			provider.AllowedNodes = ""
-		}
-		if patch.CapabilityTagsSet {
-			provider.CapabilityTags = append([]string(nil), patch.CapabilityTags...)
-		}
-		if patch.ArrayIDSet {
-			target := strings.TrimSpace(patch.ArrayID)
-			if target == "" {
-				return false, fmt.Errorf("provider array id required")
-			}
-			arr := findProviderArray(reg, target)
-			if arr == nil {
-				return false, fmt.Errorf("%w: %s", ErrArrayNotFound, target)
-			}
-			provider.ArrayID = arr.ID
-			provider.ArrayName = arr.Name
-		}
-		if err := validateMemberPolicy(&provider); err != nil {
+		before := reg.Providers[idx]
+		provider, err := applyProviderMemberPatch(reg, before, patch)
+		if err != nil {
 			return false, err
 		}
 		if !providerMemberPatchChanged(before, provider) {
@@ -226,6 +199,87 @@ func (s *Service) PatchProviderMember(ctx context.Context, id string, patch Prov
 		reg.Providers[idx] = provider
 		return true, nil
 	})
+}
+
+// PreviewProviderMember applies patch in memory and returns the member that
+// would be stored. It does not write the registry.
+func (s *Service) PreviewProviderMember(ctx context.Context, id string, patch ProviderMemberPatch) (llmpool.ProviderConfig, error) {
+	id = strings.TrimSpace(id)
+	if s == nil || id == "" {
+		return llmpool.ProviderConfig{}, fmt.Errorf("provider id required")
+	}
+	reg, err := s.LoadRegistry(ctx)
+	if err != nil {
+		return llmpool.ProviderConfig{}, err
+	}
+	idx := providerIndex(reg, id)
+	if idx < 0 {
+		return llmpool.ProviderConfig{}, fmt.Errorf("%w: %s", ErrProviderNotFound, id)
+	}
+	return applyProviderMemberPatch(reg, reg.Providers[idx], patch)
+}
+
+func applyProviderMemberPatch(reg *Registry, provider llmpool.ProviderConfig, patch ProviderMemberPatch) (llmpool.ProviderConfig, error) {
+	if patch.Enabled != nil {
+		provider.Paused = !*patch.Enabled
+	}
+	if patch.DispatchWeight != nil {
+		provider.DispatchWeight = *patch.DispatchWeight
+	}
+	if patch.Priority != nil {
+		provider.Priority = *patch.Priority
+	}
+	if patch.RequestsPerMinute != nil {
+		provider.RequestsPerMinute = *patch.RequestsPerMinute
+	}
+	if patch.RequestsPerDay != nil {
+		provider.RequestsPerDay = *patch.RequestsPerDay
+	}
+	if patch.RateLimitCooldownSec != nil {
+		provider.RateLimitCooldownSec = *patch.RateLimitCooldownSec
+	}
+	if patch.ModelMapSet {
+		provider.ModelMap = cloneStringMap(patch.ModelMap)
+	}
+	if patch.AllowedNodeIDsSet {
+		provider.AllowedNodeIDs = append([]string(nil), patch.AllowedNodeIDs...)
+		provider.AllowedNodes = ""
+	}
+	if patch.CapabilityTagsSet {
+		provider.CapabilityTags = append([]string(nil), patch.CapabilityTags...)
+	}
+	if patch.ArrayIDSet {
+		target := strings.TrimSpace(patch.ArrayID)
+		if target == "" {
+			return provider, fmt.Errorf("provider array id required")
+		}
+		arr := findProviderArray(reg, target)
+		if arr == nil {
+			return provider, fmt.Errorf("%w: %s", ErrArrayNotFound, target)
+		}
+		provider.ArrayID = arr.ID
+		provider.ArrayName = arr.Name
+	}
+	if patch.ExtraBodySet {
+		provider.ExtraBody = cloneAnyMap(patch.ExtraBody)
+	}
+	if patch.ExtraBodyPrioritySet {
+		provider.ExtraBodyPriority = patch.ExtraBodyPriority
+	}
+	if patch.DropFieldsSet {
+		if patch.DropFields == nil {
+			provider.DropFields = []string{}
+		} else {
+			provider.DropFields = append([]string(nil), patch.DropFields...)
+		}
+	}
+	if err := normalizeProviderUpstreamOverrides(&provider); err != nil {
+		return provider, err
+	}
+	if err := validateMemberPolicy(&provider); err != nil {
+		return provider, err
+	}
+	return provider, nil
 }
 
 func providerMemberPatchChanged(before, after llmpool.ProviderConfig) bool {
@@ -239,7 +293,20 @@ func providerMemberPatchChanged(before, after llmpool.ProviderConfig) bool {
 		!stringSliceEqual(before.AllowedNodeIDs, after.AllowedNodeIDs) ||
 		!stringSliceEqual(before.CapabilityTags, after.CapabilityTags) ||
 		!stringMapEqual(before.ModelMap, after.ModelMap) ||
-		!strings.EqualFold(strings.TrimSpace(before.ArrayID), strings.TrimSpace(after.ArrayID))
+		!strings.EqualFold(strings.TrimSpace(before.ArrayID), strings.TrimSpace(after.ArrayID)) ||
+		!memberUpstreamOverridesEqual(before, after)
+}
+
+func memberUpstreamOverridesEqual(before, after llmpool.ProviderConfig) bool {
+	if before.ExtraBodyPriority != after.ExtraBodyPriority || !stringSliceEqual(before.DropFields, after.DropFields) {
+		return false
+	}
+	left, errLeft := json.Marshal(before.ExtraBody)
+	right, errRight := json.Marshal(after.ExtraBody)
+	if errLeft != nil || errRight != nil {
+		return false
+	}
+	return string(left) == string(right)
 }
 
 func stringSliceEqual(a, b []string) bool {

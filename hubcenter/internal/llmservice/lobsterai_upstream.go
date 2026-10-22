@@ -40,7 +40,7 @@ func lobsterAIMaclawConfig(provider *llmpool.ProviderConfig, model string) (core
 		LobsterAIUserID:       strings.TrimSpace(provider.LobsterAIUserID),
 	}
 	cfg.AuthType = "oauth"
-	return cfg, true
+	return WithMemberUpstreamOverrides(cfg, provider), true
 }
 
 func lobsterAIMatches(provider *llmpool.ProviderConfig) bool {

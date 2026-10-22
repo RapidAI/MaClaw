@@ -55,6 +55,9 @@ func ForwardOpenCodeChat(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 	if corelib.OpenCodeUsesResponsesAPI(cfg.URL, model) {
 		return forwardOpenCodeResponses(ctx, cfg, body, client)
 	}
+	// Zen chat rewrites tools, stream, and the default output cap after the
+	// caller built the body. Member overrides run after that rewrite.
+	corelib.ApplyMemberUpstreamBody(body, cfg.MemberExtraBody, cfg.MemberExtraBodyPriority, cfg.MemberDropFields)
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return nil, 0, err

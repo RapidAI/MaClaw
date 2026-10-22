@@ -30,6 +30,9 @@ type LLMEndpointProvider struct {
 	CircuitBreakerCooldownMS int
 	FailureBackoffBaseMS     int
 	FailureBackoffMaxMS      int
+	ExtraBody                map[string]any
+	ExtraBodyPriority        string
+	DropFields               []string
 }
 
 type LLMEndpointForwardResult struct {
@@ -177,8 +180,11 @@ func (p LLMEndpointProvider) MaclawLLMConfig() MaclawLLMConfig {
 		Model:      p.Model,
 		Protocol:   NormalizeLLMProviderProtocol(p.Protocol),
 		WireAPI:    NormalizeLLMProviderWireAPI(p.WireAPI),
-		AgentType:  strings.TrimSpace(p.AgentType),
-		TimeoutSec: p.UpstreamTimeoutSec,
+		AgentType:               strings.TrimSpace(p.AgentType),
+		TimeoutSec:              p.UpstreamTimeoutSec,
+		MemberExtraBody:         p.ExtraBody,
+		MemberExtraBodyPriority: p.ExtraBodyPriority,
+		MemberDropFields:        append([]string(nil), p.DropFields...),
 	}
 }
 

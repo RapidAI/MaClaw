@@ -64,6 +64,15 @@ type ProviderConfig struct {
 	// ModelMap rewrites a public model name to this member's upstream model id.
 	// Example: {"free-llama-70b": "meta-llama/Llama-3.3-70B-Instruct"}.
 	ModelMap                 map[string]string        `json:"model_map,omitempty"`
+	// ExtraBody is merged into the upstream request after reasoning stamps.
+	// Omit on update to keep the stored object. {} clears it.
+	ExtraBody map[string]any `json:"extra_body,omitempty"`
+	// ExtraBodyPriority is "" or "member" (member wins on the same key) or
+	// "downstream" (keep a key the caller already set). Stored "" means member.
+	ExtraBodyPriority string `json:"extra_body_priority,omitempty"`
+	// DropFields names top-level keys removed after ExtraBody is merged.
+	// Omit on update to keep the stored list. [] clears it.
+	DropFields               []string                 `json:"drop_fields,omitempty"`
 	ResolutionTier           int                      `json:"resolution_tier,omitempty"`   // lower = cheaper
 	CreditMultiplier         float64                  `json:"credit_multiplier,omitempty"` // default 1.0 when no schedule window matches
 	Timezone                 string                   `json:"timezone,omitempty"`          // IANA timezone for schedule windows; default Asia/Shanghai

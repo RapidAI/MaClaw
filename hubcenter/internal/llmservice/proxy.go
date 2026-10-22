@@ -1823,6 +1823,9 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 	// Finish turns a caller-supplied thinking value into reasoning_effort.
 	corelib.AddAutoDeepSeekThinkingObject(upstreamCfg, reqBody)
 	corelib.FinishOpenAIChatReasoningControls(upstreamCfg, reqBody)
+	if provider != nil {
+		corelib.ApplyMemberUpstreamBody(reqBody, provider.ExtraBody, provider.ExtraBodyPriority, provider.DropFields)
+	}
 	openCodePlan, openCodePlanned, err := planOpenCodeStream(provider, reqBody, upstreamModel)
 	if err != nil {
 		return nil, err
@@ -1849,6 +1852,9 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 			WireAPI:            provider.WireAPI,
 			AgentType:          RequestAgentType(provider.AgentType),
 			UpstreamTimeoutSec: provider.UpstreamTimeoutSec,
+			ExtraBody:          provider.ExtraBody,
+			ExtraBodyPriority:  provider.ExtraBodyPriority,
+			DropFields:         provider.DropFields,
 		}.MaclawLLMConfig()
 		cfg = corelib.BindOpenCodeSessionID(ctx, cfg)
 	}
@@ -4146,6 +4152,9 @@ func forwardToProviderAttempts(ctx context.Context, client *http.Client, provide
 		CircuitBreakerCooldownMS: provider.CircuitBreakerCooldownMS,
 		FailureBackoffBaseMS:     provider.FailureBackoffBaseMS,
 		FailureBackoffMaxMS:      provider.FailureBackoffMaxMS,
+		ExtraBody:                provider.ExtraBody,
+		ExtraBodyPriority:        provider.ExtraBodyPriority,
+		DropFields:               provider.DropFields,
 	}
 	var respBody []byte
 	var statusCode int

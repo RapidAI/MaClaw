@@ -3306,8 +3306,11 @@
 .capc-glyph { width: 14px; flex-shrink: 0; text-align: center; }
 /* Fixed-width index column keeps T1…T99 titles on one vertical line
    (24px covers two digits; spans still grow past it if needed). */
-.capc-step-idx { flex-shrink: 0; min-width: 24px; opacity: 0.86; font-variant-numeric: tabular-nums; }
-.capc-step-title { min-width: 0; flex: 1; }
+.capc-step-idx { flex-shrink: 0; min-width: 24px; opacity: 0.86; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* anywhere stays on the title and the restatement only. The card's max-width
+   already caps the border; inheriting it would also break T10 and the buttons. */
+.capc-step-title { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+[data-testid='coding-agent-plan-understanding'] { overflow-wrap: anywhere; }
 .capc-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 
 /* CodingAgentProgressStatus.tsx */

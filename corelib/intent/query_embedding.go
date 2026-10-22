@@ -114,8 +114,35 @@ func IntentQueryEmbeddingScores(ctx context.Context, emb embedding.Embedder, tex
 	if qe, ok := QueryEmbeddingFromContext(ctx); ok && qe.matches(emb, text, intentEmbeddingRole) {
 		return qe.Vec, qe.AnchorMaxCos, nil
 	}
+	// The embedding-only cache keeps the anchor cosines and drops the vector.
+	// Embed once, and still hand the head the scores from that pass.
+	if qe, ok := queryEmbeddingRaw(ctx); ok && len(qe.Vec) == 0 && len(qe.AnchorMaxCos) > 0 && qe.sameEmbedder(emb, text, intentEmbeddingRole) {
+		vec, err = embedIntentQuery(emb, text)
+		return vec, qe.AnchorMaxCos, err
+	}
 	vec, err = embedIntentQuery(emb, text)
 	return vec, nil, err
+}
+
+func queryEmbeddingRaw(ctx context.Context) (QueryEmbedding, bool) {
+	if ctx == nil {
+		return QueryEmbedding{}, false
+	}
+	qe, ok := ctx.Value(queryEmbeddingKey{}).(QueryEmbedding)
+	return qe, ok
+}
+
+// sameEmbedder is matches without a vector-length check, for a scores-only
+// attachment whose vector was not retained.
+func (qe QueryEmbedding) sameEmbedder(emb embedding.Embedder, text string, role embedding.Role) bool {
+	if qe.Text != text || qe.Role != role || emb == nil {
+		return false
+	}
+	if qe.emb != nil && qe.emb == emb {
+		return true
+	}
+	id := embedderModelID(emb)
+	return id != "" && id == qe.ModelID
 }
 
 // HeadQueryInput returns the input vector for head h: the Layer 2 query

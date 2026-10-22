@@ -67,7 +67,7 @@ func workBuddyMaclawConfig(provider *llmpool.ProviderConfig, model string) (core
 	if workBuddyAccountHeaders(provider) {
 		cfg.AuthType = "oauth"
 	}
-	return cfg, true
+	return WithMemberUpstreamOverrides(cfg, provider), true
 }
 
 // workBuddyAccountHeaders reports a logged-in WorkBuddy account. Token Bank

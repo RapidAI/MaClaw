@@ -2,8 +2,12 @@ import { describe, expect, it } from "vitest";
 import type { ChatMessage } from "../useAIAssistant";
 import {
     coalesceCodingAgentToolLifecycle,
+    codingProgressOwnedByTimeline,
+    codingTimelineOwnedProgressTexts,
     compactCodingAgentProgressMessages,
     groupCodingAgentProgressForRender,
+    latestCodingToolTrailAt,
+    retainAssistantProgressText,
 } from "../compactCodingAgentProgressMessages";
 import { isCodingAgentBoardProgressContent, isCodingWorkbenchStatusLine, reasoningHasCodingStatusMilestone, stripCodingAgentAuditSections, stripCodingWorkbenchStatusReasoning, stripLeadingCodingWorkbenchStatus } from "../codingAgentUserFinish";
 
@@ -266,6 +270,45 @@ describe("compactCodingAgentProgressMessages", () => {
         expect(isCodingAgentBoardProgressContent("全功能远程编程：使用 SSH 会话 ssh_1 开始执行")).toBe(true);
         expect(isCodingAgentBoardProgressContent("Coding Agent: running T1 - write files")).toBe(false);
         expect(isCodingAgentBoardProgressContent("正在生成报告")).toBe(false);
+    });
+
+    it("lets the next continuation keep a tool row the previous answer does not show", () => {
+        const finished = 'Coding Agent Event: {"agent":"coding","event":"tool_finished","detail":"bash","command":"cmake --build build"}';
+        const next = 'Coding Agent Event: {"agent":"coding","event":"tool_started","detail":"bash","command":"build\\\\build_now.cmd --clean-first"}';
+        const concluded = [
+            { kind: "thinking", content: "基线已经对齐。" },
+            { kind: "progress", content: finished },
+        ];
+        expect(codingProgressOwnedByTimeline(concluded, finished)).toBe(true);
+        expect(codingProgressOwnedByTimeline(concluded, next)).toBe(false);
+        expect(codingProgressOwnedByTimeline(undefined, next)).toBe(false);
+        expect(codingProgressOwnedByTimeline([], next)).toBe(false);
+        expect(codingProgressOwnedByTimeline(concluded, "普通进度")).toBe(false);
+        const owned = codingTimelineOwnedProgressTexts(concluded);
+        expect(owned.has(finished)).toBe(true);
+        expect(owned.has(next)).toBe(false);
+    });
+
+    it("keeps a transcript tool row newer than the painted Read/Edit/$ line", () => {
+        const transcript = "工具 · 执行命令 (bash)\nbuild\\build_now.cmd --clean-first";
+        const finished = 'Coding Agent Event: {"agent":"coding","event":"tool_finished","detail":"bash","command":"cmake --build build"}';
+        const next = 'Coding Agent Event: {"agent":"coding","event":"tool_started","detail":"bash","command":"build\\\\build_now.cmd --clean-first"}';
+        const status = 'Coding Agent Event: {"agent":"coding","event":"task_status","phase":"running","task_id":"T1"}';
+        const concludedTimeline = [
+            { kind: "progress" as const, content: finished, timestamp: 100 },
+        ];
+        const owned = codingTimelineOwnedProgressTexts(concludedTimeline);
+        expect(latestCodingToolTrailAt(concludedTimeline, [{ content: status, timestamp: 250 }])).toBe(100);
+        expect(latestCodingToolTrailAt(undefined, [{ role: "progress", content: next, timestamp: 180 }])).toBe(180);
+        expect(latestCodingToolTrailAt(concludedTimeline, [{ content: transcript, timestamp: 200 }])).toBe(100);
+        expect(retainAssistantProgressText(transcript, owned, 100, 200, [])).toBe(true);
+        expect(retainAssistantProgressText(transcript, owned, 150, 100, [])).toBe(false);
+        expect(retainAssistantProgressText(transcript, owned, 200, 200, [])).toBe(false);
+        expect(retainAssistantProgressText(next, owned, 200, 200, [])).toBe(true);
+        expect(retainAssistantProgressText("普通进度", owned, 200, 50, [])).toBe(true);
+        expect(retainAssistantProgressText(transcript, owned, 100, 200, [
+            { role: "assistant", toolCalls: [{ id: "1", name: "bash", action: "执行命令", detail: "build\\build_now.cmd --clean-first" }] },
+        ])).toBe(false);
     });
 });
 

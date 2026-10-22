@@ -76,6 +76,61 @@ func TestClassifyContextHandsL2VectorToLocalL3(t *testing.T) {
 	}
 }
 
+func TestClassifyEmbeddingOnlyKeepsThePassForTheHead(t *testing.T) {
+	emb := &roleSpyEmbedder{modelID: "spy:8"}
+	const text = "fix the nil pointer in login"
+	uic := New(Config{Embedder: emb})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = []intentAnchor{
+		{Label: LabelCoding, Vecs: [][]float32{{1, 0, 0, 0, 0, 0, 0, 0}}},
+		{Label: LabelOffice, Vecs: [][]float32{{0, 1, 0, 0, 0, 0, 0, 0}}},
+	}
+	uic.mu.Unlock()
+
+	first := uic.ClassifyEmbeddingOnly(MessageContext{Text: text})
+	if len(first.QueryVec) != 8 {
+		t.Fatalf("query vec len = %d", len(first.QueryVec))
+	}
+	if first.AnchorMaxCos[string(LabelCoding)] == 0 || first.AnchorMaxCos[string(LabelOffice)] == 0 {
+		t.Fatalf("anchor scores = %v", first.AnchorMaxCos)
+	}
+	embedded := emb.countSeen(text)
+	if embedded != 1 {
+		t.Fatalf("embedded %d times, want 1", embedded)
+	}
+	ctx := uic.WithEmbeddingQuery(context.Background(), text, first)
+	vec, scores, err := IntentQueryEmbeddingScores(ctx, emb, text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vec) != 8 || scores[string(LabelCoding)] == 0 {
+		t.Fatalf("reused vec %d scores %v", len(vec), scores)
+	}
+	if emb.countSeen(text) != 1 {
+		t.Fatalf("head embedded again: %d", emb.countSeen(text))
+	}
+
+	cached := uic.ClassifyEmbeddingOnly(MessageContext{Text: text})
+	if len(cached.QueryVec) != 0 {
+		t.Fatal("cache must not retain the query vector")
+	}
+	if cached.AnchorMaxCos[string(LabelCoding)] == 0 {
+		t.Fatalf("cache dropped anchor scores: %v", cached.AnchorMaxCos)
+	}
+	ctx = uic.WithEmbeddingQuery(context.Background(), text, cached)
+	_, scores, err = IntentQueryEmbeddingScores(ctx, emb, text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scores[string(LabelOffice)] == 0 {
+		t.Fatalf("cache-hit head lost anchor scores: %v", scores)
+	}
+	if emb.countSeen(text) != 2 {
+		t.Fatalf("cache hit embedded %d times, want one more", emb.countSeen(text))
+	}
+}
+
 func TestIntentQueryEmbeddingRejectsMismatches(t *testing.T) {
 	emb := &roleSpyEmbedder{modelID: "spy:8"}
 	vec, _ := embedding.EmbedAs(emb, "hello there", intentEmbeddingRole)

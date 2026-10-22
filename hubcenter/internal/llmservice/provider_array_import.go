@@ -175,6 +175,9 @@ func (s *Service) importProviderArrays(ctx context.Context, batch []ProviderArra
 				if err := validateProviderDefaultBilling(provider); err != nil {
 					return nil, fmt.Errorf("arrays[%d].providers[%d]: %w", i, pi, err)
 				}
+				if err := normalizeProviderUpstreamOverrides(&provider); err != nil {
+					return nil, fmt.Errorf("arrays[%d].providers[%d]: %w", i, pi, err)
+				}
 				if err := validateMemberPolicy(&provider); err != nil {
 					return nil, fmt.Errorf("arrays[%d].providers[%d]: %w", i, pi, err)
 				}
@@ -190,6 +193,9 @@ func (s *Service) importProviderArrays(ctx context.Context, batch []ProviderArra
 				return nil, fmt.Errorf("arrays[%d].providers[%d]: %w", i, pi, err)
 			}
 			if err := validateProviderDefaultBilling(provider); err != nil {
+				return nil, fmt.Errorf("arrays[%d].providers[%d]: %w", i, pi, err)
+			}
+			if err := normalizeProviderUpstreamOverrides(&provider); err != nil {
 				return nil, fmt.Errorf("arrays[%d].providers[%d]: %w", i, pi, err)
 			}
 			if err := validateMemberPolicy(&provider); err != nil {

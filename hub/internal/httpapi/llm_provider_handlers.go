@@ -283,6 +283,11 @@ func UpdateLLMProvidersHandler(system store.SystemSettingsRepository, accessCtrl
 			return
 		}
 		if err := im.SaveLLMProviderRegistry(r.Context(), system, &req); err != nil {
+			var overrideErr *llmpool.MemberUpstreamOverrideError
+			if errors.As(err, &overrideErr) {
+				writeError(w, http.StatusBadRequest, "LLM_PROVIDER_INVALID", err.Error())
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_SAVE_FAILED", err.Error())
 			return
 		}
@@ -377,14 +382,22 @@ func TestLLMProviderHandler(system store.SystemSettingsRepository) http.HandlerF
 			writeJSON(w, http.StatusOK, map[string]any{"success": false, "error": "provider missing api_url/api_key/model"})
 			return
 		}
-		cfg := corelib.MaclawLLMConfig{
+		// The probe must use the same canonical overrides a save would store.
+		// Otherwise a padded key or a protected name looks fine here and fails
+		// on the next registry write, or the live request sends a different body.
+		extra, priority, drop, normErr := llmpool.NormalizeMemberUpstreamOverrides(req.ExtraBody, req.ExtraBodyPriority, req.DropFields)
+		if normErr != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"success": false, "error": normErr.Error()})
+			return
+		}
+		cfg := corelib.MemberUpstreamOverrides(corelib.MaclawLLMConfig{
 			URL:       req.APIURL,
 			Key:       req.APIKey,
 			Model:     req.Model,
 			Protocol:  normalizeProviderProtocol(req.Protocol),
 			WireAPI:   normalizeProviderWireAPI(req.WireAPI),
 			AgentType: strings.TrimSpace(req.AgentType),
-		}
+		}, extra, priority, drop)
 		messages := []interface{}{map[string]string{"role": "user", "content": "Reply with exactly: pong"}}
 		start := time.Now()
 		resp, err := agent.DoSimpleLLMRequest(cfg, messages, http.DefaultClient, 12*time.Second)
@@ -4941,7 +4954,7 @@ func registryResponse(r *http.Request, reg *im.LLMProviderRegistry, serviceReg *
 		snapshot := globalProviderConcurrency.snapshot(p.ID, p.MaxConcurrency, p.MaxQueueWaiters, p.QueueTimeoutMS)
 		resilience := globalProviderResilience.snapshot(&p)
 		ann := lbAnnotationAt(lbAnnotations, i)
-		providers = append(providers, map[string]any{
+		providerItem := map[string]any{
 			"id":                            p.ID,
 			"name":                          p.Name,
 			"api_url":                       p.APIURL,
@@ -4975,7 +4988,17 @@ func registryResponse(r *http.Request, reg *im.LLMProviderRegistry, serviceReg *
 			"circuit_open_until":            resilience.CircuitOpenUntil,
 			"backoff_until":                 resilience.BackoffUntil,
 			"usage":                         usage,
-		})
+		}
+		if len(p.ExtraBody) > 0 {
+			providerItem["extra_body"] = p.ExtraBody
+		}
+		if strings.TrimSpace(p.ExtraBodyPriority) != "" {
+			providerItem["extra_body_priority"] = p.ExtraBodyPriority
+		}
+		if len(p.DropFields) > 0 {
+			providerItem["drop_fields"] = append([]string(nil), p.DropFields...)
+		}
+		providers = append(providers, providerItem)
 		if _, ok := seenModels[p.ID]; !ok && p.ID != "" {
 			availableModels = append(availableModels, p.ID)
 			seenModels[p.ID] = struct{}{}
@@ -6106,6 +6129,9 @@ func toCoreLLMEndpointProvider(p *im.LLMProvider) corelib.LLMEndpointProvider {
 		CircuitBreakerCooldownMS: p.CircuitBreakerCooldownMS,
 		FailureBackoffBaseMS:     p.FailureBackoffBaseMS,
 		FailureBackoffMaxMS:      p.FailureBackoffMaxMS,
+		ExtraBody:                p.ExtraBody,
+		ExtraBodyPriority:        p.ExtraBodyPriority,
+		DropFields:               append([]string(nil), p.DropFields...),
 	}
 }
 

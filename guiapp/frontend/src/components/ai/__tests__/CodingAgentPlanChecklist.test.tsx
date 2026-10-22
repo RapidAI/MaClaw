@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, cleanup, fireEvent } from "@testing-library/react";
 import { CodingAgentPlanChecklist, codingPlanProgressLabel } from "../CodingAgentPlanChecklist";
@@ -70,7 +72,13 @@ describe("CodingAgentPlanChecklist", () => {
                 ]}
             />,
         );
-        expect(getByTestId("coding-agent-plan-checklist")).toBeTruthy();
+        const card = getByTestId("coding-agent-plan-checklist") as HTMLElement;
+        expect(card).toBeTruthy();
+        expect(card.style.marginLeft).toBe("");
+        expect(card.style.marginRight).toBe("");
+        expect(card.style.marginBottom).toBe("8px");
+        expect(card.style.width).toBe("");
+        expect(card.style.maxWidth).toBe("");
         expect(getByTestId("coding-agent-plan-current").textContent).toContain("T2");
         expect(getByTestId("coding-agent-plan-step-2").getAttribute("data-status")).toBe("running");
         expect(queryByTestId("coding-agent-plan-approve")).toBeNull();
@@ -195,5 +203,29 @@ describe("CodingAgentPlanChecklist", () => {
         );
         fireEvent.click(getByTestId("coding-agent-plan-approve"));
         expect(onApprove).toHaveBeenCalledTimes(1);
+    });
+
+    it("uses the composer side inset so the card matches the input width", () => {
+        const partial = readFileSync(resolve(process.cwd(), "src/styles/partials/100-pet-store-mc.css"), "utf8");
+        const assembled = readFileSync(resolve(process.cwd(), "src/App.css"), "utf8");
+        const marker = "[data-testid='ai-input-resize-handle'],\n[data-testid='coding-agent-plan-checklist'] {";
+        for (const css of [partial, assembled]) {
+            const start = css.indexOf(marker);
+            expect(start).toBeGreaterThan(-1);
+            const block = css.slice(start, css.indexOf("}", start));
+            expect(block).toContain("box-sizing: border-box");
+            expect(block).toContain("min-width: 0");
+            expect(block).toContain("align-self: stretch");
+            expect(block).toContain("max-width: calc(100% - (2 * var(--mc-composer-inset-x, 24px)))");
+            expect(block).toContain("margin-left: var(--mc-composer-inset-x, 24px)");
+            expect(block).toContain("margin-right: var(--mc-composer-inset-x, 24px)");
+            expect(block).not.toContain("overflow-wrap");
+        }
+        const layoutPartial = readFileSync(resolve(process.cwd(), "src/styles/partials/90-im-channels-markdown.css"), "utf8");
+        for (const css of [layoutPartial, assembled]) {
+            expect(css).toContain(".capc-step-title { min-width: 0; flex: 1; overflow-wrap: anywhere; }");
+            expect(css).toContain("[data-testid='coding-agent-plan-understanding'] { overflow-wrap: anywhere; }");
+            expect(css).toContain(".capc-step-idx { flex-shrink: 0; min-width: 24px; opacity: 0.86; font-variant-numeric: tabular-nums; white-space: nowrap; }");
+        }
     });
 });

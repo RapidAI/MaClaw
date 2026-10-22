@@ -1248,9 +1248,16 @@ func (u *UnifiedIntentClassifier) ClassifyEmbeddingOnly(msg MessageContext) Clas
 		}
 	}
 
-	result, confident, queryVec := classifyByEmbeddingVec(emb, anchors, msg.Text)
+	result, confident, queryVec, anchorMaxCos := classifyByEmbeddingVecScores(emb, anchors, msg.Text)
 	if len(queryVec) > 0 {
 		result.QueryVec = append([]float32(nil), queryVec...)
+	}
+	if len(anchorMaxCos) > 0 {
+		copied := make(map[string]float64, len(anchorMaxCos))
+		for label, score := range anchorMaxCos {
+			copied[label] = score
+		}
+		result.AnchorMaxCos = copied
 	}
 	// Keep the abstention bit. Callers that treat this result as a route
 	// must not read a high cosine on an unresolved composite as a grant.
@@ -1263,6 +1270,28 @@ func (u *UnifiedIntentClassifier) ClassifyEmbeddingOnly(msg MessageContext) Clas
 		u.storeEmbOnly(cacheKey, &result)
 	}
 	return result
+}
+
+// WithEmbeddingQuery attaches this embedding-only pass so a local head can
+// reuse it. A live pass includes the query vector, so the head does not embed
+// again. A cache hit kept only the anchor cosines; the head embeds once and
+// still receives those scores.
+func (u *UnifiedIntentClassifier) WithEmbeddingQuery(ctx context.Context, text string, result ClassificationResult) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if u == nil || strings.TrimSpace(text) == "" || (len(result.QueryVec) == 0 && len(result.AnchorMaxCos) == 0) {
+		return ctx
+	}
+	u.mu.RLock()
+	emb := u.embedder
+	u.mu.RUnlock()
+	if emb == nil || embedding.IsNoop(emb) {
+		return ctx
+	}
+	qe := newQueryEmbedding(emb, text, result.QueryVec)
+	qe.AnchorMaxCos = result.AnchorMaxCos
+	return WithQueryEmbedding(ctx, qe)
 }
 
 // ClassifyCached returns the full-fusion classification previously computed

@@ -101,6 +101,40 @@ func (t openCodeRewriteTransport) RoundTrip(req *http.Request) (*http.Response, 
 	return base.RoundTrip(clone)
 }
 
+func TestForwardOpenCodeChatAppliesMemberExtraAfterZenRewrite(t *testing.T) {
+	var sawBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		sawBody = string(raw)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"pong\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer srv.Close()
+	client := srv.Client()
+	client.Transport = openCodeRewriteTransport{base: client.Transport, host: srv.Listener.Addr().String()}
+	cfg := corelib.MemberUpstreamOverrides(corelib.MaclawLLMConfig{
+		URL: "https://opencode.ai/zen/v1", Model: "space-bunny-free", AgentType: "OpenCode",
+	}, map[string]any{"reasoning_effort": "none", "max_tokens": 128}, "", []string{"thinking"})
+	body, status, err := ForwardOpenCodeChat(context.Background(), cfg, map[string]interface{}{
+		"model":      "space-bunny-free",
+		"max_tokens": 65536,
+		"thinking":   map[string]interface{}{"type": "enabled"},
+		"messages":   []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+	}, client)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("status=%d err=%v body=%s", status, err, body)
+	}
+	if !strings.Contains(sawBody, `"reasoning_effort":"none"`) || !strings.Contains(sawBody, `"max_tokens":128`) {
+		t.Fatalf("member extra missing after zen rewrite: %s", sawBody)
+	}
+	if strings.Contains(sawBody, "thinking") {
+		t.Fatalf("drop_fields left thinking in the zen body: %s", sawBody)
+	}
+	if !strings.Contains(sawBody, `"name":"bash"`) {
+		t.Fatalf("zen tools missing: %s", sawBody)
+	}
+}
+
 func TestForwardOpenCodeChatKeepsPartialStream(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

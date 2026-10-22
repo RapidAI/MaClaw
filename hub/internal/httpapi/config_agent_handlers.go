@@ -384,7 +384,7 @@ func executeConfigAgentStep(r *http.Request, deps ConfigAgentDeps, system, baseS
 		}
 		items := make([]map[string]any, 0, len(reg.Providers))
 		for _, p := range reg.Providers {
-			items = append(items, map[string]any{"id": p.ID, "name": p.Name, "model": p.Model, "api_url": p.APIURL})
+			items = append(items, providerUpstreamOverrideView(p))
 		}
 		return map[string]any{"count": len(items), "providers": items, "enabled": reg.Enabled}, nil
 
@@ -2592,6 +2592,164 @@ func normalizeServiceGroupIDsArg(v any) []string {
 	return uniq
 }
 
+func providerUpstreamOverrideView(p im.LLMProvider) map[string]any {
+	item := map[string]any{"id": p.ID, "name": p.Name, "model": p.Model, "api_url": p.APIURL}
+	if len(p.ExtraBody) > 0 {
+		item["extra_body"] = p.ExtraBody
+	}
+	if strings.TrimSpace(p.ExtraBodyPriority) != "" {
+		item["extra_body_priority"] = p.ExtraBodyPriority
+	}
+	if len(p.DropFields) > 0 {
+		item["drop_fields"] = append([]string(nil), p.DropFields...)
+	}
+	return item
+}
+
+func providerUpstreamOverrideResult(item map[string]any, p im.LLMProvider) map[string]any {
+	if len(p.ExtraBody) > 0 {
+		item["extra_body"] = p.ExtraBody
+	}
+	if strings.TrimSpace(p.ExtraBodyPriority) != "" {
+		item["extra_body_priority"] = p.ExtraBodyPriority
+	}
+	if len(p.DropFields) > 0 {
+		item["drop_fields"] = append([]string(nil), p.DropFields...)
+	}
+	return item
+}
+
+// applyPlanUpstreamOverrides copies saved extra_body, priority, and drop_fields
+// when the plan omits them. A present null, empty object, or empty list clears that value.
+func applyPlanUpstreamOverrides(next *im.LLMProvider, prev *im.LLMProvider, args map[string]any) error {
+	if next == nil {
+		return nil
+	}
+	if prev != nil {
+		next.ExtraBody = clonePlanExtraBody(prev.ExtraBody)
+		next.ExtraBodyPriority = prev.ExtraBodyPriority
+		next.DropFields = append([]string(nil), prev.DropFields...)
+	}
+	if args != nil {
+		if raw, ok := args["extra_body"]; ok {
+			extra, err := parsePlanExtraBody(raw)
+			if err != nil {
+				return err
+			}
+			next.ExtraBody = extra
+		}
+		if raw, ok := args["extra_body_priority"]; ok {
+			priority, err := parsePlanExtraPriority(raw)
+			if err != nil {
+				return err
+			}
+			next.ExtraBodyPriority = priority
+		}
+		if raw, ok := args["drop_fields"]; ok {
+			drop, err := parsePlanDropFields(raw)
+			if err != nil {
+				return err
+			}
+			next.DropFields = drop
+		}
+	}
+	return next.NormalizeUpstreamOverrides()
+}
+
+func clonePlanExtraBody(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		return in
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return in
+	}
+	return out
+}
+
+func parsePlanExtraBody(raw any) (map[string]any, error) {
+	if raw == nil {
+		return map[string]any{}, nil
+	}
+	switch typed := raw.(type) {
+	case map[string]any:
+		if typed == nil {
+			return map[string]any{}, nil
+		}
+		return typed, nil
+	case string:
+		text := strings.TrimSpace(typed)
+		if text == "" || text == "{}" || text == "null" {
+			return map[string]any{}, nil
+		}
+		var out map[string]any
+		if err := json.Unmarshal([]byte(text), &out); err != nil || out == nil {
+			return nil, fmt.Errorf("extra_body must be a JSON object")
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("extra_body must be a JSON object")
+	}
+}
+
+func parsePlanExtraPriority(raw any) (string, error) {
+	if raw == nil {
+		return "", nil
+	}
+	text, ok := raw.(string)
+	if !ok {
+		return "", fmt.Errorf("extra_body_priority must be a string")
+	}
+	return strings.TrimSpace(text), nil
+}
+
+func parsePlanDropFields(raw any) ([]string, error) {
+	if raw == nil {
+		return []string{}, nil
+	}
+	switch typed := raw.(type) {
+	case []string:
+		return append([]string(nil), typed...), nil
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			text, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("drop_fields must be an array of strings")
+			}
+			out = append(out, text)
+		}
+		return out, nil
+	case string:
+		text := strings.TrimSpace(typed)
+		if text == "" || text == "[]" || text == "null" {
+			return []string{}, nil
+		}
+		if strings.HasPrefix(text, "[") {
+			var out []string
+			if err := json.Unmarshal([]byte(text), &out); err != nil {
+				return nil, fmt.Errorf("drop_fields must be an array of strings")
+			}
+			return out, nil
+		}
+		parts := strings.FieldsFunc(text, func(r rune) bool { return r == ',' || r == '，' })
+		out := make([]string, 0, len(parts))
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				out = append(out, part)
+			}
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("drop_fields must be an array of strings")
+	}
+}
+
 func upsertProviderFromPlanArgs(r *http.Request, system store.SystemSettingsRepository, args map[string]any) (any, error) {
 	id := strings.TrimSpace(fmt.Sprint(args["id"]))
 	name := strings.TrimSpace(fmt.Sprint(args["name"]))
@@ -2622,16 +2780,23 @@ func upsertProviderFromPlanArgs(r *http.Request, system store.SystemSettingsRepo
 	}
 	found := false
 	for i := range reg.Providers {
-		if strings.EqualFold(strings.TrimSpace(reg.Providers[i].ID), id) {
-			if next.APIKey == "" {
-				next.APIKey = reg.Providers[i].APIKey
-			}
-			reg.Providers[i] = next
-			found = true
-			break
+		if !strings.EqualFold(strings.TrimSpace(reg.Providers[i].ID), id) {
+			continue
 		}
+		if err := applyPlanUpstreamOverrides(&next, &reg.Providers[i], args); err != nil {
+			return nil, err
+		}
+		if next.APIKey == "" {
+			next.APIKey = reg.Providers[i].APIKey
+		}
+		reg.Providers[i] = next
+		found = true
+		break
 	}
 	if !found {
+		if err := applyPlanUpstreamOverrides(&next, nil, args); err != nil {
+			return nil, err
+		}
 		reg.Providers = append(reg.Providers, next)
 	}
 	if !reg.Enabled {
@@ -2641,10 +2806,11 @@ func upsertProviderFromPlanArgs(r *http.Request, system store.SystemSettingsRepo
 		return nil, err
 	}
 	invalidateLLMRuntimeCaches(system)
-	return map[string]any{
+	result := map[string]any{
 		"provider_id": id, "name": name, "api_url": apiURL, "model": model,
 		"updated": found, "created": !found,
-	}, nil
+	}
+	return providerUpstreamOverrideResult(result, next), nil
 }
 
 func liveTestSystemFree(r *http.Request, system store.SystemSettingsRepository) (any, error) {
@@ -2706,13 +2872,13 @@ func liveTestSystemFree(r *http.Request, system store.SystemSettingsRepository) 
 	if local == nil || strings.TrimSpace(local.APIURL) == "" || strings.TrimSpace(local.APIKey) == "" {
 		return map[string]any{"ok": false, "status": status}, fmt.Errorf("provider %q not fully configured", providerID)
 	}
-	cfg := corelib.MaclawLLMConfig{
+	cfg := corelib.MemberUpstreamOverrides(corelib.MaclawLLMConfig{
 		URL: local.APIURL, Key: local.APIKey,
 		Model:     systemFreeFirstNonEmpty(local.Model, model.Name, "auto"),
 		Protocol:  normalizeProviderProtocol(local.Protocol),
 		WireAPI:   normalizeProviderWireAPI(local.WireAPI),
 		AgentType: strings.TrimSpace(local.AgentType),
-	}
+	}, local.ExtraBody, local.ExtraBodyPriority, local.DropFields)
 	resp, err := agent.DoSimpleLLMRequest(cfg, []interface{}{
 		map[string]string{"role": "user", "content": "Reply with exactly: pong"},
 	}, http.DefaultClient, 15*time.Second)
@@ -2741,12 +2907,12 @@ func liveTestLLMProvider(r *http.Request, system store.SystemSettingsRepository,
 	if strings.TrimSpace(p.APIURL) == "" || strings.TrimSpace(p.APIKey) == "" || strings.TrimSpace(p.Model) == "" {
 		return nil, fmt.Errorf("provider %q missing api_url/api_key/model", providerID)
 	}
-	cfg := corelib.MaclawLLMConfig{
+	cfg := corelib.MemberUpstreamOverrides(corelib.MaclawLLMConfig{
 		URL: p.APIURL, Key: p.APIKey, Model: p.Model,
 		Protocol:  normalizeProviderProtocol(p.Protocol),
 		WireAPI:   normalizeProviderWireAPI(p.WireAPI),
 		AgentType: strings.TrimSpace(p.AgentType),
-	}
+	}, p.ExtraBody, p.ExtraBodyPriority, p.DropFields)
 	start := time.Now()
 	resp, err := agent.DoSimpleLLMRequest(cfg, []interface{}{
 		map[string]string{"role": "user", "content": "Reply with exactly: pong"},

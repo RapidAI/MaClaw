@@ -147,7 +147,7 @@ func openCodeMaclawConfig(provider *llmpool.ProviderConfig, model string) coreli
 	if agent == "" || strings.EqualFold(agent, "openclaw") {
 		agent = "OpenCode"
 	}
-	return corelib.MaclawLLMConfig{
+	return WithMemberUpstreamOverrides(corelib.MaclawLLMConfig{
 		URL:        provider.APIURL,
 		Key:        strings.TrimSpace(provider.APIKey),
 		Model:      model,
@@ -155,7 +155,7 @@ func openCodeMaclawConfig(provider *llmpool.ProviderConfig, model string) coreli
 		WireAPI:    provider.WireAPI,
 		AgentType:  agent,
 		TimeoutSec: provider.UpstreamTimeoutSec,
-	}
+	}, provider)
 }
 
 type openCodeStreamPlan struct {
@@ -187,6 +187,9 @@ func planOpenCodeStream(provider *llmpool.ProviderConfig, body map[string]any, u
 	if corelib.OpenCodeUsesResponsesAPI(cfg.URL, wireModel) {
 		return openCodeStreamPlan{cfg: cfg, responses: true}, true, nil
 	}
+	// Zen chat injects tools and may delete the default output cap. Apply
+	// member overrides after that rewrite so extra_body and drop_fields win.
+	corelib.ApplyMemberUpstreamBody(chat, cfg.MemberExtraBody, cfg.MemberExtraBodyPriority, cfg.MemberDropFields)
 	payload, err := json.Marshal(chat)
 	if err != nil {
 		return openCodeStreamPlan{}, true, err

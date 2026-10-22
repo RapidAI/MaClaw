@@ -214,6 +214,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     OpenFileOrShowInFolder: openFileOrShowInFolderMock,
     ShowItemInFolder: showItemInFolderMock,
     CreateTaskUnified: createTaskUnifiedMock,
+    SuggestNewTaskType: vi.fn().mockResolvedValue({ suggested: '', confident: false }),
     AIAssistantAttachmentPreviewDataURL: vi.fn().mockResolvedValue('data:image/png;base64,THUMB'),
     AIAssistantAttachmentFullDataURL: vi.fn().mockResolvedValue('data:image/png;base64,FULL'),
     SelectProjectDir: vi.fn(),

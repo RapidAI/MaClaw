@@ -313,7 +313,13 @@ type ClassificationResult struct {
 	// QueryVec is the Layer 2 query vector used for this turn (RoleClassification
 	// space of the live embedder). Not serialised. Tool routing reuses it for
 	// the first-party tool head and for Track A (same vector, no second embed).
+	// The embedding-only cache drops it; AnchorMaxCos is the compact half that
+	// stays cached for a later head.
 	QueryVec []float32 `json:"-"`
+
+	// AnchorMaxCos is the raw per-label max anchor cosine from the same Layer 2
+	// pass as QueryVec. A local head with anchor features needs it. Not a grant.
+	AnchorMaxCos map[string]float64 `json:"-"`
 
 	// EmbeddingEarlyExit is set only by ClassifyEmbeddingOnly. It is Layer 2's
 	// confident return: the embedding separated this utterance, so the tree was

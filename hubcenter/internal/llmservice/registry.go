@@ -298,6 +298,8 @@ func cloneProviderConfigs(in []llmpool.ProviderConfig) []llmpool.ProviderConfig 
 		out[i].TokenBankShareWindow.Days = append([]int(nil), p.TokenBankShareWindow.Days...)
 		out[i].ServeWindows = cloneShareWindows(p.ServeWindows)
 		out[i].ModelMap = cloneStringMap(p.ModelMap)
+		out[i].ExtraBody = cloneAnyMap(p.ExtraBody)
+		out[i].DropFields = append([]string(nil), p.DropFields...)
 		out[i].TokenPricing = p.TokenPricing.Clone()
 	}
 	return out
@@ -406,6 +408,7 @@ func normalizeRegistry(reg *Registry) {
 		normalizeProviderAccessScope(&reg.Providers[i])
 		normalizeProviderAgentType(&reg.Providers[i])
 		normalizeProviderAuth(&reg.Providers[i])
+		canonicalizeProviderUpstreamOverrides(&reg.Providers[i])
 		reg.Providers[i].NormalizeBilling()
 	}
 	normalizeProviderSequences(reg)
@@ -1016,6 +1019,9 @@ func (s *Service) AddProvider(ctx context.Context, provider llmpool.ProviderConf
 	if provider.Sequence <= 0 {
 		provider.Sequence = nextProviderSequence(reg)
 	}
+	if err := normalizeProviderUpstreamOverrides(&provider); err != nil {
+		return err
+	}
 	next := cloneRegistry(reg)
 	next.Providers = append(next.Providers, provider)
 	return s.persistRegistry(ctx, next)
@@ -1085,6 +1091,18 @@ func mergeUnspecifiedProviderFields(existing, incoming llmpool.ProviderConfig) l
 	if incoming.ModelMap == nil {
 		incoming.ModelMap = cloneStringMap(existing.ModelMap)
 	}
+	// A nil extra body or drop list was omitted. {} and [] clear. An empty
+	// priority was omitted, so an explicit "member" is what switches
+	// downstream back to the default. Canonicalize after this merge.
+	if incoming.ExtraBody == nil {
+		incoming.ExtraBody = cloneAnyMap(existing.ExtraBody)
+	}
+	if strings.TrimSpace(incoming.ExtraBodyPriority) == "" {
+		incoming.ExtraBodyPriority = existing.ExtraBodyPriority
+	}
+	if incoming.DropFields == nil {
+		incoming.DropFields = append([]string(nil), existing.DropFields...)
+	}
 	// The provider editor and array move send the fields on the form. The
 	// token-bank snapshot is not among them. A zero incoming value was omitted,
 	// so keep the published share. Clearing it would dial a cheap-hour key all
@@ -1145,6 +1163,9 @@ func (s *Service) UpdateProvider(ctx context.Context, provider llmpool.ProviderC
 	provider = mergeUnspecifiedProviderFields(existing, provider)
 	provider.NormalizeBilling()
 	if err := normalizeProviderServeWindows(&provider); err != nil {
+		return err
+	}
+	if err := normalizeProviderUpstreamOverrides(&provider); err != nil {
 		return err
 	}
 	provider.ArrayIndependent = false

@@ -271,6 +271,7 @@ func buildOpenAIChatRequestBody(
 	// Temperature is applied after AMD rewrite. A leftover thinking object
 	// used to suppress it, and that object is then removed for this host.
 	applyConfigTemperature(reqBody, cfg)
+	corelib.ApplyMemberUpstreamBody(reqBody, cfg.MemberExtraBody, cfg.MemberExtraBodyPriority, cfg.MemberDropFields)
 	return reqBody
 }
 

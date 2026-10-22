@@ -36,19 +36,19 @@ func traeMaclawConfig(provider *llmpool.ProviderConfig, model string) (corelib.M
 		model = strings.TrimSpace(provider.Models[0])
 	}
 	cfg := corelib.MaclawLLMConfig{
-		URL:            trae.CanonicalChatURL(profile, profile.ChatHost),
-		Key:            strings.TrimSpace(provider.APIKey),
-		Model:          model,
-		Protocol:       "openai",
-		ProviderName:   profile.Name,
-		TimeoutSec:     provider.UpstreamTimeoutSec,
-		TraeMachineID:  strings.TrimSpace(provider.TraeMachineID),
-		TraeDeviceID:   strings.TrimSpace(provider.TraeDeviceID),
-		TraeUserID:     strings.TrimSpace(provider.TraeUserID),
+		URL:              trae.CanonicalChatURL(profile, profile.ChatHost),
+		Key:              strings.TrimSpace(provider.APIKey),
+		Model:            model,
+		Protocol:         "openai",
+		ProviderName:     profile.Name,
+		TimeoutSec:       provider.UpstreamTimeoutSec,
+		TraeMachineID:    strings.TrimSpace(provider.TraeMachineID),
+		TraeDeviceID:     strings.TrimSpace(provider.TraeDeviceID),
+		TraeUserID:       strings.TrimSpace(provider.TraeUserID),
 		TraeRefreshToken: strings.TrimSpace(provider.TraeRefreshToken),
 	}
 	cfg.AuthType = "oauth"
-	return cfg, true
+	return WithMemberUpstreamOverrides(cfg, provider), true
 }
 
 // traeProfile selects the realm whose SOLO chat this provider must use. An
