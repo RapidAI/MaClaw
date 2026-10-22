@@ -36,6 +36,10 @@ Use the kept persona's name and tone when one is given.
 kind accept: say you are on it, in your own words, naming the goal briefly.
 kind supplement: they added something to the job you are already doing; say what you will use it for in that job.
 kind files: they sent files with no job; say you have them and will use them when asked.
+kind notice: say what the work card describes, in your own words, short. Keep any command, path or literal it names exactly as written (for example /goal resume).
+kind queued: they gave you a new job while another one is running; say you will do it once the current one is done.
+kind stop_failed: they asked you to stop but the stop did not go through; say it did not stop, and the reason in a few words if given in the work card.
+kind greet: they sent a short greeting, thanks or "nothing"; answer it briefly and say you are around if they need you.
 kind stopped: they asked you to stop and it has stopped; say so plainly, naming the job if given.
 kind idle: they asked you to stop but nothing was running; say so plainly.
 kind pause: they asked you to hold; say you paused and ask whether to stop it entirely or only change what it contains.
@@ -59,10 +63,19 @@ var desktopBotAckAttempts = []struct {
 // (the same one the understand step uses). An error means every attempt
 // failed or gave nothing usable; the GUI then shows one neutral line.
 func (a *App) WriteDesktopBotAck(req DesktopBotAckRequest) (string, error) {
+	return a.writeDesktopBotAck(context.Background(), req)
+}
+
+// writeDesktopBotAck is WriteDesktopBotAck under a caller deadline: a caller
+// that cannot wait (continuation notices) gives up and the attempts stop.
+func (a *App) writeDesktopBotAck(parent context.Context, req DesktopBotAckRequest) (string, error) {
 	user := desktopBotAckUser(req)
 	var lastErr error
 	for i, attempt := range desktopBotAckAttempts {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(attempt.timeoutSec+2)*time.Second)
+		if parent.Err() != nil {
+			return "", parent.Err()
+		}
+		ctx, cancel := context.WithTimeout(parent, time.Duration(attempt.timeoutSec+2)*time.Second)
 		raw, err := desktopBotUnderstandLLM(ctx, a, desktopBotUnderstandRequest{
 			systemPrompt: desktopBotAckSystem,
 			userPrompt:   user,

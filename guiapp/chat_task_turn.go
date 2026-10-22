@@ -269,12 +269,15 @@ func (c *LoopContext) chatTaskHandoffSent() bool {
 }
 
 func foregroundChatContinuationNote(userText string) string {
+	minimal := "The rest continues; the result will come here."
+	lang := "en"
 	for _, r := range userText {
 		if unicode.Is(unicode.Han, r) {
-			return "剩余工作已继续处理，完成后会发到这个对话。"
+			minimal, lang = "剩下的接着做，做完发这里。", "zh-Hans"
+			break
 		}
 	}
-	return "The remaining work is continuing. The result will appear in this chat."
+	return botNotice("chat-continuation", "notice", "The rest of this job keeps running in the background; the result will be posted in this chat when done.", userText, lang, minimal, 3*time.Second)
 }
 
 // foregroundChatNeedsHostHandoff is true when this desktop chat turn was

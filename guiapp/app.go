@@ -2612,6 +2612,7 @@ func (a *App) startup(ctx context.Context) {
 	log.Printf("[startup] begin")
 	bootLog("App.startup ctx_nil=%v", ctx == nil)
 	a.ctx = ctx
+	botNoticeApp.Store(a)
 	// Picture PDFs have no text layer. Wire OCR before the first document read
 	// so auto-extract and office(read_document) share the local engine.
 	wireOfficeImagePDFOCR()

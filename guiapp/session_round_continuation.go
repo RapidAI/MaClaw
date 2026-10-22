@@ -354,17 +354,19 @@ func sessionRoundContinuationPrompt(task string) string {
 }
 
 func sessionRoundContinuationNote(task string) string {
+	minimal := "Round used up; continuing."
 	if sessionRoundTextHasHan(task) {
-		return "本轮推理已经用完，同一任务会自动继续。"
+		minimal = "这轮用完了，接着做。"
 	}
-	return "This round is spent. The same task continues automatically."
+	return botNotice("session-round-note", "notice", "This round's reasoning budget is used up; the same task continues automatically in a new round.", truncateRunes(task, 200), botNoticeLang(task), minimal, 3*time.Second)
 }
 
 func sessionRoundContinuationDisplay(task string) string {
+	minimal := "Continuing"
 	if sessionRoundTextHasHan(task) {
-		return "正在继续同一任务"
+		minimal = "接着做"
 	}
-	return "Continuing the same task"
+	return botNotice("session-round-display", "notice", "A short status label: still continuing the same task.", truncateRunes(task, 200), botNoticeLang(task), minimal, 2*time.Second)
 }
 
 func sessionRoundTextHasHan(text string) bool {

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest';
-import { addDesktopBot, appendDesktopBotReport, botsForUser, botTaskText, botTranscriptGeneration, clearLiveBotTurn, confirmedWorkOrder, currentInProgressBotTasks, deleteDesktopBot, desktopBotAccountId, desktopBotActivityText, desktopBotAdmittingSentence, desktopBotAskingLabel, desktopBotCrossTargetText, desktopBotDestructive, desktopBotFiles, desktopBotImages, desktopBotLocalControl, desktopBotLocalPaths, desktopBotNoticeSeen, desktopBotRunningSentence, desktopBotStatusUnreachableSentence, desktopBotStopFailedSentence, desktopBotStopIdleSentence, desktopBotPauseAskSentence, desktopBotStillStoppingSentence, desktopBotStopIntent, desktopBotStoppedSentence, desktopFalseStopClaim, desktopReplyClaimsStopped, desktopBotTaskHint, desktopBotTypedConfirmSentence, desktopBotWorkingLabel, desktopCreditReadout, desktopTaskStep, inProgressBotTasks, markDesktopBotNotice, messageNeedsComputerTakeover, messagesForBot, namesLaterTime, noteLiveBotTurn, renameDesktopBot, saveBotMessages, settlePendingBotReply, userRequestBefore, BOT_PENDING_REPLY_WAIT_MS } from './desktopBots';
+import { addDesktopBot, appendDesktopBotReport, botsForUser, botTaskText, botTranscriptGeneration, clearLiveBotTurn, confirmedWorkOrder, currentInProgressBotTasks, deleteDesktopBot, desktopBotAccountId, desktopBotActivityText, desktopBotAdmittingSentence, desktopBotAskingLabel, desktopBotCrossTargetText, desktopBotDestructive, desktopBotFiles, desktopBotImages, desktopBotLocalControl, desktopBotLocalPaths, desktopBotNoticeSeen, desktopBotRunningSentence, desktopBotStatusUnreachableSentence, desktopBotStopFailedSentence, desktopBotStopIdleSentence, desktopBotPauseAskSentence, desktopBotStopIntent, desktopBotStoppedSentence, desktopFalseStopClaim, desktopReplyClaimsStopped, desktopBotTaskHint, desktopBotTypedConfirmSentence, desktopBotWorkingLabel, desktopCreditReadout, desktopTaskStep, inProgressBotTasks, markDesktopBotNotice, messageNeedsComputerTakeover, messagesForBot, namesLaterTime, noteLiveBotTurn, renameDesktopBot, saveBotMessages, settlePendingBotReply, userRequestBefore, BOT_PENDING_REPLY_WAIT_MS } from './desktopBots';
 
 beforeEach(() => {
     localStorage.clear();
@@ -645,7 +645,6 @@ describe('desktop bots', () => {
         expect(desktopBotLocalControl('  取消  ')).toBe('stop');
         expect(desktopBotLocalControl('别装了')).toBe('');
         expect(desktopBotLocalControl('取消任务')).toBe('');
-        expect(desktopBotStillStoppingSentence('zh-Hans')).toBe('还在停。停稳了再跟你说。');
         expect(desktopBotPauseAskSentence('zh-Hans')).toBe('我先停一下。是整个停下，还是只改正在做的内容？');
         expect(desktopBotStopIntent('yamete')).toBe(false);
         expect(desktopBotStopIntent('算了别弄了')).toBe(false);

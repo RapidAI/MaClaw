@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -229,7 +230,7 @@ func buildEmptyResultFallback(status TraceRunStatus, traceSummary string) string
 		if summary != "" {
 			return fmt.Sprintf("任务已停止，但没有可展示结果。%s", summary)
 		}
-		return "任务已停止，但没有可展示结果。可查看 Trace 了解详情。"
+		return botNotice("empty-result-stopped", "notice", "The task stopped and produced no result to show. Details are in Trace.", "", "zh-Hans", "停了，没有结果。详情看 Trace。", 5*time.Second)
 	}
 }
 

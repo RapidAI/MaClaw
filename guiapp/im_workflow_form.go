@@ -5,6 +5,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
@@ -1013,7 +1014,7 @@ func buildFormSubmissionSummary(data map[string]interface{}) string {
 // Hidden fields and internal routing fields are excluded.
 func buildFormSubmissionEcho(state *v2.WorkflowState, cleanData map[string]interface{}) string {
 	if len(cleanData) == 0 {
-		return "信息已收到"
+		return botNotice("form-echo", "notice", "The form was submitted with no fields to show; say you got it.", "", "zh-Hans", "收到。", 3*time.Second)
 	}
 
 	// Collect schema metadata from the active phase.

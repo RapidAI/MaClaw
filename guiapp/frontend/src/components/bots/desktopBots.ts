@@ -370,13 +370,6 @@ export function desktopFalseStopClaim(classified: string, told: string): boolean
     return desktopReplyClaimsStopped(told);
 }
 
-export function desktopBotStillStoppingSentence(lang: string): string {
-    const voice = desktopBotVoice(lang);
-    if (voice === 'en') return 'Still stopping. I will confirm when nothing is left running.';
-    if (voice === 'hant') return '還在停。停穩了再跟你說。';
-    return '还在停。停稳了再跟你说。';
-}
-
 export function desktopBotStopFailedSentence(reason: string, lang: string): string {
     const clean = reason.trim().replace(/[。．.]+$/u, '');
     const voice = desktopBotVoice(lang);

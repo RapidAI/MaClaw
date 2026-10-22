@@ -1548,10 +1548,14 @@ func goalTerminalNotice(g *goal.Goal) (text string, asError bool) {
 		if reason == "" {
 			reason = "预算已耗尽"
 		}
-		return "目标已停止：" + reason, true
+		return botNotice("goal-stopped", "notice", "The goal stopped. Reason: "+reason, "", "zh-Hans", "目标停了："+reason, 5*time.Second), true
 	case goal.StatusPaused:
 		if strings.Contains(g.Summary, "no tool") || strings.Contains(g.Summary, "Auto-paused") {
-			return "目标已暂停：连续两轮没有工具调用。发送 /goal resume 继续。", false
+			line := botNotice("goal-paused", "notice", "The goal paused: two rounds in a row made no tool call. They can send /goal resume to continue; include /goal resume literally.", "", "zh-Hans", "目标暂停了。发 /goal resume 继续。", 5*time.Second)
+			if !strings.Contains(line, "/goal resume") {
+				line += " /goal resume"
+			}
+			return line, false
 		}
 		return "", false
 	case goal.StatusFailed:

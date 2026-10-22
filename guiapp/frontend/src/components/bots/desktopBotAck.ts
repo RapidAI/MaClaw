@@ -1,6 +1,6 @@
 import { WriteDesktopBotAck } from '../../../wailsjs/go/main/App';
 
-export type DesktopBotAckKind = 'accept' | 'supplement' | 'files' | 'stopping' | 'stopped' | 'idle' | 'pause';
+export type DesktopBotAckKind = 'accept' | 'supplement' | 'files' | 'stopping' | 'stopped' | 'idle' | 'pause' | 'queued' | 'stop_failed';
 
 export interface DesktopBotAckContext {
     kind: DesktopBotAckKind;
@@ -63,9 +63,9 @@ export async function desktopBotStoppingLine(ctx: { lang: string; message?: stri
 
 // desktopBotLine writes a stop-path line (stopped, idle, pause) in the bot's
 // voice; fallback is used only when every model attempt failed.
-export async function desktopBotLine(kind: 'stopped' | 'idle' | 'pause', ctx: { lang: string; message?: string; persona?: string; running_task?: string }, fallback: string, write: DesktopBotAckWriter = WriteDesktopBotAck): Promise<string> {
+export async function desktopBotLine(kind: 'stopped' | 'idle' | 'pause' | 'queued' | 'stop_failed', ctx: { lang: string; message?: string; persona?: string; running_task?: string; instruction?: string }, fallback: string, write: DesktopBotAckWriter = WriteDesktopBotAck): Promise<string> {
     try {
-        const line = String(await write({ kind, message: ctx.message || '', lang: ctx.lang, persona: ctx.persona, running_task: ctx.running_task }) || '').trim();
+        const line = String(await write({ kind, message: ctx.message || '', lang: ctx.lang, persona: ctx.persona, running_task: ctx.running_task, instruction: ctx.instruction }) || '').trim();
         if (line) return line;
     } catch {
         // falls through

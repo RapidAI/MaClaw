@@ -795,7 +795,7 @@ func TestSpentForegroundChatContinuesWithoutAnotherUserMessage(t *testing.T) {
 			{Role: "tool", ToolName: "ssh", ToolOutcome: "failed", Content: "[system rejected] " + chatTaskHandoffRequiredMessage},
 		},
 	})
-	if !ok || note != "剩余工作已继续处理，完成后会发到这个对话。" {
+	if !ok || note != "剩下的接着做，做完发这里。" {
 		t.Fatalf("note = %q ok=%v", note, ok)
 	}
 	tasks := reg.List(desktopUserID)
@@ -947,7 +947,7 @@ func TestSpentForegroundChatSteersTheSingleOpenTask(t *testing.T) {
 			{Role: "tool", ToolName: "web_search", ToolOutcome: "succeeded", Content: "licensed photo list"},
 		},
 	})
-	if !ok || note != "剩余工作已继续处理，完成后会发到这个对话。" {
+	if !ok || note != "剩下的接着做，做完发这里。" {
 		t.Fatalf("note = %q ok=%v", note, ok)
 	}
 	tasks := reg.List(desktopUserID)
@@ -993,7 +993,7 @@ func TestSpentForegroundChatStartsFreshWhenTheOpenTaskCannotTakeASteer(t *testin
 			{Role: "tool", ToolName: "web_search", ToolOutcome: "succeeded", Content: "licensed photo list"},
 		},
 	})
-	if !ok || note != "剩余工作已继续处理，完成后会发到这个对话。" {
+	if !ok || note != "剩下的接着做，做完发这里。" {
 		t.Fatalf("note = %q ok=%v", note, ok)
 	}
 	var fresh AIAssistantChatTask

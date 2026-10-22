@@ -3,6 +3,7 @@ package guiapp
 import (
 	"regexp"
 	"strings"
+	"time"
 )
 
 func isShortChitChatMessage(text string) bool {
@@ -56,7 +57,17 @@ func normalizeShortChitChatToken(text string) string {
 	return ""
 }
 
+// buildShortChitChatResponse answers a greeting in the bot's voice; the
+// fixed line is the minimal fallback.
 func buildShortChitChatResponse(text, lang string) string {
+	minimal := buildShortChitChatMinimal(text, lang)
+	if strings.TrimSpace(lang) == "" {
+		lang = botNoticeLang(text)
+	}
+	return botNotice("short-chitchat", "greet", "", text, lang, minimal, 6*time.Second)
+}
+
+func buildShortChitChatMinimal(text, lang string) string {
 	normalized := normalizeShortChitChatToken(text)
 	if normalized == "" {
 		normalized = strings.ToLower(strings.TrimSpace(text))

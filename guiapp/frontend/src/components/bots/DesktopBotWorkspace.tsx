@@ -2216,10 +2216,23 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const commit = (botId: string, next: DesktopBotMessage[]) => {
         rememberMessages(botId, next);
     };
+    // The minimal line goes in at once so nothing waits; the bot's own line
+    // replaces it when the model answers.
+    const upgradeLine = (ownerId: string, botId: string, messageId: string, kind: 'queued', fallback: string, said = '') => {
+        void desktopBotLine(kind, { lang: langRef.current, message: said, persona: personaForBot(ownerId, botId) }, fallback).then(line => {
+            if (userIdRef.current !== ownerId || line === fallback) return;
+            const stored = messagesForBot(ownerId, botId);
+            if (!stored.some(item => item.id === messageId)) return;
+            commit(botId, stored.map(item => item.id === messageId ? { ...item, content: line } : item));
+        });
+    };
     noteQueuedRef.current = (botId: string) => {
         const owner = userIdRef.current;
         const stored = messagesForBot(owner, botId);
-        commit(botId, [...stored, { id: messageID(), role: 'assistant', content: desktopBotQueuedSentence(langRef.current), ack: true }]);
+        const id = messageID();
+        const fallback = desktopBotQueuedSentence(langRef.current);
+        commit(botId, [...stored, { id, role: 'assistant', content: fallback, ack: true }]);
+        upgradeLine(owner, botId, id, 'queued', fallback);
     };
     // The model writes the identity. A single hyphen withdraws it. The stored
     // text is what the next understanding call reads, not a phrase list.
@@ -3670,7 +3683,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     reason = failureMessage(error).trim();
                 }
                 if (userIdRef.current !== ownerId) return '';
-                if (reason) return desktopBotStopFailedSentence(reason, lang);
+                if (reason) return desktopBotLine('stop_failed', { lang, persona: personaForBot(ownerId, botId), instruction: reason }, desktopBotStopFailedSentence(reason, lang));
                 return finishStop(ownerId, botId, [], held.hadNext, kind, asked, said);
             }
             held.release(false);
@@ -3689,7 +3702,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             }
         }
         if (userIdRef.current !== ownerId) return '';
-        if (reason) return desktopBotStopFailedSentence(reason, lang);
+        if (reason) return desktopBotLine('stop_failed', { lang, persona: personaForBot(ownerId, botId), instruction: reason }, desktopBotStopFailedSentence(reason, lang));
         return finishStop(ownerId, botId, local.map(run => run.title), hadNext, kind, asked, said);
     };
     const desktopOperating = (botId: string, rows: Array<{ runId: string }> | undefined) => {
@@ -4403,6 +4416,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     if (item.id === userMessage.id) return { ...item, queued: true };
                     return item;
                 }));
+                upgradeLine(ownerId, botId, assistantMessage.id, 'queued', sentence, content.trim());
                 const queued = queueRef.current.get(botId) || [];
                 queued.push({ text: instruction, phase: sendPhase, verbatim: true, literal, userText: content.trim() });
                 queueRef.current.set(botId, queued);
@@ -5773,7 +5787,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                                 const queued = queueRef.current.get(botId) || [];
                                                 queueRef.current.set(botId, [...queued, { text: order, phase: 'execute', verbatim: true, crossNoteId: noteId || undefined, claimed }]);
                                                 const current = messagesForBot(userId, botId);
-                                                commit(botId, [...current, { id: messageID(), role: 'assistant', content: desktopBotQueuedSentence(lang), ack: true }]);
+                                                const qid = messageID();
+                                                const qline = desktopBotQueuedSentence(lang);
+                                                commit(botId, [...current, { id: qid, role: 'assistant', content: qline, ack: true }]);
+                                                upgradeLine(userId, botId, qid, 'queued', qline, order);
                                             };
                                             if (!noteId) {
                                                 if (desktopRunByBotRef.current[botId]) {
