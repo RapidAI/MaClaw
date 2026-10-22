@@ -54,7 +54,7 @@ import {
     ClassifyDesktopWorkStop,
     WatchDesktopBot,
 } from '../../../wailsjs/go/main/App';
-import { desktopBotAck, desktopBotLine, desktopBotStoppingLine, type DesktopBotAckContext } from './desktopBotAck';
+import { desktopBotAck, desktopBotLine, desktopBotStoppingLine, type DesktopBotAckContext, type DesktopBotStatusPayload } from './desktopBotAck';
 import { splitMaterials as splitAckMaterials } from './desktopBotMaterials';
 import { desktopModeOf, effectiveScreenPick, mineScreenURL, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
 import { desktopViewerSrc, loadDesktopViewer, saveDesktopViewer, type DesktopViewer } from './desktopViewer';
@@ -591,6 +591,19 @@ export function taskStartedStamp(iso: string): string {
 export function shortRunId(id: string): string {
     const body = (id || '').replace(/^run_/, '');
     return body.length > 8 ? body.slice(0, 8) : body;
+}
+
+// A bare "continue" with nothing else in it.
+export function isBareContinue(text: string): boolean {
+    const flat = (text || '').replace(/[\s，。！!,.~～]+/g, '').toLowerCase();
+    return /^(继续|繼續|继续吧|繼續吧|接着做|接著做|接着来|继续做|繼續做|continue|goon|carryon|keepgoing)$/.test(flat);
+}
+
+function desktopBotContinuingSentence(lang: string): string {
+    const value = String(lang || '');
+    if (value.toLowerCase().startsWith('en')) return 'Already on it.';
+    if (value.includes('Hant')) return '正在接著做。';
+    return '正在接着做。';
 }
 
 export function taskExcerpt(task: string, limit = 80): string {
@@ -1923,6 +1936,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const desktopRunByBotRef = useRef<Record<string, boolean>>({});
     const drainDeskRef = useRef<(botId: string, fromList?: boolean) => void>(() => undefined);
     const drainAllDeskRef = useRef<() => void>(() => undefined);
+    const drivingSinceRef = useRef<Record<string, number>>({});
     const noteQueuedRef = useRef<(botId: string) => void>(() => undefined);
     const langRef = useRef(lang);
     langRef.current = lang;
@@ -2328,8 +2342,30 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     };
     // The minimal line goes in at once so nothing waits; the bot's own line
     // replaces it when the model answers.
-    const upgradeLine = (ownerId: string, botId: string, messageId: string, kind: 'queued', fallback: string, said = '') => {
-        void desktopBotLine(kind, { lang: langRef.current, message: said, persona: personaForBot(ownerId, botId) }, fallback).then(line => {
+    // The last few chat lines, oldest first, so a status line fits the
+    // conversation and never repeats what the bot just said.
+    const recentChat = (ownerId: string, botId: string): string[] => messagesForBot(ownerId, botId)
+        .filter(item => !item.pending && (item.content || '').trim())
+        .slice(-6)
+        .map(item => `${item.role === 'user' ? '你' : '我'}: ${oneLine(item.content).slice(0, 160)}`);
+    // Structured state for a status line: what Hub says is on the desktop.
+    const statusFor = async (botId: string, lastTask = ''): Promise<DesktopBotStatusPayload> => {
+        const rows = await withinBudget(ListDesktopBotActiveRuns(botId) as Promise<DesktopBotActiveRunRow[] | null>, 2500);
+        const running = (rows || []).filter(row => row && row.status === 'running' && !row.stale);
+        const queued = (rows || []).filter(row => row && row.status === 'queued').length + (queueRef.current.get(botId)?.length || 0);
+        return {
+            active_run: running.map(row => oneLine(stripConfirmedOrderLead(row.task || '')).slice(0, 120)).filter(Boolean).join(' / ') || undefined,
+            current_step: running[0]?.step || running[0]?.next_step || undefined,
+            queued: queued || undefined,
+            last_task: lastTask || undefined,
+        };
+    };
+    const upgradeLine = (ownerId: string, botId: string, messageId: string, kind: 'queued' | 'continuing', fallback: string, said = '') => {
+        void (async () => {
+            const status = await statusFor(botId, said);
+            const recent = recentChat(ownerId, botId).filter((_, index, all) => index < all.length - 1 || !all[index].startsWith('我: '));
+            return desktopBotLine(kind, { lang: langRef.current, message: said, persona: personaForBot(ownerId, botId), running_task: status.active_run, status, recent }, fallback);
+        })().then(line => {
             if (userIdRef.current !== ownerId || line === fallback) return;
             const stored = messagesForBot(ownerId, botId);
             if (!stored.some(item => item.id === messageId)) return;
@@ -2339,6 +2375,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     noteQueuedRef.current = (botId: string) => {
         const owner = userIdRef.current;
         const stored = messagesForBot(owner, botId);
+        // One wait line per message: Hub may report the same refusal more
+        // than once while it retries.
+        for (let i = stored.length - 1; i >= 0; i--) {
+            if (stored[i].role === 'user') break;
+            if (stored[i].ack && !stored[i].pending) return;
+        }
         const id = messageID();
         const fallback = desktopBotQueuedSentence(langRef.current);
         commit(botId, [...stored, { id, role: 'assistant', content: fallback, ack: true }]);
@@ -2803,6 +2845,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 const prev = desktopRunByBotRef.current;
                 let next = prev;
                 if (driving) {
+                    drivingSinceRef.current[botId] = Date.now();
                     if (!prev[botId]) next = { ...prev, [botId]: true };
                 } else if (prev[botId]) {
                     next = { ...prev };
@@ -4607,6 +4650,34 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             // sentence is already in the thread. This pending bubble becomes
             // the wait, and the order is sent once this desktop is free. A
             // drain uses fromQueue, so it does not queue again.
+            // The local mark can be stale (a run that ended while this window
+            // missed it). Hub's active runs are the truth before queueing.
+            // A fresh mark may be a run still being admitted, which Hub does not list yet.
+            if (mode === 'now' && sendPhase === 'execute' && desktopRunByBotRef.current[botId] && Date.now() - (drivingSinceRef.current[botId] || 0) > 90_000) {
+                const rows = await withinBudget(ListDesktopBotActiveRuns(botId) as Promise<DesktopBotActiveRunRow[] | null>, 3000);
+                if (rows) {
+                    const local = rows.some(row => row && row.status === 'running' && !row.stale) ? null
+                        : await withinBudget(ListDesktopBotTasks(botId) as Promise<Array<{ status?: string }> | null>, 1500);
+                    if (local && !local.some(row => row && (row.status === 'running' || row.status === 'queued'))) {
+                        const next = { ...desktopRunByBotRef.current };
+                        delete next[botId];
+                        desktopRunByBotRef.current = next;
+                        setDesktopRunByBot(next);
+                    }
+                }
+            }
+            // "继续" while that job is already running again (for example right
+            // after a hand-back) is not a new order: say it is continuing.
+            if (mode === 'now' && sendPhase === 'execute' && desktopRunByBotRef.current[botId] && isBareContinue(content)) {
+                pending.settled = true;
+                pendingRef.current.delete(ticket);
+                clearLiveBotTurn(ownerId, botId, assistantMessage.id);
+                const sentence = desktopBotContinuingSentence(lang);
+                const stored = messagesForBot(ownerId, botId);
+                commit(botId, stored.map(item => item.id === assistantMessage.id ? { ...item, content: sentence, pending: false, ack: true, phase: undefined } : item));
+                upgradeLine(ownerId, botId, assistantMessage.id, 'continuing', sentence, content.trim());
+                return;
+            }
             if (mode === 'now' && sendPhase === 'execute' && desktopRunByBotRef.current[botId]) {
                 pending.settled = true;
                 pendingRef.current.delete(ticket);

@@ -1,6 +1,9 @@
 package guiapp
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestDesktopBotAckLineRejectsBriefEcho(t *testing.T) {
 	zh := DesktopBotAckRequest{Kind: "idle", Lang: "zh-Hans", Message: "暂停任务"}
@@ -24,5 +27,28 @@ func TestDesktopBotAckLineRejectsBriefEcho(t *testing.T) {
 	en := DesktopBotAckRequest{Kind: "stopped", Lang: "en"}
 	if got := desktopBotAckLine("Stopped the Zhihu post.", en); got == "" {
 		t.Fatal("english line rejected for english")
+	}
+}
+
+func TestDesktopBotAckLineCollapsesAndSkipsRepeats(t *testing.T) {
+	req := DesktopBotAckRequest{Kind: "queued", Lang: "zh-Hans", Message: "继续"}
+	twice := "现在的活还在跑，我会在它结束后马上接这件事。现在的活还在跑，我会在它结束后马上接这件事。"
+	if got := desktopBotAckLine(twice, req); got != "现在的活还在跑，我会在它结束后马上接这件事。" {
+		t.Fatalf("collapse = %q", got)
+	}
+	req.Recent = []string{"你: 继续", "我: 知乎那篇还在发，登录后已经接着做了。"}
+	if got := desktopBotAckLine("知乎那篇还在发，登录后已经接着做了。", req); got != "" {
+		t.Fatalf("repeat of an earlier line accepted: %q", got)
+	}
+}
+
+func TestDesktopBotAckUserCarriesStatusAndRecent(t *testing.T) {
+	user := desktopBotAckUser(DesktopBotAckRequest{Kind: "continuing", Lang: "zh-Hans", Message: "继续",
+		Status: &DesktopBotStatus{ActiveRun: "发知乎摘要", CurrentStep: "正在填正文", Takeover: "handed_back"},
+		Recent: []string{"你: 继续"}})
+	for _, want := range []string{"active_run: 发知乎摘要", "current_step: 正在填正文", "takeover: handed_back", "recent chat:", "你: 继续"} {
+		if !strings.Contains(user, want) {
+			t.Fatalf("prompt lacks %q:\n%s", want, user)
+		}
 	}
 }

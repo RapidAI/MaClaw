@@ -115,7 +115,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     GetDesktopBotBusy: (owner: string) => getDesktopBusy(owner),
     EvaluateDesktopTaskSupplement: (taskText: string, content: string, lang: string) => evaluateSupplement(taskText, content, lang),
     // stopped/idle/pause come back empty here so the minimal lines are checked.
-    WriteDesktopBotAck: (ctx?: { kind?: string }) => Promise.resolve(ctx?.kind === 'stopping' ? '还在收尾，停稳了告诉你。' : ['stopped', 'idle', 'pause', 'queued', 'stop_failed'].includes(ctx?.kind || '') ? '' : "好，这就去办。"),
+    WriteDesktopBotAck: (ctx?: { kind?: string }) => Promise.resolve(ctx?.kind === 'stopping' ? '还在收尾，停稳了告诉你。' : ['stopped', 'idle', 'pause', 'queued', 'stop_failed', 'continuing'].includes(ctx?.kind || '') ? '' : "好，这就去办。"),
     AppendDesktopBotSupplement: (botId: string, runId: string, instruction: string) => appendSupplement(botId, runId, instruction),
     GetDesktopBotSupplements: (botId: string, runId: string) => getSupplements(botId, runId),
     SetDesktopBotPrimary: (id: string) => setPrimary(id),
@@ -5395,6 +5395,27 @@ describe('DesktopBotWorkspace', () => {
         expect(sup?.content).toBe('补充已生效。');
         expect(sup?.failed).toBeUndefined();
         expect(sup?.noReading).toBeUndefined();
+    });
+
+    it('answers a bare 继续 during the resumed run once, without queueing it', async () => {
+        listBotTasks.mockResolvedValue([{ run_id: 'run-1', bot_id: 'bot_1', status: 'running', task: '知乎回答' }]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        expect(await screen.findByTestId('desktop-bot-command')).toBeTruthy();
+        act(() => {
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', run_driving: true });
+        });
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '继续' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        expect(await screen.findByText('正在接着做。')).toBeTruthy();
+        expect(screen.queryByText('好，这个等手上的做完我就做。')).toBeNull();
+        expect(sendTask).not.toHaveBeenCalled();
+        act(() => {
+            responseListeners.byEvent['desktop-bot-queued']?.({ bot_id: 'bot_1', owner_id: 'alice' });
+            responseListeners.byEvent['desktop-bot-queued']?.({ bot_id: 'bot_1', owner_id: 'alice' });
+        });
+        expect(screen.getAllByText('正在接着做。')).toHaveLength(1);
+        expect(screen.queryByText(/等手上的做完/)).toBeNull();
     });
 
     it('waits for the desktop that is already driving, then sends the order once', async () => {

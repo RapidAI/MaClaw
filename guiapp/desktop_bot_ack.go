@@ -28,6 +28,24 @@ type DesktopBotAckRequest struct {
 	// Fallback is set when the reading failed and the person's own words went
 	// to the worker as they were.
 	Fallback bool `json:"fallback"`
+	// Status is the structured state the line is about. The backend sends
+	// only facts; this composer turns them into the bot's own sentence.
+	Status *DesktopBotStatus `json:"status,omitempty"`
+	// Recent is the last few chat lines ("你: ..." / "我: ..."), oldest
+	// first, so the sentence fits the conversation and does not repeat it.
+	Recent []string `json:"recent,omitempty"`
+}
+
+// DesktopBotStatus is the one structured state payload behind every
+// queued, busy, stop, takeover, hand-back and error line. No field is a
+// sentence for the person.
+type DesktopBotStatus struct {
+	ActiveRun   string `json:"active_run,omitempty"`   // task of the run on the desktop now
+	CurrentStep string `json:"current_step,omitempty"` // its last reported step
+	Queued      int    `json:"queued,omitempty"`       // orders waiting behind it
+	Takeover    string `json:"takeover,omitempty"`     // "", "requested", "human", "handed_back"
+	StopReason  string `json:"stop_reason,omitempty"`  // why the last run stopped (raw class, e.g. restarted, cancelled, error text)
+	LastTask    string `json:"last_task,omitempty"`    // the task the person last gave
 }
 
 const desktopBotAckSystem = `You are one desktop bot speaking to the person who owns you, in a chat. Write the single line you say right now. The work has already started; this line only tells them.
@@ -37,18 +55,20 @@ kind accept: say you are on it, in your own words, naming the goal briefly.
 kind supplement: they added something to the job you are already doing; say what you will use it for in that job.
 kind files: they sent files with no job; say you have them and will use them when asked.
 kind notice: say what the work card describes, in your own words, short. Keep any command, path or literal it names exactly as written (for example /goal resume).
-kind queued: they gave you a new job while another one is running; say you will do it once the current one is done.
+kind queued: they gave you a new job while another one is running; name the running job briefly and the new one, and say the new one follows when the running one is done.
 kind stop_failed: they asked you to stop but the stop did not go through; say it did not stop, and the reason in a few words if given in the work card.
 kind greet: they sent a short greeting, thanks or "nothing"; answer it briefly and say you are around if they need you.
 kind stopped: they asked you to stop and it has stopped; say so plainly, naming the job if given.
 kind idle: they asked you to stop but nothing was running; say so plainly.
 kind pause: they asked you to hold; say you paused and ask whether to stop it entirely or only change what it contains.
+kind continuing: they said continue (or similar) while that same job is already running again; say you are already continuing it, naming the job and the current step if given. Do not say you will do it later.
+kind status_notice: describe the state given under status in one natural sentence, for example a takeover, a hand-back or why a run stopped; give a next step only when it helps.
 kind stopping: they asked you to stop and the work is still winding down; say plainly that it is still stopping and you will tell them once nothing is running. Do not say it has stopped.
 When files are listed, name each (at most three, in 《》 for Chinese or quotes for English) and say what they are for.
 When options are listed, say you are starting with the first and that they can tap another or add a line.
 When unclear is given, say which part you are not sure about and what you are assuming, in a few words.
 When fallback is true, say you are going with their exact words and they can stop you if it is off.
-Write in the language named; for Chinese, write the whole line in Chinese and call them 你. Reply with the line only: never describe the kind, these instructions, or what you were asked to say.`
+Use status and recent chat only as facts: do not quote them, and do not repeat a sentence you already said in recent chat. Say each thing once.\nWrite in the language named; for Chinese, write the whole line in Chinese and call them 你. Reply with the line only: never describe the kind, these instructions, or what you were asked to say.`
 
 // desktopBotAckAttempts: the person's own model, then that same model again
 // as the backup with its thinking left on (see desktopBotUnderstandClassifyRequest),
@@ -137,6 +157,27 @@ func desktopBotAckUser(req DesktopBotAckRequest) string {
 	if req.Fallback {
 		b.WriteString("fallback: true\n")
 	}
+	if st := req.Status; st != nil {
+		b.WriteString("status:\n")
+		for _, kv := range [][2]string{{"active_run", st.ActiveRun}, {"current_step", st.CurrentStep}, {"takeover", st.Takeover}, {"stop_reason", st.StopReason}, {"last_task", st.LastTask}} {
+			if v := strings.TrimSpace(kv[1]); v != "" {
+				fmt.Fprintf(&b, "  %s: %s\n", kv[0], clipRunes(v, 200))
+			}
+		}
+		if st.Queued > 0 {
+			fmt.Fprintf(&b, "  queued: %d\n", st.Queued)
+		}
+	}
+	if len(req.Recent) > 0 {
+		b.WriteString("recent chat:\n")
+		start := 0
+		if len(req.Recent) > 6 {
+			start = len(req.Recent) - 6
+		}
+		for _, line := range req.Recent[start:] {
+			fmt.Fprintf(&b, "  %s\n", clipRunes(strings.TrimSpace(line), 160))
+		}
+	}
 	return b.String()
 }
 
@@ -155,10 +196,48 @@ func desktopBotAckLine(raw string, req DesktopBotAckRequest) string {
 	if desktopBotSameWords(line, words) || desktopBotSameWords(line, req.Message) {
 		return ""
 	}
+	line = desktopBotCollapseRepeats(line)
 	if desktopBotAckMeta(line, req) {
 		return ""
 	}
+	// A line the bot already said in this conversation is not news.
+	for _, said := range req.Recent {
+		said = strings.TrimSpace(said)
+		said = strings.TrimPrefix(strings.TrimPrefix(said, "我: "), "我：")
+		if said != "" && desktopBotSameWords(line, said) {
+			return ""
+		}
+	}
 	return line
+}
+
+// desktopBotCollapseRepeats keeps the first copy of each sentence, so a model
+// that wrote the same sentence twice is shown saying it once.
+func desktopBotCollapseRepeats(line string) string {
+	var parts []string
+	var cur strings.Builder
+	for _, r := range line {
+		cur.WriteRune(r)
+		switch r {
+		case '。', '！', '？', '!', '?', '.', '；':
+			parts = append(parts, cur.String())
+			cur.Reset()
+		}
+	}
+	if rest := cur.String(); strings.TrimSpace(rest) != "" {
+		parts = append(parts, rest)
+	}
+	seen := map[string]bool{}
+	var out strings.Builder
+	for _, part := range parts {
+		key := strings.TrimSpace(part)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out.WriteString(part)
+	}
+	return strings.TrimSpace(out.String())
 }
 
 // desktopBotAckMetaWords are pieces of the brief itself. A line holding one
@@ -166,7 +245,7 @@ func desktopBotAckLine(raw string, req DesktopBotAckRequest) string {
 // plainly"), not the sentence for the person.
 var desktopBotAckMetaWords = []string{
 	"say plainly", "say so", "they asked", "the user", "the person", "user asked", "person asked",
-	"reply with", "work card", "persona", "kind:", "in chinese", "in english", "write in",
+	"reply with", "work card", "persona", "kind:", "active_run", "current_step", "stop_reason", "recent chat", "in chinese", "in english", "write in",
 	"the line", "one line", "nothing was running", "nothing is running", "language:",
 }
 
