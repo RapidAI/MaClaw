@@ -220,7 +220,7 @@ func desktopRichFill(ctx context.Context, scope agentruntime.Scope, args map[str
 		return "", err
 	}
 	desktopNoteClipboard(desktopOwner(scope), map[string]any{"text": text})
-	if strings.EqualFold(desktopArg(args, "replace"), "true") {
+	if b, _ := args["replace"].(bool); b || strings.EqualFold(desktopArg(args, "replace"), "true") {
 		if err := step(map[string]any{"action": "app_run", "steps": []any{map[string]any{"key": "ctrl+a"}}}); err != nil {
 			return "", err
 		}

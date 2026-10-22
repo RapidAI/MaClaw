@@ -133,6 +133,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"ref":         map[string]any{"type": "string", "description": "Element ref from probe, such as e3"},
 				"snapshot_id": map[string]any{"type": "string", "description": "snapshot_id returned with the ref"},
 				"text":        map[string]any{"type": "string", "description": "Text for type, or visible text for click when ref is empty"},
+				"replace":     map[string]any{"type": "boolean", "description": "rich_fill: select all in the editor first so the text replaces it"},
 				"key":         map[string]any{"type": "string", "description": "Key for press"},
 				"query":       map[string]any{"type": "string", "description": "Optional probe filter. Leave it empty to list every control."},
 				"script":      map[string]any{"type": "string", "description": "Statements for action=script. click(\"保存\") or click(\"button.primary\") clicks. type(\"#q\", \"weather\") types. select(\"状态\", \"完成\") chooses an option. press(\"Enter\"), scroll(600), and waitFor(\"下一步\", 3000) run in the same script. Do not read cookies, storage, or passwords."},
