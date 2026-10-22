@@ -34,7 +34,7 @@ const desktopRichBodyMinClip = 100
 
 var (
 	desktopRichTargetRe = regexp.MustCompile(`(?i)contenteditable|DraftEditor|public-DraftEditor|ProseMirror|ql-editor|notranslate|w-e-text|ne-viewer|editor-body|RichText`)
-	desktopRichWriteRe  = regexp.MustCompile(`(?i)innerHTML|innerText|textContent|outerHTML|insertAdjacent|appendChild|\.append\(|createTextNode|ClipboardEvent|DataTransfer|dispatchEvent|\btype\s*\(|\bfill\s*\(|setText|\.value\s*=`)
+	desktopRichWriteRe  = regexp.MustCompile(`(?i)(innerHTML|innerText|textContent|outerHTML)\s*(\+?=[^=]|\+=)|insertAdjacent|appendChild|\.append\(|createTextNode|ClipboardEvent|DataTransfer|dispatchEvent|\btype\s*\(|\bfill\s*\(|setText|\.value\s*=`)
 	desktopPasteRe      = regexp.MustCompile(`(?i)paste|ctrl\+v|control\+v|ctrl-v|clipboard`)
 	desktopPublishRe    = regexp.MustCompile(`(?i)^\s*(发布|发表|立即发布|确认发布|发布文章|发布笔记|发布动态|发布回答|发送|确认发送|提交|更新|发布更新|确认更新|立即更新|保存并发布|publish|publish now|update|post|submit|send)\s*$`)
 	desktopScriptLitRe  = regexp.MustCompile("[\"'`]([^\"'`\\n]{1,20})[\"'`]")
