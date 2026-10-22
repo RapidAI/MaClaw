@@ -74,8 +74,11 @@ describe("GoalQuickBar", () => {
         for (const css of [partial, assembled]) {
             expect(css).toContain("--mc-composer-inset-x: 24px");
             expect(css).toContain("margin: 0 var(--mc-composer-inset-x, 24px) 18px !important");
-            expect(css).toContain("width: calc(100% - (2 * var(--mc-composer-inset-x, 24px)))");
+            expect(css).toContain(".mc-goal-quick-bar,\n[data-testid='ai-input-resize-handle']");
             expect(css).toContain("max-width: calc(100% - (2 * var(--mc-composer-inset-x, 24px)))");
+            expect(css).toContain("margin-left: var(--mc-composer-inset-x, 24px)");
+            expect(css).toContain("margin-right: var(--mc-composer-inset-x, 24px)");
+            expect(css).not.toContain(".mc-goal-quick-bar {\n  box-sizing: border-box;\n  width:");
             expect(css).toContain("--mc-composer-inset-x: 12px");
             expect(css).toContain("margin: 0 var(--mc-composer-inset-x, 12px) 12px !important");
         }

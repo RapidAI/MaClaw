@@ -2668,8 +2668,24 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 	// The numbered lines in a goal continuation are instructions to call
 	// goal(action=plan|step). They are not a user-authored file-change plan,
 	// and the approval gate must not consume the turn before that tool runs.
+	// This turn is also not the orchestrator: planned stays false, so the
+	// runner will not advance the checklist. Leaving ExecutionPlan set keeps
+	// stickyHasOrchestratedPlanSteps true and blocks todo_write as well, so
+	// the only live line is the command bar. Release that ownership and any
+	// unanswered approve. The step rows stay for the agent's todos to update.
 	if isGoalSystemContinuation(userText) {
-		return fallbackSingle("goal continuation")
+		log.Printf("[coding-plan] single-task path user=%s reason=goal continuation", userID)
+		owned := false
+		if h != nil && userID != "" {
+			cur := h.getStickyCodingWorkbenchMemory(userID)
+			owned = strings.TrimSpace(cur.ExecutionPlan) != "" || strings.TrimSpace(cur.PendingPlanJSON) != ""
+		}
+		h.clearStickyCodingExecutionPlan(userID)
+		h.clearStickyPendingCodingPlan(userID)
+		if owned {
+			h.emitCodingWorkbenchStepsUpdate(userID)
+		}
+		return single, "", false
 	}
 	// "继续" after a credit stop (or any hard stop) must keep the plan that
 	// already ran and execute only the steps that did not pass. A new

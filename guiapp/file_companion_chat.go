@@ -281,7 +281,7 @@ func fileCompanionPrompt(name, ext string) string {
 	base := "你是文件伴读。只讨论当前打开的这一个文件：" + name + "。不要引用其他文件。用户没有要求生成新文件时，不要声称已经生成或发送了 PDF。"
 	switch strings.ToLower(ext) {
 	case ".pdf":
-		return base + "查看这份 PDF 可以用工具：pdf_read_pages 读指定页原文；pdf_render_page 把某一页整页渲染成图片；pdf_extract_images 提取文档内嵌位图（矢量图表用渲染）。工具生成的图在本轮从「图1」重新编号，和上一轮的图号无关。回答里写工具刚刚返回的那个「图N」，宿主会把这张原图放在回答下面展示给用户；不要沿用上一轮的编号，也不要自己加一。"
+		return base + "查看这份 PDF 可以用工具：pdf_read_pages 读指定页原文；pdf_render_page 裁出某一页上的插图（Figure / 图）和图注，不包含同页正文和表格；pdf_extract_images 提取文档内嵌位图。要看某一张图时传 figure（图号，如 1）。不传 figure 时，该页有图注就只返回裁好的图。只有用户明确要看整页版式时才传 full=true。不要为了展示一张图去要整页。工具生成的图在本轮从「图1」重新编号，和上一轮的图号无关。回答里写工具刚刚返回的那个「图N」，宿主会把这张原图放在回答下面展示给用户；不要沿用上一轮的编号，也不要自己加一。"
 	case ".xlsx":
 		return base + "不要使用工具。如果用户要求修改这个工作簿，只返回一个完整的 JSON 对象 {\"sheets\":[...]}，不要附加说明。宿主会在工具循环之外整本替换当前文件。只讨论内容时用普通文字回答，不要返回 sheets JSON。"
 	case ".pptx":

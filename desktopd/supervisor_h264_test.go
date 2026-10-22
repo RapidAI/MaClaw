@@ -257,35 +257,89 @@ print(reply.split("\r\n")[0], "Location: vnc.html?autoconnect=1" in reply)
 	}
 }
 
-// verify-after-act: the focused AT-SPI element's text is read back.
+// verify-after-act reads the deepest focused field in an active non-browser
+// window. A button label, an accessible name, a panel, and a background
+// window are not that field. Chromium staying active does not hide a
+// focused native field. A long buffer is read around the caret.
 func TestSupervisorA11yFocusedText(t *testing.T) {
 	out := runSupervisorPython(t, `
+class Ext:
+    x = y = 0
+    width = height = 100
+class Comp:
+    def getExtents(self, coord): return Ext()
 class St:
-    def __init__(self, f): self.f = f
-    def contains(self, s): return self.f and s == "F"
+    def __init__(self, flags): self.flags = flags
+    def contains(self, s): return s in self.flags
 class T:
-    characterCount = 5
-    def getText(self, a, b): return "hello"
+    def __init__(self, text):
+        self.text, self.characterCount, self.caretOffset = text, len(text), len(text)
+    def getText(self, a, b): return self.text[a:b]
 class N:
-    def __init__(self, f, kids=(), name=""): self.f, self.kids, self.name = f, list(kids), name
-    def getState(self): return St(self.f)
+    def __init__(self, flags, kids=(), name="", text=None, role="window"):
+        self.flags, self.kids, self.name, self.text, self.role = set(flags), list(kids), name, text, role
+    def getState(self):
+        flags = set(self.flags)
+        if "H" not in flags:
+            flags |= {"S", "V"}
+        return St(flags)
     @property
     def childCount(self): return len(self.kids)
     def getChildAtIndex(self, i): return self.kids[i]
-    def queryText(self): return T()
-    def getRoleName(self): return "entry"
+    def queryText(self):
+        if self.text is None: raise RuntimeError("no text")
+        return T(self.text)
+    def queryComponent(self): return Comp()
+    def getRoleName(self): return self.role
+class App:
+    def __init__(self, name, wins): self.name, self.wins = name, list(wins)
+    @property
+    def childCount(self): return len(self.wins)
+    def getChildAtIndex(self, i): return self.wins[i]
+class Desk:
+    def __init__(self, apps): self.apps = list(apps)
+    @property
+    def childCount(self): return len(self.apps)
+    def getChildAtIndex(self, i): return self.apps[i]
 class P:
-    STATE_FOCUSED = "F"
+    STATE_FOCUSED, STATE_ACTIVE = "F", "A"
+    STATE_SHOWING, STATE_VISIBLE, STATE_EDITABLE = "S", "V", "E"
+    DESKTOP_COORDS = 0
     class Registry:
+        desktop = None
         @staticmethod
-        def getDesktop(i): return None
-win = N(False, [N(False), N(True)])
-sup.a11y_windows = lambda d, s, p: [([0, 0], "app", win)]
-print(sup.a11y_focused_text({}, P))
-sup.a11y_windows = lambda d, s, p: [([0, 0], "app", N(False))]
-print(sup.a11y_focused_text({}, P))
+        def getDesktop(i): return P.Registry.desktop
+def desk(*apps):
+    P.Registry.desktop = Desk(apps)
+    return sup.a11y_focused_text({}, P)
+show = {"A", "S", "V"}
+button = N({"F"}, name="Save", text="Save", role="push button")
+entry = N({"F", "E"}, [button], text="hello", role="entry")
+panel = N({"F", "E"}, [entry], text="Title", role="panel")
+print(desk(App("gedit", [N(show, [panel])])))
+print(desk(App("gedit", [N(show, [N({"F", "E"}, name="Save", role="entry")])])))
+print(desk(App("gedit", [N(show, [N({"F"}, text="Save", role="push button")])])))
+gwin = N(show, [N({"F", "E"}, text="hello", role="entry")])
+print(desk(App("gedit", [gwin]), App("Chromium", [N(show)])))
+print(desk(App("gedit", [N({"S", "V"}, [N({"F", "E"}, text="hello", role="entry")])])))
+print(desk(App("xfce4-terminal", [N(show, [N({"F"}, text="hello", role="terminal")])])))
+print(desk(App("gedit", [N(show, [N({"E"}, text="hello", role="entry")])])))
+print(desk(App("gedit", [N(show, [N({"F", "E"}, [N({"F"}, text="Save", role="push button")], text="Title", role="panel")])])))
+print(desk(App("gedit", [gwin]), App("mousepad", [N(show, [N({"F", "E"}, text="other", role="entry")])])))
+print(desk(App("gedit", [N(show, [N({"F", "E"}, [N({"F", "E", "H"}, text="secret", role="entry")], text="hello", role="entry")])])))
+print(desk(App("gedit", [N(show, [N({"F", "E"}, [N({"F", "E"}, role="entry")], text="hello already", role="text")])])))
+print(desk(App("gedit", [N(show, [N({"F", "E"}, text="secret", role="password text")])])))
+class Long:
+    def __init__(self):
+        self.body = ("x" * 60000) + "hello" + ("y" * 60000)
+        self.characterCount = len(self.body)
+        self.caretOffset = 60005
+    def queryText(self): return self
+    def getText(self, a, b): return self.body[a:b]
+print("hello" in sup.a11y_node_value(Long()))
 `)
-	if out != "{'ok': True, 'focused_text': 'hello', 'role': 'entry'}\n{'ok': True, 'focused_text': ''}" {
+	want := "{'ok': True, 'focused_text': 'hello', 'role': 'entry'}\n{'ok': True, 'focused_text': ''}\n{'ok': True, 'focused_text': ''}\n{'ok': True, 'focused_text': 'hello', 'role': 'entry'}\n{'ok': True, 'focused_text': ''}\n{'ok': True, 'focused_text': 'hello', 'role': 'terminal'}\n{'ok': True, 'focused_text': ''}\n{'ok': True, 'focused_text': ''}\n{'ok': True, 'focused_texts': ['hello', 'other']}\n{'ok': True, 'focused_text': 'hello', 'role': 'entry'}\n{'ok': True, 'focused_text': ''}\n{'ok': True, 'focused_text': ''}\nTrue"
+	if out != want {
 		t.Fatalf("got:\n%s", out)
 	}
 }

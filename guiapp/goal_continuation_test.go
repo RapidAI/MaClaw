@@ -1819,6 +1819,152 @@ func TestGoalResumeKeepsPausedWhenRemoteSSHIsDown(t *testing.T) {
 	}
 }
 
+func TestRestartResumesPersistedActiveGoal(t *testing.T) {
+	dir := t.TempDir()
+	disk := goal.NewStore(filepath.Join(dir, "goals"))
+	localID := stickyTestUserID(t)
+	if _, err := disk.Set(localID, "继续优化向量指令"); err != nil {
+		t.Fatal(err)
+	}
+	pausedID := "restart-goal-paused"
+	paused, err := disk.Set(pausedID, "先停着")
+	if err != nil || !disk.Pause(pausedID, paused.GoalID) {
+		t.Fatalf("pause setup: %v", err)
+	}
+	doneID := "restart-goal-done"
+	done, err := disk.Set(doneID, "已经做完")
+	if err != nil || !disk.UpdateStatus(doneID, done.GoalID, goal.StatusComplete, "完成") {
+		t.Fatalf("complete setup: %v", err)
+	}
+
+	reloaded := goal.NewStore(filepath.Join(dir, "goals"))
+	app := &App{}
+	engine := NewGoalContinuationEngine(reloaded, app)
+	engine.cooldown = time.Hour
+	app.goalContinuation = engine
+	t.Cleanup(func() {
+		engine.CancelPending(localID)
+		engine.CancelPending(pausedID)
+		engine.CancelPending(doneID)
+	})
+
+	if snap := app.GetSessionGoalBar(localID); snap["visible"] != true || snap["status"] != string(goal.StatusActive) || goalTimerScheduled(t, engine, localID) {
+		t.Fatalf("bar before the assistant channel = %#v scheduled=%v", snap, goalTimerScheduled(t, engine, localID))
+	}
+
+	handler := &IMMessageHandler{app: app, goalStore: reloaded}
+	app.imHandler = handler
+	handler.storeStickyCodingWorkbenchMemory(localID, stickyCodingWorkbenchMemory{
+		Kind:        "local",
+		ProjectPath: "D:/repo/app",
+	})
+	t.Cleanup(func() { handler.clearStickyCodingWorkbenchMemory(localID) })
+
+	if snap := app.GetSessionGoalBar(localID); snap["status"] != string(goal.StatusActive) {
+		t.Fatalf("bar after restart = %#v", snap)
+	}
+	if !goalTimerScheduled(t, engine, localID) {
+		t.Fatal("active goal was not resumed after restart")
+	}
+	if goalTimerScheduled(t, engine, pausedID) || goalTimerScheduled(t, engine, doneID) {
+		t.Fatal("a paused or finished goal was resumed")
+	}
+	if handler.hasPendingTemplateSubAgentExecution(localID) {
+		t.Fatal("the bar read must not arm a coding route; the continuation turn does that")
+	}
+	if mem := handler.getStickyCodingWorkbenchMemory(localID); normalizeProjectSessionPath(mem.ProjectPath) != normalizeProjectSessionPath("D:/repo/app") {
+		t.Fatalf("restart rewrote sticky project path: %+v", mem)
+	}
+	got := reloaded.Get(localID)
+	if got == nil || got.Status != goal.StatusActive || !got.ShouldContinue() {
+		t.Fatalf("resumed goal = %+v", got)
+	}
+
+	engine.mu.Lock()
+	gen := engine.scheduleGen[localID]
+	engine.mu.Unlock()
+	app.GetSessionGoalBar(localID)
+	engine.mu.Lock()
+	again := engine.scheduleGen[localID]
+	engine.mu.Unlock()
+	if again != gen {
+		t.Fatalf("second restart resume replaced the armed turn gen=%d/%d", gen, again)
+	}
+}
+
+func TestRestartDoesNotResumeAGoalCreatedAfterStartup(t *testing.T) {
+	store := goal.NewStore("")
+	app := &App{}
+	engine := NewGoalContinuationEngine(store, app)
+	engine.cooldown = time.Hour
+	app.goalContinuation = engine
+	app.imHandler = &IMMessageHandler{app: app, goalStore: store}
+	const userID = "desktop-user"
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	if _, err := store.Set(userID, "这次进程里新建的"); err != nil {
+		t.Fatal(err)
+	}
+	if snap := app.GetSessionGoalBar(userID); snap["status"] != string(goal.StatusActive) || goalTimerScheduled(t, engine, userID) {
+		t.Fatalf("a new goal must keep the timer its creator armed, snap=%#v scheduled=%v", snap, goalTimerScheduled(t, engine, userID))
+	}
+}
+
+func TestRestartResumesGoalAskedWithTheOtherSlash(t *testing.T) {
+	dir := t.TempDir()
+	const stored = `desktop-user:F:\bird2`
+	const asked = `desktop-user:F:/bird2`
+	disk := goal.NewStore(filepath.Join(dir, "goals"))
+	if _, err := disk.Set(stored, "做愤怒的小鸟"); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := goal.NewStore(filepath.Join(dir, "goals"))
+	app := &App{}
+	engine := NewGoalContinuationEngine(reloaded, app)
+	engine.cooldown = time.Hour
+	app.goalContinuation = engine
+	app.imHandler = &IMMessageHandler{app: app, goalStore: reloaded}
+	t.Cleanup(func() { engine.CancelPending(stored) })
+
+	snap := app.GetSessionGoalBar(asked)
+	if snap["visible"] != true || snap["user_id"] != stored || snap["status"] != string(goal.StatusActive) {
+		t.Fatalf("slash variant snap = %#v", snap)
+	}
+	if !goalTimerScheduled(t, engine, stored) || goalTimerScheduled(t, engine, asked) {
+		t.Fatal("resume should arm the stored session id only")
+	}
+}
+
+func TestRestartPausesActiveGoalWhenRemoteSSHIsDown(t *testing.T) {
+	userID := stickyTestUserID(t)
+	store := goal.NewStore("")
+	if _, err := store.Set(userID, "在远程机器上继续"); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{}
+	engine := NewGoalContinuationEngine(store, app)
+	engine.cooldown = time.Hour
+	app.goalContinuation = engine
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	handler := &IMMessageHandler{app: app, goalStore: store}
+	app.imHandler = handler
+	handler.storeStickyCodingWorkbenchMemory(userID, stickyCodingWorkbenchMemory{
+		Kind:          "remote",
+		RemoteHost:    "home.example",
+		RemoteWorkDir: "/tmp/work",
+	})
+	handler.pendingV2SubAgentExecution.Store(userID, true)
+	t.Cleanup(func() {
+		handler.pendingV2SubAgentExecution.Delete(userID)
+		handler.clearStickyCodingWorkbenchMemory(userID)
+	})
+
+	snap := app.GetSessionGoalBar(userID)
+	got := store.Get(userID)
+	if snap["status"] != string(goal.StatusPaused) || got == nil || got.Status != goal.StatusPaused || !strings.Contains(got.Summary, "SSH") || goalTimerScheduled(t, engine, userID) {
+		t.Fatalf("remote restart resume = %#v goal=%+v scheduled=%v", snap, got, goalTimerScheduled(t, engine, userID))
+	}
+}
+
 func TestGoalClearDropsQueuedContinuation(t *testing.T) {
 	userID := "goal-clear-queued"
 	store := goal.NewStore("")

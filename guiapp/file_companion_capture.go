@@ -27,7 +27,91 @@ const fileCompanionPlaybackPoll = time.Second
 // download, or change the page. YouTube's end screen puts ended-mode on
 // #movie_player. ad-showing is an advertisement. A live stream has a
 // non-finite duration. webPlaybackHasEnded decides from the JSON.
-const webPlaybackEndedScript = `(function(){try{var root=document.getElementById("movie_player");if(!root){var found=document.getElementsByClassName("html5-video-player");if(found&&found.length)root=found[0];}var player=!!root;var ad=!!(root&&root.classList&&root.classList.contains("ad-showing"));var endedMode=!!(root&&root.classList&&root.classList.contains("ended-mode"));var v=document.querySelector("video.html5-main-video")||document.querySelector("video");var ended=false,finite=false,nearEnd=false;if(v){var d=v.duration;finite=typeof d==="number"&&isFinite(d)&&d>0;ended=!!v.ended;nearEnd=finite&&typeof v.currentTime==="number"&&(v.currentTime+1.5)>=d;}return {player:player,ad:ad,endedMode:endedMode,ended:ended,finite:finite,nearEnd:nearEnd};}catch(e){return {player:false,ad:false,endedMode:false,ended:false,finite:false,nearEnd:false};}})()`
+const webPlaybackEndedScript = `(function(){try{var root=document.getElementById("movie_player");if(!root){var found=document.getElementsByClassName("html5-video-player");if(found&&found.length)root=found[0];}var player=!!root;var ad=!!(root&&root.classList&&root.classList.contains("ad-showing"));var endedMode=!!(root&&root.classList&&root.classList.contains("ended-mode"));var v=document.querySelector("video.html5-main-video")||document.querySelector("video");var ended=false,finite=false,nearEnd=false,atStart=false;if(v){var d=v.duration;finite=typeof d==="number"&&isFinite(d)&&d>0;ended=!!v.ended;var t=v.currentTime;nearEnd=finite&&typeof t==="number"&&(t+1.5)>=d;atStart=finite&&typeof t==="number"&&t<0.75;}return {player:player,ad:ad,endedMode:endedMode,ended:ended,finite:finite,nearEnd:nearEnd,atStart:atStart};}catch(e){return {player:false,ad:false,endedMode:false,ended:false,finite:false,nearEnd:false,atStart:false};}})()`
+
+// webPlaybackRewindScript starts the showing video at the beginning and plays.
+// It does not navigate, download, or change the address. An advertisement is
+// left alone: seeking it would replay the ad. "ad" means try again once the
+// ad class is gone. A seek issued while the player is still ended is dropped,
+// so playback starts first and the media element is moved in the same call.
+// "seek" and "video" moved the content. "none" means there is no player to
+// move, so the recording keeps the current picture.
+const webPlaybackRewindScript = `(function(){try{var root=document.getElementById("movie_player");if(!root){var found=document.getElementsByClassName("html5-video-player");if(found&&found.length)root=found[0];}var ad=!!(root&&root.classList&&root.classList.contains("ad-showing"));if(ad)return "ad";var api=false;try{if(root&&typeof root.seekTo==="function"){if(typeof root.playVideo==="function")root.playVideo();root.seekTo(0,true);api=true;}}catch(e){}var v=document.querySelector("video.html5-main-video")||document.querySelector("video");if(v){var play=v.play();if(play&&play.catch)play.catch(function(){});try{v.currentTime=0;}catch(e){}}if(api)return "seek";if(v)return "video";return "none";}catch(e){return "err";}})()`
+
+// fileCompanionWebAdWait is how long a pre-roll may delay the rewind to 0.
+// After that the recording takes the picture that is actually showing.
+const fileCompanionWebAdWait = 45 * time.Second
+
+// fileCompanionWebSeekRetry is how long a failed player script may delay the
+// rewind. The player is on screen; the call did not get an answer. Treating
+// that as "no player" records the current position, and on an end screen the
+// finished check then writes an empty note.
+const fileCompanionWebSeekRetry = 5 * time.Second
+
+// rewindWebPlayer asks the showing player to start at the beginning.
+// Windows replaces it. Other platforms leave the player where it is.
+var rewindWebPlayer = func(context.Context) string { return "none" }
+
+// fileCompanionRewindWebPlayerHook replaces the rewind in tests.
+var fileCompanionRewindWebPlayerHook func(ctx context.Context) string
+
+func fileCompanionRewindWebPlayer(ctx context.Context) string {
+	if fileCompanionRewindWebPlayerHook != nil {
+		return fileCompanionRewindWebPlayerHook(ctx)
+	}
+	return rewindWebPlayer(ctx)
+}
+
+// fileCompanionWebSeekSettled is false while an advertisement is showing or
+// the player script failed. "none" means there is no player to move, so the
+// recording keeps the current picture. "err" is tried again.
+func fileCompanionWebSeekSettled(result string) bool {
+	result = strings.TrimSpace(result)
+	return result != "ad" && result != "err"
+}
+
+// fileCompanionRewindWait reports whether this rewind result should be tried
+// again, and whether the end screen may stop that wait. Advertisement time
+// and script-failure time are separate: a long ad must not use up the retries
+// for a later script failure.
+func fileCompanionRewindWait(result string, adWait, errWait time.Duration) (wait, stopOnEnded bool) {
+	switch strings.TrimSpace(result) {
+	case "ad":
+		return adWait < fileCompanionWebAdWait, true
+	case "err":
+		return errWait < fileCompanionWebSeekRetry, false
+	default:
+		return false, false
+	}
+}
+
+// fileCompanionRewindResult turns one script call into seek, video, ad, none,
+// or err. A call that did not return is err, which is tried again. An empty
+// answer is none: there is no player to move.
+func fileCompanionRewindResult(raw string, callErr error) string {
+	if callErr != nil {
+		return "err"
+	}
+	text := fileCompanionScriptString(raw)
+	if text == "" {
+		return "none"
+	}
+	return text
+}
+
+// fileCompanionScriptString reads the JSON string ExecuteScript returns.
+// A bare token is kept so a host that does not encode still works.
+func fileCompanionScriptString(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal([]byte(raw), &text); err == nil {
+		return text
+	}
+	return strings.Trim(raw, `"`)
+}
 
 // fileCompanionPlaybackEndedHook replaces the player probe in tests.
 // A nil hook asks the showing player. A true result ends the recording the
@@ -145,7 +229,39 @@ func fileCompanionCaptureWeb(ctx context.Context, rect image.Rectangle, note, pl
 	start := time.Now()
 	var frames []videoNoteFrame
 	playerDone, noteDone := captureDropChans(ctx)
+	// 记笔记 records the whole video. Seek to the start and play before the
+	// first grab, so a click in the middle or on the end screen does not
+	// leave a note of only the remaining seconds. The frame after a seek can
+	// still be the old picture; that grab waits one poll.
+	sought := false
+	var adWait, errWait time.Duration
 	for ctx.Err() == nil && !captureLeft(ctx) && time.Since(start) < fileCompanionNoteMaxDuration {
+		if !sought {
+			result := fileCompanionRewindWebPlayer(ctx)
+			if wait, stopOnEnded := fileCompanionRewindWait(result, adWait, errWait); wait {
+				if result == "err" {
+					errWait += fileCompanionPlaybackPoll
+				} else {
+					adWait += fileCompanionPlaybackPoll
+				}
+				// A failed script is not the end of the video. Stopping on
+				// the end-screen flag here writes an empty note before the
+				// rewind has been sent.
+				if fileCompanionWaitCapture(ctx, fileCompanionPlaybackPoll, playerDone, noteDone, stopOnEnded) {
+					break
+				}
+				continue
+			}
+			sought = true
+			// The end screen stays ended-mode until the seek lands. Wait out
+			// that flag before the finished check, or the note stops empty.
+			if result == "seek" || result == "video" {
+				if fileCompanionWaitForSeek(ctx, playerDone, noteDone) {
+					break
+				}
+				continue
+			}
+		}
 		// This video finished. Stop the same way 停止 does during capture:
 		// keep the frames already taken and write the note. Do not grab the
 		// end screen or the next autoplayed video.
@@ -175,7 +291,7 @@ func fileCompanionCaptureWeb(ctx context.Context, rect image.Rectangle, note, pl
 		if wait <= 0 {
 			break
 		}
-		if fileCompanionWaitCapture(ctx, wait, playerDone, noteDone) {
+		if fileCompanionWaitCapture(ctx, wait, playerDone, noteDone, true) {
 			break
 		}
 	}
@@ -188,9 +304,34 @@ func fileCompanionCaptureWeb(ctx context.Context, rect image.Rectangle, note, pl
 	return shots, got.pcm, got.refused
 }
 
+// fileCompanionWaitForSeek gives a rewind time to leave the end screen.
+// It always waits one poll, then up to two more while the player still
+// reports that the video has finished. Each of those polls sends the rewind
+// again: the first seek is dropped while the player is still ended. A true
+// result means the note was cancelled or the player left.
+func fileCompanionWaitForSeek(ctx context.Context, playerDone, noteDone <-chan struct{}) bool {
+	const polls = 3
+	for i := 0; i < polls; i++ {
+		if ctx.Err() != nil || captureLeft(ctx) {
+			return true
+		}
+		fileCompanionWaitCapture(ctx, fileCompanionPlaybackPoll, playerDone, noteDone, false)
+		if ctx.Err() != nil || captureLeft(ctx) {
+			return true
+		}
+		if !fileCompanionPlaybackEnded(ctx) {
+			return false
+		}
+		if i+1 < polls {
+			fileCompanionRewindWebPlayer(ctx)
+		}
+	}
+	return ctx.Err() != nil || captureLeft(ctx)
+}
+
 // fileCompanionWaitCapture waits out the gap between frames.
 // A true result means this video has finished, so the caller stops recording.
-func fileCompanionWaitCapture(ctx context.Context, wait time.Duration, playerDone, noteDone <-chan struct{}) bool {
+func fileCompanionWaitCapture(ctx context.Context, wait time.Duration, playerDone, noteDone <-chan struct{}, stopWhenEnded bool) bool {
 	if wait <= 0 {
 		return false
 	}
@@ -209,7 +350,7 @@ func fileCompanionWaitCapture(ctx context.Context, wait time.Duration, playerDon
 		case <-deadline.C:
 			return false
 		case <-pulse.C:
-			if fileCompanionPlaybackEnded(ctx) {
+			if stopWhenEnded && fileCompanionPlaybackEnded(ctx) {
 				return true
 			}
 			pulse.Reset(fileCompanionPlaybackPoll)
@@ -235,15 +376,18 @@ type webPlaybackProbe struct {
 	Ended     bool `json:"ended"`
 	Finite    bool `json:"finite"`
 	NearEnd   bool `json:"nearEnd"`
+	AtStart   bool `json:"atStart"`
 }
 
 // webPlaybackHasEnded is true when the content video has finished.
-// YouTube's end screen is ended-mode on #movie_player. The same video
-// element reports ended when an advertisement finishes, so that flag is
-// not the end while the YouTube player is on the page. An advertisement
-// is not the end. A page without that player uses a finite video that has
-// ended on its duration. A live stream has no finite duration and no
-// ended-mode, so it is not the end.
+// YouTube's end screen is ended-mode on #movie_player. That class stays
+// up after a rewind until the player repaints, so the playhead has to
+// still be at the end. A playhead at the start is the video playing
+// again. The video element also reports ended when an advertisement
+// finishes, so that flag is not the end while the YouTube player is on
+// the page. An advertisement is not the end. A page without that player
+// uses a finite video that has ended on its duration. A live stream has
+// no finite duration and no ended-mode, so it is not the end.
 func webPlaybackHasEnded(raw string) bool {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || raw == "null" || len(raw) > 512 {
@@ -253,11 +397,11 @@ func webPlaybackHasEnded(raw string) bool {
 	if err := json.Unmarshal([]byte(raw), &probe); err != nil {
 		return false
 	}
-	if probe.Ad {
+	if probe.Ad || probe.AtStart {
 		return false
 	}
 	if probe.Player {
-		return probe.EndedMode
+		return probe.EndedMode && probe.NearEnd
 	}
 	return probe.Ended && probe.Finite && probe.NearEnd
 }

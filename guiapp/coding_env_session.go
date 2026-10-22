@@ -1244,23 +1244,25 @@ func (h *IMMessageHandler) ensurePureCodingArmedForIncomingMessage(userID string
 		h.clearOrdinaryCodingResidue(userID)
 		return
 	}
+	// Arm from the project index before the sticky shortcut. The shortcut
+	// treats an unbound working directory as the desktop default and then
+	// sets pending, so the index arm never ran. A restarted goal turn is
+	// one of these cold messages: the open-task call has not armed it yet.
+	if !h.hasPendingTemplateSubAgentExecution(userID) && h.app != nil {
+		if projectPath := projectPathFromSessionOwnerID(userID); projectPath != "" {
+			st, err := h.app.EnsureCodingWorkbenchArmed(projectPath)
+			if err != nil {
+				log.Printf("[coding-env] incoming re-arm failed user=%s project=%s err=%v", userID, projectPath, err)
+			} else if st.Armed || h.hasPendingTemplateSubAgentExecution(userID) {
+				log.Printf("[coding-env] incoming re-arm user=%s project=%s armed=%v kind=%s", userID, projectPath, st.Armed, st.Kind)
+				return
+			}
+		}
+	}
+	if h.hasPendingTemplateSubAgentExecution(userID) {
+		return
+	}
 	h.ensurePureCodingArmedForGoalContinuation(userID)
-	if h.hasPendingTemplateSubAgentExecution(userID) || h.app == nil {
-		return
-	}
-	projectPath := projectPathFromSessionOwnerID(userID)
-	if projectPath == "" {
-		return
-	}
-	// Do not pre-check projectPathIsCodingWorkbench here. That helper only
-	// reads an already-open project index and can miss after /clear or a
-	// cold start, which dropped this tab into the shared chat loop.
-	st, err := h.app.EnsureCodingWorkbenchArmed(projectPath)
-	if err != nil {
-		log.Printf("[coding-env] incoming re-arm failed user=%s project=%s err=%v", userID, projectPath, err)
-		return
-	}
-	log.Printf("[coding-env] incoming re-arm user=%s project=%s armed=%v kind=%s", userID, projectPath, st.Armed, st.Kind)
 }
 
 // ensurePureCodingArmedForGoalContinuation re-arms sticky local/remote pending

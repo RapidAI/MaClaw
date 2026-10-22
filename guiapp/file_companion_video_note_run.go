@@ -515,10 +515,9 @@ func (a *App) fileCompanionRunVideoNote(path, canonical string, req FileCompanio
 		stampLimit = -1
 	}
 	reply = fileCompanionRewriteNoteTimestamps(reply, stampLimit)
-	var embed []videoNoteFrame
-	if !ev.Vision {
-		embed = ev.Frames
-	}
+	// Vision already saw the frames. The note the user reads still keeps
+	// them, under the chapter they belong to.
+	embed := ev.Frames
 	pdfPath, err := fileCompanionWriteNoteFiles(a, canonical, sessionID, userID, clearGen, title, reply, embed, ctx)
 	if err != nil {
 		if err.Error() == fileCompanionErrNoteCancelled {
@@ -527,17 +526,20 @@ func (a *App) fileCompanionRunVideoNote(path, canonical string, req FileCompanio
 		return a.fileCompanionFailNote(requestID, userID, err.Error())
 	}
 	visible := reply
+	var keyframes []FileCompanionFigure
 	if md := a.fileCompanionFindNoteMarkdown(sessionID); md != "" {
 		if raw, readErr := os.ReadFile(md); readErr == nil {
 			visible = fileCompanionNoteProse(string(raw))
+			keyframes = a.fileCompanionNoteKeyframes(userID, string(raw), filepath.Join(filepath.Dir(md), "frames"))
 		}
 	}
 	a.fileCompanionRememberNote(userID, strings.TrimSpace(req.Text), canonical)
 	a.fileCompanionLogFinishedNote(sessionID, duration, coverOK, transcript, ffmpegOK, installed, sideOK, ocrRan, dropped, ev)
 	resp := &IMAgentResponse{
-		Text:          visible,
-		NoteCardPath:  pdfPath,
-		LocalFilePath: "",
+		Text:                 visible,
+		NoteCardPath:         pdfPath,
+		LocalFilePath:        "",
+		FileCompanionFigures: keyframes,
 	}
 	a.emitFileCompanionTurn(requestID, userID, resp)
 	return nil

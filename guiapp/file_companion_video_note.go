@@ -319,9 +319,53 @@ func fileCompanionNoteContextTokens(a *App) int {
 	return 128000
 }
 
+// fileCompanionNoteKeyframes lists the pictures embedded in a note so the
+// chat can show them. The prose hides the file path; the strip shows the
+// bytes. At most one turn's figure cap is registered.
+func (a *App) fileCompanionNoteKeyframes(userID, markdown, frameDir string) []FileCompanionFigure {
+	if a == nil || strings.TrimSpace(frameDir) == "" {
+		return nil
+	}
+	matches := fileCompanionMarkdownImageRe.FindAllStringSubmatch(markdown, -1)
+	var figures []FileCompanionFigure
+	var listed []companionFigure
+	for _, match := range matches {
+		if len(figures) >= fileCompanionToolFigureCap {
+			break
+		}
+		alt := strings.TrimSpace(match[1])
+		path := strings.TrimSpace(match[2])
+		if path == "" && len(match) > 3 {
+			path = strings.TrimSpace(match[3])
+		}
+		// The model writes the note. Only frames this host just stored are shown.
+		if path == "" || !strings.HasPrefix(alt, "板书") || !companionFigureInsideDir(frameDir, path) {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil || info.Size() < paperFigureMinBytes {
+			continue
+		}
+		figures = append(figures, FileCompanionFigure{
+			Index:   len(figures) + 1,
+			Label:   alt,
+			Caption: "",
+			Path:    path,
+		})
+		listed = append(listed, companionFigure{path: path, caption: alt, size: info.Size()})
+	}
+	if len(listed) == 0 {
+		return nil
+	}
+	if _, err := a.appendFileCompanionTurnFigures(userID, listed); err != nil {
+		return nil
+	}
+	return figures
+}
+
 // fileCompanionNoteProse is the note without picture lines. The file keeps
 // those lines so the PDF can embed the frames. The chat and a later question
-// show the sentences, not the frame path.
+// show the sentences, not the frame path. The keyframe strip carries the pictures.
 func fileCompanionNoteProse(markdown string) string {
 	lines := strings.Split(markdown, "\n")
 	out := make([]string, 0, len(lines))
@@ -1101,11 +1145,11 @@ func fileCompanionInsertNoteFramesInto(markdown, frameDir string, embed []videoN
 		var image strings.Builder
 		image.WriteString("![板书 ")
 		image.WriteString(stamp)
-		image.WriteString("](")
+		image.WriteString("](<")
 		image.WriteString(fileCompanionFrameDirMark)
 		image.WriteString(string(filepath.Separator))
 		image.WriteString(name)
-		image.WriteString(")")
+		image.WriteString(">)")
 		// The chapter line already says this sentence. Repeating it under
 		// every frame of that span is the same words again. Raw OCR is not
 		// a caption. A picture that is not under that line still keeps it.

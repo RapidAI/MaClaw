@@ -5849,6 +5849,20 @@ def a11y_text(node):
         return ""
 
 
+def a11y_cdp_app(name):
+    """Chromium is read back through CDP. Its accessibility tree is not the field."""
+    return a11y_clean(name, 40).lower() in ("chromium", "google chrome", "chrome")
+
+
+def a11y_real_window(win, pyatspi):
+    """A top-level window that is actually on screen. xfwm4 keeps an active
+    5x5 helper off screen; that is not a window to read or probe."""
+    if win is None or not a11y_showing(win, pyatspi):
+        return False
+    bounds = a11y_bounds(win, pyatspi)
+    return bool(bounds) and bounds[2] > 8 and bounds[3] > 8 and bounds[0] + bounds[2] > 0 and bounds[1] + bounds[3] > 0
+
+
 def a11y_windows(desktop, scope, pyatspi):
     """Top-level windows to walk: [(path, app name, window)]."""
     out = []
@@ -5861,18 +5875,14 @@ def a11y_windows(desktop, scope, pyatspi):
             continue
         app_name = a11y_clean(app.name, 40)
         # Chromium's own tree is large; the browser stays on CDP.
-        if app_name.lower() in ("chromium", "google chrome", "chrome"):
+        if a11y_cdp_app(app_name):
             continue
         for wi in range(app.childCount):
             try:
                 win = app.getChildAtIndex(wi)
             except Exception:
                 continue
-            if win is None or not a11y_showing(win, pyatspi):
-                continue
-            bounds = a11y_bounds(win, pyatspi)
-            # xfwm4 keeps an "active" 5x5 helper window off screen.
-            if not bounds or bounds[2] <= 8 or bounds[3] <= 8 or bounds[0] + bounds[2] <= 0 or bounds[1] + bounds[3] <= 0:
+            if not a11y_real_window(win, pyatspi):
                 continue
             out.append(([ai, wi], app_name, win))
     if scope == "all":
@@ -6089,40 +6099,175 @@ def a11y_act(request, pyatspi):
     raise ValueError("unknown a11y action %r" % op)
 
 
-def a11y_focused_text(request, pyatspi):
-    """Text of the focused element in the active window, for MaClawSrv's
-    verify-after-act. "" when nothing focused exposes text."""
-    desktop = pyatspi.Registry.getDesktop(0)
-    visited = 0
-    for _, _, win in a11y_windows(desktop, "focused", pyatspi):
-        stack = [win]
-        while stack and visited < 5000:
-            node = stack.pop()
-            visited += 1
+# Roles whose text interface is the typed value. A terminal often has no
+# STATE_EDITABLE. Buttons, labels, and panels are not that value.
+A11Y_VALUE_ROLES = frozenset((
+    "text", "entry", "document text", "terminal", "editbar", "paragraph",
+))
+A11Y_NOT_VALUE_ROLES = frozenset((
+    "panel", "frame", "window", "dialog", "filler", "section", "grouping",
+    "scroll pane", "tool bar", "menu bar", "menu", "page tab", "layered pane",
+    "application", "desktop", "root pane", "split pane", "internal frame",
+    "push button", "toggle button", "button", "label", "menu item",
+    "check menu item", "radio menu item", "check box", "radio button",
+    "link", "icon", "list item", "image", "separator", "password text",
+))
+
+
+def a11y_is_value_node(role, editable):
+    if role in A11Y_VALUE_ROLES:
+        return True
+    if role in A11Y_NOT_VALUE_ROLES:
+        return False
+    return editable
+
+
+def a11y_node_value(node):
+    """Field text for verify. A short field is read whole. Keystrokes land at
+    the caret, so a long field is read at the start, around the caret, and
+    at the end rather than only from offset 0."""
+    try:
+        iface = node.queryText()
+        n = int(iface.characterCount)
+    except Exception:
+        return ""
+    if n <= 0:
+        return ""
+    if n <= 100000:
+        try:
+            return (iface.getText(0, n) or "").strip()
+        except Exception:
+            return ""
+    spans = [(0, 8000), (max(0, n - 8000), n)]
+    try:
+        caret = int(iface.caretOffset)
+    except Exception:
+        caret = -1
+    if caret >= 0:
+        spans.append((max(0, caret - 100000), min(n, caret + 200)))
+    parts, seen = [], set()
+    for start, end in spans:
+        if end <= start or (start, end) in seen:
+            continue
+        seen.add((start, end))
+        try:
+            chunk = iface.getText(start, end) or ""
+        except Exception:
+            continue
+        if chunk.strip():
+            parts.append(chunk.strip())
+    # The verdict comparison drops whitespace, so a newline would fuse the
+    # slices into a string the field never contained.
+    return "\u241e".join(parts)
+
+
+def a11y_active_native_windows(desktop, pyatspi):
+    """Active top-level windows outside the CDP browser. A background
+    window did not receive the keystrokes, so it is not included."""
+    found = []
+    if desktop is None:
+        return found
+    try:
+        count = desktop.childCount
+    except Exception:
+        return found
+    for ai in range(count):
+        try:
+            app = desktop.getChildAtIndex(ai)
+        except Exception:
+            continue
+        if app is None or a11y_cdp_app(getattr(app, "name", "")):
+            continue
+        try:
+            nwin = app.childCount
+        except Exception:
+            continue
+        for wi in range(nwin):
             try:
-                state = node.getState()
-                focused = state.contains(pyatspi.STATE_FOCUSED)
+                win = app.getChildAtIndex(wi)
             except Exception:
                 continue
-            if focused:
-                text = ""
-                try:
-                    iface = node.queryText()
-                    text = iface.getText(0, min(iface.characterCount, 20000))
-                except Exception:
-                    text = a11y_clean(node.name, 20000)
-                return {"ok": True, "focused_text": text or "", "role": node.getRoleName()}
+            if not a11y_real_window(win, pyatspi):
+                continue
             try:
-                count = min(node.childCount, 500)
+                active = win.getState().contains(pyatspi.STATE_ACTIVE)
             except Exception:
-                count = 0
-            for i in range(count):
-                try:
-                    child = node.getChildAtIndex(i)
-                except Exception:
-                    continue
-                if child is not None:
-                    stack.append(child)
+                active = False
+            if active:
+                found.append(win)
+    return found
+
+
+def a11y_deep_focused_text(win, pyatspi):
+    """Text of the deepest focused value under win. The accessible name is
+    never used. A button, a label, a panel, or a hidden node is not the
+    field. The caret field is read once; an ancestor's text is not a
+    substitute when that field is empty."""
+    best = None
+    stack = [(win, 0)]
+    visited = 0
+    while stack and visited < 5000:
+        node, depth = stack.pop()
+        visited += 1
+        try:
+            state = node.getState()
+        except Exception:
+            state = None
+        if state is not None and (
+            not state.contains(pyatspi.STATE_SHOWING) or not state.contains(pyatspi.STATE_VISIBLE)
+        ):
+            continue
+        focused = editable = False
+        if state is not None:
+            try:
+                focused = state.contains(pyatspi.STATE_FOCUSED)
+                editable = state.contains(pyatspi.STATE_EDITABLE)
+            except Exception:
+                focused = editable = False
+        if focused:
+            try:
+                role = node.getRoleName()
+            except Exception:
+                role = ""
+            if a11y_is_value_node(role, editable) and (best is None or depth >= best[0]):
+                best = (depth, node, role)
+        try:
+            count = min(node.childCount, 500)
+        except Exception:
+            count = 0
+        for i in range(count):
+            try:
+                child = node.getChildAtIndex(i)
+            except Exception:
+                continue
+            if child is not None:
+                stack.append((child, depth + 1))
+    if best is None:
+        return "", ""
+    text = a11y_node_value(best[1])
+    if not text:
+        return "", ""
+    return text, best[2]
+
+
+def a11y_focused_text(request, pyatspi):
+    """Text of the focused field in an active non-browser window.
+
+    Chromium stays on CDP. "" when no focused field exposes text, so the
+    caller can read the page. Several fields stay separate: one window's
+    text must not count as a hit for another.
+    """
+    desktop = pyatspi.Registry.getDesktop(0)
+    texts, role = [], ""
+    for win in a11y_active_native_windows(desktop, pyatspi):
+        text, found = a11y_deep_focused_text(win, pyatspi)
+        if text:
+            texts.append(text)
+            role = found
+    if len(texts) == 1:
+        return {"ok": True, "focused_text": texts[0], "role": role}
+    if len(texts) > 1:
+        return {"ok": True, "focused_texts": texts}
     return {"ok": True, "focused_text": ""}
 
 

@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -680,8 +681,150 @@ func TestFileCompanionWebStopDuringModelStillWrites(t *testing.T) {
 	}
 }
 
+func TestWebPlaybackRewindStartsAtZero(t *testing.T) {
+	if !strings.Contains(webPlaybackRewindScript, "seekTo") || !strings.Contains(webPlaybackRewindScript, "playVideo") || !strings.Contains(webPlaybackRewindScript, "ad-showing") {
+		t.Fatalf("rewind script = %s", webPlaybackRewindScript)
+	}
+	if strings.Contains(webPlaybackRewindScript, "navigate") || strings.Contains(webPlaybackRewindScript, "location") || strings.Contains(webPlaybackRewindScript, "href") {
+		t.Fatal("rewind script changes the page")
+	}
+	if fileCompanionWebSeekSettled("ad") || fileCompanionWebSeekSettled("err") || !fileCompanionWebSeekSettled("seek") || !fileCompanionWebSeekSettled("none") || !fileCompanionWebSeekSettled("") {
+		t.Fatal("seek settled on the wrong script result")
+	}
+	if got := fileCompanionRewindResult("", errors.New("timeout")); got != "err" {
+		t.Fatalf("script error = %q", got)
+	}
+	if got := fileCompanionRewindResult(`"seek"`, nil); got != "seek" {
+		t.Fatalf("script seek = %q", got)
+	}
+	if got := fileCompanionRewindResult("", nil); got != "none" {
+		t.Fatalf("empty script = %q", got)
+	}
+	if !strings.Contains(webPlaybackRewindScript, `return "err"`) {
+		t.Fatal("rewind script reports a failure as no player")
+	}
+	timeAt := strings.Index(webPlaybackRewindScript, "currentTime=0")
+	seekReturn := strings.Index(webPlaybackRewindScript, `return "seek"`)
+	adReturn := strings.Index(webPlaybackRewindScript, `return "ad"`)
+	playAPI := strings.Index(webPlaybackRewindScript, "playVideo()")
+	seekAPI := strings.Index(webPlaybackRewindScript, "seekTo(")
+	elemPlay := strings.Index(webPlaybackRewindScript, "v.play()")
+	if timeAt < 0 || seekReturn < timeAt || adReturn < 0 || adReturn > timeAt || playAPI < 0 || seekAPI < playAPI || elemPlay < 0 || timeAt < elemPlay {
+		t.Fatal("rewind seeks while the player is still ended")
+	}
+	if wait, stop := fileCompanionRewindWait("err", fileCompanionWebAdWait, 0); !wait || stop {
+		t.Fatal("a script failure after a long ad was not retried")
+	}
+	if wait, _ := fileCompanionRewindWait("err", 0, fileCompanionWebSeekRetry); wait {
+		t.Fatal("script failures retried past the limit")
+	}
+	if wait, stop := fileCompanionRewindWait("ad", 0, fileCompanionWebSeekRetry); !wait || !stop {
+		t.Fatal("an advertisement was not waited out")
+	}
+	if got := fileCompanionScriptString(`"seek"`); got != "seek" {
+		t.Fatalf("script string = %q", got)
+	}
+	if got := fileCompanionScriptString("video"); got != "video" {
+		t.Fatalf("bare script string = %q", got)
+	}
+}
+
+func TestFileCompanionRewindErrorRetriesOnTheEndScreen(t *testing.T) {
+	app := newVideoNoteTestApp(t)
+	opened, err := app.FileCompanionOpenWebPage("https://www.youtube.com/watch?v=rewind-err")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prevCap := fileCompanionWebCaptureHook
+	prevEnded := fileCompanionPlaybackEndedHook
+	prevRewind := fileCompanionRewindWebPlayerHook
+	fileCompanionWebCaptureHook = nil
+	calls := 0
+	fileCompanionRewindWebPlayerHook = func(context.Context) string {
+		calls++
+		if calls == 1 {
+			return "err"
+		}
+		return "seek"
+	}
+	fileCompanionPlaybackEndedHook = func(context.Context) bool { return true }
+	fileCompanionNoteModelHook = func(fileCompanionNoteModelRequest) *IMAgentResponse {
+		return &IMAgentResponse{Text: "## 概要\n重试后写入\n## 章节\n00:00 开始\n## 要点\n00:00 一点\n## 金句\n00:00 「话」\n## 不确定的地方\n无\n"}
+	}
+	t.Cleanup(func() {
+		fileCompanionWebCaptureHook = prevCap
+		fileCompanionPlaybackEndedHook = prevEnded
+		fileCompanionRewindWebPlayerHook = prevRewind
+		fileCompanionNoteModelHook = nil
+	})
+	start := time.Now()
+	err = app.SendFileCompanionWebMessage(FileCompanionWebTurnRequest{
+		SessionID: opened.SessionID, Text: "记笔记", Purpose: "video-note", RequestID: "web-rewind-err", RectW: 960, RectH: 540,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	elapsed := time.Since(start)
+	// One failure, the first seek, then two more while the end screen remains.
+	if calls != 4 || elapsed < 3*time.Second || elapsed > 12*time.Second {
+		t.Fatalf("rewind calls=%d elapsed=%s", calls, elapsed)
+	}
+	body := readWebNote(t, app, opened.SessionID)
+	if !strings.Contains(body, "重试后写入") {
+		t.Fatalf("rewind retry note = %s", body)
+	}
+}
+
+func TestFileCompanionWaitForSeekLeavesEndedScreen(t *testing.T) {
+	prev := fileCompanionPlaybackEndedHook
+	t.Cleanup(func() { fileCompanionPlaybackEndedHook = prev })
+	checks := 0
+	fileCompanionPlaybackEndedHook = func(context.Context) bool {
+		checks++
+		return checks < 2
+	}
+	started := time.Now()
+	if fileCompanionWaitForSeek(context.Background(), nil, nil) {
+		t.Fatal("a seek that leaves the end screen cancelled the note")
+	}
+	elapsed := time.Since(started)
+	if checks != 2 || elapsed < 1500*time.Millisecond || elapsed > 3500*time.Millisecond {
+		t.Fatalf("seek wait checks=%d elapsed=%s", checks, elapsed)
+	}
+
+	checks = 0
+	fileCompanionPlaybackEndedHook = func(context.Context) bool {
+		checks++
+		return true
+	}
+	started = time.Now()
+	if fileCompanionWaitForSeek(context.Background(), nil, nil) {
+		t.Fatal("a seek that stays on the end screen cancelled the note")
+	}
+	elapsed = time.Since(started)
+	if checks != 3 || elapsed < 2500*time.Millisecond {
+		t.Fatalf("end screen wait checks=%d elapsed=%s", checks, elapsed)
+	}
+}
+
+func TestFileCompanionSeekSettleDoesNotStopOnEnded(t *testing.T) {
+	prev := fileCompanionPlaybackEndedHook
+	t.Cleanup(func() { fileCompanionPlaybackEndedHook = prev })
+	fileCompanionPlaybackEndedHook = func(context.Context) bool { return true }
+	if fileCompanionWaitCapture(context.Background(), 40*time.Millisecond, nil, nil, false) {
+		t.Fatal("stale ended-mode stopped the seek")
+	}
+	started := time.Now()
+	if !fileCompanionWaitCapture(context.Background(), 3*time.Second, nil, nil, true) {
+		t.Fatal("ended-mode did not stop the recording")
+	}
+	if time.Since(started) > 2*time.Second {
+		t.Fatal("ended-mode waited out the whole gap")
+	}
+}
+
 func TestWebPlaybackHasEnded(t *testing.T) {
-	if !strings.Contains(webPlaybackEndedScript, "ad-showing") || !strings.Contains(webPlaybackEndedScript, "ended-mode") || !strings.Contains(webPlaybackEndedScript, "isFinite") {
+	if !strings.Contains(webPlaybackEndedScript, "ad-showing") || !strings.Contains(webPlaybackEndedScript, "ended-mode") || !strings.Contains(webPlaybackEndedScript, "isFinite") || !strings.Contains(webPlaybackEndedScript, "atStart") {
 		t.Fatalf("playback script = %s", webPlaybackEndedScript)
 	}
 	if strings.Contains(webPlaybackEndedScript, "navigate") || strings.Contains(webPlaybackEndedScript, "location") {
@@ -691,7 +834,9 @@ func TestWebPlaybackHasEnded(t *testing.T) {
 		raw  string
 		want bool
 	}{
-		{`{"player":true,"ad":false,"endedMode":true,"ended":false,"finite":true,"nearEnd":false}`, true},
+		{`{"player":true,"ad":false,"endedMode":true,"ended":false,"finite":true,"nearEnd":false}`, false},
+		{`{"player":true,"ad":false,"endedMode":true,"ended":true,"finite":true,"nearEnd":true,"atStart":false}`, true},
+		{`{"player":true,"ad":false,"endedMode":true,"ended":true,"finite":true,"nearEnd":true,"atStart":true}`, false},
 		{`{"player":true,"ad":true,"endedMode":true,"ended":true,"finite":true,"nearEnd":true}`, false},
 		{`{"player":true,"ad":false,"endedMode":false,"ended":true,"finite":true,"nearEnd":true}`, false},
 		{`{"player":false,"ad":false,"endedMode":false,"ended":true,"finite":true,"nearEnd":true}`, true},

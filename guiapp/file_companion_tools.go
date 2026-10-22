@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -105,13 +106,21 @@ func fileCompanionToolDefinitions() []map[string]interface{} {
 			"type": "function",
 			"function": map[string]interface{}{
 				"name":        fileCompanionToolRenderPage,
-				"description": "把当前打开的 PDF 的某一页整页渲染成图片。用户想看架构图、图表、公式或版式时使用。成功后返回图号，回答里写「图N」，宿主会把这张原图放在回答下面展示给用户。",
+				"description": "从当前 PDF 的某一页裁出插图（Figure / 图）及其图注。用户要看架构图、流程图或实验图时使用，不要把同页正文和表格一起截进来。figure 是图号（如 1）；不传则裁出该页每一张能分开的图。只有用户明确要看整页版式时才传 full=true。成功后返回图号，回答里写「图N」。",
 				"parameters": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
 						"page": map[string]interface{}{
 							"type":        "integer",
-							"description": "要渲染的页码，从 1 开始",
+							"description": "图所在的页码，从 1 开始",
+						},
+						"figure": map[string]interface{}{
+							"type":        "integer",
+							"description": "可选。要裁的图号，例如 1 表示 Figure 1 或图 1。不传则裁出该页全部分得开的图。",
+						},
+						"full": map[string]interface{}{
+							"type":        "boolean",
+							"description": "可选。为 true 时渲染整页。只在用户明确要看版式时使用。",
 						},
 						"dpi": map[string]interface{}{
 							"type":        "integer",
@@ -240,10 +249,16 @@ func fileCompanionToolProgressText(name, argsJSON string) string {
 	case fileCompanionToolReadPages:
 		return "正在读取文档页原文…"
 	case fileCompanionToolRenderPage:
-		if page, err := fileCompanionIntArg(args, "page"); err == nil {
-			return fmt.Sprintf("正在渲染第 %d 页为图片…", page)
+		if fileCompanionFlagArg(args, "full") {
+			if page, err := fileCompanionIntArg(args, "page"); err == nil {
+				return fmt.Sprintf("正在渲染第 %d 页为图片…", page)
+			}
+			return "正在渲染页面为图片…"
 		}
-		return "正在渲染页面为图片…"
+		if page, err := fileCompanionIntArg(args, "page"); err == nil {
+			return fmt.Sprintf("正在裁出第 %d 页的图…", page)
+		}
+		return "正在裁出页面上的图…"
 	case fileCompanionToolExtractImgs:
 		return "正在提取文档内嵌图片…"
 	}
@@ -336,6 +351,34 @@ func (a *App) fileCompanionToolRenderPage(userID, canonical string, args map[str
 	// render does.
 	if count := fileCompanionPDFPageCountOfFile(canonical); count > 0 && page > count {
 		return fmt.Sprintf("页码超出范围：这份 PDF 共 %d 页。", count), false
+	}
+	wanted := fileCompanionOptionalFigureArg(args)
+	if !fileCompanionFlagArg(args, "full") {
+		if text, ok, hit := a.fileCompanionReusePageClips(userID, canonical, page, dpi, wanted); hit {
+			return text, ok
+		}
+		crop := false
+		allowMiss := false
+		switch {
+		case fileCompanionClipPageFiguresHook != nil:
+			crop = true
+			allowMiss = wanted == ""
+		case wanted != "":
+			crop = true
+		default:
+			switch fileCompanionPageCaptionState(canonical, page) {
+			case 1:
+				crop = true
+			case -1:
+				crop = true
+				allowMiss = true
+			}
+		}
+		if crop {
+			if text, ok, handled := a.fileCompanionDeliverPageClips(userID, canonical, page, dpi, wanted, allowMiss); handled {
+				return text, ok
+			}
+		}
 	}
 	outPNG, err := a.fileCompanionToolFigurePath(canonical, fmt.Sprintf("render-p%d-d%d.png", page, dpi))
 	if err != nil {
@@ -938,6 +981,64 @@ func fileCompanionJoinPages(pages []int) string {
 		parts = append(parts, strconv.Itoa(page))
 	}
 	return strings.Join(parts, "、")
+}
+
+// fileCompanionFlagArg reads an optional boolean. A missing value is false.
+// Models send true, "true", or 1 for the same switch.
+func fileCompanionFlagArg(args map[string]interface{}, name string) bool {
+	raw, ok := args[name]
+	if !ok || raw == nil {
+		return false
+	}
+	switch value := raw.(type) {
+	case bool:
+		return value
+	case string:
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "1", "true", "yes", "y":
+			return true
+		}
+	case float64:
+		return value != 0
+	}
+	return false
+}
+
+// fileCompanionOptionalFigureArg is the figure number, or "" when the call
+// did not name one. "1", 1, and "Figure 1" all mean figure 1.
+func fileCompanionOptionalFigureArg(args map[string]interface{}) string {
+	raw, ok := args["figure"]
+	if !ok || raw == nil {
+		return ""
+	}
+	switch value := raw.(type) {
+	case string:
+		return fileCompanionFigureNumber(value)
+	case float64:
+		if value != math.Trunc(value) || value < 1 {
+			return ""
+		}
+		return strconv.Itoa(int(value))
+	case int:
+		if value < 1 {
+			return ""
+		}
+		return strconv.Itoa(value)
+	case json.Number:
+		number, err := value.Int64()
+		if err != nil || number < 1 {
+			return ""
+		}
+		return strconv.FormatInt(number, 10)
+	default:
+		return ""
+	}
+}
+
+var fileCompanionFigureNumberRe = regexp.MustCompile(`\d+(?:\.\d+)?`)
+
+func fileCompanionFigureNumber(text string) string {
+	return fileCompanionFigureNumberRe.FindString(strings.TrimSpace(text))
 }
 
 // fileCompanionIntArg reads one 1-based integer argument. JSON numbers arrive

@@ -165,7 +165,11 @@ type GoalContinuationEngine struct {
 	// Two notes of an unchanged step must stay distinct, or a late post-loop
 	// would retire the successor's note.
 	expectGen map[string]uint64
-	cooldown  time.Duration // delay between continuations (default 2s)
+	// restartCandidates is the goal id loaded from disk for each session.
+	// Only those rows are resumed. A goal created later in this process
+	// already has its own timer, and a bar poll must not arm a second turn.
+	restartCandidates map[string]string
+	cooldown          time.Duration // delay between continuations (default 2s)
 }
 
 // goalPlanMiss records that this goal already received one plan correction.
@@ -189,17 +193,30 @@ type goalContinuationExpect struct {
 
 // NewGoalContinuationEngine creates a continuation engine.
 func NewGoalContinuationEngine(store *goal.Store, app *App) *GoalContinuationEngine {
-	return &GoalContinuationEngine{
-		store:           store,
-		app:             app,
-		scheduledTimers: make(map[string]*time.Timer),
-		pendingExpect:   make(map[string]goalContinuationExpect),
-		planMiss:        make(map[string]goalPlanMiss),
-		planCorrection:  make(map[string]string),
-		scheduleGen:     make(map[string]uint64),
-		expectGen:       make(map[string]uint64),
-		cooldown:        2 * time.Second,
+	e := &GoalContinuationEngine{
+		store:             store,
+		app:               app,
+		scheduledTimers:   make(map[string]*time.Timer),
+		pendingExpect:     make(map[string]goalContinuationExpect),
+		planMiss:          make(map[string]goalPlanMiss),
+		planCorrection:    make(map[string]string),
+		scheduleGen:       make(map[string]uint64),
+		expectGen:         make(map[string]uint64),
+		restartCandidates: map[string]string{},
+		cooldown:          2 * time.Second,
 	}
+	for _, g := range store.Snapshot() {
+		if g == nil || !g.ShouldContinue() {
+			continue
+		}
+		userID := strings.TrimSpace(g.UserID)
+		goalID := strings.TrimSpace(g.GoalID)
+		if userID == "" || goalID == "" {
+			continue
+		}
+		e.restartCandidates[userID] = goalID
+	}
+	return e
 }
 
 // MaybeScheduleContinuation checks if the goal should auto-continue after the
@@ -653,6 +670,104 @@ const (
 	goalCorrectionNone goalCorrectionKind = iota
 	goalCorrectionPlan
 )
+
+// continuationHandler is the assistant handler that can re-arm a coding
+// session and refuse a dead remote host. A nil handler means this process
+// cannot start a turn yet.
+func (e *GoalContinuationEngine) continuationHandler() *IMMessageHandler {
+	if e == nil || e.app == nil {
+		return nil
+	}
+	if client := e.app.hubClient(); client != nil {
+		if handler := client.ensureIMHandler(); handler != nil {
+			return handler
+		}
+	}
+	return e.app.imHandler
+}
+
+// resumeVisibleGoalAfterRestart arms the goal on the session the bar is
+// showing. Startup itself does not arm: the coding tab binds its directory
+// as the window opens, and a timer started before that runs in the wrong
+// place. The bar read is the moment that session is on screen. Pause and
+// continue work without this because continue calls scheduleDelayed itself.
+// A missing handler leaves the session unclaimed so a later read can resume.
+func (a *App) resumeVisibleGoalAfterRestart(sessionKey string) {
+	if a == nil || a.goalContinuation == nil || a.goalContinuation.continuationHandler() == nil {
+		return
+	}
+	hit := a.goalBarHit(sessionKey)
+	if hit.goal == nil || strings.TrimSpace(hit.id) == "" || !hit.goal.ShouldContinue() {
+		return
+	}
+	if !a.goalContinuation.takeRestartCandidate(hit.id, hit.goal.GoalID) {
+		return
+	}
+	a.goalContinuation.resumePersistedGoal(hit.id, hit.goal.GoalID)
+}
+
+// takeRestartCandidate accepts the disk row captured when this process
+// started. A later poll, or a goal created after startup, gets nothing.
+func (e *GoalContinuationEngine) takeRestartCandidate(userID, goalID string) bool {
+	if e == nil {
+		return false
+	}
+	userID = strings.TrimSpace(userID)
+	goalID = strings.TrimSpace(goalID)
+	if userID == "" || goalID == "" {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.restartCandidates[userID] != goalID {
+		return false
+	}
+	delete(e.restartCandidates, userID)
+	return true
+}
+
+// resumePersistedGoal schedules the next turn for one goal that is still
+// allowed to run. Paused, finished, and exhausted goals stay as they are.
+// A remote coding session whose SSH engine is down is paused, matching the
+// continue button, so the bar does not keep saying the agent is working.
+func (e *GoalContinuationEngine) resumePersistedGoal(userID, goalID string) {
+	if e == nil || e.store == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	goalID = strings.TrimSpace(goalID)
+	if userID == "" || goalID == "" || e.continuationAlreadyQueued(userID) {
+		return
+	}
+	g := e.store.Get(userID)
+	if g == nil || g.GoalID != goalID || !g.ShouldContinue() {
+		return
+	}
+	if handler := e.continuationHandler(); handler != nil {
+		// Do not arm the coding route here. The bar read is on the UI call.
+		// The continuation turn arms from the project index, the same way
+		// opening the task does. A dead remote is paused now so the bar
+		// stops saying the agent is working and no model turn is spent.
+		if _, blocked := handler.pauseGoalForUnarmedRemote(userID); blocked {
+			log.Printf("[goal-continuation] restart left goal paused; remote coding session is down user=%s goal_id=%s", userID, goalID)
+			return
+		}
+	}
+	log.Printf("[goal-continuation] resuming goal after restart user=%s goal_id=%s", userID, goalID)
+	e.scheduleDelayed(userID, goalID)
+}
+
+// continuationAlreadyQueued reports that this session already has a timer.
+// Restart resume must not replace a turn the user just armed.
+func (e *GoalContinuationEngine) continuationAlreadyQueued(userID string) bool {
+	if e == nil {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_, queued := e.scheduledTimers[userID]
+	return queued
+}
 
 // scheduleDelayed schedules a continuation message after the cooldown period.
 func (e *GoalContinuationEngine) scheduleDelayed(userID, goalID string) {

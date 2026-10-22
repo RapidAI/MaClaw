@@ -122,16 +122,53 @@ func unquoteJSLiteral(lit string) string {
 
 // readbackJS collects the text of the focused control (its editor root for a
 // contenteditable, descending into same-origin iframes) and, when wide, of
-// every editable on the page. Capped so a big page stays cheap.
+// every editable on the page. A short field is read whole. Keystrokes land
+// at the caret, so a long focused field also keeps its start, its end, and
+// the caret. Password values are left unread. A separator the verdict
+// comparison keeps stands between those slices so they do not fuse.
 func readbackJS(wide, needFocus bool) string {
 	return fmt.Sprintf(`(function(){
 if(%t&&!document.hasFocus())return "[]";
-const out=[];const cap=s=>(s||"").slice(0,20000);
+const out=[];
+const sep=String.fromCharCode(0x241e);
+const secret=e=>!!(e&&e.tagName==="INPUT"&&String(e.type||"").toLowerCase()==="password");
+const rootOf=e=>{if(!e||secret(e))return null;if(e.tagName==="INPUT"||e.tagName==="TEXTAREA")return e;const r=e.closest&&e.closest("[contenteditable=''],[contenteditable=true],[contenteditable=plaintext-only]");return r||e;};
+const textOf=e=>{const r=rootOf(e);if(!r)return"";if(r.tagName==="INPUT"||r.tagName==="TEXTAREA")return r.value||"";return r.innerText||r.textContent||"";};
+const edges=s=>{s=s||"";if(s.length<=20000)return s;return s.slice(0,8000)+sep+s.slice(-8000);};
+const clip=(s,el)=>{
+  s=s||"";
+  if(s.length<=100000)return s;
+  const parts=[s.slice(0,8000),s.slice(-8000)];
+  if(el&&el.selectionStart!=null){
+    const at=el.selectionStart;
+    parts.push(s.slice(Math.max(0,at-100000),Math.min(s.length,at+200)));
+  }
+  try{
+    const view=el&&el.ownerDocument&&el.ownerDocument.defaultView;
+    const sel=view&&view.getSelection&&view.getSelection();
+    if(sel&&sel.rangeCount&&el&&(el===sel.anchorNode||(el.contains&&el.contains(sel.anchorNode)))){
+      const range=sel.getRangeAt(0);
+      const before=range.cloneRange();
+      before.selectNodeContents(el);
+      before.setEnd(sel.anchorNode,sel.anchorOffset);
+      const pre=before.toString();
+      parts.push(pre.slice(Math.max(0,pre.length-100000)));
+      const after=range.cloneRange();
+      after.selectNodeContents(el);
+      after.setStart(sel.anchorNode,sel.anchorOffset);
+      parts.push(after.toString().slice(0,8000));
+    }
+  }catch(err){}
+  return parts.filter(Boolean).join(sep);
+};
 let d=document,el=d.activeElement;
-for(let i=0;i<4&&el&&el.tagName==="IFRAME";i++){try{d=el.contentDocument;el=d.activeElement}catch(e){break}}
-const textOf=e=>{if(!e)return"";if(e.tagName==="INPUT"||e.tagName==="TEXTAREA")return e.value||"";const r=e.closest&&e.closest("[contenteditable=''],[contenteditable=true],[contenteditable=plaintext-only]");return (r||e).innerText||(r||e).textContent||""};
-if(el&&el!==d.body)out.push(cap(textOf(el)));
-if(%t){const all=d.querySelectorAll("input,textarea,[contenteditable=''],[contenteditable=true],[contenteditable=plaintext-only]");for(let i=0;i<all.length&&i<50;i++)out.push(cap(textOf(all[i])));}
+for(let hop=0;hop<6&&el;hop++){
+  if(el.tagName==="IFRAME"){try{d=el.contentDocument;el=d&&d.activeElement}catch(e){break}continue}
+  if(el.shadowRoot&&el.shadowRoot.activeElement){el=el.shadowRoot.activeElement;continue}
+  break;
+}
+if(el&&el!==d.body&&!secret(el))out.push(clip(textOf(el),rootOf(el)));
+if(%t){const all=d.querySelectorAll("input,textarea,[contenteditable=''],[contenteditable=true],[contenteditable=plaintext-only]");for(let i=0;i<all.length&&i<50;i++){if(!secret(all[i]))out.push(edges(textOf(all[i])));}}
 return JSON.stringify(out)})()`, needFocus, wide)
 }
 

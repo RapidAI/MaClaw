@@ -1106,6 +1106,53 @@ func TestFileCompanionFrameShowsOrganizedCaption(t *testing.T) {
 	}
 }
 
+func TestFileCompanionNoteFramesKeepAPathWithSpaces(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	root := filepath.Join(t.TempDir(), "note frames")
+	frame := videoNoteFrame{At: time.Second, JPEG: paperTestJPEG(t, 80, 60)}
+	out := fileCompanionInsertNoteFramesInto("## 章节\n0:00–1:00 开头\n", root, []videoNoteFrame{frame})
+	if !strings.Contains(out, "](<") || !strings.Contains(out, ">)") {
+		t.Fatalf("frame path is not bracketed: %s", out)
+	}
+	bound := fileCompanionBindFrameDir(out, root)
+	if strings.Contains(bound, fileCompanionFrameDirMark) {
+		t.Fatal("frame dir mark left in the note")
+	}
+	if strings.Contains(fileCompanionNoteProse(bound), "![板书") {
+		t.Fatal("chat prose kept the frame path")
+	}
+	got := app.fileCompanionNoteKeyframes("file-companion:s", bound, root)
+	if len(got) != 1 || !strings.HasPrefix(got[0].Label, "板书") {
+		t.Fatalf("keyframes = %#v", got)
+	}
+	if _, err := os.Stat(got[0].Path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFileCompanionNoteKeyframesStayInTheFrameDir(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	root := t.TempDir()
+	frames := filepath.Join(root, "frames")
+	if err := os.MkdirAll(frames, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	good := filepath.Join(frames, "1.jpg")
+	outside := filepath.Join(root, "secret.jpg")
+	encoded := paperTestJPEG(t, 80, 60)
+	if err := os.WriteFile(good, encoded, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outside, encoded, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	markdown := "![板书 0:01](" + good + ")\n![板书 0:02](" + outside + ")\n![图1](" + good + ")\n"
+	got := app.fileCompanionNoteKeyframes("file-companion:s", markdown, frames)
+	if len(got) != 1 || got[0].Path != good || got[0].Label != "板书 0:01" {
+		t.Fatalf("keyframes = %#v", got)
+	}
+}
+
 func TestFileCompanionVideoNoteFrames(t *testing.T) {
 	app := newVideoNoteTestApp(t)
 	video := writeMedia(t, app, "board.mp4", []byte("video"))
@@ -1151,8 +1198,8 @@ func TestFileCompanionVideoNoteFrames(t *testing.T) {
 		t.Fatalf("runs = %v, want 30s then 45s", media.jpegAt)
 	}
 	body := readNote(t, app, video)
-	if strings.Contains(body, "![") {
-		t.Fatalf("vision note embedded a frame: %s", body)
+	if !strings.Contains(body, "![板书") {
+		t.Fatalf("vision note dropped the keyframe: %s", body)
 	}
 	sessionID := fileCompanionSessionID(mustCanonical(t, video))
 	if err := app.imHandler.memory.FlushUser("file-companion:" + sessionID); err != nil {

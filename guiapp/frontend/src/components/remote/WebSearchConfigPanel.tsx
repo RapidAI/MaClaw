@@ -49,7 +49,7 @@ const PRESET_ORDER: Record<Exclude<Preset, "custom">, string[]> = {
 	international: ["yuanbao", "google", "duckduckgo", "bing_cn", "baidu", "brave", "serper", "tinyfish", "tavily", "maclaw_hub"],
 };
 const ALLOW_ENABLED_WITHOUT_KEY = new Set(["yuanbao"]);
-const YUANBAO_API_KEY_URL = "https://console.cloud.tencent.com/wsapi/activity";
+const YUANBAO_API_KEY_URL = "https://console.cloud.tencent.com/wsapi/index?tab=apikey";
 const RETIRED_ENGINE_IDS = new Set(["mojeek"]);
 const MACLAW_HUB_TEST_QUERY = "golang http server";
 

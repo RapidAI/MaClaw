@@ -1568,6 +1568,24 @@ describe("FileCompanionWindow", () => {
         expect(screen.queryByTestId("file-companion-figure-zoom")).toBeNull();
     });
 
+    it("labels note frames as 关键帧", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/frames.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                {
+                    role: "assistant",
+                    text: "开场先讲了频率派。",
+                    figures: [{ label: "板书 0:03", caption: "", path: "C:/notes/img/frame.png" }],
+                },
+            ],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("开场先讲了频率派。");
+        await waitFor(() => expect(screen.getByText("关键帧")).toBeTruthy());
+        expect(screen.queryByText("原文配图")).toBeNull();
+    });
+
     it("shows figures that arrive with a streamed reply", async () => {
         boot.mockResolvedValue({ paths: ["C:/notes/streamed.md"] });
         open.mockImplementation(async (path: string) => doc(path));

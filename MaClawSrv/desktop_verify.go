@@ -82,22 +82,77 @@ func desktopStepsInsertedText(raw any) string {
 	return last
 }
 
-// desktopFocusedA11yText asks the supervisor for the focused element's text
-// (AT-SPI). ok is false when the image cannot tell.
-func desktopFocusedA11yText(ctx context.Context, scope agentruntime.Scope, display string) (string, bool) {
+// desktopFocusedA11yFields asks the supervisor for the focused fields' text
+// (AT-SPI). ok is false when the image cannot tell. Several fields mean
+// several active windows.
+func desktopFocusedA11yFields(ctx context.Context, scope agentruntime.Scope, display string) ([]string, bool) {
 	out, err := desktopCtlCall(ctx, scope, display, map[string]any{"op": desktop.CtlA11yProbe, "focused_text": true})
 	if err != nil {
-		return "", false
+		return nil, false
+	}
+	if raw, ok := out["focused_texts"].([]any); ok {
+		fields := make([]string, 0, len(raw))
+		for _, item := range raw {
+			text, ok := item.(string)
+			if !ok {
+				continue
+			}
+			text = strings.TrimSpace(text)
+			if text != "" {
+				fields = append(fields, text)
+			}
+		}
+		return fields, true
 	}
 	text, ok := out["focused_text"].(string)
 	if !ok {
-		return "", false
+		return nil, false
 	}
-	return text, true
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, true
+	}
+	return []string{text}, true
 }
 
-// desktopVerifySteps reads back desktop-level typing: the focused AT-SPI
-// element first, then the browser page when it holds the focus.
+// desktopA11yFieldsVerdict is applied when every field shows the text, and
+// not_applied when none do. A mix is unknown: the hit may be a different
+// window from the one that received the keystrokes.
+func desktopA11yFieldsVerdict(inserted string, fields []string) string {
+	if len(fields) == 0 {
+		return browser.ReadbackUnknown
+	}
+	hits := 0
+	for _, field := range fields {
+		if browser.ReadbackVerdict(inserted, []string{field}) == browser.ReadbackApplied {
+			hits++
+		}
+	}
+	switch {
+	case hits == 0:
+		return browser.ReadbackNotApplied
+	case hits == len(fields):
+		return browser.ReadbackApplied
+	default:
+		return browser.ReadbackUnknown
+	}
+}
+
+// desktopReadbackVerdict joins the two readers. The page is authoritative
+// when it holds the keyboard focus, because that is where the keystrokes
+// went. The accessibility fields are used when the page cannot be read.
+func desktopReadbackVerdict(inserted string, fields []string, page func(string) string) string {
+	if page != nil {
+		if got := page(inserted); got != "" && got != browser.ReadbackUnknown {
+			return got
+		}
+	}
+	return desktopA11yFieldsVerdict(inserted, fields)
+}
+
+// desktopVerifySteps reads back desktop-level typing. The focused page
+// decides when it holds the keyboard focus. Accessibility fields are used
+// when that page cannot be read.
 func desktopVerifySteps(ctx context.Context, scope agentruntime.Scope, display string, raw any, session func() *browser.BrowserAgentSession, text string, err error) (string, error) {
 	if err != nil || !desktopVerifyEnabled() {
 		return text, err
@@ -106,14 +161,20 @@ func desktopVerifySteps(ctx context.Context, scope agentruntime.Scope, display s
 	if browser.ReadbackProbe(inserted) == "" {
 		return text, err
 	}
-	verdict := browser.ReadbackUnknown
-	if focused, ok := desktopFocusedA11yText(ctx, scope, display); ok && strings.TrimSpace(focused) != "" {
-		verdict = browser.ReadbackVerdict(inserted, []string{focused})
-	}
-	if verdict == browser.ReadbackUnknown && session != nil {
+	// The page answers in one eval when it has focus. The accessibility walk
+	// runs only when that eval cannot tell, so a browser field does not wait
+	// on the desktop tree.
+	var page func(string) string
+	pageVerdict := browser.ReadbackUnknown
+	if session != nil {
 		if s := session(); s != nil {
-			verdict = s.ReadBackIfFocused(inserted)
+			pageVerdict = s.ReadBackIfFocused(inserted)
+			page = func(string) string { return pageVerdict }
 		}
 	}
-	return desktopWithReadback("app_run", text, err, verdict)
+	var fields []string
+	if page == nil || pageVerdict == "" || pageVerdict == browser.ReadbackUnknown {
+		fields, _ = desktopFocusedA11yFields(ctx, scope, display)
+	}
+	return desktopWithReadback("app_run", text, err, desktopReadbackVerdict(inserted, fields, page))
 }

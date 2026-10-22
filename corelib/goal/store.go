@@ -40,6 +40,25 @@ func (s *Store) Get(userID string) *Goal {
 	return cloneGoal(s.goals[userID])
 }
 
+// Snapshot returns a copy of every stored goal. Callers can walk the set
+// without holding the store lock. A process restart uses this to find goals
+// that were still active when the previous process stopped.
+func (s *Store) Snapshot() []*Goal {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]*Goal, 0, len(s.goals))
+	for _, g := range s.goals {
+		if g == nil {
+			continue
+		}
+		out = append(out, cloneGoal(g))
+	}
+	return out
+}
+
 // Set creates or replaces the goal for a user. A new goal_id is generated,
 // usage counters are reset. Returns the created goal.
 func (s *Store) Set(userID string, objective string, opts ...SetOption) (*Goal, error) {

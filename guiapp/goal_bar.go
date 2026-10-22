@@ -610,7 +610,11 @@ func (a *App) UpdateSessionGoal(sessionKey, objective string) map[string]interfa
 
 // GetSessionGoalBar returns the goal bar for one assistant session.
 // An empty snapshot means the bar stays hidden.
+// The first read of a goal that was still active when this process started
+// arms its continuation. The bar is painted from the persisted row, so it
+// already says the goal is running; this is what makes the agent start.
 func (a *App) GetSessionGoalBar(sessionKey string) map[string]interface{} {
+	a.resumeVisibleGoalAfterRestart(sessionKey)
 	hit := a.goalBarHit(sessionKey)
 	if hit.goal == nil || hit.goal.Status == goal.StatusComplete {
 		userID := strings.TrimSpace(sessionKey)

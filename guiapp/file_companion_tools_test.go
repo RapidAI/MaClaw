@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -139,6 +140,212 @@ func TestFileCompanionHostToolRenderReusesThisTurnsFigure(t *testing.T) {
 	text, ok = h.executeFileCompanionHostTool(userID, fileCompanionToolRenderPage, `{"page":1}`)
 	if !ok || !strings.Contains(text, "已复用") || !strings.Contains(text, "图1") {
 		t.Fatalf("cross-turn render = %q ok=%v", text, ok)
+	}
+}
+
+func TestFileCompanionRenderPageCropsAFigureInsteadOfThePage(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	app.seedFileCompanionPaths(nil)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "paper.pdf")
+	writePaperPDFWithFigures(t, path)
+	_, doc := seedCompanionTestFileAt(t, app, path)
+	userID := "file-companion:" + doc.SessionID
+	prev := fileCompanionClipPageFiguresHook
+	t.Cleanup(func() { fileCompanionClipPageFiguresHook = prev })
+	fileCompanionClipPageFiguresHook = func(_ context.Context, _, clipDir string, page, _ int, figure string) ([]companionFigure, error) {
+		if page != 1 || figure != "" {
+			t.Fatalf("clip page=%d figure=%q", page, figure)
+		}
+		out := filepath.Join(clipDir, "fig.png")
+		writeCompanionFigurePNG(t, out, 320, 180)
+		return []companionFigure{{path: out, caption: "Figure 1（第 1 页）", size: 1024}}, nil
+	}
+	h := &IMMessageHandler{app: app}
+	text, ok := h.executeFileCompanionHostTool(userID, fileCompanionToolRenderPage, `{"page":1}`)
+	if !ok || !strings.Contains(text, "裁出") || !strings.Contains(text, "图1") || strings.Contains(text, "整页") {
+		t.Fatalf("crop render = %q ok=%v", text, ok)
+	}
+	got := app.fileCompanionTurnFigures(userID)
+	if len(got) != 1 || !strings.Contains(got[0].caption, "Figure 1") || strings.Contains(got[0].caption, "整页") {
+		t.Fatalf("cropped figures = %#v", got)
+	}
+	if _, err := os.Stat(got[0].path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFileCompanionRenderPageFullFlagSkipsTheCrop(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	app.seedFileCompanionPaths(nil)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "paper.pdf")
+	writePaperPDFWithFigures(t, path)
+	_, doc := seedCompanionTestFileAt(t, app, path)
+	userID := "file-companion:" + doc.SessionID
+	canonical, err := fileCompanionCanonicalPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := app.fileCompanionToolFigurePath(canonical, "render-p1-d140.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCompanionFigurePNG(t, rendered, 200, 150)
+	prev := fileCompanionClipPageFiguresHook
+	t.Cleanup(func() { fileCompanionClipPageFiguresHook = prev })
+	fileCompanionClipPageFiguresHook = func(context.Context, string, string, int, int, string) ([]companionFigure, error) {
+		t.Fatal("full page still cropped")
+		return nil, nil
+	}
+	h := &IMMessageHandler{app: app}
+	text, ok := h.executeFileCompanionHostTool(userID, fileCompanionToolRenderPage, `{"page":1,"full":true}`)
+	if !ok || !strings.Contains(text, "已复用") || strings.Contains(text, "裁出") {
+		t.Fatalf("full render = %q ok=%v", text, ok)
+	}
+}
+
+func TestFileCompanionRenderPageReusesACrop(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	app.seedFileCompanionPaths(nil)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "paper.pdf")
+	writePaperPDFWithFigures(t, path)
+	past := time.Now().Add(-2 * time.Second)
+	if err := os.Chtimes(path, past, past); err != nil {
+		t.Fatal(err)
+	}
+	_, doc := seedCompanionTestFileAt(t, app, path)
+	userID := "file-companion:" + doc.SessionID
+	calls := 0
+	prev := fileCompanionClipPageFiguresHook
+	t.Cleanup(func() { fileCompanionClipPageFiguresHook = prev })
+	fileCompanionClipPageFiguresHook = func(_ context.Context, _, clipDir string, page, _ int, figure string) ([]companionFigure, error) {
+		calls++
+		if calls > 1 || page != 1 || figure != "" {
+			t.Fatalf("clip calls=%d page=%d figure=%q", calls, page, figure)
+		}
+		out := filepath.Join(clipDir, "fig.png")
+		writeCompanionFigurePNG(t, out, 320, 180)
+		return []companionFigure{{path: out, caption: "Figure 1（第 1 页）", size: 1024}}, nil
+	}
+	h := &IMMessageHandler{app: app}
+	if text, ok := h.executeFileCompanionHostTool(userID, fileCompanionToolRenderPage, `{"page":1}`); !ok || !strings.Contains(text, "裁出") {
+		t.Fatalf("first crop = %q ok=%v", text, ok)
+	}
+	app.seedFileCompanionTurnFigures(userID, nil)
+	text, ok := h.executeFileCompanionHostTool(userID, fileCompanionToolRenderPage, `{"page":1}`)
+	if !ok || !strings.Contains(text, "已复用") || strings.Contains(text, "整页") || calls != 1 {
+		t.Fatalf("reused crop = %q ok=%v calls=%d", text, ok, calls)
+	}
+}
+
+func TestPaperFigureCaptionLine(t *testing.T) {
+	yes := []string{
+		"Figure 1: Overview",
+		"Fig. 2.",
+		"Figure 1 - chart",
+		"Figure 1 – chart",
+		"Figure 1",
+		"图1 结构",
+		"Figure C.1: appendix",
+		"  fig 3：标题",
+	}
+	no := []string{
+		"See Figure 1 for the result.",
+		"Figure 1 shows the method.",
+		"The figure 1 result.",
+		"body\nFigure 1 shows more.\n",
+	}
+	for _, line := range yes {
+		if !paperFigureCaptionLineRe.MatchString(line) {
+			t.Fatalf("missed caption %q", line)
+		}
+	}
+	for _, line := range no {
+		if paperFigureCaptionLineRe.MatchString(line) {
+			t.Fatalf("sentence counted as a caption %q", line)
+		}
+	}
+	if fileCompanionTextHasFigureCaption("Figure 1\nshows the method.") {
+		t.Fatal("a wrapped sentence counted as a caption")
+	}
+	if !fileCompanionTextHasFigureCaption("Figure 1\nOverview of the pipeline") {
+		t.Fatal("a title under Figure 1 was dropped")
+	}
+	if !fileCompanionTextHasFigureCaption("Figure 1") || !fileCompanionTextHasFigureCaption("Figure 1: Overview") {
+		t.Fatal("a real caption was dropped")
+	}
+}
+
+func TestFileCompanionSentencePageStillRendersWhole(t *testing.T) {
+	font := `C:\Windows\Fonts\arial.ttf`
+	if _, err := os.Stat(font); err != nil {
+		t.Skip("no arial")
+	}
+	app := &App{testHomeDir: t.TempDir()}
+	app.seedFileCompanionPaths(nil)
+	dir := t.TempDir()
+	prose := filepath.Join(dir, "prose.pdf")
+	writePaperPDFProseLine(t, prose, font)
+	captioned := filepath.Join(dir, "caption.pdf")
+	writePaperPDFWithCaption(t, captioned, font)
+	if got := fileCompanionPageCaptionState(prose, 1); got != 0 {
+		t.Fatalf("sentence page caption state = %d, want 0", got)
+	}
+	wrapped := filepath.Join(dir, "wrapped.pdf")
+	writePaperPDFWrappedProse(t, wrapped, font)
+	if got := fileCompanionPageCaptionState(wrapped, 1); got != 0 {
+		t.Fatalf("wrapped sentence caption state = %d, want 0", got)
+	}
+	if got := fileCompanionPageCaptionState(captioned, 1); got != 1 {
+		t.Fatalf("caption page caption state = %d, want 1", got)
+	}
+	past := time.Now().Add(-2 * time.Second)
+	if err := os.Chtimes(prose, past, past); err != nil {
+		t.Fatal(err)
+	}
+	_, doc := seedCompanionTestFileAt(t, app, prose)
+	userID := "file-companion:" + doc.SessionID
+	canonical, err := fileCompanionCanonicalPath(prose)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := app.fileCompanionToolFigurePath(canonical, "render-p1-d140.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCompanionFigurePNG(t, rendered, 200, 150)
+	prev := fileCompanionClipPageFiguresHook
+	t.Cleanup(func() { fileCompanionClipPageFiguresHook = prev })
+	fileCompanionClipPageFiguresHook = nil
+	h := &IMMessageHandler{app: app}
+	text, ok := h.executeFileCompanionHostTool(userID, fileCompanionToolRenderPage, `{"page":1}`)
+	if !ok || !strings.Contains(text, "已复用") || strings.Contains(text, "裁出") || strings.Contains(text, "没有改用") {
+		t.Fatalf("sentence page = %q ok=%v", text, ok)
+	}
+}
+
+func TestFileCompanionRenderPageDoesNotSubstituteTheWholePage(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	app.seedFileCompanionPaths(nil)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "paper.pdf")
+	writePaperPDFWithFigures(t, path)
+	_, doc := seedCompanionTestFileAt(t, app, path)
+	userID := "file-companion:" + doc.SessionID
+	prev := fileCompanionClipPageFiguresHook
+	t.Cleanup(func() { fileCompanionClipPageFiguresHook = prev })
+	fileCompanionClipPageFiguresHook = func(context.Context, string, string, int, int, string) ([]companionFigure, error) {
+		return nil, nil
+	}
+	h := &IMMessageHandler{app: app}
+	text, ok := h.executeFileCompanionHostTool(userID, fileCompanionToolRenderPage, `{"page":1,"figure":1}`)
+	if ok || !strings.Contains(text, "没有改用整页截图") || strings.Contains(text, "整页渲染") {
+		t.Fatalf("missing figure = %q ok=%v", text, ok)
+	}
+	if got := app.fileCompanionTurnFigures(userID); len(got) != 0 {
+		t.Fatalf("whole page was registered: %#v", got)
 	}
 }
 
@@ -654,7 +861,7 @@ func TestFileCompanionReplyMatchesToolRenderedFigure(t *testing.T) {
 
 func TestFileCompanionPromptDescribesPDFTools(t *testing.T) {
 	pdf := fileCompanionPrompt("报告.pdf", ".pdf")
-	if !strings.Contains(pdf, fileCompanionToolRenderPage) || !strings.Contains(pdf, "图N") {
+	if !strings.Contains(pdf, fileCompanionToolRenderPage) || !strings.Contains(pdf, "图N") || !strings.Contains(pdf, "裁出") || !strings.Contains(pdf, "full=true") {
 		t.Fatalf("pdf prompt lost the tool contract:\n%s", pdf)
 	}
 	if !strings.Contains(pdf, "不要声称已经生成或发送了 PDF") {

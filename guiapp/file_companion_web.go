@@ -419,10 +419,9 @@ func (a *App) FileCompanionWebNote(req FileCompanionWebNoteRequest) error {
 		reply = head.String() + reply
 	}
 	reply = fileCompanionRewriteNoteTimestamps(reply, noteClock)
-	var embed []videoNoteFrame
-	if !ev.Vision {
-		embed = frames
-	}
+	// Vision already saw the frames. The note the user reads still keeps
+	// them, under the chapter they belong to.
+	embed := frames
 	pdf, err := fileCompanionWriteNoteFiles(a, frame, sessionID, userID, clearGen, "视频笔记", reply, embed, noteCtx)
 	if err != nil {
 		if err.Error() == fileCompanionErrNoteCancelled {
@@ -436,15 +435,18 @@ func (a *App) FileCompanionWebNote(req FileCompanionWebNoteRequest) error {
 	}
 	a.fileCompanionRememberNote(userID, label, frame)
 	visible := reply
+	var keyframes []FileCompanionFigure
 	if md := a.fileCompanionFindNoteMarkdown(sessionID); md != "" {
 		if raw, readErr := os.ReadFile(md); readErr == nil {
 			visible = fileCompanionNoteProse(string(raw))
+			keyframes = a.fileCompanionNoteKeyframes(userID, string(raw), filepath.Join(filepath.Dir(md), "frames"))
 		}
 	}
 	a.emitFileCompanionTurn(requestID, userID, &IMAgentResponse{
-		Text:         visible,
-		NoteCardPath: pdf,
-		WebNote:      true,
+		Text:                 visible,
+		NoteCardPath:         pdf,
+		WebNote:              true,
+		FileCompanionFigures: keyframes,
 	})
 	a.fileCompanionLogFinishedNote(sessionID, ev.Duration, false, ev.Text, false, false, false, ocrRan, frameDropped, ev)
 	return nil

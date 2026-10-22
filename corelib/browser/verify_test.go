@@ -1,6 +1,9 @@
 package browser
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestReadbackVerdict(t *testing.T) {
 	cases := []struct {
@@ -21,12 +24,31 @@ func TestReadbackVerdict(t *testing.T) {
 	}
 }
 
+func TestReadbackJSKeepsTheCaretOfALongField(t *testing.T) {
+	js := readbackJS(true, true)
+	for _, needle := range []string{
+		"s.length<=100000",
+		"s.slice(-8000)",
+		"selectionStart",
+		"getSelection",
+		`toLowerCase()==="password"`,
+		"fromCharCode(0x241e)",
+		"shadowRoot",
+		"after.toString()",
+		"!document.hasFocus()",
+	} {
+		if !strings.Contains(js, needle) {
+			t.Errorf("script missing %q", needle)
+		}
+	}
+}
+
 func TestScriptWrittenText(t *testing.T) {
 	cases := map[string]string{
 		`document.querySelector('.DraftEditor-root [contenteditable]').innerText = "这是一段正文内容";`: "这是一段正文内容",
-		`el.focus(); document.execCommand('insertText', false, 'pasted body text');`:                    "pasted body text",
-		"const dt=new DataTransfer();dt.setData('text/html', `<p>富文本</p>`);":                            "<p>富文本</p>",
-		`input.value = text;`:                     "",
+		`el.focus(); document.execCommand('insertText', false, 'pasted body text');`:            "pasted body text",
+		"const dt=new DataTransfer();dt.setData('text/html', `<p>富文本</p>`);":                    "<p>富文本</p>",
+		`input.value = text;`:                       "",
 		`document.title = "not a write"; x.click()`: "",
 	}
 	for script, want := range cases {

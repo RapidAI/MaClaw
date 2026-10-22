@@ -824,6 +824,181 @@ func writePaperPDFWithFigures(t *testing.T, path string) {
 	}
 }
 
+// The figure sits above its caption, the way a paper page does, and a second
+// drawing lower on the page stands in for a table. The crop must keep the
+// figure and its caption, and leave that lower drawing on the page.
+func TestFileCompanionClipKeepsTheFigureAboveTheCaption(t *testing.T) {
+	font := `C:\Windows\Fonts\arial.ttf`
+	if _, err := os.Stat(font); err != nil {
+		t.Skip("no arial")
+	}
+	if paperRasterEngines().python == "" {
+		t.Skip("no pymupdf")
+	}
+	dir := t.TempDir()
+	above := filepath.Join(dir, "above.pdf")
+	writePaperPDFFigureThenCaption(t, above, font)
+	assertCompanionClipIsTheFigure(t, above)
+	below := filepath.Join(dir, "below.pdf")
+	writePaperPDFCaptionThenFigure(t, below, font)
+	assertCompanionClipIsTheFigure(t, below)
+}
+
+func assertCompanionClipIsTheFigure(t *testing.T, path string) {
+	t.Helper()
+	clips, err := fileCompanionClipPageFigures(context.Background(), path, t.TempDir(), 1, 72, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(clips) != 1 {
+		t.Fatalf("%s clips = %d, want the one figure", path, len(clips))
+	}
+	if !strings.Contains(clips[0].caption, "Figure 1") || !strings.Contains(clips[0].caption, "第 1 页") {
+		t.Fatalf("%s caption = %q", path, clips[0].caption)
+	}
+	file, err := os.Open(clips[0].path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	cfg, _, err := image.DecodeConfig(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A4 at 72 dpi is about 595 by 842. Taking the lower drawing as well makes
+	// the clip most of the page. Taking only that lower drawing makes it narrow.
+	if cfg.Height > 370 || cfg.Width < 400 {
+		t.Fatalf("%s clip is %dx%d, want the wide figure and not the lower drawing", path, cfg.Width, cfg.Height)
+	}
+}
+
+func writePaperPDFFigureThenCaption(t *testing.T, path, font string) {
+	t.Helper()
+	writePaperPDFFigureLayout(t, path, font, true)
+}
+
+func writePaperPDFCaptionThenFigure(t *testing.T, path, font string) {
+	t.Helper()
+	writePaperPDFFigureLayout(t, path, font, false)
+}
+
+func writePaperPDFFigureLayout(t *testing.T, path, font string, figureFirst bool) {
+	t.Helper()
+	left, err := gopdf2.ImageHolderByBytes(paperTestJPEG(t, 220, 130))
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := gopdf2.ImageHolderByBytes(paperTestJPEG(t, 220, 130))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lower, err := gopdf2.ImageHolderByBytes(paperTestJPEG(t, 140, 90))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pdf := &gopdf2.GoPdf{}
+	pdf.Start(gopdf2.Config{PageSize: *gopdf2.PageSizeA4})
+	pdf.AddPage()
+	if err := pdf.AddTTFFont("arial", font); err != nil {
+		t.Fatal(err)
+	}
+	if err := pdf.SetFont("arial", "", 14); err != nil {
+		t.Fatal(err)
+	}
+	// The two panels are 60pt apart, wider than a stroke, and still one figure.
+	if figureFirst {
+		if err := pdf.ImageByHolder(left, 40, 36, &gopdf2.Rect{W: 220, H: 130}); err != nil {
+			t.Fatal(err)
+		}
+		if err := pdf.ImageByHolder(right, 320, 36, &gopdf2.Rect{W: 220, H: 130}); err != nil {
+			t.Fatal(err)
+		}
+		pdf.SetXY(40, 188)
+	} else {
+		pdf.SetXY(40, 36)
+	}
+	if err := pdf.Cell(&gopdf2.Rect{W: 520, H: 20}, "Figure 1: Overview of the pipeline and the gates beside it"); err != nil {
+		t.Fatal(err)
+	}
+	if !figureFirst {
+		if err := pdf.ImageByHolder(left, 40, 70, &gopdf2.Rect{W: 220, H: 130}); err != nil {
+			t.Fatal(err)
+		}
+		if err := pdf.ImageByHolder(right, 320, 70, &gopdf2.Rect{W: 220, H: 130}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pdf.SetXY(40, 360)
+	if err := pdf.Cell(&gopdf2.Rect{W: 500, H: 20}, "Body text stays on the page and is not part of the figure."); err != nil {
+		t.Fatal(err)
+	}
+	if err := pdf.ImageByHolder(lower, 40, 470, &gopdf2.Rect{W: 140, H: 90}); err != nil {
+		t.Fatal(err)
+	}
+	// A wrapped sentence is not a second caption. "Figure 1" on its own line
+	// with "shows ..." under it must not take the drawing above those words.
+	pdf.SetXY(40, 580)
+	if err := pdf.SetFont("arial", "", 12); err != nil {
+		t.Fatal(err)
+	}
+	if err := pdf.Cell(&gopdf2.Rect{W: 120, H: 16}, "Figure 1"); err != nil {
+		t.Fatal(err)
+	}
+	pdf.SetXY(40, 598)
+	if err := pdf.Cell(&gopdf2.Rect{W: 460, H: 16}, "shows why the lower drawing stays on the page."); err != nil {
+		t.Fatal(err)
+	}
+	if err := pdf.WritePdf(path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writePaperPDFProseLine is a page whose only text names a figure in a sentence.
+func writePaperPDFProseLine(t *testing.T, path, font string) {
+	t.Helper()
+	pdf := &gopdf2.GoPdf{}
+	pdf.Start(gopdf2.Config{PageSize: *gopdf2.PageSizeA4})
+	pdf.AddPage()
+	if err := pdf.AddTTFFont("arial", font); err != nil {
+		t.Fatal(err)
+	}
+	if err := pdf.SetFont("arial", "", 14); err != nil {
+		t.Fatal(err)
+	}
+	pdf.SetXY(48, 72)
+	if err := pdf.Cell(&gopdf2.Rect{W: 480, H: 24}, "Figure 1 shows the method and stays prose."); err != nil {
+		t.Fatal(err)
+	}
+	if err := pdf.WritePdf(path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writePaperPDFWrappedProse splits "Figure 1 shows ..." across two lines.
+func writePaperPDFWrappedProse(t *testing.T, path, font string) {
+	t.Helper()
+	pdf := &gopdf2.GoPdf{}
+	pdf.Start(gopdf2.Config{PageSize: *gopdf2.PageSizeA4})
+	pdf.AddPage()
+	if err := pdf.AddTTFFont("arial", font); err != nil {
+		t.Fatal(err)
+	}
+	if err := pdf.SetFont("arial", "", 14); err != nil {
+		t.Fatal(err)
+	}
+	pdf.SetXY(48, 72)
+	if err := pdf.Cell(&gopdf2.Rect{W: 120, H: 18}, "Figure 1"); err != nil {
+		t.Fatal(err)
+	}
+	pdf.SetXY(48, 92)
+	if err := pdf.Cell(&gopdf2.Rect{W: 420, H: 18}, "shows the method and stays prose."); err != nil {
+		t.Fatal(err)
+	}
+	if err := pdf.WritePdf(path); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writePaperPDFWithCaption(t *testing.T, path, font string) {
 	t.Helper()
 	large, err := gopdf2.ImageHolderByBytes(paperTestJPEG(t, 220, 180))

@@ -283,10 +283,10 @@ describe("WebSearchConfigPanel", () => {
         render(<WebSearchConfigPanel lang="zh-Hans" />);
         const link = await screen.findByRole("link", { name: "获取 API Key" });
         expect(link.closest("li")?.textContent).toContain("未保存 API Key 时跳过");
-        expect(link.getAttribute("href")).toBe("https://console.cloud.tencent.com/wsapi/activity");
+        expect(link.getAttribute("href")).toBe("https://console.cloud.tencent.com/wsapi/index?tab=apikey");
         expect(link.closest(".web-search-config__key-field")).toBeNull();
         fireEvent.click(link);
-        expect(browserOpenURLMock).toHaveBeenCalledWith("https://console.cloud.tencent.com/wsapi/activity");
+        expect(browserOpenURLMock).toHaveBeenCalledWith("https://console.cloud.tencent.com/wsapi/index?tab=apikey");
         fireEvent.change(screen.getAllByRole("combobox")[0], { target: { value: "mainland" } });
         fireEvent.click(screen.getByRole("button", { name: "保存策略" }));
         await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(1));

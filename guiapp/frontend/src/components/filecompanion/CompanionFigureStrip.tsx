@@ -82,17 +82,19 @@ export function CompanionFigureStrip({ figures, messageId }: { figures: Companio
     }, [zoomed]);
 
     if (figures.length === 0) return null;
+    const noteFrames = figures.every((figure) => figure.label.startsWith("板书") || figure.label.startsWith("关键帧"));
+    const heading = noteFrames ? "关键帧" : "原文配图";
     const open = (event: MouseEvent, path: string) => {
         event.preventDefault();
         event.stopPropagation();
         setZoomed(path);
     };
     const zoomedFigure = figures.find((figure) => figure.path === zoomed);
-    const zoomLabel = [zoomedFigure?.label, zoomedFigure?.caption].filter(Boolean).join(" · ") || "原文配图";
+    const zoomLabel = [zoomedFigure?.label, zoomedFigure?.caption].filter(Boolean).join(" · ") || heading;
 
     return (
         <div style={{ marginTop: 10 }} data-testid={`file-companion-figures-${messageId}`}>
-            <div style={{ fontSize: 12, color: "#64748b", marginBottom: 6 }}>原文配图</div>
+            <div style={{ fontSize: 12, color: "#64748b", marginBottom: 6 }}>{heading}</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                 {figures.map((figure) => {
                     const dataURL = loaded[figure.path] || figureDataURLs.get(figure.path) || "";
@@ -108,7 +110,7 @@ export function CompanionFigureStrip({ figures, messageId }: { figures: Companio
                                 >
                                     <img
                                         src={dataURL}
-                                        alt={figure.caption || figure.label || "原文配图"}
+                                        alt={figure.caption || figure.label || heading}
                                         data-testid="file-companion-figure-image"
                                         style={{ display: "block", width: "100%", height: 112, objectFit: "contain", background: "#ffffff" }}
                                     />

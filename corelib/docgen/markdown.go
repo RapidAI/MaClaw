@@ -1085,6 +1085,11 @@ func decodeImageSize(path string) (imageSize, bool) {
 // arrive as bytes; without it, only real filesystem paths can resolve.
 func resolveMarkdownImagePath(scratch *dataURLScratch, rawPath string) (string, bool) {
 	path := strings.TrimSpace(rawPath)
+	// CommonMark wraps a destination that contains spaces in <...>.
+	// The capture includes those brackets; the file does not.
+	if len(path) >= 2 && path[0] == '<' && path[len(path)-1] == '>' {
+		path = strings.TrimSpace(path[1 : len(path)-1])
+	}
 	if path == "" || isRemoteURL(path) {
 		return "", false
 	}

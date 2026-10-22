@@ -419,6 +419,10 @@ const iCoreWebView2ExecuteScript = 29
 // capturePlaybackEnded asks the showing player whether this video has finished.
 // No player page returns false and does not run a script. A script failure
 // is not the end of the video.
+func init() {
+	rewindWebPlayer = rewindWebPlayerWindows
+}
+
 func capturePlaybackEnded(ctx context.Context) bool {
 	if !maclawplayer.Showing() {
 		return false
@@ -432,6 +436,20 @@ func capturePlaybackEnded(ctx context.Context) bool {
 		return false
 	}
 	return webPlaybackHasEnded(raw)
+}
+
+// rewindWebPlayerWindows seeks the showing player to the start and plays.
+// No player, or a script that fails, leaves the recording on the current picture.
+func rewindWebPlayerWindows(ctx context.Context) string {
+	if !maclawplayer.Showing() {
+		return "none"
+	}
+	view := maclawplayer.View()
+	if view == nil || view.Pointer() == 0 || !maclawcapture.HasUIRunner() {
+		return "none"
+	}
+	raw, err := executePlayerScript(ctx, unsafe.Pointer(view.Pointer()), webPlaybackRewindScript)
+	return fileCompanionRewindResult(raw, err)
 }
 
 type playbackScriptResult struct {

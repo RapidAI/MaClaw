@@ -844,18 +844,23 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 [data-ai-theme='dark'] .mc-input-stack textarea,
 [data-ai-theme='dark'] .mc-input-stack input { border: 0 !important; box-shadow: none !important; background: transparent !important; }
 .mc-input-stack button { border-radius: 9px !important; }
-/* Border box matches the input card: parent width minus the same side inset.
-   A definite width stops a long goal title from growing the bar past the card.
-   overflow clips any child that still paints outside that box. */
-.mc-goal-quick-bar {
+/* Same side inset as .mc-input-stack. Stretch plus this max-width keeps a long
+   goal title from growing the border box past the input card. The resize grip
+   sits in the gap under the bar and must use the same inset. */
+.mc-goal-quick-bar,
+[data-testid='ai-input-resize-handle'] {
   box-sizing: border-box;
-  width: calc(100% - (2 * var(--mc-composer-inset-x, 24px)));
-  max-width: calc(100% - (2 * var(--mc-composer-inset-x, 24px)));
   min-width: 0;
-  margin-left: auto;
-  margin-right: auto;
-  align-self: center;
+  max-width: calc(100% - (2 * var(--mc-composer-inset-x, 24px)));
+  margin-left: var(--mc-composer-inset-x, 24px);
+  margin-right: var(--mc-composer-inset-x, 24px);
+  align-self: stretch;
+}
+.mc-goal-quick-bar {
   overflow: hidden;
+}
+.mc-goal-quick-bar :focus-visible {
+  outline-offset: 0;
 }
 @media (max-width: 720px) {
   [data-testid='ai-panel-root'],

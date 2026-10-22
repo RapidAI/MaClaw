@@ -2428,6 +2428,80 @@ func TestFinalizeFillsMissingMidPlanDeps(t *testing.T) {
 	}
 }
 
+func TestGoalContinuationKeepsTheCodingChecklist(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	const plan = "### T1: 定位跨阶段接缝\n描述: gather\n### T2: 搭 A/B 变体\n描述: bench"
+	// Pending approve rewrites the checklist to all-pending. The live list is
+	// what the user is watching, so it is written after that leftover plan.
+	h.storeStickyPendingCodingPlan(userID, "旧的待批准计划", plan, []*v2.TaskItem{
+		{Index: 1, Title: "定位跨阶段接缝"},
+		{Index: 2, Title: "搭 A/B 变体"},
+	})
+	h.setStickyCodingExecutionPlan(userID, plan)
+	h.setStickyCodingStepStatuses(userID, []codingWorkbenchStepStatus{
+		{Index: 1, Title: "定位跨阶段接缝", Status: codingStepRunning},
+		{Index: 2, Title: "搭 A/B 变体", Status: codingStepPending},
+	})
+	text := "[系统续接] 继续当前目标，不要重新规划。\n1. 调用 goal(action=\"step\") 推进当前步骤。\n2. 完成后用 goal(action=\"step\") 报告结果。\n"
+	before := h.getStickyCodingWorkbenchMemory(userID)
+	if !stickyHasOrchestratedPlanSteps(before) {
+		t.Fatal("seeded plan must own the checklist before the continuation")
+	}
+	tasks, planOut, planned := h.resolveCodingWorkbenchTasks(userID, text, `E:\workprj\mousika\textproc\qmsrcdet26`, before, nil, nil)
+	if planned || planOut != "" || len(tasks) != 1 {
+		t.Fatalf("continuation stays one task: planned=%v plan=%q tasks=%d", planned, planOut, len(tasks))
+	}
+	if tasks[0].Title == "调用 goal(action=\"step\") 推进当前步骤。" {
+		t.Fatalf("goal instructions were parsed as a file plan: %s", tasks[0].Title)
+	}
+	if _, pending := h.loadStickyPendingCodingPlan(userID); pending {
+		t.Fatal("continuation must not leave an unanswered /plan approve")
+	}
+	stored := h.getStickyCodingWorkbenchMemory(userID)
+	if stored.ExecutionPlan != "" {
+		t.Fatalf("execution plan still owns the checklist: %q", stored.ExecutionPlan)
+	}
+	if stickyHasOrchestratedPlanSteps(stored) {
+		t.Fatal("goal turn must release orchestrator ownership")
+	}
+	if !stored.PlanRunStarted || len(stored.StepStatuses) != 2 {
+		t.Fatalf("checklist collapsed: started=%v steps=%+v", stored.PlanRunStarted, stored.StepStatuses)
+	}
+	if stored.StepStatuses[0].Status != codingStepRunning || stored.StepStatuses[0].Title != "定位跨阶段接缝" {
+		t.Fatalf("current step was rewritten: %+v", stored.StepStatuses[0])
+	}
+	if stored.StepStatuses[1].Status != codingStepPending || stored.StepStatuses[1].Title != "搭 A/B 变体" {
+		t.Fatalf("later step was rewritten: %+v", stored.StepStatuses[1])
+	}
+	// The single-task runner must not paint its own outcome onto row 1.
+	h.recordOrchestratedCodingStepStatus(false, userID, 1, codingStepPassed, "goal turn finished")
+	if got := h.getStickyCodingWorkbenchMemory(userID).StepStatuses; got[0].Status != codingStepRunning {
+		t.Fatalf("unplanned runner rewrote the checklist: %+v", got)
+	}
+	// The agent's own todos are the live checklist once the orchestrator steps aside.
+	publishCodingAgentTodosToUI(h, userID, []codingAgentTodoItem{
+		{ID: "1", Content: "定位跨阶段接缝", Status: codingAgentTodoCompleted},
+		{ID: "2", Content: "搭 A/B 变体", Status: codingAgentTodoInProgress},
+	})
+	updated := h.getStickyCodingWorkbenchMemory(userID)
+	if len(updated.StepStatuses) != 2 || updated.StepStatuses[0].Status != codingStepPassed || updated.StepStatuses[1].Status != codingStepRunning {
+		t.Fatalf("todos must update the kept checklist: %+v", updated.StepStatuses)
+	}
+	// A later typed 继续 still resumes those rows, rebuilding the plan markdown.
+	resumed, resumedPlan, resumedPlanned := h.resolveCodingWorkbenchTasksWithDecision(
+		userID, "继续", `E:\workprj\mousika\textproc\qmsrcdet26`, updated,
+		codingRequestDecision{Kind: codingRequestImplementation, NeedsPlan: false},
+		nil, nil,
+	)
+	if !resumedPlanned || len(resumed) != 1 || resumed[0].Index != 2 {
+		t.Fatalf("continue after a goal turn should resume T2, planned=%v tasks=%#v", resumedPlanned, resumed)
+	}
+	if !strings.Contains(resumedPlan, "搭 A/B 变体") {
+		t.Fatalf("resumed plan lost the remaining step: %q", resumedPlan)
+	}
+}
+
 func TestGoalContinuationIsNotAUserCodingPlan(t *testing.T) {
 	h := &IMMessageHandler{}
 	userID := stickyTestUserID(t)

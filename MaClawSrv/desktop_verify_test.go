@@ -22,6 +22,62 @@ func TestDesktopStepsInsertedText(t *testing.T) {
 	}
 }
 
+func TestDesktopReadbackVerdictFallsThroughToThePage(t *testing.T) {
+	const typed = "概率的本质是什么"
+	got := desktopReadbackVerdict(typed, []string{"Save"}, func(s string) string {
+		return browser.ReadbackVerdict(s, []string{typed})
+	})
+	if got != browser.ReadbackApplied {
+		t.Fatalf("page confirm: %s", got)
+	}
+	got = desktopReadbackVerdict(typed, []string{typed}, func(string) string {
+		return browser.ReadbackNotApplied
+	})
+	if got != browser.ReadbackNotApplied {
+		t.Fatalf("focused page wins: %s", got)
+	}
+	got = desktopReadbackVerdict(typed, []string{typed}, func(string) string {
+		return browser.ReadbackUnknown
+	})
+	if got != browser.ReadbackApplied {
+		t.Fatalf("native hit: %s", got)
+	}
+	got = desktopReadbackVerdict(typed, []string{"notes.txt"}, func(string) string {
+		return browser.ReadbackUnknown
+	})
+	if got != browser.ReadbackNotApplied {
+		t.Fatalf("kept miss: %s", got)
+	}
+	got = desktopReadbackVerdict(typed, nil, func(string) string {
+		return browser.ReadbackUnknown
+	})
+	if got != browser.ReadbackUnknown {
+		t.Fatalf("unknown: %s", got)
+	}
+	got = desktopReadbackVerdict(typed, nil, func(string) string {
+		return browser.ReadbackNotApplied
+	})
+	if got != browser.ReadbackNotApplied {
+		t.Fatalf("page miss: %s", got)
+	}
+	got = desktopReadbackVerdict(typed, []string{"other"}, nil)
+	if got != browser.ReadbackNotApplied {
+		t.Fatalf("no page: %s", got)
+	}
+	got = desktopReadbackVerdict(typed, []string{typed, "notes.txt"}, func(string) string {
+		return browser.ReadbackUnknown
+	})
+	if got != browser.ReadbackUnknown {
+		t.Fatalf("split fields: %s", got)
+	}
+	got = desktopReadbackVerdict(typed, []string{typed, "prefix " + typed}, func(string) string {
+		return browser.ReadbackUnknown
+	})
+	if got != browser.ReadbackApplied {
+		t.Fatalf("every field: %s", got)
+	}
+}
+
 func TestDesktopWithReadback(t *testing.T) {
 	out, err := desktopWithReadback("type", "typed 5 chars", nil, browser.ReadbackNotApplied)
 	if err != nil || !strings.Contains(out, desktopNotAppliedMarker) || !strings.Contains(out, "Ctrl+V") {

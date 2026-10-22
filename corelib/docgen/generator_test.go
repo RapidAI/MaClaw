@@ -567,6 +567,24 @@ func TestMarkdownToHTML_RemoteImageFallback(t *testing.T) {
 	}
 }
 
+func TestMarkdownToHTML_AngleBracketPath(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "my frames")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	imagePath := filepath.Join(dir, "board.jpg")
+	if err := os.WriteFile(imagePath, []byte("not-a-real-image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	html := markdownToHTML("![板书 00:30](<" + imagePath + ">)")
+	if strings.Contains(html, "图片未找到") || !strings.Contains(html, "<img src=") {
+		t.Fatalf("angle path did not embed: %s", html)
+	}
+	if strings.Contains(html, "&lt;") {
+		t.Fatalf("angle brackets stayed in the path: %s", html)
+	}
+}
+
 func TestMarkdownToHTML_MissingImageFallback(t *testing.T) {
 	md := "![系统架构图](missing/diagram.png)"
 	html := markdownToHTML(md)
