@@ -39,7 +39,7 @@ const desktopSessionOwner = "maclawsrv-desktop"
 // The desktop tool's action vocabulary is one list. Plan and execute advertise
 // that same list. The plan allow-list is only the phase gate: a mutating call
 // stays in the schema and returns the next-step sentence.
-var desktopExecuteActions = []string{"navigate", "probe", "click", "type", "press", "task_run", "script", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover"}
+var desktopExecuteActions = []string{"rich_fill", "navigate", "probe", "click", "type", "press", "task_run", "script", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover"}
 
 var desktopPlanActions = []string{"probe", "screenshot", "app_list", "file_read", "file_list", "skill_list", "app_probe", "window_list", "screen_info", "clipboard_get", "wait"}
 
@@ -108,6 +108,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			"Single browser actions navigate, click, type, and press remain available. " +
 			"For non-browser windows: action=app_probe lists the accessible elements (role, name, states, bounds) of the focused window with numbered ids; app_run or computer steps then target {\"id\":N} (click, focus, set_text). marks=true adds a screenshot with those numbers drawn. " +
 			"action=computer runs a batch of computer-use actions (Anthropic or OpenAI names) and reports each step; it stops at the first failure. " +
+			"For a rich-text editor body on any site use action=rich_fill with ref (from probe) or x,y of the body and text (replace=true to overwrite): it clicks for real, pastes with a real Ctrl+V and reads back the length. " +
 			"action=clipboard_set then a paste step (or app_run paste{text}) inserts long or Chinese text without the input method. clipboard_get reads it. window_list, window (activate, maximize, minimize, restore, move, resize, close), screen_info, and wait (for screen change or a window) manage windows. " +
 			"action=screenshot accepts region (zoom), format jpeg/webp, quality, and cursor. Full screenshots always come at one fixed size, so coordinates keep the same scale from shot to shot. " +
 			"navigate to another site keeps the current tab and opens the target in its own tab (or switches to a tab already on that site); do not retry a navigate that was refused, and do not detour through redirect links. " +
@@ -226,7 +227,17 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	}
 	started := time.Now()
 	desktopEmitStepStart(scope, desktopOwner(scope), args, desktopModelLabel(request))
-	out, err := operateDesktopWithTimeout(ctx, scope, args)
+	actionName := strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))
+	if npErr := desktopNoProgressCheck(desktopOwner(scope), actionName); npErr != nil {
+		desktopEmitStep(scope, desktopOwner(scope), args, desktopModelLabel(request), "", npErr, 0, "guard")
+		return "", npErr
+	}
+	var out string
+	if actionName == "rich_fill" {
+		out, err = desktopRichFill(ctx, scope, args)
+	} else {
+		out, err = operateDesktopWithTimeout(ctx, scope, args)
+	}
 	noteDesktopPageNeed(scope, out)
 	err = desktopDeliverSizeHint(args, err)
 	err = desktopbot.ModelFacingError(err)
@@ -237,9 +248,10 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	desktopRecordStep(ctx, desktopOwner(scope), args, out, err, took)
 	desktopExperienceRecord(scope, desktopRunSite(desktopOwner(scope)), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args, out, err)
 	failWarn := desktopFailClassRecord(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args, out, err)
+	coach := desktopProgressNote(desktopOwner(scope), actionName, out, err)
 	if err == nil {
 		out = spillDesktopToolText(ctx, scope, out)
-		out += repeatWarn + failWarn
+		out += repeatWarn + failWarn + coach
 	} else if failWarn != "" {
 		err = fmt.Errorf("%w%s", err, failWarn)
 	}

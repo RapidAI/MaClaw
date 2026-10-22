@@ -97,3 +97,28 @@ func TestDesktopPublishSideGuards(t *testing.T) {
 		t.Fatal("real body")
 	}
 }
+
+func TestDesktopProgressCoach(t *testing.T) {
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u", RunID: "run_coach"}
+	st := desktopRunFor(scope)
+	if st == nil {
+		t.Skip("no run state in this build")
+	}
+	note := ""
+	for i := 0; i < 12; i++ {
+		note = desktopProgressNote(scope, "probe", "probed page x (https://a.example/edit)", nil)
+	}
+	if !strings.Contains(note, "No progress") {
+		t.Fatalf("want no-progress note, got %q", note)
+	}
+	if desktopProgressNote(scope, "navigate", "navigated to https://b.example/", nil); st.progress.idle != 0 {
+		t.Fatal("navigate resets idle")
+	}
+	st.progress.idle = desktopNoProgressStop()
+	if desktopNoProgressCheck(scope, "probe") == nil || desktopNoProgressCheck(scope, "request_takeover") != nil {
+		t.Fatal("stop check")
+	}
+	if n := desktopProgressNote(scope, "probe", "url https://zhuanlan.zhihu.com/p/123 发布成功", nil); !strings.Contains(n, "published") {
+		t.Fatalf("published note %q", n)
+	}
+}

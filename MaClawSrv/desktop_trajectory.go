@@ -123,6 +123,7 @@ type desktopRunState struct {
 	lastLease    string            // last lease reported by bot_state (event stream)
 	lastClipLen  int               // runes of the last clipboard_set text (rich-body verify)
 	expSites     map[string]bool   // sites whose experience was shown in this run
+	progress     *desktopProgress  // budget / no-progress coaching
 }
 
 func desktopRunNoteSite(scope agentruntime.Scope, site string) {
