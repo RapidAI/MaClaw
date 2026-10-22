@@ -4480,7 +4480,7 @@ function setupMSE(){const v=document.createElement("video");v.id="s";v.autoplay=
  return new Promise(r=>ms.addEventListener("sourceopen",()=>{sb=ms.addSourceBuffer('video/mp4; codecs="avc1.42E029"');sb.mode="sequence";sb.addEventListener("updateend",pump);r()}))}
 function pump(){if(!sb||sb.updating||!mq.length)return;sb.appendBuffer(mq.shift());const b=sb.buffered,v=surface;if(b.length&&v.currentTime<b.end(0)-0.3)v.currentTime=b.end(0)-0.05;if(b.length&&b.end(0)-b.start(0)>30&&!sb.updating){try{sb.remove(b.start(0),b.end(0)-10)}catch(_){}}}
 // ---- connection
-function connect(){const url=location.href.split("#")[0].replace(/^http/,"ws").replace(/h264\.html.*$/,"h264")+(HAS_WC?"":"?mse=1");
+function connect(){const qs=[];if(!HAS_WC)qs.push("mse=1");if(WANT_INPUT)qs.push("input=1");const url=location.href.split("#")[0].replace(/^http/,"ws").replace(/h264\.html.*$/,"h264")+(qs.length?"?"+qs.join("&"):"");
  ws=new WebSocket(url);ws.binaryType="arraybuffer";show();
  ws.onmessage=e=>{if(typeof e.data==="string"){control(JSON.parse(e.data));return}if(HAS_WC)onVideo(e.data);else{gotFrame=true;fails=0;mq.push(e.data);pump()}};
  ws.onclose=()=>{ws=null;resetDecoder();releaseLocal();show();fails++;if(!gotFrame&&fails>=3&&fallback())return;setTimeout(connect,Math.min(5000,500*fails))}}
@@ -4520,11 +4520,15 @@ class H264Viewer:
     """One /h264 WebSocket: an encoder for this viewer, the video sender,
     the control reader and the lease ticker."""
 
-    def __init__(self, client, display, key, owner, mse=False, fps=H264_DEFAULT_FPS):
+    def __init__(self, client, display, key, owner, mse=False, fps=H264_DEFAULT_FPS, want_input=False):
         self.client = client
         self.display = display
         self.key = key
         self.owner = owner
+        # An interactive player on a bot's screen is the person taking over.
+        self.takes_over = bool(want_input) and not owner and bool(key)
+        if self.takes_over:
+            touch_viewer_takeover(key)
         self.mse = mse
         self.fps = fps
         self.closed = threading.Event()
@@ -4761,6 +4765,8 @@ class H264Viewer:
     def lease_loop(self):
         try:
             while not self.closed.wait(0.5):
+                if self.takes_over:
+                    touch_viewer_takeover(self.key)
                 self.screen.expire()
                 self.tick_lease()
         except OSError:
@@ -4827,7 +4833,8 @@ def serve_h264(client, head, owner_token):
             client.sendall(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             return
         try:
-            stream_h264(client, key, screen, mse=request_query(head).get("mse") == "1")
+            query = request_query(head)
+            stream_h264(client, key, screen, mse=query.get("mse") == "1", want_input=query.get("input") == "1")
         finally:
             _h264_streams.release()
     except OSError:
@@ -4839,13 +4846,13 @@ def serve_h264(client, head, owner_token):
             pass
 
 
-def stream_h264(client, key, screen, mse=False):
+def stream_h264(client, key, screen, mse=False, want_input=False):
     display, screen_key, owner = screen
     client.settimeout(None)
     client.sendall(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
                     "Sec-WebSocket-Accept: %s\r\n\r\n" % ws_accept_key(key)).encode("latin-1"))
     note_gate_activity()
-    H264Viewer(client, display, screen_key, owner, mse=mse, fps=h264_fps()).run()
+    H264Viewer(client, display, screen_key, owner, mse=mse, fps=h264_fps(), want_input=want_input).run()
 
 
 # ---------------------------------------------------------------------------
@@ -4883,12 +4890,39 @@ def bot_file_age(key, name):
         return None
 
 
+# A person who opens a bot's screen interactively (the app's 人类接管 button,
+# h264.html?view_only=0) holds a takeover for as long as that player is
+# connected. The gate marks it with a heartbeat file; it lapses
+# VIEWER_TAKEOVER_SECONDS after the player leaves, so nothing has to clean up.
+VIEWER_TAKEOVER_SECONDS = 5
+VIEWER_TAKEOVER_REASON = "人类接管"
+
+
+def viewer_takeover_active(key):
+    age = bot_file_age(key, "viewer_takeover")
+    return age is not None and age < VIEWER_TAKEOVER_SECONDS
+
+
+def touch_viewer_takeover(key):
+    path = ROOT / key / "viewer_takeover"
+    try:
+        path.parent.mkdir(mode=0o700, exist_ok=True)
+        path.touch()
+        os.utime(path, None)
+    except OSError:
+        pass
+
+
 def takeover_state(key):
     try:
         data = json.loads((ROOT / key / "takeover.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
+        data = None
+    if isinstance(data, dict):
+        return data
+    if key and viewer_takeover_active(key):
+        return {"reason": VIEWER_TAKEOVER_REASON, "viewer": True}
+    return None
 
 
 def bot_last_activity(key):

@@ -202,6 +202,34 @@ print(s["lease"], s["yield"], s["lease_ttl"])
 	}
 }
 
+// The app's 人类接管 opens h264.html?view_only=0 without calling takeover_begin.
+// That player (?input=1 on the socket) holds a takeover on the bot's screen
+// while it is connected: input is accepted and bot_state tells the bot to
+// yield. A watch-only player does not, and the hold lapses once it leaves.
+func TestSupervisorH264InteractiveViewerTakesOver(t *testing.T) {
+	out := runSupervisorPython(t, `
+os.environ["MACLAW_DESKTOP_KEY"] = "ab" * 8
+bot = "ab" * 8 + "cd" * 8
+sup.desktop_running = lambda key: True
+import socket
+a, b = socket.socketpair()
+w = sup.H264Viewer(a, 23, bot, False)
+print(w.input_allowed(), sup.ctl_bot_state({"key": bot})["lease"])
+c, d = socket.socketpair()
+v = sup.H264Viewer(c, 23, bot, False, want_input=True)
+s = sup.ctl_bot_state({"key": bot})
+print(v.input_allowed(), s["lease"], s["takeover"], s["reason"], sup.bot_busy(bot))
+o = sup.H264Viewer(socket.socketpair()[0], 20, "ab" * 8, True, want_input=True)
+print(o.takes_over)
+old = sup.time.time() - sup.VIEWER_TAKEOVER_SECONDS - 1
+os.utime(sup.ROOT / bot / "viewer_takeover", (old, old))
+print(v.input_allowed(), sup.takeover_state(bot))
+`)
+	if out != "False bot\nTrue human True 人类接管 True\nFalse\nFalse None" {
+		t.Fatalf("got:\n%s", out)
+	}
+}
+
 func TestSupervisorH264EncoderArgs(t *testing.T) {
 	out := runSupervisorPython(t, `
 argv = sup.h264_ffmpeg_argv(21, "1440x900")
