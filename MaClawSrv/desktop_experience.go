@@ -271,7 +271,10 @@ var desktopSeedNotes = map[string][]string{
 		"title: probe for the title textbox (placeholder 请输入标题) and click it by its AX/DOM ref, then type the title; verify by read-back",
 		"body: the editor is Draft.js — do not type long text key by key. Prefer the toolbar import (导入 → 导入文档) and upload the .docx; else click into the body, clipboard_set the article text and paste with a real key event (app_run key ctrl+v); never DOM-set or script the body",
 		"after paste/import, probe the body and check its text length is close to the source length before going on",
-		"publishing is public: confirm with the person before clicking 发布 unless the task already said to publish",
+		"the body is a rich-text editor: never write it with a page script or DOM (innerHTML/textContent/dispatchEvent paste are dropped and refused); only real click + clipboard_set + app_run key ctrl+v, or 导入文档",
+		"the editor footer shows 字数: N — 字数 0 after a paste means it did not land; do not go on to topics or publishing",
+		"topics (添加话题): choose topics that match what the article is about (for AI/ML paper digests: 人工智能, 机器学习, 深度学习, 大语言模型, 计算机视觉, 论文); never pick a topic because it shares a literal token (e.g. Hf → 铪 is wrong)",
+		"publishing is public: clicking 发布 is refused unless the person said to publish without asking; when ready, call request_takeover so the person checks and presses 发布",
 	},
 }
 

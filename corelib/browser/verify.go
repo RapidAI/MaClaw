@@ -199,3 +199,43 @@ func HostOfURL(raw string) string {
 	}
 	return strings.TrimPrefix(strings.ToLower(raw), "www.")
 }
+
+// richBodyJS measures the main rich-text body on the page: the longest
+// contenteditable root's text, and a "字数: N" / "N 字" counter when the
+// editor shows one (Zhihu). Title inputs are not contenteditable here.
+const richBodyJS = `(function(){
+const roots=new Set();
+document.querySelectorAll("[contenteditable=''],[contenteditable=true],[contenteditable=plaintext-only]").forEach(e=>{let r=e;while(r.parentElement&&r.parentElement.closest("[contenteditable=''],[contenteditable=true]"))r=r.parentElement.closest("[contenteditable=''],[contenteditable=true]");roots.add(r)});
+let max=0;roots.forEach(r=>{const n=(r.innerText||r.textContent||"").replace(/\s+/g,"").length;if(n>max)max=n});
+let count=-1;const m=(document.body&&document.body.innerText||"").match(/字数[:：]\s*(\d+)/);if(m)count=parseInt(m[1],10);
+return JSON.stringify({editors:roots.size,max:max,count:count})})()`
+
+// RichBody is the measured rich-text body of the attached page.
+type RichBody struct {
+	Editors int `json:"editors"`
+	Max     int `json:"max"`
+	Count   int `json:"count"`
+}
+
+// Len is the best body length: the editor's own counter when shown, else
+// the longest editable text.
+func (b RichBody) Len() int {
+	if b.Count >= 0 {
+		return b.Count
+	}
+	return b.Max
+}
+
+// RichBodyLen reads the rich-text body length. ok is false when the page
+// has no editable body or cannot be read.
+func (s *BrowserAgentSession) RichBodyLen() (RichBody, bool) {
+	var b RichBody
+	if s == nil || s.session == nil {
+		return b, false
+	}
+	raw, err := s.session.Eval(richBodyJS)
+	if err != nil || json.Unmarshal([]byte(raw), &b) != nil {
+		return b, false
+	}
+	return b, b.Editors > 0
+}

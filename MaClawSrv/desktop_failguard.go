@@ -55,6 +55,12 @@ func desktopErrorClass(out string, err error) string {
 		return "cross_origin_block"
 	case err == nil:
 		return ""
+	case strings.Contains(msg, "rich_text_dom_write"):
+		return "rich_text_dom_write"
+	case strings.Contains(msg, "publish_needs_confirmation"):
+		return "publish_needs_confirmation"
+	case strings.Contains(msg, "page script failed"):
+		return "script_error"
 	case strings.Contains(msg, "is stale") || strings.Contains(msg, "not found") || strings.Contains(msg, "no element") ||
 		strings.Contains(msg, "no match") || strings.Contains(msg, "找不到") || strings.Contains(msg, "未找到"):
 		return "element_not_found"

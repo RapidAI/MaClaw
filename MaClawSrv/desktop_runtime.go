@@ -177,6 +177,7 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	ctx = context.WithValue(ctx, desktopPhaseKey{}, botPhaseFromTurn(request))
 	ctx = context.WithValue(ctx, desktopLLMSeesImagesKey{}, desktopTurnSeesImages(request))
 	ctx = context.WithValue(ctx, desktopComputerHelperKey{}, strings.TrimSpace(desktopMessageMeta(request)["computer_helper"]) == "1")
+	ctx = context.WithValue(ctx, desktopPublishApprovedKey{}, desktopPublishPreapproved(request))
 	scope, cloud, err := desktopScopeForTurn(request)
 	if err != nil {
 		return "", err
@@ -225,6 +226,9 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	err = desktopDeliverSizeHint(args, err)
 	err = desktopbot.ModelFacingError(err)
 	took := time.Since(started)
+	if err == nil && strings.EqualFold(strings.TrimSpace(desktopArg(args, "action")), "clipboard_set") {
+		desktopNoteClipboard(desktopOwner(scope), args)
+	}
 	desktopRecordStep(ctx, desktopOwner(scope), args, out, err, took)
 	desktopExperienceRecord(scope, desktopRunSite(desktopOwner(scope)), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args, out, err)
 	failWarn := desktopFailClassRecord(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args, out, err)
@@ -697,7 +701,8 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		}
 		if action == "computer" || !desktopAppStepsLegacy(scope, args["steps"]) {
 			text, stepErr := operateDesktopSteps(ctx, scope, endpoint.Display, action, args, stepsArg, beforeInsert, browserRaises)
-			return desktopVerifySteps(ctx, scope, endpoint.Display, stepsArg, verifySession, text, stepErr)
+			text, stepErr = desktopVerifySteps(ctx, scope, endpoint.Display, stepsArg, verifySession, text, stepErr)
+			return desktopVerifyRichBody(desktopOwner(scope), verifySession(), action, args, text, stepErr)
 		}
 		text, appErr := desktopAppRun(ctx, scope, endpoint.Display, action, args, beforeInsert, browserRaises)
 		if appErr != nil || !appStepsIncludeInput(args["steps"]) {
@@ -705,7 +710,8 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		}
 		setDesktopActivity(scope.RunID, "正在看屏幕")
 		text, appErr = desktopAppRunWithShot(ctx, scope, endpoint.Display, text)
-		return desktopVerifySteps(ctx, scope, endpoint.Display, stepsArg, verifySession, text, appErr)
+		text, appErr = desktopVerifySteps(ctx, scope, endpoint.Display, stepsArg, verifySession, text, appErr)
+		return desktopVerifyRichBody(desktopOwner(scope), verifySession(), action, args, text, appErr)
 	}
 	if action == "screenshot" {
 		// The shot is the whole display. A network-error window left in front
@@ -758,6 +764,9 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 	if desktopInsertsIntoFocusedControl(action, args) && desktopPasswordFocused(scope, session) {
 		return "", fmt.Errorf("not_password_field")
 	}
+	if err := desktopRichPreCheck(ctx, session, action, args); err != nil {
+		return "", err
+	}
 	var text string
 	switch action {
 	case "navigate":
@@ -805,6 +814,13 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		result, callErr := browser.RunPageScriptBatch(session, desktopArg(args, "script"), desktopArg(args, "name"), userKey, desktopBrowserSkillRoot)
 		text, err = desktopActionText(result, callErr)
 		text, err = desktopVerifyBrowserScript(session, desktopArg(args, "script"), text, err)
+		text, err = desktopVerifyRichBody(desktopOwner(scope), session, action, args, text, err)
+		if scriptErr := err; scriptErr != nil {
+			// A script that threw did not do its job; withDesktopPages would
+			// turn it into an ok result with a page list.
+			pages, _ := withDesktopPages("", nil, endpoint.CDP, session.TargetID)
+			return "", fmt.Errorf("page script failed: %s\n%s", desktopStepClip(scriptErr.Error(), 300), strings.TrimSpace(pages))
+		}
 		text, err = withDesktopPages(text, err, endpoint.CDP, session.TargetID)
 	case "skill_run":
 		defer beginDesktopActivity(scope.RunID, "正在操作网页")()
@@ -817,8 +833,8 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 	if site := desktopSiteOf(action, args, session); site != "" {
 		desktopRunNoteSite(desktopOwner(scope), site)
 		desktopExperienceNoteSite(scope, site)
-		if action == "navigate" && err == nil {
-			if lesson := desktopExperienceText(scope, site); lesson != "" {
+		if err == nil {
+			if lesson := desktopExperienceOnFirstVisit(scope, site); lesson != "" {
 				text = strings.TrimRight(text, "\n") + "\n" + lesson
 			}
 		}

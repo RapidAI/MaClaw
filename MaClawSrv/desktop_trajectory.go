@@ -121,6 +121,8 @@ type desktopRunState struct {
 	site         string            // host of the page the last browser step was on
 	lastEventEnd time.Time         // end of the previous desktop call (event think_ms)
 	lastLease    string            // last lease reported by bot_state (event stream)
+	lastClipLen  int               // runes of the last clipboard_set text (rich-body verify)
+	expSites     map[string]bool   // sites whose experience was shown in this run
 }
 
 func desktopRunNoteSite(scope agentruntime.Scope, site string) {
