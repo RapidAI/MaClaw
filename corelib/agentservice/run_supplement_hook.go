@@ -28,6 +28,8 @@ type supplementHook struct {
 	mu sync.Mutex
 	// take drains this run's queue exactly once per item.
 	take func() []*RunSupplement
+	// hold blocks while the run is paused; nil when pausing is unavailable.
+	hold func()
 	// rounds counts TransformConversation calls, which is the loop iteration
 	// ordinal. It is reported with every applied supplement: without it a
 	// queued item that was never consumed is indistinguishable from one the
@@ -56,6 +58,7 @@ func newSupplementHook(svc *Service, botID, runID string) agent.LoopHooks {
 		botID: botID,
 		runID: runID,
 		take:  func() []*RunSupplement { return svc.takePendingRunSupplements(runID) },
+		hold:  func() { svc.holdAtStepBoundary(runID) },
 	}
 }
 
@@ -65,6 +68,12 @@ func newSupplementHook(svc *Service, botID, runID string) agent.LoopHooks {
 func (h *supplementHook) TransformConversation(conversation []interface{}) []interface{} {
 	if h == nil {
 		return nil
+	}
+	// Step boundary: a paused run waits here, before its next model call,
+	// so the step already under way finishes and nothing new starts. Taken
+	// outside h.mu so the hook stays cheap to inspect while held.
+	if h.hold != nil {
+		h.hold()
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()

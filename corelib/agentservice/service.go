@@ -118,6 +118,8 @@ type Service struct {
 	// hold input that can no longer be delivered. Supplement text is never
 	// written to logs or tables, which is also why it is not persisted.
 	supplements      *runSupplements
+	// pauses holds a run at its next step boundary (see run_pause.go).
+	pauses runPauses
 	activeRequests   sync.WaitGroup
 	closed           bool
 	idempotencyMu    sync.Mutex

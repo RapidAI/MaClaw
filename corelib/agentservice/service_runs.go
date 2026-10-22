@@ -108,6 +108,8 @@ func (s *Service) CancelRun(ctx context.Context, p Principal, instanceID, runID 
 		return nil, ErrRunNotRunning
 	}
 	cancel()
+	// A run held at a step boundary must wake to see its context cancelled.
+	s.pauses.release(run.ID)
 	completed := s.now()
 	// Whatever was queued for this run will never be consumed now. Reaping
 	// reports each item once so the caller can tell the person it did not
