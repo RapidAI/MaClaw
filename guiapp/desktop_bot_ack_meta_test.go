@@ -52,3 +52,14 @@ func TestDesktopBotAckUserCarriesStatusAndRecent(t *testing.T) {
 		}
 	}
 }
+
+func TestDesktopBotAckMetaRejectsRawCauseForNotices(t *testing.T) {
+	raw := "run interrupted: service restarted while the run was active"
+	req := DesktopBotAckRequest{Kind: "interrupted", Lang: "en", Status: &DesktopBotStatus{StopReason: raw, LastTask: "Zhihu answer"}}
+	if !desktopBotAckMeta(raw, req) {
+		t.Fatalf("raw cause passed through as the notice")
+	}
+	if desktopBotAckMeta("The Zhihu answer got cut off when the desktop restarted. Want me to pick it up again?", req) {
+		t.Fatalf("a rewritten notice was rejected")
+	}
+}

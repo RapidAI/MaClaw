@@ -13,7 +13,8 @@ import (
 // it takes a job, adds files to a running job, or keeps files for later.
 // The GUI has already started the work; this sentence only follows it.
 type DesktopBotAckRequest struct {
-	// Kind is accept, supplement, files, stopping, stopped, idle, or pause.
+	// Kind is accept, supplement, files, stopping, stopped, idle, pause, queued,
+	// stop_failed, continuing, status_notice, error or interrupted.
 	Kind        string   `json:"kind"`
 	Message     string   `json:"message"`
 	Lang        string   `json:"lang"`
@@ -63,6 +64,8 @@ kind idle: they asked you to stop but nothing was running; say so plainly.
 kind pause: they asked you to hold; say you paused and ask whether to stop it entirely or only change what it contains.
 kind continuing: they said continue (or similar) while that same job is already running again; say you are already continuing it, naming the job and the current step if given. Do not say you will do it later.
 kind status_notice: describe the state given under status in one natural sentence, for example a takeover, a hand-back or why a run stopped; give a next step only when it helps.
+kind error: something they asked for did not work; status.stop_reason is the raw cause. Say in plain words what did not happen and what they can do, without error codes, ids, hostnames or the raw wording.
+kind interrupted: the job under status.last_task ended before it finished; say which job and, briefly, why (status.stop_reason), and offer to pick it up again.
 kind stopping: they asked you to stop and the work is still winding down; say plainly that it is still stopping and you will tell them once nothing is running. Do not say it has stopped.
 When files are listed, name each (at most three, in 《》 for Chinese or quotes for English) and say what they are for.
 When options are listed, say you are starting with the first and that they can tap another or add a line.
@@ -269,6 +272,12 @@ func desktopBotAckMeta(line string, req DesktopBotAckRequest) bool {
 	}
 	if in := strings.TrimSpace(req.Instruction); in != "" && desktopBotSameWords(line, in) {
 		return true
+	}
+	// An error or interruption notice is rewritten, never the raw cause.
+	if req.Status != nil && (kind == "error" || kind == "interrupted" || kind == "status_notice") {
+		if raw := strings.TrimSpace(req.Status.StopReason); raw != "" && desktopBotSameWords(line, raw) {
+			return true
+		}
 	}
 	chinese := desktopBotAckChinese(req.Lang)
 	if !chinese && strings.TrimSpace(req.Lang) == "" {

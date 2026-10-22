@@ -9,3 +9,13 @@ describe('isBareContinue', () => {
         for (const text of ['继续写知乎回答', 'continue with the report', '帮我发邮件', '']) expect(isBareContinue(text)).toBe(false);
     });
 });
+
+import { runWasInterrupted } from './DesktopBotWorkspace';
+
+describe('runWasInterrupted', () => {
+    it('tells an interruption from an ordinary failure', () => {
+        expect(runWasInterrupted('run interrupted: service restarted')).toBe(true);
+        expect(runWasInterrupted('任务被中断')).toBe(true);
+        expect(runWasInterrupted('page not found')).toBe(false);
+    });
+});

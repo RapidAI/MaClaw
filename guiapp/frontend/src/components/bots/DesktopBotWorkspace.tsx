@@ -594,6 +594,10 @@ export function shortRunId(id: string): string {
 }
 
 // A bare "continue" with nothing else in it.
+export function runWasInterrupted(raw: string): boolean {
+    return /interrupted|service restarted|中断|中斷|被打断|重启/i.test(raw || '');
+}
+
 export function isBareContinue(text: string): boolean {
     const flat = (text || '').replace(/[\s，。！!,.~～]+/g, '').toLowerCase();
     return /^(继续|繼續|继续吧|繼續吧|接着做|接著做|接着来|继续做|繼續做|continue|goon|carryon|keepgoing)$/.test(flat);
@@ -2360,15 +2364,18 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             last_task: lastTask || undefined,
         };
     };
-    const upgradeLine = (ownerId: string, botId: string, messageId: string, kind: 'queued' | 'continuing', fallback: string, said = '') => {
+    // One composer for every status line: the bubble shows the plain
+    // fallback at once, then the persona line written from the structured
+    // state and recent chat replaces it if nothing else changed it meanwhile.
+    const upgradeLine = (ownerId: string, botId: string, messageId: string, kind: 'queued' | 'continuing' | 'status_notice' | 'error' | 'interrupted', fallback: string, said = '', facts: DesktopBotStatusPayload = {}) => {
         void (async () => {
-            const status = await statusFor(botId, said);
+            const status = { ...(await statusFor(botId, said)), ...facts };
             const recent = recentChat(ownerId, botId).filter((_, index, all) => index < all.length - 1 || !all[index].startsWith('我: '));
             return desktopBotLine(kind, { lang: langRef.current, message: said, persona: personaForBot(ownerId, botId), running_task: status.active_run, status, recent }, fallback);
         })().then(line => {
             if (userIdRef.current !== ownerId || line === fallback) return;
             const stored = messagesForBot(ownerId, botId);
-            if (!stored.some(item => item.id === messageId)) return;
+            if (!stored.some(item => item.id === messageId && item.content === fallback)) return;
             commit(botId, stored.map(item => item.id === messageId ? { ...item, content: line } : item));
         });
     };
@@ -2516,6 +2523,20 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if (requestId) latchRequestRef.current[botId] = requestId;
             syncLive(botId, { url: screen.url || liveRef.current[botId]?.url || '', userControl: screen.userControl, attentionReason: screen.reason });
             setHandoffNotice({ botId, reason: screen.reason, url: screen.url });
+            // The runtime's own reason is a fact, not the line to show.
+            if (screen.reason) {
+                const owner = userIdRef.current;
+                const raw = screen.reason;
+                void desktopBotLine('status_notice', {
+                    lang: langRef.current,
+                    persona: personaForBot(owner, botId),
+                    recent: recentChat(owner, botId),
+                    status: { takeover: screen.userControl ? 'person has the desktop' : 'bot needs the person on the desktop', stop_reason: raw },
+                }, raw).then(line => {
+                    if (userIdRef.current !== owner || !line || line === raw) return;
+                    setHandoffNotice(prev => prev?.botId === botId && prev.reason === raw ? { ...prev, reason: line } : prev);
+                });
+            }
             openPanel(botId, 'auto', true);
             showComputer(botId);
             setRetryByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
@@ -3188,6 +3209,13 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     } : item);
                     commit(botId, foldPlanConfirmation(next, next.findIndex(item => item.id === pending.messageId)));
                     if (!result.silent) reportDesktopBotCrossResult(userId, botId, result.content);
+                    // A failed run reads as the runtime wrote it; say it in the persona.
+                    if (result.failed && !ask) {
+                        const said = sentenceForTurn(result, ask);
+                        const cause = String(result.content || '');
+                        const earlier = [...stored].reverse().find(item => item.role === 'user')?.content || '';
+                        upgradeLine(userId, botId, pending.messageId, runWasInterrupted(cause) ? 'interrupted' : 'error', said, '', { stop_reason: oneLine(cause).slice(0, 240), last_task: oneLine(earlier).slice(0, 160) || undefined });
+                    }
                 }
                 drainIfIdle(botId);
             }
@@ -3444,6 +3472,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 delete latchRequestRef.current[botId];
                 setTakeoverByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
                 setTakeoverHoldByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
+                // No continuation bubble came back, so say once that it goes on.
+                const noteId = messageID();
+                const fallback = desktopBotContinuingSentence(langRef.current);
+                commit(botId, [...stored, { id: noteId, role: 'assistant', content: fallback, ack: true }]);
+                upgradeLine(userId, botId, noteId, 'status_notice', fallback, '', { takeover: 'handed back to the bot; the task continues' });
             } else {
                 setHandBackError(detail || text.handBackFailed);
             }
@@ -3922,12 +3955,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     reason = failureMessage(error).trim();
                 }
                 if (userIdRef.current !== ownerId) return '';
-                if (reason) return desktopBotLine('stop_failed', { lang, persona: personaForBot(ownerId, botId), instruction: reason }, desktopBotStopFailedSentence(reason, lang));
+                if (reason) return desktopBotLine('stop_failed', { lang, persona: personaForBot(ownerId, botId), recent: recentChat(ownerId, botId), instruction: reason }, desktopBotStopFailedSentence(reason, lang));
                 return finishStop(ownerId, botId, [], held.hadNext, kind, asked, said);
             }
             held.release(false);
             if (!local) return desktopBotStatusUnreachableSentence(lang);
-            return desktopBotLine('idle', { lang, persona: personaForBot(ownerId, botId) }, desktopBotStopIdleSentence(lang));
+            return desktopBotLine('idle', { lang, persona: personaForBot(ownerId, botId), recent: recentChat(ownerId, botId) }, desktopBotStopIdleSentence(lang));
         }
         const hadNext = held.hadNext;
         held.release(true);
@@ -3941,7 +3974,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             }
         }
         if (userIdRef.current !== ownerId) return '';
-        if (reason) return desktopBotLine('stop_failed', { lang, persona: personaForBot(ownerId, botId), instruction: reason }, desktopBotStopFailedSentence(reason, lang));
+        if (reason) return desktopBotLine('stop_failed', { lang, persona: personaForBot(ownerId, botId), recent: recentChat(ownerId, botId), instruction: reason }, desktopBotStopFailedSentence(reason, lang));
         return finishStop(ownerId, botId, local.map(run => run.title), hadNext, kind, asked, said);
     };
     const desktopOperating = (botId: string, rows: Array<{ runId: string }> | undefined) => {
@@ -3986,7 +4019,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         });
     };
     const confirmedStopSentence = (titles: string[], hadNext: boolean, kind: 'stop' | 'pause', ownerId = '', botId = '') => (
-        desktopBotLine(kind === 'pause' ? 'pause' : 'stopped', { lang, persona: ownerId && botId ? personaForBot(ownerId, botId) : undefined, running_task: titles.join(' / ') },
+        desktopBotLine(kind === 'pause' ? 'pause' : 'stopped', { lang, persona: ownerId && botId ? personaForBot(ownerId, botId) : undefined, running_task: titles.join(' / '), recent: ownerId && botId ? recentChat(ownerId, botId) : undefined, status: { stop_reason: kind === 'pause' ? 'paused at their request' : 'stopped at their request', last_task: titles.join(' / ') || undefined } },
             kind === 'pause' ? desktopBotPauseAskSentence(lang) : desktopBotStoppedSentence(titles, hadNext, lang))
     );
     const watchUntilIdle = (ownerId: string, botId: string, titles: string[], hadNext: boolean, kind: 'stop' | 'pause') => {
@@ -4041,7 +4074,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (desktopOperating(botId, rows)) {
             watchUntilIdle(ownerId, botId, titles, hadNext, kind);
             if (!asked) return '';
-            const line = await desktopBotStoppingLine({ lang, message: said, persona: personaForBot(ownerId, botId), running_task: titles.join(' / ') });
+            const line = await desktopBotStoppingLine({ lang, message: said, persona: personaForBot(ownerId, botId), running_task: titles.join(' / '), recent: recentChat(ownerId, botId) });
             if (userIdRef.current !== ownerId || !stopWatchRef.current.has(botId)) return '';
             return line;
         }
@@ -4202,6 +4235,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             // Nothing was sent. Without a phase this stays a side note, so a
             // confirmation that is still waiting keeps its button.
             commit(botId, stored.map(item => item.id === assistantMessage.id ? { ...item, content: raw, pending: false, failed: true, phase: undefined } : item));
+            upgradeLine(ownerId, botId, assistantMessage.id, 'error', raw, content.trim(), { stop_reason: raw });
             dropAutoPanel(botId);
             drainIfIdle(botId);
         };
@@ -4794,6 +4828,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     return;
                 }
                 commit(botId, failed);
+                upgradeLine(ownerId, botId, assistantMessage.id, 'error', raw, content.trim(), { stop_reason: raw });
                 dropAutoPanel(botId);
                 drainIfIdle(botId);
             }
@@ -5270,7 +5305,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 if (userIdRef.current !== ownerId || slot.drop) return;
                                 const raw = friendlyFailure(failureMessage(error), lang) || text.unavailable;
                                 const stored = messagesForBot(ownerId, botId);
-                                commit(botId, [...stored, { id: messageID(), role: 'assistant', content: raw, failed: true }]);
+                                const noteId = messageID();
+                                commit(botId, [...stored, { id: noteId, role: 'assistant', content: raw, failed: true }]);
+                                upgradeLine(ownerId, botId, noteId, 'error', raw, oneLine(told || ''), { stop_reason: raw });
                                 return;
                             }
                             if (userIdRef.current !== ownerId || slot.drop) return;
@@ -5293,7 +5330,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     ? text.scheduleNone
                                     : friendlyFailure(failureMessage(error), lang) || text.unavailable;
                                 const stored = messagesForBot(ownerId, botId);
-                                commit(botId, [...stored, { id: messageID(), role: 'assistant', content: raw, failed: true }]);
+                                const noteId = messageID();
+                                commit(botId, [...stored, { id: noteId, role: 'assistant', content: raw, failed: true }]);
+                                upgradeLine(ownerId, botId, noteId, 'error', raw, oneLine(told || ''), { stop_reason: raw });
                                 return;
                             }
                             if (userIdRef.current !== ownerId || slot.drop) return;

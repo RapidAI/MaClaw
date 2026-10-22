@@ -115,7 +115,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     GetDesktopBotBusy: (owner: string) => getDesktopBusy(owner),
     EvaluateDesktopTaskSupplement: (taskText: string, content: string, lang: string) => evaluateSupplement(taskText, content, lang),
     // stopped/idle/pause come back empty here so the minimal lines are checked.
-    WriteDesktopBotAck: (ctx?: { kind?: string }) => Promise.resolve(ctx?.kind === 'stopping' ? '还在收尾，停稳了告诉你。' : ['stopped', 'idle', 'pause', 'queued', 'stop_failed', 'continuing'].includes(ctx?.kind || '') ? '' : "好，这就去办。"),
+    WriteDesktopBotAck: (ctx?: { kind?: string }) => Promise.resolve(ctx?.kind === 'stopping' ? '还在收尾，停稳了告诉你。' : ['stopped', 'idle', 'pause', 'queued', 'stop_failed', 'continuing', 'status_notice', 'error', 'interrupted'].includes(ctx?.kind || '') ? '' : "好，这就去办。"),
     AppendDesktopBotSupplement: (botId: string, runId: string, instruction: string) => appendSupplement(botId, runId, instruction),
     GetDesktopBotSupplements: (botId: string, runId: string) => getSupplements(botId, runId),
     SetDesktopBotPrimary: (id: string) => setPrimary(id),

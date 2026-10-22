@@ -1,6 +1,6 @@
 import { WriteDesktopBotAck } from '../../../wailsjs/go/main/App';
 
-export type DesktopBotAckKind = 'accept' | 'supplement' | 'files' | 'stopping' | 'stopped' | 'idle' | 'pause' | 'queued' | 'stop_failed' | 'continuing' | 'status_notice';
+export type DesktopBotAckKind = 'accept' | 'supplement' | 'files' | 'stopping' | 'stopped' | 'idle' | 'pause' | 'queued' | 'stop_failed' | 'continuing' | 'status_notice' | 'error' | 'interrupted';
 
 // The structured state behind a status line. Facts only; the composer in
 // guiapp (desktop_bot_ack.go) writes the sentence from it and the chat.
@@ -64,9 +64,9 @@ export function desktopBotStoppingFallback(lang: string): string {
 
 // desktopBotStoppingLine writes the "still stopping" update in the bot's own
 // voice. It never rejects.
-export async function desktopBotStoppingLine(ctx: { lang: string; message?: string; persona?: string; running_task?: string }, write: DesktopBotAckWriter = WriteDesktopBotAck): Promise<string> {
+export async function desktopBotStoppingLine(ctx: { lang: string; message?: string; persona?: string; running_task?: string; recent?: string[] }, write: DesktopBotAckWriter = WriteDesktopBotAck): Promise<string> {
     try {
-        const line = String(await write({ kind: 'stopping', message: ctx.message || '', lang: ctx.lang, persona: ctx.persona, running_task: ctx.running_task }) || '').trim();
+        const line = String(await write({ kind: 'stopping', message: ctx.message || '', lang: ctx.lang, persona: ctx.persona, running_task: ctx.running_task, recent: ctx.recent }) || '').trim();
         if (line) return line;
     } catch {
         // falls through to the minimal line
@@ -76,7 +76,7 @@ export async function desktopBotStoppingLine(ctx: { lang: string; message?: stri
 
 // desktopBotLine writes a stop-path line (stopped, idle, pause) in the bot's
 // voice; fallback is used only when every model attempt failed.
-export async function desktopBotLine(kind: 'stopped' | 'idle' | 'pause' | 'queued' | 'stop_failed' | 'continuing' | 'status_notice', ctx: { lang: string; message?: string; persona?: string; running_task?: string; instruction?: string; status?: DesktopBotStatusPayload; recent?: string[] }, fallback: string, write: DesktopBotAckWriter = WriteDesktopBotAck): Promise<string> {
+export async function desktopBotLine(kind: Exclude<DesktopBotAckKind, 'accept' | 'supplement' | 'files' | 'stopping'>, ctx: { lang: string; message?: string; persona?: string; running_task?: string; instruction?: string; status?: DesktopBotStatusPayload; recent?: string[] }, fallback: string, write: DesktopBotAckWriter = WriteDesktopBotAck): Promise<string> {
     try {
         const line = String(await write({ kind, message: ctx.message || '', lang: ctx.lang, persona: ctx.persona, running_task: ctx.running_task, instruction: ctx.instruction, status: ctx.status, recent: ctx.recent }) || '').trim();
         if (line) return line;
