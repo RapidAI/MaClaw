@@ -48,7 +48,7 @@ func TestWorkStopFastPathSkipsTheClassifier(t *testing.T) {
 		return "", nil
 	}
 	resp, handled := h.tryDesktopChatStopReply(IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "都停下", Lang: "zh-Hans"})
-	if !handled || resp == nil || resp.Text != "已停下。" {
+	if !handled || resp == nil || resp.Text != "停了。" {
 		t.Fatalf("stop = handled:%v resp:%+v", handled, resp)
 	}
 	if h.ensureChatTasks().activeCount(desktopUserID) != 0 {
@@ -76,7 +76,7 @@ func TestWorkStopClassifierHandlesPhrasingTheListMisses(t *testing.T) {
 			defer release()
 			h.workStopClassifier = classify
 			resp, handled := h.tryDesktopChatStopReply(IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: text, Lang: "zh-Hans"})
-			if !handled || resp == nil || resp.Text != "已停下。" {
+			if !handled || resp == nil || resp.Text != "停了。" {
 				t.Fatalf("handled:%v resp:%+v", handled, resp)
 			}
 			if h.ensureChatTasks().activeCount(desktopUserID) != 0 {
@@ -158,7 +158,7 @@ func TestStopAllWorkToolCancelsAndReportsIdle(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.SplitN(result.Text, "\n", 2)[0]), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["idle"] != true || payload["say"] != "已停下。" || payload["intent"] != "stop" {
+	if payload["idle"] != true || payload["say"] != "停了。" || payload["intent"] != "stop" {
 		t.Fatalf("payload = %#v", payload)
 	}
 	if !loop.WorkStopRan || !loop.WorkStopIdle {
@@ -202,7 +202,7 @@ func TestStopClaimWithoutCancelRunsTheCancel(t *testing.T) {
 	publishDesktopChatLoop(h, loop, "算了别弄了")
 	msg := IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "算了别弄了", Lang: "zh-Hans"}
 	out := h.correctUnbackedStopClaim(msg, loop, &IMAgentResponse{Text: "好的，已停下，不会继续了。"})
-	if out == nil || out.Text != "已停下。" || !loop.WorkStopRan {
+	if out == nil || out.Text != "停了。" || !loop.WorkStopRan {
 		t.Fatalf("claim guard = %+v ran:%v", out, loop.WorkStopRan)
 	}
 	if h.ensureChatTasks().activeCount(desktopUserID) != 0 {

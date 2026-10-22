@@ -1,6 +1,6 @@
 import { WriteDesktopBotAck } from '../../../wailsjs/go/main/App';
 
-export type DesktopBotAckKind = 'accept' | 'supplement' | 'files' | 'stopping';
+export type DesktopBotAckKind = 'accept' | 'supplement' | 'files' | 'stopping' | 'stopped' | 'idle' | 'pause';
 
 export interface DesktopBotAckContext {
     kind: DesktopBotAckKind;
@@ -59,4 +59,16 @@ export async function desktopBotStoppingLine(ctx: { lang: string; message?: stri
         // falls through to the minimal line
     }
     return desktopBotStoppingFallback(ctx.lang);
+}
+
+// desktopBotLine writes a stop-path line (stopped, idle, pause) in the bot's
+// voice; fallback is used only when every model attempt failed.
+export async function desktopBotLine(kind: 'stopped' | 'idle' | 'pause', ctx: { lang: string; message?: string; persona?: string; running_task?: string }, fallback: string, write: DesktopBotAckWriter = WriteDesktopBotAck): Promise<string> {
+    try {
+        const line = String(await write({ kind, message: ctx.message || '', lang: ctx.lang, persona: ctx.persona, running_task: ctx.running_task }) || '').trim();
+        if (line) return line;
+    } catch {
+        // falls through
+    }
+    return fallback;
 }

@@ -248,10 +248,10 @@ func (h *IMMessageHandler) cancelCurrentTaskForUser(userID, responseLang string)
 		}
 		reg.waitSessionIdle(userID, 2*time.Second)
 		if reg.activeCount(userID) > 0 {
-			return &IMAgentResponse{Text: desktopChatStillStoppingText(desktopChatChinese(responseLang, ""))}
+			return &IMAgentResponse{Text: h.chatBotReply("stopping", "", responseLang, "stop-command", "", desktopChatStillStoppingText(desktopChatChinese(responseLang, "")))}
 		}
 		if strings.TrimSpace(resp.Text) == localizedIMCancelMessage(responseLang, "none", "") {
-			return &IMAgentResponse{Text: desktopChatStoppedText(desktopChatChinese(responseLang, ""))}
+			return &IMAgentResponse{Text: h.chatBotReply("stopped", "", responseLang, "stop-command", "", desktopChatStoppedText(desktopChatChinese(responseLang, "")))}
 		}
 		return resp
 	}

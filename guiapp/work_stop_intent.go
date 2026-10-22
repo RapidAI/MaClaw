@@ -185,9 +185,9 @@ func (h *IMMessageHandler) sessionLoopUserText(userID string) string {
 
 func desktopChatPauseAskText(chinese bool) string {
 	if chinese {
-		return "我先停一下。是整个停下，还是只改正在做的内容？"
+		return "先停一下。全停，还是只改内容？"
 	}
-	return "I've paused it. Should I stop the whole thing, or only change what's in it?"
+	return "Paused. Stop all of it, or just change it?"
 }
 
 // applyWorkStop cancels the session's work and speaks only from the verified
@@ -205,13 +205,13 @@ func (h *IMMessageHandler) applyWorkStop(msg IMUserMessage, intent string, ignor
 	var text string
 	switch {
 	case left:
-		text = desktopChatStillStoppingText(chinese)
+		text = h.chatBotReply("stopping", msg.Text, msg.Lang, "work-stop:"+intent, "", desktopChatStillStoppingText(chinese))
 	case !running:
-		text = desktopChatNothingRunningText(chinese)
+		text = h.chatBotReply("idle", msg.Text, msg.Lang, "work-stop:"+intent, "", desktopChatNothingRunningText(chinese))
 	case intent == workStopIntentPause:
-		text = desktopChatPauseAskText(chinese)
+		text = h.chatBotReply("pause", msg.Text, msg.Lang, "work-stop:"+intent, "", desktopChatPauseAskText(chinese))
 	default:
-		text = desktopChatStoppedText(chinese)
+		text = h.chatBotReply("stopped", msg.Text, msg.Lang, "work-stop:"+intent, "", desktopChatStoppedText(chinese))
 	}
 	target := ignore
 	if target == nil {
@@ -335,7 +335,7 @@ func (h *IMMessageHandler) correctUnbackedStopClaim(msg IMUserMessage, loop *Loo
 	}
 	if loop.WorkStopRan {
 		if !loop.WorkStopIdle && h.assistantClaimsWorkStopped(text) {
-			resp.Text = desktopChatStillStoppingText(desktopChatChinese(msg.Lang, msg.Text))
+			resp.Text = h.chatBotReply("stopping", msg.Text, msg.Lang, "false-stop-claim", "", desktopChatStillStoppingText(desktopChatChinese(msg.Lang, msg.Text)))
 			resp.ResponseSource = "chat_task_stop"
 		}
 		return resp

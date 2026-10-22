@@ -53,7 +53,7 @@ import {
     ClassifyDesktopWorkStop,
     WatchDesktopBot,
 } from '../../../wailsjs/go/main/App';
-import { desktopBotAck, desktopBotStoppingLine, type DesktopBotAckContext } from './desktopBotAck';
+import { desktopBotAck, desktopBotLine, desktopBotStoppingLine, type DesktopBotAckContext } from './desktopBotAck';
 import { splitMaterials as splitAckMaterials } from './desktopBotMaterials';
 import { desktopModeOf, effectiveScreenPick, mineScreenURL, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
 import { desktopViewerSrc, loadDesktopViewer, saveDesktopViewer, type DesktopViewer } from './desktopViewer';
@@ -3675,7 +3675,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             }
             held.release(false);
             if (!local) return desktopBotStatusUnreachableSentence(lang);
-            return desktopBotStopIdleSentence(lang);
+            return desktopBotLine('idle', { lang, persona: personaForBot(ownerId, botId) }, desktopBotStopIdleSentence(lang));
         }
         const hadNext = held.hadNext;
         held.release(true);
@@ -3733,8 +3733,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             return { ...item, pending: false };
         });
     };
-    const confirmedStopSentence = (titles: string[], hadNext: boolean, kind: 'stop' | 'pause') => (
-        kind === 'pause' ? desktopBotPauseAskSentence(lang) : desktopBotStoppedSentence(titles, hadNext, lang)
+    const confirmedStopSentence = (titles: string[], hadNext: boolean, kind: 'stop' | 'pause', ownerId = '', botId = '') => (
+        desktopBotLine(kind === 'pause' ? 'pause' : 'stopped', { lang, persona: ownerId && botId ? personaForBot(ownerId, botId) : undefined, running_task: titles.join(' / ') },
+            kind === 'pause' ? desktopBotPauseAskSentence(lang) : desktopBotStoppedSentence(titles, hadNext, lang))
     );
     const watchUntilIdle = (ownerId: string, botId: string, titles: string[], hadNext: boolean, kind: 'stop' | 'pause') => {
         const previous = stopWatchRef.current.get(botId);
@@ -3766,8 +3767,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     commit(botId, releaseStoppedTurns(ownerId, botId));
                     return;
                 }
-                const stored = releaseStoppedTurns(ownerId, botId);
-                commit(botId, [...stored, { id: messageID(), role: 'assistant', content: confirmedStopSentence(titles, hadNext, kind), chat: true }]);
+                commit(botId, releaseStoppedTurns(ownerId, botId));
+                const line = await confirmedStopSentence(titles, hadNext, kind, ownerId, botId);
+                if (userIdRef.current !== ownerId) return;
+                commit(botId, [...messagesForBot(ownerId, botId), { id: messageID(), role: 'assistant', content: line, chat: true }]);
             })();
         }, 150);
         stopWatchRef.current.set(botId, timer);
@@ -3791,7 +3794,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             return line;
         }
         commit(botId, releaseStoppedTurns(ownerId, botId));
-        return confirmedStopSentence(titles, hadNext, kind);
+        return confirmedStopSentence(titles, hadNext, kind, ownerId, botId);
     };
     // No pending bubble, so this answer is not the working row
     // 「正在一点点推进」. The question itself is an ordinary user line.

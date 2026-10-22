@@ -112,30 +112,30 @@ func desktopChatChinese(lang, text string) bool {
 
 func desktopChatStoppedText(chinese bool) string {
 	if chinese {
-		return "已停下。"
+		return "停了。"
 	}
 	return "Stopped."
 }
 
 func desktopChatNothingRunningText(chinese bool) string {
 	if chinese {
-		return "没有正在做的事。"
+		return "没在做事。"
 	}
 	return "Nothing is running."
 }
 
 func desktopChatStillStoppingText(chinese bool) string {
 	if chinese {
-		return "还在停，没有开始新的工作。"
+		return "还在停。"
 	}
-	return "Still stopping. Nothing new was started."
+	return "Still stopping."
 }
 
 func desktopChatFollowUpText(chinese bool) string {
 	if chinese {
-		return "好，按这个补充继续。"
+		return "好。"
 	}
-	return "Okay, I'll keep going with that."
+	return "OK."
 }
 
 // looksLikeDesktopChatStop is the instant path only. A short line made of
@@ -449,7 +449,7 @@ func (h *IMMessageHandler) tryChatTaskFollowUp(msg IMUserMessage) (*IMAgentRespo
 		return nil, false
 	}
 	return &IMAgentResponse{
-		Text:           desktopChatFollowUpText(desktopChatChinese(msg.Lang, msg.Text)),
+		Text:           h.chatBotReply("supplement", msg.Text, msg.Lang, "follow-up", task.Title, desktopChatFollowUpText(desktopChatChinese(msg.Lang, msg.Text))),
 		SessionKey:     sessionKey,
 		ResponseSource: "chat_task_follow_up",
 	}, true

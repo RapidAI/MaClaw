@@ -515,14 +515,14 @@ func TestDesktopChatStopConfirmsOnlyAfterTasksAreIdle(t *testing.T) {
 	waitChatTaskStatus(t, reg, first.ID, chatTaskRunning)
 	waitChatTaskStatus(t, reg, second.ID, chatTaskRunning)
 	resp, handled := h.tryDesktopChatStopReply(IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "都停下", Lang: "zh-Hans"})
-	if !handled || resp == nil || resp.Text != "已停下。" || strings.Contains(resp.Text, first.ID) {
+	if !handled || resp == nil || resp.Text != "停了。" || strings.Contains(resp.Text, first.ID) {
 		t.Fatalf("stop = handled:%v resp:%+v", handled, resp)
 	}
 	if reg.activeCount(desktopUserID) != 0 {
 		t.Fatalf("tasks still active: %d", reg.activeCount(desktopUserID))
 	}
 	again, handled := h.tryDesktopChatStopReply(IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "停下，不干了。", Lang: "zh-Hans"})
-	if !handled || again == nil || again.Text != "没有正在做的事。" {
+	if !handled || again == nil || again.Text != "没在做事。" {
 		t.Fatalf("compound stop = handled:%v resp:%+v", handled, again)
 	}
 	idle, handled := h.tryDesktopChatStopReply(IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "stop", Lang: "en"})

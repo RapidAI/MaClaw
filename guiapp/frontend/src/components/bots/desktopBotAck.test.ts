@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../wailsjs/go/main/App', () => ({ WriteDesktopBotAck: vi.fn() }));
 
-import { desktopBotAck, desktopBotNeutralAck, desktopBotStoppingLine } from './desktopBotAck';
+import { desktopBotAck, desktopBotLine, desktopBotNeutralAck, desktopBotStoppingLine } from './desktopBotAck';
 
 describe('desktopBotAck', () => {
     it('uses the model line', async () => {
@@ -28,5 +28,14 @@ describe('desktopBotStoppingLine', () => {
     it('falls back to the minimal line only when the model fails', async () => {
         await expect(desktopBotStoppingLine({ lang: 'zh-Hans' }, vi.fn().mockRejectedValue(new Error('x')))).resolves.toBe('还在停。');
         await expect(desktopBotStoppingLine({ lang: 'en' }, vi.fn().mockResolvedValue('  '))).resolves.toBe('Still stopping.');
+    });
+});
+
+describe('desktopBotLine', () => {
+    it('uses the model line for stopped/idle/pause and the given line only on failure', async () => {
+        const write = vi.fn().mockResolvedValue('停好了，小红书那件不做了。');
+        await expect(desktopBotLine('stopped', { lang: 'zh-Hans', running_task: '小红书' }, '停了。', write)).resolves.toBe('停好了，小红书那件不做了。');
+        expect(write).toHaveBeenCalledWith(expect.objectContaining({ kind: 'stopped', running_task: '小红书' }));
+        await expect(desktopBotLine('idle', { lang: 'zh-Hans' }, '没在做事。', vi.fn().mockRejectedValue(new Error('x')))).resolves.toBe('没在做事。');
     });
 });

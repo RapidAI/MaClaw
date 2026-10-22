@@ -13,7 +13,7 @@ import (
 // it takes a job, adds files to a running job, or keeps files for later.
 // The GUI has already started the work; this sentence only follows it.
 type DesktopBotAckRequest struct {
-	// Kind is accept, supplement, files, or stopping.
+	// Kind is accept, supplement, files, stopping, stopped, idle, or pause.
 	Kind        string   `json:"kind"`
 	Message     string   `json:"message"`
 	Lang        string   `json:"lang"`
@@ -36,6 +36,9 @@ Use the kept persona's name and tone when one is given.
 kind accept: say you are on it, in your own words, naming the goal briefly.
 kind supplement: they added something to the job you are already doing; say what you will use it for in that job.
 kind files: they sent files with no job; say you have them and will use them when asked.
+kind stopped: they asked you to stop and it has stopped; say so plainly, naming the job if given.
+kind idle: they asked you to stop but nothing was running; say so plainly.
+kind pause: they asked you to hold; say you paused and ask whether to stop it entirely or only change what it contains.
 kind stopping: they asked you to stop and the work is still winding down; say plainly that it is still stopping and you will tell them once nothing is running. Do not say it has stopped.
 When files are listed, name each (at most three, in 《》 for Chinese or quotes for English) and say what they are for.
 When options are listed, say you are starting with the first and that they can tap another or add a line.
