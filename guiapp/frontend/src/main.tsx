@@ -1,4 +1,5 @@
 import React from 'react'
+import { installFrontendIssueReporting } from './frontendIssueReport'
 import {createRoot} from 'react-dom/client'
 import './style.css'
 import App from './App'
@@ -116,6 +117,8 @@ try {
     console.error('Failed to schedule initial render', error)
     renderStartupError(error)
 }
+
+installFrontendIssueReporting()
 
 window.addEventListener('error', (event) => {
     if (!renderScheduled) {

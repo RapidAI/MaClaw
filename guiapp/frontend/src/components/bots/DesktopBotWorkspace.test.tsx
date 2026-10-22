@@ -19,6 +19,7 @@ const listSchedules = vi.hoisted(() => vi.fn(async (_botId?: string) => [] as Ar
 const deleteSchedule = vi.hoisted(() => vi.fn(async (_botId?: string, _taskId?: string) => undefined));
 const watchBot = vi.hoisted(() => vi.fn(async (_botId?: string, _epoch?: number): Promise<{ novnc_url: string; user_control: boolean; attention_reason?: string; desktop_mode?: string } | undefined> => ({ novnc_url: '', user_control: false })));
 const getScreen = vi.hoisted(() => vi.fn(async (_botId?: string): Promise<{ novnc_url: string; user_control: boolean; attention_reason?: string; desktop_mode: string }> => ({ novnc_url: '', user_control: false, desktop_mode: 'shared' })));
+const hubLink = vi.hoisted(() => vi.fn(async () => ({ state: 'connected' }) as Record<string, unknown> | null));
 const handBack = vi.hoisted(() => vi.fn(async (_botId?: string) => ({ handed_back: true, accepted: true, run_id: 'run_1', status: 'running' })));
 const setDesktopMode = vi.hoisted(() => vi.fn(async (_botId?: string, mode?: string) => mode || 'shared'));
 const desktopAdmin = vi.hoisted(() => vi.fn(async () => false));
@@ -85,7 +86,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     ReleaseDesktopBotWatch: (arg: string, epoch?: number) => releaseWatch(arg, epoch),
     GetDesktopBotScreen: (botId: string) => getScreen(botId),
     HandBackDesktopBot: (botId: string) => handBack(botId),
-    GetHubConnectionState: () => Promise.resolve({ state: 'connected' }),
+    GetHubConnectionState: () => hubLink(),
     ReconnectHub: () => Promise.resolve({ state: 'connected' }),
     SetDesktopBotDesktopMode: (botId: string, mode: string) => setDesktopMode(botId, mode),
     DesktopBotDesktopAdmin: () => desktopAdmin(),
@@ -219,6 +220,8 @@ beforeEach(() => {
     watchBot.mockResolvedValue({ novnc_url: '', user_control: false });
     getScreen.mockReset();
     getScreen.mockResolvedValue({ novnc_url: '', user_control: false, desktop_mode: 'shared' });
+    hubLink.mockReset();
+    hubLink.mockResolvedValue({ state: 'connected' });
     handBack.mockReset();
     handBack.mockResolvedValue({ handed_back: true, accepted: true, run_id: 'run_1', status: 'running' });
     setDesktopMode.mockReset();
@@ -5397,6 +5400,28 @@ describe('DesktopBotWorkspace', () => {
         expect(sup?.content).toBe('补充已生效。');
         expect(sup?.failed).toBeUndefined();
         expect(sup?.noReading).toBeUndefined();
+    });
+
+    it('renders with Hub reconnecting, offline, or answering nothing', async () => {
+        for (const state of [{ state: 'connecting', next_retry_ms: 3000 }, { state: 'offline' }, null]) {
+            hubLink.mockResolvedValue(state as Record<string, unknown> | null);
+            const view = renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+            expect(await screen.findByTestId('desktop-bot-workspace')).toBeTruthy();
+            if (state?.state === 'connecting') expect(await screen.findByTestId('desktop-bot-hub-link')).toBeTruthy();
+            if (!state) expect(screen.queryByTestId('desktop-bot-hub-link')).toBeNull();
+            view.unmount();
+        }
+    });
+
+    it('renders with an empty bot list and odd stored messages', async () => {
+        listBots.mockResolvedValue(null as unknown as never);
+        saveBotMessages('alice', 'bot_1', [
+            { id: 'odd-1', role: 'assistant', content: '' },
+            { id: 'odd-2', role: 'user', content: undefined as unknown as string },
+            { id: 'odd-3', role: 'assistant', content: 'x', pending: true, requestId: 'gone' },
+        ]);
+        renderBots(<DesktopBotWorkspace lang="en" userId="alice" />);
+        expect(await screen.findByTestId('desktop-bot-workspace')).toBeTruthy();
     });
 
     it('answers a bare 继续 during the resumed run once, without queueing it', async () => {

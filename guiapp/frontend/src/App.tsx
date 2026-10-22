@@ -1,7 +1,8 @@
 import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckinHubLLMService, ClampMaximizedWindowToWorkArea, SetMainWindowScreenPosition, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontFamily, GetChatFontSize, GetCodingFontFamily, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, SetTaskbarBadgeCount, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsEmit, EventsOff, EventsOn, Quit, WindowGetPosition, WindowGetSize, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowSetSize, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
 import { DesktopBotAccess, PullDesktopBotDeliveries } from '../wailsjs/go/main/App';
-import { beginBotAccessRead, botOpenDecision, isCurrentBotAccessRead, navigationEpoch, publishBotAccess } from './components/bots/botOpenGate';
+import { beginBotAccessRead, botOpenDecision, currentBotAccessEnabled, navigationEpoch, publishBotAccess } from './components/bots/botOpenGate';
+import { reportFrontendIssue } from './frontendIssueReport';
 import { appVersion, buildNumber } from './version';
 // Keep the in-app navigation and About artwork aligned with the packaged
 // Windows/tray icon rather than the legacy standalone SVG mark.
@@ -200,6 +201,7 @@ import { EnvCheckSplash } from './components/startup/EnvCheckSplash';
 import type { RemoteCenterHubOption, SidebarCurrentProviderTokenUsage, SidebarHubCredits, SidebarLLMProviderSummary, SidebarTokenUsageStat } from './types/appShell';
 import { AIAssistantPanel, TutorialPage, ApiStorePage, ProjectManagerPage, RemoteSessionsPage, AppsPage, SkillsPage, MCPPage, GossipPage, WorkflowsPage, UtilitiesPage, MobileDocumentsPanel, LatexTemplateLibraryPage } from './appLazyComponents';
 import { DesktopBotWorkspace, bindDesktopBotResultStore } from './components/bots/DesktopBotWorkspace';
+import { BotsPageErrorBoundary } from './components/bots/BotsPageErrorBoundary';
 import { desktopBotAccountId } from './components/bots/desktopBots';
 import { meetingRecordCommand, meetingRecordFailMessage, meetingRecordTaskTitle } from './components/pages/utilitiesMeetingRecord';
 import { parseExpertListJSON, type ExpertDefinition } from './components/ai/expertTypes';
@@ -2832,15 +2834,37 @@ function App() {
                     setToolDropdownOpen(false);
                 }
             };
-            void DesktopBotAccess().then(access => {
-                if (!isCurrentBotAccessRead(accessRead)) return;
+            void accessRead;
+            // The click is the person's decision: a background rail refresh
+            // that started meanwhile must not swallow it (2026-10-22: the
+            // Bot entry did nothing). Only a newer click or another page
+            // cancels it, through the epoch.
+            const grantedBefore = currentBotAccessEnabled();
+            let settled = false;
+            // A slow Hub read must not leave the click without effect when
+            // the rail already showed the entry because access was granted.
+            const slow = window.setTimeout(() => {
+                if (settled || !grantedBefore) return;
+                settled = true;
+                reportFrontendIssue('bot-open', 'access read slow; opening with last grant');
+                finishBotOpen(true);
+            }, 4000);
+            void Promise.resolve().then(() => DesktopBotAccess()).then(access => {
+                window.clearTimeout(slow);
                 const enabled = !!access?.enabled;
                 publishBotAccess(enabled);
+                if (settled && enabled) return;
+                settled = true;
                 finishBotOpen(enabled, access?.message);
-            }).catch(() => {
-                // A transport failure is not a grant decision. The rail hides
-                // the entry only after a denial, and the Bot page is left when
-                // Hub stays unreachable (see useSidebarHubAccess).
+            }).catch((error: unknown) => {
+                window.clearTimeout(slow);
+                // A transport failure is not a grant decision: open with the
+                // grant the rail already had, otherwise say why nothing opened.
+                reportFrontendIssue('bot-open', `access read failed: ${String((error as Error)?.message || error || '')}`);
+                if (settled) return;
+                settled = true;
+                if (grantedBefore) finishBotOpen(true);
+                else showToastMessage(localizeText('Could not reach the server. Try Bot again in a moment.', '暂时连不上服务器，请稍后再点 Bot。', '暫時連不上伺服器，請稍後再點 Bot。'));
             });
             return;
         }
@@ -5966,7 +5990,7 @@ ${instruction}`;
                     windowMaximized={windowMaximized}
                 />}
                 {navTab !== 'ai' && navTab !== 'utilities' && navTab !== 'tools' && <div className="main-content elegant-scrollbar app-main-content" data-nav-tab={navTab} style={navTab === 'skills' || navTab === 'bots' ? { display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' } : undefined}>
-                {navTab === 'bots' && <DesktopBotWorkspace lang={lang} userId={desktopBotAccountId(config)} />}
+                {navTab === 'bots' && <BotsPageErrorBoundary lang={lang}><DesktopBotWorkspace lang={lang} userId={desktopBotAccountId(config)} /></BotsPageErrorBoundary>}
                 {/* Settings is outside page Suspense. General panels are eager so the default
                     open path never depends on a lazy chunk (OEM intermittent blank fix). */}
                 {navTab === 'settings' ? (
