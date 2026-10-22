@@ -71,7 +71,7 @@ export async function desktopBotStoppingLine(ctx: { lang: string; message?: stri
     } catch {
         // falls through to the minimal line
     }
-    return desktopBotStoppingFallback(ctx.lang);
+    return desktopBotVariedFallback('stopping', ctx.lang, desktopBotStoppingFallback(ctx.lang), ctx.recent);
 }
 
 // desktopBotLine writes a stop-path line (stopped, idle, pause) in the bot's
@@ -83,5 +83,65 @@ export async function desktopBotLine(kind: Exclude<DesktopBotAckKind, 'accept' |
     } catch {
         // falls through
     }
-    return fallback;
+    return desktopBotVariedFallback(kind, ctx.lang, fallback, ctx.recent);
 }
+
+// Plain alternates per state, used only when the model wrote nothing. The
+// state-specific fallback comes first; another is picked when that one was
+// just said, so a failing model never makes the bot repeat itself.
+const FALLBACK_VARIANTS: Record<string, { hans: string[]; hant: string[]; en: string[] }> = {
+    queued: {
+        hans: ['手上这件做完，马上接这个。', '记下了，排在现在这件后面。', '收到，等这件收尾就开始。'],
+        hant: ['手上這件做完，馬上接這個。', '記下了，排在現在這件後面。', '收到，等這件收尾就開始。'],
+        en: ['Noted. That comes right after the current job.', "Got it, it's next in line.", "I'll start that as soon as this one wraps up."],
+    },
+    continuing: {
+        hans: ['还在做，没停。', '在接着推进。', '没断，继续着呢。'],
+        hant: ['還在做，沒停。', '在接著推進。', '沒斷，繼續著呢。'],
+        en: ['Still going.', 'Carrying on with it.', "Haven't stopped, still on it."],
+    },
+    idle: {
+        hans: ['眼下没有在跑的事。', '这会儿是空着的，没什么要停。'],
+        hant: ['眼下沒有在跑的事。', '這會兒是空著的，沒什麼要停。'],
+        en: ["There's nothing running right now.", "I'm idle at the moment, nothing to stop."],
+    },
+    stopped: {
+        hans: ['好，已经停下了。', '停住了。'],
+        hant: ['好，已經停下了。', '停住了。'],
+        en: ['Okay, it has stopped.', 'Stopped.'],
+    },
+    error: {
+        hans: ['这一步没成，稍后我再试，或者你换个说法。', '没办成，我这边出了点状况，等一下再来。'],
+        hant: ['這一步沒成，稍後我再試，或者你換個說法。', '沒辦成，我這邊出了點狀況，等一下再來。'],
+        en: ["That didn't go through. I'll try again shortly, or you can rephrase.", "Something went wrong on my side. Give me a moment and try again."],
+    },
+    interrupted: {
+        hans: ['刚才那件中途断了，要我接着做吗？', '那件没做完就停了，需要的话我重新接上。'],
+        hant: ['剛才那件中途斷了，要我接著做嗎？', '那件沒做完就停了，需要的話我重新接上。'],
+        en: ['That job got cut off partway. Want me to pick it up again?', 'It stopped before finishing. I can resume it if you like.'],
+    },
+};
+FALLBACK_VARIANTS.status_notice = FALLBACK_VARIANTS.continuing;
+FALLBACK_VARIANTS.stopping = {
+    hans: ['在收尾了，马上停。', '正在停，稍等一下。'],
+    hant: ['在收尾了，馬上停。', '正在停，稍等一下。'],
+    en: ['Wrapping up, stopping in a moment.', 'Stopping, one moment.'],
+};
+
+function fallbackVoice(lang: string): 'hans' | 'hant' | 'en' {
+    const value = String(lang || '');
+    if (value.toLowerCase().startsWith('en')) return 'en';
+    if (value.includes('Hant') || /zh-(TW|HK|MO)/i.test(value)) return 'hant';
+    return 'hans';
+}
+
+function plainLine(text: string): string {
+    return String(text || '').replace(/^(你|我|you|me)\s*[:：]\s*/i, '').replace(/\s+/g, '').replace(/[。.!！?？]+$/, '');
+}
+
+export function desktopBotVariedFallback(kind: string, lang: string, fallback: string, recent: string[] = []): string {
+    const said = new Set(recent.map(plainLine));
+    const pool = [fallback, ...((FALLBACK_VARIANTS[kind] || { hans: [], hant: [], en: [] })[fallbackVoice(lang)])].filter(Boolean);
+    return pool.find(line => !said.has(plainLine(line))) || fallback;
+}
+

@@ -5735,4 +5735,122 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(screen.getByTestId('desktop-bot-handback'));
         await waitFor(() => expect(handBack).toHaveBeenCalledWith('bot_2'));
     });
+
+    it('says a failed hand-back in the persona instead of raw red text', async () => {
+        handBack.mockRejectedValue(new Error('rpc error: code=500 instance offline'));
+        listBots.mockResolvedValue([
+            { id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' },
+            { id: 'bot_2', title: 'Bot B', description: '自己的桌面', instance_id: 'inst_2' },
+        ]);
+        const mine = 'http://hub.example/api/v1/desktop-handoff/mine/vnc.html?autoconnect=1';
+        const isolated = 'http://hub.example/api/v1/desktop-handoff/bot-b/vnc.html?autoconnect=1';
+        watchBot.mockImplementation(async (botId?: string) => ({
+            novnc_url: botId === 'bot_2' ? isolated : mine,
+            user_control: false,
+            desktop_mode: botId === 'bot_2' ? 'isolated' : 'shared',
+        }));
+        getScreen.mockImplementation(async (botId?: string) => ({
+            novnc_url: botId === 'bot_2' ? isolated : mine,
+            user_control: false,
+            desktop_mode: botId === 'bot_2' ? 'isolated' : 'shared',
+        }));
+        desktopAdmin.mockResolvedValue(true);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-open-desktop'));
+        expect(await screen.findByTestId('desktop-screen-switch')).toBeTruthy();
+        expect(screen.getByTestId('desktop-screen-mine').textContent).toBe('我的桌面');
+        await waitFor(() => expect(getScreen).toHaveBeenCalledWith('bot_1'));
+        await waitFor(() => expect(getScreen).toHaveBeenCalledWith('bot_2'));
+        expect(screen.getByTestId('desktop-screen-bot-bot_1').textContent).toContain('共享');
+        expect(screen.getByTestId('desktop-screen-bot-bot_2').textContent).not.toContain('共享');
+
+        fireEvent.click(screen.getByTestId('desktop-screen-bot-bot_2'));
+        await waitFor(() => expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('bot-b'));
+        expect(screen.queryByTestId('desktop-bot-handback')).toBeNull();
+
+        fireEvent.click(screen.getByTestId('desktop-bot-tab-details'));
+        const toggle = await screen.findByTestId('desktop-bot-isolated-toggle');
+        fireEvent.click(toggle.querySelector('input') as HTMLInputElement);
+        await waitFor(() => expect(setDesktopMode).toHaveBeenCalledWith('bot_1', 'isolated'));
+
+        act(() => {
+            responseListeners.byEvent['desktop-bot-view']?.({
+                request_id: 'desktop-bot-login',
+                session_key: 'alice:bot_2',
+                novnc_url: isolated,
+                desktop_handoff: true,
+                attention_reason: '请登录 Google',
+            });
+        });
+        const notice = await screen.findByTestId('desktop-bot-handoff-notice');
+        expect(notice.textContent).toContain('请登录 Google');
+        fireEvent.click(notice);
+        await waitFor(() => expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('bot-b'));
+        fireEvent.click(screen.getByTestId('desktop-bot-handback'));
+        await waitFor(() => expect(handBack).toHaveBeenCalledWith('bot_2'));
+        expect(await screen.findByText('桌面没有交还给 bot。')).toBeTruthy();
+        expect(screen.queryByTestId('desktop-bot-handback-error')).toBeNull();
+        expect(screen.queryByText(/rpc error/)).toBeNull();
+    });
+
+    it('treats a hand-back Hub already runs as done, with no error', async () => {
+        handBack.mockRejectedValue(new Error('rpc error: code=500'));
+        listTaskRuns.mockResolvedValue([{ run_id: 'run_9', status: 'running', task: '登录完成，继续' }]);
+        listBots.mockResolvedValue([
+            { id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' },
+            { id: 'bot_2', title: 'Bot B', description: '自己的桌面', instance_id: 'inst_2' },
+        ]);
+        const mine = 'http://hub.example/api/v1/desktop-handoff/mine/vnc.html?autoconnect=1';
+        const isolated = 'http://hub.example/api/v1/desktop-handoff/bot-b/vnc.html?autoconnect=1';
+        watchBot.mockImplementation(async (botId?: string) => ({
+            novnc_url: botId === 'bot_2' ? isolated : mine,
+            user_control: false,
+            desktop_mode: botId === 'bot_2' ? 'isolated' : 'shared',
+        }));
+        getScreen.mockImplementation(async (botId?: string) => ({
+            novnc_url: botId === 'bot_2' ? isolated : mine,
+            user_control: false,
+            desktop_mode: botId === 'bot_2' ? 'isolated' : 'shared',
+        }));
+        desktopAdmin.mockResolvedValue(true);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-open-desktop'));
+        expect(await screen.findByTestId('desktop-screen-switch')).toBeTruthy();
+        expect(screen.getByTestId('desktop-screen-mine').textContent).toBe('我的桌面');
+        await waitFor(() => expect(getScreen).toHaveBeenCalledWith('bot_1'));
+        await waitFor(() => expect(getScreen).toHaveBeenCalledWith('bot_2'));
+        expect(screen.getByTestId('desktop-screen-bot-bot_1').textContent).toContain('共享');
+        expect(screen.getByTestId('desktop-screen-bot-bot_2').textContent).not.toContain('共享');
+
+        fireEvent.click(screen.getByTestId('desktop-screen-bot-bot_2'));
+        await waitFor(() => expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('bot-b'));
+        expect(screen.queryByTestId('desktop-bot-handback')).toBeNull();
+
+        fireEvent.click(screen.getByTestId('desktop-bot-tab-details'));
+        const toggle = await screen.findByTestId('desktop-bot-isolated-toggle');
+        fireEvent.click(toggle.querySelector('input') as HTMLInputElement);
+        await waitFor(() => expect(setDesktopMode).toHaveBeenCalledWith('bot_1', 'isolated'));
+
+        act(() => {
+            responseListeners.byEvent['desktop-bot-view']?.({
+                request_id: 'desktop-bot-login',
+                session_key: 'alice:bot_2',
+                novnc_url: isolated,
+                desktop_handoff: true,
+                attention_reason: '请登录 Google',
+            });
+        });
+        const notice = await screen.findByTestId('desktop-bot-handoff-notice');
+        expect(notice.textContent).toContain('请登录 Google');
+        fireEvent.click(notice);
+        await waitFor(() => expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('bot-b'));
+        fireEvent.click(screen.getByTestId('desktop-bot-handback'));
+        await waitFor(() => expect(handBack).toHaveBeenCalledWith('bot_2'));
+        await waitFor(() => expect(listTaskRuns).toHaveBeenCalled());
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+        expect(screen.queryByTestId('desktop-bot-handback-error')).toBeNull();
+        expect(screen.queryByText('桌面没有交还给 bot。')).toBeNull();
+    });
 });

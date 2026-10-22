@@ -19,3 +19,16 @@ describe('runWasInterrupted', () => {
         expect(runWasInterrupted('page not found')).toBe(false);
     });
 });
+
+import { desktopBotVariedFallback } from './desktopBotAck';
+
+describe('desktopBotVariedFallback', () => {
+    it('keeps the state line, but never repeats what was just said', () => {
+        expect(desktopBotVariedFallback('queued', 'zh-Hans', '好，这个等手上的做完我就做。', [])).toBe('好，这个等手上的做完我就做。');
+        const next = desktopBotVariedFallback('queued', 'zh-Hans', '好，这个等手上的做完我就做。', ['我: 好，这个等手上的做完我就做。']);
+        expect(next).not.toBe('好，这个等手上的做完我就做。');
+        const third = desktopBotVariedFallback('queued', 'zh-Hans', '好，这个等手上的做完我就做。', ['我: 好，这个等手上的做完我就做。', `我: ${next}`]);
+        expect([next, '好，这个等手上的做完我就做。']).not.toContain(third);
+        expect(desktopBotVariedFallback('interrupted', 'en', 'It stopped.', ['me: It stopped.'])).toMatch(/pick it up|resume/);
+    });
+});

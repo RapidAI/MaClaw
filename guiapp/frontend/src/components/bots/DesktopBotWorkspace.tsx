@@ -54,7 +54,7 @@ import {
     ClassifyDesktopWorkStop,
     WatchDesktopBot,
 } from '../../../wailsjs/go/main/App';
-import { desktopBotAck, desktopBotLine, desktopBotStoppingLine, type DesktopBotAckContext, type DesktopBotStatusPayload } from './desktopBotAck';
+import { desktopBotAck, desktopBotLine, desktopBotStoppingLine, desktopBotVariedFallback, type DesktopBotAckContext, type DesktopBotStatusPayload } from './desktopBotAck';
 import { splitMaterials as splitAckMaterials } from './desktopBotMaterials';
 import { desktopModeOf, effectiveScreenPick, mineScreenURL, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
 import { desktopViewerSrc, loadDesktopViewer, saveDesktopViewer, type DesktopViewer } from './desktopViewer';
@@ -594,6 +594,44 @@ export function shortRunId(id: string): string {
 }
 
 // A bare "continue" with nothing else in it.
+// The last few chat lines, oldest first, as the composer reads them.
+export function desktopBotRecentChat(ownerId: string, botId: string): string[] {
+    return messagesForBot(ownerId, botId)
+        .filter(item => !item.pending && (item.content || '').trim())
+        .slice(-6)
+        .map(item => `${item.role === 'user' ? '你' : '我'}: ${oneLine(item.content).slice(0, 160)}`);
+}
+
+// The language results are written in; the page keeps it current, and it
+// still applies when MaClawSrv finishes after the page closed.
+let resultLang = 'zh-Hans';
+export function setDesktopBotResultLang(lang: string) {
+    if (lang) resultLang = lang;
+}
+
+// A failed run settled outside the page still reads in the persona: the
+// runtime's text goes in as status, the composed line replaces the bubble
+// only if nothing changed it meanwhile.
+export function rewordFailedTurn(userId: string, botId: string, messageId: string, shown: string, cause: string) {
+    if (!messageId || !shown) return;
+    const stored = messagesForBot(userId, botId);
+    const idx = stored.findIndex(item => item.id === messageId);
+    const earlier = stored.slice(0, idx < 0 ? stored.length : idx).reverse().find(item => item.role === 'user')?.content || '';
+    const recent = desktopBotRecentChat(userId, botId).slice(0, -1);
+    void desktopBotLine(runWasInterrupted(cause) ? 'interrupted' : 'error', {
+        lang: resultLang,
+        message: oneLine(earlier).slice(0, 160),
+        persona: personaForBot(userId, botId),
+        recent,
+        status: { stop_reason: oneLine(cause).slice(0, 240), last_task: oneLine(earlier).slice(0, 160) || undefined },
+    }, shown).then(line => {
+        if (!line || line === shown) return;
+        const now = messagesForBot(userId, botId);
+        if (!now.some(item => item.id === messageId && item.content === shown)) return;
+        saveBotMessages(userId, botId, now.map(item => item.id === messageId ? { ...item, content: line } : item));
+    });
+}
+
 export function runWasInterrupted(raw: string): boolean {
     return /interrupted|service restarted|中断|中斷|被打断|重启/i.test(raw || '');
 }
@@ -1384,8 +1422,9 @@ export function handleDesktopBotResult(payload: unknown) {
         dropPendingBotReply(resultUser, resultBot, requestId);
         return;
     }
-    settlePendingBotReply(resultUser, resultBot, {
-        content: sentenceForTurn(result, ask),
+    const shown = sentenceForTurn(result, ask);
+    const settledId = settlePendingBotReply(resultUser, resultBot, {
+        content: shown,
         failed: result.failed,
         handoffUrl: screen.userControl || screen.reason ? screen.url : '',
         userControl: screen.userControl,
@@ -1398,6 +1437,7 @@ export function handleDesktopBotResult(payload: unknown) {
         localPaths: attached.localPaths,
     });
     if (!result.silent) reportDesktopBotCrossResult(resultUser, resultBot, result.content);
+    if (result.failed && !ask && settledId) rewordFailedTurn(resultUser, resultBot, settledId, shown, String(result.content || ''));
 }
 
 export function handleDesktopBotReport(payload: unknown) {
@@ -1915,7 +1955,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [handoffNotice, setHandoffNotice] = useState<{ botId: string; reason: string; url: string } | null>(null);
     const [desktopAdmin, setDesktopAdmin] = useState(false);
     const [modeSaving, setModeSaving] = useState(false);
-    const [handingBack, setHandingBack] = useState(false);
+    // Which bot a hand-back is in flight for; the label follows that bot only.
+    const [handingBack, setHandingBack] = useState('');
     const [handBackError, setHandBackError] = useState('');
     const [modeError, setModeError] = useState('');
     const [takeoverByBot, setTakeoverByBot] = useState<Record<string, boolean>>({});
@@ -1944,6 +1985,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const noteQueuedRef = useRef<(botId: string) => void>(() => undefined);
     const langRef = useRef(lang);
     langRef.current = lang;
+    setDesktopBotResultLang(lang);
     const recoverOrphansRef = useRef<(botId: string) => Promise<void>>(async () => undefined);
     // Opening a bot after a restart clears bubbles that never left the app.
     useEffect(() => {
@@ -2348,10 +2390,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // replaces it when the model answers.
     // The last few chat lines, oldest first, so a status line fits the
     // conversation and never repeats what the bot just said.
-    const recentChat = (ownerId: string, botId: string): string[] => messagesForBot(ownerId, botId)
-        .filter(item => !item.pending && (item.content || '').trim())
-        .slice(-6)
-        .map(item => `${item.role === 'user' ? '你' : '我'}: ${oneLine(item.content).slice(0, 160)}`);
+    const recentChat = desktopBotRecentChat;
     // Structured state for a status line: what Hub says is on the desktop.
     const statusFor = async (botId: string, lastTask = ''): Promise<DesktopBotStatusPayload> => {
         const rows = await withinBudget(ListDesktopBotActiveRuns(botId) as Promise<DesktopBotActiveRunRow[] | null>, 2500);
@@ -2389,7 +2428,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if (stored[i].ack && !stored[i].pending) return;
         }
         const id = messageID();
-        const fallback = desktopBotQueuedSentence(langRef.current);
+        const fallback = desktopBotVariedFallback('queued', langRef.current, desktopBotQueuedSentence(langRef.current), desktopBotRecentChat(owner, botId));
         commit(botId, [...stored, { id, role: 'assistant', content: fallback, ack: true }]);
         upgradeLine(owner, botId, id, 'queued', fallback);
     };
@@ -3435,8 +3474,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // the person. Looking at another screen must not start that task.
     const showHandBack = botAskedForDesktop(handBackTarget);
     const handBackToBot = async (botId: string) => {
-        if (!botId || handingBack) return;
-        setHandingBack(true);
+        if (!botId || handingBack === botId) return;
+        setHandingBack(botId);
         setHandBackError('');
         try {
             const handed = await HandBackDesktopBot(botId);
@@ -3461,7 +3500,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             // timed out here while the hand-back had already happened and
             // the task did continue (10-22 17:59 / 18:01). Treat a timeout
             // as handed back: drop the takeover overlay, no red error.
-            if (/没有在时限内|timed? ?out|超时|逾時|deadline exceeded|context canceled/i.test(detail)) {
+            // Hub is the truth: a continuation running there means the
+            // hand-back went through, whatever this call reported.
+            const timedOut = /没有在时限内|timed? ?out|超时|逾時|deadline exceeded|context canceled/i.test(detail);
+            const rows = timedOut ? null : await withinBudget(ListDesktopBotActiveRuns(botId) as Promise<DesktopBotActiveRunRow[] | null>, 2500);
+            const handedOnHub = !!rows && rows.some(row => row && row.status === 'running' && !row.stale);
+            if (timedOut || handedOnHub) {
                 const stored = messagesForBot(userId, botId).map(item => (
                     item.userControl || item.attentionReason ? { ...item, userControl: false, attentionReason: '' } : item
                 ));
@@ -3474,20 +3518,29 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 setTakeoverHoldByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
                 // No continuation bubble came back, so say once that it goes on.
                 const noteId = messageID();
-                const fallback = desktopBotContinuingSentence(langRef.current);
+                const fallback = desktopBotVariedFallback('status_notice', langRef.current, desktopBotContinuingSentence(langRef.current), recentChat(userId, botId));
                 commit(botId, [...stored, { id: noteId, role: 'assistant', content: fallback, ack: true }]);
                 upgradeLine(userId, botId, noteId, 'status_notice', fallback, '', { takeover: 'handed back to the bot; the task continues' });
             } else {
-                setHandBackError(detail || text.handBackFailed);
+                // Truly not handed back: say so in the persona, in the chat.
+                const noteId = messageID();
+                const fallback = text.handBackFailed;
+                commit(botId, [...messagesForBot(userId, botId), { id: noteId, role: 'assistant', content: fallback, ack: true }]);
+                upgradeLine(userId, botId, noteId, 'error', fallback, '', { takeover: 'the person still has the desktop; hand-back did not go through', stop_reason: detail || 'hand-back failed' });
             }
         } finally {
-            setHandingBack(false);
+            setHandingBack(prev => prev === botId ? '' : prev);
         }
     };
     // A stale hand-back error goes once the bot drives again.
     useEffect(() => {
         if (handBackError && agentOperating) setHandBackError('');
     }, [handBackError, agentOperating]);
+    // The bot driving again means the hand-back is done, even while the
+    // call that asked for it has not returned yet.
+    useEffect(() => {
+        if (handingBack && selected?.id === handingBack && agentOperating) setHandingBack('');
+    }, [handingBack, agentOperating, selected?.id]);
 
     const saveDesktopMode = async (botId: string, mode: 'isolated' | 'shared') => {
         setModeSaving(true);
@@ -4706,7 +4759,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 pending.settled = true;
                 pendingRef.current.delete(ticket);
                 clearLiveBotTurn(ownerId, botId, assistantMessage.id);
-                const sentence = desktopBotContinuingSentence(lang);
+                const sentence = desktopBotVariedFallback('continuing', lang, desktopBotContinuingSentence(lang), recentChat(ownerId, botId));
                 const stored = messagesForBot(ownerId, botId);
                 commit(botId, stored.map(item => item.id === assistantMessage.id ? { ...item, content: sentence, pending: false, ack: true, phase: undefined } : item));
                 upgradeLine(ownerId, botId, assistantMessage.id, 'continuing', sentence, content.trim());
@@ -6427,8 +6480,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                         {takeover || showHandBack ? (
                                             <div className="desktop-bot-stage__bar-actions">
                                                 {showHandBack ? (
-                                                    <button type="button" data-testid="desktop-bot-handback" disabled={handingBack} onClick={() => { void handBackToBot(handBackTarget); }}>
-                                                        {handingBack ? text.handBackBusy : text.handBack}
+                                                    <button type="button" data-testid="desktop-bot-handback" disabled={handingBack === handBackTarget} onClick={() => { void handBackToBot(handBackTarget); }}>
+                                                        {handingBack === handBackTarget ? text.handBackBusy : text.handBack}
                                                     </button>
                                                 ) : null}
                                                 {takeover ? (

@@ -1271,10 +1271,10 @@ export function notePendingBotDesktop(userId: string, botId: string, patch: { ha
 
 // settlePendingBotReply records the instance result on the pending reply.
 // The bots page may already be closed when MaClawSrv finishes.
-export function settlePendingBotReply(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; files?: DesktopBotFile[]; localPaths?: string[] }) {
+export function settlePendingBotReply(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; files?: DesktopBotFile[]; localPaths?: string[] }): string {
     const current = messagesForBot(userId, botId);
     const index = pendingBotIndex(current, patch.requestId || '');
-    if (index < 0) return;
+    if (index < 0) return '';
     const next = current.slice();
     const previous = next[index];
     clearLiveBotTurn(userId, botId, previous.id);
@@ -1296,6 +1296,7 @@ export function settlePendingBotReply(userId: string, botId: string, patch: { co
         files: patch.failed || localPaths ? undefined : desktopBotFiles(patch.files),
     };
     saveBotMessages(userId, botId, foldPlanConfirmation(next, index));
+    return previous.id;
 }
 
 // dropPendingBotReply removes a turn that ended without send_to_user.
