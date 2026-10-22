@@ -1,5 +1,7 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
+import { BotAvatar } from './BotAvatar';
+import { BOT_COLORS, BOT_SHAPES, type BotAppearance, type BotShape } from './botAppearance';
 
 export type BotEditDialogLabels = {
     title: string;
@@ -8,6 +10,10 @@ export type BotEditDialogLabels = {
     save: string;
     cancel: string;
     close: string;
+    color?: string;
+    shape?: string;
+    /** Shown when another bot already uses the name. */
+    nameTaken?: string;
 };
 
 type BotEditDialogProps = {
@@ -18,7 +24,11 @@ type BotEditDialogProps = {
     notice: string;
     saving: boolean;
     onClose: () => void;
-    onSubmit: (title: string, description: string) => void;
+    onSubmit: (title: string, description: string, look: BotAppearance) => void;
+    initialAppearance?: BotAppearance;
+    /** Returns true when the name is already used by another bot. */
+    isNameTaken?: (title: string) => boolean;
+    testId?: string;
 };
 
 // Same caps as the rename inputs this dialog replaces.
@@ -29,7 +39,7 @@ const DESCRIPTION_MAX = 80;
  * Modal editor for a bot's name and description. Rendered inside #App, so the
  * custom-dialog classes pick up the theme variables directly.
  */
-export function BotEditDialog({ initialTitle, initialDescription, labels, notice, saving, onClose, onSubmit }: BotEditDialogProps) {
+export function BotEditDialog({ initialTitle, initialDescription, labels, notice, saving, onClose, onSubmit, initialAppearance, isNameTaken, testId }: BotEditDialogProps) {
     const titleId = useId();
     const nameId = useId();
     const descriptionId = useId();
@@ -39,7 +49,10 @@ export function BotEditDialog({ initialTitle, initialDescription, labels, notice
     const dialogRef = useRef<HTMLDivElement | null>(null);
     const previousFocusRef = useRef<HTMLElement | null>(null);
     const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose, { enabled: !saving });
-    const canSave = title.trim() !== '' && !saving;
+    const [color, setColor] = useState(initialAppearance?.color || BOT_COLORS[0]);
+    const [shape, setShape] = useState<BotShape>(initialAppearance?.shape || 'circle');
+    const taken = !!isNameTaken && title.trim() !== '' && isNameTaken(title.trim());
+    const canSave = title.trim() !== '' && !taken && !saving;
 
     useEffect(() => {
         previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -68,7 +81,7 @@ export function BotEditDialog({ initialTitle, initialDescription, labels, notice
 
     const submit = () => {
         if (!canSave) return;
-        onSubmit(title.trim(), description.trim());
+        onSubmit(title.trim(), description.trim(), { color, shape });
     };
 
     const onKeyDown = (event: ReactKeyboardEvent) => {
@@ -111,7 +124,7 @@ export function BotEditDialog({ initialTitle, initialDescription, labels, notice
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby={titleId}
-                data-testid="bot-edit-dialog"
+                data-testid={testId || "bot-edit-dialog"}
                 {...dialogProps}
             >
                 <div className="modal-header custom-dialog__header">
@@ -153,6 +166,49 @@ export function BotEditDialog({ initialTitle, initialDescription, labels, notice
                             spellCheck={false}
                             disabled={saving}
                         />
+                    </div>
+                    {taken ? <p className="bot-edit-dialog__notice" role="alert" data-testid="bot-edit-name-taken">{labels.nameTaken || 'Name already used'}</p> : null}
+                    <div className="bot-edit-dialog__field bot-edit-dialog__look">
+                        <BotAvatar color={color} shape={shape} className="bot-edit-dialog__preview" testId="bot-edit-preview" />
+                    </div>
+                    <div className="bot-edit-dialog__field" role="radiogroup" aria-label={labels.color || 'Color'}>
+                        <span className="form-label bot-edit-dialog__label">{labels.color || 'Color'}</span>
+                        <div className="bot-edit-dialog__swatches">
+                            {BOT_COLORS.map(c => (
+                                <button
+                                    key={c}
+                                    type="button"
+                                    role="radio"
+                                    aria-checked={c === color}
+                                    aria-label={c}
+                                    data-testid={'bot-edit-color-' + c.slice(1)}
+                                    className={'bot-edit-dialog__swatch' + (c === color ? ' is-selected' : '')}
+                                    style={{ background: c }}
+                                    disabled={saving}
+                                    onClick={() => setColor(c)}
+                                />
+                            ))}
+                        </div>
+                    </div>
+                    <div className="bot-edit-dialog__field" role="radiogroup" aria-label={labels.shape || 'Shape'}>
+                        <span className="form-label bot-edit-dialog__label">{labels.shape || 'Shape'}</span>
+                        <div className="bot-edit-dialog__shapes">
+                            {BOT_SHAPES.map(sh => (
+                                <button
+                                    key={sh}
+                                    type="button"
+                                    role="radio"
+                                    aria-checked={sh === shape}
+                                    aria-label={sh}
+                                    data-testid={'bot-edit-shape-' + sh}
+                                    className={'bot-edit-dialog__shape' + (sh === shape ? ' is-selected' : '')}
+                                    disabled={saving}
+                                    onClick={() => setShape(sh)}
+                                >
+                                    <BotAvatar color={color} shape={sh} />
+                                </button>
+                            ))}
+                        </div>
                     </div>
                     {notice ? <p className="bot-edit-dialog__notice" role="status">{notice}</p> : null}
                 </div>

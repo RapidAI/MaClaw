@@ -129,6 +129,8 @@ import { BotMessageBody, botMessageIsStructured } from './botMessageBody';
 import { botChatIsNearBottom, botChatLogStamp, pinBotChatToBottom } from './botChatScroll';
 import { DesktopBotComposer } from './DesktopBotComposer';
 import { BotEditDialog } from './BotEditDialog';
+import { BotAvatar } from './BotAvatar';
+import { appearancesForUser, botNameTaken, defaultAppearance, nextAppearance, saveBotAppearance, type BotAppearance } from './botAppearance';
 import { BotLLMSettingsDialog, type BotLLMProviderOption, type BotLLMSettingsSubmit } from './BotLLMSettingsDialog';
 import { TaskResultArtifacts } from '../ai/assistantTaskArtifacts';
 import { BotFilePreview } from './BotFilePreview';
@@ -798,6 +800,10 @@ function copy(lang: string) {
             removeTitle: 'Delete bot',
             removeAsk: (name: string) => `Delete bot "${name}"? This cannot be undone.`,
             name: 'Name',
+            color: 'Color',
+            shape: 'Shape',
+            nameTaken: 'Another bot already has this name',
+            createTitle: 'New bot',
             description: 'Description',
             persona: 'Persona',
             personaEmpty: 'No persona yet.',
@@ -941,6 +947,10 @@ function copy(lang: string) {
             removeTitle: '刪除 Bot',
             removeAsk: (name: string) => `確定刪除 Bot「${name}」？此操作不可撤銷。`,
             name: '名稱',
+            color: '顏色',
+            shape: '形狀',
+            nameTaken: '已有同名 Bot',
+            createTitle: '新建 Bot',
             description: '描述',
             persona: '人設',
             personaEmpty: '還沒有人設。',
@@ -1083,6 +1093,10 @@ function copy(lang: string) {
         removeTitle: '删除 Bot',
         removeAsk: (name: string) => `确定删除 Bot「${name}」？此操作不可撤销。`,
         name: '名称',
+        color: '颜色',
+        shape: '形状',
+        nameTaken: '已有同名 Bot',
+        createTitle: '新建 Bot',
         description: '描述',
         persona: '人设',
         personaEmpty: '还没有人设。',
@@ -1717,18 +1731,6 @@ function sessionBotId(sessionKey: string, userId: string): string {
     return sessionKey.slice(split + 1);
 }
 
-function botInitial(title: string): string {
-    const clean = title.trim();
-    if (!clean) return 'B';
-    return clean.slice(0, 1).toUpperCase();
-}
-
-function botColor(title: string): string {
-    let hash = 0;
-    for (const ch of title) hash = (hash * 31 + ch.charCodeAt(0)) % 360;
-    return `hsl(${hash}deg 62% 46%)`;
-}
-
 export function formatCreated(ts: number): string {
     if (!ts) return '';
     const date = new Date(ts);
@@ -1913,6 +1915,16 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [editBot, setEditBot] = useState<DesktopBot | null>(null);
     const [editSaving, setEditSaving] = useState(false);
     const [editNotice, setEditNotice] = useState('');
+    const [createOpen, setCreateOpen] = useState(false);
+    const [createSaving, setCreateSaving] = useState(false);
+    const [createNotice, setCreateNotice] = useState('');
+    const [looks, setLooks] = useState<Record<string, BotAppearance>>(() => appearancesForUser(userId));
+    useEffect(() => { setLooks(appearancesForUser(userId)); }, [userId]);
+    const lookOf = (bot: { id: string; title: string }): BotAppearance => looks[bot.id] || defaultAppearance(bot.title);
+    const rememberLook = (botId: string, look: BotAppearance) => {
+        saveBotAppearance(userId, botId, look);
+        setLooks(prev => ({ ...prev, [botId]: look }));
+    };
     // Model dialog. The choice is per account, not per bot, which is why it is
     // opened from the list header rather than from a row.
     const [llmOpen, setLlmOpen] = useState(false);
@@ -3578,29 +3590,44 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         }
     };
 
-    const create = async () => {
+    const create = () => {
+        setListNotice('');
+        setCreateNotice('');
+        setCreateOpen(true);
+    };
+
+    const submitCreate = async (title: string, description: string, look: BotAppearance) => {
+        if (createSaving) return;
         const gen = loadGen.current;
         setListNotice('');
-        const title = `Bot ${bots.length + 1}`;
+        setCreateNotice('');
+        setCreateSaving(true);
+        const desc = description || text.defaultDescription;
         try {
-            const created = await CreateDesktopBot(title, text.defaultDescription);
+            const created = await CreateDesktopBot(title, desc);
             if (gen !== loadGen.current) return;
             const bot: DesktopBot = {
                 id: created.id,
                 title: created.title || title,
-                description: created.description || text.defaultDescription,
+                description: created.description || desc,
                 createdAt: createdMillis(created.created_at),
             };
+            rememberLook(bot.id, look);
             pendingBots.current = [...pendingBots.current.filter(item => item.id !== bot.id), bot];
             setBots(prev => prev.some(item => item.id === bot.id) ? prev : [...prev, bot]);
+            setCreateOpen(false);
             selectBot(bot);
         } catch (error) {
             if (gen !== loadGen.current) return;
-            setListNotice(error instanceof Error && error.message ? error.message : text.unavailable);
+            const message = error instanceof Error && error.message ? error.message : text.unavailable;
+            setCreateOpen(false);
+            setListNotice(message);
+        } finally {
+            setCreateSaving(false);
         }
     };
 
-    const submitEdit = async (title: string, description: string) => {
+    const submitEdit = async (title: string, description: string, look?: BotAppearance) => {
         const botId = editBot?.id;
         if (!botId || editSaving) return;
         const gen = loadGen.current;
@@ -3616,6 +3643,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             setEditSaving(false);
         }
         if (gen !== loadGen.current) return;
+        if (look) rememberLook(botId, look);
         renamedBots.current.set(botId, { title, description });
         setBots(prev => prev.map(bot => bot.id === botId ? { ...bot, title, description } : bot));
         setEditBot(null);
@@ -6016,7 +6044,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             return (
                                 <li key={bot.id} className={'desktop-bot-workspace__row' + (selectedId === bot.id ? ' is-selected' : '')} data-testid={`desktop-bot-${bot.id}`}>
                                     <button type="button" className="desktop-bot-workspace__open" aria-pressed={selectedId === bot.id} onClick={() => selectBot(bot)}>
-                                        <span className="desktop-bot-workspace__avatar" style={{ background: botColor(bot.title) }} aria-hidden="true">{botInitial(bot.title)}</span>
+                                        <BotAvatar className="desktop-bot-workspace__avatar" color={lookOf(bot).color} shape={lookOf(bot).shape} />
                                         <span className="desktop-bot-workspace__who">
                                             {bot.primary ? (
                                                 <span className="desktop-bot-workspace__titleline">
@@ -6079,7 +6107,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 onLostPointerCapture={finishIdentityDrag}
                                 onClick={onIdentityClick}
                             >
-                                <span className="desktop-bot-workspace__avatar desktop-bot-chat__avatar" style={{ background: botColor(selected.title) }} aria-hidden="true">{botInitial(selected.title)}</span>
+                                <BotAvatar className="desktop-bot-workspace__avatar desktop-bot-chat__avatar" color={lookOf(selected).color} shape={lookOf(selected).shape} />
                                 <span className="desktop-bot-chat__identity">
                                     <strong>{selected.title}</strong>
                                     <span className={'desktop-bot-chat__status' + (statusPhase ? ' is-working' : '')} data-testid="desktop-bot-status"><i aria-hidden="true" />{statusText}</span>
@@ -6112,7 +6140,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                         {message.role === 'assistant' && message.noticeBots && message.noticeBots.length > 0 ? (
                                             <span className="desktop-bot-chat__notice-bots" data-testid="desktop-bot-notice-bots">
                                                 {message.noticeBots.map(bot => (
-                                                    <span key={bot.id} className="desktop-bot-chat__notice-avatar" title={bot.name} aria-label={bot.name}>{botInitial(bot.name)}</span>
+                                                    <BotAvatar key={bot.id} className="desktop-bot-chat__notice-avatar" title={bot.name} {...lookOf(bots.find(item => item.id === bot.id) || { id: bot.id, title: bot.name })} />
                                                 ))}
                                             </span>
                                         ) : null}
@@ -6327,7 +6355,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         <button type="button" className="desktop-bot-panel__close" data-testid="desktop-bot-stage-close" aria-label={text.hideDesktop} onClick={() => collapseStage(selected.id)}>×</button>
                     </div>
                     <div className="desktop-bot-panel__who">
-                        <span className="desktop-bot-panel__avatar" style={{ background: botColor(selected.title) }} aria-hidden="true">{botInitial(selected.title)}</span>
+                        <BotAvatar className="desktop-bot-panel__avatar" color={lookOf(selected).color} shape={lookOf(selected).shape} />
                         <h2>{selected.title}</h2>
                         <p className="desktop-bot-panel__description">{selected.description || text.defaultDescription}</p>
                     </div>
@@ -6609,13 +6637,43 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             ) : null}
             <BotFilePreview lang={lang} botId={selectedId} />
             {visibleShot ? <BotShotPreview src={visibleShot} alt={text.screenshot} closeLabel={text.closePreview} onClose={closeShot} /> : null}
+            {createOpen ? (
+                <BotEditDialog
+                    key="create"
+                    testId="bot-create-dialog"
+                    initialTitle={`Bot ${bots.length + 1}`}
+                    initialDescription=""
+                    initialAppearance={nextAppearance(bots.map(lookOf))}
+                    isNameTaken={name => botNameTaken(name, bots)}
+                    labels={{
+                        title: text.createTitle,
+                        name: text.name,
+                        description: text.description,
+                        color: text.color,
+                        shape: text.shape,
+                        nameTaken: text.nameTaken,
+                        save: text.create,
+                        cancel: text.cancel,
+                        close: text.close,
+                    }}
+                    notice={createNotice}
+                    saving={createSaving}
+                    onClose={() => setCreateOpen(false)}
+                    onSubmit={(title, description, look) => { void submitCreate(title, description, look); }}
+                />
+            ) : null}
             {editBot ? (
                 <BotEditDialog
                     key={editBot.id}
                     initialTitle={editBot.title}
                     initialDescription={editBot.description}
+                    initialAppearance={lookOf(editBot)}
+                    isNameTaken={name => botNameTaken(name, bots, editBot.id)}
                     labels={{
                         title: text.editTitle,
+                        color: text.color,
+                        shape: text.shape,
+                        nameTaken: text.nameTaken,
                         name: text.name,
                         description: text.description,
                         save: text.save,
@@ -6625,7 +6683,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     notice={editNotice}
                     saving={editSaving}
                     onClose={() => setEditBot(null)}
-                    onSubmit={(title, description) => { void submitEdit(title, description); }}
+                    onSubmit={(title, description, look) => { void submitEdit(title, description, look); }}
                 />
             ) : null}
             {llmOpen ? (

@@ -357,6 +357,7 @@ describe('DesktopBotWorkspace', () => {
         sendTask.mockImplementation(() => new Promise(resolve => { release = resolve; }));
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        fireEvent.click(await screen.findByTestId('bot-edit-save'));
         fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '先做这个' } });
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
         expect(await screen.findByText('先做这个')).toBeTruthy();
@@ -444,6 +445,7 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.getByTestId('desktop-bot-pick').textContent).toContain('选择一个 Bot');
 
         fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        fireEvent.click(await screen.findByTestId('bot-edit-save'));
         expect((await screen.findAllByText('Bot 1')).length).toBeGreaterThan(0);
         const list = screen.getByLabelText('Bot');
         expect(list.textContent).toContain('远程电脑上的7x24小时数字助理。');
@@ -492,6 +494,7 @@ describe('DesktopBotWorkspace', () => {
         }));
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        fireEvent.click(await screen.findByTestId('bot-edit-save'));
         expect(await screen.findByTestId('desktop-bot-command')).toBeTruthy();
 
         fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
@@ -515,6 +518,7 @@ describe('DesktopBotWorkspace', () => {
         }));
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        fireEvent.click(await screen.findByTestId('bot-edit-save'));
         expect(await screen.findByTestId('desktop-bot-command')).toBeTruthy();
 
         fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
@@ -541,6 +545,7 @@ describe('DesktopBotWorkspace', () => {
         }));
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        fireEvent.click(await screen.findByTestId('bot-edit-save'));
         expect(await screen.findByTestId('desktop-bot-command')).toBeTruthy();
 
         fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
@@ -562,6 +567,7 @@ describe('DesktopBotWorkspace', () => {
         understandTask.mockResolvedValue({ reading: 'unscheduled' });
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        fireEvent.click(await screen.findByTestId('bot-edit-save'));
         expect(await screen.findByTestId('desktop-bot-command')).toBeTruthy();
 
         fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '每天早上问好' } });
@@ -580,6 +586,7 @@ describe('DesktopBotWorkspace', () => {
         understandTask.mockRejectedValue('desktop bot reading timed out after 30 seconds');
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        fireEvent.click(await screen.findByTestId('bot-edit-save'));
         expect(await screen.findByTestId('desktop-bot-command')).toBeTruthy();
 
         fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
@@ -597,6 +604,7 @@ describe('DesktopBotWorkspace', () => {
         }));
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        fireEvent.click(await screen.findByTestId('bot-edit-save'));
         expect(await screen.findByTestId('desktop-bot-command')).toBeTruthy();
 
         fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
@@ -2601,6 +2609,7 @@ describe('DesktopBotWorkspace', () => {
         createBot.mockRejectedValueOnce(new Error('MaClawSrv 不可达'));
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        fireEvent.click(await screen.findByTestId('bot-edit-save'));
         expect((await screen.findByTestId('desktop-bot-list-error')).textContent).toBe('MaClawSrv 不可达');
         expect(screen.getByTestId('desktop-bot-empty')).toBeTruthy();
     });
@@ -4176,7 +4185,7 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
         const panel = screen.getByTestId('desktop-bot-panel');
         expect(screen.getByTestId('desktop-bot-open-desktop').getAttribute('aria-pressed')).toBe('true');
-        expect(panel.querySelector('.desktop-bot-panel__avatar')?.textContent).toBe('值');
+        expect(panel.querySelector('.desktop-bot-panel__avatar')?.getAttribute('data-shape')).toBeTruthy();
         expect(panel.querySelector('.desktop-bot-panel__avatar')?.className).toContain('desktop-bot-panel__avatar');
         expect(panel.textContent).toContain('远程电脑上的7x24小时数字助理。');
         expect(screen.getAllByRole('tab')).toHaveLength(4);
@@ -4596,6 +4605,7 @@ describe('DesktopBotWorkspace', () => {
         }));
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        fireEvent.click(await screen.findByTestId('bot-edit-save'));
         expect(await screen.findByTestId('desktop-bot-bot_new')).toBeTruthy();
         await act(async () => {
             resolveList([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1', created_at: listedAt }]);
@@ -4633,6 +4643,7 @@ describe('DesktopBotWorkspace', () => {
         }));
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        fireEvent.click(await screen.findByTestId('bot-edit-save'));
         await screen.findByTestId('desktop-bot-bot_new');
         fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
@@ -4684,6 +4695,7 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.getByTestId('desktop-bot-details').textContent).not.toContain(formatCreated(Date.now()));
 
         fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        fireEvent.click(await screen.findByTestId('bot-edit-save'));
         expect(await screen.findByTestId('desktop-bot-bot_new')).toBeTruthy();
         fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
         fireEvent.click(screen.getByTestId('desktop-bot-tab-details'));
@@ -5428,6 +5440,7 @@ describe('DesktopBotWorkspace', () => {
         listBotTasks.mockResolvedValue([{ run_id: 'run-1', bot_id: 'bot_1', status: 'running', task: '知乎回答' }]);
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        fireEvent.click(await screen.findByTestId('bot-edit-save'));
         expect(await screen.findByTestId('desktop-bot-command')).toBeTruthy();
         act(() => {
             responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', run_driving: true });
@@ -5450,6 +5463,7 @@ describe('DesktopBotWorkspace', () => {
         sendTask.mockResolvedValue({ request_id: 'req-queued', deferred: true, session_key: 'alice:bot_1' });
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
         fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        fireEvent.click(await screen.findByTestId('bot-edit-save'));
         expect(await screen.findByTestId('desktop-bot-command')).toBeTruthy();
         act(() => {
             responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', run_driving: true });
