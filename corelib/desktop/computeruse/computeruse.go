@@ -241,6 +241,7 @@ func ParseStep(m map[string]any) (Step, error) {
 	if input, ok := m["input"].(map[string]any); ok {
 		m = input
 	}
+	m = shorthandStep(m)
 	kind := strings.ToLower(strings.TrimSpace(StringArg(m, "action", "type")))
 	_, hasActionField := m["action"]
 	if !hasActionField {
@@ -836,3 +837,34 @@ func ShotOptionsFromArgs(args map[string]any, frame desktop.Shot, base desktop.S
 // KeyInserts reports whether a key chord types text or pastes (the
 // password-field guard applies to it).
 func KeyInserts(key string) bool { return browser.KeyInsertsText(key) }
+
+// shorthandStep reads the one-key step forms our own prompts and helpers use,
+// such as {"key":"ctrl+v"} or {"click":{"x":10,"y":20}}, as native actions.
+// Without this they carry neither action nor type and fail as action "".
+func shorthandStep(m map[string]any) map[string]any {
+	if _, ok := m["action"]; ok {
+		return m
+	}
+	if _, ok := m["type"]; ok {
+		return m
+	}
+	if k, ok := m["key"].(string); ok && strings.TrimSpace(k) != "" {
+		out := map[string]any{"action": "key"}
+		for name, v := range m {
+			out[name] = v
+		}
+		return out
+	}
+	for _, kind := range []string{"click", "double_click", "right_click", "scroll", "move"} {
+		inner, ok := m[kind].(map[string]any)
+		if !ok {
+			continue
+		}
+		out := map[string]any{"action": kind}
+		for name, v := range inner {
+			out[name] = v
+		}
+		return out
+	}
+	return m
+}

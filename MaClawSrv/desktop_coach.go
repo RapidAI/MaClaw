@@ -209,7 +209,7 @@ func desktopRichFill(ctx context.Context, scope agentruntime.Scope, args map[str
 			return "", err
 		}
 	case args["x"] != nil && args["y"] != nil:
-		if err := step(map[string]any{"action": "app_run", "steps": []any{map[string]any{"click": map[string]any{"x": args["x"], "y": args["y"]}}}}); err != nil {
+		if err := step(map[string]any{"action": "app_run", "steps": []any{map[string]any{"action": "click", "x": args["x"], "y": args["y"]}}}); err != nil {
 			return "", err
 		}
 		parts = append(parts, "focused the editor")
@@ -221,11 +221,11 @@ func desktopRichFill(ctx context.Context, scope agentruntime.Scope, args map[str
 	}
 	desktopNoteClipboard(desktopOwner(scope), map[string]any{"text": text})
 	if b, _ := args["replace"].(bool); b || strings.EqualFold(desktopArg(args, "replace"), "true") {
-		if err := step(map[string]any{"action": "app_run", "steps": []any{map[string]any{"key": "ctrl+a"}}}); err != nil {
+		if err := step(map[string]any{"action": "app_run", "steps": []any{map[string]any{"action": "key", "key": "ctrl+a"}}}); err != nil {
 			return "", err
 		}
 	}
-	out, err := operateDesktopWithTimeout(ctx, scope, map[string]any{"action": "app_run", "steps": []any{map[string]any{"key": "ctrl+v"}}})
+	out, err := operateDesktopWithTimeout(ctx, scope, map[string]any{"action": "app_run", "steps": []any{map[string]any{"action": "key", "key": "ctrl+v"}}})
 	if err != nil {
 		return "", fmt.Errorf("rich_fill paste: %w", err)
 	}
