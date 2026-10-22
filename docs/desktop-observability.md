@@ -7,6 +7,7 @@ No UI. Everything is JSONL on disk plus a read-only CLI, so you can reach it ove
 Path: `$MACLAW_DATA_ROOT/desktop-runs/<tenant>/<bot>/<run_id>.jsonl`.
 On both hosts that is `/data/soft/maclaw_srv/data/desktop-runs/...` (see `/data/soft/maclaw_srv/.env`).
 
+- The directory is created on the first desktop step after deploy.
 - One line per desktop tool call (`event:"step"`), plus note lines (`takeover_request`, `lease`).
 - Limits: each file stops at 2 MB. The tree is pruned to 300 MB and 14 days, checked at most every 10 minutes.
 - To disable, set `MACLAW_DESKTOP_EVENTS=off` in `.env`.
@@ -30,6 +31,7 @@ On both hosts that is `/data/soft/maclaw_srv/data/desktop-runs/...` (see `/data/
 ### Query CLI (read-only)
 
 ```sh
+export TZ=Asia/Shanghai   # hosts run in UTC; the CLI prints local time
 R=/data/soft/maclaw_srv/data/desktop-runs
 M=/data/soft/maclaw_srv/bin/maclawsrv
 $M runs list --root $R                       # recent runs (24h), steps and result counts
