@@ -3,6 +3,7 @@ package guiapp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -339,17 +340,78 @@ func (mb *multiBot) toolPauseResume(args map[string]interface{}, pause bool) str
 		}
 		if pause {
 			mb.reg.Pause(b.ID)
-			out = append(out, b.Name+" paused (a run already going finishes; new tasks are held)")
+			out = append(out, b.Name+" "+mb.pauseRemoteRuns(ctx, b))
 			continue
 		}
+		resumed := mb.resumeRemoteRuns(ctx, b)
 		held, _ := mb.reg.Resume(b.ID)
-		line := b.Name + " resumed"
+		line := b.Name + " resumed" + resumed
 		for _, order := range held {
 			line += "; " + mb.dispatch(ctx, b, order, "")
 		}
 		out = append(out, line)
 	}
 	return strings.Join(out, "\n")
+}
+
+// pauseRemoteRuns pauses a remote bot's running runs at their next step
+// boundary on the server. The registry hold (new orders wait) is applied by
+// the caller either way, so an older Hub still gets the soft pause.
+func (mb *multiBot) pauseRemoteRuns(ctx context.Context, b botregistry.Bot) string {
+	if b.Location != botregistry.LocationRemote {
+		return "paused (new tasks are held)"
+	}
+	runs, err := mb.hub.activeRuns(ctx, b.ID)
+	if err != nil {
+		return "paused locally only (could not read its runs: " + err.Error() + "); new tasks are held"
+	}
+	n := 0
+	for _, r := range runs {
+		if r.RunID == "" || r.Paused || strings.EqualFold(r.Status, "queued") {
+			continue
+		}
+		if err := mb.hub.pauseRun(ctx, b.ID, r.RunID, "paused by the main bot"); err != nil {
+			if errors.Is(err, errDesktopBotPauseUnsupported) {
+				return "paused softly: this Hub cannot hold a running task yet, so the current run finishes; new tasks are held"
+			}
+			return "pause failed for run " + r.RunID + ": " + err.Error() + "; new tasks are held"
+		}
+		n++
+	}
+	mb.mu.Lock()
+	mb.lastRefresh = time.Time{}
+	mb.mu.Unlock()
+	if n == 0 {
+		return "paused (nothing running; new tasks are held)"
+	}
+	return fmt.Sprintf("paused: %d running task(s) will hold at the next step boundary (the server cancels a pause left open 30 min); new tasks are held", n)
+}
+
+// resumeRemoteRuns releases runs Hub reports as paused.
+func (mb *multiBot) resumeRemoteRuns(ctx context.Context, b botregistry.Bot) string {
+	if b.Location != botregistry.LocationRemote {
+		return ""
+	}
+	runs, err := mb.hub.activeRuns(ctx, b.ID)
+	if err != nil {
+		return ""
+	}
+	n := 0
+	for _, r := range runs {
+		if !r.Paused || r.RunID == "" {
+			continue
+		}
+		if err := mb.hub.resumeRun(ctx, b.ID, r.RunID); err == nil {
+			n++
+		}
+	}
+	mb.mu.Lock()
+	mb.lastRefresh = time.Time{}
+	mb.mu.Unlock()
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (%d held task(s) continue where they stopped)", n)
 }
 
 func (mb *multiBot) toolBotEvents(args map[string]interface{}) string {

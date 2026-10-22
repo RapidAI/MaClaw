@@ -16,6 +16,9 @@ type fakeMBHub struct {
 	mu      sync.Mutex
 	bots    []desktopBotRosterEntry
 	runs    map[string][]DesktopBotActiveRun
+	pauses  []string
+	resumes []string
+	noPause bool
 	crosses []string
 	cancels []string
 	uploads []string
@@ -44,6 +47,33 @@ func (f *fakeMBHub) cancelRun(ctx context.Context, bot, run string) error {
 	f.runs[bot] = nil
 	return nil
 }
+func (f *fakeMBHub) pauseRun(ctx context.Context, bot, run, reason string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.noPause {
+		return errDesktopBotPauseUnsupported
+	}
+	f.pauses = append(f.pauses, bot+"/"+run)
+	for i := range f.runs[bot] {
+		if f.runs[bot][i].RunID == run {
+			f.runs[bot][i].Paused = true
+		}
+	}
+	return nil
+}
+
+func (f *fakeMBHub) resumeRun(ctx context.Context, bot, run string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resumes = append(f.resumes, bot+"/"+run)
+	for i := range f.runs[bot] {
+		if f.runs[bot][i].RunID == run {
+			f.runs[bot][i].Paused = false
+		}
+	}
+	return nil
+}
+
 func (f *fakeMBHub) uploadFile(ctx context.Context, bot, path string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -148,6 +178,51 @@ func TestMultiBotPauseHoldsThenResumeDispatches(t *testing.T) {
 	out = mb.toolPauseResume(map[string]interface{}{"bot": "bot_2"}, false)
 	if !strings.Contains(out, "resumed") || len(hub.crosses) != 1 {
 		t.Fatalf("resume = %s crosses=%v", out, hub.crosses)
+	}
+}
+
+func TestMultiBotRealPauseResumeSameRun(t *testing.T) {
+	mb, hub := newTestMultiBot(t)
+	hub.runs["bot_2"] = []DesktopBotActiveRun{{RunID: "run_1", Status: "running", Task: "发文章"}}
+	mb.toolListBots(map[string]interface{}{"refresh": true})
+	out := mb.toolPauseResume(map[string]interface{}{"bot": "bot_2"}, true)
+	if len(hub.pauses) != 1 || hub.pauses[0] != "bot_2/run_1" || !strings.Contains(out, "step boundary") {
+		t.Fatalf("pause = %s %v", out, hub.pauses)
+	}
+	st := mb.toolGetBotStatus(map[string]interface{}{"bot": "bot_2"})
+	if !strings.Contains(st, `"state": "paused"`) {
+		t.Fatalf("status = %s", st)
+	}
+	out = mb.toolPauseResume(map[string]interface{}{"bot": "bot_2"}, false)
+	if len(hub.resumes) != 1 || hub.resumes[0] != "bot_2/run_1" || len(hub.cancels) != 0 || !strings.Contains(out, "continue") {
+		t.Fatalf("resume = %s %v", out, hub.resumes)
+	}
+}
+
+func TestMultiBotPauseOlderHubFallsBackToHold(t *testing.T) {
+	mb, hub := newTestMultiBot(t)
+	hub.noPause = true
+	hub.runs["bot_2"] = []DesktopBotActiveRun{{RunID: "run_1", Status: "running"}}
+	mb.toolListBots(map[string]interface{}{"refresh": true})
+	out := mb.toolPauseResume(map[string]interface{}{"bot": "bot_2"}, true)
+	if !strings.Contains(out, "softly") {
+		t.Fatalf("out = %s", out)
+	}
+	if b, _ := mb.reg.Get("bot_2"); !b.Paused {
+		t.Fatal("registry hold not applied")
+	}
+}
+
+func TestDesktopBotPauseUnsupportedDetection(t *testing.T) {
+	cases := []struct {
+		status int
+		code   string
+		want   bool
+	}{{404, "", true}, {404, "BOT_NOT_FOUND", false}, {501, "PAUSE_UNSUPPORTED", true}, {405, "", true}, {409, "RUN_NOT_RUNNING", false}}
+	for _, c := range cases {
+		if got := desktopBotPauseUnsupported(c.status, c.code); got != c.want {
+			t.Fatalf("%d %s = %v", c.status, c.code, got)
+		}
 	}
 }
 

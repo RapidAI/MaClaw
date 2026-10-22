@@ -12,6 +12,8 @@ type RunView struct {
 	WaitingForUser bool
 	Stale          bool
 	Error          string
+	// Paused: Hub holds this run at a step boundary (real pause).
+	Paused bool
 }
 
 // ApplyRuns folds a bot's active runs into its state. Waiting on the person
@@ -57,6 +59,12 @@ func ApplyRuns(b *Bot, runs []RunView) {
 	case running != nil:
 		b.State = StateRunning
 		pick(running)
+		if running.Paused {
+			// Held at a step boundary on the server: nothing new starts
+			// until resume, so it reads as paused, not running.
+			b.State = StatePaused
+			b.StopReason = "paused at a step boundary"
+		}
 	case stale != nil:
 		b.State = StateError
 		pick(stale)

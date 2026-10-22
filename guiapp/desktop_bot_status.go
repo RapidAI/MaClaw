@@ -312,6 +312,10 @@ type DesktopBotActiveRun struct {
 	WaitingForUser bool   `json:"waiting_for_user"`
 	Stale          bool   `json:"stale"`
 	StartedAt      string `json:"started_at"`
+	// Paused is set by a Hub that supports pause while the run is held at
+	// a step boundary; older Hubs never send it.
+	Paused         bool   `json:"paused,omitempty"`
+	PauseExpiresAt string `json:"pause_expires_at,omitempty"`
 }
 
 // ListDesktopBotActiveRuns reads this bot's ongoing runs from Hub.

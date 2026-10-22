@@ -42,6 +42,10 @@ type multiBotHub interface {
 	activeRuns(ctx context.Context, botID string) ([]DesktopBotActiveRun, error)
 	cross(ctx context.Context, fromID, kind, targetID, text, order string) error
 	cancelRun(ctx context.Context, botID, runID string) error
+	// pauseRun/resumeRun hold and release a running run at a step boundary
+	// on the server; errDesktopBotPauseUnsupported on an older Hub.
+	pauseRun(ctx context.Context, botID, runID, reason string) error
+	resumeRun(ctx context.Context, botID, runID string) error
 	uploadFile(ctx context.Context, botID, path string) (string, error)
 }
 
@@ -175,7 +179,7 @@ func (mb *multiBot) refresh(ctx context.Context, force bool) error {
 		} else {
 			views := make([]botregistry.RunView, 0, len(runs))
 			for _, r := range runs {
-				views = append(views, botregistry.RunView{RunID: r.RunID, Status: r.Status, Task: r.Task, Step: r.Step, NextStep: r.NextStep, WaitingForUser: r.WaitingForUser, Stale: r.Stale})
+				views = append(views, botregistry.RunView{RunID: r.RunID, Status: r.Status, Task: r.Task, Step: r.Step, NextStep: r.NextStep, WaitingForUser: r.WaitingForUser, Stale: r.Stale, Paused: r.Paused})
 			}
 			botregistry.ApplyRuns(&bot, views)
 		}
@@ -326,6 +330,16 @@ func (h appMultiBotHub) cross(ctx context.Context, fromID, kind, targetID, text,
 
 func (h appMultiBotHub) cancelRun(ctx context.Context, botID, runID string) error {
 	return h.a.CancelDesktopBotRun(botID, runID)
+}
+
+func (h appMultiBotHub) pauseRun(ctx context.Context, botID, runID, reason string) error {
+	_, err := h.a.PauseDesktopBotRun(botID, runID, reason, 0)
+	return err
+}
+
+func (h appMultiBotHub) resumeRun(ctx context.Context, botID, runID string) error {
+	_, err := h.a.ResumeDesktopBotRun(botID, runID)
+	return err
 }
 
 // uploadFile sends a local file to the bot's desktop in chunks and returns
