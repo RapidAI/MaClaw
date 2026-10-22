@@ -1248,7 +1248,35 @@ def write_dock_browser_entry(profile):
     write_if_changed(target, "\n".join(lines) + "\n", 0o644)
 
 
+EVENT_LOG_MAX = 5 << 20
+
+
+def log_event(event, **fields):
+    """One structured line per desktop event (docs/desktop-observability.md)
+    in /desktops/events.jsonl, rotated at EVENT_LOG_MAX to events.jsonl.1.
+    Never raises."""
+    try:
+        record = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "event": event}
+        record.update({k: v for k, v in fields.items() if v is not None})
+        key = str(record.get("key") or "")
+        owner = owner_key()
+        if key and owner and key.startswith(owner) and len(key) > len(owner):
+            record["bot"] = key[len(owner):]
+        line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+        path = ROOT / "events.jsonl"
+        try:
+            if path.stat().st_size > EVENT_LOG_MAX:
+                os.replace(path, ROOT / "events.jsonl.1")
+        except OSError:
+            pass
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except Exception:
+        pass
+
+
 def start_desktop(key, display):
+    log_event("display_start", key=key, display=display, kind="owner")
     home = ROOT / key
     home.mkdir(mode=0o700, exist_ok=True)
     profile = prepare_screen_profile(key, display)
@@ -3543,6 +3571,7 @@ def print_idle(key):
 
 
 def stop_desktop(key):
+    log_event("display_stop", key=key)
     # Write cookies and tabs before the process is gone. The next start of
     # this same profile then still has the website login.
     flush_browser(key)
@@ -4666,10 +4695,12 @@ class H264Viewer:
                 sequence, frame, key = self.queue.pop(0)
             if self.mse:
                 self.send_raw(frame)
+                self.frames_sent = getattr(self, "frames_sent", 0) + 1
                 continue
             header = {"seq": sequence, "key": key, "ts": int(time.monotonic() * 1000000),
                       "codec": self._codec(frame), "w": self.width, "h": self.height}
             self.send_raw(h264_video_message(header, frame))
+            self.frames_sent = getattr(self, "frames_sent", 0) + 1
             with self.cond:
                 self.sent = sequence
 
@@ -4743,6 +4774,7 @@ class H264Viewer:
             while not self.closed.is_set():
                 _, opcode, data = ws_frame(self.client, pending)
                 if opcode == 8:
+                    self.close_reason = self.close_reason or "viewer_closed"
                     break
                 if opcode == 9:
                     self.send_raw(data, 0x8A)
@@ -4753,8 +4785,9 @@ class H264Viewer:
                         continue
                     if isinstance(message, dict):
                         self.handle(message)
-        except (OSError, ValueError, struct.error):
-            pass
+        except (OSError, ValueError, struct.error) as exc:
+            self.close_reason = self.close_reason or "read_error:%s" % exc.__class__.__name__
+        self.close_reason = self.close_reason or "viewer_gone"
         self.close()
 
     def tick_lease(self):
@@ -4764,6 +4797,9 @@ class H264Viewer:
         holder = screen_lease(self.key, self.screen, self)
         state = (holder, allowed)
         if state != self.lease_sent:
+            if self.lease_sent is not None:
+                log_event("lease_change", key=self.key, display=self.display, holder=holder, input=allowed,
+                          interactive=self.want_input)
             self.lease_sent = state
             self.send_json({"type": "lease", "holder": holder, "input": allowed,
                             "takeover": bool(self.key) and takeover_state(self.key) is not None})
@@ -4803,6 +4839,10 @@ class H264Viewer:
 
     def run(self):
         allowed = self.input_allowed()
+        started = time.monotonic()
+        self.close_reason = ""
+        log_event("h264_open", key=self.key, display=self.display, interactive=self.want_input,
+                  takeover=self.takes_over, input=allowed, mse=self.mse, fps=self.fps)
         self.send_json({"type": "hello", "proto": "maclaw-h264/1", "width": self.width, "height": self.height,
                         "fps": self.fps, "mode": "fmp4" if self.mse else "annexb", "input": allowed,
                         "clipboard": clipboard_tool() is not None})
@@ -4810,10 +4850,13 @@ class H264Viewer:
             threading.Thread(target=target, daemon=True).start()
         try:
             self.sender_loop()
-        except OSError:
-            pass
+        except OSError as exc:
+            self.close_reason = self.close_reason or "send_error:%s" % exc.__class__.__name__
         finally:
             self.close()
+            log_event("h264_close", key=self.key, display=self.display, interactive=self.want_input,
+                      frames=getattr(self, "frames_sent", 0), seconds=round(time.monotonic() - started, 1),
+                      reason=self.close_reason or "closed")
 
 
 def serve_h264(client, head, owner_token):
@@ -5034,6 +5077,7 @@ def evict_bots(current):
 
 
 def start_bot_desktop(key, display):
+    log_event("display_start", key=key, display=display, kind="bot")
     home = ROOT / key
     home.mkdir(mode=0o700, exist_ok=True)
     # The bot does not get its own profile. Chrome opens a working copy of
@@ -5579,6 +5623,7 @@ def watch_bot(key, display):
                 ensure_bot_panel(key, display)
                 if takeover_state(key) is None and time.time() - bot_last_activity(key) >= idle_limit:
                     print("bot display %s idle, stopping" % key, file=sys.stderr)
+                    log_event("display_idle_timeout", key=key, idle_limit=idle_limit)
                     stop_desktop(key)
                     stopped = True
         reap_children()
@@ -5626,6 +5671,7 @@ def ctl_takeover_begin(request):
     path = ROOT / key / "takeover.json"
     path.parent.mkdir(mode=0o700, exist_ok=True)
     path.write_text(json.dumps({"reason": reason, "since": int(time.time())}), encoding="utf-8")
+    log_event("takeover_begin", key=key, reason=reason[:120], source="bot")
     entry = (load_registry().get("users", {}) or {}).get(key) or {}
     try:
         display = int(entry.get("display") or 0)
@@ -5638,6 +5684,7 @@ def ctl_takeover_begin(request):
 
 def ctl_takeover_end(request):
     key = ctl_bot_key(request)
+    log_event("takeover_end", key=key, source="handback")
     try:
         (ROOT / key / "takeover.json").unlink()
     except OSError:

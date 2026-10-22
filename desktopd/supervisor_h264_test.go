@@ -289,3 +289,17 @@ print(sup.a11y_focused_text({}, P))
 		t.Fatalf("got:\n%s", out)
 	}
 }
+
+// Structured desktop events go to stderr and /desktops/events.jsonl with the
+// bot part of the key split out.
+func TestSupervisorLogEvent(t *testing.T) {
+	out := runSupervisorPython(t, `
+os.environ["MACLAW_DESKTOP_KEY"] = "ab" * 8
+sup.log_event("display_start", key="ab" * 8 + "cd" * 8, display=23, kind="bot", skip=None)
+rec = json.loads((sup.ROOT / "events.jsonl").read_text().splitlines()[-1])
+print(rec["event"], rec["display"], rec["bot"], "skip" in rec, "ts" in rec)
+`)
+	if out != "display_start 23 "+strings.Repeat("cd", 8)+" False True" {
+		t.Fatalf("got %q", out)
+	}
+}
