@@ -39,7 +39,7 @@ const desktopSessionOwner = "maclawsrv-desktop"
 // The desktop tool's action vocabulary is one list. Plan and execute advertise
 // that same list. The plan allow-list is only the phase gate: a mutating call
 // stays in the schema and returns the next-step sentence.
-var desktopExecuteActions = []string{"rich_fill", "navigate", "probe", "click", "type", "press", "task_run", "script", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover"}
+var desktopExecuteActions = []string{"batch", "rich_fill", "navigate", "probe", "click", "type", "press", "task_run", "script", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover"}
 
 var desktopPlanActions = []string{"probe", "screenshot", "app_list", "file_read", "file_list", "skill_list", "app_probe", "window_list", "screen_info", "clipboard_get", "wait"}
 
@@ -108,6 +108,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			"Single browser actions navigate, click, type, and press remain available. " +
 			"For non-browser windows: action=app_probe lists the accessible elements (role, name, states, bounds) of the focused window with numbered ids; app_run or computer steps then target {\"id\":N} (click, focus, set_text). marks=true adds a screenshot with those numbers drawn. " +
 			"action=computer runs a batch of computer-use actions (Anthropic or OpenAI names) and reports each step; it stops at the first failure. " +
+			"Batch mode (default for a known form/publish flow): observe once (one probe or one script that reads the page), then ONE action=batch whose plan is the whole sequence as desktop steps, e.g. [{action:script,script:fill title},{action:rich_fill,text:BODY},{action:script,script:set topics},{action:script,script:click 发布}], then ONE read-back script on the result page. batch runs the steps in order through the same guards, stops at the first failure and reports each step; only then fix the failed step alone. " +
 			"For a rich-text editor body on any site use ONE action=rich_fill with the full text (replace=true to overwrite); it focuses the page's main editor itself (ref, or x,y in SCREEN pixels, only for a different editor), raises the browser, pastes with a real Ctrl+V and reads back the length. Coordinates a page script reports are viewport/CSS pixels, not screen pixels: click page elements by ref, never by script coordinates. " +
 			"action=clipboard_set then a paste step (or app_run paste{text}) inserts long or Chinese text without the input method. clipboard_get reads it. window_list, window (activate, maximize, minimize, restore, move, resize, close), screen_info, and wait (for screen change or a window) manage windows. " +
 			"action=screenshot accepts region (zoom), format jpeg/webp, quality, and cursor. Full screenshots always come at one fixed size, so coordinates keep the same scale from shot to shot. " +
@@ -137,6 +138,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"key":         map[string]any{"type": "string", "description": "Key for press"},
 				"query":       map[string]any{"type": "string", "description": "Optional probe filter. Leave it empty to list every control."},
 				"script":      map[string]any{"type": "string", "description": "Statements for action=script. click(\"保存\") or click(\"button.primary\") clicks. type(\"#q\", \"weather\") types. select(\"状态\", \"完成\") chooses an option. press(\"Enter\"), scroll(600), and waitFor(\"下一步\", 3000) run in the same script. Do not read cookies, storage, or passwords."},
+				"plan":        map[string]any{"type": "array", "description": "batch: desktop steps run in order in one call, each an object with its own action (script, rich_fill, navigate, probe, click, type, press, wait) and that action's fields; stops at the first failure", "items": map[string]any{"type": "object"}},
 				"steps":       map[string]any{"type": "array", "description": "task_run or app_run steps. Browser step: {action, params:{url,ref,text,key}}. App step: {action, ...} with action focus{name|id}, type{text}, key{key, repeat}, click{x,y | id, button left|right|middle, clicks 1-3, modifiers \"ctrl+shift\"}, right_click, double_click, triple_click, middle_click, move{x,y}, mouse_down, mouse_up, drag{from_x,from_y,to_x,to_y}, scroll{x,y,direction up|down|left|right, amount}, cursor_position, wait{duration}, hold_key{key,duration}, paste{text} (clipboard + Ctrl+V, best for long or Chinese text), set_text{id,text}, screenshot, zoom{region:[x0,y0,x1,y1]}. x,y are pixels of the last screenshot.", "items": map[string]any{"type": "object"}},
 				"actions":     map[string]any{"type": "array", "description": "action=computer: a batch run in order that stops at the first failure. Each item is an Anthropic computer-use action ({action:left_click, coordinate:[x,y], text:modifiers}, left_click_drag with start_coordinate, scroll with scroll_direction/scroll_amount, key/hold_key with text, type, cursor_position, wait, screenshot, zoom with region), an OpenAI computer-use action ({type:click|double_click|scroll|type|keypress|wait|screenshot|move|drag, x, y, button, scroll_x, scroll_y, keys, path}), or an app_run step. A click may give target (words, e.g. \"the blue 发送 button\") instead of x,y as the first step of a batch: a grounding model places it when one is configured; otherwise give x,y.", "items": map[string]any{"type": "object"}},
 				"max_width":   map[string]any{"type": "integer", "description": "Ignored for full screenshots, which use one fixed size (MACLAW_DESKTOP_SHOT_WIDTH, default native). Kept for compatibility."},
@@ -180,6 +182,9 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	ctx = context.WithValue(ctx, desktopLLMSeesImagesKey{}, desktopTurnSeesImages(request))
 	ctx = context.WithValue(ctx, desktopComputerHelperKey{}, strings.TrimSpace(desktopMessageMeta(request)["computer_helper"]) == "1")
 	ctx = context.WithValue(ctx, desktopPublishApprovedKey{}, desktopTurnPublishApproved(request))
+	if strings.EqualFold(strings.TrimSpace(desktopArg(args, "action")), "batch") {
+		return desktopRuntimeModule{}.invokePlan(ctx, request, name, args)
+	}
 	scope, cloud, err := desktopScopeForTurn(request)
 	if err != nil {
 		return "", err
@@ -3525,3 +3530,53 @@ func desktopContainerIP() (string, error) {
 }
 
 var desktopIPv4Pattern = regexp.MustCompile(`^[0-9]{1,3}(?:\.[0-9]{1,3}){3}$`)
+
+// desktopBatchStepActions may run inside one plan call. Each step goes through the
+// normal InvokeTool path (guards, coach, step records).
+var desktopBatchStepActions = map[string]bool{"script": true, "rich_fill": true, "navigate": true, "probe": true, "click": true, "type": true, "press": true, "wait": true, "clipboard_set": true}
+
+const desktopPlanMaxSteps = 12
+
+// invokePlan runs a planned browser sequence in one model step: observe once,
+// act in one shot, read back once. Only CDP, page scripts and real OS input
+// are used (the browser is stock Chromium).
+func (m desktopRuntimeModule) invokePlan(ctx context.Context, request agentruntime.TurnRequest, name string, args map[string]any) (string, error) {
+	raw, _ := args["plan"].([]any)
+	if raw == nil {
+		raw, _ = args["steps"].([]any)
+	}
+	if len(raw) == 0 || len(raw) > desktopPlanMaxSteps {
+		return "", fmt.Errorf("plan needs 1 to %d steps, each {action:..., ...}", desktopPlanMaxSteps)
+	}
+	var lines []string
+	last := ""
+	for i, item := range raw {
+		step, ok := item.(map[string]any)
+		if !ok {
+			return "", fmt.Errorf("plan step %d is not an object", i+1)
+		}
+		act := strings.ToLower(strings.TrimSpace(desktopArg(step, "action")))
+		if !desktopBatchStepActions[act] {
+			return "", fmt.Errorf("plan step %d: action %q is not allowed in a plan (use script, rich_fill, navigate, probe, click, type, press, wait, clipboard_set)", i+1, act)
+		}
+		out, err := m.InvokeTool(ctx, request, name, step)
+		if err != nil {
+			lines = append(lines, fmt.Sprintf("%d. %s: FAILED: %v", i+1, act, err))
+			return strings.Join(lines, "\n") + fmt.Sprintf("\nplan stopped at step %d of %d; steps before it are done — fix only that step, then continue with the rest.", i+1, len(raw)), nil
+		}
+		lines = append(lines, fmt.Sprintf("%d. %s: ok: %s", i+1, act, desktopPlanSummary(out)))
+		last = out
+	}
+	return strings.Join(lines, "\n") + fmt.Sprintf("\nplan done (%d steps). Last step result:\n%s", len(raw), last), nil
+}
+
+func desktopPlanSummary(out string) string {
+	out = strings.Join(strings.Fields(out), " ")
+	if i := strings.Index(out, " Open browser pages"); i > 0 {
+		out = out[:i]
+	}
+	if r := []rune(out); len(r) > 300 {
+		out = string(r[:300]) + "…"
+	}
+	return out
+}

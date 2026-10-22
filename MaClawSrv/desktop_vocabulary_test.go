@@ -30,7 +30,7 @@ func TestDesktopActionVocabularyCoversBothPhases(t *testing.T) {
 	}
 	// The plan allow-list may only observe. Mutating actions stay out of that
 	// list. The published schema still names them.
-	mutating := map[string]bool{"rich_fill": true, "navigate": true, "click": true, "type": true, "press": true, "task_run": true, "script": true, "skill_run": true, "app_run": true, "app_open": true, "install": true, "deliver": true, "file_write": true, "file_edit": true, "bash": true, "computer": true, "clipboard_set": true, "window": true, "request_takeover": true}
+	mutating := map[string]bool{"batch": true, "rich_fill": true, "navigate": true, "click": true, "type": true, "press": true, "task_run": true, "script": true, "skill_run": true, "app_run": true, "app_open": true, "install": true, "deliver": true, "file_write": true, "file_edit": true, "bash": true, "computer": true, "clipboard_set": true, "window": true, "request_takeover": true}
 	for _, action := range desktopExecuteActions {
 		if mutating[action] && desktopPlanActionAllowed(action) {
 			t.Fatalf("plan phase must not expose mutating action %q", action)
