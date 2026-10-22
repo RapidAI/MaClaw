@@ -2290,3 +2290,52 @@ func textLenWithinTolerance(current, previous int, tolerance float64) bool {
 	}
 	return float64(diff) <= float64(previous)*tolerance
 }
+
+// openTargetInOwnTab shows rawURL without replacing the active page: it
+// switches to a page already on the target host, or opens a new tab there.
+// It returns a short note for the action result.
+func (s *Session) openTargetInOwnTab(rawURL string) (string, error) {
+	if s == nil {
+		return "", fmt.Errorf("browser session not connected")
+	}
+	host := hostFromURL(rawURL)
+	if host == "" {
+		return "", fmt.Errorf("missing host")
+	}
+	if pages, err := s.ListPages(); err == nil {
+		for _, page := range pages {
+			if page.Type != "page" || page.ID == "" || hostFromURL(page.URL) != host {
+				continue
+			}
+			if err := s.SwitchPage(page.ID); err != nil {
+				return "", err
+			}
+			if normalizeReusableNavigationURL(page.URL) != normalizeReusableNavigationURL(rawURL) {
+				if _, err := s.Navigate(rawURL); err != nil {
+					return "", err
+				}
+			}
+			return " (switched to the open " + host + " tab; the previous tab was kept)", nil
+		}
+	}
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	if client == nil {
+		return "", fmt.Errorf("browser session not connected")
+	}
+	result, err := client.Send("Target.createTarget", map[string]interface{}{"url": rawURL}, NavTimeout)
+	if err != nil {
+		return "", fmt.Errorf("open tab: %w", err)
+	}
+	var payload struct {
+		TargetID string `json:"targetId"`
+	}
+	if err := json.Unmarshal(result, &payload); err != nil || strings.TrimSpace(payload.TargetID) == "" {
+		return "", fmt.Errorf("open tab returned no target id")
+	}
+	if err := s.SwitchPage(payload.TargetID); err != nil {
+		return "", err
+	}
+	return " (opened in a new tab; the previous tab was kept)", nil
+}

@@ -9,6 +9,9 @@ import (
 
 type policyDeniedError struct {
 	msg string
+	// crossOrigin marks a refusal caused only by the cross-origin rule; the
+	// target host already passed the blocked and allowed domain lists.
+	crossOrigin bool
 }
 
 func (e *policyDeniedError) Error() string {
@@ -17,6 +20,12 @@ func (e *policyDeniedError) Error() string {
 
 func policyDenied(format string, args ...interface{}) error {
 	return &policyDeniedError{msg: fmt.Sprintf(format, args...)}
+}
+
+// isCrossOriginDenied reports a refusal that only the cross-origin rule made.
+func isCrossOriginDenied(err error) bool {
+	var denied *policyDeniedError
+	return errors.As(err, &denied) && denied.crossOrigin
 }
 
 func isPolicyDenied(err error) bool {
@@ -63,7 +72,7 @@ func validateNavigationPolicy(policy BrowserPolicy, targetURL, currentDomain str
 		}
 	}
 	if !policy.AllowCrossOriginNavigation && currentDomain != "" && !strings.EqualFold(currentDomain, host) {
-		return policyDenied("browser policy blocked cross-origin navigation from %s to %s", currentDomain, host)
+		return &policyDeniedError{msg: fmt.Sprintf("browser policy blocked cross-origin navigation from %s to %s", currentDomain, host), crossOrigin: true}
 	}
 	return nil
 }

@@ -83,10 +83,22 @@ func (s *BrowserAgentSession) Navigate(url string) (*BrowserActionResult, error)
 	if kept := s.keptLoggedInDocument(url); kept != nil {
 		return kept, nil
 	}
+	tabNote := ""
 	if err := validateNavigationPolicy(s.loggedInNavigationPolicy(url), url, currentDomainFromSession(s)); err != nil {
-		return policyBlockResult(s, "browser_navigate", err)
-	}
-	if _, err := s.session.Navigate(url); err != nil {
+		if !isCrossOriginDenied(err) {
+			return policyBlockResult(s, "browser_navigate", err)
+		}
+		// The cross-origin rule exists so the current page is never replaced
+		// by another site. An explicit navigate names its target, so keep the
+		// current tab and open the target in its own tab (or switch to a tab
+		// already on that host). Blocked/allowed domain lists still applied.
+		note, terr := s.session.openTargetInOwnTab(url)
+		if terr != nil {
+			log.Printf("[browser] cross-origin navigate to own tab failed url=%q err=%v", url, terr)
+			return policyBlockResult(s, "browser_navigate", err)
+		}
+		tabNote = note
+	} else if _, err := s.session.Navigate(url); err != nil {
 		return policyBlockResult(s, "browser_navigate", err)
 	}
 	followed := s.followAction("browser_navigate", 3*time.Second, 300*time.Millisecond, true, 0, 0, "navigate")
@@ -95,7 +107,7 @@ func (s *BrowserAgentSession) Navigate(url string) (*BrowserActionResult, error)
 	}
 	obs := followed.obs
 	s.appendActionTrace("navigate", fmt.Sprintf("navigate to %s", url))
-	return followed.stamp(s.completeAction("browser_navigate", fmt.Sprintf("navigated to %s", url), url, obs, map[string]interface{}{
+	return followed.stamp(s.completeAction("browser_navigate", fmt.Sprintf("navigated to %s%s", url, tabNote), url, obs, map[string]interface{}{
 		"url":   obs.Snapshot.URL,
 		"title": obs.Snapshot.Title,
 	}, true)), nil
