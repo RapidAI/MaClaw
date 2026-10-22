@@ -2386,7 +2386,7 @@ def restore_pending_path(key):
     return ROOT / key / "restore_pending"
 
 
-def restore_pending(key, max_age=90):
+def restore_pending(key, max_age=120):
     try:
         return time.time() - restore_pending_path(key).stat().st_mtime < max_age
     except OSError:
@@ -2431,7 +2431,7 @@ def run_restore_login(key):
 
 def wait_restore_done(key):
     """Bot actions wait for the background login restore (capped)."""
-    cap = env_int("MACLAW_RESTORE_WAIT_SECONDS", 20)
+    cap = env_int("MACLAW_RESTORE_WAIT_SECONDS", 35)
     end = time.time() + cap
     waited = False
     while restore_pending(key) and time.time() < end:
@@ -2456,7 +2456,11 @@ def _restore_page_login(key):
     previous = None
     stable = 0
     settled = False
-    for _ in range(24):
+    settle_started = time.time()
+    settle_end = settle_started + env_int("MACLAW_PAGE_LOGIN_SETTLE_SECONDS", 25)
+    for _ in range(400):
+        if time.time() > settle_end:
+            break
         try:
             listed = http_json_any("127.0.0.1", chrome_debug_port(key), "/json/list")
         except (OSError, ValueError, TypeError):
@@ -2485,6 +2489,7 @@ def _restore_page_login(key):
             stable = 0
             previous = signature
         time.sleep(0.25)
+    _page_login_timings.setdefault(key, []).append(("settle", round(time.time() - settle_started, 2), "ok" if settled else "no"))
     if not pages or not settled:
         return
     deadline = time.time() + env_int("MACLAW_PAGE_LOGIN_TOTAL_SECONDS", 25)
