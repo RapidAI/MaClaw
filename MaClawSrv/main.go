@@ -264,6 +264,7 @@ func runServer(ctx context.Context) error {
 		return fmt.Errorf("invalid transport configuration: %w", err)
 	}
 
+	startMemWatchdog(filepath.Join(svc.DataRoot(), "profiles"))
 	errCh := make(chan error, 1)
 	go func() {
 		srvLog().Info("maclawsrv listening", slog.String("addr", addr), slog.String("data_root", svc.DataRoot()))
