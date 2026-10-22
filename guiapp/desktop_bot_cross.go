@@ -84,7 +84,11 @@ func desktopBotRosterPrompt(roster *desktopBotRoster) string {
 		if bot.Primary {
 			mark = "yes"
 		}
-		b.WriteString("id=" + id + " name=" + name + " primary=" + mark + "\n")
+		line := "id=" + id + " name=" + name + " primary=" + mark
+		if live := desktopBotRosterLive(id); live != "" {
+			line += " " + live
+		}
+		b.WriteString(line + "\n")
 	}
 	return b.String()
 }
@@ -541,4 +545,16 @@ func resetDesktopBotCrossArm() {
 	desktopBotCrossArm.Lock()
 	desktopBotCrossArm.note = nil
 	desktopBotCrossArm.Unlock()
+}
+
+// desktopBotRosterLiveSource gives the persona reading each bot's live state
+// (location, state, task, step) from the main bot's registry. It reads the
+// cache only; nil or an unseen bot adds nothing.
+var desktopBotRosterLiveSource func(id string) string
+
+func desktopBotRosterLive(id string) string {
+	if desktopBotRosterLiveSource == nil {
+		return ""
+	}
+	return desktopBotRosterLiveSource(id)
 }

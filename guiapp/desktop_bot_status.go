@@ -243,6 +243,9 @@ func (a *App) emitDesktopBotDelivery(owner string, item desktopBotDelivery) bool
 		SendToUser: item.Reply.SendToUser,
 		Error:      item.Error,
 	})
+	if len(item.Reply.Files) > 0 {
+		a.multiBot().recordDeliveryArtifacts(botID, strings.TrimSpace(item.RunID), item.Reply.Files)
+	}
 	ids := desktopAttachmentIDs(item.Reply.Images, item.Reply.Files)
 	payload := map[string]any{
 		"request_id":      "desktop-bot-deliver-" + strings.TrimSpace(item.RunID),

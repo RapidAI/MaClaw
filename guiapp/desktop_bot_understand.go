@@ -317,6 +317,9 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 	userPrompt := desktopBotUnderstandUser(text, phase, lang, earlier, persona, userPref)
 	systemPrompt := desktopBotUnderstandSystem
 	if rosterPrimary(roster) {
+		if mb := a.multiBot(); mb != nil {
+			mb.ensureWatch()
+		}
 		systemPrompt += "\n\n" + desktopBotCrossSystem
 		userPrompt += desktopBotRosterPrompt(roster)
 	}

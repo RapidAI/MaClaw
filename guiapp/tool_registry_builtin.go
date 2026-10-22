@@ -1055,6 +1055,9 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			Capability: tool.CapabilityScheduleManageLocal, Quality: 1,
 		}}, []tool.EffectClass{tool.EffectExternalEffect})
 	}
+	if h != nil && h.app != nil {
+		registerMultiBotTools(registry, h.app.multiBot())
+	}
 }
 
 // annotateSemanticTool attaches a governed capability provision at the same

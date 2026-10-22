@@ -34,6 +34,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// Earlier pre-loop phases may still short-circuit and therefore must not
 	// advertise steering acceptance.
 	defer h.beginAgentLoopRuntime(ctx, userID, userText, platform)()
+	if h.app != nil {
+		defer h.app.noteMainBotTurn(userText)()
+	}
 
 	// A capability-managed turn has a grant-bound executor only on the shared
 	// loop.  It must not be controlled by the legacy/shared strangler flag:
