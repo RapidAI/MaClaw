@@ -704,11 +704,11 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 		log.Printf("[LLM-stream] upstream empty completion finish=%q payload=%s", finishReason, truncateUpstreamError(lastPayload))
 	}
 	if streamErr != nil {
-		// A cut that left no answer text and no complete tool call (only
-		// reasoning and/or a half-written call that was just dropped) has
-		// nothing to keep: return no response so the caller retries the call.
+		// A cut in the middle of a tool call that left no answer text and no
+		// complete call (the half-written call was just dropped) has nothing
+		// to keep: return no response so the caller retries the call.
 		// run_5d9cb829 failed outright on such a reset mid tool call.
-		if strings.TrimSpace(msg.Content) == "" && len(msg.ToolCalls) == 0 {
+		if strings.TrimSpace(msg.Content) == "" && len(msg.ToolCalls) == 0 && len(truncatedTools) > 0 {
 			return nil, fmt.Errorf("SSE stream read: %w", streamErr)
 		}
 		// Preserve a partial response after any visible delta. Retrying it in

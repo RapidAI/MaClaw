@@ -2479,6 +2479,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			if !aboveFloor && strings.TrimSpace(checklistPreAnswer) != "" {
 				answer = streamedBubbleText(rawStream)
 			}
+			answer = streamedAnswerKeepingLinks(rawStream, answer, historyDelta)
 			// A streamed "no lookup tool" sentence after web_search succeeded
 			// is not that text: another round usually repeats it, so finish
 			// from the result.
@@ -4667,6 +4668,28 @@ func streamedBubbleText(raw string) string {
 	// A cited forecast may name one page. Drop that URL and keep the sentence.
 	// A numbered result list is already rejected above.
 	return strings.TrimSpace(stripStreamedURLs(raw))
+}
+
+// streamedAnswerKeepingLinks restores the URLs streamedBubbleText dropped
+// when the turn did no web search: those URLs are the work's own result
+// (run_33c9a241 replied "链接为 。" for a published Zhihu article). The text
+// is the same bubble text with its links left in.
+func streamedAnswerKeepingLinks(raw, stripped string, history []ConversationEntry) string {
+	if stripped == "" {
+		return stripped
+	}
+	for _, entry := range history {
+		if entry.ToolName == "web_search" || strings.HasPrefix(fmt.Sprint(entry.Content), "Public web results for ") {
+			return stripped
+		}
+	}
+	raw = strings.TrimSpace(llm.StripDetailsBlocks(strings.TrimSpace(raw)))
+	raw = strings.TrimSpace(StripThinkingTags(StripRolePrefixHallucination(raw)))
+	raw = strings.TrimSpace(dropSearchListings(raw))
+	if raw == "" || strings.TrimSpace(stripStreamedURLs(raw)) != stripped {
+		return stripped
+	}
+	return raw
 }
 
 // streamedVisibleAnswer is the bubble text worth keeping in place of a search
