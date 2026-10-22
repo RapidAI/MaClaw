@@ -2503,7 +2503,15 @@ func streamAuthorizedModelRequest(w http.ResponseWriter, r *http.Request, reg *i
 		if IsMaClawProviderRequest(providerID) {
 			serviceGroupIDs := officialForwardServiceGroupIDs(model, providerID)
 			chargedIDs := llmservice.ChargedServiceGroupIDs(model, providerID)
-			resp, provenAbsent, err := openMaClawOfficialStreamRequest(request, rewriteOfficialForwardBody(body, model, providerID), serviceGroupIDs)
+			attemptReq, guard := newStreamFirstTokenGuard(request, i < len(orderedProviders)-1)
+			defer guard.cancel()
+			resp, provenAbsent, err := openMaClawOfficialStreamRequest(attemptReq, rewriteOfficialForwardBody(body, model, providerID), serviceGroupIDs)
+			if err == nil {
+				err = guard.awaitFirstData(resp, providerID)
+				if err != nil {
+					resp = nil
+				}
+			}
 			if err != nil {
 				if !provenAbsent {
 					noteOfficialDispatchObserved(r.Context())
@@ -2556,7 +2564,15 @@ func streamAuthorizedModelRequest(w http.ResponseWriter, r *http.Request, reg *i
 		}
 		noteOfficialDispatchObserved(r.Context())
 		allProviderDispatchesProvenAbsent = false
-		resp, release, err := openLLMStreamRequest(request, provider, body)
+		attemptReq, guard := newStreamFirstTokenGuard(request, i < len(orderedProviders)-1)
+		defer guard.cancel()
+		resp, release, err := openLLMStreamRequest(attemptReq, provider, body)
+		if err == nil {
+			if waitErr := guard.awaitFirstData(resp, provider.ID); waitErr != nil {
+				release()
+				resp, err = nil, waitErr
+			}
+		}
 		if err != nil {
 			globalProviderResilience.recordFailure(provider)
 			lastErr = err
