@@ -5,6 +5,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -155,6 +156,7 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 		}
 	}
 	fmt.Fprintf(&session, "\nCurrent system: %s/%s\nUser home: %s\nProject directory: %s\nTemp directory: %s\n", runtime.GOOS, runtime.GOARCH, home, projectDir, scratchDir)
+	session.WriteString(promptCurrentDateLine(time.Now()))
 	if light {
 		session.WriteString("Relative tool paths resolve against Project directory. Prefer answering without tools unless live data is needed.\n")
 		session.WriteString(fmt.Sprintf("Prompt profile: light (adaptive)\n"))
@@ -299,4 +301,12 @@ If the user message contains one of these expressions, skip all confirmation sta
 - Chinese: 直接做, 不用问了, 按你的想法来, 直接开始
 - English: just do it, skip confirmation, go ahead
 `)
+}
+
+// promptCurrentDateLine tells the model today's date. Without it a date the
+// user writes without a year ("10.18") was resolved to a year from training
+// data (run_c81b467d summarised the 2024-10-18 papers in 2026).
+func promptCurrentDateLine(now time.Time) string {
+	return fmt.Sprintf("Current date: %s (%s, %s). A date written without a year means its most recent occurrence on or before today; if the source has nothing for that day, say so and name the day you used instead.\n",
+		now.Format("2006-01-02"), now.Weekday(), now.Format("MST -07:00"))
 }
