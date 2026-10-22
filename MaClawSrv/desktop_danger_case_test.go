@@ -18,6 +18,7 @@ func TestDesktopBotDangerCases(t *testing.T) {
 	for _, id := range []string{"bash_ls_allowed", "bash_rm_blocked", "git_push_asks", "silence_blocks"} {
 		t.Run(id, func(t *testing.T) {
 			desktopbot.ResetDangerState()
+			t.Setenv("MACLAW_DESKTOP_INSTALL_ASK", "on")
 			t.Cleanup(desktopbot.ResetDangerState)
 			runDangerToolCase(t, readDangerToolCase(t, id))
 		})
@@ -131,7 +132,7 @@ func runDangerToolCase(t *testing.T, c dangerToolCase) {
 		t.Fatalf("a refused command ran %d times", ran)
 	}
 	ask, ok := desktopbot.PeekDangerAsk(scope.SessionID, scope.InstanceID)
-	if !c.Ask || !ok || ask.Kind != "ask" || !strings.Contains(ask.Text, "15 秒没有回答就不执行") || (c.Secret != "" && strings.Contains(ask.Text, c.Secret)) {
+	if !c.Ask || !ok || ask.Kind != "ask" || !strings.Contains(ask.Text, "才能继续，可以吗？") || (c.Secret != "" && strings.Contains(ask.Text, c.Secret)) {
 		t.Fatalf("ask=%+v ok=%v", ask, ok)
 	}
 	metaOut := map[string]string{}

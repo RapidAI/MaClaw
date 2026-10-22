@@ -2074,6 +2074,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const live = selected ? liveDesktop[selected.id] : undefined;
     const liveControl = live?.userControl === true;
     const liveReason = live?.attentionReason || '';
+    // Hub's desktop read is the truth for an older handoff: once it reports
+    // nobody is asked to log in or take over and no turn of this bot is
+    // pending, a 登录完成，继续 left in the transcript is stale.
+    const handoffSettled = !!live && live.userControl === false && liveReason === '' && !messages.some(message => message.role === 'assistant' && message.pending);
     // A turn is driving when its current bubble still holds the keyboard.
     // A handoff on that bubble means the person has the keys. A live flag
     // left from an older poll does not: the bubble is the turn.
@@ -6013,7 +6017,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 </div>
                                 );
                             })}
-                            {handoffMessage && !agentOperating ? (
+                            {handoffMessage && !agentOperating && !handoffSettled ? (
                                 <p className="desktop-bot-chat__entry">
                                     <button type="button" className="desktop-bot-chat__action" data-testid="desktop-bot-return-control" onClick={() => resumeFromScreenHandoff(selected.id)}>{text.returnControl}</button>
                                 </p>

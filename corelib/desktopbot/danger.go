@@ -1,6 +1,7 @@
 package desktopbot
 
 import (
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -8,7 +9,7 @@ import (
 
 const DangerWait = 15 * time.Second
 
-const DangerAskedError = "这一次先问了这个人。没有回答就不执行。不要改用别的动作代替。"
+const DangerAskedError = "这一条要先问这个人。在 send_to_user 里用你自己的口吻说清楚要做什么（不要写出密码、token 等秘密）、为什么需要它，然后停下等回答。没有回答就不执行。不要改用别的动作代替。"
 
 const DangerSilenceError = "15 秒没有回答，这一次不执行。不要再自动问。"
 
@@ -82,10 +83,40 @@ func ResetDangerState() {
 func GateDanger(in DangerInput) DangerResult {
 	call := in.Call
 	label, always, listed, readonly := classifyDanger(call)
+	// A package install lands in this bot's own isolated desktop container,
+	// so it runs without a question unless the review blocks it or
+	// MACLAW_DESKTOP_INSTALL_ASK=on asks for the old behaviour.
+	if label == "install" && !installAsks() {
+		if in.VerdictOK && strings.EqualFold(strings.TrimSpace(in.Verdict), "block") {
+			return holdDanger(in, dangerLabel(label, call))
+		}
+		return DangerResult{Run: true}
+	}
 	if always || mustAsk(in, listed, readonly) {
-		return holdDanger(in, label)
+		return holdDanger(in, dangerLabel(label, call))
 	}
 	return DangerResult{Run: true}
+}
+
+func installAsks() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("MACLAW_DESKTOP_INSTALL_ASK")), "on")
+}
+
+// dangerLabel names what would run in the fallback question. Only an install
+// shows its package names; any other command is named by its kind so a secret
+// in the command line never reaches the chat.
+func dangerLabel(label string, call DangerCall) string {
+	if label != "install" {
+		return label
+	}
+	command := strings.Join(strings.Fields(call.Command), " ")
+	if command == "" {
+		return label
+	}
+	if runes := []rune(command); len(runes) > 120 {
+		command = string(runes[:120]) + "…"
+	}
+	return command
 }
 
 func mustAsk(in DangerInput, listed, readonly bool) bool {
@@ -127,7 +158,7 @@ func dangerAskText(label string) string {
 	if label == "" {
 		label = "这一条命令"
 	}
-	return "要执行 " + label + " 这一次吗？15 秒没有回答就不执行。"
+	return "我需要执行「" + label + "」才能继续，可以吗？"
 }
 
 // NoteDangerAsk stores the first ask for each key. A later ask does not replace it.

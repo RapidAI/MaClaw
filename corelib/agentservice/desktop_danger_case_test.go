@@ -11,12 +11,12 @@ func TestDesktopBotDangerCases(t *testing.T) {
 	t.Cleanup(desktopbot.ResetDangerState)
 	desktopbot.NoteDangerAsk([]string{"conv-danger"}, desktopbot.ConnectorAsk{
 		Kind: "ask",
-		Text: "要执行 git push 这一次吗？15 秒没有回答就不执行。",
+		Text: "我需要执行「git push」才能继续，可以吗？",
 	})
 	cb := &coreAgentCallbacks{session: Session{ID: "conv-danger"}}
 	meta := map[string]string{}
 	cb.mergeConnectorAsk(meta)
-	if meta["send_to_user"] != "要执行 git push 这一次吗？15 秒没有回答就不执行。" || meta["send_to_user_kind"] != "ask" {
+	if meta["send_to_user"] != "我需要执行「git push」才能继续，可以吗？" || meta["send_to_user_kind"] != "ask" {
 		t.Fatalf("metadata=%#v", meta)
 	}
 	meta["send_to_user"] = "已经有一句"

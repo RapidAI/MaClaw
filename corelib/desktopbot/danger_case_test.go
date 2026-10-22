@@ -13,6 +13,7 @@ func TestDesktopBotDangerCases(t *testing.T) {
 	for _, id := range []string{"bash_ls_allowed", "bash_rm_blocked", "git_push_asks", "silence_blocks"} {
 		t.Run(id, func(t *testing.T) {
 			ResetDangerState()
+			t.Setenv("MACLAW_DESKTOP_INSTALL_ASK", "on")
 			t.Cleanup(ResetDangerState)
 			runDangerCase(t, readDangerCase(t, id))
 		})
@@ -78,7 +79,7 @@ func runDangerCase(t *testing.T, c dangerCase) {
 		if result.Error != DangerAskedError {
 			t.Fatalf("%s err=%q", command.Command, result.Error)
 		}
-		if c.Ask && i == 0 && (result.Ask.Kind != "ask" || !strings.Contains(result.Ask.Text, "15 秒没有回答就不执行")) {
+		if c.Ask && i == 0 && (result.Ask.Kind != "ask" || !strings.Contains(result.Ask.Text, "才能继续，可以吗？")) {
 			t.Fatalf("ask=%+v", result.Ask)
 		}
 		NoteDangerAsk([]string{c.ID}, result.Ask)
@@ -88,7 +89,7 @@ func runDangerCase(t *testing.T, c dangerCase) {
 	}
 	meta := map[string]string{}
 	ApplyDangerAsk(meta, c.ID)
-	if meta["send_to_user_kind"] != "ask" || !strings.Contains(meta["send_to_user"], "15 秒没有回答就不执行") || (c.Secret != "" && strings.Contains(meta["send_to_user"], c.Secret)) {
+	if meta["send_to_user_kind"] != "ask" || !strings.Contains(meta["send_to_user"], "才能继续，可以吗？") || (c.Secret != "" && strings.Contains(meta["send_to_user"], c.Secret)) {
 		t.Fatalf("send_to_user=%q kind=%q", meta["send_to_user"], meta["send_to_user_kind"])
 	}
 	meta["send_to_user"] = "已经有一句"

@@ -560,6 +560,7 @@ describe('desktop bots', () => {
         expect(messageNeedsComputerTakeover({ content: '页面已登录，账号 Dr.Daniel。标题和图片都已就位。' })).toBe(false);
         expect(messageNeedsComputerTakeover({ content: '已通过扫码登录并发布成功。' })).toBe(false);
         expect(messageNeedsComputerTakeover({ content: '笔记配图使用了二维码。' })).toBe(false);
+        expect(messageNeedsComputerTakeover({ content: '我理解你要做今天的摘要并发到知乎。需要你确认知乎账号是否已登录吗？' })).toBe(false);
         expect(messageNeedsComputerTakeover({ content: '登录失败', failed: true, userControl: true })).toBe(false);
     });
 

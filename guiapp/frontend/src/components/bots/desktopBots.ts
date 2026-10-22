@@ -654,14 +654,13 @@ export function messageNeedsComputerTakeover(message: Pick<DesktopBotMessage, 'c
     if (message.userControl) return true;
     const reason = (message.attentionReason || '').trim();
     if (COMPUTER_TAKEOVER_REASON.test(reason)) return true;
+    // Only an explicit request in the reply counts. A sentence that merely
+    // mentions 登录 or 需要你 (a question, a plan) is not a takeover.
     const text = message.content || '';
     if (!text.trim()) return false;
+    if (/已登录|登录成功|扫码成功/.test(text) && !/尚未登录|未登录/.test(text) && !/接管电脑|请接管|需要你接管/.test(text)) return false;
     if (/接管电脑|请接管|需要你接管/.test(text)) return true;
-    const succeeded = /已登录|登录成功|扫码成功|已通过扫码登录/.test(text) && !/尚未登录|未登录/.test(text);
-    const asks = /缺少|需要你|请你|请在|尚未登录|未登录/.test(text);
-    if (succeeded && !asks) return false;
-    if (/扫描二维码|扫码登录|二维码登录/.test(text) && asks && !succeeded) return true;
-    return asks && !succeeded && /登录|验证码|人机验证/.test(text);
+    return /(请|需要你|缺少)[^。！？\n]{0,12}(扫码|扫描二维码)/.test(text);
 }
 
 // inProgressBotTasks is the task monitor's Bot tab. One read of the transcript
