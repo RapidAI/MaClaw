@@ -2050,6 +2050,35 @@ func TestOpenAIToAnthropicUsesToolBudgetWhenMaxTokensMissing(t *testing.T) {
 	}
 }
 
+func TestOpenAIToAnthropicKeepsJSONThinkingBudget(t *testing.T) {
+	tests := []struct {
+		name   string
+		budget any
+		max    any
+		want   int
+	}{
+		{name: "legal float budget stays", budget: float64(2000), max: float64(8000), want: 2000},
+		{name: "oversized float budget clamps below max", budget: float64(9000), max: float64(8000), want: 7999},
+		{name: "small budget still clamps when it meets max", budget: float64(800), max: float64(256), want: 255},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := openaiToAnthropic(map[string]interface{}{
+				"messages":   []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+				"max_tokens": tt.max,
+				"thinking":   map[string]interface{}{"type": "enabled", "budget_tokens": tt.budget},
+			}, "claude-compat")
+			if req["max_tokens"] != tt.max {
+				t.Fatalf("max_tokens = %#v", req["max_tokens"])
+			}
+			got, _ := req["thinking"].(map[string]interface{})
+			if got["type"] != "enabled" || got["budget_tokens"] != tt.want {
+				t.Fatalf("thinking = %#v, want budget %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestResponsesToOpenAIPreservesPromptCacheUsage(t *testing.T) {
 	result := responsesToOpenAI(map[string]interface{}{
 		"id": "resp_cache",

@@ -99,6 +99,50 @@ func (s *Store) Set(userID string, objective string, opts ...SetOption) (*Goal, 
 	return g, nil
 }
 
+// pinComposerClock freezes the composer elapsed clock when a goal ends.
+// prev is the status before this write and next is the status after it.
+// Entering a terminal status stamps now. Staying terminal keeps that stamp,
+// and an older row with no stamp keeps its previous update. Leaving a terminal
+// status banks the gap into ClockHoldSeconds so the reading does not jump.
+func pinComposerClock(g *Goal, prev, next Status, now time.Time) {
+	if g == nil {
+		return
+	}
+	if !statusEndsGoalClock(next) {
+		if statusEndsGoalClock(prev) {
+			stop := g.StoppedAt
+			if stop.IsZero() {
+				stop = g.UpdatedAt
+			}
+			if !stop.IsZero() {
+				if gap := now.Unix() - stop.Unix(); gap > 0 {
+					g.ClockHoldSeconds += gap
+				}
+			}
+		}
+		g.StoppedAt = time.Time{}
+		return
+	}
+	if statusEndsGoalClock(prev) && !g.StoppedAt.IsZero() {
+		return
+	}
+	if statusEndsGoalClock(prev) && !g.UpdatedAt.IsZero() {
+		g.StoppedAt = g.UpdatedAt
+		return
+	}
+	g.StoppedAt = now
+}
+
+func touchGoalClock(g *Goal, now time.Time) {
+	if g == nil {
+		return
+	}
+	if statusEndsGoalClock(g.Status) {
+		pinComposerClock(g, g.Status, g.Status, now)
+	}
+	g.UpdatedAt = now
+}
+
 // UpdateStatus transitions the goal's status. The caller must pass the expected
 // goalID — if it doesn't match the current goal, the update is silently ignored
 // (stale update protection). Returns true if the update was applied.
@@ -109,11 +153,13 @@ func (s *Store) UpdateStatus(userID, goalID string, status Status, summary strin
 		s.mu.Unlock()
 		return false
 	}
+	now := time.Now()
+	pinComposerClock(g, g.Status, status, now)
 	g.Status = status
 	if summary != "" {
 		g.Summary = summary
 	}
-	g.UpdatedAt = time.Now()
+	g.UpdatedAt = now
 	data := s.marshalLocked(g)
 	s.mu.Unlock()
 
@@ -132,10 +178,10 @@ func (s *Store) AccountUsage(userID, goalID string, deltaTokens, deltaSeconds in
 		s.mu.Unlock()
 		return false
 	}
+	prev := g.Status
 	g.TokensUsed += deltaTokens
 	g.TimeUsedSeconds += deltaSeconds
 	g.TurnsUsed++
-	g.UpdatedAt = time.Now()
 
 	// Auto budget-limit enforcement
 	if g.TokenBudget > 0 && g.TokensUsed >= g.TokenBudget && g.Status == StatusActive {
@@ -146,6 +192,9 @@ func (s *Store) AccountUsage(userID, goalID string, deltaTokens, deltaSeconds in
 		g.Status = StatusBudgetLimit
 		g.Summary = fmt.Sprintf("Turn limit reached: %d of %d turns", g.TurnsUsed, g.MaxTurns)
 	}
+	now := time.Now()
+	pinComposerClock(g, prev, g.Status, now)
+	g.UpdatedAt = now
 	data := s.marshalLocked(g)
 	s.mu.Unlock()
 
@@ -162,13 +211,16 @@ func (s *Store) RecordNoToolTurn(userID, goalID string) bool {
 		s.mu.Unlock()
 		return false
 	}
+	prev := g.Status
 	g.ConsecutiveNoToolTurns++
-	g.UpdatedAt = time.Now()
 
 	if g.ConsecutiveNoToolTurns >= 2 && g.Status == StatusActive {
 		g.Status = StatusPaused
 		g.Summary = "Auto-paused: agent produced no tool calls for 2 consecutive turns"
 	}
+	now := time.Now()
+	pinComposerClock(g, prev, g.Status, now)
+	g.UpdatedAt = now
 	data := s.marshalLocked(g)
 	s.mu.Unlock()
 
@@ -190,7 +242,7 @@ func (s *Store) ResetNoToolCounter(userID, goalID string) bool {
 		return true
 	}
 	g.ConsecutiveNoToolTurns = 0
-	g.UpdatedAt = time.Now()
+	touchGoalClock(g, time.Now())
 	data := s.marshalLocked(g)
 	s.mu.Unlock()
 
@@ -211,9 +263,12 @@ func (s *Store) Resume(userID, goalID string) bool {
 		s.mu.Unlock()
 		return false
 	}
+	prev := g.Status
 	g.Status = StatusActive
 	g.ConsecutiveNoToolTurns = 0 // reset on resume
-	g.UpdatedAt = time.Now()
+	now := time.Now()
+	pinComposerClock(g, prev, g.Status, now)
+	g.UpdatedAt = now
 	data := s.marshalLocked(g)
 	s.mu.Unlock()
 
@@ -239,7 +294,7 @@ func (s *Store) UpdateObjective(userID, goalID, objective string) bool {
 		return true
 	}
 	g.Objective = objective
-	g.UpdatedAt = time.Now()
+	touchGoalClock(g, time.Now())
 	data := s.marshalLocked(g)
 	s.mu.Unlock()
 
@@ -258,6 +313,7 @@ func (s *Store) ReleaseForContinue(userID, goalID string) bool {
 		s.mu.Unlock()
 		return false
 	}
+	prev := g.Status
 	g.Status = StatusActive
 	g.ConsecutiveNoToolTurns = 0
 	g.Summary = ""
@@ -270,7 +326,9 @@ func (s *Store) ReleaseForContinue(userID, goalID string) bool {
 		}
 		g.TokenBudget = g.TokensUsed + g.TokenWindow
 	}
-	g.UpdatedAt = time.Now()
+	now := time.Now()
+	pinComposerClock(g, prev, g.Status, now)
+	g.UpdatedAt = now
 	data := s.marshalLocked(g)
 	s.mu.Unlock()
 
@@ -308,7 +366,7 @@ func (s *Store) SavePlan(userID, goalID, understanding string, steps []Step, cri
 	g.Steps = steps
 	g.AcceptanceCriteria = append([]string(nil), criteria...)
 	g.Phase = PhaseExecute
-	g.UpdatedAt = time.Now()
+	touchGoalClock(g, time.Now())
 	data := s.marshalLocked(g)
 	s.mu.Unlock()
 
@@ -355,7 +413,7 @@ func (s *Store) UpdateStep(userID, goalID string, index int, status StepStatus, 
 		s.mu.Unlock()
 		return fmt.Errorf("step not found")
 	}
-	g.UpdatedAt = time.Now()
+	touchGoalClock(g, time.Now())
 	data := s.marshalLocked(g)
 	s.mu.Unlock()
 

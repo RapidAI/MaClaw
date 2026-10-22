@@ -1714,21 +1714,23 @@ func (e *GoalContinuationEngine) emitGoalStateChanged(userID string, g *goal.Goa
 		awaiting = e.app.imHandler.freshPendingAskUser(userID)
 	}
 	e.app.emitEvent("goal-state-changed", map[string]interface{}{
-		"user_id":       userID,
-		"goal_id":       g.GoalID,
-		"objective":     g.Objective,
-		"status":        string(g.Status),
-		"phase":         string(g.EffectivePhase()),
-		"understanding": g.Understanding,
-		"steps":         g.Steps,
-		"turns_used":    g.TurnsUsed,
-		"max_turns":     g.MaxTurns,
-		"tokens_used":   g.TokensUsed,
-		"token_budget":  g.TokenBudget,
-		"summary":       g.Summary,
-		"awaiting_user": awaiting,
-		"visible":       g.Status != goal.StatusComplete,
-		"created_at":    goalCreatedUnix(g),
+		"user_id":            userID,
+		"goal_id":            g.GoalID,
+		"objective":          g.Objective,
+		"status":             string(g.Status),
+		"phase":              string(g.EffectivePhase()),
+		"understanding":      g.Understanding,
+		"steps":              g.Steps,
+		"turns_used":         g.TurnsUsed,
+		"max_turns":          g.MaxTurns,
+		"tokens_used":        g.TokensUsed,
+		"token_budget":       g.TokenBudget,
+		"summary":            g.Summary,
+		"awaiting_user":      awaiting,
+		"visible":            g.Status != goal.StatusComplete,
+		"created_at":         goalCreatedUnix(g),
+		"stopped_at":         goalStoppedUnix(g),
+		"clock_hold_seconds": goalClockHoldSeconds(g),
 	})
 }
 
@@ -1737,6 +1739,29 @@ func goalCreatedUnix(g *goal.Goal) int64 {
 		return 0
 	}
 	return g.CreatedAt.Unix()
+}
+
+// goalStoppedUnix is the instant the composer clock stops. Zero means the
+// clock is still running. A terminal goal that predates stopped_at freezes
+// at its last update.
+func goalStoppedUnix(g *goal.Goal) int64 {
+	if g == nil || !g.IsTerminal() {
+		return 0
+	}
+	if !g.StoppedAt.IsZero() {
+		return g.StoppedAt.Unix()
+	}
+	if !g.UpdatedAt.IsZero() {
+		return g.UpdatedAt.Unix()
+	}
+	return goalCreatedUnix(g)
+}
+
+func goalClockHoldSeconds(g *goal.Goal) int64 {
+	if g == nil || g.ClockHoldSeconds < 0 {
+		return 0
+	}
+	return g.ClockHoldSeconds
 }
 
 // emitGoalCleared tells the chat bar this session no longer has a goal.

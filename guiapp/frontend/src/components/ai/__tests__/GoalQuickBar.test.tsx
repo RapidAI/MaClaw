@@ -332,6 +332,60 @@ describe("GoalQuickBar", () => {
         expect(view.queryByTestId("goal-bar-continue")).toBeNull();
     });
 
+    it("keeps the elapsed clock at the moment the goal failed", async () => {
+        const start = 1_700_000_000;
+        installApp({
+            GetSessionGoalBar: vi.fn().mockResolvedValue({
+                ...active,
+                status: "failed",
+                summary: "编译失败",
+                created_at: start,
+                stopped_at: start + (2 * 3600 + 20 * 60 + 55),
+            }),
+        });
+        const view = render(<GoalQuickBar lang="zh-Hans" theme={theme} sessionKey="desktop-user" />);
+        await waitFor(() => expect(view.getByTestId("goal-bar-label").textContent).toBe("已失败"));
+        expect(view.getByTestId("goal-bar-elapsed").textContent).toBe("· 2h 20m 55s");
+    });
+
+    it("resumes from the frozen reading instead of the tick saved before the failure", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "Date"] });
+        try {
+            const start = 1_700_000_000;
+            vi.setSystemTime(new Date((start + 10) * 1000));
+            const running = { ...active, created_at: start, stopped_at: 0, clock_hold_seconds: 0 };
+            const failed = { ...running, status: "failed", stopped_at: start + 11 };
+            const api = installApp({
+                GetSessionGoalBar: vi.fn().mockResolvedValue(running),
+                ContinueSessionGoal: vi.fn().mockResolvedValue({
+                    ...running,
+                    status: "active",
+                    clock_hold_seconds: 7199,
+                }),
+            });
+            const view = render(<GoalQuickBar lang="zh-Hans" theme={theme} sessionKey="desktop-user" />);
+            await waitFor(() => expect(view.getByTestId("goal-bar-elapsed").textContent).toBe("· 10s"));
+            await act(() => {
+                vi.advanceTimersByTime(1000);
+            });
+            expect(view.getByTestId("goal-bar-elapsed").textContent).toBe("· 11s");
+
+            api.GetSessionGoalBar.mockResolvedValue(failed);
+            await act(async () => {
+                handlers.get("goal-state-changed")?.(failed);
+            });
+            await waitFor(() => expect(view.getByTestId("goal-bar-label").textContent).toBe("已失败"));
+            expect(view.getByTestId("goal-bar-elapsed").textContent).toBe("· 11s");
+
+            vi.setSystemTime(new Date((start + 7210) * 1000));
+            fireEvent.click(view.getByTestId("goal-bar-continue"));
+            await waitFor(() => expect(view.getByTestId("goal-bar-elapsed").textContent).toBe("· 11s"));
+            expect(view.getByTestId("goal-bar-label").textContent).toBe("进行中");
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it("labels a dead remote session apart from an ordinary pause", async () => {
         installApp({
             GetSessionGoalBar: vi.fn().mockResolvedValue({

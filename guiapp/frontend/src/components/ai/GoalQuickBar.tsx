@@ -9,7 +9,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from "re
 import { EventsOn } from "../../../wailsjs/runtime";
 import { localizeText } from "../../i18n";
 import type { Theme } from "./aiAssistantPanelTheme";
-import { formatGoalElapsed, goalBarView, type GoalBarSnapshot } from "./goalQuickBarModel";
+import { goalBarView, goalElapsedFrozen, goalElapsedText, type GoalBarSnapshot } from "./goalQuickBarModel";
 import { normalizeAssistantSessionKey } from "./aiAssistantPanelSessionUtils";
 
 type Props = {
@@ -29,6 +29,25 @@ type GoalApp = {
 };
 
 const GOAL_BAR_EVENT = "goal-state-changed";
+
+// The live reading is Date.now() at render. A tick stored from before the
+// goal stopped would paint 0s on the frame that continue unfreezes the clock.
+function GoalBarClock({ snap }: { snap: GoalBarSnapshot }) {
+    const frozen = goalElapsedFrozen(snap);
+    const [, setTick] = useState(0);
+    useEffect(() => {
+        if (frozen) return;
+        const id = window.setInterval(() => setTick(count => count + 1), 1000);
+        return () => window.clearInterval(id);
+    }, [frozen]);
+    const text = goalElapsedText(snap, Date.now());
+    if (!text) return null;
+    return (
+        <span data-testid="goal-bar-elapsed" style={{ flex: "0 0 auto", whiteSpace: "nowrap" }}>
+            · {text}
+        </span>
+    );
+}
 
 function goalApp(): GoalApp | null {
     const app = (window as unknown as { go?: { main?: { App?: GoalApp } } }).go?.main?.App;
@@ -155,13 +174,7 @@ export function GoalQuickBar({ lang, theme: t, sessionKey }: Props) {
     }, [notice]);
 
     const view = goalBarView(snap);
-    const [now, setNow] = useState(() => Date.now());
-    useEffect(() => {
-        if (!view.visible) return;
-        const id = window.setInterval(() => setNow(Date.now()), 1000);
-        return () => window.clearInterval(id);
-    }, [view.visible, snap?.created_at]);
-    if (!view.visible) return null;
+    if (!view.visible || !snap) return null;
 
     const failedNotice = () => tr("That action did not take effect. Try again.", "操作未生效，请重试。", "操作未生效，請重試。");
 
@@ -237,7 +250,6 @@ export function GoalQuickBar({ lang, theme: t, sessionKey }: Props) {
         failed: tr("Goal failed", "已失败", "已失敗"),
     };
     const label = labels[view.label];
-    const elapsed = formatGoalElapsed(Number(snap?.created_at) || 0, now);
     const iconBtn = (tone: "idle" | "danger" | "active" = "idle"): CSSProperties => ({
         width: 28,
         height: 28,
@@ -336,9 +348,7 @@ export function GoalQuickBar({ lang, theme: t, sessionKey }: Props) {
                     {view.objective}
                 </span>
             )}
-            {elapsed ? (
-                <span data-testid="goal-bar-elapsed" style={{ flex: "0 0 auto", whiteSpace: "nowrap" }}>· {elapsed}</span>
-            ) : null}
+            <GoalBarClock snap={snap} />
             {notice ? (
                 <span data-testid="goal-bar-notice" style={{ flex: "0 1 140px", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#d4534b" }}>
                     {notice}

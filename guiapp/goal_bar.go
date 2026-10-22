@@ -525,17 +525,19 @@ func (a *App) cancelOtherGoalBarTimers(userID string) {
 
 func goalBarHidden(userID string) map[string]interface{} {
 	return map[string]interface{}{
-		"visible":       false,
-		"user_id":       userID,
-		"goal_id":       "",
-		"objective":     "",
-		"status":        "",
-		"phase":         "",
-		"turns_used":    0,
-		"max_turns":     0,
-		"summary":       "",
-		"awaiting_user": false,
-		"created_at":    int64(0),
+		"visible":            false,
+		"user_id":            userID,
+		"goal_id":            "",
+		"objective":          "",
+		"status":             "",
+		"phase":              "",
+		"turns_used":         0,
+		"max_turns":          0,
+		"summary":            "",
+		"awaiting_user":      false,
+		"created_at":         int64(0),
+		"stopped_at":         int64(0),
+		"clock_hold_seconds": int64(0),
 	}
 }
 
@@ -555,17 +557,19 @@ func (a *App) goalBarSnapshotIn(store *goal.Store, userID string, g *goal.Goal) 
 		awaiting = a.imHandler.freshPendingAskUser(userID)
 	}
 	return map[string]interface{}{
-		"visible":       true,
-		"user_id":       userID,
-		"goal_id":       g.GoalID,
-		"objective":     g.Objective,
-		"status":        string(g.Status),
-		"phase":         string(g.EffectivePhase()),
-		"turns_used":    g.TurnsUsed,
-		"max_turns":     g.MaxTurns,
-		"summary":       g.Summary,
-		"awaiting_user": awaiting,
-		"created_at":    goalCreatedUnix(g),
+		"visible":            true,
+		"user_id":            userID,
+		"goal_id":            g.GoalID,
+		"objective":          g.Objective,
+		"status":             string(g.Status),
+		"phase":              string(g.EffectivePhase()),
+		"turns_used":         g.TurnsUsed,
+		"max_turns":          g.MaxTurns,
+		"summary":            g.Summary,
+		"awaiting_user":      awaiting,
+		"created_at":         goalCreatedUnix(g),
+		"stopped_at":         goalStoppedUnix(g),
+		"clock_hold_seconds": goalClockHoldSeconds(g),
 	}
 }
 

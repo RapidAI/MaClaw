@@ -1,6 +1,9 @@
 package corelib
 
 import (
+	"encoding/json"
+	"fmt"
+	"math"
 	"strings"
 )
 
@@ -31,6 +34,71 @@ func ApplyMemberUpstreamBody(body map[string]any, extra map[string]any, priority
 
 func memberExtraBodyWins(priority string) bool {
 	return !strings.EqualFold(strings.TrimSpace(priority), "downstream")
+}
+
+// FitAnthropicThinkingBudget keeps an enabled thinking budget strictly below
+// max_tokens. The output cap stays as the request set it, including a member
+// extra_body value. Call this after ApplyMemberUpstreamBody: the fit has to
+// see the numbers that will actually be sent. A budget under 1024 is left
+// alone so an explicit small budget is not rewritten.
+func FitAnthropicThinkingBudget(body map[string]any) {
+	if body == nil {
+		return
+	}
+	thinking, _ := body["thinking"].(map[string]any)
+	if thinking == nil || !strings.EqualFold(strings.TrimSpace(fmt.Sprint(thinking["type"])), "enabled") {
+		return
+	}
+	budget, ok := anthropicTokenCount(thinking["budget_tokens"])
+	if !ok || budget < 1024 {
+		return
+	}
+	maxTokens, ok := anthropicTokenCount(body["max_tokens"])
+	if !ok || maxTokens < 2 {
+		return
+	}
+	if maxBudget := maxTokens - 1; budget > maxBudget {
+		thinking["budget_tokens"] = maxBudget
+	}
+}
+
+func anthropicTokenCount(value any) (int, bool) {
+	switch n := value.(type) {
+	case int:
+		return n, true
+	case int32:
+		return int(n), true
+	case int64:
+		if n > int64(math.MaxInt) || n < int64(math.MinInt) {
+			return 0, false
+		}
+		return int(n), true
+	case float32:
+		return anthropicFloatTokenCount(float64(n))
+	case float64:
+		return anthropicFloatTokenCount(n)
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			if i > int64(math.MaxInt) || i < int64(math.MinInt) {
+				return 0, false
+			}
+			return int(i), true
+		}
+		f, err := n.Float64()
+		if err != nil {
+			return 0, false
+		}
+		return anthropicFloatTokenCount(f)
+	default:
+		return 0, false
+	}
+}
+
+func anthropicFloatTokenCount(n float64) (int, bool) {
+	if math.IsNaN(n) || math.IsInf(n, 0) || n < 0 || n > float64(math.MaxInt) {
+		return 0, false
+	}
+	return int(n), true
 }
 
 func memberUpstreamBodyProtected(key string) bool {

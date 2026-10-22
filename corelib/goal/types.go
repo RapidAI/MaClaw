@@ -126,18 +126,30 @@ type Goal struct {
 	// Timestamps
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// StoppedAt is when the goal last became terminal. Pause does not set it.
+	StoppedAt time.Time `json:"stopped_at,omitempty"`
+	// ClockHoldSeconds is time spent terminal. The composer clock subtracts it,
+	// so continue resumes from the frozen reading instead of jumping forward.
+	ClockHoldSeconds int64 `json:"clock_hold_seconds,omitempty"`
 
 	// Completion/failure metadata
 	Summary string `json:"summary,omitempty"` // set on complete/fail
 }
 
-// IsTerminal returns true if the goal has reached a final state.
-func (g *Goal) IsTerminal() bool {
-	switch g.Status {
+// statusEndsGoalClock reports a status whose composer elapsed clock stays put.
+// Pause is a hold, so the age clock keeps moving until the goal actually ends.
+func statusEndsGoalClock(status Status) bool {
+	switch status {
 	case StatusComplete, StatusFailed, StatusBudgetLimit:
 		return true
+	default:
+		return false
 	}
-	return false
+}
+
+// IsTerminal returns true if the goal has reached a final state.
+func (g *Goal) IsTerminal() bool {
+	return statusEndsGoalClock(g.Status)
 }
 
 // ShouldContinue returns true if the goal is in a state that allows

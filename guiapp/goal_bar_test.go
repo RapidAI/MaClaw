@@ -416,6 +416,37 @@ func TestSessionGoalBarHidesCompletedGoal(t *testing.T) {
 	}
 }
 
+func TestSessionGoalBarFreezesElapsedAfterFailure(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const userID = "desktop-user"
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	g, err := store.Set(userID, "提升性能")
+	if err != nil {
+		t.Fatal(err)
+	}
+	running := app.GetSessionGoalBar(userID)
+	if running["visible"] != true || running["stopped_at"] != int64(0) || running["clock_hold_seconds"] != int64(0) {
+		t.Fatalf("running clock = %#v", running)
+	}
+	if app.PauseSessionGoal(userID)["stopped_at"] != int64(0) {
+		t.Fatal("pause should keep the clock running")
+	}
+	store.UpdateStatus(userID, g.GoalID, goal.StatusFailed, "编译失败")
+	failed := app.GetSessionGoalBar(userID)
+	stopped, _ := failed["stopped_at"].(int64)
+	created, _ := failed["created_at"].(int64)
+	if failed["status"] != string(goal.StatusFailed) || stopped == 0 || stopped < created {
+		t.Fatalf("failed clock created=%d stopped=%#v snap=%#v", created, failed["stopped_at"], failed)
+	}
+	if !store.UpdateObjective(userID, g.GoalID, "失败后改一句") {
+		t.Fatal("edit")
+	}
+	edited := app.GetSessionGoalBar(userID)
+	if edited["stopped_at"] != stopped {
+		t.Fatalf("edit moved the clock from %d to %#v", stopped, edited["stopped_at"])
+	}
+}
+
 func TestSessionGoalBarRemoteSSHStaysPaused(t *testing.T) {
 	app, store, engine := newGoalBarApp(t)
 	userID := stickyTestUserID(t)

@@ -99,3 +99,23 @@ func TestBuildAnthropicMessagesRequestBodyAutoEnablesGLM53Thinking(t *testing.T)
 		t.Fatalf("auto glm-5.3 thinking missing budget: %#v", thinking)
 	}
 }
+
+func TestBuildAnthropicMessagesRequestBodyFitsMemberMaxTokens(t *testing.T) {
+	req := BuildAnthropicMessagesRequestBody(
+		corelib.MaclawLLMConfig{
+			URL:             "https://api.anthropic.com",
+			Model:           "claude-sonnet",
+			ThinkingMode:    "enabled",
+			MemberExtraBody: map[string]any{"max_tokens": float64(128)},
+		},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		AnthropicMessagesRequestOptions{MaxTokens: 8192},
+	)
+	if req["max_tokens"] != float64(128) {
+		t.Fatalf("max_tokens = %#v, want the member cap", req["max_tokens"])
+	}
+	thinking, _ := req["thinking"].(map[string]interface{})
+	if thinking["type"] != "enabled" || thinking["budget_tokens"] != 127 {
+		t.Fatalf("thinking = %#v, want budget 127", thinking)
+	}
+}

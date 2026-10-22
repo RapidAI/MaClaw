@@ -10,6 +10,10 @@ export type GoalBarSnapshot = {
     summary?: string;
     awaiting_user?: boolean;
     created_at?: number;
+    // Unix seconds when a failed or budget-limited goal stopped. Zero while the clock runs.
+    stopped_at?: number;
+    // Seconds already spent terminal. Subtracted so continue does not jump the clock.
+    clock_hold_seconds?: number;
 };
 
 export type GoalBarLabel =
@@ -41,7 +45,39 @@ function goalCount(value: unknown): number {
     return Math.trunc(parsed);
 }
 
-/** Wall clock since the goal was created, in the Codex `3h 33m 35s` form. */
+/** A failed or budget-stopped goal keeps the elapsed time it had when it ended. */
+export function goalElapsedFrozen(input: GoalBarSnapshot | null | undefined): boolean {
+    const status = goalText(input?.status).toLowerCase();
+    return status === "failed" || status === "budget_limited" || status === "complete";
+}
+
+/**
+ * End of the elapsed interval. A live goal, including a pause, uses now.
+ * A finished goal uses stopped_at so the bar does not keep counting.
+ */
+export function goalElapsedEndMs(input: GoalBarSnapshot | null | undefined, nowMs: number): number {
+    if (!goalElapsedFrozen(input)) return nowMs;
+    const stopped = Number(input?.stopped_at);
+    if (Number.isFinite(stopped) && stopped > 0) return stopped * 1000;
+    const created = Number(input?.created_at);
+    if (Number.isFinite(created) && created > 0) return created * 1000;
+    return nowMs;
+}
+
+function goalClockHoldSeconds(input: GoalBarSnapshot | null | undefined): number {
+    const hold = Number(input?.clock_hold_seconds);
+    if (!Number.isFinite(hold) || hold <= 0) return 0;
+    return Math.floor(hold);
+}
+
+/** Elapsed label for the composer bar. Terminal gaps in clock_hold_seconds stay out of the reading. */
+export function goalElapsedText(input: GoalBarSnapshot | null | undefined, nowMs: number): string {
+    const created = Number(input?.created_at);
+    if (!Number.isFinite(created) || created <= 0) return "";
+    return formatGoalElapsed(created + goalClockHoldSeconds(input), goalElapsedEndMs(input, nowMs));
+}
+
+/** Wall clock since the goal was created, in the Codex `3h 33m 35s` form. Pass the end instant from goalElapsedEndMs. */
 export function formatGoalElapsed(createdAtUnix: number, nowMs: number): string {
     if (!Number.isFinite(createdAtUnix) || createdAtUnix <= 0 || !Number.isFinite(nowMs)) return "";
     const seconds = Math.max(0, Math.floor(nowMs / 1000 - createdAtUnix));

@@ -855,6 +855,14 @@ func normalizeOpenAIProxyErrorBody(body []byte) []byte {
 // to an Anthropic Messages API request body.
 func openaiToAnthropic(body map[string]interface{}, model string) map[string]interface{} {
 	body = cloneOpenAICompatBody(body)
+	// Chat sanitizing rewrites an enabled thinking block and drops budget_tokens.
+	// That field is Anthropic-only, so keep the number already on the body:
+	// a caller JSON value, or the budget an earlier Anthropic reasoning pass wrote.
+	var callerBudget int
+	callerBudgetOK := false
+	if thinking := mapFromAny(body["thinking"]); thinking != nil {
+		callerBudget, callerBudgetOK = anthropicTokenCount(thinking["budget_tokens"])
+	}
 	sanitizeOpenAICompatForwardBodyWithOptions(MaclawLLMConfig{}, body, false, false)
 
 	anthropicReq := map[string]interface{}{
@@ -887,12 +895,17 @@ func openaiToAnthropic(body map[string]interface{}, model string) map[string]int
 		// Forwarded requests that select the Anthropic protocol need the native
 		// extended-thinking block too. The plain converter has no access to a
 		// provider config, so carry through the already-normalized intent here.
+		// JSON numbers arrive as float64. The later fit only lowers a budget
+		// of at least 1024, so a smaller budget that already meets max_tokens
+		// still has to be clamped here.
 		budget := 4096
-		if raw, ok := thinking["budget_tokens"].(int); ok && raw > 0 {
+		if raw, ok := anthropicTokenCount(thinking["budget_tokens"]); ok && raw > 0 {
 			budget = raw
+		} else if callerBudgetOK && callerBudget > 0 {
+			budget = callerBudget
 		}
 		anthropicReq["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": budget}
-		if maxTokens, ok := anthropicReq["max_tokens"].(int); ok && maxTokens > 1 && budget >= maxTokens {
+		if maxTokens, ok := anthropicTokenCount(anthropicReq["max_tokens"]); ok && maxTokens > 1 && budget >= maxTokens {
 			thinkingReq := anthropicReq["thinking"].(map[string]interface{})
 			thinkingReq["budget_tokens"] = maxTokens - 1
 		}

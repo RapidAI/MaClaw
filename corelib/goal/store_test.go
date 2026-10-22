@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNewStore_MemoryOnly(t *testing.T) {
@@ -524,5 +525,88 @@ func TestSavePlanAndUpdateStep(t *testing.T) {
 	}
 	if missing := MissingCriteria("go test 通过", got.AcceptanceCriteria); len(missing) != 0 {
 		t.Fatalf("covered criteria reported missing: %#v", missing)
+	}
+}
+
+func TestComposerClockStopsWhenTheGoalEnds(t *testing.T) {
+	s := NewStore("")
+	g, err := s.Set("user1", "ship it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.Pause("user1", g.GoalID) {
+		t.Fatal("pause")
+	}
+	if got := s.Get("user1"); !got.StoppedAt.IsZero() {
+		t.Fatalf("pause stopped the clock at %s", got.StoppedAt)
+	}
+	if !s.UpdateStatus("user1", g.GoalID, StatusFailed, "编译失败") {
+		t.Fatal("fail")
+	}
+	stopped := s.Get("user1").StoppedAt
+	if stopped.IsZero() {
+		t.Fatal("failure should pin the clock")
+	}
+	if !s.UpdateObjective("user1", g.GoalID, "改一句说明") {
+		t.Fatal("edit")
+	}
+	edited := s.Get("user1")
+	if !edited.StoppedAt.Equal(stopped) {
+		t.Fatalf("edit moved the stop from %s to %s", stopped, edited.StoppedAt)
+	}
+	s.mu.Lock()
+	s.goals["user1"].CreatedAt = time.Now().Add(-70 * time.Minute)
+	s.goals["user1"].StoppedAt = time.Now().Add(-60 * time.Minute)
+	createdAt := s.goals["user1"].CreatedAt
+	frozenElapsed := s.goals["user1"].StoppedAt.Unix() - createdAt.Unix()
+	s.mu.Unlock()
+	if !s.ReleaseForContinue("user1", g.GoalID) {
+		t.Fatal("continue")
+	}
+	continued := s.Get("user1")
+	if continued.Status != StatusActive || !continued.StoppedAt.IsZero() {
+		t.Fatalf("continue = status %s stop %s", continued.Status, continued.StoppedAt)
+	}
+	if continued.ClockHoldSeconds < 59*60 || continued.ClockHoldSeconds > 61*60 {
+		t.Fatalf("hold = %d", continued.ClockHoldSeconds)
+	}
+	resumedElapsed := time.Now().Unix() - createdAt.Unix() - continued.ClockHoldSeconds
+	if delta := resumedElapsed - frozenElapsed; delta < -1 || delta > 2 {
+		t.Fatalf("continue jumped by %d seconds (frozen %d resumed %d)", delta, frozenElapsed, resumedElapsed)
+	}
+	held := continued.ClockHoldSeconds
+	if !s.Pause("user1", g.GoalID) {
+		t.Fatal("pause after continue")
+	}
+	if got := s.Get("user1"); got.ClockHoldSeconds != held || !got.StoppedAt.IsZero() {
+		t.Fatalf("pause changed the clock hold=%d stop=%s", got.ClockHoldSeconds, got.StoppedAt)
+	}
+	if !s.Resume("user1", g.GoalID) {
+		t.Fatal("resume")
+	}
+
+	s.mu.Lock()
+	s.goals["user1"].MaxTurns = 1
+	s.goals["user1"].TurnsUsed = 0
+	s.mu.Unlock()
+	if !s.AccountUsage("user1", g.GoalID, 1, 1) {
+		t.Fatal("account")
+	}
+	budget := s.Get("user1")
+	if budget.Status != StatusBudgetLimit || budget.StoppedAt.IsZero() || budget.ClockHoldSeconds != held {
+		t.Fatalf("budget = status %s stop %s hold %d", budget.Status, budget.StoppedAt, budget.ClockHoldSeconds)
+	}
+
+	legacyUpdate := time.Now().Add(-2 * time.Hour)
+	s.mu.Lock()
+	s.goals["user1"].StoppedAt = time.Time{}
+	s.goals["user1"].UpdatedAt = legacyUpdate
+	s.goals["user1"].Status = StatusFailed
+	s.mu.Unlock()
+	if !s.UpdateObjective("user1", g.GoalID, "旧记录上改一句") {
+		t.Fatal("legacy edit")
+	}
+	if legacy := s.Get("user1"); !legacy.StoppedAt.Equal(legacyUpdate) {
+		t.Fatalf("legacy stop = %s, want %s", legacy.StoppedAt, legacyUpdate)
 	}
 }

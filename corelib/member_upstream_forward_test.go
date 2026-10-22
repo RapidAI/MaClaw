@@ -134,3 +134,93 @@ func TestForwardAnthropicCompatAppliesMemberOverrides(t *testing.T) {
 		t.Fatalf("model = %#v", got["model"])
 	}
 }
+
+func TestForwardAnthropicCompatFitsMemberMaxTokens(t *testing.T) {
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Errorf("decode anthropic body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude","content":[{"type":"text","text":"pong"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	_, _, err := ForwardOpenAICompatRequest(context.Background(), MaclawLLMConfig{
+		URL:      server.URL,
+		Key:      "sk-test",
+		Model:    "claude-sonnet",
+		Protocol: "anthropic",
+		MemberExtraBody: map[string]any{
+			"max_tokens": float64(128),
+			"thinking":   map[string]any{"type": "enabled", "budget_tokens": float64(9000)},
+		},
+	}, map[string]interface{}{
+		"model": "claude-sonnet",
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "hi"},
+		},
+	}, server.Client(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["max_tokens"] != float64(128) {
+		t.Fatalf("max_tokens = %#v", got["max_tokens"])
+	}
+	thinking, _ := got["thinking"].(map[string]any)
+	if thinking["type"] != "enabled" || thinking["budget_tokens"] != float64(127) {
+		t.Fatalf("thinking = %#v", got["thinking"])
+	}
+}
+
+func TestForwardAnthropicCompatKeepsCallerJSONThinkingBudget(t *testing.T) {
+	tests := []struct {
+		name   string
+		budget float64
+		max    float64
+		want   float64
+	}{
+		{name: "legal budget stays", budget: 2000, max: 8000, want: 2000},
+		{name: "oversized budget clamps below max", budget: 9000, max: 8000, want: 7999},
+		{name: "small budget still clamps below max", budget: 800, max: 256, want: 255},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				raw, _ := io.ReadAll(r.Body)
+				if err := json.Unmarshal(raw, &got); err != nil {
+					t.Errorf("decode anthropic body: %v", err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude","content":[{"type":"text","text":"pong"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+			}))
+			defer server.Close()
+
+			_, _, err := ForwardOpenAICompatRequest(context.Background(), MaclawLLMConfig{
+				URL:      server.URL,
+				Key:      "sk-test",
+				Model:    "claude-sonnet",
+				Protocol: "anthropic",
+			}, map[string]interface{}{
+				"model":      "claude-sonnet",
+				"max_tokens": tt.max,
+				"messages": []interface{}{
+					map[string]interface{}{"role": "user", "content": "hi"},
+				},
+				"thinking": map[string]interface{}{"type": "enabled", "budget_tokens": tt.budget},
+			}, server.Client(), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got["max_tokens"] != tt.max {
+				t.Fatalf("max_tokens = %#v", got["max_tokens"])
+			}
+			thinking, _ := got["thinking"].(map[string]any)
+			if thinking["type"] != "enabled" || thinking["budget_tokens"] != tt.want {
+				t.Fatalf("thinking = %#v", got["thinking"])
+			}
+		})
+	}
+}

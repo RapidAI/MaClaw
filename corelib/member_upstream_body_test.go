@@ -70,6 +70,28 @@ func TestApplyMemberUpstreamBodyLeavesSharedNestedMapAlone(t *testing.T) {
 	}
 }
 
+func TestFitAnthropicThinkingBudgetUsesMemberJSONNumbers(t *testing.T) {
+	body := map[string]any{
+		"max_tokens": float64(128),
+		"thinking":   map[string]any{"type": "enabled", "budget_tokens": float64(9000)},
+	}
+	FitAnthropicThinkingBudget(body)
+	thinking, _ := body["thinking"].(map[string]any)
+	if thinking["budget_tokens"] != 127 || body["max_tokens"] != float64(128) {
+		t.Fatalf("fitted body = %#v", body)
+	}
+
+	small := map[string]any{
+		"max_tokens": 8,
+		"thinking":   map[string]any{"type": "enabled", "budget_tokens": 7},
+	}
+	FitAnthropicThinkingBudget(small)
+	kept, _ := small["thinking"].(map[string]any)
+	if kept["budget_tokens"] != 7 {
+		t.Fatalf("small budget changed: %#v", small["thinking"])
+	}
+}
+
 func TestApplyMemberUpstreamBodyEmptyIsNoOp(t *testing.T) {
 	body := map[string]any{"thinking": map[string]any{"type": "enabled"}}
 	ApplyMemberUpstreamBody(body, nil, "", nil)

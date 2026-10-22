@@ -1463,6 +1463,9 @@ func forwardAnthropicCompatRequest(ctx context.Context, cfg MaclawLLMConfig, bod
 	// Conversion rebuilds the body and drops unknown keys. Apply the member
 	// overrides on the Anthropic map that the SDK sends.
 	cfg.applyMemberUpstreamBody(anthropicReq)
+	// Member max_tokens and budget_tokens land after the converter's own
+	// fit, and JSON numbers are not ints. Fit the body that is sent.
+	FitAnthropicThinkingBudget(anthropicReq)
 	respBody, statusCode, err := forwardAnthropicMessageWithSDK(ctx, cfg, anthropicReq, client)
 	if err != nil {
 		if statusCode >= 400 {
