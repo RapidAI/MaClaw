@@ -1,6 +1,10 @@
 package agentruntime
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+)
 
 func TestResponseHasPDF(t *testing.T) {
 	for _, tc := range []struct {
@@ -38,7 +42,7 @@ func TestArtifactAttachErrorProjection(t *testing.T) {
 	if !ShouldClearStaleErrorAfterArtifactAttach("LLM call failed: timeout") {
 		t.Fatal("ordinary stale error should be cleared")
 	}
-	for _, err := range []string{"cancelled", "semantic_capability_unmet", "[system rejected] x", "daily_llm_budget_exceeded", "recovery_checkpoint_failed", "panicked"} {
+	for _, err := range []string{"cancelled", "semantic_capability_unmet", "[system rejected] x", "daily_llm_budget_exceeded", "recovery_checkpoint_failed", "panicked", agent.ErrNoProgress} {
 		if ShouldClearStaleErrorAfterArtifactAttach(err) || !KeepVisibleErrorAfterArtifactAttach(err) {
 			t.Errorf("protected error projection incorrect for %q", err)
 		}

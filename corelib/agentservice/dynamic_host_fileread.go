@@ -278,7 +278,8 @@ func (c *coreAgentCallbacks) ReadReviewedHostFile(ctx context.Context, principal
 
 func reviewedHostFileReadUsesDocumentReader(path string) bool {
 	switch strings.ToLower(filepath.Ext(strings.TrimSpace(path))) {
-	case ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".ppt", ".pptx":
+	case ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".ppt", ".pptx",
+		".dwg", ".dxf", ".dxfb", ".glb", ".gltf", ".epub", ".adoc", ".asciidoc", ".eml":
 		return true
 	default:
 		return false

@@ -96,6 +96,37 @@ func TestRecoverReasoningStutterKeepsParsedToolCall(t *testing.T) {
 	}
 }
 
+func TestResponsesReasoningStutterOutcome(t *testing.T) {
+	withTool := &llm.Response{Choices: []llm.Choice{{
+		Message: llm.Message{
+			Content:          ".\n",
+			ReasoningContent: ".\n",
+			ToolCalls:        []llm.ToolCall{{ID: "call-1"}},
+		},
+	}}}
+	got, ok := responsesReasoningStutterOutcome(withTool, nil, true)
+	if !ok || len(got.Choices[0].Message.ToolCalls) != 1 || got.Choices[0].Message.ToolCalls[0].ID != "call-1" {
+		t.Fatalf("tool call dropped: ok=%v resp=%v", ok, got)
+	}
+	chant := &llm.Response{Choices: []llm.Choice{{
+		Message:      llm.Message{Content: ".\n.\n", ReasoningContent: ".\n.\n"},
+		FinishReason: "stop",
+	}}}
+	got, ok = responsesReasoningStutterOutcome(chant, nil, true)
+	if !ok || got == nil || len(got.Choices) != 1 {
+		t.Fatal("halted responses stream without a tool call did not become an empty stop")
+	}
+	if got.Choices[0].Message.Content != "" || got.Choices[0].Message.ReasoningContent != "" {
+		t.Fatalf("chant kept as the answer: %#v", got.Choices[0].Message)
+	}
+	if _, ok := responsesReasoningStutterOutcome(chant, context.Canceled, true); ok {
+		t.Fatal("caller cancel was turned into an empty stop")
+	}
+	if _, ok := responsesReasoningStutterOutcome(chant, nil, false); ok {
+		t.Fatal("a live responses stream was turned into an empty stop")
+	}
+}
+
 func TestReasoningStutterKeepsRepeatedWords(t *testing.T) {
 	var got strings.Builder
 	f := newReasoningStutterFilter(func(delta string) { got.WriteString(delta) })

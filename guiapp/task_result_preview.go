@@ -225,15 +225,27 @@ func lookupTaskResultPreviewPath(token string) (string, bool) {
 	return lease.path, true
 }
 
-// Office and image previews share the text-extraction ceiling. Video and
-// audio are streamed with Range requests, so a recording past that ceiling
-// still opens in the player.
-const taskResultPreviewMediaMaxBytes int64 = 8 << 30
+// Video, audio, and PDF are served with HTTP Range, so a file past the
+// text-extraction ceiling still opens in the viewer. Word, slides, and
+// workbooks are read whole by their page renderers and stop at a higher
+// document cap. Images and legacy Office text extracts stay on the
+// extraction ceiling.
+const (
+	taskResultPreviewMediaMaxBytes    int64 = 8 << 30
+	taskResultPreviewDocumentMaxBytes int64 = 512 << 20
+)
 
 func taskResultPreviewMaxBytes(path string) int64 {
-	kind, _ := previewHTTPContentType(filepath.Ext(path))
-	if kind == "video" || kind == "audio" {
+	ext := strings.ToLower(filepath.Ext(path))
+	kind, _ := previewHTTPContentType(ext)
+	switch kind {
+	case "video", "audio", "pdf":
 		return taskResultPreviewMediaMaxBytes
+	case "docx", "xlsx":
+		return taskResultPreviewDocumentMaxBytes
+	}
+	if ext == ".pptx" {
+		return taskResultPreviewDocumentMaxBytes
 	}
 	return agent.MaxOfficeReadFileBytes
 }
@@ -314,10 +326,14 @@ func previewTaskResultBinary(path, kind string, out *TaskResultPreview) (*TaskRe
 
 // previewTaskResultSpreadsheet serves the original workbook bytes for the
 // in-app grid renderer and keeps the text extract as the fallback content, so
-// a workbook the JS parser cannot read still previews as text.
+// a workbook the JS parser cannot read still previews as text. A file past
+// the extract ceiling is not opened by the office reader; the grid still
+// receives the original bytes.
 func previewTaskResultSpreadsheet(path string, out *TaskResultPreview) (*TaskResultPreview, error) {
-	if text, _, extractErr := agent.ExtractOfficeText(path); extractErr == nil && strings.TrimSpace(text) != "" {
-		out.Content = text
+	if info, statErr := os.Stat(path); statErr != nil || info.Size() <= agent.MaxOfficeReadFileBytes {
+		if text, _, extractErr := agent.ExtractOfficeText(path); extractErr == nil && strings.TrimSpace(text) != "" {
+			out.Content = text
+		}
 	}
 	return previewTaskResultBinary(path, "xlsx", out)
 }

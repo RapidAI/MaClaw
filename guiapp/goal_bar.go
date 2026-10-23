@@ -640,6 +640,11 @@ func (a *App) PauseSessionGoal(sessionKey string) map[string]interface{} {
 	if g.Status != goal.StatusActive {
 		return a.goalBarSnapshotIn(store, userID, g)
 	}
+	// Drop a previous continue mark before the status flip. The turn that
+	// continue re-armed must not treat this new pause as that continue.
+	if a.goalContinuation != nil {
+		a.goalContinuation.clearContinueRearmed(userID)
+	}
 	a.eachSameGoal(hit, func(rowStore *goal.Store, id string, row *goal.Goal) {
 		if row.Status != goal.StatusActive {
 			return
@@ -709,6 +714,9 @@ func (a *App) CancelSessionGoal(sessionKey string) map[string]interface{} {
 		userID = strings.TrimSpace(sessionKey)
 	}
 	ids := goalBarCandidateIDs(userID)
+	if a.goalContinuation != nil {
+		a.goalContinuation.clearContinueRearmed(userID)
+	}
 	a.stopGoalBarLoops(userID)
 	a.cancelGoalBarTimers(ids...)
 	for _, store := range a.goalBarStores() {

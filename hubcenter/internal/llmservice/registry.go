@@ -1699,9 +1699,10 @@ func buildDispatchModel(reg *Registry, model *llmpool.ModelConfig) *llmpool.Disp
 // groupWithMemberCapabilityTags returns a group whose empty route tag lists
 // include the provider editor tags. Classification reads that copy and does
 // not write it back. Route lists that are already set stay as written.
-// A quality band with one model cannot switch, so that group is returned as-is.
+// Official tiers have one model per band, and that model still needs the
+// member tags so an image can leave a band whose members cannot see.
 func groupWithMemberCapabilityTags(reg *Registry, group *llmpool.ServiceGroup) *llmpool.ServiceGroup {
-	if reg == nil || group == nil || !llmpool.IsDynamicKind(group.Kind) || !qualityBandHasAlternate(group) {
+	if reg == nil || group == nil || !llmpool.IsDynamicKind(group.Kind) {
 		return group
 	}
 	var cloned []llmpool.ModelConfig
@@ -1735,44 +1736,4 @@ func groupWithMemberCapabilityTags(reg *Registry, group *llmpool.ServiceGroup) *
 	out := *group
 	out.Models = cloned
 	return &out
-}
-
-// qualityBandHasAlternate reports whether in-band model upgrade has another
-// model it can switch to. Official high/mid/low each have one model.
-func qualityBandHasAlternate(group *llmpool.ServiceGroup) bool {
-	if group == nil {
-		return false
-	}
-	counts := map[string]int{}
-	for i := range group.Models {
-		name := strings.TrimSpace(group.Models[i].Name)
-		if name == "" || llmpool.IsAutoModel(name) {
-			continue
-		}
-		quality := memberTagBandQuality(group, name)
-		counts[quality]++
-		if counts[quality] > 1 {
-			return true
-		}
-	}
-	return false
-}
-
-func memberTagBandQuality(group *llmpool.ServiceGroup, modelName string) string {
-	if q := llmpool.QualityForOfficialTier(modelName); q != "" {
-		return q
-	}
-	name := strings.TrimSpace(modelName)
-	for _, route := range group.Routes {
-		if !strings.EqualFold(strings.TrimSpace(route.Model), name) {
-			continue
-		}
-		if q := llmpool.NormalizeQuality(route.Quality); q != "" {
-			return q
-		}
-		if q := llmpool.QualityForOfficialTier(route.Model); q != "" {
-			return q
-		}
-	}
-	return ""
 }

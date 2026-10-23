@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { UpdateModal, downloadSourceName, failedUpdateResult, isRestorableStableResult, rollbackReleaseLabel } from './UpdateModal';
+import { UpdateModal, downloadSourceName, failedUpdateResult, formatVersion, isRestorableStableResult, latestVersionLabel, rollbackReleaseLabel } from './UpdateModal';
 
 describe('downloadSourceName', () => {
     it('uses the first backend download candidate and preserves signed URL query values', () => {
@@ -47,6 +47,39 @@ describe('rollbackReleaseLabel', () => {
         expect(rollbackReleaseLabel({ build: '11970' })).toBe('11970');
     });
 });
+describe('formatVersion', () => {
+    it('spells both sides of the comparison the same way', () => {
+        // The backend tags releases as "V8.1.0.12434" while the running build
+        // arrives bare, so the pair used to render as v8.1… / V8.1….
+        expect(formatVersion('8.1.0.12431')).toBe('v8.1.0.12431');
+        expect(formatVersion('V8.1.0.12434')).toBe('v8.1.0.12434');
+        expect(formatVersion('v8.1.0.12434')).toBe('v8.1.0.12434');
+    });
+
+    it('keeps an empty or missing version empty', () => {
+        expect(formatVersion('')).toBe('');
+        expect(formatVersion(undefined)).toBe('');
+        expect(formatVersion('   ')).toBe('');
+    });
+});
+
+describe('latestVersionLabel', () => {
+    it('prefixes a release version', () => {
+        expect(latestVersionLabel({ latest_version: 'V8.1.0.12434' })).toBe('v8.1.0.12434');
+    });
+
+    it('leaves a rollback build number alone', () => {
+        // A rollback target is a build id, not a version: "v12434" would be
+        // a version that never existed.
+        expect(latestVersionLabel({ latest_version: '12434', is_rollback: true })).toBe('12434');
+    });
+
+    it('handles a missing payload', () => {
+        expect(latestVersionLabel(null)).toBe('');
+        expect(latestVersionLabel({ latest_version: '  ' })).toBe('');
+    });
+});
+
 describe('failedUpdateResult', () => {
     it('marks the payload as a check failure', () => {
         const got = failedUpdateResult('network down');

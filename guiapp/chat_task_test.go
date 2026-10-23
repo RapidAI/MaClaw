@@ -1467,6 +1467,10 @@ func TestChatTaskProgressAndEmptyResult(t *testing.T) {
 	if !ok || got == "" {
 		t.Fatalf("milestone = %q ok=%v", got, ok)
 	}
+	retry, ok := chatTaskProgressMilestone("[LiveStatus:llm-retry] 重试 2/5：API 暂时不可用，4 秒后重试")
+	if !ok || retry != "重试 2/5：API 暂时不可用，4 秒后重试" {
+		t.Fatalf("retry milestone = %q ok=%v", retry, ok)
+	}
 	if result := chatTaskResultFromAgentResponse(&IMAgentResponse{}, nil); result.Err == nil {
 		t.Fatal("empty result was treated as done")
 	}

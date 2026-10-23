@@ -341,6 +341,16 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 		existing := h.app.installedSkillForInstall(skill)
 		if existing != nil && skillInstallAlreadyCurrent(existing, skill) {
 			cskill.CleanupStaging(stagingDir)
+			if !installedSkillIsRunnable(existing) {
+				status := strings.TrimSpace(existing.Status)
+				if status == "" {
+					status = "inactive"
+				}
+				return skillInstallExecutionResult{
+					Text:          fmt.Sprintf("Skill %s is already installed but not runnable (status %s). It was not executed.", displayName, status),
+					SilentFailure: true,
+				}
+			}
 			skill = existing
 			return h.executeInstalledSkill(ctx, skill, displayName, platform, userID, policyOwnerID, sendStatus)
 		}
@@ -377,6 +387,13 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 		return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s failed: %v", displayName, err), SilentFailure: true}
 	}
 	return h.executeInstalledSkill(ctx, skill, displayName, platform, userID, policyOwnerID, sendStatus)
+}
+
+// installedSkillIsRunnable is the status gate for a repeat install. A skill
+// left at needs_setup already failed its first run; searching it again must
+// not start that run over.
+func installedSkillIsRunnable(entry *corelib.NLSkillEntry) bool {
+	return entry != nil && normalizeSkillEntryStatus(entry.Status) == skillEntryStatusActive
 }
 
 // executeInstalledSkill runs an already-installed entry. It is deliberately

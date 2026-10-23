@@ -6814,6 +6814,22 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
 .knowledge-list { gap: 8px; }
 .knowledge-row-main { min-width: 0; gap: 4px; color: var(--theme-text-primary); font-size: 0.82rem; overflow-wrap: anywhere; }
 .knowledge-row-main > strong { min-width: 0; overflow-wrap: anywhere; }
+.knowledge-watch-row-main { flex: 1 1 auto; }
+.knowledge-watch-progress { display: grid; gap: 4px; min-width: 0; width: 100%; }
+.knowledge-watch-progress-header { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.knowledge-watch-progress-track { position: relative; flex: 1 1 auto; min-width: 0; height: 6px; overflow: hidden; border-radius: 999px; background: var(--theme-surface-muted); }
+.knowledge-watch-progress-fill { height: 100%; border-radius: inherit; background: var(--theme-primary); transition: width 0.25s ease; }
+.knowledge-watch-progress-fill[data-indeterminate="true"] { width: 35%; animation: knowledge-watch-progress-slide 1.1s ease-in-out infinite; }
+@keyframes knowledge-watch-progress-slide {
+    0% { transform: translateX(-120%); }
+    100% { transform: translateX(320%); }
+}
+.knowledge-watch-progress-meta { flex: 0 0 auto; color: var(--theme-text-secondary); font-size: 0.75rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.knowledge-watch-progress-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.knowledge-watch-progress-file { display: flex; min-width: 0; overflow: hidden; font-size: 0.78rem; white-space: nowrap; }
+.knowledge-watch-progress-dir { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--theme-text-muted); }
+.knowledge-watch-progress-name { flex: 0 0 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--theme-text-primary); font-weight: 650; }
+.knowledge-watch-progress-step { flex: 0 0 auto; color: var(--theme-text-muted); font-size: 0.74rem; white-space: nowrap; }
 
 .knowledge-two-column {
     display: grid;
@@ -7060,8 +7076,13 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
 
 @media (prefers-reduced-motion: reduce) {
     .knowledge-dialog-overlay,
-    .knowledge-dialog-modal {
+    .knowledge-dialog-modal,
+    .knowledge-watch-progress-fill[data-indeterminate="true"] {
         animation: none !important;
+    }
+    .knowledge-watch-progress-fill[data-indeterminate="true"] {
+        width: 100%;
+        opacity: 0.45;
     }
 }
 
@@ -11800,250 +11821,615 @@ button.knowledge-chip:disabled {
     margin-top: 20px;
 }
 
+/* Online update dialog.
+   A compact release panel: the version pair, one status band, one primary
+   action. Every surface, border and accent comes from the theme tokens so
+   the same hierarchy survives light, dark and the alternate schemes. */
 .update-modal {
-    width: min(440px, calc(100vw - 32px));
+    width: min(468px, calc(100vw - 32px));
+    padding: 22px 24px 20px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--theme-surface);
+    box-shadow: var(--shadow-xl);
     text-align: left;
+}
+
+/* The app shell has no global border-box reset; padded panels here would
+   otherwise grow past the dialog's content box and clip their right edge. */
+.update-modal,
+.update-modal *,
+.update-modal *::before,
+.update-modal *::after {
+    box-sizing: border-box;
 }
 
 .update-modal__header {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 12px;
+    gap: 16px;
+    margin-bottom: 16px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--theme-border-subtle);
+}
+
+.update-modal__heading {
+    min-width: 0;
 }
 
 .update-modal__eyebrow {
-    margin: 0 0 4px;
-    color: var(--theme-text-secondary);
-    font-size: 0.72rem;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 0 0 6px;
+    color: var(--theme-text-muted);
+    font-size: 0.66rem;
     font-weight: 700;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+}
+
+.update-modal__eyebrow::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--theme-primary);
+    box-shadow: 0 0 0 3px var(--theme-primary-soft);
 }
 
 .update-modal__header h3 {
     margin: 0;
     color: var(--theme-text-primary);
-    font-size: 1.12rem;
-    font-weight: 800;
+    font-size: 1.16rem;
+    font-weight: 700;
+    line-height: 1.3;
+    letter-spacing: -0.01em;
 }
 
+/* Channel switch: the label is the hit target, the track is decoration. */
 .update-modal__beta-toggle {
-    display: flex;
+    position: relative;
+    display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
+    flex-shrink: 0;
+    padding: 4px 5px 4px 11px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-pill);
+    background: var(--theme-surface-muted);
     color: var(--theme-text-secondary);
     cursor: pointer;
-    font-size: 0.8rem;
+    font-size: 0.74rem;
+    font-weight: 600;
+    line-height: 1.2;
     user-select: none;
+    transition: background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+/* Keyboard focus lives on the visually hidden input; the track carries the
+   ring so the switch itself shows where focus is. */
+.update-modal__beta-toggle input:focus-visible + .update-modal__switch {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+.update-modal__beta-toggle:hover {
+    border-color: color-mix(in srgb, var(--theme-primary) 42%, var(--theme-border));
+    color: var(--theme-text-primary);
+}
+
+.update-modal__beta-toggle:has(input:disabled) {
+    opacity: 0.6;
+    cursor: not-allowed;
 }
 
 .update-modal__beta-toggle input {
-    cursor: pointer;
-    accent-color: var(--theme-primary);
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
 }
 
-.update-modal__info {
+.update-modal__switch {
+    position: relative;
+    display: inline-flex;
+    width: 32px;
+    height: 18px;
+    border-radius: 999px;
+    background: var(--theme-switch-track-off);
+    transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.update-modal__switch-thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--theme-switch-thumb);
+    box-shadow: var(--theme-switch-thumb-shadow);
+    transition: transform var(--dur-fast) var(--ease-out);
+}
+
+.update-modal__beta-toggle input:checked + .update-modal__switch {
+    background: var(--theme-primary);
+}
+
+.update-modal__beta-toggle input:checked + .update-modal__switch .update-modal__switch-thumb {
+    transform: translateX(14px);
+}
+
+.update-modal__body {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+/* Info card: var(--theme-info-bg) keeps the version pair readable in both themes. */
+.update-modal__card {
     padding: 16px;
     border: 1px solid var(--theme-border);
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     background: var(--theme-info-bg);
 }
 
-.update-modal__info--center {
-    text-align: center;
+/* Up-to-date state: the accent panel would read as a call to action. */
+.update-modal__card--current {
+    border-color: var(--theme-border-subtle);
+    background: var(--theme-surface-muted);
 }
 
-.update-modal__info--error {
-    border-color: color-mix(in srgb, var(--theme-danger) 34%, var(--theme-border));
-    background: color-mix(in srgb, var(--theme-danger-bg) 56%, var(--theme-surface));
-}
-
-.update-modal__error-message {
-    margin: 12px 0 0;
-    color: var(--theme-danger);
-    font-size: 0.9rem;
-    line-height: 1.45;
-}
-
-.update-modal__info--version {
-    margin-bottom: 15px;
+.update-modal__rollback {
+    padding: 16px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-info-bg);
 }
 
 .update-modal__version-row {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-    align-items: end;
+    align-items: center;
     gap: 12px;
 }
 
-.update-modal__version-arrow {
-    padding-bottom: 2px;
-    color: var(--theme-text-secondary);
-    font-size: 1.1rem;
+.update-modal__version-cell {
+    min-width: 0;
 }
 
-.update-modal__checking {
-    margin: 10px 0;
-    color: var(--theme-text-secondary);
-    font-size: 0.9rem;
+.update-modal__version-arrow {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border: 1px solid var(--theme-border);
+    border-radius: 50%;
+    background: var(--theme-surface);
+    color: var(--theme-text-muted);
+    font-size: 0.82rem;
+    line-height: 1;
 }
 
 .update-modal__label {
-    margin-bottom: 5px;
-    color: var(--theme-text-secondary);
-    font-size: 0.85rem;
+    margin-bottom: 6px;
+    color: var(--theme-text-muted);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
 }
 
 .update-modal__version {
-    color: var(--theme-primary);
+    color: var(--theme-text-primary);
     font-size: 1rem;
     font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
 }
 
 .update-modal__version--current {
     margin-bottom: 0;
+    color: var(--theme-text-secondary);
 }
 
 .update-modal__version--latest {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.4rem;
-    color: var(--theme-success);
+    gap: 6px;
+    color: var(--theme-primary-strong);
 }
 
 .update-modal__channel-badge {
     display: inline-flex;
     align-items: center;
-    padding: 0.1rem 0.45rem;
-    border-radius: 999px;
-    font-size: 0.7rem;
-    font-weight: 600;
+    padding: 2px 8px;
+    border: 1px solid color-mix(in srgb, var(--theme-warning) 30%, var(--theme-border));
+    border-radius: var(--radius-pill);
+    background: var(--theme-warning-bg);
+    /* --theme-warning is a neutral slate in the default schemes and amber in
+       the alternate ones; --theme-text-secondary stays legible on both the
+       pale and the translucent warning backgrounds. */
+    color: var(--theme-text-secondary);
+    font-size: 0.66rem;
+    font-weight: 700;
     letter-spacing: 0.02em;
-    color: var(--theme-warning-text, #92400e);
-    background: var(--theme-warning-bg, rgba(245, 158, 11, 0.16));
-    border: 1px solid var(--theme-warning-border, rgba(245, 158, 11, 0.35));
 }
 
 .update-modal__source {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
     gap: 12px;
     margin-top: 14px;
     padding-top: 12px;
-    border-top: 1px solid var(--theme-border);
-    color: var(--theme-text-primary);
-    font-size: 0.85rem;
+    border-top: 1px dashed var(--theme-border);
+    font-size: 0.78rem;
 }
 
 .update-modal__source-label {
+    color: var(--theme-text-muted);
+}
+
+.update-modal__source-value {
+    overflow: hidden;
+    color: var(--theme-text-primary);
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.update-modal__message {
+    margin: 0 0 12px;
+    color: var(--theme-text-secondary);
+    font-size: 0.82rem;
+    line-height: 1.55;
+}
+
+.update-modal__error-message {
+    margin: 10px 0 0;
+    color: var(--theme-danger);
+    font-size: 0.8rem;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+/* Status band: one place for "working", "failed" and "not ready yet". */
+.update-modal__status-panel {
+    margin-top: 14px;
+    padding: 14px 16px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface-muted);
+}
+
+.update-modal__status-panel--working {
+    border-color: color-mix(in srgb, var(--theme-primary) 26%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-primary-soft) 55%, var(--theme-surface));
+}
+
+.update-modal__status-panel--install {
+    border-color: color-mix(in srgb, var(--theme-primary) 26%, var(--theme-border));
+    background: linear-gradient(180deg, color-mix(in srgb, var(--theme-primary-soft) 70%, var(--theme-surface)), var(--theme-surface));
+}
+
+.update-modal__status-panel--error {
+    border-color: color-mix(in srgb, var(--theme-danger) 34%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-danger-bg) 62%, var(--theme-surface));
+}
+
+/* Neutral note (e.g. the installer is still being built): no alarm colour. */
+.update-modal__status-panel--muted {
+    border-style: dashed;
+    background: var(--theme-surface);
+}
+
+.update-modal__status-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--theme-text-primary);
+    font-size: 0.85rem;
+    font-weight: 600;
+    line-height: 1.45;
+}
+
+.update-modal__status-title {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.update-modal__status-meta {
+    margin-left: auto;
+    color: var(--theme-text-secondary);
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+/* The failure band already states the cause; the build number is context,
+   so it sits under the message as one compact line instead of a spread row. */
+.update-modal__status-foot {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-top: 10px;
+    padding-top: 10px;
+    /* Same divider as every other panel section; the band's own border
+       already carries the danger tint. */
+    border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.update-modal__status-panel--error .update-modal__status-foot {
+    border-top-color: color-mix(in srgb, var(--theme-danger) 18%, transparent);
+}
+
+.update-modal__status-foot .update-modal__label {
+    margin-bottom: 0;
     color: var(--theme-text-secondary);
 }
 
-.update-modal__source strong {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-weight: 700;
+.update-modal__status-foot .update-modal__version {
+    font-size: 0.82rem;
 }
 
-.update-modal__version--spaced {
-    margin-bottom: 12px;
-}
-
-.update-modal__workflow {
-    margin-top: 15px;
-}
-
-.update-modal__download {
-    width: 100%;
-}
-
-.update-modal__download-head {
-    display: flex;
-    justify-content: space-between;
-    margin-bottom: 8px;
-    color: var(--theme-text-primary);
-    font-size: 0.9rem;
+.update-modal__spinner {
+    flex: 0 0 auto;
+    width: 14px;
+    height: 14px;
+    border: 2px solid color-mix(in srgb, var(--theme-primary) 30%, transparent);
+    border-top-color: var(--theme-primary);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
 }
 
 .update-modal__progress-track {
+    position: relative;
     width: 100%;
-    height: 10px;
+    height: 6px;
+    margin-top: 12px;
     overflow: hidden;
     border-radius: 999px;
-    background: var(--theme-surface-muted);
+    background: color-mix(in srgb, var(--theme-text-muted) 18%, var(--theme-surface));
 }
 
 .update-modal__progress-bar {
     height: 100%;
+    border-radius: inherit;
+    /* Solid fill, no gradient: the office skin repaints every
+       [role='progressbar'] child with --office-accent at forced priority, so
+       a gradient would be flattened there anyway. Both the determinate and
+       the indeterminate bar carry the role so they stay the same colour. */
     background: var(--theme-primary);
-    transition: width 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+    transition: width 0.25s var(--ease-out);
+}
+
+.update-modal__progress-track--indeterminate .update-modal__progress-bar--indeterminate {
+    width: 38%;
+    animation: update-modal-sweep 1.3s var(--ease-out) infinite;
+}
+
+@keyframes update-modal-sweep {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(320%); }
+}
+
+/* Quiet secondary action: outline pill, never competes with the CTA. */
+.update-modal__link-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 5px 12px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-pill);
+    background: transparent;
+    color: var(--theme-text-secondary);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.74rem;
+    font-weight: 600;
+    line-height: 1.3;
+    text-decoration: none;
+    transition: background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.update-modal__link-button:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--theme-primary) 42%, var(--theme-border));
+    background: var(--theme-surface-muted);
+    color: var(--theme-primary-strong);
+}
+
+.update-modal__link-button:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+.update-modal__link-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
 
 .update-modal__cancel-download {
-    margin-top: 10px;
+    margin-top: 12px;
+    border-color: color-mix(in srgb, var(--theme-danger) 32%, var(--theme-border));
     color: var(--theme-danger);
+}
+
+.update-modal__cancel-download:hover:not(:disabled) {
+    background: var(--theme-danger-bg);
+    border-color: var(--theme-danger);
+    color: var(--theme-danger);
+}
+
+/* Install handoff: the window is about to close, so this band explains why. */
+.update-modal__install {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 4px 12px;
+}
+
+.update-modal__install-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 22%, transparent);
+    border-radius: 50%;
+    background: var(--theme-primary-soft);
+}
+
+.update-modal__install-copy {
+    min-width: 0;
+}
+
+.update-modal__install-title {
+    margin: 0;
+    color: var(--theme-text-primary);
+    font-size: 0.9rem;
+    font-weight: 700;
+    line-height: 1.4;
+}
+
+.update-modal__install-hint {
+    margin: 4px 0 0;
+    color: var(--theme-text-secondary);
+    font-size: 0.78rem;
+    line-height: 1.55;
+}
+
+.update-modal__install-progress {
+    grid-column: 1 / -1;
+    margin-top: 12px;
 }
 
 .update-modal__complete {
-    padding: 10px;
+    margin-top: 14px;
+    padding: 18px 16px 16px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface-muted);
     text-align: center;
 }
 
-.update-modal__complete p {
-    margin: 0 0 15px;
-    color: var(--theme-success);
-    font-weight: 800;
+.update-modal__complete-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    border: 1px solid color-mix(in srgb, var(--theme-success) 24%, transparent);
+    border-radius: 50%;
+    background: var(--theme-success-bg);
 }
 
-.update-modal__full-button {
-    width: 100%;
-}
-
-.update-modal__error-block {
-    margin-bottom: 10px;
-}
-
-.update-modal__error-block p {
-    margin: 0 0 5px;
-    color: var(--theme-danger);
-    font-size: 0.85rem;
-}
-
-.update-modal__danger-button {
-    background: var(--theme-danger) !important;
-}
-
-.update-modal__message {
-    margin: 10px 0;
+.update-modal__complete-title {
+    margin: 10px 0 14px;
     color: var(--theme-text-primary);
-    font-size: 0.9rem;
+    font-size: 0.88rem;
+    font-weight: 700;
+}
+
+.update-modal__cta {
+    margin-top: 14px;
+}
+
+.update-modal__cta-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-height: 38px;
+    padding: 9px 16px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-md);
+    background: var(--theme-primary);
+    color: var(--theme-on-primary);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.85rem;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--theme-primary) 24%, transparent);
+    transition: background-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+}
+
+.update-modal__cta-button:hover:not(:disabled) {
+    background: var(--theme-primary-strong);
+    box-shadow: 0 6px 16px color-mix(in srgb, var(--theme-primary) 30%, transparent);
+}
+
+.update-modal__cta-button:active:not(:disabled) {
+    transform: translateY(1px);
+    box-shadow: 0 2px 6px color-mix(in srgb, var(--theme-primary) 24%, transparent);
+}
+
+.update-modal__cta-button:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+.update-modal__cta-button[data-tone='danger'] {
+    background: var(--theme-danger);
+    color: var(--theme-on-primary);
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--theme-danger) 26%, transparent);
+}
+
+.update-modal__cta-button[data-tone='danger']:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--theme-danger) 86%, #000);
+    box-shadow: 0 6px 16px color-mix(in srgb, var(--theme-danger) 32%, transparent);
+}
+
+/* Inside a status band the action follows the message: intrinsic width and
+   right-aligned, so a failure reads as "message + remedy", not a wall of red.
+   fit-content (not auto) is what actually shrinks a block-level flex box;
+   with auto it still fills the band and margin-left:auto does nothing. */
+.update-modal__status-panel .update-modal__cta-button {
+    width: fit-content;
+    min-width: 104px;
+    margin: 12px 0 0 auto;
 }
 
 .update-modal__latest-ok {
     display: flex;
     align-items: center;
-    gap: 6px;
-    margin: 0;
+    gap: 8px;
+    margin: 12px 0 0;
+    padding-top: 12px;
+    border-top: 1px solid var(--theme-border);
     color: var(--theme-success);
-    font-size: 0.9rem;
-    font-weight: 700;
+    font-size: 0.82rem;
+    font-weight: 600;
 }
 
 .update-modal__latest-ok-icon {
     display: inline-flex;
+    align-items: center;
+    justify-content: center;
     flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--theme-success-bg);
 }
 
-.update-modal__rollback {
-    margin-bottom: 15px;
+.update-modal__checking {
+    margin: 0;
+    color: var(--theme-text-secondary);
+    font-size: 0.85rem;
 }
 
 .update-modal__rollback-heading {
     display: flex;
+    align-items: flex-start;
     justify-content: space-between;
     gap: 12px;
 }
@@ -12051,8 +12437,8 @@ button.knowledge-chip:disabled {
 .update-modal__rollback-heading p {
     margin: 0;
     color: var(--theme-text-secondary);
-    font-size: 0.82rem;
-    line-height: 1.4;
+    font-size: 0.78rem;
+    line-height: 1.5;
 }
 
 .update-modal__rollback-list {
@@ -12069,16 +12455,23 @@ button.knowledge-chip:disabled {
     width: 100%;
     padding: 10px 12px;
     border: 1px solid var(--theme-border);
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     background: var(--theme-surface);
     color: var(--theme-text-primary);
     cursor: pointer;
+    font-family: inherit;
     text-align: left;
+    transition: background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
 }
 
 .update-modal__rollback-item:hover:not(:disabled) {
-    border-color: var(--theme-primary);
+    border-color: color-mix(in srgb, var(--theme-primary) 46%, var(--theme-border));
     background: var(--theme-info-bg);
+}
+
+.update-modal__rollback-item:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
 }
 
 .update-modal__rollback-item:disabled {
@@ -12087,19 +12480,103 @@ button.knowledge-chip:disabled {
 }
 
 .update-modal__rollback-item strong {
-    color: var(--theme-primary);
+    color: var(--theme-primary-strong);
+    font-variant-numeric: tabular-nums;
 }
 
 .update-modal__rollback-item span {
-    color: var(--theme-text-secondary);
-    font-size: 0.8rem;
+    color: var(--theme-text-muted);
+    font-size: 0.76rem;
     white-space: nowrap;
 }
+
 .update-modal__actions {
     display: flex;
-    justify-content: flex-end;
+    align-items: center;
+    justify-content: space-between;
     gap: 10px;
-    margin-top: 20px;
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid var(--theme-border-subtle);
+}
+
+.update-modal__rollback-link {
+    min-height: 30px;
+}
+
+.update-modal__close {
+    min-height: 34px;
+    margin-left: auto;
+    padding: 7px 18px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+    color: var(--theme-text-secondary);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.8rem;
+    font-weight: 600;
+    transition: background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.update-modal__close:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--theme-primary) 42%, var(--theme-border));
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-primary);
+}
+
+.update-modal__close:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+.update-modal__close:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+@media (max-width: 560px) {
+    .update-modal {
+        padding: 18px 16px 16px;
+    }
+
+    .update-modal__header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 12px;
+    }
+
+    .update-modal__beta-toggle {
+        align-self: flex-start;
+    }
+
+    .update-modal__version {
+        font-size: 0.92rem;
+    }
+
+
+    .update-modal__source-value {
+        max-width: 100%;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .update-modal__progress-bar,
+    .update-modal__switch,
+    .update-modal__switch-thumb,
+    .update-modal__cta-button {
+        transition: none;
+    }
+
+    .update-modal__progress-track--indeterminate .update-modal__progress-bar--indeterminate {
+        width: 100%;
+        opacity: 0.45;
+        animation: none;
+    }
+
+    .update-modal__spinner {
+        animation-duration: 2.4s;
+    }
 }
 
 @media (max-width: 560px) {
@@ -12113,22 +12590,6 @@ button.knowledge-chip:disabled {
 
     .project-proxy-modal__field--port {
         flex-basis: auto;
-    }
-
-    .update-modal__version-row {
-        gap: 8px;
-    }
-
-    .update-modal__source {
-        align-items: flex-start;
-        flex-direction: column;
-        gap: 3px;
-    }
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .update-modal__progress-bar {
-        transition: none;
     }
 }
 
@@ -28949,17 +29410,62 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 
 /* Match the reference composer: paperclip/mic on the left and a blue send
    affordance on the right.  The button remains disabled until text exists;
-   only its visual affordance is kept present on the empty landing state. */
+   only its visual affordance is kept present on the empty landing state.
+   #App is required: the later composer utility lock
+   (#App .mc-input-stack button:not(.btn-primary), specificity 1,2,1) paints
+   muted ink on every non-primary button. That gray hook sat on the accent
+   fill at about 1.2:1. A deepened primary keeps the mark blue and clears 7:1
+   with a white stroke, including the empty disabled state. */
 [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer [data-testid='ai-clear-input'] {
   display: none !important;
 }
-[data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button[aria-label='发送'],
-[data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button[aria-label='Send'] {
-  background: var(--mc-accent, #2f6fbc) !important;
-  border-color: var(--mc-accent, #2f6fbc) !important;
-  color: var(--theme-on-primary) !important;
+#App [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send,
+#App [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send:hover,
+#App [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send:disabled {
+  background: color-mix(in srgb, var(--theme-primary, #2f6fbc) 68%, #06101c) !important;
+  border-color: color-mix(in srgb, var(--theme-primary, #2f6fbc) 68%, #06101c) !important;
+  color: #ffffff !important;
   opacity: 1 !important;
-  box-shadow: 0 3px 8px rgba(23, 105, 232, .22) !important;
+  box-shadow: 0 3px 8px rgba(8, 28, 58, .28) !important;
+}
+#App [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send:hover:not(:disabled),
+#App [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send:active:not(:disabled) {
+  filter: brightness(1.08);
+}
+#App [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send:active:not(:disabled) {
+  filter: brightness(0.94);
+}
+#App [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send svg {
+  width: 18px;
+  height: 18px;
+  color: #ffffff !important;
+}
+/* The icon sets stroke-width on the path. A value on the svg is inherited
+   only when the shape has none, so the weight has to be set on the shape. */
+#App [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send svg * {
+  stroke: currentColor;
+  stroke-width: 2.25;
+}
+/* Busy mark is a 2px ring. border-color paints every side, so the gap has to
+   be reset after it or the spinner becomes a solid circle. */
+#App [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send > span {
+  border-color: #ffffff !important;
+  border-top-color: transparent !important;
+}
+#App[data-ai-theme='dark'] [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send,
+#App[data-ai-theme='dark'] [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send:hover,
+#App[data-ai-theme='dark'] [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send:disabled {
+  background: var(--theme-primary) !important;
+  border-color: var(--theme-primary) !important;
+  color: var(--theme-on-primary, #ffffff) !important;
+  box-shadow: none !important;
+}
+#App[data-ai-theme='dark'] [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send svg {
+  color: var(--theme-on-primary, #ffffff) !important;
+}
+#App[data-ai-theme='dark'] [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send > span {
+  border-color: var(--theme-on-primary, #ffffff) !important;
+  border-top-color: transparent !important;
 }
 
 

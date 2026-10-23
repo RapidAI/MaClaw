@@ -1,10 +1,14 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { PreviewTaskResultFile } from "../../../wailsjs/go/main/App";
 import type { CodePreviewTheme } from "./FileTabBar";
 import { MarkdownPreview } from "./CodePreviewMarkdown";
 import { isTaskResultPdfPreviewURL, localizeTaskResultPreviewError, type TaskResultPreviewPayload } from "./taskResultPreview";
+import { previewWorkbookGrids, readPreviewWorkbook, releasePreviewWorkbook, type ParsedWorkbook } from "./xlsxPreviewParse";
+import { isPreviewAbortError, readPreviewBody } from "./previewBytes";
+import { PREVIEW_BAR_DELAY_MS, PREVIEW_HEAVY_PARSE_BYTES, PreviewLoadingStatus, yieldPreviewPaint, type PreviewProgress } from "./PreviewProgressBar";
 
-type XLSXModule = typeof import("xlsx");
+export { buildSheetGrid, previewWorkbookGrids, readPreviewWorkbook, releasePreviewWorkbook } from "./xlsxPreviewParse";
+
 
 /** .xlsx and the spreadsheet family the in-app grid renderer can lay out. */
 export function isXlsxFileName(name: string): boolean {
@@ -18,124 +22,6 @@ export interface XlsxPreviewPanelProps {
     lang: string;
     /** Text extract from the host; shown when the workbook cannot be parsed. */
     fallbackContent?: string;
-}
-
-/** Cap the rendered grid so a whole-column format cannot freeze the pane. */
-const MAX_PREVIEW_ROWS = 500;
-const MAX_PREVIEW_COLS = 64;
-
-type SheetGrid = {
-    rows: string[][];
-    /** Merge start → span; covered cells are skipped while rendering. */
-    spans: Map<string, { rowSpan: number; colSpan: number }>;
-    covered: Set<string>;
-    colCount: number;
-    /** Rows/cols requested from the sheet after clamping to the caps. */
-    shownRows: number;
-    shownCols: number;
-    truncatedRows: number;
-    truncatedCols: number;
-};
-
-type ParsedWorkbook = {
-    XLSX: XLSXModule;
-    wb: import("xlsx").WorkBook;
-    names: string[];
-};
-
-/**
- * Build the visible grid from a worksheet. The read range is clamped to the
- * preview caps first so `sheet_to_json` never materializes a 1M-row array;
- * merged cells collapse into row/col spans on their top-left cell.
- */
-export function buildSheetGrid(XLSX: XLSXModule, sheet: import("xlsx").WorkSheet): SheetGrid {
-    const empty: SheetGrid = { rows: [], spans: new Map(), covered: new Set(), colCount: 0, shownRows: 0, shownCols: 0, truncatedRows: 0, truncatedCols: 0 };
-    if (!sheet || !sheet["!ref"]) return empty;
-    const full = XLSX.utils.decode_range(sheet["!ref"]);
-    const totalRows = full.e.r - full.s.r + 1;
-    const totalCols = full.e.c - full.s.c + 1;
-    if (totalRows <= 0 || totalCols <= 0) return empty;
-    const range = {
-        s: { r: full.s.r, c: full.s.c },
-        e: {
-            r: Math.min(full.e.r, full.s.r + MAX_PREVIEW_ROWS - 1),
-            c: Math.min(full.e.c, full.s.c + MAX_PREVIEW_COLS - 1),
-        },
-    };
-    const shownRows = range.e.r - range.s.r + 1;
-    const shownCols = range.e.c - range.s.c + 1;
-    const raw = XLSX.utils.sheet_to_json<string[]>(sheet, {
-        header: 1,
-        defval: "",
-        raw: false,
-        range,
-    }) as string[][];
-    const width = range.e.c - range.s.c + 1;
-    const rows = raw.map((row) => {
-        const next = Array.isArray(row) ? row.map((cell) => String(cell ?? "")) : [];
-        while (next.length < width) next.push("");
-        return next;
-    });
-    // Template files often declare far more formatted-but-empty rows and
-    // columns than they fill; trailing blanks read as a broken preview. The
-    // content extent covers merge ranges too, so a wide merged title keeps
-    // its span instead of being clipped to the last text cell.
-    const merges = Array.isArray(sheet["!merges"]) ? sheet["!merges"] : [];
-    let lastRow = -1;
-    let lastCol = -1;
-    for (let r = 0; r < rows.length; r += 1) {
-        const row = rows[r];
-        for (let c = row.length - 1; c > lastCol; c -= 1) {
-            if (row[c] !== "") {
-                lastCol = Math.max(lastCol, c);
-                break;
-            }
-        }
-        if (row.some((cell) => cell !== "")) lastRow = Math.max(lastRow, r);
-    }
-    for (const merge of merges) {
-        if (merge.e.r < range.s.r || merge.e.c < range.s.c) continue;
-        if (merge.s.r > range.e.r || merge.s.c > range.e.c) continue;
-        lastRow = Math.max(lastRow, Math.min(merge.e.r, range.e.r) - range.s.r);
-        lastCol = Math.max(lastCol, Math.min(merge.e.c, range.e.c) - range.s.c);
-    }
-    if (lastRow >= 0) rows.length = lastRow + 1;
-    else rows.length = 0;
-    const colCount = lastCol + 1;
-    for (let r = 0; r < rows.length; r += 1) rows[r] = rows[r].slice(0, colCount);
-    const spans = new Map<string, { rowSpan: number; colSpan: number }>();
-    const covered = new Set<string>();
-    for (const merge of merges) {
-        const startR = merge.s.r - range.s.r;
-        const startC = merge.s.c - range.s.c;
-        const endR = merge.e.r - range.s.r;
-        const endC = merge.e.c - range.s.c;
-        if (endR < 0 || endC < 0 || startR >= rows.length || startC >= colCount) continue;
-        const clipR = Math.min(endR, rows.length - 1);
-        const clipC = Math.min(endC, colCount - 1);
-        if (startR >= 0 && startC >= 0) {
-            spans.set(`${startR}:${startC}`, { rowSpan: clipR - startR + 1, colSpan: clipC - startC + 1 });
-        }
-        for (let r = Math.max(0, startR); r <= clipR; r += 1) {
-            for (let c = Math.max(0, startC); c <= clipC; c += 1) {
-                if (r === startR && c === startC) continue;
-                covered.add(`${r}:${c}`);
-            }
-        }
-    }
-    return {
-        rows,
-        spans,
-        covered,
-        colCount,
-        // Truncation counts what the caps cut off the declared range, not the
-        // trailing blanks trimmed above — those are merely empty, not hidden
-        // content.
-        shownRows,
-        shownCols,
-        truncatedRows: Math.max(0, totalRows - shownRows),
-        truncatedCols: Math.max(0, totalCols - shownCols),
-    };
 }
 
 function isNumericCell(cell: string): boolean {
@@ -160,11 +46,21 @@ function isXlsxPreviewURL(value: string): boolean {
  */
 export function XlsxPreviewPanel({ absPath, theme, lang, fallbackContent = "" }: XlsxPreviewPanelProps) {
     const isZh = lang.startsWith("zh");
+    // Language and the tab extract only change the failure text. They must not
+    // download and parse the workbook again.
+    const langRef = useRef(lang);
+    const fallbackRef = useRef(fallbackContent);
+    useEffect(() => {
+        langRef.current = lang;
+        fallbackRef.current = fallbackContent;
+    }, [lang, fallbackContent]);
     const [parsed, setParsed] = useState<ParsedWorkbook | null>(null);
     const [activeSheet, setActiveSheet] = useState(0);
     const [error, setError] = useState("");
     const [fallback, setFallback] = useState("");
     const [loading, setLoading] = useState(true);
+    const [progress, setProgress] = useState<PreviewProgress>({ phase: "wait", ratio: null });
+    const [barOn, setBarOn] = useState(false);
     const gridScrollRef = useRef<HTMLDivElement | null>(null);
 
     // A new sheet renders into the same scroll container, so the previous
@@ -180,71 +76,141 @@ export function XlsxPreviewPanel({ absPath, theme, lang, fallbackContent = "" }:
 
     useEffect(() => {
         let cancelled = false;
+        const controller = new AbortController();
+        let parser: { parse: (bytes: Uint8Array) => Promise<ParsedWorkbook>; stop: () => void } | null = null;
+        const zh = () => langRef.current.startsWith("zh");
+        const barTimer = window.setTimeout(() => {
+            if (!cancelled) setBarOn(true);
+        }, PREVIEW_BAR_DELAY_MS);
         const fail = (message: string, extract: string) => {
             if (cancelled) return;
+            window.clearTimeout(barTimer);
             if (String(extract || "").trim()) {
                 setFallback(extract);
                 setError("");
             } else {
-                setError(localizeTaskResultPreviewError(message, lang) || message);
+                setError(localizeTaskResultPreviewError(message, langRef.current) || message);
             }
             setLoading(false);
+        };
+        const note = (phase: PreviewProgress["phase"], ratio: number | null) => {
+            if (!cancelled) setProgress({ phase, ratio });
         };
         setLoading(true);
         setParsed(null);
         setActiveSheet(0);
         setError("");
         setFallback("");
+        setProgress({ phase: "wait", ratio: null });
+        setBarOn(false);
         void (async () => {
+            // The companion tab does not carry an office extract. The preview
+            // call does, for workbooks under the extract ceiling. A parser
+            // throw happens after that call returns, so the catch has to keep
+            // the server text instead of the empty tab content.
+            let extract = fallbackRef.current;
             try {
                 const result = await PreviewTaskResultFile(absPath) as TaskResultPreviewPayload;
                 if (cancelled) return;
                 const previewURL = String(result?.preview_url || "").trim();
-                const extract = String(result?.content || "");
+                const serverExtract = String(result?.content || "");
+                if (serverExtract.trim()) extract = serverExtract;
                 if (!isXlsxPreviewURL(previewURL)) {
-                    fail(isZh ? "无法预览该表格文件" : "This spreadsheet cannot be previewed", extract);
+                    fail(zh() ? "无法预览该表格文件" : "This spreadsheet cannot be previewed", extract);
                     return;
                 }
-                const response = await fetch(previewURL);
+                const response = await fetch(previewURL, { signal: controller.signal });
                 if (!response.ok) {
-                    fail(isZh ? "无法读取该表格文件" : "This spreadsheet could not be read", extract);
+                    fail(zh() ? "无法读取该表格文件" : "This spreadsheet could not be read", extract);
                     return;
                 }
-                const bytes = await response.arrayBuffer();
+                note("read", null);
+                const bytes = await readPreviewBody(response, {
+                    signal: controller.signal,
+                    onProgress: (ratio) => note("read", ratio),
+                });
                 if (cancelled) return;
+                const size = bytes.byteLength;
+                const heavy = size >= PREVIEW_HEAVY_PARSE_BYTES;
+                const env = import.meta.env as { VITEST?: boolean; MODE?: string };
+                const skipWorker = env.VITEST === true || env.MODE === "test";
+                if (heavy && !skipWorker) {
+                    // SheetJS parses on the thread that calls it. A worker keeps
+                    // this pane's progress bar moving and the window responsive.
+                    note("parse", null);
+                    try {
+                        const mod = await import("./xlsxPreviewWorker");
+                        if (!cancelled) parser = mod.startXlsxPreviewParser();
+                    } catch {
+                        parser = null;
+                    }
+                }
+                if (cancelled) return;
+                if (parser) {
+                    try {
+                        const preview = await parser.parse(bytes);
+                        if (cancelled) return;
+                        if (preview.names.length === 0) {
+                            fail(zh() ? "该表格文件没有可预览的工作表" : "This spreadsheet has no sheets to preview", extract);
+                            return;
+                        }
+                        window.clearTimeout(barTimer);
+                        setParsed(preview);
+                        setLoading(false);
+                        return;
+                    } catch (err) {
+                        if (cancelled || isPreviewAbortError(err)) return;
+                        // Bytes move only after the worker is ready. A later
+                        // failure has already detached them.
+                        if (heavy && bytes.byteLength === 0) throw err;
+                    } finally {
+                        parser.stop();
+                        parser = null;
+                    }
+                }
+                note("parse", null);
+                if (heavy) {
+                    if (!cancelled) setBarOn(true);
+                    await yieldPreviewPaint();
+                    if (cancelled) return;
+                }
                 const XLSX = await import("xlsx");
                 if (cancelled) return;
-                const wb = XLSX.read(new Uint8Array(bytes), { type: "array" });
-                const names = wb.SheetNames.filter((name) => Boolean(wb.Sheets[name]));
-                if (names.length === 0) {
-                    fail(isZh ? "该表格文件没有可预览的工作表" : "This spreadsheet has no sheets to preview", extract);
-                    return;
+                const wb = readPreviewWorkbook(XLSX, bytes);
+                try {
+                    if (cancelled) return;
+                    const preview = previewWorkbookGrids(XLSX, wb);
+                    if (cancelled) return;
+                    if (preview.names.length === 0) {
+                        fail(zh() ? "该表格文件没有可预览的工作表" : "This spreadsheet has no sheets to preview", extract);
+                        return;
+                    }
+                    window.clearTimeout(barTimer);
+                    setParsed(preview);
+                    setLoading(false);
+                } finally {
+                    releasePreviewWorkbook(wb);
                 }
-                setParsed({ XLSX, wb, names });
-                setLoading(false);
             } catch (err) {
+                if (cancelled || isPreviewAbortError(err)) return;
                 const detail = err instanceof Error ? err.message : String(err || "");
                 // Raw parser errors are English ("Unsupported ZIP encryption");
                 // keep the detail but lead with a sentence the user can read.
                 const technical = /^[A-Za-z]/.test(detail.trim());
-                fail(isZh && technical ? `无法解析该表格文件（${detail.trim()}）` : detail, fallbackContent);
+                fail(zh() && technical ? `无法解析该表格文件（${detail.trim()}）` : detail, extract);
             }
         })();
         return () => {
             cancelled = true;
+            controller.abort();
+            window.clearTimeout(barTimer);
+            parser?.stop();
         };
-    }, [absPath, fallbackContent, isZh]);
+    }, [absPath]);
 
-    const sheetName = parsed ? parsed.names[Math.min(activeSheet, parsed.names.length - 1)] || "" : "";
-    const grid = useMemo<SheetGrid | null>(() => {
-        if (!parsed || !sheetName) return null;
-        try {
-            return buildSheetGrid(parsed.XLSX, parsed.wb.Sheets[sheetName]);
-        } catch {
-            // One malformed sheet must not blank the whole preview.
-            return { rows: [], spans: new Map(), covered: new Set(), colCount: 0, shownRows: 0, shownCols: 0, truncatedRows: 0, truncatedCols: 0 };
-        }
-    }, [parsed, sheetName]);
+    const activeIndex = parsed ? Math.min(activeSheet, parsed.names.length - 1) : 0;
+    const sheetName = parsed?.names[activeIndex] || "";
+    const grid = parsed?.grids[activeIndex] ?? null;
 
     const fill: CSSProperties = {
         display: "flex",
@@ -271,12 +237,20 @@ export function XlsxPreviewPanel({ absPath, theme, lang, fallbackContent = "" }:
     }
     if (loading || !grid) {
         return (
-            <div data-testid="xlsx-preview-loading" role="status" style={{ ...fill, padding: 20, color: theme.textMuted, fontSize: 13 }}>
-                {isZh ? "正在加载表格预览…" : "Loading spreadsheet preview…"}
-            </div>
+            <PreviewLoadingStatus
+                testId="xlsx-preview-loading"
+                style={{ ...fill, padding: 20, color: theme.textMuted, fontSize: 13 }}
+                phase={progress.phase}
+                ratio={progress.ratio}
+                showBar={barOn}
+                phrases={{
+                    wait: isZh ? "正在加载表格预览…" : "Loading spreadsheet preview…",
+                    read: isZh ? "正在读取表格…" : "Reading spreadsheet…",
+                    parse: isZh ? "正在解析表格…" : "Parsing spreadsheet…",
+                }}
+            />
         );
     }
-    const activeIndex = Math.min(activeSheet, parsed!.names.length - 1);
     const noticeBits: string[] = [];
     if (grid.truncatedRows > 0) noticeBits.push(isZh ? `仅显示前 ${grid.shownRows} 行` : `first ${grid.shownRows} rows`);
     if (grid.truncatedCols > 0) noticeBits.push(isZh ? `仅显示前 ${grid.shownCols} 列` : `first ${grid.shownCols} columns`);

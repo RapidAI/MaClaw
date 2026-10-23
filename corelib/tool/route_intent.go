@@ -134,11 +134,15 @@ func hasDottedExt(q, ext string) bool {
 // 「删除刚才的markdown文件」was tree file_write 0.60, so leftover ranked
 // write_file and the model spent the turn searching for a delete name.
 func QueryWantsLocalFileDelete(userMessage string) bool {
+	return queryIsDeleteInstruction(userMessage) && queryMentionsDeletableLocalFile(strings.ToLower(strings.TrimSpace(userMessage)))
+}
+
+func queryIsDeleteInstruction(userMessage string) bool {
 	q := strings.ToLower(strings.TrimSpace(userMessage))
 	if q == "" || queryNegatesFileDelete(q) || queryIsNonLocalDelete(q) || queryEditsInsideFile(q) || queryAsksOrReportsDelete(q) || queryAlsoAsksToWriteFile(q) {
 		return false
 	}
-	return queryMentionsFileDelete(stripDeleteNonVerbs(q)) && queryMentionsDeletableLocalFile(q)
+	return queryMentionsFileDelete(stripDeleteNonVerbs(q))
 }
 
 // stripDeleteNonVerbs removes compounds that contain a delete verb but name

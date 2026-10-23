@@ -99,6 +99,11 @@ func (h *IMMessageHandler) handleBackgroundIMRoute(msg IMUserMessage, providedLo
 		executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
 		log.Printf("[semantic-routing] explicit skill invocation planning user=%q primary=%s", msg.UserID, rewritten.Primary)
 	}
+	if rewritten := semanticFetchedDocumentReadPlanning(semanticIntent, msg.Text, history); rewritten != nil {
+		semanticIntent = rewritten
+		executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+		log.Printf("[semantic-routing] fetched document read user=%q", msg.UserID)
+	}
 	loopCtx.Runtime.Execution = h.continuationKeepsParentExecution(executionProfile, msg.UserID, msg.Text, semanticIntent)
 	markAnswerOnlySocialTurn(loopCtx, loopCtx.Runtime.Execution, msg.Text)
 	loopCtx.Runtime.ClassificationMessage = classificationMessage(msg.UserID, msg.Text, history)

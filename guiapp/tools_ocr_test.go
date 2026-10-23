@@ -2,11 +2,103 @@ package guiapp
 
 import (
 	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestOCRTranscriptAlreadyCovers(t *testing.T) {
+	dir := t.TempDir()
+	pdfPath := filepath.Join(dir, "scan.pdf")
+	if err := os.WriteFile(pdfPath, []byte("%PDF-1.4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outPath := filepath.Join(dir, "out.txt")
+	var body strings.Builder
+	for i := 1; i <= 8; i++ {
+		if i > 1 {
+			body.WriteString("\n\n")
+		}
+		fmt.Fprintf(&body, "## Page %d\n甲", i)
+	}
+	if err := os.WriteFile(outPath, []byte(body.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	receipt, ok := ocrTranscriptAlreadyCovers(pdfPath, outPath, 1)
+	if !ok || !strings.Contains(receipt, "start_page=9") || !strings.Contains(receipt, "不要重复识别") {
+		t.Fatalf("start 1 must skip, ok=%v receipt=%q", ok, receipt)
+	}
+	if _, ok := ocrTranscriptAlreadyCovers(pdfPath, outPath, 9); ok {
+		t.Fatal("start 9 is past the transcript and must be recognized")
+	}
+	gapPath := filepath.Join(dir, "gap.txt")
+	if err := os.WriteFile(gapPath, []byte("## Page 1\n甲\n\n## Page 8\n乙\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gapReceipt, gapOK := ocrTranscriptAlreadyCovers(pdfPath, gapPath, 1)
+	if !gapOK || !strings.Contains(gapReceipt, "start_page=2") || !strings.Contains(gapReceipt, "第 2 页") || strings.Contains(gapReceipt, "第 8 页") {
+		t.Fatalf("a gap must name the missing page, ok=%v receipt=%q", gapOK, gapReceipt)
+	}
+	brokenPath := filepath.Join(dir, "broken.txt")
+	if err := os.WriteFile(brokenPath, []byte("## Page 1\n[page extract error]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ocrTranscriptAlreadyCovers(pdfPath, brokenPath, 1); ok {
+		t.Fatal("an extract-error page must be readable again")
+	}
+	if _, ok := ocrTranscriptAlreadyCovers(pdfPath, filepath.Join(dir, "fresh.txt"), 1); ok {
+		t.Fatal("a new output path must start over")
+	}
+	again, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(again) != body.String() {
+		t.Fatalf("skip must not rewrite the transcript: %q", again)
+	}
+}
+
+func TestOCROutputPathRejected(t *testing.T) {
+	dir := t.TempDir()
+	pdfPath := filepath.Join(dir, "scan.pdf")
+	if got := ocrOutputPathRejected(pdfPath, filepath.Join(dir, "scan.txt")); got != "" {
+		t.Fatalf("a txt beside the pdf must be accepted, got %q", got)
+	}
+	if got := ocrOutputPathRejected(pdfPath, pdfPath); got == "" {
+		t.Fatal("output must not replace the source pdf")
+	}
+	if got := ocrOutputPathRejected(pdfPath, filepath.Join(dir, "文字版.pdf")); got == "" || !strings.Contains(got, ".txt") {
+		t.Fatalf("pdf output = %q", got)
+	}
+}
+
+func TestOCRRecognizePastEndKeepsGap(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "out.txt")
+	if err := os.WriteFile(outPath, []byte("## Page 1\n甲\n\n## Page 8\n乙\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := ocrRecognizePastEnd(outPath, 232)
+	if !strings.Contains(got, "start_page=2") || !strings.Contains(got, "第 2 页") || strings.Contains(got, "第 8 页") || strings.Contains(got, "已到文件末尾") {
+		t.Fatalf("a gap past the end must name the missing page: %q", got)
+	}
+	var body strings.Builder
+	for i := 1; i <= 3; i++ {
+		if i > 1 {
+			body.WriteString("\n\n")
+		}
+		fmt.Fprintf(&body, "## Page %d\n甲", i)
+	}
+	if err := os.WriteFile(outPath, []byte(body.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got = ocrRecognizePastEnd(outPath, 3)
+	if !strings.Contains(got, "已到文件末尾") || strings.Contains(got, "start_page=") {
+		t.Fatalf("a finished transcript is the end: %q", got)
+	}
+}
 
 func TestOCRToolImageBase64RequiresInput(t *testing.T) {
 	if _, err := ocrToolImageBase64(map[string]interface{}{}); err == nil {

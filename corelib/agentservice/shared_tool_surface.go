@@ -113,7 +113,7 @@ func (c *coreAgentCallbacks) sharedHostToolSpecs() []coreToolSpec {
 		specFromCoreTool("read_excel", "", workspaceOK, workspaceReason),
 		specFromCoreTool("write_excel", "", workspaceOK, workspaceReason),
 		specFromCoreTool("read_pptx", "", workspaceOK, workspaceReason),
-		specFromCoreTool("office", "Office/PDF/text document tool. action: read_document/read_excel/write_excel/read_pptx/write_pptx/preview_pptx/generate_pdf.", workspaceOK, workspaceReason),
+		specFromCoreTool("office", "Office/PDF/text document tool. action: read_document (PDF, Office, CAD, GLB, EPUB, AsciiDoc, EML; Office comments, formulas, revisions, charts, and SmartArt), read_excel, write_excel, read_pptx, write_pptx, preview_pptx, generate_pdf.", workspaceOK, workspaceReason),
 		specFromCoreTool("generate_pdf", "Render current facts as a PDF in the instance workspace.", workspaceOK, workspaceReason),
 		specFromCoreTool("download_file", "", workspaceOK, workspaceReason),
 		specFromCoreTool("list_mcp_tools", "List ready MCP servers and their tools for this user.", c.mcpProvider != nil, func() string {

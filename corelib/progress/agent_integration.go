@@ -127,6 +127,22 @@ func (t *AgentProgressTracker) RecordToolCall(toolName string, argsJSON string, 
 	t.pusher.OnMilestone(*m)
 }
 
+// NoteActivity keeps the silence heartbeat from firing while another channel
+// is already telling the user the task is alive. A stopped tracker ignores it.
+func (t *AgentProgressTracker) NoteActivity() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	stopped := t.stopped
+	pusher := t.pusher
+	t.mu.Unlock()
+	if stopped {
+		return
+	}
+	pusher.NoteActivity()
+}
+
 // Tick should be called periodically by the agent loop (e.g. at the start
 // of each iteration). It handles merge window expiry and heartbeat.
 // This is in addition to the background ticker — calling it from the loop

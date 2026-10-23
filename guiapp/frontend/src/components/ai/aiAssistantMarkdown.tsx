@@ -25,6 +25,7 @@ import { AssistantToolFlipTicker } from "./AssistantToolFlipTicker";
 import { TaskResultArtifacts } from "./assistantTaskArtifacts";
 import { ChatTaskCard } from "./ChatTaskCard";
 import {
+    liveStatusProgress,
     prepareChatBodyForDisplay,
     prepareChatBodyLines,
     splitTextByPictographClusters,
@@ -1663,7 +1664,9 @@ export function renderMessage(
                 coding: !!(msg.codingTimeline?.length || collapseReasoningByDefault),
                 toolCalls: !!msg.toolCalls?.length,
             });
-            const taskSettled = !taskRunning && !!msg.toolCalls?.length;
+            // A restored turn keeps resultStatus after the tool list is gone.
+            // That stored outcome is still the settled check.
+            const taskSettled = !taskRunning && (!!msg.toolCalls?.length || msg.resultStatus === "incomplete" || msg.resultStatus === "completed");
             const liveTool = taskRunning ? msg.toolCalls?.[msg.toolCalls.length - 1] : undefined;
             const summaryText = taskSettled ? completedAssistantSummary(visibleReply.content, msg.resultText) : visibleReply.content;
             return (
@@ -1882,27 +1885,31 @@ export function renderMessage(
                         </div>
                     );
                 }
-            }
-            return (
+                const parsedProgress = liveStatusProgress(msg.content || "");
+                const retryProgress = msg.progressSlot === "llm-retry" || parsedProgress.slot === "llm-retry";
+                const progressText = parsedProgress.text;
+                return (
                 <div key={msg.id} role="status" aria-live="polite" data-testid={`assistant-chat-progress-${msg.id}`} className="aamd-progress-row">
-                    <span className="assistant-chat-progress-line" style={{
+                    <span className="assistant-chat-progress-line" data-llm-retry={retryProgress ? "true" : undefined} style={{
                         maxWidth: "84%",
                         minWidth: 0,
                         display: "inline-flex",
                         alignItems: "baseline",
                         gap: 7,
-                        color: t.textMuted,
-                        fontSize: "11px",
+                        color: retryProgress ? t.text : t.textMuted,
+                        fontSize: retryProgress ? "13px" : "11px",
+                        fontWeight: retryProgress ? 650 : undefined,
                         lineHeight: 1.45,
                         overflow: "hidden",
                     }}>
                         <span aria-hidden="true" style={{ width: 5, height: 5, flex: "0 0 auto", borderRadius: "50%", background: t.headingColor, opacity: 0.72 }} />
-                        <span className="aamd-ellipsis" title={msg.content}>
-                            {prepareChatBodyForDisplay(msg.content)}
+                        <span className="aamd-ellipsis" title={progressText}>
+                            {prepareChatBodyForDisplay(progressText)}
                         </span>
                     </span>
                 </div>
-            );
+                );
+            }
         case "system":
             if (msg.kind === "goalChecklist") {
                 return (

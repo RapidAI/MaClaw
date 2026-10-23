@@ -360,7 +360,7 @@ func filterHubSkillMetaForIntent(userMessage string, candidates []HubSkillMeta) 
 		return candidates
 	}
 	userIntent := extractUserIntentCategory(userMessage)
-	filtered := candidates[:0]
+	filtered := make([]HubSkillMeta, 0, len(candidates))
 	for _, candidate := range candidates {
 		skillText := strings.TrimSpace(candidate.Name + " " + candidate.Description)
 		if isTaskCompatibleWithSkillCandidate(userIntent, userMessage, skillText) {
@@ -377,7 +377,7 @@ func filterGitHubSkillCandidatesForIntent(userMessage string, candidates []cskil
 		return candidates
 	}
 	userIntent := extractUserIntentCategory(userMessage)
-	filtered := candidates[:0]
+	filtered := make([]cskill.GitHubSkillCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
 		skillText := strings.TrimSpace(candidate.RepoFullName + " " + candidate.Description)
 		if isTaskCompatibleWithSkillCandidate(userIntent, userMessage, skillText) {

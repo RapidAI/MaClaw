@@ -244,7 +244,7 @@ func (s *HeadSlots) ResolveSlot(slot string) (string, *ClassificationHead, *Trai
 var ErrEmptyScoreText = errors.New("enter text to score")
 
 func ScoreRequestPreview(body map[string]any) (string, error) {
-	preview := RequestTextPreview(body, 400)
+	preview := RoutingScorePreview(body, 400)
 	if strings.TrimSpace(preview) == "" {
 		return "", ErrEmptyScoreText
 	}
@@ -335,7 +335,7 @@ func ScoreHeadAgainstRules(group *ServiceGroup, header http.Header, body map[str
 	routed, model, quality := RouteWorkloadClass(group, liveClass)
 	report := ClassHeadScoreReport{
 		Slot:          strings.TrimSpace(slot),
-		Preview:       RequestTextPreview(body, 400),
+		Preview:       RoutingScorePreview(body, 400),
 		RuleClass:     dec.Class,
 		RuleSource:    dec.Source,
 		HeadClass:     pred.Class,

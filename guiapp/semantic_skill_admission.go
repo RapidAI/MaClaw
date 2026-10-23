@@ -98,7 +98,7 @@ func (h *IMMessageHandler) skillAdmissionForTurn(ctx *LoopContext, userText stri
 	}
 	exec := h.getSkillExecutor()
 	if exec == nil {
-		return skillAdmissionDecision{Mode: skillAdmissionRemote}
+		return skillMarketDecision(ctx, text)
 	}
 	owner := ""
 	if ctx != nil {
@@ -126,20 +126,62 @@ func (h *IMMessageHandler) skillAdmissionForTurn(ctx *LoopContext, userText stri
 		log.Printf("[skill-admission] mode=bound task=%q skills=%s", truncateLogText(text, 60), strings.Join(names, ", "))
 		return skillAdmissionDecision{Mode: skillAdmissionBound, Bound: bound}
 	default:
+		return skillMarketDecision(ctx, text)
+	}
+}
+
+// skillMarketDecision installs from the market only when this turn has no
+// native tool that can do the job, or the user asked for a skill. Shell,
+// coding, and file write already have bash and write_file. Remote mode blocks
+// those tools until search_and_install_skill runs, so a miss must not become
+// a market install.
+func skillMarketDecision(ctx *LoopContext, text string) skillAdmissionDecision {
+	if skillMarketFallback(ctx, text) {
 		log.Printf("[skill-admission] mode=remote task=%q", truncateLogText(text, 60))
 		return skillAdmissionDecision{Mode: skillAdmissionRemote}
+	}
+	log.Printf("[skill-admission] mode=none task=%q reason=native-tool", truncateLogText(text, 60))
+	return skillAdmissionDecision{}
+}
+
+func skillMarketFallback(ctx *LoopContext, text string) bool {
+	if isExplicitSkillCapabilitySearchRequest(text) {
+		return true
+	}
+	if ctx == nil || ctx.Runtime.SemanticIntent == nil {
+		return false
+	}
+	switch ctx.Runtime.SemanticIntent.Primary {
+	case intent.LabelDocumentGenerate, intent.LabelOffice:
+		return true
+	default:
+		return false
 	}
 }
 
 func complexSkillTask(ctx *LoopContext, userText string) bool {
-	if intent.ExplicitSkillInvocation(userText) {
+	// Naming a skill, or asking to find or install one, is a market task
+	// even when the label is ssh or a lookup.
+	if isExplicitSkillCapabilitySearchRequest(userText) {
 		return true
+	}
+	// The carried label can still say document_generate when this sentence
+	// is only 继续 or a lookup. Those are not a request to install a skill.
+	if skillSearchQueryIsBareContinuation(userText) || informationLookupQuery(userText) {
+		return false
 	}
 	if ctx == nil || !executionSurfaceIsFull(executionProfileFromLoop(ctx)) {
 		return false
 	}
+	// This profile only puts the previous turn's tools back. It is not a
+	// new procedure for the skill market.
+	if operationalExecutionProfile(executionProfileFromLoop(ctx)) {
+		return false
+	}
+	// No label is not evidence. A missing classifier used to open the market
+	// for whatever sentence was on the full surface.
 	if ctx.Runtime.SemanticIntent == nil {
-		return true
+		return false
 	}
 	return skillTaskLabel(ctx.Runtime.SemanticIntent.Primary)
 }
@@ -151,24 +193,16 @@ func skillAdmissionTaskText(userText string) string {
 	return strings.TrimSpace(agent.CompactQueryForEmbedding(semanticUserIntentText(userText)))
 }
 
+// skillTaskLabel is a local-skill bind, not a market install. Document
+// generation and office also fall back to the market when nothing local
+// matches. Shell, coding, bug fix, and file write keep their own tools.
 func skillTaskLabel(primary intent.IntentLabel) bool {
-	if primary.IsNonCapabilityLabel() {
-		return false
-	}
 	switch primary {
-	case intent.LabelSearch, intent.LabelLiveData, intent.LabelLiveDataVisual, intent.LabelWebFetch, intent.LabelCurrentTime,
-		intent.LabelAttachmentDelivery, intent.LabelDocumentDelivery, intent.LabelDocumentOpen, intent.LabelDocumentRead,
-		intent.LabelAppLaunch, intent.LabelFileDownload, intent.LabelFileDelete,
-		intent.LabelScheduleManage, intent.LabelScheduleDispatch,
-		intent.LabelConfigManage, intent.LabelSessionManage, intent.LabelTemplateManage,
-		intent.LabelKnowledgeAdmin, intent.LabelKnowledgeWrite,
-		intent.LabelAudioDeliver, intent.LabelAudioSynthesize, intent.LabelAudioRecord, intent.LabelAudioTranscribe,
-		intent.LabelScreenshot, intent.LabelComputerUse,
-		intent.LabelMailboxRead, intent.LabelMailboxSend, intent.LabelMailboxConfigure, intent.LabelMailboxDelete,
-		intent.LabelWorklogRead, intent.LabelWorklogUpdate:
-		return false
-	default:
+	case intent.LabelDocumentGenerate, intent.LabelOffice, intent.LabelFileWrite, intent.LabelShellCommand,
+		intent.LabelCoding, intent.LabelBugFix:
 		return true
+	default:
+		return false
 	}
 }
 
@@ -637,8 +671,9 @@ func (c *sharedAgentLoopCallbacks) executeAdmittedSkillHostCall(name, argsJSON s
 		}
 		// The host already decided which task has no local skill. A query
 		// the model writes can be a lookup or a different job. Search the
-		// admitted task. host_admitted only lets that task past the lookup
-		// filter. It does not authorize whatever string arrived in args.
+		// admitted task. host_admitted lets that task past the wording
+		// filter. A bare continuation or an information lookup is still
+		// skipped, and the flag does not authorize the model's own string.
 		if task := skillAdmissionTaskText(c.userText); task != "" {
 			args["query"] = task
 		}

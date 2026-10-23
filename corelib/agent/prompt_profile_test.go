@@ -94,6 +94,9 @@ func TestBuildPromptBundleManagedOmitsSoupSignatures(t *testing.T) {
 	if strings.Contains(managed, "write_file, edit_file, ripgrep") {
 		t.Fatalf("managed prompt still names soup file tools as the path-resolution set: %s", managed)
 	}
+	if !strings.Contains(managed, "ocr_recognize") || !strings.Contains(managed, "PP-OCRv6") || !strings.Contains(managed, "input_too_large") {
+		t.Fatal("managed principles must keep an oversized scan on builtin OCR")
+	}
 }
 
 func TestBuildPromptBundle_LightManagedOmitsSkillDiscoveryCue(t *testing.T) {

@@ -1,13 +1,17 @@
 package guiapp
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/corelib/maclawpath"
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 )
 
@@ -266,5 +270,74 @@ func TestSemanticAcquirePlaceholderHostIsIntakeNotAdmission(t *testing.T) {
 	got := cb.ExecuteTool(name, `{"url":"https://example.com/report.pdf"}`)
 	if !strings.Contains(got, "Acquired remote artifact") {
 		t.Fatalf("real url after placeholder probe=%q", got)
+	}
+}
+
+// A fetched drawing is read by the relative name in the receipt. Download
+// used to follow the global policy owner, which another tab can overwrite
+// and which is empty when only RequestID is set. Either one lands the file
+// outside the workspace read_file opens for this principal.
+func TestAcquireTrustedRemoteLandsInReadWorkspace(t *testing.T) {
+	decoy := t.TempDir()
+	corelib.SetWorkspaceDir(decoy)
+	t.Cleanup(func() { corelib.SetWorkspaceDir("") })
+	logRoot := t.TempDir()
+	prevBase := maclawpath.BaseDir()
+	maclawpath.SetBaseDir(logRoot)
+	t.Cleanup(func() {
+		websearch.CloseDownloadLogger()
+		maclawpath.SetBaseDir(prevBase)
+	})
+
+	workspace := t.TempDir()
+	principal := projectSessionOwnerID(workspace)
+	otherDir := t.TempDir()
+	otherOwner := projectSessionOwnerID(otherDir)
+	h := &IMMessageHandler{}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write([]byte(fetchedDocumentDXF))
+	}))
+	t.Cleanup(srv.Close)
+
+	for _, tc := range []struct {
+		name  string
+		file  string
+		owner string
+	}{
+		{"other tab", "other.dxf", otherOwner},
+		{"empty explicit owner", "empty.dxf", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h.currentLoopCtx = &LoopContext{Runtime: RuntimeContext{
+				RequestID:     "req-other-tab",
+				PolicyOwnerID: tc.owner,
+			}}
+			text, err := h.acquireTrustedRemote(principal, srv.URL+"/samples/"+tc.file, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(text, "Name: "+tc.file) || strings.Contains(text, workspace) {
+				t.Fatalf("receipt=%q", text)
+			}
+			got, err := h.readTrustedFile(principal, tc.file, "", "", 0)
+			if err != nil || !strings.Contains(got, "PumpLabel") {
+				t.Fatalf("read=%q err=%v", got, err)
+			}
+			saved := filepath.Join(workspace, tc.file)
+			if _, err := os.Stat(saved); err != nil {
+				t.Fatalf("saved drawing missing at %s: %v", saved, err)
+			}
+			for _, wrong := range []string{
+				filepath.Join(decoy, tc.file),
+				filepath.Join(otherDir, tc.file),
+				filepath.Join(projectPathFromSessionOwnerID(otherOwner), tc.file),
+			} {
+				if _, err := os.Stat(wrong); !os.IsNotExist(err) {
+					t.Fatalf("drawing landed outside the task workspace at %s: %v", wrong, err)
+				}
+			}
+		})
 	}
 }

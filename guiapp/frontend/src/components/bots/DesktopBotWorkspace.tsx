@@ -136,7 +136,7 @@ import { botChatIsNearBottom, botChatLogStamp, pinBotChatToBottom } from './botC
 import { DesktopBotComposer } from './DesktopBotComposer';
 import { BotEditDialog } from './BotEditDialog';
 import { BotAvatar } from './BotAvatar';
-import { appearancesForUser, botNameTaken, defaultAppearance, hubAppearance, looksToMigrate, markLookMigrated, mergeLooks, nextAppearance, saveBotAppearance, type BotAppearance } from './botAppearance';
+import { appearancesForUser, botNameTaken, captureBotLookRevisions, defaultAppearance, hubAppearance, hydrateBotLooks, looksToMigrate, markLookMigrated, mergeLooks, nextAppearance, saveBotAppearance, storeHubLooks, type BotAppearance } from './botAppearance';
 import { BotLLMSettingsDialog, type BotLLMProviderOption, type BotLLMSettingsSubmit } from './BotLLMSettingsDialog';
 import { TaskResultArtifacts } from '../ai/assistantTaskArtifacts';
 import { BotFilePreview } from './BotFilePreview';
@@ -1929,26 +1929,138 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [createSaving, setCreateSaving] = useState(false);
     const [createNotice, setCreateNotice] = useState('');
     const [looks, setLooks] = useState<Record<string, BotAppearance>>(() => appearancesForUser(userId));
-    useEffect(() => { setLooks(appearancesForUser(userId)); }, [userId]);
     const lookOf = (bot: { id: string; title: string }): BotAppearance => looks[bot.id] || defaultAppearance(bot.title);
-    // Hub is the store for the look; local storage keeps a copy for an older
-    // Hub that does not echo color/shape.
-    const rememberLook = (botId: string, look: BotAppearance) => {
-        saveBotAppearance(userId, botId, look);
-        setLooks(prev => ({ ...prev, [botId]: look }));
-    };
+    // Hub is the store for the look. SQLite keeps a copy for an older Hub that
+    // does not echo color/shape. The WebView quota is not used for this.
     const migratingLooks = useRef(new Set<string>());
-    const applyHubLooks = (items: { id: string; color?: string; shape?: string }[]) => {
-        setLooks(prev => mergeLooks(prev, items));
-        // One-time move of looks saved before Hub kept them.
-        for (const { id, look } of looksToMigrate(userId, items)) {
-            if (migratingLooks.current.has(id)) continue;
+    // A list load and the SQLite hydrate both ask to copy the same look. The
+    // second ask lands while the first request is still out. It is remembered
+    // here and run once that request finishes without Hub keeping the look.
+    const migrationAgain = useRef(new Set<string>());
+    const hubLookItems = useRef<{ id: string; color?: string; shape?: string }[]>([]);
+    // Bots created or edited before any Hub list row exists for them. The list
+    // snapshot cannot name them, so a failed copy or a newer color would
+    // otherwise have nowhere to be sent again. A later list row replaces this.
+    const localOnlyBots = useRef(new Set<string>());
+    // Revision of each look when the Hub list now in hubLookItems was requested.
+    const hubLookRev = useRef<Record<string, number>>({});
+    const migrationItems = () => {
+        const items = hubLookItems.current;
+        const seen = new Set(items.map(item => item.id));
+        const extra: { id: string }[] = [];
+        for (const id of localOnlyBots.current) {
+            if (!seen.has(id)) extra.push({ id });
+        }
+        return extra.length ? [...items, ...extra] : items;
+    };
+    const queueLookMigration = () => {
+        const items = migrationItems();
+        const sendLook = (id: string, look: BotAppearance, allowRetry: boolean) => {
+            const ownerId = userId;
+            const sent = look;
             migratingLooks.current.add(id);
-            SetDesktopBotAppearance(id, look.color, look.shape)
-                .then(() => markLookMigrated(userId, id))
-                .catch(() => { /* older Hub or offline: keep the local look */ });
+            migrationAgain.current.delete(id);
+            // Hub kept this look. A 200 that omits it, or a rejected call, did not.
+            let accepted = false;
+            const finish = () => {
+                if (userIdRef.current !== ownerId) return;
+                migratingLooks.current.delete(id);
+                // The local look moved while this request was out. Hub may have
+                // stored the old one, so the current look is sent once.
+                // A copy Hub did not accept is sent once more, then it stops.
+                // The retry itself must not arm another, or a Hub with no
+                // appearance route would be called without end.
+                const current = appearancesForUser(ownerId)[id];
+                const same = !!current && current.color === sent.color && current.shape === sent.shape;
+                if (current && !same) migrationAgain.current.add(id);
+                else if (!accepted && allowRetry && same) migrationAgain.current.add(id);
+                if (!migrationAgain.current.has(id)) return;
+                migrationAgain.current.delete(id);
+                const again = looksToMigrate(ownerId, migrationItems()).find(item => item.id === id);
+                if (again) sendLook(again.id, again.look, false);
+            };
+            // This runs inside the list load. A synchronous bridge failure must
+            // not reject that load and wipe the bots that Hub just returned.
+            try {
+                const pending = SetDesktopBotAppearance(id, sent.color, sent.shape);
+                void Promise.resolve(pending).then(updated => {
+                    const current = appearancesForUser(ownerId)[id];
+                    const stillSent = !!current && current.color === sent.color && current.shape === sent.shape;
+                    // The response belongs to the look we sent. A newer edit or
+                    // a delete that landed while it was out stays as it is.
+                    // A 200 that omits the look did not store it, so it stays
+                    // unmarked and the waiting pass can send it again.
+                    if (stillSent) {
+                        const echoed = hubAppearance(updated as { color?: string; shape?: string } | null | undefined);
+                        if (echoed) {
+                            accepted = true;
+                            // Hub may normalize the color. That saved echo is the
+                            // look Hub just accepted, so it must not clear the
+                            // copied mark or race the insert below.
+                            if (echoed.color !== sent.color || echoed.shape !== sent.shape) {
+                                saveBotAppearance(ownerId, id, echoed, { keepMark: true });
+                            }
+                            markLookMigrated(ownerId, id);
+                            if (userIdRef.current === ownerId) setLooks(prev => ({ ...prev, [id]: echoed }));
+                        }
+                    }
+                    finish();
+                }).catch(() => finish());
+            } catch {
+                finish();
+            }
+        };
+        for (const { id, look } of looksToMigrate(userId, items)) {
+            if (migratingLooks.current.has(id)) {
+                migrationAgain.current.add(id);
+                continue;
+            }
+            sendLook(id, look, true);
         }
     };
+    const rememberLook = (botId: string, look: BotAppearance, fromHub: boolean) => {
+        setLooks(prev => ({ ...prev, [botId]: look }));
+        saveBotAppearance(userId, botId, look);
+        // Hub's create or rename response already carried this color, so the
+        // copy is done. A list row that does not exist yet must not be sent
+        // as if Hub had no color.
+        if (fromHub) markLookMigrated(userId, botId);
+        if (!hubLookItems.current.some(item => item.id === botId)) localOnlyBots.current.add(botId);
+        // The copied mark was for the previous look. An older Hub that still
+        // has no color on this bot gets the new one now, without waiting for
+        // the next visit. A list row that already has a Hub color is not sent.
+        queueLookMigration();
+    };
+    const applyHubLooks = (items: { id: string; color?: string; shape?: string }[], revAtList: Record<string, number>) => {
+        hubLookItems.current = items;
+        for (const item of items) localOnlyBots.current.delete(item.id);
+        hubLookRev.current = revAtList;
+        const since = { userId, revision: revAtList };
+        storeHubLooks(userId, items, since);
+        setLooks(prev => mergeLooks(prev, items, since));
+        queueLookMigration();
+    };
+    useEffect(() => {
+        migratingLooks.current = new Set();
+        migrationAgain.current = new Set();
+        hubLookItems.current = [];
+        localOnlyBots.current = new Set();
+        hubLookRev.current = {};
+        let cancelled = false;
+        setLooks(appearancesForUser(userId));
+        void hydrateBotLooks(userId).then(next => {
+            if (cancelled) return;
+            // next already keeps a look saved during this load and omits one
+            // cleared during it. The Hub list is the snapshot from when it
+            // was requested, so a look saved after that stays. Spreading the
+            // previous React map would put a cleared badge back.
+            const since = { userId, revision: hubLookRev.current };
+            storeHubLooks(userId, hubLookItems.current, since);
+            setLooks(mergeLooks(next, hubLookItems.current, since));
+            queueLookMigration();
+        });
+        return () => { cancelled = true; };
+    }, [userId]);
     // Model dialog. The choice is per account, not per bot, which is why it is
     // opened from the list header rather than from a row.
     const [llmOpen, setLlmOpen] = useState(false);
@@ -3102,6 +3214,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
 
     useEffect(() => {
         const gen = ++loadGen.current;
+        // Taken before the request leaves. A badge saved while the list is out
+        // is newer than the colors in the response.
+        const lookRevAtList = captureBotLookRevisions(userId);
         // The previous account's confirm must not keep this account's delete locked.
         removeLock.current = 0;
         setBots([]);
@@ -3154,7 +3269,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 createdAt: createdMillis(item.created_at),
                 primary: item.primary === true,
             }));
-            applyHubLooks(items || []);
+            applyHubLooks(items || [], lookRevAtList);
             const merged = mergeListed(list);
             botsRef.current = merged;
             setBots(merged);
@@ -3628,28 +3743,42 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         setCreateNotice('');
         setCreateSaving(true);
         const desc = description || text.defaultDescription;
+        let created: Awaited<ReturnType<typeof CreateDesktopBot>> | null = null;
         try {
-            const created = await CreateDesktopBot(title, desc, look.color, look.shape);
-            if (gen !== loadGen.current) return;
-            const bot: DesktopBot = {
-                id: created.id,
-                title: created.title || title,
-                description: created.description || desc,
-                createdAt: createdMillis(created.created_at),
-            };
-            rememberLook(bot.id, hubAppearance(created) || look);
-            pendingBots.current = [...pendingBots.current.filter(item => item.id !== bot.id), bot];
-            setBots(prev => prev.some(item => item.id === bot.id) ? prev : [...prev, bot]);
-            setCreateOpen(false);
-            selectBot(bot);
+            created = await CreateDesktopBot(title, desc, look.color, look.shape);
         } catch (error) {
             if (gen !== loadGen.current) return;
             const message = error instanceof Error && error.message ? error.message : text.unavailable;
             setCreateOpen(false);
             setListNotice(message);
+            return;
         } finally {
             setCreateSaving(false);
         }
+        if (gen !== loadGen.current) return;
+        const createdID = String(created?.id || '').trim();
+        if (!createdID) {
+            setCreateOpen(false);
+            setListNotice(text.unavailable);
+            return;
+        }
+        const bot: DesktopBot = {
+            id: createdID,
+            title: created?.title || title,
+            description: created?.description || desc,
+            createdAt: createdMillis(created?.created_at),
+        };
+        // Hub already created the bot. A local badge copy must not paint that as a failed create.
+        try {
+            const echoed = hubAppearance(created);
+            rememberLook(bot.id, echoed || look, echoed !== null);
+        } catch {
+            /* session badge is best-effort */
+        }
+        pendingBots.current = [...pendingBots.current.filter(item => item.id !== bot.id), bot];
+        setBots(prev => prev.some(item => item.id === bot.id) ? prev : [...prev, bot]);
+        setCreateOpen(false);
+        selectBot(bot);
     };
 
     const submitEdit = async (title: string, description: string, look?: BotAppearance) => {
@@ -3670,7 +3799,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             setEditSaving(false);
         }
         if (gen !== loadGen.current) return;
-        if (look) rememberLook(botId, echoed || look);
+        if (look) rememberLook(botId, echoed || look, echoed !== null);
         renamedBots.current.set(botId, { title, description });
         setBots(prev => prev.map(bot => bot.id === botId ? { ...bot, title, description } : bot));
         setEditBot(null);
@@ -3846,6 +3975,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             // not: after an account switch it belongs to whoever is on screen.
             saveBotMessages(ownerId, botId, []);
             forgetBotPersona(ownerId, botId);
+            saveBotAppearance(ownerId, botId, null);
+            localOnlyBots.current.delete(botId);
             if (userIdRef.current === ownerId) {
                 setPersonaByBot(prev => {
                     if (!prev[botId]) return prev;

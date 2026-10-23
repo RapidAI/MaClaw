@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 func TestResponsesAPIStreamConvertsPlainToolCallAndSuppressesTokens(t *testing.T) {
@@ -565,5 +567,143 @@ func TestResponsesAPIStreamCommentHeartbeatResetsIdleTimer(t *testing.T) {
 	}
 	if got := resp.Choices[0].Message.Content; got != "ok" {
 		t.Fatalf("content = %q, want ok", got)
+	}
+}
+
+func TestResponsesAPIStreamOutlivesRouteDeadlineAfterHeaders(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"delta\":\"hello \"}\n\n")
+		flusher.Flush()
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(350 * time.Millisecond):
+		}
+		_, _ = fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"delta\":\"there\"}\n\n")
+		_, _ = fmt.Fprint(w, "event: response.completed\ndata: {\"response\":{\"status\":\"completed\"}}\n\n")
+		flusher.Flush()
+	}))
+	defer srv.Close()
+
+	parent, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+	defer cancel()
+	deadline, _ := parent.Deadline()
+	parent = llm.WithOwnedRouteDeadline(parent, deadline)
+
+	resp, err := (&IMMessageHandler{}).doResponsesAPILLMRequestStream(
+		parent,
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		nil,
+		srv.Client(),
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("stream error = %v, want the body to finish after the route deadline", err)
+	}
+	if resp == nil || len(resp.Choices) == 0 {
+		t.Fatal("missing response")
+	}
+	if got := resp.Choices[0].Message.Content; got != "hello there" {
+		t.Fatalf("content = %q, want hello there", got)
+	}
+}
+
+func responsesStutterDelta() string {
+	raw, err := json.Marshal(map[string]string{"delta": strings.Repeat(".\n", reasoningStutterHaltCount)})
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
+}
+
+func TestResponsesAPIStreamReasoningStutterAbortsBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = fmt.Fprintf(w, "event: response.reasoning_summary_text.delta\ndata: %s\n\n", responsesStutterDelta())
+		flusher.Flush()
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+			_, _ = fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"delta\":\"should-not-bind\"}\n\n")
+			_, _ = fmt.Fprint(w, "event: response.completed\ndata: {\"response\":{\"status\":\"completed\"}}\n\n")
+			flusher.Flush()
+		}
+	}))
+	defer srv.Close()
+
+	started := time.Now()
+	resp, err := (&IMMessageHandler{}).doResponsesAPILLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		nil,
+		srv.Client(),
+		nil,
+		nil,
+	)
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("elapsed = %s, want the reasoning stutter to abort the body", elapsed)
+	}
+	if err != nil {
+		t.Fatalf("stream error = %v, want an empty stop", err)
+	}
+	if resp == nil || len(resp.Choices) != 1 {
+		t.Fatalf("response = %#v", resp)
+	}
+	msg := resp.Choices[0].Message
+	if msg.Content != "" || msg.ReasoningContent != "" || len(msg.ToolCalls) != 0 {
+		t.Fatalf("chant kept as the answer: %#v", msg)
+	}
+	if resp.Choices[0].FinishReason != "stop" {
+		t.Fatalf("finish_reason = %q, want stop", resp.Choices[0].FinishReason)
+	}
+}
+
+func TestResponsesAPIStreamReasoningStutterKeepsParsedToolCall(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"bash\"}}\n\n")
+		_, _ = fmt.Fprint(w, "event: response.function_call_arguments.done\ndata: {\"output_index\":0,\"arguments\":\"{}\"}\n\n")
+		_, _ = fmt.Fprintf(w, "event: response.reasoning_summary_text.delta\ndata: %s\n\n", responsesStutterDelta())
+		_, _ = fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"delta\":\"should-not-bind\"}\n\n")
+		flusher.Flush()
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+	defer srv.Close()
+
+	started := time.Now()
+	resp, err := (&IMMessageHandler{}).doResponsesAPILLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		nil,
+		srv.Client(),
+		nil,
+		nil,
+	)
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("elapsed = %s, want the reasoning stutter to abort the body", elapsed)
+	}
+	if err != nil {
+		t.Fatalf("stream error = %v, want the parsed tool call", err)
+	}
+	if resp == nil || len(resp.Choices) != 1 {
+		t.Fatalf("response = %#v", resp)
+	}
+	msg := resp.Choices[0].Message
+	if strings.Contains(msg.Content, "should-not-bind") || strings.Contains(msg.ReasoningContent, "should-not-bind") {
+		t.Fatalf("later text bound after the halt: %#v", msg)
+	}
+	if len(msg.ToolCalls) != 1 || msg.ToolCalls[0].Function.Name != "bash" || msg.ToolCalls[0].ID != "call_1" {
+		t.Fatalf("tool call = %#v", msg.ToolCalls)
 	}
 }

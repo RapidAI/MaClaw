@@ -187,6 +187,49 @@ func TestClassifyAndRouteWithHeadOnSkipsProtectedSources(t *testing.T) {
 	}
 }
 
+func TestClassifyAndRouteWithHeadScoresLatestUserText(t *testing.T) {
+	var got string
+	dec := ClassifyAndRouteWithHead(nil, map[string]any{
+		"model": "auto",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "你好"},
+			map[string]any{"role": "tool", "content": "deploy kubernetes rollback"},
+		},
+	}, officialDynamicFixture(), "auto", &HeadRuntime{
+		Mode: PipelineOn,
+		Predict: func(preview string) HeadPrediction {
+			got = preview
+			return HeadPrediction{Class: WorkloadClassChat, MaxP: 0.2}
+		},
+	})
+	if got != "你好" {
+		t.Fatalf("preview = %q", got)
+	}
+	if dec.Class != WorkloadClassChat {
+		t.Fatalf("dec=%#v", dec)
+	}
+}
+
+func TestClassifyAndRouteWithHeadSkipsToolOnlyBody(t *testing.T) {
+	called := false
+	dec := ClassifyAndRouteWithHead(nil, map[string]any{
+		"model":    "auto",
+		"messages": []any{map[string]any{"role": "tool", "content": "deploy kubernetes"}},
+	}, officialDynamicFixture(), "auto", &HeadRuntime{
+		Mode: PipelineOn,
+		Predict: func(string) HeadPrediction {
+			called = true
+			return HeadPrediction{Class: WorkloadClassOps, MaxP: 0.99}
+		},
+	})
+	if called {
+		t.Fatal("scored tool text")
+	}
+	if dec.Class != WorkloadFallbackBalanced || dec.HeadUsed {
+		t.Fatalf("dec=%#v", dec)
+	}
+}
+
 func TestIsGoldClassSource(t *testing.T) {
 	if !IsGoldClassSource(ClassSourceHint) || !IsGoldClassSource(ClassSourceWorkflow) {
 		t.Fatal("P0/P1 should be gold")

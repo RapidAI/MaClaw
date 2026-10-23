@@ -228,7 +228,8 @@ func TestReleaseForContinueKeepsGoingAfterAnyStop(t *testing.T) {
 
 	s.UpdateStatus("user1", g.GoalID, StatusBudgetLimit, "Turn limit reached")
 	s.mu.Lock()
-	s.goals["user1"].TurnsUsed = s.goals["user1"].MaxTurns
+	s.goals["user1"].MaxTurns = 4
+	s.goals["user1"].TurnsUsed = 4
 	s.goals["user1"].TokensUsed = 40
 	s.goals["user1"].TokenBudget = 40
 	usedTurns := s.goals["user1"].TurnsUsed
@@ -240,8 +241,8 @@ func TestReleaseForContinueKeepsGoingAfterAnyStop(t *testing.T) {
 	if got.Status != StatusActive {
 		t.Fatalf("budget continue status = %s", got.Status)
 	}
-	if got.TurnsUsed != usedTurns || got.MaxTurns != usedTurns+DefaultMaxTurns {
-		t.Fatalf("turn window = used %d max %d", got.TurnsUsed, got.MaxTurns)
+	if got.TurnsUsed != usedTurns || got.MaxTurns != 0 {
+		t.Fatalf("turn cap = used %d max %d, want the cap lifted", got.TurnsUsed, got.MaxTurns)
 	}
 	if got.TokenBudget != 80 || got.TokenWindow != 40 {
 		t.Fatalf("token window = budget %d window %d", got.TokenBudget, got.TokenWindow)
@@ -332,6 +333,7 @@ func TestShouldContinue(t *testing.T) {
 		expect bool
 	}{
 		{"active no limits", Goal{Status: StatusActive, MaxTurns: 50}, true},
+		{"unlimited turns", Goal{Status: StatusActive, MaxTurns: 0, TurnsUsed: 100000}, true},
 		{"paused", Goal{Status: StatusPaused}, false},
 		{"complete", Goal{Status: StatusComplete}, false},
 		{"budget exceeded", Goal{Status: StatusActive, TokenBudget: 100, TokensUsed: 100}, false},
@@ -383,6 +385,64 @@ func TestPersistence_SaveAndLoad(t *testing.T) {
 	}
 	if got.TokensUsed != 100 || got.TurnsUsed != 1 {
 		t.Fatalf("unexpected usage after reload: tokens=%d turns=%d", got.TokensUsed, got.TurnsUsed)
+	}
+}
+
+func TestPersistence_AutomaticTurnCapsBecomeUnlimited(t *testing.T) {
+	dir := t.TempDir()
+	s1 := NewStore(dir)
+	legacy, err := s1.Set("user1", "keep going", WithMaxTurns(LegacyDefaultMaxTurns))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raised, err := s1.Set("user2", "week", WithMaxTurns(RaisedDefaultMaxTurns))
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicit, err := s1.Set("user3", "short", WithMaxTurns(3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopped, err := s1.Set("user4", "stopped", WithMaxTurns(LegacyDefaultMaxTurns))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s1.UpdateStatus("user4", stopped.GoalID, StatusBudgetLimit, "Turn limit reached") {
+		t.Fatal("budget stop")
+	}
+
+	s2 := NewStore(dir)
+	gotLegacy := s2.Get("user1")
+	if gotLegacy == nil || gotLegacy.GoalID != legacy.GoalID || gotLegacy.MaxTurns != 0 || gotLegacy.Status != StatusActive {
+		t.Fatalf("legacy cap = %+v, want unlimited and still active", gotLegacy)
+	}
+	gotRaised := s2.Get("user2")
+	if gotRaised == nil || gotRaised.GoalID != raised.GoalID || gotRaised.MaxTurns != 0 {
+		t.Fatalf("raised cap = %+v, want unlimited", gotRaised)
+	}
+	gotExplicit := s2.Get("user3")
+	if gotExplicit == nil || gotExplicit.GoalID != explicit.GoalID || gotExplicit.MaxTurns != 3 {
+		t.Fatalf("explicit cap = %+v, want 3", gotExplicit)
+	}
+	gotStopped := s2.Get("user4")
+	if gotStopped == nil || gotStopped.GoalID != stopped.GoalID || gotStopped.MaxTurns != 0 || gotStopped.Status != StatusBudgetLimit {
+		t.Fatalf("stopped cap = %+v, want unlimited but still budget_limited", gotStopped)
+	}
+	for _, name := range []string{"user1", "user2", "user4"} {
+		raw, err := os.ReadFile(filepath.Join(dir, name+".json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), `"max_turns"`) {
+			t.Fatalf("%s still stores a turn cap: %s", name, raw)
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "user3.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"max_turns": 3`) {
+		t.Fatalf("explicit cap was rewritten: %s", raw)
 	}
 }
 
@@ -528,6 +588,28 @@ func TestSavePlanAndUpdateStep(t *testing.T) {
 	}
 }
 
+func TestPausedClockSurvivesReload(t *testing.T) {
+	dir := t.TempDir()
+	s := NewStore(dir)
+	g, err := s.Set("user1", "ship it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.Pause("user1", g.GoalID) {
+		t.Fatal("pause")
+	}
+	paused := s.Get("user1")
+	if paused.StoppedAt.IsZero() || paused.Status != StatusPaused {
+		t.Fatalf("pause = status %s stop %s", paused.Status, paused.StoppedAt)
+	}
+	stopped := paused.StoppedAt.Unix()
+
+	loaded := NewStore(dir).Get("user1")
+	if loaded == nil || loaded.Status != StatusPaused || loaded.StoppedAt.Unix() != stopped || loaded.IsTerminal() || !loaded.ComposerClockStopped() {
+		t.Fatalf("reloaded = %+v", loaded)
+	}
+}
+
 func TestComposerClockStopsWhenTheGoalEnds(t *testing.T) {
 	s := NewStore("")
 	g, err := s.Set("user1", "ship it")
@@ -537,15 +619,16 @@ func TestComposerClockStopsWhenTheGoalEnds(t *testing.T) {
 	if !s.Pause("user1", g.GoalID) {
 		t.Fatal("pause")
 	}
-	if got := s.Get("user1"); !got.StoppedAt.IsZero() {
-		t.Fatalf("pause stopped the clock at %s", got.StoppedAt)
+	pausedAt := s.Get("user1").StoppedAt
+	if pausedAt.IsZero() {
+		t.Fatal("pause should freeze the composer clock")
 	}
 	if !s.UpdateStatus("user1", g.GoalID, StatusFailed, "编译失败") {
 		t.Fatal("fail")
 	}
 	stopped := s.Get("user1").StoppedAt
-	if stopped.IsZero() {
-		t.Fatal("failure should pin the clock")
+	if !stopped.Equal(pausedAt) {
+		t.Fatalf("failure moved the frozen clock from %s to %s", pausedAt, stopped)
 	}
 	if !s.UpdateObjective("user1", g.GoalID, "改一句说明") {
 		t.Fatal("edit")
@@ -578,12 +661,17 @@ func TestComposerClockStopsWhenTheGoalEnds(t *testing.T) {
 	if !s.Pause("user1", g.GoalID) {
 		t.Fatal("pause after continue")
 	}
-	if got := s.Get("user1"); got.ClockHoldSeconds != held || !got.StoppedAt.IsZero() {
-		t.Fatalf("pause changed the clock hold=%d stop=%s", got.ClockHoldSeconds, got.StoppedAt)
+	if got := s.Get("user1"); got.ClockHoldSeconds != held || got.StoppedAt.IsZero() {
+		t.Fatalf("pause should freeze without adding hold, hold=%d stop=%s", got.ClockHoldSeconds, got.StoppedAt)
 	}
 	if !s.Resume("user1", g.GoalID) {
 		t.Fatal("resume")
 	}
+	resumed := s.Get("user1")
+	if !resumed.StoppedAt.IsZero() || resumed.ClockHoldSeconds < held {
+		t.Fatalf("resume = stop %s hold %d, previous hold %d", resumed.StoppedAt, resumed.ClockHoldSeconds, held)
+	}
+	held = resumed.ClockHoldSeconds
 
 	s.mu.Lock()
 	s.goals["user1"].MaxTurns = 1

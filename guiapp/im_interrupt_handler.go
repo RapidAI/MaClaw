@@ -90,6 +90,22 @@ func (ih *imInterruptHandler) EmbedText(text string) []float32 {
 	return vec
 }
 
+// NoteTrackerActivity tells the user's milestone tracker that progress is
+// already on screen. LLM retry lines do not pass through the tracker.
+func (ih *imInterruptHandler) NoteTrackerActivity(userID string) {
+	if ih == nil {
+		return
+	}
+	current, ok := ih.milestoneTrackers.Load(userID)
+	if !ok {
+		return
+	}
+	tracker, _ := current.(*progress.AgentProgressTracker)
+	if tracker != nil {
+		tracker.NoteActivity()
+	}
+}
+
 // SetTracker registers the active milestone tracker for a user.
 func (ih *imInterruptHandler) SetTracker(userID string, tracker *progress.AgentProgressTracker) {
 	if tracker != nil {

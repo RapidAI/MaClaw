@@ -8,6 +8,13 @@ const binaryDocumentMimes = new Set([
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     "application/vnd.ms-excel",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/epub+zip",
+    "application/acad",
+    "application/x-dwg",
+    "image/vnd.dwg",
+    "model/gltf-binary",
+    "model/gltf+json",
+    "message/rfc822",
 ]);
 
 /**
@@ -17,7 +24,7 @@ const binaryDocumentMimes = new Set([
  * Actual parser safety remains enforced by the native read_document route.
  */
 export function isBinaryDocumentAttachment(filename: string | null | undefined, mimeType: string | null | undefined): boolean {
-    if (/\.(pdf|doc|docx|ppt|pptx|xls|xlsx)$/i.test(String(filename || "").trim())) return true;
+    if (/\.(pdf|doc|docx|ppt|pptx|xls|xlsx|dwg|dxf|dxfb|glb|gltf|epub|adoc|asciidoc|eml)$/i.test(String(filename || "").trim())) return true;
     const mime = String(mimeType || "").trim().toLowerCase().split(";", 1)[0];
     return binaryDocumentMimes.has(mime);
 }

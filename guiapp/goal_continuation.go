@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 )
 
@@ -25,6 +27,19 @@ func isGoalSystemContinuation(text string) bool {
 // one turn. The next turn stays on the same step. The goal itself stays open.
 func codingLoopIterationExhausted(errText string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(errText)), "max iterations reached")
+}
+
+// goalTurnErrorIsRetryable reports a turn error the agent loop already treats
+// as a transport failure. A task failure such as a compile error still closes
+// the goal. The string is not a typed error, so this uses the same classifier
+// the loop uses once the text is all that remains. A copied "unexpected EOF"
+// stays non-retryable, matching IsUnexpectedStreamEOF.
+func goalTurnErrorIsRetryable(errText string) bool {
+	text := strings.TrimSpace(errText)
+	if text == "" {
+		return false
+	}
+	return agentruntime.IsRetryableLLMError(errors.New(text))
 }
 
 // goalContinuationPhase is the host phase encoded in the continuation text.
@@ -153,6 +168,11 @@ type GoalContinuationEngine struct {
 	// barHold marks a turn the goal bar stopped. The dying post-loop consumes
 	// it and must not fail or re-arm the goal, even if continue already ran.
 	barHold map[string]struct{}
+	// continueRearmed is set before a continue flips the goal back to active.
+	// The dying turn reads it under the same lock. A queued timer is not the
+	// signal: it is armed after that flip and disappears once it fires.
+	// The next chat stop or goal-bar pause clears it, so that stop still pauses.
+	continueRearmed map[string]struct{}
 	// continuationAdmit is the generation that may still enter. A bar pause
 	// or delete bumps it. A continuation that already passed the cooldown
 	// check carries the old generation and must not start. Continue does not
@@ -169,6 +189,9 @@ type GoalContinuationEngine struct {
 	// Only those rows are resumed. A goal created later in this process
 	// already has its own timer, and a bar poll must not arm a second turn.
 	restartCandidates map[string]string
+	// transientTurnMiss counts consecutive transport failures for one session.
+	// A completed turn clears it. The count does not stop the goal.
+	transientTurnMiss map[string]int
 	cooldown          time.Duration // delay between continuations (default 2s)
 }
 
@@ -363,11 +386,53 @@ func (h *IMMessageHandler) noteGoalContinuePastUserStop(userID string) {
 	if h == nil || h.app == nil || h.app.goalContinuation == nil {
 		return
 	}
+	// Record the continue before ReleaseForContinue makes the goal active.
+	// The dying turn and this mark share the engine lock.
+	h.app.goalContinuation.noteContinueRearmed(userID)
 	fence, ok := h.currentCancelledTaskFence(userID)
 	if !ok {
 		return
 	}
 	h.app.goalContinuation.noteStopSuperseded(userID, fence)
+}
+
+// noteContinueRearmed records that continue is re-arming this session.
+// Caller must invoke it before the goal status becomes active.
+func (e *GoalContinuationEngine) noteContinueRearmed(userID string) {
+	if e == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.continueRearmed == nil {
+		e.continueRearmed = map[string]struct{}{}
+	}
+	e.continueRearmed[userID] = struct{}{}
+}
+
+// continueRearmedLocked reports a continue that has not been superseded by
+// a later user stop. Caller holds e.mu.
+func (e *GoalContinuationEngine) continueRearmedLocked(userID string) bool {
+	if e == nil || e.continueRearmed == nil {
+		return false
+	}
+	_, ok := e.continueRearmed[userID]
+	return ok
+}
+
+// clearContinueRearmed drops the mark so the next explicit stop can pause.
+func (e *GoalContinuationEngine) clearContinueRearmed(userID string) {
+	if e == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	e.mu.Lock()
+	delete(e.continueRearmed, userID)
+	e.mu.Unlock()
 }
 
 // noteGoalBarHold records that this session's live turn was stopped from the
@@ -488,6 +553,80 @@ func (h *IMMessageHandler) closeGoalTurnForUserStop(userID string, resp *IMAgent
 		log.Printf("[goal-continuation] paused: user stopped the turn user=%s", userID)
 	}
 	return true
+}
+
+// finishCancelledGoalTurn closes a turn that returns before post-loop.
+// Shutdown, timeout, and turn replacement cancel the loop without a user
+// stop, and those leave the goal alone. A fenced user stop pauses and stamps
+// the clock. A goal-bar hold means that pause already happened. A continue
+// recorded before the goal became active again is left armed.
+func (h *IMMessageHandler) finishCancelledGoalTurn(userID string, resp *IMAgentResponse, loopCtx *LoopContext) {
+	if h == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	_, fenced := h.currentCancelledTaskFence(userID)
+	userStopped := loopCtx != nil && loopCtx.UserCancelled()
+	if !fenced && !userStopped {
+		return
+	}
+	stopped := IMAgentResponse{}
+	if resp != nil {
+		stopped = *resp
+	}
+	stopped.userStopped = true
+	if fenced {
+		h.closeGoalTurnForUserStop(userID, &stopped)
+		if h.app != nil && h.app.goalContinuation != nil {
+			h.app.goalContinuation.consumeGoalBarHold(userID)
+		}
+		return
+	}
+	if h.app != nil && h.app.goalContinuation != nil && h.app.goalContinuation.consumeGoalBarHold(userID) {
+		return
+	}
+	h.pauseStillActiveUserStop(userID)
+}
+
+// pauseStillActiveUserStop stamps the clock when the user stopped this loop
+// and the goal is still active. A continue that already re-armed is left
+// alone, including after its timer has fired. An already paused or finished
+// goal keeps the stamp it has. A normal queued turn is not a continue: this
+// stop cancels that timer.
+func (h *IMMessageHandler) pauseStillActiveUserStop(userID string) {
+	if h == nil || h.app == nil || h.app.goalContinuation == nil {
+		return
+	}
+	engine := h.app.goalContinuation
+	engine.mu.Lock()
+	if engine.continueRearmedLocked(userID) {
+		engine.mu.Unlock()
+		return
+	}
+	if engine.store == nil {
+		engine.mu.Unlock()
+		return
+	}
+	g := engine.store.Get(userID)
+	if g == nil || g.Status != goal.StatusActive {
+		engine.mu.Unlock()
+		return
+	}
+	paused := engine.pauseForUserStopLocked(userID)
+	var updated *goal.Goal
+	if paused {
+		updated = engine.store.Get(userID)
+	}
+	engine.mu.Unlock()
+	if updated != nil {
+		engine.emitGoalStateChanged(userID, updated)
+	}
+	if paused {
+		log.Printf("[goal-continuation] paused: user stopped the turn user=%s", userID)
+	}
 }
 
 // pauseForUserStopLocked records the stop and drops the queued turn.
@@ -1332,7 +1471,11 @@ func buildGoalExecutePrompt(g *goal.Goal) string {
 	if strings.TrimSpace(g.Understanding) != "" {
 		b.WriteString("理解：" + g.Understanding + "\n")
 	}
-	b.WriteString(fmt.Sprintf("进度：第 %d/%d 轮", g.TurnsUsed, g.MaxTurns))
+	if g.MaxTurns > 0 {
+		b.WriteString(fmt.Sprintf("进度：第 %d/%d 轮", g.TurnsUsed, g.MaxTurns))
+	} else {
+		b.WriteString(fmt.Sprintf("进度：第 %d 轮，轮次不限", g.TurnsUsed))
+	}
 	if g.TokenBudget > 0 {
 		pct := float64(g.TokensUsed) / float64(g.TokenBudget) * 100
 		b.WriteString(fmt.Sprintf(" | Token: %d/%d (%.0f%%)", g.TokensUsed, g.TokenBudget, pct))
@@ -1614,6 +1757,52 @@ func continuationMissedReport(exp goalContinuationExpect, g *goal.Goal) string {
 	return ""
 }
 
+// retryTransientGoalTurn reschedules a transport failure. There is no attempt
+// cap: a timeout does not fail the goal. A successor note or a queued timer
+// is left alone and is not counted. A late dying turn must not replace that
+// timer or close the goal. Returns false only when this engine cannot schedule.
+func (e *GoalContinuationEngine) retryTransientGoalTurn(userID, goalID string, owned goalContinuationExpect, haveOwned bool) bool {
+	if e == nil {
+		return false
+	}
+	userID = strings.TrimSpace(userID)
+	goalID = strings.TrimSpace(goalID)
+	if userID == "" || goalID == "" {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if haveOwned && e.continuationSupersededLocked(userID, owned) {
+		if e.pendingExpect != nil && owned.goalID != "" && e.pendingExpect[userID] == owned {
+			delete(e.pendingExpect, userID)
+		}
+		log.Printf("[goal-continuation] transient error on a superseded turn; successor stays user=%s", userID)
+		return true
+	}
+	if e.transientTurnMiss == nil {
+		e.transientTurnMiss = map[string]int{}
+	}
+	e.transientTurnMiss[userID]++
+	if e.pendingExpect != nil && owned.goalID != "" && e.pendingExpect[userID] == owned {
+		delete(e.pendingExpect, userID)
+	}
+	log.Printf("[goal-continuation] retrying after transient turn error user=%s goal_id=%s misses=%d", userID, goalID, e.transientTurnMiss[userID])
+	e.scheduleAfterCooldownLocked(userID, goalID, goalCorrectionNone)
+	return true
+}
+
+// clearTransientGoalRetry forgets the transport-failure streak after a turn
+// that was not a retryable transport error.
+func (e *GoalContinuationEngine) clearTransientGoalRetry(userID string) {
+	if e == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.transientTurnMiss, userID)
+}
+
 // failGoal marks the active goal failed and optionally tells the user.
 func (e *GoalContinuationEngine) failGoal(userID, goalID, reason string, announce bool) {
 	if e == nil || e.store == nil {
@@ -1742,10 +1931,10 @@ func goalCreatedUnix(g *goal.Goal) int64 {
 }
 
 // goalStoppedUnix is the instant the composer clock stops. Zero means the
-// clock is still running. A terminal goal that predates stopped_at freezes
-// at its last update.
+// clock is still running. Pause, failure, and a filled budget all stop it.
+// A stopped goal that predates stopped_at freezes at its last update.
 func goalStoppedUnix(g *goal.Goal) int64 {
-	if g == nil || !g.IsTerminal() {
+	if g == nil || !g.ComposerClockStopped() {
 		return 0
 	}
 	if !g.StoppedAt.IsZero() {
@@ -1865,11 +2054,25 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuationOwned(userID string, res
 	if haveOwnedExpect {
 		contractExpect = ownedExpect
 	}
-	if resp != nil && strings.TrimSpace(resp.Error) != "" && !goalContinuationContractMet(contractExpect, g) {
+	turnErr := ""
+	if resp != nil {
+		turnErr = strings.TrimSpace(resp.Error)
+	}
+	// An exhausted iteration budget ends this turn. The next continuation
+	// stays on the same step. It is not a failed goal and not a transport retry.
+	if codingLoopIterationExhausted(turnErr) {
+		turnErr = ""
+	}
+	if turnErr != "" && !goalContinuationContractMet(contractExpect, g) {
+		if goalTurnErrorIsRetryable(turnErr) && g.ShouldContinue() && engine.retryTransientGoalTurn(userID, g.GoalID, ownedExpect, haveOwnedExpect) {
+			return
+		}
 		log.Printf("[goal-continuation] failing goal after turn error user=%s", userID)
-		engine.failGoal(userID, g.GoalID, resp.Error, false)
+		engine.clearTransientGoalRetry(userID)
+		engine.failGoal(userID, g.GoalID, turnErr, false)
 		return
 	}
+	engine.clearTransientGoalRetry(userID)
 
 	// Keep pure-coding sticky routing armed across multi-turn /goal loops.
 	h.ensurePureCodingArmedForGoalContinuation(userID)

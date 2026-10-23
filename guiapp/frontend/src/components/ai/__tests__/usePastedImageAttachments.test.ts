@@ -304,6 +304,32 @@ describe('usePastedImageAttachments', () => {
         expect(result.current.pendingAttachments).toEqual([]);
     });
 
+    it('returns a pathless file once its save finishes', async () => {
+        let resolveSave!: (path: string) => void;
+        const savePastedFile = vi.fn(() => new Promise<string>((resolve) => { resolveSave = resolve; }));
+        (window as any).go = { main: { App: { SavePastedFile: savePastedFile } } };
+        const { result } = renderHook(() => usePastedImageAttachments('new-task-guide'));
+        const file = new File(['contract'], 'brief.pdf', { type: 'application/pdf' });
+        let settled: string[] = [];
+
+        act(() => {
+            result.current.handlePaste({
+                preventDefault: vi.fn(),
+                clipboardData: { items: null, files: [file] },
+            } as any);
+        });
+        const pending = result.current.settlePendingAttachments().then(paths => { settled = paths; });
+        await waitForCondition(() => savePastedFile.mock.calls.length === 1);
+        expect(settled).toEqual([]);
+
+        await act(async () => {
+            resolveSave('D:\\tmp\\maclaw-paste\\brief.pdf');
+            await pending;
+        });
+
+        expect(settled).toEqual(['D:\\tmp\\maclaw-paste\\brief.pdf']);
+    });
+
     it('does not append async attachments after the user replaces the session attachments', async () => {
         let resolveSave!: (path: string) => void;
         const savePastedFile = vi.fn(() => new Promise<string>((resolve) => { resolveSave = resolve; }));

@@ -227,6 +227,20 @@ func TestInstalledSkillResolutionRejectsUnregisteredAndInactive(t *testing.T) {
 	}
 }
 
+func TestInstalledSkillIsRunnableOnlyWhenActive(t *testing.T) {
+	if installedSkillIsRunnable(nil) {
+		t.Fatal("nil entry is runnable")
+	}
+	for _, status := range []string{"", "needs_setup", "disabled", "needs_review", "staged"} {
+		if installedSkillIsRunnable(&corelib.NLSkillEntry{Status: status}) {
+			t.Fatalf("status %q is runnable", status)
+		}
+	}
+	if !installedSkillIsRunnable(&corelib.NLSkillEntry{Status: "active"}) {
+		t.Fatal("active entry is not runnable")
+	}
+}
+
 // TestInstalledSkillResolutionRejectsDefinitionSwap covers the window between
 // registration and execution. Register normalizes Status/Source/CreatedAt/
 // Triggers, none of which the content digest covers, so a digest mismatch

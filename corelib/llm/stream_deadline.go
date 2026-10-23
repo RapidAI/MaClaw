@@ -8,15 +8,6 @@ import (
 	"time"
 )
 
-// StreamBodyContinuationTimeout bounds an SSE body after response headers when
-// the route deadline has already been reached. Reasoning models such as
-// GLM-5.3-Flash keep emitting tokens on a large prompt long after that
-// deadline; cutting the body there surfaces as "SSE stream read: context
-// deadline exceeded" while the turn is still in progress. Silence is still
-// cut by SSEIdleTimeout. Caller cancellation and any earlier host deadline
-// still abort immediately.
-var StreamBodyContinuationTimeout = 60 * time.Minute
-
 type routeDeadlineKey struct{}
 type streamCancelKey struct{}
 
@@ -56,8 +47,11 @@ func OwnedRouteDeadline(ctx context.Context) (time.Time, bool) {
 // Before response headers, the call is canceled when the caller is canceled
 // or when an owned route deadline expires. markHeaders returns false when
 // that deadline already owns the request. After a true mark, the route
-// deadline no longer cancels the body. The body then runs until the
-// continuation cap, the SSE idle timeout, or caller cancellation.
+// deadline no longer cancels the body, and the body has no wall-clock cap.
+// It runs until the model finishes, the SSE idle timeout, or caller
+// cancellation. Cancelling a WithCancel wrapped around the route context
+// aborts the body as well. A keepalive that keeps the idle clock fresh does
+// not end it.
 //
 // Contexts without an owned route deadline are returned unchanged so a host
 // deadline keeps its existing meaning. headerDeadline reports that the route
@@ -76,7 +70,7 @@ func streamingRequestContext(parent context.Context) (context.Context, context.C
 	if stored, _ := parent.Value(streamCancelKey{}).(context.Context); stored != nil {
 		cancelCtx = stored
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), StreamBodyContinuationTimeout)
+	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
 	var mu sync.Mutex
 	const (
 		streamPhaseWaiting = iota
@@ -134,15 +128,50 @@ func streamingRequestContext(parent context.Context) (context.Context, context.C
 		}
 		cancel()
 	})
+	// A WithCancel between the route timeout and this call is how the scheduler
+	// and a reasoning halt abort one request. That wrapper dies with
+	// DeadlineExceeded when the route timer fires, which must not end a body
+	// that already has headers. Any other cancel of the wrapper still does.
+	var parentWatch func() bool
+	if cancelCtx != parent {
+		parentWatch = context.AfterFunc(parent, func() {
+			if parent.Err() == context.DeadlineExceeded {
+				if claimTimeout() {
+					cancel()
+				}
+				return
+			}
+			cancel()
+		})
+	}
 	var once sync.Once
 	finish := func() {
 		once.Do(func() {
 			timer.Stop()
 			stopWatch()
+			if parentWatch != nil {
+				parentWatch()
+			}
 			cancel()
 		})
 	}
 	return ctx, finish, markHeaders, headerDeadline
+}
+
+// StreamingRequestContext is streamingRequestContext for transports that
+// build the HTTP or websocket request outside this package. Before headers,
+// an owned route deadline still cancels the call. After markHeaders reports
+// true, that deadline no longer cancels the body. Caller stop and an earlier
+// host deadline still do. A context without an owned route deadline is
+// returned unchanged.
+func StreamingRequestContext(parent context.Context) (context.Context, context.CancelFunc, func() bool, *atomic.Bool) {
+	return streamingRequestContext(parent)
+}
+
+// NormalizeStreamSetupError maps a pre-header owned-route cancellation to
+// context.DeadlineExceeded so a retry still sees a timeout.
+func NormalizeStreamSetupError(headerDeadline *atomic.Bool, err error) error {
+	return normalizeStreamSetupError(headerDeadline, err)
 }
 
 // normalizeStreamSetupError turns a pre-header route timeout into

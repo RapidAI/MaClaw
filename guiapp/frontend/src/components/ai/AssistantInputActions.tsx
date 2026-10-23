@@ -461,7 +461,7 @@ export function AssistantInputActionsRight({ canSend, cancelSession, handleCance
         </button>
     ) : (
         <>
-            <button type="button" onClick={handleSend} disabled={!canSend} style={{ ...getInputActionButtonStyle(t, themeMode, canSend ? "send" : "neutral", !canSend), ...sendButtonStyle }} title={localizeText(lang, "Send", "\u53d1\u9001") + " (Enter)"} aria-label={localizeText(lang, "Send", "\u53d1\u9001")} data-testid={sendButtonTestId}>
+            <button type="button" className="ai-composer-send" onClick={handleSend} disabled={!canSend} style={{ ...getInputActionButtonStyle(t, themeMode, canSend ? "send" : "neutral", !canSend), ...sendButtonStyle }} title={localizeText(lang, "Send", "\u53d1\u9001") + " (Enter)"} aria-label={localizeText(lang, "Send", "\u53d1\u9001")} data-testid={sendButtonTestId}>
                 {isBusy ? <span style={{ width: "12px", height: "12px", borderRadius: "50%", border: `2px solid ${t.textMuted}`, borderTopColor: "transparent", animation: "ai-spinner-spin 0.8s linear infinite" }} /> : <AssistantInputIcon name="cornerDownLeft" size={13} />}
             </button>
             <button type="button" onClick={handleClearInput} disabled={!inputValue} style={getInputActionButtonStyle(t, themeMode, "neutral", !inputValue)} title={localizeText(lang, "Clear input", "\u6e05\u9664\u8f93\u5165")} aria-label={localizeText(lang, "Clear input", "\u6e05\u9664\u8f93\u5165")} data-testid="ai-clear-input">

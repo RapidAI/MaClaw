@@ -55,11 +55,9 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		return resp
 	}
 	if resp := h.rejectCancelledTaskTurn(msg); resp != nil {
-		// This turn never reaches post-loop. Pause the goal here, or the bar
-		// stays on "running" with nothing queued.
-		stopped := *resp
-		stopped.userStopped = true
-		h.closeGoalTurnForUserStop(msg.UserID, &stopped)
+		// This turn never reaches post-loop. A fenced user stop pauses here,
+		// so the bar does not stay on "running" with the clock still going.
+		h.finishCancelledGoalTurn(msg.UserID, resp, nil)
 		return resp
 	}
 	// Dedicated local/remote coding is already an armed workbench. Do not
@@ -167,11 +165,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	if loopCtx.IsCancelled() || barStopped || (h.hasCancelledTaskBoundary(msg.UserID) && !h.goalContinuationAdmittedPastStop(msg)) {
 		hist, _ := drainHistory()
 		if resp := h.preLoopCancelResponse(msg, loopCtx, hist, msg.Text); resp != nil {
-			if h.hasCancelledTaskBoundary(msg.UserID) {
-				stopped := *resp
-				stopped.userStopped = true
-				h.closeGoalTurnForUserStop(msg.UserID, &stopped)
-			}
+			h.finishCancelledGoalTurn(msg.UserID, resp, loopCtx)
 			return resp
 		}
 	}
@@ -181,6 +175,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	if !turnCurrent {
 		hist, _ := drainHistory()
 		if resp := h.preLoopCancelResponse(msg, loopCtx, hist, msg.Text); resp != nil {
+			h.finishCancelledGoalTurn(msg.UserID, resp, loopCtx)
 			return resp
 		}
 		return &IMAgentResponse{Error: "semantic_turn_replaced", ResponseSource: "ingress_replacement"}
@@ -223,7 +218,13 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	var historyElapsed time.Duration
 	historyDrained := false
 	abortIfCancelled := func() *IMAgentResponse {
-		return h.preLoopCancelResponse(msg, loopCtx, history, agentLoopUserText)
+		resp := h.preLoopCancelResponse(msg, loopCtx, history, agentLoopUserText)
+		if resp != nil {
+			// Coding workbench and the other pre-loop returns skip post-loop.
+			// The user stop still has to pause the goal, or the clock keeps running.
+			h.finishCancelledGoalTurn(msg.UserID, resp, loopCtx)
+		}
+		return resp
 	}
 	// Dedicated local/remote coding does not wait for WorkflowAgentLoop.
 	// SkipWorkflowRouting or a missing marker used to skip this consume,
@@ -412,6 +413,14 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 			semanticIntent = rewritten
 			executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
 			log.Printf("[semantic-routing] explicit skill invocation planning user=%q primary=%s", msg.UserID, rewritten.Primary)
+		}
+		// After residue and the other late rewrites, and before lookup
+		// continuation can narrow the profile. History covers 「真读内容」
+		// when the classifier never merges the earlier DWG sentence.
+		if rewritten := semanticFetchedDocumentReadPlanning(semanticIntent, msg.Text, history); rewritten != nil {
+			semanticIntent = rewritten
+			executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+			log.Printf("[semantic-routing] fetched document read user=%q", msg.UserID)
 		}
 		loopCtx.Runtime.Execution = h.continuationKeepsParentExecution(executionProfile, msg.UserID, msg.Text, semanticIntent)
 		markAnswerOnlySocialTurn(loopCtx, loopCtx.Runtime.Execution, msg.Text)

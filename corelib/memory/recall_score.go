@@ -1,9 +1,12 @@
 package memory
 
 import (
+	"context"
 	"log"
 	"sort"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/rerank"
 )
 
 const recallRLockTimeout = 10 * time.Second
@@ -91,8 +94,9 @@ func (s *Store) prepareRecallSignals(query, projectPath, ownerID string) recallS
 }
 
 // scoreRecallCandidatesLocked ranks the active entries the filter allows.
-// Caller must hold s.mu read lock. Pagination and RecallDynamic both use it.
-func (s *Store) scoreRecallCandidatesLocked(signals recallSignals, query string, category Category, projectPath, filterOwner string, opts recallFilterOptions, themeRerank bool) []recallScored {
+// Caller must hold s.mu read lock. The relevance model, diversity, and
+// temporal demotion run later in finalizeRecallCandidates, outside this lock.
+func (s *Store) scoreRecallCandidatesLocked(signals recallSignals, category Category, projectPath, filterOwner string, opts recallFilterOptions) []recallScored {
 	projectLower := semanticNormalizeProjectPath(projectPath)
 	expanded := signals.expanded
 	aliasExpanded := signals.aliasExpanded
@@ -196,14 +200,25 @@ func (s *Store) scoreRecallCandidatesLocked(signals recallSignals, query string,
 		candidates = filterRecallDynamicCandidatesWithExclusions(candidates, category, projectLower, filterOwner, opts.excludeWhenNoCategory)
 	}
 	candidates = filterRecallByAnchors(candidates, signals.nameAnchors)
-	if themeRerank && ClassifyComplexity(query, expanded.Entities, nil) != ComplexitySimple && s.themeManager != nil {
-		candidates = themeAwareDiversityRerank(candidates, s.themeManager.Themes(), graphExpandSeeds)
+	return candidates
+}
+
+// finalizeRecallCandidates applies the local relevance bonus, theme diversity,
+// and temporal demotion. The model call is intentionally outside the store
+// lock. themeRerank false is the pagination path: demote and sort only.
+func finalizeRecallCandidates(candidates []recallScored, query string, now time.Time, rr rerank.Reranker, themes []ThemeNode, themeRerank bool) ([]recallScored, recallRerankMeta) {
+	var meta recallRerankMeta
+	if themeRerank {
+		candidates, meta = blendRelevanceRerank(context.Background(), rr, query, candidates)
+		if len(themes) > 0 {
+			candidates = themeAwareDiversityRerank(candidates, themes, graphExpandSeeds)
+		}
 	}
-	applyTemporalDemotion(candidates, signals.now)
+	applyTemporalDemotion(candidates, now)
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return candidates[i].score > candidates[j].score
 	})
-	return candidates
+	return candidates, meta
 }
 
 func recallLockTimeoutTrace(query string, category Category, projectPath, ownerID string, signals recallSignals) RecallTrace {

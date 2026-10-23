@@ -86,14 +86,18 @@ type WorkloadDecision struct {
 	Upgraded      bool   `json:"capability_upgraded,omitempty"`
 	// AvailabilityFallback is set when the routed high/mid/low model was not
 	// usable and a sibling quality tier in the same group was selected instead.
-	AvailabilityFallback bool             `json:"availability_fallback,omitempty"`
-	Passthrough          bool             `json:"passthrough,omitempty"`
-	HeadClass            string           `json:"head_class,omitempty"`
-	HeadMaxP             float64          `json:"head_max_p,omitempty"`
-	HeadUsed             bool             `json:"head_used,omitempty"`
-	RuleClass            string           `json:"rule_class,omitempty"`
-	RuleSource           string           `json:"rule_source,omitempty"`
-	Attribution          RouteAttribution `json:"attribution,omitempty"`
+	AvailabilityFallback bool `json:"availability_fallback,omitempty"`
+	// Degree is simple, complex, or empty. Empty does not move the band.
+	Degree string `json:"degree,omitempty"`
+	// DegreeApplied is set when this turn's degree moved the class band.
+	DegreeApplied bool             `json:"degree_applied,omitempty"`
+	Passthrough   bool             `json:"passthrough,omitempty"`
+	HeadClass     string           `json:"head_class,omitempty"`
+	HeadMaxP      float64          `json:"head_max_p,omitempty"`
+	HeadUsed      bool             `json:"head_used,omitempty"`
+	RuleClass     string           `json:"rule_class,omitempty"`
+	RuleSource    string           `json:"rule_source,omitempty"`
+	Attribution   RouteAttribution `json:"attribution,omitempty"`
 }
 
 // RouteAttribution is the documented L1/L3 audit payload.
@@ -115,7 +119,11 @@ func AttributionFrom(dec WorkloadDecision, requestedGroup, requestedModel string
 	switch {
 	case dec.AvailabilityFallback:
 		reason = "official tier availability fallback"
+	case dec.DegreeApplied:
+		reason = "workload degree gate"
 	case !dec.Passthrough:
+		reason = "dynamic workload route"
+	case dec.Upgraded:
 		reason = "dynamic workload route"
 	case requestedModel != "" && !IsAutoModel(requestedModel):
 		reason = "pinned model"
@@ -172,6 +180,20 @@ func NormalizeServiceGroupKind(kind string) string {
 // IsDynamicKind reports whether the group runs L1.
 func IsDynamicKind(kind string) bool {
 	return NormalizeServiceGroupKind(kind) == ServiceGroupKindDynamic
+}
+
+// ClientHeaderSelectsAuto reports that the user selected auto. Hub rewrites
+// the forwarded body to the resolved official tier and keeps that choice in
+// ClientModelHeader. An empty header is not auto, so a direct tier pin stays.
+func ClientHeaderSelectsAuto(header http.Header) bool {
+	if header == nil {
+		return false
+	}
+	raw := strings.TrimSpace(header.Get(ClientModelHeader))
+	if raw == "" {
+		return false
+	}
+	return CanonicalClientModel(raw) == "auto"
 }
 
 // IsAutoModel reports whether the client asked Hub/HubCenter to choose.
@@ -271,15 +293,15 @@ func OfficialTierForQuality(quality string) string {
 }
 
 // QualityAvailabilityChain is the same-group retry order for a quality band.
-// Downgrade is preferred (high→mid→low, mid→low then high); low can only upgrade.
-// plan/design never include low.
+// high descends through mid before low. mid climbs to high before it falls
+// to low. low only climbs. plan/design never include low.
 func QualityAvailabilityChain(selectedQuality, class string) []string {
 	var chain []string
 	switch NormalizeQuality(selectedQuality) {
 	case QualityHigh:
 		chain = []string{QualityHigh, QualityMid, QualityLow}
 	case QualityMid:
-		chain = []string{QualityMid, QualityLow, QualityHigh}
+		chain = []string{QualityMid, QualityHigh, QualityLow}
 	case QualityLow:
 		chain = []string{QualityLow, QualityMid, QualityHigh}
 	default:
@@ -421,7 +443,10 @@ func taskTypeClass(in ClassifyInput) string {
 }
 
 func heuristicClass(in ClassifyInput) string {
-	text := strings.ToLower(extractRequestText(in.Body))
+	return heuristicClassFromText(strings.ToLower(latestUserRequestText(in.Body)))
+}
+
+func heuristicClassFromText(text string) string {
 	if text == "" {
 		return ""
 	}
@@ -664,23 +689,35 @@ func ClassifyAndRouteModel(header http.Header, body map[string]any, group *Servi
 		model := strings.TrimSpace(requestedModel)
 		quality := QualityForOfficialTier(model)
 		model, quality, availabilityFallback := applyAvailabilityFallback(group, model, class, quality)
+		upgraded := false
+		// Hub resolves auto without live member tags, then forwards the tier.
+		// Climb from that tier when the user selected auto. A real pin does not.
+		if ClientHeaderSelectsAuto(header) && IsOfficialTierName(CanonicalClientModel(model)) {
+			// Hub's sibling retry can name low after a higher band fails.
+			// Plan and design still leave that tier before vision runs.
+			model, quality, availabilityFallback = upgradePlanRouteAwayFromLow(group, class, model, quality, availabilityFallback)
+			next, nextQuality, visionUp, climbed := applyVisionRoute(group, class, model, quality, capabilityNeeds(body), judgeDegree(latestUserRequestText(body)))
+			if visionUp {
+				model, quality = next, nextQuality
+				upgraded = true
+				if climbed {
+					availabilityFallback = false
+				}
+			}
+		}
 		return finishDecision(WorkloadDecision{
 			Class:                class,
 			RoutedClass:          class,
 			Source:               source,
 			ResolvedModel:        model,
 			Quality:              quality,
+			Upgraded:             upgraded,
 			AvailabilityFallback: availabilityFallback,
 			Passthrough:          true,
 		}, group, requestedModel)
 	}
 	class, source := ClassifyWorkload(ClassifyInput{Header: header, Body: body})
-	routedClass, model, quality, availabilityFallback := routeWorkloadClass(group, class)
-	upgraded := false
-	if upgradedModel, ok := upgradeModelInBand(group, model, quality, capabilityNeeds(body)); ok {
-		model = upgradedModel
-		upgraded = true
-	}
+	routedClass, model, quality, degree, upgraded, degreeApplied, availabilityFallback := routeAutoDecision(group, body, class, source)
 	return finishDecision(WorkloadDecision{
 		Class:                class,
 		RoutedClass:          routedClass,
@@ -689,36 +726,321 @@ func ClassifyAndRouteModel(header http.Header, body map[string]any, group *Servi
 		Quality:              quality,
 		Upgraded:             upgraded,
 		AvailabilityFallback: availabilityFallback,
+		Degree:               degree,
+		DegreeApplied:        degreeApplied,
 	}, group, requestedModel)
+}
+
+const (
+	DegreeSimple  = "simple"
+	DegreeComplex = "complex"
+
+	degreeSimpleMaxRunes  = 80
+	degreeComplexMinRunes = 400
+
+	// capabilityLongTextBytes matches the window tag in capabilityNeeds.
+	capabilityLongTextBytes = 12000
+)
+
+// judgeDegree reads only the latest user message. Unknown stays empty so the
+// class band is kept. A workload keyword is not a small edit: "fix bug" stays
+// on its class band instead of falling to low.
+func judgeDegree(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	lower := strings.ToLower(text)
+	if containsAny(lower, degreeComplexMarkers...) || len([]rune(text)) >= degreeComplexMinRunes {
+		return DegreeComplex
+	}
+	if collapsedRuneCount(text) > degreeSimpleMaxRunes || strings.ContainsAny(text, "\r\n") || strings.Contains(text, "```") {
+		return ""
+	}
+	if containsAny(lower, degreeSubstantialMarkers...) || heuristicClassFromText(lower) != "" {
+		return ""
+	}
+	return DegreeSimple
+}
+
+func collapsedRuneCount(text string) int {
+	return len([]rune(strings.Join(strings.Fields(text), "")))
+}
+
+var degreeSubstantialMarkers = []string{
+	"写", "撰写", "实现", "重构", "全文", "报告",
+	"write", "implement", "refactor",
+}
+
+var degreeComplexMarkers = []string{
+	"为什么", "为何", "怎么回事", "根因", "调试", "排查", "架构", "设计",
+	"why", "root cause", "debug", "architect",
+}
+
+func degreeMayLower(source string) bool {
+	switch strings.TrimSpace(source) {
+	case ClassSourceHeuristic, ClassSourceFallback, ClassSourceHead:
+		return true
+	default:
+		return false
+	}
+}
+
+func routeAutoDecision(group *ServiceGroup, body map[string]any, class, source string) (routedClass, model, quality, degree string, upgraded, degreeApplied, availabilityFallback bool) {
+	routedClass, model, quality, availabilityFallback = routeWorkloadClass(group, class)
+	classModel := model
+	degree = judgeDegree(latestUserRequestText(body))
+	needs := capabilityNeeds(body)
+	// Vision and a long transcript stay off low when the degree gate is the
+	// only reason to move. Tools alone must not block a short edit: agent
+	// calls carry tools on every turn.
+	blockLower := needs["vision"] > 0 || needs["window"] > 0
+	if next, nextQuality, ok := applyDegreeGate(group, class, source, model, quality, degree, blockLower); ok {
+		model, quality, degreeApplied = next, nextQuality, true
+		availabilityFallback = false
+	}
+	// A band that cannot see is ineligible when another band can. Search
+	// upward first. A long transcript does not fall back to low. Plan and
+	// design do not land on low. A group with no vision tag stays put.
+	// Climb lands on the official tier name, then the in-band pick runs again.
+	if next, nextQuality, visionUp, climbed := applyVisionRoute(group, class, model, quality, needs, degree); visionUp {
+		model, quality = next, nextQuality
+		upgraded = true
+		if climbed {
+			availabilityFallback = false
+		}
+	}
+	if degreeApplied && strings.EqualFold(model, classModel) {
+		degreeApplied = false
+	}
+	return
+}
+
+// applyVisionRoute moves to a model that can see, then prefers the sibling in
+// that band that also covers the other needs. climbed is set only when the
+// band changes.
+func applyVisionRoute(group *ServiceGroup, class, model, quality string, needs map[string]int, degree string) (string, string, bool, bool) {
+	changed := false
+	climbed := false
+	// A long image that Hub retries onto low is not allowed to stay there
+	// just because low can see. Chat and classify keep low when degree did
+	// not raise them; that band is where those turns belong.
+	if next, nextQuality, ok := liftWindowVisionOffLow(group, class, model, quality, degree, needs); ok {
+		model, quality = next, nextQuality
+		changed = true
+		climbed = true
+	}
+	if next, ok := upgradeModelInBand(group, model, quality, needs); ok {
+		model = next
+		changed = true
+	}
+	if next, nextQuality, ok := climbForUnmetVision(group, class, model, quality, needs); ok {
+		model, quality = next, nextQuality
+		changed = true
+		climbed = true
+		if again, ok := upgradeModelInBand(group, model, quality, needs); ok {
+			model = again
+		}
+	}
+	return model, quality, changed, climbed
+}
+
+func applyDegreeGate(group *ServiceGroup, class, source, model, quality, degree string, blockLower bool) (string, string, bool) {
+	if strings.TrimSpace(model) == "" {
+		return model, quality, false
+	}
+	class = NormalizeWorkloadClass(class)
+	switch class {
+	case WorkloadClassPlan, WorkloadClassDesign, WorkloadClassReview:
+		return model, quality, false
+	}
+	current := routedQuality(group, model, quality)
+	switch class {
+	case WorkloadClassChat, WorkloadClassClassify:
+		if degree != DegreeComplex || current != QualityLow {
+			return model, quality, false
+		}
+		name := firstUsableModelForQuality(group, QualityMid)
+		if name == "" || strings.EqualFold(name, model) {
+			return model, quality, false
+		}
+		return name, QualityMid, true
+	case WorkloadClassCode, WorkloadClassDocWrite, WorkloadClassOps, WorkloadFallbackBalanced:
+		if blockLower || degree != DegreeSimple || !degreeMayLower(source) || current != QualityMid {
+			return model, quality, false
+		}
+		name := firstUsableModelForQuality(group, QualityLow)
+		if name == "" || strings.EqualFold(name, model) {
+			return model, quality, false
+		}
+		return name, QualityLow, true
+	default:
+		return model, quality, false
+	}
+}
+
+func routedQuality(group *ServiceGroup, model, quality string) string {
+	if q := NormalizeQuality(quality); q != "" {
+		return q
+	}
+	if q := QualityForOfficialTier(model); q != "" {
+		return q
+	}
+	return modelQuality(group, model)
 }
 
 func upgradeModelInBand(group *ServiceGroup, selected, quality string, needs map[string]int) (string, bool) {
 	if group == nil || selected == "" || len(needs) == 0 {
 		return selected, false
 	}
-	if modelHasNeeds(findGroupModel(group, selected), needs) {
+	// A tag on a model with no providers is not a capability this group can
+	// dial. Treating it as satisfied would stop the later vision search on
+	// an undialable name.
+	selectedModel := findGroupModel(group, selected)
+	selectedUsable := modelIsUsable(group, selected)
+	if selectedUsable && modelHasNeeds(selectedModel, needs) {
 		return selected, false
 	}
 	quality = NormalizeQuality(quality)
+	var best *ModelConfig
 	bestName := selected
-	bestScore := modelNeedScore(findGroupModel(group, selected), needs)
+	if selectedUsable {
+		best = selectedModel
+	}
 	improved := false
-	for _, model := range group.Models {
+	for i := range group.Models {
+		model := &group.Models[i]
 		name := strings.TrimSpace(model.Name)
 		if name == "" || strings.EqualFold(name, selected) || IsAutoModel(name) {
 			continue
 		}
-		if modelQuality(group, name) != quality {
+		if modelQuality(group, name) != quality || !modelIsUsable(group, name) {
 			continue
 		}
-		score := modelNeedScore(&model, needs)
-		if score > bestScore {
-			bestScore = score
-			bestName = name
-			improved = true
+		if !betterCapabilityModel(model, best, needs) {
+			continue
 		}
+		best = model
+		bestName = name
+		improved = true
 	}
 	return bestName, improved
+}
+
+// betterCapabilityModel prefers a model that can see when the request has an
+// image. Other needs break the remaining ties by score.
+func betterCapabilityModel(candidate, selected *ModelConfig, needs map[string]int) bool {
+	if needs["vision"] > 0 && modelHasTag(candidate, "vision") != modelHasTag(selected, "vision") {
+		return modelHasTag(candidate, "vision")
+	}
+	return modelNeedScore(candidate, needs) > modelNeedScore(selected, needs)
+}
+
+// liftWindowVisionOffLow moves a long image off low for classes whose own
+// band is mid or high. Chat and classify stay on low unless degree already
+// called them complex. A transcript without an image keeps the normal
+// availability descent, and an explicit tier pin never reaches this helper.
+func liftWindowVisionOffLow(group *ServiceGroup, class, model, quality, degree string, needs map[string]int) (string, string, bool) {
+	if needs["vision"] == 0 || needs["window"] == 0 {
+		return model, quality, false
+	}
+	if routedQuality(group, model, quality) != QualityLow {
+		return model, quality, false
+	}
+	switch NormalizeWorkloadClass(class) {
+	case WorkloadClassChat, WorkloadClassClassify:
+		if degree != DegreeComplex {
+			return model, quality, false
+		}
+	}
+	for _, band := range []string{QualityMid, QualityHigh} {
+		name := firstUsableModelForQuality(group, band)
+		if name == "" || strings.EqualFold(name, model) {
+			continue
+		}
+		return name, band, true
+	}
+	return model, quality, false
+}
+
+func climbForUnmetVision(group *ServiceGroup, class, model, quality string, needs map[string]int) (string, string, bool) {
+	if group == nil || strings.TrimSpace(model) == "" || needs["vision"] == 0 {
+		return model, quality, false
+	}
+	// An undialable model does not count as seeing. Search continues so a
+	// usable band can still take the image.
+	if modelIsUsable(group, model) && modelHasTag(findGroupModel(group, model), "vision") {
+		return model, quality, false
+	}
+	quality = routedQuality(group, model, quality)
+	for _, band := range visionCandidateBands(quality, class, needs["window"] > 0) {
+		name := firstUsableModelWithTag(group, band, "vision")
+		if name == "" || strings.EqualFold(name, model) {
+			continue
+		}
+		return name, band, true
+	}
+	return model, quality, false
+}
+
+func visionCandidateBands(quality, class string, holdLow bool) []string {
+	class = NormalizeWorkloadClass(class)
+	protectLow := holdLow || class == WorkloadClassPlan || class == WorkloadClassDesign
+	switch quality {
+	case QualityLow:
+		return []string{QualityMid, QualityHigh}
+	case QualityMid:
+		if protectLow {
+			return []string{QualityHigh}
+		}
+		return []string{QualityHigh, QualityLow}
+	case QualityHigh:
+		if protectLow {
+			return []string{QualityMid}
+		}
+		return []string{QualityMid, QualityLow}
+	default:
+		return nil
+	}
+}
+
+func firstUsableModelWithTag(group *ServiceGroup, quality, tag string) string {
+	quality = NormalizeQuality(quality)
+	tag = strings.ToLower(strings.TrimSpace(tag))
+	if quality == "" || tag == "" || group == nil {
+		return ""
+	}
+	if official := OfficialTierForQuality(quality); official != "" && modelIsUsable(group, official) && modelHasTag(findGroupModel(group, official), tag) {
+		return official
+	}
+	for i := range group.Models {
+		name := strings.TrimSpace(group.Models[i].Name)
+		if name == "" || IsAutoModel(name) || modelQuality(group, name) != quality || !modelIsUsable(group, name) {
+			continue
+		}
+		if modelHasTag(&group.Models[i], tag) {
+			return name
+		}
+	}
+	return ""
+}
+
+func modelHasTag(model *ModelConfig, tag string) bool {
+	tag = strings.ToLower(strings.TrimSpace(tag))
+	if model == nil || tag == "" {
+		return false
+	}
+	return modelNeedScore(model, map[string]int{tag: 1}) > 0
+}
+
+// ModelHasUsableTag reports that name can be dialed and advertises tag.
+// A tag on a model with no providers does not count when the group has other
+// providers. That model cannot take the request.
+func ModelHasUsableTag(group *ServiceGroup, name, tag string) bool {
+	if !modelIsUsable(group, name) {
+		return false
+	}
+	return modelHasTag(findGroupModel(group, name), tag)
 }
 
 func QualityForModel(group *ServiceGroup, modelName string) string {
@@ -821,7 +1143,7 @@ func capabilityNeeds(body map[string]any) map[string]int {
 	if hasVisionContent(body) {
 		needs["vision"] += 8
 	}
-	if len(extractRequestText(body)) > 12000 {
+	if RequestHasLongContext(body) {
 		needs["window"] += 4
 	}
 	return needs
@@ -832,6 +1154,13 @@ func capabilityNeeds(body map[string]any) map[string]int {
 // not rotated onto a text-only upstream.
 func RequestHasVisionContent(body map[string]any) bool {
 	return hasVisionContent(body)
+}
+
+// RequestHasLongContext reports a transcript above the window threshold.
+// The comparison is strict greater-than on the full extracted text, matching
+// the degree gate. Vision climb and image failover both leave low alone then.
+func RequestHasLongContext(body map[string]any) bool {
+	return len(extractRequestText(body)) > capabilityLongTextBytes
 }
 
 func hasVisionContent(body map[string]any) bool {

@@ -140,6 +140,29 @@ func NormalizeAgentTimeoutSec(seconds int) int {
 	return seconds
 }
 
+// MaxLongRunTimeoutSec is the ceiling for one explicit shell or coding
+// command. NormalizeAgentTimeoutSec stays at MaxAgentTimeoutSec, so a model
+// request that never returns headers still fails within minutes. A live SSE
+// body has no wall-clock cap after headers. An omitted command stays at
+// DefaultAgentTimeoutSec, so a hung command still returns.
+const MaxLongRunTimeoutSec = 7 * 24 * 3600
+
+// NormalizeLongRunTimeoutSec clamps a duration that is allowed to run for
+// days. Zero or negative uses DefaultAgentTimeoutSec. Values under
+// MinAgentTimeoutSec rise to that floor. The ceiling is MaxLongRunTimeoutSec.
+func NormalizeLongRunTimeoutSec(seconds int) int {
+	if seconds <= 0 {
+		return DefaultAgentTimeoutSec
+	}
+	if seconds < MinAgentTimeoutSec {
+		return MinAgentTimeoutSec
+	}
+	if seconds > MaxLongRunTimeoutSec {
+		return MaxLongRunTimeoutSec
+	}
+	return seconds
+}
+
 const (
 	MinSkillRunnerTimeoutSec     = 240
 	DefaultSkillRunnerTimeoutSec = DefaultAgentTimeoutSec
@@ -1588,11 +1611,30 @@ func zhipuCodingProviderNameForID(providers []MaclawLLMProvider, providerID stri
 // IsAlwaysOnThinkingModel reports whether the selected model rejects
 // thinking.type=disabled. GLM-5.3 always thinks; sending disabled fails.
 func IsAlwaysOnThinkingModel(cfg MaclawLLMConfig) bool {
+	return glmModelID(cfg) == strings.ToLower(ZhipuCodingDefaultModel)
+}
+
+// GLMFlashThinksByDefault reports GLM flash checkpoints that think when an
+// Anthropic request omits the thinking block, and that accept type=disabled.
+// GLM-5.3 itself is not in this set: it rejects disabled.
+func GLMFlashThinksByDefault(cfg MaclawLLMConfig) bool {
+	switch glmModelID(cfg) {
+	case "glm-5.3-flash", "glm-5.3-flashx":
+		return true
+	default:
+		return false
+	}
+}
+
+func glmModelID(cfg MaclawLLMConfig) string {
 	model := strings.ToLower(strings.TrimSpace(cfg.Model))
+	if i := strings.LastIndex(model, "/"); i >= 0 {
+		model = model[i+1:]
+	}
 	if i := strings.IndexByte(model, '['); i > 0 {
 		model = strings.TrimSpace(model[:i])
 	}
-	return model == strings.ToLower(ZhipuCodingDefaultModel)
+	return model
 }
 
 func IsDeepSeekFlashOpenAICompat(cfg MaclawLLMConfig) bool {

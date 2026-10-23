@@ -116,6 +116,46 @@ func TestExtractSkillCapabilities(t *testing.T) {
 	}
 }
 
+func TestExtractTaskDomainDoesNotTreatDockerOrPasswordAsDocuments(t *testing.T) {
+	if got := extractTaskDomain("查询 docker 服务状态"); got != skillDomainInfra {
+		t.Fatalf("docker status domain = %q, want infra", got)
+	}
+	if got := extractTaskDomain("查看 password"); got != skillDomainUnknown {
+		t.Fatalf("password domain = %q, want unknown", got)
+	}
+	if got := extractTaskDomain("open the report.doc"); got != skillDomainDocument {
+		t.Fatalf("report.doc domain = %q, want document", got)
+	}
+	if got := extractTaskDomain("api2 server doc"); got != skillDomainInfra {
+		t.Fatalf("server doc domain = %q, want infra", got)
+	}
+	if informationLookupQuery("api2 installation status") != true {
+		t.Fatal("installation status was not a lookup")
+	}
+	if informationLookupQuery("api2 host is uninformed") {
+		t.Fatal("uninformed was treated as the word info")
+	}
+	if infraWorkInstruction("api2 host prefix") {
+		t.Fatal("prefix was treated as the verb fix")
+	}
+	if !informationLookupQuery("api2 配置状态") {
+		t.Fatal("config status was not a lookup")
+	}
+	if informationLookupQuery("请配置 api2 服务器") {
+		t.Fatal("configure task was treated as a lookup")
+	}
+	shop := []SkillSearchResult{{Name: "kwaishop-intelligent-diagnosis-skill_test", Description: "域名测试"}}
+	if got := filterSkillSearchResultsForIntent("查询 docker 服务状态", shop); len(got) != 0 {
+		t.Fatalf("docker status kept %#v", got)
+	}
+	if !informationLookupQuery("api2 服务器信息") {
+		t.Fatal("short server info was not a lookup")
+	}
+	if informationLookupQuery("把发布信息同步到 api2 服务器") {
+		t.Fatal("sync instruction was treated as a lookup")
+	}
+}
+
 func TestExtractTaskAndSkillDomainRecognizeAllOfficeFormats(t *testing.T) {
 	for _, format := range []string{"doc", "docx", "xls", "xlsx", "ppt", "pptx"} {
 		t.Run(format, func(t *testing.T) {

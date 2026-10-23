@@ -1619,6 +1619,7 @@ export function AssistantWelcomeView({
                     handleVoicePointerLeave={cp.handleVoicePointerLeave}
                     inputAreaHeight={null}
                     inputLocked={cp.inputLocked}
+                    hardLockInput={cp.hardLockInput}
                     inputRef={cp.inputRef}
                     inputValue={cp.inputValue}
                     inline={true}

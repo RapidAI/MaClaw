@@ -224,9 +224,13 @@ func ClassifyAndRouteWithHead(header http.Header, body map[string]any, group *Se
 	if !HeadMayRewriteSource(dec.Source) {
 		return finishDecision(dec, group, requestedModel)
 	}
+	preview := LatestUserPreview(body, 400)
+	if strings.TrimSpace(preview) == "" {
+		return finishDecision(dec, group, requestedModel)
+	}
 	pred := HeadPrediction{Class: WorkloadFallbackBalanced}
 	if runtime.Predict != nil {
-		pred = runtime.Predict(RequestTextPreview(body, 400))
+		pred = runtime.Predict(preview)
 	}
 	dec.HeadClass = pred.Class
 	dec.HeadMaxP = pred.MaxP
@@ -237,16 +241,13 @@ func ClassifyAndRouteWithHead(header http.Header, body map[string]any, group *Se
 	}
 	dec.Class = class
 	dec.Source = source
-	routedClass, model, quality, fallback := routeWorkloadClass(group, class)
-	upgraded := false
-	if upgradedModel, ok := upgradeModelInBand(group, model, quality, capabilityNeeds(body)); ok {
-		model = upgradedModel
-		upgraded = true
-	}
+	routedClass, model, quality, degree, upgraded, degreeApplied, fallback := routeAutoDecision(group, body, class, source)
 	dec.RoutedClass = routedClass
 	dec.ResolvedModel = model
 	dec.Quality = quality
 	dec.AvailabilityFallback = fallback
 	dec.Upgraded = upgraded
+	dec.Degree = degree
+	dec.DegreeApplied = degreeApplied
 	return finishDecision(dec, group, requestedModel)
 }

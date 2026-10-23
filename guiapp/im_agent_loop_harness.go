@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/progress"
 )
@@ -194,6 +195,156 @@ func startAgentLoopHeartbeat(sendProgress func(string)) func() {
 // Interval is 30s, safely below the frontend's configurable activity timeout.
 func startRequestLevelHeartbeat(onProgress func(string)) func() {
 	return startHeartbeatTicker(30*time.Second, onProgress)
+}
+
+// llmRetryActivityNoteInterval is how often a live retry row refreshes the
+// milestone silence clock. The silence heartbeat fires after 90s without a
+// milestone. One note at the announcement does not cover the following HTTP
+// call or a period-quota sleep, both of which can run longer than that.
+var llmRetryActivityNoteInterval = 30 * time.Second
+
+type llmRetryActivity int
+
+const (
+	llmRetryActivityNone llmRetryActivity = iota
+	llmRetryActivityArm
+	llmRetryActivityDisarm
+)
+
+// llmRetryProgressActivity decides whether this progress line keeps the
+// model-wait row alive. The row stays up through the sleep and the request.
+// A later tray milestone means that wait is over. Heartbeats, thinking-panel
+// status, and the generic acknowledgement do not enter the tray, so they
+// must not end the wait either.
+func llmRetryProgressActivity(text string) llmRetryActivity {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || trimmed == imHeartbeatMsg || strings.Contains(trimmed, "命令仍在执行中") {
+		return llmRetryActivityNone
+	}
+	if _, ok := agent.LLMRetryLiveStatusText(trimmed); ok {
+		return llmRetryActivityArm
+	}
+	if strings.HasPrefix(trimmed, "[Status]") || progressTextIsAcknowledgement(trimmed) {
+		return llmRetryActivityNone
+	}
+	return llmRetryActivityDisarm
+}
+
+func progressTextIsAcknowledgement(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if len(trimmed) >= len("[Status]") && strings.EqualFold(trimmed[:len("[Status]")], "[Status]") {
+		trimmed = strings.TrimSpace(trimmed[len("[Status]"):])
+	}
+	for _, prefix := range []string{"〔进度〕", "[进度]", "【进度】", "〔Progress〕", "[Progress]", "【Progress】"} {
+		if strings.HasPrefix(strings.ToLower(trimmed), strings.ToLower(prefix)) {
+			trimmed = strings.TrimSpace(trimmed[len(prefix):])
+			break
+		}
+	}
+	return trimmed == "收到，正在处理"
+}
+
+// startRetryActivityNotes records activity immediately and again on each
+// interval until stop. The caller stops it when the wait ends or the turn ends.
+// The immediate note runs on the caller so the silence clock moves before the
+// next wait. Callers must not hold a lock that the note, or a progress
+// callback reached from the pusher, also needs.
+func startRetryActivityNotes(note func(), interval time.Duration) func() {
+	if note == nil {
+		return func() {}
+	}
+	if interval <= 0 {
+		interval = llmRetryActivityNoteInterval
+	}
+	note()
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				// A ready ticker stays ready after cancel. Leaving on the first
+				// extra tick lets the goroutine exit instead of noting forever.
+				if ctx.Err() != nil {
+					return
+				}
+				note()
+			}
+		}
+	}()
+	return cancel
+}
+
+func (ih *imInterruptHandler) startRetryActivity(userID string) func() {
+	if ih == nil {
+		return func() {}
+	}
+	return startRetryActivityNotes(func() {
+		ih.NoteTrackerActivity(userID)
+	}, llmRetryActivityNoteInterval)
+}
+
+// observeLLMRetryProgress keeps the milestone silence clock fresh while a
+// live retry row is the current phase. One note at the announcement does not
+// cover the following HTTP call or a period-quota sleep. The ticker keeps
+// noting until a tray milestone replaces that row, or until the turn ends.
+// The shared loop emits the row as an event, and the legacy loop calls
+// onProgress directly. Neither path records a milestone.
+//
+// The silence heartbeat takes the pusher lock and then delivers through this
+// same callback. Noting activity while this callback's lock is held inverts
+// those two locks, so the note always happens after the lock is released.
+func observeLLMRetryProgress(h *IMMessageHandler, userID string, onProgress func(string)) (func(string), func()) {
+	if h == nil || onProgress == nil {
+		return onProgress, func() {}
+	}
+	var mu sync.Mutex
+	var stop func()
+	starting := false
+	release := func() {
+		mu.Lock()
+		current := stop
+		stop = nil
+		starting = false
+		mu.Unlock()
+		if current != nil {
+			current()
+		}
+	}
+	return func(text string) {
+		switch llmRetryProgressActivity(text) {
+		case llmRetryActivityArm:
+			if h.interruptHandler != nil {
+				mu.Lock()
+				already := stop != nil || starting
+				if !already {
+					starting = true
+				}
+				mu.Unlock()
+				if !already {
+					started := h.interruptHandler.startRetryActivity(userID)
+					mu.Lock()
+					if starting {
+						stop = started
+						starting = false
+						mu.Unlock()
+					} else {
+						// Released while the ticker was being created.
+						mu.Unlock()
+						started()
+					}
+				} else {
+					h.interruptHandler.NoteTrackerActivity(userID)
+				}
+			}
+		case llmRetryActivityDisarm:
+			release()
+		}
+		onProgress(text)
+	}, release
 }
 
 func agentLoopProgressSender(onProgress func(string)) func(string) {

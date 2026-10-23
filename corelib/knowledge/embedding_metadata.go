@@ -37,7 +37,15 @@ func embeddingModelIdentifier(emb embedding.Embedder) string {
 }
 
 func ensureEmbeddingMetadataSchema(ctx context.Context, db *sql.DB) error {
-	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS knowledge_embedding_metadata (
+	// CREATE TABLE / CREATE INDEX take a write lock even when the objects
+	// already exist. Skip them on a current database so search and the
+	// knowledge overview can open while a folder import is writing.
+	exists, err := tableExists(ctx, db, "knowledge_embedding_metadata")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS knowledge_embedding_metadata (
 		entity_type TEXT NOT NULL,
 		entity_id TEXT NOT NULL,
 		model_id TEXT NOT NULL,
@@ -45,11 +53,19 @@ func ensureEmbeddingMetadataSchema(ctx context.Context, db *sql.DB) error {
 		updated_at TEXT NOT NULL,
 		PRIMARY KEY(entity_type, entity_id)
 	)`); err != nil {
+			return err
+		}
+	}
+	var indexes int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'knowledge_embedding_metadata_space'`).Scan(&indexes); err != nil {
 		return err
+	}
+	if indexes > 0 {
+		return nil
 	}
 	// Search asks "does this model have any vector?" before embedding the query.
 	// The primary key is (entity_type, entity_id), so that probe cannot use it.
-	_, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS knowledge_embedding_metadata_space
+	_, err = db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS knowledge_embedding_metadata_space
 		ON knowledge_embedding_metadata(model_id, dimension, entity_type)`)
 	return err
 }

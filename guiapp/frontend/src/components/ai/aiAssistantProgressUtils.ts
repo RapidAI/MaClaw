@@ -18,6 +18,29 @@ const LEADING_EMOJI_CLUSTER = new RegExp(
 
 const STAR_MARK = "\u2B50";
 
+/** Agent-loop backoff lines. They update one status row instead of stacking. */
+const LLM_RETRY_PROGRESS = /^(?:重试 \d+\/\d+|仍在重试，第 \d+ 次)：/;
+const LLM_RETRY_LIVE_STATUS = /^\[LiveStatus:([a-z0-9-]+)\]\s*/i;
+
+export function isLLMRetryProgress(text: string): boolean {
+    return LLM_RETRY_PROGRESS.test(text.trim());
+}
+
+/**
+ * The agent loop marks one chat row with [LiveStatus:llm-retry].
+ * The prefix is not shown. A later sentence for that same row replaces it,
+ * including the in-flight line after the countdown ends.
+ */
+export function liveStatusProgress(text: string): { slot: string; text: string } {
+    const trimmed = text.trim();
+    const match = trimmed.match(LLM_RETRY_LIVE_STATUS);
+    if (match) {
+        return { slot: match[1].toLowerCase(), text: trimmed.slice(match[0].length).trim() };
+    }
+    if (isLLMRetryProgress(trimmed)) return { slot: "llm-retry", text: trimmed };
+    return { slot: "", text: trimmed };
+}
+
 export type InlineMarkVisual =
     | { kind: "status"; status: "ok" | "error" | "pending" | "warn" | "tool" }
     | { kind: "bolt" }

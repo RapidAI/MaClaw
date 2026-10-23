@@ -14,16 +14,7 @@ func ensureSchema(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 	if version >= knowledgeSchemaVersionV2 {
-		if err := createSchemaV2(ctx, db); err != nil {
-			return err
-		}
-		if err := scrubLegacyImageAssetPaths(ctx, db); err != nil {
-			return err
-		}
-		if err := repairStructuredColumnNormalization(ctx, db); err != nil {
-			return err
-		}
-		return repairStructuredCellValues(ctx, db)
+		return ensureCurrentKnowledgeMaintenance(ctx, db)
 	}
 	legacy, err := tableExists(ctx, db, "knowledge_sources")
 	if err != nil {
@@ -52,11 +43,84 @@ func ensureSchema(ctx context.Context, db *sql.DB) error {
 	return setSchemaVersion(ctx, db, knowledgeSchemaVersionV2)
 }
 
+// ensureCurrentKnowledgeMaintenance applies any v2 table or index that is
+// missing, then skips the image scrub when a read shows the rows are already
+// clean. CREATE and the scrub UPDATE are writes. A folder import that still
+// holds a transaction makes every knowledge open wait out busy_timeout and
+// then surface SQLITE_BUSY. A locked scrub is skipped for this open and
+// retried on the next one; readers still see the last committed snapshot.
+// A missing schema object is not skipped: opening without it would hide a
+// real migration failure.
+func ensureCurrentKnowledgeMaintenance(ctx context.Context, db *sql.DB) error {
+	incomplete, err := knowledgeSchemaV2Incomplete(ctx, db)
+	if err != nil {
+		return err
+	}
+	if incomplete {
+		if err := createSchemaV2(ctx, db); err != nil {
+			return err
+		}
+	}
+	// The scrub UPDATE takes a reserved lock. On a clean database it matches
+	// nothing, so a read is enough and knowledge settings can open while a
+	// folder import holds its own write transaction. A busy scrub is retried
+	// on the next open.
+	needed, err := legacyImageAssetScrubNeeded(ctx, db)
+	if err != nil {
+		if IsSQLiteLockedError(err) {
+			return nil
+		}
+		return err
+	}
+	if needed {
+		if err := scrubLegacyImageAssetPaths(ctx, db); err != nil {
+			if IsSQLiteLockedError(err) {
+				return nil
+			}
+			return err
+		}
+	}
+	if err := repairStructuredColumnNormalization(ctx, db); err != nil {
+		if IsSQLiteLockedError(err) {
+			return nil
+		}
+		return err
+	}
+	if err := repairStructuredCellValues(ctx, db); err != nil {
+		if IsSQLiteLockedError(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func legacyImageAssetScrubNeeded(ctx context.Context, db *sql.DB) (bool, error) {
+	var found int
+	err := db.QueryRowContext(ctx, `SELECT 1 FROM document_nodes
+		WHERE json_type(COALESCE(metadata_json, '{}'), '$.image_asset_path') IS NOT NULL
+		   OR json_type(COALESCE(metadata_json, '{}'), '$.image_asset_id') != 'text'
+		   OR (
+				json_type(COALESCE(metadata_json, '{}'), '$.image_asset_id') = 'text'
+				AND (
+					length(json_extract(COALESCE(metadata_json, '{}'), '$.image_asset_id')) NOT BETWEEN 1 AND 200
+					OR json_extract(COALESCE(metadata_json, '{}'), '$.image_asset_id') GLOB '*[^A-Za-z0-9_-]*'
+				)
+		   )
+		LIMIT 1`).Scan(&found)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("knowledge sqlite probe legacy image asset paths: %w", err)
+	}
+	return true, nil
+}
+
 // scrubLegacyImageAssetPaths removes the historical metadata fields that do
-// not satisfy the managed-image contract. It is intentionally idempotent and
-// runs on every open so existing databases become safe without a schema bump:
-// image_asset_path can disclose a host path, and image_asset_id must be a
-// canonical opaque token just like IDs accepted on new writes.
+// not satisfy the managed-image contract. image_asset_path can disclose a
+// host path, and image_asset_id must be a canonical opaque token just like
+// IDs accepted on new writes.
 func scrubLegacyImageAssetPaths(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return nil

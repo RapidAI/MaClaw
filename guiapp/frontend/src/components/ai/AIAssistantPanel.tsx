@@ -28,6 +28,7 @@ import { ProjectSearchPanel, useProjectSearch } from "./ProjectSearchPanel";
 import { useTTSReadback } from "./useTTSReadback";
 import { useAIAssistantVoiceControls } from "./useAIAssistantVoiceControls";
 import { ASSISTANT_OUTPUT_NEAR_BOTTOM_PX, useAssistantOutputScroll } from "./useAssistantOutputScroll";
+import { useConversationViewArchive } from "./useConversationViewArchive";
 import { useNewTaskGuideDraft } from "./useNewTaskGuideDraft";
 import { useResizableAssistantInput } from "./useResizableAssistantInput";
 import { useAssistantInputHistory, type ComposerAttachmentSnapshot } from "./useAssistantInputHistory";
@@ -89,7 +90,7 @@ import { AssistantDragHandle } from "./AssistantDragHandle";
 import { usePendingAssistantTabOpen } from "./usePendingAssistantTabOpen";
 import type { PendingProjectTabOpen } from "./usePendingAssistantTabOpen";
 import type { AIAssistantPanelProps } from "./aiAssistantPanelTypes";
-import { collapseDuplicatePendingUnfinishedSlots, latestPendingUnfinishedStatus, loadProjectTabMsgIds, mergeChatMessages, PROJECT_TAB_MSG_IDS_KEY, withoutProjectContextMessages } from "./aiAssistantProjectTabState";
+import { collapseDuplicatePendingUnfinishedSlots, latestAssistantTurnIncomplete, latestPendingUnfinishedStatus, loadProjectTabMsgIds, mergeChatMessages, PROJECT_TAB_MSG_IDS_KEY, withoutProjectContextMessages } from "./aiAssistantProjectTabState";
 import { codingTimelineOwnedProgressTexts, compactCodingAgentProgressMessages, latestCodingToolTrailAt, retainAssistantProgressText } from "./compactCodingAgentProgressMessages";
 import { CodingAgentPreviewFocusContext, CodingAgentTimelineProgressItem } from "./CodingAgentProgressStatus";
 
@@ -302,7 +303,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [panelActive]);
     const activeTabIdForRecRef = useRef<string>("local");
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
-    const guideDraft = useNewTaskGuideDraft(setDraftInputValue);
+    // True only while a new task is being created. The welcome composer is the
+    // one on screen then, and a paste must not attach to a message already sent.
+    const blockComposerFilesRef = useRef(false);
+    const guideDraft = useNewTaskGuideDraft(setDraftInputValue, blockComposerFilesRef);
     const cancelRestoreSeqRef = useRef(0);
     const closeAllPreviewPanelsRef = useRef<(() => void) | null>(null);
     const pendingSkillRecDataRef = useRef<any>(null);
@@ -2520,6 +2524,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         handleDrop: handleDropBase,
         pendingAttachments,
         setPendingAttachments,
+        settlePendingAttachments,
     } = usePastedImageAttachments(activeSessionKey, { disabled: !ready || cancelPending });
     const { queue, addEntry, removeEntry, updateEntry, reorderEntry, extractEntry } = useBufferQueue(activeSessionKey);
     const firingEntryIdsRef = useRef<Set<string>>(new Set());
@@ -4476,14 +4481,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     );
     // Block paste/drop attachments while mic is live (composer hard-lock alone is not enough).
     const handlePaste = useCallback((event: ClipboardEvent<HTMLTextAreaElement>) => {
-        if (recordingActive) {
+        if (recordingActive || blockComposerFilesRef.current) {
             event.preventDefault();
             return;
         }
         handlePasteBase(event);
     }, [handlePasteBase, recordingActive]);
     const handleDragOver = useCallback((event: DragEvent<HTMLElement>) => {
-        if (recordingActive) {
+        if (recordingActive || blockComposerFilesRef.current) {
             event.preventDefault();
             event.dataTransfer.dropEffect = "none";
             return;
@@ -4491,7 +4496,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         handleDragOverBase(event);
     }, [handleDragOverBase, recordingActive]);
     const handleDrop = useCallback((event: DragEvent<HTMLElement>) => {
-        if (recordingActive) {
+        if (recordingActive || blockComposerFilesRef.current) {
             event.preventDefault();
             return;
         }
@@ -4849,6 +4854,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         return { pinnedNews: pinned.slice(0, 2), otherMessages: other };
     }, [displayMessages]);
+    const conversationArchive = useConversationViewArchive({ messages: otherMessages, scope: (isProjectTabActive || isExpertTabActive) && activeTab.id ? `tab:${activeTab.id}` : "desktop", enabled: ready, lang, theme: t });
+    const transcriptMessages = conversationArchive.visibleMessages;
     const [branchPoints, setBranchPoints] = useState<ConversationBranchPointLike[]>([]);
     useEffect(() => {
         if (!isLocalTabActive || otherMessages.length < 2 || sending || streaming) {
@@ -4870,19 +4877,22 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [isLocalTabActive, otherMessages.length, sending, streaming]);
     const branchPointByDisplayIndex = useMemo(() => {
         const map = new Map<number, ConversationBranchPointLike>();
+        const offset = otherMessages.length - transcriptMessages.length;
         for (const point of branchPoints) {
             const index = Number(point?.index);
-            if (Number.isInteger(index) && index >= 0) map.set(index, point);
+            if (!Number.isInteger(index) || index < offset) continue;
+            map.set(index - offset, point);
         }
         return map;
-    }, [branchPoints]);
+    }, [branchPoints, otherMessages.length, transcriptMessages.length]);
     // Keep active workflow and preview surfaces out of the welcome landing.
     const workflowExecutionActive = workflowState.active || workflowCurrentPhaseRunning || workflowState.splitMode || codePreviewState.active || showAgentView || codingConflictOpen;
     const landing = canShowWorkbenchLanding({ enabled: startOnWorkbenchHome, requested: workbenchHomeRequested, local: isLocalTabActive, coding: isPureCodingEnvironment, activeTask: !!activeAssistantTaskProp, progress: displayProgressMessages.length, thinking: showThinkingState, processing: showProcessingState, preparing: activeProjectPreparing, form: workflowAwaitingForm, generating: workflowFormGeneratingDocument, review: workflowAwaitingReview, starting: !!workflowStartingLabel, queue: queue.length, editing: queueEditDraftActive, interacted: queueInteractionStarted, workflowActive: workflowExecutionActive });
-    const showWelcomeViewBase = ready && !onboardingIncomplete && !activeAssistantTaskProp && !workflowExecutionActive && (landing || (otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && !workflowAwaitingForm && !workflowFormGeneratingDocument && !workflowAwaitingReview && !workflowStartingLabel && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && (isLocalTabActive || (isProjectTabActive && !isPureCodingEnvironment))));
+    const showWelcomeViewBase = ready && !onboardingIncomplete && !activeAssistantTaskProp && !workflowExecutionActive && conversationArchive.earlierCount === 0 && (landing || (otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && !workflowAwaitingForm && !workflowFormGeneratingDocument && !workflowAwaitingReview && !workflowStartingLabel && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && (isLocalTabActive || (isProjectTabActive && !isPureCodingEnvironment))));
     const taskCreatedTimestamp = displayMessages.find((message: ChatMessage) => message.role === "user")?.timestamp ?? displayMessages[0]?.timestamp;
     const taskCreatedLabel = formatTaskCreatedAt(taskCreatedTimestamp, lang);
     const pendingUnfinishedStatus = latestPendingUnfinishedStatus(displayMessages);
+    const assistantTurnIncomplete = latestAssistantTurnIncomplete(displayMessages);
     const taskExecutionStatus = useMemo(() => resolveTaskExecutionStatus({
         lang,
         raw: activeTaskExecutionSnapshot.raw,
@@ -4896,7 +4906,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         codingStepsAllPassed: codingStepsAllPassed(codingStepStatuses),
         awaitingUserReview: workflowAwaitingReview,
         pendingUnfinishedStatus,
-    }), [activeProjectPreparing, activeTaskExecutionSnapshot, cancelPending, codingStepStatuses, displayMessages.length, pendingUnfinishedStatus, isBusy, lang, workflowAwaitingReview, workflowCurrentPhaseRunning, workflowState.active]);
+        turnIncomplete: assistantTurnIncomplete,
+    }), [activeProjectPreparing, activeTaskExecutionSnapshot, assistantTurnIncomplete, cancelPending, codingStepStatuses, displayMessages.length, pendingUnfinishedStatus, isBusy, lang, workflowAwaitingReview, workflowCurrentPhaseRunning, workflowState.active]);
     // Report the live running signal so the sidebar task stats can merge it with
     // the durable snapshot (a pure agent loop run leaves no running snapshot).
     useEffect(() => {
@@ -4929,6 +4940,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         && !onboardingIncomplete
         && !activeProjectPreparing
         && displayMessages.length === 0
+        && conversationArchive.earlierCount === 0
         && !showThinkingState
         && !showProcessingState;
     const pureCodingEmptyContent = isPureCodingEnvironment ? (
@@ -4944,7 +4956,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     useEffect(() => {
         if (showWelcomeViewBase) setWelcomeTemplateOffer(null);
     }, [showWelcomeViewBase]);
-    const hasConversation = otherMessages.length + displayProgressMessages.length > 0;
+    const hasConversation = otherMessages.length + displayProgressMessages.length > 0 || conversationArchive.earlierCount > 0;
 
     // Clear the workflow-starting indicator only when a definitive workflow UI takes over.
     // Do NOT clear on transient states (isBusy, showThinkingState) — they flash briefly
@@ -5446,10 +5458,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         activeTab, isLocalTabActive, lang, taskListProp, inputRef, inputValue,
         composeAction, inputLocked, assistantBusy: isBusy || cancelPending, keepExecutionSurface: recordingActive || isACPMirrorTabActive, localGuideVisible: showWelcomeViewBase && isLocalTabActive,
         pendingAttachments, selectedFilePaths, showComposerText: updateInputValue, replacePendingAttachments: (items) => setPendingAttachments(items as typeof pendingAttachments), replaceSelectedFilePaths: (paths) => setSelectedFilePaths?.(paths),
-        activeChatVisible: otherMessages.some((message: ChatMessage) => message.role === "user" || message.role === "assistant"),
+        activeChatVisible: conversationArchive.earlierCount > 0 || otherMessages.some((message: ChatMessage) => message.role === "user" || message.role === "assistant"),
         handleSend, handleWelcomePromptSend,
         clearComposerDraft, guideInputValue: draftInputValue, guideInputRef: guideDraft.guideInputRef,
-        guidePendingAttachments: guideDraft.guideAttachments, guideSelectedFilePaths: guideDraft.guidePaths, clearGuideDraft: guideDraft.clearGuideDraft,
+        guidePendingAttachments: guideDraft.guideAttachments, guideSelectedFilePaths: guideDraft.guidePaths, settleGuideAttachments: guideDraft.settleGuideAttachments, settleSessionAttachments: settlePendingAttachments, clearGuideDraft: guideDraft.clearGuideDraft,
         getTabs, getTabState, saveTabState,
         activateTab, setQueueInteractionStarted, setQueueEditDraftActive, setEditingEntryId,
         showAlert, showConfirm,
@@ -5462,9 +5474,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const separateGuide = wizardScreen && !isLocalTabActive;
     const warmupChrome = !ready && !onboardingIncomplete && !showWelcomeView;
     const startupWarmup = warmupChrome && isLocalTabActive;
+    const separateGuideWasRef = useRef(false);
     useEffect(() => {
-        if (separateGuide) return;
-        guideDraft.dropGuideFiles();
+        if (separateGuideWasRef.current && !separateGuide) guideDraft.dropGuideFiles();
+        separateGuideWasRef.current = separateGuide;
     }, [separateGuide, guideDraft.dropGuideFiles]);
     const title = startupWarmup
         ? initLabel
@@ -5858,9 +5871,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         void dispatchTaskIntent(payload, { uiAction: true, displayText: formatRecordingCompletionDisplay(result, lang) });
     }, [deactivateRecordingSession, dispatchTaskIntent, lang]);
 
-    const lastAssistantIdx = useMemo(() => findLastIndex(otherMessages, m => m.role === 'assistant'), [otherMessages]);
-    const lastAssistantMessage = otherMessages[lastAssistantIdx];
-    const lastAssistantOwnsLiveActivity = assistantMessageOwnsLiveActivityAt(otherMessages, lastAssistantIdx, activeSessionIsStreaming, isPureCodingEnvironment && isBusy);
+    const lastAssistantIdx = useMemo(() => findLastIndex(transcriptMessages, m => m.role === 'assistant'), [transcriptMessages]);
+    const lastAssistantMessage = transcriptMessages[lastAssistantIdx];
+    const lastAssistantOwnsLiveActivity = assistantMessageOwnsLiveActivityAt(transcriptMessages, lastAssistantIdx, activeSessionIsStreaming, isPureCodingEnvironment && isBusy);
     const lastAssistantTimeline = isPureCodingEnvironment && lastAssistantMessage?.role === "assistant" ? lastAssistantMessage.codingTimeline : undefined;
     const codingTimelineOwnsLiveThought = codingTimelineLiveThoughtIndex(lastAssistantTimeline, !!codingShownLiveLabel(lastAssistantOwnsLiveActivity, liveReasoningLabel, liveReasoningKind, lastAssistantMessage), liveReasoningKind) >= 0;
     const bubbleHostsLiveTitle = isPureCodingEnvironment && !(lastAssistantTimeline?.length) && !!lastAssistantMessage && codingBubbleHostsLiveTitle(lastAssistantMessage, assistantMessageHasVisibleBody(lastAssistantMessage), lastAssistantOwnsLiveActivity, liveReasoningKind);
@@ -5869,7 +5882,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         liveKind: liveReasoningKind,
         coding: isPureCodingEnvironment,
         lastAssistantOwnsLive: lastAssistantOwnsLiveActivity,
-        lastMessageRole: otherMessages[otherMessages.length - 1]?.role,
+        lastMessageRole: transcriptMessages[transcriptMessages.length - 1]?.role,
         timelineOwnsLiveThought: codingTimelineOwnsLiveThought,
         bubbleHostsLiveTitle,
     });
@@ -5920,7 +5933,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         // token walks the tall transcript and freezes the new-task page.
         const coveredOther = coveredOtherNodesRef.current;
         if (taskConfigWiring.wizardOverlay && coveredOther && coveredOther.length > 0) return coveredOther;
-        const coveredNodes = otherMessages.map((msg: ChatMessage, idx: number) => {
+        const coveredNodes = transcriptMessages.map((msg: ChatMessage, idx: number) => {
             const isLast = idx === lastAssistantIdx;
             // Settled rows keep their object across token flushes. The live assistant follows the round.
             const settled = cache.get(msg.id);
@@ -5932,7 +5945,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 const lastThinkingIndex = codingTimelineLiveThoughtIndex(codingTimeline, !!shownLiveLabel, liveReasoningKind);
                 // The newest thought of the current turn stays open so the latest
                 // reasoning is readable after a tool row. Earlier thoughts stay folded.
-                const openThoughtIndex = idx === lastAssistantIdx && (messageOwnsLive || idx === otherMessages.length - 1)
+                const openThoughtIndex = idx === lastAssistantIdx && (messageOwnsLive || idx === transcriptMessages.length - 1)
                     ? codingTimelineLastThoughtIndex(codingTimeline)
                     : -1;
                 const replyCacheId = `${msg.id}\0reply`;
@@ -6081,7 +6094,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         });
         if (coveredNodes.length > 0) coveredOtherNodesRef.current = coveredNodes;
         return coveredNodes;
-    }, [otherMessages, panelExecuteAction, t, lastAssistantIdx, lastAssistantOwnsLiveActivity, savedFileLabel, lang, isBusy, activeSessionHasWork, activeSessionIsStreaming, liveReasoningKind, liveReasoningLabel, liveReasoningObject, branchPointByDisplayIndex, handleRecordingComplete, isPureCodingEnvironment, activeTab.expertId, taskConfigWiring.wizardOverlay]);
+    }, [transcriptMessages, panelExecuteAction, t, lastAssistantIdx, lastAssistantOwnsLiveActivity, savedFileLabel, lang, isBusy, activeSessionHasWork, activeSessionIsStreaming, liveReasoningKind, liveReasoningLabel, liveReasoningObject, branchPointByDisplayIndex, handleRecordingComplete, isPureCodingEnvironment, activeTab.expertId, taskConfigWiring.wizardOverlay]);
     // Only rows already on the live assistant's timeline leave the feed.
     // A previous answer's timeline must not hide the next continuation.
     const renderedProgressMessages = useMemo(() => {
@@ -6130,6 +6143,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const skillRecordingAwaitingDecision = !!skillRecordingCard && (skillRecordingCard.type === "skill_recording_preparing" || skillRecordingCard.type === "skill_recording_done");
     const wizardComposerUnlocked = taskConfigWiring.wizardOverlay;
     const creatingTask = taskConfigWiring.taskConfig.sending;
+    blockComposerFilesRef.current = creatingTask;
     const newTaskWelcomeComposer: WelcomeComposerProps = {
         browseFile, canSend: creatingTask ? false : canSend, cancelPending: wizardComposerUnlocked ? false : cancelPending, cancelSession: creatingTask ? undefined : cancelSession, clearSelectedFile, composeAction,
         exitHistoryBrowsing, finishVoicePointer, handleCancel, handleClearInput, handleDragOver, handleDrop, handlePaste,
@@ -6149,6 +6163,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             browseFile: guideDraft.browseGuideFile,
             canSend: creatingTask ? false : ready && (!!draftInputValue.trim() || guideDraft.guideAttachments.length > 0 || guideDraft.guidePaths.length > 0),
             clearSelectedFile: guideDraft.clearGuideFiles,
+            handleDragOver: guideDraft.handleGuideDragOver,
+            handleDrop: guideDraft.handleGuideDrop,
+            handlePaste: guideDraft.handleGuidePaste,
             inputRef: guideDraft.guideInputRef,
             inputValue: draftInputValue,
             pendingAttachments: guideDraft.guideAttachments,
@@ -6187,7 +6204,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             {/* Column shell: chat|preview row on top, full-bleed bottom chrome under both (quick-settings / status strip spans into the code-preview column). */}
             <div className="aap-panel-main" data-testid="ai-panel-main">
             <div className="aap-panel-row" data-testid="ai-panel-content-row">
-            <div className="aap-panel-body" data-testid="ai-panel-body" onDragOver={handleDragOver} onDrop={handleDrop}>
+            <div className="aap-panel-body" data-testid="ai-panel-body" onDragOver={separateGuide ? guideDraft.handleGuideDragOver : handleDragOver} onDrop={separateGuide ? guideDraft.handleGuideDrop : handleDrop}>
             <KnowledgeDialog open={panelActive && knowledgeDialogOpen} onClose={() => setKnowledgeDialogOpen(false)} lang={lang} theme={t} />
             {panelActive && scopeApprovalPending && (
                 <ScopeApprovalDialog
@@ -6787,12 +6804,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     </div>
                 </div>
                 <div ref={outputContainerRef} data-testid="ai-output-container" className="ai-chat-scrollbar mc-task-execution" style={{ flex: 1, minHeight: 0, maxHeight: "none", padding: isPureCodingEnvironment ? "40px 10px 8px" : "8px 10px", fontSize: `${chatFontSize}px`, lineHeight: 1.5, overflowY: "auto", overflowX: "hidden", scrollbarGutter: "stable", textAlign: "left", color: t.text, background: t.bg, ...assistantMessageFontStyle(isPureCodingEnvironment ? "coding" : "conversation", isPureCodingEnvironment ? codingFontFamily : chatFontFamily), whiteSpace: "normal", overflowWrap: "break-word", wordBreak: "normal" }} onScroll={handleScroll} onWheel={handleUserScrollIntent} onTouchMove={handleUserScrollIntent} onPointerDown={handleUserScrollIntent}>
-                    {isExpertTabActive && displayMessages.length === 0 ? (
+                    {conversationArchive.banner}
+                    {conversationArchive.dialog}
+                    {isExpertTabActive && displayMessages.length === 0 && conversationArchive.earlierCount === 0 ? (
                         <ExpertTabEmptyBanner activeTab={activeTab} lang={lang} theme={t} />
                     ) : null}
                     {showPureCodingEmptyState ? pureCodingEmptyContent : null}
                     <CodingAgentPreviewFocusContext.Provider value={focusCodeFile}>
-                    <AssistantConversationBody emptyContent={isPureCodingEnvironment ? null : undefined} initLabel={initLabel} lang={lang} messages={displayMessages} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={pinnedNews} ready={ready} renderedOtherMessages={renderedOtherMessages} renderedProgressMessages={renderedProgressMessages} liveActivityLabel={standaloneLiveActivityLabel} liveActivityObject={standaloneLiveActivityLabel ? liveReasoningObject : undefined} busyAccessory={hideWorkingTrail ? null : codingWorkingTrail} theme={t} brandId={brandId} brandDisplayNameCN={brandDisplayNameCN} />
+                    <AssistantConversationBody emptyContent={isPureCodingEnvironment ? null : undefined} initLabel={initLabel} lang={lang} messages={displayMessages.length > 0 || conversationArchive.earlierCount === 0 ? displayMessages : [{ id: "archived-view", role: "system", content: "", timestamp: 0 }]} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={pinnedNews} ready={ready} renderedOtherMessages={renderedOtherMessages} renderedProgressMessages={renderedProgressMessages} liveActivityLabel={standaloneLiveActivityLabel} liveActivityObject={standaloneLiveActivityLabel ? liveReasoningObject : undefined} busyAccessory={hideWorkingTrail ? null : codingWorkingTrail} theme={t} brandId={brandId} brandDisplayNameCN={brandDisplayNameCN} />
                     </CodingAgentPreviewFocusContext.Provider>
                     <div ref={outputEndRef} />
                 </div></div>)}

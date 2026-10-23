@@ -46,6 +46,128 @@ func (m *petitioningCallbacks) BuildToolsForModelRequest(string, int) []map[stri
 	return tools
 }
 
+// A first petition grant is the host publishing the next step. It is not one
+// of the five no-progress misses. Four real failures after it leave the turn
+// open; the fifth real failure is the stop, and that stop is an error.
+func TestRunLoop_PetitionGrantDoesNotConsumeNoProgressBudget(t *testing.T) {
+	t.Setenv(WorkingStateEnvKey, "off")
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var resp map[string]interface{}
+		switch callCount {
+		case 1:
+			resp = toolCallResponse("download_file", `{"url":"https://example.invalid/a.dwg"}`)
+		case 6:
+			resp = textResponse("done")
+		default:
+			resp = toolCallResponse("web_search", `{"query":"dwg sample"}`)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+	cb := &petitioningCallbacks{
+		mockCallbacks: mockCallbacks{
+			config:      corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:     10,
+			sysPrompt:   "sys",
+			tools:       []map[string]interface{}{tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{"type": "object"})},
+			toolResult:  "Error: HTTP 404",
+			toolOutcome: ToolExecutionOutcomeError,
+		},
+		grantMsg: "工具 download_file 已授权，请立即重新发起调用。",
+	}
+	result := RunLoop(cb, "find a dwg", nil, server.Client())
+	if result.HardExit || result.Error != "" || !strings.Contains(result.Text, "done") {
+		t.Fatalf("calls=%d result=%#v", callCount, result)
+	}
+	if cb.petitions["download_file"] != 1 {
+		t.Fatalf("petitions=%v", cb.petitions)
+	}
+	if len(cb.toolCalls) != 4 {
+		t.Fatalf("executed=%v, want four real failures after the grant", cb.toolCalls)
+	}
+}
+
+// Five executed failures after a grant still stop. The grant is not a miss,
+// and it is not a pardon for the failures that follow it.
+func TestRunLoop_FiveFailuresAfterPetitionStillHardStop(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var resp map[string]interface{}
+		if callCount == 1 {
+			resp = toolCallResponse("download_file", `{"url":"https://example.invalid/a.dwg"}`)
+		} else {
+			resp = toolCallResponse("web_search", `{"query":"dwg sample"}`)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+	cb := &petitioningCallbacks{
+		mockCallbacks: mockCallbacks{
+			config:      corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:     12,
+			sysPrompt:   "sys",
+			tools:       []map[string]interface{}{tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{"type": "object"})},
+			toolResult:  "Error: HTTP 404",
+			toolOutcome: ToolExecutionOutcomeError,
+		},
+		grantMsg: "工具 download_file 已授权，请立即重新发起调用。",
+	}
+	hooks := &toolBatchCommitCallbacks{}
+	result := RunLoop(cb, "find a dwg", nil, server.Client(), hooks)
+	if callCount != 6 || !result.HardExit || result.Error != ErrNoProgress {
+		t.Fatalf("calls=%d result=%#v", callCount, result)
+	}
+	if len(hooks.batches) != 6 || len(hooks.abandons) != 0 {
+		t.Fatalf("commits=%d abandons=%d", len(hooks.batches), len(hooks.abandons))
+	}
+}
+
+// repeatingGrantCallbacks keeps granting the same name and never renders it.
+// The first grant is a surface change. Each later grant of that name is not.
+type repeatingGrantCallbacks struct {
+	mockCallbacks
+	grants int
+}
+
+func (m *repeatingGrantCallbacks) PetitionToolCall(name string) (bool, string) {
+	m.grants++
+	return true, "工具 " + strings.TrimSpace(name) + " 已授权，请立即重新发起调用。"
+}
+
+func (m *repeatingGrantCallbacks) BuildToolsForModelRequest(string, int) []map[string]interface{} {
+	return append([]map[string]interface{}(nil), m.tools...)
+}
+
+// A grant that does not put the name on the next request is not an unbounded
+// next step. The second through sixth calls of that name are misses.
+func TestRunLoop_RepeatedUnusedPetitionGrantCountsAsNoProgress(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(toolCallResponse("download_file", `{"url":"https://example.invalid/a.dwg"}`))
+	}))
+	defer server.Close()
+	cb := &repeatingGrantCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:   12,
+		sysPrompt: "sys",
+		tools:     []map[string]interface{}{tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{"type": "object"})},
+	}}
+	result := RunLoop(cb, "find a dwg", nil, server.Client())
+	if callCount != 6 || cb.grants != 6 || !result.HardExit || result.Error != ErrNoProgress {
+		t.Fatalf("calls=%d grants=%d result=%#v", callCount, cb.grants, result)
+	}
+	if len(cb.toolCalls) != 0 {
+		t.Fatalf("unused grants were executed: %v", cb.toolCalls)
+	}
+}
+
 // A petitioned call is answered with the host grant message instead of the hard
 // denial, and the next request surface must contain the petitioned tool so the
 // model's retried call executes for real.

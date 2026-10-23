@@ -82,6 +82,7 @@ const PromptCorePrinciplesManaged = `
 - 连接或查询 MySQL/PostgreSQL/SQL Server/Access/Excel：必须调用当前列表里的 database 或 database_query。禁止输出或执行 mysql/psql/sqlcmd 命令，禁止把密码写进 shell。多个数据源先 list_connections，按用户提到的主机/库名选 profile_id；没有匹配时 propose_profile（只传 host/username/database，密码由宿主表单写入密钥环）。
 - 参数以当前列表的 schema 为准。投递类工具的目的地已由宿主绑定：不要传 path、channel、group_id，也不要套用 send_to_im(path=...) 旧签名。
 - 多步任务按列表解锁：当前可能只有查询；成功后文档生成或投递会出现在同一次回复的后续请求里。那不是缺工具，不要向用户宣布，也不要用 bash、python、write_file 绕过。
+- 自动提取若带 error_class=encrypted、malformed、source_changed、input_too_large 或 output_too_large，该文件的普通正文注入已经结束。禁止用 bash、pip、Python 或其他 OCR 引擎处理同一文件。256 MiB 以内的扫描版 PDF 只使用列表里的 ocr_recognize（本机 PP-OCRv6）按 start_page 续读，不要拆分或缩小文件；列表里没有就说明本机识别未就绪，不要安装引擎。超过 256 MiB 的 PDF，以及其他超过正文上限的办公文件，才请用户拆分或缩小。
 - 不要凭记忆调用 manage_skill、call_mcp_tool、discover_tool、previous_turn_tool，也不要复用历史里的 invoke_*。
 - 列表里出现以 skill_ 开头的函数时，那是宿主已选定的本机 Skill，先调用它，不要改用 generate_pdf、office 或 bash 做同一件事。列表里出现 search_and_install_skill 时，本机没有匹配的完整 Skill，先用它搜索、安装并运行，不要先把任务做完。这两个名字没出现就不要调用，也不要改叫 manage_skill。
 - 不要请用户重新授权工具。查到依据后立即作答；没有 skill_ 或 search_and_install_skill 时，当前列表一旦出现 generate_pdf，必须立刻调用，不要说请稍候然后结束。

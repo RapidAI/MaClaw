@@ -1,6 +1,10 @@
 package agentruntime
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+)
 
 // ResponseHasPDF identifies a PDF artifact using only transport-neutral
 // metadata.  Hosts can use it to choose the same visible success projection
@@ -26,7 +30,8 @@ func HostOwnedGeneratePDFSucceeded(result string) bool {
 
 // KeepVisibleErrorAfterArtifactAttach marks errors that must remain visible
 // even when a host managed to attach a file.  Cancellation, policy rejection,
-// budget exhaustion and recovery failures are not repaired by an artifact.
+// budget exhaustion, recovery failures, and a no-progress hard stop are not
+// repaired by an artifact.
 func KeepVisibleErrorAfterArtifactAttach(err string) bool {
 	trimmed := strings.TrimSpace(err)
 	if trimmed == "" {
@@ -42,6 +47,7 @@ func KeepVisibleErrorAfterArtifactAttach(err string) bool {
 		"daily_llm_budget",
 		"recovery_checkpoint_failed",
 		"panicked",
+		agent.ErrNoProgress,
 	} {
 		if strings.Contains(lower, keep) {
 			return true

@@ -335,6 +335,16 @@ func (h *IMMessageHandler) streamResponsesWSRequestChannelVerified(
 	channel.useMu.Unlock()
 	conn := channel.conn
 	wsURL := channel.wsURL
+	// The socket is already open, so the handshake is done. An owned route
+	// deadline must not cancel the live frames. Caller stop and an earlier
+	// host deadline still close the socket. A context with no owned route
+	// deadline is left unchanged.
+	streamCtx, stopStream, markHeaders, _ := llm.StreamingRequestContext(reqCtx)
+	defer stopStream()
+	if !markHeaders() {
+		conn.Close()
+		return agent.VerifiedToolSurfaceDispatch{}, context.DeadlineExceeded
+	}
 
 	// -------------------------------------------------------------------
 	// Build and send response.create frame
@@ -367,7 +377,9 @@ func (h *IMMessageHandler) streamResponsesWSRequestChannelVerified(
 	repfWS := newRepetitionFilter(rpfWS.Write)
 	tcf := newToolCallFilter(repfWS.Write)
 	fcf := newFuncCallFilter(tcf.Callback())
-	reasoningDisplayWS := newReasoningDisplayStream(onToken, nil)
+	// Close the socket when reasoning collapses. Cancelling streamCtx is the
+	// caller's stop, and the post-loop would then discard the turn.
+	reasoningDisplayWS := newReasoningDisplayStream(onToken, func() { _ = conn.Close() })
 	tf := newThinkFilterWithReasoning(fcf.Callback(), reasoningDisplayWS.ThinkCallback())
 
 	// -------------------------------------------------------------------
@@ -407,7 +419,7 @@ func (h *IMMessageHandler) streamResponsesWSRequestChannelVerified(
 			log.Printf("[LLM Stream] Responses API WS idle timeout (%v) — closing connection", guiSSEIdleTimeout)
 			conn.Close()
 		case <-watchdogDone:
-		case <-reqCtx.Done():
+		case <-streamCtx.Done():
 			conn.Close()
 		}
 	}()
@@ -454,7 +466,7 @@ func (h *IMMessageHandler) streamResponsesWSRequestChannelVerified(
 			// the cancellation, not a transport failure. Route it through the
 			// post-loop fence so the outcome carries the context error and no
 			// late frame can be mistaken for this reservation's response.
-			if reqCtx.Err() != nil {
+			if streamCtx.Err() != nil {
 				goto postLoop
 			}
 			// Handle WebSocket close errors
@@ -556,6 +568,9 @@ func (h *IMMessageHandler) streamResponsesWSRequestChannelVerified(
 			if rd.Delta != "" {
 				reasoningBuf.WriteString(rd.Delta)
 				reasoningDisplayWS.Write(rd.Delta)
+				if reasoningDisplayWS.Halted() {
+					goto postLoop
+				}
 			}
 
 		case responsesEventReasoningSummaryPartAdded:
@@ -571,6 +586,9 @@ func (h *IMMessageHandler) streamResponsesWSRequestChannelVerified(
 			if json.Unmarshal(msgData, &sp) == nil {
 				if emitted := appendResponsesReasoningSummary(&reasoningBuf, sp.Part.Text); emitted != "" {
 					reasoningDisplayWS.Write(emitted)
+					if reasoningDisplayWS.Halted() {
+						goto postLoop
+					}
 				}
 			}
 
@@ -664,6 +682,9 @@ func (h *IMMessageHandler) streamResponsesWSRequestChannelVerified(
 			if json.Unmarshal(msgData, &reasoningDone) == nil {
 				if emitted := appendResponsesReasoningSummary(&reasoningBuf, reasoningDone.Item.DisplaySummary()); emitted != "" {
 					reasoningDisplayWS.Write(emitted)
+					if reasoningDisplayWS.Halted() {
+						goto postLoop
+					}
 				}
 			}
 
@@ -674,6 +695,9 @@ func (h *IMMessageHandler) streamResponsesWSRequestChannelVerified(
 			for _, summary := range responsesCompletedReasoningSummaries(msgData) {
 				if emitted := appendResponsesReasoningSummary(&reasoningBuf, summary); emitted != "" {
 					reasoningDisplayWS.Write(emitted)
+					if reasoningDisplayWS.Halted() {
+						goto postLoop
+					}
 				}
 			}
 			goto postLoop
@@ -731,12 +755,12 @@ postLoop:
 	// no reservation. Return the accumulated partial response only as
 	// diagnostic payload alongside the context error, so the request owner can
 	// never bind it as this reservation's response.
-	if reqCtx.Err() != nil {
+	if streamCtx.Err() != nil {
 		return agent.VerifiedToolSurfaceDispatch{Response: &llm.Response{
 			ResponseID: responseID,
 			Choices:    []llm.Choice{{Message: llm.Message{Role: "assistant"}, FinishReason: "stop"}},
 			Usage:      usage,
-		}, Receipt: receipt}, reqCtx.Err()
+		}, Receipt: receipt}, streamCtx.Err()
 	}
 
 	// -------------------------------------------------------------------
@@ -825,11 +849,17 @@ postLoop:
 	// Detect and filter truncated tool calls caused by output token limit.
 	finishReason, truncatedTools, truncatedToolArgs := filterTruncatedToolCalls(&msg, finishReason)
 
-	return agent.VerifiedToolSurfaceDispatch{Response: &llm.Response{
+	out := &llm.Response{
 		ResponseID: responseID,
 		Choices:    []llm.Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}},
 		Usage:      usage,
-	}, Receipt: receipt}, streamErr
+	}
+	if recovered, ok := responsesReasoningStutterOutcome(out, reqCtx.Err(), reasoningDisplayWS.Halted()); ok {
+		log.Printf("[LLM Stream WS] reasoning stutter halted the completion")
+		out = recovered
+		streamErr = nil
+	}
+	return agent.VerifiedToolSurfaceDispatch{Response: out, Receipt: receipt}, streamErr
 }
 
 // responsesWSResponseID extracts the provider response ID from a Responses

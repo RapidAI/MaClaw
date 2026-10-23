@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 func (h *IMMessageHandler) StartDesktopBackgroundTask(text, projectPath string) (*AIAssistantBackgroundTaskResult, error) {
@@ -68,6 +70,14 @@ func (h *IMMessageHandler) runDesktopBackgroundTask(sessionID string, loopCtx *L
 		if progressText == "" || progressText == imHeartbeatMsg || h.manager == nil {
 			return
 		}
+		// A retry row replaces itself in the chat tray. Appending each phase
+		// here would leave one transcript line per wait. The summary is the
+		// live line, and it stores the sentence without the row marker.
+		appendOutput := true
+		if visible, ok := agent.LLMRetryLiveStatusText(progressText); ok {
+			progressText = visible
+			appendOutput = false
+		}
 		h.manager.UpdateBackgroundAISummary(sessionID, func(s *RemoteSession) {
 			s.Status = SessionBusy
 			s.Summary.Status = SessionBusy.String()
@@ -75,7 +85,9 @@ func (h *IMMessageHandler) runDesktopBackgroundTask(sessionID string, loopCtx *L
 			s.Summary.ProgressSummary = progressText
 			s.Summary.CurrentTask = firstNonEmptyTraceText(progressText, s.Title)
 		})
-		h.manager.AppendBackgroundAIOutput(sessionID, progressText)
+		if appendOutput {
+			h.manager.AppendBackgroundAIOutput(sessionID, progressText)
+		}
 	}
 	resp := h.HandleIMMessageWithExistingLoop(msg, loopCtx, onProgress, nil, nil, nil)
 	if h.manager == nil {

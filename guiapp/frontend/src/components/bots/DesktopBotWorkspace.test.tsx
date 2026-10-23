@@ -27,9 +27,10 @@ const releaseWatch = vi.hoisted(() => vi.fn(async (_botId?: string, _epoch?: num
 const saveSecret = vi.hoisted(() => vi.fn(async (_name?: string, _value?: string) => undefined));
 const recallSecret = vi.hoisted(() => vi.fn(async (_name?: string) => false));
 const fillSecret = vi.hoisted(() => vi.fn(async (_botId?: string, _name?: string) => ({ filled: 'SITE_PASSWORD' })));
-type HubDesktopBot = { id: string; title: string; description: string; instance_id: string; created_at?: string; primary?: boolean };
+type HubDesktopBot = { id: string; title: string; description: string; instance_id: string; created_at?: string; primary?: boolean; color?: string; shape?: string };
 const listBots = vi.hoisted(() => vi.fn(async (): Promise<HubDesktopBot[]> => []));
 const createBot = vi.hoisted(() => vi.fn(async (name: string, description: string): Promise<HubDesktopBot> => ({ id: 'bot_1', title: name, description, instance_id: '' })));
+const setAppearance = vi.hoisted(() => vi.fn(async (_botId?: string, _color?: string, _shape?: string): Promise<{ color?: string; shape?: string }> => ({})));
 const renameBot = vi.hoisted(() => vi.fn(async (_id: string, _name: string, _description: string) => undefined));
 const deleteBot = vi.hoisted(() => vi.fn(async (_id: string) => undefined));
 const openFile = vi.hoisted(() => vi.fn(async (_path?: string) => undefined));
@@ -95,6 +96,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     FillBotSecret: (botId: string, name: string) => fillSecret(botId, name),
     ListDesktopBots: () => listBots(),
     CreateDesktopBot: (name: string, description: string) => createBot(name, description),
+    SetDesktopBotAppearance: (botId: string, color: string, shape: string) => setAppearance(botId, color, shape),
     RenameDesktopBot: (id: string, name: string, description: string) => renameBot(id, name, description),
     DeleteDesktopBot: (id: string) => deleteBot(id),
     OpenFileOrShowInFolder: (path: string) => openFile(path),
@@ -145,6 +147,7 @@ vi.mock('../../../wailsjs/runtime', () => ({
 }));
 
 import { DesktopBotWorkspace, formatCreated, handleDesktopBotReport, handleDesktopBotResult, handleDesktopBotSupplementState, handleDesktopBotView } from './DesktopBotWorkspace';
+import { appearancesForUser, resetBotLookCacheForTest, saveBotAppearance, setBotLookLoaderForTest } from './botAppearance';
 import type { BotPhase } from './desktopBots';
 import { appendDesktopBotReport, applySupplementOutcomes, messagesForBot, saveBotMessages } from './desktopBots';
 import { adoptExistingBotReplies, setBotWindowForeground, unreadBotReplyCount } from './botUnread';
@@ -187,6 +190,9 @@ async function confirmBotDelete(label = '删除') {
 
 beforeEach(() => {
     localStorage.clear();
+    resetBotLookCacheForTest();
+    setAppearance.mockReset();
+    setAppearance.mockResolvedValue({});
     // Most cases check the noVNC URL; the H.264 player has its own case.
     localStorage.setItem('maclaw.desktop.viewer', 'vnc');
     sendTask.mockReset();
@@ -4675,6 +4681,280 @@ describe('DesktopBotWorkspace', () => {
         });
         expect(await screen.findByText('已截图')).toBeTruthy();
         expect(sendTask).toHaveBeenCalledTimes(2);
+    });
+
+    it('sends a stored look again when the first copy does not stick', async () => {
+        saveBotAppearance('alice', 'bot_1', { color: '#2563eb', shape: 'cloud' });
+        let calls = 0;
+        setAppearance.mockImplementation(() => {
+            calls += 1;
+            if (calls === 1) return Promise.reject(new Error('offline'));
+            return Promise.resolve({ id: 'bot_1', color: '#2563eb', shape: 'cloud' });
+        });
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        expect(await screen.findByText('值班')).toBeTruthy();
+        await waitFor(() => expect(setAppearance).toHaveBeenCalledTimes(2));
+        expect(setAppearance).toHaveBeenLastCalledWith('bot_1', '#2563eb', 'cloud');
+        await act(async () => { await Promise.resolve(); });
+        expect(setAppearance).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps a newer look when an older copy comes back', async () => {
+        saveBotAppearance('alice', 'bot_1', { color: '#2563eb', shape: 'cloud' });
+        let calls = 0;
+        let releaseFirst: (value: { color: string; shape: string }) => void = () => {};
+        setAppearance.mockImplementation(() => {
+            calls += 1;
+            if (calls === 1) return new Promise(resolve => { releaseFirst = resolve; });
+            return Promise.resolve({});
+        });
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
+        const view = renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        expect(await screen.findByText('值班')).toBeTruthy();
+        await waitFor(() => expect(setAppearance).toHaveBeenCalledTimes(1));
+        expect(setAppearance).toHaveBeenLastCalledWith('bot_1', '#2563eb', 'cloud');
+
+        fireEvent.click(screen.getByTestId('desktop-bot-edit-bot_1'));
+        fireEvent.click(screen.getByTestId('bot-edit-color-16a34a'));
+        fireEvent.click(screen.getByTestId('bot-edit-shape-leaf'));
+        fireEvent.click(within(screen.getByTestId('bot-edit-dialog')).getByRole('button', { name: '保存' }));
+        await waitFor(() => {
+            const avatar = view.container.querySelector('.desktop-bot-workspace__avatar');
+            expect(avatar?.getAttribute('data-color')).toBe('#16a34a');
+            expect(avatar?.getAttribute('data-shape')).toBe('leaf');
+        });
+
+        await act(async () => { releaseFirst({ color: '#2563eb', shape: 'cloud' }); });
+        await waitFor(() => expect(setAppearance).toHaveBeenCalledTimes(2));
+        expect(setAppearance).toHaveBeenLastCalledWith('bot_1', '#16a34a', 'leaf');
+        const avatar = view.container.querySelector('.desktop-bot-workspace__avatar');
+        expect(avatar?.getAttribute('data-color')).toBe('#16a34a');
+        expect(avatar?.getAttribute('data-shape')).toBe('leaf');
+        expect(appearancesForUser('alice').bot_1).toEqual({ color: '#16a34a', shape: 'leaf' });
+        await act(async () => { await Promise.resolve(); });
+        expect(setAppearance).toHaveBeenCalledTimes(2);
+    });
+
+    it('sends a later look after the copied one was accepted', async () => {
+        saveBotAppearance('alice', 'bot_1', { color: '#2563eb', shape: 'cloud' });
+        setAppearance.mockImplementation(async (_botId?: string, color?: string, shape?: string) => ({ color, shape }));
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
+        const view = renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        expect(await screen.findByText('值班')).toBeTruthy();
+        await waitFor(() => expect(setAppearance).toHaveBeenCalledTimes(1));
+        expect(setAppearance).toHaveBeenLastCalledWith('bot_1', '#2563eb', 'cloud');
+
+        fireEvent.click(screen.getByTestId('desktop-bot-edit-bot_1'));
+        fireEvent.click(screen.getByTestId('bot-edit-color-16a34a'));
+        fireEvent.click(screen.getByTestId('bot-edit-shape-leaf'));
+        fireEvent.click(within(screen.getByTestId('bot-edit-dialog')).getByRole('button', { name: '保存' }));
+        await waitFor(() => expect(setAppearance).toHaveBeenCalledTimes(2));
+        expect(setAppearance).toHaveBeenLastCalledWith('bot_1', '#16a34a', 'leaf');
+        await act(async () => { await Promise.resolve(); });
+        expect(setAppearance).toHaveBeenCalledTimes(2);
+        const avatar = view.container.querySelector('.desktop-bot-workspace__avatar');
+        expect(avatar?.getAttribute('data-color')).toBe('#16a34a');
+        expect(avatar?.getAttribute('data-shape')).toBe('leaf');
+    });
+
+    it('sends a new bot look that the hub list has not returned, then the color chosen while that copy is out', async () => {
+        listBots.mockResolvedValue([]);
+        let releaseFirst: (value: { color?: string; shape?: string }) => void = () => {};
+        setAppearance.mockImplementation(() => new Promise(resolve => { releaseFirst = resolve; }));
+        createBot.mockImplementation(async (name: string, description: string) => ({
+            id: 'bot_new',
+            title: name,
+            description,
+            instance_id: 'inst_new',
+            created_at: '2023-11-04T16:45:00Z',
+        }));
+        const view = renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        const dialog = await screen.findByTestId('bot-create-dialog');
+        fireEvent.click(within(dialog).getByTestId('bot-edit-color-2563eb'));
+        fireEvent.click(within(dialog).getByTestId('bot-edit-shape-cloud'));
+        fireEvent.click(within(dialog).getByTestId('bot-edit-save'));
+        expect(await screen.findByTestId('desktop-bot-bot_new')).toBeTruthy();
+        await waitFor(() => expect(setAppearance).toHaveBeenCalledTimes(1));
+        expect(setAppearance).toHaveBeenLastCalledWith('bot_new', '#2563eb', 'cloud');
+
+        setAppearance.mockImplementation(async (_botId?: string, color?: string, shape?: string) => ({ color, shape }));
+        fireEvent.click(screen.getByTestId('desktop-bot-edit-bot_new'));
+        fireEvent.click(screen.getByTestId('bot-edit-color-16a34a'));
+        fireEvent.click(screen.getByTestId('bot-edit-shape-leaf'));
+        fireEvent.click(within(screen.getByTestId('bot-edit-dialog')).getByRole('button', { name: '保存' }));
+        await waitFor(() => {
+            const avatar = view.container.querySelector('.desktop-bot-workspace__avatar');
+            expect(avatar?.getAttribute('data-color')).toBe('#16a34a');
+        });
+        await act(async () => { releaseFirst({ color: '#2563eb', shape: 'cloud' }); });
+        await waitFor(() => expect(setAppearance).toHaveBeenCalledTimes(2));
+        expect(setAppearance).toHaveBeenLastCalledWith('bot_new', '#16a34a', 'leaf');
+        await act(async () => { await Promise.resolve(); });
+        expect(setAppearance).toHaveBeenCalledTimes(2);
+        expect(view.container.querySelector('.desktop-bot-workspace__avatar')?.getAttribute('data-color')).toBe('#16a34a');
+        expect(appearancesForUser('alice').bot_new).toEqual({ color: '#16a34a', shape: 'leaf' });
+    });
+
+    it('does not send a look the hub already returned on create', async () => {
+        let resolveList: (bots: { id: string; title: string; description: string; instance_id: string }[]) => void = () => {};
+        listBots.mockReturnValue(new Promise(resolve => { resolveList = resolve; }));
+        createBot.mockImplementation(async (name: string, description: string) => ({
+            id: 'bot_new',
+            title: name,
+            description,
+            instance_id: 'inst_new',
+            created_at: '2023-11-04T16:45:00Z',
+            color: '#16a34a',
+            shape: 'leaf',
+        }));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        const dialog = await screen.findByTestId('bot-create-dialog');
+        fireEvent.click(within(dialog).getByTestId('bot-edit-color-16a34a'));
+        fireEvent.click(within(dialog).getByTestId('bot-edit-shape-leaf'));
+        fireEvent.click(within(dialog).getByTestId('bot-edit-save'));
+        expect(await screen.findByTestId('desktop-bot-bot_new')).toBeTruthy();
+        await act(async () => {
+            resolveList([{ id: 'bot_new', title: 'Bot 1', description: '远程电脑上的7x24小时数字助理。', instance_id: 'inst_new' }]);
+        });
+        await act(async () => { await Promise.resolve(); });
+        expect(setAppearance).not.toHaveBeenCalled();
+    });
+
+    it('sends a new bot look once more when the first copy fails, then stops', async () => {
+        listBots.mockResolvedValue([]);
+        let calls = 0;
+        setAppearance.mockImplementation(() => {
+            calls += 1;
+            if (calls === 1) return Promise.reject(new Error('offline'));
+            if (calls === 2) return Promise.resolve({ color: '#2563eb', shape: 'cloud' });
+            return Promise.reject(new Error('offline'));
+        });
+        createBot.mockImplementation(async (name: string, description: string) => ({
+            id: 'bot_new',
+            title: name,
+            description,
+            instance_id: 'inst_new',
+            created_at: '2023-11-04T16:45:00Z',
+        }));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        expect(await screen.findByTestId('desktop-bot-empty')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        const dialog = await screen.findByTestId('bot-create-dialog');
+        fireEvent.click(within(dialog).getByTestId('bot-edit-color-2563eb'));
+        fireEvent.click(within(dialog).getByTestId('bot-edit-shape-cloud'));
+        fireEvent.click(within(dialog).getByTestId('bot-edit-save'));
+        expect(await screen.findByTestId('desktop-bot-bot_new')).toBeTruthy();
+        await waitFor(() => expect(setAppearance).toHaveBeenCalledTimes(2));
+        expect(setAppearance).toHaveBeenNthCalledWith(1, 'bot_new', '#2563eb', 'cloud');
+        expect(setAppearance).toHaveBeenNthCalledWith(2, 'bot_new', '#2563eb', 'cloud');
+        await act(async () => { await Promise.resolve(); });
+        expect(setAppearance).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not keep sending a new bot look after two copies fail', async () => {
+        listBots.mockResolvedValue([]);
+        setAppearance.mockRejectedValue(new Error('offline'));
+        createBot.mockImplementation(async (name: string, description: string) => ({
+            id: 'bot_new',
+            title: name,
+            description,
+            instance_id: 'inst_new',
+            created_at: '2023-11-04T16:45:00Z',
+        }));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        expect(await screen.findByTestId('desktop-bot-empty')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('desktop-bot-create'));
+        fireEvent.click(await screen.findByTestId('bot-edit-save'));
+        expect(await screen.findByTestId('desktop-bot-bot_new')).toBeTruthy();
+        await waitFor(() => expect(setAppearance).toHaveBeenCalledTimes(2));
+        await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+        expect(setAppearance).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not restore a look cleared while its copy was in flight', async () => {
+        saveBotAppearance('alice', 'bot_1', { color: '#2563eb', shape: 'cloud' });
+        let calls = 0;
+        let releaseFirst: (value: { color: string; shape: string }) => void = () => {};
+        setAppearance.mockImplementation(() => {
+            calls += 1;
+            if (calls === 1) return new Promise(resolve => { releaseFirst = resolve; });
+            return Promise.resolve({ color: '#2563eb', shape: 'cloud' });
+        });
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        expect(await screen.findByText('值班')).toBeTruthy();
+        await waitFor(() => expect(setAppearance).toHaveBeenCalledTimes(1));
+        const remove = screen.getByTestId('desktop-bot-bot_1').querySelector('[data-testid^="desktop-bot-delete-"]') as HTMLButtonElement;
+        fireEvent.click(remove);
+        await confirmBotDelete();
+        expect(await screen.findByTestId('desktop-bot-empty')).toBeTruthy();
+        await act(async () => { releaseFirst({ color: '#2563eb', shape: 'cloud' }); });
+        await act(async () => { await Promise.resolve(); });
+        expect(appearancesForUser('alice').bot_1).toBeUndefined();
+        expect(setAppearance).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps an edited badge when the stored looks arrive afterwards', async () => {
+        let releaseHydrate: (file: { looks: Record<string, { color: string; shape: string }>; migrated: string[] }) => void = () => {};
+        setBotLookLoaderForTest(() => new Promise(resolve => { releaseHydrate = resolve; }));
+        listBots.mockResolvedValue([{
+            id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1', color: '#2563eb', shape: 'cloud',
+        }]);
+        const view = renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        expect(await screen.findByText('值班')).toBeTruthy();
+        await waitFor(() => {
+            expect(view.container.querySelector('.desktop-bot-workspace__avatar')?.getAttribute('data-color')).toBe('#2563eb');
+        });
+        expect(appearancesForUser('alice').bot_1).toEqual({ color: '#2563eb', shape: 'cloud' });
+        fireEvent.click(screen.getByTestId('desktop-bot-edit-bot_1'));
+        fireEvent.click(screen.getByTestId('bot-edit-color-16a34a'));
+        fireEvent.click(screen.getByTestId('bot-edit-shape-leaf'));
+        fireEvent.click(within(screen.getByTestId('bot-edit-dialog')).getByRole('button', { name: '保存' }));
+        await waitFor(() => {
+            const avatar = view.container.querySelector('.desktop-bot-workspace__avatar');
+            expect(avatar?.getAttribute('data-color')).toBe('#16a34a');
+            expect(avatar?.getAttribute('data-shape')).toBe('leaf');
+        });
+        await act(async () => {
+            releaseHydrate({ looks: { bot_1: { color: '#2563eb', shape: 'cloud' } }, migrated: [] });
+        });
+        await act(async () => { await Promise.resolve(); });
+        const avatar = view.container.querySelector('.desktop-bot-workspace__avatar');
+        expect(avatar?.getAttribute('data-color')).toBe('#16a34a');
+        expect(avatar?.getAttribute('data-shape')).toBe('leaf');
+        expect(appearancesForUser('alice').bot_1).toEqual({ color: '#16a34a', shape: 'leaf' });
+        expect(setAppearance).not.toHaveBeenCalled();
+    });
+
+    it('creates a bot when the browser appearance store is over quota', async () => {
+        const proto = Object.getPrototypeOf(window.localStorage) as Storage;
+        const setItem = proto.setItem;
+        proto.setItem = function (key: string, value: string) {
+            if (key === 'maclaw.desktopBotAppearance.v1' || key === 'maclaw.desktopBotAppearance.v1.migrated') {
+                throw new DOMException("Failed to execute 'setItem' on 'Storage': Setting the value of '" + key + "' exceeded the quota.", 'QuotaExceededError');
+            }
+            return setItem.call(this, key, value);
+        };
+        try {
+            createBot.mockImplementation(async (name: string, description: string) => ({
+                id: 'bot_new',
+                title: name,
+                description,
+                instance_id: 'inst_new',
+                created_at: '2023-11-04T16:45:00Z',
+            }));
+            renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+            fireEvent.click(screen.getByTestId('desktop-bot-create'));
+            fireEvent.click(await screen.findByTestId('bot-edit-save'));
+            expect(await screen.findByTestId('desktop-bot-bot_new')).toBeTruthy();
+            expect(screen.queryByTestId('desktop-bot-list-error')).toBeNull();
+            expect(localStorage.getItem('maclaw.desktopBotAppearance.v1')).toBeNull();
+        } finally {
+            proto.setItem = setItem;
+        }
     });
 
     it('shows the hub created time from the list and from the create response', async () => {

@@ -41,6 +41,11 @@ var (
 		".doc": true, ".docx": true,
 		".xls": true, ".xlsx": true,
 		".ppt": true, ".pptx": true,
+		".dwg": true, ".dxf": true, ".dxfb": true,
+		".glb": true, ".gltf": true,
+		".epub": true,
+		".adoc": true, ".asciidoc": true,
+		".eml": true,
 	}
 )
 

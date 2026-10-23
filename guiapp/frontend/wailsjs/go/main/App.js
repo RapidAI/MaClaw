@@ -686,6 +686,10 @@ export function ContinueBackgroundLoop(arg1, arg2) {
   return window['go']['main']['App']['ContinueBackgroundLoop'](arg1, arg2);
 }
 
+export function ConversationViewArchiveCount(arg1) {
+  return window['go']['main']['App']['ConversationViewArchiveCount'](arg1);
+}
+
 export function CopyCloudWorkspaceTaskFilesToLocal(arg1, arg2) {
   return window['go']['main']['App']['CopyCloudWorkspaceTaskFilesToLocal'](arg1, arg2);
 }
@@ -3657,6 +3661,10 @@ export function ListVirtualRepositoryMappings(arg1) {
   return window['go']['main']['App']['ListVirtualRepositoryMappings'](arg1);
 }
 
+export function LoadAIAssistantUIArchive() {
+  return window['go']['main']['App']['LoadAIAssistantUIArchive']();
+}
+
 export function LoadAIAssistantUIState() {
   return window['go']['main']['App']['LoadAIAssistantUIState']();
 }
@@ -3683,6 +3691,10 @@ export function LoadProjectConversationHistory(arg1) {
 
 export function LoadProjectTabConversation(arg1) {
   return window['go']['main']['App']['LoadProjectTabConversation'](arg1);
+}
+
+export function LoadProjectTabConversationArchive(arg1) {
+  return window['go']['main']['App']['LoadProjectTabConversationArchive'](arg1);
 }
 
 export function LoadProjectTabIndex() {
@@ -4877,6 +4889,26 @@ export function RenameDesktopBot(arg1, arg2, arg3, arg4, arg5) {
 
 export function SetDesktopBotAppearance(arg1, arg2, arg3) {
   return window['go']['main']['App']['SetDesktopBotAppearance'](arg1, arg2, arg3);
+}
+
+export function LoadDesktopBotLooks(arg1, arg2, arg3) {
+  return window['go']['main']['App']['LoadDesktopBotLooks'](arg1, arg2, arg3);
+}
+
+export function SaveDesktopBotLook(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SaveDesktopBotLook'](arg1, arg2, arg3, arg4);
+}
+
+export function ClearDesktopBotLook(arg1, arg2) {
+  return window['go']['main']['App']['ClearDesktopBotLook'](arg1, arg2);
+}
+
+export function MarkDesktopBotLookMigrated(arg1, arg2) {
+  return window['go']['main']['App']['MarkDesktopBotLookMigrated'](arg1, arg2);
+}
+
+export function UnmarkDesktopBotLookMigrated(arg1, arg2) {
+  return window['go']['main']['App']['UnmarkDesktopBotLookMigrated'](arg1, arg2);
 }
 
 export function DeleteDesktopBot(arg1) {

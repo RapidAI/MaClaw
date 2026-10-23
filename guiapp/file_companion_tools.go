@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	gopdf2 "github.com/VantageDataChat/GoPDF2"
 )
 
@@ -89,7 +90,7 @@ func fileCompanionToolDefinitions() []map[string]interface{} {
 			"type": "function",
 			"function": map[string]interface{}{
 				"name":        fileCompanionToolReadPages,
-				"description": "读取当前打开的 PDF 指定页的原文。文档正文被截断、需要核对某页原话、或用户引用了某个页码时使用。pages 形如 \"7\"、\"3,5\"、\"7-10\"。",
+				"description": "读取当前打开的 PDF 指定页的原文。没有文字层的扫描页会用本机 PP-OCRv6 识别后再返回。不要安装其他识别引擎。pages 形如 \"7\"、\"3,5\"、\"7-10\"。",
 				"parameters": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
@@ -275,11 +276,20 @@ func (a *App) fileCompanionToolReadPages(canonical string, args map[string]inter
 	if err != nil {
 		return err.Error(), false
 	}
-	data, err := fileCompanionReadPDFBytes(canonical)
+	data, tree, err := fileCompanionOpenPDFTree(canonical)
 	if err != nil {
 		return err.Error(), false
 	}
-	count := fileCompanionPDFPageCount(data)
+	if len(data) == 0 {
+		return "文档内容为空", false
+	}
+	count := 0
+	if tree != nil {
+		count = tree.PageCount()
+	}
+	if count <= 0 {
+		count = fileCompanionPDFPageCount(data)
+	}
 	if count <= 0 {
 		return "无法解析这份 PDF 的页数，文档工具读不出原文。", false
 	}
@@ -299,19 +309,57 @@ func (a *App) fileCompanionToolReadPages(canonical string, args map[string]inter
 		dropped += len(inRange) - fileCompanionReadPagesMax
 		inRange = inRange[:fileCompanionReadPagesMax]
 	}
+	var pagesB strings.Builder
+	ocrUsed := false
+	// Text and OCR share this open. ExtractPageText's empty result falls
+	// back to a raw scan of every stream, which is how a scan page is stored.
+	var pageText map[int]string
+	var textErr error
+	if tree != nil {
+		pageText, textErr = tree.SelectableText(inRange)
+	} else {
+		pageText, textErr = agent.PDFSelectableText(data, inRange)
+	}
+	var scanned map[int]string
+	if textErr == nil && fileCompanionRecognizeScanPage == nil {
+		empty := make([]int, 0, len(inRange))
+		for _, page := range inRange {
+			if strings.TrimSpace(pageText[page]) == "" {
+				empty = append(empty, page)
+			}
+		}
+		scanned = a.fileCompanionReadEmptyScanPages(canonical, tree, empty)
+	}
+	for _, page := range inRange {
+		var text string
+		if textErr != nil {
+			text = fmt.Sprintf("(第 %d 页文字提取失败：%v)", page, textErr)
+		} else {
+			text = strings.TrimSpace(pageText[page])
+		}
+		if text == "" {
+			if fileCompanionRecognizeScanPage != nil {
+				if recognized, ok := a.fileCompanionReadScannedPage(canonical, data, page); ok {
+					text = recognized
+					ocrUsed = true
+				} else {
+					text = "(本页没有可提取的文字)"
+				}
+			} else if recognized := strings.TrimSpace(scanned[page]); recognized != "" {
+				text = recognized
+				ocrUsed = true
+			} else {
+				text = "(本页没有可提取的文字)"
+			}
+		}
+		fmt.Fprintf(&pagesB, "\n\n--- 第 %d 页 ---\n%s", page, text)
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "《%s》共 %d 页，以下为第 %s 页原文：", filepath.Base(canonical), count, fileCompanionJoinPages(inRange))
-	for _, page := range inRange {
-		text, err := safeExtractPaperPageText(data, page-1)
-		if err != nil {
-			text = fmt.Sprintf("(第 %d 页文字提取失败：%v)", page, err)
-		}
-		text = strings.TrimSpace(text)
-		if text == "" {
-			text = "(本页没有可提取的文字)"
-		}
-		fmt.Fprintf(&b, "\n\n--- 第 %d 页 ---\n%s", page, text)
+	if ocrUsed {
+		b.WriteString("没有文字层的页已用本机 PP-OCRv6 识别。")
 	}
+	b.WriteString(pagesB.String())
 	out := b.String()
 	if dropped > 0 {
 		out += fmt.Sprintf("\n\n(另有 %d 页未返回：单次最多 %d 页，需要时请分批调用。)", dropped, fileCompanionReadPagesMax)
@@ -869,6 +917,30 @@ func fileCompanionExtractPageImages(data []byte, pageIndex int) (images []gopdf2
 		}
 	}()
 	return gopdf2.ExtractImagesFromPage(data, pageIndex)
+}
+
+// fileCompanionOpenPDFTree returns the PDF bytes and one page tree. A scan
+// already opened in this process, with the same size and mtime, is reused
+// so the next read does not parse the object streams again.
+func fileCompanionOpenPDFTree(canonical string) ([]byte, *agent.PDFPageTree, error) {
+	info, statErr := os.Stat(canonical)
+	if statErr == nil && info != nil && !info.IsDir() {
+		if cached, ok := agent.CachedPDFPageTree(canonical, info); ok && cached != nil && len(cached.Bytes()) > 0 {
+			return cached.Bytes(), cached, nil
+		}
+	}
+	data, err := fileCompanionReadPDFBytes(canonical)
+	if err != nil {
+		return nil, nil, err
+	}
+	tree, openErr := agent.OpenPDFPageTree(data)
+	if openErr != nil || tree == nil {
+		return data, nil, nil
+	}
+	if statErr == nil && info != nil && !info.IsDir() && info.Size() == int64(len(data)) && info.Size() <= agent.OCRPDFMaxBytes {
+		agent.RememberPDFPageTree(canonical, info, tree)
+	}
+	return data, tree, nil
 }
 
 func fileCompanionReadPDFBytes(canonical string) ([]byte, error) {

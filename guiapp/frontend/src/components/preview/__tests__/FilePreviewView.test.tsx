@@ -153,10 +153,94 @@ describe('FilePreviewView', () => {
         body.appendChild(wrapper);
         Object.defineProperty(wrapper, 'scrollWidth', { configurable: true, value: 800 });
         Object.defineProperty(scroll, 'clientWidth', { configurable: true, value: 408 });
+        let top = 240;
+        Object.defineProperty(scroll, 'scrollTop', {
+            configurable: true,
+            get: () => top,
+            set: (value: number) => { top = value; },
+        });
         fitDocxToPane(scroll, body);
         expect(wrapper.style.alignItems).toBe('flex-start');
         expect(body.style.getPropertyValue('zoom')).toBe('0.5');
         expect(scroll.scrollLeft).toBe(0);
+        expect(top).toBe(240);
+    });
+
+    it('drops a Word page tree that finishes after the preview is gone', async () => {
+        const docx = await import('docx-preview');
+        const renderAsync = vi.mocked(docx.renderAsync);
+        const original = renderAsync.getMockImplementation();
+        let finish: () => void = () => {};
+        renderAsync.mockImplementation(async (_data: ArrayBuffer, el: HTMLElement) => {
+            await new Promise<void>((resolve) => { finish = resolve; });
+            const page = document.createElement('section');
+            page.textContent = 'late-docx';
+            el.appendChild(page);
+        });
+        const fetchMock = vi.fn(async () => ({
+            ok: true,
+            arrayBuffer: async () => new ArrayBuffer(8),
+        }));
+        vi.stubGlobal('fetch', fetchMock);
+        try {
+            const view = render(
+                <FilePreviewView
+                    file={{ fileName: 'brief.docx', absPath: 'D:/docs/brief.docx' }}
+                    theme={lightCodePreviewTheme}
+                    lang="zh"
+                />,
+            );
+            await waitFor(() => expect(renderAsync).toHaveBeenCalled());
+            const bodyHost = renderAsync.mock.calls.at(-1)?.[1] as HTMLElement;
+            view.unmount();
+            finish();
+            await waitFor(() => expect(bodyHost.childElementCount).toBe(0));
+        } finally {
+            if (original) renderAsync.mockImplementation(original);
+            vi.unstubAllGlobals();
+        }
+    });
+
+    it('drops a Word page tree when layout throws after the preview is gone', async () => {
+        const docx = await import('docx-preview');
+        const renderAsync = vi.mocked(docx.renderAsync);
+        const original = renderAsync.getMockImplementation();
+        let finish: () => void = () => {};
+        renderAsync.mockImplementation(async (_data: ArrayBuffer, body: HTMLElement, style?: HTMLElement) => {
+            await new Promise<void>((resolve) => { finish = resolve; });
+            const page = document.createElement('section');
+            page.textContent = 'partial-docx';
+            body.appendChild(page);
+            style?.appendChild(document.createElement('style'));
+            throw new Error('layout failed');
+        });
+        const fetchMock = vi.fn(async () => ({
+            ok: true,
+            arrayBuffer: async () => new ArrayBuffer(8),
+        }));
+        vi.stubGlobal('fetch', fetchMock);
+        try {
+            const view = render(
+                <FilePreviewView
+                    file={{ fileName: 'brief.docx', absPath: 'D:/docs/brief.docx' }}
+                    theme={lightCodePreviewTheme}
+                    lang="zh"
+                />,
+            );
+            await waitFor(() => expect(renderAsync).toHaveBeenCalled());
+            const call = renderAsync.mock.calls.at(-1);
+            const bodyHost = call?.[1] as HTMLElement;
+            const styleHost = call?.[2] as HTMLElement;
+            view.unmount();
+            finish();
+            await waitFor(() => {
+                expect(bodyHost.childElementCount).toBe(0);
+                expect(styleHost.childElementCount).toBe(0);
+            });
+        } finally {
+            if (original) renderAsync.mockImplementation(original);
+            vi.unstubAllGlobals();
+        }
     });
 
     it('renders a PDF reader', async () => {

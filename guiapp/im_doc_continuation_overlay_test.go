@@ -160,6 +160,151 @@ func TestHostKeepMessageForTurnUsesExpandedExtract(t *testing.T) {
 	}
 }
 
+func TestTerminalExtractDoesNotHostKeepOffice(t *testing.T) {
+	h := &IMMessageHandler{}
+	msg := agent.AutoExtractBeginMarker + `path="C:\docs\scan.pdf" format="pdf" error="自动注入已跳过（error_class=input_too_large）。" ---`
+	joined := strings.Join(h.hostKeepToolsForMessage(msg), ",")
+	if strings.Contains(joined, "office") || strings.Contains(joined, "read_document") {
+		t.Fatalf("terminal extract must not host-keep office, got %s", joined)
+	}
+}
+
+func TestBuiltinPDFOCROverlayOnOversizedScan(t *testing.T) {
+	msg := agent.AutoExtractBeginMarker + `path="C:\docs\scan.pdf" format="pdf" error="自动注入已跳过（error_class=input_too_large）。扫描件请用 ocr_recognize（本机 PP-OCRv6），不要安装其他引擎。" ---`
+	registry := NewToolRegistry()
+	for _, name := range []string{"office", "read_document", "ocr_recognize"} {
+		if err := registry.Register(RegisteredTool{Name: name, Description: name, Status: RegToolAvailable}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cb := &sharedAgentLoopCallbacks{
+		handler:         &IMMessageHandler{registry: registry},
+		semanticSurface: &semanticCallSurface{grants: map[string]tool.InvocationGrant{}},
+		userText:        msg,
+	}
+	cb.maybeOverlayDocumentContinuationForTurn(msg)
+	cb.maybeOverlayBuiltinPDFOCR(msg)
+	if cb.legacyPetitionTools["office"] || cb.legacyPetitionTools["read_document"] {
+		t.Fatalf("oversized scan must not petition a reader, got %v", cb.legacyPetitionTools)
+	}
+	if !cb.legacyPetitionTools["ocr_recognize"] {
+		t.Fatalf("oversized scan must petition ocr_recognize, got %v", cb.legacyPetitionTools)
+	}
+	defs := cb.appendLegacyPetitionedDatabaseTools(nil)
+	if len(defs) != 1 || extractToolName(defs[0]) != "ocr_recognize" {
+		t.Fatalf("overlay definition = %#v", defs)
+	}
+}
+
+func TestBuiltinPDFOCROverlaySkipsEncrypted(t *testing.T) {
+	msg := agent.AutoExtractBeginMarker + `path="C:\docs\secret.docx" format="docx" error="自动注入已跳过（error_class=encrypted）。" ---`
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{Name: "ocr_recognize", Description: "ocr", Status: RegToolAvailable}); err != nil {
+		t.Fatal(err)
+	}
+	cb := &sharedAgentLoopCallbacks{
+		handler:         &IMMessageHandler{registry: registry},
+		semanticSurface: &semanticCallSurface{grants: map[string]tool.InvocationGrant{}},
+		userText:        msg,
+	}
+	cb.maybeOverlayBuiltinPDFOCR(msg)
+	if len(cb.legacyPetitionTools) != 0 {
+		t.Fatalf("encrypted extract must not petition OCR, got %v", cb.legacyPetitionTools)
+	}
+}
+
+func TestBuiltinPDFOCROverlayFollowsContinuationHistory(t *testing.T) {
+	block := agent.AutoExtractBeginMarker + `path="C:\docs\scan.pdf" format="pdf" error="自动注入已跳过（error_class=input_too_large）。扫描件请用 ocr_recognize（本机 PP-OCRv6），不要安装其他引擎。" ---` + "\n文件超过 32 MiB\n" + agent.AutoExtractEndMarker + `path="C:\docs\scan.pdf" ---`
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{Name: "ocr_recognize", Description: "ocr", Status: RegToolAvailable}); err != nil {
+		t.Fatal(err)
+	}
+	cb := &sharedAgentLoopCallbacks{
+		handler:         &IMMessageHandler{registry: registry},
+		semanticSurface: &semanticCallSurface{grants: map[string]tool.InvocationGrant{}},
+		userText:        "继续",
+		checkpointHistory: []agent.ConversationEntry{
+			{Role: "user", Content: block},
+			{Role: "user", Content: "继续"},
+		},
+	}
+	cb.maybeOverlayDocumentContinuationForTurn("继续")
+	cb.maybeOverlayBuiltinPDFOCR("继续")
+	if !cb.legacyPetitionTools["ocr_recognize"] || cb.legacyPetitionTools["office"] {
+		t.Fatalf("继续 must still petition builtin OCR, got %v", cb.legacyPetitionTools)
+	}
+	denial := cb.terminalDocumentToolDenial("bash", `{"command":"pip install rapidocr-onnxruntime"}`)
+	if denial == "" || !strings.Contains(denial, "ocr_recognize") || !strings.Contains(denial, "PP-OCRv6") {
+		t.Fatalf("继续 must deny a substitute engine, got %q", denial)
+	}
+	if got := cb.terminalDocumentToolDenial("ocr_recognize", `{"image_path":"C:\\docs\\scan.pdf","output_path":"out.txt"}`); got != "" {
+		t.Fatalf("builtin OCR must stay allowed, got %q", got)
+	}
+
+	fresh := &sharedAgentLoopCallbacks{
+		handler:         cb.handler,
+		semanticSurface: cb.semanticSurface,
+		userText:        "今天天气怎么样",
+		checkpointHistory: []agent.ConversationEntry{
+			{Role: "user", Content: block},
+			{Role: "user", Content: "今天天气怎么样"},
+		},
+	}
+	fresh.maybeOverlayBuiltinPDFOCR("今天天气怎么样")
+	if len(fresh.legacyPetitionTools) != 0 {
+		t.Fatalf("a new request must not inherit the scan ban, got %v", fresh.legacyPetitionTools)
+	}
+	if got := fresh.terminalDocumentToolDenial("bash", `{"command":"pip install rapidocr-onnxruntime"}`); got != "" {
+		t.Fatalf("a new request must not deny an unrelated install, got %q", got)
+	}
+}
+
+func TestBuiltinPDFOCRUsesExpandedCurrentTurn(t *testing.T) {
+	raw := "将该文件从扫描版转为文字版本pdf\n\n" + filePathPromptPrefix + "\nC:\\docs\\scan.pdf\n"
+	expanded := raw + "\n" + agent.AutoExtractBeginMarker + `path="C:\\docs\\scan.pdf" format="pdf" error="自动注入已跳过（error_class=input_too_large）。扫描件请用 ocr_recognize（本机 PP-OCRv6），不要安装其他引擎。" ---`
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{Name: "ocr_recognize", Description: "ocr", Status: RegToolAvailable}); err != nil {
+		t.Fatal(err)
+	}
+	cb := &sharedAgentLoopCallbacks{
+		handler:         &IMMessageHandler{registry: registry},
+		semanticSurface: &semanticCallSurface{grants: map[string]tool.InvocationGrant{}},
+		userText:        raw,
+		checkpointHistory: []agent.ConversationEntry{
+			{Role: "user", Content: expanded},
+		},
+	}
+	cb.maybeOverlayBuiltinPDFOCR(raw)
+	if !cb.legacyPetitionTools["ocr_recognize"] {
+		t.Fatalf("the expanded current turn must petition OCR, got %v", cb.legacyPetitionTools)
+	}
+	denial := cb.terminalDocumentToolDenial("bash", `{"command":"pip install rapidocr-onnxruntime"}`)
+	if denial == "" || !strings.Contains(denial, "PP-OCRv6") {
+		t.Fatalf("the expanded current turn must deny a substitute engine, got %q", denial)
+	}
+}
+
+func TestBuiltinPDFOCROverlayReadsStrippedHistory(t *testing.T) {
+	block := agent.AutoExtractBeginMarker + `path="C:\docs\scan.pdf" format="pdf" error="自动注入已跳过（error_class=input_too_large）。扫描件请用 ocr_recognize（本机 PP-OCRv6），不要安装其他引擎。" ---` + "\nbody\n" + agent.AutoExtractEndMarker + `path="C:\docs\scan.pdf" ---`
+	stripped := agent.StripAutoExtractBodies(block)
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{Name: "ocr_recognize", Description: "ocr", Status: RegToolAvailable}); err != nil {
+		t.Fatal(err)
+	}
+	cb := &sharedAgentLoopCallbacks{
+		handler:         &IMMessageHandler{registry: registry},
+		semanticSurface: &semanticCallSurface{grants: map[string]tool.InvocationGrant{}},
+		userText:        "继续",
+		checkpointHistory: []agent.ConversationEntry{
+			{Role: "user", Content: stripped},
+		},
+	}
+	cb.maybeOverlayBuiltinPDFOCR("继续")
+	if !cb.legacyPetitionTools["ocr_recognize"] {
+		t.Fatalf("stripped history must still petition OCR, summary=%q tools=%v", stripped, cb.legacyPetitionTools)
+	}
+}
+
 func TestDocumentContinuationOverlaySkipsWhenTrustedReadIsBound(t *testing.T) {
 	msg := agent.AutoExtractBeginMarker + `path="C:\docs\paper.pdf" format="pdf" truncated=true next_offset=10 ---`
 	cb := &sharedAgentLoopCallbacks{

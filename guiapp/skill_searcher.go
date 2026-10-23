@@ -795,10 +795,75 @@ func (s *SkillSearcher) SearchAndInstallForTask(ctx context.Context, query strin
 		log.Printf("[skill-search] no intent-compatible results for query: %s", query)
 		return nil, nil
 	}
+	results = skipUnrunnableInstalledResults(s.app, results)
+	if len(results) == 0 {
+		log.Printf("[skill-search] every compatible result is an installed skill that is not runnable: %s", query)
+		return nil, nil
+	}
 
 	// Choose the first result; results are already sorted by quality.
 	best := &results[0]
 	return best, nil
+}
+
+// skipUnrunnableInstalledResults drops a market hit that is already installed
+// and not active. Searching again must not select that package over a later hit.
+func skipUnrunnableInstalledResults(app *App, results []SkillSearchResult) []SkillSearchResult {
+	if app == nil || app.skillExecutor == nil || len(results) == 0 {
+		return results
+	}
+	return skipUnrunnableInstalled(app.skillExecutor.loadSkills(), results)
+}
+
+func skipUnrunnableInstalled(installed []corelib.NLSkillEntry, results []SkillSearchResult) []SkillSearchResult {
+	if len(installed) == 0 || len(results) == 0 {
+		return results
+	}
+	kept := make([]SkillSearchResult, 0, len(results))
+	for _, result := range results {
+		if unrunnableInstalledMatch(installed, result) {
+			log.Printf("[skill-search] skipped unrunnable installed skill %q", result.Name)
+			continue
+		}
+		kept = append(kept, result)
+	}
+	return kept
+}
+
+func unrunnableInstalledMatch(installed []corelib.NLSkillEntry, result SkillSearchResult) bool {
+	matched := false
+	for i := range installed {
+		if !skillResultMatchesInstalled(&installed[i], result) {
+			continue
+		}
+		matched = true
+		if installedSkillIsRunnable(&installed[i]) {
+			return false
+		}
+	}
+	return matched
+}
+
+func skillResultMatchesInstalled(skill *corelib.NLSkillEntry, result SkillSearchResult) bool {
+	if skill == nil {
+		return false
+	}
+	if name := strings.TrimSpace(result.Name); name != "" && skill.MatchesName(name) {
+		return true
+	}
+	id := strings.TrimSpace(result.ID)
+	if id == "" {
+		return false
+	}
+	if skill.MatchesName(id) {
+		return true
+	}
+	for _, trigger := range skill.Triggers {
+		if strings.EqualFold(strings.TrimSpace(trigger), id) {
+			return true
+		}
+	}
+	return false
 }
 
 func contextErr(ctx context.Context) error {
@@ -813,7 +878,7 @@ func filterSkillSearchResultsForIntent(query string, results []SkillSearchResult
 		return results
 	}
 	userIntent := extractUserIntentCategory(query)
-	filtered := results[:0]
+	filtered := make([]SkillSearchResult, 0, len(results))
 	for _, result := range results {
 		skillText := strings.TrimSpace(result.Name + " " + result.Description)
 		if isTaskCompatibleWithSkillCandidate(userIntent, query, skillText) {

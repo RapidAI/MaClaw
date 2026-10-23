@@ -285,6 +285,12 @@ func (h *IMMessageHandler) markTaskCancelledByUser(userID string) {
 	if h == nil || strings.TrimSpace(userID) == "" {
 		return
 	}
+	// A continue mark belongs to the previous stop. This stop must be able to
+	// pause the goal after the dying turn of that continue has been told to
+	// leave the re-armed goal alone.
+	if h.app != nil && h.app.goalContinuation != nil {
+		h.app.goalContinuation.clearContinueRearmed(userID)
+	}
 	h.cancelledTaskBoundary.Store(userID, cancelledTaskFence{
 		at:  time.Now(),
 		gen: h.pendingForegroundGen(userID),

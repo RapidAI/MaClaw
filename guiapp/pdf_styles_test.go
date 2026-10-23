@@ -12,7 +12,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/docgen"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 func listPDFStylesForTest(t *testing.T, app *App) []docgen.StyleInfo {
@@ -236,6 +238,195 @@ func TestGeneratedPDFStyleErrorsStayReadable(t *testing.T) {
 	}
 }
 
+func TestPrepareDocumentStyleModelLeavesRoomForTheAnswer(t *testing.T) {
+	flash, tokens := prepareDocumentStyleModel(corelib.MaclawLLMConfig{
+		URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.3-flash", ThinkingMode: "enabled",
+	})
+	if flash.ThinkingMode != "disabled" || tokens != 900 {
+		t.Fatalf("flash = %+v tokens=%d", flash.ThinkingMode, tokens)
+	}
+	body := map[string]interface{}{}
+	corelib.ApplyReasoningControls(flash, body, corelib.ReasoningAPIAnthropic)
+	thinking, _ := body["thinking"].(map[string]interface{})
+	if thinking["type"] != "disabled" {
+		t.Fatalf("flash wire thinking = %#v", body["thinking"])
+	}
+
+	always, tokens := prepareDocumentStyleModel(corelib.MaclawLLMConfig{
+		URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.3", ThinkingMode: "enabled",
+	})
+	if always.ThinkingMode != "enabled" || always.ReasoningEffort != "low" || tokens != 2048 {
+		t.Fatalf("glm-5.3 = mode %q effort %q tokens %d", always.ThinkingMode, always.ReasoningEffort, tokens)
+	}
+
+	auto, tokens := prepareDocumentStyleModel(corelib.MaclawLLMConfig{
+		URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.3-flash",
+	})
+	if auto.ThinkingMode != "disabled" || tokens != 900 {
+		t.Fatalf("auto flash = mode %q tokens %d", auto.ThinkingMode, tokens)
+	}
+	plain, tokens := prepareDocumentStyleModel(corelib.MaclawLLMConfig{Model: "claude-sonnet"})
+	if plain.ThinkingMode != "" || tokens != 900 {
+		t.Fatalf("claude auto = mode %q tokens %d", plain.ThinkingMode, tokens)
+	}
+}
+
+func TestParseGeneratedPDFStyleNamesACutOffObject(t *testing.T) {
+	_, err := parseGeneratedPDFStyle("```json\n{\"id\":\"gov\"")
+	if err == nil || err.Error() != "模型输出被截断，没有完整的风格 JSON" {
+		t.Fatalf("error = %v", err)
+	}
+	_, err = parseGeneratedPDFStyle("这是一套公文风格，没有结构。")
+	if err == nil || err.Error() != "模型没有返回可用的风格 JSON" {
+		t.Fatalf("prose error = %v", err)
+	}
+	_, err = parseGeneratedPDFStyle("<|FunctionCallBegin|>{<|FunctionCallEnd|>这是说明")
+	if err == nil || err.Error() != "模型没有返回可用的风格 JSON" {
+		t.Fatalf("stripped brace error = %v", err)
+	}
+	_, err = parseGeneratedPDFStyle("{\"label\":\"注意}\",\"id\":\"gov\"")
+	if err == nil || err.Error() != "模型输出被截断，没有完整的风格 JSON" {
+		t.Fatalf("brace inside a string: %v", err)
+	}
+	// The nested colors object is valid JSON. It must not become the style.
+	_, err = parseGeneratedPDFStyle("{\n  \"id\": \"harbor\",\n  \"colors\": {\"ink\":\"1C1917\",\"navy\":\"134E4A\",\"accent\":\"0F766E\",\"gold\":\"B45309\",\"meta\":\"44403C\",\"rule\":\"0F766E\",\"quote\":\"115E59\",\"link\":\"0F766E\",\"on_dark\":\"F0FDFA\"}\n")
+	if err == nil || err.Error() != "模型输出被截断，没有完整的风格 JSON" {
+		t.Fatalf("nested colors in a cut-off style: %v", err)
+	}
+	noteAndCut := "{\"note\":\"草稿\"}\n{\n  \"colors\": {\"ink\":\"1C1917\"}\n"
+	_, err = parseGeneratedPDFStyle(noteAndCut)
+	if err == nil || err.Error() != "模型输出被截断，没有完整的风格 JSON" {
+		t.Fatalf("preamble hid cut-off: %v", err)
+	}
+	badMotif := `{"id":"wave-1","label":"浪","summary":"一种说明","keywords":["波浪"],"motif":"wave","colors":{"ink":"1C1917","navy":"0E2A47","accent":"C2410C","gold":"A16207","meta":"3F3F46","rule":"C2410C","quote":"7C2D12","link":"1D4ED8","on_dark":"F8FAFC"}}` + "\n{"
+	_, err = parseGeneratedPDFStyle(badMotif)
+	if err == nil || err.Error() != "版式必须是顶栏、立柱、双框、色带、粗线之一" {
+		t.Fatalf("complete style error hidden by a later brace: %v", err)
+	}
+	_, err = parseGeneratedPDFStyle("注意 {\n" + badMotif)
+	if err == nil || err.Error() != "版式必须是顶栏、立柱、双框、色带、粗线之一" {
+		t.Fatalf("unclosed prose hid the style error: %v", err)
+	}
+}
+
+func TestDocumentStyleResponseTextKeepsJSONInReasoning(t *testing.T) {
+	object := `{
+	  "id": "harbor",
+	  "label": "港务",
+	  "summary": "深色港务通报",
+	  "keywords": ["港务", "通报"],
+	  "motif": "rail",
+	  "colors": {"ink":"1C1917","navy":"134E4A","accent":"0F766E","gold":"B45309","meta":"44403C","rule":"0F766E","quote":"115E59","link":"0F766E","on_dark":"F0FDFA"}
+	}`
+	text, err := documentStyleResponseText(&llm.Response{Choices: []llm.Choice{{
+		Message: llm.Message{Content: "先用文字说明这套公文。", ReasoningContent: object},
+	}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	style, err := parseGeneratedPDFStyle(text)
+	if err != nil || style.ID != "harbor" {
+		t.Fatalf("style = %+v err = %v", style, err)
+	}
+	text, err = documentStyleResponseText(&llm.Response{Choices: []llm.Choice{{
+		Message: llm.Message{Content: "注意 {颜色} 即可", ReasoningContent: object},
+	}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	style, err = parseGeneratedPDFStyle(text)
+	if err != nil || style.ID != "harbor" {
+		t.Fatalf("prose brace hid reasoning: %+v err = %v", style, err)
+	}
+	text, err = documentStyleResponseText(&llm.Response{Choices: []llm.Choice{{
+		Message: llm.Message{Content: `{"note":"草稿"}`, ReasoningContent: object},
+	}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	style, err = parseGeneratedPDFStyle(text)
+	if err != nil || style.ID != "harbor" {
+		t.Fatalf("non-style object hid reasoning: %+v err = %v", style, err)
+	}
+	cutOff := "{\n  \"id\": \"harbor\",\n  \"colors\": {\"ink\":\"1C1917\",\"navy\":\"134E4A\",\"accent\":\"0F766E\",\"gold\":\"B45309\",\"meta\":\"44403C\",\"rule\":\"0F766E\",\"quote\":\"115E59\",\"link\":\"0F766E\",\"on_dark\":\"F0FDFA\"}\n"
+	text, err = documentStyleResponseText(&llm.Response{Choices: []llm.Choice{{
+		Message: llm.Message{Content: cutOff, ReasoningContent: object},
+	}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	style, err = parseGeneratedPDFStyle(text)
+	if err != nil || style.ID != "harbor" {
+		t.Fatalf("cut-off colors hid reasoning: %+v err = %v", style, err)
+	}
+	text, err = documentStyleResponseText(&llm.Response{Choices: []llm.Choice{{
+		Message: llm.Message{Content: `{"id":"gov"`, ReasoningContent: object},
+	}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	style, err = parseGeneratedPDFStyle(text)
+	if err != nil || style.ID != "harbor" {
+		t.Fatalf("cut-off content hid reasoning: %+v err = %v", style, err)
+	}
+	visible := strings.Replace(object, `"id": "harbor"`, `"id": "pier"`, 1)
+	text, err = documentStyleResponseText(&llm.Response{Choices: []llm.Choice{{
+		Message: llm.Message{Content: visible, ReasoningContent: object},
+	}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	style, err = parseGeneratedPDFStyle(text)
+	if err != nil || style.ID != "pier" {
+		t.Fatalf("visible style lost: %+v err = %v", style, err)
+	}
+}
+
+func TestParseGeneratedPDFStyleTakesTheFirstValidObject(t *testing.T) {
+	object := `{
+	  "id": "harbor",
+	  "label": "港务",
+	  "summary": "深色港务通报",
+	  "keywords": ["港务", "通报"],
+	  "motif": "rail",
+	  "colors": {"ink":"1C1917","navy":"134E4A","accent":"0F766E","gold":"B45309","meta":"44403C","rule":"0F766E","quote":"115E59","link":"0F766E","on_dark":"F0FDFA"}
+	}`
+	style, err := parseGeneratedPDFStyle("配色注意 {颜色} 即可。\n" + object)
+	if err != nil || style.ID != "harbor" {
+		t.Fatalf("prose brace: %+v %v", style, err)
+	}
+	withComma := strings.Replace(object, `"通报"]`, `"通报",]`, 1)
+	withComma = strings.Replace(withComma, `"on_dark":"F0FDFA"}`, `"on_dark":"F0FDFA",}`, 1)
+	style, err = parseGeneratedPDFStyle("说明在前。\n" + withComma)
+	if err != nil || style.ID != "harbor" || len(style.Keywords) != 2 {
+		t.Fatalf("trailing comma: %+v %v", style, err)
+	}
+	// A brace inside a string is part of the object, not a second candidate.
+	quoted := strings.Replace(object, `"港务"`, `"注意 {颜色}"`, 1)
+	style, err = parseGeneratedPDFStyle(quoted)
+	if err != nil || style.Label != "注意 {颜色}" {
+		t.Fatalf("brace in string: %+v %v", style, err)
+	}
+	asWords := strings.Replace(object, `"keywords": ["港务", "通报"]`, `"keywords": "港务、通报"`, 1)
+	style, err = parseGeneratedPDFStyle(asWords)
+	if err != nil || style.ID != "harbor" || len(style.Keywords) != 2 {
+		t.Fatalf("keyword string: %+v %v", style, err)
+	}
+	style, err = parseGeneratedPDFStyle("先写 {\"note\":\"草稿\"}。\n" + object)
+	if err != nil || style.ID != "harbor" {
+		t.Fatalf("non-style object: %+v %v", style, err)
+	}
+	style, err = parseGeneratedPDFStyle("[" + object + "]")
+	if err != nil || style.ID != "harbor" {
+		t.Fatalf("array: %+v %v", style, err)
+	}
+	revised := strings.Replace(object, `"id": "harbor"`, `"id": "pier"`, 1)
+	style, err = parseGeneratedPDFStyle(object + "\n" + revised)
+	if err != nil || style.ID != "pier" {
+		t.Fatalf("last style: %+v %v", style, err)
+	}
+}
+
 func TestPDFStyleCallErrorHidesTheEndpoint(t *testing.T) {
 	secret := "https://token.example.test/v1/chat"
 	deadline := &url.Error{Op: "Post", URL: secret, Err: context.DeadlineExceeded}
@@ -251,6 +442,15 @@ func TestPDFStyleCallErrorHidesTheEndpoint(t *testing.T) {
 	keep := errors.New("模型请求失败（HTTP 503）")
 	if pdfStyleCallError(keep).Error() != keep.Error() {
 		t.Fatalf("status rewritten: %v", pdfStyleCallError(keep))
+	}
+	status := pdfStyleCallError(&llm.HTTPStatusError{StatusCode: 429, Body: []byte(`{"key":"secret"}`)})
+	if status == nil || status.Error() != "模型请求失败（HTTP 429）" || strings.Contains(status.Error(), "secret") {
+		t.Fatalf("anthropic status: %v", status)
+	}
+	leaked := errors.New("[https://token.example.test/v1] parse anthropic response")
+	got = pdfStyleCallError(leaked)
+	if got == nil || got.Error() != "模型请求失败" || strings.Contains(got.Error(), "token.example") {
+		t.Fatalf("endpoint wrapper: %v", got)
 	}
 	text, err := pdfStyleModelText("", errors.New("empty caption response"))
 	if text != "" || err == nil || err.Error() != "模型没有返回内容" {

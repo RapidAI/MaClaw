@@ -15,7 +15,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/docgen"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
@@ -446,13 +448,265 @@ func uniquePDFStyleID(id string, existing []docgen.CustomStyle) string {
 	return candidate
 }
 
-func parseGeneratedPDFStyle(raw string) (docgen.CustomStyle, error) {
-	body := extractJSONObject(raw)
-	if body == "" {
-		return docgen.CustomStyle{}, fmt.Errorf("模型没有返回可用的风格 JSON")
+// styleChannelSplit keeps the visible text from gluing onto the reasoning
+// channel. A cut-off object must not absorb the other side.
+const styleChannelSplit = "\x00"
+
+var (
+	errStyleJSONCutOff  = errors.New("模型输出被截断，没有完整的风格 JSON")
+	errStyleJSONMissing = errors.New("模型没有返回可用的风格 JSON")
+)
+
+// styleCandidate is one JSON object from model text. Nested is set when the
+// object sits inside an unclosed outer value, such as a colors map inside a
+// style that was cut off.
+type styleCandidate struct {
+	body   string
+	nested bool
+}
+
+// styleJSONCandidates returns JSON objects in model text, in order. A brace in
+// the prose is not an object. A nested object inside a value that is already
+// valid JSON is not a second candidate. A trailing comma before } or ] is
+// dropped when that is what makes the value valid. Voice commands keep
+// extractJSONObject.
+func styleJSONCandidates(raw string) []styleCandidate {
+	text := jsonObjectSearchText(raw)
+	var out []styleCandidate
+	inString := false
+	escaped := false
+	nested := false
+	for i := 0; i < len(text); {
+		c := text[i]
+		if inString {
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inString = false
+			}
+			i++
+			continue
+		}
+		if c == '"' {
+			inString = true
+			i++
+			continue
+		}
+		if c != '{' {
+			i++
+			continue
+		}
+		obj, ok := balancedJSONObject(text[i:])
+		if !ok {
+			nested = true
+			i++
+			continue
+		}
+		use := obj
+		if !json.Valid([]byte(obj)) {
+			relaxed := relaxTrailingCommas(obj)
+			if !json.Valid([]byte(relaxed)) {
+				i++
+				continue
+			}
+			use = relaxed
+		}
+		out = append(out, styleCandidate{body: use, nested: nested})
+		i += len(obj)
 	}
+	return out
+}
+
+// styleJSONLooksLikeAttempt reports a complete object that tried to be a
+// style. A preamble such as {"note":"..."} does not.
+func styleJSONLooksLikeAttempt(body string) bool {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &raw); err != nil {
+		return false
+	}
+	if _, ok := raw["motif"]; ok {
+		return true
+	}
+	if _, ok := raw["colors"]; ok {
+		return true
+	}
+	_, ok := raw["label"]
+	return ok
+}
+
+// styleJSONIsFragment reports an object that is only part of a style, such as
+// the colors map. A preamble note is also a fragment. A style with a label or
+// a motif is not.
+func styleJSONIsFragment(body string) bool {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &raw); err != nil {
+		return true
+	}
+	if _, ok := raw["label"]; ok {
+		return false
+	}
+	_, ok := raw["motif"]
+	return !ok
+}
+
+// walkStyleCandidates tries the visible text first, then the reasoning
+// channel. Within a channel the last object that accept returns nil for is
+// the one kept. A later channel is used only when this channel has none.
+// A colors map inside an unclosed style does not replace the cut-off error.
+// A complete style attempt still reports its own validation error.
+func walkStyleCandidates(raw string, accept func(body string) error) error {
+	parts := strings.Split(raw, styleChannelSplit)
+	var preferred error
+	anyCutoff := false
+	for i, part := range parts {
+		cands := styleJSONCandidates(part)
+		if styleJSONLooksCutOff(part) {
+			anyCutoff = true
+		}
+		if len(cands) == 0 {
+			continue
+		}
+		chosen := false
+		var attemptErr error
+		for _, cand := range cands {
+			err := accept(cand.body)
+			if err == nil {
+				chosen = true
+				continue
+			}
+			// A colors map inside an unclosed style has neither label nor motif.
+			// A full style after an unclosed prose brace still has both, so its
+			// own validation error stays.
+			if cand.nested && styleJSONIsFragment(cand.body) {
+				continue
+			}
+			if !styleJSONLooksLikeAttempt(cand.body) {
+				continue
+			}
+			if attemptErr == nil {
+				attemptErr = err
+			}
+		}
+		if chosen {
+			return nil
+		}
+		if attemptErr != nil && (i == 0 || preferred == nil) {
+			preferred = attemptErr
+		}
+	}
+	if preferred != nil {
+		return preferred
+	}
+	if anyCutoff {
+		return errStyleJSONCutOff
+	}
+	return errStyleJSONMissing
+}
+
+// balancedJSONObject returns the {...} that starts at s. Braces and quotes
+// inside strings do not change the depth.
+func balancedJSONObject(s string) (string, bool) {
+	if s == "" || s[0] != '{' {
+		return "", false
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return s[:i+1], true
+			}
+		}
+	}
+	return "", false
+}
+
+// relaxTrailingCommas drops a comma that sits immediately before } or ],
+// outside of strings.
+func relaxTrailingCommas(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inString := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			b.WriteByte(c)
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		if c == '"' {
+			inString = true
+			b.WriteByte(c)
+			continue
+		}
+		if c == ',' {
+			j := i + 1
+			for j < len(s) && (s[j] == ' ' || s[j] == '\n' || s[j] == '\r' || s[j] == '\t') {
+				j++
+			}
+			if j < len(s) && (s[j] == '}' || s[j] == ']') {
+				continue
+			}
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+func parseGeneratedPDFStyle(raw string) (docgen.CustomStyle, error) {
 	var style docgen.CustomStyle
-	if err := json.Unmarshal([]byte(body), &style); err != nil {
+	err := walkStyleCandidates(raw, func(body string) error {
+		parsed, decErr := decodeGeneratedPDFStyle(body)
+		if decErr != nil {
+			return decErr
+		}
+		style = parsed
+		return nil
+	})
+	if errors.Is(err, errStyleJSONCutOff) || errors.Is(err, errStyleJSONMissing) {
+		logUnusablePDFStyle(raw)
+	}
+	return style, err
+}
+
+func decodeGeneratedPDFStyle(body string) (docgen.CustomStyle, error) {
+	var style docgen.CustomStyle
+	if err := json.Unmarshal([]byte(styleJSONWithKeywordList(body)), &style); err != nil {
 		return docgen.CustomStyle{}, fmt.Errorf("风格 JSON 无法解析")
 	}
 	if err := docgen.ValidateCustomStyle(style); err != nil && (strings.Contains(err.Error(), "pdf_style_id_invalid") || strings.Contains(err.Error(), "pdf_style_id_taken")) {
@@ -462,6 +716,56 @@ func parseGeneratedPDFStyle(raw string) (docgen.CustomStyle, error) {
 		return docgen.CustomStyle{}, pdfStyleClientError(err)
 	}
 	return style, nil
+}
+
+// styleJSONWithKeywordList turns "keywords":"公文、红头" into a string array.
+// The prompt asks for words, and a single string must not fail the whole object.
+func styleJSONWithKeywordList(body string) string {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &raw); err != nil {
+		return body
+	}
+	kw, ok := raw["keywords"]
+	if !ok {
+		return body
+	}
+	kw = bytes.TrimSpace(kw)
+	if len(kw) == 0 || kw[0] != '"' {
+		return body
+	}
+	var text string
+	if err := json.Unmarshal(kw, &text); err != nil {
+		return body
+	}
+	encoded, err := json.Marshal(splitStyleKeywords(text))
+	if err != nil {
+		return body
+	}
+	raw["keywords"] = encoded
+	out, err := json.Marshal(raw)
+	if err != nil {
+		return body
+	}
+	return string(out)
+}
+
+func splitStyleKeywords(text string) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return []string{}
+	}
+	parts := strings.FieldsFunc(text, func(r rune) bool {
+		switch r {
+		case ',', '，', '、', ';', '；', '|', ' ', '\t', '\n', '\r':
+			return true
+		default:
+			return false
+		}
+	})
+	if len(parts) == 0 {
+		return []string{}
+	}
+	return parts
 }
 
 func pdfStyleClientError(err error) error {
@@ -496,8 +800,34 @@ motif：版式，必须是 masthead、rail、frame、band、ledger 之一。mast
 colors：6 位十六进制，不要带 #。必须包含 ink、navy、accent、gold、meta、rule、quote、link、on_dark
 页面底色保持白色。ink、navy、meta、quote、link 必须在白底上清楚，不要用浅灰。accent 和 rule 要饱和。on_dark 是深色顶栏上的浅色字。`
 
+// prepareDocumentStyleModel keeps a short JSON answer from being eaten by
+// chain-of-thought. GLM-5.3-Flash thinks unless the request says
+// thinking.type=disabled, and then a 900-token cap ends inside the JSON.
+// GLM-5.3 cannot disable thinking; a low budget plus room for the answer
+// keeps FitAnthropicThinkingBudget from shrinking the budget to one token.
+func prepareDocumentStyleModel(cfg corelib.MaclawLLMConfig) (corelib.MaclawLLMConfig, int) {
+	cfg = captionRequestConfig(cfg)
+	if corelib.IsAlwaysOnThinkingModel(cfg) {
+		cfg.ReasoningEffort = "low"
+		return cfg, 2048
+	}
+	if corelib.GLMFlashThinksByDefault(cfg) {
+		cfg.ThinkingMode = "disabled"
+	}
+	return cfg, 900
+}
+
+func logUnusablePDFStyle(raw string) {
+	text := strings.ReplaceAll(raw, styleChannelSplit, " ")
+	text = strings.Join(strings.Fields(text), " ")
+	if utf8.RuneCountInString(text) > 80 {
+		text = string([]rune(text)[:80])
+	}
+	log.Printf("[pdf-style] no JSON object: chars=%d preview=%q", utf8.RuneCountInString(raw), text)
+}
+
 func (a *App) completePDFStyleJSON(request string) (string, error) {
-	cfg := captionRequestConfig(a.withGlobalThinkingMode(a.GetMaclawLLMConfig()))
+	cfg, maxTokens := prepareDocumentStyleModel(a.withGlobalThinkingMode(a.GetMaclawLLMConfig()))
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		return "", fmt.Errorf("请先在「大模型配置」里保存一个可用模型")
 	}
@@ -507,10 +837,10 @@ func (a *App) completePDFStyleJSON(request string) (string, error) {
 		map[string]interface{}{"role": "system", "content": pdfStyleSystemPrompt},
 		map[string]interface{}{"role": "user", "content": request},
 	}
-	extra := map[string]interface{}{"max_tokens": 900}
+	extra := map[string]interface{}{"max_tokens": maxTokens}
 	if captionUsesAnthropic(cfg) {
-		resp, err := llm.DoAnthropicRequestWithOptions(ctx, cfg, messages, nil, pdfStyleHTTPClient, llm.AnthropicMessagesRequestOptions{MaxTokens: 900})
-		text, err := captionTextFromResponse(resp, err)
+		resp, err := llm.DoAnthropicRequestWithOptions(ctx, cfg, messages, nil, pdfStyleHTTPClient, llm.AnthropicMessagesRequestOptions{MaxTokens: maxTokens})
+		text, err := documentStyleResponseText(resp, err)
 		return pdfStyleModelText(text, err)
 	}
 	if cfg.IsResponsesAPI() {
@@ -544,7 +874,7 @@ func pdfStyleHTTPParse(ctx context.Context, req *http.Request, parse func([]byte
 		return "", fmt.Errorf("模型请求失败（HTTP %d）", resp.StatusCode)
 	}
 	parsed, err := parse(body)
-	text, err := captionTextFromResponse(parsed, err)
+	text, err := documentStyleResponseText(parsed, err)
 	return pdfStyleModelText(text, err)
 }
 
@@ -576,8 +906,18 @@ func pdfStyleCallError(err error) error {
 		}
 		return fmt.Errorf("模型请求失败")
 	}
+	var status *llm.HTTPStatusError
+	if errors.As(err, &status) && status != nil && status.StatusCode > 0 {
+		log.Printf("[pdf-style] model call failed: %v", err)
+		return fmt.Errorf("模型请求失败（HTTP %d）", status.StatusCode)
+	}
 	if err.Error() == "empty caption response" {
 		return fmt.Errorf("模型没有返回内容")
+	}
+	// Anthropic wraps a non-status failure with the endpoint in the message.
+	if strings.Contains(err.Error(), "://") {
+		log.Printf("[pdf-style] model call failed: %v", err)
+		return fmt.Errorf("模型请求失败")
 	}
 	return err
 }

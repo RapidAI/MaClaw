@@ -44,7 +44,7 @@ function GoalBarClock({ snap }: { snap: GoalBarSnapshot }) {
     if (!text) return null;
     return (
         <span data-testid="goal-bar-elapsed" style={{ flex: "0 0 auto", whiteSpace: "nowrap" }}>
-            · {text}
+            {text}
         </span>
     );
 }

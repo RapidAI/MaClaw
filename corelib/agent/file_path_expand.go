@@ -96,6 +96,19 @@ const (
 	defaultAutoInjectMaxFileBytes = MaxOfficeReadFileBytes
 )
 
+// autoInjectSizeLimitForTest lowers only the chat auto-inject cap. Zero uses
+// MaxOfficeReadFileBytes. read_document and SnapshotBoundedDocumentInput stay
+// on the real cap, so a test can exercise the oversized-scan window without
+// allocating a 32 MiB file.
+var autoInjectSizeLimitForTest int64
+
+func autoInjectSizeLimit() int64 {
+	if autoInjectSizeLimitForTest > 0 {
+		return autoInjectSizeLimitForTest
+	}
+	return defaultAutoInjectMaxFileBytes
+}
+
 // ExpandUserSelectedFilePaths finds the GUI marker section, extracts supported
 // document files via native parsers, and appends the text bodies. Image and
 // other non-document paths are left listed only. Idempotent when already expanded.
@@ -650,6 +663,12 @@ func AutoExtractNeedsContinuation(text string) bool {
 		if !isAutoExtractBeginLine(trimmed) {
 			continue
 		}
+		if _, terminal := terminalExtractClasses[extractErrorClassToken(trimmed)]; terminal {
+			// input_too_large, encrypted, and the other blocked classes are
+			// not pageable. Overlaying office here only invites a second read
+			// and then a shell bypass.
+			continue
+		}
 		if strings.Contains(trimmed, "truncated=true") {
 			return true
 		}
@@ -1049,7 +1068,13 @@ func formatAutoExtractedDocumentWithSettings(filePath string, maxTokens, slack i
 	if info.IsDir() {
 		return autoExtractErrorBlock(filePath, "", "路径是目录"), 0
 	}
-	if info.Size() > defaultAutoInjectMaxFileBytes {
+	if info.Size() > autoInjectSizeLimit() {
+		// A scanned PDF inside the built-in OCR cap is read from page images.
+		// Other office files, and a PDF with no page image, stay on the
+		// terminal size error.
+		if block, used, ok := formatOversizedScanPDF(filePath, resolved, info.Size(), settings); ok {
+			return block, used
+		}
 		return autoExtractPolicyErrorBlock(filePath, "", "input_too_large"), 0
 	}
 
@@ -1176,10 +1201,27 @@ func autoExtractErrorBlock(filePath, format, msg string) string {
 // fallback parser for the same rejected input.
 func autoExtractPolicyErrorBlock(filePath, format, errorClass string, guidance ...string) string {
 	msg := fmt.Sprintf("自动注入已跳过（error_class=%s）。", errorClass)
+	pdfTooBig := errorClass == "input_too_large" && strings.EqualFold(filepath.Ext(filePath), ".pdf")
+	// The error attribute keeps 120 runes and history keeps 80 of those.
+	// The OCR instruction has to live in that head: the body is stripped
+	// before the next 「继续」.
+	withinOCR := pdfTooBig && pdfFileWithinBuiltinOCRCap(filePath)
+	if withinOCR {
+		msg += "扫描件请用 ocr_recognize（本机 PP-OCRv6），不要安装其他引擎。"
+	} else if pdfTooBig {
+		msg += "该 PDF 超过内置识别的 256 MiB 上限。"
+	}
 	if len(guidance) > 0 && guidance[0] != "" {
 		msg += "\n" + guidance[0]
-	} else if fallback, blocked := officeReadBlockedFailureGuidance(errorClass); blocked {
-		msg += "\n" + fallback
+	} else if !pdfTooBig {
+		if fallback, blocked := officeReadBlockedFailureGuidance(errorClass); blocked {
+			msg += "\n" + fallback
+		}
+	}
+	if withinOCR {
+		msg += "\n这是正文注入上限，不是缺少 OCR。把该 PDF 交给 ocr_recognize，output_path 写识别文本，start_page 从 1 起。不要拆分或缩小文件，不要安装 rapidocr、paddleocr、tesseract 或 ocrmypdf。"
+	} else if pdfTooBig {
+		msg += "\n请拆分后再识别。不要安装其他 OCR 引擎。"
 	}
 	return autoExtractErrorBlock(filePath, format, msg)
 }
@@ -1386,7 +1428,8 @@ func IsImageFilePath(filePath string) bool {
 func isDocumentExt(ext string) bool {
 	switch ext {
 	case ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".ppt", ".pptx",
-		".txt", ".md", ".markdown", ".json", ".xml", ".yaml", ".yml", ".log":
+		".txt", ".md", ".markdown", ".json", ".xml", ".yaml", ".yml", ".log",
+		".dwg", ".dxf", ".dxfb", ".glb", ".gltf", ".epub", ".adoc", ".asciidoc", ".eml":
 		return true
 	default:
 		return false

@@ -437,6 +437,30 @@ func TestNormalizeAgentTimeoutSec(t *testing.T) {
 	}
 }
 
+func TestNormalizeLongRunTimeoutSec(t *testing.T) {
+	tests := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{name: "missing", in: 0, want: DefaultAgentTimeoutSec},
+		{name: "below min", in: 120, want: MinAgentTimeoutSec},
+		{name: "hours", in: 6 * 3600, want: 6 * 3600},
+		{name: "days", in: 3 * 24 * 3600, want: 3 * 24 * 3600},
+		{name: "above max", in: MaxLongRunTimeoutSec + 1, want: MaxLongRunTimeoutSec},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NormalizeLongRunTimeoutSec(tt.in); got != tt.want {
+				t.Fatalf("NormalizeLongRunTimeoutSec(%d) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+	if MaxLongRunTimeoutSec < 7*24*3600 {
+		t.Fatalf("MaxLongRunTimeoutSec = %d, want at least 7 days", MaxLongRunTimeoutSec)
+	}
+}
+
 func TestNormalizeSkillRunnerTimeoutSec(t *testing.T) {
 	tests := []struct {
 		name string

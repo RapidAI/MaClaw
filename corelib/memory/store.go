@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -19,6 +20,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
 	"github.com/RapidAI/CodeClaw/corelib/fileutil"
+	"github.com/RapidAI/CodeClaw/corelib/rerank"
 )
 
 // Store provides persistent long-term memory storage.
@@ -38,7 +40,9 @@ type Store struct {
 	graph               *memoryGraph
 	embedder            embedding.Embedder // nil until SetEmbedder is called
 	embedderGen         uint64             // increments whenever SetEmbedder changes the embedder
-	archive             *ArchiveStore      // cold storage for evicted entries
+	reranker            rerank.Reranker    // nil until SetReranker is called; guarded by rerankerMu
+	rerankerMu          sync.RWMutex
+	archive             *ArchiveStore // cold storage for evicted entries
 	tmt                 *TemporalTree
 	gating              *RecallGating
 	partMgr             *partitionManager                       // category-based partitioned persistence
@@ -1179,7 +1183,12 @@ func recallResultIDs(result []Entry) []string {
 // Caller must NOT hold any lock; this method acquires RLock internally.
 func (s *Store) recallForProjectLocked(query string, bm25Scores map[string]float64, vecScores map[string]float64, queryTokens []string, projectPath string) []Entry {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
+	released := false
+	defer func() {
+		if !released {
+			s.mu.RUnlock()
+		}
+	}()
 
 	// === Phase 3: Dynamic Budget ===
 	activeCount := s.activeCountLocked()
@@ -1256,8 +1265,23 @@ func (s *Store) recallForProjectLocked(query string, bm25Scores map[string]float
 	// 1-hop graph expansion: expand top candidates to discover related entries.
 	others = s.graphExpand(others, graphExpandSeeds)
 	others = filterRecallProjectOthers(others, projectLower)
-	if ClassifyComplexity(query, queryTokens, nil) != ComplexitySimple && s.themeManager != nil {
-		others = themeAwareDiversityRerank(others, s.themeManager.Themes(), graphExpandSeeds)
+	complex := ClassifyComplexity(query, queryTokens, nil) != ComplexitySimple
+	var themes []ThemeNode
+	var projectReranker rerank.Reranker
+	if complex {
+		projectReranker = s.currentReranker()
+		if s.themeManager != nil {
+			themes = s.themeManager.Themes()
+		}
+	}
+	// The model call must not sit under s.mu. Entries below are copies.
+	released = true
+	s.mu.RUnlock()
+	if complex {
+		others, _ = blendRelevanceRerank(context.Background(), projectReranker, query, others)
+		if len(themes) > 0 {
+			others = themeAwareDiversityRerank(others, themes, graphExpandSeeds)
+		}
 	}
 
 	// Temporal demotion: entries marked stale or temporally invalidated are
@@ -2317,7 +2341,25 @@ func (s *Store) recallDynamicCoreWithOptions(query string, category Category, pr
 		s.recordRecallTrace(filterOwner, trace)
 		return nil, trace
 	}
-	candidates := s.scoreRecallCandidatesLocked(signals, query, category, projectPath, filterOwner, opts, true)
+	unlocked := false
+	defer func() {
+		if !unlocked {
+			s.mu.RUnlock()
+		}
+	}()
+	candidates := s.scoreRecallCandidatesLocked(signals, category, projectPath, filterOwner, opts)
+	complex := ClassifyComplexity(query, signals.expanded.Entities, nil) != ComplexitySimple
+	var themes []ThemeNode
+	var dynamicReranker rerank.Reranker
+	if complex {
+		dynamicReranker = s.currentReranker()
+		if s.themeManager != nil {
+			themes = s.themeManager.Themes()
+		}
+	}
+	unlocked = true
+	s.mu.RUnlock()
+	candidates, rerankMeta := finalizeRecallCandidates(candidates, query, signals.now, dynamicReranker, themes, complex)
 
 	const maxEntries = 15
 	const maxTokens = 2500
@@ -2334,7 +2376,6 @@ func (s *Store) recallDynamicCoreWithOptions(query string, category Category, pr
 		tokenBudget -= tokens
 		result = append(result, sc.entry)
 	}
-	s.mu.RUnlock()
 
 	finalSemanticHits := make(map[string]SemanticSearchHit)
 	for _, entry := range result {
@@ -2343,6 +2384,8 @@ func (s *Store) recallDynamicCoreWithOptions(query string, category Category, pr
 		}
 	}
 	trace := newRecallTrace(query, category, projectPath, signals.expanded, signals.bm25Scores, signals.vecScores, signals.semanticScores, candidates, result)
+	trace.RerankApplied = rerankMeta.applied
+	trace.RerankPool = rerankMeta.pool
 	s.recordRecallDebug(filterOwner, finalSemanticHits, signals.derivedFacts)
 	s.recordRecallTrace(filterOwner, trace)
 	return result, trace
@@ -2358,10 +2401,20 @@ func (s *Store) recallScoredForPagination(query string, category Category, proje
 		s.recordRecallTrace(ownerID, trace)
 		return nil
 	}
-	defer s.mu.RUnlock()
-	return s.scoreRecallCandidatesLocked(signals, query, category, projectPath, ownerID, recallFilterOptions{
+	unlocked := false
+	defer func() {
+		if !unlocked {
+			s.mu.RUnlock()
+		}
+	}()
+	scored := s.scoreRecallCandidatesLocked(signals, category, projectPath, ownerID, recallFilterOptions{
 		excludeWhenNoCategory: proactiveRecallExcludeCategories,
-	}, false)
+	})
+	unlocked = true
+	s.mu.RUnlock()
+	// Pagination keeps fusion order plus temporal demotion. No model call.
+	scored, _ = finalizeRecallCandidates(scored, query, signals.now, nil, nil, false)
+	return scored
 }
 
 // recallScoredForScroll caches the shared pagination ranking for one loop.

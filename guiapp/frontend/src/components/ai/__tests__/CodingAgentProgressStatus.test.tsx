@@ -253,7 +253,7 @@ describe('CodingAgentProgressStatus', () => {
         expect(preview.textContent).toContain('Remove-Item');
         expect(preview.getAttribute('title')).toBe(command);
         expect(preview.getAttribute('role')).toBe('note');
-        expect(preview.getAttribute('aria-label')).toBe(`Command: ${command}`);
+        expect(preview.getAttribute('aria-label')).toBe(`Command: ${command}. blocked by guardrail`);
     });
 
     it('shows the command for failed remote bash, but not successful bash', () => {
@@ -1537,7 +1537,6 @@ describe('CodingAgentProgressStatus', () => {
         const search = container.querySelector('[data-testid="coding-agent-tool-line"]');
         expect(search?.textContent).toContain('Search');
         expect(search?.textContent).toContain('func main · src/main.go');
-        expect(search?.getAttribute('data-tool-collapsed')).toBe('false');
         expect(search?.textContent).not.toContain('Fix auth');
 
         const explored = render(
@@ -1552,7 +1551,6 @@ describe('CodingAgentProgressStatus', () => {
         const line = explored.container.querySelector('[data-testid="coding-agent-tool-line"]');
         expect(line?.textContent).toContain('Explore');
         expect(line?.textContent).toContain('buildTask · guiapp/coding_subagent.go');
-        expect(line?.getAttribute('data-tool-collapsed')).toBe('false');
 
         const codegraph = render(
             <>
@@ -1567,7 +1565,8 @@ describe('CodingAgentProgressStatus', () => {
         expect(graph?.textContent).toContain('Explore');
         expect(graph?.textContent).toContain('buildTask');
         expect(graph?.textContent).not.toContain('codegraph explore');
-        expect(graph?.getAttribute('data-tool-collapsed')).toBe('false');
+        const titles = Array.from(graph?.querySelectorAll('[title]') || []).map((node) => node.getAttribute('title') || '');
+        expect(titles.join('\n')).not.toContain('codegraph');
 
         expect(codingAgentShellExplorationTarget({
             phase: 'running',
@@ -1767,7 +1766,7 @@ describe('CodingAgentProgressStatus', () => {
         })).toEqual(['snake.cpp']);
     });
 
-    it('collapses completed tool details but keeps a concise receipt visible', () => {
+    it('keeps the command visible after a completed tool finishes', () => {
         render(
             <>
                 {renderCodingAgentActivityFeed(
@@ -1779,13 +1778,46 @@ describe('CodingAgentProgressStatus', () => {
         );
 
         const line = screen.getByTestId('coding-agent-tool-line');
-        expect(line.getAttribute('data-tool-collapsed')).toBe('true');
-        expect(line.textContent).toContain('Completed');
-        const details = line as HTMLDetailsElement;
-        expect(details.open).toBe(false);
-        fireEvent.click(screen.getByText('Completed'));
-        expect(details.open).toBe(true);
-        expect(line.textContent).toContain('cmd /c del /F /Q build\\*.*');
+        expect(line.querySelector('summary')).toBeNull();
+        const command = 'cmd /c del /F /Q build\\*.*';
+        expect(line.textContent).toContain(command);
+        expect(line.textContent).not.toContain('Completed');
+        expect(line.textContent!.split(command).length - 1).toBe(1);
+    });
+
+    it('shows a finished shell command once instead of 已完成', () => {
+        render(
+            <>
+                {renderCodingAgentActivityFeed(
+                    [makeProgressMsg('Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"需求理解","turn_id":"turn-1","detail":"bash","outcome":"success","duration_ms":497,"command":"cmake --build build"}')],
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'zh-Hans',
+                )}
+            </>,
+        );
+
+        const line = screen.getByTestId('coding-agent-tool-line');
+        expect(line.textContent).toContain('cmake --build build');
+        expect(line.textContent).not.toContain('已完成');
+        expect(line.textContent).toContain('497ms');
+        expect(line.textContent!.split('cmake --build build').length - 1).toBe(1);
+    });
+
+    it('shows a running read target once', () => {
+        render(
+            <>
+                {renderCodingAgentActivityFeed(
+                    [makeProgressMsg('Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","task_id":"T1","title":"需求理解","turn_id":"turn-1","detail":"read_file","files":["README.md"]}')],
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'zh-Hans',
+                )}
+            </>,
+        );
+
+        const line = screen.getByTestId('coding-agent-tool-line');
+        expect(line.getAttribute('data-tool-running')).toBe('true');
+        expect(line.textContent).toContain('Read');
+        expect(line.textContent!.split('README.md').length - 1).toBe(1);
     });
 
     it('keeps a critical completed tool failure expanded', () => {
@@ -1799,10 +1831,43 @@ describe('CodingAgentProgressStatus', () => {
             </>,
         );
 
-        const line = screen.getByTestId('coding-agent-tool-line') as HTMLDetailsElement;
-        expect(line.getAttribute('data-tool-collapsed')).toBe('false');
-        expect(line.open).toBe(true);
-        expect(line.textContent).toContain('cmd /c del /F /Q build\\*.*');
+        const line = screen.getByTestId('coding-agent-tool-line');
+        const command = 'cmd /c del /F /Q build\\*.*';
+        expect(line.textContent).toContain(command);
+        expect(line.textContent).toContain('Access is denied');
+        expect(line.textContent!.split(command).length - 1).toBe(1);
+        const note = line.querySelector('[data-tool-note]');
+        expect(note?.textContent).toBe('· Access is denied');
+        expect(note?.textContent).not.toContain(command);
+        expect(screen.getByTestId('coding-agent-command-preview').getAttribute('title')).toBe(command);
+    });
+
+    it('tooltips the raw command when the visible line collapses whitespace', () => {
+        const command = `${'go test ./pkg '.repeat(8)}\n-count=1`;
+        render(
+            <>
+                {renderCodingAgentActivityFeed(
+                    [makeProgressMsg(`Coding Agent Event: ${JSON.stringify({
+                        version: 1,
+                        agent: 'coding',
+                        event: 'tool_finished',
+                        phase: 'running',
+                        task_id: 'T1',
+                        title: 'Test',
+                        detail: 'bash',
+                        outcome: 'success',
+                        command,
+                    })}`)],
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'en',
+                )}
+            </>,
+        );
+
+        const line = screen.getByTestId('coding-agent-tool-line');
+        expect(line.textContent).toContain('go test ./pkg');
+        expect(line.textContent).not.toContain('\n');
+        expect(line.querySelector('[title*="go test"]')?.getAttribute('title')).toBe(command);
     });
 
     it('renders Edit/Write lines as Codex file cards with line counts', () => {

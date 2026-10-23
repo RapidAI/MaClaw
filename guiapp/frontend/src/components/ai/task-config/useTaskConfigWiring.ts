@@ -109,6 +109,12 @@ export interface TaskConfigWiringOptions {
     /** Files the new-task screen itself is holding. Empty unless that screen added them. */
     guidePendingAttachments?: readonly unknown[];
     guideSelectedFilePaths?: readonly string[];
+    /**
+     * Waits until a clipboard or drop save finishes, then returns that
+     * composer's attachment paths. The React list is still stale until paint.
+     */
+    settleGuideAttachments?: () => Promise<readonly string[]>;
+    settleSessionAttachments?: () => Promise<readonly string[]>;
     /** Clears the new-task draft only. */
     clearGuideDraft?: () => void;
     replacePendingAttachments?: (items: unknown[]) => void;
@@ -176,7 +182,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
     const {
         activeTab, isLocalTabActive, lang, taskListProp,
         inputRef, inputValue, composeAction, inputLocked, assistantBusy = false, keepExecutionSurface = false, localGuideVisible = false,
-        pendingAttachments, selectedFilePaths, showComposerText, guideInputValue = "", guideInputRef, guidePendingAttachments, guideSelectedFilePaths, clearGuideDraft, replacePendingAttachments, replaceSelectedFilePaths, activeChatVisible = false,
+        pendingAttachments, selectedFilePaths, showComposerText, guideInputValue = "", guideInputRef, guidePendingAttachments, guideSelectedFilePaths, settleGuideAttachments, settleSessionAttachments, clearGuideDraft, replacePendingAttachments, replaceSelectedFilePaths, activeChatVisible = false,
         handleSend, handleWelcomePromptSend, clearComposerDraft,
         getTabs, getTabState, saveTabState,
         setQueueInteractionStarted, setQueueEditDraftActive, setEditingEntryId,
@@ -587,18 +593,21 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         return localGuideVisible || !!getTabState(activeTab.id)?.newTaskWizard;
     }, [activeTab.id, getTabState, isLocalTabActive, localGuideVisible, wizardOverlay]);
 
-    const collectGuideFilePaths = useCallback((): string[] => {
+    const collectGuideFilePaths = useCallback(async (): Promise<string[]> => {
         // Over another tab, the new-task screen must not send that tab's files.
+        // A pathless paste is still copying when Enter arrives. Wait for that
+        // save and read the hook's list, which is ahead of the next render.
         const separate = wizardOverlay && !isLocalTabActive;
-        const paths = [
-            ...(separate ? (guideSelectedFilePaths ?? []) : (selectedFilePaths ?? [])),
-            ...(separate ? (guidePendingAttachments ?? []) : (pendingAttachments ?? [])).map((item) => {
+        const settle = separate ? settleGuideAttachments : settleSessionAttachments;
+        const pasted = settle
+            ? [...await settle()]
+            : (separate ? (guidePendingAttachments ?? []) : (pendingAttachments ?? [])).map((item) => {
                 if (!item || typeof item !== "object") return "";
                 return String((item as { filePath?: unknown }).filePath || "").trim();
-            }),
-        ];
-        return paths.map((path) => path.trim()).filter((path, index, all) => path.length > 0 && all.indexOf(path) === index);
-    }, [guidePendingAttachments, guideSelectedFilePaths, isLocalTabActive, pendingAttachments, selectedFilePaths, wizardOverlay]);
+            });
+        const picked = [...(separate ? (guideSelectedFilePaths ?? []) : (selectedFilePaths ?? []))].map((path) => path.trim());
+        return [...picked, ...pasted].filter((path, index, all) => path.length > 0 && all.indexOf(path) === index);
+    }, [guidePendingAttachments, guideSelectedFilePaths, isLocalTabActive, pendingAttachments, selectedFilePaths, settleGuideAttachments, settleSessionAttachments, wizardOverlay]);
 
     const scheduleConfiguredTask = useCallback(async (named: string, initialMessage: string, classifyText = ""): Promise<boolean> => {
         const isZh = !lang?.startsWith("en");
@@ -658,8 +667,8 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
 
     // Name stays the typed text. A file with no text uses the filename so the
     // guide still creates a task instead of falling into a nameless session.
-    const startGuideTask = useCallback((text: string, wizardActive: boolean, taskName?: string) => {
-        const filePaths = collectGuideFilePaths();
+    const startGuideTask = useCallback(async (text: string, wizardActive: boolean, taskName?: string, knownPaths?: readonly string[]) => {
+        const filePaths = knownPaths ? [...knownPaths] : await collectGuideFilePaths();
         const fileName = filePaths[0] ? (filePaths[0].split(/[/\\]/).pop() || filePaths[0]) : "";
         const typed = (text || "").trim();
         const named = (taskName || typed || fileName).trim();
@@ -705,16 +714,22 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             handleSend();
             return;
         }
-        if (!text && collectGuideFilePaths().length === 0) {
-            // Empty Enter must not dismiss the guide and reveal an old chat.
-            if (!wizardActive) handleSend();
-            return;
-        }
-        if (!text && !wizardActive) {
-            handleSend();
-            return;
-        }
-        void startGuideTask(text, wizardActive, composeAction ? raw : undefined);
+        const taskName = composeAction ? raw : undefined;
+        void (async () => {
+            if (taskConfigSendingRef.current) return;
+            const filePaths = await collectGuideFilePaths();
+            if (taskConfigSendingRef.current) return;
+            if (!text && filePaths.length === 0) {
+                // Empty Enter must not dismiss the guide and reveal an old chat.
+                if (!wizardActive) handleSend();
+                return;
+            }
+            if (!text && !wizardActive) {
+                handleSend();
+                return;
+            }
+            await startGuideTask(text, wizardActive, taskName, filePaths);
+        })();
     }, [collectGuideFilePaths, composeAction, guideInputRef, guideInputValue, handleSend, inputValue, isLocalTabActive, isNewTaskWizardTabActive, startGuideTask]);
 
     // Welcome card "send now" path uses the same task create, including files
@@ -736,7 +751,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         if (typedSlash || isHistoryResetCommandText(composed) || isBtwCommandText(composed) || normalizeInstallCommandText(composed)) {
             return handleWelcomePromptSend(typedSlash ? commandText : composed, meta);
         }
-        const hasFiles = collectGuideFilePaths().length > 0;
+        const hasFiles = (await collectGuideFilePaths()).length > 0;
         if ((!isDraftDefault(draft) || wizardActive || isRunWindowScheduled(draft)) && (composed || (wizardActive && hasFiles))) {
             await startGuideTask(composed, wizardActive, composeAction ? commandText : undefined);
             return;

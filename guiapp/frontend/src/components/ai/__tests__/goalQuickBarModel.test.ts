@@ -43,22 +43,30 @@ describe("goalBarView", () => {
         expect(formatGoalElapsed(0, Date.now())).toBe("");
     });
 
-    it("freezes elapsed time once the goal has failed or hit its budget", () => {
+    it("freezes elapsed time when the goal pauses, fails, or hits its budget", () => {
         const start = 1_700_000_000;
         const stopped = start + 65;
         const later = (start + 2 * 3600) * 1000;
         const failed = { ...base, status: "failed", created_at: start, stopped_at: stopped };
         const budget = { ...base, status: "budget_limited", created_at: start, stopped_at: stopped };
+        const paused = { ...base, status: "paused", created_at: start, stopped_at: stopped };
         expect(goalElapsedFrozen(failed)).toBe(true);
         expect(goalElapsedFrozen(budget)).toBe(true);
+        expect(goalElapsedFrozen(paused)).toBe(true);
         expect(goalElapsedEndMs(failed, later)).toBe(stopped * 1000);
+        expect(goalElapsedEndMs(paused, later)).toBe(stopped * 1000);
         expect(formatGoalElapsed(start, goalElapsedEndMs(failed, later))).toBe("1m 5s");
         expect(formatGoalElapsed(start, goalElapsedEndMs(budget, later))).toBe("1m 5s");
+        expect(goalElapsedText(paused, later)).toBe("1m 5s");
+        const pausedHeld = {
+            ...paused,
+            stopped_at: start + 3600 + 65,
+            clock_hold_seconds: 3600,
+        };
+        expect(goalElapsedText(pausedHeld, later)).toBe("1m 5s");
 
-        const paused = { ...base, status: "paused", created_at: start, stopped_at: stopped };
         const running = { ...base, status: "active", created_at: start };
-        expect(goalElapsedFrozen(paused)).toBe(false);
-        expect(goalElapsedEndMs(paused, later)).toBe(later);
+        expect(goalElapsedFrozen(running)).toBe(false);
         expect(goalElapsedEndMs(running, later)).toBe(later);
         expect(formatGoalElapsed(start, goalElapsedEndMs({ ...failed, stopped_at: 0 }, later))).toBe("0s");
 

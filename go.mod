@@ -53,6 +53,13 @@ require (
 )
 
 require (
+	github.com/JohannesKaufmann/dom v0.2.0 // indirect
+	github.com/JohannesKaufmann/html-to-markdown/v2 v2.4.0 // indirect
+	github.com/raitucarp/epub v0.5.1 // indirect
+	github.com/unitedrhino/go-cad v0.0.0-20261001090957-ddd91eea9618 // indirect
+)
+
+require (
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/ebitengine/purego v0.11.1
 	github.com/emersion/go-imap v1.2.1 // indirect
@@ -142,7 +149,7 @@ require (
 	github.com/wailsapp/go-webview2 v1.0.22 // indirect
 	github.com/wailsapp/mimetype v1.4.1 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	github.com/yuin/goldmark v1.7.8
+	github.com/yuin/goldmark v1.7.13
 	go.mozilla.org/pkcs7 v0.9.0 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
 	modernc.org/libc v1.67.6 // indirect

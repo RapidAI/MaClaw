@@ -37,6 +37,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	if h.app != nil {
 		defer h.app.noteMainBotTurn(userText)()
 	}
+	var releaseRetryActivity func()
+	onProgress, releaseRetryActivity = observeLLMRetryProgress(h, userID, onProgress)
+	defer releaseRetryActivity()
 
 	// A capability-managed turn has a grant-bound executor only on the shared
 	// loop.  It must not be controlled by the legacy/shared strangler flag:

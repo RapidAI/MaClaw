@@ -359,10 +359,121 @@ func extractRequestText(body map[string]any) string {
 	return strings.Join(parts, " ")
 }
 
-// RequestTextPreview returns a compact, truncated view of request text for rule-board samples.
-func RequestTextPreview(body map[string]any, maxRunes int) string {
-	text := strings.Join(strings.Fields(extractRequestText(body)), " ")
-	if maxRunes <= 0 {
+// latestUserRequestText is the last user utterance. Tool results and earlier
+// turns stay out of class and degree judgment so a continuation cannot move
+// the band.
+func latestUserRequestText(body map[string]any) string {
+	if body == nil {
+		return ""
+	}
+	if messages, ok := body["messages"].([]any); ok {
+		if text := latestUserFromItems(messages); text != "" {
+			return text
+		}
+	}
+	switch input := body["input"].(type) {
+	case string:
+		if strings.TrimSpace(input) != "" {
+			return input
+		}
+	case []any:
+		if text := latestUserFromItems(input); text != "" {
+			return text
+		}
+	}
+	if prompt, ok := body["prompt"].(string); ok {
+		return prompt
+	}
+	return ""
+}
+
+func latestUserFromItems(items []any) string {
+	for i := len(items) - 1; i >= 0; i-- {
+		switch item := items[i].(type) {
+		case string:
+			if strings.TrimSpace(item) != "" {
+				return item
+			}
+		case map[string]any:
+			if !isUserTurnItem(item) {
+				continue
+			}
+			if text := strings.TrimSpace(userItemText(item)); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+func isUserTurnItem(item map[string]any) bool {
+	if strings.TrimSpace(stringValue(item["tool_call_id"])) != "" || strings.TrimSpace(stringValue(item["tool_use_id"])) != "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(stringValue(item["type"]))) {
+	case "function_call", "function_call_output", "tool_result", "tool_use":
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(stringValue(item["role"]))) {
+	case "system", "developer", "assistant", "tool", "function":
+		return false
+	case "user", "":
+		return item["content"] != nil || item["text"] != nil || strings.TrimSpace(stringValue(item["input"])) != ""
+	default:
+		return false
+	}
+}
+
+func userItemText(item map[string]any) string {
+	if content, ok := item["content"]; ok {
+		return flattenUserText(content)
+	}
+	if text, ok := item["text"]; ok {
+		return flattenUserText(text)
+	}
+	if input, ok := item["input"]; ok {
+		return flattenUserText(input)
+	}
+	return ""
+}
+
+func flattenUserText(v any) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case []any:
+		parts := make([]string, 0, len(val))
+		for _, item := range val {
+			if text := strings.TrimSpace(flattenUserText(item)); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, " ")
+	case map[string]any:
+		switch strings.ToLower(strings.TrimSpace(stringValue(val["type"]))) {
+		case "image_url", "image", "input_image", "function_call", "function_call_output", "tool_result", "tool_use":
+			return ""
+		}
+		if val["image_url"] != nil {
+			return ""
+		}
+		parts := make([]string, 0, 2)
+		for _, key := range []string{"text", "content", "input"} {
+			if sub, ok := val[key]; ok {
+				if text := strings.TrimSpace(flattenUserText(sub)); text != "" {
+					parts = append(parts, text)
+				}
+			}
+		}
+		return strings.Join(parts, " ")
+	default:
+		return ""
+	}
+}
+
+func previewRunes(text string, maxRunes int) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if maxRunes <= 0 || text == "" {
 		return text
 	}
 	runes := []rune(text)
@@ -370,6 +481,25 @@ func RequestTextPreview(body map[string]any, maxRunes int) string {
 		return text
 	}
 	return string(runes[:maxRunes]) + "…"
+}
+
+// RequestTextPreview returns a compact, truncated view of request text for rule-board samples.
+func RequestTextPreview(body map[string]any, maxRunes int) string {
+	return previewRunes(extractRequestText(body), maxRunes)
+}
+
+// LatestUserPreview is the routing text for the class head and degree gate.
+func LatestUserPreview(body map[string]any, maxRunes int) string {
+	return previewRunes(latestUserRequestText(body), maxRunes)
+}
+
+// RoutingScorePreview is the admin scoring text. A body with no user turn
+// still scores the full preview so pasted text can be tried.
+func RoutingScorePreview(body map[string]any, maxRunes int) string {
+	if preview := LatestUserPreview(body, maxRunes); strings.TrimSpace(preview) != "" {
+		return preview
+	}
+	return RequestTextPreview(body, maxRunes)
 }
 
 func flattenAnyText(v any) string {

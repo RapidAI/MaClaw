@@ -706,6 +706,11 @@ type SkillObligationNudger interface {
 // streamed that summary is the same kind of stop.
 const ErrChecklistUnsettled = "checklist_unsettled"
 
+// ErrNoProgress is the hard-exit code when consecutive tool batches make no
+// forward progress. The sentence beside those calls is not a checked finish,
+// so the host must not report the turn as success.
+const ErrNoProgress = "no_progress"
+
 // checklistStillOpenNudge is the reminder after the first open-checklist stop.
 // Later stops must not repeat the full id list.
 const checklistStillOpenNudge = "[系统] 清单仍未关闭。请马上用 todo_write，merge=true，按上一条列出的 id 把每一项标成 completed 或 cancelled。expected_revision 和 expected_version 从本轮 todo_write 的 definition 原样带回。然后保留已写好的结论。"
@@ -1221,15 +1226,17 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	const maxConsecutiveSameToolFailures = 8
 	const hardStopSameToolFailures = 12
 
-	// No-forward-progress detection: consecutive iterations in which NO tool
-	// call succeeded. The same-tool detector above only counts repeats of one
-	// tool, so a model that alternates failing/denied calls (or fence-denied
-	// retries of an unrendered name) escapes it and dithers until maxIter —
-	// production 2026-08-26: 12+ iterations, ~20 minutes of thinking, zero
-	// successful calls after the first search. Petition/discovery rescues
-	// need at most 1-2 no-success iterations, so 5 is far clear of legitimate
-	// recovery.
+	// No-forward-progress detection: consecutive iterations in which the
+	// model attempted work and nothing succeeded. The same-tool detector
+	// above only counts repeats of one tool, so alternating failures escape
+	// it and dither until maxIter (production 2026-08-26). A host surface
+	// grant — a petition that widens the list, or the next repeat wave — is
+	// not an execution. Counting it as a miss stops the turn on the host's
+	// own next step. A second grant of a name that still has not run did
+	// not change the surface, and that one counts. Real executions, policy
+	// denials, and schema rejects still count. Five of those is the stop.
 	consecutiveNoProgressIterations := 0
+	surfaceGrantWithoutExecution := map[string]struct{}{}
 	const hardStopNoProgressIterations = 5
 
 	// MoA fan-out budget for this loop (K11).
@@ -1475,8 +1482,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		// Apply the active route's timeout at the request boundary. This preserves
 		// host-provided cancellation/tracing while making a tool-driven config
 		// promotion effective immediately. The deadline bounds time-to-headers.
-		// An SSE body that is already delivering tokens continues until it goes
-		// idle, the caller cancels, or the stream continuation cap.
+		// An SSE body that is already delivering tokens has no wall-clock cap.
+		// It continues until the model finishes, the stream goes idle, or the
+		// caller cancels.
 		requestBaseCtx := ctx
 		requestCtx, cancelRequestTimeout := llmRequestContextWithTimeout(requestBaseCtx, aggCFG)
 		finishRequest := func(requestErr error) {
@@ -2046,7 +2054,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 							cfg = applyRefreshedLLMAuth(cfg, next)
 							aggCFG = applyRefreshedLLMAuth(aggCFG, next)
 							rotated = true
-							cb.OnProgress("已刷新模型登录状态，即将重试...")
+							cb.OnProgress(LLMRetryAuthRefreshStatus())
 						}
 					}
 				}
@@ -2068,17 +2076,14 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					switch kind {
 					case llmContinuePeriod:
 						log.Printf("[agent-loop] period quota exhausted, continuing this task in %s: %v", backoff, err)
-						cb.OnProgress(fmt.Sprintf("官方额度约 %s 后恢复，到时继续当前任务。", formatContinuationWait(backoff)))
+						cb.OnProgress(llmRetryLiveStatus(fmt.Sprintf("官方额度约 %s 后恢复，到时继续当前任务。", formatContinuationWait(backoff))))
 					case llmContinueKeepGoing:
 						log.Printf("[agent-loop] transient LLM error, continuing this task in %s: %v", backoff, err)
-						cb.OnProgress(fmt.Sprintf("服务仍暂时不可用，%d 秒后继续当前任务。", int(backoff.Seconds())))
+						// 重试 5/5 is followed by 第 6 次. Restarting at 1 looks like a new wait.
+						cb.OnProgress(llmRetryKeepGoingStatus(continuationAttempt(continuation.fast, continuation.extra), backoff))
 					default:
 						log.Printf("[agent-loop] LLM error (attempt %d/%d), retrying in %s: %v", continuation.fast, maxLLMRetries, backoff, err)
-						retryMsg := "API 暂时不可用，%d 秒后重试 (%d/%d)..."
-						if llm.IsTransientTokenValidationError(err) {
-							retryMsg = "模型认证暂时失败，%d 秒后重试 (%d/%d)..."
-						}
-						cb.OnProgress(fmt.Sprintf(retryMsg, int(backoff.Seconds()), continuation.fast, maxLLMRetries))
+						cb.OnProgress(LLMRetryWaitStatus(continuation.fast, maxLLMRetries, backoff, llm.IsTransientTokenValidationError(err)))
 					}
 				} else {
 					log.Printf("[agent-loop] LLM token-validation error, retrying immediately after credential refresh (attempt %d/%d): %v", continuation.fast, maxLLMRetries, err)
@@ -2224,6 +2229,12 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					staticAttemptManifest = &lifecycle.manifest
 					tools = lifecycle.definitions
 					startAttempt()
+					// The countdown described the sleep, which is over. Say the
+					// request is in flight before this call, or a long route
+					// timeout keeps showing "32 秒后继续".
+					if backoff > 0 || rotated {
+						cb.OnProgress(LLMRetryInFlightStatus(continuationAttempt(continuation.fast, continuation.extra)))
+					}
 					// Replace the predecessor error here. Gating this call on
 					// err == nil skips the request, and every later attempt only sleeps.
 					resp, err = doLLMRequestWithTools(requestCtx, aggCFG, reqConversation, tools, invocationPolicy, receiptClient)
@@ -2444,7 +2455,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				"role":    "user",
 				"content": recoveryPrompt,
 			})
-			historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: recoveryPrompt})
+			historyDelta = append(historyDelta, HostUserEntry(recoveryPrompt))
 			continue
 		}
 
@@ -2475,7 +2486,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				"role":    "user",
 				"content": recoveryPrompt,
 			})
-			historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: recoveryPrompt})
+			historyDelta = append(historyDelta, HostUserEntry(recoveryPrompt))
 			continue
 		}
 
@@ -2601,7 +2612,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 								"role":    "user",
 								"content": nudge,
 							})
-							historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: nudge})
+							historyDelta = append(historyDelta, HostUserEntry(nudge))
 							continue
 						}
 					}
@@ -2623,7 +2634,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 							"role":    "user",
 							"content": nudge,
 						})
-						historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: nudge})
+						historyDelta = append(historyDelta, HostUserEntry(nudge))
 						continue
 					}
 					text = next
@@ -2739,7 +2750,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					"role":    "user",
 					"content": recoverPrompt,
 				})
-				historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: recoverPrompt})
+				historyDelta = append(historyDelta, HostUserEntry(recoverPrompt))
 				continue
 			}
 		}
@@ -2839,7 +2850,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					"role":    "user",
 					"content": nudge,
 				})
-				historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: nudge})
+				historyDelta = append(historyDelta, HostUserEntry(nudge))
 				continue
 			}
 			// A malformed content tool-markup interception is a transport-level
@@ -2860,7 +2871,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					"role":    "user",
 					"content": reprompt,
 				})
-				historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: reprompt})
+				historyDelta = append(historyDelta, HostUserEntry(reprompt))
 				continue
 			}
 			attached := ShouldAttachWorkingState(loopPromptProfile(cb), WorkingStateDisabled(), workingState)
@@ -2897,7 +2908,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 						"role":    "user",
 						"content": nudge,
 					})
-					historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: nudge})
+					historyDelta = append(historyDelta, HostUserEntry(nudge))
 					continue
 				}
 			}
@@ -2914,7 +2925,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 							"role":    "user",
 							"content": prompt,
 						})
-						historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: prompt})
+						historyDelta = append(historyDelta, HostUserEntry(prompt))
 						continue
 					}
 				}
@@ -2933,7 +2944,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					"role":    "user",
 					"content": nudge,
 				})
-				historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: nudge})
+				historyDelta = append(historyDelta, HostUserEntry(nudge))
 				continue
 			}
 			if ShouldBlockFinish(workingState, userText, attached) && iteration+1 < maxIter {
@@ -2944,7 +2955,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					"role":    "user",
 					"content": nudge,
 				})
-				historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: nudge})
+				historyDelta = append(historyDelta, HostUserEntry(nudge))
 				continue
 			}
 			preNudgeText := StripThinkingTags(preNudgeAnswer)
@@ -2970,7 +2981,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					"role":    "user",
 					"content": message,
 				})
-				historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: message})
+				historyDelta = append(historyDelta, HostUserEntry(message))
 				continue
 			}
 			finalText = next
@@ -3026,6 +3037,10 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		// that distinguish different completed tools in one model response.
 		executedToolNames := make([]string, 0, len(choice.Message.ToolCalls))
 		batchHadSuccess := false
+		// batchProgressMiss is an attempted call that did not succeed: an
+		// execution, a policy denial, a schema reject, or a host message that
+		// did not publish a new surface. A first surface grant is neither.
+		batchProgressMiss := false
 		for _, tc := range choice.Message.ToolCalls {
 			if cb.ShouldStop() {
 				_ = wsBatch.apply(workingState)
@@ -3052,6 +3067,10 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				tool.RecordUnrenderedToolCallDenial()
 				denial := unrenderedToolCallDeniedMessage(tc.Function.Name)
 				hostDirective := false
+				// surfaceGrant is a host publication of a name that was not
+				// executed. The first one is the next step. A repeat of a
+				// name that still has not run did not change the surface.
+				surfaceGrant := false
 				if _, ok := succeededToolNames[strings.TrimSpace(tc.Function.Name)]; ok {
 					// A budgeted repeat family can publish one more invocation
 					// when the model asks again. One-shot tools stay on the
@@ -3061,6 +3080,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 						denial = repeatWaveContinuedMessage(tc.Function.Name)
 						repeatWaveName = strings.TrimSpace(tc.Function.Name)
 						hostDirective = true
+						surfaceGrant = true
 					} else {
 						tool.RecordConsumedGrantDenial()
 						denial = consumedGrantToolCallDeniedMessage(tc.Function.Name)
@@ -3082,12 +3102,15 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					if text := strings.TrimSpace(message); text != "" {
 						if granted {
 							tool.RecordPetitionGrant()
+							surfaceGrant = true
 						}
 						denial = text
 						// The call did not run. A non-empty host message is the
 						// next step (re-issue this name, or run the predecessor
 						// it names). Empty-response recovery must follow that
 						// text instead of treating it as a failed execution.
+						// Only a grant publishes a surface. An explanation that
+						// leaves the name off the list is still a miss.
 						hostDirective = true
 					}
 				}
@@ -3116,6 +3139,16 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					ToolName:    tc.Function.Name,
 					ToolOutcome: string(execResult.Outcome),
 				})
+				grantName := strings.TrimSpace(tc.Function.Name)
+				if surfaceGrant && grantName != "" {
+					if _, seen := surfaceGrantWithoutExecution[grantName]; seen {
+						batchProgressMiss = true
+					} else {
+						surfaceGrantWithoutExecution[grantName] = struct{}{}
+					}
+				} else {
+					batchProgressMiss = true
+				}
 				continue
 			}
 			// Hard-stop on oversized tool arguments (parity with GUI stream/exec gates).
@@ -3177,6 +3210,10 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			if toolExecuted && execResult.Outcome == ToolExecutionOutcomeOK {
 				succeededToolNames[executedName] = struct{}{}
 			}
+			// The name was on this request and the model called it, even when
+			// arguments or policy stopped the dispatcher. A later grant of that
+			// name is a new surface, not a repeat of one the model never used.
+			delete(surfaceGrantWithoutExecution, executedName)
 			if toolExecuted && executedName == repeatWaveName {
 				// This call used the invocation published for it. Drop the
 				// listing before inspecting the result, so a failed or
@@ -3235,6 +3272,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			// Determine success for outcome tracking.
 			toolSuccess := lastToolOutcome.kind == toolOutcomeOK
 			batchHadSuccess = batchHadSuccess || toolSuccess
+			if !toolSuccess {
+				batchProgressMiss = true
+			}
 			// Record policy denies and invalid args once a workspace exists.
 			// Replan-skipped stale calls must not look like a new fail.
 			// Host policy denials are fail-closed routing guardrails, not
@@ -3361,17 +3401,20 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		// already settled in note(); apply() still records the last failure.
 		inject := wsBatch.apply(workingState)
 
-		// No-forward-progress circuit breaker. A batch with zero successful
-		// calls (all failed, denied, or fence-rejected) moves the turn no
-		// closer to its goal; enough of those in a row means the model is
-		// dithering, not recovering. The stop is decided here but applied
-		// only after the paired batch is committed: every result is already
-		// in HistoryDelta, so abandoning would keep the pre-tool checkpoint
-		// and the next user message would look like a crash recovery.
+		// No-forward-progress circuit breaker. A batch that attempted work and
+		// got nothing (failed, denied, schema-rejected, or a grant that did
+		// not change the surface) moves the turn no closer to its goal.
+		// Enough of those in a row means the model is dithering. A batch
+		// whose only calls are first-time host surface grants is the host's
+		// next step, not a miss and not a success: the counter stays. The
+		// stop is decided here but applied only after the paired batch is
+		// committed: every result is already in HistoryDelta, so abandoning
+		// would keep the pre-tool checkpoint and the next user message would
+		// look like a crash recovery.
 		noProgressHardStop := false
 		if batchHadSuccess {
 			consecutiveNoProgressIterations = 0
-		} else {
+		} else if batchProgressMiss {
 			consecutiveNoProgressIterations++
 			if consecutiveNoProgressIterations >= hardStopNoProgressIterations {
 				noProgressHardStop = true
@@ -3401,7 +3444,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			}
 		}
 		if noProgressHardStop {
-			disposeSurface(ToolSurfaceResponseAbandoned)
+			// The paired batch is already committed. Abandoned is the
+			// disposition of a batch that was not paired. This response settled.
+			disposeSurface(ToolSurfaceToolBatchSettled)
 			text := strings.TrimSpace(StripThinkingTags(lastNonEmptyContent))
 			if text == "" {
 				text = "多次尝试均未取得进展，已停止执行。请换一种方式描述任务，或稍后再试。"
@@ -3414,11 +3459,12 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					"role":    "user",
 					"content": nudge,
 				})
-				historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: nudge})
+				historyDelta = append(historyDelta, HostUserEntry(nudge))
 				continue
 			}
 			return finish(LoopResult{
 				Text:       next,
+				Error:      ErrNoProgress,
 				Iterations: iteration + 1,
 				ToolCalls:  totalToolCalls,
 				HardExit:   true,
@@ -3489,7 +3535,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				"role":    "user",
 				"content": inject,
 			})
-			historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: inject})
+			historyDelta = append(historyDelta, HostUserEntry(inject))
 		}
 
 		// Consecutive same-tool failure guidance: inject AFTER all tool results
@@ -3506,7 +3552,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				"role":    "user",
 				"content": guidance,
 			})
-			historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: guidance})
+			historyDelta = append(historyDelta, HostUserEntry(guidance))
 		}
 
 		// Drift detection: check if the last N calls are the same tool+args+result.
@@ -3547,7 +3593,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 						"role":    "user",
 						"content": driftMsg,
 					})
-					historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: driftMsg})
+					historyDelta = append(historyDelta, HostUserEntry(driftMsg))
 				}
 			} else {
 				consecutiveSame = 0
@@ -4663,11 +4709,7 @@ func splitNumberedResultLine(line string) (int, string, bool) {
 // that text as the fallback answer replaces the reply the user was waiting for.
 func visibleAnswerBesideReasoning(visible, reasoning string) string {
 	visible = strings.TrimSpace(visible)
-	reasoning = strings.TrimSpace(reasoning)
-	if visible == "" {
-		return ""
-	}
-	if reasoning != "" && visible == reasoning {
+	if visible == "" || AssistantContentRepeatsReasoning(visible, reasoning) {
 		return ""
 	}
 	return visible

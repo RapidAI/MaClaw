@@ -18,8 +18,7 @@ import (
 )
 
 const (
-	maxAIAssistantUIStateMessages = 200
-	maxAIAssistantUIStatePrompts  = 100
+	maxAIAssistantUIStatePrompts = 100
 )
 
 var aiAssistantUIStateMu sync.Mutex
@@ -41,12 +40,20 @@ type AIAssistantUIState struct {
 	Prompts                  []string                        `json:"prompts"`
 	PromptAttachments        [][]AIAssistantPromptAttachment `json:"prompt_attachments,omitempty"`
 	ContextBoundaryMessageID string                          `json:"context_boundary_message_id,omitempty"`
-	UpdatedAt                string                          `json:"updated_at,omitempty"`
-	StoragePath              string                          `json:"storage_path,omitempty"`
+	// ArchivedCount is how many earlier local messages sit outside the hot
+	// transcript. It is filled on load so the view can offer "查看" without
+	// parsing the archive.
+	ArchivedCount int    `json:"archived_count,omitempty"`
+	UpdatedAt     string `json:"updated_at,omitempty"`
+	StoragePath   string `json:"storage_path,omitempty"`
 }
 
 func (a *App) aiAssistantUIStatePath() string {
 	return filepath.Join(a.GetDataDir(), "ai_assistant_ui_state.json")
+}
+
+func (a *App) aiAssistantUIArchivePath() string {
+	return filepath.Join(a.GetDataDir(), "ai_assistant_ui_archive.json")
 }
 
 func (a *App) LoadAIAssistantUIState() (AIAssistantUIState, error) {
@@ -75,9 +82,12 @@ func (a *App) LoadAIAssistantUIState() (AIAssistantUIState, error) {
 		}
 		log.Printf("[paths] ai_assistant_ui_state sanitized path=%q messages=%d prompts=%d boundary=%q", path, len(state.Messages), len(state.Prompts), state.ContextBoundaryMessageID)
 	}
-	state.StoragePath = path
 	a.injectStartupRecoveryCard(&state)
-	log.Printf("[paths] ai_assistant_ui_state load path=%q messages=%d prompts=%d boundary=%q", path, len(state.Messages), len(state.Prompts), state.ContextBoundaryMessageID)
+	if err := a.windowAIAssistantUIStateLocked(&state, false); err != nil {
+		return AIAssistantUIState{Messages: []map[string]interface{}{}, Prompts: []string{}, StoragePath: path}, err
+	}
+	state.StoragePath = path
+	log.Printf("[paths] ai_assistant_ui_state load path=%q messages=%d archived=%d prompts=%d boundary=%q", path, len(state.Messages), state.ArchivedCount, len(state.Prompts), state.ContextBoundaryMessageID)
 	return state, nil
 }
 
@@ -168,10 +178,13 @@ func (a *App) SaveAIAssistantUIState(state AIAssistantUIState) error {
 	state.StoragePath = ""
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	normalizeAIAssistantUIState(&state)
+	if err := a.windowAIAssistantUIStateLocked(&state, true); err != nil {
+		return err
+	}
 	if err := configfile.AtomicWriteJSON(path, state); err != nil {
 		return err
 	}
-	log.Printf("[paths] ai_assistant_ui_state save path=%q messages=%d prompts=%d boundary=%q", path, len(state.Messages), len(state.Prompts), state.ContextBoundaryMessageID)
+	log.Printf("[paths] ai_assistant_ui_state save path=%q messages=%d archived=%d prompts=%d boundary=%q", path, len(state.Messages), state.ArchivedCount, len(state.Prompts), state.ContextBoundaryMessageID)
 	return nil
 }
 
@@ -181,6 +194,10 @@ func (a *App) ClearAIAssistantUIState() error {
 
 	path := a.aiAssistantUIStatePath()
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	archivePath := a.aiAssistantUIArchivePath()
+	if err := os.Remove(archivePath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	log.Printf("[paths] ai_assistant_ui_state clear path=%q", path)
@@ -201,9 +218,6 @@ func normalizeAIAssistantUIState(state *AIAssistantUIState) {
 			}
 		}
 		state.Messages = messages
-	}
-	if len(state.Messages) > maxAIAssistantUIStateMessages {
-		state.Messages = state.Messages[len(state.Messages)-maxAIAssistantUIStateMessages:]
 	}
 	if state.Messages == nil {
 		state.Messages = []map[string]interface{}{}

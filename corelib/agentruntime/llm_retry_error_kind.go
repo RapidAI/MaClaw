@@ -71,8 +71,15 @@ func IsNetworkLLMRetryError(err error) bool {
 }
 
 func HasLLMNetworkRetryMarker(s string) bool {
+	// These are the Error() texts of the typed failures IsNetworkLLMRetryError
+	// already retries: context.DeadlineExceeded, a net.Error timeout
+	// ("i/o timeout", the TLS and header timeouts), and the idle reader.
+	// A goal continuation only has err.Error(), so the type is gone.
 	return strings.Contains(s, "context deadline exceeded") ||
 		strings.Contains(s, "Client.Timeout") ||
+		strings.Contains(s, "i/o timeout") ||
+		strings.Contains(s, "TLS handshake timeout") ||
+		strings.Contains(s, "timeout awaiting response headers") ||
 		strings.Contains(s, "connection reset") ||
 		strings.Contains(s, "connection refused") ||
 		strings.Contains(s, "SSE stream idle timeout")

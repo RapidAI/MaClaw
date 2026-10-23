@@ -11,6 +11,7 @@
 package goal
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
@@ -126,19 +127,21 @@ type Goal struct {
 	// Timestamps
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
-	// StoppedAt is when the goal last became terminal. Pause does not set it.
+	// StoppedAt is when the composer clock last froze. Pause, failure, and a
+	// filled budget all stamp it. Continue clears it after banking the gap.
 	StoppedAt time.Time `json:"stopped_at,omitempty"`
-	// ClockHoldSeconds is time spent terminal. The composer clock subtracts it,
-	// so continue resumes from the frozen reading instead of jumping forward.
+	// ClockHoldSeconds is time the clock was held. The composer clock subtracts
+	// it, so continue resumes from the frozen reading instead of jumping forward.
 	ClockHoldSeconds int64 `json:"clock_hold_seconds,omitempty"`
 
 	// Completion/failure metadata
 	Summary string `json:"summary,omitempty"` // set on complete/fail
 }
 
-// statusEndsGoalClock reports a status whose composer elapsed clock stays put.
-// Pause is a hold, so the age clock keeps moving until the goal actually ends.
-func statusEndsGoalClock(status Status) bool {
+// statusIsTerminal reports a final state. Pause is not final: the bar can
+// continue it. Keep this list separate from the clock so a pause cannot
+// start being treated as finished.
+func statusIsTerminal(status Status) bool {
 	switch status {
 	case StatusComplete, StatusFailed, StatusBudgetLimit:
 		return true
@@ -147,9 +150,22 @@ func statusEndsGoalClock(status Status) bool {
 	}
 }
 
-// IsTerminal returns true if the goal has reached a final state.
-func (g *Goal) IsTerminal() bool {
+// statusEndsGoalClock reports a status whose composer elapsed clock stays put.
+// Pause holds the reading. Continue banks that gap and the clock resumes
+// from the frozen value.
+func statusEndsGoalClock(status Status) bool {
+	return status == StatusPaused || statusIsTerminal(status)
+}
+
+// ComposerClockStopped reports whether the composer elapsed clock stays put.
+func (g *Goal) ComposerClockStopped() bool {
 	return statusEndsGoalClock(g.Status)
+}
+
+// IsTerminal returns true if the goal has reached a final state.
+// Pause stops the clock, but the goal can still be continued.
+func (g *Goal) IsTerminal() bool {
+	return statusIsTerminal(g.Status)
 }
 
 // ShouldContinue returns true if the goal is in a state that allows
@@ -177,5 +193,32 @@ func NewGoalID() string {
 	return uuid.New().String()
 }
 
-// DefaultMaxTurns is the default iteration cap when no explicit max is set.
-const DefaultMaxTurns = 50
+// DefaultMaxTurns is unlimited. Create leaves MaxTurns at 0 unless the caller
+// sets one. ShouldContinue treats 0 as no turn cap. The goal runs until it
+// completes, fails, hits a token budget, sees two turns with no tools, or
+// the user stops it.
+const DefaultMaxTurns = 0
+
+// LegacyDefaultMaxTurns is the cap create wrote when max_turns was omitted,
+// before a goal could run for days.
+const LegacyDefaultMaxTurns = 50
+
+// RaisedDefaultMaxTurns is the later automatic cap (about a week at one turn
+// a minute). Load clears only these two exact values. Any other explicit
+// max_turns stays. A caller who chose 50 or 10000 on purpose is
+// indistinguishable from the old default and is cleared too.
+const RaisedDefaultMaxTurns = 10000
+
+// MaxTurnsLabel is the turn cap shown to the model. Zero is unlimited.
+func MaxTurnsLabel(turns int) string {
+	if turns <= 0 {
+		return "不限"
+	}
+	return strconv.Itoa(turns)
+}
+
+// FormatTurnCount is the used/cap line shown to the model. A zero cap is
+// unlimited, so the text must not look like the budget is already spent.
+func FormatTurnCount(used, max int) string {
+	return strconv.Itoa(used) + " / " + MaxTurnsLabel(max)
+}

@@ -1,6 +1,7 @@
 package progress
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -128,6 +129,30 @@ func TestAgentProgressTracker_StopIdempotent(t *testing.T) {
 	tracker.Stop()
 }
 
+func TestProgressPusherNoteActivitySuppressesSilenceHeartbeat(t *testing.T) {
+	var pushed []string
+	p := NewProgressPusher(NewMilestoneBuffer(8), func(text string) {
+		pushed = append(pushed, text)
+	}, ComplexityMedium, "zh")
+	p.mu.Lock()
+	p.lastPushTime = time.Now().Add(-2 * time.Hour)
+	p.mu.Unlock()
+
+	p.NoteActivity()
+	p.Tick()
+	if len(pushed) != 0 {
+		t.Fatalf("silence heartbeat after retry activity: %q", pushed)
+	}
+
+	p.mu.Lock()
+	p.lastPushTime = time.Now().Add(-2 * time.Hour)
+	p.mu.Unlock()
+	p.Tick()
+	if len(pushed) != 1 || !strings.Contains(pushed[0], "仍在执行中") {
+		t.Fatalf("heartbeat = %q, want the silence line once the wait is real", pushed)
+	}
+}
+
 func TestClassifyComplexity(t *testing.T) {
 	tests := []struct {
 		intent   string
@@ -138,8 +163,8 @@ func TestClassifyComplexity(t *testing.T) {
 		{"ssh", 10, ComplexityHeavy},
 		{"workflow", 100, ComplexityHeavy},
 		{"bug_fix", 30, ComplexityHeavy},
-		{"search", 100, ComplexityMedium},  // long message
-		{"search", 10, ComplexityLight},     // short message
+		{"search", 100, ComplexityMedium}, // long message
+		{"search", 10, ComplexityLight},   // short message
 		{"non_coding", 5, ComplexityLight},
 		{"unknown", 3, ComplexityLight},
 	}

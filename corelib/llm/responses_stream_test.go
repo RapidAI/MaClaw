@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -339,5 +340,193 @@ func TestDoResponsesAPIRequestStreamAcceptsThinkingSummaryPart(t *testing.T) {
 	}
 	if got := response.Choices[0].Message.ReasoningContent; got != "Thought it through." {
 		t.Fatalf("reasoning = %q, want thinking part captured", got)
+	}
+}
+
+func TestResponsesStreamOutlivesRouteDeadlineAfterHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"delta\":\"hello \"}\n\n")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(350 * time.Millisecond):
+		}
+		_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"delta\":\"there\"}\n\n")
+		_, _ = io.WriteString(w, "event: response.completed\ndata: {\"response\":{\"id\":\"resp-long\",\"status\":\"completed\"}}\n\n")
+	}))
+	defer server.Close()
+
+	parent, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+	defer cancel()
+	deadline, _ := parent.Deadline()
+	parent = WithOwnedRouteDeadline(parent, deadline)
+
+	resp, err := DoResponsesAPIRequestStream(
+		parent,
+		corelib.MaclawLLMConfig{URL: server.URL, Model: "test", WireAPI: "responses"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		nil,
+		server.Client(),
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("stream error = %v, want the body to finish after the route deadline", err)
+	}
+	if resp == nil || len(resp.Choices) == 0 {
+		t.Fatal("missing response")
+	}
+	if got := resp.Choices[0].Message.Content; got != "hello there" {
+		t.Fatalf("content = %q, want hello there", got)
+	}
+}
+
+func TestResponsesStreamRouteDeadlineStillBoundsHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(time.Second):
+		}
+	}))
+	defer func() {
+		server.CloseClientConnections()
+		server.Close()
+	}()
+
+	parent, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	deadline, _ := parent.Deadline()
+	parent = WithOwnedRouteDeadline(parent, deadline)
+
+	started := time.Now()
+	_, err := DoResponsesAPIRequestStream(
+		parent,
+		corelib.MaclawLLMConfig{URL: server.URL, Model: "test", WireAPI: "responses"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		nil,
+		server.Client(),
+		nil,
+		nil,
+	)
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("elapsed = %s, want the route deadline rather than an open body", elapsed)
+	}
+}
+
+func TestResponsesStreamStopAbortsAfterHeaders(t *testing.T) {
+	cancelParent, stopTurn := context.WithCancel(context.Background())
+	defer stopTurn()
+	route, cancelRoute := context.WithTimeout(cancelParent, 2*time.Second)
+	defer cancelRoute()
+	deadline, _ := route.Deadline()
+	route = BindRouteStreamDeadline(route, deadline, cancelParent)
+
+	headersSent := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"delta\":\"hello \"}\n\n")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(headersSent)
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+	}))
+	defer func() {
+		server.CloseClientConnections()
+		server.Close()
+	}()
+
+	go func() {
+		select {
+		case <-headersSent:
+		case <-time.After(time.Second):
+			return
+		}
+		stopTurn()
+	}()
+
+	started := time.Now()
+	_, err := DoResponsesAPIRequestStream(
+		route,
+		corelib.MaclawLLMConfig{URL: server.URL, Model: "test", WireAPI: "responses"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		nil,
+		server.Client(),
+		nil,
+		nil,
+	)
+	if err == nil {
+		t.Fatal("stop after headers returned a finished stream")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("elapsed = %s, want the stop to abort the body", elapsed)
+	}
+}
+
+func TestResponsesStreamWrapperCancelAbortsAfterHeaders(t *testing.T) {
+	cancelParent, stopTurn := context.WithCancel(context.Background())
+	defer stopTurn()
+	route, cancelRoute := context.WithTimeout(cancelParent, 2*time.Second)
+	defer cancelRoute()
+	deadline, _ := route.Deadline()
+	route = BindRouteStreamDeadline(route, deadline, cancelParent)
+	wrapper, cancelWrapper := context.WithCancel(route)
+	defer cancelWrapper()
+
+	headersSent := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"delta\":\"hello \"}\n\n")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(headersSent)
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+	}))
+	defer func() {
+		server.CloseClientConnections()
+		server.Close()
+	}()
+
+	go func() {
+		select {
+		case <-headersSent:
+		case <-time.After(time.Second):
+			return
+		}
+		cancelWrapper()
+	}()
+
+	started := time.Now()
+	_, err := DoResponsesAPIRequestStream(
+		wrapper,
+		corelib.MaclawLLMConfig{URL: server.URL, Model: "test", WireAPI: "responses"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		nil,
+		server.Client(),
+		nil,
+		nil,
+	)
+	if err == nil {
+		t.Fatal("wrapper cancel after headers returned a finished stream")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("elapsed = %s, want the wrapper cancel to abort the body", elapsed)
+	}
+	if cancelParent.Err() != nil {
+		t.Fatal("wrapper cancel also stopped the turn")
 	}
 }

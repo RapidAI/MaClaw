@@ -1,6 +1,7 @@
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { PptxPreviewPanel, isPptxFileName } from "../PptxPreviewPanel";
+import { PREVIEW_BAR_DELAY_MS } from "../PreviewProgressBar";
 import type { CodePreviewTheme } from "../FileTabBar";
 import { AIAssistantAttachmentFullDataURL, PptxPreviewEnsure, PptxSlideThumbnailDataURL } from "../../../../wailsjs/go/main/App";
 
@@ -80,6 +81,47 @@ describe("PptxPreviewPanel", () => {
         expect(getAllByTestId("pptx-preview-thumbnail")[1].getAttribute("data-active")).toBe("true");
     });
 
+    it("loads the full slide again when the reader comes back to it", async () => {
+        fullDataURL.mockImplementation(async (path: string) => `data:image/png;base64,full:${path}`);
+        const { getByTestId, getAllByTestId } = renderPanel();
+        await waitFor(() => expect(getByTestId("pptx-preview-slide").getAttribute("src")).toContain("slide_001"));
+        const afterFirst = fullDataURL.mock.calls.length;
+        fireEvent.click(getAllByTestId("pptx-preview-thumbnail")[1]);
+        await waitFor(() => expect(getByTestId("pptx-preview-slide").getAttribute("src")).toContain("slide_002"));
+        const afterSecond = fullDataURL.mock.calls.length;
+        expect(afterSecond).toBeGreaterThan(afterFirst);
+        fireEvent.click(getAllByTestId("pptx-preview-thumbnail")[0]);
+        await waitFor(() => expect(getByTestId("pptx-preview-slide").getAttribute("src")).toContain("slide_001"));
+        expect(fullDataURL.mock.calls.length).toBeGreaterThan(afterSecond);
+    });
+
+    it("retries a failed full slide when the reader clicks that page again", async () => {
+        let failed = false;
+        fullDataURL.mockImplementation(async (path: string) => {
+            if (!failed) {
+                failed = true;
+                throw new Error("load failed");
+            }
+            return `data:image/png;base64,full:${path}`;
+        });
+        try {
+            const { getByTestId, getAllByTestId, queryByTestId } = renderPanel();
+            await waitFor(() => expect(getByTestId("pptx-preview-panel")).toBeTruthy());
+            await waitFor(() => expect(fullDataURL).toHaveBeenCalled());
+            expect(queryByTestId("pptx-preview-slide")).toBeNull();
+            const afterFail = fullDataURL.mock.calls.length;
+            fireEvent.click(getAllByTestId("pptx-preview-thumbnail")[0]);
+            await waitFor(() => expect(getByTestId("pptx-preview-slide").getAttribute("src")).toContain("slide_001"));
+            expect(fullDataURL.mock.calls.length).toBeGreaterThan(afterFail);
+            const shown = fullDataURL.mock.calls.length;
+            fireEvent.click(getAllByTestId("pptx-preview-thumbnail")[0]);
+            await waitFor(() => expect(getByTestId("pptx-preview-slide").getAttribute("src")).toContain("slide_001"));
+            expect(fullDataURL.mock.calls.length).toBe(shown);
+        } finally {
+            fullDataURL.mockImplementation(async (path: string) => `data:image/png;base64,full:${path}`);
+        }
+    });
+
     it("holds the page with the enlarged thumbnail while full bytes load", async () => {
         fullDataURL.mockImplementation(async (path: string) => path.includes("slide_001") ? `data:image/png;base64,full:${path}` : "");
         const { getByTestId, getAllByTestId } = renderPanel();
@@ -112,6 +154,27 @@ describe("PptxPreviewPanel", () => {
         const { getByTestId } = renderPanel();
 
         await waitFor(() => expect(getByTestId("pptx-preview-error").textContent).toContain("读取 PPTX 失败"));
+    });
+
+    it("shows a progress bar when rendering the deck takes a while", async () => {
+        const impl = ensure.getMockImplementation();
+        ensure.mockImplementation(() => new Promise(() => {}));
+        try {
+            const view = renderPanel();
+            expect(view.getByTestId("pptx-preview-loading")).toBeTruthy();
+            expect(view.queryByTestId("preview-progress-bar")).toBeNull();
+            await act(async () => {
+                await new Promise((resolve) => setTimeout(resolve, PREVIEW_BAR_DELAY_MS + 80));
+            });
+            const bar = view.getByTestId("preview-progress-bar");
+            expect(bar.getAttribute("data-mode")).toBe("indeterminate");
+            expect(bar.hasAttribute("aria-valuenow")).toBe(false);
+            expect(view.getByRole("status").textContent).toBe("正在渲染 PPT 预览…");
+            expect(view.getByRole("status").contains(bar)).toBe(false);
+            expect(view.getByTestId("pptx-preview-loading").textContent).toContain("正在渲染 PPT");
+        } finally {
+            if (impl) ensure.mockImplementation(impl);
+        }
     });
 
     it("reports decks without renderable slides", async () => {

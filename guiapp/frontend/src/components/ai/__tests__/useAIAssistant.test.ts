@@ -3732,6 +3732,43 @@ describe('useAIAssistant property tests', () => {
         expect(messageContents(result.current.messages)).not.toContain('streamed');
     });
 
+    it('keeps the plan sentence when the loop stops with no_progress', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('read the dwg');
+        });
+
+        const req = requestEvent();
+        const sentence = '先从 GitHub 上取一份目录清单。';
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', req);
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, text: sentence });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '工具 · 执行命令 (download_file)\nhttps://example.invalid/a.dwg' });
+        });
+
+        await act(async () => {
+            pending.resolve({
+                text: sentence,
+                error: 'no_progress',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+            });
+            await pending.promise;
+        });
+
+        const assistant = [...result.current.messages].reverse().find((message) => message.role === 'assistant');
+        expect(assistant?.content).toContain(sentence);
+        expect(assistant?.content || '').not.toContain('no_progress');
+        expect(assistant?.resultText).toBe('先从 GitHub 上取一份目录清单。');
+        expect(assistant?.resultStatus).toBe('incomplete');
+        expect(result.current.messages.some((message) => message.role === 'error')).toBe(false);
+    });
+
     it.each([
         ['请求超时', 'partial output before timeout'],
         ['context deadline exceeded', 'partial output before deadline'],
@@ -5331,9 +5368,11 @@ describe('useAIAssistant property tests', () => {
 
         const req = requestEvent();
         await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '[LiveStatus:llm-retry] 正在重新请求模型（第 2 次）' });
             emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '工具 · 执行命令 (bash)\nls -la' });
         });
 
+        expect(result.current.progressMessages.some((message) => (message.content || '').includes('正在重新请求模型'))).toBe(false);
         const assistant = [...result.current.messages].reverse().find((message) => message.role === 'assistant');
         expect(assistant?.toolCalls?.[0]).toMatchObject({ name: 'bash', action: '执行命令', detail: 'ls -la' });
         expect(assistant?.content || '').toContain('maclaw-tool:');
@@ -5381,6 +5420,47 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(result.current.progressMessages.map(message => message.content)).toEqual(['正在生成报告']);
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '[LiveStatus:llm-retry] 重试 1/5：API 暂时不可用，2 秒后重试' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '[LiveStatus:llm-retry] 已刷新模型登录状态，即将重试...' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '[LiveStatus:llm-retry] 正在重新请求模型（第 1 次）' });
+        });
+        expect(result.current.progressMessages.map(message => message.content)).toEqual([
+            '正在生成报告',
+            '正在重新请求模型（第 1 次）',
+        ]);
+        expect(result.current.progressMessages.some(message => (message.content || '').includes('即将重试'))).toBe(false);
+        expect(result.current.progressMessages.find(message => message.content === '正在重新请求模型（第 1 次）')?.progressSlot).toBe('llm-retry');
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '[LiveStatus:llm-retry] 重试 2/5：API 暂时不可用，4 秒后重试' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '[LiveStatus:llm-retry] 仍在重试，第 6 次：服务暂时不可用，32 秒后继续' });
+        });
+
+        expect(result.current.progressMessages.map(message => message.content)).toEqual([
+            '正在生成报告',
+            '仍在重试，第 6 次：服务暂时不可用，32 秒后继续',
+        ]);
+        expect(result.current.progressMessages.some(message => (message.content || '').includes('LiveStatus'))).toBe(false);
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '正在读取文件' });
+        });
+        expect(result.current.progressMessages.map(message => message.content)).toEqual([
+            '正在生成报告',
+            '正在读取文件',
+        ]);
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '重试 1/5：API 暂时不可用，2 秒后重试' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '重试 4/5：API 暂时不可用，16 秒后重试' });
+        });
+        expect(result.current.progressMessages.map(message => message.content)).toEqual([
+            '正在生成报告',
+            '正在读取文件',
+            '重试 4/5：API 暂时不可用，16 秒后重试',
+        ]);
 
         await act(async () => {
             pending.resolve({ text: '', error: '', fields: null, actions: null, request_id: req.request_id });

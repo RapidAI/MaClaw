@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
@@ -182,7 +183,7 @@ func (h *IMMessageHandler) toolSearchAndInstallSkillResultAdmitted(args map[stri
 		return searchAndInstallSkillResult{Text: "Missing query parameter.", Success: false}
 	}
 	if !skillSearchQueryAllowed(query, hostAdmitted) {
-		return searchAndInstallSkillResult{Text: fmt.Sprintf("Skill search skipped: query %q is an information lookup, not a missing capability request.", strings.TrimSpace(query)), Success: false}
+		return searchAndInstallSkillResult{Text: skillSearchSkippedText(query), Success: false}
 	}
 	if h == nil || h.app == nil {
 		return searchAndInstallSkillResult{Text: "Skill search failed: app is not initialized.", Success: false}
@@ -275,14 +276,29 @@ func dropSkillSearchWrapperStopWords(fields []string) []string {
 // skillSearchQueryAllowed is the market-search gate. hostAdmitted is only
 // for the task the host already selected. The caller must put that task in
 // query. A model-invented lookup is not host admission and stays skipped.
+// Host admission still does not install a skill for a bare continuation or
+// an information lookup: those are not missing capabilities.
 func skillSearchQueryAllowed(query string, hostAdmitted bool) bool {
-	if strings.TrimSpace(query) == "" {
+	query = strings.TrimSpace(query)
+	if query == "" || skillSearchQueryIsBareContinuation(query) {
 		return false
 	}
 	if hostAdmitted {
-		return true
+		return !informationLookupQuery(query)
 	}
 	return shouldExecuteSearchAndInstallSkillQuery(query)
+}
+
+func skillSearchSkippedText(query string) string {
+	query = strings.TrimSpace(query)
+	switch {
+	case skillSearchQueryIsBareContinuation(query):
+		return fmt.Sprintf("Skill search skipped: query %q continues the current task and is not a missing capability request.", query)
+	case informationLookupQuery(query):
+		return fmt.Sprintf("Skill search skipped: query %q is an information lookup, not a missing capability request.", query)
+	default:
+		return fmt.Sprintf("Skill search skipped: query %q is not a missing capability request.", query)
+	}
 }
 
 func shouldExecuteSearchAndInstallSkillQuery(query string) bool {
@@ -292,6 +308,11 @@ func shouldExecuteSearchAndInstallSkillQuery(query string) bool {
 	}
 	if isExplicitSkillCapabilitySearchRequest(query) {
 		return true
+	}
+	// "有哪些技能" has no query verb, so the preference gate would allow it.
+	// An inventory question is still a lookup.
+	if informationLookupQuery(query) {
+		return false
 	}
 	if !isIntentSkillPreferenceCompatible(query) {
 		return false
@@ -307,11 +328,22 @@ func isExplicitSkillCapabilitySearchRequest(query string) bool {
 	if lower == "" {
 		return false
 	}
+	// "使用这个技能查询服务器" is a query, but the user named a skill to run.
+	// Without this, the host search is skipped after 技能 stops being a bare match.
+	if intent.ExplicitSkillInvocation(query) {
+		return true
+	}
 	if containsAny(lower, "missing capability", "search and install", "缺少能力") {
 		return true
 	}
 	if containsASCIIWord(lower, "skill") || containsASCIIWord(lower, "capability") ||
-		containsAny(lower, "技能", "能力", "安装 skill") {
+		containsAny(lower, "安装 skill") || mentionsSkillInstallRequest(lower) {
+		return true
+	}
+	// 能力 by itself is ordinary prose ("处理能力"). Only a request to
+	// find or install one is a market search.
+	if strings.Contains(lower, "能力") && containsAny(lower,
+		"找能力", "找个能力", "找一个能力", "需要能力", "安装能力") {
 		return true
 	}
 	if containsASCIIWord(lower, "tool") {
@@ -321,6 +353,59 @@ func isExplicitSkillCapabilitySearchRequest(query string) bool {
 		return containsAny(lower, "找工具", "找个工具", "找一个工具", "搜索工具", "安装工具", "需要工具", "缺少工具")
 	}
 	return false
+}
+
+// mentionsSkillInstallRequest is a request to find or install a skill.
+// The noun 技能 alone is not one: "查询已安装的技能" and "有哪些技能" ask
+// what is already here. The verb and the noun need not be adjacent
+// ("找一个能改 tex 的技能").
+func mentionsSkillInstallRequest(lower string) bool {
+	if !strings.Contains(lower, "技能") {
+		return false
+	}
+	probe := stripInstalledSkillInventoryWording(lower)
+	if !strings.Contains(probe, "技能") {
+		return false
+	}
+	if strings.Contains(probe, "缺少") {
+		return true
+	}
+	// 查找 is a lookup. 寻找 and 找一个 stay requests.
+	if strings.Contains(strings.ReplaceAll(probe, "查找", ""), "找") {
+		return true
+	}
+	if strings.Contains(probe, "需要") || strings.Contains(probe, "搜索") {
+		return true
+	}
+	// 已安装 and 安装过 describe the inventory. 安装了 stays: "安装了一个技能"
+	// is a request, and stripping 安装了 would delete that 安装.
+	install := strings.NewReplacer("已安装", "", "安装过", "").Replace(probe)
+	return strings.Contains(install, "安装")
+}
+
+// stripInstalledSkillInventoryWording removes phrases that name skills the
+// user already has, so a leftover 技能 can still be a find-or-install request
+// ("安装一个和已安装的技能类似的 pdf 技能").
+func stripInstalledSkillInventoryWording(lower string) string {
+	return strings.NewReplacer(
+		"已安装的技能", " ",
+		"已安装技能", " ",
+		"哪些技能", " ",
+		"什么技能", " ",
+		"技能列表", " ",
+		"本地技能", " ",
+		"现有技能", " ",
+		"当前技能", " ",
+	).Replace(lower)
+}
+
+// installedSkillInventoryQuestion asks which skills are already here.
+// It is not a request to fetch one from the market.
+func installedSkillInventoryQuestion(lower string) bool {
+	if !strings.Contains(lower, "技能") {
+		return false
+	}
+	return containsAny(lower, "已安装", "哪些技能", "什么技能", "技能列表", "本地技能", "现有技能", "当前技能", "有没有", "安装过")
 }
 
 func containsASCIIWord(text, word string) bool {

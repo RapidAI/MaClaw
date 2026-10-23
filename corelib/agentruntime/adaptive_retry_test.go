@@ -67,4 +67,13 @@ func TestClassifyAdaptiveRetryFailureMapsNetworkKind(t *testing.T) {
 	if IsRetryableLLMError(errors.New("SSE stream read: unexpected EOF")) {
 		t.Fatal("text without io.ErrUnexpectedEOF is not a transport retry")
 	}
+	if !IsRetryableLLMError(errors.New("dial tcp 10.0.0.1:443: i/o timeout")) {
+		t.Fatal("string form of a net timeout should be retried")
+	}
+	if !IsRetryableLLMError(errors.New("net/http: TLS handshake timeout")) {
+		t.Fatal("TLS handshake timeout should be retried")
+	}
+	if !IsRetryableLLMError(errors.New("net/http: timeout awaiting response headers")) {
+		t.Fatal("header timeout should be retried")
+	}
 }

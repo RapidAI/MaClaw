@@ -8919,6 +8919,261 @@ describe('new-task wizard page (task-pane 新建任务 button)', () => {
         });
     });
 
+    it('pastes a clipboard image onto the new-task page over another task', async () => {
+        mockURLObjectURLs('blob:guide-shot');
+        const savePastedImage = vi.fn().mockResolvedValue('D:\\tmp\\maclaw-paste\\shot.png');
+        const previousGo = (window as any).go;
+        (window as any).go = { main: { App: { SavePastedImage: savePastedImage } } };
+        loadProjectConversationHistoryMock.mockResolvedValue([
+            { role: 'user', content: 'agent already said hello' },
+            { role: 'assistant', content: 'agent reply' },
+        ]);
+        const pasteImage = (input: HTMLTextAreaElement, bytes: string) => {
+            const pastedFile = new File([bytes], 'image.png', { type: 'image/png' });
+            fireEvent.paste(input, {
+                clipboardData: {
+                    items: [{ kind: 'file', type: 'image/png', getAsFile: () => pastedFile }],
+                    files: [pastedFile],
+                },
+            });
+        };
+        try {
+            renderPanel({
+                window: { inline: true },
+                pendingProjectTabOpen: {
+                    projectPath: 'D:/tasks/agent-chat',
+                    taskTitle: 'Agent chat',
+                    autoSend: false,
+                },
+                onPendingProjectTabOpenHandled: vi.fn(),
+                state: { messages: [], sending: false, streaming: false, ready: true },
+                actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+            });
+            await waitFor(() => expect(document.body.textContent || '').toContain('agent already said hello'));
+            expect(screen.queryByTestId('ai-welcome-container')).toBeNull();
+
+            act(() => {
+                window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+            });
+            await waitFor(() => expect(screen.getByTestId('welcome-task-config')).toBeTruthy());
+
+            const input = screen.getByTestId('ai-input') as HTMLTextAreaElement;
+            pasteImage(input, 'png-bytes');
+            await waitFor(() => expect(screen.getByTestId('ai-pending-attachments').textContent || '').toContain('shot.png'));
+            expect(savePastedImage).toHaveBeenCalled();
+
+            fireEvent.click(screen.getByTestId('new-task-wizard-back'));
+            await waitFor(() => expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('execution'));
+            expect(screen.queryByTestId('ai-pending-attachments')).toBeNull();
+
+            savePastedImage.mockResolvedValue('D:\\tmp\\maclaw-paste\\other.png');
+            act(() => {
+                window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+            });
+            await waitFor(() => expect(screen.getByTestId('welcome-task-config')).toBeTruthy());
+            const guideInput = screen.getByTestId('ai-input') as HTMLTextAreaElement;
+            pasteImage(guideInput, 'png-bytes-again');
+            await waitFor(() => expect(screen.getByTestId('ai-pending-attachments').textContent || '').toContain('other.png'));
+
+            const launches: CustomEvent[] = [];
+            const listener = (event: Event) => launches.push(event as CustomEvent);
+            window.addEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+            try {
+                fireEvent.change(guideInput, { target: { value: 'look at this' } });
+                fireEvent.keyDown(guideInput, { key: 'Enter' });
+                await waitFor(() => expect(launches).toHaveLength(1));
+                expect(String((launches[0].detail as { initialMessage?: string }).initialMessage || '')).toContain('D:\\tmp\\maclaw-paste\\other.png');
+            } finally {
+                window.removeEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+            }
+        } finally {
+            (window as any).go = previousGo;
+            if (originalCreateObjectURL) Object.defineProperty(URL, 'createObjectURL', originalCreateObjectURL);
+            if (originalRevokeObjectURL) Object.defineProperty(URL, 'revokeObjectURL', originalRevokeObjectURL);
+            loadProjectConversationHistoryMock.mockReset();
+            loadProjectConversationHistoryMock.mockResolvedValue([]);
+        }
+    });
+
+    it('pastes a clipboard file onto the new-task page over another task', async () => {
+        loadProjectConversationHistoryMock.mockResolvedValue([
+            { role: 'user', content: 'agent already said hello' },
+            { role: 'assistant', content: 'agent reply' },
+        ]);
+        try {
+            renderPanel({
+                window: { inline: true },
+                pendingProjectTabOpen: {
+                    projectPath: 'D:/tasks/agent-chat',
+                    taskTitle: 'Agent chat',
+                    autoSend: false,
+                },
+                onPendingProjectTabOpenHandled: vi.fn(),
+                state: { messages: [], sending: false, streaming: false, ready: true },
+                actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+            });
+            await waitFor(() => expect(document.body.textContent || '').toContain('agent already said hello'));
+
+            act(() => {
+                window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+            });
+            await waitFor(() => expect(screen.getByTestId('welcome-task-config')).toBeTruthy());
+
+            const input = screen.getByTestId('ai-input') as HTMLTextAreaElement;
+            const pastedFile = new File(['contract'], 'brief.pdf', { type: 'application/pdf' });
+            Object.defineProperty(pastedFile, 'path', {
+                configurable: true,
+                value: 'D:\\docs\\brief.pdf',
+            });
+            fireEvent.paste(input, {
+                clipboardData: {
+                    items: [{ kind: 'file', type: 'application/pdf', getAsFile: () => pastedFile }],
+                    files: [pastedFile],
+                },
+            });
+            await waitFor(() => expect(screen.getByTestId('ai-pending-attachments').textContent || '').toContain('brief.pdf'));
+
+            const launches: CustomEvent[] = [];
+            const listener = (event: Event) => launches.push(event as CustomEvent);
+            window.addEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+            try {
+                fireEvent.change(input, { target: { value: 'read this' } });
+                fireEvent.keyDown(input, { key: 'Enter' });
+                await waitFor(() => expect(launches).toHaveLength(1));
+                expect(String((launches[0].detail as { initialMessage?: string }).initialMessage || '')).toContain('D:\\docs\\brief.pdf');
+            } finally {
+                window.removeEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+            }
+        } finally {
+            loadProjectConversationHistoryMock.mockReset();
+            loadProjectConversationHistoryMock.mockResolvedValue([]);
+        }
+    });
+
+    it('waits for a pathless clipboard file to finish saving before creating the task', async () => {
+        let resolveSave: ((path: string) => void) | null = null;
+        const savePastedFile = vi.fn(() => new Promise<string>((resolve) => { resolveSave = resolve; }));
+        const previousGo = (window as any).go;
+        (window as any).go = { main: { App: { SavePastedFile: savePastedFile } } };
+        loadProjectConversationHistoryMock.mockResolvedValue([
+            { role: 'user', content: 'agent already said hello' },
+            { role: 'assistant', content: 'agent reply' },
+        ]);
+        const launches: CustomEvent[] = [];
+        const listener = (event: Event) => launches.push(event as CustomEvent);
+        window.addEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+        try {
+            renderPanel({
+                window: { inline: true },
+                pendingProjectTabOpen: {
+                    projectPath: 'D:/tasks/agent-chat',
+                    taskTitle: 'Agent chat',
+                    autoSend: false,
+                },
+                onPendingProjectTabOpenHandled: vi.fn(),
+                state: { messages: [], sending: false, streaming: false, ready: true },
+                actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+            });
+            await waitFor(() => expect(document.body.textContent || '').toContain('agent already said hello'));
+            act(() => {
+                window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+            });
+            await waitFor(() => expect(screen.getByTestId('welcome-task-config')).toBeTruthy());
+
+            const pastedFile = new File(['contract'], 'notes.pdf', { type: 'application/pdf' });
+            fireEvent.paste(screen.getByTestId('ai-input'), {
+                clipboardData: {
+                    items: [{ kind: 'file', type: 'application/pdf', getAsFile: () => pastedFile }],
+                    files: [pastedFile],
+                },
+            });
+            fireEvent.keyDown(screen.getByTestId('ai-input'), { key: 'Enter' });
+            await waitFor(() => expect(savePastedFile).toHaveBeenCalled());
+            expect(createTaskUnifiedMock).not.toHaveBeenCalled();
+
+            await act(async () => {
+                resolveSave?.('D:\\tmp\\maclaw-paste\\notes.pdf');
+            });
+            await waitFor(() => expect(launches).toHaveLength(1));
+            expect(String((launches[0].detail as { initialMessage?: string }).initialMessage || '')).toContain('D:\\tmp\\maclaw-paste\\notes.pdf');
+            expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1);
+        } finally {
+            window.removeEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+            (window as any).go = previousGo;
+            loadProjectConversationHistoryMock.mockReset();
+            loadProjectConversationHistoryMock.mockResolvedValue([]);
+        }
+    });
+
+    it('ignores a pasted file while the new task is still being created', async () => {
+        let resolveCreate: ((result: { projectPath: string }) => void) | null = null;
+        createTaskUnifiedMock.mockImplementation(() => new Promise<{ projectPath: string }>(resolve => { resolveCreate = resolve; }));
+        loadProjectConversationHistoryMock.mockResolvedValue([
+            { role: 'user', content: 'agent already said hello' },
+            { role: 'assistant', content: 'agent reply' },
+        ]);
+        const pending = {
+            projectPath: 'D:/tasks/agent-chat',
+            taskTitle: 'Agent chat',
+            autoSend: false,
+        };
+        function Harness() {
+            const [draft, setDraft] = useState('');
+            const base = defaultPanelProps();
+            return (
+                <AIAssistantPanel
+                    {...base}
+                    window={{ inline: true }}
+                    pendingProjectTabOpen={pending}
+                    onPendingProjectTabOpenHandled={vi.fn()}
+                    state={{ ...base.state, messages: [], sending: false, streaming: false, ready: true, draftInputValue: draft }}
+                    actions={{ ...base.actions, sendMessage: vi.fn().mockResolvedValue(true), setDraftInputValue: setDraft }}
+                />
+            );
+        }
+        const launches: CustomEvent[] = [];
+        const listener = (event: Event) => launches.push(event as CustomEvent);
+        window.addEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+        try {
+            render(<Harness />, { wrapper: DialogProvider });
+            await waitFor(() => expect(document.body.textContent || '').toContain('agent already said hello'));
+            act(() => {
+                window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+            });
+            await waitFor(() => expect(screen.getByTestId('welcome-task-config')).toBeTruthy());
+
+            fireEvent.change(screen.getByTestId('ai-input'), { target: { value: 'read this' } });
+            await waitFor(() => expect((screen.getByTestId('ai-input') as HTMLTextAreaElement).value).toBe('read this'));
+            fireEvent.keyDown(screen.getByTestId('ai-input'), { key: 'Enter' });
+            await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1));
+            await waitFor(() => expect((screen.getByTestId('ai-input') as HTMLTextAreaElement).disabled).toBe(true));
+
+            const pastedFile = new File(['contract'], 'late.pdf', { type: 'application/pdf' });
+            Object.defineProperty(pastedFile, 'path', { configurable: true, value: 'D:\\docs\\late.pdf' });
+            fireEvent.paste(screen.getByTestId('ai-input'), {
+                clipboardData: {
+                    items: [{ kind: 'file', type: 'application/pdf', getAsFile: () => pastedFile }],
+                    files: [pastedFile],
+                },
+            });
+            expect(screen.queryByTestId('ai-pending-attachments')).toBeNull();
+
+            await act(async () => {
+                resolveCreate?.({ projectPath: 'D:/tasks/wizard-task' });
+            });
+            await waitFor(() => expect(launches).toHaveLength(1));
+            const message = String((launches[0].detail as { initialMessage?: string }).initialMessage || '');
+            expect(message).toContain('read this');
+            expect(message).not.toContain('late.pdf');
+        } finally {
+            window.removeEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+            createTaskUnifiedMock.mockReset();
+            createTaskUnifiedMock.mockResolvedValue({ projectPath: 'D:/tasks/wizard-task' });
+            loadProjectConversationHistoryMock.mockReset();
+            loadProjectConversationHistoryMock.mockResolvedValue([]);
+        }
+    });
+
     it('returns to the covered assistant when the task list focuses that task', async () => {
         const user = makeMsg({ role: 'user', content: 'Chongzhou weather' });
         renderPanel({

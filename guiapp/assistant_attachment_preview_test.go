@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/pptx"
 	gopdf2 "github.com/VantageDataChat/GoPDF2"
 )
@@ -110,6 +111,86 @@ func TestAIAssistantAttachmentOpeningPreviewPDFStopsOnFirstFullPage(t *testing.T
 	}
 	if strings.Contains(got.Pages[0].Text, "later page") {
 		t.Fatalf("first page text included the second page: %q", got.Pages[0].Text)
+	}
+}
+
+func TestAttachmentPreviewSizeLimitUsesShotBufferForPDF(t *testing.T) {
+	const wantPDF int64 = 128 << 20
+	if attachmentPreviewPDFMaxBytes != wantPDF {
+		t.Fatalf("shot buffer = %d, want %d", attachmentPreviewPDFMaxBytes, wantPDF)
+	}
+	if attachmentPreviewPDFMaxBytes <= agent.MaxOfficeReadFileBytes {
+		t.Fatalf("shot buffer %d must sit above the text cap %d", attachmentPreviewPDFMaxBytes, agent.MaxOfficeReadFileBytes)
+	}
+	if attachmentPreviewPDFMaxBytes >= taskResultPreviewMediaMaxBytes {
+		t.Fatalf("shot buffer %d must stay under the viewer range cap %d", attachmentPreviewPDFMaxBytes, taskResultPreviewMediaMaxBytes)
+	}
+	if got := attachmentPreviewSizeLimit(`C:\docs\scan.pdf`); got != attachmentPreviewPDFMaxBytes {
+		t.Fatalf("pdf limit = %d, want the shot buffer %d", got, attachmentPreviewPDFMaxBytes)
+	}
+	if got := attachmentPreviewSizeLimit(`C:\docs\scan.PDF`); got != attachmentPreviewPDFMaxBytes {
+		t.Fatalf("PDF limit = %d, want the shot buffer %d", got, attachmentPreviewPDFMaxBytes)
+	}
+	if got := attachmentPreviewSizeLimit(`C:\docs\note.docx`); got != agent.MaxOfficeReadFileBytes {
+		t.Fatalf("docx limit = %d, want the text cap %d", got, agent.MaxOfficeReadFileBytes)
+	}
+	if got := attachmentPreviewSizeLimit(`C:\docs\deck.pptx`); got != agent.MaxOfficeReadFileBytes {
+		t.Fatalf("pptx limit = %d, want the text cap %d", got, agent.MaxOfficeReadFileBytes)
+	}
+}
+
+func TestAIAssistantAttachmentOpeningPreviewPDFAboveTextCapStillLeasesPage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scan.pdf")
+	if err := os.WriteFile(path, []byte("%PDF-1.7\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(agent.MaxOfficeReadFileBytes + 1); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := (*App)(nil).AIAssistantAttachmentOpeningPreview(path)
+	if err != nil {
+		t.Fatalf("preview above the text cap: %v", err)
+	}
+	if got.Kind != "pdf" || !strings.Contains(got.PreviewURL, taskResultPreviewHTTPPath) {
+		t.Fatalf("preview = %+v", got)
+	}
+	if len(got.Pages) != 1 || got.Pages[0].Index != 1 {
+		t.Fatalf("pages = %+v, want page 1 only", got.Pages)
+	}
+	if strings.TrimSpace(got.Pages[0].Text) != "" {
+		t.Fatalf("text = %q, a file past the text cap must not be parsed", got.Pages[0].Text)
+	}
+}
+
+func TestAIAssistantAttachmentOpeningPreviewPDFAboveShotBufferRejects(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "huge.pdf")
+	if err := os.WriteFile(path, []byte("%PDF-1.7\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(attachmentPreviewPDFMaxBytes + 1); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = (*App)(nil).AIAssistantAttachmentOpeningPreview(path)
+	if err == nil || !strings.Contains(err.Error(), "文件过大") {
+		t.Fatalf("oversized pdf error = %v", err)
 	}
 }
 

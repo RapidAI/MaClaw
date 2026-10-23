@@ -16,6 +16,15 @@ export function pendingUnfinishedSlotID(message: ChatMessage): string {
     return String(message.unfinishedSlot?.slotID || "").trim();
 }
 
+/** The latest assistant turn failed. A later prose or completed turn clears it. */
+export function latestAssistantTurnIncomplete(messages: ChatMessage[]): boolean {
+    for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role !== "assistant") continue;
+        return messages[i].resultStatus === "incomplete";
+    }
+    return false;
+}
+
 /** Latest pending recovery status, or "" when every card is resolved. */
 export function latestPendingUnfinishedStatus(messages: ChatMessage[]): string {
     let status = "";

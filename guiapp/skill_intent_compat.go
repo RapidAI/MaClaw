@@ -19,6 +19,7 @@ package guiapp
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // intentCategory represents a coarse action category extracted from user text.
@@ -80,6 +81,7 @@ var supplementalIntentVerbsCJK = map[string]intentCategory{
 	"知道": intentCatQuery,
 	"回忆": intentCatQuery,
 	"看看": intentCatQuery,
+	"看下": intentCatQuery,
 	"检查": intentCatQuery,
 	"确认": intentCatQuery,
 }
@@ -329,10 +331,84 @@ func isTaskDomainCompatibleWithSkill(userIntent intentCategory, userText string,
 		return true
 	}
 	skillDomain := extractSkillDomain(skillText)
+	// A server lookup must name infrastructure. An undescribed shop or
+	// prompt skill used to pass and was installed as the first ClawHub hit.
 	if skillDomain == skillDomainUnknown {
-		return true
+		return taskDomain != skillDomainInfra
 	}
 	return taskDomain == skillDomain
+}
+
+// informationLookupQuery is a request for facts, not a missing capability.
+// Naming a skill or asking to install one is not a lookup. Asking which
+// skills are already installed is a lookup even when the sentence has no
+// query verb ("有哪些技能").
+func informationLookupQuery(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" || isExplicitSkillCapabilitySearchRequest(text) {
+		return false
+	}
+	if installedSkillInventoryQuestion(strings.ToLower(text)) {
+		return true
+	}
+	switch extractUserIntentCategory(text) {
+	case intentCatQuery:
+		return true
+	case intentCatUnknown:
+		return verblessInfraStatusLookup(text)
+	default:
+		return false
+	}
+}
+
+// verblessInfraStatusLookup is a host plus a status word, such as
+// "api2 服务器情况". Naming a service inside an instruction
+// ("加固 php.ini 并重启服务") is not a lookup.
+func verblessInfraStatusLookup(text string) bool {
+	if extractTaskDomain(text) != skillDomainInfra || infraWorkInstruction(text) {
+		return false
+	}
+	lower := strings.ToLower(text)
+	if containsDomainTerm(lower, "情况", "状态", "健康", "status", "health", "healthy", "uptime", "information", "info") {
+		return true
+	}
+	// 信息 also appears in ordinary instructions. It is a lookup only when
+	// the whole request is a short status phrase, such as "api2 服务器信息".
+	if !strings.Contains(lower, "信息") {
+		return false
+	}
+	return utf8.RuneCountInString(strings.TrimSpace(text)) <= 16
+}
+
+func infraWorkInstruction(text string) bool {
+	lower := strings.ToLower(text)
+	// 安装 and 配置 are left out. "api2 配置状态" asks for status, and
+	// "请配置 api2 服务器" has no status word so it stays a task.
+	if containsAny(lower,
+		"重启", "加固", "部署", "修复", "清理", "启动", "停止",
+		"编写", "实现", "迁移", "备份", "升级", "回滚", "排查", "同步", "写入", "推送", "切换") {
+		return true
+	}
+	// ASCII verbs are tokens. "fix" must not match "prefix" or "suffix".
+	return containsDomainTerm(lower,
+		"restart", "deploy", "fix", "clean",
+		"migrate", "backup", "upgrade", "rollback")
+}
+
+// skillSearchQueryIsBareContinuation reports a steer such as 继续 that
+// carries no new task. A longer sentence that happens to contain 继续 stays
+// a real request.
+func skillSearchQueryIsBareContinuation(text string) bool {
+	folded := strings.ToLower(strings.Join(strings.Fields(strings.Trim(strings.TrimSpace(text), " \t\r\n.。!！?？…~～")), " "))
+	switch folded {
+	case "继续", "请继续", "继续执行", "请继续执行", "继续吧", "继续做", "继续一下", "继续下去",
+		"接着", "接着做", "接着来",
+		"continue", "go ahead", "go on", "carry on",
+		"开工", "开干", "直接做":
+		return true
+	default:
+		return false
+	}
 }
 
 func extractTaskDomain(text string) skillDomainCategory {
@@ -340,17 +416,19 @@ func extractTaskDomain(text string) skillDomainCategory {
 	if lower == "" {
 		return skillDomainUnknown
 	}
-	if containsAny(lower, "doc", "docx", "xls", "xlsx", "ppt", "pptx", "word", "excel", "spreadsheet") {
-		return skillDomainDocument
-	}
-	if containsAny(lower, "server", "status", "health", "ssh", "host", "uptime", "api2", "api1",
+	// Infrastructure wins over an office token in the same sentence.
+	// "api2 server doc" is a server lookup, not a document lookup.
+	if containsDomainTerm(lower, "server", "status", "health", "ssh", "host", "localhost", "uptime", "api2", "api1",
 		"服务器", "服务", "状态", "健康", "主机", "连接") {
 		return skillDomainInfra
 	}
-	if containsAny(lower, "weather", "forecast", "temperature", "天气", "气温", "预报") {
+	if containsDomainTerm(lower, "doc", "docx", "xls", "xlsx", "ppt", "pptx", "word", "excel", "spreadsheet") {
+		return skillDomainDocument
+	}
+	if containsDomainTerm(lower, "weather", "forecast", "temperature", "天气", "气温", "预报") {
 		return skillDomainWeather
 	}
-	if containsAny(lower, "pdf", "ppt", "pptx", "document", "docx", "file", "文档", "文件") {
+	if containsDomainTerm(lower, "pdf", "ppt", "pptx", "document", "docx", "file", "文档", "文件") {
 		return skillDomainDocument
 	}
 	return skillDomainUnknown
@@ -361,24 +439,44 @@ func extractSkillDomain(text string) skillDomainCategory {
 	if lower == "" {
 		return skillDomainUnknown
 	}
-	if containsAny(lower, "doc", "docx", "xls", "xlsx", "ppt", "pptx", "word", "excel", "spreadsheet") {
+	if containsDomainTerm(lower, "doc", "docx", "xls", "xlsx", "ppt", "pptx", "word", "excel", "spreadsheet") {
 		return skillDomainDocument
 	}
-	if containsAny(lower, "api design", "design review", "design reviewer", "api reviewer", "openapi review",
+	if containsDomainTerm(lower, "api design", "design review", "design reviewer", "api reviewer", "openapi review",
 		"接口设计", "api设计", "设计评审") {
 		return skillDomainAPIDesign
 	}
-	if containsAny(lower, "server", "status", "health", "ssh", "host", "uptime", "monitor",
+	if containsDomainTerm(lower, "server", "status", "health", "ssh", "host", "localhost", "uptime", "monitor",
 		"服务器", "服务状态", "健康检查", "主机", "运维", "监控") {
 		return skillDomainInfra
 	}
-	if containsAny(lower, "weather", "forecast", "temperature", "天气", "气温", "预报") {
+	if containsDomainTerm(lower, "weather", "forecast", "temperature", "天气", "气温", "预报") {
 		return skillDomainWeather
 	}
-	if containsAny(lower, "pdf", "ppt", "pptx", "document", "docx", "file", "文档", "文件") {
+	if containsDomainTerm(lower, "pdf", "ppt", "pptx", "document", "docx", "file", "文档", "文件") {
 		return skillDomainDocument
 	}
 	return skillDomainUnknown
+}
+
+// containsDomainTerm matches an ASCII word as a token. "doc" must not match
+// "docker", and "word" must not match "password". CJK terms stay substrings.
+func containsDomainTerm(text string, needles ...string) bool {
+	for _, needle := range needles {
+		if needle == "" {
+			continue
+		}
+		if !isASCII(needle) || strings.ContainsAny(needle, " ") {
+			if strings.Contains(text, needle) {
+				return true
+			}
+			continue
+		}
+		if containsASCIIWord(text, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func containsAny(text string, needles ...string) bool {

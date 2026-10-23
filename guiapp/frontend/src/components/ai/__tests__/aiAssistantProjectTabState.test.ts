@@ -1,9 +1,20 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { collapseDuplicatePendingUnfinishedSlots, latestPendingUnfinishedStatus, loadProjectTabMsgIds, mergeChatMessages, messageHasPendingUnfinishedSlot, PROJECT_TAB_MSG_IDS_KEY } from '../aiAssistantProjectTabState';
+import { collapseDuplicatePendingUnfinishedSlots, latestAssistantTurnIncomplete, latestPendingUnfinishedStatus, loadProjectTabMsgIds, mergeChatMessages, messageHasPendingUnfinishedSlot, PROJECT_TAB_MSG_IDS_KEY } from '../aiAssistantProjectTabState';
 
 describe('aiAssistantProjectTabState', () => {
     beforeEach(() => {
         localStorage.clear();
+    });
+
+    it('reads the latest assistant outcome and skips a later system card', () => {
+        expect(latestAssistantTurnIncomplete([
+            { id: 'a', role: 'assistant' as const, content: '先从 GitHub 上取一份目录清单。', resultStatus: 'incomplete' as const, timestamp: 1 },
+            { id: 's', role: 'system' as const, content: '已保存', timestamp: 2 },
+        ])).toBe(true);
+        expect(latestAssistantTurnIncomplete([
+            { id: 'a', role: 'assistant' as const, content: '先从 GitHub 上取一份目录清单。', resultStatus: 'incomplete' as const, timestamp: 1 },
+            { id: 'b', role: 'assistant' as const, content: '目录里没有这个文件。', resultStatus: 'completed' as const, timestamp: 2 },
+        ])).toBe(false);
     });
 
     it('loads persisted project-tab message ids from localStorage', () => {

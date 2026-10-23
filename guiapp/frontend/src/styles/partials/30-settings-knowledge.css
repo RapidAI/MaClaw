@@ -1651,6 +1651,22 @@
 .knowledge-list { gap: 8px; }
 .knowledge-row-main { min-width: 0; gap: 4px; color: var(--theme-text-primary); font-size: 0.82rem; overflow-wrap: anywhere; }
 .knowledge-row-main > strong { min-width: 0; overflow-wrap: anywhere; }
+.knowledge-watch-row-main { flex: 1 1 auto; }
+.knowledge-watch-progress { display: grid; gap: 4px; min-width: 0; width: 100%; }
+.knowledge-watch-progress-header { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.knowledge-watch-progress-track { position: relative; flex: 1 1 auto; min-width: 0; height: 6px; overflow: hidden; border-radius: 999px; background: var(--theme-surface-muted); }
+.knowledge-watch-progress-fill { height: 100%; border-radius: inherit; background: var(--theme-primary); transition: width 0.25s ease; }
+.knowledge-watch-progress-fill[data-indeterminate="true"] { width: 35%; animation: knowledge-watch-progress-slide 1.1s ease-in-out infinite; }
+@keyframes knowledge-watch-progress-slide {
+    0% { transform: translateX(-120%); }
+    100% { transform: translateX(320%); }
+}
+.knowledge-watch-progress-meta { flex: 0 0 auto; color: var(--theme-text-secondary); font-size: 0.75rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.knowledge-watch-progress-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.knowledge-watch-progress-file { display: flex; min-width: 0; overflow: hidden; font-size: 0.78rem; white-space: nowrap; }
+.knowledge-watch-progress-dir { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--theme-text-muted); }
+.knowledge-watch-progress-name { flex: 0 0 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--theme-text-primary); font-weight: 650; }
+.knowledge-watch-progress-step { flex: 0 0 auto; color: var(--theme-text-muted); font-size: 0.74rem; white-space: nowrap; }
 
 .knowledge-two-column {
     display: grid;
@@ -1897,8 +1913,13 @@
 
 @media (prefers-reduced-motion: reduce) {
     .knowledge-dialog-overlay,
-    .knowledge-dialog-modal {
+    .knowledge-dialog-modal,
+    .knowledge-watch-progress-fill[data-indeterminate="true"] {
         animation: none !important;
+    }
+    .knowledge-watch-progress-fill[data-indeterminate="true"] {
+        width: 100%;
+        opacity: 0.45;
     }
 }
 

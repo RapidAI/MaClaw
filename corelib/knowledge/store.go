@@ -17,6 +17,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/rerank"
 	_ "modernc.org/sqlite"
 )
 
@@ -36,6 +37,8 @@ type SQLiteStore struct {
 	scanProgress               ScanProgressFunc
 	embedder                   embedding.Embedder
 	embedderMu                 sync.RWMutex
+	reranker                   rerank.Reranker
+	rerankerMu                 sync.RWMutex
 	embedderGeneration         uint64 // invalidates in-flight writes after a model switch
 	vectorANN                  *vectorANNStore
 	vectorANNEnabled           bool // opt-in: exact scan remains the safe default
@@ -2822,6 +2825,7 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	}
 	opts.Retrieval = retrieval
 	if strings.TrimSpace(opts.Query) == "" {
+		setRerankNote(ctx, "rerank_off")
 		return []SearchResult{}, nil
 	}
 	query := buildFTSQuerySegmented(opts.Query)
@@ -2834,256 +2838,54 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	// still be embedded.
 	runLexical := query != "" && (retrieval != knowledgeRetrievalVector || QuerySuppressesEmbedding(opts.Query))
 	if !runLexical && retrieval != knowledgeRetrievalVector {
+		setRerankNote(ctx, "rerank_off")
 		return []SearchResult{}, nil
 	}
 
 	results := make([]SearchResult, 0, opts.Limit)
+	wideRetrievalOrder := false
+	reranker := s.currentReranker()
+	rerankNote := "rerank_off"
+	wantWide := false
+	if reranker != nil {
+		rerankNote = "rerank_skipped"
+		wantWide = knowledgeRerankPreGate(opts) && knowledgeQueryIsQuestion(opts.Query)
+	}
 	if runLexical {
-		candidateLimit := opts.Limit * 3
-		if candidateLimit < opts.Limit {
-			candidateLimit = opts.Limit
+		candidateLimit := knowledgeScanLimit(opts.Limit, wantWide)
+		// LIKE keeps the historical final limit until the gate actually widens.
+		// Opening it earlier would change a strong hit that never calls the scorer.
+		likeLimit := opts.Limit
+		if wantWide && candidateLimit > likeLimit {
+			likeLimit = candidateLimit
 		}
-		if candidateLimit > 100 {
-			candidateLimit = 100
+		var lexErr error
+		results, lexErr = s.collectLexicalResults(ctx, opts, query, candidateLimit, likeLimit)
+		if lexErr != nil {
+			return nil, lexErr
 		}
-		resultTypes := normalizeSearchResultTypes(opts.ResultTypes)
-
-		seenCards := make(map[string]struct{})
-		seenFacts := make(map[string]struct{})
-		seenNodes := make(map[string]struct{})
-
-		if wantsSearchType(resultTypes, "card") {
-			cardWhere := []string{"knowledge_cards_fts MATCH ?", "NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)", "COALESCE(c.invalid_at, '') = ''"}
-			cardArgs := []interface{}{query}
-			cardWhere, cardArgs = appendSearchFilters(cardWhere, cardArgs, "s", opts)
-			cardArgs = append(cardArgs, candidateLimit)
-			cardQuery := `SELECT c.id, COALESCE(c.node_id, ''), c.title, c.claim, c.summary,
-		COALESCE(n.title, ''), COALESCE(n.type, ''), COALESCE(n.page, 0), COALESCE(n.sheet_name, ''), COALESCE(n.row_range, ''), COALESCE(n.col_range, ''),
-		s.id, s.kind, s.uri, s.canonical_uri, s.title, s.author, s.site_name, s.published_at, s.fetched_at, s.content_hash,
-		s.owner_id, s.tenant_id, s.project_path, s.topic_hint, s.source_trust, s.batch_id, s.relative_path, s.status, s.error_message, s.created_at, s.updated_at,
-		snippet(knowledge_cards_fts, 2, '', '', '...', 32), bm25(knowledge_cards_fts)
-		FROM knowledge_cards_fts
-		JOIN knowledge_cards c ON c.id = knowledge_cards_fts.card_id
-		LEFT JOIN document_nodes n ON n.id = c.node_id
-		JOIN knowledge_sources s ON s.id = c.source_id
-		WHERE ` + strings.Join(cardWhere, " AND ") + ` ORDER BY bm25(knowledge_cards_fts) LIMIT ?`
-			cardRows, err := s.db.QueryContext(ctx, cardQuery, cardArgs...)
-			if err != nil {
-				return nil, err
+		if reranker != nil && !wantWide && knowledgeRerankPreGate(opts) && len(results) > 0 && bestNonNodeSearchScore(results) < 2 {
+			wantWide = true
+			wideLimit := candidateLimit
+			if wideLimit < knowledgeRerankPool {
+				wideLimit = knowledgeRerankPool
 			}
-			for cardRows.Next() {
-				var result SearchResult
-				var source Source
-				var publishedAt, fetchedAt, createdAt, updatedAt string
-				var snippet string
-				var rank float64
-				if err := cardRows.Scan(&result.CardID, &result.NodeID, &result.CardTitle, &result.Claim, &result.Summary,
-					&result.NodeTitle, &result.NodeType, &result.Page, &result.SheetName, &result.RowRange, &result.ColRange,
-					&source.ID, &source.Kind, &source.URI, &source.CanonicalURI, &source.Title, &source.Author, &source.SiteName, &publishedAt, &fetchedAt,
-					&source.ContentHash, &source.OwnerID, &source.TenantID, &source.ProjectPath, &source.TopicHint, &source.SourceTrust, &source.BatchID, &source.RelativePath,
-					&source.Status, &source.ErrorMessage, &createdAt, &updatedAt, &snippet, &rank); err != nil {
-					_ = cardRows.Close()
-					return nil, err
+			// FTS may already be at the pool size while LIKE is still on the
+			// final limit. Rescan only the side that is still short.
+			needFTS := candidateLimit < wideLimit
+			needLike := containsNoSpaceScriptRunes(opts.Query) && likeLimit < wideLimit
+			if needFTS || needLike {
+				ftsLimit := candidateLimit
+				if needFTS {
+					ftsLimit = wideLimit
 				}
-				source.PublishedAt = parseTime(publishedAt)
-				source.FetchedAt = parseTime(fetchedAt)
-				source.CreatedAt = parseTime(createdAt)
-				source.UpdatedAt = parseTime(updatedAt)
-				result.Source = source
-				result.ResultType = "card"
-				result.Snippet = strings.TrimSpace(snippet)
-				result.Score = scoreSearchResult(result, opts, -rank)
-				result.Citation = formatResultCitation(result)
-				seenCards[result.CardID] = struct{}{}
-				if result.NodeID != "" {
-					seenNodes[source.ID+"\x00"+result.NodeID] = struct{}{}
+				nextLike := likeLimit
+				if needLike {
+					nextLike = wideLimit
 				}
-				results = append(results, result)
-			}
-			if err := cardRows.Close(); err != nil {
-				return nil, err
-			}
-			if err := cardRows.Err(); err != nil {
-				return nil, err
-			}
-			kbCardResults, err := s.searchKBTableCardsFTS(ctx, opts, candidateLimit)
-			if err != nil {
-				return nil, err
-			}
-			for _, result := range kbCardResults {
-				if _, ok := seenCards[result.CardID]; ok {
-					continue
-				}
-				seenCards[result.CardID] = struct{}{}
-				results = append(results, result)
-			}
-		}
-
-		if wantsSearchType(resultTypes, "fact") {
-			factWhere := []string{"knowledge_facts_fts MATCH ?", "NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)", "COALESCE(f.invalid_at, '') = ''"}
-			factArgs := []interface{}{query}
-			factWhere, factArgs = appendSearchFilters(factWhere, factArgs, "s", opts)
-			factArgs = append(factArgs, candidateLimit)
-			factQuery := `SELECT f.id, f.card_id, f.subject, f.predicate, f.object, c.title, COALESCE(c.node_id, ''), c.claim, c.summary,
-		COALESCE(n.title, ''), COALESCE(n.type, ''), COALESCE(n.page, 0), COALESCE(n.sheet_name, ''), COALESCE(n.row_range, ''), COALESCE(n.col_range, ''),
-		s.id, s.kind, s.uri, s.canonical_uri, s.title, s.author, s.site_name, s.published_at, s.fetched_at, s.content_hash,
-		s.owner_id, s.tenant_id, s.project_path, s.topic_hint, s.source_trust, s.batch_id, s.relative_path, s.status, s.error_message, s.created_at, s.updated_at,
-		bm25(knowledge_facts_fts)
-		FROM knowledge_facts_fts
-		JOIN knowledge_facts f ON f.id = knowledge_facts_fts.fact_id
-		JOIN knowledge_cards c ON c.id = f.card_id
-		LEFT JOIN document_nodes n ON n.id = c.node_id
-		JOIN knowledge_sources s ON s.id = f.source_id
-		WHERE ` + strings.Join(factWhere, " AND ") + ` ORDER BY bm25(knowledge_facts_fts) LIMIT ?`
-			factRows, err := s.db.QueryContext(ctx, factQuery, factArgs...)
-			if err != nil {
-				return nil, err
-			}
-			for factRows.Next() {
-				var result SearchResult
-				var source Source
-				var publishedAt, fetchedAt, createdAt, updatedAt string
-				var rank float64
-				if err := factRows.Scan(&result.FactID, &result.CardID, &result.Subject, &result.Predicate, &result.Object, &result.CardTitle, &result.NodeID, &result.Claim, &result.Summary,
-					&result.NodeTitle, &result.NodeType, &result.Page, &result.SheetName, &result.RowRange, &result.ColRange,
-					&source.ID, &source.Kind, &source.URI, &source.CanonicalURI, &source.Title, &source.Author, &source.SiteName, &publishedAt, &fetchedAt,
-					&source.ContentHash, &source.OwnerID, &source.TenantID, &source.ProjectPath, &source.TopicHint, &source.SourceTrust, &source.BatchID, &source.RelativePath,
-					&source.Status, &source.ErrorMessage, &createdAt, &updatedAt, &rank); err != nil {
-					_ = factRows.Close()
-					return nil, err
-				}
-				source.PublishedAt = parseTime(publishedAt)
-				source.FetchedAt = parseTime(fetchedAt)
-				source.CreatedAt = parseTime(createdAt)
-				source.UpdatedAt = parseTime(updatedAt)
-				result.Source = source
-				result.ResultType = "fact"
-				result.Snippet = strings.TrimSpace(result.Subject + " " + result.Predicate + " " + result.Object)
-				result.Score = scoreSearchResult(result, opts, -rank)
-				result.Citation = formatResultCitation(result)
-				seenFacts[result.FactID] = struct{}{}
-				seenCards[result.CardID] = struct{}{}
-				if result.NodeID != "" {
-					seenNodes[source.ID+"\x00"+result.NodeID] = struct{}{}
-				}
-				results = append(results, result)
-			}
-			if err := factRows.Close(); err != nil {
-				return nil, err
-			}
-			if err := factRows.Err(); err != nil {
-				return nil, err
-			}
-			kbFactResults, err := s.searchKBTableFactsFTS(ctx, opts, candidateLimit)
-			if err != nil {
-				return nil, err
-			}
-			for _, result := range kbFactResults {
-				if _, ok := seenFacts[result.FactID]; ok {
-					continue
-				}
-				seenFacts[result.FactID] = struct{}{}
-				results = append(results, result)
-			}
-		}
-
-		if wantsSearchType(resultTypes, "node") {
-			nodeWhere := []string{"document_nodes_fts MATCH ?"}
-			nodeArgs := []interface{}{query}
-			nodeWhere, nodeArgs = appendSearchFilters(nodeWhere, nodeArgs, "s", opts)
-			nodeArgs = append(nodeArgs, candidateLimit)
-			nodeQuery := `SELECT n.id, n.title, n.type, n.page, n.sheet_name, n.row_range, n.col_range,
-		s.id, s.kind, s.uri, s.canonical_uri, s.title, s.author, s.site_name, s.published_at, s.fetched_at, s.content_hash,
-		s.owner_id, s.tenant_id, s.project_path, s.topic_hint, s.source_trust, s.batch_id, s.relative_path, s.status, s.error_message, s.created_at, s.updated_at,
-		snippet(document_nodes_fts, 2, '', '', '...', 32), bm25(document_nodes_fts)
-		FROM document_nodes_fts
-		JOIN document_nodes n ON n.id = document_nodes_fts.node_id
-		JOIN knowledge_sources s ON s.id = n.source_id
-		WHERE ` + strings.Join(nodeWhere, " AND ") + ` ORDER BY bm25(document_nodes_fts) LIMIT ?`
-			nodeRows, err := s.db.QueryContext(ctx, nodeQuery, nodeArgs...)
-			if err != nil {
-				return nil, err
-			}
-			defer nodeRows.Close()
-			for nodeRows.Next() {
-				var result SearchResult
-				var snippet string
-				var rank float64
-				var source Source
-				var publishedAt, fetchedAt, createdAt, updatedAt string
-				if err := nodeRows.Scan(&result.NodeID, &result.NodeTitle, &result.NodeType, &result.Page, &result.SheetName, &result.RowRange, &result.ColRange,
-					&source.ID, &source.Kind, &source.URI, &source.CanonicalURI, &source.Title, &source.Author, &source.SiteName, &publishedAt, &fetchedAt,
-					&source.ContentHash, &source.OwnerID, &source.TenantID, &source.ProjectPath, &source.TopicHint, &source.SourceTrust, &source.BatchID, &source.RelativePath,
-					&source.Status, &source.ErrorMessage, &createdAt, &updatedAt, &snippet, &rank); err != nil {
-					return nil, err
-				}
-				source.PublishedAt = parseTime(publishedAt)
-				source.FetchedAt = parseTime(fetchedAt)
-				source.CreatedAt = parseTime(createdAt)
-				source.UpdatedAt = parseTime(updatedAt)
-				if _, ok := seenNodes[source.ID+"\x00"+result.NodeID]; ok {
-					continue
-				}
-				result.Source = source
-				result.ResultType = "node"
-				result.Snippet = strings.TrimSpace(snippet)
-				result.Score = scoreSearchResult(result, opts, -rank)
-				result.Citation = formatResultCitation(result)
-				results = append(results, result)
-			}
-			if err := nodeRows.Err(); err != nil {
-				return nil, err
-			}
-		}
-
-		if wantsSearchType(resultTypes, "table_row") {
-			rowResults, rowErr := s.searchTableRowsFTS(ctx, opts)
-			if rowErr == nil && len(rowResults) > 0 {
-				seenRows := make(map[string]struct{})
-				for _, result := range results {
-					if result.ResultType == "table_row" && result.RowID != "" {
-						seenRows[result.RowID] = struct{}{}
-					}
-				}
-				for _, result := range rowResults {
-					if _, ok := seenRows[result.RowID]; ok {
-						continue
-					}
-					seenRows[result.RowID] = struct{}{}
-					results = append(results, result)
-				}
-			}
-		}
-
-		// FTS fallback for languages whose scripts do not consistently expose word
-		// boundaries to SQLite unicode61 (CJK, Japanese, Korean, and Thai).
-		// This handles three cases:
-		// 1. FTS index not yet rebuilt with segmentation (rebuild pending/failed)
-		// 2. FTS tokenization mismatch (new words not in gse dictionary)
-		// 3. FTS found card/fact results but missed relevant document_nodes content
-		//    (distillation loss: cards/facts may not cover all original document text)
-		if containsNoSpaceScriptRunes(opts.Query) && !strictAnchorsAlreadyCovered(opts.Query, results) {
-			// For no-space scripts, run LIKE fallback to search document_nodes original
-			// text when lexical FTS has not already covered a composite name. FTS
-			// tokenization mismatch means FTS may find some nodes (via "马勇"
-			// matching page 1) but miss others (page 2 has "书籍" which doesn't match
-			// query token "书"). LIKE handles arbitrary substrings correctly.
-			// Performance: O(nodes × terms) string matching. For typical knowledge bases
-			// (<2000 nodes, <12 terms), this is <50ms — acceptable tradeoff for recall.
-			likeResults, likeErr := s.searchCJKLikeFallback(ctx, opts)
-			if likeErr == nil && len(likeResults) > 0 {
-				// Merge LIKE results into FTS results. IDs may be supplied by callers and
-				// are unique only within their entity table, so namespace them before
-				// deduplicating: a card ID must never suppress an unrelated fact ID.
-				seen := make(map[string]struct{})
-				for _, r := range results {
-					markSearchResultIDs(seen, r)
-				}
-				for _, lr := range likeResults {
-					if !searchResultIDsSeen(seen, lr) {
-						results = append(results, lr)
-						markSearchResultIDs(seen, lr)
-					}
+				results, lexErr = s.collectLexicalResults(ctx, opts, query, ftsLimit, nextLike)
+				if lexErr != nil {
+					return nil, lexErr
 				}
 			}
 		}
@@ -3092,27 +2894,61 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	// Vector retrieval is decided after the lexical scan. auto keeps the
 	// historical heuristic, including the non-node score cutoff. Explicit
 	// routes and strict names are handled in knowledgeRetrievalPlan.
+	// A wide pool uses the same route decision, with auto and hybrid keeping
+	// vectors even when the lexical score is already strong.
 	if emb := s.currentEmbedder(); emb != nil && !embedding.IsNoop(emb) {
 		decision := knowledgeRetrievalPlan(opts, results, true)
+		searchLimit := opts.Limit
+		if wantWide {
+			decision = knowledgeRerankRetrieval(opts, results, true)
+			searchLimit = knowledgeRerankPool
+		}
 		if decision.runEmbedding {
-			embResults, embErr := s.searchByEmbedding(ctx, opts)
+			searchOpts := opts
+			searchOpts.Limit = searchLimit
+			embResults, embErr := s.searchByEmbedding(ctx, searchOpts)
 			if embErr == nil && len(embResults) > 0 {
-				if decision.fuse {
-					results = rrfFuse(results, embResults, opts.Limit)
+				if decision.fuse && runLexical {
+					results = rrfFuse(results, embResults, searchLimit)
 				} else {
 					results = embResults
 				}
+				// A wide retrieval list is already in fusion or vector order.
+				// A rerank miss keeps that order. The nil-reranker path still sorts.
+				if wantWide {
+					wideRetrievalOrder = true
+				}
 			}
+		}
+	}
+	if wantWide && !wideRetrievalOrder && len(results) > knowledgeRerankPool {
+		sortSearchResults(results)
+		results = results[:knowledgeRerankPool]
+	}
+
+	appliedRerank := false
+	if wantWide && len(results) > opts.Limit {
+		outcome := rerank.Apply(ctx, reranker, opts.Query, knowledgePassages(opts.Query, results), rerank.DefaultBudget)
+		if outcome.Applied {
+			results = orderKnowledgeResultsByRerank(opts, results, outcome.Scores)
+			rerankNote = "rerank_applied"
+			appliedRerank = true
 		}
 	}
 
 	// Composite and unknown names keep only hits that contain each content span.
 	results = retainEntityMentionEvidence(opts.Query, results)
 
-	sortSearchResults(results)
+	// A rerank miss on a wide fused or vector list keeps that retrieval order.
+	// A short list, a lexical-only list, and a nil reranker still use the
+	// historical type-and-score sort.
+	if !appliedRerank && !(wideRetrievalOrder && len(results) > opts.Limit) {
+		sortSearchResults(results)
+	}
 	if len(results) > opts.Limit {
 		results = results[:opts.Limit]
 	}
+	setRerankNote(ctx, rerankNote)
 	if err := s.hydrateSearchResultNodeMetadata(ctx, results); err != nil {
 		return nil, err
 	}
@@ -3257,9 +3093,14 @@ func (s *SQLiteStore) Explain(ctx context.Context, opts SearchOptions) (ExplainR
 	if opts.Limit <= 0 || opts.Limit > 50 {
 		opts.Limit = 8
 	}
-	results, err := s.Search(ctx, opts)
+	noteCtx, noteBox := contextWithRerankNote(ctx)
+	results, err := s.Search(noteCtx, opts)
 	if err != nil {
 		return ExplainResult{}, err
+	}
+	rerankNote := noteBox.note
+	if rerankNote == "" {
+		rerankNote = "rerank_off"
 	}
 	citations := make([]Citation, 0, len(results))
 	seen := make(map[string]struct{})
@@ -3279,7 +3120,7 @@ func (s *SQLiteStore) Explain(ctx context.Context, opts SearchOptions) (ExplainR
 		Count:     len(results),
 		Results:   results,
 		Citations: citations,
-		Notes:     []string{"local_fts_no_llm", "topic_context_rerank", "card_fact_node_candidates"},
+		Notes:     []string{"local_fts_no_llm", "topic_context_rerank", "card_fact_node_candidates", rerankNote},
 	}, nil
 }
 
@@ -4431,27 +4272,32 @@ func searchContextTerms(opts SearchOptions) []string {
 	return terms
 }
 
+var searchTypePriority = map[string]int{"table_row": 0, "card": 1, "fact": 2, "node": 3}
+
+func searchResultLess(a, b SearchResult) bool {
+	pi, ok := searchTypePriority[a.ResultType]
+	if !ok {
+		pi = 9
+	}
+	pj, ok := searchTypePriority[b.ResultType]
+	if !ok {
+		pj = 9
+	}
+	if scoreDelta := a.Score - b.Score; scoreDelta > 0.35 || scoreDelta < -0.35 {
+		return a.Score > b.Score
+	}
+	if pi != pj {
+		return pi < pj
+	}
+	if a.Score != b.Score {
+		return a.Score > b.Score
+	}
+	return a.Citation < b.Citation
+}
+
 func sortSearchResults(results []SearchResult) {
-	typePriority := map[string]int{"table_row": 0, "card": 1, "fact": 2, "node": 3}
 	sort.SliceStable(results, func(i, j int) bool {
-		pi, ok := typePriority[results[i].ResultType]
-		if !ok {
-			pi = 9
-		}
-		pj, ok := typePriority[results[j].ResultType]
-		if !ok {
-			pj = 9
-		}
-		if scoreDelta := results[i].Score - results[j].Score; scoreDelta > 0.35 || scoreDelta < -0.35 {
-			return results[i].Score > results[j].Score
-		}
-		if pi != pj {
-			return pi < pj
-		}
-		if results[i].Score != results[j].Score {
-			return results[i].Score > results[j].Score
-		}
-		return results[i].Citation < results[j].Citation
+		return searchResultLess(results[i], results[j])
 	})
 }
 
@@ -5121,7 +4967,7 @@ func lastItemProgressFields(item ImportItem) (path, status, reason string) {
 	return path, status, item.ErrorMessage
 }
 
-func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImportRequest, result DirectoryImportResult, items []ImportItem) (DirectoryImportResult, error) {
+func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImportRequest, result DirectoryImportResult, items []ImportItem) (out DirectoryImportResult, err error) {
 	batchID := NewID("kbatch")
 	result.BatchID = batchID
 	result.Status = ImportStatusRunning
@@ -5147,34 +4993,104 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 		UpdatedAt:    now,
 	}
 
+	imported := 0
+	failed := result.FailedFiles
+	processed := 0
+	// durable* is the last successful commit. The open transaction is rolled
+	// back when this function returns an error, so a partial import must report
+	// the committed counts rather than the in-flight ones.
+	durableImported := 0
+	durableFailed := result.FailedFiles
+	durableProcessed := 0
+	var failedItems []ImportFailedItem
+	var durableFailedItems []ImportFailedItem
+	const maxFailedItems = 20
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return result, err
 	}
-	defer tx.Rollback()
 	// Embedded image files are written before their nodes can be inserted: image
 	// decoding and optional descriptions must not hold a SQLite write lock. Keep
-	// their opaque IDs until this import transaction commits so a later failure
-	// (including one in a different file in the same batch) cannot leave assets
-	// that no committed node can reference.
+	// their opaque IDs until the transaction that inserts their nodes commits, so
+	// a later failure cannot leave assets that no committed node can reference.
 	committed := false
 	provisionalImageAssetIDs := make([]string, 0)
 	defer func() {
-		if !committed {
-			s.deleteProvisionalEmbeddedImageAssets(provisionalImageAssetIDs)
+		if tx != nil {
+			_ = tx.Rollback()
+			tx = nil
+		}
+		if committed {
+			return
+		}
+		s.deleteProvisionalEmbeddedImageAssets(provisionalImageAssetIDs)
+		result.ImportedFiles = durableImported
+		result.FailedFiles = durableFailed
+		result.ProcessedFiles = durableProcessed
+		if len(durableFailedItems) > 0 {
+			result.FailedItems = append([]ImportFailedItem(nil), durableFailedItems...)
+		}
+		result.Status = ImportStatusFailed
+		out = result
+		// Per-file commits can leave the batch row running when a later file
+		// returns. Mark that row failed, with the committed counts, once this
+		// connection is free.
+		if s != nil && s.db != nil {
+			_, _ = s.db.ExecContext(context.Background(), `UPDATE knowledge_import_batches
+				SET status = ?, imported_files = ?, failed_files = ?, updated_at = ?
+				WHERE id = ? AND status = ?`,
+				ImportStatusFailed, durableImported, durableFailed, formatTime(time.Now().UTC()), batchID, ImportStatusRunning)
 		}
 	}()
 	if err := insertBatch(ctx, tx, batch); err != nil {
 		return result, err
 	}
 
-	imported := 0
-	failed := result.FailedFiles
-	processed := 0
 	importedSourceIDs := make([]string, 0)
 	supersededAssets := make(map[string][]string)
-	const maxFailedItems = 20
-	failedItems := make([]ImportFailedItem, 0)
+	replacementPending := false
+	// release commits the open chunk and leaves the store connection free.
+	// Parse, OCR, image decode, and LLM distillation run in that gap.
+	// nodesCommitted drops provisional image IDs whose nodes this commit made
+	// durable. Superseded assets are deleted only after commit, while no
+	// transaction holds the single store connection. ensure begins the next
+	// transaction immediately before the next SQL statement.
+	release := func(nodesCommitted bool) error {
+		if tx == nil {
+			return nil
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		tx = nil
+		durableImported = imported
+		durableFailed = failed
+		durableProcessed = processed
+		durableFailedItems = append([]ImportFailedItem(nil), failedItems...)
+		if nodesCommitted {
+			provisionalImageAssetIDs = nil
+		}
+		if replacementPending {
+			for sourceID, oldAssetIDs := range supersededAssets {
+				s.deleteSupersededImageAssets(ctx, sourceID, oldAssetIDs)
+			}
+			supersededAssets = make(map[string][]string)
+			replacementPending = false
+		}
+		return nil
+	}
+	ensure := func() error {
+		if tx != nil {
+			return nil
+		}
+		next, beginErr := s.db.BeginTx(ctx, nil)
+		if beginErr != nil {
+			return beginErr
+		}
+		tx = next
+		return nil
+	}
 	recordFailedItem := func(item ImportItem) {
 		if len(failedItems) >= maxFailedItems {
 			return
@@ -5248,8 +5164,16 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 	}
 
 	for i := 0; i < len(items); {
+		// Commit the previous file before the next one starts. Folder-watch
+		// imports are one batch transaction per file, not one transaction for
+		// the whole directory. Begin again only for this file's SQL.
+		if err := release(true); err != nil {
+			return result, err
+		}
+		if err := ensure(); err != nil {
+			return result, err
+		}
 		item := items[i]
-		var replacedAssetIDs []string
 		var preParsedPDFNodes []DocumentNode
 		var preParsedPDFErr error
 		preParsedPDF := false
@@ -5280,10 +5204,16 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 				end++
 			}
 			if err := s.importLightItemsBatch(
-				ctx, tx, req, batchID, items, i, end,
+				ctx, &tx, req, batchID, items, i, end,
 				&imported, &failed, &importedSourceIDs,
 				recordFailedItem, markImportItemProcessed, emitStepProgress,
 			); err != nil {
+				return result, err
+			}
+			// Phase 3 left the batch's inserts open. Commit them before the
+			// next file so the write lock does not span batches. The next
+			// iteration begins its own transaction.
+			if err := release(true); err != nil {
 				return result, err
 			}
 			i = end
@@ -5291,6 +5221,53 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 		}
 
 		source := BuildSourceFromImport(req, batchID, item)
+		replaceExisting := false
+		replacementBound := false
+		verifiedContentHash := ""
+		// bindReplacement deletes the previous derived rows in the same
+		// transaction that inserts the replacement. It runs after parse, OCR,
+		// and image decoding, so that work does not hold the connection, and a
+		// crash during it leaves the previous rows in place.
+		bindReplacement := func() error {
+			if !replaceExisting || replacementBound {
+				return nil
+			}
+			if err := ensure(); err != nil {
+				return err
+			}
+			oldAssets, assetErr := imageAssetIDsForSourcesTx(ctx, tx, []string{source.ID})
+			if assetErr != nil {
+				return assetErr
+			}
+			if ids := oldAssets[source.ID]; len(ids) > 0 {
+				supersededAssets[source.ID] = ids
+			}
+			if err := deleteSourceDerivedRows(ctx, tx, source.ID); err != nil {
+				return err
+			}
+			replacementPending = true
+			replacementBound = true
+			if err := insertSource(ctx, tx, source); err != nil {
+				return err
+			}
+			return addSourceLabelsTx(ctx, tx, source.ID, ingestLabelsForSource(source, req.Labels, req.AutoLabels))
+		}
+		distillNow := func(docNodes []DocumentNode) (Source, error) {
+			if err := release(true); err != nil {
+				return source, err
+			}
+			prepared, prepErr := s.prepareDistilledCards(ctx, source, docNodes, req.DistillMode)
+			if prepErr != nil {
+				return source, prepErr
+			}
+			if err := ensure(); err != nil {
+				return source, err
+			}
+			if prepared == nil {
+				return source, nil
+			}
+			return s.writeDistilledCards(ctx, tx, source, prepared)
+		}
 		emitStepProgress(item, "preparing", 1, 5)
 		if existingSource, ok, err := findExistingSourceForImport(ctx, tx, req, item); err != nil {
 			return result, err
@@ -5302,6 +5279,12 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 			}
 			if source.SourceTrust == 0 {
 				source.SourceTrust = existingSource.SourceTrust
+			}
+			// The lookup above is a read. Commit it and drop the connection
+			// before parse and OCR. The replacement delete runs later, in the
+			// transaction that inserts the new rows.
+			if err := release(false); err != nil {
+				return result, err
 			}
 			// A changed Office file must be bound to its verified private snapshot
 			// before this re-import deletes the existing derived rows. The scan
@@ -5325,6 +5308,9 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 					item.UpdatedAt = time.Now().UTC()
 					failed++
 					recordFailedItem(item)
+					if err := ensure(); err != nil {
+						return result, err
+					}
 					if err := insertImportItem(ctx, tx, item); err != nil {
 						return result, err
 					}
@@ -5367,6 +5353,9 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 					item.ErrorMessage = preParsedPDFErr.Error()
 					failed++
 					recordFailedItem(item)
+					if err := ensure(); err != nil {
+						return result, err
+					}
 					if err := insertImportItem(ctx, tx, item); err != nil {
 						return result, err
 					}
@@ -5375,20 +5364,11 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 					continue
 				}
 			}
-			oldAssets, assetErr := imageAssetIDsForSourcesTx(ctx, tx, []string{existingSource.ID})
-			if assetErr != nil {
-				preParsedOffice.close()
-				return result, assetErr
-			}
-			replacedAssetIDs = oldAssets[existingSource.ID]
-			if len(replacedAssetIDs) > 0 {
-				supersededAssets[source.ID] = replacedAssetIDs
-			}
-			if err := deleteSourceDerivedRows(ctx, tx, existingSource.ID); err != nil {
-				preParsedOffice.close()
+			replaceExisting = true
+		} else if isSnapshotBoundKnowledgeKind(item.Kind) {
+			if err := release(false); err != nil {
 				return result, err
 			}
-		} else if isSnapshotBoundKnowledgeKind(item.Kind) {
 			// First-time imports are subject to the same scan-to-parse identity
 			// rule. Without this check a file replaced after scanning could evade
 			// duplicate qualification merely because there is no older Source to
@@ -5404,34 +5384,55 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 		item.Status = ItemStatusImported
 		item.UpdatedAt = time.Now().UTC()
 		emitStepProgress(item, "saving", 2, 5)
-		if err := insertSource(ctx, tx, source); err != nil {
-			preParsedOffice.close()
-			item.Status = ItemStatusFailed
-			item.ErrorMessage = err.Error()
-			failed++
-			recordFailedItem(item)
-			if err := insertImportItem(ctx, tx, item); err != nil {
+		// A replacement keeps its previous rows until the new nodes are ready.
+		// Writing the new source hash here and committing it would make a crash
+		// during OCR or image decoding look like the new file was already imported.
+		if !replaceExisting {
+			if err := ensure(); err != nil {
+				preParsedOffice.close()
 				return result, err
 			}
-			markImportItemProcessed(i, item)
-			i++
-			continue
-		}
-		if err := addSourceLabelsTx(ctx, tx, source.ID, ingestLabelsForSource(source, req.Labels, req.AutoLabels)); err != nil {
-			preParsedOffice.close()
-			item.Status = ItemStatusFailed
-			item.ErrorMessage = err.Error()
-			failed++
-			recordFailedItem(item)
-			if err := insertImportItem(ctx, tx, item); err != nil {
-				return result, err
+			if err := insertSource(ctx, tx, source); err != nil {
+				preParsedOffice.close()
+				item.Status = ItemStatusFailed
+				item.ErrorMessage = err.Error()
+				failed++
+				recordFailedItem(item)
+				if err := ensure(); err != nil {
+					return result, err
+				}
+				if err := insertImportItem(ctx, tx, item); err != nil {
+					return result, err
+				}
+				markImportItemProcessed(i, item)
+				i++
+				continue
 			}
-			markImportItemProcessed(i, item)
-			i++
-			continue
+			if err := addSourceLabelsTx(ctx, tx, source.ID, ingestLabelsForSource(source, req.Labels, req.AutoLabels)); err != nil {
+				preParsedOffice.close()
+				item.Status = ItemStatusFailed
+				item.ErrorMessage = err.Error()
+				failed++
+				recordFailedItem(item)
+				if err := ensure(); err != nil {
+					return result, err
+				}
+				if err := insertImportItem(ctx, tx, item); err != nil {
+					return result, err
+				}
+				markImportItemProcessed(i, item)
+				i++
+				continue
+			}
 		}
 
 		if isImmediatelyParsedKind(item.Kind) {
+			// Commit the new source row, if this transaction holds one, so
+			// parsing, OCR, and image decoding do not check out the connection.
+			if err := release(false); err != nil {
+				preParsedOffice.close()
+				return result, err
+			}
 			emitStepProgress(item, "parsing", 3, 5)
 			var nodes []DocumentNode
 			var richOfficeContent agent.OfficeReadRichContent
@@ -5444,7 +5445,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 			// only after the parser has bound its input to the private snapshot.
 			// This prevents an intermediate source write from claiming live-path
 			// bytes that were replaced after the scan hash.
-			verifiedContentHash := ""
+			verifiedContentHash = ""
 			if item.Kind == SourceKindPDF && preParsedPDF {
 				nodes = preParsedPDFNodes
 				// The changed-PDF pre-parse above owns the same verified snapshot
@@ -5477,14 +5478,10 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 				}
 			}
 			if verifiedContentHash != "" {
+				// Keep the verified digest on the source value. It is written with
+				// the node transaction, or with the version row when the file has
+				// no nodes, so OCR and image decoding stay off the connection.
 				source.ContentHash = verifiedContentHash
-				// The first source write above is intentionally early so parser
-				// failures have a durable status. Replace its scan-time digest now
-				// that a verified Office snapshot exists, even if the document has
-				// no text nodes and therefore skips later node/card writes.
-				if err := insertSource(ctx, tx, source); err != nil {
-					return result, err
-				}
 			}
 			// Classify PDFs after native extraction. Text pages retain the existing
 			// GoPDF2 path; only the selected scanned/mixed pages are rendered and
@@ -5504,6 +5501,25 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 					nodes, parseErr = mergePDFNodes(nodes, parseErr, ocr)
 				}
 			}
+			if parseErr != nil && replaceExisting {
+				// The previous revision is still intact. Record the item and leave
+				// that revision in place.
+				officeImportParse.close()
+				if err := ensure(); err != nil {
+					return result, err
+				}
+				persistedParseErr := sanitizeKnowledgeParseError(item.Kind, parseErr)
+				item.Status = ItemStatusFailed
+				item.ErrorMessage = persistedParseErr.Error()
+				failed++
+				recordFailedItem(item)
+				if err := insertImportItem(ctx, tx, item); err != nil {
+					return result, err
+				}
+				markImportItemProcessed(i, item)
+				i++
+				continue
+			}
 			if parseErr != nil {
 				// A parse error never reaches the later spreadsheet row-import
 				// phase. Close the private Office snapshot here for every format;
@@ -5511,6 +5527,9 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 				// temporary plaintext snapshot still retained. Successful spreadsheet
 				// imports deliberately keep it open until that later phase finishes.
 				officeImportParse.close()
+				if err := ensure(); err != nil {
+					return result, err
+				}
 				if IsUnsupportedParserError(parseErr) {
 					source.Status = StatusPending
 					if err := insertSource(ctx, tx, source); err != nil {
@@ -5559,19 +5578,81 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 				nodes = annotateMultilingualNodes(nodes)
 				source.NodeCount = len(nodes)
 				emitStepProgress(item, "indexing", 4, 5)
+				// Workbook IO and row text stay off the write transaction. The
+				// replacement delete and these rows still commit together.
+				var preparedSpreadsheet *spreadsheetPreparedImport
+				if isSpreadsheetKind(item.Kind) {
+					var prepErr error
+					preparedSpreadsheet, prepErr = prepareSpreadsheetImport(ctx, imageParsePath, item.Kind, source)
+					if prepErr != nil {
+						officeImportParse.close()
+						persistedParseErr := sanitizeKnowledgeParseError(item.Kind, prepErr)
+						if err := ensure(); err != nil {
+							return result, err
+						}
+						if !replaceExisting {
+							source.Status = StatusFailed
+							source.ErrorMessage = persistedParseErr.Error()
+							if saveErr := insertSource(ctx, tx, source); saveErr != nil {
+								return result, saveErr
+							}
+						}
+						item.Status = ItemStatusFailed
+						item.ErrorMessage = persistedParseErr.Error()
+						failed++
+						recordFailedItem(item)
+						if err := insertImportItem(ctx, tx, item); err != nil {
+							return result, err
+						}
+						markImportItemProcessed(i, item)
+						i++
+						continue
+					}
+				}
+				if err := ensure(); err != nil {
+					officeImportParse.close()
+					return result, err
+				}
+				if err := bindReplacement(); err != nil {
+					officeImportParse.close()
+					return result, err
+				}
+				if !replaceExisting && verifiedContentHash != "" {
+					if err := insertSource(ctx, tx, source); err != nil {
+						officeImportParse.close()
+						return result, err
+					}
+				}
 				if err := insertDocumentNodes(ctx, tx, nodes); err != nil {
 					officeImportParse.close()
 					// This item's nodes will not be committed. Remove only its newly
 					// generated embedded assets now; the outer defer also protects the
 					// batch-wide rollback path.
 					s.deleteProvisionalEmbeddedImageAssets(officeReadImageAssetIDs(nodes))
-					source.Status = StatusFailed
-					source.ErrorMessage = err.Error()
-					if saveErr := insertSource(ctx, tx, source); saveErr != nil {
-						return result, saveErr
+					provisionalImageAssetIDs = nil
+					nodeErr := err
+					if replacementPending {
+						// Roll back the replacement delete with the failed insert so
+						// the previous revision stays searchable.
+						replacementPending = false
+						replacementBound = false
+						delete(supersededAssets, source.ID)
+						if tx != nil {
+							_ = tx.Rollback()
+							tx = nil
+						}
+					} else {
+						source.Status = StatusFailed
+						source.ErrorMessage = nodeErr.Error()
+						if saveErr := insertSource(ctx, tx, source); saveErr != nil {
+							return result, saveErr
+						}
+					}
+					if err := ensure(); err != nil {
+						return result, err
 					}
 					item.Status = ItemStatusFailed
-					item.ErrorMessage = err.Error()
+					item.ErrorMessage = nodeErr.Error()
 					failed++
 					recordFailedItem(item)
 					if err := insertImportItem(ctx, tx, item); err != nil {
@@ -5582,7 +5663,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 					continue
 				}
 				if isSpreadsheetKind(item.Kind) {
-					if nextSource, err := importSpreadsheetSourceV2WithProgress(ctx, tx, source, imageParsePath, item.Kind, func(processedRows, totalRows int) {
+					if nextSource, err := writePreparedSpreadsheet(ctx, tx, source, preparedSpreadsheet, func(processedRows, totalRows int) {
 						if s == nil || !s.hasImportProgressCallback() {
 							return
 						}
@@ -5604,10 +5685,23 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 					}); err != nil {
 						officeImportParse.close()
 						persistedParseErr := sanitizeKnowledgeParseError(item.Kind, err)
-						source.Status = StatusFailed
-						source.ErrorMessage = persistedParseErr.Error()
-						if saveErr := insertSource(ctx, tx, source); saveErr != nil {
-							return result, saveErr
+						if replacementPending {
+							replacementPending = false
+							replacementBound = false
+							delete(supersededAssets, source.ID)
+							if tx != nil {
+								_ = tx.Rollback()
+								tx = nil
+							}
+						} else {
+							source.Status = StatusFailed
+							source.ErrorMessage = persistedParseErr.Error()
+							if saveErr := insertSource(ctx, tx, source); saveErr != nil {
+								return result, saveErr
+							}
+						}
+						if err := ensure(); err != nil {
+							return result, err
 						}
 						item.Status = ItemStatusFailed
 						item.ErrorMessage = persistedParseErr.Error()
@@ -5625,8 +5719,14 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 					officeImportParse.close()
 				}
 				emitStepProgress(item, "distilling", 5, 5)
-				nextSource, err := s.DistillAndSaveCardsWithMode(ctx, tx, source, nodes, req.DistillMode)
+				// Card distillation calls the model outside a transaction. The
+				// node rows are already committed; the card writes begin after
+				// the model returns.
+				nextSource, err := distillNow(nodes)
 				if err != nil {
+					if ensureErr := ensure(); ensureErr != nil {
+						return result, ensureErr
+					}
 					source.Status = StatusFailed
 					source.ErrorMessage = err.Error()
 					if saveErr := insertSource(ctx, tx, source); saveErr != nil {
@@ -5651,14 +5751,34 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 					emitStepProgress(item, "processing image", 4, 5)
 					imageNodes := s.ProcessStandaloneImage(ctx, source, item.FilePath, nil)
 					if len(imageNodes) > 0 {
+						if err := ensure(); err != nil {
+							return result, err
+						}
+						if err := bindReplacement(); err != nil {
+							return result, err
+						}
 						if err := insertDocumentNodes(ctx, tx, imageNodes); err != nil {
-							source.Status = StatusFailed
-							source.ErrorMessage = err.Error()
-							if saveErr := insertSource(ctx, tx, source); saveErr != nil {
-								return result, saveErr
+							nodeErr := err
+							if replacementPending {
+								replacementPending = false
+								replacementBound = false
+								delete(supersededAssets, source.ID)
+								if tx != nil {
+									_ = tx.Rollback()
+									tx = nil
+								}
+							} else {
+								source.Status = StatusFailed
+								source.ErrorMessage = nodeErr.Error()
+								if saveErr := insertSource(ctx, tx, source); saveErr != nil {
+									return result, saveErr
+								}
+							}
+							if err := ensure(); err != nil {
+								return result, err
 							}
 							item.Status = ItemStatusFailed
-							item.ErrorMessage = err.Error()
+							item.ErrorMessage = nodeErr.Error()
 							failed++
 							recordFailedItem(item)
 							if err := insertImportItem(ctx, tx, item); err != nil {
@@ -5670,8 +5790,11 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 						}
 						source.NodeCount = len(imageNodes)
 						emitStepProgress(item, "distilling", 5, 5)
-						nextSource, err := s.DistillAndSaveCardsWithMode(ctx, tx, source, imageNodes, req.DistillMode)
+						nextSource, err := distillNow(imageNodes)
 						if err != nil {
+							if ensureErr := ensure(); ensureErr != nil {
+								return result, ensureErr
+							}
 							source.Status = StatusFailed
 							source.ErrorMessage = err.Error()
 							if saveErr := insertSource(ctx, tx, source); saveErr != nil {
@@ -5694,6 +5817,18 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 			}
 		}
 
+		if err := ensure(); err != nil {
+			return result, err
+		}
+		if err := bindReplacement(); err != nil {
+			preParsedOffice.close()
+			return result, err
+		}
+		if !replaceExisting && verifiedContentHash != "" {
+			if err := insertSource(ctx, tx, source); err != nil {
+				return result, err
+			}
+		}
 		if err := insertSourceVersionTx(ctx, tx, source, "import"); err != nil {
 			return result, err
 		}
@@ -5724,12 +5859,16 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 	batch.Imported = imported
 	batch.Failed = failed
 	batch.UpdatedAt = time.Now().UTC()
+	if err := ensure(); err != nil {
+		return result, err
+	}
 	if err := updateBatchCompletion(ctx, tx, batch); err != nil {
 		return result, err
 	}
 	if err := tx.Commit(); err != nil {
 		return result, err
 	}
+	tx = nil
 	committed = true
 	for sourceID, oldAssetIDs := range supersededAssets {
 		s.deleteSupersededImageAssets(ctx, sourceID, oldAssetIDs)

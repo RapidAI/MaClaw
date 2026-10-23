@@ -2419,6 +2419,106 @@ func TestRunLoopHostCancelDuringInFlightRetryDoesNotAnnounceAnother(t *testing.T
 	}
 }
 
+func TestRunLoopRetryProgressNamesEachWait(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	// Keep-going sleeps maxLLMRetryBackoff. The helper above only shortens
+	// the initial delay and leaves this cap at 32s.
+	maxLLMRetryBackoff = time.Millisecond
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Five exponential waits, then one numbered continuation, then success.
+		if requests.Add(1) <= int64(maxLLMRetries+1) {
+			http.Error(w, "slow down", http.StatusTooManyRequests)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &retryProgressCallbacks{hostDeadlineCallbacks: hostDeadlineCallbacks{
+		mockCallbacks: mockCallbacks{
+			config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+		},
+		ctx: context.Background(),
+	}}
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error != "" || result.Text != "done" {
+		t.Fatalf("result=%+v progress=%q", result, cb.progress)
+	}
+	joined := strings.Join(cb.progress, "\n")
+	waitAt := strings.Index(joined, "重试 1/5：")
+	flightAt := strings.Index(joined, "正在重新请求模型（第 1 次）")
+	if waitAt < 0 || flightAt < waitAt {
+		t.Fatalf("progress=%q, want the in-flight line after 重试 1/5", cb.progress)
+	}
+	if !strings.Contains(joined, "重试 5/5：") {
+		t.Fatalf("progress=%q, want 重试 5/5", cb.progress)
+	}
+	keepAt := strings.Index(joined, fmt.Sprintf("仍在重试，第 %d 次：", maxLLMRetries+1))
+	keepFlightAt := strings.Index(joined, fmt.Sprintf("正在重新请求模型（第 %d 次）", maxLLMRetries+1))
+	if keepAt < 0 || keepFlightAt < keepAt {
+		t.Fatalf("progress=%q, want the continuation request to replace its countdown", cb.progress)
+	}
+}
+
+type authRefreshProgressCallbacks struct {
+	retryProgressCallbacks
+}
+
+func (m *authRefreshProgressCallbacks) RefreshLLMAuth(context.Context) (corelib.MaclawLLMConfig, bool) {
+	cfg := m.config
+	cfg.Key = "rotated-token"
+	cfg.AuthType = "oauth"
+	return cfg, true
+}
+
+func TestRunLoopAuthRefreshProgressStaysOnLiveStatus(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"error":{"message":"The OAuth2 access token could not be validated."}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &authRefreshProgressCallbacks{retryProgressCallbacks: retryProgressCallbacks{
+		hostDeadlineCallbacks: hostDeadlineCallbacks{
+			mockCallbacks: mockCallbacks{
+				config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+			},
+			ctx: context.Background(),
+		},
+	}}
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error != "" || result.Text != "done" {
+		t.Fatalf("result=%+v progress=%q", result, cb.progress)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("requests=%d progress=%q, want the failed auth attempt plus the immediate retry", got, cb.progress)
+	}
+	authAt := -1
+	flightAt := -1
+	for i, text := range cb.progress {
+		if strings.Contains(text, "已刷新模型登录状态，即将重试") {
+			if !strings.HasPrefix(text, LLMRetryLiveStatusPrefix) {
+				t.Fatalf("auth progress=%q, want the llm-retry slot", text)
+			}
+			authAt = i
+		}
+		if strings.Contains(text, "正在重新请求模型（第 1 次）") && strings.HasPrefix(text, LLMRetryLiveStatusPrefix) {
+			flightAt = i
+		}
+	}
+	if authAt < 0 || flightAt < authAt {
+		t.Fatalf("progress=%q, want the in-flight line to follow the slotted auth refresh", cb.progress)
+	}
+}
+
 func TestRunLoopHostCancelDuringRetryBackoffDoesNotSendSuccessor(t *testing.T) {
 	useLLMRetryBackoff(t, 2*time.Second)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -7205,7 +7305,7 @@ func TestRunLoop_NoProgressHardStopCommitsPairedBatch(t *testing.T) {
 	}
 	hooks := &toolBatchCommitCallbacks{}
 	result := RunLoop(cb, "查询北京天气", nil, server.Client(), hooks)
-	if callCount != 5 || !result.HardExit {
+	if callCount != 5 || !result.HardExit || result.Error != ErrNoProgress {
 		t.Fatalf("calls=%d hard_exit=%v result=%#v", callCount, result.HardExit, result)
 	}
 	if len(hooks.starts) != 5 || len(hooks.batches) != 5 || len(hooks.abandons) != 0 {

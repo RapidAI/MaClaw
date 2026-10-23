@@ -25,6 +25,8 @@ export function resolveTaskExecutionStatus(input: {
     /** A real workflow review is waiting. Unlike a ledger gate block, the user has an action. */
     awaitingUserReview?: boolean;
     pendingUnfinishedStatus: string;
+    /** The latest assistant turn finished with a loop error. Idle chat with messages is not completion. */
+    turnIncomplete?: boolean;
 }): TaskExecutionStatus {
     const raw = input.raw || "";
     const lang = input.lang;
@@ -66,6 +68,11 @@ export function resolveTaskExecutionStatus(input: {
         if (input.pendingUnfinishedStatus === "interrupted") {
             return { label: localizeText(lang, "Interrupted", "已中断", "已中斷"), tone: "pending" };
         }
+        return { label: localizeText(lang, "Unfinished", "未完成", "未完成"), tone: "pending" };
+    }
+    // A hard exit still leaves the model's sentence in the transcript. That
+    // sentence is not a checked finish, so an idle chat must not say completed.
+    if (input.turnIncomplete) {
         return { label: localizeText(lang, "Unfinished", "未完成", "未完成"), tone: "pending" };
     }
     if (/(complete|completed|finish|success|succeed|done|passed|已完成|完成|成功)/.test(raw) || input.hasOutput || (input.hasMessages && !input.workflowActive && input.codingStepCount === 0)) {

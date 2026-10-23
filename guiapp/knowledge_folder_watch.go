@@ -31,6 +31,10 @@ const (
 // knowledgeFolderWatchDebounce coalesces editor save bursts before import.
 var knowledgeFolderWatchDebounce = 800 * time.Millisecond
 
+// knowledgeFolderWatchProgressMinInterval coalesces live progress events.
+// The latest file is still emitted when the interval elapses.
+var knowledgeFolderWatchProgressMinInterval = 300 * time.Millisecond
+
 // knowledgeFolderWatchMaxDirs is the process-wide cap on watched directories.
 var knowledgeFolderWatchMaxDirs = 2000
 
@@ -57,7 +61,15 @@ type KnowledgeFolderWatch struct {
 	ImportedFiles int       `json:"imported_files"`
 	SkippedFiles  int       `json:"skipped_files"`
 	FailedFiles   int       `json:"failed_files"`
-	Status        string    `json:"status"`
+	// TotalFiles, ProcessedFiles, CurrentFile, CurrentStep, and StepProgress are
+	// live import progress. Ticks update memory and the watch event only. They
+	// are cleared when the import finishes, so the watch file does not store them.
+	TotalFiles     int    `json:"total_files,omitempty"`
+	ProcessedFiles int    `json:"processed_files,omitempty"`
+	CurrentFile    string `json:"current_file,omitempty"`
+	CurrentStep    string `json:"current_step,omitempty"`
+	StepProgress   int    `json:"step_progress,omitempty"`
+	Status         string `json:"status"`
 }
 
 type knowledgeFolderWatchFile struct {
@@ -112,13 +124,26 @@ type knowledgeFolderWatchState struct {
 	// overflow errors does not stack one full import per error.
 	overflowRunning bool
 	overflowAgain   bool
+	// progressMark throttles per-watch progress emits. publishRunning coalesces
+	// list emits so a trailing progress tick cannot overwrite a newer list.
+	progressMark   map[string]knowledgeFolderWatchProgressMark
+	publishRunning bool
+	publishAgain   bool
+}
+
+// knowledgeFolderWatchProgressMark is the last emit time for one watch and the
+// trailing timer that publishes a tick skipped by the interval.
+type knowledgeFolderWatchProgressMark struct {
+	at    time.Time
+	timer *time.Timer
 }
 
 func newKnowledgeFolderWatchState() *knowledgeFolderWatchState {
 	return &knowledgeFolderWatchState{
-		dirs:    map[string]knowledgeFolderWatchDir{},
-		pending: map[string]*knowledgeFolderWatchPending{},
-		dirWake: make(chan struct{}, 1),
+		dirs:         map[string]knowledgeFolderWatchDir{},
+		pending:      map[string]*knowledgeFolderWatchPending{},
+		dirWake:      make(chan struct{}, 1),
+		progressMark: map[string]knowledgeFolderWatchProgressMark{},
 	}
 }
 
@@ -268,7 +293,7 @@ func (a *App) KnowledgeAddFolderWatch(rawPath string) (KnowledgeFolderWatch, err
 	}
 	unlock = false
 	st.persistMu.Unlock()
-	a.emitKnowledgeFolderWatches(snapshot)
+	a.publishKnowledgeFolderWatches()
 	go a.importKnowledgeFolderWatchDirectory(item.ID)
 	return item, nil
 }
@@ -304,6 +329,7 @@ func (a *App) KnowledgeRemoveFolderWatch(id string) error {
 	}
 	st.items = removeKnowledgeFolderWatchID(st.items, id)
 	a.stopPendingKnowledgeFolderWatchLocked(st, removed.ID)
+	a.stopKnowledgeFolderWatchProgressLocked(st, removed.ID)
 	snapshot := copyKnowledgeFolderWatches(st.items)
 	st.mu.Unlock()
 	a.detachKnowledgeFolderWatchDirs(id)
@@ -318,7 +344,7 @@ func (a *App) KnowledgeRemoveFolderWatch(id string) error {
 		return err
 	}
 	st.persistMu.Unlock()
-	a.emitKnowledgeFolderWatches(snapshot)
+	a.publishKnowledgeFolderWatches()
 	return nil
 }
 
@@ -352,6 +378,9 @@ func (a *App) ensureKnowledgeFolderWatch() error {
 		if strings.TrimSpace(items[i].Status) == "" {
 			items[i].Status = knowledgeFolderWatchStatusWatching
 		}
+		// A crash can persist "importing". Nothing is running at startup, so
+		// show watching until this folder's reconcile import actually starts.
+		normalizeLoadedKnowledgeFolderWatch(&items[i])
 		if _, statErr := os.Stat(items[i].Path); statErr != nil {
 			items[i].Status = knowledgeFolderWatchStatusMissing
 			items[i].LastError = "folder does not exist"
@@ -420,6 +449,12 @@ func (a *App) stopKnowledgeFolderWatch() {
 	st.watcher = nil
 	st.cancel = nil
 	st.dirs = map[string]knowledgeFolderWatchDir{}
+	for id, mark := range st.progressMark {
+		if mark.timer != nil {
+			mark.timer.Stop()
+		}
+		delete(st.progressMark, id)
+	}
 	st.mu.Unlock()
 	st.persistMu.Unlock()
 	for _, bucket := range pending {
@@ -809,16 +844,20 @@ func (a *App) importKnowledgeFolderWatchDirectory(id string) {
 		})
 		return
 	}
-	a.updateKnowledgeFolderWatch(id, func(watch *KnowledgeFolderWatch) {
-		watch.Status = knowledgeFolderWatchStatusImporting
-	})
+	a.beginKnowledgeFolderWatchImport(id)
 	store, err := a.openKnowledgeStore()
 	if err != nil {
 		a.finishKnowledgeFolderWatchImport(id, item.Path, knowledge.DirectoryImportResult{}, err)
 		return
 	}
+	a.bindKnowledgeFolderWatchImportProgress(store, id)
+	releaseStore := releaseKnowledgeFolderWatchImportStoreOnce(store)
+	defer releaseStore()
 	result, err := store.ImportDirectory(a.knowledgeContext(), a.knowledgeFolderWatchImportRequest(item.Path))
-	_ = store.Close()
+	// A progress callback makes ImportDirectory return while linking still runs.
+	// Wait before Close, which would otherwise cancel that work. Finish runs
+	// after this so the row stays on "importing" through linking.
+	releaseStore()
 	if !a.knowledgeFolderWatchHas(id) || a.knowledgeFolderWatchClosed() {
 		return
 	}
@@ -911,16 +950,17 @@ func (a *App) importKnowledgeFolderWatchFiles(id string, paths []string) {
 		return
 	}
 	sort.Strings(cleaned)
-	a.updateKnowledgeFolderWatch(id, func(watch *KnowledgeFolderWatch) {
-		watch.Status = knowledgeFolderWatchStatusImporting
-	})
+	a.beginKnowledgeFolderWatchImport(id)
 	store, err := a.openKnowledgeStore()
 	if err != nil {
 		a.finishKnowledgeFolderWatchImport(id, cleaned[len(cleaned)-1], knowledge.DirectoryImportResult{}, err)
 		return
 	}
+	a.bindKnowledgeFolderWatchImportProgress(store, id)
+	releaseStore := releaseKnowledgeFolderWatchImportStoreOnce(store)
+	defer releaseStore()
 	result, err := store.ImportFiles(a.knowledgeContext(), a.knowledgeFolderWatchImportRequest(item.Path), cleaned)
-	_ = store.Close()
+	releaseStore()
 	if !a.knowledgeFolderWatchHas(id) || a.knowledgeFolderWatchClosed() {
 		return
 	}
@@ -958,9 +998,15 @@ func (a *App) finishKnowledgeFolderWatchImport(id, path string, result knowledge
 		}
 	}
 	limitMessage := knowledgeFolderWatchDirLimitMessage()
+	a.stopKnowledgeFolderWatchProgress(id)
 	a.updateKnowledgeFolderWatch(id, func(watch *KnowledgeFolderWatch) {
 		watch.LastImportAt = time.Now().UTC()
 		watch.LastEventAt = watch.LastImportAt
+		watch.CurrentFile = ""
+		watch.CurrentStep = ""
+		watch.StepProgress = 0
+		watch.TotalFiles = 0
+		watch.ProcessedFiles = 0
 		if strings.TrimSpace(path) != "" {
 			watch.LastFile = path
 		}
@@ -1197,7 +1243,7 @@ func (a *App) updateKnowledgeFolderWatch(id string, mutate func(*KnowledgeFolder
 		log.Printf("[knowledge-watch] save: %v", err)
 	}
 	st.persistMu.Unlock()
-	a.emitKnowledgeFolderWatches(snapshot)
+	a.publishKnowledgeFolderWatches()
 }
 
 func (a *App) emitKnowledgeFolderWatches(items []KnowledgeFolderWatch) {
@@ -1205,6 +1251,285 @@ func (a *App) emitKnowledgeFolderWatches(items []KnowledgeFolderWatch) {
 		items = []KnowledgeFolderWatch{}
 	}
 	a.emitEvent("knowledge:folder-watch", items)
+}
+
+// publishKnowledgeFolderWatches emits the current watch list. A publish that
+// starts while one is in flight emits again with the newer list, so an older
+// progress snapshot cannot land after a remove or a finished import.
+// Callers must not hold st.mu.
+func (a *App) publishKnowledgeFolderWatches() {
+	if a == nil || a.knowledgeFolderWatch == nil {
+		return
+	}
+	st := a.knowledgeFolderWatch
+	st.mu.Lock()
+	if st.publishRunning {
+		st.publishAgain = true
+		st.mu.Unlock()
+		return
+	}
+	st.publishRunning = true
+	for {
+		if st.closed {
+			st.publishRunning = false
+			st.publishAgain = false
+			st.mu.Unlock()
+			return
+		}
+		snapshot := copyKnowledgeFolderWatches(st.items)
+		st.publishAgain = false
+		st.mu.Unlock()
+		a.emitKnowledgeFolderWatches(snapshot)
+		st.mu.Lock()
+		if !st.publishAgain {
+			st.publishRunning = false
+			st.mu.Unlock()
+			return
+		}
+	}
+}
+
+func releaseKnowledgeFolderWatchImportStore(store *knowledge.SQLiteStore) {
+	if store == nil {
+		return
+	}
+	store.WaitBackground()
+	_ = store.Close()
+}
+
+// releaseKnowledgeFolderWatchImportStoreOnce waits for linking and closes the
+// store. Import calls it before finish, and defer calls it again on panic.
+func releaseKnowledgeFolderWatchImportStoreOnce(store *knowledge.SQLiteStore) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() { releaseKnowledgeFolderWatchImportStore(store) })
+	}
+}
+
+// normalizeLoadedKnowledgeFolderWatch drops live progress from a saved watch.
+// Status "importing" only means a previous process was interrupted.
+func normalizeLoadedKnowledgeFolderWatch(item *KnowledgeFolderWatch) {
+	if item == nil {
+		return
+	}
+	if item.Status == knowledgeFolderWatchStatusImporting {
+		item.Status = knowledgeFolderWatchStatusWatching
+	}
+	item.CurrentFile = ""
+	item.CurrentStep = ""
+	item.StepProgress = 0
+	item.TotalFiles = 0
+	item.ProcessedFiles = 0
+}
+
+// knowledgeFolderWatchProgressPath is the path shown while importing.
+// Relative paths stay as they are. Absolute paths are made relative to the
+// watched folder so the row shows the file, not the whole drive path.
+func knowledgeFolderWatchProgressPath(root, path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" || root == "" || !filepath.IsAbs(path) {
+		return path
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." || knowledgeFolderWatchRelEscapes(rel) {
+		return filepath.Base(path)
+	}
+	return rel
+}
+
+func knowledgeFolderWatchRelEscapes(rel string) bool {
+	return rel == ".." || strings.HasPrefix(rel, "../") || strings.HasPrefix(rel, `..\`)
+}
+
+func (a *App) beginKnowledgeFolderWatchImport(id string) {
+	a.stopKnowledgeFolderWatchProgress(id)
+	// Live status only. Persisting here rewrote the watch file on every
+	// debounced file change. A crash mid-import is loaded back as watching.
+	a.touchKnowledgeFolderWatch(id, func(watch *KnowledgeFolderWatch) {
+		watch.Status = knowledgeFolderWatchStatusImporting
+		watch.CurrentFile = ""
+		watch.CurrentStep = ""
+		watch.StepProgress = 0
+		watch.TotalFiles = 0
+		watch.ProcessedFiles = 0
+	})
+}
+
+// touchKnowledgeFolderWatch updates one watch in memory and publishes it.
+// It does not rewrite the watch file.
+func (a *App) touchKnowledgeFolderWatch(id string, mutate func(*KnowledgeFolderWatch)) {
+	if a == nil || id == "" || mutate == nil || a.knowledgeFolderWatch == nil {
+		return
+	}
+	st := a.knowledgeFolderWatch
+	st.mu.Lock()
+	if st.closed {
+		st.mu.Unlock()
+		return
+	}
+	found := false
+	for i := range st.items {
+		if st.items[i].ID == id {
+			mutate(&st.items[i])
+			found = true
+			break
+		}
+	}
+	st.mu.Unlock()
+	if found {
+		a.publishKnowledgeFolderWatches()
+	}
+}
+
+func (a *App) bindKnowledgeFolderWatchImportProgress(store *knowledge.SQLiteStore, id string) {
+	if store == nil || id == "" {
+		return
+	}
+	store.SetImportProgressCallback(func(progress knowledge.DirectoryImportResult) {
+		a.noteKnowledgeFolderWatchImportProgress(id, progress)
+	})
+	store.SetScanProgressCallback(func(phase string, done, total int, path string) {
+		a.noteKnowledgeFolderWatchScanProgress(id, phase, done, total, path)
+	})
+}
+
+func (a *App) noteKnowledgeFolderWatchScanProgress(id, phase string, done, total int, path string) {
+	step := "scanning"
+	if phase == "hash" {
+		step = "hashing"
+	}
+	a.noteKnowledgeFolderWatchProgress(id, func(watch *KnowledgeFolderWatch) {
+		watch.CurrentStep = step
+		watch.CurrentFile = knowledgeFolderWatchProgressPath(watch.Path, path)
+		watch.ProcessedFiles = done
+		// Walking has no known total until it finishes, and that finish is not
+		// the import. Keep the bar indeterminate so it does not flash 100%.
+		if phase == "hash" {
+			watch.TotalFiles = total
+		} else {
+			watch.TotalFiles = 0
+		}
+		watch.StepProgress = 0
+	})
+}
+
+func (a *App) noteKnowledgeFolderWatchImportProgress(id string, progress knowledge.DirectoryImportResult) {
+	a.noteKnowledgeFolderWatchProgress(id, func(watch *KnowledgeFolderWatch) {
+		watch.TotalFiles = progress.TotalFiles
+		watch.ProcessedFiles = progress.ProcessedFiles
+		watch.ImportedFiles = progress.ImportedFiles
+		watch.SkippedFiles = progress.SkippedFiles
+		watch.FailedFiles = progress.FailedFiles
+		watch.CurrentFile = knowledgeFolderWatchProgressPath(watch.Path, progress.CurrentFile)
+		watch.CurrentStep = progress.CurrentStep
+		watch.StepProgress = progress.StepProgress
+	})
+}
+
+// noteKnowledgeFolderWatchProgress records one live tick. The watch file is not
+// rewritten. Events are coalesced, and a skipped tick is published when the
+// interval elapses so the visible file does not stay on the previous name.
+func (a *App) noteKnowledgeFolderWatchProgress(id string, patch func(*KnowledgeFolderWatch)) {
+	if a == nil || id == "" || patch == nil || a.knowledgeFolderWatch == nil {
+		return
+	}
+	st := a.knowledgeFolderWatch
+	st.mu.Lock()
+	if st.closed {
+		st.mu.Unlock()
+		return
+	}
+	idx := -1
+	for i := range st.items {
+		if st.items[i].ID == id && st.items[i].Status == knowledgeFolderWatchStatusImporting {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		st.mu.Unlock()
+		return
+	}
+	patch(&st.items[idx])
+	if st.progressMark == nil {
+		st.progressMark = map[string]knowledgeFolderWatchProgressMark{}
+	}
+	mark := st.progressMark[id]
+	now := time.Now()
+	if mark.at.IsZero() || now.Sub(mark.at) >= knowledgeFolderWatchProgressMinInterval {
+		if mark.timer != nil {
+			mark.timer.Stop()
+		}
+		st.progressMark[id] = knowledgeFolderWatchProgressMark{at: now}
+		st.mu.Unlock()
+		// Publish off this goroutine. The callback runs under the store
+		// progress lock, and EventsEmit must not hold that lock.
+		go a.publishKnowledgeFolderWatches()
+		return
+	}
+	if mark.timer == nil {
+		delay := knowledgeFolderWatchProgressMinInterval - now.Sub(mark.at)
+		watchID := id
+		mark.timer = time.AfterFunc(delay, func() {
+			a.flushKnowledgeFolderWatchProgress(watchID)
+		})
+		st.progressMark[id] = mark
+	}
+	st.mu.Unlock()
+}
+
+func (a *App) flushKnowledgeFolderWatchProgress(id string) {
+	if a == nil || id == "" || a.knowledgeFolderWatch == nil {
+		return
+	}
+	st := a.knowledgeFolderWatch
+	st.mu.Lock()
+	if st.closed {
+		a.stopKnowledgeFolderWatchProgressLocked(st, id)
+		st.mu.Unlock()
+		return
+	}
+	importing := false
+	for i := range st.items {
+		if st.items[i].ID == id && st.items[i].Status == knowledgeFolderWatchStatusImporting {
+			importing = true
+			break
+		}
+	}
+	if !importing {
+		a.stopKnowledgeFolderWatchProgressLocked(st, id)
+		st.mu.Unlock()
+		return
+	}
+	if st.progressMark == nil {
+		st.progressMark = map[string]knowledgeFolderWatchProgressMark{}
+	}
+	mark := st.progressMark[id]
+	mark.timer = nil
+	mark.at = time.Now()
+	st.progressMark[id] = mark
+	st.mu.Unlock()
+	a.publishKnowledgeFolderWatches()
+}
+
+func (a *App) stopKnowledgeFolderWatchProgress(id string) {
+	if a == nil || id == "" || a.knowledgeFolderWatch == nil {
+		return
+	}
+	st := a.knowledgeFolderWatch
+	st.mu.Lock()
+	a.stopKnowledgeFolderWatchProgressLocked(st, id)
+	st.mu.Unlock()
+}
+
+func (a *App) stopKnowledgeFolderWatchProgressLocked(st *knowledgeFolderWatchState, id string) {
+	if st == nil || id == "" || st.progressMark == nil {
+		return
+	}
+	if mark := st.progressMark[id]; mark.timer != nil {
+		mark.timer.Stop()
+	}
+	delete(st.progressMark, id)
 }
 
 func (a *App) knowledgeFolderWatchClosed() bool {
@@ -1637,7 +1962,17 @@ func (a *App) saveKnowledgeFolderWatches(items []KnowledgeFolderWatch) error {
 	if items == nil {
 		items = []KnowledgeFolderWatch{}
 	}
-	payload, err := json.MarshalIndent(knowledgeFolderWatchFile{Watches: items}, "", "  ")
+	// Live progress stays in memory. A save during import must not pin the
+	// current file into the watch file.
+	saved := copyKnowledgeFolderWatches(items)
+	for i := range saved {
+		saved[i].CurrentFile = ""
+		saved[i].CurrentStep = ""
+		saved[i].StepProgress = 0
+		saved[i].TotalFiles = 0
+		saved[i].ProcessedFiles = 0
+	}
+	payload, err := json.MarshalIndent(knowledgeFolderWatchFile{Watches: saved}, "", "  ")
 	if err != nil {
 		return err
 	}

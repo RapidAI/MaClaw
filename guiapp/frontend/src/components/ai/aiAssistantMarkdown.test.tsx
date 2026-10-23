@@ -2610,7 +2610,60 @@ describe("renderMessage assistant display guard", () => {
         expect(progress.getAttribute("aria-live")).toBe("polite");
         expect(progress.className).toContain("aamd-progress-row");
         expect(progress.querySelector(".assistant-chat-progress-line")).toBeTruthy();
+        expect(progress.querySelector(".assistant-chat-progress-line")?.getAttribute("data-llm-retry")).toBeNull();
         expect(screen.getByText("Fetching details")).toBeTruthy();
+    });
+
+    it("renders an LLM retry countdown as its own status line", () => {
+        render(<div>
+            {renderMessage({
+                id: "retry-progress",
+                role: "progress",
+                content: "重试 1/5：API 暂时不可用，2 秒后重试",
+                timestamp: Date.now(),
+            }, vi.fn(), lightTheme, false, "Saved file", "zh-Hans", false)}
+            {renderMessage({
+                id: "retry-progress-tail",
+                role: "progress",
+                content: "仍在重试，第 6 次：服务暂时不可用，32 秒后继续",
+                timestamp: Date.now(),
+            }, vi.fn(), lightTheme, false, "Saved file", "zh-Hans", false)}
+            {renderMessage({
+                id: "retry-progress-inflight",
+                role: "progress",
+                content: "[LiveStatus:llm-retry] 正在重新请求模型（第 1 次）",
+                timestamp: Date.now(),
+            }, vi.fn(), lightTheme, false, "Saved file", "zh-Hans", false)}
+            {renderMessage({
+                id: "retry-progress-auth",
+                role: "progress",
+                content: "[LiveStatus:llm-retry] 已刷新模型登录状态，即将重试...",
+                timestamp: Date.now(),
+            }, vi.fn(), lightTheme, false, "Saved file", "zh-Hans", false)}
+            {renderMessage({
+                id: "retry-progress-other",
+                role: "progress",
+                content: "本机重试 1/3：编译",
+                timestamp: Date.now(),
+            }, vi.fn(), lightTheme, false, "Saved file", "zh-Hans", false)}
+        </div>);
+
+        const line = screen.getByTestId("assistant-chat-progress-retry-progress").querySelector(".assistant-chat-progress-line");
+        expect(line?.getAttribute("data-llm-retry")).toBe("true");
+        expect(line?.textContent).toContain("重试 1/5");
+        const tail = screen.getByTestId("assistant-chat-progress-retry-progress-tail").querySelector(".assistant-chat-progress-line");
+        expect(tail?.getAttribute("data-llm-retry")).toBe("true");
+        expect(tail?.textContent).toContain("仍在重试，第 6 次");
+        const inflight = screen.getByTestId("assistant-chat-progress-retry-progress-inflight").querySelector(".assistant-chat-progress-line");
+        expect(inflight?.getAttribute("data-llm-retry")).toBe("true");
+        expect(inflight?.textContent).toContain("正在重新请求模型（第 1 次）");
+        expect(inflight?.textContent).not.toContain("LiveStatus");
+        const auth = screen.getByTestId("assistant-chat-progress-retry-progress-auth").querySelector(".assistant-chat-progress-line");
+        expect(auth?.getAttribute("data-llm-retry")).toBe("true");
+        expect(auth?.textContent).toContain("已刷新模型登录状态，即将重试");
+        expect(auth?.textContent).not.toContain("LiveStatus");
+        const other = screen.getByTestId("assistant-chat-progress-retry-progress-other").querySelector(".assistant-chat-progress-line");
+        expect(other?.getAttribute("data-llm-retry")).toBeNull();
     });
 
     it("does not paint the tool anchor when the live body is only that anchor", () => {
@@ -2735,6 +2788,20 @@ describe("renderMessage assistant display guard", () => {
 
         expect(screen.getByTestId("assistant-task-summary-status").textContent).toBe("未完成");
         expect(screen.getByText("日志还没写完。")).toBeTruthy();
+        expect(screen.queryByTestId("assistant-tool-call")).toBeNull();
+    });
+
+    it("shows 未完成 for a restored turn whose tool list was not stored", () => {
+        render(<div>{renderMessage({
+            id: "assistant-restored-incomplete",
+            role: "assistant",
+            content: "先从 GitHub 上取一份目录清单。",
+            resultStatus: "incomplete",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "zh", false)}</div>);
+
+        expect(screen.getByTestId("assistant-task-summary-status").textContent).toBe("未完成");
+        expect(screen.getByText("先从 GitHub 上取一份目录清单。")).toBeTruthy();
         expect(screen.queryByTestId("assistant-tool-call")).toBeNull();
     });
 

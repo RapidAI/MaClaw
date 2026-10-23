@@ -8247,6 +8247,7 @@ export namespace main {
 	    /** Parallel to prompts. Each row is the files attached to that input. */
 	    prompt_attachments?: any[][];
 	    context_boundary_message_id?: string;
+	    archived_count?: number;
 	    updated_at?: string;
 	    storage_path?: string;
 	
@@ -8260,6 +8261,7 @@ export namespace main {
 	        this.prompts = source["prompts"];
 	        this.prompt_attachments = source["prompt_attachments"];
 	        this.context_boundary_message_id = source["context_boundary_message_id"];
+	        this.archived_count = source["archived_count"];
 	        this.updated_at = source["updated_at"];
 	        this.storage_path = source["storage_path"];
 	    }
@@ -15689,6 +15691,8 @@ export namespace main {
 	    role: string;
 	    content: string;
 	    reasoning_content?: string;
+	    terminal_class?: string;
+	    result_status?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ProjectConversationHistoryItem(source);
@@ -15699,6 +15703,8 @@ export namespace main {
 	        this.role = source["role"];
 	        this.content = source["content"];
 	        this.reasoning_content = source["reasoning_content"];
+	        this.terminal_class = source["terminal_class"];
+	        this.result_status = source["result_status"];
 	    }
 	}
 	export class ProjectScanner {

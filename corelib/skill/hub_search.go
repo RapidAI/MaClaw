@@ -26,6 +26,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -388,10 +389,7 @@ func (c *HubClient) searchClawHub(ctx context.Context, query string) ([]HubSearc
 
 	results := make([]HubSearchResult, 0, len(raw.Results))
 	for _, r := range raw.Results {
-		name := r.DisplayName
-		if name == "" {
-			name = r.Slug
-		}
+		name := clawHubInstallName(r.DisplayName, r.Slug)
 		results = append(results, HubSearchResult{
 			ID:          r.Slug,
 			Name:        name,
@@ -854,6 +852,47 @@ func cleanupHubBundledDirOnError(skillDirAbs string, rootCreated bool, err error
 	return err
 }
 
+// clawHubInstallName keeps a short catalog label. ClawHub sometimes puts the
+// whole SKILL.md description in displayName; that paragraph becomes the
+// local skill name and then matches unrelated sentences.
+func clawHubInstallName(displayName, slug string) string {
+	name := strings.TrimSpace(displayName)
+	slug = strings.TrimSpace(slug)
+	if clawHubNameIsLabel(name) {
+		return name
+	}
+	if slug != "" {
+		return slug
+	}
+	return name
+}
+
+func clawHubNameIsLabel(name string) bool {
+	if name == "" || strings.ContainsAny(name, "\r\n") || clawHubNameLooksLikeProse(name) {
+		return false
+	}
+	return utf8.RuneCountInString(name) <= 80
+}
+
+// clawHubNameLooksLikeProse reports a description pasted into the catalog
+// name. "Node.js helper" stays a label. A clause before ". " does not.
+func clawHubNameLooksLikeProse(name string) bool {
+	if strings.Contains(name, "。") {
+		return true
+	}
+	rest := name
+	for {
+		i := strings.Index(rest, ". ")
+		if i < 0 {
+			return false
+		}
+		if utf8.RuneCountInString(strings.TrimSpace(rest[:i])) > 12 {
+			return true
+		}
+		rest = rest[i+2:]
+	}
+}
+
 // DownloadClawHub downloads a skill from ClawHub mirror and returns an
 // NLSkillEntry with a craft_tool step using the SKILL.md content.
 func (c *HubClient) DownloadClawHub(ctx context.Context, slug string) (*corelib.NLSkillEntry, error) {
@@ -864,10 +903,7 @@ func (c *HubClient) DownloadClawHub(ctx context.Context, slug string) (*corelib.
 		return nil, fmt.Errorf("下载 ClawHub Skill 失败: %w", err)
 	}
 
-	name := raw.Skill.DisplayName
-	if name == "" {
-		name = raw.Skill.Slug
-	}
+	name := clawHubInstallName(raw.Skill.DisplayName, raw.Skill.Slug)
 
 	skillMD := raw.MetaContent.SkillMD
 	if skillMD == "" {

@@ -33,6 +33,20 @@ func TestRuntimeEventProjectionForwardsAssistantDelta(t *testing.T) {
 	}
 }
 
+func TestProjectGUIRuntimeEventsForwardsRetryProgress(t *testing.T) {
+	var got string
+	events := projectGUIRuntimeEvents(nil, nil, func(text string) { got = text }, nil)
+	if err := events.Emit(context.Background(), agentruntime.Event{
+		Type:    agentruntime.EventProgress,
+		Payload: map[string]any{"text": "重试 1/5：API 暂时不可用，2 秒后重试"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got != "重试 1/5：API 暂时不可用，2 秒后重试" {
+		t.Fatalf("chat progress = %q", got)
+	}
+}
+
 func TestRuntimeEventProjectionForwardsProgressAndRound(t *testing.T) {
 	var progress string
 	rounds := 0

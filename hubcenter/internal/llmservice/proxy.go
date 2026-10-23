@@ -787,7 +787,7 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 				}
 			}
 			if arrayRateLimited {
-				orderedRoutes = proxyAppendSameGroupRateLimitRoutes(orderedRoutes, reg, matchedGroup, logicalModel, reqWorkloadClass(req), acceptLiveProvider)
+				orderedRoutes = proxyAppendSameGroupRateLimitRoutes(orderedRoutes, reg, matchedGroup, logicalModel, reqWorkloadClass(req), acceptLiveProvider, req.Body)
 			}
 			continue
 		}
@@ -1204,7 +1204,7 @@ func proxyQuotePricingForRequest(req *ProxyRequest, providerID, upstreamModel st
 // finishes is billed at its own price. See appendUndeliveredQuoteRoutes.
 func proxyOrderedRoutesForRequest(cfg *ProxyConfig, reg *Registry, req *ProxyRequest, group *llmpool.ServiceGroup, model *llmpool.DispatchModel, logicalModel string, accept func(*llmpool.ProviderConfig) bool, startedAt time.Time, stream bool) ([]llmpool.DispatchProviderRoute, error) {
 	if req == nil || req.Quote == nil {
-		return orderProxyDispatchRoutes(cfg, reg, group, logicalModel, reqWorkloadClass(req), llmpool.OrderScoredProviderRoutes(req.Body, model), accept, startedAt, stream), nil
+		return orderProxyDispatchRoutesWithBody(cfg, reg, group, logicalModel, reqWorkloadClass(req), llmpool.OrderScoredProviderRoutes(req.Body, model), accept, startedAt, stream, req.Body), nil
 	}
 	quote := req.Quote
 	// Claim validates expiry before consuming the opaque token. Once claimed,
@@ -2709,6 +2709,10 @@ func reqWorkloadClass(req *ProxyRequest) string {
 }
 
 func orderProxyDispatchRoutes(cfg *ProxyConfig, reg *Registry, group *llmpool.ServiceGroup, logicalModel, class string, scored []llmpool.ScoredProviderRoute, accept func(*llmpool.ProviderConfig) bool, startedAt time.Time, stream bool) []llmpool.DispatchProviderRoute {
+	return orderProxyDispatchRoutesWithBody(cfg, reg, group, logicalModel, class, scored, accept, startedAt, stream, nil)
+}
+
+func orderProxyDispatchRoutesWithBody(cfg *ProxyConfig, reg *Registry, group *llmpool.ServiceGroup, logicalModel, class string, scored []llmpool.ScoredProviderRoute, accept func(*llmpool.ProviderConfig) bool, startedAt time.Time, stream bool, body map[string]any) []llmpool.DispatchProviderRoute {
 	if accept == nil {
 		accept = acceptLiveProvider
 	}
@@ -2726,7 +2730,7 @@ func orderProxyDispatchRoutes(cfg *ProxyConfig, reg *Registry, group *llmpool.Se
 	}
 	// Official high/mid/low siblings are a quality chain, not an equal-cost
 	// band. Keep them after WRR extras so mid is always tried before low.
-	return appendOfficialTierAvailabilityRoutes(reg, out, group, logicalModel, class, accept)
+	return appendOfficialTierAvailabilityRoutes(reg, out, group, logicalModel, class, accept, body)
 }
 
 func balanceProxyScoredRoutes(cfg *ProxyConfig, reg *Registry, scored []llmpool.ScoredProviderRoute, accept func(*llmpool.ProviderConfig) bool, startedAt time.Time, pool string) []llmpool.DispatchProviderRoute {
@@ -3158,7 +3162,7 @@ func officialSiblingUpstreamKeys(reg *Registry, group *llmpool.ServiceGroup, sel
 	return keys
 }
 
-func appendOfficialTierAvailabilityRoutes(reg *Registry, dst []llmpool.DispatchProviderRoute, group *llmpool.ServiceGroup, logicalModel, class string, accept func(*llmpool.ProviderConfig) bool) []llmpool.DispatchProviderRoute {
+func appendOfficialTierAvailabilityRoutes(reg *Registry, dst []llmpool.DispatchProviderRoute, group *llmpool.ServiceGroup, logicalModel, class string, accept func(*llmpool.ProviderConfig) bool, body map[string]any) []llmpool.DispatchProviderRoute {
 	if group == nil {
 		return dst
 	}
@@ -3170,6 +3174,15 @@ func appendOfficialTierAvailabilityRoutes(reg *Registry, dst []llmpool.DispatchP
 	if accept == nil {
 		accept = acceptLiveProvider
 	}
+	// An image stays off a band that cannot see when another band this
+	// request is allowed to use can see. Plan and design omit low, so a
+	// seeing low model does not remove mid. A long transcript does not
+	// fail over onto low either; low still counts, so a request already
+	// on a seeing low tier does not pick up a blind band. No vision tag
+	// on an allowed band keeps the normal chain, including for a long
+	// text request. A nil body does too.
+	seeing := visionFailoverBands(reg, group, logicalModel, chain, body)
+	holdLow := seeing != nil && llmpool.RequestHasLongContext(body)
 	seen := map[string]struct{}{}
 	mark := func(routes []llmpool.DispatchProviderRoute) {
 		for _, route := range routes {
@@ -3181,6 +3194,14 @@ func appendOfficialTierAvailabilityRoutes(reg *Registry, dst []llmpool.DispatchP
 	}
 	mark(dst)
 	for _, band := range chain {
+		if seeing != nil {
+			if _, ok := seeing[band]; !ok {
+				continue
+			}
+		}
+		if holdLow && band == llmpool.QualityLow {
+			continue
+		}
 		tier := llmpool.OfficialTierForQuality(band)
 		if tier == "" || strings.EqualFold(tier, logicalModel) {
 			continue
@@ -3214,6 +3235,72 @@ func appendOfficialTierAvailabilityRoutes(reg *Registry, dst []llmpool.DispatchP
 		}
 	}
 	return dst
+}
+
+// visionFailoverBands is the set of official qualities whose own tier can see
+// this image. Nil means the caller keeps the full quality chain: the body has
+// no image, or no model this request is allowed to use can see. An empty map
+// means some allowed model can see, but none of the official tiers can, so no
+// official extra is added. Allowed bands are the availability chain. The
+// current model counts as well when it can see, so a plan request already on
+// a seeing low tier does not fail over onto a blind mid. A vision tag on a
+// model with no providers does not count. A tag on a model outside those
+// bands does not count: climb will not select it, and plan or design will
+// not use low. Tag resolution matches L1, including route lists that are
+// already set and are not refilled from members.
+func visionFailoverBands(reg *Registry, group *llmpool.ServiceGroup, logicalModel string, chain []string, body map[string]any) map[string]struct{} {
+	if group == nil || !llmpool.RequestHasVisionContent(body) {
+		return nil
+	}
+	scored := groupWithMemberCapabilityTags(reg, group)
+	if !routableModelHasUsableTag(scored, logicalModel, chain, "vision") {
+		return nil
+	}
+	seeing := map[string]struct{}{}
+	for _, band := range []string{llmpool.QualityLow, llmpool.QualityMid, llmpool.QualityHigh} {
+		tier := llmpool.OfficialTierForQuality(band)
+		if tier == "" || !llmpool.ModelHasUsableTag(scored, tier, "vision") {
+			continue
+		}
+		seeing[band] = struct{}{}
+	}
+	return seeing
+}
+
+// routableModelHasUsableTag reports a dialable model that advertises tag and
+// sits in a band this request may use. The availability chain is that set.
+// When the current model itself can see, its band counts too, including a
+// low tier that plan or design would otherwise omit.
+func routableModelHasUsableTag(group *llmpool.ServiceGroup, logicalModel string, chain []string, tag string) bool {
+	if group == nil {
+		return false
+	}
+	allowed := map[string]struct{}{}
+	for _, band := range chain {
+		band = llmpool.NormalizeQuality(band)
+		if band != "" {
+			allowed[band] = struct{}{}
+		}
+	}
+	if llmpool.ModelHasUsableTag(group, logicalModel, tag) {
+		if band := llmpool.QualityForModel(group, logicalModel); band != "" {
+			allowed[band] = struct{}{}
+		}
+	}
+	if len(allowed) == 0 {
+		return false
+	}
+	for i := range group.Models {
+		name := strings.TrimSpace(group.Models[i].Name)
+		band := llmpool.QualityForModel(group, name)
+		if _, ok := allowed[band]; !ok {
+			continue
+		}
+		if llmpool.ModelHasUsableTag(group, name, tag) {
+			return true
+		}
+	}
+	return false
 }
 
 func providerRouteKey(providerID, model string) string {
@@ -3351,7 +3438,11 @@ func recordProxyClassHeadSample(cfg *ProxyConfig, req *ProxyRequest, groupID str
 	if ruleSource == "" {
 		ruleSource = req.ClassSource
 	}
-	cfg.Service.RecordOfficialClassHeadSample(llmpool.RequestTextPreview(req.Body, 400), ruleClass, ruleSource, req.HeadClass, req.HeadMaxP, groupID, req.HeadPassthrough)
+	preview := llmpool.LatestUserPreview(req.Body, 400)
+	if strings.TrimSpace(preview) == "" {
+		return
+	}
+	cfg.Service.RecordOfficialClassHeadSample(preview, ruleClass, ruleSource, req.HeadClass, req.HeadMaxP, groupID, req.HeadPassthrough)
 }
 
 func applyProxyWorkloadRouting(req *ProxyRequest, cfg *ProxyConfig, reg *Registry, group *llmpool.ServiceGroup, dispatchModel *llmpool.DispatchModel, model string) (string, *llmpool.ServiceGroup, *llmpool.DispatchModel) {
@@ -3364,7 +3455,9 @@ func applyProxyWorkloadRouting(req *ProxyRequest, cfg *ProxyConfig, reg *Registr
 	}
 	header := req.Header
 	scoreGroup := group
-	if llmpool.IsAutoModel(model) {
+	// A rewritten official tier still needs member tags when the user picked
+	// auto. Hub does not have those tags, so the climb has to happen here.
+	if llmpool.IsAutoModel(model) || (llmpool.ClientHeaderSelectsAuto(header) && llmpool.IsOfficialTierName(llmpool.CanonicalClientModel(model))) {
 		scoreGroup = groupWithMemberCapabilityTags(reg, group)
 	}
 	dec := llmpool.ClassifyAndRouteWithHead(header, req.Body, scoreGroup, model, runtime)
@@ -3795,7 +3888,7 @@ func serviceGroupModelProviderIDs(group *llmpool.ServiceGroup, logicalModel stri
 	return ids
 }
 
-func proxyAppendSameGroupRateLimitRoutes(ordered []llmpool.DispatchProviderRoute, reg *Registry, group *llmpool.ServiceGroup, logicalModel, class string, accept func(*llmpool.ProviderConfig) bool) []llmpool.DispatchProviderRoute {
+func proxyAppendSameGroupRateLimitRoutes(ordered []llmpool.DispatchProviderRoute, reg *Registry, group *llmpool.ServiceGroup, logicalModel, class string, accept func(*llmpool.ProviderConfig) bool, body map[string]any) []llmpool.DispatchProviderRoute {
 	seen := map[string]struct{}{}
 	for _, route := range ordered {
 		if key := providerIDKey(route.ProviderID); key != "" {
@@ -3807,7 +3900,7 @@ func proxyAppendSameGroupRateLimitRoutes(ordered []llmpool.DispatchProviderRoute
 	if len(extras) > 0 {
 		out = append(out, extras...)
 	}
-	next := appendOfficialTierAvailabilityRoutes(reg, out, group, logicalModel, class, accept)
+	next := appendOfficialTierAvailabilityRoutes(reg, out, group, logicalModel, class, accept, body)
 	if len(next) == len(ordered) {
 		return ordered
 	}
@@ -3872,7 +3965,7 @@ func appendUndeliveredQuoteRoutes(cfg *ProxyConfig, reg *Registry, req *ProxyReq
 		added += len(extras)
 	}
 	beforeTiers := len(current)
-	current = appendOfficialTierAvailabilityRoutes(reg, current, group, logicalModel, reqWorkloadClass(req), accept)
+	current = appendOfficialTierAvailabilityRoutes(reg, current, group, logicalModel, reqWorkloadClass(req), accept, req.Body)
 	added += len(current) - beforeTiers
 	if added > 0 {
 		log.Printf("[llm-proxy] quoted upstream failed before delivery; switching providers model=%s group=%s request=%s added=%d", logicalModel, strings.TrimSpace(group.ID), req.RequestID, added)
@@ -3959,7 +4052,11 @@ func proxyAppendSameGroupRateLimitDispatches(ctx context.Context, cfg *ProxyConf
 	}
 	extras := sameModelOfficialFailoverRoutes(reg, seed.matchedGroup, sameGroupRateLimitFailoverRoutes(reg, seed.matchedGroup, seed.model, seen, accept), seed.model)
 	combined := append(append([]llmpool.DispatchProviderRoute(nil), ordered...), extras...)
-	combined = appendOfficialTierAvailabilityRoutes(reg, combined, seed.matchedGroup, seed.model, reqWorkloadClass(req), accept)
+	var requestBody map[string]any
+	if req != nil {
+		requestBody = req.Body
+	}
+	combined = appendOfficialTierAvailabilityRoutes(reg, combined, seed.matchedGroup, seed.model, reqWorkloadClass(req), accept, requestBody)
 	if len(combined) <= len(ordered) {
 		return dispatches
 	}

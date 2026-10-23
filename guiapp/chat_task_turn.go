@@ -222,6 +222,9 @@ func chatTaskProgressMilestone(text string) (string, bool) {
 	if text == "" || text == imHeartbeatMsg || strings.HasPrefix(text, "__") {
 		return "", false
 	}
+	if visible, ok := agent.LLMRetryLiveStatusText(text); ok {
+		return truncateChatTaskText(visible, 240), true
+	}
 	lower := strings.ToLower(text)
 	if strings.HasPrefix(lower, "[status]") || strings.Contains(lower, "agent reasoning") || strings.Contains(lower, "命令仍在执行") || strings.Contains(lower, "running command") || strings.Contains(lower, "auto-extended") || strings.Contains(lower, "tool_started") {
 		return "", false

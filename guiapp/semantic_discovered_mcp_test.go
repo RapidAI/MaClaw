@@ -195,8 +195,24 @@ func TestInstalledMCPSidecarStaysAuthorizedBesideManagedSurface(t *testing.T) {
 	if !cb.IsToolAllowed(name) || !cb.IsToolAllowedForPromptProfile(name, agent.PromptProfileFull) || !cb.IsToolAllowedForPromptProfile(name, agent.PromptProfileLight) {
 		t.Fatal("managed surface rejected the installed MCP tool the request listed")
 	}
+	if allowed, reason := cb.IsToolCallAllowed(name, `{}`); !allowed || reason != "" {
+		t.Fatalf("listed sidecar was refused at execution: allowed=%v reason=%q", allowed, reason)
+	}
+	// The rendered spelling can be the builtin name. Listing it and then
+	// denying the call is the same split, whatever the key is.
+	cb.discoveredMCPSurface.grants["web_search"] = tool.InvocationGrant{Token: "sidecar-search"}
+	if !cb.IsToolAllowed("web_search") {
+		t.Fatal("sidecar grant rendered as web_search was dropped from the list")
+	}
+	if allowed, reason := cb.IsToolCallAllowed("web_search", `{"query":"dwg"}`); !allowed || reason != "" {
+		t.Fatalf("listed web_search sidecar was refused: allowed=%v reason=%q", allowed, reason)
+	}
+	delete(cb.discoveredMCPSurface.grants, "web_search")
 	if cb.IsToolAllowed("web_fetch") {
 		t.Fatal("managed surface admitted a tool neither plan granted")
+	}
+	if allowed, _ := cb.IsToolCallAllowed("web_fetch", `{"url":"https://example.invalid"}`); allowed {
+		t.Fatal("a name neither surface granted was admitted")
 	}
 	filtered := agent.FilterToolDefinitionsByAuthorizer(cb, cb.tools)
 	if got, _ := listedInstalledMCP(filtered, "tengyun", "post_work_log_add"); got != name {
@@ -222,6 +238,9 @@ func TestInstalledMCPSidecarStaysAuthorizedBesideManagedSurface(t *testing.T) {
 	cb.discoveredMCPSurface.retiredGrants[name] = grant
 	if cb.IsToolAllowed(name) || cb.IsToolAllowedForPromptProfile(name, agent.PromptProfileFull) {
 		t.Fatal("a retired installed MCP name stayed authorized")
+	}
+	if allowed, _ := cb.IsToolCallAllowed(name, `{}`); allowed {
+		t.Fatal("a retired installed MCP name was executable")
 	}
 	cb.discoveredMCPSurface.grants[name] = grant
 	loop.semanticTurnAnswerOnly = true

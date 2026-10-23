@@ -65,6 +65,8 @@ describe('resolveFinalRoundContent — reasoning-trail collapse', () => {
         expect(terminalAssistantResult(withCall, { text: '', error: '写入日志失败' })).toBe('写入日志失败');
         expect(terminalAssistantResultStatus(withCall, { text: '日志已保存一半。', error: '写入日志失败' })).toBe('incomplete');
         expect(terminalAssistantResult(withCall, { text: '日志已保存一半。', error: '写入日志失败' })).toBe('日志已保存一半。\n\n写入日志失败');
+        expect(terminalAssistantResult(withCall, { text: '先从 GitHub 上取一份目录清单。', error: 'no_progress' })).toBe('先从 GitHub 上取一份目录清单。');
+        expect(terminalAssistantResultStatus(withCall, { text: '先从 GitHub 上取一份目录清单。', error: 'no_progress' })).toBe('incomplete');
     });
 
     it('does not repeat the official answer when it is already in the tool transcript', () => {

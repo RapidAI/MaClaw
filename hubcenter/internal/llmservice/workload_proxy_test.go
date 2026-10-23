@@ -26,7 +26,7 @@ func TestApplyProxyWorkloadRoutingPinUsesWorkflowClass(t *testing.T) {
 	if req.WorkloadClass != llmpool.WorkloadClassPlan {
 		t.Fatalf("class = %q, want plan from workflow", req.WorkloadClass)
 	}
-	got := appendOfficialTierAvailabilityRoutes(reg, nil, &reg.ServiceGroups[0], model, req.WorkloadClass, acceptLiveProvider)
+	got := appendOfficialTierAvailabilityRoutes(reg, nil, &reg.ServiceGroups[0], model, req.WorkloadClass, acceptLiveProvider, nil)
 	for _, route := range got {
 		if route.Model == llmpool.OfficialTierLow {
 			t.Fatalf("plan pin extras = %#v, must not include official-low", got)
@@ -71,6 +71,44 @@ func TestApplyProxyWorkloadRoutingResolvesAuto(t *testing.T) {
 	model, _, _ := applyProxyWorkloadRouting(req, nil, reg, &reg.ServiceGroups[0], dispatch, "auto")
 	if model != llmpool.OfficialTierHigh {
 		t.Fatalf("model = %q, want official-high", model)
+	}
+}
+
+func TestApplyProxyWorkloadRoutingAutoClientClimbsBlindRewrittenTier(t *testing.T) {
+	group := llmpool.ServiceGroup{
+		ID:     llmpool.OfficialGroupID,
+		Kind:   llmpool.ServiceGroupKindDynamic,
+		Routes: llmpool.DefaultOfficialAutoRoutes(),
+		Models: []llmpool.ModelConfig{
+			{Name: llmpool.OfficialTierHigh, ProviderIDs: []string{"p-high"}, ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p-high", Model: llmpool.OfficialTierHigh}}},
+			{Name: llmpool.OfficialTierMid, ProviderIDs: []string{"p-mid"}, ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p-mid", Model: llmpool.OfficialTierMid}}},
+			{Name: llmpool.OfficialTierLow, ProviderIDs: []string{"p-low"}, ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p-low", Model: llmpool.OfficialTierLow}}},
+		},
+	}
+	reg := &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "p-high"},
+			{ID: "p-mid", CapabilityTags: []string{"vision"}},
+			{ID: "p-low"},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{group},
+	}
+	image := map[string]any{"model": llmpool.OfficialTierLow, "messages": []any{map[string]any{"role": "user", "content": []any{
+		map[string]any{"type": "text", "text": "你好"},
+		map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,aaaa"}},
+	}}}}
+	header := http.Header{}
+	header.Set(llmpool.ClientModelHeader, "auto")
+	header.Set(llmpool.WorkloadClassHeader, llmpool.WorkloadClassChat)
+	req := &ProxyRequest{Header: header, Body: image}
+	model, _, dispatch := applyProxyWorkloadRouting(req, nil, reg, &reg.ServiceGroups[0], nil, llmpool.OfficialTierLow)
+	if model != llmpool.OfficialTierMid || dispatch == nil || dispatch.Name != llmpool.OfficialTierMid {
+		t.Fatalf("auto rewrite = %q dispatch=%#v", model, dispatch)
+	}
+	req.Header = http.Header{}
+	model, _, _ = applyProxyWorkloadRouting(req, nil, reg, &reg.ServiceGroups[0], nil, llmpool.OfficialTierLow)
+	if model != llmpool.OfficialTierLow {
+		t.Fatalf("direct tier = %q, want official-low", model)
 	}
 }
 
@@ -238,7 +276,7 @@ func TestAppendOfficialTierAvailabilityRoutesAddsMidAfterHigh(t *testing.T) {
 		},
 	}
 	reg := &Registry{Providers: []llmpool.ProviderConfig{{ID: "p-high"}, {ID: "p-low"}}}
-	got := appendOfficialTierAvailabilityRoutes(reg, []llmpool.DispatchProviderRoute{{ProviderID: "p-high", Model: llmpool.OfficialTierHigh}}, group, llmpool.OfficialTierHigh, "", acceptLiveProvider)
+	got := appendOfficialTierAvailabilityRoutes(reg, []llmpool.DispatchProviderRoute{{ProviderID: "p-high", Model: llmpool.OfficialTierHigh}}, group, llmpool.OfficialTierHigh, "", acceptLiveProvider, nil)
 	if len(got) < 3 {
 		t.Fatalf("routes = %#v, want high then mid then low", got)
 	}
@@ -248,10 +286,151 @@ func TestAppendOfficialTierAvailabilityRoutesAddsMidAfterHigh(t *testing.T) {
 	if got[2].Model != llmpool.OfficialTierLow || got[2].ProviderID != "p-low" {
 		t.Fatalf("second extra = %#v, want p-low/official-low", got[2])
 	}
-	planOnly := appendOfficialTierAvailabilityRoutes(reg, nil, group, llmpool.OfficialTierHigh, llmpool.WorkloadClassPlan, acceptLiveProvider)
+	planOnly := appendOfficialTierAvailabilityRoutes(reg, nil, group, llmpool.OfficialTierHigh, llmpool.WorkloadClassPlan, acceptLiveProvider, nil)
 	if len(planOnly) != 1 || planOnly[0].Model != llmpool.OfficialTierMid {
 		t.Fatalf("plan extras = %#v, want only official-mid", planOnly)
 	}
+}
+
+func TestAppendOfficialTierAvailabilityRoutesSkipsBlindTierOnImage(t *testing.T) {
+	group := &llmpool.ServiceGroup{
+		ID:   llmpool.OfficialGroupID,
+		Kind: llmpool.ServiceGroupKindDynamic,
+		Models: []llmpool.ModelConfig{
+			{Name: llmpool.OfficialTierHigh, ProviderIDs: []string{"p-high"}, ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p-high", Model: llmpool.OfficialTierHigh}}},
+			{Name: llmpool.OfficialTierMid, ProviderIDs: []string{"p-mid"}, ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p-mid", Model: llmpool.OfficialTierMid}}},
+			{Name: llmpool.OfficialTierLow, ProviderIDs: []string{"p-low"}, ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p-low", Model: llmpool.OfficialTierLow}}},
+		},
+	}
+	reg := &Registry{Providers: []llmpool.ProviderConfig{
+		{ID: "p-high", CapabilityTags: []string{"vision"}},
+		{ID: "p-mid", CapabilityTags: []string{"vision"}},
+		{ID: "p-low"},
+	}}
+	image := map[string]any{"messages": []any{map[string]any{"role": "user", "content": []any{
+		map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,aaaa"}},
+	}}}}
+	got := appendOfficialTierAvailabilityRoutes(reg, nil, group, llmpool.OfficialTierMid, "", acceptLiveProvider, image)
+	if len(got) != 1 || got[0].ProviderID != "p-high" || got[0].Model != llmpool.OfficialTierHigh {
+		t.Fatalf("seeing image extras = %#v, want only official-high", got)
+	}
+	onlyLow := &Registry{Providers: []llmpool.ProviderConfig{
+		{ID: "p-high"},
+		{ID: "p-mid"},
+		{ID: "p-low", CapabilityTags: []string{"vision"}},
+	}}
+	got = appendOfficialTierAvailabilityRoutes(onlyLow, nil, group, llmpool.OfficialTierHigh, "", acceptLiveProvider, image)
+	if len(got) != 1 || got[0].ProviderID != "p-low" || got[0].Model != llmpool.OfficialTierLow {
+		t.Fatalf("only-low image extras = %#v, want official-low", got)
+	}
+	got = appendOfficialTierAvailabilityRoutes(onlyLow, nil, group, llmpool.OfficialTierHigh, llmpool.WorkloadClassPlan, acceptLiveProvider, image)
+	if !routeListHasModel(got, llmpool.OfficialTierMid) || routeListHasModel(got, llmpool.OfficialTierLow) {
+		t.Fatalf("plan image extras = %#v, want official-mid and not official-low", got)
+	}
+	got = appendOfficialTierAvailabilityRoutes(onlyLow, nil, group, llmpool.OfficialTierLow, llmpool.WorkloadClassPlan, acceptLiveProvider, image)
+	if len(got) != 0 {
+		t.Fatalf("seeing low plan extras = %#v, blind tiers must stay out", got)
+	}
+	longImage := map[string]any{"messages": []any{
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "text", "text": "加个注释"},
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,aaaa"}},
+		}},
+		map[string]any{"role": "tool", "content": strings.Repeat("x", 12000)},
+	}}
+	got = appendOfficialTierAvailabilityRoutes(onlyLow, nil, group, llmpool.OfficialTierMid, "", acceptLiveProvider, longImage)
+	if len(got) != 0 {
+		t.Fatalf("long image extras = %#v, low must stay out", got)
+	}
+	got = appendOfficialTierAvailabilityRoutes(onlyLow, nil, group, llmpool.OfficialTierLow, "", acceptLiveProvider, longImage)
+	if len(got) != 0 {
+		t.Fatalf("long image on seeing low = %#v, blind tiers must stay out", got)
+	}
+	got = appendOfficialTierAvailabilityRoutes(onlyLow, nil, group, llmpool.OfficialTierHigh, llmpool.WorkloadClassPlan, acceptLiveProvider, longImage)
+	if !routeListHasModel(got, llmpool.OfficialTierMid) || routeListHasModel(got, llmpool.OfficialTierLow) {
+		t.Fatalf("long plan image extras = %#v, want official-mid and not official-low", got)
+	}
+	bothEnds := &Registry{Providers: []llmpool.ProviderConfig{
+		{ID: "p-high", CapabilityTags: []string{"vision"}},
+		{ID: "p-mid"},
+		{ID: "p-low", CapabilityTags: []string{"vision"}},
+	}}
+	got = appendOfficialTierAvailabilityRoutes(bothEnds, nil, group, llmpool.OfficialTierMid, "", acceptLiveProvider, longImage)
+	if !routeListHasModel(got, llmpool.OfficialTierHigh) || routeListHasModel(got, llmpool.OfficialTierLow) {
+		t.Fatalf("long image extras = %#v, want official-high and not official-low", got)
+	}
+	longText := map[string]any{"messages": []any{
+		map[string]any{"role": "user", "content": "加个注释"},
+		map[string]any{"role": "tool", "content": strings.Repeat("x", 12000)},
+	}}
+	got = appendOfficialTierAvailabilityRoutes(onlyLow, nil, group, llmpool.OfficialTierMid, "", acceptLiveProvider, longText)
+	if !routeListHasModel(got, llmpool.OfficialTierLow) || !routeListHasModel(got, llmpool.OfficialTierHigh) {
+		t.Fatalf("long text extras = %#v, want the normal chain", got)
+	}
+	blind := &Registry{Providers: []llmpool.ProviderConfig{{ID: "p-high"}, {ID: "p-mid"}, {ID: "p-low"}}}
+	got = appendOfficialTierAvailabilityRoutes(blind, nil, group, llmpool.OfficialTierMid, "", acceptLiveProvider, image)
+	if !routeListHasModel(got, llmpool.OfficialTierLow) || !routeListHasModel(got, llmpool.OfficialTierHigh) {
+		t.Fatalf("untagged image extras = %#v, want the normal chain", got)
+	}
+	text := map[string]any{"messages": []any{map[string]any{"role": "user", "content": "你好"}}}
+	got = appendOfficialTierAvailabilityRoutes(reg, nil, group, llmpool.OfficialTierMid, "", acceptLiveProvider, text)
+	if !routeListHasModel(got, llmpool.OfficialTierLow) {
+		t.Fatalf("text extras = %#v, want official-low", got)
+	}
+	stored := *group
+	stored.Models = append([]llmpool.ModelConfig(nil), group.Models...)
+	stored.Models[2].ProviderConfigs = []llmpool.ModelProviderConfig{{
+		ProviderID: "p-low", Model: llmpool.OfficialTierLow, CapabilityTags: []string{"chat"},
+	}}
+	taggedLow := &Registry{Providers: []llmpool.ProviderConfig{
+		{ID: "p-high"},
+		{ID: "p-mid", CapabilityTags: []string{"vision"}},
+		{ID: "p-low", CapabilityTags: []string{"vision"}},
+	}}
+	got = appendOfficialTierAvailabilityRoutes(taggedLow, nil, &stored, llmpool.OfficialTierMid, "", acceptLiveProvider, image)
+	if routeListHasModel(got, llmpool.OfficialTierLow) {
+		t.Fatalf("stored non-vision list extras = %#v, low must stay out", got)
+	}
+	custom := *group
+	custom.Models = append([]llmpool.ModelConfig(nil), group.Models...)
+	custom.Models = append(custom.Models, llmpool.ModelConfig{
+		Name: "mid-vision", ProviderIDs: []string{"p-see"}, CapabilityTags: []string{"vision"},
+	})
+	custom.Routes = []llmpool.WorkloadRoute{{Class: "extra", Model: "mid-vision", Quality: llmpool.QualityMid}}
+	got = appendOfficialTierAvailabilityRoutes(blind, nil, &custom, "mid-vision", "", acceptLiveProvider, image)
+	if len(got) != 0 {
+		t.Fatalf("custom vision extras = %#v, blind official tiers must stay out", got)
+	}
+	ghost := *group
+	ghost.Models = append([]llmpool.ModelConfig(nil), group.Models...)
+	ghost.Models = append(ghost.Models, llmpool.ModelConfig{
+		Name: "ghost-vision", CapabilityTags: []string{"vision"},
+	})
+	got = appendOfficialTierAvailabilityRoutes(blind, nil, &ghost, llmpool.OfficialTierMid, "", acceptLiveProvider, image)
+	if !routeListHasModel(got, llmpool.OfficialTierLow) || !routeListHasModel(got, llmpool.OfficialTierHigh) {
+		t.Fatalf("undialable vision tag extras = %#v, want the normal chain", got)
+	}
+	orphan := *group
+	orphan.Models = append([]llmpool.ModelConfig(nil), group.Models...)
+	orphan.Models = append(orphan.Models, llmpool.ModelConfig{
+		Name: "orphan-vision", ProviderIDs: []string{"p-see"}, CapabilityTags: []string{"vision"},
+	})
+	orphanReg := &Registry{Providers: []llmpool.ProviderConfig{
+		{ID: "p-high"}, {ID: "p-mid"}, {ID: "p-low"}, {ID: "p-see"},
+	}}
+	got = appendOfficialTierAvailabilityRoutes(orphanReg, nil, &orphan, llmpool.OfficialTierMid, "", acceptLiveProvider, image)
+	if !routeListHasModel(got, llmpool.OfficialTierLow) || !routeListHasModel(got, llmpool.OfficialTierHigh) {
+		t.Fatalf("unbanded vision tag extras = %#v, want the normal chain", got)
+	}
+}
+
+func routeListHasModel(routes []llmpool.DispatchProviderRoute, model string) bool {
+	for _, route := range routes {
+		if route.Model == model {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAppendOfficialTierAvailabilityRoutesPlanPinOfLowQualityConcreteAddsMid(t *testing.T) {
@@ -265,7 +444,7 @@ func TestAppendOfficialTierAvailabilityRoutesPlanPinOfLowQualityConcreteAddsMid(
 		Routes: []llmpool.WorkloadRoute{{Class: llmpool.WorkloadClassPlan, Model: "gpt-4o-mini", Quality: llmpool.QualityLow}},
 	}
 	reg := &Registry{Providers: []llmpool.ProviderConfig{{ID: "p-high"}, {ID: "p-mid"}, {ID: "p-mini"}}}
-	got := appendOfficialTierAvailabilityRoutes(reg, []llmpool.DispatchProviderRoute{{ProviderID: "p-mini", Model: "gpt-4o-mini"}}, group, "gpt-4o-mini", llmpool.WorkloadClassPlan, acceptLiveProvider)
+	got := appendOfficialTierAvailabilityRoutes(reg, []llmpool.DispatchProviderRoute{{ProviderID: "p-mini", Model: "gpt-4o-mini"}}, group, "gpt-4o-mini", llmpool.WorkloadClassPlan, acceptLiveProvider, nil)
 	hasMid, hasLow := false, false
 	for _, route := range got {
 		if route.Model == llmpool.OfficialTierMid {
@@ -613,7 +792,7 @@ func TestProxyAppendSameGroupRateLimitRoutesKeepsOfficialMidBeforeLow(t *testing
 		ServiceGroups: []llmpool.ServiceGroup{*group},
 	}
 	ordered := []llmpool.DispatchProviderRoute{{ProviderID: "p-high", Model: llmpool.OfficialTierHigh}}
-	got := proxyAppendSameGroupRateLimitRoutes(ordered, reg, group, llmpool.OfficialTierHigh, "", acceptLiveProvider)
+	got := proxyAppendSameGroupRateLimitRoutes(ordered, reg, group, llmpool.OfficialTierHigh, "", acceptLiveProvider, nil)
 	var models []string
 	for _, route := range got {
 		if route.ProviderID == "p-new" || route.Model == llmpool.OfficialTierMid || route.Model == llmpool.OfficialTierLow {

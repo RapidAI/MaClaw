@@ -60,14 +60,20 @@ func DoResponsesAPIRequestStreamWithOptions(
 	client = HTTPClientForRequestContext(ctx, client)
 	opts.Stream = true
 	opts.Tools = tools
-	req, _, endpoint, err := NewResponsesAPIRequest(ctx, cfg, messages, opts)
+	// The route deadline still bounds time-to-headers. Once an event stream
+	// starts, it has no wall-clock cap. Idle silence, a stop, and an earlier
+	// host deadline still abort it. A JSON body is not a token stream and
+	// stays on the route deadline.
+	reqCtx, cancelReq, markHeaders, headerDeadline := streamingRequestContext(ctx)
+	defer cancelReq()
+	req, _, endpoint, err := NewResponsesAPIRequest(reqCtx, cfg, messages, opts)
 	if err != nil {
 		return nil, err
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, normalizeStreamSetupError(headerDeadline, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -90,6 +96,12 @@ func DoResponsesAPIRequestStreamWithOptions(
 		}
 		return parsed, parseErr
 	}
+	// Losing the claim means the route timer already canceled this request.
+	if !markHeaders() {
+		return nil, context.DeadlineExceeded
+	}
+	idleBody := newIdleTimeoutReader(resp.Body, SSEIdleTimeout)
+	defer idleBody.Close()
 
 	var textBuf strings.Builder
 	var reasoningBuf strings.Builder
@@ -126,7 +138,7 @@ func DoResponsesAPIRequestStreamWithOptions(
 		}
 	}
 
-	scanner := bufio.NewScanner(resp.Body)
+	scanner := bufio.NewScanner(idleBody)
 	scanner.Split(scanResponsesAPIStreamEvent)
 	scanner.Buffer(make([]byte, 0, 64*1024), responsesStreamMaxEventBytes)
 	for scanner.Scan() {

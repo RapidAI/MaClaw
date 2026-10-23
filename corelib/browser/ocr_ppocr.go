@@ -1,12 +1,8 @@
 package browser
 
 import (
-	"bytes"
-	"encoding/base64"
 	"fmt"
 	"image"
-	_ "image/jpeg"
-	_ "image/png"
 	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/ocr"
@@ -43,7 +39,7 @@ func (p *NativeOCRProvider) Recognize(pngBase64 string) ([]OCRResult, error) {
 	if p == nil {
 		return nil, fmt.Errorf("OCR provider nil")
 	}
-	ocrB64, scaleX, scaleY, prepErr := ocr.PrepareImageBase64(pngBase64, ocrMaxLongEdge)
+	img, scaleX, scaleY, prepErr := ocr.PrepareImage(pngBase64, ocrMaxLongEdge)
 	if prepErr != nil {
 		// Fail closed: never replay an unprepared payload (mirrors the old
 		// sidecar behavior for multi-monitor captures).
@@ -51,15 +47,6 @@ func (p *NativeOCRProvider) Recognize(pngBase64 string) ([]OCRResult, error) {
 	}
 	if scaleX != 1 || scaleY != 1 {
 		p.log("OCR image downscaled scale_x=%.3f scale_y=%.3f max_edge=%d", scaleX, scaleY, ocrMaxLongEdge)
-	}
-
-	raw, err := base64.StdEncoding.DecodeString(ocrB64)
-	if err != nil {
-		return nil, fmt.Errorf("decode prepared image: %w", err)
-	}
-	img, _, err := image.Decode(bytes.NewReader(raw))
-	if err != nil {
-		return nil, fmt.Errorf("decode prepared image: %w", err)
 	}
 
 	results, err := p.ocrManager().Recognize(img)

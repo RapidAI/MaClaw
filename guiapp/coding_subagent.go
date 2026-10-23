@@ -3923,7 +3923,7 @@ func normalizeCodingBashTimeout(raw interface{}) float64 {
 			timeout = int(i)
 		}
 	}
-	return float64(corelib.NormalizeAgentTimeoutSec(timeout))
+	return float64(corelib.NormalizeLongRunTimeoutSec(timeout))
 }
 
 func rejectDisallowedCodingBashCommand(command string) string {
@@ -17947,7 +17947,7 @@ func truncateRunesForSubAgent(s string, maxRunes int) string {
 // belt. The membership map is derived from it below.
 const (
 	codingSubAgentDefaultBashTimeout                  = corelib.DefaultAgentTimeoutSec
-	codingSubAgentMaxBashTimeout                      = corelib.MaxAgentTimeoutSec
+	codingSubAgentMaxBashTimeout                      = corelib.MaxLongRunTimeoutSec
 	codingSubAgentGuardrailSummaryMax                 = 5
 	codingSubAgentGuardrailDetailMaxRunes             = 240
 	codingSubAgentCommandSummaryMax                   = 10

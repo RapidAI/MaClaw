@@ -332,6 +332,33 @@ describe("GoalQuickBar", () => {
         expect(view.queryByTestId("goal-bar-continue")).toBeNull();
     });
 
+    it("stops the elapsed clock while the goal is paused", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "Date"] });
+        try {
+            const start = 1_700_000_000;
+            vi.setSystemTime(new Date((start + 65) * 1000));
+            installApp({
+                GetSessionGoalBar: vi.fn().mockResolvedValue({
+                    ...active,
+                    status: "paused",
+                    summary: "用户已暂停",
+                    created_at: start,
+                    stopped_at: start + 65,
+                }),
+            });
+            const view = render(<GoalQuickBar lang="zh-Hans" theme={theme} sessionKey="desktop-user" />);
+            await waitFor(() => expect(view.getByTestId("goal-bar-elapsed").textContent).toBe("1m 5s"));
+            expect(view.getByTestId("goal-bar-label").textContent).toBe("已暂停");
+            vi.setSystemTime(new Date((start + 3600) * 1000));
+            await act(() => {
+                vi.advanceTimersByTime(5000);
+            });
+            expect(view.getByTestId("goal-bar-elapsed").textContent).toBe("1m 5s");
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it("keeps the elapsed clock at the moment the goal failed", async () => {
         const start = 1_700_000_000;
         installApp({
@@ -345,7 +372,7 @@ describe("GoalQuickBar", () => {
         });
         const view = render(<GoalQuickBar lang="zh-Hans" theme={theme} sessionKey="desktop-user" />);
         await waitFor(() => expect(view.getByTestId("goal-bar-label").textContent).toBe("已失败"));
-        expect(view.getByTestId("goal-bar-elapsed").textContent).toBe("· 2h 20m 55s");
+        expect(view.getByTestId("goal-bar-elapsed").textContent).toBe("2h 20m 55s");
     });
 
     it("resumes from the frozen reading instead of the tick saved before the failure", async () => {
@@ -364,22 +391,22 @@ describe("GoalQuickBar", () => {
                 }),
             });
             const view = render(<GoalQuickBar lang="zh-Hans" theme={theme} sessionKey="desktop-user" />);
-            await waitFor(() => expect(view.getByTestId("goal-bar-elapsed").textContent).toBe("· 10s"));
+            await waitFor(() => expect(view.getByTestId("goal-bar-elapsed").textContent).toBe("10s"));
             await act(() => {
                 vi.advanceTimersByTime(1000);
             });
-            expect(view.getByTestId("goal-bar-elapsed").textContent).toBe("· 11s");
+            expect(view.getByTestId("goal-bar-elapsed").textContent).toBe("11s");
 
             api.GetSessionGoalBar.mockResolvedValue(failed);
             await act(async () => {
                 handlers.get("goal-state-changed")?.(failed);
             });
             await waitFor(() => expect(view.getByTestId("goal-bar-label").textContent).toBe("已失败"));
-            expect(view.getByTestId("goal-bar-elapsed").textContent).toBe("· 11s");
+            expect(view.getByTestId("goal-bar-elapsed").textContent).toBe("11s");
 
             vi.setSystemTime(new Date((start + 7210) * 1000));
             fireEvent.click(view.getByTestId("goal-bar-continue"));
-            await waitFor(() => expect(view.getByTestId("goal-bar-elapsed").textContent).toBe("· 11s"));
+            await waitFor(() => expect(view.getByTestId("goal-bar-elapsed").textContent).toBe("11s"));
             expect(view.getByTestId("goal-bar-label").textContent).toBe("进行中");
         } finally {
             vi.useRealTimers();

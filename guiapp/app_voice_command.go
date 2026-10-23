@@ -79,11 +79,24 @@ type VoiceCommandNormalizationResult struct {
 // extractJSONObject pulls the outermost {...} from model output, stripping
 // optional markdown fences (```json ... ```).
 func extractJSONObject(raw string) string {
+	text := jsonObjectSearchText(raw)
+	if text == "" {
+		return ""
+	}
+	start := strings.Index(text, "{")
+	end := strings.LastIndex(text, "}")
+	if start < 0 || end < start {
+		return ""
+	}
+	return text[start : end+1]
+}
+
+// jsonObjectSearchText is the text extractJSONObject scans for braces.
+func jsonObjectSearchText(raw string) string {
 	text := strings.TrimSpace(stripFunctionCalls(stripThinkTags(raw)))
 	if text == "" {
 		return ""
 	}
-	// Common LLM wrapping.
 	if strings.HasPrefix(text, "```") {
 		text = strings.TrimPrefix(text, "```json")
 		text = strings.TrimPrefix(text, "```JSON")
@@ -93,12 +106,44 @@ func extractJSONObject(raw string) string {
 		}
 		text = strings.TrimSpace(text)
 	}
-	start := strings.Index(text, "{")
-	end := strings.LastIndex(text, "}")
-	if start < 0 || end < start {
-		return ""
+	return text
+}
+
+// styleJSONLooksCutOff reports an opened object that never closed. A brace
+// inside a string still counts as unclosed when the object itself has no
+// matching brace. A brace that the search step drops does not count.
+func styleJSONLooksCutOff(raw string) bool {
+	text := jsonObjectSearchText(raw)
+	inString := false
+	escaped := false
+	for i := 0; i < len(text); {
+		c := text[i]
+		if inString {
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inString = false
+			}
+			i++
+			continue
+		}
+		if c == '"' {
+			inString = true
+			i++
+			continue
+		}
+		if c != '{' {
+			i++
+			continue
+		}
+		if _, ok := balancedJSONObject(text[i:]); !ok {
+			return true
+		}
+		i++
 	}
-	return text[start : end+1]
+	return false
 }
 
 func normalizeVoiceCommandLLMResult(raw, fallback string) VoiceCommandNormalizationResult {

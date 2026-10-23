@@ -481,7 +481,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"status":              map[string]string{"type": "string", "description": "Step outcome for action=step: progress (same step continues next turn), done, or failed"},
 			"result":              map[string]string{"type": "string", "description": "Step result (required for step)"},
 			"token_budget":        map[string]string{"type": "integer", "description": "Token budget limit (optional, 0=unlimited)"},
-			"max_turns":           map[string]string{"type": "integer", "description": "Max iteration rounds (optional, default 50)"},
+			"max_turns":           map[string]string{"type": "integer", "description": "Max continuation turns (optional). Omit it and the goal runs until it finishes, fails, or the user stops it."},
 			"acceptance_criteria": map[string]interface{}{"type": "array", "description": "Verifiable completion conditions (required for plan)", "items": map[string]string{"type": "string"}},
 			"summary":             map[string]string{"type": "string", "description": "Completion summary (for complete action). Must mention each acceptance criterion."},
 			"reason":              map[string]string{"type": "string", "description": "Failure reason (for fail action)"},
@@ -492,7 +492,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "read_document",
-		Description: "Read text from documents and text-based data using native readers (no Python/Word required). Supports PDF (.pdf), Word (.docx/.doc), Excel (.xlsx/.xls/.csv), PowerPoint (.ppt/.pptx), and text-based files (.txt/.md/.json/.xml/.yaml/.yml/.log). Prefer this over read_file/bash for documents. For long content, use offset+max_chars to page through (# next_offset in the result).",
+		Description: "Read text from one document. This is the only text extraction tool: PDF, Word (.docx/.doc), Excel (.xlsx/.xls/.csv), PowerPoint (.ppt/.pptx), text files (.txt/.md/.json/.xml/.yaml/.yml/.log), CAD (.dwg/.dxf), 3D models (.glb/.gltf structure only), EPUB (.epub), AsciiDoc (.adoc/.asciidoc), and email (.eml). PDF pages keep ## Page markers, join tracked glyphs, read multi-column pages down the left column first, and turn aligned tables into Markdown. DOCX, PPTX, and XLSX text also includes comments, formulas, revisions, charts, and SmartArt when the file contains them. Prefer this over read_file/bash. For long content, use offset+max_chars (# next_offset in the result). read_excel and read_pptx are structured views, not a second extractor.",
 		Properties: map[string]interface{}{
 			"file_path":    map[string]string{"type": "string", "description": "Document file path (alias: path)"},
 			"path":         map[string]string{"type": "string", "description": "Alias for file_path"},
@@ -545,7 +545,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "office",
-		Description: "Office/PDF/text document tool. action: read_document (auto-detect .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx and text files), read_excel, write_excel, read_pptx, write_pptx, preview_pptx, generate_pdf. Prefer read_document for mixed formats; read_excel is spreadsheet-only and read_pptx is PPTX-only. write_pptx renders a designed deck (each theme has its own cover, header, section divider, cards, timeline, comparison, KPI, and quote motif; theme auto or clean/magazine/eink/dashboard/retro/sketch/whiteboard/handmade/research/mckinsey/official/course or custom style id, with purpose selecting a style when theme is auto; slide layout auto/bullets/cards/timeline/comparison/section/agenda/kpi/quote/closing) and automatically renders per-slide preview images next to the deck (<name>_preview/) so the visual result can be checked and fixed by rewriting; preview_pptx renders a .pptx deck to per-slide PNG/JPEG images on demand.",
+		Description: "Office/PDF/text document tool. Text extraction is one action: read_document (auto-detect .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx, text files, .dwg/.dxf, .glb/.gltf, .epub, .adoc/.asciidoc, and .eml; PDF columns and aligned tables are restored; DOCX/PPTX/XLSX also return comments, formulas, revisions, charts, and SmartArt). Other actions: read_excel, write_excel, read_pptx, write_pptx, preview_pptx, generate_pdf. read_excel is spreadsheet-only and read_pptx is PPTX-only. write_pptx renders a designed deck (each theme has its own cover, header, section divider, cards, timeline, comparison, KPI, and quote motif; theme auto or clean/magazine/eink/dashboard/retro/sketch/whiteboard/handmade/research/mckinsey/official/course or custom style id, with purpose selecting a style when theme is auto; slide layout auto/bullets/cards/timeline/comparison/section/agenda/kpi/quote/closing) and automatically renders per-slide preview images next to the deck (<name>_preview/) so the visual result can be checked and fixed by rewriting; preview_pptx renders a .pptx deck to per-slide PNG/JPEG images on demand.",
 		Properties: map[string]interface{}{
 			"action":       map[string]string{"type": "string", "description": "read_document/read_doc/read_docx/read_pdf/read_excel/write_excel/read_pptx/write_pptx/preview_pptx/generate_pdf"},
 			"content":      map[string]string{"type": "string", "description": "Markdown body for generate_pdf"},

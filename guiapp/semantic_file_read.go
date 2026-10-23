@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -307,12 +308,57 @@ func trustedFileReadWindow(content string, startLine int, tail bool) (string, er
 	return chunk + fmt.Sprintf("\n... (total %d lines, showing %d-%d. Next: start_line=%d)", total, 1, readFileMaxLines, readFileMaxLines+1), nil
 }
 
+// trustedFileReadUsesDocumentReader is the non-plaintext half of isDocumentExt.
+// DWG and the other structured formats go through ToolReadDocument. txt, md,
+// json, and log stay on the text pager; a log still defaults to its tail,
+// and start_line is rejected for a document-reader path.
 func trustedFileReadUsesDocumentReader(path string) bool {
 	switch strings.ToLower(filepath.Ext(strings.TrimSpace(path))) {
-	case ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".ppt", ".pptx":
+	case ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".ppt", ".pptx",
+		".dwg", ".dxf", ".dxfb", ".glb", ".gltf", ".epub", ".adoc", ".asciidoc", ".eml":
 		return true
 	default:
 		return false
+	}
+}
+
+// semanticFileReadDocumentStartLineCheck refuses start_line on a document
+// reader path before admission. The schema allows the field, and the adapter
+// rejects it only after the grant is spent. Refusing here keeps that grant
+// and tells the model to omit start_line. Plain text still pages.
+func semanticFileReadDocumentStartLineCheck(values map[string]interface{}) error {
+	if len(values) == 0 {
+		return nil
+	}
+	start, ok := semanticCanonicalInt(values["start_line"])
+	if !ok || start <= 0 {
+		return nil
+	}
+	path, _ := values["path"].(string)
+	if !trustedFileReadUsesDocumentReader(path) {
+		return nil
+	}
+	path = strings.TrimSpace(path)
+	return &semanticCanonicalDetailedRejection{text: fmt.Sprintf("[system rejected] trusted_file_read_start_line_unsupported: %s. The call was refused before execution, so the tool remains available: omit start_line and call again with the path. This document is read as a whole; start_line only pages plain text.", path)}
+}
+
+func semanticCanonicalInt(raw interface{}) (int, bool) {
+	switch n := raw.(type) {
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return int(i), true
+	case float64:
+		if n != float64(int(n)) {
+			return 0, false
+		}
+		return int(n), true
+	case int:
+		return n, true
+	default:
+		return 0, false
 	}
 }
 

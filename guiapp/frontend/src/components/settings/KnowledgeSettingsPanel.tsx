@@ -1329,6 +1329,11 @@ type KnowledgeFolderWatch = {
     imported_files?: number;
     skipped_files?: number;
     failed_files?: number;
+    total_files?: number;
+    processed_files?: number;
+    current_file?: string;
+    current_step?: string;
+    step_progress?: number;
 };
 
 type EnterpriseLibrary = {
@@ -4493,6 +4498,127 @@ function knowledgeFolderWatchTime(value?: string) {
     return date.toLocaleString();
 }
 
+function knowledgeFolderWatchFileParts(path?: string) {
+    const value = String(path || '').trim().replace(/\\/g, '/');
+    const parts = value.split('/').filter(Boolean);
+    if (!parts.length) return { dir: '', name: '' };
+    return {
+        dir: parts.length > 1 ? parts.slice(0, -1).join('/') : '',
+        name: parts[parts.length - 1],
+    };
+}
+
+function knowledgeFolderWatchStepLabel(t: (en: string, zhHans: string, zhHant?: string) => string, step?: string) {
+    switch (step) {
+        case 'scanning':
+            return t('Scanning...', '正在扫描...');
+        case 'hashing':
+            return t('Checking files...', '正在校验...');
+        case 'preparing':
+            return t('Preparing...', '准备中...');
+        case 'saving':
+            return t('Saving source...', '保存来源...');
+        case 'parsing':
+            return t('Parsing document...', '解析文档...');
+        case 'indexing':
+            return t('Indexing content...', '索引内容...');
+        case 'indexing_rows':
+            return t('Indexing rows...', '索引行数据...');
+        case 'distilling':
+            return t('Generating cards...', '生成知识卡片...');
+        case 'embedding':
+            return t('Building vector index...', '构建向量索引...');
+        case 'linking':
+            return t('Linking topics...', '关联主题...');
+        case 'post_index':
+            return t('Background indexing...', '后台索引中...');
+        case 'processing image':
+            return t('Processing image...', '处理图片...');
+        default:
+            return '';
+    }
+}
+
+function knowledgeFolderWatchPhase(step?: string) {
+    if (step === 'scanning') return 'scanning';
+    if (step === 'hashing') return 'hashing';
+    if (step === 'linking' || step === 'embedding' || step === 'post_index') return 'post';
+    return 'files';
+}
+
+// File progress plus the current file's step, so one long document still moves the bar.
+// Scanning, hashing, and post-import linking stay indeterminate: a filled bar there
+// either jumps backward when file import starts, or sits at 100% while linking continues.
+function knowledgeFolderWatchPercent(watch: KnowledgeFolderWatch): number | null {
+    if (watch.status !== 'importing') return null;
+    if (knowledgeFolderWatchPhase(watch.current_step) !== 'files') return null;
+    const total = Number(watch.total_files) || 0;
+    if (total <= 0) return null;
+    const processed = Math.min(Math.max(Number(watch.processed_files) || 0, 0), total);
+    let fraction = processed / total;
+    const step = Math.max(0, Math.min(100, Number(watch.step_progress) || 0)) / 100;
+    if (watch.current_file && processed < total && step > 0) {
+        fraction += step / total;
+    }
+    return Math.max(0, Math.min(100, Math.round(fraction * 100)));
+}
+
+function FolderWatchImportProgress({ t, watch }: {
+    t: (en: string, zhHans: string, zhHant?: string) => string;
+    watch: KnowledgeFolderWatch;
+}) {
+    const percent = knowledgeFolderWatchPercent(watch);
+    const file = knowledgeFolderWatchFileParts(watch.current_file);
+    const step = knowledgeFolderWatchStepLabel(t, watch.current_step);
+    const total = Number(watch.total_files) || 0;
+    const processed = Number(watch.processed_files) || 0;
+    const indeterminate = percent == null;
+    const action = step || t('Importing', '导入中');
+    const label = file.name ? `${action} ${file.name}` : action;
+    const failed = Number(watch.failed_files) || 0;
+    const phase = knowledgeFolderWatchPhase(watch.current_step);
+    const meta = (phase === 'hashing' || phase === 'post') && total > 0
+        ? `${processed}/${total}`
+        : indeterminate
+            ? (processed > 0 ? t(`${processed} found`, `已发现 ${processed}`) : t('Importing', '导入中'))
+            : `${percent}% · ${processed}/${total}`;
+    return (
+        <div className="knowledge-watch-progress" data-testid="knowledge-watch-progress">
+            <div className="knowledge-watch-progress-header">
+                <div
+                    className="knowledge-watch-progress-track"
+                    role="progressbar"
+                    aria-label={label}
+                    aria-valuemin={indeterminate ? undefined : 0}
+                    aria-valuemax={indeterminate ? undefined : 100}
+                    aria-valuenow={indeterminate ? undefined : percent}
+                    aria-valuetext={indeterminate ? (step || t('Importing', '导入中')) : `${percent}%`}
+                >
+                    <div
+                        className="knowledge-watch-progress-fill"
+                        data-indeterminate={indeterminate ? 'true' : 'false'}
+                        style={indeterminate ? undefined : { width: `${percent}%` }}
+                    />
+                </div>
+                <span className="knowledge-watch-progress-meta">
+                    {meta}{failed > 0 ? ` · ${t(`${failed} failed`, `失败 ${failed}`)}` : ''}
+                </span>
+            </div>
+            {(file.name || step) ? (
+                <div className="knowledge-watch-progress-line">
+                    {file.name ? (
+                        <span className="knowledge-watch-progress-file" title={watch.current_file || file.name}>
+                            {file.dir ? <span className="knowledge-watch-progress-dir">{file.dir}/</span> : null}
+                            <span className="knowledge-watch-progress-name" data-testid="knowledge-watch-current-file">{file.name}</span>
+                        </span>
+                    ) : null}
+                    {step ? <span className="knowledge-watch-progress-step">{step}</span> : null}
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
 function FolderWatchPanel({ t }: { t: (en: string, zhHans: string, zhHant?: string) => string }) {
     const [watches, setWatches] = useState<KnowledgeFolderWatch[]>([]);
     const [error, setError] = useState('');
@@ -4582,11 +4708,16 @@ function FolderWatchPanel({ t }: { t: (en: string, zhHans: string, zhHant?: stri
                                 watch.last_file || '',
                                 knowledgeFolderWatchNotice(t, watch),
                             ].filter(Boolean).join(' · ');
+                            const importing = watch.status === 'importing';
                             return (
                                 <div key={id} className="knowledge-row">
-                                    <div className="knowledge-row-main">
+                                    <div className="knowledge-row-main knowledge-watch-row-main">
                                         <strong>{watch.path}</strong>
-                                        <span className="knowledge-muted-line">{detail}</span>
+                                        {importing ? (
+                                            <FolderWatchImportProgress t={t} watch={watch} />
+                                        ) : (
+                                            <span className="knowledge-muted-line">{detail}</span>
+                                        )}
                                     </div>
                                     <button
                                         type="button"

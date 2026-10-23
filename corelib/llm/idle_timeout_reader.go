@@ -19,10 +19,10 @@ import (
 // var so tests can shrink it (package tests must not run in parallel while
 // overriding it).
 //
-// Scope: the OpenAI-compatible HTTP stream only. The Anthropic SDK stream
-// (anthropic_sdk.go) manages its own reads and has no idle bound; production
-// configs use the OpenAI wire, and adding one there needs SDK-level event
-// observation rather than a body wrapper.
+// Scope: the OpenAI-compatible HTTP stream, the Anthropic SDK stream, and
+// the Responses API SSE stream. Each wraps a 200 event-stream body with this
+// reader after headers, so a stalled body has the same idle bound. A live
+// body still outlives the route deadline via streamingRequestContext.
 var SSEIdleTimeout = 4 * time.Minute
 
 // idleTimeoutReader aborts reads on body when no byte arrives within timeout.

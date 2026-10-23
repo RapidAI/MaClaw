@@ -10,9 +10,9 @@ export type GoalBarSnapshot = {
     summary?: string;
     awaiting_user?: boolean;
     created_at?: number;
-    // Unix seconds when a failed or budget-limited goal stopped. Zero while the clock runs.
+    // Unix seconds when a paused, failed, or budget-limited goal stopped. Zero while the clock runs.
     stopped_at?: number;
-    // Seconds already spent terminal. Subtracted so continue does not jump the clock.
+    // Seconds the clock was already held. Subtracted so continue does not jump the clock.
     clock_hold_seconds?: number;
 };
 
@@ -45,15 +45,15 @@ function goalCount(value: unknown): number {
     return Math.trunc(parsed);
 }
 
-/** A failed or budget-stopped goal keeps the elapsed time it had when it ended. */
+/** Pause, failure, and a filled budget keep the elapsed time from when the clock stopped. */
 export function goalElapsedFrozen(input: GoalBarSnapshot | null | undefined): boolean {
     const status = goalText(input?.status).toLowerCase();
-    return status === "failed" || status === "budget_limited" || status === "complete";
+    return status === "paused" || status === "failed" || status === "budget_limited" || status === "complete";
 }
 
 /**
- * End of the elapsed interval. A live goal, including a pause, uses now.
- * A finished goal uses stopped_at so the bar does not keep counting.
+ * End of the elapsed interval. A running goal uses now.
+ * A paused or finished goal uses stopped_at so the bar does not keep counting.
  */
 export function goalElapsedEndMs(input: GoalBarSnapshot | null | undefined, nowMs: number): number {
     if (!goalElapsedFrozen(input)) return nowMs;
@@ -70,7 +70,7 @@ function goalClockHoldSeconds(input: GoalBarSnapshot | null | undefined): number
     return Math.floor(hold);
 }
 
-/** Elapsed label for the composer bar. Terminal gaps in clock_hold_seconds stay out of the reading. */
+/** Elapsed label for the composer bar. Held gaps in clock_hold_seconds stay out of the reading. */
 export function goalElapsedText(input: GoalBarSnapshot | null | undefined, nowMs: number): string {
     const created = Number(input?.created_at);
     if (!Number.isFinite(created) || created <= 0) return "";

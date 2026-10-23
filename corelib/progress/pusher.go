@@ -124,6 +124,24 @@ func (p *ProgressPusher) OnMilestone(m Milestone) {
 	// (checked by Tick) or the task completes (checked by Flush).
 }
 
+// NoteActivity records that the task is still moving even though this pusher
+// did not emit the line. LLM retry status is delivered on the chat row, not
+// through the milestone buffer. Without this, a 429 wait looks like silence
+// and the 90s heartbeat ("仍在执行中") arrives on the same progress channel,
+// which the chat treats as a new milestone and drops the retry row.
+func (p *ProgressPusher) NoteActivity() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.silenced {
+		return
+	}
+	p.lastPushTime = time.Now()
+	p.heartbeatCount = 0
+}
+
 // Tick should be called periodically (e.g. every 10s) by the agent loop.
 // It handles merge window expiry and heartbeat fallback.
 func (p *ProgressPusher) Tick() {

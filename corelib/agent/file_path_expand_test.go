@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -84,6 +86,210 @@ func TestFormatAutoExtractedDocument_OversizedInputDoesNotSuggestUnavailablePagi
 		if strings.Contains(block, forbidden) {
 			t.Fatalf("oversized auto-extract must not suggest a boundary bypass %q:\n%s", forbidden, block)
 		}
+	}
+}
+
+func TestFormatAutoExtractedDocument_OversizedPDFNamesBuiltinOCR(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scan.pdf")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(MaxOfficeReadFileBytes + 1); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	block := FormatAutoExtractedDocument(path)
+	if !strings.Contains(block, "error_class=input_too_large") || !strings.Contains(block, "ocr_recognize") || !strings.Contains(block, "PP-OCRv6") || !strings.Contains(block, "不要安装") {
+		t.Fatalf("oversized scan must name the built-in OCR tool:\n%s", block)
+	}
+	if strings.Contains(block, "请拆分") {
+		t.Fatalf("a PDF inside the OCR cap must not ask to be split:\n%s", block)
+	}
+	if AutoExtractNeedsContinuation(block) {
+		t.Fatal("oversized scan inject must not request office continuation")
+	}
+	records := AutoExtractTerminalRecords(block)
+	if len(records) != 1 || records[0].Class != "input_too_large" || !TerminalExtractOffersBuiltinOCR(records) {
+		t.Fatalf("terminal records = %#v", records)
+	}
+	kept := StripAutoExtractBodies(block)
+	if !strings.Contains(kept, "error_class=input_too_large") || !strings.Contains(kept, "ocr_recognize") || !strings.Contains(kept, "PP-OCRv6") {
+		t.Fatalf("history summary dropped the built-in OCR instruction:\n%s", kept)
+	}
+	keptRecords := AutoExtractTerminalRecords(kept)
+	if len(keptRecords) != 1 || !TerminalExtractOffersBuiltinOCR(keptRecords) || keptRecords[0].Path != path {
+		t.Fatalf("stripped history lost the terminal pdf: %#v\n%s", keptRecords, kept)
+	}
+}
+
+func useAutoInjectSizeLimitForTest(t *testing.T, n int64) {
+	t.Helper()
+	prev := autoInjectSizeLimitForTest
+	autoInjectSizeLimitForTest = n
+	t.Cleanup(func() { autoInjectSizeLimitForTest = prev })
+}
+
+func TestExpandUserSelectedFilePaths_OversizedScanInjectsOCRWindow(t *testing.T) {
+	restoreOfficeImagePDFOCR(t)
+	useAutoInjectSizeLimitForTest(t, 1)
+	calls := 0
+	SetOfficeImagePDFOCR(func() bool { return true }, func(string) (string, error) {
+		calls++
+		return fmt.Sprintf("识别页%d", calls), nil
+	})
+	jpegBytes := mustJPEG(t, 32, 32)
+	page := imagePDFPage{jpeg: jpegBytes, width: 32, height: 32}
+	pages := make([]imagePDFPage, 9)
+	for i := range pages {
+		pages[i] = page
+	}
+	path := filepath.Join(t.TempDir(), "scan.pdf")
+	if err := os.WriteFile(path, buildImagePDF(t, pages...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := ExpandUserSelectedFilePaths(FilePathPromptPrefix + "\n" + path + "\n")
+	if calls != 8 {
+		t.Fatalf("ocr calls = %d, want 8", calls)
+	}
+	for _, want := range []string{"识别页1", "识别页8", "start_page=9", "PP-OCRv6", "不要拆分", "# text_source: ocr", "# scan_continue: ocr_recognize"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "识别页9") || strings.Contains(out, "error_class=input_too_large") || strings.Contains(out, "请拆分") {
+		t.Fatalf("scan window drifted:\n%s", out)
+	}
+	if AutoExtractNeedsContinuation(out) {
+		t.Fatal("scan window must not request office continuation")
+	}
+	if !AutoExtractRequestsBuiltinOCR(out) {
+		t.Fatal("scan window must request builtin OCR")
+	}
+	kept := StripAutoExtractBodies(out)
+	if !AutoExtractRequestsBuiltinOCR(kept) {
+		t.Fatalf("history dropped the OCR continuation:\n%s", kept)
+	}
+}
+
+func TestExpandUserSelectedFilePaths_OversizedScanWaitsForOCR(t *testing.T) {
+	restoreOfficeImagePDFOCR(t)
+	useAutoInjectSizeLimitForTest(t, 1)
+	calls := 0
+	SetOfficeImagePDFOCR(func() bool { return false }, func(string) (string, error) {
+		calls++
+		return "nope", nil
+	})
+	jpegBytes := mustJPEG(t, 32, 32)
+	path := filepath.Join(t.TempDir(), "scan.pdf")
+	if err := os.WriteFile(path, buildImagePDF(t, imagePDFPage{jpeg: jpegBytes, width: 32, height: 32}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := ExpandUserSelectedFilePaths(FilePathPromptPrefix + "\n" + path + "\n")
+	if calls != 0 {
+		t.Fatalf("engine not ready still recognized: calls=%d", calls)
+	}
+	for _, want := range []string{"尚未就绪", "ocr_recognize", "不要拆分", "PP-OCRv6"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "error_class=input_too_large") || strings.Contains(out, "请拆分") || AutoExtractNeedsContinuation(out) || !AutoExtractRequestsBuiltinOCR(out) {
+		t.Fatalf("not-ready scan drifted:\n%s", out)
+	}
+}
+
+func TestExpandUserSelectedFilePaths_OversizedScanAttachesPageImages(t *testing.T) {
+	restoreOfficeImagePDFOCR(t)
+	useAutoInjectSizeLimitForTest(t, 1)
+	SetOfficeImagePDFOCR(func() bool { return true }, func(string) (string, error) {
+		return "公式正文", nil
+	})
+	jpegBytes := mustJPEG(t, 32, 32)
+	path := filepath.Join(t.TempDir(), "scan.pdf")
+	if err := os.WriteFile(path, buildImagePDF(t, imagePDFPage{jpeg: jpegBytes, width: 32, height: 32}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := ExpandUserSelectedFilePathsForVisionBudget(FilePathPromptPrefix+"\n"+path+"\n", 0, 0)
+	for _, want := range []string{"# text_source: vision", "公式正文", pdfVisionPageMarker, "图片也附"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "请拆分") || strings.Contains(out, "error_class=input_too_large") {
+		t.Fatalf("vision scan drifted:\n%s", out)
+	}
+	reads := oversizedScanVisionFileReads
+	atts, notes := SelectedImageOnlyPDFPageAttachments(out, 0)
+	if oversizedScanVisionFileReads != reads {
+		t.Fatalf("vision attach re-read the scan: before=%d after=%d", reads, oversizedScanVisionFileReads)
+	}
+	if len(notes) != 0 || len(atts) != 1 {
+		t.Fatalf("attachments=%d notes=%v", len(atts), notes)
+	}
+	if atts[0].MimeType != "image/jpeg" || !strings.HasSuffix(atts[0].FileName, "-page-1.jpg") {
+		t.Fatalf("attachment = %#v", atts[0].FileName)
+	}
+	raw, err := base64.StdEncoding.DecodeString(atts[0].Data)
+	if err != nil || !bytes.Equal(raw, jpegBytes) {
+		t.Fatalf("page image mismatch err=%v got=%d want=%d", err, len(raw), len(jpegBytes))
+	}
+}
+
+func TestExpandUserSelectedFilePaths_OversizedScanKeepsEmptyOCR(t *testing.T) {
+	restoreOfficeImagePDFOCR(t)
+	useAutoInjectSizeLimitForTest(t, 1)
+	calls := 0
+	SetOfficeImagePDFOCR(func() bool { return true }, func(string) (string, error) {
+		calls++
+		return "", nil
+	})
+	jpegBytes := mustJPEG(t, 32, 32)
+	path := filepath.Join(t.TempDir(), "scan.pdf")
+	if err := os.WriteFile(path, buildImagePDF(t, imagePDFPage{jpeg: jpegBytes, width: 32, height: 32}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := ExpandUserSelectedFilePaths(FilePathPromptPrefix + "\n" + path + "\n")
+	if calls != 1 {
+		t.Fatalf("ocr calls = %d, want 1", calls)
+	}
+	for _, want := range []string{"[no text recognized]", "没有写出可用正文", "ocr_recognize", "PP-OCRv6"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "尚未就绪") || strings.Contains(out, "error_class=input_too_large") || strings.Contains(out, "请拆分") {
+		t.Fatalf("empty OCR was treated as a missing engine:\n%s", out)
+	}
+}
+
+func TestExpandUserSelectedFilePaths_OversizedTextPDFStaysTooLarge(t *testing.T) {
+	restoreOfficeImagePDFOCR(t)
+	useAutoInjectSizeLimitForTest(t, 1)
+	calls := 0
+	SetOfficeImagePDFOCR(func() bool { return true }, func(string) (string, error) {
+		calls++
+		return "识别正文", nil
+	})
+	jpegBytes := mustJPEG(t, 32, 32)
+	path := filepath.Join(t.TempDir(), "paper.pdf")
+	if err := os.WriteFile(path, buildImagePDF(t, imagePDFPage{
+		text: "Alpha Bravo Charlie Delta", jpeg: jpegBytes, width: 32, height: 32,
+	}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := ExpandUserSelectedFilePaths(FilePathPromptPrefix + "\n" + path + "\n")
+	if calls != 0 {
+		t.Fatalf("text page was OCR'd: calls=%d", calls)
+	}
+	if !strings.Contains(out, "error_class=input_too_large") {
+		t.Fatalf("text pdf was injected as a scan:\n%s", out)
+	}
+	if strings.Contains(out, "Alpha Bravo Charlie Delta") || strings.Contains(out, "宿主已用本机 PP-OCRv6 识别") || strings.Contains(out, "识别正文") {
+		t.Fatalf("native page entered the scan window:\n%s", out)
 	}
 }
 
@@ -594,9 +800,17 @@ func TestAutoExtractNeedsContinuation(t *testing.T) {
 	if !AutoExtractNeedsContinuation(truncated) {
 		t.Fatal("truncated=true on begin marker is host extract output")
 	}
-	failed := AutoExtractBeginMarker + `path="C:\a.pdf" error="自动注入已跳过（error_class=encrypted）。" ---`
+	failed := AutoExtractBeginMarker + `path="C:\a.pdf" error="原生解析失败（error_class=extract_error）。" ---`
 	if !AutoExtractNeedsContinuation(failed) {
 		t.Fatal("error= on begin marker is host extract output")
+	}
+	blocked := AutoExtractBeginMarker + `path="C:\a.pdf" format="pdf" error="自动注入已跳过（error_class=input_too_large）。" ---`
+	if AutoExtractNeedsContinuation(blocked) {
+		t.Fatal("input_too_large is terminal and must not request continuation")
+	}
+	encrypted := AutoExtractBeginMarker + `path="C:\a.pdf" error="自动注入已跳过（error_class=encrypted）。" ---`
+	if AutoExtractNeedsContinuation(encrypted) {
+		t.Fatal("encrypted is terminal and must not request continuation")
 	}
 }
 
@@ -731,6 +945,11 @@ func TestIsDocumentFilePath(t *testing.T) {
 	}
 	if IsDocumentFilePath("/tmp/a.png") {
 		t.Fatal("png should not be document")
+	}
+	for _, path := range []string{`C:\draw\pump.dwg`, `C:\draw\pump.dxf`, `C:\model\pump.glb`, `C:\book\manual.epub`, `C:\doc\manual.adoc`, `C:\mail\ask.eml`} {
+		if !IsDocumentFilePath(path) {
+			t.Fatalf("%s should be a document", path)
+		}
 	}
 }
 

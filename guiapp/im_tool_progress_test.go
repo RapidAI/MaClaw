@@ -218,6 +218,10 @@ func TestStyleIMIntermediateProgress(t *testing.T) {
 	if !strings.HasPrefix(en, "[Status] ") {
 		t.Fatalf("got %q, want English status label", en)
 	}
+	live := "[LiveStatus:llm-retry] 重试 1/5：API 暂时不可用，2 秒后重试"
+	if styleIMIntermediateProgress("zh", live) != live {
+		t.Fatalf("live status marker must stay at the start, got %q", styleIMIntermediateProgress("zh", live))
+	}
 }
 
 func TestNormalizeToolProgressName(t *testing.T) {

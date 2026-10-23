@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { PreviewTaskResultFile } from "../../../wailsjs/go/main/App";
 import type { CodePreviewTheme } from "./FileTabBar";
 import { isTaskResultPdfPreviewURL, localizeTaskResultPreviewError, type TaskResultPreviewPayload } from "./taskResultPreview";
+import { isPreviewAbortError, readPreviewBody } from "./previewBytes";
+import { PREVIEW_BAR_DELAY_MS, PREVIEW_HEAVY_PARSE_BYTES, PreviewLoadingStatus, yieldPreviewPaint, type PreviewProgress } from "./PreviewProgressBar";
 
 /** .docx is the OOXML word processor file the in-app renderer can lay out. */
 export function isDocxFileName(name: string): boolean {
@@ -29,20 +31,35 @@ export function DocxPreviewPanel({ absPath, theme, lang }: DocxPreviewPanelProps
     const scrollRef = useRef<HTMLDivElement>(null);
     const [error, setError] = useState("");
     const [loading, setLoading] = useState(true);
+    const [progress, setProgress] = useState<PreviewProgress>({ phase: "wait", ratio: null });
+    const [barOn, setBarOn] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
+        const controller = new AbortController();
         const zh = () => langRef.current.startsWith("zh");
+        const barTimer = window.setTimeout(() => {
+            if (!cancelled) setBarOn(true);
+        }, PREVIEW_BAR_DELAY_MS);
         const fail = (message: string) => {
             if (cancelled) return;
+            window.clearTimeout(barTimer);
             setError(localizeTaskResultPreviewError(message, langRef.current));
             setLoading(false);
         };
+        const note = (phase: PreviewProgress["phase"], ratio: number | null) => {
+            if (!cancelled) setProgress({ phase, ratio });
+        };
         setLoading(true);
         setError("");
+        setProgress({ phase: "wait", ratio: null });
+        setBarOn(false);
         const host = hostRef.current;
         if (host) host.replaceChildren();
         void (async () => {
+            let styleHost: HTMLDivElement | null = null;
+            let bodyHost: HTMLDivElement | null = null;
+            let target: HTMLDivElement | null = null;
             try {
                 const result = await PreviewTaskResultFile(absPath) as TaskResultPreviewPayload;
                 if (cancelled) return;
@@ -51,18 +68,30 @@ export function DocxPreviewPanel({ absPath, theme, lang }: DocxPreviewPanelProps
                     fail(zh() ? "无法预览该 Word 文档" : "This Word document cannot be previewed");
                     return;
                 }
-                const response = await fetch(previewURL);
+                const response = await fetch(previewURL, { signal: controller.signal });
                 if (!response.ok) {
                     fail(zh() ? "无法读取该 Word 文档" : "This Word document could not be read");
                     return;
                 }
-                const bytes = await response.arrayBuffer();
-                const target = hostRef.current;
+                note("read", null);
+                const bytes = await readPreviewBody(response, {
+                    signal: controller.signal,
+                    onProgress: (ratio) => note("read", ratio),
+                });
+                target = hostRef.current;
                 if (cancelled || !target) return;
                 const { renderAsync } = await import("docx-preview");
                 if (cancelled || hostRef.current !== target) return;
-                const styleHost = document.createElement("div");
-                const bodyHost = document.createElement("div");
+                note("parse", null);
+                // A long synchronous stretch inside the renderer cannot paint
+                // a bar that was only scheduled. Large documents show it first.
+                if (bytes.byteLength >= PREVIEW_HEAVY_PARSE_BYTES) {
+                    if (!cancelled) setBarOn(true);
+                    await yieldPreviewPaint();
+                    if (cancelled || hostRef.current !== target) return;
+                }
+                styleHost = document.createElement("div");
+                bodyHost = document.createElement("div");
                 target.replaceChildren(styleHost, bodyHost);
                 await renderAsync(bytes, bodyHost, styleHost, {
                     className: "maclaw-docx",
@@ -78,22 +107,45 @@ export function DocxPreviewPanel({ absPath, theme, lang }: DocxPreviewPanelProps
                     fail(zh() ? "该 Word 文档没有可预览的页面" : "This Word document has no pages to preview");
                     return;
                 }
-                fitDocxToPane(scrollRef.current, bodyHost);
+                const pane = scrollRef.current;
+                fitDocxToPane(pane, bodyHost);
+                if (pane) pane.scrollTop = 0;
+                window.clearTimeout(barTimer);
                 setLoading(false);
             } catch (err) {
+                if (cancelled || isPreviewAbortError(err)) return;
                 fail(err instanceof Error ? err.message : String(err || ""));
+            } finally {
+                // renderAsync keeps writing into these nodes after the preview
+                // is gone, including when it throws partway through.
+                if (bodyHost && styleHost && (cancelled || hostRef.current !== target)) {
+                    bodyHost.replaceChildren();
+                    styleHost.replaceChildren();
+                }
             }
         })();
         const scroll = scrollRef.current;
+        let fittedWidth = scroll?.clientWidth ?? -1;
         const observer = scroll && typeof ResizeObserver !== "undefined"
             ? new ResizeObserver(() => {
-                const body = hostRef.current?.querySelector(":scope > div:last-child");
-                if (body instanceof HTMLElement) fitDocxToPane(scroll, body);
+                const pane = scrollRef.current;
+                const host = hostRef.current;
+                if (!pane || !host) return;
+                const width = pane.clientWidth;
+                // Height changes, including the scrollbar, are not a new layout.
+                if (width <= 0 || width === fittedWidth) return;
+                fittedWidth = width;
+                const top = pane.scrollTop;
+                const body = host.querySelector(":scope > div:last-child");
+                if (body instanceof HTMLElement) fitDocxToPane(pane, body);
+                if (top > 0) pane.scrollTop = top;
             })
             : null;
         observer?.observe(scroll!);
         return () => {
             cancelled = true;
+            controller.abort();
+            window.clearTimeout(barTimer);
             observer?.disconnect();
         };
     }, [absPath]);
@@ -119,9 +171,18 @@ export function DocxPreviewPanel({ absPath, theme, lang }: DocxPreviewPanelProps
             style={{ ...fill, width: "100%", minWidth: 0, overflow: "auto" }}
         >
             {loading ? (
-                <div data-testid="docx-preview-loading" role="status" style={{ padding: 20, color: theme.textMuted, fontSize: 13 }}>
-                    {isZh ? "正在加载 Word 预览…" : "Loading Word preview…"}
-                </div>
+                <PreviewLoadingStatus
+                    testId="docx-preview-loading"
+                    style={{ padding: 20, color: theme.textMuted, fontSize: 13 }}
+                    phase={progress.phase}
+                    ratio={progress.ratio}
+                    showBar={barOn}
+                    phrases={{
+                        wait: isZh ? "正在加载 Word 预览…" : "Loading Word preview…",
+                        read: isZh ? "正在读取 Word…" : "Reading Word…",
+                        parse: isZh ? "正在解析 Word…" : "Parsing Word…",
+                    }}
+                />
             ) : null}
             <div ref={hostRef} />
         </div>
@@ -157,8 +218,9 @@ export function fitDocxToPane(scroll: HTMLElement | null, body: HTMLElement) {
     const scale = Math.min(1, Math.max(0.2, (avail - 8) / natural));
     if (scale < 0.995) body.style.setProperty("zoom", String(scale));
     else body.style.removeProperty("zoom");
+    // Horizontal pin only. The reader may already be on a later page;
+    // a width refit must not send them back to the top.
     scroll.scrollLeft = 0;
-    scroll.scrollTop = 0;
 }
 
 function docxNaturalWidth(box: HTMLElement, zoomed: HTMLElement): number {

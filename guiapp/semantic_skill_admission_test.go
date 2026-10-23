@@ -415,6 +415,86 @@ func TestSkillAdmissionAuthorizerKeepsGuidedFileToolsAndClosesPDF(t *testing.T) 
 	}
 }
 
+func TestSkillAdmissionDoesNotInstallForALookupOrContinuation(t *testing.T) {
+	app, _ := newSkillExecutorWithEntries(t, paperTranslatorTestSkill())
+	h := &IMMessageHandler{app: app}
+	for _, text := range []string{"查询 api2服务器信息", "继续", "请继续", "api2 服务器情况", "看下有没有可以清理的", "查询 api2 的处理能力", "查询已安装的技能", "有哪些技能", "查找已安装的技能"} {
+		decision := h.skillAdmissionForTurn(fullDocumentLoop(intent.LabelDocumentGenerate), text)
+		if decision.Mode != skillAdmissionNone {
+			t.Fatalf("%q mode=%v, want none", text, decision.Mode)
+		}
+	}
+	for _, text := range []string{"使用 book-pdf skill 查询 api2服务器信息", "使用这个技能查询服务器", "找一个能改 tex 的技能"} {
+		named := h.skillAdmissionForTurn(fullDocumentLoop(intent.LabelDocumentGenerate), text)
+		if named.Mode != skillAdmissionRemote {
+			t.Fatalf("%q mode=%v, want remote", text, named.Mode)
+		}
+	}
+}
+
+func TestSkillAdmissionKeepsAnInfraChangeTask(t *testing.T) {
+	app, _ := newSkillExecutorWithEntries(t, paperTranslatorTestSkill())
+	h := &IMMessageHandler{app: app}
+	decision := h.skillAdmissionForTurn(fullDocumentLoop(intent.LabelDocumentGenerate), "加固 php.ini 并重启服务")
+	if decision.Mode != skillAdmissionRemote {
+		t.Fatalf("infra change mode=%v, want remote", decision.Mode)
+	}
+	if !skillSearchQueryAllowed("加固 php.ini 并重启服务", true) {
+		t.Fatal("host-admitted infra change was treated as a lookup")
+	}
+	if skillSearchQueryAllowed("api2 服务器情况", true) || skillSearchQueryAllowed("请继续执行", true) {
+		t.Fatal("status question or bare continuation was searched")
+	}
+}
+
+func TestSkillAdmissionUsesTheUtteranceCapability(t *testing.T) {
+	app, _ := newSkillExecutorWithEntries(t, paperTranslatorTestSkill())
+	h := &IMMessageHandler{app: app}
+	// Residue rewrote 不要的就删除 to ssh. Remote shell already has its tool.
+	for _, label := range []intent.IntentLabel{intent.LabelSSH, intent.LabelFileRead, intent.LabelFileDelete} {
+		decision := h.skillAdmissionForTurn(fullDocumentLoop(label), "不要的就删除")
+		if decision.Mode != skillAdmissionNone {
+			t.Fatalf("%s mode=%v, want none", label, decision.Mode)
+		}
+	}
+	unread := h.skillAdmissionForTurn(fullDocumentLoop(intent.LabelFileRead), "读一下这份配置")
+	if unread.Mode != skillAdmissionNone {
+		t.Fatalf("file read mode=%v, want none", unread.Mode)
+	}
+	unlabeled := fullDocumentLoop(intent.LabelDocumentGenerate)
+	unlabeled.Runtime.SemanticIntent = nil
+	if decision := h.skillAdmissionForTurn(unlabeled, "写一个脚本"); decision.Mode != skillAdmissionNone {
+		t.Fatalf("unlabeled mode=%v, want none", decision.Mode)
+	}
+	carried := fullDocumentLoop(intent.LabelDocumentGenerate)
+	carried.Runtime.Execution = fullExecutionProfile(shortContinuationReason)
+	if decision := h.skillAdmissionForTurn(carried, "就按这个做"); decision.Mode != skillAdmissionNone {
+		t.Fatalf("parent-tool carry mode=%v, want none", decision.Mode)
+	}
+	named := h.skillAdmissionForTurn(fullDocumentLoop(intent.LabelSSH), "使用这个技能查询服务器")
+	if named.Mode != skillAdmissionRemote {
+		t.Fatalf("named skill on ssh mode=%v, want remote", named.Mode)
+	}
+	for _, tc := range []struct {
+		label intent.IntentLabel
+		text  string
+	}{
+		{intent.LabelShellCommand, "写一个清理脚本"},
+		{intent.LabelFileWrite, "把这段写进 notes.txt"},
+		{intent.LabelCoding, "修一下这个函数"},
+		{intent.LabelBugFix, "修一下这个函数"},
+	} {
+		decision := h.skillAdmissionForTurn(fullDocumentLoop(tc.label), tc.text)
+		if decision.Mode != skillAdmissionNone {
+			t.Fatalf("%s %q mode=%v, want none", tc.label, tc.text, decision.Mode)
+		}
+	}
+	found := h.skillAdmissionForTurn(fullDocumentLoop(intent.LabelSSH), "找一个能改 tex 的技能")
+	if found.Mode != skillAdmissionRemote {
+		t.Fatalf("find-skill on ssh mode=%v, want remote", found.Mode)
+	}
+}
+
 func TestHostAdmittedSkillSearchKeepsAComplexTaskQuery(t *testing.T) {
 	query := "修改这份表格的目录结构"
 	if skillSearchQueryAllowed(query, false) {

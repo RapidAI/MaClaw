@@ -141,6 +141,7 @@ export function usePastedImageAttachments(sessionKey = DEFAULT_ATTACHMENT_SESSIO
     const mountedRef = useRef(true);
     const objectUrlsRef = useRef<Set<string>>(new Set());
     const pasteSignaturesRef = useRef<Map<string, number>>(new Map());
+    const attachQueueRef = useRef<Promise<void>>(Promise.resolve());
 
     const sessionResetVersion = useCallback((session: string) => {
         return sessionResetVersionsRef.current.get(normalizeAttachmentSessionKey(session)) || 0;
@@ -308,13 +309,34 @@ export function usePastedImageAttachments(sessionKey = DEFAULT_ATTACHMENT_SESSIO
         }
     }, [disabled, clearPasteSignature, markPasteSignature, sessionResetVersion, setPendingAttachmentsForSession]);
 
+    const trackAttach = useCallback((pending: Promise<void>) => {
+        attachQueueRef.current = attachQueueRef.current
+            .then(() => pending, () => pending)
+            .then(() => undefined, () => undefined);
+    }, []);
+
+    const settlePendingAttachments = useCallback(async (): Promise<string[]> => {
+        for (let i = 0; i < 32; i += 1) {
+            const pending = attachQueueRef.current;
+            await pending;
+            if (attachQueueRef.current === pending) break;
+        }
+        const current = pendingAttachmentsBySessionRef.current.get(activeSessionKeyRef.current) || [];
+        const paths: string[] = [];
+        for (const item of current) {
+            const path = String(item?.filePath || "").trim();
+            if (path && !paths.includes(path)) paths.push(path);
+        }
+        return paths;
+    }, []);
+
     const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
         const files = uniqueClipboardFiles(e);
         if (files.length === 0) return;
         e.preventDefault();
         if (disabled) return;
-        void attachFiles(files, "pasted");
-    }, [attachFiles, disabled]);
+        trackAttach(attachFiles(files, "pasted"));
+    }, [attachFiles, disabled, trackAttach]);
 
     const handleDragOver = useCallback((e: React.DragEvent<HTMLElement>) => {
         if (!hasTransferredFiles(e.dataTransfer)) return;
@@ -329,8 +351,8 @@ export function usePastedImageAttachments(sessionKey = DEFAULT_ATTACHMENT_SESSIO
         e.preventDefault();
         e.stopPropagation?.();
         if (disabled || files.length === 0) return;
-        void attachFiles(files, "dropped");
-    }, [attachFiles, disabled]);
+        trackAttach(attachFiles(files, "dropped"));
+    }, [attachFiles, disabled, trackAttach]);
 
-    return { handlePaste, handleDragOver, handleDrop, pendingAttachments, setPendingAttachments };
+    return { handlePaste, handleDragOver, handleDrop, pendingAttachments, setPendingAttachments, settlePendingAttachments };
 }

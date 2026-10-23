@@ -246,6 +246,16 @@ type ProjectConversationHistoryItem struct {
 	Role             string `json:"role"`
 	Content          string `json:"content"`
 	ReasoningContent string `json:"reasoning_content,omitempty"`
+	// TerminalClass is the loop stop code, such as no_progress. It is not the sentence.
+	TerminalClass string `json:"terminal_class,omitempty"`
+	// ResultStatus is the display outcome of that turn: incomplete or completed.
+	ResultStatus string `json:"result_status,omitempty"`
+	// planningEcho is a tool turn whose content only repeats reasoning.
+	// Visible history can omit it. The desktop payload does not include it.
+	planningEcho bool `json:"-"`
+	// hostContinuation is a loop hint stored as a user row. It stays inside
+	// the person turn and is not shown as something the person typed.
+	hostContinuation bool `json:"-"`
 }
 
 // ProjectWorkflowState is a compact workflow snapshot attached to a
@@ -5476,12 +5486,15 @@ func (a *App) LoadProjectConversationHistory(projectPath string) []ProjectConver
 		if content == "" && reasoning == "" {
 			continue
 		}
-		items = append(items, ProjectConversationHistoryItem{
+		items = append(items, withConversationHistoryOutcome(ProjectConversationHistoryItem{
 			Role:             role,
 			Content:          content,
 			ReasoningContent: reasoning,
-		})
+			planningEcho:     agent.AssistantPlanningEcho(content, reasoning, entry.FinishReason, entry.ToolCalls),
+			hostContinuation: entry.HostContinuation,
+		}, entry.TerminalClass, ""))
 	}
+	items = visibleProjectConversationHistory(items)
 	if projectConversationHistoryHasTurns(items) {
 		return items
 	}
@@ -5505,6 +5518,15 @@ func (a *App) LoadProjectConversationHistory(projectPath string) []ProjectConver
 		return items
 	}
 	if session != nil {
+		if tabID := strings.TrimSpace(session.TabID); tabID != "" && len(session.Conversation) > conversationViewHotMessages {
+			hot := foldProjectTabConversationWindow(persist, tabID, session.Conversation)
+			if len(hot) < len(session.Conversation) {
+				session.Conversation = hot
+				if err := persist.SaveSession(session); err != nil {
+					log.Printf("[project_search] window conversation project=%q err=%v", projectPath, err)
+				}
+			}
+		}
 		persisted := projectConversationHistoryFromTabSession(session.Conversation)
 		if projectConversationHistoryHasTurns(persisted) {
 			return persisted
@@ -5549,10 +5571,18 @@ func projectConversationHistoryFromTabSession(conversation []interface{}) []Proj
 			continue
 		}
 		var entry struct {
-			Role             string      `json:"role"`
-			Content          interface{} `json:"content"`
-			ReasoningContent interface{} `json:"reasoning_content"`
-			Reasoning        interface{} `json:"reasoning"`
+			Role              string      `json:"role"`
+			Content           interface{} `json:"content"`
+			ReasoningContent  interface{} `json:"reasoning_content"`
+			Reasoning         interface{} `json:"reasoning"`
+			TerminalClass     string      `json:"terminal_class"`
+			ResultStatus      string      `json:"result_status"`
+			ResultStatusCamel string      `json:"resultStatus"`
+			FinishReason      string      `json:"finish_reason"`
+			FinishReasonCamel string      `json:"finishReason"`
+			ToolCalls         interface{} `json:"tool_calls"`
+			ToolCallsCamel    interface{} `json:"toolCalls"`
+			HostContinuation  bool        `json:"host_continuation"`
 		}
 		if json.Unmarshal(data, &entry) != nil {
 			continue
@@ -5571,13 +5601,183 @@ func projectConversationHistoryFromTabSession(conversation []interface{}) []Proj
 		if content == "" && reasoning == "" {
 			continue
 		}
-		items = append(items, ProjectConversationHistoryItem{
+		status := entry.ResultStatus
+		if strings.TrimSpace(status) == "" {
+			status = entry.ResultStatusCamel
+		}
+		finish := entry.FinishReason
+		if strings.TrimSpace(finish) == "" {
+			finish = entry.FinishReasonCamel
+		}
+		calls := entry.ToolCalls
+		if calls == nil {
+			calls = entry.ToolCallsCamel
+		}
+		items = append(items, withConversationHistoryOutcome(ProjectConversationHistoryItem{
 			Role:             role,
 			Content:          content,
 			ReasoningContent: reasoning,
-		})
+			planningEcho:     agent.AssistantPlanningEcho(content, reasoning, finish, calls),
+			hostContinuation: entry.HostContinuation,
+		}, entry.TerminalClass, status))
 	}
-	return items
+	return visibleProjectConversationHistory(items)
+}
+
+// visibleProjectConversationHistory drops a tool turn whose content only
+// repeats its thinking, when that person turn also has a real reply. A loop
+// hint stored as a user row stays inside that turn and is not shown. The
+// stored memory keeps both for the model. A closing answer that repeats its
+// thinking and did not call a tool stays: the loop returns that text. A
+// planning line that is the only assistant stays, or the turn would vanish.
+// A class that lived only on a hidden line moves onto a kept reply that has
+// no outcome of its own.
+func visibleProjectConversationHistory(items []ProjectConversationHistoryItem) []ProjectConversationHistoryItem {
+	if len(items) == 0 {
+		return items
+	}
+	drop := map[int]struct{}{}
+	inheritClass := map[int]string{}
+	inheritStatus := map[int]string{}
+	for i := range items {
+		if items[i].hostContinuation {
+			drop[i] = struct{}{}
+		}
+	}
+	spanStart := 0
+	flush := func(end int) {
+		visibleHistoryOmitReasoningEcho(items, spanStart, end, drop, inheritClass, inheritStatus)
+	}
+	for i := range items {
+		if personHistoryTurn(items[i]) && i > spanStart {
+			flush(i)
+			spanStart = i
+		}
+	}
+	flush(len(items))
+	if len(drop) == 0 && len(inheritClass) == 0 && len(inheritStatus) == 0 {
+		return items
+	}
+	out := make([]ProjectConversationHistoryItem, 0, len(items)-len(drop))
+	for i, item := range items {
+		if _, skip := drop[i]; skip {
+			continue
+		}
+		if class, ok := inheritClass[i]; ok {
+			item.TerminalClass = class
+		}
+		if status, ok := inheritStatus[i]; ok {
+			item.ResultStatus = status
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func visibleHistoryOmitReasoningEcho(items []ProjectConversationHistoryItem, start, end int, drop map[int]struct{}, inheritClass, inheritStatus map[int]string) {
+	if start < 0 {
+		start = 0
+	}
+	if end > len(items) {
+		end = len(items)
+	}
+	body := start
+	if start < end && personHistoryTurn(items[start]) {
+		body = start + 1
+	}
+	if body >= end {
+		return
+	}
+	classes := map[string]struct{}{}
+	statuses := map[string]struct{}{}
+	hasRealReply := false
+	var echoes []int
+	var assistants []int
+	for i := body; i < end; i++ {
+		item := items[i]
+		if !strings.EqualFold(strings.TrimSpace(item.Role), "assistant") {
+			continue
+		}
+		assistants = append(assistants, i)
+		if item.planningEcho {
+			echoes = append(echoes, i)
+		} else if strings.TrimSpace(item.Content) != "" {
+			hasRealReply = true
+		}
+		if class := strings.TrimSpace(item.TerminalClass); class != "" {
+			classes[class] = struct{}{}
+		}
+		if status := strings.TrimSpace(item.ResultStatus); status != "" {
+			statuses[status] = struct{}{}
+		}
+	}
+	if !hasRealReply || len(echoes) == 0 {
+		return
+	}
+	for _, i := range echoes {
+		drop[i] = struct{}{}
+	}
+	class, oneClass := soleHistoryKey(classes)
+	status := ""
+	if oneClass {
+		status = "incomplete"
+	} else if len(classes) == 0 {
+		status, _ = soleHistoryKey(statuses)
+	}
+	if class == "" && status == "" {
+		return
+	}
+	for _, i := range assistants {
+		if _, skipped := drop[i]; skipped {
+			continue
+		}
+		if strings.TrimSpace(items[i].TerminalClass) != "" || strings.TrimSpace(items[i].ResultStatus) != "" {
+			continue
+		}
+		if class != "" {
+			inheritClass[i] = class
+		}
+		if status != "" {
+			inheritStatus[i] = status
+		}
+	}
+}
+
+func personHistoryTurn(item ProjectConversationHistoryItem) bool {
+	return strings.EqualFold(strings.TrimSpace(item.Role), "user") && !item.hostContinuation
+}
+
+func soleHistoryKey(set map[string]struct{}) (string, bool) {
+	if len(set) != 1 {
+		return "", false
+	}
+	for key := range set {
+		return key, true
+	}
+	return "", false
+}
+
+// withConversationHistoryOutcome copies a loop terminal class onto the
+// history item the desktop reopens. A class code becomes result_status
+// incomplete. A stored incomplete or completed status is kept. Sentences
+// and other strings are not outcomes.
+func withConversationHistoryOutcome(item ProjectConversationHistoryItem, terminalClass, resultStatus string) ProjectConversationHistoryItem {
+	class := strings.TrimSpace(terminalClass)
+	if !agent.IsTerminalClassCode(class) {
+		class = ""
+	}
+	status := strings.TrimSpace(resultStatus)
+	switch status {
+	case "incomplete", "completed":
+	default:
+		status = ""
+	}
+	if status == "" && class != "" {
+		status = "incomplete"
+	}
+	item.TerminalClass = class
+	item.ResultStatus = status
+	return item
 }
 
 func (a *App) emitProjectIndexChanged(projectPath string) {
@@ -7749,6 +7949,7 @@ func (a *App) SaveProjectTabConversation(tabID string, conversation []interface{
 	// newer, but the snapshot can still hold turns the UI had not flushed.
 	// Keep both, or reopening the paper drops whichever side lost the race.
 	session.Conversation = mergeConversationWithLatexArchive(persist, tabID, session.ProjectPath, session.Conversation, session.ConversationClearedAt)
+	session.Conversation = foldProjectTabConversationWindow(persist, tabID, session.Conversation)
 	if err := persist.SaveSession(session); err != nil {
 		log.Printf("[SaveProjectTabConversation] tab=%s err=%v", tabID, err)
 	}
@@ -7790,13 +7991,44 @@ func mergeConversationWithLatexArchive(persist *ProjectTabSessionPersist, tabID,
 	if err != nil || archived == nil || normalizeProjectSessionPath(archived.ProjectPath) != projectPath {
 		return conversation
 	}
-	if !latexSessionHasUserTurn(archived.Conversation) {
+	olderArchive, archiveErr := persist.LoadConversationViewArchive(archiveID)
+	if archiveErr != nil {
+		olderArchive = nil
+	}
+	older := mergeConversationSnapshots(olderArchive, archived.Conversation)
+	if !latexSessionHasUserTurn(older) {
 		return conversation
 	}
-	if clearedAt > 0 && !tabConversationPassesClearFence(&TabSessionData{ConversationClearedAt: clearedAt}, archived.Conversation) {
+	if clearedAt > 0 && !tabConversationPassesClearFence(&TabSessionData{ConversationClearedAt: clearedAt}, older) {
 		return conversation
 	}
-	return mergeConversationSnapshots(archived.Conversation, conversation)
+	return mergeConversationSnapshots(older, conversation)
+}
+
+// foldProjectTabConversationWindow moves turns that sit above the hot tail
+// into the tab archive. The session file keeps the tail the view restores.
+// Archive is written before the caller stores the tail, so a failed session
+// write still leaves the older turns on disk.
+func foldProjectTabConversationWindow(persist *ProjectTabSessionPersist, tabID string, conversation []interface{}) []interface{} {
+	if persist == nil {
+		return conversation
+	}
+	archive, err := persist.LoadConversationViewArchive(tabID)
+	if err != nil {
+		log.Printf("[conversation-view] read archive tab=%s err=%v", tabID, err)
+		archive = nil
+	}
+	full := mergeConversationSnapshots(archive, conversation)
+	hot, earlier := splitConversationViewAny(full)
+	earlier = capConversationViewArchive(earlier)
+	if sameConversationViewIDs(archive, earlier) {
+		return hot
+	}
+	if err := persist.SaveConversationViewArchive(tabID, earlier); err != nil {
+		log.Printf("[conversation-view] write archive tab=%s err=%v", tabID, err)
+		return full
+	}
+	return hot
 }
 
 func mergeConversationSnapshots(older, newer []interface{}) []interface{} {
@@ -7920,7 +8152,32 @@ func (a *App) LoadProjectTabConversation(tabID string) []interface{} {
 	if len(session.Conversation) == 0 {
 		return nil
 	}
-	return session.Conversation
+	if len(session.Conversation) <= conversationViewHotMessages {
+		return session.Conversation
+	}
+	hot := foldProjectTabConversationWindow(persist, tabID, session.Conversation)
+	if len(hot) == 0 {
+		return nil
+	}
+	session.Conversation = hot
+	if err := persist.SaveSession(session); err != nil {
+		log.Printf("[LoadProjectTabConversation] window tab=%s err=%v", tabID, err)
+	}
+	return hot
+}
+
+// LoadProjectTabConversationArchive returns earlier turns for a project or
+// expert tab. The live view does not mount these until the user asks.
+func (a *App) LoadProjectTabConversationArchive(tabID string) []interface{} {
+	tabID = strings.TrimSpace(tabID)
+	if a == nil || tabID == "" {
+		return []interface{}{}
+	}
+	messages, err := a.ensureProjectTabSessionPersist().LoadConversationViewArchive(tabID)
+	if err != nil || len(messages) == 0 {
+		return []interface{}{}
+	}
+	return messages
 }
 
 // ---------------------------------------------------------------------------

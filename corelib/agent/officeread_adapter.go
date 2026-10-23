@@ -552,8 +552,12 @@ func snapshotDocumentVersion(filePath string) (officeReadVersionToken, error) {
 func documentSnapshotExtension(value string) string {
 	ext := "." + strings.TrimPrefix(strings.ToLower(strings.TrimSpace(value)), ".")
 	switch strings.TrimPrefix(ext, ".") {
-	case "doc", "docx", "xls", "xlsx", "ppt", "pptx", "pdf", "csv", "txt", "text", "md", "markdown", "json", "xml", "yaml", "yml", "log":
-		// Preserve only parser-relevant suffixes.
+	case "doc", "docx", "xls", "xlsx", "ppt", "pptx", "pdf", "csv", "txt", "text", "md", "markdown", "json", "xml", "yaml", "yml", "log",
+		"dwg", "dxf", "dxfb", "glb", "gltf", "epub", "adoc", "asciidoc", "eml":
+		// Preserve only parser-relevant suffixes. The EPUB exception in
+		// preflightOfficeReadContainer keys off this suffix: the private copy
+		// must still be named .epub or a real EPUB zip is rejected as a
+		// non-OOXML archive.
 	default:
 		ext = ""
 	}
@@ -1001,7 +1005,14 @@ func preflightOfficeReadContainer(filePath, format string) error {
 	// a required primary document part, so reject packages without exactly that
 	// part after checking every entry for encryption first (an encrypted package
 	// should retain its more actionable error class).
+	// EPUB is also a ZIP, but it has no word/xl/ppt family. The walk above has
+	// already enforced entry count, path depth, encryption, and expansion
+	// limits. Allow that shape only when the snapshot still carries .epub, so
+	// an arbitrary archive named .doc stays rejected.
 	if len(primaryFamilies) != 1 {
+		if len(primaryFamilies) == 0 && strings.EqualFold(filepath.Ext(filePath), ".epub") {
+			return nil
+		}
 		return errOfficeReadUnsafeContainer
 	}
 	for family := range primaryFamilies {
@@ -1787,6 +1798,14 @@ func extractOfficeTextWithEngineAfterPreflight(filePath, format string, prefligh
 }
 
 func extractOfficeTextWithEngineAfterPreflightWithSettings(filePath, format string, preflightDone bool, settings officeReadSettings) (string, string, error) {
+	text, kind, err := extractOfficeTextEngine(filePath, format, preflightDone, settings)
+	if err != nil || strings.TrimSpace(text) == "" {
+		return text, kind, err
+	}
+	return appendOfficeRichSupplement(filePath, kind, text), kind, nil
+}
+
+func extractOfficeTextEngine(filePath, format string, preflightDone bool, settings officeReadSettings) (string, string, error) {
 	if !settings.enabledFor(format) {
 		return extractLegacyOfficeTextWithFormat(filePath, format, settings)
 	}

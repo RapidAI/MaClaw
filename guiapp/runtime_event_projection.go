@@ -20,6 +20,20 @@ func shouldProjectRuntimeCallbacks(onToken func(string), onProgress func(string)
 	return onToken != nil || onProgress != nil || onNewRound != nil
 }
 
+// projectGUIRuntimeEvents fans a turn's runtime events out to the desktop
+// chat callbacks. Progress has to be included: the shared loop emits retry
+// status only as EventProgress, and a sink built without onProgress drops
+// "重试 1/5" before the dialog can show it.
+func projectGUIRuntimeEvents(events agentruntime.EventSink, onToken func(string), onProgress func(string), onNewRound func()) agentruntime.EventSink {
+	if !shouldProjectRuntimeCallbacks(onToken, onProgress, onNewRound) {
+		return events
+	}
+	return agentruntime.FanoutEventSink{Sinks: []agentruntime.EventSink{
+		events,
+		runtimeEventProjectionSink{onToken: onToken, onProgress: onProgress, onNewRound: onNewRound},
+	}}
+}
+
 func (s runtimeEventProjectionSink) Emit(_ context.Context, event agentruntime.Event) error {
 	switch event.Type {
 	case agentruntime.EventAssistantDelta:

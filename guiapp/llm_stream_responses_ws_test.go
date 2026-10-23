@@ -8,11 +8,13 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 func TestBuildResponsesWSHeadersDefaultsCodeGenClientName(t *testing.T) {
@@ -1080,5 +1082,165 @@ func TestResponsesWSStreamReasoningSummaryPartAdded(t *testing.T) {
 	}
 	if got := streamed.String(); !strings.Contains(got, "\x01WS whole summary part.") {
 		t.Fatalf("summary part was not sent to thinking channel: %q", got)
+	}
+}
+
+func TestResponsesWSStreamOutlivesRouteDeadlineAfterHeaders(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.output_text.delta","delta":"hello "}`)); err != nil {
+			return
+		}
+		select {
+		case <-time.After(350 * time.Millisecond):
+		}
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.output_text.delta","delta":"there"}`))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"status":"completed"}}`))
+	}))
+	defer srv.Close()
+
+	parent, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+	defer cancel()
+	deadline, _ := parent.Deadline()
+	parent = llm.WithOwnedRouteDeadline(parent, deadline)
+
+	resp, err := (&IMMessageHandler{}).doResponsesWSLLMRequestStream(
+		parent,
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses_ws"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		nil,
+		srv.Client(),
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("stream error = %v, want the body to finish after the route deadline", err)
+	}
+	if resp == nil || len(resp.Choices) == 0 {
+		t.Fatal("missing response")
+	}
+	if got := resp.Choices[0].Message.Content; got != "hello there" {
+		t.Fatalf("content = %q, want hello there", got)
+	}
+}
+
+func TestResponsesWSStreamStopAbortsAfterHeaders(t *testing.T) {
+	cancelParent, stopTurn := context.WithCancel(context.Background())
+	defer stopTurn()
+	route, cancelRoute := context.WithTimeout(cancelParent, 2*time.Second)
+	defer cancelRoute()
+	deadline, _ := route.Deadline()
+	route = llm.BindRouteStreamDeadline(route, deadline, cancelParent)
+
+	startedFrames := make(chan struct{})
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.output_text.delta","delta":"hello "}`)); err != nil {
+			return
+		}
+		close(startedFrames)
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer srv.Close()
+
+	go func() {
+		select {
+		case <-startedFrames:
+		case <-time.After(time.Second):
+			return
+		}
+		stopTurn()
+	}()
+
+	started := time.Now()
+	_, err := (&IMMessageHandler{}).doResponsesWSLLMRequestStream(
+		route,
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses_ws"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		nil,
+		srv.Client(),
+		nil,
+		nil,
+	)
+	if err == nil {
+		t.Fatal("stop after headers returned a finished stream")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("elapsed = %s, want the stop to abort the socket", elapsed)
+	}
+}
+
+func TestResponsesWSStreamReasoningStutterAbortsSocket(t *testing.T) {
+	payload, err := json.Marshal(map[string]string{
+		"type":  "response.reasoning_summary_text.delta",
+		"delta": strings.Repeat(".\n", reasoningStutterHaltCount),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+			return
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		if _, _, err := conn.ReadMessage(); err == nil {
+			return
+		}
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.output_text.delta","delta":"should-not-bind"}`))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"status":"completed"}}`))
+	}))
+	defer srv.Close()
+
+	started := time.Now()
+	resp, err := (&IMMessageHandler{}).doResponsesWSLLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses_ws"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		nil,
+		srv.Client(),
+		nil,
+		nil,
+	)
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("elapsed = %s, want the reasoning stutter to abort the socket", elapsed)
+	}
+	if err != nil {
+		t.Fatalf("stream error = %v, want an empty stop", err)
+	}
+	if resp == nil || len(resp.Choices) != 1 {
+		t.Fatalf("response = %#v", resp)
+	}
+	msg := resp.Choices[0].Message
+	if msg.Content != "" || msg.ReasoningContent != "" || len(msg.ToolCalls) != 0 || strings.Contains(msg.Content, "should-not-bind") {
+		t.Fatalf("chant kept as the answer: %#v", msg)
+	}
+	if resp.Choices[0].FinishReason != "stop" {
+		t.Fatalf("finish_reason = %q, want stop", resp.Choices[0].FinishReason)
 	}
 }

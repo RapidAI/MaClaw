@@ -2046,6 +2046,9 @@ func TestSemanticGrantPromptFenceRejectsHistoryToolNames(t *testing.T) {
 	if strings.Contains(semanticGrantPromptFence, "完整代理") {
 		t.Fatalf("fence leaked workaround copy: %s", semanticGrantPromptFence)
 	}
+	if !strings.Contains(semanticGrantPromptFence, "input_too_large") || !strings.Contains(semanticGrantPromptFence, "ocr_recognize") || !strings.Contains(semanticGrantPromptFence, "PP-OCRv6") {
+		t.Fatal("fence must keep an oversized scan on builtin OCR")
+	}
 	full := ensureSemanticGrantPromptFence("FULL SYSTEM: use web_search then web_fetch")
 	if !strings.Contains(full, "the live tool list is the ground truth") || !strings.Contains(full, "web_search") {
 		t.Fatalf("full rebuild lost grant fence: %q", full)

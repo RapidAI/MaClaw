@@ -2,6 +2,7 @@ package llmpool
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -433,5 +434,491 @@ func TestClassifyAndRouteFillsAttribution(t *testing.T) {
 	}
 	if attr.SelectionReason != "dynamic workload route" {
 		t.Fatalf("reason = %q", attr.SelectionReason)
+	}
+}
+
+func TestHeuristicUsesLatestUserText(t *testing.T) {
+	chatBody := map[string]any{"messages": []any{
+		map[string]any{"role": "user", "content": "你好"},
+		map[string]any{"role": "tool", "content": "部署 kubernetes rollback"},
+	}}
+	class, source := ClassifyWorkload(ClassifyInput{Body: chatBody})
+	if class != WorkloadClassChat || source != ClassSourceHeuristic {
+		t.Fatalf("chat continuation class=%s source=%s", class, source)
+	}
+	codeBody := map[string]any{"messages": []any{
+		map[string]any{"role": "user", "content": "实现这个函数"},
+		map[string]any{"role": "tool", "content": "你好"},
+	}}
+	class, source = ClassifyWorkload(ClassifyInput{Body: codeBody})
+	if class != WorkloadClassCode || source != ClassSourceHeuristic {
+		t.Fatalf("code continuation class=%s source=%s", class, source)
+	}
+}
+
+func TestDegreeGateLowersSimpleFallback(t *testing.T) {
+	dec := ClassifyAndRouteModel(nil, map[string]any{
+		"model":    "auto",
+		"messages": []any{map[string]any{"role": "user", "content": "加个注释"}},
+	}, officialDynamicFixture(), "auto")
+	if dec.Class != WorkloadFallbackBalanced || dec.Source != ClassSourceFallback {
+		t.Fatalf("class = %s/%s", dec.Class, dec.Source)
+	}
+	if dec.ResolvedModel != OfficialTierLow || dec.Degree != DegreeSimple || !dec.DegreeApplied {
+		t.Fatalf("decision = %#v", dec)
+	}
+	if dec.Attribution.SelectionReason != "workload degree gate" {
+		t.Fatalf("reason = %q", dec.Attribution.SelectionReason)
+	}
+}
+
+func TestDegreeGateKeepsReasoningOnMid(t *testing.T) {
+	header := http.Header{}
+	header.Set(TaskTypeHeader, "reasoning")
+	dec := ClassifyAndRouteModel(header, map[string]any{
+		"model":    "auto",
+		"messages": []any{map[string]any{"role": "user", "content": "加个注释"}},
+	}, officialDynamicFixture(), "auto")
+	if dec.Class != WorkloadClassCode || dec.Source != ClassSourceTaskType {
+		t.Fatalf("class = %s/%s", dec.Class, dec.Source)
+	}
+	if dec.ResolvedModel != OfficialTierMid || dec.DegreeApplied {
+		t.Fatalf("decision = %#v", dec)
+	}
+}
+
+func TestDegreeGateRaisesHardChat(t *testing.T) {
+	header := http.Header{}
+	header.Set(WorkloadClassHeader, WorkloadClassChat)
+	dec := ClassifyAndRouteModel(header, map[string]any{
+		"model":    "auto",
+		"messages": []any{map[string]any{"role": "user", "content": "为什么这个锁会丢"}},
+	}, officialDynamicFixture(), "auto")
+	if dec.Class != WorkloadClassChat || dec.ResolvedModel != OfficialTierMid || dec.Degree != DegreeComplex || !dec.DegreeApplied {
+		t.Fatalf("decision = %#v", dec)
+	}
+}
+
+func TestDegreeGateDoesNotLowerPlanOrPin(t *testing.T) {
+	header := http.Header{}
+	header.Set(WorkloadClassHeader, WorkloadClassPlan)
+	dec := ClassifyAndRouteModel(header, map[string]any{
+		"model":    "auto",
+		"messages": []any{map[string]any{"role": "user", "content": "加个注释"}},
+	}, officialDynamicFixture(), "auto")
+	if dec.ResolvedModel != OfficialTierHigh || dec.DegreeApplied {
+		t.Fatalf("plan = %#v", dec)
+	}
+	pinned := ClassifyAndRouteModel(nil, map[string]any{
+		"model":    OfficialTierMid,
+		"messages": []any{map[string]any{"role": "user", "content": "加个注释"}},
+	}, officialDynamicFixture(), OfficialTierMid)
+	if !pinned.Passthrough || pinned.ResolvedModel != OfficialTierMid || pinned.DegreeApplied {
+		t.Fatalf("pin = %#v", pinned)
+	}
+}
+
+func TestDegreeGateKeepsShortCodeOnMid(t *testing.T) {
+	dec := ClassifyAndRouteModel(nil, map[string]any{
+		"model":    "auto",
+		"messages": []any{map[string]any{"role": "user", "content": "fix bug"}},
+	}, officialDynamicFixture(), "auto")
+	if dec.Class != WorkloadClassCode || dec.Source != ClassSourceHeuristic {
+		t.Fatalf("class = %s/%s", dec.Class, dec.Source)
+	}
+	if dec.ResolvedModel != OfficialTierMid || dec.Degree == DegreeSimple || dec.DegreeApplied {
+		t.Fatalf("decision = %#v", dec)
+	}
+}
+
+func TestDegreeGateKeepsVisionOnMid(t *testing.T) {
+	dec := ClassifyAndRouteModel(nil, map[string]any{
+		"model": "auto",
+		"messages": []any{map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "text", "text": "加个注释"},
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,aaaa"}},
+		}}},
+	}, officialDynamicFixture(), "auto")
+	if dec.Class != WorkloadFallbackBalanced || dec.Source != ClassSourceFallback {
+		t.Fatalf("class = %s/%s", dec.Class, dec.Source)
+	}
+	if dec.ResolvedModel != OfficialTierMid || dec.Degree != DegreeSimple || dec.DegreeApplied {
+		t.Fatalf("decision = %#v", dec)
+	}
+}
+
+func TestVisionClimbUsesTheNextBandThatCanSee(t *testing.T) {
+	image := map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": []any{
+		map[string]any{"type": "text", "text": "你好"},
+		map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,aaaa"}},
+	}}}}
+	blindLow := officialDynamicFixture()
+	blindLow.Models[1].CapabilityTags = []string{"vision"}
+	dec := ClassifyAndRouteModel(nil, image, blindLow, "auto")
+	if dec.Class != WorkloadClassChat || dec.ResolvedModel != OfficialTierMid || !dec.Upgraded || dec.DegreeApplied {
+		t.Fatalf("blind low = %#v", dec)
+	}
+	seeingLow := officialDynamicFixture()
+	seeingLow.Models[2].CapabilityTags = []string{"vision"}
+	dec = ClassifyAndRouteModel(nil, image, seeingLow, "auto")
+	if dec.ResolvedModel != OfficialTierLow || dec.Upgraded {
+		t.Fatalf("seeing low = %#v", dec)
+	}
+	onlyHigh := officialDynamicFixture()
+	onlyHigh.Models[0].CapabilityTags = []string{"vision"}
+	dec = ClassifyAndRouteModel(nil, map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": []any{
+		map[string]any{"type": "text", "text": "加个注释"},
+		map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,aaaa"}},
+	}}}}, onlyHigh, "auto")
+	if dec.Class != WorkloadFallbackBalanced || dec.ResolvedModel != OfficialTierHigh || !dec.Upgraded {
+		t.Fatalf("only high = %#v", dec)
+	}
+	untagged := ClassifyAndRouteModel(nil, image, officialDynamicFixture(), "auto")
+	if untagged.ResolvedModel != OfficialTierLow || untagged.Upgraded {
+		t.Fatalf("untagged = %#v", untagged)
+	}
+}
+
+func TestVisionClimbReturnsToTheBandThatCanSee(t *testing.T) {
+	header := http.Header{}
+	header.Set(WorkloadClassHeader, WorkloadClassChat)
+	onlyLow := officialDynamicFixture()
+	onlyLow.Models[2].CapabilityTags = []string{"vision"}
+	dec := ClassifyAndRouteModel(header, map[string]any{
+		"model": "auto",
+		"messages": []any{map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "text", "text": "为什么看不清"},
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,aaaa"}},
+		}}},
+	}, onlyLow, "auto")
+	if dec.Class != WorkloadClassChat || dec.ResolvedModel != OfficialTierLow || !dec.Upgraded || dec.DegreeApplied {
+		t.Fatalf("seeing low = %#v", dec)
+	}
+	plain := map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": []any{
+		map[string]any{"type": "text", "text": "加个注释"},
+		map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,aaaa"}},
+	}}}}
+	dec = ClassifyAndRouteModel(nil, plain, onlyLow, "auto")
+	if dec.Class != WorkloadFallbackBalanced || dec.ResolvedModel != OfficialTierLow || !dec.Upgraded {
+		t.Fatalf("simple image = %#v", dec)
+	}
+	longBody := map[string]any{"model": "auto", "messages": []any{
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "text", "text": "加个注释"},
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,aaaa"}},
+		}},
+		map[string]any{"role": "tool", "content": strings.Repeat("x", capabilityLongTextBytes)},
+	}}
+	dec = ClassifyAndRouteModel(nil, longBody, onlyLow, "auto")
+	if dec.ResolvedModel != OfficialTierMid || dec.Upgraded {
+		t.Fatalf("long image = %#v", dec)
+	}
+	planHeader := http.Header{}
+	planHeader.Set(WorkloadClassHeader, WorkloadClassPlan)
+	dec = ClassifyAndRouteModel(planHeader, plain, onlyLow, "auto")
+	if dec.ResolvedModel != OfficialTierHigh || dec.Upgraded {
+		t.Fatalf("plan = %#v", dec)
+	}
+	onlyMid := officialDynamicFixture()
+	onlyMid.Models[1].CapabilityTags = []string{"vision"}
+	dec = ClassifyAndRouteModel(planHeader, plain, onlyMid, "auto")
+	if dec.ResolvedModel != OfficialTierMid || !dec.Upgraded {
+		t.Fatalf("plan mid = %#v", dec)
+	}
+}
+
+func TestVisionUpgradePrefersSeeingModelInBand(t *testing.T) {
+	group := officialDynamicFixture()
+	group.Models[1].CapabilityTags = []string{"tools"}
+	group.Models = append(group.Models, ModelConfig{Name: "mid-vision", CapabilityTags: []string{"vision"}})
+	group.Routes = append(group.Routes, WorkloadRoute{Class: "extra", Model: "mid-vision", Quality: QualityMid})
+	dec := ClassifyAndRouteModel(nil, map[string]any{
+		"model": "auto",
+		"tools": []any{map[string]any{"type": "function", "function": map[string]any{"name": "edit"}}},
+		"messages": []any{map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "text", "text": "加个注释"},
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,aaaa"}},
+		}}},
+	}, group, "auto")
+	if dec.ResolvedModel != "mid-vision" || !dec.Upgraded {
+		t.Fatalf("decision = %#v", dec)
+	}
+}
+
+func TestVisionUpgradeSkipsUndialableSibling(t *testing.T) {
+	group := officialDynamicFixture()
+	group.Models[0].ProviderIDs = []string{"p-high"}
+	group.Models[0].CapabilityTags = []string{"vision"}
+	group.Models[1].ProviderIDs = []string{"p-mid"}
+	group.Models[2].ProviderIDs = []string{"p-low"}
+	group.Models = append(group.Models, ModelConfig{Name: "mid-vision", CapabilityTags: []string{"vision"}})
+	group.Routes = append(group.Routes, WorkloadRoute{Class: "extra", Model: "mid-vision", Quality: QualityMid})
+	needs := map[string]int{"vision": 8}
+	if got, ok := upgradeModelInBand(group, OfficialTierMid, QualityMid, needs); ok || got != OfficialTierMid {
+		t.Fatalf("in-band = %s ok=%v, want usable official-mid", got, ok)
+	}
+	dec := ClassifyAndRouteModel(nil, map[string]any{
+		"model": "auto",
+		"messages": []any{map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "text", "text": "加个注释"},
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,aaaa"}},
+		}}},
+	}, group, "auto")
+	if dec.ResolvedModel != OfficialTierHigh || !dec.Upgraded {
+		t.Fatalf("decision = %#v", dec)
+	}
+}
+
+func TestAutoClientRewriteClimbsOffABlindOfficialTier(t *testing.T) {
+	group := officialDynamicFixture()
+	group.Models[1].CapabilityTags = []string{"vision"}
+	image := map[string]any{"model": OfficialTierLow, "messages": []any{map[string]any{"role": "user", "content": []any{
+		map[string]any{"type": "text", "text": "你好"},
+		map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,aaaa"}},
+	}}}}
+	header := http.Header{}
+	header.Set(ClientModelHeader, "auto")
+	header.Set(WorkloadClassHeader, WorkloadClassChat)
+	dec := ClassifyAndRouteModel(header, image, group, OfficialTierLow)
+	if dec.ResolvedModel != OfficialTierMid || !dec.Upgraded || dec.Attribution.SelectionReason != "dynamic workload route" {
+		t.Fatalf("auto rewrite = %#v", dec)
+	}
+	pin := http.Header{}
+	pin.Set(ClientModelHeader, "low")
+	dec = ClassifyAndRouteModel(pin, image, group, OfficialTierLow)
+	if dec.ResolvedModel != OfficialTierLow || dec.Upgraded || dec.Attribution.SelectionReason != "pinned model" {
+		t.Fatalf("pin = %#v", dec)
+	}
+	dec = ClassifyAndRouteModel(nil, image, group, OfficialTierLow)
+	if dec.ResolvedModel != OfficialTierLow || dec.Upgraded {
+		t.Fatalf("direct pin = %#v", dec)
+	}
+	textHeader := http.Header{}
+	textHeader.Set(ClientModelHeader, "auto")
+	dec = ClassifyAndRouteModel(textHeader, map[string]any{
+		"model":    OfficialTierLow,
+		"messages": []any{map[string]any{"role": "user", "content": "你好"}},
+	}, group, OfficialTierLow)
+	if dec.ResolvedModel != OfficialTierLow || dec.Upgraded {
+		t.Fatalf("text rewrite = %#v", dec)
+	}
+	plan := http.Header{}
+	plan.Set(ClientModelHeader, "auto")
+	plan.Set(WorkloadClassHeader, WorkloadClassPlan)
+	onlyLow := officialDynamicFixture()
+	onlyLow.Models[2].CapabilityTags = []string{"vision"}
+	dec = ClassifyAndRouteModel(plan, image, onlyLow, OfficialTierHigh)
+	if dec.ResolvedModel != OfficialTierHigh || dec.Upgraded {
+		t.Fatalf("plan rewrite = %#v", dec)
+	}
+}
+
+func TestAutoRewriteLiftsLongImageOffLow(t *testing.T) {
+	group := officialDynamicFixture()
+	group.Models[2].CapabilityTags = []string{"vision"}
+	longImage := func(text, model string) map[string]any {
+		return map[string]any{
+			"model": model,
+			"messages": []any{
+				map[string]any{"role": "user", "content": []any{
+					map[string]any{"type": "text", "text": text},
+					map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,aaaa"}},
+				}},
+				map[string]any{"role": "tool", "content": strings.Repeat("x", capabilityLongTextBytes)},
+			},
+		}
+	}
+	code := http.Header{}
+	code.Set(ClientModelHeader, "auto")
+	code.Set(WorkloadClassHeader, WorkloadClassCode)
+	dec := ClassifyAndRouteModel(code, longImage("加个注释", OfficialTierLow), group, OfficialTierLow)
+	if dec.ResolvedModel != OfficialTierMid || !dec.Upgraded {
+		t.Fatalf("code retry = %#v, want official-mid", dec)
+	}
+	chat := http.Header{}
+	chat.Set(ClientModelHeader, "auto")
+	chat.Set(WorkloadClassHeader, WorkloadClassChat)
+	dec = ClassifyAndRouteModel(chat, longImage("你好", OfficialTierLow), group, OfficialTierLow)
+	if dec.ResolvedModel != OfficialTierLow || dec.Upgraded {
+		t.Fatalf("chat = %#v, want official-low", dec)
+	}
+	dec = ClassifyAndRouteModel(chat, longImage("为什么看不清", OfficialTierLow), group, OfficialTierLow)
+	if dec.ResolvedModel != OfficialTierMid || !dec.Upgraded {
+		t.Fatalf("complex chat = %#v, want official-mid", dec)
+	}
+	pin := http.Header{}
+	pin.Set(ClientModelHeader, "low")
+	pin.Set(WorkloadClassHeader, WorkloadClassCode)
+	dec = ClassifyAndRouteModel(pin, longImage("加个注释", OfficialTierLow), group, OfficialTierLow)
+	if dec.ResolvedModel != OfficialTierLow || dec.Upgraded {
+		t.Fatalf("pin = %#v, want official-low", dec)
+	}
+	plan := http.Header{}
+	plan.Set(ClientModelHeader, "auto")
+	plan.Set(WorkloadClassHeader, WorkloadClassPlan)
+	dec = ClassifyAndRouteModel(plan, map[string]any{
+		"model": OfficialTierLow,
+		"messages": []any{map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "text", "text": "架构怎么拆"},
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,aaaa"}},
+		}}},
+	}, group, OfficialTierLow)
+	if dec.ResolvedModel == OfficialTierLow {
+		t.Fatalf("plan = %#v, want a higher band", dec)
+	}
+}
+
+func TestVisionClimbThenUpgradesInsideTheBandThatCanSee(t *testing.T) {
+	group := officialDynamicFixture()
+	for i := range group.Models {
+		group.Models[i].ProviderIDs = []string{"p"}
+	}
+	group.Models[1].CapabilityTags = []string{"vision"}
+	group.Models = append(group.Models, ModelConfig{
+		Name:           "mid-both",
+		ProviderIDs:    []string{"p-both"},
+		CapabilityTags: []string{"vision", "tools"},
+	})
+	group.Routes = append(group.Routes, WorkloadRoute{Class: "extra", Model: "mid-both", Quality: QualityMid})
+	dec := ClassifyAndRouteModel(nil, map[string]any{
+		"model": "auto",
+		"tools": []any{map[string]any{"type": "function", "function": map[string]any{"name": "edit"}}},
+		"messages": []any{map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "text", "text": "你好"},
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,aaaa"}},
+		}}},
+	}, group, "auto")
+	if dec.Class != WorkloadClassChat || dec.ResolvedModel != "mid-both" || !dec.Upgraded {
+		t.Fatalf("decision = %#v", dec)
+	}
+}
+
+func TestToolsDoNotClimbWhenLowLacksTools(t *testing.T) {
+	group := officialDynamicFixture()
+	group.Models[1].CapabilityTags = []string{"tools"}
+	dec := ClassifyAndRouteModel(nil, map[string]any{
+		"model":    "auto",
+		"tools":    []any{map[string]any{"type": "function", "function": map[string]any{"name": "edit"}}},
+		"messages": []any{map[string]any{"role": "user", "content": "加个注释"}},
+	}, group, "auto")
+	if dec.ResolvedModel != OfficialTierLow || !dec.DegreeApplied || dec.Upgraded {
+		t.Fatalf("decision = %#v", dec)
+	}
+}
+
+func TestDegreeGateKeepsLongTranscriptOnMid(t *testing.T) {
+	dec := ClassifyAndRouteModel(nil, map[string]any{
+		"model": "auto",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "加个注释"},
+			map[string]any{"role": "tool", "content": strings.Repeat("x", capabilityLongTextBytes)},
+		},
+	}, officialDynamicFixture(), "auto")
+	if dec.Class != WorkloadFallbackBalanced || dec.ResolvedModel != OfficialTierMid || dec.Degree != DegreeSimple || dec.DegreeApplied {
+		t.Fatalf("decision = %#v", dec)
+	}
+}
+
+func TestDegreeGateLowersAtExactWindowLimit(t *testing.T) {
+	user := "加个注释"
+	// extractRequestText joins message texts with one space. The window tag
+	// is strict greater-than, so a transcript of exactly that many bytes
+	// still counts as a short edit.
+	toolLen := capabilityLongTextBytes - len(user) - 1
+	dec := ClassifyAndRouteModel(nil, map[string]any{
+		"model": "auto",
+		"messages": []any{
+			map[string]any{"role": "user", "content": user},
+			map[string]any{"role": "tool", "content": strings.Repeat("x", toolLen)},
+		},
+	}, officialDynamicFixture(), "auto")
+	if dec.ResolvedModel != OfficialTierLow || dec.Degree != DegreeSimple || !dec.DegreeApplied {
+		t.Fatalf("decision = %#v", dec)
+	}
+}
+
+func TestToolsDoNotBlockSimpleLower(t *testing.T) {
+	dec := ClassifyAndRouteModel(nil, map[string]any{
+		"model":    "auto",
+		"tools":    []any{map[string]any{"type": "function", "function": map[string]any{"name": "edit"}}},
+		"messages": []any{map[string]any{"role": "user", "content": "加个注释"}},
+	}, officialDynamicFixture(), "auto")
+	if dec.ResolvedModel != OfficialTierLow || !dec.DegreeApplied {
+		t.Fatalf("decision = %#v", dec)
+	}
+}
+
+func TestToolWrappedTurnKeepsEarlierUserText(t *testing.T) {
+	cases := []struct {
+		name string
+		last any
+	}{
+		{
+			name: "tool_result part",
+			last: map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "call_1", "content": "部署 kubernetes rollback"},
+			}},
+		},
+		{
+			name: "tool_call_id item",
+			last: map[string]any{"tool_call_id": "call_1", "content": "部署 kubernetes rollback"},
+		},
+		{
+			name: "function_call_output",
+			last: map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "部署 kubernetes rollback"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := map[string]any{"messages": []any{
+				map[string]any{"role": "user", "content": "你好"},
+				tc.last,
+			}}
+			class, source := ClassifyWorkload(ClassifyInput{Body: body})
+			if class != WorkloadClassChat || source != ClassSourceHeuristic {
+				t.Fatalf("class=%s source=%s", class, source)
+			}
+			if got := LatestUserPreview(body, 400); got != "你好" {
+				t.Fatalf("preview=%q", got)
+			}
+		})
+	}
+}
+
+func TestBusinessPlanWriteStaysOnMid(t *testing.T) {
+	dec := ClassifyAndRouteModel(nil, map[string]any{
+		"model":    "auto",
+		"messages": []any{map[string]any{"content": "请写商业计划书全文"}},
+	}, officialDynamicFixture(), "auto")
+	if dec.Class != WorkloadClassDocWrite || dec.ResolvedModel != OfficialTierMid || dec.DegreeApplied {
+		t.Fatalf("decision = %#v", dec)
+	}
+}
+
+func TestQualityAvailabilityChainMidClimbsBeforeFalling(t *testing.T) {
+	got := QualityAvailabilityChain(QualityMid, WorkloadClassCode)
+	want := []string{QualityMid, QualityHigh, QualityLow}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Fatalf("chain = %#v, want %#v", got, want)
+	}
+	plan := QualityAvailabilityChain(QualityMid, WorkloadClassPlan)
+	if len(plan) != 2 || plan[0] != QualityMid || plan[1] != QualityHigh {
+		t.Fatalf("plan chain = %#v", plan)
+	}
+}
+
+func TestFallbackAvailableModelMidPrefersHigh(t *testing.T) {
+	group := &ServiceGroup{
+		Kind: ServiceGroupKindDynamic,
+		Models: []ModelConfig{
+			{Name: OfficialTierHigh, ProviderIDs: []string{"p-high"}},
+			{Name: OfficialTierMid},
+			{Name: OfficialTierLow, ProviderIDs: []string{"p-low"}},
+		},
+		Routes: DefaultOfficialAutoRoutes(),
+	}
+	got, ok := FallbackAvailableModel(group, OfficialTierMid, WorkloadClassCode)
+	if !ok || got != OfficialTierHigh {
+		t.Fatalf("mid fallback = %s ok=%v, want official-high", got, ok)
 	}
 }

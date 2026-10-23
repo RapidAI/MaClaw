@@ -66,6 +66,32 @@ func TestPrepareImageBase64_DownscalesLarge(t *testing.T) {
 	}
 }
 
+func TestPrepareImageMatchesBase64Scale(t *testing.T) {
+	large := solidPNGBase64(t, 4000, 2000, color.RGBA{R: 200, G: 100, B: 50, A: 255})
+	img, sx, sy, err := PrepareImage(large, 2560)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, bsx, bsy, err := PrepareImageBase64(large, 2560)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sx != bsx || sy != bsy {
+		t.Fatalf("scale image=%v,%v base64=%v,%v", sx, sy, bsx, bsy)
+	}
+	if got := img.Bounds(); got.Dx() != 2560 || got.Dy() != 1280 {
+		t.Fatalf("bitmap=%v", got)
+	}
+	small := solidPNGBase64(t, 800, 600, color.RGBA{R: 10, G: 20, B: 30, A: 255})
+	img, sx, sy, err = PrepareImage(small, 2560)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sx != 1 || sy != 1 || img.Bounds().Dx() != 800 || img.Bounds().Dy() != 600 {
+		t.Fatalf("small bitmap=%v scale=%v,%v", img.Bounds(), sx, sy)
+	}
+}
+
 func TestPrepareImageBase64_PortraitDownscale(t *testing.T) {
 	// 1080x4000 → longest edge 2560 → 691x2560
 	b64 := solidPNGBase64(t, 1080, 4000, color.RGBA{R: 1, A: 255})

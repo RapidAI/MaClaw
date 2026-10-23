@@ -226,7 +226,10 @@ func (h *IMMessageHandler) acquireTrustedRemote(principalID, rawURL string, publ
 	if h.semanticTrustedArtifactAcquire != nil {
 		return h.semanticTrustedArtifactAcquire(principalID, rawURL)
 	}
-	base := strings.TrimSpace(h.toolDownloadBaseDirForOwner(h.currentRuntimeOrLegacyPolicyOwnerID()))
+	// read_file opens this principal's workspace. The global policy owner is
+	// another session's loop under concurrency, and an empty one falls through
+	// to the desktop default, so the receipt's relative name would miss.
+	base := strings.TrimSpace(h.toolDownloadBaseDirForOwner(principalID))
 	if base == "" {
 		return "", fmt.Errorf("trusted_artifact_acquire_workspace_unavailable")
 	}

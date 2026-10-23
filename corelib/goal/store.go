@@ -85,9 +85,6 @@ func (s *Store) Set(userID string, objective string, opts ...SetOption) (*Goal, 
 		CreatedAt:          now,
 		UpdatedAt:          now,
 	}
-	if g.MaxTurns == 0 {
-		g.MaxTurns = DefaultMaxTurns
-	}
 
 	s.mu.Lock()
 	s.goals[userID] = g
@@ -99,11 +96,11 @@ func (s *Store) Set(userID string, objective string, opts ...SetOption) (*Goal, 
 	return g, nil
 }
 
-// pinComposerClock freezes the composer elapsed clock when a goal ends.
+// pinComposerClock freezes the composer elapsed clock when a goal pauses or ends.
 // prev is the status before this write and next is the status after it.
-// Entering a terminal status stamps now. Staying terminal keeps that stamp,
-// and an older row with no stamp keeps its previous update. Leaving a terminal
-// status banks the gap into ClockHoldSeconds so the reading does not jump.
+// Entering a clock-stopping status stamps now. Staying there keeps that stamp,
+// and an older row with no stamp keeps its previous update. Leaving that status
+// banks the gap into ClockHoldSeconds so the reading does not jump.
 func pinComposerClock(g *Goal, prev, next Status, now time.Time) {
 	if g == nil {
 		return
@@ -304,8 +301,9 @@ func (s *Store) UpdateObjective(userID, goalID, objective string) bool {
 
 // ReleaseForContinue re-arms a goal after the user explicitly chooses to keep
 // going. A completed goal stays finished. Pause, failure, and an exhausted
-// turn or token cap all become active again, with another window so the next
-// turn is allowed to run.
+// turn or token cap all become active again. An exhausted turn cap is lifted,
+// so continuation is unlimited from there. A filled token cap gets another
+// window of the same size.
 func (s *Store) ReleaseForContinue(userID, goalID string) bool {
 	s.mu.Lock()
 	g := s.goals[userID]
@@ -318,7 +316,7 @@ func (s *Store) ReleaseForContinue(userID, goalID string) bool {
 	g.ConsecutiveNoToolTurns = 0
 	g.Summary = ""
 	if g.MaxTurns > 0 && g.TurnsUsed >= g.MaxTurns {
-		g.MaxTurns = g.TurnsUsed + DefaultMaxTurns
+		g.MaxTurns = 0
 	}
 	if g.TokenBudget > 0 && g.TokensUsed >= g.TokenBudget {
 		if g.TokenWindow < 1 {
@@ -484,6 +482,7 @@ func (s *Store) loadAll() {
 	if err != nil {
 		return
 	}
+	upgraded := make([]string, 0)
 	for _, e := range entries {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
 			continue
@@ -497,9 +496,26 @@ func (s *Store) loadAll() {
 			continue
 		}
 		if g.UserID != "" {
+			if automaticTurnCap(g.MaxTurns) {
+				g.MaxTurns = 0
+				upgraded = append(upgraded, g.UserID)
+			}
 			s.goals[g.UserID] = &g
 		}
 	}
+	for _, userID := range upgraded {
+		g := s.goals[userID]
+		if g != nil && g.MaxTurns == 0 {
+			_ = s.persist(userID, g)
+		}
+	}
+}
+
+// automaticTurnCap reports a max_turns value create used to write when the
+// caller omitted one. Load clears only these. The goal's status is left
+// alone, so a budget stop stays stopped until the user continues.
+func automaticTurnCap(turns int) bool {
+	return turns == LegacyDefaultMaxTurns || turns == RaisedDefaultMaxTurns
 }
 
 // sanitizeForFilename replaces characters unsafe for filenames.

@@ -2736,6 +2736,25 @@ func TestInterruptedSharedLoopExitResponseDoesNotWritePartialHistory(t *testing.
 	}
 }
 
+func TestSharedLoopCheckpointIsFinishedWork(t *testing.T) {
+	if !sharedLoopCheckpointIsFinishedWork(agent.LoopResult{}) {
+		t.Fatal("a normal finish must retire the in-flight marker")
+	}
+	if !sharedLoopCheckpointIsFinishedWork(agent.LoopResult{HardExit: true, Error: agent.ErrNoProgress}) {
+		t.Fatal("a committed no-progress stop must not stay a crash marker")
+	}
+	if sharedLoopCheckpointIsFinishedWork(agent.LoopResult{Error: "recovery_checkpoint_failed"}) {
+		t.Fatal("a checkpoint failure must keep the marker")
+	}
+	if sharedLoopCheckpointIsFinishedWork(agent.LoopResult{Error: "cancelled"}) {
+		t.Fatal("cancel must not take the normal-finish cleanup")
+	}
+	ask := &agent.AskUserRequest{Question: "continue?"}
+	if sharedLoopCheckpointIsFinishedWork(agent.LoopResult{AskUser: ask}) {
+		t.Fatal("an ask-user pause is still open")
+	}
+}
+
 func TestShouldSaveSharedLoopTerminalHistoryRejectsPendingToolBatch(t *testing.T) {
 	result := agent.LoopResult{HistoryDelta: []agent.ConversationEntry{
 		{Role: "user", Content: "update"},

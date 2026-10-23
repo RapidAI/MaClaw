@@ -16,6 +16,12 @@ const SHOT_RASTER_MAX = 8;
 const shotRasters = new Map<string, Promise<string>>();
 let workerReady = false;
 
+/**
+ * Whole-file budget for one chat PDF shot. The shot copies the preview body
+ * into one buffer. Kept in step with attachmentPreviewPDFMaxBytes.
+ */
+export const PDF_SHOT_MAX_BYTES = 128 * 1024 * 1024;
+
 /** Keep the newest shot rasters. A long chat must not retain every page bitmap. */
 export function retainShotRaster<T>(cache: Map<string, T>, key: string, value: T, max = SHOT_RASTER_MAX): T {
     cache.delete(key);
@@ -67,10 +73,66 @@ export function rasterizePdfShot(src: string, page: number, maxWidth = ATTACHMEN
     return retainShotRaster(shotRasters, key, pending);
 }
 
+function shotContentLength(response: Response): number | null {
+    const raw = response.headers.get("content-length");
+    if (raw == null || raw.trim() === "") return null;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value < 0) return null;
+    return value;
+}
+
+/**
+ * Copy a preview body, and stop once it passes the shot buffer.
+ *
+ * The copy happens before the next read. A stream may reuse one
+ * Uint8Array for every chunk; holding those views and copying after
+ * the download would overwrite the earlier bytes. A known
+ * Content-Length is allocated once.
+ */
+export async function readShotPdfBytes(response: Response, maxBytes = PDF_SHOT_MAX_BYTES): Promise<Uint8Array> {
+    const declared = shotContentLength(response);
+    if (declared != null && declared > maxBytes) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new Error("pdf preview too large");
+    }
+    const reader = response.body?.getReader();
+    if (!reader) {
+        const buffered = new Uint8Array(await response.arrayBuffer());
+        if (buffered.byteLength > maxBytes) throw new Error("pdf preview too large");
+        return buffered;
+    }
+    let data = new Uint8Array(declared != null && declared > 0 ? declared : 0);
+    let offset = 0;
+    try {
+        for (;;) {
+            const step = await reader.read();
+            if (step.done) break;
+            const value = step.value;
+            if (!value?.byteLength) continue;
+            const next = offset + value.byteLength;
+            if (next > maxBytes) throw new Error("pdf preview too large");
+            if (next > data.byteLength) {
+                let cap = data.byteLength > 0 ? data.byteLength : value.byteLength;
+                while (cap < next) cap = Math.min(maxBytes, cap * 2);
+                if (cap < next) cap = next;
+                const grown = new Uint8Array(cap);
+                if (offset > 0) grown.set(data.subarray(0, offset), 0);
+                data = grown;
+            }
+            data.set(value, offset);
+            offset = next;
+        }
+    } finally {
+        await reader.cancel().catch(() => undefined);
+    }
+    if (offset === data.byteLength) return data;
+    return data.slice(0, offset);
+}
+
 async function drawPdfShot(src: string, pageNumber: number, maxWidth: number, maxHeight: number, pixelRatio: number): Promise<string> {
     const response = await fetch(src);
     if (!response.ok) throw new Error(`pdf preview ${response.status}`);
-    const data = new Uint8Array(await response.arrayBuffer());
+    const data = await readShotPdfBytes(response);
     if (data.byteLength < 5) throw new Error("empty pdf preview");
     const pdfjs = await loadPdfjs();
     const task = pdfjs.getDocument({

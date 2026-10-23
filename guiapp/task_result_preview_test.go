@@ -311,9 +311,164 @@ func TestPreviewTaskResultFileStreamsVideoPastOfficeCap(t *testing.T) {
 	}
 }
 
-func TestPreviewTaskResultFileRejectsPDFPastOfficeCap(t *testing.T) {
+func TestPreviewTaskResultFileStreamsPDFPastOfficeCap(t *testing.T) {
+	resetTaskResultPreviewLeasesForTest()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "doc.pdf")
+	path := filepath.Join(dir, "book.pdf")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("%PDF-1.4\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(agent.MaxOfficeReadFileBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (*App)(nil).PreviewTaskResultFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != "pdf" || !strings.HasPrefix(got.PreviewURL, taskResultPreviewHTTPPath+"?t=") {
+		t.Fatalf("pdf preview = %+v", got)
+	}
+	req := httptest.NewRequest(http.MethodGet, got.PreviewURL, nil)
+	req.Header.Set("Range", "bytes=0-3")
+	rec := httptest.NewRecorder()
+	handleTaskResultPreviewHTTP(nil, rec, req)
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d body = %q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Header().Get("Content-Type"), "pdf") {
+		t.Fatalf("content-type = %q", rec.Header().Get("Content-Type"))
+	}
+	if rec.Header().Get("Accept-Ranges") != "bytes" {
+		t.Fatalf("accept-ranges = %q", rec.Header().Get("Accept-Ranges"))
+	}
+	if rec.Body.String() != "%PDF" {
+		t.Fatalf("range body = %q", rec.Body.String())
+	}
+}
+
+func TestPreviewTaskResultFileRejectsPDFPastStreamCap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "huge.pdf")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("%PDF-1.4\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(taskResultPreviewMediaMaxBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = (*App)(nil).PreviewTaskResultFile(path)
+	if err == nil || !strings.Contains(err.Error(), "文件过大，无法预览") {
+		t.Fatalf("pdf over stream cap error = %v", err)
+	}
+}
+
+func TestPreviewTaskResultFileStreamsDocxPastOfficeCap(t *testing.T) {
+	resetTaskResultPreviewLeasesForTest()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "brief.docx")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("PK\x03\x04")); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(agent.MaxOfficeReadFileBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (*App)(nil).PreviewTaskResultFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != "docx" || !strings.HasPrefix(got.PreviewURL, taskResultPreviewHTTPPath+"?t=") {
+		t.Fatalf("docx preview = %+v", got)
+	}
+	req := httptest.NewRequest(http.MethodGet, got.PreviewURL, nil)
+	req.Header.Set("Range", "bytes=0-3")
+	rec := httptest.NewRecorder()
+	handleTaskResultPreviewHTTP(nil, rec, req)
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d body = %q", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != "PK\x03\x04" {
+		t.Fatalf("range body = %q", rec.Body.String())
+	}
+}
+
+func TestPreviewTaskResultFileRejectsDocxPastDocumentCap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "huge.docx")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(taskResultPreviewDocumentMaxBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = (*App)(nil).PreviewTaskResultFile(path)
+	if err == nil || !strings.Contains(err.Error(), "文件过大，无法预览") {
+		t.Fatalf("docx over document cap error = %v", err)
+	}
+}
+
+func TestPreviewTaskResultFileStreamsXlsxPastOfficeCap(t *testing.T) {
+	resetTaskResultPreviewLeasesForTest()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "book.xlsx")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("PK\x03\x04")); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(agent.MaxOfficeReadFileBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (*App)(nil).PreviewTaskResultFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != "xlsx" || got.Content != "" || !strings.HasPrefix(got.PreviewURL, taskResultPreviewHTTPPath+"?t=") {
+		t.Fatalf("xlsx preview = %+v", got)
+	}
+	req := httptest.NewRequest(http.MethodGet, got.PreviewURL, nil)
+	req.Header.Set("Range", "bytes=0-3")
+	rec := httptest.NewRecorder()
+	handleTaskResultPreviewHTTP(nil, rec, req)
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d body = %q", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != "PK\x03\x04" {
+		t.Fatalf("range body = %q", rec.Body.String())
+	}
+}
+
+func TestPreviewTaskResultFileAllowsPPTXPastOfficeCap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "deck.pptx")
 	file, err := os.Create(path)
 	if err != nil {
 		t.Fatal(err)
@@ -324,9 +479,12 @@ func TestPreviewTaskResultFileRejectsPDFPastOfficeCap(t *testing.T) {
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
-	_, err = (*App)(nil).PreviewTaskResultFile(path)
-	if err == nil || !strings.Contains(err.Error(), "文件过大，无法预览") {
-		t.Fatalf("pdf over cap error = %v", err)
+	got, err := (*App)(nil).PreviewTaskResultFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != "pptx" {
+		t.Fatalf("pptx preview = %+v", got)
 	}
 }
 
@@ -337,8 +495,23 @@ func TestTaskResultPreviewMaxBytesSeparatesMedia(t *testing.T) {
 	if taskResultPreviewMaxBytes("note.wav") != taskResultPreviewMediaMaxBytes {
 		t.Fatalf("audio cap = %d", taskResultPreviewMaxBytes("note.wav"))
 	}
-	if taskResultPreviewMaxBytes("doc.pdf") != agent.MaxOfficeReadFileBytes {
+	if taskResultPreviewMaxBytes("doc.pdf") != taskResultPreviewMediaMaxBytes {
 		t.Fatalf("pdf cap = %d", taskResultPreviewMaxBytes("doc.pdf"))
+	}
+	if taskResultPreviewMaxBytes("brief.docx") != taskResultPreviewDocumentMaxBytes {
+		t.Fatalf("docx cap = %d", taskResultPreviewMaxBytes("brief.docx"))
+	}
+	if taskResultPreviewMaxBytes("deck.pptx") != taskResultPreviewDocumentMaxBytes {
+		t.Fatalf("pptx cap = %d", taskResultPreviewMaxBytes("deck.pptx"))
+	}
+	if taskResultPreviewMaxBytes("book.xlsx") != taskResultPreviewDocumentMaxBytes {
+		t.Fatalf("xlsx cap = %d", taskResultPreviewMaxBytes("book.xlsx"))
+	}
+	if taskResultPreviewMaxBytes("scan.png") != agent.MaxOfficeReadFileBytes {
+		t.Fatalf("image cap = %d", taskResultPreviewMaxBytes("scan.png"))
+	}
+	if taskResultPreviewMaxBytes("legacy.doc") != agent.MaxOfficeReadFileBytes {
+		t.Fatalf("legacy word cap = %d", taskResultPreviewMaxBytes("legacy.doc"))
 	}
 }
 

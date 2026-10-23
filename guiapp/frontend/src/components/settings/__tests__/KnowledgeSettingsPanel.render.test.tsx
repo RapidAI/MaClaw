@@ -309,6 +309,81 @@ describe('KnowledgeSettingsPanel component', () => {
         }
     });
 
+    it('shows a progress bar and the current file while a watched folder is importing', async () => {
+        vi.mocked(KnowledgeListFolderWatches).mockResolvedValue([
+            {
+                id: 'kfw_doc',
+                path: 'E:\\workprj\\mousika\\doc',
+                status: 'importing',
+                total_files: 10,
+                processed_files: 4,
+                current_file: 'notes/chapter.docx',
+                current_step: 'parsing',
+                step_progress: 40,
+                imported_files: 3,
+                skipped_files: 1,
+                failed_files: 0,
+            },
+            {
+                id: 'kfw_scan',
+                path: 'E:\\workprj\\mousika\\scan',
+                status: 'importing',
+                total_files: 0,
+                processed_files: 6,
+                current_file: 'nested/readme.md',
+                current_step: 'scanning',
+            },
+            {
+                id: 'kfw_hash',
+                path: 'E:\\workprj\\mousika\\hash',
+                status: 'importing',
+                total_files: 8,
+                processed_files: 3,
+                current_file: 'hash.md',
+                current_step: 'hashing',
+            },
+            {
+                id: 'kfw_link',
+                path: 'E:\\workprj\\mousika\\link',
+                status: 'importing',
+                total_files: 8,
+                processed_files: 8,
+                current_step: 'linking',
+            },
+        ] as never);
+
+        try {
+            render(<KnowledgeSettingsPanel lang="zh-Hans" />);
+            fireEvent.click(screen.getByRole('tab', { name: '监控' }));
+
+            const fileBar = await screen.findByRole('progressbar', { name: '解析文档... chapter.docx' });
+            expect(fileBar.getAttribute('aria-valuenow')).toBe('44');
+            expect(fileBar.getAttribute('aria-valuemin')).toBe('0');
+            expect(fileBar.getAttribute('aria-valuemax')).toBe('100');
+            expect(screen.getByText('44% · 4/10')).toBeTruthy();
+            const names = screen.getAllByTestId('knowledge-watch-current-file').map(node => node.textContent);
+            expect(names).toEqual(['chapter.docx', 'readme.md', 'hash.md']);
+            expect(screen.getByText('解析文档...')).toBeTruthy();
+
+            const scanBar = screen.getByRole('progressbar', { name: '正在扫描... readme.md' });
+            expect(scanBar.getAttribute('aria-valuenow')).toBeNull();
+            expect(scanBar.getAttribute('aria-valuetext')).toBe('正在扫描...');
+            expect(screen.getByText('已发现 6')).toBeTruthy();
+            expect(screen.getByText('正在扫描...')).toBeTruthy();
+
+            const hashBar = screen.getByRole('progressbar', { name: '正在校验... hash.md' });
+            expect(hashBar.getAttribute('aria-valuenow')).toBeNull();
+            expect(screen.getByText('3/8')).toBeTruthy();
+
+            const linkBar = screen.getByRole('progressbar', { name: '关联主题...' });
+            expect(linkBar.getAttribute('aria-valuenow')).toBeNull();
+            expect(screen.getByText('8/8')).toBeTruthy();
+            expect(screen.getByText('关联主题...')).toBeTruthy();
+        } finally {
+            vi.mocked(KnowledgeListFolderWatches).mockResolvedValue([]);
+        }
+    });
+
     it('labels the GUI entry as Enterprise digital assets and explains a skipped sync', async () => {
         render(<KnowledgeSettingsPanel lang="en" />);
         fireEvent.click(screen.getByRole('tab', { name: 'Enterprise digital assets' }));

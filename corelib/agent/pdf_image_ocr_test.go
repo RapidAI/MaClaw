@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"compress/zlib"
 	"encoding/base64"
 	"fmt"
 	"image"
@@ -11,7 +12,283 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	gopdf2 "github.com/VantageDataChat/GoPDF2"
 )
+
+func TestPDFScanPagePayloadsReadsClassicAndObjectStream(t *testing.T) {
+	jpegBytes := mustJPEG(t, 24, 24)
+	page := imagePDFPage{jpeg: jpegBytes, width: 24, height: 24}
+	classic := buildImagePDF(t, page)
+	if !plaintextHasPDFPageObject(classic) {
+		t.Fatal("classic fixture lost its page object")
+	}
+	got, err := PDFScanPagePayloads(classic, 1, 8)
+	if err != nil || len(got) != 1 || got[0].PageNumber != 1 || got[0].MIME != "image/jpeg" || !bytes.Equal(got[0].Data, jpegBytes) {
+		t.Fatalf("classic payloads=%d err=%v", len(got), err)
+	}
+	stream := buildObjectStreamImagePDF(t, page)
+	if plaintextHasPDFPageObject(stream) {
+		t.Fatal("object-stream fixture still has a plaintext page object")
+	}
+	got, err = PDFScanPagePayloads(stream, 1, 8)
+	if err != nil || len(got) != 1 || !bytes.Equal(got[0].Data, jpegBytes) || got[0].MIME != "image/jpeg" {
+		t.Fatalf("object-stream payloads=%d err=%v", len(got), err)
+	}
+}
+
+func TestPDFSelectableTextReadsPageTreeOnly(t *testing.T) {
+	jpegBytes := mustJPEG(t, 24, 24)
+	page := imagePDFPage{jpeg: jpegBytes, width: 24, height: 24}
+	scan := buildObjectStreamImagePDF(t, page, page)
+	got, err := PDFSelectableText(scan, []int{1, 2})
+	if err != nil || strings.TrimSpace(got[1]) != "" || strings.TrimSpace(got[2]) != "" {
+		t.Fatalf("object-stream scan text=%v err=%v", got, err)
+	}
+	classic := buildImagePDF(t, imagePDFPage{text: "Alpha Bravo Charlie Delta"}, page)
+	got, err = PDFSelectableText(classic, []int{1, 2})
+	if err != nil || !strings.Contains(got[1], "Alpha Bravo Charlie Delta") || strings.TrimSpace(got[2]) != "" {
+		t.Fatalf("classic text=%v err=%v", got, err)
+	}
+}
+
+func TestOpenPDFPageTreeParsesObjectStreamOnce(t *testing.T) {
+	jpegBytes := mustJPEG(t, 24, 24)
+	page := imagePDFPage{jpeg: jpegBytes, width: 24, height: 24}
+	stream := buildObjectStreamImagePDF(t, page, page)
+	tree, err := OpenPDFPageTree(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	texts, err := tree.SelectableText([]int{1, 2})
+	if err != nil || strings.TrimSpace(texts[1]) != "" || strings.TrimSpace(texts[2]) != "" {
+		t.Fatalf("object-stream text=%v err=%v", texts, err)
+	}
+	batch, pictures, err := tree.OCRImagePages(1, 2, 0, func(string) (string, error) {
+		return "扫描正文", nil
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tree.PageCount() != 2 || tree.treeOpens() != 1 {
+		t.Fatalf("object-stream opens=%d pages=%d", tree.treeOpens(), tree.PageCount())
+	}
+	if batch.Recognized != 2 || len(pictures) != 2 || !bytes.Equal(pictures[0].Data, jpegBytes) {
+		t.Fatalf("object-stream batch=%+v pictures=%d", batch, len(pictures))
+	}
+
+	classic := buildImagePDF(t, page, page)
+	ctree, err := OpenPDFPageTree(classic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ctree.SelectableText([]int{1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ctree.OCRImagePages(1, 1, 2, func(string) (string, error) {
+		return "甲", nil
+	}, false); err != nil {
+		t.Fatal(err)
+	}
+	if ctree.PageCount() != 2 || ctree.treeOpens() != 1 {
+		t.Fatalf("classic opens=%d pages=%d", ctree.treeOpens(), ctree.PageCount())
+	}
+}
+
+func TestPDFPageDictResolvesEachLeafOnce(t *testing.T) {
+	jpegBytes := mustJPEG(t, 24, 24)
+	page := imagePDFPage{jpeg: jpegBytes, width: 24, height: 24}
+	stream := buildObjectStreamImagePDF(t, page, page, page, page)
+	tree, err := OpenPDFPageTree(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recognize := func(string) (string, error) { return "扫描正文", nil }
+	_, pictures, err := tree.OCRImagePages(1, 2, 3, recognize, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pictures) != 2 || !bytes.Equal(pictures[0].Data, jpegBytes) || !bytes.Equal(pictures[1].Data, jpegBytes) {
+		t.Fatalf("first pictures=%d", len(pictures))
+	}
+	if got := tree.pageKidResolves(); got != 2 {
+		t.Fatalf("first window resolved %d kids", got)
+	}
+	_, pictures, err = tree.OCRImagePages(3, 2, 0, recognize, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pictures) != 2 || pictures[0].PageNumber != 3 || !bytes.Equal(pictures[1].Data, jpegBytes) {
+		t.Fatalf("second pictures=%d", len(pictures))
+	}
+	if got := tree.pageKidResolves(); got != 4 {
+		t.Fatalf("second window resolved %d kids", got)
+	}
+	if tree.treeOpens() != 1 {
+		t.Fatalf("opens=%d", tree.treeOpens())
+	}
+	if _, err := tree.SelectableText([]int{1, 2, 3, 4}); err != nil {
+		t.Fatal(err)
+	}
+	if got := tree.pageKidResolves(); got != 4 {
+		t.Fatalf("text reread resolved %d kids", got)
+	}
+}
+
+func TestPDFPageDictSkipsUnvisitedSubtree(t *testing.T) {
+	jpegBytes := mustJPEG(t, 24, 24)
+	page := imagePDFPage{jpeg: jpegBytes, width: 24, height: 24}
+	stream := buildNestedObjectStreamImagePDF(t, page, page, page, page)
+	tree, err := OpenPDFPageTree(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recognize := func(string) (string, error) { return "扫描正文", nil }
+	if _, _, err := tree.OCRImagePages(1, 1, 2, recognize, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := tree.pageKidResolves(); got != 2 {
+		t.Fatalf("page 1 resolved %d kids", got)
+	}
+	_, pictures, err := tree.OCRImagePages(3, 1, 4, recognize, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pictures) != 1 || pictures[0].PageNumber != 3 || !bytes.Equal(pictures[0].Data, jpegBytes) {
+		t.Fatalf("page 3 pictures=%d", len(pictures))
+	}
+	if got := tree.pageKidResolves(); got != 4 {
+		t.Fatalf("page 3 resolved %d kids", got)
+	}
+	if tree.PageCount() != 4 || tree.treeOpens() != 1 {
+		t.Fatalf("pages=%d opens=%d", tree.PageCount(), tree.treeOpens())
+	}
+}
+
+func TestPDFPageDictIndexesOnlyTheRequestedLeaf(t *testing.T) {
+	pages := make([]imagePDFPage, 4)
+	jpegs := make([][]byte, 4)
+	for i := 0; i < 4; i++ {
+		jpegs[i] = solidJPEG(t, 24, 24, uint8(40*(i+1)), 16, 32)
+		pages[i] = imagePDFPage{jpeg: jpegs[i], width: 24, height: 24}
+	}
+	tree, err := OpenPDFPageTree(buildObjectStreamImagePDF(t, pages...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recognize := func(string) (string, error) { return "丁", nil }
+	_, pictures, err := tree.OCRImagePages(4, 1, 5, recognize, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pictures) != 1 || pictures[0].PageNumber != 4 || !bytes.Equal(pictures[0].Data, jpegs[3]) {
+		t.Fatalf("page 4 pictures=%d", len(pictures))
+	}
+	if got := tree.pageKidResolves(); got != 1 {
+		t.Fatalf("page 4 resolved %d kids", got)
+	}
+	if got := tree.pageImageCollects(); got != 1 {
+		t.Fatalf("page 4 collected %d", got)
+	}
+	_, pictures, err = tree.OCRImagePages(4, 1, 5, recognize, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pictures) != 1 || !bytes.Equal(pictures[0].Data, jpegs[3]) {
+		t.Fatalf("cached page 4 pictures=%d", len(pictures))
+	}
+	if tree.pageKidResolves() != 1 || tree.pageImageCollects() != 1 || tree.treeOpens() != 1 {
+		t.Fatalf("cached resolves=%d collects=%d opens=%d", tree.pageKidResolves(), tree.pageImageCollects(), tree.treeOpens())
+	}
+	_, pictures, err = tree.OCRImagePages(1, 1, 2, recognize, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pictures) != 1 || pictures[0].PageNumber != 1 || !bytes.Equal(pictures[0].Data, jpegs[0]) {
+		t.Fatalf("page 1 pictures=%d", len(pictures))
+	}
+	if tree.pageKidResolves() != 2 || tree.pageImageCollects() != 2 {
+		t.Fatalf("after page 1 resolves=%d collects=%d", tree.pageKidResolves(), tree.pageImageCollects())
+	}
+}
+
+func TestOpenCachedPDFPageTreeReusesObjectStreamParse(t *testing.T) {
+	jpegBytes := mustJPEG(t, 24, 24)
+	page := imagePDFPage{jpeg: jpegBytes, width: 24, height: 24}
+	data := buildObjectStreamImagePDF(t, page, page)
+	path := filepath.Join(t.TempDir(), "scan.pdf")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := pdfPageTreeFileReads
+	tree, err := OpenCachedPDFPageTree(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tree.SelectableText([]int{1, 2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := tree.OCRImagePages(1, 1, 2, func(string) (string, error) {
+		return "甲", nil
+	}, false); err != nil {
+		t.Fatal(err)
+	}
+	if tree.treeOpens() != 1 {
+		t.Fatalf("opens=%d", tree.treeOpens())
+	}
+	again, err := OpenCachedPDFPageTree(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != tree || again.treeOpens() != 1 || pdfPageTreeFileReads-before != 1 {
+		t.Fatalf("reopen tree=%p opens=%d reads=%d", again, again.treeOpens(), pdfPageTreeFileReads-before)
+	}
+	replaced := buildObjectStreamImagePDF(t, page, page, page)
+	if err := os.WriteFile(path, replaced, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	third, err := OpenCachedPDFPageTree(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third == tree || third.PageCount() != 3 || pdfPageTreeFileReads-before != 2 {
+		t.Fatalf("replaced pages=%d reads=%d same=%v", third.PageCount(), pdfPageTreeFileReads-before, third == tree)
+	}
+}
+
+func TestOCRImagePDFPageBatchHonorsBudget(t *testing.T) {
+	jpegBytes := mustJPEG(t, 32, 32)
+	page := imagePDFPage{jpeg: jpegBytes, width: 32, height: 32}
+	data := buildImagePDF(t, page, page, page)
+	if !plaintextHasPDFPageObject(data) {
+		t.Fatal("classic page objects must stay on the raw parser")
+	}
+	var calls int
+	batch, err := OCRImagePDFPageBatch(data, 1, 2, 0, func(string) (string, error) {
+		calls++
+		return "甲", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || batch.NextPage != 3 || batch.Recognized != 2 || batch.TotalPages != 3 {
+		t.Fatalf("calls=%d batch=%+v", calls, batch)
+	}
+	if strings.Contains(batch.Text, "## Page 3\n") {
+		t.Fatalf("page past the budget was written:\n%s", batch.Text)
+	}
+	var stopped int
+	stoppedBatch, err := OCRImagePDFPageBatch(data, 1, 8, 2, func(string) (string, error) {
+		stopped++
+		return "甲", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped != 1 || stoppedBatch.NextPage != 2 || strings.Contains(stoppedBatch.Text, "## Page 2\n") {
+		t.Fatalf("stop before a finished page: calls=%d batch=%+v\n%s", stopped, stoppedBatch, stoppedBatch.Text)
+	}
+}
 
 func TestStripAttachedImageInstructionsKeepsTheTask(t *testing.T) {
 	raw := "把配图版讲稿做完\n\n" + AutoExtractNotice + "\n\n" + imageOnlyPDFVisionLead + "\n\n## Page 1\n" + pdfVisionPageMarker
@@ -560,6 +837,7 @@ type imagePDFPage struct {
 	text          string
 	jpeg          []byte
 	width, height int
+	filter        string
 }
 
 func buildImagePDF(t *testing.T, pages ...imagePDFPage) []byte {
@@ -572,6 +850,13 @@ func buildImagePDF(t *testing.T, pages ...imagePDFPage) []byte {
 	builtPages := make([]built, len(pages))
 	for i, page := range pages {
 		switch {
+		case len(page.jpeg) > 0 && page.text != "":
+			extra := fmt.Sprintf("<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length %d >>\nstream\n%s\nendstream", page.width, page.height, len(page.jpeg), page.jpeg)
+			builtPages[i] = built{
+				resources: "/Font << /F1 3 0 R >> /XObject << /Im1 0 0 R >>",
+				content:   "BT /F1 12 Tf 72 720 Td (" + page.text + ") Tj ET\nq 200 0 0 200 72 500 cm /Im1 Do Q",
+				extra:     []string{extra},
+			}
 		case len(page.jpeg) > 0:
 			extra := fmt.Sprintf("<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length %d >>\nstream\n%s\nendstream", page.width, page.height, len(page.jpeg), page.jpeg)
 			builtPages[i] = built{
@@ -624,4 +909,514 @@ func buildImagePDF(t *testing.T, pages ...imagePDFPage) []byte {
 	}
 	fmt.Fprintf(&output, "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", len(objects)+1, xref)
 	return output.Bytes()
+}
+
+func TestEmbeddedJPEGPayloadReturnsOriginalBytes(t *testing.T) {
+	jpegBytes := mustJPEG(t, 32, 40)
+	got, err := embeddedPDFImagePayload(gopdf2.ExtractedImage{
+		Name: "/Im1", Width: 32, Height: 40, Filter: "DCTDecode", Data: jpegBytes,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, jpegBytes) {
+		t.Fatalf("jpeg payload changed %d bytes into %d", len(jpegBytes), len(got))
+	}
+}
+
+func TestOCRImagePDFPageBatchReadsObjectStreamJPEG(t *testing.T) {
+	jpeg1 := solidJPEG(t, 32, 32, 20, 40, 80)
+	jpeg2 := solidJPEG(t, 32, 40, 200, 10, 10)
+	data := buildObjectStreamImagePDF(t,
+		imagePDFPage{jpeg: jpeg1, width: 32, height: 32},
+		imagePDFPage{jpeg: jpeg2, width: 32, height: 40},
+	)
+	_, rawErr := gopdf2.ExtractImagesFromPage(data, 0)
+	if rawErr == nil || !strings.Contains(rawErr.Error(), "out of range (0..-1)") {
+		t.Fatalf("raw parser = %v; object-stream page tree should be invisible", rawErr)
+	}
+	if plaintextHasPDFPageObject(data) {
+		t.Fatal("compressed page tree should skip the raw parser")
+	}
+	var got [][]byte
+	batch, err := OCRImagePDFPageBatch(data, 1, 8, 0, func(imageBase64 string) (string, error) {
+		raw, decErr := base64.StdEncoding.DecodeString(imageBase64)
+		if decErr != nil {
+			return "", decErr
+		}
+		got = append(got, raw)
+		return "字", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.Recognized != 2 || batch.TotalPages != 2 || len(got) != 2 {
+		t.Fatalf("batch=%+v payloads=%d", batch, len(got))
+	}
+	if !bytes.Equal(got[0], jpeg1) || !bytes.Equal(got[1], jpeg2) {
+		t.Fatalf("page images were not the object-stream JPEGs")
+	}
+	got = nil
+	second, err := OCRImagePDFPageBatch(data, 2, 1, 0, func(imageBase64 string) (string, error) {
+		raw, decErr := base64.StdEncoding.DecodeString(imageBase64)
+		if decErr != nil {
+			return "", decErr
+		}
+		got = append(got, raw)
+		return "乙", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Recognized != 1 || len(got) != 1 || !bytes.Equal(got[0], jpeg2) {
+		t.Fatalf("start page 2 batch=%+v payloads=%d", second, len(got))
+	}
+}
+
+func TestOCRImagePDFPageBatchKeepsUnreadableObjectStreamImage(t *testing.T) {
+	data := buildObjectStreamImagePDF(t, imagePDFPage{
+		jpeg:   []byte("not-a-jpeg"),
+		width:  32,
+		height: 32,
+		filter: "CCITTFaxDecode",
+	})
+	batch, err := OCRImagePDFPageBatch(data, 1, 8, 0, func(string) (string, error) {
+		t.Fatal("a non-jpeg page image must not be sent to OCR")
+		return "", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.Recognized != 0 || !strings.Contains(batch.Text, ocrPDFPageErrorMarker) || strings.Contains(batch.Text, pdfEmptyPageMarker) {
+		t.Fatalf("batch=%+v", batch)
+	}
+}
+
+func TestExtractPDFTextObjectStreamSkipsBlindRawParse(t *testing.T) {
+	jpeg := mustJPEG(t, 32, 32)
+	scan := buildObjectStreamImagePDF(t,
+		imagePDFPage{jpeg: jpeg, width: 32, height: 32},
+		imagePDFPage{jpeg: jpeg, width: 32, height: 32},
+	)
+	if _, skip := pdfLayoutPass(scan, 2); !skip {
+		t.Fatal("object-stream scan still extracts each page with the raw parser")
+	}
+	classic := buildImagePDF(t, imagePDFPage{jpeg: jpeg, width: 32, height: 32})
+	if _, skip := pdfLayoutPass(classic, 1); skip {
+		t.Fatal("classic page tree skipped the plain extractor")
+	}
+	textPage := buildImagePDF(t, imagePDFPage{text: "Alpha Bravo Charlie Delta"})
+	if _, skip := pdfLayoutPass(textPage, 1); skip {
+		t.Fatal("a text page skipped the plain extractor")
+	}
+}
+
+func TestExtractPDFTextOCRsObjectStreamPageImage(t *testing.T) {
+	restoreOfficeImagePDFOCR(t)
+	setImageOnlyPDFOCRPageLimitForTest(t, 16)
+	jpeg1 := solidJPEG(t, 32, 32, 20, 40, 80)
+	jpeg3 := solidJPEG(t, 32, 40, 200, 10, 10)
+	data := buildObjectStreamImagePDF(t,
+		imagePDFPage{jpeg: jpeg1, width: 32, height: 32},
+		imagePDFPage{},
+		imagePDFPage{jpeg: jpeg3, width: 32, height: 40},
+	)
+	if plaintextHasPDFPageObject(data) {
+		t.Fatal("compressed page tree should skip the raw parser")
+	}
+	all, allErr := gopdf2.ExtractImagesFromAllPages(data)
+	if allErr != nil || len(all) != 0 {
+		t.Fatalf("ExtractImagesFromAllPages = %d, %v; an object-stream page tree is an empty map", len(all), allErr)
+	}
+	var got [][]byte
+	SetOfficeImagePDFOCR(nil, func(imageBase64 string) (string, error) {
+		raw, err := base64.StdEncoding.DecodeString(imageBase64)
+		if err != nil {
+			return "", err
+		}
+		got = append(got, raw)
+		return "第" + strconv.Itoa(len(got)) + "页", nil
+	})
+	path := filepath.Join(t.TempDir(), "scan.pdf")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	text, err := ExtractPDFText(path)
+	if err != nil {
+		t.Fatalf("ExtractPDFText: %v", err)
+	}
+	if len(got) != 2 || !bytes.Equal(got[0], jpeg1) || !bytes.Equal(got[1], jpeg3) {
+		t.Fatalf("payloads=%d", len(got))
+	}
+	if !strings.Contains(text, "# text_source: ocr") || !strings.Contains(text, "## Page 1\n第1页") || !strings.Contains(text, "## Page 2\n"+pdfEmptyPageMarker) || !strings.Contains(text, "## Page 3\n第2页") {
+		t.Fatalf("transcript:\n%s", text)
+	}
+}
+
+func TestExtractPDFTextObjectStreamUnreadablePageStaysAnError(t *testing.T) {
+	restoreOfficeImagePDFOCR(t)
+	setImageOnlyPDFOCRPageLimitForTest(t, 16)
+	jpeg2 := mustJPEG(t, 32, 32)
+	data := buildObjectStreamImagePDF(t,
+		imagePDFPage{jpeg: []byte("not-a-jpeg"), width: 32, height: 32, filter: "CCITTFaxDecode"},
+		imagePDFPage{jpeg: jpeg2, width: 32, height: 32},
+	)
+	calls := 0
+	SetOfficeImagePDFOCR(nil, func(string) (string, error) {
+		calls++
+		return "第二页", nil
+	})
+	path := filepath.Join(t.TempDir(), "scan.pdf")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	text, err := ExtractPDFText(path)
+	if err != nil {
+		t.Fatalf("ExtractPDFText: %v", err)
+	}
+	if calls != 1 || !strings.Contains(text, "## Page 1\n[page extract error: pdf page image is not a decodable jpeg]") || !strings.Contains(text, "## Page 2\n第二页") {
+		t.Fatalf("calls=%d text:\n%s", calls, text)
+	}
+	if strings.Contains(text, "## Page 1\n"+pdfEmptyPageMarker) {
+		t.Fatalf("unreadable image was an empty page:\n%s", text)
+	}
+}
+
+func TestExtractPDFTextObjectStreamPageLimitSkipsUnreadImage(t *testing.T) {
+	restoreOfficeImagePDFOCR(t)
+	setImageOnlyPDFOCRPageLimitForTest(t, 1)
+	data := buildObjectStreamImagePDF(t,
+		imagePDFPage{jpeg: mustJPEG(t, 32, 32), width: 32, height: 32},
+		imagePDFPage{jpeg: []byte("not-a-jpeg"), width: 32, height: 32, filter: "CCITTFaxDecode"},
+		imagePDFPage{},
+	)
+	calls := 0
+	SetOfficeImagePDFOCR(nil, func(string) (string, error) {
+		calls++
+		return "第一页", nil
+	})
+	path := filepath.Join(t.TempDir(), "scan.pdf")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	text, err := ExtractPDFText(path)
+	if err != nil {
+		t.Fatalf("ExtractPDFText: %v", err)
+	}
+	if calls != 1 || !strings.Contains(text, "ocr_truncated: true") || !strings.Contains(text, "## Page 1\n第一页") || !strings.Contains(text, "## Page 2\n"+pdfOCRSkippedPageMarker) || !strings.Contains(text, "## Page 3\n"+pdfEmptyPageMarker) {
+		t.Fatalf("calls=%d text:\n%s", calls, text)
+	}
+	if strings.Contains(text, "[page extract error") {
+		t.Fatalf("a page past the cap was extracted:\n%s", text)
+	}
+}
+
+func TestExtractPDFTextVisionReadsObjectStreamPageImage(t *testing.T) {
+	restoreOfficeImagePDFOCR(t)
+	resetImageOnlyPDFVisionState()
+	setImageOnlyPDFOCRPageLimitForTest(t, 1)
+	jpeg1 := solidJPEG(t, 32, 32, 11, 22, 33)
+	jpeg2 := solidJPEG(t, 32, 40, 44, 55, 66)
+	data := buildObjectStreamImagePDF(t,
+		imagePDFPage{jpeg: jpeg1, width: 32, height: 32},
+		imagePDFPage{jpeg: jpeg2, width: 32, height: 40},
+	)
+	all, allErr := gopdf2.ExtractImagesFromAllPages(data)
+	if allErr != nil || len(all) != 0 {
+		t.Fatalf("ExtractImagesFromAllPages = %d, %v", len(all), allErr)
+	}
+	calls := 0
+	SetOfficeImagePDFOCR(nil, func(string) (string, error) {
+		calls++
+		return "ocr-only", nil
+	})
+	path := filepath.Join(t.TempDir(), "scan.pdf")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	text, err := extractPDFText(path, officeReadSettings{imagePDFPreferVision: true})
+	if err != nil {
+		t.Fatalf("extractPDFText: %v", err)
+	}
+	if calls != 0 || !strings.Contains(text, "# text_source: vision") || !strings.Contains(text, "vision_truncated: true") || !strings.Contains(text, "## Page 1\n"+pdfVisionPageMarker) || !strings.Contains(text, "## Page 2\n"+pdfVisionSkippedPageMarker) {
+		t.Fatalf("calls=%d text:\n%s", calls, text)
+	}
+	pages, truncated, err := ImageOnlyPDFPages(path)
+	if err != nil || !truncated || len(pages) != 1 || pages[0].PageNumber != 1 || pages[0].MIME != "image/jpeg" || !bytes.Equal(pages[0].Data, jpeg1) {
+		t.Fatalf("pages=%d truncated=%v err=%v", len(pages), truncated, err)
+	}
+}
+
+func TestPDFHasEmbeddedImageProbesObjectStream(t *testing.T) {
+	jpeg := mustJPEG(t, 32, 32)
+	scan := buildObjectStreamImagePDF(t, imagePDFPage{jpeg: jpeg, width: 32, height: 32})
+	if !pdfHasEmbeddedImage(scan) {
+		t.Fatal("object-stream scan was reported as having no image")
+	}
+	tiny := buildObjectStreamImagePDF(t, imagePDFPage{jpeg: mustJPEG(t, 4, 4), width: 4, height: 4})
+	if pdfHasEmbeddedImage(tiny) {
+		t.Fatal("a 4px decoration counted as a page image")
+	}
+	blank := buildObjectStreamImagePDF(t, imagePDFPage{})
+	if pdfHasEmbeddedImage(blank) {
+		t.Fatal("a blank object-stream page counted as an image")
+	}
+	classic := buildImagePDF(t, imagePDFPage{jpeg: jpeg, width: 32, height: 32})
+	if !pdfHasEmbeddedImage(classic) {
+		t.Fatal("classic page image was missed")
+	}
+
+	early := make([]imagePDFPage, ocrPDFImageProbePages)
+	early[ocrPDFImageProbePages-1] = imagePDFPage{jpeg: jpeg, width: 32, height: 32}
+	if !pdfHasEmbeddedImage(buildObjectStreamImagePDF(t, early...)) {
+		t.Fatal("an image on the last probed page was missed")
+	}
+	late := make([]imagePDFPage, ocrPDFImageProbePages+1)
+	late[ocrPDFImageProbePages] = imagePDFPage{jpeg: jpeg, width: 32, height: 32}
+	if pdfHasEmbeddedImage(buildObjectStreamImagePDF(t, late...)) {
+		t.Fatal("the probe walked past its page cap")
+	}
+}
+
+func solidJPEG(t *testing.T, w, h int, r, g, b uint8) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for i := 0; i < len(img.Pix); i += 4 {
+		img.Pix[i] = r
+		img.Pix[i+1] = g
+		img.Pix[i+2] = b
+		img.Pix[i+3] = 255
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 70}); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// buildObjectStreamImagePDF stores the page tree in an object stream.
+// The image and content streams stay ordinary objects, which is how a
+// PDF 1.5 scan keeps JPEG XObjects while hiding /Type /Page from a raw
+// "N gen obj" scan.
+func buildObjectStreamImagePDF(t *testing.T, pages ...imagePDFPage) []byte {
+	t.Helper()
+	if len(pages) == 0 {
+		t.Fatal("no pages")
+	}
+	n := len(pages)
+	catalogNum := 2
+	pagesNum := 3
+	firstPageNum := 4
+	firstClassic := firstPageNum + n
+	nums := make([]int, 0, 2+n)
+	bodies := make([]string, 0, 2+n)
+	nums = append(nums, catalogNum)
+	bodies = append(bodies, fmt.Sprintf("<< /Type /Catalog /Pages %d 0 R >>", pagesNum))
+	kids := make([]string, n)
+	for i := 0; i < n; i++ {
+		kids[i] = fmt.Sprintf("%d 0 R", firstPageNum+i)
+	}
+	nums = append(nums, pagesNum)
+	bodies = append(bodies, fmt.Sprintf("<< /Type /Pages /Kids [%s] /Count %d >>", strings.Join(kids, " "), n))
+	for i, page := range pages {
+		imageNum := firstClassic + 2*i
+		contentNum := imageNum + 1
+		nums = append(nums, firstPageNum+i)
+		if objectStreamPageHasImage(page) {
+			bodies = append(bodies, fmt.Sprintf("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 200 200] /Resources << /XObject << /Im1 %d 0 R >> >> /Contents %d 0 R >>", pagesNum, imageNum, contentNum))
+		} else {
+			bodies = append(bodies, fmt.Sprintf("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 200 200] /Contents %d 0 R >>", pagesNum, contentNum))
+		}
+	}
+	stream, first := encodeObjectStream(nums, bodies)
+	compressed, zipErr := zlibWrap([]byte(stream))
+	if zipErr != nil {
+		t.Fatal(zipErr)
+	}
+	var buf bytes.Buffer
+	buf.WriteString("%PDF-1.5\n")
+	offsets := make([]int, firstClassic+2*n+1)
+	offsets[1] = writePDFStreamObject(&buf, 1, fmt.Sprintf("/Type /ObjStm /N %d /First %d /Filter /FlateDecode", len(nums), first), compressed)
+	content := []byte("q 200 0 0 200 0 0 cm /Im1 Do Q")
+	for i, page := range pages {
+		imageNum := firstClassic + 2*i
+		contentNum := imageNum + 1
+		pageContent := content
+		if objectStreamPageHasImage(page) {
+			filter := page.filter
+			if filter == "" {
+				filter = "DCTDecode"
+			}
+			dict := fmt.Sprintf("/Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /%s", page.width, page.height, filter)
+			offsets[imageNum] = writePDFStreamObject(&buf, imageNum, dict, page.jpeg)
+		} else {
+			pageContent = nil
+		}
+		offsets[contentNum] = writePDFStreamObject(&buf, contentNum, "", pageContent)
+	}
+	xrefNum := firstClassic + 2*n
+	xrefAt := buf.Len()
+	size := xrefNum + 1
+	var table bytes.Buffer
+	writeXRefEntry(&table, 0, 0, 65535)
+	writeXRefEntry(&table, 1, offsets[1], 0)
+	for i := 0; i < len(nums); i++ {
+		writeXRefEntry(&table, 2, 1, i)
+	}
+	for num := firstClassic; num < xrefNum; num++ {
+		if offsets[num] == 0 {
+			// A blank page has no image object. Keep the object number free
+			// so the content-stream numbers stay paired with each page.
+			writeXRefEntry(&table, 0, 0, 65535)
+			continue
+		}
+		writeXRefEntry(&table, 1, offsets[num], 0)
+	}
+	writeXRefEntry(&table, 1, xrefAt, 0)
+	if table.Len() != size*7 {
+		t.Fatalf("xref entries=%d size=%d", table.Len()/7, size)
+	}
+	writePDFStreamObject(&buf, xrefNum, fmt.Sprintf("/Type /XRef /Size %d /Index [0 %d] /W [1 4 2] /Root %d 0 R", size, size, catalogNum), table.Bytes())
+	fmt.Fprintf(&buf, "startxref\n%d\n%%%%EOF\n", xrefAt)
+	return buf.Bytes()
+}
+
+// buildNestedObjectStreamImagePDF splits four pages under two /Pages nodes
+// so a lookup can skip the other subtree by /Count.
+func buildNestedObjectStreamImagePDF(t *testing.T, pages ...imagePDFPage) []byte {
+	t.Helper()
+	if len(pages) != 4 {
+		t.Fatal("nested fixture wants 4 pages")
+	}
+	n := len(pages)
+	catalogNum := 2
+	rootNum := 3
+	midA := 4
+	midB := 5
+	firstPageNum := 6
+	firstClassic := 10
+	nums := []int{catalogNum, rootNum, midA, midB}
+	bodies := []string{
+		fmt.Sprintf("<< /Type /Catalog /Pages %d 0 R >>", rootNum),
+		fmt.Sprintf("<< /Type /Pages /Kids [%d 0 R %d 0 R] /Count %d >>", midA, midB, n),
+		fmt.Sprintf("<< /Type /Pages /Parent %d 0 R /Kids [%d 0 R %d 0 R] /Count 2 >>", rootNum, firstPageNum, firstPageNum+1),
+		fmt.Sprintf("<< /Type /Pages /Parent %d 0 R /Kids [%d 0 R %d 0 R] /Count 2 >>", rootNum, firstPageNum+2, firstPageNum+3),
+	}
+	for i, page := range pages {
+		parent := midA
+		if i >= 2 {
+			parent = midB
+		}
+		imageNum := firstClassic + 2*i
+		contentNum := imageNum + 1
+		nums = append(nums, firstPageNum+i)
+		if !objectStreamPageHasImage(page) {
+			t.Fatal("nested fixture page needs an image")
+		}
+		bodies = append(bodies, fmt.Sprintf("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 200 200] /Resources << /XObject << /Im1 %d 0 R >> >> /Contents %d 0 R >>", parent, imageNum, contentNum))
+	}
+	stream, first := encodeObjectStream(nums, bodies)
+	compressed, zipErr := zlibWrap([]byte(stream))
+	if zipErr != nil {
+		t.Fatal(zipErr)
+	}
+	var buf bytes.Buffer
+	buf.WriteString("%PDF-1.5\n")
+	xrefNum := firstClassic + 2*n
+	offsets := make([]int, xrefNum+1)
+	offsets[1] = writePDFStreamObject(&buf, 1, fmt.Sprintf("/Type /ObjStm /N %d /First %d /Filter /FlateDecode", len(nums), first), compressed)
+	content := []byte("q 200 0 0 200 0 0 cm /Im1 Do Q")
+	for i, page := range pages {
+		imageNum := firstClassic + 2*i
+		contentNum := imageNum + 1
+		filter := page.filter
+		if filter == "" {
+			filter = "DCTDecode"
+		}
+		dict := fmt.Sprintf("/Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /%s", page.width, page.height, filter)
+		offsets[imageNum] = writePDFStreamObject(&buf, imageNum, dict, page.jpeg)
+		offsets[contentNum] = writePDFStreamObject(&buf, contentNum, "", content)
+	}
+	xrefAt := buf.Len()
+	size := xrefNum + 1
+	var table bytes.Buffer
+	writeXRefEntry(&table, 0, 0, 65535)
+	writeXRefEntry(&table, 1, offsets[1], 0)
+	for i := 0; i < len(nums); i++ {
+		writeXRefEntry(&table, 2, 1, i)
+	}
+	for num := firstClassic; num < xrefNum; num++ {
+		writeXRefEntry(&table, 1, offsets[num], 0)
+	}
+	writeXRefEntry(&table, 1, xrefAt, 0)
+	if table.Len() != size*7 {
+		t.Fatalf("xref entries=%d size=%d", table.Len()/7, size)
+	}
+	writePDFStreamObject(&buf, xrefNum, fmt.Sprintf("/Type /XRef /Size %d /Index [0 %d] /W [1 4 2] /Root %d 0 R", size, size, catalogNum), table.Bytes())
+	fmt.Fprintf(&buf, "startxref\n%d\n%%%%EOF\n", xrefAt)
+	return buf.Bytes()
+}
+
+func objectStreamPageHasImage(page imagePDFPage) bool {
+	return len(page.jpeg) > 0 || page.width > 0 || page.height > 0 || page.filter != ""
+}
+
+func zlibWrap(payload []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	w := zlib.NewWriter(&buf)
+	if _, err := w.Write(payload); err != nil {
+		_ = w.Close()
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func encodeObjectStream(nums []int, bodies []string) (string, int) {
+	offs := make([]int, len(bodies))
+	at := 0
+	for i, body := range bodies {
+		offs[i] = at
+		at += len(body)
+		if i+1 < len(bodies) {
+			at++
+		}
+	}
+	var header strings.Builder
+	for i, num := range nums {
+		fmt.Fprintf(&header, "%d %d ", num, offs[i])
+	}
+	var body strings.Builder
+	for i, text := range bodies {
+		if i > 0 {
+			body.WriteByte('\n')
+		}
+		body.WriteString(text)
+	}
+	return header.String() + body.String(), header.Len()
+}
+
+func writePDFStreamObject(buf *bytes.Buffer, num int, dict string, stream []byte) int {
+	offset := buf.Len()
+	if dict != "" {
+		dict += " "
+	}
+	fmt.Fprintf(buf, "%d 0 obj\n<< %s/Length %d >>\nstream\n", num, dict, len(stream))
+	buf.Write(stream)
+	buf.WriteString("\nendstream\nendobj\n")
+	return offset
+}
+
+func writeXRefEntry(buf *bytes.Buffer, typ, a, b int) {
+	var entry [7]byte
+	entry[0] = byte(typ)
+	entry[1] = byte(a >> 24)
+	entry[2] = byte(a >> 16)
+	entry[3] = byte(a >> 8)
+	entry[4] = byte(a)
+	entry[5] = byte(b >> 8)
+	entry[6] = byte(b)
+	buf.Write(entry[:])
 }

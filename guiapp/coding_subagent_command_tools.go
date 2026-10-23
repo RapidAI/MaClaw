@@ -583,8 +583,8 @@ func resolveCodingCommandTimeout(args map[string]interface{}, command string) in
 			timeout = int(i)
 		}
 	}
-	if timeout > corelib.MaxAgentTimeoutSec {
-		return corelib.MaxAgentTimeoutSec
+	if timeout > corelib.MaxLongRunTimeoutSec {
+		return corelib.MaxLongRunTimeoutSec
 	}
 	return timeout
 }

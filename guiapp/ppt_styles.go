@@ -328,12 +328,21 @@ func knownPPTStyleID(id string) bool {
 }
 
 func parseGeneratedPPTStyle(raw string) (pptx.CustomStyle, error) {
-	body := extractJSONObject(raw)
-	if body == "" {
-		return pptx.CustomStyle{}, fmt.Errorf("模型没有返回可用的风格 JSON")
-	}
 	var style pptx.CustomStyle
-	if err := json.Unmarshal([]byte(body), &style); err != nil {
+	err := walkStyleCandidates(raw, func(body string) error {
+		parsed, decErr := decodeGeneratedPPTStyle(body)
+		if decErr != nil {
+			return decErr
+		}
+		style = parsed
+		return nil
+	})
+	return style, err
+}
+
+func decodeGeneratedPPTStyle(body string) (pptx.CustomStyle, error) {
+	var style pptx.CustomStyle
+	if err := json.Unmarshal([]byte(styleJSONWithKeywordList(body)), &style); err != nil {
 		return pptx.CustomStyle{}, fmt.Errorf("风格 JSON 无法解析")
 	}
 	if err := pptx.ValidateCustomStyle(style); err != nil && (strings.Contains(err.Error(), "ppt_style_id_invalid") || strings.Contains(err.Error(), "ppt_style_id_taken")) {
@@ -360,7 +369,7 @@ colors：6 位十六进制，不要带 #。必须包含 paper、ink、navy、nav
 navy 是结构色，accent 是强调色，paper 是内容页底色，ink 是正文色，on_dark 是深色区域上的标题色。文字和背景对比要够。`
 
 func (a *App) completePPTStyleJSON(request string) (string, error) {
-	cfg := captionRequestConfig(a.withGlobalThinkingMode(a.GetMaclawLLMConfig()))
+	cfg, maxTokens := prepareDocumentStyleModel(a.withGlobalThinkingMode(a.GetMaclawLLMConfig()))
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		return "", fmt.Errorf("请先在「大模型配置」里保存一个可用模型")
 	}
@@ -370,21 +379,22 @@ func (a *App) completePPTStyleJSON(request string) (string, error) {
 		map[string]interface{}{"role": "system", "content": pptStyleSystemPrompt},
 		map[string]interface{}{"role": "user", "content": request},
 	}
-	extra := map[string]interface{}{"max_tokens": 900}
+	extra := map[string]interface{}{"max_tokens": maxTokens}
 	if captionUsesAnthropic(cfg) {
-		resp, err := llm.DoAnthropicRequestWithOptions(ctx, cfg, messages, nil, pptStyleHTTPClient, llm.AnthropicMessagesRequestOptions{MaxTokens: 900})
-		return captionTextFromResponse(resp, err)
+		resp, err := llm.DoAnthropicRequestWithOptions(ctx, cfg, messages, nil, pptStyleHTTPClient, llm.AnthropicMessagesRequestOptions{MaxTokens: maxTokens})
+		text, err := documentStyleResponseText(resp, err)
+		return pdfStyleModelText(text, err)
 	}
 	if cfg.IsResponsesAPI() {
 		req, _, _, err := llm.NewResponsesAPIRequest(ctx, cfg, messages, llm.ResponsesAPIRequestOptions{Stream: false, ExtraBody: extra})
 		if err != nil {
-			return "", err
+			return "", pdfStyleCallError(err)
 		}
 		return pptStyleHTTPParse(ctx, req, llm.ParseNonStreamResponsesAPIBody)
 	}
 	req, _, _, err := llm.NewOpenAIChatRequest(ctx, cfg, messages, llm.OpenAIChatRequestOptions{Stream: false, ExtraBody: extra})
 	if err != nil {
-		return "", err
+		return "", pdfStyleCallError(err)
 	}
 	return pptStyleHTTPParse(ctx, req, llm.ParseNonStreamOpenAIResponseBody)
 }
@@ -395,23 +405,17 @@ func pptStyleHTTPParse(ctx context.Context, req *http.Request, parse func([]byte
 	req = req.WithContext(ctx)
 	resp, err := pptStyleHTTPClient.Do(req)
 	if err != nil {
-		return "", err
+		return "", pdfStyleCallError(err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
 	if err != nil {
-		return "", err
+		return "", pdfStyleCallError(err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("模型请求失败（HTTP %d）", resp.StatusCode)
 	}
 	parsed, err := parse(body)
-	text, err := captionTextFromResponse(parsed, err)
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(text) == "" {
-		return "", fmt.Errorf("模型没有返回内容")
-	}
-	return text, nil
+	text, err := documentStyleResponseText(parsed, err)
+	return pdfStyleModelText(text, err)
 }

@@ -201,6 +201,113 @@ func TestIMSemanticFileReadStaysInsideBoundWorkspace(t *testing.T) {
 	}
 }
 
+func TestTrustedFileReadUsesDocumentReaderForStructuredFormats(t *testing.T) {
+	for _, name := range []string{
+		"a.dwg", "a.DWG", "a.dxf", "a.dxfb", "a.glb", "a.gltf",
+		"a.epub", "a.adoc", "a.asciidoc", "a.eml", "a.pdf", "a.docx", "a.csv",
+	} {
+		if !trustedFileReadUsesDocumentReader(name) {
+			t.Errorf("%s should use the document reader", name)
+		}
+	}
+	for _, name := range []string{"a.txt", "a.log", "a.go", "a.md", "a.markdown", "a.json", "a.xml", "a.yaml", "a.yml"} {
+		if trustedFileReadUsesDocumentReader(name) {
+			t.Errorf("%s should stay a text read", name)
+		}
+	}
+}
+
+const fetchedDocumentDXF = `0
+SECTION
+2
+HEADER
+9
+$ACADVER
+1
+AC1032
+0
+ENDSEC
+0
+SECTION
+2
+TABLES
+0
+TABLE
+2
+LAYER
+5
+2
+70
+1
+0
+LAYER
+5
+10
+2
+TESTLAYER
+70
+0
+62
+7
+0
+ENDTAB
+0
+ENDSEC
+0
+SECTION
+2
+ENTITIES
+0
+TEXT
+5
+30
+8
+TESTLAYER
+10
+100.0
+20
+200.0
+30
+0.0
+40
+3.5
+1
+PumpLabel
+50
+45.0
+0
+ENDSEC
+0
+EOF
+`
+
+func TestTrustedFileReadDXFUsesDocumentReader(t *testing.T) {
+	h := &IMMessageHandler{}
+	workspace := t.TempDir()
+	principal := desktopUserID + ":" + workspace
+	if err := os.WriteFile(filepath.Join(workspace, "pump.dxf"), []byte(fetchedDocumentDXF), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "sample.dwg"), []byte("0\nSECTION\n2\nENTITIES\nnot a drawing\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := h.readTrustedFile(principal, "pump.dxf", "", "", 0)
+	if err != nil || !strings.Contains(got, "PumpLabel") {
+		t.Fatalf("dxf=%q err=%v", got, err)
+	}
+	if strings.Contains(got, "SECTION") || strings.Contains(got, "TESTLAYER") {
+		t.Fatalf("dxf dumped source groups: %q", got)
+	}
+	raw, err := h.readTrustedFile(principal, "sample.dwg", "", "", 0)
+	if err == nil && strings.Contains(raw, "SECTION") {
+		t.Fatalf("dwg was read as text: %q", raw)
+	}
+	if err != nil && !strings.Contains(err.Error(), "trusted_document_read_failed") {
+		t.Fatalf("dwg err=%v body=%q", err, raw)
+	}
+}
+
 // TestIMSemanticFileReadLocatesFilesByName covers the outcome that path and
 // query cannot reach. Without it a managed plan holding only fs.read.local can
 // read a file it already knows about and grep for a string, but has no way to
@@ -445,5 +552,86 @@ func TestIMSemanticFileReadProjectionKeepsPagedText(t *testing.T) {
 	}
 	if _, err := semanticTrustedFileReadResultProjection("see [file_base64]"); err == nil || !strings.Contains(err.Error(), "trusted_file_read_delivery_token") {
 		t.Fatalf("delivery token err=%v", err)
+	}
+}
+
+func TestFetchedDocumentReadStartLineKeepsGrant(t *testing.T) {
+	if err := semanticFileReadDocumentStartLineCheck(map[string]interface{}{"path": "notes.txt", "start_line": json.Number("1")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := semanticFileReadDocumentStartLineCheck(map[string]interface{}{"path": "pump.dwg"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := semanticFileReadDocumentStartLineCheck(map[string]interface{}{"path": "Pump.DWG", "start_line": float64(0)}); err != nil {
+		t.Fatal(err)
+	}
+	rejected := semanticFileReadDocumentStartLineCheck(map[string]interface{}{"path": "pump.dwg", "start_line": json.Number("1")})
+	if rejected == nil || !strings.Contains(rejected.Error(), "trusted_file_read_start_line_unsupported") || !strings.Contains(rejected.Error(), "remains available") {
+		t.Fatalf("document start_line=%v", rejected)
+	}
+	if got := semanticCanonicalRejectionText(rejected); !strings.Contains(got, "pump.dwg") || strings.Contains(got, "parameter_schema_invalid") {
+		t.Fatalf("detail=%s", got)
+	}
+	dxf := semanticFileReadDocumentStartLineCheck(map[string]interface{}{"path": "sheet.dxf", "start_line": json.Number("4")})
+	if dxf == nil || !strings.Contains(dxf.Error(), "sheet.dxf") {
+		t.Fatalf("dxf start_line=%v", dxf)
+	}
+
+	// Plain text still pages. This surface is file_read primary, so the
+	// repeat ceiling is not the assertion; the stub must observe start_line.
+	textHandler := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, intent.LabelFileRead)}
+	var textStart int
+	textHandler.semanticTrustedFileRead = func(_, _, _, _ string, startLine int) (string, error) {
+		textStart = startLine
+		return "LINE-1\n", nil
+	}
+	registerBuiltinTools(textHandler.registry, textHandler)
+	_, textSurface, handled, err := textHandler.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+		"user-1", "看看 notes.txt", "lansenger", "root-fread-page", "turn-fread-page", fileReadClassification(),
+	)
+	if err != nil || !handled || textSurface == nil {
+		t.Fatalf("text surface handled=%v err=%v", handled, err)
+	}
+	textName := semanticGrantNameForAdapter(textSurface, semanticTrustedFileReadAdapter)
+	textCB := &sharedAgentLoopCallbacks{handler: textHandler, semanticSurface: textSurface}
+	if got := textCB.ExecuteToolCall(textName, `{"path":"notes.txt","start_line":1}`, "call-text-page").Result; !strings.Contains(got, "LINE-1") || textStart != 1 {
+		t.Fatalf("text page=%q start_line=%d", got, textStart)
+	}
+
+	// start_line on the drawing is refused before the grant is spent. The
+	// path-only retry must still run on that same grant.
+	evidence := "网上搜索一个dwg文档，理解其中的内容"
+	rewritten := semanticFetchedDocumentReadRewrite(&intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: 0.94, Layer: 3}, evidence)
+	if rewritten == nil || rewritten.Primary != intent.LabelSearch {
+		t.Fatalf("rewrite=%+v", rewritten)
+	}
+	h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, intent.LabelSearch)}
+	var reads []int
+	h.semanticTrustedFileRead = func(userID, path, query, filePattern string, startLine int) (string, error) {
+		if userID != "user-1" || path != "pump.dwg" || query != "" || filePattern != "" {
+			t.Fatalf("read user=%q path=%q query=%q pattern=%q", userID, path, query, filePattern)
+		}
+		reads = append(reads, startLine)
+		return "PumpLabel", nil
+	}
+	registerBuiltinTools(h.registry, h)
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+		"user-1", evidence, "desktop", "root-dwg-read", "turn-dwg-read", rewritten,
+	)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("surface handled=%v err=%v", handled, err)
+	}
+	name := semanticGrantNameForAdapter(surface, semanticTrustedFileReadAdapter)
+	if name != "read_file" {
+		t.Fatalf("read grant=%q", name)
+	}
+	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface}
+	first := cb.ExecuteToolCall(name, `{"path":"pump.dwg","start_line":1}`, "call-dwg-start").Result
+	if !strings.Contains(first, "trusted_file_read_start_line_unsupported") || !strings.Contains(first, "remains available") || len(reads) != 0 {
+		t.Fatalf("pre-admission rejection=%q reads=%v", first, reads)
+	}
+	second := cb.ExecuteToolCall(name, `{"path":"pump.dwg"}`, "call-dwg-body").Result
+	if !strings.Contains(second, "PumpLabel") || len(reads) != 1 || reads[0] != 0 {
+		t.Fatalf("retry=%q reads=%v", second, reads)
 	}
 }

@@ -308,6 +308,34 @@ func TestApplyReasoningControlsGLM53DoesNotDisableThinking(t *testing.T) {
 	}
 }
 
+func TestApplyReasoningControlsGLMFlashAnthropicDisablesExplicitly(t *testing.T) {
+	for _, model := range []string{"glm-5.3-flash", "GLM-5.3-FlashX", "vendor/glm-5.3-flash[1m]"} {
+		body := map[string]interface{}{}
+		ApplyReasoningControls(
+			MaclawLLMConfig{URL: "https://open.bigmodel.cn/api/anthropic", Model: model, ThinkingMode: "disabled"},
+			body,
+			ReasoningAPIAnthropic,
+		)
+		thinking, _ := body["thinking"].(map[string]interface{})
+		if thinking["type"] != "disabled" {
+			t.Fatalf("model %s thinking = %#v, want type=disabled", model, body["thinking"])
+		}
+		if _, ok := thinking["budget_tokens"]; ok {
+			t.Fatalf("model %s disabled thinking kept a budget: %#v", model, thinking)
+		}
+	}
+
+	body := map[string]interface{}{}
+	ApplyReasoningControls(
+		MaclawLLMConfig{URL: "https://api.anthropic.com", Model: "claude-sonnet", ThinkingMode: "disabled"},
+		body,
+		ReasoningAPIAnthropic,
+	)
+	if _, ok := body["thinking"]; ok {
+		t.Fatalf("claude disabled thinking = %#v, want the block omitted", body["thinking"])
+	}
+}
+
 func TestApplyReasoningControlsAutoEnablesAlwaysOnThinking(t *testing.T) {
 	body := map[string]interface{}{}
 	ApplyReasoningControls(

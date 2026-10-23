@@ -8159,7 +8159,12 @@ func TestCodingSubAgentNormalizesBashTimeout(t *testing.T) {
 		t.Fatalf("default timeout = %v, want %d", got, codingSubAgentDefaultBashTimeout)
 	}
 
-	largeArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": "go test ./...", "timeout": float64(999)})
+	longArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": "go test ./...", "timeout": float64(6 * 3600)})
+	if got, _ := longArgs["timeout"].(float64); got != float64(6*3600) {
+		t.Fatalf("multi-hour timeout = %v, want %d", got, 6*3600)
+	}
+
+	largeArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": "go test ./...", "timeout": float64(corelib.MaxLongRunTimeoutSec + 1000)})
 	if got, _ := largeArgs["timeout"].(float64); got != float64(codingSubAgentMaxBashTimeout) {
 		t.Fatalf("large timeout = %v, want %d", got, codingSubAgentMaxBashTimeout)
 	}

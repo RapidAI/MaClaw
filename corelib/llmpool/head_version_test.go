@@ -185,6 +185,22 @@ func TestScoreRequestPreviewRejectsEmpty(t *testing.T) {
 	}
 }
 
+func TestScoreRequestPreviewUsesLatestUserText(t *testing.T) {
+	got, err := ScoreRequestPreview(map[string]any{"messages": []any{
+		map[string]any{"role": "user", "content": "你好"},
+		map[string]any{"role": "tool", "content": "deploy kubernetes rollback"},
+	}})
+	if err != nil || got != "你好" {
+		t.Fatalf("preview = %q err=%v", got, err)
+	}
+	fallback, err := ScoreRequestPreview(map[string]any{"messages": []any{
+		map[string]any{"role": "system", "content": "system rules"},
+	}})
+	if err != nil || fallback != "system rules" {
+		t.Fatalf("fallback = %q err=%v", fallback, err)
+	}
+}
+
 func TestEvaluateHeadGateRescoresAndFilters(t *testing.T) {
 	now := time.Now().UTC()
 	head := EmptyHead(7, 0.01)

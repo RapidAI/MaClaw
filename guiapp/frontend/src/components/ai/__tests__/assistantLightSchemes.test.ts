@@ -116,6 +116,33 @@ describe("assistant light schemes", () => {
         expect(contrastRatio(scheme.assistantTheme.sendBtnColor, scheme.assistantTheme.sendBtnBg)).toBeGreaterThanOrEqual(4.5);
     });
 
+    it("paints the new-task send mark white on a deepened primary", () => {
+        const shell = readFileSync(resolve(frontendSrc, "styles/partials/110-mc-app-shell.css"), "utf8");
+        expect(shell).toContain("#App [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send");
+        expect(shell).toContain("color-mix(in srgb, var(--theme-primary, #2f6fbc) 68%, #06101c)");
+        expect(shell).toContain("color: #ffffff !important");
+        expect(shell).toContain("button.ai-composer-send svg *");
+        expect(shell).toContain("stroke-width: 2.25");
+        const mark = shell.slice(shell.indexOf("button.ai-composer-send > span"));
+        expect(mark.indexOf("border-color: #ffffff !important")).toBeGreaterThanOrEqual(0);
+        expect(mark.indexOf("border-top-color: transparent !important")).toBeGreaterThan(mark.indexOf("border-color: #ffffff !important"));
+        const darkMark = mark.slice(mark.indexOf("data-ai-theme='dark']"));
+        const darkRing = darkMark.indexOf("border-color: var(--theme-on-primary, #ffffff) !important");
+        expect(darkRing).toBeGreaterThanOrEqual(0);
+        expect(darkMark.indexOf("border-top-color: transparent !important")).toBeGreaterThan(darkRing);
+        const ink = { r: 6, g: 16, b: 28 };
+        const mix = (hex: string) => {
+            const n = parseInt(hex.slice(1), 16);
+            const channel = (shift: number) => Math.round(((n >> shift) & 255) * 0.68 + (shift === 16 ? ink.r : shift === 8 ? ink.g : ink.b) * 0.32);
+            const rgb = { r: channel(16), g: channel(8), b: channel(0) };
+            return "#" + [rgb.r, rgb.g, rgb.b].map((c) => c.toString(16).padStart(2, "0")).join("");
+        };
+        for (const scheme of assistantLightSchemes) {
+            const fill = mix(scheme.cssVars.primary);
+            expect(contrastRatio("#ffffff", fill), scheme.id).toBeGreaterThanOrEqual(7);
+        }
+    });
+
     it("keeps light interface ink darker than the rail and off near-black", () => {
         const css = readFileSync(resolve(frontendSrc, "styles/partials/120-app-responsive.css"), "utf8");
         const shell = readFileSync(resolve(frontendSrc, "styles/partials/110-mc-app-shell.css"), "utf8");

@@ -235,6 +235,23 @@ func recoverReasoningStutter(resp *llm.Response, reqErr error, halted bool) (*ll
 	return resp, true
 }
 
+// responsesReasoningStutterOutcome is the Responses HTTP and WebSocket form
+// of recoverReasoningStutter. Those streams assemble the body themselves, and
+// the agent loop copies reasoning into the answer when content is empty.
+// A halt that already parsed a tool call keeps that call. Any other halt
+// becomes an empty stop so the loop asks again. The caller's own cancel is
+// left untouched.
+func responsesReasoningStutterOutcome(resp *llm.Response, reqErr error, halted bool) (*llm.Response, bool) {
+	if resp != nil && len(resp.Choices) > 0 && len(resp.Choices[0].Message.ToolCalls) > 0 {
+		return recoverReasoningStutter(resp, reqErr, halted)
+	}
+	recovered, ok := recoverReasoningStutter(nil, reqErr, halted)
+	if !ok {
+		return resp, false
+	}
+	return recovered, true
+}
+
 func reasoningStutterPunctuation(unit string) bool {
 	if unit == "" || utf8.RuneCountInString(unit) > reasoningStutterMaxRunes {
 		return false

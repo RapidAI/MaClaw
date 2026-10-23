@@ -740,6 +740,166 @@ func TestKnowledgeFolderWatchSplitsAroundSkippedDirectory(t *testing.T) {
 	waitKnowledgeWatchText(t, app, added.ID, "kfwsplitnext", time.Time{})
 }
 
+func TestKnowledgeFolderWatchProgressReportsCurrentFile(t *testing.T) {
+	previous := knowledgeFolderWatchProgressMinInterval
+	knowledgeFolderWatchProgressMinInterval = 300 * time.Millisecond
+	t.Cleanup(func() { knowledgeFolderWatchProgressMinInterval = previous })
+
+	app := &App{testHomeDir: t.TempDir()}
+	st := app.folderWatch()
+	t.Cleanup(func() {
+		st.mu.Lock()
+		for id, mark := range st.progressMark {
+			if mark.timer != nil {
+				mark.timer.Stop()
+			}
+			delete(st.progressMark, id)
+		}
+		st.mu.Unlock()
+	})
+	st.mu.Lock()
+	st.started = true
+	st.items = []KnowledgeFolderWatch{{
+		ID:            "kfw_doc",
+		Path:          filepath.Join(t.TempDir(), "missing-doc"),
+		Status:        knowledgeFolderWatchStatusImporting,
+		CurrentFile:   "stale.docx",
+		TotalFiles:    99,
+		ImportedFiles: 7,
+	}}
+	st.mu.Unlock()
+
+	app.noteKnowledgeFolderWatchImportProgress("kfw_doc", knowledge.DirectoryImportResult{
+		TotalFiles:     4,
+		ProcessedFiles: 1,
+		ImportedFiles:  1,
+		CurrentFile:    "notes/chapter.docx",
+		CurrentStep:    "parsing",
+		StepProgress:   40,
+	})
+	got := knowledgeWatchItem(t, app, "kfw_doc")
+	if got.CurrentFile != "notes/chapter.docx" || got.TotalFiles != 4 || got.ProcessedFiles != 1 || got.CurrentStep != "parsing" || got.StepProgress != 40 || got.ImportedFiles != 1 {
+		t.Fatalf("progress = %+v", got)
+	}
+	if _, err := os.Stat(app.knowledgeFolderWatchStorePath()); !os.IsNotExist(err) {
+		t.Fatalf("progress tick persisted the watch file: %v", err)
+	}
+
+	app.noteKnowledgeFolderWatchImportProgress("kfw_doc", knowledge.DirectoryImportResult{
+		TotalFiles:     4,
+		ProcessedFiles: 2,
+		ImportedFiles:  2,
+		CurrentFile:    "notes/next.docx",
+		CurrentStep:    "distilling",
+		StepProgress:   10,
+	})
+	got = knowledgeWatchItem(t, app, "kfw_doc")
+	if got.CurrentFile != "notes/next.docx" || got.ProcessedFiles != 2 || got.CurrentStep != "distilling" {
+		t.Fatalf("throttled progress = %+v", got)
+	}
+
+	app.noteKnowledgeFolderWatchScanProgress("kfw_doc", "walk", 6, 0, filepath.Join("doc", "scan.md"))
+	got = knowledgeWatchItem(t, app, "kfw_doc")
+	if got.CurrentStep != "scanning" || got.TotalFiles != 0 || got.ProcessedFiles != 6 || got.CurrentFile != filepath.Join("doc", "scan.md") {
+		t.Fatalf("scan progress = %+v", got)
+	}
+	app.noteKnowledgeFolderWatchScanProgress("kfw_doc", "hash", 2, 6, filepath.Join("doc", "hash.md"))
+	got = knowledgeWatchItem(t, app, "kfw_doc")
+	if got.CurrentStep != "hashing" || got.TotalFiles != 6 || got.ProcessedFiles != 2 || got.CurrentFile != filepath.Join("doc", "hash.md") {
+		t.Fatalf("hash progress = %+v", got)
+	}
+
+	root := t.TempDir()
+	st.mu.Lock()
+	st.items[0].Path = root
+	st.mu.Unlock()
+	app.noteKnowledgeFolderWatchScanProgress("kfw_doc", "walk", 4, 4, filepath.Join(root, "nested", "chapter.docx"))
+	got = knowledgeWatchItem(t, app, "kfw_doc")
+	if got.CurrentStep != "scanning" || got.TotalFiles != 0 || got.ProcessedFiles != 4 || got.CurrentFile != filepath.Join("nested", "chapter.docx") {
+		t.Fatalf("walk progress = %+v", got)
+	}
+	st.mu.Lock()
+	st.items[0].Path = filepath.Join(t.TempDir(), "missing-doc")
+	st.mu.Unlock()
+
+	loaded := KnowledgeFolderWatch{Status: knowledgeFolderWatchStatusImporting, CurrentFile: "a.md", TotalFiles: 3, ImportedFiles: 2}
+	normalizeLoadedKnowledgeFolderWatch(&loaded)
+	if loaded.Status != knowledgeFolderWatchStatusWatching || loaded.CurrentFile != "" || loaded.TotalFiles != 0 || loaded.ImportedFiles != 2 {
+		t.Fatalf("loaded watch = %+v", loaded)
+	}
+
+	app.noteKnowledgeFolderWatchImportProgress("kfw_other", knowledge.DirectoryImportResult{CurrentFile: "nope.md", TotalFiles: 1})
+	got = knowledgeWatchItem(t, app, "kfw_doc")
+	if got.CurrentFile == "nope.md" {
+		t.Fatalf("foreign progress applied: %+v", got)
+	}
+
+	st.mu.Lock()
+	st.items[0].Status = knowledgeFolderWatchStatusWatching
+	st.mu.Unlock()
+	app.noteKnowledgeFolderWatchImportProgress("kfw_doc", knowledge.DirectoryImportResult{CurrentFile: "late.md", TotalFiles: 9, ProcessedFiles: 9})
+	got = knowledgeWatchItem(t, app, "kfw_doc")
+	if got.CurrentFile == "late.md" || got.TotalFiles == 9 {
+		t.Fatalf("late progress applied after import: %+v", got)
+	}
+
+	app.beginKnowledgeFolderWatchImport("kfw_doc")
+	got = knowledgeWatchItem(t, app, "kfw_doc")
+	if got.Status != knowledgeFolderWatchStatusImporting || got.CurrentFile != "" || got.CurrentStep != "" || got.TotalFiles != 0 || got.ProcessedFiles != 0 || got.StepProgress != 0 {
+		t.Fatalf("begin did not clear live progress: %+v", got)
+	}
+	if got.ImportedFiles != 2 {
+		t.Fatalf("begin cleared the in-progress import summary: %+v", got)
+	}
+	if _, err := os.Stat(app.knowledgeFolderWatchStorePath()); !os.IsNotExist(err) {
+		t.Fatalf("begin persisted the watch file: %v", err)
+	}
+
+	st.mu.Lock()
+	st.items[0].CurrentFile = "scan.md"
+	st.items[0].TotalFiles = 6
+	st.items[0].ProcessedFiles = 6
+	st.mu.Unlock()
+	app.finishKnowledgeFolderWatchImport("kfw_doc", filepath.Join("doc", "scan.md"), knowledge.DirectoryImportResult{
+		ImportedFiles:  2,
+		SkippedFiles:   1,
+		FailedFiles:    0,
+		TotalFiles:     6,
+		ProcessedFiles: 6,
+		CurrentFile:    "scan.md",
+	}, nil)
+	got = knowledgeWatchItem(t, app, "kfw_doc")
+	if got.Status != knowledgeFolderWatchStatusMissing {
+		t.Fatalf("status = %s, want missing", got.Status)
+	}
+	if got.CurrentFile != "" || got.CurrentStep != "" || got.TotalFiles != 0 || got.ProcessedFiles != 0 || got.StepProgress != 0 {
+		t.Fatalf("finished progress not cleared: %+v", got)
+	}
+	if got.ImportedFiles != 2 || got.SkippedFiles != 1 || got.LastFile == "" {
+		t.Fatalf("finished summary = %+v", got)
+	}
+	app.noteKnowledgeFolderWatchImportProgress("kfw_doc", knowledge.DirectoryImportResult{CurrentFile: "after.md", TotalFiles: 3})
+	got = knowledgeWatchItem(t, app, "kfw_doc")
+	if got.CurrentFile != "" || got.Status != knowledgeFolderWatchStatusMissing {
+		t.Fatalf("progress after finish = %+v", got)
+	}
+}
+
+func knowledgeWatchItem(t *testing.T, app *App, id string) KnowledgeFolderWatch {
+	t.Helper()
+	items, err := app.KnowledgeListFolderWatches()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if item.ID == id {
+			return item
+		}
+	}
+	t.Fatalf("watch %s not found in %+v", id, items)
+	return KnowledgeFolderWatch{}
+}
+
 func knowledgeWatchDirCount(app *App, id string) int {
 	st := app.folderWatch()
 	st.mu.Lock()

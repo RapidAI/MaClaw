@@ -125,6 +125,30 @@ func TestAnthropicSDKOptionsOmitsRequestTimeoutWhenContextHasDeadline(t *testing
 	}
 }
 
+func TestAnthropicSDKOptionsOmitsRequestTimeoutOnLiveStream(t *testing.T) {
+	cfg := corelib.MaclawLLMConfig{URL: "https://api.anthropic.com", TimeoutSec: 600}
+	parent, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+	deadline, ok := parent.Deadline()
+	if !ok {
+		t.Fatal("parent missing deadline")
+	}
+	parent = WithOwnedRouteDeadline(parent, deadline)
+	reqCtx, stop, markHeaders, _ := streamingRequestContext(parent)
+	defer stop()
+	if !markHeaders() {
+		t.Fatal("headers did not own the body")
+	}
+	if _, hasDeadline := reqCtx.Deadline(); hasDeadline {
+		t.Fatal("live stream context still has a deadline")
+	}
+	open := anthropicSDKOptions(context.Background(), cfg, http.DefaultClient)
+	live := anthropicSDKOptions(reqCtx, cfg, http.DefaultClient)
+	if len(live) >= len(open) {
+		t.Fatalf("live stream should omit SDK request timeout, open=%d live=%d", len(open), len(live))
+	}
+}
+
 func anthropicSDKHeaderErrorResponse(req *http.Request) *http.Response {
 	return &http.Response{
 		StatusCode: http.StatusBadRequest,

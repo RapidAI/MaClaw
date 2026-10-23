@@ -70,7 +70,7 @@ func toolGoalCreate(store *goal.Store, args map[string]interface{}) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("目标已创建: %s\n", g.Objective))
 	b.WriteString(fmt.Sprintf("Goal ID: %s\n", g.GoalID))
-	b.WriteString(fmt.Sprintf("最大轮次: %d", g.MaxTurns))
+	b.WriteString("最大轮次: " + goal.MaxTurnsLabel(g.MaxTurns))
 	if g.TokenBudget > 0 {
 		b.WriteString(fmt.Sprintf(" | Token 预算: %d", g.TokenBudget))
 	}
@@ -215,7 +215,7 @@ func toolGoalGet(store *goal.Store) string {
 	if g.TokenBudget > 0 {
 		b.WriteString(fmt.Sprintf("Token: %d/%d\n", g.TokensUsed, g.TokenBudget))
 	}
-	b.WriteString(fmt.Sprintf("轮次: %d/%d | 耗时: %ds", g.TurnsUsed, g.MaxTurns, g.TimeUsedSeconds))
+	b.WriteString(fmt.Sprintf("轮次: %s | 耗时: %ds", goal.FormatTurnCount(g.TurnsUsed, g.MaxTurns), g.TimeUsedSeconds))
 	if g.Summary != "" {
 		b.WriteString(fmt.Sprintf("\n备注: %s", g.Summary))
 	}

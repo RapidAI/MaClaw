@@ -871,6 +871,114 @@ func TestGoalExecuteTurnMustRecordTheStep(t *testing.T) {
 	}
 }
 
+func TestGoalContinuationRetriesTransientTurnError(t *testing.T) {
+	userID := "goal-transient"
+	store := goal.NewStore("")
+	g, err := store.Set(userID, "持续巡检")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewGoalContinuationEngine(store, nil)
+	engine.cooldown = time.Hour
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	handler := &IMMessageHandler{app: &App{goalContinuation: engine}, goalStore: store}
+
+	const retries = 12
+	for i := 0; i < retries; i++ {
+		handler.maybeScheduleGoalContinuation(userID, &IMAgentResponse{Error: "context deadline exceeded"}, "goal-continuation")
+		got := store.Get(userID)
+		if got == nil || got.Status != goal.StatusActive || got.GoalID != g.GoalID || got.TurnsUsed != 0 {
+			t.Fatalf("retry %d closed the goal: %+v", i+1, got)
+		}
+	}
+	engine.mu.Lock()
+	scheduled := engine.scheduledTimers[userID] != nil
+	misses := engine.transientTurnMiss[userID]
+	engine.mu.Unlock()
+	if !scheduled {
+		t.Fatal("transient deadline did not schedule another turn")
+	}
+	if misses != retries {
+		t.Fatalf("transport misses = %d, want %d", misses, retries)
+	}
+
+	if goalTurnErrorIsRetryable("编译失败") || goalTurnErrorIsRetryable("cancelled during LLM retry") || goalTurnErrorIsRetryable("unexpected EOF") {
+		t.Fatal("task, cancel, and a copied unexpected EOF must not be retried")
+	}
+	if !goalTurnErrorIsRetryable("SSE stream idle timeout") || !goalTurnErrorIsRetryable("context deadline exceeded") || !goalTurnErrorIsRetryable("dial tcp 10.0.0.1:443: i/o timeout") {
+		t.Fatal("idle timeout, a route deadline, and a dial timeout should be retried")
+	}
+}
+
+func TestGoalExecutePromptDoesNotShowAZeroTurnCap(t *testing.T) {
+	store := goal.NewStore("")
+	g, err := store.Set("user", "做游戏")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SavePlan("user", g.GoalID, "交付游戏", []goal.Step{{Title: "骨架"}}, []string{"能玩"}); err != nil {
+		t.Fatal(err)
+	}
+	prompt := buildGoalExecutePrompt(store.Get("user"))
+	if strings.Contains(prompt, "/0") || !strings.Contains(prompt, "轮次不限") {
+		t.Fatalf("unlimited prompt = %s", prompt)
+	}
+	capped, err := store.Set("user-capped", "做游戏", goal.WithMaxTurns(4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SavePlan("user-capped", capped.GoalID, "交付游戏", []goal.Step{{Title: "骨架"}}, []string{"能玩"}); err != nil {
+		t.Fatal(err)
+	}
+	cappedPrompt := buildGoalExecutePrompt(store.Get("user-capped"))
+	if !strings.Contains(cappedPrompt, "第 0/4 轮") {
+		t.Fatalf("capped prompt = %s", cappedPrompt)
+	}
+}
+
+func TestLateRetryableTurnErrorDoesNotReplaceSuccessor(t *testing.T) {
+	userID := "goal-late-retry"
+	store := goal.NewStore("")
+	if _, err := store.Set(userID, "做游戏"); err != nil {
+		t.Fatal(err)
+	}
+	engine := NewGoalContinuationEngine(store, nil)
+	engine.cooldown = time.Hour
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	handler := &IMMessageHandler{app: &App{goalContinuation: engine}}
+
+	engine.noteContinuationExpect(userID, store.Get(userID))
+	owned := engine.peekContinuationExpect(userID)
+	engine.scheduleDelayed(userID, store.Get(userID).GoalID)
+	engine.noteContinuationExpect(userID, store.Get(userID))
+	next := engine.peekContinuationExpect(userID)
+	if next.generation == owned.generation {
+		t.Fatal("successor note did not advance")
+	}
+	engine.mu.Lock()
+	gen := engine.scheduleGen[userID]
+	engine.mu.Unlock()
+
+	handler.maybeScheduleGoalContinuationOwned(userID, &IMAgentResponse{Error: "context deadline exceeded"}, "goal-continuation", owned, true)
+	got := store.Get(userID)
+	if got == nil || got.Status != goal.StatusActive || got.TurnsUsed != 0 {
+		t.Fatalf("superseded transport error closed the goal: %+v", got)
+	}
+	if peeked := engine.peekContinuationExpect(userID); peeked != next {
+		t.Fatalf("late retry retired the next note: got %+v want %+v", peeked, next)
+	}
+	engine.mu.Lock()
+	gotGen := engine.scheduleGen[userID]
+	misses := engine.transientTurnMiss[userID]
+	engine.mu.Unlock()
+	if gotGen != gen {
+		t.Fatalf("late retry replaced the timer: gen %d -> %d", gen, gotGen)
+	}
+	if misses != 0 {
+		t.Fatalf("superseded turn was counted: %d", misses)
+	}
+}
+
 func TestGoalContinuationTurnErrorAndMissingPlanFail(t *testing.T) {
 	userID := "goal-turn-error"
 	store := goal.NewStore("")

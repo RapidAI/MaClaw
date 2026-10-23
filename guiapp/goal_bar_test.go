@@ -72,7 +72,7 @@ func TestSessionGoalBarContinueAndCancel(t *testing.T) {
 func TestSessionGoalBarContinuePastBudget(t *testing.T) {
 	app, store, engine := newGoalBarApp(t)
 	const userID = "desktop-user"
-	g, err := store.Set(userID, "keep going")
+	g, err := store.Set(userID, "keep going", goal.WithMaxTurns(3))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -428,15 +428,24 @@ func TestSessionGoalBarFreezesElapsedAfterFailure(t *testing.T) {
 	if running["visible"] != true || running["stopped_at"] != int64(0) || running["clock_hold_seconds"] != int64(0) {
 		t.Fatalf("running clock = %#v", running)
 	}
-	if app.PauseSessionGoal(userID)["stopped_at"] != int64(0) {
-		t.Fatal("pause should keep the clock running")
+	pausedSnap := app.PauseSessionGoal(userID)
+	pausedAt, _ := pausedSnap["stopped_at"].(int64)
+	if pausedSnap["status"] != string(goal.StatusPaused) || pausedAt == 0 {
+		t.Fatalf("pause should freeze the clock: %#v", pausedSnap)
 	}
 	store.UpdateStatus(userID, g.GoalID, goal.StatusFailed, "编译失败")
 	failed := app.GetSessionGoalBar(userID)
 	stopped, _ := failed["stopped_at"].(int64)
 	created, _ := failed["created_at"].(int64)
-	if failed["status"] != string(goal.StatusFailed) || stopped == 0 || stopped < created {
-		t.Fatalf("failed clock created=%d stopped=%#v snap=%#v", created, failed["stopped_at"], failed)
+	if failed["status"] != string(goal.StatusFailed) || stopped != pausedAt || stopped < created {
+		t.Fatalf("failed clock created=%d paused=%d stopped=%#v snap=%#v", created, pausedAt, failed["stopped_at"], failed)
+	}
+	legacy := &goal.Goal{Status: goal.StatusPaused, UpdatedAt: time.Unix(pausedAt, 0)}
+	if got := goalStoppedUnix(legacy); got != pausedAt {
+		t.Fatalf("legacy pause freeze = %d, want %d", got, pausedAt)
+	}
+	if got := goalStoppedUnix(&goal.Goal{Status: goal.StatusActive, UpdatedAt: time.Unix(pausedAt, 0)}); got != 0 {
+		t.Fatalf("active clock = %d", got)
 	}
 	if !store.UpdateObjective(userID, g.GoalID, "失败后改一句") {
 		t.Fatal("edit")
@@ -533,6 +542,185 @@ func TestContinueSessionGoalRunsPastUserStop(t *testing.T) {
 	}
 	if !strings.Contains(stopped.Summary, "停止") || strings.Contains(stopped.Summary, "SSH") || strings.Contains(stopped.Summary, "远程") {
 		t.Fatalf("summary = %q", stopped.Summary)
+	}
+}
+
+func TestFinishCancelledGoalTurnPausesOnUserStopFence(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const userID = "desktop-user"
+	g, err := store.Set(userID, "设计并实现一个愤怒的小鸟游戏")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.scheduleDelayed(userID, g.GoalID)
+	if !goalBarPending(engine, userID) {
+		t.Fatal("the running goal should have a timer")
+	}
+	ctx := NewLoopContext("coding-abort", 4, nil)
+	ctx.MarkUserCancel()
+	ctx.Cancel()
+	app.imHandler.markTaskCancelledByUser(userID)
+
+	app.imHandler.finishCancelledGoalTurn(userID, &IMAgentResponse{Text: "Stopped before finishing"}, ctx)
+
+	got := store.Get(userID)
+	if got == nil || got.Status != goal.StatusPaused || got.IsTerminal() || !got.ComposerClockStopped() || got.StoppedAt.IsZero() {
+		t.Fatalf("user stop should freeze a continuable goal: %+v", got)
+	}
+	if goalStoppedUnix(got) == 0 {
+		t.Fatal("paused snapshot sent stopped_at 0")
+	}
+	if goalBarPending(engine, userID) {
+		t.Fatal("user stop left the next turn armed")
+	}
+	if !strings.Contains(got.Summary, "停止") {
+		t.Fatalf("summary = %q", got.Summary)
+	}
+
+	if app.ContinueSessionGoal(userID)["status"] != string(goal.StatusActive) || !goalBarPending(engine, userID) {
+		t.Fatal("continue should re-arm the same fence")
+	}
+	app.imHandler.finishCancelledGoalTurn(userID, &IMAgentResponse{Text: "Stopped before finishing"}, ctx)
+	kept := store.Get(userID)
+	if kept == nil || kept.Status != goal.StatusActive || kept.ComposerClockStopped() || !goalBarPending(engine, userID) {
+		t.Fatalf("dying abort undid continue: pending=%v goal=%+v", goalBarPending(engine, userID), kept)
+	}
+}
+
+func TestFinishCancelledGoalTurnIgnoresParentCancel(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const userID = "desktop-user"
+	g, err := store.Set(userID, "keep going")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.scheduleDelayed(userID, g.GoalID)
+	ctx := NewLoopContext("parent-cancel", 4, nil)
+	ctx.Cancel()
+
+	app.imHandler.finishCancelledGoalTurn(userID, &IMAgentResponse{Text: "context canceled"}, ctx)
+
+	got := store.Get(userID)
+	if got == nil || got.Status != goal.StatusActive || got.ComposerClockStopped() || !got.StoppedAt.IsZero() || !goalBarPending(engine, userID) {
+		t.Fatalf("parent cancel changed the goal: pending=%v goal=%+v", goalBarPending(engine, userID), got)
+	}
+}
+
+func TestFinishCancelledGoalTurnLeavesContinuedGoalArmed(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const userID = "desktop-user"
+	if _, err := store.Set(userID, "keep going"); err != nil {
+		t.Fatal(err)
+	}
+	ctx := NewLoopContext("goal-bar-pause", 4, nil)
+	app.imHandler.sessionLoops.Store(userID, &sessionLoopState{loopCtx: ctx})
+	if app.PauseSessionGoal(userID)["status"] != string(goal.StatusPaused) || !ctx.UserCancelled() {
+		t.Fatal("pause should stop the live turn without a chat fence")
+	}
+	if app.imHandler.hasCancelledTaskBoundary(userID) {
+		t.Fatal("goal-bar pause must not fence the next message")
+	}
+	if app.ContinueSessionGoal(userID)["status"] != string(goal.StatusActive) || !goalBarPending(engine, userID) {
+		t.Fatal("continue should arm the same goal")
+	}
+
+	app.imHandler.finishCancelledGoalTurn(userID, &IMAgentResponse{Text: "Stopped before finishing"}, ctx)
+
+	kept := store.Get(userID)
+	if kept == nil || kept.Status != goal.StatusActive || kept.ComposerClockStopped() || !goalBarPending(engine, userID) {
+		t.Fatalf("dying abort undid the goal-bar continue: pending=%v goal=%+v", goalBarPending(engine, userID), kept)
+	}
+
+	app.imHandler.markTaskCancelledByUser(userID)
+	app.imHandler.maybeScheduleGoalContinuation(userID, &IMAgentResponse{Text: "stopped", userStopped: true}, "desktop")
+	stopped := store.Get(userID)
+	if stopped == nil || stopped.Status != goal.StatusPaused || stopped.IsTerminal() || stopped.StoppedAt.IsZero() || goalBarPending(engine, userID) {
+		t.Fatalf("a later stop was swallowed: pending=%v goal=%+v", goalBarPending(engine, userID), stopped)
+	}
+}
+
+func TestFinishCancelledGoalTurnKeepsAnArmedContinue(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const userID = "desktop-user"
+	if _, err := store.Set(userID, "keep going"); err != nil {
+		t.Fatal(err)
+	}
+	if app.PauseSessionGoal(userID)["status"] != string(goal.StatusPaused) {
+		t.Fatal("pause")
+	}
+	if app.ContinueSessionGoal(userID)["status"] != string(goal.StatusActive) || !goalBarPending(engine, userID) {
+		t.Fatal("continue should arm the timer before the turn is published")
+	}
+	ctx := NewLoopContext("unpublished-stop", 4, nil)
+	ctx.MarkUserCancel()
+
+	app.imHandler.finishCancelledGoalTurn(userID, &IMAgentResponse{Text: "Stopped before finishing"}, ctx)
+
+	got := store.Get(userID)
+	if got == nil || got.Status != goal.StatusActive || got.ComposerClockStopped() || !goalBarPending(engine, userID) {
+		t.Fatalf("unpublished abort cancelled the continue: pending=%v goal=%+v", goalBarPending(engine, userID), got)
+	}
+}
+
+func TestFinishCancelledGoalTurnPausesAQueuedTurn(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const userID = "desktop-user"
+	g, err := store.Set(userID, "keep going")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.scheduleDelayed(userID, g.GoalID)
+	ctx := NewLoopContext("queued-stop", 4, nil)
+	ctx.MarkUserCancel()
+
+	app.imHandler.finishCancelledGoalTurn(userID, &IMAgentResponse{Text: "Stopped before finishing"}, ctx)
+
+	got := store.Get(userID)
+	if got == nil || got.Status != goal.StatusPaused || got.IsTerminal() || !got.ComposerClockStopped() || got.StoppedAt.IsZero() || goalBarPending(engine, userID) {
+		t.Fatalf("a queued turn is not a continue: pending=%v goal=%+v", goalBarPending(engine, userID), got)
+	}
+}
+
+func TestFinishCancelledGoalTurnHonorsContinueBeforeItsTimer(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const userID = "desktop-user"
+	g, err := store.Set(userID, "keep going")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app.PauseSessionGoal(userID)["status"] != string(goal.StatusPaused) {
+		t.Fatal("pause")
+	}
+	app.imHandler.noteGoalContinuePastUserStop(userID)
+	if !store.ReleaseForContinue(userID, g.GoalID) {
+		t.Fatal("release")
+	}
+	if goalBarPending(engine, userID) {
+		t.Fatal("the timer is armed only after the goal is active")
+	}
+	ctx := NewLoopContext("continue-gap", 4, nil)
+	ctx.MarkUserCancel()
+
+	app.imHandler.finishCancelledGoalTurn(userID, &IMAgentResponse{Text: "Stopped before finishing"}, ctx)
+
+	kept := store.Get(userID)
+	if kept == nil || kept.Status != goal.StatusActive || kept.ComposerClockStopped() || !kept.StoppedAt.IsZero() {
+		t.Fatalf("abort during the continue gap re-paused the goal: %+v", kept)
+	}
+
+	engine.scheduleDelayed(userID, g.GoalID)
+	engine.CancelPending(userID)
+	app.imHandler.finishCancelledGoalTurn(userID, &IMAgentResponse{Text: "Stopped before finishing"}, ctx)
+	afterFire := store.Get(userID)
+	if afterFire == nil || afterFire.Status != goal.StatusActive || afterFire.ComposerClockStopped() {
+		t.Fatalf("abort after the continue timer fired re-paused the goal: %+v", afterFire)
+	}
+
+	app.imHandler.markTaskCancelledByUser(userID)
+	app.imHandler.finishCancelledGoalTurn(userID, &IMAgentResponse{Text: "Stopped before finishing"}, ctx)
+	stopped := store.Get(userID)
+	if stopped == nil || stopped.Status != goal.StatusPaused || stopped.IsTerminal() || stopped.StoppedAt.IsZero() || goalBarPending(engine, userID) {
+		t.Fatalf("a later user stop was swallowed: pending=%v goal=%+v", goalBarPending(engine, userID), stopped)
 	}
 }
 

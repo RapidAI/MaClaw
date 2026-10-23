@@ -96,6 +96,9 @@ type lightPreparedItem struct {
 	// itemFailed means the item should be recorded as failed after prep.
 	itemFailed bool
 	failMsg    string
+	// replaceExisting deletes the previous derived rows in the phase-3 write
+	// transaction, after parsing and distillation have released the lock.
+	replaceExisting bool
 }
 
 // lightImportBeforeParse is a narrow test seam for the scan-to-snapshot
@@ -113,7 +116,7 @@ var fileRefreshBeforeParse = func(Source) {}
 // canParallelLightImport-eligible. start/end are indices into items.
 func (s *SQLiteStore) importLightItemsBatch(
 	ctx context.Context,
-	tx *sql.Tx,
+	txp **sql.Tx,
 	req DirectoryImportRequest,
 	batchID string,
 	items []ImportItem,
@@ -124,9 +127,18 @@ func (s *SQLiteStore) importLightItemsBatch(
 	markImportItemProcessed func(int, ImportItem),
 	emitStepProgress func(ImportItem, string, int, int),
 ) error {
+	if txp == nil || *txp == nil {
+		return fmt.Errorf("knowledge import transaction is nil")
+	}
 	if end <= start {
 		return nil
 	}
+	// Publish the caller's transaction even when this function returns early.
+	// Parsing and distillation run with no transaction checked out. Phase 3 is
+	// one write batch; each file uses a savepoint so a failed insert does not
+	// keep an earlier delete in that batch.
+	tx := *txp
+	defer func() { *txp = tx }()
 	// Warm CJK segmenter once so workers don't stampede dict load.
 	bm25.PrewarmDict()
 
@@ -135,6 +147,13 @@ func (s *SQLiteStore) importLightItemsBatch(
 
 	// Phase 1: sequential source identity + replace cleanup (DB-bound).
 	for i := start; i < end; i++ {
+		if tx == nil {
+			next, beginErr := s.db.BeginTx(ctx, nil)
+			if beginErr != nil {
+				return beginErr
+			}
+			tx = next
+		}
 		item := items[i]
 		item.BatchID = batchID
 		source := BuildSourceFromImport(req, batchID, item)
@@ -155,6 +174,15 @@ func (s *SQLiteStore) importLightItemsBatch(
 				source.SourceTrust = existingSource.SourceTrust
 			}
 		}
+		// Commit the lookup before parsing. A deferred transaction that has
+		// already read holds a shared lock until commit, and it also checks
+		// out this store's only connection. The next statement begins again.
+		kept, commitErr := commitImportTx(tx)
+		if commitErr != nil {
+			tx = kept
+			return commitErr
+		}
+		tx = nil
 		// Text and Markdown now share the scan-to-parse version contract of
 		// Office/PDF/CSV imports. Parse an owned snapshot before destructive
 		// replacement, bind Source.content_hash to those bytes, then reuse the
@@ -185,15 +213,13 @@ func (s *SQLiteStore) importLightItemsBatch(
 		source.ContentHash = parsed.contentHash
 		parsedNodes := parsed.nodes
 		parsed.close()
-		if exists {
-			if err := deleteSourceDerivedRows(ctx, tx, existingSource.ID); err != nil {
-				return err
-			}
-		}
 		item.SourceID = source.ID
 		item.Status = ItemStatusImported
 		item.UpdatedAt = time.Now().UTC()
-		jobs[i-start] = lightPreparedItem{index: i, item: item, source: source, parsedNodes: parsedNodes, parsedInputReady: true}
+		jobs[i-start] = lightPreparedItem{
+			index: i, item: item, source: source, parsedNodes: parsedNodes, parsedInputReady: true,
+			replaceExisting: exists,
+		}
 	}
 
 	// Phase 2: parallel parse + distill + FTS segmentation.
@@ -275,7 +301,15 @@ func (s *SQLiteStore) importLightItemsBatch(
 		}
 	}
 
-	// Phase 3: sequential SQL with prepared statements.
+	// Phase 3: sequential SQL with prepared statements. Parsing finished with
+	// no transaction checked out, so begin the write batch here.
+	if tx == nil {
+		next, beginErr := s.db.BeginTx(ctx, nil)
+		if beginErr != nil {
+			return beginErr
+		}
+		tx = next
+	}
 	stmts, err := prepareLightImportStmts(ctx, tx)
 	if err != nil {
 		return err
@@ -286,13 +320,24 @@ func (s *SQLiteStore) importLightItemsBatch(
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if _, err := tx.ExecContext(ctx, `SAVEPOINT kimp`); err != nil {
+			return err
+		}
 		prep := jobs[j]
 		item := prep.item
 		source := prep.source
-
-		if prep.itemFailed {
+		// undo drops this file's writes, including a replacement delete, then
+		// records the import item. Earlier files stay in the batch transaction
+		// because their savepoints were already released.
+		undo := func(msg string) error {
+			if _, err := tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT kimp`); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `RELEASE SAVEPOINT kimp`); err != nil {
+				return err
+			}
 			item.Status = ItemStatusFailed
-			item.ErrorMessage = prep.failMsg
+			item.ErrorMessage = msg
 			*failed++
 			if recordFailedItem != nil {
 				recordFailedItem(item)
@@ -302,6 +347,17 @@ func (s *SQLiteStore) importLightItemsBatch(
 			}
 			if markImportItemProcessed != nil {
 				markImportItemProcessed(prep.index, item)
+			}
+			return nil
+		}
+		releaseItem := func() error {
+			_, err := tx.ExecContext(ctx, `RELEASE SAVEPOINT kimp`)
+			return err
+		}
+
+		if prep.itemFailed {
+			if err := undo(prep.failMsg); err != nil {
+				return err
 			}
 			continue
 		}
@@ -311,50 +367,30 @@ func (s *SQLiteStore) importLightItemsBatch(
 		// not let the generic early source write below overwrite its hash with the
 		// scan-time candidate before we record the failed import item.
 		if prep.parseErr != nil && prep.preserveExisting {
-			persistedParseErr := sanitizeKnowledgeParseError(item.Kind, prep.parseErr)
-			item.Status = ItemStatusFailed
-			item.ErrorMessage = persistedParseErr.Error()
-			*failed++
-			if recordFailedItem != nil {
-				recordFailedItem(item)
-			}
-			if err := insertImportItem(ctx, tx, item); err != nil {
+			if err := undo(sanitizeKnowledgeParseError(item.Kind, prep.parseErr).Error()); err != nil {
 				return err
-			}
-			if markImportItemProcessed != nil {
-				markImportItemProcessed(prep.index, item)
 			}
 			continue
 		}
 
-		// Persist source row (may already reflect distilled status).
-		if err := insertSource(ctx, tx, source); err != nil {
-			item.Status = ItemStatusFailed
-			item.ErrorMessage = err.Error()
-			*failed++
-			if recordFailedItem != nil {
-				recordFailedItem(item)
-			}
-			if err := insertImportItem(ctx, tx, item); err != nil {
+		// Delete the previous derived rows only in this write batch, after
+		// distillation has finished, so a crash during the model call does not
+		// leave the source empty and the model call does not hold the lock.
+		if prep.replaceExisting {
+			if err := deleteSourceDerivedRows(ctx, tx, source.ID); err != nil {
 				return err
 			}
-			if markImportItemProcessed != nil {
-				markImportItemProcessed(prep.index, item)
+		}
+		// Persist source row (may already reflect distilled status).
+		if err := insertSource(ctx, tx, source); err != nil {
+			if undoErr := undo(err.Error()); undoErr != nil {
+				return undoErr
 			}
 			continue
 		}
 		if err := addSourceLabelsTx(ctx, tx, source.ID, ingestLabelsForSource(source, req.Labels, req.AutoLabels)); err != nil {
-			item.Status = ItemStatusFailed
-			item.ErrorMessage = err.Error()
-			*failed++
-			if recordFailedItem != nil {
-				recordFailedItem(item)
-			}
-			if err := insertImportItem(ctx, tx, item); err != nil {
-				return err
-			}
-			if markImportItemProcessed != nil {
-				markImportItemProcessed(prep.index, item)
+			if undoErr := undo(err.Error()); undoErr != nil {
+				return undoErr
 			}
 			continue
 		}
@@ -383,46 +419,21 @@ func (s *SQLiteStore) importLightItemsBatch(
 			if markImportItemProcessed != nil {
 				markImportItemProcessed(prep.index, item)
 			}
+			if err := releaseItem(); err != nil {
+				return err
+			}
 			continue
 		} else if len(prep.nodes) > 0 {
 			if err := insertPreparedLightNodes(ctx, stmts, prep.nodes); err != nil {
-				source.Status = StatusFailed
-				source.ErrorMessage = err.Error()
-				if saveErr := insertSource(ctx, tx, source); saveErr != nil {
-					return saveErr
-				}
-				item.Status = ItemStatusFailed
-				item.ErrorMessage = err.Error()
-				*failed++
-				if recordFailedItem != nil {
-					recordFailedItem(item)
-				}
-				if err := insertImportItem(ctx, tx, item); err != nil {
-					return err
-				}
-				if markImportItemProcessed != nil {
-					markImportItemProcessed(prep.index, item)
+				if undoErr := undo(err.Error()); undoErr != nil {
+					return undoErr
 				}
 				continue
 			}
 			if len(prep.cards) > 0 {
 				if err := insertPreparedLightCardsFacts(ctx, tx, stmts, prep, embeddingModelID); err != nil {
-					source.Status = StatusFailed
-					source.ErrorMessage = err.Error()
-					if saveErr := insertSource(ctx, tx, source); saveErr != nil {
-						return saveErr
-					}
-					item.Status = ItemStatusFailed
-					item.ErrorMessage = err.Error()
-					*failed++
-					if recordFailedItem != nil {
-						recordFailedItem(item)
-					}
-					if err := insertImportItem(ctx, tx, item); err != nil {
-						return err
-					}
-					if markImportItemProcessed != nil {
-						markImportItemProcessed(prep.index, item)
+					if undoErr := undo(err.Error()); undoErr != nil {
+						return undoErr
 					}
 					continue
 				}
@@ -444,6 +455,9 @@ func (s *SQLiteStore) importLightItemsBatch(
 		}
 		if markImportItemProcessed != nil {
 			markImportItemProcessed(prep.index, item)
+		}
+		if err := releaseItem(); err != nil {
+			return err
 		}
 	}
 	return nil

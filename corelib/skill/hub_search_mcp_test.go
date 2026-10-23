@@ -14,6 +14,26 @@ import (
 // SearchMCPClawHub tests
 // ────────────────────────────────────────────────────────────────────────────
 
+func TestClawHubInstallNameKeepsAShortLabelAndDropsAParagraph(t *testing.T) {
+	if got := clawHubInstallName("域名测试", "kwaishop-intelligent-diagnosis-skill_test"); got != "域名测试" {
+		t.Fatalf("short label = %q", got)
+	}
+	paragraph := "强制进度检查点。当龙虾助手在执行任务时超过60秒没有完成，必须立即向用户发送进度反馈"
+	if got := clawHubInstallName(paragraph, "long-task-checkin"); got != "long-task-checkin" {
+		t.Fatalf("paragraph name = %q, want slug", got)
+	}
+	if got := clawHubInstallName("", "long-task-checkin"); got != "long-task-checkin" {
+		t.Fatalf("empty display = %q", got)
+	}
+	sentence := "Force a progress check-in. Send a note when the task runs long."
+	if got := clawHubInstallName(sentence, "long-task-checkin"); got != "long-task-checkin" {
+		t.Fatalf("english sentence name = %q, want slug", got)
+	}
+	if got := clawHubInstallName("Node.js helper", "nodejs-helper"); got != "Node.js helper" {
+		t.Fatalf("dotted label = %q", got)
+	}
+}
+
 func TestSearchMCPClawHub_ParsesResponse(t *testing.T) {
 	// Mock ClawHub API response
 	mockResp := clawHubMCPSearchResponse{

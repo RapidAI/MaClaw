@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
@@ -65,6 +66,48 @@ func TestFilterSkillSearchResultsForIntent_UsesOriginalTaskNotSearchQuery(t *tes
 	filtered := filterSkillSearchResultsForIntent(taskText, results)
 	if len(filtered) != 1 || filtered[0].Name != "Server Status Search" {
 		t.Fatalf("task intent filter kept %#v, want only Server Status Search", filtered)
+	}
+}
+
+func TestSkipUnrunnableInstalledKeepsALaterRunnableHit(t *testing.T) {
+	shop := corelib.NLSkillEntry{
+		Name:     "域名测试",
+		Status:   "needs_setup",
+		Triggers: []string{"kwaishop-intelligent-diagnosis-skill_test"},
+	}
+	progress := corelib.NLSkillEntry{
+		Name:     "强制进度检查点。当龙虾助手在执行任务时超过60秒没有完成，必须立即向用户发送进度反馈",
+		Status:   "needs_setup",
+		Triggers: []string{"long-task-checkin"},
+	}
+	results := []SkillSearchResult{
+		{ID: "kwaishop-intelligent-diagnosis-skill_test", Name: "域名测试", Description: "域名测试"},
+		{ID: "long-task-checkin", Name: "long-task-checkin", Description: "progress"},
+		{ID: "server-status", Name: "Server Status Search", Description: "Searches server status and lists health checks."},
+	}
+	got := skipUnrunnableInstalled([]corelib.NLSkillEntry{shop, progress}, results)
+	if len(got) != 1 || got[0].Name != "Server Status Search" {
+		t.Fatalf("kept %#v", got)
+	}
+	shop.Status = "active"
+	kept := skipUnrunnableInstalled([]corelib.NLSkillEntry{shop}, results[:1])
+	if len(kept) != 1 || kept[0].Name != "域名测试" {
+		t.Fatalf("active install was skipped: %#v", kept)
+	}
+}
+
+func TestFilterSkillSearchResultsForIntent_DropsUndescribedSkillForServerQuery(t *testing.T) {
+	shop := SkillSearchResult{Name: "kwaishop-intelligent-diagnosis-skill_test", Description: "域名测试"}
+	server := SkillSearchResult{Name: "Server Status Search", Description: "Searches server status and lists health checks."}
+	filtered := filterSkillSearchResultsForIntent("查询 api2服务器信息", []SkillSearchResult{shop, server})
+	if len(filtered) != 1 || filtered[0].Name != "Server Status Search" {
+		t.Fatalf("server query kept %#v, want only Server Status Search", filtered)
+	}
+	// The filter compacts its input in place. Pass a fresh slice so the
+	// only-shop case is not the survivor of the call above.
+	onlyShop := filterSkillSearchResultsForIntent("查询 api2服务器信息", []SkillSearchResult{shop})
+	if len(onlyShop) != 0 {
+		t.Fatalf("shop diagnosis kept %#v, want none", onlyShop)
 	}
 }
 
@@ -189,6 +232,62 @@ func TestSearchAndInstallForTask_EmptyQueryDoesNotSearch(t *testing.T) {
 	}
 	if best != nil {
 		t.Fatalf("best = %#v, want nil", best)
+	}
+}
+
+func TestToolSearchAndInstallSkillRejectsHostAdmittedLookupAndContinuation(t *testing.T) {
+	handler := &IMMessageHandler{}
+	lookup := handler.toolSearchAndInstallSkillResultAdmitted(map[string]interface{}{"query": "查询 api2服务器信息"}, nil, true)
+	if lookup.Success || !strings.Contains(lookup.Text, "information lookup") {
+		t.Fatalf("host-admitted lookup = %+v", lookup)
+	}
+	continuation := handler.toolSearchAndInstallSkillResultAdmitted(map[string]interface{}{"query": "继续"}, nil, true)
+	if continuation.Success || !strings.Contains(continuation.Text, "continues the current task") {
+		t.Fatalf("host-admitted continuation = %+v", continuation)
+	}
+	modify := skillSearchQueryAllowed("修改这份表格的目录结构", true)
+	if !modify {
+		t.Fatal("host-admitted modify task was dropped")
+	}
+}
+
+func TestToolSearchAndInstallSkillRejectsCapabilityNounLookup(t *testing.T) {
+	handler := &IMMessageHandler{}
+	lookup := handler.toolSearchAndInstallSkillResult(map[string]interface{}{"query": "查询 api2 的处理能力"}, nil)
+	if lookup.Success || !strings.Contains(lookup.Text, "information lookup") {
+		t.Fatalf("capability noun lookup = %+v", lookup)
+	}
+	asked := handler.toolSearchAndInstallSkillResult(map[string]interface{}{"query": "需要能力检查 api2 服务器状态"}, nil)
+	if strings.Contains(asked.Text, "information lookup") || !strings.Contains(asked.Text, "app is not initialized") {
+		t.Fatalf("explicit capability phrase = %+v", asked)
+	}
+	clean := handler.toolSearchAndInstallSkillResult(map[string]interface{}{"query": "看下有没有可以清理的"}, nil)
+	if clean.Success || !strings.Contains(clean.Text, "information lookup") {
+		t.Fatalf("cleanup look = %+v", clean)
+	}
+	for _, query := range []string{"查询已安装的技能", "查找已安装的技能", "有哪些技能", "搜索已安装的技能"} {
+		lookup := handler.toolSearchAndInstallSkillResult(map[string]interface{}{"query": query}, nil)
+		if lookup.Success || !strings.Contains(lookup.Text, "information lookup") {
+			t.Fatalf("installed-skill inventory %q = %+v", query, lookup)
+		}
+		if skillSearchQueryAllowed(query, true) {
+			t.Fatalf("host-admitted inventory %q was searched", query)
+		}
+	}
+	for _, query := range []string{
+		"找一个能改 tex 的技能",
+		"寻找 pdf 技能",
+		"安装 huashu-art-motion 技能",
+		"需要一个能处理 pdf 的技能",
+		"使用这个技能查询服务器",
+	} {
+		asked := handler.toolSearchAndInstallSkillResult(map[string]interface{}{"query": query}, nil)
+		if strings.Contains(asked.Text, "information lookup") || strings.Contains(asked.Text, "not a missing capability") || !strings.Contains(asked.Text, "app is not initialized") {
+			t.Fatalf("skill request %q = %+v", query, asked)
+		}
+		if !skillSearchQueryAllowed(query, true) {
+			t.Fatalf("host-admitted skill request %q was skipped", query)
+		}
 	}
 }
 

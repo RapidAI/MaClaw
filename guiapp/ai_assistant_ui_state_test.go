@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -127,7 +128,7 @@ func TestAIAssistantUIStateNormalizesAndBoundsPayload(t *testing.T) {
 	messages := make([]map[string]interface{}, 0, 205)
 	for i := 0; i < 205; i++ {
 		messages = append(messages, map[string]interface{}{
-			"id":      "m",
+			"id":      fmt.Sprintf("m%d", i),
 			"role":    "user",
 			"content": i,
 		})
@@ -155,11 +156,21 @@ func TestAIAssistantUIStateNormalizesAndBoundsPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAIAssistantUIState() error = %v", err)
 	}
-	if len(loaded.Messages) != maxAIAssistantUIStateMessages {
-		t.Fatalf("messages len = %d, want %d", len(loaded.Messages), maxAIAssistantUIStateMessages)
+	if len(loaded.Messages) != conversationViewHotMessages {
+		t.Fatalf("messages len = %d, want %d", len(loaded.Messages), conversationViewHotMessages)
 	}
-	if loaded.Messages[0]["content"] != float64(5) {
-		t.Fatalf("oldest retained message content = %#v, want 5", loaded.Messages[0]["content"])
+	if loaded.Messages[0]["content"] != float64(205-conversationViewHotMessages) {
+		t.Fatalf("oldest retained message content = %#v, want %d", loaded.Messages[0]["content"], 205-conversationViewHotMessages)
+	}
+	if loaded.ArchivedCount != 205-conversationViewHotMessages {
+		t.Fatalf("archived count = %d, want %d", loaded.ArchivedCount, 205-conversationViewHotMessages)
+	}
+	archived := app.LoadAIAssistantUIArchive()
+	if len(archived) != 205-conversationViewHotMessages {
+		t.Fatalf("archive len = %d, want %d", len(archived), 205-conversationViewHotMessages)
+	}
+	if archived[0]["id"] != "m0" {
+		t.Fatalf("oldest archived id = %#v", archived[0]["id"])
 	}
 	if len(loaded.Prompts) != maxAIAssistantUIStatePrompts {
 		t.Fatalf("prompts len = %d, want %d", len(loaded.Prompts), maxAIAssistantUIStatePrompts)

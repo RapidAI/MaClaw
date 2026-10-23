@@ -9,6 +9,8 @@ import { addParticipantIdentityKeys, participantIdentityMatches } from "./partic
 import { veStatusEventInfo } from "./veStatusEvent";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { archiveExpertTranscriptForProject, expertSessionKey, normalizeProjectSessionPath, purgeDeletedExpertTabLocalCache } from "./aiAssistantPanelSessionUtils";
+import { mergeChatMessages } from "./aiAssistantProjectTabState";
+import { splitConversationView } from "./conversationViewWindow";
 import { cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTaskFields, isExplicitTaskCopy } from "./codingTaskMode";
 import type { TaskManagementItem } from "../layout/SidebarTaskManagement";
 import { updateAssistantTabTaskSession } from "./aiAssistantPanelSessionUtils";
@@ -1048,19 +1050,19 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                 if ((historyGenerationByTabIdRef.current.get(tab.id) || 0) !== generationAtRequest) return;
                 if (!conversation || !Array.isArray(conversation) || conversation.length === 0) return;
                 const existing = tabStatesRef.current.get(tab.id);
-                const existingLen = existing?.history?.length || 0;
                 const history = persistableProjectHistory(conversation);
                 if (history.length !== conversation.length) {
                     SaveProjectTabConversation(tab.id, history).catch(() => {});
                 }
-                // Backend wins if it has more or equal history (more recent flush survived process kill)
-                if (history.length >= existingLen) {
-                    tabStatesRef.current.set(tab.id, {
-                        ...(existing || { scrollTop: 0, inputText: "" }),
-                        history,
-                        lastActiveAt: Date.now(),
-                    });
-                }
+                // A windowed session file is shorter than the local tail even when it is newer.
+                // Merge by id, then keep only the hot suffix the live view mounts.
+                const existingHistory = Array.isArray(existing?.history) ? existing.history : [];
+                const merged = splitConversationView(mergeChatMessages(existingHistory, history)).visible;
+                tabStatesRef.current.set(tab.id, {
+                    ...(existing || { scrollTop: 0, inputText: "" }),
+                    history: merged,
+                    lastActiveAt: Date.now(),
+                });
             }).catch(() => {});
         }
     }, []);

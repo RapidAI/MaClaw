@@ -1838,10 +1838,13 @@ func queuedSessionSkipReason(sr SessionResult) string {
 // ---------------------------------------------------------------------------
 
 const (
-	bashMinTimeout          = 240
-	bashDefaultTimeout      = corelib.DefaultAgentTimeoutSec
-	bashMaxTimeout          = 600
-	bashPDFTimeout          = bashMaxTimeout
+	bashMinTimeout     = 240
+	bashDefaultTimeout = corelib.DefaultAgentTimeoutSec
+	// An omitted timeout still dies in minutes. An explicit timeout may cover
+	// a goal that keeps one process running for days. PDF work keeps the old
+	// 10-minute default when the caller does not set a timeout.
+	bashMaxTimeout          = corelib.MaxLongRunTimeoutSec
+	bashPDFTimeout          = 600
 	craftToolDefaultTimeout = 90
 	craftToolMaxTimeout     = 300
 	craftToolPDFTimeout     = 180

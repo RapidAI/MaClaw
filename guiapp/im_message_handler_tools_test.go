@@ -1427,7 +1427,10 @@ func TestResolveBashTimeout_PrefersPDFDefaultOnlyWhenNoExplicitTimeout(t *testin
 	if got := resolveBashTimeout(map[string]interface{}{"timeout": float64(45)}, "python render_pdf.py --input review.md"); got != bashMinTimeout {
 		t.Fatalf("resolveBashTimeout(explicit below min) = %d, want %d", got, bashMinTimeout)
 	}
-	if got := resolveBashTimeout(map[string]interface{}{"timeout": float64(999)}, "python render_pdf.py --input review.md"); got != bashMaxTimeout {
+	if got := resolveBashTimeout(map[string]interface{}{"timeout": float64(6 * 3600)}, "python render_pdf.py --input review.md"); got != 6*3600 {
+		t.Fatalf("resolveBashTimeout(multi-hour) = %d, want %d", got, 6*3600)
+	}
+	if got := resolveBashTimeout(map[string]interface{}{"timeout": float64(corelib.MaxLongRunTimeoutSec + 1000)}, "python render_pdf.py --input review.md"); got != bashMaxTimeout {
 		t.Fatalf("resolveBashTimeout(clamped) = %d, want %d", got, bashMaxTimeout)
 	}
 }

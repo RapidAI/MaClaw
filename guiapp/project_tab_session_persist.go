@@ -276,7 +276,7 @@ func (p *ProjectTabSessionPersist) LoadLatestSessionForProject(projectPath strin
 	var latestAt time.Time
 	var latestHasTimestamp bool
 	for _, entry := range entries {
-		if entry.IsDir() || entry.Name() == sessionIndexFileName || filepath.Ext(entry.Name()) != ".json" {
+		if entry.IsDir() || skipSessionDirEntry(entry.Name()) {
 			continue
 		}
 		data, readErr := os.ReadFile(filepath.Join(dir, entry.Name()))
@@ -335,7 +335,7 @@ func (p *ProjectTabSessionPersist) ClearProjectSessionConversations(projectPath 
 	cleared := 0
 	var errs []error
 	for _, entry := range entries {
-		if entry.IsDir() || entry.Name() == sessionIndexFileName || filepath.Ext(entry.Name()) != ".json" {
+		if entry.IsDir() || skipSessionDirEntry(entry.Name()) {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
@@ -360,6 +360,11 @@ func (p *ProjectTabSessionPersist) ClearProjectSessionConversations(projectPath 
 			errs = append(errs, fmt.Errorf("clear session %s: %w", entry.Name(), writeErr))
 			continue
 		}
+		archiveTabID := strings.TrimSpace(session.TabID)
+		if archiveTabID == "" {
+			archiveTabID = strings.TrimSuffix(entry.Name(), ".json")
+		}
+		removeConversationViewArchive(dir, archiveTabID)
 		cleared++
 	}
 	return cleared, errors.Join(errs...)
@@ -402,6 +407,7 @@ func (p *ProjectTabSessionPersist) ClearSessionConversation(tabID string) error 
 	if err := atomicWriteFile(path, encoded); err != nil {
 		return fmt.Errorf("clear session %s: %w", tabID, err)
 	}
+	removeConversationViewArchive(filepath.Dir(path), tabID)
 	return nil
 }
 
@@ -443,6 +449,7 @@ func (p *ProjectTabSessionPersist) DeleteSession(tabID string) error {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("delete session %s: %w", tabID, err)
 	}
+	removeConversationViewArchive(filepath.Dir(path), tabID)
 	return nil
 }
 
@@ -495,6 +502,7 @@ func (p *ProjectTabSessionPersist) DeleteProjectSessions(projectPath string) (in
 			errs = append(errs, fmt.Errorf("delete session %s: %w", tabID, err))
 			return
 		}
+		removeConversationViewArchive(dir, tabID)
 		removedFiles[tabID] = struct{}{}
 	}
 	for tabID := range removedIDs {
@@ -508,7 +516,7 @@ func (p *ProjectTabSessionPersist) DeleteProjectSessions(projectPath string) (in
 		errs = append(errs, fmt.Errorf("read sessions dir: %w", readErr))
 	} else {
 		for _, file := range files {
-			if file.IsDir() || file.Name() == sessionIndexFileName || filepath.Ext(file.Name()) != ".json" {
+			if file.IsDir() || skipSessionDirEntry(file.Name()) {
 				continue
 			}
 			data, err := os.ReadFile(filepath.Join(dir, file.Name()))
@@ -615,7 +623,7 @@ func (p *ProjectTabSessionPersist) cleanupOrphanedFiles(index *TabIndex) {
 	for _, entry := range entries {
 		name := entry.Name()
 		// Skip the index file and non-JSON files.
-		if name == sessionIndexFileName || filepath.Ext(name) != ".json" {
+		if skipSessionDirEntry(name) {
 			continue
 		}
 		// Skip files that are in the index.
@@ -639,6 +647,80 @@ func (p *ProjectTabSessionPersist) cleanupOrphanedFiles(index *TabIndex) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+func skipSessionDirEntry(name string) bool {
+	return name == sessionIndexFileName || isConversationViewArchiveFile(name) || filepath.Ext(name) != ".json"
+}
+
+func removeConversationViewArchive(dir, tabID string) {
+	tabID = strings.TrimSpace(tabID)
+	if dir == "" || tabID == "" {
+		return
+	}
+	_ = os.Remove(filepath.Join(dir, conversationViewArchiveFileName(tabID)))
+}
+
+func (p *ProjectTabSessionPersist) conversationViewArchivePath(tabID string) (string, error) {
+	dir, err := p.sessionsDir()
+	if err != nil {
+		return "", err
+	}
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return "", fmt.Errorf("conversation archive: tab_id is required")
+	}
+	return filepath.Join(dir, conversationViewArchiveFileName(tabID)), nil
+}
+
+// LoadConversationViewArchive reads the earlier turns for a tab. Missing files
+// are an empty transcript, not an error.
+func (p *ProjectTabSessionPersist) LoadConversationViewArchive(tabID string) ([]interface{}, error) {
+	if p == nil {
+		return []interface{}{}, nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	path, err := p.conversationViewArchivePath(tabID)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []interface{}{}, nil
+		}
+		return nil, fmt.Errorf("read conversation archive %s: %w", tabID, err)
+	}
+	var document conversationViewArchiveDocument
+	if json.Unmarshal(data, &document) != nil || len(document.Messages) == 0 {
+		return []interface{}{}, nil
+	}
+	return document.Messages, nil
+}
+
+// SaveConversationViewArchive writes earlier turns. An empty slice removes the file.
+func (p *ProjectTabSessionPersist) SaveConversationViewArchive(tabID string, messages []interface{}) error {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	path, err := p.conversationViewArchivePath(tabID)
+	if err != nil {
+		return err
+	}
+	if len(messages) == 0 {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove conversation archive %s: %w", tabID, err)
+		}
+		return nil
+	}
+	payload, err := json.MarshalIndent(conversationViewArchiveDocument{Messages: messages}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal conversation archive %s: %w", tabID, err)
+	}
+	return atomicWriteFile(path, payload)
+}
 
 // atomicWriteFile writes data to a temporary file then renames it to the
 // target path, ensuring the file is never partially written.

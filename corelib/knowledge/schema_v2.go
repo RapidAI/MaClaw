@@ -4,12 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 )
 
 const knowledgeSchemaVersionV2 = 2
 
-func createSchemaV2(ctx context.Context, db *sql.DB) error {
-	stmts := []string{
+func schemaV2DDL() []string {
+	return []string{
 		`CREATE TABLE IF NOT EXISTS kb_meta (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
@@ -168,10 +169,59 @@ func createSchemaV2(ctx context.Context, db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_kb_facts_subject ON kb_facts(subject)`,
 		`CREATE INDEX IF NOT EXISTS idx_kb_facts_object ON kb_facts(object)`,
 	}
-	for _, stmt := range stmts {
+}
+
+func createSchemaV2(ctx context.Context, db *sql.DB) error {
+	for _, stmt := range schemaV2DDL() {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("knowledge sqlite schema v2: %w", err)
 		}
 	}
 	return nil
+}
+
+// schemaV2ObjectNamePattern reads the object name out of one CREATE TABLE /
+// CREATE INDEX statement. A v2 database still runs those statements when an
+// object is missing, so a later index can land without a version bump and
+// without taking a write lock on every open.
+var schemaV2ObjectNamePattern = regexp.MustCompile(`(?i)CREATE\s+(?:VIRTUAL\s+TABLE|TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+([A-Za-z0-9_]+)`)
+
+func knowledgeSchemaV2Incomplete(ctx context.Context, db *sql.DB) (bool, error) {
+	stmts := schemaV2DDL()
+	names := make([]string, 0, len(stmts))
+	seen := make(map[string]struct{}, len(stmts))
+	for _, stmt := range stmts {
+		match := schemaV2ObjectNamePattern.FindStringSubmatch(stmt)
+		if match == nil {
+			return true, nil
+		}
+		if _, ok := seen[match[1]]; ok {
+			return true, nil
+		}
+		seen[match[1]] = struct{}{}
+		names = append(names, match[1])
+	}
+	args := make([]interface{}, len(names))
+	for i, name := range names {
+		args[i] = name
+	}
+	rows, err := db.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE name IN (`+placeholders(len(names))+`)`, args...)
+	if err != nil {
+		return false, fmt.Errorf("knowledge sqlite probe schema v2: %w", err)
+	}
+	defer rows.Close()
+	got := make(map[string]struct{}, len(names))
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false, fmt.Errorf("knowledge sqlite probe schema v2: %w", err)
+		}
+		if _, ok := seen[name]; ok {
+			got[name] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("knowledge sqlite probe schema v2: %w", err)
+	}
+	return len(got) != len(names), nil
 }

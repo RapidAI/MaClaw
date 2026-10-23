@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -64,9 +65,16 @@ type ConversationEntry struct {
 	// FinishReason is host/trajectory metadata only (not sent to the LLM API).
 	// Typical values: stop, tool_calls, length.
 	FinishReason string `json:"finish_reason,omitempty"`
-	ID           string `json:"_id,omitempty"`
-	ParentID     string `json:"_parent_id,omitempty"`
-	Timestamp    int64  `json:"_ts,omitempty"`
+	// TerminalClass is the loop stop code for this turn, such as no_progress.
+	// It names the outcome. It is not the sentence, and ToMessage omits it.
+	TerminalClass string `json:"terminal_class,omitempty"`
+	// HostContinuation is a loop-injected user row, such as a retry hint.
+	// It keeps the model going inside the same person turn. ToMessage omits
+	// it. Visible history does not treat it as a new request.
+	HostContinuation bool   `json:"host_continuation,omitempty"`
+	ID               string `json:"_id,omitempty"`
+	ParentID         string `json:"_parent_id,omitempty"`
+	Timestamp        int64  `json:"_ts,omitempty"`
 	// CompactionID marks a context-checkpoint separator. An async summary
 	// replaces that entry in place and does not rewrite newer messages.
 	CompactionID string `json:"compaction_id,omitempty"`
@@ -117,6 +125,106 @@ func (e ConversationEntry) ToMessage() interface{} {
 		m["tool_call_id"] = e.ToolCallID
 	}
 	return m
+}
+
+// terminalClassCode matches a loop status code. A sentence is not a class.
+var terminalClassCode = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// IsTerminalClassCode reports a loop terminal class such as no_progress.
+// Human error sentences do not match.
+func IsTerminalClassCode(code string) bool {
+	return terminalClassCode.MatchString(strings.TrimSpace(code))
+}
+
+// StampTurnTerminalClass records a loop terminal class on every displayable
+// assistant entry of this turn. The reply the user saw can be an earlier
+// line. A later line may only repeat reasoning into content, and that line
+// is still part of the same unfinished turn. turnStart is the first index
+// that belongs to the turn. Earlier turns stay as they were. The class is
+// host metadata: ToMessage omits it, so the next model request does not see
+// it. An empty code, a sentence, or a turn with no displayable assistant
+// entry changes nothing.
+func StampTurnTerminalClass(entries []ConversationEntry, turnStart int, class string) {
+	class = strings.TrimSpace(class)
+	if !IsTerminalClassCode(class) || len(entries) == 0 {
+		return
+	}
+	if turnStart < 0 {
+		turnStart = 0
+	}
+	if turnStart > len(entries) {
+		turnStart = len(entries)
+	}
+	for i := turnStart; i < len(entries); i++ {
+		if !assistantEntryDisplayable(entries[i]) {
+			continue
+		}
+		entries[i].TerminalClass = class
+	}
+}
+
+// AssistantContentRepeatsReasoning reports content that is only a copy of the
+// thinking trace. A tool turn's copy is not the fallback reply. A closing
+// answer can still use the same text.
+func AssistantContentRepeatsReasoning(content, reasoning string) bool {
+	content = strings.TrimSpace(content)
+	reasoning = strings.TrimSpace(reasoning)
+	return content != "" && content == reasoning
+}
+
+// AssistantPlanningEcho reports a tool turn whose content only repeats the
+// thinking trace. Visible history can omit that line when the turn has a real
+// reply. A closing answer with no tool call stays, even when the two fields
+// match: the loop returns that text, and dropping it would hide the answer.
+func AssistantPlanningEcho(content, reasoning, finishReason string, toolCalls any) bool {
+	if !AssistantContentRepeatsReasoning(content, reasoning) {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(finishReason), "tool_calls") {
+		return true
+	}
+	return toolCallListNonEmpty(toolCalls)
+}
+
+// HostUserEntry is a user row the loop injected to continue the same person
+// turn. It is not something the person typed.
+func HostUserEntry(content string) ConversationEntry {
+	return ConversationEntry{Role: "user", Content: content, HostContinuation: true}
+}
+
+func toolCallListNonEmpty(toolCalls any) bool {
+	if toolCalls == nil {
+		return false
+	}
+	value := reflect.ValueOf(toolCalls)
+	switch value.Kind() {
+	case reflect.Slice, reflect.Array:
+		return value.Len() > 0
+	case reflect.Pointer, reflect.Interface:
+		if value.IsNil() {
+			return false
+		}
+		return toolCallListNonEmpty(value.Elem().Interface())
+	default:
+		return false
+	}
+}
+
+func assistantEntryDisplayable(entry ConversationEntry) bool {
+	if !strings.EqualFold(strings.TrimSpace(entry.Role), "assistant") {
+		return false
+	}
+	if strings.TrimSpace(entry.ReasoningContent) != "" {
+		return true
+	}
+	switch content := entry.Content.(type) {
+	case nil:
+		return false
+	case string:
+		return strings.TrimSpace(content) != ""
+	default:
+		return true
+	}
 }
 
 // UnfinishedTaskSlot tracks an incomplete task that can be resumed later.
@@ -1075,6 +1183,11 @@ func deduplicateAdjacentAssistantEntries(entries []ConversationEntry, respectBra
 	result = append(result, entries[:dupAt]...)
 	for _, entry := range entries[dupAt:] {
 		if len(result) > 0 && isDuplicateAssistantEntry(result[len(result)-1], entry, respectBranchMetadata) {
+			// The later copy can be the turn that received the stop code.
+			// Dropping it must not drop that outcome.
+			if result[len(result)-1].TerminalClass == "" && strings.TrimSpace(entry.TerminalClass) != "" {
+				result[len(result)-1].TerminalClass = entry.TerminalClass
+			}
 			continue
 		}
 		result = append(result, entry)
@@ -1118,6 +1231,21 @@ func mergeLinearEntriesIntoExistingTree(all []ConversationEntry, activeTipID str
 	}
 	if common == 0 {
 		return nil, "", false
+	}
+	// A tool-batch checkpoint stores this turn before the loop knows it
+	// stopped. The later save carries the same lines plus the terminal
+	// class. Matching only the model payload would keep the unstamped
+	// copy and the outcome would not survive reopen.
+	for i := 0; i < common; i++ {
+		class := strings.TrimSpace(entries[i].TerminalClass)
+		if class == "" || active[i].TerminalClass == class {
+			continue
+		}
+		node := tree.entries[active[i].ID]
+		if node == nil {
+			continue
+		}
+		node.TerminalClass = class
 	}
 	if !tree.BranchAt(active[common-1].ID) {
 		return nil, "", false

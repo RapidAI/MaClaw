@@ -136,7 +136,7 @@ func (h *IMMessageHandler) goalCreateForUser(userID string, args map[string]inte
 	if g.TokenBudget > 0 {
 		b.WriteString(fmt.Sprintf("Token 预算: %d\n", g.TokenBudget))
 	}
-	b.WriteString(fmt.Sprintf("最大轮次: %d\n", g.MaxTurns))
+	b.WriteString("最大轮次: " + goal.MaxTurnsLabel(g.MaxTurns) + "\n")
 	if len(g.AcceptanceCriteria) > 0 {
 		b.WriteString("验收标准:\n")
 		for _, c := range g.AcceptanceCriteria {
@@ -345,7 +345,7 @@ func (h *IMMessageHandler) goalGetForUser(userID string) string {
 	} else {
 		b.WriteString(fmt.Sprintf("Token 已用: %d（无限制）\n", g.TokensUsed))
 	}
-	b.WriteString(fmt.Sprintf("轮次: %d / %d\n", g.TurnsUsed, g.MaxTurns))
+	b.WriteString("轮次: " + goal.FormatTurnCount(g.TurnsUsed, g.MaxTurns) + "\n")
 	b.WriteString(fmt.Sprintf("耗时: %ds\n", g.TimeUsedSeconds))
 	if g.Understanding != "" {
 		b.WriteString(fmt.Sprintf("理解: %s\n", g.Understanding))
@@ -386,6 +386,9 @@ func (h *IMMessageHandler) goalPauseForUser(userID string) string {
 	}
 	if g.Status != goal.StatusActive {
 		return fmt.Sprintf("目标不在活跃状态（当前: %s），无法暂停。", g.Status)
+	}
+	if h.app != nil && h.app.goalContinuation != nil {
+		h.app.goalContinuation.clearContinueRearmed(userID)
 	}
 	store.Pause(userID, g.GoalID)
 	// The queued continuation must stop with the goal. Cancel after the

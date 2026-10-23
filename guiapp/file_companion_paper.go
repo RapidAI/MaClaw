@@ -55,7 +55,7 @@ func fileCompanionOutgoing(canonical string, req FileCompanionTurnRequest) (prom
 }
 
 func fileCompanionPaperPrompt(name string) string {
-	return "你是文件伴读。只讨论当前打开的这一份文档：" + name + "。不要使用工具，不要编造文中没有的地址、仓库或指标。按用户消息里的解读要求输出正文。这篇解读的 PDF 由宿主根据正文生成。数据集和代码若文中没有 URL，写成「论文未给出」，并给出检索词。"
+	return "你是文件伴读。只讨论当前打开的这一份文档：" + name + "。不要使用工具，不要编造文中没有的地址、仓库或指标。按用户消息里的解读要求输出正文。这篇解读的 PDF 由宿主根据正文生成。数据集和代码若文中没有 URL，写成「论文未给出」，并给出检索词。消息里若已有扫描页识别正文，按那些页写，不要写文档无法读取。"
 }
 
 func fileCompanionPaperInstruction() string {

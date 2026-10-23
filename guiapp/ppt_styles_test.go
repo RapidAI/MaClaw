@@ -29,6 +29,11 @@ func TestParseGeneratedPPTStyleKeepsPaletteAndRewritesBuiltinID(t *testing.T) {
 	if style.ID != "custom-style" || style.Label != "赛博霓虹" || style.Colors.Accent != "FF2E88" {
 		t.Fatalf("parsed = %+v", style)
 	}
+	asWords := strings.Replace(raw, `"keywords":["赛博","霓虹"]`, `"keywords":"赛博、霓虹"`, 1)
+	style, err = parseGeneratedPPTStyle(asWords)
+	if err != nil || style.Label != "赛博霓虹" || len(style.Keywords) != 2 {
+		t.Fatalf("keyword string: %+v %v", style, err)
+	}
 	if _, err := parseGeneratedPPTStyle(`{"id":"ok-style","label":"x"}`); err == nil {
 		t.Fatal("incomplete palette must fail")
 	}

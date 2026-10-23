@@ -2448,17 +2448,62 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 
 /* Match the reference composer: paperclip/mic on the left and a blue send
    affordance on the right.  The button remains disabled until text exists;
-   only its visual affordance is kept present on the empty landing state. */
+   only its visual affordance is kept present on the empty landing state.
+   #App is required: the later composer utility lock
+   (#App .mc-input-stack button:not(.btn-primary), specificity 1,2,1) paints
+   muted ink on every non-primary button. That gray hook sat on the accent
+   fill at about 1.2:1. A deepened primary keeps the mark blue and clears 7:1
+   with a white stroke, including the empty disabled state. */
 [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer [data-testid='ai-clear-input'] {
   display: none !important;
 }
-[data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button[aria-label='发送'],
-[data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button[aria-label='Send'] {
-  background: var(--mc-accent, #2f6fbc) !important;
-  border-color: var(--mc-accent, #2f6fbc) !important;
-  color: var(--theme-on-primary) !important;
+#App [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send,
+#App [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send:hover,
+#App [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send:disabled {
+  background: color-mix(in srgb, var(--theme-primary, #2f6fbc) 68%, #06101c) !important;
+  border-color: color-mix(in srgb, var(--theme-primary, #2f6fbc) 68%, #06101c) !important;
+  color: #ffffff !important;
   opacity: 1 !important;
-  box-shadow: 0 3px 8px rgba(23, 105, 232, .22) !important;
+  box-shadow: 0 3px 8px rgba(8, 28, 58, .28) !important;
+}
+#App [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send:hover:not(:disabled),
+#App [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send:active:not(:disabled) {
+  filter: brightness(1.08);
+}
+#App [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send:active:not(:disabled) {
+  filter: brightness(0.94);
+}
+#App [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send svg {
+  width: 18px;
+  height: 18px;
+  color: #ffffff !important;
+}
+/* The icon sets stroke-width on the path. A value on the svg is inherited
+   only when the shape has none, so the weight has to be set on the shape. */
+#App [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send svg * {
+  stroke: currentColor;
+  stroke-width: 2.25;
+}
+/* Busy mark is a 2px ring. border-color paints every side, so the gap has to
+   be reset after it or the spinner becomes a solid circle. */
+#App [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send > span {
+  border-color: #ffffff !important;
+  border-top-color: transparent !important;
+}
+#App[data-ai-theme='dark'] [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send,
+#App[data-ai-theme='dark'] [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send:hover,
+#App[data-ai-theme='dark'] [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send:disabled {
+  background: var(--theme-primary) !important;
+  border-color: var(--theme-primary) !important;
+  color: var(--theme-on-primary, #ffffff) !important;
+  box-shadow: none !important;
+}
+#App[data-ai-theme='dark'] [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send svg {
+  color: var(--theme-on-primary, #ffffff) !important;
+}
+#App[data-ai-theme='dark'] [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send > span {
+  border-color: var(--theme-on-primary, #ffffff) !important;
+  border-top-color: transparent !important;
 }
 
 

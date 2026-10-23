@@ -11,6 +11,7 @@ import { noteAIScrollStreamFlush, noteAIScrollStreamRoundEnd, noteAIScrollStream
 import { appendRolePrefixStrip, createRolePrefixStreamCursor, findRolePrefixForDisplay, isBrowserEchoFieldLabel, stripRolePrefixForDisplay, truncateRolePrefixForDisplay, type RolePrefixStreamCursor } from "./rolePrefixDisplay";
 import { isHistoryResetCommandText } from "./composeAction";
 import { isCodingAgentChatHiddenEvent, isCodingAgentProgressContent, parseCodingAgentProgress } from "./CodingAgentProgressStatus";
+import { liveStatusProgress } from "./aiAssistantProgressUtils";
 import { reasoningHasCodingStatusMilestone, stripCodingWorkbenchStatusReasoning } from "./codingAgentUserFinish";
 import { clearAssistantRoundProse, isRejectedRoundContentToken, rejectStreamedAssistantContent, rejectedRoundContentToken } from "./assistantRoundProse";
 import { appendToolCallMarker, contentHasAssistantToolCall, isProgressOnlyToolAction, isTranscriptToolCallText, parseAssistantToolStatus, stripAssistantToolCallMarkers, type AssistantToolCall } from "./assistantToolCall";
@@ -562,6 +563,8 @@ export interface ChatMessage {
     /** Background chat task card. The foreground turn stays free while this runs. */
     chatTask?: import("./chatTaskModel").ChatTaskView;
     content: string;
+    /** Live status row id. A later event with the same slot replaces this line. */
+    progressSlot?: string;
     /** Local attachment metadata used only for compact user-bubble rendering. */
     attachments?: ChatAttachment[];
     /** Reasoning/thinking content from reasoning models. The panel stays open while that thought is in progress, then folds. */
@@ -705,18 +708,49 @@ function removeMessageAtIndex(messages: ChatMessage[], index: number): ChatMessa
     return [...messages.slice(0, index), ...messages.slice(index + 1)];
 }
 
+function isLLMRetryProgressRow(message: ChatMessage): boolean {
+    return message.progressSlot === "llm-retry" || liveStatusProgress(message.content || "").slot === "llm-retry";
+}
+
 function appendProgressText(messages: ChatMessage[], progressText: string): ChatMessage[] {
+    const incoming = liveStatusProgress(progressText);
+    const visible = incoming.text;
+    if (!visible) return messages;
     const lastMessage = messages[messages.length - 1];
-    if (lastMessage?.content === progressText) {
+    if (lastMessage?.content === visible && (!incoming.slot || lastMessage.progressSlot === incoming.slot)) {
         return messages;
     }
-    if (lastMessage && progressSemanticKey(lastMessage.content) === progressSemanticKey(progressText)) {
+    // One row for the model wait. The countdown, the in-flight request, and
+    // the later 第 N 次 all carry LiveStatus:llm-retry, so the three-line cap
+    // cannot keep a finished "32 秒后继续" beside the next phase. The next
+    // milestone retires that row. An identical sentence is dropped above.
+    if (incoming.slot === "llm-retry") {
+        let kept: ChatMessage | undefined;
+        const rest: ChatMessage[] = [];
+        for (const message of messages) {
+            if (isLLMRetryProgressRow(message)) {
+                kept = message;
+                continue;
+            }
+            rest.push(message);
+        }
+        if (kept) {
+            rest.push({ ...kept, content: visible, progressSlot: "llm-retry", timestamp: Date.now() });
+            return rest;
+        }
+    } else {
+        const withoutRetry = messages.filter((message) => !isLLMRetryProgressRow(message));
+        if (withoutRetry.length !== messages.length) messages = withoutRetry;
+    }
+    const tail = messages[messages.length - 1];
+    if (tail && progressSemanticKey(tail.content) === progressSemanticKey(visible)) {
         return messages;
     }
     const next = [...messages, {
         id: nextId(),
         role: 'progress' as const,
-        content: progressText,
+        content: visible,
+        progressSlot: incoming.slot || undefined,
         timestamp: Date.now(),
     }];
     return capLiveProgressMessages(next);
@@ -2944,13 +2978,20 @@ function storedFactReceiptTail(stream: string, finalText: string): boolean {
     return head.includes('先查记忆') && head.includes('knowledge_search');
 }
 
+/** A loop terminal class, such as no_progress. It names the turn. It is not the sentence. */
+export function isTerminalClassCode(error: string): boolean {
+    return /^[a-z][a-z0-9_]*$/.test(error);
+}
+
 /** The model's final message. Independent of the live tool transcript in content. */
 export function terminalAssistantResult(message: ChatMessage, response: any): string | undefined {
     if (!message.toolCalls?.length) return undefined;
     const raw = typeof response?.text === "string" ? response.text : "";
     let text = stripAssistantToolCallMarkers(stripRolePrefixFrontend(raw)).trim();
     const err = typeof response?.error === "string" ? response.error.trim() : "";
-    if (err && !text.includes(err)) text = text ? `${text}\n\n${err}` : err;
+    // A status code is the turn's terminal class. It is not a second paragraph.
+    // A sentence, including a tool error the host wants shown, still is.
+    if (err && !isTerminalClassCode(err) && !text.includes(err)) text = text ? `${text}\n\n${err}` : err;
     if (!text) return undefined;
     if ((message.content || "").includes(CANCELED_BY_USER_LINE) && !text.includes(CANCELED_BY_USER_LINE)) {
         return `${text}\n\n${CANCELED_BY_USER_LINE}`;
@@ -3367,8 +3408,20 @@ function resolveSendResult(messages: ChatMessage[], assistantMessageId: string |
         if (semanticHostRejectKeepsDismiss(response)) {
             return finalizeRoundMessage(messages, assistantMessageId, requestId, response, preferences);
         }
-        const display = semanticHostRejectDisplayText(response) || responseError;
-        return replaceRoundWithError(messages, assistantMessageId, requestId, display, isTimeoutErrorText(display));
+        // A host reject already has its sentence. That row stays an error.
+        // The class code must not turn it into a finished assistant reply.
+        const hostReject = semanticHostRejectDisplayText(response);
+        if (hostReject) {
+            return replaceRoundWithError(messages, assistantMessageId, requestId, hostReject, isTimeoutErrorText(hostReject));
+        }
+        // The loop already put the utterance in text. A class code only
+        // classifies that turn, so the header can read incomplete. Putting
+        // the code in the bubble drops the sentence. A failure sentence
+        // still replaces the round.
+        if (isTerminalClassCode(responseError) && hasVisibleTerminalPayload(response)) {
+            return finalizeRoundMessage(messages, assistantMessageId, requestId, response, preferences);
+        }
+        return replaceRoundWithError(messages, assistantMessageId, requestId, responseError, isTimeoutErrorText(responseError));
     }
     return finalizeRoundMessage(messages, assistantMessageId, requestId, response, preferences);
 }
@@ -6636,7 +6689,20 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 && !!knownAssistant
                 && knownAssistant.role === 'assistant'
                 && !knownAssistant.codingTimeline?.length;
-            if (!isStatusProgress && !embedWillLand) {
+            if (embedWillLand) {
+                // The tool card lands on the assistant message, so this line
+                // never enters the tray. The model-wait row still has to leave:
+                // appendProgressText is what retires it, and this path skips that.
+                const current = progressMessagesBySessionRef.current.get(progressSessionKey) || [];
+                const withoutRetry = current.filter((message) => !isLLMRetryProgressRow(message));
+                if (withoutRetry.length !== current.length) {
+                    progressMessagesBySessionRef.current.set(progressSessionKey, withoutRetry);
+                    progressTailBySessionRef.current.delete(progressSessionKey);
+                    if (activeProgressSessionKeyRef.current === progressSessionKey) {
+                        setProgressMessages(withoutRetry);
+                    }
+                }
+            } else if (!isStatusProgress) {
                 appendProgressForSession(progressSessionKey, progressText);
             }
             if (tryEmbedToolCall) {

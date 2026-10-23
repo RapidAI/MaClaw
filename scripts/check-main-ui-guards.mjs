@@ -633,7 +633,9 @@ const extractedFileLineLimits = [
   // Refreshed 100 -> 170 (2026-10-15): input-history recall now restores the
   // composer's attachment snapshot too (guard counts 165).
   ['guiapp/frontend/src/components/ai/useAssistantInputHistory.ts', 170],
-  ['guiapp/frontend/src/components/ai/usePastedImageAttachments.ts', 340],
+  // Refreshed 340 -> 375 (2026-10-23): in-flight paste-attachment work
+  // measured 359 lines.
+  ['guiapp/frontend/src/components/ai/usePastedImageAttachments.ts', 375],
   ['guiapp/frontend/src/components/ai/useGroupDiscussionControls.ts', 90],
   // Refreshed 280 -> 335 (2026-10-20): document preview row added for
   // non-image attachments (guard counts 318).
@@ -1207,7 +1209,7 @@ requireIncludes('guiapp/frontend/src/components/modals/ToolRepairProgressDialog.
 requireIncludes('guiapp/frontend/src/components/modals/UpdateModal.tsx', 'downloadAndUpdate', 'update modal download action');
 requireIncludes('guiapp/frontend/src/components/modals/UpdateModal.tsx', 'cancelDownload', 'update modal cancel download action');
 requireIncludes('guiapp/frontend/src/components/modals/UpdateModal.tsx', 'var(--theme-info-bg)', 'update modal theme-aware info panel');
-requireIncludes('guiapp/frontend/src/components/modals/UpdateModal.tsx', '\\u2714\\uFE0F', 'update modal latest-version icon');
+requireIncludes('guiapp/frontend/src/components/modals/UpdateModal.tsx', 'StatusGlyph', 'update modal status icons');
 requireIncludes('guiapp/frontend/src/components/modals/InstallLogModal.tsx', 'installLogTitle', 'install log title');
 requireIncludes('guiapp/frontend/src/components/modals/InstallLogModal.tsx', 'navigator.clipboard.writeText', 'install log copy action');
 requireIncludes('guiapp/frontend/src/components/modals/InstallLogModal.tsx', 'onSendLog(hasError)', 'install log send action');

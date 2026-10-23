@@ -100,6 +100,21 @@ func TestBuildAnthropicMessagesRequestBodyAutoEnablesGLM53Thinking(t *testing.T)
 	}
 }
 
+func TestBuildAnthropicMessagesRequestBodyDisablesGLMFlashThinking(t *testing.T) {
+	req := BuildAnthropicMessagesRequestBody(
+		corelib.MaclawLLMConfig{URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.3-flash", ThinkingMode: "disabled"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		AnthropicMessagesRequestOptions{MaxTokens: 900},
+	)
+	thinking, _ := req["thinking"].(map[string]interface{})
+	if thinking["type"] != "disabled" {
+		t.Fatalf("thinking = %#v, want type=disabled", req["thinking"])
+	}
+	if req["max_tokens"] != 900 {
+		t.Fatalf("max_tokens = %#v, want 900", req["max_tokens"])
+	}
+}
+
 func TestBuildAnthropicMessagesRequestBodyFitsMemberMaxTokens(t *testing.T) {
 	req := BuildAnthropicMessagesRequestBody(
 		corelib.MaclawLLMConfig{

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { AIAssistantAttachmentFullDataURL, PptxPreviewEnsure, PptxSlideThumbnailDataURL } from "../../../wailsjs/go/main/App";
 import type { CodePreviewTheme } from "./FileTabBar";
+import { PREVIEW_BAR_DELAY_MS, PreviewLoadingStatus } from "./PreviewProgressBar";
 
 type PptxPreviewResult = {
     file_path?: string;
@@ -42,8 +43,11 @@ export function PptxPreviewPanel({ absPath, theme, lang }: PptxPreviewPanelProps
     const [images, setImages] = useState<string[] | null>(null);
     const [error, setError] = useState("");
     const [thumbs, setThumbs] = useState<ReadonlyMap<number, string>>(new Map());
-    const [fullUrls, setFullUrls] = useState<ReadonlyMap<number, string>>(new Map());
+    const [fullUrl, setFullUrl] = useState<{ index: number; url: string } | null>(null);
+    const fullUrlRef = useRef<{ index: number; url: string } | null>(null);
+    const [fullRetry, setFullRetry] = useState(0);
     const [selected, setSelected] = useState(0);
+    const [barOn, setBarOn] = useState(false);
     const versionRef = useRef(0);
 
     useEffect(() => {
@@ -51,14 +55,20 @@ export function PptxPreviewPanel({ absPath, theme, lang }: PptxPreviewPanelProps
         setImages(null);
         setError("");
         setThumbs(new Map());
-        setFullUrls(new Map());
+        fullUrlRef.current = null;
+        setFullUrl(null);
         setSelected(0);
         let cancelled = false;
+        setBarOn(false);
+        const barTimer = window.setTimeout(() => {
+            if (!cancelled) setBarOn(true);
+        }, PREVIEW_BAR_DELAY_MS);
         const alive = () => !cancelled && version === versionRef.current;
         const zh = () => langRef.current.startsWith("zh");
         void (async () => {
             try {
                 const result = await PptxPreviewEnsure(absPath) as PptxPreviewResult;
+                window.clearTimeout(barTimer);
                 if (!alive()) return;
                 const list = Array.isArray(result?.images) ? result.images.filter(Boolean) : [];
                 if (list.length === 0) {
@@ -90,34 +100,44 @@ export function PptxPreviewPanel({ absPath, theme, lang }: PptxPreviewPanelProps
                 });
                 await Promise.all(workers);
             } catch (err) {
+                window.clearTimeout(barTimer);
                 if (alive()) setError(err instanceof Error ? err.message : String(err || ""));
             }
         })();
-        return () => { cancelled = true; };
+        return () => {
+            cancelled = true;
+            window.clearTimeout(barTimer);
+        };
     }, [absPath]);
 
-    // The full-fidelity slide loads on demand for the selected page only.
+    // The full-fidelity slide loads for the selected page only. The previous
+    // page's bytes are dropped; the thumbnail strip is what stays.
     useEffect(() => {
         if (!images || images.length === 0) return;
         const index = Math.min(selected, images.length - 1);
-        if (fullUrls.has(index)) return;
+        const cached = fullUrlRef.current;
+        if (cached && cached.index === index && cached.url) return;
+        // Drop the previous page before the next fetch. A failed fetch must
+        // not keep that page's full-size bytes for the rest of the session.
+        if (cached) {
+            fullUrlRef.current = null;
+            setFullUrl(null);
+        }
         const version = versionRef.current;
         let cancelled = false;
         void (async () => {
             try {
                 const url = String(await AIAssistantAttachmentFullDataURL(images[index]) || "");
                 if (cancelled || version !== versionRef.current || !url) return;
-                setFullUrls(prev => {
-                    const next = new Map(prev);
-                    next.set(index, url);
-                    return next;
-                });
+                const next = { index, url };
+                fullUrlRef.current = next;
+                setFullUrl(next);
             } catch {
-                // Keep the placeholder; the user can reselect to retry.
+                // Keep the placeholder. Clicking this page again retries.
             }
         })();
         return () => { cancelled = true; };
-    }, [selected, images, fullUrls]);
+    }, [selected, images, fullRetry]);
 
     if (error) {
         return (
@@ -127,15 +147,21 @@ export function PptxPreviewPanel({ absPath, theme, lang }: PptxPreviewPanelProps
         );
     }
     if (!images) {
+        const sentence = isZh ? "正在渲染 PPT 预览…" : "Rendering slide preview…";
         return (
-            <div data-testid="pptx-preview-loading" role="status" style={{ padding: 20, color: theme.textMuted, fontSize: 13 }}>
-                {isZh ? "正在渲染 PPT 预览…" : "Rendering slide preview…"}
-            </div>
+            <PreviewLoadingStatus
+                testId="pptx-preview-loading"
+                style={{ padding: 20, color: theme.textMuted, fontSize: 13 }}
+                phase="wait"
+                ratio={null}
+                showBar={barOn}
+                phrases={{ wait: sentence, read: sentence, parse: sentence }}
+            />
         );
     }
 
     const current = Math.min(selected, images.length - 1);
-    const currentUrl = fullUrls.get(current) || "";
+    const currentUrl = fullUrl && fullUrl.index === current ? fullUrl.url : "";
     const handleThumbsKeyDown = (event: KeyboardEvent) => {
         let next = current;
         if (event.key === "ArrowDown" || event.key === "ArrowRight") next = Math.min(images.length - 1, current + 1);
@@ -177,7 +203,14 @@ export function PptxPreviewPanel({ absPath, theme, lang }: PptxPreviewPanelProps
                             aria-selected={active}
                             data-testid="pptx-preview-thumbnail"
                             data-active={active ? "true" : "false"}
-                            onClick={() => setSelected(index)}
+                            onClick={() => {
+                                // The selected page is already current, so a
+                                // second click is the retry for a failed load.
+                                if (index === current && !(fullUrl && fullUrl.index === index && fullUrl.url)) {
+                                    setFullRetry((attempt) => attempt + 1);
+                                }
+                                setSelected(index);
+                            }}
                             title={isZh ? `第 ${index + 1} 页` : `Slide ${index + 1}`}
                             style={{
                                 position: "relative",

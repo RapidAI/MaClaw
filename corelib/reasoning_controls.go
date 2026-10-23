@@ -89,13 +89,19 @@ func ApplyReasoningControls(cfg MaclawLLMConfig, body map[string]interface{}, ap
 	}
 
 	if api == ReasoningAPIAnthropic {
-		// Anthropic disables extended thinking by omitting the thinking block;
-		// unlike the OpenAI-compatible APIs, it does not accept type=disabled.
+		// Anthropic Claude disables extended thinking by omitting the thinking
+		// block; it rejects type=disabled. GLM-5.3-Flash does the opposite: an
+		// omitted block still thinks, and a short max_tokens budget is then
+		// spent before the answer. Those models accept an explicit disable.
 		if mode == "enabled" {
 			body["thinking"] = map[string]interface{}{
 				"type":          "enabled",
 				"budget_tokens": anthropicThinkingBudget(cfg.ReasoningEffort),
 			}
+			return
+		}
+		if mode == "disabled" && GLMFlashThinksByDefault(cfg) {
+			body["thinking"] = map[string]interface{}{"type": "disabled"}
 		}
 		return
 	}

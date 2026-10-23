@@ -3,9 +3,11 @@ package guiapp
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 func TestMaybeRefreshLLMAuthForRetryWithoutApp(t *testing.T) {
@@ -56,6 +58,17 @@ func TestApplyRefreshedProviderKeyFallbackWithoutProviderID(t *testing.T) {
 	got := applyRefreshedProviderKey(cfg, "", "", false, corelib.MaclawLLMConfig{Key: "assistant"})
 	if got.Key != "assistant" {
 		t.Fatalf("unbound config should take fallback key, got %q", got.Key)
+	}
+}
+
+func TestReportLLMAuthRefreshUsesLiveStatusSlot(t *testing.T) {
+	var got []string
+	reportLLMAuthRefresh(func(text string) { got = append(got, text) })
+	if len(got) != 1 || got[0] != agent.LLMRetryAuthRefreshStatus() {
+		t.Fatalf("progress=%q", got)
+	}
+	if !strings.HasPrefix(got[0], agent.LLMRetryLiveStatusPrefix) || !strings.Contains(got[0], "已刷新模型登录状态，即将重试") {
+		t.Fatalf("progress=%q, want the llm-retry slot", got)
 	}
 }
 

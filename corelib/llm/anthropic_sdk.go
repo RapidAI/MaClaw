@@ -82,10 +82,20 @@ func anthropicSDKMessageStream(ctx context.Context, cfg corelib.MaclawLLMConfig,
 	client = HTTPClientForRequestContext(ctx, client)
 	body = anthropicSDKBodyWithoutStream(body)
 	cfg = bindOpenCodeSessionFromJSONBody(ctx, cfg, body)
+	// GLM-5.3-Flash keeps emitting tokens after the route deadline. The OpenAI
+	// stream detaches that deadline once SSE headers arrive. This SDK call
+	// used the route context for the whole body, so a live 200 was cut at
+	// 10 minutes with context.DeadlineExceeded and surfaced as 请求超时.
+	// After headers the body has no wall-clock cap. Idle silence, a stop,
+	// and an earlier host deadline still abort it.
+	reqCtx, cancelReq, markHeaders, headerDeadline := streamingRequestContext(ctx)
+	defer cancelReq()
 	capture := &openAISDKStreamCapture{limit: 512 * 1024}
 	streamClient := openAISDKClientWithCapture(client, capture)
-	anthropicClient := anthropic.NewClient(anthropicSDKOptions(ctx, cfg, streamClient)...)
-	stream := anthropicClient.Messages.NewStreaming(ctx, anthropic.MessageNewParams{}, anthropicopt.WithRequestBody("application/json", body))
+	streamClient = httpClientWithStreamBodyDeadline(streamClient, markHeaders)
+	anthropicClient := anthropic.NewClient(anthropicSDKOptions(reqCtx, cfg, streamClient)...)
+	stream := anthropicClient.Messages.NewStreaming(reqCtx, anthropic.MessageNewParams{}, anthropicopt.WithRequestBody("application/json", body))
+	defer stream.Close()
 
 	var rawSSE strings.Builder
 	contentFilter := newContentToolCallDeltaFilter(onToken)
@@ -101,6 +111,7 @@ func anthropicSDKMessageStream(ctx context.Context, cfg corelib.MaclawLLMConfig,
 		emitAnthropicSDKDeltas(raw, contentFilter.Write, onReasoning)
 	}
 	if err := stream.Err(); err != nil {
+		err = normalizeStreamSetupError(headerDeadline, err)
 		contentFilter.Flush()
 		body := capture.body()
 		if len(body) == 0 {
@@ -200,6 +211,42 @@ func emitAnthropicSDKDeltas(raw string, onToken TokenCallback, onReasoning Token
 	appendAnthropicThinking(nil, onReasoning, anthropicDeltaThinkingText(event.Delta.Type, event.Delta.Thinking, event.Delta.Text))
 }
 
+// httpClientWithStreamBodyDeadline lets a live Anthropic SSE body outlive the
+// route deadline. markHeaders is called once response headers are in. A 200
+// that loses that claim was already canceled by the route timer. Silence on
+// the body is still cut by SSEIdleTimeout. Non-200 bodies stay on the route
+// deadline because they are not token streams.
+func httpClientWithStreamBodyDeadline(client *http.Client, markHeaders func() bool) *http.Client {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	clone := *client
+	clone.Transport = streamBodyDeadlineTransport{base: client.Transport, markHeaders: markHeaders}
+	return &clone
+}
+
+type streamBodyDeadlineTransport struct {
+	base        http.RoundTripper
+	markHeaders func() bool
+}
+
+func (t streamBodyDeadlineTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	resp, err := base.RoundTrip(req)
+	if err != nil || resp == nil || resp.Body == nil || resp.StatusCode != http.StatusOK {
+		return resp, err
+	}
+	if t.markHeaders != nil && !t.markHeaders() {
+		_ = resp.Body.Close()
+		return nil, context.DeadlineExceeded
+	}
+	resp.Body = newIdleTimeoutReader(resp.Body, SSEIdleTimeout)
+	return resp, nil
+}
+
 func anthropicSDKOptions(ctx context.Context, cfg corelib.MaclawLLMConfig, client *http.Client) []anthropicopt.RequestOption {
 	cfg = bindOpenCodeSession(ctx, cfg, nil)
 	opts := []anthropicopt.RequestOption{
@@ -221,9 +268,16 @@ func anthropicSDKOptions(ctx context.Context, cfg corelib.MaclawLLMConfig, clien
 	}
 	// A caller deadline (caption's 6s callCtx, agent-loop timeout) already
 	// bounds the request. Layering WithRequestTimeout (floored at 240s) races
-	// context cancel the same way http.Client.Timeout did.
+	// context cancel the same way http.Client.Timeout did. A live SSE body
+	// drops that deadline after headers and keeps the owned route mark.
+	// WithRequestTimeout there would put the short SDK timer back on a
+	// stream that runs until the model finishes, the caller stops, or the
+	// connection goes idle.
 	if ctx != nil {
 		if _, ok := ctx.Deadline(); ok {
+			return opts
+		}
+		if _, owned := OwnedRouteDeadline(ctx); owned {
 			return opts
 		}
 	}

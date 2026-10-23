@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -414,6 +415,11 @@ func hasAnyPrefixFold(s string, prefixes ...string) bool {
 func styleIMIntermediateProgress(lang, text string) string {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" || trimmed == imHeartbeatMsg {
+		return trimmed
+	}
+	// The chat row id has to stay at the start of the string. A progress
+	// label in front of it makes the tray treat the line as a new milestone.
+	if _, ok := agent.LLMRetryLiveStatusText(trimmed); ok {
 		return trimmed
 	}
 	if isIMToolStatusText(trimmed) || isIMProgressStatusText(trimmed) {

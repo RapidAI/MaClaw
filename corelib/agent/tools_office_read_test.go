@@ -811,6 +811,30 @@ func TestToolReadDocument_RejectsOversizedInputBeforeExtraction(t *testing.T) {
 	}
 }
 
+func TestFormatOfficeReadFailure_WithinOCRCapPDFDoesNotAskToSplit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scan.pdf")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(MaxOfficeReadFileBytes + 1); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out := formatOfficeReadFailure(path, "pdf", ErrOfficeReadInputTooLarge)
+	for _, want := range []string{"error_class=input_too_large", "ocr_recognize", "PP-OCRv6", "不要拆分"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "请拆分") {
+		t.Fatalf("within-cap PDF told the model to split:\n%s", out)
+	}
+}
+
 func TestToolReadDocument_LineNumbersContinueAcrossOffset(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "lines.docx")

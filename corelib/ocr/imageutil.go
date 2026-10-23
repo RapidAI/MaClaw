@@ -88,6 +88,60 @@ func PrepareImageBase64(pngBase64 string, maxEdge int) (outB64 string, scaleX, s
 	return base64.StdEncoding.EncodeToString(buf.Bytes()), scaleX, scaleY, nil
 }
 
+// PrepareImage decodes a PNG or JPEG base64 payload into the bitmap OCR runs
+// on. When the longest edge exceeds maxEdge the bitmap is downscaled in
+// memory. Scale factors are orig/new, the same as PrepareImageBase64, so
+// boxes still map back to the original pixels. The resized bitmap is not
+// encoded: a scan page is about 2000×3000, and turning that into a PNG only
+// to decode it again was wasted work on every page.
+func PrepareImage(b64 string, maxEdge int) (image.Image, float64, float64, error) {
+	if maxEdge <= 0 {
+		maxEdge = DefaultMaxLongEdge
+	}
+	raw, err := decodeImageBytes(b64)
+	if err != nil {
+		return nil, 1, 1, err
+	}
+	return prepareImageRaw(raw, maxEdge)
+}
+
+func prepareImageRaw(raw []byte, maxEdge int) (image.Image, float64, float64, error) {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw))
+	if err != nil {
+		return nil, 1, 1, fmt.Errorf("decode image config: %w", err)
+	}
+	w, h := cfg.Width, cfg.Height
+	if w <= 0 || h <= 0 {
+		return nil, 1, 1, fmt.Errorf("invalid image size %dx%d", w, h)
+	}
+	if int64(w)*int64(h) > 50_000_000 {
+		return nil, 1, 1, fmt.Errorf("image too large: %dx%d exceeds 50MP limit", w, h)
+	}
+	img, _, err := image.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return nil, 1, 1, fmt.Errorf("decode image: %w", err)
+	}
+	bounds := img.Bounds()
+	if bw, bh := bounds.Dx(), bounds.Dy(); bw > 0 && bh > 0 {
+		w, h = bw, bh
+	}
+	long := max(w, h)
+	if long <= maxEdge {
+		return img, 1, 1, nil
+	}
+	newW := w * maxEdge / long
+	newH := h * maxEdge / long
+	if newW < 1 {
+		newW = 1
+	}
+	if newH < 1 {
+		newH = 1
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, newW, newH))
+	xdraw.ApproxBiLinear.Scale(dst, dst.Bounds(), img, bounds, xdraw.Src, nil)
+	return dst, float64(w) / float64(newW), float64(h) / float64(newH), nil
+}
+
 // ScaleResults maps OCR results obtained on a downscaled image back to the
 // original coordinate space. scaleX/scaleY are the orig/new factors returned
 // by PrepareImageBase64.

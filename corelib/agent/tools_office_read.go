@@ -720,7 +720,7 @@ func extractOfficeTextWithSettings(filePath string, settings officeReadSettings)
 		}
 	}
 	if format == "unknown" || format == "" {
-		return "", format, fmt.Errorf("原生解析暂不支持文件类型 %s（内置支持: .pdf .doc .docx .xls .xlsx .csv .ppt .pptx .txt .md .markdown .json .xml .yaml .yml .log）", ext)
+		return "", format, fmt.Errorf("原生解析暂不支持文件类型 %s（内置支持: .pdf .doc .docx .xls .xlsx .csv .ppt .pptx .txt .md .markdown .json .xml .yaml .yml .log .dwg .dxf .glb .gltf .epub .adoc .asciidoc .eml）", ext)
 	}
 	// Keep the retained head/tail with the error. Public callers that check the
 	// error still fail closed. The chat cache accepts this window and injects it.
@@ -878,7 +878,7 @@ func ExtractOfficeTextWithFormat(filePath, format string) (string, string, error
 // materializes the requested table before it can be converted to text.
 func preflightNonOfficeExtractInput(filePath, format string) error {
 	switch strings.TrimPrefix(strings.ToLower(strings.TrimSpace(format)), ".") {
-	case "pdf", "csv":
+	case "pdf", "csv", "dwg", "dxf", "dxfb", "glb", "gltf", "epub", "adoc", "asciidoc", "eml":
 		return preflightDirectDocumentInput(filePath)
 	default:
 		return nil
@@ -926,6 +926,24 @@ func extractLegacyOfficeTextWithFormat(filePath, format string, settings officeR
 		return string(data), format, nil
 	case "ppt":
 		return "", "ppt", fmt.Errorf("原生解析暂不支持旧版 PowerPoint .ppt")
+	case "dwg":
+		text, err := extractCADText(filePath, "dwg")
+		return validateLegacyOfficeText(text, "dwg", err)
+	case "dxf", "dxfb":
+		text, err := extractCADText(filePath, format)
+		return validateLegacyOfficeText(text, format, err)
+	case "glb", "gltf":
+		text, err := extractGLTFText(filePath)
+		return validateLegacyOfficeText(text, format, err)
+	case "epub":
+		text, err := extractEPUBText(filePath)
+		return validateLegacyOfficeText(text, "epub", err)
+	case "adoc", "asciidoc":
+		text, err := extractAsciiDocText(filePath)
+		return validateLegacyOfficeText(text, format, err)
+	case "eml":
+		text, err := extractEMLText(filePath)
+		return validateLegacyOfficeText(text, "eml", err)
 	default:
 		return "", format, fmt.Errorf("未知格式 %s", format)
 	}
@@ -1079,6 +1097,10 @@ func formatOfficeReadFailure(filePath, format string, err error) string {
 	// actionable routing without turning the response into a diagnostics dump.
 	b.WriteString(fmt.Sprintf("读取失败（%s%s）\n", officeReadErrorClassMarker, errorClass))
 	b.WriteString(fmt.Sprintf("# path: %s\n# format: %s\n", filePath, format))
+	if errorClass == "input_too_large" && (ext == ".pdf" || strings.EqualFold(format, "pdf")) && pdfFileWithinBuiltinOCRCap(filePath) {
+		b.WriteString("\n该 PDF 在内置识别的 256 MiB 以内。正文超过 32 MiB 只是注入上限，不是缺少 OCR。请调用 ocr_recognize（本机 PP-OCRv6），按 start_page 续读。不要拆分或缩小文件，不要安装其他 OCR 引擎。\n")
+		return b.String()
+	}
 	if guidance, blocked := officeReadBlockedFailureGuidance(errorClass); blocked {
 		// These errors were produced by a boundary that has already rejected this
 		// exact input or its version. Do not suggest a generic script, converter,
@@ -1102,7 +1124,7 @@ func formatOfficeReadFailure(filePath, format string, err error) string {
 	case ".doc", ".xls":
 		b.WriteString("3. 旧 Office 备选：craft_tool 用 PowerShell Word/Excel COM，或 LibreOffice 转为 docx/xlsx 后再 read_document\n")
 	case ".pdf":
-		b.WriteString("3. 扫描版 PDF 备选：craft_tool 做 OCR（如 paddleocr/tesseract），或请用户提供可选中文本的 PDF\n")
+		b.WriteString("3. 扫描版 PDF：调用 ocr_recognize（本机 PP-OCRv6），image_path 传该 PDF，output_path 传结果文本。不要安装 paddleocr、tesseract、rapidocr 或 ocrmypdf。\n")
 	default:
 		b.WriteString("3. 仍失败时：bash 调用已安装的转换工具；最后才请用户另存为 .docx/.pdf/.txt\n")
 	}
@@ -1196,8 +1218,13 @@ func extractPDFText(filePath string, settings officeReadSettings) (text string, 
 		if err := validatePDFPageCount(numPages); err != nil {
 			return "", err
 		}
+		layouts, skipPlain := pdfLayoutPass(data, numPages)
 		text, gotAny := renderPDFPageExtracts(numPages, func(pageIndex int) (string, error) {
-			return gopdf2.ExtractPageText(data, pageIndex)
+			var layout pdfLayoutPage
+			if pageIndex >= 0 && pageIndex < len(layouts) {
+				layout = layouts[pageIndex]
+			}
+			return pdfPageBody(data, pageIndex, layout, skipPlain)
 		})
 		if gotAny {
 			return text, nil
@@ -1556,6 +1583,7 @@ func docxParagraphs(data []byte) ([]string, error) {
 	var cellText strings.Builder
 	inCell := false
 	tableDepth := 0 // outermost table = 1
+	ruby, skipRT := 0, 0
 
 	flushParagraph := func() {
 		if !inParagraph {
@@ -1640,9 +1668,15 @@ func docxParagraphs(data []byte) ([]string, error) {
 				}
 				inParagraph = true
 				inText = false
+			case "ruby":
+				ruby++
+			case "rt":
+				if ruby > 0 {
+					skipRT++
+				}
 			case "t":
-				// Only real Word text runs.
-				if inParagraph {
+				// w:rt is ruby pronunciation, not the base text.
+				if inParagraph && skipRT == 0 {
 					inText = true
 				}
 			case "tab":
@@ -1656,6 +1690,14 @@ func docxParagraphs(data []byte) ([]string, error) {
 			}
 		case xml.EndElement:
 			switch t.Name.Local {
+			case "rt":
+				if skipRT > 0 {
+					skipRT--
+				}
+			case "ruby":
+				if ruby > 0 {
+					ruby--
+				}
 			case "t":
 				inText = false
 			case "p":

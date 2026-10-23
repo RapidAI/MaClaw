@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -229,9 +230,16 @@ func insertDocumentNodesFast(ctx context.Context, tx *sql.Tx, nodes []DocumentNo
 
 // distillAndSaveCardsFast is the multi-core-aware path used by single-file and
 // multi-node imports: parallel FTS/fact prep + prepared SQL inserts.
-func (s *SQLiteStore) distillAndSaveCardsFast(ctx context.Context, tx *sql.Tx, source Source, nodes []DocumentNode, mode string) (Source, error) {
+// distilledCardWrite is the card batch produced before any SQL. The model call
+// and embedding run while the directory import is not holding a transaction.
+type distilledCardWrite struct {
+	cards            []Card
+	embeddingModelID string
+}
+
+func (s *SQLiteStore) prepareDistilledCards(ctx context.Context, source Source, nodes []DocumentNode, mode string) (*distilledCardWrite, error) {
 	if len(nodes) == 0 {
-		return source, nil
+		return nil, nil
 	}
 	// Ensure node IDs exist (insertDocumentNodesFast may have assigned them already).
 	for i := range nodes {
@@ -247,7 +255,7 @@ func (s *SQLiteStore) distillAndSaveCardsFast(ctx context.Context, tx *sql.Tx, s
 		}
 	}
 	if len(cards) == 0 {
-		return source, nil
+		return nil, nil
 	}
 
 	embeddingModelID := ""
@@ -263,19 +271,36 @@ func (s *SQLiteStore) distillAndSaveCardsFast(ctx context.Context, tx *sql.Tx, s
 			}
 		}
 	}
+	return &distilledCardWrite{cards: cards, embeddingModelID: embeddingModelID}, nil
+}
 
-	prepCards, prepFacts := prepareCardsAndFacts(source, cards)
+func (s *SQLiteStore) writeDistilledCards(ctx context.Context, tx *sql.Tx, source Source, prepared *distilledCardWrite) (Source, error) {
+	if prepared == nil || len(prepared.cards) == 0 {
+		return source, nil
+	}
+	if tx == nil {
+		return source, fmt.Errorf("knowledge import transaction is nil")
+	}
+	prepCards, prepFacts := prepareCardsAndFacts(source, prepared.cards)
 	stmts, err := prepareLightImportStmts(ctx, tx)
 	if err != nil {
 		return source, err
 	}
 	defer stmts.Close()
-	if err := insertPreparedCardsFacts(ctx, tx, stmts, prepCards, prepFacts, embeddingModelID); err != nil {
+	if err := insertPreparedCardsFacts(ctx, tx, stmts, prepCards, prepFacts, prepared.embeddingModelID); err != nil {
 		return source, err
 	}
 	source.Status = StatusDistilled
 	source.UpdatedAt = time.Now().UTC()
 	return source, insertSource(ctx, tx, source)
+}
+
+func (s *SQLiteStore) distillAndSaveCardsFast(ctx context.Context, tx *sql.Tx, source Source, nodes []DocumentNode, mode string) (Source, error) {
+	prepared, err := s.prepareDistilledCards(ctx, source, nodes, mode)
+	if err != nil || prepared == nil {
+		return source, err
+	}
+	return s.writeDistilledCards(ctx, tx, source, prepared)
 }
 
 // insertPreparedCardsFacts writes precomputed cards and facts (shared by multi-file

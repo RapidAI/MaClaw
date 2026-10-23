@@ -1249,6 +1249,14 @@ func executionProfileFromSemanticIntent(result *intent.ClassificationResult, con
 				IterationBudget: 4,
 			}
 		}
+		// Search plus a document body needs download_file and read_file.
+		// Budget 1 would omit them, and the light prompt says file tools
+		// are absent. This reason stays full: lookup continuation only
+		// narrows "semantic capability-managed intent" and
+		// "structural execution signal".
+		if semanticFetchedDocumentReadProfile(*result) {
+			return fullExecutionProfile("semantic fetched document read")
+		}
 		if semanticIntentRequiresFullProfile(*result) {
 			return fullExecutionProfile("semantic capability-managed mutating intent")
 		}

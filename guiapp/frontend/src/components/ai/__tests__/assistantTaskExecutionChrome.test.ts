@@ -59,6 +59,40 @@ describe("isTaskExecutionHeaderInteractiveTarget", () => {
         expect(status).toEqual({ label: "未完成", tone: "pending" });
     });
 
+    it("does not label a hard-exited chat with messages as completed", () => {
+        const status = resolveTaskExecutionStatus({
+            lang: "zh-Hans",
+            raw: "",
+            pendingReview: false,
+            cancelPending: false,
+            busy: false,
+            hasOutput: false,
+            hasMessages: true,
+            workflowActive: false,
+            codingStepCount: 0,
+            pendingUnfinishedStatus: "",
+            turnIncomplete: true,
+        });
+        expect(status).toEqual({ label: "未完成", tone: "pending" });
+    });
+
+    it("keeps a running hard-exit turn in progress", () => {
+        const status = resolveTaskExecutionStatus({
+            lang: "zh-Hans",
+            raw: "",
+            pendingReview: false,
+            cancelPending: false,
+            busy: true,
+            hasOutput: false,
+            hasMessages: true,
+            workflowActive: false,
+            codingStepCount: 0,
+            pendingUnfinishedStatus: "",
+            turnIncomplete: true,
+        });
+        expect(status).toEqual({ label: "进行中", tone: "running" });
+    });
+
     it("still labels an idle chat without a recovery card as completed", () => {
         const status = resolveTaskExecutionStatus({
             lang: "zh-Hans",

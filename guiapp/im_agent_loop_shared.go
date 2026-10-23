@@ -278,13 +278,7 @@ func (h *IMMessageHandler) runAgentLoopShared(
 		return &IMAgentResponse{Error: "cancelled"}
 	}
 	runtime := h.sharedAgentRuntime()
-	events := runtimeEventSinkForLoop(ctx)
-	if shouldProjectRuntimeCallbacks(onToken, nil, onNewRound) {
-		events = agentruntime.FanoutEventSink{Sinks: []agentruntime.EventSink{
-			events,
-			runtimeEventProjectionSink{onToken: onToken, onNewRound: onNewRound},
-		}}
-	}
+	events := projectGUIRuntimeEvents(runtimeEventSinkForLoop(ctx), onToken, onProgress, onNewRound)
 	hostCaps := agentruntime.HostCapabilities(guiHostCapabilities{})
 	if ctx != nil && ctx.Host != nil {
 		hostCaps = ctx.Host
@@ -703,16 +697,18 @@ func (h *IMMessageHandler) executeSharedTurn(
 		}
 	}
 	if shouldSaveSharedLoopTerminalHistory(loopResult, cb) {
+		// The stop code belongs to this turn's record. The model copy omits it.
+		agent.StampTurnTerminalClass(outHistory, len(history), loopResult.Error)
 		h.saveConversationHistoryTimed(userID, outHistory, &IMAgentResponse{})
 	}
 	if cb.hasPendingToolBatch {
 		return h.interruptedSharedLoopResultResponse(userText, loopResult, requestID, telemetry, onStreamDone, cb)
 	}
-	// A marker represents incomplete work only. Clear it after a normal shared
-	// loop completion, and only when this exact run owns it. Errors keep the
-	// latest successful checkpoint for crash recovery. User cancel already
-	// retired its marker above.
-	if cb.checkpointCommitted && loopResult.Error == "" && loopResult.AskUser == nil && loopResult.RecordAudio == nil {
+	// A marker is incomplete work. Clear it when this run finished, including
+	// a no-progress stop whose paired batch is already committed. Other errors
+	// keep the checkpoint for crash recovery. User cancel already retired its
+	// marker above.
+	if cb.checkpointCommitted && sharedLoopCheckpointIsFinishedWork(loopResult) {
 		if err := h.memory.CompleteInFlightCheckpointForRun(userID, recoveryRunID); err != nil {
 			log.Printf("[InFlightTask] shared normal cleanup flush failed user=%q run=%q err=%v", userID, recoveryRunID, err)
 		}
@@ -1081,13 +1077,13 @@ func (c *sharedAgentLoopCallbacks) flushHostOwnedLiveDataVisual(resp *IMAgentRes
 	}
 }
 
-// finalizeHostOwnedFileResponse is the last attach step: a delivered file is a
-// successful-enough turn. Desktop resolveSendResult treats any Error as a failed
-// round and drops LocalFilePath, so a later LLM timeout after search would hide
-// the PDF. Once the PDF is attached, chat keeps the assistant answer. The
-// 已生成 receipt is the fallback only when this turn published that PDF and
-// the projected answer is empty. A delivery of an already-produced document
-// keeps the delivery outcome and the original file name.
+// finalizeHostOwnedFileResponse is the last attach step. The file stays on
+// the response. A stale error that is not part of the turn's outcome is
+// cleared so the client can keep that file. A terminal class such as
+// no_progress stays, because the keep-list names it. The 已生成 receipt is
+// the fallback only when this turn published that PDF and the projected
+// answer is empty. A delivery of an already-produced document keeps the
+// delivery outcome and the original file name.
 func finalizeHostOwnedFileResponse(resp *IMAgentResponse, cb *sharedAgentLoopCallbacks) {
 	if resp == nil {
 		return
@@ -1970,8 +1966,8 @@ func (c *sharedAgentLoopCallbacks) IsToolAllowedForPromptProfile(name string, pr
 			// An installed MCP tool the sidecar listed is already authorized.
 			// The managed plan does not have to select it first. A light
 			// profile does not know server__tool names, so this admission
-			// is the same one the legacy sidecar path uses below.
-			if c.liveInstalledMCPSidecarGrant(resolved) || c.liveInstalledMCPSidecarGrant(name) {
+			// is the same one IsToolAllowed and IsToolCallAllowed use.
+			if c.listedInstalledMCPSidecar(name) {
 				return true
 			}
 			return false
@@ -2043,6 +2039,7 @@ func (c *sharedAgentLoopCallbacks) IsToolAllowed(name string) bool {
 		}
 		return true
 	}
+	requested := name
 	name = c.semanticSurface.resolveFunctionName(name)
 	if c.foregroundHandoffOnly() {
 		return c.chatTaskHostTool(name)
@@ -2066,7 +2063,7 @@ func (c *sharedAgentLoopCallbacks) IsToolAllowed(name string) bool {
 		// managed sibling is the wrong path for a name the plan never granted.
 		// A spent-but-still-live sidecar grant stays allowed here so ExecuteTool
 		// can return the hop-fence message. A retired-only name does not.
-		if c.liveInstalledMCPSidecarGrant(name) {
+		if c.listedInstalledMCPSidecar(requested) {
 			return true
 		}
 		// A light turn cannot run the download, so do not publish a sibling
@@ -2267,6 +2264,14 @@ func (c *sharedAgentLoopCallbacks) IsToolCallAllowed(name, argsJSON string) (boo
 		return true, ""
 	}
 	if _, ok := c.semanticSurface.grants[resolved]; !ok {
+		// Exposure and execution are one predicate. listedInstalledMCPSidecar
+		// is what keeps the name on the model request; denying it here
+		// listed the name and then refused the call before
+		// executeDiscoveredMCPGrant. The hop fence and the request epoch
+		// still run at execution. A retired-only name is not a live grant.
+		if c.listedInstalledMCPSidecar(name) {
+			return true, ""
+		}
 		reason := strings.TrimSpace(c.ToolDenialMessage(name))
 		return false, strings.TrimPrefix(reason, "Error: ")
 	}
@@ -2918,6 +2923,7 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 	if c.semanticSurface != nil {
 		c.maybeOverlaySQLDatabaseForTurn(userText)
 		c.maybeOverlayDocumentContinuationForTurn(userText)
+		c.maybeOverlayBuiltinPDFOCR(userText)
 		c.maybeOverlaySpilledToolResultReader()
 		definitions, err := visibleSemanticCallSurfaceDefinitions(c.semanticSurface)
 		if err != nil {
@@ -3403,6 +3409,86 @@ func (c *sharedAgentLoopCallbacks) maybeOverlayDocumentContinuationForTurn(userT
 	}
 	if len(added) > 0 {
 		log.Printf("[doc-extract] continuation overlay truncated=true tools=%v", added)
+	}
+}
+
+// maybeOverlayBuiltinPDFOCR lists ocr_recognize when text inject refused an
+// oversized PDF. The built-in PP-OCRv6 engine reads page images to a file.
+// Encrypted and malformed files are not offered this path.
+func (c *sharedAgentLoopCallbacks) maybeOverlayBuiltinPDFOCR(userText string) {
+	if c == nil || c.semanticSurface == nil {
+		return
+	}
+	text := c.extractBearingTurnText(userText)
+	records := agent.AutoExtractTerminalRecords(text)
+	if !agent.TerminalExtractOffersBuiltinOCR(records) && !agent.AutoExtractRequestsBuiltinOCR(text) {
+		return
+	}
+	if c.semanticGrantNamed("ocr_recognize") || c.legacyPetitionAllows("ocr_recognize") {
+		return
+	}
+	if c.liveLegacyPetitionDefinitionByName("ocr_recognize") == nil {
+		return
+	}
+	if c.legacyPetitionTools == nil {
+		c.legacyPetitionTools = map[string]bool{}
+	}
+	c.legacyPetitionTools["ocr_recognize"] = true
+	log.Printf("[doc-extract] builtin ocr overlay tools=[ocr_recognize]")
+}
+
+// extractBearingTurnText is the extract the execution gate can see.
+// The raw picker (c.userText) has no error_class; the expanded inject is the
+// newest checkpoint user message. A bare 「继续」 is skipped so the previous
+// inject still closes the file. A newer question that is not a continuation
+// does not inherit that close.
+func (c *sharedAgentLoopCallbacks) extractBearingTurnText(userText string) string {
+	var b strings.Builder
+	if c != nil && c.loopCtx != nil {
+		if expanded := strings.TrimSpace(c.loopCtx.autoExtractExpandedText); agent.TextHasAutoExtractRecord(expanded) {
+			b.WriteString(expanded)
+			b.WriteByte('\n')
+		}
+	}
+	if agent.TextHasAutoExtractRecord(userText) {
+		b.WriteString(userText)
+		return b.String()
+	}
+	if c == nil {
+		return b.String()
+	}
+	for i := len(c.checkpointHistory) - 1; i >= 0; i-- {
+		if c.checkpointHistory[i].Role != "user" {
+			continue
+		}
+		text := conversationEntryText(c.checkpointHistory[i].Content)
+		if bareContinuationUtterance(text) {
+			continue
+		}
+		if agent.TextHasAutoExtractRecord(text) {
+			b.WriteString(text)
+		}
+		break
+	}
+	return b.String()
+}
+
+func (c *sharedAgentLoopCallbacks) terminalDocumentToolDenial(name, argsJSON string) string {
+	if c == nil {
+		return ""
+	}
+	records := agent.AutoExtractTerminalRecords(c.extractBearingTurnText(c.userText))
+	return agent.ToolCallBypassesTerminalDocument(name, argsJSON, records)
+}
+
+func bareContinuationUtterance(text string) bool {
+	s := strings.TrimSpace(text)
+	s = strings.Trim(s, "。.!！ ")
+	switch strings.ToLower(s) {
+	case "继续", "continue", "接着", "接着做", "go on", "重试":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -3892,6 +3978,12 @@ func (c *sharedAgentLoopCallbacks) liveLegacyPetitionDefinitionByName(name strin
 	if strings.EqualFold(strings.TrimSpace(name), "read_tool_result") {
 		return c.handler.continuationHostDefinitionByName(name)
 	}
+	if strings.EqualFold(strings.TrimSpace(name), "ocr_recognize") && c.handler.registry != nil {
+		registered, ok := c.handler.registry.Get("ocr_recognize")
+		if ok && registered != nil && registered.Status == RegToolAvailable {
+			return registeredToolToDef(*registered)
+		}
+	}
 	if strings.TrimSpace(name) != "ssh" || c.handler.registry == nil {
 		return nil
 	}
@@ -4131,8 +4223,14 @@ func (c *sharedAgentLoopCallbacks) executeToolCallWithExecutionContext(name, arg
 		setComputerUseOwner(computerUseOwnerFromLoop(c.loopCtx, c.userID))
 	}
 	var result agent.ToolExecutionResult
+	terminalDenial := ""
+	if c != nil {
+		terminalDenial = c.terminalDocumentToolDenial(name, argsJSON)
+	}
 	if c != nil && c.sessionTurnDeniesTools() {
 		result = agent.ToolExecutionResult{Result: c.sessionToolClosedMessage(), Outcome: agent.ToolExecutionOutcomeError}
+	} else if terminalDenial != "" {
+		result = agent.ToolExecutionResult{Result: terminalDenial, Outcome: agent.ToolExecutionOutcomeError}
 	} else if c != nil && isFileCompanionHostTool(name) && fileCompanionToolsDisabled(c.userID) {
 		// The companion surface's executor. Handled before the legacy chain:
 		// these host-owned names are not in the reviewed adapter catalog.
@@ -4436,6 +4534,23 @@ func (c *sharedAgentLoopCallbacks) discoveredMCPGrantNamed(name string) bool {
 	}
 	_, ok := c.discoveredMCPSurface.retiredGrants[name]
 	return ok
+}
+
+// listedInstalledMCPSidecar is the one admission check for an installed MCP
+// tool this request's sidecar published. IsToolAllowed, the light profile,
+// and IsToolCallAllowed all use it, so a name cannot be listed and then
+// refused before executeDiscoveredMCPGrant. The model's spelling and the
+// resolved spelling are the same lookup. A retired-only name is not listed.
+// The hop fence and the request epoch stay at execution.
+func (c *sharedAgentLoopCallbacks) listedInstalledMCPSidecar(name string) bool {
+	if c.liveInstalledMCPSidecarGrant(name) {
+		return true
+	}
+	if c == nil || c.semanticSurface == nil {
+		return false
+	}
+	resolved := c.semanticSurface.resolveFunctionName(name)
+	return resolved != name && c.liveInstalledMCPSidecarGrant(resolved)
 }
 
 // liveInstalledMCPSidecarGrant reports a server__tool grant the sidecar
@@ -7790,6 +7905,14 @@ func (c *sharedAgentLoopCallbacks) semanticCanonicalArguments(selection tool.Pla
 			return tool.CanonicalRequest{}, err
 		}
 	}
+	// start_line is schema-legal. A document reader path rejects it inside
+	// the adapter, after Admit. Refusing here keeps the grant and names the
+	// correction. Plain text still pages through the adapter.
+	if selection.FitProof.MatchedCapability == tool.CapabilityFSReadLocal {
+		if err := semanticFileReadDocumentStartLineCheck(canonical.Values); err != nil {
+			return tool.CanonicalRequest{}, err
+		}
+	}
 	return canonical, nil
 }
 
@@ -8095,6 +8218,19 @@ func shouldSaveSharedLoopTerminalHistory(loopResult agent.LoopResult, cb *shared
 		return false
 	}
 	return cb == nil || !cb.hasPendingToolBatch
+}
+
+// sharedLoopCheckpointIsFinishedWork reports that this turn's in-flight
+// marker is not a crash. An empty error is a normal finish. A no-progress
+// hard exit is a failed finish: the loop committed the paired batch before
+// stopping, and the next message must not be offered as crash recovery.
+// Ask-user and record-audio pauses are still open. Any other error keeps
+// the marker.
+func sharedLoopCheckpointIsFinishedWork(result agent.LoopResult) bool {
+	if result.AskUser != nil || result.RecordAudio != nil {
+		return false
+	}
+	return result.Error == "" || result.Error == agent.ErrNoProgress
 }
 
 // interruptedSharedLoopResultResponse keeps the UI outcome aligned with the

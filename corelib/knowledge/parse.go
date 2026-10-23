@@ -825,7 +825,15 @@ func parsePDFNodesWith(source Source, filePath string, pageCount func([]byte) (i
 // extractPDFPageTexts pulls text for each page. Pages are independent and are
 // extracted concurrently, while the output slice keeps their original order.
 func extractPDFPageTexts(pdfData []byte, numPages int) []string {
-	return extractPDFPageTextsWith(pdfData, numPages, gopdf2.ExtractPageText)
+	bodies := agent.PDFPageBodies(pdfData, numPages)
+	if len(bodies) != numPages {
+		return extractPDFPageTextsWith(pdfData, numPages, gopdf2.ExtractPageText)
+	}
+	out := make([]string, numPages)
+	for i, text := range bodies {
+		out[i] = strings.TrimSpace(trimNodeText(text))
+	}
+	return out
 }
 
 // extractPDFPageTextsWith keeps native PDF text extraction isolated per page.

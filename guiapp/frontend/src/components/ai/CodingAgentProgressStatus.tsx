@@ -1420,14 +1420,6 @@ function codingAgentLineIsRunning(progress: CodingAgentProgress): boolean {
     return isCodingAgentActivePhase(progress.phase) && !(progress.outcome || "").trim();
 }
 
-/** Completed, non-critical tool calls can collapse to one compact receipt. */
-function codingAgentToolLineCanCollapse(progress: CodingAgentProgress): boolean {
-    const event = (progress.event || "").trim().toLowerCase();
-    return event === "tool_finished"
-        && !codingAgentLineIsRunning(progress)
-        && !codingAgentProgressLooksCritical(progress);
-}
-
 /**
  * Header snapshot for a feed:
  * - title/task from the best available row
@@ -1754,7 +1746,14 @@ function CodingAgentToolLine({
     const tone = resolveCodingAgentStatusTone(progress, t.isDark);
     const mark = codingAgentOutcomeMark(progress, t.isDark);
     const toolName = codingAgentToolNameText(progress);
-    let detail = codingAgentToolDetailText(progress, lang);
+    const rawDetail = codingAgentToolDetailText(progress, lang);
+    // Avoid repeating the feed header title on every tool row.
+    const detail = rawDetail
+        && hideDetailIfEquals
+        && rawDetail === hideDetailIfEquals
+        && !codingAgentToolPinsInquiryTarget(progress)
+        ? undefined
+        : rawDetail;
     const previewPaths = codingAgentPreviewTargetPaths(progress);
     const previewCandidate = previewPaths[0];
     const previewPath = previewCandidate
@@ -1762,77 +1761,51 @@ function CodingAgentToolLine({
         ? previewCandidate
         : undefined;
     const canOpenPreview = !!(onOpenPreviewFile && previewPath);
-    // Avoid repeating the feed header title on every tool row.
-    if (detail && hideDetailIfEquals && detail === hideDetailIfEquals && !codingAgentToolPinsInquiryTarget(progress)) {
-        detail = undefined;
-    }
     const duration = formatCodingAgentDuration(progress.durationMs);
     const command = (progress.command || "").trim();
     const showCmdPreview = !!codingAgentCommandPreviewText(progress, lang);
     const running = codingAgentLineIsRunning(progress);
-    const [expanded, setExpanded] = React.useState(false);
-    const colorFileDelta = codingAgentToolLooksLikeFileEdit(progress) && !command && !!detail;
-    const shellInquiry = !!(codingAgentShellSearchTarget(progress) || codingAgentShellExplorationTarget(progress));
-    const pinInquiryTarget = codingAgentToolPinsInquiryTarget(progress) && !!detail && (!command || shellInquiry);
-    if ((colorFileDelta || pinInquiryTarget) && detail) {
-        return (
-            <div
-                data-testid="coding-agent-tool-line"
-                data-tool-running={running ? "true" : "false"}
-                data-tool-collapsed="false"
-                style={{
-                    ...codingAgentToolLineColumns,
-                    padding: "0",
-                    fontSize: 11,
-                    lineHeight: 1.4,
-                    color: t.text,
-                    opacity: running ? 0.9 : 1,
-                }}
-            >
-                <span aria-hidden="true" style={{ color: mark.color, fontWeight: 700, fontFamily: monoFont, textAlign: "center", fontSize: 11, width: 12 }}>
-                    {mark.glyph}
-                </span>
-                <span style={{ color: tone.accent, fontFamily: monoFont, fontSize: 11, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={toolName}>
-                    {toolName}
-                </span>
-                <span
-                    data-testid={canOpenPreview ? "coding-agent-preview-link" : undefined}
-                    role={canOpenPreview ? "button" : undefined}
-                    tabIndex={canOpenPreview ? 0 : undefined}
-                    data-preview-path={canOpenPreview ? previewPath : undefined}
-                    aria-label={canOpenPreview
-                        ? `${lang.startsWith("zh") ? "打开预览" : "Open preview"}: ${compactCodingTrailPath(previewPath) || previewPath}`
-                        : undefined}
-                    title={detail}
-                    onClick={canOpenPreview ? () => onOpenPreviewFile?.(previewPath) : undefined}
-                    onKeyDown={canOpenPreview ? (event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            onOpenPreviewFile?.(previewPath);
-                        }
-                    } : undefined}
-                    style={{ color: t.fieldLabel, fontFamily: monoFont, fontSize: 11, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: canOpenPreview ? "pointer" : undefined }}
-                >
-                    <CodingAgentInlineLineDelta text={detail} muted={t.fieldLabel} isDark={t.isDark} />
-                </span>
-                <span style={{ color: t.fieldLabel, fontFamily: monoFont, fontSize: 10, flexShrink: 0, opacity: 0.85, fontVariantNumeric: "tabular-nums" }}>
-                    {duration || ""}
-                </span>
-            </div>
-        );
-    }
-    const canCollapse = codingAgentToolLineCanCollapse(progress);
-    const collapsed = canCollapse && !expanded;
-    const collapseLabel = lang.startsWith("zh") ? "已完成，展开详情" : "Completed, show details";
-    const expandedLabel = lang.startsWith("zh") ? "收起工具详情" : "Collapse tool details";
+    const actionText = detail || command;
+    const finished = (progress.event || "").trim().toLowerCase() === "tool_finished";
+    const normalizedCommand = command.replace(/\s+/g, " ").trim();
+    const actionPrefix = actionText.endsWith("\u2026") ? actionText.slice(0, -1) : "";
+    // Detail text collapses whitespace before it truncates, so the raw command
+    // is not a string prefix of the visible line.
+    const actionIsTruncatedCommand = !!actionPrefix
+        && normalizedCommand.length > actionPrefix.length
+        && normalizedCommand.startsWith(actionPrefix);
+    const actionIsCommand = !!actionText && (actionText === normalizedCommand || actionIsTruncatedCommand);
+    const note = (progress.summary || "").replace(/\s+/g, " ").trim();
+    const visibleNote = note && note !== actionText && note !== normalizedCommand
+        ? truncateCodingAgentInlineText(note, 48)
+        : "";
+    // The checkmark already marks a finished call. 「已完成」 only fills a row
+    // that has no command, path, or failure note.
+    const lineText = actionText || visibleNote || (finished ? (lang.startsWith("zh") ? "已完成" : "Completed") : "");
+    // The note sits beside the action. Putting it in the same ellipsis run hides
+    // "Access is denied" behind a long command.
+    const trailingNote = actionText && visibleNote ? visibleNote : "";
+    const colorDelta = codingAgentToolLooksLikeFileEdit(progress);
+    const previewLabel = canOpenPreview && previewPath
+        ? `${lang.startsWith("zh") ? "打开预览" : "Open preview"}: ${compactCodingTrailPath(previewPath) || previewPath}`
+        : undefined;
+    const commandLabel = showCmdPreview && actionIsCommand
+        ? `${lang.startsWith("zh") ? "\u547d\u4ee4" : "Command"}: ${command}${trailingNote ? `. ${note}` : ""}`
+        : undefined;
+    // Hover the raw command only when this line is that command. A Search or
+    // Explore row shows a compact target, so the shell line stays off the tooltip.
+    const titleText = actionIsCommand && command && (showCmdPreview || actionIsTruncatedCommand)
+        ? command
+        : undefined;
+    const openPreview = canOpenPreview && previewPath
+        ? () => onOpenPreviewFile?.(previewPath)
+        : undefined;
     return (
-        <details
+        <div
             data-testid="coding-agent-tool-line"
             data-tool-running={running ? "true" : "false"}
-            data-tool-collapsed={collapsed ? "true" : "false"}
-            open={!collapsed}
-            onToggle={(event) => setExpanded((event.currentTarget as HTMLDetailsElement).open)}
             style={{
+                ...codingAgentToolLineColumns,
                 padding: "0",
                 fontSize: 11,
                 lineHeight: 1.4,
@@ -1840,52 +1813,47 @@ function CodingAgentToolLine({
                 opacity: running ? 0.9 : 1,
             }}
         >
-            <summary
-                aria-label={collapsed ? collapseLabel : expandedLabel}
-                style={{
-                    ...codingAgentToolLineColumns,
-                    cursor: canCollapse ? "pointer" : "default",
-                    listStyle: "none",
-                }}
+            <span aria-hidden="true" style={{ color: mark.color, fontWeight: 700, fontFamily: monoFont, textAlign: "center", fontSize: 11, width: 12 }}>
+                {mark.glyph}
+            </span>
+            <span style={{ color: tone.accent, fontFamily: monoFont, fontSize: 11, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={toolName}>
+                {toolName}
+            </span>
+            <span
+                data-testid={canOpenPreview ? "coding-agent-preview-link" : ((showCmdPreview || (showCommandTestId && command)) ? "coding-agent-command-preview" : undefined)}
+                role={canOpenPreview ? "button" : (showCmdPreview && actionIsCommand ? "note" : undefined)}
+                tabIndex={canOpenPreview ? 0 : undefined}
+                data-preview-path={canOpenPreview ? previewPath : undefined}
+                aria-label={previewLabel || commandLabel}
+                title={titleText}
+                onClick={openPreview}
+                onKeyDown={openPreview ? (event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        openPreview();
+                    }
+                } : undefined}
+                style={{ display: "flex", alignItems: "baseline", gap: 6, minWidth: 0, color: t.fieldLabel, fontFamily: monoFont, fontSize: 11, cursor: canOpenPreview ? "pointer" : undefined }}
             >
-                <span aria-hidden="true" style={{ color: mark.color, fontWeight: 700, fontFamily: monoFont, textAlign: "center", fontSize: 11, width: 12 }}>
-                    {mark.glyph}
+                <span style={{ flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {colorDelta
+                        ? <CodingAgentInlineLineDelta text={lineText} muted={t.fieldLabel} isDark={t.isDark} />
+                        : lineText}
                 </span>
-                <span style={{ color: tone.accent, fontFamily: monoFont, fontSize: 11, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={toolName}>
-                    {toolName}
-                </span>
-                <span style={{ color: t.fieldLabel, fontFamily: monoFont, fontSize: 11, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {collapsed ? (lang.startsWith("zh") ? "已完成" : "Completed") : (detail || "")}
-                </span>
-                <span style={{ color: t.fieldLabel, fontFamily: monoFont, fontSize: 10, flexShrink: 0, opacity: 0.85, fontVariantNumeric: "tabular-nums" }}>
-                    {duration || ""}
-                </span>
-            </summary>
-            {(detail || command || canOpenPreview) && (
-                <div style={{ margin: "2px 0 3px 18px", color: t.fieldLabel, fontFamily: monoFont, fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {trailingNote ? (
                     <span
-                        data-testid={canOpenPreview ? "coding-agent-preview-link" : (showCmdPreview || showCommandTestId ? "coding-agent-command-preview" : undefined)}
-                        role={canOpenPreview ? "button" : showCmdPreview ? "note" : undefined}
-                        tabIndex={canOpenPreview ? 0 : undefined}
-                        data-preview-path={canOpenPreview ? previewPath : undefined}
-                        aria-label={canOpenPreview
-                            ? `${lang.startsWith("zh") ? "打开预览" : "Open preview"}: ${compactCodingTrailPath(previewPath) || previewPath}`
-                            : showCmdPreview ? `${lang.startsWith("zh") ? "\u547d\u4ee4" : "Command"}: ${command}` : undefined}
-                        title={command || detail || undefined}
-                        onClick={canOpenPreview ? () => onOpenPreviewFile?.(previewPath) : undefined}
-                        onKeyDown={canOpenPreview ? (event) => {
-                            if (event.key === "Enter" || event.key === " ") {
-                                event.preventDefault();
-                                onOpenPreviewFile?.(previewPath);
-                            }
-                        } : undefined}
-                        style={{ cursor: canOpenPreview ? "pointer" : undefined }}
+                        data-tool-note=""
+                        title={note !== trailingNote ? note : undefined}
+                        style={{ flex: "0 1 auto", minWidth: 0, maxWidth: "46%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                     >
-                        {detail || command}
+                        {`\u00b7 ${trailingNote}`}
                     </span>
-                </div>
-            )}
-        </details>
+                ) : null}
+            </span>
+            <span style={{ color: t.fieldLabel, fontFamily: monoFont, fontSize: 10, flexShrink: 0, opacity: 0.85, fontVariantNumeric: "tabular-nums" }}>
+                {duration || ""}
+            </span>
+        </div>
     );
 }
 

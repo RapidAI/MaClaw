@@ -349,6 +349,8 @@ export function ConfirmPreviewedSkillDraftReview(arg1:string):Promise<Record<str
 
 export function ContinueBackgroundLoop(arg1:string,arg2:number):Promise<void>;
 
+export function ConversationViewArchiveCount(arg1:string):Promise<number>;
+
 export function CopyCloudWorkspaceTaskFilesToLocal(arg1:string,arg2:string):Promise<main.TaskFileTransferResult>;
 
 export function CopyComputerUsePath(arg1:string):Promise<Record<string, any>>;
@@ -1830,6 +1832,8 @@ export function ListVirtualRepositories():Promise<string>;
 
 export function ListVirtualRepositoryMappings(arg1:string):Promise<string>;
 
+export function LoadAIAssistantUIArchive():Promise<Array<Record<string, any>>>;
+
 export function LoadAIAssistantUIState():Promise<main.AIAssistantUIState>;
 
 export function LoadConfig():Promise<corelib.AppConfig>;
@@ -1843,6 +1847,8 @@ export function LoadProjectContext(arg1:string):Promise<main.ProjectContextSumma
 export function LoadProjectConversationHistory(arg1:string):Promise<Array<main.ProjectConversationHistoryItem>>;
 
 export function LoadProjectTabConversation(arg1:string):Promise<Array<any>>;
+
+export function LoadProjectTabConversationArchive(arg1:string):Promise<Array<any>>;
 
 export function LoadProjectTabIndex():Promise<Array<main.TabIndexEntry>>;
 
@@ -2438,6 +2444,16 @@ export function CreateDesktopBot(arg1:string,arg2:string,arg3:string,arg4:string
 export function RenameDesktopBot(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string}>;
 
 export function SetDesktopBotAppearance(arg1:string,arg2:string,arg3:string):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean,color?:string,shape?:string}>;
+
+export function LoadDesktopBotLooks(arg1:string,arg2:string,arg3:string):Promise<{looks:Record<string,{color:string,shape:string}>,migrated:Array<string>}>;
+
+export function SaveDesktopBotLook(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
+
+export function ClearDesktopBotLook(arg1:string,arg2:string):Promise<void>;
+
+export function MarkDesktopBotLookMigrated(arg1:string,arg2:string):Promise<void>;
+
+export function UnmarkDesktopBotLookMigrated(arg1:string,arg2:string):Promise<void>;
 
 export function DeleteDesktopBot(arg1:string):Promise<void>;
 

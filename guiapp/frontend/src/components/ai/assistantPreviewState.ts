@@ -1,4 +1,4 @@
-import { sanitizeAIAssistantStreamText, type ChatMessage } from "./useAIAssistant";
+import { isTerminalClassCode, sanitizeAIAssistantStreamText, type ChatMessage } from "./useAIAssistant";
 import { changedPreviewFilePath, cloneCodePreviewState, type CodeFile, type CodePreviewUIState } from "./useCodePreviewState";
 import type { WorkflowUIState } from "./useWorkflowState";
 import type { AITab } from "./AITabTypes";
@@ -315,6 +315,34 @@ export function hasRestorableProjectConversation(history: unknown[] | undefined)
     });
 }
 
+/** The outcome stored with a reopened turn. A class code is incomplete. A sentence is not. */
+export function restoredProjectHistoryResultStatus(entry: {
+    result_status?: unknown;
+    resultStatus?: unknown;
+    terminal_class?: unknown;
+    terminalClass?: unknown;
+} | null | undefined): ChatMessage["resultStatus"] {
+    const status = firstRestoredHistoryStatus(entry?.result_status, entry?.resultStatus);
+    if (status) return status;
+    const code = firstRestoredHistoryString(entry?.terminal_class, entry?.terminalClass);
+    if (isTerminalClassCode(code)) return "incomplete";
+    return undefined;
+}
+
+function firstRestoredHistoryStatus(...values: unknown[]): ChatMessage["resultStatus"] {
+    for (const value of values) {
+        if (value === "incomplete" || value === "completed") return value;
+    }
+    return undefined;
+}
+
+function firstRestoredHistoryString(...values: unknown[]): string {
+    for (const value of values) {
+        if (typeof value === "string" && value.trim()) return value.trim();
+    }
+    return "";
+}
+
 export function normalizeRestoredProjectHistoryContent(value: unknown): string {
     if (typeof value === "string") return sanitizeAIAssistantStreamText(value).replace(/^\x01/, '').trim();
     if (value == null) return "";
@@ -352,6 +380,7 @@ export async function loadRestoredProjectConversationHistory(projectPath: string
                 role,
                 content,
                 reasoning: reasoning || undefined,
+                resultStatus: restoredProjectHistoryResultStatus(entry),
                 sessionKey,
                 timestamp: baseTimestamp + index,
             };

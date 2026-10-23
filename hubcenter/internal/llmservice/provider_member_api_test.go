@@ -234,8 +234,16 @@ func TestGroupWithMemberCapabilityTagsLeavesStoredGroup(t *testing.T) {
 			{Name: llmpool.OfficialTierMid, ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p1"}}},
 		},
 	}
-	if groupWithMemberCapabilityTags(reg, official) != official {
-		t.Fatal("one model per quality band does not need a scoring copy")
+	scoredOfficial := groupWithMemberCapabilityTags(reg, official)
+	if scoredOfficial == official {
+		t.Fatal("official tiers need member tags so an image can leave a blind band")
+	}
+	if len(official.Models[0].ProviderConfigs[0].CapabilityTags) != 0 {
+		t.Fatal("stored official tags were changed")
+	}
+	if strings.Join(scoredOfficial.Models[0].ProviderConfigs[0].CapabilityTags, ",") != "vision" ||
+		strings.Join(scoredOfficial.Models[1].ProviderConfigs[0].CapabilityTags, ",") != "vision" {
+		t.Fatalf("official scoring tags high=%#v mid=%#v", scoredOfficial.Models[0].ProviderConfigs[0].CapabilityTags, scoredOfficial.Models[1].ProviderConfigs[0].CapabilityTags)
 	}
 }
 

@@ -680,6 +680,32 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
         });
     });
 
+    it("windows a shorter backend transcript without dropping an unflushed local tail", async () => {
+        const older = Array.from({ length: 45 }, (_, index) => ({
+            id: `m${index}`,
+            role: "user",
+            content: `c${index}`,
+            timestamp: index + 1,
+        }));
+        const unflushed = { id: "local-new", role: "user", content: "still here", timestamp: 100 };
+        localStorage.setItem("ai_assistant_project_tab_histories", JSON.stringify({
+            "proj-window": [...older, unflushed],
+        }));
+        vi.mocked(LoadProjectTabIndex).mockResolvedValue([
+            { id: "proj-window", type: "project", title: "Window", projectPath: "D:/tasks/window", lastActiveAt: 1, archived: false },
+        ] as any);
+        vi.mocked(LoadProjectTabConversation).mockResolvedValue(older.slice(-40) as any);
+
+        const { result } = renderHook(() => useAITabManager());
+
+        await waitFor(() => {
+            const history = (result.current.getTabState("proj-window")?.history || []) as Array<{ id?: string }>;
+            expect(history.map((message) => message.id)).toContain("local-new");
+            expect(history.map((message) => message.id)).not.toContain("m0");
+            expect(history).toHaveLength(40);
+        });
+    });
+
     it("keeps a freshly opened project tab when backend restore resolves late", async () => {
         let resolveIndex!: (entries: any[]) => void;
         vi.mocked(LoadProjectTabIndex).mockReturnValueOnce(new Promise(resolve => {

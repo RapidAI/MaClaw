@@ -1311,7 +1311,9 @@ func semanticLocalFileDeletePlanningClassification(result intent.ClassificationR
 // semanticPlanningClassification applies query evidence before the resolver
 // floor. File delete wins, then a schedule whose body is a mailbox delete,
 // then an immediate mailbox-message delete, then a markdown file write, then
-// a worklog record.
+// a worklog record, then a web lookup whose body is a document to read.
+// A follow-up that does not itself name the format is left unchanged, so a
+// bare 「真读内容」 cannot strip labels the entry hook already stored.
 func semanticPlanningClassification(classification intent.ClassificationResult, planningQuery string) intent.ClassificationResult {
 	if tool.QueryWantsLocalFileDelete(planningQuery) {
 		return semanticLocalFileDeletePlanningClassification(classification)
@@ -1324,6 +1326,9 @@ func semanticPlanningClassification(classification intent.ClassificationResult, 
 	}
 	if kind := classifyWorklogRecord(planningQuery); kind != worklogRecordNone {
 		return semanticWorklogPlanningClassification(classification, kind)
+	}
+	if rewritten := semanticFetchedDocumentReadRewrite(&classification, planningQuery); rewritten != nil {
+		return *rewritten
 	}
 	return classification
 }

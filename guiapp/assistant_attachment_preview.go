@@ -34,6 +34,12 @@ const attachmentPreviewTextCap = 4000
 // file-viewer lease would have expired. The transcript stays on screen.
 const attachmentPreviewTokenTTL = 6 * time.Hour
 
+// attachmentPreviewPDFMaxBytes is how much of a PDF the chat shot may copy.
+// The shot fetches the preview and holds the whole body in one buffer, with
+// range and stream disabled. 128 MiB still covers a scan past the 32 MiB
+// office text budget. The file viewer keeps its own range cap.
+const attachmentPreviewPDFMaxBytes int64 = 128 << 20
+
 // Slide rasters are shown at ATTACHMENT_DOC_PREVIEW_MAX_WIDTH (640 CSS px).
 // Twice that stays sharp on hi-DPI without shipping a full-deck render.
 const attachmentPreviewSlideWidth = 1280
@@ -147,10 +153,24 @@ func openAttachmentPreviewFile(a *App, path string) (string, os.FileInfo, error)
 	if info.Size() <= 0 {
 		return "", nil, fmt.Errorf("文件是空的")
 	}
-	if info.Size() > agent.MaxOfficeReadFileBytes {
+	// The office reader cap is a whole-file text budget. A PDF page shot copies
+	// that file into the webview, so it uses the shot buffer instead: above
+	// the text cap, and far below the viewer's range cap. Word and slides
+	// keep the text cap because their opening preview reads the file.
+	if info.Size() > attachmentPreviewSizeLimit(cleaned) {
 		return "", nil, fmt.Errorf("文件过大，无法预览")
 	}
 	return cleaned, info, nil
+}
+
+// attachmentPreviewSizeLimit is how large a file the opening preview may open.
+// A PDF stops at the chat-shot buffer. Other documents stay on the office
+// text-extraction ceiling.
+func attachmentPreviewSizeLimit(path string) int64 {
+	if strings.EqualFold(filepath.Ext(path), ".pdf") {
+		return attachmentPreviewPDFMaxBytes
+	}
+	return agent.MaxOfficeReadFileBytes
 }
 
 func previewOpeningBinary(path, kind string, info os.FileInfo) (*AIAssistantOpeningPreview, error) {
@@ -171,6 +191,12 @@ func previewOpeningBinary(path, kind string, info os.FileInfo) (*AIAssistantOpen
 func previewPDFOpening(path string, size int64) (*AIAssistantOpeningPreview, error) {
 	if size <= 0 {
 		return nil, fmt.Errorf("不是有效的 PDF 文件")
+	}
+	// Past the text budget, do not slurp the file to pick a page. The shot
+	// draws page 1 from the lease. Sparse-page selection stays on the small
+	// files the office reader is willing to parse.
+	if size > agent.MaxOfficeReadFileBytes {
+		return previewPDFOpeningLeaseOnly(path)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -222,9 +248,36 @@ func previewPDFOpening(path string, size int64) (*AIAssistantOpeningPreview, err
 	}, nil
 }
 
+// previewPDFOpeningLeaseOnly issues the viewer lease after a header peek.
+// Page 1 is enough: the chat shot rasters that page, and there is no text
+// to skip a sparse cover.
+func previewPDFOpeningLeaseOnly(path string) (*AIAssistantOpeningPreview, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("无法打开文件")
+	}
+	ok, peekErr := peekPDFHeader(file)
+	closeErr := file.Close()
+	if peekErr != nil || closeErr != nil {
+		return nil, fmt.Errorf("无法读取文件")
+	}
+	if !ok {
+		return nil, fmt.Errorf("不是有效的 PDF 文件")
+	}
+	token := issueTaskResultPreviewLease(path, attachmentPreviewTokenTTL)
+	if token == "" {
+		return nil, fmt.Errorf("无法预览该文档")
+	}
+	return &AIAssistantOpeningPreview{
+		Kind:       "pdf",
+		PreviewURL: taskResultPreviewHTTPPath + "?t=" + token,
+		Pages:      []AIAssistantOpeningPreviewPage{{Index: 1}},
+	}, nil
+}
+
 func safeExtractPDFPageText(data []byte, pageIndex int) (text string) {
 	defer func() { _ = recover() }()
-	text, err := gopdf2.ExtractPageText(data, pageIndex)
+	text, err := agent.PDFPageBody(data, pageIndex)
 	if err != nil {
 		return ""
 	}

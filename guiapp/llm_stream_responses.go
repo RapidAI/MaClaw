@@ -150,7 +150,12 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 	// Build HTTP request
 	// -----------------------------------------------------------------------
 	requestBuildStartedAt := time.Now()
-	req, _, endpoint, err := llm.NewResponsesAPIRequest(reqCtx, cfg, messages, llm.ResponsesAPIRequestOptions{
+	// The route deadline still bounds time-to-headers. After a 200, the body
+	// has no wall-clock cap. The idle watchdog below, a stop, and an earlier
+	// host deadline still abort it.
+	streamCtx, cancelStream, markHeaders, headerDeadline := llm.StreamingRequestContext(reqCtx)
+	defer cancelStream()
+	req, _, endpoint, err := llm.NewResponsesAPIRequest(streamCtx, cfg, messages, llm.ResponsesAPIRequestOptions{
 		Stream: true,
 		Tools:  tools,
 	})
@@ -169,7 +174,7 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 		metrics.HTTPDoNanos += time.Since(httpDoStartedAt).Nanoseconds()
 	}
 	if err != nil {
-		return nil, fmt.Errorf("[%s] %w", endpoint, err)
+		return nil, fmt.Errorf("[%s] %w", endpoint, llm.NormalizeStreamSetupError(headerDeadline, err))
 	}
 	defer resp.Body.Close()
 
@@ -188,6 +193,11 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("%s", classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, upstreamModel, cfg.ProviderName))
 	}
+	// A non-200 stays on the route deadline. Losing this claim means that
+	// deadline already canceled the live body.
+	if !markHeaders() {
+		return nil, fmt.Errorf("[%s] %w", endpoint, context.DeadlineExceeded)
+	}
 
 	// -----------------------------------------------------------------------
 	// Token stream filters (same chain as OpenAI path)
@@ -203,7 +213,9 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 	repfResp := newRepetitionFilter(rpfResp.Write)
 	tcf := newToolCallFilter(repfResp.Write)
 	fcf := newFuncCallFilter(tcf.Callback())
-	reasoningDisplayResp := newReasoningDisplayStream(onToken, nil)
+	// Close the body when reasoning collapses. The detached stream context
+	// stays up, so this halt is not reported as the caller's cancel.
+	reasoningDisplayResp := newReasoningDisplayStream(onToken, func() { _ = resp.Body.Close() })
 	tf := newThinkFilterWithReasoning(fcf.Callback(), reasoningDisplayResp.ThinkCallback())
 
 	// -----------------------------------------------------------------------
@@ -241,7 +253,7 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 			log.Printf("[LLM Stream] Responses API SSE idle timeout (%v) — aborting stalled request", idleFor)
 			resp.Body.Close()
 		case <-watchdogDone:
-		case <-reqCtx.Done():
+		case <-streamCtx.Done():
 		}
 	}()
 	defer close(watchdogDone)
@@ -323,6 +335,9 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 			if rd.Delta != "" {
 				reasoningBuf.WriteString(rd.Delta)
 				reasoningDisplayResp.Write(rd.Delta)
+				if reasoningDisplayResp.Halted() {
+					goto postLoop
+				}
 			}
 
 		case responsesEventReasoningSummaryPartAdded:
@@ -338,6 +353,9 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 			if json.Unmarshal([]byte(payload), &sp) == nil {
 				if emitted := appendResponsesReasoningSummary(&reasoningBuf, sp.Part.Text); emitted != "" {
 					reasoningDisplayResp.Write(emitted)
+					if reasoningDisplayResp.Halted() {
+						goto postLoop
+					}
 				}
 			}
 
@@ -392,6 +410,9 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 			if json.Unmarshal([]byte(payload), &done) == nil {
 				if emitted := appendResponsesReasoningSummary(&reasoningBuf, done.Item.DisplaySummary()); emitted != "" {
 					reasoningDisplayResp.Write(emitted)
+					if reasoningDisplayResp.Halted() {
+						goto postLoop
+					}
 				}
 			}
 
@@ -402,6 +423,9 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 			for _, summary := range responsesCompletedReasoningSummaries([]byte(payload)) {
 				if emitted := appendResponsesReasoningSummary(&reasoningBuf, summary); emitted != "" {
 					reasoningDisplayResp.Write(emitted)
+					if reasoningDisplayResp.Halted() {
+						goto postLoop
+					}
 				}
 			}
 			log.Printf("[LLM Stream Responses] response.completed received; closing SSE stream without waiting for trailing DONE")
@@ -528,8 +552,13 @@ postLoop:
 	// Detect and filter truncated tool calls caused by output token limit.
 	finishReason, truncatedTools, truncatedToolArgs := filterTruncatedToolCalls(&msg, finishReason)
 
-	return &llm.Response{
+	out := &llm.Response{
 		Choices: []llm.Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}},
 		Usage:   usage,
-	}, streamErr
+	}
+	if recovered, ok := responsesReasoningStutterOutcome(out, reqCtx.Err(), reasoningDisplayResp.Halted()); ok {
+		log.Printf("[LLM Stream Responses] reasoning stutter halted the completion")
+		return recovered, nil
+	}
+	return out, streamErr
 }

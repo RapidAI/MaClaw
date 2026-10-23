@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -104,14 +105,18 @@ func (h *IMMessageHandler) retryAgentLoopLLMRequestAdaptive(
 		if rotated {
 			log.Printf("[LLM] AdaptiveRetry: token-validation error, retrying immediately after credential refresh (%d): %v", retryAttempt+1, result.Err)
 			reportLLMAuthRefresh(onProgress)
+			reportLLMRetryInFlight(onProgress, retryAttempt+1)
 		} else {
 			adaptiveRetry.RecordFailure("llm_request", category, decision)
 			log.Printf("[LLM] AdaptiveRetry: %s error, retry after %v (%d): %v", string(category), decision.Delay, retryAttempt+1, result.Err)
 			result.RetryWaitElapsed += decision.Delay
-			reportLLMRetryWait(category == FailureTransient, onProgress, decision.Delay, retryAttempt+1, maxTransientRetries)
+			announced := reportLLMRetryWait(category == FailureTransient, onProgress, decision.Delay, retryAttempt+1, maxTransientRetries)
 			if waitCancelled(ctx, decision.Delay) {
 				result.Cancelled = true
 				return
+			}
+			if announced {
+				reportLLMRetryInFlight(onProgress, retryAttempt+1)
 			}
 		}
 		retryMetrics := &llmStreamMetrics{}
@@ -167,13 +172,17 @@ func (h *IMMessageHandler) retryAgentLoopLLMRequestFallback(
 		if rotated {
 			log.Printf("[LLM] token-validation error, retrying immediately after credential refresh (%d/%d): %v", retryAttempt+1, retryMax, result.Err)
 			reportLLMAuthRefresh(onProgress)
+			reportLLMRetryInFlight(onProgress, retryAttempt+1)
 		} else {
 			log.Printf("[LLM] request failed, retry after %v (%d/%d): %v", retryDelay, retryAttempt+1, retryMax, result.Err)
 			result.RetryWaitElapsed += retryDelay
-			reportLLMRetryWait(isTransient, onProgress, retryDelay, retryAttempt+1, retryMax)
+			announced := reportLLMRetryWait(isTransient, onProgress, retryDelay, retryAttempt+1, retryMax)
 			if waitCancelled(ctx, retryDelay) {
 				result.Cancelled = true
 				return
+			}
+			if announced {
+				reportLLMRetryInFlight(onProgress, retryAttempt+1)
 			}
 		}
 		retryMetrics := &llmStreamMetrics{}
@@ -233,18 +242,26 @@ func waitCancelled(ctx *LoopContext, delay time.Duration) bool {
 	}
 }
 
-func reportLLMRetryWait(isTransient bool, onProgress tool.ProgressCallback, delay time.Duration, attempt, max int) {
+func reportLLMRetryWait(isTransient bool, onProgress tool.ProgressCallback, delay time.Duration, attempt, max int) bool {
 	if !isTransient || onProgress == nil {
+		return false
+	}
+	onProgress(agent.LLMRetryWaitStatus(attempt, max, delay, false))
+	return true
+}
+
+func reportLLMRetryInFlight(onProgress tool.ProgressCallback, attempt int) {
+	if onProgress == nil {
 		return
 	}
-	onProgress(fmt.Sprintf("API 暂时不可用，%d 秒后重试 (%d/%d)...", int(delay.Seconds()), attempt, max))
+	onProgress(agent.LLMRetryInFlightStatus(attempt))
 }
 
 func reportLLMAuthRefresh(onProgress tool.ProgressCallback) {
 	if onProgress == nil {
 		return
 	}
-	onProgress("已刷新模型登录状态，即将重试...")
+	onProgress(agent.LLMRetryAuthRefreshStatus())
 }
 
 func (h *IMMessageHandler) maybeRefreshLLMAuthForRetry(ctx context.Context, cfg corelib.MaclawLLMConfig, err error, did *bool) (corelib.MaclawLLMConfig, bool) {

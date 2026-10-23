@@ -23,8 +23,12 @@ type RecallTrace struct {
 	ResultEntryIDs []string `json:"result_entry_ids,omitempty"`
 	// LockTimedOut is set when recall could not read the hot set before the
 	// wait expired. Empty results in that case are a failure, not a miss.
-	LockTimedOut bool           `json:"lock_timed_out,omitempty"`
-	SourceCounts map[string]int `json:"source_counts,omitempty"`
+	LockTimedOut bool `json:"lock_timed_out,omitempty"`
+	// RerankApplied is set when a local scorer added a bounded relevance
+	// bonus to the head. RerankPool is how many head entries it scored.
+	RerankApplied bool           `json:"rerank_applied,omitempty"`
+	RerankPool    int            `json:"rerank_pool,omitempty"`
+	SourceCounts  map[string]int `json:"source_counts,omitempty"`
 }
 
 func newRecallTrace(query string, category Category, projectPath string, expanded ExpandResult, bm25Scores, vecScores, semanticScores map[string]float64, candidates []recallScored, results []Entry) RecallTrace {

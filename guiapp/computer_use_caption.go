@@ -253,6 +253,29 @@ func captionTextFromResponse(resp *llm.Response, err error) (string, error) {
 	return agent.StripThinkingTags(out), nil
 }
 
+// documentStyleResponseText keeps both channels. The visible text comes first.
+// A NUL between them stops a cut-off object from absorbing the reasoning
+// channel. Think tags stay until the style parser runs.
+func documentStyleResponseText(resp *llm.Response, err error) (string, error) {
+	if err != nil {
+		return "", err
+	}
+	if resp == nil || len(resp.Choices) == 0 {
+		return "", fmt.Errorf("empty caption response")
+	}
+	msg := resp.Choices[0].Message
+	content := strings.TrimSpace(msg.Content)
+	reasoning := strings.TrimSpace(msg.ReasoningContent)
+	switch {
+	case content != "" && reasoning != "":
+		return content + styleChannelSplit + reasoning, nil
+	case content != "":
+		return content, nil
+	default:
+		return reasoning, nil
+	}
+}
+
 func decodePNGBase64(pngB64 string) (image.Image, error) {
 	raw, err := base64.StdEncoding.DecodeString(pngB64)
 	if err != nil {
