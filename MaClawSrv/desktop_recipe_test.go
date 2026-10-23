@@ -59,3 +59,23 @@ func TestDesktopRecipeIgnoresStepsAfterFirstWrite(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestDesktopRecipeOldVersionNotOffered(t *testing.T) {
+	desktopExperienceRoot = t.TempDir()
+	t.Cleanup(func() { desktopExperienceRoot = "" })
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u-recv", RunID: "run_recv_1"}
+	desktopRecipeBegin(scope, "做10.18的 Hugging Face Daily Papers 摘要，发到知乎上")
+	desktopRecipeObserve(scope, "bash", map[string]any{"action": "bash", "command": "curl -s https://example.org/a"}, strings.Repeat("paper line\n", 60), nil)
+	desktopRecipeValidate(scope)
+	desktopExperienceMu.Lock()
+	path := desktopExperiencePath(scope)
+	f := desktopExperienceLoad(path)
+	for i := range f.Recipes {
+		f.Recipes[i].V = 0
+	}
+	desktopExperienceSave(path, f)
+	desktopExperienceMu.Unlock()
+	if got := desktopRecipeText(scope, "做10.20的 Hugging Face Daily Papers 摘要，发到知乎上"); got != "" {
+		t.Fatalf("v0 recipe offered: %q", got)
+	}
+}

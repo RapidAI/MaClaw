@@ -36,7 +36,12 @@ type desktopRecipe struct {
 	Code   string `json:"code"`
 	Count  int    `json:"count"`
 	Last   int64  `json:"last"`
+	// V is the capture rule version. Recipes from older rules (v<2 stored
+	// post-write scripts) are never offered and get replaced on validate.
+	V int `json:"v,omitempty"`
 }
+
+const desktopRecipeVersion = 2
 
 type desktopRecipeRun struct {
 	frozen bool // a write started: later scripts are the write flow, not gathering
@@ -176,17 +181,18 @@ func desktopRecipeValidate(scope agentruntime.Scope) {
 	found := false
 	for i := range f.Recipes {
 		if f.Recipes[i].Intent == r.intent {
-			if f.Recipes[i].Code == r.code {
+			if f.Recipes[i].Code == r.code && f.Recipes[i].V >= desktopRecipeVersion {
 				f.Recipes[i].Count++
 			} else {
 				f.Recipes[i].Code, f.Recipes[i].Action, f.Recipes[i].Count = r.code, r.action, 1
+				f.Recipes[i].V = desktopRecipeVersion
 			}
 			f.Recipes[i].Last = now
 			found = true
 		}
 	}
 	if !found {
-		f.Recipes = append(f.Recipes, desktopRecipe{Intent: r.intent, Action: r.action, Code: r.code, Count: 1, Last: now})
+		f.Recipes = append(f.Recipes, desktopRecipe{Intent: r.intent, Action: r.action, Code: r.code, Count: 1, Last: now, V: desktopRecipeVersion})
 	}
 	sort.SliceStable(f.Recipes, func(i, j int) bool { return f.Recipes[i].Last > f.Recipes[j].Last })
 	if len(f.Recipes) > desktopRecipeMaxStored {
@@ -208,6 +214,9 @@ func desktopRecipeText(scope agentruntime.Scope, task string) string {
 	desktopExperienceMu.Unlock()
 	best, score := -1, 0.0
 	for i, r := range f.Recipes {
+		if r.V < desktopRecipeVersion {
+			continue
+		}
 		if s := desktopRecipeSimilarity(intent, r.Intent); s > score {
 			best, score = i, s
 		}
