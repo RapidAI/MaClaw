@@ -129,6 +129,8 @@ A cross-bot task now completes with **no GUI running**. Hub itself drives it; th
 
 - Live E2E on papers (2026-10-23 15:03–15:09 UTC+8, Bot 1 → mybod): the delegate was stored, Hub started mybod itself (`started_by=hub`), and mybod's mid-run artifact report and `done` result (with `reply_to`) both reached Bot 1's mailbox. Daniel's GUI was polling, so it acked them and Hub correctly left the wake to it; the GUI-closed wake is covered by unit tests only. Two findings were fixed: guardrail clauses ("do not … delete", 不要删除) no longer hold a delegate for confirmation; and a shared path notify_main cannot read is now logged and named in the tool result instead of silently going without bytes (in the live run the file arrived as a name only).
 
+- GUI-closed live E2E passed 15:43–15:50 (Hub woke Bot 1 server-side, `woken_at`). It showed Hub-started turns resumed old requests from the bot's shared conversation (client_session_key = bot id), so delegate/wake turns now use their own session `botID#xdel-…`/`#xwake-…` (f1d8d75f1).
+
 ## 3. End-to-end example: local file → remote publish
 Person: 「把 D:\稿子\周报.md 整理一下，用发布员发到公司博客，发好告诉我」
 1. Main bot (`running`, task=整理周报): `read_file D:\稿子\周报.md` (local), edits, `write_file D:\稿子\周报-定稿.md` (permission prompt as today).
