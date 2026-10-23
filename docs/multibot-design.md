@@ -161,3 +161,9 @@ Person (to the main bot): 「让采集员去后台把本月订单导出来，导
 ## GUI display feed (delivered vs shown)
 
 "Delivered to an agent" (AckedAt / WokenAt) and "shown to the person" (ShownAt) are separate. The GUI polls the cross-notes list plus `POST /api/v1/bots/feed` every 4 s. It shows every delegate, notify, result and **report** note (done/blocked/progress/question/artifact with file names) in the target bot's chat and in the sender's chat, deduplicated per note on this machine. Then it marks those notes shown on Hub. If a note carries `wake_run_id`, or is a delegate with `started_by=hub`, the GUI watches that run (GetDesktopBotRunOutput, every 10 s, read-only) and posts its output in that bot's chat when it ends. This also covers notes and runs that happened while the GUI was closed: they stay in the feed until a GUI shows them. Needs a GUI rebuild (guiapp 5a57e3b30) and a Hub that includes 4571bc2b9. With an older Hub, the feed call fails quietly and the cross-notes list still drives the display.
+
+### Shared files on notify_main (fixed a738fcdfa)
+Live E2E (16:12 UTC+8): artifact notes carried names but no bytes. The MaClawSrv log said `[notify_main] … not attached: no docker service is assigned to this user`. notify_main read the path with the raw run scope. The bot's file tools use `desktopScopeForTurn` (Hub user → the bot's desktop user, Hub tenant). notify_main now uses that same scope. Note: MaClawSrv logs go to data/logs/maclaw_srv.log, not the journal.
+
+### Primary chat dedupe (fc87343e8)
+A report to the primary bot that no server wake took is delivered by the GUI into the main chat (multibot-wake). The bot workspace does not repeat it in the primary bot's chat. Reports a server wake took (wake_run_id set) are shown there, followed by the wake run's output.
