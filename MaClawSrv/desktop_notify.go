@@ -95,7 +95,14 @@ func desktopNotifyMain(ctx context.Context, request agentruntime.TurnRequest, ar
 	}
 	// Shared paths travel with the message as bytes, so the receiver has the
 	// file now instead of when this run ends. Unreadable paths stay names.
-	files, skipped := desktopNotifyFiles(ctx, request.Scope, artifacts)
+	// Read from this bot's own desktop: the same scope its file tools use
+	// (the Hub user mapped to the bot's desktop user), not the raw run scope,
+	// which Hub cannot map to a container ("no docker service is assigned").
+	fileScope := request.Scope
+	if s, _, err := desktopScopeForTurn(request); err == nil {
+		fileScope = s
+	}
+	files, skipped := desktopNotifyFiles(ctx, fileScope, artifacts)
 	if len(files) > 0 {
 		body["files"] = files
 	}

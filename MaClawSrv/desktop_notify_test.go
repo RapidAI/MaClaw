@@ -164,3 +164,23 @@ func TestDesktopNotifyMainSendsSharedFileBytes(t *testing.T) {
 		t.Fatalf("paths still listed: %#v", arts)
 	}
 }
+
+func TestNotifyMainReadsSharedFilesFromTheBotsOwnDesktop(t *testing.T) {
+	oldRead := desktopNotifyReadFile
+	var seen agentruntime.Scope
+	desktopNotifyReadFile = func(_ context.Context, scope agentruntime.Scope, p string) (string, string, []byte, error) {
+		seen = scope
+		return "a.txt", "text/plain", []byte("x"), nil
+	}
+	desktopRemoteNotify = func(_ context.Context, body map[string]any) (map[string]any, error) { return map[string]any{}, nil }
+	defer func() { desktopRemoteNotify = nil; desktopNotifyReadFile = oldRead }()
+	inst := agentservice.Instance{ID: "inst_scope", Metadata: map[string]string{"hub_user_id": "alice", "hub_tenant_id": "tenant-a"}}
+	req := agentruntime.TurnRequest{Scope: agentruntime.Scope{RunID: "run_scope", UserID: "raw-run-user"}, Input: agentservice.ExecuteRequest{Instance: inst}}
+	if _, err := desktopNotifyMain(context.Background(), req, map[string]any{"kind": "artifact", "message": "done", "paths": []any{"/tmp/a.txt"}}); err != nil {
+		t.Fatal(err)
+	}
+	want, _, _ := desktopScopeForTurn(req)
+	if seen.UserID != want.UserID || seen.TenantID != "tenant-a" || seen.UserID == "raw-run-user" {
+		t.Fatalf("file read with scope %+v, want the bot desktop scope %+v", seen, want)
+	}
+}
