@@ -226,3 +226,38 @@ print("IsolateOrigins" in [a for a in bot if a.startswith("--disable-features=")
 		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
 	}
 }
+
+// A human takeover is temporary: with no person input for the idle limit it
+// hands the desktop back by itself, the deadline is kept in takeover.json
+// (so a restart keeps it), and the next bot_state reports it once.
+func TestSupervisorTakeoverAutoHandback(t *testing.T) {
+	out := runSupervisorPython(t, `
+import json, os, time
+bot = "ab" * 8 + "22" * 8
+sup.save_registry({"users": {bot: {"display": 21, "token": "bb" * 16, "bot": True}}})
+sup.desktop_running = lambda key: True
+sup.start_bot_fcitx = lambda key, display: None
+sup.flush_browser = lambda key: None
+sup.heal_browser_window = lambda *a, **k: None
+os.environ["MACLAW_BOT_TAKEOVER_IDLE_SECONDS"] = "300"
+sup.ctl_takeover_begin({"key": bot, "reason": "login"})
+path = sup.ROOT / bot / "takeover.json"
+d = json.loads(path.read_text())
+print(d["idle_seconds"], d["expires_at"] - d["since"])
+print(sup.takeover_expire_if_idle(bot, now=d["since"] + 100), sup.takeover_state(bot) is not None)
+sup.touch_bot_file(bot, "human_input", force=True)
+t = os.path.getmtime(sup.ROOT / bot / "human_input")
+print(sup.takeover_expire_if_idle(bot, now=d["since"] + 299), json.loads(path.read_text())["expires_at"] == int(t + 300))
+print(sup.takeover_expire_if_idle(bot, now=t + 301), sup.takeover_state(bot) is None)
+s = sup.ctl_bot_state({"key": bot})
+print(s["auto_handback"], s["auto_handback_idle"], s["takeover"])
+print(sup.ctl_bot_state({"key": bot})["auto_handback"])
+os.environ["MACLAW_BOT_TAKEOVER_IDLE_SECONDS"] = "0"
+sup.ctl_takeover_begin({"key": bot, "reason": "x"})
+print(sup.takeover_expire_if_idle(bot, now=time.time() + 99999))
+`, botOwner)
+	want := "300 300\nFalse True\nFalse True\nTrue True\nTrue 300 False\nFalse\nFalse"
+	if out != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
+	}
+}

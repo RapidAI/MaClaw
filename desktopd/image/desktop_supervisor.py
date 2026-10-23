@@ -5109,6 +5109,9 @@ def touch_viewer_takeover(key):
         pass
 
 
+TAKEOVER_IDLE_SECONDS = 300
+
+
 def takeover_state(key):
     try:
         data = json.loads((ROOT / key / "takeover.json").read_text(encoding="utf-8"))
@@ -5830,6 +5833,10 @@ def watch_bot(key, display):
         reap_children()
         if stopped:
             break
+        try:
+            takeover_expire_if_idle(key)
+        except Exception as exc:  # never break the watcher
+            print("takeover expire: %s" % exc, file=sys.stderr)
         time.sleep(5)
     return 0
 
@@ -5952,6 +5959,8 @@ def ctl_bot_state(request):
         return {"ok": True, "unstick": page_unstick(key, str(request.get("unstick") or ""))}
     wait_restore_done(key)
     touch_bot_file(key, "activity")
+    takeover_expire_if_idle(key)
+    handed = pop_auto_handback(key)
     human = bot_file_age(key, "human_input")
     state = takeover_state(key)
     yield_limit = env_int("MACLAW_BOT_HUMAN_YIELD_SECONDS", BOT_HUMAN_YIELD_SECONDS)
@@ -5971,7 +5980,79 @@ def ctl_bot_state(request):
         "lease": "human" if should_yield else "bot",
         "lease_ttl": INPUT_LEASE_SECONDS,
         "yield": should_yield,
+        "auto_handback": handed is not None,
+        "auto_handback_idle": int((handed or {}).get("idle_seconds") or 0),
     }
+
+
+def takeover_idle_limit():
+    """Seconds without person input after which a takeover hands the desktop
+    back to the bot by itself. 0 turns it off."""
+    raw = os.environ.get("MACLAW_BOT_TAKEOVER_IDLE_SECONDS", "").strip()
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return TAKEOVER_IDLE_SECONDS
+
+
+def takeover_expire_if_idle(key, now=None):
+    """A human takeover is temporary: once nobody has touched the display for
+    the idle limit, end it the same way a hand back does. The deadline lives in
+    takeover.json (expires_at) so it survives a supervisor restart. Returns
+    True when it ended the takeover."""
+    path = ROOT / key / "takeover.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    now = time.time() if now is None else now
+    try:
+        limit = int(data.get("idle_seconds") if data.get("idle_seconds") is not None else takeover_idle_limit())
+    except (TypeError, ValueError):
+        limit = takeover_idle_limit()
+    if limit <= 0:
+        return False
+    try:
+        since = float(data.get("since") or 0)
+    except (TypeError, ValueError):
+        since = 0.0
+    last = since
+    try:
+        last = max(last, (ROOT / key / "human_input").stat().st_mtime)
+    except OSError:
+        pass
+    expires = int(last + limit)
+    if now < expires:
+        if data.get("expires_at") != expires:
+            data["expires_at"] = expires
+            data["idle_seconds"] = limit
+            try:
+                path.write_text(json.dumps(data), encoding="utf-8")
+            except OSError:
+                pass
+        return False
+    log_event("takeover_auto_handback", key=key, idle_seconds=limit,
+              reason=str(data.get("reason") or "")[:120], expired_at=expires)
+    ctl_takeover_end({"key": key, "source": "auto_handback"})
+    try:
+        (ROOT / key / "auto_handback.json").write_text(json.dumps(
+            {"at": int(now), "idle_seconds": limit, "reason": str(data.get("reason") or "")[:120]}), encoding="utf-8")
+    except OSError:
+        pass
+    return True
+
+
+def pop_auto_handback(key):
+    """The last automatic hand back not yet reported to MaClawSrv, once."""
+    path = ROOT / key / "auto_handback.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        path.unlink()
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def ctl_takeover_begin(request):
@@ -5979,7 +6060,10 @@ def ctl_takeover_begin(request):
     reason = str(request.get("reason") or "").strip()[:300]
     path = ROOT / key / "takeover.json"
     path.parent.mkdir(mode=0o700, exist_ok=True)
-    path.write_text(json.dumps({"reason": reason, "since": int(time.time())}), encoding="utf-8")
+    now = int(time.time())
+    limit = takeover_idle_limit()
+    path.write_text(json.dumps({"reason": reason, "since": now, "idle_seconds": limit,
+                                "expires_at": now + limit if limit > 0 else 0}), encoding="utf-8")
     log_event("takeover_begin", key=key, reason=reason[:120], source="bot")
     entry = (load_registry().get("users", {}) or {}).get(key) or {}
     try:
@@ -5993,7 +6077,8 @@ def ctl_takeover_begin(request):
 
 def ctl_takeover_end(request):
     key = ctl_bot_key(request)
-    log_event("takeover_end", key=key, source="handback")
+    source = "auto_handback" if request.get("source") == "auto_handback" else "handback"
+    log_event("takeover_end", key=key, source=source)
     try:
         heal_browser_window(key, display_of(key), "handback")
     except Exception:

@@ -56,7 +56,8 @@ Every line has `ts`, `event`, `key` and `bot` (the desktop key minus the owner p
 | `display_idle_timeout` | `display`, idle seconds |
 | `h264_open` | `display`, `interactive`, `takeover`, `input`, `mse`, `fps` |
 | `h264_close` | `frames`, `seconds`, `reason` (viewer_closed, viewer_gone, read_error, send_error, closed) |
-| `takeover_begin` / `takeover_end` | `source` (bot or handback) |
+| `takeover_begin` / `takeover_end` | `source` (bot, handback or auto_handback) |
+| `takeover_auto_handback` | `idle_seconds`, `reason`, `expired_at`: a takeover with no person input for `MACLAW_BOT_TAKEOVER_IDLE_SECONDS` (default 300, 0 = off) ended by itself; the deadline is kept in `takeover.json` `expires_at` |
 | `lease_change` | old and new lease state |
 
 ```sh

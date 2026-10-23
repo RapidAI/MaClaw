@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
@@ -75,6 +76,7 @@ func desktopBotYield(ctx context.Context, scope agentruntime.Scope) error {
 	// lease is the supervisor's input lease between the person and the bot
 	// ("human" or "bot"); an older supervisor only reports yield.
 	lease, _ := out["lease"].(string)
+	desktopNoteAutoHandback(scope, out)
 	desktopNoteLease(scope, lease, out)
 	if yield, _ := out["yield"].(bool); !yield && lease != "human" {
 		return nil
@@ -83,4 +85,18 @@ func desktopBotYield(ctx context.Context, scope agentruntime.Scope) error {
 		return fmt.Errorf("用户正在接管这个桌面（%v），请等用户交还后再操作；现在结束本轮并告诉用户完成后点交还", out["reason"])
 	}
 	return fmt.Errorf("用户刚刚在这个桌面上输入，正在操作；请暂停桌面动作，结束本轮并告诉用户完成后点交还")
+}
+
+// desktopNoteAutoHandback shows in the feed that a human takeover ended by
+// itself after the supervisor saw no person input for its idle limit.
+func desktopNoteAutoHandback(scope agentruntime.Scope, out map[string]any) {
+	if handed, _ := out["auto_handback"].(bool); !handed {
+		return
+	}
+	idle := 0
+	if v, ok := out["auto_handback_idle"].(float64); ok {
+		idle = int(v)
+	}
+	log.Printf("[desktop] takeover auto hand back after %ds without human input", idle)
+	desktopEmitNote(scope, "takeover_auto_handback", "bot", fmt.Sprintf("人类接管 %d 秒无操作，已自动交还给 Bot", idle))
 }
