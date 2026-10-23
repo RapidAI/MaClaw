@@ -123,3 +123,33 @@ func TestAfterPublishRefusesUnaskedDeliver(t *testing.T) {
 		t.Fatalf("asked file must pass: %v", err)
 	}
 }
+
+func TestDriftGuardKeepsBrowserTasksInTheBrowser(t *testing.T) {
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u-drift", RunID: "run-drift"}
+	st, p := desktopProgressFor(scope)
+	if st == nil {
+		t.Skip("no run state")
+	}
+	req := "做10.18的 Hugging Face Daily Papers 摘要，发到知乎上"
+	if err := desktopDriftCheck(scope, "app_open", map[string]any{"program": "libreoffice"}, req); err != nil {
+		t.Fatalf("before any page: %v", err)
+	}
+	st.mu.Lock()
+	p.lastURL = "https://site.example/write"
+	st.mu.Unlock()
+	if desktopDriftCheck(scope, "app_open", map[string]any{"program": "libreoffice"}, req) == nil {
+		t.Fatal("office app allowed in browser task")
+	}
+	if desktopDriftCheck(scope, "bash", map[string]any{"command": "pandoc a.md -o a.docx"}, req) == nil {
+		t.Fatal("docx allowed")
+	}
+	if err := desktopDriftCheck(scope, "bash", map[string]any{"command": "convert -size 1080x1440 xc:white cover.png"}, req); err != nil {
+		t.Fatalf("image for upload refused: %v", err)
+	}
+	if err := desktopDriftCheck(scope, "app_open", map[string]any{"program": "chromium"}, req); err != nil {
+		t.Fatalf("browser refused: %v", err)
+	}
+	if err := desktopDriftCheck(scope, "bash", map[string]any{"command": "pandoc a.md -o a.docx"}, req+"，再给我一个 docx 文件"); err != nil {
+		t.Fatalf("asked file refused: %v", err)
+	}
+}

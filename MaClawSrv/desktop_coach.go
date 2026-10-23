@@ -491,3 +491,38 @@ func desktopAfterPublishDeliverCheck(scope agentruntime.Scope, request string) e
 	}
 	return fmt.Errorf("refused: already_published — the request did not ask for a file; the published link is the result. Give the final answer now (title, /p/<id> link, date used) with no attachment")
 }
+
+var desktopAskedForAppRe = regexp.MustCompile(`(?i)libreoffice|wps|word|excel|powerpoint|终端|terminal|编辑器|editor|打开.{0,6}(应用|软件|程序)|\bapp\b`)
+
+// desktopDriftCheck (generic, every site): once a run is working in the
+// browser, it may not wander into desktop apps or make office documents the
+// request did not ask for (RUN38 opened a document app mid-task; XHS-1 spent
+// minutes in other windows). Images and plain files for an upload stay
+// allowed, and so does anything the request names.
+func desktopDriftCheck(scope agentruntime.Scope, action string, args map[string]any, request string) error {
+	st, p := desktopProgressFor(scope)
+	if st == nil {
+		return nil
+	}
+	st.mu.Lock()
+	inBrowser := p.lastURL != ""
+	st.mu.Unlock()
+	if !inBrowser || strings.TrimSpace(request) == "" {
+		return nil
+	}
+	switch action {
+	case "app_open":
+		prog := strings.ToLower(desktopArg(args, "program"))
+		if desktopWindowIsBrowser(prog) || strings.Contains(prog, "chrom") || desktopAskedForAppRe.MatchString(request) || desktopAskedForFileRe.MatchString(request) {
+			return nil
+		}
+		return fmt.Errorf("refused: off_task_app — this is a browser task and the request did not ask for a desktop app. Do the work in the browser (page scripts, action=upload for files, rich_fill for text); use bash only for data and images")
+	case "bash", "file_write":
+		text := desktopArg(args, "command") + " " + desktopArg(args, "path")
+		if !desktopOfficeFileRe.MatchString(text) || desktopAskedForFileRe.MatchString(request) {
+			return nil
+		}
+		return fmt.Errorf("refused: unasked_file — this is a browser task and the request did not ask for a document; do not make Word/PDF/office files. Put the text on the page directly (rich_fill)")
+	}
+	return nil
+}

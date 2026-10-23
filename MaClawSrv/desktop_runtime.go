@@ -263,6 +263,9 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	if npErr == nil {
 		npErr = desktopAfterPublishCheck(desktopOwner(scope), actionName, args)
 	}
+	if npErr == nil {
+		npErr = desktopDriftCheck(desktopOwner(scope), actionName, args, desktopMessageText(request))
+	}
 	if npErr == nil && actionName == "deliver" {
 		npErr = desktopAfterPublishDeliverCheck(desktopOwner(scope), desktopMessageText(request))
 	}
