@@ -300,9 +300,17 @@ func imapLogin(c *imapclient.Client, username, secret string) error {
 		return ErrAuth
 	}
 	if token, ok := OAuthAccessToken(secret); ok {
-		return c.Authenticate(newXOAuth2Client(username, token))
+		if err := c.Authenticate(newXOAuth2Client(username, token)); err != nil {
+			return err
+		}
+		sendIMAPID(c)
+		return nil
 	}
-	return c.Login(username, secret)
+	if err := c.Login(username, secret); err != nil {
+		return err
+	}
+	sendIMAPID(c)
+	return nil
 }
 
 // authSMTP uses the mechanism the server advertised. QQ, 163 and many
