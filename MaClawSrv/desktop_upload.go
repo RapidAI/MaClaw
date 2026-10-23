@@ -78,11 +78,11 @@ func desktopUpload(session *browser.BrowserAgentSession, args map[string]any) (s
 		return "", fmt.Errorf("upload needs files (absolute paths on the desktop)")
 	}
 	session.Policy.AllowUpload = true
-	hook, hookErr := browser.RunPageScriptBatch(session, "return "+desktopUploadHookJS, "", "", "")
-	_ = hook
-	if hookErr != nil {
-		return "", fmt.Errorf("upload: page not ready: %w", hookErr)
-	}
+	// The hook is our own code, not a model script: evaluate it directly.
+	// Through the page-script guard it was refused (".prototype"), so every
+	// upload failed as "page not ready" (run_65ce783c). Without the hook
+	// the run-wide file-chooser interception still covers clicks.
+	_, _ = session.EvalValue(desktopUploadHookJS)
 	before := desktopUploadState(session)
 	selectors := desktopUploadSelectors
 	if sel := desktopArg(args, "selector"); sel != "" {
