@@ -279,6 +279,16 @@ func (p *publishRun) upload() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if obj == "" && p.spec.UploadTrigger == "" && isImageExt(fileExt(p.spec.Files)) {
+		// Editors with media tabs (video first) only mount the image input
+		// once the image tab is chosen; pick it once and look again.
+		if v, _ := p.eval(publishImageTabJS); v == "clicked" {
+			time.Sleep(1500 * time.Millisecond)
+			if obj, err = p.element(inputExpr); err != nil {
+				return "", err
+			}
+		}
+	}
 	if obj != "" {
 		if _, err := p.send("DOM.setFileInputFiles", map[string]interface{}{"objectId": obj, "files": p.spec.Files}); err != nil {
 			return "", fmt.Errorf("setFileInputFiles: %v", err)
@@ -736,3 +746,15 @@ func (p *publishRun) checkResult(key string, budget time.Duration, listed bool) 
 		time.Sleep(700 * time.Millisecond)
 	}
 }
+
+func isImageExt(ext string) bool {
+	switch strings.ToLower(ext) {
+	case ".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".heic":
+		return true
+	}
+	return false
+}
+
+// publishImageTabJS clicks a visible, short tab/button whose label names an
+// image post ("上传图文", "图文", "Image", "Photo").
+const publishImageTabJS = `(() => { const res = [/^(上传)?图文$|^(image|photo) posts?$/i, /^(上传)?图片$|^(upload )?(images?|photos?)$/i]; const vis = e => e.getClientRects().length > 0; const all = [...document.querySelectorAll('[role=tab],button,a,span,div')].filter(e => vis(e) && e.children.length <= 2); let e = null; for (const re of res) { const c = all.filter(x => re.test((x.innerText || '').trim())); if (c.length) { e = c[c.length - 1]; break; } } if (!e) return 'none'; e.click(); return 'clicked'; })()`

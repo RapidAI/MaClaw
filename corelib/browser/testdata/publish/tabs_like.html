@@ -1,0 +1,31 @@
+<!doctype html><html><head><meta charset="utf-8"><title>小红书创作服务平台 (fixture: video tab first)</title>
+<!-- Structure captured read-only from creator.xiaohongshu.com/publish on 2026-10-23:
+     hidden multi-image input.upload-input (0x0); after a file, an editor with
+     input.d-text (placeholder 填写标题会有更多赞哦) and div.tiptap.ProseMirror;
+     the real 发布 button lives in <xhs-publish-btn> under a CLOSED shadow root;
+     a sidebar "发布笔记" is a decoy. -->
+<style>.upload-input{width:0;height:0;opacity:0;position:absolute} #editor{display:none} .tiptap{min-height:200px;width:600px;border:1px solid #ccc} .d-text{width:500px}</style></head><body>
+<div class="publish-video"><div class="btn-wrapper"><span class="btn-text">发布笔记</span></div></div>
+<div class="creator-tab active"><span class="title">上传视频</span></div><div class="creator-tab" onclick="document.querySelector('.upload-input').accept='.jpg,.jpeg,.png,.webp'"><span class="title">上传图文</span></div>
+<div id="up"><button class="d-button" onclick="document.querySelector('.upload-input').click()">上传图片</button>
+<input class="upload-input" type="file" accept="video/*" multiple></div>
+<div id="editor"><div id="imgs"></div>
+<div class="d-input"><input class="d-text" type="text" placeholder="填写标题会有更多赞哦"></div>
+<div class="tiptap-container"><div class="tiptap ProseMirror" contenteditable="true"></div></div>
+<xhs-publish-btn submit-text="发布" save-text="暂存离开"></xhs-publish-btn></div>
+<script>
+document.querySelector('.upload-input').addEventListener('change', e => {
+  const f = e.target.files; if (!f.length) return;
+  for (const x of f) { const i = document.createElement('img'); i.src = URL.createObjectURL(x); document.getElementById('imgs').appendChild(i); }
+  e.target.value = ''; document.getElementById('up').style.display = 'none'; document.getElementById('editor').style.display = 'block';
+});
+customElements.define('xhs-publish-btn', class extends HTMLElement { constructor() { super(); const r = this.attachShadow({mode: 'closed'});
+  r.innerHTML = '<div class="publish-page-publish-btn"><button type="button" class="ce-btn white">暂存离开</button><button type="button" class="ce-btn bg-red">发布</button></div>';
+  r.querySelectorAll('button')[1].addEventListener('click', async ev => {
+    if (!ev.isTrusted) return; // the real page ignores synthetic clicks
+    const t = document.querySelector('.d-text').value, b = document.querySelector('.tiptap').innerText;
+    if (!t || !b.trim() || !document.querySelector('#imgs img')) { alert('missing'); return; }
+    await fetch('/publish', {method: 'POST', body: JSON.stringify({title: t, body: b})});
+    location.href = '/success';
+  }); } });
+</script></body></html>
