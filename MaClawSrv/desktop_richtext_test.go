@@ -45,6 +45,9 @@ func TestDesktopPublishGuard(t *testing.T) {
 	if desktopRichPreCheck(ok, nil, "click", map[string]any{"text": "发布"}) != nil {
 		t.Fatal("pre-approved publish must pass")
 	}
+	if desktopRichPreCheck(ctx, nil, "publish", map[string]any{"title": "x"}) == nil || desktopRichPreCheck(ok, nil, "publish", map[string]any{"title": "x"}) != nil {
+		t.Fatal("publish action must follow the same approval")
+	}
 	req := agentruntime.TurnRequest{Input: agentservice.ExecuteRequest{Message: agentservice.Message{Content: "写好后直接发布到知乎，不用确认"}}}
 	if !desktopPublishPreapproved(req) {
 		t.Fatal("preapproval phrase")

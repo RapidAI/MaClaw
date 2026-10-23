@@ -119,6 +119,11 @@ func desktopRichPreCheck(ctx context.Context, session *browser.BrowserAgentSessi
 			}
 			return desktopPublishBodyCheck(session)
 		}
+	case "publish":
+		if !desktopPublishAllowed(ctx) {
+			log.Printf("[desktop-guard] refused publish_needs_confirmation (publish action)")
+			return fmt.Errorf("%s", desktopPublishRefusal)
+		}
 	case "click":
 		label := desktopArg(args, "text")
 		if ref := desktopArg(args, "ref"); ref != "" && session != nil {
