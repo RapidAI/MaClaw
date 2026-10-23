@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -73,21 +74,46 @@ func (fc *FailoverChain) NextAvailable() *FailoverProvider {
 //   - auth_error: 300s (likely permanent, long cooldown)
 //   - timeout/network: 15s
 func (fc *FailoverChain) MarkFailed(name string, reason FailoverReason) {
-	var duration time.Duration
-	switch reason {
-	case FailoverRateLimit:
-		duration = 60 * time.Second
-	case FailoverServerError:
-		duration = 30 * time.Second
-	case FailoverAuthError:
-		duration = 300 * time.Second
-	default:
-		duration = 15 * time.Second
+	fc.MarkFailedWithCooldown(name, reason, 0)
+}
+
+// MarkFailedWithCooldown is MarkFailed with an explicit cooldown. A positive
+// cooldown (e.g. from Retry-After) wins over the reason's default. Cap at 1h.
+func (fc *FailoverChain) MarkFailedWithCooldown(name string, reason FailoverReason, cooldown time.Duration) {
+	if cooldown <= 0 {
+		switch reason {
+		case FailoverRateLimit:
+			cooldown = 60 * time.Second
+		case FailoverServerError:
+			cooldown = 30 * time.Second
+		case FailoverAuthError:
+			cooldown = 300 * time.Second
+		default:
+			cooldown = 15 * time.Second
+		}
+	}
+	if cooldown > time.Hour {
+		cooldown = time.Hour
 	}
 	fc.mu.Lock()
-	fc.cooldowns[name] = time.Now().Add(duration)
+	fc.cooldowns[name] = time.Now().Add(cooldown)
 	fc.mu.Unlock()
-	log.Printf("[Failover] provider %q marked failed (%s), cooldown %v", name, reason, duration)
+	log.Printf("[Failover] provider %q marked failed (%s), cooldown %v", name, reason, cooldown)
+}
+
+// MarkFailedFromError classifies err and, for an HTTP 429 with a Retry-After
+// body field, uses that wait as the cooldown.
+func (fc *FailoverChain) MarkFailedFromError(name string, err error) {
+	reason := ClassifyError(err)
+	if reason == "" {
+		reason = FailoverNetwork
+	}
+	var wait time.Duration
+	var se *HTTPStatusError
+	if errors.As(err, &se) && se != nil {
+		wait = HubRetryWait(se.Body, time.Now())
+	}
+	fc.MarkFailedWithCooldown(name, reason, wait)
 }
 
 // MarkSuccess clears cooldown for a provider.

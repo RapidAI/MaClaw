@@ -94,6 +94,15 @@ func openAISDKChatRaw(ctx context.Context, cfg corelib.MaclawLLMConfig, body []b
 				responseBody = raw
 			}
 		}
+		if len(responseBody) == 0 && status == http.StatusTooManyRequests {
+			hdr := response
+			if hdr == nil {
+				if apiErr := openAISDKError(err); apiErr != nil {
+					hdr = apiErr.Response
+				}
+			}
+			responseBody = retryAfterHeaderBody(hdr, time.Now())
+		}
 		return responseBody, status, err
 	}
 	return responseBody, status, nil

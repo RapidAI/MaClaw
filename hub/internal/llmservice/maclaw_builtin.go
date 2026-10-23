@@ -817,8 +817,14 @@ func (c *MaClawProviderClient) nodeIDForURL(rawURL string) string {
 // error: it guarantees no upstream provider accepted the request on that node,
 // so replaying it on another configured HubCenter node is usage-safe.
 // Reverse-proxy HTML/text 5xx responses are likewise safe to retry.
+// HTTP 429 is also safe: HubCenter (and upstream providers) reject the request
+// before billing starts, so another HubCenter candidate may still have healthy
+// keys/providers in the same service group.
 func shouldFailoverHubCenter(status int, responseBody []byte, err error) bool {
 	if err != nil || status == http.StatusConflict {
+		return true
+	}
+	if status == http.StatusTooManyRequests {
 		return true
 	}
 	if status < 500 {

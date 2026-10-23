@@ -78,6 +78,18 @@ func TestShouldFailoverHubCenterAllProvidersFailed(t *testing.T) {
 			want:   true,
 		},
 		{
+			name:   "http 429 fails over",
+			status: 429,
+			body:   `{"error":{"message":"rate limited"}}`,
+			want:   true,
+		},
+		{
+			name:   "empty 429 fails over",
+			status: 429,
+			body:   "",
+			want:   true,
+		},
+		{
 			name:   "json 400 stays",
 			status: 400,
 			body:   `{"error":{"message":"all providers failed"}}`,
