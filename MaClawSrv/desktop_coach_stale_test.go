@@ -153,3 +153,21 @@ func TestDriftGuardKeepsBrowserTasksInTheBrowser(t *testing.T) {
 		t.Fatalf("asked file refused: %v", err)
 	}
 }
+
+func TestDriftGuardNoCopyAfterPublish(t *testing.T) {
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u-drift2", RunID: "run-drift2"}
+	st, p := desktopProgressFor(scope)
+	if st == nil {
+		t.Skip("no run state")
+	}
+	st.mu.Lock()
+	p.lastURL, p.publishSeen = "https://site.example/p/1", true
+	st.mu.Unlock()
+	req := "做10.18的摘要，发到知乎上"
+	if desktopDriftCheck(scope, "file_write", map[string]any{"path": "/home/desktop/Desktop/稿.md"}, req) == nil {
+		t.Fatal("desktop copy allowed after publish")
+	}
+	if err := desktopDriftCheck(scope, "file_write", map[string]any{"path": "/tmp/x.md"}, req); err != nil {
+		t.Fatal(err)
+	}
+}

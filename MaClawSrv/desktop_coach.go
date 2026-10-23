@@ -506,7 +506,11 @@ func desktopDriftCheck(scope agentruntime.Scope, action string, args map[string]
 	}
 	st.mu.Lock()
 	inBrowser := p.lastURL != ""
+	published := p.publishSeen
 	st.mu.Unlock()
+	if published && action == "file_write" && !desktopAskedForFileRe.MatchString(request) && !desktopScratchPathRe.MatchString(desktopArg(args, "path")) {
+		return fmt.Errorf("refused: unasked_file — the result is already published and the request did not ask for a file; do not save a copy. Give the final answer with the link now")
+	}
 	if !inBrowser || strings.TrimSpace(request) == "" {
 		return nil
 	}
@@ -526,3 +530,6 @@ func desktopDriftCheck(scope agentruntime.Scope, action string, args map[string]
 	}
 	return nil
 }
+
+// Scratch locations a run may write to without the person asking.
+var desktopScratchPathRe = regexp.MustCompile(`^(/tmp/|/var/tmp/|/home/desktop/tasks/|/home/desktop/\.cache/)`)
