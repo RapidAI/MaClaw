@@ -290,6 +290,7 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	desktopExperienceRecord(scope, desktopRunSite(desktopOwner(scope)), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args, out, err)
 	failWarn := desktopFailClassRecord(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args, out, err)
 	desktopNotePublishAttempt(desktopOwner(scope), actionName, args)
+	desktopNoteMedia(scope, actionName, args, out, err)
 	desktopRecordBatchDefault(desktopOwner(scope), actionName, err)
 	desktopRecipeObserve(desktopOwner(scope), actionName, args, out, err)
 	if err == nil && (actionName == "deliver" || strings.Contains(out, desktopAppliedMarker)) {
@@ -840,6 +841,7 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 	if err != nil {
 		return "", err
 	}
+	defer desktopArmChooserForRun(scope, action, session)()
 	// Extra copies of the same URL hide the control the next click needs.
 	// Close them before this step reads or changes the page.
 	switch action {
