@@ -505,8 +505,14 @@ func wrapPageScript(script, siteHost string) string {
     if (found.length < 2) return found;
     return found.filter(el => !found.some(other => other !== el && el.contains && el.contains(other)));
   }
+  function shownEl(el) {
+    try { return !!(el && el.getClientRects && el.getClientRects().length > 0); } catch (e) { return true; }
+  }
+  let hiddenOnly = false;
   function one(target) {
-    const found = preferInnermost(collect(target));
+    const all = preferInnermost(collect(target));
+    const found = all.filter(shownEl);
+    hiddenOnly = found.length === 0 && all.length > 0;
     if (found.length === 1) return found[0];
     if (found.length === 0) return null;
     const names = found.slice(0, 4).map(labelOf).filter(Boolean).join(', ');
@@ -522,6 +528,7 @@ func wrapPageScript(script, siteHost string) string {
       if (el) return el;
       await new Promise(resolve => setTimeout(resolve, 100));
     }
+    if (hiddenOnly) throw new Error('only hidden matches for ' + target + ' (open the menu, popover or panel that shows it first, e.g. click its button)');
     throw new Error('not found: ' + target);
   }
   function setValue(el, text) {
