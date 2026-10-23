@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 )
@@ -262,7 +265,8 @@ func desktopRichFill(ctx context.Context, scope agentruntime.Scope, args map[str
 	// viewport ones a script reported (run_bcc21d49 clicked y=356 for an
 	// editor at viewport y=343: the browser toolbar, so the body stayed 0).
 	focused := false
-	if out, err := operateDesktopWithTimeout(ctx, scope, map[string]any{"action": "script", "script": desktopRichFocusScript}); err == nil && strings.Contains(out, "RICH_FOCUSED") {
+	sel := desktopArg(args, "selector")
+	if out, err := operateDesktopWithTimeout(ctx, scope, map[string]any{"action": "script", "script": desktopRichFocusScriptFor(sel)}); err == nil && strings.Contains(out, "RICH_FOCUSED") {
 		focused = true
 		parts = append(parts, "focused the editor")
 	}
@@ -300,6 +304,12 @@ func desktopRichFill(ctx context.Context, scope agentruntime.Scope, args map[str
 	parts = append(parts, fmt.Sprintf("pasted %d chars with a real Ctrl+V", len([]rune(text))))
 	if m := desktopBodyCountRe.FindString(out); m != "" {
 		parts = append(parts, m)
+	}
+	if rb, err := operateDesktopWithTimeout(ctx, scope, map[string]any{"action": "script", "script": desktopRichReadbackScript(sel, text)}); err == nil {
+		if line := desktopRichReadbackLine(rb); line != "" {
+			parts = append(parts, line)
+			parts = append(parts, desktopRichFillNext(scope, line, text))
+		}
 	}
 	res := "rich_fill: " + strings.Join(parts, "; ")
 	if strings.Contains(out, desktopNotAppliedMarker) {
@@ -464,6 +474,87 @@ func desktopAfterPublishCheck(scope agentruntime.Scope, action string, args map[
 // desktopRichFocusScript focuses the largest visible contenteditable (the
 // article body of Draft.js / ProseMirror / Quill editors) and reports whether
 // keyboard focus is in it.
+func desktopRichFocusScriptFor(sel string) string {
+	if strings.TrimSpace(sel) == "" {
+		return desktopRichFocusScript
+	}
+	q, _ := json.Marshal(sel)
+	return `const ed = document.querySelector(` + string(q) + `);
+if (!ed) return 'RICH_NONE';
+ed.scrollIntoView({block: 'center'});
+ed.focus();
+const ae = document.activeElement;
+return (ae === ed || ed.contains(ae)) ? 'RICH_FOCUSED' : 'RICH_NOFOCUS';`
+}
+
+// desktopRichReadbackScript reads what the filled field holds now: the
+// selector's element, else the focused field or contenteditable root, else
+// the largest visible editor. It reports kind, length, whether the start of
+// the pasted text is present (whitespace-insensitive) and the first chars.
+func desktopRichReadbackScript(sel, want string) string {
+	q, _ := json.Marshal(sel)
+	w := []rune(want)
+	if len(w) > 200 {
+		w = w[:200]
+	}
+	wq, _ := json.Marshal(string(w))
+	return `const sel = ` + string(q) + `, want = ` + string(wq) + `;
+const isField = e => e && (e.tagName === 'INPUT' || e.tagName === 'TEXTAREA');
+let ed = sel ? document.querySelector(sel) : null;
+if (!ed) { const ae = document.activeElement; if (isField(ae)) ed = ae; else if (ae && ae.closest) ed = ae.closest('[contenteditable="true"],[contenteditable=""]'); }
+if (!ed) { const eds = [...document.querySelectorAll('[contenteditable="true"]')].filter(e => { const r = e.getBoundingClientRect(); return r.width > 200 && r.height > 20; }); eds.sort((a, b) => { const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect(); return rb.width * rb.height - ra.width * ra.height; }); ed = eds[0]; }
+if (!ed) return 'RICH_READBACK kind=none len=0 has=no head=""';
+const v = isField(ed) ? String(ed.value || '') : String(ed.innerText || ed.textContent || '');
+const norm = s => s.replace(/\s+/g, '');
+const key = norm(want).slice(0, 20);
+return 'RICH_READBACK kind=' + (isField(ed) ? 'field' : 'editor') + ' len=' + v.length + ' has=' + (key && norm(v).includes(key) ? 'yes' : 'no') + ' head=' + JSON.stringify(v.slice(0, 30));`
+}
+
+var desktopRichReadbackRe = regexp.MustCompile(`RICH_READBACK kind=(\w+) len=(\d+) has=(yes|no) head=("(?:[^"\\]|\\.)*")`)
+
+// desktopRichReadbackLine turns the script output into the read-back the
+// model sees.
+func desktopRichReadbackLine(out string) string {
+	m := desktopRichReadbackRe.FindStringSubmatch(out)
+	if m == nil {
+		return ""
+	}
+	return fmt.Sprintf("read back: the %s now holds %s chars, your text present=%s, starts %s", m[1], m[2], m[3], m[4])
+}
+
+var desktopRichFills sync.Map // run key -> *desktopRichFillState
+
+type desktopRichFillState struct {
+	mu          sync.Mutex
+	title, body bool
+}
+
+// desktopRichFillNext records a verified fill (short single-line text or a
+// form field counts as the title, anything else as the body) and says what
+// comes next.
+func desktopRichFillNext(scope agentruntime.Scope, line, text string) string {
+	if !strings.Contains(line, "present=yes") {
+		return "NOT verified: the text is not in the field — fill it once more with replace=true (selector for a title field); do not probe or script around it"
+	}
+	v, _ := desktopRichFills.LoadOrStore(desktopTrajRunKey(scope), &desktopRichFillState{})
+	st := v.(*desktopRichFillState)
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if strings.Contains(line, "the field ") || (utf8.RuneCountInString(strings.TrimSpace(text)) <= 100 && !strings.Contains(strings.TrimSpace(text), "\n")) {
+		st.title = true
+	} else {
+		st.body = true
+	}
+	switch {
+	case st.title && st.body:
+		return "VERIFIED: title and body are both in place. NEXT STEP: click the submit/publish button now (one click by its text); no more fills, probes or checks before it"
+	case st.body:
+		return "VERIFIED body. Next: fill the title the same way (rich_fill with selector of the title field) if it is still empty, then click submit/publish"
+	default:
+		return "VERIFIED title. Next: rich_fill the body, then click submit/publish"
+	}
+}
+
 const desktopRichFocusScript = `const eds = [...document.querySelectorAll('[contenteditable="true"]')].filter(e => { const r = e.getBoundingClientRect(); return r.width > 200 && r.height > 20; });
 eds.sort((a, b) => { const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect(); return rb.width * rb.height - ra.width * ra.height; });
 const ed = eds[0];
