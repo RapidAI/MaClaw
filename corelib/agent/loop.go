@@ -100,6 +100,23 @@ type LLMAuthRefresh interface {
 	RefreshLLMAuth(ctx context.Context) (corelib.MaclawLLMConfig, bool)
 }
 
+// LLMProviderFailover lets a host switch the turn to another configured
+// provider when the current one answers HTTP 429, instead of waiting out a
+// fixed backoff against the same exhausted key. The host owns cooldowns and
+// ordering; ok=false means no other provider is available right now.
+type LLMProviderFailover interface {
+	FailoverLLMProvider(ctx context.Context, current corelib.MaclawLLMConfig, err error) (corelib.MaclawLLMConfig, bool)
+}
+
+// llmErrStatus returns the HTTP status carried by an LLM error, or 0.
+func llmErrStatus(err error) int {
+	var sc interface{ HTTPStatusCode() int }
+	if errors.As(err, &sc) {
+		return sc.HTTPStatusCode()
+	}
+	return 0
+}
+
 func applyRefreshedLLMAuth(dst, src corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
 	if key := strings.TrimSpace(src.Key); key != "" {
 		dst.Key = src.Key
@@ -2030,6 +2047,17 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 							aggCFG = applyRefreshedLLMAuth(aggCFG, next)
 							rotated = true
 							cb.OnProgress("已刷新模型登录状态，即将重试...")
+						}
+					}
+				}
+				if !rotated && llmErrStatus(err) == http.StatusTooManyRequests {
+					if fo, ok := cb.(LLMProviderFailover); ok {
+						if next, ok := fo.FailoverLLMProvider(requestCtx, cfg, err); ok {
+							log.Printf("[agent-loop] HTTP 429 from provider %q, failing over to %q", cfg.ProviderName, next.ProviderName)
+							cfg = next
+							aggCFG = next
+							rotated = true
+							cb.OnProgress("当前模型服务限流，已切换到备用服务继续。")
 						}
 					}
 				}
