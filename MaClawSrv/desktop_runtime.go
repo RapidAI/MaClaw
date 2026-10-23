@@ -287,7 +287,9 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	desktopNotePublishAttempt(desktopOwner(scope), actionName, args)
 	desktopRecordBatchDefault(desktopOwner(scope), actionName, err)
 	desktopRecipeObserve(desktopOwner(scope), actionName, args, out, err)
-	if err == nil && actionName == "deliver" {
+	if err == nil && (actionName == "deliver" || strings.Contains(out, desktopAppliedMarker)) {
+		// Generic verified outcome: a delivered file, or any write that a
+		// read-back confirmed (every site), validates the gathering recipe.
 		desktopRecipeValidate(desktopOwner(scope))
 	}
 	coach := desktopProgressNote(desktopOwner(scope), actionName, out, err)
