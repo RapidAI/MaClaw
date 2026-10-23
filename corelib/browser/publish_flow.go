@@ -620,11 +620,15 @@ func (p *publishRun) submit() (string, error) {
 		return "", err
 	}
 	confirmed := false
+	reclicks := 0
+	lastClick := time.Now()
 	deadline := time.Now().Add(minDur(p.spec.StepBudget, 25*time.Second))
 	for time.Now().Before(deadline) {
 		time.Sleep(500 * time.Millisecond)
 		url, _ := p.eval("location.href")
-		if url != "" && url != p.editURL {
+		// An autosaved draft also changes the URL (/write -> /p/1/edit):
+		// only a page outside the editor counts as published.
+		if url != "" && url != p.editURL && !publishEditorURL.MatchString(url) {
 			return "page left the editor: " + url, nil
 		}
 		txt, _ := p.eval("document.body ? document.body.innerText.slice(0, 20000) : ''")
@@ -634,7 +638,15 @@ func (p *publishRun) submit() (string, error) {
 		if !confirmed && len(p.spec.ConfirmTexts) > 0 {
 			if p.clickText(p.spec.ConfirmTexts, true) == nil {
 				confirmed = true
+				lastClick = time.Now()
 			}
+		}
+		// Many sites answer the first click with a settings panel whose
+		// own button carries the same text; press the newest one again.
+		if reclicks < 2 && time.Since(lastClick) > 3*time.Second {
+			reclicks++
+			lastClick = time.Now()
+			_ = p.clickText(p.spec.SubmitTexts, true)
 		}
 	}
 	return "", fmt.Errorf("clicked submit but the page neither left the editor nor said it was published")
@@ -660,12 +672,28 @@ func (p *publishRun) verify() (string, error) {
 	if key == "" {
 		key = clipRunes(p.spec.Body, 12)
 	}
-	if p.spec.VerifyURL != "" {
-		if err := p.navigate(p.spec.VerifyURL); err != nil {
-			return "", err
+	// The page the submit landed on is the post itself on many sites
+	// (/p/<id>); when it shows the title and is not an editor, that is the
+	// result. Otherwise open verify_url, where the post must be listed.
+	if out, err := p.checkResult(key, 6*time.Second, false); err == nil {
+		if !publishEditorURL.MatchString(p.rep.ResultURL) || p.spec.VerifyURL == "" {
+			return out, nil
 		}
 	}
-	deadline := time.Now().Add(minDur(p.spec.StepBudget, 20*time.Second))
+	if p.spec.VerifyURL == "" {
+		return p.checkResult(key, minDur(p.spec.StepBudget, 20*time.Second), false)
+	}
+	if err := p.navigate(p.spec.VerifyURL); err != nil {
+		return "", err
+	}
+	return p.checkResult(key, minDur(p.spec.StepBudget, 25*time.Second), true)
+}
+
+var publishEditorURL = regexp.MustCompile(`(?i)/(edit|write|publish|creator|draft)`)
+
+func (p *publishRun) checkResult(key string, budget time.Duration, listed bool) (string, error) {
+	deadline := time.Now().Add(budget)
+	reloaded := false
 	for {
 		out, _ := p.eval(`(() => { const key = ` + jsq(normText(key)) + `; const n = s => (s || '').replace(/\s+/g, ''); const has = n(document.body ? document.body.innerText : '').includes(key); const a = [...document.querySelectorAll('a[href]')].find(a => n(a.innerText).includes(key) || n(a.closest('section,li,article,div') ? a.closest('section,li,article,div').innerText : '').includes(key)); return JSON.stringify({url: location.href, has, link: a ? a.href : ''}); })()`)
 		var o struct {
@@ -676,13 +704,18 @@ func (p *publishRun) verify() (string, error) {
 		_ = json.Unmarshal([]byte(out), &o)
 		if o.Has {
 			p.rep.ResultURL = o.URL
-			if p.spec.VerifyURL != "" && o.Link != "" {
+			if listed && o.Link != "" {
 				p.rep.ResultURL = o.Link
 			}
 			return fmt.Sprintf("result page %s shows %q", o.URL, key), nil
 		}
 		if time.Now().After(deadline) {
 			return "", fmt.Errorf("result page %s does not show %q", o.URL, key)
+		}
+		// Lists load lazily; one reload halfway catches a stale first render.
+		if listed && !reloaded && time.Until(deadline) < budget/2 {
+			reloaded = true
+			_, _ = p.d.Send("Page.reload", map[string]any{})
 		}
 		time.Sleep(700 * time.Millisecond)
 	}

@@ -11,12 +11,20 @@
 <script>
 const ed = document.querySelector('.public-DraftEditor-content');
 // Draft.js keeps its own model: DOM writes that bypass input events are lost.
-let model = ''; ed.addEventListener('input', () => { model = ed.innerText; });
-document.getElementById('pub').addEventListener('click', async ev => {
+let model = ''; ed.addEventListener('input', () => { model = ed.innerText; if (!location.pathname.endsWith('/p/123/edit')) history.replaceState(null, '', '/p/123/edit'); });
+// Autosave moves the URL into a draft editor; that is not a publish.
+document.getElementById('pub').addEventListener('click', ev => {
+  if (!ev.isTrusted || document.getElementById('dlg')) return;
+  // The first click opens a panel whose own 发布 does the publish.
+  const d = document.createElement('div'); d.id = 'dlg'; d.innerHTML = '<div>发布设置</div><button class="Button Button--primary" id="pub2">发布</button>';
+  document.body.appendChild(d);
+  document.getElementById('pub2').addEventListener('click', go);
+});
+async function go(ev) {
   if (!ev.isTrusted) return;
   const t = document.querySelector('textarea').value;
   if (!t || !model.trim()) { alert('empty'); return; }
   const r = await fetch('/publish', {method: 'POST', body: JSON.stringify({title: t, body: model})});
   location.href = await r.text();
-});
+}
 </script></body></html>
