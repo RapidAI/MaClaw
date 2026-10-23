@@ -542,7 +542,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	}
 	messageBody := map[string]any{
 		"content":            content,
-		"client_session_key": rec.Bots[index].ID,
+		"client_session_key": desktopSessionKey(rec.Bots[index].ID, clientMessageID),
 		"metadata":           messageMeta,
 		// The per-turn key travels in the body, where MaClawSrv reads it as
 		// client_message_id. A repeated key replays the run it already
@@ -1726,4 +1726,15 @@ func normalizeGrant(in Grant, existing []Grant) (Grant, error) {
 		return Grant{}, fmt.Errorf("%w: scope must be global, department, or user", ErrInvalidInput)
 	}
 	return in, nil
+}
+
+// desktopSessionKey is the bot's own conversation, except for a turn Hub
+// starts itself (a delegate or a mailbox wake): that runs in a session of
+// its own, so it never resumes an older or cancelled request left in the
+// person's conversation with the bot.
+func desktopSessionKey(botID, clientMessageID string) string {
+	if strings.HasPrefix(clientMessageID, "xdel-") || strings.HasPrefix(clientMessageID, "xwake-") {
+		return botID + "#" + clientMessageID
+	}
+	return botID
 }
