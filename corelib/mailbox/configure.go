@@ -34,6 +34,7 @@ func ApplyConfigure(existing []Account, args map[string]interface{}, now time.Ti
 	username := strings.TrimSpace(stringArg(args, "username"))
 	inbound := endpointFromMap(args["inbound"], true, username, email)
 	outbound := endpointFromMap(args["outbound"], false, username, email)
+	inbound, outbound = fillPresetEndpoints(email, username, inbound, outbound)
 	if inbound == nil && outbound == nil {
 		return nil, Account{}, nil, "", classErr("invalid", "至少要有收件或发件服务器")
 	}
@@ -69,7 +70,11 @@ func ApplyConfigure(existing []Account, args map[string]interface{}, now time.Ti
 	if len(secrets) > 0 {
 		return next, saved, secrets, fmt.Sprintf(MsgConfigured, saved.Name), nil
 	}
-	return next, saved, nil, fmt.Sprintf(MsgConfiguredNoSecret, saved.Name), nil
+	msg := fmt.Sprintf(MsgConfiguredNoSecret, saved.Name)
+	if hint := ProviderHint(email); hint != "" {
+		msg += " " + hint
+	}
+	return next, saved, nil, msg, nil
 }
 
 // ConfigureShapeReason reports a save that cannot be written. It does not
@@ -91,6 +96,7 @@ func ConfigureShapeReason(args map[string]interface{}) string {
 	}
 	inbound := endpointFromMap(args["inbound"], true, "", email)
 	outbound := endpointFromMap(args["outbound"], false, "", email)
+	inbound, outbound = fillPresetEndpoints(email, "", inbound, outbound)
 	if inbound == nil && outbound == nil {
 		return "mailbox_configure_server_required"
 	}
@@ -180,7 +186,7 @@ func ConfigureProperties() map[string]interface{} {
 func ConfigureInvocationSchema() map[string]interface{} { return configureSchema() }
 
 func ToolDescriptionConfigure() string {
-	return "根据用户提供的接入信息保存邮箱。action 只能是 save。邮箱名必须填写：用户提供了就用用户的，没提供就由你生成一个简短名字（可用地址本地部分），不要留空；重名则另起一个。同时填写 email、username、password，以及 inbound 和 outbound（host、port、security 用 tls、starttls 或 none，收件还可填 box）。IMAP 写入 inbound，SMTP 写入 outbound。密码只写入系统密钥环，不要把密码复述到回复里。这个工具不发送邮件。"
+	return "根据用户提供的接入信息保存邮箱。action 只能是 save。邮箱名必须填写：用户提供了就用用户的，没提供就由你生成一个简短名字（可用地址本地部分），不要留空；重名则另起一个。同时填写 email、username、password，以及 inbound 和 outbound（host、port、security 用 tls、starttls 或 none，收件还可填 box）。IMAP 写入 inbound，SMTP 写入 outbound。163/126/yeah、QQ、Gmail、Outlook/Hotmail 地址可省略 inbound/outbound，自动使用预置服务器；163 和 QQ 的 password 是授权码，Gmail 是应用专用密码或浏览器登录，Outlook/Hotmail 只能浏览器登录。密码只写入系统密钥环，不要把密码复述到回复里。这个工具不发送邮件。"
 }
 
 func configureSchema() map[string]interface{} {
