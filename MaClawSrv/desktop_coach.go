@@ -204,6 +204,7 @@ func desktopProgressNote(scope agentruntime.Scope, action string, out string, er
 	}
 	if err == nil && p.publishTried && !p.publishSeen && desktopPublishedRe.MatchString(out) && !strings.Contains(out, "/edit") {
 		p.publishSeen = true
+		desktopRecipeValidate(scope)
 		notes = append(notes, "The article appears published. Verify once (open the article URL and check title and body length), then stop operating the desktop and report the URL. Do not keep editing the published article.")
 	}
 	if len(notes) == 0 {

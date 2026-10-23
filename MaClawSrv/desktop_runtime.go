@@ -286,6 +286,10 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	failWarn := desktopFailClassRecord(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args, out, err)
 	desktopNotePublishAttempt(desktopOwner(scope), actionName, args)
 	desktopRecordBatchDefault(desktopOwner(scope), actionName, err)
+	desktopRecipeObserve(desktopOwner(scope), actionName, args, out, err)
+	if err == nil && actionName == "deliver" {
+		desktopRecipeValidate(desktopOwner(scope))
+	}
 	coach := desktopProgressNote(desktopOwner(scope), actionName, out, err)
 	if err == nil {
 		out = spillDesktopToolText(ctx, scope, out, actionName)
@@ -380,6 +384,9 @@ func (desktopRuntimeModule) ContributePrompt(ctx context.Context, request agentr
 	prompt := "The current user has one cloud desktop through the desktop tool. "
 	if scope, _, err := desktopScopeForTurn(request); err == nil {
 		prompt += desktopExperienceText(scope, "")
+		task := desktopTurnTask(request)
+		desktopRecipeBegin(scope, task)
+		prompt += desktopRecipeText(scope, task)
 	}
 	prompt += desktopInboxText(ctx, request)
 	return prompt +
@@ -3662,4 +3669,16 @@ func desktopScriptErrIsNavigation(err error) bool {
 	}
 	m := strings.ToLower(err.Error())
 	return strings.Contains(m, "inspected target navigated") || strings.Contains(m, "execution context was destroyed") || strings.Contains(m, "cannot find context with specified id")
+}
+
+func desktopTurnTask(request agentruntime.TurnRequest) string {
+	switch input := request.Input.(type) {
+	case agentservice.ExecuteRequest:
+		return input.Message.Content
+	case *agentservice.ExecuteRequest:
+		if input != nil {
+			return input.Message.Content
+		}
+	}
+	return ""
 }

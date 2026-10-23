@@ -56,6 +56,7 @@ type desktopSiteExperience struct {
 type desktopExperienceFile struct {
 	LastSite string                            `json:"last_site,omitempty"`
 	Sites    map[string]*desktopSiteExperience `json:"sites"`
+	Recipes  []desktopRecipe                   `json:"recipes,omitempty"`
 }
 
 func desktopExperienceEnabled() bool {
