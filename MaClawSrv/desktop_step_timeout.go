@@ -198,7 +198,7 @@ func desktopDropStuckBinding(scope agentruntime.Scope) {
 // Runtime.evaluate timeout) before the hard step timeout fires; that is the
 // same hung renderer, so the tab is reopened the same way, at most once a
 // minute per desktop.
-var desktopPageHungRe = regexp.MustCompile(`cdp timeout: Runtime\.evaluate|page did not answer`)
+var desktopPageHungRe = regexp.MustCompile(`cdp timeout: (Runtime\.evaluate|Page\.enable)|page did not answer`)
 
 func desktopPageHung(out string, err error) bool {
 	if err != nil && desktopPageHungRe.MatchString(err.Error()) {
