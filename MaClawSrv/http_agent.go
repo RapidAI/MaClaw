@@ -255,7 +255,7 @@ func (s *HTTPServer) handleSendMessage(w http.ResponseWriter, r *http.Request, p
 		// Returning 202 from this request must not release the desktop.
 		ownsRun := false
 		in.ExecutionOwner = &ownsRun
-		in.PrepareExecution, in.FinishExecution = desktopAsyncHooks(desktopTenantID, desktopUserID, shotID, botID, &ownsRun)
+		in.PrepareExecution, in.FinishExecution = desktopAsyncHooks(desktopTenantID, desktopUserID, shotID, botID, &ownsRun, in.Content)
 		sess, run, err := s.svc.SendMessageAsync(r.Context(), p, r.PathValue("instanceId"), in)
 		if err != nil {
 			callErr = err
@@ -491,7 +491,7 @@ func (s *HTTPServer) handlePostMessage(w http.ResponseWriter, r *http.Request, p
 	if wantsAsync {
 		ownsRun := false
 		in.ExecutionOwner = &ownsRun
-		in.PrepareExecution, in.FinishExecution = desktopAsyncHooks(desktopTenantID, desktopUserID, shotID, botID, &ownsRun)
+		in.PrepareExecution, in.FinishExecution = desktopAsyncHooks(desktopTenantID, desktopUserID, shotID, botID, &ownsRun, in.Content)
 		run, err := s.svc.PostMessageAsync(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"), in)
 		if err != nil {
 			writeRedactedError(w, err, s.svc.DataRoot())
@@ -513,6 +513,7 @@ func (s *HTTPServer) handlePostMessage(w http.ResponseWriter, r *http.Request, p
 	shotCtx, shot := withDesktopShotSlot(r.Context())
 	run, msg, err := s.svc.PostMessage(shotCtx, p, shotID, r.PathValue("sessionId"), in)
 	if err == nil {
+		dropUnaskedDesktopShot(shot, in.Content, msg)
 		publishDesktopReply(msg, shot)
 	} else if msg != nil {
 		msg.Content = correctDesktopPathClaim(msg.Content, desktopSavedPath(shot))
@@ -541,7 +542,7 @@ func (s *HTTPServer) handleGetRun(w http.ResponseWriter, r *http.Request, p agen
 // desktopAsyncHooks hold the desktop for the detached run. The HTTP handler
 // returns as soon as the run exists. Finish stores the screenshot and the
 // handoff so a later read of the run can deliver them.
-func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool) (
+func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool, request ...string) (
 	func(context.Context) context.Context,
 	func(context.Context, *agentservice.Run, *agentservice.Message, error),
 ) {
@@ -586,6 +587,9 @@ func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool) (
 		images := 0
 		files := 0
 		if err == nil {
+			if len(request) > 0 {
+				dropUnaskedDesktopShot(shot, request[0], msg)
+			}
 			images, files = publishDesktopReply(msg, shot)
 		} else if msg != nil {
 			msg.Content = correctDesktopPathClaim(msg.Content, desktopSavedPath(shot))
