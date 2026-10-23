@@ -39,6 +39,7 @@ type desktopRecipe struct {
 }
 
 type desktopRecipeRun struct {
+	frozen bool // a write started: later scripts are the write flow, not gathering
 	intent string
 	action string
 	code   string
@@ -118,11 +119,16 @@ func desktopRecipeBegin(scope agentruntime.Scope, task string) {
 
 // desktopRecipeObserve keeps the latest successful gathering step of the run.
 func desktopRecipeObserve(scope agentruntime.Scope, action string, args map[string]any, out string, err error) {
-	if err != nil || (action != "bash" && action != "script") {
-		return
-	}
 	v, ok := desktopRecipeRuns.Load(desktopTrajRunKey(scope))
 	if !ok {
+		return
+	}
+	if desktopRecipeWriteActions[action] {
+		// Gathering is what happens before the first write on any site.
+		v.(*desktopRecipeRun).frozen = true
+		return
+	}
+	if err != nil || (action != "bash" && action != "script") || v.(*desktopRecipeRun).frozen {
 		return
 	}
 	code := desktopArg(args, "command")
@@ -142,6 +148,11 @@ func desktopRecipeObserve(scope agentruntime.Scope, action string, args map[stri
 	}
 	r := v.(*desktopRecipeRun)
 	r.action, r.code = action, desktopbot.ScrubSecrets(code)
+}
+
+var desktopRecipeWriteActions = map[string]bool{
+	"rich_fill": true, "type": true, "click": true, "press": true, "batch": true,
+	"computer": true, "app_run": true, "file_write": true, "deliver": true,
 }
 
 // desktopRecipeValidate stores the run's gathering step once the run reached

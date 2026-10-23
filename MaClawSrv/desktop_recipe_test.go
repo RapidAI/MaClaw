@@ -43,3 +43,19 @@ func TestDesktopRecipeIntentNormalizesDigits(t *testing.T) {
 		}
 	}
 }
+
+func TestDesktopRecipeIgnoresStepsAfterFirstWrite(t *testing.T) {
+	desktopExperienceRoot = t.TempDir()
+	t.Cleanup(func() { desktopExperienceRoot = "" })
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u-rec2", RunID: "run_rec_3"}
+	desktopRecipeBegin(scope, "summarize papers and post")
+	big := strings.Repeat("row\n", 200)
+	desktopRecipeObserve(scope, "bash", map[string]any{"command": "fetch-material"}, big, nil)
+	desktopRecipeObserve(scope, "rich_fill", map[string]any{}, "ok", nil)
+	desktopRecipeObserve(scope, "script", map[string]any{"script": "readBackPage()"}, big, nil)
+	desktopRecipeValidate(scope)
+	got := desktopRecipeText(agentruntime.Scope{TenantID: "t", UserID: "u-rec2"}, "summarize papers and post")
+	if !strings.Contains(got, "fetch-material") || strings.Contains(got, "readBackPage") {
+		t.Fatalf("got %q", got)
+	}
+}
