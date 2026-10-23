@@ -8,20 +8,31 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 )
 
-func TestStaleZhihuArticleIsNotThisRunsResult(t *testing.T) {
+func TestVerifiedResultIsGeneric(t *testing.T) {
 	scope := agentruntime.Scope{TenantID: "t", UserID: "u-stale", InstanceID: "i", SessionID: "s", RunID: "run-stale"}
 	st := desktopRunFor(scope)
 	if st == nil {
 		t.Skip("no run state")
 	}
-	n := desktopProgressNote(scope, "script", "script ok: url https://zhuanlan.zhihu.com/p/2096823748510991511; title x", nil)
-	if strings.Contains(n, "appears published") || !strings.Contains(n, "earlier article") {
-		t.Fatalf("stale tab note = %q", n)
+	// An earlier result open before this run filled anything is not verified.
+	if n := desktopProgressNote(scope, "script", "script ok: url https://forum.example/t/99; title x 发布成功", nil); strings.Contains(n, "Verified") {
+		t.Fatalf("stale page verified: %q", n)
 	}
-	desktopProgressNote(scope, "navigate", "navigated to https://zhuanlan.zhihu.com/write", nil)
-	n = desktopProgressNote(scope, "probe", "probed page (https://zhuanlan.zhihu.com/p/2096823748510991999; title y", nil)
-	if !strings.Contains(n, "appears published") {
-		t.Fatalf("own article note = %q", n)
+	desktopProgressNote(scope, "navigate", "navigated to https://forum.example/compose", nil)
+	desktopNotePublishAttempt(scope, "batch", map[string]any{"plan": []any{
+		map[string]any{"action": "rich_fill", "text": "# Weekly notes\nFirst line of the body here"},
+		map[string]any{"action": "click", "text": "Publish"},
+	}})
+	// Still on the editor: not verified even if the text shows.
+	if n := desktopProgressNote(scope, "script", "url https://forum.example/compose Weeklynotes", nil); strings.Contains(n, "Verified") {
+		t.Fatalf("editor verified: %q", n)
+	}
+	// Moved, but read-back lacks the text: hint, not verified.
+	if n := desktopProgressNote(scope, "probe", "probed page (https://forum.example/t/100) other", nil); strings.Contains(n, "Verified") || !strings.Contains(n, "Read it back") {
+		t.Fatalf("moved note: %q", n)
+	}
+	if n := desktopProgressNote(scope, "script", "url https://forum.example/t/100; title Weekly notes; body First line", nil); !strings.Contains(n, "Verified") {
+		t.Fatalf("own result not verified: %q", n)
 	}
 }
 

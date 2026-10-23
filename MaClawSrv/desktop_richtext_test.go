@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/browser"
 )
 
@@ -118,7 +118,9 @@ func TestDesktopProgressCoach(t *testing.T) {
 	if desktopNoProgressCheck(scope, "probe") == nil || desktopNoProgressCheck(scope, "request_takeover") != nil {
 		t.Fatal("stop check")
 	}
-	if n := desktopProgressNote(scope, "probe", "url https://zhuanlan.zhihu.com/p/123 发布成功", nil); !strings.Contains(n, "published") {
+	desktopNotePublishAttempt(scope, "rich_fill", map[string]any{"text": "## 今日论文速览：多模态推理"})
+	desktopNotePublishAttempt(scope, "click", map[string]any{"text": "发布"})
+	if n := desktopProgressNote(scope, "script", "url https://site.example/p/123; 今日论文速览：多模态推理 …", nil); !strings.Contains(n, "Verified") {
 		t.Fatalf("published note %q", n)
 	}
 }

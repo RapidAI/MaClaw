@@ -30,11 +30,12 @@ import (
 //    verify once and stop.
 
 var (
-	desktopURLRe            = regexp.MustCompile(`https?://[^\s;)'"]+`)
-	desktopBodyCountRe      = regexp.MustCompile(`editor body has (\d+) chars|字数[:：]\s*(\d+)`)
-	desktopArticleURLRe     = regexp.MustCompile(`zhuanlan\.zhihu\.com/p/\d+`)
-	desktopPublishAttemptRe = regexp.MustCompile(`发布成功|zhuanlan\.zhihu\.com/write|clicked\s*(发布|更新|发布中|确认发布)`)
-	desktopPublishedRe      = regexp.MustCompile(`发布成功|已发布|zhuanlan\.zhihu\.com/p/\d+(?:[?#\s;]|$)`)
+	desktopURLRe       = regexp.MustCompile(`https?://[^\s;)'"]+`)
+	desktopBodyCountRe = regexp.MustCompile(`editor body has (\d+) chars|字数[:：]\s*(\d+)`)
+	// Generic (every site): a submit was reported by the step output.
+	desktopPublishAttemptRe = regexp.MustCompile(`(?i)(发布|发表|提交|发送)成功|\bclicked\s*\S{0,6}(发布|发表|提交|更新|publish|post|submit|send)|\b(published|submitted)\b`)
+	// Editor/compose pages: a result is never verified while still on one.
+	desktopEditURLRe = regexp.MustCompile(`(?i)/(write|edit|editor|compose|new|draft|drafts|create|publish)(?:[/?#]|$)`)
 )
 
 var desktopReadOnlyActions = map[string]bool{
@@ -54,6 +55,13 @@ type desktopProgress struct {
 	// URL seen before that is a page left open by an earlier task.
 	publishTried bool
 	staleWarned  bool
+	// Generic verified-result detection: snippets of the text this run
+	// filled, and the page URL it was filled on. A result is verified when,
+	// after a submit, the page is a different non-editor URL and a read-back
+	// shows the filled text.
+	filled         []string
+	writeURL       string
+	readBackHinted bool
 	// Batch-default path (generic, every site): observe once, then one
 	// action=batch for the rest. These counters enforce that outside a plan.
 	observed       bool
@@ -195,17 +203,17 @@ func desktopProgressNote(scope agentruntime.Scope, action string, out string, er
 		}
 	}
 
-	if err == nil && desktopPublishAttemptRe.MatchString(out) {
+	if err == nil && len(p.filled) > 0 && desktopPublishAttemptRe.MatchString(out) {
 		p.publishTried = true
 	}
-	if err == nil && !p.publishTried && !p.staleWarned && desktopArticleURLRe.MatchString(out) && !strings.Contains(out, "/edit") {
-		p.staleWarned = true
-		notes = append(notes, "That zhuanlan.zhihu.com/p/ article was already open before this task pressed 发布: it is an earlier article, not this task's result. Do not report it. If this task asks to publish, open https://zhuanlan.zhihu.com/write and make a new article.")
+	if err == nil && p.publishTried && !p.publishSeen && !p.readBackHinted && p.lastURL != p.writeURL && !desktopEditURLRe.MatchString(strings.SplitN(p.lastURL, "?", 2)[0]) && !desktopVerifiedResult(p, out) {
+		p.readBackHinted = true
+		notes = append(notes, "Submitted and the page moved to "+p.lastURL+". Read it back ONCE (one script returning location.href, the title and the first lines of the body), then report.")
 	}
-	if err == nil && p.publishTried && !p.publishSeen && desktopPublishedRe.MatchString(out) && !strings.Contains(out, "/edit") {
+	if err == nil && desktopVerifiedResult(p, out) {
 		p.publishSeen = true
 		desktopRecipeValidate(scope)
-		notes = append(notes, "The article appears published. Verify once (open the article URL and check title and body length), then stop operating the desktop and report the URL. Do not keep editing the published article.")
+		notes = append(notes, "Verified: the page moved to "+p.lastURL+" and it shows the text this task filled. Stop operating the desktop and report that URL. Do not keep editing the published result.")
 	}
 	if len(notes) == 0 {
 		return ""
@@ -313,7 +321,9 @@ func desktopNotePublishAttempt(scope agentruntime.Scope, action string, args map
 	case "click":
 		hit = desktopIsPublishLabel(desktopArg(args, "text"))
 	}
-	if !hit {
+	var texts []string
+	desktopCollectFilled(action, args, &texts, &hit)
+	if !hit && len(texts) == 0 {
 		return
 	}
 	st, p := desktopProgressFor(scope)
@@ -321,8 +331,99 @@ func desktopNotePublishAttempt(scope agentruntime.Scope, action string, args map
 		return
 	}
 	st.mu.Lock()
-	p.publishTried = true
-	st.mu.Unlock()
+	defer st.mu.Unlock()
+	for _, t := range texts {
+		if sn := desktopFilledSnippet(t); sn != "" {
+			if len(p.filled) == 0 {
+				p.writeURL = p.lastURL
+			}
+			if len(p.filled) < 8 {
+				p.filled = append(p.filled, sn)
+			}
+		}
+	}
+	if hit && len(p.filled) > 0 {
+		p.publishTried = true
+	}
+}
+
+// desktopCollectFilled gathers the text a write step puts on the page
+// (rich_fill/type text, and the same inside a batch plan) and whether a step
+// presses a submit control.
+func desktopCollectFilled(action string, args map[string]any, texts *[]string, hit *bool) {
+	switch action {
+	case "rich_fill", "type":
+		if t := desktopRawArg(args, "text"); t != "" {
+			*texts = append(*texts, t)
+		}
+	case "script":
+		if desktopScriptClicksPublish(desktopArg(args, "script")) || desktopScriptSubmits(desktopArg(args, "script")) {
+			*hit = true
+		}
+	case "click":
+		if desktopIsPublishLabel(desktopArg(args, "text")) {
+			*hit = true
+		}
+	case "batch":
+		plan, _ := args["plan"].([]any)
+		for _, it := range plan {
+			m, ok := it.(map[string]any)
+			if !ok {
+				continue
+			}
+			a := strings.ToLower(strings.TrimSpace(desktopArg(m, "action")))
+			if a != "batch" {
+				desktopCollectFilled(a, m, texts, hit)
+			}
+		}
+	}
+}
+
+var desktopSnippetTrimRe = regexp.MustCompile(`^[\s#>*\-+|\d.、]+`)
+
+// desktopFilledSnippet: the first meaningful line of filled text, markup
+// stripped, whitespace removed, at most 12 runes ("" when too short).
+func desktopFilledSnippet(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		line = desktopSnippetTrimRe.ReplaceAllString(line, "")
+		line = strings.NewReplacer("*", "", "`", "", "[", "", "]", "").Replace(line)
+		line = strings.Join(strings.Fields(line), "")
+		r := []rune(line)
+		if len(r) < 4 {
+			continue
+		}
+		if len(r) > 12 {
+			r = r[:12]
+		}
+		return string(r)
+	}
+	return ""
+}
+
+// desktopVerifiedResult (generic, every site): after this run filled text
+// and pressed a submit control, the page moved to a different non-editor URL
+// and the step output (a read-back) contains text this run filled.
+func desktopVerifiedResult(p *desktopProgress, out string) bool {
+	if p.publishSeen || !p.publishTried || len(p.filled) == 0 {
+		return false
+	}
+	u := desktopFirstURL(out)
+	if u == "" {
+		u = p.lastURL
+	}
+	if u == "" || desktopEditURLRe.MatchString(strings.SplitN(u, "?", 2)[0]) {
+		return false
+	}
+	if p.writeURL != "" && strings.SplitN(u, "#", 2)[0] == strings.SplitN(p.writeURL, "#", 2)[0] {
+		return false
+	}
+	flat := strings.Join(strings.Fields(out), "")
+	for _, sn := range p.filled {
+		if strings.Contains(flat, sn) {
+			return true
+		}
+	}
+	return false
 }
 
 var desktopOfficeFileRe = regexp.MustCompile(`(?i)\.(docx?|odt|pdf|pptx?|xlsx?)\b|python-docx|\b(libreoffice|lowriter|soffice|pandoc)\b`)
