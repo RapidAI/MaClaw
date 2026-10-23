@@ -54,6 +54,10 @@ type desktopProgress struct {
 	warned70    bool
 	warned90    bool
 	publishSeen bool
+	// publishVerified: action=publish returned PUBLISHED and verified;
+	// afterPublish counts the desktop steps taken after it.
+	publishVerified bool
+	afterPublish    int
 	// publishTried: this run pressed 发布/更新 (or saw 发布成功). An article
 	// URL seen before that is a page left open by an earlier task.
 	publishTried bool
@@ -212,6 +216,10 @@ func desktopProgressNote(scope agentruntime.Scope, action string, out string, er
 	if err == nil && p.publishTried && !p.publishSeen && !p.readBackHinted && p.lastURL != p.writeURL && !desktopEditURLRe.MatchString(strings.SplitN(p.lastURL, "?", 2)[0]) && !desktopVerifiedResult(p, out) {
 		p.readBackHinted = true
 		notes = append(notes, "Submitted and the page moved to "+p.lastURL+". Read it back ONCE (one script returning location.href, the title and the first lines of the body), then report.")
+	}
+	if err == nil && action == "publish" && strings.Contains(out, "PUBLISHED and verified") {
+		p.publishVerified = true
+		p.publishSeen = true
 	}
 	if err == nil && desktopVerifiedResult(p, out) {
 		p.publishSeen = true
@@ -598,7 +606,15 @@ func desktopDriftCheck(scope agentruntime.Scope, action string, args map[string]
 	st.mu.Lock()
 	inBrowser := p.lastURL != ""
 	published := p.publishSeen
+	over := false
+	if p.publishVerified && action != "publish" {
+		p.afterPublish++
+		over = p.afterPublish > 2
+	}
 	st.mu.Unlock()
+	if over {
+		return fmt.Errorf("refused: already_published — action=publish already published and verified the post. Do not look for more (no probes, scripts, screenshots or fetches); give the final answer now with exactly what that publish result said (its link, or its post id, or the list page and title)")
+	}
 	if published && action == "bash" && !desktopAskedForFileRe.MatchString(request) && desktopUserDirWriteRe.MatchString(desktopArg(args, "command")) {
 		return fmt.Errorf("refused: unasked_file — the result is already published and the request did not ask for a file; do not save a copy. Give the final answer with the link now")
 	}
