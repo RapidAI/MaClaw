@@ -49,6 +49,11 @@ func desktopStepTimeout(action string) time.Duration {
 	if desktopStepLongActions[action] {
 		return desktopEnvSeconds(desktopStepTimeoutLongEnv, 900*time.Second)
 	}
+	if action == "navigate" {
+		// A navigate that has not returned in 45s is a hung tab; the
+		// unstick path reopens it, so waiting longer only costs time.
+		return desktopEnvSeconds(desktopStepTimeoutEnv, 45*time.Second)
+	}
 	return desktopEnvSeconds(desktopStepTimeoutEnv, 90*time.Second)
 }
 
@@ -148,7 +153,7 @@ func desktopUnstickAfterTimeout(scope agentruntime.Scope, action string, args ma
 	closed, _ := res["closed"].(string)
 	log.Printf("[desktop-step] unstick after %s timeout: closed=%s reopened=%s", action, closed, reopened)
 	desktopEmitNote(scope, "page_unstick", "bot", "closed "+closed+" reopened "+reopened)
-	return "the browser tab had stopped responding (" + closed + "); it was closed and opened again at " + reopened + ". Take one screenshot now and continue from what it shows; do not repeat the same navigate"
+	return "the browser tab had stopped responding (" + closed + "); it was closed and opened again at " + reopened + " and is ready. Continue with your next page action on it (script, probe or rich_fill); no screenshot is needed and do not repeat the same navigate"
 }
 
 // desktopDropStuckBinding: the step that timed out is still running and
