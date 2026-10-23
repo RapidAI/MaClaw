@@ -28,7 +28,7 @@ const (
 	desktopRecipeMinOutRunes = 400  // output big enough to be material
 	desktopRecipeMaxCmdRunes = 4000 // stored command cap
 	desktopRecipeMaxStored   = 8
-	desktopRecipeMatchMin    = 0.35
+	desktopRecipeMatchMin    = 0.6
 )
 
 type desktopRecipe struct {
@@ -102,11 +102,10 @@ func desktopRecipeSimilarity(a, b string) float64 {
 			n++
 		}
 	}
-	min := len(A)
-	if len(B) < min {
-		min = len(B)
-	}
-	return float64(n) / float64(min)
+	// Dice, not overlap-over-the-shorter: a different task that shares one
+	// topic phrase (XHS-2 "HF Daily Papers 10.18 … 小红书" vs the Zhihu
+	// recipe) must not reach the threshold.
+	return 2 * float64(n) / float64(len(A)+len(B))
 }
 
 // desktopRecipeBegin remembers the task intent of this run (prompt time).

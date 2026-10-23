@@ -94,3 +94,14 @@ func TestDesktopRecipeWritingScriptFreezes(t *testing.T) {
 		t.Fatalf("want gathering bash, got %q", got)
 	}
 }
+
+func TestRecipeSimilarityRejectsOtherTaskSameTopic(t *testing.T) {
+	zh := desktopRecipeIntent("做10.18的 Hugging Face Daily Papers 摘要，发到知乎上")
+	xhs := desktopRecipeIntent("做一张简单的封面图，在小红书发一篇图文笔记，主题是 Hugging Face Daily Papers 10.18 的三篇亮点论文速览（标题+三段短正文）。发布后打开笔记确认，并把链接给我。")
+	if s := desktopRecipeSimilarity(zh, xhs); s >= desktopRecipeMatchMin {
+		t.Fatalf("cross-task score %.2f", s)
+	}
+	if s := desktopRecipeSimilarity(zh, desktopRecipeIntent("做10.17的 Hugging Face Daily Papers 摘要，发到知乎上")); s < desktopRecipeMatchMin {
+		t.Fatalf("same task score %.2f", s)
+	}
+}
