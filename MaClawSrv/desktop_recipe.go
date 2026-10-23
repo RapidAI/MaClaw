@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -36,12 +37,12 @@ type desktopRecipe struct {
 	Code   string `json:"code"`
 	Count  int    `json:"count"`
 	Last   int64  `json:"last"`
-	// V is the capture rule version. Recipes from older rules (v<2 stored
+	// V is the capture rule version. Recipes from older rules (v<3 could store
 	// post-write scripts) are never offered and get replaced on validate.
 	V int `json:"v,omitempty"`
 }
 
-const desktopRecipeVersion = 2
+const desktopRecipeVersion = 3
 
 type desktopRecipeRun struct {
 	frozen bool // a write started: later scripts are the write flow, not gathering
@@ -128,7 +129,7 @@ func desktopRecipeObserve(scope agentruntime.Scope, action string, args map[stri
 	if !ok {
 		return
 	}
-	if desktopRecipeWriteActions[action] {
+	if desktopRecipeWriteActions[action] || (action == "script" && desktopRecipeScriptWritesRe.MatchString(desktopArg(args, "script"))) {
 		// Gathering is what happens before the first write on any site.
 		v.(*desktopRecipeRun).frozen = true
 		return
@@ -154,6 +155,10 @@ func desktopRecipeObserve(scope agentruntime.Scope, action string, args map[stri
 	r := v.(*desktopRecipeRun)
 	r.action, r.code = action, desktopbot.ScrubSecrets(code)
 }
+
+// A page script that changes the page (types, sets values, clicks) is a
+// write step on any site: it freezes gathering like rich_fill does.
+var desktopRecipeScriptWritesRe = regexp.MustCompile(`\btype\s*\(|\.value\s*=[^=]|\.click\s*\(|dispatchEvent\s*\(|execCommand\s*\(|innerHTML\s*=[^=]|textContent\s*=[^=]|\.submit\s*\(`)
 
 var desktopRecipeWriteActions = map[string]bool{
 	"rich_fill": true, "type": true, "click": true, "press": true, "batch": true,

@@ -79,3 +79,18 @@ func TestDesktopRecipeOldVersionNotOffered(t *testing.T) {
 		t.Fatalf("v0 recipe offered: %q", got)
 	}
 }
+
+func TestDesktopRecipeWritingScriptFreezes(t *testing.T) {
+	desktopExperienceRoot = t.TempDir()
+	t.Cleanup(func() { desktopExperienceRoot = "" })
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u-recw", RunID: "run_recw_1"}
+	desktopRecipeBegin(scope, "做10.18的 Hugging Face Daily Papers 摘要，发到知乎上")
+	big := strings.Repeat("paper line\n", 60)
+	desktopRecipeObserve(scope, "bash", map[string]any{"action": "bash", "command": "curl -s https://example.org/gather"}, big, nil)
+	desktopRecipeObserve(scope, "script", map[string]any{"action": "script", "script": "await type('textarea', T); return document.body.innerText"}, big, nil)
+	desktopRecipeObserve(scope, "script", map[string]any{"action": "script", "script": "return document.body.innerText"}, big, nil)
+	desktopRecipeValidate(scope)
+	if got := desktopRecipeText(scope, "做10.20的 Hugging Face Daily Papers 摘要，发到知乎上"); !strings.Contains(got, "example.org/gather") {
+		t.Fatalf("want gathering bash, got %q", got)
+	}
+}
