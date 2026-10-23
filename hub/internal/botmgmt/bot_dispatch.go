@@ -225,6 +225,9 @@ func (s *Service) dispatchOnce(tenantID, userID string) bool {
 	}
 	traceBot(job.botID, "hub_dispatch_"+job.kind, err, "key", job.key, "run", adm.RunID)
 	if job.kind != "delegate" {
+		if err == nil && strings.TrimSpace(adm.RunID) != "" {
+			s.markWakeRun(tenantID, userID, job.noteIDs, strings.TrimSpace(adm.RunID))
+		}
 		return false
 	}
 	noteID := job.noteIDs[0]

@@ -233,3 +233,37 @@ func LocalBotsHandler(svc *botmgmt.Service, identity botAuthenticator) http.Hand
 		}
 	}
 }
+
+// BotFeedHandler GET|POST /api/v1/bots/feed is the person's display feed:
+// every message between their bots, delegates and Hub-started runs, kept
+// apart from what the bots' agents consume (acks never hide a note here).
+// POST {"shown":[ids]} marks notes displayed; ?all=1 / "all" is history.
+func BotFeedHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		var in struct {
+			Shown []string `json:"shown"`
+			All   bool     `json:"all"`
+		}
+		if r.Method == http.MethodPost {
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&in); err != nil {
+				writeError(w, http.StatusBadRequest, "INVALID_INPUT", "invalid feed request")
+				return
+			}
+		} else {
+			in.All = r.URL.Query().Get("all") == "1"
+		}
+		items, err := svc.BotFeed(r.Context(), principal.TenantID, principal.UserID, in.Shown, in.All)
+		if err != nil {
+			writeBotUserError(w, r, principal, err, "")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}

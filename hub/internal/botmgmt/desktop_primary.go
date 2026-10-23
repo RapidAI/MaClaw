@@ -60,6 +60,13 @@ type BotCrossNote struct {
 	// Files are bytes a bot shared with this message mid-run (bot_mail_files.go);
 	// the receiver fetches them right away instead of waiting for the run end.
 	Files []BotMailFile `json:"files,omitempty"`
+	// WakeRunID is the server-side turn Hub started to hand this message to
+	// its target bot (bot_dispatch.go), so the GUI can show that run.
+	WakeRunID string `json:"wake_run_id,omitempty"`
+	// ShownAt is when the person's GUI displayed this message. It is apart
+	// from AckedAt (the bot's agent took it): a server-side wake acks a
+	// message, but the GUI still shows it when it opens (bot_feed.go).
+	ShownAt string `json:"shown_at,omitempty"`
 }
 
 // keyedNote is the stored note this sender already filed under key.
