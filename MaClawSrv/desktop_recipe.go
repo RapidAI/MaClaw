@@ -29,6 +29,9 @@ const (
 	desktopRecipeMaxCmdRunes = 4000 // stored command cap
 	desktopRecipeMaxStored   = 8
 	desktopRecipeMatchMin    = 0.6
+	// Without a named target site only a near-identical request may reuse a
+	// recipe (run_cf0c6d31: an XHS post hit a Zhihu recipe at 0.61).
+	desktopRecipeMatchMinNoSite = 0.8
 )
 
 type desktopRecipe struct {
@@ -221,14 +224,44 @@ func desktopRecipeText(scope agentruntime.Scope, task string) string {
 		if r.V < desktopRecipeVersion {
 			continue
 		}
+		if !desktopRecipeSameSite(intent, r.Intent) {
+			continue
+		}
 		if s := desktopRecipeSimilarity(intent, r.Intent); s > score {
 			best, score = i, s
 		}
 	}
-	if best < 0 || score < desktopRecipeMatchMin {
+	min := desktopRecipeMatchMin
+	if desktopRecipeSite(intent) == "" {
+		min = desktopRecipeMatchMinNoSite
+	}
+	if best < 0 || score < min {
 		return ""
 	}
 	r := f.Recipes[best]
 	desktopEmit(scope, desktopEvent{Event: "recipe_hit", Action: r.Action, Reason: fmt.Sprintf("score=%.2f count=%d", score, r.Count)})
 	return fmt.Sprintf("Data recipe from an earlier verified run of this kind of task (worked x%d): run it FIRST as ONE action=%s, changing only dates/parameters for this task; explore other sources only if it fails or returns nothing. ```%s``` ", r.Count, r.Action, r.Code)
+}
+
+// desktopRecipeSiteRe finds the target a request posts to or works on: the
+// place after 发到/发布到/上传到/post to…, or a domain-like word.
+var desktopRecipeSiteRe = regexp.MustCompile(`(?:发到|发布到|发在|发表到|上传到|投稿到|分享到|同步到|贴到|笔记到|文章到|post(?:ed)? to|publish(?:ed)? (?:to|on)|upload(?:ed)? to|share(?:d)? (?:to|on))\s*([\p{Han}a-z]{2,12}?)(?:上|平台|网站|\s|$)`)
+
+var desktopRecipeDomainRe = regexp.MustCompile(`\b([a-z][a-z0-9-]{2,}) (?:com|cn|net|org|io|co)\b`)
+
+// desktopRecipeSite names the target site of a normalized intent, or "".
+func desktopRecipeSite(intent string) string {
+	if m := desktopRecipeSiteRe.FindStringSubmatch(intent); m != nil {
+		return m[1]
+	}
+	if m := desktopRecipeDomainRe.FindStringSubmatch(intent); m != nil && m[1] != "www" {
+		return m[1]
+	}
+	return ""
+}
+
+// desktopRecipeSameSite: a recipe is reused only on the same target site;
+// a request naming a site never reuses one stored for another or for none.
+func desktopRecipeSameSite(a, b string) bool {
+	return desktopRecipeSite(a) == desktopRecipeSite(b)
 }
