@@ -91,6 +91,8 @@ type record struct {
 	Connection     *connectionCredential `json:"connection,omitempty"`
 	Principals     []ownerPrincipal      `json:"principals,omitempty"`
 	Bots           []Bot                 `json:"bots"`
+	// LocalBots are GUI-hosted bots on the owners' machines (bot_local.go).
+	LocalBots []LocalBot `json:"local_bots,omitempty"`
 	Grants         []Grant               `json:"grants,omitempty"`
 	Desktop        *desktopStateRecord   `json:"desktop,omitempty"`
 	LLM            llmSettings           `json:"llm,omitempty"`
@@ -133,6 +135,8 @@ type Service struct {
 	Desktop   DesktopControl
 	// MaterialStageDir holds partial material uploads; empty is a temp dir.
 	MaterialStageDir string
+	// MailFileDir keeps files shared in bot messages; empty is a temp dir.
+	MailFileDir string
 	HTTP             *http.Client
 	Now              func() time.Time
 	// messageTimeout overrides the wait for one bot command. Tests use it.

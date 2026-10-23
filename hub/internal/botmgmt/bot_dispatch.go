@@ -47,6 +47,9 @@ type botDispatchState struct {
 	fails   map[string]int
 	users   map[string][2]string
 	sweep   bool
+	// saved marks tenant|user pairs already on the persisted roster.
+	saved    map[string]bool
+	rosterMu sync.Mutex
 }
 
 func dispatchUserKey(tenantID, userID string) string {
@@ -63,6 +66,9 @@ func (d *botDispatchState) init() {
 		d.wakes = map[string][]time.Time{}
 		d.fails = map[string]int{}
 		d.users = map[string][2]string{}
+	}
+	if d.saved == nil {
+		d.saved = map[string]bool{}
 	}
 }
 
@@ -95,6 +101,7 @@ func (s *Service) kickDispatch(tenantID, userID string) {
 	s.dispatch.mu.Lock()
 	s.dispatch.init()
 	s.dispatch.users[key] = [2]string{tenantID, userID}
+	fresh := !s.dispatch.saved[key]
 	if !s.dispatch.sweep {
 		s.dispatch.sweep = true
 		go s.dispatchSweep()
@@ -102,10 +109,16 @@ func (s *Service) kickDispatch(tenantID, userID string) {
 	if s.dispatch.running[key] {
 		s.dispatch.again[key] = true
 		s.dispatch.mu.Unlock()
+		if fresh {
+			s.rememberDispatchUser(tenantID, userID)
+		}
 		return
 	}
 	s.dispatch.running[key] = true
 	s.dispatch.mu.Unlock()
+	if fresh {
+		s.rememberDispatchUser(tenantID, userID)
+	}
 	go s.dispatchLoop(tenantID, userID)
 }
 
@@ -411,13 +424,7 @@ func (s *Service) PostBotDelegateFromInstance(ctx context.Context, tenantID, use
 	if from == "" {
 		return BotCrossNote{}, ErrNotFound
 	}
-	if t := strings.TrimSpace(in.Target); t != "" && !botOwned(rec.Bots, userID, t) {
-		for _, bot := range botsOwnedBy(rec.Bots, userID) {
-			if strings.EqualFold(strings.TrimSpace(bot.Name), t) {
-				in.Target = bot.ID
-			}
-		}
-	}
+	in.Target = resolveParticipant(rec, userID, in.Target)
 	in.Kind = "delegate"
 	return s.PostBotCrossTalk(ctx, tenantID, userID, from, in)
 }
@@ -435,6 +442,11 @@ func (s *Service) BotTeam(ctx context.Context, tenantID, userID string) ([]map[s
 	out := []map[string]any{}
 	for _, b := range botsOwnedBy(rec.Bots, userID) {
 		out = append(out, map[string]any{"id": b.ID, "name": b.Name, "primary": b.ID == primary})
+	}
+	for _, b := range rec.LocalBots {
+		if b.Owner == strings.TrimSpace(userID) {
+			out = append(out, map[string]any{"id": b.ID, "name": b.Name, "primary": false, "location": "local", "device": b.Device})
+		}
 	}
 	return out, nil
 }

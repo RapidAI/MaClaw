@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -97,6 +98,7 @@ func PostBotCrossStartHandler(svc *botmgmt.Service, identity botAuthenticator) h
 			"kind":       note.Kind,
 			"text":       note.Text,
 			"order":      note.Order,
+			"started_by": note.StartedBy,
 			"created_at": note.CreatedAt,
 			"started_at": note.StartedAt,
 			"run_id":     note.RunID,
@@ -162,5 +164,72 @@ func BotMailboxHandler(svc *botmgmt.Service, identity botAuthenticator) http.Han
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
+// GetBotMailFileHandler GET /api/v1/bots/{id}/inbox/{noteID}/files/{name}
+// returns a file another bot shared with a message, as {name,mime,size,data}
+// (base64), so the receiver has the bytes as soon as the message arrives.
+func GetBotMailFileHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		botID := strings.TrimSpace(r.PathValue("id"))
+		if strings.EqualFold(botID, "main") || strings.EqualFold(botID, "primary") {
+			botID = ""
+		}
+		f, data, err := svc.ReadBotMailFile(r.Context(), principal.TenantID, principal.UserID, botID, r.PathValue("noteID"), r.PathValue("name"))
+		if err != nil {
+			writeBotUserError(w, r, principal, err, "")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"name": f.Name, "mime": f.MIME, "size": f.Size, "sha256": f.SHA, "data": base64.StdEncoding.EncodeToString(data)})
+	}
+}
+
+// LocalBotsHandler: GET /api/v1/local-bots lists this user's GUI-hosted
+// bots; PUT registers or refreshes one {name, device, capabilities};
+// DELETE /api/v1/local-bots/{localID} removes one.
+func LocalBotsHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			items, err := svc.ListLocalBots(r.Context(), principal.TenantID, principal.UserID)
+			if err != nil {
+				writeBotUserError(w, r, principal, err, "")
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"items": items})
+		case http.MethodPut:
+			var in botmgmt.LocalBot
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&in); err != nil {
+				writeError(w, http.StatusBadRequest, "INVALID_BOT", "invalid local bot")
+				return
+			}
+			bot, err := svc.RegisterLocalBot(r.Context(), principal.TenantID, principal.UserID, in)
+			if err != nil {
+				writeBotUserError(w, r, principal, err, "")
+				return
+			}
+			writeJSON(w, http.StatusOK, bot)
+		case http.MethodDelete:
+			if err := svc.RemoveLocalBot(r.Context(), principal.TenantID, principal.UserID, r.PathValue("localID")); err != nil {
+				writeBotUserError(w, r, principal, err, "")
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		}
 	}
 }

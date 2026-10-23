@@ -37,6 +37,11 @@ type multiBotNoteHub interface {
 	report(ctx context.Context, fromID, targetID, topic, text, replyTo string, artifacts []string) (DesktopBotCrossNote, error)
 }
 
+// multiBotMailFiles is the optional Hub surface for files shared mid-run.
+type multiBotMailFiles interface {
+	mailFile(ctx context.Context, noteID, name string) (string, string, []byte, error)
+}
+
 // MultiBotWake is the payload of the "multibot-wake" event.
 type MultiBotWake struct {
 	Prompt  string   `json:"prompt"`
@@ -178,8 +183,9 @@ func (mb *multiBot) pollReports(ctx context.Context) {
 	for _, n := range notes {
 		taken := true
 		if n.From != relay {
+			arts := append(append([]string(nil), n.Artifacts...), mb.fetchMailFiles(ctx, n)...)
 			_, err := mb.receive(botregistry.Message{
-				From: n.From, Kind: botregistry.NormalizeKind(n.Topic), Text: n.Text, Artifacts: n.Artifacts,
+				From: n.From, Kind: botregistry.NormalizeKind(n.Topic), Text: n.Text, Artifacts: arts,
 				RunID: n.RunID, ReplyTo: n.ReplyTo, Via: "hub", ExternalID: "note:" + n.ID,
 			})
 			// Rate/loop refusals are final for this message; only a bad
@@ -204,6 +210,38 @@ func (a *App) startTeamInbox() {
 
 func (h appMultiBotHub) mailbox(ctx context.Context, ack []string) ([]DesktopBotCrossNote, error) {
 	return h.a.desktopBotMailbox("main", ack)
+}
+
+func (h appMultiBotHub) mailFile(ctx context.Context, noteID, name string) (string, string, []byte, error) {
+	return h.a.desktopBotMailFile(noteID, name)
+}
+
+// fetchMailFiles stores the files a teammate shared with message n as local
+// artifacts right away (not at its run end) and returns "art_id=path" entries.
+// A file that cannot be fetched now is retried on the next read only if the
+// message is still unacked; the desktop path stays in the message either way.
+func (mb *multiBot) fetchMailFiles(ctx context.Context, n DesktopBotCrossNote) []string {
+	if len(n.Files) == 0 || mb.artifacts == nil || mb.hub == nil {
+		return nil
+	}
+	h, ok := mb.hub.(multiBotMailFiles)
+	if !ok {
+		return nil
+	}
+	out := []string{}
+	for _, f := range n.Files {
+		name, mime, data, err := h.mailFile(ctx, n.ID, f.Name)
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		art, err := mb.artifacts.PutBytes(firstNonEmptyMB(name, f.Name), firstNonEmptyMB(mime, f.MIME), n.From, n.RunID, data)
+		if err != nil {
+			log.Printf("[multibot] store shared file: %v", err)
+			continue
+		}
+		out = append(out, art.ID+"="+art.Path)
+	}
+	return out
 }
 
 func (h appMultiBotHub) report(ctx context.Context, fromID, targetID, topic, text, replyTo string, artifacts []string) (DesktopBotCrossNote, error) {

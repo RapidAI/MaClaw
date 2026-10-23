@@ -1358,6 +1358,15 @@ const DESKTOP_BOT_INSTALL_WORD = /(?:^|[^a-z])install(?:[^a-z]|$)/i;
 
 export const DESKTOP_BOT_NOT_PRIMARY = '我不能去叫别的 Bot。你跟主 Bot 说，或者直接打开那个 Bot。';
 
+// The line a target bot's chat shows when Hub (not this window) started a
+// delegated order: it runs on the server and finishes with MaClaw closed.
+export function desktopBotHubStartedText(runId: string): string {
+    const run = (runId || '').trim();
+    return run
+        ? `已在服务器上开始做这件（${run}），关掉 MaClaw 也会继续，做完结果会交回主 Bot。`
+        : '已在服务器上开始做这件，关掉 MaClaw 也会继续，做完结果会交回主 Bot。';
+}
+
 export function desktopBotDestructive(text: string): boolean {
     const value = text || '';
     if (/安装|卸载|刪除|删除|付款|支付|代发|代發|清空/.test(value)) return true;

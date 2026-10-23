@@ -3,6 +3,7 @@ package guiapp
 import (
 	"context"
 	"crypto/sha1"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -303,6 +304,20 @@ type DesktopBotCrossNote struct {
 	Artifacts []string `json:"artifacts,omitempty"`
 	Duplicate bool     `json:"duplicate,omitempty"`
 	AckedAt   string   `json:"acked_at,omitempty"`
+	// StartedBy is "hub" when Hub's dispatcher started this delegate; the
+	// GUI then only shows it.
+	StartedBy string `json:"started_by,omitempty"`
+	// Files are bytes the sender shared with this message (fetch with
+	// desktopBotMailFile), available before its run ends.
+	Files []DesktopBotMailFile `json:"files,omitempty"`
+}
+
+// DesktopBotMailFile is one file on a Hub message.
+type DesktopBotMailFile struct {
+	Name   string `json:"name"`
+	MIME   string `json:"mime,omitempty"`
+	Size   int    `json:"size"`
+	SHA256 string `json:"sha256"`
 }
 
 // DesktopBotCrossPost is the result of one primary handoff.
@@ -327,6 +342,7 @@ type DesktopBotCrossClaim struct {
 	Order     string `json:"order,omitempty"`
 	StartedAt string `json:"started_at,omitempty"`
 	RunID     string `json:"run_id,omitempty"`
+	StartedBy string `json:"started_by,omitempty"`
 }
 
 func (a *App) loadDesktopBotRoster() (*desktopBotRoster, error) {
@@ -495,6 +511,26 @@ func (a *App) desktopBotMailbox(botID string, ack []string) ([]DesktopBotCrossNo
 		return nil, err
 	}
 	return out.Items, nil
+}
+
+// desktopBotMailFile fetches a file shared with one of this user's messages.
+func (a *App) desktopBotMailFile(noteID, name string) (string, string, []byte, error) {
+	if a == nil {
+		return "", "", nil, errDesktopBotUnavailable
+	}
+	var out struct {
+		Name string `json:"name"`
+		MIME string `json:"mime"`
+		Data string `json:"data"`
+	}
+	if err := a.desktopBotCall(context.Background(), http.MethodGet, "/api/v1/bots/main/inbox/"+url.PathEscape(noteID)+"/files/"+url.PathEscape(name), nil, &out, 60*time.Second); err != nil {
+		return "", "", nil, err
+	}
+	raw, err := base64.StdEncoding.DecodeString(out.Data)
+	if err != nil {
+		return "", "", nil, err
+	}
+	return out.Name, out.MIME, raw, nil
 }
 
 // PullDesktopBotCrossNotes returns this user's notes. It does not consume them.

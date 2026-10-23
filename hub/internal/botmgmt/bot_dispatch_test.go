@@ -154,3 +154,30 @@ func TestReportIdempotencyKey(t *testing.T) {
 		t.Fatalf("a=%+v b=%+v", a, b)
 	}
 }
+
+// A delegate saved while dispatch was off (a Hub that then restarted) is
+// started by the boot scan of the persisted roster on the next Hub.
+func TestHubBootScanResumesPendingDelegate(t *testing.T) {
+	svc, f := dispatchFixture(t)
+	ctx := context.Background()
+	svc.kickDispatch("tenant-a", "alice") // puts alice on the roster
+	waitFor(t, func() bool { return len(svc.loadDispatchRoster(ctx)) == 1 })
+	svc.BotDispatch = false
+	d, err := svc.PostBotDelegateFromInstance(ctx, "tenant-a", "alice", "inst_main", BotCrossNote{Target: "发布员", Text: "整理文件", Key: "boot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if len(f.list()) != 0 {
+		t.Fatal("started with dispatch off")
+	}
+	// "Restart": a new Service over the same store.
+	next := &Service{System: svc.System, Directory: svc.Directory, Desktop: svc.Desktop, Now: svc.Now, BotDispatch: true, dispatchAdmit: f.admit}
+	if n := next.ResumeBotDispatch(ctx); n != 1 {
+		t.Fatalf("resumed %d users", n)
+	}
+	waitFor(t, func() bool { return len(f.list()) == 1 })
+	if got := f.list()[0]; got != "bot_pub|xdel-"+d.ID+"|整理文件" {
+		t.Fatalf("admit = %q", got)
+	}
+}

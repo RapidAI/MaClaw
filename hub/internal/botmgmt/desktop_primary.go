@@ -57,6 +57,9 @@ type BotCrossNote struct {
 	// HeldAt is set when Hub left it for the person to confirm.
 	StartedBy string `json:"started_by,omitempty"`
 	HeldAt    string `json:"held_at,omitempty"`
+	// Files are bytes a bot shared with this message mid-run (bot_mail_files.go);
+	// the receiver fetches them right away instead of waiting for the run end.
+	Files []BotMailFile `json:"files,omitempty"`
 }
 
 // keyedNote is the stored note this sender already filed under key.
@@ -205,7 +208,23 @@ func (s *Service) PostBotCrossTalk(ctx context.Context, tenantID, userID, fromBo
 		if primaryBotID(rec, userID) != fromBotID {
 			return BotCrossNote{}, ErrNotPrimary
 		}
-		target := strings.TrimSpace(in.Target)
+		target := resolveParticipant(rec, userID, in.Target)
+		if target != "" && target != fromBotID && localOwned(rec, userID, target) {
+			// A local (GUI-hosted) bot: Hub cannot start its run, so the
+			// order goes to its mailbox and its GUI wakes it.
+			topic := "info"
+			if kind == "delegate" {
+				topic = "task"
+			}
+			note, changed, err := s.reportLocked(&rec, userID, fromBotID, BotCrossNote{Target: target, Topic: topic, Text: firstNonEmptyString(strings.TrimSpace(in.Order), strings.TrimSpace(in.Text)), Key: in.Key})
+			if err != nil || !changed {
+				return note, err
+			}
+			if err := s.save(ctx, tenantID, rec); err != nil {
+				return BotCrossNote{}, err
+			}
+			return note, nil
+		}
 		if target == "" || target == fromBotID || !botOwned(rec.Bots, userID, target) {
 			return BotCrossNote{}, ErrNoSuchBot
 		}
@@ -289,21 +308,24 @@ const (
 	reportTextMax = 2000
 )
 
-var reportTopics = map[string]bool{"done": true, "blocked": true, "progress": true, "question": true, "artifact": true, "info": true, "reply": true}
+// "task" is a work order for a local bot (Hub cannot start a run for it).
+var reportTopics = map[string]bool{"task": true, "done": true, "blocked": true, "progress": true, "question": true, "artifact": true, "info": true, "reply": true}
 
 // reportLocked appends a bot-originated report. Any bot of the account may
 // report to the primary (target empty, "main" or "primary") or to a peer.
 // It is a message, not control: it never admits a run.
 func (s *Service) reportLocked(rec *record, userID, fromBotID string, in BotCrossNote) (BotCrossNote, bool, error) {
-	if !botOwned(rec.Bots, userID, fromBotID) {
+	if !participantOwned(*rec, userID, fromBotID) {
 		return BotCrossNote{}, false, ErrNotFound
 	}
 	target := strings.TrimSpace(in.Target)
 	switch strings.ToLower(target) {
 	case "", "main", "primary":
 		target = primaryBotID(*rec, userID)
+	default:
+		target = resolveParticipant(*rec, userID, target)
 	}
-	if target == "" || target == fromBotID || !botOwned(rec.Bots, userID, target) {
+	if target == "" || target == fromBotID || !participantOwned(*rec, userID, target) {
 		return BotCrossNote{}, false, ErrNoSuchBot
 	}
 	topic := strings.ToLower(strings.TrimSpace(in.Topic))
@@ -361,6 +383,7 @@ func (s *Service) reportLocked(rec *record, userID, fromBotID string, in BotCros
 		Topic:     topic,
 		Text:      text,
 		Artifacts: artifacts,
+		Files:     cleanMailFiles(in.Files),
 		RunID:     strings.TrimSpace(in.RunID),
 		ReplyTo:   strings.TrimSpace(in.ReplyTo),
 		CreatedAt: now.UTC().Format(time.RFC3339),
@@ -400,15 +423,8 @@ func (s *Service) PostBotReportFromInstance(ctx context.Context, tenantID, userI
 	if from == "" {
 		return BotCrossNote{}, ErrNotFound
 	}
-	// A target given by name resolves to that bot's id.
-	if t := strings.TrimSpace(in.Target); t != "" && !botOwned(rec.Bots, userID, t) {
-		for _, bot := range botsOwnedBy(rec.Bots, userID) {
-			if strings.EqualFold(strings.TrimSpace(bot.Name), t) {
-				in.Target = bot.ID
-				break
-			}
-		}
-	}
+	// A target given by name resolves to that bot's id (Hub or local bot).
+	in.Target = resolveParticipant(rec, userID, in.Target)
 	note, changed, err := s.reportLocked(&rec, userID, from, in)
 	if err != nil || !changed {
 		return note, err
@@ -630,7 +646,7 @@ func resolveMailboxBot(rec record, userID, botID string) (string, error) {
 	case "", "main", "primary":
 		botID = primaryBotID(rec, userID)
 	}
-	if botID == "" || !botOwned(rec.Bots, userID, botID) {
+	if botID == "" || !participantOwned(rec, userID, botID) {
 		return "", ErrNoSuchBot
 	}
 	return botID, nil

@@ -160,3 +160,33 @@ func TestMultiBotMailboxAcksAfterHandoffAndSendGoesToHub(t *testing.T) {
 		t.Fatalf("out=%s reports=%v crosses=%v", out, hub.reports, hub.crosses)
 	}
 }
+
+type fileNoteHub struct{ *noteFakeHub }
+
+func (h fileNoteHub) mailFile(ctx context.Context, noteID, name string) (string, string, []byte, error) {
+	return name, "text/csv", []byte("a,b"), nil
+}
+
+// A file shared mid-run becomes a local artifact as soon as the message is read.
+func TestMultiBotSharedFileIsLocalOnArrival(t *testing.T) {
+	base, _ := newTestMultiBot(t)
+	base.close()
+	hub := fileNoteHub{&noteFakeHub{fakeMBHub: base.hub.(*fakeMBHub)}}
+	wakes := make(chan MultiBotWake, 2)
+	mb := newMultiBot(hub, t.TempDir(), func(name string, data ...interface{}) {
+		if name == "multibot-wake" && len(data) > 0 {
+			if w, ok := data[0].(MultiBotWake); ok {
+				wakes <- w
+			}
+		}
+	})
+	ctx := context.Background()
+	_ = mb.refresh(ctx, true)
+	hub.items = []DesktopBotCrossNote{{ID: "f1", Kind: "report", From: "bot_2", Target: "bot_1", Topic: "artifact", Text: "导出了",
+		Artifacts: []string{"/home/d/orders.csv"}, Files: []DesktopBotMailFile{{Name: "orders.csv", Size: 3}}}}
+	mb.pollReports(ctx)
+	w := waitWake(t, wakes)
+	if !strings.Contains(w.Prompt, "/home/d/orders.csv") || !strings.Contains(w.Prompt, "orders.csv") || !strings.Contains(w.Prompt, "art_") {
+		t.Fatalf("prompt lacks the local file: %s", w.Prompt)
+	}
+}

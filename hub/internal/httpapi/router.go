@@ -393,7 +393,18 @@ func NewRouter(
 	botSvc := botmgmt.NewService(system)
 	// Hub starts delegated work and wakes idle bots itself; off only when
 	// an operator sets MACLAW_HUB_BOT_DISPATCH=off.
+	botSvc.MailFileDir = strings.TrimSpace(os.Getenv("MACLAW_HUB_BOT_MAIL_DIR"))
 	botSvc.BotDispatch = !strings.EqualFold(strings.TrimSpace(os.Getenv("MACLAW_HUB_BOT_DISPATCH")), "off")
+	if botSvc.BotDispatch {
+		// Boot scan: resume pending cross-bot work for every tenant once the
+		// listeners are up.
+		go func() {
+			time.Sleep(20 * time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			botSvc.ResumeBotDispatch(ctx)
+		}()
+	}
 	if identity != nil {
 		botSvc.OwnerLLM = botOwnerLLM{identity: identity, center: centerSvc}
 	}
@@ -452,6 +463,10 @@ func NewRouter(
 	mux.HandleFunc("GET /api/v1/bots/cross-notes", GetBotCrossNotesHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/{id}/inbox", BotMailboxHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/inbox", BotMailboxHandler(botSvc, identity))
+	mux.HandleFunc("GET /api/v1/bots/{id}/inbox/{noteID}/files/{name}", GetBotMailFileHandler(botSvc, identity))
+	mux.HandleFunc("GET /api/v1/local-bots", LocalBotsHandler(botSvc, identity))
+	mux.HandleFunc("PUT /api/v1/local-bots", LocalBotsHandler(botSvc, identity))
+	mux.HandleFunc("DELETE /api/v1/local-bots/{localID}", LocalBotsHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/primary", PostBotPrimaryHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/cross", PostBotCrossHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/cross-notes/{noteID}/start", PostBotCrossStartHandler(botSvc, identity))

@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"path"
 	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
 // action=notify_main lets a desktop bot tell the account's main bot (or a
@@ -89,8 +92,17 @@ func desktopNotifyMain(ctx context.Context, request agentruntime.TurnRequest, ar
 		"artifacts":   artifacts,
 		"reply_to":    strings.TrimSpace(desktopArg(args, "reply_to")),
 	}
+	// Shared paths travel with the message as bytes, so the receiver has the
+	// file now instead of when this run ends. Unreadable paths stay names.
+	if files := desktopNotifyFiles(ctx, request.Scope, artifacts); len(files) > 0 {
+		body["files"] = files
+	}
 	body["key"] = desktopMessageKey(runKey, kind, fmt.Sprint(body["target"]), text, fmt.Sprint(body["reply_to"]), strings.Join(artifacts, ","))
-	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	wait := 10 * time.Second
+	if _, ok := body["files"]; ok {
+		wait = 60 * time.Second
+	}
+	cctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	var out map[string]any
 	var err error
@@ -262,4 +274,44 @@ func desktopDelegate(ctx context.Context, request agentruntime.TurnRequest, args
 		return "This task was already handed over; do not send it again.", nil
 	}
 	return fmt.Sprintf("Handed to %s (order %v). Hub starts it now or when the desktop is free; its result arrives as a message in your mailbox and wakes you. Do not wait in this turn: finish it, telling the person who is doing what.", target, out["id"]), nil
+}
+
+const (
+	desktopNotifyFilesMax    = 3
+	desktopNotifyFileMaxSize = 8 << 20
+)
+
+// desktopNotifyReadFile reads one desktop path; tests replace it.
+var desktopNotifyReadFile = func(ctx context.Context, scope agentruntime.Scope, p string) (string, string, []byte, error) {
+	resolved, err := desktop.ContainerPath(p)
+	if err != nil {
+		return "", "", nil, err
+	}
+	encoded, err := desktopContainerFile(ctx, scope, "file_bytes", map[string]any{"path": resolved})
+	if err != nil {
+		return "", "", nil, err
+	}
+	raw, err := desktop.DecodeFileBytes(encoded)
+	if err != nil {
+		return "", "", nil, err
+	}
+	name := path.Base(resolved)
+	return name, desktopDeliverMIME(name), raw, nil
+}
+
+func desktopNotifyFiles(ctx context.Context, scope agentruntime.Scope, paths []string) []map[string]any {
+	out := []map[string]any{}
+	for _, p := range paths {
+		if len(out) >= desktopNotifyFilesMax {
+			break
+		}
+		rctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		name, mime, raw, err := desktopNotifyReadFile(rctx, scope, p)
+		cancel()
+		if err != nil || len(raw) == 0 || len(raw) > desktopNotifyFileMaxSize {
+			continue
+		}
+		out = append(out, map[string]any{"name": name, "mime": mime, "data": base64.StdEncoding.EncodeToString(raw)})
+	}
+	return out
 }

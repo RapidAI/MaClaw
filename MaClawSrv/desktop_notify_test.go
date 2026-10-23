@@ -130,3 +130,33 @@ func TestDesktopDelegatePostsToHub(t *testing.T) {
 		t.Fatal("target required")
 	}
 }
+
+// A path shared mid-run travels as bytes with the message.
+func TestDesktopNotifyMainSendsSharedFileBytes(t *testing.T) {
+	useTempMultibotState(t)
+	var got map[string]any
+	desktopRemoteNotify = func(_ context.Context, body map[string]any) (map[string]any, error) {
+		got = body
+		return map[string]any{"id": "note_f"}, nil
+	}
+	oldRead := desktopNotifyReadFile
+	desktopNotifyReadFile = func(_ context.Context, _ agentruntime.Scope, p string) (string, string, []byte, error) {
+		if strings.HasSuffix(p, "missing.csv") {
+			return "", "", nil, context.Canceled
+		}
+		return "orders.csv", "text/csv", []byte("a,b"), nil
+	}
+	defer func() { desktopRemoteNotify = nil; desktopNotifyReadFile = oldRead }()
+	inst := agentservice.Instance{ID: "inst_pub", Metadata: map[string]string{"hub_user_id": "alice", "hub_tenant_id": "tenant-a"}}
+	req := agentruntime.TurnRequest{Scope: agentruntime.Scope{RunID: "run_files"}, Input: agentservice.ExecuteRequest{Instance: inst}}
+	if _, err := desktopNotifyMain(context.Background(), req, map[string]any{"kind": "artifact", "message": "导出了", "paths": []any{"/home/desktop/orders.csv", "/home/desktop/missing.csv"}}); err != nil {
+		t.Fatal(err)
+	}
+	files, _ := got["files"].([]map[string]any)
+	if len(files) != 1 || files[0]["name"] != "orders.csv" || files[0]["data"] != "YSxi" {
+		t.Fatalf("files = %#v", got["files"])
+	}
+	if arts := got["artifacts"].([]string); len(arts) != 2 {
+		t.Fatalf("paths still listed: %#v", arts)
+	}
+}

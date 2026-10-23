@@ -69,6 +69,7 @@ import {
     desktopBotAskingLabel,
     desktopBotCrossTargetText,
     desktopBotDestructive,
+    desktopBotHubStartedText,
     desktopBotNoticeSeen,
     markDesktopBotNotice,
     rememberDesktopBotCrossRun,
@@ -5006,6 +5007,21 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         drainIfIdle(botId);
     };
     recoverOrphansRef.current = recoverOrphanedTurns;
+    // A delegate Hub started itself: one bubble in the target's chat, and a
+    // queued copy of the same order is no longer shown as waiting.
+    const showHubStartedDelegate = (botId: string, noteId: string, order: string, runId: string) => {
+        const words = (order || '').trim();
+        const stored = messagesForBot(userId, botId);
+        const next = stored.map(item => (item.queued && (item.crossNoteId === noteId || (words !== '' && item.content === words)) ? { ...item, queued: false } : item));
+        if (next.some((item, i) => item !== stored[i])) commit(botId, next);
+        appendDesktopBotReport(userId, botId, {
+            content: desktopBotHubStartedText(runId),
+            failed: false,
+            requestId: `${noteId}:hub`,
+            chat: true,
+        });
+        setMessagesByBot(prev => ({ ...prev, [botId]: messagesForBot(userId, botId) }));
+    };
     const drainIfIdle = (botId: string, fromList = false) => {
         if (stopHoldRef.current.has(botId)) return;
         const queue = queueRef.current.get(botId);
@@ -5044,7 +5060,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 try {
                     if (!nextSend.claimed) {
                         const claim = await ClaimDesktopBotCrossStart(botId, noteId);
-                        if (!claim?.claimed) return;
+                        if (!claim?.claimed) {
+                            // Hub's dispatcher already runs this order: show it as its
+                            // own bubble and clear the queued one instead of a silent drop.
+                            if (String((claim as { started_by?: string } | null)?.started_by || '') === 'hub') {
+                                showHubStartedDelegate(botId, noteId, nextSend.text, String((claim as { run_id?: string } | null)?.run_id || ''));
+                            }
+                            return;
+                        }
                         rememberDesktopBotCrossRun(userId, botId, noteId, String(claim.from || ''));
                     }
                     await ArmDesktopBotCrossRun(botId, noteId);
@@ -5148,6 +5171,15 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     workOrder: body,
                     crossNoteId: id,
                 });
+            } else if (kind === 'delegate' && (String((note as { started_by?: string }).started_by || '') === 'hub' || String((note as { run_id?: string }).run_id || '').trim() !== '')) {
+                // Started by Hub (no GUI needed): its own bubble, never queued here.
+                appendDesktopBotReport(userId, target, {
+                    content: desktopBotCrossTargetText(kind, text || order),
+                    failed: false,
+                    requestId: `${id}:target`,
+                    chat: true,
+                });
+                showHubStartedDelegate(target, id, body, String((note as { run_id?: string }).run_id || ''));
             } else if (kind === 'delegate') {
                 appendDesktopBotReport(userId, target, {
                     content: desktopBotCrossTargetText(kind, text || order),

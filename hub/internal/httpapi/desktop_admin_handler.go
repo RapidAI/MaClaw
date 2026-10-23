@@ -551,13 +551,33 @@ func PostDesktopNotifyHandler(bots *botmgmt.Service) http.HandlerFunc {
 			Artifacts  []string `json:"artifacts"`
 			ReplyTo    string   `json:"reply_to"`
 			Key        string   `json:"key"`
+			// Files are the bytes of shared paths, base64; at most 3 x 8 MB.
+			Files []struct {
+				Name string `json:"name"`
+				MIME string `json:"mime"`
+				Data string `json:"data"`
+			} `json:"files"`
 		}
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&in); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 36<<20)).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid notify request")
 			return
 		}
+		var files []botmgmt.BotMailFile
+		for _, f := range in.Files {
+			if len(files) >= 3 {
+				break
+			}
+			raw, err := base64.StdEncoding.DecodeString(f.Data)
+			if err != nil {
+				continue
+			}
+			// Stored before the message, so a receiver woken by it can fetch at once.
+			if stored, err := bots.StoreBotMailFile(in.TenantID, f.Name, f.MIME, raw); err == nil {
+				files = append(files, stored)
+			}
+		}
 		note, err := bots.PostBotReportFromInstance(r.Context(), in.TenantID, in.UserID, in.InstanceID, botmgmt.BotCrossNote{
-			Target: in.Target, Topic: in.Kind, Text: in.Text, Artifacts: in.Artifacts, RunID: in.RunID, ReplyTo: in.ReplyTo, Key: in.Key,
+			Target: in.Target, Topic: in.Kind, Text: in.Text, Artifacts: in.Artifacts, RunID: in.RunID, ReplyTo: in.ReplyTo, Key: in.Key, Files: files,
 		})
 		if err != nil {
 			switch {
