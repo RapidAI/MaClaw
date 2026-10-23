@@ -547,7 +547,7 @@ func desktopRichFillNext(scope agentruntime.Scope, line, text string) string {
 	}
 	switch {
 	case st.title && st.body:
-		return "VERIFIED: title and body are both in place. NEXT STEP: click the submit/publish button now (one click by its text); no more fills, probes or checks before it"
+		return "VERIFIED: title and body are both in place. NEXT STEP: action=publish with the same title= and body= and submit_texts=[the publish button text]; it re-checks, clicks publish and verifies the result. No more fills, probes or checks before it"
 	case st.body:
 		return "VERIFIED body. Next: fill the title the same way (rich_fill with selector of the title field) if it is still empty, then click submit/publish"
 	default:

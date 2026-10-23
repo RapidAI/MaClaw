@@ -22,7 +22,7 @@ func TestRichReadbackLineAndNext(t *testing.T) {
 	}
 	body := strings.Repeat("论文摘要一行\n", 30)
 	bl := desktopRichReadbackLine(`RICH_READBACK kind=editor len=210 has=yes head="论文摘要一行"`)
-	if n := desktopRichFillNext(scope, bl, body); !strings.Contains(n, "click the submit/publish") {
+	if n := desktopRichFillNext(scope, bl, body); !strings.Contains(n, "action=publish") {
 		t.Fatalf("both next=%q", n)
 	}
 	nl := desktopRichReadbackLine(`RICH_READBACK kind=editor len=0 has=no head=""`)

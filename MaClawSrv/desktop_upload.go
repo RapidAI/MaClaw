@@ -119,7 +119,7 @@ func desktopUpload(session *browser.BrowserAgentSession, args map[string]any) (s
 		if err == nil && armed {
 			if ok, chErr := session.WaitFileChooser(3 * time.Second); ok && chErr == nil {
 				if ok, why := desktopUploadVerify(session, before); ok {
-					return fmt.Sprintf("uploaded %d file(s): the page's file chooser was answered over CDP (no OS dialog) after clicking %s; page: %s", len(files), clicked, why), nil
+					return fmt.Sprintf("uploaded %d file(s): the page's file chooser was answered over CDP (no OS dialog) after clicking %s; page: %s", len(files), clicked, why) + desktopPublishNext, nil
 				}
 			}
 		}
@@ -140,7 +140,7 @@ func desktopUpload(session *browser.BrowserAgentSession, args map[string]any) (s
 		msg += " after clicking " + clicked
 	}
 	_ = r
-	return msg, nil
+	return msg + desktopPublishNext, nil
 }
 
 // desktopUploadStateJS: what a page shows after an upload. Many sites clear
@@ -191,3 +191,6 @@ func desktopUploadVerify(session *browser.BrowserAgentSession, before string) (b
 	}
 	return false, why
 }
+
+// desktopPublishNext steers the rest of a post into the one checked call.
+const desktopPublishNext = "\nNEXT: finish the post with ONE action=publish (title=, body= the full text with any #tags you chose yourself, submit_texts=[the publish button text]); files are already in, so leave files empty. It fills, reads back, clicks publish and verifies. Do not fill fields or add the page's suggested tags by script."
