@@ -20,8 +20,9 @@ func (s *BrowserAgentSession) ResolveRef(snapshotID, ref string) (*BrowserElemen
 	if !ok || snap == nil {
 		return nil, fmt.Errorf("browser snapshot not found: %s", snapshotID)
 	}
+	want := strings.TrimPrefix(strings.TrimSpace(ref), "@")
 	for _, item := range snap.Refs {
-		if strings.EqualFold(item.Ref, ref) {
+		if strings.EqualFold(strings.TrimPrefix(item.Ref, "@"), want) {
 			cp := item
 			return &cp, nil
 		}
