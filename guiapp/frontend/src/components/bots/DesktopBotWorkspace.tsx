@@ -38,6 +38,8 @@ import {
     ListDesktopBotActiveRuns,
     PostDesktopBotCross,
     PullDesktopBotCrossNotes,
+    PullDesktopBotFeed,
+    GetDesktopBotRunOutput,
     SetDesktopBotPrimary,
     PersistDesktopBotPreference,
     QueryDesktopBotTaskStatus,
@@ -70,6 +72,8 @@ import {
     desktopBotCrossTargetText,
     desktopBotDestructive,
     desktopBotHubStartedText,
+    desktopBotReportFeedText,
+    desktopBotServerRunText,
     desktopBotNoticeSeen,
     markDesktopBotNotice,
     rememberDesktopBotCrossRun,
@@ -1894,6 +1898,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const botsRef = useRef(bots);
     botsRef.current = bots;
     const pendingCrossNotes = useRef<Array<Record<string, unknown>>>([]);
+    const shownRef = useRef<Set<string>>(new Set());
+    const markedRef = useRef<Set<string>>(new Set());
+    const watchingRef = useRef<Set<string>>(new Set());
+    const watchRunRef = useRef<(botId: string, runId: string, kind: 'wake' | 'delegate') => void>(() => {});
     const landCrossRef = useRef<(notes: Array<Record<string, unknown>>) => void>(() => undefined);
     const loadGen = useRef(0);
     // Local writes that happen while a list request is in flight. The response
@@ -5113,6 +5121,29 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     drainAllDeskRef.current = () => {
         for (const id of [...queueRef.current.keys()]) drainIfIdle(id);
     };
+    watchRunRef.current = (botId: string, runId: string, kind: 'wake' | 'delegate') => {
+        const key = `${runId}:out`;
+        if (watchingRef.current.has(key) || desktopBotNoticeSeen(userId, key)) return;
+        watchingRef.current.add(key);
+        void (async () => {
+            for (let i = 0; i < 360; i += 1) {
+                if (userIdRef.current !== userId) break;
+                try {
+                    const out = await GetDesktopBotRunOutput(botId, runId);
+                    if (out?.done) {
+                        if (!desktopBotNoticeSeen(userId, key)) {
+                            appendDesktopBotReport(userId, botId, { content: desktopBotServerRunText(kind, runId, out.text || '', out.error || '', out.status), failed: out.status === 'failed', requestId: key, chat: true });
+                            markDesktopBotNotice(userId, key);
+                            setMessagesByBot(prev => ({ ...prev, [botId]: messagesForBot(userId, botId) }));
+                        }
+                        break;
+                    }
+                } catch { /* keep watching */ }
+                await new Promise(resolve => window.setTimeout(resolve, 10000));
+            }
+            watchingRef.current.delete(key);
+        })();
+    };
     landCrossRef.current = (notes) => {
         const bots = botsRef.current;
         if (bots.length === 0) {
@@ -5130,7 +5161,29 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const target = String(note.target || '').trim();
             const text = String(note.text || '').trim();
             const order = String(note.order || '').trim();
-            if (!id || (kind !== 'notify' && kind !== 'delegate' && kind !== 'result')) continue;
+            if (!id || (kind !== 'notify' && kind !== 'delegate' && kind !== 'result' && kind !== 'report')) continue;
+            shownRef.current.add(id);
+            const wakeRun = String(note.wake_run_id || '').trim();
+            if (wakeRun && target && known.has(target)) watchRunRef.current(target, wakeRun, 'wake');
+            if (kind === 'delegate' && String(note.started_by || '') === 'hub' && String(note.run_id || '').trim() && target && known.has(target)) {
+                watchRunRef.current(target, String(note.run_id).trim(), 'delegate');
+            }
+            if (kind === 'report') {
+                // A message between bots is shown to the person whether or not
+                // an agent (GUI or a server-side wake) already took it.
+                const content = desktopBotReportFeedText(note, bots);
+                if (target && known.has(target) && !desktopBotNoticeSeen(userId, `${id}:target`)) {
+                    appendDesktopBotReport(userId, target, { content: content.received, failed: false, requestId: `${id}:target`, chat: true });
+                    markDesktopBotNotice(userId, `${id}:target`);
+                    show(target);
+                }
+                if (from && known.has(from) && !desktopBotNoticeSeen(userId, `${id}:from`)) {
+                    appendDesktopBotReport(userId, from, { content: content.sent, failed: false, requestId: `${id}:from`, chat: true });
+                    markDesktopBotNotice(userId, `${id}:from`);
+                    show(from);
+                }
+                continue;
+            }
             if (kind === 'result') {
                 const replyTo = String(note.reply_to || note.replyTo || '').trim();
                 const local = replyTo !== '' && target !== '' && desktopBotNoticeSeen(userId, `${replyTo}:result:${target}`);
@@ -5219,7 +5272,22 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 return;
             }
             if (cancelled || userIdRef.current !== userId) return;
+            // Hub's display feed: notes a server-side wake already delivered
+            // to an agent are still here until a GUI marks them shown.
+            try {
+                const feed = (await PullDesktopBotFeed([], false)) as Array<Record<string, unknown>>;
+                const have = new Set((notes || []).map(n => String(n.id || '')));
+                for (const item of feed || []) if (!have.has(String(item.id || ''))) notes.push(item);
+            } catch { /* older Hub: the cross-notes list is all there is */ }
+            if (cancelled || userIdRef.current !== userId) return;
             landCrossRef.current(notes || []);
+            const shown = [...shownRef.current].filter(id => !markedRef.current.has(id));
+            if (shown.length > 0) {
+                try {
+                    await PullDesktopBotFeed(shown, false);
+                    for (const id of shown) markedRef.current.add(id);
+                } catch { /* try again next poll */ }
+            }
         };
         void pull();
         const timer = window.setInterval(() => { void pull(); }, 4000);

@@ -4851,6 +4851,14 @@ export function PullDesktopBotCrossNotes() {
   return window['go']['main']['App']['PullDesktopBotCrossNotes']();
 }
 
+export function PullDesktopBotFeed(arg1, arg2) {
+  return window['go']['main']['App']['PullDesktopBotFeed'](arg1, arg2);
+}
+
+export function GetDesktopBotRunOutput(arg1, arg2) {
+  return window['go']['main']['App']['GetDesktopBotRunOutput'](arg1, arg2);
+}
+
 export function ClaimDesktopBotCrossStart(arg1, arg2) {
   return window['go']['main']['App']['ClaimDesktopBotCrossStart'](arg1, arg2);
 }

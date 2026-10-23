@@ -1513,3 +1513,36 @@ function clearBotMessages(userId: string, botId: string) {
     store.setItem(MESSAGE_KEY, JSON.stringify(all));
     noteTranscriptWrite(userId, botId);
 }
+
+const reportTopicWords: Record<string, string> = {
+    done: '完成了', blocked: '卡住了', progress: '进展', question: '有个问题', artifact: '交来文件',
+    info: '说', reply: '回复', task: '交来任务',
+};
+
+// A message one bot sent another, as the person sees it in each chat.
+export function desktopBotReportFeedText(note: Record<string, unknown>, bots: Array<{ id: string; title?: string }>): { received: string; sent: string } {
+    const name = (id: string) => bots.find(bot => bot.id === id)?.title || id;
+    const from = String(note.from || '').trim();
+    const target = String(note.target || '').trim();
+    const topic = String(note.topic || '').trim().toLowerCase();
+    const text = String(note.text || '').trim();
+    const files = Array.isArray(note.files) ? (note.files as Array<Record<string, unknown>>) : [];
+    const fileLine = files.length > 0
+        ? `\n附件：${files.map(f => String(f.name || f.path || f.url || '').split(/[\\/]/).pop()).filter(Boolean).join('、')}`
+        : '';
+    const word = reportTopicWords[topic] || '说';
+    const woken = String(note.wake_run_id || '').trim() ? '\n（MaClaw 没开时服务器已把这条交给我处理）' : '';
+    return {
+        received: `${name(from)} ${word}：${text}${fileLine}${woken}`,
+        sent: `发给 ${name(target)}（${word}）：${text}${fileLine}`,
+    };
+}
+
+// The end of a run Hub started on the server (a delegate or a wake).
+export function desktopBotServerRunText(kind: 'wake' | 'delegate', runId: string, text: string, error: string, status: string): string {
+    const head = kind === 'wake' ? `服务器上处理队友消息的这一轮（${runId}）` : `服务器上做的这件（${runId}）`;
+    const body = (text || '').trim();
+    if (body) return `${head}结果：\n${body}`;
+    if ((error || '').trim()) return `${head}没做成：${error.trim()}`;
+    return `${head}已结束（${status || 'done'}）。`;
+}

@@ -310,6 +310,11 @@ type DesktopBotCrossNote struct {
 	// Files are bytes the sender shared with this message (fetch with
 	// desktopBotMailFile), available before its run ends.
 	Files []DesktopBotMailFile `json:"files,omitempty"`
+	// WakeRunID is the server-side turn Hub started to hand this message to
+	// its target bot; WokenAt when it did. ShownAt is when a GUI displayed it.
+	WakeRunID string `json:"wake_run_id,omitempty"`
+	WokenAt   string `json:"woken_at,omitempty"`
+	ShownAt   string `json:"shown_at,omitempty"`
 }
 
 // DesktopBotMailFile is one file on a Hub message.

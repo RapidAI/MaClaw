@@ -2425,6 +2425,10 @@ export function PostDesktopBotCross(arg1:string,arg2:string,arg3:string,arg4:str
 
 export function PullDesktopBotCrossNotes():Promise<Array<{id:string,owner?:string,from?:string,target?:string,kind?:string,text?:string,order?:string,created_at?:string,started_at?:string,run_id?:string,reply_to?:string}>>;
 
+export function PullDesktopBotFeed(arg1:Array<string>,arg2:boolean):Promise<Array<{id:string,owner?:string,from?:string,target?:string,kind?:string,topic?:string,text?:string,order?:string,created_at?:string,run_id?:string,started_by?:string,wake_run_id?:string,woken_at?:string,shown_at?:string,files?:Array<{name?:string,path?:string,url?:string,size?:number}>}>>;
+
+export function GetDesktopBotRunOutput(arg1:string,arg2:string):Promise<{status:string,text:string,error?:string,done:boolean}>;
+
 export function ClaimDesktopBotCrossStart(arg1:string,arg2:string):Promise<{claimed:boolean,id?:string,from?:string,target?:string,kind?:string,text?:string,order?:string,started_at?:string,run_id?:string}>;
 
 export function ArmDesktopBotCrossRun(arg1:string,arg2:string):Promise<void>;
