@@ -161,7 +161,7 @@ func desktopRecipeObserve(scope agentruntime.Scope, action string, args map[stri
 var desktopRecipeScriptWritesRe = regexp.MustCompile(`\btype\s*\(|\.value\s*=[^=]|\.click\s*\(|dispatchEvent\s*\(|execCommand\s*\(|innerHTML\s*=[^=]|textContent\s*=[^=]|\.submit\s*\(`)
 
 var desktopRecipeWriteActions = map[string]bool{
-	"rich_fill": true, "type": true, "click": true, "press": true, "batch": true,
+	"rich_fill": true, "upload": true, "type": true, "click": true, "press": true, "batch": true,
 	"computer": true, "app_run": true, "file_write": true, "deliver": true,
 }
 

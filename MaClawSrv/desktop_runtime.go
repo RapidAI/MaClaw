@@ -39,7 +39,7 @@ const desktopSessionOwner = "maclawsrv-desktop"
 // The desktop tool's action vocabulary is one list. Plan and execute advertise
 // that same list. The plan allow-list is only the phase gate: a mutating call
 // stays in the schema and returns the next-step sentence.
-var desktopExecuteActions = []string{"batch", "rich_fill", "navigate", "probe", "click", "type", "press", "task_run", "script", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover", "notify_main", "check_inbox", "delegate"}
+var desktopExecuteActions = []string{"batch", "rich_fill", "navigate", "probe", "click", "type", "press", "task_run", "script", "upload", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover", "notify_main", "check_inbox", "delegate"}
 
 var desktopPlanActions = []string{"probe", "screenshot", "app_list", "file_read", "file_list", "skill_list", "app_probe", "window_list", "screen_info", "clipboard_get", "wait", "notify_main", "check_inbox"}
 
@@ -106,6 +106,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			"To put that image on the desktop, set name to one file name ending in .png. The file is written to /home/desktop/Desktop and the result says Saved with that path. Without name, nothing is written. Do not invent a file path. " +
 			"After an app_run that clicks, types, or sends a key, the result includes one fresh unscaled desktop image. app_run click uses those pixels. " +
 			"Single browser actions navigate, click, type, and press remain available. " +
+			"File upload on any site: action=upload with files=[absolute paths] (and text= or ref= of the page's upload button when the file input only appears after a click). It sets the files on the page's file input over CDP (shadow DOM and frames included) and never opens the OS file chooser; use it instead of clicking an upload button and typing a path into a dialog. " +
 			"For non-browser windows: action=app_probe lists the accessible elements (role, name, states, bounds) of the focused window with numbered ids; app_run or computer steps then target {\"id\":N} (click, focus, set_text). marks=true adds a screenshot with those numbers drawn. " +
 			"action=computer runs a batch of computer-use actions (Anthropic or OpenAI names) and reports each step; it stops at the first failure. " +
 			"Batch mode (DEFAULT for any multi-step browser/form flow on every site): observe once (one probe or one script that reads the page), then ONE action=batch whose plan is the whole sequence as desktop steps, e.g. [{action:script,script:fill title},{action:rich_fill,text:BODY},{action:script,script:set topics},{action:script,script:click 发布}], then ONE read-back script on the result page. batch runs the steps in order through the same guards, stops at the first failure and reports each step; only then fix the failed step alone. " +
@@ -120,7 +121,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":      map[string]any{"type": "string", "description": "probe, script, skill_list, skill_run, task_run, app_list, app_run, app_open, install, screenshot, navigate, click, type, press, deliver, file_read, file_write, file_edit, file_list, bash, computer, app_probe, clipboard_get, clipboard_set, window_list, window, screen_info, wait, request_takeover, notify_main, check_inbox, or delegate", "enum": desktopExecuteActions},
+				"action":      map[string]any{"type": "string", "description": "probe, script, upload, skill_list, skill_run, task_run, app_list, app_run, app_open, install, screenshot, navigate, click, type, press, deliver, file_read, file_write, file_edit, file_list, bash, computer, app_probe, clipboard_get, clipboard_set, window_list, window, screen_info, wait, request_takeover, notify_main, check_inbox, or delegate", "enum": desktopExecuteActions},
 				"kind":        map[string]any{"type": "string", "description": "notify_main: done, blocked, progress, question, artifact, info, or reply.", "enum": []string{"done", "blocked", "progress", "question", "artifact", "info", "reply"}},
 				"message":     map[string]any{"type": "string", "description": "notify_main: one or two sentences for the main bot."},
 				"target":      map[string]any{"type": "string", "description": "notify_main: empty (the main bot) or another bot's name or id. delegate: the teammate bot's name or id."},
@@ -144,6 +145,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"key":         map[string]any{"type": "string", "description": "Key for press"},
 				"query":       map[string]any{"type": "string", "description": "Optional probe filter. Leave it empty to list every control."},
 				"script":      map[string]any{"type": "string", "description": "Statements for action=script. click(\"保存\") or click(\"button.primary\") clicks. type(\"#q\", \"weather\") types. select(\"状态\", \"完成\") chooses an option. press(\"Enter\"), scroll(600), and waitFor(\"下一步\", 3000) run in the same script. Do not read cookies, storage, or passwords."},
+				"files":       map[string]any{"type": "array", "description": "upload: absolute file paths on the desktop to put into the page's file input", "items": map[string]any{"type": "string"}},
 				"plan":        map[string]any{"type": "array", "description": "batch: desktop steps run in order in one call, each an object with its own action (script, rich_fill, navigate, probe, click, type, press, wait) and that action's fields; stops at the first failure", "items": map[string]any{"type": "object"}},
 				"steps":       map[string]any{"type": "array", "description": "task_run or app_run steps. Browser step: {action, params:{url,ref,text,key}}. App step: {action, ...} with action focus{name|id}, type{text}, key{key, repeat}, click{x,y | id, button left|right|middle, clicks 1-3, modifiers \"ctrl+shift\"}, right_click, double_click, triple_click, middle_click, move{x,y}, mouse_down, mouse_up, drag{from_x,from_y,to_x,to_y}, scroll{x,y,direction up|down|left|right, amount}, cursor_position, wait{duration}, hold_key{key,duration}, paste{text} (clipboard + Ctrl+V, best for long or Chinese text), set_text{id,text}, screenshot, zoom{region:[x0,y0,x1,y1]}. x,y are pixels of the last screenshot.", "items": map[string]any{"type": "object"}},
 				"actions":     map[string]any{"type": "array", "description": "action=computer: a batch run in order that stops at the first failure. Each item is an Anthropic computer-use action ({action:left_click, coordinate:[x,y], text:modifiers}, left_click_drag with start_coordinate, scroll with scroll_direction/scroll_amount, key/hold_key with text, type, cursor_position, wait, screenshot, zoom with region), an OpenAI computer-use action ({type:click|double_click|scroll|type|keypress|wait|screenshot|move|drag, x, y, button, scroll_x, scroll_y, keys, path}), or an app_run step. A click may give target (words, e.g. \"the blue 发送 button\") instead of x,y as the first step of a batch: a grounding model places it when one is configured; otherwise give x,y.", "items": map[string]any{"type": "object"}},
@@ -910,6 +912,10 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 			pages, _ := withDesktopPages("", nil, endpoint.CDP, session.TargetID)
 			return "", fmt.Errorf("page script failed: %s\n%s", desktopStepClip(scriptErr.Error(), 300), strings.TrimSpace(pages))
 		}
+		text, err = withDesktopPages(text, err, endpoint.CDP, session.TargetID)
+	case "upload":
+		defer beginDesktopActivity(scope.RunID, "正在上传文件")()
+		text, err = desktopUpload(session, args)
 		text, err = withDesktopPages(text, err, endpoint.CDP, session.TargetID)
 	case "skill_run":
 		defer beginDesktopActivity(scope.RunID, "正在操作网页")()
@@ -3601,7 +3607,7 @@ var desktopIPv4Pattern = regexp.MustCompile(`^[0-9]{1,3}(?:\.[0-9]{1,3}){3}$`)
 
 // desktopBatchStepActions may run inside one plan call. Each step goes through the
 // normal InvokeTool path (guards, coach, step records).
-var desktopBatchStepActions = map[string]bool{"script": true, "rich_fill": true, "navigate": true, "probe": true, "click": true, "type": true, "press": true, "wait": true, "clipboard_set": true}
+var desktopBatchStepActions = map[string]bool{"upload": true, "script": true, "rich_fill": true, "navigate": true, "probe": true, "click": true, "type": true, "press": true, "wait": true, "clipboard_set": true}
 
 const desktopPlanMaxSteps = 12
 
