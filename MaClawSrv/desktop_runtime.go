@@ -3578,8 +3578,21 @@ func (m desktopRuntimeModule) invokePlan(ctx context.Context, request agentrunti
 		lines = append(lines, fmt.Sprintf("%d. %s: ok: %s", i+1, act, desktopPlanSummary(out)))
 		last = out
 	}
-	return strings.Join(lines, "\n") + fmt.Sprintf("\nplan done (%d steps). Last step result:\n%s", len(raw), last), nil
+	settle := ""
+	if lastAct := strings.ToLower(strings.TrimSpace(desktopArg(raw[len(raw)-1].(map[string]any), "action"))); lastAct == "script" || lastAct == "click" || lastAct == "press" {
+		// The last step often submits a form and the page moves on its own.
+		// Report where the page settled so the model does not spend a
+		// wait/probe call (or fail a "screen changed" wait) to learn it.
+		if out, err := m.InvokeTool(ctx, request, name, map[string]any{"action": "script", "script": desktopPlanSettleScript}); err == nil {
+			settle = "\npage after plan: " + desktopPlanSummary(out)
+		}
+	}
+	return strings.Join(lines, "\n") + fmt.Sprintf("\nplan done (%d steps). Last step result:\n%s", len(raw), last) + settle, nil
 }
+
+// desktopPlanSettleScript waits briefly for a navigation the plan started,
+// then reports the page it landed on.
+const desktopPlanSettleScript = `const u0=location.href; for (let i=0;i<10;i++){ await new Promise(r=>setTimeout(r,300)); if (location.href!==u0) break; } await new Promise(r=>setTimeout(r,500)); return 'url '+location.href+' ; title '+document.title`
 
 func desktopPlanSummary(out string) string {
 	out = strings.Join(strings.Fields(out), " ")
