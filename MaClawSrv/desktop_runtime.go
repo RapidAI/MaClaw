@@ -2632,11 +2632,20 @@ func desktopFocusedWindowOutsideBrowser(run func(...string) (string, error)) boo
 	if i := strings.IndexAny(class, "\r\n"); i >= 0 {
 		class = strings.TrimSpace(class[:i])
 	}
-	if class == "" || desktopWindowIsBrowser(class) {
+	if class == "" {
 		return false
+	}
+	if desktopWindowIsBrowser(class) {
+		// The browser's own native file chooser (GTK "Open File") has the
+		// browser class but holds no web page, so no password field: text
+		// typed there is a file path. Every site's upload uses it.
+		nameOut, nerr := run("getactivewindow", "getwindowname")
+		return nerr == nil && desktopFileDialogTitleRe.MatchString(strings.TrimSpace(nameOut))
 	}
 	return true
 }
+
+var desktopFileDialogTitleRe = regexp.MustCompile(`(?i)^(open|open files?|save|save files?|save as|select files?|choose files?|file upload|upload files?|打开|打开文件|保存|保存文件|另存为|选择文件|上传文件)$`)
 
 // desktopWhiskerDismiss finds the menu when Super keyup opened it. search
 // with no match returns non-zero. That is the menu-not-open case.
