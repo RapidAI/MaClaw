@@ -1,0 +1,47 @@
+package main
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
+)
+
+// With publishing approved, a takeover only to click 发布 is refused and the
+// bot is steered to action=publish; a login takeover still goes through, and
+// without approval the confirmation takeover stays.
+func TestDesktopTakeoverForPublishRefusedWhenApproved(t *testing.T) {
+	old := desktopRemoteCtl
+	desktopRemoteCtl = func(ctx context.Context, tenantID, userID, display string, request map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	}
+	defer func() { desktopRemoteCtl = old }()
+	t.Setenv("MACLAW_DESKTOP_PUBLISH_CONFIRM", "1")
+	scope := agentruntime.Scope{TenantID: "t", UserID: desktop.BotDesktopUser("alice", "bot_1"), InstanceID: "inst-pubtake"}
+	approved := context.WithValue(context.Background(), desktopPublishApprovedKey{}, true)
+	for _, reason := range []string{"请检查内容并亲自点发布（标题与正文已填好）", "10.18 摘要已填好，请检查内容并亲自点「发布」。", "please click Publish"} {
+		_, err := requestDesktopTakeover(approved, scope, reason)
+		if err == nil || !strings.Contains(err.Error(), "action=publish") {
+			t.Fatalf("%q: %v", reason, err)
+		}
+	}
+	if _, err := requestDesktopTakeover(approved, scope, "请扫码登录小红书后点交还"); err != nil {
+		t.Fatalf("login takeover refused: %v", err)
+	}
+	if _, err := requestDesktopTakeover(context.Background(), scope, "请检查内容并亲自点发布"); err != nil {
+		t.Fatalf("unapproved confirmation takeover refused: %v", err)
+	}
+}
+
+func TestDesktopPublishIntentSiteFirst(t *testing.T) {
+	for _, s := range []string{"在小红书创作者中心发布一篇图文笔记", "在知乎专栏发表一篇文章"} {
+		if !desktopPublishIntentRe.MatchString(s) {
+			t.Fatalf("no intent: %q", s)
+		}
+	}
+	if desktopPublishIntentRe.MatchString("在知乎看看有什么热门") {
+		t.Fatal("browse matched")
+	}
+}

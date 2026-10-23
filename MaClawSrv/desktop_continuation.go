@@ -34,7 +34,7 @@ var (
 
 // desktopPublishIntentRe: the person asked for the post itself ("发到知乎",
 // "发布到小红书"); that is the approval to press 发布 once the body is in.
-var desktopPublishIntentRe = regexp.MustCompile(`(?i)(发到|发布到|发表到|发在|发布在|发表在|投到|贴到)\s*(知乎|小红书|微博|公众号|头条|掘金|csdn|b站|网站|博客|专栏)|发(知乎|小红书|微博)|(post|publish) (it |this )?(to|on) `)
+var desktopPublishIntentRe = regexp.MustCompile(`(?i)(发到|发布到|发表到|发在|发布在|发表在|投到|贴到)\s*(知乎|小红书|微博|公众号|头条|掘金|csdn|b站|网站|博客|专栏)|发(知乎|小红书|微博)|在\s*(知乎|小红书|微博|公众号|头条|掘金|csdn|b站)[^。\n]{0,20}(发布|发表|发一篇|发篇)|(post|publish) (it |this )?(to|on) `)
 
 var desktopHandBackRe = regexp.MustCompile(`桌面交还给你|请继续刚才的任务|hand(ed)? (the desktop )?back`)
 

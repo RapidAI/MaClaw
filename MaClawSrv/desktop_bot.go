@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
@@ -25,6 +26,13 @@ func desktopBotUser(owner string, metadata map[string]string) string {
 	return desktop.BotDesktopUser(owner, bot)
 }
 
+// A takeover only so the person clicks 发布 is not needed once publishing is
+// approved for this task: the bot finishes with action=publish itself.
+var desktopPublishOnlyTakeoverRe = regexp.MustCompile(`(?i)(亲自|手动|帮忙|自行)?\s*点(击)?\s*[「“"']?(发布|发表|发送)|click (the )?(publish|post|submit)`)
+var desktopPublishLoginRe = regexp.MustCompile(`(?i)登录|验证码|扫码|验证|captcha|log ?in|sign ?in|2fa`)
+
+const desktopPublishTakeoverRefusal = "refused: takeover_for_publish — publishing is approved for this task, so do not ask the person to click 发布. The editor is open: finish with ONE call action=publish (title, body, and upload/verify params as needed); it fills, clicks publish, confirms and reads the post back. Only ask for a takeover for a login, captcha or verification."
+
 func desktopIsolatedBot(scope agentruntime.Scope) bool {
 	_, bot := desktop.SplitDesktopUser(scope.UserID)
 	return bot != ""
@@ -38,6 +46,9 @@ func requestDesktopTakeover(ctx context.Context, scope agentruntime.Scope, reaso
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		return "", fmt.Errorf("request_takeover requires reason")
+	}
+	if desktopPublishOnlyTakeoverRe.MatchString(reason) && !desktopPublishLoginRe.MatchString(reason) && desktopPublishAllowed(ctx) {
+		return "", fmt.Errorf("%s", desktopPublishTakeoverRefusal)
 	}
 	if len([]rune(reason)) > 300 {
 		reason = string([]rune(reason)[:300])
