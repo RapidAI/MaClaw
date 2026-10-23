@@ -227,10 +227,9 @@ func desktopExperienceText(scope agentruntime.Scope, site string) string {
 	seed := desktopSeedNotesFor(site)
 	e := f.Sites[site]
 	learned := e != nil && len(e.Worked)+len(e.Avoid) > 0
-	if !learned && len(seed) == 0 {
-		return ""
-	}
 	var b strings.Builder
+	// Generic batch default for every site (Zhihu is only a validation scenario).
+	fmt.Fprintf(&b, "Browser default on every site: observe once (one probe), then ONE action=batch whose plan is the rest of the form/flow, then one read-back; do not click/type step by step. ")
 	if len(seed) > 0 {
 		fmt.Fprintf(&b, "Site playbook for %s:", site)
 		for _, n := range seed {
@@ -247,12 +246,14 @@ func desktopExperienceText(scope agentruntime.Scope, site string) string {
 			fmt.Fprintf(&b, " avoid: %s (x%d);", n.Note, n.Count)
 		}
 	}
-	source := "learned"
+	source := "batch-default"
 	switch {
 	case len(seed) > 0 && learned:
 		source = "seed+learned"
 	case len(seed) > 0:
 		source = "seed"
+	case learned:
+		source = "learned"
 	}
 	nLearned := 0
 	if learned {

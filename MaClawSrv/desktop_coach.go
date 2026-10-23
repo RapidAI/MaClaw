@@ -54,6 +54,12 @@ type desktopProgress struct {
 	// URL seen before that is a page left open by an earlier task.
 	publishTried bool
 	staleWarned  bool
+	// Batch-default path (generic, every site): observe once, then one
+	// action=batch for the rest. These counters enforce that outside a plan.
+	observed       bool
+	singleMutating int
+	batchStarted   bool
+	batchHinted    bool
 }
 
 func desktopEnvIntDefault(name string, def int) int {
@@ -166,6 +172,10 @@ func desktopProgressNote(scope agentruntime.Scope, action string, out string, er
 		p.idle = 0
 	} else {
 		p.idle++
+	}
+	if p.observed && !p.batchStarted && !p.batchHinted && action == "probe" {
+		p.batchHinted = true
+		notes = append(notes, "Page observed. Put the remaining form/flow into ONE action=batch plan (script/rich_fill/click/type/press/wait steps), then one read-back. Do not click or type step by step.")
 	}
 	if w := desktopNoProgressWarn(); w > 0 && p.idle == w {
 		notes = append(notes, fmt.Sprintf("No progress in the last %d actions (nothing on the page changed). Stop repeating probes/screenshots/scripts: pick a different method from the input ladder, or call request_takeover and say what is stuck.", p.idle))

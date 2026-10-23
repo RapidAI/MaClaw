@@ -108,7 +108,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			"Single browser actions navigate, click, type, and press remain available. " +
 			"For non-browser windows: action=app_probe lists the accessible elements (role, name, states, bounds) of the focused window with numbered ids; app_run or computer steps then target {\"id\":N} (click, focus, set_text). marks=true adds a screenshot with those numbers drawn. " +
 			"action=computer runs a batch of computer-use actions (Anthropic or OpenAI names) and reports each step; it stops at the first failure. " +
-			"Batch mode (default for a known form/publish flow): observe once (one probe or one script that reads the page), then ONE action=batch whose plan is the whole sequence as desktop steps, e.g. [{action:script,script:fill title},{action:rich_fill,text:BODY},{action:script,script:set topics},{action:script,script:click 发布}], then ONE read-back script on the result page. batch runs the steps in order through the same guards, stops at the first failure and reports each step; only then fix the failed step alone. " +
+			"Batch mode (DEFAULT for any multi-step browser/form flow on every site): observe once (one probe or one script that reads the page), then ONE action=batch whose plan is the whole sequence as desktop steps, e.g. [{action:script,script:fill title},{action:rich_fill,text:BODY},{action:script,script:set topics},{action:script,script:click 发布}], then ONE read-back script on the result page. batch runs the steps in order through the same guards, stops at the first failure and reports each step; only then fix the failed step alone. " +
 			"For a rich-text editor body on any site use ONE action=rich_fill with the full text (replace=true to overwrite); it focuses the page's main editor itself (ref, or x,y in SCREEN pixels, only for a different editor), raises the browser, pastes with a real Ctrl+V and reads back the length. Coordinates a page script reports are viewport/CSS pixels, not screen pixels: click page elements by ref, never by script coordinates. " +
 			"action=clipboard_set then a paste step (or app_run paste{text}) inserts long or Chinese text without the input method. clipboard_get reads it. window_list, window (activate, maximize, minimize, restore, move, resize, close), screen_info, and wait (for screen change or a window) manage windows. " +
 			"action=screenshot accepts region (zoom), format jpeg/webp, quality, and cursor. Full screenshots always come at one fixed size, so coordinates keep the same scale from shot to shot. " +
@@ -182,12 +182,14 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	ctx = context.WithValue(ctx, desktopLLMSeesImagesKey{}, desktopTurnSeesImages(request))
 	ctx = context.WithValue(ctx, desktopComputerHelperKey{}, strings.TrimSpace(desktopMessageMeta(request)["computer_helper"]) == "1")
 	ctx = context.WithValue(ctx, desktopPublishApprovedKey{}, desktopTurnPublishApproved(request))
-	if strings.EqualFold(strings.TrimSpace(desktopArg(args, "action")), "batch") {
-		return desktopRuntimeModule{}.invokePlan(ctx, request, name, args)
-	}
 	scope, cloud, err := desktopScopeForTurn(request)
 	if err != nil {
 		return "", err
+	}
+	if strings.EqualFold(strings.TrimSpace(desktopArg(args, "action")), "batch") {
+		ctx = context.WithValue(ctx, desktopInsideBatchKey{}, true)
+		desktopMarkBatchStarted(desktopOwner(scope))
+		return desktopRuntimeModule{}.invokePlan(ctx, request, name, args)
 	}
 	if inst, ok := turnInstance(request); ok && inst.Metadata != nil {
 		if folder := strings.TrimSpace(inst.Metadata[desktopMaterialsMetadataKey]); folder != "" {
@@ -236,6 +238,9 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	actionName := strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))
 	npErr := desktopNoProgressCheckStep(ctx, desktopOwner(scope), actionName, args)
 	if npErr == nil {
+		npErr = desktopBatchDefaultCheck(ctx, desktopOwner(scope), actionName)
+	}
+	if npErr == nil {
 		npErr = desktopAfterPublishCheck(desktopOwner(scope), actionName, args)
 	}
 	if npErr == nil && actionName == "deliver" {
@@ -262,6 +267,7 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	desktopExperienceRecord(scope, desktopRunSite(desktopOwner(scope)), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args, out, err)
 	failWarn := desktopFailClassRecord(desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))), args, out, err)
 	desktopNotePublishAttempt(desktopOwner(scope), actionName, args)
+	desktopRecordBatchDefault(desktopOwner(scope), actionName, err)
 	coach := desktopProgressNote(desktopOwner(scope), actionName, out, err)
 	if err == nil {
 		out = spillDesktopToolText(ctx, scope, out)
@@ -1110,6 +1116,8 @@ func desktopPageFlagsLine(text string) string {
 }
 
 type desktopPhaseKey struct{}
+
+type desktopInsideBatchKey struct{}
 
 type desktopCloudKey struct{}
 
