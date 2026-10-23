@@ -132,6 +132,7 @@ import {
 } from './desktopBots';
 import { botWindowIsForeground, setBotWindowForeground, watchBotReplies } from './botUnread';
 import { BotMessageBody, botMessageIsStructured } from './botMessageBody';
+import { BotFeedLine, botFeedLineOf } from './botFeedLine';
 import { botChatIsNearBottom, botChatLogStamp, pinBotChatToBottom } from './botChatScroll';
 import { DesktopBotComposer } from './DesktopBotComposer';
 import { BotEditDialog } from './BotEditDialog';
@@ -5307,7 +5308,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 // by this GUI into the main chat (multibot-wake); not twice.
                 const primary = bots.find(bot => bot.id === target)?.primary === true;
                 if (!(primary && !wakeRun) && target && known.has(target) && !desktopBotNoticeSeen(userId, `${id}:target`)) {
-                    appendDesktopBotReport(userId, target, { content: content.received, failed: false, requestId: `${id}:target`, chat: true });
+                    appendDesktopBotReport(userId, target, { content: content.received, failed: false, requestId: `${id}:target`, chat: true, feed: content.feed });
                     markDesktopBotNotice(userId, `${id}:target`);
                     show(target);
                 }
@@ -6384,6 +6385,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 const rawBody = desktopBotBubbleBody(sentMaterials.text, message.failed === true, message.askUser?.question || '', lang);
                                 const body = message.role === 'assistant' ? stripConfirmedOrderLead(rawBody) : rawBody;
                                 const structured = message.role === 'assistant' && !message.failed && botMessageIsStructured(body);
+                                const feedLine = message.role === 'assistant' && message.chat && !message.askUser && message.phase !== 'plan' && !message.localPaths?.length && !message.files?.length
+                                    ? botFeedLineOf(message.content || '', selected.title, { feed: message.feed, failed: message.failed })
+                                    : null;
+                                if (feedLine) return (
+                                    <div key={message.id} className="desktop-bot-chat__entry desktop-bot-chat__entry--feed" data-message-role="feed">
+                                        <BotFeedLine line={feedLine} />
+                                    </div>
+                                );
                                 return (
                                 <div key={message.id} className={`desktop-bot-chat__entry desktop-bot-chat__entry--${message.role}`} data-message-role={message.role}>
                                     <div className={`desktop-bot-chat__bubble desktop-bot-chat__bubble--${message.role}${message.failed ? ' is-failed' : ''}${structured ? '' : ' is-plain'}`}>

@@ -1,3 +1,4 @@
+import type { BotFeedMeta } from './botFeedLine';
 import { visibleActivityPhrase } from './visibleDesktopTurn';
 
 export interface DesktopBot {
@@ -874,6 +875,8 @@ export interface DesktopBotMessage {
     // A delegate that still needs the button on this thread. Claiming happens
     // on that click, not when the note is shown.
     crossNoteId?: string;
+    // Bot-to-bot traffic received from another bot: shown as one compact line.
+    feed?: BotFeedMeta;
     // Small faces beside 「已发消息给 N 个 Bot」.
     noticeBots?: DesktopBotNoticeBot[];
     // This turn has no reading, so the person's own words are parked on the
@@ -1473,7 +1476,7 @@ export function takeDesktopBotCrossRun(userId: string, botId: string): DesktopBo
 // The same request id is written once, so the open page and the store can
 // both hear the event. A scheduled report passes no phase, so it does not
 // take the confirm control. A destructive delegate passes phase plan.
-export function appendDesktopBotReport(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; phase?: BotPhase; workOrder?: string; crossNoteId?: string; noticeBots?: DesktopBotNoticeBot[]; chat?: boolean }) {
+export function appendDesktopBotReport(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; phase?: BotPhase; workOrder?: string; crossNoteId?: string; noticeBots?: DesktopBotNoticeBot[]; chat?: boolean; feed?: BotFeedMeta }) {
     const requestId = (patch.requestId || '').trim();
     const current = messagesForBot(userId, botId);
     if (requestId && current.some(item => item.requestId === requestId)) return;
@@ -1499,6 +1502,7 @@ export function appendDesktopBotReport(userId: string, botId: string, patch: { c
         crossNoteId: (patch.crossNoteId || '').trim() || undefined,
         noticeBots: patch.noticeBots && patch.noticeBots.length > 0 ? patch.noticeBots : undefined,
         chat: patch.chat === true ? true : undefined,
+        feed: patch.feed,
     };
     saveBotMessages(userId, botId, [...current, message]);
 }
@@ -1520,7 +1524,7 @@ const reportTopicWords: Record<string, string> = {
 };
 
 // A message one bot sent another, as the person sees it in each chat.
-export function desktopBotReportFeedText(note: Record<string, unknown>, bots: Array<{ id: string; title?: string }>): { received: string; sent: string } {
+export function desktopBotReportFeedText(note: Record<string, unknown>, bots: Array<{ id: string; title?: string }>): { received: string; sent: string; feed: BotFeedMeta } {
     const name = (id: string) => bots.find(bot => bot.id === id)?.title || id;
     const from = String(note.from || '').trim();
     const target = String(note.target || '').trim();
@@ -1535,6 +1539,7 @@ export function desktopBotReportFeedText(note: Record<string, unknown>, bots: Ar
     return {
         received: `${name(from)} ${word}：${text}${fileLine}${woken}`,
         sent: `发给 ${name(target)}（${word}）：${text}${fileLine}`,
+        feed: { from: name(from), word },
     };
 }
 

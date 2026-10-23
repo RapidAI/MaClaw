@@ -2778,3 +2778,58 @@
     width: 100%;
     height: 100%;
 }
+
+/* Bot-to-bot traffic: one compact muted line, full text on click. */
+.desktop-bot-feed {
+    align-self: stretch;
+    margin: 2px 0;
+    font-size: 12px;
+    color: var(--text-muted, #6b7280);
+    border-left: 2px solid rgba(107, 114, 128, 0.35);
+    padding: 1px 8px;
+    background: transparent;
+}
+.desktop-bot-feed__row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    list-style: none;
+    white-space: nowrap;
+    overflow: hidden;
+}
+.desktop-bot-feed__row::-webkit-details-marker { display: none; }
+.desktop-bot-feed__dir { flex: none; opacity: 0.85; }
+.desktop-bot-feed__kind {
+    flex: none;
+    padding: 0 6px;
+    border-radius: 8px;
+    background: rgba(107, 114, 128, 0.12);
+}
+.desktop-bot-feed__summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.desktop-bot-feed__file {
+    flex: none;
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: 0 6px;
+    border: 1px solid rgba(107, 114, 128, 0.3);
+    border-radius: 8px;
+}
+.desktop-bot-feed__full {
+    margin: 4px 0 2px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 12px;
+}
+.desktop-bot-feed.is-alert {
+    color: #b45309;
+    border-left-color: #f59e0b;
+    background: rgba(245, 158, 11, 0.08);
+    font-weight: 600;
+}
+.desktop-bot-feed.is-alert[data-kind='出错'] {
+    color: #b91c1c;
+    border-left-color: #ef4444;
+    background: rgba(239, 68, 68, 0.08);
+}
