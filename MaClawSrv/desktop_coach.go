@@ -508,6 +508,9 @@ func desktopDriftCheck(scope agentruntime.Scope, action string, args map[string]
 	inBrowser := p.lastURL != ""
 	published := p.publishSeen
 	st.mu.Unlock()
+	if published && action == "bash" && !desktopAskedForFileRe.MatchString(request) && desktopUserDirWriteRe.MatchString(desktopArg(args, "command")) {
+		return fmt.Errorf("refused: unasked_file — the result is already published and the request did not ask for a file; do not save a copy. Give the final answer with the link now")
+	}
 	if published && action == "file_write" && !desktopAskedForFileRe.MatchString(request) && !desktopScratchPathRe.MatchString(desktopArg(args, "path")) {
 		return fmt.Errorf("refused: unasked_file — the result is already published and the request did not ask for a file; do not save a copy. Give the final answer with the link now")
 	}
@@ -540,3 +543,6 @@ var desktopScratchPathRe = regexp.MustCompile(`^(/tmp/|/var/tmp/|/home/desktop/t
 // A request that names a web destination or a publish/upload is a browser
 // task from its first step (XHS-2 opened an image viewer before any page).
 var desktopBrowserTaskRe = regexp.MustCompile(`(?i)https?://|www\.|\.(com|cn|org|net|io)\b|网页|网站|浏览器|发到|发布|发表|发一篇|上传|post to|publish`)
+
+// A shell write (redirect, tee, cp/mv) into the person's own folders.
+var desktopUserDirWriteRe = regexp.MustCompile(`(>>?|\btee\b|\bcp\b|\bmv\b|open\(|write_text\()[^|;&]*(/home/desktop/(Desktop|Documents|桌面|文档)|~/(Desktop|Documents|桌面|文档))`)

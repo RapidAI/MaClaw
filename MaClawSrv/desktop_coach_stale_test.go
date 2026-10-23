@@ -184,3 +184,21 @@ func TestDriftGuardWebTaskBeforeFirstPage(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDriftGuardNoBashCopyAfterPublish(t *testing.T) {
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u-drift4", RunID: "run-drift4"}
+	st, p := desktopProgressFor(scope)
+	if st == nil {
+		t.Skip("no run state")
+	}
+	st.mu.Lock()
+	p.lastURL, p.publishSeen = "https://site.example/p/1", true
+	st.mu.Unlock()
+	req := "做摘要，发到知乎上"
+	if desktopDriftCheck(scope, "bash", map[string]any{"command": "cat > /home/desktop/Desktop/a.md <<'E'\nx\nE"}, req) == nil {
+		t.Fatal("bash copy allowed")
+	}
+	if err := desktopDriftCheck(scope, "bash", map[string]any{"command": "curl -s x > /tmp/a.json"}, req); err != nil {
+		t.Fatal(err)
+	}
+}
