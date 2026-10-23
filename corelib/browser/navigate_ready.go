@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -188,8 +189,14 @@ func (s *Session) waitPageReady() (NavReadyReport, bool) {
 		rep.Wall = rep.State.Wall
 	case loginWallURL(rep.State.URL) != "":
 		rep.Wall = "login_url"
-	case rep.State.Interactive == 0 && rep.State.TextLen < 20 && rep.Waited >= blankWall:
+	case rep.State.Interactive == 0 && rep.State.TextLen < 20 && rep.Waited >= blankWall && !localPageURL(rep.State.URL):
+		// A blank local page (an image preview, a dev server) has no
+		// sign-in; only remote sites get the person called in (XHS-7).
 		rep.Wall = "blank"
 	}
 	return rep, true
 }
+
+var localPageRe = regexp.MustCompile(`(?i)^(file:|data:|blob:|about:|https?://(localhost|127\.|0\.0\.0\.0|\[::1\])[:/]?)`)
+
+func localPageURL(u string) bool { return localPageRe.MatchString(strings.TrimSpace(u)) }
