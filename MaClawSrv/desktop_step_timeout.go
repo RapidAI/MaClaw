@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
@@ -82,6 +84,14 @@ func operateDesktopWithTimeout(ctx context.Context, scope agentruntime.Scope, ar
 	}()
 	select {
 	case r := <-done:
+		if desktopPageHung(r.out, r.err) && desktopUnstickDue(scope) {
+			if note := desktopUnstickAfterTimeout(scope, action, args); note != "" {
+				if r.err != nil {
+					return "", fmt.Errorf("%v; %s", r.err, note)
+				}
+				return r.out + "\n" + note, nil
+			}
+		}
 		return r.out, r.err
 	case <-stepCtx.Done():
 		if ctx.Err() != nil {
@@ -182,4 +192,33 @@ func desktopDropStuckBinding(scope agentruntime.Scope) {
 	if desktopBindings.CompareAndDelete(userKey, value) {
 		log.Printf("[desktop-step] dropped a desktop binding held by a hung step user=%s", userKey)
 	}
+}
+
+// A step can come back on its own budget with the page silent (a CDP
+// Runtime.evaluate timeout) before the hard step timeout fires; that is the
+// same hung renderer, so the tab is reopened the same way, at most once a
+// minute per desktop.
+var desktopPageHungRe = regexp.MustCompile(`cdp timeout: Runtime\.evaluate|page did not answer`)
+
+func desktopPageHung(out string, err error) bool {
+	if err != nil && desktopPageHungRe.MatchString(err.Error()) {
+		return true
+	}
+	return desktopPageHungRe.MatchString(out)
+}
+
+var (
+	desktopUnstickMu   sync.Mutex
+	desktopUnstickLast = map[string]time.Time{}
+)
+
+func desktopUnstickDue(scope agentruntime.Scope) bool {
+	key := scope.TenantID + "/" + scope.UserID
+	desktopUnstickMu.Lock()
+	defer desktopUnstickMu.Unlock()
+	if time.Since(desktopUnstickLast[key]) < time.Minute {
+		return false
+	}
+	desktopUnstickLast[key] = time.Now()
+	return true
 }

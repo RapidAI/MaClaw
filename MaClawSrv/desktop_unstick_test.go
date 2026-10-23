@@ -54,3 +54,31 @@ func TestDesktopStepTimeoutDropsStuckBinding(t *testing.T) {
 		t.Fatal("free binding dropped")
 	}
 }
+
+// A step that returns on its own with the page silent (cdp timeout) also
+// reopens the tab, at most once a minute.
+func TestDesktopCdpTimeoutUnsticksOncePerMinute(t *testing.T) {
+	oldOp, oldUn := operateDesktopFunc, desktopUnstickFunc
+	defer func() { operateDesktopFunc, desktopUnstickFunc = oldOp, oldUn }()
+	operateDesktopFunc = func(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
+		return "", errString("publish step observe failed: page did not answer: cdp timeout: Runtime.evaluate (id=39)")
+	}
+	calls := 0
+	desktopUnstickFunc = func(ctx context.Context, scope agentruntime.Scope, url string) (map[string]any, error) {
+		calls++
+		return map[string]any{"unstick": map[string]any{"done": true, "closed": "https://a.test/x", "reopened": "https://a.test/x"}}, nil
+	}
+	scope := agentruntime.Scope{TenantID: "t", UserID: desktop.BotDesktopUser("u3", "bot_625eda1bbe86a157")}
+	_, err := operateDesktopWithTimeout(context.Background(), scope, map[string]any{"action": "publish"})
+	if err == nil || !strings.Contains(err.Error(), "closed and opened again") || calls != 1 {
+		t.Fatalf("err=%v calls=%d", err, calls)
+	}
+	_, _ = operateDesktopWithTimeout(context.Background(), scope, map[string]any{"action": "probe"})
+	if calls != 1 {
+		t.Fatalf("unstick not rate limited: %d", calls)
+	}
+}
+
+type errString string
+
+func (e errString) Error() string { return string(e) }
