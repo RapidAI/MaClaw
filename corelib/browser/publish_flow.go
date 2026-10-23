@@ -49,6 +49,9 @@ type PublishStep struct {
 type PublishReport struct {
 	Steps     []PublishStep `json:"steps"`
 	ResultURL string        `json:"result_url,omitempty"`
+	// PostID is an id-like attribute value found on the listed post when the
+	// list has no direct link to it (verify_url pages often render cards).
+	PostID string `json:"post_id,omitempty"`
 	Stuck     string        `json:"stuck,omitempty"`
 }
 
@@ -65,6 +68,9 @@ func (r *PublishReport) String() string {
 		fmt.Fprintf(&b, "publish stopped at step %q; nothing after it ran", r.Stuck)
 	} else if r.ResultURL != "" {
 		fmt.Fprintf(&b, "published: %s", r.ResultURL)
+		if r.PostID != "" {
+			fmt.Fprintf(&b, " (post id %s)", r.PostID)
+		}
 	}
 	return strings.TrimSpace(b.String())
 }
@@ -702,17 +708,20 @@ func (p *publishRun) checkResult(key string, budget time.Duration, listed bool) 
 	deadline := time.Now().Add(budget)
 	reloaded := false
 	for {
-		out, _ := p.eval(`(() => { const key = ` + jsq(normText(key)) + `; const n = s => (s || '').replace(/\s+/g, ''); const has = n(document.body ? document.body.innerText : '').includes(key); const a = [...document.querySelectorAll('a[href]')].find(a => n(a.innerText).includes(key) || n(a.closest('section,li,article,div') ? a.closest('section,li,article,div').innerText : '').includes(key)); return JSON.stringify({url: location.href, has, link: a ? a.href : ''}); })()`)
+		out, _ := p.eval(`(() => { const key = ` + jsq(normText(key)) + `; const n = s => (s || '').replace(/\s+/g, ''); const has = n(document.body ? document.body.innerText : '').includes(key); const a = [...document.querySelectorAll('a[href]')].find(a => n(a.innerText).includes(key) || n(a.closest('section,li,article,div') ? a.closest('section,li,article,div').innerText : '').includes(key)); let id = ''; if (has && !a) { const els = [...document.querySelectorAll('body *')].filter(e => e.children.length < 3 && n(e.innerText).includes(key)); let e = els[0]; for (let i = 0; e && i < 6 && !id; i++, e = e.parentElement) { for (const x of [e, ...e.querySelectorAll('*')]) { for (const at of x.attributes) { const m = (at.value || '').match(/\b([0-9a-f]{24}|[0-9]{15,20})\b/); if (m) { id = m[1]; break; } } if (id) break; } } } return JSON.stringify({url: location.href, has, link: a ? a.href : '', id}); })()`)
 		var o struct {
 			URL  string `json:"url"`
 			Has  bool   `json:"has"`
 			Link string `json:"link"`
+			ID   string `json:"id"`
 		}
 		_ = json.Unmarshal([]byte(out), &o)
 		if o.Has {
 			p.rep.ResultURL = o.URL
 			if listed && o.Link != "" {
 				p.rep.ResultURL = o.Link
+			} else if listed {
+				p.rep.PostID = o.ID
 			}
 			return fmt.Sprintf("result page %s shows %q", o.URL, key), nil
 		}

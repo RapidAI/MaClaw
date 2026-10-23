@@ -184,6 +184,10 @@ func fixtureServer(t *testing.T, page string) (*httptest.Server, *fixtureSite) {
 		m := last()
 		page1(w, `<li><a href="/explore/abc">`+m["title"]+`</a></li>`)
 	})
+	mux.HandleFunc("/cards", func(w http.ResponseWriter, r *http.Request) {
+		m := last()
+		page1(w, `<div class="note" data-impression='{"noteId":"6adbcee50000000031026525"}'><div class="cover"></div><span class="title">`+m["title"]+`</span><span>审核中</span></div>`)
+	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv, site
@@ -259,5 +263,20 @@ func TestPublishFlowReportsTheStuckStep(t *testing.T) {
 	}
 	if len(site.published) != 0 {
 		t.Fatal("published anyway")
+	}
+}
+
+// A list of cards without links still yields the post id.
+func TestPublishFlowCardListReportsPostID(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, _ := fixtureServer(t, "xhs_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit")
+	rep, err := RunPublish(d, PublishSpec{Files: []string{fixtureImage(t)}, Title: "扩散语言模型量化每步不同", Body: fixtureBody, VerifyURL: srv.URL + "/cards", StepBudget: 20 * time.Second})
+	t.Log(rep.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.PostID != "6adbcee50000000031026525" {
+		t.Fatalf("post id %q url %q", rep.PostID, rep.ResultURL)
 	}
 }

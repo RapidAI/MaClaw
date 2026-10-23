@@ -57,5 +57,8 @@ func desktopPublish(session *browser.BrowserAgentSession, args map[string]any) (
 	if err != nil {
 		return "", fmt.Errorf("%s\n%s", err.Error(), out)
 	}
+	if rep.PostID != "" && spec.VerifyURL != "" && strings.TrimRight(rep.ResultURL, "/") == strings.TrimRight(spec.VerifyURL, "/") {
+		return out + "\nPUBLISHED and verified: the post is listed on " + rep.ResultURL + " but the list has no direct link. Its id is " + rep.PostID + "; build the post link from the site's post URL pattern (site notes) with that id and reply to the user once with it. Do not publish again.", nil
+	}
 	return out + "\nPUBLISHED and verified. Reply to the user once with this link: " + rep.ResultURL, nil
 }

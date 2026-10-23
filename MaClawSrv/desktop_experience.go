@@ -271,6 +271,7 @@ var desktopSeedNotes = map[string][]string{
 	"xiaohongshu.com": {
 		"publish a note from https://creator.xiaohongshu.com/publish/publish with ONE action=publish and verify_url=https://creator.xiaohongshu.com/new/note-manager (the account's note list; a new note shows there with 审核中 while public /explore links may still 404)",
 		"after 发布 the page lands on /publish/publish?published=true: the note is submitted. Never call publish again for it; read it back once in note-manager and reply with its link",
+		"a note's link is https://www.xiaohongshu.com/explore/<24-hex note id>; publish reports the id when note-manager shows no direct link",
 	},
 	"zhihu.com": {
 		"write articles at https://zhuanlan.zhihu.com/write; if it shows a sign-in form, 安全验证 or stays blank, call request_takeover at once (do not wait)",
