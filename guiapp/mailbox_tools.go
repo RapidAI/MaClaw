@@ -175,6 +175,17 @@ func (h *IMMessageHandler) toolMailboxQuery(ctx context.Context, args map[string
 	return host.Query(ctx, args)
 }
 
+func (h *IMMessageHandler) toolMailboxOrganize(ctx context.Context, args map[string]interface{}) string {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	host := h.mailboxHost(mailboxOwnerFromContext(ctx))
+	if host == nil {
+		return mailbox.MsgNotConfigured
+	}
+	return host.Organize(ctx, args)
+}
+
 func (h *IMMessageHandler) toolMailboxConfigure(ctx context.Context, args map[string]interface{}) string {
 	text, err := h.applyMailboxConfigure(ctx, args)
 	if err != nil {

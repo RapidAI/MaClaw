@@ -70,6 +70,12 @@ func (c *coreAgentCallbacks) sharedHostToolSpecs() []coreToolSpec {
 			Enabled:     true,
 			Parameters:  mailbox.DeleteInvocationSchema(),
 		},
+		{
+			Name:        "mailbox_organize",
+			Description: mailbox.ToolDescriptionOrganize(),
+			Enabled:     true,
+			Parameters:  mailbox.OrganizeInvocationSchema(),
+		},
 		specFromCoreTool("manage_skill", "", c.skillProvider != nil, func() string {
 			if c.skillProvider == nil {
 				return "skill system is not configured"
@@ -185,6 +191,8 @@ func (c *coreAgentCallbacks) executeSharedHostTool(name string, args map[string]
 			return toolTextResult(msg), true
 		}
 		return toolTextResult(c.mailboxRuntime().Delete(mailboxToolContext(c), args)), true
+	case "mailbox_organize":
+		return toolTextResult(c.mailboxRuntime().Organize(mailboxToolContext(c), args)), true
 	case "mailbox_configure":
 		return toolTextResult(c.configureMailbox(args)), true
 	case "goal":

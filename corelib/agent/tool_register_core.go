@@ -734,6 +734,14 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Handler:     extraHandler(deps, "mailbox_delete", mailbox.MsgNotConfigured),
 		HandlerCtx:  extraHandlerCtx(deps, "mailbox_delete", mailbox.MsgNotConfigured),
 	})
+	r.Register(ToolEntry{
+		Name:        "mailbox_organize",
+		Description: mailbox.ToolDescriptionOrganize(),
+		Properties:  mailbox.OrganizeProperties(),
+		Required:    []string{"action", "uids"},
+		Handler:     extraHandler(deps, "mailbox_organize", mailbox.MsgNotConfigured),
+		HandlerCtx:  extraHandlerCtx(deps, "mailbox_organize", mailbox.MsgNotConfigured),
+	})
 
 	r.Register(ToolEntry{
 		Name:        "manage_skill",
