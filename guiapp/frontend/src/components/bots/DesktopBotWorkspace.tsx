@@ -5172,7 +5172,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 // A message between bots is shown to the person whether or not
                 // an agent (GUI or a server-side wake) already took it.
                 const content = desktopBotReportFeedText(note, bots);
-                if (target && known.has(target) && !desktopBotNoticeSeen(userId, `${id}:target`)) {
+                // A report to the primary that no server wake took is delivered
+                // by this GUI into the main chat (multibot-wake); not twice.
+                const primary = bots.find(bot => bot.id === target)?.primary === true;
+                if (!(primary && !wakeRun) && target && known.has(target) && !desktopBotNoticeSeen(userId, `${id}:target`)) {
                     appendDesktopBotReport(userId, target, { content: content.received, failed: false, requestId: `${id}:target`, chat: true });
                     markDesktopBotNotice(userId, `${id}:target`);
                     show(target);
