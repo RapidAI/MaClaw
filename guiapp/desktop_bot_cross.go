@@ -2,6 +2,8 @@ package guiapp
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -465,6 +467,9 @@ func (a *App) postDesktopBotReport(botID, target, topic, text, replyTo string, a
 	body := map[string]any{"kind": "report", "text": text, "target": target, "topic": topic}
 	if replyTo != "" {
 		body["reply_to"] = replyTo
+		// One answer per message: a retried reply is filed once by Hub.
+		sum := sha1.Sum([]byte(target + "\x00" + topic + "\x00" + text))
+		body["key"] = "reply:" + replyTo + ":" + hex.EncodeToString(sum[:8])
 	}
 	if len(artifacts) > 0 {
 		body["artifacts"] = artifacts

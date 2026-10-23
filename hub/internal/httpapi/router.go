@@ -391,6 +391,9 @@ func NewRouter(
 	mux.HandleFunc("GET /api/admin/cloud-workspaces/metrics", requireTenantAdmin(GetCloudWorkspaceMetricsAdminHandler(cloudWorkspaceSvc)))
 	mux.HandleFunc("GET /api/admin/cloud-workspaces/audit/export", requireTenantAdmin(GetCloudWorkspaceAuditExportAdminHandler(cloudWorkspaceSvc)))
 	botSvc := botmgmt.NewService(system)
+	// Hub starts delegated work and wakes idle bots itself; off only when
+	// an operator sets MACLAW_HUB_BOT_DISPATCH=off.
+	botSvc.BotDispatch = !strings.EqualFold(strings.TrimSpace(os.Getenv("MACLAW_HUB_BOT_DISPATCH")), "off")
 	if identity != nil {
 		botSvc.OwnerLLM = botOwnerLLM{identity: identity, center: centerSvc}
 	}
@@ -423,6 +426,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/v1/desktop-services/hold", PostDesktopHoldHandler(botSvc))
 	mux.HandleFunc("POST /api/v1/desktop-services/notify", PostDesktopNotifyHandler(botSvc))
 	mux.HandleFunc("POST /api/v1/desktop-services/inbox", PostDesktopInboxHandler(botSvc))
+	mux.HandleFunc("POST /api/v1/desktop-services/delegate", PostDesktopDelegateHandler(botSvc))
 	mux.HandleFunc("POST /api/v1/desktop-services/app", PostDesktopAppHandler(desktopPool))
 	mux.HandleFunc("POST /api/v1/desktop-services/open", PostDesktopOpenHandler(desktopPool))
 	mux.HandleFunc("POST /api/v1/desktop-services/install", PostDesktopInstallHandler(desktopPool))

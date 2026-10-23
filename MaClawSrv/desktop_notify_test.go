@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -9,7 +10,16 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
 
+func useTempMultibotState(t *testing.T) string {
+	path := filepath.Join(t.TempDir(), "multibot-state.json")
+	old := multibotStatePath
+	multibotStatePath = func() string { return path }
+	t.Cleanup(func() { multibotStatePath = old })
+	return path
+}
+
 func TestDesktopNotifyMainPostsReportAndCapsPerRun(t *testing.T) {
+	useTempMultibotState(t)
 	var got []map[string]any
 	desktopRemoteNotify = func(_ context.Context, body map[string]any) (map[string]any, error) {
 		got = append(got, body)
@@ -46,6 +56,7 @@ func TestDesktopNotifyMainPostsReportAndCapsPerRun(t *testing.T) {
 }
 
 func TestDesktopInboxTextReadsAndAcksHubMailbox(t *testing.T) {
+	useTempMultibotState(t)
 	var calls []map[string]any
 	desktopRemoteInbox = func(_ context.Context, body map[string]any) ([]map[string]any, error) {
 		calls = append(calls, body)
@@ -63,5 +74,59 @@ func TestDesktopInboxTextReadsAndAcksHubMailbox(t *testing.T) {
 	}
 	if len(calls) != 2 || calls[1]["ack"].([]string)[0] != "note_9" || calls[0]["instance_id"] != "inst_pub" {
 		t.Fatalf("calls = %#v", calls)
+	}
+	// The ack was lost and Hub replays note_9: acked again, not shown twice.
+	if again := desktopInboxText(context.Background(), req); again != "" {
+		t.Fatalf("replayed message shown twice: %q", again)
+	}
+	if len(calls) != 4 || calls[3]["ack"].([]string)[0] != "note_9" {
+		t.Fatalf("replay not re-acked: %#v", calls)
+	}
+}
+
+func TestDesktopNotifyCapAndKeySurviveRestart(t *testing.T) {
+	path := useTempMultibotState(t)
+	var keys []string
+	desktopRemoteNotify = func(_ context.Context, body map[string]any) (map[string]any, error) {
+		keys = append(keys, body["key"].(string))
+		return map[string]any{"id": "n"}, nil
+	}
+	defer func() { desktopRemoteNotify = nil }()
+	inst := agentservice.Instance{ID: "inst_pub", Metadata: map[string]string{"hub_user_id": "alice"}}
+	req := agentruntime.TurnRequest{Scope: agentruntime.Scope{RunID: "run_r"}, Input: agentservice.ExecuteRequest{Instance: inst}}
+	for i := 0; i < desktopNotifyPerRun; i++ {
+		if _, err := desktopNotifyMain(context.Background(), req, map[string]any{"message": "same"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if keys[0] == "" || keys[0] != keys[1] {
+		t.Fatalf("same message must carry the same idempotency key: %v", keys[:2])
+	}
+	// A restart: the in-process state is gone, the file is not.
+	multibotStatePath = func() string { return path }
+	if _, err := desktopNotifyMain(context.Background(), req, map[string]any{"message": "after restart"}); err == nil {
+		t.Fatal("cap reset by restart")
+	}
+}
+
+func TestDesktopDelegatePostsToHub(t *testing.T) {
+	useTempMultibotState(t)
+	var got map[string]any
+	desktopRemoteDelegate = func(_ context.Context, body map[string]any) (map[string]any, error) {
+		got = body
+		return map[string]any{"id": "note_d"}, nil
+	}
+	defer func() { desktopRemoteDelegate = nil }()
+	inst := agentservice.Instance{ID: "inst_main", Metadata: map[string]string{"hub_user_id": "alice", "hub_tenant_id": "tenant-a"}}
+	req := agentruntime.TurnRequest{Scope: agentruntime.Scope{RunID: "run_m"}, Input: agentservice.ExecuteRequest{Instance: inst}}
+	out, err := desktopDelegate(context.Background(), req, map[string]any{"target": "发布员", "message": "导出本月订单"})
+	if err != nil || !strings.Contains(out, "note_d") {
+		t.Fatalf("out=%q err=%v", out, err)
+	}
+	if got["target"] != "发布员" || got["text"] != "导出本月订单" || got["instance_id"] != "inst_main" || got["key"] == "" {
+		t.Fatalf("body = %#v", got)
+	}
+	if _, err := desktopDelegate(context.Background(), req, map[string]any{"message": "no target"}); err == nil {
+		t.Fatal("target required")
 	}
 }

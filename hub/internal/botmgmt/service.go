@@ -212,6 +212,12 @@ type Service struct {
 	// desktopAdmits is the reply of a run that was accepted and is still
 	// executing, or has finished, after the admitting call returned.
 	desktopAdmits map[string]*desktopAdmitState
+	// BotDispatch lets Hub itself start delegated work and wake idle
+	// server-side bots when mail arrives (bot_dispatch.go). Off in tests.
+	BotDispatch bool
+	dispatch    botDispatchState
+	// dispatchAdmit replaces AdmitDesktopMessage in tests.
+	dispatchAdmit func(ctx context.Context, tenantID, userID, botID, content, phase, key string) (BotAdmission, error)
 	// runPauses records runs this Hub paused on MaClawSrv (desktop_pause.go).
 	runPauses sync.Map
 }

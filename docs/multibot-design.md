@@ -111,6 +111,18 @@ Bots can say they are **done**, **blocked**/need help, have **progress**, a **qu
 | Ping-pong | Bus pair counter (main↔teammate with no person turn) and reply-chain depth | 8 messages / 4 hops, reset when the person speaks. Hub's run-end reports and GUI-derived status messages do not count. A refused `send_to_bot` tells the model to ask the person. |
 | Retention | Hub mailbox per account | 7 days. Reports are capped at 60 per owner, separately from the 50-note delegate cap. Acked reports are dropped first; unacked reports are dropped only when the mailbox is entirely unacked. |
 
+### 2.10 Server-side coordination: Hub's dispatcher (2026-10-23, `hub/internal/botmgmt/bot_dispatch.go`)
+
+A cross-bot task now completes with **no GUI running**. Hub itself drives it; the GUI is a view/controller of the same Hub state.
+
+* **Delegates are started by Hub.** When a `delegate` note is stored (from the GUI's main bot, or from the server-side main bot via MaClawSrv `desktop{action:"delegate", target, message}` → `POST /api/v1/desktop-services/delegate`), Hub claims it (`started_by=hub`) and admits the target's turn with turn key `xdel-<note id>`. MaClawSrv answers a repeated key with the run it already started, so a Hub restart mid-admit cannot double-start. A GUI that later tries the same note loses the claim and only shows the run. Orders the GUI would ask the person to confirm (install / delete / pay / 清空 …, same words as `desktopBotDestructive`) are **not** started: Hub marks them `held_at` and tells the main bot `blocked`, and the person's GUI can still confirm and start them.
+* **Idle bots are woken by Hub.** When a report lands in a bot's mailbox, Hub starts a turn of that bot (key `xwake-<first note id>`, marks `woken_at`, one wake per message). The turn's prompt already carries the mailbox (§2.9), so the bot reads and answers it now. The main bot is woken **where it runs**: while a GUI polls its mailbox (seen in the last 2 min) the GUI wakes its local main bot and Hub stays out; with no GUI, Hub wakes the primary's server-side twin, which can answer, `notify_main` peers, or `delegate` further.
+* **One desktop run per user.** A busy desktop undoes the mark and retries (45 s, up to ~30 min); every run end, every new delegate/report, and a 2-min sweep kick the dispatcher again. Wakes are capped at 6 per bot per hour so two bots cannot loop the desktop; report rate limits (§2.9) still apply. Only notes younger than 2 h are dispatched.
+* **Delegated run end** → Hub's watcher posts `done`/`blocked` to the primary (§2.9) → that wakes the main bot (GUI or server-side) → it reports to the person. Full loop: main delegates → Hub starts teammate → teammate runs/notifies → Hub reports → main is woken → main answers, all on Hub + MaClawSrv.
+* **Duplicate delivery.** Every message may carry an idempotency `key`; Hub answers a second note with the same sender+key with the stored one (`duplicate:true`). MaClawSrv keys `notify_main`/`delegate` by run + content; the GUI keys replies by `reply_to` + content. On the consumer side MaClawSrv remembers which mailbox ids it already put in a prompt (`<data>/multibot-state.json`), so a lost ack re-acks without showing the message twice; the GUI dedupes by note id in its Bus. Delivery is still at-least-once on the wire, effectively once to the model.
+* **Per-run cap** (8 messages) is kept in the same state file, so a MaClawSrv restart does not reset it.
+* Off switch: `MACLAW_HUB_BOT_DISPATCH=off` in Hub's environment restores "GUI starts delegates, mail waits for the next run".
+
 ## 3. End-to-end example: local file → remote publish
 Person: 「把 D:\稿子\周报.md 整理一下，用发布员发到公司博客，发好告诉我」
 1. Main bot (`running`, task=整理周报): `read_file D:\稿子\周报.md` (local), edits, `write_file D:\稿子\周报-定稿.md` (permission prompt as today).
@@ -133,7 +145,7 @@ Person (to the main bot): 「让采集员去后台把本月订单导出来，导
 
 ## 5. Open questions
 1. ~~Persist color/shape on Hub~~ — done 2026-10-23 (§4).
-2. ~~Push team events proactively into the main bot's chat~~ — done 2026-10-23 (§2.9, Hub mailbox + synthetic wake turn). Still open: Hub does not start a turn by itself for an idle server-side bot when mail arrives (the mail waits for its next turn); delegates are still started by the GUI client; a remote bot's mid-run `paths` are desktop paths; the main bot only gets the bytes once the run delivers them (no mid-run pull yet), and MaClawSrv's per-run counter is in memory.
+2. ~~Push team events proactively into the main bot's chat~~ — done 2026-10-23 (§2.9, Hub mailbox + synthetic wake turn). Hub-side waking, Hub-started delegates, idempotency keys and the persisted per-run cap are done (§2.10). Still open: a remote bot's mid-run `paths` are desktop paths and the main bot only gets the bytes once the run delivers them (no mid-run pull); the GUI does not yet render a Hub-started delegate run in the target's chat as its own bubble (it shows in the run list); Hub's dispatch kick after a restart waits for the first activity of that user (no boot-time scan of all tenants).
 3. Local sub-bots (several bots inside one GUI with separate loops) — the registry supports `Location=local`, but only the main bot exists locally today.
 4. ~~True pause of an in-flight remote run~~ — done 2026-10-23 (§2.8, step-boundary pause; not durable across a MaClawSrv restart).
 5. Should Hub's primary bot and the local main bot be unified in the UI (today Hub primary is the relay identity for cross notes)?

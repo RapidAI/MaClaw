@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -549,13 +550,14 @@ func PostDesktopNotifyHandler(bots *botmgmt.Service) http.HandlerFunc {
 			Text       string   `json:"text"`
 			Artifacts  []string `json:"artifacts"`
 			ReplyTo    string   `json:"reply_to"`
+			Key        string   `json:"key"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid notify request")
 			return
 		}
 		note, err := bots.PostBotReportFromInstance(r.Context(), in.TenantID, in.UserID, in.InstanceID, botmgmt.BotCrossNote{
-			Target: in.Target, Topic: in.Kind, Text: in.Text, Artifacts: in.Artifacts, RunID: in.RunID, ReplyTo: in.ReplyTo,
+			Target: in.Target, Topic: in.Kind, Text: in.Text, Artifacts: in.Artifacts, RunID: in.RunID, ReplyTo: in.ReplyTo, Key: in.Key,
 		})
 		if err != nil {
 			switch {
@@ -865,5 +867,54 @@ func PostDesktopCtlHandler(pool *desktoppool.Pool) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+// PostDesktopDelegateHandler lets the server-side main bot (a MaClawSrv run
+// of the account primary) hand work to a teammate:
+// {tenant_id,user_id,instance_id,target,text,key}. Hub stores the delegate
+// note and starts it itself. A missing target answers with the team.
+func PostDesktopDelegateHandler(bots *botmgmt.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if bots == nil {
+			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "desktop service store is unavailable")
+			return
+		}
+		if !authorizeDesktopAPI(w, r) {
+			return
+		}
+		var in struct {
+			TenantID   string `json:"tenant_id"`
+			UserID     string `json:"user_id"`
+			InstanceID string `json:"instance_id"`
+			Target     string `json:"target"`
+			Text       string `json:"text"`
+			Key        string `json:"key"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid delegate request")
+			return
+		}
+		note, err := bots.PostBotDelegateFromInstance(r.Context(), in.TenantID, in.UserID, in.InstanceID, botmgmt.BotCrossNote{Target: in.Target, Text: in.Text, Order: in.Text, Key: in.Key})
+		if err != nil {
+			team, _ := bots.BotTeam(r.Context(), in.TenantID, in.UserID)
+			names := []string{}
+			for _, b := range team {
+				names = append(names, fmt.Sprintf("%v (%v)", b["name"], b["id"]))
+			}
+			teamText := "; bots: " + strings.Join(names, ", ")
+			switch {
+			case errors.Is(err, botmgmt.ErrNotPrimary):
+				writeJSON(w, http.StatusForbidden, map[string]any{"error": "only the main bot can delegate" + teamText, "team": team})
+			case errors.Is(err, botmgmt.ErrNoSuchBot), errors.Is(err, botmgmt.ErrNotFound):
+				writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such bot" + teamText, "team": team})
+			case errors.Is(err, botmgmt.ErrInvalidInput):
+				writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "instance, user, target and text are required")
+			default:
+				writeError(w, http.StatusBadGateway, "DOCKER_SERVICE_REQUEST_FAILED", "delegate failed")
+			}
+			return
+		}
+		writeJSON(w, http.StatusOK, note)
 	}
 }

@@ -47,6 +47,30 @@ type BotCrossNote struct {
 	// has taken the message from its Hub mailbox. Unacked messages are
 	// replayed on every inbox read, so a closed GUI loses nothing.
 	AckedAt string `json:"acked_at,omitempty"`
+	// Key is the sender's idempotency key: a second note from the same bot
+	// with the same key is answered with the stored one (retries, restarts).
+	Key string `json:"key,omitempty"`
+	// WokenAt is when Hub started a server-side turn of the target bot for
+	// this message (bot_dispatch.go), so one message wakes it once.
+	WokenAt string `json:"woken_at,omitempty"`
+	// StartedBy is "hub" when Hub's dispatcher started this delegate, and
+	// HeldAt is set when Hub left it for the person to confirm.
+	StartedBy string `json:"started_by,omitempty"`
+	HeldAt    string `json:"held_at,omitempty"`
+}
+
+// keyedNote is the stored note this sender already filed under key.
+func keyedNote(notes []BotCrossNote, userID, from, key string) *BotCrossNote {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil
+	}
+	for i := range notes {
+		if notes[i].Owner == userID && notes[i].From == from && notes[i].Key == key {
+			return &notes[i]
+		}
+	}
+	return nil
 }
 
 // ListBotsForUser returns this user's bots. Exactly one of them is primary
@@ -185,7 +209,13 @@ func (s *Service) PostBotCrossTalk(ctx context.Context, tenantID, userID, fromBo
 		if target == "" || target == fromBotID || !botOwned(rec.Bots, userID, target) {
 			return BotCrossNote{}, ErrNoSuchBot
 		}
+		if prior := keyedNote(rec.CrossNotes, userID, fromBotID, in.Key); prior != nil {
+			out := *prior
+			out.Duplicate = true
+			return out, nil
+		}
 		note := BotCrossNote{
+			Key:       strings.TrimSpace(in.Key),
 			ID:        newCrossNoteID(),
 			Owner:     userID,
 			From:      fromBotID,
@@ -199,6 +229,9 @@ func (s *Service) PostBotCrossTalk(ctx context.Context, tenantID, userID, fromBo
 		rec.CrossNotes = capCrossNotes(rec.CrossNotes, userID)
 		if err := s.save(ctx, tenantID, rec); err != nil {
 			return BotCrossNote{}, err
+		}
+		if kind == "delegate" {
+			s.kickDispatch(tenantID, userID)
 		}
 		return note, nil
 	case "result":
@@ -240,6 +273,7 @@ func (s *Service) PostBotCrossTalk(ctx context.Context, tenantID, userID, fromBo
 		if err := s.save(ctx, tenantID, rec); err != nil {
 			return BotCrossNote{}, err
 		}
+		s.kickDispatch(tenantID, userID)
 		return note, nil
 	default:
 		return BotCrossNote{}, ErrInvalidInput
@@ -289,6 +323,11 @@ func (s *Service) reportLocked(rec *record, userID, fromBotID string, in BotCros
 	if text == "" && len(artifacts) == 0 {
 		return BotCrossNote{}, false, ErrInvalidInput
 	}
+	if prior := keyedNote(rec.CrossNotes, userID, fromBotID, in.Key); prior != nil {
+		out := *prior
+		out.Duplicate = true
+		return out, false, nil
+	}
 	now := s.now()
 	recent := 0
 	for i := len(rec.CrossNotes) - 1; i >= 0; i-- {
@@ -318,6 +357,7 @@ func (s *Service) reportLocked(rec *record, userID, fromBotID string, in BotCros
 		From:      fromBotID,
 		Target:    target,
 		Kind:      "report",
+		Key:       strings.TrimSpace(in.Key),
 		Topic:     topic,
 		Text:      text,
 		Artifacts: artifacts,
@@ -376,6 +416,7 @@ func (s *Service) PostBotReportFromInstance(ctx context.Context, tenantID, userI
 	if err := s.save(ctx, tenantID, rec); err != nil {
 		return BotCrossNote{}, err
 	}
+	s.kickDispatch(tenantID, userID)
 	return note, nil
 }
 
@@ -423,7 +464,8 @@ func (s *Service) ClaimBotCrossStart(ctx context.Context, tenantID, userID, botI
 		return BotCrossNote{}, false, ErrNotFound
 	}
 	now := s.now()
-	if strings.TrimSpace(note.RunID) != "" || crossClaimFresh(note.StartedAt, now) {
+	// Hub's dispatcher started it (bot_dispatch.go): the client only views.
+	if strings.TrimSpace(note.RunID) != "" || note.StartedBy == "hub" || crossClaimFresh(note.StartedAt, now) {
 		return *note, false, nil
 	}
 	note.StartedAt = now.UTC().Format(time.RFC3339)
@@ -609,6 +651,11 @@ func (s *Service) BotMailbox(ctx context.Context, tenantID, userID, botID string
 	if err != nil {
 		return nil, err
 	}
+	if id, err := resolveMailboxBot(rec, userID, botID); err == nil {
+		// A user-side reader (the GUI) is polling this bot's mail, so Hub
+		// leaves the wake to it instead of starting a server-side turn.
+		s.noteGUIReader(tenantID, userID, id)
+	}
 	return s.mailboxLocked(ctx, tenantID, &rec, userID, botID, ack, all)
 }
 
@@ -732,7 +779,9 @@ func (s *Service) reportDelegateRunEnd(tenantID, userID, botID, runID, status st
 	if err != nil || !changed || note.ID == "" {
 		return
 	}
-	_ = s.save(ctx, tenantID, rec)
+	if s.save(ctx, tenantID, rec) == nil {
+		s.kickDispatch(tenantID, userID)
+	}
 }
 
 func firstNonEmptyString(v ...string) string {

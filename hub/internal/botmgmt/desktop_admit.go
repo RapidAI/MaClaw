@@ -591,6 +591,8 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 		state.mu.Unlock()
 		s.persistDesktopTasks(job.TenantID)
 		s.reportDelegateRunEnd(job.TenantID, job.UserID, job.BotID, job.RunID, runStatus, reply, settleErr)
+		// The desktop is free again: start the next queued delegate or wake.
+		s.kickDispatch(job.TenantID, job.UserID)
 		traceBot(job.BotID, "post_end", settleErr,
 			"instance", job.InstanceID,
 			"run", job.RunID,
