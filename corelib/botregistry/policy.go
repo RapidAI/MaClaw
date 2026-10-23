@@ -18,6 +18,10 @@ const (
 	ActionPause    Action = "pause"    // hold new work
 	ActionResume   Action = "resume"   // release held work
 	ActionTransfer Action = "transfer" // move a file between bots
+	// ActionMessage is a bot-originated report (done, blocked, question,
+	// file…) to the main bot or a peer. Any bot may send one; the Bus
+	// rate-limits it and stops ping-pong. It never controls the target.
+	ActionMessage Action = "message"
 )
 
 // Decision is the outcome of a policy check.
@@ -51,6 +55,12 @@ func Destructive(text string) bool {
 //     waiting on the person, need the person's confirmation.
 func Check(caller, target Bot, action Action, text string) Decision {
 	if action == ActionRead {
+		return Decision{Allowed: true}
+	}
+	if action == ActionMessage {
+		if caller.ID == "" || target.ID == "" || caller.ID == target.ID {
+			return Decision{Reason: "a message needs another bot as target"}
+		}
 		return Decision{Allowed: true}
 	}
 	if caller.ID == "" {

@@ -100,6 +100,8 @@ func writeBotUserError(w http.ResponseWriter, r *http.Request, principal *auth.M
 		status, code, message = http.StatusForbidden, "NOT_PRIMARY", botmgmt.ErrNotPrimary.Error()
 	case errors.Is(err, botmgmt.ErrNoSuchBot):
 		status, code, message = http.StatusNotFound, "BOT_NOT_FOUND", botmgmt.ErrNoSuchBot.Error()
+	case errors.Is(err, botmgmt.ErrRateLimited):
+		status, code, message = http.StatusTooManyRequests, "RATE_LIMITED", botmgmt.ErrRateLimited.Error()
 	default:
 		// 502: unknown, treat as unreachable.
 	}

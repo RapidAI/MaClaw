@@ -62,6 +62,15 @@ type multiBot struct {
 	selfTurns   int
 	watching    bool
 	stopWatch   chan struct{}
+
+	// bus and inbox carry teammate messages to the main bot (multibot_messages.go).
+	bus       *botregistry.Bus
+	inbox     *botregistry.Inbox
+	seenNotes map[string]bool
+	notesInit bool
+	wakeBuf   []botregistry.Message
+	wakeTimer *time.Timer
+	lastNotes time.Time
 }
 
 var multiBots sync.Map // *App -> *multiBot
@@ -93,6 +102,7 @@ func newMultiBot(hub multiBotHub, artifactDir string, emit func(string, ...inter
 		State:        botregistry.StateIdle,
 	})
 	mb := &multiBot{reg: reg, hub: hub, emit: emit}
+	mb.initMessages()
 	if store, err := botregistry.NewArtifacts(artifactDir); err == nil {
 		mb.artifacts = store
 	} else {
@@ -116,6 +126,10 @@ func (mb *multiBot) beginSelfTurn(task string) func() {
 	mb.mu.Lock()
 	mb.selfTurns++
 	mb.mu.Unlock()
+	if !isTeammateWake(task) {
+		mb.bus.PersonSpoke()
+	}
+	endInbox := mb.inbox.Begin()
 	task = clipRunes(strings.TrimSpace(task), 120)
 	mb.reg.Update(multiBotSelfID, func(b *botregistry.Bot) {
 		b.State = botregistry.StateRunning
@@ -127,6 +141,7 @@ func (mb *multiBot) beginSelfTurn(task string) func() {
 		mb.selfTurns--
 		left := mb.selfTurns
 		mb.mu.Unlock()
+		defer endInbox()
 		if left > 0 {
 			return
 		}
@@ -221,23 +236,31 @@ func (mb *multiBot) ensureWatch() {
 	stop := mb.stopWatch
 	mb.mu.Unlock()
 	go func() {
+		var lastFull time.Time
 		for {
-			wait := multiBotWatchIdle
+			// Reports from teammates arrive as Hub notes and are polled every
+			// tick; the roster/run refresh runs at the active pace only while
+			// a teammate is busy.
+			full := multiBotWatchIdle
 			for _, b := range mb.reg.List() {
 				if b.ID != multiBotSelfID && (b.State == botregistry.StateRunning || b.State == botregistry.StateQueued) {
-					wait = multiBotWatchActive
+					full = multiBotWatchActive
 					break
 				}
 			}
 			select {
 			case <-stop:
 				return
-			case <-time.After(wait):
+			case <-time.After(multiBotWatchActive):
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			if err := mb.refresh(ctx, true); err != nil {
-				log.Printf("[multibot] refresh: %v", err)
+			if time.Since(lastFull) >= full {
+				lastFull = time.Now()
+				if err := mb.refresh(ctx, true); err != nil {
+					log.Printf("[multibot] refresh: %v", err)
+				}
 			}
+			mb.pollReports(ctx)
 			cancel()
 		}
 	}()

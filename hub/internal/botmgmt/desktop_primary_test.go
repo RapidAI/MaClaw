@@ -201,3 +201,55 @@ func TestStaleCrossClaimCanBeTakenAgain(t *testing.T) {
 		t.Fatalf("stale claim claimed=%v note=%#v err=%v", claimed, again, err)
 	}
 }
+
+func TestAnyBotReportsToPrimaryWithDedupeAndRateLimit(t *testing.T) {
+	svc := primaryFixture(t, []Bot{
+		{ID: "bot_main", Name: "主", OwnerUserID: "alice", InstanceID: "inst_main", CreatedAt: "2026-01-01T00:00:00Z"},
+		{ID: "bot_pub", Name: "发布员", OwnerUserID: "alice", InstanceID: "inst_pub", CreatedAt: "2026-02-01T00:00:00Z"},
+		{ID: "bot_x", Name: "X", OwnerUserID: "bob", InstanceID: "inst_x", CreatedAt: "2026-02-01T00:00:00Z"},
+	})
+	ctx := context.Background()
+	note, err := svc.PostBotReportFromInstance(ctx, "tenant-a", "alice", "inst_pub", BotCrossNote{Topic: "done", Text: "发好了", Artifacts: []string{"/home/desktop/Desktop/shot.png"}, RunID: "run_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if note.Kind != "report" || note.From != "bot_pub" || note.Target != "bot_main" || note.Topic != "done" || note.RunID != "run_1" || len(note.Artifacts) != 1 {
+		t.Fatalf("note = %#v", note)
+	}
+	dup, err := svc.PostBotReportFromInstance(ctx, "tenant-a", "alice", "inst_pub", BotCrossNote{Topic: "done", Text: "发好了", Artifacts: []string{"/home/desktop/Desktop/shot.png"}})
+	if err != nil || !dup.Duplicate || dup.ID != note.ID {
+		t.Fatalf("dup = %#v err=%v", dup, err)
+	}
+	// A non-primary bot reports through the user route too (no ErrNotPrimary).
+	if _, err := svc.PostBotCrossTalk(ctx, "tenant-a", "alice", "bot_pub", BotCrossNote{Kind: "report", Target: "main", Topic: "question", Text: "用哪个标题？"}); err != nil {
+		t.Fatal(err)
+	}
+	// Primary reports to a peer.
+	if n, err := svc.PostBotCrossTalk(ctx, "tenant-a", "alice", "bot_main", BotCrossNote{Kind: "report", Target: "bot_pub", Topic: "reply", Text: "用第一个"}); err != nil || n.Target != "bot_pub" {
+		t.Fatalf("peer report %v %#v", err, n)
+	}
+	if _, err := svc.PostBotReportFromInstance(ctx, "tenant-a", "alice", "inst_x", BotCrossNote{Text: "hi"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("other owner's instance err = %v", err)
+	}
+	if _, err := svc.PostBotReportFromInstance(ctx, "tenant-a", "alice", "inst_main", BotCrossNote{Text: "self"}); !errors.Is(err, ErrNoSuchBot) {
+		t.Fatalf("self report err = %v", err)
+	}
+	for i := 0; i < reportPerHour; i++ {
+		_, err = svc.PostBotReportFromInstance(ctx, "tenant-a", "alice", "inst_pub", BotCrossNote{Topic: "progress", Text: "step " + time.Duration(i).String()})
+		if err != nil {
+			break
+		}
+	}
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("rate limit err = %v", err)
+	}
+	notes, err := svc.ListBotCrossNotes(ctx, "tenant-a", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range notes {
+		if n.Duplicate {
+			t.Fatal("duplicate flag must not be stored")
+		}
+	}
+}

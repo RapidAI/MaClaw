@@ -6126,6 +6126,21 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         return run;
     }, [optionsForActiveSession, sendMessageNow]);
 
+    // Teammate bots report (done / blocked / question / file) through the Go
+    // multibot inbox; an idle main bot is woken with one synthetic turn. The
+    // person sees the short display line, the model sees the framed prompt.
+    const sendMessageForWakeRef = useRef(sendMessage);
+    sendMessageForWakeRef.current = sendMessage;
+    useEffect(() => {
+        const off = subscribeEvent('multibot-wake', (payload: unknown) => {
+            const wake = (payload || {}) as { prompt?: string; display?: string };
+            const prompt = typeof wake.prompt === 'string' ? wake.prompt.trim() : '';
+            if (!prompt) return;
+            void sendMessageForWakeRef.current(prompt, { displayText: wake.display || prompt });
+        });
+        return off;
+    }, []);
+
     const sendMessageInBackground = useCallback(async (text: string) => {
         // Callers are responsible for embedding file paths into `text` before calling here.
         const outgoingText = text.trim();

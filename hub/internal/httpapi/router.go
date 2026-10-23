@@ -421,6 +421,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/v1/desktop-services/session", PostDesktopSessionHandler(desktopPool, botSvc))
 	mux.HandleFunc("POST /api/v1/desktop-services/stop", PostDesktopStopHandler(desktopPool, botSvc))
 	mux.HandleFunc("POST /api/v1/desktop-services/hold", PostDesktopHoldHandler(botSvc))
+	mux.HandleFunc("POST /api/v1/desktop-services/notify", PostDesktopNotifyHandler(botSvc))
 	mux.HandleFunc("POST /api/v1/desktop-services/app", PostDesktopAppHandler(desktopPool))
 	mux.HandleFunc("POST /api/v1/desktop-services/open", PostDesktopOpenHandler(desktopPool))
 	mux.HandleFunc("POST /api/v1/desktop-services/install", PostDesktopInstallHandler(desktopPool))

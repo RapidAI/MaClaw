@@ -295,6 +295,11 @@ type DesktopBotCrossNote struct {
 	StartedAt string `json:"started_at,omitempty"`
 	RunID     string `json:"run_id,omitempty"`
 	ReplyTo   string `json:"reply_to,omitempty"`
+	// Topic and Artifacts are set on kind "report" (a bot telling another
+	// bot it is done, blocked, has a question or a file).
+	Topic     string   `json:"topic,omitempty"`
+	Artifacts []string `json:"artifacts,omitempty"`
+	Duplicate bool     `json:"duplicate,omitempty"`
 }
 
 // DesktopBotCrossPost is the result of one primary handoff.
@@ -447,6 +452,21 @@ func (a *App) postOneDesktopBotCross(botID, kind, target, text, order, replyTo s
 	}
 	if replyTo != "" {
 		body["reply_to"] = replyTo
+	}
+	var note DesktopBotCrossNote
+	err := a.desktopBotCall(context.Background(), http.MethodPost, "/api/v1/bots/"+url.PathEscape(botID)+"/cross", body, &note, 20*time.Second)
+	return note, err
+}
+
+// postDesktopBotReport posts a kind "report" note: any owned bot may send
+// one to the primary or a peer. Hub dedupes and rate-limits.
+func (a *App) postDesktopBotReport(botID, target, topic, text, replyTo string, artifacts []string) (DesktopBotCrossNote, error) {
+	body := map[string]any{"kind": "report", "text": text, "target": target, "topic": topic}
+	if replyTo != "" {
+		body["reply_to"] = replyTo
+	}
+	if len(artifacts) > 0 {
+		body["artifacts"] = artifacts
 	}
 	var note DesktopBotCrossNote
 	err := a.desktopBotCall(context.Background(), http.MethodPost, "/api/v1/bots/"+url.PathEscape(botID)+"/cross", body, &note, 20*time.Second)

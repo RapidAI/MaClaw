@@ -2846,6 +2846,7 @@ func (a *App) domReady(ctx context.Context) {
 
 func (a *App) finishDomReady(ctx context.Context) {
 	a.frontendDOMReady.Store(true)
+	go a.startTeamInbox()
 	bootLog("wails OnDomReady htmlReady=%v (about:blank also fires this)", a.frontendHTMLReady.Load())
 	log.Printf("[domReady] err=none wails navigation completed htmlReady=%v warmup_done=%v", a.frontendHTMLReady.Load(), a.warmupDone.Load())
 	if !a.frontendHTMLReady.Load() {

@@ -41,6 +41,8 @@ var (
 	ErrNotPrimary = errors.New("我不能去叫别的 Bot。你跟主 Bot 说，或者直接打开那个 Bot。")
 	// ErrNoSuchBot is a cross-talk target that is not one of this user's bots.
 	ErrNoSuchBot = errors.New("没有这个 Bot。")
+	// ErrRateLimited is a bot sending more reports than the hourly cap.
+	ErrRateLimited = errors.New("too many reports from this bot; wait a little")
 	// ErrAdminSecretMissing is ErrNotConfigured for the MaClawSrv admin secret.
 	// It is a separate sentinel so callers do not have to match on the message
 	// text to explain what is missing.

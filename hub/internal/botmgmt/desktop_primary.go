@@ -35,6 +35,13 @@ type BotCrossNote struct {
 	ReplyTo string `json:"reply_to,omitempty"`
 	// NoteID is the request alias for ReplyTo. It is not stored on the note.
 	NoteID string `json:"note_id,omitempty"`
+	// Topic is a report's reason: done, blocked, progress, question,
+	// artifact, info or reply. Artifacts are desktop paths or artifact ids.
+	Topic     string   `json:"topic,omitempty"`
+	Artifacts []string `json:"artifacts,omitempty"`
+	// Duplicate is set on a response when an identical report was already
+	// stored inside the dedupe window; it is not stored.
+	Duplicate bool `json:"duplicate,omitempty"`
 }
 
 // ListBotsForUser returns this user's bots. Exactly one of them is primary
@@ -220,9 +227,151 @@ func (s *Service) PostBotCrossTalk(ctx context.Context, tenantID, userID, fromBo
 			return BotCrossNote{}, err
 		}
 		return note, nil
+	case "report":
+		note, changed, err := s.reportLocked(&rec, userID, fromBotID, in)
+		if err != nil || !changed {
+			return note, err
+		}
+		if err := s.save(ctx, tenantID, rec); err != nil {
+			return BotCrossNote{}, err
+		}
+		return note, nil
 	default:
 		return BotCrossNote{}, ErrInvalidInput
 	}
+}
+
+// Report limits: one bot may send at most reportPerHour reports, and an
+// identical report (same from, target, topic, text) inside reportDedupe is
+// answered with the stored one instead of a second note.
+const (
+	reportPerHour = 15
+	reportDedupe  = 10 * time.Minute
+	reportTextMax = 2000
+)
+
+var reportTopics = map[string]bool{"done": true, "blocked": true, "progress": true, "question": true, "artifact": true, "info": true, "reply": true}
+
+// reportLocked appends a bot-originated report. Any bot of the account may
+// report to the primary (target empty, "main" or "primary") or to a peer.
+// It is a message, not control: it never admits a run.
+func (s *Service) reportLocked(rec *record, userID, fromBotID string, in BotCrossNote) (BotCrossNote, bool, error) {
+	if !botOwned(rec.Bots, userID, fromBotID) {
+		return BotCrossNote{}, false, ErrNotFound
+	}
+	target := strings.TrimSpace(in.Target)
+	switch strings.ToLower(target) {
+	case "", "main", "primary":
+		target = primaryBotID(*rec, userID)
+	}
+	if target == "" || target == fromBotID || !botOwned(rec.Bots, userID, target) {
+		return BotCrossNote{}, false, ErrNoSuchBot
+	}
+	topic := strings.ToLower(strings.TrimSpace(in.Topic))
+	if !reportTopics[topic] {
+		topic = "info"
+	}
+	text := strings.TrimSpace(in.Text)
+	if r := []rune(text); len(r) > reportTextMax {
+		text = string(r[:reportTextMax])
+	}
+	artifacts := make([]string, 0, len(in.Artifacts))
+	for _, a := range in.Artifacts {
+		if a = strings.TrimSpace(a); a != "" && len(artifacts) < 10 {
+			artifacts = append(artifacts, a)
+		}
+	}
+	if text == "" && len(artifacts) == 0 {
+		return BotCrossNote{}, false, ErrInvalidInput
+	}
+	now := s.now()
+	recent := 0
+	for i := len(rec.CrossNotes) - 1; i >= 0; i-- {
+		n := rec.CrossNotes[i]
+		if n.Kind != "report" || n.Owner != userID || n.From != fromBotID {
+			continue
+		}
+		stamp, err := time.Parse(time.RFC3339, n.CreatedAt)
+		if err != nil {
+			continue
+		}
+		age := now.Sub(stamp)
+		if age <= reportDedupe && n.Target == target && n.Topic == topic && n.Text == text && strings.Join(n.Artifacts, ",") == strings.Join(artifacts, ",") {
+			n.Duplicate = true
+			return n, false, nil
+		}
+		if age <= time.Hour {
+			recent++
+		}
+	}
+	if recent >= reportPerHour {
+		return BotCrossNote{}, false, ErrRateLimited
+	}
+	note := BotCrossNote{
+		ID:        newCrossNoteID(),
+		Owner:     userID,
+		From:      fromBotID,
+		Target:    target,
+		Kind:      "report",
+		Topic:     topic,
+		Text:      text,
+		Artifacts: artifacts,
+		RunID:     strings.TrimSpace(in.RunID),
+		ReplyTo:   strings.TrimSpace(in.ReplyTo),
+		CreatedAt: now.UTC().Format(time.RFC3339),
+	}
+	rec.CrossNotes = append(rec.CrossNotes, note)
+	rec.CrossNotes = capReportNotes(rec.CrossNotes, userID)
+	rec.CrossNotes = capCrossNotes(rec.CrossNotes, userID)
+	return note, true, nil
+}
+
+// PostBotReportFromInstance is the MaClawSrv side of a report: a desktop
+// run (identified by its instance) tells the account's main bot, or a peer,
+// that it finished, is blocked, has a question or has a file.
+func (s *Service) PostBotReportFromInstance(ctx context.Context, tenantID, userID, instanceID string, in BotCrossNote) (BotCrossNote, error) {
+	if s == nil {
+		return BotCrossNote{}, ErrSettingsUnavailable
+	}
+	userID = strings.TrimSpace(userID)
+	instanceID = strings.TrimSpace(instanceID)
+	if userID == "" || instanceID == "" {
+		return BotCrossNote{}, ErrInvalidInput
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.loadForUser(ctx, tenantID, userID)
+	if err != nil {
+		return BotCrossNote{}, err
+	}
+	rec.CrossNotes = pruneCrossNotes(rec.CrossNotes, s.now())
+	from := ""
+	for _, bot := range botsOwnedBy(rec.Bots, userID) {
+		if strings.TrimSpace(bot.InstanceID) == instanceID {
+			from = bot.ID
+			break
+		}
+	}
+	if from == "" {
+		return BotCrossNote{}, ErrNotFound
+	}
+	// A target given by name resolves to that bot's id.
+	if t := strings.TrimSpace(in.Target); t != "" && !botOwned(rec.Bots, userID, t) {
+		for _, bot := range botsOwnedBy(rec.Bots, userID) {
+			if strings.EqualFold(strings.TrimSpace(bot.Name), t) {
+				in.Target = bot.ID
+				break
+			}
+		}
+	}
+	note, changed, err := s.reportLocked(&rec, userID, from, in)
+	if err != nil || !changed {
+		return note, err
+	}
+	if err := s.save(ctx, tenantID, rec); err != nil {
+		return BotCrossNote{}, err
+	}
+	return note, nil
 }
 
 // ListBotCrossNotes returns this user's notes that are still inside the
@@ -380,6 +529,32 @@ func capCrossNotes(notes []BotCrossNote, userID string) []BotCrossNote {
 			continue
 		}
 		out = append(out, note)
+	}
+	return out
+}
+
+// reportNoteCap keeps reports from crowding delegate notes out of the
+// account's note cap: past it the oldest reports go first.
+const reportNoteCap = 20
+
+func capReportNotes(notes []BotCrossNote, userID string) []BotCrossNote {
+	count := 0
+	for _, n := range notes {
+		if n.Owner == userID && n.Kind == "report" {
+			count++
+		}
+	}
+	drop := count - reportNoteCap
+	if drop <= 0 {
+		return notes
+	}
+	out := make([]BotCrossNote, 0, len(notes)-drop)
+	for _, n := range notes {
+		if drop > 0 && n.Owner == userID && n.Kind == "report" {
+			drop--
+			continue
+		}
+		out = append(out, n)
 	}
 	return out
 }

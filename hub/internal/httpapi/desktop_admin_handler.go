@@ -527,6 +527,53 @@ func PostDesktopHoldHandler(bots *botmgmt.Service) http.HandlerFunc {
 	}
 }
 
+// PostDesktopNotifyHandler POST /api/v1/desktop-services/notify: a desktop
+// run on MaClawSrv reports to the account's main bot (or a peer bot). The
+// bot is the one bound to instance_id; Hub dedupes and rate-limits.
+func PostDesktopNotifyHandler(bots *botmgmt.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if bots == nil {
+			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "desktop service store is unavailable")
+			return
+		}
+		if !authorizeDesktopAPI(w, r) {
+			return
+		}
+		var in struct {
+			TenantID   string   `json:"tenant_id"`
+			UserID     string   `json:"user_id"`
+			InstanceID string   `json:"instance_id"`
+			RunID      string   `json:"run_id"`
+			Target     string   `json:"target"`
+			Kind       string   `json:"kind"`
+			Text       string   `json:"text"`
+			Artifacts  []string `json:"artifacts"`
+			ReplyTo    string   `json:"reply_to"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid notify request")
+			return
+		}
+		note, err := bots.PostBotReportFromInstance(r.Context(), in.TenantID, in.UserID, in.InstanceID, botmgmt.BotCrossNote{
+			Target: in.Target, Topic: in.Kind, Text: in.Text, Artifacts: in.Artifacts, RunID: in.RunID, ReplyTo: in.ReplyTo,
+		})
+		if err != nil {
+			switch {
+			case errors.Is(err, botmgmt.ErrInvalidInput):
+				writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "instance, user and text are required")
+			case errors.Is(err, botmgmt.ErrNotFound), errors.Is(err, botmgmt.ErrNoSuchBot):
+				writeError(w, http.StatusNotFound, "BOT_NOT_FOUND", "no such bot")
+			case errors.Is(err, botmgmt.ErrRateLimited):
+				writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", err.Error())
+			default:
+				writeError(w, http.StatusBadGateway, "DOCKER_SERVICE_REQUEST_FAILED", "notify failed")
+			}
+			return
+		}
+		writeJSON(w, http.StatusOK, note)
+	}
+}
+
 // PostDesktopAppHandler forwards an app command from MaClawSrv to the user's Docker service.
 func PostDesktopAppHandler(pool *desktoppool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

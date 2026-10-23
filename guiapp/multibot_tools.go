@@ -157,6 +157,17 @@ func (mb *multiBot) toolSendToBot(args map[string]interface{}) string {
 	}
 	ctx, cancel := mb.ctx()
 	defer cancel()
+	replyTo := mbArg(args, "reply_to")
+	if arts := mbList(args, "artifact_ids"); len(arts) > 0 {
+		text += "\n[files: " + strings.Join(arts, ", ") + " — ask the main bot to share them if you need them]"
+	}
+	wire := text
+	if replyTo != "" {
+		wire = "[re " + replyTo + "] " + text
+	}
+	if replyTo != "" && len(bots) != 1 {
+		return "error: reply_to answers one bot"
+	}
 	sent := []string{}
 	for _, b := range bots {
 		if b.ID == multiBotSelfID {
@@ -165,11 +176,19 @@ func (mb *multiBot) toolSendToBot(args map[string]interface{}) string {
 		if msg, ok := mb.confirmGate(b, botregistry.ActionNotify, text, mbBool(args, "confirm")); !ok {
 			return msg
 		}
+		// The bus is the loop guard: a reply chain or a burst between the
+		// main bot and one teammate stops here until the person speaks.
+		if _, err := mb.bus.Submit(botregistry.Message{From: multiBotSelfID, To: b.ID, Kind: botregistry.NormalizeKind(firstNonEmptyMB(mbArg(args, "kind"), map[bool]string{true: "reply", false: "info"}[replyTo != ""])), Text: text, ReplyTo: replyTo}); err != nil {
+			if errors.Is(err, botregistry.ErrDuplicate) {
+				return "already sent the same message to " + b.Name + " just now; not sent again"
+			}
+			return "not sent: " + err.Error() + ". Tell the person instead of continuing the back-and-forth."
+		}
 		relay, err := mb.hubRelay(ctx)
 		if err != nil {
 			return "error: " + err.Error()
 		}
-		if err := mb.hub.cross(ctx, relay, "notify", b.ID, text, ""); err != nil {
+		if err := mb.hub.cross(ctx, relay, "notify", b.ID, wire, ""); err != nil {
 			return "error: " + err.Error()
 		}
 		mb.reg.Notify(botregistry.EventMessage, b.ID, "main bot → "+b.Name+": "+text)
@@ -502,8 +521,8 @@ func registerMultiBotTools(registry *ToolRegistry, mb *multiBot) {
 		map[string]interface{}{"refresh": boolean("Force a fresh read from Hub")}, nil, mb.toolListBots)
 	add(toolGetBotStatus, "Live status of one bot: state, task, current/next step, run id, why it stopped, queue.",
 		map[string]interface{}{"bot": botArg}, []string{"bot"}, mb.toolGetBotStatus)
-	add(toolSendToBot, "Send a short message to another bot. It sees it at the start of its next turn; its current turn is not interrupted.",
-		map[string]interface{}{"bot": botArg, "text": str("The message"), "confirm": confirm}, []string{"bot", "text"}, mb.toolSendToBot)
+	add(toolSendToBot, "Send a short message to another bot, or answer a teammate message (pass reply_to=its id from the teammate-messages turn). It sees it at the start of its next turn; its current turn is not interrupted. Teammates message you the same way (their done/blocked/question/file reports wake you). Loops are capped: if a send is refused, tell the person instead.",
+		map[string]interface{}{"bot": botArg, "text": str("The message"), "kind": map[string]interface{}{"type": "string", "enum": []string{"info", "reply", "question", "done", "blocked", "artifact", "progress"}, "description": "Optional message kind (default info, or reply with reply_to)"}, "reply_to": str("Optional teammate message id this answers"), "artifact_ids": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional artifact ids to mention"}, "confirm": confirm}, []string{"bot", "text"}, mb.toolSendToBot)
 	add(toolAssignTask, "Hand a task to another bot (e.g. a remote desktop bot to publish in a browser). Optional files (artifact ids or local paths) are copied to its desktop first. Returns immediately; results arrive via bot_events. Do the parts that need this computer's files/shell yourself.",
 		map[string]interface{}{"bot": botArg, "task": str("What the bot should do, self-contained"), "note": str("Optional one-line note shown to that bot"), "artifact_ids": arr("Artifacts to send along"), "local_paths": arr("Local files to send along"), "confirm": confirm},
 		[]string{"bot", "task"}, mb.toolAssignTask)
