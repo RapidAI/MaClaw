@@ -38,3 +38,19 @@ func TestBatchDefaultAllowsFirstSingleAndProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestBatchDefaultScriptsFreeAndPerPage(t *testing.T) {
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u", RunID: "run_batch_def_3"}
+	desktopRunFor(scope)
+	for i := 0; i < 3; i++ {
+		if err := desktopBatchDefaultCheck(context.Background(), scope, "script"); err != nil {
+			t.Fatalf("script %d refused: %v", i, err)
+		}
+		desktopRecordBatchDefault(scope, "script", nil)
+	}
+	desktopRecordBatchDefault(scope, "click", nil)
+	desktopRecordBatchDefault(scope, "navigate", nil)
+	if err := desktopBatchDefaultCheck(context.Background(), scope, "click"); err != nil {
+		t.Fatalf("new page should get a fresh single: %v", err)
+	}
+}

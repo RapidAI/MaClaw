@@ -17,7 +17,10 @@ import (
 // skip this check. Stock Chromium only (CDP / page scripts / OS input).
 
 var desktopBatchMutating = map[string]bool{
-	"click": true, "type": true, "press": true, "rich_fill": true, "script": true, "computer": true,
+	"click": true, "type": true, "press": true, "rich_fill": true, "computer": true,
+	// script is not counted: one page script is already a batched unit
+	// (typically a read/extract), and refusing it pushed models into
+	// bash/file detours (RUN30).
 }
 
 func desktopInsideBatch(ctx context.Context) bool {
@@ -94,6 +97,10 @@ func desktopRecordBatchDefault(scope agentruntime.Scope, action string, err erro
 	p := st.progress
 	if action == "probe" && err == nil {
 		p.observed = true
+	}
+	if action == "navigate" && err == nil {
+		// singles are budgeted per page: a new page starts a new flow.
+		p.singleMutating = 0
 	}
 	if action == "batch" {
 		p.batchStarted = true
