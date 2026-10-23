@@ -77,7 +77,8 @@ func TestDesktopPagesStayVisibleWhenTheAttachedTabTimesOut(t *testing.T) {
 	t.Cleanup(func() { desktopOpenPages = previous })
 
 	text, err := withDesktopPages("", fmt.Errorf("cdp timeout: Runtime.evaluate (id=3)"), "http://desktop", "tab-b")
-	if err != nil || !strings.Contains(text, "YouTube") || !strings.Contains(text, "cdp timeout") || strings.Contains(text, "://secret") {
+	// A failed step is an error (never ok), and it still lists the pages.
+	if err == nil || text != "" || !strings.HasPrefix(err.Error(), "FAILED: cdp timeout") || !strings.Contains(err.Error(), "YouTube") || strings.Contains(err.Error(), "://secret") {
 		t.Fatalf("text=%q err=%v", text, err)
 	}
 

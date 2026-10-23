@@ -39,7 +39,7 @@ const desktopSessionOwner = "maclawsrv-desktop"
 // The desktop tool's action vocabulary is one list. Plan and execute advertise
 // that same list. The plan allow-list is only the phase gate: a mutating call
 // stays in the schema and returns the next-step sentence.
-var desktopExecuteActions = []string{"batch", "rich_fill", "navigate", "probe", "click", "type", "press", "task_run", "script", "upload", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover", "notify_main", "check_inbox", "delegate"}
+var desktopExecuteActions = []string{"batch", "rich_fill", "navigate", "probe", "click", "type", "press", "task_run", "script", "upload", "publish", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover", "notify_main", "check_inbox", "delegate"}
 
 var desktopPlanActions = []string{"probe", "screenshot", "app_list", "file_read", "file_list", "skill_list", "app_probe", "window_list", "screen_info", "clipboard_get", "wait", "notify_main", "check_inbox"}
 
@@ -106,6 +106,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			"To put that image on the desktop, set name to one file name ending in .png. The file is written to /home/desktop/Desktop and the result says Saved with that path. Without name, nothing is written. Do not invent a file path. " +
 			"After an app_run that clicks, types, or sends a key, the result includes one fresh unscaled desktop image. app_run click uses those pixels. " +
 			"Single browser actions navigate, click, type, and press remain available. " +
+			"Publishing a post/article on any site (editor page already open): ONE call action=publish with title=, body= (full text), files=[images] if the post needs them, submit_texts=[the exact publish button text] and verify_url= (a page where the new post is listed, if known). It uploads, fills title and body, reads them back, clicks publish (shadow DOM included), opens the result and verifies; each step has its own check and time budget. On failure it names the stuck step: fix only that parameter (e.g. title_selector, body_selector, upload_trigger) and call publish again; never re-fill by hand. " +
 			"File upload on any site: action=upload with files=[absolute paths] (and text= or ref= of the page's upload button when the file input only appears after a click). It sets the files on the page's file input over CDP (shadow DOM and frames included) and never opens the OS file chooser; use it instead of clicking an upload button and typing a path into a dialog. " +
 			"For non-browser windows: action=app_probe lists the accessible elements (role, name, states, bounds) of the focused window with numbered ids; app_run or computer steps then target {\"id\":N} (click, focus, set_text). marks=true adds a screenshot with those numbers drawn. " +
 			"action=computer runs a batch of computer-use actions (Anthropic or OpenAI names) and reports each step; it stops at the first failure. " +
@@ -121,53 +122,61 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":      map[string]any{"type": "string", "description": "probe, script, upload, skill_list, skill_run, task_run, app_list, app_run, app_open, install, screenshot, navigate, click, type, press, deliver, file_read, file_write, file_edit, file_list, bash, computer, app_probe, clipboard_get, clipboard_set, window_list, window, screen_info, wait, request_takeover, notify_main, check_inbox, or delegate", "enum": desktopExecuteActions},
-				"kind":        map[string]any{"type": "string", "description": "notify_main: done, blocked, progress, question, artifact, info, or reply.", "enum": []string{"done", "blocked", "progress", "question", "artifact", "info", "reply"}},
-				"message":     map[string]any{"type": "string", "description": "notify_main: one or two sentences for the main bot."},
-				"target":      map[string]any{"type": "string", "description": "notify_main: empty (the main bot) or another bot's name or id. delegate: the teammate bot's name or id."},
-				"paths":       map[string]any{"type": "array", "description": "notify_main: desktop file paths you hand over.", "items": map[string]any{"type": "string"}},
-				"reply_to":    map[string]any{"type": "string", "description": "notify_main: id of the message you answer."},
-				"reason":      map[string]any{"type": "string", "description": "request_takeover: one short sentence for the person, what they need to do on this desktop (log in, enter the 2FA code, solve the captcha)."},
-				"path":        map[string]any{"type": "string", "description": "Container path. file_read, file_write, file_edit, and file_list use it as the file. action=deliver attaches that existing file, such as /home/desktop/Desktop/北京天气.pdf. /home/desktop/Desktop/a.c and ~/Desktop/a.c are the same folder."},
-				"old_string":  map[string]any{"type": "string", "description": "Exact passage file_edit replaces. It must occur once."},
-				"new_string":  map[string]any{"type": "string", "description": "Replacement text for file_edit."},
-				"command":     map[string]any{"type": "string", "description": "Command for action=bash. It runs in this container and the result is its output."},
-				"program":     map[string]any{"type": "string", "description": "Program for action=app_open. One name or an absolute path, such as xfce4-terminal. Not a shell and not a browser."},
-				"args":        map[string]any{"type": "array", "description": "Arguments for action=app_open. Not a shell command.", "items": map[string]any{"type": "string"}},
-				"packages":    map[string]any{"type": "array", "description": "Debian package names for action=install, such as libreoffice", "items": map[string]any{"type": "string"}},
-				"name":        map[string]any{"type": "string", "description": "Download name for action=deliver. Any ordinary file name. When path is empty, the chat receives the text in content under this name. action=screenshot: ends in .png and is written to /home/desktop/Desktop. action=script stores the script under a kebab-case name, such as save-draft, when it succeeds. action=skill_run runs that saved script."},
-				"content":     map[string]any{"type": "string", "description": "Text for action=deliver when path is empty, or the full file text for action=file_write. A file already on the desktop uses path."},
-				"url":         map[string]any{"type": "string", "description": "URL for navigate"},
-				"ref":         map[string]any{"type": "string", "description": "Element ref from probe, such as e3"},
-				"snapshot_id": map[string]any{"type": "string", "description": "snapshot_id returned with the ref"},
-				"text":        map[string]any{"type": "string", "description": "Text for type, or visible text for click when ref is empty"},
-				"replace":     map[string]any{"type": "boolean", "description": "rich_fill: select all in the editor first so the text replaces it"},
-				"selector":    map[string]any{"type": "string", "description": "rich_fill: CSS selector of the field to fill when it is not the page's main editor, e.g. the title input (input/textarea/contenteditable)"},
-				"key":         map[string]any{"type": "string", "description": "Key for press"},
-				"query":       map[string]any{"type": "string", "description": "Optional probe filter. Leave it empty to list every control."},
-				"script":      map[string]any{"type": "string", "description": "Statements for action=script. click(\"保存\") or click(\"button.primary\") clicks. type(\"#q\", \"weather\") types. select(\"状态\", \"完成\") chooses an option. press(\"Enter\"), scroll(600), and waitFor(\"下一步\", 3000) run in the same script. Do not read cookies, storage, or passwords."},
-				"files":       map[string]any{"type": "array", "description": "upload: absolute file paths on the desktop to put into the page's file input", "items": map[string]any{"type": "string"}},
-				"plan":        map[string]any{"type": "array", "description": "batch: desktop steps run in order in one call, each an object with its own action (script, rich_fill, navigate, probe, click, type, press, wait) and that action's fields; stops at the first failure", "items": map[string]any{"type": "object"}},
-				"steps":       map[string]any{"type": "array", "description": "task_run or app_run steps. Browser step: {action, params:{url,ref,text,key}}. App step: {action, ...} with action focus{name|id}, type{text}, key{key, repeat}, click{x,y | id, button left|right|middle, clicks 1-3, modifiers \"ctrl+shift\"}, right_click, double_click, triple_click, middle_click, move{x,y}, mouse_down, mouse_up, drag{from_x,from_y,to_x,to_y}, scroll{x,y,direction up|down|left|right, amount}, cursor_position, wait{duration}, hold_key{key,duration}, paste{text} (clipboard + Ctrl+V, best for long or Chinese text), set_text{id,text}, screenshot, zoom{region:[x0,y0,x1,y1]}. x,y are pixels of the last screenshot.", "items": map[string]any{"type": "object"}},
-				"actions":     map[string]any{"type": "array", "description": "action=computer: a batch run in order that stops at the first failure. Each item is an Anthropic computer-use action ({action:left_click, coordinate:[x,y], text:modifiers}, left_click_drag with start_coordinate, scroll with scroll_direction/scroll_amount, key/hold_key with text, type, cursor_position, wait, screenshot, zoom with region), an OpenAI computer-use action ({type:click|double_click|scroll|type|keypress|wait|screenshot|move|drag, x, y, button, scroll_x, scroll_y, keys, path}), or an app_run step. A click may give target (words, e.g. \"the blue 发送 button\") instead of x,y as the first step of a batch: a grounding model places it when one is configured; otherwise give x,y.", "items": map[string]any{"type": "object"}},
-				"max_width":   map[string]any{"type": "integer", "description": "Ignored for full screenshots, which use one fixed size (MACLAW_DESKTOP_SHOT_WIDTH, default native). Kept for compatibility."},
-				"max_height":  map[string]any{"type": "integer", "description": "Like max_width for the height."},
-				"format":      map[string]any{"type": "string", "description": "Screenshot format: png (default), jpeg, or webp.", "enum": []string{"png", "jpeg", "webp"}},
-				"quality":     map[string]any{"type": "integer", "description": "jpeg/webp quality 1-100 (default 80)."},
-				"cursor":      map[string]any{"type": "boolean", "description": "Draw the mouse pointer on the screenshot."},
-				"marks":       map[string]any{"type": "boolean", "description": "app_probe or screenshot: draw numbered boxes of the last app_probe elements."},
-				"region":      map[string]any{"type": "array", "description": "action=screenshot zoom: [x0,y0,x1,y1] in pixels of the last full screenshot.", "items": map[string]any{"type": "number"}},
-				"window":      map[string]any{"type": "string", "description": "app_probe: focused (default), all, or part of a window title."},
-				"max_nodes":   map[string]any{"type": "integer", "description": "app_probe: most elements to list (default 120, at most 400)."},
-				"do":          map[string]any{"type": "string", "description": "action=window: activate, maximize, minimize, restore, move, resize, move_resize, or close."},
-				"window_id":   map[string]any{"type": "string", "description": "action=window: id from window_list. title also selects a window."},
-				"title":       map[string]any{"type": "string", "description": "action=window or wait: part of a window title."},
-				"x":           map[string]any{"type": "number", "description": "action=window move: left edge in screenshot pixels."},
-				"y":           map[string]any{"type": "number", "description": "action=window move: top edge in screenshot pixels."},
-				"width":       map[string]any{"type": "number", "description": "action=window resize: width in screenshot pixels."},
-				"height":      map[string]any{"type": "number", "description": "action=window resize: height in screenshot pixels."},
-				"for":         map[string]any{"type": "string", "description": "action=wait: change (the screen changes) or window (a window with title appears; gone=true waits for it to close)."},
-				"timeout":     map[string]any{"type": "number", "description": "action=wait: seconds, at most 60."},
+				"action":          map[string]any{"type": "string", "description": "probe, script, upload, skill_list, skill_run, task_run, app_list, app_run, app_open, install, screenshot, navigate, click, type, press, deliver, file_read, file_write, file_edit, file_list, bash, computer, app_probe, clipboard_get, clipboard_set, window_list, window, screen_info, wait, request_takeover, notify_main, check_inbox, or delegate", "enum": desktopExecuteActions},
+				"kind":            map[string]any{"type": "string", "description": "notify_main: done, blocked, progress, question, artifact, info, or reply.", "enum": []string{"done", "blocked", "progress", "question", "artifact", "info", "reply"}},
+				"message":         map[string]any{"type": "string", "description": "notify_main: one or two sentences for the main bot."},
+				"target":          map[string]any{"type": "string", "description": "notify_main: empty (the main bot) or another bot's name or id. delegate: the teammate bot's name or id."},
+				"paths":           map[string]any{"type": "array", "description": "notify_main: desktop file paths you hand over.", "items": map[string]any{"type": "string"}},
+				"reply_to":        map[string]any{"type": "string", "description": "notify_main: id of the message you answer."},
+				"reason":          map[string]any{"type": "string", "description": "request_takeover: one short sentence for the person, what they need to do on this desktop (log in, enter the 2FA code, solve the captcha)."},
+				"path":            map[string]any{"type": "string", "description": "Container path. file_read, file_write, file_edit, and file_list use it as the file. action=deliver attaches that existing file, such as /home/desktop/Desktop/北京天气.pdf. /home/desktop/Desktop/a.c and ~/Desktop/a.c are the same folder."},
+				"old_string":      map[string]any{"type": "string", "description": "Exact passage file_edit replaces. It must occur once."},
+				"new_string":      map[string]any{"type": "string", "description": "Replacement text for file_edit."},
+				"command":         map[string]any{"type": "string", "description": "Command for action=bash. It runs in this container and the result is its output."},
+				"program":         map[string]any{"type": "string", "description": "Program for action=app_open. One name or an absolute path, such as xfce4-terminal. Not a shell and not a browser."},
+				"args":            map[string]any{"type": "array", "description": "Arguments for action=app_open. Not a shell command.", "items": map[string]any{"type": "string"}},
+				"packages":        map[string]any{"type": "array", "description": "Debian package names for action=install, such as libreoffice", "items": map[string]any{"type": "string"}},
+				"name":            map[string]any{"type": "string", "description": "Download name for action=deliver. Any ordinary file name. When path is empty, the chat receives the text in content under this name. action=screenshot: ends in .png and is written to /home/desktop/Desktop. action=script stores the script under a kebab-case name, such as save-draft, when it succeeds. action=skill_run runs that saved script."},
+				"content":         map[string]any{"type": "string", "description": "Text for action=deliver when path is empty, or the full file text for action=file_write. A file already on the desktop uses path."},
+				"url":             map[string]any{"type": "string", "description": "URL for navigate"},
+				"ref":             map[string]any{"type": "string", "description": "Element ref from probe, such as e3"},
+				"snapshot_id":     map[string]any{"type": "string", "description": "snapshot_id returned with the ref"},
+				"text":            map[string]any{"type": "string", "description": "Text for type, or visible text for click when ref is empty"},
+				"replace":         map[string]any{"type": "boolean", "description": "rich_fill: select all in the editor first so the text replaces it"},
+				"selector":        map[string]any{"type": "string", "description": "rich_fill: CSS selector of the field to fill when it is not the page's main editor, e.g. the title input (input/textarea/contenteditable)"},
+				"key":             map[string]any{"type": "string", "description": "Key for press"},
+				"query":           map[string]any{"type": "string", "description": "Optional probe filter. Leave it empty to list every control."},
+				"script":          map[string]any{"type": "string", "description": "Statements for action=script. click(\"保存\") or click(\"button.primary\") clicks. type(\"#q\", \"weather\") types. select(\"状态\", \"完成\") chooses an option. press(\"Enter\"), scroll(600), and waitFor(\"下一步\", 3000) run in the same script. Do not read cookies, storage, or passwords."},
+				"files":           map[string]any{"type": "array", "description": "upload: absolute file paths on the desktop to put into the page's file input", "items": map[string]any{"type": "string"}},
+				"body":            map[string]any{"type": "string", "description": "publish: full body text (lines become paragraphs)"},
+				"title_selector":  map[string]any{"type": "string", "description": "publish: CSS selector of the title field if not auto-found"},
+				"body_selector":   map[string]any{"type": "string", "description": "publish: CSS selector of the body editor if not auto-found"},
+				"upload_selector": map[string]any{"type": "string", "description": "publish: CSS selector of the file input"},
+				"upload_trigger":  map[string]any{"type": "string", "description": "publish: visible text of the upload button when there is no file input yet"},
+				"submit_texts":    map[string]any{"type": "array", "description": "publish: exact text of the publish button(s), e.g. [\"发布\"]", "items": map[string]any{"type": "string"}},
+				"confirm_texts":   map[string]any{"type": "array", "description": "publish: exact text of a second confirm button if the site asks", "items": map[string]any{"type": "string"}},
+				"verify_url":      map[string]any{"type": "string", "description": "publish: page to open after submit where the new post must be listed"},
+				"plan":            map[string]any{"type": "array", "description": "batch: desktop steps run in order in one call, each an object with its own action (script, rich_fill, navigate, probe, click, type, press, wait) and that action's fields; stops at the first failure", "items": map[string]any{"type": "object"}},
+				"steps":           map[string]any{"type": "array", "description": "task_run or app_run steps. Browser step: {action, params:{url,ref,text,key}}. App step: {action, ...} with action focus{name|id}, type{text}, key{key, repeat}, click{x,y | id, button left|right|middle, clicks 1-3, modifiers \"ctrl+shift\"}, right_click, double_click, triple_click, middle_click, move{x,y}, mouse_down, mouse_up, drag{from_x,from_y,to_x,to_y}, scroll{x,y,direction up|down|left|right, amount}, cursor_position, wait{duration}, hold_key{key,duration}, paste{text} (clipboard + Ctrl+V, best for long or Chinese text), set_text{id,text}, screenshot, zoom{region:[x0,y0,x1,y1]}. x,y are pixels of the last screenshot.", "items": map[string]any{"type": "object"}},
+				"actions":         map[string]any{"type": "array", "description": "action=computer: a batch run in order that stops at the first failure. Each item is an Anthropic computer-use action ({action:left_click, coordinate:[x,y], text:modifiers}, left_click_drag with start_coordinate, scroll with scroll_direction/scroll_amount, key/hold_key with text, type, cursor_position, wait, screenshot, zoom with region), an OpenAI computer-use action ({type:click|double_click|scroll|type|keypress|wait|screenshot|move|drag, x, y, button, scroll_x, scroll_y, keys, path}), or an app_run step. A click may give target (words, e.g. \"the blue 发送 button\") instead of x,y as the first step of a batch: a grounding model places it when one is configured; otherwise give x,y.", "items": map[string]any{"type": "object"}},
+				"max_width":       map[string]any{"type": "integer", "description": "Ignored for full screenshots, which use one fixed size (MACLAW_DESKTOP_SHOT_WIDTH, default native). Kept for compatibility."},
+				"max_height":      map[string]any{"type": "integer", "description": "Like max_width for the height."},
+				"format":          map[string]any{"type": "string", "description": "Screenshot format: png (default), jpeg, or webp.", "enum": []string{"png", "jpeg", "webp"}},
+				"quality":         map[string]any{"type": "integer", "description": "jpeg/webp quality 1-100 (default 80)."},
+				"cursor":          map[string]any{"type": "boolean", "description": "Draw the mouse pointer on the screenshot."},
+				"marks":           map[string]any{"type": "boolean", "description": "app_probe or screenshot: draw numbered boxes of the last app_probe elements."},
+				"region":          map[string]any{"type": "array", "description": "action=screenshot zoom: [x0,y0,x1,y1] in pixels of the last full screenshot.", "items": map[string]any{"type": "number"}},
+				"window":          map[string]any{"type": "string", "description": "app_probe: focused (default), all, or part of a window title."},
+				"max_nodes":       map[string]any{"type": "integer", "description": "app_probe: most elements to list (default 120, at most 400)."},
+				"do":              map[string]any{"type": "string", "description": "action=window: activate, maximize, minimize, restore, move, resize, move_resize, or close."},
+				"window_id":       map[string]any{"type": "string", "description": "action=window: id from window_list. title also selects a window."},
+				"title":           map[string]any{"type": "string", "description": "action=window or wait: part of a window title. publish: the full post title."},
+				"x":               map[string]any{"type": "number", "description": "action=window move: left edge in screenshot pixels."},
+				"y":               map[string]any{"type": "number", "description": "action=window move: top edge in screenshot pixels."},
+				"width":           map[string]any{"type": "number", "description": "action=window resize: width in screenshot pixels."},
+				"height":          map[string]any{"type": "number", "description": "action=window resize: height in screenshot pixels."},
+				"for":             map[string]any{"type": "string", "description": "action=wait: change (the screen changes) or window (a window with title appears; gone=true waits for it to close)."},
+				"timeout":         map[string]any{"type": "number", "description": "action=wait: seconds, at most 60."},
 			},
 			"required": []string{"action"},
 		},
@@ -923,6 +932,9 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		defer beginDesktopActivity(scope.RunID, "正在上传文件")()
 		text, err = desktopUpload(session, args)
 		text, err = withDesktopPages(text, err, endpoint.CDP, session.TargetID)
+	case "publish":
+		defer beginDesktopActivity(scope.RunID, "正在发布")()
+		text, err = desktopPublish(session, args)
 	case "skill_run":
 		defer beginDesktopActivity(scope.RunID, "正在操作网页")()
 		result, callErr := browser.RunSavedPageScript(session, userKey, desktopArg(args, "name"), desktopBrowserSkillRoot)
@@ -1802,7 +1814,8 @@ func withDesktopPagesPlain(text string, err error, addr, attachedID string) (str
 		if note != "" {
 			pages += "\nThe attached page did not answer: " + note
 		}
-		return pages, nil
+		// Never fold a failure into an ok result: the step did not happen.
+		return "", fmt.Errorf("FAILED: %s\n%s", desktopStepClip(err.Error(), 300), strings.TrimSpace(pages))
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
