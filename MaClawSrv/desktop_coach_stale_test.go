@@ -92,3 +92,23 @@ func TestNavigateClearsPageBoundBlocks(t *testing.T) {
 		t.Fatalf("script still blocked after navigate: %v", err)
 	}
 }
+
+func TestAfterPublishRefusesUnaskedDeliver(t *testing.T) {
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u", RunID: "run_deliver_guard"}
+	if err := desktopAfterPublishDeliverCheck(scope, "x"); err != nil {
+		t.Fatalf("before publish: %v", err)
+	}
+	st, p := desktopProgressFor(scope)
+	if st == nil {
+		t.Skip("no run state")
+	}
+	st.mu.Lock()
+	p.publishSeen = true
+	st.mu.Unlock()
+	if err := desktopAfterPublishDeliverCheck(scope, "做10.18的 Hugging Face Daily Papers 摘要，发到知乎上"); err == nil {
+		t.Fatal("unasked deliver after publish must be refused")
+	}
+	if err := desktopAfterPublishDeliverCheck(scope, "发到知乎上，再给我一个 docx 文件"); err != nil {
+		t.Fatalf("asked file must pass: %v", err)
+	}
+}

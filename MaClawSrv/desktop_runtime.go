@@ -238,6 +238,9 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	if npErr == nil {
 		npErr = desktopAfterPublishCheck(desktopOwner(scope), actionName, args)
 	}
+	if npErr == nil && actionName == "deliver" {
+		npErr = desktopAfterPublishDeliverCheck(desktopOwner(scope), desktopMessageText(request))
+	}
 	if npErr != nil {
 		desktopEmitStep(scope, desktopOwner(scope), args, desktopModelLabel(request), "", npErr, 0, "guard")
 		return "", npErr
@@ -3579,4 +3582,16 @@ func desktopPlanSummary(out string) string {
 		out = string(r[:300]) + "…"
 	}
 	return out
+}
+
+func desktopMessageText(request agentruntime.TurnRequest) string {
+	switch input := request.Input.(type) {
+	case agentservice.ExecuteRequest:
+		return input.Message.Content
+	case *agentservice.ExecuteRequest:
+		if input != nil {
+			return input.Message.Content
+		}
+	}
+	return ""
 }

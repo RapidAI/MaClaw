@@ -360,3 +360,22 @@ ed.scrollIntoView({block: 'center'});
 ed.focus();
 const ae = document.activeElement;
 return (ae === ed || ed.contains(ae)) ? 'RICH_FOCUSED' : 'RICH_NOFOCUS';`
+
+// desktopAskedForFileRe matches a request that wants a file back.
+var desktopAskedForFileRe = regexp.MustCompile(`(?i)(文件|文档|附件|下载|导出|docx|\bword\b|pdf|markdown|\.md\b|\bfile\b|document|attach|export|download)`)
+
+// desktopAfterPublishDeliverCheck refuses an unasked file once the article is
+// published: the published link is the result.
+func desktopAfterPublishDeliverCheck(scope agentruntime.Scope, request string) error {
+	st, p := desktopProgressFor(scope)
+	if st == nil {
+		return nil
+	}
+	st.mu.Lock()
+	done := p.publishSeen
+	st.mu.Unlock()
+	if !done || strings.TrimSpace(request) == "" || desktopAskedForFileRe.MatchString(request) {
+		return nil
+	}
+	return fmt.Errorf("refused: already_published — the request did not ask for a file; the published link is the result. Give the final answer now (title, /p/<id> link, date used) with no attachment")
+}
