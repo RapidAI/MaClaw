@@ -185,7 +185,12 @@ type dispatchJob struct {
 // wait for the person to confirm and are never started by Hub.
 var dispatchInstallWord = regexp.MustCompile(`\b(install|reinstall)\b`)
 
+// dispatchNegated matches a clause that forbids something ("do not ...
+// delete anything", "不要删除"); such clauses are guardrails, not orders.
+var dispatchNegated = regexp.MustCompile(`(?i)(\bdo not\b|\bdon't\b|\bnever\b|\bmust not\b|\bwithout\b|不要|不得|禁止|别|勿|不准)[^.。;；!！?？\n]*`)
+
 func dispatchDestructive(text string) bool {
+	text = dispatchNegated.ReplaceAllString(text, " ")
 	for _, w := range []string{"安装", "卸载", "刪除", "删除", "付款", "支付", "代发", "代發", "清空"} {
 		if strings.Contains(text, w) {
 			return true
