@@ -285,7 +285,7 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	desktopRecordBatchDefault(desktopOwner(scope), actionName, err)
 	coach := desktopProgressNote(desktopOwner(scope), actionName, out, err)
 	if err == nil {
-		out = spillDesktopToolText(ctx, scope, out)
+		out = spillDesktopToolText(ctx, scope, out, actionName)
 		out += repeatWarn + failWarn + coach
 	} else if failWarn != "" {
 		err = fmt.Errorf("%w%s", err, failWarn)
@@ -298,8 +298,8 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 // spillDesktopToolText writes a long desktop result into the container and
 // leaves the path plus one line in the conversation. A failed write keeps the
 // original text. The executor then sees a short string and does not spill again.
-func spillDesktopToolText(ctx context.Context, scope agentruntime.Scope, body string) string {
-	if utf8.RuneCountInString(body) <= desktopbot.ToolResultSpillRunes {
+func spillDesktopToolText(ctx context.Context, scope agentruntime.Scope, body string, action string) string {
+	if utf8.RuneCountInString(body) <= desktopSpillLimit(action) {
 		return body
 	}
 	// A deliver record stays whole in the conversation: the outcome check
@@ -324,6 +324,19 @@ func spillDesktopToolText(ctx context.Context, scope agentruntime.Scope, body st
 		return body
 	}
 	return desktopbot.ToolResultShown(path, body)
+}
+
+// desktopSpillLimit: gathered material (bash/file_read/script output) stays
+// inline up to a larger cap. With the 4000-rune cap a 8 KB source dump was
+// spilled to a file, and reading that file spilled again, so the model paged
+// it with head/sed/file_read for many steps (RUN30/RUN31). Screen/page
+// results keep the small cap.
+func desktopSpillLimit(action string) int {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "bash", "file_read", "script":
+		return desktopbot.ToolResultSpillRunes * 6
+	}
+	return desktopbot.ToolResultSpillRunes
 }
 
 func truncateDesktopSpill(s string, max int) string {

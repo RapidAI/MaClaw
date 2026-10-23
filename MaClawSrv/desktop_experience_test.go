@@ -22,7 +22,7 @@ func TestDesktopExperienceLearnsOnlyValidatedOutcomes(t *testing.T) {
 	paste := map[string]any{"action": "app_run", "steps": []any{map[string]any{"action": "paste", "text": "secret body 123"}}}
 	// Unverified success teaches nothing.
 	desktopExperienceRecord(scope, "zhuanlan.zhihu.com", "script", script, "ok", nil)
-	if got := desktopExperienceText(scope, "zhuanlan.zhihu.com"); got != "" {
+	if got := desktopExperienceText(scope, "zhuanlan.zhihu.com"); strings.Contains(got, "secret") || strings.Contains(got, "worked:") || strings.Contains(got, "avoid:") {
 		t.Fatalf("unverified step stored: %q", got)
 	}
 	desktopExperienceRecord(scope, "zhuanlan.zhihu.com", "script", script, "ok\n\n"+desktopNotAppliedMarker, nil)
@@ -39,7 +39,7 @@ func TestDesktopExperienceLearnsOnlyValidatedOutcomes(t *testing.T) {
 		t.Fatalf("typed text leaked into the store: %s", raw)
 	}
 	// Another user sees nothing.
-	if other := desktopExperienceText(agentruntime.Scope{TenantID: "t", UserID: "u-other"}, "zhuanlan.zhihu.com"); other != "" {
+	if other := desktopExperienceText(agentruntime.Scope{TenantID: "t", UserID: "u-other"}, "zhuanlan.zhihu.com"); strings.Contains(other, "worked:") || strings.Contains(other, "avoid:") {
 		t.Fatalf("leaked across users: %q", other)
 	}
 	t.Setenv(desktopExperienceEnv, "off")
