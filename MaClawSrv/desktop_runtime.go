@@ -2526,6 +2526,12 @@ func runGuardedDesktopAppSteps(steps [][]string, beforeInsert func() error, brow
 			// No window is waiting to be focused, and the active window was
 			// not recorded. The class cannot show that the keystrokes leave
 			// the browser, so the read's error stops the type before any key.
+			if insertErr != nil && desktopRaiseFileDialog(run) && desktopFocusedWindowOutsideBrowser(run) {
+				// The refusal read the page behind an open native file
+				// chooser; the text goes to that dialog (a path), raised now.
+				insertErr = nil
+				focusPending, restoreID = false, ""
+			}
 			if insertErr != nil && !focusPending && restoreID == "" {
 				return "", insertErr
 			}
@@ -3704,3 +3710,27 @@ func desktopTurnTask(request agentruntime.TurnRequest) string {
 	}
 	return ""
 }
+
+// desktopRaiseFileDialog: a browser's native file chooser is a separate
+// window that is often not the focused one (XHS-3: Chromium stayed active,
+// so the password read of the page refused the path as a password). When
+// such a dialog is open and this app_run types, raise it first; the
+// class+title rule then knows the text goes to a file dialog, not a page.
+func desktopRaiseFileDialog(run func(...string) (string, error)) bool {
+	if run == nil {
+		return false
+	}
+	out, err := run("search", "--onlyvisible", "--name", desktopFileDialogSearchPattern)
+	if err != nil {
+		return false
+	}
+	for _, id := range strings.Fields(out) {
+		if _, convErr := strconv.ParseUint(id, 10, 64); convErr == nil {
+			_, aerr := run("windowactivate", "--sync", id)
+			return aerr == nil
+		}
+	}
+	return false
+}
+
+const desktopFileDialogSearchPattern = `^(Open|Open Files?|Save|Save Files?|Save As|Select Files?|Choose Files?|File Upload|Upload Files?|打开|打开文件|保存|保存文件|另存为|选择文件|上传文件)$`
