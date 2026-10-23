@@ -44,3 +44,24 @@ func TestDesktopNotifyMainPostsReportAndCapsPerRun(t *testing.T) {
 		t.Fatal("empty message must fail")
 	}
 }
+
+func TestDesktopInboxTextReadsAndAcksHubMailbox(t *testing.T) {
+	var calls []map[string]any
+	desktopRemoteInbox = func(_ context.Context, body map[string]any) ([]map[string]any, error) {
+		calls = append(calls, body)
+		if body["ack"] != nil {
+			return nil, nil
+		}
+		return []map[string]any{{"id": "note_9", "from": "bot_main", "kind": "report", "topic": "reply", "text": "用第一个标题"}}, nil
+	}
+	defer func() { desktopRemoteInbox = nil }()
+	inst := agentservice.Instance{ID: "inst_pub", Metadata: map[string]string{"hub_user_id": "alice"}}
+	req := agentruntime.TurnRequest{Input: agentservice.ExecuteRequest{Instance: inst}}
+	text := desktopInboxText(context.Background(), req)
+	if !strings.Contains(text, "id=note_9") || !strings.Contains(text, "用第一个标题") || !strings.Contains(text, "kind=reply") {
+		t.Fatalf("text = %q", text)
+	}
+	if len(calls) != 2 || calls[1]["ack"].([]string)[0] != "note_9" || calls[0]["instance_id"] != "inst_pub" {
+		t.Fatalf("calls = %#v", calls)
+	}
+}

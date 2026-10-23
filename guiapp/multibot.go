@@ -64,13 +64,12 @@ type multiBot struct {
 	stopWatch   chan struct{}
 
 	// bus and inbox carry teammate messages to the main bot (multibot_messages.go).
-	bus       *botregistry.Bus
-	inbox     *botregistry.Inbox
-	seenNotes map[string]bool
-	notesInit bool
-	wakeBuf   []botregistry.Message
-	wakeTimer *time.Timer
-	lastNotes time.Time
+	bus        *botregistry.Bus
+	inbox      *botregistry.Inbox
+	pendingAck []string
+	wakeBuf    []botregistry.Message
+	wakeTimer  *time.Timer
+	lastNotes  time.Time
 }
 
 var multiBots sync.Map // *App -> *multiBot

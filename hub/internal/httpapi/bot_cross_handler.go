@@ -131,3 +131,36 @@ func PostBotCrossRunHandler(svc *botmgmt.Service, identity botAuthenticator) htt
 		writeJSON(w, http.StatusOK, note)
 	}
 }
+
+// BotMailboxHandler GET|POST /api/v1/bots/{id}/inbox — the bot's durable Hub
+// mailbox ({id} may be "main"). POST {"ack":[ids],"all":false} marks ids
+// taken and returns what is still unacked; GET only reads.
+func BotMailboxHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		var in struct {
+			Ack []string `json:"ack"`
+			All bool     `json:"all"`
+		}
+		if r.Method == http.MethodPost {
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&in); err != nil {
+				writeError(w, http.StatusBadRequest, "INVALID_INPUT", "invalid inbox request")
+				return
+			}
+		} else {
+			in.All = r.URL.Query().Get("all") == "1"
+		}
+		items, err := svc.BotMailbox(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.Ack, in.All)
+		if err != nil {
+			writeBotUserError(w, r, principal, err, "")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}

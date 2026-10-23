@@ -574,6 +574,43 @@ func PostDesktopNotifyHandler(bots *botmgmt.Service) http.HandlerFunc {
 	}
 }
 
+// PostDesktopInboxHandler lets a MaClawSrv run read its bot's Hub mailbox:
+// {tenant_id,user_id,instance_id,ack:[ids]} acks ids and returns the rest.
+func PostDesktopInboxHandler(bots *botmgmt.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if bots == nil {
+			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "desktop service store is unavailable")
+			return
+		}
+		if !authorizeDesktopAPI(w, r) {
+			return
+		}
+		var in struct {
+			TenantID   string   `json:"tenant_id"`
+			UserID     string   `json:"user_id"`
+			InstanceID string   `json:"instance_id"`
+			Ack        []string `json:"ack"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid inbox request")
+			return
+		}
+		items, err := bots.BotMailboxForInstance(r.Context(), in.TenantID, in.UserID, in.InstanceID, in.Ack)
+		if err != nil {
+			switch {
+			case errors.Is(err, botmgmt.ErrInvalidInput):
+				writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "instance and user are required")
+			case errors.Is(err, botmgmt.ErrNotFound), errors.Is(err, botmgmt.ErrNoSuchBot):
+				writeError(w, http.StatusNotFound, "BOT_NOT_FOUND", "no such bot")
+			default:
+				writeError(w, http.StatusBadGateway, "DOCKER_SERVICE_REQUEST_FAILED", "inbox failed")
+			}
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
 // PostDesktopAppHandler forwards an app command from MaClawSrv to the user's Docker service.
 func PostDesktopAppHandler(pool *desktoppool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

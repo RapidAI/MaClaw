@@ -39,9 +39,9 @@ const desktopSessionOwner = "maclawsrv-desktop"
 // The desktop tool's action vocabulary is one list. Plan and execute advertise
 // that same list. The plan allow-list is only the phase gate: a mutating call
 // stays in the schema and returns the next-step sentence.
-var desktopExecuteActions = []string{"batch", "rich_fill", "navigate", "probe", "click", "type", "press", "task_run", "script", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover", "notify_main"}
+var desktopExecuteActions = []string{"batch", "rich_fill", "navigate", "probe", "click", "type", "press", "task_run", "script", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover", "notify_main", "check_inbox"}
 
-var desktopPlanActions = []string{"probe", "screenshot", "app_list", "file_read", "file_list", "skill_list", "app_probe", "window_list", "screen_info", "clipboard_get", "wait", "notify_main"}
+var desktopPlanActions = []string{"probe", "screenshot", "app_list", "file_read", "file_list", "skill_list", "app_probe", "window_list", "screen_info", "clipboard_get", "wait", "notify_main", "check_inbox"}
 
 func desktopActionAllowed(action string) bool {
 	for _, allowed := range desktopExecuteActions {
@@ -116,11 +116,11 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			desktopAXFirstPrompt() +
 			"Rich-text editors (Zhihu, WeChat, Xiaohongshu, Draft.js/ProseMirror boxes): script- or DOM-set text and synthetic paste are often ignored. Click inside the editor first, put the text on the clipboard with clipboard_set, then paste with a real key event (app_run steps [click{x,y}, key{key:\"ctrl+v\"}] or paste{text}), then check that the text shows and that the publish (发布) button is enabled. If the same method fails twice, switch to another method instead of retrying it. " +
 			"When a site needs a login, password, 2FA/SMS code, or a captcha, do not try to get past it yourself: call action=request_takeover with reason, then stop and end your turn, telling the person what to do on the desktop and to press hand back (交还) when done. You resume after the hand back. " +
-			"action=notify_main with kind and message tells the account's main bot (or target, another bot) something mid-task: a milestone (progress), a question, being blocked, a file ready (artifact, with paths), or done. It does not end your turn and does not wait for an answer; keep working. Use it sparingly: at most a few per task, never to acknowledge.",
+			"action=notify_main with kind and message tells the account's main bot (or target, another bot) something mid-task: a milestone (progress), a question, being blocked, a file ready (artifact, with paths), or done. It does not end your turn and does not wait for an answer; keep working. Use it sparingly: at most a few per task, never to acknowledge. action=check_inbox reads new messages other bots left for you on Hub (answers to your question, new instructions); messages that arrived before this turn are already in the instructions.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":      map[string]any{"type": "string", "description": "probe, script, skill_list, skill_run, task_run, app_list, app_run, app_open, install, screenshot, navigate, click, type, press, deliver, file_read, file_write, file_edit, file_list, bash, computer, app_probe, clipboard_get, clipboard_set, window_list, window, screen_info, wait, request_takeover, or notify_main", "enum": desktopExecuteActions},
+				"action":      map[string]any{"type": "string", "description": "probe, script, skill_list, skill_run, task_run, app_list, app_run, app_open, install, screenshot, navigate, click, type, press, deliver, file_read, file_write, file_edit, file_list, bash, computer, app_probe, clipboard_get, clipboard_set, window_list, window, screen_info, wait, request_takeover, notify_main, or check_inbox", "enum": desktopExecuteActions},
 				"kind":        map[string]any{"type": "string", "description": "notify_main: done, blocked, progress, question, artifact, info, or reply.", "enum": []string{"done", "blocked", "progress", "question", "artifact", "info", "reply"}},
 				"message":     map[string]any{"type": "string", "description": "notify_main: one or two sentences for the main bot."},
 				"target":      map[string]any{"type": "string", "description": "notify_main: empty (the main bot) or another bot's name or id."},
@@ -194,6 +194,12 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	}
 	if strings.EqualFold(strings.TrimSpace(desktopArg(args, "action")), "notify_main") {
 		return desktopNotifyMain(ctx, request, args)
+	}
+	if strings.EqualFold(strings.TrimSpace(desktopArg(args, "action")), "check_inbox") {
+		if text := desktopInboxText(ctx, request); text != "" {
+			return text, nil
+		}
+		return "No new messages from other bots.", nil
 	}
 	if strings.EqualFold(strings.TrimSpace(desktopArg(args, "action")), "batch") {
 		ctx = context.WithValue(ctx, desktopInsideBatchKey{}, true)
@@ -331,7 +337,7 @@ func truncateDesktopSpill(s string, max int) string {
 	return s[:cut]
 }
 
-func (desktopRuntimeModule) ContributePrompt(_ context.Context, request agentruntime.TurnRequest) (string, error) {
+func (desktopRuntimeModule) ContributePrompt(ctx context.Context, request agentruntime.TurnRequest) (string, error) {
 	if !desktopAvailable() || !desktopTurnUsesContainer(request) {
 		return "", nil
 	}
@@ -359,6 +365,7 @@ func (desktopRuntimeModule) ContributePrompt(_ context.Context, request agentrun
 	if scope, _, err := desktopScopeForTurn(request); err == nil {
 		prompt += desktopExperienceText(scope, "")
 	}
+	prompt += desktopInboxText(ctx, request)
 	return prompt +
 		"Carry out the arrangement. Return three conclusion lines and one file path. Do not write the person's chat reply. " +
 		"When the user asked for a file, action=deliver. A file already on this desktop, including a pdf, uses path, and the chat receives that file. name and content send the supplied text under that name. A name ending in .docx is a Word file built from that text. Say that it is attached to this message, or say what failed. Do not ask the user to choose a delivery method or to save the file themselves. Do not refuse a file because of its type. " +

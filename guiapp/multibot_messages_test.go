@@ -10,17 +10,35 @@ import (
 
 type noteFakeHub struct {
 	*fakeMBHub
-	nmu   sync.Mutex
-	items []DesktopBotCrossNote
+	nmu     sync.Mutex
+	items   []DesktopBotCrossNote
+	reports []string
 }
 
-func (h *noteFakeHub) notes(ctx context.Context) ([]DesktopBotCrossNote, error) {
+// mailbox mimics Hub: notes to the primary (bot_1) stay until acked.
+func (h *noteFakeHub) mailbox(ctx context.Context, ack []string) ([]DesktopBotCrossNote, error) {
 	h.nmu.Lock()
 	defer h.nmu.Unlock()
-	return append([]DesktopBotCrossNote(nil), h.items...), nil
+	for _, id := range ack {
+		for i := range h.items {
+			if h.items[i].ID == id {
+				h.items[i].AckedAt = "now"
+			}
+		}
+	}
+	out := []DesktopBotCrossNote{}
+	for _, n := range h.items {
+		if n.Target == "bot_1" && n.AckedAt == "" {
+			out = append(out, n)
+		}
+	}
+	return out, nil
 }
 func (h *noteFakeHub) report(ctx context.Context, from, target, topic, text, replyTo string, arts []string) (DesktopBotCrossNote, error) {
-	return DesktopBotCrossNote{}, nil
+	h.nmu.Lock()
+	defer h.nmu.Unlock()
+	h.reports = append(h.reports, from+"|"+target+"|"+topic+"|"+replyTo+"|"+text)
+	return DesktopBotCrossNote{ID: "r"}, nil
 }
 
 func waitWake(t *testing.T, ch chan MultiBotWake) MultiBotWake {
@@ -46,15 +64,19 @@ func TestMultiBotReportWakesIdleMainAndQueuesWhenBusy(t *testing.T) {
 	})
 	ctx := context.Background()
 	_ = mb.refresh(ctx, true)
+	// Sent while the GUI was closed: replayed on the first read.
 	hub.items = []DesktopBotCrossNote{{ID: "old", Kind: "report", From: "bot_2", Target: "bot_1", Topic: "done", Text: "旧的"}}
-	mb.pollReports(ctx) // startup: seen, not replayed
+	mb.pollReports(ctx)
+	if w := waitWake(t, wakes); !strings.Contains(w.Prompt, "旧的") {
+		t.Fatalf("backlog not replayed: %s", w.Prompt)
+	}
 
 	hub.nmu.Lock()
 	hub.items = append(hub.items, DesktopBotCrossNote{ID: "n1", Kind: "report", From: "bot_2", Target: "bot_1", Topic: "artifact", Text: "截图好了", Artifacts: []string{"/home/desktop/Desktop/s.png"}, RunID: "run_7"},
 		DesktopBotCrossNote{ID: "n2", Kind: "report", From: "bot_1", Target: "bot_2", Topic: "info", Text: "to peer"})
 	hub.nmu.Unlock()
 	mb.pollReports(ctx)
-	mb.pollReports(ctx) // no double delivery
+	mb.pollReports(ctx) // no double delivery; acks the first read
 	w := waitWake(t, wakes)
 	if !strings.HasPrefix(w.Prompt, "[队友消息") || !strings.Contains(w.Prompt, "截图好了") || !strings.Contains(w.Prompt, "s.png") || strings.Contains(w.Prompt, "旧的") || strings.Contains(w.Prompt, "to peer") {
 		t.Fatalf("prompt = %s", w.Prompt)
@@ -108,13 +130,33 @@ func TestMultiBotReplyLoopGuardAndRunEvents(t *testing.T) {
 	if out := mb.toolSendToBot(map[string]interface{}{"bot": "发布员", "text": "person said go"}); strings.HasPrefix(out, "not sent") {
 		t.Fatalf("person turn should reset: %s", out)
 	}
-	// A teammate finishing a run wakes the main bot without any report call.
-	hub.runs["bot_2"] = []DesktopBotActiveRun{{RunID: "run_1", Status: "running", Task: "发文章"}}
-	_ = mb.refresh(context.Background(), true)
-	hub.runs["bot_2"] = nil
+	// A teammate waiting for the person wakes the main bot without any report call.
+	hub.runs["bot_2"] = []DesktopBotActiveRun{{RunID: "run_1", Status: "waiting_for_user", Task: "发文章", Step: "扫码登录"}}
 	_ = mb.refresh(context.Background(), true)
 	w := waitWake(t, wakes)
-	if !strings.Contains(w.Prompt, "kind=done") || !strings.Contains(w.Prompt, "bot_2") {
+	if !strings.Contains(w.Prompt, "kind=blocked") || !strings.Contains(w.Prompt, "bot_2") {
 		t.Fatalf("run-finished wake = %s", w.Prompt)
+	}
+}
+
+func TestMultiBotMailboxAcksAfterHandoffAndSendGoesToHub(t *testing.T) {
+	base, _ := newTestMultiBot(t)
+	base.close()
+	hub := &noteFakeHub{fakeMBHub: base.hub.(*fakeMBHub)}
+	mb := newMultiBot(hub, t.TempDir(), func(string, ...interface{}) {})
+	ctx := context.Background()
+	_ = mb.refresh(ctx, true)
+	hub.items = []DesktopBotCrossNote{{ID: "q1", Kind: "report", From: "bot_2", Target: "bot_1", Topic: "question", Text: "标题?"}}
+	mb.pollReports(ctx)
+	if hub.items[0].AckedAt != "" {
+		t.Fatal("acked before the next read")
+	}
+	mb.pollReports(ctx)
+	if hub.items[0].AckedAt == "" {
+		t.Fatal("not acked after hand-off")
+	}
+	out := mb.toolSendToBot(map[string]interface{}{"bot": "发布员", "text": "用第一个", "reply_to": "msg_1"})
+	if strings.HasPrefix(out, "error") || len(hub.reports) != 1 || hub.reports[0] != "bot_1|bot_2|reply|msg_1|用第一个" {
+		t.Fatalf("out=%s reports=%v crosses=%v", out, hub.reports, hub.crosses)
 	}
 }

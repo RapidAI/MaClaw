@@ -1,14 +1,20 @@
 package guiapp
 
-// multibot_messages.go is the teammate → main bot direction. Remote desktop
-// bots report through Hub (kind "report" cross notes, posted by MaClawSrv's
-// desktop notify_main action or by any bot through POST /bots/{id}/cross);
-// the watcher pulls them, and run transitions it already sees (finished,
-// blocked, failed, file delivered) become reports too. Every message goes
-// through one botregistry.Bus (dedupe, rate limit, ping-pong guard) and one
-// Inbox: an idle main bot is woken with a synthetic turn ("multibot-wake",
-// sent by the frontend into the main chat); a busy one gets them when its
-// turn ends. The main bot answers with send_to_bot(reply_to=...).
+// multibot_messages.go is the main bot's end of the Hub message broker.
+// Hub is the durable broker: every bot-to-bot message (main ↔ teammate,
+// peer ↔ peer) is a kind "report" note stored in the target bot's Hub
+// mailbox until that bot acks it. Remote bots send with MaClawSrv's
+// desktop notify_main and read their own mailbox at each turn start (and
+// with check_inbox), and Hub itself reports when a delegated run ends, so
+// none of that needs this GUI. This file only reads the mailbox of the
+// account primary (the relay identity of this local main bot): unacked
+// messages are replayed on every read, so whatever arrived while the GUI
+// was closed is delivered on reconnect; a message is acked on the read
+// after it was handed to the main bot (at-least-once; the Bus dedupes a
+// replay by note id). Delivery: idle main bot → one synthetic turn
+// ("multibot-wake", sent by the frontend into the main chat); busy → queued
+// until its turn ends. The main bot answers with send_to_bot(reply_to=...),
+// which posts a report into the teammate's mailbox.
 
 import (
 	"context"
@@ -26,7 +32,8 @@ const multiBotWakeDebounce = 1500 * time.Millisecond
 // multiBotNoteHub is the optional Hub surface for reports. appMultiBotHub
 // implements it; a hub without it simply never yields reports.
 type multiBotNoteHub interface {
-	notes(ctx context.Context) ([]DesktopBotCrossNote, error)
+	// mailbox acks ack and returns the primary's still-unacked messages.
+	mailbox(ctx context.Context, ack []string) ([]DesktopBotCrossNote, error)
 	report(ctx context.Context, fromID, targetID, topic, text, replyTo string, artifacts []string) (DesktopBotCrossNote, error)
 }
 
@@ -44,7 +51,6 @@ func isTeammateWake(text string) bool {
 func (mb *multiBot) initMessages() {
 	mb.bus = botregistry.NewBus(botregistry.BusLimits{})
 	mb.inbox = botregistry.NewInbox(mb.queueWake)
-	mb.seenNotes = map[string]bool{}
 	mb.reg.Subscribe(mb.onRegistryEvent)
 }
 
@@ -104,20 +110,20 @@ func (mb *multiBot) flushWake() {
 	mb.emit("multibot-wake", MultiBotWake{Prompt: botregistry.WakePrompt(msgs), Display: botregistry.WakeDisplay(msgs), IDs: ids})
 }
 
-// onRegistryEvent turns a teammate's run transition into a report.
+// onRegistryEvent turns a teammate's blocked state or delivered file into a message.
 func (mb *multiBot) onRegistryEvent(ev botregistry.Event) {
 	if ev.BotID == multiBotSelfID || ev.BotID == "" {
 		return
 	}
 	var kind botregistry.MessageKind
 	text := strings.TrimSpace(ev.Detail)
+	// Run ends (done / failed) come from Hub's own report on delegated runs,
+	// so they reach the main bot with the GUI closed too. Here only what Hub
+	// does not report: a mid-run "needs the person" and the local artifact
+	// id of a delivered file.
 	switch ev.Kind {
-	case botregistry.EventFinished:
-		kind, text = botregistry.MsgDone, firstNonEmptyMB(text, "任务完成 / run finished")
 	case botregistry.EventNeedsUser:
 		kind, text = botregistry.MsgBlocked, firstNonEmptyMB(text, "需要人处理 / needs the person")
-	case botregistry.EventFailed:
-		kind, text = botregistry.MsgBlocked, "失败 / failed: "+firstNonEmptyMB(text, "unknown error")
 	case botregistry.EventArtifact:
 		kind = botregistry.MsgArtifact
 	default:
@@ -147,54 +153,44 @@ func firstNonEmptyMB(v ...string) string {
 	return ""
 }
 
-// pollReports pulls Hub report notes addressed to the account primary (the
-// relay that stands for this main bot). Notes already on Hub when the GUI
-// starts are marked seen, not replayed.
+// pollReports reads the primary's Hub mailbox: it acks what the previous
+// read handed over, then delivers whatever is still unacked (the backlog
+// after a restart included).
 func (mb *multiBot) pollReports(ctx context.Context) {
 	h := mb.hubNotes()
 	if h == nil {
 		return
 	}
-	notes, err := h.notes(ctx)
+	mb.mu.Lock()
+	ack := append([]string(nil), mb.pendingAck...)
+	mb.mu.Unlock()
+	notes, err := h.mailbox(ctx, ack)
 	if err != nil {
 		return
 	}
+	mb.mu.Lock()
+	mb.pendingAck = mb.pendingAck[len(ack):]
+	mb.mu.Unlock()
 	relay := ""
 	if r, err := mb.hubRelay(ctx); err == nil {
 		relay = r
 	}
-	mb.mu.Lock()
-	first := !mb.notesInit
-	mb.notesInit = true
-	fresh := []DesktopBotCrossNote{}
 	for _, n := range notes {
-		if n.Kind != "report" || mb.seenNotes[n.ID] {
-			continue
+		taken := true
+		if n.From != relay {
+			_, err := mb.receive(botregistry.Message{
+				From: n.From, Kind: botregistry.NormalizeKind(n.Topic), Text: n.Text, Artifacts: n.Artifacts,
+				RunID: n.RunID, ReplyTo: n.ReplyTo, Via: "hub", ExternalID: "note:" + n.ID,
+			})
+			// Rate/loop refusals are final for this message; only a bad
+			// local state would leave it for the next read.
+			taken = err == nil || errors.Is(err, botregistry.ErrDuplicate) || errors.Is(err, botregistry.ErrRateLimited) || errors.Is(err, botregistry.ErrLoop) || errors.Is(err, botregistry.ErrBadMessage)
 		}
-		mb.seenNotes[n.ID] = true
-		if !first {
-			fresh = append(fresh, n)
+		if taken {
+			mb.mu.Lock()
+			mb.pendingAck = append(mb.pendingAck, n.ID)
+			mb.mu.Unlock()
 		}
-	}
-	if len(mb.seenNotes) > 500 {
-		keep := map[string]bool{}
-		for _, n := range notes {
-			keep[n.ID] = mb.seenNotes[n.ID]
-		}
-		mb.seenNotes = keep
-	}
-	mb.mu.Unlock()
-	for _, n := range fresh {
-		if relay != "" && n.Target != relay {
-			continue // a report to another teammate; its own chat shows it
-		}
-		if n.From == relay {
-			continue // the main bot's own send
-		}
-		_, _ = mb.receive(botregistry.Message{
-			From: n.From, Kind: botregistry.NormalizeKind(n.Topic), Text: n.Text, Artifacts: n.Artifacts,
-			RunID: n.RunID, ReplyTo: n.ReplyTo, Via: "hub", ExternalID: "note:" + n.ID,
-		})
 	}
 }
 
@@ -206,8 +202,8 @@ func (a *App) startTeamInbox() {
 	}
 }
 
-func (h appMultiBotHub) notes(ctx context.Context) ([]DesktopBotCrossNote, error) {
-	return h.a.PullDesktopBotCrossNotes()
+func (h appMultiBotHub) mailbox(ctx context.Context, ack []string) ([]DesktopBotCrossNote, error) {
+	return h.a.desktopBotMailbox("main", ack)
 }
 
 func (h appMultiBotHub) report(ctx context.Context, fromID, targetID, topic, text, replyTo string, artifacts []string) (DesktopBotCrossNote, error) {

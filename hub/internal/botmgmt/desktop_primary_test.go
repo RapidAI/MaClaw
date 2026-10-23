@@ -253,3 +253,69 @@ func TestAnyBotReportsToPrimaryWithDedupeAndRateLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestBotMailboxReplaysUntilAcked(t *testing.T) {
+	svc := primaryFixture(t, []Bot{
+		{ID: "bot_main", Name: "主", OwnerUserID: "alice", InstanceID: "inst_main", CreatedAt: "2026-01-01T00:00:00Z"},
+		{ID: "bot_pub", Name: "发布员", OwnerUserID: "alice", InstanceID: "inst_pub", CreatedAt: "2026-02-01T00:00:00Z"},
+	})
+	ctx := context.Background()
+	a, err := svc.PostBotReportFromInstance(ctx, "tenant-a", "alice", "inst_pub", BotCrossNote{Topic: "done", Text: "发好了"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := svc.PostBotReportFromInstance(ctx, "tenant-a", "alice", "inst_pub", BotCrossNote{Topic: "question", Text: "标题?"})
+	// Nobody read yet (GUI closed): both stay, read twice.
+	for i := 0; i < 2; i++ {
+		items, err := svc.BotMailbox(ctx, "tenant-a", "alice", "main", nil, false)
+		if err != nil || len(items) != 2 || items[0].ID != a.ID {
+			t.Fatalf("items=%v err=%v", items, err)
+		}
+	}
+	items, _ := svc.BotMailbox(ctx, "tenant-a", "alice", "bot_main", []string{a.ID}, false)
+	if len(items) != 1 || items[0].ID != b.ID {
+		t.Fatalf("after ack: %v", items)
+	}
+	all, _ := svc.BotMailbox(ctx, "tenant-a", "alice", "main", nil, true)
+	if len(all) != 2 || all[0].AckedAt == "" {
+		t.Fatalf("all: %v", all)
+	}
+	// The peer reads its own mail through its instance.
+	if _, err := svc.PostBotCrossTalk(ctx, "tenant-a", "alice", "bot_main", BotCrossNote{Kind: "report", Target: "bot_pub", Topic: "reply", Text: "用第一个", ReplyTo: b.ID}); err != nil {
+		t.Fatal(err)
+	}
+	mine, err := svc.BotMailboxForInstance(ctx, "tenant-a", "alice", "inst_pub", nil)
+	if err != nil || len(mine) != 1 || mine[0].Text != "用第一个" {
+		t.Fatalf("peer mailbox %v %v", mine, err)
+	}
+	if mine, _ = svc.BotMailboxForInstance(ctx, "tenant-a", "alice", "inst_pub", []string{mine[0].ID}); len(mine) != 0 {
+		t.Fatalf("acked mail replayed: %v", mine)
+	}
+}
+
+func TestDelegatedRunEndReportsToPrimaryMailbox(t *testing.T) {
+	svc := primaryFixture(t, []Bot{
+		{ID: "bot_main", Name: "主", OwnerUserID: "alice", InstanceID: "inst_main", CreatedAt: "2026-01-01T00:00:00Z"},
+		{ID: "bot_pub", Name: "发布员", OwnerUserID: "alice", InstanceID: "inst_pub", CreatedAt: "2026-02-01T00:00:00Z"},
+	})
+	ctx := context.Background()
+	d, err := svc.PostBotCrossTalk(ctx, "tenant-a", "alice", "bot_main", BotCrossNote{Kind: "delegate", Target: "bot_pub", Text: "导出订单", Order: "导出本月订单"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, claimed, err := svc.ClaimBotCrossStart(ctx, "tenant-a", "alice", "bot_pub", d.ID); err != nil || !claimed {
+		t.Fatalf("claim %v %v", claimed, err)
+	}
+	if _, err := svc.NoteBotCrossRun(ctx, "tenant-a", "alice", "bot_pub", d.ID, "run_42"); err != nil {
+		t.Fatal(err)
+	}
+	svc.reportDelegateRunEnd("tenant-a", "alice", "bot_pub", "run_42", "succeeded", Reply{Text: "导出好了", Files: []ReplyFile{{Name: "orders.csv"}}}, nil)
+	svc.reportDelegateRunEnd("tenant-a", "alice", "bot_pub", "run_other", "succeeded", Reply{Text: "not delegated"}, nil)
+	items, err := svc.BotMailbox(ctx, "tenant-a", "alice", "main", nil, false)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items=%v err=%v", items, err)
+	}
+	if n := items[0]; n.Topic != "done" || n.From != "bot_pub" || n.ReplyTo != d.ID || n.RunID != "run_42" || len(n.Artifacts) != 1 || n.Artifacts[0] != "orders.csv" {
+		t.Fatalf("report = %#v", n)
+	}
+}

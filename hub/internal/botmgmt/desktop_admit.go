@@ -587,8 +587,10 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 		if state.status == "" {
 			state.status = "succeeded"
 		}
+		runStatus := state.status
 		state.mu.Unlock()
 		s.persistDesktopTasks(job.TenantID)
+		s.reportDelegateRunEnd(job.TenantID, job.UserID, job.BotID, job.RunID, runStatus, reply, settleErr)
 		traceBot(job.BotID, "post_end", settleErr,
 			"instance", job.InstanceID,
 			"run", job.RunID,

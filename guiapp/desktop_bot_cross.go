@@ -300,6 +300,7 @@ type DesktopBotCrossNote struct {
 	Topic     string   `json:"topic,omitempty"`
 	Artifacts []string `json:"artifacts,omitempty"`
 	Duplicate bool     `json:"duplicate,omitempty"`
+	AckedAt   string   `json:"acked_at,omitempty"`
 }
 
 // DesktopBotCrossPost is the result of one primary handoff.
@@ -471,6 +472,24 @@ func (a *App) postDesktopBotReport(botID, target, topic, text, replyTo string, a
 	var note DesktopBotCrossNote
 	err := a.desktopBotCall(context.Background(), http.MethodPost, "/api/v1/bots/"+url.PathEscape(botID)+"/cross", body, &note, 20*time.Second)
 	return note, err
+}
+
+// desktopBotMailbox acks ack and returns the bot's unacked Hub mailbox
+// ("main" = the account primary).
+func (a *App) desktopBotMailbox(botID string, ack []string) ([]DesktopBotCrossNote, error) {
+	if a == nil {
+		return nil, errDesktopBotUnavailable
+	}
+	if ack == nil {
+		ack = []string{}
+	}
+	var out struct {
+		Items []DesktopBotCrossNote `json:"items"`
+	}
+	if err := a.desktopBotCall(context.Background(), http.MethodPost, "/api/v1/bots/"+url.PathEscape(botID)+"/inbox", map[string]any{"ack": ack}, &out, 20*time.Second); err != nil {
+		return nil, err
+	}
+	return out.Items, nil
 }
 
 // PullDesktopBotCrossNotes returns this user's notes. It does not consume them.

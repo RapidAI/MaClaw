@@ -188,7 +188,15 @@ func (mb *multiBot) toolSendToBot(args map[string]interface{}) string {
 		if err != nil {
 			return "error: " + err.Error()
 		}
-		if err := mb.hub.cross(ctx, relay, "notify", b.ID, wire, ""); err != nil {
+		// Hub is the broker: the message goes into the bot's Hub mailbox,
+		// which its MaClawSrv run reads itself. An older Hub without
+		// reports gets the legacy notify note.
+		if nh := mb.hubNotes(); nh != nil {
+			kind := firstNonEmptyMB(mbArg(args, "kind"), map[bool]string{true: "reply", false: "info"}[replyTo != ""])
+			if _, err := nh.report(ctx, relay, b.ID, string(botregistry.NormalizeKind(kind)), text, replyTo, mbList(args, "artifact_ids")); err != nil {
+				return "error: " + err.Error()
+			}
+		} else if err := mb.hub.cross(ctx, relay, "notify", b.ID, wire, ""); err != nil {
 			return "error: " + err.Error()
 		}
 		mb.reg.Notify(botregistry.EventMessage, b.ID, "main bot → "+b.Name+": "+text)
@@ -197,7 +205,7 @@ func (mb *multiBot) toolSendToBot(args map[string]interface{}) string {
 	if len(sent) == 0 {
 		return "error: nothing to send (the main bot does not message itself)"
 	}
-	return "sent to " + strings.Join(sent, ", ") + ". They see it at the start of their next turn."
+	return "sent to " + strings.Join(sent, ", ") + ". It waits in their Hub mailbox; they read it at their next turn or step."
 }
 
 // toolAssignTask hands a task to a bot. Files named by artifact_ids or

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -42,6 +43,10 @@ type BotCrossNote struct {
 	// Duplicate is set on a response when an identical report was already
 	// stored inside the dedupe window; it is not stored.
 	Duplicate bool `json:"duplicate,omitempty"`
+	// AckedAt is set once the receiving bot (its GUI, or its MaClawSrv run)
+	// has taken the message from its Hub mailbox. Unacked messages are
+	// replayed on every inbox read, so a closed GUI loses nothing.
+	AckedAt string `json:"acked_at,omitempty"`
 }
 
 // ListBotsForUser returns this user's bots. Exactly one of them is primary
@@ -514,7 +519,7 @@ func capCrossNotes(notes []BotCrossNote, userID string) []BotCrossNote {
 	userID = strings.TrimSpace(userID)
 	owned := 0
 	for _, note := range notes {
-		if note.Owner == userID {
+		if note.Owner == userID && note.Kind != "report" {
 			owned++
 		}
 	}
@@ -524,7 +529,7 @@ func capCrossNotes(notes []BotCrossNote, userID string) []BotCrossNote {
 	drop := owned - desktopCrossNoteCap
 	out := make([]BotCrossNote, 0, len(notes)-drop)
 	for _, note := range notes {
-		if drop > 0 && note.Owner == userID {
+		if drop > 0 && note.Owner == userID && note.Kind != "report" {
 			drop--
 			continue
 		}
@@ -533,9 +538,10 @@ func capCrossNotes(notes []BotCrossNote, userID string) []BotCrossNote {
 	return out
 }
 
-// reportNoteCap keeps reports from crowding delegate notes out of the
-// account's note cap: past it the oldest reports go first.
-const reportNoteCap = 20
+// reportNoteCap bounds each account's mailbox. Reports are kept apart from
+// the delegate-note cap. Past the cap acked reports go first, oldest first;
+// unacked ones are dropped only when the mailbox is all unacked.
+const reportNoteCap = 60
 
 func capReportNotes(notes []BotCrossNote, userID string) []BotCrossNote {
 	count := 0
@@ -548,15 +554,122 @@ func capReportNotes(notes []BotCrossNote, userID string) []BotCrossNote {
 	if drop <= 0 {
 		return notes
 	}
-	out := make([]BotCrossNote, 0, len(notes)-drop)
-	for _, n := range notes {
-		if drop > 0 && n.Owner == userID && n.Kind == "report" {
+	gone := map[int]bool{}
+	for pass := 0; pass < 2 && drop > 0; pass++ {
+		for i, n := range notes {
+			if drop == 0 {
+				break
+			}
+			if gone[i] || n.Owner != userID || n.Kind != "report" {
+				continue
+			}
+			if pass == 0 && n.AckedAt == "" {
+				continue
+			}
+			gone[i] = true
 			drop--
-			continue
 		}
-		out = append(out, n)
+	}
+	out := make([]BotCrossNote, 0, len(notes)-len(gone))
+	for i, n := range notes {
+		if !gone[i] {
+			out = append(out, n)
+		}
 	}
 	return out
+}
+
+// mailboxKinds are the notes that land in a bot's Hub mailbox.
+var mailboxKinds = map[string]bool{"report": true}
+
+func resolveMailboxBot(rec record, userID, botID string) (string, error) {
+	botID = strings.TrimSpace(botID)
+	switch strings.ToLower(botID) {
+	case "", "main", "primary":
+		botID = primaryBotID(rec, userID)
+	}
+	if botID == "" || !botOwned(rec.Bots, userID, botID) {
+		return "", ErrNoSuchBot
+	}
+	return botID, nil
+}
+
+// BotMailbox returns the messages addressed to botID ("main" = the
+// account primary), oldest first. Unacked only unless all is set. ack ids
+// are marked taken first, in the same write, so a reader can ack the last
+// batch and pull the next one in one call.
+func (s *Service) BotMailbox(ctx context.Context, tenantID, userID, botID string, ack []string, all bool) ([]BotCrossNote, error) {
+	if s == nil {
+		return nil, ErrSettingsUnavailable
+	}
+	userID = strings.TrimSpace(userID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.loadForUser(ctx, tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	return s.mailboxLocked(ctx, tenantID, &rec, userID, botID, ack, all)
+}
+
+func (s *Service) mailboxLocked(ctx context.Context, tenantID string, rec *record, userID, botID string, ack []string, all bool) ([]BotCrossNote, error) {
+	id, err := resolveMailboxBot(*rec, userID, botID)
+	if err != nil {
+		return nil, err
+	}
+	rec.CrossNotes = pruneCrossNotes(rec.CrossNotes, s.now())
+	if len(ack) > 0 {
+		want := map[string]bool{}
+		for _, a := range ack {
+			want[strings.TrimSpace(a)] = true
+		}
+		stamp := s.now().UTC().Format(time.RFC3339)
+		changed := false
+		for i := range rec.CrossNotes {
+			n := &rec.CrossNotes[i]
+			if want[n.ID] && n.Owner == userID && n.Target == id && n.AckedAt == "" {
+				n.AckedAt = stamp
+				changed = true
+			}
+		}
+		if changed {
+			if err := s.save(ctx, tenantID, *rec); err != nil {
+				return nil, err
+			}
+		}
+	}
+	out := []BotCrossNote{}
+	for _, n := range rec.CrossNotes {
+		if n.Owner == userID && n.Target == id && mailboxKinds[n.Kind] && (all || n.AckedAt == "") {
+			out = append(out, n)
+		}
+	}
+	return out, nil
+}
+
+// BotMailboxForInstance is BotMailbox for the bot that owns a MaClawSrv
+// instance (the remote bot reading its own mail).
+func (s *Service) BotMailboxForInstance(ctx context.Context, tenantID, userID, instanceID string, ack []string) ([]BotCrossNote, error) {
+	if s == nil {
+		return nil, ErrSettingsUnavailable
+	}
+	userID = strings.TrimSpace(userID)
+	instanceID = strings.TrimSpace(instanceID)
+	if userID == "" || instanceID == "" {
+		return nil, ErrInvalidInput
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.loadForUser(ctx, tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	for _, bot := range botsOwnedBy(rec.Bots, userID) {
+		if strings.TrimSpace(bot.InstanceID) == instanceID {
+			return s.mailboxLocked(ctx, tenantID, &rec, userID, bot.ID, ack, false)
+		}
+	}
+	return nil, ErrNotFound
 }
 
 func newCrossNoteID() string {
@@ -565,4 +678,68 @@ func newCrossNoteID() string {
 		return "note_" + hex.EncodeToString([]byte(time.Now().UTC().Format(time.RFC3339Nano)))
 	}
 	return "note_" + hex.EncodeToString(buf[:])
+}
+
+// reportDelegateRunEnd is Hub's own "teammate finished" message: when a run
+// that the primary delegated (a delegate note carries its run id) ends, Hub
+// puts a done/blocked report in the primary's mailbox. It runs on Hub's run
+// watcher, so it does not need any GUI to be open.
+func (s *Service) reportDelegateRunEnd(tenantID, userID, botID, runID, status string, reply Reply, runErr error) {
+	if s == nil || strings.TrimSpace(runID) == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.loadForUser(ctx, tenantID, userID)
+	if err != nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	primary := primaryBotID(rec, userID)
+	if primary == "" || primary == botID {
+		return
+	}
+	delegate := ""
+	for _, n := range rec.CrossNotes {
+		if n.Owner == userID && n.Kind == "delegate" && n.Target == botID && n.RunID == runID {
+			delegate = n.ID
+		}
+	}
+	if delegate == "" {
+		return
+	}
+	topic, text := "done", strings.TrimSpace(reply.Text)
+	switch {
+	case runErr != nil || status == "failed" || status == "error":
+		topic = "blocked"
+		text = "失败 / failed: " + firstNonEmptyString(text, fmt.Sprint(runErr))
+	case reply.Handoff || strings.TrimSpace(reply.AttentionReason) != "" || strings.TrimSpace(reply.AskUserQuestion) != "":
+		topic = "blocked"
+		text = firstNonEmptyString(strings.TrimSpace(reply.AskUserQuestion), strings.TrimSpace(reply.AttentionReason), text, "需要人处理 / needs the person")
+	}
+	if text == "" {
+		text = "任务完成 / run finished"
+	}
+	arts := []string{}
+	for _, f := range reply.Files {
+		if name := strings.TrimSpace(f.Name); name != "" && len(arts) < 10 {
+			arts = append(arts, name)
+		}
+	}
+	note, changed, err := s.reportLocked(&rec, userID, botID, BotCrossNote{Target: primary, Topic: topic, Text: text, Artifacts: arts, RunID: runID, ReplyTo: delegate})
+	if err != nil || !changed || note.ID == "" {
+		return
+	}
+	_ = s.save(ctx, tenantID, rec)
+}
+
+func firstNonEmptyString(v ...string) string {
+	for _, x := range v {
+		if strings.TrimSpace(x) != "" && x != "<nil>" {
+			return x
+		}
+	}
+	return ""
 }
