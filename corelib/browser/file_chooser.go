@@ -118,3 +118,29 @@ func (s *BrowserAgentSession) onFileChooserOpened(params json.RawMessage) {
 		}
 	}()
 }
+
+// EvalValue evaluates a page expression on the attached tab and returns its
+// value as a string (JSON for objects).
+func (s *BrowserAgentSession) EvalValue(expr string) (string, error) {
+	client := s.cdpClient()
+	if client == nil {
+		return "", fmt.Errorf("no live browser session")
+	}
+	raw, err := client.Send("Runtime.evaluate", map[string]interface{}{"expression": expr, "returnByValue": true, "awaitPromise": true}, DefaultCmdTimeout)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Result struct {
+			Value interface{} `json:"value"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return "", err
+	}
+	if str, ok := out.Result.Value.(string); ok {
+		return str, nil
+	}
+	b, _ := json.Marshal(out.Result.Value)
+	return string(b), nil
+}

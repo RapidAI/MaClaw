@@ -83,6 +83,7 @@ func desktopUpload(session *browser.BrowserAgentSession, args map[string]any) (s
 	if hookErr != nil {
 		return "", fmt.Errorf("upload: page not ready: %w", hookErr)
 	}
+	before := desktopUploadState(session)
 	selectors := desktopUploadSelectors
 	if sel := desktopArg(args, "selector"); sel != "" {
 		selectors = append([]string{sel}, selectors...)
@@ -117,7 +118,9 @@ func desktopUpload(session *browser.BrowserAgentSession, args map[string]any) (s
 		}
 		if err == nil && armed {
 			if ok, chErr := session.WaitFileChooser(3 * time.Second); ok && chErr == nil {
-				return fmt.Sprintf("uploaded %d file(s): the page's file chooser was answered over CDP (no OS dialog) after clicking %s", len(files), clicked), nil
+				if ok, why := desktopUploadVerify(session, before); ok {
+					return fmt.Sprintf("uploaded %d file(s): the page's file chooser was answered over CDP (no OS dialog) after clicking %s; page: %s", len(files), clicked, why), nil
+				}
 			}
 		}
 		if err == nil {
@@ -127,10 +130,64 @@ func desktopUpload(session *browser.BrowserAgentSession, args map[string]any) (s
 	if err != nil {
 		return "", fmt.Errorf("upload: no file input took the files (%v). Pass text= (or ref=) of the page's upload button so the input it creates is caught; do not open the OS file chooser", err)
 	}
-	msg := fmt.Sprintf("uploaded %d file(s) via the page's file input (no OS dialog)", len(files))
+	if ok, why := desktopUploadVerify(session, before); !ok {
+		return "", fmt.Errorf("upload: the files were set on a file input but the page shows no change (%s). Check you are on the page's upload area (the right tab/mode), then pass text= of its upload button; do not open the OS file chooser", why)
+	} else {
+		before = why
+	}
+	msg := fmt.Sprintf("uploaded %d file(s) via the page's file input (no OS dialog); page: %s", len(files), before)
 	if clicked != "" {
 		msg += " after clicking " + clicked
 	}
 	_ = r
 	return msg, nil
+}
+
+// desktopUploadStateJS: what a page shows after an upload. Many sites clear
+// input.files right after reading them (XHS does), so previews (blob:/data:
+// images, <video>, canvas), all images and the DOM size count too.
+const desktopUploadStateJS = `(() => { let files = 0; const walk = (r) => { r.querySelectorAll('input[type=file]').forEach(e => files += e.files.length); r.querySelectorAll('*').forEach(n => n.shadowRoot && walk(n.shadowRoot)); }; walk(document);
+  const imgs = [...document.images]; return [files, imgs.filter(i => /^(blob|data):/.test(i.src)).length, imgs.length, document.querySelectorAll('video,canvas').length, document.getElementsByTagName('*').length].join(','); })()`
+
+func desktopUploadState(session *browser.BrowserAgentSession) string {
+	v, err := session.EvalValue(desktopUploadStateJS)
+	if err != nil {
+		return ""
+	}
+	return strings.Trim(v, `"`)
+}
+
+func desktopUploadParse(v string) []int {
+	out := make([]int, 5)
+	for i, f := range strings.Split(v, ",") {
+		if i < 5 {
+			fmt.Sscan(f, &out[i])
+		}
+	}
+	return out
+}
+
+// desktopUploadJudge reports whether after differs from before the way an
+// accepted upload does.
+func desktopUploadJudge(before, after string) (bool, string) {
+	b, a := desktopUploadParse(before), desktopUploadParse(after)
+	why := fmt.Sprintf("input files %d, previews %d->%d, images %d->%d, media %d->%d, nodes %d->%d", a[0], b[1], a[1], b[2], a[2], b[3], a[3], b[4], a[4])
+	if before == "" && after == "" {
+		return true, "state unreadable"
+	}
+	ok := a[0] > 0 || a[1] > b[1] || a[2] > b[2] || a[3] > b[3] || a[4] > b[4]+20
+	return ok, why
+}
+
+func desktopUploadVerify(session *browser.BrowserAgentSession, before string) (bool, string) {
+	var why string
+	for i := 0; i < 8; i++ {
+		time.Sleep(500 * time.Millisecond)
+		ok, w := desktopUploadJudge(before, desktopUploadState(session))
+		if ok {
+			return true, w
+		}
+		why = w
+	}
+	return false, why
 }
