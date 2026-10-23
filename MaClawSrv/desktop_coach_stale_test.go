@@ -131,8 +131,8 @@ func TestDriftGuardKeepsBrowserTasksInTheBrowser(t *testing.T) {
 		t.Skip("no run state")
 	}
 	req := "做10.18的 Hugging Face Daily Papers 摘要，发到知乎上"
-	if err := desktopDriftCheck(scope, "app_open", map[string]any{"program": "libreoffice"}, req); err != nil {
-		t.Fatalf("before any page: %v", err)
+	if err := desktopDriftCheck(scope, "app_open", map[string]any{"program": "libreoffice"}, "整理一下这些数据"); err != nil {
+		t.Fatalf("non-web task before any page: %v", err)
 	}
 	st.mu.Lock()
 	p.lastURL = "https://site.example/write"
@@ -168,6 +168,19 @@ func TestDriftGuardNoCopyAfterPublish(t *testing.T) {
 		t.Fatal("desktop copy allowed after publish")
 	}
 	if err := desktopDriftCheck(scope, "file_write", map[string]any{"path": "/tmp/x.md"}, req); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDriftGuardWebTaskBeforeFirstPage(t *testing.T) {
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u-drift3", RunID: "run-drift3"}
+	if st, _ := desktopProgressFor(scope); st == nil {
+		t.Skip("no run state")
+	}
+	if desktopDriftCheck(scope, "app_open", map[string]any{"program": "eog"}, "做一张封面图，在小红书发一篇图文笔记") == nil {
+		t.Fatal("image viewer allowed in a publish task")
+	}
+	if err := desktopDriftCheck(scope, "app_open", map[string]any{"program": "eog"}, "打开图片查看器看看这张图"); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -511,6 +511,9 @@ func desktopDriftCheck(scope agentruntime.Scope, action string, args map[string]
 	if published && action == "file_write" && !desktopAskedForFileRe.MatchString(request) && !desktopScratchPathRe.MatchString(desktopArg(args, "path")) {
 		return fmt.Errorf("refused: unasked_file — the result is already published and the request did not ask for a file; do not save a copy. Give the final answer with the link now")
 	}
+	if !inBrowser && desktopBrowserTaskRe.MatchString(request) {
+		inBrowser = true // the request is a web task even before the first page
+	}
 	if !inBrowser || strings.TrimSpace(request) == "" {
 		return nil
 	}
@@ -533,3 +536,7 @@ func desktopDriftCheck(scope agentruntime.Scope, action string, args map[string]
 
 // Scratch locations a run may write to without the person asking.
 var desktopScratchPathRe = regexp.MustCompile(`^(/tmp/|/var/tmp/|/home/desktop/tasks/|/home/desktop/\.cache/)`)
+
+// A request that names a web destination or a publish/upload is a browser
+// task from its first step (XHS-2 opened an image viewer before any page).
+var desktopBrowserTaskRe = regexp.MustCompile(`(?i)https?://|www\.|\.(com|cn|org|net|io)\b|网页|网站|浏览器|发到|发布|发表|发一篇|上传|post to|publish`)
