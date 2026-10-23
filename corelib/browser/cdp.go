@@ -590,7 +590,8 @@ func isCriticalCDPEvent(method string) bool {
 	case "Inspector.detached",
 		"Page.frameNavigated",
 		"Page.frameStartedNavigating",
-		"Page.loadEventFired":
+		"Page.loadEventFired",
+		"Page.fileChooserOpened":
 		return true
 	}
 	return false

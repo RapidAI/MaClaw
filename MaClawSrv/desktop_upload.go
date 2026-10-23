@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/browser"
 )
@@ -103,12 +104,21 @@ func desktopUpload(session *browser.BrowserAgentSession, args map[string]any) (s
 	if desktopArg(args, "ref") == "" && desktopArg(args, "text") == "" {
 		r, err = try()
 	} else {
+		armed := session.ArmFileChooser(files) == nil
+		if armed {
+			defer session.DisarmFileChooser()
+		}
 		if ref := desktopArg(args, "ref"); ref != "" {
 			_, err = session.Click(desktopArg(args, "snapshot_id"), ref, "")
 			clicked = ref
 		} else {
 			_, err = session.ClickText(desktopArg(args, "snapshot_id"), desktopArg(args, "text"))
 			clicked = desktopArg(args, "text")
+		}
+		if err == nil && armed {
+			if ok, chErr := session.WaitFileChooser(3 * time.Second); ok && chErr == nil {
+				return fmt.Sprintf("uploaded %d file(s): the page's file chooser was answered over CDP (no OS dialog) after clicking %s", len(files), clicked), nil
+			}
 		}
 		if err == nil {
 			r, err = try()
