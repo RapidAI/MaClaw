@@ -629,6 +629,7 @@ func RegisterTools(registry *tool.Registry) {
 			Handler: browserSkillRunTool,
 		},
 	}
+	tools = append(tools, shopTools()...)
 
 	for _, t := range tools {
 		t.Status = tool.StatusAvailable
