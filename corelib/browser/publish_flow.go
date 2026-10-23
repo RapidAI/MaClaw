@@ -681,13 +681,20 @@ func (p *publishRun) verify() (string, error) {
 		}
 	}
 	if p.spec.VerifyURL == "" {
-		return p.checkResult(key, minDur(p.spec.StepBudget, 20*time.Second), false)
+		out, err := p.checkResult(key, minDur(p.spec.StepBudget, 20*time.Second), false)
+		if err != nil && publishSubmittedURL.MatchString(err.Error()) {
+			return "", fmt.Errorf("%v. The site confirmed the submit in its URL, so the post IS submitted: do NOT publish again. Read it back once from the account's own post list (pass verify_url next time) and reply with its link; a post still under review may not open publicly yet", err)
+		}
+		return out, err
 	}
 	if err := p.navigate(p.spec.VerifyURL); err != nil {
 		return "", err
 	}
 	return p.checkResult(key, minDur(p.spec.StepBudget, 25*time.Second), true)
 }
+
+// A landing URL that itself says the submit went through (?published=true).
+var publishSubmittedURL = regexp.MustCompile(`(?i)[?&#](published|publish_success|success|status)=(true|1|success|ok)`)
 
 var publishEditorURL = regexp.MustCompile(`(?i)/(edit|write|publish|creator|draft)`)
 
