@@ -16,6 +16,9 @@ func (d *NetDialer) PreviewDelete(ctx context.Context, account Account, secret s
 	if account.Inbound == nil {
 		return DeletePreview{}, classErr("no_inbound", MsgNoInbound(account.Name))
 	}
+	if isPOP3(account) {
+		return DeletePreview{}, classErr("unsupported", MsgPOP3Unsupported)
+	}
 	c, err := d.imapClient(ctx, account, secret)
 	if err != nil {
 		return DeletePreview{}, err
@@ -39,6 +42,9 @@ func (d *NetDialer) PreviewDelete(ctx context.Context, account Account, secret s
 func (d *NetDialer) ApplyDelete(ctx context.Context, account Account, secret string, plan DeletePlan) (DeleteResult, error) {
 	if account.Inbound == nil {
 		return DeleteResult{}, classErr("no_inbound", MsgNoInbound(account.Name))
+	}
+	if isPOP3(account) {
+		return DeleteResult{}, classErr("unsupported", MsgPOP3Unsupported)
 	}
 	c, err := d.imapClient(ctx, account, secret)
 	if err != nil {

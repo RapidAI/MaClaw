@@ -350,15 +350,26 @@ func normalizeEndpoint(ep *Endpoint, inbound bool) (*Endpoint, error) {
 	if sec == SecurityNone && !loopbackHost(host) {
 		return nil, classErr("invalid", "不加密的连接只允许本机地址")
 	}
+	proto := ""
+	if inbound {
+		p, err := normalizeProtocol(ep.Protocol)
+		if err != nil {
+			return nil, err
+		}
+		proto = p
+	}
 	port := ep.Port
 	if port == 0 {
 		port = defaultPort(inbound, sec)
+		if proto == ProtocolPOP3 {
+			port = pop3DefaultPort(sec)
+		}
 	}
 	if port < 1 || port > 65535 {
 		return nil, classErr("invalid", "端口必须在 1 到 65535 之间")
 	}
 	out := &Endpoint{
-		Host: host, Port: port, Security: sec,
+		Host: host, Port: port, Security: sec, Protocol: proto,
 		Username: strings.TrimSpace(ep.Username),
 	}
 	if inbound {

@@ -126,6 +126,9 @@ func endpointFromMap(raw interface{}, inbound bool, username, email string) *End
 		Host: host, Port: intFrom(fields["port"]), Security: normalizeSecurity(stringArg(fields, "security")),
 		Username: user, Box: strings.TrimSpace(stringArg(fields, "box")),
 	}
+	if inbound {
+		ep.Protocol = strings.ToLower(strings.TrimSpace(stringArg(fields, "protocol")))
+	}
 	if !inbound {
 		from := strings.TrimSpace(stringArg(fields, "from_address"))
 		if from == "" {
@@ -186,7 +189,7 @@ func ConfigureProperties() map[string]interface{} {
 func ConfigureInvocationSchema() map[string]interface{} { return configureSchema() }
 
 func ToolDescriptionConfigure() string {
-	return "根据用户提供的接入信息保存邮箱。action 只能是 save。邮箱名必须填写：用户提供了就用用户的，没提供就由你生成一个简短名字（可用地址本地部分），不要留空；重名则另起一个。同时填写 email、username、password，以及 inbound 和 outbound（host、port、security 用 tls、starttls 或 none，收件还可填 box）。IMAP 写入 inbound，SMTP 写入 outbound。163/126/yeah、QQ、Gmail、Outlook/Hotmail 地址可省略 inbound/outbound，自动使用预置服务器；163 和 QQ 的 password 是授权码，Gmail 是应用专用密码或浏览器登录，Outlook/Hotmail 只能浏览器登录。密码只写入系统密钥环，不要把密码复述到回复里。这个工具不发送邮件。"
+	return "根据用户提供的接入信息保存邮箱。action 只能是 save。邮箱名必须填写：用户提供了就用用户的，没提供就由你生成一个简短名字（可用地址本地部分），不要留空；重名则另起一个。同时填写 email、username、password，以及 inbound 和 outbound（host、port、security 用 tls、starttls 或 none，收件还可填 box）。IMAP 或 POP3 写入 inbound（POP3 时 inbound.protocol=pop3），SMTP 写入 outbound。163/126/yeah、QQ、Gmail、Outlook/Hotmail 地址可省略 inbound/outbound，自动使用预置服务器；163 和 QQ 的 password 是授权码，Gmail 是应用专用密码或浏览器登录，Outlook/Hotmail 只能浏览器登录。密码只写入系统密钥环，不要把密码复述到回复里。这个工具不发送邮件。"
 }
 
 func configureSchema() map[string]interface{} {
@@ -194,6 +197,7 @@ func configureSchema() map[string]interface{} {
 		"type": "object",
 		"properties": map[string]interface{}{
 			"host":         map[string]interface{}{"type": "string", "description": "服务器主机名"},
+			"protocol":     map[string]interface{}{"type": "string", "description": "收件协议 imap（默认）或 pop3。只填在 inbound。"},
 			"port":         map[string]interface{}{"type": "integer"},
 			"security":     map[string]interface{}{"type": "string", "description": "tls、starttls 或 none。ssl 按 tls 保存。"},
 			"username":     map[string]interface{}{"type": "string"},

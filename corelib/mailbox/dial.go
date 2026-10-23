@@ -38,6 +38,9 @@ func (d *NetDialer) timeout() time.Duration {
 }
 
 func (d *NetDialer) DialInbound(ctx context.Context, ep Endpoint) (InboundSession, error) {
+	if strings.EqualFold(strings.TrimSpace(ep.Protocol), ProtocolPOP3) {
+		return d.dialPOP3Probe(ctx, ep)
+	}
 	c, err := d.dialIMAP(ctx, ep)
 	if err != nil {
 		return nil, err

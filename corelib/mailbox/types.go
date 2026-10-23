@@ -77,7 +77,9 @@ const (
 
 // Endpoint is one IMAP or SMTP side. Either side may be absent on an account.
 type Endpoint struct {
-	Host        string `json:"host,omitempty"`
+	Host string `json:"host,omitempty"`
+	// Protocol is "pop3" for a POP3 inbound server. Empty is IMAP.
+	Protocol    string `json:"protocol,omitempty"`
 	Port        int    `json:"port,omitempty"`
 	Security    string `json:"security,omitempty"`
 	Username    string `json:"username,omitempty"`

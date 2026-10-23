@@ -26,10 +26,16 @@ import (
 const snippetFetchBytes = 2048
 
 func (d *NetDialer) List(ctx context.Context, account Account, secret, box string, limit int) ([]MessageSummary, error) {
+	if isPOP3(account) {
+		return d.pop3Summaries(ctx, account, secret, box, "", limit)
+	}
 	return d.fetchSummaries(ctx, account, secret, box, limit, nil, false)
 }
 
 func (d *NetDialer) Search(ctx context.Context, account Account, secret, box, query string, limit int) ([]MessageSummary, error) {
+	if isPOP3(account) {
+		return d.pop3Summaries(ctx, account, secret, box, query, limit)
+	}
 	return d.fetchSummaries(ctx, account, secret, box, limit, messageSearchCriteria(query), true)
 }
 
@@ -63,6 +69,9 @@ func messageSearchCriteria(query string) *imap.SearchCriteria {
 }
 
 func (d *NetDialer) Read(ctx context.Context, account Account, secret, box string, uid uint32, _ int) (Body, error) {
+	if isPOP3(account) {
+		return d.pop3Read(ctx, account, secret, box, uid)
+	}
 	c, err := d.openBox(ctx, account, secret, mailboxBox(account, box))
 	if err != nil {
 		return Body{}, err
@@ -97,6 +106,9 @@ func (d *NetDialer) Read(ctx context.Context, account Account, secret, box strin
 }
 
 func (d *NetDialer) Attachment(ctx context.Context, account Account, secret, box string, uid uint32, index int) (Attachment, error) {
+	if isPOP3(account) {
+		return d.pop3Attachment(ctx, account, secret, box, uid, index)
+	}
 	c, err := d.openBox(ctx, account, secret, mailboxBox(account, box))
 	if err != nil {
 		return Attachment{}, err
