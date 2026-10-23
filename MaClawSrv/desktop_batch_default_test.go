@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -52,5 +53,14 @@ func TestBatchDefaultScriptsFreeAndPerPage(t *testing.T) {
 	desktopRecordBatchDefault(scope, "navigate", nil)
 	if err := desktopBatchDefaultCheck(context.Background(), scope, "click"); err != nil {
 		t.Fatalf("new page should get a fresh single: %v", err)
+	}
+}
+
+func TestDesktopScriptErrIsNavigation(t *testing.T) {
+	if !desktopScriptErrIsNavigation(errors.New("cdp error -32000: Inspected target navigated or closed")) {
+		t.Fatal("want navigation")
+	}
+	if desktopScriptErrIsNavigation(errors.New("TypeError: x is null")) {
+		t.Fatal("not navigation")
 	}
 }

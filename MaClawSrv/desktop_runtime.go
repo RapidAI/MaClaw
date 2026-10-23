@@ -888,6 +888,13 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		text, err = desktopActionText(result, callErr)
 		text, err = desktopVerifyBrowserScript(session, desktopArg(args, "script"), text, err)
 		text, err = desktopVerifyRichBody(desktopOwner(scope), session, action, args, text, err)
+		if err != nil && desktopScriptErrIsNavigation(err) {
+			// The page navigated (e.g. after a submit) while the script ran.
+			// That is a page change, not a failure: report where it went so
+			// the model does not retry or wait (RUN33).
+			pages, _ := withDesktopPages("", nil, endpoint.CDP, session.TargetID)
+			return "script ended because the page navigated (a submit or link took effect). Do not rerun it; read the new page.\n" + strings.TrimSpace(pages), nil
+		}
 		if scriptErr := err; scriptErr != nil {
 			// A script that threw did not do its job; withDesktopPages would
 			// turn it into an ok result with a page list.
@@ -3647,4 +3654,12 @@ func desktopMessageText(request agentruntime.TurnRequest) string {
 		}
 	}
 	return ""
+}
+
+func desktopScriptErrIsNavigation(err error) bool {
+	if err == nil {
+		return false
+	}
+	m := strings.ToLower(err.Error())
+	return strings.Contains(m, "inspected target navigated") || strings.Contains(m, "execution context was destroyed") || strings.Contains(m, "cannot find context with specified id")
 }
