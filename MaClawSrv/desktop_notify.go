@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"log"
 	"path"
 	"strings"
 	"time"
@@ -94,7 +95,8 @@ func desktopNotifyMain(ctx context.Context, request agentruntime.TurnRequest, ar
 	}
 	// Shared paths travel with the message as bytes, so the receiver has the
 	// file now instead of when this run ends. Unreadable paths stay names.
-	if files := desktopNotifyFiles(ctx, request.Scope, artifacts); len(files) > 0 {
+	files, skipped := desktopNotifyFiles(ctx, request.Scope, artifacts)
+	if len(files) > 0 {
 		body["files"] = files
 	}
 	body["key"] = desktopMessageKey(runKey, kind, fmt.Sprint(body["target"]), text, fmt.Sprint(body["reply_to"]), strings.Join(artifacts, ","))
@@ -119,6 +121,9 @@ func desktopNotifyMain(ctx context.Context, request agentruntime.TurnRequest, ar
 	}
 	if dup, _ := out["duplicate"].(bool); dup {
 		return "Already sent the same message; do not send it again. Continue the task.", nil
+	}
+	if len(skipped) > 0 {
+		return "Sent to the main bot, but these files were not attached (only their names went): " + strings.Join(skipped, "; ") + ". Fix the path or share it again when it is readable; otherwise continue the task.", nil
 	}
 	return "Sent to the main bot. It sees it now, or right after its current turn. Do not wait for an answer here; continue the task (an answer arrives as a new message).", nil
 }
@@ -299,8 +304,9 @@ var desktopNotifyReadFile = func(ctx context.Context, scope agentruntime.Scope, 
 	return name, desktopDeliverMIME(name), raw, nil
 }
 
-func desktopNotifyFiles(ctx context.Context, scope agentruntime.Scope, paths []string) []map[string]any {
+func desktopNotifyFiles(ctx context.Context, scope agentruntime.Scope, paths []string) ([]map[string]any, []string) {
 	out := []map[string]any{}
+	var skipped []string
 	for _, p := range paths {
 		if len(out) >= desktopNotifyFilesMax {
 			break
@@ -308,10 +314,18 @@ func desktopNotifyFiles(ctx context.Context, scope agentruntime.Scope, paths []s
 		rctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		name, mime, raw, err := desktopNotifyReadFile(rctx, scope, p)
 		cancel()
-		if err != nil || len(raw) == 0 || len(raw) > desktopNotifyFileMaxSize {
+		if err == nil && len(raw) == 0 {
+			err = fmt.Errorf("file is empty")
+		}
+		if err == nil && len(raw) > desktopNotifyFileMaxSize {
+			err = fmt.Errorf("file is larger than 8 MB")
+		}
+		if err != nil {
+			log.Printf("[notify_main] %s not attached: %v", p, err)
+			skipped = append(skipped, fmt.Sprintf("%s (%v)", p, err))
 			continue
 		}
 		out = append(out, map[string]any{"name": name, "mime": mime, "data": base64.StdEncoding.EncodeToString(raw)})
 	}
-	return out
+	return out, skipped
 }

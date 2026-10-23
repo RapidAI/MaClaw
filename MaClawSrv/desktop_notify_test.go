@@ -149,8 +149,12 @@ func TestDesktopNotifyMainSendsSharedFileBytes(t *testing.T) {
 	defer func() { desktopRemoteNotify = nil; desktopNotifyReadFile = oldRead }()
 	inst := agentservice.Instance{ID: "inst_pub", Metadata: map[string]string{"hub_user_id": "alice", "hub_tenant_id": "tenant-a"}}
 	req := agentruntime.TurnRequest{Scope: agentruntime.Scope{RunID: "run_files"}, Input: agentservice.ExecuteRequest{Instance: inst}}
-	if _, err := desktopNotifyMain(context.Background(), req, map[string]any{"kind": "artifact", "message": "导出了", "paths": []any{"/home/desktop/orders.csv", "/home/desktop/missing.csv"}}); err != nil {
+	reply, err := desktopNotifyMain(context.Background(), req, map[string]any{"kind": "artifact", "message": "导出了", "paths": []any{"/home/desktop/orders.csv", "/home/desktop/missing.csv"}})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "missing.csv") || !strings.Contains(reply, "not attached") {
+		t.Fatalf("the bot is not told which file stayed behind: %q", reply)
 	}
 	files, _ := got["files"].([]map[string]any)
 	if len(files) != 1 || files[0]["name"] != "orders.csv" || files[0]["data"] != "YSxi" {
