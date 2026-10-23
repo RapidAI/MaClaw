@@ -680,6 +680,7 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 	if text, handled := e.consumeMailboxConfirmation(ctx, req); handled {
 		return &ExecuteResult{Content: text, OutputType: "text/plain"}, nil
 	}
+	recordUserCheckoutConfirmation(req)
 	llmCfg, err := ResolveLLMConfig(req.Config)
 	if err != nil {
 		return nil, err

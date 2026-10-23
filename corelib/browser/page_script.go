@@ -92,6 +92,9 @@ func (s *BrowserAgentSession) RunPageScriptForSite(script, siteHost string) (*Br
 	if !s.IsTargetAlive() {
 		return nil, fmt.Errorf("browser target is gone (destroyed or detached); retry the operation — session will auto-recover")
 	}
+	if err := s.guardCheckoutScript(script); err != nil {
+		return policyBlockResult(s, "browser_script", err)
+	}
 	// One guard read. A probe from this turn already has the flags, so a
 	// script that follows it does not walk the page before it clicks.
 	// A failed read stops the script (it must not click through a page it

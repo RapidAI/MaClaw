@@ -83,6 +83,9 @@ func (s *BrowserAgentSession) Navigate(url string) (*BrowserActionResult, error)
 	if kept := s.keptLoggedInDocument(url); kept != nil {
 		return kept, nil
 	}
+	if err := s.guardCheckoutNavigate(url); err != nil {
+		return policyBlockResult(s, "browser_navigate", err)
+	}
 	tabNote := ""
 	if err := validateNavigationPolicy(s.loggedInNavigationPolicy(url), url, currentDomainFromSession(s)); err != nil {
 		if !isCrossOriginDenied(err) {
@@ -490,6 +493,9 @@ func (s *BrowserAgentSession) Click(snapshotID, ref, selector string) (*BrowserA
 	if err := rejectDisabledRef(resolvedRef); err != nil {
 		return nil, err
 	}
+	if err := s.guardCheckoutClick(resolvedRef, selector, ""); err != nil {
+		return policyBlockResult(s, "browser_click", err)
+	}
 	submitKey := s.submitClickKey(resolvedRef, selector, "")
 	if err := s.guardSubmitClick(submitKey); err != nil {
 		return nil, err
@@ -545,6 +551,9 @@ func (s *BrowserAgentSession) ClickText(snapshotID, text string) (*BrowserAction
 	}
 	if err := rejectDisabledRef(resolvedRef); err != nil {
 		return nil, err
+	}
+	if err := s.guardCheckoutClick(resolvedRef, "", text); err != nil {
+		return policyBlockResult(s, "browser_click", err)
 	}
 	submitKey := s.submitClickKey(resolvedRef, "", text)
 	if err := s.guardSubmitClick(submitKey); err != nil {
