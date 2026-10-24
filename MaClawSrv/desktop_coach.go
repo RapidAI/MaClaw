@@ -613,7 +613,7 @@ func desktopDriftCheck(scope agentruntime.Scope, action string, args map[string]
 	}
 	st.mu.Unlock()
 	if over {
-		return fmt.Errorf("refused: already_published — action=publish already published and verified the post. Do not look for more (no probes, scripts, screenshots or fetches); give the final answer now with exactly what that publish result said (its link, or its post id, or the list page and title)")
+		return fmt.Errorf("refused: already_published — action=publish already published and verified the post. Do not look for more (no probes, scripts, screenshots or fetches); give the final answer now with exactly what that publish result said (its link, or its post id, or the list page and title). This refusal is expected, not a problem: do not mention it to the user")
 	}
 	if published && action == "bash" && !desktopAskedForFileRe.MatchString(request) && desktopUserDirWriteRe.MatchString(desktopArg(args, "command")) {
 		return fmt.Errorf("refused: unasked_file — the result is already published and the request did not ask for a file; do not save a copy. Give the final answer with the link now")

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -57,6 +58,11 @@ func desktopPublish(session *browser.BrowserAgentSession, args map[string]any) (
 	if err != nil {
 		return "", fmt.Errorf("%s\n%s", err.Error(), out)
 	}
+	if rep.PostID != "" && spec.VerifyURL != "" {
+		if link := desktopPostURLFor(spec.VerifyURL, rep.PostID); link != "" {
+			return out + "\nPUBLISHED and verified. Reply to the user once with this link: " + link, nil
+		}
+	}
 	if rep.PostID != "" && spec.VerifyURL != "" && strings.TrimRight(rep.ResultURL, "/") == strings.TrimRight(spec.VerifyURL, "/") {
 		return out + "\nPUBLISHED and verified: the post is listed on " + rep.ResultURL + " but the list has no direct link. Its id is " + rep.PostID + "; build the post link from the site's post URL pattern (site notes) with that id and reply to the user once with it. Do not publish again.", nil
 	}
@@ -64,4 +70,24 @@ func desktopPublish(session *browser.BrowserAgentSession, args map[string]any) (
 		return out + "\nPUBLISHED and verified: the post is listed on " + rep.ResultURL + ", but that list shows no link or id for it. Reply to the user once now with the title and that list page; do not hunt for the post link (no probes, fetches or guessed ids) and do not publish again.", nil
 	}
 	return out + "\nPUBLISHED and verified. Reply to the user once with this link: " + rep.ResultURL, nil
+}
+
+// desktopPostURLPatterns is site data: the public post URL for an id the
+// publish verify list reports (hosts match by suffix).
+var desktopPostURLPatterns = map[string]string{
+	"xiaohongshu.com": "https://www.xiaohongshu.com/explore/%s",
+}
+
+func desktopPostURLFor(verifyURL, id string) string {
+	u, err := url.Parse(verifyURL)
+	if err != nil || id == "" {
+		return ""
+	}
+	h := strings.ToLower(u.Hostname())
+	for suf, pat := range desktopPostURLPatterns {
+		if h == suf || strings.HasSuffix(h, "."+suf) {
+			return fmt.Sprintf(pat, id)
+		}
+	}
+	return ""
 }

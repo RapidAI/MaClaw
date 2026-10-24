@@ -25,3 +25,12 @@ func TestAfterVerifiedPublishStopsTheHunt(t *testing.T) {
 		t.Fatal("third step after a verified publish must be refused")
 	}
 }
+
+func TestPostURLForListedID(t *testing.T) {
+	if got := desktopPostURLFor("https://creator.xiaohongshu.com/new/note-manager", "6adbf6450000000024036add"); got != "https://www.xiaohongshu.com/explore/6adbf6450000000024036add" {
+		t.Fatal(got)
+	}
+	if desktopPostURLFor("https://example.com/list", "1") != "" {
+		t.Fatal("unknown host must give no link")
+	}
+}
