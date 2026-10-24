@@ -121,3 +121,14 @@ func TestPublishFlowXHSLikeStructuredBody(t *testing.T) {
 		t.Fatalf("upload %s", rep.String())
 	}
 }
+
+// A page that freezes after the publish click must not invite a second publish.
+func TestPublishFlowSubmitHangSaysClicked(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, _ := fixtureServer(t, "rich_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit?hang=1")
+	rep, err := RunPublish(d, PublishSpec{Title: "t 卡住", Body: "正文 **重点**", StepBudget: 5 * time.Second})
+	if err == nil || rep.Stuck != "submit" || !strings.Contains(err.Error(), "WAS clicked") || !strings.Contains(err.Error(), "do NOT click publish") {
+		t.Fatalf("err=%v rep=%s", err, rep.String())
+	}
+}

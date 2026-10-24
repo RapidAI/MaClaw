@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -115,10 +116,19 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 			ch <- res{d, e}
 		}(st.fn)
 		var r res
+		budget := spec.StepBudget
+		if st.name == "submit" || st.name == "verify_result" {
+			// After several pictures a rich editor answers slowly; the
+			// submit's own loop is bounded, so give it room to finish.
+			budget = 2 * spec.StepBudget
+		}
 		select {
 		case r = <-ch:
-		case <-time.After(spec.StepBudget + 5*time.Second):
-			r = res{"", fmt.Errorf("step exceeded its %s budget", spec.StepBudget)}
+		case <-time.After(budget + 5*time.Second):
+			r = res{"", fmt.Errorf("step exceeded its %s budget", budget)}
+			if p.submitClicked.Load() {
+				r.err = fmt.Errorf("%v after the publish button WAS clicked, so the post may already be published: do NOT click publish or run this action again; read it back once (open verify_url or the account's post list) and reply with its link", r.err)
+			}
 		}
 		step := PublishStep{Name: st.name, OK: r.err == nil, Detail: r.detail, TookMS: time.Since(start).Milliseconds()}
 		if r.err != nil {
@@ -134,10 +144,11 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 }
 
 type publishRun struct {
-	d       PublishDriver
-	spec    PublishSpec
-	rep     *PublishReport
-	editURL string
+	submitClicked atomic.Bool
+	d             PublishDriver
+	spec          PublishSpec
+	rep           *PublishReport
+	editURL       string
 	// pasteLater: no file input showed the images; paste them into the
 	// body editor after the text (paste_images step).
 	pasteLater bool
@@ -716,6 +727,8 @@ func (p *publishRun) clickText(texts []string, buttonsOnly bool) error {
 var publishDoneRe = regexp.MustCompile(`发布成功|已发布|发表成功|Published|published successfully`)
 
 func (p *publishRun) submit() (string, error) {
+	// Set before the click: a page that freezes on publish never answers it.
+	p.submitClicked.Store(true)
 	if err := p.clickText(p.spec.SubmitTexts, true); err != nil {
 		return "", err
 	}
