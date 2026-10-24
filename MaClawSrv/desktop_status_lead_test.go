@@ -32,3 +32,17 @@ func TestDropInternalStatusProtectionTalk(t *testing.T) {
 		t.Fatalf("%q", out)
 	}
 }
+
+func TestDropInternalStatusDesktopFail(t *testing.T) {
+	in := "核验结论：之前标记的 desktop 失败只有一处。\n\n**结论一：** 已发布。\n\n文章链接：https://x.com/p/3"
+	if out := dropInternalStatusLead(in); strings.Contains(out, "desktop") || !strings.Contains(out, "结论一") {
+		t.Fatalf("%q", out)
+	}
+}
+
+func TestDropInternalStatusKeepsDesktopPath(t *testing.T) {
+	in := "已发布：https://x.com/p/4\n\n文件在 /home/desktop/Desktop/a.docx"
+	if dropInternalStatusLead(in) != in {
+		t.Fatal("dropped a Desktop path line")
+	}
+}
