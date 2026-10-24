@@ -542,7 +542,7 @@ func desktopStepKey(runID, toolCallID string) string {
 	return runID + ":" + toolCallID
 }
 
-func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[string]any) (string, error) {
+func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[string]any) (out string, err error) {
 	scope = desktopOwner(scope)
 	if person, pinned := desktopPinnedPerson(ctx); pinned {
 		scope.UserID = person.UserID
@@ -841,13 +841,18 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 			return "", optErr
 		}
 		opts = desktopPinShotSize(opts)
-		shot, _, shotErr := desktopCaptureShot(ctx, scope, endpoint.Display, name, opts, opts.Region.Empty())
+		// The accessibility list is read before the capture so the screen
+		// YOLO gate knows how many elements it already has.
+		axBlock, shotCtx := "", ctx
+		if name == "" && opts.Region.Empty() {
+			axBlock = desktopAXFirstElements(ctx, scope, endpoint.Display)
+			shotCtx = withDesktopVisionHints(ctx, desktopVisionHints{AXCount: desktopAXElementCount(axBlock)})
+		}
+		shot, _, shotErr := desktopCaptureShot(shotCtx, scope, endpoint.Display, name, opts, opts.Region.Empty())
 		if shotErr != nil {
 			return "", shotErr
 		}
-		if name == "" && opts.Region.Empty() {
-			shot = desktopAXFirstElements(ctx, scope, endpoint.Display) + shot
-		}
+		shot = axBlock + shot
 		return withDesktopPages(shot, nil, endpoint.CDP, attached)
 	}
 
@@ -855,6 +860,16 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 	if err != nil {
 		return "", err
 	}
+	defer func() {
+		// Registered first so it runs after the disarm below, which waits briefly for a late chooser.
+		if session != nil && session.FileChooserBlocked() > 0 {
+			if err != nil {
+				err = fmt.Errorf("%w (%s)", err, desktopChooserBlockedNote)
+			} else {
+				out = strings.TrimRight(out, "\n") + "\n" + desktopChooserBlockedNote
+			}
+		}
+	}()
 	defer desktopArmChooserForRun(scope, action, session)()
 	// Extra copies of the same URL hide the control the next click needs.
 	// Close them before this step reads or changes the page.
@@ -2992,7 +3007,7 @@ func desktopCapture(ctx context.Context, scope agentruntime.Scope, display strin
 	if ctx != nil && mime == "image/png" && encoded != "" {
 		ctx = context.WithValue(ctx, desktopVisionEncodedKey{}, encoded)
 	}
-	if vision := desktopVisionText(ctx, data, clickPixels); vision != "" {
+	if vision := desktopVisionText(desktopEnsureVisionHints(ctx, scope, display), data, clickPixels); vision != "" {
 		// The vision block ends with the same click sentence. Leaving a
 		// second copy on the caption puts that order above the page list.
 		text = strings.Replace(text, "app_run click uses these pixel coordinates. ", "", 1)

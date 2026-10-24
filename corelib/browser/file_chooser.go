@@ -18,7 +18,12 @@ type fileChooserState struct {
 	mu      sync.Mutex
 	files   []string
 	handled chan error
+	block   bool // armed without files: swallow the chooser
+	blocked int  // choosers swallowed since the last FileChooserBlocked
 }
+
+// ErrFileChooserBlocked answers WaitFileChooser for a swallowed chooser.
+var ErrFileChooserBlocked = fmt.Errorf("native file chooser blocked")
 
 var fileChoosers sync.Map // *BrowserAgentSession -> *fileChooserState
 
@@ -43,6 +48,7 @@ func (s *BrowserAgentSession) ArmFileChooser(files []string) error {
 	st := s.chooserState()
 	st.mu.Lock()
 	st.files = append([]string(nil), files...)
+	st.block = false
 	st.handled = make(chan error, 1)
 	st.mu.Unlock()
 	_, _ = client.Send("Page.enable", nil, 3*time.Second)
@@ -51,6 +57,40 @@ func (s *BrowserAgentSession) ArmFileChooser(files []string) error {
 		return fmt.Errorf("setInterceptFileChooserDialog: %w", err)
 	}
 	return nil
+}
+
+// ArmFileChooserBlock intercepts file choosers without files to give: the
+// OS dialog does not open (a server desktop cannot use it) and the page's
+// input stays empty. FileChooserBlocked reports whether one was swallowed,
+// so the caller can point the model at the upload action instead.
+func (s *BrowserAgentSession) ArmFileChooserBlock() error {
+	client := s.cdpClient()
+	if client == nil {
+		return fmt.Errorf("no live browser session")
+	}
+	s.startEventPump()
+	st := s.chooserState()
+	st.mu.Lock()
+	st.files = nil
+	st.block = true
+	st.handled = make(chan error, 1)
+	st.mu.Unlock()
+	_, _ = client.Send("Page.enable", nil, 3*time.Second)
+	if _, err := client.Send("Page.setInterceptFileChooserDialog", map[string]interface{}{"enabled": true}, DefaultCmdTimeout); err != nil {
+		s.DisarmFileChooser()
+		return fmt.Errorf("setInterceptFileChooserDialog: %w", err)
+	}
+	return nil
+}
+
+// FileChooserBlocked returns and clears the count of swallowed choosers.
+func (s *BrowserAgentSession) FileChooserBlocked() int {
+	st := s.chooserState()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	n := st.blocked
+	st.blocked = 0
+	return n
 }
 
 // WaitFileChooser reports whether an intercepted chooser was answered.
@@ -74,7 +114,7 @@ func (s *BrowserAgentSession) WaitFileChooser(timeout time.Duration) (bool, erro
 func (s *BrowserAgentSession) DisarmFileChooser() {
 	st := s.chooserState()
 	st.mu.Lock()
-	st.files, st.handled = nil, nil
+	st.files, st.handled, st.block = nil, nil, false
 	st.mu.Unlock()
 	if client := s.cdpClient(); client != nil {
 		_, _ = client.Send("Page.setInterceptFileChooserDialog", map[string]interface{}{"enabled": false}, 3*time.Second)
@@ -93,10 +133,21 @@ func parseFileChooserOpened(params json.RawMessage) (int, string) {
 func (s *BrowserAgentSession) onFileChooserOpened(params json.RawMessage) {
 	st := s.chooserState()
 	st.mu.Lock()
-	files, ch := st.files, st.handled
+	files, ch, block := st.files, st.handled, st.block
 	st.files = nil
+	if ch != nil && block && len(files) == 0 {
+		st.blocked++
+	}
 	st.mu.Unlock()
 	node, mode := parseFileChooserOpened(params)
+	if ch != nil && block && len(files) == 0 {
+		log.Printf("[browser] native file chooser blocked session=%s node=%d (no files armed)", s.ID, node)
+		select {
+		case ch <- ErrFileChooserBlocked:
+		default:
+		}
+		return
+	}
 	if ch == nil || len(files) == 0 {
 		return // not ours; the dialog stays suppressed only while armed
 	}

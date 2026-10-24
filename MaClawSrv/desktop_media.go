@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -79,8 +80,19 @@ func desktopArmChooserForRun(scope agentruntime.Scope, action string, session *b
 		return func() {}
 	}
 	media := desktopPendingMedia(scope.RunID)
-	if len(media) == 0 || session == nil {
+	if session == nil {
 		return func() {}
+	}
+	if len(media) == 0 {
+		// No file to give: still keep the OS chooser closed. On a server
+		// desktop it only strands the run in a native dialog (XHS-3).
+		if !desktopChooserBlockEnabled() || session.ArmFileChooserBlock() != nil {
+			return func() {}
+		}
+		return func() {
+			_, _ = session.WaitFileChooser(400 * time.Millisecond)
+			session.DisarmFileChooser()
+		}
 	}
 	session.Policy.AllowUpload = true
 	if session.ArmFileChooser(media[len(media)-1:]) != nil {
@@ -91,3 +103,17 @@ func desktopArmChooserForRun(scope agentruntime.Scope, action string, session *b
 		session.DisarmFileChooser()
 	}
 }
+
+// desktopChooserBlockEnabled: MACLAW_DESKTOP_BLOCK_FILE_CHOOSER=off lets the
+// OS file chooser open for page actions of runs without media.
+func desktopChooserBlockEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("MACLAW_DESKTOP_BLOCK_FILE_CHOOSER"))) {
+	case "0", "off", "false", "no":
+		return false
+	}
+	return true
+}
+
+// desktopChooserBlockedNote is added to a page action whose click tried to
+// open the native file chooser while no file was armed.
+const desktopChooserBlockedNote = "The page tried to open the system file chooser; it was kept closed (no file was set). To attach a file use action=upload with files=[...] (or the publish action's images), not a click on the upload button."

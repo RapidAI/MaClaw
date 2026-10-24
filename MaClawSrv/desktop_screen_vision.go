@@ -9,7 +9,6 @@ import (
 	"log"
 	"runtime/debug"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -92,84 +91,90 @@ func (m *srvAIModelManager) screenVision(ctx context.Context, png []byte, clickP
 		return ""
 	}
 	ocrReady := m.ocrTierReady()
-	yoloReady, _ := yolowFileReady(m.modelPath(srvOmniParserFilename))
-	yoloReady = yoloReady && desktopScreenYOLOEnabled()
-	if !ocrReady && !yoloReady {
+	mode := desktopScreenYOLOMode()
+	// YOLO only ever runs on the shared model service; without one the
+	// detector is never considered (no per-process 2 GB load).
+	yoloPossible := mode != desktopYOLOModeOff && m.remote != nil
+	if !ocrReady && !yoloPossible {
 		return ""
 	}
 	if desktopPNGTooLarge(png) {
 		return ""
 	}
-	// One inference at a time. A step that timed out leaves its inference
-	// running; stacking another OCR+OmniParser pass on top of it holds two
-	// sets of im2col buffers and pushed papers (8 GB) into the OOM killer.
-	// A screenshot taken while one is still running goes without vision.
+	// One observation at a time. A step that timed out leaves its inference
+	// running; stacking another pass on top of it pushed papers (8 GB) into
+	// the OOM killer. A screenshot taken meanwhile goes without vision.
 	if !acquireDesktopVision(ctx) {
 		log.Printf("[desktop-vision] skipped: another screen_vision is still running")
 		return ""
 	}
 	encoded := desktopVisionEncodedPNG(ctx, png)
-	var (
-		wg       sync.WaitGroup
+	hints := desktopVisionHintsFrom(ctx)
+	type result struct {
 		elements []taskengine.UIElement
 		lines    []taskengine.OCRResult
-	)
-	// OmniParser and OCR run one after the other, not side by side: the two
-	// passes together peak near 1 GB, more than the service limit allows on
-	// top of the loaded models.
-	yoloDone := make(chan struct{})
-	if yoloReady {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer close(yoloDone)
-			if ctx != nil && ctx.Err() != nil {
-				return
-			}
-			found, err := m.detectUI(ctx, encoded)
-			if err != nil {
-				log.Printf("[desktop-vision] omniparser: %v", err)
-				return
-			}
-			elements = found
-		}()
-	} else {
-		close(yoloDone)
 	}
-	if ocrReady {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			<-yoloDone
-			if ctx != nil && ctx.Err() != nil {
-				return
-			}
+	finished := make(chan result, 1)
+	go func() {
+		defer releaseDesktopVision()
+		start := time.Now()
+		mt := desktopVisionMetrics{AXCount: hints.AXCount}
+		var res result
+		// OCR first: its line count is part of the YOLO gate.
+		if ocrReady && (ctx == nil || ctx.Err() == nil) {
+			t := time.Now()
 			found, err := m.recognizeOCR(ctx, encoded)
+			mt.OCRMs = time.Since(t).Milliseconds()
 			if err != nil {
 				log.Printf("[desktop-vision] ocr: %v", err)
-				return
+			} else {
+				res.lines = taskOCRFromBrowser(found)
 			}
-			lines = taskOCRFromBrowser(found)
-		}()
-	}
-	if ctx == nil {
-		wg.Wait()
-		releaseDesktopVision()
-		return finishScreenVision(elements, lines, png, clickPixels)
-	}
-	finished := make(chan struct{})
-	go func() {
-		wg.Wait()
-		releaseDesktopVision()
-		close(finished)
+		}
+		mt.OCRLines = len(res.lines)
+		var dec desktopYOLODecision
+		switch {
+		case mode == desktopYOLOModeOff:
+			dec = desktopYOLODecision{false, "mode_off"}
+		case m.remote == nil:
+			dec = desktopYOLODecision{false, "no_model_service"}
+		default:
+			class, title, winOK := "", "", false
+			if mode == desktopYOLOModeAuto && clickPixels && hints.Window != nil {
+				class, title, winOK = hints.Window()
+			}
+			mt.WindowClass = class
+			dec = decideDesktopYOLO(mode, clickPixels, class, title, winOK, mt.OCRLines, hints.AXCount, desktopScreenYOLOMinElements())
+		}
+		if dec.Run && (ctx == nil || ctx.Err() == nil) {
+			t := time.Now()
+			found, peak, err := m.desktopDetectViaService(ctx, encoded)
+			mt.YOLOMs = time.Since(t).Milliseconds()
+			mt.SvcPeakKB = peak
+			if err != nil {
+				dec = desktopYOLODecision{false, dec.Reason + "/skipped_" + desktopYOLOSkipReason(err)}
+				log.Printf("[desktop-vision] omniparser skipped: %v", err)
+			} else {
+				res.elements = found
+				mt.YOLOElems = len(found)
+			}
+		}
+		mt.YOLO, mt.Reason = dec.Run, dec.Reason
+		mt.TotalMs = time.Since(start).Milliseconds()
+		desktopVisionLog(mt.line())
+		finished <- res
 	}()
+	var done <-chan struct{}
+	if ctx != nil {
+		done = ctx.Done()
+	}
 	select {
-	case <-finished:
-		if ctx.Err() != nil {
+	case res := <-finished:
+		if ctx != nil && ctx.Err() != nil {
 			return ""
 		}
-		return finishScreenVision(elements, lines, png, clickPixels)
-	case <-ctx.Done():
+		return finishScreenVision(res.elements, res.lines, png, clickPixels)
+	case <-done:
 		// Inference may still be running. The turn is over, so this tool
 		// result does not wait for it.
 		return ""

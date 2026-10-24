@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"os"
 	"runtime/debug"
-	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/modelmanager"
 	_ "github.com/RapidAI/CodeClaw/corelib/onnxrt"
@@ -14,9 +12,10 @@ import (
 // screenshots from parallel steps or bots run it one at a time.
 var desktopYOLOSem = make(chan struct{}, 1)
 
-// desktopScreenYOLOEnabled lets MACLAW_SCREEN_YOLO=off skip the detector.
+// desktopScreenYOLOEnabled is false only for MACLAW_SCREEN_YOLO=off; auto
+// (the default) still gates each screenshot in decideDesktopYOLO.
 func desktopScreenYOLOEnabled() bool {
-	return !strings.EqualFold(strings.TrimSpace(os.Getenv("MACLAW_SCREEN_YOLO")), "off")
+	return desktopScreenYOLOMode() != desktopYOLOModeOff
 }
 
 // desktopAcquireYOLO waits for the detector slot. The release hands the

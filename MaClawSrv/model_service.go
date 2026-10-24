@@ -58,6 +58,8 @@ type modelServiceOCRResp struct {
 }
 type modelServiceDetectResp struct {
 	Elements []taskengine.UIElement `json:"elements"`
+	// PeakRSSKB is the model service's VmHWM after the pass (0 off Linux).
+	PeakRSSKB int64 `json:"peak_rss_kb,omitempty"`
 }
 type modelServiceErr struct {
 	Error string `json:"error"`
@@ -284,6 +286,12 @@ func newModelServiceHandlerWith(m *srvAIModelManager, res *modelResidency, mu *s
 				return
 			}
 			mu.Lock()
+			if r.Context().Err() != nil {
+				// The caller gave up while queued (e.g. the screen YOLO
+				// timeout); do not run an inference nobody will read.
+				mu.Unlock()
+				return
+			}
 			if res != nil {
 				res.before(models[path])
 			}
@@ -354,7 +362,7 @@ func newModelServiceHandlerWith(m *srvAIModelManager, res *modelResidency, mu *s
 			return nil, err
 		}
 		res, err := m.detectUI(r.Context(), in.PNGBase64)
-		return modelServiceDetectResp{Elements: res}, err
+		return modelServiceDetectResp{Elements: res, PeakRSSKB: procStatusKB("VmHWM")}, err
 	})
 	// Heap profile for memory diagnosis; only reachable through the 0660 socket.
 	mux.Handle("/debug/pprof/heap", pprof.Handler("heap"))

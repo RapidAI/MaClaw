@@ -193,7 +193,7 @@ func desktopCaptureShot(ctx context.Context, scope agentruntime.Scope, display, 
 		noteDesktopSavedPath(ctx, saved)
 	}
 	if shot.MIME == "image/png" {
-		if vision := desktopVisionText(ctx, shot.Data, clickPixels && !zoom); vision != "" {
+		if vision := desktopVisionText(desktopEnsureVisionHints(ctx, scope, display), shot.Data, clickPixels && !zoom); vision != "" {
 			text += "\n" + vision
 		}
 	}
