@@ -97,6 +97,9 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 		fmt.Fprintf(&stable, "You are %s, %s: %s. Handle this as a low-complexity turn; prefer a concise answer and only use tools when necessary.\n", roleName, roleTitle, roleDesc)
 		stable.WriteString(PromptOutputFormatRules)
 		stable.WriteString(lightCorePrinciples(cfg.LiveDataFactTurn))
+		if promptIsWritingTask(userMessage) {
+			stable.WriteString(PromptWritingRules)
+		}
 		if EnableDiagramRendering(cfg) {
 			stable.WriteString(PromptVisualizationRulesLight)
 		}
@@ -108,6 +111,7 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 		fmt.Fprintf(&stable, "You are %s, %s: %s. Handle this turn with the tools currently listed; do not invent a larger catalog.\n", roleName, roleTitle, roleDesc)
 		stable.WriteString(PromptOutputFormatRules)
 		stable.WriteString(PromptCorePrinciplesManaged)
+		stable.WriteString(PromptWritingRules)
 		if EnableDiagramRendering(cfg) {
 			stable.WriteString(PromptVisualizationRulesLight)
 		}
@@ -124,6 +128,7 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 		if EnableDiagramRendering(cfg) {
 			stable.WriteString(PromptVisualizationRules)
 		}
+		stable.WriteString(PromptWritingRules)
 		stable.WriteString(PromptWorkingStateContract)
 		stable.WriteString(PromptEvidenceBoundFactualRules)
 		if deps.HasKnowledgeBase {
