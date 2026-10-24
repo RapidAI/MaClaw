@@ -3141,7 +3141,7 @@ func replaceLeakedMonologue(text string) string {
 }
 
 // Words that only make sense inside the runtime (tool status lines, guards).
-var desktopInternalStatusRe = regexp.MustCompile("(?i)`?desktop: ?error`?|progress_where|runtime tool|refused|already_published|宿主|\\bdeliver\\b|\\bguard\\b")
+var desktopInternalStatusRe = regexp.MustCompile("(?i)`?desktop:? ?(error|报错)`?|PUBLISHED|保护|写入保护|^文件路径：/tmp/|progress_where|runtime tool|refused|already_published|宿主|\\bdeliver\\b|\\bguard\\b")
 
 // dropInternalStatusLead removes leading paragraphs that talk about the
 // runtime's own status lines instead of the result, when a later paragraph
