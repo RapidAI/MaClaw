@@ -310,3 +310,18 @@ func TestPublishFlowTabAsTrigger(t *testing.T) {
 		t.Fatalf("published %+v", site.published)
 	}
 }
+
+// No file input: images are pasted into the rich body editor.
+func TestPublishFlowPastesImagesIntoEditor(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "paste_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit")
+	rep, err := RunPublish(d, PublishSpec{Files: []string{fixtureImage(t)}, Title: "Hugging Face Daily Papers 10.18 摘要", Body: fixtureBody, StepBudget: 20 * time.Second})
+	t.Log(rep.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(site.published) != 1 || !strings.Contains(rep.String(), "pasted 1 image") {
+		t.Fatalf("published %+v", site.published)
+	}
+}

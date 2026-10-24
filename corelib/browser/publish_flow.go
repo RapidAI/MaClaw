@@ -9,8 +9,11 @@ package browser
 // root, closed ones included, via the CDP DOM tree).
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -52,7 +55,7 @@ type PublishReport struct {
 	// PostID is an id-like attribute value found on the listed post when the
 	// list has no direct link to it (verify_url pages often render cards).
 	PostID string `json:"post_id,omitempty"`
-	Stuck     string        `json:"stuck,omitempty"`
+	Stuck  string `json:"stuck,omitempty"`
 }
 
 func (r *PublishReport) String() string {
@@ -95,6 +98,7 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 		{"upload", len(spec.Files) == 0, p.upload},
 		{"fill_title", spec.Title == "", p.fillTitle},
 		{"fill_body", spec.Body == "", p.fillBody},
+		{"paste_images", len(spec.Files) == 0 || spec.Body == "", p.pasteImages},
 		{"readback", spec.Title == "" && spec.Body == "", p.readback},
 		{"submit", false, p.submit},
 		{"verify_result", false, p.verify},
@@ -137,6 +141,9 @@ type publishRun struct {
 	spec    PublishSpec
 	rep     *PublishReport
 	editURL string
+	// pasteLater: no file input showed the images; paste them into the
+	// body editor after the text (paste_images step).
+	pasteLater bool
 }
 
 func (p *publishRun) send(method string, params interface{}) (json.RawMessage, error) {
@@ -248,7 +255,7 @@ func (p *publishRun) observe() (string, error) {
 			return detail, fmt.Errorf("no editor found; pass body_selector")
 		}
 	}
-	if len(p.spec.Files) > 0 && o.Files == 0 && p.spec.UploadTrigger == "" && p.spec.UploadSelector == "" {
+	if len(p.spec.Files) > 0 && o.Files == 0 && p.spec.UploadTrigger == "" && p.spec.UploadSelector == "" && !(o.Body && isImageExt(fileExt(p.spec.Files))) {
 		return detail, fmt.Errorf("no file input on the page; pass upload_trigger (the upload button text)")
 	}
 	return detail, nil
@@ -320,6 +327,9 @@ func (p *publishRun) upload() (string, error) {
 			return "", fmt.Errorf("clicking %q opened no file chooser (err=%v)", p.spec.UploadTrigger, err)
 		}
 		how = "intercepted chooser"
+	} else if p.canPasteImages() {
+		p.pasteLater = true
+		return "no image file input; will paste the images into the body editor after the text", nil
 	} else {
 		return "", fmt.Errorf("no matching file input; pass upload_selector or upload_trigger")
 	}
@@ -330,6 +340,10 @@ func (p *publishRun) upload() (string, error) {
 			return fmt.Sprintf("uploaded %d file(s) via %s; page shows it (files=%d previews=%d imgs %d->%d)", len(p.spec.Files), how, after.Files, after.Blobs+after.Bg, before.Imgs, after.Imgs), nil
 		}
 		if time.Now().After(deadline) {
+			if p.canPasteImages() {
+				p.pasteLater = true
+				return fmt.Sprintf("files set via %s showed nothing; will paste the images into the body editor after the text", how), nil
+			}
 			return "", fmt.Errorf("files set via %s but the page shows no file, preview or image for them; nothing was submitted. Use the editor's own image/upload button as upload_trigger (its visible text) and run publish again", how)
 		}
 		time.Sleep(300 * time.Millisecond)
@@ -768,3 +782,71 @@ func isImageExt(ext string) bool {
 // publishImageTabJS clicks a visible, short tab/button whose label names an
 // image post ("上传图文", "图文", "Image", "Photo").
 const publishImageTabJS = `(() => { const res = [/^(上传)?图文$|^(image|photo) posts?$/i, /^(上传)?图片$|^(upload )?(images?|photos?)$/i]; const vis = e => e.getClientRects().length > 0; const all = [...document.querySelectorAll('[role=tab],button,a,span,div')].filter(e => vis(e) && e.children.length <= 2); let e = null; for (const re of res) { const c = all.filter(x => re.test((x.innerText || '').trim())); if (c.length) { e = c[c.length - 1]; break; } } if (!e) return 'none'; e.click(); return 'clicked'; })()`
+
+// canPasteImages: image files and a rich body editor; editors such as Zhihu's
+// take pictures pasted into the text rather than through a file input.
+func (p *publishRun) canPasteImages() bool {
+	if p.spec.Body == "" || !isImageExt(fileExt(p.spec.Files)) {
+		return false
+	}
+	obj, err := p.element(p.bodyExpr())
+	if err != nil || obj == "" {
+		return false
+	}
+	v, _ := p.call(obj, `function() { return this.isContentEditable ? 'yes' : 'no'; }`)
+	return v == "yes"
+}
+
+// pasteImages pastes the files at the end of the body editor as a clipboard
+// paste of image files, then waits for the editor to show more <img>.
+func (p *publishRun) pasteImages() (string, error) {
+	if !p.pasteLater {
+		return "not needed", nil
+	}
+	obj, err := p.element(p.bodyExpr())
+	if err != nil || obj == "" {
+		return "", fmt.Errorf("body editor not found for pasting images")
+	}
+	count := `function() { return String(this.querySelectorAll('img').length); }`
+	before, _ := p.call(obj, count)
+	var items []string
+	for _, f := range p.spec.Files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			return "", fmt.Errorf("read %s: %v", f, err)
+		}
+		mime := "image/png"
+		switch strings.ToLower(filepath.Ext(f)) {
+		case ".jpg", ".jpeg":
+			mime = "image/jpeg"
+		case ".webp":
+			mime = "image/webp"
+		case ".gif":
+			mime = "image/gif"
+		}
+		items = append(items, fmt.Sprintf(`[%s,%s,%s]`, jsq(base64.StdEncoding.EncodeToString(b)), jsq(filepath.Base(f)), jsq(mime)))
+	}
+	pasted := 0
+	for _, it := range items {
+		fn := `function() { const it = ` + it + `; const bin = atob(it[0]); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); const f = new File([u], it[1], {type: it[2]}); this.focus(); const sel = getSelection(); const r = document.createRange(); r.selectNodeContents(this); r.collapse(false); sel.removeAllRanges(); sel.addRange(r); const dt = new DataTransfer(); dt.items.add(f); this.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true})); return 'ok'; }`
+		if v, err := p.call(obj, fn); err != nil || v != "ok" {
+			return "", fmt.Errorf("paste image %d failed: %v", pasted+1, err)
+		}
+		pasted++
+		time.Sleep(1500 * time.Millisecond)
+	}
+	deadline := time.Now().Add(minDur(p.spec.StepBudget, 20*time.Second))
+	for {
+		after, _ := p.call(obj, count)
+		var a, b int
+		fmt.Sscan(after, &a)
+		fmt.Sscan(before, &b)
+		if a > b {
+			return fmt.Sprintf("pasted %d image(s) into the body; editor imgs %d->%d", pasted, b, a), nil
+		}
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("pasted %d image(s) but the editor shows no new image (imgs %d); nothing was submitted", pasted, a)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
