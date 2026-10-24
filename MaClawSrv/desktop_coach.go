@@ -54,6 +54,8 @@ type desktopProgress struct {
 	warned70    bool
 	warned90    bool
 	publishSeen bool
+	// publishRan: the publish action itself ran at least once.
+	publishRan bool
 	// publishVerified: action=publish returned PUBLISHED and verified;
 	// afterPublish counts the desktop steps taken after it.
 	publishVerified bool
@@ -226,6 +228,9 @@ func desktopProgressNote(scope agentruntime.Scope, action string, out string, er
 		p.publishResult = desktopPublishSummary(out)
 		p.publishSeen = true
 		desktopNotePublishedLink(scope.RunID, out)
+	}
+	if action == "publish" {
+		p.publishRan = true
 	}
 	if err != nil && action == "publish" && strings.Contains(err.Error(), "WAS clicked") {
 		// The submit went out; the post is (very likely) up. From here on
@@ -618,6 +623,7 @@ func desktopDriftCheck(scope agentruntime.Scope, action string, args map[string]
 	st.mu.Lock()
 	inBrowser := p.lastURL != ""
 	published := p.publishSeen
+	publishRan := p.publishRan
 	over := false
 	result := p.publishResult
 	if p.publishVerified && action != "publish" {
@@ -627,6 +633,12 @@ func desktopDriftCheck(scope agentruntime.Scope, action string, args map[string]
 	st.mu.Unlock()
 	if over {
 		return fmt.Errorf("refused: already_published — action=publish already published and verified the post. Its result: %s. Do not look for more (no probes, scripts, screenshots or fetches) and do not doubt it: give the final answer now saying it is published, with that link (or post id, or list page and title). This refusal is expected, not a problem: do not mention it to the user", result)
+	}
+	if err := desktopAvoidListCheck(action, args, request); err != nil {
+		return err
+	}
+	if err := desktopHandPublishCheck(action, args, request, p.lastURL, publishRan); err != nil {
+		return err
 	}
 	if err := desktopManualImageCheck(action, args, request, published); err != nil {
 		return err
@@ -681,4 +693,70 @@ func desktopPublishSummary(out string) string {
 		out = string(r[:300])
 	}
 	return out
+}
+
+// A request that lists papers (arXiv ids) not to pick.
+var (
+	desktopAvoidWordRe = regexp.MustCompile(`(?i)不要选|别选|不要用|避开|排除|写过|已用|avoid|exclude|except|not these|already (used|covered|written)`)
+	desktopArxivIDRe   = regexp.MustCompile(`\b(\d{4}\.\d{4,5})(?:v\d+)?\b`)
+	desktopPublishAskRe = regexp.MustCompile(`(?i)(发布|发表|发到|发在|贴到|投到)[^。\n]{0,12}(知乎|小红书|微博|公众号|头条|掘金|csdn|b站|专栏|博客|账号)|(post|publish)\b[^.\n]{0,30}\b(to|on)\b`)
+	desktopPublishButtonRe = regexp.MustCompile(`(?i)["'“「](发布|发表|立即发布|确认发布|发布文章|发布笔记|publish|post)["'”」]`)
+)
+
+func desktopAvoidIDs(request string) map[string]bool {
+	if !desktopAvoidWordRe.MatchString(request) {
+		return nil
+	}
+	ids := map[string]bool{}
+	for _, m := range desktopArxivIDRe.FindAllStringSubmatch(request, -1) {
+		ids[m[1]] = true
+	}
+	return ids
+}
+
+func desktopArgsText(args map[string]any) string {
+	b, _ := json.Marshal(args)
+	return string(b)
+}
+
+// desktopAvoidListCheck (generic): a post or saved draft may not carry a paper
+// the request said to avoid (XHS-27 published one from the list).
+func desktopAvoidListCheck(action string, args map[string]any, request string) error {
+	switch action {
+	case "publish", "rich_fill", "type", "file_write", "batch":
+	default:
+		return nil
+	}
+	ids := desktopAvoidIDs(request)
+	if len(ids) == 0 {
+		return nil
+	}
+	for _, m := range desktopArxivIDRe.FindAllStringSubmatch(desktopArgsText(args), -1) {
+		if ids[m[1]] {
+			return fmt.Errorf("refused: avoid_list — arXiv %s is in the request's list of papers not to pick. Choose a different paper that is not on that list, then write and publish that one", m[1])
+		}
+	}
+	return nil
+}
+
+// desktopHandPublishCheck (generic): on a publish task the publish action does
+// the fill, submit and read-back; a hand click of the publish button (or a
+// desktop click on an editor page) before that action ran skips its checks
+// (XHS-26 posted by hand).
+func desktopHandPublishCheck(action string, args map[string]any, request, url string, publishRan bool) error {
+	if publishRan || !desktopPublishAskRe.MatchString(request) || !desktopEditURLRe.MatchString(strings.SplitN(url, "?", 2)[0]) {
+		return nil
+	}
+	hand := false
+	switch action {
+	case "app_run", "computer":
+		hand = true
+	case "click", "script", "batch":
+		t := desktopArgsText(args)
+		hand = desktopPublishButtonRe.MatchString(strings.ReplaceAll(t, `\"`, `"`)) && strings.Contains(strings.ToLower(t), "click")
+	}
+	if !hand {
+		return nil
+	}
+	return fmt.Errorf("refused: hand_publish — this is a publish task and the page is the editor: do not click publish yourself. Run action=publish once with the title, the full body and the picture files; it fills, submits and reads the post back")
 }
