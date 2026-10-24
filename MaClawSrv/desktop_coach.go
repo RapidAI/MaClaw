@@ -213,6 +213,9 @@ func desktopProgressNote(scope agentruntime.Scope, action string, out string, er
 	if err == nil && len(p.filled) > 0 && desktopPublishAttemptRe.MatchString(out) {
 		p.publishTried = true
 	}
+	if p.publishTried {
+		desktopNoteEditLink(scope.RunID, p.lastURL)
+	}
 	if err == nil && p.publishTried && !p.publishSeen && !p.readBackHinted && p.lastURL != p.writeURL && !desktopEditURLRe.MatchString(strings.SplitN(p.lastURL, "?", 2)[0]) && !desktopVerifiedResult(p, out) {
 		p.readBackHinted = true
 		notes = append(notes, "Submitted and the page moved to "+p.lastURL+". Read it back ONCE (one script returning location.href, the title and the first lines of the body), then report.")

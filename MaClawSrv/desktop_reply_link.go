@@ -27,6 +27,10 @@ func desktopNotePublishedLink(runID, out string) {
 // appended when the reply does not already contain it.
 func desktopReplyWithLink(runID, content string) string {
 	v, ok := desktopPublishedLinks.LoadAndDelete(runID)
+	cand, hasCand := desktopEditLinks.LoadAndDelete(runID)
+	if !ok && hasCand && desktopReplySaysPublishedRe.MatchString(content) {
+		v, ok = cand, true
+	}
 	if !ok || runID == "" {
 		return content
 	}
@@ -48,4 +52,21 @@ func desktopNotePublishedURL(runID, u string) {
 		return
 	}
 	desktopPublishedLinks.LoadOrStore(runID, u)
+}
+
+// A publish clicked by script on an editor page (…/p/123/edit) leaves the
+// tab on the editor; ZN-5 read the post back elsewhere and replied
+// "已发布" without a link. The editor URL minus /edit is the post, used only
+// when the reply itself says it was published.
+var (
+	desktopEditLinks            sync.Map
+	desktopEditSuffixRe         = regexp.MustCompile(`^(https?://[^?#]+?)/edit/?$`)
+	desktopReplySaysPublishedRe = regexp.MustCompile(`(?i)已发布|发布成功|已发表|发表成功|\bpublished\b`)
+)
+
+func desktopNoteEditLink(runID, u string) {
+	u = strings.SplitN(strings.TrimSpace(u), "?", 2)[0]
+	if m := desktopEditSuffixRe.FindStringSubmatch(u); m != nil && runID != "" {
+		desktopEditLinks.Store(runID, m[1])
+	}
 }
