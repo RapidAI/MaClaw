@@ -697,9 +697,9 @@ func desktopPublishSummary(out string) string {
 
 // A request that lists papers (arXiv ids) not to pick.
 var (
-	desktopAvoidWordRe = regexp.MustCompile(`(?i)不要选|别选|不要用|避开|排除|写过|已用|avoid|exclude|except|not these|already (used|covered|written)`)
-	desktopArxivIDRe   = regexp.MustCompile(`\b(\d{4}\.\d{4,5})(?:v\d+)?\b`)
-	desktopPublishAskRe = regexp.MustCompile(`(?i)(发布|发表|发到|发在|贴到|投到)[^。\n]{0,12}(知乎|小红书|微博|公众号|头条|掘金|csdn|b站|专栏|博客|账号)|(post|publish)\b[^.\n]{0,30}\b(to|on)\b`)
+	desktopAvoidWordRe     = regexp.MustCompile(`(?i)不要选|别选|不要用|避开|排除|写过|已用|avoid|exclude|except|not these|already (used|covered|written)`)
+	desktopArxivIDRe       = regexp.MustCompile(`\b(\d{4}\.\d{4,5})(?:v\d+)?\b`)
+	desktopPublishAskRe    = regexp.MustCompile(`(?i)(发布|发表|发到|发在|贴到|投到)[^。\n]{0,12}(知乎|小红书|微博|公众号|头条|掘金|csdn|b站|专栏|博客|账号)|(post|publish)\b[^.\n]{0,30}\b(to|on)\b`)
 	desktopPublishButtonRe = regexp.MustCompile(`(?i)["'“「](发布|发表|立即发布|确认发布|发布文章|发布笔记|publish|post)["'”」]`)
 )
 
