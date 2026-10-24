@@ -279,7 +279,7 @@ func (p *publishRun) upload() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if obj == "" && p.spec.UploadTrigger == "" && isImageExt(fileExt(p.spec.Files)) {
+	if obj == "" && isImageExt(fileExt(p.spec.Files)) {
 		// Editors with media tabs (video first) only mount the image input
 		// once the image tab is chosen; pick it once and look again.
 		if v, _ := p.eval(publishImageTabJS); v == "clicked" {

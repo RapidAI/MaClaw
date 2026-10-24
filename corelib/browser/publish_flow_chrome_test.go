@@ -295,3 +295,18 @@ func TestPublishFlowPicksImageTab(t *testing.T) {
 		t.Fatalf("published %+v", site.published)
 	}
 }
+
+// A trigger naming the image tab (not a chooser button) still uploads.
+func TestPublishFlowTabAsTrigger(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "tabs_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit")
+	rep, err := RunPublish(d, PublishSpec{Files: []string{fixtureImage(t)}, UploadTrigger: "上传图文", Title: "10.18 HF论文精选｜速读", Body: fixtureBody, VerifyURL: srv.URL + "/notes", StepBudget: 20 * time.Second})
+	t.Log(rep.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(site.published) != 1 {
+		t.Fatalf("published %+v", site.published)
+	}
+}
