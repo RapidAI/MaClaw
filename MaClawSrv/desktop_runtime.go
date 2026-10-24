@@ -156,6 +156,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 				"submit_texts":    map[string]any{"type": "array", "description": "publish: exact text of the publish button(s), e.g. [\"发布\"]", "items": map[string]any{"type": "string"}},
 				"confirm_texts":   map[string]any{"type": "array", "description": "publish: exact text of a second confirm button if the site asks", "items": map[string]any{"type": "string"}},
 				"verify_url":      map[string]any{"type": "string", "description": "publish: page to open after submit where the new post must be listed"},
+				"editor_url":      map[string]any{"type": "string", "description": "publish: the site's editor page; publish opens it itself (known sites need none)"},
 				"edit_url":        map[string]any{"type": "string", "description": "publish: edit page of a published post ({url} = post URL), used to put back a lost picture"},
 				"plan":            map[string]any{"type": "array", "description": "batch: desktop steps run in order in one call, each an object with its own action (script, rich_fill, navigate, probe, click, type, press, wait) and that action's fields; stops at the first failure", "items": map[string]any{"type": "object"}},
 				"offers":          desktopShopOffersSchema(),
@@ -275,6 +276,7 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	if npErr == nil {
 		npErr = desktopAfterPublishCheck(desktopOwner(scope), actionName, args)
 	}
+	desktopNoteTaskSpec(scope.RunID, desktopMessageText(request))
 	if npErr == nil {
 		npErr = desktopDriftCheck(desktopOwner(scope), actionName, args, desktopMessageText(request))
 	}

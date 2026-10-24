@@ -35,7 +35,7 @@ var desktopPublishPlan = map[desktopPublishPhase]struct {
 	next    string
 }{
 	phaseResearch: {allow("probe", "script", "navigate", "bash", "file_read", "file_write", "file_edit", "file_list", "skill_list", "skill_run", "wait", "request_takeover", "publish", "check_inbox", "batch", "app_open"),
-		"read pages as text (probe/script/fetch with bash), prepare the title, the full body with [[img:N]] anchors and the picture files under /tmp, open the editor, then call action=publish"},
+		"read pages as text (probe/script/fetch with bash), prepare the title, the full body with [[img:N]] anchors and the picture files under /tmp, then call action=publish; it opens the site's editor itself"},
 	phaseCompose: {allow("bash", "file_read", "file_write", "file_edit", "file_list", "navigate", "probe", "request_takeover", "publish", "app_open"),
 		"the editor is open: put everything in with action=publish (title=, body=, files=, verify_url=); it uploads, fills, submits and reads the post back"},
 	phaseSubmitted: {allow("navigate", "probe", "publish", "request_takeover"),

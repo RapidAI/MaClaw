@@ -41,8 +41,21 @@ func TestPublishRecordStatesTell(t *testing.T) {
 	}
 }
 
-func TestDesktopEditURLForIsSiteData(t *testing.T) {
-	if desktopEditURLFor("https://www.zhihu.com/creator/manage/creation/article") != "{url}/edit" || desktopEditURLFor("https://www.xiaohongshu.com/x") != "" || desktopEditURLFor("") != "" {
-		t.Fatal("edit url pattern lookup")
+func TestDesktopTaskSpecTargets(t *testing.T) {
+	zn := desktopTaskSpecOf("随机选一篇论文写解读，直接发布到我的知乎专栏。不要选这些已经写过的论文：2610.11765。")
+	if zn.Site != "zhihu" || zn.EditorURL == "" || zn.EditURL != "{url}/edit" || !zn.Avoid["2610.11765"] {
+		t.Fatalf("%+v", zn)
+	}
+	x := desktopTaskSpecOf("写一篇笔记，直接发布到我的小红书账号")
+	if x.Site != "xiaohongshu" || x.VerifyURL == "" || x.EditURL != "" {
+		t.Fatalf("%+v", x)
+	}
+	if s := desktopTaskSpecOf("帮我看看知乎上关于这篇论文的讨论"); s.EditorURL != "" {
+		t.Fatalf("not a publish task: %+v", s)
+	}
+	desktopNoteTaskSpec("run-ts", "发布到我的知乎专栏")
+	desktopNoteTaskSpec("run-ts", "发布到我的小红书账号")
+	if desktopTaskSpecFor("run-ts").Site != "zhihu" {
+		t.Fatal("the first request of a run fixes its spec")
 	}
 }

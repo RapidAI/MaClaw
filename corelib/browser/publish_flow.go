@@ -37,6 +37,9 @@ type PublishSpec struct {
 	SubmitTexts    []string // exact button texts; default 发布/Publish/Post/提交
 	ConfirmTexts   []string // a second confirm button, if the site asks
 	VerifyURL      string   // page to open after submit where the post must be listed
+	// EditorURL is the page where a new post is written; the run opens it
+	// itself when the tab is elsewhere.
+	EditorURL string
 	// EditURL opens a published post for editing ({url} is the post URL);
 	// with it a picture missing from the live post is put back.
 	EditURL     string
@@ -78,6 +81,8 @@ const (
 	PublishLive PublishState = "live"
 	// PublishLiveIncomplete: the post is live but lacks something (Missing).
 	PublishLiveIncomplete PublishState = "live_incomplete"
+	// PublishNoEditor: no editor to write in (wrong page or signed out).
+	PublishNoEditor PublishState = "no_editor"
 )
 
 func (r *PublishReport) String() string {
@@ -143,7 +148,7 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 		}(st.fn)
 		var r res
 		budget := spec.StepBudget
-		if st.name == "submit" || st.name == "verify_result" || st.name == "readback" {
+		if st.name == "submit" || st.name == "verify_result" || st.name == "readback" || st.name == "observe" {
 			// These steps end on the page's own events (uploads stored,
 			// draft saved, post found); the budget is only a safety net.
 			budget = publishSafetyBudget(spec.StepBudget)
@@ -169,6 +174,8 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 				p.rep.State, p.rep.Missing = PublishLiveIncomplete, p.incomplete.Load().(string)
 			case p.submitClicked.Load():
 				p.rep.State = PublishSubmitted
+			case p.noEditor:
+				p.rep.State = PublishNoEditor
 			}
 			return p.rep, fmt.Errorf("publish step %s failed: %v", st.name, r.err)
 		}
@@ -185,6 +192,8 @@ type publishRun struct {
 	net *netTracker
 	// lastEdit: when the run last changed the editor content.
 	lastEdit time.Time
+	// noEditor: the run found no editor to write in.
+	noEditor bool
 	// lastMissing: anchor indexes the last structure check found missing.
 	lastMissing []int
 	d           PublishDriver
@@ -289,7 +298,45 @@ func (p *publishRun) bodyExpr() string {
 	return "(() => {" + publishHelpersJS + " return __body(" + jsq(p.spec.BodySelector) + ", __title(" + jsq(p.spec.TitleSelector) + ")); })()"
 }
 
+// observe opens the editor (EditorURL) when the tab is elsewhere and waits
+// for it to show; a page without one is the named outcome no_editor.
 func (p *publishRun) observe() (string, error) {
+	if p.spec.EditorURL != "" {
+		cur, _ := p.eval("location.href")
+		if !samePage(cur, p.spec.EditorURL) {
+			if err := p.navigate(p.spec.EditorURL); err != nil {
+				p.noEditor = true
+				return "", fmt.Errorf("could not open the editor %s: %v", p.spec.EditorURL, err)
+			}
+		}
+	}
+	var detail string
+	var err error
+	end := time.Now().Add(minDur(p.spec.StepBudget, 20*time.Second))
+	for {
+		detail, err = p.observeOnce()
+		if err == nil || time.Now().After(end) {
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	if err != nil {
+		p.noEditor = true
+		return detail, fmt.Errorf("no editor on this page (%v); it may need a sign-in — open the site's editor or ask for a takeover", err)
+	}
+	return detail, nil
+}
+
+// samePage: same host and path, ignoring query and trailing slash.
+func samePage(a, b string) bool {
+	n := func(u string) string {
+		u = strings.SplitN(strings.SplitN(u, "#", 2)[0], "?", 2)[0]
+		return strings.TrimRight(u, "/")
+	}
+	return n(a) == n(b)
+}
+
+func (p *publishRun) observeOnce() (string, error) {
 	out, err := p.eval("(() => {" + publishHelpersJS + ` return JSON.stringify({url: location.href, ready: document.readyState, files: __all('input[type=file]').length, title: !!__title(` + jsq(p.spec.TitleSelector) + `), body: !!__body(` + jsq(p.spec.BodySelector) + `, null)}); })()`)
 	if err != nil {
 		return "", fmt.Errorf("page did not answer: %v", err)

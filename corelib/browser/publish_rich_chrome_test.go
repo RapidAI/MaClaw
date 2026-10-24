@@ -282,3 +282,27 @@ func TestPublishFlowRichBodyDroppedPictureIsIncomplete(t *testing.T) {
 		t.Fatalf("err=%v rep=%s", err, rep.String())
 	}
 }
+
+// A tab left on another page (the last run's post) is not the editor: the
+// run opens EditorURL itself and publishes there.
+func TestPublishFlowOpensTheEditorItself(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "rich_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/success")
+	rep, err := RunPublish(d, PublishSpec{Files: richImages(t), Title: "论文解读：自己打开编辑器", Body: richBody, EditorURL: srv.URL + "/edit", StepBudget: 10 * time.Second})
+	if err != nil || rep.State != PublishLive || len(site.published) != 1 {
+		t.Fatalf("err=%v rep=%s", err, rep.String())
+	}
+}
+
+// With no editor on the page and none to open, the outcome is no_editor,
+// named, and nothing is filled or submitted.
+func TestPublishFlowNoEditorIsNamed(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "rich_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/success")
+	rep, err := RunPublish(d, PublishSpec{Title: "t", Body: "b", StepBudget: 3 * time.Second})
+	if err == nil || rep.State != PublishNoEditor || !strings.Contains(err.Error(), "no editor on this page") || len(site.published) != 0 {
+		t.Fatalf("err=%v rep=%s", err, rep.String())
+	}
+}
