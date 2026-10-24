@@ -3086,7 +3086,7 @@ func correctDesktopPathClaim(text, saved string) string {
 	for _, line := range lines {
 		if strings.Contains(line, "~/Desktop/") || strings.Contains(line, "/Desktop/") || strings.Contains(line, "保存到桌面") {
 			low := strings.ToLower(line)
-			claimedShot = claimedShot || strings.Contains(line, "截图") || strings.Contains(low, "screenshot") || strings.Contains(low, ".png")
+			claimedShot = claimedShot || strings.Contains(line, "截图") || strings.Contains(low, "screenshot")
 			continue
 		}
 		kept = append(kept, line)
