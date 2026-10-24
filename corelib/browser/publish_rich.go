@@ -289,13 +289,14 @@ func (p *publishRun) fillRich(obj string) (string, error) {
 // publishStructureFn checks a container (the editor, or the published
 // article) for the pictures in order at their anchors and for the bold and
 // heading formatting. It returns JSON {imgs, misplaced:[...], bold, heads}.
-const publishStructureFn = `function(spec) { const n = s => (s || '').replace(/\s+/g, ''); let txt = ''; const imgs = []; const w = document.createTreeWalker(this, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT); for (let x = w.currentNode; x; x = w.nextNode()) { if (x.nodeType === 3) { const p = x.parentElement; if (p && p.closest('script,style,noscript')) continue; txt += n(x.nodeValue); } else if (x.tagName === 'IMG') { const r = x.getBoundingClientRect(); const big = Math.max(x.naturalWidth || 0, r.width || 0) >= 60; if (big) imgs.push(txt.length); } } const mis = []; for (let i = 0; i < spec.anchors; i++) { const at = imgs[i]; if (at === undefined) { mis.push('picture ' + (i + 1) + ' missing'); continue; } const a = n(spec.before[i]).slice(-12), b = n(spec.after[i]).slice(0, 12); const ia = a ? txt.indexOf(a) : 0; const ib = b ? txt.indexOf(b, ia < 0 ? 0 : ia) : txt.length; if (ia < 0 || ib < 0) { mis.push('text around picture ' + (i + 1) + ' not found'); continue; } if (at < ia + a.length - 1 || at > ib + 1) mis.push('picture ' + (i + 1) + ' is not after "' + spec.before[i].slice(-12) + '"'); } const bel = [...this.querySelectorAll('strong,b')].concat([...this.querySelectorAll('span,em')].filter(e => parseInt(getComputedStyle(e).fontWeight) >= 600)); const btxt = n(bel.map(e => e.innerText).join('|')); const boldOK = spec.bold.filter(b => btxt.includes(n(b).slice(0, 8))).length; return JSON.stringify({imgs: imgs.length, misplaced: mis, bold: boldOK, heads: this.querySelectorAll('h1,h2,h3,h4,h5,h6').length}); }`
+const publishStructureFn = `function(spec) { const n = s => (s || '').replace(/\s+/g, ''); let txt = ''; const imgs = []; let pending = 0; const w = document.createTreeWalker(this, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT); for (let x = w.currentNode; x; x = w.nextNode()) { if (x.nodeType === 3) { const p = x.parentElement; if (p && p.closest('script,style,noscript')) continue; txt += n(x.nodeValue); } else if (x.tagName === 'IMG') { const r = x.getBoundingClientRect(); const big = Math.max(x.naturalWidth || 0, r.width || 0) >= 60; if (big) { imgs.push(txt.length); const src = x.currentSrc || x.src || ''; if (!x.complete || !/^https?:/.test(src)) pending++; } } } const mis = []; for (let i = 0; i < spec.anchors; i++) { const at = imgs[i]; if (at === undefined) { mis.push('picture ' + (i + 1) + ' missing'); continue; } const a = n(spec.before[i]).slice(-12), b = n(spec.after[i]).slice(0, 12); const ia = a ? txt.indexOf(a) : 0; const ib = b ? txt.indexOf(b, ia < 0 ? 0 : ia) : txt.length; if (ia < 0 || ib < 0) { mis.push('text around picture ' + (i + 1) + ' not found'); continue; } if (at < ia + a.length - 1 || at > ib + 1) mis.push('picture ' + (i + 1) + ' is not after "' + spec.before[i].slice(-12) + '"'); } const bel = [...this.querySelectorAll('strong,b')].concat([...this.querySelectorAll('span,em')].filter(e => parseInt(getComputedStyle(e).fontWeight) >= 600)); const btxt = n(bel.map(e => e.innerText).join('|')); const boldOK = spec.bold.filter(b => btxt.includes(n(b).slice(0, 8))).length; return JSON.stringify({pending: pending, imgs: imgs.length, misplaced: mis, bold: boldOK, heads: this.querySelectorAll('h1,h2,h3,h4,h5,h6').length}); }`
 
 type structureResult struct {
 	Imgs      int      `json:"imgs"`
 	Misplaced []string `json:"misplaced"`
 	Bold      int      `json:"bold"`
 	Heads     int      `json:"heads"`
+	Pending   int      `json:"pending"`
 }
 
 func (p *publishRun) structureSpec() map[string]interface{} {
@@ -316,9 +317,25 @@ func (p *publishRun) structureSpec() map[string]interface{} {
 
 // checkStructure runs publishStructureFn on obj and names what is wrong.
 func (p *publishRun) checkStructure(obj, where string) (string, error) {
+	// A picture shown from a local blob:/data: source is not stored by the
+	// site yet; publishing or reloading now loses it. Wait for the upload.
+	deadline := time.Now().Add(45 * time.Second)
+	for {
+		sum, pending, err := p.checkStructureOnce(obj, where)
+		if err != nil || pending == 0 {
+			return sum, err
+		}
+		if time.Now().After(deadline) {
+			return sum, fmt.Errorf("%s: %d picture(s) still show a local blob:/data: source, so the site has not stored them; publishing now would drop them", where, pending)
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+func (p *publishRun) checkStructureOnce(obj, where string) (string, int, error) {
 	raw, err := p.send("Runtime.callFunctionOn", map[string]interface{}{"objectId": obj, "functionDeclaration": publishStructureFn, "arguments": []map[string]interface{}{{"value": p.structureSpec()}}, "returnByValue": true})
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	var out struct {
 		Result struct {
@@ -338,9 +355,9 @@ func (p *publishRun) checkStructure(obj, where string) (string, error) {
 	}
 	sum := fmt.Sprintf("%s: %d picture(s), %d/%d bold, %d heading(s)", where, r.Imgs, r.Bold, len(p.doc.bold), r.Heads)
 	if len(bad) > 0 {
-		return sum, fmt.Errorf("%s: %s", where, strings.Join(bad, "; "))
+		return sum, 0, fmt.Errorf("%s: %s", where, strings.Join(bad, "; "))
 	}
-	return sum + " — pictures in place, formatting kept", nil
+	return sum + " — pictures in place, formatting kept", r.Pending, nil
 }
 
 // articleExpr finds the published article: the smallest element holding the

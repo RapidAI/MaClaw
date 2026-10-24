@@ -132,3 +132,18 @@ func TestPublishFlowSubmitHangSaysClicked(t *testing.T) {
 		t.Fatalf("err=%v rep=%s", err, rep.String())
 	}
 }
+
+// Pictures the site never stored (still a data:/blob: source) fail the
+// read-back before submit instead of vanishing from the published post.
+func TestPublishFlowRichBodyUnstoredPicturesFail(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "rich_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit?noupload=1")
+	rep, err := RunPublish(d, PublishSpec{Files: richImages(t), Title: "t 未上传", Body: richBody, StepBudget: 60 * time.Second})
+	if err == nil || rep.Stuck != "readback" || !strings.Contains(rep.String(), "has not stored them") {
+		t.Fatalf("err=%v rep=%s", err, rep.String())
+	}
+	if len(site.published) != 0 {
+		t.Fatal("published anyway")
+	}
+}

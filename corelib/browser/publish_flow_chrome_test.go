@@ -154,6 +154,10 @@ func fixtureServer(t *testing.T, page string) (*httptest.Server, *fixtureSite) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write(html)
 	})
+	mux.HandleFunc("/img/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/svg+xml")
+		fmt.Fprint(w, `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="120"><rect width="200" height="120" fill="#48c"/></svg>`)
+	})
 	mux.HandleFunc("/publish", func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		var m map[string]string

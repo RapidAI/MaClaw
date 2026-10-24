@@ -2,7 +2,7 @@
 <!-- Zhihu-like rich editor: textarea title, contenteditable body that takes
      pasted HTML (keeps h2/h3/strong/em/ul/ol/li/p/blockquote, drops the rest)
      and pasted image files (inserted at the caret as <img>). Query flags:
-     ?plainpaste=1 drops all formatting; ?imgtop=1 puts every image at the top; ?hang=1 freezes the page for 25s on publish. -->
+     ?plainpaste=1 drops all formatting; ?imgtop=1 puts every image at the top; ?hang=1 freezes the page for 25s on publish; ?noupload=1 never stores pasted pictures (they keep a data: source). -->
 <style>.public-DraftEditor-content{min-height:300px;width:690px;border:1px solid #ccc} img{width:200px}</style></head><body>
 <div class="WriteIndex-titleInput"><textarea class="Input" placeholder="请输入标题（最多 100 个字）"></textarea></div>
 <div class="DraftEditor-editorContainer"><div class="notranslate public-DraftEditor-content" contenteditable="true" role="textbox"></div></div>
@@ -17,7 +17,7 @@ ed.addEventListener('paste', e => {
   e.preventDefault();
   const fs = [...(e.clipboardData.files || [])];
   if (fs.length) {
-    for (const f of fs) { const rd = new FileReader(); const i = document.createElement('img'); i.width = 200; rd.onload = () => { i.src = rd.result; }; rd.readAsDataURL(f);
+    for (const f of fs) { const rd = new FileReader(); const i = document.createElement('img'); i.width = 200; rd.onload = () => { i.src = rd.result; if (!q.get('noupload')) setTimeout(() => { i.src = location.origin + '/img/' + Math.random(); }, 800); }; rd.readAsDataURL(f);
       if (q.get('imgtop')) ed.insertBefore(i, ed.firstChild); else { const f2 = document.createDocumentFragment(); f2.appendChild(i); atCaret(f2); } }
     return;
   }
