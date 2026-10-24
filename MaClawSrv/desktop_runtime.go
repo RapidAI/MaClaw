@@ -122,7 +122,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":          map[string]any{"type": "string", "description": "probe, script, upload, skill_list, skill_run, task_run, app_list, app_run, app_open, install, screenshot, navigate, click, type, press, deliver, file_read, file_write, file_edit, file_list, bash, computer, app_probe, clipboard_get, clipboard_set, window_list, window, screen_info, wait, request_takeover, notify_main, check_inbox, delegate, shop_readback (read-only cart/orders/tracking summary of the current shopping page), or shop_compare_offers (rank offers[] by price+shipping)", "enum": desktopExecuteActions},
+				"action":          map[string]any{"type": "string", "description": "probe, script, upload, skill_list, skill_run, task_run, app_list, app_run, app_open, install, screenshot, navigate, click, type, press, deliver, file_read, file_write, file_edit, file_list, bash, computer, app_probe, clipboard_get, clipboard_set, window_list, window, screen_info, wait, request_takeover, notify_main, check_inbox, delegate, shop_readback (read-only cart/orders/tracking summary of the current shopping page), or shop_compare_offers (rank offers[] by price+shipping). Posting to a site: prepare the title, body and pictures with bash under /tmp, open the editor, then make ONE action=publish call (it uploads, fills, submits and reads back); no hand upload/rich_fill/screenshots in the editor, and no receipt or copy files unless the request asks for a file", "enum": desktopExecuteActions},
 				"kind":            map[string]any{"type": "string", "description": "notify_main: done, blocked, progress, question, artifact, info, or reply.", "enum": []string{"done", "blocked", "progress", "question", "artifact", "info", "reply"}},
 				"message":         map[string]any{"type": "string", "description": "notify_main: one or two sentences for the main bot."},
 				"target":          map[string]any{"type": "string", "description": "notify_main: empty (the main bot) or another bot's name or id. delegate: the teammate bot's name or id."},
@@ -3141,7 +3141,7 @@ func replaceLeakedMonologue(text string) string {
 }
 
 // Words that only make sense inside the runtime (tool status lines, guards).
-var desktopInternalStatusRe = regexp.MustCompile("(?i)(^|[^/\\w])desktop([^/\\w]|$)|PUBLISHED|保护|写入保护|^文件路径：/tmp/|progress_where|runtime tool|refused|already_published|宿主|\\bdeliver\\b|\\bguard\\b")
+var desktopInternalStatusRe = regexp.MustCompile("(^|[^/\\w])desktop ?(:|报错|失败|error|出错|异常)|PUBLISHED and verified|写入保护|保护(被|再次)?.{0,4}触发|^文件路径：/tmp/|progress_where|runtime tool|refused|already_published|unasked_file|宿主|`deliver`|deliver ?(报错|调用|被拦|失败)|guard ?(拦|refus)")
 
 // dropInternalStatusLead removes leading paragraphs that talk about the
 // runtime's own status lines instead of the result, when a later paragraph

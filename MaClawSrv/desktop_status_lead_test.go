@@ -46,3 +46,11 @@ func TestDropInternalStatusKeepsDesktopPath(t *testing.T) {
 		t.Fatal("dropped a Desktop path line")
 	}
 }
+
+// Paper content that happens to use these words must survive.
+func TestDropInternalStatusKeepsContentWords(t *testing.T) {
+	in := "已发布：https://x.com/p/5\n\n- LlamaGuard 3 在隐私保护任务上提升 4.2 分\n- 论文 published 于 NeurIPS，代码可 deliver 到边缘设备\n- 方法在 desktop GUI 智能体上测试"
+	if out := dropInternalStatusLead(in); out != in {
+		t.Fatalf("over-trimmed: %q", out)
+	}
+}

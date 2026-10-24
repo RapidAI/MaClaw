@@ -56,6 +56,8 @@ type desktopProgress struct {
 	publishSeen bool
 	// publishRan: the publish action itself ran at least once.
 	publishRan bool
+	// editorLooks: probes on an editor page before the publish action ran.
+	editorLooks int
 	// publishVerified: action=publish returned PUBLISHED and verified;
 	// afterPublish counts the desktop steps taken after it.
 	publishVerified bool
@@ -628,9 +630,22 @@ func desktopDriftCheck(scope agentruntime.Scope, action string, args map[string]
 	result := p.publishResult
 	if p.publishVerified && action != "publish" {
 		p.afterPublish++
-		over = p.afterPublish > 2
+		over = p.afterPublish > 2 || desktopAfterVerifyHeavy[action]
+	}
+	prepub := !publishRan && desktopPublishAskRe.MatchString(request) && desktopEditURLRe.MatchString(strings.SplitN(p.lastURL, "?", 2)[0])
+	looks := p.editorLooks
+	if prepub && action == "probe" {
+		p.editorLooks++
 	}
 	st.mu.Unlock()
+	if err := desktopUnaskedFileCheck(action, args, request); err != nil {
+		return err
+	}
+	if prepub {
+		if err := desktopPrepublishCheck(action, args, looks); err != nil {
+			return err
+		}
+	}
 	if over {
 		return fmt.Errorf("refused: already_published — action=publish already published and verified the post. Its result: %s. Do not look for more (no probes, scripts, screenshots or fetches) and do not doubt it: give the final answer now saying it is published, with that link (or post id, or list page and title). This refusal is expected, not a problem: do not mention it to the user", result)
 	}
@@ -759,4 +774,47 @@ func desktopHandPublishCheck(action string, args map[string]any, request, url st
 		return nil
 	}
 	return fmt.Errorf("refused: hand_publish — this is a publish task and the page is the editor: do not click publish yourself. Run action=publish once with the title, the full body and the picture files; it fills, submits and reads the post back")
+}
+
+// After a verified publish these only re-check what the publish action
+// already read back (ZN-16/XHS-28 screenshots and probes).
+var desktopAfterVerifyHeavy = map[string]bool{"screenshot": true, "probe": true, "navigate": true, "upload": true, "rich_fill": true, "type": true, "app_run": true, "computer": true, "file_write": true, "deliver": true, "wait": true}
+
+// Steps that do by hand what action=publish does itself.
+var desktopPrepublishManual = map[string]bool{"upload": true, "rich_fill": true, "type": true, "screenshot": true, "clipboard_set": true, "app_run": true, "computer": true, "wait": true}
+
+var desktopBatchManualRe = regexp.MustCompile(`"action":\s*"(upload|rich_fill|type|clipboard_set)"`)
+
+// desktopPrepublishCheck (generic): on a publish task, once the editor is
+// open and before action=publish ran, the content is prepared off-page
+// (bash/files) and goes in with ONE publish call; hand uploads, fills,
+// screenshots and repeated probes there are detours (XHS-28, ZN-15).
+func desktopPrepublishCheck(action string, args map[string]any, looks int) error {
+	manual := desktopPrepublishManual[action] || (action == "batch" && desktopBatchManualRe.MatchString(desktopArgsText(args))) || (action == "probe" && looks >= 1)
+	if !manual {
+		return nil
+	}
+	return fmt.Errorf("refused: prepublish_detour — the editor is open and this is a publish task: do not %s here by hand. Prepare the title, the full body (with [[img:N]] anchors) and the picture files with bash, then make ONE action=publish call; it uploads, fills, submits and reads the post back", action)
+}
+
+// desktopUnaskedFileCheck (generic): on a publish task that did not ask for a
+// file, no copy, receipt or draft goes to the person's folders or into the
+// reply, before or after publishing (ZN-13/14, XHS-26). Scratch dirs stay open.
+func desktopUnaskedFileCheck(action string, args map[string]any, request string) error {
+	if !desktopPublishAskRe.MatchString(request) || desktopAskedForFileRe.MatchString(request) {
+		return nil
+	}
+	bad := false
+	switch action {
+	case "deliver":
+		bad = true
+	case "file_write", "file_edit":
+		bad = !desktopScratchPathRe.MatchString(desktopArg(args, "path"))
+	case "bash":
+		bad = desktopUserDirWriteRe.MatchString(desktopArg(args, "command"))
+	}
+	if !bad {
+		return nil
+	}
+	return fmt.Errorf("refused: unasked_file — this is a publish task and the request did not ask for a file: the published link is the result. Keep drafts and pictures under /tmp or the task folder; do not save receipts or copies to the person's folders or attach them")
 }

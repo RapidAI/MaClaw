@@ -320,7 +320,7 @@ func (p *publishRun) structureSpec() map[string]interface{} {
 func (p *publishRun) checkStructure(obj, where string) (string, error) {
 	// A picture shown from a local blob:/data: source is not stored by the
 	// site yet; publishing or reloading now loses it. Wait for the upload.
-	deadline := time.Now().Add(minDur(2*p.spec.StepBudget-15*time.Second, 45*time.Second))
+	deadline := time.Now().Add(minDur(2*p.spec.StepBudget-15*time.Second, 45*time.Second) + p.pictureWait())
 	for {
 		sum, pending, err := p.checkStructureOnce(obj, where)
 		if err != nil || pending == 0 {

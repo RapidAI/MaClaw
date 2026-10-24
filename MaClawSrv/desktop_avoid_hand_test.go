@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+)
 
 func TestAvoidListCheck(t *testing.T) {
 	req := "随机挑一篇论文发布到我的小红书账号。不要选这些已经写过的：2610.30043 2610.24383。"
@@ -32,5 +36,63 @@ func TestHandPublishCheck(t *testing.T) {
 	}
 	if err := desktopHandPublishCheck("app_run", nil, req, "https://huggingface.co/papers", false); err != nil {
 		t.Fatalf("not an editor: %v", err)
+	}
+}
+
+func TestPrepublishCheck(t *testing.T) {
+	for _, a := range []string{"upload", "rich_fill", "screenshot", "app_run"} {
+		if desktopPrepublishCheck(a, nil, 0) == nil {
+			t.Fatalf("%s before publish must be refused", a)
+		}
+	}
+	if desktopPrepublishCheck("probe", nil, 0) != nil {
+		t.Fatal("first probe of the editor is allowed")
+	}
+	if desktopPrepublishCheck("probe", nil, 1) == nil {
+		t.Fatal("second probe must be refused")
+	}
+	if desktopPrepublishCheck("batch", map[string]any{"plan": []any{map[string]any{"action": "upload"}}}, 0) == nil {
+		t.Fatal("batch with an upload must be refused")
+	}
+	if desktopPrepublishCheck("bash", nil, 5) != nil || desktopPrepublishCheck("publish", nil, 5) != nil {
+		t.Fatal("bash/publish must pass")
+	}
+}
+
+func TestUnaskedFileCheckBeforePublish(t *testing.T) {
+	req := "写一篇解读并直接发布到我的知乎专栏"
+	if desktopUnaskedFileCheck("deliver", nil, req) == nil {
+		t.Fatal("deliver must be refused")
+	}
+	if desktopUnaskedFileCheck("file_write", map[string]any{"path": "/home/desktop/Desktop/回执.md"}, req) == nil {
+		t.Fatal("Desktop file must be refused")
+	}
+	if desktopUnaskedFileCheck("file_write", map[string]any{"path": "/tmp/zn/body.md"}, req) != nil {
+		t.Fatal("scratch file must pass")
+	}
+	if desktopUnaskedFileCheck("deliver", nil, "发布到知乎，再给我一个 docx 文件") != nil {
+		t.Fatal("asked file must pass")
+	}
+	if desktopUnaskedFileCheck("deliver", nil, "整理成文档给我") != nil {
+		t.Fatal("non-publish task must pass")
+	}
+}
+
+func TestDriftCheckPrepublishOnEditor(t *testing.T) {
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u", RunID: "run_prepub"}
+	st, p := desktopProgressFor(scope)
+	if st == nil {
+		t.Skip("no run state")
+	}
+	st.mu.Lock()
+	p.lastURL = "https://creator.xiaohongshu.com/publish/publish?from=menu"
+	st.mu.Unlock()
+	req := "写一篇笔记并直接发布到我的小红书账号"
+	if desktopDriftCheck(scope, "upload", map[string]any{}, req) == nil {
+		t.Fatal("hand upload on the editor must be refused")
+	}
+	_ = desktopProgressNote(scope, "publish", "PUBLISHED and verified, link https://www.xiaohongshu.com/explore/1", nil)
+	if desktopDriftCheck(scope, "screenshot", map[string]any{}, req) == nil {
+		t.Fatal("screenshot after a verified publish must be refused")
 	}
 }

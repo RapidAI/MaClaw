@@ -222,3 +222,25 @@ func TestPublishFlowRichBodyLazyPublishedPicturesPass(t *testing.T) {
 		t.Fatalf("fixture not lazy or no check: %s", rep.String())
 	}
 }
+
+// Each pasted picture adds to the store wait, so many pictures do not fail
+// the read-back on time alone.
+
+func TestPublishFlowRichBodySlowPictureStorePasses(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "rich_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit?slowupload=1")
+	rep, err := RunPublish(d, PublishSpec{Files: richImages(t), Title: "论文解读：慢上传", Body: richBody, StepBudget: 12 * time.Second})
+	if err != nil || len(site.published) != 1 {
+		t.Fatalf("err=%v rep=%s", err, rep.String())
+	}
+}
+
+// Each pasted picture adds to the store wait, so many pictures do not fail
+// the read-back on time alone.
+func TestPublishPictureWaitScales(t *testing.T) {
+	p := &publishRun{doc: richDoc{anchors: make([]int, 6)}}
+	if p.pictureWait() < 60*time.Second {
+		t.Fatalf("6 pictures wait %s", p.pictureWait())
+	}
+}

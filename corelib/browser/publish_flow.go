@@ -122,6 +122,9 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 			// submit's own loop is bounded, so give it room to finish.
 			budget = 2 * spec.StepBudget
 		}
+		if st.name == "readback" || st.name == "verify_result" {
+			budget += p.pictureWait()
+		}
 		select {
 		case r = <-ch:
 		case <-time.After(budget + 5*time.Second):
@@ -993,4 +996,10 @@ func newLines(before, after string) string {
 		}
 	}
 	return clipRunes(strings.Join(out, " | "), 200)
+}
+
+// pictureWait is the extra time pasted pictures get to be stored by the
+// site: about 12s each (Zhihu needed >45s for 6 pictures in ZN-17).
+func (p *publishRun) pictureWait() time.Duration {
+	return time.Duration(len(p.doc.anchors)) * 12 * time.Second
 }
