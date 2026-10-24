@@ -54,3 +54,15 @@ func TestDropInternalStatusKeepsContentWords(t *testing.T) {
 		t.Fatalf("over-trimmed: %q", out)
 	}
 }
+
+func TestDropInternalStatusTrimsScratchPathList(t *testing.T) {
+	in := "笔记链接：https://www.xiaohongshu.com/explore/6add28bf000000002403999f\n\n图片文件：/tmp/xhs/01.png、/tmp/xhs/02.png、/tmp/xhs/03.png"
+	got := dropInternalStatusLead(in)
+	if strings.Contains(got, "/tmp/") || !strings.Contains(got, "explore/6add28bf") {
+		t.Fatalf("got %q", got)
+	}
+	keep := "链接 https://zhuanlan.zhihu.com/p/1\n\n代码放在 /tmp/x 下面，可以自己跑一下。"
+	if dropInternalStatusLead(keep) != keep {
+		t.Fatalf("over-trim: %q", dropInternalStatusLead(keep))
+	}
+}

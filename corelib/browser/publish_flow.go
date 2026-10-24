@@ -562,7 +562,7 @@ func (p *publishRun) verifyAll() (string, error) {
 	}
 	sum, cerr := p.checkPublished()
 	if cerr != nil {
-		return out + "; " + sum, fmt.Errorf("the post IS published at %s (do NOT publish again), but %v. Report this to the user as a failure with the link", p.rep.ResultURL, cerr)
+		return out + "; " + sum, fmt.Errorf("the post IS published at %s (do NOT publish again), but it is INCOMPLETE: %v. Do not call it done or successful: lead the reply with what is missing and give the link", p.rep.ResultURL, cerr)
 	}
 	return out + "; " + sum, nil
 }
@@ -590,6 +590,9 @@ func (p *publishRun) readback() (string, error) {
 				return "", fmt.Errorf("%v; nothing was submitted", err)
 			}
 			parts = append(parts, sum)
+			// Let the editor's draft save catch up with the last picture
+			// before the submit sends it.
+			time.Sleep(minDur(time.Duration(len(p.doc.anchors))*time.Second, 8*time.Second))
 		}
 	}
 	return strings.Join(parts, ", ") + " verified", nil

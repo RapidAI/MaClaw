@@ -641,6 +641,9 @@ func desktopDriftCheck(scope agentruntime.Scope, action string, args map[string]
 	if err := desktopUnaskedFileCheck(action, args, request); err != nil {
 		return err
 	}
+	if err := desktopPublishTaskScreenshotCheck(action, request, publishRan); err != nil {
+		return err
+	}
 	if prepub {
 		if err := desktopPrepublishCheck(action, args, looks); err != nil {
 			return err
@@ -795,6 +798,17 @@ func desktopPrepublishCheck(action string, args map[string]any, looks int) error
 		return nil
 	}
 	return fmt.Errorf("refused: prepublish_detour — the editor is open and this is a publish task: do not %s here by hand. Prepare the title, the full body (with [[img:N]] anchors) and the picture files with bash, then make ONE action=publish call; it uploads, fills, submits and reads the post back", action)
+}
+
+// desktopPublishTaskScreenshotCheck (generic): on a publish task nothing
+// needs a screenshot before action=publish: papers and pages are read as
+// text (fetch/probe), pictures are prepared with bash, and the publish
+// action reads the post back itself (XHS-29 screenshot detour).
+func desktopPublishTaskScreenshotCheck(action, request string, publishRan bool) error {
+	if action != "screenshot" || publishRan || !desktopPublishAskRe.MatchString(request) {
+		return nil
+	}
+	return fmt.Errorf("refused: prepublish_detour — this is a publish task: no screenshots. Read pages as text (fetch/probe), prepare the title, body and picture files with bash, then make ONE action=publish call; it reads the post back and reports any sign-in it needs")
 }
 
 // desktopUnaskedFileCheck (generic): on a publish task that did not ask for a

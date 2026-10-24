@@ -376,14 +376,21 @@ func (p *publishRun) articleExpr() string {
 }
 
 // checkPublished re-reads the published page for pictures and formatting.
+// A just-published page can render before every picture is attached (the
+// last pasted picture showed up late on a real site), so it scrolls the
+// page through, waits as long as the pictures may need, and reloads the
+// page once half way before calling a picture missing.
 func (p *publishRun) checkPublished() (string, error) {
 	var last error
 	var sum string
-	deadline := time.Now().Add(minDur(p.spec.StepBudget, 15*time.Second))
+	start := time.Now()
+	wait := minDur(p.spec.StepBudget, 15*time.Second) + p.pictureWait()/2
+	deadline := start.Add(wait)
+	reloaded := false
 	for {
 		obj, err := p.element(p.articleExpr())
 		if err == nil && obj != "" {
-			_, _ = p.eval(`window.scrollTo(0, document.body.scrollHeight)`)
+			_, _ = p.evalWithin(publishScrollThroughJS, 3*time.Second)
 			sum, last = p.checkStructure(obj, "published page")
 			if last == nil {
 				return sum, nil
@@ -394,9 +401,19 @@ func (p *publishRun) checkPublished() (string, error) {
 		if time.Now().After(deadline) {
 			return sum, last
 		}
+		if !reloaded && time.Since(start) > wait/2 {
+			reloaded = true
+			_, _ = p.send("Page.reload", map[string]interface{}{"ignoreCache": true})
+			time.Sleep(2 * time.Second)
+			continue
+		}
 		time.Sleep(time.Second)
 	}
 }
+
+// publishScrollThroughJS scrolls the page down in viewport steps so pictures
+// that load only when seen get loaded, then back to the top.
+const publishScrollThroughJS = `(() => { const h = document.body.scrollHeight, v = innerHeight || 800; for (let y = 0; y < h; y += v) scrollTo(0, y); scrollTo(0, h); return String(h); })()`
 
 // quoteShare is the share of the body's characters on Markdown quote lines.
 func quoteShare(body string) float64 {

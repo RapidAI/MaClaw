@@ -2,7 +2,7 @@
 <!-- Zhihu-like rich editor: textarea title, contenteditable body that takes
      pasted HTML (keeps h2/h3/strong/em/ul/ol/li/p/blockquote, drops the rest)
      and pasted image files (inserted at the caret as <img>). Query flags:
-     ?plainpaste=1 drops all formatting; ?imgtop=1 puts every image at the top; ?hang=1 freezes the page for 25s on publish; ?stickyquote=1 pulls everything after a pasted quote into it; ?toolong=1 refuses publish with a length error; ?busypost=1 lands on a post page whose JS is busy for 9s; ?lazypost=1 publishes pictures as lazy placeholders (data: src, real URL in data-actualsrc); ?slowupload=1 stores the n-th picture only after 6s*n; ?noupload=1 never stores pasted pictures (they keep a data: source). -->
+     ?plainpaste=1 drops all formatting; ?imgtop=1 puts every image at the top; ?hang=1 freezes the page for 25s on publish; ?stickyquote=1 pulls everything after a pasted quote into it; ?toolong=1 refuses publish with a length error; ?busypost=1 lands on a post page whose JS is busy for 9s; ?lazypost=1 publishes pictures as lazy placeholders (data: src, real URL in data-actualsrc); ?slowupload=1 stores the n-th picture only after 6s*n; ?latepic=1 leaves the last picture off the post page until it is reloaded; ?droppic=1 always leaves it off; ?noupload=1 never stores pasted pictures (they keep a data: source). -->
 <style>.public-DraftEditor-content{min-height:300px;width:690px;border:1px solid #ccc} img{width:200px}</style></head><body>
 <div class="WriteIndex-titleInput"><textarea class="Input" placeholder="请输入标题（最多 100 个字）"></textarea></div>
 <div class="DraftEditor-editorContainer"><div class="notranslate public-DraftEditor-content" contenteditable="true" role="textbox"></div></div>
@@ -31,6 +31,6 @@ document.getElementById('pub').addEventListener('click', async ev => {
   if (!ev.isTrusted) return;
   const t = document.querySelector('textarea').value;
   const r = await fetch('/publish', {method: 'POST', body: JSON.stringify({title: t, body: ed.innerText, html: q.get('lazypost') ? ed.innerHTML.replace(/<img([^>]*?) src="([^"]*)"/g, '<img$1 src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" data-actualsrc="$2"') : ed.innerHTML})});
-  location.href = (await r.text()) + (q.get('busypost') ? '?busy=1' : '');
+  location.href = (await r.text()) + (q.get('busypost') ? '?busy=1' : q.get('latepic') ? '?latepic=1' : q.get('droppic') ? '?droppic=1' : '');
 });
 </script></body></html>

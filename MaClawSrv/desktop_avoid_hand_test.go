@@ -96,3 +96,16 @@ func TestDriftCheckPrepublishOnEditor(t *testing.T) {
 		t.Fatal("screenshot after a verified publish must be refused")
 	}
 }
+
+func TestPublishTaskScreenshotCheck(t *testing.T) {
+	ask := "写一篇小红书图文笔记并直接发布到我的小红书账号，发完把笔记链接回复给我。"
+	if desktopPublishTaskScreenshotCheck("screenshot", ask, false) == nil {
+		t.Fatal("screenshot before publish allowed on a publish task")
+	}
+	if desktopPublishTaskScreenshotCheck("screenshot", "帮我看看这个网页长什么样", false) != nil {
+		t.Fatal("screenshot refused on a non-publish task")
+	}
+	if desktopPublishTaskScreenshotCheck("bash", ask, false) != nil {
+		t.Fatal("bash refused")
+	}
+}

@@ -141,6 +141,7 @@ func fixtureTab(t *testing.T, addr, url string) *fixtureDriver {
 type fixtureSite struct {
 	mu        sync.Mutex
 	published []map[string]string
+	views     int
 }
 
 func fixtureServer(t *testing.T, page string) (*httptest.Server, *fixtureSite) {
@@ -187,6 +188,16 @@ func fixtureServer(t *testing.T, page string) (*httptest.Server, *fixtureSite) {
 			b = m["html"]
 		}
 		busy := ""
+		qp := r.URL.Query()
+		site.mu.Lock()
+		site.views++
+		views := site.views
+		site.mu.Unlock()
+		if qp.Get("droppic") != "" || (qp.Get("latepic") != "" && views == 1) {
+			if i := strings.LastIndex(b, "<img"); i >= 0 {
+				b = b[:i] + "<span>" + b[i+4:]
+			}
+		}
 		if r.URL.Query().Get("busy") != "" {
 			busy = "<script>setTimeout(()=>{const t=Date.now();while(Date.now()-t<9000){}},200)</script>"
 		}

@@ -223,9 +223,7 @@ func TestPublishFlowRichBodyLazyPublishedPicturesPass(t *testing.T) {
 	}
 }
 
-// Each pasted picture adds to the store wait, so many pictures do not fail
-// the read-back on time alone.
-
+// Pictures stored only after several seconds each still pass the read-back.
 func TestPublishFlowRichBodySlowPictureStorePasses(t *testing.T) {
 	addr := startFixtureChrome(t)
 	srv, site := fixtureServer(t, "rich_like.html")
@@ -242,5 +240,29 @@ func TestPublishPictureWaitScales(t *testing.T) {
 	p := &publishRun{doc: richDoc{anchors: make([]int, 6)}}
 	if p.pictureWait() < 60*time.Second {
 		t.Fatalf("6 pictures wait %s", p.pictureWait())
+	}
+}
+
+// A just-published page that attaches its last picture only after a reload
+// passes: the check reloads once instead of calling the picture missing.
+func TestPublishFlowRichBodyLatePublishedPicturePasses(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "rich_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit?latepic=1")
+	rep, err := RunPublish(d, PublishSpec{Files: richImages(t), Title: "论文解读：晚到的图", Body: richBody, StepBudget: 10 * time.Second})
+	if err != nil || len(site.published) != 1 || site.views < 2 {
+		t.Fatalf("err=%v views=%d rep=%s", err, site.views, rep.String())
+	}
+}
+
+// A published page that really lacks a picture is reported as published but
+// incomplete, never as done, and is not published twice.
+func TestPublishFlowRichBodyDroppedPictureIsIncomplete(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "rich_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit?droppic=1")
+	rep, err := RunPublish(d, PublishSpec{Files: richImages(t), Title: "论文解读：丢图", Body: richBody, StepBudget: 10 * time.Second})
+	if err == nil || len(site.published) != 1 || !strings.Contains(err.Error(), "INCOMPLETE") || !strings.Contains(err.Error(), "picture 2 missing") {
+		t.Fatalf("err=%v rep=%s", err, rep.String())
 	}
 }
