@@ -1,12 +1,13 @@
 package main
 
 import (
-	"fmt"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/browser"
 )
 
 func TestVerifiedResultIsGeneric(t *testing.T) {
@@ -204,9 +205,10 @@ func TestDriftGuardNoBashCopyAfterPublish(t *testing.T) {
 	}
 }
 
-func TestPublishTimeoutAfterClickCountsAsPublished(t *testing.T) {
+func TestPublishSubmittedRecordCountsAsPublished(t *testing.T) {
 	scope := agentruntime.Scope{TenantID: "t", UserID: "u", RunID: "run_clicked_guard"}
-	_ = desktopProgressNote(scope, "publish", "", fmt.Errorf("publish step submit failed: step exceeded its 1m0s budget after the publish button WAS clicked, so the post may already be published"))
+	desktopPublishRecordUpdate(scope, func(r *desktopPublishRecord) { r.State, r.URL = browser.PublishSubmitted, "" })
+	_ = desktopProgressNote(scope, "publish", "", fmt.Errorf("publish step submit failed: step exceeded its budget"))
 	if st, _ := desktopProgressFor(scope); st == nil {
 		t.Skip("no run state")
 	}

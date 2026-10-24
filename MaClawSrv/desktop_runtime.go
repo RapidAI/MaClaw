@@ -953,7 +953,7 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 		text, err = withDesktopPages(text, err, endpoint.CDP, session.TargetID)
 	case "publish":
 		defer beginDesktopActivity(scope.RunID, "正在发布")()
-		text, err = desktopPublish(session, args)
+		text, err = desktopPublish(desktopOwner(scope), session, args)
 	case "shop_readback":
 		defer beginDesktopActivity(scope.RunID, "正在查看")()
 		text, err = desktopShopReadback(session)
@@ -3156,7 +3156,7 @@ func replaceLeakedMonologue(text string) string {
 }
 
 // Words that only make sense inside the runtime (tool status lines, guards).
-var desktopInternalStatusRe = regexp.MustCompile("(^|[^/\\w])desktop ?(:|报错|失败|error|出错|异常)|PUBLISHED and verified|写入保护|保护(被|再次)?.{0,4}触发|^\\s*[^/\\s]{0,10}[：:]?\\s*(/tmp/\\S+?[、,，;；\\s]*)+$|progress_where|runtime tool|refused|already_published|unasked_file|宿主|`deliver`|deliver ?(报错|调用|被拦|失败)|guard ?(拦|refus)")
+var desktopInternalStatusRe = regexp.MustCompile("(^|[^/\\w])desktop ?(:|报错|失败|error|出错|异常)|PUBLISH STATE|写入保护|保护(被|再次)?.{0,4}触发|^\\s*[^/\\s]{0,10}[：:]?\\s*(/tmp/\\S+?[、,，;；\\s]*)+$|progress_where|runtime tool|refused|already_published|unasked_file|宿主|`deliver`|deliver ?(报错|调用|被拦|失败)|guard ?(拦|refus)")
 
 // dropInternalStatusLead removes leading paragraphs that talk about the
 // runtime's own status lines instead of the result, when a later paragraph

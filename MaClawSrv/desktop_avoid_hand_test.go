@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/browser"
 )
 
 func TestAvoidListCheck(t *testing.T) {
@@ -91,7 +92,9 @@ func TestDriftCheckPrepublishOnEditor(t *testing.T) {
 	if desktopDriftCheck(scope, "upload", map[string]any{}, req) == nil {
 		t.Fatal("hand upload on the editor must be refused")
 	}
-	_ = desktopProgressNote(scope, "publish", "PUBLISHED and verified, link https://www.xiaohongshu.com/explore/1", nil)
+	desktopPublishRecordUpdate(scope, func(r *desktopPublishRecord) {
+		r.State, r.URL = browser.PublishLive, "https://www.xiaohongshu.com/explore/1"
+	})
 	if desktopDriftCheck(scope, "screenshot", map[string]any{}, req) == nil {
 		t.Fatal("screenshot after a verified publish must be refused")
 	}

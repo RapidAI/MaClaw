@@ -128,7 +128,7 @@ func TestPublishFlowSubmitHangSaysClicked(t *testing.T) {
 	srv, _ := fixtureServer(t, "rich_like.html")
 	d := fixtureTab(t, addr, srv.URL+"/edit?hang=1")
 	rep, err := RunPublish(d, PublishSpec{Title: "t 卡住", Body: "正文 **重点**", StepBudget: 5 * time.Second})
-	if err == nil || rep.Stuck != "submit" || !strings.Contains(err.Error(), "WAS clicked") || !strings.Contains(err.Error(), "do NOT click publish") {
+	if err == nil || rep.Stuck != "submit" || rep.State != PublishSubmitted {
 		t.Fatalf("err=%v rep=%s", err, rep.String())
 	}
 }
@@ -250,7 +250,7 @@ func TestPublishFlowRichBodyLatePublishedPicturePasses(t *testing.T) {
 	srv, site := fixtureServer(t, "rich_like.html")
 	d := fixtureTab(t, addr, srv.URL+"/edit?latepic=1")
 	rep, err := RunPublish(d, PublishSpec{Files: richImages(t), Title: "论文解读：晚到的图", Body: richBody, StepBudget: 10 * time.Second})
-	if err != nil || len(site.published) != 1 || site.views < 2 {
+	if err != nil || len(site.published) != 1 || site.views < 2 || rep.State != PublishLive {
 		t.Fatalf("err=%v views=%d rep=%s", err, site.views, rep.String())
 	}
 }
@@ -262,7 +262,7 @@ func TestPublishFlowRichBodyDroppedPictureIsIncomplete(t *testing.T) {
 	srv, site := fixtureServer(t, "rich_like.html")
 	d := fixtureTab(t, addr, srv.URL+"/edit?droppic=1")
 	rep, err := RunPublish(d, PublishSpec{Files: richImages(t), Title: "论文解读：丢图", Body: richBody, StepBudget: 10 * time.Second})
-	if err == nil || len(site.published) != 1 || !strings.Contains(err.Error(), "INCOMPLETE") || !strings.Contains(err.Error(), "picture 2 missing") {
+	if err == nil || len(site.published) != 1 || rep.State != PublishLiveIncomplete || rep.ResultURL == "" || !strings.Contains(err.Error(), "picture 2 missing") {
 		t.Fatalf("err=%v rep=%s", err, rep.String())
 	}
 }

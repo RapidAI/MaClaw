@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/browser"
 )
 
 // Run coaching (post-mortem of run_4d3e6297, 10-22: 200 actions in 35 min,
@@ -54,15 +55,11 @@ type desktopProgress struct {
 	warned70    bool
 	warned90    bool
 	publishSeen bool
-	// publishRan: the publish action itself ran at least once.
-	publishRan bool
 	// editorLooks: probes on an editor page before the publish action ran.
 	editorLooks int
-	// publishVerified: action=publish returned PUBLISHED and verified;
-	// afterPublish counts the desktop steps taken after it.
-	publishVerified bool
-	afterPublish    int
-	publishResult   string
+	// afterPublish counts the desktop steps taken after the publish record
+	// says the post is live.
+	afterPublish int
 	// publishTried: this run pressed 发布/更新 (or saw 发布成功). An article
 	// URL seen before that is a page left open by an earlier task.
 	publishTried bool
@@ -225,23 +222,12 @@ func desktopProgressNote(scope agentruntime.Scope, action string, out string, er
 		p.readBackHinted = true
 		notes = append(notes, "Submitted and the page moved to "+p.lastURL+". Read it back ONCE (one script returning location.href, the title and the first lines of the body), then report.")
 	}
-	if err == nil && action == "publish" && strings.Contains(out, "PUBLISHED and verified") {
-		p.publishVerified = true
-		p.publishResult = desktopPublishSummary(out)
-		p.publishSeen = true
-		desktopNotePublishedLink(scope.RunID, out)
-	}
-	if action == "publish" {
-		p.publishRan = true
-	}
-	if err != nil && action == "publish" && strings.Contains(err.Error(), "WAS clicked") {
-		// The submit went out; the post is (very likely) up. From here on
-		// the same no-copies/no-files rules apply as after a verified publish.
+	if rec, ok := desktopPublishRecordOf(scope.RunID); ok && rec.posted() {
 		p.publishSeen = true
 	}
 	if err == nil && desktopVerifiedResult(p, out) {
 		p.publishSeen = true
-		desktopNotePublishedURL(scope.RunID, p.lastURL)
+		desktopRecordVerifiedPage(scope, p.lastURL)
 		desktopRecipeValidate(scope)
 		notes = append(notes, "Verified: the page moved to "+p.lastURL+" and it shows the text this task filled. Stop operating the desktop and report that URL. Do not keep editing the published result.")
 	}
@@ -625,10 +611,10 @@ func desktopDriftCheck(scope agentruntime.Scope, action string, args map[string]
 	st.mu.Lock()
 	inBrowser := p.lastURL != ""
 	published := p.publishSeen
-	publishRan := p.publishRan
+	rec, publishRan := desktopPublishRecordOf(scope.RunID)
 	over := false
-	result := p.publishResult
-	if p.publishVerified && action != "publish" {
+	result := desktopPublishRecordText(rec)
+	if publishRan && (rec.State == browser.PublishLive || rec.State == browser.PublishLiveIncomplete) && action != "publish" {
 		p.afterPublish++
 		over = p.afterPublish > 2 || desktopAfterVerifyHeavy[action]
 	}
@@ -699,19 +685,6 @@ var desktopBrowserTaskRe = regexp.MustCompile(`(?i)https?://|www\.|\.(com|cn|org
 
 // A shell write (redirect, tee, cp/mv) into the person's own folders.
 var desktopUserDirWriteRe = regexp.MustCompile(`(>>?|\btee\b|\bcp\b|\bmv\b|open\(|write_text\()[^|;&]*(/home/desktop/(Desktop|Documents|桌面|文档)|~/(Desktop|Documents|桌面|文档))`)
-
-// desktopPublishSummary keeps the verified publish result short enough to
-// repeat in later refusals, so a turn that lost it still answers with it.
-func desktopPublishSummary(out string) string {
-	out = strings.TrimSpace(out)
-	if m := desktopPublishLinkRe.FindStringSubmatch(out); m != nil {
-		return "PUBLISHED and verified, link " + strings.TrimRight(m[1], "。.,，)")
-	}
-	if r := []rune(out); len(r) > 300 {
-		out = string(r[:300])
-	}
-	return out
-}
 
 // A request that lists papers (arXiv ids) not to pick.
 var (

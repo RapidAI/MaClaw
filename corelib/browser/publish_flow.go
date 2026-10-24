@@ -54,7 +54,27 @@ type PublishReport struct {
 	// list has no direct link to it (verify_url pages often render cards).
 	PostID string `json:"post_id,omitempty"`
 	Stuck  string `json:"stuck,omitempty"`
+	// State is the one answer to "is it published?", set from what the run
+	// observed (see PublishState). Missing names what a live post lacks.
+	State   PublishState `json:"state"`
+	Missing string       `json:"missing,omitempty"`
 }
+
+// PublishState is the outcome of a publish run.
+type PublishState string
+
+const (
+	// PublishNotSubmitted: stopped before the submit went out; nothing is
+	// on the site and running the publish again is safe.
+	PublishNotSubmitted PublishState = "not_submitted"
+	// PublishSubmitted: the submit went out but the post was not confirmed;
+	// it may be live. Never submit again for the same content.
+	PublishSubmitted PublishState = "submitted"
+	// PublishLive: the post was found and read back as filled.
+	PublishLive PublishState = "live"
+	// PublishLiveIncomplete: the post is live but lacks something (Missing).
+	PublishLiveIncomplete PublishState = "live_incomplete"
+)
 
 func (r *PublishReport) String() string {
 	var b strings.Builder
@@ -129,9 +149,6 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 		case r = <-ch:
 		case <-time.After(budget + 5*time.Second):
 			r = res{"", fmt.Errorf("step exceeded its %s budget", budget)}
-			if p.submitClicked.Load() {
-				r.err = fmt.Errorf("%v after the publish button WAS clicked, so the post may already be published: do NOT click publish or run this action again; read it back once (open verify_url or the account's post list) and reply with its link. Only if it is NOT there, run this same publish action again with the full body and files: never click publish by hand, a reloaded editor may have lost the pictures", r.err)
-			}
 		}
 		step := PublishStep{Name: st.name, OK: r.err == nil, Detail: r.detail, TookMS: time.Since(start).Milliseconds()}
 		if r.err != nil {
@@ -140,18 +157,28 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 		p.rep.Steps = append(p.rep.Steps, step)
 		if r.err != nil {
 			p.rep.Stuck = st.name
+			p.rep.State = PublishNotSubmitted
+			switch {
+			case p.incomplete.Load() != nil:
+				p.rep.State, p.rep.Missing = PublishLiveIncomplete, p.incomplete.Load().(string)
+			case p.submitClicked.Load():
+				p.rep.State = PublishSubmitted
+			}
 			return p.rep, fmt.Errorf("publish step %s failed: %v", st.name, r.err)
 		}
 	}
+	p.rep.State = PublishLive
 	return p.rep, nil
 }
 
 type publishRun struct {
 	submitClicked atomic.Bool
-	d             PublishDriver
-	spec          PublishSpec
-	rep           *PublishReport
-	editURL       string
+	// incomplete: the post is live but its re-read found something missing.
+	incomplete atomic.Value // string
+	d          PublishDriver
+	spec       PublishSpec
+	rep        *PublishReport
+	editURL    string
 	// pasteLater: no file input showed the images; paste them into the
 	// body editor after the text (paste_images step).
 	pasteLater bool
@@ -562,7 +589,8 @@ func (p *publishRun) verifyAll() (string, error) {
 	}
 	sum, cerr := p.checkPublished()
 	if cerr != nil {
-		return out + "; " + sum, fmt.Errorf("the post IS published at %s (do NOT publish again), but it is INCOMPLETE: %v. Do not call it done or successful: lead the reply with what is missing and give the link", p.rep.ResultURL, cerr)
+		p.incomplete.Store(cerr.Error())
+		return out + "; " + sum, fmt.Errorf("published at %s but %v", p.rep.ResultURL, cerr)
 	}
 	return out + "; " + sum, nil
 }

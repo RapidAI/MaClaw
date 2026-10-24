@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/browser"
 )
 
 // After action=publish verified the post, two read-back steps pass and the
@@ -15,7 +16,8 @@ func TestAfterVerifiedPublishStopsTheHunt(t *testing.T) {
 	if st == nil {
 		t.Skip("no run state")
 	}
-	desktopProgressNote(scope, "publish", "verify_result: ok\nPUBLISHED and verified. Reply to the user once with this link: https://x.example/p/1", nil)
+	desktopPublishRecordUpdate(scope, func(r *desktopPublishRecord) { r.State, r.URL = browser.PublishLive, "https://x.example/p/1" })
+	desktopProgressNote(scope, "publish", "verify_result: ok", nil)
 	req := "在小红书发布一篇笔记"
 	for i := 0; i < 2; i++ {
 		if err := desktopDriftCheck(scope, "script", nil, req); err != nil {
@@ -41,18 +43,18 @@ func TestPostURLForListedID(t *testing.T) {
 }
 
 func TestReplyGetsThePublishedLink(t *testing.T) {
-	desktopNotePublishedLink("run-l", "x\nPUBLISHED and verified. Reply to the user once with this link: https://x.example/p/9")
+	desktopPublishRecordUpdate(agentruntime.Scope{RunID: "run-l"}, func(r *desktopPublishRecord) { r.State, r.URL = browser.PublishLive, "https://x.example/p/9" })
 	if got := desktopReplyWithLink("run-l", "论文数据已经拿到。"); !strings.Contains(got, "https://x.example/p/9") {
 		t.Fatal(got)
 	}
-	desktopNotePublishedLink("run-m", "PUBLISHED and verified. Reply to the user once with this link: https://x.example/p/8")
+	desktopPublishRecordUpdate(agentruntime.Scope{RunID: "run-m"}, func(r *desktopPublishRecord) { r.State, r.URL = browser.PublishLive, "https://x.example/p/8" })
 	if got := desktopReplyWithLink("run-m", "见 https://x.example/p/8"); got != "见 https://x.example/p/8" {
 		t.Fatal(got)
 	}
 }
 
 func TestReplyGetsTheVerifiedPageURL(t *testing.T) {
-	desktopNotePublishedURL("run-v", "https://zhuanlan.zhihu.com/p/2097265154266227495?just_published=2")
+	desktopRecordVerifiedPage(agentruntime.Scope{RunID: "run-v"}, "https://zhuanlan.zhihu.com/p/2097265154266227495?just_published=2")
 	if got := desktopReplyWithLink("run-v", "核验完成。"); !strings.Contains(got, "https://zhuanlan.zhihu.com/p/2097265154266227495") || strings.Contains(got, "just_published") {
 		t.Fatal(got)
 	}
