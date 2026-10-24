@@ -128,7 +128,7 @@ func desktopUpload(session *browser.BrowserAgentSession, args map[string]any) (s
 		}
 	}
 	if err != nil {
-		return "", fmt.Errorf("upload: no file input took the files (%v). Pass text= (or ref=) of the page's upload button so the input it creates is caught; do not open the OS file chooser", err)
+		return "", fmt.Errorf("upload: no file input took the files (%v). Pass text= (or ref=) of the page's upload button so the input it creates is caught; do not open the OS file chooser. For pictures inside an article body (rich editor), skip this action: call action=publish with files=[...], title= and body= — it pastes the pictures into the editor and checks they show", err)
 	}
 	if ok, why := desktopUploadVerify(session, before); !ok {
 		return "", fmt.Errorf("upload: the files were set on a file input but the page shows no change (%s). Check you are on the page's upload area (the right tab/mode), then pass text= of its upload button; do not open the OS file chooser", why)

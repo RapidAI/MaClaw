@@ -39,3 +39,13 @@ func desktopReplyWithLink(runID, content string) string {
 	}
 	return strings.TrimRight(content, "\n") + "\n\n链接：" + link
 }
+
+// desktopNotePublishedURL records a result page the run verified itself (a
+// script click on 发布 then a read-back), unless publish already named one.
+func desktopNotePublishedURL(runID, u string) {
+	u = strings.SplitN(strings.TrimSpace(u), "?", 2)[0]
+	if runID == "" || !strings.HasPrefix(u, "http") {
+		return
+	}
+	desktopPublishedLinks.LoadOrStore(runID, u)
+}

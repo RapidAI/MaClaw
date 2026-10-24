@@ -224,6 +224,7 @@ func desktopProgressNote(scope agentruntime.Scope, action string, out string, er
 	}
 	if err == nil && desktopVerifiedResult(p, out) {
 		p.publishSeen = true
+		desktopNotePublishedURL(scope.RunID, p.lastURL)
 		desktopRecipeValidate(scope)
 		notes = append(notes, "Verified: the page moved to "+p.lastURL+" and it shows the text this task filled. Stop operating the desktop and report that URL. Do not keep editing the published result.")
 	}

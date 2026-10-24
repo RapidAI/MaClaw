@@ -46,3 +46,10 @@ func TestReplyGetsThePublishedLink(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestReplyGetsTheVerifiedPageURL(t *testing.T) {
+	desktopNotePublishedURL("run-v", "https://zhuanlan.zhihu.com/p/2097265154266227495?just_published=2")
+	if got := desktopReplyWithLink("run-v", "核验完成。"); !strings.Contains(got, "https://zhuanlan.zhihu.com/p/2097265154266227495") || strings.Contains(got, "just_published") {
+		t.Fatal(got)
+	}
+}
