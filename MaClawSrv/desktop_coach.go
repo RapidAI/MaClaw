@@ -227,6 +227,11 @@ func desktopProgressNote(scope agentruntime.Scope, action string, out string, er
 		p.publishSeen = true
 		desktopNotePublishedLink(scope.RunID, out)
 	}
+	if err != nil && action == "publish" && strings.Contains(err.Error(), "WAS clicked") {
+		// The submit went out; the post is (very likely) up. From here on
+		// the same no-copies/no-files rules apply as after a verified publish.
+		p.publishSeen = true
+	}
 	if err == nil && desktopVerifiedResult(p, out) {
 		p.publishSeen = true
 		desktopNotePublishedURL(scope.RunID, p.lastURL)

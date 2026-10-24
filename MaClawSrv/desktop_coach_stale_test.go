@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"errors"
 	"strings"
 	"testing"
@@ -200,5 +201,16 @@ func TestDriftGuardNoBashCopyAfterPublish(t *testing.T) {
 	}
 	if err := desktopDriftCheck(scope, "bash", map[string]any{"command": "curl -s x > /tmp/a.json"}, req); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPublishTimeoutAfterClickCountsAsPublished(t *testing.T) {
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u", RunID: "run_clicked_guard"}
+	_ = desktopProgressNote(scope, "publish", "", fmt.Errorf("publish step submit failed: step exceeded its 1m0s budget after the publish button WAS clicked, so the post may already be published"))
+	if st, _ := desktopProgressFor(scope); st == nil {
+		t.Skip("no run state")
+	}
+	if err := desktopAfterPublishDeliverCheck(scope, "在知乎发论文解读"); err == nil {
+		t.Fatal("deliver after a clicked publish must be refused")
 	}
 }
