@@ -594,6 +594,9 @@ func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool, r
 		} else if msg != nil {
 			msg.Content = correctDesktopPathClaim(msg.Content, desktopSavedPath(shot))
 		}
+		if err == nil && msg != nil && run != nil {
+			msg.Content = desktopReplyWithLink(run.ID, msg.Content)
+		}
 		if err == nil && msg != nil {
 			noteDesktopReplyHandoff(tenantID, userID, instanceID, msg.Content)
 		}

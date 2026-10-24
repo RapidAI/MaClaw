@@ -220,6 +220,7 @@ func desktopProgressNote(scope agentruntime.Scope, action string, out string, er
 	if err == nil && action == "publish" && strings.Contains(out, "PUBLISHED and verified") {
 		p.publishVerified = true
 		p.publishSeen = true
+		desktopNotePublishedLink(scope.RunID, out)
 	}
 	if err == nil && desktopVerifiedResult(p, out) {
 		p.publishSeen = true

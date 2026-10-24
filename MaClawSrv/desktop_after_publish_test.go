@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
@@ -32,5 +33,16 @@ func TestPostURLForListedID(t *testing.T) {
 	}
 	if desktopPostURLFor("https://example.com/list", "1") != "" {
 		t.Fatal("unknown host must give no link")
+	}
+}
+
+func TestReplyGetsThePublishedLink(t *testing.T) {
+	desktopNotePublishedLink("run-l", "x\nPUBLISHED and verified. Reply to the user once with this link: https://x.example/p/9")
+	if got := desktopReplyWithLink("run-l", "论文数据已经拿到。"); !strings.Contains(got, "https://x.example/p/9") {
+		t.Fatal(got)
+	}
+	desktopNotePublishedLink("run-m", "PUBLISHED and verified. Reply to the user once with this link: https://x.example/p/8")
+	if got := desktopReplyWithLink("run-m", "见 https://x.example/p/8"); got != "见 https://x.example/p/8" {
+		t.Fatal(got)
 	}
 }
