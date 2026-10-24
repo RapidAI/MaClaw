@@ -207,3 +207,18 @@ func TestPublishFlowSubmitBusyPostPageConfirms(t *testing.T) {
 		}
 	}
 }
+
+// A published page that shows its pictures as lazy-load placeholders (data:
+// src, real URL in a data- attribute) has stored them: no false failure.
+func TestPublishFlowRichBodyLazyPublishedPicturesPass(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "rich_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit?lazypost=1")
+	rep, err := RunPublish(d, PublishSpec{Files: richImages(t), Title: "论文解读：懒加载", Body: richBody, StepBudget: 20 * time.Second})
+	if err != nil {
+		t.Fatalf("err=%v rep=%s", err, rep.String())
+	}
+	if !strings.Contains(site.published[0]["html"], "data-actualsrc") || !strings.Contains(rep.String(), "published page: 2 picture(s)") {
+		t.Fatalf("fixture not lazy or no check: %s", rep.String())
+	}
+}
