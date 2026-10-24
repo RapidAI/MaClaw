@@ -179,3 +179,14 @@ func TestPublishFlowPlainEditorGetsMarkedPlainText(t *testing.T) {
 		t.Fatalf("published %v", site.published)
 	}
 }
+
+// A refused submit reports what the page said, so the next try can fix it.
+func TestPublishFlowSubmitRefusalQuotesPage(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "rich_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit?toolong=1")
+	_, err := RunPublish(d, PublishSpec{Title: "t 太长", Body: "正文 **重点**", StepBudget: 10 * time.Second})
+	if err == nil || !strings.Contains(err.Error(), "正文超出字数限制") || len(site.published) != 0 {
+		t.Fatalf("err=%v", err)
+	}
+}

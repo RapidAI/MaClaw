@@ -739,6 +739,7 @@ func (p *publishRun) clickText(texts []string, buttonsOnly bool) error {
 var publishDoneRe = regexp.MustCompile(`发布成功|已发布|发表成功|Published|published successfully`)
 
 func (p *publishRun) submit() (string, error) {
+	before, _ := p.eval("document.body ? document.body.innerText.slice(0, 20000) : ''")
 	// Set before the click: a page that freezes on publish never answers it.
 	p.submitClicked.Store(true)
 	if err := p.clickText(p.spec.SubmitTexts, true); err != nil {
@@ -773,6 +774,10 @@ func (p *publishRun) submit() (string, error) {
 			lastClick = time.Now()
 			_ = p.clickText(p.spec.SubmitTexts, true)
 		}
+	}
+	after, _ := p.eval("document.body ? document.body.innerText.slice(0, 20000) : ''")
+	if said := newLines(before, after); said != "" {
+		return "", fmt.Errorf("clicked submit but the page neither left the editor nor said it was published; after the click it showed: %q (fix that, e.g. a length limit or a required field, then run publish again)", said)
 	}
 	return "", fmt.Errorf("clicked submit but the page neither left the editor nor said it was published")
 }
@@ -923,4 +928,19 @@ func (p *publishRun) pasteImages() (string, error) {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
+}
+
+// newLines is the text lines that appear in after but not in before.
+func newLines(before, after string) string {
+	seen := map[string]bool{}
+	for _, l := range strings.Split(before, "\n") {
+		seen[strings.TrimSpace(l)] = true
+	}
+	var out []string
+	for _, l := range strings.Split(after, "\n") {
+		if l = strings.TrimSpace(l); l != "" && !seen[l] {
+			out = append(out, l)
+		}
+	}
+	return clipRunes(strings.Join(out, " | "), 200)
 }
