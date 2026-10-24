@@ -1,0 +1,10 @@
+[
+ {"name":"zn2 paste event","refuse":true,"action":"script","args":{"script":"const dt=new DataTransfer();dt.items.add(new File([b],'f1.png',{type:'image/png'}));ed.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt}))"}},
+ {"name":"zn6 xclip image","refuse":true,"action":"bash","args":{"command":"xclip -selection clipboard -t image/png -i /tmp/se2/r1.png"}},
+ {"name":"clipboard file","refuse":true,"action":"clipboard_set","args":{"file":"/tmp/fig2.jpg"}},
+ {"name":"batch with insert","refuse":true,"action":"batch","args":{"plan":[{"action":"click","ref":"e3"},{"action":"script","script":"document.execCommand('insertImage',false,u)"}]}},
+ {"name":"text clipboard","refuse":false,"action":"clipboard_set","args":{"text":"正文第一段"}},
+ {"name":"read back","refuse":false,"action":"script","args":{"script":"return [location.href, document.querySelectorAll('img').length]"}},
+ {"name":"plain bash","refuse":false,"action":"bash","args":{"command":"ls /tmp/se2"}},
+ {"name":"publish itself","refuse":false,"action":"publish","args":{"files":["/tmp/se2/r1.png"]}}
+]
