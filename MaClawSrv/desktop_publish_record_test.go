@@ -40,3 +40,9 @@ func TestPublishRecordStatesTell(t *testing.T) {
 		t.Fatal("not_submitted counts as posted")
 	}
 }
+
+func TestDesktopEditURLForIsSiteData(t *testing.T) {
+	if desktopEditURLFor("https://www.zhihu.com/creator/manage/creation/article") != "{url}/edit" || desktopEditURLFor("https://www.xiaohongshu.com/x") != "" || desktopEditURLFor("") != "" {
+		t.Fatal("edit url pattern lookup")
+	}
+}

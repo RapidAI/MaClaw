@@ -1227,6 +1227,7 @@ func (s *BrowserAgentSession) handleCDPEvent(evt CDPEvent) {
 	if evt.Method == "Page.fileChooserOpened" {
 		s.onFileChooserOpened(evt.Params)
 	}
+	publishSessionEvent(s, evt)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.UpdatedAt = time.Now()

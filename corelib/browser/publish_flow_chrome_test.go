@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -23,6 +24,7 @@ type fixtureDriver struct {
 	mu      sync.Mutex
 	files   []string
 	handled chan error
+	subs    map[chan CDPEvent]bool
 }
 
 func (d *fixtureDriver) Send(m string, p interface{}) (json.RawMessage, error) {
@@ -53,8 +55,34 @@ func (d *fixtureDriver) DisarmChooser() {
 	_, _ = d.c.Send("Page.setInterceptFileChooserDialog", map[string]interface{}{"enabled": false}, 5*time.Second)
 }
 
+func (d *fixtureDriver) Subscribe() (<-chan CDPEvent, func()) {
+	ch := make(chan CDPEvent, 256)
+	d.mu.Lock()
+	if d.subs == nil {
+		d.subs = map[chan CDPEvent]bool{}
+	}
+	d.subs[ch] = true
+	d.mu.Unlock()
+	return ch, func() {
+		d.mu.Lock()
+		if d.subs[ch] {
+			delete(d.subs, ch)
+			close(ch)
+		}
+		d.mu.Unlock()
+	}
+}
+
 func (d *fixtureDriver) pump() {
 	for ev := range d.c.Events() {
+		d.mu.Lock()
+		for ch := range d.subs {
+			select {
+			case ch <- ev:
+			default:
+			}
+		}
+		d.mu.Unlock()
 		if ev.Method != "Page.fileChooserOpened" {
 			continue
 		}
@@ -142,6 +170,7 @@ type fixtureSite struct {
 	mu        sync.Mutex
 	published []map[string]string
 	views     int
+	draft     string
 }
 
 func fixtureServer(t *testing.T, page string) (*httptest.Server, *fixtureSite) {
@@ -159,10 +188,36 @@ func fixtureServer(t *testing.T, page string) (*httptest.Server, *fixtureSite) {
 		w.Header().Set("Content-Type", "image/svg+xml")
 		fmt.Fprint(w, `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="120"><rect width="200" height="120" fill="#48c"/></svg>`)
 	})
+	mux.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		q := r.URL.Query()
+		if q.Get("fail") != "" {
+			http.Error(w, "upload failed", http.StatusInternalServerError)
+			return
+		}
+		n, _ := strconv.Atoi(q.Get("n"))
+		d := 800 * time.Millisecond
+		if q.Get("slow") != "" {
+			d = time.Duration(n) * 6 * time.Second
+		}
+		time.Sleep(d)
+		fmt.Fprintf(w, "/img/%d-%d", n, time.Now().UnixNano())
+	})
+	mux.HandleFunc("/draft", func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		site.mu.Lock()
+		site.draft = string(b)
+		site.mu.Unlock()
+	})
 	mux.HandleFunc("/publish", func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		var m map[string]string
 		_ = json.Unmarshal(b, &m)
+		if m["draft"] != "" {
+			site.mu.Lock()
+			m["html"] = site.draft
+			site.mu.Unlock()
+		}
 		site.mu.Lock()
 		site.published = append(site.published, m)
 		site.mu.Unlock()
@@ -180,6 +235,10 @@ func fixtureServer(t *testing.T, page string) (*httptest.Server, *fixtureSite) {
 		}
 		return site.published[len(site.published)-1]
 	}
+	mux.HandleFunc("/last", func(w http.ResponseWriter, r *http.Request) {
+		m := last()
+		_ = json.NewEncoder(w).Encode(m)
+	})
 	mux.HandleFunc("/success", func(w http.ResponseWriter, r *http.Request) { page1(w, "发布成功") })
 	mux.HandleFunc("/p/123", func(w http.ResponseWriter, r *http.Request) {
 		m := last()
@@ -193,7 +252,11 @@ func fixtureServer(t *testing.T, page string) (*httptest.Server, *fixtureSite) {
 		site.views++
 		views := site.views
 		site.mu.Unlock()
-		if qp.Get("droppic") != "" || (qp.Get("latepic") != "" && views == 1) {
+		site.mu.Lock()
+		npub := len(site.published)
+		site.mu.Unlock()
+		_ = views
+		if qp.Get("droppic") != "" && npub == 1 {
 			if i := strings.LastIndex(b, "<img"); i >= 0 {
 				b = b[:i] + "<span>" + b[i+4:]
 			}

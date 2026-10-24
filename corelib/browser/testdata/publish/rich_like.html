@@ -2,7 +2,7 @@
 <!-- Zhihu-like rich editor: textarea title, contenteditable body that takes
      pasted HTML (keeps h2/h3/strong/em/ul/ol/li/p/blockquote, drops the rest)
      and pasted image files (inserted at the caret as <img>). Query flags:
-     ?plainpaste=1 drops all formatting; ?imgtop=1 puts every image at the top; ?hang=1 freezes the page for 25s on publish; ?stickyquote=1 pulls everything after a pasted quote into it; ?toolong=1 refuses publish with a length error; ?busypost=1 lands on a post page whose JS is busy for 9s; ?lazypost=1 publishes pictures as lazy placeholders (data: src, real URL in data-actualsrc); ?slowupload=1 stores the n-th picture only after 6s*n; ?latepic=1 leaves the last picture off the post page until it is reloaded; ?droppic=1 always leaves it off; ?noupload=1 never stores pasted pictures (they keep a data: source). -->
+     ?plainpaste=1 drops all formatting; ?imgtop=1 puts every image at the top; ?hang=1 freezes the page for 25s on publish; ?stickyquote=1 pulls everything after a pasted quote into it; ?toolong=1 refuses publish with a length error; ?busypost=1 lands on a post page whose JS is busy for 9s; ?lazypost=1 publishes pictures as lazy placeholders (data: src, real URL in data-actualsrc); ?slowupload=1 stores the n-th picture only after 6s*n; ?droppic=1 leaves the last picture off the post page while it was published only once; ?noupload=1 never stores pasted pictures (they keep a data: source). -->
 <style>.public-DraftEditor-content{min-height:300px;width:690px;border:1px solid #ccc} img{width:200px}</style></head><body>
 <div class="WriteIndex-titleInput"><textarea class="Input" placeholder="请输入标题（最多 100 个字）"></textarea></div>
 <div class="DraftEditor-editorContainer"><div class="notranslate public-DraftEditor-content" contenteditable="true" role="textbox"></div></div>
@@ -17,7 +17,7 @@ ed.addEventListener('paste', e => {
   e.preventDefault();
   const fs = [...(e.clipboardData.files || [])];
   if (fs.length) {
-    for (const f of fs) { const rd = new FileReader(); const i = document.createElement('img'); i.width = 200; rd.onload = () => { i.src = rd.result; if (!q.get('noupload')) setTimeout(() => { i.src = location.origin + '/img/' + Math.random(); }, q.get('slowupload') ? 6000 * (++window.__up || (window.__up = 1)) : 800); }; rd.readAsDataURL(f);
+    for (const f of fs) { const rd = new FileReader(); const i = document.createElement('img'); i.width = 200; rd.onload = () => { i.src = rd.result; const n = (window.__up = (window.__up || 0) + 1); fetch('/upload?n=' + n + (q.get('slowupload') ? '&slow=1' : '') + (q.get('noupload') ? '&fail=1' : ''), {method: 'POST', body: f}).then(r => r.ok ? r.text() : null).then(u => { if (u) i.src = location.origin + u; }); }; rd.readAsDataURL(f);
       if (q.get('imgtop')) ed.insertBefore(i, ed.firstChild); else { const f2 = document.createDocumentFragment(); f2.appendChild(i); atCaret(f2); } }
     return;
   }
@@ -27,10 +27,12 @@ ed.addEventListener('paste', e => {
 });
 if (q.get('toolong')) document.getElementById('pub').addEventListener('click', ev => { ev.stopImmediatePropagation(); if (!document.getElementById('tl')) { const d = document.createElement('div'); d.id = 'tl'; d.textContent = '正文超出字数限制'; document.body.appendChild(d); } }, true);
 if (q.get('hang')) document.getElementById('pub').addEventListener('click', () => { const t = Date.now(); while (Date.now() - t < 25000) {} });
+if (q.get('serverdraft')) { let tm; new MutationObserver(() => { clearTimeout(tm); tm = setTimeout(() => fetch('/draft', {method: 'POST', body: ed.innerHTML}), 2000); }).observe(ed, {subtree: true, childList: true, characterData: true, attributes: true}); }
+if (q.get('load')) fetch('/last').then(r => r.json()).then(m => { document.querySelector('textarea').value = m.title || ''; ed.innerHTML = m.html || ''; });
 document.getElementById('pub').addEventListener('click', async ev => {
   if (!ev.isTrusted) return;
   const t = document.querySelector('textarea').value;
-  const r = await fetch('/publish', {method: 'POST', body: JSON.stringify({title: t, body: ed.innerText, html: q.get('lazypost') ? ed.innerHTML.replace(/<img([^>]*?) src="([^"]*)"/g, '<img$1 src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" data-actualsrc="$2"') : ed.innerHTML})});
-  location.href = (await r.text()) + (q.get('busypost') ? '?busy=1' : q.get('latepic') ? '?latepic=1' : q.get('droppic') ? '?droppic=1' : '');
+  const r = await fetch('/publish', {method: 'POST', body: JSON.stringify({title: t, body: ed.innerText, draft: q.get('serverdraft') ? '1' : '', html: q.get('lazypost') ? ed.innerHTML.replace(/<img([^>]*?) src="([^"]*)"/g, '<img$1 src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" data-actualsrc="$2"') : ed.innerHTML})});
+  location.href = (await r.text()) + (q.get('busypost') ? '?busy=1' : q.get('droppic') ? '?droppic=1' : '');
 });
 </script></body></html>

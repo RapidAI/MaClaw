@@ -140,7 +140,7 @@ func TestPublishFlowRichBodyUnstoredPicturesFail(t *testing.T) {
 	srv, site := fixtureServer(t, "rich_like.html")
 	d := fixtureTab(t, addr, srv.URL+"/edit?noupload=1")
 	rep, err := RunPublish(d, PublishSpec{Files: richImages(t), Title: "t 未上传", Body: richBody, StepBudget: 30 * time.Second})
-	if err == nil || rep.Stuck != "readback" || !strings.Contains(rep.String(), "has not stored them") {
+	if err == nil || rep.Stuck != "readback" || !strings.Contains(rep.String(), "upload failed") {
 		t.Fatalf("err=%v rep=%s", err, rep.String())
 	}
 	if len(site.published) != 0 {
@@ -234,29 +234,45 @@ func TestPublishFlowRichBodySlowPictureStorePasses(t *testing.T) {
 	}
 }
 
-// Each pasted picture adds to the store wait, so many pictures do not fail
-// the read-back on time alone.
-func TestPublishPictureWaitScales(t *testing.T) {
-	p := &publishRun{doc: richDoc{anchors: make([]int, 6)}}
-	if p.pictureWait() < 60*time.Second {
-		t.Fatalf("6 pictures wait %s", p.pictureWait())
-	}
-}
-
-// A just-published page that attaches its last picture only after a reload
-// passes: the check reloads once instead of calling the picture missing.
-func TestPublishFlowRichBodyLatePublishedPicturePasses(t *testing.T) {
+// An editor that publishes its server-saved draft loses the last picture
+// when the submit beats the save; the run waits for the page's own save
+// request after the last edit instead of a fixed pause.
+func TestPublishFlowRichBodyWaitsForServerDraftSave(t *testing.T) {
 	addr := startFixtureChrome(t)
 	srv, site := fixtureServer(t, "rich_like.html")
-	d := fixtureTab(t, addr, srv.URL+"/edit?latepic=1")
-	rep, err := RunPublish(d, PublishSpec{Files: richImages(t), Title: "论文解读：晚到的图", Body: richBody, StepBudget: 10 * time.Second})
-	if err != nil || len(site.published) != 1 || site.views < 2 || rep.State != PublishLive {
-		t.Fatalf("err=%v views=%d rep=%s", err, site.views, rep.String())
+	d := fixtureTab(t, addr, srv.URL+"/edit?serverdraft=1")
+	rep, err := RunPublish(d, PublishSpec{Files: richImages(t), Title: "论文解读：草稿保存", Body: richBody, StepBudget: 10 * time.Second})
+	if err != nil || rep.State != PublishLive || strings.Count(site.published[0]["html"], "<img") != 2 {
+		t.Fatalf("err=%v rep=%s html=%q", err, rep.String(), site.published[0]["html"])
 	}
 }
 
-// A published page that really lacks a picture is reported as published but
-// incomplete, never as done, and is not published twice.
+// A failed picture upload is named from the page's own request at once,
+// not after a timeout, and nothing is submitted.
+func TestPublishFlowRichBodyUploadFailureNamed(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "rich_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit?noupload=1")
+	start := time.Now()
+	rep, err := RunPublish(d, PublishSpec{Files: richImages(t), Title: "论文解读：上传失败", Body: richBody, StepBudget: 10 * time.Second})
+	if err == nil || !strings.Contains(err.Error(), "HTTP 500") || rep.State != PublishNotSubmitted || len(site.published) != 0 || time.Since(start) > 40*time.Second {
+		t.Fatalf("err=%v took=%s rep=%s", err, time.Since(start), rep.String())
+	}
+}
+
+// A picture missing from the live post is put back through the post's edit
+// page, and the run ends live.
+func TestPublishFlowRichBodyMissingPictureRepaired(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "rich_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit?droppic=1")
+	rep, err := RunPublish(d, PublishSpec{Files: richImages(t), Title: "论文解读：补图", Body: richBody, EditURL: srv.URL + "/edit?load=1", StepBudget: 10 * time.Second})
+	if err != nil || rep.State != PublishLive || len(site.published) != 2 || !strings.Contains(rep.String(), "repaired 1") {
+		t.Fatalf("err=%v published=%d rep=%s", err, len(site.published), rep.String())
+	}
+}
+
+// Without an edit page the post stays live but incomplete, never "live".
 func TestPublishFlowRichBodyDroppedPictureIsIncomplete(t *testing.T) {
 	addr := startFixtureChrome(t)
 	srv, site := fixtureServer(t, "rich_like.html")

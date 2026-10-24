@@ -44,7 +44,11 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 		SubmitTexts:    desktopStrList(args, "submit_texts"),
 		ConfirmTexts:   desktopStrList(args, "confirm_texts"),
 		VerifyURL:      desktopArg(args, "verify_url"),
+		EditURL:        desktopArg(args, "edit_url"),
 		StepBudget:     30 * time.Second,
+	}
+	if spec.EditURL == "" {
+		spec.EditURL = desktopEditURLFor(desktopArg(args, "verify_url"))
 	}
 	if spec.Title == "" && spec.Body == "" {
 		return "", fmt.Errorf("publish needs title and/or body")
@@ -86,6 +90,27 @@ func desktopPostURLFor(verifyURL, id string) string {
 		if h == suf || strings.HasSuffix(h, "."+suf) {
 			return fmt.Sprintf(pat, id)
 		}
+	}
+	return ""
+}
+
+// desktopEditURLPatterns is site data: how a published post on a host is
+// opened for editing ({url} is the post URL). With it the publish pipeline
+// puts back a picture the live post lost.
+var desktopEditURLPatterns = map[string]string{
+	"zhuanlan.zhihu.com": "{url}/edit",
+	"zhihu.com":          "{url}/edit",
+}
+
+// desktopEditURLFor returns the edit pattern for the host of a site URL.
+func desktopEditURLFor(site string) string {
+	u, err := url.Parse(site)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	h := strings.TrimPrefix(u.Hostname(), "www.")
+	if p, ok := desktopEditURLPatterns[h]; ok {
+		return p
 	}
 	return ""
 }

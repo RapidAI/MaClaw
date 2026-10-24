@@ -37,7 +37,11 @@ type PublishSpec struct {
 	SubmitTexts    []string // exact button texts; default 发布/Publish/Post/提交
 	ConfirmTexts   []string // a second confirm button, if the site asks
 	VerifyURL      string   // page to open after submit where the post must be listed
-	StepBudget     time.Duration
+	// EditURL opens a published post for editing ({url} is the post URL);
+	// with it a picture missing from the live post is put back.
+	EditURL     string
+	UpdateTexts []string // buttons that save an edited post (default 更新/发布/Update/Publish)
+	StepBudget  time.Duration
 }
 
 type PublishStep struct {
@@ -107,6 +111,8 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 		spec.SubmitTexts = defaultSubmitTexts
 	}
 	p := &publishRun{d: d, spec: spec, rep: &PublishReport{}, doc: parseRichBody(spec.Body, len(spec.Files))}
+	p.net = startNetTracker(d)
+	defer p.net.stop()
 	steps := []struct {
 		name string
 		skip bool
@@ -138,12 +144,9 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 		var r res
 		budget := spec.StepBudget
 		if st.name == "submit" || st.name == "verify_result" || st.name == "readback" {
-			// After several pictures a rich editor answers slowly; the
-			// submit's own loop is bounded, so give it room to finish.
-			budget = 2 * spec.StepBudget
-		}
-		if st.name == "readback" || st.name == "verify_result" {
-			budget += p.pictureWait()
+			// These steps end on the page's own events (uploads stored,
+			// draft saved, post found); the budget is only a safety net.
+			budget = publishSafetyBudget(spec.StepBudget)
 		}
 		select {
 		case r = <-ch:
@@ -155,6 +158,9 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 			step.Detail = strings.TrimSpace(r.detail + " " + r.err.Error())
 		}
 		p.rep.Steps = append(p.rep.Steps, step)
+		if strings.HasPrefix(st.name, "fill_") || st.name == "paste_images" {
+			p.lastEdit = time.Now()
+		}
 		if r.err != nil {
 			p.rep.Stuck = st.name
 			p.rep.State = PublishNotSubmitted
@@ -175,10 +181,16 @@ type publishRun struct {
 	submitClicked atomic.Bool
 	// incomplete: the post is live but its re-read found something missing.
 	incomplete atomic.Value // string
-	d          PublishDriver
-	spec       PublishSpec
-	rep        *PublishReport
-	editURL    string
+	// net follows the page's writing requests (nil: driver has no events).
+	net *netTracker
+	// lastEdit: when the run last changed the editor content.
+	lastEdit time.Time
+	// lastMissing: anchor indexes the last structure check found missing.
+	lastMissing []int
+	d           PublishDriver
+	spec        PublishSpec
+	rep         *PublishReport
+	editURL     string
 	// pasteLater: no file input showed the images; paste them into the
 	// body editor after the text (paste_images step).
 	pasteLater bool
@@ -588,6 +600,13 @@ func (p *publishRun) verifyAll() (string, error) {
 		return out, err
 	}
 	sum, cerr := p.checkPublished()
+	if cerr != nil && len(p.lastMissing) > 0 && p.spec.EditURL != "" {
+		rs, rerr := p.repair(append([]int(nil), p.lastMissing...))
+		if rerr == nil {
+			return out + "; " + sum + "; " + rs, nil
+		}
+		cerr = fmt.Errorf("%v (repair failed: %v)", cerr, rerr)
+	}
 	if cerr != nil {
 		p.incomplete.Store(cerr.Error())
 		return out + "; " + sum, fmt.Errorf("published at %s but %v", p.rep.ResultURL, cerr)
@@ -618,9 +637,9 @@ func (p *publishRun) readback() (string, error) {
 				return "", fmt.Errorf("%v; nothing was submitted", err)
 			}
 			parts = append(parts, sum)
-			// Let the editor's draft save catch up with the last picture
-			// before the submit sends it.
-			time.Sleep(minDur(time.Duration(len(p.doc.anchors))*time.Second, 8*time.Second))
+			if err := p.waitSaved(); err != nil {
+				return "", fmt.Errorf("%v; nothing was submitted", err)
+			}
 		}
 	}
 	return strings.Join(parts, ", ") + " verified", nil
@@ -1029,8 +1048,32 @@ func newLines(before, after string) string {
 	return clipRunes(strings.Join(out, " | "), 200)
 }
 
-// pictureWait is the extra time pasted pictures get to be stored by the
-// site: about 12s each (Zhihu needed >45s for 6 pictures in ZN-17).
-func (p *publishRun) pictureWait() time.Duration {
-	return time.Duration(len(p.doc.anchors)) * 12 * time.Second
+// publishSafetyBudget caps a step that ends on page events; it is reached
+// only when the page stops answering.
+func publishSafetyBudget(step time.Duration) time.Duration {
+	return 2*step + 4*time.Minute
+}
+
+// waitSaved: editors that save drafts on the server publish the saved
+// draft, so a submit right after the last edit can lose it. When the page
+// makes writing requests, wait until one started after the last edit has
+// finished and the page is quiet; editors that never save stay instant.
+func (p *publishRun) waitSaved() error {
+	if p.net == nil {
+		return nil
+	}
+	if fails := p.net.failedSince(p.lastEdit); len(fails) > 0 {
+		return fmt.Errorf("the page's save/upload request failed: %s", strings.Join(fails, "; "))
+	}
+	if !p.net.wroteSince(time.Time{}) {
+		return nil
+	}
+	end := time.Now().Add(10 * time.Second)
+	for !p.net.wroteSince(p.lastEdit) && time.Now().Before(end) {
+		time.Sleep(200 * time.Millisecond)
+	}
+	if !p.net.waitQuiet(time.Second, 60*time.Second) {
+		return fmt.Errorf("the page kept saving for 60s after the last edit")
+	}
+	return nil
 }

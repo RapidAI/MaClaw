@@ -23,3 +23,9 @@ func (d sessionPublishDriver) WaitChooser(t time.Duration) (bool, error) {
 	return d.s.WaitFileChooser(t)
 }
 func (d sessionPublishDriver) DisarmChooser() { d.s.DisarmFileChooser() }
+
+// Subscribe streams the session's CDP events to the publish run.
+func (d sessionPublishDriver) Subscribe() (<-chan CDPEvent, func()) {
+	d.s.startEventPump()
+	return subscribeSessionEvents(d.s)
+}

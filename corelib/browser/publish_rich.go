@@ -232,8 +232,15 @@ func (p *publishRun) imgCount(obj string) int {
 // pasteFile pastes picker file k at the end of the editor and waits for one
 // more <img>.
 func (p *publishRun) pasteFile(obj string, k int) error {
+	_, _ = p.call(obj, `function() { this.focus(); const s = getSelection(); const r = document.createRange(); r.selectNodeContents(this); r.collapse(false); s.removeAllRanges(); s.addRange(r); return 'ok'; }`)
+	return p.pasteImageHere(obj, k)
+}
+
+// pasteImageHere pastes picker file k at the current caret and waits for
+// one more <img>.
+func (p *publishRun) pasteImageHere(obj string, k int) error {
 	before := p.imgCount(obj)
-	fn := `function(k) { const f = document.getElementById('__pub_picker').files[k]; this.focus(); const s = getSelection(); const r = document.createRange(); r.selectNodeContents(this); r.collapse(false); s.removeAllRanges(); s.addRange(r); const dt = new DataTransfer(); dt.items.add(f); this.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true})); return 'ok'; }`
+	fn := `function(k) { const f = document.getElementById('__pub_picker').files[k]; const dt = new DataTransfer(); dt.items.add(f); this.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true})); return 'ok'; }`
 	if _, err := p.send("Runtime.callFunctionOn", map[string]interface{}{"objectId": obj, "functionDeclaration": fn, "arguments": []map[string]interface{}{{"value": k}}, "returnByValue": true}); err != nil {
 		return err
 	}
@@ -279,6 +286,7 @@ func (p *publishRun) fillRich(obj string) (string, error) {
 		}
 	}
 	p.imagesPlaced = len(p.doc.anchors)
+	p.lastEdit = time.Now()
 	got, _ := p.call(obj, readValueFn)
 	if !holds(got, p.doc.text) {
 		return "", fmt.Errorf("body read back %d chars (%q) instead of the text", len([]rune(got)), clipRunes(got, 24))
@@ -289,7 +297,7 @@ func (p *publishRun) fillRich(obj string) (string, error) {
 // publishStructureFn checks a container (the editor, or the published
 // article) for the pictures in order at their anchors and for the bold and
 // heading formatting. It returns JSON {imgs, misplaced:[...], bold, heads}.
-const publishStructureFn = `function(spec) { const n = s => (s || '').replace(/\s+/g, ''); let txt = ''; const imgs = []; let pending = 0; const w = document.createTreeWalker(this, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT); for (let x = w.currentNode; x; x = w.nextNode()) { if (x.nodeType === 3) { const p = x.parentElement; if (p && p.closest('script,style,noscript')) continue; txt += n(x.nodeValue); } else if (x.tagName === 'IMG') { const r = x.getBoundingClientRect(); const lazy = [...x.attributes].some(a => a.name !== 'src' && /^data-/.test(a.name) && /^https?:\/\//.test(a.value)); const big = lazy || Math.max(x.naturalWidth || 0, r.width || 0) >= 60; if (big) { imgs.push(txt.length); const src = x.currentSrc || x.src || ''; if (!lazy && !/^https?:/.test(src)) pending++; } } } const mis = []; for (let i = 0; i < spec.anchors; i++) { const at = imgs[i]; if (at === undefined) { mis.push('picture ' + (i + 1) + ' missing'); continue; } const a = n(spec.before[i]).slice(-12), b = n(spec.after[i]).slice(0, 12); const ia = a ? txt.indexOf(a) : 0; const ib = b ? txt.indexOf(b, ia < 0 ? 0 : ia) : txt.length; if (ia < 0 || ib < 0) { mis.push('text around picture ' + (i + 1) + ' not found'); continue; } if (at < ia + a.length - 1 || at > ib + 1) mis.push('picture ' + (i + 1) + ' is not after "' + spec.before[i].slice(-12) + '"'); } const bel = [...this.querySelectorAll('strong,b')].concat([...this.querySelectorAll('span,em')].filter(e => parseInt(getComputedStyle(e).fontWeight) >= 600)); const btxt = n(bel.map(e => e.innerText).join('|')); const boldOK = spec.bold.filter(b => btxt.includes(n(b).slice(0, 8))).length; const qt = n([...this.querySelectorAll('blockquote')].filter(q => !q.parentElement.closest('blockquote')).map(q => q.innerText).join('')).length; return JSON.stringify({quote: txt.length ? qt / txt.length : 0, pending: pending, imgs: imgs.length, misplaced: mis, bold: boldOK, heads: this.querySelectorAll('h1,h2,h3,h4,h5,h6').length}); }`
+const publishStructureFn = `function(spec) { const n = s => (s || '').replace(/\s+/g, ''); let txt = ''; const imgs = []; let pending = 0; const w = document.createTreeWalker(this, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT); for (let x = w.currentNode; x; x = w.nextNode()) { if (x.nodeType === 3) { const p = x.parentElement; if (p && p.closest('script,style,noscript')) continue; txt += n(x.nodeValue); } else if (x.tagName === 'IMG') { const r = x.getBoundingClientRect(); const stored = [...x.attributes].some(a => /^https?:\/\//.test(a.value)); const big = stored || Math.max(x.naturalWidth || 0, r.width || 0) >= 60; if (big) { imgs.push(txt.length); if (!stored) pending++; } } } const mis = [], missing = []; for (let i = 0; i < spec.anchors; i++) { const at = imgs[i]; if (at === undefined) { mis.push('picture ' + (i + 1) + ' missing'); missing.push(i); continue; } const a = n(spec.before[i]).slice(-12), b = n(spec.after[i]).slice(0, 12); const ia = a ? txt.indexOf(a) : 0; const ib = b ? txt.indexOf(b, ia < 0 ? 0 : ia) : txt.length; if (ia < 0 || ib < 0) { mis.push('text around picture ' + (i + 1) + ' not found'); continue; } if (at < ia + a.length - 1 || at > ib + 1) mis.push('picture ' + (i + 1) + ' is not after "' + spec.before[i].slice(-12) + '"'); } const bel = [...this.querySelectorAll('strong,b')].concat([...this.querySelectorAll('span,em')].filter(e => parseInt(getComputedStyle(e).fontWeight) >= 600)); const btxt = n(bel.map(e => e.innerText).join('|')); const boldOK = spec.bold.filter(b => btxt.includes(n(b).slice(0, 8))).length; const qt = n([...this.querySelectorAll('blockquote')].filter(q => !q.parentElement.closest('blockquote')).map(q => q.innerText).join('')).length; return JSON.stringify({missing: missing, quote: txt.length ? qt / txt.length : 0, pending: pending, imgs: imgs.length, misplaced: mis, bold: boldOK, heads: this.querySelectorAll('h1,h2,h3,h4,h5,h6').length}); }`
 
 type structureResult struct {
 	Imgs      int      `json:"imgs"`
@@ -298,6 +306,7 @@ type structureResult struct {
 	Heads     int      `json:"heads"`
 	Pending   int      `json:"pending"`
 	Quote     float64  `json:"quote"`
+	Missing   []int    `json:"missing"`
 }
 
 func (p *publishRun) structureSpec() map[string]interface{} {
@@ -317,21 +326,41 @@ func (p *publishRun) structureSpec() map[string]interface{} {
 }
 
 // checkStructure runs publishStructureFn on obj and names what is wrong.
+// A picture that does not reference a server URL yet is not stored; it is
+// waited for while the page is still uploading (writing requests in flight
+// or recent), and fails as soon as an upload request fails or the page has
+// gone quiet with pictures still local.
 func (p *publishRun) checkStructure(obj, where string) (string, error) {
-	// A picture shown from a local blob:/data: source is not stored by the
-	// site yet; publishing or reloading now loses it. Wait for the upload.
-	deadline := time.Now().Add(minDur(2*p.spec.StepBudget-15*time.Second, 45*time.Second) + p.pictureWait())
+	start := time.Now()
+	fallback := start.Add(minDur(2*p.spec.StepBudget-15*time.Second, 45*time.Second))
 	for {
 		sum, pending, err := p.checkStructureOnce(obj, where)
 		if err != nil || pending == 0 {
 			return sum, err
 		}
-		if time.Now().After(deadline) {
-			return sum, fmt.Errorf("%s: %d picture(s) still show a local blob:/data: source, so the site has not stored them; publishing now would drop them", where, pending)
+		if p.net == nil {
+			if time.Now().After(fallback) {
+				return sum, fmt.Errorf("%s: %d picture(s) are not stored by the site yet; publishing now would drop them", where, pending)
+			}
+		} else {
+			if fails := p.net.failedSince(start.Add(-publishUploadLookback)); len(fails) > 0 {
+				return sum, fmt.Errorf("%s: %d picture(s) not stored: the site's upload failed (%s)", where, pending, strings.Join(fails, "; "))
+			}
+			if n, since := p.net.state(); n == 0 && since > publishUploadIdle {
+				return sum, fmt.Errorf("%s: %d picture(s) not stored and the page has made no upload/save request for %s", where, pending, publishUploadIdle)
+			}
 		}
-		time.Sleep(time.Second)
+		time.Sleep(500 * time.Millisecond)
 	}
 }
+
+// publishUploadIdle: pictures still local with no writing request for this
+// long will not be stored. publishUploadLookback: upload failures this long
+// before a check started count (the paste happened earlier).
+const (
+	publishUploadIdle     = 15 * time.Second
+	publishUploadLookback = 5 * time.Minute
+)
 
 func (p *publishRun) checkStructureOnce(obj, where string) (string, int, error) {
 	raw, err := p.send("Runtime.callFunctionOn", map[string]interface{}{"objectId": obj, "functionDeclaration": publishStructureFn, "arguments": []map[string]interface{}{{"value": p.structureSpec()}}, "returnByValue": true})
@@ -346,6 +375,7 @@ func (p *publishRun) checkStructureOnce(obj, where string) (string, int, error) 
 	_ = json.Unmarshal(raw, &out)
 	var r structureResult
 	_ = json.Unmarshal([]byte(out.Result.Value), &r)
+	p.lastMissing = r.Missing
 	var bad []string
 	bad = append(bad, r.Misplaced...)
 	if nb := len(p.doc.bold); nb > 0 && r.Bold*2 < nb {
@@ -376,21 +406,15 @@ func (p *publishRun) articleExpr() string {
 }
 
 // checkPublished re-reads the published page for pictures and formatting.
-// A just-published page can render before every picture is attached (the
-// last pasted picture showed up late on a real site), so it scrolls the
-// page through, waits as long as the pictures may need, and reloads the
-// page once half way before calling a picture missing.
+// The page is the site's rendering of what it stored, so one settled read
+// is the answer; a picture missing there is missing from the post.
 func (p *publishRun) checkPublished() (string, error) {
 	var last error
 	var sum string
-	start := time.Now()
-	wait := minDur(p.spec.StepBudget, 15*time.Second) + p.pictureWait()/2
-	deadline := start.Add(wait)
-	reloaded := false
+	deadline := time.Now().Add(minDur(p.spec.StepBudget, 15*time.Second))
 	for {
 		obj, err := p.element(p.articleExpr())
 		if err == nil && obj != "" {
-			_, _ = p.evalWithin(publishScrollThroughJS, 3*time.Second)
 			sum, last = p.checkStructure(obj, "published page")
 			if last == nil {
 				return sum, nil
@@ -401,19 +425,9 @@ func (p *publishRun) checkPublished() (string, error) {
 		if time.Now().After(deadline) {
 			return sum, last
 		}
-		if !reloaded && time.Since(start) > wait/2 {
-			reloaded = true
-			_, _ = p.send("Page.reload", map[string]interface{}{"ignoreCache": true})
-			time.Sleep(2 * time.Second)
-			continue
-		}
 		time.Sleep(time.Second)
 	}
 }
-
-// publishScrollThroughJS scrolls the page down in viewport steps so pictures
-// that load only when seen get loaded, then back to the top.
-const publishScrollThroughJS = `(() => { const h = document.body.scrollHeight, v = innerHeight || 800; for (let y = 0; y < h; y += v) scrollTo(0, y); scrollTo(0, h); return String(h); })()`
 
 // quoteShare is the share of the body's characters on Markdown quote lines.
 func quoteShare(body string) float64 {
