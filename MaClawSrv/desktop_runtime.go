@@ -3141,7 +3141,7 @@ func replaceLeakedMonologue(text string) string {
 }
 
 // Words that only make sense inside the runtime (tool status lines, guards).
-var desktopInternalStatusRe = regexp.MustCompile("(?i)`?desktop: ?error`?|progress_where|runtime tool|refused: |already_published|宿主")
+var desktopInternalStatusRe = regexp.MustCompile("(?i)`?desktop: ?error`?|progress_where|runtime tool|refused|already_published|宿主|\\bdeliver\\b|\\bguard\\b")
 
 // dropInternalStatusLead removes leading paragraphs that talk about the
 // runtime's own status lines instead of the result, when a later paragraph
@@ -3152,10 +3152,19 @@ func dropInternalStatusLead(text string) string {
 	for i < len(paras)-1 && desktopInternalStatusRe.MatchString(paras[i]) && !strings.Contains(paras[i], "http") {
 		i++
 	}
-	if i == 0 || !strings.Contains(strings.Join(paras[i:], "\n\n"), "http") {
+	rest := strings.Join(paras[i:], "\n\n")
+	if !strings.Contains(rest, "http") {
 		return text
 	}
-	return strings.Join(paras[i:], "\n\n")
+	// Single lines anywhere that explain a guard or tool refusal.
+	var keep []string
+	for _, ln := range strings.Split(rest, "\n") {
+		if desktopInternalStatusRe.MatchString(ln) && !strings.Contains(ln, "http") {
+			continue
+		}
+		keep = append(keep, ln)
+	}
+	return strings.TrimSpace(strings.Join(keep, "\n"))
 }
 
 func noteDesktopShot(ctx context.Context, mime, data string) bool {
