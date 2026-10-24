@@ -3110,6 +3110,7 @@ func publishDesktopReply(msg *agentservice.Message, slot *desktopShotSlot) (imag
 	if msg != nil {
 		msg.Content = correctDesktopPathClaim(msg.Content, desktopSavedPath(slot))
 		msg.Content = replaceLeakedMonologue(msg.Content)
+		msg.Content = dropInternalStatusLead(msg.Content)
 	}
 	return images, files
 }
@@ -3137,6 +3138,24 @@ func replaceLeakedMonologue(text string) string {
 		return text
 	}
 	return "这次没有完成：浏览器页面卡住了，我没能把任务做完，也没有发布任何内容。可以让我再试一次。"
+}
+
+// Words that only make sense inside the runtime (tool status lines, guards).
+var desktopInternalStatusRe = regexp.MustCompile("(?i)`?desktop: ?error`?|progress_where|runtime tool|refused: |already_published|宿主")
+
+// dropInternalStatusLead removes leading paragraphs that talk about the
+// runtime's own status lines instead of the result, when a later paragraph
+// carries the result (a link).
+func dropInternalStatusLead(text string) string {
+	paras := strings.Split(strings.TrimSpace(text), "\n\n")
+	i := 0
+	for i < len(paras)-1 && desktopInternalStatusRe.MatchString(paras[i]) && !strings.Contains(paras[i], "http") {
+		i++
+	}
+	if i == 0 || !strings.Contains(strings.Join(paras[i:], "\n\n"), "http") {
+		return text
+	}
+	return strings.Join(paras[i:], "\n\n")
 }
 
 func noteDesktopShot(ctx context.Context, mime, data string) bool {
