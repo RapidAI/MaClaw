@@ -190,3 +190,20 @@ func TestPublishFlowSubmitRefusalQuotesPage(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+// A post page whose JS is busy right after the submit (heavy page, dialog)
+// must still count as published from the browser's own URL.
+func TestPublishFlowSubmitBusyPostPageConfirms(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "rich_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit?busypost=1")
+	rep, err := RunPublish(d, PublishSpec{Title: "t 忙页", Body: "正文 **重点**", StepBudget: 8 * time.Second})
+	if len(site.published) != 1 {
+		t.Fatalf("published %d", len(site.published))
+	}
+	for _, s := range rep.Steps {
+		if s.Name == "submit" && (!s.OK || s.TookMS > 6000) {
+			t.Fatalf("submit %+v err=%v", s, err)
+		}
+	}
+}

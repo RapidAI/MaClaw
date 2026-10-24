@@ -751,13 +751,13 @@ func (p *publishRun) submit() (string, error) {
 	deadline := time.Now().Add(2*p.spec.StepBudget - 5*time.Second)
 	for time.Now().Before(deadline) {
 		time.Sleep(500 * time.Millisecond)
-		url, _ := p.eval("location.href")
+		url := p.pageURL()
 		// An autosaved draft also changes the URL (/write -> /p/1/edit):
 		// only a page outside the editor counts as published.
 		if url != "" && url != p.editURL && !publishEditorURL.MatchString(url) {
 			return "page left the editor: " + url, nil
 		}
-		txt, _ := p.eval("document.body ? document.body.innerText.slice(0, 20000) : ''")
+		txt, _ := p.evalWithin("document.body ? document.body.innerText.slice(0, 20000) : ''", 3*time.Second)
 		if m := publishDoneRe.FindString(txt); m != "" {
 			return "page says " + m, nil
 		}
@@ -780,6 +780,56 @@ func (p *publishRun) submit() (string, error) {
 		return "", fmt.Errorf("clicked submit but the page neither left the editor nor said it was published; after the click it showed: %q (fix that, e.g. a length limit or a required field, then run publish again)", said)
 	}
 	return "", fmt.Errorf("clicked submit but the page neither left the editor nor said it was published")
+}
+
+// evalWithin is eval bounded by d: a page that navigates away or freezes
+// right after a submit may never answer Runtime.evaluate.
+func (p *publishRun) evalWithin(expr string, d time.Duration) (string, error) {
+	type res struct {
+		s   string
+		err error
+	}
+	ch := make(chan res, 1)
+	go func() { s, err := p.eval(expr); ch <- res{s, err} }()
+	select {
+	case r := <-ch:
+		return r.s, r.err
+	case <-time.After(d):
+		// A JS dialog (beforeunload, alert) blocks every evaluate.
+		go func() { _, _ = p.send("Page.handleJavaScriptDialog", map[string]interface{}{"accept": true}) }()
+		return "", fmt.Errorf("page did not answer in %s", d)
+	}
+}
+
+// pageURL reads the current URL from the browser's navigation history
+// (answered by the browser even while the page's JS is busy), falling back
+// to a bounded location.href.
+func (p *publishRun) pageURL() string {
+	type res struct{ u string }
+	ch := make(chan res, 1)
+	go func() {
+		raw, err := p.send("Page.getNavigationHistory", map[string]interface{}{})
+		var h struct {
+			CurrentIndex int `json:"currentIndex"`
+			Entries      []struct {
+				URL string `json:"url"`
+			} `json:"entries"`
+		}
+		if err == nil && json.Unmarshal(raw, &h) == nil && h.CurrentIndex >= 0 && h.CurrentIndex < len(h.Entries) {
+			ch <- res{h.Entries[h.CurrentIndex].URL}
+			return
+		}
+		ch <- res{""}
+	}()
+	select {
+	case r := <-ch:
+		if r.u != "" {
+			return r.u
+		}
+	case <-time.After(3 * time.Second):
+	}
+	u, _ := p.evalWithin("location.href", 3*time.Second)
+	return u
 }
 
 func (p *publishRun) navigate(url string) error {

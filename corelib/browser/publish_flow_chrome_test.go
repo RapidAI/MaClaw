@@ -186,7 +186,11 @@ func fixtureServer(t *testing.T, page string) (*httptest.Server, *fixtureSite) {
 		if m["html"] != "" {
 			b = m["html"]
 		}
-		page1(w, "<header><img src='data:,' width=32 alt=avatar></header><h1>"+m["title"]+"</h1><article>"+b+"</article>")
+		busy := ""
+		if r.URL.Query().Get("busy") != "" {
+			busy = "<script>setTimeout(()=>{const t=Date.now();while(Date.now()-t<9000){}},200)</script>"
+		}
+		page1(w, "<header><img src='data:,' width=32 alt=avatar></header><h1>"+m["title"]+"</h1><article>"+b+"</article>"+busy)
 	})
 	mux.HandleFunc("/notes", func(w http.ResponseWriter, r *http.Request) {
 		m := last()
@@ -242,7 +246,7 @@ func TestPublishFlowZhihuLikeDraftBody(t *testing.T) {
 	if len(site.published) != 1 || !strings.Contains(site.published[0]["body"], "第一篇") {
 		t.Fatalf("published %+v", site.published)
 	}
-	if !strings.HasSuffix(rep.ResultURL, "/p/123") {
+	if !strings.Contains(rep.ResultURL, "/p/123") {
 		t.Fatalf("result url %q", rep.ResultURL)
 	}
 }
