@@ -3128,7 +3128,6 @@ func publishDesktopReply(msg *agentservice.Message, slot *desktopShotSlot) (imag
 	if msg != nil {
 		msg.Content = correctDesktopPathClaim(msg.Content, desktopSavedPath(slot))
 		msg.Content = replaceLeakedMonologue(msg.Content)
-		msg.Content = dropInternalStatusLead(msg.Content)
 	}
 	return images, files
 }
@@ -3156,33 +3155,6 @@ func replaceLeakedMonologue(text string) string {
 		return text
 	}
 	return "这次没有完成：浏览器页面卡住了，我没能把任务做完，也没有发布任何内容。可以让我再试一次。"
-}
-
-// Words that only make sense inside the runtime (tool status lines, guards).
-var desktopInternalStatusRe = regexp.MustCompile("(^|[^/\\w])desktop ?(:|报错|失败|error|出错|异常)|PUBLISH STATE|写入保护|保护(被|再次)?.{0,4}触发|^\\s*[^/\\s]{0,10}[：:]?\\s*(/tmp/\\S+?[、,，;；\\s]*)+$|progress_where|runtime tool|refused|already_published|unasked_file|宿主|`deliver`|deliver ?(报错|调用|被拦|失败)|guard ?(拦|refus)")
-
-// dropInternalStatusLead removes leading paragraphs that talk about the
-// runtime's own status lines instead of the result, when a later paragraph
-// carries the result (a link).
-func dropInternalStatusLead(text string) string {
-	paras := strings.Split(strings.TrimSpace(text), "\n\n")
-	i := 0
-	for i < len(paras)-1 && desktopInternalStatusRe.MatchString(paras[i]) && !strings.Contains(paras[i], "http") {
-		i++
-	}
-	rest := strings.Join(paras[i:], "\n\n")
-	if !strings.Contains(rest, "http") {
-		return text
-	}
-	// Single lines anywhere that explain a guard or tool refusal.
-	var keep []string
-	for _, ln := range strings.Split(rest, "\n") {
-		if desktopInternalStatusRe.MatchString(ln) && !strings.Contains(ln, "http") {
-			continue
-		}
-		keep = append(keep, ln)
-	}
-	return strings.TrimSpace(strings.Join(keep, "\n"))
 }
 
 func noteDesktopShot(ctx context.Context, mime, data string) bool {

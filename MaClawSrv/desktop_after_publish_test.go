@@ -37,13 +37,25 @@ func TestPostURLForListedID(t *testing.T) {
 	}
 }
 
-func TestReplyGetsThePublishedLink(t *testing.T) {
-	desktopPublishRecordUpdate(agentruntime.Scope{RunID: "run-l"}, func(r *desktopPublishRecord) { r.State, r.URL = browser.PublishLive, "https://x.example/p/9" })
-	if got := desktopReplyWithLink("run-l", "论文数据已经拿到。"); !strings.Contains(got, "https://x.example/p/9") {
+func TestReplyIsTheTemplateFromTheRecord(t *testing.T) {
+	desktopPublishRecordUpdate(agentruntime.Scope{RunID: "run-l"}, func(r *desktopPublishRecord) {
+		r.State, r.URL, r.Title = browser.PublishLive, "https://x.example/p/9?just_published=2", "论文解读"
+	})
+	got := desktopReplyWithLink("run-l", "桌面被守卫锁死了，我改用 API 核验……文件在 /tmp/a.png")
+	if got != "已发布《论文解读》\n链接：https://x.example/p/9" {
 		t.Fatal(got)
 	}
-	desktopPublishRecordUpdate(agentruntime.Scope{RunID: "run-m"}, func(r *desktopPublishRecord) { r.State, r.URL = browser.PublishLive, "https://x.example/p/8" })
-	if got := desktopReplyWithLink("run-m", "见 https://x.example/p/8"); got != "见 https://x.example/p/8" {
+	desktopPublishRecordUpdate(agentruntime.Scope{RunID: "run-i"}, func(r *desktopPublishRecord) {
+		r.State, r.URL, r.Missing = browser.PublishLiveIncomplete, "https://x.example/p/8", "picture 2 missing"
+	})
+	if got := desktopReplyWithLink("run-i", "全部完成"); !strings.Contains(got, "不完整：picture 2 missing") || !strings.Contains(got, "https://x.example/p/8") {
+		t.Fatal(got)
+	}
+	desktopPublishRecordUpdate(agentruntime.Scope{RunID: "run-n"}, func(r *desktopPublishRecord) { r.State = browser.PublishNoEditor })
+	if got := desktopReplyWithLink("run-n", "没找到编辑器，需要登录。"); got != "没找到编辑器，需要登录。" {
+		t.Fatal(got)
+	}
+	if got := desktopReplyWithLink("run-none", "你好"); got != "你好" {
 		t.Fatal(got)
 	}
 }
