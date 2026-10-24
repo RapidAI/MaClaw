@@ -117,7 +117,7 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 		}(st.fn)
 		var r res
 		budget := spec.StepBudget
-		if st.name == "submit" || st.name == "verify_result" {
+		if st.name == "submit" || st.name == "verify_result" || st.name == "readback" {
 			// After several pictures a rich editor answers slowly; the
 			// submit's own loop is bounded, so give it room to finish.
 			budget = 2 * spec.StepBudget
