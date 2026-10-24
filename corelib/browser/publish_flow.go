@@ -506,7 +506,19 @@ func (p *publishRun) fillBody() (string, error) {
 		if obj != "" {
 			if v, _ := p.call(obj, `function() { return this.isContentEditable ? 'yes' : 'no'; }`); v == "yes" {
 				p.richFilled = true
-				return p.fillRich(obj)
+				out, err := p.fillRich(obj)
+				if err != nil || len(p.doc.anchors) > 0 || (len(p.doc.bold) == 0 && p.doc.headings == 0) {
+					return out, err
+				}
+				// A plain-text editor (note sites) drops every bold and
+				// heading: write the plain form with its 【】/• markers
+				// instead of failing; partial loss still fails readback.
+				if _, n, b, h := p.structureCounts(obj); n == 0 && b == 0 && h == 0 {
+					p.richFilled = false
+					d, err := p.fill("body", p.bodyExpr(), p.doc.plain, true)
+					return d + " (editor keeps no formatting: plain text with 【】 key points)", err
+				}
+				return out, nil
 			}
 		}
 	}

@@ -163,3 +163,19 @@ func TestPublishFlowRichBodyStickyQuoteFails(t *testing.T) {
 		t.Fatal("published anyway")
 	}
 }
+
+// A note editor that keeps no formatting at all gets the plain form with
+// 【】 key points instead of a failed read-back.
+func TestPublishFlowPlainEditorGetsMarkedPlainText(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "rich_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit?plainpaste=1")
+	body := "## 一、背景\n\n长上下文推理里 **KV 缓存**占满显存。\n\n## 二、方法\n\n冷热分层，**吞吐提升 2 倍**。"
+	rep, err := RunPublish(d, PublishSpec{Title: "t 纯文本", Body: body, StepBudget: 20 * time.Second})
+	if err != nil {
+		t.Fatalf("err=%v rep=%s", err, rep.String())
+	}
+	if len(site.published) != 1 || !strings.Contains(site.published[0]["html"]+site.published[0]["text"], "【") {
+		t.Fatalf("published %v", site.published)
+	}
+}

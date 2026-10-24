@@ -413,3 +413,20 @@ func quoteShare(body string) float64 {
 	}
 	return float64(q) / float64(all)
 }
+
+// structureCounts reads pending pictures, pictures, bold and headings once.
+func (p *publishRun) structureCounts(obj string) (int, int, int, int) {
+	raw, err := p.send("Runtime.callFunctionOn", map[string]interface{}{"objectId": obj, "functionDeclaration": publishStructureFn, "arguments": []map[string]interface{}{{"value": p.structureSpec()}}, "returnByValue": true})
+	if err != nil {
+		return 0, -1, -1, -1
+	}
+	var out struct {
+		Result struct {
+			Value string `json:"value"`
+		} `json:"result"`
+	}
+	_ = json.Unmarshal(raw, &out)
+	var r structureResult
+	_ = json.Unmarshal([]byte(out.Result.Value), &r)
+	return r.Pending, r.Imgs, r.Bold, r.Heads
+}
