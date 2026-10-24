@@ -18,7 +18,7 @@ var (
 	desktopImageExtRe          = regexp.MustCompile(`(?i)\.(png|jpe?g|gif|webp)\b|image/`)
 )
 
-const desktopManualImageRefusal = "refused: manual_image_insert — this task publishes, and pictures in a rich editor go through ONE call: action=publish with title, body (text, with the picture places marked or at the end) and files=[the image paths]. It uploads or pastes each picture, waits until it shows, clicks publish and reads the post back. Do not put images in by clipboard, xclip or page scripts. Call action=publish now"
+const desktopManualImageRefusal = "refused: manual_image_insert — this task publishes, and pictures in a rich editor go through ONE call: action=publish with title, a structured body (## headings, **bold** key points, and a line [[img:N|caption]] where picture N belongs) and files=[the image paths]. It uploads or pastes each picture, waits until it shows, clicks publish and reads the post back. Do not put images in by clipboard, xclip or page scripts. Call action=publish now"
 
 // desktopManualImageInsert reports a step that puts an image into a page by
 // hand instead of through the publish flow.

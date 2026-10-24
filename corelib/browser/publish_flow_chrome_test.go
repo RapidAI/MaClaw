@@ -178,7 +178,11 @@ func fixtureServer(t *testing.T, page string) (*httptest.Server, *fixtureSite) {
 	mux.HandleFunc("/success", func(w http.ResponseWriter, r *http.Request) { page1(w, "发布成功") })
 	mux.HandleFunc("/p/123", func(w http.ResponseWriter, r *http.Request) {
 		m := last()
-		page1(w, "<h1>"+m["title"]+"</h1><div>"+m["body"]+"</div>")
+		b := m["body"]
+		if m["html"] != "" {
+			b = m["html"]
+		}
+		page1(w, "<header><img src='data:,' width=32 alt=avatar></header><h1>"+m["title"]+"</h1><article>"+b+"</article>")
 	})
 	mux.HandleFunc("/notes", func(w http.ResponseWriter, r *http.Request) {
 		m := last()

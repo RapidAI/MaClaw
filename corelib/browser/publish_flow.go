@@ -9,11 +9,8 @@ package browser
 // root, closed ones included, via the CDP DOM tree).
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -88,20 +85,20 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 	if len(spec.SubmitTexts) == 0 {
 		spec.SubmitTexts = defaultSubmitTexts
 	}
-	p := &publishRun{d: d, spec: spec, rep: &PublishReport{}}
+	p := &publishRun{d: d, spec: spec, rep: &PublishReport{}, doc: parseRichBody(spec.Body, len(spec.Files))}
 	steps := []struct {
 		name string
 		skip bool
 		fn   func() (string, error)
 	}{
 		{"observe", false, p.observe},
-		{"upload", len(spec.Files) == 0, p.upload},
+		{"upload", len(spec.Files) == 0, p.uploadOrInline},
 		{"fill_title", spec.Title == "", p.fillTitle},
 		{"fill_body", spec.Body == "", p.fillBody},
 		{"paste_images", len(spec.Files) == 0 || spec.Body == "", p.pasteImages},
 		{"readback", spec.Title == "" && spec.Body == "", p.readback},
 		{"submit", false, p.submit},
-		{"verify_result", false, p.verify},
+		{"verify_result", false, p.verifyAll},
 	}
 	for _, st := range steps {
 		if st.skip {
@@ -144,6 +141,12 @@ type publishRun struct {
 	// pasteLater: no file input showed the images; paste them into the
 	// body editor after the text (paste_images step).
 	pasteLater bool
+	// doc is the structured body; richFilled when it went into a rich editor
+	// as formatted text, imagesPlaced pictures at their anchors.
+	doc          richDoc
+	richFilled   bool
+	imagesPlaced int
+	gallery      bool
 }
 
 func (p *publishRun) send(method string, params interface{}) (json.RawMessage, error) {
@@ -485,7 +488,57 @@ func (p *publishRun) fillTitle() (string, error) {
 }
 
 func (p *publishRun) fillBody() (string, error) {
+	// Pictures that went to a gallery (note-style sites) leave a plain
+	// caption body: those editors do not keep bold or headings.
+	if p.doc.rich && !p.gallery {
+		obj, _ := p.element(p.bodyExpr())
+		if obj != "" {
+			if v, _ := p.call(obj, `function() { return this.isContentEditable ? 'yes' : 'no'; }`); v == "yes" {
+				p.richFilled = true
+				return p.fillRich(obj)
+			}
+		}
+	}
+	if p.doc.rich {
+		return p.fill("body", p.bodyExpr(), p.doc.plain, true)
+	}
 	return p.fill("body", p.bodyExpr(), p.spec.Body, true)
+}
+
+// bodyWant is the text the body editor must hold.
+func (p *publishRun) bodyWant() string {
+	switch {
+	case p.richFilled:
+		return p.doc.text
+	case p.doc.rich:
+		return p.doc.plain
+	}
+	return p.spec.Body
+}
+
+// uploadOrInline: pictures anchored in the body of a rich editor go in at
+// their anchors during fill_body instead of through a file input.
+func (p *publishRun) uploadOrInline() (string, error) {
+	if len(p.doc.anchors) > 0 && p.canPasteImages() {
+		return fmt.Sprintf("%d picture(s) go into the body at their anchors", len(p.doc.anchors)), nil
+	}
+	out, err := p.upload()
+	p.gallery = err == nil && !p.pasteLater
+	return out, err
+}
+
+// verifyAll is verify plus, for a rich article that opened as its own page,
+// a re-read of its pictures and formatting.
+func (p *publishRun) verifyAll() (string, error) {
+	out, err := p.verify()
+	if err != nil || !p.richFilled || p.rep.PostID != "" || (p.spec.VerifyURL != "" && strings.TrimRight(p.rep.ResultURL, "/") == strings.TrimRight(p.spec.VerifyURL, "/")) {
+		return out, err
+	}
+	sum, cerr := p.checkPublished()
+	if cerr != nil {
+		return out + "; " + sum, fmt.Errorf("the post IS published at %s (do NOT publish again), but %v. Report this to the user as a failure with the link", p.rep.ResultURL, cerr)
+	}
+	return out + "; " + sum, nil
 }
 
 func (p *publishRun) readback() (string, error) {
@@ -501,10 +554,17 @@ func (p *publishRun) readback() (string, error) {
 	if p.spec.Body != "" {
 		obj, _ := p.element(p.bodyExpr())
 		got, _ := p.call(obj, readValueFn)
-		if obj == "" || !holds(got, p.spec.Body) {
+		if obj == "" || !holds(got, p.bodyWant()) {
 			return "", fmt.Errorf("body no longer holds the text (%d chars)", len([]rune(got)))
 		}
 		parts = append(parts, fmt.Sprintf("body %d chars", len([]rune(got))))
+		if p.richFilled {
+			sum, err := p.checkStructure(obj, "editor")
+			if err != nil {
+				return "", fmt.Errorf("%v; nothing was submitted", err)
+			}
+			parts = append(parts, sum)
+		}
 	}
 	return strings.Join(parts, ", ") + " verified", nil
 }
@@ -800,6 +860,9 @@ func (p *publishRun) canPasteImages() bool {
 // pasteImages pastes the files at the end of the body editor as a clipboard
 // paste of image files, then waits for the editor to show more <img>.
 func (p *publishRun) pasteImages() (string, error) {
+	if p.imagesPlaced > 0 {
+		return fmt.Sprintf("%d picture(s) already at their anchors", p.imagesPlaced), nil
+	}
 	if !p.pasteLater {
 		return "not needed", nil
 	}
@@ -809,31 +872,17 @@ func (p *publishRun) pasteImages() (string, error) {
 	}
 	count := `function() { return String(this.querySelectorAll('img').length); }`
 	before, _ := p.call(obj, count)
-	var items []string
-	for _, f := range p.spec.Files {
-		b, err := os.ReadFile(f)
-		if err != nil {
-			return "", fmt.Errorf("read %s: %v", f, err)
-		}
-		mime := "image/png"
-		switch strings.ToLower(filepath.Ext(f)) {
-		case ".jpg", ".jpeg":
-			mime = "image/jpeg"
-		case ".webp":
-			mime = "image/webp"
-		case ".gif":
-			mime = "image/gif"
-		}
-		items = append(items, fmt.Sprintf(`[%s,%s,%s]`, jsq(base64.StdEncoding.EncodeToString(b)), jsq(filepath.Base(f)), jsq(mime)))
+	// The browser reads the files itself (server and desktop disks differ;
+	// ZN-7 could not paste because the server read the desktop path).
+	if _, err := p.loadPicker(); err != nil {
+		return "", err
 	}
 	pasted := 0
-	for _, it := range items {
-		fn := `function() { const it = ` + it + `; const bin = atob(it[0]); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); const f = new File([u], it[1], {type: it[2]}); this.focus(); const sel = getSelection(); const r = document.createRange(); r.selectNodeContents(this); r.collapse(false); sel.removeAllRanges(); sel.addRange(r); const dt = new DataTransfer(); dt.items.add(f); this.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true})); return 'ok'; }`
-		if v, err := p.call(obj, fn); err != nil || v != "ok" {
-			return "", fmt.Errorf("paste image %d failed: %v", pasted+1, err)
+	for k := range p.spec.Files {
+		if err := p.pasteFile(obj, k); err != nil {
+			return "", fmt.Errorf("pasted %d of %d: %v; nothing was submitted", pasted, len(p.spec.Files), err)
 		}
 		pasted++
-		time.Sleep(1500 * time.Millisecond)
 	}
 	deadline := time.Now().Add(minDur(p.spec.StepBudget, 20*time.Second))
 	for {

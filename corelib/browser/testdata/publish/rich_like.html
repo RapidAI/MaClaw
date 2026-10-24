@@ -1,0 +1,34 @@
+<!doctype html><html><head><meta charset="utf-8"><title>写文章 (rich fixture)</title>
+<!-- Zhihu-like rich editor: textarea title, contenteditable body that takes
+     pasted HTML (keeps h2/h3/strong/em/ul/ol/li/p/blockquote, drops the rest)
+     and pasted image files (inserted at the caret as <img>). Query flags:
+     ?plainpaste=1 drops all formatting; ?imgtop=1 puts every image at the top. -->
+<style>.public-DraftEditor-content{min-height:300px;width:690px;border:1px solid #ccc} img{width:200px}</style></head><body>
+<div class="WriteIndex-titleInput"><textarea class="Input" placeholder="请输入标题（最多 100 个字）"></textarea></div>
+<div class="DraftEditor-editorContainer"><div class="notranslate public-DraftEditor-content" contenteditable="true" role="textbox"></div></div>
+<button class="Button Button--primary" id="pub">发布</button>
+<script>
+const q = new URLSearchParams(location.search);
+const ed = document.querySelector('.public-DraftEditor-content');
+const keep = new Set(['P','H2','H3','H4','STRONG','B','EM','UL','OL','LI','BLOCKQUOTE','BR','A']);
+function clean(node) { for (const c of [...node.childNodes]) { if (c.nodeType === 1) { clean(c); if (!keep.has(c.tagName) || q.get('plainpaste')) { c.replaceWith(...c.childNodes); } } } }
+function atCaret(frag) { const s = getSelection(); if (!s.rangeCount || !ed.contains(s.anchorNode)) { ed.appendChild(frag); return; } const r = s.getRangeAt(0); r.deleteContents(); const last = frag.lastChild; r.insertNode(frag); if (last) { r.setStartAfter(last); r.collapse(true); s.removeAllRanges(); s.addRange(r); } }
+ed.addEventListener('paste', e => {
+  e.preventDefault();
+  const fs = [...(e.clipboardData.files || [])];
+  if (fs.length) {
+    for (const f of fs) { const rd = new FileReader(); const i = document.createElement('img'); i.width = 200; rd.onload = () => { i.src = rd.result; }; rd.readAsDataURL(f);
+      if (q.get('imgtop')) ed.insertBefore(i, ed.firstChild); else { const f2 = document.createDocumentFragment(); f2.appendChild(i); atCaret(f2); } }
+    return;
+  }
+  const h = e.clipboardData.getData('text/html'); const t = document.createElement('template');
+  if (h) { t.innerHTML = h; clean(t.content); } else { t.content.appendChild(document.createTextNode(e.clipboardData.getData('text/plain'))); }
+  atCaret(t.content);
+});
+document.getElementById('pub').addEventListener('click', async ev => {
+  if (!ev.isTrusted) return;
+  const t = document.querySelector('textarea').value;
+  const r = await fetch('/publish', {method: 'POST', body: JSON.stringify({title: t, body: ed.innerText, html: ed.innerHTML})});
+  location.href = await r.text();
+});
+</script></body></html>
