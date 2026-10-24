@@ -1,9 +1,10 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"log"
+	"net/url"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
@@ -29,6 +30,14 @@ func desktopIntentClass(action string, args map[string]any) string {
 		}
 		if desktopStepsInsertedText(raw) != "" {
 			return action + ":text_input"
+		}
+		return action
+	case "navigate":
+		// A navigate timeout reopens the tab, and one site hanging says
+		// nothing about another: block per host, so a run whose first site
+		// hung can still open the next one (XHS-22 was left on a dead tab).
+		if u, err := url.Parse(desktopArg(args, "url")); err == nil && u.Host != "" {
+			return "navigate:" + strings.TrimPrefix(u.Host, "www.")
 		}
 		return action
 	case "click":
