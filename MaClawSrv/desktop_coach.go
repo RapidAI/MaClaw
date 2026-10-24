@@ -13,7 +13,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
-	"github.com/RapidAI/CodeClaw/corelib/browser"
 )
 
 // Run coaching (post-mortem of run_4d3e6297, 10-22: 200 actions in 35 min,
@@ -55,11 +54,6 @@ type desktopProgress struct {
 	warned70    bool
 	warned90    bool
 	publishSeen bool
-	// editorLooks: probes on an editor page before the publish action ran.
-	editorLooks int
-	// afterPublish counts the desktop steps taken after the publish record
-	// says the post is live.
-	afterPublish int
 	// publishTried: this run pressed 发布/更新 (or saw 发布成功). An article
 	// URL seen before that is a page left open by an earlier task.
 	publishTried bool
@@ -214,9 +208,6 @@ func desktopProgressNote(scope agentruntime.Scope, action string, out string, er
 
 	if err == nil && len(p.filled) > 0 && desktopPublishAttemptRe.MatchString(out) {
 		p.publishTried = true
-	}
-	if p.publishTried {
-		desktopNoteEditLink(scope.RunID, p.lastURL)
 	}
 	if err == nil && p.publishTried && !p.publishSeen && !p.readBackHinted && p.lastURL != p.writeURL && !desktopEditURLRe.MatchString(strings.SplitN(p.lastURL, "?", 2)[0]) && !desktopVerifiedResult(p, out) {
 		p.readBackHinted = true
@@ -611,37 +602,22 @@ func desktopDriftCheck(scope agentruntime.Scope, action string, args map[string]
 	st.mu.Lock()
 	inBrowser := p.lastURL != ""
 	published := p.publishSeen
-	rec, publishRan := desktopPublishRecordOf(scope.RunID)
-	over := false
-	result := desktopPublishRecordText(rec)
-	if publishRan && (rec.State == browser.PublishLive || rec.State == browser.PublishLiveIncomplete) && action != "publish" {
-		p.afterPublish++
-		over = p.afterPublish > 2 || desktopAfterVerifyHeavy[action]
-	}
-	prepub := !publishRan && desktopPublishAskRe.MatchString(request) && desktopEditURLRe.MatchString(strings.SplitN(p.lastURL, "?", 2)[0])
-	looks := p.editorLooks
-	if prepub && action == "probe" {
-		p.editorLooks++
-	}
+	lastURL := p.lastURL
 	st.mu.Unlock()
+	rec, hasRec := desktopPublishRecordOf(scope.RunID)
 	if err := desktopUnaskedFileCheck(action, args, request); err != nil {
 		return err
 	}
-	if err := desktopPublishTaskScreenshotCheck(action, request, publishRan); err != nil {
-		return err
-	}
-	if prepub {
-		if err := desktopPrepublishCheck(action, args, looks); err != nil {
+	if hasRec || desktopPublishAskRe.MatchString(request) {
+		phase := desktopPublishPhaseOf(rec, hasRec, lastURL)
+		if err := desktopPublishPlanCheck(phase, action, args); err != nil {
+			if hasRec {
+				return fmt.Errorf("%v. %s", err, desktopPublishRecordText(rec))
+			}
 			return err
 		}
 	}
-	if over {
-		return fmt.Errorf("refused: already_published — action=publish already published and verified the post. Its result: %s. Do not look for more (no probes, scripts, screenshots or fetches) and do not doubt it: give the final answer now saying it is published, with that link (or post id, or list page and title). This refusal is expected, not a problem: do not mention it to the user", result)
-	}
 	if err := desktopAvoidListCheck(action, args, request); err != nil {
-		return err
-	}
-	if err := desktopHandPublishCheck(action, args, request, p.lastURL, publishRan); err != nil {
 		return err
 	}
 	if err := desktopManualImageCheck(action, args, request, published); err != nil {
@@ -728,60 +704,6 @@ func desktopAvoidListCheck(action string, args map[string]any, request string) e
 		}
 	}
 	return nil
-}
-
-// desktopHandPublishCheck (generic): on a publish task the publish action does
-// the fill, submit and read-back; a hand click of the publish button (or a
-// desktop click on an editor page) before that action ran skips its checks
-// (XHS-26 posted by hand).
-func desktopHandPublishCheck(action string, args map[string]any, request, url string, publishRan bool) error {
-	if publishRan || !desktopPublishAskRe.MatchString(request) || !desktopEditURLRe.MatchString(strings.SplitN(url, "?", 2)[0]) {
-		return nil
-	}
-	hand := false
-	switch action {
-	case "app_run", "computer":
-		hand = true
-	case "click", "script", "batch":
-		t := desktopArgsText(args)
-		hand = desktopPublishButtonRe.MatchString(strings.ReplaceAll(t, `\"`, `"`)) && strings.Contains(strings.ToLower(t), "click")
-	}
-	if !hand {
-		return nil
-	}
-	return fmt.Errorf("refused: hand_publish — this is a publish task and the page is the editor: do not click publish yourself. Run action=publish once with the title, the full body and the picture files; it fills, submits and reads the post back")
-}
-
-// After a verified publish these only re-check what the publish action
-// already read back (ZN-16/XHS-28 screenshots and probes).
-var desktopAfterVerifyHeavy = map[string]bool{"screenshot": true, "probe": true, "navigate": true, "upload": true, "rich_fill": true, "type": true, "app_run": true, "computer": true, "file_write": true, "deliver": true, "wait": true}
-
-// Steps that do by hand what action=publish does itself.
-var desktopPrepublishManual = map[string]bool{"upload": true, "rich_fill": true, "type": true, "screenshot": true, "clipboard_set": true, "app_run": true, "computer": true, "wait": true}
-
-var desktopBatchManualRe = regexp.MustCompile(`"action":\s*"(upload|rich_fill|type|clipboard_set)"`)
-
-// desktopPrepublishCheck (generic): on a publish task, once the editor is
-// open and before action=publish ran, the content is prepared off-page
-// (bash/files) and goes in with ONE publish call; hand uploads, fills,
-// screenshots and repeated probes there are detours (XHS-28, ZN-15).
-func desktopPrepublishCheck(action string, args map[string]any, looks int) error {
-	manual := desktopPrepublishManual[action] || (action == "batch" && desktopBatchManualRe.MatchString(desktopArgsText(args))) || (action == "probe" && looks >= 1)
-	if !manual {
-		return nil
-	}
-	return fmt.Errorf("refused: prepublish_detour — the editor is open and this is a publish task: do not %s here by hand. Prepare the title, the full body (with [[img:N]] anchors) and the picture files with bash, then make ONE action=publish call; it uploads, fills, submits and reads the post back", action)
-}
-
-// desktopPublishTaskScreenshotCheck (generic): on a publish task nothing
-// needs a screenshot before action=publish: papers and pages are read as
-// text (fetch/probe), pictures are prepared with bash, and the publish
-// action reads the post back itself (XHS-29 screenshot detour).
-func desktopPublishTaskScreenshotCheck(action, request string, publishRan bool) error {
-	if action != "screenshot" || publishRan || !desktopPublishAskRe.MatchString(request) {
-		return nil
-	}
-	return fmt.Errorf("refused: prepublish_detour — this is a publish task: no screenshots. Read pages as text (fetch/probe), prepare the title, body and picture files with bash, then make ONE action=publish call; it reads the post back and reports any sign-in it needs")
 }
 
 // desktopUnaskedFileCheck (generic): on a publish task that did not ask for a

@@ -8,8 +8,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/browser"
 )
 
-// After action=publish verified the post, two read-back steps pass and the
-// third is refused so the run replies instead of hunting.
+// After action=publish verified the post, any further look is refused with
+// the published link so the run replies instead of hunting.
 func TestAfterVerifiedPublishStopsTheHunt(t *testing.T) {
 	scope := agentruntime.Scope{TenantID: "t", UserID: "u-ap", InstanceID: "i", SessionID: "s", RunID: "run-ap"}
 	st, _ := desktopProgressFor(scope)
@@ -19,14 +19,9 @@ func TestAfterVerifiedPublishStopsTheHunt(t *testing.T) {
 	desktopPublishRecordUpdate(scope, func(r *desktopPublishRecord) { r.State, r.URL = browser.PublishLive, "https://x.example/p/1" })
 	desktopProgressNote(scope, "publish", "verify_result: ok", nil)
 	req := "在小红书发布一篇笔记"
-	for i := 0; i < 2; i++ {
-		if err := desktopDriftCheck(scope, "script", nil, req); err != nil {
-			t.Fatalf("read-back %d refused: %v", i, err)
-		}
-	}
 	err := desktopDriftCheck(scope, "probe", nil, req)
 	if err == nil {
-		t.Fatal("third step after a verified publish must be refused")
+		t.Fatal("a probe after a verified publish must be refused")
 	}
 	if !strings.Contains(err.Error(), "https://x.example/p/1") {
 		t.Fatalf("refusal must repeat the published link: %v", err)

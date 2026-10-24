@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
@@ -20,43 +21,51 @@ func TestAvoidListCheck(t *testing.T) {
 	}
 }
 
-func TestHandPublishCheck(t *testing.T) {
-	req := "写一篇笔记并直接发布到我的小红书账号"
+func TestPublishPlanPhases(t *testing.T) {
 	ed := "https://creator.xiaohongshu.com/publish/publish?from=menu"
-	if err := desktopHandPublishCheck("app_run", map[string]any{"steps": "click 900 700"}, req, ed, false); err == nil {
-		t.Fatal("desktop click on editor before publish action must be refused")
+	if p := desktopPublishPhaseOf(desktopPublishRecord{}, false, ed); p != phaseCompose {
+		t.Fatal(p)
 	}
-	if err := desktopHandPublishCheck("script", map[string]any{"script": `[...document.querySelectorAll('button')].find(b=>b.innerText==="发布").click()`}, req, ed, false); err == nil {
-		t.Fatal("scripted publish click must be refused")
+	if p := desktopPublishPhaseOf(desktopPublishRecord{}, false, "https://huggingface.co/papers"); p != phaseResearch {
+		t.Fatal(p)
 	}
-	if err := desktopHandPublishCheck("script", map[string]any{"script": "document.title"}, req, ed, false); err != nil {
-		t.Fatalf("plain script: %v", err)
-	}
-	if err := desktopHandPublishCheck("app_run", nil, req, ed, true); err != nil {
-		t.Fatalf("after publish action: %v", err)
-	}
-	if err := desktopHandPublishCheck("app_run", nil, req, "https://huggingface.co/papers", false); err != nil {
-		t.Fatalf("not an editor: %v", err)
-	}
-}
-
-func TestPrepublishCheck(t *testing.T) {
-	for _, a := range []string{"upload", "rich_fill", "screenshot", "app_run"} {
-		if desktopPrepublishCheck(a, nil, 0) == nil {
-			t.Fatalf("%s before publish must be refused", a)
+	for st, want := range map[browser.PublishState]desktopPublishPhase{browser.PublishLive: phaseLive, browser.PublishLiveIncomplete: phaseIncomplete, browser.PublishSubmitted: phaseSubmitted, browser.PublishNotSubmitted: phaseCompose} {
+		if p := desktopPublishPhaseOf(desktopPublishRecord{State: st}, true, ed); p != want {
+			t.Fatalf("%s: %s", st, p)
 		}
 	}
-	if desktopPrepublishCheck("probe", nil, 0) != nil {
-		t.Fatal("first probe of the editor is allowed")
+	click := map[string]any{"script": `[...document.querySelectorAll('button')].find(b=>b.innerText==="发布").click()`}
+	cases := []struct {
+		ph   desktopPublishPhase
+		act  string
+		args map[string]any
+		ok   bool
+	}{
+		{phaseResearch, "screenshot", nil, false},
+		{phaseResearch, "probe", nil, true},
+		{phaseResearch, "bash", nil, true},
+		{phaseCompose, "upload", nil, false},
+		{phaseCompose, "rich_fill", nil, false},
+		{phaseCompose, "app_run", nil, false},
+		{phaseCompose, "script", click, false},
+		{phaseCompose, "batch", map[string]any{"plan": []any{map[string]any{"action": "upload"}}}, false},
+		{phaseCompose, "publish", nil, true},
+		{phaseCompose, "bash", nil, true},
+		{phaseResearch, "batch", map[string]any{"plan": []any{map[string]any{"action": "script", "script": click["script"]}}}, false},
+		{phaseSubmitted, "probe", nil, true},
+		{phaseSubmitted, "click", nil, false},
+		{phaseLive, "probe", nil, false},
+		{phaseLive, "screenshot", nil, false},
+		{phaseIncomplete, "app_run", nil, false},
 	}
-	if desktopPrepublishCheck("probe", nil, 1) == nil {
-		t.Fatal("second probe must be refused")
-	}
-	if desktopPrepublishCheck("batch", map[string]any{"plan": []any{map[string]any{"action": "upload"}}}, 0) == nil {
-		t.Fatal("batch with an upload must be refused")
-	}
-	if desktopPrepublishCheck("bash", nil, 5) != nil || desktopPrepublishCheck("publish", nil, 5) != nil {
-		t.Fatal("bash/publish must pass")
+	for _, c := range cases {
+		err := desktopPublishPlanCheck(c.ph, c.act, c.args)
+		if (err == nil) != c.ok {
+			t.Fatalf("%s/%s: %v", c.ph, c.act, err)
+		}
+		if err != nil && !strings.Contains(err.Error(), "publish_plan("+string(c.ph)+")") {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -97,18 +106,5 @@ func TestDriftCheckPrepublishOnEditor(t *testing.T) {
 	})
 	if desktopDriftCheck(scope, "screenshot", map[string]any{}, req) == nil {
 		t.Fatal("screenshot after a verified publish must be refused")
-	}
-}
-
-func TestPublishTaskScreenshotCheck(t *testing.T) {
-	ask := "写一篇小红书图文笔记并直接发布到我的小红书账号，发完把笔记链接回复给我。"
-	if desktopPublishTaskScreenshotCheck("screenshot", ask, false) == nil {
-		t.Fatal("screenshot before publish allowed on a publish task")
-	}
-	if desktopPublishTaskScreenshotCheck("screenshot", "帮我看看这个网页长什么样", false) != nil {
-		t.Fatal("screenshot refused on a non-publish task")
-	}
-	if desktopPublishTaskScreenshotCheck("bash", ask, false) != nil {
-		t.Fatal("bash refused")
 	}
 }
