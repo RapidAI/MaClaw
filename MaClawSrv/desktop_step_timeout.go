@@ -51,6 +51,12 @@ func desktopStepTimeout(action string) time.Duration {
 	if desktopStepLongActions[action] {
 		return desktopEnvSeconds(desktopStepTimeoutLongEnv, 900*time.Second)
 	}
+	if action == "publish" {
+		// The publish pipeline bounds each of its own steps and reports
+		// where it stopped (and whether submit was clicked); killing it
+		// earlier reopens the tab mid-publish and loses that report.
+		return desktopEnvSeconds(desktopStepTimeoutEnv+"_PUBLISH", 300*time.Second)
+	}
 	if action == "navigate" {
 		// A navigate that has not returned in 45s is a hung tab; the
 		// unstick path reopens it, so waiting longer only costs time.

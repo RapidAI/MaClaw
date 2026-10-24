@@ -2,7 +2,7 @@
 <!-- Zhihu-like rich editor: textarea title, contenteditable body that takes
      pasted HTML (keeps h2/h3/strong/em/ul/ol/li/p/blockquote, drops the rest)
      and pasted image files (inserted at the caret as <img>). Query flags:
-     ?plainpaste=1 drops all formatting; ?imgtop=1 puts every image at the top; ?hang=1 freezes the page for 25s on publish; ?noupload=1 never stores pasted pictures (they keep a data: source). -->
+     ?plainpaste=1 drops all formatting; ?imgtop=1 puts every image at the top; ?hang=1 freezes the page for 25s on publish; ?stickyquote=1 pulls everything after a pasted quote into it; ?noupload=1 never stores pasted pictures (they keep a data: source). -->
 <style>.public-DraftEditor-content{min-height:300px;width:690px;border:1px solid #ccc} img{width:200px}</style></head><body>
 <div class="WriteIndex-titleInput"><textarea class="Input" placeholder="请输入标题（最多 100 个字）"></textarea></div>
 <div class="DraftEditor-editorContainer"><div class="notranslate public-DraftEditor-content" contenteditable="true" role="textbox"></div></div>
@@ -22,7 +22,7 @@ ed.addEventListener('paste', e => {
     return;
   }
   const h = e.clipboardData.getData('text/html'); const t = document.createElement('template');
-  if (h) { t.innerHTML = h; clean(t.content); } else { t.content.appendChild(document.createTextNode(e.clipboardData.getData('text/plain'))); }
+  if (h) { t.innerHTML = h; clean(t.content); if (q.get('stickyquote')) { const bq = t.content.querySelector('blockquote'); if (bq) { let x = bq.nextSibling; while (x) { const nx = x.nextSibling; bq.appendChild(x); x = nx; } } } } else { t.content.appendChild(document.createTextNode(e.clipboardData.getData('text/plain'))); }
   atCaret(t.content);
 });
 if (q.get('hang')) document.getElementById('pub').addEventListener('click', () => { const t = Date.now(); while (Date.now() - t < 25000) {} });

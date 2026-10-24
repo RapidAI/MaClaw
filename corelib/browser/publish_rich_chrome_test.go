@@ -147,3 +147,19 @@ func TestPublishFlowRichBodyUnstoredPicturesFail(t *testing.T) {
 		t.Fatal("published anyway")
 	}
 }
+
+// An editor that keeps the quote style after a quoted line swallows the body;
+// the read-back must catch it before submit.
+func TestPublishFlowRichBodyStickyQuoteFails(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "rich_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit?stickyquote=1")
+	body := "> 一句话：**分层缓存**更快。\n\n## 一、背景\n\n长上下文推理里 **KV 缓存**占满显存，这是主要瓶颈。\n\n## 二、方法\n\n把冷数据放到主机内存，热数据留在显存，**吞吐提升 2 倍**。"
+	rep, err := RunPublish(d, PublishSpec{Title: "t 引用", Body: body, StepBudget: 20 * time.Second})
+	if err == nil || rep.Stuck != "readback" || !strings.Contains(rep.String(), "quote block") {
+		t.Fatalf("err=%v rep=%s", err, rep.String())
+	}
+	if len(site.published) != 0 {
+		t.Fatal("published anyway")
+	}
+}

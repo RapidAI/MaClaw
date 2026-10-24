@@ -289,7 +289,7 @@ func (p *publishRun) fillRich(obj string) (string, error) {
 // publishStructureFn checks a container (the editor, or the published
 // article) for the pictures in order at their anchors and for the bold and
 // heading formatting. It returns JSON {imgs, misplaced:[...], bold, heads}.
-const publishStructureFn = `function(spec) { const n = s => (s || '').replace(/\s+/g, ''); let txt = ''; const imgs = []; let pending = 0; const w = document.createTreeWalker(this, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT); for (let x = w.currentNode; x; x = w.nextNode()) { if (x.nodeType === 3) { const p = x.parentElement; if (p && p.closest('script,style,noscript')) continue; txt += n(x.nodeValue); } else if (x.tagName === 'IMG') { const r = x.getBoundingClientRect(); const big = Math.max(x.naturalWidth || 0, r.width || 0) >= 60; if (big) { imgs.push(txt.length); const src = x.currentSrc || x.src || ''; if (!x.complete || !/^https?:/.test(src)) pending++; } } } const mis = []; for (let i = 0; i < spec.anchors; i++) { const at = imgs[i]; if (at === undefined) { mis.push('picture ' + (i + 1) + ' missing'); continue; } const a = n(spec.before[i]).slice(-12), b = n(spec.after[i]).slice(0, 12); const ia = a ? txt.indexOf(a) : 0; const ib = b ? txt.indexOf(b, ia < 0 ? 0 : ia) : txt.length; if (ia < 0 || ib < 0) { mis.push('text around picture ' + (i + 1) + ' not found'); continue; } if (at < ia + a.length - 1 || at > ib + 1) mis.push('picture ' + (i + 1) + ' is not after "' + spec.before[i].slice(-12) + '"'); } const bel = [...this.querySelectorAll('strong,b')].concat([...this.querySelectorAll('span,em')].filter(e => parseInt(getComputedStyle(e).fontWeight) >= 600)); const btxt = n(bel.map(e => e.innerText).join('|')); const boldOK = spec.bold.filter(b => btxt.includes(n(b).slice(0, 8))).length; return JSON.stringify({pending: pending, imgs: imgs.length, misplaced: mis, bold: boldOK, heads: this.querySelectorAll('h1,h2,h3,h4,h5,h6').length}); }`
+const publishStructureFn = `function(spec) { const n = s => (s || '').replace(/\s+/g, ''); let txt = ''; const imgs = []; let pending = 0; const w = document.createTreeWalker(this, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT); for (let x = w.currentNode; x; x = w.nextNode()) { if (x.nodeType === 3) { const p = x.parentElement; if (p && p.closest('script,style,noscript')) continue; txt += n(x.nodeValue); } else if (x.tagName === 'IMG') { const r = x.getBoundingClientRect(); const big = Math.max(x.naturalWidth || 0, r.width || 0) >= 60; if (big) { imgs.push(txt.length); const src = x.currentSrc || x.src || ''; if (!x.complete || !/^https?:/.test(src)) pending++; } } } const mis = []; for (let i = 0; i < spec.anchors; i++) { const at = imgs[i]; if (at === undefined) { mis.push('picture ' + (i + 1) + ' missing'); continue; } const a = n(spec.before[i]).slice(-12), b = n(spec.after[i]).slice(0, 12); const ia = a ? txt.indexOf(a) : 0; const ib = b ? txt.indexOf(b, ia < 0 ? 0 : ia) : txt.length; if (ia < 0 || ib < 0) { mis.push('text around picture ' + (i + 1) + ' not found'); continue; } if (at < ia + a.length - 1 || at > ib + 1) mis.push('picture ' + (i + 1) + ' is not after "' + spec.before[i].slice(-12) + '"'); } const bel = [...this.querySelectorAll('strong,b')].concat([...this.querySelectorAll('span,em')].filter(e => parseInt(getComputedStyle(e).fontWeight) >= 600)); const btxt = n(bel.map(e => e.innerText).join('|')); const boldOK = spec.bold.filter(b => btxt.includes(n(b).slice(0, 8))).length; const qt = n([...this.querySelectorAll('blockquote')].filter(q => !q.parentElement.closest('blockquote')).map(q => q.innerText).join('')).length; return JSON.stringify({quote: txt.length ? qt / txt.length : 0, pending: pending, imgs: imgs.length, misplaced: mis, bold: boldOK, heads: this.querySelectorAll('h1,h2,h3,h4,h5,h6').length}); }`
 
 type structureResult struct {
 	Imgs      int      `json:"imgs"`
@@ -297,6 +297,7 @@ type structureResult struct {
 	Bold      int      `json:"bold"`
 	Heads     int      `json:"heads"`
 	Pending   int      `json:"pending"`
+	Quote     float64  `json:"quote"`
 }
 
 func (p *publishRun) structureSpec() map[string]interface{} {
@@ -350,6 +351,9 @@ func (p *publishRun) checkStructureOnce(obj, where string) (string, int, error) 
 	if nb := len(p.doc.bold); nb > 0 && r.Bold*2 < nb {
 		bad = append(bad, fmt.Sprintf("bold kept on %d of %d key points", r.Bold, nb))
 	}
+	if want := quoteShare(p.spec.Body); r.Quote > want+0.3 {
+		bad = append(bad, fmt.Sprintf("%.0f%% of the body ended up inside a quote block (the editor kept the quote style after a quoted line); write that line as a normal paragraph", r.Quote*100))
+	}
 	if p.doc.headings > 0 && r.Heads == 0 {
 		bad = append(bad, "headings were lost")
 	}
@@ -392,4 +396,20 @@ func (p *publishRun) checkPublished() (string, error) {
 		}
 		time.Sleep(time.Second)
 	}
+}
+
+// quoteShare is the share of the body's characters on Markdown quote lines.
+func quoteShare(body string) float64 {
+	all, q := 0, 0
+	for _, ln := range strings.Split(body, "\n") {
+		k := len([]rune(strings.TrimSpace(ln)))
+		all += k
+		if richQuoteRe.MatchString(ln) {
+			q += k
+		}
+	}
+	if all == 0 {
+		return 0
+	}
+	return float64(q) / float64(all)
 }
