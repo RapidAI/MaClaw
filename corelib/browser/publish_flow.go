@@ -748,7 +748,7 @@ func (p *publishRun) submit() (string, error) {
 	confirmed := false
 	reclicks := 0
 	lastClick := time.Now()
-	deadline := time.Now().Add(minDur(p.spec.StepBudget, 25*time.Second))
+	deadline := time.Now().Add(2*p.spec.StepBudget - 5*time.Second)
 	for time.Now().Before(deadline) {
 		time.Sleep(500 * time.Millisecond)
 		url, _ := p.eval("location.href")
