@@ -667,3 +667,22 @@ func (c *CDPClient) readLoop() {
 		}
 	}
 }
+
+// CloseTargetHTTP closes one page through the DevTools HTTP endpoint.
+func CloseTargetHTTP(ctx context.Context, cdpHTTP, id string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cdpHTTP+"/json/close/"+id, nil)
+	if err != nil {
+		return err
+	}
+	setCDPGateAuth(req)
+	useCDPChromeHost(req)
+	resp, err := cdpHTTPClient(3 * time.Second).Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}

@@ -1916,6 +1916,7 @@ func listDesktopOpenPages(addr, attachedID string) string {
 		return ""
 	}
 	attachedID = strings.TrimSpace(attachedID)
+	targets = trimDesktopTabs(addr, attachedID, targets)
 	lines := make([]string, 0, len(targets))
 	for _, target := range targets {
 		if target.Type != "page" || strings.TrimSpace(target.ID) == "" {
@@ -3081,13 +3082,21 @@ func correctDesktopPathClaim(text, saved string) string {
 	}
 	lines := strings.Split(text, "\n")
 	kept := make([]string, 0, len(lines))
+	claimedShot := false
 	for _, line := range lines {
 		if strings.Contains(line, "~/Desktop/") || strings.Contains(line, "/Desktop/") || strings.Contains(line, "保存到桌面") {
+			low := strings.ToLower(line)
+			claimedShot = claimedShot || strings.Contains(line, "截图") || strings.Contains(low, "screenshot") || strings.Contains(low, ".png")
 			continue
 		}
 		kept = append(kept, line)
 	}
 	body := strings.TrimSpace(strings.Join(kept, "\n"))
+	if !claimedShot && body != "" {
+		// Working paths in a reply about other work (a published post)
+		// are dropped quietly: a screenshot note there is noise.
+		return body
+	}
 	const note = "截图没有写到桌面文件夹。"
 	if body == "" {
 		return note
@@ -3100,8 +3109,34 @@ func publishDesktopReply(msg *agentservice.Message, slot *desktopShotSlot) (imag
 	files = attachDesktopFile(msg, slot)
 	if msg != nil {
 		msg.Content = correctDesktopPathClaim(msg.Content, desktopSavedPath(slot))
+		msg.Content = replaceLeakedMonologue(msg.Content)
 	}
 	return images, files
+}
+
+var desktopMonologueMarkers = []string{"Let me ", "I need ", "Hmm", "Idea:", "Maybe ", "Actually ", "So probe", "I can't attach", "Alternative approach", "Let's try", "I should "}
+
+// replaceLeakedMonologue swaps a reply that is the model's own working notes
+// (English think-aloud, no user-facing result) for a short honest status.
+func replaceLeakedMonologue(text string) string {
+	t := strings.TrimSpace(text)
+	if t == "" || strings.Contains(t, "http") {
+		return text
+	}
+	n := 0
+	for _, m := range desktopMonologueMarkers {
+		n += strings.Count(t, m)
+	}
+	cjk := 0
+	for _, r := range t {
+		if r >= 0x4e00 && r <= 0x9fff {
+			cjk++
+		}
+	}
+	if n < 3 || cjk*10 > len([]rune(t)) {
+		return text
+	}
+	return "这次没有完成：浏览器页面卡住了，我没能把任务做完，也没有发布任何内容。可以让我再试一次。"
 }
 
 func noteDesktopShot(ctx context.Context, mime, data string) bool {
@@ -3755,3 +3790,36 @@ func desktopRaiseFileDialog(run func(...string) (string, error)) bool {
 }
 
 const desktopFileDialogSearchPattern = `^(Open|Open Files?|Save|Save Files?|Save As|Select Files?|Choose Files?|File Upload|Upload Files?|打开|打开文件|保存|保存文件|另存为|选择文件|上传文件)$`
+
+// desktopMaxTabs bounds the open pages: every run opens a few, and a browser
+// with a dozen heavy editor tabs hangs (XHS-22 ended on a blank tab with 12
+// open). Closing a tab keeps cookies and logins.
+const desktopMaxTabs = 6
+
+var desktopCloseTab = func(addr, id string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return browser.CloseTargetHTTP(ctx, addr, id)
+}
+
+// trimDesktopTabs closes the oldest pages beyond desktopMaxTabs, never the
+// attached one. DevTools lists the most recently used pages first.
+func trimDesktopTabs(addr, attachedID string, targets []browser.TargetInfo) []browser.TargetInfo {
+	pages := 0
+	out := make([]browser.TargetInfo, 0, len(targets))
+	for _, t := range targets {
+		if t.Type != "page" || strings.TrimSpace(t.ID) == "" {
+			out = append(out, t)
+			continue
+		}
+		pages++
+		if pages > desktopMaxTabs && t.ID != attachedID {
+			if err := desktopCloseTab(addr, t.ID); err == nil {
+				log.Printf("[desktop] closed extra tab %s (%d open > %d)", desktopPageLocation(t.URL), pages, desktopMaxTabs)
+				continue
+			}
+		}
+		out = append(out, t)
+	}
+	return out
+}
