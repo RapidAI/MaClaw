@@ -268,7 +268,17 @@ func (p *publishRun) state() uploadState {
 }
 
 func uploadReflected(before, after uploadState) bool {
-	return after.Files > before.Files || after.Blobs > before.Blobs || after.Bg > before.Bg || after.Imgs > before.Imgs || after.Media > before.Media || after.Nodes > before.Nodes+20
+	return uploadReflectedFor(before, after, false)
+}
+
+// uploadReflectedFor: for images, a page that only grew DOM nodes has not
+// shown the picture (Zhihu ZN-1 published with 0 images that way); require a
+// file, preview, background or <img> increase.
+func uploadReflectedFor(before, after uploadState, images bool) bool {
+	if after.Files > before.Files || after.Blobs > before.Blobs || after.Bg > before.Bg || after.Imgs > before.Imgs || after.Media > before.Media {
+		return true
+	}
+	return !images && after.Nodes > before.Nodes+20
 }
 
 func (p *publishRun) upload() (string, error) {
@@ -316,11 +326,11 @@ func (p *publishRun) upload() (string, error) {
 	deadline := time.Now().Add(minDur(p.spec.StepBudget, 15*time.Second))
 	for {
 		after := p.state()
-		if uploadReflected(before, after) {
+		if uploadReflectedFor(before, after, isImageExt(fileExt(p.spec.Files))) {
 			return fmt.Sprintf("uploaded %d file(s) via %s; page shows it (files=%d previews=%d imgs %d->%d)", len(p.spec.Files), how, after.Files, after.Blobs+after.Bg, before.Imgs, after.Imgs), nil
 		}
 		if time.Now().After(deadline) {
-			return "", fmt.Errorf("files set via %s but the page shows no file, preview or change", how)
+			return "", fmt.Errorf("files set via %s but the page shows no file, preview or image for them; nothing was submitted. Use the editor's own image/upload button as upload_trigger (its visible text) and run publish again", how)
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
