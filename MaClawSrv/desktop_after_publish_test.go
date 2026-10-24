@@ -22,8 +22,12 @@ func TestAfterVerifiedPublishStopsTheHunt(t *testing.T) {
 			t.Fatalf("read-back %d refused: %v", i, err)
 		}
 	}
-	if desktopDriftCheck(scope, "probe", nil, req) == nil {
+	err := desktopDriftCheck(scope, "probe", nil, req)
+	if err == nil {
 		t.Fatal("third step after a verified publish must be refused")
+	}
+	if !strings.Contains(err.Error(), "https://x.example/p/1") {
+		t.Fatalf("refusal must repeat the published link: %v", err)
 	}
 }
 

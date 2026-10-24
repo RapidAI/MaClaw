@@ -58,6 +58,7 @@ type desktopProgress struct {
 	// afterPublish counts the desktop steps taken after it.
 	publishVerified bool
 	afterPublish    int
+	publishResult   string
 	// publishTried: this run pressed 发布/更新 (or saw 发布成功). An article
 	// URL seen before that is a page left open by an earlier task.
 	publishTried bool
@@ -222,6 +223,7 @@ func desktopProgressNote(scope agentruntime.Scope, action string, out string, er
 	}
 	if err == nil && action == "publish" && strings.Contains(out, "PUBLISHED and verified") {
 		p.publishVerified = true
+		p.publishResult = desktopPublishSummary(out)
 		p.publishSeen = true
 		desktopNotePublishedLink(scope.RunID, out)
 	}
@@ -612,13 +614,14 @@ func desktopDriftCheck(scope agentruntime.Scope, action string, args map[string]
 	inBrowser := p.lastURL != ""
 	published := p.publishSeen
 	over := false
+	result := p.publishResult
 	if p.publishVerified && action != "publish" {
 		p.afterPublish++
 		over = p.afterPublish > 2
 	}
 	st.mu.Unlock()
 	if over {
-		return fmt.Errorf("refused: already_published — action=publish already published and verified the post. Do not look for more (no probes, scripts, screenshots or fetches); give the final answer now with exactly what that publish result said (its link, or its post id, or the list page and title). This refusal is expected, not a problem: do not mention it to the user")
+		return fmt.Errorf("refused: already_published — action=publish already published and verified the post. Its result: %s. Do not look for more (no probes, scripts, screenshots or fetches) and do not doubt it: give the final answer now saying it is published, with that link (or post id, or list page and title). This refusal is expected, not a problem: do not mention it to the user", result)
 	}
 	if err := desktopManualImageCheck(action, args, request, published); err != nil {
 		return err
@@ -661,3 +664,16 @@ var desktopBrowserTaskRe = regexp.MustCompile(`(?i)https?://|www\.|\.(com|cn|org
 
 // A shell write (redirect, tee, cp/mv) into the person's own folders.
 var desktopUserDirWriteRe = regexp.MustCompile(`(>>?|\btee\b|\bcp\b|\bmv\b|open\(|write_text\()[^|;&]*(/home/desktop/(Desktop|Documents|桌面|文档)|~/(Desktop|Documents|桌面|文档))`)
+
+// desktopPublishSummary keeps the verified publish result short enough to
+// repeat in later refusals, so a turn that lost it still answers with it.
+func desktopPublishSummary(out string) string {
+	out = strings.TrimSpace(out)
+	if m := desktopPublishLinkRe.FindStringSubmatch(out); m != nil {
+		return "PUBLISHED and verified, link " + strings.TrimRight(m[1], "。.,，)")
+	}
+	if r := []rune(out); len(r) > 300 {
+		out = string(r[:300])
+	}
+	return out
+}
