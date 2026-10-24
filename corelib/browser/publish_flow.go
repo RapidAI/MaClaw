@@ -127,7 +127,7 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 		case <-time.After(budget + 5*time.Second):
 			r = res{"", fmt.Errorf("step exceeded its %s budget", budget)}
 			if p.submitClicked.Load() {
-				r.err = fmt.Errorf("%v after the publish button WAS clicked, so the post may already be published: do NOT click publish or run this action again; read it back once (open verify_url or the account's post list) and reply with its link", r.err)
+				r.err = fmt.Errorf("%v after the publish button WAS clicked, so the post may already be published: do NOT click publish or run this action again; read it back once (open verify_url or the account's post list) and reply with its link. Only if it is NOT there, run this same publish action again with the full body and files: never click publish by hand, a reloaded editor may have lost the pictures", r.err)
 			}
 		}
 		step := PublishStep{Name: st.name, OK: r.err == nil, Detail: r.detail, TookMS: time.Since(start).Milliseconds()}
