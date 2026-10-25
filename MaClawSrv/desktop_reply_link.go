@@ -50,3 +50,17 @@ func desktopReplyTemplate(r desktopPublishRecord) string {
 	}
 	return ""
 }
+
+// desktopDropAskAfterPost: a templated post reply is the whole answer; a
+// question the model attached (ZN-22 asked to confirm a fix after the post
+// was live) is dropped with it.
+func desktopDropAskAfterPost(content string, meta map[string]string) {
+	if meta == nil || !strings.HasPrefix(content, "已发布") && !strings.HasPrefix(content, "已提交发布") {
+		return
+	}
+	for k := range meta {
+		if strings.HasPrefix(k, "ask_user_") {
+			delete(meta, k)
+		}
+	}
+}

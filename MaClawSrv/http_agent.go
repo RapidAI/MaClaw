@@ -596,6 +596,7 @@ func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool, r
 		}
 		if err == nil && msg != nil && run != nil {
 			msg.Content = desktopReplyWithLink(run.ID, msg.Content)
+			desktopDropAskAfterPost(msg.Content, msg.Metadata)
 		}
 		if err == nil && msg != nil {
 			noteDesktopReplyHandoff(tenantID, userID, instanceID, msg.Content)

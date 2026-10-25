@@ -66,3 +66,16 @@ func TestReplyGetsTheVerifiedPageURL(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestTemplatedReplyDropsTheAsk(t *testing.T) {
+	m := map[string]string{"ask_user_question": "要修吗？", "ask_user_options_json": "[]", "model": "x"}
+	desktopDropAskAfterPost("已发布《t》\n链接：https://x.example/p/1", m)
+	if len(m) != 1 || m["model"] != "x" {
+		t.Fatal(m)
+	}
+	m = map[string]string{"ask_user_question": "登录了吗？"}
+	desktopDropAskAfterPost("需要你先登录。", m)
+	if len(m) != 1 {
+		t.Fatal(m)
+	}
+}

@@ -120,6 +120,11 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 		spec.SubmitTexts = defaultSubmitTexts
 	}
 	p := &publishRun{d: d, spec: spec, rep: &PublishReport{}, doc: parseRichBody(spec.Body, len(spec.Files))}
+	if b := p.doc.badAnchors; len(b) > 0 {
+		p.rep.State = PublishNotSubmitted
+		p.rep.Stuck = "spec"
+		return p.rep, fmt.Errorf("publish not started: the body has [[img:%d]] but only %d picture file(s) were given; pass a file for every anchor or remove the anchor (nothing was filled or posted)", b[0], len(spec.Files))
+	}
 	p.net = startNetTracker(d)
 	defer p.net.stop()
 	steps := []struct {

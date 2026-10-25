@@ -22,13 +22,15 @@ import (
 type richDoc struct {
 	segments []string // HTML before the first anchor, between anchors, after the last
 	texts    []string // plain text of each segment
-	anchors  []int    // file index (0-based) for the picture after segments[i]
-	captions []string
-	plain    string // whole body as plain text for non-rich editors
-	text     string // visible text in a rich editor (no markup)
-	bold     []string
-	headings int
-	rich     bool // the body carries structure or anchors
+	// badAnchors: [[img:N]] lines that name no given file.
+	badAnchors []int
+	anchors    []int // file index (0-based) for the picture after segments[i]
+	captions   []string
+	plain      string // whole body as plain text for non-rich editors
+	text       string // visible text in a rich editor (no markup)
+	bold       []string
+	headings   int
+	rich       bool // the body carries structure or anchors
 }
 
 var (
@@ -66,7 +68,11 @@ func parseRichBody(body string, files int) richDoc {
 	for _, ln := range strings.Split(body, "\n") {
 		if m := richAnchorRe.FindStringSubmatch(ln); m != nil {
 			n, _ := strconv.Atoi(m[1])
-			if n >= 1 && (files == 0 || n <= files) {
+			if n < 1 || (files > 0 && n > files) {
+				d.badAnchors = append(d.badAnchors, n)
+				continue
+			}
+			if n >= 1 {
 				flush()
 				d.anchors = append(d.anchors, n-1)
 				d.captions = append(d.captions, strings.TrimSpace(m[2]))
