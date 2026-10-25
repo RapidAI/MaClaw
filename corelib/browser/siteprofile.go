@@ -62,6 +62,13 @@ type SiteProfile struct {
 	SuccessTexts []string `json:"success_texts"`
 	// SuccessURL: a regexp the page URL matches once the post is out.
 	SuccessURL string `json:"success_url"`
+
+	// Playbook: notes for the model when it works on this site by hand
+	// (shown as the site's seed experience).
+	Playbook []string `json:"playbook"`
+	// RiskySubmitSelectors: selector fragments whose click submits a post
+	// on this site (a click on one needs the publish approval).
+	RiskySubmitSelectors []string `json:"risky_submit_selectors"`
 }
 
 //go:embed siteprofiles/*.json

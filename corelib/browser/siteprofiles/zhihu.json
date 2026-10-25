@@ -1,12 +1,49 @@
 {
   "id": "zhihu",
-  "hosts": ["zhihu.com"],
-  "request_words": ["知乎", "zhihu"],
+  "hosts": [
+    "zhihu.com"
+  ],
+  "request_words": [
+    "知乎",
+    "zhihu"
+  ],
   "editor_url": "https://zhuanlan.zhihu.com/write",
   "edit_url": "{url}/edit",
   "image_mode": "paste",
-  "submit_texts": ["发布"],
-  "update_texts": ["更新", "发布"],
-  "success_texts": ["发布成功", "已发布", "发表成功"],
-  "success_url": "^https://zhuanlan\\.zhihu\\.com/p/\\d+/?([?#].*)?$"
+  "submit_texts": [
+    "发布"
+  ],
+  "update_texts": [
+    "更新",
+    "发布"
+  ],
+  "success_texts": [
+    "发布成功",
+    "已发布",
+    "发表成功"
+  ],
+  "success_url": "^https://zhuanlan\\.zhihu\\.com/p/\\d+/?([?#].*)?$",
+  "risky_submit_selectors": [
+    "button--blue"
+  ],
+  "plain_bold": "【$1】",
+  "playbook": [
+    "write articles at https://zhuanlan.zhihu.com/write; if it shows a sign-in form, 安全验证 or stays blank, call request_takeover at once (do not wait)",
+    "article with pictures: save the images as files first, then ONE action=publish with files=[...], title= and a structured body= (## section headings, **bold** key points and numbers, lists) with [[img:N|图N：caption]] on its own line right after the paragraph each picture illustrates; publish pastes each picture at its anchor and checks pictures, order and bold on the published page (do not insert images by hand with scripts or keys)",
+    "DEFAULT FLOW = 3 desktop calls, no other page steps: (1) navigate to /write (no probe needed); (2) ONE action=batch with plan=[{\"action\":\"script\",\"script\":TITLE_SCRIPT},{\"action\":\"rich_fill\",\"text\":WHOLE_BODY},{\"action\":\"script\",\"script\":TOPICS_AND_PUBLISH}]; (3) ONE read-back script on the /p/<id> page it returned, then the reply. TITLE_SCRIPT = await type('textarea[placeholder^=\"请输入标题\"]', TITLE); return document.querySelector('textarea[placeholder^=\"请输入标题\"]').value . TOPICS_AND_PUBLISH (copy it, put your title and 2 topics in): const T=TITLE, TOPICS=['人工智能','机器学习']; const sleep=ms=>new Promise(r=>setTimeout(r,ms)); const z=s=>(s||'').replace(/\\u200b/g,'').trim(); const vis=e=>!!e&&e.getClientRects().length>0; const btn=t=>[...document.querySelectorAll('button')].find(b=>vis(b)&&z(b.innerText)===t); const box=()=>[...document.querySelectorAll('input[placeholder*=\"搜索话题\"]')].find(vis); const ta='textarea[placeholder^=\"请输入标题\"]'; const got=[]; for (const tp of TOPICS) { for (let k=0;k<12&&!box();k++) { const a=btn('添加话题'); if (a) { a.scrollIntoView({block:'center'}); a.click(); } await sleep(500); } if (!box()) continue; await type('input[placeholder*=\"搜索话题\"]', tp); let s=null; for (let k=0;k<20&&!s;k++) { await sleep(300); s=btn(tp); } if (s) { s.click(); got.push(tp); await sleep(700); } } if (document.querySelector(ta).value!==T) await type(ta, T); const p=btn('发布'); if (!p) return 'no 发布 button; topics '+got; setTimeout(()=>p.click(),50); return 'topics '+got.join(',')+'; 发布 clicked from '+location.href . The page then moves to /p/<id>: step (3) is one wait (2s) or probe to read the new URL, then navigate there and run the read-back script. If batch reports a failed step, fix only that step and continue with the rest; topics never hold up 发布",
+    "title FIRST, before the body: the title is a plain <textarea placeholder=\"请输入标题（最多 100 个字）\"> (not the Draft.js body). Fill it with one page script: await type('textarea[placeholder^=\"请输入标题\"]', TITLE); return document.querySelector('textarea[placeholder^=\"请输入标题\"]').value — and check the returned value equals the title. Do not click it by pixels, OCR it, or paste into it with app_run",
+    "decide the final title before you fill it: when the person named a date (e.g. 10.18), the title carries that date as they wrote it; if you used an earlier day's data, say so in the body's first paragraph, not by putting the other date in the title. A title once published is final: never go back to /edit to reword it, change its date or re-publish (that is an update, which only the person can ask for)",
+    "topics: set them with one page script per topic, never with app_run keys or paste; the search box only exists after 添加话题 is clicked and closes after each pick, so every topic script first clicks the 添加话题 button when no input[placeholder*=\"搜索话题\"] is present, then await type('input[placeholder*=\"搜索话题\"]', TOPIC); (page scripts refuse execCommand/insertText — use the type() helper); then (after the suggestions appear, a second script) click the suggestion element whose text is exactly TOPIC and return the chosen topic list; two topics are enough — once two topic chips show, stop adding topics; if a topic does not stick after two tries, skip it: topics never hold up 发布. Right before 发布 re-read document.querySelector('textarea[placeholder^=\"请输入标题\"]').value; if it is not exactly the title (e.g. a topic name got appended), set it again with the title script",
+    "body: the editor is Draft.js — fill it with ONE action=rich_fill whose text is the whole article (no x,y, no ref): it focuses the editor, pastes with a real Ctrl+V and returns 字数; do not type the body in chunks, with type(), or key by key, and never DOM-set or script the body",
+    "after paste/import, probe the body and check its text length is close to the source length before going on",
+    "the body is a rich-text editor: never write it with a page script or DOM (innerHTML/textContent/dispatchEvent paste are dropped and refused); only rich_fill (real paste); if 字数 stays 0, call rich_fill once more with replace=true, never append a second copy",
+    "the editor footer shows 字数: N — 字数 0 after a paste means it did not land; do not go on to topics or publishing",
+    "topics (添加话题): choose topics that match what the article is about (for AI/ML paper digests: 人工智能, 机器学习, 深度学习, 大语言模型, 计算机视觉, 论文); never pick a topic because it shares a literal token (e.g. Hf → 铪 is wrong)",
+    "publishing is public: when the person asked in this task to publish it (发到知乎/发布到知乎/直接发布), click 发布 yourself once 字数 > 0 and the title is set — then, if a 发布设置/话题 dialog appears, finish it and confirm; otherwise (no such request) call request_takeover so the person checks and presses 发布",
+    "after 发布: the page moves to zhuanlan.zhihu.com/p/<id> (not /edit); open that URL again and probe that the title and the full body text are there before you report the link as published",
+    "verify the published article in the browser tab (navigate to /p/<id>, then a page script that returns document.title, the h1 text and the article body text length) — never with curl/wget/python from the shell: zhihu answers those with a ~650-byte anti-bot page, which says nothing about the article; make that browser read your last desktop action before the reply, and quote its title, body length and URL",
+    "once /p/<id> shows the title and body, the article is published: do not open /edit, select-all or paste again, and do not press 更新",
+    "finish right after that check: once the /p/<id> read-back shows the title and body, your next step is the final answer (one reply: what was published, the title, the /p/<id> link, the date used) — no screenshot, no closing the 发布成功 popup, no docx/export/deliver and no further tool calls unless the person asked for a file",
+    "each request to publish (发到知乎/发布到知乎) means a NEW article made in this task at /write, even if a tab, the 创作中心 list or your notes already show a published article with the same or a similar title: that page is from an earlier task, not this one — never report it as this task's result; only open an existing article's /edit when the person asks to update/修改/更新 that article"
+  ]
 }

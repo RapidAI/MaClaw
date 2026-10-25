@@ -48,7 +48,7 @@ var (
 	richHTMLHeadRe = regexp.MustCompile(`(?i)<h[1-6]\b`)
 )
 
-func parseRichBody(body string, files int) richDoc {
+func parseRichBody(body string, files int, plainBold ...string) richDoc {
 	var d richDoc
 	body = strings.ReplaceAll(body, "\r\n", "\n")
 	isHTML := richTagRe.MatchString(body)
@@ -98,7 +98,7 @@ func parseRichBody(body string, files int) richDoc {
 	d.headings = len(richHTMLHeadRe.FindAllString(all, -1))
 	d.rich = len(d.anchors) > 0 || len(d.bold) > 0 || d.headings > 0 || isHTML
 	d.text = strings.Join(d.texts, "\n")
-	d.plain = richHTMLPlain(all)
+	d.plain = richHTMLPlain(all, plainBold...)
 	if !d.rich {
 		d.plain = body
 	}
@@ -191,10 +191,15 @@ func richHTMLText(h string) string {
 }
 
 // richHTMLPlain renders HTML for a plain-text editor: headings and bold stay
-// visible as 【…】, list items get a bullet.
-func richHTMLPlain(h string) string {
-	h = regexp.MustCompile(`(?is)<h[1-6][^>]*>(.*?)</h[1-6]>`).ReplaceAllString(h, "\n【$1】\n")
-	h = richHTMLBoldRe.ReplaceAllString(h, "【$2】")
+// visible through plainBold ($1 = the text; a site profile may set e.g. a
+// bracket form, the default keeps just the text), list items get a bullet.
+func richHTMLPlain(h string, plainBold ...string) string {
+	pb := "$1"
+	if len(plainBold) > 0 && strings.Contains(plainBold[0], "$1") {
+		pb = plainBold[0]
+	}
+	h = regexp.MustCompile(`(?is)<h[1-6][^>]*>(.*?)</h[1-6]>`).ReplaceAllString(h, "\n"+strings.ReplaceAll(pb, "$1", "${1}")+"\n")
+	h = richHTMLBoldRe.ReplaceAllString(h, strings.ReplaceAll(pb, "$1", "${2}"))
 	h = regexp.MustCompile(`(?i)<li[^>]*>`).ReplaceAllString(h, "• ")
 	h = regexp.MustCompile(`(?i)<a [^>]*href="([^"]+)"[^>]*>(.*?)</a>`).ReplaceAllString(h, "$2 $1")
 	h = richBlockEndRe.ReplaceAllString(h, "\n")

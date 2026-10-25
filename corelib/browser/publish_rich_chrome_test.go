@@ -35,7 +35,7 @@ func richImages(t *testing.T) []string {
 }
 
 func TestParseRichBody(t *testing.T) {
-	d := parseRichBody(richBody, 2)
+	d := parseRichBody(richBody, 2, "【$1】")
 	if len(d.anchors) != 2 || d.anchors[1] != 1 || d.headings != 3 || len(d.bold) != 3 {
 		t.Fatalf("doc %+v", d)
 	}
@@ -108,7 +108,7 @@ func TestPublishFlowXHSLikeStructuredBody(t *testing.T) {
 	addr := startFixtureChrome(t)
 	srv, site := fixtureServer(t, "xhs_like.html")
 	d := fixtureTab(t, addr, srv.URL+"/edit")
-	rep, err := RunPublish(d, PublishSpec{Files: richImages(t), Title: "分层 KV 缓存｜速读", Body: richBody, VerifyURL: srv.URL + "/notes", StepBudget: 20 * time.Second})
+	rep, err := RunPublish(d, PublishSpec{Files: richImages(t), Title: "分层 KV 缓存｜速读", Body: richBody, PlainBold: "【$1】", VerifyURL: srv.URL + "/notes", StepBudget: 20 * time.Second})
 	t.Log(rep.String())
 	if err != nil {
 		t.Fatal(err)
@@ -171,7 +171,7 @@ func TestPublishFlowPlainEditorGetsMarkedPlainText(t *testing.T) {
 	srv, site := fixtureServer(t, "rich_like.html")
 	d := fixtureTab(t, addr, srv.URL+"/edit?plainpaste=1")
 	body := "## 一、背景\n\n长上下文推理里 **KV 缓存**占满显存。\n\n## 二、方法\n\n冷热分层，**吞吐提升 2 倍**。"
-	rep, err := RunPublish(d, PublishSpec{Title: "t 纯文本", Body: body, StepBudget: 20 * time.Second})
+	rep, err := RunPublish(d, PublishSpec{Title: "t 纯文本", Body: body, PlainBold: "【$1】", StepBudget: 20 * time.Second})
 	if err != nil {
 		t.Fatalf("err=%v rep=%s", err, rep.String())
 	}

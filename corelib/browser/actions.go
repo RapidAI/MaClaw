@@ -397,10 +397,15 @@ func (s *BrowserAgentSession) submitClickKey(ref *BrowserElementRef, selector, f
 	if !risky && containsSubmitClickMarker(label, selectorLower) {
 		risky = true
 	}
-	if strings.Contains(url, "zhihu.com") && strings.Contains(selectorLower, "button--blue") {
-		risky = true
-		if label == "" {
-			label = "zhihu-blue-submit"
+	if p := ProfileForURL(url); p != nil {
+		for _, frag := range p.RiskySubmitSelectors {
+			if frag != "" && strings.Contains(selectorLower, strings.ToLower(frag)) {
+				risky = true
+				if label == "" {
+					label = p.ID + "-submit"
+				}
+				break
+			}
 		}
 	}
 	if !risky {

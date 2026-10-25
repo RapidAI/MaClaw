@@ -136,7 +136,7 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 	if len(spec.SuccessTexts) == 0 {
 		spec.SuccessTexts = publishSuccessTexts
 	}
-	p := &publishRun{d: d, spec: spec, rep: &PublishReport{}, doc: parseRichBody(spec.Body, len(spec.Files)), discoverSubmit: discover}
+	p := &publishRun{d: d, spec: spec, rep: &PublishReport{}, doc: parseRichBody(spec.Body, len(spec.Files), spec.PlainBold), discoverSubmit: discover}
 	if b := p.doc.badAnchors; len(b) > 0 {
 		p.rep.State = PublishNotSubmitted
 		p.rep.Stuck = "spec"
@@ -457,7 +457,7 @@ func (p *publishRun) upload() (string, error) {
 	if obj == "" && isImageExt(fileExt(p.spec.Files)) {
 		// Editors with media tabs (video first) only mount the image input
 		// once the image tab is chosen; pick it once and look again.
-		if v, _ := p.eval(publishImageTabJS); v == "clicked" {
+		if v, _ := p.eval(publishImageTabJS(p.spec.ImageTabTexts)); v == "clicked" {
 			time.Sleep(1500 * time.Millisecond)
 			if obj, err = p.element(inputExpr); err != nil {
 				return "", err
@@ -663,7 +663,7 @@ func (p *publishRun) fillBody() (string, error) {
 				if _, n, b, h := p.structureCounts(obj); n == 0 && b == 0 && h == 0 {
 					p.richFilled = false
 					d, err := p.fill("body", p.bodyExpr(), p.doc.plain, true)
-					return d + " (editor keeps no formatting: plain text with 【】 key points)", err
+					return d + " (editor keeps no formatting: plain text, key points kept as text)", err
 				}
 				return out, nil
 			}
@@ -742,11 +742,12 @@ func (p *publishRun) bodyWant() string {
 // uploadOrInline: pictures anchored in the body of a rich editor go in at
 // their anchors during fill_body instead of through a file input.
 func (p *publishRun) uploadOrInline() (string, error) {
-	if p.bodyKind() == "markdown" && p.spec.Body != "" && isImageExt(fileExt(p.spec.Files)) {
+	gallery := p.spec.ImageMode == "gallery" // the profile says pictures go to a gallery input
+	if !gallery && p.bodyKind() == "markdown" && p.spec.Body != "" && isImageExt(fileExt(p.spec.Files)) {
 		p.pasteLater = true
 		return fmt.Sprintf("%d picture(s) are pasted into the markdown editor after the text", len(p.spec.Files)), nil
 	}
-	if len(p.doc.anchors) > 0 && p.canPasteImages() {
+	if !gallery && len(p.doc.anchors) > 0 && (p.spec.ImageMode == "paste" || p.canPasteImages()) {
 		return fmt.Sprintf("%d picture(s) go into the body at their anchors", len(p.doc.anchors)), nil
 	}
 	out, err := p.upload()
@@ -1248,8 +1249,16 @@ func isImageExt(ext string) bool {
 }
 
 // publishImageTabJS clicks a visible, short tab/button whose label names an
-// image post ("上传图文", "图文", "Image", "Photo").
-const publishImageTabJS = `(() => { const res = [/^(上传)?图文$|^(image|photo) posts?$/i, /^(上传)?图片$|^(upload )?(images?|photos?)$/i]; const vis = e => e.getClientRects().length > 0; const all = [...document.querySelectorAll('[role=tab],button,a,span,div')].filter(e => vis(e) && e.children.length <= 2); let e = null; for (const re of res) { const c = all.filter(x => re.test((x.innerText || '').trim())); if (c.length) { e = c[c.length - 1]; break; } } if (!e) return 'none'; e.click(); return 'clicked'; })()`
+// image post: the profile's labels when given, else generic ones ("图文",
+// "图片", "Image post", "Photos").
+func publishImageTabJS(texts []string) string {
+	res := "[/^图文$|^(image|photo) posts?$/i, /^图片$|^(upload )?(images?|photos?)$/i]"
+	if len(texts) > 0 {
+		b, _ := json.Marshal(texts)
+		res = "(" + string(b) + ").map(t => ({test: s => s === t}))"
+	}
+	return `(() => { const res = ` + res + `; const vis = e => e.getClientRects().length > 0; const all = [...document.querySelectorAll('[role=tab],button,a,span,div')].filter(e => vis(e) && e.children.length <= 2); let e = null; for (const re of res) { const c = all.filter(x => re.test((x.innerText || '').trim())); if (c.length) { e = c[c.length - 1]; break; } } if (!e) return 'none'; e.click(); return 'clicked'; })()`
+}
 
 // canPasteImages: image files and a rich body editor; editors such as Zhihu's
 // take pictures pasted into the text rather than through a file input.

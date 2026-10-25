@@ -68,7 +68,7 @@ func TestDesktopRichErrorClasses(t *testing.T) {
 	if !desktopStepPastes("app_run", map[string]any{"steps": []any{map[string]any{"key": "ctrl+v"}}}) {
 		t.Fatal("paste step")
 	}
-	if !strings.Contains(strings.Join(desktopSeedNotes["zhihu.com"], " "), "铪") {
+	if !strings.Contains(strings.Join(desktopSeedNotesFor("zhuanlan.zhihu.com"), " "), "铪") {
 		t.Fatal("topic rule seeded")
 	}
 }

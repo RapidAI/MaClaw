@@ -1,13 +1,30 @@
 {
   "id": "xiaohongshu",
-  "hosts": ["xiaohongshu.com"],
-  "request_words": ["小红书", "xiaohongshu", "rednote"],
+  "hosts": [
+    "xiaohongshu.com"
+  ],
+  "request_words": [
+    "小红书",
+    "xiaohongshu",
+    "rednote"
+  ],
   "editor_url": "https://creator.xiaohongshu.com/publish/publish?from=menu",
   "verify_url": "https://creator.xiaohongshu.com/new/note-manager",
   "post_url": "https://www.xiaohongshu.com/explore/{id}",
   "image_mode": "gallery",
-  "image_tab_texts": ["上传图文", "图文"],
+  "image_tab_texts": [
+    "上传图文",
+    "图文"
+  ],
   "plain_bold": "【$1】",
-  "submit_texts": ["发布"],
-  "success_texts": ["发布成功"]
+  "submit_texts": [
+    "发布"
+  ],
+  "success_texts": [
+    "发布成功"
+  ],
+  "playbook": [
+    "after 发布 the page lands on /publish/publish?published=true: the note is submitted. Never call publish again for it; read it back once in note-manager and reply with its link",
+    "a note's link is https://www.xiaohongshu.com/explore/<24-hex note id>; publish reports the id when note-manager shows no direct link"
+  ]
 }

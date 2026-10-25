@@ -388,7 +388,7 @@ func TestPublishFlowPicksImageTab(t *testing.T) {
 	addr := startFixtureChrome(t)
 	srv, site := fixtureServer(t, "tabs_like.html")
 	d := fixtureTab(t, addr, srv.URL+"/edit")
-	rep, err := RunPublish(d, PublishSpec{Files: []string{fixtureImage(t)}, Title: "10.18 HF论文精选｜速读", Body: fixtureBody, VerifyURL: srv.URL + "/notes", StepBudget: 20 * time.Second})
+	rep, err := RunPublish(d, PublishSpec{ImageTabTexts: []string{"上传图文", "图文"}, Files: []string{fixtureImage(t)}, Title: "10.18 HF论文精选｜速读", Body: fixtureBody, VerifyURL: srv.URL + "/notes", StepBudget: 20 * time.Second})
 	t.Log(rep.String())
 	if err != nil {
 		t.Fatal(err)
@@ -403,7 +403,7 @@ func TestPublishFlowTabAsTrigger(t *testing.T) {
 	addr := startFixtureChrome(t)
 	srv, site := fixtureServer(t, "tabs_like.html")
 	d := fixtureTab(t, addr, srv.URL+"/edit")
-	rep, err := RunPublish(d, PublishSpec{Files: []string{fixtureImage(t)}, UploadTrigger: "上传图文", Title: "10.18 HF论文精选｜速读", Body: fixtureBody, VerifyURL: srv.URL + "/notes", StepBudget: 20 * time.Second})
+	rep, err := RunPublish(d, PublishSpec{ImageTabTexts: []string{"上传图文", "图文"}, Files: []string{fixtureImage(t)}, UploadTrigger: "上传图文", Title: "10.18 HF论文精选｜速读", Body: fixtureBody, VerifyURL: srv.URL + "/notes", StepBudget: 20 * time.Second})
 	t.Log(rep.String())
 	if err != nil {
 		t.Fatal(err)

@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/browser"
 )
 
 // Run coaching (post-mortem of run_4d3e6297, 10-22: 200 actions in 35 min,
@@ -666,7 +667,7 @@ var desktopUserDirWriteRe = regexp.MustCompile(`(>>?|\btee\b|\bcp\b|\bmv\b|open\
 var (
 	desktopAvoidWordRe     = regexp.MustCompile(`(?i)不要选|别选|不要用|避开|排除|写过|已用|avoid|exclude|except|not these|already (used|covered|written)`)
 	desktopArxivIDRe       = regexp.MustCompile(`\b(\d{4}\.\d{4,5})(?:v\d+)?\b`)
-	desktopPublishAskRe    = regexp.MustCompile(`(?i)(发布|发表|发到|发在|贴到|投到)[^。\n]{0,12}(知乎|小红书|微博|公众号|头条|掘金|csdn|b站|专栏|博客|账号)|(post|publish)\b[^.\n]{0,30}\b(to|on)\b`)
+	desktopPublishAskRe    = desktopPublishAskRegexp(browser.SiteRequestWords())
 	desktopPublishButtonRe = regexp.MustCompile(`(?i)["'“「](发布|发表|立即发布|确认发布|发布文章|发布笔记|publish|post)["'”」]`)
 )
 
@@ -726,4 +727,27 @@ func desktopUnaskedFileCheck(action string, args map[string]any, request string)
 		return nil
 	}
 	return fmt.Errorf("refused: unasked_file — this is a publish task and the request did not ask for a file: the published link is the result. Keep drafts and pictures under /tmp or the task folder; do not save receipts or copies to the person's folders or attach them")
+}
+
+// desktopPublishAskRegexp: a request to post somewhere. No site list is
+// built in: a publish verb aimed at a place (发布到/发在/投到 X), a verb near
+// a site a profile names or a generic place word (公众号/专栏/博客/账号/平台…),
+// "在 X 上发…", or English post/publish … to/on.
+func desktopPublishAskRegexp(siteWords []string) *regexp.Regexp {
+	places := []string{"公众号", "头条", "专栏", "博客", "账号", "主页", "平台", "网站", "社区", "论坛", "blog"}
+	for _, w := range siteWords {
+		if w = strings.TrimSpace(w); w != "" {
+			places = append(places, regexp.QuoteMeta(w))
+		}
+	}
+	p := strings.Join(places, "|")
+	site := "(?:x^)" // never matches when no profile names a site
+	if len(siteWords) > 0 {
+		var q []string
+		for _, w := range siteWords {
+			q = append(q, regexp.QuoteMeta(w))
+		}
+		site = "发(" + strings.Join(q, "|") + ")"
+	}
+	return regexp.MustCompile(`(?i)(发布|发表|发|贴|投)(到|在|至)[^。\n]{1,20}|(发布|发表|发到|发在|贴到|投到)[^。\n]{0,12}(` + p + `)|在\s*([a-z][\w.\-]*|` + p + `)[^。\n]{0,20}?(发布|发表|发[^现生觉出])|` + site + `|(post|publish)\b[^.\n]{0,30}\b(to|on)\b`)
 }

@@ -23,6 +23,9 @@ jobs:
       - name: Check shared Runtime architecture
         run: node scripts/check-agent-architecture.mjs
 
+      - name: Check no site domains are hardcoded (site data lives in profiles)
+        run: bash scripts/check-site-domains.sh
+
       - uses: actions/setup-go@v6
         with:
           go-version: '1.25.5'
