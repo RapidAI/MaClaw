@@ -185,6 +185,9 @@ type record struct {
 	// not pick one ("" means smart). ProxyModeLocked forces it on everyone.
 	ProxyModeDefault string `json:"proxy_mode_default,omitempty"`
 	ProxyModeLocked  bool   `json:"proxy_mode_locked,omitempty"`
+	// ComputerResetDisabled stops users of this tenant from resetting
+	// (recreating) their own desktop. Restart stays allowed.
+	ComputerResetDisabled bool `json:"computer_reset_disabled,omitempty"`
 	// ProxyModes is each user's own desktop_proxy_mode, by user id.
 	ProxyModes map[string]string `json:"proxy_modes,omitempty"`
 }

@@ -71,17 +71,17 @@ function readWorkspaceCss(): string {
 }
 
 describe('Bot settings tabs', () => {
-    it('renders two tabs and marks only the active one', () => {
-        render(<BotSettingsTabs active="model" labels={{ model: '模型', network: '网络' }} onSelect={() => {}} />);
+    it('renders the tabs and marks only the active one', () => {
+        render(<BotSettingsTabs active="model" labels={{ model: '模型', network: '网络', computer: '电脑' }} onSelect={() => {}} />);
         const tabs = screen.getAllByRole('tab');
-        expect(tabs.map(tab => tab.textContent)).toEqual(['模型', '网络']);
+        expect(tabs.map(tab => tab.textContent)).toEqual(['模型', '网络', '电脑']);
         expect(screen.getByTestId('bot-settings-tab-model').getAttribute('aria-selected')).toBe('true');
         expect(screen.getByTestId('bot-settings-tab-network').getAttribute('aria-selected')).toBe('false');
     });
 
     it('only reports a tab that is not already active', () => {
         const onSelect = vi.fn();
-        render(<BotSettingsTabs active="model" labels={{ model: '模型', network: '网络' }} onSelect={onSelect} />);
+        render(<BotSettingsTabs active="model" labels={{ model: '模型', network: '网络', computer: '电脑' }} onSelect={onSelect} />);
         fireEvent.click(screen.getByTestId('bot-settings-tab-model'));
         expect(onSelect).not.toHaveBeenCalled();
         fireEvent.click(screen.getByTestId('bot-settings-tab-network'));
@@ -93,7 +93,7 @@ describe('Bot settings tabs', () => {
     // scroll the page instead.
     it('is a single tab stop and moves with the arrow keys', () => {
         const onSelect = vi.fn();
-        render(<BotSettingsTabs active="model" labels={{ model: '模型', network: '网络' }} onSelect={onSelect} />);
+        render(<BotSettingsTabs active="model" labels={{ model: '模型', network: '网络', computer: '电脑' }} onSelect={onSelect} />);
         expect(screen.getByTestId('bot-settings-tab-model').getAttribute('tabindex')).toBe('0');
         expect(screen.getByTestId('bot-settings-tab-network').getAttribute('tabindex')).toBe('-1');
 
@@ -101,19 +101,19 @@ describe('Bot settings tabs', () => {
         fireEvent.keyDown(list, { key: 'ArrowRight' });
         expect(onSelect).toHaveBeenLastCalledWith('network');
         fireEvent.keyDown(list, { key: 'ArrowLeft' });
-        expect(onSelect).toHaveBeenLastCalledWith('network');
+        expect(onSelect).toHaveBeenLastCalledWith('computer');
     });
 
     it('wraps the arrow keys around the ends', () => {
         const onSelect = vi.fn();
-        render(<BotSettingsTabs active="model" labels={{ model: '模型', network: '网络' }} onSelect={onSelect} />);
+        render(<BotSettingsTabs active="model" labels={{ model: '模型', network: '网络', computer: '电脑' }} onSelect={onSelect} />);
         fireEvent.keyDown(screen.getByTestId('bot-settings-tabs'), { key: 'ArrowLeft' });
-        expect(onSelect).toHaveBeenCalledWith('network');
+        expect(onSelect).toHaveBeenCalledWith('computer');
     });
 
     it('ignores arrows while the strip is disabled', () => {
         const onSelect = vi.fn();
-        render(<BotSettingsTabs active="model" disabled labels={{ model: '模型', network: '网络' }} onSelect={onSelect} />);
+        render(<BotSettingsTabs active="model" disabled labels={{ model: '模型', network: '网络', computer: '电脑' }} onSelect={onSelect} />);
         fireEvent.keyDown(screen.getByTestId('bot-settings-tabs'), { key: 'ArrowRight' });
         expect(onSelect).not.toHaveBeenCalled();
     });
@@ -134,7 +134,7 @@ describe('Bot model settings dialog', () => {
                 onClose={() => {}}
                 onSubmit={onSubmit}
                 heading="设置"
-                tabs={<BotSettingsTabs active="model" labels={{ model: '模型', network: '网络' }} onSelect={() => {}} />}
+                tabs={<BotSettingsTabs active="model" labels={{ model: '模型', network: '网络', computer: '电脑' }} onSelect={() => {}} />}
                 {...overrides}
             />,
         );
@@ -192,7 +192,7 @@ describe('Bot network settings dialog', () => {
                 state={state}
                 notice=""
                 saving={false}
-                tabs={<BotSettingsTabs active="network" labels={{ model: '模型', network: '网络' }} onSelect={() => {}} />}
+                tabs={<BotSettingsTabs active="network" labels={{ model: '模型', network: '网络', computer: '电脑' }} onSelect={() => {}} />}
                 onClose={() => {}}
                 onSubmit={onSubmit}
                 {...overrides}

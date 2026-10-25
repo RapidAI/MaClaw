@@ -3030,3 +3030,32 @@
 [data-ai-theme='dark'] .form-input.bot-llm-dialog__select:disabled {
     color: var(--theme-text-muted, #7f8ea1);
 }
+
+/* 设置弹窗「电脑」标签页：重启 / 重置云电脑。 */
+.bot-computer__item {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    margin-top: 14px;
+}
+
+.bot-computer__desc {
+    margin: 0;
+    padding-left: 18px;
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--theme-text-secondary, #475467);
+}
+
+.bot-computer__shared {
+    color: #b54708;
+}
+
+.bot-computer__danger-title {
+    color: #b91c1c;
+}
+
+.bot-computer__ack {
+    margin-top: 10px;
+}

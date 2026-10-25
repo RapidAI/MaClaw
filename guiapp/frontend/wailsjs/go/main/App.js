@@ -5068,6 +5068,18 @@ export function GetDesktopBotCredits() {
   return window['go']['main']['App']['GetDesktopBotCredits']();
 }
 
+export function GetDesktopComputer() {
+  return window['go']['main']['App']['GetDesktopComputer']();
+}
+
+export function RestartDesktopComputer(arg1) {
+  return window['go']['main']['App']['RestartDesktopComputer'](arg1);
+}
+
+export function ResetDesktopComputer(arg1) {
+  return window['go']['main']['App']['ResetDesktopComputer'](arg1);
+}
+
 export function GetDesktopProxyMode() {
   return window['go']['main']['App']['GetDesktopProxyMode']();
 }

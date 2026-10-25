@@ -501,6 +501,74 @@ func (a *App) SaveDesktopProxyMode(mode string) (*DesktopProxyMode, error) {
 	return &out, nil
 }
 
+// DesktopComputerInfo drives the Settings dialog's "电脑" tab.
+// ActiveRuns counts bot turns this client has in flight on the shared
+// computer (waiting-for-answer runs are over and not counted).
+type DesktopComputerInfo struct {
+	RestartAllowed bool `json:"restart_allowed"`
+	ResetAllowed   bool `json:"reset_allowed"`
+	ActiveRuns     int  `json:"active_runs"`
+}
+
+// DesktopComputerResult is one restart or reset. Busy means the server
+// refused because a bot is still working; the UI may retry with force.
+type DesktopComputerResult struct {
+	OK      bool   `json:"ok"`
+	Busy    bool   `json:"busy"`
+	Action  string `json:"action,omitempty"`
+	Status  string `json:"status,omitempty"`
+	Backup  string `json:"backup,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+func countActiveDesktopRuns() int {
+	activeDesktopRunsMu.Lock()
+	defer activeDesktopRunsMu.Unlock()
+	n := 0
+	for _, run := range activeDesktopRuns {
+		if run != nil && !run.WaitingForUser {
+			n++
+		}
+	}
+	return n
+}
+
+// GetDesktopComputer reads what this user may do with their cloud computer.
+func (a *App) GetDesktopComputer() (*DesktopComputerInfo, error) {
+	var out DesktopComputerInfo
+	if err := a.desktopBotCall(context.Background(), http.MethodGet, "/api/v1/bots/desktop-computer", nil, &out, 20*time.Second); err != nil {
+		return nil, err
+	}
+	out.ActiveRuns = countActiveDesktopRuns()
+	return &out, nil
+}
+
+// RestartDesktopComputer restarts this user's cloud computer (the container
+// shared by the owner and all of their bots). Logins are written back first.
+func (a *App) RestartDesktopComputer(force bool) (*DesktopComputerResult, error) {
+	return a.desktopComputerOp("restart", force)
+}
+
+// ResetDesktopComputer recreates this user's cloud computer from the current
+// system image, keeping files, website logins and /opt, /usr/local.
+func (a *App) ResetDesktopComputer(force bool) (*DesktopComputerResult, error) {
+	return a.desktopComputerOp("reset", force)
+}
+
+func (a *App) desktopComputerOp(action string, force bool) (*DesktopComputerResult, error) {
+	var out DesktopComputerResult
+	status, err := a.desktopBotExchange(context.Background(), http.MethodPost, "/api/v1/bots/desktop-computer/"+action, map[string]bool{"force": force}, &out, 11*time.Minute, nil)
+	if status == http.StatusConflict {
+		return &DesktopComputerResult{Busy: true, Action: action}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out.OK = true
+	out.Action = action
+	return &out, nil
+}
+
 // ActiveDesktopRun is one cloud-desktop turn this client has in flight.
 //
 // Identity reaches the run, not the bot. A bot can have several runs live at

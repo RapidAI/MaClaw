@@ -450,6 +450,8 @@ func NewRouter(
 	mux.HandleFunc("POST /api/v1/desktop-services/proxy-mode", PostDesktopProxyModeHandler(desktopPool))
 	mux.HandleFunc("GET /api/admin/desktop-services/proxy-mode", requireTenantAdmin(GetDesktopProxyModeAdminHandler(desktopPool)))
 	mux.HandleFunc("PUT /api/admin/desktop-services/proxy-mode", requireTenantAdmin(PutDesktopProxyModeAdminHandler(desktopPool)))
+	mux.HandleFunc("GET /api/admin/desktop-services/computer-policy", requireTenantAdmin(GetDesktopComputerPolicyAdminHandler(desktopPool)))
+	mux.HandleFunc("PUT /api/admin/desktop-services/computer-policy", requireTenantAdmin(PutDesktopComputerPolicyAdminHandler(desktopPool)))
 	desktopMCPTokens := &desktopMCPTokenStore{system: system}
 	desktopMCP := DesktopMCPHandler(desktopPool, desktopMCPTokens, identity, admins)
 	userMCPTokens := DesktopMCPUserTokensHandler(desktopMCPTokens, identity)
@@ -502,6 +504,13 @@ func NewRouter(
 	mux.HandleFunc("PUT /api/v1/bots/llm", PutBotLLMHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/desktop-proxy-mode", GetUserDesktopProxyModeHandler(desktopPool, identity))
 	mux.HandleFunc("PUT /api/v1/bots/desktop-proxy-mode", PutUserDesktopProxyModeHandler(desktopPool, identity))
+	var computerViews desktopViewForgetter
+	if botSvc != nil {
+		computerViews = botSvc
+	}
+	mux.HandleFunc("GET /api/v1/bots/desktop-computer", GetUserDesktopComputerHandler(desktopPool, identity))
+	mux.HandleFunc("POST /api/v1/bots/desktop-computer/restart", PostUserDesktopComputerHandler(desktopPool, identity, computerViews, "restart"))
+	mux.HandleFunc("POST /api/v1/bots/desktop-computer/reset", PostUserDesktopComputerHandler(desktopPool, identity, computerViews, "reset"))
 	mux.HandleFunc("GET /api/v1/desktop-handoff/{token}/{rest...}", GetDesktopHandoffHandler(botSvc))
 	mux.HandleFunc("GET /api/v1/cloud-workspaces/entitlement", CloudWorkspaceEntitlementHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("POST /api/v1/cloud-workspace-sessions", CloudWorkspaceIssueInstanceSessionHandler(cloudWorkspaceSvc, identity))

@@ -429,6 +429,44 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 	})
 	mux.HandleFunc("GET /v1/desktops/screenshot", screenshot)
 	mux.HandleFunc("POST /v1/desktops/screenshot", screenshot)
+	computerOp := func(action string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if !authOK(r) {
+				writeErr(w, http.StatusUnauthorized, "unauthorized")
+				return
+			}
+			var in struct {
+				TenantID string `json:"tenant_id"`
+				UserID   string `json:"user_id"`
+				Image    string `json:"image"`
+				Memory   string `json:"memory"`
+				CPUs     string `json:"cpus"`
+				ShmSize  string `json:"shm_size"`
+				Force    bool   `json:"force"`
+			}
+			if !decodeBody(w, r, &in) {
+				return
+			}
+			spec := Spec{TenantID: in.TenantID, UserID: in.UserID, Image: in.Image,
+				Memory: in.Memory, CPUs: in.CPUs, ShmSize: in.ShmSize}
+			var (
+				out ComputerResult
+				err error
+			)
+			if action == "reset" {
+				out, err = svc.Reset(r.Context(), spec, in.Force)
+			} else {
+				out, err = svc.Restart(r.Context(), spec, in.Force)
+			}
+			if err != nil {
+				writeServiceErr(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, out)
+		}
+	}
+	mux.HandleFunc("POST /v1/desktops/restart", computerOp("restart"))
+	mux.HandleFunc("POST /v1/desktops/reset", computerOp("reset"))
 	mux.HandleFunc("POST /v1/desktops/stop", func(w http.ResponseWriter, r *http.Request) {
 		if !authOK(r) {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")
@@ -529,6 +567,14 @@ func writeServiceErr(w http.ResponseWriter, err error) {
 	}
 	if errors.Is(err, ErrInvalid) {
 		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if errors.Is(err, ErrNoDesktop) {
+		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if errors.Is(err, ErrDesktopBusy) {
+		writeErr(w, http.StatusConflict, err.Error())
 		return
 	}
 	writeErr(w, http.StatusBadGateway, "docker request failed")

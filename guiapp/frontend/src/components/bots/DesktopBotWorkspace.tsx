@@ -29,6 +29,9 @@ import {
     GetDesktopBotSupplements,
     GetDesktopBotLLM,
     GetDesktopProxyMode,
+    GetDesktopComputer,
+    RestartDesktopComputer,
+    ResetDesktopComputer,
     GetHubLLMServiceStatus,
     GetMaclawLLMProviders,
     ArmDesktopBotCrossRun,
@@ -141,6 +144,7 @@ import { BotEditDialog } from './BotEditDialog';
 import { BotAvatar } from './BotAvatar';
 import { appearancesForUser, botNameTaken, captureBotLookRevisions, defaultAppearance, hubAppearance, hydrateBotLooks, looksToMigrate, markLookMigrated, mergeLooks, nextAppearance, saveBotAppearance, storeHubLooks, type BotAppearance } from './botAppearance';
 import { BotLLMSettingsDialog, type BotLLMProviderOption, type BotLLMSettingsSubmit } from './BotLLMSettingsDialog';
+import { BotComputerSettingsDialog, type DesktopComputerAction, type DesktopComputerState } from './BotComputerSettingsDialog';
 import { BotNetworkSettingsDialog, BotSettingsTabs, type BotSettingsTab, type DesktopProxyModeState, type DesktopProxyModeValue } from './BotNetworkSettingsDialog';
 import { TaskResultArtifacts } from '../ai/assistantTaskArtifacts';
 import { BotFilePreview } from './BotFilePreview';
@@ -942,6 +946,38 @@ function copy(lang: string) {
             netSmart: 'Smart',
             netSmartHint: 'Mainland China sites (JD, Taobao, Baidu…) go direct, everything else through the proxy. Recommended.',
             netLocked: 'Your administrator fixed this setting for the organization, so it cannot be changed here.',
+            settingsTabComputer: 'Computer',
+            pcTitle: 'Cloud computer',
+            pcShared: 'You and all of your bots share this one computer. Restarting or resetting it affects every bot at the same time.',
+            pcRestart: 'Restart computer',
+            pcRestartDesc: [
+                'Like turning a computer off and on again.',
+                'Open windows close and tasks bots are running are interrupted.',
+                'Your files, installed software and website logins are all kept (logins are saved before shutting down).',
+                'Takes about 1 minute.',
+                'Try this first when the computer is slow or the browser misbehaves.',
+            ],
+            pcRestartConfirm: 'Restart the cloud computer?',
+            pcRestartForce: 'Interrupt and restart',
+            pcRestartWorking: 'Restarting… saving website logins, then starting again. Please keep this window open.',
+            pcRestartDone: 'Restarted. The browser opens again the next time you or a bot uses the computer.',
+            pcReset: 'Reset computer',
+            pcResetDesc: [
+                'Like installing a fresh computer with the latest system, then moving your data back.',
+                'Kept: your files (home folder), website logins and other browser data (yours and your bots\'), software in /opt and /usr/local.',
+                'Not kept: software installed through the system package manager (e.g. apt) and changes to system settings. The administrator can recover the most recent backup of these if needed.',
+                'Open windows close and tasks bots are running are interrupted.',
+                'Takes about 1–3 minutes (longer if a new system has to be downloaded).',
+                'Use this only when restarting does not fix the problem.',
+            ],
+            pcResetConfirm: 'Reset the cloud computer?',
+            pcResetAck: 'I understand system-installed software will not be kept',
+            pcResetForce: 'Interrupt and reset',
+            pcResetWorking: 'Resetting… saving website logins, setting up the new system and moving your data back. Please keep this window open.',
+            pcResetDone: 'Reset finished. Your files and website logins are in place.',
+            pcResetDisabled: 'Your administrator has turned off reset for this organization.',
+            pcActiveRuns: (count: number) => `${count} bot task(s) are running. Continuing will interrupt them.`,
+            pcBusy: 'A bot is using the computer for a task right now. Continuing will interrupt that task.',
             llmTitle: 'Model for your bots',
             llmSharedHint: 'Every bot of this account runs on the same model. Changing it here moves all of them.',
             llmUseDefault: 'Default',
@@ -1102,6 +1138,38 @@ function copy(lang: string) {
             netSmart: '智慧',
             netSmartHint: '國內網站（京東、淘寶、百度等）直連，其餘經代理。建議使用。',
             netLocked: '管理員已統一設定此項，這裡無法修改。',
+            settingsTabComputer: '電腦',
+            pcTitle: '雲端電腦',
+            pcShared: '這台電腦由你和你所有的 Bot 共用，重新啟動或重設會同時影響所有 Bot。',
+            pcRestart: '重新啟動電腦',
+            pcRestartDesc: [
+                '像給電腦關機再開機。',
+                '打開的視窗會關閉，Bot 正在執行的任務會中斷。',
+                '檔案、安裝的軟體、網站登入都會保留（關機前會先儲存登入狀態）。',
+                '約需 1 分鐘。',
+                '電腦卡頓或瀏覽器異常時，先試這個。',
+            ],
+            pcRestartConfirm: '確定重新啟動雲端電腦？',
+            pcRestartForce: '中斷任務並重新啟動',
+            pcRestartWorking: '正在重新啟動…先儲存網站登入，再重新開機，請勿關閉視窗。',
+            pcRestartDone: '已重新啟動。下次你或 Bot 使用電腦時，瀏覽器會自動打開。',
+            pcReset: '重設電腦',
+            pcResetDesc: [
+                '像用最新的系統重新裝一台電腦，再把你的資料搬回去。',
+                '保留：你的檔案（主資料夾）、網站登入和其他瀏覽器資料（含所有 Bot 的）、裝在 /opt 和 /usr/local 的軟體。',
+                '不保留：透過系統套件管理（如 apt）安裝的軟體，以及對系統設定的修改。這些會備份最近一次，需要時可請管理員找回。',
+                '打開的視窗會關閉，Bot 正在執行的任務會中斷。',
+                '約需 1–3 分鐘（若需下載新系統會更久）。',
+                '重新啟動解決不了問題時再用。',
+            ],
+            pcResetConfirm: '確定重設雲端電腦？',
+            pcResetAck: '我知道透過系統安裝的軟體不會保留',
+            pcResetForce: '中斷任務並重設',
+            pcResetWorking: '正在重設…先儲存網站登入，再安裝新系統並搬回你的資料，請勿關閉視窗。',
+            pcResetDone: '重設完成，你的檔案和網站登入都已保留。',
+            pcResetDisabled: '管理員已關閉重設功能。',
+            pcActiveRuns: (count: number) => `目前有 ${count} 個 Bot 任務在執行，繼續會中斷它們。`,
+            pcBusy: '有 Bot 正在用這台電腦執行任務，繼續會中斷該任務。',
             llmTitle: 'Bot 用的模型',
             llmSharedHint: '這個帳號底下的所有 Bot 都跑同一個模型，這裡改了會一起生效。',
             llmUseDefault: '預設',
@@ -1261,6 +1329,38 @@ function copy(lang: string) {
         netSmart: '智能',
         netSmartHint: '国内网站（京东、淘宝、百度等）直连，其余走代理。推荐。',
         netLocked: '管理员已统一设置该项，这里无法修改。',
+        settingsTabComputer: '电脑',
+        pcTitle: '云电脑',
+        pcShared: '这台电脑由你和你所有的 Bot 共用，重启或重置会同时影响所有 Bot。',
+        pcRestart: '重启电脑',
+        pcRestartDesc: [
+            '像给电脑关机再开机。',
+            '打开的窗口会关闭，Bot 正在跑的任务会中断。',
+            '文件、安装的软件、网站登录都保留（关机前会先保存登录状态）。',
+            '约需 1 分钟。',
+            '电脑卡顿或浏览器异常时，先试这个。',
+        ],
+        pcRestartConfirm: '确定重启云电脑？',
+        pcRestartForce: '中断任务并重启',
+        pcRestartWorking: '正在重启…先保存网站登录，再重新开机，请不要关闭窗口。',
+        pcRestartDone: '已重启。下次你或 Bot 使用电脑时，浏览器会自动打开。',
+        pcReset: '重置电脑',
+        pcResetDesc: [
+            '像用最新的系统重新装一台电脑，再把你的数据搬回去。',
+            '保留：你的文件（主目录）、网站登录和其他浏览器数据（包括所有 Bot 的）、装在 /opt 和 /usr/local 下的软件。',
+            '不保留：通过系统软件包（如 apt）安装的软件，以及对系统设置的修改。这些会备份最近一次，需要时可找管理员找回。',
+            '打开的窗口会关闭，Bot 正在跑的任务会中断。',
+            '约需 1–3 分钟（如需下载新系统会更久）。',
+            '重启解决不了问题时再用。',
+        ],
+        pcResetConfirm: '确定重置云电脑？',
+        pcResetAck: '我知道通过系统安装的软件不会保留',
+        pcResetForce: '中断任务并重置',
+        pcResetWorking: '正在重置…先保存网站登录，再装好新系统并搬回你的数据，请不要关闭窗口。',
+        pcResetDone: '重置完成，你的文件和网站登录都已保留。',
+        pcResetDisabled: '管理员已关闭重置功能。',
+        pcActiveRuns: (count: number) => `当前有 ${count} 个 Bot 任务在运行，继续会中断它们。`,
+        pcBusy: '有 Bot 正在用这台电脑执行任务，继续会中断该任务。',
         llmTitle: 'Bot 用的模型',
         llmSharedHint: '这个账号下的所有 Bot 都跑同一个模型，这里改了会一起生效。',
         llmUseDefault: '默认',
@@ -2126,6 +2226,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [netState, setNetState] = useState<DesktopProxyModeState | null>(null);
     const [netSaving, setNetSaving] = useState(false);
     const [netNotice, setNetNotice] = useState('');
+    // Computer tab: restart / reset the cloud computer shared with every bot.
+    const [pcOpen, setPcOpen] = useState(false);
+    const [pcState, setPcState] = useState<DesktopComputerState | null>(null);
+    const [pcWorking, setPcWorking] = useState<DesktopComputerAction | null>(null);
+    const [pcBusy, setPcBusy] = useState<DesktopComputerAction | null>(null);
+    const [pcNotice, setPcNotice] = useState('');
     const [messagesByBot, setMessagesByBot] = useState<Record<string, DesktopBotMessage[]>>({});
     const [command, setCommand] = useState('');
     const [listNotice, setListNotice] = useState('');
@@ -3952,6 +4058,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if (gen !== loadGen.current) return;
             setNetState(current ?? { mode: 'smart', locked: false });
             setLlmOpen(false);
+            setPcOpen(false);
             setNetOpen(true);
         } catch (error) {
             if (gen !== loadGen.current) return;
@@ -3961,7 +4068,55 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         }
     };
 
+    const openComputerSettings = async () => {
+        if (pcOpen) return;
+        const gen = loadGen.current;
+        setPcNotice('');
+        setPcBusy(null);
+        try {
+            const current = await GetDesktopComputer();
+            if (gen !== loadGen.current) return;
+            setPcState(current ?? { restart_allowed: true, reset_allowed: true, active_runs: 0 });
+            setLlmOpen(false);
+            setNetOpen(false);
+            setPcOpen(true);
+        } catch (error) {
+            if (gen !== loadGen.current) return;
+            const message = error instanceof Error && error.message ? error.message : text.unavailable;
+            if (llmOpen) setLlmNotice(message);
+            else if (netOpen) setNetNotice(message);
+            else setListNotice(message);
+        }
+    };
+
+    const runComputerAction = async (action: DesktopComputerAction, force: boolean) => {
+        if (pcWorking) return;
+        const gen = loadGen.current;
+        setPcWorking(action);
+        setPcBusy(null);
+        setPcNotice('');
+        try {
+            const result = action === 'reset' ? await ResetDesktopComputer(force) : await RestartDesktopComputer(force);
+            if (gen !== loadGen.current) return;
+            if (result?.busy) {
+                setPcBusy(action);
+                return;
+            }
+            setPcNotice(action === 'reset' ? text.pcResetDone : text.pcRestartDone);
+        } catch (error) {
+            if (gen !== loadGen.current) return;
+            setPcNotice(error instanceof Error && error.message ? error.message : text.unavailable);
+        } finally {
+            setPcWorking(null);
+        }
+    };
+
     const switchSettingsTab = (tab: BotSettingsTab) => {
+        if (tab === 'computer') {
+            void openComputerSettings();
+            return;
+        }
+        setPcOpen(false);
         if (tab === 'network') {
             void openNetworkSettings();
             return;
@@ -3969,6 +4124,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         setNetOpen(false);
         void openLLMSettings();
     };
+    const settingsTabLabels = { model: text.settingsTabModel, network: text.settingsTabNetwork, computer: text.settingsTabComputer };
 
     const submitNetwork = async (mode: DesktopProxyModeValue) => {
         if (netSaving) return;
@@ -7062,7 +7218,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         close: text.close,
                     }}
                     heading={text.settingsTitle}
-                    tabs={<BotSettingsTabs active="model" labels={{ model: text.settingsTabModel, network: text.settingsTabNetwork }} disabled={llmSaving} onSelect={switchSettingsTab} />}
+                    tabs={<BotSettingsTabs active="model" labels={settingsTabLabels} disabled={llmSaving} onSelect={switchSettingsTab} />}
                     providers={llmProviders}
                     initialMode={llmMode}
                     initialName={llmName}
@@ -7093,9 +7249,43 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     state={netState}
                     notice={netNotice}
                     saving={netSaving}
-                    tabs={<BotSettingsTabs active="network" labels={{ model: text.settingsTabModel, network: text.settingsTabNetwork }} disabled={netSaving} onSelect={switchSettingsTab} />}
+                    tabs={<BotSettingsTabs active="network" labels={settingsTabLabels} disabled={netSaving} onSelect={switchSettingsTab} />}
                     onClose={() => setNetOpen(false)}
                     onSubmit={mode => { void submitNetwork(mode); }}
+                />
+            ) : null}
+            {pcOpen && pcState ? (
+                <BotComputerSettingsDialog
+                    labels={{
+                        heading: text.settingsTitle,
+                        title: text.pcTitle,
+                        shared: text.pcShared,
+                        actions: {
+                            restart: {
+                                name: text.pcRestart, button: text.pcRestart, description: text.pcRestartDesc,
+                                confirmTitle: text.pcRestartConfirm, confirmButton: text.pcRestart, forceButton: text.pcRestartForce,
+                                working: text.pcRestartWorking, done: text.pcRestartDone,
+                            },
+                            reset: {
+                                name: text.pcReset, button: text.pcReset, description: text.pcResetDesc,
+                                confirmTitle: text.pcResetConfirm, confirmButton: text.pcResetAck, forceButton: text.pcResetForce,
+                                working: text.pcResetWorking, done: text.pcResetDone,
+                            },
+                        },
+                        resetDisabled: text.pcResetDisabled,
+                        activeRuns: text.pcActiveRuns,
+                        busy: text.pcBusy,
+                        close: text.close,
+                        cancel: text.cancel,
+                    }}
+                    state={pcState}
+                    working={pcWorking}
+                    busy={pcBusy}
+                    notice={pcNotice}
+                    tabs={<BotSettingsTabs active="computer" labels={settingsTabLabels} disabled={pcWorking !== null} onSelect={switchSettingsTab} />}
+                    onClose={() => { if (!pcWorking) { setPcOpen(false); setPcBusy(null); } }}
+                    onCancelConfirm={() => setPcBusy(null)}
+                    onRun={(action, force) => { void runComputerAction(action, force); }}
                 />
             ) : null}
         </section>

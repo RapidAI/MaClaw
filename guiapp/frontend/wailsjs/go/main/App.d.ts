@@ -2532,6 +2532,12 @@ export function DeleteDesktopBot(arg1:string):Promise<void>;
 
 export function GetDesktopBotCredits():Promise<{ applies: boolean; unlimited: boolean; limit: number; used: number; remaining: number }>;
 
+export function GetDesktopComputer():Promise<{ restart_allowed: boolean; reset_allowed: boolean; active_runs: number }>;
+
+export function RestartDesktopComputer(arg1:boolean):Promise<{ ok: boolean; busy: boolean; action?: string; status?: string; backup?: string; message?: string }>;
+
+export function ResetDesktopComputer(arg1:boolean):Promise<{ ok: boolean; busy: boolean; action?: string; status?: string; backup?: string; message?: string }>;
+
 export function GetDesktopProxyMode():Promise<{ mode: string; user_mode: string; tenant_default: string; locked: boolean; applied: boolean; warning?: string }>;
 
 export function SaveDesktopProxyMode(arg1:string):Promise<{ mode: string; user_mode: string; tenant_default: string; locked: boolean; applied: boolean; warning?: string }>;
