@@ -49,8 +49,14 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 			Memory   string `json:"memory"`
 			CPUs     string `json:"cpus"`
 			ShmSize  string `json:"shm_size"`
+			// ProxyMode is the Hub's effective mode for this user; it
+			// restores the mode after a host restart lost or never had it.
+			ProxyMode string `json:"proxy_mode"`
 		}
 		if !decodeBody(w, r, &in) {
+			return
+		}
+		if !applyProxyMode(w, r, svc, in.TenantID, in.UserID, in.ProxyMode) {
 			return
 		}
 		desktop, err := svc.Create(r.Context(), Spec{
@@ -75,8 +81,14 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 			Memory   string `json:"memory"`
 			CPUs     string `json:"cpus"`
 			ShmSize  string `json:"shm_size"`
+			// ProxyMode is the Hub's effective mode for this user; it
+			// restores the mode after a host restart lost or never had it.
+			ProxyMode string `json:"proxy_mode"`
 		}
 		if !decodeBody(w, r, &in) {
+			return
+		}
+		if !applyProxyMode(w, r, svc, in.TenantID, in.UserID, in.ProxyMode) {
 			return
 		}
 		session, err := svc.OpenSession(r.Context(), Spec{
@@ -89,6 +101,34 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		}
 		writeJSON(w, http.StatusOK, session)
 	})
+	// POST /v1/desktops/proxy-mode switches one user's desktop egress mode.
+	// It takes effect on the next connection; open tunnels of that desktop
+	// are dropped so the browser reconnects on the new route.
+	mux.HandleFunc("POST /v1/desktops/proxy-mode", func(w http.ResponseWriter, r *http.Request) {
+		if !authOK(r) {
+			writeErr(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		var in struct {
+			TenantID string `json:"tenant_id"`
+			UserID   string `json:"user_id"`
+			Mode     string `json:"mode"`
+		}
+		if !decodeBody(w, r, &in) {
+			return
+		}
+		if svc.ProxyModes == nil {
+			writeErr(w, http.StatusConflict, "proxy modes are not enabled on this host")
+			return
+		}
+		changed, err := svc.ProxyModes.Set(r.Context(), in.TenantID, in.UserID, in.Mode)
+		if err != nil {
+			writeServiceErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"mode": svc.ProxyModes.Mode(in.TenantID, in.UserID), "changed": changed})
+	})
+
 	mux.HandleFunc("POST /v1/desktops/ensure", func(w http.ResponseWriter, r *http.Request) {
 		if !authOK(r) {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")
@@ -424,6 +464,19 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 
 // decodeBody caps request bodies: the desktop API only ever carries small
 // JSON specs, so an oversized body is a client bug or an attack.
+// applyProxyMode stores a mode carried on a create/session request. An empty
+// mode leaves the stored one alone; hosts without a mode store ignore it.
+func applyProxyMode(w http.ResponseWriter, r *http.Request, svc *Service, tenantID, userID, mode string) bool {
+	if strings.TrimSpace(mode) == "" || svc == nil || svc.ProxyModes == nil {
+		return true
+	}
+	if _, err := svc.ProxyModes.Set(r.Context(), tenantID, userID, mode); err != nil {
+		writeServiceErr(w, err)
+		return false
+	}
+	return true
+}
+
 func decodeBody(w http.ResponseWriter, r *http.Request, dest any) bool {
 	return decodeMessage(w, r, "invalid desktop request", dest)
 }

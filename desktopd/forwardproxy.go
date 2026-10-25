@@ -74,6 +74,11 @@ type ProxyConfig struct {
 	// (or should not carry). Empty means no bypass. ParseDirectSuffixes
 	// supplies the built-in default when DESKTOPD_PROXY_DIRECT is unset.
 	DirectSuffixes []string
+	// Modes, when set, picks the route per desktop container by the
+	// connection's source IP (proxymode.go): proxy, direct or smart. Only the
+	// anonymous bridge listener desktops use sets it. nil keeps the
+	// host-wide behavior (DirectSuffixes only).
+	Modes *ProxyModeStore
 }
 
 // DefaultForwardProxyAddr is the default proxy port. 18081 is the admin API;
@@ -94,13 +99,16 @@ type ForwardProxy struct {
 	retryWait func(ctx context.Context, delay time.Duration) error
 	direct    []string
 
-	mu     sync.Mutex
-	tunnel map[net.Conn]struct{}
+	mu sync.Mutex
+	// tunnel maps each open CONNECT client to its source IP so a mode switch
+	// can drop exactly that desktop's tunnels.
+	tunnel map[net.Conn]string
 }
 
 // NewForwardProxy builds a proxy server. It does not listen yet; call Start.
 func NewForwardProxy(cfg ProxyConfig) *ForwardProxy {
-	p := &ForwardProxy{cfg: cfg, tunnel: map[net.Conn]struct{}{}, direct: normalizeDirectSuffixes(cfg.DirectSuffixes)}
+	p := &ForwardProxy{cfg: cfg, tunnel: map[net.Conn]string{}, direct: normalizeDirectSuffixes(cfg.DirectSuffixes)}
+	cfg.Modes.attach(p)
 	p.transport = &http.Transport{
 		// Proxy resolves per request: nil unless chained upstream, and the
 		// panel can repoint it between requests. dialVerified resolves each
@@ -188,7 +196,7 @@ func (p *ForwardProxy) Stop() error {
 	for conn := range p.tunnel {
 		_ = conn.Close()
 	}
-	p.tunnel = map[net.Conn]struct{}{}
+	p.tunnel = map[net.Conn]string{}
 	return first
 }
 
@@ -296,14 +304,15 @@ func (p *ForwardProxy) serveConnect(w http.ResponseWriter, r *http.Request) {
 	upstream, upstreamErr := p.currentUpstreamURL()
 	// A name on the direct list is dialed here even when the upstream file
 	// cannot be read: a broken panel must not take domestic sites down with it.
-	if upstreamErr != nil && !p.directTarget(target) {
+	direct := p.routeDirect(r.RemoteAddr, target)
+	if upstreamErr != nil && !direct {
 		// Unreadable egress config denies the chain loudly.
 		log.Printf("[desktopd-proxy] upstream config unreadable: %v", upstreamErr)
 		http.Error(w, "upstream config unreadable", http.StatusBadGateway)
 		return
 	}
 	switch {
-	case (upstream != nil || upstreamErr != nil) && p.directTarget(target):
+	case (upstream != nil || upstreamErr != nil) && direct:
 		noteProxyDirect()
 		backend, err = p.dial(dialCtx, target)
 	case upstream != nil:
@@ -349,7 +358,7 @@ func (p *ForwardProxy) serveConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = brw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
 	_ = brw.Flush()
-	p.join(conn, backend)
+	p.join(conn, backend, remoteIP(r.RemoteAddr))
 }
 
 // serveHTTPProxy forwards an absolute-form http:// request. Other targets
@@ -368,7 +377,7 @@ func (p *ForwardProxy) serveHTTPProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "proxy target is not allowed", http.StatusForbidden)
 		return
 	}
-	out := r.Clone(r.Context())
+	out := r.Clone(context.WithValue(r.Context(), proxyClientKey{}, r.RemoteAddr))
 	out.RequestURI = ""
 	// Connection names other hop-by-hop headers; read it before the loop
 	// deletes the header itself.
@@ -439,12 +448,12 @@ var hopByHopHeaders = []string{
 // join pumps both directions until one copy finishes, then tears the tunnel
 // down. Verify-first dialing means TLS integrity is the client's business:
 // this process only relays bytes.
-func (p *ForwardProxy) join(client, backend net.Conn) {
+func (p *ForwardProxy) join(client, backend net.Conn, sourceIP string) {
 	p.mu.Lock()
 	if p.tunnel == nil {
-		p.tunnel = map[net.Conn]struct{}{}
+		p.tunnel = map[net.Conn]string{}
 	}
-	p.tunnel[client] = struct{}{}
+	p.tunnel[client] = sourceIP
 	p.mu.Unlock()
 	defer func() {
 		p.mu.Lock()
@@ -580,7 +589,8 @@ func (p *ForwardProxy) proxyForRequest(req *http.Request) (*url.URL, error) {
 	if req != nil && req.URL != nil {
 		host = req.URL.Host
 	}
-	if p.directTarget(host) {
+	remote, _ := req.Context().Value(proxyClientKey{}).(string)
+	if p.routeDirect(remote, host) {
 		upstream, err := p.currentUpstreamURL()
 		if err != nil || upstream != nil {
 			noteProxyDirect()
@@ -588,6 +598,64 @@ func (p *ForwardProxy) proxyForRequest(req *http.Request) (*url.URL, error) {
 		}
 	}
 	return p.currentUpstreamURL()
+}
+
+// proxyClientKey carries the proxied client's RemoteAddr from serveHTTPProxy
+// to proxyForRequest, which only sees the outgoing request.
+type proxyClientKey struct{}
+
+// remoteIP strips the port from a RemoteAddr.
+func remoteIP(remoteAddr string) string {
+	host := remoteAddr
+	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = h
+	}
+	return strings.Trim(host, "[]")
+}
+
+// routeDirect decides whether target is dialed from this host rather than
+// through the upstream, for the desktop at remoteAddr. Without a mode store
+// only the host's direct list applies. It never relaxes proxyTargetAllowed:
+// callers check that before routing, and dial re-verifies public addresses.
+func (p *ForwardProxy) routeDirect(remoteAddr, target string) bool {
+	if p == nil {
+		return false
+	}
+	if p.cfg.Modes == nil {
+		return p.directTarget(target)
+	}
+	switch p.cfg.Modes.modeForIP(remoteIP(remoteAddr)) {
+	case ProxyModeDirect:
+		return true
+	case ProxyModeSmart:
+		return p.directTarget(target) || cnTarget(target)
+	default:
+		return p.directTarget(target)
+	}
+}
+
+// closeTunnelsFrom closes every open tunnel whose client came from one of
+// ips. Clients (Chromium keep-alive, HTTP/2) reconnect and get the new route.
+func (p *ForwardProxy) closeTunnelsFrom(ips []string) int {
+	if p == nil || len(ips) == 0 {
+		return 0
+	}
+	want := map[string]bool{}
+	for _, ip := range ips {
+		want[ip] = true
+	}
+	p.mu.Lock()
+	var conns []net.Conn
+	for conn, ip := range p.tunnel {
+		if want[ip] {
+			conns = append(conns, conn)
+		}
+	}
+	p.mu.Unlock()
+	for _, conn := range conns {
+		_ = conn.Close()
+	}
+	return len(conns)
 }
 
 // directTarget reports whether authority (host or host:port) is on the

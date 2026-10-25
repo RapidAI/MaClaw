@@ -447,6 +447,9 @@ func NewRouter(
 	mux.HandleFunc("POST /api/v1/desktop-services/screenshot", PostDesktopScreenshotHandler(desktopPool))
 	mux.HandleFunc("POST /api/v1/desktop-services/ctl", PostDesktopCtlHandler(desktopPool))
 	mux.HandleFunc("POST /api/v1/desktop-services/tool", PostDesktopToolHandler(desktopPool))
+	mux.HandleFunc("POST /api/v1/desktop-services/proxy-mode", PostDesktopProxyModeHandler(desktopPool))
+	mux.HandleFunc("GET /api/admin/desktop-services/proxy-mode", requireTenantAdmin(GetDesktopProxyModeAdminHandler(desktopPool)))
+	mux.HandleFunc("PUT /api/admin/desktop-services/proxy-mode", requireTenantAdmin(PutDesktopProxyModeAdminHandler(desktopPool)))
 	desktopMCPTokens := &desktopMCPTokenStore{system: system}
 	desktopMCP := DesktopMCPHandler(desktopPool, desktopMCPTokens, identity, admins)
 	userMCPTokens := DesktopMCPUserTokensHandler(desktopMCPTokens, identity)
@@ -497,6 +500,8 @@ func NewRouter(
 	mux.HandleFunc("PUT /api/v1/bots/{id}/desktop-mode", PutBotDesktopModeUserHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/llm", GetBotLLMHandler(botSvc, identity))
 	mux.HandleFunc("PUT /api/v1/bots/llm", PutBotLLMHandler(botSvc, identity))
+	mux.HandleFunc("GET /api/v1/bots/desktop-proxy-mode", GetUserDesktopProxyModeHandler(desktopPool, identity))
+	mux.HandleFunc("PUT /api/v1/bots/desktop-proxy-mode", PutUserDesktopProxyModeHandler(desktopPool, identity))
 	mux.HandleFunc("GET /api/v1/desktop-handoff/{token}/{rest...}", GetDesktopHandoffHandler(botSvc))
 	mux.HandleFunc("GET /api/v1/cloud-workspaces/entitlement", CloudWorkspaceEntitlementHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("POST /api/v1/cloud-workspace-sessions", CloudWorkspaceIssueInstanceSessionHandler(cloudWorkspaceSvc, identity))

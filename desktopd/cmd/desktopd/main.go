@@ -147,12 +147,16 @@ func main() {
 	}
 	desktopd.StartProxyErrorSummary(ctx)
 	if desktopBind != "" {
+		// Per-user egress modes (proxy/direct/smart) live next to the other
+		// panel state; the bridge listener maps source IPs to desktops.
+		svc.ProxyModes = desktopd.NewProxyModeStore(keyStateDir, svc.DesktopContainerIPs)
 		desktopProxy := desktopd.NewForwardProxy(desktopd.ProxyConfig{
 			Addr:           desktopBind,
 			Token:          token,
 			Anonymous:      true,
 			Upstreams:      egress,
 			DirectSuffixes: directSuffixes,
+			Modes:          svc.ProxyModes,
 		})
 		// A taken port is environmental, not a configuration error: keep the
 		// desktop API up and let desktops egress directly, with the failure

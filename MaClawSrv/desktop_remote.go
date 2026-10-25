@@ -236,6 +236,25 @@ func (c *desktopHubClient) HTTP(ctx context.Context, tenantID, userID, rawURL st
 	return out.Body, out.Status, out.Kind, nil
 }
 
+// DesktopProxyMode is the user's desktop egress setting as Hub reports it.
+type DesktopProxyMode struct {
+	Mode          string `json:"mode"`
+	UserMode      string `json:"user_mode"`
+	TenantDefault string `json:"tenant_default"`
+	Locked        bool   `json:"locked"`
+}
+
+// ProxyMode reads the user's desktop proxy mode. Read-only: Hub offers no
+// write on the service token, so a bot cannot switch it.
+func (c *desktopHubClient) ProxyMode(ctx context.Context, tenantID, userID string) (DesktopProxyMode, error) {
+	var out DesktopProxyMode
+	err := c.postLimit(ctx, "/api/v1/desktop-services/proxy-mode", map[string]string{
+		"tenant_id": tenantID,
+		"user_id":   userID,
+	}, &out, 1<<16)
+	return out, err
+}
+
 // Screenshot returns a PNG of the user's desktop.
 func (c *desktopHubClient) Screenshot(ctx context.Context, tenantID, userID, display string) ([]byte, error) {
 	data, _, err := c.screenshot(ctx, tenantID, userID, display, "")

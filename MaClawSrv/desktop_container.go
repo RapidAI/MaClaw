@@ -82,6 +82,41 @@ func desktopBotFetch(ctx context.Context, tenantID, userID, rawURL string, maxCh
 	return fmt.Sprintf("URL: %s\nStatus: %d\n\n%s", rawURL, status, text), nil
 }
 
+// desktopRemoteProxyMode is set by tests. Production asks Hub.
+var desktopRemoteProxyMode func(ctx context.Context, tenantID, userID string) (DesktopProxyMode, error)
+
+// desktopProxyModeText answers action=proxy_mode. It only reads: switching
+// the proxy is the person's decision in Settings, never the bot's.
+func desktopProxyModeText(ctx context.Context, tenantID, userID string) (string, error) {
+	var (
+		mode DesktopProxyMode
+		err  error
+	)
+	switch {
+	case desktopRemoteProxyMode != nil:
+		mode, err = desktopRemoteProxyMode(ctx, tenantID, userID)
+	default:
+		client := desktopHubClientFromEnv()
+		if client == nil {
+			return "", fmt.Errorf("this bot's desktop is the person's cloud desktop, and the connection is not configured")
+		}
+		mode, err = client.ProxyMode(ctx, tenantID, userID)
+	}
+	if err != nil {
+		return "", err
+	}
+	meaning := map[string]string{
+		"proxy":  "all traffic goes through the overseas proxy",
+		"direct": "all traffic goes out directly from the desktop host",
+		"smart":  "mainland China sites (jd.com, taobao, baidu, ...) go direct, everything else through the proxy",
+	}[mode.Mode]
+	text := fmt.Sprintf("Desktop network mode: %s (%s).", mode.Mode, meaning)
+	if mode.Locked {
+		text += " The administrator locked this setting."
+	}
+	return text + " Only the person can change it (Desktop Bot > Settings > Network); ask them if a site needs a different route.", nil
+}
+
 func desktopContainerHTTP(ctx context.Context, tenantID, userID, rawURL string) (string, int, string, error) {
 	if desktopRemoteHTTP != nil {
 		return desktopRemoteHTTP(ctx, tenantID, userID, rawURL)

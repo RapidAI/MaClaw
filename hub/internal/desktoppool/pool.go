@@ -181,6 +181,12 @@ type View struct {
 type record struct {
 	Servers     []Server     `json:"servers"`
 	Assignments []Assignment `json:"assignments"`
+	// ProxyModeDefault is the tenant's desktop egress mode for users who did
+	// not pick one ("" means smart). ProxyModeLocked forces it on everyone.
+	ProxyModeDefault string `json:"proxy_mode_default,omitempty"`
+	ProxyModeLocked  bool   `json:"proxy_mode_locked,omitempty"`
+	// ProxyModes is each user's own desktop_proxy_mode, by user id.
+	ProxyModes map[string]string `json:"proxy_modes,omitempty"`
 }
 
 // Pool stores Docker services and calls the one assigned to a user.
@@ -452,6 +458,9 @@ func (p *Pool) CreateDesktop(ctx context.Context, tenantID, userID string) (Desk
 		"cpus":      server.CPUs,
 		"shm_size":  server.ShmSize,
 	}
+	if mode := p.effectiveProxyMode(ctx, tenantID, userID); mode != "" {
+		body["proxy_mode"] = mode
+	}
 	if err := p.call(ctx, server, http.MethodPost, "/v1/desktops", body, &out); err != nil {
 		return Desktop{}, err
 	}
@@ -526,6 +535,9 @@ func (p *Pool) OpenDesktop(ctx context.Context, tenantID, userID string) (Deskto
 		"memory":    server.Memory,
 		"cpus":      server.CPUs,
 		"shm_size":  server.ShmSize,
+	}
+	if mode := p.effectiveProxyMode(ctx, tenantID, userID); mode != "" {
+		body["proxy_mode"] = mode
 	}
 	// The session call is create-or-get for this (tenant, user): a service
 	// that never answered, or answered 5xx, is tried again rather than

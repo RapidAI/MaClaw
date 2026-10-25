@@ -75,6 +75,9 @@ type Service struct {
 	// the effective value per creation (the panel's file-backed config).
 	DesktopProxyURL string
 	Egress          *EgressSource
+	// ProxyModes holds each desktop's egress mode (proxy/direct/smart), read
+	// by the bridge listener per connection. nil disables per-user modes.
+	ProxyModes *ProxyModeStore
 	// ImageSources maps a local image name to the registry ref it is pulled
 	// from when missing (image_source.go); ImagePullTimeout bounds that pull.
 	ImageSources     map[string]string
