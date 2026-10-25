@@ -509,6 +509,7 @@ type coreAgentCallbacks struct {
 	runtimeRemoteBinding  *remoteCodingRuntimeBinding
 	runtimeParentExecutor *CoreAgentExecutor
 	runtimeRequest        ExecuteRequest
+	runID                 string // req.RunID, set for every run (EarlyStop)
 
 	// Host-injected scheduled-task tool (MaClawSrv scheduler).
 	scheduleHandler func(args map[string]interface{}) string
@@ -794,6 +795,7 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 		runtimeToolInvoker: req.RuntimeToolInvoker,
 		host:               req.Host,
 		adaptiveRetry:      agentruntime.NewAdaptiveRetry(nil),
+		runID:              req.RunID,
 	}
 	cb.bindRequestHostCapabilities()
 	if runtimeStore != nil && runtimeAttempt != nil {

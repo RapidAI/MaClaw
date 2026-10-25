@@ -8,10 +8,10 @@ var RunGoalReached func(runID string) (reply string, ok bool)
 
 // EarlyStop implements agent.EarlyStopper.
 func (c *coreAgentCallbacks) EarlyStop() (bool, string, string) {
-	if RunGoalReached == nil || c.runtimeRequest.RunID == "" {
+	if RunGoalReached == nil || c.runID == "" {
 		return false, "", ""
 	}
-	if reply, ok := RunGoalReached(c.runtimeRequest.RunID); ok {
+	if reply, ok := RunGoalReached(c.runID); ok {
 		return true, "", reply
 	}
 	return false, "", ""
