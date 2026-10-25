@@ -550,7 +550,8 @@ func (a *App) RestartDesktopComputer(force bool) (*DesktopComputerResult, error)
 }
 
 // ResetDesktopComputer recreates this user's cloud computer from the current
-// system image, keeping files, website logins and /opt, /usr/local.
+// system image in factory state: website logins/browser data and the home
+// folder are kept; self-installed software and system settings are not.
 func (a *App) ResetDesktopComputer(force bool) (*DesktopComputerResult, error) {
 	return a.desktopComputerOp("reset", force)
 }

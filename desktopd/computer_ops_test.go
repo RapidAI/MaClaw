@@ -61,6 +61,8 @@ func (f *fakeComputer) run(_ context.Context, args ...string) (string, error) {
 		f.running = true
 	case args[0] == "rm":
 		f.exists, f.running = false, false
+	case args[0] == "run" && args[1] == "--rm":
+		// volume backup helper
 	case args[0] == "run":
 		f.exists, f.running = true, true
 	case args[0] == "rmi":
@@ -136,7 +138,7 @@ func TestResetBacksUpLayerDropsStateAndRecreatesWithVolumes(t *testing.T) {
 	}
 	state, _ := desktop.StateImage("tenant", "alice")
 	prev := strings.TrimSuffix(state, ":state") + ":prev"
-	flush, stop, commit, rm, rmi, run := f.has("exec maclaw-desktop-"), f.has("stop "), f.has("commit "), f.has("rm -f"), f.has("rmi "+state), f.has("run ")
+	flush, stop, commit, rm, rmi, run := f.has("exec maclaw-desktop-"), f.has("stop "), f.has("commit "), f.has("rm -f"), f.has("rmi "+state), f.has("run -d")
 	if out.Backup != prev || !(flush < stop && stop < commit && commit < rm && rm < rmi && rmi < run) || flush < 0 {
 		t.Fatalf("out=%+v calls=%v", out, f.calls)
 	}
@@ -148,6 +150,18 @@ func TestResetBacksUpLayerDropsStateAndRecreatesWithVolumes(t *testing.T) {
 		vol := strings.SplitN(v, "=", 2)
 		if !strings.Contains(runLine, "--volume "+vol[0]+":"+vol[1]) {
 			t.Fatalf("volume %s missing from %s", v, runLine)
+		}
+	}
+	mounts, _ := desktop.PrivateMounts("tenant", "alice")
+	for _, m := range mounts {
+		backup := m.Volume + ResetBackupSuffix
+		copyAt, removeAt := f.has("run --rm --network none --entrypoint sh --volume "+m.Volume+":/from:ro --volume "+backup+":/to"), f.has("volume rm "+m.Volume)
+		if m.Target == "/opt" || m.Target == "/usr/local" {
+			if f.has("volume create "+backup) < 0 || copyAt < rm || removeAt < copyAt || removeAt > run {
+				t.Fatalf("%s not backed up then removed before run: %v", m.Volume, f.calls)
+			}
+		} else if copyAt >= 0 || removeAt >= 0 {
+			t.Fatalf("%s (%s) must be kept: %v", m.Volume, m.Target, f.calls)
 		}
 	}
 	if !strings.Contains(runLine, " "+DefaultImage+" ") {

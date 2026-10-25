@@ -37,12 +37,13 @@ func (s *Service) Restart(ctx context.Context, spec Spec, force bool) (ComputerR
 	return s.computerOp(ctx, spec, force, "restart")
 }
 
-// Reset recreates the container from the requested image. All four private
-// volumes (/desktops browser profiles, /home/desktop, /opt, /usr/local) are
-// kept. The old container layer (system packages, /etc, /var, /root ...) is
-// NOT carried over: it is committed to this user's :prev image as a backup
-// and the private :state image is dropped, so the new container starts from
-// the clean requested image.
+// Reset returns the computer to factory state from the requested image.
+// Kept: /desktops (browser profiles and website logins) and /home/desktop.
+// Not kept: every self-installed piece of software and system setting — the
+// container layer (committed to this user's :prev image as a backup, :state
+// dropped) and the /opt and /usr/local volumes (copied to "<volume>-prev"
+// backups, then recreated empty so docker fills them from the image).
+// Backups keep one generation and are only recovered by an operator.
 func (s *Service) Reset(ctx context.Context, spec Spec, force bool) (ComputerResult, error) {
 	return s.computerOp(ctx, spec, force, "reset")
 }
@@ -193,6 +194,12 @@ func (s *Service) resetUnlocked(ctx context.Context, spec Spec, force bool) (Com
 			return ComputerResult{}, err
 		}
 	}
+	// Software volumes go back to factory content: the old ones are copied
+	// to one-generation "-prev" backups and removed, so docker fills the
+	// new empty volumes from the image on the next run.
+	if err := s.resetSoftwareVolumes(ctx, spec); err != nil {
+		return ComputerResult{}, err
+	}
 	// Without :state the new container starts from the clean requested image.
 	if _, err := s.docker(ctx, "rmi", state); err != nil && !missingObject(err) {
 		log.Printf("desktopd: reset: untag %s: %v", state, err)
@@ -204,4 +211,49 @@ func (s *Service) resetUnlocked(ctx context.Context, spec Spec, force bool) (Com
 		return ComputerResult{}, err
 	}
 	return ComputerResult{Desktop: desktopOf(spec, name, "running"), Action: "reset", Backup: backup}, nil
+}
+
+// resetVolumeTargets are the private volumes a reset returns to factory
+// content. /desktops (browser profiles and logins) and /home/desktop are kept.
+var resetVolumeTargets = map[string]bool{"/opt": true, "/usr/local": true}
+
+// ResetBackupSuffix names the one-generation backup of a reset volume.
+const ResetBackupSuffix = "-prev"
+
+// resetSoftwareVolumes backs up and removes /opt and /usr/local. The backup
+// copy runs in a throwaway container of the requested image (it has sh and
+// cp); cp -a keeps owners and modes. A missing volume is skipped.
+func (s *Service) resetSoftwareVolumes(ctx context.Context, spec Spec) error {
+	mounts, err := desktop.PrivateMounts(spec.TenantID, spec.UserID)
+	if err != nil {
+		return err
+	}
+	for _, mount := range mounts {
+		if !resetVolumeTargets[mount.Target] {
+			continue
+		}
+		if _, err := s.docker(ctx, "volume", "inspect", mount.Volume); err != nil {
+			if missingObject(err) {
+				continue
+			}
+			return err
+		}
+		backup := mount.Volume + ResetBackupSuffix
+		if _, err := s.docker(ctx, "volume", "rm", "-f", backup); err != nil && !missingObject(err) {
+			return err
+		}
+		if _, err := s.docker(ctx, "volume", "create", backup); err != nil {
+			return err
+		}
+		if _, err := s.docker(ctx, "run", "--rm", "--network", "none", "--entrypoint", "sh",
+			"--volume", mount.Volume+":/from:ro", "--volume", backup+":/to",
+			spec.Image, "-c", "cp -a /from/. /to/"); err != nil {
+			return fmt.Errorf("%w: back up %s: %v", ErrDocker, mount.Volume, err)
+		}
+		if _, err := s.docker(ctx, "volume", "rm", mount.Volume); err != nil {
+			return err
+		}
+		log.Printf("desktopd: reset: %s backed up to %s and removed", mount.Volume, backup)
+	}
+	return nil
 }
