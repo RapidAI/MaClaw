@@ -52,7 +52,7 @@ func TestPublishPlanPhases(t *testing.T) {
 		{phaseCompose, "publish", nil, true},
 		{phaseCompose, "bash", nil, true},
 		{phaseResearch, "batch", map[string]any{"plan": []any{map[string]any{"action": "script", "script": click["script"]}}}, false},
-		{phaseSubmitted, "probe", nil, true},
+		{phaseSubmitted, "probe", nil, false},
 		{phaseSubmitted, "click", nil, false},
 		{phaseLive, "probe", nil, false},
 		{phaseLive, "screenshot", nil, false},

@@ -26,7 +26,15 @@ type netTracker struct {
 	// processing state with reads after the write finished).
 	fetched time.Time
 	starts  []time.Time
+	log     []netWrite // every write and its answer, in order
 	cancel  func()
+}
+
+type netWrite struct {
+	at     time.Time
+	id     string
+	what   string
+	answer string
 }
 
 type netFailure struct {
@@ -90,9 +98,11 @@ func (t *netTracker) on(ev CDPEvent) {
 			t.open[p.RequestID] = p.Request.Method + " " + clipRunes(p.Request.URL, 120)
 			t.writes++
 			t.starts = append(t.starts, time.Now())
+			t.log = append(t.log, netWrite{at: time.Now(), id: p.RequestID, what: t.open[p.RequestID], answer: "no answer yet"})
 			t.last = time.Now()
 		}
 	case "Network.responseReceived":
+		t.answer(p.RequestID, "HTTP "+itoa(p.Response.Status))
 		if what, ok := t.open[p.RequestID]; ok && p.Response.Status >= 400 {
 			t.failures = append(t.failures, netFailure{time.Now(), what + " → HTTP " + itoa(p.Response.Status)})
 		}
@@ -105,6 +115,7 @@ func (t *netTracker) on(ev CDPEvent) {
 		if what, ok := t.open[p.RequestID]; ok {
 			delete(t.open, p.RequestID)
 			t.last = time.Now()
+			t.answer(p.RequestID, "failed: "+p.ErrorText)
 			if !p.Canceled {
 				t.failures = append(t.failures, netFailure{time.Now(), what + " → " + p.ErrorText})
 			}
@@ -178,4 +189,26 @@ func (t *netTracker) wroteSince(since time.Time) bool {
 		}
 	}
 	return false
+}
+
+func (t *netTracker) answer(id, a string) {
+	for i := len(t.log) - 1; i >= 0; i-- {
+		if t.log[i].id == id {
+			t.log[i].answer = a
+			return
+		}
+	}
+}
+
+// writesSince lists the writes sent after since with their answers.
+func (t *netTracker) writesSince(since time.Time) []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var out []string
+	for _, w := range t.log {
+		if w.at.After(since) {
+			out = append(out, w.what+" → "+w.answer)
+		}
+	}
+	return out
 }

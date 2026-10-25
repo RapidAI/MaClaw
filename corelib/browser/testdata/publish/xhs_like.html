@@ -25,8 +25,20 @@ customElements.define('xhs-publish-btn', class extends HTMLElement { constructor
     if (!ev.isTrusted) return; // the real page ignores synthetic clicks
     const t = document.querySelector('.d-text').value, b = document.querySelector('.tiptap').innerText;
     if (!t || !b.trim() || !document.querySelector('#imgs img')) { alert('missing'); return; }
+    const q = new URLSearchParams(location.search);
+    if (q.get('refuse')) { const r = await fetch('/refuse', {method: 'POST'}); const d = document.createElement('div'); d.className = 'toast'; d.setAttribute('role', 'alert'); d.textContent = '发布失败：内容违规'; document.body.appendChild(d); return; }
     await fetch('/publish', {method: 'POST', body: JSON.stringify({title: t, body: b})});
     if (new URLSearchParams(location.search).get('stay')) return; // ?stay=1: posts but stays on the editor
     location.href = '/success';
   }); } });
+// ?popup=1: a typed "#tag" opens a topic list that takes every click until
+// Escape closes it (the real topic suggester).
+if (new URLSearchParams(location.search).get('popup')) {
+  const pop = document.createElement('div'); pop.setAttribute('role', 'listbox'); pop.textContent = '#AI人工智能 #AI绘画';
+  pop.style.cssText = 'display:none;position:fixed;inset:0;z-index:999;background:rgba(255,255,255,.01)';
+  document.body.appendChild(pop);
+  const ed = document.querySelector('.tiptap');
+  ed.addEventListener('input', () => { if (/#\S*$/.test(ed.innerText.trim())) pop.style.display = 'block'; });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && new URLSearchParams(location.search).get('popup') !== 'sticky') pop.style.display = 'none'; }, true);
+}
 </script></body></html>

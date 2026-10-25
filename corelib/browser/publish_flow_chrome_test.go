@@ -209,6 +209,7 @@ func fixtureServer(t *testing.T, page string) (*httptest.Server, *fixtureSite) {
 		site.draft = string(b)
 		site.mu.Unlock()
 	})
+	mux.HandleFunc("/refuse", func(w http.ResponseWriter, r *http.Request) { http.Error(w, "content rejected", 422) })
 	mux.HandleFunc("/publish", func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		var m map[string]string
@@ -422,5 +423,42 @@ func TestPublishFlowSilentSubmitSettledByTheList(t *testing.T) {
 	rep, err := RunPublish(d, PublishSpec{Files: []string{fixtureImage(t)}, Title: "10.18 HF论文精选｜速读", Body: fixtureBody, VerifyURL: srv.URL + "/notes", StepBudget: 10 * time.Second})
 	if err != nil || rep.State != PublishLive || len(site.published) != 1 {
 		t.Fatalf("err=%v state=%v n=%d rep=%+v", err, rep.State, len(site.published), rep)
+	}
+}
+
+// A suggestion list opened by the body's trailing "#tag" takes the click;
+// publish closes open overlays first and posts exactly once.
+func TestPublishFlowOverlayClosedBeforeSubmit(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "xhs_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit?popup=1")
+	rep, err := RunPublish(d, PublishSpec{Files: []string{fixtureImage(t)}, Title: "10.18 HF论文精选｜速读", Body: fixtureBody, VerifyURL: srv.URL + "/notes", StepBudget: 15 * time.Second})
+	if err != nil || rep.State != PublishLive || len(site.published) != 1 {
+		t.Fatalf("err=%v state=%v n=%d rep=%+v", err, rep.State, len(site.published), rep)
+	}
+}
+
+// The site's refusal of the publish write is the answer: named with its
+// HTTP status and the page's own words, and nothing is posted.
+func TestPublishFlowSiteRefusalNamed(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "xhs_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit?refuse=1")
+	rep, err := RunPublish(d, PublishSpec{Files: []string{fixtureImage(t)}, Title: "10.18 HF论文精选｜速读", Body: fixtureBody, VerifyURL: srv.URL + "/notes", StepBudget: 15 * time.Second})
+	s := rep.String()
+	if err == nil || rep.State == PublishLive || len(site.published) != 0 || !strings.Contains(s, "HTTP 422") || !strings.Contains(s, "内容违规") {
+		t.Fatalf("err=%v state=%v n=%d rep=%s", err, rep.State, len(site.published), s)
+	}
+}
+
+// A click that sent no write and left no post is not_submitted (the run may
+// fix the cause and publish again), never an unconfirmed "submitted".
+func TestPublishFlowClickWithoutWriteIsNotSubmitted(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "xhs_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit?popup=sticky")
+	rep, err := RunPublish(d, PublishSpec{Files: []string{fixtureImage(t)}, Title: "10.18 HF论文精选｜速读", Body: fixtureBody, VerifyURL: srv.URL + "/notes", StepBudget: 10 * time.Second})
+	if err == nil || rep.State != PublishNotSubmitted || len(site.published) != 0 || !strings.Contains(rep.String(), "no write was sent") {
+		t.Fatalf("err=%v state=%v n=%d rep=%s", err, rep.State, len(site.published), rep.String())
 	}
 }

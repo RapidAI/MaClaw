@@ -195,6 +195,9 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 			switch {
 			case p.incomplete.Load() != nil:
 				p.rep.State, p.rep.Missing = PublishLiveIncomplete, p.incomplete.Load().(string)
+			case p.submitClicked.Load() && p.net != nil && len(p.net.writesSince(p.clickedAt)) == 0 && spec.VerifyURL != "":
+				// The click sent nothing and the post list lacks the post:
+				// nothing went out, so the run may fix the cause and retry.
 			case p.submitClicked.Load():
 				p.rep.State = PublishSubmitted
 			case p.noEditor:
@@ -209,6 +212,7 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 
 type publishRun struct {
 	submitClicked atomic.Bool
+	clickedAt     time.Time
 	// incomplete: the post is live but its re-read found something missing.
 	incomplete atomic.Value // string
 	// net follows the page's writing requests (nil: driver has no events).
@@ -864,8 +868,10 @@ var publishDoneRe = regexp.MustCompile(`发布成功|已发布|发表成功|Publ
 func (p *publishRun) submit() (string, error) {
 	before, _ := p.eval("document.body ? document.body.innerText.slice(0, 20000) : ''")
 	// Set before the click: a page that freezes on publish never answers it.
+	closed := p.closeOverlays()
 	p.submitClicked.Store(true)
 	clickedAt := time.Now()
+	p.clickedAt = clickedAt
 	if err := p.clickText(p.spec.SubmitTexts, true); err != nil {
 		return "", err
 	}
@@ -875,6 +881,13 @@ func (p *publishRun) submit() (string, error) {
 	deadline := time.Now().Add(2*p.spec.StepBudget - 5*time.Second)
 	for time.Now().Before(deadline) {
 		time.Sleep(500 * time.Millisecond)
+		// The site's answer to the publish write is the signal: a refused
+		// write ends the wait with the site's own reason.
+		if p.net != nil {
+			if f := p.net.failedSince(clickedAt); len(f) > 0 {
+				return "", fmt.Errorf("clicked submit and the site refused it: %s; %s", strings.Join(f, "; "), p.afterSubmitState(clickedAt))
+			}
+		}
 		url := p.pageURL()
 		// An autosaved draft also changes the URL (/write -> /p/1/edit):
 		// only a page outside the editor counts as published.
@@ -902,10 +915,14 @@ func (p *publishRun) submit() (string, error) {
 		}
 	}
 	after, _ := p.eval("document.body ? document.body.innerText.slice(0, 20000) : ''")
-	if said := newLines(before, after); said != "" {
-		return "", fmt.Errorf("clicked submit but the page neither left the editor nor said it was published; after the click it showed: %q (fix that, e.g. a length limit or a required field, then run publish again)", said)
+	state := p.afterSubmitState(clickedAt)
+	if closed != "" {
+		state = "before the click: " + closed + "; " + state
 	}
-	return "", fmt.Errorf("clicked submit but the page neither left the editor nor said it was published")
+	if said := newLines(before, after); said != "" {
+		return "", fmt.Errorf("clicked submit but the page neither left the editor nor said it was published; after the click it showed: %q; %s", clipRunes(said, 200), state)
+	}
+	return "", fmt.Errorf("clicked submit but the page neither left the editor nor said it was published; %s", state)
 }
 
 // evalWithin is eval bounded by d: a page that navigates away or freezes
