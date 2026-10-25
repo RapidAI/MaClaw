@@ -410,6 +410,52 @@ func TestSpecifiedTargetDeliveryEndsTheTurn(t *testing.T) {
 	}
 }
 
+func TestEarlyStopDoesNotFireWhileRequiredUnmetNeedRemains(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "崇州天气与风土人情.pdf")
+	if err := os.WriteFile(path, []byte("%PDF-1.4\nstop after send"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const userID = "desktop-user:unmet-stop"
+	h := registerDocumentGeneratePDF(t)
+	h.settleSemanticSessionResidue(IMUserMessage{UserID: userID, Platform: "desktop"}, &LoopContext{semanticResidueCandidateNeeds: []tool.CapabilityNeed{
+		{ID: "need:gen", Capability: "document.generate.file", Required: true},
+	}}, &IMAgentResponse{LocalFilePath: path})
+	target := hostOwnedCurrentChannelDeliveryTarget("desktop", userID)
+	ctx := withSemanticDestination(context.Background(), target.DestinationID)
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndIdentityAndClassificationAndAttachments(
+		ctx, userID, "发到微信", "desktop", "root-unmet-stop", "turn-unmet-stop",
+		&intent.ClassificationResult{Primary: intent.LabelDocumentDelivery, Confidence: 0.70, Layer: 3}, nil,
+	)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("surface handled=%v err=%v", handled, err)
+	}
+	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface, loopCtx: &LoopContext{DeliveryTarget: target}}
+	for _, selection := range surface.plan.Selections {
+		surface.completed[selection.ID] = true
+	}
+	stop, code, _ := cb.EarlyStop()
+	if !stop || code != "" {
+		t.Fatalf("fully delivered turn must stop cleanly: stop=%v code=%q", stop, code)
+	}
+
+	// A required unmet need reopens the run even though delivery completed.
+	// Without this gate a clean early stop would close a turn whose hop run
+	// still reports remaining work, and the hard-exit guard (which only runs
+	// on tool-less stops) would never get a look.
+	surface.plan.Unmet = append(surface.plan.Unmet, tool.UnmetNeed{NeedID: "need:unmet-extra", ReasonCode: "provider_unavailable"})
+	if stop, code, _ := cb.EarlyStop(); stop || code != "" {
+		t.Fatalf("required unmet need must hold the turn open: stop=%v code=%q", stop, code)
+	}
+	if !cb.RequiredEffectUnsettled() {
+		t.Fatal("hop run should report the unmet need as remaining")
+	}
+	surface.plan.Unmet = nil
+	if stop, code, _ := cb.EarlyStop(); !stop || code != "" {
+		t.Fatalf("cleared unmet need should restore the clean stop: stop=%v code=%q", stop, code)
+	}
+}
+
 func TestHostSpecifiedTargetOnWeixinDoesNotCallIMFileSenderWhenModelStops(t *testing.T) {
 	userID := "wx-user-host-stop"
 	h := &IMMessageHandler{registry: NewToolRegistry()}

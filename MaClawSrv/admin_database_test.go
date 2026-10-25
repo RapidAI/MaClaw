@@ -337,9 +337,10 @@ func TestAdminDatabaseProfileConcurrentMutationsSerialized(t *testing.T) {
 		t.Fatalf("schema_version = %d, want %d (every rotate must commit)", got, rotates)
 	}
 
-	// Mixed rotate+upsert: an upsert is a full-profile replace, so whichever
-	// mutation commits last wins wholesale — but the final state must be one
-	// coherent serialized outcome, never a torn mix of both.
+	// Mixed rotate+upsert: mutations are serialized, and every one that
+	// changes the credential binding (a rotate, or an upsert that rebinds
+	// secret_ref) bumps schema_version. The final state must be one coherent
+	// serialized outcome, never a torn mix of both.
 	codes = make(chan int, 2*rotates)
 	for i := 0; i < rotates; i++ {
 		wg.Add(2)
@@ -371,15 +372,16 @@ func TestAdminDatabaseProfileConcurrentMutationsSerialized(t *testing.T) {
 	}
 	got := profiles[0]
 	if got.SecretRef == "keyring:crm" {
-		// The last committed mutation was an upsert (full replace): no rotate
-		// may have landed after it, so the version must be the upsert's zero.
-		if got.SchemaVersion != 0 {
-			t.Fatalf("torn state: upsert secret_ref with schema_version %d", got.SchemaVersion)
+		// The last committed mutation was an upsert: it rebound the stored
+		// (rotated) ref back to keyring:crm, so the merge must have bumped the
+		// generation to invalidate approvals minted for the old credential.
+		if got.SchemaVersion < rotates+1 {
+			t.Fatalf("torn state: upsert secret_ref with schema_version %d, want >= %d", got.SchemaVersion, rotates+1)
 		}
 	} else {
 		// A rotate committed last: it must carry a bumped version on top of
 		// whatever it read.
-		if !strings.HasPrefix(got.SecretRef, "keyring:crm-r") || got.SchemaVersion < 1 {
+		if !strings.HasPrefix(got.SecretRef, "keyring:crm-r") || got.SchemaVersion < rotates+1 {
 			t.Fatalf("torn state: profile = %#v", got)
 		}
 	}

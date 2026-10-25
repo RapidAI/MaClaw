@@ -932,7 +932,7 @@ func TestIsOperationalInspectionOnlyCommand(t *testing.T) {
 }
 
 func TestCodingInquiryToolFiltersAreReadOnly(t *testing.T) {
-	if !isCodingInquiryTool("read_file") || !isCodingInquiryTool("code_navigation") || !isCodingInquiryTool("knowledge_image_search") {
+	if !isCodingInquiryTool("read_file") || !isCodingInquiryTool("code_navigation") || !isCodingInquiryTool(codeSearchToolName) || !isCodingInquiryTool("knowledge_image_search") {
 		t.Fatal("local inquiry must retain read/navigation tools")
 	}
 	if isCodingInquiryTool("write_file") || isCodingInquiryTool("todo_write") {
@@ -944,7 +944,7 @@ func TestCodingInquiryToolFiltersAreReadOnly(t *testing.T) {
 	if !isRemoteCodingInquiryTool("knowledge_image_search") {
 		t.Fatal("remote inquiry must retain read-only image knowledge search")
 	}
-	if isRemoteCodingInquiryTool("ssh_write_file") || isRemoteCodingInquiryTool("ssh_edit_file") {
+	if isRemoteCodingInquiryTool("ssh_write_file") || isRemoteCodingInquiryTool("ssh_edit_file") || isRemoteCodingInquiryTool(codeSearchToolName) {
 		t.Fatal("remote inquiry must not expose SSH write tools")
 	}
 }
@@ -990,7 +990,7 @@ func TestCodingOperationalFilterIsSelfContained(t *testing.T) {
 }
 
 func TestCodingOperationalToolFiltersAreNonMutating(t *testing.T) {
-	for _, name := range []string{"bash", "read_file", "Glob", "ripgrep", "code_navigation", "knowledge_image_search"} {
+	for _, name := range []string{"bash", "read_file", "Glob", "ripgrep", "code_navigation", codeSearchToolName, "knowledge_image_search"} {
 		if !isCodingOperationalTool(name) {
 			t.Fatalf("operational task should retain %q", name)
 		}
@@ -2499,6 +2499,84 @@ func TestGoalContinuationKeepsTheCodingChecklist(t *testing.T) {
 	}
 	if !strings.Contains(resumedPlan, "搭 A/B 变体") {
 		t.Fatalf("resumed plan lost the remaining step: %q", resumedPlan)
+	}
+}
+
+func TestGoalContinuationRewindsChecklistToFirstUnfinished(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	h.setStickyCodingStepStatuses(userID, []codingWorkbenchStepStatus{
+		{Index: 1, Title: "确认现状", Status: codingStepPassed},
+		{Index: 2, Title: "干净构建", Status: codingStepPassed},
+		{Index: 3, Title: "跑测试", Status: codingStepPassed},
+		{Index: 4, Title: "运行真实控制台 probe", Status: codingStepPending, Summary: "probe exited 1"},
+		{Index: 5, Title: "核对 git status", Status: codingStepPending},
+		{Index: 6, Title: "修复渲染器", Status: codingStepRunning, Summary: "src\\game.cpp(114): error C3861: 'spawnFood': identifier not found"},
+		{Index: 7, Title: "加固 probe", Status: codingStepPending},
+	})
+	text := "[系统续接][execute] 按步骤执行目标：开发一个c++的贪吃蛇游戏。\n\n" +
+		strings.Repeat("已完成步骤的记录。", 20) + "\n\n" +
+		"交付物完成后再调用 goal(action=\"step\", index=8, status=\"done\", result=\"...\")，然后停止。"
+	tasks, planOut, planned := h.resolveCodingWorkbenchTasks(userID, text, `E:\prog-test1`, h.getStickyCodingWorkbenchMemory(userID), nil, nil)
+	if planned || planOut != "" || len(tasks) != 1 {
+		t.Fatalf("continuation stays one task: planned=%v plan=%q tasks=%d", planned, planOut, len(tasks))
+	}
+	stored := h.getStickyCodingWorkbenchMemory(userID)
+	if len(stored.StepStatuses) != 7 {
+		t.Fatalf("checklist len=%d", len(stored.StepStatuses))
+	}
+	if stored.StepStatuses[3].Status != codingStepRunning || stored.StepStatuses[3].Title != "运行真实控制台 probe" {
+		t.Fatalf("resume cursor: %+v", stored.StepStatuses[3])
+	}
+	if stored.StepStatuses[5].Status != codingStepPending {
+		t.Fatalf("middle step still current: %+v", stored.StepStatuses[5])
+	}
+	if !strings.Contains(stored.StepStatuses[5].Summary, "C3861") {
+		t.Fatalf("error note was dropped: %+v", stored.StepStatuses[5])
+	}
+	if !isGoalSystemContinuation(tasks[0].Description) {
+		t.Fatalf("resume note hid the continuation marker: %q", tasks[0].Description)
+	}
+	if !strings.Contains(tasks[0].Description, "从 T4 开始") || !strings.Contains(tasks[0].Description, "运行真实控制台 probe") {
+		t.Fatalf("resume note missing: %q", tasks[0].Description)
+	}
+	if !strings.Contains(tasks[0].Description, "probe exited 1") {
+		t.Fatalf("current step record missing: %q", tasks[0].Description)
+	}
+	if strings.Contains(tasks[0].Description, "C3861") {
+		t.Fatalf("later step error was pulled into the resume prompt: %q", tasks[0].Description)
+	}
+	msg := goalContinuationTaskUserMessage(&TaskItem{Description: tasks[0].Description}, "")
+	if !strings.Contains(msg, "从 T4 开始") || !strings.Contains(msg, `goal(action="step"`) {
+		t.Fatalf("model prompt lost the cursor or the phase contract: %q", msg)
+	}
+	if strings.Contains(msg, "C3861") {
+		t.Fatalf("model prompt was steered back to the skipped step: %q", msg)
+	}
+}
+
+func TestGoalContinuationRewindsBeforeAnythingPassed(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	h.setStickyCodingStepStatuses(userID, []codingWorkbenchStepStatus{
+		{Index: 1, Title: "确认现状", Status: codingStepPending},
+		{Index: 2, Title: "修复渲染器", Status: codingStepRunning},
+	})
+	text := "[系统续接][execute] 按步骤执行目标：游戏。\n\n做完调用 goal(action=\"step\", index=1, status=\"done\", result=\"...\")。"
+	tasks, planOut, planned := h.resolveCodingWorkbenchTasks(userID, text, `E:\prog-test1`, h.getStickyCodingWorkbenchMemory(userID), nil, nil)
+	if planned || planOut != "" || len(tasks) != 1 {
+		t.Fatalf("continuation stays one task: planned=%v plan=%q tasks=%d", planned, planOut, len(tasks))
+	}
+	stored := h.getStickyCodingWorkbenchMemory(userID).StepStatuses
+	if len(stored) != 2 || stored[0].Status != codingStepRunning || stored[1].Status != codingStepPending {
+		t.Fatalf("cursor: %+v", stored)
+	}
+	if !isGoalSystemContinuation(tasks[0].Description) || !strings.Contains(tasks[0].Description, "从 T1 开始") {
+		t.Fatalf("resume note: %q", tasks[0].Description)
+	}
+	msg := goalContinuationTaskUserMessage(&TaskItem{Description: tasks[0].Description}, "")
+	if !strings.Contains(msg, "从 T1 开始") || !strings.Contains(msg, `goal(action="step"`) {
+		t.Fatalf("model prompt: %q", msg)
 	}
 }
 

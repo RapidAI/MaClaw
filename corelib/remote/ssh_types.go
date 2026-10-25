@@ -108,6 +108,11 @@ type SSHSessionSpec struct {
 	Rows int `json:"rows,omitempty"`
 	// SessionID 由调用方指定或自动生成。
 	SessionID string `json:"session_id,omitempty"`
+	// OwnerID is the conversation principal that opened this session.
+	// Binding, reuse, and situation listing select by this id.
+	// Empty means the session was opened with no named principal, and a
+	// named conversation does not inherit it.
+	OwnerID string `json:"owner_id,omitempty"`
 }
 
 // SSHSessionSummary 是 SSH 会话的摘要信息，用于 UI 展示。

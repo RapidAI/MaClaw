@@ -16,9 +16,10 @@ import { reasoningHasCodingStatusMilestone, stripCodingWorkbenchStatusReasoning 
 import { clearAssistantRoundProse, isRejectedRoundContentToken, rejectStreamedAssistantContent, rejectedRoundContentToken } from "./assistantRoundProse";
 import { appendToolCallMarker, contentHasAssistantToolCall, isProgressOnlyToolAction, isTranscriptToolCallText, parseAssistantToolStatus, stripAssistantToolCallMarkers, type AssistantToolCall } from "./assistantToolCall";
 import { cleanReasoningTrailForBody, parkReplacedStreamInReasoning } from "./assistantReasoningBody";
-import { answerDesktopChatTask, appendChatTaskResultMessage, cancelDesktopChatTask, chatTaskCardMessage, chatTaskEventName, chatTasksToRestore, dispatchDesktopChatTask, isChatTaskResultResponse, listDesktopChatTasks, parseChatTaskEvent, steerDesktopChatTask, upsertChatTaskCard, upsertChatTaskList, type ChatTaskView } from "./chatTaskModel";
+import { answerDesktopChatTask, appendChatTaskResultMessage, cancelDesktopChatTask, chatTaskCardMessage, chatTaskEventName, chatTasksToRestore, dispatchDesktopChatTask, isChatTaskResultResponse, listDesktopChatTasks, parseChatTaskEvent, resumeDesktopChatTask, steerDesktopChatTask, upsertChatTaskCard, upsertChatTaskList, type ChatTaskView } from "./chatTaskModel";
 import { takeAssistantStreamToken } from "../bots/visibleDesktopTurn";
 import { codingThoughtDeltaIsChrome, codingThoughtHasOpenFence, codingThoughtTextIsBlank } from "./assistantLiveActivity";
+import { createStreamCoalescer } from "./streamCoalescer";
 
 export interface CancelAIAssistantResult {
     canceledText: string;
@@ -550,7 +551,10 @@ export interface CodingAgentTimelineItem {
     eventSequences?: number[];
     kind: 'thinking' | 'progress';
     content: string;
+    /** Last activity on this row. Tool finish and thought tokens move it. */
     timestamp: number;
+    /** When the row began. Later tokens and a tool finish must not move it. */
+    startedAt?: number;
 }
 
 export interface ChatMessage {
@@ -1630,6 +1634,14 @@ function codingTimelineSequenceIsTaken(timeline: CodingAgentTimelineItem[], sequ
     );
 }
 
+/** Row start. A later rewrite of `timestamp` must not move this. */
+function codingRowStartedAt(item: { startedAt?: number; timestamp?: number }, fallback: number): number {
+    const started = item.startedAt || 0;
+    if (started > 0) return started;
+    const stamp = item.timestamp || 0;
+    return stamp > 0 ? stamp : fallback;
+}
+
 /** Keep the transport order recoverable even when Wails delivers a batch late. */
 function insertCodingTimelineItem(timeline: CodingAgentTimelineItem[], item: CodingAgentTimelineItem): CodingAgentTimelineItem[] {
     const insertAt = timeline.findIndex((current) => current.sequence > item.sequence);
@@ -1709,6 +1721,7 @@ function appendAdjacentCodingThought(
         content: `${last.content}${content}`,
         lastSequence: sequence,
         timestamp,
+        startedAt: codingRowStartedAt(last, timestamp),
     }];
 }
 
@@ -1728,10 +1741,12 @@ function extendOwnedCodingThought(
     if (index < 0) return null;
     const next = timeline.slice();
     const item = next[index];
+    const timestamp = Date.now();
     next[index] = {
         ...item,
         content: `${item.content}${content}`,
-        timestamp: Date.now(),
+        timestamp,
+        startedAt: codingRowStartedAt(item, timestamp),
     };
     return next;
 }
@@ -1807,7 +1822,7 @@ function replaceMatchingCodingToolStart(
         if (!codingToolLifecycleMatches(item.content, finishedContent)) continue;
         const eventSequences = Array.from(new Set([item.sequence, ...(item.eventSequences || []), finishedSequence]));
         return timeline.map((current, currentIndex) => currentIndex === index
-            ? { ...current, content: finishedContent, timestamp, eventSequences }
+            ? { ...current, content: finishedContent, timestamp, startedAt: codingRowStartedAt(current, timestamp), eventSequences }
             : current);
     }
     return null;
@@ -1825,7 +1840,7 @@ function replaceLateCodingToolStart(
         if (!codingToolLifecycleMatches(startedContent, item.content)) continue;
         const eventSequences = Array.from(new Set([startedSequence, ...(item.eventSequences || []), item.sequence]));
         return timeline.map((current, currentIndex) => currentIndex === index
-            ? { ...current, sequence: startedSequence, content: item.content, timestamp, eventSequences }
+            ? { ...current, sequence: startedSequence, content: item.content, timestamp, startedAt: codingRowStartedAt(current, timestamp), eventSequences }
             : current);
     }
     return null;
@@ -1912,13 +1927,15 @@ function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence
                     pendingCodingThoughts: noted,
                 };
             }
-            const adjacentThoughts = appendAdjacentCodingThought(pendingCodingThoughts, reasoningDelta, sequence, Date.now());
+            const thoughtAt = Date.now();
+            const adjacentThoughts = appendAdjacentCodingThought(pendingCodingThoughts, reasoningDelta, sequence, thoughtAt);
             const thought: CodingAgentTimelineItem = {
                 id: nextId(),
                 sequence,
                 kind: 'thinking',
                 content: reasoningDelta,
-                timestamp: Date.now(),
+                timestamp: thoughtAt,
+                startedAt: thoughtAt,
             };
             return {
                 ...message,
@@ -1953,12 +1970,14 @@ function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence
                 codingTimeline: noted,
             };
         }
-        const nextTimeline = appendAdjacentCodingThought(baseTimeline, reasoningDelta, sequence, Date.now()) || insertCodingTimelineItem(baseTimeline, {
+        const thoughtAt = Date.now();
+        const nextTimeline = appendAdjacentCodingThought(baseTimeline, reasoningDelta, sequence, thoughtAt) || insertCodingTimelineItem(baseTimeline, {
             id: nextId(),
             sequence,
             kind: 'thinking',
             content: reasoningDelta,
-            timestamp: Date.now(),
+            timestamp: thoughtAt,
+            startedAt: thoughtAt,
         });
         return { ...message, reasoning: nextReasoning || undefined, reasoningLive: true, codingTimeline: nextTimeline };
     }
@@ -3156,15 +3175,22 @@ function appendFinalReasoningToCodingTimeline(message: ChatMessage, response: an
     }
     if (!trailingReasoning) return timeline;
     const last = timeline[timeline.length - 1];
+    const thoughtAt = Date.now();
     if (last?.kind === 'thinking') {
-        return [...timeline.slice(0, -1), { ...last, content: `${last.content}${last.content.endsWith('\n') ? '' : '\n'}${trailingReasoning}` }];
+        return [...timeline.slice(0, -1), {
+            ...last,
+            content: `${last.content}${last.content.endsWith('\n') ? '' : '\n'}${trailingReasoning}`,
+            timestamp: thoughtAt,
+            startedAt: codingRowStartedAt(last, thoughtAt),
+        }];
     }
     return [...timeline, {
         id: nextId(),
         sequence: nextCodingTimelineSequence(timeline),
         kind: 'thinking',
         content: trailingReasoning,
-        timestamp: Date.now(),
+        timestamp: thoughtAt,
+        startedAt: thoughtAt,
     }];
 }
 
@@ -3196,7 +3222,7 @@ function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: strin
         const nextUnfinishedSlot = (response as any).unfinished_slot;
         const nextRecoverableSession = (response as any).recoverable_session;
         const nextRecordingSession = extractRecordingSessionFromResponse(response);
-        if (!nextContent && !resultText && !nextReasoning && !nextFields?.length && !nextActions?.length && !nextUnfinishedSlot && !nextRecoverableSession && !nextRecordingSession && !nextThumbnailBase64 && !nextImageKey && !nextLocalFilePaths?.length) {
+        if (!nextContent && !resultText && !nextReasoning && !nextFields?.length && !nextActions?.length && !nextUnfinishedSlot && !nextRecoverableSession && !nextRecordingSession && !nextThumbnailBase64 && !nextImageKey && !nextLocalFilePaths?.length && !message.codingTimeline?.length) {
             return null;
         }
         return {
@@ -4015,7 +4041,12 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const [promptHistory, setPromptHistory] = useState<PromptHistoryEntry[]>(loadPersistedPromptHistory);
     const submittedPrompts = useMemo(() => promptHistory.map(entry => entry.text), [promptHistory]);
     const submittedPromptAttachments = useMemo(() => promptHistory.map(entry => entry.attachments), [promptHistory]);
-    const [draftInputValue, setDraftInputValue] = useState("");
+    const [draftInputValue, setDraftInputValue] = useState(() => {
+        try { return localStorage.getItem("ai_assistant_local_draft") || ""; } catch { return ""; }
+    });
+    useEffect(() => {
+        try { localStorage.setItem("ai_assistant_local_draft", draftInputValue); } catch { }
+    }, [draftInputValue]);
     const [progressMessages, setProgressMessages] = useState<ChatMessage[]>([]);
     const [selectedFilePaths, setSelectedFilePaths] = useState<string[]>([]);
     const [trialReflectEnabled, setTrialReflectEnabled] = useState(false);
@@ -4690,6 +4721,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                     kind: 'thinking' as const,
                     content: message.reasoning,
                     timestamp: message.timestamp,
+                    startedAt: message.timestamp,
                 }]
                 : timeline;
             const toolProgress = parseCodingAgentProgress(progressText);
@@ -4740,6 +4772,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                     kind: 'progress',
                     content: progressText,
                     timestamp: completedAt,
+                    startedAt: completedAt,
                 }),
             };
         }));
@@ -5764,6 +5797,32 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     // "分类服务暂时不可用，请稍后重发" hint); "token"/"final" maintain one
     // appended assistant message keyed by the continuation request id.
     useEffect(() => {
+        // Tokens paint their first delta immediately and coalesce the rest
+        // into one 33ms flush per request (same cadence as the main chat
+        // loop). "final" flushes the pending tail before replacing content,
+        // so the transcript stays byte-identical to per-token writes.
+        const tokenCoalescer = createStreamCoalescer<string, { delta: string; sessionKey: string }>({
+            onFlush: (requestId, items) => {
+                const joined = items.map(item => item.delta).join('');
+                if (!joined) return;
+                const firstSessionKey = items[0]?.sessionKey;
+                setMessages(prev => {
+                    const idx = prev.findIndex(m => m.requestId === requestId && m.role === 'assistant');
+                    if (idx < 0) {
+                        return [...prev, {
+                            id: nextId(),
+                            role: 'assistant' as const,
+                            content: joined,
+                            requestId,
+                            sessionKey: firstSessionKey || normalizeRuntimeSessionKey('desktop-user'),
+                            timestamp: Date.now(),
+                        }];
+                    }
+                    const updated = { ...prev[idx], content: (prev[idx].content || '') + joined };
+                    return [...prev.slice(0, idx), updated, ...prev.slice(idx + 1)];
+                });
+            },
+        });
         const handler = (payload: any) => {
             let event: { request_id?: string; session_key?: string; kind?: string; text?: string; as_error?: boolean };
             try {
@@ -5830,26 +5889,29 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 const delta = String(event.text || '');
                 if (!delta) return;
                 emitPetStateForAssistant('speaking', 'ai:continuation-token', 1800);
-                setMessages(prev => {
-                    const idx = prev.findIndex(m => m.requestId === requestId && m.role === 'assistant');
-                    if (idx < 0) {
-                        return [...prev, {
-                            id: nextId(),
-                            role: 'assistant' as const,
-                            content: delta,
-                            requestId,
-                            sessionKey,
-                            timestamp: Date.now(),
-                        }];
-                    }
-                    const updated = { ...prev[idx], content: (prev[idx].content || '') + delta };
-                    return [...prev.slice(0, idx), updated, ...prev.slice(idx + 1)];
-                });
+                if (tokenCoalescer.push(requestId, { delta, sessionKey })) {
+                    setMessages(prev => {
+                        const idx = prev.findIndex(m => m.requestId === requestId && m.role === 'assistant');
+                        if (idx < 0) {
+                            return [...prev, {
+                                id: nextId(),
+                                role: 'assistant' as const,
+                                content: delta,
+                                requestId,
+                                sessionKey,
+                                timestamp: Date.now(),
+                            }];
+                        }
+                        const updated = { ...prev[idx], content: (prev[idx].content || '') + delta };
+                        return [...prev.slice(0, idx), updated, ...prev.slice(idx + 1)];
+                    });
+                }
                 return;
             }
             if (event.kind === 'final') {
                 const text = String(event.text || '');
                 emitPetStateForAssistant('done', 'ai:continuation-final', 1500);
+                tokenCoalescer.flush(requestId);
                 setMessages(prev => {
                     const idx = prev.findIndex(m => m.requestId === requestId && m.role === 'assistant');
                     if (idx < 0) {
@@ -5868,7 +5930,10 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             }
         };
         const off = subscribeEvent('ai-continuation', handler);
-        return () => { off(); };
+        return () => {
+            tokenCoalescer.dispose();
+            off();
+        };
     }, [emitPetStateForAssistant]);
 
     const sendMessageNow = useCallback(async (text: string, options?: SendMessageOptions): Promise<boolean> => {
@@ -6276,16 +6341,30 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         setMessages(prev => [...prev, userMsg, placeholderMsg]);
         emitPetStateForAssistant('thinking', 'ai:btw-send', 10000);
 
-        // Listen for streaming tokens on the /btw-specific channel.
+        // Listen for streaming tokens on the /btw-specific channel. The first
+        // token still paints immediately; later tokens share a 33ms coalesced
+        // flush (same cadence as the main chat loop) so a fast burst does not
+        // re-render per event. The final/error writes flush the tail first,
+        // so message order and text stay byte-identical.
+        const tokenCoalescer = createStreamCoalescer<string, string>({
+            onFlush: (_key, deltas) => {
+                const joined = deltas.join('');
+                setMessages(prev => prev.map(m =>
+                    m.id === assistantMsgId ? { ...m, content: m.content + joined } : m
+                ));
+            },
+        });
         const tokenHandler = (payload: unknown) => {
             const event = normalizeStreamEvent(payload);
             if (event?.request_id !== requestId) return;
             const delta = event?.text || '';
             if (!delta) return;
             emitPetStateForAssistant('speaking', 'ai:btw-token', 1800);
-            setMessages(prev => prev.map(m =>
-                m.id === assistantMsgId ? { ...m, content: m.content + delta } : m
-            ));
+            if (tokenCoalescer.push(requestId, delta)) {
+                setMessages(prev => prev.map(m =>
+                    m.id === assistantMsgId ? { ...m, content: m.content + delta } : m
+                ));
+            }
         };
         const progressHandler = (payload: unknown) => {
             const event = normalizeStreamEvent(payload);
@@ -6301,16 +6380,19 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             const finalText = response?.text || response?.error || '查询失败';
             // Replace placeholder content with the final result.
             // If streaming already populated content, the final text is authoritative.
+            tokenCoalescer.flush(requestId);
             setMessages(prev => prev.map(m =>
                 m.id === assistantMsgId ? { ...m, content: finalText } : m
             ));
         } catch (err: any) {
+            tokenCoalescer.flush(requestId);
             setMessages(prev => prev.map(m =>
                 m.id === assistantMsgId ? { ...m, content: `ERROR /btw 查询失败: ${err?.message || String(err)}` } : m
             ));
         } finally {
             offBtwToken();
             offBtwProgress();
+            tokenCoalescer.dispose();
             emitPetStateForAssistant('done', 'ai:btw-done', 1600);
         }
     }, [activeSessionKeyForEvents, emitPetStateForAssistant]);
@@ -7301,6 +7383,13 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         }
     }, [activeSessionKeyForEvents, uiLang]);
 
+    const resumeChatTask = useCallback(async (taskID: string, text = "") => {
+        const task = await resumeDesktopChatTask(taskID, text);
+        if (task) {
+            setChatTasks(prev => upsertChatTaskList(prev, task));
+            setMessages(prev => upsertChatTaskCard(prev, task) as ChatMessage[]);
+        }
+    }, []);
     const cancelChatTask = useCallback(async (taskID: string) => {
         await cancelDesktopChatTask(taskID);
     }, []);
@@ -7386,12 +7475,13 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         dismissAgentView,
         deactivateRecordingSession,
         dispatchChatTask,
+        resumeChatTask,
         cancelChatTask,
         steerChatTask,
         answerChatTask,
         isSessionIdle,
         waitForForegroundIdle,
-    }), [browseFile, clearSelectedFile, setSelectedFiles, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, doFetchNews, cancelSession, submitAgentView, dismissAgentView, deactivateRecordingSession, dispatchChatTask, cancelChatTask, steerChatTask, answerChatTask, isSessionIdle, waitForForegroundIdle]);
+    }), [browseFile, clearSelectedFile, setSelectedFiles, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, doFetchNews, cancelSession, submitAgentView, dismissAgentView, deactivateRecordingSession, dispatchChatTask, resumeChatTask, cancelChatTask, steerChatTask, answerChatTask, isSessionIdle, waitForForegroundIdle]);
 
     return { messages, submittedPrompts, submittedPromptAttachments, draftInputValue, progressMessages, sending, sendingSessionKey, busySessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, agentView, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession, injectSupplementary, guideLaunchReference, submitAgentView, dismissAgentView, panelState, panelActions };
 }

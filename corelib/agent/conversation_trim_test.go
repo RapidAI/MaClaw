@@ -48,6 +48,107 @@ func TestProjectToolResultKeepsSSHStatusInline(t *testing.T) {
 	}
 }
 
+func TestProjectToolResultKeepsCodeNavigationInline(t *testing.T) {
+	output := strings.Repeat("step(); ", 400) + "DRAW_BUDGET_1_5" + strings.Repeat("step(); ", 400)
+	rawBytes, err := json.Marshal(map[string]any{
+		"backend":       "codegraph",
+		"operation":     "node",
+		"query":         "kDrawMsBudgetFactor",
+		"output":        output,
+		"continue_with": "keep using this codegraph source",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := string(rawBytes)
+	if len(raw) <= MaxToolResultLen || len(raw) >= CodeNavigationMaxToolResult {
+		t.Fatalf("fixture len=%d, want between %d and %d", len(raw), MaxToolResultLen, CodeNavigationMaxToolResult)
+	}
+	for _, toolName := range []string{"code_navigation", "Code_Navigation"} {
+		projection, err := ProjectToolResultWithContext(toolName, "owner", raw, 400_000)
+		if err != nil {
+			t.Fatalf("%s: %v", toolName, err)
+		}
+		if projection.Spilled || projection.Preview != raw {
+			t.Fatalf("%s source was sketched: spilled=%v preview=%d raw=%d", toolName, projection.Spilled, len(projection.Preview), len(raw))
+		}
+		if strings.Contains(projection.Preview, "[json_preview]") || !strings.Contains(projection.Preview, "DRAW_BUDGET_1_5") || !strings.Contains(projection.Preview, "keep using this codegraph source") {
+			t.Fatalf("%s dropped the navigation payload", toolName)
+		}
+	}
+
+	ordinaryBlob := strings.Repeat("a", 8000) + "ORDINARY_MIDDLE"
+	ordinaryBytes, err := json.Marshal(map[string]string{"note": ordinaryBlob})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordinary := string(ordinaryBytes)
+	if len(ordinary) <= MaxToolResultLen {
+		t.Fatalf("ordinary fixture len=%d, want above %d", len(ordinary), MaxToolResultLen)
+	}
+	sketched, err := ProjectToolResult("custom_note", "owner", ordinary)
+	if err != nil && sketched.Preview == "" {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sketched.Preview, "[json_preview]") || strings.Contains(sketched.Preview, "ORDINARY_MIDDLE") {
+		t.Fatalf("ordinary JSON should stay on the 4KB sketch: %s", sketched.Preview)
+	}
+
+	hugeOutput := strings.Repeat("y", 65_000) + "CUT_MIDDLE" + strings.Repeat("y", 5_000) + "END_OF_SOURCE_MARKER"
+	hugeBytes, err := json.Marshal(map[string]any{
+		"backend":       "codegraph",
+		"operation":     "explore",
+		"query":         "snake",
+		"output":        hugeOutput,
+		"continue_with": "keep using this codegraph source",
+		"candidates":    []map[string]string{{"file": "snake.cpp", "evidence": strings.Repeat("CANDIDATE_ONLY ", 1500)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	huge := string(hugeBytes)
+	if len(huge) <= CodeNavigationMaxToolResult {
+		t.Fatalf("huge fixture len=%d, want above %d", len(huge), CodeNavigationMaxToolResult)
+	}
+	over, err := ProjectToolResult("code_navigation", "owner", huge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !over.Spilled || strings.Contains(over.Preview, "[json_preview]") || strings.Contains(over.Preview, "CUT_MIDDLE") || strings.Contains(over.Preview, "CANDIDATE_ONLY") {
+		t.Fatalf("over-budget navigation lost the source shape: spilled=%v preview=%d", over.Spilled, len(over.Preview))
+	}
+	if !strings.Contains(over.Preview, "END_OF_SOURCE_MARKER") || !strings.Contains(over.Preview, "keep using this codegraph source") || !strings.Contains(over.Preview, "middle of this codegraph result omitted") {
+		t.Fatalf("over-budget navigation dropped the source ends:\n%s", over.Preview)
+	}
+	if len(over.Preview) > CodeNavigationMaxToolResult {
+		t.Fatalf("over-budget preview %d exceeds %d", len(over.Preview), CodeNavigationMaxToolResult)
+	}
+
+	fitOutput := "HEAD_SOURCE\n" + strings.Repeat("step(); ", 2000) + "TAIL_SOURCE\n"
+	fitBytes, err := json.Marshal(map[string]any{
+		"backend":       "remote:auto",
+		"operation":     "explore",
+		"query":         "snake",
+		"output":        fitOutput,
+		"continue_with": "keep using this codegraph source",
+		"candidates":    []map[string]string{{"file": "snake.cpp", "evidence": strings.Repeat("CANDIDATE_ONLY ", 4000)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fit := string(fitBytes)
+	if len(fit) <= CodeNavigationMaxToolResult {
+		t.Fatalf("candidate fixture len=%d, want above %d", len(fit), CodeNavigationMaxToolResult)
+	}
+	dropped, err := ProjectToolResult("code_navigation", "owner", fit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(dropped.Preview, "HEAD_SOURCE") || !strings.Contains(dropped.Preview, "TAIL_SOURCE") || !strings.Contains(dropped.Preview, "keep using this codegraph source") || strings.Contains(dropped.Preview, "CANDIDATE_ONLY") || strings.Contains(dropped.Preview, "[json_preview]") {
+		t.Fatalf("candidates replaced a source that fits:\n%s", dropped.Preview)
+	}
+}
+
 func TestProjectToolResultKeepsDesktopFileAndCommand(t *testing.T) {
 	file := "int main(){}\n" + strings.Repeat("a", 20_000)
 	if len(file) <= MaxToolResultLen || len(file) > desktop.ToolResultMax {

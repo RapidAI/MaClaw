@@ -388,9 +388,15 @@ func (m *SSHBackgroundTaskManager) ListTasks() []*SSHBackgroundTask {
 }
 
 func SSHBackgroundTaskOwnerMatches(taskOwnerID, filterOwnerID string) bool {
-	taskOwnerID = strings.TrimSpace(taskOwnerID)
-	filterOwnerID = strings.TrimSpace(filterOwnerID)
-	return taskOwnerID == filterOwnerID
+	return SSHSessionOwnerMatches(taskOwnerID, filterOwnerID)
+}
+
+// SSHSessionOwnerMatches reports whether a session opened by sessionOwner
+// belongs to principal. The match is exact. A session with no owner belongs
+// only to a caller that also has no principal. A named conversation never
+// inherits another conversation's session, or a session that recorded no owner.
+func SSHSessionOwnerMatches(sessionOwner, principal string) bool {
+	return strings.TrimSpace(sessionOwner) == strings.TrimSpace(principal)
 }
 
 func (m *SSHBackgroundTaskManager) AuthorizeTaskOwner(taskID, ownerID string) error {

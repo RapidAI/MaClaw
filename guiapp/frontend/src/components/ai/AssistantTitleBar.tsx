@@ -85,7 +85,7 @@ const stopMouse = (handler: () => void) => (e: MouseEvent) => {
 };
 export function AssistantTitleBar({ active = true, clearHistory, clearHistoryDisabled, hideNotifications, inline, lang, maximized, onClose, onDismissAppUpdate, onHideWindow, onOpenAppReleaseNotes, onOpenAppUpdate, onOpenKnowledge, onOpenTutorial, onOptimizeExpert, onReturnToCoveredConversation, onSaveCurrentTask, onToggleMaximize, onTogglePreviewPanel, optimizeExpertBusy, previewPanelOpen, previewAvailable, refreshNews, showMaximizeToggle, theme: t, themeMode, title, trialReflectEnabled, updateAvailable, workflowActive }: AssistantTitleBarProps) {
     // Keep title-bar state controls on the active shell palette in both schemes.
-    const themeSuccess = "var(--theme-success, #4f7f6f)";
+    const themeSuccess = "var(--theme-success, #11813a)";
     const rootStyle: WailsDragStyle = {
         display: "flex",
         alignItems: "center",

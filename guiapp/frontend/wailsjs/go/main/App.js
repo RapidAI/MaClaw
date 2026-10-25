@@ -38,6 +38,10 @@ export function AIAssistantAttachmentPreviewDataURL(arg1) {
   return window['go']['main']['App']['AIAssistantAttachmentPreviewDataURL'](arg1);
 }
 
+export function AIAssistantFileTypeIconDataURL(arg1) {
+  return window['go']['main']['App']['AIAssistantFileTypeIconDataURL'](arg1);
+}
+
 export function AIAssistantAttachmentOpeningPreview(arg1) {
   return window['go']['main']['App']['AIAssistantAttachmentOpeningPreview'](arg1);
 }
@@ -52,6 +56,10 @@ export function GetReferralRegistrationStatus(arg1, arg2, arg3) {
 
 export function SendFileCompanionMessage(arg1) {
   return window['go']['main']['App']['SendFileCompanionMessage'](arg1);
+}
+
+export function TranslateFileCompanionSelection(arg1, arg2) {
+  return window['go']['main']['App']['TranslateFileCompanionSelection'](arg1, arg2);
 }
 
 export function SendReferralRegistrationEmail(arg1, arg2, arg3, arg4) {
@@ -384,6 +392,10 @@ export function RetryMCPRuntimeSync(arg1, arg2) {
 
 export function CheckMaclawAppRuntimeHealth(arg1, arg2) {
   return window['go']['main']['App']['CheckMaclawAppRuntimeHealth'](arg1, arg2);
+}
+
+export function CheckFormulaModel() {
+  return window['go']['main']['App']['CheckFormulaModel']();
 }
 
 export function CheckOCRModel() {
@@ -812,6 +824,11 @@ export function SuggestNewTaskType(arg1) {
   return window['go']['main']['App']['SuggestNewTaskType'](arg1);
 }
 
+// MANUAL SYNC: mirrors guiapp/task_expert_suggest.go SuggestNewTaskExpert.
+export function SuggestNewTaskExpert(arg1) {
+  return window['go']['main']['App']['SuggestNewTaskExpert'](arg1);
+}
+
 export function ProvisionCloudWorkspaceTask(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['ProvisionCloudWorkspaceTask'](arg1, arg2, arg3, arg4);
 }
@@ -886,6 +903,14 @@ export function MailboxBrowseMessages(arg1, arg2, arg3) {
 
 export function MailboxBrowseRead(arg1, arg2, arg3) {
   return window['go']['main']['App']['MailboxBrowseRead'](arg1, arg2, arg3);
+}
+
+export function MailboxBrowseMarkRead(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['MailboxBrowseMarkRead'](arg1, arg2, arg3, arg4);
+}
+
+export function MailboxBrowseDelete(arg1, arg2, arg3) {
+  return window['go']['main']['App']['MailboxBrowseDelete'](arg1, arg2, arg3);
 }
 
 export function MailboxOAuthLogin(arg1, arg2) {
@@ -1128,6 +1153,10 @@ export function DownloadMaclawAppPackageFromHub(arg1) {
   return window['go']['main']['App']['DownloadMaclawAppPackageFromHub'](arg1);
 }
 
+export function DownloadFormulaModel() {
+  return window['go']['main']['App']['DownloadFormulaModel']();
+}
+
 export function DownloadOCRModel() {
   return window['go']['main']['App']['DownloadOCRModel']();
 }
@@ -1268,6 +1297,18 @@ export function FileCompanionOpen(arg1) {
   return window['go']['main']['App']['FileCompanionOpen'](arg1);
 }
 
+export function FileCompanionPDFScan(arg1) {
+  return window['go']['main']['App']['FileCompanionPDFScan'](arg1);
+}
+
+export function FileCompanionChooseConvertDestination(arg1) {
+  return window['go']['main']['App']['FileCompanionChooseConvertDestination'](arg1);
+}
+
+export function FileCompanionConvertScan(arg1, arg2) {
+  return window['go']['main']['App']['FileCompanionConvertScan'](arg1, arg2);
+}
+
 export function FileCompanionResumePaths() {
   return window['go']['main']['App']['FileCompanionResumePaths']();
 }
@@ -1278,6 +1319,10 @@ export function SetFileCompanionOpenSet(arg1) {
 
 export function FileCompanionOpenArxiv(arg1) {
   return window['go']['main']['App']['FileCompanionOpenArxiv'](arg1);
+}
+
+export function FileCompanionSearchArxiv(arg1) {
+  return window['go']['main']['App']['FileCompanionSearchArxiv'](arg1);
 }
 
 export function FileCompanionOpenWebPage(arg1) {
@@ -1376,8 +1421,80 @@ export function FileCompanionExportPDF(arg1, arg2) {
   return window['go']['main']['App']['FileCompanionExportPDF'](arg1, arg2);
 }
 
+export function FileCompanionExportProject(arg1, arg2) {
+  return window['go']['main']['App']['FileCompanionExportProject'](arg1, arg2);
+}
+
+export function ListFileCompanionLibrary() {
+  return window['go']['main']['App']['ListFileCompanionLibrary']();
+}
+
+export function ShareFileCompanionDocument(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['ShareFileCompanionDocument'](arg1, arg2, arg3, arg4, arg5, arg6);
+}
+
+export function ImportFileCompanionShare(arg1, arg2) {
+  return window['go']['main']['App']['ImportFileCompanionShare'](arg1, arg2);
+}
+
+export function SyncFileCompanionShare(arg1, arg2) {
+  return window['go']['main']['App']['SyncFileCompanionShare'](arg1, arg2);
+}
+
+export function AddFileCompanionShareNote(arg1, arg2) {
+  return window['go']['main']['App']['AddFileCompanionShareNote'](arg1, arg2);
+}
+
+export function ListFileCompanionGroups() {
+  return window['go']['main']['App']['ListFileCompanionGroups']();
+}
+
+export function CreateFileCompanionGroup(arg1) {
+  return window['go']['main']['App']['CreateFileCompanionGroup'](arg1);
+}
+
+export function AddFileCompanionGroupMember(arg1, arg2) {
+  return window['go']['main']['App']['AddFileCompanionGroupMember'](arg1, arg2);
+}
+
+export function RemoveFileCompanionGroupMember(arg1, arg2) {
+  return window['go']['main']['App']['RemoveFileCompanionGroupMember'](arg1, arg2);
+}
+
+export function UpdateFileCompanionGroup(arg1, arg2, arg3) {
+  return window['go']['main']['App']['UpdateFileCompanionGroup'](arg1, arg2, arg3);
+}
+
+export function DeleteFileCompanionGroup(arg1) {
+  return window['go']['main']['App']['DeleteFileCompanionGroup'](arg1);
+}
+
+export function LeaveFileCompanionGroup(arg1) {
+  return window['go']['main']['App']['LeaveFileCompanionGroup'](arg1);
+}
+
+export function ListFileCompanionGroupInvites() {
+  return window['go']['main']['App']['ListFileCompanionGroupInvites']();
+}
+
+export function AcceptFileCompanionGroupInvite(arg1) {
+  return window['go']['main']['App']['AcceptFileCompanionGroupInvite'](arg1);
+}
+
+export function DeclineFileCompanionGroupInvite(arg1) {
+  return window['go']['main']['App']['DeclineFileCompanionGroupInvite'](arg1);
+}
+
 export function FileCompanionExportChatPDF(arg1, arg2) {
   return window['go']['main']['App']['FileCompanionExportChatPDF'](arg1, arg2);
+}
+
+export function FileCompanionExportChatCloud(arg1, arg2) {
+  return window['go']['main']['App']['FileCompanionExportChatCloud'](arg1, arg2);
+}
+
+export function FileCompanionExportWebChatCloud(arg1, arg2) {
+  return window['go']['main']['App']['FileCompanionExportWebChatCloud'](arg1, arg2);
 }
 
 export function FileCompanionReplaceOffice(arg1, arg2) {
@@ -1942,6 +2059,10 @@ export function GetMobileMeetingRecordingAudio(arg1) {
 
 export function GetNLSkillRunStatus(arg1) {
   return window['go']['main']['App']['GetNLSkillRunStatus'](arg1);
+}
+
+export function GetFormulaEnabled() {
+  return window['go']['main']['App']['GetFormulaEnabled']();
 }
 
 export function GetOCREnabled() {
@@ -3066,6 +3187,34 @@ export function KnowledgeListSourceVersions(arg1, arg2) {
 
 export function KnowledgeListSources(arg1) {
   return window['go']['main']['App']['KnowledgeListSources'](arg1);
+}
+
+export function KnowledgeListCollections() {
+  return window['go']['main']['App']['KnowledgeListCollections']();
+}
+
+export function KnowledgeCreateCollection(arg1) {
+  return window['go']['main']['App']['KnowledgeCreateCollection'](arg1);
+}
+
+export function KnowledgeListCollectionMembers(arg1) {
+  return window['go']['main']['App']['KnowledgeListCollectionMembers'](arg1);
+}
+
+export function KnowledgeAddCollectionMember(arg1, arg2) {
+  return window['go']['main']['App']['KnowledgeAddCollectionMember'](arg1, arg2);
+}
+
+export function KnowledgeRemoveCollectionMember(arg1, arg2) {
+  return window['go']['main']['App']['KnowledgeRemoveCollectionMember'](arg1, arg2);
+}
+
+export function KnowledgeListUnassignedSources(arg1) {
+  return window['go']['main']['App']['KnowledgeListUnassignedSources'](arg1);
+}
+
+export function KnowledgeListSourceCollectionRefs() {
+  return window['go']['main']['App']['KnowledgeListSourceCollectionRefs']();
 }
 
 export function KnowledgeListSuppressedCards(arg1) {
@@ -5157,6 +5306,10 @@ export function VerifyAndActivateNLSkill(arg1) {
 
 export function VerifyAndActivateNLSkillWithArgs(arg1, arg2) {
   return window['go']['main']['App']['VerifyAndActivateNLSkillWithArgs'](arg1, arg2);
+}
+
+export function SetFormulaEnabled(arg1) {
+  return window['go']['main']['App']['SetFormulaEnabled'](arg1);
 }
 
 export function SetOCREnabled(arg1) {

@@ -4,28 +4,19 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
-// snapshotInterruptedSessionsForShutdown persists an unfinished-task slot for
-// every session that still has an active agent loop when the app is closing.
-//
-// Previously a graceful exit left no recovery marker at all: the in-flight
-// marker lifecycle only covers crashes and max-rounds termination, so a task
-// that was mid-flight when the user closed the window silently lost its
-// resume entry point. Persisting a slot here lets the next launch continue
-// the task when the user opens the restored (or task-list) tab.
-//
-// The slot uses UnfinishedTaskSlotSourceAppExit: reopening the tab IS the
-// user's resume intent, so the message pipeline binds these slots
-// automatically (applyAppExitAutoResumeDecision) instead of showing a
-// "continue previous task?" banner.
+// snapshotInterruptedSessionsForShutdown records every active or pre-loop turn
+// before cancellation. The caller waits for loop cleanup before the final flush.
 func (h *IMMessageHandler) snapshotInterruptedSessionsForShutdown() {
 	if h == nil || h.memory == nil {
 		return
 	}
+	seen := make(map[string]*LoopContext)
 	h.sessionLoops.Range(func(key, value any) bool {
 		userID, _ := key.(string)
 		state, ok := value.(*sessionLoopState)
@@ -36,52 +27,55 @@ func (h *IMMessageHandler) snapshotInterruptedSessionsForShutdown() {
 		ctx := state.loopCtx
 		userText := state.userText
 		state.stateMu.RUnlock()
-		if ctx == nil {
+		if ctx != nil {
+			seen[userID] = ctx
+			h.snapshotInterruptedSessionForShutdown(userID, userText, ctx, state)
+		}
+		return true
+	})
+	h.inFlightTurns.Range(func(key, value any) bool {
+		userID, _ := key.(string)
+		turn, _ := value.(*inFlightTurn)
+		if turn == nil || turn.ctx == nil || strings.TrimSpace(userID) == "" {
 			return true
 		}
-		// The stop button can close CancelC while a tool call is still blocked.
-		// This snapshot used to skip that session and leave the pre-tool marker,
-		// so the next launch promoted a task the user had already stopped.
-		// Shutdown, parent timeout, and turn replacement do not set the flag,
-		// and those markers stay recoverable.
-		if ctx.UserCancelled() {
-			h.retireUserCancelCheckpoint(userID, ctx.ID)
+		if previous := seen[userID]; previous == turn.ctx {
 			return true
 		}
-		if ctx.IsCancelled() {
-			return true
-		}
+		h.snapshotInterruptedSessionForShutdown(userID, turn.userText, turn.ctx, nil)
+		return true
+	})
+}
 
-		// The atomic memory operation below preserves an older pending slot. A
-		// resolved slot is historical state and may be replaced by this newer
-		// shutdown snapshot.
-		entries := h.memory.Load(userID)
-		taskText := strings.TrimSpace(userText)
-		if taskText == "" {
-			// Background loops carry their task in Description, not userText.
-			taskText = strings.TrimSpace(ctx.Description)
-		}
-		if taskText == "" {
-			taskText = extractOriginalUserTask(entries)
-		}
-		if taskText == "" {
-			log.Printf("[ShutdownSnapshot] skip user=%q reason=no_task_text", userID)
-			ctx.Cancel()
-			return true
-		}
-
-		projectPath := h.effectiveWorkingDirForUser(userID)
-		if projectPath == "" {
-			projectPath = projectPathFromUserID(userID)
-		}
-
-		// Re-check right before writing: the loop may have finished while we
-		// were loading entries above — its cleanup clears state.loopCtx (see
-		// im_loop_control.go), and natural completion does not cancel the
-		// context, so identity comparison is the reliable signal. Writing an
-		// "interrupted" slot for a finished loop would resurrect a completed
-		// task on the next launch. Slot conflict resolution remains inside the
-		// atomic memory operation below.
+func (h *IMMessageHandler) snapshotInterruptedSessionForShutdown(userID, userText string, ctx *LoopContext, state *sessionLoopState) {
+	if ctx == nil {
+		return
+	}
+	if ctx.UserCancelled() {
+		h.retireUserCancelCheckpoint(userID, ctx.ID)
+		return
+	}
+	if ctx.IsCancelled() {
+		return
+	}
+	entries := h.memory.Load(userID)
+	taskText := strings.TrimSpace(userText)
+	if taskText == "" {
+		taskText = strings.TrimSpace(ctx.Description)
+	}
+	if taskText == "" {
+		taskText = extractOriginalUserTask(entries)
+	}
+	if taskText == "" {
+		log.Printf("[ShutdownSnapshot] skip user=%q reason=no_task_text", userID)
+		ctx.Cancel()
+		return
+	}
+	projectPath := h.effectiveWorkingDirForUser(userID)
+	if projectPath == "" {
+		projectPath = projectPathFromUserID(userID)
+	}
+	if state != nil {
 		state.stateMu.RLock()
 		stillActive := state.loopCtx == ctx && !ctx.IsCancelled()
 		state.stateMu.RUnlock()
@@ -89,37 +83,102 @@ func (h *IMMessageHandler) snapshotInterruptedSessionsForShutdown() {
 			log.Printf("[ShutdownSnapshot] skip user=%q reason=state_changed_during_snapshot", userID)
 			if ctx.UserCancelled() {
 				h.retireUserCancelCheckpoint(userID, ctx.ID)
-				return true
+				return
 			}
 			ctx.Cancel()
-			return true
+			return
 		}
-
-		now := time.Now()
-		slot := &agent.UnfinishedTaskSlot{
-			SlotID:      shutdownRecoverySlotID(now),
-			UserID:      userID,
-			ProjectPath: projectPath,
-			Status:      agent.UnfinishedTaskSlotStatusInterrupted,
-			LastTask:    truncateRunes(taskText, 200),
-			Summary:     extractProgressSummary(entries),
-			ResumePrompt: "The application was closed while this task was still in progress. " +
-				"Resume from the saved context and continue the original task instead of starting over.",
-			Source:    agent.UnfinishedTaskSlotSourceAppExit,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}
-		if !h.memory.ReplaceInFlightWithUnfinishedSlot(userID, slot) {
-			log.Printf("[ShutdownSnapshot] skip user=%q reason=pending_slot_exists", userID)
-			ctx.Cancel()
-			return true
-		}
-		log.Printf("[ShutdownSnapshot] saved unfinished slot user=%q project=%q task=%q",
-			userID, projectPath, truncateRunes(taskText, 80))
-
+	}
+	now := time.Now()
+	slot := &agent.UnfinishedTaskSlot{
+		SlotID:      shutdownRecoverySlotID(now),
+		UserID:      userID,
+		ProjectPath: projectPath,
+		Status:      agent.UnfinishedTaskSlotStatusInterrupted,
+		LastTask:    truncateRunes(taskText, 200),
+		Summary:     extractProgressSummary(entries),
+		ResumePrompt: "The application was closed while this task was still in progress. " +
+			"Resume from the saved context and continue the original task instead of starting over.",
+		Source:    agent.UnfinishedTaskSlotSourceAppExit,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if !h.memory.ReplaceInFlightWithUnfinishedSlot(userID, slot) {
+		log.Printf("[ShutdownSnapshot] skip user=%q reason=invalid_slot", userID)
 		ctx.Cancel()
+		return
+	}
+	log.Printf("[ShutdownSnapshot] saved unfinished slot user=%q project=%q task=%q",
+		userID, projectPath, truncateRunes(taskText, 80))
+	ctx.Cancel()
+}
+
+func (h *IMMessageHandler) waitForInterruptedSessionsForShutdown() {
+	if h == nil {
+		return
+	}
+	type waitItem struct {
+		userID string
+		done   <-chan struct{}
+	}
+	var items []waitItem
+	seen := make(map[*LoopContext]struct{})
+	h.sessionLoops.Range(func(key, value any) bool {
+		userID, _ := key.(string)
+		state, _ := value.(*sessionLoopState)
+		if state == nil {
+			return true
+		}
+		state.stateMu.RLock()
+		ctx := state.loopCtx
+		state.stateMu.RUnlock()
+		if ctx != nil {
+			seen[ctx] = struct{}{}
+			items = append(items, waitItem{userID: userID, done: ctx.DoneC})
+		}
 		return true
 	})
+	h.inFlightTurns.Range(func(key, value any) bool {
+		userID, _ := key.(string)
+		turn, _ := value.(*inFlightTurn)
+		if turn == nil || turn.ctx == nil {
+			return true
+		}
+		if _, ok := seen[turn.ctx]; ok {
+			return true
+		}
+		items = append(items, waitItem{userID: userID, done: turn.done})
+		return true
+	})
+	pending := make(chan string, len(items))
+	var wg sync.WaitGroup
+	for _, item := range items {
+		if item.done == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(item waitItem) {
+			defer wg.Done()
+			select {
+			case <-item.done:
+			case <-time.After(30 * time.Second):
+				pending <- item.userID
+			}
+		}(item)
+	}
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		close(pending)
+		for userID := range pending {
+			log.Printf("[ShutdownSnapshot] timed out waiting for saved loop cleanup user=%q", userID)
+		}
+	}
 }
 
 func shutdownRecoverySlotID(now time.Time) string {

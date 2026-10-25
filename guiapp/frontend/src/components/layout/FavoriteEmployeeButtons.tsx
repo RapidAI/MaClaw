@@ -399,7 +399,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                             width: '8px',
                             height: '8px',
                             borderRadius: '50%',
-                            background: slot.online ? 'var(--theme-success, #4f7f6f)' : 'var(--theme-text-muted, #64748b)',
+                            background: slot.online ? 'var(--theme-success, #11813a)' : 'var(--theme-text-muted, #56677c)',
                             border: '1.5px solid var(--theme-page-bg)',
                         }} />
                     </div>
@@ -527,7 +527,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                             onRemove(contextMenu.slot.veId);
                             setContextMenu(null);
                         }}
-                        style={{ ...menuItemStyle, color: 'var(--theme-danger, #c43d34)', opacity: contextMenu.slot.resident ? 0.4 : 1, cursor: contextMenu.slot.resident ? 'default' : 'pointer' }}
+                        style={{ ...menuItemStyle, color: 'var(--theme-danger, #dc1f25)', opacity: contextMenu.slot.resident ? 0.4 : 1, cursor: contextMenu.slot.resident ? 'default' : 'pointer' }}
                         onMouseEnter={contextMenu.slot.resident ? undefined : menuItemHover}
                         onMouseLeave={menuItemUnhover}
                     >
@@ -631,7 +631,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                                 <span style={{
                                     position: 'absolute', bottom: 2, right: 2,
                                     width: 14, height: 14, borderRadius: '50%',
-                                    background: viewInfoSlot.online ? 'var(--theme-success, #4f7f6f)' : 'var(--theme-text-muted, #64748b)',
+                                    background: viewInfoSlot.online ? 'var(--theme-success, #11813a)' : 'var(--theme-text-muted, #56677c)',
                                     border: '2.5px solid var(--theme-page-bg)',
                                 }} />
                             </div>
@@ -650,7 +650,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                             {/* Status */}
                             <div className="feb-info-row">
                                 <span className="feb-info-label">{text.infoStatus}</span>
-                                <span style={{ ...infoValueStyle, color: viewInfoSlot.online ? 'var(--theme-success, #4f7f6f)' : 'var(--theme-text-muted, #64748b)', fontWeight: 600 }}>
+                                <span style={{ ...infoValueStyle, color: viewInfoSlot.online ? 'var(--theme-success, #11813a)' : 'var(--theme-text-muted, #56677c)', fontWeight: 600 }}>
                                     <span className="feb-info-status">
                                         <span
                                             aria-hidden="true"
@@ -659,8 +659,8 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                                                 height: 8,
                                                 borderRadius: '50%',
                                                 background: viewInfoSlot.online
-                                                    ? 'var(--theme-success, #4f7f6f)'
-                                                    : 'var(--theme-text-muted, #64748b)',
+                                                    ? 'var(--theme-success, #11813a)'
+                                                    : 'var(--theme-text-muted, #56677c)',
                                                 flexShrink: 0,
                                             }}
                                         />

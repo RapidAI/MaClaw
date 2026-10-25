@@ -40,6 +40,12 @@ func waitChatTaskStatus(t *testing.T, reg *chatTaskRegistry, id string, want cha
 	return AIAssistantChatTask{}
 }
 
+func waitChatTaskPersistIdle(t *testing.T, reg *chatTaskRegistry) {
+	t.Helper()
+	reg.persistMu.Lock()
+	reg.persistMu.Unlock()
+}
+
 func TestChatTaskDoesNotBlockChatOrClobberTranscript(t *testing.T) {
 	h, mem := testChatTaskHandler(t)
 	mem.Save(desktopUserID, []agent.ConversationEntry{
@@ -137,11 +143,66 @@ func TestChatTaskRestartDoesNotResume(t *testing.T) {
 	if len(tasks) != 1 || tasks[0].Status != string(chatTaskInterrupted) || !tasks[0].Recovered {
 		t.Fatalf("reloaded = %+v", tasks)
 	}
+	if tasks[0].Progress != "" {
+		t.Fatalf("restart progress = %q", tasks[0].Progress)
+	}
 	if called != 0 {
 		t.Fatalf("restart resumed the task %d times", called)
 	}
 	if _, err := os.Stat(filepath.Join(dir, chatTaskStoreFile)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestChatTaskRestartKeepsARealStep(t *testing.T) {
+	dir := t.TempDir()
+	h, _ := testChatTaskHandler(t)
+	reg := newChatTaskRegistry(h, dir)
+	now := time.Now()
+	seed := func(id, progress string, status chatTaskStatus) {
+		reg.tasks[id] = &chatTaskRecord{
+			ID:         id,
+			SessionKey: desktopUserID,
+			MemoryKey:  chatTaskMemoryOwner(desktopUserID, id),
+			Title:      "slides",
+			Status:     status,
+			Progress:   progress,
+			Recovered:  status == chatTaskInterrupted,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+			answerCh:   make(chan string, 1),
+		}
+	}
+	reg.mu.Lock()
+	seed("ct-empty", "", chatTaskRunning)
+	seed("ct-clock", "〔进度〕仍在执行中，正在处理中（已耗时 5 分 50 秒）...", chatTaskRunning)
+	seed("ct-notice", "任务耗时较长，完成后会立即通知你。", chatTaskRunning)
+	seed("ct-english", "Was running when the app stopped. It was not resumed.", chatTaskRunning)
+	seed("ct-step", "第 3 页已经写好", chatTaskRunning)
+	seed("ct-wrapped", "〔进度〕仍在执行中，整理结果", chatTaskRunning)
+	seed("ct-saved-english", "Was running when the app stopped. It was not resumed.", chatTaskInterrupted)
+	seed("ct-saved-clock", "〔进度〕仍在执行中，正在处理中（已耗时 5 分 50 秒）...", chatTaskInterrupted)
+	seed("ct-saved-step", "第 3 页已经写好", chatTaskInterrupted)
+	reg.mu.Unlock()
+	reg.persist()
+
+	got := map[string]string{}
+	for _, task := range newChatTaskRegistry(h, dir).List(desktopUserID) {
+		got[task.ID] = task.Progress
+		if task.Status != string(chatTaskInterrupted) || !task.Recovered {
+			t.Fatalf("reloaded %s = %+v", task.ID, task)
+		}
+	}
+	for _, id := range []string{"ct-empty", "ct-clock", "ct-notice", "ct-english", "ct-saved-english", "ct-saved-clock"} {
+		if got[id] != "" {
+			t.Fatalf("status copy kept for %s: %q", id, got[id])
+		}
+	}
+	if got["ct-step"] != "第 3 页已经写好" || got["ct-saved-step"] != "第 3 页已经写好" {
+		t.Fatalf("step = %q saved = %q", got["ct-step"], got["ct-saved-step"])
+	}
+	if got["ct-wrapped"] != "整理结果" {
+		t.Fatalf("wrapped step = %q", got["ct-wrapped"])
 	}
 }
 
@@ -1424,11 +1485,28 @@ func TestChatTaskWorkerIsNotAnotherQuickLookup(t *testing.T) {
 		t.Fatalf("surface handled=%v err=%v defs=%d", handled, err, len(defs))
 	}
 	project := `C:\Users\ma139\.maclaw\data\tasks\omni-update-1792449160929319200`
-	if got := foregroundChatContinuationTitle("desktop-user:"+project, "继续"); got != "omni-update" {
+	if got := foregroundChatContinuationTitle("desktop-user:"+project, "继续", ""); got != "omni-update" {
 		t.Fatalf("task title = %q", got)
 	}
-	if got := foregroundChatContinuationTitle(desktopUserID, "继续做配图版"); got != "继续做配图版" {
+	if got := foregroundChatContinuationTitle(desktopUserID, "继续做配图版", ""); got != "继续做配图版" {
 		t.Fatalf("chat title = %q", got)
+	}
+	if got := foregroundChatContinuationTitle("desktop-user:"+project, "测试下这台macmini的GPU性能数据", ""); got != "测试下这台macmini的GPU性能数据" {
+		t.Fatalf("new request kept the folder title: %q", got)
+	}
+	if got := foregroundChatContinuationTitle("desktop-user:"+project, "继续", "查询 macmini状态"); got != "查询 macmini状态" {
+		t.Fatalf("continuation title = %q", got)
+	}
+	if got := foregroundChatContinuationTitle("desktop-user:"+project, "继续做配图版", ""); got != "继续做配图版" {
+		t.Fatalf("named continuation title = %q", got)
+	}
+	withFile := "继续\n\n[用户选择的本地文件路径]\nC:\\Users\\ma139\\Desktop\\a.pdf"
+	if got := foregroundChatContinuationTitle("desktop-user:"+project, withFile, ""); got != "omni-update" {
+		t.Fatalf("file block became the title: %q", got)
+	}
+	gpuWithFile := "测试下这台macmini的GPU性能数据\n\n[用户选择的本地文件路径]\nC:\\Users\\ma139\\Desktop\\a.pdf"
+	if got := foregroundChatContinuationTitle("desktop-user:"+project, gpuWithFile, ""); got != "测试下这台macmini的GPU性能数据" {
+		t.Fatalf("request title = %q", got)
 	}
 }
 
@@ -1453,6 +1531,101 @@ func TestOpenNextRepeatWaveStaysClosedAfterInlineHandoff(t *testing.T) {
 	}
 }
 
+func TestForegroundChatContinuationTitle(t *testing.T) {
+	project := `C:\Users\ma139\.maclaw\data\tasks\omni-update-1792449160929319200`
+	session := "desktop-user:" + project
+	if got := foregroundChatContinuationTitle(session, "继续", ""); got != "omni-update" {
+		t.Fatalf("cue title = %q", got)
+	}
+	if got := foregroundChatContinuationTitle(desktopUserID, "继续做配图版", ""); got != "继续做配图版" {
+		t.Fatalf("named cue = %q", got)
+	}
+	if got := foregroundChatContinuationTitle(session, "测试下这台macmini的GPU性能数据", ""); got != "测试下这台macmini的GPU性能数据" {
+		t.Fatalf("new request = %q", got)
+	}
+	if got := foregroundChatContinuationTitle(session, "继续", "查询 macmini状态"); got != "查询 macmini状态" {
+		t.Fatalf("earlier title = %q", got)
+	}
+	withFile := "继续\n\n[用户选择的本地文件路径]\nC:\\Users\\ma139\\Desktop\\a.pdf"
+	if got := foregroundChatContinuationTitle(session, withFile, ""); got != "omni-update" {
+		t.Fatalf("file block title = %q", got)
+	}
+	gpuWithFile := "测试下这台macmini的GPU性能数据\n\n[用户选择的本地文件路径]\nC:\\Users\\ma139\\Desktop\\a.pdf"
+	if got := foregroundChatContinuationTitle(session, gpuWithFile, ""); got != "测试下这台macmini的GPU性能数据" {
+		t.Fatalf("request with file = %q", got)
+	}
+	if got := foregroundChatContinuationTitle(session, "请继续", ""); got != "omni-update" {
+		t.Fatalf("polite cue title = %q", got)
+	}
+	if got := foregroundChatContinuationTitle(session, "请继续做配图版", ""); got != "请继续做配图版" {
+		t.Fatalf("polite named title = %q", got)
+	}
+	led := "请继续\n测试下这台macmini的GPU性能数据"
+	if got := foregroundChatContinuationTitle(session, led, ""); got != "测试下这台macmini的GPU性能数据" {
+		t.Fatalf("cue then request = %q", got)
+	}
+	if got := foregroundChatContinuationTitle(session, "请继续，", ""); got != "omni-update" {
+		t.Fatalf("cue with comma = %q", got)
+	}
+	if got := foregroundChatContinuationTitle(session, "请继续，测试下GPU", ""); got != "请继续，测试下GPU" {
+		t.Fatalf("cue with a named remainder = %q", got)
+	}
+	if got := foregroundChatContinuationTitle(session, "請繼續", ""); got != "omni-update" {
+		t.Fatalf("traditional cue = %q", got)
+	}
+	hist := "继续\n\n" + agent.FilePathPromptPrefixHistorical + "\nC:\\Users\\ma139\\Desktop\\a.pdf"
+	if got := foregroundChatContinuationTitle(session, "请继续", hist); got != "omni-update" {
+		t.Fatalf("historical file block title = %q", got)
+	}
+	namedHist := "查询 macmini状态\n\n" + agent.FilePathPromptPrefixHistorical + "\nC:\\Users\\ma139\\Desktop\\a.pdf"
+	if got := foregroundChatContinuationTitle(session, "请继续", namedHist); got != "查询 macmini状态" {
+		t.Fatalf("wording before historical block = %q", got)
+	}
+	fileOnly := agent.FilePathPromptPrefix + "\nC:\\Users\\ma139\\Desktop\\信息安全数学基础_文字版.pdf\n"
+	if got := foregroundChatContinuationTitle(desktopUserID, fileOnly, ""); got != "信息安全数学基础_文字版.pdf" {
+		t.Fatalf("file-only title = %q", got)
+	}
+	if got := foregroundChatContinuationTitle(session, fileOnly, ""); got != "信息安全数学基础_文字版.pdf" {
+		t.Fatalf("file-only managed title = %q", got)
+	}
+	if got := foregroundChatContinuationTitle(desktopUserID, "", ""); got != "This work" {
+		t.Fatalf("empty title = %q", got)
+	}
+	if got := foregroundChatContinuationTitle(session, "", ""); got != "omni-update" {
+		t.Fatalf("empty managed title = %q", got)
+	}
+	if got := foregroundChatContinuationTitle(desktopUserID, "继续", ""); got != "继续" {
+		t.Fatalf("desktop cue = %q", got)
+	}
+	desktopFile := "继续\n\n" + agent.FilePathPromptPrefix + "\nC:\\Users\\ma139\\Desktop\\a.pdf"
+	if got := foregroundChatContinuationTitle(desktopUserID, desktopFile, ""); got != "a.pdf" {
+		t.Fatalf("desktop cue with file = %q", got)
+	}
+	earlierFile := agent.FilePathPromptPrefixHistorical + "\nC:\\Users\\ma139\\Desktop\\a.pdf\n"
+	if got := foregroundChatContinuationTitle(desktopUserID, "请继续", earlierFile); got != "a.pdf" {
+		t.Fatalf("desktop cue with earlier file = %q", got)
+	}
+	if got := foregroundChatContinuationTitle(session, "", earlierFile); got != "omni-update" {
+		t.Fatalf("managed empty with earlier file = %q", got)
+	}
+	back := `desktop-user:C:\Users\ma139\.maclaw\data\tasks\pdf-1`
+	fwd := `desktop-user:C:/Users/ma139/.maclaw/data/tasks/pdf-1/`
+	if !sameChatSession(back, fwd) {
+		t.Fatalf("session keys differ: %q vs %q", canonicalChatSessionKey(back), canonicalChatSessionKey(fwd))
+	}
+	if sameChatSession(back, `desktop-user:C:/Users/ma139/.maclaw/data/tasks/other`) {
+		t.Fatal("different tasks matched")
+	}
+	dot := `desktop-user:C:\Users\ma139\.maclaw\data\tasks\pdf-1\.\`
+	up := `desktop-user:C:\Users\ma139\.maclaw\data\tasks\foo\..\pdf-1`
+	if !sameChatSession(back, dot) || !sameChatSession(back, up) {
+		t.Fatalf("dot session keys differ: %q %q", canonicalChatSessionKey(dot), canonicalChatSessionKey(up))
+	}
+	if sameChatSession(`desktop-user:expert:ab\cd`, `desktop-user:expert:ab/cd`) {
+		t.Fatal("expert ids were cleaned as paths")
+	}
+}
+
 func TestChatTaskProgressAndEmptyResult(t *testing.T) {
 	if _, ok := chatTaskProgressMilestone("[Status] 已接收任务"); ok {
 		t.Fatal("status prep was kept")
@@ -1471,6 +1644,25 @@ func TestChatTaskProgressAndEmptyResult(t *testing.T) {
 	if !ok || retry != "重试 2/5：API 暂时不可用，4 秒后重试" {
 		t.Fatalf("retry milestone = %q ok=%v", retry, ok)
 	}
+	for _, silence := range []string{
+		"〔进度〕仍在执行中，正在处理中（已耗时 5 分 50 秒）...",
+		"〔进度〕任务耗时较长，完成后会立即通知你。",
+		"〔进度〕收到，正在处理",
+		"[Status] This is taking a while; I'll notify you when done.",
+		"Still working: Still processing (elapsed 5m50s)...",
+	} {
+		if _, ok := chatTaskProgressMilestone(silence); ok {
+			t.Fatalf("silence was kept: %q", silence)
+		}
+	}
+	kept, ok := chatTaskProgressMilestone("〔进度〕仍在执行中，整理结果")
+	if !ok || kept != "整理结果" {
+		t.Fatalf("named heartbeat = %q ok=%v", kept, ok)
+	}
+	page, ok := chatTaskProgressMilestone("〔进度〕第 3 页已经写好")
+	if !ok || page != "第 3 页已经写好" {
+		t.Fatalf("labeled milestone = %q ok=%v", page, ok)
+	}
 	if result := chatTaskResultFromAgentResponse(&IMAgentResponse{}, nil); result.Err == nil {
 		t.Fatal("empty result was treated as done")
 	}
@@ -1478,4 +1670,74 @@ func TestChatTaskProgressAndEmptyResult(t *testing.T) {
 	if withFile.Err != nil || len(withFile.Artifacts) != 1 {
 		t.Fatalf("file result = %+v", withFile)
 	}
+}
+
+func TestChatTaskRestartCanResumeSameTask(t *testing.T) {
+	dir := t.TempDir()
+	h, _ := testChatTaskHandler(t)
+	reg := newChatTaskRegistry(h, dir)
+	reg.tasks["ct-resume"] = &chatTaskRecord{
+		ID: "ct-resume", SessionKey: desktopUserID, MemoryKey: chatTaskMemoryOwner(desktopUserID, "ct-resume"),
+		Title: "slides", Prompt: "finish the slides", Status: chatTaskNeedsInput,
+		Question: "which color?", WhereWeAre: "three slides ready", NextStep: "style them",
+		answerCh: make(chan string, 1), cancelCh: make(chan struct{}),
+	}
+	h.memory.Save(chatTaskMemoryOwner(desktopUserID, "ct-resume"), []agent.ConversationEntry{{Role: "user", Content: "finish the slides"}})
+	reg.persist()
+
+	reloaded := newChatTaskRegistry(h, dir)
+	executed := make(chan *chatTaskRecord, 1)
+	reloaded.executor = func(_ *IMMessageHandler, task *chatTaskRecord) chatTaskRunResult {
+		executed <- task
+		return chatTaskRunResult{Text: "done"}
+	}
+	if _, err := reloaded.Resume("ct-resume", "blue"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reloaded.Resume("ct-resume", "again"); err == nil {
+		t.Fatal("concurrent resume unexpectedly succeeded")
+	}
+	var task *chatTaskRecord
+	select {
+	case task = <-executed:
+	case <-time.After(time.Second):
+		t.Fatal("resumed task did not execute")
+	}
+	if task.ID != "ct-resume" || task.MemoryKey != chatTaskMemoryOwner(desktopUserID, "ct-resume") {
+		t.Fatalf("resumed identity = %#v", task)
+	}
+	for _, want := range []string{"finish the slides", "three slides ready", "which color?", "blue"} {
+		if !strings.Contains(task.resumePrompt, want) {
+			t.Fatalf("resume prompt %q does not contain %q", task.resumePrompt, want)
+		}
+	}
+	if got := h.memory.Load(task.MemoryKey); len(got) != 1 {
+		t.Fatalf("task history was not preserved: %#v", got)
+	}
+	waitChatTaskStatus(t, reloaded, "ct-resume", chatTaskDone)
+	waitChatTaskPersistIdle(t, reloaded)
+}
+
+func TestChatTaskInterruptedAnswerResumes(t *testing.T) {
+	dir := t.TempDir()
+	h, _ := testChatTaskHandler(t)
+	reg := newChatTaskRegistry(h, dir)
+	reg.tasks["ct-answer"] = &chatTaskRecord{
+		ID: "ct-answer", SessionKey: desktopUserID, MemoryKey: chatTaskMemoryOwner(desktopUserID, "ct-answer"),
+		Prompt: "make a deck", Status: chatTaskNeedsInput, Question: "which color?",
+		answerCh: make(chan string, 1), cancelCh: make(chan struct{}),
+	}
+	reg.persist()
+	reloaded := newChatTaskRegistry(h, dir)
+	reloaded.executor = func(_ *IMMessageHandler, task *chatTaskRecord) chatTaskRunResult {
+		if !strings.Contains(task.resumePrompt, "User continuation/answer: blue") {
+			t.Errorf("answer missing from resume prompt: %q", task.resumePrompt)
+		}
+		return chatTaskRunResult{Text: "done"}
+	}
+	if err := reloaded.Answer("ct-answer", "blue"); err != nil {
+		t.Fatal(err)
+	}
+	waitChatTaskStatus(t, reloaded, "ct-answer", chatTaskDone)
+	waitChatTaskPersistIdle(t, reloaded)
 }

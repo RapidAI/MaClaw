@@ -238,6 +238,13 @@ type distilledCardWrite struct {
 }
 
 func (s *SQLiteStore) prepareDistilledCards(ctx context.Context, source Source, nodes []DocumentNode, mode string) (*distilledCardWrite, error) {
+	return s.prepareDistilledCardsEmbed(ctx, source, nodes, mode, true)
+}
+
+// prepareDistilledCardsEmbed builds claims before any SQL write. embedCards is
+// false when the caller is rebuilding body indexes: those vectors come from
+// node text and row text, not from the claim.
+func (s *SQLiteStore) prepareDistilledCardsEmbed(ctx context.Context, source Source, nodes []DocumentNode, mode string, embedCards bool) (*distilledCardWrite, error) {
 	if len(nodes) == 0 {
 		return nil, nil
 	}
@@ -251,7 +258,7 @@ func (s *SQLiteStore) prepareDistilledCards(ctx context.Context, source Source, 
 	cards := buildCardsForNodesFast(source, nodes)
 	if s != nil && s.distiller != nil && shouldUseLLMForMode(mode, source, nodes) {
 		if llmCards, err := s.distiller.DistillCards(ctx, source, nodes); err == nil && len(llmCards) > 0 {
-			cards = NormalizeDistilledCards(source, llmCards)
+			cards = bindDistilledCardsToNodes(NormalizeDistilledCards(source, llmCards), nodes)
 		}
 	}
 	if len(cards) == 0 {
@@ -259,15 +266,17 @@ func (s *SQLiteStore) prepareDistilledCards(ctx context.Context, source Source, 
 	}
 
 	embeddingModelID := ""
-	if emb, _ := s.currentEmbedderSnapshot(); emb != nil && !embedding.IsNoop(emb) {
-		embeddingModelID = embeddingModelIdentifier(emb)
-		texts := make([]string, len(cards))
-		for i, card := range cards {
-			texts[i] = cardEmbeddingText(card)
-		}
-		if vectors, err := embedding.EmbedBatchAs(emb, texts, embedding.RoleDocument); err == nil && len(vectors) == len(cards) {
-			for i := range cards {
-				cards[i].Embedding = vectors[i]
+	if embedCards {
+		if emb, _ := s.currentEmbedderSnapshot(); emb != nil && !embedding.IsNoop(emb) {
+			embeddingModelID = embeddingModelIdentifier(emb)
+			texts := make([]string, len(cards))
+			for i, card := range cards {
+				texts[i] = cardEmbeddingText(card)
+			}
+			if vectors, err := embedding.EmbedBatchAs(emb, texts, embedding.RoleDocument); err == nil && len(vectors) == len(cards) {
+				for i := range cards {
+					cards[i].Embedding = vectors[i]
+				}
 			}
 		}
 	}
@@ -292,6 +301,8 @@ func (s *SQLiteStore) writeDistilledCards(ctx context.Context, tx *sql.Tx, sourc
 	}
 	source.Status = StatusDistilled
 	source.UpdatedAt = time.Now().UTC()
+	// The caller owns the stamp. Import stamps before this write; rebuild keeps
+	// the owner already stored on the source.
 	return source, insertSource(ctx, tx, source)
 }
 
@@ -342,11 +353,11 @@ func insertPreparedCardsFacts(ctx context.Context, tx *sql.Tx, stmts *lightImpor
 	return nil
 }
 
-// lookupContentHashes returns the subset of hashes that already exist for the
-// import scope. Used by small-batch ImportFiles to avoid loading every hash in
-// the knowledge base.
-func (s *SQLiteStore) lookupContentHashes(ctx context.Context, req DirectoryImportRequest, hashes []string) (map[string]struct{}, error) {
-	out := make(map[string]struct{})
+// lookupContentHashes returns each hash that already belongs to this import's
+// owner, with the source id a duplicate skip should keep. Used by small-batch
+// ImportFiles to avoid loading every hash in the knowledge base.
+func (s *SQLiteStore) lookupContentHashes(ctx context.Context, req DirectoryImportRequest, hashes []string) (map[string]string, error) {
+	out := make(map[string]string)
 	if len(hashes) == 0 {
 		return out, nil
 	}
@@ -368,6 +379,16 @@ func (s *SQLiteStore) lookupContentHashes(ctx context.Context, req DirectoryImpo
 		return out, nil
 	}
 
+	ownerID := s.ownerForExistingSourceLookup(req.OwnerID)
+	wantedProject := ""
+	if req.SaveScope == SaveScopeProject {
+		wantedProject = strings.TrimSpace(req.ProjectPath)
+	}
+	type hashChoice struct {
+		id, owner, updated, project string
+		member                      bool
+	}
+	chosen := make(map[string]hashChoice, len(uniq))
 	const batch = 80
 	for start := 0; start < len(uniq); start += batch {
 		end := start + batch
@@ -375,8 +396,13 @@ func (s *SQLiteStore) lookupContentHashes(ctx context.Context, req DirectoryImpo
 			end = len(uniq)
 		}
 		chunk := uniq[start:end]
+		memberSQL := "0"
+		args := make([]any, 0, len(chunk)+8)
+		if wantedProject != "" {
+			memberSQL = "CASE WHEN EXISTS (SELECT 1 FROM knowledge_memberships m WHERE m.source_id = knowledge_sources.id AND m.kind = ? AND m.scope_key = ?) THEN 1 ELSE 0 END"
+			args = append(args, MembershipKindProject, wantedProject)
+		}
 		where := []string{"content_hash IN (" + placeholders(len(chunk)) + ")"}
-		args := make([]interface{}, 0, len(chunk)+3)
 		for _, h := range chunk {
 			args = append(args, h)
 		}
@@ -384,28 +410,34 @@ func (s *SQLiteStore) lookupContentHashes(ctx context.Context, req DirectoryImpo
 			where = append(where, "tenant_id = ?")
 			args = append(args, req.TenantID)
 		}
-		if req.OwnerID != "" {
-			where = append(where, "owner_id = ?")
-			args = append(args, req.OwnerID)
+		if clause, ownerArgs := contentHashOwnerFilter(ownerID); clause != "" {
+			where = append(where, clause)
+			args = append(args, ownerArgs...)
 		}
-		if req.ProjectPath != "" && req.SaveScope == SaveScopeProject {
-			where = append(where, "project_path = ?")
-			args = append(args, req.ProjectPath)
+		if clause, projectArgs := contentHashProjectFilter(ownerID, req.ProjectPath, req.SaveScope); clause != "" {
+			where = append(where, clause)
+			args = append(args, projectArgs...)
 		}
-		q := `SELECT content_hash FROM knowledge_sources WHERE ` + joinAND(where)
+		q := `SELECT content_hash, id, COALESCE(owner_id, ''), COALESCE(updated_at, ''), COALESCE(project_path, ''), ` + memberSQL + ` FROM knowledge_sources WHERE ` + joinAND(where)
 		rows, err := s.db.QueryContext(ctx, q, args...)
 		if err != nil {
 			return nil, err
 		}
 		for rows.Next() {
-			var h string
-			if err := rows.Scan(&h); err != nil {
+			var hash, id, owner, updated, project string
+			var member int
+			if err := rows.Scan(&hash, &id, &owner, &updated, &project, &member); err != nil {
 				rows.Close()
 				return nil, err
 			}
-			if h != "" {
-				out[h] = struct{}{}
+			if hash == "" || id == "" {
+				continue
 			}
+			isMember := member == 1
+			if prev, ok := chosen[hash]; ok && !preferContentHashSource(ownerID, owner, updated, project, isMember, prev.owner, prev.updated, prev.project, prev.member, wantedProject) {
+				continue
+			}
+			chosen[hash] = hashChoice{id: id, owner: owner, updated: updated, project: project, member: isMember}
 		}
 		err = rows.Err()
 		rows.Close()
@@ -413,7 +445,67 @@ func (s *SQLiteStore) lookupContentHashes(ctx context.Context, req DirectoryImpo
 			return nil, err
 		}
 	}
+	for hash, choice := range chosen {
+		out[hash] = choice.id
+	}
 	return out, nil
+}
+
+// preferContentHashSource reports whether the candidate should replace the
+// current hash choice. The row stored in this project wins. A row this project
+// already members comes next, ahead of a newer row in another project.
+func preferContentHashSource(wanted, owner, updated, project string, member bool, currentOwner, currentUpdated, currentProject string, currentMember bool, wantedProject string) bool {
+	if strings.TrimSpace(wanted) == "" {
+		if wantedProject != "" {
+			left := projectChoiceRank(project, member, wantedProject)
+			right := projectChoiceRank(currentProject, currentMember, wantedProject)
+			if left != right {
+				return left < right
+			}
+		}
+		return updated > currentUpdated
+	}
+	left := hashOwnerRank(owner, wanted)
+	right := hashOwnerRank(currentOwner, wanted)
+	if left != right {
+		return left < right
+	}
+	if wantedProject != "" {
+		leftProject := projectChoiceRank(project, member, wantedProject)
+		rightProject := projectChoiceRank(currentProject, currentMember, wantedProject)
+		if leftProject != rightProject {
+			return leftProject < rightProject
+		}
+	}
+	owner = strings.TrimSpace(owner)
+	currentOwner = strings.TrimSpace(currentOwner)
+	wanted = strings.TrimSpace(wanted)
+	if (owner == wanted) != (currentOwner == wanted) {
+		return owner == wanted
+	}
+	return updated > currentUpdated
+}
+
+func projectMatchRank(stored, wanted string) int {
+	if strings.TrimSpace(stored) == strings.TrimSpace(wanted) {
+		return 0
+	}
+	return 1
+}
+
+// projectChoiceRank prefers the row stored in this project, then a row this
+// project already members, then any other row.
+func projectChoiceRank(project string, member bool, wanted string) int {
+	if strings.TrimSpace(wanted) == "" {
+		return 0
+	}
+	if projectMatchRank(project, wanted) == 0 {
+		return 0
+	}
+	if member {
+		return 1
+	}
+	return 2
 }
 
 func placeholders(n int) string {
@@ -442,19 +534,40 @@ func joinAND(parts []string) string {
 }
 
 // applyExistingHashSkips marks queued items whose content hash already exists.
-func applyExistingHashSkips(result DirectoryImportResult, items []ImportItem, existing map[string]struct{}) (DirectoryImportResult, []ImportItem) {
-	if len(existing) == 0 {
+// localUpdate wins over existing when this batch will replace a local source
+// with that hash: the copy keeps the local id, and the local path stays queued.
+func applyExistingHashSkips(result DirectoryImportResult, items []ImportItem, existing map[string]string, blocked map[string]struct{}, localUpdate map[string]string) (DirectoryImportResult, []ImportItem) {
+	if len(existing) == 0 && len(localUpdate) == 0 {
 		return result, items
 	}
 	for i := range items {
 		item := &items[i]
-		if item.Status != ItemStatusQueued || item.FileHash == "" {
+		if item.FileHash == "" {
 			continue
 		}
-		if _, ok := existing[item.FileHash]; !ok {
+		if _, skip := blocked[item.FilePath]; skip && item.Status == ItemStatusQueued {
+			continue
+		}
+		sourceID := strings.TrimSpace(localUpdate[item.FileHash])
+		if sourceID == "" {
+			sourceID = strings.TrimSpace(existing[item.FileHash])
+		}
+		if sourceID == "" {
+			continue
+		}
+		// A second copy in this scan was marked duplicate before the database
+		// lookup. Keep its source id without counting the skip twice.
+		if item.Status == ItemStatusSkippedDuplicate {
+			if strings.TrimSpace(item.SourceID) == "" {
+				item.SourceID = sourceID
+			}
+			continue
+		}
+		if item.Status != ItemStatusQueued {
 			continue
 		}
 		item.Status = ItemStatusSkippedDuplicate
+		item.SourceID = sourceID
 		item.ErrorMessage = "duplicate content hash"
 		item.UpdatedAt = time.Now().UTC()
 		result.QueuedFiles--
@@ -468,6 +581,39 @@ func applyExistingHashSkips(result DirectoryImportResult, items []ImportItem, ex
 			result.EstimatedBytes -= item.FileSize
 		} else if item.FileSize > 0 {
 			result.EstimatedBytes = 0
+		}
+	}
+	result.Items = items
+	return result, items
+}
+
+// requeueBlockedHashSkips puts a within-batch duplicate back in the import when
+// this project already has that path with different bytes. The scan marked it
+// duplicate before the database lookup, so the path update would otherwise be lost.
+func requeueBlockedHashSkips(result DirectoryImportResult, items []ImportItem, blocked map[string]struct{}) (DirectoryImportResult, []ImportItem) {
+	if len(blocked) == 0 {
+		return result, items
+	}
+	for i := range items {
+		item := &items[i]
+		if _, ok := blocked[item.FilePath]; !ok || item.Status != ItemStatusSkippedDuplicate {
+			continue
+		}
+		item.Status = ItemStatusQueued
+		item.SourceID = ""
+		item.ErrorMessage = ""
+		item.UpdatedAt = time.Now().UTC()
+		result.QueuedFiles++
+		result.DuplicateFiles--
+		result.SkippedFiles--
+		if result.DuplicateFiles < 0 {
+			result.DuplicateFiles = 0
+		}
+		if result.SkippedFiles < 0 {
+			result.SkippedFiles = 0
+		}
+		if item.FileSize > 0 {
+			result.EstimatedBytes += item.FileSize
 		}
 	}
 	result.Items = items

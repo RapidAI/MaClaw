@@ -2,17 +2,13 @@ import React from "react";
 import { localizeText } from "./aiAssistantI18n";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { createReasoningTrailCleanCache, rememberReasoningTrailClean } from "./reasoningTrailCleanCache";
-import { AssistantReasoningPanel } from "./AssistantReasoningPanel";
 import { createIncrementalRenderState, renderContentIncremental, streamingMarkdownUsesIncremental, type IncrementalRenderState } from "./IncrementalMarkdownRenderer";
 import { reasoningTrailMarkdownOptions, renderContentWithCodeBlocks } from "./aiAssistantMarkdown";
 import { codingThoughtTextIsBlank, stripCodingThoughtChrome } from "./assistantLiveActivity";
 import type { CodingAgentTimelineItem } from "./useAIAssistant";
-
-function reasoningPreviewText(text: string, maxLength = 96): string | undefined {
-    const compact = text.replace(/\s+/gu, " ").trim();
-    if (compact.length <= 48) return undefined;
-    return compact.length > maxLength ? `${compact.slice(0, maxLength - 1).trimEnd()}…` : compact;
-}
+import { CodingAgentProcessChevron, CodingAgentProcessIcon } from "./CodingAgentProcessIcon";
+import { formatCodingAgentDuration } from "./CodingAgentProgressStatus";
+import { useNestedPinnedScroll } from "./useNestedPinnedScroll";
 
 /**
  * Open thoughts re-parse on every token. Once the cleaned text only grows,
@@ -48,19 +44,22 @@ export const CodingAgentThinkingTimelineItem = React.memo(function CodingAgentTh
     item,
     theme: t,
     lang,
-    step,
     liveLabel,
     liveObject,
     expanded = false,
+    durationMs,
 }: {
     item: CodingAgentTimelineItem;
     theme: Theme;
     lang: string;
+    /** Kept so callers can still pass the ordinal. The flat row does not print it. */
     step?: number;
     liveLabel?: string;
     liveObject?: string;
     /** Open for the newest thought of the current turn. Earlier thoughts stay folded. */
     expanded?: boolean;
+    /** Milliseconds until the next timeline row. Under one second is omitted. */
+    durationMs?: number;
 }) {
     const trailCleanRef = React.useRef(createReasoningTrailCleanCache());
     // The audit cleaner cuts a thought at ### T and would drop prose that
@@ -81,24 +80,92 @@ export const CodingAgentThinkingTimelineItem = React.memo(function CodingAgentTh
             : null,
         [blank, displayReasoning, expanded, t],
     );
+    const [isOpen, setIsOpen] = React.useState(expanded);
+    const { bodyRef, contentRef, handleScroll, handleUserScrollIntent } = useNestedPinnedScroll(isOpen, displayReasoning);
+    React.useLayoutEffect(() => {
+        setIsOpen(expanded);
+    }, [expanded]);
     // A settled rule or step banner is not a thought. A live label still needs
     // its header while the model has not written anything yet.
     if (!live && (blank || !displayReasoning.trim())) return null;
-    const preview = live ? undefined : reasoningPreviewText(displayReasoning);
+    const label = liveLabel || localizeText(lang, "Thought", "思考过程", "思考過程");
+    const objectText = live ? String(liveObject || "").trim() : "";
+    const durationText = !live && typeof durationMs === "number" && durationMs >= 1000
+        ? formatCodingAgentDuration(durationMs)
+        : undefined;
+    const hasBody = body != null;
+    const summary = (
+        <>
+            <CodingAgentProcessIcon kind="think" className="caps-process-icon" />
+            <span className="caps-process-body">
+                <span
+                    className={live ? "assistant-reasoning-live-label caps-process-verb" : "caps-process-verb"}
+                    data-testid="assistant-reasoning-label"
+                >
+                    {label}
+                </span>
+                {objectText ? (
+                    <span data-testid="assistant-reasoning-object" className="arp-object" title={objectText}>
+                        {objectText}
+                    </span>
+                ) : null}
+                {durationText ? <span className="caps-process-count">{`· ${durationText}`}</span> : null}
+            </span>
+            <span className="caps-process-trail">
+                {live ? <span className="caps-process-live-dot assistant-reasoning-live-dot" data-testid="coding-agent-process-live-dot" /> : null}
+                {hasBody ? (
+                    <span className="caps-process-chevron" data-testid="coding-agent-process-chevron">
+                        <CodingAgentProcessChevron />
+                    </span>
+                ) : null}
+            </span>
+        </>
+    );
+    const attrs = {
+        className: "caps-process-thought",
+        "data-testid": "coding-agent-thought",
+        "data-live": live ? "true" : "false",
+        "data-process-kind": "think" as const,
+        "aria-label": objectText ? `${label} ${objectText}` : label,
+    };
+    // The shared reasoning summary paints its own leading chevron. This row
+    // already has the process chevron, so that mark would shift the bulb icon.
+    const summaryClass = "caps-process-row assistant-reasoning-summary assistant-reasoning-summary--plain";
+    if (!hasBody) {
+        return (
+            <div {...attrs} role="status">
+                <div className={summaryClass}>{summary}</div>
+            </div>
+        );
+    }
     return (
-        <AssistantReasoningPanel
-            defaultOpen={expanded}
-            label={liveLabel || localizeText(lang, "Thought", "思考过程", "思考過程")}
-            objectLabel={live ? liveObject : undefined}
-            step={step}
-            lang={lang}
-            preview={preview}
-            theme={t}
-            contentKey={displayReasoning}
-            live={live}
+        <details
+            {...attrs}
+            open={isOpen}
+            onToggle={(event) => setIsOpen(event.currentTarget.open)}
         >
-            {body}
-        </AssistantReasoningPanel>
+            <summary className={summaryClass}>
+                {summary}
+            </summary>
+            <div
+                ref={bodyRef}
+                className="assistant-reasoning-body caps-process-thought-body"
+                data-testid="assistant-reasoning-body"
+                data-nested-scroll=""
+                onWheel={(event) => {
+                    event.stopPropagation();
+                    handleUserScrollIntent(event);
+                }}
+                onTouchMove={(event) => {
+                    event.stopPropagation();
+                    handleUserScrollIntent(event);
+                }}
+                onPointerDown={handleUserScrollIntent}
+                onScroll={handleScroll}
+            >
+                <div ref={contentRef}>{body}</div>
+            </div>
+        </details>
     );
 });
 
@@ -110,6 +177,7 @@ export function renderCodingAgentThinkingTimelineItem(
     liveLabel?: string,
     liveObject?: string,
     expanded = false,
+    durationMs?: number,
 ): React.ReactNode {
     return (
         <CodingAgentThinkingTimelineItem
@@ -120,6 +188,7 @@ export function renderCodingAgentThinkingTimelineItem(
             liveLabel={liveLabel}
             liveObject={liveObject}
             expanded={expanded}
+            durationMs={durationMs}
         />
     );
 }

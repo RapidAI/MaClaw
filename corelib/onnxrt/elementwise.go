@@ -99,11 +99,35 @@ const (
 	uSqrt
 	uErf
 	uHardSigmoid
+	uSin
+	uCos
+	uLog
+	uExp
 )
 
 // parThreshold is the element count above which elementwise loops are split
 // across the worker pool.
 const parThreshold = 1 << 18
+
+// affineInto writes dst[i] = src[i]*scale + bias, then optionally ReLU.
+// The multiply and the add are separate roundings, matching opBatchNorm's
+// scalar formula; AVX2/AVX-512/NEON cover the prefix.
+func affineInto(dst, src []float32, scale, bias float32, relu bool) {
+	n := len(dst)
+	if len(src) < n {
+		n = len(src)
+	}
+	if n <= 0 {
+		return
+	}
+	body := affineVec(dst[:n], src[:n], scale, bias)
+	for i := body; i < n; i++ {
+		dst[i] = src[i]*scale + bias
+	}
+	if relu {
+		vek32.MaximumNumber_Inplace(dst[:n], 0)
+	}
+}
 
 // parallelChunks splits data-length work over the pool when large.
 func parallelChunks(n int, fn func(start, end int)) {
@@ -481,6 +505,14 @@ func unaryOpTensor(rc *runCtx, n *Node, t *Tensor, code unOp, p0, p1 float32) (*
 			vek32.MaximumNumber_Inplace(dst[s:e], 0)
 			vek32.MinimumNumber_Inplace(dst[s:e], 1)
 		})
+	case uSin:
+		parallelChunks(len(dst), func(s, e int) { vek32.Sin_Into(dst[s:e], data[s:e]) })
+	case uCos:
+		parallelChunks(len(dst), func(s, e int) { vek32.Cos_Into(dst[s:e], data[s:e]) })
+	case uLog:
+		parallelChunks(len(dst), func(s, e int) { vek32.Log_Into(dst[s:e], data[s:e]) })
+	case uExp:
+		parallelChunks(len(dst), func(s, e int) { vek32.Exp_Into(dst[s:e], data[s:e]) })
 	}
 	return out, nil
 }

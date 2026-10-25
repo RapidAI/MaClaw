@@ -611,18 +611,16 @@ func TestAppRunUsesOneXdotoolCall(t *testing.T) {
 		},
 	}, func() error {
 		reads++
-		// The fake answers "ok", which is not a window id. The click records
-		// the window before the modifier release, unmaps the menu, then the
-		// text step records the window again before the read. Nothing is typed yet.
-		if reads == 1 && (len(guarded) != 5 || guarded[0][0] != "getactivewindow" || guarded[1][0] != "keyup" || strings.Join(guarded[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || !strings.Contains(strings.Join(guarded[3], " "), "click") || strings.Join(guarded[4], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Contains(strings.Join(guarded[3], " "), "type")) {
-			return fmt.Errorf("click was not delivered before the read: %v", guarded)
-		}
 		return nil
 	})
-	if err != nil || text != "ok" || reads != 1 || len(guarded) != 6 {
+	// The click records its window before the modifier release, unmaps the
+	// menu, then clicks. The text step probes the focused window's class:
+	// the fake answers "ok", which is not a browser, so the password read
+	// is skipped and nothing stands between the probe and the typing.
+	if err != nil || text != "ok" || reads != 0 || len(guarded) != 6 {
 		t.Fatalf("click reads=%d text=%q err=%v calls=%v", reads, text, err, guarded)
 	}
-	if strings.Join(guarded[0], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(guarded[1], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(guarded[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(guarded[3], " ") != "mousemove --sync 10 20 click 1" || strings.Join(guarded[4], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(guarded[5], " ") != "type --delay 20 --args 1 -- hi" {
+	if guarded[0][0] != "getactivewindow" || strings.Join(guarded[1], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(guarded[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(guarded[3], " ") != "mousemove --sync 10 20 click 1" || strings.Join(guarded[4], " ") != strings.Join(desktopWindowClassRead, " ") || strings.Join(guarded[5], " ") != "type --delay 20 --args 1 -- hi" {
 		t.Fatalf("click then type=%v", guarded)
 	}
 	for _, call := range guarded {
@@ -680,30 +678,16 @@ func TestAppRunClickThenTypeRestoresTheClickedWindow(t *testing.T) {
 		},
 	}, func() error {
 		reads++
-		// The click restores its window before the click. The text step
-		// records the window after that click and before this read. The
-		// post-click activate has not run yet.
-		if reads == 1 && (len(calls) != 7 || calls[0][0] != "getactivewindow" || calls[1][0] != "keyup" || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" || !strings.Contains(strings.Join(calls[4], " "), "click") || calls[5][0] != "key" || calls[6][0] != "getactivewindow") {
-			return fmt.Errorf("window was read after the browser could raise: %v", calls)
-		}
-		activates := 0
-		for _, call := range calls {
-			if len(call) > 0 && call[0] == "type" {
-				return fmt.Errorf("text ran before the password read: %v", calls)
-			}
-			if len(call) > 0 && call[0] == "windowactivate" {
-				activates++
-			}
-		}
-		if activates != 1 {
-			return fmt.Errorf("post-click activate ran before the read: %v", calls)
-		}
 		return nil
 	})
-	if err != nil || text != "ok" || reads != 1 || len(calls) != 10 {
+	// The click records and activates its window before the click. The text
+	// step probes the focused window's class: "ok" is not a browser, so the
+	// password read is skipped and no second activate runs — the click's
+	// activate already holds the target.
+	if err != nil || text != "ok" || reads != 0 || len(calls) != 9 {
 		t.Fatalf("reads=%d text=%q err=%v calls=%v", reads, text, err, calls)
 	}
-	if strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[1], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" || strings.Join(calls[4], " ") != "mousemove --sync 10 20 click 1" || strings.Join(calls[5], " ") != "key Return" || strings.Join(calls[6], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[7], " ") != "windowactivate --sync 8388609" || strings.Join(calls[8], " ") != "type --delay 20 --args 1 -- hi key Return" || strings.Join(calls[9], " ") != "type --delay 20 --args 1 -- there" {
+	if strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[1], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" || strings.Join(calls[4], " ") != "mousemove --sync 10 20 click 1" || strings.Join(calls[5], " ") != "key Return" || strings.Join(calls[6], " ") != strings.Join(desktopWindowClassRead, " ") || strings.Join(calls[7], " ") != "type --delay 20 --args 1 -- hi key Return" || strings.Join(calls[8], " ") != "type --delay 20 --args 1 -- there" {
 		t.Fatalf("restore=%v", calls)
 	}
 	// The next text step reads again. The first line may have moved the
@@ -718,17 +702,15 @@ func TestAppRunClickThenTypeRestoresTheClickedWindow(t *testing.T) {
 		},
 	}, func() error {
 		reads++
-		if reads == 2 {
-			if len(calls) != 9 || calls[7][0] != "type" || calls[8][0] != "getactivewindow" {
-				return fmt.Errorf("second read saw the wrong window: %v", calls)
-			}
-		}
 		return nil
 	})
-	if err != nil || text != "ok" || reads != 2 || len(calls) != 11 {
+	// Every keystroke step probes the focused window's class; "ok" is not a
+	// browser, so neither step pays the password read or a re-activate: the
+	// click's own activate still holds the target.
+	if err != nil || text != "ok" || reads != 0 || len(calls) != 9 {
 		t.Fatalf("second text reads=%d text=%q err=%v calls=%v", reads, text, err, calls)
 	}
-	if strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[1], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" || strings.Join(calls[4], " ") != "mousemove --sync 4 5 click 1" || strings.Join(calls[5], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[6], " ") != "windowactivate --sync 8388609" || strings.Join(calls[7], " ") != "type --delay 20 --args 1 -- a" || strings.Join(calls[8], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[9], " ") != "windowactivate --sync 8388609" || strings.Join(calls[10], " ") != "key b" {
+	if strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[1], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" || strings.Join(calls[4], " ") != "mousemove --sync 4 5 click 1" || strings.Join(calls[5], " ") != strings.Join(desktopWindowClassRead, " ") || strings.Join(calls[6], " ") != "type --delay 20 --args 1 -- a" || strings.Join(calls[7], " ") != strings.Join(desktopWindowClassRead, " ") || strings.Join(calls[8], " ") != "key b" {
 		t.Fatalf("second text=%v", calls)
 	}
 	// A missing id does not cancel the type. The click already landed.
@@ -746,7 +728,10 @@ func TestAppRunClickThenTypeRestoresTheClickedWindow(t *testing.T) {
 			map[string]any{"action": "type", "text": "hi"},
 		},
 	}, func() error { return nil })
-	if err != nil || text != "typed" || len(calls) != 6 || calls[0][0] != "getactivewindow" || calls[1][0] != "keyup" || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || !strings.Contains(strings.Join(calls[3], " "), "click") || calls[4][0] != "getactivewindow" || calls[5][0] != "type" {
+	// A missing id does not cancel the type. The click already landed. The
+	// failed class probe keeps the password gate, and the failed name read
+	// leaves nothing to activate.
+	if err != nil || text != "typed" || len(calls) != 7 || calls[0][0] != "getactivewindow" || calls[1][0] != "keyup" || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || !strings.Contains(strings.Join(calls[3], " "), "click") || !strings.Contains(strings.Join(calls[4], " "), "getwindowclassname") || strings.Contains(strings.Join(calls[5], " "), "getwindowclassname") || calls[6][0] != "type" {
 		t.Fatalf("text=%q err=%v calls=%v", text, err, calls)
 	}
 	for _, call := range calls {
@@ -780,15 +765,15 @@ func TestAppRunTypeWithoutAClickRestoresTheFocusedWindow(t *testing.T) {
 		},
 	}, func() error {
 		reads++
-		if len(calls) != 1 || strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") {
-			return fmt.Errorf("window was read after the browser could raise: %v", calls)
-		}
 		return nil
 	})
-	if err != nil || text != "" || reads != 1 || len(calls) != 5 {
+	// The class probe answers "8388609", which is not a browser class, so
+	// the password read is skipped. The release records the focused window
+	// and the type restores it by id.
+	if err != nil || text != "" || reads != 0 || len(calls) != 6 {
 		t.Fatalf("reads=%d text=%q err=%v calls=%v", reads, text, err, calls)
 	}
-	if strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[1], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" || strings.Join(calls[4], " ") != "type --delay 20 --args 1 -- pwd" {
+	if strings.Join(calls[0], " ") != strings.Join(desktopWindowClassRead, " ") || strings.Join(calls[1], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[2], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[3], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[4], " ") != "windowactivate --sync 8388609" || strings.Join(calls[5], " ") != "type --delay 20 --args 1 -- pwd" {
 		t.Fatalf("type only=%v", calls)
 	}
 }
@@ -990,22 +975,21 @@ func TestAppRunSkipsWindowRestoreWhenTheBrowserStaysPut(t *testing.T) {
 		},
 	}, func() error {
 		reads++
-		// The browser will not raise, so the text step does not record
-		// again. The click still records before Super keyup and activates
-		// before the click, or the menu takes it.
-		if len(calls) != 5 || calls[0][0] != "getactivewindow" || calls[1][0] != "keyup" || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" || !strings.Contains(strings.Join(calls[4], " "), "click") {
-			return fmt.Errorf("click was not delivered before the read: %v", calls)
-		}
 		return nil
 	}, func() bool { return false })
-	if err != nil || text != "ok" || reads != 1 || len(calls) != 6 {
+	// The class probe answers "8388609", not a browser, so the password
+	// read is skipped. The click still records before Super keyup and
+	// activates before the click, or the menu takes it.
+	if err != nil || text != "ok" || reads != 0 || len(calls) != 7 {
 		t.Fatalf("reads=%d text=%q err=%v calls=%v", reads, text, err, calls)
 	}
-	if strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[1], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" || strings.Join(calls[4], " ") != "mousemove --sync 10 20 click 1" || strings.Join(calls[5], " ") != "type --delay 20 --args 1 -- hi" {
+	if calls[0][0] != "getactivewindow" || strings.Join(calls[1], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" || strings.Join(calls[4], " ") != "mousemove --sync 10 20 click 1" || strings.Join(calls[5], " ") != strings.Join(desktopWindowClassRead, " ") || strings.Join(calls[6], " ") != "type --delay 20 --args 1 -- hi" {
 		t.Fatalf("stayed=%v", calls)
 	}
 	// No click has released modifiers yet. Super keyup opens the menu, so
 	// the focused window is recorded before that release and put back after.
+	// Each keystroke step probes the window class first; "8388609" is not a
+	// browser, so the password read never runs.
 	calls = nil
 	reads = 0
 	text, err = desktopAppRun(context.Background(), agentruntime.Scope{TenantID: "tenant", UserID: "alice"}, ":20", "app_run", map[string]any{
@@ -1015,15 +999,12 @@ func TestAppRunSkipsWindowRestoreWhenTheBrowserStaysPut(t *testing.T) {
 		},
 	}, func() error {
 		reads++
-		if reads == 1 && (len(calls) != 1 || calls[0][0] != "getactivewindow") {
-			return fmt.Errorf("release ran before the window was recorded: %v", calls)
-		}
 		return nil
 	}, func() bool { return false })
-	if err != nil || text != "ok" || reads != 2 || len(calls) != 6 {
+	if err != nil || text != "ok" || reads != 0 || len(calls) != 8 {
 		t.Fatalf("release reads=%d text=%q err=%v calls=%v", reads, text, err, calls)
 	}
-	if strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[1], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" || strings.Join(calls[4], " ") != "type --delay 20 --args 1 -- pwd" || strings.Join(calls[5], " ") != "key b" {
+	if strings.Join(calls[0], " ") != strings.Join(desktopWindowClassRead, " ") || strings.Join(calls[1], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[2], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[3], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[4], " ") != "windowactivate --sync 8388609" || strings.Join(calls[5], " ") != "type --delay 20 --args 1 -- pwd" || strings.Join(calls[6], " ") != strings.Join(desktopWindowClassRead, " ") || strings.Join(calls[7], " ") != "key b" {
 		t.Fatalf("release=%v", calls)
 	}
 	// The first read can raise Chromium. The next line is on the browser
@@ -1044,10 +1025,13 @@ func TestAppRunSkipsWindowRestoreWhenTheBrowserStaysPut(t *testing.T) {
 		}
 		return nil
 	}, func() bool { return raises })
-	if err != nil || text != "ok" || reads != 2 || len(calls) != 9 {
+	// The class probes answer "8388609", not a browser, so the password
+	// read never runs and the raise flag stays unused. The click's own
+	// activate holds the target for both keystroke steps.
+	if err != nil || text != "ok" || reads != 0 || len(calls) != 9 {
 		t.Fatalf("second reads=%d text=%q err=%v calls=%v", reads, text, err, calls)
 	}
-	if strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[1], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" || strings.Join(calls[4], " ") != "mousemove --sync 4 5 click 1" || strings.Join(calls[5], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[6], " ") != "windowactivate --sync 8388609" || strings.Join(calls[7], " ") != "type --delay 20 --args 1 -- a" || strings.Join(calls[8], " ") != "key b" {
+	if strings.Join(calls[0], " ") != strings.Join(desktopActiveWindowRead, " ") || strings.Join(calls[1], " ") != strings.Join(desktopModifierRelease, " ") || strings.Join(calls[2], " ") != strings.Join(desktopWhiskerDismiss, " ") || strings.Join(calls[3], " ") != "windowactivate --sync 8388609" || strings.Join(calls[4], " ") != "mousemove --sync 4 5 click 1" || strings.Join(calls[5], " ") != strings.Join(desktopWindowClassRead, " ") || strings.Join(calls[6], " ") != "type --delay 20 --args 1 -- a" || strings.Join(calls[7], " ") != strings.Join(desktopWindowClassRead, " ") || strings.Join(calls[8], " ") != "key b" {
 		t.Fatalf("second=%v", calls)
 	}
 }

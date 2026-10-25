@@ -46,7 +46,7 @@
     min-width: 0;
     padding: 10px;
     border: 1px solid var(--theme-border-subtle, var(--theme-border));
-    border-radius: 12px;
+    border-radius: var(--radius-lg);
     background: var(--theme-surface);
 }
 
@@ -55,7 +55,7 @@
     width: 100%;
     aspect-ratio: 16 / 9;
     object-fit: cover;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     background: var(--theme-surface-muted);
 }
 
@@ -81,9 +81,9 @@
 .ppt-style-badge {
     flex-shrink: 0;
     padding: 2px 8px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
-    color: var(--theme-primary, #2f6fbc);
+    color: var(--theme-primary, #2e75cb);
     font-size: 12px;
 }
 

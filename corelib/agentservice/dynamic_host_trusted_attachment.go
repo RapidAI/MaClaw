@@ -196,6 +196,8 @@ func reviewedHostDocumentFallbackName(mime string) string {
 		return "document.xlsx"
 	case "application/vnd.openxmlformats-officedocument.presentationml.presentation":
 		return "document.pptx"
+	case "application/x-mobipocket-ebook":
+		return "document.mobi"
 	default:
 		return "document.txt"
 	}

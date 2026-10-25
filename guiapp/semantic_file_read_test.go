@@ -204,7 +204,7 @@ func TestIMSemanticFileReadStaysInsideBoundWorkspace(t *testing.T) {
 func TestTrustedFileReadUsesDocumentReaderForStructuredFormats(t *testing.T) {
 	for _, name := range []string{
 		"a.dwg", "a.DWG", "a.dxf", "a.dxfb", "a.glb", "a.gltf",
-		"a.epub", "a.adoc", "a.asciidoc", "a.eml", "a.pdf", "a.docx", "a.csv",
+		"a.epub", "a.mobi", "a.adoc", "a.asciidoc", "a.eml", "a.pdf", "a.docx", "a.csv",
 	} {
 		if !trustedFileReadUsesDocumentReader(name) {
 			t.Errorf("%s should use the document reader", name)

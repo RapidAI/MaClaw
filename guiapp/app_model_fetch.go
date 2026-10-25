@@ -151,7 +151,7 @@ func (a *App) startHeadAssetFetch() {
 		a.removeLegacyHeadFiles(dir)
 		hub := a.modelHubURL()
 		for _, asset := range embedding.ReleaseAssets() {
-			if asset.Kind == "model" {
+			if !embedding.IsHeadKind(asset.Kind) {
 				continue
 			}
 			asset := asset

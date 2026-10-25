@@ -11,5 +11,5 @@ func TestDebugRunnerUpSignal(t *testing.T) {
 	t.Logf("signal=%v label=%v floor=%v", classificationHasSSHSignal(r), classificationHasLabel(r, intent.LabelSSH), intent.EmbeddingLookupMinScore)
 	t.Logf("managed=%v meetsFloor=%v belowFloor=%v", imSemanticIntentIsManaged(r), semanticClassificationMeetsResolverFloor(r), semanticClassificationPlansBelowResolverFloor(r))
 	h := &IMMessageHandler{registry: NewToolRegistry()}
-	t.Logf("connectPublished=%v anyPublished=%v", semanticTrustedSSHConnectPublished(h), semanticTrustedSSHAnyPublished(h))
+	t.Logf("connectPublished=%v anyPublished=%v", semanticTrustedSSHConnectPublished(h, ""), semanticTrustedSSHAnyPublished(h, ""))
 }

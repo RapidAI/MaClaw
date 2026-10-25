@@ -89,6 +89,7 @@ export interface AIAssistantPanelHookActions {
     /** Mark a record_audio card inactive so the mic UI does not re-open. */
     deactivateRecordingSession: (messageId: string) => void;
     dispatchChatTask: (text: string, options?: { session_key?: string; project_path?: string }) => Promise<boolean>;
+    resumeChatTask: (taskID: string, text?: string) => Promise<void>;
     cancelChatTask: (taskID: string) => Promise<void>;
     steerChatTask: (taskID: string, text: string) => Promise<void>;
     answerChatTask: (taskID: string, text: string) => Promise<void>;

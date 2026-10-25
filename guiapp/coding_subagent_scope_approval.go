@@ -46,10 +46,14 @@ type ScopeApprovalDecision string
 const (
 	ScopeApprovalDeny       ScopeApprovalDecision = "deny"
 	ScopeApprovalAllowOnce  ScopeApprovalDecision = "allow_once"
+	ScopeApprovalAllowTask  ScopeApprovalDecision = "allow_task"
 	ScopeApprovalAllowDir   ScopeApprovalDecision = "allow_dir"
 	ScopeApprovalFullAccess ScopeApprovalDecision = "full_access"
 
 	localHighRiskApprovalKind = "local_high_risk_bash"
+	// commitShapeApprovalKind is a human-class tool shape. It waits on the
+	// same dialog as scope approval and does not time out.
+	commitShapeApprovalKind = "commit_shape"
 )
 
 // ScopeApprovalRequest is sent to the user when an out-of-scope access is detected.
@@ -798,8 +802,10 @@ func ResolveScopeApproval(approvalID string, decision string) {
 
 	var d ScopeApprovalDecision
 	switch strings.ToLower(strings.TrimSpace(decision)) {
-	case "allow_once", "allowonce", "allow once":
+	case "allow_once", "allowonce", "allow once", "仅这一次":
 		d = ScopeApprovalAllowOnce
+	case "allow_task", "allowtask", "allow task", "本任务内允许":
+		d = ScopeApprovalAllowTask
 	case "allow_dir", "allowdir", "allow dir", "allow directory":
 		d = ScopeApprovalAllowDir
 	case "full_access", "fullaccess", "full access":
@@ -819,6 +825,10 @@ func emitScopeApprovalEvent(app *App, approvalID string, req ScopeApprovalReques
 	if app == nil {
 		return
 	}
+	timeoutSeconds := int(scopeApprovalTimeout / time.Second)
+	if req.Kind == commitShapeApprovalKind {
+		timeoutSeconds = 0
+	}
 	app.emitEvent("subagent-scope-approval", map[string]interface{}{
 		"id":              approvalID,
 		"tool":            req.ToolName,
@@ -829,7 +839,7 @@ func emitScopeApprovalEvent(app *App, approvalID string, req ScopeApprovalReques
 		"message":         req.Message,
 		"auto_allow":      req.AutoAllow,
 		"maintenance":     req.Maintenance,
-		"timeout_seconds": int(scopeApprovalTimeout / time.Second),
+		"timeout_seconds": timeoutSeconds,
 	})
 }
 

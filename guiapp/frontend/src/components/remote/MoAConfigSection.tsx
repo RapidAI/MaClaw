@@ -697,10 +697,10 @@ export function MoAConfigSection({ lang, providers }: Props) {
                     style={{
                         fontSize: "0.75rem",
                         fontWeight: 600,
-                        border: "1px solid var(--theme-primary-strong, #183b63)",
+                        border: "1px solid var(--theme-primary-strong, #1e6bc5)",
                         borderRadius: 6,
                         /* primary-strong + on-primary: dark mode primary alone is too light for white text */
-                        background: "var(--theme-primary-strong, #183b63)",
+                        background: "var(--theme-primary-strong, #1e6bc5)",
                         color: "var(--theme-on-primary, #ffffff)",
                         padding: "6px 14px",
                         cursor: saving ? "wait" : "pointer",

@@ -57,6 +57,13 @@ describe('assistantLiveActivity', () => {
         expect(parseLiveActivityFromProgressText('preflight checks done')).toBeNull();
         expect(parseLiveActivityFromProgressText('Working on screenshot')).toBeNull();
         expect(parseLiveActivityFromProgressText('工具 · CustomMCP')).toBe('calling_tool');
+        expect(parseLiveActivityFromProgressText('工具 · 查找')).toBe('searching_files');
+        expect(parseLiveActivityFromProgressText('工具 · 查找文件 src')).toBe('searching_files');
+        expect(parseLiveActivityFromProgressText('工具 · 探索源码并查找调用')).toBe('exploring_source');
+        expect(parseLiveActivityFromProgressText('工具 · 调用工具 (todo_write)')).toBe('updating_todo');
+        expect(parseLiveActivityFromProgressText('工具 · 调用工具 (git_diff)')).toBe('checking_diff');
+        expect(parseLiveActivityFromProgressText('工具 · 搜索文件 (search_files)')).toBe('searching_files');
+        expect(parseLiveActivityFromProgressText('Coding Agent Event: {"agent":"coding","event":"tool_started","detail":"git_diff"}')).toBe('checking_diff');
     });
 
     it('prefers the current tool over generic thinking while busy', () => {
@@ -246,6 +253,18 @@ describe('assistantLiveActivity', () => {
         expect(assistantLiveActivityLabel('calling_tool', 'zh-Hans', 'todo_write')).toBe('正在调用工具 todo_write');
         expect(assistantLiveActivityLabel('calling_tool', 'en', 'todo_write')).toBe('Calling todo_write');
         expect(assistantLiveActivityLabel('calling_tool', 'zh-Hant', 'todo_write')).toBe('正在呼叫工具 todo_write');
+        expect(assistantLiveActivityFromToolName('todo_write')).toBe('updating_todo');
+        expect(assistantLiveActivityFromToolName('code_search')).toBe('searching_content');
+        expect(assistantLiveActivityFromToolName('spawn_coding_agent')).toBe('delegating');
+        expect(assistantLiveActivityLabel('delegating', 'zh-Hans')).toBe('正在委派任务');
+        expect(assistantLiveActivityObject('searching_content', 'zh-Hans', { toolName: 'code_search', target: 'persist the widget' })).toBe('persist the widget');
+        expect(assistantLiveActivityObject('delegating', 'zh-Hans', { toolName: 'spawn_coding_agent' })).toBe('');
+        expect(assistantLiveActivityLabel('updating_todo', 'zh-Hans')).toBe('正在更新待办');
+        expect(assistantLiveActivityLabel('checking_diff', 'zh-Hans')).toBe('正在查看差异');
+        expect(assistantLiveActivityObject('checking_diff', 'zh-Hans', { toolName: 'git_diff' })).toBe('');
+        expect(assistantLiveActivityLabel('searching_files', 'zh-Hans')).toBe('正在查找');
+        expect(assistantLiveActivityLabel('listing_dir', 'zh-Hans')).toBe('正在查找');
+        expect(assistantLiveActivityObject('updating_todo', 'zh-Hans', { toolName: 'todo_write' })).toBe('');
         expect(assistantLiveActivityLabel('editing_file', 'zh-Hans', 'edit_file')).toBe('正在编辑文件');
         expect(assistantLiveActivityLabel('accessing_model', 'zh-Hans')).toBe('正在访问模型');
         expect(assistantLiveActivityLabel('analyzing', 'zh-Hans')).toBe('正在分析任务');

@@ -727,7 +727,10 @@ type ListSourcesOptions struct {
 	IncludeEmptyOwner bool `json:"-"`
 	// OwnerLineage also matches owner_id values that start with OwnerID and a
 	// colon. Zero value keeps an exact owner_id match.
-	OwnerLineage    bool     `json:"-"`
+	OwnerLineage bool `json:"-"`
+	// UseMembership filters by knowledge_memberships. IncludeEmptyOwner is
+	// ignored on that path. Zero value keeps the owner_id and project_path filters.
+	UseMembership   bool     `json:"-"`
 	TenantID        string   `json:"tenant_id,omitempty"`
 	BatchID         string   `json:"batch_id,omitempty"`
 	SearchScope     string   `json:"search_scope,omitempty"`
@@ -933,23 +936,27 @@ type SearchOptions struct {
 	// OwnerLineage also matches owner_id values that start with OwnerID and a
 	// colon. IncludeEmptyOwner also matches a blank owner_id. Both default off
 	// so an OwnerID stays an exact match.
-	OwnerLineage      bool     `json:"-"`
-	IncludeEmptyOwner bool     `json:"-"`
-	TenantID          string   `json:"tenant_id,omitempty"`
-	ProjectPath       string   `json:"project_path,omitempty"`
-	SearchScope       string   `json:"search_scope,omitempty"`
-	TopicHint         string   `json:"topic_hint,omitempty"`
-	ContextTerms      []string `json:"context_terms,omitempty"`
-	ResultTypes       []string `json:"result_types,omitempty"`
-	SourceKinds       []string `json:"source_kinds,omitempty"`
-	SourceIDs         []string `json:"source_ids,omitempty"`
-	SourceID          string   `json:"source_id,omitempty"`
-	Labels            []string `json:"labels,omitempty"`
-	Domain            string   `json:"domain,omitempty"`
-	Entity            string   `json:"entity,omitempty"`
-	Predicate         string   `json:"predicate,omitempty"`
-	Limit             int      `json:"limit,omitempty"`
-	IncludeDisabled   bool     `json:"include_disabled,omitempty"`
+	OwnerLineage      bool `json:"-"`
+	IncludeEmptyOwner bool `json:"-"`
+	// UseMembership filters by knowledge_memberships. IncludeEmptyOwner is
+	// ignored on that path. Zero value keeps the owner_id and project_path filters.
+	UseMembership   bool     `json:"-"`
+	TenantID        string   `json:"tenant_id,omitempty"`
+	ProjectPath     string   `json:"project_path,omitempty"`
+	SearchScope     string   `json:"search_scope,omitempty"`
+	TopicHint       string   `json:"topic_hint,omitempty"`
+	ContextTerms    []string `json:"context_terms,omitempty"`
+	ResultTypes     []string `json:"result_types,omitempty"`
+	SourceKinds     []string `json:"source_kinds,omitempty"`
+	SourceIDs       []string `json:"source_ids,omitempty"`
+	SourceID        string   `json:"source_id,omitempty"`
+	Labels          []string `json:"labels,omitempty"`
+	CollectionIDs   []string `json:"collection_ids,omitempty"`
+	Domain          string   `json:"domain,omitempty"`
+	Entity          string   `json:"entity,omitempty"`
+	Predicate       string   `json:"predicate,omitempty"`
+	Limit           int      `json:"limit,omitempty"`
+	IncludeDisabled bool     `json:"include_disabled,omitempty"`
 	// PreferEmbedding forces the hybrid embedding path even when FTS already
 	// returned medium-confidence hits. Auto-recall leaves this false so Search
 	// still runs embedding when FTS is empty or best FTS score < 2.0.
@@ -986,32 +993,41 @@ type DateRange struct {
 }
 
 type StructuredSearchOptions struct {
-	Query           string                 `json:"query,omitempty"`
-	OwnerID         string                 `json:"owner_id,omitempty"`
-	TenantID        string                 `json:"tenant_id,omitempty"`
-	ProjectPath     string                 `json:"project_path,omitempty"`
-	SearchScope     string                 `json:"search_scope,omitempty"`
-	SourceIDs       []string               `json:"source_ids,omitempty"`
-	SourceID        string                 `json:"source_id,omitempty"`
-	SheetNames      []string               `json:"sheet_names,omitempty"`
-	ColumnEquals    map[string]string      `json:"column_equals,omitempty"`
-	ColumnContains  map[string]string      `json:"column_contains,omitempty"`
-	NumberRanges    map[string]NumberRange `json:"number_ranges,omitempty"`
-	DateRanges      map[string]DateRange   `json:"date_ranges,omitempty"`
-	Limit           int                    `json:"limit,omitempty"`
-	IncludeDisabled bool                   `json:"include_disabled,omitempty"`
+	Query             string                 `json:"query,omitempty"`
+	OwnerID           string                 `json:"owner_id,omitempty"`
+	OwnerLineage      bool                   `json:"-"`
+	IncludeEmptyOwner bool                   `json:"-"`
+	UseMembership     bool                   `json:"-"`
+	TenantID          string                 `json:"tenant_id,omitempty"`
+	ProjectPath       string                 `json:"project_path,omitempty"`
+	SearchScope       string                 `json:"search_scope,omitempty"`
+	SourceIDs         []string               `json:"source_ids,omitempty"`
+	SourceID          string                 `json:"source_id,omitempty"`
+	SourceKinds       []string               `json:"source_kinds,omitempty"`
+	Labels            []string               `json:"labels,omitempty"`
+	Domain            string                 `json:"domain,omitempty"`
+	SheetNames        []string               `json:"sheet_names,omitempty"`
+	ColumnEquals      map[string]string      `json:"column_equals,omitempty"`
+	ColumnContains    map[string]string      `json:"column_contains,omitempty"`
+	NumberRanges      map[string]NumberRange `json:"number_ranges,omitempty"`
+	DateRanges        map[string]DateRange   `json:"date_ranges,omitempty"`
+	Limit             int                    `json:"limit,omitempty"`
+	IncludeDisabled   bool                   `json:"include_disabled,omitempty"`
 }
 
 type StructuredCatalogOptions struct {
-	OwnerID         string   `json:"owner_id,omitempty"`
-	TenantID        string   `json:"tenant_id,omitempty"`
-	ProjectPath     string   `json:"project_path,omitempty"`
-	SearchScope     string   `json:"search_scope,omitempty"`
-	SourceIDs       []string `json:"source_ids,omitempty"`
-	SourceID        string   `json:"source_id,omitempty"`
-	SheetNames      []string `json:"sheet_names,omitempty"`
-	Limit           int      `json:"limit,omitempty"`
-	IncludeDisabled bool     `json:"include_disabled,omitempty"`
+	OwnerID           string   `json:"owner_id,omitempty"`
+	OwnerLineage      bool     `json:"-"`
+	IncludeEmptyOwner bool     `json:"-"`
+	UseMembership     bool     `json:"-"`
+	TenantID          string   `json:"tenant_id,omitempty"`
+	ProjectPath       string   `json:"project_path,omitempty"`
+	SearchScope       string   `json:"search_scope,omitempty"`
+	SourceIDs         []string `json:"source_ids,omitempty"`
+	SourceID          string   `json:"source_id,omitempty"`
+	SheetNames        []string `json:"sheet_names,omitempty"`
+	Limit             int      `json:"limit,omitempty"`
+	IncludeDisabled   bool     `json:"include_disabled,omitempty"`
 }
 
 type StructuredTableCatalog struct {
@@ -1032,7 +1048,10 @@ type StructuredCatalogResult struct {
 }
 
 type SearchResult struct {
-	Source     Source `json:"source"`
+	Source Source `json:"source"`
+	// LibraryID is set when the source belongs to an enterprise library.
+	// Display adds [企业] from this field. Titles are not rewritten.
+	LibraryID  string `json:"library_id,omitempty"`
 	ResultType string `json:"result_type,omitempty"`
 	NodeID     string `json:"node_id,omitempty"`
 	// ParentNodeID, Language and Script are hydrated from the originating
@@ -1105,9 +1124,37 @@ type SourceLink struct {
 	Score           float64   `json:"score,omitempty"`
 	Terms           []string  `json:"terms,omitempty"`
 	Evidence        []string  `json:"evidence,omitempty"`
+	Status          string    `json:"status,omitempty"`
 	RelatedSource   Source    `json:"related_source,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+type Collection struct {
+	ID          string    `json:"id"`
+	OwnerUser   string    `json:"owner_user"`
+	Title       string    `json:"title"`
+	Kind        string    `json:"kind"`
+	FolderPath  string    `json:"folder_path,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	MemberCount int       `json:"member_count,omitempty"`
+}
+
+type CollectionMember struct {
+	CollectionID string    `json:"collection_id"`
+	SourceID     string    `json:"source_id"`
+	AddedBy      string    `json:"added_by"`
+	CreatedAt    time.Time `json:"created_at"`
+	Source       Source    `json:"source,omitempty"`
+}
+
+type SourceCollectionRef struct {
+	ID         string `json:"id"`
+	Title      string `json:"title"`
+	Kind       string `json:"kind"`
+	FolderPath string `json:"folder_path,omitempty"`
+	SourceID   string `json:"source_id"`
 }
 
 type SourceTopicLinkBuildResult struct {
@@ -1247,13 +1294,14 @@ type ExplainResult struct {
 }
 
 type SearchFacetBucket struct {
-	Label      string   `json:"label"`
-	Kind       string   `json:"kind,omitempty"`
-	Count      int      `json:"count"`
-	SourceID   string   `json:"source_id,omitempty"`
-	SourceKind string   `json:"source_kind,omitempty"`
-	Domain     string   `json:"domain,omitempty"`
-	Examples   []string `json:"examples,omitempty"`
+	Label        string   `json:"label"`
+	Kind         string   `json:"kind,omitempty"`
+	Count        int      `json:"count"`
+	SourceID     string   `json:"source_id,omitempty"`
+	SourceKind   string   `json:"source_kind,omitempty"`
+	Domain       string   `json:"domain,omitempty"`
+	CollectionID string   `json:"collection_id,omitempty"`
+	Examples     []string `json:"examples,omitempty"`
 }
 
 type SearchFacetsResult struct {
@@ -1263,6 +1311,7 @@ type SearchFacetsResult struct {
 	SourceKinds []SearchFacetBucket `json:"source_kinds,omitempty"`
 	Domains     []SearchFacetBucket `json:"domains,omitempty"`
 	Labels      []SearchFacetBucket `json:"labels,omitempty"`
+	Collections []SearchFacetBucket `json:"collections,omitempty"`
 	Sources     []SearchFacetBucket `json:"sources,omitempty"`
 	Entities    []SearchFacetBucket `json:"entities,omitempty"`
 	Predicates  []SearchFacetBucket `json:"predicates,omitempty"`

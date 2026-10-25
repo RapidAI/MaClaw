@@ -768,6 +768,37 @@ func TestAutoRewriteLiftsLongImageOffLow(t *testing.T) {
 	}
 }
 
+func TestAutoRewriteComplexChatDoesNotSkipToBlindHigh(t *testing.T) {
+	group := officialDynamicFixture()
+	group.Models[0].ProviderIDs = []string{"p-high"}
+	group.Models[2].ProviderIDs = []string{"p-low"}
+	group.Models[2].CapabilityTags = []string{"vision"}
+	body := map[string]any{
+		"model": OfficialTierLow,
+		"messages": []any{
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "text", "text": "为什么看不清"},
+				map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,aaaa"}},
+			}},
+			map[string]any{"role": "tool", "content": strings.Repeat("x", capabilityLongTextBytes)},
+		},
+	}
+	chat := http.Header{}
+	chat.Set(ClientModelHeader, "auto")
+	chat.Set(WorkloadClassHeader, WorkloadClassChat)
+	dec := ClassifyAndRouteModel(chat, body, group, OfficialTierLow)
+	if dec.ResolvedModel != OfficialTierLow || dec.Upgraded {
+		t.Fatalf("complex chat = %#v, want official-low", dec)
+	}
+	code := http.Header{}
+	code.Set(ClientModelHeader, "auto")
+	code.Set(WorkloadClassHeader, WorkloadClassCode)
+	dec = ClassifyAndRouteModel(code, body, group, OfficialTierLow)
+	if dec.ResolvedModel != OfficialTierHigh || !dec.Upgraded {
+		t.Fatalf("code = %#v, want official-high", dec)
+	}
+}
+
 func TestVisionClimbThenUpgradesInsideTheBandThatCanSee(t *testing.T) {
 	group := officialDynamicFixture()
 	for i := range group.Models {

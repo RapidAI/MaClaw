@@ -1,6 +1,6 @@
 {
  "release": "https://github.com/RapidAI/MaClaw/releases/download/Model_Release",
- "generated": "2026-10-15T06:00:00+08:00",
+ "generated": "2026-10-25T12:00:00+08:00",
  "assets": [
   {
    "filename": "Qwen3-Embedding-0.6B-Q8_0.gguf",
@@ -29,6 +29,55 @@
    "subdir": "interrupt_heads",
    "size": 2662440,
    "sha256": "7d5494785311997d46ea80a65425f7625ad4e86fe6a2fb2745759474e96eb4ed"
+  },
+  {
+   "filename": "formulanet-encoder.onnx",
+   "kind": "formula",
+   "subdir": "formula",
+   "size": 54168561,
+   "sha256": "fbd69cf63cf833db1e2ef40013d859b560671c1253278441a01bde4516b624ae"
+  },
+  {
+   "filename": "formulanet-decoder.onnx",
+   "kind": "formula",
+   "subdir": "formula",
+   "size": 25872372,
+   "sha256": "00f07add62d74c78750cfda60ce8f1cff3d1774f913ca3f412e2e72f4189d7d4"
+  },
+  {
+   "filename": "formulanet-decoder-past.onnx",
+   "kind": "formula",
+   "subdir": "formula",
+   "size": 20337816,
+   "sha256": "cf6838e89f96e33cd81ec8eb885bf78953506e340ff0485aaea13a784af2e804"
+  },
+  {
+   "filename": "formulanet-tokenizer.json",
+   "kind": "formula",
+   "subdir": "formula",
+   "size": 17318,
+   "sha256": "1240f9d178e1ad2a0076fe95ba62e332871c702accdd5ce3ae3ef33ffd6c3a1e"
+  },
+  {
+   "filename": "PP-DocLayoutV3.onnx",
+   "kind": "layout",
+   "subdir": "layout",
+   "size": 5088167,
+   "sha256": "c0721928ff08741bb208ebed539c77170db5234a68cb7e546e6cc9bc172a695b"
+  },
+  {
+   "filename": "PP-DocLayoutV3.onnx.data",
+   "kind": "layout",
+   "subdir": "layout",
+   "size": 136774480,
+   "sha256": "34df3e4b79d7bbbf82abce1b4f3cde3d540fa57ad42ec8905c352b97c408d437"
+  },
+  {
+   "filename": "unet.onnx",
+   "kind": "table",
+   "subdir": "table",
+   "size": 8335007,
+   "sha256": "0ea48d3a17e35ef5c2e498a5e799566073234d39b1079ca21d9f4fafe73c6d20"
   }
  ]
 }

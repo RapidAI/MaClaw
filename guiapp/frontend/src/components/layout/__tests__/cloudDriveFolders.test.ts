@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyCloudDriveItem, cloudDriveItemMatchesQuery, groupCloudDrive, type CloudDriveItem } from '../cloudDriveFolders';
+import { classifyCloudDriveItem, cloudDriveGlyphKind, cloudDriveItemMatchesQuery, groupCloudDrive, type CloudDriveItem } from '../cloudDriveFolders';
 
 function item(partial: CloudDriveItem & { id: string }): CloudDriveItem {
   return partial;
@@ -126,5 +126,21 @@ describe('groupCloudDrive', () => {
       ['video', 0, 0],
       ['other', 0, 0],
     ]);
+  });
+});
+
+describe('cloudDriveGlyphKind', () => {
+  it('maps items to their row icon kind', () => {
+    expect(cloudDriveGlyphKind(item({ id: 'a', source_filename: 'spec.pdf' }))).toBe('pdf');
+    expect(cloudDriveGlyphKind(item({ id: 'b', source_filename: 'note.docx' }))).toBe('word');
+    expect(cloudDriveGlyphKind(item({ id: 'c', source_filename: '预算.xlsx' }))).toBe('sheet');
+    expect(cloudDriveGlyphKind(item({ id: 'd', source_filename: 'deck.pptx' }))).toBe('slides');
+    expect(cloudDriveGlyphKind(item({ id: 'e', source_filename: 'readme.md' }))).toBe('markdown');
+    expect(cloudDriveGlyphKind(item({ id: 'f', source_filename: 'page.html' }))).toBe('web');
+    expect(cloudDriveGlyphKind(item({ id: 'g', type: 'audio' }))).toBe('audio');
+    expect(cloudDriveGlyphKind(item({ id: 'h', source_filename: 'clip.mp4' }))).toBe('video');
+    expect(cloudDriveGlyphKind(item({ id: 'i', source_filename: 'cover.png' }))).toBe('image');
+    expect(cloudDriveGlyphKind(item({ id: 'j', title: '会议纪要' }))).toBe('text');
+    expect(cloudDriveGlyphKind(item({ id: 'k', source_filename: 'data.bin' }))).toBe('file');
   });
 });

@@ -2,6 +2,10 @@ import { useEffect } from "react";
 import { buildOutgoingMessageMulti, type ChatMessage } from "./useAIAssistant";
 import { expertTabId } from "./expertTypes";
 import { cloudWorkspaceIdFromPath } from "./codingTaskMode";
+import { normalizeProjectSessionPath } from "./assistantSessionPath";
+import { mergeProjectRoundHistory } from "./aiAssistantProjectTabState";
+
+export { normalizeProjectSessionPath };
 
 /** Keep in sync with LATEX_EXPERT_ID. Local so this module does not import the template catalogue. */
 const LATEX_PAPER_EXPERT_ID = "builtin-latex-paper";
@@ -211,7 +215,8 @@ export function projectTabLiveMessages(live: ProjectTabLiveHistory, tabId: strin
  * Put the goal record on the transcript the user is looking at.
  * An empty or cleared tab stays empty: one inserted card would turn history
  * non-empty and let the live sync copy residual messages back in.
- * The open tab's live list wins over the saved snapshot, which lags behind it.
+ * The open list replaces the same id. A live subset must not drop a coding
+ * trail that the snapshot already carried further.
  * Returns null when nothing should be written.
  */
 export function nextGoalChecklistHistory(input: {
@@ -224,7 +229,9 @@ export function nextGoalChecklistHistory(input: {
     if (input.cleared) return null;
     const stored = Array.isArray(input.history) ? input.history : [];
     const live = Array.isArray(input.liveHistory) ? input.liveHistory : [];
-    const base = live.length > 0 ? live : stored;
+    // The open list wins on the same id, but it lags the snapshot while a
+    // continuation is streaming. A live subset must not drop that trail.
+    const base = stored.length === 0 ? live : mergeProjectRoundHistory(stored, stored, live);
     if (base.length === 0) return null;
     const next = upsertGoalChecklistInHistory(base, input.sessionKey, input.content);
     return next === base ? null : next;
@@ -336,6 +343,51 @@ export function buildProjectTabRecentMessages(history: ChatMessage[] | undefined
         })
         .filter((message): message is { role: 'user' | 'assistant'; content: string } => message !== null)
         .slice(-MAX_PROJECT_CONTEXT_MESSAGES_TO_SEND);
+}
+
+export function sessionKeysMatch(left?: string | null, right?: string | null): boolean {
+    const a = normalizeAssistantSessionKey(left);
+    const b = normalizeAssistantSessionKey(right);
+    return !!a && a === b;
+}
+
+/** Busy and streaming keys are normalized. The open tab key may still use Windows separators. */
+export function sessionKeyListHas(keys: Iterable<string> | undefined | null, sessionKey: string): boolean {
+    if (!keys || !sessionKey) return false;
+    const normalized = normalizeAssistantSessionKey(sessionKey);
+    for (const key of keys) {
+        if (key === sessionKey || (normalized && normalizeAssistantSessionKey(key) === normalized)) return true;
+    }
+    return false;
+}
+
+/**
+ * True only when this tab's session is still sending.
+ * A busy key on another session must not count: the open tab can already be
+ * 已完成 while the global sending flag stays true.
+ */
+export function assistantSessionIsSending(input: {
+    sessionKey: string;
+    sending: boolean;
+    sendingSessionKey?: string | null;
+    busySessionKeys?: readonly string[] | null;
+    panelInFlightKeys?: Iterable<string> | null;
+    fallbackRoundActive?: boolean;
+}): boolean {
+    const sessionKey = String(input.sessionKey || "");
+    if (sessionKeyListHas(input.panelInFlightKeys, sessionKey)) return true;
+    if (Array.isArray(input.busySessionKeys)) {
+        const busy: string[] = [];
+        for (const key of input.busySessionKeys) {
+            const text = String(key || "").trim();
+            if (text) busy.push(text);
+        }
+        return sessionKeyListHas(busy, sessionKey);
+    }
+    if (!input.sending) return false;
+    const sendingKey = String(input.sendingSessionKey || "").trim();
+    if (sendingKey) return sessionKeysMatch(sendingKey, sessionKey);
+    return !!input.fallbackRoundActive;
 }
 
 export function messageBelongsToSession(message: ChatMessage, sessionKey: string): boolean {
@@ -610,37 +662,6 @@ export function projectPathFromSessionKey(sessionKey?: string | null): string {
     // path-based routing (it would be mistaken for a real project path).
     if (isExpertSessionKey(key) || isACPAssistantSessionKey(key)) return "";
     return normalizeProjectSessionPath(key.slice(prefix.length));
-}
-
-export function normalizeProjectSessionPath(projectPath?: string | null): string {
-    let path = typeof projectPath === "string" ? projectPath.trim() : "";
-    if (!path) return "";
-    path = path.replace(/\\+/g, "/").replace(/\/+/g, "/");
-    const drive = path.match(/^([a-zA-Z]):(\/.*)?$/);
-    if (drive) path = `${drive[1].toUpperCase()}:${drive[2] || "/"}`;
-    const parts: string[] = [];
-    const absolute = path.startsWith("/") || /^[A-Z]:\//.test(path);
-    const prefix = /^[A-Z]:\//.test(path) ? path.slice(0, 3) : (path.startsWith("/") ? "/" : "");
-    const body = prefix ? path.slice(prefix.length) : path;
-    // Trim each segment, not just the whole string. A segment may carry
-    // incidental padding around a separator (for example "dir /sub"), and
-    // leaving it in place made this function non-idempotent: re-normalizing
-    // the stored result then stripped it. Callers compare paths by
-    // re-normalizing both sides, so that asymmetry silently broke tab
-    // deduplication and produced duplicate tabs for one project.
-    for (const rawPart of body.split("/")) {
-        const part = rawPart.trim();
-        if (!part || part === ".") continue;
-        if (part === ".." && parts.length > 0 && parts[parts.length - 1] !== "..") {
-            parts.pop();
-            continue;
-        }
-        if (part === ".." && absolute) continue;
-        parts.push(part);
-    }
-    const joined = parts.join("/");
-    if (prefix) return joined ? `${prefix}${joined}` : prefix.replace(/\/$/, "") || "/";
-    return joined || ".";
 }
 
 /** Remove matching tab metadata and history blobs from localStorage. */

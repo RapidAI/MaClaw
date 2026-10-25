@@ -21,15 +21,18 @@ import (
 	gopdf2 "github.com/VantageDataChat/GoPDF2"
 )
 
-// The companion's closed tool surface: read-only PDF helpers bound to the one
-// open document. Tool arguments carry no path on purpose — the open file is
-// the entire reach of these tools, and outputs only ever land in the session's
-// own figure directory. Every tool-produced image joins the turn's 图N list,
-// so the reply displays it by reference instead of restating a path.
+// The companion's closed tool surface: PDF helpers bound to the one open
+// document. Tool arguments carry no path on purpose — the open file is the
+// entire reach of these tools. pdf_restore writes a new selectable PDF under
+// the session results directory and does not modify the open file. Figure
+// tools write only into the session figure directory. Every tool-produced
+// image joins the turn's 图N list, so the reply displays it by reference
+// instead of restating a path.
 const (
 	fileCompanionToolReadPages   = "pdf_read_pages"
 	fileCompanionToolRenderPage  = "pdf_render_page"
 	fileCompanionToolExtractImgs = "pdf_extract_images"
+	fileCompanionToolRestore     = "pdf_restore"
 
 	// A turn's displayable 图N list is bounded: the model cannot flood the
 	// reply with renders, and numbering stays deterministic.
@@ -44,6 +47,9 @@ const (
 	// "read everything" call cannot become an unbounded context injection.
 	fileCompanionReadPagesMax      = 8
 	fileCompanionReadPagesCapRunes = 30000
+	// One restore call recognizes at most this many pages. The text layer
+	// accumulates in the session cache, and the next call continues.
+	fileCompanionRestorePagesMax = 16
 	// One extract call registers at most this many embedded images, and stops
 	// decoding once this much image data is in hand. A 200 MB scan is not
 	// decoded end to end to answer what is on one page.
@@ -148,21 +154,37 @@ func fileCompanionToolDefinitions() []map[string]interface{} {
 				},
 			},
 		},
+		{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":        fileCompanionToolRestore,
+				"description": "把当前打开的扫描版 PDF 恢复成可以选中、可以搜索的 PDF。扫描图保留，文字按识别位置写成透明文字层。公式行用已经接入的公式模型写成 LaTeX。不覆盖原文件。pages 可省略；省略时从未完成的页继续。单次最多 16 页。",
+				"parameters": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"pages": map[string]interface{}{
+							"type":        "string",
+							"description": "可选。从 1 开始的页码，支持逗号分隔和范围，例如 \"7\" 或 \"3,5,7-9\"。不传则从未完成的页继续。单次最多 16 页。",
+						},
+					},
+				},
+			},
+		},
 	}
 }
 
 func isFileCompanionHostTool(name string) bool {
 	switch strings.TrimSpace(name) {
-	case fileCompanionToolReadPages, fileCompanionToolRenderPage, fileCompanionToolExtractImgs:
+	case fileCompanionToolReadPages, fileCompanionToolRenderPage, fileCompanionToolExtractImgs, fileCompanionToolRestore:
 		return true
 	}
 	return false
 }
 
 // fileCompanionClosedSurfaceTools is the whole executable surface a companion
-// turn gets: the read-only document tools when the open file is a PDF, and
-// nothing otherwise. The figures a markdown or docx needs already travel with
-// the turn itself.
+// turn gets: the document tools when the open file is a PDF, and nothing
+// otherwise. The figures a markdown or docx needs already travel with the
+// turn itself. pdf_restore adds a new file and leaves the open PDF as it is.
 func (h *IMMessageHandler) fileCompanionClosedSurfaceTools(userID string) []map[string]interface{} {
 	if h == nil || h.app == nil {
 		return nil
@@ -235,6 +257,8 @@ func (h *IMMessageHandler) runFileCompanionHostTool(userID, name, argsJSON strin
 		return h.app.fileCompanionToolRenderPage(userID, canonical, args)
 	case fileCompanionToolExtractImgs:
 		return h.app.fileCompanionToolExtractImages(userID, canonical, args)
+	case fileCompanionToolRestore:
+		return h.app.fileCompanionToolRestore(canonical, args)
 	}
 	return "未知工具 " + name, false
 }
@@ -262,6 +286,8 @@ func fileCompanionToolProgressText(name, argsJSON string) string {
 		return "正在裁出页面上的图…"
 	case fileCompanionToolExtractImgs:
 		return "正在提取文档内嵌图片…"
+	case fileCompanionToolRestore:
+		return "正在把扫描页恢复成可选中的 PDF…"
 	}
 	return "正在处理文档…"
 }

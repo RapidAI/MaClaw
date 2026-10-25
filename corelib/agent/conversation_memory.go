@@ -304,6 +304,7 @@ type conversationSession struct {
 	activeBranchTipID    string
 	lastAccess           time.Time
 	unfinishedSlot       *UnfinishedTaskSlot
+	recoverySlots        []*UnfinishedTaskSlot
 	activeSlotID         string
 	inFlightTask         string // non-empty while an agent loop is executing; cleared on normal exit
 	inFlightProjectPath  string // project path when the in-flight task was set
@@ -323,6 +324,7 @@ type persistedSession struct {
 	ActiveBranchTipID      string                     `json:"active_branch_tip_id,omitempty"`
 	LastAccess             time.Time                  `json:"last_access"`
 	UnfinishedSlot         *UnfinishedTaskSlot        `json:"unfinished_slot,omitempty"`
+	RecoverySlots          []*UnfinishedTaskSlot      `json:"recovery_slots,omitempty"`
 	ActiveSlotID           string                     `json:"active_slot_id,omitempty"`
 	InFlightTask           string                     `json:"in_flight_task,omitempty"`
 	InFlightProjectPath    string                     `json:"in_flight_project_path,omitempty"`
@@ -1322,13 +1324,73 @@ func (cm *ConversationMemory) UnfinishedSlots() []*UnfinishedTaskSlot {
 	for _, sh := range cm.shards {
 		sh.mu.RLock()
 		for _, s := range sh.sessions {
-			if s != nil && s.unfinishedSlot != nil {
+			if s == nil {
+				continue
+			}
+			if s.unfinishedSlot != nil {
 				slots = append(slots, CloneUnfinishedTaskSlot(s.unfinishedSlot))
+			}
+			for _, slot := range s.recoverySlots {
+				slots = append(slots, CloneUnfinishedTaskSlot(slot))
 			}
 		}
 		sh.mu.RUnlock()
 	}
 	return slots
+}
+
+func cloneRecoverySlots(slots []*UnfinishedTaskSlot) []*UnfinishedTaskSlot {
+	if len(slots) == 0 {
+		return nil
+	}
+	clones := make([]*UnfinishedTaskSlot, 0, len(slots))
+	for _, slot := range slots {
+		clones = append(clones, CloneUnfinishedTaskSlot(slot))
+	}
+	return clones
+}
+
+func queueUnfinishedSlotLocked(s *conversationSession, slot *UnfinishedTaskSlot) {
+	if s == nil || slot == nil {
+		return
+	}
+	if s.unfinishedSlot != nil && s.unfinishedSlot.SlotID == slot.SlotID {
+		s.unfinishedSlot = slot
+		return
+	}
+	for i, queued := range s.recoverySlots {
+		if queued != nil && queued.SlotID == slot.SlotID {
+			s.recoverySlots = append(s.recoverySlots[:i], s.recoverySlots[i+1:]...)
+			break
+		}
+	}
+	if unfinishedSlotIsPendingDecision(s.unfinishedSlot) {
+		s.recoverySlots = append(s.recoverySlots, s.unfinishedSlot)
+	}
+	s.unfinishedSlot = slot
+}
+
+func promoteNextRecoverySlotLocked(s *conversationSession) {
+	if s == nil {
+		return
+	}
+	droppedID := ""
+	if s.unfinishedSlot != nil {
+		droppedID = s.unfinishedSlot.SlotID
+	}
+	if s.activeSlotID == "" || s.activeSlotID == droppedID {
+		s.activeSlotID = ""
+	}
+	s.unfinishedSlot = nil
+	for len(s.recoverySlots) > 0 {
+		last := len(s.recoverySlots) - 1
+		slot := s.recoverySlots[last]
+		s.recoverySlots = s.recoverySlots[:last]
+		if unfinishedSlotIsPendingDecision(slot) {
+			s.unfinishedSlot = slot
+			return
+		}
+	}
 }
 
 func (cm *ConversationMemory) ActiveUnfinishedSlot(userID string) *UnfinishedTaskSlot {
@@ -1365,7 +1427,7 @@ func (cm *ConversationMemory) UpsertUnfinishedSlot(userID string, slot *Unfinish
 			s = &conversationSession{}
 			sh.sessions[userID] = s
 		}
-		s.unfinishedSlot = clone
+		queueUnfinishedSlotLocked(s, clone)
 		if s.lastAccess.IsZero() {
 			s.lastAccess = time.Now()
 		}
@@ -1375,8 +1437,7 @@ func (cm *ConversationMemory) UpsertUnfinishedSlot(userID string, slot *Unfinish
 }
 
 // ReplaceInFlightWithUnfinishedSlot atomically records a recovery slot and
-// clears the marker. It refuses to overwrite a pending user-facing slot, but
-// replaces an already resolved slot with the newer interrupted-loop snapshot.
+// clears the marker. Older pending work stays queued behind the newer snapshot.
 func (cm *ConversationMemory) ReplaceInFlightWithUnfinishedSlot(userID string, slot *UnfinishedTaskSlot) bool {
 	if slot == nil {
 		return false
@@ -1399,19 +1460,9 @@ func (cm *ConversationMemory) ReplaceInFlightWithUnfinishedSlot(userID string, s
 			s = &conversationSession{}
 			sh.sessions[userID] = s
 		}
-		if unfinishedSlotIsPendingDecision(s.unfinishedSlot) {
-			sh.mu.Unlock()
-			return
-		}
-		s.unfinishedSlot = clone
+		queueUnfinishedSlotLocked(s, clone)
 		s.activeSlotID = ""
-		s.inFlightTask = ""
-		s.inFlightProjectPath = ""
-		s.inFlightSetAt = time.Time{}
-		s.inFlightRunID = ""
-		s.inFlightSequence = 0
-		s.inFlightLastTool = ""
-		s.inFlightSideEffect = ""
+		clearInFlightFields(s)
 		s.lastAccess = now
 		sh.mu.Unlock()
 		cm.markSessionDirty(userID)
@@ -1430,9 +1481,21 @@ func (cm *ConversationMemory) BindUnfinishedSlot(userID, slotID string) bool {
 		sh := cm.shard(userID)
 		sh.mu.Lock()
 		s := sh.sessions[userID]
-		if s == nil || s.unfinishedSlot == nil || s.unfinishedSlot.SlotID != slotID {
+		if s == nil || s.unfinishedSlot == nil {
 			sh.mu.Unlock()
 			return
+		}
+		if s.unfinishedSlot.SlotID != slotID {
+			for _, queued := range s.recoverySlots {
+				if queued != nil && queued.SlotID == slotID {
+					queueUnfinishedSlotLocked(s, queued)
+					break
+				}
+			}
+			if s.unfinishedSlot.SlotID != slotID {
+				sh.mu.Unlock()
+				return
+			}
 		}
 		now := time.Now()
 		s.activeSlotID = slotID
@@ -1464,12 +1527,23 @@ func (cm *ConversationMemory) DismissUnfinishedSlot(userID, slotID string) {
 	cm.checkpointLockedMutation(func() {
 		sh := cm.shard(userID)
 		sh.mu.Lock()
-		if s := sh.sessions[userID]; s != nil && s.unfinishedSlot != nil {
-			if slotID == "" || s.unfinishedSlot.SlotID == strings.TrimSpace(slotID) {
-				s.unfinishedSlot = nil
+		if s := sh.sessions[userID]; s != nil {
+			slotID = strings.TrimSpace(slotID)
+			if slotID == "" {
+				s.recoverySlots = nil
 				s.activeSlotID = ""
-				s.lastAccess = time.Now()
+				promoteNextRecoverySlotLocked(s)
+			} else if s.unfinishedSlot != nil && s.unfinishedSlot.SlotID == slotID {
+				promoteNextRecoverySlotLocked(s)
+			} else {
+				for i, slot := range s.recoverySlots {
+					if slot != nil && slot.SlotID == slotID {
+						s.recoverySlots = append(s.recoverySlots[:i], s.recoverySlots[i+1:]...)
+						break
+					}
+				}
 			}
+			s.lastAccess = time.Now()
 		}
 		sh.mu.Unlock()
 		cm.markSessionDirty(userID)
@@ -1482,11 +1556,8 @@ func (cm *ConversationMemory) CompleteUnfinishedSlot(userID, slotID string) {
 		sh.mu.Lock()
 		if s := sh.sessions[userID]; s != nil && s.unfinishedSlot != nil {
 			if slotID == "" || s.unfinishedSlot.SlotID == strings.TrimSpace(slotID) {
-				now := time.Now()
-				s.unfinishedSlot.Status = UnfinishedTaskSlotStatusCompleted
-				s.unfinishedSlot.UpdatedAt = now
-				s.activeSlotID = ""
-				s.lastAccess = now
+				promoteNextRecoverySlotLocked(s)
+				s.lastAccess = time.Now()
 			}
 		}
 		sh.mu.Unlock()
@@ -1524,6 +1595,7 @@ func (cm *ConversationMemory) ClearConversationAndDismissSlot(userID string) {
 		s.entries = nil
 		s.activeBranchTipID = ""
 		s.unfinishedSlot = nil
+		s.recoverySlots = nil
 		s.activeSlotID = ""
 		s.lastAccess = time.Now()
 		sh.mu.Unlock()
@@ -1719,10 +1791,7 @@ func dropUnfinishedSlotLocked(s *conversationSession) {
 	if s == nil || s.unfinishedSlot == nil {
 		return
 	}
-	if s.activeSlotID == "" || s.activeSlotID == s.unfinishedSlot.SlotID {
-		s.activeSlotID = ""
-	}
-	s.unfinishedSlot = nil
+	promoteNextRecoverySlotLocked(s)
 }
 
 func pendingSameRunRecoverySlot(slot *UnfinishedTaskSlot, scope string) bool {
@@ -1870,6 +1939,7 @@ func cloneConversationSession(s *conversationSession) *conversationSession {
 	copy := *s
 	copy.entries = append([]ConversationEntry(nil), s.entries...)
 	copy.unfinishedSlot = CloneUnfinishedTaskSlot(s.unfinishedSlot)
+	copy.recoverySlots = cloneRecoverySlots(s.recoverySlots)
 	return &copy
 }
 
@@ -1904,8 +1974,10 @@ func (cm *ConversationMemory) restoreCheckpointMutation(userID string, before, c
 			current.inFlightLastTool = before.inFlightLastTool
 			current.inFlightSideEffect = before.inFlightSideEffect
 		}
-		if reflect.DeepEqual(current.unfinishedSlot, candidate.unfinishedSlot) && current.activeSlotID == candidate.activeSlotID {
+		if reflect.DeepEqual(current.unfinishedSlot, candidate.unfinishedSlot) &&
+			reflect.DeepEqual(current.recoverySlots, candidate.recoverySlots) && current.activeSlotID == candidate.activeSlotID {
 			current.unfinishedSlot = CloneUnfinishedTaskSlot(before.unfinishedSlot)
+			current.recoverySlots = cloneRecoverySlots(before.recoverySlots)
 			current.activeSlotID = before.activeSlotID
 		}
 	}
@@ -2186,37 +2258,25 @@ func (cm *ConversationMemory) convertExpiredInFlightLocked(userID string, s *con
 	task := s.inFlightTask
 	projectPath := s.inFlightProjectPath
 	runID := s.inFlightRunID
-	// A pending slot is deliberate user state and wins. A resumed/completed
-	// slot is historical state, so a newer stalled run must replace it just as
-	// startup promotion and graceful shutdown snapshots do.
-	if s.unfinishedSlot == nil || !unfinishedSlotIsPendingDecision(s.unfinishedSlot) {
-		slotID := newRecoverySlotID("inflight-expired", now)
-		s.unfinishedSlot = &UnfinishedTaskSlot{
-			SlotID:           slotID,
-			UserID:           userID,
-			ProjectPath:      projectPath,
-			Tool:             "agent",
-			Status:           UnfinishedTaskSlotStatusInterrupted,
-			Summary:          "Previous task stopped making progress and was moved to recovery.",
-			LastTask:         task,
-			ResumePrompt:     expiredInFlightResumePrompt(s.inFlightSideEffect),
-			Source:           UnfinishedTaskSlotSourceInFlightLeaseExpired,
-			EvidenceScopeKey: inFlightRunScopeKey(runID),
-			LastCheckpointAt: s.inFlightSetAt,
-			LastToolName:     s.inFlightLastTool,
-			SideEffectState:  s.inFlightSideEffect,
-			RecoveryMode:     recoveryModeForSideEffect(s.inFlightSideEffect),
-			CreatedAt:        now,
-			UpdatedAt:        now,
-		}
-	}
-	s.inFlightTask = ""
-	s.inFlightProjectPath = ""
-	s.inFlightSetAt = time.Time{}
-	s.inFlightRunID = ""
-	s.inFlightSequence = 0
-	s.inFlightLastTool = ""
-	s.inFlightSideEffect = ""
+	queueUnfinishedSlotLocked(s, &UnfinishedTaskSlot{
+		SlotID:           newRecoverySlotID("inflight-expired", now),
+		UserID:           userID,
+		ProjectPath:      projectPath,
+		Tool:             "agent",
+		Status:           UnfinishedTaskSlotStatusInterrupted,
+		Summary:          "Previous task stopped making progress and was moved to recovery.",
+		LastTask:         task,
+		ResumePrompt:     expiredInFlightResumePrompt(s.inFlightSideEffect),
+		Source:           UnfinishedTaskSlotSourceInFlightLeaseExpired,
+		EvidenceScopeKey: inFlightRunScopeKey(runID),
+		LastCheckpointAt: s.inFlightSetAt,
+		LastToolName:     s.inFlightLastTool,
+		SideEffectState:  s.inFlightSideEffect,
+		RecoveryMode:     recoveryModeForSideEffect(s.inFlightSideEffect),
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	})
+	clearInFlightFields(s)
 	s.lastAccess = now
 }
 
@@ -2297,36 +2357,26 @@ func (cm *ConversationMemory) promoteRecoverableCheckpoints(now time.Time) int {
 				if s == nil || strings.TrimSpace(s.inFlightTask) == "" {
 					continue
 				}
-				if s.unfinishedSlot == nil || !unfinishedSlotIsPendingDecision(s.unfinishedSlot) {
-					s.unfinishedSlot = &UnfinishedTaskSlot{
-						SlotID:           newRecoverySlotID("inflight-recovery", now),
-						UserID:           userID,
-						ProjectPath:      s.inFlightProjectPath,
-						Tool:             "agent",
-						Status:           UnfinishedTaskSlotStatusInterrupted,
-						Summary:          "Previous task was interrupted after a durable tool-progress checkpoint.",
-						LastTask:         s.inFlightTask,
-						ResumePrompt:     recoveryResumePrompt(s.inFlightSideEffect),
-						Source:           UnfinishedTaskSlotSourceInFlightRecovery,
-						EvidenceScopeKey: inFlightRunScopeKey(s.inFlightRunID),
-						LastCheckpointAt: s.inFlightSetAt,
-						LastToolName:     s.inFlightLastTool,
-						SideEffectState:  s.inFlightSideEffect,
-						RecoveryMode:     recoveryModeForSideEffect(s.inFlightSideEffect),
-						CreatedAt:        now,
-						UpdatedAt:        now,
-					}
-					promoted++
-				}
-				// An existing pending slot is deliberate user state. Preserve it but
-				// consume the marker to prevent duplicate promotion on next launch.
-				s.inFlightTask = ""
-				s.inFlightProjectPath = ""
-				s.inFlightSetAt = time.Time{}
-				s.inFlightRunID = ""
-				s.inFlightSequence = 0
-				s.inFlightLastTool = ""
-				s.inFlightSideEffect = ""
+				queueUnfinishedSlotLocked(s, &UnfinishedTaskSlot{
+					SlotID:           newRecoverySlotID("inflight-recovery", now),
+					UserID:           userID,
+					ProjectPath:      s.inFlightProjectPath,
+					Tool:             "agent",
+					Status:           UnfinishedTaskSlotStatusInterrupted,
+					Summary:          "Previous task was interrupted after a durable tool-progress checkpoint.",
+					LastTask:         s.inFlightTask,
+					ResumePrompt:     recoveryResumePrompt(s.inFlightSideEffect),
+					Source:           UnfinishedTaskSlotSourceInFlightRecovery,
+					EvidenceScopeKey: inFlightRunScopeKey(s.inFlightRunID),
+					LastCheckpointAt: s.inFlightSetAt,
+					LastToolName:     s.inFlightLastTool,
+					SideEffectState:  s.inFlightSideEffect,
+					RecoveryMode:     recoveryModeForSideEffect(s.inFlightSideEffect),
+					CreatedAt:        now,
+					UpdatedAt:        now,
+				})
+				promoted++
+				clearInFlightFields(s)
 				s.lastAccess = now
 				changed = true
 				cm.noteDetachedPending(userID)
@@ -2816,6 +2866,7 @@ func conversationSessionFromPersisted(session persistedSession) *conversationSes
 		activeBranchTipID:    session.ActiveBranchTipID,
 		lastAccess:           session.LastAccess,
 		unfinishedSlot:       CloneUnfinishedTaskSlot(session.UnfinishedSlot),
+		recoverySlots:        cloneRecoverySlots(session.RecoverySlots),
 		activeSlotID:         session.ActiveSlotID,
 		inFlightTask:         session.InFlightTask,
 		inFlightProjectPath:  session.InFlightProjectPath,
@@ -2875,6 +2926,7 @@ func persistedFromSession(session *conversationSession) persistedSession {
 		ActiveBranchTipID:      session.activeBranchTipID,
 		LastAccess:             session.lastAccess,
 		UnfinishedSlot:         CloneUnfinishedTaskSlot(session.unfinishedSlot),
+		RecoverySlots:          cloneRecoverySlots(session.recoverySlots),
 		ActiveSlotID:           session.activeSlotID,
 		InFlightTask:           session.inFlightTask,
 		InFlightProjectPath:    session.inFlightProjectPath,
@@ -3006,7 +3058,8 @@ func (cm *ConversationMemory) loadFromDisk() error {
 		// a colon after the "desktop-user" prefix, distinguishing them from the
 		// plain "desktop-user" local session).
 		if strings.HasPrefix(userID, "desktop-user:") && len(userID) > len("desktop-user:") {
-			if !session.LastAccess.IsZero() && now.Sub(session.LastAccess) > projectTabSessionMaxAge {
+			hasRecoveryWork := unfinishedSlotIsPendingDecision(session.UnfinishedSlot) || len(session.RecoverySlots) > 0 || strings.TrimSpace(session.InFlightTask) != ""
+			if !hasRecoveryWork && !session.LastAccess.IsZero() && now.Sub(session.LastAccess) > projectTabSessionMaxAge {
 				log.Printf("[ConversationMemory] evicting stale project tab session user=%s (last_access=%v, age=%v)",
 					userID, session.LastAccess, now.Sub(session.LastAccess))
 				needsRewrite = true
@@ -3055,6 +3108,7 @@ func (cm *ConversationMemory) loadFromDisk() error {
 			activeBranchTipID:    session.ActiveBranchTipID,
 			lastAccess:           session.LastAccess,
 			unfinishedSlot:       CloneUnfinishedTaskSlot(session.UnfinishedSlot),
+			recoverySlots:        cloneRecoverySlots(session.RecoverySlots),
 			activeSlotID:         session.ActiveSlotID,
 			inFlightTask:         session.InFlightTask,
 			inFlightProjectPath:  session.InFlightProjectPath,

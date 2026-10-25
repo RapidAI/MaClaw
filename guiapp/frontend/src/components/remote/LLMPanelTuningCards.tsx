@@ -68,39 +68,60 @@ export function LLMSubAgentConcurrencyCard({ subAgentConc, setSubAgentConc, t }:
     );
 }
 
-/** Global thinking (reasoning) mode toggle. */
+export type ThinkingLevel = "auto" | "low" | "high" | "max" | "none";
+
+const THINKING_LEVELS: { id: ThinkingLevel; en: string; zh: string }[] = [
+    { id: "auto", en: "Auto", zh: "自动" },
+    { id: "low", en: "Low", zh: "低" },
+    { id: "high", en: "High", zh: "高" },
+    { id: "max", en: "Max", zh: "最大" },
+    { id: "none", en: "Off", zh: "关闭" },
+];
+
+function thinkingLevelNote(level: ThinkingLevel, t: Translate): string {
+    switch (level) {
+        case "low":
+            return t("Light reasoning on providers that accept an effort. Others turn thinking on.", "支持档位的服务商使用轻度思考，其余服务商开启思考。");
+        case "high":
+            return t("Stronger reasoning on providers that accept an effort. Others turn thinking on.", "支持档位的服务商使用增强思考，其余服务商开启思考。");
+        case "max":
+            return t("Deepest reasoning the provider accepts. Others turn thinking on.", "使用该服务商允许的最深思考；没有档位的服务商只开启思考。");
+        case "none":
+            return t("Turns thinking off where the provider allows it. Models that must think use their lowest level.", "能关闭的服务商会关闭思考；不能关闭的模型改用它允许的最低档。");
+        default:
+            return t("Leaves each provider's default in place. If a model rejects turning thinking off, the request retries at the lowest level it allows.", "沿用各服务商的默认行为。如果模型拒绝关闭思考，会按它允许的最低档自动重试。");
+    }
+}
+
+/** Global thinking level. Auto is the default and lets the system choose. */
 export function LLMThinkingModeCard({ thinkingMode, thinkingModeSaving, thinkingModeError, saveThinkingMode, t }: {
-    thinkingMode: "enabled" | "disabled";
+    thinkingMode: ThinkingLevel;
     thinkingModeSaving: boolean;
     thinkingModeError: string | null;
-    saveThinkingMode: (mode: "enabled" | "disabled") => void;
+    saveThinkingMode: (mode: ThinkingLevel) => void;
     t: Translate;
 }) {
     return tuningRow(
-        t("Thinking (Reasoning)", "推理（思考过程）"),
-        t("Global; translated to each provider's supported control", "全局设置；会按服务商支持的参数转换"),
+        t("Thinking level", "思考档位"),
+        t("Global. Auto is the default; other levels use each provider's native control.", "全局设置。默认自动，其它档位按服务商支持的参数转换。"),
         <>
-            <div className="llm-config-option-group" role="group" aria-label={t("Thinking mode", "推理模式")} aria-busy={thinkingModeSaving}>
-                {(["enabled", "disabled"] as const).map(mode => {
-                    const active = thinkingMode === mode;
+            <div className="llm-config-option-group" role="group" aria-label={t("Thinking level", "思考档位")} aria-busy={thinkingModeSaving}>
+                {THINKING_LEVELS.map(level => {
+                    const active = thinkingMode === level.id;
                     return (
-                        <button key={mode}
-                            data-testid={`thinking-mode-${mode}`}
+                        <button key={level.id}
+                            data-testid={`thinking-mode-${level.id}`}
                             type="button"
                             aria-pressed={active}
                             disabled={thinkingModeSaving}
                             className={"llm-config-option-btn" + (active ? " is-active" : "")}
-                            onClick={() => { saveThinkingMode(mode); }}>
-                            {mode === "enabled" ? t("On", "开启") : t("Off", "关闭")}
+                            onClick={() => { saveThinkingMode(level.id); }}>
+                            {t(level.en, level.zh)}
                         </button>
                     );
                 })}
             </div>
-            <p className="llm-tuning-row__note">
-                {thinkingMode === "enabled"
-                    ? t("Enabled on new requests using the provider's native control. The chat panel shows reasoning only when the provider returns it.", "已在后续请求中按服务商原生参数开启；仅当服务商返回推理内容时，助手面板才会显示“思考过程”。")
-                    : t("Disabled on new requests using the provider's native control. Models without a hard off switch use their lowest reasoning level.", "已在后续请求中按服务商原生参数关闭；没有硬关闭能力的模型会使用最低推理强度。")}
-            </p>
+            <p className="llm-tuning-row__note">{thinkingLevelNote(thinkingMode, t)}</p>
             {thinkingModeError && <p role="alert" className="llm-tuning-row__note llm-tuning-row__note--danger">{thinkingModeError}</p>}
         </>
     );

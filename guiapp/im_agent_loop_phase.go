@@ -105,14 +105,29 @@ func (h *IMMessageHandler) initialAgentLoopPhase(userText string, ctx *LoopConte
 	if skillName != "" && skillMode == skillPreferenceAgentGuided {
 		return apply(skillName, skillReason, skillMode)
 	}
-	if skillName != "" && taskWantsSkill {
-		return apply(skillName, skillReason, skillMode)
-	}
+	// Naming a skill that is not installed is still a market search. This
+	// stays ahead of the open-document return: admission publishes that
+	// search and closes generate_pdf until it runs.
 	if intent.ExplicitSkillInvocation(userText) && skillName == "" {
 		h.forgetAgentGuidedSkill(ownerID)
 		phase.ForceSkillPreference = true
 		phase.SkillMode = skillPreferenceRemoteRequired
 		return phase
+	}
+	// The classifier already kept this short sentence on the open document.
+	// Admission will not publish a skill tool for it. A pdf/报告 hint must
+	// not demand manage_skill or a market search this round cannot call,
+	// or the model leaves the generate_pdf the plan just authorized.
+	// That hint is also what used to replace a named workflow. An edit
+	// that never asked for a skill leaves the workflow for later.
+	if ctx != nil && ctx.Runtime.SemanticIntent != nil && semanticResidueDocumentSurfaceTurn(*ctx.Runtime.SemanticIntent, userText) {
+		if taskWantsSkill {
+			h.forgetAgentGuidedSkill(ownerID)
+		}
+		return phase
+	}
+	if skillName != "" && taskWantsSkill {
+		return apply(skillName, skillReason, skillMode)
 	}
 	if sticky := h.recallAgentGuidedSkill(ownerID, exec); sticky != "" && looksLikeAgentGuidedContinuation(userText) {
 		return apply(sticky, "continue named agent-guided workflow", skillPreferenceAgentGuided)

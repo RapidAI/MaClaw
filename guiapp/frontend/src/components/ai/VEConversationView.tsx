@@ -26,6 +26,7 @@ import { getWailsAppModule as loadWailsAppModule, type WailsAppModule } from "..
 import { firstVEStreamText, visibleHistoryMessageContent, visibleVEStreamContent } from "./visibleChatText";
 import { applyUserScrollFollow, isAwayFromBottom, tryPinAssistantOutput } from "./assistantOutputScrollLogic";
 import { localizeAIAssistantError } from "./aiAssistantI18n";
+import { createStreamCoalescer, type StreamCoalescer } from "./streamCoalescer";
 
 export { firstVEStreamText, sanitizeVisibleVEText, visibleHistoryMessageContent, visibleVEStreamContent } from "./visibleChatText";
 
@@ -315,6 +316,53 @@ function generateMsgId(): string {
     return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+interface VEStreamChunkEntry {
+    content: string;
+    senderId: string;
+    senderName: string;
+    attachments: VEMessageAttachment[];
+}
+
+/**
+ * Fold one stream chunk into the conversation state — exactly the update
+ * handleStreamChunk applied per event. Extracted so both the immediate
+ * first-chunk paint and the 33ms coalesced flush run the identical logic,
+ * keeping message order, sender switches, and attachment merges unchanged.
+ */
+function applyVEStreamChunkEntry(prev: VEConversationState, entry: VEStreamChunkEntry): VEConversationState {
+    const hasPendingStream = !!prev.streamContent || prev.streamAttachments.length > 0;
+    if (prev.streaming && hasPendingStream && entry.senderId && prev.streamFromId && !participantIdentityMatches(entry.senderId, prev.streamFromId)) {
+        const completedMsg: VEMessage = {
+            id: generateMsgId(),
+            role: "assistant",
+            content: prev.streamContent,
+            timestamp: Date.now(),
+            fromId: prev.streamFromId,
+            fromName: prev.streamFromName || undefined,
+            attachments: prev.streamAttachments.length ? prev.streamAttachments : undefined,
+        };
+        return {
+            ...prev,
+            streaming: true,
+            streamContent: entry.content,
+            streamFromId: entry.senderId,
+            streamFromName: entry.senderName,
+            streamAttachments: entry.attachments,
+            messages: [...prev.messages, completedMsg],
+            error: prev.error?.type === "response_timeout" ? null : prev.error,
+        };
+    }
+    return {
+        ...prev,
+        streaming: true,
+        streamContent: prev.streamContent + entry.content,
+        streamFromId: entry.senderId || prev.streamFromId,
+        streamFromName: entry.senderName || prev.streamFromName,
+        streamAttachments: entry.attachments.length ? mergeVEMessageAttachments(prev.streamAttachments, entry.attachments) : prev.streamAttachments,
+        error: prev.error?.type === "response_timeout" ? null : prev.error,
+    };
+}
+
 /** Create a session with timeout */
 function createSessionWithTimeout<T>(
     promise: Promise<T>,
@@ -588,6 +636,23 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const queueDrainRunningRef = useRef(false);
     const responseWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // 33ms coalescer for ve:stream_chunk updates. The first chunk of a burst
+    // paints immediately; later chunks fold into one state update per flush
+    // (terminal events flush eagerly). Created once — the flush callback only
+    // uses the stable setState, so it survives effect re-subscription.
+    const streamChunkCoalescerRef = useRef<StreamCoalescer<string, VEStreamChunkEntry> | null>(null);
+    if (streamChunkCoalescerRef.current === null) {
+        streamChunkCoalescerRef.current = createStreamCoalescer<string, VEStreamChunkEntry>({
+            onFlush: (_key, entries) => {
+                if (entries.length === 0) return;
+                setState((prev) => {
+                    let next = prev;
+                    for (const entry of entries) next = applyVEStreamChunkEntry(next, entry);
+                    return next;
+                });
+            },
+        });
+    }
     const authPendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const loadedHistorySessionRef = useRef<string>("");
     const wasActiveRef = useRef(active);
@@ -1359,6 +1424,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         setHistoryLoadFailedSessionId("");
         showLocalIntroAfterClearRef.current = true;
         sessionIdRef.current = null;
+        streamChunkCoalescerRef.current?.flush("ve");
         setState((prev) => ({
             ...prev,
             sessionId: null,
@@ -1455,39 +1521,15 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             refreshSilenceTimer();
             const senderId = String(data?.from_id || data?.fromId || data?.sender_id || data?.senderId || "");
             const senderName = String(data?.from_name || data?.fromName || data?.sender_name || data?.senderName || "");
-            setState((prev) => {
-                const hasPendingStream = !!prev.streamContent || prev.streamAttachments.length > 0;
-                if (prev.streaming && hasPendingStream && senderId && prev.streamFromId && !participantIdentityMatches(senderId, prev.streamFromId)) {
-                    const completedMsg: VEMessage = {
-                        id: generateMsgId(),
-                        role: "assistant",
-                        content: prev.streamContent,
-                        timestamp: Date.now(),
-                        fromId: prev.streamFromId,
-                        fromName: prev.streamFromName || undefined,
-                        attachments: prev.streamAttachments.length ? prev.streamAttachments : undefined,
-                    };
-                    return {
-                        ...prev,
-                        streaming: true,
-                        streamContent: content,
-                        streamFromId: senderId,
-                        streamFromName: senderName,
-                        streamAttachments: attachments,
-                        messages: [...prev.messages, completedMsg],
-                        error: prev.error?.type === "response_timeout" ? null : prev.error,
-                    };
-                }
-                return {
-                    ...prev,
-                    streaming: true,
-                    streamContent: prev.streamContent + content,
-                    streamFromId: senderId || prev.streamFromId,
-                    streamFromName: senderName || prev.streamFromName,
-                    streamAttachments: attachments.length ? mergeVEMessageAttachments(prev.streamAttachments, attachments) : prev.streamAttachments,
-                    error: prev.error?.type === "response_timeout" ? null : prev.error,
-                };
-            });
+            // First chunk of a burst paints immediately (no added first-token
+            // latency); later chunks in the same burst are folded into one
+            // state update per 33ms flush so a fast SSE burst does not
+            // re-render per chunk. End/disconnect/clear flush the tail first,
+            // so the transcript stays byte-identical to per-chunk writes.
+            const entry: VEStreamChunkEntry = { content, senderId, senderName, attachments };
+            if (streamChunkCoalescerRef.current?.push("ve", entry)) {
+                setState((prev) => applyVEStreamChunkEntry(prev, entry));
+            }
         };
 
         const handleStreamEnd = (data: any) => {
@@ -1495,6 +1537,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             if (sessionId && sessionId !== sessionIdRef.current) return;
             if (!mountedRef.current) return;
             hideAwaitingReply();
+            streamChunkCoalescerRef.current?.flush("ve");
             setState((prev) => {
                 // A MaClawSrv delivery failure is transported as the content
                 // of the terminal stream_end envelope.  Include that payload
@@ -1538,6 +1581,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             if (reconnectTimerRef.current) return;
             hideAwaitingReply();
             releaseResponseGate();
+            streamChunkCoalescerRef.current?.flush("ve");
             setState((prev) => ({
                 ...prev,
                 streaming: false,
@@ -1595,6 +1639,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         });
 
         return () => {
+            streamChunkCoalescerRef.current?.dispose();
             if (typeof unsub1 === "function") unsub1();
             else EventsOff("ve:stream_chunk");
             if (typeof unsubActivity === "function") unsubActivity();

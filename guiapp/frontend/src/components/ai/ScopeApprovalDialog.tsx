@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef } from "react";
+import { COMMIT_SHAPE_APPROVAL_KIND } from "./assistantApprovalKinds";
 import { localizeText } from "./aiAssistantI18n";
 
 /** Shape of the pending scope-approval request (matches the panel state). */
@@ -15,7 +16,7 @@ export interface ScopeApprovalRequest {
     maintenance: boolean;
 }
 
-export type ScopeApprovalDecision = "allow_once" | "allow_dir" | "deny" | "full_access";
+export type ScopeApprovalDecision = "allow_once" | "allow_task" | "allow_dir" | "deny" | "full_access";
 
 interface ScopeApprovalDialogProps {
     lang?: string;
@@ -51,31 +52,43 @@ function ApprovalMark() {
 
 /** Modal approval dialog shown when CodingSubAgent/maintenance exceeds its scope. */
 export function ScopeApprovalDialog({ lang, approval, isHighRisk, isRemoteHighRisk, isRemoteMaintenance, countdown, onResolve }: ScopeApprovalDialogProps) {
-    const title = isHighRisk
-        ? (isRemoteHighRisk
-            ? localizeText(lang, "Remote Command Approval", "远程命令确认", "遠程命令確認")
-            : localizeText(lang, "Command Approval", "命令确认", "命令確認"))
-        : isRemoteMaintenance
-            ? localizeText(lang, "Remote Maintenance Approval", "远程维护确认", "遠端維護確認")
-            : localizeText(lang, "Scope Approval", "目录越权确认", "目錄越權確認");
-    const lead = isHighRisk
-        ? (isRemoteMaintenance
-            ? localizeText(lang, "Remote maintenance is requesting a high-risk command:", "远程维护请求执行高风险命令：", "遠端維護請求執行高風險命令：")
-            : isRemoteHighRisk
-                ? localizeText(lang, "Remote CodingSubAgent is trying to run a blocked high-risk command:", "远程编码 SubAgent 尝试执行被拦截的高风险命令：", "遠程編碼 SubAgent 嘗試執行被攔截的高風險命令：")
-                : localizeText(lang, "CodingSubAgent is trying to run a blocked high-risk command:", "编码 SubAgent 尝试执行被拦截的高风险命令：", "編碼 SubAgent 嘗試執行被攔截的高風險命令："))
-        : isRemoteMaintenance
-            ? localizeText(lang, "Remote maintenance is requesting access outside the project scope:", "远程维护请求访问项目范围外的路径：", "遠端維護請求存取專案範圍外的路徑：")
-            : localizeText(lang, "CodingSubAgent is trying to access a path outside the project:", "编码 SubAgent 尝试访问项目目录外的路径：", "編碼 SubAgent 嘗試訪問項目目錄外的路徑：");
-    const note = isHighRisk
-        ? localizeText(lang, "Only approve this if you understand the command and trust its effect. Allow for this task skips later command prompts in the current task. If you do nothing, it will be rejected.", "仅在你理解该命令并信任其影响时放行。以后允许后，当前任务不再询问，直接放行。不操作将自动拒绝。", "僅在你理解該命令並信任其影響時放行。以後允許後，當前任務不再詢問，直接放行。不操作將自動拒絕。")
-        : localizeText(lang, `Allow "${approval.directory}" for the rest of this task. Full Access is remembered for later tasks. If you do nothing, it will be rejected.`, `允许目录「${approval.directory}」在本任务中继续使用。完全访问会一直记住。不操作将自动拒绝。`, `允許目錄「${approval.directory}」在本任務中繼續使用。完全訪問會一直記住。不操作將自動拒絕。`);
+    const isCommitShape = approval.kind === COMMIT_SHAPE_APPROVAL_KIND;
+    const title = isCommitShape
+        ? localizeText(lang, "Approval needed", "调用确认", "調用確認")
+        : isHighRisk
+            ? (isRemoteHighRisk
+                ? localizeText(lang, "Remote Command Approval", "远程命令确认", "遠程命令確認")
+                : localizeText(lang, "Command Approval", "命令确认", "命令確認"))
+            : isRemoteMaintenance
+                ? localizeText(lang, "Remote Maintenance Approval", "远程维护确认", "遠端維護確認")
+                : localizeText(lang, "Scope Approval", "目录越权确认", "目錄越權確認");
+    const lead = isCommitShape
+        ? (approval.message.trim() || localizeText(lang, "This call needs approval before it runs.", "这一步需要你的批准后才会执行。", "這一步需要你的批准後才會執行。"))
+        : isHighRisk
+            ? (isRemoteMaintenance
+                ? localizeText(lang, "Remote maintenance is requesting a high-risk command:", "远程维护请求执行高风险命令：", "遠端維護請求執行高風險命令：")
+                : isRemoteHighRisk
+                    ? localizeText(lang, "Remote CodingSubAgent is trying to run a blocked high-risk command:", "远程编码 SubAgent 尝试执行被拦截的高风险命令：", "遠程編碼 SubAgent 嘗試執行被攔截的高風險命令：")
+                    : localizeText(lang, "CodingSubAgent is trying to run a blocked high-risk command:", "编码 SubAgent 尝试执行被拦截的高风险命令：", "編碼 SubAgent 嘗試執行被攔截的高風險命令："))
+            : isRemoteMaintenance
+                ? localizeText(lang, "Remote maintenance is requesting access outside the project scope:", "远程维护请求访问项目范围外的路径：", "遠端維護請求存取專案範圍外的路徑：")
+                : localizeText(lang, "CodingSubAgent is trying to access a path outside the project:", "编码 SubAgent 尝试访问项目目录外的路径：", "編碼 SubAgent 嘗試訪問項目目錄外的路徑：");
+    const note = isCommitShape
+        ? localizeText(lang, "Allow once runs this call only. Allow for this task accepts the same call shape until the task ends. This dialog waits until you choose or the task is cancelled.", "仅这一次只放行这一次调用。本任务内允许后，这一任务里相同形状的调用不再询问。这里会等到你选择，或任务被取消。", "僅這一次只放行這一次調用。本任務內允許後，這一任務裡相同形狀的調用不再詢問。這裡會等到你選擇，或任務被取消。")
+        : isHighRisk
+            ? localizeText(lang, "Only approve this if you understand the command and trust its effect. Allow for this task skips later command prompts in the current task. If you do nothing, it will be rejected.", "仅在你理解该命令并信任其影响时放行。以后允许后，当前任务不再询问，直接放行。不操作将自动拒绝。", "僅在你理解該命令並信任其影響時放行。以後允許後，當前任務不再詢問，直接放行。不操作將自動拒絕。")
+            : localizeText(lang, `Allow "${approval.directory}" for the rest of this task. Full Access is remembered for later tasks. If you do nothing, it will be rejected.`, `允许目录「${approval.directory}」在本任务中继续使用。完全访问会一直记住。不操作将自动拒绝。`, `允許目錄「${approval.directory}」在本任務中繼續使用。完全訪問會一直記住。不操作將自動拒絕。`);
     const alwaysLabel = isHighRisk
         ? localizeText(lang, "Allow for this task", "以后允许", "以後允許")
         : localizeText(lang, "Full Access", "完全访问", "完全訪問");
     const onceLabel = isHighRisk
         ? localizeText(lang, `Allow Once (${countdown}s)`, `本次放行 (${countdown}s)`, `本次放行 (${countdown}s)`)
         : localizeText(lang, `Allow Directory (${countdown}s)`, `允许该目录 (${countdown}s)`, `允許該目錄 (${countdown}s)`);
+    const pathLabel = isCommitShape
+        ? localizeText(lang, "This call", "这次调用", "這次調用")
+        : isHighRisk
+            ? localizeText(lang, "Command", "命令", "命令")
+            : localizeText(lang, "Path", "路径", "路徑");
     const showFacts = [approval.tool, approval.path, approval.projectPath].some(value => value.trim() !== "");
     const titleId = useId();
     const leadId = useId();
@@ -150,7 +163,7 @@ export function ScopeApprovalDialog({ lang, approval, isHighRisk, isRemoteHighRi
                     {showFacts && (
                     <div className="aap-scope-facts" id={factsId}>
                         <FactRow label={localizeText(lang, "Tool", "工具", "工具")} value={approval.tool} />
-                        <FactRow label={isHighRisk ? localizeText(lang, "Command", "命令", "命令") : localizeText(lang, "Path", "路径", "路徑")} value={approval.path} />
+                        <FactRow label={pathLabel} value={approval.path} />
                         <FactRow label={isHighRisk ? localizeText(lang, "Working dir", "工作目录", "工作目錄") : localizeText(lang, "Project", "项目范围", "項目範圍")} value={approval.projectPath} />
                     </div>
                     )}
@@ -158,8 +171,17 @@ export function ScopeApprovalDialog({ lang, approval, isHighRisk, isRemoteHighRi
                 </div>
                 <div className="modal-footer custom-dialog__footer">
                     <button ref={denyRef} type="button" className="btn-secondary" onClick={() => resolve("deny")}>{localizeText(lang, "Deny", "拒绝", "拒絕")}</button>
-                    <button type="button" className="btn-secondary aap-scope-always" onClick={() => resolve("full_access")}>{alwaysLabel}</button>
-                    <button type="button" className="btn-primary" onClick={() => resolve(isHighRisk ? "allow_once" : "allow_dir")}>{onceLabel}</button>
+                    {isCommitShape ? (
+                        <>
+                            <button type="button" className="btn-secondary aap-scope-always" onClick={() => resolve("allow_task")}>{localizeText(lang, "Allow for this task", "本任务内允许", "本任務內允許")}</button>
+                            <button type="button" className="btn-primary" onClick={() => resolve("allow_once")}>{localizeText(lang, "Allow once", "仅这一次", "僅這一次")}</button>
+                        </>
+                    ) : (
+                        <>
+                            <button type="button" className="btn-secondary aap-scope-always" onClick={() => resolve("full_access")}>{alwaysLabel}</button>
+                            <button type="button" className="btn-primary" onClick={() => resolve(isHighRisk ? "allow_once" : "allow_dir")}>{onceLabel}</button>
+                        </>
+                    )}
                 </div>
             </div>
         </div>

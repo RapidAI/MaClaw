@@ -2,7 +2,7 @@ import type { ChatMessage } from "./useAIAssistant";
 import { forgetAIAssistantSessionRounds } from "./useAIAssistant";
 import type { AITab, AITabState } from "./AITabTypes";
 import { expertSessionKey, messageBelongsToSessionOrLegacy, projectSessionKey } from "./aiAssistantPanelSessionUtils";
-import { mergeChatMessages, withoutProjectContextMessages } from "./aiAssistantProjectTabState";
+import { mergeProjectRoundHistory, withoutProjectContextMessages } from "./aiAssistantProjectTabState";
 
 type ProjectRound = { tabId: string | null; projectPath: string; sessionKey: string; baseline: number; seq?: number };
 type DetachedRound = { tabId: string; messageIds: Set<string> };
@@ -101,12 +101,11 @@ export function closeAssistantProjectTab(tabId: string, deps: AssistantProjectTa
         if (snapshot?.tabId === tabId) {
             const wasCleared = deps.clearedProjectTabIdsRef.current.has(tabId);
             const snapshotMessages = !wasCleared && deps.activeTabIdRef.current === tabId ? deps.latestDisplayMessagesRef.current : snapshot.messages;
+            const storedHistory = withoutProjectContextMessages(existingState?.history);
+            const snapshotHistory = withoutProjectContextMessages(snapshotMessages);
             const nextHistory = wasCleared
-                ? withoutProjectContextMessages(snapshotMessages)
-                : mergeChatMessages(
-                    withoutProjectContextMessages(existingState?.history),
-                    withoutProjectContextMessages(snapshotMessages),
-                );
+                ? snapshotHistory
+                : mergeProjectRoundHistory(storedHistory, storedHistory, snapshotHistory);
             deps.saveTabState(tabId, {
                 ...existingState,
                 history: nextHistory,

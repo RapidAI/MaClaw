@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -801,18 +800,13 @@ colors：6 位十六进制，不要带 #。必须包含 ink、navy、accent、go
 页面底色保持白色。ink、navy、meta、quote、link 必须在白底上清楚，不要用浅灰。accent 和 rule 要饱和。on_dark 是深色顶栏上的浅色字。`
 
 // prepareDocumentStyleModel keeps a short JSON answer from being eaten by
-// chain-of-thought. GLM-5.3-Flash thinks unless the request says
-// thinking.type=disabled, and then a 900-token cap ends inside the JSON.
-// GLM-5.3 cannot disable thinking; a low budget plus room for the answer
-// keeps FitAnthropicThinkingBudget from shrinking the budget to one token.
+// chain-of-thought. Models that cannot skip the trace use their cheapest
+// legal effort and enough room for the JSON to land outside that trace.
 func prepareDocumentStyleModel(cfg corelib.MaclawLLMConfig) (corelib.MaclawLLMConfig, int) {
 	cfg = captionRequestConfig(cfg)
-	if corelib.IsAlwaysOnThinkingModel(cfg) {
-		cfg.ReasoningEffort = "low"
-		return cfg, 2048
-	}
-	if corelib.GLMFlashThinksByDefault(cfg) {
-		cfg.ThinkingMode = "disabled"
+	if corelib.ProbeNeedsReasoningRoom(cfg) {
+		cfg = corelib.UseCheapLegalThinking(cfg)
+		return cfg, corelib.LLMProbeAlwaysOnMaxOutputTokens
 	}
 	return cfg, 900
 }
@@ -837,44 +831,29 @@ func (a *App) completePDFStyleJSON(request string) (string, error) {
 		map[string]interface{}{"role": "system", "content": pdfStyleSystemPrompt},
 		map[string]interface{}{"role": "user", "content": request},
 	}
-	extra := map[string]interface{}{"max_tokens": maxTokens}
-	if captionUsesAnthropic(cfg) {
-		resp, err := llm.DoAnthropicRequestWithOptions(ctx, cfg, messages, nil, pdfStyleHTTPClient, llm.AnthropicMessagesRequestOptions{MaxTokens: maxTokens})
-		text, err := documentStyleResponseText(resp, err)
-		return pdfStyleModelText(text, err)
-	}
-	if cfg.IsResponsesAPI() {
-		req, _, _, err := llm.NewResponsesAPIRequest(ctx, cfg, messages, llm.ResponsesAPIRequestOptions{Stream: false, ExtraBody: extra})
-		if err != nil {
-			return "", pdfStyleCallError(err)
-		}
-		return pdfStyleHTTPParse(ctx, req, llm.ParseNonStreamResponsesAPIBody)
-	}
-	req, _, _, err := llm.NewOpenAIChatRequest(ctx, cfg, messages, llm.OpenAIChatRequestOptions{Stream: false, ExtraBody: extra})
-	if err != nil {
-		return "", pdfStyleCallError(err)
-	}
-	return pdfStyleHTTPParse(ctx, req, llm.ParseNonStreamOpenAIResponseBody)
+	return completeDocumentStyleModel(ctx, cfg, pdfStyleHTTPClient, messages, maxTokens)
 }
 
 var pdfStyleHTTPClient = &http.Client{Timeout: pdfStyleGenerateTimeout}
 
-func pdfStyleHTTPParse(ctx context.Context, req *http.Request, parse func([]byte) (*llm.Response, error)) (string, error) {
-	req = req.WithContext(ctx)
-	resp, err := pdfStyleHTTPClient.Do(req)
-	if err != nil {
-		return "", pdfStyleCallError(err)
+// completeDocumentStyleModel sends the short JSON request through the shared
+// non-stream helpers. Those helpers retry a thinking-off refusal once.
+// Hand-rolled posts dropped the response body, so the refusal could not be
+// retried and the dialog only showed the status code.
+func completeDocumentStyleModel(ctx context.Context, cfg corelib.MaclawLLMConfig, client *http.Client, messages []interface{}, maxTokens int) (string, error) {
+	extra := map[string]interface{}{"max_tokens": maxTokens}
+	if captionUsesAnthropic(cfg) {
+		resp, err := llm.DoAnthropicRequestWithOptions(ctx, cfg, messages, nil, client, llm.AnthropicMessagesRequestOptions{MaxTokens: maxTokens})
+		text, err := documentStyleResponseText(resp, err)
+		return pdfStyleModelText(text, err)
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-	if err != nil {
-		return "", pdfStyleCallError(err)
+	if cfg.IsResponsesAPI() {
+		resp, err := llm.DoResponsesAPIRequestWithOptions(ctx, cfg, messages, client, llm.ResponsesAPIRequestOptions{ExtraBody: extra})
+		text, err := documentStyleResponseText(resp, err)
+		return pdfStyleModelText(text, err)
 	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("模型请求失败（HTTP %d）", resp.StatusCode)
-	}
-	parsed, err := parse(body)
-	text, err := documentStyleResponseText(parsed, err)
+	resp, err := llm.DoOpenAIRequestWithOptions(ctx, cfg, messages, nil, client, llm.OpenAIChatRequestOptions{ExtraBody: extra})
+	text, err := documentStyleResponseText(resp, err)
 	return pdfStyleModelText(text, err)
 }
 

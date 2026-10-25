@@ -243,25 +243,19 @@ func TestSemanticAcquireRemoteInvocationArgsPromotesSingleURLAlias(t *testing.T)
 	}
 }
 
-// The delivery adapter takes no input, so the empty envelope slip
-// {"arguments": "{}"} washes to {} and the one-shot send_file grant survives.
-// Contentful arguments (forged artifact_id/path, non-empty envelope) pass
-// through unchanged so admission rejects them as unknown fields.
-func TestSemanticDeliveryInvocationArgsWashesOnlyEmptyEnvelope(t *testing.T) {
-	if got := semanticDeliveryInvocationArgs(`{"arguments": "{}"}`); got != "{}" {
-		t.Fatalf("empty envelope slip must wash to {}: %s", got)
-	}
-	forged := `{"artifact_id":"forged","path":"C:/Windows/win.ini"}`
-	if got := semanticDeliveryInvocationArgs(forged); got != forged {
-		t.Fatalf("forged steering fields must pass through for rejection: %s", got)
-	}
-	contentful := `{"arguments": "{\"path\": \"/tmp/x.pdf\"}"}`
-	if got := semanticDeliveryInvocationArgs(contentful); got != contentful {
-		t.Fatalf("non-empty envelope must pass through for rejection: %s", got)
-	}
-	decoration := `{"path": null}`
-	if got := semanticDeliveryInvocationArgs(decoration); got != decoration {
-		t.Fatalf("non-envelope keys must pass through for rejection: %s", got)
+// The current-channel adapter takes no input. Any JSON object is the bound
+// delivery, including a path or a forged artifact id. A non-object stays so
+// the schema can still reject it.
+func TestSemanticDeliveryInvocationArgsWashesObjectsToTheBoundCall(t *testing.T) {
+	for _, input := range []string{
+		`{"arguments": "{}"}`,
+		`{"artifact_id":"forged","path":"C:/Windows/win.ini"}`,
+		`{"arguments": "{\"path\": \"/tmp/x.pdf\"}"}`,
+		`{"path": null}`,
+	} {
+		if got := semanticDeliveryInvocationArgs(input); got != "{}" {
+			t.Fatalf("object must wash to the bound call: input=%s output=%s", input, got)
+		}
 	}
 	garbage := `not json`
 	if got := semanticDeliveryInvocationArgs(garbage); got != garbage {
@@ -285,6 +279,17 @@ func TestSemanticDeliveryAdmissionSurvivesArgumentsEnvelope(t *testing.T) {
 	}
 	if _, err := cb.semanticCanonicalArguments(*delivery, `{"arguments": "{}"}`); err != nil {
 		t.Fatalf("envelope slip must not burn the delivery grant: %v", err)
+	}
+	aimed := `{"path":"C:/Windows/win.ini","destination":"wechat","forward_to_im":true,"artifact_id":"forged"}`
+	canonical, err := cb.semanticCanonicalArguments(*delivery, aimed)
+	if err != nil {
+		t.Fatalf("a path on the current-chat file must be the bound call: %v", err)
+	}
+	if string(canonical.CanonicalJSON) != "{}" {
+		t.Fatalf("canonical=%s", canonical.CanonicalJSON)
+	}
+	if _, err := cb.semanticCanonicalArguments(*delivery, `not json`); err == nil {
+		t.Fatal("a non-object must still be rejected before execution")
 	}
 }
 

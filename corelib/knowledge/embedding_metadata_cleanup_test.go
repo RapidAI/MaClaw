@@ -22,7 +22,7 @@ func TestDeleteSourcesByIDsRemovesStructuredRowsAndEmbeddingMetadata(t *testing.
 	}
 	now := formatTime(parseTime("2026-01-01T00:00:00Z"))
 	source := Source{ID: "cleanup-source", Kind: SourceKindCSV, URI: "cleanup.csv", Status: StatusParsed}
-	if err := insertKBSource(ctx, tx, source); err != nil {
+	if err := insertSource(ctx, tx, source); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO kb_tables(id, source_id, sheet_name, created_at, updated_at) VALUES ('cleanup-table', ?, 'Sheet1', ?, ?)`, source.ID, now, now); err != nil {
@@ -79,7 +79,7 @@ func TestBackfillTableRowEmbeddingsForSourcesBatchesLargeSourceLists(t *testing.
 	for i := 0; i < 401; i++ {
 		id := NewID("batch-source")
 		ids = append(ids, id)
-		if err := insertKBSource(ctx, tx, Source{ID: id, Kind: SourceKindCSV, URI: id + ".csv", Status: StatusParsed}); err != nil {
+		if err := insertSource(ctx, tx, Source{ID: id, Kind: SourceKindCSV, URI: id + ".csv", Status: StatusParsed}); err != nil {
 			t.Fatal(err)
 		}
 	}

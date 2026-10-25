@@ -81,7 +81,7 @@ export const inputStyle: CSSProperties = {
     padding: "7px 10px",
     fontSize: "0.8rem",
     border: `1px solid var(--theme-border)`,
-    borderRadius: "var(--radius-md, 10px)",
+    borderRadius: "var(--radius-md, 8px)",
     background: "var(--theme-surface)",
     color: "var(--theme-text-primary)",
     boxSizing: "border-box",

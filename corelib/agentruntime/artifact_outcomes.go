@@ -18,6 +18,12 @@ func ResponseHasPDF(fileName, localPath, mimeType string) bool {
 		strings.HasSuffix(strings.ToLower(strings.TrimSpace(localPath)), ".pdf")
 }
 
+// HostPublishedCurrentChannelFileNote is the tool result after a PDF is in
+// the artifact broker. The host attaches that file to this chat when the
+// model stops. The sentence must not name send_file: that name is also an
+// external send, and a model call pauses the turn before the host attach.
+const HostPublishedCurrentChannelFileNote = "PDF artifact published. The host attaches it to this chat. This is not a send."
+
 // HostOwnedGeneratePDFSucceeded recognizes the stable success marker emitted
 // by the trusted PDF adapter.  Error/unknown markers always win, preventing a
 // friendly-looking failure string from being treated as a committed effect.

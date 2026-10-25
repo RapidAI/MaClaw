@@ -299,6 +299,8 @@ func (a *App) KnowledgeAddFolderWatch(rawPath string) (KnowledgeFolderWatch, err
 }
 
 // KnowledgeRemoveFolderWatch stops watching a folder. Imported knowledge stays.
+// KnowledgeRemoveFolderWatch stops listening to a folder. The folder collection
+// and its members stay, so imported documents remain filed after the watch ends.
 func (a *App) KnowledgeRemoveFolderWatch(id string) error {
 	if a == nil {
 		return fmt.Errorf("app is unavailable")
@@ -858,6 +860,9 @@ func (a *App) importKnowledgeFolderWatchDirectory(id string) {
 	// Wait before Close, which would otherwise cancel that work. Finish runs
 	// after this so the row stays on "importing" through linking.
 	releaseStore()
+	if err == nil {
+		a.attachImportedSourcesToFolderCollection(item.Path, result)
+	}
 	if !a.knowledgeFolderWatchHas(id) || a.knowledgeFolderWatchClosed() {
 		return
 	}
@@ -961,6 +966,9 @@ func (a *App) importKnowledgeFolderWatchFiles(id string, paths []string) {
 	defer releaseStore()
 	result, err := store.ImportFiles(a.knowledgeContext(), a.knowledgeFolderWatchImportRequest(item.Path), cleaned)
 	releaseStore()
+	if err == nil {
+		a.attachImportedSourcesToFolderCollection(item.Path, result)
+	}
 	if !a.knowledgeFolderWatchHas(id) || a.knowledgeFolderWatchClosed() {
 		return
 	}
@@ -980,11 +988,44 @@ func (a *App) knowledgeFolderWatchImportRequest(root string) knowledge.Directory
 		RootPath:     root,
 		SaveScope:    knowledge.SaveScopePersonal,
 		TopicHint:    filepath.Base(root),
+		DistillMode:  knowledge.DistillModeRules,
 		Labels:       []string{"folder-watch", filepath.Base(root)},
 		AutoLabels:   true,
 		Recursive:    true,
 		ExcludeGlobs: globs,
 	})
+}
+
+func collectionSourceIDsFromImport(result knowledge.DirectoryImportResult) []string {
+	ids := make([]string, 0, len(result.Items))
+	seen := make(map[string]struct{}, len(result.Items))
+	for _, item := range result.Items {
+		id := strings.TrimSpace(item.SourceID)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func (a *App) attachImportedSourcesToFolderCollection(root string, result knowledge.DirectoryImportResult) {
+	if a == nil || a.knowledgeFolderWatchClosed() {
+		return
+	}
+	store, err := a.openKnowledgeStore()
+	if err != nil {
+		log.Printf("[knowledge-watch] folder collection: %v", err)
+		return
+	}
+	defer store.Close()
+	if _, err := store.AttachFolderCollection(a.knowledgeContext(), knowledge.MembershipUserKey(desktopUserID), root, collectionSourceIDsFromImport(result)); err != nil {
+		log.Printf("[knowledge-watch] folder collection: %v", err)
+	}
 }
 
 func (a *App) finishKnowledgeFolderWatchImport(id, path string, result knowledge.DirectoryImportResult, importErr error) {

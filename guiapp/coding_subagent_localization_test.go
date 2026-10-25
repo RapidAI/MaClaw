@@ -58,6 +58,76 @@ func TestLocalizationCandidatesFromOutputFindsAllPathsDeterministically(t *testi
 	}
 }
 
+func TestCodegraphCandidateProbe(t *testing.T) {
+	const readProbe = "read symbol context and trace references/callers"
+	const navProbe = "code_navigation node, file_symbols, callers, or callees"
+	hit := "#### snake/src/Game.cpp — update(method)\n```cpp\nvoid update() {}\n```\n- snake/src/Game.cpp:12 caller\n- snake/src/Renderer.cpp:4 caller\n"
+	if got := codegraphCandidateProbe("codegraph", hit, "snake/src/Game.cpp", readProbe); got != navProbe {
+		t.Fatalf("codegraph hit probe=%q", got)
+	}
+	if got := codegraphCandidateProbe("text", hit, "snake/src/Game.cpp", readProbe); got != readProbe {
+		t.Fatalf("text search probe=%q", got)
+	}
+	if got := codegraphCandidateProbe("remote:auto", hit, "snake/src/Game.cpp", readProbe); got != readProbe {
+		t.Fatalf("remote search probe=%q", got)
+	}
+	if got := codegraphCandidateProbe("codegraph", "No indexed file matches snake/src/Game.cpp\n", "snake/src/Game.cpp", readProbe); got != readProbe {
+		t.Fatalf("indexed miss probe=%q", got)
+	}
+	stale := hit + "\nThese files were edited since the last index sync.\n- ./snake/src/Renderer.cpp (edited 1s ago)\nRead them directly.\n"
+	if got := codegraphCandidateProbe("codegraph", stale, "snake/src/Renderer.cpp", readProbe); got != readProbe {
+		t.Fatalf("stale file probe=%q", got)
+	}
+	if got := codegraphCandidateProbe("codegraph", stale, "snake/src/Game.cpp", readProbe); got != navProbe {
+		t.Fatalf("fresh file beside stale banner probe=%q", got)
+	}
+	direct := stale + "Read the file directly.\n"
+	if got := codegraphCandidateProbe("codegraph", direct, "snake/src/Game.cpp", readProbe); got != readProbe {
+		t.Fatalf("direct-read sentence probe=%q", got)
+	}
+	candidates := retargetCodegraphCandidateProbes("codegraph", stale, localizationCandidatesFromOutput(stale))
+	probes := map[string]string{}
+	for _, candidate := range candidates {
+		probes[candidate.File] = candidate.NextProbe
+	}
+	if probes["snake/src/Game.cpp"] != navProbe || probes["snake/src/Renderer.cpp"] != readProbe {
+		t.Fatalf("retargeted=%+v", candidates)
+	}
+	search := retargetCodegraphCandidateProbes("text", hit, localizationCandidatesFromOutput(hit))
+	if len(search) != 2 || search[0].NextProbe != readProbe || search[1].NextProbe != readProbe {
+		t.Fatalf("text retarget=%+v", search)
+	}
+}
+
+func TestCodegraphFenceIsNotADirectReadBanner(t *testing.T) {
+	const readProbe = "read symbol context and trace references/callers"
+	const navProbe = "code_navigation node, file_symbols, callers, or callees"
+	fenced := "#### snake/src/Game.cpp — update(function)\n\n```cpp\n// were edited since the last index sync\n// Read them directly\n// Read the file directly\n// directly for its current content\n- snake/src/Game.cpp (edited 1s ago)\nvoid update() {}\n```\n- snake/src/Game.cpp:12 caller\n"
+	if codegraphMCPStale(fenced) || codegraphMCPStaleFile(fenced, "snake/src/Game.cpp") || codegraphOutputAllowsDirectRead(fenced) {
+		t.Fatal("a source fence was treated as the daemon banner")
+	}
+	if got := codegraphCandidateProbe("codegraph", fenced, "snake/src/Game.cpp", readProbe); got != navProbe {
+		t.Fatalf("fenced phrase probe=%q", got)
+	}
+	if hint := codegraphContinueHint("codegraph", "names only\n```\nRead the file directly\n```\n"); hint != codegraphNamesHint {
+		t.Fatalf("fenced hint=%q", hint)
+	}
+	listedInside := "were edited since the last index sync\n```\n- snake/src/Game.cpp (edited 1s ago)\n```\n"
+	if codegraphMCPStaleFile(listedInside, "snake/src/Game.cpp") {
+		t.Fatal("a fenced path list marked the file stale")
+	}
+	banner := "These files were edited since the last index sync.\n- snake/src/Game.cpp (edited 1s ago)\nRead them directly.\n" + fenced
+	if !codegraphMCPStaleFile(banner, "snake/src/Game.cpp") {
+		t.Fatal("banner list was ignored")
+	}
+	if got := codegraphCandidateProbe("codegraph", banner, "snake/src/Game.cpp", readProbe); got != readProbe {
+		t.Fatalf("banner probe=%q", got)
+	}
+	if hint := codegraphContinueHint("codegraph", "> Read the file directly if you need a value.\n"); hint != codegraphDirectReadHint {
+		t.Fatalf("quote hint=%q", hint)
+	}
+}
+
 func TestRankLocalizationCandidatesIsIdempotent(t *testing.T) {
 	in := []CodingSubAgentLocalizationCandidate{
 		{File: "root.go", Symbol: "Run", Score: 2, SupportingEvidence: []string{"stack", "caller"}},
@@ -807,6 +877,161 @@ func TestMissedNodeBodyUsesTheAbsolutePathFromTheEditGate(t *testing.T) {
 	}
 }
 
+func TestPinnedNodeDeclarationOpensTheEditGate(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "quality_baseline.h")
+	src := "" +
+		"struct Frame {\n" +
+		"    const char* label;\n" +
+		"    int colors;\n" +
+		"};\n" +
+		"static const Frame kFrames[] = {\n" +
+		"    { \"running\", 1 },\n" +
+		"};\n" +
+		"static const Frame& reference() { return kFrames[0]; }\n" +
+		"static const double kDrawMsBudgetFactor = 1.5;\n" +
+		"double shown = kDrawMsBudgetFactor;\n" +
+		"int Foo::Bar = 1;\n" +
+		"struct Bar { int x; };\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	factor, ok := codegraphMissedNodeBody(root, "node", "kDrawMsBudgetFactor", "quality_baseline.h")
+	if !ok || !strings.Contains(factor, "Body for kDrawMsBudgetFactor in quality_baseline.h.") || !strings.Contains(factor, "= 1.5;") || strings.Contains(factor, "shown") || strings.Contains(factor, "struct Frame") {
+		t.Fatalf("constant declaration = %q ok=%v", factor, ok)
+	}
+	frame, ok := codegraphMissedNodeBody(root, "node", "Frame", path)
+	if !ok || !strings.Contains(frame, "struct Frame {") || !strings.Contains(frame, "label") || strings.Contains(frame, "1.5") || strings.Contains(frame, "kFrames") {
+		t.Fatalf("struct declaration = %q ok=%v", frame, ok)
+	}
+	rows, ok := codegraphMissedNodeBody(root, "node", "kFrames", "quality_baseline.h")
+	if !ok || !strings.Contains(rows, "kFrames[]") || !strings.Contains(rows, "running") || strings.Contains(rows, "struct Frame") {
+		t.Fatalf("array declaration = %q ok=%v", rows, ok)
+	}
+	fn, ok := codegraphMissedNodeBody(root, "node", "reference", "quality_baseline.h")
+	if !ok || !strings.Contains(fn, "return kFrames[0];") || strings.Contains(fn, "1.5") {
+		t.Fatalf("function declaration must stay on the function reader, got %q ok=%v", fn, ok)
+	}
+	qualified, ok := codegraphMissedNodeBody(root, "node", "quality_baseline::kDrawMsBudgetFactor", "quality_baseline.h")
+	if !ok || !strings.Contains(qualified, "Body for quality_baseline::kDrawMsBudgetFactor in quality_baseline.h.") || !strings.Contains(qualified, "= 1.5;") || strings.Contains(qualified, "shown") {
+		t.Fatalf("qualified constant = %q ok=%v", qualified, ok)
+	}
+	dotted, ok := codegraphMissedNodeBody(root, "node", "quality_baseline.kDrawMsBudgetFactor", "quality_baseline.h")
+	if !ok || !strings.Contains(dotted, "Body for quality_baseline.kDrawMsBudgetFactor in quality_baseline.h.") || !strings.Contains(dotted, "= 1.5;") || strings.Contains(dotted, "shown") {
+		t.Fatalf("dotted constant = %q ok=%v", dotted, ok)
+	}
+	qfn, ok := codegraphMissedNodeBody(root, "node", "quality_baseline::reference", "quality_baseline.h")
+	if !ok || !strings.Contains(qfn, "Body for quality_baseline::reference in quality_baseline.h.") || !strings.Contains(qfn, "return kFrames[0];") || strings.Contains(qfn, "1.5") {
+		t.Fatalf("qualified function = %q ok=%v", qfn, ok)
+	}
+	bar, ok := codegraphMissedNodeBody(root, "node", "Foo::Bar", "quality_baseline.h")
+	if !ok || !strings.Contains(bar, "Foo::Bar = 1") || strings.Contains(bar, "struct Bar") {
+		t.Fatalf("full qualified name must win over the short name, got %q ok=%v", bar, ok)
+	}
+	if _, ok := codegraphMissedNodeBody(root, "node", "shown", "quality_baseline.h"); !ok {
+		t.Fatal("a plain variable declaration must still be the current source")
+	}
+	if _, ok := codegraphMissedNodeBody(root, "explore", "kDrawMsBudgetFactor", path); ok {
+		t.Fatal("a file survey is not a declaration body")
+	}
+	if _, ok := codegraphMissedNodeBody(root, "node", "notInFile", path); ok {
+		t.Fatal("a name that is not declared must stay a miss")
+	}
+	absent := "No indexed file matches \"quality_baseline.h\". Codegraph indexes source files."
+	if got := codegraphFinishPinnedNode(root, "node", "kDrawMsBudgetFactor", path, absent); got != absent || strings.Contains(got, "Body for ") {
+		t.Fatalf("file miss became a declaration: %q", got)
+	}
+	names := "**quality_baseline.h** — 1 symbol\n- `kDrawMsBudgetFactor` (constant) — :8\n"
+	finished := codegraphFinishPinnedNode(root, "node", "kDrawMsBudgetFactor", path, names)
+	if !strings.Contains(finished, "Body for kDrawMsBudgetFactor in quality_baseline.h.") || !strings.Contains(finished, "= 1.5;") || strings.Contains(finished, "constant") {
+		t.Fatalf("symbol map must be replaced by the declaration, got %q", finished)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: root}}
+	cb.noteCodegraphOwnership(path, info, true)
+	if msg := cb.requireReadBeforeModify(path, "edit_file"); !strings.Contains(msg, `file 填 "quality_baseline.h"`) {
+		t.Fatalf("indexed header stayed editable before the declaration, got %q", msg)
+	}
+	cb.noteCodegraphReadSnapshots(root, factor)
+	if msg := cb.requireReadBeforeModify(path, "edit_file"); msg != "" {
+		t.Fatalf("the constant declaration must open the edit gate, got %q", msg)
+	}
+}
+
+func TestQualifiedSpellingDoesNotBindToAnotherShortName(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "names.cpp")
+	src := "" +
+		"void Foo::Bar();\n" +
+		"void Bar() { return 1; }\n" +
+		"struct Bar { int x; };\n" +
+		"int shown = Foo::Bar;\n" +
+		"int Bar = 2;\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if body, ok := codegraphMissedNodeBody(root, "node", "Foo::Bar", "names.cpp"); ok {
+		t.Fatalf("qualified spelling bound to another Bar: %q", body)
+	}
+	short := "void Bar() { return 1; }\n"
+	if err := os.WriteFile(path, []byte(short), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body, ok := codegraphMissedNodeBody(root, "node", "Foo::Bar", "names.cpp")
+	if !ok || !strings.Contains(body, "Body for Foo::Bar in names.cpp.") || !strings.Contains(body, "return 1") {
+		t.Fatalf("short name fallback = %q ok=%v", body, ok)
+	}
+	nested := "void Foo::Bar::baz() { return 9; }\n"
+	if err := os.WriteFile(path, []byte(nested), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if body, ok := codegraphMissedNodeBody(root, "node", "Foo::Bar", "names.cpp"); ok {
+		t.Fatalf("longer qualified name bound to Foo::Bar: %q", body)
+	}
+	other := "int Foo::Bar = 1;\nstruct Bar { int x; };\n"
+	if err := os.WriteFile(path, []byte(other), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := codegraphMissedNodeBody(root, "node", "Other::Bar", "names.cpp")
+	if !ok || !strings.Contains(got, "struct Bar") || strings.Contains(got, "Foo::Bar = 1") {
+		t.Fatalf("different qualifier = %q ok=%v", got, ok)
+	}
+	inner := "void Foo::Bar() { return 3; }\n"
+	if err := os.WriteFile(path, []byte(inner), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	innerBody, ok := codegraphMissedNodeBody(root, "node", "ns::Foo::Bar", "names.cpp")
+	if !ok || !strings.Contains(innerBody, "return 3") {
+		t.Fatalf("shorter qualifier = %q ok=%v", innerBody, ok)
+	}
+	both := "void Bar() { return 1; }\nvoid Foo::Bar() { return 3; }\nstruct Bar { int x; };\nint Foo::Bar = 4;\n"
+	if err := os.WriteFile(path, []byte(both), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prefer, ok := codegraphMissedNodeBody(root, "node", "ns::Foo::Bar", "names.cpp")
+	if !ok || !strings.Contains(prefer, "return 3") || strings.Contains(prefer, "return 1") || strings.Contains(prefer, "struct Bar") {
+		t.Fatalf("qualified spelling must beat the short name, got %q ok=%v", prefer, ok)
+	}
+	decl := "struct Bar { int x; };\nint Foo::Bar = 4;\n"
+	if err := os.WriteFile(path, []byte(decl), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	declBody, ok := codegraphMissedNodeBody(root, "node", "ns::Foo::Bar", "names.cpp")
+	if !ok || !strings.Contains(declBody, "Foo::Bar = 4") || strings.Contains(declBody, "struct Bar") {
+		t.Fatalf("qualified declaration must beat the short name, got %q ok=%v", declBody, ok)
+	}
+	longer := "void X::Foo::Bar() { return 8; }\n"
+	if err := os.WriteFile(path, []byte(longer), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if body, ok := codegraphMissedNodeBody(root, "node", "Foo::Bar", "names.cpp"); ok {
+		t.Fatalf("longer chain bound to Foo::Bar: %q", body)
+	}
+}
+
 func TestCodeNavigationDoesNotReadThroughJunction(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, "project")
@@ -1152,6 +1377,542 @@ func TestCodegraphUnbracedDefinitionUnlocksEdit(t *testing.T) {
 	if !strings.Contains(pyBody, "return CLIENT_W") || strings.Contains(pyBody, "def other") {
 		t.Fatalf("python body = %s", pyBody)
 	}
+	qualifiedPy := codegraphSourceBody(dir, "tone.py", "Audio.playTone")
+	if !strings.Contains(qualifiedPy, "return CLIENT_W") || strings.Contains(qualifiedPy, "def other") {
+		t.Fatalf("qualified python body = %s", qualifiedPy)
+	}
+	qualifiedLua := codegraphSourceBody(dir, "tone.lua", "Audio::playTone")
+	if !strings.Contains(qualifiedLua, "return CLIENT_W") || strings.Contains(qualifiedLua, "function other") {
+		t.Fatalf("qualified lua body = %s", qualifiedLua)
+	}
+	opened, ok := codegraphMissedNodeBody(dir, "node", "Audio.playTone", "tone.py")
+	if !ok || !strings.Contains(opened, "Body for Audio.playTone in tone.py.") || !strings.Contains(opened, "return CLIENT_W") || strings.Contains(opened, "def other") {
+		t.Fatalf("qualified python edit body = %q ok=%v", opened, ok)
+	}
+	both := "def playTone(freq):\n    return SHORT\n\ndef Audio.playTone(freq):\n    return FULL\n"
+	if err := os.WriteFile(filepath.Join(dir, "both.py"), []byte(both), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bothBody := codegraphSourceBody(dir, "both.py", "Audio.playTone")
+	if !strings.Contains(bothBody, "return FULL") || strings.Contains(bothBody, "return SHORT") {
+		t.Fatalf("full python name = %s", bothBody)
+	}
+	dotted := "obj.playTone()\n{\n  return CALL\n}\nfunction playTone(freq)\n  return SHORT\nend\nfunction Audio.playTone(freq)\n  return DOT\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "dotted.lua"), []byte(dotted), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dotBody := codegraphSourceBody(dir, "dotted.lua", "mod.Audio.playTone")
+	if !strings.Contains(dotBody, "return DOT") || strings.Contains(dotBody, "return SHORT") || strings.Contains(dotBody, "return CALL") {
+		t.Fatalf("dotted qualifier body = %s", dotBody)
+	}
+	colon := "function playTone(freq)\n  return SHORT\nend\nfunction Audio::playTone(freq)\n  return COLON\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "colon.lua"), []byte(colon), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	colonBody := codegraphSourceBody(dir, "colon.lua", "ns::Audio::playTone")
+	if !strings.Contains(colonBody, "return COLON") || strings.Contains(colonBody, "return SHORT") {
+		t.Fatalf("colon qualifier body = %s", colonBody)
+	}
+	arrow := "obj->playTone()\n{\n    return ARROW;\n}\nvoid playTone() { return REAL; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "arrow.cpp"), []byte(arrow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	arrowBody := codegraphSourceBody(dir, "arrow.cpp", "playTone")
+	if !strings.Contains(arrowBody, "return REAL") || strings.Contains(arrowBody, "return ARROW") {
+		t.Fatalf("arrow call body = %s", arrowBody)
+	}
+	method := "obj:playTone()\n{\n  return CALL\n}\nfunction Audio:playTone(freq)\n  return METHOD\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "method.lua"), []byte(method), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	methodBody := codegraphSourceBody(dir, "method.lua", "playTone")
+	if !strings.Contains(methodBody, "return METHOD") || strings.Contains(methodBody, "return CALL") {
+		t.Fatalf("lua colon body = %s", methodBody)
+	}
+	quoted := "const char* help = \"playTone()\"\nconst char* tick = `playTone()`\nconst char* one = 'playTone()'\nvoid playTone() { return REAL; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "quoted.cpp"), []byte(quoted), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	quotedBody := codegraphSourceBody(dir, "quoted.cpp", "playTone")
+	if !strings.Contains(quotedBody, "return REAL") || strings.Contains(quotedBody, "const char") {
+		t.Fatalf("quoted call body = %s", quotedBody)
+	}
+	url := "const char* s = \"http://x\"; void playTone() { return REAL; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "url.cpp"), []byte(url), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	urlBody := codegraphSourceBody(dir, "url.cpp", "playTone")
+	if urlBody == "" || !strings.Contains(urlBody, "return REAL") {
+		t.Fatalf("url string body = %s", urlBody)
+	}
+	block := "/* playTone() */\nint keep; /* playTone() */\nvoid playTone() { return REAL; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "block.cpp"), []byte(block), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	blockBody := codegraphSourceBody(dir, "block.cpp", "playTone")
+	if !strings.Contains(blockBody, "return REAL") || strings.Contains(blockBody, "/*") {
+		t.Fatalf("block comment body = %s", blockBody)
+	}
+	commented := "int keep; // playTone()\nvoid playTone() { return REAL; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "comment.cpp"), []byte(commented), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commentBody := codegraphSourceBody(dir, "comment.cpp", "playTone")
+	if !strings.Contains(commentBody, "return REAL") || strings.Contains(commentBody, "int keep") {
+		t.Fatalf("line comment body = %s", commentBody)
+	}
+	draw := "const char* s = \"int kDraw = 1;\";\nstatic const int kDraw = 2;\n"
+	if err := os.WriteFile(filepath.Join(dir, "draw.cpp"), []byte(draw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	drawBody := codegraphDeclaredBody(dir, "draw.cpp", "kDraw")
+	if !strings.Contains(drawBody, "= 2") || strings.Contains(drawBody, "= 1") {
+		t.Fatalf("string declaration = %s", drawBody)
+	}
+	drawURL := "const char* s = \"http://x\"; static const int kDraw = 2;\n"
+	if err := os.WriteFile(filepath.Join(dir, "drawurl.cpp"), []byte(drawURL), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	drawURLBody := codegraphDeclaredBody(dir, "drawurl.cpp", "kDraw")
+	if !strings.Contains(drawURLBody, "= 2") {
+		t.Fatalf("url declaration = %s", drawURLBody)
+	}
+	drawComment := "static const int other = 1; // kDraw = 9\nstatic const int kDraw = 2;\n"
+	if err := os.WriteFile(filepath.Join(dir, "drawcmt.cpp"), []byte(drawComment), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	drawCommentBody := codegraphDeclaredBody(dir, "drawcmt.cpp", "kDraw")
+	if !strings.Contains(drawCommentBody, "= 2") || strings.Contains(drawCommentBody, "= 9") {
+		t.Fatalf("comment declaration = %s", drawCommentBody)
+	}
+	lead := "/* old */ void playTone() { return LEAD; }\nvoid playTone() { return SHORT; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "lead.cpp"), []byte(lead), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	leadBody := codegraphSourceBody(dir, "lead.cpp", "playTone")
+	if !strings.Contains(leadBody, "return LEAD") || strings.Contains(leadBody, "return SHORT") {
+		t.Fatalf("comment lead body = %s", leadBody)
+	}
+	closer := "*/ void playTone() { return CLOSER; }\nvoid playTone() { return SHORT; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "closer.cpp"), []byte(closer), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	closerBody := codegraphSourceBody(dir, "closer.cpp", "playTone")
+	if !strings.Contains(closerBody, "return CLOSER") || strings.Contains(closerBody, "return SHORT") {
+		t.Fatalf("comment closer body = %s", closerBody)
+	}
+	jdoc := " * playTone() JDOC\nvoid playTone() { return REAL; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "jdoc.cpp"), []byte(jdoc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	jdocBody := codegraphSourceBody(dir, "jdoc.cpp", "playTone")
+	if !strings.Contains(jdocBody, "return REAL") || strings.Contains(jdocBody, "JDOC") {
+		t.Fatalf("javadoc continuation body = %s", jdocBody)
+	}
+	macro := "/* old */ #define playTone() { return MACRO; }\nvoid playTone() { return REAL; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "macro.cpp"), []byte(macro), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	macroBody := codegraphSourceBody(dir, "macro.cpp", "playTone")
+	if !strings.Contains(macroBody, "return REAL") || strings.Contains(macroBody, "return MACRO") {
+		t.Fatalf("directive body = %s", macroBody)
+	}
+	proto := "void playTone(const char* s = \"{\");\nvoid playTone() { return REAL; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "proto.cpp"), []byte(proto), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	protoBody := codegraphSourceBody(dir, "proto.cpp", "playTone")
+	if !strings.Contains(protoBody, "return REAL") || strings.Contains(protoBody, "const char") {
+		t.Fatalf("string brace prototype = %s", protoBody)
+	}
+	arg := "void playTone(const char* s = \"a;b\") { return ARG; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "arg.cpp"), []byte(arg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	argBody := codegraphSourceBody(dir, "arg.cpp", "playTone")
+	if argBody == "" || !strings.Contains(argBody, "return ARG") {
+		t.Fatalf("string semi definition = %s", argBody)
+	}
+	afterComment := "/* return */ static const int kDraw = 2;\n"
+	if err := os.WriteFile(filepath.Join(dir, "after.cpp"), []byte(afterComment), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	afterBody := codegraphDeclaredBody(dir, "after.cpp", "kDraw")
+	if !strings.Contains(afterBody, "= 2") {
+		t.Fatalf("declaration after comment = %s", afterBody)
+	}
+	define := "/* old */ #define kDraw 1\nstatic const int kDraw = 2;\n"
+	if err := os.WriteFile(filepath.Join(dir, "define.cpp"), []byte(define), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	defineBody := codegraphDeclaredBody(dir, "define.cpp", "kDraw")
+	if !strings.Contains(defineBody, "#define") || strings.Contains(defineBody, "= 2") {
+		t.Fatalf("define after comment = %s", defineBody)
+	}
+	carried := "/*\nvoid playTone() { return FAKE; }\n*/\nvoid playTone() { return REAL; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "carried.cpp"), []byte(carried), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	carriedBody := codegraphSourceBody(dir, "carried.cpp", "playTone")
+	if !strings.Contains(carriedBody, "return REAL") || strings.Contains(carriedBody, "return FAKE") {
+		t.Fatalf("carried comment body = %s", carriedBody)
+	}
+	carriedDecl := "/*\nstatic const int kDraw = 1;\n*/\nstatic const int kDraw = 2;\n"
+	if err := os.WriteFile(filepath.Join(dir, "carriedecl.cpp"), []byte(carriedDecl), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	carriedDeclBody := codegraphDeclaredBody(dir, "carriedecl.cpp", "kDraw")
+	if !strings.Contains(carriedDeclBody, "= 2") || strings.Contains(carriedDeclBody, "= 1") {
+		t.Fatalf("carried declaration = %s", carriedDeclBody)
+	}
+	commentBrace := "void playTone() {\n    return REAL;\n/*\n{\n*/\n}\nvoid other() { return SHORT; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "cbrace.cpp"), []byte(commentBrace), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commentBraceBody := codegraphSourceBody(dir, "cbrace.cpp", "playTone")
+	if !strings.Contains(commentBraceBody, "return REAL") || strings.Contains(commentBraceBody, "return SHORT") {
+		t.Fatalf("comment brace span = %s", commentBraceBody)
+	}
+	quoteOpen := "const char* s = \"/*\";\nconst char* t = `/*`;\nvoid playTone() { return REAL; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "quoteopen.cpp"), []byte(quoteOpen), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	quoteOpenBody := codegraphSourceBody(dir, "quoteopen.cpp", "playTone")
+	if !strings.Contains(quoteOpenBody, "return REAL") {
+		t.Fatalf("string comment opener = %s", quoteOpenBody)
+	}
+	spelled := "/*\nvoid Foo::Bar() { return COMMENTED; }\n*/\nvoid Bar() { return OPEN; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "cspell.cpp"), []byte(spelled), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spelledBody := codegraphSourceBody(dir, "cspell.cpp", "Foo::Bar")
+	if !strings.Contains(spelledBody, "return OPEN") || strings.Contains(spelledBody, "return COMMENTED") {
+		t.Fatalf("commented spelling = %s", spelledBody)
+	}
+	raw := "s := `\nvoid playTone() { return FAKE; }\n`\nvoid playTone() { return REAL; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "rawstr.go"), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rawBody := codegraphSourceBody(dir, "rawstr.go", "playTone")
+	if !strings.Contains(rawBody, "return REAL") || strings.Contains(rawBody, "return FAKE") {
+		t.Fatalf("raw string body = %s", rawBody)
+	}
+	triple := "s = \"\"\"\ndef playTone():\n    return FAKE\n\"\"\"\ndef playTone():\n    return REAL\n"
+	if err := os.WriteFile(filepath.Join(dir, "triple.py"), []byte(triple), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tripleBody := codegraphSourceBody(dir, "triple.py", "playTone")
+	if !strings.Contains(tripleBody, "return REAL") || strings.Contains(tripleBody, "return FAKE") {
+		t.Fatalf("triple quote body = %s", tripleBody)
+	}
+	continued := "const char* s = \"\\\nvoid playTone() { return FAKE; }\\\n\";\nvoid playTone() { return REAL; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "cont.cpp"), []byte(continued), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	continuedBody := codegraphSourceBody(dir, "cont.cpp", "playTone")
+	if !strings.Contains(continuedBody, "return REAL") || strings.Contains(continuedBody, "return FAKE") {
+		t.Fatalf("continued string body = %s", continuedBody)
+	}
+	closedTriple := "s = \"\"\"playTone()\"\"\"\ndef playTone():\n    return REAL\n"
+	if err := os.WriteFile(filepath.Join(dir, "closed.py"), []byte(closedTriple), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	closedBody := codegraphSourceBody(dir, "closed.py", "playTone")
+	if !strings.Contains(closedBody, "return REAL") {
+		t.Fatalf("closed triple body = %s", closedBody)
+	}
+	stringDecl := "const char* s = \"\\\nstatic const int kDraw = 1;\\\n\";\nstatic const int kDraw = 2;\n"
+	if err := os.WriteFile(filepath.Join(dir, "strdecl.cpp"), []byte(stringDecl), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stringDeclBody := codegraphDeclaredBody(dir, "strdecl.cpp", "kDraw")
+	if !strings.Contains(stringDeclBody, "= 2") || strings.Contains(stringDeclBody, "= 1") {
+		t.Fatalf("continued declaration = %s", stringDeclBody)
+	}
+	stringBrace := "void playTone() {\n    return REAL;\n    const char* s = \"\\\n{\n\";\n}\nvoid other() { return SHORT; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "sbrace.cpp"), []byte(stringBrace), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stringBraceBody := codegraphSourceBody(dir, "sbrace.cpp", "playTone")
+	if !strings.Contains(stringBraceBody, "return REAL") || strings.Contains(stringBraceBody, "return SHORT") {
+		t.Fatalf("continued brace span = %s", stringBraceBody)
+	}
+	deadIf := "#if 0\nvoid playTone() { return DEAD; }\n#endif\nvoid playTone() { return REAL; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "ifzero.cpp"), []byte(deadIf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deadIfBody := codegraphSourceBody(dir, "ifzero.cpp", "playTone")
+	if !strings.Contains(deadIfBody, "return REAL") || strings.Contains(deadIfBody, "return DEAD") {
+		t.Fatalf("if 0 body = %s", deadIfBody)
+	}
+	deadFalse := "#if false\nvoid playTone() { return DEAD; }\n#endif\nvoid playTone() { return REAL; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "iffalse.cpp"), []byte(deadFalse), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deadFalseBody := codegraphSourceBody(dir, "iffalse.cpp", "playTone")
+	if !strings.Contains(deadFalseBody, "return REAL") || strings.Contains(deadFalseBody, "return DEAD") {
+		t.Fatalf("if false body = %s", deadFalseBody)
+	}
+	spacedIf := "# if 0\nvoid playTone() { return DEAD; }\n# endif\nvoid playTone() { return REAL; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "ifspace.cpp"), []byte(spacedIf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spacedIfBody := codegraphSourceBody(dir, "ifspace.cpp", "playTone")
+	if !strings.Contains(spacedIfBody, "return REAL") || strings.Contains(spacedIfBody, "return DEAD") {
+		t.Fatalf("spaced if 0 body = %s", spacedIfBody)
+	}
+	ifOne := "#if 1\nvoid playTone() { return REAL; }\n#else\nvoid playTone() { return DEAD; }\n#endif\n"
+	if err := os.WriteFile(filepath.Join(dir, "ifone.cpp"), []byte(ifOne), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ifOneBody := codegraphSourceBody(dir, "ifone.cpp", "playTone")
+	if !strings.Contains(ifOneBody, "return REAL") || strings.Contains(ifOneBody, "return DEAD") {
+		t.Fatalf("if 1 body = %s", ifOneBody)
+	}
+	onlyDead := "#if 0\nvoid playTone() { return DEAD; }\n#endif\n"
+	if err := os.WriteFile(filepath.Join(dir, "onlydead.cpp"), []byte(onlyDead), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if body := codegraphSourceBody(dir, "onlydead.cpp", "playTone"); body != "" {
+		t.Fatalf("disabled-only body = %s", body)
+	}
+	deadDecl := "#if 0\nstatic const int kDraw = 1;\n#endif\nstatic const int kDraw = 2;\n"
+	if err := os.WriteFile(filepath.Join(dir, "ifdecl.cpp"), []byte(deadDecl), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deadDeclBody := codegraphDeclaredBody(dir, "ifdecl.cpp", "kDraw")
+	if !strings.Contains(deadDeclBody, "= 2") || strings.Contains(deadDeclBody, "= 1") {
+		t.Fatalf("if 0 declaration = %s", deadDeclBody)
+	}
+	deadBrace := "void playTone() {\n    return REAL;\n#if 0\n{\n#endif\n}\nvoid other() { return SHORT; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "ifbrace.cpp"), []byte(deadBrace), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deadBraceBody := codegraphSourceBody(dir, "ifbrace.cpp", "playTone")
+	if !strings.Contains(deadBraceBody, "return REAL") || strings.Contains(deadBraceBody, "return SHORT") {
+		t.Fatalf("if 0 brace span = %s", deadBraceBody)
+	}
+	luaComment := "-- function playTone()\n--   return FAKE\n-- end\nfunction playTone()\n  return REAL\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "dash.lua"), []byte(luaComment), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	luaCommentBody := codegraphSourceBody(dir, "dash.lua", "playTone")
+	if !strings.Contains(luaCommentBody, "return REAL") || strings.Contains(luaCommentBody, "return FAKE") {
+		t.Fatalf("lua comment body = %s", luaCommentBody)
+	}
+	decrement := "void playTone() { --count; return REAL; }\nvoid other() { return SHORT; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "decr.cpp"), []byte(decrement), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	decrementBody := codegraphSourceBody(dir, "decr.cpp", "playTone")
+	if !strings.Contains(decrementBody, "return REAL") || strings.Contains(decrementBody, "return SHORT") {
+		t.Fatalf("decrement body = %s", decrementBody)
+	}
+	hashComment := "# Foo::Bar\ndef Bar():\n    return OPEN\n"
+	if err := os.WriteFile(filepath.Join(dir, "hashc.py"), []byte(hashComment), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hashCommentBody := codegraphSourceBody(dir, "hashc.py", "Foo::Bar")
+	if !strings.Contains(hashCommentBody, "return OPEN") {
+		t.Fatalf("hash comment spelling = %s", hashCommentBody)
+	}
+	longComment := "--[[\nfunction playTone()\n  return FAKE\nend\n]]\nfunction playTone()\n  return REAL\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "long.lua"), []byte(longComment), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	longCommentBody := codegraphSourceBody(dir, "long.lua", "playTone")
+	if !strings.Contains(longCommentBody, "return REAL") || strings.Contains(longCommentBody, "return FAKE") {
+		t.Fatalf("lua long comment body = %s", longCommentBody)
+	}
+	longEnd := "function playTone()\n--[[\nfunction other()\n  return INNER\nend\n]]\n  return REAL\nend\nfunction another()\n  return SHORT\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "longend.lua"), []byte(longEnd), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	longEndBody := codegraphSourceBody(dir, "longend.lua", "playTone")
+	if !strings.Contains(longEndBody, "return REAL") || strings.Contains(longEndBody, "return SHORT") {
+		t.Fatalf("lua long comment end = %s", longEndBody)
+	}
+	longLevel := "--[=[\n]]\nfunction playTone()\n  return FAKE\nend\n]=]\nfunction playTone()\n  return REAL\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "longlevel.lua"), []byte(longLevel), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	longLevelBody := codegraphSourceBody(dir, "longlevel.lua", "playTone")
+	if !strings.Contains(longLevelBody, "return REAL") || strings.Contains(longLevelBody, "return FAKE") {
+		t.Fatalf("lua long level body = %s", longLevelBody)
+	}
+	longAfter := "--[[\nfunction playTone()\n  return FAKE\nend\n]] function playTone()\n  return REAL\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "longafter.lua"), []byte(longAfter), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	longAfterBody := codegraphSourceBody(dir, "longafter.lua", "playTone")
+	if !strings.Contains(longAfterBody, "return REAL") || strings.Contains(longAfterBody, "return FAKE") {
+		t.Fatalf("lua long closer body = %s", longAfterBody)
+	}
+	longOpen := "--[[\nfunction playTone()\n  return ONLY\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "longopen.lua"), []byte(longOpen), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if body := codegraphSourceBody(dir, "longopen.lua", "playTone"); body != "" {
+		t.Fatalf("unclosed lua long comment = %s", body)
+	}
+	longDecl := "--[[\nlocal kDraw = 1\n]]\nlocal kDraw = 2\n"
+	if err := os.WriteFile(filepath.Join(dir, "longdecl.lua"), []byte(longDecl), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	longDeclBody := codegraphDeclaredBody(dir, "longdecl.lua", "kDraw")
+	if !strings.Contains(longDeclBody, "= 2") || strings.Contains(longDeclBody, "= 1") {
+		t.Fatalf("lua long declaration = %s", longDeclBody)
+	}
+	longBrace := "void playTone() {\n    return REAL;\n--[[\n{\n]]\n}\nvoid other() { return SHORT; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "longbrace.cpp"), []byte(longBrace), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	longBraceBody := codegraphSourceBody(dir, "longbrace.cpp", "playTone")
+	if !strings.Contains(longBraceBody, "return REAL") || strings.Contains(longBraceBody, "return SHORT") {
+		t.Fatalf("lua long brace span = %s", longBraceBody)
+	}
+	midLong := "void playTone() { --[[\n    return REAL;\n}\nvoid other() { return SHORT; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "midlong.cpp"), []byte(midLong), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	midLongBody := codegraphSourceBody(dir, "midlong.cpp", "playTone")
+	if !strings.Contains(midLongBody, "return REAL") || strings.Contains(midLongBody, "return SHORT") {
+		t.Fatalf("mid-line long bracket = %s", midLongBody)
+	}
+	pyComment := "def playTone():\n# def other():\n    return REAL\ndef other():\n    return SHORT\n"
+	if err := os.WriteFile(filepath.Join(dir, "pycomment.py"), []byte(pyComment), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pyCommentBody := codegraphSourceBody(dir, "pycomment.py", "playTone")
+	if !strings.Contains(pyCommentBody, "return REAL") || strings.Contains(pyCommentBody, "return SHORT") {
+		t.Fatalf("python comment dedent = %s", pyCommentBody)
+	}
+	pyString := "def playTone():\n    x = \"\"\"\nend\n\"\"\"\n    return REAL\ndef other():\n    return SHORT\n"
+	if err := os.WriteFile(filepath.Join(dir, "strdedent.py"), []byte(pyString), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pyStringBody := codegraphSourceBody(dir, "strdedent.py", "playTone")
+	if !strings.Contains(pyStringBody, "return REAL") || strings.Contains(pyStringBody, "return SHORT") {
+		t.Fatalf("python string dedent = %s", pyStringBody)
+	}
+	luaTrail := "local x = 1 -- function playTone()\nfunction playTone()\n  return REAL\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "trail.lua"), []byte(luaTrail), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	luaTrailBody := codegraphSourceBody(dir, "trail.lua", "playTone")
+	if !strings.Contains(luaTrailBody, "return REAL") {
+		t.Fatalf("lua trailing comment body = %s", luaTrailBody)
+	}
+	luaSpell := "local x = 1 -- Foo::Bar\nfunction Bar()\n  return OPEN\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "trailspell.lua"), []byte(luaSpell), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	luaSpellBody := codegraphSourceBody(dir, "trailspell.lua", "Foo::Bar")
+	if !strings.Contains(luaSpellBody, "return OPEN") {
+		t.Fatalf("lua trailing spelling = %s", luaSpellBody)
+	}
+	luaTrailDecl := "local shown = 1 -- kDraw = 1\nlocal kDraw = 2\n"
+	if err := os.WriteFile(filepath.Join(dir, "traildecl.lua"), []byte(luaTrailDecl), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	luaTrailDeclBody := codegraphDeclaredBody(dir, "traildecl.lua", "kDraw")
+	if !strings.Contains(luaTrailDeclBody, "= 2") || strings.Contains(luaTrailDeclBody, "= 1") {
+		t.Fatalf("lua trailing declaration = %s", luaTrailDeclBody)
+	}
+	luaMidLong := "local x = 1 --[[\nfunction playTone()\n  return FAKE\nend\n]]\nfunction playTone()\n  return REAL\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "midlong.lua"), []byte(luaMidLong), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	luaMidLongBody := codegraphSourceBody(dir, "midlong.lua", "playTone")
+	if !strings.Contains(luaMidLongBody, "return REAL") || strings.Contains(luaMidLongBody, "return FAKE") {
+		t.Fatalf("lua mid long comment = %s", luaMidLongBody)
+	}
+	luaMidEnd := "function playTone()\n  local x = 1 --[[\n  end\n  ]]\n  return REAL\nend\nfunction other()\n  return SHORT\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "midend.lua"), []byte(luaMidEnd), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	luaMidEndBody := codegraphSourceBody(dir, "midend.lua", "playTone")
+	if !strings.Contains(luaMidEndBody, "return REAL") || strings.Contains(luaMidEndBody, "return SHORT") {
+		t.Fatalf("lua mid long end = %s", luaMidEndBody)
+	}
+	luaString := "local s = \"-- function playTone()\"\nfunction playTone()\n  return REAL\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "dashstr.lua"), []byte(luaString), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	luaStringBody := codegraphSourceBody(dir, "dashstr.lua", "playTone")
+	if !strings.Contains(luaStringBody, "return REAL") {
+		t.Fatalf("lua string dashes = %s", luaStringBody)
+	}
+	longString := "local s = [[\nfunction playTone()\n  return FAKE\nend\n]]\nfunction playTone()\n  return REAL\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "longstr.lua"), []byte(longString), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	longStringBody := codegraphSourceBody(dir, "longstr.lua", "playTone")
+	if !strings.Contains(longStringBody, "return REAL") || strings.Contains(longStringBody, "return FAKE") {
+		t.Fatalf("lua long string body = %s", longStringBody)
+	}
+	onlyString := "local s = [[\nfunction playTone()\n  return FAKE\nend\n]]\n"
+	if codegraphExcerptDefinesFile(onlyString, "playTone", "longstr.lua") {
+		t.Fatal("lua long string excerpt counts the string")
+	}
+	if !codegraphExcerptDefinesFile(longString, "playTone", "longstr.lua") {
+		t.Fatal("lua long string hid the real function")
+	}
+	longStringLevel := "local s = [=[\n]]\nfunction playTone()\n  return FAKE\nend\n]=]\nfunction playTone()\n  return REAL\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "longstrlevel.lua"), []byte(longStringLevel), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	longStringLevelBody := codegraphSourceBody(dir, "longstrlevel.lua", "playTone")
+	if !strings.Contains(longStringLevelBody, "return REAL") || strings.Contains(longStringLevelBody, "return FAKE") {
+		t.Fatalf("lua long string level = %s", longStringLevelBody)
+	}
+	longStringEnd := "function playTone()\n  local s = [[\n  end\n  ]]\n  return REAL\nend\nfunction other()\n  return SHORT\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "longstrend.lua"), []byte(longStringEnd), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	longStringEndBody := codegraphSourceBody(dir, "longstrend.lua", "playTone")
+	if !strings.Contains(longStringEndBody, "return REAL") || strings.Contains(longStringEndBody, "return SHORT") {
+		t.Fatalf("lua long string end = %s", longStringEndBody)
+	}
+	longStringOpen := "local s = [[\nfunction playTone()\n  return ONLY\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "longstropen.lua"), []byte(longStringOpen), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if body := codegraphSourceBody(dir, "longstropen.lua", "playTone"); body != "" {
+		t.Fatalf("unclosed lua long string = %s", body)
+	}
+	longStringDecl := "local s = [[\nlocal kDraw = 1\n]]\nlocal kDraw = 2\n"
+	if err := os.WriteFile(filepath.Join(dir, "longstrdecl.lua"), []byte(longStringDecl), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	longStringDeclBody := codegraphDeclaredBody(dir, "longstrdecl.lua", "kDraw")
+	if !strings.Contains(longStringDeclBody, "= 2") || strings.Contains(longStringDeclBody, "= 1") {
+		t.Fatalf("lua long string declaration = %s", longStringDeclBody)
+	}
+	longStringSpell := "local s = [[\nFoo::Bar\n]]\nfunction Bar()\n  return OPEN\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "longstrspell.lua"), []byte(longStringSpell), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	longStringSpellBody := codegraphSourceBody(dir, "longstrspell.lua", "Foo::Bar")
+	if !strings.Contains(longStringSpellBody, "return OPEN") {
+		t.Fatalf("lua long string spelling = %s", longStringSpellBody)
+	}
+	quotedBracket := "local s = \"[[function playTone()]]\"\nfunction playTone()\n  return REAL\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "qbrack.lua"), []byte(quotedBracket), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	quotedBracketBody := codegraphSourceBody(dir, "qbrack.lua", "playTone")
+	if !strings.Contains(quotedBracketBody, "return REAL") {
+		t.Fatalf("quoted long bracket = %s", quotedBracketBody)
+	}
+	attr := "void playTone() {\n    return REAL;\n[[\n}\nvoid other() { return SHORT; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "attr.cpp"), []byte(attr), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	attrBody := codegraphSourceBody(dir, "attr.cpp", "playTone")
+	if !strings.Contains(attrBody, "return REAL") || strings.Contains(attrBody, "return SHORT") {
+		t.Fatalf("cpp attribute brackets = %s", attrBody)
+	}
 	cpp := "static void playTone(int freq) {\n    int t[] = {1, 2};\n    return;\n}\nstatic void other() {\n    return;\n}\n"
 	if err := os.WriteFile(filepath.Join(dir, "audio.cpp"), []byte(cpp), 0o644); err != nil {
 		t.Fatal(err)
@@ -1198,6 +1959,94 @@ func TestCodegraphFileSurveyDoesNotSwallowUnbracedFunction(t *testing.T) {
 	got := codegraphAttachFileSurvey(dir, "src/tone.lua", "### Symbols\n- `playTone` (function) — :2\n")
 	if !strings.Contains(got, "CLIENT_W = 824") || strings.Contains(got, "return CLIENT_W") {
 		t.Fatalf("survey swallowed the function: %s", got)
+	}
+}
+
+func TestCodegraphFileSurveySkipsLuaLongString(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := "local s = [[\nlocal FAKE_W = 1\n#include \"other.h\"\n]]\n-- local DEAD_W = 2\nlocal CLIENT_W = 824\nfunction playTone(freq)\n  return CLIENT_W + freq\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "src", "tone.lua"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := codegraphAttachFileSurvey(dir, "src/tone.lua", "### Symbols\n- `playTone` (function) — :7\n")
+	if !strings.Contains(got, "CLIENT_W = 824") || strings.Contains(got, "FAKE_W") || strings.Contains(got, "DEAD_W") || strings.Contains(got, "other.h") || strings.Contains(got, "return CLIENT_W") {
+		t.Fatalf("lua survey = %s", got)
+	}
+}
+
+func TestCodegraphFileSurveyKeepsCppBrackets(t *testing.T) {
+	dir := t.TempDir()
+	src := "static const int CLIENT_W = 824;\n[[\nstatic const int FAKE_W = 1;\n]]\nstatic void drawScene() { use(CLIENT_W); }\n"
+	if err := os.WriteFile(filepath.Join(dir, "snake.cpp"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := codegraphAttachFileSurvey(dir, "snake.cpp", "### Symbols\n- `drawScene` (function) — :5\n")
+	if !strings.Contains(got, "CLIENT_W = 824") || !strings.Contains(got, "FAKE_W = 1") || strings.Contains(got, "void drawScene") {
+		t.Fatalf("cpp brackets survey = %s", got)
+	}
+}
+
+func TestCodegraphDirectiveInLuaLongString(t *testing.T) {
+	dir := t.TempDir()
+	hidden := "local s = [[\n#if 0\n]]\nfunction playTone()\n  return REAL\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "tone.lua"), []byte(hidden), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if body := codegraphSourceBody(dir, "tone.lua", "playTone"); !strings.Contains(body, "return REAL") {
+		t.Fatalf("directive inside lua long string hid the function: %s", body)
+	}
+	endifInString := "#if 0\nlocal s = [[\n#endif\n]]\nfunction playTone()\n  return DEAD\nend\n#endif\nfunction playTone()\n  return REAL\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "endif.lua"), []byte(endifInString), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	endifBody := codegraphSourceBody(dir, "endif.lua", "playTone")
+	if !strings.Contains(endifBody, "return REAL") || strings.Contains(endifBody, "return DEAD") {
+		t.Fatalf("endif inside lua long string = %s", endifBody)
+	}
+	comment := "--[[\n#if 0\n]]\nfunction playTone()\n  return REAL\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "comment.lua"), []byte(comment), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if body := codegraphSourceBody(dir, "comment.lua", "playTone"); !strings.Contains(body, "return REAL") {
+		t.Fatalf("directive inside lua long comment = %s", body)
+	}
+	continued := "const char* s = \"\\\n#if 0\n\";\nvoid playTone() { return REAL; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "cont.cpp"), []byte(continued), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if body := codegraphSourceBody(dir, "cont.cpp", "playTone"); !strings.Contains(body, "return REAL") {
+		t.Fatalf("directive inside continued string = %s", body)
+	}
+	brackets := "[[\n#if 0\nvoid playTone() { return DEAD; }\n#endif\n]]\nvoid playTone() { return REAL; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "attr.cpp"), []byte(brackets), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bracketsBody := codegraphSourceBody(dir, "attr.cpp", "playTone")
+	if !strings.Contains(bracketsBody, "return REAL") || strings.Contains(bracketsBody, "return DEAD") {
+		t.Fatalf("cpp brackets hid a directive = %s", bracketsBody)
+	}
+}
+
+func TestCodegraphFenceIgnoresLuaLongString(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := "local FAKE_W = 1\nlocal CLIENT_W = 824\nlocal DEAD_W = 2\nfunction playTone()\n  local s = [[\n    FAKE_W\n  ]]\n  return CLIENT_W -- DEAD_W\nend\n"
+	if err := os.WriteFile(filepath.Join(dir, "src", "tone.lua"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body := "## playTone (function)\n\n**Location:** src/tone.lua:4\n\n```lua\nfunction playTone()\n  local s = [[\n    FAKE_W\n  ]]\n  return CLIENT_W -- DEAD_W\nend\n```\n"
+	got := codegraphAttachReferencedDecls(dir, body)
+	section := got
+	if i := strings.Index(got, "Declarations referenced"); i >= 0 {
+		section = got[i:]
+	}
+	if !strings.Contains(section, "CLIENT_W = 824") || strings.Contains(section, "FAKE_W") || strings.Contains(section, "DEAD_W") {
+		t.Fatalf("lua fence idents = %s", got)
 	}
 }
 
@@ -3599,5 +4448,403 @@ func TestResearchSourceAuditRejectsEchoedQueryAsTitle(t *testing.T) {
 	searches[0].Summary = "搜索 \"AcmeSDK exact error migration\" 找到 1 条结果:\n\n1. AcmeSDK exact error migration\n   https://vendor.example/exact-title"
 	if !codingWebResearchSourceCoversAudit("AcmeSDK exact error migration", searches) {
 		t.Fatal("a genuine result title equal to the query should be accepted when it appears in the result body")
+	}
+}
+
+func codegraphExploreSample() string {
+	return strings.Join([]string{
+		"## Exploration: snake game implementation overview",
+		"",
+		"Found 85 symbols across 17 files.",
+		"",
+		"### Blast radius",
+		"",
+		"- `update` (snake/src/Game.cpp:1) — 1 caller",
+		"- `draw` (angry-birds/src/game/Game.h:19) — 1 caller",
+		"",
+		"#### snake/src/Game.cpp \u2014 update(method)",
+		"",
+		"```cpp",
+		"void update() {",
+		"}",
+		"```",
+		"",
+		"#### snake/src/Trimmed.cpp \u2014 drawScene(function)",
+		"",
+		"```cpp",
+		"// outline only",
+		"```",
+		"",
+		"#### snake/README.md \u2014 note(function)",
+		"",
+		"```md",
+		"note",
+		"```",
+		"",
+		"#### angry-birds/src/game/Game.h \u2014 draw(method)",
+		"",
+		"```cpp",
+		"void draw() {",
+		"}",
+		"```",
+		"",
+		"> Some file sections were trimmed for size.",
+		"",
+	}, "\n")
+}
+
+func TestCodegraphExploreFocusKeepsTheNamedProject(t *testing.T) {
+	sample := codegraphExploreSample()
+	got, paths, remainder := codegraphPrepareExplore("explore", "snake game implementation overview", sample)
+	if !remainder || strings.Contains(got, "angry-birds") || !strings.Contains(got, "snake/src/Game.cpp") || !strings.Contains(got, "void update()") {
+		t.Fatalf("focus = remainder %v paths %v\n%s", remainder, paths, got)
+	}
+	if strings.Contains(got, "snake/README.md") == false {
+		t.Fatal("snake/README.md is inside the snake directory and must stay")
+	}
+	hint := codegraphContinueHint("codegraph", got)
+	presented, hint := codegraphPresentExplore(got, paths, remainder, hint)
+	if hint != codegraphExploreRemainderHint || !strings.Contains(presented, "Indexed files in this result:") || !strings.Contains(presented, "snake/src/Trimmed.cpp") || strings.Contains(presented, "angry-birds") {
+		t.Fatalf("presented hint=%q\n%s", hint, presented)
+	}
+	if strings.Contains(presented, "across 17 files") || !strings.Contains(presented, "Showing 3 of 17 indexed files in this result.") || !strings.Contains(presented, "code_navigation explore or file_symbols") {
+		t.Fatalf("index total still reads as the whole workspace:\n%s", presented)
+	}
+	if !strings.Contains(presented, codegraphTrimBanner) {
+		t.Fatalf("trim footer was left as the daemon wrote it:\n%s", presented)
+	}
+	if strings.Contains(hint, "list_directory repeats this map") == false || strings.Contains(hint, "file_symbols") == false {
+		t.Fatalf("remainder hint = %q", hint)
+	}
+}
+
+func TestCodegraphExploreFocusKeepsBothGames(t *testing.T) {
+	sample := strings.ReplaceAll(codegraphExploreSample(), "> Some file sections were trimmed for size.\n", "")
+	got, paths, remainder := codegraphPrepareExplore("explore", "how does Game work", sample)
+	if remainder || !strings.Contains(got, "angry-birds/src/game/Game.h") || !strings.Contains(got, "snake/src/Game.cpp") {
+		t.Fatalf("unscoped explore changed: remainder %v paths %v\n%s", remainder, paths, got)
+	}
+	presented, hint := codegraphPresentExplore(got, paths, remainder, codegraphContinueHint("codegraph", got))
+	if hint != codegraphKeepUsingHint {
+		t.Fatalf("complete unscoped hint = %q", hint)
+	}
+	if !strings.Contains(presented, "Found 85 symbols across 17 files.") {
+		t.Fatalf("unscoped explore rewrote the daemon count:\n%s", presented)
+	}
+}
+
+func TestCodegraphExploreFocusDropsMiddleProjectWithoutLeakingSource(t *testing.T) {
+	sample := strings.Join([]string{
+		"Found 85 symbols across 17 files.",
+		"",
+		"#### snake/src/Game.h \u2014 SnakeGame(class)",
+		"",
+		"```cpp",
+		"class SnakeGame {};",
+		"```",
+		"",
+		"#### angry-birds/src/game/Game.h \u2014 draw(method)",
+		"",
+		"> Note: this section is the bird renderer.",
+		"void draw() {",
+		"}",
+		"",
+		"#### snake/src/Game.cpp \u2014 update(method)",
+		"",
+		"```cpp",
+		"void update() {",
+		"}",
+		"```",
+		"",
+		"> Some file sections were trimmed for size.",
+	}, "\n")
+	got, paths, remainder := codegraphPrepareExplore("explore", "snake game implementation overview", sample)
+	if !remainder || strings.Contains(got, "angry-birds") || strings.Contains(got, "void draw()") || strings.Contains(got, "bird renderer") || !strings.Contains(got, "void update()") || !strings.Contains(got, "class SnakeGame") || !strings.Contains(got, "trimmed for size") {
+		t.Fatalf("middle project leaked: remainder %v paths %v\n%s", remainder, paths, got)
+	}
+	presented, _ := codegraphPresentExplore(got, paths, remainder, codegraphContinueHint("codegraph", got))
+	if strings.Contains(presented, "across 17 files") || !strings.Contains(presented, "Showing 2 of 17 indexed files in this result.") {
+		t.Fatalf("shown file count = \n%s", presented)
+	}
+}
+
+func TestCodegraphExploreFocusKeepsTwoNamedTrees(t *testing.T) {
+	sample := strings.ReplaceAll(codegraphExploreSample(), "> Some file sections were trimmed for size.\n", "")
+	got, paths, remainder := codegraphPrepareExplore("explore", "snake/src and angry-birds", sample)
+	if remainder || !strings.Contains(got, "angry-birds/src/game/Game.h") || !strings.Contains(got, "snake/src/Game.cpp") || !strings.Contains(got, "snake/README.md") || len(paths) < 4 {
+		t.Fatalf("two named trees were narrowed: remainder %v paths %v\n%s", remainder, paths, got)
+	}
+	same, samePaths, sameRemainder := codegraphPrepareExplore("explore", "snake/src snake", sample)
+	if !sameRemainder || strings.Contains(same, "angry-birds") || strings.Contains(same, "snake/README.md") || !strings.Contains(same, "snake/src/Game.cpp") || len(samePaths) == 0 {
+		t.Fatalf("same tree was not narrowed to the prefix: remainder %v paths %v\n%s", sameRemainder, samePaths, same)
+	}
+}
+
+func TestCodegraphExploreFocusHonorsSlashPrefix(t *testing.T) {
+	got, paths, _ := codegraphPrepareExplore("explore", "snake/src", codegraphExploreSample())
+	joined := strings.Join(paths, ",")
+	if strings.Contains(got, "angry-birds") || strings.Contains(got, "snake/README.md") || !strings.Contains(got, "snake/src/Trimmed.cpp") {
+		t.Fatalf("slash focus paths=%s\n%s", joined, got)
+	}
+	if strings.Contains(joined, "README") || strings.Contains(joined, "angry-birds") {
+		t.Fatalf("inventory paths = %s", joined)
+	}
+}
+
+func TestCodegraphExploreFocusLeavesNode(t *testing.T) {
+	node := "## playTone (function)\n\n**Location:** snake.cpp:1\n\n```cpp\n1\tstatic void playTone() {}\n```\n"
+	got, narrowed := codegraphFocusExplore("playTone", node)
+	if narrowed || got != node {
+		t.Fatalf("node explore changed: narrowed %v\n%s", narrowed, got)
+	}
+	passed, paths, remainder := codegraphPrepareExplore("node", "playTone", node)
+	if remainder || len(paths) != 0 || passed != node {
+		t.Fatalf("node prepare = remainder %v paths %v text %q", remainder, paths, passed)
+	}
+}
+
+func TestCodegraphExploreCompleteHitKeepsTheOriginalHint(t *testing.T) {
+	only := strings.Join([]string{
+		"#### snake/src/Game.cpp \u2014 update(method)",
+		"",
+		"```cpp",
+		"void update() {",
+		"}",
+		"```",
+		"",
+	}, "\n")
+	got, paths, remainder := codegraphPrepareExplore("explore", "snake game implementation overview", only)
+	if remainder || strings.Contains(got, "Indexed files") {
+		t.Fatalf("complete snake explore looked partial: remainder %v\n%s", remainder, got)
+	}
+	_, hint := codegraphPresentExplore(got, paths, remainder, codegraphContinueHint("codegraph", got))
+	if hint != codegraphKeepUsingHint {
+		t.Fatalf("complete hint = %q", hint)
+	}
+}
+
+func TestCodegraphExploreDotSlashHeaderStaysInTheNamedProject(t *testing.T) {
+	sample := strings.Join([]string{
+		"Found 4 symbols across 3 files.",
+		"",
+		"#### ./snake/src/Game.cpp \u2014 update(method)",
+		"",
+		"```cpp",
+		"void update() {",
+		"}",
+		"```",
+		"",
+		"#### .\\angry-birds\\src\\game\\Game.h \u2014 draw(method)",
+		"",
+		"```cpp",
+		"void draw() {}",
+		"```",
+		"",
+	}, "\n")
+	got, paths, remainder := codegraphPrepareExplore("explore", "snake game implementation overview", sample)
+	if !remainder || strings.Contains(got, "angry-birds") || strings.Contains(got, "void draw()") || !strings.Contains(got, "void update()") {
+		t.Fatalf("dot-slash focus = remainder %v paths %v\n%s", remainder, paths, got)
+	}
+	if len(paths) != 1 || paths[0] != "snake/src/Game.cpp" || strings.Contains(got, "#### ./") || strings.Contains(got, `#### .\`) || !strings.Contains(got, "#### snake/src/Game.cpp") {
+		t.Fatalf("paths = %v\n%s", paths, got)
+	}
+	both, bothPaths, bothRemainder := codegraphPrepareExplore("explore", "how does Game work", sample)
+	if bothRemainder || len(bothPaths) != 2 || strings.Contains(both, "#### ./") || strings.Contains(both, `#### .\`) || !strings.Contains(both, "#### snake/src/Game.cpp") || !strings.Contains(both, "#### angry-birds/src/game/Game.h") || !strings.Contains(both, "void draw()") {
+		t.Fatalf("unscoped headers = remainder %v paths %v\n%s", bothRemainder, bothPaths, both)
+	}
+	slash, slashPaths, _ := codegraphPrepareExplore("explore", "./snake/src", sample)
+	if strings.Contains(slash, "angry-birds") || len(slashPaths) != 1 || slashPaths[0] != "snake/src/Game.cpp" {
+		t.Fatalf("slash focus = %v\n%s", slashPaths, slash)
+	}
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "snake", "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "snake", "src", "Game.cpp"), []byte("void update() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: root}}
+	cb.noteCodegraphExplored(root, got, paths)
+	steer := cb.codegraphListSteer(filepath.Join(root, "snake"))
+	if !strings.Contains(steer, "snake/src/Game.cpp") || strings.Contains(steer, "./") {
+		t.Fatalf("steer = %s", steer)
+	}
+}
+
+func TestCodegraphLineHasPathIgnoresDotSlashAndLongerNames(t *testing.T) {
+	if !codegraphLineHasPath("- ./angry-birds/src/game/Game.h (edited 10ms ago)", "angry-birds/src/game/Game.h") {
+		t.Fatal("dot-slash banner path did not match")
+	}
+	if !codegraphLineHasPath(`- .\snake\src\Old.cpp (edited 10ms ago)`, "snake/src/Old.cpp") {
+		t.Fatal("backslash banner path did not match")
+	}
+	if codegraphLineHasPath("snake-extra/src/Game.cpp", "snake") || codegraphLineHasPath("src2/Game.cpp", "src") {
+		t.Fatal("a longer path matched a shorter name")
+	}
+	if !codegraphLineHasPath("- snake/src/Game.cpp", "snake/src/Game.cpp") {
+		t.Fatal("plain path did not match")
+	}
+}
+
+func TestCodegraphExploreFocusDropsStaleBannerForTheOtherProject(t *testing.T) {
+	banner := "⚠️ Some files referenced below were edited since the last index sync — their codegraph entries may be stale:\n  - ./angry-birds/src/game/Game.h (edited 10ms ago, pending sync)\nFor accurate content of those specific files, Read them directly. The rest of this response is fresh.\n\n(Note: 1 file(s) elsewhere in this project are pending index sync but were not referenced above:\n  - extra.go (edited 4ms ago))\n\n"
+	got, _, remainder := codegraphPrepareExplore("explore", "snake game implementation overview", banner+codegraphExploreSample())
+	if !remainder || strings.Contains(got, "angry-birds") || strings.Contains(got, "were edited since the last index sync") || strings.Contains(got, "Read them directly") || !strings.Contains(got, "extra.go") || !strings.Contains(got, "void update()") {
+		t.Fatalf("other project's stale banner stayed: remainder %v\n%s", remainder, got)
+	}
+	both := "⚠️ Some files referenced below were edited since the last index sync — their codegraph entries may be stale:\n  - ./snake/src/Old.cpp (edited 10ms ago, pending sync)\n  - ./angry-birds/src/game/Game.h (edited 10ms ago, pending sync)\nFor accurate content of those specific files, Read them directly. The rest of this response is fresh.\n\n" + codegraphExploreSample()
+	kept, _, _ := codegraphPrepareExplore("explore", "snake game implementation overview", both)
+	if strings.Contains(kept, "angry-birds") || !strings.Contains(kept, "snake/src/Old.cpp") || !strings.Contains(kept, "were edited since the last index sync") || !strings.Contains(kept, "Read them directly") || !strings.Contains(kept, "void update()") {
+		t.Fatalf("in-scope stale file lost its banner:\n%s", kept)
+	}
+}
+
+func TestCodegraphExploreTrimInsideSourceIsACompleteHit(t *testing.T) {
+	sample := strings.Join([]string{
+		"Found 8 symbols across 4 files.",
+		"",
+		"#### snake/src/Game.cpp \u2014 update(method)",
+		"",
+		"```cpp",
+		"// trimmed for size",
+		"void update() {",
+		"}",
+		"```",
+		"",
+		"#### angry-birds/src/game/Game.h \u2014 draw(method)",
+		"",
+		"```cpp",
+		"// trimmed for size",
+		"void draw() {}",
+		"```",
+		"",
+	}, "\n")
+	got, paths, remainder := codegraphPrepareExplore("explore", "how does Game work", sample)
+	if remainder || len(paths) != 2 || !strings.Contains(got, "// trimmed for size") {
+		t.Fatalf("source text looked partial: remainder %v paths %v\n%s", remainder, paths, got)
+	}
+	presented, hint := codegraphPresentExplore(got, paths, remainder, codegraphContinueHint("codegraph", got))
+	if hint != codegraphKeepUsingHint || strings.Contains(presented, "Indexed files") || strings.Contains(presented, "Showing ") || !strings.Contains(presented, "Found 8 symbols across 4 files.") {
+		t.Fatalf("complete hit was retargeted: hint %q\n%s", hint, presented)
+	}
+	focused, focusPaths, focusRemainder := codegraphPrepareExplore("explore", "snake game implementation overview", sample)
+	if !focusRemainder || strings.Contains(focused, "angry-birds") || strings.Contains(focused, "void draw()") || len(focusPaths) != 1 {
+		t.Fatalf("named project was not narrowed: remainder %v paths %v\n%s", focusRemainder, focusPaths, focused)
+	}
+	shown, focusHint := codegraphPresentExplore(focused, focusPaths, focusRemainder, codegraphContinueHint("codegraph", focused))
+	if focusHint != codegraphExploreRemainderHint || strings.Contains(shown, codegraphTrimBanner) || !strings.Contains(shown, "// trimmed for size") || !strings.Contains(shown, "Showing 1 of 4 indexed files in this result.") {
+		t.Fatalf("narrowed source quote changed the footer: hint %q\n%s", focusHint, shown)
+	}
+}
+
+func TestCodegraphTrimBannerNamesCodeNavigation(t *testing.T) {
+	sample := strings.Join([]string{
+		"Found 4 symbols across 2 files.",
+		"",
+		"#### snake/src/Game.cpp \u2014 update(method)",
+		"",
+		"```cpp",
+		"> trimmed for size stays inside the fence",
+		"void update() {",
+		"}",
+		"```",
+		"",
+		"> Some file sections were trimmed for size. For a specific symbol you still need, run another `codegraph_explore` (or `codegraph_node`) which is cheaper and more complete than Read.",
+	}, "\n")
+	got, paths, remainder := codegraphPrepareExplore("explore", "snake game implementation overview", sample)
+	if !remainder || !strings.Contains(got, "codegraph_explore") || !strings.Contains(got, "> trimmed for size stays inside the fence") {
+		t.Fatalf("prepare changed the footer or the fence: remainder %v\n%s", remainder, got)
+	}
+	presented, hint := codegraphPresentExplore(got, paths, remainder, codegraphContinueHint("codegraph", got))
+	if hint != codegraphExploreRemainderHint || !strings.Contains(presented, codegraphTrimBanner) || strings.Contains(presented, "codegraph_explore") || strings.Contains(presented, "than Read") {
+		t.Fatalf("footer hint=%q\n%s", hint, presented)
+	}
+	if !strings.Contains(presented, "> trimmed for size stays inside the fence") || !strings.Contains(presented, "void update()") {
+		t.Fatalf("fence quote was rewritten:\n%s", presented)
+	}
+}
+
+func TestExploredPathWithoutBodyStaysIndexedAndListed(t *testing.T) {
+	root := t.TempDir()
+	srcDir := filepath.Join(root, "snake", "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	trimmed := filepath.Join(srcDir, "Trimmed.cpp")
+	if err := os.WriteFile(trimmed, []byte("SECRET_BODY\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "Game.cpp"), []byte("void update() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "snake", "CMakeLists.txt"), []byte("project(snake)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	readme := filepath.Join(root, "snake", "README.md")
+	if err := os.WriteFile(readme, []byte("SECRET_README\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := filepath.Join(srcDir, "Old.cpp")
+	sample := codegraphExploreSample() + "\n⚠️ Some files referenced below were edited since the last index sync — their codegraph entries may be stale:\n  - snake/src/Old.cpp (edited 10ms ago, pending sync)\n\n#### snake/src/Old.cpp \u2014 draw(function)\n\n```cpp\nvoid draw() {\n}\n```\n"
+	focused, paths, _ := codegraphPrepareExplore("explore", "snake game implementation overview", sample)
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: root}}
+	cb.noteCodegraphReadSnapshots(root, focused)
+	cb.noteCodegraphExplored(root, focused, append(paths, "snake/src/Old.cpp"))
+	if !cb.codegraphPathWasIndexed(trimmed) {
+		t.Fatal("trimmed source was not remembered as indexed")
+	}
+	if ok, _ := cb.validateReadSnapshot(trimmed); ok {
+		t.Fatal("trimmed source received an edit snapshot")
+	}
+	if msg := cb.requireReadBeforeModify(trimmed, "edit_file"); !strings.Contains(msg, "node") || strings.Contains(msg, "请先调用 read_file") {
+		t.Fatalf("trimmed edit gate = %q", msg)
+	}
+	info, err := os.Stat(trimmed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb.rememberCodegraphFileMap(trimmed, info, codingToolExecutionResult{Text: `{"backend":"codegraph","output":"file symbols"}`, Outcome: codingToolOutcomeSuccess})
+	redirected, ok := cb.codegraphReadInstead(map[string]interface{}{"path": trimmed})
+	if !ok || !strings.Contains(redirected.Text, "file symbols") || strings.Contains(redirected.Text, "SECRET_BODY") {
+		t.Fatalf("trimmed read = ok %v text %q", ok, redirected.Text)
+	}
+	if cb.codegraphPathWasIndexed(oldPath) {
+		t.Fatal("stale explore path was remembered")
+	}
+	cmake := filepath.Join(root, "snake", "CMakeLists.txt")
+	if cb.codegraphPathWasIndexed(cmake) {
+		t.Fatal("CMakeLists was marked indexed")
+	}
+	if cb.codegraphPathWasIndexed(readme) {
+		t.Fatal("README was marked indexed")
+	}
+	if msg := cb.requireReadBeforeModify(readme, "edit_file"); strings.Contains(msg, "node") || !strings.Contains(msg, "read_file") {
+		t.Fatalf("readme edit gate = %q", msg)
+	}
+	plain := executeCodingReadFile(map[string]interface{}{"path": cmake})
+	if plain.Outcome != codingToolOutcomeSuccess || !strings.Contains(plain.Text, "project(snake)") {
+		t.Fatalf("build file read = %#v", plain)
+	}
+	readmeText := executeCodingReadFile(map[string]interface{}{"path": readme})
+	if readmeText.Outcome != codingToolOutcomeSuccess || !strings.Contains(readmeText.Text, "SECRET_README") {
+		t.Fatalf("readme read = %#v", readmeText)
+	}
+	listed := cb.ExecuteTool("list_directory", fmt.Sprintf(`{"path":%q}`, filepath.Join(root, "snake")))
+	if !strings.Contains(listed, "[file] CMakeLists.txt") || !strings.Contains(listed, "[file] README.md") || !strings.Contains(listed, "snake/src/Trimmed.cpp") || !strings.Contains(listed, "snake/src/Game.cpp") || !strings.Contains(listed, codegraphListedSourceSteer) || strings.Contains(listed, "Old.cpp") || strings.Contains(listed, "snake/README.md") || strings.Contains(listed, "snake/CMakeLists.txt") {
+		t.Fatalf("directory steer = %s", listed)
+	}
+	rootListed := cb.ExecuteTool("list_directory", `{"path":"."}`)
+	if !strings.Contains(rootListed, "[dir] snake/") || !strings.Contains(rootListed, codegraphListedSourceSteer) || !strings.Contains(rootListed, "snake/src/Trimmed.cpp") || strings.Contains(rootListed, "Old.cpp") || strings.Contains(rootListed, "snake/README.md") || strings.Contains(rootListed, "snake/CMakeLists.txt") {
+		t.Fatalf("project root steer = %s", rootListed)
+	}
+	if steer := cb.codegraphListSteer(filepath.Dir(root)); steer != "" {
+		t.Fatalf("outside listing inherited the map: %s", steer)
+	}
+	if steer := cb.codegraphListSteer(filepath.Join(root, "angry-birds")); strings.Contains(steer, "Trimmed.cpp") || strings.Contains(steer, "Game.cpp") {
+		t.Fatalf("other project listing inherited snake files: %s", steer)
+	}
+	srcListed := cb.ExecuteTool("list_directory", fmt.Sprintf(`{"path":%q}`, srcDir))
+	if !strings.Contains(srcListed, "Trimmed.cpp") || !strings.Contains(srcListed, codegraphListedSourceSteer) || strings.Contains(srcListed, "[file] CMakeLists.txt") || strings.Contains(srcListed, "snake/README.md") {
+		t.Fatalf("src listing = %s", srcListed)
 	}
 }

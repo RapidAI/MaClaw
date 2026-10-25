@@ -1,23 +1,17 @@
 {
   "totals": {
-    "files": 200,
-    "styleAttrs": 3705,
-    "static": 1316,
-    "dynamicLayout": 700,
-    "dynamicColor": 1689
+    "files": 240,
+    "styleAttrs": 3338,
+    "static": 957,
+    "dynamicLayout": 702,
+    "dynamicColor": 1679
   },
   "report": [
     {
       "file": "src/components/remote/SkillsManagementPanelView.tsx",
-      "static": 221,
-      "dynamicLayout": 82,
-      "dynamicColor": 143
-    },
-    {
-      "file": "src/components/ai/AgentTaskPanel.tsx",
-      "static": 48,
-      "dynamicLayout": 24,
-      "dynamicColor": 91
+      "static": 173,
+      "dynamicLayout": 61,
+      "dynamicColor": 126
     },
     {
       "file": "src/components/remote/MemoryExperienceLearningPanel.tsx",
@@ -26,70 +20,52 @@
       "dynamicColor": 94
     },
     {
-      "file": "src/components/ai/AIAssistantPanel.tsx",
-      "static": 39,
-      "dynamicLayout": 10,
-      "dynamicColor": 73
-    },
-    {
       "file": "src/components/remote/OnboardingWizard.tsx",
-      "static": 48,
-      "dynamicLayout": 43,
+      "static": 50,
+      "dynamicLayout": 44,
       "dynamicColor": 61
     },
     {
+      "file": "src/components/ai/AgentTaskPanel.tsx",
+      "static": 0,
+      "dynamicLayout": 21,
+      "dynamicColor": 90
+    },
+    {
       "file": "src/components/remote/MCPManagementPanel.tsx",
-      "static": 54,
+      "static": 55,
       "dynamicLayout": 12,
-      "dynamicColor": 26
+      "dynamicColor": 31
     },
     {
-      "file": "src/components/remote/LLMConfigPanel.tsx",
-      "static": 29,
-      "dynamicLayout": 12,
-      "dynamicColor": 50
-    },
-    {
-      "file": "src/components/ai/AssistantWelcomeView.tsx",
-      "static": 26,
-      "dynamicLayout": 15,
-      "dynamicColor": 43
-    },
-    {
-      "file": "src/components/ai/aiAssistantMarkdown.tsx",
-      "static": 16,
-      "dynamicLayout": 16,
-      "dynamicColor": 52
+      "file": "src/components/remote/ScheduledTasksPanel.tsx",
+      "static": 45,
+      "dynamicLayout": 28,
+      "dynamicColor": 35
     },
     {
       "file": "src/components/remote/MemoryManagementPanel.tsx",
       "static": 29,
-      "dynamicLayout": 13,
+      "dynamicLayout": 15,
       "dynamicColor": 32
-    },
-    {
-      "file": "src/components/remote/ScheduledTasksPanel.tsx",
-      "static": 33,
-      "dynamicLayout": 24,
-      "dynamicColor": 23
     },
     {
       "file": "src/components/SystemDoctorDialog.tsx",
       "static": 43,
-      "dynamicLayout": 3,
-      "dynamicColor": 12
+      "dynamicLayout": 5,
+      "dynamicColor": 10
     },
     {
-      "file": "src/components/ai/CodePreviewPanel.tsx",
-      "static": 12,
-      "dynamicLayout": 12,
-      "dynamicColor": 38
+      "file": "src/components/ai/aiAssistantMarkdown.tsx",
+      "static": 0,
+      "dynamicLayout": 17,
+      "dynamicColor": 49
     },
     {
-      "file": "src/components/ai/WorkflowDocPreview.tsx",
-      "static": 14,
-      "dynamicLayout": 6,
-      "dynamicColor": 35
+      "file": "src/components/ai/VirtualEmployeeTab.tsx",
+      "static": 4,
+      "dynamicLayout": 4,
+      "dynamicColor": 44
     },
     {
       "file": "src/components/remote/PassthroughCommandsPanel.tsx",
@@ -101,19 +77,13 @@
       "file": "src/components/remote/RemoteSessionList.tsx",
       "static": 31,
       "dynamicLayout": 11,
-      "dynamicColor": 13
+      "dynamicColor": 14
     },
     {
-      "file": "src/components/ai/VirtualEmployeeTab.tsx",
+      "file": "src/components/ai/AssistantWelcomeView.tsx",
       "static": 0,
-      "dynamicLayout": 4,
-      "dynamicColor": 42
-    },
-    {
-      "file": "src/components/ai/WelcomePromptParamDialog.tsx",
-      "static": 14,
-      "dynamicLayout": 4,
-      "dynamicColor": 25
+      "dynamicLayout": 15,
+      "dynamicColor": 43
     },
     {
       "file": "src/components/remote/SecurityPolicyPanel.tsx",
@@ -122,10 +92,22 @@
       "dynamicColor": 16
     },
     {
+      "file": "src/components/ai/CodePreviewPanel.tsx",
+      "static": 0,
+      "dynamicLayout": 9,
+      "dynamicColor": 38
+    },
+    {
       "file": "src/components/settings/ModelRoutesSettingsSection.tsx",
       "static": 32,
       "dynamicLayout": 2,
       "dynamicColor": 5
+    },
+    {
+      "file": "src/components/ai/WorkflowDocPreview.tsx",
+      "static": 0,
+      "dynamicLayout": 6,
+      "dynamicColor": 35
     },
     {
       "file": "src/components/gossip/GossipPanel.tsx",
@@ -134,40 +116,22 @@
       "dynamicColor": 22
     },
     {
-      "file": "src/components/ai/CodePreviewMarkdown.tsx",
-      "static": 10,
-      "dynamicLayout": 6,
-      "dynamicColor": 24
-    },
-    {
       "file": "src/components/remote/RemoteSessionCard.tsx",
       "static": 10,
       "dynamicLayout": 12,
       "dynamicColor": 24
     },
     {
-      "file": "src/components/ai/ComputerUseOperatorPanel.tsx",
-      "static": 24,
-      "dynamicLayout": 7,
-      "dynamicColor": 9
-    },
-    {
-      "file": "src/components/ai/NotificationDetail.tsx",
-      "static": 10,
-      "dynamicLayout": 0,
-      "dynamicColor": 23
+      "file": "src/components/ai/AIAssistantPanel.tsx",
+      "static": 0,
+      "dynamicLayout": 4,
+      "dynamicColor": 32
     },
     {
       "file": "src/components/remote/EmbeddingConfigPanel.tsx",
       "static": 28,
       "dynamicLayout": 6,
       "dynamicColor": 4
-    },
-    {
-      "file": "src/components/remote/LLMProfileAssignments.tsx",
-      "static": 11,
-      "dynamicLayout": 7,
-      "dynamicColor": 21
     },
     {
       "file": "src/components/remote/RemoteSessionConsole.tsx",
@@ -183,45 +147,15 @@
     },
     {
       "file": "src/components/remote/SkillRepairDraftsPanel.tsx",
-      "static": 12,
+      "static": 11,
       "dynamicLayout": 2,
       "dynamicColor": 16
     },
     {
-      "file": "src/components/ai/CodePreviewWorkspace.tsx",
-      "static": 7,
-      "dynamicLayout": 6,
-      "dynamicColor": 20
-    },
-    {
-      "file": "src/components/ai/ProjectSearchPanel.tsx",
-      "static": 6,
-      "dynamicLayout": 2,
-      "dynamicColor": 21
-    },
-    {
-      "file": "src/components/remote/MoAConfigSection.tsx",
-      "static": 13,
-      "dynamicLayout": 5,
-      "dynamicColor": 14
-    },
-    {
-      "file": "src/components/ai/CodingAgentProgressStatus.tsx",
-      "static": 5,
-      "dynamicLayout": 5,
-      "dynamicColor": 21
-    },
-    {
-      "file": "src/components/ai/CodingConflictSidePanel.tsx",
-      "static": 7,
-      "dynamicLayout": 10,
-      "dynamicColor": 19
-    },
-    {
-      "file": "src/components/ai/VEAuthorizationDialog.tsx",
-      "static": 7,
-      "dynamicLayout": 2,
-      "dynamicColor": 18
+      "file": "src/components/ai/WelcomePromptParamDialog.tsx",
+      "static": 0,
+      "dynamicLayout": 4,
+      "dynamicColor": 25
     },
     {
       "file": "src/components/MemoryHealthDialog.tsx",
@@ -230,58 +164,76 @@
       "dynamicColor": 4
     },
     {
+      "file": "src/components/remote/LLMProfileAssignments.tsx",
+      "static": 9,
+      "dynamicLayout": 3,
+      "dynamicColor": 16
+    },
+    {
+      "file": "src/components/remote/MoAConfigSection.tsx",
+      "static": 13,
+      "dynamicLayout": 4,
+      "dynamicColor": 12
+    },
+    {
+      "file": "src/components/ai/CodePreviewMarkdown.tsx",
+      "static": 0,
+      "dynamicLayout": 6,
+      "dynamicColor": 24
+    },
+    {
+      "file": "src/components/ai/CodePreviewWorkspace.tsx",
+      "static": 2,
+      "dynamicLayout": 6,
+      "dynamicColor": 21
+    },
+    {
+      "file": "src/components/ai/NotificationDetail.tsx",
+      "static": 0,
+      "dynamicLayout": 0,
+      "dynamicColor": 23
+    },
+    {
       "file": "src/components/remote/MobileQRCodeDialog.tsx",
       "static": 7,
       "dynamicLayout": 1,
       "dynamicColor": 16
     },
     {
-      "file": "src/components/ai/FileTabBar.tsx",
-      "static": 6,
-      "dynamicLayout": 6,
-      "dynamicColor": 16
+      "file": "src/components/ai/CodingConflictSidePanel.tsx",
+      "static": 0,
+      "dynamicLayout": 10,
+      "dynamicColor": 19
     },
     {
-      "file": "src/components/ai/AssistantGroupDiscussionDropdown.tsx",
-      "static": 8,
-      "dynamicLayout": 7,
-      "dynamicColor": 11
-    },
-    {
-      "file": "src/components/ai/VEGroupChat.tsx",
-      "static": 7,
-      "dynamicLayout": 5,
-      "dynamicColor": 12
-    },
-    {
-      "file": "src/components/ai/BufferQueuePanel.tsx",
-      "static": 7,
+      "file": "src/components/ai/task-config/TaskConfigBar.tsx",
+      "static": 9,
       "dynamicLayout": 4,
       "dynamicColor": 9
     },
     {
-      "file": "src/components/ai/CodingAgentPlanChecklist.tsx",
-      "static": 6,
-      "dynamicLayout": 1,
-      "dynamicColor": 10
-    },
-    {
-      "file": "src/components/ai/HistoryGroupDiscussionTab.tsx",
-      "static": 5,
-      "dynamicLayout": 0,
-      "dynamicColor": 11
-    },
-    {
-      "file": "src/components/ai/NotificationPanel.tsx",
-      "static": 3,
-      "dynamicLayout": 4,
-      "dynamicColor": 13
-    },
-    {
       "file": "src/components/layout/SidebarTaskManagement.tsx",
-      "static": 2,
+      "static": 3,
       "dynamicLayout": 6,
-      "dynamicColor": 14
+      "dynamicColor": 15
+    },
+    {
+      "file": "src/components/ai/VEAuthorizationDialog.tsx",
+      "static": 0,
+      "dynamicLayout": 2,
+      "dynamicColor": 17
+    },
+    {
+      "file": "src/components/remote/LLMConfigPanel.tsx",
+      "static": 8,
+      "dynamicLayout": 2,
+      "dynamicColor": 9
+    },
+    {
+      "file": "src/components/ai/FileTabBar.tsx",
+      "static": 0,
+      "dynamicLayout": 5,
+      "dynamicColor": 16
     },
     {
       "file": "src/components/remote/MCPRemoteServerRow.tsx",
@@ -290,28 +242,34 @@
       "dynamicColor": 11
     },
     {
-      "file": "src/components/ai/AssistantInputActions.tsx",
-      "static": 4,
+      "file": "src/components/ai/CodePreviewFileList.tsx",
+      "static": 2,
+      "dynamicLayout": 0,
+      "dynamicColor": 13
+    },
+    {
+      "file": "src/components/ai/CodingAgentProgressStatus.tsx",
+      "static": 0,
       "dynamicLayout": 3,
-      "dynamicColor": 11
+      "dynamicColor": 15
     },
     {
       "file": "src/components/ai/VEConversationView.tsx",
       "static": 0,
-      "dynamicLayout": 5,
+      "dynamicLayout": 6,
       "dynamicColor": 15
     },
     {
-      "file": "src/components/ai/PptxPreviewPanel.tsx",
-      "static": 4,
-      "dynamicLayout": 0,
-      "dynamicColor": 10
+      "file": "src/components/ai/AssistantPermissionModeMenu.tsx",
+      "static": 0,
+      "dynamicLayout": 2,
+      "dynamicColor": 14
     },
     {
-      "file": "src/components/ai/RecordingSessionCard.tsx",
-      "static": 5,
-      "dynamicLayout": 1,
-      "dynamicColor": 9
+      "file": "src/components/ai/ChatTaskCard.tsx",
+      "static": 7,
+      "dynamicLayout": 0,
+      "dynamicColor": 7
     },
     {
       "file": "src/components/SecurityEventsDialog.tsx",
@@ -320,28 +278,22 @@
       "dynamicColor": 2
     },
     {
-      "file": "src/components/ai/AssistantPermissionModeMenu.tsx",
+      "file": "src/components/ai/AttachmentDocumentPreview.tsx",
+      "static": 11,
+      "dynamicLayout": 5,
+      "dynamicColor": 2
+    },
+    {
+      "file": "src/components/ai/NotificationPanel.tsx",
       "static": 0,
-      "dynamicLayout": 2,
+      "dynamicLayout": 4,
       "dynamicColor": 13
     },
     {
-      "file": "src/components/ai/CodePreviewFileList.tsx",
-      "static": 5,
+      "file": "src/components/ai/ProjectSearchRow.tsx",
+      "static": 0,
       "dynamicLayout": 0,
-      "dynamicColor": 8
-    },
-    {
-      "file": "src/components/ai/GroupParticipantPanel.tsx",
-      "static": 4,
-      "dynamicLayout": 1,
-      "dynamicColor": 9
-    },
-    {
-      "file": "src/components/ai/WelcomeTemplatesImportPreview.tsx",
-      "static": 4,
-      "dynamicLayout": 0,
-      "dynamicColor": 9
+      "dynamicColor": 13
     },
     {
       "file": "src/components/remote/RemoteToolDiagnosticsCard.tsx",
@@ -350,46 +302,64 @@
       "dynamicColor": 11
     },
     {
-      "file": "src/components/ai/AITabBar.tsx",
-      "static": 2,
-      "dynamicLayout": 1,
-      "dynamicColor": 10
-    },
-    {
-      "file": "src/components/ai/AppViewShell.tsx",
-      "static": 4,
-      "dynamicLayout": 3,
-      "dynamicColor": 8
-    },
-    {
-      "file": "src/components/ai/WorkflowInlinePrompts.tsx",
-      "static": 6,
+      "file": "src/components/ai/VEGroupChat.tsx",
+      "static": 0,
       "dynamicLayout": 5,
-      "dynamicColor": 6
+      "dynamicColor": 12
     },
     {
-      "file": "src/components/ai/AssistantTitleBar.tsx",
-      "static": 5,
-      "dynamicLayout": 9,
-      "dynamicColor": 6
-    },
-    {
-      "file": "src/components/ai/CodingWorkbenchControlPanel.tsx",
-      "static": 1,
+      "file": "src/components/settings/PDFStylesSettingsPanel.tsx",
+      "static": 0,
       "dynamicLayout": 0,
-      "dynamicColor": 10
+      "dynamicColor": 12
     },
     {
-      "file": "src/components/ai/TabParticipantInviteDialog.tsx",
-      "static": 2,
+      "file": "src/components/ai/AssistantGroupDiscussionDropdown.tsx",
+      "static": 0,
+      "dynamicLayout": 5,
+      "dynamicColor": 11
+    },
+    {
+      "file": "src/components/ai/AssistantInputActions.tsx",
+      "static": 0,
+      "dynamicLayout": 3,
+      "dynamicColor": 11
+    },
+    {
+      "file": "src/components/ai/HistoryGroupDiscussionTab.tsx",
+      "static": 0,
       "dynamicLayout": 0,
-      "dynamicColor": 9
+      "dynamicColor": 11
     },
     {
-      "file": "src/components/ai/task-config/TaskConfigBar.tsx",
-      "static": 6,
+      "file": "src/components/ai/RemoteReconnectForm.tsx",
+      "static": 0,
+      "dynamicLayout": 5,
+      "dynamicColor": 11
+    },
+    {
+      "file": "src/components/ai/useConversationViewArchive.tsx",
+      "static": 4,
+      "dynamicLayout": 0,
+      "dynamicColor": 7
+    },
+    {
+      "file": "src/components/filecompanion/FileCompanionWindow.tsx",
+      "static": 11,
+      "dynamicLayout": 4,
+      "dynamicColor": 0
+    },
+    {
+      "file": "src/components/remote/LLMConfigHubOfficialCard.tsx",
+      "static": 11,
       "dynamicLayout": 1,
-      "dynamicColor": 5
+      "dynamicColor": 0
+    },
+    {
+      "file": "src/components/remote/LLMConfigOAuthFields.tsx",
+      "static": 3,
+      "dynamicLayout": 1,
+      "dynamicColor": 8
     },
     {
       "file": "src/components/remote/RemoteRoutingCard.tsx",
@@ -398,28 +368,16 @@
       "dynamicColor": 6
     },
     {
-      "file": "src/components/ai/AssistantConversationBody.tsx",
-      "static": 5,
-      "dynamicLayout": 0,
-      "dynamicColor": 5
-    },
-    {
-      "file": "src/components/ai/confirmationCard.tsx",
-      "static": 2,
-      "dynamicLayout": 0,
-      "dynamicColor": 8
-    },
-    {
-      "file": "src/components/ai/ProjectSceneDetailPanel.tsx",
-      "static": 4,
+      "file": "src/components/ai/AITabBar.tsx",
+      "static": 0,
       "dynamicLayout": 1,
-      "dynamicColor": 6
+      "dynamicColor": 10
     },
     {
-      "file": "src/components/ai/WelcomeTemplateSaveOffer.tsx",
-      "static": 5,
+      "file": "src/components/filecompanion/CompanionFigureStrip.tsx",
+      "static": 9,
       "dynamicLayout": 0,
-      "dynamicColor": 5
+      "dynamicColor": 1
     },
     {
       "file": "src/components/pages/ApiStorePage.tsx",
@@ -434,22 +392,34 @@
       "dynamicColor": 1
     },
     {
-      "file": "src/components/ai/AssistantTitleBarNotifications.tsx",
-      "static": 3,
-      "dynamicLayout": 0,
-      "dynamicColor": 6
+      "file": "src/components/ai/BufferQueuePanel.tsx",
+      "static": 0,
+      "dynamicLayout": 4,
+      "dynamicColor": 9
     },
     {
-      "file": "src/components/ai/ProjectSearchArchivedPanel.tsx",
-      "static": 1,
-      "dynamicLayout": 0,
-      "dynamicColor": 8
-    },
-    {
-      "file": "src/components/ai/SessionWorkingDirChip.tsx",
-      "static": 7,
+      "file": "src/components/ai/CodingAgentPlanChecklist.tsx",
+      "static": 0,
       "dynamicLayout": 2,
-      "dynamicColor": 2
+      "dynamicColor": 9
+    },
+    {
+      "file": "src/components/ai/CodingWorkbenchControlPanel.tsx",
+      "static": 0,
+      "dynamicLayout": 0,
+      "dynamicColor": 9
+    },
+    {
+      "file": "src/components/ai/GroupParticipantPanel.tsx",
+      "static": 0,
+      "dynamicLayout": 1,
+      "dynamicColor": 9
+    },
+    {
+      "file": "src/components/ai/WelcomeTemplatesImportPreview.tsx",
+      "static": 0,
+      "dynamicLayout": 0,
+      "dynamicColor": 9
     },
     {
       "file": "src/components/remote/LLMConfigProviderLimitsFields.tsx",
@@ -464,10 +434,52 @@
       "dynamicColor": 4
     },
     {
-      "file": "src/components/ai/AIAssistantRenameGroupDialog.tsx",
-      "static": 1,
+      "file": "src/components/ai/AppViewShell.tsx",
+      "static": 0,
+      "dynamicLayout": 3,
+      "dynamicColor": 8
+    },
+    {
+      "file": "src/components/ai/confirmationCard.tsx",
+      "static": 0,
+      "dynamicLayout": 0,
+      "dynamicColor": 8
+    },
+    {
+      "file": "src/components/ai/GoalQuickBar.tsx",
+      "static": 4,
+      "dynamicLayout": 0,
+      "dynamicColor": 4
+    },
+    {
+      "file": "src/components/ai/PptxPreviewPanel.tsx",
+      "static": 0,
+      "dynamicLayout": 0,
+      "dynamicColor": 8
+    },
+    {
+      "file": "src/components/ai/ProjectSearchArchivedPanel.tsx",
+      "static": 0,
+      "dynamicLayout": 0,
+      "dynamicColor": 8
+    },
+    {
+      "file": "src/components/ai/RecordingSessionCard.tsx",
+      "static": 0,
       "dynamicLayout": 1,
-      "dynamicColor": 7
+      "dynamicColor": 8
+    },
+    {
+      "file": "src/components/ai/SaveTaskDialog.tsx",
+      "static": 0,
+      "dynamicLayout": 1,
+      "dynamicColor": 8
+    },
+    {
+      "file": "src/components/ai/TabParticipantInviteDialog.tsx",
+      "static": 0,
+      "dynamicLayout": 0,
+      "dynamicColor": 8
     },
     {
       "file": "src/components/ai/task-config/RemoteServerPopover.tsx",
@@ -476,10 +488,28 @@
       "dynamicColor": 5
     },
     {
+      "file": "src/components/layout/TaskWorkspaceTransferDialog.tsx",
+      "static": 8,
+      "dynamicLayout": 0,
+      "dynamicColor": 0
+    },
+    {
       "file": "src/components/remote/OnboardingOfflineModeOption.tsx",
       "static": 3,
       "dynamicLayout": 1,
       "dynamicColor": 5
+    },
+    {
+      "file": "src/components/ai/ChatTaskTray.tsx",
+      "static": 2,
+      "dynamicLayout": 0,
+      "dynamicColor": 5
+    },
+    {
+      "file": "src/components/ai/LatexPreviewPanel.tsx",
+      "static": 1,
+      "dynamicLayout": 2,
+      "dynamicColor": 6
     },
     {
       "file": "src/components/DataMigrationOverlay.tsx",
@@ -488,40 +518,46 @@
       "dynamicColor": 5
     },
     {
-      "file": "src/components/remote/ProviderModelCombobox.tsx",
-      "static": 3,
-      "dynamicLayout": 3,
-      "dynamicColor": 4
-    },
-    {
       "file": "src/components/remote/SkillInstallProgressPanel.tsx",
       "static": 2,
       "dynamicLayout": 4,
       "dynamicColor": 5
     },
     {
-      "file": "src/components/settings/LLMCacheSettingsPanel.tsx",
-      "static": 5,
-      "dynamicLayout": 0,
-      "dynamicColor": 2
+      "file": "src/components/ai/AIAssistantRenameGroupDialog.tsx",
+      "static": 0,
+      "dynamicLayout": 1,
+      "dynamicColor": 6
     },
     {
-      "file": "src/components/ai/AssistantQuickSettingsBar.tsx",
-      "static": 5,
-      "dynamicLayout": 4,
-      "dynamicColor": 1
+      "file": "src/components/ai/ProjectSceneDetailPanel.tsx",
+      "static": 0,
+      "dynamicLayout": 1,
+      "dynamicColor": 6
     },
     {
-      "file": "src/components/ai/AttachmentImagePreviewOverlay.tsx",
+      "file": "src/components/ai/ProjectSearchPanel.tsx",
+      "static": 0,
+      "dynamicLayout": 1,
+      "dynamicColor": 6
+    },
+    {
+      "file": "src/components/ai/WorkflowInlinePrompts.tsx",
+      "static": 0,
+      "dynamicLayout": 5,
+      "dynamicColor": 6
+    },
+    {
+      "file": "src/components/ai/XlsxPreviewPanel.tsx",
       "static": 2,
-      "dynamicLayout": 3,
+      "dynamicLayout": 2,
       "dynamicColor": 4
     },
     {
-      "file": "src/components/ai/ProjectSearchLibraryRows.tsx",
-      "static": 1,
-      "dynamicLayout": 1,
-      "dynamicColor": 5
+      "file": "src/components/bots/BotFilePreview.tsx",
+      "static": 4,
+      "dynamicLayout": 0,
+      "dynamicColor": 2
     },
     {
       "file": "src/components/layout/MainTopHeaderActions.tsx",
@@ -530,34 +566,58 @@
       "dynamicColor": 3
     },
     {
-      "file": "src/components/ai/AssistantMermaidDiagram.tsx",
+      "file": "src/components/preview/WebPreviewBrowser.tsx",
       "static": 1,
       "dynamicLayout": 0,
-      "dynamicColor": 4
+      "dynamicColor": 5
     },
     {
-      "file": "src/components/ai/AssistantPreviewPane.tsx",
-      "static": 2,
-      "dynamicLayout": 4,
+      "file": "src/components/remote/BotTasksPanel.tsx",
+      "static": 3,
+      "dynamicLayout": 1,
       "dynamicColor": 3
     },
     {
-      "file": "src/components/ai/AssistantWorkflowMaximizeSuggestion.tsx",
-      "static": 1,
-      "dynamicLayout": 0,
-      "dynamicColor": 4
+      "file": "src/components/ai/aiCodingWorkbenchMiniPanels.tsx",
+      "static": 0,
+      "dynamicLayout": 1,
+      "dynamicColor": 5
     },
     {
-      "file": "src/components/ai/InlineChatCard.tsx",
-      "static": 4,
+      "file": "src/components/ai/AssistantConversationBody.tsx",
+      "static": 0,
+      "dynamicLayout": 0,
+      "dynamicColor": 5
+    },
+    {
+      "file": "src/components/ai/assistantPanelInlineBanners.tsx",
+      "static": 0,
+      "dynamicLayout": 0,
+      "dynamicColor": 5
+    },
+    {
+      "file": "src/components/ai/AssistantTitleBar.tsx",
+      "static": 0,
+      "dynamicLayout": 8,
+      "dynamicColor": 5
+    },
+    {
+      "file": "src/components/ai/AssistantTitleBarNotifications.tsx",
+      "static": 0,
+      "dynamicLayout": 0,
+      "dynamicColor": 5
+    },
+    {
+      "file": "src/components/ai/assistantToolCallRow.tsx",
+      "static": 2,
       "dynamicLayout": 2,
-      "dynamicColor": 1
+      "dynamicColor": 3
     },
     {
-      "file": "src/components/ai/MentionPopover.tsx",
-      "static": 1,
-      "dynamicLayout": 0,
-      "dynamicColor": 4
+      "file": "src/components/ai/CompanionGroupInvites.tsx",
+      "static": 3,
+      "dynamicLayout": 1,
+      "dynamicColor": 2
     },
     {
       "file": "src/components/ai/task-config/WorkspacePickerPopover.tsx",
@@ -566,10 +626,10 @@
       "dynamicColor": 4
     },
     {
-      "file": "src/components/CustomDialog.tsx",
-      "static": 5,
-      "dynamicLayout": 2,
-      "dynamicColor": 0
+      "file": "src/components/ai/WelcomeTemplateSaveOffer.tsx",
+      "static": 0,
+      "dynamicLayout": 0,
+      "dynamicColor": 5
     },
     {
       "file": "src/components/layout/CodingAgentCompactStatus.tsx",
@@ -596,12 +656,6 @@
       "dynamicColor": 0
     },
     {
-      "file": "src/components/remote/LLMConfigOAuthFields.tsx",
-      "static": 0,
-      "dynamicLayout": 1,
-      "dynamicColor": 5
-    },
-    {
       "file": "src/components/remote/MCPSecretConfigurationEditor.tsx",
       "static": 3,
       "dynamicLayout": 0,
@@ -626,16 +680,16 @@
       "dynamicColor": 0
     },
     {
+      "file": "src/components/settings/LLMCacheSettingsPanel.tsx",
+      "static": 3,
+      "dynamicLayout": 0,
+      "dynamicColor": 2
+    },
+    {
       "file": "src/components/ai/AITabItem.tsx",
       "static": 0,
       "dynamicLayout": 1,
       "dynamicColor": 4
-    },
-    {
-      "file": "src/components/ai/AssistantPinnedNewsCards.tsx",
-      "static": 2,
-      "dynamicLayout": 2,
-      "dynamicColor": 2
     },
     {
       "file": "src/components/ai/AssistantPureCodingEmptyState.tsx",
@@ -644,33 +698,45 @@
       "dynamicColor": 4
     },
     {
-      "file": "src/components/ai/AssistantReasoningPanel.tsx",
-      "static": 2,
-      "dynamicLayout": 5,
-      "dynamicColor": 2
-    },
-    {
-      "file": "src/components/ai/InputHistoryAutocomplete.tsx",
-      "static": 2,
-      "dynamicLayout": 1,
-      "dynamicColor": 2
-    },
-    {
-      "file": "src/components/ai/ProjectSearchForkForm.tsx",
-      "static": 1,
-      "dynamicLayout": 0,
-      "dynamicColor": 3
-    },
-    {
-      "file": "src/components/layout/CloudWorkspaceShareDialog.tsx",
+      "file": "src/components/ai/AssistantWorkflowMaximizeSuggestion.tsx",
       "static": 0,
       "dynamicLayout": 0,
       "dynamicColor": 4
     },
     {
-      "file": "src/components/layout/MobileDocumentsPanel.tsx",
+      "file": "src/components/ai/AttachmentImagePreviewOverlay.tsx",
       "static": 0,
-      "dynamicLayout": 5,
+      "dynamicLayout": 3,
+      "dynamicColor": 4
+    },
+    {
+      "file": "src/components/ai/InputHistoryAutocomplete.tsx",
+      "static": 1,
+      "dynamicLayout": 1,
+      "dynamicColor": 3
+    },
+    {
+      "file": "src/components/ai/MentionPopover.tsx",
+      "static": 0,
+      "dynamicLayout": 0,
+      "dynamicColor": 4
+    },
+    {
+      "file": "src/components/ai/ProjectSearchLibraryRows.tsx",
+      "static": 0,
+      "dynamicLayout": 2,
+      "dynamicColor": 4
+    },
+    {
+      "file": "src/components/filecompanion/FileCompanionComposer.tsx",
+      "static": 4,
+      "dynamicLayout": 0,
+      "dynamicColor": 0
+    },
+    {
+      "file": "src/components/layout/CloudWorkspaceShareDialog.tsx",
+      "static": 0,
+      "dynamicLayout": 0,
       "dynamicColor": 4
     },
     {
@@ -686,9 +752,9 @@
       "dynamicColor": 0
     },
     {
-      "file": "src/components/remote/LLMConfigDialogFooter.tsx",
+      "file": "src/components/remote/LLMConfigZhipuLoginSection.tsx",
       "static": 2,
-      "dynamicLayout": 2,
+      "dynamicLayout": 1,
       "dynamicColor": 2
     },
     {
@@ -704,22 +770,28 @@
       "dynamicColor": 2
     },
     {
-      "file": "src/components/ai/AssistantGroupDiscussionMenu.tsx",
+      "file": "src/components/ai/AssistantAttachmentsStrip.tsx",
       "static": 2,
       "dynamicLayout": 1,
       "dynamicColor": 1
     },
     {
-      "file": "src/components/ai/ComputerUseQuickBar.tsx",
-      "static": 1,
-      "dynamicLayout": 0,
-      "dynamicColor": 2
+      "file": "src/components/ai/AssistantPreviewPane.tsx",
+      "static": 0,
+      "dynamicLayout": 4,
+      "dynamicColor": 3
     },
     {
-      "file": "src/components/ai/ComputerUseReadinessBanner.tsx",
-      "static": 2,
-      "dynamicLayout": 3,
-      "dynamicColor": 1
+      "file": "src/components/ai/ComputerUseOperatorPanel.tsx",
+      "static": 0,
+      "dynamicLayout": 7,
+      "dynamicColor": 3
+    },
+    {
+      "file": "src/components/ai/ProjectSearchForkForm.tsx",
+      "static": 0,
+      "dynamicLayout": 0,
+      "dynamicColor": 3
     },
     {
       "file": "src/components/ai/__tests__/useAssistantOutputScroll.test.tsx",
@@ -738,12 +810,6 @@
       "static": 2,
       "dynamicLayout": 1,
       "dynamicColor": 1
-    },
-    {
-      "file": "src/components/layout/SidebarNavRail.tsx",
-      "static": 1,
-      "dynamicLayout": 1,
-      "dynamicColor": 2
     },
     {
       "file": "src/components/pages/ApiStoreProviderCard.tsx",
@@ -770,12 +836,6 @@
       "dynamicColor": 2
     },
     {
-      "file": "src/components/remote/LLMConfigDialogSaveError.tsx",
-      "static": 2,
-      "dynamicLayout": 0,
-      "dynamicColor": 1
-    },
-    {
       "file": "src/components/settings/KnowledgeImportDialog.tsx",
       "static": 3,
       "dynamicLayout": 2,
@@ -800,24 +860,6 @@
       "dynamicColor": 3
     },
     {
-      "file": "src/components/ai/aiAssistantControls.tsx",
-      "static": 1,
-      "dynamicLayout": 0,
-      "dynamicColor": 1
-    },
-    {
-      "file": "src/components/ai/AssistantActiveTabContent.tsx",
-      "static": 2,
-      "dynamicLayout": 1,
-      "dynamicColor": 0
-    },
-    {
-      "file": "src/components/ai/AssistantAttachmentsStrip.tsx",
-      "static": 1,
-      "dynamicLayout": 1,
-      "dynamicColor": 1
-    },
-    {
       "file": "src/components/ai/AssistantInputComposer.tsx",
       "static": 1,
       "dynamicLayout": 2,
@@ -830,10 +872,34 @@
       "dynamicColor": 2
     },
     {
-      "file": "src/components/ai/AssistantUpdateNotice.tsx",
-      "static": 1,
+      "file": "src/components/ai/AssistantMermaidDiagram.tsx",
+      "static": 0,
+      "dynamicLayout": 0,
+      "dynamicColor": 2
+    },
+    {
+      "file": "src/components/ai/AssistantPinnedNewsCards.tsx",
+      "static": 0,
+      "dynamicLayout": 2,
+      "dynamicColor": 2
+    },
+    {
+      "file": "src/components/ai/AssistantReasoningPanel.tsx",
+      "static": 0,
+      "dynamicLayout": 2,
+      "dynamicColor": 2
+    },
+    {
+      "file": "src/components/ai/CodePreviewDiffView.tsx",
+      "static": 0,
       "dynamicLayout": 1,
-      "dynamicColor": 1
+      "dynamicColor": 2
+    },
+    {
+      "file": "src/components/ai/ComputerUseQuickBar.tsx",
+      "static": 0,
+      "dynamicLayout": 0,
+      "dynamicColor": 2
     },
     {
       "file": "src/components/ai/KnowledgeDialog.tsx",
@@ -842,28 +908,16 @@
       "dynamicColor": 2
     },
     {
-      "file": "src/components/ai/NotificationItem.tsx",
-      "static": 2,
-      "dynamicLayout": 0,
-      "dynamicColor": 0
-    },
-    {
-      "file": "src/components/ai/PreviewFileActions.tsx",
-      "static": 1,
-      "dynamicLayout": 1,
-      "dynamicColor": 1
-    },
-    {
       "file": "src/components/ai/task-config/ExpertPickerPopover.tsx",
       "static": 1,
       "dynamicLayout": 1,
       "dynamicColor": 1
     },
     {
-      "file": "src/components/ai/TTSLevelBars.tsx",
-      "static": 1,
+      "file": "src/components/ai/__tests__/AssistantAttachmentsStrip.test.tsx",
+      "static": 2,
       "dynamicLayout": 0,
-      "dynamicColor": 1
+      "dynamicColor": 0
     },
     {
       "file": "src/components/ai/__tests__/ChatBubbleFrame.test.tsx",
@@ -875,6 +929,12 @@
       "file": "src/components/layout/AppStatusMessageBar.tsx",
       "static": 0,
       "dynamicLayout": 0,
+      "dynamicColor": 2
+    },
+    {
+      "file": "src/components/layout/SidebarNavRail.tsx",
+      "static": 0,
+      "dynamicLayout": 1,
       "dynamicColor": 2
     },
     {
@@ -902,6 +962,18 @@
       "dynamicColor": 2
     },
     {
+      "file": "src/components/remote/providerLogos.tsx",
+      "static": 2,
+      "dynamicLayout": 0,
+      "dynamicColor": 0
+    },
+    {
+      "file": "src/components/remote/ProviderModelCombobox.tsx",
+      "static": 1,
+      "dynamicLayout": 1,
+      "dynamicColor": 1
+    },
+    {
       "file": "src/components/remote/RemoteStatusCards.tsx",
       "static": 0,
       "dynamicLayout": 1,
@@ -912,6 +984,12 @@
       "static": 2,
       "dynamicLayout": 0,
       "dynamicColor": 0
+    },
+    {
+      "file": "src/components/settings/MailboxManageDialog.tsx",
+      "static": 1,
+      "dynamicLayout": 0,
+      "dynamicColor": 1
     },
     {
       "file": "src/components/settings/TelegramBotSettings.tsx",
@@ -926,58 +1004,76 @@
       "dynamicColor": 2
     },
     {
-      "file": "src/components/ai/aiAssistantMarkdownMedia.tsx",
-      "static": 1,
+      "file": "src/components/ai/aiAssistantControls.tsx",
+      "static": 0,
       "dynamicLayout": 0,
+      "dynamicColor": 1
+    },
+    {
+      "file": "src/components/ai/AssistantGroupDiscussionMenu.tsx",
+      "static": 0,
+      "dynamicLayout": 1,
+      "dynamicColor": 1
+    },
+    {
+      "file": "src/components/ai/AssistantQuickModelSwitcher.tsx",
+      "static": 1,
+      "dynamicLayout": 1,
       "dynamicColor": 0
     },
     {
-      "file": "src/components/ai/aiAssistantPanelTheme.tsx",
-      "static": 1,
-      "dynamicLayout": 0,
-      "dynamicColor": 0
+      "file": "src/components/ai/AssistantQuickSettingsBar.tsx",
+      "static": 0,
+      "dynamicLayout": 3,
+      "dynamicColor": 1
     },
     {
       "file": "src/components/ai/AssistantReplyCopyButton.tsx",
       "static": 0,
-      "dynamicLayout": 1,
+      "dynamicLayout": 0,
       "dynamicColor": 1
     },
     {
-      "file": "src/components/ai/AssistantTitleBarIcons.tsx",
-      "static": 1,
+      "file": "src/components/ai/AssistantToolFlipTicker.tsx",
+      "static": 0,
       "dynamicLayout": 0,
-      "dynamicColor": 0
+      "dynamicColor": 1
     },
     {
-      "file": "src/components/ai/ChatBubbleFrame.tsx",
-      "static": 1,
-      "dynamicLayout": 1,
-      "dynamicColor": 0
-    },
-    {
-      "file": "src/components/ai/CodePreviewMinimap.tsx",
-      "static": 1,
-      "dynamicLayout": 3,
-      "dynamicColor": 0
-    },
-    {
-      "file": "src/components/ai/MemoryUsageRing.tsx",
-      "static": 1,
-      "dynamicLayout": 2,
-      "dynamicColor": 0
-    },
-    {
-      "file": "src/components/ai/MessageContentRenderer.tsx",
-      "static": 1,
-      "dynamicLayout": 0,
-      "dynamicColor": 0
-    },
-    {
-      "file": "src/components/ai/NewTaskWizardRunningBanner.tsx",
+      "file": "src/components/ai/AssistantUpdateNotice.tsx",
       "static": 0,
       "dynamicLayout": 1,
       "dynamicColor": 1
+    },
+    {
+      "file": "src/components/ai/CompanionPdfReader.tsx",
+      "static": 0,
+      "dynamicLayout": 6,
+      "dynamicColor": 1
+    },
+    {
+      "file": "src/components/ai/ComputerUseReadinessBanner.tsx",
+      "static": 0,
+      "dynamicLayout": 3,
+      "dynamicColor": 1
+    },
+    {
+      "file": "src/components/ai/DocxPreviewPanel.tsx",
+      "static": 0,
+      "dynamicLayout": 2,
+      "dynamicColor": 1
+    },
+    {
+      "file": "src/components/ai/InlineChatCard.tsx",
+      "static": 0,
+      "dynamicLayout": 2,
+      "dynamicColor": 1
+    },
+    {
+      "file": "src/components/ai/NewTaskWizardRunningBanner.tsx",
+      "static": 1,
+      "dynamicLayout": 2,
+      "dynamicColor": 0
     },
     {
       "file": "src/components/ai/PdfPreviewPanel.tsx",
@@ -986,10 +1082,40 @@
       "dynamicColor": 1
     },
     {
-      "file": "src/components/ai/ProjectSearchIcon.tsx",
-      "static": 1,
+      "file": "src/components/ai/PPTStyleChooser.tsx",
+      "static": 0,
       "dynamicLayout": 0,
-      "dynamicColor": 0
+      "dynamicColor": 1
+    },
+    {
+      "file": "src/components/ai/PreviewFileActions.tsx",
+      "static": 0,
+      "dynamicLayout": 1,
+      "dynamicColor": 1
+    },
+    {
+      "file": "src/components/ai/PreviewProgressBar.tsx",
+      "static": 0,
+      "dynamicLayout": 2,
+      "dynamicColor": 1
+    },
+    {
+      "file": "src/components/ai/ProjectSearchContextMenu.tsx",
+      "static": 0,
+      "dynamicLayout": 1,
+      "dynamicColor": 1
+    },
+    {
+      "file": "src/components/ai/SessionWorkingDirChip.tsx",
+      "static": 0,
+      "dynamicLayout": 2,
+      "dynamicColor": 1
+    },
+    {
+      "file": "src/components/ai/task-config/LatexTemplatePickerPopover.tsx",
+      "static": 0,
+      "dynamicLayout": 1,
+      "dynamicColor": 1
     },
     {
       "file": "src/components/ai/task-config/WorkflowPickerPopover.tsx",
@@ -998,10 +1124,40 @@
       "dynamicColor": 1
     },
     {
+      "file": "src/components/ai/TTSLevelBars.tsx",
+      "static": 0,
+      "dynamicLayout": 0,
+      "dynamicColor": 1
+    },
+    {
+      "file": "src/components/bots/BotEditDialog.tsx",
+      "static": 0,
+      "dynamicLayout": 0,
+      "dynamicColor": 1
+    },
+    {
+      "file": "src/components/bots/BotsPageErrorBoundary.tsx",
+      "static": 1,
+      "dynamicLayout": 0,
+      "dynamicColor": 0
+    },
+    {
       "file": "src/components/common/MarkdownLink.tsx",
       "static": 0,
       "dynamicLayout": 0,
       "dynamicColor": 1
+    },
+    {
+      "file": "src/components/layout/cloudDriveGlyphs.tsx",
+      "static": 1,
+      "dynamicLayout": 0,
+      "dynamicColor": 0
+    },
+    {
+      "file": "src/components/layout/MobileDocumentsPanel.tsx",
+      "static": 1,
+      "dynamicLayout": 2,
+      "dynamicColor": 0
     },
     {
       "file": "src/components/layout/SidebarAiPane.tsx",
@@ -1037,6 +1193,12 @@
       "file": "src/components/pages/SkillsPage.tsx",
       "static": 1,
       "dynamicLayout": 0,
+      "dynamicColor": 0
+    },
+    {
+      "file": "src/components/remote/HubRecommendationCatalog.tsx",
+      "static": 1,
+      "dynamicLayout": 1,
       "dynamicColor": 0
     },
     {
@@ -1076,6 +1238,12 @@
       "dynamicColor": 0
     },
     {
+      "file": "src/components/ui/SuggestCombobox.tsx",
+      "static": 1,
+      "dynamicLayout": 2,
+      "dynamicColor": 0
+    },
+    {
       "file": "src/components/workflow/InstanceConfirmationPanel.tsx",
       "static": 0,
       "dynamicLayout": 2,
@@ -1084,7 +1252,13 @@
     {
       "file": "src/App.tsx",
       "static": 0,
-      "dynamicLayout": 2,
+      "dynamicLayout": 3,
+      "dynamicColor": 0
+    },
+    {
+      "file": "src/components/ai/AssistantActiveTabContent.tsx",
+      "static": 0,
+      "dynamicLayout": 1,
       "dynamicColor": 0
     },
     {
@@ -1100,6 +1274,30 @@
       "dynamicColor": 0
     },
     {
+      "file": "src/components/ai/ChatBubbleFrame.tsx",
+      "static": 0,
+      "dynamicLayout": 1,
+      "dynamicColor": 0
+    },
+    {
+      "file": "src/components/ai/CodePreviewMinimap.tsx",
+      "static": 0,
+      "dynamicLayout": 3,
+      "dynamicColor": 0
+    },
+    {
+      "file": "src/components/ai/MemoryUsageRing.tsx",
+      "static": 0,
+      "dynamicLayout": 2,
+      "dynamicColor": 0
+    },
+    {
+      "file": "src/components/ai/NewTaskWizardWelcomePane.tsx",
+      "static": 0,
+      "dynamicLayout": 1,
+      "dynamicColor": 0
+    },
+    {
       "file": "src/components/ai/task-config/taskConfigIcons.tsx",
       "static": 0,
       "dynamicLayout": 1,
@@ -1112,15 +1310,39 @@
       "dynamicColor": 0
     },
     {
+      "file": "src/components/bots/DesktopBotWorkspace.tsx",
+      "static": 0,
+      "dynamicLayout": 1,
+      "dynamicColor": 0
+    },
+    {
+      "file": "src/components/CustomDialog.tsx",
+      "static": 0,
+      "dynamicLayout": 1,
+      "dynamicColor": 0
+    },
+    {
+      "file": "src/components/filecompanion/CompanionNoteStatus.tsx",
+      "static": 0,
+      "dynamicLayout": 1,
+      "dynamicColor": 0
+    },
+    {
       "file": "src/components/layout/AppSidebarShell.tsx",
       "static": 0,
       "dynamicLayout": 2,
       "dynamicColor": 0
     },
     {
+      "file": "src/components/layout/CloudWorkspaceFilesDialog.tsx",
+      "static": 0,
+      "dynamicLayout": 1,
+      "dynamicColor": 0
+    },
+    {
       "file": "src/components/layout/SystemPopupMenu.tsx",
       "static": 0,
-      "dynamicLayout": 2,
+      "dynamicLayout": 1,
       "dynamicColor": 0
     },
     {
@@ -1172,6 +1394,12 @@
       "dynamicColor": 0
     },
     {
+      "file": "src/components/remote/TokenUsageTrend.tsx",
+      "static": 0,
+      "dynamicLayout": 3,
+      "dynamicColor": 0
+    },
+    {
       "file": "src/components/remote/UsageDisplay.tsx",
       "static": 0,
       "dynamicLayout": 1,
@@ -1179,6 +1407,12 @@
     },
     {
       "file": "src/components/settings/DeepCrawlPanel.tsx",
+      "static": 0,
+      "dynamicLayout": 1,
+      "dynamicColor": 0
+    },
+    {
+      "file": "src/components/settings/LatexSettingsPanel.tsx",
       "static": 0,
       "dynamicLayout": 1,
       "dynamicColor": 0
@@ -1198,11 +1432,17 @@
     {
       "file": "src/components/settings/UISettingsPanel.tsx",
       "static": 0,
-      "dynamicLayout": 2,
+      "dynamicLayout": 3,
       "dynamicColor": 0
     },
     {
       "file": "src/components/startup/EnvCheckSplash.tsx",
+      "static": 0,
+      "dynamicLayout": 1,
+      "dynamicColor": 0
+    },
+    {
+      "file": "src/components/TokenBankShareableProviders.tsx",
       "static": 0,
       "dynamicLayout": 1,
       "dynamicColor": 0

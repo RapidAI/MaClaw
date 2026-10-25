@@ -232,8 +232,8 @@ func TestResolveLLMConfigUsesSharedThinkingModeDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveLLMConfig() error = %v", err)
 	}
-	if llmCfg.ThinkingMode != "enabled" {
-		t.Fatalf("unset global thinking mode = %q, want enabled", llmCfg.ThinkingMode)
+	if llmCfg.ThinkingMode != "" {
+		t.Fatalf("unset global thinking mode = %q, want auto", llmCfg.ThinkingMode)
 	}
 }
 

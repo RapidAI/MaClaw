@@ -44,6 +44,7 @@ var (
 		".dwg": true, ".dxf": true, ".dxfb": true,
 		".glb": true, ".gltf": true,
 		".epub": true,
+		".mobi": true,
 		".adoc": true, ".asciidoc": true,
 		".eml": true,
 	}

@@ -90,7 +90,7 @@ func TestFolderWatchImportReleasesWriteLockDuringDistill(t *testing.T) {
 	store.SetCardDistiller(distiller)
 
 	started := time.Now()
-	// TopicHint matches a folder watch: sequential import that always distills.
+	// Explicit LLM mode stays sequential and must release the write lock during distillation.
 	result, err := store.ImportDirectory(ctx, DirectoryImportRequest{
 		RootPath:    docs,
 		TopicHint:   "doc",

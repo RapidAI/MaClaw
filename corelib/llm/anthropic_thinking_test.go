@@ -95,20 +95,23 @@ func TestBuildAnthropicMessagesRequestBodyAutoEnablesGLM53Thinking(t *testing.T)
 	if thinking["type"] != "enabled" {
 		t.Fatalf("auto glm-5.3 thinking = %#v, want type=enabled", req["thinking"])
 	}
-	if thinking["budget_tokens"] == nil {
-		t.Fatalf("auto glm-5.3 thinking missing budget: %#v", thinking)
+	if _, ok := thinking["budget_tokens"]; ok {
+		t.Fatalf("auto glm-5.3 must not send budget_tokens: %#v", thinking)
 	}
 }
 
-func TestBuildAnthropicMessagesRequestBodyDisablesGLMFlashThinking(t *testing.T) {
+func TestBuildAnthropicMessagesRequestBodyGLMFlashUsesLowEffort(t *testing.T) {
 	req := BuildAnthropicMessagesRequestBody(
 		corelib.MaclawLLMConfig{URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.3-flash", ThinkingMode: "disabled"},
 		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
 		AnthropicMessagesRequestOptions{MaxTokens: 900},
 	)
 	thinking, _ := req["thinking"].(map[string]interface{})
-	if thinking["type"] != "disabled" {
-		t.Fatalf("thinking = %#v, want type=disabled", req["thinking"])
+	if thinking["type"] != "enabled" || req["reasoning_effort"] != "low" {
+		t.Fatalf("thinking = %#v effort = %#v, want enabled/low", req["thinking"], req["reasoning_effort"])
+	}
+	if _, ok := thinking["budget_tokens"]; ok {
+		t.Fatalf("flash kept a budget: %#v", thinking)
 	}
 	if req["max_tokens"] != 900 {
 		t.Fatalf("max_tokens = %#v, want 900", req["max_tokens"])

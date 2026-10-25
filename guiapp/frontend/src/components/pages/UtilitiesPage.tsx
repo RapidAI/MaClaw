@@ -2159,7 +2159,11 @@ export const UtilitiesPage = ({
                             data-testid="utilities-expert-new-card"
                             onClick={() => setExpertEditor({ mode: 'new' })}
                         >
-                            <span className="utilities-expert-card__new-icon" aria-hidden>➕</span>
+                            <span className="utilities-expert-card__new-icon" aria-hidden>
+                                <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                                    <path d="M8 3.2v9.6M3.2 8h9.6" />
+                                </svg>
+                            </span>
                             <span>{t.expertNew}</span>
                         </button>
                         <button
@@ -2170,7 +2174,11 @@ export const UtilitiesPage = ({
                             disabled={expertPackageBusy}
                             aria-busy={expertPackageBusy || undefined}
                         >
-                            <span className="utilities-expert-card__new-icon" aria-hidden>⇩</span>
+                            <span className="utilities-expert-card__new-icon" aria-hidden>
+                                <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M8 2.5v7.5M4.8 7.2 8 10.4l3.2-3.2M3 13h10" />
+                                </svg>
+                            </span>
                             <span>{t.expertImport}</span>
                         </button>
                     </div>

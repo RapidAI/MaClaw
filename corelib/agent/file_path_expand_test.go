@@ -946,7 +946,7 @@ func TestIsDocumentFilePath(t *testing.T) {
 	if IsDocumentFilePath("/tmp/a.png") {
 		t.Fatal("png should not be document")
 	}
-	for _, path := range []string{`C:\draw\pump.dwg`, `C:\draw\pump.dxf`, `C:\model\pump.glb`, `C:\book\manual.epub`, `C:\doc\manual.adoc`, `C:\mail\ask.eml`} {
+	for _, path := range []string{`C:\draw\pump.dwg`, `C:\draw\pump.dxf`, `C:\model\pump.glb`, `C:\book\manual.epub`, `C:\book\manual.mobi`, `C:\doc\manual.adoc`, `C:\mail\ask.eml`} {
 		if !IsDocumentFilePath(path) {
 			t.Fatalf("%s should be a document", path)
 		}

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { collapseDuplicatePendingUnfinishedSlots, latestAssistantTurnIncomplete, latestPendingUnfinishedStatus, loadProjectTabMsgIds, mergeChatMessages, messageHasPendingUnfinishedSlot, PROJECT_TAB_MSG_IDS_KEY } from '../aiAssistantProjectTabState';
+import { collapseDuplicatePendingUnfinishedSlots, latestAssistantTurnIncomplete, latestPendingUnfinishedStatus, loadProjectTabMsgIds, mergeChatMessages, mergeProjectRoundHistory, messageHasPendingUnfinishedSlot, PROJECT_TAB_MSG_IDS_KEY } from '../aiAssistantProjectTabState';
 
 describe('aiAssistantProjectTabState', () => {
     beforeEach(() => {
@@ -73,6 +73,164 @@ describe('aiAssistantProjectTabState', () => {
         expect(merged).toHaveLength(1);
         expect(merged[0].content).toBe('weather done');
         expect(merged[0].fields?.[0]?.value).toBe('ok');
+    });
+
+    it('keeps a saved coding trail when the fresh row is thinner', () => {
+        const trail = [
+            { id: 't1', sequence: 1, kind: 'thinking' as const, content: 'Inspect quality.h', timestamp: 2 },
+            { id: 'p1', sequence: 2, kind: 'progress' as const, content: 'Coding Agent Event: {"detail":"edit_file"}', timestamp: 3 },
+        ];
+        const merged = mergeProjectRoundHistory(
+            [{ id: 'ack', role: 'assistant', content: '目标已开始', timestamp: 1 }],
+            [{ id: 'ack', role: 'assistant', content: '目标已开始', timestamp: 1 }, { id: 'goal', role: 'assistant', content: '', requestId: 'goal-cont-1', timestamp: 2, codingTimeline: trail }],
+            [{ id: 'goal', role: 'assistant', content: '步骤已核对', requestId: 'goal-cont-1', timestamp: 2 }],
+        );
+        expect(merged.map(message => message.id)).toEqual(['ack', 'goal']);
+        expect(merged[1].content).toBe('步骤已核对');
+        expect(merged[1].codingTimeline).toEqual(trail);
+    });
+
+    it('keeps a tool row the later trail skipped when a further event arrived', () => {
+        const saved = [
+            { id: 't1', sequence: 1, kind: 'thinking' as const, content: 'Inspect quality.h', timestamp: 2 },
+            { id: 'p1', sequence: 2, kind: 'progress' as const, content: 'edit_file', timestamp: 3 },
+        ];
+        const fresh = [
+            { id: 't1', sequence: 1, kind: 'thinking' as const, content: 'Inspect quality.h', timestamp: 2 },
+            { id: 'p2', sequence: 8, kind: 'progress' as const, content: 'todo_write', timestamp: 4 },
+        ];
+        const merged = mergeProjectRoundHistory(
+            [{ id: 'goal', role: 'assistant', content: '', timestamp: 1, codingTimeline: saved }],
+            undefined,
+            [{ id: 'goal', role: 'assistant', content: '步骤已核对', timestamp: 2, codingTimeline: fresh }],
+        );
+        expect(merged[0].content).toBe('步骤已核对');
+        expect(merged[0].codingTimeline).toEqual([fresh[0], saved[1], fresh[1]]);
+    });
+
+    it('keeps a same-watermark edit instead of a longer earlier trail', () => {
+        const saved = [
+            { id: 't1', sequence: 1, kind: 'thinking' as const, content: 'old', timestamp: 2 },
+            { id: 'p1', sequence: 2, kind: 'progress' as const, content: 'edit_file', timestamp: 3 },
+            { id: 't2', sequence: 3, kind: 'thinking' as const, content: 'tail', timestamp: 4 },
+        ];
+        const fresh = [
+            { id: 't1', sequence: 1, lastSequence: 2, kind: 'thinking' as const, content: 'revised', timestamp: 2 },
+            { id: 'p2', sequence: 3, kind: 'progress' as const, content: 'todo_write', timestamp: 5 },
+        ];
+        const merged = mergeProjectRoundHistory(
+            [{ id: 'goal', role: 'assistant', content: '', timestamp: 1, codingTimeline: saved }],
+            undefined,
+            [{ id: 'goal', role: 'assistant', content: '步骤已核对', timestamp: 2, codingTimeline: fresh }],
+        );
+        expect(merged[0].codingTimeline).toBe(fresh);
+    });
+
+    it('keeps an in-place tool finish and a thought only the earlier copy carried further', () => {
+        const saved = [
+            { id: 't1', sequence: 1, kind: 'thinking' as const, content: 'old', timestamp: 2 },
+            { id: 'p1', sequence: 2, kind: 'progress' as const, content: 'edit_file', timestamp: 3 },
+            { id: 't2', sequence: 10, kind: 'thinking' as const, content: 'later', timestamp: 6 },
+        ];
+        const fresh = [
+            { id: 't1', sequence: 1, kind: 'thinking' as const, content: 'revised', timestamp: 4 },
+            { id: 'p1', sequence: 2, kind: 'progress' as const, content: 'finished', timestamp: 5, eventSequences: [2, 5] },
+        ];
+        const merged = mergeProjectRoundHistory(
+            [{ id: 'goal', role: 'assistant', content: '', timestamp: 1, codingTimeline: saved }],
+            undefined,
+            [{ id: 'goal', role: 'assistant', content: '步骤已核对', timestamp: 2, codingTimeline: fresh }],
+        );
+        expect(merged[0].content).toBe('步骤已核对');
+        expect(merged[0].codingTimeline).toEqual([fresh[0], fresh[1], saved[2]]);
+    });
+
+    it('replaces an earlier tool row when a later copy owns its event sequence', () => {
+        const saved = [
+            { id: 'p1', sequence: 5, kind: 'progress' as const, content: 'edit_file', timestamp: 3 },
+            { id: 't2', sequence: 10, kind: 'thinking' as const, content: 'later', timestamp: 6 },
+        ];
+        const finished = { id: 'p1', sequence: 2, kind: 'progress' as const, content: 'finished', timestamp: 5, eventSequences: [2, 5] };
+        const merged = mergeProjectRoundHistory(
+            [{ id: 'goal', role: 'assistant', content: '', timestamp: 1, codingTimeline: saved }],
+            undefined,
+            [{ id: 'goal', role: 'assistant', content: '步骤已核对', timestamp: 2, codingTimeline: [finished] }],
+        );
+        expect(merged[0].codingTimeline).toEqual([finished, saved[1]]);
+    });
+
+    it('does not paint the same unsequenced row twice', () => {
+        const saved = [{ id: 't1', sequence: 0, kind: 'thinking' as const, content: 'old', timestamp: 1 }];
+        const fresh = [{ id: 't1', sequence: 0, kind: 'thinking' as const, content: 'revised', timestamp: 2 }];
+        const merged = mergeProjectRoundHistory(
+            [{ id: 'goal', role: 'assistant', content: '', timestamp: 1, codingTimeline: saved }],
+            undefined,
+            [{ id: 'goal', role: 'assistant', content: '步骤已核对', timestamp: 2, codingTimeline: fresh }],
+        );
+        expect(merged[0].codingTimeline).toBe(fresh);
+    });
+
+    it('keeps the later row when the same id gains a transport sequence', () => {
+        const saved = [
+            { id: 't1', sequence: 0, kind: 'thinking' as const, content: 'old', timestamp: 1 },
+            { id: 'p1', sequence: 5, kind: 'progress' as const, content: 'edit_file', timestamp: 3 },
+        ];
+        const fresh = [
+            { id: 't1', sequence: 4, kind: 'thinking' as const, content: 'revised', timestamp: 4 },
+            { id: 'p1', sequence: 2, kind: 'progress' as const, content: 'finished', timestamp: 5 },
+        ];
+        const merged = mergeProjectRoundHistory(
+            [{ id: 'goal', role: 'assistant', content: '', timestamp: 1, codingTimeline: saved }],
+            undefined,
+            [{ id: 'goal', role: 'assistant', content: '步骤已核对', timestamp: 2, codingTimeline: fresh }],
+        );
+        expect(merged[0].codingTimeline).toBe(fresh);
+    });
+
+    it('trusts a live row that left the coding trail while the turn is sending', () => {
+        const trail = [
+            { id: 't1', sequence: 1, kind: 'thinking' as const, content: 'Let me explore the repository.', timestamp: 2 },
+            { id: 'p1', sequence: 2, kind: 'progress' as const, content: 'edit_file', timestamp: 3 },
+        ];
+        const merged = mergeProjectRoundHistory(
+            [{ id: 'goal', role: 'assistant', content: '', timestamp: 2, codingTimeline: trail }],
+            undefined,
+            [{ id: 'goal', role: 'assistant', content: '', reasoning: '先看现有实现。', timestamp: 4 }],
+            undefined,
+            true,
+        );
+        expect(merged[0].reasoning).toBe('先看现有实现。');
+        expect(merged[0].codingTimeline).toBeUndefined();
+    });
+
+    it('keeps an unsequenced row that is a different id', () => {
+        const saved = [
+            { id: 'n1', sequence: 0, kind: 'thinking' as const, content: 'note', timestamp: 1 },
+            { id: 'p1', sequence: 2, kind: 'progress' as const, content: 'edit_file', timestamp: 3 },
+        ];
+        const fresh = [
+            { id: 't1', sequence: 1, kind: 'thinking' as const, content: 'revised', timestamp: 4 },
+        ];
+        const merged = mergeProjectRoundHistory(
+            [{ id: 'goal', role: 'assistant', content: '', timestamp: 1, codingTimeline: saved }],
+            undefined,
+            [{ id: 'goal', role: 'assistant', content: '步骤已核对', timestamp: 2, codingTimeline: fresh }],
+        );
+        expect(merged[0].codingTimeline?.map(item => item.id)).toEqual(['n1', 't1', 'p1']);
+    });
+
+    it('does not put a saved coding trail back on an error row', () => {
+        const trail = [
+            { id: 't1', sequence: 1, kind: 'thinking' as const, content: 'Inspect quality.h', timestamp: 2 },
+        ];
+        const merged = mergeProjectRoundHistory(
+            [{ id: 'goal', role: 'assistant', content: '', timestamp: 1, codingTimeline: trail }],
+            undefined,
+            [{ id: 'goal', role: 'error', content: 'Tool execution failed.', timestamp: 3 }],
+        );
+        expect(merged[0].role).toBe('error');
+        expect(merged[0].content).toBe('Tool execution failed.');
+        expect(merged[0].codingTimeline).toBeUndefined();
     });
 
     it('keeps one pending recovery card when startup injection and the reply share a slot', () => {

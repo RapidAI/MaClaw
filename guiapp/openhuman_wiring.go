@@ -843,16 +843,10 @@ func (h *IMMessageHandler) buildSituationReport(userID string) string {
 
 	// Active workflow — legacy engine removed, always nil.
 
-	// Active SSH sessions (check if sshMgr is available)
+	// Active SSH sessions owned by this conversation. Another conversation's
+	// session is not part of this turn's situation.
 	if h.sshMgr != nil {
-		if sessions := h.sshMgr.List(); len(sessions) > 0 {
-			for _, s := range sessions {
-				if len(ctx.ActiveSSHSessions) >= 3 {
-					break
-				}
-				ctx.ActiveSSHSessions = append(ctx.ActiveSSHSessions, s.ID)
-			}
-		}
+		ctx.ActiveSSHSessions = sshBoundSituationSessionIDs(h.sshMgr.List(), userID, sshSituationSessionAlive)
 	}
 
 	// Background tasks

@@ -63,10 +63,10 @@ export const AppStatusMessageBar = ({
     }
     const successMarker = installStatus.startsWith('?') || installStatus.startsWith('??');
     const statusTone = (statusText.includes("Error") || statusText.includes("!"))
-        ? 'var(--theme-danger, #c43d34)'
-        : 'var(--theme-success, #4f7f6f)';
-    const noticeTone = 'var(--theme-text-muted, #64748b)';
-    const progressTone = successMarker ? 'var(--theme-success, #4f7f6f)' : 'var(--theme-text-muted, #64748b)';
+        ? 'var(--theme-danger, #dc1f25)'
+        : 'var(--theme-success, #11813a)';
+    const noticeTone = 'var(--theme-text-muted, #56677c)';
+    const progressTone = successMarker ? 'var(--theme-success, #11813a)' : 'var(--theme-text-muted, #56677c)';
     const inline = variant === 'inline';
 
     // Inline sits after chips: take only natural width (can shrink), do not compete

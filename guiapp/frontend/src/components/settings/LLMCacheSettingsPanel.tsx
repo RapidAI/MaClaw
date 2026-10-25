@@ -194,7 +194,7 @@ export const LLMCacheSettingsPanel = ({ config, setConfig, lang, showToastMessag
                     {saving ? textForLang(lang, 'Saving...', '\u4fdd\u5b58\u4e2d...', '\u4fdd\u5b58\u4e2d...') : textForLang(lang, 'Save', '\u4fdd\u5b58', '\u4fdd\u5b58')}
                 </button>
             </div>
-            {saveError && <div style={{ color: 'var(--theme-danger, #c43d34)', fontSize: 13 }}>{saveError}</div>}
+            {saveError && <div style={{ color: 'var(--theme-danger, #dc1f25)', fontSize: 13 }}>{saveError}</div>}
 
             <hr style={{ border: 'none', borderTop: '1px solid var(--theme-border, rgba(127,127,127,0.25))', margin: '8px 0' }} />
             <ModelRoutesSettingsSection

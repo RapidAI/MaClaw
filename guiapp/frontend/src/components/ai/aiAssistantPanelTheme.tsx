@@ -580,12 +580,20 @@ export const AI_PANEL_STATIC_STYLE_TEXT = `
         contain: layout style;
         width: fit-content;
     }
+    .ai-attachment-name {
+        min-width: 6ch;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 220px;
+        font-weight: 500;
+    }
     .ai-attachment-strip {
-        display: grid;
+        display: flex;
+        flex-wrap: wrap;
         width: fit-content;
         max-width: min(100%, 760px);
-        grid-template-columns: repeat(auto-fill, minmax(58px, max-content));
-        align-items: start;
+        align-items: center;
     }
     .ai-attachment-remove:hover:not(:disabled) {
         background: var(--ai-attachment-remove-hover-bg) !important;

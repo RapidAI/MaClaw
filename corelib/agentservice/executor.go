@@ -3,7 +3,6 @@ package agentservice
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -173,51 +172,30 @@ func serviceSystemPrompt(req ExecuteRequest) string {
 }
 
 func simpleLLMRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client) (string, error) {
-	if !cfg.IsResponsesAPI() && strings.EqualFold(cfg.Protocol, "anthropic") {
+	// Chat and Responses used to read the provider body and then return only
+	// its length. A thinking-off refusal never reached the retry. Anthropic
+	// already goes through DoAnthropicRequest, which retries that refusal once.
+	if cfg.IsResponsesAPI() {
+		resp, err := llm.DoResponsesAPIRequest(ctx, cfg, messages, client)
+		return simpleLLMText(resp, err)
+	}
+	if strings.EqualFold(cfg.Protocol, "anthropic") {
 		return doSimpleAnthropicRequest(ctx, cfg, messages, client)
 	}
-	return doSimpleOpenAIRequest(ctx, cfg, messages, client)
+	resp, err := llm.DoOpenAIRequest(ctx, cfg, messages, nil, client)
+	return simpleLLMText(resp, err)
 }
 
-func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client) (string, error) {
-	var (
-		req  *http.Request
-		data []byte
-		err  error
-	)
-	if cfg.IsResponsesAPI() {
-		req, data, _, err = llm.NewResponsesAPIRequest(ctx, cfg, messages, llm.ResponsesAPIRequestOptions{Stream: false})
-	} else {
-		req, data, _, err = llm.NewOpenAIChatRequest(ctx, cfg, messages, llm.OpenAIChatRequestOptions{Stream: false})
-	}
+func simpleLLMText(resp *llm.Response, err error) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("llm http %d: body_len=%d req_len=%d", resp.StatusCode, len(body), len(data))
-	}
-
-	var parsed *llm.Response
-	if cfg.IsResponsesAPI() {
-		parsed, err = llm.ParseNonStreamResponsesAPIBody(body)
-	} else {
-		parsed, err = llm.ParseNonStreamOpenAIResponseBody(body)
-	}
-	if err != nil {
-		return "", err
-	}
-	if len(parsed.Choices) == 0 {
+	if resp == nil || len(resp.Choices) == 0 {
 		return "", fmt.Errorf("llm returned no choices")
 	}
-	text := parsed.Choices[0].Message.Content
+	text := resp.Choices[0].Message.Content
 	if text == "" {
-		text = parsed.Choices[0].Message.ReasoningContent
+		text = resp.Choices[0].Message.ReasoningContent
 	}
 	text = stripThinkingTags(text)
 	if strings.TrimSpace(text) == "" {

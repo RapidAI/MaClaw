@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -164,5 +165,31 @@ func TestManagedIndustryExpertSaveInactiveLocksUnconfirmedInstallation(t *testin
 	}
 	if item.Active {
 		t.Fatal("unconfirmed installation must remain managed but inactive")
+	}
+}
+
+func TestManagedIndustryExpertLocalIDFlagsOneRead(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "managed.json")
+	body := []byte(`{"installs":[
+		{"local_expert_id":"industry-off","active":false},
+		{"local_expert_id":"industry-on","active":false},
+		{"local_expert_id":"industry-on","active":true}
+	]}`)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := &managedIndustryExpertStore{pathFn: func() string { return path }}
+	known, active := store.localIDFlags()
+	if !known["industry-off"] || !known["industry-on"] || len(known) != 2 {
+		t.Fatalf("known = %#v", known)
+	}
+	if active["industry-off"] || !active["industry-on"] || len(active) != 1 {
+		t.Fatalf("active = %#v", active)
+	}
+	broken := &managedIndustryExpertStore{pathFn: func() string { return dir }}
+	known, active = broken.localIDFlags()
+	if len(known) != 0 || len(active) != 0 {
+		t.Fatalf("load error known=%v active=%v", known, active)
 	}
 }

@@ -18,11 +18,13 @@ type Folder struct {
 }
 
 // BrowsePage is one signed-in look at a mailbox: the folder list and one page
-// of messages. Both come from the same IMAP session.
+// of messages. Both come from the same IMAP session. Unseen maps a folder name
+// to its unread count; folders the server refuses to STATUS stay absent.
 type BrowsePage struct {
 	Folders  []Folder
 	Box      string
 	Messages []MessageSummary
+	Unseen   map[string]uint64
 }
 
 // FolderBrowser is the read side of the mailbox management dialog.
@@ -73,7 +75,7 @@ func (d *NetDialer) Browse(ctx context.Context, account Account, secret, box str
 	}
 	folders := classifyFolders(infos)
 	box = preferredFolder(folders, box)
-	page := BrowsePage{Folders: folders, Box: box}
+	page := BrowsePage{Folders: folders, Box: box, Unseen: folderUnseen(c, folders)}
 	if box == "" {
 		return page, nil
 	}
@@ -121,6 +123,21 @@ func preferredFolder(folders []Folder, want string) string {
 		return folders[0].Name
 	}
 	return ""
+}
+
+// folderUnseen asks STATUS UNSEEN per folder. One command each, and a folder
+// that refuses the STATUS (some servers only allow it on selectable mailboxes)
+// simply gets no badge.
+func folderUnseen(c *imapclient.Client, folders []Folder) map[string]uint64 {
+	out := make(map[string]uint64, len(folders))
+	for _, folder := range folders {
+		status, err := c.Status(folder.Name, []imap.StatusItem{imap.StatusUnseen})
+		if err != nil || status == nil || status.Unseen == 0 {
+			continue
+		}
+		out[folder.Name] = uint64(status.Unseen)
+	}
+	return out
 }
 
 func listMailboxes(c *imapclient.Client) ([]*imap.MailboxInfo, error) {

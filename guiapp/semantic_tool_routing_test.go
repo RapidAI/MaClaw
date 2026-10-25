@@ -472,14 +472,18 @@ func TestIMSemanticAttachmentDeliveryUsesBoundFileArtifact(t *testing.T) {
 	}
 	name := extractToolName(defs[0])
 	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface, platform: "lansenger", loopCtx: &LoopContext{DeliveryTarget: &agent.DeliveryTarget{ChannelScope: "lansenger", DestinationID: "user:user-1"}}}
-	if got := cb.ExecuteTool(name, `{"artifact_id":"forged","path":"C:/Windows/win.ini"}`); !strings.Contains(got, "parameter_unknown_field") {
+	// The adapter has no parameters. A forged artifact id or path is the same
+	// call as {}: it delivers the bound attachment and cannot select win.ini.
+	// Rejecting it left the grant live, and five such misses stopped the turn
+	// before the host could attach the file.
+	if got := cb.ExecuteTool(name, `{"artifact_id":"forged","path":"C:/Windows/win.ini"}`); !strings.Contains(got, "Delivery committed") || strings.Contains(got, "win.ini") {
 		t.Fatalf("forged model input=%q", got)
 	}
-	// Rejection is an admitted use of a one-shot grant. Do not make a failed
-	// parameter attempt retryable; start a distinct logical turn for the
-	// success-path delivery assertion below.
+	if cb.semanticDeliveryFileData != attachment.Data {
+		t.Fatalf("forged args delivered a different artifact")
+	}
 	if got := cb.ExecuteTool(name, `{}`); !strings.Contains(got, "invocation_grant_replayed") {
-		t.Fatalf("replayed rejected invocation=%q", got)
+		t.Fatalf("replayed bound delivery=%q", got)
 	}
 	defs, surface, handled, err = h.semanticCallSurfaceForSharedTurnWithIdentityAndClassificationAndAttachments("user-1", "send this attachment back", "lansenger", "root-file-valid", "turn-file-valid", &intent.ClassificationResult{Primary: intent.LabelAttachmentDelivery, Confidence: .98}, []MessageAttachment{attachment})
 	if err != nil || !handled || surface == nil || len(defs) < 1 {
@@ -2359,7 +2363,7 @@ func TestSemanticBoundSkillExecutesExactStableIdentityWithoutAliasDrift(t *testi
 	if bound.SkillID == "" {
 		t.Fatalf("bound skill missing from loaded skills=%#v", entries)
 	}
-	output, err := executor.executeBoundSkill(
+	output, _, err := executor.executeBoundSkill(
 		agentservice.DynamicSkillStableID(bound), bound.Name, bound.Version, agentservice.DynamicSkillContentDigest(bound), nil,
 	)
 	if err != nil || !strings.Contains(output, "bound") || strings.Contains(output, "replacement") {
@@ -2401,7 +2405,7 @@ func TestSemanticBoundSkillRejectsSameStableIDReplacementDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	executor.invalidateSkillCache()
-	output, err := executor.executeBoundSkill(
+	output, _, err := executor.executeBoundSkill(
 		agentservice.DynamicSkillStableID(original), original.Name, original.Version, agentservice.DynamicSkillContentDigest(original), nil,
 	)
 	if err == nil || !strings.Contains(err.Error(), "skill_binding_stale") || output != "" {

@@ -8,6 +8,12 @@ const hasAVX2FMA = false
 // hasAVX512ZMM is always false off amd64 (no AVX-512 kernels there).
 const hasAVX512ZMM = false
 
+// reduceContigExtreme is the amd64 SIMD path. Other architectures keep the
+// scalar reduction in opReduce.
+func reduceContigExtreme(row []float32, code reduceCode) (float32, bool) {
+	return 0, false
+}
+
 // ctcRowExpClamp now lives in ctc.go (untagged): it calls ctcRowExpAVX512 only
 // when hasAVX512ZMM, and otherwise runs the same portable vek32 pipeline that
 // used to sit here. Only the fused kernel needs a !amd64 counterpart.
@@ -61,7 +67,9 @@ func fmadd3Into(out, x []float32, w0, w1, w2 float32) {
 	if n <= 0 {
 		return
 	}
-	fmadd3Scalar(out, x, w0, w1, w2, n)
+	if body := fmadd3Vec(out, x, w0, w1, w2, n); body < n {
+		fmadd3Scalar(out[body:], x[body:], w0, w1, w2, n-body)
+	}
 }
 
 // fmadd3Scalar is the portable per-tap-order implementation.
@@ -70,5 +78,30 @@ func fmadd3Scalar(out, x []float32, w0, w1, w2 float32, n int) {
 		out[i] += w0 * x[i]
 		out[i] += w1 * x[i+1]
 		out[i] += w2 * x[i+2]
+	}
+}
+
+// fmadd5Into computes out[i] += w0*x[i] + ... + w4*x[i+4] (portable fallback).
+func fmadd5Into(out, x []float32, w0, w1, w2, w3, w4 float32) {
+	n := len(out)
+	if len(x)-4 < n {
+		n = len(x) - 4
+	}
+	if n <= 0 {
+		return
+	}
+	if body := fmadd5Vec(out, x, w0, w1, w2, w3, w4, n); body < n {
+		fmadd5Scalar(out[body:], x[body:], w0, w1, w2, w3, w4, n-body)
+	}
+}
+
+// fmadd5Scalar is the portable per-tap-order implementation.
+func fmadd5Scalar(out, x []float32, w0, w1, w2, w3, w4 float32, n int) {
+	for i := 0; i < n; i++ {
+		out[i] += w0 * x[i]
+		out[i] += w1 * x[i+1]
+		out[i] += w2 * x[i+2]
+		out[i] += w3 * x[i+3]
+		out[i] += w4 * x[i+4]
 	}
 }

@@ -34,6 +34,12 @@ export interface NotificationPanelProps {
     onClose: () => void;
     selectedNotification?: AdminNotification | null;
     onBackFromDetail?: () => void;
+    onGroupInviteAction?: (groupId: string, action: "accept" | "decline" | "ignore") => void;
+    groupInviteBusy?: boolean;
+    groupInviteHold?: string;
+    groupInviteActionError?: string;
+    groupInviteListError?: string;
+    groupInviteError?: string;
     /** Marks the transient panel inaccessible while its host page is hidden. */
     ariaHidden?: boolean;
     detailTheme?: Theme;
@@ -180,7 +186,9 @@ const NotificationItem: React.FC<NotificationItemProps> = React.memo(({
               ? { color: "var(--theme-warning)", fontWeight: 600 }
               : undefined;
     const titleText = (notification.title || "").trim();
-    const contentPreview = stripMarkdownPreview(notification.content || "");
+    const contentPreview = notification.groupInviteId
+        ? String(notification.content || "").replace(/\s+/g, " ").trim()
+        : stripMarkdownPreview(notification.content || "");
     const hasDistinctPreview = Boolean(contentPreview) && contentPreview !== titleText;
     const hasMoreToRead = titleText.length > 28 || hasDistinctPreview;
 
@@ -292,7 +300,7 @@ const NotificationItem: React.FC<NotificationItemProps> = React.memo(({
                 </span>
             )}
 
-            {hasMoreToRead && (
+            {(notification.groupInviteId || hasMoreToRead) && (
                 <span
                     style={{
                         fontSize: "11px",
@@ -301,7 +309,9 @@ const NotificationItem: React.FC<NotificationItemProps> = React.memo(({
                         alignSelf: "flex-start",
                     }}
                 >
-                    {localizeText(lang, "View full notice", "查看全文", "查看全文")}
+                    {notification.groupInviteId
+                        ? localizeText(lang, "Open to respond", "打开处理", "打開處理")
+                        : localizeText(lang, "View full notice", "查看全文", "查看全文")}
                 </span>
             )}
         </div>
@@ -318,6 +328,12 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
     onClose,
     selectedNotification,
     onBackFromDetail,
+    onGroupInviteAction,
+    groupInviteBusy = false,
+    groupInviteHold = "",
+    groupInviteActionError = "",
+    groupInviteListError = "",
+    groupInviteError = "",
     ariaHidden = false,
     detailTheme,
     lang,
@@ -335,10 +351,19 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
         lastSelectedIdRef.current = selectedNotification.id;
     }
 
-    const filteredNotifications = categoryFilter
-        ? notifications.filter((n) => n.category === categoryFilter)
-        : notifications;
-    const hasUnread = notifications.some((n) => !n.is_read);
+    const inviteNotifications = notifications.filter((n) => n.groupInviteId);
+    const hubNotifications = notifications.filter((n) => !n.groupInviteId);
+    const filteredHub = categoryFilter
+        ? hubNotifications.filter((n) => n.category === categoryFilter)
+        : hubNotifications;
+    const filteredNotifications = [...inviteNotifications, ...filteredHub];
+    const hasUnread = hubNotifications.some((n) => !n.is_read);
+    const inviteListError = groupInviteListError.trim();
+    // A category with no matching rows still says that category is empty.
+    // The invite-load error stays a banner, so it is not read as a category failure.
+    const categoryMiss = Boolean(categoryFilter) && filteredNotifications.length === 0;
+    const showInviteListErrorBanner = Boolean(inviteListError) && (filteredNotifications.length > 0 || categoryMiss);
+    const emptyIsInviteError = Boolean(inviteListError) && !categoryFilter;
     const viewingDetail = Boolean(selectedNotification);
     const resolvedDetailTheme = resolveDetailTheme(t, detailTheme);
     const preferredHeight = viewingDetail ? 520 : 460;
@@ -463,6 +488,11 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
                     onClose={onClose}
                     theme={resolvedDetailTheme}
                     lang={lang}
+                    onGroupInviteAction={selectedNotification.groupInviteId ? onGroupInviteAction : undefined}
+                    groupInviteBusy={Boolean(selectedNotification.groupInviteId) && groupInviteBusy}
+                    groupInviteHold={selectedNotification.groupInviteId ? groupInviteHold : ""}
+                    groupInviteActionError={selectedNotification.groupInviteId ? groupInviteActionError : ""}
+                    groupInviteError={selectedNotification.groupInviteId ? groupInviteError : ""}
                 />
             ) : (
             <>
@@ -554,6 +584,12 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
                 data-testid="notification-list"
                 className="np-list"
             >
+                {showInviteListErrorBanner ? (
+                    <p className="np-invite-list-error" data-testid="notification-group-invite-list-error" role="status">{inviteListError}</p>
+                ) : null}
+                {groupInviteActionError.trim() ? (
+                    <p className="np-invite-list-error" data-testid="notification-group-invite-action-error" role="status">{groupInviteActionError.trim()}</p>
+                ) : null}
                 {filteredNotifications.length === 0 ? (
                     <div
                         data-testid="notification-empty-state"
@@ -570,8 +606,10 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
                         }}
                     >
                         <span className="np-empty-icon"><IconBell size={28} /></span>
-                        <span>
-                            {categoryFilter
+                        <span className={emptyIsInviteError ? "np-invite-list-error" : undefined} data-testid={emptyIsInviteError ? "notification-group-invite-list-error" : undefined} role={emptyIsInviteError ? "status" : undefined}>
+                            {emptyIsInviteError
+                                ? inviteListError
+                                : categoryFilter
                                 ? localizeText(lang, "No notifications in this category", "该分类没有通知", "該分類沒有通知")
                                 : localizeText(lang, "No notifications", "没有通知", "沒有通知")}
                         </span>

@@ -181,6 +181,7 @@ func (h *IMMessageHandler) setSessionLoopCtx(userID string, ctx *LoopContext) {
 type inFlightTurn struct {
 	ctx      *LoopContext
 	userText string
+	done     chan struct{}
 	// clearGen is the file-companion clear generation at turn start.
 	// A /clear that bumps the generation makes this turn's later save stale.
 	clearGen uint64
@@ -194,7 +195,17 @@ func (h *IMMessageHandler) beginInFlightTurn(userID, userText string, ctx *LoopC
 	if h.app != nil && fileCompanionToolsDisabled(userID) {
 		clearGen = h.app.fileCompanionCaptureChatGen(userID)
 	}
-	h.inFlightTurns.Store(userID, &inFlightTurn{ctx: ctx, userText: userText, clearGen: clearGen})
+	h.beginInFlightTurnAtGen(userID, userText, ctx, clearGen)
+}
+
+// beginInFlightTurnAtGen stores a turn whose save generation was already
+// paired with the history it loaded. It must not read the generation again.
+// A later read would pick up a sync that happened after that history load.
+func (h *IMMessageHandler) beginInFlightTurnAtGen(userID, userText string, ctx *LoopContext, clearGen uint64) {
+	if h == nil || strings.TrimSpace(userID) == "" || ctx == nil {
+		return
+	}
+	h.inFlightTurns.Store(userID, &inFlightTurn{ctx: ctx, userText: userText, done: make(chan struct{}), clearGen: clearGen})
 }
 
 func (h *IMMessageHandler) endInFlightTurn(userID string, ctx *LoopContext) {
@@ -209,7 +220,9 @@ func (h *IMMessageHandler) endInFlightTurn(userID string, ctx *LoopContext) {
 	if turn == nil || turn.ctx != ctx {
 		return
 	}
-	h.inFlightTurns.CompareAndDelete(userID, current)
+	if h.inFlightTurns.CompareAndDelete(userID, current) && turn.done != nil {
+		close(turn.done)
+	}
 }
 
 func (h *IMMessageHandler) inFlightTurnForUser(userID string) *inFlightTurn {

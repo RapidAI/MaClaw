@@ -1,6 +1,7 @@
 package desktopd
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -53,6 +54,11 @@ print(o[0], o[1] == "ab" * 8, o[2], b[0], b[1] == bot, b[2])
 // refused, the player page is served, and the stream upgrades, says hello
 // and relays the encoder's bytes. ?mse=1 keeps the raw fragmented MP4.
 func TestSupervisorH264StreamsEncoderOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The stand-in encoder is a shebang shell script on PATH; Windows
+		// cannot exec it, so the relayed encoder bytes never arrive.
+		t.Skip("the fake ffmpeg needs a POSIX exec")
+	}
 	out := runSupervisorPython(t, `
 import socket, stat
 bin_dir = tmp / "bin"
@@ -405,7 +411,8 @@ sup._xdo = xdo
 sup._window_state = lambda d, w: (state["map"], 1280 if w == "222" else 10)
 sup.shutil.which = lambda n: "/usr/bin/" + n
 real_exists = sup.Path.exists
-sup.Path.exists = lambda self: True if str(self).startswith("/tmp/.X11-unix") else real_exists(self)
+# str(Path(...)) is backslashed on Windows; compare with separators folded.
+sup.Path.exists = lambda self: True if str(self).replace("\\", "/").startswith("/tmp/.X11-unix") else real_exists(self)
 first = sup.heal_browser_window(key, 30, "watch", wait_ticks=1)
 second = sup.heal_browser_window(key, 30, "watch", wait_ticks=1)
 third = sup.heal_browser_window(key, 30, "watch", wait_ticks=1)

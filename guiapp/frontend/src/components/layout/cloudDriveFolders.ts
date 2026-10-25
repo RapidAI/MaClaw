@@ -146,6 +146,18 @@ export function groupCloudDrive<T extends CloudDriveItem>(items: readonly T[]): 
   }));
 }
 
+export type CloudDriveGlyphKind = DocumentCategoryId | 'audio' | 'video' | 'image' | 'file';
+
+/** Icon kind for a row: document subtypes, media classes, image, or generic file. */
+export function cloudDriveGlyphKind(item: CloudDriveItem): CloudDriveGlyphKind {
+  const classified = classifyCloudDriveItem(item);
+  if (classified.folder === 'audio') return 'audio';
+  if (classified.folder === 'video') return 'video';
+  if (classified.category) return classified.category;
+  const ext = fileExtFromName(String(item.source_filename || item.title || ''));
+  return IMAGE_EXT.has(ext) ? 'image' : 'file';
+}
+
 const SINGLE_LATIN = /^[\u0000-\u007f]+$/;
 
 /**

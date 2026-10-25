@@ -60,6 +60,8 @@ func TestConvDepthwiseFusedTaps(t *testing.T) {
 		{8, 15, 3, 3, 1, 1, true}, // odd W
 		{8, 16, 3, 3, 0, 0, true}, // no pad
 		{8, 16, 7, 7, 3, 3, true}, // 7x7
+		{8, 24, 5, 5, 2, 2, true}, // 5x5 fused taps
+		{8, 15, 5, 5, 2, 2, true}, // 5x5 odd W
 		{8, 15, 7, 7, 3, 3, true}, // 7x7 odd W
 		{8, 9, 3, 3, 1, 1, true},  // small W edge heavy
 		{5, 8, 3, 3, 1, 1, true},  // minimal oW for fused path

@@ -348,9 +348,9 @@ func (p *ProjectTabSessionPersist) ClearProjectSessionConversations(projectPath 
 		if json.Unmarshal(data, &session) != nil || normalizeProjectSessionPath(session.ProjectPath) != projectPath {
 			continue
 		}
-	session.Conversation = []interface{}{}
-	session.ConversationClearedAt = time.Now().UnixMilli()
-	session.LastActiveAt = time.Now().UTC().Format(time.RFC3339Nano)
+		session.Conversation = []interface{}{}
+		session.ConversationClearedAt = time.Now().UnixMilli()
+		session.LastActiveAt = time.Now().UTC().Format(time.RFC3339Nano)
 		encoded, marshalErr := json.MarshalIndent(&session, "", "  ")
 		if marshalErr != nil {
 			errs = append(errs, fmt.Errorf("marshal session %s: %w", entry.Name(), marshalErr))
@@ -398,9 +398,9 @@ func (p *ProjectTabSessionPersist) ClearSessionConversation(tabID string) error 
 		return fmt.Errorf("decode session %s: %w", tabID, err)
 	}
 	session.Conversation = []interface{}{}
-		session.ConversationClearedAt = time.Now().UnixMilli()
-		session.LastActiveAt = time.Now().UTC().Format(time.RFC3339Nano)
-		encoded, err := json.MarshalIndent(&session, "", "  ")
+	session.ConversationClearedAt = time.Now().UnixMilli()
+	session.LastActiveAt = time.Now().UTC().Format(time.RFC3339Nano)
+	encoded, err := json.MarshalIndent(&session, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal session %s: %w", tabID, err)
 	}
@@ -570,6 +570,15 @@ func (p *ProjectTabSessionPersist) CleanupStale(threshold time.Duration) (int, e
 	for _, entry := range index.Tabs {
 		lastActive := time.Unix(entry.LastActiveAt, 0)
 		if lastActive.Before(cutoff) {
+			session, loadErr := p.LoadSession(entry.ID)
+			if loadErr != nil {
+				kept = append(kept, entry)
+				continue
+			}
+			if tabSessionHasRecoveryWork(session) {
+				kept = append(kept, entry)
+				continue
+			}
 			// Stale entry — delete session file.
 			if err := p.DeleteSession(entry.ID); err != nil {
 				log.Printf("[session-persist] cleanup: failed to delete session %s: %v", entry.ID, err)

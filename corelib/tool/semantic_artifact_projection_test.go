@@ -23,6 +23,16 @@ func TestDocumentTempSuffixAndRequiredContract(t *testing.T) {
 	if got := DocumentTempSuffixForSelection(selection); got != ".pptx" {
 		t.Fatalf("presentation suffix=%q", got)
 	}
+	mobi := PlannedSelection{FitProof: FitProof{QualifierBindings: map[string]string{"format": "mobi"}}}
+	if got := DocumentTempSuffixForSelection(mobi); got != ".mobi" {
+		t.Fatalf("mobi suffix=%q", got)
+	}
+	if got := DocumentTempSuffixForSelection(PlannedSelection{}); got != ".txt" {
+		t.Fatalf("unknown suffix=%q", got)
+	}
+	if got := ArtifactFileName(ArtifactRef{MIMEType: "application/x-mobipocket-ebook"}); got != "attachment.mobi" {
+		t.Fatalf("mobi name fallback=%q", got)
+	}
 	contracts := []ArtifactContract{{Kind: "optional"}, {Kind: "required", Required: true}}
 	if got := FirstRequiredArtifactContract(contracts); got.Kind != "required" {
 		t.Fatalf("required contract=%#v", got)

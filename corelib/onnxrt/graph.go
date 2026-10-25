@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -25,6 +28,7 @@ type Graph struct {
 	initializers map[string]*Tensor
 	inputNames   []string // graph inputs that are not initializers
 	inputShapes  map[string][]Dim
+	inputDTypes  map[string]TensorDataType
 	outputNames  []string
 	opset        int64
 	epilogues    map[*Node]*epilogue  // fused conv activations
@@ -46,11 +50,17 @@ func LoadGraph(path string) (*Graph, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewGraph(m)
+	return newGraph(m, filepath.Dir(path))
 }
 
 // NewGraph prepares an executable graph from a parsed model.
+// Initializers that point at an external data file need LoadGraph, which
+// knows the model directory.
 func NewGraph(m *Model) (*Graph, error) {
+	return newGraph(m, "")
+}
+
+func newGraph(m *Model, modelDir string) (*Graph, error) {
 	gp := m.Graph
 	if gp == nil {
 		return nil, fmt.Errorf("onnxrt: model has no graph")
@@ -59,9 +69,19 @@ func NewGraph(m *Model) (*Graph, error) {
 		proto:        gp,
 		initializers: map[string]*Tensor{},
 		inputShapes:  map[string][]Dim{},
+		inputDTypes:  map[string]TensorDataType{},
 		opset:        m.Opset,
 	}
+	externalFiles := map[string][]byte{}
 	for name, tp := range gp.Initializers {
+		raw, err := externalInitializer(modelDir, tp, externalFiles)
+		if err != nil {
+			return nil, fmt.Errorf("onnxrt: initializer %q: %w", name, err)
+		}
+		if raw != nil {
+			tp.RawData = raw
+			tp.DataLocation = 0
+		}
 		t, err := tensorFromProto(tp)
 		if err != nil {
 			return nil, fmt.Errorf("onnxrt: initializer %q: %w", name, err)
@@ -82,6 +102,7 @@ func NewGraph(m *Model) (*Graph, error) {
 		}
 		g.inputNames = append(g.inputNames, vi.Name)
 		g.inputShapes[vi.Name] = vi.Shape
+		g.inputDTypes[vi.Name] = vi.ElemType
 	}
 	for _, vi := range gp.Outputs {
 		g.outputNames = append(g.outputNames, vi.Name)
@@ -127,6 +148,75 @@ func (g *Graph) OutputNames() []string { return g.outputNames }
 
 // Opset returns the model opset version.
 func (g *Graph) Opset() int64 { return g.opset }
+
+// externalInitializer reads one EXTERNAL initializer. A nil slice means the
+// tensor is stored inside the model. The file cache keeps a shared .onnx.data
+// from being read once per weight.
+func externalInitializer(modelDir string, tp *TensorProto, cache map[string][]byte) ([]byte, error) {
+	if tp == nil || tp.DataLocation != 1 {
+		return nil, nil
+	}
+	loc := ""
+	off := int64(0)
+	length := int64(-1)
+	for _, entry := range tp.ExternalData {
+		switch entry.Key {
+		case "location":
+			loc = entry.Value
+		case "offset":
+			v, err := strconv.ParseInt(strings.TrimSpace(entry.Value), 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("external offset %q", entry.Value)
+			}
+			off = v
+		case "length":
+			v, err := strconv.ParseInt(strings.TrimSpace(entry.Value), 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("external length %q", entry.Value)
+			}
+			length = v
+		}
+	}
+	if loc == "" {
+		return nil, fmt.Errorf("external data has no location")
+	}
+	if modelDir == "" {
+		return nil, fmt.Errorf("external data %q needs the model directory", loc)
+	}
+	if filepath.IsAbs(loc) || strings.Contains(loc, "..") {
+		return nil, fmt.Errorf("external data location %q is not a file next to the model", loc)
+	}
+	absDir, err := filepath.Abs(modelDir)
+	if err != nil {
+		return nil, err
+	}
+	absPath, err := filepath.Abs(filepath.Join(absDir, loc))
+	if err != nil {
+		return nil, err
+	}
+	rel, err := filepath.Rel(absDir, absPath)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return nil, fmt.Errorf("external data location %q escapes the model directory", loc)
+	}
+	buf, ok := cache[absPath]
+	if !ok {
+		buf, err = os.ReadFile(absPath)
+		if err != nil {
+			return nil, err
+		}
+		cache[absPath] = buf
+	}
+	if off < 0 || off > int64(len(buf)) {
+		return nil, fmt.Errorf("external offset %d outside %s", off, loc)
+	}
+	if length < 0 {
+		length = int64(len(buf)) - off
+	}
+	if length < 0 || off+length > int64(len(buf)) {
+		return nil, fmt.Errorf("external span %d+%d outside %s", off, length, loc)
+	}
+	return buf[off : off+length], nil
+}
 
 // tensorFromProto converts a parsed TensorProto initializer to a Tensor.
 func tensorFromProto(tp *TensorProto) (*Tensor, error) {
@@ -439,15 +529,29 @@ func (g *Graph) exec(inputs map[string]*Tensor, tail *ctcTail) (outs map[string]
 	return result, dec, nil
 }
 
+// InputType reports the element type declared for a runtime input.
+// TypeUndefined means the model did not record one.
+func (g *Graph) InputType(name string) TensorDataType {
+	if g == nil || g.inputDTypes == nil {
+		return TypeUndefined
+	}
+	return g.inputDTypes[name]
+}
+
 // validateInput checks dtype and shape against the declared input signature.
 // Dynamic (symbolic or unknown) dims accept any size.
+//
+// FLOAT/FLOAT16/DOUBLE inputs are float32 tensors. INT32/INT64 inputs are
+// int64 tensors (token ids, index vectors). A missing element type keeps the
+// historical rule: a declared shape requires float32, and an input with no
+// shape info is not dtype-checked.
 func (g *Graph) validateInput(name string, t *Tensor) error {
+	if err := g.checkInputDtype(name, t); err != nil {
+		return err
+	}
 	decl, ok := g.inputShapes[name]
 	if !ok || decl == nil {
 		return nil // no declared shape info
-	}
-	if t.DType != DFloat32 {
-		return fmt.Errorf("onnxrt: input %q: only float32 inputs supported, got %v", name, t.DType)
 	}
 	if len(t.Shape) != len(decl) {
 		return fmt.Errorf("onnxrt: input %q: rank %d does not match declared rank %d", name, len(t.Shape), len(decl))
@@ -456,6 +560,32 @@ func (g *Graph) validateInput(name string, t *Tensor) error {
 		if d.Param == "" && d.Value >= 0 && int(d.Value) != t.Shape[i] {
 			return fmt.Errorf("onnxrt: input %q: dim %d is %d, declared %d", name, i, t.Shape[i], d.Value)
 		}
+	}
+	return nil
+}
+
+func (g *Graph) checkInputDtype(name string, t *Tensor) error {
+	dt := TypeUndefined
+	if g.inputDTypes != nil {
+		dt = g.inputDTypes[name]
+	}
+	switch dt {
+	case TypeUndefined:
+		decl, ok := g.inputShapes[name]
+		if ok && decl != nil && t.DType != DFloat32 {
+			return fmt.Errorf("onnxrt: input %q: only float32 inputs supported, got %v", name, t.DType)
+		}
+		return nil
+	case TypeFloat, TypeFloat16, TypeDouble:
+		if t.DType != DFloat32 {
+			return fmt.Errorf("onnxrt: input %q: expected float32, got %v", name, t.DType)
+		}
+	case TypeInt32, TypeInt64:
+		if t.DType != DInt64 {
+			return fmt.Errorf("onnxrt: input %q: expected int64, got %v", name, t.DType)
+		}
+	default:
+		return fmt.Errorf("onnxrt: input %q: unsupported element type %s", name, dt)
 	}
 	return nil
 }

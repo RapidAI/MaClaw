@@ -39,6 +39,9 @@ func TestReleaseAssetsTable(t *testing.T) {
 	if Qwen3ModelSpec.Size != 639150592 || !strings.HasPrefix(Qwen3ModelSpec.URLs[0], "https://github.com/RapidAI/MaClaw/releases/download/Model_Release/") {
 		t.Fatalf("Qwen3 spec %+v", Qwen3ModelSpec)
 	}
+	if !IsHeadKind("intent_head") || IsHeadKind("formula") || IsHeadKind("model") || IsHeadKind("layout") || IsHeadKind("table") {
+		t.Fatal("IsHeadKind")
+	}
 	s := Qwen3ModelSpec.WithHubFallback("https://hub.example/")
 	if len(s.URLs) != 2 || s.URLs[1] != "https://hub.example/api/v1/models/"+Qwen3ModelFilename {
 		t.Fatalf("hub fallback %v", s.URLs)
@@ -145,6 +148,38 @@ func TestFetchBothFailGraceful(t *testing.T) {
 	}
 	if _, err := os.Stat(f.Path()); !os.IsNotExist(err) {
 		t.Fatal("nothing may be installed")
+	}
+}
+
+func TestLayoutAndTableReleaseFetch(t *testing.T) {
+	want := map[string]ReleaseAsset{
+		"PP-DocLayoutV3.onnx":      {Kind: "layout", Subdir: "layout", Size: 5088167, SHA256: "c0721928ff08741bb208ebed539c77170db5234a68cb7e546e6cc9bc172a695b"},
+		"PP-DocLayoutV3.onnx.data": {Kind: "layout", Subdir: "layout", Size: 136774480, SHA256: "34df3e4b79d7bbbf82abce1b4f3cde3d540fa57ad42ec8905c352b97c408d437"},
+		"unet.onnx":                {Kind: "table", Subdir: "table", Size: 8335007, SHA256: "0ea48d3a17e35ef5c2e498a5e799566073234d39b1079ca21d9f4fafe73c6d20"},
+	}
+	got := map[string]bool{}
+	for _, asset := range ReleaseAssets() {
+		spec, ok := want[asset.Filename]
+		if !ok {
+			continue
+		}
+		got[asset.Filename] = true
+		if asset.Kind != spec.Kind || asset.Subdir != spec.Subdir || asset.Size != spec.Size || asset.SHA256 != spec.SHA256 {
+			t.Fatalf("pin %+v", asset)
+		}
+		fetcher := NewReleaseAssetFetcher(t.TempDir(), asset, "https://hub.example")
+		if fetcher.KeepExisting {
+			t.Fatalf("%s kept an existing file", asset.Filename)
+		}
+		if len(fetcher.spec.URLs) != 2 || fetcher.spec.URLs[0] != ReleaseBaseURL+"/"+asset.Filename || fetcher.spec.URLs[1] != "https://hub.example/api/v1/models/"+asset.Filename {
+			t.Fatalf("urls %v", fetcher.spec.URLs)
+		}
+	}
+	if len(got) != len(want) {
+		t.Fatalf("pins %v", got)
+	}
+	if err := EnsureReleaseKind(context.Background(), t.TempDir(), "", "not-a-kind"); err == nil {
+		t.Fatal("unknown kind")
 	}
 }
 

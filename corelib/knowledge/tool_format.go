@@ -39,20 +39,11 @@ func FormatSearchResultsForLLM(results []SearchResult) string {
 	b.WriteString(SearchResultsHeader)
 	for i, r := range results {
 		b.WriteString(fmt.Sprintf("### Result %d (score: %.2f, type: %s)\n", i+1, r.Score, r.ResultType))
-		if r.CardTitle != "" {
-			b.WriteString(fmt.Sprintf("**Title**: %s\n", r.CardTitle))
+		if body := searchBodyText(r); body != "" {
+			b.WriteString(fmt.Sprintf("**Body**: %s\n", body))
 		}
-		if r.Claim != "" {
-			b.WriteString(fmt.Sprintf("**Claim**: %s\n", r.Claim))
-		}
-		if r.Summary != "" {
-			b.WriteString(fmt.Sprintf("**Summary**: %s\n", r.Summary))
-		}
-		if r.Snippet != "" && r.Snippet != r.Claim && r.Snippet != r.Summary {
-			b.WriteString(fmt.Sprintf("**Snippet**: %s\n", r.Snippet))
-		}
-		if r.Subject != "" {
-			b.WriteString(fmt.Sprintf("**Fact**: %s %s %s\n", r.Subject, r.Predicate, r.Object))
+		if claim := searchClaimLine(r); claim != "" {
+			b.WriteString(fmt.Sprintf("**Claim**: %s\n", claim))
 		}
 		if r.FactID != "" {
 			b.WriteString(fmt.Sprintf("**FactID**: %s\n", r.FactID))
@@ -112,7 +103,7 @@ func FormatSourceLabel(r SearchResult) string {
 	}
 	for _, value := range []string{r.Source.Title, r.Source.RelativePath, r.Source.URI, r.Source.ID} {
 		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
+			return withEnterpriseMark(value, r)
 		}
 	}
 	return "unknown source"
@@ -125,10 +116,24 @@ func FormatSourceLabel(r SearchResult) string {
 func FormatImageSourceLabel(r SearchResult) string {
 	for _, value := range []string{r.Source.Title, r.Source.RelativePath, r.Source.ID} {
 		if value = SafeImageDisplayText(value); value != "" {
-			return value
+			return withEnterpriseMark(value, r)
 		}
 	}
 	return "knowledge image"
+}
+
+// withEnterpriseMark prefixes [企业] from a library membership or an older
+// title that was already tagged. A label that already starts with the mark
+// is left as it is.
+func withEnterpriseMark(label string, r SearchResult) string {
+	label = strings.TrimSpace(label)
+	if label == "" || strings.HasPrefix(label, "[企业]") {
+		return label
+	}
+	if strings.TrimSpace(r.LibraryID) != "" || strings.HasPrefix(strings.TrimSpace(r.Source.Title), "[企业]") {
+		return "[企业] " + label
+	}
+	return label
 }
 
 // FormatImageCitationLabel omits the persisted generic citation when it may

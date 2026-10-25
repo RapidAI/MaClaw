@@ -11,7 +11,6 @@ import qianxinIcon from './assets/images/qianxin.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import './App.css';
 import { a2a, corelib } from '../wailsjs/go/models';
 import { EVENT_APP_UPDATE_AVAILABLE, EVENT_CLOUD_WORKSPACE_SHARE_PASSWORD, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH, EVENT_PROJECT_INDEX_CHANGED, EVENT_PROJECT_TASK_ACTIVATE, EVENT_TASKS_CHANGED, EVENT_TOKEN_BANK_CREDIT, type OpenTaskLaunchDetail } from './constants/events';
 import { CloudWorkspaceShareJoinDialog } from './components/layout/CloudWorkspaceShareDialog';
@@ -263,7 +262,7 @@ function fetchDigitalEmployeeFeatureStatus() {
 type SensitivePermissionRequest = {
     request_id: string;
     session_id?: string;
-    query: string;
+    query: string; kind?: string;
     timeout_seconds?: number;
 };
 
@@ -7033,9 +7032,9 @@ ${instruction}`;
             {sensitivePermissionRequest && (
                 <div className="modal-overlay" data-testid="sensitive-permission-dialog">
                     <div className="modal-content sensitive-permission-modal">
-                        <h3>{localizeText('Sensitive Information Request', '\u654f\u611f\u4fe1\u606f\u67e5\u8be2\u786e\u8ba4', '\u654f\u611f\u8cc7\u8a0a\u67e5\u8a62\u78ba\u8a8d')}</h3>
+                        <h3>{sensitivePermissionRequest.kind === 'commit' ? localizeText('Digital employee action', '\u6570\u5b57\u5458\u5de5\u64cd\u4f5c\u786e\u8ba4', '\u6578\u4f4d\u54e1\u5de5\u64cd\u4f5c\u78ba\u8a8d') : localizeText('Sensitive Information Request', '\u654f\u611f\u4fe1\u606f\u67e5\u8be2\u786e\u8ba4', '\u654f\u611f\u8cc7\u8a0a\u67e5\u8a62\u78ba\u8a8d')}</h3>
                         <p className="sensitive-permission-modal__copy">
-                            {localizeText('A digital employee is requesting permission to answer a password or sensitive information query.', '\u6570\u5b57\u5458\u5de5\u6b63\u5728\u8bf7\u6c42\u8bb8\u53ef\uff0c\u4ee5\u56de\u590d\u5bc6\u7801\u6216\u654f\u611f\u4fe1\u606f\u67e5\u8be2\u3002', '\u6578\u5b57\u54e1\u5de5\u6b63\u5728\u8acb\u6c42\u8a31\u53ef\uff0c\u4ee5\u56de\u8986\u5bc6\u78bc\u6216\u654f\u611f\u8cc7\u8a0a\u67e5\u8a62\u3002')}
+                            {sensitivePermissionRequest.kind === 'commit' ? localizeText('A digital employee wants to send a file into this conversation. Allow runs this call once.', '\u6570\u5b57\u5458\u5de5\u8981\u628a\u6587\u4ef6\u53d1\u8fdb\u5f53\u524d\u4f1a\u8bdd\u3002\u5141\u8bb8\u53ea\u653e\u884c\u8fd9\u4e00\u6b21\u3002', '\u6578\u4f4d\u54e1\u5de5\u8981\u628a\u6a94\u6848\u767c\u9032\u76ee\u524d\u5c0d\u8a71\u3002\u5141\u8a31\u53ea\u653e\u884c\u9019\u4e00\u6b21\u3002') : localizeText('A digital employee is requesting permission to answer a password or sensitive information query.', '\u6570\u5b57\u5458\u5de5\u6b63\u5728\u8bf7\u6c42\u8bb8\u53ef\uff0c\u4ee5\u56de\u590d\u5bc6\u7801\u6216\u654f\u611f\u4fe1\u606f\u67e5\u8be2\u3002', '\u6578\u5b57\u54e1\u5de5\u6b63\u5728\u8acb\u6c42\u8a31\u53ef\uff0c\u4ee5\u56de\u8986\u5bc6\u78bc\u6216\u654f\u611f\u8cc7\u8a0a\u67e5\u8a62\u3002')}
                         </p>
                         <div className="sensitive-permission-modal__query">
                             {sensitivePermissionRequest.query}

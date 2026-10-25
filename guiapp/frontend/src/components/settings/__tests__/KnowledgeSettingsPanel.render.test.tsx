@@ -10,6 +10,8 @@ import {
     KnowledgeListImportBatches,
     KnowledgeRemoveFolderWatch,
     KnowledgeListSources,
+    KnowledgeListCollections,
+    KnowledgeListCollectionMembers,
     KnowledgeSaveText,
     KnowledgeShareToHub,
     KnowledgeSearchStructured,
@@ -167,6 +169,13 @@ vi.mock('../../../../wailsjs/go/main/App', () => {
         LoadConfig: vi.fn(async () => ({})),
         PatchConfigFields: vi.fn(async (patch: Record<string, unknown>) => patch || {}),
         KnowledgeListSources: arrayResult,
+        KnowledgeListCollections: vi.fn(async () => []),
+        KnowledgeCreateCollection: vi.fn(async () => ({})),
+        KnowledgeListCollectionMembers: vi.fn(async () => []),
+        KnowledgeAddCollectionMember: vi.fn(async () => undefined),
+        KnowledgeRemoveCollectionMember: vi.fn(async () => undefined),
+        KnowledgeListUnassignedSources: vi.fn(async () => []),
+        KnowledgeListSourceCollectionRefs: vi.fn(async () => []),
         KnowledgeListFolderWatches: vi.fn(async () => []),
         KnowledgeBrowseAddFolderWatch: vi.fn(async () => ({})),
         KnowledgeRemoveFolderWatch: vi.fn(async () => undefined),
@@ -715,7 +724,8 @@ describe('KnowledgeSettingsPanel component', () => {
 
         fireEvent.click(screen.getByRole('tab', { name: 'Export' }));
 
-        expect(await screen.findByText('D:\\docs\\contracts')).toBeTruthy();
+        expect(await screen.findByText(/D:\\docs\\contracts/)).toBeTruthy();
+        expect(screen.getByText('Ungrouped sources')).toBeTruthy();
         expect(screen.getByText('Lease.pdf')).toBeTruthy();
         expect(screen.getByText('Policy page')).toBeTruthy();
         fireEvent.click(screen.getByLabelText(/Lease.pdf/i));
@@ -949,6 +959,29 @@ describe('KnowledgeSettingsPanel component', () => {
         expect(screen.getByText(/OfficeRead Markdown/)).toBeTruthy();
         expect(screen.getByText('Structured agreement body')).toBeTruthy();
         expect(screen.getByText(/does not reopen the original file/i)).toBeTruthy();
+    });
+
+    it('lists collections on the sources tab', async () => {
+        vi.mocked(KnowledgeListCollections).mockResolvedValueOnce([{
+            id: 'kcol_notes',
+            title: 'Notes',
+            kind: 'manual',
+            member_count: 1,
+        }] as any);
+        vi.mocked(KnowledgeListCollectionMembers).mockResolvedValueOnce([{
+            collection_id: 'kcol_notes',
+            source_id: 'ksrc_note',
+            added_by: 'user',
+            source: { id: 'ksrc_note', title: 'Filed note' },
+        }] as any);
+
+        render(<KnowledgeSettingsPanel lang="en" />);
+        fireEvent.click(screen.getByRole('tab', { name: 'Sources' }));
+
+        expect(await screen.findByRole('heading', { name: 'Collections' })).toBeTruthy();
+        expect(screen.getByTestId('knowledge-collections')).toBeTruthy();
+        expect(await screen.findByText('Notes')).toBeTruthy();
+        expect(await screen.findByText('Filed note')).toBeTruthy();
     });
 
     it('does not restore a stale source preview after its filters change', async () => {

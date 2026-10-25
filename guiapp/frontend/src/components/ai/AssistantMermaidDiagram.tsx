@@ -3,6 +3,7 @@ import { localizeText } from "./aiAssistantI18n";
 import { relativeLuminance, type Theme } from "./aiAssistantPanelTheme";
 import { chatCodeWellStyle, codeFenceInnerStyle, codeFenceScrollUnderLangStyle } from "./assistantCodeFence";
 import { copyTextToClipboard } from "./AssistantReplyCopyButton";
+import { typesetMermaidLabelMath } from "./mermaidLabelMath";
 
 let mermaidModule: any = null;
 let mermaidModulePromise: Promise<any> | null = null;
@@ -541,6 +542,11 @@ export function getMermaidTheme(theme: Theme) {
         // Chat responses are untrusted model output. Strict mode asks Mermaid to
         // sanitise diagram labels and disables executable click handlers.
         securityLevel: "strict",
+        // WebView2 reports MathML support, so Mermaid would emit bare MathML.
+        // Inside a label's foreignObject that MathML does not take KaTeX's
+        // layout. HTML output uses the KaTeX stylesheet already on the page.
+        legacyMathML: true,
+        forceLegacyMathML: true,
         suppressErrorRendering: true,
         fontFamily: MERMAID_FONT,
         themeVariables,
@@ -675,6 +681,22 @@ function nodeRim(nodeStroke: number): number {
     return nodeStroke;
 }
 
+function mermaidKatexInkCss(scope: string, ink: string): string {
+    // Mermaid paints every .node path, including KaTeX glyph strokes, and then
+    // forces those strokes black at 1px. The formula follows the node ink.
+    return `${scope} .katex{color:inherit}${scope} .node .katex path{fill:${ink};stroke:${ink};stroke-width:0.04em}`;
+}
+
+/** Same KaTeX ink override for a diagram that does not go through reinforceMermaidSvg. */
+export function paintMermaidKatexInk(svg: string, ink: string): string {
+    if (!MERMAID_STYLE_COLOR.test(ink)) return svg;
+    const id = svg.match(/<svg\b[^>]*\sid="([^"]+)"/)?.[1];
+    const close = svg.lastIndexOf("</svg>");
+    if (!id || close < 0 || !/^[A-Za-z_][\w-]*$/.test(id)) return svg;
+    const css = mermaidKatexInkCss(`#${id}`, ink);
+    return `${svg.slice(0, close)}<style>${css}</style>${svg.slice(close)}`;
+}
+
 /** Mermaid prefixes every diagram rule with the svg id. One id beats any
  *  number of classes on the page, so the overrides have to live in the svg. */
 export function reinforceMermaidSvg(svg: string, theme: Theme, nodeStroke = 1): string {
@@ -703,6 +725,7 @@ export function reinforceMermaidSvg(svg: string, theme: Theme, nodeStroke = 1): 
         // Node rims use the column's pixel in drawing units. Connector lines
         // stay at 1 unit so they keep the same scale as their arrowheads.
         `${scope} .node rect,${scope} .node circle,${scope} .node ellipse,${scope} .node polygon,${scope} .node path,${scope} .cluster rect,${scope} .stateGroup rect,${scope} .entityBox,${scope} .transition{stroke-width:${nodeRim(nodeStroke)}px}`,
+        mermaidKatexInkCss(scope, ink),
     ].join("");
     return `${svg.slice(0, close)}<style>${css}</style>${svg.slice(close)}`;
 }
@@ -729,7 +752,7 @@ async function renderDiagram(
         }
         try {
             mermaid.initialize(getMermaidTheme(theme));
-            const { svg } = await mermaid.render(id, code, workspace ?? undefined);
+            const { svg } = await mermaid.render(id, typesetMermaidLabelMath(code), workspace ?? undefined);
             const root = svg.match(/<svg\b[^>]*>/)?.[0] ?? "";
             const display = workspace?.clientWidth || workspace?.parentElement?.clientWidth || 0;
             const stroke = mermaidHairlineStroke(mermaidViewBoxSize(root).width, display);
@@ -1426,8 +1449,67 @@ function fittedRasterFont(lines: string[], boxWidth: number, height: number): nu
     return Math.max(1, Math.floor(fontSize * 10) / 10);
 }
 
+function isKatexRoot(openTag: string): boolean {
+    const cls = openTag.match(/\bclass\s*=\s*['"]([^'"]*)['"]/i)?.[1] ?? "";
+    return cls.split(/\s+/).includes("katex");
+}
+
+function matchingSpanEnd(html: string, from: number): number {
+    let depth = 1;
+    const tags = /<\/?span\b[^>]*>/gi;
+    tags.lastIndex = from;
+    let match: RegExpExecArray | null;
+    while ((match = tags.exec(html))) {
+        depth += match[0].startsWith("</") ? -1 : 1;
+        if (depth === 0) return match.index + match[0].length;
+    }
+    return -1;
+}
+
+/** A typeset label carries the original formula on `data-plain`. The bitmap
+ *  path drops the KaTeX tree and prints that text once. */
+function katexLabelsAsPlain(html: string): string {
+    let out = "";
+    let index = 0;
+    const lower = html.toLowerCase();
+    while (index < html.length) {
+        const start = lower.indexOf("<span", index);
+        if (start < 0) {
+            out += html.slice(index);
+            break;
+        }
+        out += html.slice(index, start);
+        const openEnd = html.indexOf(">", start);
+        if (openEnd < 0) {
+            out += html.slice(start);
+            break;
+        }
+        const open = html.slice(start, openEnd + 1);
+        if (!isKatexRoot(open)) {
+            out += open;
+            index = openEnd + 1;
+            continue;
+        }
+        const close = matchingSpanEnd(html, openEnd + 1);
+        if (close < 0) {
+            out += html.slice(start);
+            break;
+        }
+        const block = html.slice(start, close);
+        const plain = open.match(/\bdata-plain\s*=\s*(['"])([\s\S]*?)\1/i);
+        if (plain) {
+            out += plain[2];
+        } else {
+            const annotation = block.match(/<annotation\b[^>]*>([\s\S]*?)<\/annotation>/i);
+            out += annotation ? annotation[1] : block.replace(/<[^>]+>/g, "");
+        }
+        index = close;
+    }
+    return out;
+}
+
 function foreignObjectLines(inner: string): string[] {
-    const broken = inner.replace(/<br\s*\/?>/gi, "\n").replace(/<\/(?:p|div|li|h[1-6])>/gi, "\n");
+    const broken = katexLabelsAsPlain(inner).replace(/<br\s*\/?>/gi, "\n").replace(/<\/(?:p|div|li|h[1-6])>/gi, "\n");
     const plain = decodeRasterText(broken.replace(/<[^>]+>/g, "").replace(/&nbsp;|&#160;/gi, " "));
     return plain.split("\n").map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
 }

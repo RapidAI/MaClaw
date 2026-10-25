@@ -465,6 +465,45 @@ fm3done:
 	VZEROUPPER
 	RET
 
+// func fmadd5AVX2(out, x *float32, w0, w1, w2, w3, w4 float32, n int)
+// out[i] += w0*x[i] + ... + w4*x[i+4] for n elements (n multiple of 8;
+// n == 0 is a no-op). x must have at least n+4 valid elements.
+// Same FMA order as five sequential fmaddScalarInto passes: bit-exact.
+// Frame: out+0, x+8, w0+16, w1+20, w2+24, w3+28, w4+32, n+40.
+TEXT ·fmadd5AVX2(SB), NOSPLIT, $0-48
+	MOVQ out+0(FP), DI
+	MOVQ x+8(FP), SI
+	VBROADCASTSS w0+16(FP), Y3
+	VBROADCASTSS w1+20(FP), Y4
+	VBROADCASTSS w2+24(FP), Y5
+	VBROADCASTSS w3+28(FP), Y6
+	VBROADCASTSS w4+32(FP), Y7
+	MOVQ n+40(FP), CX
+	XORL AX, AX
+	TESTQ CX, CX
+	JZ    fm5done
+
+fm5:
+	VMOVUPS (DI)(AX*4), Y0
+	VMOVUPS (SI)(AX*4), Y1
+	VFMADD231PS Y1, Y3, Y0
+	VMOVUPS 4(SI)(AX*4), Y1
+	VFMADD231PS Y1, Y4, Y0
+	VMOVUPS 8(SI)(AX*4), Y1
+	VFMADD231PS Y1, Y5, Y0
+	VMOVUPS 12(SI)(AX*4), Y1
+	VFMADD231PS Y1, Y6, Y0
+	VMOVUPS 16(SI)(AX*4), Y1
+	VFMADD231PS Y1, Y7, Y0
+	VMOVUPS Y0, (DI)(AX*4)
+	ADDQ $0x08, AX
+	CMPQ AX, CX
+	JB   fm5
+
+fm5done:
+	VZEROUPPER
+	RET
+
 // func ctcRowExpAVX512(row *float32, n int, m float32)
 // row[i] = exp(max(row[i]-m, -80)) for n elements (n multiple of 16; n == 0
 // is a no-op). In-place safe (row is read then stored per block).
@@ -717,4 +756,247 @@ chNext:
 	ADDQ R9, SI                                // next channel plane
 	DECQ R12
 	JNZ   channel
+	RET
+
+// func bilinear4AVX2(out, a, b, c, d *float32, omx, wx, omy, wy float32, n int)
+// out[i] = ((a*(1-wx))*(1-wy) + (b*wx)*(1-wy)) + ((c*(1-wx))*wy + (d*wx)*wy)
+// n a multiple of 8. Two multiplies then an add, matching gridBilinear.
+// Frame: out+0 a+8 b+16 c+24 d+32 omx+40 wx+44 omy+48 wy+52 n+56.
+TEXT ·bilinear4AVX2(SB), NOSPLIT, $0-64
+	MOVQ out+0(FP), DI
+	MOVQ a+8(FP), SI
+	MOVQ b+16(FP), R8
+	MOVQ c+24(FP), R9
+	MOVQ d+32(FP), R10
+	VBROADCASTSS omx+40(FP), Y4
+	VBROADCASTSS wx+44(FP), Y5
+	VBROADCASTSS omy+48(FP), Y6
+	VBROADCASTSS wy+52(FP), Y7
+	MOVQ n+56(FP), CX
+
+b4_loop:
+	VMOVUPS (SI), Y0
+	VMULPS Y4, Y0, Y0
+	VMULPS Y6, Y0, Y0
+	VMOVUPS (R8), Y1
+	VMULPS Y5, Y1, Y1
+	VMULPS Y6, Y1, Y1
+	VADDPS Y1, Y0, Y0
+	VMOVUPS (R9), Y1
+	VMULPS Y4, Y1, Y1
+	VMULPS Y7, Y1, Y1
+	VADDPS Y1, Y0, Y0
+	VMOVUPS (R10), Y1
+	VMULPS Y5, Y1, Y1
+	VMULPS Y7, Y1, Y1
+	VADDPS Y1, Y0, Y0
+	VMOVUPS Y0, (DI)
+	ADDQ $32, DI
+	ADDQ $32, SI
+	ADDQ $32, R8
+	ADDQ $32, R9
+	ADDQ $32, R10
+	SUBQ $8, CX
+	JNZ  b4_loop
+
+	VZEROUPPER
+	RET
+
+// func bilinear4AVX512(out, a, b, c, d *float32, omx, wx, omy, wy float32, n int)
+// 16-wide form of bilinear4AVX2. n a multiple of 16.
+TEXT ·bilinear4AVX512(SB), NOSPLIT, $0-64
+	MOVQ out+0(FP), DI
+	MOVQ a+8(FP), SI
+	MOVQ b+16(FP), R8
+	MOVQ c+24(FP), R9
+	MOVQ d+32(FP), R10
+	VBROADCASTSS omx+40(FP), Z4
+	VBROADCASTSS wx+44(FP), Z5
+	VBROADCASTSS omy+48(FP), Z6
+	VBROADCASTSS wy+52(FP), Z7
+	MOVQ n+56(FP), CX
+
+b4z_loop:
+	VMOVUPS (SI), Z0
+	VMULPS Z4, Z0, Z0
+	VMULPS Z6, Z0, Z0
+	VMOVUPS (R8), Z1
+	VMULPS Z5, Z1, Z1
+	VMULPS Z6, Z1, Z1
+	VADDPS Z1, Z0, Z0
+	VMOVUPS (R9), Z1
+	VMULPS Z4, Z1, Z1
+	VMULPS Z7, Z1, Z1
+	VADDPS Z1, Z0, Z0
+	VMOVUPS (R10), Z1
+	VMULPS Z5, Z1, Z1
+	VMULPS Z7, Z1, Z1
+	VADDPS Z1, Z0, Z0
+	VMOVUPS Z0, (DI)
+	ADDQ $64, DI
+	ADDQ $64, SI
+	ADDQ $64, R8
+	ADDQ $64, R9
+	ADDQ $64, R10
+	SUBQ $16, CX
+	JNZ  b4z_loop
+
+	VZEROUPPER
+	RET
+
+// func affineAVX2(out, x *float32, scale, bias float32, n int)
+// out[i] = x[i]*scale + bias. n a multiple of 8. Mul then add.
+// Frame: out+0 x+8 scale+16 bias+20 n+24.
+TEXT ·affineAVX2(SB), NOSPLIT, $0-32
+	MOVQ out+0(FP), DI
+	MOVQ x+8(FP), SI
+	VBROADCASTSS scale+16(FP), Y2
+	VBROADCASTSS bias+20(FP), Y3
+	MOVQ n+24(FP), CX
+
+af_loop:
+	VMOVUPS (SI), Y0
+	VMULPS Y2, Y0, Y0
+	VADDPS Y3, Y0, Y0
+	VMOVUPS Y0, (DI)
+	ADDQ $32, DI
+	ADDQ $32, SI
+	SUBQ $8, CX
+	JNZ  af_loop
+
+	VZEROUPPER
+	RET
+
+// func affineAVX512(out, x *float32, scale, bias float32, n int)
+// 16-wide form of affineAVX2. n a multiple of 16.
+TEXT ·affineAVX512(SB), NOSPLIT, $0-32
+	MOVQ out+0(FP), DI
+	MOVQ x+8(FP), SI
+	VBROADCASTSS scale+16(FP), Z2
+	VBROADCASTSS bias+20(FP), Z3
+	MOVQ n+24(FP), CX
+
+afz_loop:
+	VMOVUPS (SI), Z0
+	VMULPS Z2, Z0, Z0
+	VADDPS Z3, Z0, Z0
+	VMOVUPS Z0, (DI)
+	ADDQ $64, DI
+	ADDQ $64, SI
+	SUBQ $16, CX
+	JNZ  afz_loop
+
+	VZEROUPPER
+	RET
+
+// reduceInf holds the float32 infinities used to seed a lane-wise extreme.
+// +0: -Inf, +4: +Inf.
+DATA reduceInf<>+0(SB)/4, $0xff800000
+DATA reduceInf<>+4(SB)/4, $0x7f800000
+GLOBL reduceInf<>(SB), RODATA|NOPTR, $8
+
+// func reduceMaxAVX2(x *float32, n int, lanes *float32, nan *uint32)
+// Lane-wise maximum of x[:n] under Go's `>` (n a multiple of 8).
+// *nan is nonzero when any element is NaN. A NaN does not enter lanes:
+// GT_OQ is false for NaN, matching `v > best`.
+TEXT ·reduceMaxAVX2(SB), NOSPLIT, $0-32
+	MOVQ x+0(FP), SI
+	MOVQ n+8(FP), CX
+	MOVQ lanes+16(FP), DI
+	MOVQ nan+24(FP), R8
+	VBROADCASTSS reduceInf<>+0(SB), Y0
+	VPXOR Y7, Y7, Y7
+
+max2_loop:
+	VMOVUPS (SI), Y1
+	VCMPPS $0x03, Y1, Y1, Y2
+	VORPS Y2, Y7, Y7
+	VCMPPS $0x1E, Y0, Y1, Y2
+	VBLENDVPS Y2, Y1, Y0, Y0
+	ADDQ $32, SI
+	SUBQ $8, CX
+	JNZ max2_loop
+
+	VMOVUPS Y0, (DI)
+	VMOVMSKPS Y7, AX
+	MOVL AX, (R8)
+	VZEROUPPER
+	RET
+
+// func reduceMinAVX2(x *float32, n int, lanes *float32, nan *uint32)
+// Lane-wise minimum under Go's `<`. n a multiple of 8.
+TEXT ·reduceMinAVX2(SB), NOSPLIT, $0-32
+	MOVQ x+0(FP), SI
+	MOVQ n+8(FP), CX
+	MOVQ lanes+16(FP), DI
+	MOVQ nan+24(FP), R8
+	VBROADCASTSS reduceInf<>+4(SB), Y0
+	VPXOR Y7, Y7, Y7
+
+min2_loop:
+	VMOVUPS (SI), Y1
+	VCMPPS $0x03, Y1, Y1, Y2
+	VORPS Y2, Y7, Y7
+	VCMPPS $0x11, Y0, Y1, Y2
+	VBLENDVPS Y2, Y1, Y0, Y0
+	ADDQ $32, SI
+	SUBQ $8, CX
+	JNZ min2_loop
+
+	VMOVUPS Y0, (DI)
+	VMOVMSKPS Y7, AX
+	MOVL AX, (R8)
+	VZEROUPPER
+	RET
+
+// func reduceMaxAVX512(x *float32, n int, lanes *float32, nan *uint32)
+// 16-wide form of reduceMaxAVX2. n a multiple of 16.
+TEXT ·reduceMaxAVX512(SB), NOSPLIT, $0-32
+	MOVQ x+0(FP), SI
+	MOVQ n+8(FP), CX
+	MOVQ lanes+16(FP), DI
+	MOVQ nan+24(FP), R8
+	VBROADCASTSS reduceInf<>+0(SB), Z0
+	KXORW K2, K2, K2
+
+maxz_loop:
+	VMOVUPS (SI), Z1
+	VCMPPS $0x03, Z1, Z1, K1
+	KORW K1, K2, K2
+	VCMPPS $0x1E, Z0, Z1, K1
+	VBLENDMPS Z1, Z0, K1, Z0
+	ADDQ $64, SI
+	SUBQ $16, CX
+	JNZ maxz_loop
+
+	VMOVUPS Z0, (DI)
+	KMOVW K2, AX
+	MOVL AX, (R8)
+	VZEROUPPER
+	RET
+
+// func reduceMinAVX512(x *float32, n int, lanes *float32, nan *uint32)
+// 16-wide form of reduceMinAVX2. n a multiple of 16.
+TEXT ·reduceMinAVX512(SB), NOSPLIT, $0-32
+	MOVQ x+0(FP), SI
+	MOVQ n+8(FP), CX
+	MOVQ lanes+16(FP), DI
+	MOVQ nan+24(FP), R8
+	VBROADCASTSS reduceInf<>+4(SB), Z0
+	KXORW K2, K2, K2
+
+minz_loop:
+	VMOVUPS (SI), Z1
+	VCMPPS $0x03, Z1, Z1, K1
+	KORW K1, K2, K2
+	VCMPPS $0x11, Z0, Z1, K1
+	VBLENDMPS Z1, Z0, K1, Z0
+	ADDQ $64, SI
+	SUBQ $16, CX
+	JNZ minz_loop
+
+	VMOVUPS Z0, (DI)
+	KMOVW K2, AX
+	MOVL AX, (R8)
+	VZEROUPPER
 	RET

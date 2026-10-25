@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestDeleteFragmentRemovesCardNodeAndDerivedEvidence(t *testing.T) {
@@ -211,10 +212,15 @@ func TestDeleteFragmentTableCardRemovesRow(t *testing.T) {
 	store := newStoreWithStructuredCSV(t)
 	defer store.Close()
 
-	var cardID, rowID, tableID string
+	var cardID, rowID, tableID, sourceID string
 	var beforeCount int
-	if err := store.db.QueryRowContext(ctx, `SELECT c.id, c.row_id, r.table_id FROM kb_cards c JOIN kb_rows r ON r.id = c.row_id LIMIT 1`).Scan(&cardID, &rowID, &tableID); err != nil {
-		t.Fatalf("read table card: %v", err)
+	cardID = "legacy-card"
+	if err := store.db.QueryRowContext(ctx, `SELECT id, table_id, source_id FROM kb_rows LIMIT 1`).Scan(&rowID, &tableID, &sourceID); err != nil {
+		t.Fatalf("read table row: %v", err)
+	}
+	now := formatTime(time.Now().UTC())
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO kb_cards (id, source_id, row_id, origin_type, claim, created_at, updated_at) VALUES (?, ?, ?, 'table_row', 'legacy row claim', ?, ?)`, cardID, sourceID, rowID, now, now); err != nil {
+		t.Fatalf("insert legacy card: %v", err)
 	}
 	if err := store.db.QueryRowContext(ctx, `SELECT row_count FROM kb_tables WHERE id = ?`, tableID).Scan(&beforeCount); err != nil {
 		t.Fatalf("read row_count: %v", err)
@@ -278,9 +284,17 @@ func TestDeleteFragmentRemovesDanglingTableFactWhenRowMissing(t *testing.T) {
 	store := newStoreWithStructuredCSV(t)
 	defer store.Close()
 
-	var factID, rowID string
-	if err := store.db.QueryRowContext(ctx, `SELECT id, row_id FROM kb_facts LIMIT 1`).Scan(&factID, &rowID); err != nil {
-		t.Fatalf("read table fact: %v", err)
+	var factID, rowID, sourceID string
+	factID = "legacy-fact"
+	if err := store.db.QueryRowContext(ctx, `SELECT id, source_id FROM kb_rows LIMIT 1`).Scan(&rowID, &sourceID); err != nil {
+		t.Fatalf("read table row: %v", err)
+	}
+	now := formatTime(time.Now().UTC())
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO kb_cards (id, source_id, row_id, origin_type, claim, created_at, updated_at) VALUES ('legacy-card', ?, ?, 'table_row', 'legacy row claim', ?, ?)`, sourceID, rowID, now, now); err != nil {
+		t.Fatalf("insert legacy card: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO kb_facts (id, card_id, source_id, row_id, subject, predicate, object, created_at) VALUES (?, 'legacy-card', ?, ?, '张三', '部门', '法务', ?)`, factID, sourceID, rowID, now); err != nil {
+		t.Fatalf("insert legacy fact: %v", err)
 	}
 	if _, err := store.db.ExecContext(ctx, `DELETE FROM kb_rows WHERE id = ?`, rowID); err != nil {
 		t.Fatalf("delete row: %v", err)
@@ -323,6 +337,37 @@ func TestDeleteFragmentEmptyTypeStillRemovesOrphanCard(t *testing.T) {
 	}
 }
 
+func TestDeleteFragmentFactWithRowIDLeavesRow(t *testing.T) {
+	ctx := context.Background()
+	store := newStoreWithStructuredCSV(t)
+	defer store.Close()
+
+	var rowID, sourceID string
+	if err := store.db.QueryRowContext(ctx, `SELECT id, source_id FROM kb_rows LIMIT 1`).Scan(&rowID, &sourceID); err != nil {
+		t.Fatalf("read row: %v", err)
+	}
+	now := formatTime(time.Now().UTC())
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO kb_cards (id, source_id, row_id, origin_type, claim, created_at, updated_at) VALUES ('legacy-card', ?, ?, 'table_row', 'legacy row claim', ?, ?)`, sourceID, rowID, now, now); err != nil {
+		t.Fatalf("insert legacy card: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO kb_facts (id, card_id, source_id, row_id, subject, predicate, object, created_at) VALUES ('legacy-fact', 'legacy-card', ?, ?, '张三', '部门', '法务', ?)`, sourceID, rowID, now); err != nil {
+		t.Fatalf("insert legacy fact: %v", err)
+	}
+	if _, err := store.DeleteFragment(ctx, SearchResult{ResultType: "fact", FactID: "legacy-fact", RowID: rowID}); err != nil {
+		t.Fatalf("DeleteFragment: %v", err)
+	}
+	var rows, cells, facts int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM kb_rows WHERE id = ?`, rowID).Scan(&rows); err != nil || rows != 1 {
+		t.Fatalf("rows = %d, err = %v", rows, err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM kb_cells WHERE row_id = ?`, rowID).Scan(&cells); err != nil || cells == 0 {
+		t.Fatalf("cells = %d, err = %v", cells, err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM kb_facts WHERE id = 'legacy-fact'`).Scan(&facts); err != nil || facts != 0 {
+		t.Fatalf("facts = %d, err = %v", facts, err)
+	}
+}
+
 func TestDeleteFragmentRequiresIdentity(t *testing.T) {
 	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
 	if err != nil {
@@ -352,7 +397,7 @@ func TestResolveFragmentDeleteTarget(t *testing.T) {
 		t.Fatalf("table card = %s %s %v", kind, id, err)
 	}
 	kind, id, err = resolveFragmentDeleteTarget(SearchResult{ResultType: "fact", FactID: "f1", RowID: "r1"})
-	if err != nil || kind != "table_row" || id != "r1" {
+	if err != nil || kind != "fact" || id != "f1" {
 		t.Fatalf("table fact = %s %s %v", kind, id, err)
 	}
 	kind, id, err = resolveFragmentDeleteTarget(SearchResult{ResultType: "table_row", RowID: "r1"})

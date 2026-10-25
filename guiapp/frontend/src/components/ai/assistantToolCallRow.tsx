@@ -1,7 +1,8 @@
 import React from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { CODE_FENCE_FONT } from "./assistantCodeFence";
-import { splitAssistantToolCallContent, type AssistantToolCall } from "./assistantToolCall";
+import { sessionToolIconKind, splitAssistantToolCallContent, type AssistantToolCall } from "./assistantToolCall";
+import { CodingAgentProcessIcon } from "./CodingAgentProcessIcon";
 
 function ToolCallIcon({ color }: { color: string }) {
     return (
@@ -14,10 +15,12 @@ function ToolCallIcon({ color }: { color: string }) {
 export const AssistantToolCallRow = React.memo(function AssistantToolCallRow({ call, theme }: { call: AssistantToolCall; theme: Theme }) {
     const title = call.name || call.action || "tool";
     const action = call.action && call.action !== call.name ? call.action : "";
+    const iconKind = sessionToolIconKind(call);
     return (
         <div
             data-testid="assistant-tool-call"
             data-tool-name={call.name}
+            data-process-kind={iconKind || undefined}
             aria-label={[title, action, call.detail].filter(Boolean).join(" ")}
             style={{
                 display: "flex",
@@ -34,7 +37,9 @@ export const AssistantToolCallRow = React.memo(function AssistantToolCallRow({ c
             }}
         >
             <span aria-hidden="true" style={{ display: "inline-flex", flex: "0 0 auto", marginTop: 1, color: theme.headingColor }}>
-                <ToolCallIcon color={theme.headingColor || theme.text} />
+                {iconKind
+                    ? <CodingAgentProcessIcon kind={iconKind} />
+                    : <ToolCallIcon color={theme.headingColor || theme.text} />}
             </span>
             <div style={{ minWidth: 0, flex: "1 1 auto" }}>
                 <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "2px 8px" }}>

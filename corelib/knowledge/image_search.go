@@ -16,6 +16,12 @@ import (
 // bounded candidate window before a relevant image is considered.
 func (s *SQLiteStore) SearchImages(ctx context.Context, opts ImageSearchOptions) ([]SearchResult, error) {
 	searchOpts := opts.SearchOptions
+	if err := validateSearchResultTypes(searchOpts.ResultTypes); err != nil {
+		return nil, err
+	}
+	if resultTypes := normalizeSearchResultTypes(searchOpts.ResultTypes); len(resultTypes) > 0 && !wantsSearchType(resultTypes, "node") {
+		return []SearchResult{}, nil
+	}
 	if strings.TrimSpace(searchOpts.Query) == "" {
 		return []SearchResult{}, nil
 	}
@@ -67,6 +73,9 @@ func (s *SQLiteStore) SearchImages(ctx context.Context, opts ImageSearchOptions)
 		return nil, err
 	}
 	if err := s.hydrateSearchResultSourceLabels(ctx, results); err != nil {
+		return nil, err
+	}
+	if err := s.hydrateSearchResultLibraryIDs(ctx, results); err != nil {
 		return nil, err
 	}
 	return results, nil

@@ -173,8 +173,26 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 			tools = nil
 			baseTools = nil
 		} else if semanticPlanErrorBlocksSession(semanticErr) {
-			log.Printf("[semantic-routing] managed plan rejected user=%q reason=%v", opts.UserID, semanticErr)
-			hostReject = semanticHostRejectResponseForManagedSurfaceFailure(semanticErr)
+			// A missing built-in is not a routing miss. Publish skill search and
+			// craft_tool, and leave bash and the rest of the legacy catalog off.
+			if reason, paths, ok := semanticCapabilityExtension(semanticErr, opts.UserText, attachments); ok {
+				ext := capabilityExtensionToolDefs(h)
+				if len(ext) > 0 {
+					tools = ext
+					baseTools = ext
+					if ctx != nil {
+						ctx.capabilityExtensionReason = reason
+						ctx.capabilityExtensionPaths = append([]string(nil), paths...)
+					}
+					log.Printf("[semantic-routing] capability extension user=%q reason=%s tools=%d", opts.UserID, reason, len(ext))
+				} else {
+					log.Printf("[semantic-routing] managed plan rejected user=%q reason=%v", opts.UserID, semanticErr)
+					hostReject = semanticHostRejectResponseForManagedSurfaceFailure(semanticErr)
+				}
+			} else {
+				log.Printf("[semantic-routing] managed plan rejected user=%q reason=%v", opts.UserID, semanticErr)
+				hostReject = semanticHostRejectResponseForManagedSurfaceFailure(semanticErr)
+			}
 		} else if surface == nil || len(semanticTools) == 0 {
 			log.Printf("[semantic-routing] managed surface unavailable user=%q reason=empty surface", opts.UserID)
 			hostReject = semanticHostRejectResponseForManagedSurfaceFailure(nil)
@@ -267,7 +285,7 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 		}
 	}
 	toolsTokenBudget := toolSet.ToolsTokenBudget
-	if semanticSurface != nil || (loopContextIsVisionFallthrough(ctx) && len(tools) > 0) || (fileCompanionToolsDisabled(opts.UserID) && len(tools) > 0) {
+	if semanticSurface != nil || (loopContextIsVisionFallthrough(ctx) && len(tools) > 0) || (fileCompanionToolsDisabled(opts.UserID) && len(tools) > 0) || (ctx != nil && ctx.capabilityExtensionReason != "") {
 		toolsTokenBudget = estimateToolsTokens(tools)
 	}
 	if telemetry != nil {
@@ -294,6 +312,9 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 	}
 	if ctx != nil && ctx.semanticSessionCeilingSpent {
 		systemPrompt += "\n\n" + sessionCeilingTurnPrompt()
+	}
+	if ctx != nil && ctx.capabilityExtensionReason != "" {
+		systemPrompt += "\n\n" + capabilityExtensionPrompt(ctx.capabilityExtensionReason, ctx.capabilityExtensionPaths, tools)
 	}
 
 	loopID := ""

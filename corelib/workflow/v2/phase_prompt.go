@@ -32,6 +32,7 @@ office(action="read_document", file_path="完整路径")
 - CAD：.dwg/.dxf/.dxfb（按图框提取文字，不渲染）
 - 三维模型：.glb/.gltf（场景、节点、网格清单，不渲染）
 - EPUB：.epub（按章节）
+- MOBI：.mobi（PalmDOC / HUFF，不读取图片，加密本拒绝）
 - AsciiDoc：.adoc/.asciidoc
 - 邮件：.eml（正文与附件名；不读取附件二进制）
 - DOCX/PPTX/XLSX 还会附上批注、公式、修订、图表和 SmartArt
@@ -47,7 +48,7 @@ office(action="read_document", file_path="完整路径")
 
 ### 3) craft_tool（其它格式 / 普通 office 失败时必须尝试）
 仅当失败不属于上述 error_class 时，当出现以下情况，**必须**用 craft_tool 生成一次性解析脚本，不要停下来让用户自己转格式：
-- 扩展名不在上面列表（如 .rtf .odt .wps .et .dps .pages .mobi .msg .html .htm 等）
+- 扩展名不在上面列表（如 .rtf .odt .wps .et .dps .pages .msg .html .htm 等）
 - office 返回“读取失败 / 暂不支持 / 没有可读取文本”
 - 扫描版 PDF 需要 OCR
 
@@ -1471,7 +1472,7 @@ title: 第2页标题
 **方式一：交底书/申请材料文件（file_mode）**
 - 先用内置工具提取文档文本（不要对二进制文档用 read_file）：
   - 若消息中已有「系统已自动解析文档正文」/ auto_extract：**优先直接用注入正文**；仅 truncated=true 或失败时再 office 分页
-  - 否则优先：office(action="read_document", file_path="路径")  — 支持 .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx/.txt/.md/.markdown/.json/.xml/.yaml/.yml/.log/.dwg/.dxf/.glb/.gltf/.epub/.adoc/.asciidoc/.eml
+  - 否则优先：office(action="read_document", file_path="路径")  — 支持 .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx/.txt/.md/.markdown/.json/.xml/.yaml/.yml/.log/.dwg/.dxf/.glb/.gltf/.epub/.mobi/.adoc/.asciidoc/.eml
   - 上述文本数据也可用 read_file；需要字符偏移分页时优先 read_document
   - 先检查 office 返回的 error_class；encrypted、malformed、source_changed、input_too_large、output_too_large 必须遵循原提示，禁止对同一文件用 craft_tool、Skill、bash、PowerShell COM、LibreOffice 或其他解析器绕过；encrypted 不接收密码也不支持密码解密
   - 仅普通 office 失败或不支持的格式（.rtf/.odt/.wps 等）：必须 craft_tool(task="读取路径并提取纯文本...") 生成解析脚本
@@ -2084,7 +2085,7 @@ Check the form data above for the input mode:
 - The file path is shown above as "Disclosure File Path / 交底书文件路径". Replace FILE_PATH below with that value.
 - Extract text (never use read_file on binary Office/PDF):
   0. If the message already contains auto-extracted body ("系统已自动解析文档正文" / auto_extract markers): use that first; only call office when truncated=true or extract failed
-  1. Else prefer office(action="read_document", file_path="FILE_PATH") for .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx/.txt/.md/.markdown/.json/.xml/.yaml/.yml/.log/.dwg/.dxf/.glb/.gltf/.epub/.adoc/.asciidoc/.eml
+  1. Else prefer office(action="read_document", file_path="FILE_PATH") for .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx/.txt/.md/.markdown/.json/.xml/.yaml/.yml/.log/.dwg/.dxf/.glb/.gltf/.epub/.mobi/.adoc/.asciidoc/.eml
   2. Those text-based files may also use read_file; prefer read_document when offset-based paging is needed
   3. First inspect office error_class. For encrypted, malformed, source_changed, input_too_large, or output_too_large: follow the returned safety, version, or resource guidance; do NOT retry the same file through craft_tool, Skill, bash, PowerShell COM, LibreOffice, or another parser. Encrypted Office files do not accept passwords and password decryption is unsupported.
   4. Only for an ordinary office failure or an unsupported format (.rtf/.odt/.wps/etc.): MUST call craft_tool(task="Read FILE_PATH and print full plain text to stdout; use Python/COM/LibreOffice as needed; no GUI")

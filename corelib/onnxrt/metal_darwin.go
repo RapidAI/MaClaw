@@ -46,14 +46,26 @@ type gpuGraph struct {
 }
 
 var (
-	onnxGPUOnce sync.Once
-	onnxGPUDev  *mtl.Device
-	onnxGPUPipe map[string]*mtl.Pipeline
-	onnxGPUErr  error
+	onnxGPUOnce  sync.Once
+	onnxGPUDev   *mtl.Device
+	onnxGPUPipe  map[string]*mtl.Pipeline
+	onnxGPUErr   error
+	onnxGridPipe *mtl.Pipeline // bilinear GridSample; nil keeps that op on the CPU
 )
 
 func onnxMetalDisabled() bool {
 	return os.Getenv("MACLAW_ONNXRT_METAL") == "0" || os.Getenv("MACLAW_METAL") == "0"
+}
+
+// metalSupported reports whether the existing conv/elementwise Metal
+// kernels initialized. A failed self-check leaves the device nil, which
+// disables every Metal op; this does not add a new kernel to that list.
+func metalSupported() bool {
+	if onnxMetalDisabled() {
+		return false
+	}
+	dev, _, err := onnxMetalInit()
+	return err == nil && dev != nil
 }
 
 func onnxMetalInit() (*mtl.Device, map[string]*mtl.Pipeline, error) {
@@ -63,7 +75,7 @@ func onnxMetalInit() (*mtl.Device, map[string]*mtl.Pipeline, error) {
 			onnxGPUErr = err
 			return
 		}
-		p, err := dev.CompileOpts(onnxMetalSrc, []string{"conv_gemm", "conv_dw", "binary4", "unary", "gap"}, false)
+		p, err := dev.CompileOpts(onnxMetalSrc, []string{"conv_gemm", "conv_1x1", "conv_dw", "binary4", "unary", "gap"}, false)
 		if err != nil {
 			onnxGPUErr = err
 			return
@@ -72,9 +84,68 @@ func onnxMetalInit() (*mtl.Device, map[string]*mtl.Pipeline, error) {
 		if err := onnxMetalSelfCheck(); err != nil {
 			onnxGPUErr = fmt.Errorf("onnxrt metal self-check: %w", err)
 			onnxGPUDev, onnxGPUPipe = nil, nil
+			return
 		}
+		// GridSample is not part of the self-check above. A bad shader
+		// disables only this op.
+		onnxMetalGridInit(dev)
 	})
 	return onnxGPUDev, onnxGPUPipe, onnxGPUErr
+}
+
+func onnxMetalGridInit(dev *mtl.Device) {
+	p, err := dev.CompileOpts(onnxMetalGridSrc, []string{"grid_sample"}, false)
+	if err != nil || p["grid_sample"] == nil {
+		return
+	}
+	if err := onnxMetalGridSelfCheck(dev, p["grid_sample"]); err != nil {
+		return
+	}
+	onnxGridPipe = p["grid_sample"]
+}
+
+// onnxMetalGridSelfCheck compares the shader with the CPU 2×2 bilinear case
+// (center 2.5, zeros-corner 0.25). Failure leaves onnxGridPipe nil.
+func onnxMetalGridSelfCheck(dev *mtl.Device, pipe *mtl.Pipeline) error {
+	xb, err := dev.NewBuffer(4 * 4)
+	if err != nil {
+		return err
+	}
+	defer xb.Release()
+	copy(xb.Float32s(), []float32{1, 2, 3, 4})
+	gb, err := dev.NewBuffer(2 * 4)
+	if err != nil {
+		return err
+	}
+	defer gb.Release()
+	yb, err := dev.NewBuffer(4)
+	if err != nil {
+		return err
+	}
+	defer yb.Release()
+	p := gridPGPU{N: 1, C: 1, H: 2, W: 2, OH: 1, OW: 1}
+	run := func(gx, gy, want float32) error {
+		gb.Float32s()[0], gb.Float32s()[1] = gx, gy
+		yb.Float32s()[0] = -999
+		enc := dev.Begin()
+		enc.SetPipeline(pipe)
+		enc.SetBuffer(xb, 0, 0)
+		enc.SetBuffer(gb, 0, 1)
+		enc.SetBuffer(yb, 0, 2)
+		enc.SetBytes(unsafe.Pointer(&p), int(unsafe.Sizeof(p)), 3)
+		enc.Dispatch(1, 1, 1, 32, 1, 1)
+		if err := enc.Wait(); err != nil {
+			return err
+		}
+		if math.Abs(float64(yb.Float32s()[0]-want)) > 1e-4 {
+			return fmt.Errorf("grid sample got %v want %v", yb.Float32s()[0], want)
+		}
+		return nil
+	}
+	if err := run(0, 0, 2.5); err != nil {
+		return err
+	}
+	return run(-1, -1, 0.25)
 }
 
 // gpuFor returns the graph's GPU state, or nil when Metal is off/unavailable.
@@ -364,8 +435,83 @@ func (r *gpuRun) tryOp(rc *runCtx, nd *Node, args []*Tensor) ([]*Tensor, bool, e
 		return r.unary(nd, args)
 	case "GlobalAveragePool":
 		return r.gap(nd, args)
+	case "GridSample":
+		return r.gridSample(nd, args)
 	}
 	return nil, false, nil
+}
+
+// gridPGPU matches GridP in onnxMetalGridSrc. All fields are int32 so the
+// Metal constant block has no trailing padding.
+type gridPGPU struct {
+	N, C, H, W, OH, OW int32
+	alignCorners       int32
+}
+
+// gridSample runs bilinear zeros-padding GridSample on the GPU only when
+// both inputs already live in GPU buffers. Uploading a CPU feature map
+// (the layout model's GridSample reads a Reshape/Transpose) just to sample
+// it, then syncing before the next CPU MatMul, is slower than the SIMD path.
+func (r *gpuRun) gridSample(nd *Node, args []*Tensor) ([]*Tensor, bool, error) {
+	if onnxGridPipe == nil || len(args) < 2 || args[0] == nil || args[1] == nil {
+		return nil, false, nil
+	}
+	x, grid := args[0], args[1]
+	if x.Rank() != 4 || grid.Rank() != 4 || grid.Shape[3] != 2 || x.Shape[0] != grid.Shape[0] {
+		return nil, false, nil
+	}
+	mode := attrStr(nd, "mode", "linear")
+	if mode == "linear" {
+		mode = "bilinear"
+	}
+	if mode != "bilinear" || attrStr(nd, "padding_mode", "zeros") != "zeros" {
+		return nil, false, nil
+	}
+	if _, off := r.find(x.F32); off == 0 && r.findBuf(x.F32) == nil {
+		return nil, false, nil
+	}
+	if r.findBuf(grid.F32) == nil {
+		return nil, false, nil
+	}
+	N, C, H, W := x.Shape[0], x.Shape[1], x.Shape[2], x.Shape[3]
+	oH, oW := grid.Shape[1], grid.Shape[2]
+	if N == 0 || C == 0 || H <= 0 || W <= 0 || oH == 0 || oW == 0 {
+		return nil, false, nil
+	}
+	xb, xoff, err := r.bufOf(x, false)
+	if err != nil {
+		return nil, false, err
+	}
+	gb, goff, err := r.bufOf(grid, false)
+	if err != nil {
+		return nil, false, err
+	}
+	out, ob, err := r.newOut(N, C, oH, oW)
+	if err != nil {
+		return nil, false, err
+	}
+	p := gridPGPU{
+		N: int32(N), C: int32(C), H: int32(H), W: int32(W),
+		OH: int32(oH), OW: int32(oW),
+		alignCorners: int32(attrInt(nd, "align_corners", 0)),
+	}
+	if attrInt(nd, "align_corners", 0) != 0 {
+		p.alignCorners = 1
+	}
+	total := N * C * oH * oW
+	enc := r.encoder()
+	enc.SetPipeline(onnxGridPipe)
+	enc.SetBuffer(xb, xoff, 0)
+	enc.SetBuffer(gb, goff, 1)
+	enc.SetBuffer(ob.b, 0, 2)
+	enc.SetBytes(unsafe.Pointer(&p), int(unsafe.Sizeof(p)), 3)
+	enc.Dispatch((total+255)/256, 1, 1, 256, 1, 1)
+	return []*Tensor{out}, true, nil
+}
+
+func (r *gpuRun) findBuf(f []float32) *gbuf {
+	b, _ := r.find(f)
+	return b
 }
 
 type convPGPU struct {
@@ -468,6 +614,9 @@ func (r *gpuRun) conv(rc *runCtx, nd *Node, args []*Tensor) ([]*Tensor, bool, er
 		enc.SetPipeline(r.gg.pipe["conv_dw"])
 		tot := N * C * oH * oW
 		enc.Dispatch((tot+255)/256, 1, 1, 256, 1, 1)
+	} else if p.kH == 1 && p.kW == 1 && p.strides == [2]int{1, 1} && p.dilations == [2]int{1, 1} && p.pads == [4]int{} && oH == H && oW == W {
+		enc.SetPipeline(r.gg.pipe["conv_1x1"])
+		enc.Dispatch((oH*oW+63)/64, (M/p.group+31)/32, N*p.group, 128, 1, 1)
 	} else {
 		enc.SetPipeline(r.gg.pipe["conv_gemm"])
 		enc.Dispatch((oH*oW+63)/64, (M/p.group+31)/32, N*p.group, 128, 1, 1)

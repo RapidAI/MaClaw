@@ -323,4 +323,34 @@ func TestConnectionProbeOutputCapLeavesVisionBudget(t *testing.T) {
 	if original.MaxOutputTokens != 65536 {
 		t.Fatal("capping the probe must not rewrite the caller's config")
 	}
+	for _, cfg := range []corelib.MaclawLLMConfig{
+		{URL: "https://api.x.ai/v1", Model: "grok-4.5"},
+		{URL: "https://api.kimi.com/coding/v1", Model: "kimi-k3"},
+		{URL: "https://api.kimi.com/coding/v1", Model: "kimi-k2.7-code"},
+		{URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.3-flash"},
+		{URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7"},
+	} {
+		got := capConnectionProbeOutput(cfg)
+		if got.MaxOutputTokens != corelib.LLMProbeAlwaysOnMaxOutputTokens {
+			t.Fatalf("%s probe cap = %d", cfg.Model, got.MaxOutputTokens)
+		}
+	}
+	free := capConnectionProbeOutput(corelib.MaclawLLMConfig{
+		URL: "https://opencode.ai/zen/go/v1", Model: "glm-5.3-flash-free",
+	})
+	if free.MaxOutputTokens != corelib.LLMProbeMaxOutputTokens {
+		t.Fatalf("zen free probe cap = %d", free.MaxOutputTokens)
+	}
+	m3 := capConnectionProbeOutput(corelib.MaclawLLMConfig{
+		URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M3",
+	})
+	if m3.MaxOutputTokens != corelib.LLMProbeMaxOutputTokens {
+		t.Fatalf("minimax m3 probe cap = %d", m3.MaxOutputTokens)
+	}
+	shortXAI := capConnectionProbeOutput(corelib.MaclawLLMConfig{
+		URL: "https://api.x.ai/v1", Model: "grok-4.5", MaxOutputTokens: 16,
+	})
+	if shortXAI.MaxOutputTokens != 16 {
+		t.Fatalf("explicit short xAI cap = %d", shortXAI.MaxOutputTokens)
+	}
 }

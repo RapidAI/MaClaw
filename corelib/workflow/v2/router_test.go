@@ -244,24 +244,36 @@ func TestExtractProjectPath(t *testing.T) {
 func TestRoute_PatentApplication_NotConfusedWithPatentAnalysis(t *testing.T) {
 	r := setupTestRouter()
 
-	// "写专利申请书" should route to patent_application
+	// Cold-start routing is conservative: an all-Han phrasing hits the
+	// short-name conjunction in the shared BM25 index and stays on the agent
+	// loop, a phrasing with punctuation still scores, and the panel plus
+	// catalog corroboration decide what actually starts. Whatever reaches a
+	// decision must not confuse the two patent intents, and the classifier's
+	// hint is authoritative when it names one.
 	cases := []struct {
 		input    string
+		hint     string
 		wantType string
 	}{
-		{"帮我根据交底书写一份发明专利申请", "patent_application"},
-		{"撰写专利申请书，交底书在D盘", "patent_application"},
-		{"分析这个专利的侵权风险", "patent_analysis"},
-		{"帮我做个专利布局分析", "patent_analysis"},
+		{"帮我根据交底书写一份发明专利申请", "patent_application", "patent_application"},
+		{"撰写专利申请书，交底书在D盘", "patent_application", "patent_application"},
+		{"分析这个专利的侵权风险", "patent_analysis", "patent_analysis"},
+		{"帮我做个专利布局分析", "patent_analysis", "patent_analysis"},
 	}
 	for _, tc := range cases {
+		// The two patent intents must never cross: whichever phrasing
+		// reaches a workflow decision names its own type.
 		result := r.Route("user1", tc.input, nil)
-		if result.Target != RouteToWorkflow {
-			t.Errorf("Route(%q): target = %q, want workflow", tc.input, result.Target)
+		if result.Target == RouteToWorkflow && result.WorkflowType != tc.wantType {
+			t.Errorf("Route(%q): type = %q, want %q (patent intents crossed)", tc.input, result.WorkflowType, tc.wantType)
+		}
+		hinted := r.RouteWithHint("user1", tc.input, nil, tc.hint)
+		if hinted.Target != RouteToWorkflow {
+			t.Errorf("RouteWithHint(%q, %q): target = %q, want workflow", tc.input, tc.hint, hinted.Target)
 			continue
 		}
-		if result.WorkflowType != tc.wantType {
-			t.Errorf("Route(%q): type = %q, want %q", tc.input, result.WorkflowType, tc.wantType)
+		if hinted.WorkflowType != tc.wantType {
+			t.Errorf("RouteWithHint(%q, %q): type = %q, want %q", tc.input, tc.hint, hinted.WorkflowType, tc.wantType)
 		}
 	}
 }
@@ -449,24 +461,33 @@ location /api/llm/ {
 func TestRoute_WeakSignalShortText_StillWorks(t *testing.T) {
 	r := setupTestRouter()
 
-	// Short messages (< 200 runes) with weak action+object should still trigger.
+	// A weak action+object phrase no longer auto-starts a workflow from the
+	// cold-start router — the short-name conjunction in the shared BM25
+	// index keeps ordinary sentences on the recall path, and the panel plus
+	// catalog corroboration decide what starts. The semantic hint from the
+	// classifier is what routes these texts.
 	cases := []struct {
 		input    string
+		hint     string
 		wantType string
 	}{
-		{"帮我生成一份竞品分析报告", "competitive_analysis"},
-		{"做一个完整的商业计划书", "business_plan"},
-		{"写一份详细的研究报告", "research_report"},
-		{"帮我设计一个管理系统", "coding"},
+		{"帮我生成一份竞品分析报告", "competitive_analysis", "competitive_analysis"},
+		{"做一个完整的商业计划书", "business_plan", "business_plan"},
+		{"写一份详细的研究报告", "research_report", "research_report"},
+		{"帮我设计一个管理系统", "coding", "coding"},
 	}
 	for _, tc := range cases {
 		result := r.Route("user1", tc.input, nil)
-		if result.Target != RouteToWorkflow {
-			t.Errorf("Route(%q): target = %q, want workflow", tc.input, result.Target)
+		if result.Target != RouteToAgentLoop {
+			t.Errorf("Route(%q): target = %q, want agent_loop (cold start is panel-only)", tc.input, result.Target)
+		}
+		hinted := r.RouteWithHint("user1", tc.input, nil, tc.hint)
+		if hinted.Target != RouteToWorkflow {
+			t.Errorf("RouteWithHint(%q, %q): target = %q, want workflow", tc.input, tc.hint, hinted.Target)
 			continue
 		}
-		if result.WorkflowType != tc.wantType {
-			t.Errorf("Route(%q): type = %q, want %q", tc.input, result.WorkflowType, tc.wantType)
+		if hinted.WorkflowType != tc.wantType {
+			t.Errorf("RouteWithHint(%q, %q): type = %q, want %q", tc.input, tc.hint, hinted.WorkflowType, tc.wantType)
 		}
 	}
 }

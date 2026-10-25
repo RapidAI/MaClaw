@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"hash/crc32"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
@@ -176,6 +178,120 @@ func (s *dataURLScratch) resolve(raw string) (string, bool) {
 		return "", false
 	}
 
+	s.mu.Lock()
+	s.seen[key] = path
+	s.mu.Unlock()
+	return path, true
+}
+
+// pngSignature is the 8-byte header of a PNG file.
+var pngSignature = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+
+// pngPayloadIntact reports whether data is a complete PNG.
+//
+// A valid IHDR is not enough: the file can be torn off before IEND. The fast
+// path writes the original bytes only when every chunk checksum matches and
+// the file ends on IEND.
+func pngPayloadIntact(data []byte) bool {
+	if len(data) < len(pngSignature)+12 || !bytes.HasPrefix(data, pngSignature) {
+		return false
+	}
+	i := len(pngSignature)
+	sawIHDR := false
+	for i+12 <= len(data) {
+		n := uint64(binary.BigEndian.Uint32(data[i : i+4]))
+		if n > uint64(len(data)-i-12) {
+			return false
+		}
+		size := int(n)
+		chunkType := data[i+4 : i+8]
+		sum := crc32.ChecksumIEEE(data[i+4 : i+8+size])
+		want := binary.BigEndian.Uint32(data[i+8+size : i+12+size])
+		if sum != want {
+			return false
+		}
+		switch string(chunkType) {
+		case "IHDR":
+			if sawIHDR || size != 13 {
+				return false
+			}
+			sawIHDR = true
+		case "IEND":
+			return sawIHDR && size == 0 && i+12+size == len(data)
+		}
+		i += 12 + size
+	}
+	return false
+}
+
+// pngBytesToStore is the picture writePNG will put on disk.
+//
+// A complete PNG from the diagram drawer is kept as-is. Decoding it to pixels
+// and encoding it again holds the whole bitmap in memory, which for a
+// print-sized diagram is tens of megabytes on the path the reader is waiting
+// for. Anything that is not a complete PNG is decoded and re-encoded, and a
+// blob that is not a picture is refused so the caller can keep the mermaid
+// source.
+func pngBytesToStore(data []byte) ([]byte, bool) {
+	if len(data) == 0 || len(data) > 8<<20 {
+		return nil, false
+	}
+	if bytes.HasPrefix(data, pngSignature) && pngPayloadIntact(data) {
+		if _, _, err := image.DecodeConfig(bytes.NewReader(data)); err != nil {
+			return nil, false
+		}
+		return data, true
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil || img.Bounds().Dx() < 1 || img.Bounds().Dy() < 1 {
+		return nil, false
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil, false
+	}
+	return buf.Bytes(), true
+}
+
+// PNGBytesEmbeddable reports whether writePNG would store data.
+//
+// The diagram cache has to use this same rule. Remembering a payload the PDF
+// will refuse makes every later export of that diagram stay source: those
+// bytes are returned and the window is never asked again.
+func PNGBytesEmbeddable(data []byte) bool {
+	_, ok := pngBytesToStore(data)
+	return ok
+}
+
+// writePNG stores one picture for this render and returns its path.
+func (s *dataURLScratch) writePNG(data []byte) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	payload, ok := pngBytesToStore(data)
+	if !ok {
+		return "", false
+	}
+	sum := sha256.Sum256(payload)
+	key := hex.EncodeToString(sum[:]) + ".png"
+
+	s.mu.Lock()
+	cached, found := s.seen[key]
+	s.mu.Unlock()
+	if found {
+		if info, statErr := os.Stat(cached); statErr == nil && !info.IsDir() {
+			return cached, true
+		}
+	}
+
+	dir, err := s.dirFor()
+	if err != nil || dir == "" {
+		return "", false
+	}
+	path := filepath.Join(dir, key)
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		return "", false
+	}
 	s.mu.Lock()
 	s.seen[key] = path
 	s.mu.Unlock()

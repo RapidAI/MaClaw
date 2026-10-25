@@ -105,6 +105,17 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	// Load conversation history in parallel with loop-context + profile classify.
 	// History is pure memory/disk; classify does not depend on history contents.
 	// Always drain historyCh before return so the loader goroutine cannot leak.
+	// A companion turn is the exception. Its history and its save generation
+	// are one snapshot, taken before this goroutine. The load used to finish
+	// first, and the generation was captured later. A sync in between
+	// installed the sharer's chat, and the turn then saved the old chat
+	// under the new generation.
+	var snapEntries []agent.ConversationEntry
+	var snapGen uint64
+	snapOK := false
+	if h.app != nil && fileCompanionToolsDisabled(msg.UserID) {
+		snapEntries, snapGen, snapOK = h.app.fileCompanionSnapshotChat(msg.UserID)
+	}
 	type historyLoadResult struct {
 		entries []agent.ConversationEntry
 		elapsed time.Duration
@@ -119,7 +130,9 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		}()
 		start := time.Now()
 		var entries []agent.ConversationEntry
-		if h != nil && h.memory != nil {
+		if snapOK {
+			entries = fileCompanionStripNoteExcerptHistory(msg.UserID, snapEntries)
+		} else if h != nil && h.memory != nil {
 			entries = h.memory.Load(msg.UserID)
 			entries = fileCompanionStripNoteExcerptHistory(msg.UserID, entries)
 		}
@@ -155,7 +168,11 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		// the loop is not counted as work that was already running.
 		loopCtx.WorkLiveAtStart = h.sessionWorkLive(msg.UserID)
 	}
-	h.beginInFlightTurn(msg.UserID, msg.Text, loopCtx)
+	if snapOK {
+		h.beginInFlightTurnAtGen(msg.UserID, msg.Text, loopCtx, snapGen)
+	} else {
+		h.beginInFlightTurn(msg.UserID, msg.Text, loopCtx)
+	}
 	defer h.endInFlightTurn(msg.UserID, loopCtx)
 	// A cancelled loop still stops. The user-stop fence does not: an explicit
 	// goal continue already admitted this host turn, and the fence remains for
@@ -354,7 +371,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 						if mergedBare {
 							relation = decideSemanticResidueRelationWithBare(*semanticIntent, &bareIntent, msg.Text, residue)
 						}
-						rewritten, applied := semanticClassificationWithOpenResidue(*semanticIntent, residue.Needs, relation)
+						rewritten, applied := semanticClassificationWithAuthorizedResidue(*semanticIntent, residue.Needs, relation, residue.IntentPrimary)
 						planned := *semanticIntent
 						if applied {
 							planned = rewritten
@@ -424,6 +441,15 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		}
 		loopCtx.Runtime.Execution = h.continuationKeepsParentExecution(executionProfile, msg.UserID, msg.Text, semanticIntent)
 		markAnswerOnlySocialTurn(loopCtx, loopCtx.Runtime.Execution, msg.Text)
+		if resumed, profile, ok := commitApprovalResumePlan(opts.AskUserContext); ok {
+			// The card answer is the approval, not a new delivery sentence.
+			// Planning it again rejects the turn when the published file is
+			// not a fresh producer in this plan.
+			copied := resumed
+			semanticIntent = &copied
+			loopCtx.Runtime.Execution = profile
+			log.Printf("[semantic-routing] commit approval resumes paused call user=%q", msg.UserID)
+		}
 		loopCtx.Runtime.ClassificationMessage = classifyMsg
 		bindLoopSemanticIntent(loopCtx, semanticIntent)
 	}
@@ -906,6 +932,7 @@ func (h *IMMessageHandler) rearmStickyLocalCodingEnvironment(userID, projectPath
 		h.storeStickyCodingWorkbenchMemory(userID, mem)
 	}
 	log.Printf("[coding-env] re-armed sticky local coding session user=%s project=%s", userID, projectPath)
+	warmCodeSearch(projectPath)
 }
 
 // rearmStickyRemoteCodingEnvironment keeps pure remote coding sessions multi-turn.

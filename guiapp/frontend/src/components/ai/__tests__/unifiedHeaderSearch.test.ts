@@ -4,6 +4,7 @@ import {
     filterMobileLibraryHits,
     headerLibrarySearchJobs,
     isOpenableExpert,
+    knowledgeHitID,
     knowledgeHitPreview,
     knowledgeHitTitle,
     knowledgeResultKey,
@@ -44,6 +45,8 @@ describe("unifiedHeaderSearch", () => {
     it("maps knowledge search rows onto display hits", () => {
         expect(knowledgeHitTitle({ card_title: "ACL card", source: { title: "Policy" } })).toBe("ACL card");
         expect(knowledgeHitTitle({ card_title: "ACL card", source: { title: "[企业] Policy" } })).toBe("[企业] ACL card");
+        expect(knowledgeHitTitle({ card_title: "ACL card", library_id: "lib-1", source: { title: "Policy" } })).toBe("[企业] ACL card");
+        expect(knowledgeHitTitle({ card_title: "[企业] ACL card", library_id: "lib-1", source: { title: "Policy" } })).toBe("[企业] ACL card");
         expect(knowledgeHitTitle({
             result_type: "fact",
             card_title: "Risk card",
@@ -65,6 +68,7 @@ describe("unifiedHeaderSearch", () => {
             {
                 result_type: "fact",
                 fact_id: "f2",
+                node_id: "n9",
                 card_id: "c1",
                 card_title: "Risk card",
                 claim: "card claim",
@@ -72,21 +76,27 @@ describe("unifiedHeaderSearch", () => {
                 snippet: "service port 18099",
                 source: { id: "s2", title: "Doc" },
             },
+            {
+                result_type: "fact",
+                fact_id: "f3",
+                node_id: "n9",
+                claim: "same node again",
+                source: { id: "s2", title: "Doc" },
+            },
             { result_type: "table_row", row_id: "r1", source: { id: "s2", title: "Sheet" }, snippet: "first row" },
             { result_type: "table_row", row_id: "r2", source: { id: "s2", title: "Sheet" }, snippet: "second row" },
         ], 8);
         expect(hits).toEqual([
-            expect.objectContaining({ id: "n1", title: "Gateway", sourceId: "s1", resultType: "node" }),
-            expect.objectContaining({ id: "c1", title: "Risk card", sourceId: "s2" }),
-            expect.objectContaining({ id: "f1", title: "distinct fact", preview: "distinct fact", resultType: "fact" }),
-            expect.objectContaining({ id: "f2", title: "Risk card", preview: "service port 18099", resultType: "fact" }),
-            expect.objectContaining({ id: "r1", title: "Sheet", preview: "first row", resultType: "table_row" }),
-            expect.objectContaining({ id: "r2", title: "Sheet", preview: "second row", resultType: "table_row" }),
+            expect.objectContaining({ id: "node:n1", title: "Gateway", sourceId: "s1", resultType: "node" }),
+            expect.objectContaining({ id: "node:n9", title: "Risk card", preview: "service port 18099", resultType: "fact" }),
+            expect.objectContaining({ id: "row:r1", title: "Sheet", preview: "first row", resultType: "table_row" }),
+            expect.objectContaining({ id: "row:r2", title: "Sheet", preview: "second row", resultType: "table_row" }),
         ]);
         const sharedNode = { result_type: "fact", node_id: "n1", card_id: "c1", source: { id: "s2" } };
-        expect(knowledgeResultKey({ ...sharedNode, fact_id: "f1" }, 0)).toBe("fact-f1");
-        expect(knowledgeResultKey({ ...sharedNode, fact_id: "f2" }, 1)).toBe("fact-f2");
-        expect(knowledgeResultKey({ result_type: "table_row", row_id: "r1", source: { id: "s2" } }, 0)).toBe("table_row-r1");
+        expect(knowledgeHitID({ ...sharedNode, fact_id: "f1" })).toBe("node:n1");
+        expect(knowledgeHitID({ ...sharedNode, fact_id: "f2" })).toBe("node:n1");
+        expect(knowledgeHitID({ result_type: "card", card_id: "c-loose" })).toBe("");
+        expect(knowledgeResultKey({ result_type: "table_row", row_id: "r1", source: { id: "s2" } }, 0)).toBe("table_row-row:r1");
     });
 
     it("resolves files without waiting for knowledge search", async () => {

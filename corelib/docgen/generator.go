@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -53,6 +54,38 @@ func New() *Generator {
 // HasFont reports whether a usable font was found.
 func (g *Generator) HasFont() bool {
 	return len(g.fontRegularData) > 0
+}
+
+// systemCJKFontCopies counts faces copied for a caller to keep. A check that
+// the face exists does not increment it.
+var systemCJKFontCopies atomic.Int64
+
+// SystemCJKFontCopies is how many times SystemCJKFontBytes has copied the face.
+func SystemCJKFontCopies() int64 {
+	return systemCJKFontCopies.Load()
+}
+
+// SystemCJKFontAvailable reports whether an embeddable CJK face is already
+// detected. It does not copy the face.
+func SystemCJKFontAvailable() error {
+	regular, _ := detectSystemFonts()
+	if len(regular) == 0 {
+		return noFontError()
+	}
+	return nil
+}
+
+// SystemCJKFontBytes returns a copy of the embeddable TrueType face used for
+// Chinese PDFs. The slice is safe for the caller to retain.
+func SystemCJKFontBytes() ([]byte, error) {
+	regular, _ := detectSystemFonts()
+	if len(regular) == 0 {
+		return nil, noFontError()
+	}
+	systemCJKFontCopies.Add(1)
+	out := make([]byte, len(regular))
+	copy(out, regular)
+	return out, nil
 }
 
 // noFontError explains why no font is usable. Naming the last rejection
@@ -646,6 +679,16 @@ func (g *Generator) renderPagedMarkdown(pdf *gopdf.GoPdf, layout pdfPageLayout, 
 	// this render. Deferring the cleanup covers every return path below,
 	// including the ones that bail out on a measurement error.
 	defer m.scratch.cleanup()
+	// Draw each mermaid fence once, into that same directory, before the
+	// pager measures the body. A fence the drawer cannot paint stays source.
+	if expanded := expandMermaidFences(spec.Content, m.scratch); expanded != spec.Content {
+		spec.Content = expanded
+		blocks = splitMarkdownBlocks(spec.Content)
+		if len(blocks) == 0 {
+			addFooter(pdf, layout, spec)
+			return nil
+		}
+	}
 	currentY := firstPageY
 	for len(blocks) > 0 {
 		fitCount, err := m.fitBlockPrefix(layout, currentY, blocks, spec.Colorful)

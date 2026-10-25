@@ -3,6 +3,7 @@ package corelib
 import (
 	"net/url"
 	"strings"
+	"sync"
 )
 
 // ReasoningAPIKind identifies the request schema that receives a reasoning
@@ -31,13 +32,27 @@ func ApplyReasoningControls(cfg MaclawLLMConfig, body map[string]interface{}, ap
 		return
 	}
 
+	absorbConfiguredThinkingLevel(&cfg)
 	mode := normalizeReasoningMode(cfg.ThinkingMode)
+	if floor := rememberedThinkingFloor(cfg); floor != "" && (mode == "disabled" || thinkingTypeDisabled(body)) {
+		// A previous response told us this checkpoint rejects thinking off.
+		mode = "enabled"
+		if !explicitThinkingEffort(cfg.ReasoningEffort) {
+			cfg.ReasoningEffort = floor
+		}
+	}
 	if IsAlwaysOnThinkingModel(cfg) {
-		// GLM-5.3 rejects thinking.type=disabled, including leftover pass-through
-		// bodies in auto mode. Anthropic-compatible gateways also omit
-		// thinking_delta unless the thinking block is present, so auto must
-		// still request enabled.
-		if mode == "disabled" || mode == "" || thinkingTypeDisabled(body) {
+		// GLM-5.3 and its flash checkpoints reject thinking.type=disabled,
+		// including leftover pass-through bodies. A request that tried to
+		// turn thinking off uses the cheapest legal effort. Auto enables the
+		// thinking block only on wires that otherwise omit it. Groq,
+		// OpenRouter, and Together encode "on" as an effort, and inventing
+		// one would replace the provider default.
+		fromOff := mode == "disabled" || thinkingTypeDisabled(body)
+		if fromOff || (mode == "" && alwaysOnAutoEnablesThinking(cfg, api)) {
+			if fromOff && !explicitThinkingEffort(cfg.ReasoningEffort) {
+				cfg.ReasoningEffort = "low"
+			}
 			mode = "enabled"
 		}
 	}
@@ -58,11 +73,11 @@ func ApplyReasoningControls(cfg MaclawLLMConfig, body map[string]interface{}, ap
 		if api == ReasoningAPIResponses {
 			// Responses streams expose the user-displayable reasoning through
 			// response.reasoning_summary_text.delta only when a summary is
-			// requested. The internal chain of thought is never requested. Do
-			// not ask for a summary in disabled mode: minimal is the lowest
-			// supported effort, but it is not equivalent to showing thinking.
+			// requested. The internal chain of thought is never requested.
+			// omit means the provider's fieldless default already expresses
+			// off, so writing minimal here would put back a level it rejects.
 			if omit {
-				effort = "minimal"
+				return
 			}
 			reasoning := map[string]interface{}{"effort": effort}
 			if mode == "enabled" {
@@ -83,6 +98,14 @@ func ApplyReasoningControls(cfg MaclawLLMConfig, body map[string]interface{}, ap
 		return
 	}
 
+	// Kimi, MiniMax, Groq, OpenRouter, Together, and Doubao each reject at
+	// least one of the generic spellings. A Qwen model id on those hosts must
+	// not be sent enable_thinking. This also covers the Anthropic wire for
+	// Kimi and MiniMax, which do not use Claude budget_tokens.
+	if applyNativeVendorReasoning(cfg, body, mode, api) {
+		return
+	}
+
 	if api == ReasoningAPIChat && usesQwenThinkingControl(cfg) {
 		body["enable_thinking"] = mode == "enabled"
 		return
@@ -90,30 +113,39 @@ func ApplyReasoningControls(cfg MaclawLLMConfig, body map[string]interface{}, ap
 
 	if api == ReasoningAPIAnthropic {
 		// Anthropic Claude disables extended thinking by omitting the thinking
-		// block; it rejects type=disabled. GLM-5.3-Flash does the opposite: an
-		// omitted block still thinks, and a short max_tokens budget is then
-		// spent before the answer. Those models accept an explicit disable.
+		// block; it rejects type=disabled. GLM effort models use reasoning_effort
+		// instead of budget_tokens: a budget on a short probe is spent inside
+		// the trace before the answer, and GLM-5.3-Flash rejects disabled.
+		if GLMSupportsReasoningEffort(cfg) {
+			if mode == "disabled" {
+				body["thinking"] = map[string]interface{}{"type": "disabled"}
+				return
+			}
+			body["thinking"] = map[string]interface{}{"type": "enabled"}
+			stampGLMReasoningEffort(cfg, body)
+			return
+		}
 		if mode == "enabled" {
 			body["thinking"] = map[string]interface{}{
 				"type":          "enabled",
 				"budget_tokens": anthropicThinkingBudget(cfg.ReasoningEffort),
 			}
-			return
 		}
-		if mode == "disabled" && GLMFlashThinksByDefault(cfg) {
-			body["thinking"] = map[string]interface{}{"type": "disabled"}
-		}
+		// Claude rejects thinking.type=disabled. Off is the omitted block.
 		return
 	}
 
-	// DeepSeek V4, GLM, Kimi, Ark, and most current OpenAI-compatible
-	// reasoning gateways use this object. In particular, this preserves an
-	// explicit disabled state for DeepSeek instead of later re-enabling it.
+	// DeepSeek V4, GLM, Ark-hosted GLM, TokenHub, and most current
+	// OpenAI-compatible reasoning gateways use this object. In particular,
+	// this preserves an explicit disabled state for DeepSeek instead of later
+	// re-enabling it. Providers without an effort vocabulary treat low, high,
+	// and max as thinking on, and none as thinking off.
 	body["thinking"] = map[string]interface{}{"type": mode}
 	// DeepSeek keeps thinking.type as the switch and also needs
 	// reasoning_effort. Doing it here covers retarget, which would otherwise
 	// delete a caller-supplied low/max and leave a later stamp to invent high.
 	StampDeepSeekReasoningEffort(cfg, body)
+	stampGLMReasoningEffort(cfg, body)
 }
 
 // DeepSeekReasoningEffort maps a configured effort onto the values DeepSeek
@@ -168,39 +200,52 @@ func thinkingTypeDisabled(body map[string]interface{}) bool {
 	return strings.EqualFold(strings.TrimSpace(typ), "disabled")
 }
 
-// CoerceAlwaysOnThinkingMode upgrades ThinkingMode=disabled to enabled when
-// the selected model rejects thinking.type=disabled.
+// CoerceAlwaysOnThinkingMode upgrades an off request to the cheapest legal
+// effort when the selected model rejects thinking.type=disabled.
 func CoerceAlwaysOnThinkingMode(cfg MaclawLLMConfig) MaclawLLMConfig {
+	absorbConfiguredThinkingLevel(&cfg)
+	if floor := rememberedThinkingFloor(cfg); floor != "" && normalizeReasoningMode(cfg.ThinkingMode) == "disabled" {
+		cfg.ThinkingMode = "enabled"
+		if !explicitThinkingEffort(cfg.ReasoningEffort) {
+			cfg.ReasoningEffort = floor
+		}
+	}
 	if IsAlwaysOnThinkingModel(cfg) && normalizeReasoningMode(cfg.ThinkingMode) == "disabled" {
 		cfg.ThinkingMode = "enabled"
+		if !explicitThinkingEffort(cfg.ReasoningEffort) {
+			cfg.ReasoningEffort = "low"
+		}
 	}
 	return cfg
 }
 
 // ParseGlobalThinkingMode normalizes the persisted application-level setting
-// shared by GUI, MaClawSrv and other hosts. The bool distinguishes the
-// explicit auto/unset value from an unknown value so reviewed config surfaces
-// can reject typos while request builders can safely fall back to auto.
+// shared by GUI, MaClawSrv and other hosts. The bool distinguishes a known
+// level from an unknown value so reviewed config surfaces can reject typos
+// while request builders can safely fall back to auto.
+//
+// Canonical levels are auto, low, high, max, and none. Legacy enabled/on
+// maps to high. Legacy disabled/off maps to none.
 func ParseGlobalThinkingMode(raw string) (mode string, ok bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "", "auto":
-		return "", true
+		return "auto", true
+	case "low", "high", "max":
+		return strings.ToLower(strings.TrimSpace(raw)), true
+	case "none", "disabled", "disable", "off", "0", "false":
+		return "none", true
 	case "enabled", "enable", "on", "1", "true":
-		return "enabled", true
-	case "disabled", "disable", "off", "0", "false", "none":
-		return "disabled", true
+		return "high", true
 	default:
 		return "", false
 	}
 }
 
-// GlobalThinkingModeOptions is the closed set of canonical thinking modes the
-// config capability advertises in its invocation schema, and the vocabulary
-// every host spells back. Legacy truthy/falsy aliases are accepted by
-// ParseGlobalThinkingMode but never advertised, so a host cannot drift from
-// the spelling the setting persists.
+// GlobalThinkingModeOptions is the closed set of canonical thinking levels the
+// config capability advertises in its invocation schema. Legacy truthy/falsy
+// aliases are accepted by ParseGlobalThinkingMode but never advertised.
 func GlobalThinkingModeOptions() []string {
-	return []string{"enabled", "disabled"}
+	return []string{"auto", "low", "high", "max", "none"}
 }
 
 // GlobalThinkingModeHint renders the canonical vocabulary for a rejection
@@ -210,25 +255,86 @@ func GlobalThinkingModeHint() string {
 	return "allowed: " + strings.Join(GlobalThinkingModeOptions(), ", ")
 }
 
-// NormalizeGlobalThinkingMode returns the canonical persisted spelling, or
-// the legacy auto/unset value for unknown input.
+// NormalizeGlobalThinkingMode returns the canonical persisted spelling.
+// Auto and unknown input persist as unset so the JSON field stays omitted.
 func NormalizeGlobalThinkingMode(raw string) string {
-	mode, _ := ParseGlobalThinkingMode(raw)
+	mode, ok := ParseGlobalThinkingMode(raw)
+	if !ok || mode == "auto" {
+		return ""
+	}
 	return mode
 }
 
-// EffectiveGlobalThinkingMode resolves auto/unset and invalid legacy values to
-// the product default used by the desktop UI when materializing a request.
-func EffectiveGlobalThinkingMode(raw string) string {
+// CanonicalThinkingLevel is the value the settings UI shows: auto, low, high,
+// max, or none. Unset and unknown input are auto.
+func CanonicalThinkingLevel(raw string) string {
 	mode, ok := ParseGlobalThinkingMode(raw)
-	if ok && mode != "" {
-		return mode
+	if !ok || mode == "" {
+		return "auto"
 	}
-	return "enabled"
+	return mode
+}
+
+// EffectiveGlobalThinkingMode is the level applied when a host reads the
+// persisted setting. Unset and unknown values are auto: the system leaves
+// ordinary providers alone and only rewrites models that reject thinking off.
+func EffectiveGlobalThinkingMode(raw string) string {
+	return CanonicalThinkingLevel(raw)
+}
+
+// ApplyGlobalThinkingLevel copies a persisted level onto a request config.
+// The wire switch stays enabled/disabled; the depth is ReasoningEffort.
+func ApplyGlobalThinkingLevel(cfg MaclawLLMConfig, raw string) MaclawLLMConfig {
+	switch CanonicalThinkingLevel(raw) {
+	case "low", "high", "max":
+		cfg.ThinkingMode = "enabled"
+		cfg.ReasoningEffort = CanonicalThinkingLevel(raw)
+	case "none":
+		cfg.ThinkingMode = "disabled"
+		cfg.ReasoningEffort = ""
+	default:
+		cfg.ThinkingMode = ""
+		cfg.ReasoningEffort = ""
+	}
+	return CoerceAlwaysOnThinkingMode(cfg)
 }
 
 func normalizeReasoningMode(raw string) string {
-	return NormalizeGlobalThinkingMode(raw)
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "enabled", "enable", "on", "1", "true", "low", "high", "max":
+		return "enabled"
+	case "disabled", "disable", "off", "0", "false", "none":
+		return "disabled"
+	default:
+		return ""
+	}
+}
+
+// absorbConfiguredThinkingLevel turns a level stored in ThinkingMode into the
+// enabled/disabled switch plus ReasoningEffort. Request builders that copy
+// the persisted setting straight onto ThinkingMode still send a legal body.
+func absorbConfiguredThinkingLevel(cfg *MaclawLLMConfig) {
+	if cfg == nil {
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.ThinkingMode)) {
+	case "low", "high", "max":
+		if strings.TrimSpace(cfg.ReasoningEffort) == "" {
+			cfg.ReasoningEffort = strings.ToLower(strings.TrimSpace(cfg.ThinkingMode))
+		}
+		cfg.ThinkingMode = "enabled"
+	case "none":
+		cfg.ThinkingMode = "disabled"
+	}
+}
+
+func explicitThinkingEffort(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "low", "medium", "high", "xhigh", "max":
+		return true
+	default:
+		return false
+	}
 }
 
 // IsAutoThinkingMode reports whether a configuration leaves the provider's
@@ -247,6 +353,9 @@ func reasoningEffortForMode(mode, configured string) string {
 	switch strings.ToLower(strings.TrimSpace(configured)) {
 	case "minimal", "low", "medium", "high", "xhigh":
 		return strings.ToLower(strings.TrimSpace(configured))
+	case "max", "ultra":
+		// OpenAI and xAI have no max literal. xhigh is their deepest effort.
+		return "xhigh"
 	default:
 		return "medium"
 	}
@@ -259,6 +368,15 @@ func reasoningEffortForMode(mode, configured string) string {
 // (no field) is already the no-reasoning behavior, so “off” maps to omission.
 func openAIStyleReasoningEffort(cfg MaclawLLMConfig, mode string) (effort string, omit bool) {
 	effort = reasoningEffortForMode(mode, cfg.ReasoningEffort)
+	if isXAIReasoningEndpoint(cfg) {
+		// grok-4.5 and later cannot turn reasoning off, and they do not
+		// accept minimal. The cheapest legal effort is low. max is already
+		// xhigh, which older Grok models treat as high.
+		switch effort {
+		case "minimal", "none":
+			return "low", false
+		}
+	}
 	if isAgnesReasoningEndpoint(cfg) {
 		switch effort {
 		case "minimal":
@@ -357,21 +475,142 @@ func anthropicThinkingBudget(configured string) int {
 		return 1024
 	case "high", "xhigh":
 		return 8192
+	case "max", "ultra":
+		return 16384
 	default:
 		return 4096
 	}
+}
+
+// stampGLMReasoningEffort writes reasoning_effort for GLM-5.2 and newer.
+// Empty effort keeps the provider default (max on GLM-5.3). Disabled GLM-5.2
+// keeps thinking.type=disabled and does not also send an effort. Always-on
+// checkpoints never reach this function with type=disabled.
+func stampGLMReasoningEffort(cfg MaclawLLMConfig, body map[string]interface{}) {
+	if body == nil || !GLMSupportsReasoningEffort(cfg) {
+		return
+	}
+	thinking, _ := body["thinking"].(map[string]interface{})
+	if thinking == nil {
+		return
+	}
+	delete(thinking, "budget_tokens")
+	typ, _ := thinking["type"].(string)
+	if !strings.EqualFold(strings.TrimSpace(typ), "enabled") {
+		delete(body, "reasoning_effort")
+		return
+	}
+	effort, ok := glmReasoningEffortValue(cfg.ReasoningEffort)
+	if !ok {
+		delete(body, "reasoning_effort")
+		return
+	}
+	body["reasoning_effort"] = effort
+}
+
+func glmReasoningEffortValue(configured string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(configured)) {
+	case "low", "minimal":
+		return "low", true
+	case "high", "medium":
+		return "high", true
+	case "max", "xhigh", "ultra":
+		return "max", true
+	default:
+		return "", false
+	}
+}
+
+var thinkingFloors sync.Map
+
+func thinkingFloorKey(cfg MaclawLLMConfig) string {
+	return requestHost(cfg) + "|" + glmModelID(cfg)
+}
+
+// RememberThinkingFloor records that this checkpoint rejected thinking off
+// and named a legal effort. Later requests that still ask for off use it.
+func RememberThinkingFloor(cfg MaclawLLMConfig, effort string) {
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	switch effort {
+	case "low", "high", "max":
+	default:
+		return
+	}
+	thinkingFloors.Store(thinkingFloorKey(cfg), effort)
+}
+
+func rememberedThinkingFloor(cfg MaclawLLMConfig) string {
+	value, ok := thinkingFloors.Load(thinkingFloorKey(cfg))
+	if !ok {
+		return ""
+	}
+	effort, _ := value.(string)
+	return effort
+}
+
+// ThinkingOffRejectedEffort reads a provider error that refuses to turn
+// thinking off. The returned effort is the cheapest level the message allows,
+// which is low when it says to use low, high, or max.
+func ThinkingOffRejectedEffort(text string) (string, bool) {
+	if strings.TrimSpace(text) == "" {
+		return "", false
+	}
+	lower := strings.ToLower(text)
+	rejected := strings.Contains(text, "不支持关闭思考") ||
+		strings.Contains(text, "始终思考") ||
+		strings.Contains(lower, "does not support disabling thinking") ||
+		strings.Contains(lower, "cannot disable thinking") ||
+		strings.Contains(lower, "thinking cannot be disabled") ||
+		strings.Contains(lower, "does not support turning off thinking")
+	if !rejected && strings.Contains(lower, "1210") && hasEffortWord(lower, "low") && hasEffortWord(lower, "max") {
+		rejected = true
+	}
+	if !rejected {
+		return "", false
+	}
+	switch {
+	case hasEffortWord(lower, "low"):
+		return "low", true
+	case hasEffortWord(lower, "high"):
+		return "high", true
+	case hasEffortWord(lower, "max"):
+		return "max", true
+	default:
+		return "low", true
+	}
+}
+
+// hasEffortWord reports an effort token, not a piece of a longer token.
+// "slower" and "highlight" are not levels. Underscore and hyphen stay inside
+// the token, so max_tokens and max-tokens are not the level max. Spaces,
+// slashes, and punctuation remain boundaries, so "low/high/max" still matches.
+func hasEffortWord(lower, word string) bool {
+	for from := 0; from < len(lower); {
+		i := strings.Index(lower[from:], word)
+		if i < 0 {
+			return false
+		}
+		i += from
+		end := i + len(word)
+		beforeOK := i == 0 || !isEffortTokenByte(lower[i-1])
+		afterOK := end == len(lower) || !isEffortTokenByte(lower[end])
+		if beforeOK && afterOK {
+			return true
+		}
+		from = i + 1
+	}
+	return false
+}
+
+func isEffortTokenByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_' || b == '-'
 }
 
 func usesOpenAIStyleReasoning(cfg MaclawLLMConfig) bool {
 	// Provider names and model IDs are user-editable and gateway URLs often
 	// contain upstream vendor names in their path. Only a real endpoint host is
 	// safe evidence that the OpenAI/xAI wire-specific fields are accepted.
-	endpoint, err := url.Parse(strings.TrimSpace(cfg.URL))
-	if err != nil {
-		return false
-	}
-	host := strings.ToLower(strings.TrimSpace(endpoint.Hostname()))
-	switch host {
+	switch requestHost(cfg) {
 	case "api.openai.com", "chatgpt.com", "api.x.ai", "x.ai":
 		return true
 	case "api.agnes-ai.cn", "agnes-ai.cn":
@@ -384,11 +623,7 @@ func usesOpenAIStyleReasoning(cfg MaclawLLMConfig) bool {
 }
 
 func isAgnesReasoningEndpoint(cfg MaclawLLMConfig) bool {
-	endpoint, err := url.Parse(strings.TrimSpace(cfg.URL))
-	if err != nil {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(endpoint.Hostname())) {
+	switch requestHost(cfg) {
 	case "api.agnes-ai.cn", "agnes-ai.cn":
 		return true
 	default:
@@ -396,8 +631,295 @@ func isAgnesReasoningEndpoint(cfg MaclawLLMConfig) bool {
 	}
 }
 
+func isXAIReasoningEndpoint(cfg MaclawLLMConfig) bool {
+	switch requestHost(cfg) {
+	case "api.x.ai", "x.ai":
+		return true
+	default:
+		return false
+	}
+}
+
+func requestHost(cfg MaclawLLMConfig) string {
+	// Same parser as the AMD check. url.Parse treats a scheme-less value as a
+	// path, which would hide api.kimi.com and api.x.ai and let the generic
+	// thinking object through.
+	return llmEndpointHostname(cfg.URL)
+}
+
+func hostIs(host string, names ...string) bool {
+	for _, name := range names {
+		if host == name || strings.HasSuffix(host, "."+name) {
+			return true
+		}
+	}
+	return false
+}
+
+// nativeVendorReasoningKind names the host whose wire is not the generic
+// thinking.type object. Anthropic Claude stays empty so budget_tokens still
+// applies; Kimi and MiniMax keep their own object on that wire too. Volcengine
+// GLM and DeepSeek stay empty so their effort stamps are not replaced by the
+// Doubao vocabulary.
+func nativeVendorReasoningKind(cfg MaclawLLMConfig, api ReasoningAPIKind) string {
+	host := requestHost(cfg)
+	switch {
+	case hostIs(host, "kimi.com", "kimi.ai", "moonshot.cn", "moonshot.ai"):
+		return "kimi"
+	case hostIs(host, "minimaxi.com", "minimax.io", "minimax.chat"):
+		return "minimax"
+	}
+	if api == ReasoningAPIAnthropic {
+		return ""
+	}
+	switch {
+	case hostIs(host, "groq.com"):
+		return "groq"
+	case hostIs(host, "openrouter.ai"):
+		return "openrouter"
+	case hostIs(host, "together.xyz", "together.ai"):
+		return "together"
+	case hostIs(host, "volces.com", "volcengine.com") && !GLMSupportsReasoningEffort(cfg) && !IsDeepSeekThinkingModeModel(cfg):
+		return "doubao"
+	default:
+		return ""
+	}
+}
+
+// alwaysOnAutoEnablesThinking reports whether an unset thinking level must
+// still send the on-block. Wires that encode "on" as an effort keep the
+// provider default when the user left the level on auto.
+func alwaysOnAutoEnablesThinking(cfg MaclawLLMConfig, api ReasoningAPIKind) bool {
+	if api == ReasoningAPIAnthropic {
+		return true
+	}
+	if usesOpenAIStyleReasoning(cfg) || IsAMDRadeonPublicChatEndpoint(cfg) {
+		return false
+	}
+	if api == ReasoningAPIChat && usesQwenThinkingControl(cfg) {
+		return false
+	}
+	return nativeVendorReasoningKind(cfg, api) == ""
+}
+
+func applyNativeVendorReasoning(cfg MaclawLLMConfig, body map[string]interface{}, mode string, api ReasoningAPIKind) bool {
+	switch nativeVendorReasoningKind(cfg, api) {
+	case "kimi":
+		applyKimiReasoning(cfg, body, mode)
+	case "minimax":
+		applyMiniMaxReasoning(cfg, body, mode)
+	case "groq":
+		body["reasoning_effort"] = groqReasoningEffort(cfg, mode)
+	case "openrouter":
+		body["reasoning"] = map[string]interface{}{"effort": openRouterReasoningEffort(cfg, mode)}
+	case "together":
+		applyTogetherReasoning(cfg, body, mode)
+	case "doubao":
+		applyDoubaoReasoning(cfg, body, mode)
+	default:
+		return false
+	}
+	return true
+}
+
+func applyKimiReasoning(cfg MaclawLLMConfig, body map[string]interface{}, mode string) {
+	switch kimiReasoningFamily(cfg.Model) {
+	case "k3":
+		// K3 rejects the K2 thinking object. It always reasons, and the only
+		// depth control is reasoning_effort low, high, or max. An empty effort
+		// stays omitted so the documented default (max) is not replaced.
+		if effort := kimiK3Effort(cfg, mode); effort != "" {
+			body["reasoning_effort"] = effort
+		}
+	case "k27code":
+		// k2.7-code rejects every explicit thinking value except enabled
+		// with keep=all. Omitting keep is accepted; sending disabled is not.
+		body["thinking"] = map[string]interface{}{"type": "enabled", "keep": "all"}
+	default:
+		typ := "enabled"
+		if mode == "disabled" {
+			typ = "disabled"
+		}
+		body["thinking"] = map[string]interface{}{"type": typ}
+	}
+}
+
+func kimiReasoningFamily(model string) string {
+	id := strings.ToLower(strings.TrimSpace(model))
+	id = strings.ReplaceAll(id, "_", "-")
+	if i := strings.LastIndex(id, "/"); i >= 0 {
+		id = id[i+1:]
+	}
+	if i := strings.IndexByte(id, '['); i > 0 {
+		id = strings.TrimSpace(id[:i])
+	}
+	if strings.Contains(id, "k2.7-code") || strings.Contains(id, "k2-7-code") {
+		return "k27code"
+	}
+	if kimiFamilyToken(id, "kimi-k3") || kimiFamilyToken(id, "k3") {
+		return "k3"
+	}
+	return "k2"
+}
+
+func kimiFamilyToken(id, family string) bool {
+	for from := 0; from < len(id); {
+		i := strings.Index(id[from:], family)
+		if i < 0 {
+			return false
+		}
+		i += from
+		end := i + len(family)
+		if end == len(id) || id[end] == '.' || id[end] == '-' {
+			if i == 0 || id[i-1] == '/' || id[i-1] == '-' || id[i-1] == ':' {
+				return true
+			}
+		}
+		from = i + 1
+	}
+	return false
+}
+
+func kimiK3Effort(cfg MaclawLLMConfig, mode string) string {
+	if mode == "disabled" {
+		return "low"
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort)) {
+	case "low", "minimal", "none":
+		return "low"
+	case "high", "medium":
+		return "high"
+	case "max", "ultra", "xhigh":
+		return "max"
+	default:
+		return ""
+	}
+}
+
+func applyMiniMaxReasoning(cfg MaclawLLMConfig, body map[string]interface{}, mode string) {
+	id := glmModelID(cfg)
+	if strings.Contains(id, "minimax-m3") {
+		// M3 thinks adaptively unless the request disables it. type=enabled
+		// is not one of its accepted values.
+		typ := "adaptive"
+		if mode == "disabled" {
+			typ = "disabled"
+		}
+		body["thinking"] = map[string]interface{}{"type": typ}
+		return
+	}
+	// M2 always thinks. It has no effort enum, and type=disabled does not
+	// turn thinking off. Leave the body without a thinking field.
+}
+
+func groqReasoningEffort(cfg MaclawLLMConfig, mode string) string {
+	if mode == "disabled" {
+		return "none"
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort)) {
+	case "none":
+		return "none"
+	case "low", "medium", "high", "xhigh":
+		return strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort))
+	case "minimal":
+		return "low"
+	case "max", "ultra":
+		return "xhigh"
+	default:
+		return "medium"
+	}
+}
+
+func openRouterReasoningEffort(cfg MaclawLLMConfig, mode string) string {
+	if mode == "disabled" {
+		return "none"
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort)) {
+	case "none", "minimal", "low", "medium", "high", "xhigh", "max":
+		return strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort))
+	case "ultra":
+		return "max"
+	default:
+		return "medium"
+	}
+}
+
+func applyTogetherReasoning(cfg MaclawLLMConfig, body map[string]interface{}, mode string) {
+	if mode == "disabled" {
+		body["reasoning"] = map[string]interface{}{"enabled": false}
+		return
+	}
+	// reasoning.enabled and reasoning_effort are alternative schemas. A named
+	// level is the effort field alone. An empty effort is the on-switch alone.
+	// Sending both is rejected by some checkpoints.
+	switch strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort)) {
+	case "low", "medium", "high":
+		body["reasoning_effort"] = strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort))
+	case "max", "xhigh", "ultra":
+		body["reasoning_effort"] = "high"
+	default:
+		body["reasoning"] = map[string]interface{}{"enabled": true}
+	}
+}
+
+func applyDoubaoReasoning(cfg MaclawLLMConfig, body map[string]interface{}, mode string) {
+	typ := "enabled"
+	if mode == "disabled" {
+		typ = "disabled"
+	}
+	body["thinking"] = map[string]interface{}{"type": typ}
+	if mode != "enabled" {
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort)) {
+	case "low", "medium", "high", "minimal":
+		body["reasoning_effort"] = strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort))
+	case "max", "xhigh", "ultra":
+		// Current Seed checkpoints map max and xhigh onto high.
+		body["reasoning_effort"] = "high"
+	}
+}
+
 func usesQwenThinkingControl(cfg MaclawLLMConfig) bool {
 	return IsQwenOpenAICompat(cfg)
+}
+
+// ProbeNeedsReasoningRoom reports a connectivity check or short JSON answer
+// whose wire still spends the first tokens on a trace. A 256-token cap then
+// comes back with an empty answer. The set is the wires that cannot express
+// off: always-on GLM, xAI, Kimi K3 / k2.7-code, and MiniMax checkpoints other
+// than M3. M3 accepts thinking.type=disabled.
+func ProbeNeedsReasoningRoom(cfg MaclawLLMConfig) bool {
+	if IsAlwaysOnThinkingModel(cfg) || isXAIReasoningEndpoint(cfg) {
+		return true
+	}
+	switch nativeVendorReasoningKind(cfg, ReasoningAPIChat) {
+	case "kimi":
+		switch kimiReasoningFamily(cfg.Model) {
+		case "k3", "k27code":
+			return true
+		default:
+			return false
+		}
+	case "minimax":
+		return !strings.Contains(glmModelID(cfg), "minimax-m3")
+	default:
+		return false
+	}
+}
+
+// UseCheapLegalThinking selects the cheapest trace a short answer can keep.
+// xAI stays disabled: that state still writes effort low and does not request
+// a Responses summary. Other families need an explicit enabled block, or an
+// auto request keeps the provider's deepest default.
+func UseCheapLegalThinking(cfg MaclawLLMConfig) MaclawLLMConfig {
+	cfg.ReasoningEffort = "low"
+	if isXAIReasoningEndpoint(cfg) {
+		cfg.ThinkingMode = "disabled"
+		return cfg
+	}
+	cfg.ThinkingMode = "enabled"
+	return cfg
 }
 
 // IsAMDRadeonPublicChatEndpoint reports AMD's public free-model gateway
@@ -527,17 +1049,24 @@ func FinishOpenAIChatReasoningControls(cfg MaclawLLMConfig, body map[string]inte
 // IsTencentTokenHubEndpoint reports the Token Plan chat hosts. Guangzhou and
 // Singapore, on both the mainland and international domains, share this schema.
 func IsTencentTokenHubEndpoint(cfg MaclawLLMConfig) bool {
-	endpoint, err := url.Parse(strings.TrimSpace(cfg.URL))
-	if err != nil {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(endpoint.Hostname())) {
+	switch requestHost(cfg) {
 	case "tokenhub.tencentmaas.com", "tokenhub-intl.tencentmaas.com",
 		"tokenhub.tencentcloudmaas.com", "tokenhub-intl.tencentcloudmaas.com":
 		return true
 	default:
 		return false
 	}
+}
+
+// OpenAIChatThinkingUsesBudget reports whether a chat-completions thinking
+// object is the Claude-style block that may carry budget_tokens. Kimi,
+// MiniMax, and Doubao objects are not that block. DeepSeek, GLM, and TokenHub
+// reject the field as well.
+func OpenAIChatThinkingUsesBudget(cfg MaclawLLMConfig) bool {
+	if IsDeepSeekThinkingModeModel(cfg) || GLMSupportsReasoningEffort(cfg) || IsTencentTokenHubEndpoint(cfg) {
+		return false
+	}
+	return nativeVendorReasoningKind(cfg, ReasoningAPIChat) == ""
 }
 
 // RewriteAMDRadeonChatReasoning removes thinking from an AMD public chat body.

@@ -119,7 +119,7 @@ describe("assistant light schemes", () => {
     it("paints the new-task send mark white on a deepened primary", () => {
         const shell = readFileSync(resolve(frontendSrc, "styles/partials/110-mc-app-shell.css"), "utf8");
         expect(shell).toContain("#App [data-testid='ai-panel-root'][data-ai-view='welcome'] .ai-composer button.ai-composer-send");
-        expect(shell).toContain("color-mix(in srgb, var(--theme-primary, #2f6fbc) 68%, #06101c)");
+        expect(shell).toContain("color-mix(in srgb, var(--theme-primary, #2e75cb) 68%, #06101c)");
         expect(shell).toContain("color: #ffffff !important");
         expect(shell).toContain("button.ai-composer-send svg *");
         expect(shell).toContain("stroke-width: 2.25");

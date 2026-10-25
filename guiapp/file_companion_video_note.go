@@ -56,7 +56,7 @@ const (
 	fileCompanionErrWindowTooSmall   = "当前模型的上下文窗口太小，无法整理这段笔记"
 	fileCompanionErrNoteCancelled    = "已取消生成笔记"
 	fileCompanionErrCannotOverwrite  = "不能覆盖当前文件"
-	fileCompanionErrOpenFileScheme   = "本地文件请用「打开文件」，这里不接受 file:// 和其他协议"
+	fileCompanionErrOpenFileScheme   = "本地文件请用「打开文档或导入项目」，这里不接受 file:// 和其他协议"
 	fileCompanionErrSelfPage         = "这个地址是伴读自己的页面，不能当作视频网页打开"
 	fileCompanionErrWebPlayerHidden  = "播放区域还没有显示"
 	fileCompanionErrBlackFrame       = "画面无法采集"

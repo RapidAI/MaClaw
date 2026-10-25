@@ -927,9 +927,11 @@ async function loadTransactions(page) {
       renderTxPager();
       return;
     }
+    const rows = [];
     list.forEach(tx => {
-      tbody.innerHTML += '<tr><th scope="row">' + esc(tx.created_at||'') + '</th><td>' + esc(tx.type) + '</td><td>' + esc(String(tx.amount)) + '</td><td>' + esc(String(tx.balance)) + '</td><td>' + esc(tx.description||'') + '</td></tr>';
+      rows.push('<tr><th scope="row">' + esc(tx.created_at||'') + '</th><td>' + esc(tx.type) + '</td><td>' + esc(String(tx.amount)) + '</td><td>' + esc(String(tx.balance)) + '</td><td>' + esc(tx.description||'') + '</td></tr>');
     });
+    tbody.innerHTML = rows.join('');
     renderTxPager();
   } catch(e) {}
 }
@@ -984,20 +986,22 @@ async function loadMySkills() {
     empty.style.display = 'none';
     wrap.style.display = '';
     table.style.display = '';
+    const rows = [];
     list.forEach(s => {
       const statusLabel = statusText(s.status || 'published');
       const rating = (s.avg_rating || 0).toFixed(1);
       const dl = s.download_count || s.downloads || 0;
       const encodedID = encodeURIComponent(s.id || '');
-      tbody.innerHTML += `<tr>
+      rows.push(`<tr>
         <th scope="row">${esc(s.name)}</th>
         <td>${esc(s.version || '-')}</td>
         <td>${esc(statusLabel)}</td>
         <td>${rating}</td>
         <td>${dl}</td>
         <td><button class="btn btn-outline" type="button" aria-label="${esc(t('action.copy') + ' ' + (s.name || ''))}" onclick="copyText(decodeActionValue('${encodedID}'),'msg.copied')">${t('action.copy')}</button> <button class="btn btn-danger" type="button" aria-label="${esc(t('sk.withdraw') + ' ' + (s.name || ''))}" onclick="withdrawSkill(decodeActionValue('${encodedID}'))">${t('sk.withdraw')}</button></td>
-      </tr>`;
+      </tr>`);
     });
+    tbody.innerHTML = rows.join('');
   } catch(e) {}
 }
 

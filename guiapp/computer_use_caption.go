@@ -10,7 +10,6 @@ import (
 	"image/draw"
 	_ "image/jpeg"
 	"image/png"
-	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -151,41 +150,15 @@ func callCaptionLLM(ctx context.Context, cfg corelib.MaclawLLMConfig, pngB64 str
 		return captionTextFromResponse(resp, err)
 	}
 	if cfg.IsResponsesAPI() {
-		req, _, _, err := llm.NewResponsesAPIRequest(callCtx, cfg, messages, llm.ResponsesAPIRequestOptions{
-			Stream:    false,
+		resp, err := llm.DoResponsesAPIRequestWithOptions(callCtx, cfg, messages, computerUseCaptionHTTP, llm.ResponsesAPIRequestOptions{
 			ExtraBody: maxTok,
 		})
-		if err != nil {
-			return "", err
-		}
-		return captionHTTPParse(req, llm.ParseNonStreamResponsesAPIBody)
+		return captionTextFromResponse(resp, err)
 	}
-
-	req, _, _, err := llm.NewOpenAIChatRequest(callCtx, cfg, messages, llm.OpenAIChatRequestOptions{
-		Stream:    false,
+	resp, err := llm.DoOpenAIRequestWithOptions(callCtx, cfg, messages, nil, computerUseCaptionHTTP, llm.OpenAIChatRequestOptions{
 		ExtraBody: maxTok,
 	})
-	if err != nil {
-		return "", err
-	}
-	return captionHTTPParse(req, llm.ParseNonStreamOpenAIResponseBody)
-}
-
-func captionHTTPParse(req *http.Request, parse func([]byte) (*llm.Response, error)) (string, error) {
-	resp, err := computerUseCaptionHTTP.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", &llm.HTTPStatusError{StatusCode: resp.StatusCode, Body: append([]byte(nil), body...)}
-	}
-	parsed, err := parse(body)
-	return captionTextFromResponse(parsed, err)
+	return captionTextFromResponse(resp, err)
 }
 
 func captionUsesAnthropic(cfg corelib.MaclawLLMConfig) bool {

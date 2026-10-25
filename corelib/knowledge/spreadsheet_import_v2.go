@@ -285,15 +285,11 @@ func writePreparedSpreadsheet(ctx context.Context, tx *sql.Tx, source Source, pr
 	if prepared == nil {
 		return source, nil
 	}
-	if err := insertKBSource(ctx, tx, source); err != nil {
+	if err := ensureKnowledgeSourceRow(ctx, tx, source); err != nil {
 		return source, err
 	}
 	now := time.Now().UTC()
 	nowStr := formatTime(now)
-	tagsJSON, _ := json.Marshal([]string{source.Kind, "table_row", "structured"})
-	topicsJSON, _ := json.Marshal(topicsForSource(source))
-	tagsJSONStr := string(tagsJSON)
-	topicsJSONStr := string(topicsJSON)
 	rowCount := 0
 	processedDataRows := 0
 	for _, sheet := range prepared.sheets {
@@ -345,18 +341,10 @@ func writePreparedSpreadsheet(ctx context.Context, tx *sql.Tx, source Source, pr
 			stmtRowFTSIns.Close()
 			return source, fmt.Errorf("knowledge sqlite prepare kb_cells: %w", err)
 		}
-		cardFactStmts, err := prepareBatchCardFactStmts(ctx, tx)
-		if err != nil {
-			stmtRow.Close()
-			stmtRowFTSIns.Close()
-			stmtCell.Close()
-			return source, fmt.Errorf("knowledge sqlite prepare card/fact stmts: %w", err)
-		}
 		closeAllStmts := func() {
 			stmtRow.Close()
 			stmtRowFTSIns.Close()
 			stmtCell.Close()
-			cardFactStmts.Close()
 		}
 		const prepBatchSize = 200
 		for batchStart := 0; batchStart < len(sheet.rows); batchStart += prepBatchSize {
@@ -407,53 +395,6 @@ func writePreparedSpreadsheet(ctx context.Context, tx *sql.Tx, source Source, pr
 						return source, fmt.Errorf("knowledge sqlite insert kb cell: %w", err)
 					}
 				}
-				rowCells := make([]KnowledgeTableCell, len(pr.cells))
-				for i, pc := range pr.cells {
-					header := ""
-					normalizedName := ""
-					if pc.colIdx < len(sheet.headers) {
-						header = sheet.headers[pc.colIdx]
-					}
-					if pc.colIdx < len(sheet.normalizedNames) {
-						normalizedName = sheet.normalizedNames[pc.colIdx]
-					}
-					rowCells[i] = KnowledgeTableCell{
-						ID:                   pc.cellID,
-						RowID:                pr.rowID,
-						TableID:              tableID,
-						ColumnID:             columnIDs[pc.colIdx],
-						ColumnName:           header,
-						NormalizedColumnName: normalizedName,
-						RawValue:             pc.rawValue,
-						NormalizedValue:      pc.normalizedValue,
-						ValueType:            pc.valueType,
-						NumberValue:          pc.numberValue,
-						DateValue:            pc.dateValue,
-						BoolValue:            pc.boolValue,
-						CreatedAt:            now,
-						UpdatedAt:            now,
-					}
-				}
-				if err := insertKBTableRowCardAndFactsBatch(ctx, cardFactStmts, source, KnowledgeTableRow{
-					ID:             pr.rowID,
-					TableID:        tableID,
-					SourceID:       source.ID,
-					RowIndex:       pr.rowIdx + 1,
-					PrimaryKeyText: pr.primaryKeyText,
-					RowText:        pr.rowText,
-					RowJSON:        pr.rowJSON,
-					CreatedAt:      now,
-					UpdatedAt:      now,
-				}, rowCells, &rowCardFTSData{
-					ftsRowText:    pr.ftsRowText,
-					ftsTitle:      pr.ftsTitle,
-					ftsSubject:    pr.ftsSubject,
-					ftsPredicates: buildCellFTSPredicates(pr.cells, sheet.ftsPredicates),
-					ftsObjects:    buildCellFTSObjects(pr.cells),
-				}, nowStr, tagsJSONStr, topicsJSONStr, true); err != nil {
-					closeAllStmts()
-					return source, err
-				}
 				rowCount++
 				processedDataRows++
 			}
@@ -472,6 +413,24 @@ func snapshotSpreadsheetImportInput(filePath, kind string) (snapshot string, cle
 		return agent.SnapshotCSVInput(filePath)
 	}
 	return agent.SnapshotOfficeReadInput(filePath, kind)
+}
+
+// ensureKnowledgeSourceRow inserts the body parent when this transaction has
+// not written it yet. An existing row is left unchanged, including its owner.
+func ensureKnowledgeSourceRow(ctx context.Context, tx *sql.Tx, source Source) error {
+	source = normalizeSource(source)
+	_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO knowledge_sources
+		(id, kind, uri, canonical_uri, title, author, site_name, published_at, fetched_at, content_hash,
+		 owner_id, tenant_id, project_path, topic_hint, source_trust, batch_id, relative_path, status, error_message, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		source.ID, source.Kind, source.URI, source.CanonicalURI, source.Title, source.Author, source.SiteName,
+		formatTime(source.PublishedAt), formatTime(source.FetchedAt), source.ContentHash, source.OwnerID, source.TenantID,
+		source.ProjectPath, source.TopicHint, source.SourceTrust, source.BatchID, source.RelativePath, source.Status,
+		source.ErrorMessage, formatTime(source.CreatedAt), formatTime(source.UpdatedAt))
+	if err != nil {
+		return fmt.Errorf("knowledge sqlite ensure knowledge source: %w", err)
+	}
+	return nil
 }
 
 func insertKBSource(ctx context.Context, tx *sql.Tx, source Source) error {

@@ -82,12 +82,12 @@ const CATEGORIES = [
 ] as const;
 
 const CATEGORY_COLORS: Record<string, string> = {
-    self_identity: "var(--theme-primary-strong, #183b63)",
+    self_identity: "var(--theme-primary-strong, #1e6bc5)",
     user_fact: "var(--theme-primary)",
     preference: "var(--theme-primary)",
     project_knowledge: "var(--theme-success)",
     instruction: "var(--theme-primary)",
-    conversation_summary: "var(--theme-primary-strong, #183b63)",
+    conversation_summary: "var(--theme-primary-strong, #1e6bc5)",
     session_checkpoint: "var(--theme-text-muted)",
     task_artifact: "var(--theme-text-muted)",
     profile: "var(--theme-success)",

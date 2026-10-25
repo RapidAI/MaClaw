@@ -16,6 +16,7 @@ import (
 )
 
 func TestHubMirrorsReleaseAssets(t *testing.T) {
+	t.Setenv("HUB_MODEL_FILES", "")
 	files := modelDownloadExpectedFiles()
 	for _, a := range embedding.ReleaseAssets() {
 		found := false
@@ -27,6 +28,10 @@ func TestHubMirrorsReleaseAssets(t *testing.T) {
 		}
 		if !isAllowedModelFilename(a.Filename) {
 			t.Fatalf("hub endpoint refuses %s", a.Filename)
+		}
+		args := modelDownloadArgs([]string{a.Filename})
+		if args[0] != a.Filename+"#"+a.SHA256 {
+			t.Fatalf("pin %s", args[0])
 		}
 	}
 	if isAllowedModelFilename("secrets.json") || isAllowedModelFilename("../x.gguf") {

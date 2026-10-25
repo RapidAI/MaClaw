@@ -323,6 +323,53 @@ func TestBuildAnthropicMessagesRequestDataHonorsMaxTokensOption(t *testing.T) {
 	}
 }
 
+func TestDoAnthropicRequestRetriesWhenThinkingOffIsRejected(t *testing.T) {
+	var calls int
+	var first, second map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		calls++
+		if calls == 1 {
+			first = body
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"[1210][该模型始终思考，不支持关闭思考；请使用 low、high 或 max。]"}}`))
+			return
+		}
+		second = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_test","type":"message","role":"assistant","model":"custom-thinker","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer srv.Close()
+
+	resp, err := DoAnthropicRequest(context.Background(), corelib.MaclawLLMConfig{
+		URL: srv.URL, Key: "test-key", Model: "custom-thinker", Protocol: "anthropic", ThinkingMode: "disabled",
+	}, []interface{}{map[string]interface{}{"role": "user", "content": "hi"}}, nil, srv.Client())
+	if err != nil {
+		t.Fatalf("DoAnthropicRequest: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls=%d", calls)
+	}
+	// Claude-style Anthropic omits the thinking block to turn it off. The
+	// provider still refused, so the retry asks for the cheapest effort.
+	if _, exists := first["thinking"]; exists {
+		t.Fatalf("first thinking = %#v, want omitted", first["thinking"])
+	}
+	thinking, _ := second["thinking"].(map[string]interface{})
+	if thinking["type"] != "enabled" || thinking["budget_tokens"] != float64(1024) {
+		t.Fatalf("retry thinking = %#v, want enabled with low budget", second["thinking"])
+	}
+	if resp == nil || len(resp.Choices) != 1 || resp.Choices[0].Message.Content != "ok" {
+		t.Fatalf("response = %#v", resp)
+	}
+}
+
 func TestDoAnthropicRequestUsesOfficialSDKShape(t *testing.T) {
 	var gotPath, gotUserAgent string
 	var gotBody map[string]interface{}
@@ -6117,6 +6164,118 @@ func TestBuildOpenAIChatRequestBody_ThinkingModeUsesProviderNativeControl(t *tes
 	)
 	if got := qwen["enable_thinking"]; got != false {
 		t.Fatalf("Qwen enable_thinking = %#v, want false", got)
+	}
+}
+
+func TestBuildOpenAIChatRequestBodyAutoEffortUsesNativeControl(t *testing.T) {
+	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hi"}}
+
+	xai := buildOpenAIChatRequestBody(corelib.MaclawLLMConfig{
+		URL: "https://api.x.ai/v1", Model: "grok-4.5", ReasoningEffort: "none",
+	}, messages, OpenAIChatRequestOptions{})
+	if got := xai["reasoning_effort"]; got != "low" {
+		t.Fatalf("xAI auto none = %#v, want low", got)
+	}
+	if _, ok := xai["thinking"]; ok {
+		t.Fatalf("xAI auto none gained thinking: %#v", xai["thinking"])
+	}
+
+	router := buildOpenAIChatRequestBody(corelib.MaclawLLMConfig{
+		URL: "https://openrouter.ai/api/v1", Model: "openai/gpt-5", ReasoningEffort: "high",
+	}, messages, OpenAIChatRequestOptions{})
+	reasoning, _ := router["reasoning"].(map[string]interface{})
+	if reasoning["effort"] != "high" {
+		t.Fatalf("OpenRouter auto high = %#v", router["reasoning"])
+	}
+	if _, ok := router["reasoning_effort"]; ok {
+		t.Fatalf("OpenRouter auto high gained reasoning_effort: %#v", router["reasoning_effort"])
+	}
+
+	qwen := buildOpenAIChatRequestBody(corelib.MaclawLLMConfig{
+		URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen-plus", ReasoningEffort: "high",
+	}, messages, OpenAIChatRequestOptions{})
+	if qwen["enable_thinking"] != true {
+		t.Fatalf("Qwen auto high enable_thinking = %#v", qwen["enable_thinking"])
+	}
+	if _, ok := qwen["reasoning_effort"]; ok {
+		t.Fatalf("Qwen auto high gained reasoning_effort: %#v", qwen["reasoning_effort"])
+	}
+
+	kimi := buildOpenAIChatRequestBody(corelib.MaclawLLMConfig{
+		URL: "https://api.kimi.com/coding/v1", Model: "kimi-k2-thinking", ReasoningEffort: "low",
+	}, messages, OpenAIChatRequestOptions{})
+	thinking, _ := kimi["thinking"].(map[string]interface{})
+	if thinking["type"] != "enabled" {
+		t.Fatalf("Kimi K2 auto low thinking = %#v", kimi["thinking"])
+	}
+	if _, ok := kimi["reasoning_effort"]; ok {
+		t.Fatalf("Kimi K2 auto low gained reasoning_effort: %#v", kimi["reasoning_effort"])
+	}
+
+	openai := buildOpenAIChatRequestBody(corelib.MaclawLLMConfig{
+		URL: "https://api.openai.com/v1", Model: "gpt-5", ReasoningEffort: "max",
+	}, messages, OpenAIChatRequestOptions{})
+	if got := openai["reasoning_effort"]; got != "xhigh" {
+		t.Fatalf("OpenAI auto max = %#v, want xhigh", got)
+	}
+
+	tools := OpenAIChatRequestOptions{Tools: []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "bash"}},
+	}}
+	generic := buildOpenAIChatRequestBody(corelib.MaclawLLMConfig{
+		URL: "https://example.com/v1", Model: "custom-thinker", ReasoningEffort: "low",
+	}, messages, tools)
+	thinking, _ = generic["thinking"].(map[string]interface{})
+	if thinking["type"] != "enabled" || thinking["budget_tokens"] != 1024 {
+		t.Fatalf("auto low tool budget = %#v", generic["thinking"])
+	}
+}
+
+func TestBuildOpenAIChatRequestBodyNativeThinkingOmitsBudget(t *testing.T) {
+	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hi"}}
+	tools := OpenAIChatRequestOptions{Tools: []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "bash"}},
+	}}
+
+	kimi := buildOpenAIChatRequestBody(corelib.MaclawLLMConfig{
+		URL: "api.kimi.com/coding/v1", Model: "kimi-k2.7-code", ThinkingMode: "enabled",
+	}, messages, tools)
+	thinking, _ := kimi["thinking"].(map[string]interface{})
+	if thinking["type"] != "enabled" || thinking["keep"] != "all" {
+		t.Fatalf("kimi thinking = %#v", kimi["thinking"])
+	}
+	if _, ok := thinking["budget_tokens"]; ok {
+		t.Fatalf("kimi gained budget_tokens: %#v", thinking)
+	}
+
+	doubao := buildOpenAIChatRequestBody(corelib.MaclawLLMConfig{
+		URL: "https://ark.cn-beijing.volces.com/api/coding", Model: "doubao-seed-code-preview-latest", ThinkingMode: "enabled",
+	}, messages, tools)
+	thinking, _ = doubao["thinking"].(map[string]interface{})
+	if thinking["type"] != "enabled" {
+		t.Fatalf("doubao thinking = %#v", doubao["thinking"])
+	}
+	if _, ok := thinking["budget_tokens"]; ok {
+		t.Fatalf("doubao gained budget_tokens: %#v", thinking)
+	}
+
+	generic := buildOpenAIChatRequestBody(corelib.MaclawLLMConfig{
+		URL: "https://example.com/v1", Model: "custom-thinker", ThinkingMode: "enabled",
+	}, messages, tools)
+	thinking, _ = generic["thinking"].(map[string]interface{})
+	if thinking["type"] != "enabled" || thinking["budget_tokens"] != 4096 {
+		t.Fatalf("generic tool budget = %#v", thinking)
+	}
+
+	tokenHub := buildOpenAIChatRequestBody(corelib.MaclawLLMConfig{
+		URL: "tokenhub.tencentmaas.com/plan/v3", Model: "auto", ThinkingMode: "enabled",
+	}, messages, tools)
+	thinking, _ = tokenHub["thinking"].(map[string]interface{})
+	if thinking["type"] != "enabled" {
+		t.Fatalf("scheme-less tokenhub thinking = %#v", tokenHub["thinking"])
+	}
+	if _, ok := thinking["budget_tokens"]; ok {
+		t.Fatalf("scheme-less tokenhub gained budget_tokens: %#v", thinking)
 	}
 }
 

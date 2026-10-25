@@ -545,14 +545,14 @@ export function StatusGlyph({
         case "error":
             return <IconCross size={size} color={color ?? "var(--theme-danger, #dc2626)"} />;
         case "warn":
-            return <IconAlert size={size} color={color ?? "var(--theme-warning, #d97706)"} />;
+            return <IconAlert size={size} color={color ?? "var(--theme-warning, #aa5d05)"} />;
         case "tool":
             return <IconRecord size={size} color={color ?? "var(--theme-primary, #2f5f98)"} />;
         case "info":
             return <IconInfo size={size} color={color ?? "var(--theme-primary, #2f5f98)"} />;
         case "offline":
             // Distinct from error (cross): muted hollow ring for disconnected/idle.
-            return <IconCircle size={size} color={color ?? "var(--theme-text-muted, #64748b)"} />;
+            return <IconCircle size={size} color={color ?? "var(--theme-text-muted, #56677c)"} />;
         case "pending":
         default:
             return <IconHourglass size={size} color={color ?? "currentColor"} style={color ? undefined : { opacity: 0.75 }} />;

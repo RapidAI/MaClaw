@@ -142,7 +142,7 @@ export function MentionPopover({
                                 width: 7,
                                 height: 7,
                                 borderRadius: "50%",
-                                background: p.online ? "var(--theme-success, #4f7f6f)" : (theme.textMuted || "var(--theme-text-muted, #64748b)"),
+                                background: p.online ? "var(--theme-success, #11813a)" : (theme.textMuted || "var(--theme-text-muted, #56677c)"),
                                 flexShrink: 0,
                             }}
                         />

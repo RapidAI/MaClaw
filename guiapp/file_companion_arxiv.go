@@ -476,6 +476,8 @@ func arxivDownloadErrorText(err error) string {
 	msg := strings.TrimSpace(err.Error())
 	what := strings.ToLower(arxivStripURL(msg))
 	switch {
+	case arxivLooksLikeHubLogin(what):
+		return "下载失败：需要先在主窗口登录"
 	case arxivStatusLooksNotFound(what):
 		return "下载失败：找不到这篇论文（404）"
 	case arxivStatusLooksForbidden(what):
@@ -513,6 +515,17 @@ func arxivStatusLooksNotFound(what string) bool {
 		}
 	}
 	return arxivLemmaIsStatus(what, "404")
+}
+
+// arxivLooksLikeHubLogin recognizes the hub-download sentinel. RapidSearch
+// routes the fetch through MaClaw Hub, and a missing session comes back as
+// an English sentence. The reader already uses one Chinese sentence for that
+// case; leaving the sentinel raw told them to sign in, in a language the
+// rest of this panel does not use.
+func arxivLooksLikeHubLogin(what string) bool {
+	return strings.Contains(what, "signed-in hub") ||
+		strings.Contains(what, "sign in to maclaw hub") ||
+		strings.Contains(what, "hub login is required")
 }
 
 func arxivStatusLooksForbidden(what string) bool {

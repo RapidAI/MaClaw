@@ -5,6 +5,7 @@ import { GetTabWorkingDir, SetTabWorkingDir, OpenProjectDirectory, SelectWorking
 import { localizeText } from "./aiAssistantI18n";
 import { cloudWorkspaceIdFromPath, isCloudWorkspacePath, lookupCloudWorkspaceDisplayName, remoteWorkspaceLocationLabel, subscribeCloudWorkspaceDisplayNames } from "./codingTaskMode";
 import { IconFolder, IconFolderOpen } from "./WorkbenchIcons";
+import { DEFAULT_EXPERT_ICON } from "./expertTypes";
 
 export interface SessionWorkingDirChipProps {
     /** Current active tab ID. Empty string = local tab. */
@@ -23,6 +24,8 @@ export interface SessionWorkingDirChipProps {
     remoteHost?: string;
     remoteWorkDir?: string;
     remotePort?: number;
+    /** Shown to the right of the folder when this session is a specific expert. */
+    expert?: { name?: string; icon?: string } | null;
 }
 
 interface DirState {
@@ -112,8 +115,37 @@ export function useCloudWorkspaceDisplayName(workspaceId: string): string {
  * copy share the full path, the server location, or the cloud workspace name.
  * Click the chip to open a menu: open the directory, switch it, or copy that location.
  * Cloud and remote workspaces hide directory switching.
+ * A non-general expert sits to the right of that folder: its icon and name.
  */
-export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: t, lang, onWorkingDirChange, onWorkingDirResolved, onOpenCloudFiles, remoteHost, remoteWorkDir, remotePort }: SessionWorkingDirChipProps) {
+export function composerExpertFromTab(tab: { type?: string; expertId?: string; title?: string; expertIcon?: string } | null | undefined): { name: string; icon?: string } | null {
+    if (!tab || tab.type !== "expert") return null;
+    const id = String(tab.expertId || "").trim();
+    if (!id) return null;
+    const name = String(tab.title || "").trim() || id;
+    const icon = String(tab.expertIcon || "").trim();
+    return icon ? { name, icon } : { name };
+}
+function composerExpertBadge(
+    expert: { name?: string; icon?: string } | null | undefined,
+    lang: string | undefined,
+) {
+    const name = String(expert?.name || "").trim();
+    if (!name) return null;
+    const icon = String(expert?.icon || "").trim() || DEFAULT_EXPERT_ICON;
+    return (
+        <span
+            data-testid="composer-expert-badge"
+            className="swdc-expert"
+            title={name}
+            aria-label={localizeText(lang, `Expert: ${name}`, `专家：${name}`, `專家：${name}`)}
+        >
+            <span className="swdc-expert-icon" aria-hidden="true">{icon}</span>
+            <span className="swdc-expert-name">{name}</span>
+        </span>
+    );
+}
+
+export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: t, lang, onWorkingDirChange, onWorkingDirResolved, onOpenCloudFiles, remoteHost, remoteWorkDir, remotePort, expert }: SessionWorkingDirChipProps) {
     const [dirState, setDirState] = useState<DirState | null>(null);
     const cloudWorkspaceId = isCloudWorkspacePath(dirState?.path) ? cloudWorkspaceIdFromPath(dirState?.path) : "";
     const cloudName = useCloudWorkspaceDisplayName(cloudWorkspaceId);
@@ -297,11 +329,15 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
         }
     }, [detailLabel]);
 
+    const expertBadge = composerExpertBadge(expert, lang);
     if (!dirState) {
         // Show a fixed-height placeholder to prevent layout shift during tab switch.
         return (
-            <div data-testid="session-context-bar" className="swdc-placeholder">
-                <span className="swdc-placeholder-icon"><IconFolder size={13} color="currentColor" /></span>
+            <div data-testid="session-context-bar" className="swdc-bar">
+                <div className="swdc-placeholder">
+                    <span className="swdc-placeholder-icon"><IconFolder size={13} color="currentColor" /></span>
+                </div>
+                {expertBadge}
             </div>
         );
     }
@@ -412,6 +448,7 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
                     document.body,
                 )}
             </div>
+            {expertBadge}
         </div>
     );
 }

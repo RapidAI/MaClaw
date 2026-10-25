@@ -374,13 +374,23 @@ export async function loadRestoredProjectConversationHistory(projectPath: string
             if (role !== "user" && role !== "assistant" && role !== "system" && role !== "error") return null;
             const content = normalizeRestoredProjectHistoryContent(entry?.content);
             const reasoning = normalizeRestoredProjectHistoryContent(entry?.reasoning_content ?? entry?.reasoningContent);
-            if (!content && !reasoning) return null;
+            const hasRichPayload = !!(entry?.attachments?.length || entry?.codingTimeline?.length || entry?.coding_timeline?.length || entry?.toolCalls?.length || entry?.tool_calls?.length || entry?.unfinishedSlot || entry?.unfinished_slot || entry?.recoverableSession || entry?.recoverable_session || entry?.confirmation);
+            if (!content && !reasoning && !hasRichPayload) return null;
             return {
                 id: `restored-${pathToken}-${index}`,
                 role,
                 content,
                 reasoning: reasoning || undefined,
                 resultStatus: restoredProjectHistoryResultStatus(entry),
+                attachments: entry.attachments,
+                codingTimeline: entry.codingTimeline ?? entry.coding_timeline,
+                toolCalls: entry.toolCalls ?? entry.tool_calls,
+                unfinishedSlot: entry.unfinishedSlot ?? entry.unfinished_slot,
+                recoverableSession: entry.recoverableSession ?? entry.recoverable_session,
+                confirmation: entry.confirmation,
+                localFilePath: entry.localFilePath ?? entry.local_file_path,
+                localFilePaths: entry.localFilePaths ?? entry.local_file_paths,
+                actions: entry.actions,
                 sessionKey,
                 timestamp: baseTimestamp + index,
             };

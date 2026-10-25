@@ -315,7 +315,7 @@ func trustedFileReadWindow(content string, startLine int, tail bool) (string, er
 func trustedFileReadUsesDocumentReader(path string) bool {
 	switch strings.ToLower(filepath.Ext(strings.TrimSpace(path))) {
 	case ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".ppt", ".pptx",
-		".dwg", ".dxf", ".dxfb", ".glb", ".gltf", ".epub", ".adoc", ".asciidoc", ".eml":
+		".dwg", ".dxf", ".dxfb", ".glb", ".gltf", ".epub", ".mobi", ".adoc", ".asciidoc", ".eml":
 		return true
 	default:
 		return false

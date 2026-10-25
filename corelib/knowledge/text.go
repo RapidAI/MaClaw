@@ -11,6 +11,9 @@ import (
 const maxSavedTextRunes = 20_000_000
 
 func (s *SQLiteStore) SaveText(ctx context.Context, req TextSaveRequest) (Source, error) {
+	if err := rejectSaveScopeSession(req.SaveScope); err != nil {
+		return Source{}, err
+	}
 	seed := Source{}
 	forceID := strings.TrimSpace(req.ForceID)
 	if forceID != "" {
@@ -23,12 +26,16 @@ func (s *SQLiteStore) SaveText(ctx context.Context, req TextSaveRequest) (Source
 	if err != nil {
 		return Source{}, err
 	}
+	// Dedup has to look up the owner this save will store. The desktop stamp
+	// fills an empty owner, and a repeat save must find that row.
+	source = s.applyDesktopOwnerStamp(source)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Source{}, err
 	}
 	defer tx.Rollback()
 	isDuplicate := false
+	requestedProject := ""
 	// Content-hash dedup remaps to another source id. Skip when ForceID is set so
 	// callers (e.g. coding experience UpdateExperience) keep a stable identity.
 	if forceID == "" {
@@ -36,8 +43,11 @@ func (s *SQLiteStore) SaveText(ctx context.Context, req TextSaveRequest) (Source
 			return Source{}, err
 		} else if ok {
 			isDuplicate = true
+			requestedProject = strings.TrimSpace(source.ProjectPath)
 			source.ID = existing.ID
 			source.CreatedAt = existing.CreatedAt
+			source = preserveStoredOwner(source, existing)
+			source = preserveStoredProjectPath(source, existing)
 			if err := deleteSourceDerivedRows(ctx, tx, existing.ID); err != nil {
 				return Source{}, err
 			}
@@ -53,8 +63,13 @@ func (s *SQLiteStore) SaveText(ctx context.Context, req TextSaveRequest) (Source
 			return Source{}, err
 		}
 	}
-	if err := insertSource(ctx, tx, source); err != nil {
+	if err := s.insertSource(ctx, tx, source); err != nil {
 		return Source{}, err
+	}
+	if requestedProject != "" && requestedProject != strings.TrimSpace(source.ProjectPath) {
+		if err := assignSourceMembershipsTx(ctx, tx, Source{ID: source.ID, OwnerID: source.OwnerID, ProjectPath: requestedProject}); err != nil {
+			return Source{}, err
+		}
 	}
 	labels := ingestLabelsForSource(source, req.Labels, req.AutoLabels)
 	if forceID != "" {
@@ -146,14 +161,16 @@ func findExistingTextSourceForSave(ctx context.Context, tx *sql.Tx, source Sourc
 		return Source{}, false, nil
 	}
 	// First try exact match including project_path (same scope update)
+	ownerSQL, ownerArgs := sourceOwnerMatchSQL(source.OwnerID)
 	q := `SELECT id, kind, uri, canonical_uri, title, author, site_name, published_at, fetched_at, content_hash,
 		owner_id, tenant_id, project_path, topic_hint, source_trust, batch_id, relative_path, status, error_message, created_at, updated_at
 		FROM knowledge_sources
-		WHERE kind = ? AND content_hash = ? AND COALESCE(owner_id, '') = ? AND COALESCE(tenant_id, '') = ? AND COALESCE(project_path, '') = ?
-		ORDER BY updated_at DESC LIMIT 1`
-	existing, err := scanSource(tx.QueryRowContext(ctx, q,
-		source.Kind, source.ContentHash, source.OwnerID, source.TenantID, source.ProjectPath,
-	))
+		WHERE kind = ? AND content_hash = ? AND ` + ownerSQL + ` AND COALESCE(tenant_id, '') = ? AND COALESCE(project_path, '') = ?
+		ORDER BY ` + sourceOwnerMatchOrder + ` LIMIT 1`
+	args := []any{source.Kind, source.ContentHash}
+	args = append(args, ownerArgs...)
+	args = append(args, source.TenantID, source.ProjectPath, source.OwnerID)
+	existing, err := scanSource(tx.QueryRowContext(ctx, q, args...))
 	if err == nil {
 		return existing, true, nil
 	}
@@ -165,11 +182,12 @@ func findExistingTextSourceForSave(ctx context.Context, tx *sql.Tx, source Sourc
 	q2 := `SELECT id, kind, uri, canonical_uri, title, author, site_name, published_at, fetched_at, content_hash,
 		owner_id, tenant_id, project_path, topic_hint, source_trust, batch_id, relative_path, status, error_message, created_at, updated_at
 		FROM knowledge_sources
-		WHERE kind = ? AND content_hash = ? AND COALESCE(owner_id, '') = ? AND COALESCE(tenant_id, '') = ?
-		ORDER BY updated_at DESC LIMIT 1`
-	existing, err = scanSource(tx.QueryRowContext(ctx, q2,
-		source.Kind, source.ContentHash, source.OwnerID, source.TenantID,
-	))
+		WHERE kind = ? AND content_hash = ? AND ` + ownerSQL + ` AND COALESCE(tenant_id, '') = ?
+		ORDER BY ` + sourceOwnerMatchOrder + ` LIMIT 1`
+	args = []any{source.Kind, source.ContentHash}
+	args = append(args, ownerArgs...)
+	args = append(args, source.TenantID, source.OwnerID)
+	existing, err = scanSource(tx.QueryRowContext(ctx, q2, args...))
 	if err == nil {
 		return existing, true, nil
 	}

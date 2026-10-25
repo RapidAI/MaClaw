@@ -50,7 +50,7 @@ func (a *App) HeadStatusLines() []string {
 	dir := embedding.DefaultModelsDir()
 	var out []string
 	for _, as := range embedding.ReleaseAssets() {
-		if as.Kind == "model" {
+		if !embedding.IsHeadKind(as.Kind) {
 			continue
 		}
 		p := filepath.Join(dir, as.Subdir, as.Filename)

@@ -124,7 +124,11 @@ func BuiltinCapabilityOntology() []CapabilityDescriptor {
 		},
 		{
 			ID: CapabilityShellExecuteRemoteHost, Version: "v1", Owner: builtinCapabilityOntologyOwner,
-			Summary: "Execute a command on a remote host over an authenticated session, or copy one file or directory from that host onto this computer. A command uses command. A copy uses remote_path and local_path together, including a session opened through ProxyJump. remote_path may be absolute or start with ~/. Host, credentials, and session id are not fields. Do not cat the file through command and do not call scp.",
+			// Connection fields depend on the published schema. Connect mode
+			// requires host; exec mode omits it because the session is already
+			// bound. The renderer adds that sentence. This summary stays true
+			// for both.
+			Summary: "Execute a command on a remote host over an authenticated session, or copy one file or directory from that host onto this computer. A command uses command. A copy uses remote_path and local_path together, including a session opened through ProxyJump. remote_path may be absolute or start with ~/. Do not cat the file through command and do not call scp.",
 			Effects: []EffectClass{EffectExternalEffect},
 		},
 		{

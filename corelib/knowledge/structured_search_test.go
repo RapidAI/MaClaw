@@ -89,21 +89,49 @@ func TestSearchIncludesTableRowFTS(t *testing.T) {
 func TestSearchIncludesStructuredCardAndFactFTS(t *testing.T) {
 	store := newStoreWithStructuredCSV(t)
 	defer store.Close()
+	ctx := t.Context()
+	assertCount(t, store.db, "kb_cards", 0)
+	assertCount(t, store.db, "kb_facts", 0)
 
-	cardResults, err := store.Search(t.Context(), SearchOptions{Query: "张三 法务", ResultTypes: []string{"card"}, Limit: 5})
-	if err != nil {
-		t.Fatalf("Search cards: %v", err)
+	var rowID, sourceID, rowText string
+	var rowIndex int
+	if err := store.db.QueryRowContext(ctx, `SELECT id, source_id, row_index, row_text FROM kb_rows WHERE row_index = 2`).Scan(&rowID, &sourceID, &rowIndex, &rowText); err != nil {
+		t.Fatalf("read row: %v", err)
 	}
-	if !hasResultTypeWithRow(cardResults, "card", 2) {
-		t.Fatalf("expected structured card result, got %#v", cardResults)
+	now := formatTime(time.Now().UTC())
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO kb_cards (id, source_id, row_id, origin_type, title, claim, summary, created_at, updated_at) VALUES ('legacy-card', ?, ?, 'table_row', '张三', 'legacy card claim', ?, ?, ?)`, sourceID, rowID, rowText, now, now); err != nil {
+		t.Fatalf("insert legacy card: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO kb_cards_fts(card_id, title, claim, summary) VALUES ('legacy-card', ?, ?, ?)`, segmentTextForFTS("张三"), segmentTextForFTS("legacy card claim"), segmentTextForFTS(rowText)); err != nil {
+		t.Fatalf("insert legacy card fts: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO kb_facts (id, card_id, source_id, row_id, subject, predicate, object, created_at) VALUES ('legacy-fact', 'legacy-card', ?, ?, '张三', '部门', '法务', ?)`, sourceID, rowID, now); err != nil {
+		t.Fatalf("insert legacy fact: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO kb_facts_fts(fact_id, subject, predicate, object) VALUES ('legacy-fact', ?, ?, ?)`, segmentTextForFTS("张三"), segmentTextForFTS("部门"), segmentTextForFTS("法务")); err != nil {
+		t.Fatalf("insert legacy fact fts: %v", err)
 	}
 
-	factResults, err := store.Search(t.Context(), SearchOptions{Query: "张三 部门 法务", ResultTypes: []string{"fact"}, Limit: 5})
+	results, err := store.Search(ctx, SearchOptions{Query: "张三 法务", Limit: 5})
 	if err != nil {
-		t.Fatalf("Search facts: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
-	if !hasResultTypeWithRow(factResults, "fact", 2) {
-		t.Fatalf("expected structured fact result, got %#v", factResults)
+	matched := 0
+	var hit SearchResult
+	for _, result := range results {
+		if result.RowID == rowID {
+			matched++
+			hit = result
+		}
+	}
+	if matched != 1 || hit.ResultType != "table_row" || hit.CardID != "legacy-card" || hit.FactID != "legacy-fact" {
+		t.Fatalf("legacy table copies = %d, hit = %#v", matched, hit)
+	}
+	if !strings.Contains(hit.Summary, "张三") && !strings.Contains(hit.Snippet, "张三") {
+		t.Fatalf("body is not row text: %#v", hit)
+	}
+	if hit.Object != "法务" && !strings.Contains(hit.Claim, "legacy card claim") {
+		t.Fatalf("claim annotation missing: %#v", hit)
 	}
 }
 
@@ -575,6 +603,27 @@ func newStoreWithStructuredCSV(t *testing.T) *SQLiteStore {
 		t.Fatalf("commit: %v", err)
 	}
 	return store
+}
+
+// seedLegacyStructuredTableFact inserts one historical table-row card and fact.
+// A new spreadsheet import leaves kb_cards and kb_facts empty. Readers still
+// serve rows that were written before that change.
+func seedLegacyStructuredTableFact(t *testing.T, store *SQLiteStore) {
+	t.Helper()
+	ctx := t.Context()
+	assertCount(t, store.db, "kb_cards", 0)
+	assertCount(t, store.db, "kb_facts", 0)
+	var rowID, sourceID string
+	if err := store.db.QueryRowContext(ctx, `SELECT id, source_id FROM kb_rows WHERE row_index = 2`).Scan(&rowID, &sourceID); err != nil {
+		t.Fatalf("read row: %v", err)
+	}
+	now := formatTime(time.Now().UTC())
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO kb_cards (id, source_id, row_id, origin_type, title, claim, summary, created_at, updated_at) VALUES ('legacy-card', ?, ?, 'table_row', '张三', '张三的部门是法务', '张三', ?, ?)`, sourceID, rowID, now, now); err != nil {
+		t.Fatalf("insert legacy card: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO kb_facts (id, card_id, source_id, row_id, subject, predicate, object, created_at) VALUES ('legacy-fact', 'legacy-card', ?, ?, '张三', '部门', '法务', ?)`, sourceID, rowID, now); err != nil {
+		t.Fatalf("insert legacy fact: %v", err)
+	}
 }
 
 func newStoreWithASCIIStructuredCSV(t *testing.T) *SQLiteStore {

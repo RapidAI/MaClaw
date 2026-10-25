@@ -22,7 +22,12 @@ type desktopTurnResult struct {
 	StoredAt  time.Time
 }
 
-var desktopTurnResults sync.Map
+const desktopTurnResultTTL = 6 * time.Hour
+
+var (
+	desktopTurnResults           sync.Map
+	desktopTurnResultCleanupOnce sync.Once
+)
 
 func storeDesktopTurnResult(run *agentservice.Run, msg *agentservice.Message, handoff bool, attention string) {
 	if run == nil || run.ID == "" {
@@ -51,7 +56,22 @@ func storeDesktopTurnResult(run *agentservice.Run, msg *agentservice.Message, ha
 		Message:   copied,
 		StoredAt:  time.Now(),
 	})
-	cutoff := time.Now().Add(-6 * time.Hour)
+	desktopTurnResultCleanupOnce.Do(func() {
+		go runDesktopTurnResultCleanup()
+	})
+	cleanupDesktopTurnResults(time.Now())
+}
+
+func runDesktopTurnResultCleanup() {
+	ticker := time.NewTicker(30 * time.Minute)
+	defer ticker.Stop()
+	for now := range ticker.C {
+		cleanupDesktopTurnResults(now)
+	}
+}
+
+func cleanupDesktopTurnResults(now time.Time) {
+	cutoff := now.Add(-desktopTurnResultTTL)
 	desktopTurnResults.Range(func(key, value any) bool {
 		item, _ := value.(desktopTurnResult)
 		if !item.StoredAt.IsZero() && item.StoredAt.Before(cutoff) {

@@ -636,7 +636,11 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 		if httpResp.StatusCode == http.StatusInternalServerError {
 			return nil, dumpLLMContext(httpResp.StatusCode, "llm request failed", data, "")
 		}
-		return nil, &llm.HTTPStatusError{StatusCode: httpResp.StatusCode, Body: append([]byte(nil), body...)}
+		httpErr := &llm.HTTPStatusError{StatusCode: httpResp.StatusCode, Body: append([]byte(nil), body...)}
+		if next, ok := llm.ConfigAfterThinkingRejection(cfg, httpErr); ok {
+			return doSimpleOpenAIRequest(ctx, next, messages, client, timeout, requestOpts...)
+		}
+		return nil, httpErr
 	}
 	parsed, err := llm.ParseNonStreamOpenAIResponseBody(body)
 	if err != nil {
@@ -665,6 +669,9 @@ func doSimpleResponsesRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 
 	if corelib.OpenCodeUsesResponsesAPI(cfg.URL, cfg.Model) {
 		streamed, streamErr := llm.DoResponsesAPIRequestStream(ctx, cfg, messages, nil, client, nil, nil)
+		if next, ok := llm.ConfigAfterThinkingRejection(cfg, streamErr); ok {
+			streamed, streamErr = llm.DoResponsesAPIRequestStream(ctx, next, messages, nil, client, nil, nil)
+		}
 		if streamErr != nil {
 			return nil, streamErr
 		}
@@ -703,6 +710,10 @@ func doSimpleResponsesRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 		log.Printf("[LLM] done %s model=%s configured_model=%s wire_api=responses simple=true status=%d elapsed=%s body_len=%d %s", endpoint, upstreamModel, cfg.Model, httpResp.StatusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
 		if httpResp.StatusCode == http.StatusInternalServerError {
 			return nil, dumpLLMContext(httpResp.StatusCode, classifyResponsesAPIHTTPError(httpResp.StatusCode, body, endpoint, upstreamModel, cfg.ProviderName), data, "")
+		}
+		httpErr := &llm.HTTPStatusError{StatusCode: httpResp.StatusCode, Body: append([]byte(nil), body...)}
+		if next, ok := llm.ConfigAfterThinkingRejection(cfg, httpErr); ok {
+			return doSimpleResponsesRequest(ctx, next, messages, client, timeout, requestOpts...)
 		}
 		return nil, &llmSimpleHTTPError{
 			status: httpResp.StatusCode,

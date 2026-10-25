@@ -148,7 +148,7 @@ export const KNOWN_OPENAI_ENDPOINTS: KnownOpenAIEndpoint[] = [
 /* Hoisted style objects (avoid re-creation per render). */
 export const inputStyle: CSSProperties = {
     width: "100%", padding: "7px 10px", fontSize: "0.8rem",
-    border: `1px solid ${colors.border}`, borderRadius: "var(--radius-md, 10px)",
+    border: `1px solid ${colors.border}`, borderRadius: "var(--radius-md, 8px)",
     background: colors.surface, color: colors.text, boxSizing: "border-box",
 };
 export const labelStyle: CSSProperties = {

@@ -90,7 +90,7 @@ type TaskWorkflowStatus = {
 
 const TASK_WORKFLOW_STATUS_COLORS: Record<TaskWorkflowStatusTone, { border: string; color: string; background: string }> = {
     info: { border: 'color-mix(in srgb, var(--theme-primary) 42%, transparent)', color: 'var(--theme-primary)', background: 'color-mix(in srgb, var(--theme-primary) 8%, transparent)' },
-    warning: { border: 'color-mix(in srgb, var(--theme-warning, #d97706) 48%, transparent)', color: 'color-mix(in srgb, var(--theme-warning, #d97706) 82%, var(--theme-text-primary))', background: 'color-mix(in srgb, var(--theme-warning, #d97706) 12%, transparent)' },
+    warning: { border: 'color-mix(in srgb, var(--theme-warning, #aa5d05) 48%, transparent)', color: 'color-mix(in srgb, var(--theme-warning, #aa5d05) 82%, var(--theme-text-primary))', background: 'color-mix(in srgb, var(--theme-warning, #aa5d05) 12%, transparent)' },
     danger: { border: 'color-mix(in srgb, var(--theme-danger, #dc2626) 46%, transparent)', color: 'color-mix(in srgb, var(--theme-danger, #dc2626) 82%, var(--theme-text-primary))', background: 'color-mix(in srgb, var(--theme-danger, #dc2626) 10%, transparent)' },
     // Settled tasks use the shared neutral blue-gray (--mc-done) instead of the
     // old standalone green: it matches the shell's primary-tinted surface language.
@@ -6162,14 +6162,14 @@ export const SidebarTaskManagement = ({
                             color: item.disabled
                                 ? 'var(--theme-text-muted)'
                                 : item.danger
-                                    ? 'var(--theme-danger, #c43d34)'
+                                    ? 'var(--theme-danger, #dc1f25)'
                                     : 'var(--theme-text-primary)',
                             opacity: item.disabled ? 0.55 : 1,
                         }}
                         onMouseEnter={e => {
                             if (item.disabled) return;
                             e.currentTarget.style.background = item.danger
-                                ? 'color-mix(in srgb, var(--theme-danger, #c43d34) 10%, transparent)'
+                                ? 'color-mix(in srgb, var(--theme-danger, #dc1f25) 10%, transparent)'
                                 : 'color-mix(in srgb, var(--theme-text-primary) 8%, transparent)';
                         }}
                         onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}

@@ -9,6 +9,8 @@ import (
 	"unicode"
 )
 
+const contextPackNodeWindowRunes = 2000
+
 func (s *SQLiteStore) ContextPack(ctx context.Context, opts ContextPackOptions) (ContextPackResult, error) {
 	searchOpts := opts.SearchOptions
 	query := strings.TrimSpace(searchOpts.Query)
@@ -41,7 +43,7 @@ func (s *SQLiteStore) ContextPack(ctx context.Context, opts ContextPackOptions) 
 	}
 	results = selectContextPackResults(results, maxItems)
 	contextEnriched := false
-	if enriched, changed, err := s.enrichContextPackNodes(ctx, results); err != nil {
+	if enriched, changed, err := s.enrichContextPackNodes(ctx, query, results); err != nil {
 		return ContextPackResult{}, err
 	} else {
 		results = enriched
@@ -221,19 +223,31 @@ func contextTextTokens(text string) map[string]struct{} {
 	return tokens
 }
 
-// enrichContextPackNodes adds a parent heading and immediate surrounding child
-// text for chunked document hits. The original hit remains the citation anchor.
-func (s *SQLiteStore) enrichContextPackNodes(ctx context.Context, results []SearchResult) ([]SearchResult, bool, error) {
+// enrichContextPackNodes expands short FTS snippets from the original node and
+// adds ordered neighboring text for chunked hits.
+func (s *SQLiteStore) enrichContextPackNodes(ctx context.Context, query string, results []SearchResult) ([]SearchResult, bool, error) {
 	changed := false
 	for i := range results {
-		if results[i].ResultType != "node" || results[i].NodeID == "" || results[i].ParentNodeID == "" {
+		if results[i].ResultType != "node" || results[i].NodeID == "" {
+			continue
+		}
+		if results[i].ParentNodeID == "" {
+			var text string
+			if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(text, '') FROM document_nodes WHERE id = ?`, results[i].NodeID).Scan(&text); err != nil {
+				if err == sql.ErrNoRows {
+					continue
+				}
+				return nil, false, err
+			}
+			results[i].Snippet = searchBodyTextWindowLimit(text, query, contextPackNodeWindowRunes)
 			continue
 		}
 		var parentTitle string
 		if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(title, '') FROM document_nodes WHERE id = ?`, results[i].ParentNodeID).Scan(&parentTitle); err != nil && err != sql.ErrNoRows {
 			return nil, false, err
 		}
-		rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(text, '') FROM document_nodes WHERE parent_id = ? ORDER BY offset ASC, id ASC`, results[i].ParentNodeID)
+		rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(text, '') FROM document_nodes WHERE parent_id = ?
+			ORDER BY CAST(CASE WHEN json_valid(metadata_json) THEN COALESCE(json_extract(metadata_json, '$.chunk_index'), '0') ELSE '0' END AS INTEGER) ASC, offset ASC, id ASC`, results[i].ParentNodeID)
 		if err != nil {
 			return nil, false, err
 		}
@@ -260,16 +274,17 @@ func (s *SQLiteStore) enrichContextPackNodes(ctx context.Context, results []Sear
 		if position < 0 {
 			continue
 		}
-		parts := make([]string, 0, 3)
+		parts := make([]string, 0, 4)
 		if parentTitle = strings.TrimSpace(parentTitle); parentTitle != "" {
-			parts = append(parts, parentTitle)
+			title, _ := truncateContextText(parentTitle, 160)
+			parts = append(parts, title)
 		}
+		parts = append(parts, searchBodyTextWindowLimit(children[position].text, query, contextPackNodeWindowRunes))
 		if position > 0 {
-			parts = append(parts, "[preceding] "+strings.TrimSpace(children[position-1].text))
+			parts = append(parts, "[preceding] "+searchBodyTextWindow(children[position-1].text, query))
 		}
-		parts = append(parts, strings.TrimSpace(children[position].text))
 		if position+1 < len(children) {
-			parts = append(parts, "[following] "+strings.TrimSpace(children[position+1].text))
+			parts = append(parts, "[following] "+searchBodyTextWindow(children[position+1].text, query))
 		}
 		text := strings.TrimSpace(strings.Join(parts, "\n"))
 		if text != "" && text != results[i].Snippet {
@@ -310,17 +325,58 @@ func contextPackTitle(result SearchResult) string {
 }
 
 func contextPackText(result SearchResult) string {
-	switch result.ResultType {
-	case "table_row":
-		return strings.TrimSpace(strings.Join(nonEmptyStrings(result.Summary, result.Snippet, result.Claim), "\n"))
-	case "card":
-		return strings.TrimSpace(strings.Join(nonEmptyStrings(result.Claim, result.Summary, result.Snippet), "\n"))
-	case "fact":
-		fact := strings.TrimSpace(strings.Join(nonEmptyStrings(result.Subject, result.Predicate, result.Object), " "))
-		return strings.TrimSpace(strings.Join(nonEmptyStrings(fact, result.Snippet), "\n"))
-	default:
-		return strings.TrimSpace(strings.Join(nonEmptyStrings(result.Snippet, result.Summary, result.Claim), "\n"))
+	return strings.TrimSpace(strings.Join(nonEmptyStrings(searchBodyText(result), searchClaimLine(result)), "\n"))
+}
+
+// searchBodyText is the node window or the table row. Claims stay out of it.
+func searchBodyText(result SearchResult) string {
+	if result.ResultType == "table_row" {
+		if summary := strings.TrimSpace(result.Summary); summary != "" {
+			return summary
+		}
+		return strings.TrimSpace(result.Snippet)
 	}
+	if result.ResultType == "fact" {
+		fact := strings.TrimSpace(strings.Join(nonEmptyStrings(result.Subject, result.Predicate, result.Object), " "))
+		if fact != "" {
+			return fact
+		}
+	}
+	if snippet := strings.TrimSpace(result.Snippet); snippet != "" {
+		return snippet
+	}
+	if summary := strings.TrimSpace(result.Summary); summary != "" {
+		return summary
+	}
+	if result.ResultType == "card" {
+		return strings.TrimSpace(result.Claim)
+	}
+	return ""
+}
+
+// searchClaimLine is the one annotation that follows the body. A fact triple
+// wins over a card claim so the same sentence is not repeated when the body
+// already contains it.
+func searchClaimLine(result SearchResult) string {
+	body := strings.TrimSpace(searchBodyText(result))
+	candidates := make([]string, 0, 3)
+	if fact := strings.TrimSpace(strings.Join(nonEmptyStrings(result.Subject, result.Predicate, result.Object), " ")); fact != "" {
+		candidates = append(candidates, fact)
+	}
+	if claim := strings.TrimSpace(result.Claim); claim != "" {
+		candidates = append(candidates, claim)
+	}
+	title := strings.TrimSpace(result.CardTitle)
+	if title != "" && !strings.EqualFold(title, strings.TrimSpace(result.NodeTitle)) && !strings.EqualFold(title, strings.TrimSpace(result.Source.Title)) {
+		candidates = append(candidates, title)
+	}
+	for _, candidate := range candidates {
+		if body != "" && strings.EqualFold(candidate, body) {
+			continue
+		}
+		return candidate
+	}
+	return ""
 }
 
 func nonEmptyStrings(values ...string) []string {

@@ -47,9 +47,10 @@ type RemoteCodingSubAgent struct {
 	httpClient *http.Client
 
 	// Remote server context
-	sessionID  string // SSH session ID (already connected)
-	workDir    string // remote working directory
-	projectDir string // remote project directory (within workDir)
+	sessionID    string // SSH session ID (already connected)
+	workDir      string // remote working directory
+	projectDir   string // remote project directory (within workDir)
+	commitTaskID string
 	// workspaceWasEmptyAtStart is captured before project bootstrap and before
 	// the model can create files. It gives remote greenfield tasks the same
 	// authoritative context evidence as local coding tasks.
@@ -68,7 +69,10 @@ type RemoteCodingSubAgent struct {
 
 	// highRiskApproval lets the user override remote bash safety guardrails.
 	// Nil preserves the default hard-reject behavior.
-	highRiskApproval         *remoteHighRiskApprovalState
+	highRiskApproval *remoteHighRiskApprovalState
+	// commitAsk answers a human-class tool inside the same call. Nil uses the
+	// approval dialog. Tests set it so they do not open that dialog.
+	commitAsk                commitAskFunc
 	highRiskApprovalExplicit bool
 
 	// sourcePreviewEnabled is opt-in because this agent is also used by remote
@@ -259,13 +263,14 @@ func NewRemoteCodingSubAgent(
 	loopCtx *LoopContext,
 ) *RemoteCodingSubAgent {
 	return &RemoteCodingSubAgent{
-		handler:    handler,
-		cfg:        cfg,
-		httpClient: httpClient,
-		sessionID:  sessionID,
-		workDir:    workDir,
-		projectDir: projectDir,
-		loopCtx:    loopCtx,
+		handler:      handler,
+		cfg:          cfg,
+		httpClient:   httpClient,
+		sessionID:    sessionID,
+		workDir:      workDir,
+		projectDir:   projectDir,
+		commitTaskID: newInFlightRecoveryRunID(),
+		loopCtx:      loopCtx,
 	}
 }
 
@@ -437,6 +442,15 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 	if r == nil {
 		return &RemoteCodingSubAgentResult{Status: "failed", Error: "remote coding subagent is nil"}
 	}
+	root := strings.TrimSpace(r.projectDir)
+	if root == "" {
+		root = strings.TrimSpace(r.workDir)
+	}
+	commitTaskID := strings.TrimSpace(r.commitTaskID)
+	if commitTaskID == "" {
+		commitTaskID = strings.TrimSpace(taskDescription)
+	}
+	defer forgetCommitLedgerForApp(commitAppForHandler(r.handler), "remote\n"+root+"\n"+commitTaskID)
 	// The remote transport does not issue semantic identity. It may only use a
 	// one-shot desktop ingress already attached to the host-owned LoopContext
 	// (or the continuation token chained from the previous root step's bind).
@@ -3231,7 +3245,7 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 				Agent:      codingAgentNameCoding.String(),
 				Event:      codingAgentEventKindToolFinished.String(),
 				Phase:      codingAgentEventPhaseRunning.String(),
-				Detail:     strings.TrimSpace(name),
+				Detail:     codingToolFinishedEventDetail(name, result),
 				Title:      c.userFacingActivityTitle(),
 				Command:    remoteCodingToolEventCommand(canonicalName, normalizedArgsJSON),
 				Target:     codingToolEventTarget(canonicalName, firstNonEmptySubAgentString(normalizedArgsJSON, argsJSON), remoteCodingDisplayRoot(c)),
@@ -3407,6 +3421,7 @@ func (c *remoteCodingCallbacks) executeRemoteTodoWrite(argsJSON string) string {
 		handler = c.agent.handler
 	}
 	revision := c.currentControlPlaneRevision()
+	restoreCodingAgentTodosFromSticky(&c.todos, handler, userID, argsJSON)
 	text, outcome := executeCodingAgentTodoWriteForControlPlane(&c.todos, argsJSON, wrapTodoProgressForOrchestratedPlan(handler, userID, onProgress), func(items []codingAgentTodoItem) {
 		if handler != nil && userID != "" {
 			publishCodingAgentTodosToUI(handler, userID, items)

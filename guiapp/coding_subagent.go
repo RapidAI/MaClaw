@@ -59,10 +59,11 @@ import (
 
 // CodingSubAgent executes a single coding task in a clean context.
 type CodingSubAgent struct {
-	handler     *IMMessageHandler // host — provides tool implementations
-	cfg         corelib.MaclawLLMConfig
-	httpClient  *http.Client
-	projectPath string
+	handler      *IMMessageHandler // host — provides tool implementations
+	cfg          corelib.MaclawLLMConfig
+	httpClient   *http.Client
+	projectPath  string
+	commitTaskID string
 
 	// onToken streams text deltas to the UI (optional).
 	onToken func(delta string)
@@ -84,6 +85,9 @@ type CodingSubAgent struct {
 	// attempts to access paths outside the declared projectPath. When nil,
 	// out-of-scope access is hard-rejected (legacy behavior).
 	scopeApproval *scopeApprovalState
+	// commitAsk answers a human-class tool inside the same call. Nil uses the
+	// approval dialog. Tests set it so they do not open that dialog.
+	commitAsk commitAskFunc
 
 	// fullEnvironment enables Claude Code / Codex–aligned posture: broader
 	// skill/MCP surface, project workspace probe, and full-workbench prompts.
@@ -456,11 +460,12 @@ var codingSubAgentFreeformSecretPatterns = []*regexp.Regexp{
 // loopCtx propagates cancellation from the main agent loop.
 func NewCodingSubAgent(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, projectPath string, loopCtx *LoopContext) *CodingSubAgent {
 	return &CodingSubAgent{
-		handler:     handler,
-		cfg:         cfg,
-		httpClient:  httpClient,
-		projectPath: projectPath,
-		loopCtx:     loopCtx,
+		handler:      handler,
+		cfg:          cfg,
+		httpClient:   httpClient,
+		projectPath:  projectPath,
+		commitTaskID: newInFlightRecoveryRunID(),
+		loopCtx:      loopCtx,
 	}
 }
 
@@ -650,6 +655,11 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		log.Printf("[coding-subagent] task start failed: task is nil (project=%s)", s.projectPath)
 		return failedCodingSubAgentStartResult("coding subagent task is nil")
 	}
+	commitTaskID := strings.TrimSpace(s.commitTaskID)
+	if commitTaskID == "" {
+		commitTaskID = strings.TrimSpace(task.Title)
+	}
+	defer forgetCommitLedgerForApp(commitAppForHandler(s.handler), "coding\n"+strings.TrimSpace(s.projectPath)+"\n"+commitTaskID)
 	if denied := strings.TrimSpace(s.writableSurfaceDenied); denied != "" {
 		log.Printf("[coding-subagent] task T%d not started: %s (project=%s)", taskDisplayNumber(task), denied, s.projectPath)
 		return failedCodingSubAgentStartResult(denied)
@@ -1234,12 +1244,16 @@ type codingSubAgentCallbacks struct {
 	dynamicSelectionTextBuilt  bool
 
 	// filesModified tracks files written/edited during execution.
-	mu                    sync.Mutex
-	filesModified         map[string]bool
-	filesCreated          map[string]bool
-	filesRead             map[string]bool
-	codegraphOwned        map[string]codegraphFileOwnership
-	codegraphFileMaps     map[string]codegraphFileMapCache
+	mu                sync.Mutex
+	filesModified     map[string]bool
+	filesCreated      map[string]bool
+	filesRead         map[string]bool
+	codegraphOwned    map[string]codegraphFileOwnership
+	codegraphFileMaps map[string]codegraphFileMapCache
+	// codegraphExplored is every source path a codegraph explore named, including
+	// a file whose body was trimmed. It steers a later list_directory. It is not
+	// an edit snapshot.
+	codegraphExplored     map[string]struct{}
 	fileSnapshots         map[string]codingFileSnapshot
 	fileLineDeltas        map[string]SubAgentFileDiffStat
 	gitDiffChecked        bool
@@ -1782,7 +1796,7 @@ This request is running on the temporary uncorrelated Coding compatibility surfa
 
 ## Available posture
 - Gather repository evidence with the read-only definitions that are present (for example Glob, ripgrep, list_directory, read_file, git_diff, code_navigation, and approved knowledge/research lookups).
-- If the project has .codegraph/, use code_navigation for structure, symbols, and call edges. A text search that already returned lines is evidence; use those lines and do not repeat that search.
+- If the project has .codegraph/, use code_navigation for structure, symbols, and call edges. A text search that already returned lines is evidence; use those lines and do not repeat that search. When the name is unknown and the question is about behavior or which module owns it, use code_search. Known symbols and call edges stay on code_navigation. Exact text stays on ripgrep.
 - Do not claim that a file was changed, a command was run, a child was delegated, or structured localization was submitted: those operations are not available on this request surface.
 `)
 	if c != nil && taskCarriesGoalContinuation(c.task, c.reqCtx) {
@@ -1960,7 +1974,7 @@ func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]inter
 		return cloneCodingSubAgentToolDefinitions(c.appendExposedGoalTool(tools))
 	}
 	tools := buildCodingToolDefinitionsFromRegistry(c.subagent.handler)
-	tools = append(tools, buildCodeNavigationToolDefinition())
+	tools = append(tools, buildCodeNavigationToolDefinition(), buildCodeSearchToolDefinition())
 	if c.task == nil || codingTaskNeedsLocalization(c.task.Title+"\n"+c.task.Description) {
 		tools = append(tools, buildReportLocalizationToolDefinition())
 	}
@@ -2259,7 +2273,7 @@ func buildHorizonEpisodeTools(handler *IMMessageHandler, surface []string) []map
 	needCoding := false
 	for _, name := range surface {
 		n := canonicalCodingSubAgentToolName(longhorizon.NormalizeToolName(name))
-		if codingSubAgentToolNames[n] || n == codeNavigationToolName || n == reportLocalizationToolName || n == codingAgentTodoToolName {
+		if codingSubAgentToolNames[n] || n == codeNavigationToolName || n == codeSearchToolName || n == reportLocalizationToolName || n == codingAgentTodoToolName {
 			needCoding = true
 			break
 		}
@@ -2267,7 +2281,7 @@ func buildHorizonEpisodeTools(handler *IMMessageHandler, surface []string) []map
 	var tools []map[string]interface{}
 	if needCoding {
 		tools = buildCodingToolDefinitionsFromRegistry(handler)
-		tools = append(tools, buildCodeNavigationToolDefinition(), buildReportLocalizationToolDefinition(), buildCodingAgentTodoToolDefinition())
+		tools = append(tools, buildCodeNavigationToolDefinition(), buildCodeSearchToolDefinition(), buildReportLocalizationToolDefinition(), buildCodingAgentTodoToolDefinition())
 	}
 	tools = append(tools, horizonHostToolDefs(handler, surface)...)
 	return filterToolsByHorizonSurface(tools, surface)
@@ -2506,11 +2520,27 @@ func (c *codingSubAgentCallbacks) ProjectToolResult(name string, result agent.To
 		return agent.PreviewToolResultForTool(toolName, result.Result)
 	}
 	preview := truncateToolResultForSubAgent(toolName, result.Result)
+	limit := codegraphProjectionLimit(toolName, result.Result)
+	// A directory listing that already names explored files keeps that
+	// sentence. The shared preview keeps a tail of the listing and can cut
+	// the sentence off the end.
+	if toolName == "list_directory" {
+		if kept := codegraphListPreview(preview, limit); kept != "" {
+			preview = kept
+		}
+	}
+	// Leave room for the spill footer. A preview at the full limit is rebuilt
+	// as a JSON key sketch, which drops the source.
+	if limit > maxToolResultLen && len(result.Result) > limit-1024 {
+		if shrunk := codegraphResultPreview(result.Result, limit-1024); shrunk != "" {
+			preview = shrunk
+		}
+	}
 	sessionKey := ""
 	if c != nil && c.subagent != nil && c.subagent.handler != nil {
 		sessionKey = c.subagent.handler.currentRuntimeOrLegacyPolicyOwnerID()
 	}
-	projected := projectToolResultHandle(toolName, sessionKey, result.Result, preview, maxToolResultLen)
+	projected := projectToolResultHandle(toolName, sessionKey, result.Result, preview, limit)
 	if c != nil {
 		noteSpilledCodingToolResult(&c.spilledToolResultReader, projected)
 	}
@@ -2812,6 +2842,13 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 			}
 		}
 		result := executeCodingListDirectory(listArgs)
+		if result.Outcome == codingToolOutcomeSuccess {
+			if p, _ := listArgs["path"].(string); p != "" {
+				if steer := c.codegraphListSteer(p); steer != "" {
+					result.Text += steer
+				}
+			}
+		}
 		c.trackSearchResult("list_directory", listArgs, result.Text, result.Outcome == codingToolOutcomeSuccess)
 		return result
 	case "git_diff":
@@ -2826,6 +2863,8 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 			c.trackGitDiff(result.Text)
 		}
 		return result
+	case codeSearchToolName:
+		return c.executeLocalCodeSearch(args)
 	case codeNavigationToolName:
 		result := c.executeLocalCodeNavigation(args)
 		if result.Outcome == codingToolOutcomeSuccess {
@@ -2911,6 +2950,7 @@ func (c *codingSubAgentCallbacks) executeTodoWrite(argsJSON string) codingToolEx
 		handler = c.subagent.handler
 	}
 	revision := c.currentControlPlaneRevision()
+	restoreCodingAgentTodosFromSticky(&c.todos, handler, userID, argsJSON)
 	text, outcome := executeCodingAgentTodoWriteForControlPlane(&c.todos, argsJSON, wrapTodoProgressForOrchestratedPlan(handler, userID, onProgress), func(items []codingAgentTodoItem) {
 		if handler != nil && userID != "" {
 			publishCodingAgentTodosToUI(handler, userID, items)
@@ -3071,6 +3111,8 @@ func codingSubAgentRequiredArgumentFields(name string) []string {
 		return []string{"server_id", "tool_name"}
 	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search":
 		return []string{"query"}
+	case codeSearchToolName:
+		return []string{"query"}
 	case "ssh":
 		return []string{"action"}
 	default:
@@ -3181,6 +3223,8 @@ func codingSubAgentStringArgumentFields(name string) []string {
 		return []string{"server_id", "tool_name"}
 	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search":
 		return []string{"query"}
+	case codeSearchToolName:
+		return []string{"query", "path"}
 	case "ssh":
 		return []string{"action", "host", "user", "auth_method", "key_path", "password", "label", "initial_command", "session_id", "command", "task_id", "local_path", "remote_path"}
 	default:
@@ -3198,6 +3242,8 @@ func codingSubAgentNumberArgumentFields(name string) []string {
 		return []string{"timeout"}
 	case "ssh":
 		return []string{"port", "timeout", "wait_seconds", "tail_lines"}
+	case codeSearchToolName:
+		return []string{"top_k"}
 	default:
 		return nil
 	}
@@ -3222,6 +3268,10 @@ func codingSubAgentNumberArgumentMin(name, field string) (int64, bool) {
 	case "ssh":
 		switch field {
 		case "port", "timeout", "wait_seconds", "tail_lines":
+			return 1, true
+		}
+	case codeSearchToolName:
+		if field == "top_k" {
 			return 1, true
 		}
 	}
@@ -3381,6 +3431,8 @@ func codingSubAgentToolArgumentExample(name string) string {
 		return `{"server_id":"server","tool_name":"tool","arguments":{}}`
 	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search":
 		return `{"query":"search terms"}`
+	case codeSearchToolName:
+		return `{"query":"where configuration is written to disk","path":"."}`
 	default:
 		return ""
 	}
@@ -9971,13 +10023,20 @@ func unresolvedFailedSubAgentDynamicTools(tools []CodingSubAgentDynamicToolResul
 	return unresolved
 }
 
-// Knowledge search is an optional, read-only context aid. Its backend may be
-// unavailable or simply have no indexed material; that must not invalidate
-// edits that have independent exploration, verification, and diff evidence.
-// MCP and skill failures remain hard because they may represent the requested
-// operation itself rather than an optional lookup.
+// Knowledge search and code_search are optional read-only lookups. An
+// unavailable knowledge backend, or a code_search path the caller should omit
+// and search again, does not invalidate edits that have their own exploration,
+// verification, and diff evidence. A later successful lookup is not recorded
+// on this list, so the failure cannot be cleared by retrying. MCP and skill
+// failures remain hard because they may be the requested operation. A
+// code_search path outside the project is recorded separately as a scope
+// guardrail.
 func subAgentDynamicToolIsSoftFailure(tool CodingSubAgentDynamicToolResult) bool {
-	return !tool.Succeeded && subAgentDynamicToolIsKnowledgeSearch(tool)
+	return !tool.Succeeded && (subAgentDynamicToolIsKnowledgeSearch(tool) || subAgentDynamicToolIsCodeSearch(tool))
+}
+
+func subAgentDynamicToolIsCodeSearch(tool CodingSubAgentDynamicToolResult) bool {
+	return strings.EqualFold(strings.TrimSpace(tool.Tool), codeSearchToolName)
 }
 
 func normalizeSubAgentDynamicToolForEvidence(tool CodingSubAgentDynamicToolResult) string {
@@ -15052,6 +15111,30 @@ func (c *codingSubAgentCallbacks) previewRouteProjectPath() string {
 	return c.projectPath()
 }
 
+func codingToolFinishedEventDetail(name, result string) string {
+	detail := strings.TrimSpace(name)
+	switch canonicalCodingSubAgentToolName(name) {
+	case "read_file", "ssh_read_file", codeNavigationToolName:
+	default:
+		return detail
+	}
+	result = strings.TrimSpace(result)
+	if !strings.HasPrefix(result, "{") || !strings.Contains(result, `"backend"`) {
+		return detail
+	}
+	var payload struct {
+		Backend   string  `json:"backend"`
+		Operation string  `json:"operation"`
+		Output    *string `json:"output"`
+	}
+	if json.Unmarshal([]byte(result), &payload) == nil &&
+		strings.EqualFold(strings.TrimSpace(payload.Backend), "codegraph") &&
+		strings.TrimSpace(payload.Operation) != "" && payload.Output != nil {
+		return "codegraph"
+	}
+	return detail
+}
+
 func (c *codingSubAgentCallbacks) emitToolFinishedEvent(name, argsJSON, result string, outcome codingToolOutcome, duration time.Duration) {
 	if c == nil || c.subagent == nil || c.subagent.onProgress == nil {
 		return
@@ -15062,7 +15145,7 @@ func (c *codingSubAgentCallbacks) emitToolFinishedEvent(name, argsJSON, result s
 	}
 	event := newCodingAgentTaskEvent(codingAgentEventPhaseRunning, c.task, title, "")
 	event.Event = codingAgentEventKindToolFinished.String()
-	event.Detail = strings.TrimSpace(name)
+	event.Detail = codingToolFinishedEventDetail(name, result)
 	event.Command = codingToolEventCommand(name, argsJSON)
 	event.Target = codingToolEventTarget(name, argsJSON, c.projectPath())
 	event.Files = codingToolEventFiles(name, argsJSON, c.projectPath())
@@ -15124,7 +15207,7 @@ func codingToolEventTarget(name, argsJSON, projectRoot string) string {
 	canonical := canonicalCodingSubAgentToolName(name)
 	bare := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(canonical)), "ssh_")
 	switch bare {
-	case "bash", "glob", "ripgrep", "grep", "search_files", "grep_search", "list_directory", "list_dir", "code_navigation":
+	case "bash", "glob", "ripgrep", "grep", "search_files", "grep_search", "list_directory", "list_dir", "code_navigation", "code_search", "spawn_coding_agent", "todo_write":
 	default:
 		return ""
 	}
@@ -15134,6 +15217,14 @@ func codingToolEventTarget(name, argsJSON, projectRoot string) string {
 	}
 	if bare == "bash" {
 		return codingShellInquiryTarget(codingToolEventArgString(args, "command"), projectRoot)
+	}
+	if bare == "spawn_coding_agent" || bare == "todo_write" {
+		shown := codingSpawnEventTarget(args)
+		if bare == "todo_write" {
+			shown = codingTodoEventTarget(args)
+		}
+		shown = strings.Join(strings.Fields(redactCodingSubAgentFreeformLogText(shown)), " ")
+		return truncateRunesForSubAgent(shown, 120)
 	}
 	pattern := strings.Join(strings.Fields(redactCodingSubAgentFreeformLogText(firstNonEmptySubAgentString(
 		codingToolEventArgString(args, "pattern"),
@@ -15175,6 +15266,65 @@ func codingToolEventTarget(name, argsJSON, projectRoot string) string {
 	default:
 		return truncateRunesForSubAgent(pattern, 120)
 	}
+}
+
+// codingSpawnEventTarget is the child task. A batch uses the first agent and
+// ignores the single-agent task field, matching the tool's own precedence.
+func codingSpawnEventTarget(args map[string]interface{}) string {
+	if agents, ok := args["agents"].([]interface{}); ok && len(agents) > 0 {
+		for _, raw := range agents {
+			item, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if task := codingToolEventArgString(item, "task"); task != "" {
+				return task
+			}
+		}
+	}
+	return codingToolEventArgString(args, "task")
+}
+
+// codingTodoEventTarget is the step being updated. A status-only merge has no
+// sentence, so the row does not invent one from the task title.
+func codingTodoEventTarget(args map[string]interface{}) string {
+	items := codingTodoEventItems(args["todos"])
+	if len(items) == 0 {
+		items = codingTodoEventItems(args["tasks"])
+	}
+	first := ""
+	for _, item := range items {
+		content := strings.TrimSpace(firstNonEmptySubAgentString(
+			codingToolEventArgString(item, "content"),
+			codingToolEventArgString(item, "title"),
+		))
+		if content == "" {
+			continue
+		}
+		if first == "" {
+			first = content
+		}
+		status := strings.ToLower(codingToolEventArgString(item, "status"))
+		if status == "in_progress" || status == "in-progress" {
+			return content
+		}
+	}
+	return first
+}
+
+func codingTodoEventItems(raw interface{}) []map[string]interface{} {
+	list, ok := raw.([]interface{})
+	if !ok {
+		return nil
+	}
+	items := make([]map[string]interface{}, 0, len(list))
+	for _, entry := range list {
+		item, ok := entry.(map[string]interface{})
+		if ok {
+			items = append(items, item)
+		}
+	}
+	return items
 }
 
 func codingToolEventPathIsProjectRoot(path, projectRoot string) bool {
@@ -16432,7 +16582,7 @@ func (c *codingSubAgentCallbacks) buildTaskUserMessage() string {
 	if codingTaskLooksInquiry(c.task) {
 		b.WriteString(fmt.Sprintf("请回答下面的仓库/代码问题。先做必要的只读检索，再给出简洁、可核查的结论；不要修改文件、不要写测试、不要创建实现任务。\\n\\n## 问题\\n%s\\n\\n", compactSubAgentTaskDescription(c.task.Description)))
 		b.WriteString("**只读工作要求**：\\n")
-		b.WriteString("1. 有 .codegraph/ 时，结构、符号和调用关系优先 code_navigation。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。\\n")
+		b.WriteString("1. 有 .codegraph/ 时，结构、符号和调用关系优先 code_navigation。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。不知道名字、问的是行为或模块在哪时用 code_search。已知符号和调用边仍用 code_navigation。精确文本用 ripgrep。\\n")
 		b.WriteString("2. 最终先回答用户问题，再简要列出查看过的关键目录或文件；不要输出 TDD、任务编号或完整工具流水。\\n")
 		b.WriteString("3. 未明确要求修改时，绝不写入文件、运行构建或测试。\\n")
 		return compactCodingSubAgentTaskUserMessage(b.String())
@@ -16496,7 +16646,7 @@ func appendCodingSubAgentCompatibilityChecklist(b *strings.Builder) {
 		return
 	}
 	b.WriteString("**当前安全兼容模式**：\n")
-	b.WriteString("1. 先做只读检索并给出可核查的路径、符号和结论。有 .codegraph/ 时，结构、符号和调用关系优先 code_navigation。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。\n")
+	b.WriteString("1. 先做只读检索并给出可核查的路径、符号和结论。有 .codegraph/ 时，结构、符号和调用关系优先 code_navigation。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。不知道名字、问的是行为或模块在哪时用 code_search。已知符号和调用边仍用 code_navigation。精确文本用 ripgrep。\n")
 	b.WriteString("2. 本轮不能直接执行实现、运行验证、派生子任务或提交结构化定位结果；不要尝试猜测未列出的工具。\n")
 	b.WriteString("3. 若任务需要这些操作，说明已收集的证据，并给出可由后续相关执行工作流完成的最小步骤。\n")
 	b.WriteString("4. 若本轮列出了 todo_write，只能携带定义中的 expected_revision 和 expected_version 更新清单；过期结果必须重新读取状态。\n\n")
@@ -16512,7 +16662,7 @@ func appendCodingSubAgentPreflightChecklist(b *strings.Builder, qualityGateEnabl
 		return
 	}
 	b.WriteString("**Before editing**:\n")
-	b.WriteString("1. Use code_navigation (codegraph explore / codegraph node) for structure, symbols, and call edges; fall back to Glob/ripgrep/read_file when it is unavailable. Survey one file with file_symbols instead of read_file of the whole file. A missing .codegraph/ directory is not a reason to skip the tool; on a modify turn it installs codegraph and runs codegraph init. A text search that already returned lines is evidence; use those lines and do not repeat that search.\n")
+	b.WriteString("1. Use code_navigation (codegraph explore / codegraph node) for structure, symbols, and call edges; fall back to Glob/ripgrep/read_file when it is unavailable. Survey one file with file_symbols instead of read_file of the whole file. A missing .codegraph/ directory is not a reason to skip the tool; on a modify turn it installs codegraph and runs codegraph init. A text search that already returned lines is evidence; use those lines and do not repeat that search. When the name is unknown and the question is about behavior or which module owns it, use code_search. Known symbols and call edges stay on code_navigation. Exact text stays on ripgrep.\n")
 	b.WriteString("2. State likely files and risk/impact.\n")
 	b.WriteString("3. Choose the minimal edit approach.\n")
 	b.WriteString("4. If this is a retry, use retry context and avoid repeating the failed approach.\n")
@@ -17538,6 +17688,7 @@ func buildLocalInspectionRoleSystemPrompt(projectPath string, role codingSubAgen
 	b.WriteString(`## 可用工具
 - code_navigation：有 .codegraph/ 时优先，内部运行 codegraph explore / codegraph node，用于结构、符号、定义、引用和调用链
 - report_localization：仅 bug 修复时提交根因证据；探索/新功能不要调用
+- code_search：不知道名字、问的是行为或模块在哪时使用。命中是片段，不是源码读取，不能因此修改文件。已知符号和调用边仍用 code_navigation。精确文本用 ripgrep
 - Glob / ripgrep / list_directory / read_file：正文搜索。已经返回的行算数，不要把同一次查找再做一遍
 - git_diff：只读 diff/status（如可用）
 `)
@@ -17546,7 +17697,7 @@ func buildLocalInspectionRoleSystemPrompt(projectPath string, role codingSubAgen
 	}
 	b.WriteString(`
 ## 工作规范
-	1. 结构、符号和调用关系优先 code_navigation，再按命中阅读关键文件。已经返回行的正文搜索也算数，不要把同一次查找再做一遍
+	1. 结构、符号和调用关系优先 code_navigation，再按命中阅读关键文件。已经返回行的正文搜索也算数，不要把同一次查找再做一遍。不知道名字、问的是行为或模块在哪时用 code_search。已知符号和调用边仍用 code_navigation。精确文本用 ripgrep。
 	2. 仅当任务是修复已有代码的 bug 时，才调用 report_localization 提交根因证据。探索项目、补齐功能、核对 CLI 不要提交定位报告。
 	3. 遇到陌生概念/精确报错、第三方依赖/API/协议、版本或兼容性事实，必须 web_search 搜索精确错误和官方文档；纯仓内 bug 才在 report_localization 说明为何无需联网
 	4. 完成后给出结构化发现：关键路径、结论、外部来源、风险/建议
@@ -17571,7 +17722,7 @@ func buildFullCodingEnvironmentPromptPreamble() string {
 - 不得猜测或调用 Skill/MCP 的旧通用入口；只有本轮实际列出的受限别名才可调用。若未出现扩展函数，继续使用静态工具或说明需要重新规划。
 - 工作区根目录已绑定；下方「工作区概览」是宿主 os.ReadDir 的权威顶层清单，请先消化再深入探索。
 - 禁止仅用 python/python3/os.listdir/ls/dir 复核顶层是否为空；失败的列目录命令不能当成「目录为空」。深入文件用 list_directory / read_file / glob。
-- 默认自主探索与实现：不要等待用户再发「去了解项目」。结构、符号和调用关系优先 code_navigation（codegraph explore / codegraph node）。摸清一个文件的分段、include 和文件级声明时用 file_symbols，不要为此 read_file 整份文件。顶层没有 .codegraph/ 时，可修改的任务里该工具会安装 codegraph 并 codegraph init。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。
+- 默认自主探索与实现：不要等待用户再发「去了解项目」。结构、符号和调用关系优先 code_navigation（codegraph explore / codegraph node）。摸清一个文件的分段、include 和文件级声明时用 file_symbols，不要为此 read_file 整份文件。顶层没有 .codegraph/ 时，可修改的任务里该工具会安装 codegraph 并 codegraph init。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。不知道名字、问的是行为或模块在哪时用 code_search。已知符号和调用边仍用 code_navigation。精确文本用 ripgrep。
 - 本会话支持多轮续写：用户后续消息仍在同一编程工作台中执行，可继续改码、验证、补测。
 - 复杂任务：系统可能已给出多步「自动规划」；若有规划，严格按步骤推进并在每步验证。若无规划，先短计划（explore → implement → verify）再动手。
 - 多步任务自行拆解、实现、验证；工具失败时换策略，不要空转重试。
@@ -17593,7 +17744,7 @@ func buildNestedFullCodingEnvironmentPromptPreamble() string {
 	return `## 嵌套实现子代理（Nested Worker）
 你是全功能编程工作台派发的实现子代理（干净上下文）：
 - 可使用文件读写、搜索、shell、git_diff、ssh、web_search/web_fetch、current_datetime，以及本轮工具列表中实际出现的受管扩展函数；不得猜测旧 Skill/MCP 入口。
-- 结构、符号和调用关系优先 code_navigation（codegraph explore / codegraph node）。摸清一个文件的分段、include 和文件级声明时用 file_symbols，不要为此 read_file 整份文件。没有 .codegraph/ 时，可修改的任务里该工具会安装并 codegraph init。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。
+- 结构、符号和调用关系优先 code_navigation（codegraph explore / codegraph node）。摸清一个文件的分段、include 和文件级声明时用 file_symbols，不要为此 read_file 整份文件。没有 .codegraph/ 时，可修改的任务里该工具会安装并 codegraph init。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。不知道名字、问的是行为或模块在哪时用 code_search。已知符号和调用边仍用 code_navigation。精确文本用 ripgrep。
 - 禁止再派生子代理；请在本上下文中直接完成指派任务并验证。
 - 最小必要改动；工具失败时换策略；完成后用工程师短文说明改了什么以及实际跑过的验证，不要写审计标题。
 
@@ -17688,9 +17839,9 @@ func probeCodingWorkspace(projectPath string) string {
 	}
 	b.WriteString("- 顶层清单以本概览为准；不要用 python3/os.listdir 复核。失败的列目录不能当成目录为空。\n")
 	if hasCodeGraph {
-		b.WriteString("- 存在 .codegraph/：结构、符号和调用关系优先 code_navigation（codegraph explore / codegraph node）。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。\n")
+		b.WriteString("- 存在 .codegraph/：结构、符号和调用关系优先 code_navigation（codegraph explore / codegraph node）。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。不知道名字、问的是行为或模块在哪时用 code_search。已知符号和调用边仍用 code_navigation。精确文本用 ripgrep。\n")
 	} else {
-		b.WriteString("- 顶层没有 .codegraph/。结构、符号和调用关系仍可调用 code_navigation；可修改的任务里该工具会安装 codegraph 并 codegraph init。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。只读询问不要安装或初始化。\n")
+		b.WriteString("- 顶层没有 .codegraph/。结构、符号和调用关系仍可调用 code_navigation；可修改的任务里该工具会安装 codegraph 并 codegraph init。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。不知道名字、问的是行为或模块在哪时用 code_search。已知符号和调用边仍用 code_navigation。精确文本用 ripgrep。只读询问不要安装或初始化。\n")
 	}
 	return strings.TrimSpace(b.String())
 }
@@ -17734,6 +17885,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 
 ## 允许
 - list_directory / glob / read_file / bash（以及只读搜索）定位并启动程序。
+- 不知道名字、问的是行为或模块在哪时用 code_search。已知符号和调用边仍用 code_navigation。精确文本用 ripgrep。
 - 仅当没有可执行产物时，用已有 build 脚本编译一次再运行。
 
 ## 禁止
@@ -17773,7 +17925,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 	b.WriteString(codingAgentTodoControlPlanePromptSection)
 	b.WriteString(`
 ## 工作流
-- 结构、符号和调用关系优先 code_navigation（运行 codegraph explore / codegraph node）。摸清一个文件的分段、include 和文件级声明时用 file_symbols，不要为此 read_file 整份文件。顶层没有 .codegraph/ 时，可修改的任务里该工具会尝试 npm install -g @colbymchenry/codegraph，没有索引时再 codegraph init。code_navigation 不可用或检索失败时，用 Glob、ripgrep、list_directory 完成同样的定位再读文件。code_navigation 已经给出的符号正文就是当前源码，不要为同一个符号再 read_file 或 ripgrep。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。所有读取、搜索、列目录都必须限定在项目路径内；不要读取项目外文件。
+- 结构、符号和调用关系优先 code_navigation（运行 codegraph explore / codegraph node）。摸清一个文件的分段、include 和文件级声明时用 file_symbols，不要为此 read_file 整份文件。顶层没有 .codegraph/ 时，可修改的任务里该工具会尝试 npm install -g @colbymchenry/codegraph，没有索引时再 codegraph init。code_navigation 不可用或检索失败时，用 Glob、ripgrep、list_directory 完成同样的定位再读文件。code_navigation 已经给出的符号正文就是当前源码，不要为同一个符号再 read_file 或 ripgrep。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。不知道名字、问的是行为或模块在哪时用 code_search。已知符号和调用边仍用 code_navigation。精确文本用 ripgrep。所有读取、搜索、列目录都必须限定在项目路径内；不要读取项目外文件。
 - .codegraph/ 是 code_navigation 的本地索引，不是任务改动。不要删除它，不要提交它，也不要因为它出现在 git status 里就回滚。
 - 修复 bug 时，优先复现或确认错误，再沿调用链追踪输入、状态变化和影响范围。不要基于猜测修改。
 - 修改已有文件时优先使用 edit_file 或 edit_lines；禁止用 write_file 重写已有文件来做小修改。edit_file 失败时先 read_file 确认当前内容，再改用 edit_lines。
@@ -18040,6 +18192,7 @@ var codingSubAgentDynamicToolNames = map[string]bool{
 	codingSubAgentSpawnToolName: true,
 	codingAgentTodoToolName:     true,
 	codeNavigationToolName:      true,
+	codeSearchToolName:          true,
 	reportLocalizationToolName:  true,
 }
 

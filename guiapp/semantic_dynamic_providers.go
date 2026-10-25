@@ -648,7 +648,7 @@ func (b guiSemanticSkillBridge) CallBoundSkill(_ context.Context, _ agentservice
 	if executor == nil {
 		return "", fmt.Errorf("skill_bound_execution_unavailable")
 	}
-	text, err := executor.executeBoundSkill(binding.StableID, binding.Name, binding.Version, binding.ContentDigest, arguments)
+	text, _, err := executor.executeBoundSkill(binding.StableID, binding.Name, binding.Version, binding.ContentDigest, arguments)
 	if err != nil {
 		return "", err
 	}

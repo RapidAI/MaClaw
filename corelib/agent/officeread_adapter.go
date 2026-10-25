@@ -553,7 +553,7 @@ func documentSnapshotExtension(value string) string {
 	ext := "." + strings.TrimPrefix(strings.ToLower(strings.TrimSpace(value)), ".")
 	switch strings.TrimPrefix(ext, ".") {
 	case "doc", "docx", "xls", "xlsx", "ppt", "pptx", "pdf", "csv", "txt", "text", "md", "markdown", "json", "xml", "yaml", "yml", "log",
-		"dwg", "dxf", "dxfb", "glb", "gltf", "epub", "adoc", "asciidoc", "eml":
+		"dwg", "dxf", "dxfb", "glb", "gltf", "epub", "mobi", "adoc", "asciidoc", "eml":
 		// Preserve only parser-relevant suffixes. The EPUB exception in
 		// preflightOfficeReadContainer keys off this suffix: the private copy
 		// must still be named .epub or a real EPUB zip is rejected as a

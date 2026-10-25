@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/swarm"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -184,7 +185,7 @@ func (c *coreAgentCallbacks) GenerateReviewedHostDocument(ctx context.Context, p
 		return "", err
 	}
 	c.reviewedHostGeneratedDocument = generated
-	return "PDF artifact published; deliver it through the current-channel file adapter. This is not a send.", nil
+	return agentruntime.HostPublishedCurrentChannelFileNote, nil
 }
 
 func reviewedHostGeneratedDocumentFromPDF(content string, pdf []byte) (*reviewedHostGeneratedDocument, error) {

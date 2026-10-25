@@ -143,7 +143,7 @@ func DraftSkill(session *TrajectorySession) (*skill.SkillYAMLFile, error) {
 	name := tool.GenerateSkillName(description)
 	triggers := tool.ExtractTriggerKeywords(description)
 
-	return &skill.SkillYAMLFile{
+	draft := &skill.SkillYAMLFile{
 		Name:         name,
 		Description:  description,
 		Triggers:     triggers,
@@ -156,7 +156,13 @@ func DraftSkill(session *TrajectorySession) (*skill.SkillYAMLFile, error) {
 		// what other coding tasks learned; a chat never contributes a
 		// capability to a coding turn.
 		ExperienceDomain: corelib.NormalizeSkillExperienceDomain(session.ExperienceDomain),
-	}, nil
+	}
+	// Publication refuses a learned draft that cannot stop on a failed check.
+	// Drafting itself still returns the recipe so callers can inspect it.
+	if !learnedSkillHasExitCheck(draft) {
+		log.Printf("[skill-auto-summary] draft %s has no exit-code check; publication will refuse it", draft.Name)
+	}
+	return draft, nil
 }
 
 // learnedSkillIntentMaxRunes bounds a learned skill's stored description.
@@ -798,6 +804,9 @@ func RunQualityGate(draft *skill.SkillYAMLFile, tagGen *TagGenerator) (*QualityG
 	if draft == nil {
 		return nil, fmt.Errorf("quality gate: draft is required")
 	}
+	if err := refuseLearnedSkillWithoutExitCheck(draft); err != nil {
+		return nil, err
+	}
 	// 1. Get the base skills directory.
 	baseDir, err := skill.PrimarySkillsDir()
 	if err != nil {
@@ -834,6 +843,57 @@ func RunQualityGate(draft *skill.SkillYAMLFile, tagGen *TagGenerator) (*QualityG
 	return result, nil
 }
 
+// learnedSkillHasExitCheck reports whether a learned draft can fail closed.
+// An explicit check command counts. Otherwise the last executable step must
+// be bash that stops when it fails. OnError skip or continue does not.
+func learnedSkillHasExitCheck(draft *skill.SkillYAMLFile) bool {
+	if draft == nil {
+		return false
+	}
+	if strings.TrimSpace(draft.Check) != "" {
+		return true
+	}
+	var last *skill.SkillYAMLStep
+	for i := range draft.Steps {
+		if strings.TrimSpace(draft.Steps[i].Action) == "" {
+			continue
+		}
+		last = &draft.Steps[i]
+	}
+	if last == nil {
+		return false
+	}
+	normalized := skill.NormalizeStepForRunnerCopy(corelib.NLSkillStep{
+		Action:  last.Action,
+		Params:  last.Params,
+		OnError: last.OnError,
+	}, "")
+	if skill.NormalizeStepActionName(normalized.Action) != "bash" {
+		return false
+	}
+	if last.ContinueOnErr {
+		return false
+	}
+	switch skill.NormalizeStepActionName(normalized.OnError) {
+	case "continue", "skip":
+		return false
+	default:
+		return true
+	}
+}
+
+// refuseLearnedSkillWithoutExitCheck blocks publication of a learned draft
+// that has no exit-code check. Other sources keep today's write path.
+func refuseLearnedSkillWithoutExitCheck(draft *skill.SkillYAMLFile) error {
+	if draft == nil || !strings.EqualFold(strings.TrimSpace(draft.Source), "learned") {
+		return nil
+	}
+	if learnedSkillHasExitCheck(draft) {
+		return nil
+	}
+	return fmt.Errorf("quality gate: learned skill has no exit-code check")
+}
+
 // runQualityGateInDirectory writes and evaluates a draft in an already-owned
 // directory. The caller owns the directory lifecycle. It is deliberately
 // separate from RunQualityGate so automatic producers can generate and scan a
@@ -841,6 +901,9 @@ func RunQualityGate(draft *skill.SkillYAMLFile, tagGen *TagGenerator) (*QualityG
 func runQualityGateInDirectory(draft *skill.SkillYAMLFile, tagGen *TagGenerator, skillDir string) (*QualityGateResult, error) {
 	if draft == nil {
 		return nil, fmt.Errorf("quality gate: draft is required")
+	}
+	if err := refuseLearnedSkillWithoutExitCheck(draft); err != nil {
+		return nil, err
 	}
 	skillDir = strings.TrimSpace(skillDir)
 	if skillDir == "" {
@@ -1151,6 +1214,10 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 	}
 	log.Printf("[skill-auto-summary] session=%s stage=ValidateSkillDraft result=ok name=%s",
 		sid, draft.Name)
+	if err := refuseLearnedSkillWithoutExitCheck(draft); err != nil {
+		log.Printf("[skill-auto-summary] session=%s stage=ExitCheck error=%v", sid, err)
+		return
+	}
 	if err := ensureSkillEvolutionMutationAdmission(app, draft.Name); err != nil {
 		log.Printf("[skill-auto-summary] session=%s stage=MutationAdmission blocked=%v", sid, err)
 		return

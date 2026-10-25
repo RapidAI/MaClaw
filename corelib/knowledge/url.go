@@ -32,6 +32,9 @@ var (
 )
 
 func (s *SQLiteStore) SaveURL(ctx context.Context, req URLSaveRequest) (Source, error) {
+	if err := rejectSaveScopeSession(req.SaveScope); err != nil {
+		return Source{}, err
+	}
 	if err := enforceURLDomainPolicy(ctx, s, req.URL); err != nil {
 		return Source{}, err
 	}
@@ -42,6 +45,7 @@ func (s *SQLiteStore) SaveURL(ctx context.Context, req URLSaveRequest) (Source, 
 	if err := enforceURLDomainPolicy(ctx, s, fallbackText(source.CanonicalURI, source.URI)); err != nil {
 		return Source{}, err
 	}
+	source = s.applyDesktopOwnerStamp(source)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Source{}, err
@@ -54,6 +58,7 @@ func (s *SQLiteStore) SaveURL(ctx context.Context, req URLSaveRequest) (Source, 
 		isDuplicate = true
 		source.ID = existing.ID
 		source.CreatedAt = existing.CreatedAt
+		source = preserveStoredOwner(source, existing)
 		if err := deleteSourceDerivedRows(ctx, tx, existing.ID); err != nil {
 			return Source{}, err
 		}
@@ -61,7 +66,7 @@ func (s *SQLiteStore) SaveURL(ctx context.Context, req URLSaveRequest) (Source, 
 			nodes[i].SourceID = source.ID
 		}
 	}
-	if err := insertSource(ctx, tx, source); err != nil {
+	if err := s.insertSource(ctx, tx, source); err != nil {
 		return Source{}, err
 	}
 	if err := addSourceLabelsTx(ctx, tx, source.ID, ingestLabelsForSource(source, req.Labels, req.AutoLabels)); err != nil {
@@ -290,16 +295,17 @@ func findExistingURLSourceForSave(ctx context.Context, tx *sql.Tx, source Source
 	if uri == "" && canonicalURI == "" {
 		return Source{}, false, nil
 	}
+	ownerSQL, ownerArgs := sourceOwnerMatchSQL(source.OwnerID)
 	q := `SELECT id, kind, uri, canonical_uri, title, author, site_name, published_at, fetched_at, content_hash,
 		owner_id, tenant_id, project_path, topic_hint, source_trust, batch_id, relative_path, status, error_message, created_at, updated_at
 		FROM knowledge_sources
-		WHERE kind IN (?, ?) AND COALESCE(owner_id, '') = ? AND COALESCE(tenant_id, '') = ? AND COALESCE(project_path, '') = ?
+		WHERE kind IN (?, ?) AND ` + ownerSQL + ` AND COALESCE(tenant_id, '') = ? AND COALESCE(project_path, '') = ?
 		AND (uri = ? OR canonical_uri = ? OR uri = ? OR canonical_uri = ?)
-		ORDER BY updated_at DESC LIMIT 1`
-	existing, err := scanSource(tx.QueryRowContext(ctx, q,
-		SourceKindURL, SourceKindHTML, source.OwnerID, source.TenantID, source.ProjectPath,
-		uri, uri, canonicalURI, canonicalURI,
-	))
+		ORDER BY ` + sourceOwnerMatchOrder + ` LIMIT 1`
+	args := []any{SourceKindURL, SourceKindHTML}
+	args = append(args, ownerArgs...)
+	args = append(args, source.TenantID, source.ProjectPath, uri, uri, canonicalURI, canonicalURI, source.OwnerID)
+	existing, err := scanSource(tx.QueryRowContext(ctx, q, args...))
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return Source{}, false, nil
@@ -932,7 +938,8 @@ func (s *SQLiteStore) replaceSourceDerivedRowsWithSpreadsheet(ctx context.Contex
 	if err := deleteSourceDerivedRows(ctx, tx, source.ID); err != nil {
 		return Source{}, err
 	}
-	if err := insertSource(ctx, tx, source); err != nil {
+	source = s.applyDesktopOwnerStamp(source)
+	if err := s.insertSource(ctx, tx, source); err != nil {
 		return Source{}, err
 	}
 	if len(nodes) > 0 {

@@ -416,9 +416,13 @@ func TestPutMailboxKeyringSplitsLongSecret(t *testing.T) {
 }
 
 type mailboxBrowseFake struct {
-	box     string
-	uid     uint32
-	listErr error
+	box         string
+	uid         uint32
+	listErr     error
+	html        string
+	markedRead  map[string][]uint32
+	deletedBox  string
+	deletedUIDs []uint32
 }
 
 func (f *mailboxBrowseFake) Folders(context.Context, mailbox.Account, string) ([]mailbox.Folder, error) {
@@ -429,6 +433,7 @@ func (f *mailboxBrowseFake) Browse(context.Context, mailbox.Account, string, str
 		Folders:  []mailbox.Folder{{Name: "INBOX", Special: "inbox"}, {Name: "Junk", Special: "junk"}},
 		Box:      "INBOX",
 		Messages: []mailbox.MessageSummary{{UID: 3, From: "a@ex.com", Subject: "Hello"}},
+		Unseen:   map[string]uint64{"INBOX": 2},
 	}, nil
 }
 func (f *mailboxBrowseFake) List(_ context.Context, _ mailbox.Account, _, box string, _ int) ([]mailbox.MessageSummary, error) {
@@ -443,7 +448,46 @@ func (f *mailboxBrowseFake) List(_ context.Context, _ mailbox.Account, _, box st
 }
 func (f *mailboxBrowseFake) Read(_ context.Context, _ mailbox.Account, _, _ string, uid uint32, _ int) (mailbox.Body, error) {
 	f.uid = uid
-	return mailbox.Body{MessageSummary: mailbox.MessageSummary{UID: uid, From: "a@ex.com", Subject: "Hello"}, Text: "plain note"}, nil
+	return mailbox.Body{MessageSummary: mailbox.MessageSummary{UID: uid, From: "a@ex.com", Subject: "Hello"}, Text: "plain note", HTML: f.html}, nil
+}
+func (f *mailboxBrowseFake) Organize(_ context.Context, _ mailbox.Account, _ string, req mailbox.OrganizeRequest) (int, error) {
+	if req.Action != "mark_read" && req.Action != "mark_unread" {
+		return 0, errors.New("bad action")
+	}
+	if f.markedRead == nil {
+		f.markedRead = map[string][]uint32{}
+	}
+	f.markedRead[req.Action] = append(f.markedRead[req.Action], req.UIDs...)
+	return len(req.UIDs), nil
+}
+func (f *mailboxBrowseFake) PreviewDelete(_ context.Context, _ mailbox.Account, _ string, req mailbox.DeleteRequest) (mailbox.DeletePreview, error) {
+	if len(req.UIDs) == 0 {
+		return mailbox.DeletePreview{}, errors.New("no uids")
+	}
+	return mailbox.DeletePreview{
+		Total: len(req.UIDs),
+		Plan:  mailbox.DeletePlan{Scope: mailbox.DeleteScopeFolder, Box: req.Box, UIDs: req.UIDs},
+	}, nil
+}
+func (f *mailboxBrowseFake) ApplyDelete(_ context.Context, _ mailbox.Account, _ string, plan mailbox.DeletePlan) (mailbox.DeleteResult, error) {
+	f.deletedBox = plan.Box
+	f.deletedUIDs = plan.UIDs
+	return mailbox.DeleteResult{Moved: len(plan.UIDs)}, nil
+}
+
+var (
+	_ mailbox.MailOrganizer = (*mailboxBrowseFake)(nil)
+	_ mailbox.MailDeleter   = (*mailboxBrowseFake)(nil)
+)
+
+func TestMailboxBrowseFakeAssertions(t *testing.T) {
+	var fb mailbox.FolderBrowser = &mailboxBrowseFake{}
+	if _, ok := fb.(mailbox.MailOrganizer); !ok {
+		t.Fatal("fake does not satisfy MailOrganizer")
+	}
+	if _, ok := fb.(mailbox.MailDeleter); !ok {
+		t.Fatal("fake does not satisfy MailDeleter")
+	}
 }
 
 func TestMailboxBrowseListsFolderAndReadsMessage(t *testing.T) {
@@ -487,5 +531,83 @@ func TestMailboxBrowseListsFolderAndReadsMessage(t *testing.T) {
 	fake.listErr = mailbox.ErrAuth
 	if _, err := app.MailboxBrowseMessages(id, "INBOX", 10); err == nil || err.Error() != mailbox.MsgAuth {
 		t.Fatalf("auth err=%v", err)
+	}
+}
+
+func TestMailboxBrowseMarkReadAndDelete(t *testing.T) {
+	app := newDatabaseProfileTestApp(t)
+	installFakeMailboxKeyring(t)
+	id, err := app.MailboxAccountSave(map[string]interface{}{
+		"name": "Work", "address": "w@ex.com",
+		"inbound": map[string]interface{}{"host": "imap.example.com", "port": 993, "security": "tls", "username": "w"},
+	})
+	if err != nil || id == "" {
+		t.Fatal(err)
+	}
+	if err := app.MailboxAccountSetSecret(id, mailbox.SideInbound, "stored-secret"); err != nil {
+		t.Fatal(err)
+	}
+	fake := &mailboxBrowseFake{}
+	prev := mailboxToolBrowser
+	mailboxToolBrowser = fake
+	t.Cleanup(func() { mailboxToolBrowser = prev })
+
+	if _, err := app.MailboxBrowseMarkRead(id, "INBOX", []uint32{7, 8}, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := fake.markedRead["mark_read"]; len(got) != 2 || got[0] != 7 || got[1] != 8 {
+		t.Fatalf("mark_read=%v", got)
+	}
+	if _, err := app.MailboxBrowseMarkRead(id, "INBOX", []uint32{7}, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := fake.markedRead["mark_unread"]; len(got) != 1 || got[0] != 7 {
+		t.Fatalf("mark_unread=%v", got)
+	}
+	if _, err := app.MailboxBrowseMarkRead(id, "INBOX", nil, true); err == nil {
+		t.Fatal("empty uid list must fail")
+	}
+	if _, err := app.MailboxBrowseMarkRead(id, "INBOX", make([]uint32, mailbox.OrganizeMaxUIDs+1), true); err == nil {
+		t.Fatal("over-limit uid list must fail")
+	}
+
+	moved, err := app.MailboxBrowseDelete(id, "INBOX", []uint32{7})
+	if err != nil || moved["moved"] != 1 {
+		t.Fatalf("delete=%v err=%v", moved, err)
+	}
+	if fake.deletedBox != "INBOX" || len(fake.deletedUIDs) != 1 || fake.deletedUIDs[0] != 7 {
+		t.Fatalf("deleted box=%s uids=%v", fake.deletedBox, fake.deletedUIDs)
+	}
+	if _, err := app.MailboxBrowseDelete(id, "INBOX", nil); err == nil {
+		t.Fatal("empty uid delete must fail")
+	}
+}
+
+func TestMailboxBrowseReadReturnsHTML(t *testing.T) {
+	app := newDatabaseProfileTestApp(t)
+	installFakeMailboxKeyring(t)
+	id, err := app.MailboxAccountSave(map[string]interface{}{
+		"name": "Work", "address": "w@ex.com",
+		"inbound": map[string]interface{}{"host": "imap.example.com", "port": 993, "security": "tls", "username": "w"},
+	})
+	if err != nil || id == "" {
+		t.Fatal(err)
+	}
+	if err := app.MailboxAccountSetSecret(id, mailbox.SideInbound, "stored-secret"); err != nil {
+		t.Fatal(err)
+	}
+	fake := &mailboxBrowseFake{html: "<p>你好 <b>世界</b></p>"}
+	prev := mailboxToolBrowser
+	mailboxToolBrowser = fake
+	t.Cleanup(func() { mailboxToolBrowser = prev })
+
+	body, err := app.MailboxBrowseRead(id, "INBOX", 5)
+	if err != nil || body["html"] != "<p>你好 <b>世界</b></p>" {
+		t.Fatalf("body=%v err=%v", body, err)
+	}
+	fake.html = strings.Repeat("x", browseHTMLCap+10)
+	body, err = app.MailboxBrowseRead(id, "INBOX", 5)
+	if err != nil || len(body["html"].(string)) != browseHTMLCap {
+		t.Fatalf("capped html len=%d err=%v", len(body["html"].(string)), err)
 	}
 }

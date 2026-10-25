@@ -5,6 +5,7 @@ import "testing"
 func TestFactIndexIncludesStructuredTableFacts(t *testing.T) {
 	store := newStoreWithStructuredCSV(t)
 	defer store.Close()
+	seedLegacyStructuredTableFact(t, store)
 
 	entities, err := store.FactIndex(t.Context(), FactIndexOptions{SearchOptions: SearchOptions{Query: "张三", Limit: 20}, Kind: "entity"})
 	if err != nil {
@@ -26,6 +27,7 @@ func TestFactIndexIncludesStructuredTableFacts(t *testing.T) {
 func TestSuggestIncludesStructuredFactIndexItems(t *testing.T) {
 	store := newStoreWithStructuredCSV(t)
 	defer store.Close()
+	seedLegacyStructuredTableFact(t, store)
 
 	suggestions, err := store.Suggest(t.Context(), KnowledgeSuggestOptions{
 		SearchOptions: SearchOptions{Query: "部门", Limit: 20},

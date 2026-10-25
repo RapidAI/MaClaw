@@ -87,7 +87,7 @@
     gap: 4px;
     padding: 4px 10px;
     border: 1px solid var(--theme-border);
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     background: transparent;
     color: var(--theme-primary);
     cursor: pointer;
@@ -134,7 +134,7 @@
     gap: 10px;
     padding: 8px 12px;
     border: 1px solid var(--theme-border);
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     background: var(--theme-surface);
     color: var(--theme-text-primary);
     font: inherit;
@@ -190,7 +190,7 @@
 .install-skill-list__badge {
     flex: 0 0 auto;
     padding: 2px 6px;
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
     background: var(--theme-success-bg);
     color: var(--theme-success);
     font-size: 0.75rem;
@@ -204,7 +204,7 @@
     margin-top: 12px;
     padding: 10px 12px;
     border: 1px solid var(--theme-border);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     background: var(--theme-surface-muted);
     color: var(--theme-text-primary);
     text-align: left;
@@ -243,7 +243,7 @@
 .install-skill-progress__track {
     height: 4px;
     overflow: hidden;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--theme-border);
 }
 
@@ -285,7 +285,7 @@
     overflow-y: auto;
     padding: 24px;
     border: 1px solid var(--theme-border);
-    border-radius: 12px;
+    border-radius: var(--radius-lg);
     background: var(--theme-surface);
     box-shadow: 0 20px 60px rgba(15, 23, 42, 0.3), 0 0 0 1px rgba(15, 23, 42, 0.05);
     animation: slideUp 0.3s ease-out;
@@ -336,7 +336,7 @@
 .confirm-dialog__button {
     min-height: 44px;
     padding: 8px 20px;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     cursor: pointer;
     font-size: 0.875rem;
     font-weight: 700;
@@ -393,7 +393,7 @@
     max-width: 280px;
     padding: 20px 28px;
     border: 1px solid var(--theme-border-subtle);
-    border-radius: 16px;
+    border-radius: var(--radius-xl);
     background: var(--theme-surface);
     box-shadow: 0 8px 32px rgba(15, 23, 42, 0.12);
     text-align: center;
@@ -459,7 +459,7 @@
 .tool-repair-dialog__close {
     padding: 6px 16px;
     border: 1px solid var(--theme-border);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     background: var(--theme-surface-muted);
     color: var(--theme-text-secondary);
     cursor: pointer;
@@ -483,7 +483,7 @@
 .thanks-modal__content {
     padding: 10px;
     border: 1px solid var(--theme-border);
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
     background: var(--theme-surface);
     color: var(--theme-text-primary);
     font-family: inherit;
@@ -615,7 +615,7 @@
     display: inline-flex;
     width: 32px;
     height: 18px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--theme-switch-track-off);
     transition: background-color var(--dur-fast) var(--ease-out);
 }
@@ -872,7 +872,7 @@
     height: 6px;
     margin-top: 12px;
     overflow: hidden;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: color-mix(in srgb, var(--theme-text-muted) 18%, var(--theme-surface));
 }
 
@@ -1287,7 +1287,7 @@
    reads as one canvas instead of mixed-radius islands. */
 .llm-config-panel .usage-display,
 .llm-config-panel .token-usage-panel {
-    border-radius: 12px;
+    border-radius: var(--radius-lg);
 }
 
 .llm-config-panel .token-usage-panel {
@@ -1350,7 +1350,7 @@
     flex-shrink: 0;
     width: 6px;
     height: 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--theme-primary);
 }
 
@@ -1396,7 +1396,7 @@
     padding: 6px 16px;
     font-size: 0.78rem;
     font-weight: 600;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     cursor: pointer;
 }
 
@@ -1455,7 +1455,7 @@
 
 .llm-config-card,
 .llm-config-form-card {
-    border-radius: 12px;
+    border-radius: var(--radius-lg);
     border-color: var(--theme-border);
     background: var(--theme-surface);
     box-shadow: var(--shadow-sm);
@@ -1492,7 +1492,7 @@
     min-height: 30px;
     padding: 4px 12px;
     font-size: 0.72rem;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     cursor: pointer;
     background: var(--theme-surface);
     border-color: color-mix(in srgb, var(--theme-danger) 45%, transparent);
@@ -1519,7 +1519,7 @@
     font-size: 0.74rem;
     line-height: 1.5;
     font-weight: 600;
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     border: 1px solid color-mix(in srgb, var(--theme-danger) 32%, transparent);
     background: var(--theme-danger-bg);
 }
@@ -1573,7 +1573,7 @@
     max-height: min(86vh, 820px) !important;
     padding: 0 !important;
     border: 1px solid var(--theme-border);
-    border-radius: 14px !important;
+    border-radius: var(--radius-lg) !important;
     background: var(--theme-surface) !important;
     box-shadow: 0 24px 70px rgba(15, 23, 42, 0.24), 0 0 0 1px var(--theme-border-subtle) !important;
     -webkit-app-region: no-drag;
@@ -1620,7 +1620,7 @@
     padding: 0 !important;
     cursor: pointer;
     border: 1px solid var(--theme-border) !important;
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     background: var(--theme-surface-muted) !important;
     color: var(--theme-text-secondary) !important;
     transition: background 0.15s, border-color 0.15s, color 0.15s;
@@ -1677,7 +1677,7 @@
     gap: 5px;
     min-height: 36px;
     padding: 5px 14px !important;
-    border-radius: 999px !important;
+    border-radius: var(--radius-pill) !important;
     font-size: 0.78rem;
     font-weight: 600;
     cursor: pointer;
@@ -1715,7 +1715,7 @@
     flex-shrink: 0;
     width: 6px;
     height: 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--theme-success);
 }
 
@@ -1726,7 +1726,7 @@
     font-size: 0.56rem;
     line-height: 1;
     padding: 2px 5px;
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     white-space: nowrap;
     background: var(--theme-info-bg);
     color: var(--theme-primary-strong);
@@ -1791,7 +1791,7 @@
 .settings-content.settings-panel .llm-config-panel button.llm-config-option-btn {
     min-height: 30px;
     padding: 4px 14px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     font-size: 0.76rem;
     font-weight: 600;
     cursor: pointer;
@@ -1827,7 +1827,7 @@
 .llm-config-hub-card {
     margin: 16px 0 0 !important;
     padding: 18px 20px;
-    border-radius: var(--radius-lg, 14px);
+    border-radius: var(--radius-lg, 12px);
     border: 1px solid color-mix(in srgb, var(--theme-success) 28%, var(--theme-border));
     background: var(--theme-surface-muted);
 }
@@ -1835,7 +1835,7 @@
 .llm-config-hub-card__status {
     flex: 0 0 auto;
     padding: 4px 10px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     border: 1px solid color-mix(in srgb, var(--theme-success) 34%, var(--theme-border));
     background: var(--theme-success-bg);
     color: var(--theme-success);
@@ -1845,7 +1845,7 @@
 
 .llm-config-hub-card__cell {
     padding: 10px 12px;
-    border-radius: var(--radius-md, 10px);
+    border-radius: var(--radius-md, 8px);
     background: var(--theme-surface);
     border: 1px solid var(--theme-border-subtle);
 }
@@ -1872,7 +1872,7 @@
     content: "";
     width: 6px;
     height: 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: currentColor;
 }
 
@@ -1885,7 +1885,7 @@
 .settings-content.settings-panel .llm-config-btn {
     min-height: 36px;
     padding: 0 20px;
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     font-size: 0.8rem;
     font-weight: 600;
     cursor: pointer;
@@ -1958,7 +1958,7 @@
 .llm-config-save-error {
     margin-bottom: 10px;
     padding: 9px 12px;
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     border: 1px solid color-mix(in srgb, var(--theme-danger) 30%, transparent);
     background: var(--theme-danger-bg);
     color: var(--theme-danger);
@@ -2031,7 +2031,7 @@
     padding: 5px 8px;
     text-align: center;
     border: 1px solid var(--theme-border);
-    border-radius: var(--radius-md, 10px);
+    border-radius: var(--radius-md, 8px);
     background: var(--theme-surface);
     color: var(--theme-text-primary);
     font-size: 0.8rem;
@@ -2099,7 +2099,7 @@
     font-size: 0.72rem;
     line-height: 1.2;
     white-space: nowrap;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     cursor: pointer;
     background: var(--theme-surface);
     color: var(--theme-primary-strong);
@@ -2138,7 +2138,7 @@
 .llm-profile-assignments__state--soft {
     margin-bottom: 14px;
     padding: 8px 10px;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     background: var(--theme-surface-muted);
     color: var(--theme-text-secondary);
     font-size: 0.72rem;
@@ -2167,7 +2167,7 @@
     padding: 4px 10px;
     font-size: 0.7rem;
     font-weight: 600;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     cursor: pointer;
     background: var(--theme-surface);
     color: var(--theme-primary-strong);
@@ -2211,7 +2211,7 @@
     min-height: 26px;
     padding: 3px 9px;
     font-size: 0.7rem;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     cursor: pointer;
     background: var(--theme-surface);
 }
@@ -2250,7 +2250,7 @@
     content: "";
     width: 6px;
     height: 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: currentColor;
 }
 
@@ -2305,7 +2305,7 @@
 
 .model-config-heading--warning,
 .model-config-phase-title--warning {
-    color: var(--theme-primary, #2f6fbc);
+    color: var(--theme-primary, #2e75cb);
 }
 
 .model-config-heading--success,
@@ -2315,7 +2315,7 @@
 }
 
 .model-config-heading--info {
-    color: var(--theme-primary, #2f6fbc);
+    color: var(--theme-primary, #2e75cb);
 }
 
 .model-config-toggle-row {
@@ -2371,7 +2371,7 @@
     height: 32px;
     padding: 0 10px;
     border: 1px solid var(--theme-border);
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     outline: none;
     background: var(--theme-surface);
     color: var(--theme-text-primary);
@@ -2382,7 +2382,7 @@
     margin-top: 20px;
     padding: 12px 14px;
     border: 1px solid var(--theme-border);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     background: var(--theme-surface-muted);
 }
 
@@ -2409,7 +2409,7 @@
     margin-bottom: 10px;
     padding: 10px 12px;
     border: 1px solid var(--theme-border);
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     background: var(--theme-surface);
 }
 
@@ -2434,13 +2434,13 @@
     height: 6px;
     overflow: hidden;
     margin-bottom: 10px;
-    border-radius: 3px;
+    border-radius: var(--radius-xs);
     background: var(--theme-border-subtle);
 }
 
 .model-config-level-fill {
     height: 100%;
-    border-radius: 3px;
+    border-radius: var(--radius-xs);
     transition: width 0.1s ease-out;
 }
 
@@ -2449,7 +2449,7 @@
 }
 
 .model-config-level-fill--warning {
-    background: var(--theme-primary, #2f6fbc);
+    background: var(--theme-primary, #2e75cb);
 }
 
 .model-config-actions {
@@ -2462,7 +2462,7 @@
 .model-config-button {
     padding: 5px 12px;
     border: 1px solid var(--theme-border);
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     background: transparent;
     color: var(--theme-text-secondary);
     cursor: pointer;
@@ -2489,7 +2489,7 @@
 .model-status-box {
     padding: 12px 14px;
     border: 1px solid var(--theme-border);
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     background: var(--theme-surface);
 }
 
@@ -2530,13 +2530,13 @@
     width: 100%;
     height: 6px;
     overflow: hidden;
-    border-radius: 3px;
+    border-radius: var(--radius-xs);
     background: var(--theme-border);
 }
 
 .model-status-box__progress-fill {
     height: 100%;
-    border-radius: 3px;
+    border-radius: var(--radius-xs);
     background: var(--model-accent, var(--theme-primary));
     transition: width 0.3s ease;
 }
@@ -2550,7 +2550,7 @@
 .model-status-box__primary {
     padding: 6px 16px;
     border: 0;
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
     background: var(--model-accent, var(--theme-primary));
     color: var(--theme-on-primary);
     cursor: pointer;
@@ -2567,7 +2567,7 @@
     margin-left: 10px;
     padding: 4px 12px;
     border: 1px solid var(--theme-border);
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
     background: var(--theme-surface);
     color: var(--theme-text-primary);
     cursor: pointer;
@@ -2919,7 +2919,7 @@
     height: 14px;
     flex: 0 0 18px;
     border: 2px solid currentColor;
-    border-radius: 3px;
+    border-radius: var(--radius-xs);
     background: color-mix(in srgb, var(--theme-primary) 8%, var(--theme-surface));
     transform: rotate(-6deg);
 }
@@ -2931,7 +2931,7 @@
     top: 50%;
     width: 6px;
     height: 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: color-mix(in srgb, var(--theme-primary) 18%, var(--theme-surface-muted));
     transform: translateY(-50%);
 }
@@ -3105,7 +3105,7 @@
 .hub-service-redeem__period-card {
     background: var(--theme-surface);
     border: 1px solid var(--theme-border);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     padding: 10px 12px;
     display: flex;
     flex-direction: column;
@@ -3162,7 +3162,7 @@
 
 .hub-service-redeem__period-bar {
     height: 6px;
-    border-radius: 3px;
+    border-radius: var(--radius-xs);
     background: var(--theme-border);
     overflow: hidden;
     position: relative;
@@ -3170,7 +3170,7 @@
 
 .hub-service-redeem__period-bar-fill {
     height: 100%;
-    border-radius: 3px;
+    border-radius: var(--radius-xs);
     transition: width var(--transition-normal);
 }
 
@@ -3220,7 +3220,7 @@
     display: inline-flex;
     align-items: center;
     border: 1px solid var(--theme-border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     font-size: 0.72rem;
     font-weight: 600;
 }

@@ -208,6 +208,19 @@ func CanonicalRunVarKey(key string) string {
 	return canonicalRunVarKey(key)
 }
 
+// CaptureAssigned reports that a declared capture name has a non-empty value,
+// either under the declared spelling or the runner's canonical key.
+func CaptureAssigned(vars map[string]string, name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || len(vars) == 0 {
+		return false
+	}
+	if strings.TrimSpace(vars[name]) != "" {
+		return true
+	}
+	return strings.TrimSpace(vars[canonicalRunVarKey(name)]) != ""
+}
+
 // FoldUnconsumedArgsToInput merges undeclared user-provided args into the
 // "input" carrier key when the skill has no explicit parameter contract.
 //

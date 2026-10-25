@@ -134,16 +134,73 @@ func TestApplyExistingHashSkipsAdjustsEstimatedBytes(t *testing.T) {
 	items := []ImportItem{
 		{Status: ItemStatusQueued, FileHash: "aaa", FileSize: 100, FilePath: "a.md", RelativePath: "a.md"},
 		{Status: ItemStatusQueued, FileHash: "bbb", FileSize: 200, FilePath: "b.md", RelativePath: "b.md"},
+		{Status: ItemStatusSkippedDuplicate, FileHash: "aaa", FileSize: 100, FilePath: "a-copy.md", RelativePath: "a-copy.md"},
 	}
-	result, items = applyExistingHashSkips(result, items, map[string]struct{}{"aaa": {}})
+	result, items = applyExistingHashSkips(result, items, map[string]string{"aaa": "src-aaa"}, nil, nil)
 	if result.QueuedFiles != 1 || result.DuplicateFiles != 1 || result.SkippedFiles != 1 {
 		t.Fatalf("counters: %#v", result)
 	}
 	if result.EstimatedBytes != 200 {
 		t.Fatalf("estimated_bytes=%d want 200", result.EstimatedBytes)
 	}
-	if items[0].Status != ItemStatusSkippedDuplicate || items[1].Status != ItemStatusQueued {
-		t.Fatalf("items statuses: %s %s", items[0].Status, items[1].Status)
+	if items[0].Status != ItemStatusSkippedDuplicate || items[0].SourceID != "src-aaa" || items[1].Status != ItemStatusQueued {
+		t.Fatalf("items statuses: %s %s source %s", items[0].Status, items[1].Status, items[0].SourceID)
+	}
+	if items[2].SourceID != "src-aaa" {
+		t.Fatalf("within-batch duplicate source = %q", items[2].SourceID)
+	}
+}
+
+func TestApplyExistingHashSkipsUsesLocalUpdate(t *testing.T) {
+	result := DirectoryImportResult{QueuedFiles: 1, DuplicateFiles: 1, SkippedFiles: 1, EstimatedBytes: 100}
+	items := []ImportItem{
+		{Status: ItemStatusQueued, FileHash: "aaa", FileSize: 100, FilePath: "note.md"},
+		{Status: ItemStatusSkippedDuplicate, FileHash: "aaa", FileSize: 100, FilePath: "copy.md"},
+	}
+	blocked := map[string]struct{}{"note.md": {}}
+	local := map[string]string{"aaa": "local-src"}
+	result, items = applyExistingHashSkips(result, items, map[string]string{"aaa": "other-src"}, blocked, local)
+	if items[0].Status != ItemStatusQueued || items[0].SourceID != "" {
+		t.Fatalf("blocked item changed: %#v", items[0])
+	}
+	if items[1].Status != ItemStatusSkippedDuplicate || items[1].SourceID != "local-src" {
+		t.Fatalf("copy = %#v", items[1])
+	}
+	if result.QueuedFiles != 1 || result.DuplicateFiles != 1 || result.SkippedFiles != 1 || result.EstimatedBytes != 100 {
+		t.Fatalf("counters %#v", result)
+	}
+}
+
+func TestPreferContentHashSourceKeepsProjectMembership(t *testing.T) {
+	const owner = "desktop-user"
+	// A membership in this project beats a newer row stored in another project.
+	if !preferContentHashSource(owner, owner, "t1", "D:/Alpha", true, owner, "t9", "D:/Gamma", false, "D:/Beta") {
+		t.Fatal("membered source lost to a newer other project")
+	}
+	if preferContentHashSource(owner, owner, "t9", "D:/Gamma", false, owner, "t1", "D:/Alpha", true, "D:/Beta") {
+		t.Fatal("newer other project replaced the membered source")
+	}
+	// The row stored in this project still beats a newer membership-only row.
+	if !preferContentHashSource(owner, owner, "t1", "D:/Beta", false, owner, "t9", "D:/Alpha", true, "D:/Beta") {
+		t.Fatal("native project lost to a newer membership")
+	}
+	if preferContentHashSource(owner, owner, "t9", "D:/Alpha", true, owner, "t1", "D:/Beta", false, "D:/Beta") {
+		t.Fatal("newer membership replaced the native project")
+	}
+}
+
+func TestHashesToLinkSkipsLocalUpdate(t *testing.T) {
+	items := []ImportItem{
+		{Status: ItemStatusQueued, FileHash: "aaa", FilePath: "copy.md"},
+		{Status: ItemStatusSkippedDuplicate, FileHash: "aaa", FilePath: "note.md"},
+		{Status: ItemStatusQueued, FileHash: "bbb", FilePath: "other.md"},
+	}
+	link := hashesToLink(items, map[string]string{"aaa": "other-project", "bbb": "beta"}, map[string]struct{}{"note.md": {}}, map[string]string{"aaa": "local"})
+	if _, ok := link["aaa"]; ok {
+		t.Fatalf("linked a hash this batch will write locally: %#v", link)
+	}
+	if link["bbb"] != "beta" {
+		t.Fatalf("link = %#v", link)
 	}
 }
 

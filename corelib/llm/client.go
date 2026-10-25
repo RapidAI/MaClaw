@@ -64,6 +64,34 @@ func newHTTPStatusError(status int, body []byte) error {
 	return &HTTPStatusError{StatusCode: status, Body: append([]byte(nil), body...)}
 }
 
+// ConfigAfterThinkingRejection reports whether err is a provider refusal to
+// turn thinking off, and returns a config that retries at the cheapest legal
+// effort named in the error. A second refusal of that same effort is not
+// retried.
+func ConfigAfterThinkingRejection(cfg corelib.MaclawLLMConfig, err error) (corelib.MaclawLLMConfig, bool) {
+	if err == nil {
+		return cfg, false
+	}
+	text := err.Error()
+	var httpErr *HTTPStatusError
+	if errors.As(err, &httpErr) && len(bytes.TrimSpace(httpErr.Body)) > 0 {
+		text = string(httpErr.Body)
+	}
+	effort, ok := corelib.ThinkingOffRejectedEffort(text)
+	if !ok {
+		return cfg, false
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.ThinkingMode), "enabled") &&
+		strings.EqualFold(strings.TrimSpace(cfg.ReasoningEffort), effort) {
+		return cfg, false
+	}
+	corelib.RememberThinkingFloor(cfg, effort)
+	cfg.ThinkingMode = "enabled"
+	cfg.ReasoningEffort = effort
+	log.Printf("[LLM] thinking off rejected model=%s; retry effort=%s", cfg.UpstreamModel(), effort)
+	return cfg, true
+}
+
 // OpenAIChatRequestOptions controls how an OpenAI-compatible chat/completions
 // request is built.
 type OpenAIChatRequestOptions struct {
@@ -220,10 +248,30 @@ func buildOpenAIChatRequestBody(
 	// DeepSeek V4+ defaults to enabled, but some hosts only return
 	// reasoning_content when thinking.type is present. AMD is not one of them.
 	corelib.AddAutoDeepSeekThinkingObject(cfg, reqBody)
-	// Cap reasoning budget when tools present (room for tool-call JSON).
-	// DeepSeek uses reasoning_effort, not Anthropic budget_tokens. WorkBuddy
-	// returns an empty reasoning_content when only thinking.type is set.
-	if thinking, _ := reqBody["thinking"].(map[string]interface{}); thinking != nil && !corelib.IsDeepSeekThinkingModeModel(cfg) {
+	if re := strings.TrimSpace(cfg.ReasoningEffort); re != "" && corelib.IsAutoThinkingMode(cfg.ThinkingMode) && !openAIChatBodyHasReasoningControl(reqBody) {
+		// A configured effort on auto still has to be expressed, in the
+		// provider's own fields. Writing the raw string sends minimal to xAI,
+		// reasoning_effort to OpenRouter and Qwen, and the wrong object to Kimi.
+		// Official DeepSeek is left for the stamp below, which rejects minimal
+		// and medium. AMD DeepSeek is not that stamp: this gateway never gets
+		// the DeepSeek thinking object.
+		if corelib.IsAMDRadeonPublicChatEndpoint(cfg) || !corelib.IsDeepSeekThinkingModeModel(cfg) {
+			next := cfg
+			next.ReasoningEffort = re
+			next.ThinkingMode = "enabled"
+			switch strings.ToLower(re) {
+			case "none", "off", "0", "false":
+				next.ThinkingMode = "disabled"
+			}
+			corelib.ApplyReasoningControls(next, reqBody, corelib.ReasoningAPIChat)
+		}
+	}
+	// Cap reasoning budget when tools are present so the trace leaves room
+	// for the tool-call JSON. This runs after the auto-effort stamp: that
+	// stamp is what creates the thinking object for an effort set on auto.
+	// Only the Claude-style thinking object accepts budget_tokens. Kimi,
+	// Doubao, and MiniMax reject that field, and DeepSeek uses reasoning_effort.
+	if thinking, _ := reqBody["thinking"].(map[string]interface{}); thinking != nil && corelib.OpenAIChatThinkingUsesBudget(cfg) {
 		if typ, _ := thinking["type"].(string); strings.EqualFold(typ, "enabled") && len(opts.Tools) > 0 {
 			if _, hasBudget := thinking["budget_tokens"]; !hasBudget {
 				budget := 4096
@@ -233,29 +281,6 @@ func buildOpenAIChatRequestBody(
 					budget = 1024
 				}
 				thinking["budget_tokens"] = budget
-			}
-		}
-	}
-	if re := strings.TrimSpace(cfg.ReasoningEffort); re != "" && corelib.IsAutoThinkingMode(cfg.ThinkingMode) && !openAIChatBodyHasReasoningControl(reqBody) {
-		if corelib.IsAMDRadeonPublicChatEndpoint(cfg) {
-			// A configured effort on auto must still be expressed, but only in
-			// a tier this gateway accepts. Do not write the raw value first:
-			// Qwen on AMD rejects high, and minimal is not a portable tier.
-			next := cfg
-			next.ReasoningEffort = re
-			next.ThinkingMode = "enabled"
-			switch strings.ToLower(re) {
-			case "none", "off", "0", "false":
-				next.ThinkingMode = "disabled"
-			}
-			corelib.ApplyReasoningControls(next, reqBody, corelib.ReasoningAPIChat)
-		} else if !corelib.IsDeepSeekThinkingModeModel(cfg) {
-			// Official DeepSeek effort is stamped below and rejects minimal/medium.
-			switch strings.ToLower(re) {
-			case "none", "off", "0", "false":
-				reqBody["reasoning_effort"] = "minimal"
-			default:
-				reqBody["reasoning_effort"] = re
 			}
 		}
 	}
@@ -2709,6 +2734,9 @@ func DoOpenAIRequestWithOptions(
 	opts.Stream = false
 	opts.Tools = tools
 	result, _, err := doOpenAIRequestRawWithOptions(ctx, cfg, messages, client, opts)
+	if next, ok := ConfigAfterThinkingRejection(cfg, err); ok {
+		result, _, err = doOpenAIRequestRawWithOptions(ctx, next, messages, client, opts)
+	}
 	return result, err
 }
 

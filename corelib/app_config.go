@@ -129,7 +129,7 @@ type AppConfig struct {
 	WebSearchCurrentProvider string                     `json:"web_search_current_provider,omitempty"`
 	WebSearchStrategy        WebSearchStrategy          `json:"web_search_strategy,omitempty"`
 	MaclawAgentMaxIterations int                        `json:"maclaw_agent_max_iterations,omitempty"`
-	MaclawLLMThinkingMode    string                     `json:"maclaw_llm_thinking_mode,omitempty"` // global: "" = unset (resolves to enabled), "enabled" | "disabled"
+	MaclawLLMThinkingMode    string                     `json:"maclaw_llm_thinking_mode,omitempty"` // global: "" = auto, or low | high | max | none
 	SubAgentConcurrency      int                        `json:"subagent_concurrency,omitempty"`
 	SubAgentFullAccess       bool                       `json:"subagent_full_access,omitempty"`
 	// MaClaw Role configuration
@@ -476,6 +476,10 @@ type AppConfig struct {
 	// OCRModelTier selects the PP-OCRv6 model size: "tiny", "small" or
 	// "medium". Empty means the default tier (see NormalizeOCRModelTier).
 	OCRModelTier string `json:"ocr_model_tier,omitempty"`
+	// FormulaEnabled gates FormulaNet inside ocr_recognize (mode=formula)
+	// and the background download shown in the OCR section of AI model
+	// settings. Text OCR stays on OCREnabled. Absent values stay enabled.
+	FormulaEnabled bool `json:"formula_enabled"`
 	// LatexTinyTeXEnabled installs the official TinyTeX-0 bootstrap and then
 	// TeX Live scheme-small in the background. Absent values stay enabled.
 	LatexTinyTeXEnabled bool `json:"latex_tinytex_enabled"`
@@ -1592,6 +1596,7 @@ func AppConfigDefaults() AppConfig {
 		ASREnabled:                 true,
 		OCREnabled:                 true,
 		OCRModelTier:               DefaultOCRModelTier,
+		FormulaEnabled:             true,
 		LatexTinyTeXEnabled:        true,
 		DiarizationEnabled:         true,
 		ASRVoiceCorrectionEnabled:  true,

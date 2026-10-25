@@ -2010,7 +2010,7 @@ describe("renderMessage assistant display guard", () => {
             timestamp: 1,
         };
         render(<div>{renderCodingAgentThinkingTimelineItem(item, lightTheme, "en")}</div>);
-        const panel = screen.getByTestId("assistant-reasoning-panel");
+        const panel = screen.getByTestId("coding-agent-thought");
         expect(panel.textContent || "").toContain("The user wants me to continue");
         expect(panel.textContent || "").not.toContain("\x01");
         expect(panel.textContent || "").not.toContain("\u25A1");
@@ -2043,7 +2043,7 @@ describe("renderMessage assistant display guard", () => {
             content: "Inspect the current scanner CLI",
             timestamp: 1,
         }, lightTheme, "zh", 2)}</div>);
-        expect(screen.getByText("#2")).toBeTruthy();
+        expect(screen.queryByText("#2")).toBeNull();
         expect(screen.queryByText("#131")).toBeNull();
     });
 
@@ -2055,7 +2055,7 @@ describe("renderMessage assistant display guard", () => {
             content: "---",
             timestamp: 1,
         }, lightTheme, "zh", 43)}</div>);
-        expect(screen.queryByTestId("assistant-reasoning-panel")).toBeNull();
+        expect(screen.queryByTestId("coding-agent-thought")).toBeNull();
         expect(screen.queryByText("思考过程")).toBeNull();
 
         rerender(<div>{renderCodingAgentThinkingTimelineItem({
@@ -2065,7 +2065,7 @@ describe("renderMessage assistant display guard", () => {
             content: "\n\n---\n### T3: title\n",
             timestamp: 1,
         }, lightTheme, "zh", 1)}</div>);
-        expect(screen.queryByTestId("assistant-reasoning-panel")).toBeNull();
+        expect(screen.queryByTestId("coding-agent-thought")).toBeNull();
 
         rerender(<div>{renderCodingAgentThinkingTimelineItem({
             id: "thought-dash",
@@ -2074,7 +2074,7 @@ describe("renderMessage assistant display guard", () => {
             content: "-",
             timestamp: 1,
         }, lightTheme, "zh", 158)}</div>);
-        expect(screen.queryByTestId("assistant-reasoning-panel")).toBeNull();
+        expect(screen.queryByTestId("coding-agent-thought")).toBeNull();
 
         rerender(<div>{renderCodingAgentThinkingTimelineItem({
             id: "thought-prose",
@@ -2155,13 +2155,15 @@ describe("renderMessage assistant display guard", () => {
             content: "Need to patch the scanner CLI and then verify the full implementation path.",
             timestamp: 1,
         }, lightTheme, "zh", 2, "正在编辑文件")}</div>);
-        const panel = screen.getByTestId("assistant-reasoning-panel");
+        const panel = screen.getByTestId("coding-agent-thought");
         expect(panel.getAttribute("data-live")).toBe("true");
+        expect(panel.getAttribute("data-process-kind")).toBe("think");
         const label = screen.getByTestId("assistant-reasoning-label");
         expect(label.textContent).toBe("正在编辑文件");
         expect(label.className).toContain("assistant-reasoning-live-label");
-        expect(screen.getByText("#2")).toBeTruthy();
+        expect(screen.queryByText("#2")).toBeNull();
         expect(screen.queryByText("思考过程")).toBeNull();
+        expect(panel.querySelector("[data-testid='coding-agent-process-live-dot']")).toBeTruthy();
         const summary = panel.querySelector(".assistant-reasoning-summary");
         expect(summary?.textContent || "").not.toContain("Need to patch the scanner CLI");
         expect((panel as HTMLDetailsElement).open).toBe(false);
@@ -2175,11 +2177,27 @@ describe("renderMessage assistant display guard", () => {
             content: "   ",
             timestamp: 1,
         }, lightTheme, "zh", 1, "正在思考")}</div>);
-        expect(screen.getByTestId("assistant-reasoning-panel").getAttribute("data-live")).toBe("true");
+        expect(screen.getByTestId("coding-agent-thought").getAttribute("data-live")).toBe("true");
         expect(screen.getByTestId("assistant-reasoning-label").textContent).toBe("正在思考");
         expect(screen.getByTestId("assistant-reasoning-label").className).toContain("assistant-reasoning-live-label");
-        expect(screen.getByText("#1")).toBeTruthy();
+        expect(screen.queryByText("#1")).toBeNull();
         expect(screen.queryByTestId("assistant-reasoning-body")).toBeNull();
+    });
+
+    it("shows how long a settled coding thought lasted and hides that while it is live", () => {
+        const item = {
+            id: "thought-duration",
+            sequence: 4,
+            kind: "thinking" as const,
+            content: "Compare the process row with the screenshot.",
+            timestamp: 1_000,
+        };
+        const { rerender } = render(<div>{renderCodingAgentThinkingTimelineItem(item, lightTheme, "zh", undefined, undefined, undefined, false, 12_000)}</div>);
+        expect(screen.getByTestId("coding-agent-thought").textContent).toContain("思考过程");
+        expect(screen.getByTestId("coding-agent-thought").textContent).toContain("· 12s");
+        rerender(<div>{renderCodingAgentThinkingTimelineItem(item, lightTheme, "zh", undefined, "正在思考", undefined, true, 12_000)}</div>);
+        expect(screen.getByTestId("assistant-reasoning-label").textContent).toBe("正在思考");
+        expect(screen.getByTestId("coding-agent-thought").textContent).not.toContain("12s");
     });
 
     it("renders legacy guide receipts as compact status instead of a system card", () => {
@@ -2612,6 +2630,21 @@ describe("renderMessage assistant display guard", () => {
         expect(progress.querySelector(".assistant-chat-progress-line")).toBeTruthy();
         expect(progress.querySelector(".assistant-chat-progress-line")?.getAttribute("data-llm-retry")).toBeNull();
         expect(screen.getByText("Fetching details")).toBeTruthy();
+    });
+
+    it("shows a status icon on a session tool progress row", () => {
+        render(<div>{renderMessage({
+            id: "tool-progress",
+            role: "progress",
+            content: "工具 · 执行命令 (bash)\nls corelib/knowledge",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "zh-Hans", false)}</div>);
+
+        const row = screen.getByTestId("assistant-tool-call");
+        expect(row.getAttribute("data-process-kind")).toBe("run");
+        expect(row.querySelector('[data-process-icon="run"]')).toBeTruthy();
+        expect(row.textContent).toContain("bash");
+        expect(row.textContent).toContain("ls corelib/knowledge");
     });
 
     it("renders an LLM retry countdown as its own status line", () => {

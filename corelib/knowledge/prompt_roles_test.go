@@ -103,6 +103,7 @@ func newRoleRecordingStore(t *testing.T) (*SQLiteStore, *recordingRoleEmbedder) 
 	t.Cleanup(func() { _ = store.Close() })
 	rec := &recordingRoleEmbedder{}
 	store.SetEmbedder(rec)
+	store.WaitBackground()
 	return store, rec
 }
 
@@ -122,12 +123,18 @@ func TestAllQuerySitesUseQueryRole(t *testing.T) {
 		{
 			name: "vector_search.searchByEmbedding",
 			query: func(s *SQLiteStore) error {
-				// A query is embedded only after this model has a stored vector.
+				// A query is embedded only after this model has a stored node vector.
 				// Seed one directly so the role assertion is not skipped.
 				if err := s.SaveSource(ctx, Source{ID: "role-query-source", Kind: SourceKindText, URI: "manual://role-query", Status: StatusParsed}); err != nil {
 					return err
 				}
-				if err := s.SaveCard(ctx, Card{ID: "role-query-card", SourceID: "role-query-source", Title: "prompt", Claim: "官方接入", Embedding: []float32{1, 0}}); err != nil {
+				if err := s.EnsureNodeEmbeddingColumn(); err != nil {
+					return err
+				}
+				if _, err := s.db.ExecContext(ctx, `INSERT INTO document_nodes(id, source_id, type, title, text, embedding) VALUES ('role-query-node', 'role-query-source', 'paragraph', 'prompt', '官方接入', ?)`, float32SliceToBytes([]float32{1, 0})); err != nil {
+					return err
+				}
+				if err := s.upsertEmbeddingMetadata(ctx, embeddingEntityNode, "role-query-node", embeddingModelIdentifier(s.currentEmbedder()), 2); err != nil {
 					return err
 				}
 				_, err := s.searchByEmbedding(ctx, SearchOptions{Query: "如何接入官方 prompt", Limit: 5})
@@ -137,6 +144,18 @@ func TestAllQuerySitesUseQueryRole(t *testing.T) {
 		{
 			name: "structured_search.searchTableRowsByEmbedding",
 			query: func(s *SQLiteStore) error {
+				if err := s.SaveSource(ctx, Source{ID: "role-row-source", Kind: SourceKindXLSX, URI: "manual://role-row", Status: StatusParsed}); err != nil {
+					return err
+				}
+				if _, err := s.db.ExecContext(ctx, `INSERT INTO kb_tables(id, source_id, sheet_name, created_at, updated_at) VALUES ('role-row-table', 'role-row-source', 'Sheet1', 'now', 'now')`); err != nil {
+					return err
+				}
+				if _, err := s.db.ExecContext(ctx, `INSERT INTO kb_rows(id, table_id, source_id, row_index, row_text, embedding, created_at, updated_at) VALUES ('role-row', 'role-row-table', 'role-row-source', 1, '季度营收', ?, 'now', 'now')`, float32SliceToBytes([]float32{1, 0})); err != nil {
+					return err
+				}
+				if err := s.upsertEmbeddingMetadata(ctx, embeddingEntityRow, "role-row", embeddingModelIdentifier(s.currentEmbedder()), 2); err != nil {
+					return err
+				}
 				_, err := s.searchTableRowsByEmbedding(ctx, StructuredSearchOptions{Query: "季度营收"}, 5)
 				return err
 			},
@@ -144,6 +163,18 @@ func TestAllQuerySitesUseQueryRole(t *testing.T) {
 		{
 			name: "image_search.SearchImages",
 			query: func(s *SQLiteStore) error {
+				if err := s.SaveSource(ctx, Source{ID: "role-image-source", Kind: SourceKindImage, URI: "manual://role-image", Status: StatusParsed}); err != nil {
+					return err
+				}
+				if err := s.EnsureNodeEmbeddingColumn(); err != nil {
+					return err
+				}
+				if _, err := s.db.ExecContext(ctx, `INSERT INTO document_nodes(id, source_id, type, text, embedding) VALUES ('role-image-node', 'role-image-source', ?, 'harbour sunset', ?)`, NodeTypeImage, float32SliceToBytes([]float32{1, 0})); err != nil {
+					return err
+				}
+				if err := s.upsertEmbeddingMetadata(ctx, embeddingEntityNode, "role-image-node", embeddingModelIdentifier(s.currentEmbedder()), 2); err != nil {
+					return err
+				}
 				// An English query keeps bm25.ShortEntityMention false, so the
 				// lexical-anchor shortcut does not skip the embedding branch.
 				_, err := s.SearchImages(ctx, ImageSearchOptions{

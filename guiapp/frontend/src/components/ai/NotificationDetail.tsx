@@ -15,6 +15,11 @@ export interface NotificationDetailProps {
   onClose?: () => void;
   theme: Theme;
   lang?: string;
+  onGroupInviteAction?: (groupId: string, action: "accept" | "decline" | "ignore") => void;
+  groupInviteBusy?: boolean;
+  groupInviteHold?: string;
+  groupInviteActionError?: string;
+  groupInviteError?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +68,11 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
   onClose,
   theme: t,
   lang,
+  onGroupInviteAction,
+  groupInviteBusy = false,
+  groupInviteHold = "",
+  groupInviteActionError = "",
+  groupInviteError = "",
 }) => {
   const isZh = lang?.startsWith("zh");
   const catLabel = CATEGORY_LABELS[notification.category] || CATEGORY_LABELS.custom;
@@ -212,7 +222,11 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
           </span>
         </div>
 
-        {hasDistinctBody ? (
+        {notification.groupInviteId && bodyText ? (
+          <div data-testid="notification-detail-content" className="ndet-invite-body">
+            {bodyText}
+          </div>
+        ) : hasDistinctBody ? (
           <div
             data-testid="notification-detail-content"
             className="notification-markdown-content"
@@ -242,6 +256,49 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
           >
             {localizeText(lang, "No additional details.", "没有更多正文。", "沒有更多正文。")}
           </div>
+        ) : null}
+        {notification.groupInviteId && onGroupInviteAction ? (
+          <div className="ndet-invite-actions">
+            <button
+              type="button"
+              className="ndet-invite-accept"
+              data-testid="notification-group-invite-accept"
+              disabled={groupInviteBusy}
+              aria-busy={groupInviteBusy}
+              onClick={() => onGroupInviteAction(notification.groupInviteId || "", "accept")}
+            >
+              {localizeText(lang, "Accept", "接受", "接受")}
+            </button>
+            <button
+              type="button"
+              className="ndet-invite-decline"
+              data-testid="notification-group-invite-decline"
+              disabled={groupInviteBusy}
+              aria-busy={groupInviteBusy}
+              onClick={() => onGroupInviteAction(notification.groupInviteId || "", "decline")}
+            >
+              {localizeText(lang, "Decline", "拒绝", "拒絕")}
+            </button>
+            <button
+              type="button"
+              className="ndet-invite-ignore"
+              data-testid="notification-group-invite-ignore"
+              disabled={groupInviteBusy}
+              aria-busy={groupInviteBusy}
+              onClick={() => onGroupInviteAction(notification.groupInviteId || "", "ignore")}
+            >
+              {localizeText(lang, "Ignore", "忽略", "忽略")}
+            </button>
+          </div>
+        ) : null}
+        {notification.groupInviteId && groupInviteHold ? (
+          <p className="ndet-invite-note" data-testid="notification-group-invite-hold" role="status">{groupInviteHold}</p>
+        ) : null}
+        {notification.groupInviteId && groupInviteActionError.trim() ? (
+          <p className="ndet-invite-error" data-testid="notification-group-invite-action-error" role="status">{groupInviteActionError.trim()}</p>
+        ) : null}
+        {notification.groupInviteId && groupInviteError ? (
+          <p className="ndet-invite-error" data-testid="notification-group-invite-error" role="status">{groupInviteError}</p>
         ) : null}
       </div>
     </div>

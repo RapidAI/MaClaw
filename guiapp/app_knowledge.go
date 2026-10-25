@@ -371,6 +371,13 @@ func (a *App) openKnowledgeStoreWithRetry(ctx context.Context) (*knowledge.SQLit
 		if err != nil {
 			return nil, err
 		}
+		// Stamp this desktop database once. Servers never take this path, so
+		// empty owners stay empty outside the desktop library.
+		store.SetDesktopOwnerStamp(desktopUserID)
+		if err := store.EnsureMembershipBackfill(ctx, desktopUserID); err != nil {
+			_ = store.Close()
+			return nil, err
+		}
 		// Image nodes are useful only when their assets can be persisted and later
 		// rendered by the agent UI. Configure this for every store instance, not
 		// only for the callers that happen to import images.
@@ -2112,6 +2119,73 @@ func (a *App) KnowledgeListSources(opts knowledge.ListSourcesOptions) ([]knowled
 	defer store.Close()
 	opts = a.normalizeKnowledgeListOptions(opts)
 	return store.ListSources(a.knowledgeContext(), opts)
+}
+
+func (a *App) knowledgeCollectionOwner() string {
+	return knowledge.MembershipUserKey(desktopUserID)
+}
+
+func (a *App) KnowledgeListCollections() ([]knowledge.Collection, error) {
+	store, err := a.openKnowledgeStore()
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	return store.ListCollections(a.knowledgeContext(), a.knowledgeCollectionOwner())
+}
+
+func (a *App) KnowledgeCreateCollection(title string) (knowledge.Collection, error) {
+	store, err := a.openKnowledgeStore()
+	if err != nil {
+		return knowledge.Collection{}, err
+	}
+	defer store.Close()
+	return store.CreateManualCollection(a.knowledgeContext(), a.knowledgeCollectionOwner(), title)
+}
+
+func (a *App) KnowledgeListCollectionMembers(collectionID string) ([]knowledge.CollectionMember, error) {
+	store, err := a.openKnowledgeStore()
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	return store.ListCollectionMembers(a.knowledgeContext(), a.knowledgeCollectionOwner(), collectionID)
+}
+
+func (a *App) KnowledgeAddCollectionMember(collectionID string, sourceID string) error {
+	store, err := a.openKnowledgeStore()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	return store.AddCollectionMember(a.knowledgeContext(), a.knowledgeCollectionOwner(), collectionID, sourceID, knowledge.CollectionAddedByUser)
+}
+
+func (a *App) KnowledgeRemoveCollectionMember(collectionID string, sourceID string) error {
+	store, err := a.openKnowledgeStore()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	return store.RemoveCollectionMember(a.knowledgeContext(), a.knowledgeCollectionOwner(), collectionID, sourceID)
+}
+
+func (a *App) KnowledgeListUnassignedSources(limit int) ([]knowledge.Source, error) {
+	store, err := a.openKnowledgeStore()
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	return store.ListUnassignedSources(a.knowledgeContext(), a.knowledgeCollectionOwner(), limit)
+}
+
+func (a *App) KnowledgeListSourceCollectionRefs() ([]knowledge.SourceCollectionRef, error) {
+	store, err := a.openKnowledgeStore()
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	return store.ListSourceCollectionRefs(a.knowledgeContext(), a.knowledgeCollectionOwner())
 }
 
 func buildGUIKnowledgePackage(ctx context.Context, store *knowledge.SQLiteStore, cfg corelib.AppConfig, title, description string, sources []knowledge.Source, redactSensitive bool) (guiKnowledgePackage, []string, error) {
@@ -4040,6 +4114,23 @@ func (a *App) normalizeKnowledgeImportRequest(req knowledge.DirectoryImportReque
 	return req
 }
 
+// applyDesktopKnowledgeMembershipRead is the desktop read identity. An empty
+// scope is this person's whole library, including synced enterprise libraries.
+// A non-desktop owner is kept and is not given lineage. Empty owners are not
+// treated as a match; the desktop open stamps them once.
+func applyDesktopKnowledgeMembershipRead(ownerID, searchScope string) (owner string, lineage bool, scope string) {
+	owner = strings.TrimSpace(ownerID)
+	if owner == "" || trustedDesktopPrincipal(owner) {
+		owner = desktopUserID
+		lineage = true
+	}
+	scope = strings.TrimSpace(searchScope)
+	if scope == "" {
+		scope = string(knowledgeSearchScopeAll)
+	}
+	return owner, lineage, scope
+}
+
 func (a *App) normalizeKnowledgeSearchOptions(opts knowledge.SearchOptions) knowledge.SearchOptions {
 	opts.OwnerID = strings.TrimSpace(opts.OwnerID)
 	opts.TenantID = strings.TrimSpace(opts.TenantID)
@@ -4047,6 +4138,9 @@ func (a *App) normalizeKnowledgeSearchOptions(opts knowledge.SearchOptions) know
 	opts.Query = strings.TrimSpace(opts.Query)
 	opts.Retrieval = strings.ToLower(strings.TrimSpace(opts.Retrieval))
 	opts.SearchScope = strings.TrimSpace(opts.SearchScope)
+	opts.OwnerID, opts.OwnerLineage, opts.SearchScope = applyDesktopKnowledgeMembershipRead(opts.OwnerID, opts.SearchScope)
+	opts.UseMembership = true
+	opts.IncludeEmptyOwner = false
 	opts.TopicHint = strings.TrimSpace(opts.TopicHint)
 	opts.Domain = strings.TrimSpace(opts.Domain)
 	opts.Entity = strings.TrimSpace(opts.Entity)
@@ -4082,6 +4176,9 @@ func (a *App) normalizeKnowledgeStructuredSearchOptions(opts knowledge.Structure
 	opts.ColumnContains = normalizeKnowledgeStructuredStringMap(opts.ColumnContains)
 	opts.NumberRanges = normalizeKnowledgeNumberRanges(opts.NumberRanges)
 	opts.DateRanges = normalizeKnowledgeDateRanges(opts.DateRanges)
+	opts.OwnerID, opts.OwnerLineage, opts.SearchScope = applyDesktopKnowledgeMembershipRead(opts.OwnerID, opts.SearchScope)
+	opts.UseMembership = true
+	opts.IncludeEmptyOwner = false
 	switch scope := normalizeKnowledgeSearchScopeKind(opts.SearchScope); {
 	case scope == knowledgeSearchScopeProject:
 		if strings.TrimSpace(opts.ProjectPath) == "" {
@@ -4103,6 +4200,9 @@ func (a *App) normalizeKnowledgeStructuredCatalogOptions(opts knowledge.Structur
 	opts.SourceID = strings.TrimSpace(opts.SourceID)
 	opts.SourceIDs = normalizeKnowledgeIDStrings(opts.SourceIDs)
 	opts.SheetNames = normalizeKnowledgeStructuredOptionStrings(opts.SheetNames)
+	opts.OwnerID, opts.OwnerLineage, opts.SearchScope = applyDesktopKnowledgeMembershipRead(opts.OwnerID, opts.SearchScope)
+	opts.UseMembership = true
+	opts.IncludeEmptyOwner = false
 	switch scope := normalizeKnowledgeSearchScopeKind(opts.SearchScope); {
 	case scope == knowledgeSearchScopeProject:
 		if strings.TrimSpace(opts.ProjectPath) == "" {
@@ -4256,6 +4356,9 @@ func (a *App) normalizeKnowledgeListOptions(opts knowledge.ListSourcesOptions) k
 	if opts.Limit <= 0 {
 		opts.Limit = 100
 	}
+	opts.OwnerID, opts.OwnerLineage, opts.SearchScope = applyDesktopKnowledgeMembershipRead(opts.OwnerID, opts.SearchScope)
+	opts.UseMembership = true
+	opts.IncludeEmptyOwner = false
 	switch scope := normalizeKnowledgeSearchScopeKind(opts.SearchScope); {
 	case scope == knowledgeSearchScopeProject:
 		if opts.ProjectPath == "" {

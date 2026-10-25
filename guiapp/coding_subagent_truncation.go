@@ -1,9 +1,13 @@
 package guiapp
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
 
 // ---------------------------------------------------------------------------
@@ -54,6 +58,12 @@ func truncateToolResultForSubAgent(toolName string, result string) string {
 
 	switch toolName {
 	case "read_file":
+		// A survey of an indexed file is answered with the codegraph payload.
+		// Cutting it and saying "read_file with offset" is how that survey
+		// turns back into a byte read.
+		if codegraphToolResult(result) {
+			return result
+		}
 		if tokenEst(result) <= subAgentTruncReadFileTokens {
 			return result
 		}
@@ -66,10 +76,11 @@ func truncateToolResultForSubAgent(toolName string, result string) string {
 		return truncateSubAgentBashResult(result)
 
 	case "list_directory":
-		if strings.Count(result, "\n") <= subAgentTruncListDirMaxLines {
+		body, steer := splitCodegraphListSteer(result)
+		if strings.Count(body, "\n") <= subAgentTruncListDirMaxLines {
 			return result
 		}
-		return truncateSubAgentListDirResult(result)
+		return truncateSubAgentListDirResult(body) + steer
 
 	case "Glob", "ripgrep":
 		if countSubAgentSearchMatches(result) <= subAgentTruncSearchMaxMatches {
@@ -201,6 +212,129 @@ func truncateSubAgentBashResult(result string) string {
 		}
 	}
 
+	return b.String()
+}
+
+// codegraphProjectedResultLimit is the conversation budget for a codegraph
+// tool result. The navigation output is already capped near 24KB, and the
+// shared projector uses this same budget for code_navigation.
+const codegraphProjectedResultLimit = 65536
+
+func codegraphProjectionLimit(toolName, result string) int {
+	if toolName == codeNavigationToolName || codegraphToolResult(result) {
+		return codegraphProjectedResultLimit
+	}
+	return maxToolResultLen
+}
+
+func codegraphToolResult(result string) bool {
+	result = strings.TrimSpace(result)
+	if !strings.HasPrefix(result, "{") || !strings.Contains(result, `"backend"`) {
+		return false
+	}
+	var payload struct {
+		Backend string `json:"backend"`
+	}
+	if err := json.Unmarshal([]byte(result), &payload); err != nil {
+		return false
+	}
+	return payload.Backend == "codegraph" || payload.Backend == "remote:auto"
+}
+
+// codegraphResultPreview keeps the instruction and both ends of the source
+// when a payload still exceeds the projection budget. The shared projector
+// owns the same reduction for remote and core hosts.
+func codegraphResultPreview(result string, budget int) string {
+	return toolresult.PreviewCodeNavigation(result, budget)
+}
+
+func codegraphUTF8Prefix(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if n >= len(s) {
+		return s
+	}
+	s = s[:n]
+	for len(s) > 0 && !utf8.RuneStart(s[len(s)-1]) {
+		s = s[:len(s)-1]
+	}
+	return s
+}
+
+func codegraphUTF8Suffix(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if n >= len(s) {
+		return s
+	}
+	s = s[len(s)-n:]
+	for len(s) > 0 && !utf8.RuneStart(s[0]) {
+		s = s[1:]
+	}
+	return s
+}
+
+func splitCodegraphListSteer(result string) (string, string) {
+	marker := "\n" + codegraphListedSourceSteer
+	i := strings.LastIndex(result, marker)
+	if i < 0 {
+		return result, ""
+	}
+	return result[:i], result[i:]
+}
+
+// codegraphListPreview keeps the explored-file steer when a listing is longer
+// than the conversation preview. The steer is the last paragraph. A head/tail
+// cut keeps the last file names and drops the sentence that says what to call.
+func codegraphListPreview(result string, limit int) string {
+	body, steer := splitCodegraphListSteer(result)
+	if steer == "" || limit <= 0 {
+		return ""
+	}
+	budget := limit - 1024
+	if budget < len(codegraphListedSourceSteer) {
+		budget = limit
+	}
+	if len(result) <= budget {
+		return ""
+	}
+	steer = codegraphFitListSteer(steer, budget)
+	const note = "\n[... directory entries omitted ...]\n"
+	room := budget - len(steer) - len(note)
+	if room < 64 {
+		return steer
+	}
+	head := codegraphUTF8Prefix(body, room)
+	if i := strings.LastIndex(head, "\n"); i >= 0 {
+		head = head[:i+1]
+	}
+	out := head + note + steer
+	if len(out) > budget {
+		return steer
+	}
+	return out
+}
+
+func codegraphFitListSteer(steer string, budget int) string {
+	if len(steer) <= budget {
+		return steer
+	}
+	var b strings.Builder
+	for _, line := range strings.Split(steer, "\n") {
+		next := line
+		if b.Len() > 0 {
+			next = "\n" + line
+		}
+		if b.Len()+len(next) > budget {
+			break
+		}
+		b.WriteString(next)
+	}
+	if b.Len() == 0 {
+		return codegraphUTF8Prefix(steer, budget)
+	}
 	return b.String()
 }
 

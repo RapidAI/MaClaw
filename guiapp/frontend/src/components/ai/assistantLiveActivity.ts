@@ -17,7 +17,9 @@ export type AssistantLiveActivityKind =
     | "editing_file"
     | "listing_dir"
     | "searching_files"
+    | "updating_todo"
     | "searching_content"
+    | "checking_diff"
     | "exploring_source"
     | "searching_web"
     | "fetching_page"
@@ -54,9 +56,11 @@ const TOOL_KIND_BY_NAME: Record<string, AssistantLiveActivityKind> = {
     search_files: "searching_files",
     search: "searching_files",
     glob: "searching_files",
+    todo_write: "updating_todo",
     code_navigation: "exploring_source",
-    git_diff: "searching_content",
+    git_diff: "checking_diff",
     ripgrep: "searching_content",
+    code_search: "searching_content",
     grep_search: "searching_content",
     grep: "searching_content",
     web_search: "searching_web",
@@ -82,6 +86,7 @@ const TOOL_KIND_BY_NAME: Record<string, AssistantLiveActivityKind> = {
     asr: "asr",
     open: "opening",
     delegate_task: "delegating",
+    spawn_coding_agent: "delegating",
 };
 
 const ACTION_PHRASE_KIND: Array<[RegExp, AssistantLiveActivityKind]> = [
@@ -90,9 +95,11 @@ const ACTION_PHRASE_KIND: Array<[RegExp, AssistantLiveActivityKind]> = [
     [/写入文件|write file/i, "writing_file"],
     [/编辑文件|edit file/i, "editing_file"],
     [/列出目录|list directory/i, "listing_dir"],
-    [/搜索文件|search files/i, "searching_files"],
+    [/搜索文件|查找文件|(?:^|\s)查找(?:\s|$)|search files/i, "searching_files"],
+    [/待办|update todos/i, "updating_todo"],
     [/探索源码|探索代码|explore source/i, "exploring_source"],
     [/检索内容|search content/i, "searching_content"],
+    [/查看差异|查看差異|checking diff|check diff/i, "checking_diff"],
     [/搜索网络|web search/i, "searching_web"],
     [/访问网页|提取网页|open page|fetch(?:ing)? pages?/i, "fetching_page"],
     [/操作浏览器|using browser|^browser$/i, "using_browser"],
@@ -122,7 +129,9 @@ const TOOL_ACTIVITY_KINDS: ReadonlySet<AssistantLiveActivityKind> = new Set([
     "editing_file",
     "listing_dir",
     "searching_files",
+    "updating_todo",
     "searching_content",
+    "checking_diff",
     "exploring_source",
     "searching_web",
     "fetching_page",
@@ -165,11 +174,15 @@ export function assistantLiveActivityLabel(kind: AssistantLiveActivityKind, lang
         case "editing_file":
             return localizeText(lang, "Editing files", "正在编辑文件", "正在編輯檔案");
         case "listing_dir":
-            return localizeText(lang, "Listing directory", "正在列出目录", "正在列出目錄");
+            return localizeText(lang, "Finding files", "正在查找", "正在查找");
         case "searching_files":
-            return localizeText(lang, "Searching files", "正在搜索文件", "正在搜尋檔案");
+            return localizeText(lang, "Finding files", "正在查找", "正在查找");
+        case "updating_todo":
+            return localizeText(lang, "Updating todos", "正在更新待办", "正在更新待辦");
         case "searching_content":
             return localizeText(lang, "Searching content", "正在检索内容", "正在檢索內容");
+        case "checking_diff":
+            return localizeText(lang, "Checking diff", "正在查看差异", "正在查看差異");
         case "exploring_source":
             return localizeText(lang, "Exploring source", "正在探索源码", "正在探索原始碼");
         case "searching_web":
@@ -226,7 +239,7 @@ export function assistantLiveActivityObject(
         if (target) return target;
         const toolName = normalizeLiveToolName(ctx?.toolName);
         if (!toolName || isImpliedToolName(kind, toolName)) return "";
-        // The generic title already includes the name ("正在调用工具 todo_write").
+        // The generic title already includes the name ("正在调用工具 unknown_mcp").
         if (kind === "calling_tool") return "";
         return formatLiveToolObject(lang, toolName);
     }
@@ -240,6 +253,11 @@ const IMPLIED_TOOL_NAMES: Partial<Record<AssistantLiveActivityKind, readonly str
     writing_file: ["write_file", "write", "create_file"],
     editing_file: ["edit_file", "edit_lines", "edit", "str_replace", "apply_patch"],
     listing_dir: ["list_directory", "list_dir"],
+    searching_files: ["glob", "search_files", "search"],
+    updating_todo: ["todo_write"],
+    searching_content: ["code_search"],
+    checking_diff: ["git_diff"],
+    delegating: ["delegate_task", "spawn_coding_agent"],
     generating_pdf: ["generate_pdf"],
     accessing_memory: ["memory"],
     screenshot: ["screenshot"],
@@ -945,7 +963,22 @@ export function parseLiveActivityFromProgressText(text: string): AssistantLiveAc
     }
     const prefixed = firstLine.match(IM_TOOL_STATUS_PREFIX);
     if (!prefixed?.[1]) return null;
-    return liveActivityFromActionPhrase(prefixed[1].trim());
+    return liveActivityFromIMHeader(prefixed[1].trim());
+}
+
+/** Known tool id in the card header. The localized verb is only the fallback. */
+function knownLiveToolKind(name: string): AssistantLiveActivityKind | null {
+    const raw = (name || "").trim().toLowerCase();
+    if (!raw) return null;
+    const bare = raw.startsWith("ssh_") ? raw.slice(4) : raw;
+    return TOOL_KIND_BY_NAME[bare] || TOOL_KIND_BY_NAME[raw] || null;
+}
+
+function liveActivityFromIMHeader(headerBody: string): AssistantLiveActivityKind | null {
+    const parenthetical = headerBody.match(/\(([A-Za-z][A-Za-z0-9_-]*)\)\s*$/);
+    const named = parenthetical?.[1] ? knownLiveToolKind(parenthetical[1]) : null;
+    if (named) return named;
+    return liveActivityFromActionPhrase(headerBody);
 }
 
 function parseRunningToolsLine(firstLine: string): AssistantLiveActivityKind | null {

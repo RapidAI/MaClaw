@@ -39,6 +39,9 @@ func (g *Graph) optimize() error {
 	// Second pass: catches activations exposed by the folds above
 	// (e.g. Conv->BN->Relu becomes Conv->Relu only after BN folding).
 	g.detectEpilogues()
+	// BN that does not follow a conv (Concat, or a conv the fold rejected)
+	// still has a channel affine plus, on the table UNET, a trailing Relu.
+	g.fuseBatchNormRelu()
 	g.elimDeadNodes()
 	return nil
 }
@@ -229,6 +232,12 @@ var foldableOps = map[string]bool{
 	"Shape": true, "Slice": true, "Concat": true, "Reshape": true,
 	"Squeeze": true, "Unsqueeze": true, "Transpose": true,
 	"Add": true, "Sub": true, "Mul": true, "Div": true, "Pow": true,
+	// Constant has no inputs; folding it on iteration 1 lets Cast, Gather,
+	// and the other shape ops below fold on later iterations. Pad folds
+	// only when its pads tensor is already an initializer.
+	"Constant": true, "Cast": true, "Gather": true, "Expand": true,
+	"Range": true, "ConstantOfShape": true, "Equal": true, "Less": true,
+	"Where": true, "Pad": true, "LayerNormalization": true,
 }
 
 // foldConstants evaluates nodes whose inputs are all initializers (with a
@@ -286,7 +295,9 @@ func (g *Graph) foldConstants() {
 }
 
 // foldBatchNorms folds inference BatchNormalization into a preceding Conv
-// when the conv output feeds only that BN.
+// or ConvTranspose when that output feeds only the BN. ConvTranspose weights
+// are [C_in, C_out/group, kH, kW], so the scale is along output-channel
+// axis 1, not axis 0.
 func (g *Graph) foldBatchNorms() {
 	nodes := g.proto.Nodes
 	cons := consumersOf(nodes)
@@ -312,7 +323,11 @@ func (g *Graph) foldBatchNorms() {
 			continue
 		}
 		conv := prod[bn.Inputs[0]]
-		if conv == nil || conv.OpType != "Conv" || len(conv.Inputs) < 2 || len(conv.Outputs) == 0 || conv.Outputs[0] == "" {
+		if conv == nil || len(conv.Inputs) < 2 || len(conv.Outputs) == 0 || conv.Outputs[0] == "" {
+			continue
+		}
+		convT := conv.OpType == "ConvTranspose"
+		if conv.OpType != "Conv" && !convT {
 			continue
 		}
 		if len(cons[conv.Outputs[0]]) != 1 {
@@ -350,7 +365,15 @@ func (g *Graph) foldBatchNorms() {
 		}
 		scale, bias, mean, varr := params[0], params[1], params[2], params[3]
 		eps := float64(attrFloat(bn, "epsilon", 1e-5))
+		group := 1
 		M := wT.Shape[0]
+		if convT {
+			group = int(attrInt(conv, "group", 1))
+			if group <= 0 || len(wT.Shape) != 4 || wT.Shape[0]%group != 0 || wT.Shape[1] <= 0 {
+				continue
+			}
+			M = wT.Shape[1] * group
+		}
 		if M <= 0 || len(scale) != M || len(bias) != M || len(mean) != M || len(varr) != M {
 			continue
 		}
@@ -411,25 +434,37 @@ func (g *Graph) foldBatchNorms() {
 		// Check the actual rewritten weights too. A finite BN factor may still
 		// overflow a large Conv coefficient; do this before changing either
 		// initializer so a rejected fold remains atomic.
-		perCh := wT.NumElements() / M
-		for m := 0; m < M && ok; m++ {
-			for _, w := range wT.F32[m*perCh : (m+1)*perCh] {
-				v := w * f[m]
-				if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
-					ok = false
-					break
+		if convT {
+			if !bnScaleConvT(wT.F32, wT.Shape, f, group, false) {
+				continue
+			}
+		} else {
+			perCh := wT.NumElements() / M
+			for m := 0; m < M && ok; m++ {
+				for _, w := range wT.F32[m*perCh : (m+1)*perCh] {
+					v := w * f[m]
+					if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
+						ok = false
+						break
+					}
 				}
 			}
+			if !ok {
+				continue
+			}
 		}
-		if !ok {
-			continue
-		}
-		// w'[m] = w[m] * f[m]
-		for m := 0; m < M; m++ {
-			row := wT.F32[m*perCh : (m+1)*perCh]
-			fm := f[m]
-			for i := range row {
-				row[i] *= fm
+		// w'[m] = w[m] * f[m]. Conv channels are contiguous; ConvTranspose
+		// output channels are strided along axis 1.
+		if convT {
+			bnScaleConvT(wT.F32, wT.Shape, f, group, true)
+		} else {
+			perCh := wT.NumElements() / M
+			for m := 0; m < M; m++ {
+				row := wT.F32[m*perCh : (m+1)*perCh]
+				fm := f[m]
+				for i := range row {
+					row[i] *= fm
+				}
 			}
 		}
 		// bias: b' = (b - mean)*f + beta
@@ -444,6 +479,82 @@ func (g *Graph) foldBatchNorms() {
 		copy(bb, newBias)
 		conv.Outputs[0] = bn.Outputs[0]
 		removed[bn] = true
+	}
+	if len(removed) > 0 {
+		g.proto.Nodes = filterRemoved(nodes, removed)
+	}
+}
+
+// bnScaleConvT multiplies each ConvTranspose output channel by f[m].
+// Weight layout is [C_in, C_out/group, kH, kW]. apply is false to validate
+// that every product is finite before any weight is stored.
+func bnScaleConvT(w []float32, shape []int, f []float32, group int, apply bool) bool {
+	if group <= 0 || len(shape) != 4 || shape[0]%group != 0 || shape[1] <= 0 {
+		return false
+	}
+	cin, mg := shape[0], shape[1]
+	k := shape[2] * shape[3]
+	cg := cin / group
+	for g := 0; g < group; g++ {
+		for m := 0; m < mg; m++ {
+			fm := f[g*mg+m]
+			for c := 0; c < cg; c++ {
+				base := ((g*cg+c)*mg + m) * k
+				for i := 0; i < k; i++ {
+					v := w[base+i] * fm
+					if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
+						return false
+					}
+					if apply {
+						w[base+i] = v
+					}
+				}
+			}
+		}
+	}
+	return true
+}
+
+// fuseBatchNormRelu folds a trailing Relu into a BatchNormalization that
+// was not absorbed by a convolution. The table UNET's encoder Concat and
+// its ConvTranspose (after the weight fold, the relu moves onto the conv)
+// leave this shape only for the Concat path.
+func (g *Graph) fuseBatchNormRelu() {
+	nodes := g.proto.Nodes
+	cons := consumersOf(nodes)
+	gout := g.graphOutputNames()
+	removed := map[*Node]bool{}
+	if g.epilogues == nil {
+		g.epilogues = map[*Node]*epilogue{}
+	}
+	for _, bn := range nodes {
+		if removed[bn] || bn.OpType != "BatchNormalization" || len(bn.Outputs) == 0 || bn.Outputs[0] == "" {
+			continue
+		}
+		if attrInt(bn, "training_mode", 0) != 0 {
+			continue
+		}
+		extra := false
+		for _, o := range bn.Outputs[1:] {
+			if o != "" {
+				extra = true
+				break
+			}
+		}
+		if extra {
+			continue
+		}
+		out := bn.Outputs[0]
+		if gout[out] {
+			continue
+		}
+		cs := cons[out]
+		if len(cs) != 1 || cs[0].OpType != "Relu" || len(cs[0].Outputs) != 1 || cs[0].Outputs[0] == "" {
+			continue
+		}
+		g.epilogues[bn] = &epilogue{kind: EpiRelu}
+		bn.Outputs[0] = cs[0].Outputs[0]
+		removed[cs[0]] = true
 	}
 	if len(removed) > 0 {
 		g.proto.Nodes = filterRemoved(nodes, removed)

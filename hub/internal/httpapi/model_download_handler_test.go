@@ -283,7 +283,7 @@ func TestEnsureModelDownloadScriptCreatesExecutableScript(t *testing.T) {
 		t.Fatalf("read script: %v", err)
 	}
 	text := string(content)
-	for _, want := range []string{modelDownloadScriptVersion, "is_allowed_model_file()", "Skip unsafe model filename", "curl -L --fail", "--retry-delay 2", "wget --tries=3", "rm -f \"$tmp\"", "touch \"$SENTINEL\"", "cleanup() { rm -f \"$LOCK_FILE\"; }"} {
+	for _, want := range []string{modelDownloadScriptVersion, "*.onnx.data", "is_allowed_model_file()", "Skip unsafe model filename", "curl -L --fail", "--retry-delay 2", "wget --tries=3", "rm -f \"$tmp\"", "touch \"$SENTINEL\"", "cleanup() { rm -f \"$LOCK_FILE\"; }"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("script missing %q in:\n%s", want, text)
 		}
@@ -309,6 +309,29 @@ func TestEnsureModelDownloadScriptUpgradesOldScript(t *testing.T) {
 	text := string(content)
 	if !strings.Contains(text, modelDownloadScriptVersion) || strings.Contains(text, "echo old") {
 		t.Fatalf("script was not upgraded:\n%s", text)
+	}
+}
+
+func TestEnsureModelDownloadScriptRewritesPreviousAllowList(t *testing.T) {
+	root := t.TempDir()
+	scriptPath := filepath.Join(root, "data", "download-models.sh")
+	if err := os.MkdirAll(filepath.Dir(scriptPath), 0755); err != nil {
+		t.Fatalf("mkdir script dir: %v", err)
+	}
+	old := "#!/bin/sh\n# maclaw-model-download-v4\n*.gguf|*.onnx|*.zip|*.json\n"
+	if err := os.WriteFile(scriptPath, []byte(old), 0644); err != nil {
+		t.Fatalf("write old script: %v", err)
+	}
+	if err := ensureModelDownloadScript(scriptPath); err != nil {
+		t.Fatalf("ensure script: %v", err)
+	}
+	text, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read script: %v", err)
+	}
+	body := string(text)
+	if !strings.Contains(body, modelDownloadScriptVersion) || !strings.Contains(body, "*.onnx.data") || strings.Contains(body, "maclaw-model-download-v4") {
+		t.Fatalf("script was not rewritten:\n%s", body)
 	}
 }
 

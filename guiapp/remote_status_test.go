@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1584,5 +1586,75 @@ func TestListValidProviders(t *testing.T) {
 	}
 	if !foundDeepSeek {
 		t.Error("DeepSeek not found in providers")
+	}
+}
+
+// Concurrent ListRemoteSessions callers must coalesce onto one snapshot
+// build: the frontend debounce fires faster than a build while output
+// streams in, and every caller serializing the full session list again
+// wastes CPU and the Wails bridge. Waiters reuse the in-flight result.
+func TestListRemoteSessionsCoalescesConcurrentRefreshes(t *testing.T) {
+	app := &App{}
+	now := time.Now()
+	app.remoteSessions = NewRemoteSessionManager(app)
+	app.remoteSessions.sessions["sess-1"] = &RemoteSession{
+		ID:          "sess-1",
+		Tool:        "claude",
+		Title:       "demo",
+		ProjectPath: `D:\workprj\demo`,
+		ModelID:     "m1",
+		Status:      SessionBusy,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		Summary:     SessionSummary{SessionID: "sess-1"},
+		Preview:     SessionPreview{SessionID: "sess-1"},
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var builds int32
+	var once sync.Once
+	prevHook := listRemoteSessionsBuildHook
+	listRemoteSessionsBuildHook = func() {
+		atomic.AddInt32(&builds, 1)
+		once.Do(func() { close(entered) })
+		<-release
+	}
+	t.Cleanup(func() { listRemoteSessionsBuildHook = prevHook })
+
+	const callers = 6
+	results := make([][]RemoteSessionView, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i] = app.ListRemoteSessions()
+		}(i)
+	}
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("snapshot build never started")
+	}
+	// Give every caller time to pile onto the in-flight build.
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&builds); got != 1 {
+		t.Fatalf("snapshot built %d times for %d concurrent callers, want 1", got, callers)
+	}
+	for i := 0; i < callers; i++ {
+		if len(results[i]) != 1 || results[i][0].ID != "sess-1" {
+			t.Fatalf("caller %d got %#v", i, results[i])
+		}
+	}
+	// Callers must not share one slice: trimming one result must leave the
+	// other results intact.
+	results[0] = results[0][:0]
+	if len(results[1]) != 1 {
+		t.Fatal("concurrent callers share the same result slice")
 	}
 }

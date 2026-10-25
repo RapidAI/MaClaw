@@ -98,9 +98,9 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	// placeholder for dropped entries. memorySinkCollector only collects
 	// texts into a slice (no I/O, no locks) — actual persistence is async.
 	trimmed := trimHistoryWithSummaryPrecomputed(history, nil, memorySinkCollector, dynamicLimit, dynamicTokenLimit, estimatedTokens)
-	// A file-companion /clear bumps a generation the live turn captured at
-	// start. The loop still tries to save on the way out. That save must
-	// not put the cleared chat back.
+	// A file-companion /clear or a synced transcript bumps a generation the
+	// live turn captured with the history it loaded. The loop still tries
+	// to save on the way out. That save must not put the previous chat back.
 	if fileCompanionToolsDisabled(userID) && h.app != nil {
 		if !h.app.fileCompanionCommitChat(userID, h.inFlightTurnForUser(userID), func() {
 			h.memory.Save(userID, trimmed)

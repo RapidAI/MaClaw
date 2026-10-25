@@ -401,9 +401,10 @@ func markdownToHTMLStyled(scratch *dataURLScratch, md string, colorful bool, sty
 				size, color, align = styledSize, styledColor, styledAlign
 				mark = headingMark(style, prefix)
 			}
+			body := markdownHeadingBody(trimmed, prefix)
 			if prefix == "## " {
 				if colorful {
-					sectionBody = paperSectionBodyColor(strings.TrimSpace(strings.TrimPrefix(trimmed, prefix)))
+					sectionBody = paperSectionBodyColor(strings.TrimSpace(body))
 				}
 				h2++
 			}
@@ -411,7 +412,7 @@ func markdownToHTMLStyled(scratch *dataURLScratch, md string, colorful bool, sty
 			if align == "center" {
 				alignAttr = "text-align:center; "
 			}
-			sb.WriteString(fmt.Sprintf(`<p style="%sfont-size:%s; color:%s"><b>%s%s</b></p>`, alignAttr, size, color, mark, renderInlineHTMLMode(strings.TrimPrefix(trimmed, prefix), colorful, style)))
+			sb.WriteString(fmt.Sprintf(`<p style="%sfont-size:%s; color:%s"><b>%s%s</b></p>`, alignAttr, size, color, mark, renderInlineHTMLMode(body, colorful, style)))
 			continue
 		}
 		if imageHTML, ok := markdownImageToHTML(scratch, trimmed, colorful, style); ok {
@@ -1240,7 +1241,35 @@ func isMarkdownTableBlock(block string) bool {
 	return true
 }
 
+// MarkdownDisplayMathSpan is the line range one display-math block covers.
+// A single-line "$$...$$" covers itself. A closed block runs through the
+// line that ends in "$$". An opener with no closer covers only that opener:
+// the lines after it are ordinary text. Callers that decide whether a fence
+// marker is real have to use this, because a "```" inside the block is math.
+func MarkdownDisplayMathSpan(lines []string, idx int) (end int, ok bool) {
+	if idx < 0 || idx >= len(lines) {
+		return idx, false
+	}
+	trimmed := strings.TrimSpace(lines[idx])
+	if !strings.HasPrefix(trimmed, "$$") {
+		return idx, false
+	}
+	if strings.Count(trimmed, "$$") >= 2 && strings.HasSuffix(trimmed, "$$") && len(trimmed) > 4 {
+		return idx, true
+	}
+	for next := idx + 1; next < len(lines); next++ {
+		if strings.HasSuffix(strings.TrimSpace(lines[next]), "$$") {
+			return next, true
+		}
+	}
+	return idx, true
+}
+
 func markdownDisplayMathToHTML(lines []string, idx int, colorful bool) (string, int, bool) {
+	end, ok := MarkdownDisplayMathSpan(lines, idx)
+	if !ok {
+		return "", idx, false
+	}
 	render := func(text string) string {
 		if colorful {
 			text = paperPrepareMath(text)
@@ -1248,30 +1277,30 @@ func markdownDisplayMathToHTML(lines []string, idx int, colorful bool) (string, 
 		return transformMathText(text)
 	}
 	trimmed := strings.TrimSpace(lines[idx])
-	if !strings.HasPrefix(trimmed, "$$") {
-		return "", idx, false
-	}
-	if strings.Count(trimmed, "$$") >= 2 && strings.HasSuffix(trimmed, "$$") && len(trimmed) > 4 {
-		inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "$$"), "$$"))
-		return render(inner), idx, true
+	if end == idx {
+		if strings.Count(trimmed, "$$") >= 2 && strings.HasSuffix(trimmed, "$$") && len(trimmed) > 4 {
+			inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "$$"), "$$"))
+			return render(inner), idx, true
+		}
+		return render(strings.TrimSpace(strings.TrimPrefix(trimmed, "$$"))), idx, true
 	}
 	var block []string
 	first := strings.TrimSpace(strings.TrimPrefix(trimmed, "$$"))
 	if first != "" {
 		block = append(block, first)
 	}
-	for next := idx + 1; next < len(lines); next++ {
+	for next := idx + 1; next <= end; next++ {
 		part := strings.TrimSpace(lines[next])
-		if strings.HasSuffix(part, "$$") {
+		if next == end {
 			part = strings.TrimSpace(strings.TrimSuffix(part, "$$"))
 			if part != "" {
 				block = append(block, part)
 			}
-			return render(strings.Join(block, " ")), next, true
+			break
 		}
 		block = append(block, part)
 	}
-	return render(strings.TrimSpace(strings.TrimPrefix(trimmed, "$$"))), idx, true
+	return render(strings.Join(block, " ")), end, true
 }
 
 func renderInlineHTML(text string) string {
@@ -1556,6 +1585,25 @@ func stripLatexDelimiters(text string) string {
 		{`\right)`, `)`}, {`\right]`, `]`}, {`\right|`, `|`}, {`\right.`, ``},
 	} {
 		text = strings.ReplaceAll(text, pair.old, pair.new)
+	}
+	return text
+}
+
+// markdownHeadingBody is the words of one heading. A closing run of hashes
+// is not part of the title when a space sits in front of it and only spaces
+// follow it. A hash that belongs to the word, as in "C#", stays.
+func markdownHeadingBody(trimmed, prefix string) string {
+	text := strings.TrimPrefix(trimmed, prefix)
+	end := len(text)
+	for end > 0 && text[end-1] == ' ' {
+		end--
+	}
+	hash := end
+	for hash > 0 && text[hash-1] == '#' {
+		hash--
+	}
+	if hash < end && hash > 0 && text[hash-1] == ' ' {
+		return strings.TrimRight(text[:hash], " ")
 	}
 	return text
 }

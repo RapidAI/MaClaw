@@ -1,5 +1,7 @@
 import React from "react";
+import { localizeText } from "../../i18n";
 import type { ChatMessage } from "./useAIAssistant";
+import { CodingAgentProcessChevron, CodingAgentProcessCopyIcon, CodingAgentProcessIcon, type CodingAgentProcessKind } from "./CodingAgentProcessIcon";
 
 import { sanitizeVisibleChatText } from "./visibleChatText";
 
@@ -604,16 +606,11 @@ export function codingAgentToolDisplayName(name: string): string {
     if (bare === "read_file" || bare === "read") return "Read";
     if (bare === "write_file" || bare === "write") return "Write";
     if (bare === "edit_file" || bare === "edit_lines" || bare === "str_replace" || bare === "apply_patch") return "Edit";
-    if (
-        bare === "ripgrep" ||
-        bare === "grep_search" ||
-        bare === "glob" ||
-        bare === "list_dir" ||
-        bare === "list_directory" ||
-        bare === "search_files"
-    ) {
-        return "Search";
-    }
+    if (bare === "ripgrep" || bare === "grep_search" || bare === "grep" || bare === "code_search") return "Search";
+    // File lookup is its own row. A magnifying glass is content search.
+    if (bare === "glob" || bare === "list_dir" || bare === "list_directory" || bare === "search_files" || bare === "search") return "Find";
+    if (bare === "todo_write") return "Todo";
+    if (bare === "delegate_task" || bare === "spawn_coding_agent") return "Agent";
     if (bare === "code_navigation") return "Explore";
     if (bare === "git_diff") return "Diff";
     if (lower.startsWith("ssh_")) return codingAgentToolDisplayName(raw.slice(4));
@@ -1304,13 +1301,20 @@ export function codingAgentInquiryTargetText(progress: CodingAgentProgress | nul
     return files.length > 0 ? files.join(", ") : undefined;
 }
 
-/** Search and source exploration keep their target visible, like Read/Edit. */
+/** Search, file lookup, and source exploration keep their target visible, like Read/Edit. */
 export function codingAgentToolPinsInquiryTarget(progress: CodingAgentProgress): boolean {
     const event = (progress.event || "").trim().toLowerCase();
     if (event !== "tool_finished" && event !== "tool_started") return false;
     if (codingAgentShellSearchTarget(progress) || codingAgentShellExplorationTarget(progress)) return true;
     const label = codingAgentToolDisplayName(progress.detail || "");
-    return label === "Search" || label === "Explore";
+    if (label === "Search" || label === "Explore") return true;
+    // A lookup, checklist, or child agent keeps its own target. The task title
+    // is not a target, so a row with only that title can still be hidden.
+    if (label === "Find" || label === "Todo" || label === "Agent") {
+        if ((progress.target || "").trim()) return true;
+        return (progress.files || []).some((file) => (file || "").trim());
+    }
+    return false;
 }
 
 /**
@@ -1483,11 +1487,24 @@ function renderCodingAgentAssistantNote(
     progress: CodingAgentProgress,
     t: CodingAgentProgressTheme,
     key?: string,
+    timeline = false,
 ): React.ReactNode {
     const raw = (progress.detail || progress.summary || "").trim();
     if (!raw || codingAssistantNoteLooksInternal(raw)) return null;
     const text = sanitizeVisibleChatText(raw).trim();
     if (!text) return null;
+    // The process list has no note icon. The sentence starts on the verb column.
+    if (timeline) {
+        return (
+            <div
+                key={key}
+                className="caps-process-note-line"
+                data-testid="coding-agent-assistant-note"
+            >
+                {text}
+            </div>
+        );
+    }
     return (
         <div
             key={key}
@@ -1552,6 +1569,7 @@ function renderCodingAgentFileChangeTable(
     t: CodingAgentProgressTheme,
     lang: string,
     key?: string,
+    flat = false,
 ): React.ReactNode {
     const rows = codingAgentFileChangeRows(progress);
     if (rows.length === 0) return null;
@@ -1562,6 +1580,7 @@ function renderCodingAgentFileChangeTable(
             rows={rows}
             t={t}
             lang={lang}
+            flat={flat}
         />
     );
 }
@@ -1616,11 +1635,14 @@ function CodingAgentFileChangeTable({
     rows,
     t,
     lang,
+    flat = false,
 }: {
     progress: CodingAgentProgress;
     rows: CodingAgentFileChange[];
     t: CodingAgentProgressTheme;
     lang: string;
+    /** Process list: the header shares the icon column, so the card chrome stays off. */
+    flat?: boolean;
 }): React.ReactElement {
     const onOpenPreviewFile = React.useContext(CodingAgentPreviewFocusContext);
     const [expanded, setExpanded] = React.useState(false);
@@ -1632,27 +1654,22 @@ function CodingAgentFileChangeTable({
     const delColor = t.isDark ? codingAgentDelColor.dark : codingAgentDelColor.light;
     const rawCount = progress.fileChanges?.length || progress.files?.length || rows.length;
     const count = progress.count && progress.count > rawCount ? progress.count : rows.length;
-    const header = lang.startsWith("zh") ? `${count} 个文件已更改` : `${count} files changed`;
-    const showAll = lang.startsWith("zh") ? "全部显示" : "Show all";
+    const header = localizeText(
+        lang,
+        count === 1 ? "1 file changed" : `${count} files changed`,
+        `${count} 个文件已更改`,
+        `${count} 個檔案已更改`,
+    );
+    const showAll = localizeText(lang, "Show all", "全部显示", "全部顯示");
     const muted = t.fieldLabel;
     return (
         <div
-            className="coding-agent-file-changes"
+            className={flat ? "coding-agent-file-changes caps-process-files" : "coding-agent-file-changes"}
             data-testid="coding-agent-file-changes"
             aria-label={header}
         >
-            <div
-                style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    marginBottom: 4,
-                    minHeight: 20,
-                    fontSize: 12,
-                    lineHeight: 1.35,
-                    color: t.text,
-                }}
-            >
+            <div className="caps-process-row caps-file-head-row" data-process-kind="edit">
+                <CodingAgentProcessIcon kind="edit" className="caps-process-icon" />
                 <span className="caps-file-head">{header}</span>
                 <CodingAgentFileChangeStat
                     added={added}
@@ -1721,12 +1738,292 @@ function CodingAgentFileChangeTable({
     );
 }
 
-const codingAgentToolLineColumns: React.CSSProperties = {
-    display: "grid",
-    gridTemplateColumns: "12px minmax(52px, 72px) minmax(0, 1fr) auto",
-    alignItems: "baseline",
-    columnGap: 6,
-};
+const PROCESS_SUMMARY_MAX_MS = 48 * 60 * 60 * 1000;
+
+/** Write/edit tools whose file list already is the process row. `diff_updated` only echoes `trackFile`. */
+const CODING_PROCESS_EDIT_TOOLS = new Set([
+    "write_file",
+    "edit_file",
+    "edit_lines",
+    "apply_patch",
+    "str_replace",
+]);
+
+function codingProcessTurnKey(progress: CodingAgentProgress): string {
+    if (progress.turnID) return `turn:${progress.turnID}`;
+    if (progress.runID && progress.taskID) return `run:${progress.runID}|task:${progress.taskID}`;
+    if (progress.taskID) return `task:${progress.taskID}`;
+    return "turn:default";
+}
+
+function addCodingProcessFileKeys(target: Set<string>, path: string | undefined): void {
+    const slash = (path || "").replace(/\\/g, "/").trim();
+    if (!slash) return;
+    target.add(slash);
+    const compact = compactCodingTrailPath(slash);
+    if (compact) target.add(compact);
+}
+
+export interface CodingProcessTimelineVisibility {
+    /** Redundant `diff_updated` rows. Omitted from the list, the summary, and thought timing. */
+    hidden: Set<number>;
+    /**
+     * Failed diff self-checks. A one-event feed drops `diff_check`, so the
+     * failure would otherwise vanish. Passed checks stay quiet.
+     */
+    notes: Map<number, string>;
+}
+
+function codingProcessDiffCheckFailed(progress: CodingAgentProgress): boolean {
+    const outcome = (progress.outcome || "").trim().toLowerCase();
+    return outcome === "failed" || outcome === "missing";
+}
+
+function codingProcessDiffCheckNote(progress: CodingAgentProgress): string {
+    const summary = (progress.summary || progress.detail || "").replace(/\s+/g, " ").trim();
+    return summary ? truncateCodingAgentInlineText(summary, 160) : "";
+}
+
+/** Product copy for a failed diff self-check. A real git error stays after the label. */
+export function codingProcessDiffCheckDisplay(summary: string, lang: string): string {
+    const text = summary.replace(/\s+/g, " ").trim();
+    const label = localizeText(lang, "Diff self-check did not complete", "差异自检未完成", "差異自檢未完成");
+    if (!text || text === "git diff self-check did not complete" || text === label) return label;
+    return `${label} · ${text}`;
+}
+
+/**
+ * Which timeline rows are not separate edit actions.
+ * The stored events stay for the turn snapshot. `diff_summary` stays, because
+ * that row is the file-change table.
+ * A start row covers a `diff_updated` once its files already name the path.
+ * A diff that names some other file stays. An empty diff path is the cumulative
+ * "N files" echo and drops when this turn already has an edit.
+ * A failed `diff_check` is a self-check note, not another edit. A passed one
+ * is not renderable on its own and stays out of the list.
+ */
+export function codingProcessTimelineVisibility(
+    items: ReadonlyArray<{ kind: string; content?: string }>,
+): CodingProcessTimelineVisibility {
+    const hidden = new Set<number>();
+    const notes = new Map<number, string>();
+    const covered = new Map<string, Set<string>>();
+    const parsed: Array<CodingAgentProgress | null> = [];
+    for (let index = 0; index < items.length; index++) {
+        const item = items[index];
+        if (!item || item.kind !== "progress" || !item.content) {
+            parsed.push(null);
+            continue;
+        }
+        const progress = parseCodingAgentProgress(item.content);
+        parsed.push(progress);
+        if (!progress) continue;
+        const event = (progress.event || "").trim().toLowerCase();
+        if (event !== "tool_started" && event !== "tool_finished") continue;
+        const tool = (progress.detail || "").trim().toLowerCase().replace(/^ssh_/, "");
+        if (!CODING_PROCESS_EDIT_TOOLS.has(tool)) continue;
+        const files = covered.get(codingProcessTurnKey(progress)) ?? new Set<string>();
+        for (const path of progress.files || []) addCodingProcessFileKeys(files, path);
+        for (const row of progress.fileChanges || []) addCodingProcessFileKeys(files, row.path);
+        if (files.size > 0) covered.set(codingProcessTurnKey(progress), files);
+    }
+    for (let index = 0; index < parsed.length; index++) {
+        const progress = parsed[index];
+        if (!progress) continue;
+        const event = (progress.event || "").trim().toLowerCase();
+        if (event === "diff_check") {
+            if (codingProcessDiffCheckFailed(progress)) {
+                const text = codingProcessDiffCheckNote(progress);
+                if (text) notes.set(index, text);
+            }
+            continue;
+        }
+        if (event !== "diff_updated") continue;
+        const files = covered.get(codingProcessTurnKey(progress));
+        if (!files || files.size === 0) continue;
+        const updated = new Set<string>();
+        for (const path of progress.files || []) addCodingProcessFileKeys(updated, path);
+        for (const row of progress.fileChanges || []) addCodingProcessFileKeys(updated, row.path);
+        if (updated.size === 0 || [...updated].some((path) => files.has(path))) hidden.add(index);
+    }
+    return { hidden, notes };
+}
+
+/** Icon kind for a tool or diff row. Thinking rows use `think` directly. */
+export function codingAgentProcessKind(progress: CodingAgentProgress): CodingAgentProcessKind {
+    const event = (progress.event || "").trim().toLowerCase();
+    if (event === "diff_updated" || event === "diff_summary" || event === "diff_check") return "edit";
+    switch (codingAgentToolNameText(progress)) {
+        case "Search": return "search";
+        case "Find": return "find";
+        case "Read": return "read";
+        case "$": return "run";
+        case "Edit":
+            return "edit";
+        // git_diff inspects the tree. It keeps the pencil, but it is not an edit:
+        // the verb and the file count are handled apart from write/edit tools.
+        case "Diff":
+            return "edit";
+        case "Write": return "write";
+        case "Explore": return "explore";
+        case "Todo": return "todo";
+        case "Agent": return "agent";
+        default: return "other";
+    }
+}
+
+/** Visible verb. Unknown tools keep their existing display name. */
+export function codingAgentProcessVerb(kind: CodingAgentProcessKind, lang: string, fallbackName?: string): string {
+    switch (kind) {
+        case "think": return localizeText(lang, "Thought", "思考过程", "思考過程");
+        case "search": return localizeText(lang, "Search", "搜索", "搜尋");
+        case "find": return localizeText(lang, "Find", "查找", "查找");
+        case "read": return localizeText(lang, "Read", "读取", "讀取");
+        case "run": return localizeText(lang, "Run", "运行", "執行");
+        case "edit": return localizeText(lang, "Edit", "编辑", "編輯");
+        case "write": return localizeText(lang, "Write", "写入", "寫入");
+        case "explore": return localizeText(lang, "Explore", "探索", "探索");
+        case "todo": return localizeText(lang, "Todo", "待办", "待辦");
+        case "agent": return "Agent";
+        default: return (fallbackName || "").trim() || localizeText(lang, "Call", "调用", "呼叫");
+    }
+}
+
+function codingAgentProcessLivePrefix(kind: CodingAgentProcessKind, lang: string): string {
+    switch (kind) {
+        case "think": return localizeText(lang, "Thinking", "正在思考", "正在思考");
+        case "search": return localizeText(lang, "Searching", "正在搜索", "正在搜尋");
+        case "find": return localizeText(lang, "Finding files", "正在查找", "正在查找");
+        case "read": return localizeText(lang, "Reading", "正在读取", "正在讀取");
+        case "run": return localizeText(lang, "Running command", "正在运行命令", "正在執行命令");
+        case "edit": return localizeText(lang, "Editing", "正在编辑", "正在編輯");
+        case "write": return localizeText(lang, "Writing", "正在写入", "正在寫入");
+        case "explore": return localizeText(lang, "Exploring", "正在探索", "正在探索");
+        case "todo": return localizeText(lang, "Updating todos", "正在更新待办", "正在更新待辦");
+        case "agent": return localizeText(lang, "Delegating", "正在委派任务", "正在委派任務");
+        default: return localizeText(lang, "Calling tool", "正在调用工具", "正在呼叫工具");
+    }
+}
+
+export interface CodingAgentProcessSummaryItem {
+    kind: "thinking" | "progress";
+    content: string;
+    /** Last activity on the row. */
+    timestamp: number;
+    /** When the row began. Falls back to `timestamp` for older timelines. */
+    startedAt?: number;
+}
+
+function codingAgentProcessEnglishCount(count: number, one: string, many: string): string {
+    return `${count} ${count === 1 ? one : many}`;
+}
+
+/** `git_diff` reads the tree. It is not a file the turn edited. */
+function codingAgentProcessToolIsDiffInspection(progress: CodingAgentProgress): boolean {
+    return codingAgentToolNameText(progress) === "Diff";
+}
+
+function codingAgentProcessDiffLivePrefix(lang: string): string {
+    return localizeText(lang, "Checking diff", "正在查看差异", "正在查看差異");
+}
+
+/**
+ * One-line turn summary: live verb, then row counts, then elapsed.
+ * A zero count is omitted. Elapsed longer than two days is omitted so a
+ * fixture timestamp cannot render as decades.
+ */
+export function codingAgentProcessSummaryText(
+    items: CodingAgentProcessSummaryItem[],
+    lang: string,
+    options?: { live?: boolean; nowMs?: number; thoughtLive?: boolean },
+): string {
+    let find = 0;
+    let search = 0;
+    let read = 0;
+    let run = 0;
+    let edit = 0;
+    let firstTs = Number.POSITIVE_INFINITY;
+    let lastTs = 0;
+    // The newest in-progress row names the summary. A settled note clears a
+    // thought, then the summary falls back to a command that is still running.
+    let runningKind: CodingAgentProcessKind | undefined;
+    // The newest in-progress git_diff is an inspection, not "正在编辑".
+    let runningDiff = false;
+    let thoughtPending = false;
+    for (const item of items) {
+        const started = item.startedAt && item.startedAt > 0 ? item.startedAt : item.timestamp;
+        if (started > 0) firstTs = Math.min(firstTs, started);
+        if (item.timestamp > 0) lastTs = Math.max(lastTs, item.timestamp);
+        if (item.kind !== "progress") {
+            thoughtPending = true;
+            continue;
+        }
+        thoughtPending = false;
+        const progress = parseCodingAgentProgress(item.content);
+        if (!progress) continue;
+        if (codingAgentLineIsRunning(progress)) {
+            if (codingAgentProcessToolIsDiffInspection(progress)) {
+                runningKind = undefined;
+                runningDiff = true;
+            } else {
+                runningKind = codingAgentProcessKind(progress);
+                runningDiff = false;
+            }
+        }
+        const event = (progress.event || "").trim().toLowerCase();
+        if (event !== "tool_started" && event !== "tool_finished" && event !== "diff_updated") continue;
+        if (codingAgentProcessToolIsDiffInspection(progress)) continue;
+        const kind = codingAgentProcessKind(progress);
+        if (kind === "find") find += 1;
+        else if (kind === "search") search += 1;
+        else if (kind === "read") read += 1;
+        else if (kind === "run") run += 1;
+        else if (kind === "edit" || kind === "write") edit += 1;
+    }
+    const parts: string[] = [];
+    // A trailing thought names the summary only while that thought is still the
+    // live activity. After the answer starts, the row drops its sheen and the
+    // prefix falls back to a command that is still running. Callers that do
+    // not pass thoughtLive keep the older "last thought is live" reading.
+    const thinkingNow = thoughtPending && options?.thoughtLive !== false;
+    const liveKind = thinkingNow ? "think" : runningKind;
+    if (options?.live && thinkingNow) parts.push(codingAgentProcessLivePrefix("think", lang));
+    else if (options?.live && runningDiff) parts.push(codingAgentProcessDiffLivePrefix(lang));
+    else if (options?.live && liveKind) parts.push(codingAgentProcessLivePrefix(liveKind, lang));
+    if (find > 0) parts.push(localizeText(lang, `Looked up ${codingAgentProcessEnglishCount(find, "time", "times")}`, `已找了 ${find} 次文件`, `已找了 ${find} 次檔案`));
+    if (search > 0) parts.push(localizeText(lang, `Searched ${codingAgentProcessEnglishCount(search, "pattern", "patterns")}`, `已搜索了 ${search} 个模式`, `已搜尋了 ${search} 個模式`));
+    if (read > 0) parts.push(localizeText(lang, `Read ${codingAgentProcessEnglishCount(read, "file", "files")}`, `已读取了 ${read} 个文件`, `已讀取了 ${read} 個檔案`));
+    if (run > 0) parts.push(localizeText(lang, `Ran ${codingAgentProcessEnglishCount(run, "command", "commands")}`, `已运行了 ${run} 条命令`, `已執行了 ${run} 條命令`));
+    if (edit > 0) parts.push(localizeText(lang, `Edited ${codingAgentProcessEnglishCount(edit, "file", "files")}`, `已编辑了 ${edit} 个文件`, `已編輯了 ${edit} 個檔案`));
+    const end = options?.live ? (options.nowMs ?? lastTs) : lastTs;
+    if (firstTs < Number.POSITIVE_INFINITY && end >= firstTs) {
+        const delta = end - firstTs;
+        const duration = delta > 0 && delta <= PROCESS_SUMMARY_MAX_MS ? formatCodingAgentDuration(delta) : undefined;
+        if (duration) parts.push(duration);
+    }
+    return parts.join(" · ");
+}
+
+function codingAgentProcessSecondaryPath(progress: CodingAgentProgress, operand?: string): string | undefined {
+    const raw = (progress.files && progress.files[0]) || "";
+    const compact = compactCodingTrailPath(raw);
+    if (!compact) return undefined;
+    const visible = (operand || "").replace(/\s+/g, " ").trim();
+    if (!visible) return compact;
+    if (visible === compact || visible.includes(compact)) return undefined;
+    return compact;
+}
+
+function codingAgentProcessCountLabel(progress: CodingAgentProgress, kind: CodingAgentProcessKind, lang: string): string | undefined {
+    const count = progress.count;
+    if (typeof count !== "number" || !Number.isFinite(count) || count < 0) return undefined;
+    if (kind === "search") return localizeText(lang, `${count} results`, `${count} 个结果`, `${count} 個結果`);
+    if (kind === "find") {
+        const files = count === 1 ? "1 file" : `${count} files`;
+        return localizeText(lang, files, `${count} 个文件`, `${count} 個檔案`);
+    }
+    return String(count);
+}
 
 function CodingAgentToolLine({
     progress,
@@ -1743,9 +2040,13 @@ function CodingAgentToolLine({
     hideDetailIfEquals?: string;
     onOpenPreviewFile?: (path: string) => void;
 }): React.ReactElement {
-    const tone = resolveCodingAgentStatusTone(progress, t.isDark);
-    const mark = codingAgentOutcomeMark(progress, t.isDark);
+    const kind = codingAgentProcessKind(progress);
     const toolName = codingAgentToolNameText(progress);
+    const diffInspection = codingAgentProcessToolIsDiffInspection(progress);
+    // A finished inspection has no path. "已完成" would read as an edit that landed.
+    const verb = diffInspection
+        ? localizeText(lang, "Diff", "查看差异", "查看差異")
+        : codingAgentProcessVerb(kind, lang, toolName);
     const rawDetail = codingAgentToolDetailText(progress, lang);
     // Avoid repeating the feed header title on every tool row.
     const detail = rawDetail
@@ -1761,7 +2062,6 @@ function CodingAgentToolLine({
         ? previewCandidate
         : undefined;
     const canOpenPreview = !!(onOpenPreviewFile && previewPath);
-    const duration = formatCodingAgentDuration(progress.durationMs);
     const command = (progress.command || "").trim();
     const showCmdPreview = !!codingAgentCommandPreviewText(progress, lang);
     const running = codingAgentLineIsRunning(progress);
@@ -1776,55 +2076,117 @@ function CodingAgentToolLine({
         && normalizedCommand.startsWith(actionPrefix);
     const actionIsCommand = !!actionText && (actionText === normalizedCommand || actionIsTruncatedCommand);
     const note = (progress.summary || "").replace(/\s+/g, " ").trim();
-    const visibleNote = note && note !== actionText && note !== normalizedCommand
+    const outcome = (progress.outcome || "").trim().toLowerCase();
+    const failureOutcome = outcome === "failed" || outcome === "blocked" || outcome === "missing" || outcome === "timeout";
+    // A failed command used to keep 48 runes of the diagnostic beside the
+    // command, which cut a compiler line at "id…". The full line wraps under
+    // the row. Shorter notes stay on the row.
+    // The object cell ellipsizes. A failure whose only text is the diagnostic
+    // used to live there, so the tail was clipped with no tooltip. That
+    // diagnostic goes on the wrapping line, and the object stays empty.
+    const summaryIsTheAction = !!note && note === actionText;
+    const failureNote = failureOutcome && note && note !== normalizedCommand
+        ? note
+        : "";
+    const visibleNote = !failureNote && note && note !== actionText && note !== normalizedCommand
         ? truncateCodingAgentInlineText(note, 48)
         : "";
-    // The checkmark already marks a finished call. 「已完成」 only fills a row
-    // that has no command, path, or failure note.
-    const lineText = actionText || visibleNote || (finished ? (lang.startsWith("zh") ? "已完成" : "Completed") : "");
+    // 「已完成」 only fills a finished row that has no command, path, or failure note.
+    const lineText = summaryIsTheAction && failureNote
+        ? ""
+        : (actionText || visibleNote || (
+            finished && !diffInspection && !failureNote ? localizeText(lang, "Completed", "已完成", "已完成") : ""
+        ));
     // The note sits beside the action. Putting it in the same ellipsis run hides
     // "Access is denied" behind a long command.
     const trailingNote = actionText && visibleNote ? visibleNote : "";
+    // The failure line is visible, but the command's accessible name still
+    // carries the full reason. A blocked row used to put that reason here
+    // even when the inline note was clipped.
+    const accessibleNote = failureNote || trailingNote;
     const colorDelta = codingAgentToolLooksLikeFileEdit(progress);
     const previewLabel = canOpenPreview && previewPath
-        ? `${lang.startsWith("zh") ? "打开预览" : "Open preview"}: ${compactCodingTrailPath(previewPath) || previewPath}`
+        ? `${localizeText(lang, "Open preview", "打开预览", "開啟預覽")}: ${compactCodingTrailPath(previewPath) || previewPath}`
         : undefined;
     const commandLabel = showCmdPreview && actionIsCommand
-        ? `${lang.startsWith("zh") ? "\u547d\u4ee4" : "Command"}: ${command}${trailingNote ? `. ${note}` : ""}`
+        ? `${localizeText(lang, "Command", "命令", "命令")}: ${command}${accessibleNote ? `. ${note}` : ""}`
         : undefined;
     // Hover the raw command only when this line is that command. A Search or
     // Explore row shows a compact target, so the shell line stays off the tooltip.
+    // The emitter keeps up to 120 runes of that target and the row clips at 88.
+    // The clipped tail stays on the tooltip and the accessible name. A chevron
+    // is still only for a truncated command or a previewable file.
+    const inquiryTarget = (codingAgentInquiryTargetText(progress) || "").replace(/\s+/g, " ").trim();
+    const inquiryShown = inquiryTarget ? truncateCodingAgentInlineText(inquiryTarget, 88) : "";
+    const inquiryLabel = inquiryTarget && inquiryShown !== inquiryTarget && actionText === inquiryShown
+        ? inquiryTarget
+        : undefined;
     const titleText = actionIsCommand && command && (showCmdPreview || actionIsTruncatedCommand)
         ? command
-        : undefined;
+        : inquiryLabel;
+    const objectLabel = previewLabel && inquiryLabel
+        ? `${previewLabel}. ${inquiryLabel}`
+        : (previewLabel || commandLabel || inquiryLabel);
     const openPreview = canOpenPreview && previewPath
         ? () => onOpenPreviewFile?.(previewPath)
         : undefined;
+    const secondaryPath = codingAgentProcessSecondaryPath(progress, lineText);
+    const countLabel = codingAgentProcessCountLabel(progress, kind, lang);
+    const failed = codingAgentProgressLooksCritical(progress);
+    const expandable = !running && (actionIsTruncatedCommand || canOpenPreview);
+    const [commandOpen, setCommandOpen] = React.useState(false);
+    const copyCommand = command
+        ? (event: React.MouseEvent<HTMLButtonElement>) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const write = navigator.clipboard?.writeText;
+            if (!write) return;
+            try {
+                void Promise.resolve(write.call(navigator.clipboard, command)).catch(() => undefined);
+            } catch {
+                // Clipboard access can throw before it returns a promise.
+            }
+        }
+        : undefined;
+    const chevronLabel = actionIsTruncatedCommand
+        ? localizeText(
+            lang,
+            commandOpen ? "Hide full command" : "Show full command",
+            commandOpen ? "隐藏完整命令" : "显示完整命令",
+            commandOpen ? "隱藏完整命令" : "顯示完整命令",
+        )
+        : previewLabel;
+    const onChevron = actionIsTruncatedCommand
+        ? (event: React.MouseEvent<HTMLButtonElement>) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setCommandOpen((open) => !open);
+        }
+        : openPreview
+            ? (event: React.MouseEvent<HTMLButtonElement>) => {
+                event.preventDefault();
+                event.stopPropagation();
+                openPreview();
+            }
+            : undefined;
     return (
+        <div className="caps-process-item">
         <div
+            className="caps-process-row"
             data-testid="coding-agent-tool-line"
             data-tool-running={running ? "true" : "false"}
-            style={{
-                ...codingAgentToolLineColumns,
-                padding: "0",
-                fontSize: 11,
-                lineHeight: 1.4,
-                color: t.text,
-                opacity: running ? 0.9 : 1,
-            }}
+            data-process-kind={kind}
+            data-failed={failed ? "true" : "false"}
         >
-            <span aria-hidden="true" style={{ color: mark.color, fontWeight: 700, fontFamily: monoFont, textAlign: "center", fontSize: 11, width: 12 }}>
-                {mark.glyph}
-            </span>
-            <span style={{ color: tone.accent, fontFamily: monoFont, fontSize: 11, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={toolName}>
-                {toolName}
-            </span>
+            <CodingAgentProcessIcon kind={kind} className="caps-process-icon" />
+            <span className="caps-process-verb">{verb}</span>
             <span
+                className="caps-process-object"
                 data-testid={canOpenPreview ? "coding-agent-preview-link" : ((showCmdPreview || (showCommandTestId && command)) ? "coding-agent-command-preview" : undefined)}
                 role={canOpenPreview ? "button" : (showCmdPreview && actionIsCommand ? "note" : undefined)}
                 tabIndex={canOpenPreview ? 0 : undefined}
                 data-preview-path={canOpenPreview ? previewPath : undefined}
-                aria-label={previewLabel || commandLabel}
+                aria-label={objectLabel}
                 title={titleText}
                 onClick={openPreview}
                 onKeyDown={openPreview ? (event) => {
@@ -1833,26 +2195,59 @@ function CodingAgentToolLine({
                         openPreview();
                     }
                 } : undefined}
-                style={{ display: "flex", alignItems: "baseline", gap: 6, minWidth: 0, color: t.fieldLabel, fontFamily: monoFont, fontSize: 11, cursor: canOpenPreview ? "pointer" : undefined }}
             >
-                <span style={{ flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {colorDelta
-                        ? <CodingAgentInlineLineDelta text={lineText} muted={t.fieldLabel} isDark={t.isDark} />
-                        : lineText}
+                {colorDelta
+                    ? <CodingAgentInlineLineDelta text={lineText} muted={t.fieldLabel} isDark={t.isDark} />
+                    : lineText}
+            </span>
+            {secondaryPath ? (
+                <span className="caps-process-path" title={progress.files?.[0]}>{secondaryPath}</span>
+            ) : null}
+            {trailingNote ? (
+                <span
+                    className="caps-process-note"
+                    data-tool-note=""
+                    title={note !== trailingNote ? note : undefined}
+                >
+                    {`\u00b7 ${trailingNote}`}
                 </span>
-                {trailingNote ? (
-                    <span
-                        data-tool-note=""
-                        title={note !== trailingNote ? note : undefined}
-                        style={{ flex: "0 1 auto", minWidth: 0, maxWidth: "46%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+            ) : null}
+            {countLabel ? <span className="caps-process-count">{countLabel}</span> : null}
+            <span className="caps-process-trail">
+                {running && copyCommand ? (
+                    <button
+                        type="button"
+                        className="caps-process-copy"
+                        data-testid="coding-agent-process-copy"
+                        aria-label={localizeText(lang, "Copy command", "复制命令", "複製命令")}
+                        onClick={copyCommand}
                     >
-                        {`\u00b7 ${trailingNote}`}
-                    </span>
+                        <CodingAgentProcessCopyIcon />
+                    </button>
+                ) : null}
+                {running ? <span className="caps-process-live-dot" data-testid="coding-agent-process-live-dot" /> : null}
+                {expandable && onChevron ? (
+                    <button
+                        type="button"
+                        className="caps-process-chevron"
+                        data-testid="coding-agent-process-chevron"
+                        aria-label={chevronLabel}
+                        aria-expanded={actionIsTruncatedCommand ? commandOpen : undefined}
+                        onClick={onChevron}
+                    >
+                        <CodingAgentProcessChevron />
+                    </button>
                 ) : null}
             </span>
-            <span style={{ color: t.fieldLabel, fontFamily: monoFont, fontSize: 10, flexShrink: 0, opacity: 0.85, fontVariantNumeric: "tabular-nums" }}>
-                {duration || ""}
-            </span>
+        </div>
+        {commandOpen && actionIsTruncatedCommand ? (
+            <div className="caps-process-command" data-testid="coding-agent-process-command">{command}</div>
+        ) : null}
+        {failureNote ? (
+            <div className="caps-process-note-line caps-process-note-line--failed" data-testid="coding-agent-tool-error" data-tool-note="">
+                {failureNote}
+            </div>
+        ) : null}
         </div>
     );
 }
@@ -1873,6 +2268,7 @@ export function renderCodingAgentActivityFeed(
     messages: ChatMessage[],
     t: CodingAgentProgressTheme,
     lang: string,
+    options?: { timeline?: boolean },
 ): React.ReactNode {
     const rows = messages
         .map((msg) => ({ msg, progress: parseCodingAgentProgress(msg.content) }))
@@ -1900,6 +2296,7 @@ export function renderCodingAgentActivityFeed(
             lineRows={lineRows}
             t={t}
             lang={lang}
+            timeline={options?.timeline}
         />
     );
 }
@@ -1923,7 +2320,7 @@ export const CodingAgentTimelineProgressItem = React.memo(function CodingAgentTi
         role: "progress",
         content,
         timestamp,
-    }], theme, lang);
+    }], theme, lang, { timeline: true });
 });
 
 const MAX_VISIBLE_FEED_LINES = 20;
@@ -1933,11 +2330,14 @@ function CodingAgentActivityFeedShell({
     lineRows,
     t,
     lang,
+    timeline = false,
 }: {
     header: CodingAgentProgress;
     lineRows: Array<{ msg: ChatMessage; progress: CodingAgentProgress }>;
     t: CodingAgentProgressTheme;
     lang: string;
+    /** One process row. The multi-line feed inset and scrollport belong to boards. */
+    timeline?: boolean;
 }): React.ReactElement {
     const onOpenPreviewFile = React.useContext(CodingAgentPreviewFocusContext);
     const [expanded, setExpanded] = React.useState(false);
@@ -1985,7 +2385,7 @@ function CodingAgentActivityFeedShell({
 
     return (
         <div
-            className={codingAgentStatusClassName(header, "chat-progress")}
+            className={[codingAgentStatusClassName(header, "chat-progress"), timeline ? "caps-process-feed" : ""].filter(Boolean).join(" ")}
             data-testid="coding-agent-progress"
             data-coding-feed={isMulti ? "true" : lineRows.some(({ progress }) => !isCodingAgentTaskStatusOnly(progress)) ? "activity" : "single"}
             data-coding-trail={hasPlainTrail ? "plain" : "board"}
@@ -1997,7 +2397,7 @@ function CodingAgentActivityFeedShell({
             aria-atomic="false"
             aria-label={feedLabel}
             style={{
-                margin: hasPlainTrail ? "2px 0" : "4px 0",
+                margin: timeline ? "0" : (hasPlainTrail ? "2px 0" : "4px 0"),
                 padding: hasPlainTrail ? "0" : "4px 7px 4px",
                 borderRadius: hasPlainTrail ? 0 : 5,
                 border: hasPlainTrail ? "none" : `1px solid ${borderColor}`,
@@ -2082,9 +2482,9 @@ function CodingAgentActivityFeedShell({
                 )}
                 {visibleLineRows.map(({ msg, progress }) =>
                     (progress.event || "").trim().toLowerCase() === "assistant_note"
-                        ? renderCodingAgentAssistantNote(progress, t, msg.id)
+                        ? renderCodingAgentAssistantNote(progress, t, msg.id, timeline)
                         : codingAgentFileChangeRows(progress).length > 0 && (progress.event || "").trim().toLowerCase() === "diff_summary"
-                        ? renderCodingAgentFileChangeTable(progress, t, lang, msg.id)
+                        ? renderCodingAgentFileChangeTable(progress, t, lang, msg.id, timeline)
                         : <CodingAgentToolLine
                             key={msg.id}
                             progress={progress}
@@ -2464,14 +2864,21 @@ export function codingAgentToolTraceText(snapshot: CodingAgentTurnSnapshot, lang
 export function formatCodingAgentDuration(durationMs?: number): string | undefined {
     if (!Number.isFinite(durationMs) || durationMs === undefined || durationMs < 0) return undefined;
     if (durationMs === 0) return "0ms";
-    if (durationMs < 1000) return `${Math.max(1, Math.round(durationMs))}ms`;
-    if (durationMs < 60000) {
-        const seconds = durationMs / 1000;
-        return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)}s`;
+    // Round before the unit split. Rounding the leftover after flooring the
+    // minute is what showed "60s" and "1m 60s" at each minute boundary.
+    if (durationMs < 1000) {
+        const ms = Math.max(1, Math.round(durationMs));
+        return ms < 1000 ? `${ms}ms` : "1.0s";
     }
-    const minutes = Math.floor(durationMs / 60000);
-    const seconds = Math.round((durationMs % 60000) / 1000);
-    return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+    if (durationMs < 10000) {
+        const shown = (durationMs / 1000).toFixed(1);
+        return shown === "10.0" ? "10s" : `${shown}s`;
+    }
+    const seconds = Math.round(durationMs / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const remain = seconds % 60;
+    if (minutes <= 0) return `${remain}s`;
+    return remain > 0 ? `${minutes}m ${remain}s` : `${minutes}m`;
 }
 
 export function normalizeCodingAgentToolOutcome(outcome?: string): CodingAgentToolOutcome {

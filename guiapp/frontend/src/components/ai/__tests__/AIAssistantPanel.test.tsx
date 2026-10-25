@@ -215,7 +215,10 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     ShowItemInFolder: showItemInFolderMock,
     CreateTaskUnified: createTaskUnifiedMock,
     SuggestNewTaskType: vi.fn().mockResolvedValue({ suggested: '', confident: false }),
+    SuggestNewTaskExpert: vi.fn().mockResolvedValue({ expertId: '', confident: false }),
     AIAssistantAttachmentPreviewDataURL: vi.fn().mockResolvedValue('data:image/png;base64,THUMB'),
+    AIAssistantFileTypeIconDataURL: vi.fn().mockResolvedValue(''),
+    ConversationViewArchiveCount: vi.fn().mockResolvedValue(0),
     AIAssistantAttachmentFullDataURL: vi.fn().mockResolvedValue('data:image/png;base64,FULL'),
     SelectProjectDir: vi.fn(),
     SetWorkflowWorkingDir: vi.fn(),
@@ -3743,7 +3746,7 @@ describe('AIAssistantPanel property tests', () => {
             expect(live?.textContent).toBe('正在思考');
             expect(live?.className).toContain('assistant-reasoning-live-label');
         });
-        expect(container.querySelector<HTMLDetailsElement>('details[data-testid="assistant-reasoning-panel"]')?.open).toBe(true);
+        expect(container.querySelector<HTMLDetailsElement>('details[data-testid="coding-agent-thought"]')?.open).toBe(true);
         expect(container.textContent || '').toContain('Let me explore the repository.');
         expect(queryByTestId('coding-agent-working-trail')).toBeNull();
 
@@ -3839,10 +3842,15 @@ describe('AIAssistantPanel property tests', () => {
             streamingSessionKey: '',
         }} />);
         await waitFor(() => {
-            expect(container.querySelectorAll('[data-testid="assistant-reasoning-label"]')).toHaveLength(1);
-            expect(container.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在调用工具 todo_write');
+            const labels = Array.from(container.querySelectorAll('[data-testid="assistant-reasoning-label"]')).map(el => el.textContent);
+            expect(labels).toContain('思考过程...');
+            expect(labels).toContain('正在更新待办');
         });
-        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')?.getAttribute('data-live')).toBe('true');
+        const liveTodo = container.querySelector('[data-live="true"] [data-testid="assistant-reasoning-label"]');
+        expect(liveTodo?.textContent).toBe('正在更新待办');
+        expect(liveTodo?.className).toContain('assistant-reasoning-live-label');
+        expect(container.querySelector('[data-live="false"] [data-testid="assistant-reasoning-label"]')?.textContent).toBe('思考过程...');
+        expect(container.querySelector('[data-live="true"][data-testid="assistant-reasoning-panel"]')?.tagName).toBe('DIV');
         expect(container.querySelector<HTMLDetailsElement>('details[data-testid="assistant-reasoning-panel"]')?.open).toBe(false);
         expect(queryByTestId('coding-agent-working-trail')).toBeNull();
 
@@ -3930,6 +3938,97 @@ describe('AIAssistantPanel property tests', () => {
         expect(container.querySelector('[data-live="true"] [data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在编辑文件');
         expect(container.querySelector('[data-live="true"] [data-testid="assistant-reasoning-label"]')?.className).toContain('assistant-reasoning-live-label');
         expect(container.querySelector<HTMLDetailsElement>('details[data-live="false"]')?.open).toBe(true);
+    });
+
+    it('keeps a later goal continuation trail after the round settles', async () => {
+        const projectPath = 'D:/tasks/goal-trail-after-done';
+        const sessionKey = `desktop-user:${projectPath}`;
+        const rawKey = 'desktop-user:D:\\tasks\\goal-trail-after-done';
+        loadProjectConversationHistoryMock.mockResolvedValue([
+            { role: 'user', content: '/goal 改进画质' },
+            { role: 'assistant', content: '目标已开始：改进画质' },
+        ]);
+        const ackUser = makeMsg({ id: 'goal-ack-user', role: 'user', content: '/goal 改进画质', sessionKey: rawKey, timestamp: 1 });
+        const ack = makeMsg({ id: 'goal-ack', role: 'assistant', content: '目标已开始：改进画质', sessionKey: rawKey, timestamp: 2 });
+        const thought = 'Step 2 is complete. The metrics module now covers the named set.';
+        const goal = makeMsg({
+            id: 'goal-cont-assistant',
+            role: 'assistant',
+            content: '',
+            requestId: 'goal-cont-after-done',
+            sessionKey: rawKey,
+            timestamp: 3,
+            codingTimeline: [
+                { id: 't1', sequence: 1, kind: 'thinking', content: thought, timestamp: 3 },
+                { id: 'p1', sequence: 2, kind: 'progress', content: 'Coding Agent Event: {"agent":"coding","event":"tool_started","phase":"running","detail":"todo_write"}', timestamp: 4 },
+            ],
+        });
+        const base = defaultPanelProps();
+        const props = {
+            ...base,
+            lang: 'zh-Hans' as const,
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Goal trail after done',
+                autoSend: false,
+                prepareMode: 'restore-context' as const,
+                agentMode: 'coding_dev' as const,
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { ...base.state, messages: [], sending: false, streaming: false, ready: true },
+        };
+        const { rerender, container, getByTestId } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        await waitFor(() => expect(container.textContent || '').toContain('目标已开始：改进画质'));
+
+        const running = {
+            ...props.state,
+            messages: [ackUser, ack, goal],
+            sending: true,
+            streaming: true,
+            sendingSessionKey: sessionKey,
+            streamingSessionKey: sessionKey,
+            busySessionKeys: [sessionKey],
+            streamingSessionKeys: [sessionKey],
+        };
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={running} />);
+        await waitFor(() => expect(getByTestId('coding-agent-interleaved-timeline')).toBeTruthy());
+        expect(container.textContent || '').toContain(thought);
+        expect(container.textContent || '').toContain('思考过程');
+
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...running,
+            sending: false,
+            streaming: false,
+            sendingSessionKey: '',
+            streamingSessionKey: '',
+            busySessionKeys: [],
+            streamingSessionKeys: [],
+        }} />);
+        await waitFor(() => expect(getByTestId('coding-agent-interleaved-timeline')).toBeTruthy());
+        expect(container.textContent || '').toContain(thought);
+        expect(container.textContent || '').toContain('目标已开始：改进画质');
+        expect(container.querySelector('[data-process-kind="todo"]')).toBeTruthy();
+
+        const thinner = makeMsg({
+            id: 'goal-cont-assistant',
+            role: 'assistant',
+            content: '步骤已核对',
+            requestId: 'goal-cont-after-done',
+            sessionKey: rawKey,
+            timestamp: 5,
+        });
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...props.state,
+            messages: [ackUser, ack, thinner],
+            sending: true,
+            streaming: false,
+            sendingSessionKey: 'desktop-user',
+            busySessionKeys: ['desktop-user'],
+            streamingSessionKeys: [],
+        }} />);
+        await waitFor(() => expect(getByTestId('coding-agent-interleaved-timeline')).toBeTruthy());
+        expect(container.textContent || '').toContain(thought);
+        expect(container.querySelector('[data-process-kind="todo"]')).toBeTruthy();
     });
 
     it('auto-opens the cloud file preview when a restored cloud workspace tab resolves its cache path', async () => {
@@ -5325,7 +5424,7 @@ describe('AIAssistantPanel property tests', () => {
     it('replaces streaming placeholder with final content when round completes (no ghost 思考中)', async () => {
         // Regression test for appendUnique bug: when the live-sync effect writes
         // an empty assistant placeholder into projectTabMessages during streaming,
-        // the wasSending→!sending effect must *replace* it (via mergeChatMessages)
+        // the wasSending→!sending effect must *replace* it (via mergeProjectRoundHistory)
         // with the final-content version from `messages`, not skip it (appendUnique
         // skipped IDs already present, leaving a ghost empty placeholder alongside
         // the real response — manifesting as "思考中..." + response text together).
@@ -5615,7 +5714,9 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         await waitFor(() => expect(getByTestId('ai-pending-attachments').textContent || '').toContain('contract.pdf'));
-        expect(getByTestId('ai-pending-attachments').textContent || '').toContain('PDF');
+        const attachmentName = getByTestId('ai-pending-attachments').querySelector('.ai-attachment-name');
+        expect(attachmentName?.textContent).toBe('contract.pdf');
+        await waitFor(() => expect(getByTestId('ai-pending-attachments').textContent || '').toContain('PDF'));
 
         fireEvent.change(input, { target: { value: 'please review' } });
         const launches: CustomEvent[] = [];
@@ -7885,31 +7986,43 @@ describe('AIAssistantPanel property tests', () => {
 
     it('activates the matching project tab on a task activate event', async () => {
         const onHandled = vi.fn();
+        // The local assistant owns a conversation so the tab bar stays mounted
+        // while the panel is on the local tab (the empty-tab welcome view has
+        // no tab bar to observe).
         renderPanel({
             pendingProjectTabOpen: { projectPath: 'D:/tasks/activate-target', taskTitle: 'Activate target task', autoSend: false },
             onPendingProjectTabOpenHandled: onHandled,
-            state: { messages: [], sending: false, streaming: false, ready: true },
+            state: {
+                messages: [makeMsg({ id: 'local-seed-user', role: 'user', content: 'keep the tab bar mounted', sessionKey: 'desktop-user' })],
+                sending: false,
+                streaming: false,
+                ready: true,
+            },
         });
         await waitFor(() => expect(onHandled).toHaveBeenCalled());
 
         const tabFor = (name: string) => screen.getAllByRole('tab', { hidden: true }).find(el => el.textContent?.includes(name));
         await waitFor(() => expect(tabFor('Activate target task')?.getAttribute('aria-selected')).toBe('true'));
 
-        // Switch away to the local assistant tab first. In jsdom the tab bar is
-        // zero-width, so the inactive project tab collapses into the overflow
-        // menu and leaves the DOM until it is active again.
-        act(() => {
-            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
-        });
-        await waitFor(() => expect(tabFor('Activate target task')?.getAttribute('aria-selected')).toBe('false'));
+        // Switch away through the focus-only activate channel first: the task
+        // list can send the local assistant forward ({ local: true }). The
+        // new-task wizard no longer switches tabs (37b744b0) — it covers the
+        // active tab in place — so the activate event is the supported way
+        // back. An inactive project tab may collapse into the overflow menu
+        // and leave the DOM, so "no longer selected" is asserted tolerantly.
         loadProjectTabConversationMock.mockClear();
-
         const activateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'project-task:activate').at(-1)?.[1];
         expect(activateHandler).toBeTypeOf('function');
+        // A draft blocks the idle auto-close, so the open tab survives the
+        // switch away and the activate event has something to focus.
+        fireEvent.change(screen.getByTestId('ai-input') as HTMLTextAreaElement, { target: { value: 'draft keeps this tab open' } });
+        act(() => activateHandler({ local: true }));
+        await waitFor(() => expect(tabFor('Activate target task')?.getAttribute('aria-selected')).not.toBe('true'));
+
         act(() => activateHandler({ projectPath: 'D:/tasks/activate-target' }));
 
         await waitFor(() => expect(tabFor('Activate target task')?.getAttribute('aria-selected')).toBe('true'));
-        expect(screen.queryByRole('tab', { name: 'Default Task' })).toBeNull();
+        // Activation focuses an open tab; it must not mint a new-task tab.
         expect(screen.queryByRole('tab', { name: 'New task' })).toBeNull();
         // Focus-only: no transcript reload for the reactivated tab.
         expect(loadProjectTabConversationMock).not.toHaveBeenCalled();

@@ -476,19 +476,27 @@ func TestCheckpointCompletionFlushFailureRestoresMarker(t *testing.T) {
 	}
 }
 
-func TestPromoteCheckpointPreservesExistingPendingSlot(t *testing.T) {
+func TestPromoteCheckpointQueuesExistingPendingSlot(t *testing.T) {
 	cm := NewConversationMemory()
 	defer cm.Stop()
 	cm.UpsertUnfinishedSlot("user", &UnfinishedTaskSlot{SlotID: "existing", Status: UnfinishedTaskSlotStatusInterrupted, LastTask: "older task"})
 	cm.SetInFlightTaskForRun("user", "newer task", "/project", "run-2")
-	if promoted := cm.PromoteRecoverableCheckpoints(time.Now()); promoted != 0 {
-		t.Fatalf("promoted = %d, want 0 with an existing pending slot", promoted)
+	if promoted := cm.PromoteRecoverableCheckpoints(time.Now()); promoted != 1 {
+		t.Fatalf("promoted = %d, want 1", promoted)
 	}
+	if slot := cm.GetUnfinishedSlot("user"); slot == nil || slot.LastTask != "newer task" {
+		t.Fatalf("newer recovery slot = %#v", slot)
+	}
+	slots := cm.UnfinishedSlots()
+	if len(slots) != 2 {
+		t.Fatalf("recovery slots = %#v, want old and new tasks", slots)
+	}
+	cm.DismissUnfinishedSlot("user", cm.GetUnfinishedSlot("user").SlotID)
 	if slot := cm.GetUnfinishedSlot("user"); slot == nil || slot.SlotID != "existing" {
-		t.Fatalf("existing pending slot was replaced: %#v", slot)
+		t.Fatalf("older pending slot was not restored: %#v", slot)
 	}
 	if task, _ := cm.ConsumeInFlightTask("user"); task != "" {
-		t.Fatalf("marker not cleared after duplicate suppression: %q", task)
+		t.Fatalf("marker not cleared after promotion: %q", task)
 	}
 }
 
@@ -562,7 +570,7 @@ func TestExpireStaleInFlightReplacesResolvedSlot(t *testing.T) {
 	}
 }
 
-func TestExpireStaleInFlightPreservesPendingSlot(t *testing.T) {
+func TestExpireStaleInFlightQueuesPendingSlot(t *testing.T) {
 	cm := NewConversationMemory()
 	defer cm.Stop()
 
@@ -582,8 +590,13 @@ func TestExpireStaleInFlightPreservesPendingSlot(t *testing.T) {
 		t.Fatalf("expired = %d, want 1", expired)
 	}
 	slot := cm.GetUnfinishedSlot("user")
+	if slot == nil || slot.LastTask != "stalled task" {
+		t.Fatalf("stalled recovery slot = %#v", slot)
+	}
+	cm.DismissUnfinishedSlot("user", slot.SlotID)
+	slot = cm.GetUnfinishedSlot("user")
 	if slot == nil || slot.SlotID != "pending-slot" || slot.LastTask != "awaiting decision" {
-		t.Fatalf("pending slot was overwritten: %#v", slot)
+		t.Fatalf("pending slot was lost: %#v", slot)
 	}
 }
 
@@ -1001,5 +1014,32 @@ func TestReplaceInFlightWithUnfinishedSlotReplacesResolvedSlot(t *testing.T) {
 	}
 	if task, _ := cm.ConsumeInFlightTask("user"); task != "" {
 		t.Fatalf("marker remained after replacement: %q", task)
+	}
+}
+
+func TestRecoverySlotsSurviveReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "conversation.json")
+	cm := NewPersistentConversationMemory(path)
+	cm.UpsertUnfinishedSlot("user", &UnfinishedTaskSlot{SlotID: "older", Status: UnfinishedTaskSlotStatusInterrupted, LastTask: "older task"})
+	cm.SetInFlightTaskForRun("user", "newer task", "/project", "run-new")
+	cm.PromoteRecoverableCheckpoints(time.Now())
+	if err := cm.FlushNow(); err != nil {
+		t.Fatal(err)
+	}
+	cm.Stop()
+
+	reloaded := NewPersistentConversationMemory(path)
+	defer reloaded.Stop()
+	if got := len(reloaded.UnfinishedSlots()); got != 2 {
+		t.Fatalf("reloaded recovery slot count = %d, want 2", got)
+	}
+	if slot := reloaded.GetUnfinishedSlot("user"); slot == nil || slot.LastTask != "newer task" {
+		t.Fatalf("current recovery slot = %#v", slot)
+	}
+	if !reloaded.BindUnfinishedSlot("user", "older") {
+		t.Fatal("could not bind queued recovery slot")
+	}
+	if slot := reloaded.ActiveUnfinishedSlot("user"); slot == nil || slot.SlotID != "older" {
+		t.Fatalf("bound queued recovery slot = %#v", slot)
 	}
 }

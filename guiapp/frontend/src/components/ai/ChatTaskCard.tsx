@@ -3,7 +3,7 @@ import type { ChatTaskView } from "./chatTaskModel";
 import { chatTaskTerminal } from "./chatTaskModel";
 import type { Theme } from "./aiAssistantPanelTheme";
 
-function emitChatTaskAction(action: "cancel" | "steer" | "answer", taskId: string, text = "") {
+function emitChatTaskAction(action: "resume" | "cancel" | "steer" | "answer", taskId: string, text = "") {
     window.dispatchEvent(new CustomEvent("ai-chat-task-action", { detail: { action, taskId, text } }));
 }
 
@@ -24,7 +24,8 @@ function statusLabel(status: string, lang: string): string {
 export function ChatTaskCard({ task, theme, lang }: { task: ChatTaskView; theme: Theme; lang: string }) {
     const [draft, setDraft] = useState("");
     const zh = lang.startsWith("zh");
-    const open = !chatTaskTerminal(task.status);
+    const interrupted = task.status === "interrupted";
+    const open = !chatTaskTerminal(task.status) || interrupted;
     const waiting = task.status === "needs_input";
     return (
         <div
@@ -49,7 +50,7 @@ export function ChatTaskCard({ task, theme, lang }: { task: ChatTaskView; theme:
                     {task.progress || (zh ? "上次退出时这个任务还在跑，没有自动重开。" : "This was still running when the app stopped. It was not resumed.")}
                 </div>
             )}
-            {waiting && task.question && <div style={{ marginTop: 8, fontSize: 13, lineHeight: 1.45 }}>{task.question}</div>}
+            {(waiting || interrupted) && task.question && <div style={{ marginTop: 8, fontSize: 13, lineHeight: 1.45 }}>{task.question}</div>}
             {!waiting && task.progress && open && <div style={{ marginTop: 6, fontSize: 12, color: theme.textMuted }}>{task.progress}</div>}
             {task.error && task.status === "failed" && <div style={{ marginTop: 6, fontSize: 12 }}>{task.error}</div>}
             {!!task.artifactPaths?.length && (
@@ -68,12 +69,24 @@ export function ChatTaskCard({ task, theme, lang }: { task: ChatTaskView; theme:
                             event.preventDefault();
                             const text = draft.trim();
                             if (!text) return;
-                            emitChatTaskAction(waiting ? "answer" : "steer", task.id, text);
+                            emitChatTaskAction(waiting ? "answer" : interrupted ? "resume" : "steer", task.id, text);
                             setDraft("");
                         }}
                         placeholder={waiting ? (zh ? "回答后继续" : "Answer to continue") : (zh ? "补充后接着做" : "Add to this work")}
                         style={{ flex: 1, minWidth: 0, borderRadius: 8, border: `1px solid ${theme.inputBarBorder}`, background: theme.bg, color: theme.text, padding: "6px 8px", fontSize: 12 }}
                     />
+                    {interrupted && (
+                        <button
+                            type="button"
+                            onClick={() => {
+                                emitChatTaskAction("resume", task.id, draft.trim());
+                                setDraft("");
+                            }}
+                            style={{ borderRadius: 8, border: `1px solid ${theme.inputBarBorder}`, background: theme.bg, color: theme.text, padding: "6px 8px", fontSize: 12, cursor: "pointer" }}
+                        >
+                            {zh ? "继续任务" : "Resume task"}
+                        </button>
+                    )}
                     <button
                         type="button"
                         onClick={() => emitChatTaskAction("cancel", task.id)}

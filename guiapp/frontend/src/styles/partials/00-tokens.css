@@ -1,10 +1,15 @@
-/* WCAG AA contrast fix: --theme-success darkened (#4f7f6f → #4b796a; was 4.23:1 on success-bg). */
+/* WCAG AA: the status pairings keep ≥4.5:1 on their tinted backgrounds
+   (success 4.62, warning 4.54, danger 4.55, muted-on-white 5.79, on-primary
+   4.64 as of the 2026-10-25 Fluent fallback alignment). */
 :root {
     color-scheme: light;
     /* Legacy pre-theme variables were removed (2026-08): every consumer now
        uses the --theme-* system, which all dark blocks rebind properly. */
-    /* UI polish scale: 4/6/10/14px radii + soft blue-tinted shadows.
-       Dark-mode overrides live in the [data-ai-theme='dark'] blocks below. */
+    /* UI polish scale: 4/6/8/12/16px radii + soft blue-tinted shadows.
+       Dark-mode overrides live in the [data-ai-theme='dark'] blocks below.
+       The fallback palette mirrors the default light scheme (Fluent Azure,
+       assistantLightSchemes.ts) so the pre-paint frame matches the mounted
+       app exactly. */
     --shadow-sm: 0 1px 2px rgba(30, 58, 95, 0.06);
     --shadow-md: 0 1px 2px rgba(30, 58, 95, 0.05), 0 4px 12px -2px rgba(30, 58, 95, 0.10);
     --shadow-lg: 0 8px 28px -6px rgba(30, 58, 95, 0.18);
@@ -12,8 +17,9 @@
     --shadow-xl: 0 12px 40px -8px rgba(30, 58, 95, 0.22);
     --radius-xs: 4px;
     --radius-sm: 6px;
-    --radius-md: 10px;
-    --radius-lg: 14px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-xl: 16px;
     --radius-pill: 999px;
     --space-1: 4px;
     --space-2: 8px;
@@ -23,29 +29,29 @@
     --space-6: 32px;
     --transition-fast: 120ms cubic-bezier(0.4, 0, 0.2, 1);
     --transition-normal: 180ms cubic-bezier(0.4, 0, 0.2, 1);
-    --theme-primary: #2f6fbc;
-    --theme-primary-strong: #235a9e;
-    --theme-primary-soft: rgba(47, 111, 188, 0.10);
-    --theme-page-bg: #f4f7fb;
+    --theme-primary: #2e75cb;
+    --theme-primary-strong: #1e6bc5;
+    --theme-primary-soft: rgba(47, 120, 208, 0.10);
+    --theme-page-bg: #ffffff;
     --theme-surface: #ffffff;
-    --theme-surface-muted: #f0f4f9;
+    --theme-surface-muted: #eef5ff;
     /* Light shell retints these again on [data-ai-light-scheme] to the
        assistant-title gray. This fallback matches that Fluent ink. */
     --theme-text-primary: #526277;
     --theme-text-secondary: #546479;
-    --theme-text-muted: #657384;
+    --theme-text-muted: #56677c;
     /* Derived on theme roots via :is(...) block below (must rebind per cascade). */
     --theme-text-tertiary: color-mix(in srgb, var(--theme-text-muted) 72%, var(--theme-surface));
-    --theme-border: #d9e1ec;
-    --theme-border-subtle: #e8eef5;
-    --theme-success: #4b796a;
-    --theme-success-bg: #f3f7f5;
-    --theme-warning: #64748b;
-    --theme-warning-bg: #f8fafc;
-    --theme-danger: #c43d34;
-    --theme-danger-bg: #fbf1f0;
-    --theme-link-color: #2f6fbc;
-    --theme-info-bg: #f3f7fb;
+    --theme-border: #c9ddf6;
+    --theme-border-subtle: #dde9fa;
+    --theme-success: #11813a;
+    --theme-success-bg: rgba(22, 163, 74, 0.07);
+    --theme-warning: #aa5d05;
+    --theme-warning-bg: rgba(217, 119, 6, 0.07);
+    --theme-danger: #dc1f25;
+    --theme-danger-bg: rgba(229, 72, 77, 0.06);
+    --theme-link-color: #2e75cb;
+    --theme-info-bg: rgba(47, 120, 208, 0.06);
     --theme-overlay-color: #0f172a;
     --theme-overlay: rgba(15, 23, 42, 0.48);
     --theme-on-primary: #ffffff;

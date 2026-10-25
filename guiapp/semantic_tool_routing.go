@@ -73,6 +73,11 @@ type semanticCallSurface struct {
 	schemas          map[string]map[string]interface{} // trusted renderer definitions
 	parameterSchemas map[string]map[string]interface{} // canonical invocation schemas
 	registry         *tool.CapabilityRegistry
+	optionalMu       sync.Mutex
+	optionalCacheKey string
+	hopEvidence      map[string]HopStepEvidence
+	optionalByNeed   map[string]bool
+	optionalKnown    bool
 	artifacts        *semanticArtifactBroker
 	pendingArtifacts map[string][]tool.ArtifactPayload // producer selection -> deferred/published payloads; coordinated hosts commit them with selection success
 	// replan contains only host/trusted planning observations. It intentionally
@@ -413,7 +418,7 @@ func newIMSemanticCapabilityRegistry() *tool.CapabilityRegistry {
 			ID: "document.read.local", Version: "v1", Owner: "im",
 			Summary: "Read one trusted document attachment without exposing its local path.",
 			Qualifiers: map[string]tool.QualifierConstraint{
-				"format": {Values: []string{"pdf", "word", "spreadsheet", "presentation", "text"}, Required: true},
+				"format": {Values: []string{"pdf", "word", "spreadsheet", "presentation", "text", "mobi"}, Required: true},
 			},
 			Effects: []tool.EffectClass{tool.EffectReadOnly},
 		},
@@ -2644,10 +2649,13 @@ func semanticSpentBudgetNote(surface *semanticCallSurface, selectionID string) s
 // delivery finished while a required selection is still open does not match:
 // the loop continues. A specified-target send that is still awaiting the
 // channel gateway is not completed, so that turn does not stop here.
+// A required unmet need keeps the turn open too: TurnRequiredDeliveryComplete
+// only walks selections, while the hop run counts a non-optional unmet need
+// whose need family no selection covers as remaining work. Without this gate
+// a clean early stop could close a turn whose execution contract still says
+// failed, and the hard-exit guard (which runs only on tool-less stops) would
+// never get a look.
 func semanticTurnDeliveryComplete(surface *semanticCallSurface) bool {
-	if surface == nil || len(surface.plan.Selections) == 0 || surface.registry == nil || surface.replan == nil {
-		return false
-	}
 	// Optionality is need-level and the plan does not retain needs; recompute
 	// them deterministically from the stored classification (rule templates
 	// only, no LLM) under the bundle key the plan was published with. Unknown
@@ -2655,18 +2663,26 @@ func semanticTurnDeliveryComplete(surface *semanticCallSurface) bool {
 	// be proven must still complete. A later repeat sibling is not that case:
 	// the repeat contract makes only the family base an obligation, including
 	// a baseline ceiling the bundle-key recompute does not replay.
-	needsCtx := withSemanticArchetypeBundleKeyOverride(context.Background(), surface.replan.BundleKey)
-	needs, _, err := semanticNeedsFromClassificationContext(needsCtx, surface.registry, surface.replan.Classification)
-	if err != nil {
+	optionalByNeed, ok := semanticSurfaceOptionalNeeds(surface)
+	if !ok {
 		return false
 	}
-	optionalByNeed := make(map[string]bool, len(needs))
-	for _, need := range needs {
-		if !need.Required {
-			optionalByNeed[need.ID] = true
-		}
+	if !tool.TurnRequiredDeliveryComplete(surface.plan, completedWithSatisfiedFamilies(surface), optionalByNeed) {
+		return false
 	}
-	return tool.TurnRequiredDeliveryComplete(surface.plan, surface.completed, optionalByNeed)
+	// Mirror hopRunSnapshot's unmet accounting: skip unmet needs a selection
+	// already covers, then hold the turn open on every non-optional one.
+	selectedNeeds := make(map[string]bool, len(surface.plan.Selections))
+	for _, selection := range surface.plan.Selections {
+		selectedNeeds[selection.NeedID] = true
+	}
+	for _, unmet := range surface.plan.Unmet {
+		if selectedNeeds[unmet.NeedID] || optionalByNeed[unmet.NeedID] {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func refreshSemanticCallSurface(surface *semanticCallSurface) ([]map[string]interface{}, error) {
@@ -2860,13 +2876,15 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	if semanticHostStagedImageUnderstand(userText, attachments, classification) {
 		return nil, false, nil
 	}
-	// Managed SSH publishes exactly one mode per catalog build: the bound-session
-	// exec adapter when a session is live, or the connect adapter when none is.
-	// Only when NEITHER mode is published (e.g. several ambiguous live sessions
-	// and no runtime binding) does a declared SSH turn miss to leftover, where
-	// the builtin ssh tool lives. Planning the other family first HostRejects
+	// Managed SSH publishes exactly one mode per catalog build, scoped to this
+	// principal: the exec adapter when this conversation owns one live
+	// session, or the connect adapter when it owns none. Another
+	// conversation's session is not this turn's session. Only when NEITHER
+	// mode is published (this principal has several live sessions and no
+	// runtime binding) does a declared SSH turn miss to leftover, where the
+	// builtin ssh tool lives. Planning the other family first HostRejects
 	// the whole turn as unmet.
-	if classificationHasLabel(classification, intent.LabelSSH) && !semanticTrustedSSHPublished(h) && !semanticTrustedSSHConnectPublished(h) {
+	if classificationHasLabel(classification, intent.LabelSSH) && !semanticTrustedSSHPublished(h, userID) && !semanticTrustedSSHConnectPublished(h, userID) {
 		return nil, false, nil
 	}
 	// Rewrite before coverage gates: a bare "继续" arrives as
@@ -2919,11 +2937,11 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 			// re-plan dies right here (production 2026-09-18 11:04:
 			// "连接驱网服务器，查看状态" answered "SSH 工具不在可用工具列表"
 			// after the tree channel 502'd).
-			if !classificationHasSSHSignal(classification) || !semanticTrustedSSHAnyPublished(h) {
+			if !classificationHasSSHSignal(classification) || !semanticTrustedSSHAnyPublished(h, userID) {
 				return nil, false, nil
 			}
 			planning = semanticSSHDegradedPlanningClassification(classification)
-			logSSHAvailabilityEvent("rescue", "layer=plan_exemption", "mode="+sshAvailabilityMode(h))
+			logSSHAvailabilityEvent("rescue", "layer=plan_exemption", "mode="+sshAvailabilityMode(h, userID))
 		} else {
 			planning = semanticLookupClassificationForPlanning(classification)
 		}
@@ -2972,9 +2990,9 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 			needs = withoutDocumentMutationNeeds(needs, semanticPetitionedKeep(requestCtx))
 		}
 	}
-	if classificationHasLabel(planning, intent.LabelSSH) && semanticTrustedSSHAnyPublished(h) && sshAvailabilityCountEligible(turnID) {
+	if classificationHasLabel(planning, intent.LabelSSH) && semanticTrustedSSHAnyPublished(h, userID) && sshAvailabilityCountEligible(turnID) {
 		// Denominator for the ssh rescue-rate observability stream (§D1).
-		logSSHAvailabilityEvent("turn_total", "mode="+sshAvailabilityMode(h))
+		logSSHAvailabilityEvent("turn_total", "mode="+sshAvailabilityMode(h, userID))
 	}
 	if !managed || len(needs) == 0 {
 		// A governed family already passed coverage. Falling through to the
@@ -3225,6 +3243,7 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 			{Capability: "document.read.local", Qualifiers: map[string]string{"format": "spreadsheet"}, Quality: 1},
 			{Capability: "document.read.local", Qualifiers: map[string]string{"format": "presentation"}, Quality: 1},
 			{Capability: "document.read.local", Qualifiers: map[string]string{"format": "text"}, Quality: 1},
+			{Capability: "document.read.local", Qualifiers: map[string]string{"format": "mobi"}, Quality: 1},
 		},
 		Consumes: []tool.ArtifactContract{{Kind: "document", Required: true}},
 		Effects:  []tool.EffectClass{tool.EffectReadOnly}, Ready: true, ChannelScopes: semanticChannelScopes(channel),
@@ -3553,7 +3572,7 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 		Provides:               []tool.CapabilityProvision{{Capability: tool.CapabilityScheduleAdministerLocal, Quality: 2}},
 		Effects:                []tool.EffectClass{tool.EffectLocalMutation}, Ready: true, ChannelScopes: semanticChannelScopes(channel),
 	})
-	if err := appendClosedHostSemanticProviders(&providers, defsByName, semanticSchemas, channel, h); err != nil {
+	if err := appendClosedHostSemanticProviders(&providers, defsByName, semanticSchemas, channel, h, userID); err != nil {
 		return nil, true, err
 	}
 	defsByName["semantic_deliver_current_image"] = semanticCurrentImageDeliveryDefinition()
@@ -4647,7 +4666,7 @@ func semanticCurrentFileDeliveryDefinition() map[string]interface{} {
 		"type": "function",
 		"function": map[string]interface{}{
 			"name":        "semantic_deliver_current_file",
-			"description": "Deliver the approved file artifact to the current channel.",
+			"description": "Attaches the published file to this chat. Call it with no arguments when it is listed. No path and no destination. This is not a send and does not need approval.",
 			"parameters":  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "additionalProperties": false},
 		},
 	}
@@ -5654,7 +5673,7 @@ func canonicalToolDefinitionBytes(definition map[string]interface{}) []byte {
 	return encoded
 }
 
-func appendClosedHostSemanticProviders(providers *[]tool.ProviderSpec, defsByName, schemas map[string]map[string]interface{}, channel string, h *IMMessageHandler) error {
+func appendClosedHostSemanticProviders(providers *[]tool.ProviderSpec, defsByName, schemas map[string]map[string]interface{}, channel string, h *IMMessageHandler, principalID string) error {
 	type hostProvider struct {
 		adapter, implementation string
 		definition, schema      map[string]interface{}
@@ -5677,9 +5696,9 @@ func appendClosedHostSemanticProviders(providers *[]tool.ProviderSpec, defsByNam
 	if semanticTrustedDelegatePublished(h) {
 		items = append(items, hostProvider{semanticTrustedDelegateAdapter, semanticTrustedDelegateImplementation, semanticTrustedDelegateDefinition(), semanticTrustedDelegateInvocationSchema(), tool.CapabilityAgentDelegateSubtask, nil, []tool.EffectClass{tool.EffectSensitive}, true})
 	}
-	if semanticTrustedSSHPublished(h) {
+	if semanticTrustedSSHPublished(h, principalID) {
 		items = append(items, hostProvider{semanticTrustedSSHAdapter, semanticTrustedSSHImplementation, semanticTrustedSSHDefinition(), semanticTrustedSSHInvocationSchema(), tool.CapabilityShellExecuteRemoteHost, nil, []tool.EffectClass{tool.EffectExternalEffect}, true})
-	} else if semanticTrustedSSHConnectPublished(h) {
+	} else if semanticTrustedSSHConnectPublished(h, principalID) {
 		// Session-less turns still need a connect path: petitions and planned
 		// ssh surfaces would otherwise have no provider to resolve against
 		// (production 2026-09-18 08:26: "密码是 …" turn could not connect at

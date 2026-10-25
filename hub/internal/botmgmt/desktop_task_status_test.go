@@ -272,7 +272,9 @@ func TestDesktopTaskQueryStripsLeadAndSpeaksEachLanguage(t *testing.T) {
 		}
 	}
 
-	started := time.Date(2026, 10, 14, 1, 0, 0, 0, time.UTC)
+	// Relative to now: a finished task older than the undelivered keep
+	// window (seven days) is expired and would read as idle.
+	started := time.Now().UTC().Add(-time.Hour)
 	lead := "现在就执行下面这项安排。同意已经给出：文中的「下一轮」「确认后」「等你点头」以及「不实际」「先不要」都是确认前的说法，现在按其中的动作做完，不要再陈述，也不要再征求确认。顺带提到的其他还在等待确认的事不要做。\n安装 Evince"
 	evince := &desktopAdmitState{
 		task: lead, status: "running", userID: "alice", botID: "bot_alice", runID: "run_evince", started: started,

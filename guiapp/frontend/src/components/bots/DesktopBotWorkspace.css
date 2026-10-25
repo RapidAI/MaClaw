@@ -567,80 +567,7 @@
     color: var(--theme-danger, #d92d20);
 }
 
-/* Bot 大模型设置弹窗：两个互斥选项各自成组，选中项的细节缩进一点，
-   看得出从属于上面的单选。 */
-.bot-llm-dialog__hint {
-    margin: 0;
-    font-size: 12.5px;
-    line-height: 1.6;
-    color: var(--theme-text-muted, #667085);
-}
-
-.bot-llm-dialog__option {
-    margin-top: 14px;
-    padding: 12px;
-    border: 1px solid var(--theme-border, #eaecf0);
-    border-radius: 10px;
-    background: var(--theme-surface-muted, #f9fafb);
-}
-
-.bot-llm-dialog__radio {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: var(--theme-text-primary, #101828);
-    cursor: pointer;
-}
-
-.bot-llm-dialog__radio input {
-    flex: 0 0 auto;
-    margin: 0;
-    accent-color: var(--mc-accent, #2f6fbc);
-}
-
-.bot-llm-dialog__radio input:disabled {
-    cursor: not-allowed;
-}
-
-.bot-llm-dialog__radio input:disabled + span {
-    color: var(--theme-text-muted, #667085);
-}
-
-.bot-llm-dialog__subhint {
-    margin: 8px 0 0;
-    padding-left: 24px;
-    font-size: 12px;
-    line-height: 1.6;
-    color: var(--theme-text-muted, #667085);
-}
-
-.bot-llm-dialog__field {
-    margin-top: 10px;
-    padding-left: 24px;
-}
-
-.bot-llm-dialog__label {
-    margin-bottom: 6px;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--theme-text-secondary, #475467);
-}
-
-.bot-llm-dialog__select {
-    min-height: 38px;
-    padding: 8px 12px;
-    border-radius: 8px;
-    font-size: 0.875rem;
-}
-
-.bot-llm-dialog__notice {
-    margin: 14px 0 0;
-    font-size: 12.5px;
-    line-height: 1.5;
-    color: var(--theme-danger, #d92d20);
-}
+/* Bot 设置弹窗的样式在文件末尾的「Bot 设置弹窗（模型 / 网络）」一节。 */
 
 /* 主区：会话面板。消息区滚动，输入条钉在这一列底部。 */
 .desktop-bot-chat {
@@ -2832,32 +2759,274 @@
     color: #b91c1c;
     border-left-color: #ef4444;
     background: rgba(239, 68, 68, 0.08);
-/* 设置弹窗：模型 / 网络两个独立标签页，各自保存。 */
+}
+
+/* ── Bot 设置弹窗（模型 / 网络）────────────────────────────────────────
+   两页共用一套骨架：标题栏 → 分段标签 → 选项卡片 → 底部按钮。每个选项是一张
+   可点整张卡片的单选项，选中态用主题色描边和淡底标出来；子字段缩进到单选项
+   文字下，看得出从属关系。 */
+.modal-content.custom-dialog.bot-llm-dialog {
+    width: min(560px, calc(100vw - 40px));
+    /* 弹窗容器自己会接住打开时的焦点（tabIndex={-1}），全局 :focus-visible
+       会给它描一整圈蓝边。键盘焦点该落在里面的控件上，容器不画环。 */
+    outline: none;
+}
+
+/* 标题栏和标签条合成一块头部：一条分隔线落在标签下面，正文从干净的区域开始。
+   否则标题栏自带的边线会把标签挤进正文，看起来像挂在标题下的两个按钮。 */
+.bot-llm-dialog__head {
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--theme-border-subtle, #dde9fa);
+}
+
+.bot-llm-dialog .custom-dialog__header {
+    border-bottom: none;
+    padding-bottom: 10px;
+}
+
+/* 标签页做成滑块：两枚按钮浮在浅槽上，选中的一枚抬成表面色。
+   槽收缩到内容宽，不横贯整个弹窗 —— 它是一组开关，不是一条分隔带。 */
 .bot-settings-tabs {
     display: flex;
-    gap: 4px;
-    padding: 0 20px;
-    border-bottom: 1px solid var(--theme-border, #e4e7ec);
+    width: fit-content;
+    max-width: calc(100% - 36px);
+    flex-shrink: 0;
+    gap: 2px;
+    margin: 0 18px 12px;
+    padding: 3px;
+    border: 1px solid var(--theme-border-subtle, #dde9fa);
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--theme-text-muted, #667085) 7%, var(--theme-surface, #fff));
 }
 
 .bot-settings-tabs__tab {
-    padding: 8px 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 28px;
+    padding: 0 14px;
     border: none;
-    border-bottom: 2px solid transparent;
+    border-radius: 7px;
     background: none;
     font-size: 13px;
+    font-weight: 500;
+    line-height: 1;
     color: var(--theme-text-muted, #667085);
     cursor: pointer;
+    transition: background var(--transition-fast, 120ms ease), color var(--transition-fast, 120ms ease);
+}
+
+.bot-settings-tabs__tab:hover:not(:disabled):not(.is-active) {
+    background: color-mix(in srgb, var(--theme-surface, #fff) 72%, transparent);
+    color: var(--theme-text-primary, #101828);
 }
 
 .bot-settings-tabs__tab.is-active {
-    color: var(--theme-text, #101828);
-    border-bottom-color: var(--theme-primary, #2563eb);
+    background: var(--theme-surface, #fff);
+    color: var(--theme-primary, #2e75cb);
     font-weight: 600;
+    box-shadow: 0 1px 2px rgba(30, 58, 95, 0.10), 0 0 0 1px color-mix(in srgb, var(--theme-text-muted, #667085) 14%, transparent);
+}
+
+.bot-settings-tabs__tab:disabled {
+    cursor: default;
+    opacity: 0.6;
+}
+
+.bot-settings-tabs__tab:focus-visible {
+    outline: 2px solid var(--theme-primary, #2e75cb);
+    outline-offset: 1px;
+}
+
+.bot-settings-tabs__icon {
+    flex: 0 0 auto;
+    width: 14px;
+    height: 14px;
+}
+
+/* 正文：区块标题 → 说明 → 卡片，间距由 flex gap 统一，避免各段各写 margin。 */
+.bot-llm-dialog .custom-dialog__body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 16px 18px 18px;
 }
 
 .bot-llm-dialog__section {
-    margin: 0 0 6px;
-    font-size: 14px;
+    margin: 0;
+    font-size: 0.9375rem;
+    font-weight: 650;
+    letter-spacing: -0.011em;
+    line-height: 1.4;
+    color: var(--theme-text-primary, #101828);
+}
+
+.bot-llm-dialog__hint {
+    margin: -4px 0 2px;
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--theme-text-muted, #667085);
+}
+
+.bot-llm-dialog__option {
+    padding: 12px 14px;
+    border: 1px solid var(--theme-border-subtle, #dde9fa);
+    border-radius: 10px;
+    background: var(--theme-surface, #fff);
+    cursor: pointer;
+    transition: border-color var(--transition-fast, 120ms ease), background var(--transition-fast, 120ms ease), box-shadow var(--transition-fast, 120ms ease);
+}
+
+.bot-llm-dialog__option:hover {
+    border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 38%, var(--theme-border-subtle, #dde9fa));
+}
+
+.bot-llm-dialog__option.is-selected {
+    border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 52%, transparent);
+    background: color-mix(in srgb, var(--theme-primary, #2e75cb) 4%, var(--theme-surface, #fff));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--theme-primary, #2e75cb) 16%, transparent);
+}
+
+.bot-llm-dialog__option.is-disabled {
+    cursor: default;
+    opacity: 0.72;
+}
+
+.bot-llm-dialog__option.is-disabled:hover {
+    border-color: var(--theme-border-subtle, #dde9fa);
+}
+
+.bot-llm-dialog__radio {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    font-size: 0.875rem;
     font-weight: 600;
+    line-height: 1.45;
+    color: var(--theme-text-primary, #101828);
+    cursor: inherit;
+}
+
+.bot-llm-dialog__radio input {
+    flex: 0 0 auto;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    accent-color: var(--theme-primary, #2e75cb);
+}
+
+.bot-llm-dialog__radio input:disabled {
+    cursor: not-allowed;
+}
+
+.bot-llm-dialog__radio input:disabled + span {
+    color: var(--theme-text-muted, #667085);
+}
+
+/* 说明与字段都缩进到单选项文字下，和圆圈右缘对齐。 */
+.bot-llm-dialog__subhint {
+    margin: 6px 0 0;
+    padding-left: 25px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--theme-text-muted, #667085);
+}
+
+.bot-llm-dialog__fields {
+    margin-top: 12px;
+    padding: 12px 0 0 25px;
+    border-top: 1px solid color-mix(in srgb, var(--theme-border-subtle, #dde9fa) 85%, transparent);
+}
+
+.bot-llm-dialog__field + .bot-llm-dialog__field {
+    margin-top: 10px;
+}
+
+.bot-llm-dialog__label {
+    display: block;
+    margin-bottom: 5px;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    color: var(--theme-text-secondary, #475467);
+}
+
+/* 只写能生效的部分：App.css 里 `.form-input` 的 border/background 带 !important，
+   是全局表单基线，这里声明同类属性只会成为死代码。尺寸、间距、字号没有被钉住，
+   所以这些照常生效。聚焦环同理由 App.css 的 .form-input:focus 提供。 */
+.form-input.bot-llm-dialog__select {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 36px;
+    padding: 7px 10px;
+    border-radius: 8px;
+    font-size: 0.875rem;
+}
+
+.form-input.bot-llm-dialog__select:disabled {
+    color: var(--theme-text-muted, #667085);
+}
+
+/* 网络页的"当前状态"做成一颗药丸，和下面的可选项分开读。 */
+.bot-llm-dialog__status {
+    align-self: flex-start;
+    margin: 0;
+    padding: 4px 11px;
+    border-radius: var(--radius-pill, 999px);
+    background: var(--theme-surface-muted, #eef5ff);
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.5;
+    color: var(--theme-text-secondary, #546479);
+}
+
+/* 失败原因按错误横幅呈现；租户锁定的说明是中性提示，不共用这套配色。 */
+.bot-llm-dialog__notice,
+.bot-llm-dialog__note {
+    margin: 2px 0 0;
+    padding: 9px 12px;
+    border-radius: 8px;
+    font-size: 12.5px;
+    line-height: 1.55;
+}
+
+.bot-llm-dialog__notice {
+    border: 1px solid color-mix(in srgb, var(--theme-danger, #d92d20) 26%, transparent);
+    background: var(--theme-danger-bg, rgba(229, 72, 77, 0.06));
+    color: var(--theme-danger, #d92d20);
+}
+
+.bot-llm-dialog__note {
+    border: 1px solid color-mix(in srgb, var(--theme-warning, #aa5d05) 26%, transparent);
+    background: var(--theme-warning-bg, rgba(217, 119, 6, 0.07));
+    color: var(--theme-warning, #aa5d05);
+}
+
+[data-ai-theme='dark'] .bot-settings-tabs {
+    border-color: color-mix(in srgb, var(--theme-text-primary, #c9c9c9) 18%, transparent);
+    background: var(--theme-control-well, #1c1c1c);
+}
+
+[data-ai-theme='dark'] .bot-settings-tabs__tab.is-active {
+    background: color-mix(in srgb, var(--theme-text-primary, #c9c9c9) 16%, var(--theme-control-well, #1c1c1c));
+    color: var(--theme-text-primary, #ffffff);
+    box-shadow: none;
+}
+
+[data-ai-theme='dark'] .bot-llm-dialog__option {
+    border-color: color-mix(in srgb, var(--theme-text-primary, #c9c9c9) 16%, transparent);
+    background: var(--theme-surface, #1c1c1c);
+}
+
+[data-ai-theme='dark'] .bot-llm-dialog__option.is-selected {
+    border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 62%, transparent);
+    background: color-mix(in srgb, var(--theme-primary, #2e75cb) 12%, var(--theme-surface, #1c1c1c));
+    box-shadow: none;
+}
+
+/* 暗色下输入框底色由 App.css 的 .form-input 强制为 surface，比选中卡片暗一档。
+   这层落差靠卡片自身的内边距和描边已经读得出来，不再另加暗色覆盖：border 和
+   background 都被 !important 钉住，写了也不会生效。 */
+[data-ai-theme='dark'] .form-input.bot-llm-dialog__select:disabled {
+    color: var(--theme-text-muted, #7f8ea1);
 }

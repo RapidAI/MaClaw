@@ -7514,21 +7514,23 @@ func TestMaclawLLMThinkingMode_GlobalSetting(t *testing.T) {
 
 	app := &App{testHomeDir: tmpHome}
 
-	// Default: unset resolves to enabled (behavior evolved: the legacy "auto"
-	// default left most providers without reasoning controls, so the desktop
-	// now defaults the global thinking mode to on).
-	if got := app.GetMaclawLLMThinkingMode(); got != "enabled" {
-		t.Fatalf("default GetMaclawLLMThinkingMode() = %q, want enabled", got)
+	// Default is auto: the system leaves ordinary providers alone and only
+	// rewrites models that reject turning thinking off.
+	if got := app.GetMaclawLLMThinkingMode(); got != "auto" {
+		t.Fatalf("default GetMaclawLLMThinkingMode() = %q, want auto", got)
 	}
 
 	for _, tc := range []struct{ in, wantGet, wantSaved string }{
-		{in: "enabled", wantGet: "enabled", wantSaved: "enabled"},
-		{in: "ON", wantGet: "enabled", wantSaved: "enabled"},
-		{in: "disabled", wantGet: "disabled", wantSaved: "disabled"},
-		{in: "off", wantGet: "disabled", wantSaved: "disabled"},
-		// Legacy "auto"/unknown values stay stored as unset but resolve to enabled.
-		{in: "auto", wantGet: "enabled", wantSaved: ""},
-		{in: "garbage", wantGet: "enabled", wantSaved: ""},
+		{in: "low", wantGet: "low", wantSaved: "low"},
+		{in: "HIGH", wantGet: "high", wantSaved: "high"},
+		{in: "max", wantGet: "max", wantSaved: "max"},
+		{in: "enabled", wantGet: "high", wantSaved: "high"},
+		{in: "ON", wantGet: "high", wantSaved: "high"},
+		{in: "disabled", wantGet: "none", wantSaved: "none"},
+		{in: "off", wantGet: "none", wantSaved: "none"},
+		{in: "none", wantGet: "none", wantSaved: "none"},
+		{in: "auto", wantGet: "auto", wantSaved: ""},
+		{in: "garbage", wantGet: "auto", wantSaved: ""},
 	} {
 		if err := app.SetMaclawLLMThinkingMode(tc.in); err != nil {
 			t.Fatalf("SetMaclawLLMThinkingMode(%q) error = %v", tc.in, err)
@@ -7545,20 +7547,19 @@ func TestMaclawLLMThinkingMode_GlobalSetting(t *testing.T) {
 		}
 	}
 
-	// Enabled propagates onto the materialized runtime config.
-	if err := app.SetMaclawLLMThinkingMode("enabled"); err != nil {
-		t.Fatalf("SetMaclawLLMThinkingMode(enabled) error = %v", err)
+	// An explicit level propagates onto the materialized runtime config.
+	if err := app.SetMaclawLLMThinkingMode("high"); err != nil {
+		t.Fatalf("SetMaclawLLMThinkingMode(high) error = %v", err)
 	}
 	cfg := app.GetMaclawLLMConfig()
-	if cfg.ThinkingMode != "enabled" {
-		t.Fatalf("GetMaclawLLMConfig().ThinkingMode = %q, want enabled", cfg.ThinkingMode)
+	if cfg.ThinkingMode != "enabled" || cfg.ReasoningEffort != "high" {
+		t.Fatalf("materialized thinking = mode %q effort %q, want enabled/high", cfg.ThinkingMode, cfg.ReasoningEffort)
 	}
 	if err := app.SetMaclawLLMThinkingMode(""); err != nil {
 		t.Fatalf("SetMaclawLLMThinkingMode(empty) error = %v", err)
 	}
-	// Unset still materializes as enabled (default-on).
-	if got := app.GetMaclawLLMConfig().ThinkingMode; got != "enabled" {
-		t.Fatalf("GetMaclawLLMConfig().ThinkingMode after reset = %q, want enabled", got)
+	if got := app.GetMaclawLLMConfig().ThinkingMode; got != "" {
+		t.Fatalf("GetMaclawLLMConfig().ThinkingMode after reset = %q, want auto", got)
 	}
 }
 
@@ -7640,8 +7641,8 @@ func TestQuietConnectionProbeSkipsXAIReasoningSummary(t *testing.T) {
 	body := map[string]interface{}{}
 	corelib.ApplyReasoningControls(cfg, body, corelib.ReasoningAPIResponses)
 	reasoning, _ := body["reasoning"].(map[string]interface{})
-	if reasoning["effort"] != "minimal" {
-		t.Fatalf("reasoning = %#v, want minimal effort", reasoning)
+	if reasoning["effort"] != "low" {
+		t.Fatalf("reasoning = %#v, want low effort", reasoning)
 	}
 	if _, ok := reasoning["summary"]; ok {
 		t.Fatalf("probe requested a reasoning summary: %#v", reasoning)
@@ -7654,5 +7655,12 @@ func TestQuietConnectionProbeSkipsXAIReasoningSummary(t *testing.T) {
 	})
 	if alwaysOn.ThinkingMode != "enabled" {
 		t.Fatalf("always-on model thinking = %q, want enabled", alwaysOn.ThinkingMode)
+	}
+	flash := quietConnectionProbe(corelib.MaclawLLMConfig{
+		URL:   "https://open.bigmodel.cn/api/anthropic",
+		Model: "glm-5.3-flash",
+	})
+	if flash.ThinkingMode != "enabled" || flash.ReasoningEffort != "low" {
+		t.Fatalf("flash probe = mode %q effort %q, want enabled/low", flash.ThinkingMode, flash.ReasoningEffort)
 	}
 }

@@ -8,6 +8,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -249,4 +251,68 @@ func NewResponsesAPIRequest(
 		}
 	}
 	return req, data, endpoint, nil
+}
+
+// DoResponsesAPIRequest sends one non-streaming Responses request.
+// A thinking-off refusal is retried once at the legal effort named in the
+// error. Callers that post NewResponsesAPIRequest themselves never see that
+// refusal when they discard the response body.
+func DoResponsesAPIRequest(
+	ctx context.Context,
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	client *http.Client,
+) (*Response, error) {
+	return DoResponsesAPIRequestWithOptions(ctx, cfg, messages, client, ResponsesAPIRequestOptions{})
+}
+
+// DoResponsesAPIRequestWithOptions sends one non-streaming Responses request
+// with the caller's invocation options. Stream is forced off: this function
+// parses a single JSON body.
+func DoResponsesAPIRequestWithOptions(
+	ctx context.Context,
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	client *http.Client,
+	opts ResponsesAPIRequestOptions,
+) (*Response, error) {
+	opts.Stream = false
+	resp, err := doResponsesAPIRequestOnce(ctx, cfg, messages, client, opts)
+	if next, ok := ConfigAfterThinkingRejection(cfg, err); ok {
+		return doResponsesAPIRequestOnce(ctx, next, messages, client, opts)
+	}
+	return resp, err
+}
+
+func doResponsesAPIRequestOnce(
+	ctx context.Context,
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	client *http.Client,
+	opts ResponsesAPIRequestOptions,
+) (*Response, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	client = HTTPClientForRequestContext(ctx, client)
+	req, _, _, err := NewResponsesAPIRequest(ctx, cfg, messages, opts)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if readErr != nil {
+		return nil, readErr
+	}
+	if resp.StatusCode != http.StatusOK {
+		if se := newHTTPStatusError(resp.StatusCode, body); se != nil {
+			return nil, se
+		}
+		return nil, fmt.Errorf("llm http status %d body_len=%d", resp.StatusCode, len(body))
+	}
+	return ParseNonStreamResponsesAPIBody(body)
 }

@@ -295,6 +295,7 @@ func (s *MemoryStore) startAttemptLocked(taskID, leaseOwner string, leaseFor tim
 		return nil, err
 	}
 	maxNo := 0
+	var dead []*Attempt
 	for _, attempt := range s.attempts {
 		if attempt.TaskID == taskID && attempt.AttemptNo > maxNo {
 			maxNo = attempt.AttemptNo
@@ -303,12 +304,26 @@ func (s *MemoryStore) startAttemptLocked(taskID, leaseOwner string, leaseFor tim
 			continue
 		}
 		if attempt.TaskID == taskID {
+			// Same rule as the other holders below. A dead lease on this task
+			// is recorded, then refused: a new attempt still needs recovery.
+			// A live lease stays held and is not rewritten. The interrupt can
+			// no-op when this process is inside the attempt; that holder is
+			// still live, so the start stays ErrLeaseHeld.
+			if runningAttemptDead(attempt.LeaseUntil, now, attempt.AttemptID) {
+				s.interruptExpiredAttemptLocked(attempt, now)
+				if attempt.Status == TaskRunning {
+					return nil, ErrLeaseHeld
+				}
+				return nil, fmt.Errorf("%w: start attempt", ErrInvalidTransition)
+			}
 			return nil, ErrLeaseHeld
 		}
 		// An expired lease is a dead holder unless this process is still
-		// inside that attempt. Keeping every running row would lock the
-		// directory until the next process start.
-		if !attempt.LeaseUntil.After(now) && !localWriterLive(attempt.AttemptID) {
+		// inside that attempt. Record that death before admitting the next
+		// writer, at the lease end rather than at this call, so the corpse
+		// cannot outrank work that finished after the lease ended.
+		if runningAttemptDead(attempt.LeaseUntil, now, attempt.AttemptID) {
+			dead = append(dead, attempt)
 			continue
 		}
 		other := s.tasks[attempt.TaskID]
@@ -320,6 +335,23 @@ func (s *MemoryStore) startAttemptLocked(taskID, leaseOwner string, leaseFor tim
 	}
 	if !validStartStatus(task.Status) {
 		return nil, fmt.Errorf("%w: start attempt", ErrInvalidTransition)
+	}
+	// Earliest lease end first, then attempt id. That is the child that stamps
+	// a waiting parent. ExpireLeases uses the same order.
+	sort.Slice(dead, func(i, j int) bool {
+		if !dead[i].LeaseUntil.Equal(dead[j].LeaseUntil) {
+			return dead[i].LeaseUntil.Before(dead[j].LeaseUntil)
+		}
+		return dead[i].AttemptID < dead[j].AttemptID
+	})
+	for _, attempt := range dead {
+		s.interruptExpiredAttemptLocked(attempt, now)
+		// A no-op means the holder is still running. There is no transaction
+		// to undo the deaths already recorded in this loop. Refusing the new
+		// writer is what keeps a second running attempt from landing beside it.
+		if attempt.Status == TaskRunning {
+			return nil, ErrLeaseHeld
+		}
 	}
 	attempt := &Attempt{AttemptID: uuid.NewString(), TaskID: taskID, AttemptNo: maxNo + 1, LeaseOwner: leaseOwner, LeaseUntil: now.Add(leaseFor), Status: TaskRunning, Policy: policy, SideEffectState: SideEffectNone, StartedAt: now}
 	s.attempts[attempt.AttemptID] = attempt
@@ -490,27 +522,54 @@ func (s *MemoryStore) taskSubtreeLocked(rootID string) []string {
 func (s *MemoryStore) ExpireLeases(now time.Time) ([]*Attempt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var expired []*Attempt
+	var dead []*Attempt
 	for _, attempt := range s.attempts {
-		if attempt.Status != TaskRunning || attempt.LeaseUntil.After(now) {
+		if attempt.Status != TaskRunning || !runningAttemptDead(attempt.LeaseUntil, now, attempt.AttemptID) {
 			continue
 		}
-		attempt.Status, attempt.SideEffectState, attempt.FinishedAt = TaskInterrupted, SideEffectUncertain, now
-		attempt.LeaseUntil = time.Time{}
-		if task := s.tasks[attempt.TaskID]; task != nil {
-			task.Status, task.UpdatedAt = TaskInterrupted, now
-			// A parent released its lease intentionally while children ran. If
-			// one child dies with the process, the parent cannot remain
-			// waiting_child forever: neither side may be replayed automatically.
-			if task.ParentTaskID != "" {
-				s.interruptWaitingParentLocked(task.ParentTaskID, now)
-			}
+		dead = append(dead, attempt)
+	}
+	// Same order as the sqlite sweep. The first dead child stamps a waiting parent.
+	sort.Slice(dead, func(i, j int) bool {
+		if !dead[i].LeaseUntil.Equal(dead[j].LeaseUntil) {
+			return dead[i].LeaseUntil.Before(dead[j].LeaseUntil)
 		}
-		event := Event{TaskID: attempt.TaskID, AttemptID: attempt.AttemptID, Sequence: uint64(len(s.events[attempt.AttemptID]) + 1), Type: "lease_expired", CreatedAt: now}
-		s.events[attempt.AttemptID] = append(s.events[attempt.AttemptID], event)
+		return dead[i].AttemptID < dead[j].AttemptID
+	})
+	var expired []*Attempt
+	for _, attempt := range dead {
+		s.interruptExpiredAttemptLocked(attempt, now)
+		// A no-op leaves the holder running. Do not report that row as expired.
+		if attempt.Status == TaskRunning {
+			continue
+		}
 		expired = append(expired, cloneAttempt(attempt))
 	}
 	return expired, nil
+}
+
+// interruptExpiredAttemptLocked records that a running attempt's lease ended
+// while this process was not inside it. finished_at and the task updated_at
+// are the lease end, so a later sweep does not look newer than work that
+// already finished. A task that has already left running is left alone.
+func (s *MemoryStore) interruptExpiredAttemptLocked(attempt *Attempt, now time.Time) {
+	if attempt == nil || attempt.Status != TaskRunning || !runningAttemptDead(attempt.LeaseUntil, now, attempt.AttemptID) {
+		return
+	}
+	died := leaseDeathTime(attempt.LeaseUntil, now)
+	attempt.Status, attempt.SideEffectState, attempt.FinishedAt = TaskInterrupted, SideEffectUncertain, died
+	attempt.LeaseUntil = time.Time{}
+	if task := s.tasks[attempt.TaskID]; task != nil && task.Status == TaskRunning {
+		task.Status, task.UpdatedAt = TaskInterrupted, died
+		// A parent released its lease intentionally while children ran. If
+		// one child dies with the process, the parent cannot remain
+		// waiting_child forever: neither side may be replayed automatically.
+		if task.ParentTaskID != "" {
+			s.interruptWaitingParentLocked(task.ParentTaskID, died)
+		}
+	}
+	event := Event{TaskID: attempt.TaskID, AttemptID: attempt.AttemptID, Sequence: uint64(len(s.events[attempt.AttemptID]) + 1), Type: "lease_expired", CreatedAt: died}
+	s.events[attempt.AttemptID] = append(s.events[attempt.AttemptID], event)
 }
 
 // InterruptUnstartedChildren is a startup reconciliation step. A queued child
@@ -547,17 +606,68 @@ func (s *MemoryStore) InterruptUnstartedChildren(now time.Time) ([]*Attempt, err
 
 func (s *MemoryStore) interruptWaitingParentLocked(parentTaskID string, now time.Time) {
 	parent := s.tasks[parentTaskID]
-	if parent == nil || parent.Status != TaskWaitingChild {
+	if parent == nil {
+		return
+	}
+	// A child noticed later can have an earlier lease end. Move the stamp
+	// back only while it is still the task's current time. A later child
+	// does not move it forward, and a newer write on the parent stays.
+	if parent.Status == TaskInterrupted {
+		stamped := s.latestChildDeathAttemptLocked(parentTaskID)
+		if stamped == nil || !parent.UpdatedAt.Equal(stamped.FinishedAt) || !stamped.FinishedAt.After(now) {
+			return
+		}
+		parent.UpdatedAt = now
+		stamped.FinishedAt = now
+		for i := range s.events[stamped.AttemptID] {
+			event := &s.events[stamped.AttemptID][i]
+			if event.Type == "child_lease_expired" && event.CreatedAt.After(now) {
+				event.CreatedAt = now
+			}
+		}
+		return
+	}
+	if parent.Status != TaskWaitingChild {
 		return
 	}
 	parent.Status, parent.UpdatedAt = TaskInterrupted, now
-	latest := s.latestWaitingParentAttemptLocked(parentTaskID)
-	if latest == nil {
-		return
+	if latest := s.latestWaitingParentAttemptLocked(parentTaskID); latest != nil {
+		latest.Status, latest.SideEffectState, latest.FinishedAt = TaskInterrupted, SideEffectNone, now
+		event := Event{TaskID: parentTaskID, AttemptID: latest.AttemptID, Sequence: uint64(len(s.events[latest.AttemptID]) + 1), Type: "child_lease_expired", CreatedAt: now}
+		s.events[latest.AttemptID] = append(s.events[latest.AttemptID], event)
 	}
-	latest.Status, latest.SideEffectState, latest.FinishedAt = TaskInterrupted, SideEffectNone, now
-	event := Event{TaskID: parentTaskID, AttemptID: latest.AttemptID, Sequence: uint64(len(s.events[latest.AttemptID]) + 1), Type: "child_lease_expired", CreatedAt: now}
-	s.events[latest.AttemptID] = append(s.events[latest.AttemptID], event)
+	// Queued siblings never took a lease. Closing them here is the same
+	// write that stops the parent from dispatching. A running sibling keeps
+	// its own lease.
+	for _, child := range s.tasks {
+		if child != nil && child.ParentTaskID == parentTaskID && child.Status == TaskQueued {
+			child.Status, child.UpdatedAt = TaskInterrupted, now
+		}
+	}
+}
+
+func (s *MemoryStore) latestChildDeathAttemptLocked(parentTaskID string) *Attempt {
+	var latest *Attempt
+	for _, attempt := range s.attempts {
+		if attempt.TaskID != parentTaskID || attempt.Status != TaskInterrupted {
+			continue
+		}
+		events := s.events[attempt.AttemptID]
+		stamped := false
+		for i := range events {
+			if events[i].Type == "child_lease_expired" {
+				stamped = true
+				break
+			}
+		}
+		if !stamped {
+			continue
+		}
+		if latest == nil || attempt.AttemptNo > latest.AttemptNo {
+			latest = attempt
+		}
+	}
+	return latest
 }
 
 func (s *MemoryStore) latestWaitingParentAttemptLocked(parentTaskID string) *Attempt {

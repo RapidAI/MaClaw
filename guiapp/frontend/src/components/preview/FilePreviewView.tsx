@@ -9,6 +9,7 @@ import { AIAssistantAttachmentFullDataURL, PreviewTaskResultFile } from '../../.
 import { MarkdownPreview } from '../ai/CodePreviewMarkdown';
 import type { CodePreviewTheme } from '../ai/FileTabBar';
 import { LatexPreviewPanel } from '../ai/LatexPreviewPanel';
+import { CompanionPdfReader } from '../ai/CompanionPdfReader';
 import { PdfPreviewPanel } from '../ai/PdfPreviewPanel';
 import { DocxPreviewPanel } from '../ai/DocxPreviewPanel';
 import { PptxPreviewPanel } from '../ai/PptxPreviewPanel';
@@ -47,6 +48,8 @@ export type FilePreviewViewProps = {
     lang?: string;
     projectPath?: string;
     onLatexSourceChange?: (content: string) => void;
+    /** Companion PDF reader. Other callers keep the iframe. */
+    pdfAnnotate?: boolean;
     matchLineIndexes?: number[];
     activeMatchLine?: number;
     children?: React.ReactNode;
@@ -520,6 +523,7 @@ export function FilePreviewView({
     lang = 'en',
     projectPath = '',
     onLatexSourceChange,
+    pdfAnnotate = false,
     matchLineIndexes = EMPTY_MATCHES,
     activeMatchLine = -1,
     children,
@@ -576,6 +580,17 @@ export function FilePreviewView({
     const latexAbs = String(file.absPath || '').trim();
     if (kind === 'latex' && latexAbs) {
         return <LatexPreviewPanel key={fileKey} absPath={latexAbs} theme={theme} lang={lang} />;
+    }
+    if (kind === 'pdf' && pdfAnnotate) {
+        return (
+            <CompanionPdfReader
+                key={fileKey}
+                absPath={absPath || name}
+                dataUrl={file.dataUrl}
+                theme={theme}
+                lang={lang}
+            />
+        );
     }
     if (kind === 'pdf') {
         return (

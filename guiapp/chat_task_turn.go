@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/mailbox"
 )
 
@@ -232,7 +233,116 @@ func chatTaskProgressMilestone(text string) (string, bool) {
 	if strings.HasPrefix(text, "$ ") || strings.HasPrefix(lower, "bash ") || strings.HasPrefix(lower, "running ") || strings.HasPrefix(lower, "executing ") {
 		return "", false
 	}
-	return truncateChatTaskText(text, 240), true
+	// The progress pusher's acknowledgement, elapsed heartbeat, and
+	// "this is taking a while" notice are silence, not a step. Recording
+	// them replaces the last real change and then freezes the card.
+	if chatTaskProgressIsSilence(text) {
+		return "", false
+	}
+	return truncateChatTaskText(chatTaskProgressStep(text), 240), true
+}
+
+// chatTaskProgressStep is the step name the card shows. The 〔进度〕 wrapper
+// and the "仍在执行中" heartbeat prefix are the channel, not the step.
+func chatTaskProgressStep(text string) string {
+	body := stripChatTaskProgressLabel(text)
+	for _, lang := range []string{"zh", "en"} {
+		prefix := chatTaskFormatPrefix(i18n.T(i18n.MsgProgressStillWorking, lang))
+		if prefix != "" && strings.HasPrefix(body, prefix) {
+			if rest := strings.TrimSpace(strings.TrimPrefix(body, prefix)); rest != "" {
+				return rest
+			}
+		}
+	}
+	if body != "" {
+		return body
+	}
+	return strings.TrimSpace(text)
+}
+
+// chatTaskProgressIsSilence reports a progress-pusher line that does not name
+// a step. A heartbeat that still carries a real summary is kept.
+func chatTaskProgressIsSilence(text string) bool {
+	body := stripChatTaskProgressLabel(text)
+	if body == "" {
+		return true
+	}
+	for _, lang := range []string{"zh", "en"} {
+		if body == i18n.T(i18n.MsgProgressAck, lang) || body == i18n.T(i18n.MsgProgressLongTask, lang) {
+			return true
+		}
+		prefix := chatTaskFormatPrefix(i18n.T(i18n.MsgProgressStillWorking, lang))
+		rest := body
+		if prefix != "" && strings.HasPrefix(body, prefix) {
+			rest = strings.TrimSpace(strings.TrimPrefix(body, prefix))
+		}
+		if rest != body && chatTaskElapsedFiller(rest, lang) {
+			return true
+		}
+		if chatTaskElapsedFiller(body, lang) {
+			return true
+		}
+	}
+	return false
+}
+
+func stripChatTaskProgressLabel(text string) string {
+	trimmed := strings.TrimSpace(text)
+	for _, prefix := range []string{
+		i18n.T(i18n.MsgProgressStatusLabel, "zh"),
+		i18n.T(i18n.MsgProgressStatusLabel, "en"),
+		"〔进度〕", "[进度]", "【进度】", "〔Progress〕", "[Progress]", "【Progress】",
+	} {
+		if prefix != "" && strings.HasPrefix(trimmed, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+		}
+	}
+	return trimmed
+}
+
+func chatTaskFormatPrefix(template string) string {
+	if i := strings.Index(template, "%s"); i >= 0 {
+		return template[:i]
+	}
+	return ""
+}
+
+// interruptedChatTaskProgress is the step still worth showing after a restart.
+// The interrupted status has its own explanation on the card. A pusher silence
+// line, or a copy of that explanation stored in this field, is not a step.
+func interruptedChatTaskProgress(progress string) string {
+	progress = strings.TrimSpace(progress)
+	if progress == "" || chatTaskProgressIsSilence(progress) || interruptedProgressExplanation(progress) {
+		return ""
+	}
+	step := strings.TrimSpace(chatTaskProgressStep(progress))
+	if step == "" || chatTaskProgressIsSilence(step) || interruptedProgressExplanation(step) {
+		return ""
+	}
+	return step
+}
+
+func interruptedProgressExplanation(text string) bool {
+	switch strings.TrimSpace(text) {
+	case "Was running when the app stopped. It was not resumed.",
+		"This was still running when the app stopped. It was not resumed.":
+		return true
+	default:
+		return false
+	}
+}
+
+func chatTaskElapsedFiller(text, lang string) bool {
+	template := i18n.T(i18n.MsgMilestoneProcessingElapsed, lang)
+	i := strings.Index(template, "%s")
+	if i < 0 {
+		return text == template
+	}
+	head, tail := template[:i], template[i+2:]
+	if head == "" || !strings.HasPrefix(text, head) || !strings.HasSuffix(text, tail) {
+		return false
+	}
+	return len(text) > len(head)+len(tail)
 }
 
 const (

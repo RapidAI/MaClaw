@@ -30,20 +30,20 @@ export function useToast(): ToastContextValue {
 const TYPE_STYLES: Record<ToastType, { bg: string; color: string; border: string; icon: string }> = {
     success: {
         bg: 'var(--theme-success-bg, rgba(79, 127, 111, 0.10))',
-        color: 'var(--theme-success, #4f7f6f)',
-        border: 'var(--theme-success, #4f7f6f)',
+        color: 'var(--theme-success, #11813a)',
+        border: 'var(--theme-success, #11813a)',
         icon: 'OK',
     },
     error: {
         bg: 'var(--theme-danger-bg, #fbf1f0)',
-        color: 'var(--theme-danger, #c43d34)',
-        border: 'var(--theme-danger, #c43d34)',
+        color: 'var(--theme-danger, #dc1f25)',
+        border: 'var(--theme-danger, #dc1f25)',
         icon: 'ERR',
     },
     warning: {
-        bg: 'var(--theme-warning-bg, #f8fafc)',
-        color: 'var(--theme-warning, #64748b)',
-        border: 'var(--theme-warning, #64748b)',
+        bg: 'var(--theme-warning-bg, rgba(217, 119, 6, 0.07))',
+        color: 'var(--theme-warning, #aa5d05)',
+        border: 'var(--theme-warning, #aa5d05)',
         icon: 'WARN',
     },
     info: {

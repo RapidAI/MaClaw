@@ -15,6 +15,8 @@ describe("AssistantToolFlipTicker", () => {
         const strip = screen.getByTestId("assistant-tool-flip");
         expect(strip.getAttribute("aria-label")).toBe("web_search (北京天气)");
         expect(strip.getAttribute("title")).toBe("web_search (北京天气)");
+        expect(strip.querySelector('[data-process-icon="search"]')).toBeTruthy();
+        expect(strip.querySelector(".assistant-tool-flip-dot")).toBeNull();
     });
 
     afterEach(() => {
@@ -62,5 +64,7 @@ describe("AssistantToolFlipTicker", () => {
         expect(strip.getAttribute("data-flipping")).toBe("false");
         expect(screen.queryByTestId("assistant-tool-flip-out")).toBeNull();
         expect(strip.getAttribute("aria-label")).toBe("generate_pdf (北京天气.pdf)");
+        expect(strip.querySelector("[data-process-icon]")).toBeNull();
+        expect(strip.querySelector(".assistant-tool-flip-dot")).toBeTruthy();
     });
 });

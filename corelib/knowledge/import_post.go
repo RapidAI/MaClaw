@@ -407,6 +407,7 @@ func (s *SQLiteStore) refreshSourceTopicLinksFast(ctx context.Context, sourceID 
 			Score:           c.score,
 			Terms:           c.terms,
 			Evidence:        []string{"import_fts"},
+			Status:          SourceLinkStatusSuggested,
 			RelatedSource:   c.src,
 			CreatedAt:       now,
 			UpdatedAt:       now,

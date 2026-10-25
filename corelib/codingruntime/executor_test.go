@@ -580,11 +580,25 @@ func TestExpiredRunningWriterDoesNotBlockWithoutLocalExecutor(t *testing.T) {
 		t.Fatal(err)
 	}
 	markLocalLiveWriter(attempt.AttemptID)
+	t.Cleanup(func() { unmarkLocalLiveWriter(attempt.AttemptID) })
 	if _, err := store.StartAttempt(second.TaskID, "waiter", time.Minute, policy, now.Add(2*time.Minute)); !errors.Is(err, ErrWriterConflict) {
 		t.Fatalf("local executor was admitted beside an expired lease: %v", err)
+	}
+	held, err := store.GetTask(first.TaskID)
+	if err != nil || held.Status != TaskRunning {
+		t.Fatalf("local executor was interrupted while still running: %+v %v", held, err)
 	}
 	unmarkLocalLiveWriter(attempt.AttemptID)
 	if _, err := store.StartAttempt(second.TaskID, "waiter", time.Minute, policy, now.Add(2*time.Minute)); err != nil {
 		t.Fatalf("dead expired writer still locked the directory: %v", err)
+	}
+	leaseEnd := now.Add(time.Minute)
+	closed, err := store.GetTask(first.TaskID)
+	if err != nil || closed.Status != TaskInterrupted || !closed.UpdatedAt.Equal(leaseEnd) {
+		t.Fatalf("dead writer task=%+v err=%v, want interrupted at %s", closed, err, leaseEnd)
+	}
+	attempts, err := store.ListAttempts(first.TaskID)
+	if err != nil || len(attempts) != 1 || attempts[0].Status != TaskInterrupted || !attempts[0].FinishedAt.Equal(leaseEnd) || !attempts[0].LeaseUntil.IsZero() {
+		t.Fatalf("dead writer attempt=%+v err=%v", attempts, err)
 	}
 }

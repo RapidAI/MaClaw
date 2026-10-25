@@ -275,7 +275,7 @@ func (h *IMMessageHandler) stopGoalBarLoop(userID string) {
 	h.pendingInjection.Delete(userID)
 	h.dropGoalCommandSteer(userID)
 	// A question must not keep owning the next message after the goal stops.
-	h.pendingAskUser.Delete(userID)
+	h.deletePendingAskUser(userID)
 }
 
 // noteGoalBarNoQuestion records the foreground generation a bar stop silences.
@@ -334,7 +334,7 @@ func (h *IMMessageHandler) forgetPendingUserReply(userID string, turnGen uint64)
 	if h.goalBarTurnMustNotAsk(userID, turnGen) {
 		return
 	}
-	h.pendingUserReply.Delete(userID)
+	h.deletePendingUserReply(userID)
 }
 
 // rememberPendingUserReply stores a prose question unless this generation
@@ -348,7 +348,7 @@ func (h *IMMessageHandler) rememberPendingUserReply(userID string, turnGen uint6
 	if h.goalBarTurnMustNotAsk(userID, turnGen) {
 		return false
 	}
-	h.pendingUserReply.Store(userID, state)
+	h.storePendingUserReply(userID, state)
 	return true
 }
 
@@ -677,7 +677,7 @@ func (a *App) ContinueSessionGoal(sessionKey string) map[string]interface{} {
 		if _, blocked := h.pauseGoalForUnarmedRemote(userID); blocked {
 			return a.goalBarSnapshotIn(store, userID, nil)
 		}
-		h.pendingAskUser.Delete(userID)
+		h.deletePendingAskUser(userID)
 		// Record the stop fence before the goal becomes active again.
 		// The dying turn then leaves this timer alone.
 		h.noteGoalContinuePastUserStop(userID)

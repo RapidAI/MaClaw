@@ -7,6 +7,23 @@ import (
 	"testing"
 )
 
+func TestFileCompanionExportTeXWrapsAWriteFailure(t *testing.T) {
+	app, path := newCompanionChatExportApp(t, filepath.Join(t.TempDir(), "unused"))
+	blocker := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev := fileCompanionSaveTeXDialog
+	t.Cleanup(func() { fileCompanionSaveTeXDialog = prev })
+	fileCompanionSaveTeXDialog = func(*App, string) (string, error) {
+		return filepath.Join(blocker, "对话.tex"), nil
+	}
+	_, err := app.FileCompanionExportChatTeX(path, []CompanionChatTurn{{Role: "user", Content: "提问"}})
+	if err == nil || !strings.Contains(err.Error(), "写入 PDF 失败") {
+		t.Fatalf("write: %v", err)
+	}
+}
+
 func TestFileCompanionExportKeepsPDFAndWritesTeXFragment(t *testing.T) {
 	app := newVideoNoteTestApp(t)
 	path := writeMedia(t, app, "notes.md", []byte("# hello"))

@@ -395,6 +395,7 @@ const (
 	DocumentAttachmentFormatSpreadsheet  = "spreadsheet"
 	DocumentAttachmentFormatPresentation = "presentation"
 	DocumentAttachmentFormatText         = "text"
+	DocumentAttachmentFormatMOBI         = "mobi"
 )
 
 // DocumentAttachmentFormat is an ingress classification only. The document
@@ -412,6 +413,8 @@ func DocumentAttachmentFormat(fileName, mimeType string) (format, canonicalMIME 
 		return DocumentAttachmentFormatPresentation, "application/vnd.openxmlformats-officedocument.presentationml.presentation", true
 	case ".txt", ".md", ".markdown", ".json", ".xml", ".yaml", ".yml", ".log":
 		return DocumentAttachmentFormatText, "text/plain", true
+	case ".mobi":
+		return DocumentAttachmentFormatMOBI, "application/x-mobipocket-ebook", true
 	}
 	switch strings.ToLower(strings.TrimSpace(strings.SplitN(mimeType, ";", 2)[0])) {
 	case "application/pdf":
@@ -424,6 +427,8 @@ func DocumentAttachmentFormat(fileName, mimeType string) (format, canonicalMIME 
 		return DocumentAttachmentFormatPresentation, "application/vnd.openxmlformats-officedocument.presentationml.presentation", true
 	case "text/plain", "text/markdown", "application/json", "application/xml", "text/xml", "application/yaml", "text/yaml":
 		return DocumentAttachmentFormatText, "text/plain", true
+	case "application/x-mobipocket-ebook":
+		return DocumentAttachmentFormatMOBI, "application/x-mobipocket-ebook", true
 	default:
 		return "", "", false
 	}
@@ -435,7 +440,7 @@ func DocumentAttachmentFormat(fileName, mimeType string) (format, canonicalMIME 
 func DocumentAttachmentTempSuffix(fileName, format string) string {
 	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(fileName)))
 	switch ext {
-	case ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".ppt", ".pptx", ".txt", ".md", ".markdown", ".json", ".xml", ".yaml", ".yml", ".log":
+	case ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".ppt", ".pptx", ".txt", ".md", ".markdown", ".json", ".xml", ".yaml", ".yml", ".log", ".mobi":
 		return ext
 	}
 	switch format {
@@ -447,6 +452,8 @@ func DocumentAttachmentTempSuffix(fileName, format string) string {
 		return ".xlsx"
 	case DocumentAttachmentFormatPresentation:
 		return ".pptx"
+	case DocumentAttachmentFormatMOBI:
+		return ".mobi"
 	default:
 		return ".txt"
 	}

@@ -1429,7 +1429,7 @@ func isDocumentExt(ext string) bool {
 	switch ext {
 	case ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".ppt", ".pptx",
 		".txt", ".md", ".markdown", ".json", ".xml", ".yaml", ".yml", ".log",
-		".dwg", ".dxf", ".dxfb", ".glb", ".gltf", ".epub", ".adoc", ".asciidoc", ".eml":
+		".dwg", ".dxf", ".dxfb", ".glb", ".gltf", ".epub", ".mobi", ".adoc", ".asciidoc", ".eml":
 		return true
 	default:
 		return false

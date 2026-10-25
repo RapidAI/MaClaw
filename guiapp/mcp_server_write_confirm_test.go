@@ -496,6 +496,19 @@ func TestPendingAskUserContextStripsConfirmBinding(t *testing.T) {
 			t.Fatalf("pendingAskUserContext(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
+	ticket := agent.CommitApprovalContext("desktop\nuser\nD:/work", "mailbox_send\nto\nnone", "nonce-1")
+	if got := pendingAskUserContext(ticket); got != "" {
+		t.Fatalf("commit ticket stayed visible: %q", got)
+	}
+	shown := FormatAskUserForDisplay(&AskUserRequest{
+		Question:  "执行 mailbox_send 缺少人的批准",
+		Options:   []string{"仅这一次", "本任务内允许", "拒绝"},
+		InputType: "choice",
+		Context:   ticket,
+	})
+	if strings.Contains(shown, agent.CommitApprovalContextPrefix) || strings.Contains(shown, "nonce-1") || !strings.Contains(shown, "仅这一次") {
+		t.Fatalf("commit card leaked the ticket: %s", shown)
+	}
 }
 
 // An observed installed server must not be replaced by a chat confirmation

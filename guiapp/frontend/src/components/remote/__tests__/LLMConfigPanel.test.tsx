@@ -402,31 +402,34 @@ describe('LLMConfigPanel test-and-save flow', () => {
         });
     });
 
-    it('persists the global thinking mode via the thinking card', async () => {
-        // The Auto option was removed: unset now defaults to enabled, so the
-        // card only offers On/Off.
+    it('persists the global thinking level via the thinking card', async () => {
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        const onButton = await screen.findByTestId('thinking-mode-enabled');
-        const offButton = screen.getByTestId('thinking-mode-disabled');
+        const autoButton = await screen.findByTestId('thinking-mode-auto');
+        expect(autoButton.getAttribute('aria-pressed')).toBe('true');
 
-        fireEvent.click(offButton);
+        fireEvent.click(screen.getByTestId('thinking-mode-none'));
         await waitFor(() => {
-            expect(SetMaclawLLMThinkingModeMock).toHaveBeenCalledWith('disabled');
+            expect(SetMaclawLLMThinkingModeMock).toHaveBeenCalledWith('none');
         });
 
-        fireEvent.click(onButton);
+        fireEvent.click(screen.getByTestId('thinking-mode-low'));
         await waitFor(() => {
-            expect(SetMaclawLLMThinkingModeMock).toHaveBeenCalledWith('enabled');
+            expect(SetMaclawLLMThinkingModeMock).toHaveBeenCalledWith('low');
+        });
+
+        fireEvent.click(screen.getByTestId('thinking-mode-max'));
+        await waitFor(() => {
+            expect(SetMaclawLLMThinkingModeMock).toHaveBeenCalledWith('max');
         });
     });
 
     it('reflects the loaded global thinking mode as active', async () => {
-        GetMaclawLLMThinkingModeMock.mockResolvedValue('disabled');
+        GetMaclawLLMThinkingModeMock.mockResolvedValue('none');
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        const offButton = await screen.findByTestId('thinking-mode-disabled');
+        const offButton = await screen.findByTestId('thinking-mode-none');
         await waitFor(() => {
             expect(offButton.getAttribute('aria-pressed')).toBe('true');
         });
@@ -506,15 +509,15 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        // Default is enabled; switching off fails and must roll back to On.
-        const offButton = await screen.findByTestId('thinking-mode-disabled');
+        // Default is auto; switching off fails and must roll back to Auto.
+        const offButton = await screen.findByTestId('thinking-mode-none');
         fireEvent.click(offButton);
 
         await waitFor(() => {
-            expect(SetMaclawLLMThinkingModeMock).toHaveBeenCalledWith('disabled');
+            expect(SetMaclawLLMThinkingModeMock).toHaveBeenCalledWith('none');
             expect(screen.getByRole('alert').textContent).toContain("Couldn't save the reasoning setting");
         });
-        expect(screen.getByTestId('thinking-mode-enabled').getAttribute('aria-pressed')).toBe('true');
+        expect(screen.getByTestId('thinking-mode-auto').getAttribute('aria-pressed')).toBe('true');
     });
 
     it('prevents duplicate reasoning saves before React applies the disabled state', async () => {
@@ -523,7 +526,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        const offButton = await screen.findByTestId('thinking-mode-disabled');
+        const offButton = await screen.findByTestId('thinking-mode-none');
         fireEvent.click(offButton);
         fireEvent.click(offButton);
         expect(SetMaclawLLMThinkingModeMock).toHaveBeenCalledTimes(1);

@@ -2492,10 +2492,14 @@ func (c *cli) doJSON(ctx context.Context, method, endpoint, token string, body a
 }
 
 func newFlagSet(name string) (*config, *flag.FlagSet) {
+	// The default GUI config only seeds ConfigPath here. Token and BaseURL
+	// resolve in finalizeConfig against the final config path, so an explicit
+	// --config (or MACLAW_CONFIG) discovers its own gateway instead of
+	// silently reusing the default one's credentials.
 	discovered := discoverGatewayConfig("")
 	cfg := &config{
-		BaseURL:        firstNonEmpty(os.Getenv("MACLAW_GATEWAY_URL"), discovered.BaseURL, defaultBaseURL),
-		Token:          firstNonEmpty(os.Getenv("MACLAW_GATEWAY_TOKEN"), discovered.Token),
+		BaseURL:        os.Getenv("MACLAW_GATEWAY_URL"),
+		Token:          os.Getenv("MACLAW_GATEWAY_TOKEN"),
 		ConfigPath:     firstNonEmpty(os.Getenv("MACLAW_CONFIG"), discovered.ConfigPath),
 		StatePath:      firstNonEmpty(os.Getenv("MACLAW_CLI_STATE"), defaultStatePath()),
 		ClientID:       firstNonEmpty(os.Getenv("MACLAW_CLIENT_ID"), defaultClientID),
@@ -2512,7 +2516,6 @@ func newFlagSet(name string) (*config, *flag.FlagSet) {
 		AutoAck:        true,
 		RequireSession: strings.EqualFold(os.Getenv("MACLAW_REQUIRE_SESSION"), "1") || strings.EqualFold(os.Getenv("MACLAW_REQUIRE_SESSION"), "true"),
 		JSONErrors:     wantsJSONErrors(nil),
-		Discovered:     discovered.OK,
 	}
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -2543,11 +2546,11 @@ func finalizeConfig(cfg config) config {
 	if strings.TrimSpace(cfg.Token) == "" {
 		cfg.Token = discovered.Token
 	}
-	if strings.TrimSpace(cfg.BaseURL) == "" || cfg.BaseURL == defaultBaseURL {
-		cfg.BaseURL = firstNonEmpty(discovered.BaseURL, cfg.BaseURL, defaultBaseURL)
+	if strings.TrimSpace(cfg.BaseURL) == "" {
+		cfg.BaseURL = firstNonEmpty(discovered.BaseURL, defaultBaseURL)
 	}
 	cfg.BaseURL = normalizeBaseURL(cfg.BaseURL)
-	cfg.Discovered = cfg.Discovered || discovered.OK
+	cfg.Discovered = discovered.OK
 	return cfg
 }
 

@@ -8,10 +8,15 @@ import {
     FileCompanionWebPlayerLeft,
     ClearFileCompanionChat,
     ClearFileCompanionWebChat,
+    FileCompanionChooseConvertDestination,
+    FileCompanionConvertScan,
+    FileCompanionExportChatCloud,
     FileCompanionExportChatPDF,
     FileCompanionExportChatTeX,
     FileCompanionExportPDF,
+    FileCompanionExportProject,
     FileCompanionExportTeX,
+    FileCompanionExportWebChatCloud,
     FileCompanionExportWebChatPDF,
     FileCompanionExportWebChatTeX,
     FileCompanionExportWebPDF,
@@ -20,7 +25,10 @@ import {
     FileCompanionImportKnowledge,
     FileCompanionOpen,
     FileCompanionOpenArxiv,
+    FileCompanionSearchArxiv,
     FileCompanionOpenWebPage,
+    ImportFileCompanionShare,
+    FileCompanionPDFScan,
     FileCompanionPlayerHide,
     FileCompanionPlayerPlace,
     FileCompanionPlayerSupported,
@@ -29,14 +37,20 @@ import {
     FileCompanionSaveText,
     FileCompanionUIReady,
     FileCompanionUploadCloud,
+    ShowItemInFolder,
     GetBrandInfo,
     GetFileCompanionBoot,
+    ListFileCompanionLibrary,
     SetFileCompanionOpenSet,
+    SetMainWindowScreenPosition,
+    AddFileCompanionShareNote,
     SendFileCompanionMessage,
     SendFileCompanionWebMessage,
 } from "../../../wailsjs/go/main/App";
-import { WindowHide } from "../../../wailsjs/runtime";
+import { WindowFullscreen, WindowGetPosition, WindowGetSize, WindowHide, WindowSetSize, WindowUnfullscreen } from "../../../wailsjs/runtime";
+import { createWindowMaximizeRestoreSession } from "../../utils/windowRestoreGeometry";
 import { useToast } from "../Toast";
+import { companionLibrarySync, companionNotePost, companionNotesRevisionWins, companionShareNotes, companionSharePathKey, CompanionGroupsDialog, CompanionImportDialog, CompanionLibraryView, CompanionShareDialog, type CompanionShareNote, type CompanionShareUpdate } from "./FileCompanionLibrary";
 import { AssistantReasoningPanel } from "../ai/AssistantReasoningPanel";
 import { copyTextToClipboard } from "../ai/AssistantReplyCopyButton";
 import { MarkdownPreview } from "../ai/CodePreviewMarkdown";
@@ -56,9 +70,10 @@ import { CompanionFigureStrip, type CompanionFigure } from "./CompanionFigureStr
 import { companionVisibleText, finishCompanionReply, splitCompanionStreamDelta } from "./companionReasoning";
 import { PaperResultCard } from "./PaperResultCard";
 import { NoteResultCard } from "./NoteResultCard";
-import { FILE_COMPANION_OPEN_HINT, companionVideoNotePhrase, looksLikeArxivReference, noteStampAtLineStart, type NoteStampLine } from "./companionNoteSeek";
+import { FILE_COMPANION_OPEN_HINT, companionVideoNotePhrase, looksLikeArxivReference, looksLikeCompanionShare, noteStampAtLineStart, type NoteStampLine } from "./companionNoteSeek";
 import { windowDragHandleProps } from "../../utils/windowDrag";
 import type { CodePreviewTheme } from "../ai/FileTabBar";
+import { loadPdfMarks, normalizePdfMarks, savePdfMarks, type PdfMark } from "./pdfMarks";
 import { FilePreviewView } from "../preview/FilePreviewView";
 import { filePreviewKindFromName, type FilePreviewKind } from "../preview/filePreviewKind";
 
@@ -103,6 +118,10 @@ const COMPANION_TAB_EDGE = 1;
 const COMPANION_TAB_NUDGE_SLIVER = 24;
 
 export type CompanionTabBox = { left: number; right: number };
+
+// The companion window's screens: the document reader, the 文档管理 screen,
+// and the 阅读群组 screen. 分享 overlays as a dialog on any of them.
+export type CompanionView = "read" | "library" | "groups";
 
 export type CompanionTabEnds = {
     overflow: boolean;
@@ -238,6 +257,10 @@ type CompanionDoc = {
     ReadOnlyReason?: string;
     messages?: CompanionMessageDoc[];
     Messages?: CompanionMessageDoc[];
+    highlights?: unknown;
+    Highlights?: unknown;
+    imported?: boolean;
+    Imported?: boolean;
 };
 
 type CompanionMessageDoc = { role?: string; Role?: string; text?: string; Text?: string; reasoning?: string; Reasoning?: string; resultPath?: string; ResultPath?: string; noteCardPath?: string; NoteCardPath?: string; webNote?: boolean; WebNote?: boolean; figures?: unknown[]; Figures?: unknown[] };
@@ -318,6 +341,9 @@ type CompanionTab = {
     diskHash: string;
     confirmOverwrite: boolean;
     previewEpoch: number;
+    shareToken?: string;
+    shareMine?: boolean;
+    notes?: CompanionShareNote[];
     saveError: string;
     htmlPreview: boolean;
     kind?: "web";
@@ -335,13 +361,43 @@ type RuntimeAPI = {
     OnFileDropOff?: () => void;
 };
 
-export function readFileCompanionBootFlag(): boolean {
-    const flag = (window as unknown as { __MACLAW_FILE_COMPANION__?: boolean }).__MACLAW_FILE_COMPANION__;
-    return flag === true;
-}
-
 function runtimeAPI(): RuntimeAPI | undefined {
     return (window as unknown as { runtime?: RuntimeAPI }).runtime;
+}
+
+type ConvertDoneBody = {
+    path: string;
+    ok: boolean;
+    scan: boolean;
+    complete: boolean;
+    pending: boolean;
+    pdf: string;
+    message: string;
+    saveFailed: boolean;
+};
+
+function readConvertDone(payload: unknown): ConvertDoneBody | null {
+    if (!payload || typeof payload !== "object") return null;
+    const body = payload as Record<string, unknown>;
+    const path = String(body.path ?? body.Path ?? "").trim();
+    if (!path) return null;
+    return {
+        path,
+        ok: (body.ok ?? body.OK) === true,
+        scan: (body.scan ?? body.Scan) !== false,
+        complete: (body.complete ?? body.Complete) === true,
+        pending: (body.pending ?? body.Pending) === true,
+        pdf: String(body.pdf ?? body.Pdf ?? "").trim(),
+        message: String(body.message ?? body.Message ?? "").trim(),
+        saveFailed: (body.save_failed ?? body.SaveFailed) === true,
+    };
+}
+
+function withConvertFile(path: string, text: string): string {
+    const name = path.split(/[/\\]/).pop() || "";
+    if (!name) return text;
+    const lead = `「${name}」`;
+    return text.startsWith(lead) ? text : lead + text;
 }
 
 function field<T>(doc: CompanionDoc, lower: keyof CompanionDoc, upper: keyof CompanionDoc, fallback: T): T {
@@ -416,11 +472,34 @@ function turnErrorText(error: string): string {
     }
 }
 
+function exportSaveError(raw: string): string {
+    const lower = raw.toLowerCase();
+    if (lower.includes("not enough space") || lower.includes("no space left") || lower.includes("disk full")) return "磁盘已满";
+    if (lower.includes("access is denied") || lower.includes("permission denied")) return "没有写入权限";
+    return "无法保存到该位置";
+}
+
+// Wails rejects a Go error as a plain string: window.wails.Callback passes
+// message.error through, and that value is not an Error. Reading only
+// Error.message hides 需要分享密码, so the password box never opens.
+function bindingErrorText(err: unknown): string {
+    if (err instanceof Error) return err.message.trim();
+    if (typeof err === "string") return err.trim();
+    return "";
+}
+
 function exportErrorText(err: unknown): string {
-    const raw = (err instanceof Error ? err.message : typeof err === "string" ? err : "").trim();
+    const raw = bindingErrorText(err);
     if (raw.includes("MaClaw Hub login is required")) return "需要先在主窗口登录，才能上传到云盘";
+    if (raw.includes("upload mobile document failed") || raw.includes("Hub upload") || raw.includes("decode upload response")) return "上传到云盘失败，请稍后重试";
+    if (raw === "web session is not open") return "这个页面没有打开";
+    if (raw === "path is outside the open file") return "这个文件没有打开";
     if (raw === "file is empty") return "文件是空的";
-    if (/director/i.test(raw)) return "不支持上传文件夹";
+    // Only the upload of a folder uses this sentence. A save error such as
+    // "The directory name is invalid", or a path that contains "director",
+    // is a failed PDF write.
+    if (raw === "path is a directory") return "不支持上传文件夹";
+    if (raw.includes("创建目录失败") || raw.includes("写入 PDF 失败")) return exportSaveError(raw);
     if (raw === "file too large to compress safely") return "文件太大，无法上传到云盘";
     return raw || "操作失败";
 }
@@ -435,6 +514,12 @@ function knowledgeResultText(result: { imported_files?: number; failed_files?: n
     }
     if (imported === 0 && skipped > 0) return { ok: true, text: "文件已在桌面知识库中" };
     return { ok: true, text: "已进入桌面知识库" };
+}
+
+function highlightsFromDoc(doc: CompanionDoc): PdfMark[] | null {
+    const has = Object.prototype.hasOwnProperty.call(doc, "highlights") || Object.prototype.hasOwnProperty.call(doc, "Highlights");
+    if (!has) return null;
+    return normalizePdfMarks(doc.highlights ?? doc.Highlights);
 }
 
 function messagesFromDoc(doc: CompanionDoc): ChatMessage[] {
@@ -797,7 +882,7 @@ function MarkdownSourceEditor({
     );
 }
 
-function CompanionActionIcon({ name, size = 14 }: { name: "paper" | "knowledge" | "cloud" | "hide" | "markdown" | "latex" | "pdf" | "check" | "file"; size?: number }) {
+function CompanionActionIcon({ name, size = 14 }: { name: "paper" | "knowledge" | "cloud" | "hide" | "markdown" | "latex" | "pdf" | "check" | "file" | "fullscreen" | "restore" | "project" | "library" | "convert" | "note" | "stop" | "share" | "groups"; size?: number }) {
     const common = {
         fill: "none",
         stroke: "currentColor",
@@ -822,6 +907,14 @@ function CompanionActionIcon({ name, size = 14 }: { name: "paper" | "knowledge" 
                     <path {...common} d="m15.4 12.4 3.6 5.2" />
                 </>
             )}
+            {name === "project" && (
+                <>
+                    <path {...common} d="M4.5 8.2h15v11.2h-15z" />
+                    <path {...common} d="M4.5 8.2 8 4.6h8l3.5 3.6" />
+                    <path {...common} d="M12 11.2v5.2" />
+                    <path {...common} d="m9.6 14.2 2.4 2.3 2.4-2.3" />
+                </>
+            )}
             {name === "pdf" && (
                 <>
                     <path {...common} d="M12.6 4.5H7.4a1.8 1.8 0 0 0-1.8 1.8v11.4a1.8 1.8 0 0 0 1.8 1.8h9.2a1.8 1.8 0 0 0 1.8-1.8V10z" />
@@ -830,6 +923,29 @@ function CompanionActionIcon({ name, size = 14 }: { name: "paper" | "knowledge" 
                     <path {...common} d="m9.9 15.4 2.1 2.2 2.1-2.2" />
                 </>
             )}
+            {name === "note" && (
+                <>
+                    <path {...common} d="M5.5 4.5h9L18 8v11.5h-12.5z" />
+                    <path {...common} d="M14.5 4.5V8H18" />
+                    <path {...common} d="m9.4 14.6 4.9-4.9 1.9 1.9-4.9 4.9-2.1.2z" />
+                </>
+            )}
+            {name === "share" && (
+                <>
+                    <path {...common} d="M6.5 12.2h11a3.5 3.5 0 0 0 .2-7 5.5 5.5 0 0 0-10.6 1.5A3.2 3.2 0 0 0 6.5 12.2Z" />
+                    <path {...common} d="M12 20.5v-8.2" />
+                    <path {...common} d="m9.3 14.8 2.7-2.7 2.7 2.7" />
+                </>
+            )}
+            {name === "groups" && (
+                <>
+                    <circle {...common} cx="9" cy="8" r="2.2" />
+                    <circle {...common} cx="16" cy="9.2" r="1.8" />
+                    <path {...common} d="M4.8 18.2c.5-2.5 2.3-3.8 4.2-3.8s3.7 1.3 4.2 3.8" />
+                    <path {...common} d="M13.6 14.8c1.5-.2 3 .5 3.8 2.2" />
+                </>
+            )}
+            {name === "stop" && <rect {...common} x="7.2" y="7.2" width="9.6" height="9.6" rx="1.6" />}
             {name === "check" && <path {...common} d="m5 12.8 4.4 4.2L19 6.6" />}
             {name === "paper" && (
                 <>
@@ -841,10 +957,26 @@ function CompanionActionIcon({ name, size = 14 }: { name: "paper" | "knowledge" 
                     <path {...common} d="m18.1 18.3 2.1 2.1" />
                 </>
             )}
+            {name === "library" && (
+                <>
+                    <path {...common} d="M5 8.2h14v11.2H5z" />
+                    <path {...common} d="M8 8.2V5.2h8v3" />
+                    <path {...common} d="M8 12h8" />
+                    <path {...common} d="M8 15.2h5" />
+                </>
+            )}
             {name === "file" && (
                 <>
                     <path {...common} d="M6.5 3.5h6.8L17.5 8v12.5h-11z" />
                     <path {...common} d="M13.3 3.5V8h4.2" />
+                </>
+            )}
+            {name === "convert" && (
+                <>
+                    <path {...common} d="M7 4.5h6.2L17 8.2V19.5H7z" />
+                    <path {...common} d="M13.2 4.5V8.2H17" />
+                    <path {...common} d="M9.2 14.8a2.5 2.5 0 1 0 .6-1.9" />
+                    <path {...common} d="M9.1 11.2v2h2" />
                 </>
             )}
             {name === "knowledge" && (
@@ -866,6 +998,22 @@ function CompanionActionIcon({ name, size = 14 }: { name: "paper" | "knowledge" 
                     <path {...common} d="M3.2 12s3.4-5 8.8-5 8.8 5 8.8 5-3.4 5-8.8 5-8.8-5-8.8-5Z" />
                     <circle {...common} cx="12" cy="12" r="2.1" />
                     <path {...common} d="M5.2 18.8 18.8 5.2" />
+                </>
+            )}
+            {name === "fullscreen" && (
+                <>
+                    <path {...common} d="M9 4.5H4.5V9" />
+                    <path {...common} d="M15 4.5h4.5V9" />
+                    <path {...common} d="M9 19.5H4.5V15" />
+                    <path {...common} d="M15 19.5h4.5V15" />
+                </>
+            )}
+            {name === "restore" && (
+                <>
+                    <path {...common} d="M9 4.5v4.5H4.5" />
+                    <path {...common} d="M15 4.5v4.5h4.5" />
+                    <path {...common} d="M9 19.5v-4.5H4.5" />
+                    <path {...common} d="M15 19.5v-4.5h4.5" />
                 </>
             )}
         </svg>
@@ -964,12 +1112,30 @@ type CompanionChatExport = {
 };
 
 /**
+ * Text of one turn that belongs in an exported transcript, or "" when it does not.
+ *
+ * Skipped: a reply still streaming (a half-written answer is not what the
+ * reader asked to keep), a paper card (its body is a separate PDF; the bubble
+ * only says 已生成论文解读), and an empty bubble.
+ */
+function companionChatTurnBody(message: ChatMessage, index: number, lastIndex: number, tabBusy: boolean): string {
+    const mine = message.role === "user";
+    if (message.resultPath) return "";
+    if (!mine && tabBusy && index === lastIndex) return "";
+    const content = mine ? message.text : companionMessageExportText(message, false);
+    return content.trim() ? content : "";
+}
+
+function companionChatHasExportableTurn(messages: ChatMessage[], tabBusy: boolean): boolean {
+    const lastIndex = messages.length - 1;
+    return messages.some((message, index) => companionChatTurnBody(message, index, lastIndex, tabBusy) !== "");
+}
+
+/**
  * Every turn that belongs in an exported transcript.
  *
- * Skipped: messages still streaming (a half-written answer is not what the
- * reader asked to keep), turns whose paper is still being written, and empty
- * bubbles. What is left is paired question and answer text, which is the only
- * form in which most answers read correctly.
+ * What is left is paired question and answer text, which is the only form in
+ * which most answers read correctly.
  *
  * Figures are fetched as bytes and appended to their answer. The bytes have to
  * travel with the text because a path cannot be resolved on the reader's side
@@ -989,15 +1155,9 @@ async function companionChatExportTurns(
     let missingFigures = 0;
     let missingDiagrams = 0;
     for (const [index, message] of messages.entries()) {
+        let content = companionChatTurnBody(message, index, lastIndex, tabBusy);
+        if (!content) continue;
         const mine = message.role === "user";
-        const streaming = Boolean(!mine && tabBusy && index === lastIndex);
-        // Skipping rather than returning: the streaming reply is the last one
-        // by definition, so both behave the same today, but `continue` keeps
-        // that having to stay true from being load-bearing.
-        if (streaming) continue;
-        if (message.resultPath) continue;
-        let content = mine ? message.text : companionMessageExportText(message, streaming);
-        if (!content.trim()) continue;
         if (!mine) {
             const inlined = await inlineCompanionDiagrams(content, theme);
             content = inlined.text;
@@ -1089,10 +1249,12 @@ async function inlineCompanionDiagrams(markdown: string, theme: AssistantTheme):
                 break;
             }
         }
-        // An unclosed fence is still being written, or is not a fence at all.
+        // An unclosed fence runs to the end of the text. The lines inside it
+        // stay in that block: a later marker is not a new fence, which is how
+        // an unclosed fence stays one block on screen.
         if (close < 0) {
-            out.push(lines[i]);
-            continue;
+            out.push(...lines.slice(i));
+            break;
         }
         if (!isMermaidCodeFence(open[3])) {
             out.push(...lines.slice(i, close + 1));
@@ -1138,6 +1300,18 @@ function companionExportNotice(missingFigures: number, missingDiagrams: number):
 
 function companionExportNoticeKind(missingFigures: number, missingDiagrams: number): "success" | "warning" {
     return missingFigures > 0 || missingDiagrams > 0 ? "warning" : "success";
+}
+
+function companionCloudExportNotice(uploaded: { duplicate?: boolean; duplicate_of_title?: string; title?: string } | null | undefined, missingFigures: number, missingDiagrams: number): string {
+    const held = uploaded?.duplicate_of_title || uploaded?.title || "";
+    const base = uploaded?.duplicate
+        ? `云盘中已有相同内容${held ? `（${held}）` : ""}，未再次上传`
+        : "已上传到云盘，手机端「文档」可打开";
+    const missing: string[] = [];
+    if (missingFigures > 0) missing.push(`${missingFigures} 张配图`);
+    if (missingDiagrams > 0) missing.push(`${missingDiagrams} 张流程图`);
+    if (missing.length === 0) return base;
+    return `${base}，但 ${missing.join("、")}未能读取，未包含在内`;
 }
 
 /**
@@ -1372,6 +1546,140 @@ function NoteStampAnswer({ text, path, web, previewOpen, messageId, streaming, o
     );
 }
 
+function sameShareNotes(left: CompanionShareNote[], right: CompanionShareNote[]): boolean {
+    if (left.length !== right.length) return false;
+    for (let i = 0; i < left.length; i++) {
+        if (left[i].id !== right[i].id || left[i].text !== right[i].text || left[i].author !== right[i].author) return false;
+    }
+    return true;
+}
+
+type SharePart = { token: string; mine: boolean; revision: number; notes: CompanionShareNote[] };
+type ShareBind = { mine: boolean; notes: CompanionShareNote[]; parts: SharePart[] };
+type PendingShareNote = { path: string; text: string };
+const pendingShareNoteCap = 20;
+
+// One open file can belong to more than one share. The page shows every
+// share's notes. A later row must not replace an earlier share's newer list.
+function shareBindFromParts(parts: SharePart[]): ShareBind {
+    const notes: CompanionShareNote[] = [];
+    const seen = new Set<string>();
+    let mine = parts.length > 0;
+    for (const part of parts) {
+        if (!part.mine) mine = false;
+        for (const note of part.notes) {
+            if (seen.has(note.id)) continue;
+            seen.add(note.id);
+            notes.push(note);
+        }
+    }
+    return { mine, notes, parts };
+}
+
+function sharePartsFromRows(prev: ShareBind | undefined, rows: { token: string; mine: boolean; revision: number; notes: CompanionShareNote[] }[]): SharePart[] {
+    const parts: SharePart[] = [];
+    const seen = new Set<string>();
+    for (const row of rows) {
+        if (seen.has(row.token)) continue;
+        seen.add(row.token);
+        const old = prev?.parts.find((part) => part.token === row.token);
+        if (old && !companionNotesRevisionWins(old.revision, row.revision)) {
+            parts.push(old);
+            continue;
+        }
+        const revision = old ? Math.max(old.revision, row.revision) : row.revision;
+        if (old && old.mine === row.mine && old.revision === revision && sameShareNotes(old.notes, row.notes)) {
+            parts.push(old);
+            continue;
+        }
+        parts.push({ token: row.token, mine: row.mine, revision, notes: row.notes });
+    }
+    return parts;
+}
+
+function shareBindToken(bind: ShareBind): string {
+    return bind.parts[0]?.token ?? "";
+}
+
+function SharePasswordGlyph({ name }: { name: "lock" | "eye" | "eye-off" }) {
+    const stroke = {
+        fill: "none",
+        stroke: "currentColor",
+        strokeWidth: 1.8,
+        strokeLinecap: "round" as const,
+        strokeLinejoin: "round" as const,
+    };
+    return (
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
+            {name === "lock" ? (
+                <>
+                    <rect {...stroke} x="6" y="10.5" width="12" height="8.8" rx="1.6" />
+                    <path {...stroke} d="M8.6 10.5V8.1a3.4 3.4 0 0 1 6.8 0v2.4" />
+                </>
+            ) : null}
+            {name === "eye" ? (
+                <>
+                    <path {...stroke} d="M3.2 12s3.4-5 8.8-5 8.8 5 8.8 5-3.4 5-8.8 5-8.8-5-8.8-5Z" />
+                    <circle {...stroke} cx="12" cy="12" r="2.1" />
+                </>
+            ) : null}
+            {name === "eye-off" ? (
+                <>
+                    <path {...stroke} d="M3.2 12s3.4-5 8.8-5 8.8 5 8.8 5-3.4 5-8.8 5-8.8-5-8.8-5Z" />
+                    <circle {...stroke} cx="12" cy="12" r="2.1" />
+                    <path {...stroke} d="M5.2 18.8 18.8 5.2" />
+                </>
+            ) : null}
+        </svg>
+    );
+}
+
+type CompanionArxivHit = {
+    id: string;
+    title: string;
+    abstract: string;
+    authors: string;
+    published: string;
+    categories: string[];
+};
+
+function companionArxivSearchStatus(error: string, query: string, submitted: string, searched: boolean, count: number, busy: boolean): string {
+    if (error) return error;
+    // The request has cleared the previous list. The idle sentence would
+    // tell the reader to type a keyword they have already submitted.
+    if (busy) return "正在检索…";
+    // The count describes the list on screen. It stays true only while the
+    // box still holds the query that produced that list; a keystroke must
+    // not leave "找到 N 篇" attached to a different keyword. What to try
+    // next lives in the empty panel, so this line only states the result.
+    const current = searched && query.trim() === submitted;
+    if (current && count === 0) return "检索完成，没有结果";
+    if (current && count > 0) return `找到 ${count} 篇，点击任一条下载并打开`;
+    if (count > 0) return "关键字已修改，请重新搜索";
+    return "输入关键字或 arXiv 编号，检索公开预印本";
+}
+
+function companionArxivHits(raw: unknown): CompanionArxivHit[] {
+    if (!Array.isArray(raw)) return [];
+    const hits: CompanionArxivHit[] = [];
+    for (const item of raw) {
+        if (!item || typeof item !== "object") continue;
+        const row = item as Record<string, unknown>;
+        const id = String(row.id ?? row.ID ?? "").trim();
+        const title = String(row.title ?? row.Title ?? "").trim();
+        const abstract = String(row.abstract ?? row.Abstract ?? "").trim();
+        const authors = String(row.authors ?? row.Authors ?? "").trim();
+        const published = String(row.published ?? row.Published ?? "").trim();
+        const rawCategories = row.categories ?? row.Categories;
+        const categories = Array.isArray(rawCategories)
+            ? rawCategories.map((name) => String(name ?? "").trim()).filter(Boolean)
+            : [];
+        if (!id || !title) continue;
+        hits.push({ id, title, abstract, authors, published, categories });
+    }
+    return hits;
+}
+
 export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: boolean } = {}) {
     const [tabs, setTabs] = useState<CompanionTab[]>([]);
     const [active, setActive] = useState("");
@@ -1384,17 +1692,236 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     // the default so a failed call leaves the label exactly as it was.
     const [brandName, setBrandName] = useState("MaClaw");
     const [openMenu, setOpenMenu] = useState(false);
+    // 独立界面 state: the window switches between the reading view, the
+    // 文档管理 screen, and the 阅读群组 screen. 分享 opens over either.
+    const [view, setView] = useState<CompanionView>("read");
+    const [shareDialogPath, setShareDialogPath] = useState("");
+    const [importDialogOpen, setImportDialogOpen] = useState(false);
+    // A link pasted into 导入分享, or the one carried by a cloud row that has
+    // no local copy yet. The dialog opens on it either way.
+    const [importDialogLink, setImportDialogLink] = useState("");
+    const [readingFull, setReadingFull] = useState(false);
     const [arxivInput, setArxivInput] = useState("");
     const [arxivBusy, setArxivBusy] = useState(false);
     const [arxivMessage, setArxivMessage] = useState("");
+    const [arxivSearchOpen, setArxivSearchOpen] = useState(false);
+    const [arxivSearchQuery, setArxivSearchQuery] = useState("");
+    const [arxivSearchBusy, setArxivSearchBusy] = useState(false);
+    const [arxivSearchError, setArxivSearchError] = useState("");
+    const [arxivSearchHits, setArxivSearchHits] = useState<CompanionArxivHit[]>([]);
+    const [arxivSearched, setArxivSearched] = useState(false);
+    const [arxivSearchFor, setArxivSearchFor] = useState("");
+    const [arxivOpeningId, setArxivOpeningId] = useState("");
+    const [sharePasswordLink, setSharePasswordLink] = useState("");
+    const [sharePasswordValue, setSharePasswordValue] = useState("");
+    const [sharePasswordError, setSharePasswordError] = useState("");
+    const [sharePasswordVisible, setSharePasswordVisible] = useState(false);
     const arxivBusyRef = useRef(false);
+    const sharePasswordRef = useRef("");
+    sharePasswordRef.current = sharePasswordLink;
+    // Search is a modal over this menu. Escape and outside clicks belong to
+    // it, the same way the share-password box does.
+    const arxivSearchRef = useRef(false);
+    arxivSearchRef.current = arxivSearchOpen;
+    const arxivSearchBusyRef = useRef(false);
+    const arxivSearchGenRef = useRef(0);
+    const arxivSearchInputRef = useRef<HTMLInputElement | null>(null);
+    const arxivSearchButtonRef = useRef<HTMLButtonElement | null>(null);
+    const arxivSearchDialogRef = useRef<HTMLDivElement | null>(null);
+    const closeArxivSearchRef = useRef<() => void>(() => undefined);
+    const sharePasswordInputRef = useRef<HTMLInputElement | null>(null);
+    const sharePasswordDialogRef = useRef<HTMLDivElement | null>(null);
+    const closeSharePasswordRef = useRef<() => void>(() => undefined);
+    const openMenuRef = useRef(false);
+    openMenuRef.current = openMenu;
+    // Escape ownership: a full screen (文档管理 / 阅读群组) or a popup
+    // (分享 / 导入) takes Escape before a fullscreen exit may run.
+    const overlayRef = useRef(false);
+    overlayRef.current = view !== "read" || Boolean(shareDialogPath) || importDialogOpen || arxivSearchOpen;
+    // The share dialog names the project it is sharing. The row that opened it
+    // is the truth; the open tab is the fallback for the title-bar button.
+    const shareDialogName = useMemo(() => {
+        if (!shareDialogPath) return "";
+        const tab = tabs.find((item) => companionSharePathKey(item.path) === companionSharePathKey(shareDialogPath));
+        if (tab) return tab.name;
+        const base = shareDialogPath.replace(/\\/g, "/").split("/").pop() ?? "";
+        return base;
+    }, [shareDialogPath, tabs]);
+    // The destination panel owns Escape the same way 打开 does. The ref is
+    // assigned once the panel flag is known, later in this render.
+    const chatExportDestOpenRef = useRef(false);
+    // The size written back by 恢复原始大小 is the window before 全屏, not the
+    // launch size. Frameless Unfullscreen can keep the monitor rect, so the
+    // captured geometry is applied again after the OS restore.
+    const readingFrameRef = useRef(createWindowMaximizeRestoreSession({
+        getSize: WindowGetSize,
+        getPosition: WindowGetPosition,
+        setSize: WindowSetSize,
+        setPosition: (x, y) => { void SetMainWindowScreenPosition(x, y); },
+    }));
+    const readingFullRef = useRef(false);
+    const readingToggleRef = useRef(false);
     const openWrapRef = useRef<HTMLDivElement | null>(null);
+    const chatExportWrapRef = useRef<HTMLDivElement | null>(null);
+    const chatExportButtonRef = useRef<HTMLButtonElement | null>(null);
     const arxivInputRef = useRef<HTMLInputElement | null>(null);
     const chooseButtonRef = useRef<HTMLButtonElement | null>(null);
     const tabsRef = useRef(tabs);
     tabsRef.current = tabs;
     const activeRef = useRef(active);
     activeRef.current = active;
+    // A cleared chat bumps this generation. A synced transcript does the same
+    // for that file, so the reply already on the way cannot land on top of it.
+    const chatEpochRef = useRef(new Map<string, number>());
+    const shareByPathRef = useRef(new Map<string, ShareBind>());
+    // A line sent before the library list returns does not yet know whether
+    // this file is the host's. It waits here and is posted only if the reader
+    // is not the host.
+    const pendingShareNotesRef = useRef(new Map<string, PendingShareNote[]>());
+    const publishShareNoteRef = useRef<(path: string, text: string) => Promise<void>>(async () => undefined);
+    const flushPendingShareNotesRef = useRef<() => void>(() => undefined);
+    const applyShareNotesRef = useRef<(listed: unknown) => void>(() => undefined);
+    const applyLibraryListRef = useRef<(listed: unknown) => void>(() => undefined);
+    const clearShareNotes = (keys: Set<string> | null) => {
+        setTabs((current) => {
+            let changed = false;
+            const next = current.map((tab) => {
+                const key = companionSharePathKey(tab.path);
+                if (keys && !keys.has(key)) return tab;
+                if (!tab.shareToken && !tab.shareMine && (!tab.notes || tab.notes.length === 0)) return tab;
+                changed = true;
+                return { ...tab, shareToken: "", shareMine: false, notes: [] };
+            });
+            return changed ? next : current;
+        });
+    };
+    applyShareNotesRef.current = (listed) => {
+        const rows = companionShareNotes(listed);
+        if (rows.length === 0) {
+            // No share rows. Notes for a share the hub no longer has should
+            // leave the page. A line sent before any list returns stays queued.
+            if (shareByPathRef.current.size > 0) {
+                shareByPathRef.current.clear();
+                clearShareNotes(null);
+            }
+            return;
+        }
+        const grouped = new Map<string, typeof rows>();
+        for (const row of rows) {
+            const key = companionSharePathKey(row.path);
+            const group = grouped.get(key);
+            if (group) group.push(row);
+            else grouped.set(key, [row]);
+        }
+        const removed = new Set<string>();
+        for (const key of shareByPathRef.current.keys()) {
+            if (!grouped.has(key)) {
+                shareByPathRef.current.delete(key);
+                removed.add(key);
+            }
+        }
+        for (const key of pendingShareNotesRef.current.keys()) {
+            if (!grouped.has(key)) pendingShareNotesRef.current.delete(key);
+        }
+        const accepted = new Map<string, ShareBind>();
+        for (const [key, group] of grouped) {
+            const prev = shareByPathRef.current.get(key);
+            const stored = shareBindFromParts(sharePartsFromRows(prev, group));
+            if (prev && prev.mine === stored.mine && sameShareNotes(prev.notes, stored.notes) && prev.parts.length === stored.parts.length && prev.parts.every((part, index) => part === stored.parts[index])) {
+                continue;
+            }
+            shareByPathRef.current.set(key, stored);
+            accepted.set(key, stored);
+        }
+        if (accepted.size !== 0 || removed.size !== 0) {
+            setTabs((current) => {
+                let changed = false;
+                const next = current.map((tab) => {
+                    const key = companionSharePathKey(tab.path);
+                    if (removed.has(key)) {
+                        if (!tab.shareToken && !tab.shareMine && (!tab.notes || tab.notes.length === 0)) return tab;
+                        changed = true;
+                        return { ...tab, shareToken: "", shareMine: false, notes: [] };
+                    }
+                    const row = accepted.get(key);
+                    if (!row) return tab;
+                    const token = shareBindToken(row);
+                    if (tab.shareToken === token && tab.shareMine === row.mine && tab.notes === row.notes) return tab;
+                    changed = true;
+                    return { ...tab, shareToken: token, shareMine: row.mine, notes: row.notes };
+                });
+                return changed ? next : current;
+            });
+        }
+        flushPendingShareNotesRef.current();
+    };
+    const applyShareUpdateRef = useRef<(update: CompanionShareUpdate) => void>(() => undefined);
+    applyShareUpdateRef.current = (update) => {
+        if (!update.path || !update.project) return;
+        try {
+            savePdfMarks(update.path, update.highlights ? JSON.parse(update.highlights) : []);
+        } catch {
+            savePdfMarks(update.path, []);
+        }
+        if (!update.replaceMessages) return;
+        const updateKey = companionSharePathKey(update.path);
+        const sessionId = tabsRef.current.find((tab) => companionSharePathKey(tab.path) === updateKey)?.sessionId ?? "";
+        if (sessionId) {
+            chatEpochRef.current.set(sessionId, (chatEpochRef.current.get(sessionId) ?? 0) + 1);
+        }
+        const messages = messagesFromDoc({ messages: update.messages } as CompanionDoc);
+        setTabs((current) => current.map((tab) => companionSharePathKey(tab.path) === updateKey ? { ...tab, messages, status: "", previewEpoch: tab.previewEpoch + 1 } : tab));
+    };
+    // The window poll and 文档管理 both read the library. One apply keeps notes,
+    // the sharer's transcript, and a removed copy on the same path key.
+    applyLibraryListRef.current = (listed) => {
+        const synced = companionLibrarySync(listed);
+        for (const update of synced.updates) applyShareUpdateRef.current(update);
+        applyShareNotesRef.current(listed);
+        if (synced.removed.length === 0) return;
+        const gone = new Set(synced.removed.map(companionSharePathKey));
+        setTabs((current) => {
+            const left = current.filter((tab) => !gone.has(companionSharePathKey(tab.path)));
+            setActive((active) => gone.has(companionSharePathKey(active)) ? (left[0]?.path ?? "") : active);
+            return left;
+        });
+    };
+    // The library panel is not the only reader. A removed member, or a newer
+    // revision, has to land while the document is already open.
+    useEffect(() => {
+        let stopped = false;
+        const refresh = () => {
+            void ListFileCompanionLibrary().then((listed) => {
+                if (stopped) return;
+                applyLibraryListRef.current(listed);
+            }).catch(() => undefined);
+        };
+        refresh();
+        const timer = window.setInterval(refresh, 60_000);
+        window.addEventListener("focus", refresh);
+        return () => {
+            stopped = true;
+            window.clearInterval(timer);
+            window.removeEventListener("focus", refresh);
+        };
+    }, []);
+    const openTabPaths = tabs.map((tab) => tab.path).join("\n");
+    // The library list can finish before the file becomes a tab. The binding
+    // stays on the ref, and this copies it onto the tab once that path is open.
+    useEffect(() => {
+        setTabs((current) => {
+            let changed = false;
+            const next = current.map((tab) => {
+                const row = shareByPathRef.current.get(companionSharePathKey(tab.path));
+                if (!row) return tab;
+                const token = shareBindToken(row);
+                if (tab.shareToken === token && tab.shareMine === row.mine && tab.notes === row.notes) return tab;
+                changed = true;
+                return { ...tab, shareToken: token, shareMine: row.mine, notes: row.notes };
+            });
+            return changed ? next : current;
+        });
+    }, [openTabPaths]);
     // Each open file is its own agent. This set is which of those turns are
     // still in flight. It is not a window-wide lock.
     const sendingPathsRef = useRef(new Set<string>());
@@ -1445,7 +1972,6 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         if (!introQueueRef.current.includes(path)) return;
         introQueueRef.current = introQueueRef.current.filter((item) => item !== path);
     };
-    const chatEpochRef = useRef(new Map<string, number>());
     const requestEpochRef = useRef(new Map<string, number>());
     const paperRequestIds = useRef(new Set<string>());
     const videoNoteRequestIds = useRef(new Set<string>());
@@ -1522,7 +2048,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             try {
                 doc = await FileCompanionOpen(trimmed) as CompanionDoc;
             } catch (err) {
-                doc = { path: trimmed, error: err instanceof Error ? err.message : "打不开这个文件" };
+                doc = { path: trimmed, error: bindingErrorText(err) || "打不开这个文件" };
             }
             if (openEpoch.current.get(trimmed) !== serial) return;
             const error = field(doc, "error", "Error", "");
@@ -1531,6 +2057,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                 return;
             }
             const next = tabFromDoc(doc, trimmed);
+            const imported = doc.imported === true || doc.Imported === true;
+            const importedMarks = highlightsFromDoc(doc);
+            if (importedMarks && next.path && !next.error) savePdfMarks(next.path, importedMarks);
             const resolved = next.path || trimmed;
             if (refresh < 1 && (saveEpoch.current.get(resolved) ?? 0) !== (epochsAtStart.get(resolved) ?? 0)) {
                 void openPath(resolved, fromDrop, keepDirty, 1, focus);
@@ -1560,6 +2089,14 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                     if (tab.path !== next.path) return tab;
                     if (keepDirty && tab.dirty) {
                         return { ...tab, conflict: true, diskHash: next.loadedHash, confirmOverwrite: false };
+                    }
+                    if (imported) {
+                        return {
+                            ...next,
+                            draft: tab.draft,
+                            previewEpoch: tab.previewEpoch + 1,
+                            htmlPreview: tab.htmlPreview,
+                        };
                     }
                     const keepSelection = sameSelectionAnchor(next.content, tab.selection, tab.selectionStart);
                     return {
@@ -1746,7 +2283,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         const windowIsEmpty = () => opensInFlight.current === 0 && !tabCommittedRef.current && tabsRef.current.length === 0;
         const showOpenPanel = () => {
             // Empty history opens this panel. The system file dialog is the
-            // 打开文件 row inside it, not this click.
+            // 打开文档或导入项目 row inside it, not this click.
             setOpenMenu(true);
         };
         const onShow = () => {
@@ -2021,8 +2558,47 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     };
 
     const activeForSave = tabs.find((item) => item.path === active);
+    const toggleReadingFrame = useCallback(async () => {
+        if (readingToggleRef.current) return;
+        readingToggleRef.current = true;
+        const session = readingFrameRef.current;
+        const op = session.beginMaximize();
+        try {
+            if (readingFullRef.current) {
+                if (typeof WindowUnfullscreen === "function") await Promise.resolve(WindowUnfullscreen());
+                if (!session.isCurrent(op)) return;
+                session.restoreNormal();
+                readingFullRef.current = false;
+                setReadingFull(false);
+                return;
+            }
+            await session.rememberNormal(op);
+            if (!session.isCurrent(op)) return;
+            if (typeof WindowFullscreen === "function") await Promise.resolve(WindowFullscreen());
+            if (!session.isCurrent(op)) return;
+            readingFullRef.current = true;
+            setReadingFull(true);
+        } catch {
+            // The runtime can be gone while the window is closing.
+        } finally {
+            readingToggleRef.current = false;
+        }
+    }, []);
+
     useEffect(() => {
         const onKey = (event: KeyboardEvent) => {
+            if (event.key === "F11") {
+                event.preventDefault();
+                void toggleReadingFrame();
+                return;
+            }
+            // 打开, the full screens, and the popups each own Escape
+            // while they are up. A fullscreen exit would otherwise run in the same keypress.
+            if (event.key === "Escape" && readingFullRef.current && !openMenuRef.current && !overlayRef.current && !chatExportDestOpenRef.current && !sharePasswordRef.current && !arxivSearchRef.current) {
+                event.preventDefault();
+                void toggleReadingFrame();
+                return;
+            }
             if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "s") return;
             event.preventDefault();
             const tab = tabsRef.current.find((item) => item.path === activeRef.current);
@@ -2031,7 +2607,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, []);
+    }, [toggleReadingFrame]);
 
     useEffect(() => {
         const tab = tabsRef.current.find((item) => item.path === activeRef.current);
@@ -2246,6 +2822,92 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         }, () => undefined);
     }, [pinnedPlayerPath]);
     const kind: FilePreviewKind = activeTab && !isWebTab ? filePreviewKindFromName(activeTab.name) : "text";
+    const [convertBusyPaths, setConvertBusyPaths] = useState<ReadonlySet<string>>(() => new Set());
+    const convertFlight = useRef(new Set<string>());
+    const convertBusyRef = useRef(new Set<string>());
+    const settleConvertRef = useRef<(body: ConvertDoneBody) => void>(() => undefined);
+    const [scanPaths, setScanPaths] = useState<ReadonlySet<string>>(() => new Set());
+    const [convertResults, setConvertResults] = useState<Readonly<Record<string, { pdf: string; message: string }>>>({});
+    const [convertProgress, setConvertProgress] = useState<Readonly<Record<string, { done: number; total: number }>>>({});
+    // A probe that started before a newer result must not put the old card back.
+    const scanEpoch = useRef(0);
+    const applyScanProbeRef = useRef<(path: string, result: { scan?: boolean; Scan?: boolean; path?: string; Path?: string }, epoch: number) => void>(() => undefined);
+    applyScanProbeRef.current = (path, result, epoch) => {
+        if (!path || epoch !== scanEpoch.current) return;
+        const scan = Boolean(result.scan ?? result.Scan);
+        if (!scan) {
+            // This file is not a scan. A card or button remembered from an
+            // earlier probe would still offer the previous conversion.
+            setScanPaths((current) => {
+                if (!current.has(path)) return current;
+                const next = new Set(current);
+                next.delete(path);
+                return next;
+            });
+            setConvertResults((current) => {
+                if (!current[path]) return current;
+                const next = { ...current };
+                delete next[path];
+                return next;
+            });
+            return;
+        }
+        setScanPaths((current) => {
+            if (current.has(path)) return current;
+            const next = new Set(current);
+            next.add(path);
+            return next;
+        });
+        const ready = String(result.path ?? result.Path ?? "").trim();
+        setConvertResults((current) => {
+            const known = current[path];
+            if (!ready) {
+                if (!known) return current;
+                // The cache no longer has a PDF for this source. A remembered
+                // path would open a file the scan already dropped.
+                const next = { ...current };
+                delete next[path];
+                return next;
+            }
+            if (known?.pdf === ready) return current;
+            return { ...current, [path]: { pdf: ready, message: "" } };
+        });
+    };
+    useEffect(() => {
+        const path = activeTab?.path ?? "";
+        if (!path || isWebTab || activeTab?.error || kind !== "pdf") return;
+        let cancelled = false;
+        const epoch = scanEpoch.current;
+        void Promise.resolve(FileCompanionPDFScan(path)).then((result) => {
+            if (cancelled || !result) return;
+            applyScanProbeRef.current(path, result, epoch);
+        }, () => undefined);
+        return () => { cancelled = true; };
+    }, [activeTab?.path, activeTab?.error, isWebTab, kind]);
+    useEffect(() => {
+        const runtime = runtimeAPI();
+        const onConvert = (payload: unknown) => {
+            const body = payload && typeof payload === "object" ? payload as { path?: string; Path?: string; done?: number; Done?: number; total?: number; Total?: number } : null;
+            if (!body) return;
+            const path = String(body.path ?? body.Path ?? "");
+            const done = Number(body.done ?? body.Done ?? 0);
+            const total = Number(body.total ?? body.Total ?? 0);
+            if (!path || !Number.isFinite(done) || !Number.isFinite(total) || total < 1) return;
+            setConvertProgress((current) => ({ ...current, [path]: { done, total } }));
+        };
+        runtime?.EventsOn?.("file-companion:convert-progress", onConvert);
+        return () => { runtime?.EventsOff?.("file-companion:convert-progress"); };
+    }, []);
+    useEffect(() => {
+        const runtime = runtimeAPI();
+        const onDone = (payload: unknown) => {
+            const body = readConvertDone(payload);
+            if (!body) return;
+            settleConvertRef.current(body);
+        };
+        runtime?.EventsOn?.("file-companion:convert-done", onDone);
+        return () => { runtime?.EventsOff?.("file-companion:convert-done"); };
+    }, []);
     const textEditorKind = kind === "markdown" || kind === "text" || kind === "code" || kind === "html";
     const showEditor = Boolean(activeTab && !isWebTab && !activeTab.error && textEditorKind && (activeTab.editable || activeTab.content || activeTab.readOnlyReason));
     const showPreview = Boolean(activeTab && !isWebTab && !activeTab.error && (kind === "pptx" || kind === "docx" || kind === "pdf" || kind === "xlsx" || kind === "office" || kind === "image" || kind === "video" || kind === "audio" || kind === "html" || kind === "latex"));
@@ -2263,6 +2925,11 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     const paperBusyPathsRef = useRef<ReadonlySet<string>>(paperBusyPaths);
     const [noteBusyPaths, setNoteBusyPaths] = useState<ReadonlySet<string>>(() => new Set());
     const [chatTexOpen, setChatTexOpen] = useState(false);
+    const [chatExportDestPath, setChatExportDestPath] = useState("");
+    // 打开 and 导出 PDF each hang a panel under the bar. One open panel is enough.
+    useEffect(() => {
+        if (openMenu) setChatExportDestPath("");
+    }, [openMenu]);
     const publishNoteBusy = (next: Set<string>) => {
         noteBusyPathsRef.current = next;
         setNoteBusyPaths(next);
@@ -2318,7 +2985,8 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         }
         return false;
     };
-    const [chatExportBusyPath, setChatExportBusyPath] = useState("");
+    const [chatExportBusyPaths, setChatExportBusyPaths] = useState<ReadonlySet<string>>(() => new Set());
+    const [projectExportBusyPath, setProjectExportBusyPath] = useState("");
     const [chatWidth, setChatWidth] = useState(360);
     const chatWidthRef = useRef(chatWidth);
     chatWidthRef.current = chatWidth;
@@ -2333,8 +3001,15 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     // mark this one 处理中, and a click here starts this file's own turn.
     const sendBusy = Boolean(activeTab && (sendingPaths.has(activeTab.path) || activeTab.status.trim()));
     const paperBusy = Boolean(activeTab && paperBusyPaths.has(activeTab.path));
+    const convertBusy = Boolean(activeTab && convertBusyPaths.has(activeTab.path));
+    const showConvert = Boolean(activeTab && !isWebTab && kind === "pdf" && !activeTab.error && scanPaths.has(activeTab.path));
+    const convertCard = activeTab ? convertResults[activeTab.path] : undefined;
+    const convertTitle = convertBusy && activeTab && convertProgress[activeTab.path]
+        ? `已处理 ${convertProgress[activeTab.path].done}/${convertProgress[activeTab.path].total} 页`
+        : "保留扫描版式，生成可以选中和搜索的 PDF";
     const noteBusy = Boolean(activeTab && noteBusyPaths.has(activeTab.path));
-    const chatExportBusy = Boolean(activeTab && chatExportBusyPath === activeTab.path);
+    const chatExportBusy = Boolean(activeTab && chatExportBusyPaths.has(activeTab.path));
+    const projectExportBusy = Boolean(activeTab && projectExportBusyPath === activeTab.path);
     // Computed on demand, not at render time: whether a turn is still arriving
     // depends on which files are still sending. Reading it later
     // than the buttons would let a reply that finished streaming into the
@@ -2348,7 +3023,26 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         );
     }, [activeTab, sendingPaths]);
     const hasChatHistory = Boolean(activeTab && activeTab.messages.some((message) => message.text.trim() !== ""));
-    const canExportChat = hasChatHistory && !chatExportBusy;
+    const chatExportable = Boolean(activeTab && companionChatHasExportableTurn(
+        activeTab.messages,
+        Boolean(activeTab.status) || sendingPaths.has(activeTab.path),
+    ));
+    const canExportChat = chatExportable && !chatExportBusy;
+    const chatExportDestOpen = Boolean(activeTab && chatExportDestPath === activeTab.path && canExportChat);
+    chatExportDestOpenRef.current = chatExportDestOpen;
+    // Drop a remembered destination when the reader leaves that file, or when
+    // the button can no longer export. Leaving the path set pops the panel
+    // open again on the way back. The LaTeX row is one boolean for the whole
+    // window, so a tab change has to close it too.
+    const chatMenuPathRef = useRef(active);
+    useEffect(() => {
+        if (chatMenuPathRef.current !== active || !canExportChat) {
+            chatMenuPathRef.current = active;
+            setChatTexOpen(false);
+        }
+        if (!chatExportDestPath) return;
+        if (chatExportDestPath !== active || !canExportChat) setChatExportDestPath("");
+    }, [active, chatExportDestPath, canExportChat]);
     const resizeChat = (next: number) => {
         setChatWidth(clampCompanionChatWidth(next, splitRef.current?.clientWidth ?? 0));
     };
@@ -2407,53 +3101,106 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         }
     };
 
-    // Exporting the whole conversation. The busy flag is per file like the other
-    // exports, and a second click while one dialog is open would stack two save
-    // dialogs, which answers neither.
-    const exportChat = async () => {
-        if (!activeTab || chatExportBusy) return;
-        // Built at click time so the export sees the transcript as it stands,
-        // including the answer that just finished arriving.
-        const prepared = await buildChatTurns();
-        if (prepared.turns.length === 0) return;
-        const path = activeTab.path;
+    // File, cloud, and LaTeX share one flight per document. The button is
+    // marked busy before figures and diagrams are inlined, so a second choice
+    // cannot start while the first is still preparing the transcript. The
+    // tab is the one that was clicked: a switch during the await keeps this
+    // export on that document.
+    const beginChatExport = (path: string) => {
         const flight = `chat:${path}`;
-        if (exportFlight.current.has(flight)) return;
+        if (exportFlight.current.has(flight)) return false;
         exportFlight.current.add(flight);
-        setChatExportBusyPath(path);
+        setChatExportBusyPaths((current) => {
+            if (current.has(path)) return current;
+            const next = new Set(current);
+            next.add(path);
+            return next;
+        });
+        return true;
+    };
+    const endChatExport = (path: string) => {
+        exportFlight.current.delete(`chat:${path}`);
+        setChatExportBusyPaths((current) => {
+            if (!current.has(path)) return current;
+            const next = new Set(current);
+            next.delete(path);
+            return next;
+        });
+    };
+    const runChatExport = async (work: (tab: CompanionTab, prepared: CompanionChatExport) => Promise<void>) => {
+        const tab = activeTab;
+        if (!tab) return;
+        // Same rule as the button. A paper card or a reply still arriving
+        // must not flash 正在导出 before the toast.
+        if (!companionChatHasExportableTurn(tab.messages, Boolean(tab.status) || sendingPaths.has(tab.path))) {
+            showToast("没有可导出的内容", "error", 6000);
+            return;
+        }
+        if (!beginChatExport(tab.path)) return;
         try {
-            const dest = activeTab.kind === "web"
-                ? await FileCompanionExportWebChatPDF(activeTab.sessionId, prepared.turns)
-                : await FileCompanionExportChatPDF(path, prepared.turns);
-            // An empty path is the reader cancelling the dialog, not a failure.
-            if (dest) showToast(companionExportNotice(prepared.missingFigures, prepared.missingDiagrams), companionExportNoticeKind(prepared.missingFigures, prepared.missingDiagrams), 6000);
+            const prepared = await buildChatTurns();
+            if (prepared.turns.length === 0) {
+                showToast("没有可导出的内容", "error", 6000);
+                return;
+            }
+            await work(tab, prepared);
         } catch (err) {
             showToast(exportErrorText(err), "error", 6000);
         } finally {
-            exportFlight.current.delete(flight);
-            setChatExportBusyPath((current) => (current === path ? "" : current));
+            endChatExport(tab.path);
         }
     };
 
-    const exportChatTeX = async () => {
-        if (!activeTab || chatExportBusy) return;
-        const prepared = await buildChatTurns();
-        if (prepared.turns.length === 0) return;
+    const exportChat = () => runChatExport(async (tab, prepared) => {
+        const dest = tab.kind === "web"
+            ? await FileCompanionExportWebChatPDF(tab.sessionId, prepared.turns)
+            : await FileCompanionExportChatPDF(tab.path, prepared.turns);
+        // An empty path is the reader cancelling the dialog, not a failure.
+        // A saved file is selected in Explorer so the reader can see where it went.
+        if (dest) {
+            showToast(companionExportNotice(prepared.missingFigures, prepared.missingDiagrams), companionExportNoticeKind(prepared.missingFigures, prepared.missingDiagrams), 6000);
+            void ShowItemInFolder(dest).catch(() => undefined);
+        }
+    });
+
+    const exportChatCloud = () => runChatExport(async (tab, prepared) => {
+        const uploaded = tab.kind === "web"
+            ? await FileCompanionExportWebChatCloud(tab.sessionId, prepared.turns)
+            : await FileCompanionExportChatCloud(tab.path, prepared.turns);
+        showToast(
+            companionCloudExportNotice(uploaded, prepared.missingFigures, prepared.missingDiagrams),
+            companionExportNoticeKind(prepared.missingFigures, prepared.missingDiagrams),
+            6000,
+        );
+    });
+
+    const exportChatTeX = () => runChatExport(async (tab, prepared) => {
+        const dest = tab.kind === "web"
+            ? await FileCompanionExportWebChatTeX(tab.sessionId, prepared.turns)
+            : await FileCompanionExportChatTeX(tab.path, prepared.turns);
+        if (dest) showToast("已导出 LaTeX", "success", 6000);
+    });
+
+    // The zip holds the open file, the highlights stored for that path, and the
+    // chat the host already has. An empty dialog result is a cancel.
+    const exportProject = async () => {
+        if (!activeTab || activeTab.kind === "web" || projectExportBusy) return;
         const path = activeTab.path;
-        const flight = `chat-tex:${path}`;
+        const flight = `project:${path}`;
         if (exportFlight.current.has(flight)) return;
         exportFlight.current.add(flight);
-        setChatExportBusyPath(path);
+        setProjectExportBusyPath(path);
         try {
-            const dest = activeTab.kind === "web"
-                ? await FileCompanionExportWebChatTeX(activeTab.sessionId, prepared.turns)
-                : await FileCompanionExportChatTeX(path, prepared.turns);
-            if (dest) showToast("已导出 LaTeX", "success", 6000);
+            const dest = await FileCompanionExportProject(path, JSON.stringify(loadPdfMarks(path)));
+            if (dest) {
+                showToast("已导出项目", "success", 6000);
+                void ShowItemInFolder(dest).catch(() => undefined);
+            }
         } catch (err) {
             showToast(exportErrorText(err), "error", 6000);
         } finally {
             exportFlight.current.delete(flight);
-            setChatExportBusyPath((current) => (current === path ? "" : current));
+            setProjectExportBusyPath((current) => (current === path ? "" : current));
         }
     };
 
@@ -2478,6 +3225,39 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             showToast(turnErrorText(err instanceof Error ? err.message : "没能清空聊天"), "error", 6000);
         }
         return true;
+    };
+
+    publishShareNoteRef.current = (tabPath, text) => {
+        const key = companionSharePathKey(tabPath);
+        return AddFileCompanionShareNote(tabPath, text).then((raw) => {
+            const posted = companionNotePost(raw);
+            const prev = shareByPathRef.current.get(key);
+            if (!prev) return;
+            const part = prev.parts.length === 1 ? prev.parts[0] : prev.parts.find((item) => !item.mine);
+            if (!part || !companionNotesRevisionWins(part.revision, posted.revision)) return;
+            const revision = Math.max(part.revision, posted.revision);
+            if (part.revision === revision && sameShareNotes(part.notes, posted.notes)) return;
+            const stored = shareBindFromParts(prev.parts.map((item) => item.token === part.token ? { ...item, notes: posted.notes, revision } : item));
+            shareByPathRef.current.set(key, stored);
+            const token = shareBindToken(stored);
+            setTabs((current) => current.map((tab) => companionSharePathKey(tab.path) === key ? { ...tab, shareToken: token, shareMine: stored.mine, notes: stored.notes } : tab));
+        }).catch((err) => {
+            showToast(turnErrorText(err instanceof Error ? err.message : "批注没有同步出去"), "error", 6000);
+        });
+    };
+    flushPendingShareNotesRef.current = () => {
+        for (const [key, queued] of pendingShareNotesRef.current) {
+            const bind = shareByPathRef.current.get(key);
+            if (!bind) continue;
+            pendingShareNotesRef.current.delete(key);
+            if (bind.mine || queued.length === 0) continue;
+            const lines = queued.slice();
+            void (async () => {
+                for (const line of lines) {
+                    await publishShareNoteRef.current(line.path, line.text);
+                }
+            })();
+        }
     };
 
     const send = async (): Promise<boolean> => {
@@ -2520,6 +3300,22 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             if (!accepted) {
                 markSending(tabPath, false);
                 drainIntroRef.current();
+            }
+        }
+        // A reader’s line is a note on the host’s paper. It goes out with the
+        // question and does not replace the host transcript. The host’s own
+        // chat still syncs with the document. A line sent before the library
+        // list arrives waits until that list says who the host is.
+        if (accepted && !isWebTab) {
+            const key = companionSharePathKey(tabPath);
+            const shared = shareByPathRef.current.get(key);
+            if (shared) {
+                if (!shared.mine) void publishShareNoteRef.current(tabPath, text);
+            } else {
+                const queued = pendingShareNotesRef.current.get(key) ?? [];
+                queued.push({ path: tabPath, text });
+                if (queued.length > pendingShareNoteCap) queued.splice(0, queued.length - pendingShareNoteCap);
+                pendingShareNotesRef.current.set(key, queued);
             }
         }
         // The question is sent once the user bubble is committed. The reply
@@ -2617,6 +3413,116 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             markSending(tabPath, false);
             markPaperBusy(tabPath, false);
             drainIntroRef.current();
+        }
+    };
+
+    const markConvertBusy = (path: string, on: boolean) => {
+        if (convertBusyRef.current.has(path) === on) return;
+        const next = new Set(convertBusyRef.current);
+        if (on) next.add(path);
+        else next.delete(path);
+        convertBusyRef.current = next;
+        setConvertBusyPaths(next);
+    };
+    const endConvert = (path: string) => {
+        markConvertBusy(path, false);
+        setConvertProgress((current) => {
+            if (!current[path]) return current;
+            const next = { ...current };
+            delete next[path];
+            return next;
+        });
+    };
+    // The click returns as soon as the job starts. This runs when that job
+    // emits file-companion:convert-done, including after the reader has
+    // switched to another file.
+    settleConvertRef.current = (body) => {
+        const tell = (text: string, type: "success" | "error") => {
+            showToast(withConvertFile(body.path, text), type, 6000);
+        };
+        if (body.saveFailed) {
+            // The selectable PDF exists. The path the reader picked was not written.
+            scanEpoch.current += 1;
+            tell(body.message || "无法保存到该位置", "error");
+            if (body.pdf) {
+                setConvertResults((current) => ({
+                    ...current,
+                    [body.path]: { pdf: body.pdf, message: body.message },
+                }));
+                void ShowItemInFolder(body.pdf).catch(() => undefined);
+            }
+            endConvert(body.path);
+            return;
+        }
+        if (!body.scan) {
+            // Text layer, or a file that cannot be converted. Either way the
+            // remembered card is for a PDF this file no longer owns.
+            scanEpoch.current += 1;
+            applyScanProbeRef.current(body.path, { scan: false }, scanEpoch.current);
+            tell(body.message || (body.ok ? "这份 PDF 已有文字层，可以直接选择和搜索。" : "没有生成可选中的 PDF"), body.ok ? "success" : "error");
+            endConvert(body.path);
+            return;
+        }
+        if (!body.ok || !body.pdf) {
+            tell(body.message || "没有生成可选中的 PDF", "error");
+            endConvert(body.path);
+            // The click may already have dropped a PDF that belonged to other
+            // bytes. Ask the probe, which is what the card follows.
+            const epoch = scanEpoch.current;
+            void Promise.resolve(FileCompanionPDFScan(body.path)).then((result) => {
+                if (!result) return;
+                applyScanProbeRef.current(body.path, result, epoch);
+            }, () => undefined);
+            return;
+        }
+        scanEpoch.current += 1;
+        setConvertResults((current) => ({
+            ...current,
+            [body.path]: { pdf: body.pdf, message: body.message },
+        }));
+        const toastText = !body.complete || body.pending
+            ? (body.message || "请再点「转换」继续。")
+            : "已生成可选中文字的 PDF，原文件没有改动。";
+        tell(toastText, "success");
+        // The toast names the source file. Explorer selects the PDF this
+        // result names: the path the reader picked when that copy was written.
+        void ShowItemInFolder(body.pdf).catch(() => undefined);
+        endConvert(body.path);
+    };
+
+    const convertScan = async () => {
+        if (!activeTab || activeTab.error || isWebTab || kind !== "pdf") return;
+        const path = activeTab.path;
+        if (convertFlight.current.has(path) || convertBusyRef.current.has(path) || paperBusyPathsRef.current.has(path) || tabIsSending(path)) return;
+        convertFlight.current.add(path);
+        try {
+            const picked = String(await FileCompanionChooseConvertDestination(path) ?? "").trim();
+            if (!picked) return;
+            markConvertBusy(path, true);
+            const result = await FileCompanionConvertScan(path, picked);
+            const started = result?.started === true || result?.Started === true;
+            if (started) return;
+            const busy = result?.busy === true || result?.Busy === true;
+            if (busy) {
+                showToast(withConvertFile(path, String(result?.message ?? result?.Message ?? "").trim() || "正在转换，请稍候。"), "info", 4000);
+                return;
+            }
+            const scan = (result?.scan ?? result?.Scan) !== false;
+            settleConvertRef.current({
+                path,
+                ok: (result?.ok ?? result?.OK) === true,
+                scan,
+                complete: result?.complete === true || result?.Complete === true,
+                pending: result?.pending === true || result?.Pending === true,
+                pdf: String(result?.path ?? result?.Path ?? "").trim(),
+                message: String(result?.message ?? result?.Message ?? "").trim(),
+                saveFailed: result?.save_failed === true || result?.SaveFailed === true,
+            });
+        } catch (err) {
+            showToast(withConvertFile(path, exportErrorText(err)), "error", 6000);
+            endConvert(path);
+        } finally {
+            convertFlight.current.delete(path);
         }
     };
 
@@ -2806,15 +3712,15 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     // unmounted panel and leave the user with no reason for the silence.
     useEffect(() => {
         if (!openMenu) return;
-        arxivInputRef.current?.focus();
+        if (!arxivSearchRef.current) arxivInputRef.current?.focus();
         const onPointerDown = (event: MouseEvent) => {
-            if (arxivBusyRef.current) return;
+            if (arxivBusyRef.current || sharePasswordRef.current || arxivSearchRef.current) return;
             const node = openWrapRef.current;
             if (node && event.target instanceof Node && node.contains(event.target)) return;
             closeOpenMenu(false);
         };
         const onKeyDown = (event: KeyboardEvent) => {
-            if (event.key !== "Escape" || arxivBusyRef.current) return;
+            if (event.key !== "Escape" || arxivBusyRef.current || sharePasswordRef.current || arxivSearchRef.current) return;
             closeOpenMenu(true);
         };
         document.addEventListener("mousedown", onPointerDown);
@@ -2825,13 +3731,125 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         };
     }, [openMenu, closeOpenMenu]);
 
+    // The PDF iframe never delivers a click to the document, so the scrim
+    // under the bar is the close for that page. Everything else — the title
+    // bar, Escape — is handled here. Escape stops at this listener so it
+    // does not also leave fullscreen.
+    useEffect(() => {
+        if (!chatExportDestOpen) return;
+        chatExportWrapRef.current?.querySelector<HTMLButtonElement>("[data-testid='file-companion-export-chat-file']")?.focus();
+        const onPointerDown = (event: MouseEvent) => {
+            const node = chatExportWrapRef.current;
+            if (node && event.target instanceof Node && node.contains(event.target)) return;
+            setChatExportDestPath("");
+        };
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== "Escape") return;
+            event.preventDefault();
+            event.stopPropagation();
+            setChatExportDestPath("");
+            chatExportButtonRef.current?.focus();
+        };
+        document.addEventListener("mousedown", onPointerDown);
+        document.addEventListener("keydown", onKeyDown);
+        return () => {
+            document.removeEventListener("mousedown", onPointerDown);
+            document.removeEventListener("keydown", onKeyDown);
+        };
+    }, [chatExportDestOpen]);
+
+    const clearSharePassword = () => {
+        setSharePasswordLink("");
+        setSharePasswordValue("");
+        setSharePasswordError("");
+        setSharePasswordVisible(false);
+    };
+    // Assigned during render so the Escape capture listener, which is bound
+    // once per open, still calls the latest closer and can return focus to
+    // the URL box. The menu stays up; only this box goes away.
+    closeSharePasswordRef.current = () => {
+        if (arxivBusyRef.current) return;
+        clearSharePassword();
+        arxivInputRef.current?.focus();
+    };
+    const closeSharePassword = () => closeSharePasswordRef.current();
+
+    const importCompanionShare = async (link: string, password: string) => {
+        if (arxivBusyRef.current) return;
+        arxivBusyRef.current = true;
+        setArxivBusy(true);
+        setArxivMessage("");
+        try {
+            const raw = await ImportFileCompanionShare(link, password) as Record<string, unknown>;
+            const path = String(raw?.path || raw?.Path || "").trim();
+            const highlights = String(raw?.highlights || raw?.Highlights || "");
+            if (!path) {
+                const failure = "导入失败：没有拿到文件";
+                if (sharePasswordRef.current) setSharePasswordError(failure);
+                else setArxivMessage(failure);
+                return;
+            }
+            if (highlights) {
+                applyShareUpdateRef.current({ path, highlights, messages: [], project: true, replaceMessages: false });
+            }
+            try {
+                await openPath(path, false, false, 0, true);
+            } catch {
+                // The share is already in the library. A later open failure
+                // must not be read as 需要分享密码 or as a failed import.
+                clearSharePassword();
+                setArxivMessage("文件已导入，但没有打开");
+                showToast("已导入文档库", "success", 6000);
+                return;
+            }
+            showToast("已导入文档库", "success", 6000);
+            setArxivInput("");
+            clearSharePassword();
+            closeOpenMenu(focusInsideOpenMenu());
+        } catch (err) {
+            const sentence = bindingErrorText(err) || "导入失败";
+            if (sentence.includes("需要分享密码")) {
+                setSharePasswordLink(link);
+                setSharePasswordError(password ? sentence : "");
+                if (!password) setSharePasswordValue("");
+                return;
+            }
+            if (sharePasswordRef.current) {
+                setSharePasswordError(sentence);
+                return;
+            }
+            setArxivMessage(sentence);
+        } finally {
+            arxivBusyRef.current = false;
+            setArxivBusy(false);
+        }
+    };
+
+    const submitSharePassword = () => {
+        const link = sharePasswordRef.current;
+        const secret = sharePasswordValue.trim();
+        if (!link || arxivBusyRef.current) return;
+        if (!secret) {
+            setSharePasswordError("请输入分享密码");
+            sharePasswordInputRef.current?.focus();
+            return;
+        }
+        void importCompanionShare(link, secret);
+    };
+
     const openReference = async () => {
         const value = arxivInput.trim();
-        if (arxivBusyRef.current) return;
+        // The password box is modal. Enter on the URL field behind it must
+        // not start a second import with an empty password.
+        if (arxivBusyRef.current || sharePasswordRef.current) return;
         // Enter reaches here even when 确定 is disabled, so an empty box must
         // say so instead of doing nothing at all.
         if (!value) {
-            setArxivMessage("请填写 Arxiv ID 或论文链接");
+            setArxivMessage("请填写论文、页面或分享链接");
+            return;
+        }
+        if (looksLikeCompanionShare(value)) {
+            await importCompanionShare(value, "");
             return;
         }
         const arxiv = looksLikeArxivReference(value);
@@ -2895,12 +3913,183 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             setArxivInput("");
             closeOpenMenu(focusInsideOpenMenu());
         } catch (err) {
-            setArxivMessage(err instanceof Error ? err.message : (arxiv ? "下载失败" : "打开失败"));
+            setArxivMessage(bindingErrorText(err) || (arxiv ? "下载失败" : "打开失败"));
         } finally {
             arxivBusyRef.current = false;
             setArxivBusy(false);
         }
     };
+
+    const dismissArxivSearch = () => {
+        arxivSearchGenRef.current += 1;
+        arxivSearchBusyRef.current = false;
+        setArxivSearchOpen(false);
+        setArxivSearchBusy(false);
+        setArxivOpeningId("");
+    };
+    const focusInsideArxivSearch = () => {
+        const node = arxivSearchDialogRef.current;
+        return !!node && document.activeElement instanceof Node && node.contains(document.activeElement);
+    };
+    // Assigned during render so the Escape capture listener calls the latest
+    // closer. A download in flight keeps the list up: closing it would hide
+    // the failure the same way closing the open menu would.
+    closeArxivSearchRef.current = () => {
+        if (arxivBusyRef.current) return;
+        dismissArxivSearch();
+        arxivSearchButtonRef.current?.focus();
+    };
+    const closeArxivSearch = () => closeArxivSearchRef.current();
+
+    const openArxivSearch = () => {
+        if (arxivBusyRef.current || sharePasswordRef.current) return;
+        setArxivSearchQuery(arxivInput.trim());
+        setArxivSearchError("");
+        setArxivSearchHits([]);
+        setArxivSearched(false);
+        setArxivSearchFor("");
+        setArxivSearchBusy(false);
+        arxivSearchBusyRef.current = false;
+        setArxivOpeningId("");
+        setArxivSearchOpen(true);
+    };
+
+    const runArxivSearch = async () => {
+        if (arxivBusyRef.current || arxivSearchBusyRef.current) return;
+        const q = arxivSearchQuery.trim();
+        if (!q) {
+            setArxivSearchError("请输入关键字");
+            setArxivSearched(false);
+            setArxivSearchHits([]);
+            return;
+        }
+        const gen = ++arxivSearchGenRef.current;
+        arxivSearchBusyRef.current = true;
+        setArxivSearchBusy(true);
+        setArxivSearchError("");
+        setArxivSearchHits([]);
+        setArxivSearched(false);
+        try {
+            const raw = await FileCompanionSearchArxiv(q);
+            if (gen !== arxivSearchGenRef.current) return;
+            setArxivSearchHits(companionArxivHits(raw));
+            setArxivSearchFor(q);
+            setArxivSearched(true);
+        } catch (err) {
+            if (gen !== arxivSearchGenRef.current) return;
+            setArxivSearchError(bindingErrorText(err) || "搜索失败");
+        } finally {
+            if (gen === arxivSearchGenRef.current) {
+                arxivSearchBusyRef.current = false;
+                setArxivSearchBusy(false);
+            }
+        }
+    };
+
+    const openArxivHit = async (id: string) => {
+        const paper = id.trim();
+        if (!paper || arxivBusyRef.current) return;
+        arxivBusyRef.current = true;
+        setArxivBusy(true);
+        setArxivSearchError("");
+        setArxivOpeningId(paper);
+        try {
+            const path = await FileCompanionOpenArxiv(paper);
+            if (!path) {
+                setArxivSearchError("下载失败：没有拿到文件路径");
+                return;
+            }
+            await openPath(path, false, false, 0, true);
+            const restore = focusInsideArxivSearch();
+            dismissArxivSearch();
+            closeOpenMenu(restore);
+        } catch (err) {
+            setArxivSearchError(bindingErrorText(err) || "下载失败");
+        } finally {
+            arxivBusyRef.current = false;
+            setArxivBusy(false);
+            setArxivOpeningId("");
+        }
+    };
+
+    // Search owns Escape and Tab while it is open, including during a
+    // download. Capture runs before the open menu and before fullscreen, so
+    // one keypress cannot also close the menu or leave fullscreen. Tab stays
+    // inside the dialog: the URL field behind it would otherwise open whatever
+    // was typed there.
+    useEffect(() => {
+        if (!arxivSearchOpen) return;
+        const input = arxivSearchInputRef.current;
+        input?.focus();
+        input?.select();
+        const onKey = (event: KeyboardEvent) => {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                if (!arxivBusyRef.current) closeArxivSearchRef.current();
+                return;
+            }
+            if (event.key !== "Tab") return;
+            const root = arxivSearchDialogRef.current;
+            if (!root) return;
+            const items = Array.from(root.querySelectorAll<HTMLElement>("input, button, textarea, select, a[href]")).filter((el) => !el.hasAttribute("disabled") && el.tabIndex !== -1);
+            if (items.length === 0) {
+                event.preventDefault();
+                return;
+            }
+            const first = items[0];
+            const last = items[items.length - 1];
+            const active = document.activeElement;
+            if (event.shiftKey && (active === first || !root.contains(active))) {
+                event.preventDefault();
+                last.focus();
+            } else if (!event.shiftKey && (active === last || !root.contains(active))) {
+                event.preventDefault();
+                first.focus();
+            }
+        };
+        window.addEventListener("keydown", onKey, true);
+        return () => window.removeEventListener("keydown", onKey, true);
+    }, [arxivSearchOpen]);
+
+    // The password box owns Escape and Tab, including while the import is in
+    // flight. A capture listener runs before the open menu and before
+    // fullscreen. Tab stays inside the box: the URL field is earlier in the
+    // document and would otherwise import again. When the request ends and
+    // the box is still open, focus returns to the field — disabling that
+    // field for the request would have dropped the caret onto the document.
+    useEffect(() => {
+        if (!sharePasswordLink) return;
+        if (!arxivBusy) sharePasswordInputRef.current?.focus();
+        const onKey = (event: KeyboardEvent) => {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                if (!arxivBusyRef.current) closeSharePasswordRef.current();
+                return;
+            }
+            if (event.key !== "Tab") return;
+            const root = sharePasswordDialogRef.current;
+            if (!root) return;
+            const items = Array.from(root.querySelectorAll<HTMLElement>("input, button, textarea, select, a[href]")).filter((el) => !el.hasAttribute("disabled") && el.tabIndex !== -1);
+            if (items.length === 0) {
+                event.preventDefault();
+                return;
+            }
+            const first = items[0];
+            const last = items[items.length - 1];
+            const active = document.activeElement;
+            if (event.shiftKey && (active === first || !root.contains(active))) {
+                event.preventDefault();
+                last.focus();
+            } else if (!event.shiftKey && (active === last || !root.contains(active))) {
+                event.preventDefault();
+                first.focus();
+            }
+        };
+        window.addEventListener("keydown", onKey, true);
+        return () => window.removeEventListener("keydown", onKey, true);
+    }, [sharePasswordLink, arxivBusy]);
 
     // Pin during render so the committed tree never shows the next page
     // before Go has retired this player. Closing the tab removes it; that
@@ -2926,7 +4115,14 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
 
     return (
         <div data-testid="file-companion-window" className="file-companion-window" style={{ display: "flex", flexDirection: "column", height: "100vh", background: "#f3f5f7", color: "#1e293b" }}>
-            <div className={openMenu ? "file-companion-titlebar file-companion-titlebar--menu-open" : "file-companion-titlebar"} data-testid="file-companion-titlebar" {...windowDragHandleProps(true, { display: "flex", gap: 8, padding: 8, alignItems: "center", flexWrap: "nowrap", borderBottom: "1px solid #d9e1ec", background: "#ffffff" })}>
+            <div className={openMenu || chatExportDestOpen ? "file-companion-titlebar file-companion-titlebar--menu-open" : "file-companion-titlebar"} data-testid="file-companion-titlebar" {...windowDragHandleProps(true, { display: "flex", gap: 8, padding: 8, alignItems: "center", flexWrap: "nowrap", borderBottom: "1px solid #d9e1ec", background: "#ffffff" })}>
+                {chatExportDestOpen ? (
+                    <div
+                        className="file-companion-open-scrim"
+                        data-testid="file-companion-export-chat-scrim"
+                        onMouseDown={() => setChatExportDestPath("")}
+                    />
+                ) : null}
                 <span className="mc-header-brand" data-testid="file-companion-brand" aria-label={`${brandName}伴读`}>
                     <span className="mc-header-brand-mark" aria-hidden="true">
                         <svg viewBox="0 0 80 80" focusable="false">
@@ -3017,7 +4213,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                         onClick={() => {
                             // A download in flight owns the panel; the toggle
                             // must not hide the progress it reports.
-                            if (arxivBusyRef.current) return;
+                            if (arxivBusyRef.current || arxivSearchRef.current) return;
                             setOpenMenu((current) => !current);
                         }}
                     >
@@ -3038,7 +4234,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                             className="file-companion-open-scrim"
                             data-testid="file-companion-open-scrim"
                             onMouseDown={() => {
-                                if (arxivBusyRef.current) return;
+                                if (arxivBusyRef.current || sharePasswordRef.current || arxivSearchRef.current) return;
                                 closeOpenMenu(false);
                             }}
                         />
@@ -3049,12 +4245,13 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                 data-testid="file-companion-open-local"
                                 disabled={arxivBusy || chooseBusy}
                                 onClick={() => {
+                                    if (sharePasswordRef.current || arxivSearchRef.current) return;
                                     closeOpenMenu(false);
                                     void chooseFiles();
                                 }}
                             >
                                 <CompanionActionIcon name="file" />
-                                打开文件
+                                打开文档或导入项目
                             </button>
                             <div className="file-companion-open-sep" />
                             <div className="file-companion-open-row">
@@ -3085,7 +4282,20 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                     aria-busy={arxivBusy}
                                     onClick={() => { void openReference(); }}
                                 >
-                                    {arxivBusy ? (looksLikeArxivReference(arxivInput) ? "下载中…" : "打开中…") : "确定"}
+                                    {arxivBusy ? (looksLikeCompanionShare(arxivInput) ? "正在导入…" : looksLikeArxivReference(arxivInput) ? "下载中…" : "打开中…") : "确定"}
+                                </button>
+                                <button
+                                    type="button"
+                                    ref={arxivSearchButtonRef}
+                                    className="file-companion-open-go file-companion-open-search"
+                                    data-testid="file-companion-arxiv-search"
+                                    disabled={arxivBusy || sharePasswordLink !== ""}
+                                    aria-haspopup="dialog"
+                                    aria-expanded={arxivSearchOpen}
+                                    aria-controls="file-companion-arxiv-search-title"
+                                    onClick={openArxivSearch}
+                                >
+                                    搜索
                                 </button>
                             </div>
                             <p
@@ -3100,75 +4310,214 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                         </>
                     ) : null}
                 </div>
+                <div className="file-companion-library-anchor" data-testid="file-companion-library-anchor" data-window-no-drag="">
+                    <button
+                        type="button"
+                        className="file-companion-tool file-companion-tool--icon"
+                        data-testid="file-companion-library"
+                        aria-label="文档管理"
+                        aria-pressed={view === "library"}
+                        title="文档管理 — 本机文档与云端项目"
+                        onClick={() => {
+                            if (arxivBusyRef.current) return;
+                            setChatExportDestPath("");
+                            setOpenMenu(false);
+                            setView((current) => current === "library" ? "read" : "library");
+                        }}
+                    >
+                        <CompanionActionIcon name="library" />
+                        <span className="file-companion-sr">文档管理</span>
+                    </button>
+                    <button
+                        type="button"
+                        className="file-companion-tool file-companion-tool--icon"
+                        data-testid="file-companion-groups-open"
+                        aria-label="阅读群组"
+                        aria-pressed={view === "groups"}
+                        title="阅读群组 — 创建群组、邀请成员、分享给群组"
+                        onClick={() => {
+                            if (arxivBusyRef.current) return;
+                            setChatExportDestPath("");
+                            setOpenMenu(false);
+                            setView((current) => current === "groups" ? "read" : "groups");
+                        }}
+                    >
+                        <CompanionActionIcon name="groups" />
+                        <span className="file-companion-sr">阅读群组</span>
+                    </button>
+                </div>
                 <div className="file-companion-titlebar-gap" data-testid="file-companion-titlebar-gap" />
                 {activeTab ? (
                     <div className="file-companion-titlebar-actions" data-testid="file-companion-export">
+                        <button
+                            type="button"
+                            className="file-companion-tool file-companion-tool--icon"
+                            data-testid="file-companion-share-open"
+                            disabled={Boolean(activeTab.error) || isWebTab || !activeTab.path}
+                            aria-label="分享"
+                            title="分享 — 上传文档、高亮和聊天，生成云端链接"
+                            onClick={() => { setShareDialogPath(activeTab.path); }}
+                        >
+                            <CompanionActionIcon name="share" />
+                            <span className="file-companion-sr">分享</span>
+                        </button>
+                        {showConvert ? (
+                        <button
+                            type="button"
+                            className="file-companion-tool file-companion-tool--icon"
+                            data-testid="file-companion-convert"
+                            disabled={Boolean(activeTab.error) || sendBusy || paperBusy || convertBusy}
+                            aria-busy={convertBusy}
+                            aria-label={convertBusy ? "正在转换" : "转换"}
+                            title={convertBusy ? convertTitle : "转换 — 保留扫描版式，生成可选中、可搜索的 PDF"}
+                            onClick={() => { void convertScan(); }}
+                        >
+                            <CompanionActionIcon name="convert" />
+                            <span className="file-companion-sr">{convertBusy ? "正在转换…" : "转换"}</span>
+                        </button>
+                        ) : null}
                         {isWebTab || kind === "video" || kind === "audio" ? null : (
                         <button
                             type="button"
-                            className="file-companion-tool"
+                            className="file-companion-tool file-companion-tool--icon"
                             data-testid="file-companion-paper"
-                            disabled={Boolean(activeTab.error) || sendBusy}
+                            disabled={Boolean(activeTab.error) || sendBusy || convertBusy}
                             aria-busy={paperBusy}
+                            aria-label="论文解读"
+                            title={paperBusy ? "正在解读…" : "论文解读 — 生成本文的结构化解读报告"}
                             onClick={() => { void sendPaper(); }}
                         >
                             <CompanionActionIcon name="paper" />
-                            {paperBusy ? "正在解读…" : "论文解读"}
+                            <span className="file-companion-sr">{paperBusy ? "正在解读…" : "论文解读"}</span>
                         </button>
                         )}
                         {isWebTab || kind === "video" || kind === "audio" ? (
                         <button
                             type="button"
-                            className="file-companion-tool"
+                            className="file-companion-tool file-companion-tool--icon"
                             data-testid="file-companion-video-note"
                             disabled={noteBusy ? false : Boolean(activeTab.error) || sendBusy}
+                            aria-label={noteBusy ? (isWebTab ? "停止" : "取消") : (isWebTab ? "记笔记" : "生成笔记")}
+                            title={noteBusy ? (isWebTab ? "停止 — 结束网页笔记" : "取消 — 结束笔记生成") : (isWebTab ? "记笔记 — 把网页内容整理成笔记" : "生成笔记 — 把视频、音频内容整理成笔记")}
                             onClick={() => { void sendNote(); }}
                         >
-                            <CompanionActionIcon name="paper" />
-                            {noteBusy ? (isWebTab ? "停止" : "取消") : (isWebTab ? "记笔记" : "生成笔记")}
+                            <CompanionActionIcon name={noteBusy ? "stop" : "note"} />
+                            <span className="file-companion-sr">{noteBusy ? (isWebTab ? "停止" : "取消") : (isWebTab ? "记笔记" : "生成笔记")}</span>
                         </button>
                         ) : null}
+                        <div className="file-companion-export-anchor" data-testid="file-companion-export-anchor" ref={chatExportWrapRef}>
                         <button
                             type="button"
-                            className="file-companion-tool"
+                            ref={chatExportButtonRef}
+                            className="file-companion-tool file-companion-export-chat"
                             data-testid="file-companion-export-chat"
                             disabled={!canExportChat}
                             aria-busy={chatExportBusy}
-                            title={canExportChat || chatExportBusy ? "按聊天区原来的格式，把全部对话导出为 PDF" : "对话为空，没有可导出的内容"}
-                            onClick={() => { void exportChat(); }}
+                            aria-expanded={chatExportDestOpen}
+                            aria-haspopup="menu"
+                            aria-controls="file-companion-export-chat-dest"
+                            aria-label="导出 PDF"
+                            title={canExportChat || chatExportBusy ? "导出 PDF — 按聊天区原来的格式，把全部对话导出" : hasChatHistory ? "没有可导出的正文" : "对话为空，没有可导出的内容"}
+                            onClick={() => {
+                                if (!canExportChat || !activeTab) return;
+                                setChatTexOpen(false);
+                                setOpenMenu(false);
+                                // The export panel hangs from the title bar, above
+                                // the reader. A management screen would cover it.
+                                setView("read");
+                                setChatExportDestPath((current) => current === activeTab.path ? "" : activeTab.path);
+                            }}
                         >
                             <CompanionActionIcon name="pdf" />
-                            {chatExportBusy ? "正在导出…" : "导出 PDF"}<span data-testid="file-companion-export-chat-menu" role="button" aria-label="导出格式" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setChatTexOpen((current) => !current); }}><svg viewBox="0 0 10 6" aria-hidden="true" focusable="false"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.4" /></svg></span>{chatTexOpen ? <span data-testid="file-companion-export-chat-tex" role="menuitem" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setChatTexOpen(false); void exportChatTeX(); }}>LaTeX</span> : null}
+                            <span className="file-companion-sr">{chatExportBusy ? "正在导出…" : "导出 PDF"}</span><span data-testid="file-companion-export-chat-menu" role="button" aria-label="导出格式" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setChatExportDestPath(""); setChatTexOpen((current) => !current); }}><svg viewBox="0 0 10 6" aria-hidden="true" focusable="false"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.4" /></svg></span>{chatTexOpen ? <span data-testid="file-companion-export-chat-tex" role="menuitem" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setChatTexOpen(false); void exportChatTeX(); }}>LaTeX</span> : null}
                         </button>
+                        {chatExportDestOpen ? (
+                            <div
+                                className="file-companion-export-menu"
+                                id="file-companion-export-chat-dest"
+                                data-testid="file-companion-export-chat-dest"
+                                role="menu"
+                                aria-label="导出 PDF"
+                            >
+                                <button
+                                    type="button"
+                                    role="menuitem"
+                                    className="file-companion-open-item"
+                                    data-testid="file-companion-export-chat-file"
+                                    onClick={() => {
+                                        setChatExportDestPath("");
+                                        void exportChat();
+                                    }}
+                                >
+                                    导出文件
+                                </button>
+                                <button
+                                    type="button"
+                                    role="menuitem"
+                                    className="file-companion-open-item"
+                                    data-testid="file-companion-export-chat-cloud"
+                                    onClick={() => {
+                                        setChatExportDestPath("");
+                                        void exportChatCloud();
+                                    }}
+                                >
+                                    导出到云盘
+                                </button>
+                            </div>
+                        ) : null}
+                        </div>
+                        {isWebTab ? null : (
                         <button
                             type="button"
-                            className="file-companion-tool"
+                            className="file-companion-tool file-companion-tool--icon"
+                            data-testid="file-companion-export-project"
+                            disabled={!activeTab.canExport || projectExportBusy}
+                            aria-busy={projectExportBusy}
+                            aria-label="导出项目"
+                            title={projectExportBusy ? "正在导出…" : "导出项目 — 文档、高亮和聊天记录打包成项目"}
+                            onClick={() => { void exportProject(); }}
+                        >
+                            <CompanionActionIcon name="project" />
+                            <span className="file-companion-sr">{projectExportBusy ? "正在导出…" : "导出项目"}</span>
+                        </button>
+                        )}
+                        <button
+                            type="button"
+                            className="file-companion-tool file-companion-tool--icon"
                             data-testid="file-companion-import"
                             disabled={!activeTab.canExport || importBusy}
                             aria-busy={importBusy}
+                            aria-label="导入知识库"
+                            title={importBusy ? "正在导入…" : "导入知识库 — 存入知识库，以后可以检索"}
                             onClick={() => { void runExport("import"); }}
                         >
                             <CompanionActionIcon name="knowledge" />
-                            {importBusy ? "正在导入…" : "导入知识库"}
+                            <span className="file-companion-sr">{importBusy ? "正在导入…" : "导入知识库"}</span>
                         </button>
                         <button
                             type="button"
-                            className="file-companion-tool"
+                            className="file-companion-tool file-companion-tool--icon"
                             data-testid="file-companion-upload"
                             disabled={cloudDisabled || uploadBusy || uploaded}
                             aria-busy={uploadBusy}
-                            title={activeTab.size > CLOUD_DISABLE_BYTES ? "文件太大，无法上传到云盘" : uploaded ? "已上传到云盘" : "上传到云盘"}
+                            aria-label={uploaded ? "已上传到云盘" : "上传到云盘"}
+                            title={activeTab.size > CLOUD_DISABLE_BYTES ? "文件太大，无法上传到云盘" : uploaded ? "已上传到云盘 — 手机端「文档」可打开" : uploadBusy ? "正在上传…" : "上传到云盘 — 手机端「文档」可打开"}
                             onClick={() => { void runExport("upload"); }}
                         >
-                            <CompanionActionIcon name="cloud" />
-                            {uploadBusy ? "正在上传…" : "上传到云盘"}
+                            <CompanionActionIcon name={uploaded ? "check" : "cloud"} />
+                            <span className="file-companion-sr">{uploadBusy ? "正在上传…" : "上传到云盘"}</span>
                         </button>
                     </div>
                 ) : null}
+                <button type="button" className="file-companion-tool file-companion-tool--icon file-companion-tool--fullscreen" data-testid="file-companion-fullscreen" aria-pressed={readingFull} aria-label={readingFull ? "恢复原始大小" : "全屏"} title={readingFull ? "恢复进入全屏前的窗口大小" : "全屏阅读"} onClick={() => { void toggleReadingFrame(); }}><CompanionActionIcon name={readingFull ? "restore" : "fullscreen"} /><span className="file-companion-sr">{readingFull ? "恢复原始大小" : "全屏"}</span></button>
                 {/* runtime WindowHide. App.WindowHide also shows the tray pet. */}
-                <button type="button" className="file-companion-tool file-companion-tool--close" data-testid="file-companion-close" title="隐藏窗口，已打开的文件会保留" onClick={() => { windowHiddenRef.current = true; windowRevealRef.current = false; WindowHide(); }}><CompanionActionIcon name="hide" />隐藏</button>
+                <button type="button" className="file-companion-tool file-companion-tool--icon file-companion-tool--close" data-testid="file-companion-close" aria-label="隐藏" title="隐藏窗口，已打开的文件会保留" onClick={() => { windowHiddenRef.current = true; windowRevealRef.current = false; WindowHide(); }}><CompanionActionIcon name="hide" /><span className="file-companion-sr">隐藏</span></button>
             </div>
             {dropMessage ? <div data-testid="file-companion-drop-error" style={{ padding: "8px 12px", color: "#9a3412" }}>{dropMessage}</div> : null}
+            {/* The reading view stays mounted under the management screens. A
+                native web player is placed from this subtree's slot; unmounting
+                it would empty the box and unload the page, which stops a note
+                that is still recording. The screens paint over it instead. */}
             {!activeTab ? (
                 <div data-testid="file-companion-empty" style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
                     把文件拖到这里，或点击「打开」
@@ -3262,6 +4611,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                     file={{ fileName: activeTab.name, filePath: activeTab.path, absPath: activeTab.path, content: activeTab.content, updatedAt: activeTab.previewEpoch }}
                                     theme={companionPreviewTheme}
                                     lang="zh-Hans"
+                                    pdfAnnotate={kind === "pdf"}
                                 />
                             </div>
                         ) : null}
@@ -3308,6 +4658,12 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                     />
                     <section className="file-companion-chat" data-testid="file-companion-chat" style={{ width: chatWidth }}>
                         {activeTab.status ? <CompanionStatus text={activeTab.status} kind={tabNoteKind(activeTab)} noteStartedAt={activeTab.noteStartedAt} phaseStartedAt={activeTab.phaseStartedAt} /> : null}
+                        {convertCard ? (
+                            <div data-testid="file-companion-convert-result">
+                                <p style={{ margin: "12px 16px 0", fontSize: 13 }}>{convertCard.message || "已生成可选中文字的 PDF，原文件没有改动。"}</p>
+                                <PaperResultCard filePath={convertCard.pdf} messageId="convert" />
+                            </div>
+                        ) : null}
                         <div
                             ref={outputContainerRef}
                             data-testid="file-companion-chat-log"
@@ -3395,6 +4751,19 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                             })}
                             <div ref={outputEndRef} />
                         </div>
+                        {activeTab.shareToken && (!activeTab.shareMine || (activeTab.notes && activeTab.notes.length > 0)) ? (
+                            <div className="file-companion-annotations" data-testid="file-companion-annotations">
+                                <p className="file-companion-annotations-kicker">批注</p>
+                                {activeTab.notes && activeTab.notes.length > 0 ? activeTab.notes.map((note) => (
+                                    <p key={note.id} data-testid={`file-companion-annotation-${note.id}`}>
+                                        <span className="file-companion-annotations-author">{note.author || "读者"}</span>
+                                        {note.text}
+                                    </p>
+                                )) : (
+                                    <p className="file-companion-annotations-empty">你的讨论会成为批注，同步给能看到这份分享的人。</p>
+                                )}
+                            </div>
+                        ) : null}
                         <FileCompanionComposer
                             path={activeTab.path}
                             value={activeTab.draft}
@@ -3405,6 +4774,281 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                     </section>
                 </div>
             )}
+            {view === "library" ? (
+                <CompanionLibraryView
+                    activePath={active}
+                    showToast={showToast}
+                    onOpen={(path) => { void openPath(path, false, false, 0, true); setView("read"); }}
+                    onExit={() => setView("read")}
+                    onShareUpdated={(update) => { applyShareUpdateRef.current(update); }}
+                    onListed={(listed) => { applyLibraryListRef.current(listed); }}
+                    onShareProject={(path) => { setImportDialogLink(""); setShareDialogPath(path); }}
+                    onImportLink={(link) => { setImportDialogLink(link); setImportDialogOpen(true); }}
+                    dialogOpen={Boolean(shareDialogPath) || importDialogOpen}
+                />
+            ) : null}
+            {view === "groups" ? (
+                <CompanionGroupsDialog
+                    showToast={showToast}
+                    onClose={() => setView("read")}
+                />
+            ) : null}
+            {shareDialogPath ? (
+                <CompanionShareDialog
+                    path={shareDialogPath}
+                    name={shareDialogName}
+                    showToast={showToast}
+                    onListed={(listed) => { applyLibraryListRef.current(listed); }}
+                    onClose={() => setShareDialogPath("")}
+                />
+            ) : null}
+            {importDialogOpen ? (
+                <CompanionImportDialog
+                    initialLink={importDialogLink}
+                    showToast={showToast}
+                    onOpen={(path) => { void openPath(path, false, false, 0, true); setView("read"); }}
+                    onShareUpdated={(update) => { applyShareUpdateRef.current(update); }}
+                    onListed={(listed) => { applyLibraryListRef.current(listed); }}
+                    onClose={() => { setImportDialogOpen(false); setImportDialogLink(""); }}
+                />
+            ) : null}
+            {sharePasswordLink ? (
+                <div ref={sharePasswordDialogRef} className={playerHost === "native" && playerTab ? "file-companion-share-password file-companion-share-password--beside-player" : "file-companion-share-password"} data-testid="file-companion-share-password" role="dialog" aria-modal="true" aria-labelledby="file-companion-share-password-title" aria-describedby="file-companion-share-password-hint">
+                    <div
+                        className="file-companion-dialog-scrim"
+                        data-testid="file-companion-share-password-scrim"
+                        onMouseDown={() => closeSharePassword()}
+                    />
+                    <form
+                        className="file-companion-dialog-card file-companion-share-password-card"
+                        autoComplete="off"
+                        onSubmit={(event) => {
+                            event.preventDefault();
+                            submitSharePassword();
+                        }}
+                    >
+                        <header className="file-companion-dialog-head">
+                            <span className="file-companion-share-password-mark" aria-hidden="true">
+                                <SharePasswordGlyph name="lock" />
+                            </span>
+                            <div className="file-companion-dialog-heading">
+                                <h2 id="file-companion-share-password-title">输入分享密码</h2>
+                            </div>
+                            <p id="file-companion-share-password-hint" className="file-companion-dialog-sub">该文档为私密分享，需要密码才能导入。</p>
+                        </header>
+                        <div className="file-companion-dialog-body">
+                            <section className="file-companion-dialog-section">
+                                <div className="file-companion-share-password-field">
+                                    <input
+                                        ref={sharePasswordInputRef}
+                                        className="file-companion-dialog-input"
+                                        data-testid="file-companion-share-password-input"
+                                        type={sharePasswordVisible ? "text" : "password"}
+                                        aria-label="分享密码"
+                                        aria-invalid={sharePasswordError ? true : undefined}
+                                        aria-describedby={sharePasswordError ? "file-companion-share-password-error" : undefined}
+                                        autoComplete="new-password"
+                                        spellCheck={false}
+                                        placeholder="分享密码"
+                                        value={sharePasswordValue}
+                                        readOnly={arxivBusy}
+                                        onChange={(event) => {
+                                            setSharePasswordValue(event.target.value);
+                                            setSharePasswordError("");
+                                        }}
+                                    />
+                                    <button
+                                        type="button"
+                                        className="file-companion-share-password-reveal"
+                                        aria-label={sharePasswordVisible ? "隐藏密码" : "显示密码"}
+                                        aria-pressed={sharePasswordVisible}
+                                        disabled={arxivBusy}
+                                        onMouseDown={(event) => {
+                                            // Chromium focuses a button on mousedown. That blur
+                                            // drops the caret, and the next characters never
+                                            // reach the password field.
+                                            event.preventDefault();
+                                        }}
+                                        onClick={() => {
+                                            setSharePasswordVisible((shown) => !shown);
+                                            sharePasswordInputRef.current?.focus();
+                                        }}
+                                    >
+                                        <SharePasswordGlyph name={sharePasswordVisible ? "eye-off" : "eye"} />
+                                    </button>
+                                </div>
+                                {sharePasswordError ? (
+                                    <p className="file-companion-dialog-error" id="file-companion-share-password-error" data-testid="file-companion-share-password-error" data-state="error" role="status">{sharePasswordError}</p>
+                                ) : null}
+                            </section>
+                        </div>
+                        <footer className="file-companion-dialog-foot">
+                            <div className="file-companion-dialog-actions">
+                                <button type="button" className="file-companion-dialog-secondary" data-testid="file-companion-share-password-cancel" disabled={arxivBusy} onClick={closeSharePassword}>取消</button>
+                                <button type="submit" className="file-companion-dialog-primary" data-testid="file-companion-share-password-confirm" disabled={arxivBusy} aria-busy={arxivBusy}>{arxivBusy ? "正在导入…" : "导入"}</button>
+                            </div>
+                        </footer>
+                    </form>
+                </div>
+            ) : null}
+            {arxivSearchOpen ? (
+                <div
+                    ref={arxivSearchDialogRef}
+                    className={playerHost === "native" && playerTab ? "file-companion-arxiv-search file-companion-arxiv-search--beside-player" : "file-companion-arxiv-search"}
+                    data-testid="file-companion-arxiv-search-dialog"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="file-companion-arxiv-search-title"
+                    aria-describedby="file-companion-arxiv-search-status"
+                    aria-busy={arxivSearchBusy || arxivBusy}
+                >
+                    <div
+                        className="file-companion-dialog-scrim"
+                        data-testid="file-companion-arxiv-search-scrim"
+                        onMouseDown={() => closeArxivSearch()}
+                    />
+                    <form
+                        className="file-companion-dialog-card file-companion-arxiv-search-card"
+                        onSubmit={(event) => {
+                            event.preventDefault();
+                            void runArxivSearch();
+                        }}
+                    >
+                        <header className="file-companion-dialog-head">
+                            <div className="file-companion-dialog-heading">
+                                <h2 id="file-companion-arxiv-search-title">arXiv 文献检索</h2>
+                                <p className="file-companion-dialog-sub">公开预印本，最多 10 篇</p>
+                            </div>
+                            <button
+                                type="button"
+                                className="file-companion-dialog-x"
+                                data-testid="file-companion-arxiv-search-close"
+                                aria-label="关闭"
+                                disabled={arxivBusy}
+                                onClick={closeArxivSearch}
+                            >
+                                ×
+                            </button>
+                        </header>
+                        <div className="file-companion-arxiv-search-bar">
+                            <div className="file-companion-arxiv-search-row">
+                                <span className="file-companion-arxiv-search-glyph" aria-hidden="true">
+                                    <CompanionActionIcon name="paper" size={15} />
+                                </span>
+                                <input
+                                    ref={arxivSearchInputRef}
+                                    className="file-companion-dialog-input file-companion-arxiv-search-input"
+                                    data-testid="file-companion-arxiv-search-input"
+                                    aria-label="搜索关键字或论文编号"
+                                    placeholder="关键字、作者，或论文编号"
+                                    value={arxivSearchQuery}
+                                    readOnly={arxivSearchBusy || arxivBusy}
+                                    spellCheck={false}
+                                    onChange={(event) => {
+                                        setArxivSearchQuery(event.target.value);
+                                        setArxivSearchError("");
+                                    }}
+                                />
+                                <button
+                                    type="submit"
+                                    className="file-companion-dialog-primary"
+                                    data-testid="file-companion-arxiv-search-go"
+                                    disabled={arxivSearchBusy || arxivBusy}
+                                    aria-busy={arxivSearchBusy}
+                                >
+                                    {arxivSearchBusy ? "检索中…" : "检索"}
+                                </button>
+                            </div>
+                            <p
+                                id="file-companion-arxiv-search-status"
+                                className={arxivSearchError ? "file-companion-arxiv-search-status file-companion-arxiv-search-status--error" : "file-companion-arxiv-search-status"}
+                                data-testid="file-companion-arxiv-search-status"
+                                data-state={arxivSearchError ? "error" : "hint"}
+                                role="status"
+                            >
+                                {companionArxivSearchStatus(arxivSearchError, arxivSearchQuery, arxivSearchFor, arxivSearched, arxivSearchHits.length, arxivSearchBusy)}
+                            </p>
+                        </div>
+                        {arxivSearchBusy ? (
+                            // The first search has nothing to show yet. Placeholder
+                            // rows hold the list's shape so the card does not jump
+                            // from an empty box to ten results.
+                            <div className="file-companion-dialog-body" data-testid="file-companion-arxiv-search-skeleton" aria-hidden="true">
+                                <ul className="file-companion-arxiv-hits">
+                                    {[0, 1, 2, 3].map((row) => (
+                                        <li key={row} className="file-companion-arxiv-skeleton">
+                                            <span className="file-companion-arxiv-skeleton-line file-companion-arxiv-skeleton-line--title" />
+                                            <span className="file-companion-arxiv-skeleton-line file-companion-arxiv-skeleton-line--meta" />
+                                            <span className="file-companion-arxiv-skeleton-line file-companion-arxiv-skeleton-line--abstract" />
+                                            <span className="file-companion-arxiv-skeleton-line file-companion-arxiv-skeleton-line--abstract-short" />
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                        ) : null}
+                        {!arxivSearchBusy && arxivSearchHits.length > 0 ? (
+                            <div className="file-companion-dialog-body">
+                                <ul className="file-companion-arxiv-hits" aria-label="搜索结果">
+                                    {arxivSearchHits.map((hit, index) => {
+                                        const opening = arxivOpeningId === hit.id;
+                                        return (
+                                            <li key={hit.id}>
+                                                <button
+                                                    type="button"
+                                                    className="file-companion-arxiv-hit"
+                                                    data-testid={`file-companion-arxiv-hit-${hit.id.replace(/[\\/]/g, "_")}`}
+                                                    // aria-disabled rather than disabled: the global
+                                                    // button:disabled rule dims the whole row and the
+                                                    // generic button[aria-busy] rule draws its own
+                                                    // spinner beside the citation. The click handler
+                                                    // already refuses while a download runs.
+                                                    aria-disabled={arxivSearchBusy || arxivBusy}
+                                                    aria-busy={opening}
+                                                    onClick={() => { void openArxivHit(hit.id); }}
+                                                >
+                                                    <span className="file-companion-arxiv-hit-index" aria-hidden="true">{index + 1}</span>
+                                                    <span className="file-companion-arxiv-hit-body">
+                                                        <span className="file-companion-arxiv-hit-title">{hit.title}</span>
+                                                        <span className="file-companion-arxiv-hit-meta">
+                                                            <span className="file-companion-arxiv-hit-id">{hit.id}</span>
+                                                            {hit.categories.map((category) => (
+                                                                <span key={category} className="file-companion-arxiv-hit-tag">{category}</span>
+                                                            ))}
+                                                            {hit.published ? <span className="file-companion-arxiv-hit-date">{hit.published}</span> : null}
+                                                        </span>
+                                                        {hit.authors ? <span className="file-companion-arxiv-hit-authors">{hit.authors}</span> : null}
+                                                        {hit.abstract ? <span className="file-companion-arxiv-hit-abstract">{hit.abstract}</span> : null}
+                                                    </span>
+                                                    <span className="file-companion-arxiv-hit-action">
+                                                        {opening ? <span className="file-companion-arxiv-hit-status">正在下载…</span> : <span className="file-companion-arxiv-hit-open">打开</span>}
+                                                    </span>
+                                                </button>
+                                            </li>
+                                        );
+                                    })}
+                                </ul>
+                            </div>
+                        ) : null}
+                        {!arxivSearchBusy && arxivSearched && arxivSearchHits.length === 0 && !arxivSearchError ? (
+                            // An empty list is a result, not a dead end. Naming the
+                            // query that came back empty is what makes it useful: the
+                            // reader can see the box and the answer disagree, instead
+                            // of reading a second copy of "no results". It belongs to
+                            // the query that produced it, so a keystroke drops it —
+                            // the status line above is already back to its idle
+                            // sentence, and the two must not disagree.
+                            arxivSearchQuery.trim() === arxivSearchFor ? (
+                                <div className="file-companion-dialog-body" data-testid="file-companion-arxiv-search-empty">
+                                    <div className="file-companion-arxiv-empty">
+                                        <p className="file-companion-arxiv-empty-title">没有与「{arxivSearchFor}」匹配的论文</p>
+                                        <p className="file-companion-arxiv-empty-hint">换一个更常见的术语，或在上方输入 arXiv 编号（如 2510.16079）后检索。</p>
+                                    </div>
+                                </div>
+                            ) : null
+                        ) : null}
+                    </form>
+                </div>
+            ) : null}
         </div>
     );
 }

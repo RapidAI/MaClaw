@@ -46,12 +46,14 @@ func TestImportSpreadsheetSourceV2CreatesRowsAndCells(t *testing.T) {
 		t.Fatalf("commit: %v", err)
 	}
 
+	assertCount(t, store.db, "knowledge_sources", 1)
+	assertCount(t, store.db, "kb_sources", 0)
 	assertCount(t, store.db, "kb_tables", 1)
 	assertCount(t, store.db, "kb_columns", 4)
 	assertCount(t, store.db, "kb_rows", 2)
 	assertCount(t, store.db, "kb_cells", 8)
-	assertCount(t, store.db, "kb_cards", 2)
-	assertCount(t, store.db, "kb_facts", 8)
+	assertCount(t, store.db, "kb_cards", 0)
+	assertCount(t, store.db, "kb_facts", 0)
 
 	var rowText string
 	if err := store.db.QueryRow(`SELECT row_text FROM kb_rows WHERE row_index = 2`).Scan(&rowText); err != nil {
@@ -69,12 +71,22 @@ func TestImportSpreadsheetSourceV2CreatesRowsAndCells(t *testing.T) {
 		t.Fatalf("number_value = %v", numberValue)
 	}
 
-	var factObject string
-	if err := store.db.QueryRow(`SELECT object FROM kb_facts WHERE subject = '张三' AND predicate = '部门'`).Scan(&factObject); err != nil {
-		t.Fatalf("row fact: %v", err)
+	filtered, err := store.SearchStructured(t.Context(), StructuredSearchOptions{
+		ColumnEquals: map[string]string{"部门": "法务"},
+		Limit:        5,
+	})
+	if err != nil {
+		t.Fatalf("SearchStructured: %v", err)
 	}
-	if factObject != "法务" {
-		t.Fatalf("fact object = %q", factObject)
+	if len(filtered) != 1 || filtered[0].ResultType != "table_row" || !strings.Contains(filtered[0].Summary, "法务") {
+		t.Fatalf("column filter = %#v", filtered)
+	}
+	found, err := store.Search(t.Context(), SearchOptions{Query: "张三 法务", Limit: 5})
+	if err != nil {
+		t.Fatalf("Search row text: %v", err)
+	}
+	if len(found) != 1 || found[0].ResultType != "table_row" || !strings.Contains(found[0].Summary, "张三") {
+		t.Fatalf("row text search = %#v", found)
 	}
 }
 
@@ -99,6 +111,8 @@ func TestImportSpreadsheetSourceV2CreatesStructuredRowsForLegacyXLS(t *testing.T
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
+	assertCount(t, store.db, "knowledge_sources", 1)
+	assertCount(t, store.db, "kb_sources", 0)
 	assertCount(t, store.db, "kb_tables", 1)
 	var rowCount, cellCount int
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM kb_rows WHERE source_id = ?`, source.ID).Scan(&rowCount); err != nil {
@@ -127,6 +141,7 @@ func TestKnowledgeImportFilesIndexesLegacyXLSAsStructuredRows(t *testing.T) {
 	if err != nil || result.ImportedFiles != 1 || result.FailedFiles != 0 || len(result.Items) != 1 || result.Items[0].SourceID == "" {
 		t.Fatalf("ImportFiles legacy XLS = %#v, %v", result, err)
 	}
+	assertCount(t, store.db, "kb_sources", 0)
 	assertCount(t, store.db, "kb_tables", 1)
 	var rowCount int
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM kb_rows WHERE source_id = ?`, result.Items[0].SourceID).Scan(&rowCount); err != nil {

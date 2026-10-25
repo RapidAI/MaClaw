@@ -36,23 +36,50 @@ const (
 	semanticTrustedSSHCommandTimeout = semanticTrustedShellMaxTimeout
 )
 
+// semanticSSHPublicationMode is the one catalog mode for this principal.
+// A runtime hook forces exec. Otherwise the count of live sessions this
+// principal opened decides the mode: zero publishes connect, one publishes
+// exec, and any other count publishes neither. Sessions opened by another
+// principal are not part of the count.
+func semanticSSHPublicationMode(bound int, runtimeHook bool) string {
+	if runtimeHook {
+		return "exec"
+	}
+	switch {
+	case bound <= 0:
+		return "connect"
+	case bound == 1:
+		return "exec"
+	default:
+		return "none"
+	}
+}
+
+// semanticSSHCatalogMode is one catalog decision for this principal.
+// A runtime hook forces exec without listing sessions. Otherwise the live
+// sessions this principal opened are read once: zero publishes connect, one
+// publishes exec, and any other count publishes neither.
+func semanticSSHCatalogMode(h *IMMessageHandler, principalID string) string {
+	if h == nil {
+		return "none"
+	}
+	if h.semanticTrustedSSH != nil {
+		return "exec"
+	}
+	return semanticSSHPublicationMode(len(trustedSSHBoundSessions(h, principalID)), false)
+}
+
 // semanticTrustedSSHAnyPublished reports whether either mode is published for
-// the current catalog build. Exactly one mode publishes at a time (or none,
-// when several ambiguous sessions are live): exec with a bound session,
-// connect when session-less.
-func semanticTrustedSSHAnyPublished(h *IMMessageHandler) bool {
-	return semanticTrustedSSHPublished(h) || semanticTrustedSSHConnectPublished(h)
+// this principal's catalog build. Exactly one mode publishes at a time (or
+// none, when this principal has several live sessions).
+func semanticTrustedSSHAnyPublished(h *IMMessageHandler, principalID string) bool {
+	mode := semanticSSHCatalogMode(h, principalID)
+	return mode == "exec" || mode == "connect"
 }
 
 // sshAvailabilityMode names the published adapter mode for observability.
-func sshAvailabilityMode(h *IMMessageHandler) string {
-	if semanticTrustedSSHConnectPublished(h) {
-		return "connect"
-	}
-	if semanticTrustedSSHPublished(h) {
-		return "exec"
-	}
-	return "none"
+func sshAvailabilityMode(h *IMMessageHandler, principalID string) string {
+	return semanticSSHCatalogMode(h, principalID)
 }
 
 // logSSHAvailabilityEvent emits the single observable event for the ssh
@@ -88,40 +115,50 @@ func semanticUnpublishedLegacySSHProvider(registered RegisteredTool) bool {
 }
 
 // semanticTrustedSSHPublished reports the exec mode: a command-only surface
-// bound host-side to the single live session (or a runtime binding).
-func semanticTrustedSSHPublished(h *IMMessageHandler) bool {
-	return h != nil && (h.semanticTrustedSSH != nil || trustedSSHSingleBoundSession(h) != nil)
+// bound to the one live session this principal owns (or a runtime binding).
+func semanticTrustedSSHPublished(h *IMMessageHandler, principalID string) bool {
+	return semanticSSHCatalogMode(h, principalID) == "exec"
 }
 
 // semanticTrustedSSHConnectPublished reports the connect mode: no runtime
-// binding and no live session, so the only useful ssh surface is one that can
-// OPEN a session. Without it a session-less turn (e.g. the user top-up turn
-// "密码是 …" after a classifier degradation) has no connect path at all: the
-// managed planner cannot plan an unbound exec adapter, leftover drops the
-// builtin ssh tool on degraded classifications, and petitions die on the
-// missing provider (production 2026-09-18 08:26).
-func semanticTrustedSSHConnectPublished(h *IMMessageHandler) bool {
-	if h == nil || h.semanticTrustedSSH != nil {
-		return false
-	}
-	return len(trustedSSHBoundSessions(h)) == 0
+// binding and no live session owned by this principal, so the only useful
+// ssh surface is one that can OPEN a session. Another principal's session
+// leaves this turn session-less. Without connect, a session-less turn
+// (e.g. the user top-up turn "密码是 …" after a classifier degradation) has
+// no connect path at all: the managed planner cannot plan an unbound exec
+// adapter, leftover drops the builtin ssh tool on degraded classifications,
+// and petitions die on the missing provider (production 2026-09-18 08:26).
+func semanticTrustedSSHConnectPublished(h *IMMessageHandler, principalID string) bool {
+	return semanticSSHCatalogMode(h, principalID) == "connect"
 }
 
-func trustedSSHBoundSessions(h *IMMessageHandler) []*remote.SSHManagedSession {
+func trustedSSHBoundSessions(h *IMMessageHandler, principalID string) []*remote.SSHManagedSession {
 	if h == nil || h.sshMgr == nil {
 		return nil
 	}
+	return sshSessionsBoundToPrincipal(h.sshMgr.List(), principalID, guiRuntimeSSHSessionAlive)
+}
+
+// sshSessionsBoundToPrincipal keeps live sessions opened by principalID.
+// Liveness is injected so the ownership rule can be tested without a PTY.
+func sshSessionsBoundToPrincipal(sessions []*remote.SSHManagedSession, principalID string, alive func(*remote.SSHManagedSession) bool) []*remote.SSHManagedSession {
+	if alive == nil {
+		return nil
+	}
 	var out []*remote.SSHManagedSession
-	for _, session := range h.sshMgr.List() {
-		if guiRuntimeSSHSessionAlive(session) {
+	for _, session := range sessions {
+		if session == nil || !remote.SSHSessionOwnerMatches(session.OwnerID, principalID) {
+			continue
+		}
+		if alive(session) {
 			out = append(out, session)
 		}
 	}
 	return out
 }
 
-func trustedSSHSingleBoundSession(h *IMMessageHandler) *remote.SSHManagedSession {
-	sessions := trustedSSHBoundSessions(h)
+func trustedSSHSingleBoundSession(h *IMMessageHandler, principalID string) *remote.SSHManagedSession {
+	sessions := trustedSSHBoundSessions(h, principalID)
 	if len(sessions) != 1 {
 		return nil
 	}
@@ -202,9 +239,10 @@ func semanticTrustedSSHConnectDefinition() map[string]interface{} {
 }
 
 // semanticTrustedSSHConnectSchema is the session-less surface: it admits the
-// connection fields the exec schema forbids. Field-level descriptions carry
-// the mode-specific guidance because the catalog renderer rebuilds the
-// top-level description from the capability registry, which is mode-agnostic.
+// connection fields the exec schema forbids. The catalog renderer rebuilds
+// the top-level description from the mode-agnostic capability summary, then
+// semanticRemoteHostSchemaCue appends whether host and the credential fields
+// in this schema are required. Field descriptions still carry the rest.
 //
 // command is optional: the catalog is bound for the whole turn, so after a
 // mid-turn connect the surface cannot switch to the exec schema — without
@@ -569,7 +607,7 @@ func (h *IMMessageHandler) executeTrustedSSH(principalID, command string, timeou
 	if rejection, rejected := tool.RejectRawSSHCommand(command); rejected {
 		return "", fmt.Errorf("%s", rejection)
 	}
-	session := trustedSSHSingleBoundSession(h)
+	session := trustedSSHSingleBoundSession(h, principalID)
 	if session == nil {
 		return "", fmt.Errorf("trusted_ssh_session_unavailable")
 	}

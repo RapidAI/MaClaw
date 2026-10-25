@@ -16,6 +16,144 @@ func TestInstalledMCPReuseCueDoesNotForceCall(t *testing.T) {
 	}
 }
 
+func TestSemanticRemoteHostSchemaCueFollowsListedFields(t *testing.T) {
+	props := func(names ...string) map[string]interface{} {
+		out := map[string]interface{}{}
+		for _, name := range names {
+			out[name] = map[string]interface{}{"type": "string"}
+		}
+		return out
+	}
+	cases := []struct {
+		name   string
+		params map[string]interface{}
+		want   string
+	}{
+		{
+			name:   "bound session",
+			params: map[string]interface{}{"properties": props("command")},
+			want:   " Host, credentials, and session id are not fields; the session is already bound.",
+		},
+		{
+			name: "host optional",
+			params: map[string]interface{}{
+				"properties": props("host", "user", "password"),
+			},
+			want: " Host is optional. user and password are optional. session id is not a field.",
+		},
+		{
+			name: "required credential is named",
+			params: map[string]interface{}{
+				"properties": props("host", "user", "password", "port"),
+				"required":   []interface{}{"host", "user"},
+			},
+			want: " Host is required. user is required. password and port are optional. session id is not a field.",
+		},
+		{
+			name: "desktop connect schema",
+			params: map[string]interface{}{
+				"properties": props("host", "user", "password", "port", "label", "command", "remote_path", "local_path"),
+				"required":   []string{"host"},
+			},
+			want: " Host is required. user, password, and port are optional. session id is not a field.",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := semanticRemoteHostSchemaCue(CapabilityShellExecuteRemoteHost, tc.params); got != tc.want {
+				t.Fatalf("cue=%q", got)
+			}
+		})
+	}
+	if got := semanticRemoteHostSchemaCue(CapabilityFSReadLocal, map[string]interface{}{"properties": props("host")}); got != "" {
+		t.Fatalf("other capability cue=%q", got)
+	}
+}
+
+func TestCatalogRendererRemoteHostCueFollowsSchema(t *testing.T) {
+	var remote CapabilityDescriptor
+	for _, descriptor := range BuiltinCapabilityOntology() {
+		if descriptor.ID == CapabilityShellExecuteRemoteHost {
+			remote = descriptor
+			break
+		}
+	}
+	if remote.ID == "" {
+		t.Fatal("missing shell.execute.remote_host")
+	}
+	if strings.Contains(remote.Summary, "are not fields") {
+		t.Fatalf("mode-agnostic summary denies connection fields: %q", remote.Summary)
+	}
+	registry := NewCapabilityRegistry("v1")
+	if err := registry.Register(remote); err != nil {
+		t.Fatal(err)
+	}
+	connectSchema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"host": map[string]interface{}{"type": "string"},
+			"user": map[string]interface{}{"type": "string"},
+		},
+		"required":             []string{"host"},
+		"additionalProperties": false,
+	}
+	execSchema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"command": map[string]interface{}{"type": "string"},
+		},
+		"additionalProperties": false,
+	}
+	for _, tc := range []struct {
+		name   string
+		schema map[string]interface{}
+		want   string
+		unwant string
+	}{
+		{name: "connect", schema: connectSchema, want: "Host is required. user is optional. session id is not a field.", unwant: "password"},
+		{name: "exec", schema: execSchema, want: "are not fields", unwant: "Host is required."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			snapshot := semanticSnapshot(t, registry, []ProviderSpec{
+				semanticProviderWithSchema("ssh_adapter", CapabilityShellExecuteRemoteHost, nil, tc.schema, EffectExternalEffect),
+			})
+			plan, err := NewToolPlanner(registry).Plan(RouteRequest{
+				RootTaskID: "task-ssh", TurnID: "turn-ssh", Snapshot: snapshot,
+				Needs: []CapabilityNeed{{ID: "ssh", Capability: CapabilityShellExecuteRemoteHost, Required: true}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issuer, err := NewInvocationIssuer([]byte(strings.Repeat("k", 32)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			scope := InvocationScope{RootTaskID: "task-ssh", PlanID: plan.ID, SessionID: "s", TurnID: "turn-ssh", PrincipalID: "u"}
+			grants, err := issuer.Issue(plan, scope, time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rendered, err := NewCatalogRenderer(registry).Render(plan, grants, map[string]map[string]interface{}{
+				"ssh_adapter": {
+					"type": "function",
+					"function": map[string]interface{}{
+						"name": "ssh", "description": "provider text the model must not see",
+						"parameters": tc.schema,
+					},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			fn := rendered[0].Definition["function"].(map[string]interface{})
+			description := fn["description"].(string)
+			if strings.Contains(description, "provider text") || !strings.Contains(description, tc.want) || strings.Contains(description, tc.unwant) {
+				t.Fatalf("description = %q", description)
+			}
+		})
+	}
+}
+
 func TestCatalogRendererUsesStableHostNameAndGovernedDescription(t *testing.T) {
 	registry := semanticRegistry(t)
 	snapshot := semanticSnapshot(t, registry, []ProviderSpec{
@@ -96,7 +234,7 @@ func TestCatalogRendererTeachesNoArgumentsForClosedEmptySchema(t *testing.T) {
 	}
 	fn := rendered[0].Definition["function"].(map[string]interface{})
 	description, _ := fn["description"].(string)
-	if !strings.Contains(description, "takes no arguments") || !strings.Contains(description, "empty arguments object") {
+	if !strings.Contains(description, "takes no arguments") || !strings.Contains(description, "empty arguments object") || !strings.Contains(description, "is rejected") {
 		t.Fatalf("closed empty-schema description must teach the no-argument call: %q", description)
 	}
 
@@ -135,6 +273,40 @@ func TestCatalogRendererTeachesNoArgumentsForClosedEmptySchema(t *testing.T) {
 	description, _ = rendered[0].Definition["function"].(map[string]interface{})["description"].(string)
 	if strings.Contains(description, "takes no arguments") {
 		t.Fatalf("schema with properties must not carry the no-argument cue: %q", description)
+	}
+}
+
+func TestCatalogRendererChannelAttachIsNotARejectedSend(t *testing.T) {
+	registry := semanticRegistry(t)
+	provider := semanticProvider("delivery_adapter", "artifact.deliver.current_channel", map[string]string{"format": "file"}, EffectExternalEffect)
+	provider.Binding.Kind = "channel"
+	snapshot := semanticSnapshot(t, registry, []ProviderSpec{provider})
+	plan, err := NewToolPlanner(registry).Plan(RouteRequest{
+		RootTaskID: "task-1", TurnID: "turn-1", Snapshot: snapshot,
+		Needs: []CapabilityNeed{{ID: "deliver", Capability: "artifact.deliver.current_channel", Qualifiers: map[string]string{"format": "file"}, Required: true}},
+	})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	issuer, _ := NewInvocationIssuer([]byte(strings.Repeat("k", 32)))
+	grants, err := issuer.Issue(plan, InvocationScope{RootTaskID: "task-1", PlanID: plan.ID}, time.Minute)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	rendered, err := NewCatalogRenderer(registry).Render(plan, grants, map[string]map[string]interface{}{
+		"delivery_adapter": rendererTestDefinition("delivery_adapter"),
+	})
+	if err != nil || len(rendered) != 1 {
+		t.Fatalf("render=%#v err=%v", rendered, err)
+	}
+	description, _ := rendered[0].Definition["function"].(map[string]interface{})["description"].(string)
+	for _, want := range []string{"not an external send", "does not wait for approval", "takes no arguments", "empty arguments object", "cannot select a different artifact"} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("channel attach description missing %q: %q", want, description)
+		}
+	}
+	if strings.Contains(description, "is rejected") {
+		t.Fatalf("channel attach still tells the model a path is rejected: %q", description)
 	}
 }
 

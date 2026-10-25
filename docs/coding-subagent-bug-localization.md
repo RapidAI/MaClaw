@@ -3,7 +3,7 @@
 本地和远端 CodingSubAgent 使用相同的故障定位协议：
 
 1. 从用户描述提取错误文本、堆栈、入口、期望/实际行为和复现信息。
-2. 优先调用 `code_navigation`。后端顺序为 CodeGraph、语言服务器（`gopls`/`lsp-cli`）、`rg`；远端采用相同顺序并最终回退 `grep`。
+2. 优先调用 `code_navigation`。后端顺序为 CodeGraph、语言服务器（`gopls`/`lsp-cli`）、`rg`；远端采用相同顺序并最终回退 `grep`。仓内行为定位可以先调用 `code_search`，再对命中的符号调用 `code_navigation`。
 3. 将匹配转换为带支持证据、反证、下一探针和可解释分数的 Top-10 候选。
 4. 对陌生概念/精确报错、第三方依赖/API/协议、版本或兼容性事实，调用 `web_search`（精确错误 + 组件/版本），并优先用 `web_fetch` 核对官方来源；纯仓内逻辑问题明确记录无需联网的理由。
 5. 调用 `report_localization` 提交根因文件/符号、因果路径、复现、支持证据、排除假设、focused tests、`research_decision`、来源和置信度。

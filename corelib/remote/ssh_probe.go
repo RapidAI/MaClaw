@@ -16,6 +16,10 @@ const (
 	// before the connection is treated as dead. A shorter timeout is not
 	// another failure: the request is still the same one.
 	sshProbeStuckAfter = 30 * time.Second
+	// sshProbeResultKeep is how long a finished keepalive stays readable.
+	// Callers that already timed out still need the transport error; deleting
+	// it on completion leaves the catalog bound to a session that has failed.
+	sshProbeResultKeep = 3 * time.Second
 )
 
 // sharedSSHProbe is the single in-flight keepalive for one ssh.Client.
@@ -40,27 +44,77 @@ func loadSharedSSHProbe(client *ssh.Client) *sharedSSHProbe {
 		_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
 		p.ok = err == nil
 		close(p.done)
-		sshProbes.CompareAndDelete(client, p)
+		// A success is dropped at once so the next read checks the connection
+		// again. A failure stays readable for sshProbeResultKeep: callers that
+		// already timed out still observe it, and the handle records it.
+		if p.ok {
+			sshProbes.CompareAndDelete(client, p)
+			return
+		}
+		time.AfterFunc(sshProbeResultKeep, func() {
+			sshProbes.CompareAndDelete(client, p)
+		})
 	}()
 	return p
 }
 
-// awaitSSHProbe waits for the one keepalive already running on client.
-// finished is false when wait elapses first. ok is only meaningful then
-// when finished is true. A rejected keepalive reply still has a nil error
-// and counts as alive; only a transport error does not.
-func awaitSSHProbe(client *ssh.Client, wait time.Duration) (ok bool, finished bool, running time.Duration) {
+// peekSSHProbe reports the keepalive already stored for client.
+// It does not start one. present is false when no probe is stored.
+// finished is false while that request is still in flight.
+func peekSSHProbe(client *ssh.Client) (ok bool, finished bool, present bool) {
 	if client == nil {
-		return false, true, 0
+		return false, false, false
+	}
+	value, found := sshProbes.Load(client)
+	if !found {
+		return false, false, false
+	}
+	p := value.(*sharedSSHProbe)
+	select {
+	case <-p.done:
+		return p.ok, true, true
+	default:
+		return false, false, true
+	}
+}
+
+// awaitSSHProbe waits for the one keepalive already running on client.
+// finished is false when wait elapses first. ok is only meaningful when
+// finished is true. A rejected keepalive reply still has a nil error and
+// counts as alive; only a transport error does not.
+// probe is that same request. A caller that still needs its result waits
+// on probe.done instead of starting another keepalive.
+//
+// A request that has already been unanswered for sshProbeStuckAfter is
+// reported immediately. Waiting another sshProbeWait would only postpone
+// the same failure.
+func awaitSSHProbe(client *ssh.Client, wait time.Duration) (ok bool, finished bool, running time.Duration, probe *sharedSSHProbe) {
+	if client == nil {
+		return false, true, 0, nil
+	}
+	if wait < 0 {
+		wait = 0
 	}
 	p := loadSharedSSHProbe(client)
+	running = time.Since(p.started)
+	if running >= sshProbeStuckAfter {
+		select {
+		case <-p.done:
+			return p.ok, true, time.Since(p.started), p
+		default:
+			return false, false, running, p
+		}
+	}
+	if remaining := sshProbeStuckAfter - running; remaining < wait {
+		wait = remaining
+	}
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	select {
 	case <-p.done:
-		return p.ok, true, time.Since(p.started)
+		return p.ok, true, time.Since(p.started), p
 	case <-timer.C:
-		return false, false, time.Since(p.started)
+		return false, false, time.Since(p.started), p
 	}
 }
 

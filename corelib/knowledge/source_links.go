@@ -12,6 +12,15 @@ import (
 
 const SourceRelationTopicRelated = "topic_related"
 
+const (
+	SourceLinkStatusSuggested = "suggested"
+	SourceLinkStatusConfirmed = "confirmed"
+)
+
+// sourceLinkConfirmedSQL keeps recall walks on confirmed links. Suggested
+// overlap stays listed, and is not a hop.
+const sourceLinkConfirmedSQL = `COALESCE(status, '') = '` + SourceLinkStatusConfirmed + `'`
+
 func (s *SQLiteStore) RefreshSourceTopicLinks(ctx context.Context, sourceID string, limit int) (SourceTopicLinkBuildResult, error) {
 	sourceID = strings.TrimSpace(sourceID)
 	if sourceID == "" {
@@ -67,6 +76,7 @@ func (s *SQLiteStore) RefreshSourceTopicLinks(ctx context.Context, sourceID stri
 			Score:           item.Score,
 			Terms:           item.MatchedTerms,
 			Evidence:        sourceLinkEvidence(item),
+			Status:          SourceLinkStatusSuggested,
 			RelatedSource:   item.Source,
 			CreatedAt:       now,
 			UpdatedAt:       now,
@@ -176,6 +186,7 @@ func (s *SQLiteStore) LinkSources(ctx context.Context, link SourceLink) (SourceL
 	}
 	link.Terms = uniqueTrimmed(link.Terms)
 	link.Evidence = uniqueTrimmed(link.Evidence)
+	link.Status = SourceLinkStatusConfirmed
 	if link.Score <= 0 {
 		link.Score = 1
 	}
@@ -322,7 +333,7 @@ func (s *SQLiteStore) ListSourceLinks(ctx context.Context, sourceID string, limi
 	if limit > 200 {
 		limit = 200
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT l.source_id, l.related_source_id, l.relation, l.score, COALESCE(l.terms_json, '[]'), COALESCE(l.evidence_json, '[]'), l.created_at, l.updated_at,
+	rows, err := s.db.QueryContext(ctx, `SELECT l.source_id, l.related_source_id, l.relation, l.score, COALESCE(l.terms_json, '[]'), COALESCE(l.evidence_json, '[]'), l.created_at, l.updated_at, COALESCE(l.status, ''),
 		s.id, s.kind, s.uri, s.canonical_uri, s.title, s.author, s.site_name, s.published_at, s.fetched_at, s.content_hash,
 		s.owner_id, s.tenant_id, s.project_path, s.topic_hint, s.source_trust, s.batch_id, s.relative_path, s.status, s.error_message, s.created_at, s.updated_at
 		FROM knowledge_source_links l
@@ -405,6 +416,7 @@ func (s *SQLiteStore) SourceGraph(ctx context.Context, opts ListSourcesOptions, 
 	rows, err := s.db.QueryContext(ctx, `SELECT source_id, related_source_id, relation, score, COALESCE(terms_json, '[]'), COALESCE(evidence_json, '[]')
 		FROM knowledge_source_links
 		WHERE source_id IN (`+placeholders+`) AND related_source_id IN (`+placeholders+`)
+		AND `+sourceLinkConfirmedSQL+`
 		ORDER BY score DESC, updated_at DESC
 		LIMIT ?`, args...)
 	if err != nil {
@@ -692,7 +704,8 @@ func (s *SQLiteStore) sourceNeighborIDs(ctx context.Context, sourceIDs []string,
 	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, `SELECT source_id, related_source_id
 		FROM knowledge_source_links
-		WHERE source_id IN (`+placeholders+`) OR related_source_id IN (`+placeholders+`)
+		WHERE (source_id IN (`+placeholders+`) OR related_source_id IN (`+placeholders+`))
+		AND `+sourceLinkConfirmedSQL+`
 		ORDER BY score DESC, updated_at DESC
 		LIMIT ?`, args...)
 	if err != nil {
@@ -751,7 +764,8 @@ func (s *SQLiteStore) sourceNeighborEdges(ctx context.Context, sourceIDs []strin
 	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, `SELECT source_id, related_source_id, relation, score, COALESCE(terms_json, '[]'), COALESCE(evidence_json, '[]')
 		FROM knowledge_source_links
-		WHERE source_id IN (`+placeholders+`) OR related_source_id IN (`+placeholders+`)
+		WHERE (source_id IN (`+placeholders+`) OR related_source_id IN (`+placeholders+`))
+		AND `+sourceLinkConfirmedSQL+`
 		ORDER BY score DESC, updated_at DESC
 		LIMIT ?`, args...)
 	if err != nil {
@@ -953,15 +967,49 @@ func insertSourceLinkTx(ctx context.Context, tx *sql.Tx, link SourceLink) error 
 	}
 	termsJSON, _ := json.Marshal(uniqueTrimmed(link.Terms))
 	evidenceJSON, _ := json.Marshal(uniqueTrimmed(link.Evidence))
-	_, err := tx.ExecContext(ctx, `INSERT INTO knowledge_source_links(source_id, related_source_id, relation, score, terms_json, evidence_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	status := normalizeSourceLinkStatus(link.Status, relation)
+	_, err := tx.ExecContext(ctx, `INSERT INTO knowledge_source_links(source_id, related_source_id, relation, score, terms_json, evidence_json, created_at, updated_at, status)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(source_id, related_source_id, relation) DO UPDATE SET
 			score = excluded.score,
 			terms_json = excluded.terms_json,
 			evidence_json = excluded.evidence_json,
-			updated_at = excluded.updated_at`,
-		link.SourceID, link.RelatedSourceID, relation, link.Score, string(termsJSON), string(evidenceJSON), formatTime(link.CreatedAt), formatTime(link.UpdatedAt))
+			updated_at = excluded.updated_at,
+			status = CASE
+				WHEN knowledge_source_links.status = 'confirmed' AND excluded.status != 'confirmed' THEN knowledge_source_links.status
+				ELSE excluded.status
+			END`,
+		link.SourceID, link.RelatedSourceID, relation, link.Score, string(termsJSON), string(evidenceJSON), formatTime(link.CreatedAt), formatTime(link.UpdatedAt), status)
 	return err
+}
+
+func normalizeSourceLinkStatus(status, relation string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case SourceLinkStatusConfirmed, "linked", "accepted":
+		return SourceLinkStatusConfirmed
+	case SourceLinkStatusSuggested:
+		return SourceLinkStatusSuggested
+	case "":
+		if strings.TrimSpace(relation) == "" || strings.TrimSpace(relation) == SourceRelationTopicRelated {
+			return SourceLinkStatusSuggested
+		}
+		return SourceLinkStatusConfirmed
+	default:
+		return SourceLinkStatusSuggested
+	}
+}
+
+func confirmedSourceLinks(links []SourceLink) []SourceLink {
+	if len(links) == 0 {
+		return links
+	}
+	kept := make([]SourceLink, 0, len(links))
+	for _, link := range links {
+		if strings.EqualFold(strings.TrimSpace(link.Status), SourceLinkStatusConfirmed) {
+			kept = append(kept, link)
+		}
+	}
+	return kept
 }
 
 func insertSourceLinkEventTx(ctx context.Context, tx *sql.Tx, link SourceLink, action string, note string) error {
@@ -1016,7 +1064,7 @@ func scanSourceLink(row interface {
 	var createdAt, updatedAt string
 	var source Source
 	var publishedAt, fetchedAt, sourceCreatedAt, sourceUpdatedAt string
-	err := row.Scan(&link.SourceID, &link.RelatedSourceID, &link.Relation, &link.Score, &termsJSON, &evidenceJSON, &createdAt, &updatedAt,
+	err := row.Scan(&link.SourceID, &link.RelatedSourceID, &link.Relation, &link.Score, &termsJSON, &evidenceJSON, &createdAt, &updatedAt, &link.Status,
 		&source.ID, &source.Kind, &source.URI, &source.CanonicalURI, &source.Title, &source.Author, &source.SiteName, &publishedAt, &fetchedAt, &source.ContentHash,
 		&source.OwnerID, &source.TenantID, &source.ProjectPath, &source.TopicHint, &source.SourceTrust, &source.BatchID, &source.RelativePath,
 		&source.Status, &source.ErrorMessage, &sourceCreatedAt, &sourceUpdatedAt)

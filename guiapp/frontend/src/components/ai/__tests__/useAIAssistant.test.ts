@@ -2704,6 +2704,76 @@ describe('useAIAssistant property tests', () => {
         expect(assistantMessages(result.current.messages)[0].content).toBe('progress-first done');
     });
 
+    it('keeps a goal continuation coding trail after an empty final response', async () => {
+        const activeKey = 'desktop-user:D:/tasks/goal-trail-after-done';
+        const rawKey = 'desktop-user:D:\\tasks\\goal-trail-after-done';
+        setActiveSessionKey(activeKey);
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        try {
+            const { result } = renderAssistantHook();
+            await act(async () => {
+                void result.current.sendMessage('/goal 优化在macos上的性能20%', { project_path: 'D:/tasks/goal-trail-after-done' });
+                await Promise.resolve();
+            });
+            const ack = requestEvent();
+            await act(async () => {
+                pending.resolve({
+                    text: '目标已开始：优化在macos上的性能20%',
+                    error: '',
+                    fields: null,
+                    actions: null,
+                    request_id: ack.request_id || '',
+                });
+                await pending.promise;
+            });
+            expect(result.current.sending).toBe(false);
+            expect(messageContents(result.current.messages).join('\n')).toContain('目标已开始：优化在macos上的性能20%');
+
+            const requestId = 'goal-cont-macos-1';
+            const thought = '先比对 qnsrc.tgz 和当前 src。';
+            const tool = 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","task_id":"T1","title":"建立 before/after 源码基线比对","turn_id":"turn-1","detail":"todo_write"}';
+            const laterThought = '基线一致后再跑远端重建。';
+            const emitJson = (name: string, payload: Record<string, unknown>) => {
+                emitRuntimeEvent(name, JSON.stringify(payload));
+            };
+            await act(async () => {
+                emitJson('ai-assistant-foreground-round-started', {
+                    request_id: requestId,
+                    session_key: rawKey,
+                    text: '[系统续接][execute] 按步骤执行目标：优化在macos上的性能20%',
+                    display_text: '目标清单\n→ 1. 建立 before/after 源码基线比对',
+                });
+                emitJson('ai-assistant-token', { request_id: requestId, session_key: rawKey, text: `\x01${thought}` });
+                emitJson('ai-assistant-progress', { request_id: requestId, session_key: rawKey, text: tool });
+                emitJson('ai-assistant-token', { request_id: requestId, session_key: rawKey, text: `\x01${laterThought}` });
+            });
+            await act(async () => {
+                emitJson('ai-assistant-response', {
+                    request_id: requestId,
+                    session_key: rawKey,
+                    text: '',
+                    error: '',
+                    fields: null,
+                    actions: null,
+                });
+            });
+
+            expect(result.current.sending).toBe(false);
+            expect(result.current.progressMessages).toEqual([]);
+            const assistant = result.current.messages.find(message => message.requestId === requestId);
+            expect(assistant).toBeDefined();
+            expect(assistant?.role).toBe('assistant');
+            expect(assistant?.codingTimeline?.map(item => item.kind)).toEqual(['thinking', 'progress', 'thinking']);
+            expect(assistant?.codingTimeline?.[0]?.content).toContain(thought);
+            expect(assistant?.codingTimeline?.[1]?.content).toContain('todo_write');
+            expect(assistant?.codingTimeline?.[2]?.content).toContain(laterThought);
+            expect(messageContents(result.current.messages).join('\n')).toContain('目标已开始：优化在macos上的性能20%');
+        } finally {
+            setActiveSessionKey('');
+        }
+    });
+
     it('does not resurrect forgotten goal continuation rounds from late events', async () => {
         const { result } = renderAssistantHook();
         const requestId = 'goal-cont-forgotten';
@@ -6771,6 +6841,32 @@ describe('useAIAssistant property tests', () => {
             'thinking', 'progress', 'thinking', 'progress', 'thinking',
         ]);
         expect(assistantMessages(result.current.messages)[0].codingTimeline?.at(-1)?.content).toBe('Finally verify the completed edit.');
+    });
+
+    it('keeps the coding trail when a continuation ends without prose', async () => {
+        const pending = deferred<{ text: string; reasoning?: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('continue the goal step');
+            await Promise.resolve();
+        });
+
+        const req = requestEvent();
+        const tool = 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","task_id":"T2","title":"Update metrics","turn_id":"turn-2","detail":"todo_write"}';
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 10, text: '\x01Step 2 is complete.' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 20, text: tool });
+            pending.resolve({ text: '', reasoning: '', error: '', fields: null, actions: null, request_id: req.request_id || '' });
+            await pending.promise;
+        });
+
+        const assistant = assistantMessages(result.current.messages)[0];
+        expect(assistant).toBeDefined();
+        expect(assistant.codingTimeline?.map(item => item.kind)).toEqual(['thinking', 'progress']);
+        expect(assistant.codingTimeline?.[0]?.content).toContain('Step 2 is complete.');
+        expect(assistant.codingTimeline?.[1]?.content).toContain('todo_write');
     });
 
     it('keeps a dash prefix and a fenced rule, and drops a finished step banner', async () => {

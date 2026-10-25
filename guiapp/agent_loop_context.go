@@ -115,6 +115,11 @@ type LoopContext struct {
 	semanticResidueLookupUsed  bool
 	// semanticSessionCeilingSpent closes this turn. No legacy tool name may run.
 	semanticSessionCeilingSpent bool
+	// capabilityExtensionReason opens a closed skill-search and craft_tool
+	// turn when the managed catalog has no built-in for the request. An empty
+	// reason keeps the host rejection. Paths are the unsupported files, if any.
+	capabilityExtensionReason string
+	capabilityExtensionPaths  []string
 	// semanticPriorPlanClosed is the previous turn's ceiling, copied off the
 	// residue. It is not inferred from the assistant's wording.
 	semanticPriorPlanClosed bool

@@ -19,7 +19,7 @@ func (s *SQLiteStore) StructuredCatalog(ctx context.Context, opts StructuredCata
 	}
 	where := []string{"1=1"}
 	args := make([]interface{}, 0)
-	where, args = appendKBSourceFilters(where, args, "s", ownerScope{ID: opts.OwnerID}, opts.TenantID, opts.ProjectPath, opts.SearchScope, nil, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
+	where, args = appendKBSourceFilters(where, args, "s", ownerScope{ID: opts.OwnerID, Lineage: opts.OwnerLineage, IncludeEmpty: opts.IncludeEmptyOwner, UseMembership: opts.UseMembership}, opts.TenantID, opts.ProjectPath, opts.SearchScope, nil, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
 	if len(opts.SheetNames) > 0 {
 		names := normalizeSearchStrings(opts.SheetNames)
 		if len(names) == 1 {
@@ -36,7 +36,7 @@ func (s *SQLiteStore) StructuredCatalog(ctx context.Context, opts StructuredCata
 	rows, err := s.db.QueryContext(ctx, `SELECT t.id, t.source_id, COALESCE(s.title, ''), s.kind, t.sheet_name,
 			COALESCE(t.table_title, ''), t.row_count, t.column_count
 		FROM kb_tables t
-		JOIN kb_sources s ON s.id = t.source_id
+		JOIN knowledge_sources s ON s.id = t.source_id
 		WHERE `+strings.Join(where, " AND ")+`
 		ORDER BY s.updated_at DESC, t.sheet_name ASC, t.id ASC
 		LIMIT ?`, args...)

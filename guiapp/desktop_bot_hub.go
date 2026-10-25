@@ -2124,27 +2124,178 @@ func desktopViewShouldEmit(prev, next desktopViewSnap) bool {
 	return prev == unseen && next.url != ""
 }
 
-// publishDesktopBotView polls Hub while a bot message is in flight.
-// It announces the desktop only when the poll is a real handoff.
-func (a *App) publishDesktopBotView(ctx context.Context, requestID, sessionKey, botID string) {
-	var last desktopViewSnap
+// desktopViewWatchEvent is one shared poll of a bot's live desktop: the
+// snapshot every subscriber of this poll sees, plus the error that poll
+// returned, so each in-flight turn can keep logging a failure under its own
+// request id the way its private ticker used to.
+type desktopViewWatchEvent struct {
+	snap desktopViewSnap
+	err  error
+}
+
+// desktopViewWatcher is the single 400ms poll loop that every concurrent
+// turn of one bot shares. Each turn used to run its own ticker against the
+// same /desktop address, so ten in-flight turns meant ten requests per tick;
+// the first turn now starts this loop and the rest subscribe to its
+// snapshots. The loop stops itself the moment the last subscriber lets go,
+// so a bot with nothing in flight leaves no ticker behind.
+type desktopViewWatcher struct {
+	mu      sync.Mutex
+	update  chan struct{} // closed and replaced on every publish: broadcast
+	event   desktopViewWatchEvent
+	seq     uint64
+	subs    int
+	stopCh  chan struct{} // closed by the release that drops subs to zero
+	stopped bool
+}
+
+func newDesktopViewWatcher() *desktopViewWatcher {
+	return &desktopViewWatcher{
+		update: make(chan struct{}),
+		stopCh: make(chan struct{}),
+	}
+}
+
+// publish stores the latest poll and wakes every waiting subscriber.
+func (w *desktopViewWatcher) publish(ev desktopViewWatchEvent) {
+	w.mu.Lock()
+	w.event = ev
+	w.seq++
+	close(w.update)
+	w.update = make(chan struct{})
+	w.mu.Unlock()
+}
+
+// wait blocks until a poll newer than seen arrives, or ctx ends. ok is false
+// when ctx ended first.
+func (w *desktopViewWatcher) wait(ctx context.Context, seen uint64) (desktopViewWatchEvent, uint64, bool) {
+	w.mu.Lock()
+	for {
+		if w.seq != seen {
+			ev, seq := w.event, w.seq
+			w.mu.Unlock()
+			return ev, seq, true
+		}
+		ch := w.update
+		w.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return desktopViewWatchEvent{}, seen, false
+		case <-ch:
+		}
+		w.mu.Lock()
+	}
+}
+
+var (
+	desktopViewWatchMu  sync.Mutex
+	desktopViewWatchers = map[string]*desktopViewWatcher{}
+)
+
+// acquireDesktopViewWatcher returns the shared poll loop for this bot and
+// subscribes this turn to it, starting the loop on first use. The map and
+// the subscriber count are adjusted together under desktopViewWatchMu, so a
+// release that brings the count to zero cannot stop the loop between this
+// lookup and the increment.
+func (a *App) acquireDesktopViewWatcher(botID string) *desktopViewWatcher {
+	desktopViewWatchMu.Lock()
+	defer desktopViewWatchMu.Unlock()
+	w := desktopViewWatchers[botID]
+	if w == nil {
+		w = newDesktopViewWatcher()
+		desktopViewWatchers[botID] = w
+		go a.runDesktopViewWatcher(botID, w)
+	}
+	w.mu.Lock()
+	w.subs++
+	w.mu.Unlock()
+	return w
+}
+
+// releaseDesktopViewWatcher unsubscribes this turn. The last subscriber out
+// closes stopCh and removes the loop from the map; the goroutine sees the
+// close at its next tick and returns, and an acquire that raced it simply
+// builds a fresh loop.
+func (a *App) releaseDesktopViewWatcher(botID string, w *desktopViewWatcher) {
+	desktopViewWatchMu.Lock()
+	defer desktopViewWatchMu.Unlock()
+	w.mu.Lock()
+	if w.subs > 0 {
+		w.subs--
+	}
+	if w.subs != 0 || w.stopped {
+		w.mu.Unlock()
+		return
+	}
+	w.stopped = true
+	close(w.stopCh)
+	w.mu.Unlock()
+	delete(desktopViewWatchers, botID)
+}
+
+// runDesktopViewWatcher polls the bot's desktop on the shared 400ms tick and
+// publishes every result. The first publish lands before the ticker starts,
+// so a turn that just subscribed reads the live state at once instead of
+// waiting a tick for the loop to spin up. Each poll carries its own timeout;
+// one already in flight when the loop stops still publishes, but nobody
+// waits on it.
+func (a *App) runDesktopViewWatcher(botID string, w *desktopViewWatcher) {
 	poll := func() {
+		callCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		novnc, control, reason, err := a.watchDesktopBot(callCtx, botID)
+		cancel()
+		if err != nil {
+			w.publish(desktopViewWatchEvent{err: err})
+			return
+		}
+		w.publish(desktopViewWatchEvent{snap: desktopViewSnap{url: novnc, control: control, reason: reason}})
+	}
+	poll()
+	ticker := time.NewTicker(400 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-w.stopCh:
+			return
+		case <-ticker.C:
+			poll()
+		}
+	}
+}
+
+// publishDesktopBotView announces this turn's desktop handoffs while the turn
+// is in flight, subscribing to the bot's shared watcher instead of running a
+// private 400ms ticker. The turn still diffs the stream against its own
+// previous snapshot, so a handoff is announced exactly when a private loop
+// would have announced it; only the polling is shared. The subscription ends
+// with this turn's context, and the loop itself stops once no turn
+// references it.
+func (a *App) publishDesktopBotView(ctx context.Context, requestID, sessionKey, botID string) {
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return
+	}
+	w := a.acquireDesktopViewWatcher(botID)
+	defer a.releaseDesktopViewWatcher(botID, w)
+	var last desktopViewSnap
+	var seen uint64
+	for {
+		ev, seq, ok := w.wait(ctx, seen)
+		if !ok {
+			return
+		}
+		seen = seq
+		if ev.err != nil {
+			if ctx.Err() == nil {
+				botlog.WriteOnce(botID, "gui.desktop_poll", ev.err, "request_id", requestID)
+			}
+			continue
+		}
 		if ctx.Err() != nil {
 			return
 		}
-		callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		novnc, control, reason, err := a.watchDesktopBot(callCtx, botID)
-		cancel()
-		if err != nil || ctx.Err() != nil {
-			if err != nil && ctx.Err() == nil {
-				botlog.WriteOnce(botID, "gui.desktop_poll", err, "request_id", requestID)
-			}
-			return
-		}
 		prev := last
-		last = a.announceDesktopView(requestID, sessionKey, last, desktopViewSnap{
-			url: novnc, control: control, reason: reason,
-		})
+		last = a.announceDesktopView(requestID, sessionKey, last, ev.snap)
 		if desktopViewShouldEmit(prev, last) {
 			botlog.Write(botID, "gui.desktop_view", nil,
 				"request_id", requestID,
@@ -2152,17 +2303,6 @@ func (a *App) publishDesktopBotView(ctx context.Context, requestID, sessionKey, 
 				"user_control", strconv.FormatBool(last.control),
 				"attention", last.reason,
 			)
-		}
-	}
-	poll()
-	ticker := time.NewTicker(400 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			poll()
 		}
 	}
 }

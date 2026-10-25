@@ -5,6 +5,7 @@ import "testing"
 func TestFactGraphIncludesStructuredTableFacts(t *testing.T) {
 	store := newStoreWithStructuredCSV(t)
 	defer store.Close()
+	seedLegacyStructuredTableFact(t, store)
 
 	graph, err := store.FactGraph(t.Context(), SearchOptions{Entity: "张三", Limit: 20})
 	if err != nil {
@@ -18,6 +19,7 @@ func TestFactGraphIncludesStructuredTableFacts(t *testing.T) {
 func TestEntityProfileIncludesStructuredTableFacts(t *testing.T) {
 	store := newStoreWithStructuredCSV(t)
 	defer store.Close()
+	seedLegacyStructuredTableFact(t, store)
 
 	profile, err := store.EntityProfile(t.Context(), SearchOptions{Entity: "张三", Limit: 20})
 	if err != nil {

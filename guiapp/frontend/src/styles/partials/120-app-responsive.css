@@ -97,12 +97,12 @@
 .remote-session-table-scroll:focus-visible {
   outline: 2px solid var(--theme-focus, var(--theme-primary));
   outline-offset: -2px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 .remote-session-tab:focus-visible {
   outline: 2px solid var(--theme-focus, var(--theme-primary));
   outline-offset: -2px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 .remote-session-list[data-session-tab='background'] .remote-monitor-empty-state {
   min-height: clamp(220px, 30vh, 340px);
@@ -170,7 +170,7 @@
   box-shadow: none !important;
 }
 [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-input-stack:focus-within {
-  border-color: var(--theme-primary, #2f6fbc) !important;
+  border-color: var(--theme-primary, #2e75cb) !important;
   box-shadow: 0 0 0 3px var(--theme-primary-soft, rgba(47, 111, 188, 0.10)) !important;
 }
 
@@ -208,7 +208,7 @@
   height: 100%;
   overflow: hidden;
   border: 1px solid var(--mc-preview-surface-border, #e4e4e4);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   background: var(--mc-preview-surface-bg, #fff);
   box-shadow: var(--mc-preview-surface-shadow, 0 1px 2px rgba(0, 0, 0, 0.04), 0 12px 28px -14px rgba(0, 0, 0, 0.10));
   transition: border-left-color .15s ease;
@@ -268,7 +268,7 @@
     padding: 8px 8px 8px 0;
   }
   .mc-assistant-preview-surface {
-    border-radius: 10px;
+    border-radius: var(--radius-md);
   }
 }
 @media (max-width: 560px) {
@@ -276,7 +276,7 @@
     padding: 4px 4px 4px 0;
   }
   .mc-assistant-preview-surface {
-    border-radius: 8px;
+    border-radius: var(--radius-md);
   }
 }
 
@@ -306,7 +306,7 @@
 .mc-ve-conversation {
   min-width: 0;
   min-height: 0;
-  background: var(--theme-page-bg, #f4f7fb) !important;
+  background: var(--theme-page-bg, #ffffff) !important;
 }
 .mc-ve-conversation [data-testid='ve-message-list'] {
   box-sizing: border-box;
@@ -317,7 +317,7 @@
   margin-bottom: 18px !important;
 }
 .mc-ve-message-label {
-  color: var(--theme-text-muted, #657384) !important;
+  color: var(--theme-text-muted, #56677c) !important;
 }
 .mc-ve-message-bubble {
   box-shadow: 0 3px 12px rgba(35, 55, 80, 0.045);
@@ -351,7 +351,7 @@
   box-shadow: none !important;
 }
 .mc-ve-conversation .mc-input-stack:focus-within {
-  border-color: var(--theme-primary, #2f6fbc) !important;
+  border-color: var(--theme-primary, #2e75cb) !important;
   box-shadow: 0 0 0 3px var(--theme-primary-soft, rgba(47, 111, 188, 0.10)) !important;
 }
 #App[data-ai-theme='dark'] .mc-ve-message-bubble {
@@ -394,7 +394,7 @@
 }
 [data-testid='sidebar-ai-content-slot'] .mc-task-list::-webkit-scrollbar-thumb {
   background: color-mix(in srgb, var(--theme-text-muted) 45%, transparent);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 [data-testid='sidebar-ai-content-slot'] .mc-task-list::-webkit-scrollbar-thumb:hover {
   background: color-mix(in srgb, var(--theme-text-muted) 65%, transparent);
@@ -412,16 +412,16 @@
   bottom: 0;
   left: 3px;
   width: 1px;
-  border-radius: 999px;
-  background: var(--mc-task-pane-divider-color, var(--theme-border, #d9e1ec));
+  border-radius: var(--radius-pill);
+  background: var(--mc-task-pane-divider-color, var(--theme-border, #c9ddf6));
   transition: background .15s ease;
 }
 .mc-task-pane-resize-handle:hover::before,
 .mc-task-pane-resize-handle:focus-visible::before {
-  background: var(--theme-primary, #2f6fbc);
+  background: var(--theme-primary, #2e75cb);
 }
 .mc-task-pane-resize-handle:active::before {
-  background: var(--theme-primary-strong, var(--theme-primary, #2f6fbc));
+  background: var(--theme-primary-strong, var(--theme-primary, #2e75cb));
 }
 .mc-task-pane-resize-handle:focus-visible {
   outline: none;
@@ -430,9 +430,9 @@
 /* The bottom system trigger is a keyboard-accessible menu button even though
    it remains visually integrated with the narrow navigation rail. */
 .mc-legacy-rail-footer .left-nav-item[role='button']:focus-visible {
-  outline: 2px solid var(--theme-primary, #2f6fbc);
+  outline: 2px solid var(--theme-primary, #2e75cb);
   outline-offset: -2px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 
 /* The live Wails shell has several legacy fixed-width rules above. Resolve
@@ -795,7 +795,7 @@
 }
 .skills-tab-scroll::-webkit-scrollbar-thumb {
   background: color-mix(in srgb, var(--theme-text-muted) 55%, var(--theme-border));
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 .skills-tab-scroll::-webkit-scrollbar-thumb:hover,
 .skills-tab-scroll::-webkit-scrollbar-thumb:active {
@@ -905,7 +905,7 @@
   .secondary-page-shell,
   .workflows-page,
   .remote-sessions-page,
-  .utilities-page:not(.utilities-page--compact) { border-radius: 12px; }
+  .utilities-page:not(.utilities-page--compact) { border-radius: var(--radius-lg); }
   .api-store-page,
   .skills-page,
   .mcp-page,
@@ -975,12 +975,12 @@
     padding: calc(12px + var(--dwm-top-offset, 0px)) clamp(12px, 3vw, 48px) 12px;
     border: 0;
     border-radius: 0;
-    background: var(--theme-page-bg, #f4f7fb);
-    color: var(--theme-text-primary, #1c2733);
+    background: var(--theme-page-bg, #ffffff);
+    color: var(--theme-text-primary, #526277);
 }
 
 .app-loading-shell[data-ai-theme='dark'] {
-    background: var(--theme-page-bg, #f4f7fb);
+    background: var(--theme-page-bg, #ffffff);
 }
 
 .app-loading-shell[data-native-rounded="true"],
@@ -1029,7 +1029,7 @@
     padding: clamp(28px, 6vh, 78px) clamp(24px, 7vw, 108px);
     overflow: hidden;
     border: 1px solid var(--theme-border, rgba(177, 190, 207, 0.72));
-    border-radius: var(--radius-xl, 18px);
+    border-radius: var(--radius-xl, 16px);
     background: var(--theme-surface, #ffffff);
     box-shadow: var(--shadow-xl, 0 20px 54px rgba(35, 55, 79, 0.16), 0 2px 8px rgba(35, 55, 79, 0.08));
 }
@@ -1087,7 +1087,7 @@
     aspect-ratio: 192 / 220;
     margin: 0 0 clamp(12px, 2vh, 24px);
     pointer-events: none;
-    filter: drop-shadow(0 12px 18px color-mix(in srgb, var(--theme-primary-strong, #235a9e) 12%, transparent));
+    filter: drop-shadow(0 12px 18px color-mix(in srgb, var(--theme-primary-strong, #1e6bc5) 12%, transparent));
 }
 
 .app-loading-card--logs .app-loading-mascot {
@@ -1105,7 +1105,7 @@
 .app-loading-title {
     width: 100%;
     margin: 0 0 14px;
-    color: var(--theme-text-primary, #1c2733);
+    color: var(--theme-text-primary, #526277);
     font-weight: 760;
     font-size: clamp(2rem, 4vw, 3rem);
     letter-spacing: -0.045em;
@@ -1113,20 +1113,20 @@
 }
 
 .app-loading-shell[data-ai-theme='dark'] .app-loading-title {
-    color: var(--theme-text-primary, #1c2733);
+    color: var(--theme-text-primary, #526277);
 }
 
 .app-loading-subtitle {
     max-width: 44em;
     margin: 0 0 clamp(24px, 4vh, 40px);
-    color: var(--theme-text-secondary, #44546a);
+    color: var(--theme-text-secondary, #546479);
     font-size: clamp(1rem, 1.65vw, 1.34rem);
     font-weight: 400;
     line-height: 1.5;
 }
 
 .app-loading-shell[data-ai-theme='dark'] .app-loading-subtitle {
-    color: var(--theme-text-secondary, #44546a);
+    color: var(--theme-text-secondary, #546479);
 }
 
 .app-loading-progress {
@@ -1135,7 +1135,7 @@
     overflow: hidden;
     margin: 0 0 16px;
     border: 0;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--theme-control-well, color-mix(in srgb, var(--theme-text-muted) 15%, var(--theme-surface)));
 }
 
@@ -1158,7 +1158,7 @@
     min-height: 24px;
     margin: 0 0 14px;
     overflow: hidden;
-    color: var(--theme-text-muted, #657384);
+    color: var(--theme-text-muted, #56677c);
     font-size: clamp(0.9rem, 1.2vw, 1.08rem);
     line-height: 1.4;
     text-overflow: ellipsis;
@@ -1166,7 +1166,7 @@
 }
 
 .app-loading-shell[data-ai-theme='dark'] .app-loading-status {
-    color: var(--theme-text-muted, #657384);
+    color: var(--theme-text-muted, #56677c);
 }
 
 .app-loading-actions {
@@ -1180,14 +1180,14 @@
 .app-loading-link {
     border: 0;
     background: transparent;
-    color: var(--theme-text-muted, #657384);
+    color: var(--theme-text-muted, #56677c);
     cursor: pointer;
     font-size: 0.8rem;
 }
 
 .app-loading-link:hover,
 .app-loading-link:focus-visible {
-    color: var(--theme-primary, #2f6fbc);
+    color: var(--theme-primary, #2e75cb);
     text-decoration: underline;
 }
 
@@ -1216,11 +1216,11 @@
     flex: 1 1 auto;
     margin: 22px 0 12px;
     padding: 14px;
-    border: 1px solid var(--theme-border, #d9e1ec);
-    border-radius: 12px;
+    border: 1px solid var(--theme-border, #c9ddf6);
+    border-radius: var(--radius-lg);
     outline: none;
-    background: var(--theme-surface-muted, #f0f4f9);
-    color: var(--theme-text-primary, #1c2733);
+    background: var(--theme-surface-muted, #eef5ff);
+    color: var(--theme-text-primary, #526277);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 0.86rem;
     resize: none;
@@ -1233,8 +1233,8 @@
     width: min(480px, calc(100% - 48px));
     transform: translate(-50%, -50%);
     padding: 26px;
-    border: 1px solid var(--theme-border, #d9e1ec);
-    border-radius: 16px;
+    border: 1px solid var(--theme-border, #c9ddf6);
+    border-radius: var(--radius-xl);
     background: var(--theme-surface, #ffffff);
     box-shadow: var(--shadow-xl, 0 20px 52px rgba(15, 23, 42, 0.22));
     text-align: center;
@@ -1249,7 +1249,7 @@
 
 .app-loading-quit__message {
     margin: 0 0 18px;
-    color: var(--theme-text-secondary, #44546a);
+    color: var(--theme-text-secondary, #546479);
     font-size: 0.88rem;
     line-height: 1.5;
     white-space: pre-line;
@@ -1257,7 +1257,7 @@
 
 @media (max-width: 720px) {
     .app-loading-shell { padding: calc(8px + var(--dwm-top-offset, 0px)) 8px 8px; }
-    .app-loading-card { height: min(720px, 100%); padding: 28px 20px; border-radius: 15px; }
+    .app-loading-card { height: min(720px, 100%); padding: 28px 20px; border-radius: var(--radius-xl); }
     .app-loading-mascot { width: clamp(132px, 22vh, 190px); }
     .app-loading-title { font-size: clamp(1.7rem, 8vw, 2.25rem); }
     .app-loading-subtitle { font-size: 0.96rem; }
@@ -1290,22 +1290,22 @@
    is the drop target, so give feedback beyond the small dropzone box.
    (Shell background is set inline in JSX — outline is the reliable signal.) */
 .mobile-documents-shell.wails-drop-target-active {
-    outline: 2px dashed color-mix(in srgb, var(--theme-primary, #2f6fbc) 62%, transparent);
+    outline: 2px dashed color-mix(in srgb, var(--theme-primary, #2e75cb) 62%, transparent);
     outline-offset: -2px;
 }
 
 .mobile-documents-icon {
-    color: var(--theme-primary, #2f6fbc);
-    box-shadow: 0 8px 18px color-mix(in srgb, var(--theme-primary, #2f6fbc) 12%, transparent);
+    color: var(--theme-primary, #2e75cb);
+    box-shadow: 0 8px 18px color-mix(in srgb, var(--theme-primary, #2e75cb) 12%, transparent);
 }
 
 .mobile-documents-title {
-    color: var(--theme-text-primary, #1c2733);
+    color: var(--theme-text-primary, #526277);
 }
 
 .mobile-documents-subtitle,
 .mobile-documents-dropzone-help {
-    color: var(--theme-text-secondary, #44546a);
+    color: var(--theme-text-secondary, #546479);
 }
 
 .mobile-documents-btn {
@@ -1313,9 +1313,9 @@
 }
 
 .mobile-documents-btn:hover:not(:disabled) {
-    border-color: color-mix(in srgb, var(--theme-primary, #2f6fbc) 44%, var(--theme-border, #d9e1ec));
+    border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 44%, var(--theme-border, #c9ddf6));
     background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
-    color: var(--theme-primary-strong, #235a9e);
+    color: var(--theme-primary-strong, #1e6bc5);
 }
 
 .mobile-documents-btn:focus-visible,
@@ -1323,17 +1323,12 @@
 .mobile-documents-list-item:focus-visible,
 .mobile-documents-list-delete:focus-visible,
 .mdoc-folder-toggle:focus-visible {
-    outline: 3px solid color-mix(in srgb, var(--theme-primary, #2f6fbc) 32%, transparent);
+    outline: 3px solid color-mix(in srgb, var(--theme-primary, #2e75cb) 32%, transparent);
     outline-offset: 2px;
 }
 
-.mobile-documents-btn--primary {
-    background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
-    color: var(--theme-primary-strong, #235a9e);
-}
-
 .mobile-documents-btn--danger {
-    color: var(--theme-danger, #c43d34) !important;
+    color: var(--theme-danger, #dc1f25) !important;
 }
 
 .mobile-documents-dropzone {
@@ -1343,14 +1338,14 @@
 .mobile-documents-dropzone-title,
 .mobile-documents-preview-title,
 .mobile-documents-list-item-title {
-    color: var(--theme-text-primary, #1c2733);
+    color: var(--theme-text-primary, #526277);
 }
 
 .mobile-documents-quota-copy,
 .mobile-documents-count,
 .mobile-documents-list-item-meta,
 .mobile-documents-list-item-preview {
-    color: var(--theme-text-secondary, #44546a);
+    color: var(--theme-text-secondary, #546479);
 }
 
 .mobile-documents-body {
@@ -1358,24 +1353,24 @@
 }
 
 .mobile-documents-list-pane {
-    background: color-mix(in srgb, var(--theme-surface-muted, #f0f4f9) 36%, var(--theme-surface, #ffffff));
+    background: color-mix(in srgb, var(--theme-surface-muted, #eef5ff) 36%, var(--theme-surface, #ffffff));
 }
 
 .mobile-documents-search::placeholder {
-    color: var(--theme-text-muted, #657384);
+    color: var(--theme-text-muted, #56677c);
     opacity: 0.82;
 }
 
 .mobile-documents-list-row:hover {
-    background: color-mix(in srgb, var(--theme-primary, #2f6fbc) 6%, var(--theme-surface, #ffffff)) !important;
+    background: color-mix(in srgb, var(--theme-primary, #2e75cb) 6%, var(--theme-surface, #ffffff)) !important;
 }
 
 .mobile-documents-list-row.is-active {
-    background: color-mix(in srgb, var(--theme-primary, #2f6fbc) 10%, var(--theme-surface, #ffffff)) !important;
+    background: color-mix(in srgb, var(--theme-primary, #2e75cb) 10%, var(--theme-surface, #ffffff)) !important;
 }
 
 .mobile-documents-list-delete:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--theme-danger, #c43d34) 8%, transparent);
+    background: color-mix(in srgb, var(--theme-danger, #dc1f25) 8%, transparent);
     opacity: 1 !important;
 }
 
@@ -1384,28 +1379,28 @@
 }
 
 .mobile-documents-preview-body {
-    color: var(--theme-text-secondary, #44546a);
+    color: var(--theme-text-secondary, #546479);
 }
 
 .mobile-documents-banner {
-    color: var(--theme-primary-strong, #235a9e) !important;
+    color: var(--theme-primary-strong, #1e6bc5) !important;
 }
 
 .mobile-documents-error {
-    color: var(--theme-danger, #c43d34) !important;
-    background: color-mix(in srgb, var(--theme-danger, #c43d34) 8%, var(--theme-surface, #ffffff)) !important;
-    border-color: color-mix(in srgb, var(--theme-danger, #c43d34) 28%, var(--theme-border, #d9e1ec)) !important;
+    color: var(--theme-danger, #dc1f25) !important;
+    background: color-mix(in srgb, var(--theme-danger, #dc1f25) 8%, var(--theme-surface, #ffffff)) !important;
+    border-color: color-mix(in srgb, var(--theme-danger, #dc1f25) 28%, var(--theme-border, #c9ddf6)) !important;
 }
 
 .mobile-documents-inline-error {
-    color: var(--theme-danger, #c43d34);
+    color: var(--theme-danger, #dc1f25);
 }
 
 .mobile-documents-overlay[data-ai-theme='dark'] .mobile-documents-title,
 .mobile-documents-overlay[data-ai-theme='dark'] .mobile-documents-dropzone-title,
 .mobile-documents-overlay[data-ai-theme='dark'] .mobile-documents-preview-title,
 .mobile-documents-overlay[data-ai-theme='dark'] .mobile-documents-list-item-title {
-    color: var(--theme-text-primary, #1c2733);
+    color: var(--theme-text-primary, #526277);
 }
 
 .mobile-documents-overlay[data-ai-theme='dark'] .mobile-documents-subtitle,
@@ -1415,39 +1410,41 @@
 .mobile-documents-overlay[data-ai-theme='dark'] .mobile-documents-list-item-meta,
 .mobile-documents-overlay[data-ai-theme='dark'] .mobile-documents-list-item-preview,
 .mobile-documents-overlay[data-ai-theme='dark'] .mobile-documents-preview-body {
-    color: var(--theme-text-secondary, #44546a);
+    color: var(--theme-text-secondary, #546479);
 }
 
+/* The drop strip keeps its drag-over highlight while dragging: :not(.is-dragover)
+   stops this forced fill from covering the .mdoc-dropstrip.is-dragover tint. */
 .mobile-documents-overlay[data-ai-theme='dark'] .mobile-documents-list-pane,
-.mobile-documents-overlay[data-ai-theme='dark'] .mobile-documents-dropzone {
-    background: color-mix(in srgb, var(--theme-surface-muted, #f0f4f9) 82%, var(--theme-surface, #ffffff)) !important;
+.mobile-documents-overlay[data-ai-theme='dark'] .mobile-documents-dropzone:not(.is-dragover) {
+    background: color-mix(in srgb, var(--theme-surface-muted, #eef5ff) 82%, var(--theme-surface, #ffffff)) !important;
 }
 
 .mobile-documents-overlay[data-ai-theme='dark'] .mobile-documents-inline-error {
-    color: var(--theme-danger, #c43d34);
+    color: var(--theme-danger, #dc1f25);
 }
 
 @media (max-width: 900px) {
     .mobile-documents-overlay { padding: 16px; }
-    .mobile-documents-shell { max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); border-radius: 20px; }
-    .mobile-documents-header { padding: 20px; }
-    .mobile-documents-icon { width: 54px !important; height: 54px !important; }
-    .mobile-documents-title { font-size: 1.3rem !important; }
-    .mobile-documents-subtitle { font-size: 0.9rem !important; }
-    .mobile-documents-dropzone { margin-left: 20px !important; margin-right: 20px !important; padding: 18px !important; }
-    .mobile-documents-body { margin-top: 14px !important; }
+    .mobile-documents-shell { max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); border-radius: var(--radius-xl); }
+    .mobile-documents-header { padding: 12px 16px 10px; }
+    .mobile-documents-icon { width: 38px !important; height: 38px !important; }
+    .mobile-documents-title { font-size: 1.05rem !important; }
+    .mobile-documents-subtitle { font-size: 0.78rem !important; }
+    .mobile-documents-dropzone { margin-left: 16px !important; margin-right: 16px !important; padding: 12px 14px !important; }
+    .mobile-documents-body { margin-top: 12px !important; }
 }
 
 @media (max-width: 760px) {
     .mobile-documents-overlay { padding: 8px; }
-    .mobile-documents-shell { width: 100% !important; height: 100% !important; max-width: none; max-height: none; border-radius: 16px; }
-    .mobile-documents-header { align-items: flex-start !important; flex-wrap: wrap; padding: 16px; }
-    .mobile-documents-heading { order: 1; flex: 1 1 calc(100% - 76px) !important; }
+    .mobile-documents-shell { width: 100% !important; height: 100% !important; max-width: none; max-height: none; border-radius: var(--radius-xl); }
+    .mobile-documents-header { align-items: flex-start !important; flex-wrap: wrap; gap: 10px; padding: 12px 14px 10px; }
+    .mobile-documents-heading { order: 1; flex: 1 1 calc(100% - 56px) !important; }
     .mobile-documents-header-actions { width: 100%; justify-content: flex-end; order: 2; }
-    .mobile-documents-dropzone { flex-direction: column; align-items: stretch !important; margin: 14px 16px 0 !important; padding: 16px !important; }
-    .mobile-documents-dropzone .mobile-documents-btn { align-self: flex-end; }
+    .mobile-documents-dropzone { flex-direction: column; align-items: stretch !important; margin: 12px 14px 0 !important; padding: 12px 14px !important; }
+    .mobile-documents-quota { flex: 0 1 auto; margin-left: 0; }
     .mobile-documents-body { flex-direction: column; overflow: hidden; }
-    .mobile-documents-list-pane { width: 100% !important; min-width: 0 !important; height: 42%; flex: 0 0 42%; border-right: 0 !important; border-bottom: 1px solid var(--theme-border, #d9e1ec); }
+    .mobile-documents-list-pane { width: 100% !important; min-width: 0 !important; height: 42%; flex: 0 0 42%; border-right: 0 !important; border-bottom: 1px solid var(--theme-border, #c9ddf6); }
     .mobile-documents-preview-pane { min-height: 0; }
     .mobile-documents-preview-header { padding: 14px 16px !important; }
     .mdoc-preview-actions .mdoc-toolbar-btn { height: 38px; min-height: 38px; padding: 0 11px; }
@@ -1509,7 +1506,7 @@
   width: 48px;
   height: 48px;
   flex: 0 0 48px;
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
 }
 .mc-nav-rail .sidebar-header--maclaw .mc-sidebar-brand-mark svg {
   width: 39px;
@@ -1528,7 +1525,7 @@
     width: 40px;
     height: 40px;
     flex-basis: 40px;
-    border-radius: 12px;
+    border-radius: var(--radius-lg);
   }
   .mc-nav-rail .sidebar-header--maclaw .mc-sidebar-brand-mark svg {
     width: 33px;
@@ -1713,7 +1710,7 @@
   min-height: 24px !important;
   height: 24px !important;
   padding: 0 8px !important;
-  border-radius: 999px !important;
+  border-radius: var(--radius-pill) !important;
   display: inline-flex !important;
   align-items: center;
   gap: 5px;
@@ -1727,6 +1724,24 @@
   background: color-mix(in srgb, var(--mc-accent) 9%, var(--mc-surface)) !important;
   border-color: var(--mc-accent) !important;
   color: var(--mc-accent-strong) !important;
+}
+/* The 34px utility-button lock is for square icon buttons. This chip is a
+   text label on the same 24px row as the model chip and the expert mark.
+   min-height is not !important on the lock, so this more specific rule
+   restores the authored height without a new !important. */
+.mc-input-stack button.mc-working-dir-chip,
+#App .mc-input-stack button.mc-working-dir-chip {
+  min-width: 0;
+  width: auto;
+  max-width: 100%;
+  min-height: 24px;
+  height: 24px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  font-size: 11px;
+  line-height: 1.4;
 }
 /* The working-directory chip is one menu button. Composer button locks repaint
    every non-primary button, so its inline open colors never show. Match hover. */
@@ -1745,7 +1760,7 @@
   width: 24px !important;
   height: 24px !important;
   padding: 0 !important;
-  border-radius: 8px !important;
+  border-radius: var(--radius-md) !important;
   display: inline-flex !important;
   align-items: center;
   justify-content: center;
@@ -1755,14 +1770,14 @@
 #App .mc-input-stack button.ai-queue-action:focus-visible,
 .mc-input-stack button.ai-queue-text-action:focus-visible,
 #App .mc-input-stack button.ai-queue-text-action:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--mc-accent, #2f6fbc) 48%, transparent);
+  outline: 2px solid color-mix(in srgb, var(--mc-accent, #2e75cb) 48%, transparent);
   outline-offset: 1px;
 }
 .mc-input-stack button.ai-queue-action--accent,
 #App .mc-input-stack button.ai-queue-action--accent {
-  color: var(--mc-accent, #2f6fbc) !important;
-  border-color: color-mix(in srgb, var(--mc-accent, #2f6fbc) 42%, var(--mc-line, #d9e1ec)) !important;
-  background: color-mix(in srgb, var(--mc-accent, #2f6fbc) 8%, var(--mc-surface, #fff)) !important;
+  color: var(--mc-accent, #2e75cb) !important;
+  border-color: color-mix(in srgb, var(--mc-accent, #2e75cb) 42%, var(--mc-line, #d9e1ec)) !important;
+  background: color-mix(in srgb, var(--mc-accent, #2e75cb) 8%, var(--mc-surface, #fff)) !important;
 }
 #App[data-ai-theme='dark'] .mc-input-stack button.ai-queue-action--accent {
   color: var(--theme-primary) !important;
@@ -1771,14 +1786,14 @@
 }
 .mc-input-stack button.ai-queue-action--send,
 #App .mc-input-stack button.ai-queue-action--send {
-  background: var(--mc-accent, #2f6fbc) !important;
-  border-color: var(--mc-accent, #2f6fbc) !important;
+  background: var(--mc-accent, #2e75cb) !important;
+  border-color: var(--mc-accent, #2e75cb) !important;
   color: var(--theme-on-primary) !important;
 }
 .mc-input-stack button.ai-queue-action--send:hover:not(:disabled),
 #App .mc-input-stack button.ai-queue-action--send:hover:not(:disabled) {
-  background: var(--mc-accent-strong, #235a9e) !important;
-  border-color: var(--mc-accent-strong, #235a9e) !important;
+  background: var(--mc-accent-strong, #1e6bc5) !important;
+  border-color: var(--mc-accent-strong, #1e6bc5) !important;
   color: var(--theme-on-primary) !important;
 }
 #App[data-ai-theme='dark'] .mc-input-stack button.ai-queue-action--send,
@@ -1789,9 +1804,9 @@
 }
 .mc-input-stack button.ai-queue-action--danger:hover:not(:disabled),
 #App .mc-input-stack button.ai-queue-action--danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--theme-danger, #c43d34) 10%, var(--mc-surface, #fff)) !important;
-  border-color: color-mix(in srgb, var(--theme-danger, #c43d34) 42%, var(--mc-line, #d9e1ec)) !important;
-  color: var(--theme-danger, #c43d34) !important;
+  background: color-mix(in srgb, var(--theme-danger, #dc1f25) 10%, var(--mc-surface, #fff)) !important;
+  border-color: color-mix(in srgb, var(--theme-danger, #dc1f25) 42%, var(--mc-line, #d9e1ec)) !important;
+  color: var(--theme-danger, #dc1f25) !important;
 }
 .mc-input-stack button.ai-queue-text-action,
 #App .mc-input-stack button.ai-queue-text-action {
@@ -1800,7 +1815,7 @@
   min-height: 24px !important;
   height: 24px !important;
   padding: 0 8px !important;
-  border-radius: 8px !important;
+  border-radius: var(--radius-md) !important;
   font-size: 11px !important;
 }
 .mc-input-stack button.ai-queue-chip-remove,
@@ -1815,7 +1830,7 @@
   padding: 0 !important;
   border: none !important;
   background: transparent !important;
-  border-radius: 4px !important;
+  border-radius: var(--radius-xs) !important;
   box-shadow: none !important;
 }
 /* Full control is the dangerous permission: keep the trigger visibly red
@@ -1823,9 +1838,9 @@
    locks above — including on hover, which would otherwise repaint it blue. */
 #App .mc-input-stack .ai-permission-mode-trigger[data-testid='ai-permission-mode'][data-permission-mode='full'],
 #App .mc-input-stack .ai-permission-mode-trigger[data-testid='ai-permission-mode'][data-permission-mode='full']:hover {
-  background: color-mix(in srgb, var(--theme-danger, #c43d34) 8%, transparent) !important;
-  border-color: color-mix(in srgb, var(--theme-danger, #c43d34) 42%, transparent) !important;
-  color: var(--theme-danger, #c43d34) !important;
+  background: color-mix(in srgb, var(--theme-danger, #dc1f25) 8%, transparent) !important;
+  border-color: color-mix(in srgb, var(--theme-danger, #dc1f25) 42%, transparent) !important;
+  color: var(--theme-danger, #dc1f25) !important;
 }
 #App .mc-welcome [role='tabpanel'] > button,
 #App .mc-welcome [data-testid^='welcome-recent-'],
@@ -1884,8 +1899,8 @@
 #App .mc-execution-step[data-status='failed'],
 #App .mc-execution-step[data-status='verify_failed'] { background: color-mix(in srgb, var(--theme-danger) 8%, var(--mc-surface)) !important; }
 #App .mc-execution-step + .mc-execution-step { border-color: var(--mc-line-subtle) !important; }
-#App .mc-task-execution [data-testid='coding-agent-file-changes'],
-#App .mc-task-execution .coding-agent-file-changes {
+#App .mc-task-execution [data-testid='coding-agent-file-changes']:not(.caps-process-files),
+#App .mc-task-execution .coding-agent-file-changes:not(.caps-process-files) {
   background: color-mix(in srgb, var(--mc-muted-surface, #f5f8fc) 88%, transparent) !important;
   border-color: color-mix(in srgb, var(--mc-line, #d9e1ec) 80%, transparent) !important;
   box-shadow: none !important;
@@ -2067,12 +2082,12 @@
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--mc-muted) 14%, var(--mc-surface)) !important;
 }
 #App .mc-workbench-status-card__online.is-pending i {
-  background: var(--theme-warning, #64748b) !important;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-warning, #64748b) 14%, var(--mc-surface)) !important;
+  background: var(--theme-warning, #aa5d05) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-warning, #aa5d05) 14%, var(--mc-surface)) !important;
 }
 #App .mc-workbench-status-card__online.is-error i {
-  background: var(--theme-danger, #c43d34) !important;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-danger, #c43d34) 14%, var(--mc-surface)) !important;
+  background: var(--theme-danger, #dc1f25) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-danger, #dc1f25) 14%, var(--mc-surface)) !important;
 }
 #App .mc-workbench-status-card__row {
   color: var(--mc-chrome-ink, var(--mc-copy)) !important;
@@ -2086,7 +2101,7 @@
 #App button.mc-workbench-status-card__row:focus-visible {
   outline: 2px solid var(--mc-accent) !important;
   outline-offset: 2px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 #App button.mc-workbench-status-card__im:hover {
   color: var(--mc-chrome-ink, var(--mc-ink)) !important;
@@ -2097,7 +2112,7 @@
 #App button.mc-workbench-status-card__im:focus-visible {
   outline: 2px solid var(--mc-accent) !important;
   outline-offset: 2px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 #App .mc-workbench-status-card__row strong,
 #App .mc-workbench-status-card__model strong {
@@ -2179,7 +2194,7 @@
     background: color-mix(in srgb, currentColor 10%, transparent);
 }
 .mc-taskcfg-datetime-btn:focus-visible {
-    outline: 2px solid var(--theme-primary, #2f6fbc);
+    outline: 2px solid var(--theme-primary, #2e75cb);
     outline-offset: -2px;
 }
 @media (prefers-reduced-motion: reduce) {

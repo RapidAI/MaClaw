@@ -167,16 +167,16 @@ export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar
         lineHeight: 1,
         cursor: "pointer",
         userSelect: "none",
-        border: active ? "1px solid color-mix(in srgb, var(--theme-success, #4f7f6f) 36%, transparent)" : `1px solid ${t.titleBarBorder}`,
-        background: active ? "color-mix(in srgb, var(--theme-success, #4f7f6f) 12%, transparent)" : t.fieldBg,
-        color: active ? "var(--theme-success, #4f7f6f)" : t.promptColor,
+        border: active ? "1px solid color-mix(in srgb, var(--theme-success, #11813a) 36%, transparent)" : `1px solid ${t.titleBarBorder}`,
+        background: active ? "color-mix(in srgb, var(--theme-success, #11813a) 12%, transparent)" : t.fieldBg,
+        color: active ? "var(--theme-success, #11813a)" : t.promptColor,
         transition: "all 150ms ease",
         flexShrink: 0,
         height: 20,
     }), [t.titleBarBorder, t.fieldBg, t.promptColor]);
 
     const dot = (active: boolean) => (
-        <span aria-hidden="true" style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: active ? "var(--theme-success, #4f7f6f)" : t.promptColor, opacity: active ? 1 : 0.4, transition: "all 150ms ease" }} />
+        <span aria-hidden="true" style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: active ? "var(--theme-success, #11813a)" : t.promptColor, opacity: active ? 1 : 0.4, transition: "all 150ms ease" }} />
     );
 
     const nextLang = LANG_CYCLE[lang] || "zh-Hans";

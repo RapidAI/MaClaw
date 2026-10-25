@@ -47,6 +47,17 @@ func TestSearchStructuredUsesTableRowEmbeddingsWithModelIsolation(t *testing.T) 
 	if len(results) != 1 || results[0].RowIndex != 3 || results[0].Claim != "Bob" {
 		t.Fatalf("semantic table-row results = %#v", results)
 	}
+	general, err := store.Search(ctx, SearchOptions{Query: "semantic employee", Retrieval: knowledgeRetrievalVector, ResultTypes: []string{"table_row"}, Limit: 5})
+	if err != nil {
+		t.Fatalf("general table-row vector search: %v", err)
+	}
+	if len(general) != 1 || general[0].ResultType != "table_row" || general[0].Claim != "Bob" {
+		t.Fatalf("general table-row vector results = %#v", general)
+	}
+	filtered, err := store.Search(ctx, SearchOptions{Query: "semantic employee", Retrieval: knowledgeRetrievalVector, ResultTypes: []string{"table_row"}, Labels: []string{"missing-label"}, Limit: 5})
+	if err != nil || len(filtered) != 0 {
+		t.Fatalf("table-row vector search dropped label filter: %#v, %v", filtered, err)
+	}
 
 	if _, err := store.db.ExecContext(ctx, `UPDATE knowledge_embedding_metadata SET model_id = 'other-model' WHERE entity_type = 'table_row'`); err != nil {
 		t.Fatalf("mark row vectors stale: %v", err)

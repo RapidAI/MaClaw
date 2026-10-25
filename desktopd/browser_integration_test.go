@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -50,6 +51,10 @@ sup.ROOT.mkdir()
 }
 
 func TestBrowserIntegrationRoutesEveryBrowserEntryToTheSupervisedBrowser(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Asserts a POSIX 0o755 mode, which a Windows host cannot represent.
+		t.Skip("POSIX file mode is asserted")
+	}
 	out := runSupervisorPython(t, `
 root = tmp / "rootfs"
 (root / "etc/chromium.d").mkdir(parents=True)
@@ -88,6 +93,10 @@ print(json.dumps({"same": first == again, "files": first, "mode": oct((root / "u
 }
 
 func TestBrowserIntegrationSkipsXFCEOnTheLegacyImage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Asserts "/" path spellings, which pathlib only yields on POSIX.
+		t.Skip("POSIX path separators are asserted")
+	}
 	out := runSupervisorPython(t, `
 root = tmp / "rootfs"
 (root / "etc/chromium.d").mkdir(parents=True)

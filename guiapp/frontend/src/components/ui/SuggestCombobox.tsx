@@ -222,8 +222,8 @@ export function SuggestCombobox({
                     width: "auto",
                     borderTopRightRadius: 0,
                     borderBottomRightRadius: 0,
-                    borderTopLeftRadius: "var(--radius-md, 10px)",
-                    borderBottomLeftRadius: "var(--radius-md, 10px)",
+                    borderTopLeftRadius: "var(--radius-md, 8px)",
+                    borderBottomLeftRadius: "var(--radius-md, 8px)",
                 } : {
                     ...inputStyle,
                     flex: 1,
@@ -231,8 +231,8 @@ export function SuggestCombobox({
                     minWidth: 0,
                     borderTopRightRadius: 0,
                     borderBottomRightRadius: 0,
-                    borderTopLeftRadius: "var(--radius-md, 10px)",
-                    borderBottomLeftRadius: "var(--radius-md, 10px)",
+                    borderTopLeftRadius: "var(--radius-md, 8px)",
+                    borderBottomLeftRadius: "var(--radius-md, 8px)",
                 }}
                 onChange={(event) => {
                     const next = event.target.value;
@@ -314,7 +314,7 @@ export function SuggestCombobox({
                     color: "var(--theme-text-primary)",
                     border: fieldBorder,
                     borderLeft: 0,
-                    borderRadius: "0 var(--radius-md, 10px) var(--radius-md, 10px) 0",
+                    borderRadius: "0 var(--radius-md, 8px) var(--radius-md, 8px) 0",
                     opacity: disabled || !hasOptions ? 0.5 : 1,
                 }}
             >
@@ -342,7 +342,7 @@ export function SuggestCombobox({
                         ...(listClassName ? {} : {
                             padding: 4,
                             border: fieldBorder,
-                            borderRadius: "var(--radius-md, 10px)",
+                            borderRadius: "var(--radius-md, 8px)",
                             background: "var(--theme-surface)",
                             boxShadow: "0 8px 20px rgba(15, 23, 42, 0.14)",
                         }),

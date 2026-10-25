@@ -122,15 +122,24 @@ func (r *CatalogRenderer) renderDefinition(selection PlannedSelection, functionN
 	if description == "" {
 		description = "Perform the approved " + string(capability.ID) + " capability."
 	}
+	// The channel current-chat adapter attaches the artifact the plan already
+	// bound. Its model fields are not a selector and the call is not an
+	// approval. Saying that a path is rejected described the old admission
+	// failure: the model retried until no_progress, and the host then refused
+	// to attach the file it had published. Other empty schemas still reject
+	// extra fields, including a host-kind attachment deliver.
+	channelAttach := CurrentChannelArtifactDeliverySelection(selection) && semanticSchemaAdmitsNoArguments(params)
+	if channelAttach {
+		description = "Attaches the artifact already bound to this chat. This is not an external send and does not wait for approval."
+	}
+	description += semanticRemoteHostSchemaCue(capability.ID, params)
 	description += semanticRenderedReuseCue(capability.ID)
 	if semanticSchemaAdmitsNoArguments(params) {
-		// Closed empty-schema adapters (current-channel delivery and similar)
-		// bind content and destination host-side. Models habitually invent a
-		// path field out of legacy send_file memory; admission rejects any
-		// argument as parameter_schema_invalid and the rejection retires the
-		// one-shot grant, so a guessed field costs the delivery itself
-		// (2026-08-25 weather-PDF turn). Say so up front.
-		description += " It takes no arguments: content and destination are bound by the host. Call it with an empty arguments object; any field (for example path) is rejected."
+		if channelAttach {
+			description += " It takes no arguments: the artifact is already bound. Call it with an empty arguments object. A path or any other field cannot select a different artifact."
+		} else {
+			description += " It takes no arguments: content and destination are bound by the host. Call it with an empty arguments object; any field (for example path) is rejected."
+		}
 	}
 	return map[string]interface{}{
 		"type": "function",
@@ -143,6 +152,88 @@ func (r *CatalogRenderer) renderDefinition(selection PlannedSelection, functionN
 }
 
 const semanticListedCallCue = " Call it whenever it is listed; after a successful call this name may briefly leave the list and later reappear for the next authorized step."
+
+// semanticRemoteHostSchemaCue keeps the mode-agnostic capability summary from
+// denying fields the connect schema requires. A session-less turn publishes
+// host; a bound session does not. Optional names are only the ones this
+// schema actually lists.
+func semanticRemoteHostSchemaCue(id CapabilityID, params map[string]interface{}) string {
+	if id != CapabilityShellExecuteRemoteHost {
+		return ""
+	}
+	props, _ := params["properties"].(map[string]interface{})
+	if _, ok := props["host"]; !ok {
+		return " Host, credentials, and session id are not fields; the session is already bound."
+	}
+	var b strings.Builder
+	if schemaRequiresProperty(params, "host") {
+		b.WriteString(" Host is required.")
+	} else {
+		b.WriteString(" Host is optional.")
+	}
+	var requiredNames, optionalNames []string
+	for _, name := range []string{"user", "password", "port"} {
+		if _, ok := props[name]; !ok {
+			continue
+		}
+		if schemaRequiresProperty(params, name) {
+			requiredNames = append(requiredNames, name)
+			continue
+		}
+		optionalNames = append(optionalNames, name)
+	}
+	writeSchemaFieldSentence(&b, requiredNames, "required")
+	writeSchemaFieldSentence(&b, optionalNames, "optional")
+	b.WriteString(" session id is not a field.")
+	return b.String()
+}
+
+func writeSchemaFieldSentence(b *strings.Builder, names []string, kind string) {
+	switch len(names) {
+	case 0:
+		return
+	case 1:
+		b.WriteString(" ")
+		b.WriteString(names[0])
+		b.WriteString(" is ")
+		b.WriteString(kind)
+		b.WriteByte('.')
+	case 2:
+		b.WriteString(" ")
+		b.WriteString(names[0])
+		b.WriteString(" and ")
+		b.WriteString(names[1])
+		b.WriteString(" are ")
+		b.WriteString(kind)
+		b.WriteByte('.')
+	default:
+		b.WriteString(" ")
+		b.WriteString(strings.Join(names[:len(names)-1], ", "))
+		b.WriteString(", and ")
+		b.WriteString(names[len(names)-1])
+		b.WriteString(" are ")
+		b.WriteString(kind)
+		b.WriteByte('.')
+	}
+}
+
+func schemaRequiresProperty(params map[string]interface{}, name string) bool {
+	switch required := params["required"].(type) {
+	case []string:
+		for _, item := range required {
+			if item == name {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, item := range required {
+			if text, ok := item.(string); ok && text == name {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // semanticRenderedReuseCue is the host-authored call policy appended to every
 // governed description. Delivery and generate tools must be called when listed.

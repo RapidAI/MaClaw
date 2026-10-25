@@ -36,6 +36,7 @@ func (s *SQLiteStore) SourceDigest(ctx context.Context, sourceID string, nodeLim
 	if err != nil {
 		return SourceDigestResult{}, err
 	}
+	links = confirmedSourceLinks(links)
 	timeline, err := s.SourceTimeline(ctx, sourceID, 12)
 	if err != nil {
 		return SourceDigestResult{}, err

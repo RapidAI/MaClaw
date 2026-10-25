@@ -221,7 +221,7 @@ func loadStickyCodingWorkbenchMemoryFromDisk(userID string) (mem stickyCodingWor
 	}
 	if mem.UpdatedAtUnix > 0 {
 		age := time.Since(time.Unix(mem.UpdatedAtUnix, 0))
-		if age > stickyCodingMemoryMaxAge {
+		if age > stickyCodingMemoryMaxAge && !codingWorkbenchHasUnfinishedWork(mem) {
 			_ = os.Remove(path)
 			return stickyCodingWorkbenchMemory{}, false, true
 		}

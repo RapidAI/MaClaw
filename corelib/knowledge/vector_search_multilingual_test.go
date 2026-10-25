@@ -28,7 +28,7 @@ func (directionalKnowledgeEmbedder) EmbedBatch(texts []string) ([][]float32, err
 func (directionalKnowledgeEmbedder) Dim() int { return 2 }
 func (directionalKnowledgeEmbedder) Close()   {}
 
-func TestSearchByEmbeddingDoesNotDropLowImportanceCardBeforeScoring(t *testing.T) {
+func TestSearchByEmbeddingDoesNotDropNodeBeforeScoring(t *testing.T) {
 	ctx := context.Background()
 	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
 	if err != nil {
@@ -36,6 +36,9 @@ func TestSearchByEmbeddingDoesNotDropLowImportanceCardBeforeScoring(t *testing.T
 	}
 	defer store.Close()
 	store.SetEmbedder(directionalKnowledgeEmbedder{})
+	if err := store.EnsureNodeEmbeddingColumn(); err != nil {
+		t.Fatalf("EnsureNodeEmbeddingColumn: %v", err)
+	}
 
 	now := time.Now().UTC()
 	source := Source{
@@ -49,24 +52,22 @@ func TestSearchByEmbeddingDoesNotDropLowImportanceCardBeforeScoring(t *testing.T
 	if err := insertSource(ctx, tx, source); err != nil {
 		t.Fatalf("source: %v", err)
 	}
-	// These cards would fill the old importance-ordered 500-row candidate cap.
+	// These nodes would fill an importance-ordered candidate cap if scoring truncated first.
 	for i := 0; i < 500; i++ {
-		cardID := "card_noise_" + fmt.Sprint(i)
-		if _, err := tx.ExecContext(ctx, insertCardSQL,
-			cardID, source.ID, nil, "noise", "irrelevant", "", "[]", "[]", "[]", "", "", "",
-			"", "", 0.8, 100.0, 0.8, float32SliceToBytes([]float32{0, 1}), formatTime(now), formatTime(now)); err != nil {
-			t.Fatalf("noise card %d: %v", i, err)
+		nodeID := "node_noise_" + fmt.Sprint(i)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO document_nodes(id, source_id, type, title, text, embedding) VALUES (?, ?, 'paragraph', 'noise', 'irrelevant', ?)`,
+			nodeID, source.ID, float32SliceToBytes([]float32{0, 1})); err != nil {
+			t.Fatalf("noise node %d: %v", i, err)
 		}
-		if err := upsertEmbeddingMetadataTx(ctx, tx, embeddingEntityCard, cardID, embeddingModelIdentifier(directionalKnowledgeEmbedder{}), 2); err != nil {
+		if err := upsertEmbeddingMetadataTx(ctx, tx, embeddingEntityNode, nodeID, embeddingModelIdentifier(directionalKnowledgeEmbedder{}), 2); err != nil {
 			t.Fatalf("noise metadata %d: %v", i, err)
 		}
 	}
-	if _, err := tx.ExecContext(ctx, insertCardSQL,
-		"card_target", source.ID, nil, "target", "relevant", "", "[]", "[]", "[]", "", "", "",
-		"", "", 0.8, 0.01, 0.8, float32SliceToBytes([]float32{1, 0}), formatTime(now), formatTime(now)); err != nil {
-		t.Fatalf("target card: %v", err)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO document_nodes(id, source_id, type, title, text, embedding) VALUES ('node_target', ?, 'paragraph', 'target', 'relevant', ?)`,
+		source.ID, float32SliceToBytes([]float32{1, 0})); err != nil {
+		t.Fatalf("target node: %v", err)
 	}
-	if err := upsertEmbeddingMetadataTx(ctx, tx, embeddingEntityCard, "card_target", embeddingModelIdentifier(directionalKnowledgeEmbedder{}), 2); err != nil {
+	if err := upsertEmbeddingMetadataTx(ctx, tx, embeddingEntityNode, "node_target", embeddingModelIdentifier(directionalKnowledgeEmbedder{}), 2); err != nil {
 		t.Fatalf("target metadata: %v", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -77,7 +78,7 @@ func TestSearchByEmbeddingDoesNotDropLowImportanceCardBeforeScoring(t *testing.T
 	if err != nil {
 		t.Fatalf("searchByEmbedding: %v", err)
 	}
-	if len(results) != 1 || results[0].CardID != "card_target" {
-		t.Fatalf("results = %#v, want low-importance target", results)
+	if len(results) != 1 || results[0].NodeID != "node_target" {
+		t.Fatalf("results = %#v, want the matching node", results)
 	}
 }

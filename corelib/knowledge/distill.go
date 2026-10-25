@@ -364,6 +364,43 @@ func NormalizeDistilledCards(source Source, cards []Card) []Card {
 	return cleaned
 }
 
+// bindDistilledCardsToNodes attaches a distilled claim to a node of this source.
+// A card that already names one of these nodes keeps that id. When the source
+// has a single node, a card with no node rides that node. Several nodes and no
+// matching id stay unbound, so default search does not invent a passage.
+func bindDistilledCardsToNodes(cards []Card, nodes []DocumentNode) []Card {
+	if len(cards) == 0 || len(nodes) == 0 {
+		return cards
+	}
+	ids := make(map[string]struct{}, len(nodes))
+	only := ""
+	for _, node := range nodes {
+		id := strings.TrimSpace(node.ID)
+		if id == "" {
+			continue
+		}
+		ids[id] = struct{}{}
+		only = id
+	}
+	if len(ids) == 0 {
+		return cards
+	}
+	single := len(ids) == 1
+	for i := range cards {
+		id := strings.TrimSpace(cards[i].NodeID)
+		if _, ok := ids[id]; ok {
+			cards[i].NodeID = id
+			continue
+		}
+		if single {
+			cards[i].NodeID = only
+			continue
+		}
+		cards[i].NodeID = ""
+	}
+	return cards
+}
+
 func buildCardDistillInput(source Source, nodes []DocumentNode, maxRunes int) string {
 	if maxRunes <= 0 {
 		maxRunes = 12000
@@ -731,13 +768,14 @@ func firstListValue(values []string) string {
 	return ""
 }
 
+// ShouldUseLLMCardDistillation is the auto-mode length gate. TopicHint stays
+// a recall hint and does not select this path; callers choose rules or LLM
+// explicitly through shouldUseLLMForMode.
 func ShouldUseLLMCardDistillation(source Source, nodes []DocumentNode) bool {
 	if len(nodes) == 0 {
 		return false
 	}
-	if strings.TrimSpace(source.TopicHint) != "" {
-		return true
-	}
+	_ = source
 	totalTokens := 0
 	for _, node := range nodes {
 		totalTokens += node.TokenCount

@@ -14,26 +14,28 @@ export interface ChatTaskActionDetail {
 
 export interface ChatTaskPanelActions {
     dispatchChatTask?: (text: string, options: { session_key: string; project_path?: string }) => void | Promise<void>;
+    resumeChatTask?: (taskId: string, text?: string) => void | Promise<void>;
     cancelChatTask?: (taskId: string) => void | Promise<void>;
     steerChatTask?: (taskId: string, text: string) => void | Promise<void>;
     answerChatTask?: (taskId: string, text: string) => void | Promise<void>;
 }
 
-// Bridges tray events (cancel/steer/answer) to the panel actions.
+// Bridges tray events (resume/cancel/steer/answer) to the panel actions.
 export function useChatTaskActionBridge(actions: ChatTaskPanelActions): void {
-    const { cancelChatTask, steerChatTask, answerChatTask } = actions;
+    const { resumeChatTask, cancelChatTask, steerChatTask, answerChatTask } = actions;
     useEffect(() => {
         const onAction = (event: Event) => {
             const detail = (event as CustomEvent<ChatTaskActionDetail>).detail || {};
             const taskId = String(detail.taskId || "").trim();
             if (!taskId) return;
+            if (detail.action === "resume") void resumeChatTask?.(taskId, String(detail.text || ""));
             if (detail.action === "cancel") void cancelChatTask?.(taskId);
             if (detail.action === "steer") void steerChatTask?.(taskId, String(detail.text || ""));
             if (detail.action === "answer") void answerChatTask?.(taskId, String(detail.text || ""));
         };
         window.addEventListener(CHAT_TASK_ACTION_EVENT, onAction);
         return () => window.removeEventListener(CHAT_TASK_ACTION_EVENT, onAction);
-    }, [answerChatTask, cancelChatTask, steerChatTask]);
+    }, [answerChatTask, cancelChatTask, resumeChatTask, steerChatTask]);
 }
 
 // Runs the current composer text as a background task. clearComposerDraft is

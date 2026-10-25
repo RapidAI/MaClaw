@@ -37,36 +37,34 @@ func cardEmbeddingText(card Card) string {
 	return strings.Join(parts, " ")
 }
 
-// searchByEmbedding performs vector similarity search on card AND node embeddings.
-// Returns results sorted by cosine similarity to the query embedding.
-// Searches both distilled cards AND original document nodes to ensure
-// information lost during distillation is still discoverable.
+// searchByEmbedding searches both distilled cards and original document nodes.
+// Card vectors keep older and partially backfilled libraries searchable while
+// body collapsing still prefers the original node for display.
 func (s *SQLiteStore) searchByEmbedding(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
 	emb, generation := s.currentEmbedderSnapshot()
 	if emb == nil || embedding.IsNoop(emb) {
 		return nil, nil
 	}
-	// A library rebuild is embedding documents on this model. The query would
-	// wait behind those batches. Once that rebuild has finished, a search that
-	// was already in flight still embeds against the vectors now on disk.
+	resultTypes := normalizeSearchResultTypes(opts.ResultTypes)
+	wantTextVectors := wantsSearchType(resultTypes, "card") || wantsSearchType(resultTypes, "node")
+	wantRowVectors := len(resultTypes) > 0 && wantsSearchType(resultTypes, "table_row")
+	if !wantTextVectors && !wantRowVectors {
+		return nil, nil
+	}
 	if skipQueryEmbeddingDuringRefresh(ctx) {
 		return nil, nil
 	}
-	// The active model has no stored vectors yet. Embedding the query would only
-	// contend with the library refresh and still match nothing.
 	modelID := embeddingModelIdentifier(emb)
-	if !s.hasCurrentModelEmbeddings(ctx, modelID, emb.Dim()) {
+	if wantTextVectors && !wantRowVectors && !s.hasCurrentModelEmbeddings(ctx, modelID, emb.Dim()) {
 		return nil, nil
 	}
-	// The query side of asymmetric retrieval carries its own EmbeddingGemma task
-	// prompt; documents were indexed with RoleDocument, so the two spaces are a
-	// matched pair. Embedders without prompt support fall back to a plain Embed.
+	if wantRowVectors && !wantTextVectors && !s.hasCurrentModelEmbeddingsFor(ctx, embeddingEntityRow, modelID, emb.Dim()) {
+		return nil, nil
+	}
 	queryVec, err := embedding.EmbedAs(emb, opts.Query, embedding.RoleQuery)
 	if err != nil || !validEmbeddingVector(queryVec, emb.Dim()) {
 		return nil, nil
 	}
-	// A model can switch while a remote Embed call is in flight. Do not search
-	// its newly selected space with a vector produced by the previous model.
 	if !s.isEmbedderGenerationCurrent(generation) {
 		return nil, nil
 	}
@@ -75,119 +73,136 @@ func (s *SQLiteStore) searchByEmbedding(ctx context.Context, opts SearchOptions)
 	if limit <= 0 {
 		limit = 5
 	}
-
-	// --- Card embedding search ---
-	// SQLite has no native vector index. Until an ANN backend is enabled, score
-	// every ACL-filtered vector instead of pre-truncating by importance; ranking
-	// before cosine evaluation silently loses relevant low-importance content.
-	where := []string{"c.embedding IS NOT NULL", "LENGTH(c.embedding) > 0"}
-	args := make([]interface{}, 0)
-	where, args = appendSearchFilters(where, args, "s", opts)
-	if modelID != "" {
-		where = append(where, `EXISTS (SELECT 1 FROM knowledge_embedding_metadata em WHERE em.entity_type = 'card' AND em.entity_id = c.id AND em.model_id = ? AND em.dimension = ?)`)
-		args = append(args, modelID, len(queryVec))
-	}
-
-	sqlQuery := `SELECT c.id, COALESCE(c.node_id, ''), COALESCE(c.title, ''), COALESCE(c.claim, ''), COALESCE(c.summary, ''), c.embedding,
-		s.id, s.kind, s.uri, COALESCE(s.canonical_uri, ''), COALESCE(s.title, ''), COALESCE(s.author, ''), COALESCE(s.site_name, ''), COALESCE(s.published_at, ''), s.fetched_at, s.content_hash,
-		COALESCE(s.owner_id, ''), COALESCE(s.tenant_id, ''), COALESCE(s.project_path, ''), COALESCE(s.topic_hint, ''), COALESCE(s.source_trust, 0.5), COALESCE(s.batch_id, ''), COALESCE(s.relative_path, ''), s.status, COALESCE(s.error_message, ''), s.created_at, s.updated_at
-		FROM knowledge_cards c
-		JOIN knowledge_sources s ON s.id = c.source_id
-		WHERE ` + strings.Join(where, " AND ") + `
-		AND NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)`
-
-	rows, err := s.db.QueryContext(ctx, sqlQuery, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
 	type candidate struct {
 		result SearchResult
 		vector []float32
 		sim    float64
 	}
 	var candidates []candidate
-	var vectorCandidates []vectorANNVector
 
-	for rows.Next() {
-		var result SearchResult
-		var source Source
-		var embBlob []byte
-		var publishedAt, fetchedAt, createdAt, updatedAt string
-
-		if err := rows.Scan(&result.CardID, &result.NodeID, &result.CardTitle, &result.Claim, &result.Summary, &embBlob,
-			&source.ID, &source.Kind, &source.URI, &source.CanonicalURI, &source.Title, &source.Author, &source.SiteName, &publishedAt, &fetchedAt,
-			&source.ContentHash, &source.OwnerID, &source.TenantID, &source.ProjectPath, &source.TopicHint, &source.SourceTrust, &source.BatchID, &source.RelativePath,
-			&source.Status, &source.ErrorMessage, &createdAt, &updatedAt); err != nil {
+	if wantsSearchType(resultTypes, "card") {
+		where := []string{"c.embedding IS NOT NULL", "LENGTH(c.embedding) > 0"}
+		args := make([]interface{}, 0)
+		where, args = appendSearchFilters(where, args, "s", opts)
+		if modelID != "" {
+			where = append(where, `EXISTS (SELECT 1 FROM knowledge_embedding_metadata em WHERE em.entity_type = 'card' AND em.entity_id = c.id AND em.model_id = ? AND em.dimension = ?)`)
+			args = append(args, modelID, len(queryVec))
+		}
+		sqlQuery := `SELECT c.id, COALESCE(c.node_id, ''), COALESCE(c.title, ''), COALESCE(c.claim, ''), COALESCE(c.summary, ''), c.embedding,
+		COALESCE(n.title, ''), COALESCE(n.type, ''), COALESCE(n.page, 0), COALESCE(n.sheet_name, ''), COALESCE(n.row_range, ''), COALESCE(n.col_range, ''),
+		s.id, s.kind, s.uri, COALESCE(s.canonical_uri, ''), COALESCE(s.title, ''), COALESCE(s.author, ''), COALESCE(s.site_name, ''), COALESCE(s.published_at, ''), s.fetched_at, s.content_hash,
+		COALESCE(s.owner_id, ''), COALESCE(s.tenant_id, ''), COALESCE(s.project_path, ''), COALESCE(s.topic_hint, ''), COALESCE(s.source_trust, 0.5), COALESCE(s.batch_id, ''), COALESCE(s.relative_path, ''), s.status, COALESCE(s.error_message, ''), s.created_at, s.updated_at
+		FROM knowledge_cards c
+		LEFT JOIN document_nodes n ON n.id = c.node_id
+		JOIN knowledge_sources s ON s.id = c.source_id
+		WHERE ` + strings.Join(where, " AND ") + `
+		AND NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)`
+		rows, err := s.db.QueryContext(ctx, sqlQuery, args...)
+		if err != nil {
 			return nil, err
 		}
-
-		cardVec := bytesToFloat32Slice(embBlob)
-		if !validEmbeddingVector(cardVec, len(queryVec)) {
-			continue
-		}
-
-		source.PublishedAt = parseTime(publishedAt)
-		source.FetchedAt = parseTime(fetchedAt)
-		source.CreatedAt = parseTime(createdAt)
-		source.UpdatedAt = parseTime(updatedAt)
-		result.Source = source
-		result.ResultType = "card"
-		result.Snippet = result.Claim
-		// Score: cosine similarity scaled to be comparable with FTS scores
-		// cosine sim 0.3-1.0 → score 1.0-4.0
-		candidates = append(candidates, candidate{result: result, vector: cardVec})
-		vectorCandidates = append(vectorCandidates, vectorANNVector{key: "card:" + result.CardID, vector: cardVec})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if len(candidates) > 0 {
-		candidateIndexes := s.vectorANNCandidates("card:"+modelID, generation, vectorCandidates, queryVec, limit*4)
-		accelerated := make([]candidate, 0, len(candidateIndexes))
-		for _, index := range candidateIndexes {
-			candidate := candidates[index]
-			candidate.sim = cosineSimilarity(queryVec, candidate.vector)
-			if candidate.sim < 0.3 { // minimum similarity threshold
+		var cardCandidates []candidate
+		var vectorCandidates []vectorANNVector
+		for rows.Next() {
+			var result SearchResult
+			var source Source
+			var embBlob []byte
+			var publishedAt, fetchedAt, createdAt, updatedAt string
+			if err := rows.Scan(&result.CardID, &result.NodeID, &result.CardTitle, &result.Claim, &result.Summary, &embBlob,
+				&result.NodeTitle, &result.NodeType, &result.Page, &result.SheetName, &result.RowRange, &result.ColRange,
+				&source.ID, &source.Kind, &source.URI, &source.CanonicalURI, &source.Title, &source.Author, &source.SiteName, &publishedAt, &fetchedAt,
+				&source.ContentHash, &source.OwnerID, &source.TenantID, &source.ProjectPath, &source.TopicHint, &source.SourceTrust, &source.BatchID, &source.RelativePath,
+				&source.Status, &source.ErrorMessage, &createdAt, &updatedAt); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			cardVec := bytesToFloat32Slice(embBlob)
+			if !validEmbeddingVector(cardVec, len(queryVec)) {
 				continue
 			}
-			candidate.result.Score = 1.0 + (candidate.sim-0.3)*4.3
-			candidate.result.Citation = formatResultCitation(candidate.result)
-			accelerated = append(accelerated, candidate)
+			source.PublishedAt = parseTime(publishedAt)
+			source.FetchedAt = parseTime(fetchedAt)
+			source.CreatedAt = parseTime(createdAt)
+			source.UpdatedAt = parseTime(updatedAt)
+			result.Source = source
+			result.ResultType = "card"
+			result.Snippet = result.Claim
+			cardCandidates = append(cardCandidates, candidate{result: result, vector: cardVec})
+			vectorCandidates = append(vectorCandidates, vectorANNVector{key: "card:" + result.CardID, vector: cardVec})
 		}
-		candidates = accelerated
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+		if len(cardCandidates) > 0 {
+			want := limit * 4
+			for {
+				indexes := s.vectorANNCandidates("card:"+modelID, generation, vectorCandidates, queryVec, want)
+				candidates = candidates[:0]
+				for _, index := range indexes {
+					candidate := cardCandidates[index]
+					candidate.sim = cosineSimilarity(queryVec, candidate.vector)
+					if candidate.sim < 0.3 {
+						continue
+					}
+					candidate.result.Score = 1.0 + (candidate.sim-0.3)*4.3
+					candidate.result.Citation = formatResultCitation(candidate.result)
+					candidates = append(candidates, candidate)
+				}
+				if len(resultTypes) > 0 || len(indexes) == len(vectorCandidates) || want >= len(vectorCandidates) {
+					break
+				}
+				bodyResults := make([]SearchResult, 0, len(candidates))
+				for _, candidate := range candidates {
+					bodyResults = append(bodyResults, candidate.result)
+				}
+				if len(collapseSearchBodies(bodyResults)) >= limit {
+					break
+				}
+				want *= 2
+			}
+		}
 	}
 
-	// --- Node embedding search (original document full text) ---
-	nodeResults, nodeErr := s.searchNodesByEmbedding(ctx, queryVec, modelID, generation, opts)
-	if nodeErr == nil && len(nodeResults) > 0 {
+	if wantsSearchType(resultTypes, "node") {
+		nodeResults, nodeErr := s.searchNodesByEmbedding(ctx, queryVec, modelID, generation, opts)
+		if nodeErr != nil {
+			return nil, nodeErr
+		}
 		for _, nr := range nodeResults {
-			// Reverse the score→sim mapping: score = 1.0 + (sim-0.25)*4.0
 			sim := (nr.Score-1.0)/4.0 + 0.25
 			candidates = append(candidates, candidate{result: nr, sim: sim})
 		}
 	}
-
-	// Sort by similarity descending; stable tiebreakers keep pagination and
-	// evaluations deterministic.
+	if wantRowVectors {
+		rowResults, rowErr := s.searchTableRowsByEmbedding(ctx, structuredSearchOptionsFromSearch(opts), limit)
+		if rowErr != nil {
+			return nil, rowErr
+		}
+		for _, row := range rowResults {
+			sim := (row.Score-1.0)/4.0 + 0.25
+			candidates = append(candidates, candidate{result: row, sim: sim})
+		}
+	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		if candidates[i].sim == candidates[j].sim {
 			return embeddingResultKey(candidates[i].result) < embeddingResultKey(candidates[j].result)
 		}
 		return candidates[i].sim > candidates[j].sim
 	})
-
-	results := make([]SearchResult, 0, limit)
-	for i, c := range candidates {
-		if i >= limit {
-			break
-		}
+	results := make([]SearchResult, 0, len(candidates))
+	for _, c := range candidates {
 		results = append(results, c.result)
 	}
-	// Candidate loading and cosine ranking can outlive the query Embed call.
-	// Suppress an otherwise internally-consistent but stale result set when the
-	// configured model changed while SQLite was being scanned.
+	if len(resultTypes) == 0 {
+		results = collapseSearchBodies(results)
+	}
+	if len(results) > limit {
+		results = results[:limit]
+	}
 	if !s.isEmbedderGenerationCurrent(generation) {
 		return nil, nil
 	}
@@ -467,8 +482,7 @@ func skipQueryEmbeddingDuringRefresh(ctx context.Context) bool {
 var embeddingBackfillBatchSize = 64
 
 // hasCurrentModelEmbeddings reports whether card or node search has any vector
-// in this retrieval space. Table-row vectors do not count: text search never
-// reads them, so they must not cause a query embed that cannot match.
+// in this retrieval space. Table-row vectors use structured search instead.
 func (s *SQLiteStore) hasCurrentModelEmbeddings(ctx context.Context, modelID string, dimension int) bool {
 	if s == nil || s.db == nil || strings.TrimSpace(modelID) == "" || dimension <= 0 {
 		return false

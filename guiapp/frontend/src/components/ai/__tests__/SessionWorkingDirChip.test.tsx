@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetCloudWorkspaceDisplayNamesForTests, rememberCloudWorkspaceDisplayName } from '../codingTaskMode';
-import { composerWorkspaceKindLabel, SessionWorkingDirChip, truncatePathMiddle, workingDirDisplayLabel } from '../SessionWorkingDirChip';
+import { composerExpertFromTab, composerWorkspaceKindLabel, SessionWorkingDirChip, truncatePathMiddle, workingDirDisplayLabel } from '../SessionWorkingDirChip';
 
 const getTabWorkingDir = vi.fn();
 const setTabWorkingDir = vi.fn();
@@ -187,10 +187,51 @@ describe('SessionWorkingDirChip', () => {
         expect(screen.queryByTestId('working-dir-menu')).toBeNull();
     });
 
+    it('shows the expert name and icon to the right of the folder', async () => {
+        getTabWorkingDir.mockResolvedValue({ path: 'D:/work/app', is_default: true });
+        render(<SessionWorkingDirChip
+            tabId="expert-translate"
+            theme={theme}
+            lang="zh"
+            expert={{ name: '论文翻译专家', icon: '🌐' }}
+        />);
+        const chip = await screen.findByTestId('working-dir-chip');
+        const badge = screen.getByTestId('composer-expert-badge');
+        expect(badge.textContent).toContain('🌐');
+        expect(badge.textContent).toContain('论文翻译专家');
+        expect(badge.getAttribute('aria-label')).toBe('专家：论文翻译专家');
+        expect(chip.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(screen.queryByText('通用')).toBeNull();
+        cleanup();
+        render(<SessionWorkingDirChip tabId="expert-plain" theme={theme} lang="zh" expert={{ name: '论文润色专家' }} />);
+        expect((await screen.findByTestId('composer-expert-badge')).textContent).toContain('🤖');
+    });
+
+    it('shows an expert only for an expert tab', () => {
+        expect(composerExpertFromTab({ type: 'expert', expertId: 'builtin-paper-translate', title: '论文翻译专家', expertIcon: '🌐' })).toEqual({ name: '论文翻译专家', icon: '🌐' });
+        expect(composerExpertFromTab({ type: 'expert', expertId: 'builtin-paper-polish', title: '  ' })).toEqual({ name: 'builtin-paper-polish' });
+        expect(composerExpertFromTab({ type: 'expert', expertId: '  ', title: '通用' })).toBeNull();
+        expect(composerExpertFromTab({ type: 'local', title: '新建任务' })).toBeNull();
+        expect(composerExpertFromTab({ type: 'project', title: '编程任务' })).toBeNull();
+        expect(composerExpertFromTab(null)).toBeNull();
+    });
+
+    it('leaves the folder alone when no expert is assigned', async () => {
+        getTabWorkingDir.mockResolvedValue({ path: 'D:/work/app', is_default: true });
+        render(<SessionWorkingDirChip tabId="proj-plain" theme={theme} lang="zh" expert={{ name: '  ', icon: '🌐' }} />);
+        await screen.findByTestId('working-dir-chip');
+        expect(screen.queryByTestId('composer-expert-badge')).toBeNull();
+    });
+
     it('keeps the open chip highlighted above the composer button locks', () => {
         const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../App.css'), 'utf8');
         expect(css).toContain('button.mc-working-dir-chip[aria-expanded="true"]');
         expect(css).toMatch(/button\.mc-working-dir-chip\[aria-expanded="true"\][^{]*\{[^}]*border-color:\s*var\(--mc-accent\)/);
+        // The 34px utility lock must not stretch this text chip. The expert mark
+        // uses that same 24px row and the lock's surface tokens.
+        expect(css).toMatch(/button\.mc-working-dir-chip,\s*#App \.mc-input-stack button\.mc-working-dir-chip\s*\{[^}]*min-height:\s*24px/);
+        expect(css).toMatch(/\.swdc-expert\s*\{[^}]*height:\s*24px[^}]*border-radius:\s*var\(--radius-md\)[^}]*var\(--mc-muted-surface,\s*var\(--theme-surface\)\)/);
+        expect(css).toMatch(/\.swdc-bar\s*\{[^}]*flex:\s*0 0 auto/);
     });
 });
 

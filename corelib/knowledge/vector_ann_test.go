@@ -17,6 +17,9 @@ func TestApproximateVectorSearchIsOptInAndKeepsTopKParity(t *testing.T) {
 	}
 	defer store.Close()
 	store.SetEmbedder(directionalKnowledgeEmbedder{})
+	if err := store.EnsureNodeEmbeddingColumn(); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC()
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -31,11 +34,11 @@ func TestApproximateVectorSearchIsOptInAndKeepsTopKParity(t *testing.T) {
 		if i == 299 {
 			vector = []float32{1, 0}
 		}
-		id := fmt.Sprintf("ann-card-%03d", i)
-		if _, err := tx.ExecContext(ctx, insertCardSQL, id, source.ID, nil, id, id, "", "[]", "[]", "[]", "", "", "", "", "", .8, 1, .8, float32SliceToBytes(vector), formatTime(now), formatTime(now)); err != nil {
+		id := fmt.Sprintf("ann-node-%03d", i)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO document_nodes(id, source_id, type, title, text, embedding) VALUES (?, ?, 'paragraph', ?, ?, ?)`, id, source.ID, id, id, float32SliceToBytes(vector)); err != nil {
 			t.Fatal(err)
 		}
-		if err := upsertEmbeddingMetadataTx(ctx, tx, embeddingEntityCard, id, embeddingModelIdentifier(directionalKnowledgeEmbedder{}), 2); err != nil {
+		if err := upsertEmbeddingMetadataTx(ctx, tx, embeddingEntityNode, id, embeddingModelIdentifier(directionalKnowledgeEmbedder{}), 2); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -54,7 +57,7 @@ func TestApproximateVectorSearchIsOptInAndKeepsTopKParity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(exact) == 0 || len(approximate) == 0 || exact[0].CardID != "ann-card-299" || approximate[0].CardID != exact[0].CardID {
+	if len(exact) == 0 || len(approximate) == 0 || exact[0].NodeID != "ann-node-299" || approximate[0].NodeID != exact[0].NodeID {
 		t.Fatalf("exact=%#v approximate=%#v", exact, approximate)
 	}
 }

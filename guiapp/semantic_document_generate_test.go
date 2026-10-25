@@ -911,8 +911,8 @@ func TestIMSemanticWeatherPDFAdvancesToDeliverAfterSearchAndGenerate(t *testing.
 	if strings.Contains(got, "semantic_plan_advance_failed") {
 		t.Fatalf("successful generate must not hide behind advance failure: %q", got)
 	}
-	if !strings.Contains(got, "PDF artifact published") {
-		t.Fatalf("generate result=%q", got)
+	if !strings.Contains(got, "PDF artifact published") || strings.Contains(got, "send_file") || strings.Contains(got, "deliver it through") {
+		t.Fatalf("generate result must not ask for a send: %q", got)
 	}
 	var deliveryName string
 	for name, grant := range surface.grants {
@@ -970,6 +970,86 @@ func TestChatTaskHandoffStillDeliversAnAlreadyPublishedPDF(t *testing.T) {
 	}
 	if resp.LocalFilePath == "" && resp.FileData == "" {
 		t.Fatalf("an already published PDF must still attach: %+v", resp)
+	}
+}
+
+func TestCurrentChannelSendFileIsNotAnExternalCommit(t *testing.T) {
+	cb, deliveryName := weatherPDFDesktopReadyForHostDeliver(t)
+	if deliveryName != "send_file" {
+		t.Fatalf("current-chat grant name=%q", deliveryName)
+	}
+	aimed := `{"path":"report.pdf","destination":"wechat","forward_to_im":true}`
+	if !cb.CommitCallBoundToChat("send_file", aimed) {
+		t.Fatal("the live current-chat grant must stay in this chat")
+	}
+	if cb.CommitCallBoundToChat("send_to_im", `{}`) {
+		t.Fatal("send_to_im is an external send")
+	}
+	if _, blocked := agent.ApplyCommitGate(cb, "send_file", aimed); blocked {
+		t.Fatal("a path on the current-chat grant must not ask for approval")
+	}
+	if (&sharedAgentLoopCallbacks{}).CommitCallBoundToChat("send_file", `{}`) {
+		t.Fatal("a turn with no live grant is not the chat attach")
+	}
+	desc, _ := semanticCurrentFileDeliveryDefinition()["function"].(map[string]interface{})["description"].(string)
+	if strings.Contains(desc, "Do not call it") || !strings.Contains(desc, "does not need approval") {
+		t.Fatalf("description=%q", desc)
+	}
+	got := cb.ExecuteToolCall(deliveryName, `{}`, "call-send").Result
+	if !strings.Contains(got, "Delivery committed") || !strings.Contains(got, "This is not a send.") || strings.Contains(got, "Report the file as sent") {
+		t.Fatalf("delivery result=%q", got)
+	}
+}
+
+func TestCurrentChannelSendFilePathDeliversTheBoundFile(t *testing.T) {
+	cb, deliveryName := weatherPDFDesktopReadyForHostDeliver(t)
+	aimed := `{"path":"C:/Windows/win.ini","destination":"wechat","forward_to_im":true,"artifact_id":"forged"}`
+	got := cb.ExecuteToolCall(deliveryName, aimed, "call-send-path").Result
+	if strings.Contains(got, "[system rejected]") || strings.Contains(got, "win.ini") || strings.Contains(got, "wechat") || strings.Contains(got, "forged") {
+		t.Fatalf("path-shaped attach must deliver the bound file: %q", got)
+	}
+	if !strings.Contains(got, "Delivery committed") || !strings.Contains(got, "This is not a send.") {
+		t.Fatalf("delivery result=%q", got)
+	}
+	if cb.semanticDeliveryFileMIME != "application/pdf" || strings.Contains(cb.semanticDeliveryFileName, "win.ini") || cb.semanticDeliveryFileName == "" {
+		t.Fatalf("bound file=%q mime=%q", cb.semanticDeliveryFileName, cb.semanticDeliveryFileMIME)
+	}
+	if cb.filesForwarded != 0 {
+		t.Fatalf("current-chat attach forwarded %d file(s)", cb.filesForwarded)
+	}
+}
+
+func TestPausedTurnStillAttachesPublishedCurrentChannelFile(t *testing.T) {
+	cb, _ := weatherPDFDesktopReadyForHostDeliver(t)
+	cb.skipHostAutoFileDelivery = true
+	question := "执行 send_file 缺少人的批准，这一步先不执行。要允许这一形状的调用吗？"
+	resp := &IMAgentResponse{Text: question}
+	cb.projectPausedCurrentChannelFile(resp)
+	if !cb.skipHostAutoFileDelivery {
+		t.Fatal("attaching the current-chat file cleared the pause")
+	}
+	if resp.FileMimeType != "application/pdf" || (resp.LocalFilePath == "" && resp.FileData == "") {
+		t.Fatalf("a pause must still attach the published file: %+v", resp)
+	}
+	if resp.Text != question {
+		t.Fatalf("the approval question was replaced: %q", resp.Text)
+	}
+}
+
+func TestPausedTurnDoesNotGenerateWhileAttaching(t *testing.T) {
+	cb := weatherPDFDesktopReadyAfterSearch(t)
+	name, grant := soleLiveSemanticGrantByAdapter(cb.semanticSurface, "generate_pdf")
+	if name == "" || grant.Token == "" {
+		t.Fatal("generate_pdf grant missing after search")
+	}
+	cb.skipHostAutoFileDelivery = true
+	resp := &IMAgentResponse{Text: "要哪一天的报告？"}
+	cb.projectPausedCurrentChannelFile(resp)
+	if _, ok := cb.semanticSurface.grants[name]; !ok {
+		t.Fatal("a pause must not consume generate_pdf")
+	}
+	if resp.LocalFilePath != "" || resp.FileData != "" || resp.Text != "要哪一天的报告？" {
+		t.Fatalf("pause generated or rewrote the question: %+v", resp)
 	}
 }
 
@@ -1613,6 +1693,11 @@ func TestIMSemanticWeatherPDFRunLoopPublishesDependentGrantAfterCommittedBatch(t
 				"message":       map[string]interface{}{"role": "assistant", "content": "PDF report generated."},
 				"finish_reason": "stop",
 			}}}
+		case 4:
+			response = map[string]interface{}{"choices": []map[string]interface{}{{
+				"message":       map[string]interface{}{"role": "assistant", "content": "PDF report generated."},
+				"finish_reason": "stop",
+			}}}
 		default:
 			t.Fatalf("unexpected model request %d", request)
 		}
@@ -1627,11 +1712,11 @@ func TestIMSemanticWeatherPDFRunLoopPublishesDependentGrantAfterCommittedBatch(t
 	cb.maxIter = 4
 	cb.systemPrompt = "test semantic loop"
 	result := agent.RunLoop(cb, cb.userText, nil, server.Client(), cb)
-	if result.Error != "" || result.Text != "PDF report generated." {
+	if result.Error != "required_effect_unsettled" || result.Text != "PDF report generated." {
 		t.Fatalf("RunLoop result=%+v", result)
 	}
-	if request != 3 {
-		t.Fatalf("model requests=%d, want 3", request)
+	if request != 4 {
+		t.Fatalf("model requests=%d, want 4", request)
 	}
 }
 
@@ -2042,6 +2127,12 @@ func TestSemanticGrantPromptFenceRejectsHistoryToolNames(t *testing.T) {
 	}
 	if !strings.Contains(semanticGrantPromptFence, "this same reply") || !strings.Contains(semanticGrantPromptFence, "please wait") {
 		t.Fatalf("fence omitted same-reply generate_pdf guidance: %q", semanticGrantPromptFence)
+	}
+	if !strings.Contains(semanticGrantPromptFence, "not an external send") || !strings.Contains(semanticGrantPromptFence, "does not wait for approval") {
+		t.Fatalf("fence must say the current-chat attach is not an approval: %q", semanticGrantPromptFence)
+	}
+	if strings.Contains(semanticGrantPromptFence, "send_file is not that call") || strings.Contains(semanticGrantPromptFence, "but not send_file") {
+		t.Fatalf("fence still tells the model to skip the current-chat attach: %q", semanticGrantPromptFence)
 	}
 	if strings.Contains(semanticGrantPromptFence, "完整代理") {
 		t.Fatalf("fence leaked workaround copy: %s", semanticGrantPromptFence)

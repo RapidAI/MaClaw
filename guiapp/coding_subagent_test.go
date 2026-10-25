@@ -391,7 +391,7 @@ func TestCodingSubAgentOperationalTaskUsesFocusedNonMutatingTools(t *testing.T) 
 		task:     &TaskItem{Index: 1, Title: "Run the app", Description: "run the app", RequestKind: codingRequestOperational},
 	}
 	names := codingSubAgentToolDefinitionNamesForTest(cb.BuildTools("run the app"))
-	for _, want := range []string{"bash", "read_file", "Glob", "ripgrep", codeNavigationToolName} {
+	for _, want := range []string{"bash", "read_file", "Glob", "ripgrep", codeNavigationToolName, codeSearchToolName} {
 		if !containsStringForTest(names, want) {
 			t.Fatalf("operational BuildTools missing %q; got %#v", want, names)
 		}
@@ -524,11 +524,11 @@ func TestBuildCodingSubAgentSystemPrompt_WithContext(t *testing.T) {
 		t.Error("full untruncated context should not appear in the prompt")
 	}
 	// The cap is a leak detector for untruncated contexts (~1000 runes each,
-	// truncated to 280), not a platform limit: the static template carries the
-	// workflow, guardrails, and Windows shell contract (~8.1k runes today).
-	// 8500 leaves headroom for that template while still failing a leak.
-	if len([]rune(prompt)) > 8500 {
-		t.Errorf("prompt too long: %d runes, expected <8500", len([]rune(prompt)))
+	// truncated to 280), not a platform limit. The static template, including
+	// the code_search routing sentence, is about 8.6k runes. 8800 still fails
+	// when a 1000-rune context is copied in whole.
+	if len([]rune(prompt)) > 8800 {
+		t.Errorf("prompt too long: %d runes, expected <8800", len([]rune(prompt)))
 	}
 	// Previous outputs are injected into the task user message, not duplicated in
 	// the system prompt.
@@ -5758,6 +5758,44 @@ func TestCodingSubAgentExecuteToolEmitsStructuredToolEvent(t *testing.T) {
 	}
 }
 
+func TestCodingSubAgentToolFinishedEventRecordsCodegraphBackend(t *testing.T) {
+	var progress []string
+	cb := &codingSubAgentCallbacks{
+		task: &TaskItem{Index: 7, Title: "Inspect parser"},
+		subagent: &CodingSubAgent{
+			onProgress: func(text string) {
+				progress = append(progress, text)
+			},
+		},
+	}
+	result := `{"backend":"codegraph","operation":"file_symbols","query":"src/main.cpp","output":"symbols"}`
+	tests := []struct {
+		name   string
+		result string
+		want   string
+	}{
+		{name: "read_file", result: result, want: "codegraph"},
+		{name: "code_navigation", result: result, want: "codegraph"},
+		{name: "read_file", result: `{"backend":"ripgrep","operation":"explore","output":"matches"}`, want: "read_file"},
+		{name: "read_file", result: `{"backend":"codegraph"}`, want: "read_file"},
+		{name: "bash", result: result, want: "bash"},
+		{name: "code_navigation", result: `{"backend":"remote:auto","operation":"explore","output":"matches"}`, want: "code_navigation"},
+	}
+
+	for _, tc := range tests {
+		cb.emitToolFinishedEvent(tc.name, `{}`, tc.result, codingToolOutcomeSuccess, 7*time.Millisecond)
+	}
+	if len(progress) != len(tests) {
+		t.Fatalf("expected %d tool events, got %#v", len(tests), progress)
+	}
+	for i, tc := range tests {
+		event, ok := parseCodingAgentEventText(progress[i])
+		if !ok || event.Detail != tc.want {
+			t.Fatalf("event %d detail = %q, want %q: %#v", i, event.Detail, tc.want, progress[i])
+		}
+	}
+}
+
 func TestCodingSubAgentToolFinishedEventPrefersStderrDiagnostic(t *testing.T) {
 	var progress []string
 	cb := &codingSubAgentCallbacks{
@@ -9553,6 +9591,11 @@ func TestSummarizeSubAgentQuality(t *testing.T) {
 	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, []string{"main.go"}, nil, nil, 0, nil, []CodingSubAgentDynamicToolResult{{Tool: "knowledge_search", Name: "project conventions", Succeeded: false, Summary: "knowledge backend unavailable"}})
 	if status != "passed" || count != 0 || strings.Contains(summary, "dynamic tool failed") {
 		t.Fatalf("optional knowledge search failure must not invalidate verified work, got %q, %q, %d", status, summary, count)
+	}
+
+	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, []string{"main.go"}, nil, nil, 0, nil, []CodingSubAgentDynamicToolResult{{Tool: "code_search", Succeeded: false, Summary: "path not found: test-prog. Omit path to search the project."}})
+	if status != "passed" || count != 0 || strings.Contains(summary, "dynamic tool failed") {
+		t.Fatalf("code_search path correction must not invalidate verified work, got %q, %q, %d", status, summary, count)
 	}
 
 	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, []string{"main.go"}, nil, nil, 1, nil, []CodingSubAgentDynamicToolResult{

@@ -81,6 +81,16 @@ describe("svgWithRasterLabels", () => {
         expect(count * font * 1.25).toBeLessThanOrEqual(28.05);
     });
 
+    it("prints a typeset formula from data-plain instead of both KaTeX layers", () => {
+        const katex = `<span class="katex" data-plain="L = L_CE"><span class="katex-mathml"><math><semantics><mrow><mi>L</mi></mrow><annotation encoding="application/x-tex">L = L_{CE}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="mord">LCE</span></span></span>`;
+        const svg = `<svg id="m" width="200" height="40"><foreignObject x="0" y="0" width="180" height="28"><div>损失 ${katex}</div></foreignObject></svg>`;
+        const next = svgWithRasterLabels(svg);
+        expect(next).toContain("损失 L = L_CE");
+        expect(next).not.toContain("L_{CE}");
+        expect(next).not.toContain("LCE");
+        expect(next).not.toContain("katex");
+    });
+
     it("leaves a diagram without html labels unchanged", () => {
         const svg = '<svg id="m" width="10" height="10"><text>A</text></svg>';
         expect(svgWithRasterLabels(svg)).toBe(svg);

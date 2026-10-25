@@ -2743,6 +2743,9 @@ func TestSharedLoopCheckpointIsFinishedWork(t *testing.T) {
 	if !sharedLoopCheckpointIsFinishedWork(agent.LoopResult{HardExit: true, Error: agent.ErrNoProgress}) {
 		t.Fatal("a committed no-progress stop must not stay a crash marker")
 	}
+	if !sharedLoopCheckpointIsFinishedWork(agent.LoopResult{HardExit: true, Error: agent.ErrDeliverableUnassigned}) {
+		t.Fatal("an unfinished declared deliverable must not stay a crash marker")
+	}
 	if sharedLoopCheckpointIsFinishedWork(agent.LoopResult{Error: "recovery_checkpoint_failed"}) {
 		t.Fatal("a checkpoint failure must keep the marker")
 	}

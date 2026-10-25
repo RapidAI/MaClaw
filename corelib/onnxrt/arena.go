@@ -22,6 +22,7 @@ import "sync"
 //   - Ops that accumulate into their output (ConvTranspose col2im
 //     scatter-add, ReduceMean) get a zeroed buffer on checkout
 //     (arenaPlan.needsZero). Every other kernel fully overwrites its output.
+//     ReduceSum assigns each reduced value, so it is not listed.
 
 // arenaMaxElems caps how many floats one arena retains (512 MB). Buffers
 // returned past the cap are dropped for the GC.
@@ -221,6 +222,8 @@ func (g *Graph) computeArenaPlan() {
 	for _, nd := range nodes {
 		switch nd.OpType {
 		case "ConvTranspose", "ReduceMean":
+			// ReduceSum is absent on purpose: opReduce assigns each output.
+			// Listing it here would hide a += into a dirty buffer.
 			plan.needsZero[nd] = true
 		}
 	}

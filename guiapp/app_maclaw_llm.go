@@ -3643,8 +3643,7 @@ func formatMaclawLLMTestError(err error, cfg corelib.MaclawLLMConfig) error {
 }
 
 // quietConnectionProbe turns reasoning off for a connectivity or vision check.
-// Always-on models are put back to enabled; an explicit disable makes them
-// reject the request.
+// Models that reject off are put on their cheapest legal effort instead.
 func quietConnectionProbe(cfg corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
 	cfg.ThinkingMode = "disabled"
 	cfg.ReasoningEffort = ""
@@ -3655,8 +3654,12 @@ func quietConnectionProbe(cfg corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
 // probe keeps the provider cap: it classifies a short colour answer, and
 // cutting that reply at the text-probe limit marks a working model inconclusive.
 func capConnectionProbeOutput(cfg corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
-	if cfg.MaxOutputTokens <= 0 || cfg.MaxOutputTokens > corelib.LLMProbeMaxOutputTokens {
-		cfg.MaxOutputTokens = corelib.LLMProbeMaxOutputTokens
+	limit := corelib.LLMProbeMaxOutputTokens
+	if corelib.ProbeNeedsReasoningRoom(cfg) {
+		limit = corelib.LLMProbeAlwaysOnMaxOutputTokens
+	}
+	if cfg.MaxOutputTokens <= 0 || cfg.MaxOutputTokens > limit {
+		cfg.MaxOutputTokens = limit
 	}
 	return cfg
 }
@@ -3718,8 +3721,49 @@ func (a *App) testResponsesAPILLM(cfg corelib.MaclawLLMConfig) (string, error) {
 	lease.SetCancel(scheduledCancel)
 	defer scheduledCancel()
 
+	for attempt := 0; attempt < 2; attempt++ {
+		text, err := postResponsesConnectionProbe(scheduledCtx, client, cfg, messages, trace)
+		if err == nil {
+			return text, nil
+		}
+		if attempt == 0 {
+			if next, ok := llm.ConfigAfterThinkingRejection(cfg, err); ok {
+				cfg = next
+				continue
+			}
+		}
+		return "", err
+	}
+	return "", fmt.Errorf("no response from model")
+}
+
+// responsesProbeHTTPError is a Responses probe failure whose text is the
+// classified dialog sentence and whose cause still carries the response body.
+type responsesProbeHTTPError struct {
+	msg string
+	*llm.HTTPStatusError
+}
+
+func (e *responsesProbeHTTPError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.msg
+}
+
+func (e *responsesProbeHTTPError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.HTTPStatusError
+}
+
+// postResponsesConnectionProbe sends one Responses connectivity check.
+// A thinking-off refusal is returned with its response body still attached
+// so the caller can retry once at the legal effort.
+func postResponsesConnectionProbe(ctx context.Context, client *http.Client, cfg corelib.MaclawLLMConfig, messages []interface{}, trace llm.RequestTrace) (string, error) {
 	if corelib.OpenCodeUsesResponsesAPI(cfg.URL, cfg.Model) {
-		streamed, streamErr := llm.DoResponsesAPIRequestStream(scheduledCtx, cfg, messages, nil, client, nil, nil)
+		streamed, streamErr := llm.DoResponsesAPIRequestStream(ctx, cfg, messages, nil, client, nil, nil)
 		globalLLMScheduler.ObserveResult(trace, streamErr)
 		if streamErr != nil {
 			return "", streamErr
@@ -3736,7 +3780,7 @@ func (a *App) testResponsesAPILLM(cfg corelib.MaclawLLMConfig) (string, error) {
 		}
 		return stripFunctionCalls(stripThinkTags(text)), nil
 	}
-	req, _, endpoint, err := llm.NewResponsesAPIRequest(scheduledCtx, cfg, messages, llm.ResponsesAPIRequestOptions{
+	req, _, endpoint, err := llm.NewResponsesAPIRequest(ctx, cfg, messages, llm.ResponsesAPIRequestOptions{
 		Stream: false,
 	})
 	if err != nil {
@@ -3756,9 +3800,12 @@ func (a *App) testResponsesAPILLM(cfg corelib.MaclawLLMConfig) (string, error) {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		msg := classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, cfg.Model, cfg.ProviderName)
 		log.Printf("[LLM] TestResponsesAPI http_error status=%d endpoint=%s model=%s msg=%s", resp.StatusCode, endpoint, cfg.Model, msg)
-		err := fmt.Errorf("%s", msg)
-		globalLLMScheduler.ObserveResult(trace, err)
-		return "", err
+		httpErr := &llm.HTTPStatusError{StatusCode: resp.StatusCode, Body: append([]byte(nil), body...)}
+		// The dialog keeps the classified sentence. The body stays on the
+		// unwrap chain so a thinking-off refusal can be retried once.
+		probeErr := &responsesProbeHTTPError{msg: msg, HTTPStatusError: httpErr}
+		globalLLMScheduler.ObserveResult(trace, probeErr)
+		return "", probeErr
 	}
 
 	parsed, err := llm.ParseNonStreamResponsesAPIResponse(resp)
@@ -3950,6 +3997,11 @@ func classifyVisionProbeHTTPFailure(statusCode int, body []byte) visionProbeResu
 	if statusCode != http.StatusBadRequest && statusCode != http.StatusUnprocessableEntity {
 		return visionProbeInconclusive
 	}
+	// A thinking-off refusal is not an image-capability answer. Gateways echo
+	// the request, so image_url plus 不支持 would otherwise clear SupportsVision.
+	if _, rejected := corelib.ThinkingOffRejectedEffort(string(body)); rejected {
+		return visionProbeInconclusive
+	}
 	message := strings.ToLower(string(body))
 	// Require both an image/vision reference and an explicit capability rejection
 	// so ordinary malformed-request errors are still treated as inconclusive.
@@ -4053,58 +4105,82 @@ func probeVisionResponsesAPIContext(ctx context.Context, probeCfg corelib.Maclaw
 			map[string]interface{}{"type": "image_url", "image_url": map[string]interface{}{"url": "data:image/png;base64," + visionProbeRedPNG}},
 		},
 	}}
+	// Text and vision probes run together, so a floor remembered by the text
+	// probe is not yet visible to this request. Retry the refusal once here,
+	// on the same lease, before the result is saved.
+	for attempt := 0; attempt < 2; attempt++ {
+		result, err := postVisionResponsesProbe(scheduledCtx, client, probeCfg, messages, trace)
+		if err == nil {
+			return result
+		}
+		if attempt == 0 {
+			if next, ok := llm.ConfigAfterThinkingRejection(probeCfg, err); ok {
+				probeCfg = next
+				continue
+			}
+		}
+		return result
+	}
+	return visionProbeInconclusive
+}
+
+// postVisionResponsesProbe sends one Responses vision check. A non-2xx
+// response is returned with its body so a thinking-off refusal can be
+// retried before the caller treats it as an image-capability answer.
+func postVisionResponsesProbe(ctx context.Context, client *http.Client, probeCfg corelib.MaclawLLMConfig, messages []interface{}, trace llm.RequestTrace) (visionProbeResult, error) {
 	if corelib.OpenCodeUsesResponsesAPI(probeCfg.URL, probeCfg.Model) {
-		streamed, streamErr := llm.DoResponsesAPIRequestStream(scheduledCtx, probeCfg, messages, nil, client, nil, nil)
+		streamed, streamErr := llm.DoResponsesAPIRequestStream(ctx, probeCfg, messages, nil, client, nil, nil)
 		globalLLMScheduler.ObserveResult(trace, streamErr)
 		if streamErr != nil {
 			var httpErr *llm.HTTPStatusError
 			if errors.As(streamErr, &httpErr) && httpErr != nil {
-				return classifyVisionProbeHTTPFailure(httpErr.StatusCode, httpErr.Body)
+				return classifyVisionProbeHTTPFailure(httpErr.StatusCode, httpErr.Body), streamErr
 			}
 			log.Printf("[LLM] vision probe ResponsesAPI error: %v", streamErr)
-			return visionProbeInconclusive
+			return visionProbeInconclusive, nil
 		}
 		content := ""
 		if streamed != nil && len(streamed.Choices) > 0 {
 			content = streamed.Choices[0].Message.Content
 		}
-		return classifyVisionProbeResponse(content)
+		return classifyVisionProbeResponse(content), nil
 	}
-	req, data, _, err := llm.NewResponsesAPIRequest(scheduledCtx, probeCfg, messages, llm.ResponsesAPIRequestOptions{
+	req, data, _, err := llm.NewResponsesAPIRequest(ctx, probeCfg, messages, llm.ResponsesAPIRequestOptions{
 		Stream:    false,
 		ExtraBody: map[string]interface{}{"store": false},
 	})
 	if err != nil {
 		log.Printf("[LLM] vision probe ResponsesAPI request error: %v", err)
-		return visionProbeInconclusive
+		return visionProbeInconclusive, nil
 	}
 
 	resp, err := client.Do(req)
 	globalLLMScheduler.ObserveResult(trace, err)
 	if err != nil {
 		log.Printf("[LLM] vision probe ResponsesAPI error: %v", err)
-		return visionProbeInconclusive
+		return visionProbeInconclusive, nil
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		log.Printf("[LLM] vision probe ResponsesAPI: HTTP %d request=%s", resp.StatusCode, llm.SummarizeOpenAIChatRequestBody(data))
-		globalLLMScheduler.ObserveResult(trace, fmt.Errorf("HTTP %d", resp.StatusCode))
-		return classifyVisionProbeHTTPFailure(resp.StatusCode, body)
+		httpErr := &llm.HTTPStatusError{StatusCode: resp.StatusCode, Body: append([]byte(nil), body...)}
+		globalLLMScheduler.ObserveResult(trace, httpErr)
+		return classifyVisionProbeHTTPFailure(resp.StatusCode, body), httpErr
 	}
 
 	parsed, err := llm.ParseNonStreamResponsesAPIResponse(resp)
 	globalLLMScheduler.ObserveResult(trace, err)
 	if err != nil || len(parsed.Choices) == 0 {
-		return visionProbeInconclusive
+		return visionProbeInconclusive, nil
 	}
 	content := parsed.Choices[0].Message.Content
 	result := classifyVisionProbeResponse(content)
 	if result != visionProbeSupported && content != "" {
 		log.Printf("[LLM] vision probe ResponsesAPI: model replied %q, looksLikeVision=false", truncateForLog(content, 120))
 	}
-	return result
+	return result, nil
 }
 
 // saveVisionProbeResultForProvider persists a vision probe result for the
@@ -4202,33 +4278,26 @@ func (a *App) saveVisionProbeResult(providerID, providerName, model string, supp
 	return nil
 }
 
-// normalizeThinkingModeSetting normalizes a user-supplied thinking mode to
-// "" (unset/legacy auto), "enabled", or "disabled". Unknown values fall back
-// to unset.
+// normalizeThinkingModeSetting normalizes a user-supplied thinking level to
+// the persisted spelling: "" (auto), "low", "high", "max", or "none".
 func normalizeThinkingModeSetting(v string) string {
 	return corelib.NormalizeGlobalThinkingMode(v)
 }
 
-// effectiveThinkingModeSetting resolves the persisted setting to the mode
-// actually applied to requests. Unset (legacy "auto") defaults to enabled:
-// desktop users expect the reasoning stream by default, while "auto" meant
-// most providers silently omitted reasoning controls (blank thinking panel).
-// Per-provider/model auto behavior still lives in corelib for configs that
-// bypass this global setting.
+// effectiveThinkingModeSetting is the level the settings UI shows.
 func effectiveThinkingModeSetting(setting string) string {
 	return corelib.EffectiveGlobalThinkingMode(setting)
 }
 
-// withGlobalThinkingMode applies the global maclaw_llm_thinking_mode setting
-// to a materialized LLM config. Unset resolves to enabled (see
-// effectiveThinkingModeSetting).
+// withGlobalThinkingMode applies the global thinking level to a materialized
+// LLM config. Auto leaves ordinary providers alone. Always-on models that
+// reject thinking off are coerced to their cheapest legal effort.
 func (a *App) withGlobalThinkingMode(cfg corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
 	appCfg, err := a.LoadConfig()
 	if err != nil {
 		return cfg
 	}
-	cfg.ThinkingMode = effectiveThinkingModeSetting(appCfg.MaclawLLMThinkingMode)
-	return corelib.CoerceAlwaysOnThinkingMode(cfg)
+	return corelib.ApplyGlobalThinkingLevel(cfg, appCfg.MaclawLLMThinkingMode)
 }
 
 // maclawLLMConfigForMutation returns the complete current configuration. It
@@ -4241,21 +4310,20 @@ func (a *App) maclawLLMConfigForMutation() (corelib.AppConfig, error) {
 	return cfg, err
 }
 
-// GetMaclawLLMThinkingMode returns the effective global thinking mode:
-// "enabled" (default when unset) or "disabled".
+// GetMaclawLLMThinkingMode returns the global thinking level: auto, low,
+// high, max, or none. Unset is auto.
 func (a *App) GetMaclawLLMThinkingMode() string {
 	cfg, err := a.LoadConfig()
 	if err != nil {
-		return "enabled"
+		return "auto"
 	}
 	return effectiveThinkingModeSetting(cfg.MaclawLLMThinkingMode)
 }
 
-// SetMaclawLLMThinkingMode persists the global thinking mode
-// ("enabled", "disabled"; "" / "auto" stores unset, which resolves to
-// enabled — kept for backward compatibility with older frontends).
+// SetMaclawLLMThinkingMode persists the global thinking level. auto stores
+// unset. Legacy enabled/on stores high, and disabled/off stores none.
 func (a *App) SetMaclawLLMThinkingMode(mode string) error {
-	_, err := a.PatchConfigFields(map[string]interface{}{"maclaw_llm_thinking_mode": mode})
+	_, err := a.PatchConfigFields(map[string]interface{}{"maclaw_llm_thinking_mode": normalizeThinkingModeSetting(mode)})
 	return err
 }
 

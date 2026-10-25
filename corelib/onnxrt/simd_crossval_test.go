@@ -510,6 +510,111 @@ func TestSIMDKernelsDirect(t *testing.T) {
 	}
 }
 
+// TestReduceExtremeLanes checks the AVX2 and AVX512 bodies directly, including
+// a 4-byte-unaligned row. The dispatcher on an AVX-512 CPU never calls the
+// AVX2 body for n >= 16, so this test calls both kernels itself.
+func TestReduceExtremeLanes(t *testing.T) {
+	if !hasAVX2FMA {
+		t.Skip("AVX2+FMA not available on this CPU")
+	}
+	patterns := func(n int) [][]float32 {
+		out := make([][]float32, 0, 4)
+		asc := make([]float32, n)
+		for i := range asc {
+			asc[i] = float32(i - n/3)
+		}
+		out = append(out, asc)
+		neg := make([]float32, n)
+		for i := range neg {
+			neg[i] = -float32(i + 1)
+		}
+		neg[n/2] = -0.25
+		out = append(out, neg)
+		withNaN := append([]float32(nil), asc...)
+		withNaN[n/7] = math.Float32frombits(0x7fc00011)
+		out = append(out, withNaN)
+		return out
+	}
+	for _, n := range []int{8, 16, 24, 64, 4096} {
+		for _, row := range patterns(n) {
+			checkReduceLanes(t, row, false)
+			if hasAVX512ZMM && n >= 16 {
+				checkReduceLanes(t, row, true)
+			}
+		}
+		buf := make([]float32, n+1)
+		for i := range buf {
+			buf[i] = float32(i) - 3
+		}
+		checkReduceLanes(t, buf[1:], false)
+		if hasAVX512ZMM && n >= 16 {
+			checkReduceLanes(t, buf[1:], true)
+		}
+	}
+}
+
+func checkReduceLanes(t *testing.T, row []float32, avx512 bool) {
+	t.Helper()
+	n := len(row)
+	body := n &^ 7
+	width := 8
+	if avx512 {
+		body = n &^ 15
+		width = 16
+	}
+	if body <= 0 {
+		t.Fatalf("body %d", body)
+	}
+	for _, code := range []reduceCode{reduceMax, reduceMin} {
+		var lanes [16]float32
+		var nan uint32
+		switch {
+		case avx512 && code == reduceMax:
+			reduceMaxAVX512(&row[0], body, &lanes[0], &nan)
+		case avx512:
+			reduceMinAVX512(&row[0], body, &lanes[0], &nan)
+		case code == reduceMax:
+			reduceMaxAVX2(&row[0], body, &lanes[0], &nan)
+		default:
+			reduceMinAVX2(&row[0], body, &lanes[0], &nan)
+		}
+		bodyNaN := false
+		for _, v := range row[:body] {
+			if math.IsNaN(float64(v)) {
+				bodyNaN = true
+				break
+			}
+		}
+		if bodyNaN {
+			if nan == 0 {
+				t.Fatalf("avx512=%v n=%d code=%d: NaN mask clear", avx512, n, code)
+			}
+			continue
+		}
+		if nan != 0 {
+			t.Fatalf("avx512=%v n=%d code=%d: NaN mask set", avx512, n, code)
+		}
+		best := lanes[0]
+		for i := 1; i < width; i++ {
+			if tookExtreme(code, best, lanes[i]) {
+				best = lanes[i]
+			}
+		}
+		for _, v := range row[body:] {
+			if math.IsNaN(float64(v)) {
+				t.Fatal("tail NaN in a finite pattern")
+			}
+			if tookExtreme(code, best, v) {
+				best = v
+			}
+		}
+		want := scalarExtreme(row, code)
+		if want != 0 && math.Float32bits(best) != math.Float32bits(want) {
+			t.Fatalf("avx512=%v n=%d code=%d bits %x want %x", avx512, n, code, math.Float32bits(best), math.Float32bits(want))
+		}
+	}
+}
+
 // TestSIMDWrappersNilAndEmpty: nil/empty slices must not panic anywhere.
 func TestSIMDWrappersNilAndEmpty(t *testing.T) {
 	fmaddScalarInto(nil, nil, 1.5)

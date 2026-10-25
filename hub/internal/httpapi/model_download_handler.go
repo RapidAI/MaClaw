@@ -37,10 +37,23 @@ var defaultHubModelFiles = strings.Join([]string{
 	"head_mlp_qwen3go_r13f1.json",
 	"tool_head_ovr_qwen3go_r5.json",
 	"interrupt_relevance_qwen3go.json",
+	// FormulaNet ONNX (GitHub release Model_Release; sha256 pinned in
+	// corelib/embedding/release_assets.json). The hub stores them flat;
+	// clients install them under models/formula.
+	"formulanet-encoder.onnx",
+	"formulanet-decoder.onnx",
+	"formulanet-decoder-past.onnx",
+	"formulanet-tokenizer.json",
+	// PP-DocLayoutV3 (graph plus external weights) and the wired table UNET.
+	// Clients install them under models/layout and models/table. The .onnx.data
+	// name is the external-data location stored in the graph.
+	"PP-DocLayoutV3.onnx",
+	"PP-DocLayoutV3.onnx.data",
+	"unet.onnx",
 }, " ")
 
 const defaultHubModelLockTTL = 24 * time.Hour
-const modelDownloadScriptVersion = "maclaw-model-download-v4"
+const modelDownloadScriptVersion = "maclaw-model-download-v5"
 
 type hubModelFileView struct {
 	Name        string `json:"name"`
@@ -168,7 +181,7 @@ func modelDownloadArgs(files []string) []string {
 // Allows model artifacts distributed through the hub public model endpoint.
 func isAllowedModelExtension(filename string) bool {
 	lower := strings.ToLower(filename)
-	return strings.HasSuffix(lower, ".gguf") || strings.HasSuffix(lower, ".cmpg") || strings.HasSuffix(lower, ".yolow") || strings.HasSuffix(lower, ".koro") || strings.HasSuffix(lower, ".onnx") || strings.HasSuffix(lower, ".zip")
+	return strings.HasSuffix(lower, ".gguf") || strings.HasSuffix(lower, ".cmpg") || strings.HasSuffix(lower, ".yolow") || strings.HasSuffix(lower, ".koro") || strings.HasSuffix(lower, ".onnx.data") || strings.HasSuffix(lower, ".onnx") || strings.HasSuffix(lower, ".zip")
 }
 
 // ModelDownloadHandler serves model files while keeping the public URL stable.
@@ -413,7 +426,7 @@ func ensureModelDownloadScript(scriptPath string) error {
 		return err
 	}
 	const script = `#!/bin/sh
-# maclaw-model-download-v4
+# maclaw-model-download-v5
 set -eu
 BASE_URL="$1"
 TARGET_DIR="$2"
@@ -428,7 +441,7 @@ trap cleanup EXIT INT TERM
 is_allowed_model_file() {
   case "$1" in
     ""|*/*|*\\*|*..*) return 1 ;;
-    *.gguf|*.cmpg|*.yolow|*.koro|*.onnx|*.zip|*.json) return 0 ;;
+    *.gguf|*.cmpg|*.yolow|*.koro|*.onnx|*.onnx.data|*.zip|*.json) return 0 ;;
     *) return 1 ;;
   esac
 }

@@ -344,7 +344,7 @@ func (s *SQLiteStore) importSnapshotRecord(ctx context.Context, tx *sql.Tx, reco
 			result.WouldImport++
 			return nil
 		}
-		if err := insertSource(ctx, tx, source); err != nil {
+		if err := s.insertSource(ctx, tx, source); err != nil {
 			return err
 		}
 	case "source_label":
@@ -823,7 +823,7 @@ func (s *SQLiteStore) exportSourceLabels(ctx context.Context, writer *bufio.Writ
 }
 
 func (s *SQLiteStore) exportSourceLinks(ctx context.Context, writer *bufio.Writer, redact bool, sourceSet map[string]struct{}, scoped bool, result *ExportResult) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT source_id, related_source_id, relation, score, COALESCE(terms_json, '[]'), COALESCE(evidence_json, '[]'), created_at, updated_at
+	rows, err := s.db.QueryContext(ctx, `SELECT source_id, related_source_id, relation, score, COALESCE(terms_json, '[]'), COALESCE(evidence_json, '[]'), created_at, updated_at, COALESCE(status, '')
 		FROM knowledge_source_links ORDER BY source_id, score DESC, related_source_id, relation`)
 	if err != nil {
 		return err
@@ -833,7 +833,7 @@ func (s *SQLiteStore) exportSourceLinks(ctx context.Context, writer *bufio.Write
 		var link SourceLink
 		var termsJSON, evidenceJSON string
 		var createdAt, updatedAt string
-		if err := rows.Scan(&link.SourceID, &link.RelatedSourceID, &link.Relation, &link.Score, &termsJSON, &evidenceJSON, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&link.SourceID, &link.RelatedSourceID, &link.Relation, &link.Score, &termsJSON, &evidenceJSON, &createdAt, &updatedAt, &link.Status); err != nil {
 			return err
 		}
 		if !exportSourceSelected(sourceSet, link.SourceID, scoped) || !exportSourceSelected(sourceSet, link.RelatedSourceID, scoped) {

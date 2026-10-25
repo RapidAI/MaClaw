@@ -2886,16 +2886,16 @@ func (e *SkillExecutor) resolveRegisteredInstalledEntry(installed corelib.NLSkil
 // arguments are business parameters already validated by the semantic
 // invocation boundary. This method owns the runner envelope, so a dynamic
 // provider cannot smuggle SkillRunner control fields alongside its arguments.
-func (e *SkillExecutor) executeBoundSkill(stableID, name, version, contentDigest string, arguments map[string]interface{}) (string, error) {
+func (e *SkillExecutor) executeBoundSkill(stableID, name, version, contentDigest string, arguments map[string]interface{}) (string, map[string]string, error) {
 	if e == nil {
-		return "", fmt.Errorf("skill_binding_stale")
+		return "", nil, fmt.Errorf("skill_binding_stale")
 	}
 	stableID = strings.TrimSpace(stableID)
 	name = strings.TrimSpace(name)
 	version = strings.TrimSpace(version)
 	contentDigest = strings.TrimSpace(contentDigest)
 	if stableID == "" || name == "" || contentDigest == "" {
-		return "", fmt.Errorf("skill_binding_stale")
+		return "", nil, fmt.Errorf("skill_binding_stale")
 	}
 
 	var target *corelib.NLSkillEntry
@@ -2907,7 +2907,7 @@ func (e *SkillExecutor) executeBoundSkill(stableID, name, version, contentDigest
 		// entry for a bound identity is an ambiguous lifecycle observation, not
 		// a license to select the first matching name or alias.
 		if target != nil {
-			return "", fmt.Errorf("skill_binding_stale")
+			return "", nil, fmt.Errorf("skill_binding_stale")
 		}
 		entryCopy := entry
 		target = &entryCopy
@@ -2916,12 +2916,12 @@ func (e *SkillExecutor) executeBoundSkill(stableID, name, version, contentDigest
 		strings.TrimSpace(target.Version) != version ||
 		agentservice.DynamicSkillContentDigest(*target) != contentDigest ||
 		!semanticSkillIsRunnable(*target) {
-		return "", fmt.Errorf("skill_binding_stale")
+		return "", nil, fmt.Errorf("skill_binding_stale")
 	}
 
 	runArgs := map[string]interface{}{"args": cloneSemanticSkillArguments(arguments)}
 	execResult := e.executeSkillStepsDetailed(target, runArgs)
-	output, execErr := execResult.Output, execResult.Err
+	output, captured, execErr := execResult.Output, execResult.Captured, execResult.Err
 
 	// Account only against the exact entry we executed. A concurrent
 	// replacement must never receive the previous binding's usage or error
@@ -2931,7 +2931,7 @@ func (e *SkillExecutor) executeBoundSkill(stableID, name, version, contentDigest
 		if err := ensureSkillEvolutionMutationAdmission(e.app, name); err != nil {
 			e.app.installMutex.Unlock()
 			log.Printf("[skill-execution] skip bound usage persistence for %s: %v", name, err)
-			return output, execErr
+			return output, captured, execErr
 		}
 	}
 	e.skillListMutateMu.Lock()
@@ -2971,7 +2971,7 @@ func (e *SkillExecutor) executeBoundSkill(stableID, name, version, contentDigest
 	if shouldEmitUsageEvent && e.app != nil {
 		e.app.emitEvent(EventSkillUsageUpdated)
 	}
-	return output, execErr
+	return output, captured, execErr
 }
 
 func cloneSemanticSkillArguments(arguments map[string]interface{}) map[string]interface{} {

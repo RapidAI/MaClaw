@@ -169,12 +169,15 @@ func TestParseGlobalThinkingModeSharesHostAliases(t *testing.T) {
 		mode string
 		ok   bool
 	}{
-		{raw: "", mode: "", ok: true},
-		{raw: " auto ", mode: "", ok: true},
-		{raw: "ENABLE", mode: "enabled", ok: true},
-		{raw: "true", mode: "enabled", ok: true},
-		{raw: "DISABLE", mode: "disabled", ok: true},
-		{raw: "none", mode: "disabled", ok: true},
+		{raw: "", mode: "auto", ok: true},
+		{raw: " auto ", mode: "auto", ok: true},
+		{raw: "low", mode: "low", ok: true},
+		{raw: "HIGH", mode: "high", ok: true},
+		{raw: "max", mode: "max", ok: true},
+		{raw: "ENABLE", mode: "high", ok: true},
+		{raw: "true", mode: "high", ok: true},
+		{raw: "DISABLE", mode: "none", ok: true},
+		{raw: "none", mode: "none", ok: true},
 		{raw: "unexpected", mode: "", ok: false},
 	}
 	for _, tt := range tests {
@@ -183,11 +186,14 @@ func TestParseGlobalThinkingModeSharesHostAliases(t *testing.T) {
 			t.Errorf("ParseGlobalThinkingMode(%q) = (%q, %v), want (%q, %v)", tt.raw, mode, ok, tt.mode, tt.ok)
 		}
 	}
-	if got := EffectiveGlobalThinkingMode("auto"); got != "enabled" {
-		t.Fatalf("auto effective mode = %q, want enabled", got)
+	if got := EffectiveGlobalThinkingMode("auto"); got != "auto" {
+		t.Fatalf("auto effective mode = %q, want auto", got)
 	}
-	if got := EffectiveGlobalThinkingMode("invalid"); got != "enabled" {
-		t.Fatalf("invalid effective mode = %q, want enabled", got)
+	if got := EffectiveGlobalThinkingMode("invalid"); got != "auto" {
+		t.Fatalf("invalid effective mode = %q, want auto", got)
+	}
+	if got := NormalizeGlobalThinkingMode("auto"); got != "" {
+		t.Fatalf("persisted auto = %q, want unset", got)
 	}
 }
 
@@ -252,8 +258,8 @@ func TestApplyReasoningControlsResponsesDoesNotRequestSummaryWhenDisabled(t *tes
 		ReasoningAPIResponses,
 	)
 	reasoning, _ := body["reasoning"].(map[string]interface{})
-	if reasoning["effort"] != "minimal" {
-		t.Fatalf("reasoning.effort = %#v, want minimal", reasoning["effort"])
+	if reasoning["effort"] != "low" {
+		t.Fatalf("reasoning.effort = %#v, want low", reasoning["effort"])
 	}
 	if _, exists := reasoning["summary"]; exists {
 		t.Fatalf("disabled Responses request must not ask for a summary: %#v", body)
@@ -308,7 +314,7 @@ func TestApplyReasoningControlsGLM53DoesNotDisableThinking(t *testing.T) {
 	}
 }
 
-func TestApplyReasoningControlsGLMFlashAnthropicDisablesExplicitly(t *testing.T) {
+func TestApplyReasoningControlsGLMFlashAnthropicUsesLowEffort(t *testing.T) {
 	for _, model := range []string{"glm-5.3-flash", "GLM-5.3-FlashX", "vendor/glm-5.3-flash[1m]"} {
 		body := map[string]interface{}{}
 		ApplyReasoningControls(
@@ -317,11 +323,14 @@ func TestApplyReasoningControlsGLMFlashAnthropicDisablesExplicitly(t *testing.T)
 			ReasoningAPIAnthropic,
 		)
 		thinking, _ := body["thinking"].(map[string]interface{})
-		if thinking["type"] != "disabled" {
-			t.Fatalf("model %s thinking = %#v, want type=disabled", model, body["thinking"])
+		if thinking["type"] != "enabled" {
+			t.Fatalf("model %s thinking = %#v, want type=enabled", model, body["thinking"])
 		}
 		if _, ok := thinking["budget_tokens"]; ok {
-			t.Fatalf("model %s disabled thinking kept a budget: %#v", model, thinking)
+			t.Fatalf("model %s kept a budget: %#v", model, thinking)
+		}
+		if body["reasoning_effort"] != "low" {
+			t.Fatalf("model %s reasoning_effort = %#v, want low", model, body["reasoning_effort"])
 		}
 	}
 
@@ -344,8 +353,14 @@ func TestApplyReasoningControlsAutoEnablesAlwaysOnThinking(t *testing.T) {
 		ReasoningAPIAnthropic,
 	)
 	thinking, _ := body["thinking"].(map[string]interface{})
-	if thinking["type"] != "enabled" || thinking["budget_tokens"] == nil {
-		t.Fatalf("auto glm-5.3 empty Anthropic body = %#v, want thinking.enabled with budget", body)
+	if thinking["type"] != "enabled" {
+		t.Fatalf("auto glm-5.3 empty Anthropic body = %#v, want thinking.enabled", body)
+	}
+	if _, ok := thinking["budget_tokens"]; ok {
+		t.Fatalf("auto glm-5.3 must not send a budget: %#v", thinking)
+	}
+	if _, ok := body["reasoning_effort"]; ok {
+		t.Fatalf("auto glm-5.3 must keep the provider default effort: %#v", body)
 	}
 }
 
@@ -623,8 +638,12 @@ func TestApplyReasoningControlsAMDUsesReasoningEffort(t *testing.T) {
 
 func TestCoerceAlwaysOnThinkingMode(t *testing.T) {
 	got := CoerceAlwaysOnThinkingMode(MaclawLLMConfig{Model: "glm-5.3", ThinkingMode: "off"})
-	if got.ThinkingMode != "enabled" {
-		t.Fatalf("off = %q, want enabled", got.ThinkingMode)
+	if got.ThinkingMode != "enabled" || got.ReasoningEffort != "low" {
+		t.Fatalf("off = mode %q effort %q, want enabled/low", got.ThinkingMode, got.ReasoningEffort)
+	}
+	got = CoerceAlwaysOnThinkingMode(MaclawLLMConfig{Model: "glm-5.3-flash", ThinkingMode: "none"})
+	if got.ThinkingMode != "enabled" || got.ReasoningEffort != "low" {
+		t.Fatalf("flash off = mode %q effort %q, want enabled/low", got.ThinkingMode, got.ReasoningEffort)
 	}
 	got = CoerceAlwaysOnThinkingMode(MaclawLLMConfig{Model: "glm-5.3", ThinkingMode: ""})
 	if got.ThinkingMode != "" {
@@ -633,5 +652,518 @@ func TestCoerceAlwaysOnThinkingMode(t *testing.T) {
 	got = CoerceAlwaysOnThinkingMode(MaclawLLMConfig{Model: "claude-sonnet", ThinkingMode: "disabled"})
 	if got.ThinkingMode != "disabled" {
 		t.Fatalf("unrelated model coerced: %q", got.ThinkingMode)
+	}
+}
+
+func TestApplyGlobalThinkingLevelMapsProviders(t *testing.T) {
+	levels := []struct {
+		level string
+		check func(t *testing.T, body map[string]interface{})
+		cfg   MaclawLLMConfig
+		api   ReasoningAPIKind
+	}{
+		{
+			level: "max",
+			cfg:   MaclawLLMConfig{URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.3-flash"},
+			api:   ReasoningAPIAnthropic,
+			check: func(t *testing.T, body map[string]interface{}) {
+				thinking, _ := body["thinking"].(map[string]interface{})
+				if thinking["type"] != "enabled" || body["reasoning_effort"] != "max" {
+					t.Fatalf("glm max = %#v", body)
+				}
+			},
+		},
+		{
+			level: "low",
+			cfg:   MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				thinking, _ := body["thinking"].(map[string]interface{})
+				if thinking["type"] != "enabled" || body["reasoning_effort"] != "low" {
+					t.Fatalf("deepseek low = %#v", body)
+				}
+			},
+		},
+		{
+			level: "max",
+			cfg:   MaclawLLMConfig{URL: "https://api.openai.com/v1", Model: "gpt-5"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				if body["reasoning_effort"] != "xhigh" {
+					t.Fatalf("openai max = %#v, want xhigh", body["reasoning_effort"])
+				}
+			},
+		},
+		{
+			level: "high",
+			cfg:   MaclawLLMConfig{URL: "https://api.x.ai/v1", Model: "grok-4.5"},
+			api:   ReasoningAPIResponses,
+			check: func(t *testing.T, body map[string]interface{}) {
+				reasoning, _ := body["reasoning"].(map[string]interface{})
+				if reasoning["effort"] != "high" {
+					t.Fatalf("grok high = %#v", body["reasoning"])
+				}
+			},
+		},
+		{
+			level: "none",
+			cfg:   MaclawLLMConfig{URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen3"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				if body["enable_thinking"] != false {
+					t.Fatalf("qwen none = %#v", body)
+				}
+			},
+		},
+		{
+			level: "low",
+			cfg:   MaclawLLMConfig{URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen3.8-flash"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				if body["enable_thinking"] != true {
+					t.Fatalf("qwen low = %#v", body)
+				}
+			},
+		},
+		{
+			level: "max",
+			cfg:   MaclawLLMConfig{URL: "https://api.anthropic.com", Model: "claude-sonnet"},
+			api:   ReasoningAPIAnthropic,
+			check: func(t *testing.T, body map[string]interface{}) {
+				thinking, _ := body["thinking"].(map[string]interface{})
+				if thinking["budget_tokens"] != 16384 {
+					t.Fatalf("claude max budget = %#v", thinking)
+				}
+			},
+		},
+		{
+			level: "max",
+			cfg:   MaclawLLMConfig{URL: "https://api.agnes-ai.cn/v1", Model: "agnes-2.5-flash"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				if body["reasoning_effort"] != "high" {
+					t.Fatalf("agnes max = %#v, want high", body["reasoning_effort"])
+				}
+			},
+		},
+		{
+			level: "none",
+			cfg:   MaclawLLMConfig{URL: "https://api.kimi.com/coding/v1", Model: "kimi-k2-thinking"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				thinking, _ := body["thinking"].(map[string]interface{})
+				if thinking["type"] != "disabled" {
+					t.Fatalf("kimi none = %#v", body["thinking"])
+				}
+			},
+		},
+		{
+			level: "high",
+			cfg:   MaclawLLMConfig{URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				if _, exists := body["thinking"]; exists {
+					t.Fatalf("minimax m2 must not send thinking: %#v", body)
+				}
+			},
+		},
+		{
+			level: "none",
+			cfg:   MaclawLLMConfig{URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M3"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				thinking, _ := body["thinking"].(map[string]interface{})
+				if thinking["type"] != "disabled" {
+					t.Fatalf("minimax m3 none = %#v", body["thinking"])
+				}
+			},
+		},
+		{
+			level: "high",
+			cfg:   MaclawLLMConfig{URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M3"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				thinking, _ := body["thinking"].(map[string]interface{})
+				if thinking["type"] != "adaptive" {
+					t.Fatalf("minimax m3 high = %#v", body["thinking"])
+				}
+			},
+		},
+		{
+			level: "high",
+			cfg:   MaclawLLMConfig{URL: "https://api.kimi.com/coding/v1", Model: "kimi-k3"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				if _, exists := body["thinking"]; exists {
+					t.Fatalf("kimi k3 kept thinking: %#v", body)
+				}
+				if body["reasoning_effort"] != "high" {
+					t.Fatalf("kimi k3 high = %#v", body["reasoning_effort"])
+				}
+			},
+		},
+		{
+			level: "none",
+			cfg:   MaclawLLMConfig{URL: "https://api.moonshot.cn/v1", Model: "kimi-k3.1-pro"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				if body["reasoning_effort"] != "low" {
+					t.Fatalf("kimi k3 none = %#v", body)
+				}
+			},
+		},
+		{
+			level: "none",
+			cfg:   MaclawLLMConfig{URL: "https://api.kimi.com/coding/v1", Model: "kimi-k2.7-code"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				thinking, _ := body["thinking"].(map[string]interface{})
+				if thinking["type"] != "enabled" || thinking["keep"] != "all" {
+					t.Fatalf("kimi k2.7-code none = %#v", body["thinking"])
+				}
+				if _, exists := body["reasoning_effort"]; exists {
+					t.Fatalf("kimi k2.7-code gained reasoning_effort: %#v", body)
+				}
+			},
+		},
+		{
+			level: "max",
+			cfg:   MaclawLLMConfig{URL: "https://api.groq.com/openai/v1", Model: "qwen/qwen3-32b"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				if _, exists := body["thinking"]; exists {
+					t.Fatalf("groq kept thinking: %#v", body)
+				}
+				if body["reasoning_effort"] != "xhigh" {
+					t.Fatalf("groq max = %#v", body["reasoning_effort"])
+				}
+			},
+		},
+		{
+			level: "none",
+			cfg:   MaclawLLMConfig{URL: "https://api.groq.com/openai/v1", Model: "qwen/qwen3-32b"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				if body["reasoning_effort"] != "none" {
+					t.Fatalf("groq none = %#v", body["reasoning_effort"])
+				}
+			},
+		},
+		{
+			level: "high",
+			cfg:   MaclawLLMConfig{URL: "https://openrouter.ai/api/v1", Model: "openai/gpt-4o"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				reasoning, _ := body["reasoning"].(map[string]interface{})
+				if reasoning["effort"] != "high" {
+					t.Fatalf("openrouter high = %#v", body["reasoning"])
+				}
+				if _, exists := body["thinking"]; exists {
+					t.Fatalf("openrouter kept thinking: %#v", body)
+				}
+			},
+		},
+		{
+			level: "none",
+			cfg:   MaclawLLMConfig{URL: "https://openrouter.ai/api/v1", Model: "openai/gpt-4o"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				reasoning, _ := body["reasoning"].(map[string]interface{})
+				if reasoning["effort"] != "none" {
+					t.Fatalf("openrouter none = %#v", body["reasoning"])
+				}
+			},
+		},
+		{
+			level: "max",
+			cfg:   MaclawLLMConfig{URL: "https://api.together.xyz/v1", Model: "openai/gpt-oss-120b"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				if _, exists := body["reasoning"]; exists || body["reasoning_effort"] != "high" {
+					t.Fatalf("together max = %#v, want reasoning_effort high alone", body)
+				}
+			},
+		},
+		{
+			level: "none",
+			cfg:   MaclawLLMConfig{URL: "https://api.together.xyz/v1", Model: "MiniMaxAI/MiniMax-M3"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				reasoning, _ := body["reasoning"].(map[string]interface{})
+				if reasoning["enabled"] != false {
+					t.Fatalf("together none = %#v", body)
+				}
+				if _, exists := body["reasoning_effort"]; exists {
+					t.Fatalf("together none kept reasoning_effort: %#v", body)
+				}
+			},
+		},
+		{
+			level: "low",
+			cfg:   MaclawLLMConfig{URL: "https://ark.cn-beijing.volces.com/api/coding", Model: "doubao-seed-code-preview-latest"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				thinking, _ := body["thinking"].(map[string]interface{})
+				if thinking["type"] != "enabled" || body["reasoning_effort"] != "low" {
+					t.Fatalf("doubao low = %#v", body)
+				}
+			},
+		},
+		{
+			level: "max",
+			cfg:   MaclawLLMConfig{URL: "https://ark.cn-beijing.volces.com/api/coding", Model: "doubao-seed-2-0-pro"},
+			api:   ReasoningAPIChat,
+			check: func(t *testing.T, body map[string]interface{}) {
+				if body["reasoning_effort"] != "high" {
+					t.Fatalf("doubao max = %#v, want high", body["reasoning_effort"])
+				}
+			},
+		},
+		{
+			level: "none",
+			cfg:   MaclawLLMConfig{URL: "https://api.x.ai/v1", Model: "grok-4.5"},
+			api:   ReasoningAPIResponses,
+			check: func(t *testing.T, body map[string]interface{}) {
+				reasoning, _ := body["reasoning"].(map[string]interface{})
+				if reasoning["effort"] != "low" {
+					t.Fatalf("grok none = %#v, want low", body["reasoning"])
+				}
+			},
+		},
+		{
+			level: "low",
+			cfg:   MaclawLLMConfig{URL: "https://ark.cn-beijing.volces.com/api/plan/v3", Model: "glm-5.2"},
+			api:   ReasoningAPIResponses,
+			check: func(t *testing.T, body map[string]interface{}) {
+				thinking, _ := body["thinking"].(map[string]interface{})
+				if thinking["type"] != "enabled" || body["reasoning_effort"] != "low" {
+					t.Fatalf("ark glm-5.2 low = %#v", body)
+				}
+			},
+		},
+	}
+	for _, tt := range levels {
+		t.Run(tt.cfg.Model+"/"+tt.level, func(t *testing.T) {
+			cfg := ApplyGlobalThinkingLevel(tt.cfg, tt.level)
+			body := map[string]interface{}{}
+			ApplyReasoningControls(cfg, body, tt.api)
+			tt.check(t, body)
+		})
+	}
+}
+
+func TestThinkingOffRejectedEffort(t *testing.T) {
+	effort, ok := ThinkingOffRejectedEffort(`[1210][该模型始终思考，不支持关闭思考；请使用 low、high 或 max。]`)
+	if !ok || effort != "low" {
+		t.Fatalf("effort = %q ok=%v, want low", effort, ok)
+	}
+	if _, ok := ThinkingOffRejectedEffort("HTTP 400: invalid api key"); ok {
+		t.Fatal("unrelated 400 looked like a thinking refusal")
+	}
+	effort, ok = ThinkingOffRejectedEffort("thinking cannot be disabled; the trace was slower")
+	if !ok || effort != "low" {
+		t.Fatalf("slower = %q ok=%v, want low", effort, ok)
+	}
+	effort, ok = ThinkingOffRejectedEffort("thinking cannot be disabled; see the highlight")
+	if !ok || effort != "low" {
+		t.Fatalf("highlight = %q ok=%v, want low", effort, ok)
+	}
+	effort, ok = ThinkingOffRejectedEffort("thinking cannot be disabled; maximal context")
+	if !ok || effort != "low" {
+		t.Fatalf("maximal = %q ok=%v, want low", effort, ok)
+	}
+	effort, ok = ThinkingOffRejectedEffort("does not support disabling thinking; use high or max")
+	if !ok || effort != "high" {
+		t.Fatalf("named high = %q ok=%v, want high", effort, ok)
+	}
+	effort, ok = ThinkingOffRejectedEffort(`thinking cannot be disabled {"max_tokens":2048}`)
+	if !ok || effort != "low" {
+		t.Fatalf("max_tokens = %q ok=%v, want low", effort, ok)
+	}
+	effort, ok = ThinkingOffRejectedEffort("cannot disable thinking; max-tokens was 256")
+	if !ok || effort != "low" {
+		t.Fatalf("max-tokens = %q ok=%v, want low", effort, ok)
+	}
+	effort, ok = ThinkingOffRejectedEffort("does not support turning off thinking; use max")
+	if !ok || effort != "max" {
+		t.Fatalf("named max = %q ok=%v, want max", effort, ok)
+	}
+	if _, ok := ThinkingOffRejectedEffort("1210 invalid low max_tokens"); ok {
+		t.Fatal("1210 plus max_tokens looked like a named max level")
+	}
+}
+
+func TestApplyReasoningControlsAutoDoesNotInventVendorEffort(t *testing.T) {
+	if IsAlwaysOnThinkingModel(MaclawLLMConfig{Model: "glm-5.3-flash-free"}) {
+		t.Fatal("OpenCode Zen glm-5.3-flash-free is not a Zhipu always-on checkpoint")
+	}
+	free := map[string]interface{}{"model": "glm-5.3-flash-free"}
+	ApplyReasoningControls(
+		MaclawLLMConfig{URL: "https://opencode.ai/zen/go/v1", Model: "glm-5.3-flash-free"},
+		free,
+		ReasoningAPIChat,
+	)
+	assertNoReasoningFields(t, free)
+
+	for _, cfg := range []MaclawLLMConfig{
+		{URL: "https://api.groq.com/openai/v1", Model: "glm-5.3-flash"},
+		{URL: "https://openrouter.ai/api/v1", Model: "glm-5.3-flash"},
+		{URL: "https://api.together.xyz/v1", Model: "glm-5.3-flash"},
+		{URL: "https://api.kimi.com/coding/v1", Model: "kimi-k3"},
+	} {
+		body := map[string]interface{}{"model": cfg.Model}
+		ApplyReasoningControls(cfg, body, ReasoningAPIChat)
+		assertNoReasoningFields(t, body)
+	}
+
+	kept := map[string]interface{}{}
+	ApplyReasoningControls(MaclawLLMConfig{
+		URL:             "https://open.bigmodel.cn/api/anthropic",
+		Model:           "glm-5.3",
+		ThinkingMode:    "disabled",
+		ReasoningEffort: "high",
+	}, kept, ReasoningAPIChat)
+	if kept["reasoning_effort"] != "high" {
+		t.Fatalf("explicit high was downgraded: %#v", kept)
+	}
+
+	togetherOff := map[string]interface{}{}
+	ApplyReasoningControls(MaclawLLMConfig{
+		URL:          "https://api.together.xyz/v1",
+		Model:        "glm-5.3-flash",
+		ThinkingMode: "disabled",
+	}, togetherOff, ReasoningAPIChat)
+	if _, exists := togetherOff["reasoning"]; exists || togetherOff["reasoning_effort"] != "low" {
+		t.Fatalf("together always-on off = %#v, want reasoning_effort low alone", togetherOff)
+	}
+
+	kimiOn := map[string]interface{}{}
+	ApplyReasoningControls(MaclawLLMConfig{
+		URL:          "https://api.kimi.com/coding/v1",
+		Model:        "kimi-k3",
+		ThinkingMode: "enabled",
+	}, kimiOn, ReasoningAPIChat)
+	assertNoReasoningFields(t, kimiOn)
+
+	togetherOn := map[string]interface{}{}
+	ApplyReasoningControls(MaclawLLMConfig{
+		URL:          "https://api.together.xyz/v1",
+		Model:        "openai/gpt-oss-120b",
+		ThinkingMode: "enabled",
+	}, togetherOn, ReasoningAPIChat)
+	reasoning, _ := togetherOn["reasoning"].(map[string]interface{})
+	if reasoning["enabled"] != true {
+		t.Fatalf("together enabled = %#v", togetherOn)
+	}
+	if _, exists := togetherOn["reasoning_effort"]; exists {
+		t.Fatalf("together empty effort invented a depth: %#v", togetherOn)
+	}
+
+	agnes := map[string]interface{}{"thinking": map[string]interface{}{"type": "enabled"}}
+	ApplyReasoningControls(MaclawLLMConfig{
+		URL:          "https://api.agnes-ai.cn/v1",
+		Model:        "agnes-2.5-flash",
+		ThinkingMode: "disabled",
+	}, agnes, ReasoningAPIResponses)
+	assertNoReasoningFields(t, agnes)
+
+	ark := map[string]interface{}{}
+	ApplyReasoningControls(MaclawLLMConfig{
+		URL:   "https://ark.cn-beijing.volces.com/api/coding",
+		Model: "glm-5.3",
+	}, ark, ReasoningAPIChat)
+	arkThinking, _ := ark["thinking"].(map[string]interface{})
+	if arkThinking["type"] != "enabled" {
+		t.Fatalf("ark glm auto = %#v, want thinking.enabled", ark)
+	}
+	if _, exists := ark["reasoning_effort"]; exists {
+		t.Fatalf("ark glm auto invented an effort: %#v", ark)
+	}
+}
+
+func TestProbeNeedsReasoningRoom(t *testing.T) {
+	needs := []MaclawLLMConfig{
+		{URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.3-flash"},
+		{URL: "https://api.x.ai/v1", Model: "grok-4.5"},
+		{URL: "https://api.kimi.com/coding/v1", Model: "kimi-k3"},
+		{URL: "https://api.moonshot.cn/v1", Model: "kimi-k2.7-code"},
+		{URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7"},
+	}
+	for _, cfg := range needs {
+		if !ProbeNeedsReasoningRoom(cfg) {
+			t.Fatalf("%s/%s should keep room for a trace", cfg.URL, cfg.Model)
+		}
+	}
+	quiet := []MaclawLLMConfig{
+		{Model: "glm-5.3-flash-free", URL: "https://opencode.ai/zen/go/v1"},
+		{Model: "claude-sonnet", URL: "https://api.anthropic.com"},
+		{Model: "kimi-k2-thinking", URL: "https://api.kimi.com/coding/v1"},
+		{Model: "MiniMax-M3", URL: "https://api.minimaxi.com/v1"},
+		{Model: "kimi-k3", URL: "https://api.openai.com/v1"},
+	}
+	for _, cfg := range quiet {
+		if ProbeNeedsReasoningRoom(cfg) {
+			t.Fatalf("%s/%s should use the short probe cap", cfg.URL, cfg.Model)
+		}
+	}
+	xai := UseCheapLegalThinking(MaclawLLMConfig{URL: "https://api.x.ai/v1", Model: "grok-4.5"})
+	if xai.ThinkingMode != "disabled" || xai.ReasoningEffort != "low" {
+		t.Fatalf("xai short answer = mode %q effort %q", xai.ThinkingMode, xai.ReasoningEffort)
+	}
+	glm := UseCheapLegalThinking(MaclawLLMConfig{URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.3-flash"})
+	if glm.ThinkingMode != "enabled" || glm.ReasoningEffort != "low" {
+		t.Fatalf("glm short answer = mode %q effort %q", glm.ThinkingMode, glm.ReasoningEffort)
+	}
+}
+
+func TestApplyReasoningControlsSchemeLessHostUsesNativeWire(t *testing.T) {
+	kimi := map[string]interface{}{}
+	ApplyReasoningControls(MaclawLLMConfig{
+		URL:             "api.kimi.com/coding/v1",
+		Model:           "kimi-k3",
+		ThinkingMode:    "enabled",
+		ReasoningEffort: "high",
+	}, kimi, ReasoningAPIChat)
+	if _, exists := kimi["thinking"]; exists {
+		t.Fatalf("scheme-less kimi kept thinking: %#v", kimi)
+	}
+	if kimi["reasoning_effort"] != "high" {
+		t.Fatalf("scheme-less kimi = %#v", kimi)
+	}
+
+	xai := map[string]interface{}{}
+	ApplyReasoningControls(MaclawLLMConfig{
+		URL:          "api.x.ai/v1",
+		Model:        "grok-4.5",
+		ThinkingMode: "disabled",
+	}, xai, ReasoningAPIChat)
+	if _, exists := xai["thinking"]; exists {
+		t.Fatalf("scheme-less xai kept thinking: %#v", xai)
+	}
+	if xai["reasoning_effort"] != "low" {
+		t.Fatalf("scheme-less xai = %#v", xai)
+	}
+
+	together := map[string]interface{}{}
+	ApplyReasoningControls(MaclawLLMConfig{
+		URL:          "api.together.xyz/v1",
+		Model:        "openai/gpt-oss-120b",
+		ThinkingMode: "disabled",
+	}, together, ReasoningAPIChat)
+	reasoning, _ := together["reasoning"].(map[string]interface{})
+	if reasoning["enabled"] != false {
+		t.Fatalf("scheme-less together = %#v", together)
+	}
+	if _, exists := together["thinking"]; exists {
+		t.Fatalf("scheme-less together kept thinking: %#v", together)
+	}
+}
+
+func assertNoReasoningFields(t *testing.T, body map[string]interface{}) {
+	t.Helper()
+	for _, key := range []string{"thinking", "reasoning", "reasoning_effort", "enable_thinking"} {
+		if _, exists := body[key]; exists {
+			t.Fatalf("body kept %s: %#v", key, body)
+		}
 	}
 }

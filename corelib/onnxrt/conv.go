@@ -212,7 +212,7 @@ func convDepthwiseSIMD(out, x, w, bias []float32, N, C, H, W, oH, oW int, p *con
 			for oh := 0; oh < oH; oh++ {
 				outRow := out[outBase+oh*oW : outBase+oh*oW+oW]
 				fillBias(outRow, bv)
-				if sW == 1 && (p.kW == 3 || p.kW == 7) && oW >= 8 {
+				if sW == 1 && (p.kW == 3 || p.kW == 5 || p.kW == 7) && oW >= 8 {
 					// Fused-tap path: one pass per kh row for the W-interior
 					// (all kernel taps in bounds), scalar fixups for the few
 					// edge pixels. Bit-identical tap order to the per-tap
@@ -239,6 +239,8 @@ func convDepthwiseSIMD(out, x, w, bias []float32, N, C, H, W, oH, oW int, p *con
 							switch p.kW {
 							case 3:
 								fmadd3Into(outRow[i0:i1], row[i0-pL:], wk[0], wk[1], wk[2])
+							case 5:
+								fmadd5Into(outRow[i0:i1], row[i0-pL:], wk[0], wk[1], wk[2], wk[3], wk[4])
 							case 7:
 								fmadd3Into(outRow[i0:i1], row[i0-pL:], wk[0], wk[1], wk[2])
 								fmadd3Into(outRow[i0:i1], row[i0-pL+3:], wk[3], wk[4], wk[5])
@@ -366,7 +368,23 @@ func nCBase(n, c, C, H, W int) int { return (n*C + c) * H * W }
 // im2row fills B[0:rows*K] with the flattened kernel windows for output
 // pixels [pix0, pix0+rows) (row-major over oW). Out-of-bounds taps are
 // written as explicit zeros so pooled buffers need no clearing.
+//
+// Large panels (the formula encoder's 48×96×96 and 96×48×48 3×3s) are a
+// serial gather in front of a parallel GEMM. Split the pixel range across
+// the matmul pool. Callers of im2row are the conv outer goroutines, never
+// pool workers, so this wait cannot deadlock the pool.
 func im2row(B, x []float32, xG, pix0, rows, oW, H, W, Cg int, p *convParams) {
+	K := Cg * p.kH * p.kW
+	if rows >= 64 && K >= 16 && rows*K >= 1<<20 && xt.PoolWorkers() > 1 {
+		xt.ParallelRanges(rows, func(s, e int) {
+			im2rowChunk(B[s*K:], x, xG, pix0+s, e-s, oW, H, W, Cg, p)
+		})
+		return
+	}
+	im2rowChunk(B, x, xG, pix0, rows, oW, H, W, Cg, p)
+}
+
+func im2rowChunk(B, x []float32, xG, pix0, rows, oW, H, W, Cg int, p *convParams) {
 	kH, kW := p.kH, p.kW
 
 	if p.dilations[1] == 1 && kH <= 8 && kW <= 8 {

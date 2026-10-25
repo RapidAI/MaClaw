@@ -157,36 +157,63 @@ func NeedsOpenAIProxy(requiredEnv []string, extraEnv map[string]string) bool {
 // NeedsOpenAIProxyAuto decides whether to start the local OpenAI proxy for a
 // skill run. The policy is default-on: the proxy starts unless
 //
-//  1. the caller already supplied OpenAI credentials via extraEnv,
-//  2. the process environment already has a valid OPENAI_API_KEY (the stale
-//     "sk-maclaw-local-proxy" sentinel does not count), or
-//  3. the skill explicitly declares no_llm_api (noLLMAPI=true).
+//  1. the skill explicitly declares no_llm_api (noLLMAPI=true),
+//  2. every OpenAI var the skill declares is already satisfied by the
+//     caller's extraEnv or the process environment, or
+//  3. nothing is declared and the caller supplied the complete OpenAI
+//     surface, or the process environment already has a valid OPENAI_API_KEY
+//     (the stale "sk-maclaw-local-proxy" sentinel does not count).
 //
-// Starting the proxy is cheap (a local listener); not starting it is
-// expensive (the skill fails for lack of an API key). Static source scanning
-// cannot reliably determine whether a script reads OPENAI_API_KEY at runtime
-// (library-internal reads, dotenv loaders, arbitrary file layouts), so the
-// former three-layer detection scan no longer gates the decision — it is
-// kept only as a diagnostic log (logOpenAIProxyDiagnostics).
+// Satisfaction is per variable: a partial user supply (a base URL without a
+// key, or a key without a base URL) keeps the proxy on, because the missing
+// half is exactly what the proxy provides. Starting the proxy is cheap (a
+// local listener); not starting it is expensive (the skill fails for lack of
+// an API key). Static source scanning cannot reliably determine whether a
+// script reads OPENAI_API_KEY at runtime (library-internal reads, dotenv
+// loaders, arbitrary file layouts), so the former three-layer detection scan
+// no longer gates the decision — it is kept only as a diagnostic log
+// (logOpenAIProxyDiagnostics).
 func NeedsOpenAIProxyAuto(requiredEnv []string, extraEnv map[string]string, steps []NLSkillStep, skillDir string, noLLMAPI bool) bool {
-	// Fast path: the caller already provided OpenAI credentials.
+	// The skill explicitly declares it does not call any LLM API.
+	if noLLMAPI {
+		return false
+	}
+	// Declared OpenAI usage: the proxy starts unless every declared var is
+	// satisfied. Declared vars are checked before the process-level env so a
+	// stale "sk-maclaw-local-proxy" sentinel in os env does not suppress the
+	// proxy for skills that genuinely need it.
+	explicitUsage := openAIEnvUsage{
+		apiKey:  declaresOpenAIAPIKey(requiredEnv) || stepsDeclareOpenAIAPIKey(steps),
+		baseURL: declaresOpenAIBaseURL(requiredEnv) || stepsDeclareOpenAIBaseURL(steps),
+	}
+	if explicitUsage.any() {
+		apiKeySatisfied := !explicitUsage.apiKey || hasUserProvidedOpenAIAPIKey(extraEnv) || hasProcessOpenAIAPIKey(extraEnv)
+		baseURLSatisfied := !explicitUsage.baseURL || hasUserProvidedOpenAIBaseURL(extraEnv) || processOpenAIBaseURLPresent(extraEnv)
+		return !(apiKeySatisfied && baseURLSatisfied)
+	}
+	// Nothing declared: the caller's own OpenAI configuration wins, so any
+	// user-supplied OpenAI var (even a partial one) skips the proxy.
 	if hasUserProvidedOpenAIEnv(extraEnv) {
 		return false
 	}
 	// Fast path: the process env already has a valid OPENAI_API_KEY
-	// (non stale sentinel). Checked before noLLMAPI so a stale sentinel
-	// never suppresses the proxy.
+	// (non stale sentinel).
 	if hasProcessOpenAIAPIKey(extraEnv) {
-		return false
-	}
-	// The skill explicitly declares it does not call any LLM API.
-	if noLLMAPI {
 		return false
 	}
 	// Default: start the proxy. Proxy cost is near zero; skipping it when the
 	// skill does need an API key costs a failed run.
 	logOpenAIProxyDiagnostics(requiredEnv, steps, skillDir)
 	return true
+}
+
+// processOpenAIBaseURLPresent reports a process-level OPENAI_BASE_URL that
+// the caller did not explicitly override via extraEnv.
+func processOpenAIBaseURLPresent(extraEnv map[string]string) bool {
+	if _, explicitlyOverridden := lookupExtraEnvName(extraEnv, "OPENAI_BASE_URL"); explicitlyOverridden {
+		return false
+	}
+	return strings.TrimSpace(os.Getenv("OPENAI_BASE_URL")) != ""
 }
 
 // logOpenAIProxyDiagnostics records the legacy three-layer detection results

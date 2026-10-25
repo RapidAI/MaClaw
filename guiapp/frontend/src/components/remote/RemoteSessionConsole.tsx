@@ -155,7 +155,7 @@ const inputBarStyle: React.CSSProperties = {
 };
 
 const promptStyle: React.CSSProperties = {
-    color: "var(--theme-success, #4f7f6f)",
+    color: "var(--theme-success, #11813a)",
     fontFamily: "Consolas, monospace",
     fontSize: "13px",
     flexShrink: 0,
@@ -246,9 +246,9 @@ type StreamRowStyleKey = StreamStatusKind | "bolt" | "path";
 const STREAM_STATUS_ROW_STYLE: Record<StreamRowStyleKey, React.CSSProperties> = {
     tool: { color: "var(--theme-primary, #2f5f98)", fontWeight: 700, marginTop: "0.3em" },
     pending: { color: "#94a3b8" },
-    bolt: { color: "var(--theme-success, #4f7f6f)", fontWeight: 700, marginTop: "0.4em" },
-    ok: { color: "var(--theme-success, #4f7f6f)" },
-    warn: { color: "var(--theme-warning, #d97706)" },
+    bolt: { color: "var(--theme-success, #11813a)", fontWeight: 700, marginTop: "0.4em" },
+    ok: { color: "var(--theme-success, #11813a)" },
+    warn: { color: "var(--theme-warning, #aa5d05)" },
     error: { color: "var(--theme-danger, #e07a72)" },
     path: { color: "var(--theme-primary, #2f5f98)" },
 };
@@ -265,7 +265,7 @@ const SEND_FEEDBACK_BAR_BASE: React.CSSProperties = {
 const SEND_FEEDBACK_BAR_OK: React.CSSProperties = {
     ...SEND_FEEDBACK_BAR_BASE,
     background: "rgba(79, 127, 111, 0.12)",
-    color: "var(--theme-success, #4f7f6f)",
+    color: "var(--theme-success, #11813a)",
 };
 const SEND_FEEDBACK_BAR_ERR: React.CSSProperties = {
     ...SEND_FEEDBACK_BAR_BASE,
@@ -280,7 +280,7 @@ function renderLegacyStreamLine(key: string | number, mark: string, body: string
     if (visual.kind === "bolt") {
         return streamStatusRow(
             key,
-            <IconBolt size={13} color="var(--theme-success, #4f7f6f)" />,
+            <IconBolt size={13} color="var(--theme-success, #11813a)" />,
             content,
             STREAM_STATUS_ROW_STYLE.bolt,
         );
@@ -427,7 +427,7 @@ const userDividerStyle: React.CSSProperties = {
     margin: "8px 0 4px 0",
 };
 const promptStyleQA: React.CSSProperties = {
-    color: "var(--theme-success, #4f7f6f)", fontWeight: 600, padding: "3px 0",
+    color: "var(--theme-success, #11813a)", fontWeight: 600, padding: "3px 0",
     overflowWrap: "break-word",
 };
 const responseBlockStyle: React.CSSProperties = {
@@ -470,6 +470,7 @@ export function RemoteSessionConsole(props: Props) {
     // the backend returns fewer lines on a subsequent refresh (e.g. due to
     // screen-refresh detection in PTY mode replacing the buffer).
     const lineCacheRef = useRef<string[]>([]);
+    const rawLinesCacheRef = useRef<{ source: string[]; clearOffset: number; lines: string[] } | null>(null);
     const sessionIdRef = useRef(session.id);
 
     const status = (session.summary?.status || session.status || "unknown").toLowerCase();
@@ -488,15 +489,26 @@ export function RemoteSessionConsole(props: Props) {
     } else if (incomingLines.length > lineCacheRef.current.length) {
         // Backend has more lines — take the full snapshot
         lineCacheRef.current = incomingLines.slice();
-    } else if (incomingLines.length === lineCacheRef.current.length && incomingLines.length > 0) {
-        // Same count — update the last line (streaming accumulator may have changed)
+    } else if (
+        incomingLines.length === lineCacheRef.current.length &&
+        incomingLines.length > 0 &&
+        incomingLines[incomingLines.length - 1] !== lineCacheRef.current[lineCacheRef.current.length - 1]
+    ) {
+        // Same count — replace the snapshot when the streaming last line changed.
+        lineCacheRef.current = lineCacheRef.current.slice();
         lineCacheRef.current[lineCacheRef.current.length - 1] =
             incomingLines[incomingLines.length - 1];
     }
     // When incomingLines.length < cache length, keep the cache as-is.
     // This is the key fix: prevents content from disappearing.
 
-    const rawLines = lineCacheRef.current.slice(clearOffset);
+    const cachedRawLines = rawLinesCacheRef.current;
+    const rawLines = cachedRawLines?.source === lineCacheRef.current && cachedRawLines.clearOffset === clearOffset
+        ? cachedRawLines.lines
+        : clearOffset === 0 ? lineCacheRef.current : lineCacheRef.current.slice(clearOffset);
+    if (rawLines !== cachedRawLines?.lines) {
+        rawLinesCacheRef.current = { source: lineCacheRef.current, clearOffset, lines: rawLines };
+    }
 
     // Helper: set status feedback with auto-clear (structured — no OK/ERR text markers)
     const showSendInfo = useCallback((ok: boolean, text: string) => {
@@ -757,7 +769,7 @@ export function RemoteSessionConsole(props: Props) {
         setImageUploading(false);
     }, [session.id, refreshSessionsOnly, showSendInfo]);
 
-    const statusColor = status === "running" || status === "busy" ? "var(--theme-success, #4f7f6f)"
+    const statusColor = status === "running" || status === "busy" ? "var(--theme-success, #11813a)"
         : status === "waiting_input" ? "var(--theme-primary, #2f5f98)" : "#a8b8c8";
 
     // ── Build output elements ──
@@ -1175,7 +1187,7 @@ export function RemoteSessionConsole(props: Props) {
                         <button
                             onClick={handleScreenshot}
                             disabled={disabled || imageUploading}
-                            style={{ ...inputBtnStyle, color: "var(--theme-success, #4f7f6f)", borderColor: "var(--theme-success, #4f7f6f)" }}
+                            style={{ ...inputBtnStyle, color: "var(--theme-success, #11813a)", borderColor: "var(--theme-success, #11813a)" }}
                             title={localizeText(currentLang, "Capture screenshot (fullscreen or window)", "截图 (全屏或指定窗口)", "截圖 (全螢幕或指定視窗)")}
                         >
                             SHOT

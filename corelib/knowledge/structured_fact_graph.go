@@ -43,7 +43,7 @@ func (s *SQLiteStore) kbFactGraphEdges(ctx context.Context, opts SearchOptions) 
 		JOIN kb_cards c ON c.id = f.card_id
 		LEFT JOIN kb_rows r ON r.id = f.row_id
 		LEFT JOIN kb_tables t ON t.id = r.table_id
-		JOIN kb_sources s ON s.id = f.source_id
+		JOIN knowledge_sources s ON s.id = f.source_id
 		WHERE `+strings.Join(where, " AND ")+`
 		ORDER BY `+order+` LIMIT ?`, args...)
 	if err != nil {

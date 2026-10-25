@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
+import { useModalFocusTrap } from '../../hooks/useModalFocusTrap';
 import { buildSidebarModelOptions } from '../../utils/sidebarModelOptions';
 import { FetchProviderModels } from '../../../wailsjs/go/main/App';
 
@@ -120,28 +121,8 @@ export function BotLLMSettingsDialog({
     const [modelsLoading, setModelsLoading] = useState(() => willFetchModels(firstProvider));
     const modelsSeq = useRef(0);
     const dialogRef = useRef<HTMLDivElement | null>(null);
-    const previousFocusRef = useRef<HTMLElement | null>(null);
     const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose, { enabled: !saving });
-
-    useEffect(() => {
-        previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-        return () => {
-            const previousFocus = previousFocusRef.current;
-            previousFocusRef.current = null;
-            if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
-        };
-    }, []);
-
-    // Keep keyboard focus inside the modal while it is open, as BotEditDialog does.
-    useEffect(() => {
-        const handleFocusIn = (event: FocusEvent) => {
-            if (event.target instanceof Node && !dialogRef.current?.contains(event.target)) {
-                dialogRef.current?.focus();
-            }
-        };
-        document.addEventListener('focusin', handleFocusIn, true);
-        return () => document.removeEventListener('focusin', handleFocusIn, true);
-    }, []);
+    const { onKeyDown } = useModalFocusTrap(dialogRef, { onEscape: () => { if (!saving) onClose(); } });
 
     // Falling back to the first usable entry keeps the select's value inside its
     // own option list: a saved provider can lose its key after the fact.
@@ -209,13 +190,10 @@ export function BotLLMSettingsDialog({
         onSubmit({ mode: 'custom', provider: selected, model: model.trim() });
     };
 
-    const onKeyDown = (event: ReactKeyboardEvent) => {
-        if (event.key === 'Escape') {
-            event.preventDefault();
-            event.stopPropagation();
-            if (!saving) onClose();
-            return;
-        }
+    // Enter submits from anywhere in the dialog; Escape and the Tab wrap come
+    // from the focus trap. The order matters: Enter is checked first so it
+    // never falls through to the trap's Tab branch.
+    const handleKeyDown = (event: ReactKeyboardEvent) => {
         if (event.key === 'Enter') {
             const native = event.nativeEvent as KeyboardEvent;
             if (native.isComposing || native.keyCode === 229) return;
@@ -225,23 +203,11 @@ export function BotLLMSettingsDialog({
             submit();
             return;
         }
-        if (event.key === 'Tab') {
-            const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
-                'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href]',
-            );
-            if (!focusable?.length) return;
-            const items = Array.from(focusable);
-            const currentIndex = items.indexOf(document.activeElement as HTMLElement);
-            const nextIndex = event.shiftKey
-                ? (currentIndex <= 0 ? items.length - 1 : currentIndex - 1)
-                : (currentIndex === items.length - 1 ? 0 : currentIndex + 1);
-            event.preventDefault();
-            items[nextIndex].focus();
-        }
+        onKeyDown(event);
     };
 
     return (
-        <div className="modal-backdrop custom-dialog-backdrop bot-llm-dialog-backdrop" {...backdropProps} onKeyDown={onKeyDown}>
+        <div className="modal-backdrop custom-dialog-backdrop bot-llm-dialog-backdrop" {...backdropProps} onKeyDown={handleKeyDown}>
             <div
                 className="modal-content custom-dialog bot-llm-dialog"
                 ref={dialogRef}
@@ -252,22 +218,27 @@ export function BotLLMSettingsDialog({
                 tabIndex={-1}
                 {...dialogProps}
             >
-                <div className="modal-header custom-dialog__header">
-                    <div className="custom-dialog__heading">
-                        <h3 id={titleId} className="custom-dialog__title">{heading ?? labels.title}</h3>
+                <div className="bot-llm-dialog__head">
+                    <div className="modal-header custom-dialog__header">
+                        <div className="custom-dialog__heading">
+                            <h3 id={titleId} className="custom-dialog__title">{heading ?? labels.title}</h3>
+                        </div>
+                        <button type="button" className="btn-close custom-dialog__close" aria-label={labels.close} disabled={saving} onClick={onClose}>
+                            <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+                                <path d="M3.2 3.2 10.8 10.8M10.8 3.2 3.2 10.8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                            </svg>
+                        </button>
                     </div>
-                    <button type="button" className="btn-close custom-dialog__close" aria-label={labels.close} disabled={saving} onClick={onClose}>
-                        <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
-                            <path d="M3.2 3.2 10.8 10.8M10.8 3.2 3.2 10.8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-                        </svg>
-                    </button>
+                    {tabs}
                 </div>
-                {tabs}
                 <div className="modal-body custom-dialog__body">
                     {heading ? <h4 className="bot-llm-dialog__section">{labels.title}</h4> : null}
                     <p className="bot-llm-dialog__hint">{labels.sharedHint}</p>
 
-                    <div className="bot-llm-dialog__option">
+                    <div
+                        className={`bot-llm-dialog__option${mode === 'default' ? ' is-selected' : ''}`}
+                        onClick={() => { if (!saving) chooseMode('default'); }}
+                    >
                         <label className="bot-llm-dialog__radio">
                             <input
                                 type="radio"
@@ -283,7 +254,10 @@ export function BotLLMSettingsDialog({
                         <p className="bot-llm-dialog__subhint">{labels.defaultHint}</p>
                     </div>
 
-                    <div className="bot-llm-dialog__option">
+                    <div
+                        className={`bot-llm-dialog__option${mode === 'custom' ? ' is-selected' : ''}${usable.length === 0 ? ' is-disabled' : ''}`}
+                        onClick={() => { if (!saving && usable.length > 0) chooseMode('custom'); }}
+                    >
                         <label className="bot-llm-dialog__radio">
                             <input
                                 type="radio"
@@ -300,40 +274,42 @@ export function BotLLMSettingsDialog({
                         {usable.length === 0 ? <p className="bot-llm-dialog__subhint" role="status">{labels.noProviders}</p> : null}
 
                         {usable.length > 0 ? (
-                            <div className="bot-llm-dialog__field">
-                                <label className="form-label bot-llm-dialog__label" htmlFor={providerId}>{labels.providerLabel}</label>
-                                <select
-                                    id={providerId}
-                                    className="form-input bot-llm-dialog__select"
-                                    value={selected?.name ?? ''}
-                                    disabled={saving || mode !== 'custom'}
-                                    data-testid="bot-llm-provider"
-                                    onChange={event => pickProvider(event.target.value)}
-                                >
-                                    {usable.map(item => (
-                                        <option key={item.name} value={item.name}>{item.name}</option>
-                                    ))}
-                                </select>
-                            </div>
-                        ) : null}
+                            <div className="bot-llm-dialog__fields">
+                                <div className="bot-llm-dialog__field">
+                                    <label className="form-label bot-llm-dialog__label" htmlFor={providerId}>{labels.providerLabel}</label>
+                                    <select
+                                        id={providerId}
+                                        className="form-input bot-llm-dialog__select"
+                                        value={selected?.name ?? ''}
+                                        disabled={saving || mode !== 'custom'}
+                                        data-testid="bot-llm-provider"
+                                        onClick={event => event.stopPropagation()}
+                                        onChange={event => pickProvider(event.target.value)}
+                                    >
+                                        {usable.map(item => (
+                                            <option key={item.name} value={item.name}>{item.name}</option>
+                                        ))}
+                                    </select>
+                                </div>
 
-                        {usable.length > 0 ? (
-                            <div className="bot-llm-dialog__field">
-                                <label className="form-label bot-llm-dialog__label" htmlFor={modelId}>{labels.modelLabel}</label>
-                                <select
-                                    id={modelId}
-                                    className="form-input bot-llm-dialog__select"
-                                    value={model}
-                                    disabled={saving || mode !== 'custom' || modelOptions.length === 0}
-                                    data-testid="bot-llm-model"
-                                    onChange={event => setModel(event.target.value)}
-                                >
-                                    {modelOptions.map(item => (
-                                        <option key={item} value={item}>{item}</option>
-                                    ))}
-                                </select>
-                                {modelsLoading ? <p className="bot-llm-dialog__subhint" role="status">{labels.modelLoading}</p> : null}
-                                {!modelsLoading && modelOptions.length === 0 ? <p className="bot-llm-dialog__subhint" role="status">{labels.modelEmpty}</p> : null}
+                                <div className="bot-llm-dialog__field">
+                                    <label className="form-label bot-llm-dialog__label" htmlFor={modelId}>{labels.modelLabel}</label>
+                                    <select
+                                        id={modelId}
+                                        className="form-input bot-llm-dialog__select"
+                                        value={model}
+                                        disabled={saving || mode !== 'custom' || modelOptions.length === 0}
+                                        data-testid="bot-llm-model"
+                                        onClick={event => event.stopPropagation()}
+                                        onChange={event => setModel(event.target.value)}
+                                    >
+                                        {modelOptions.map(item => (
+                                            <option key={item} value={item}>{item}</option>
+                                        ))}
+                                    </select>
+                                    {modelsLoading ? <p className="bot-llm-dialog__subhint" role="status">{labels.modelLoading}</p> : null}
+                                    {!modelsLoading && modelOptions.length === 0 ? <p className="bot-llm-dialog__subhint" role="status">{labels.modelEmpty}</p> : null}
+                                </div>
                             </div>
                         ) : null}
                     </div>

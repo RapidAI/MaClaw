@@ -851,6 +851,9 @@ func applyPackageWithImporter(ctx context.Context, store *knowledge.SQLiteStore,
 		if err := replaceLibrarySourceMappings(meta, libraryID, previousMappings); err != nil {
 			return fmt.Errorf("%w; rollback map restore failed: %v", cause, err)
 		}
+		if err := store.ReplaceLibraryMemberships(ctx, libraryID, localSourceIDs(previousMappings)); err != nil {
+			return fmt.Errorf("%w; rollback membership restore failed: %v", cause, err)
+		}
 		return cause
 	}
 	if op == "replace_snapshot" || op == "upsert_sources" {
@@ -908,7 +911,23 @@ func applyPackageWithImporter(ctx context.Context, store *knowledge.SQLiteStore,
 	if err := replaceLibrarySourceMappings(meta, libraryID, newMappings); err != nil {
 		return restorePrevious(err)
 	}
+	if err := store.ReplaceLibraryMemberships(ctx, libraryID, localSourceIDs(newMappings)); err != nil {
+		return restorePrevious(err)
+	}
 	return nil
+}
+
+func localSourceIDs(mappings []sourceMapRow) []string {
+	if len(mappings) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(mappings))
+	for _, mapping := range mappings {
+		if id := strings.TrimSpace(mapping.localID); id != "" {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // replaceLibrarySourceMappings updates every mapping for one library in a

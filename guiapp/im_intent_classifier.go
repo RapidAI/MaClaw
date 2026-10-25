@@ -255,25 +255,13 @@ func (h *IMMessageHandler) requestIntentClassificationResponses(cfg corelib.Macl
 			"schema": intentClassifierJSONSchema,
 		},
 	}
-	req, body, endpoint, err := llm.NewResponsesAPIRequest(scheduledCtx, cfg, messages, llm.ResponsesAPIRequestOptions{
-		Stream:    false,
+	// The shared sender keeps the provider body. A local post handed
+	// dumpLLMContext the request bytes, so a thinking-off refusal could
+	// not be retried.
+	parsedResp, err := llm.DoResponsesAPIRequestWithOptions(scheduledCtx, cfg, messages, httpClient, llm.ResponsesAPIRequestOptions{
 		ExtraBody: map[string]interface{}{"response_format": responseFormat},
 	})
-	if err != nil {
-		return llmIntentClassification{}, err
-	}
-	resp, err := httpClient.Do(req)
 	globalLLMScheduler.ObserveResult(trace, err)
-	if err != nil {
-		return llmIntentClassification{}, fmt.Errorf("[%s] %w", endpoint, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		err := dumpLLMContext(resp.StatusCode, "intent classify responses request failed", body, h.getTempDir())
-		globalLLMScheduler.ObserveResult(trace, err)
-		return llmIntentClassification{}, err
-	}
-	parsedResp, err := llm.ParseNonStreamResponsesAPIResponse(resp)
 	if err != nil {
 		return llmIntentClassification{}, err
 	}
@@ -300,22 +288,10 @@ func (h *IMMessageHandler) requestIntentClassificationOpenAI(cfg corelib.MaclawL
 			"schema": intentClassifierJSONSchema,
 		},
 	}
-	req, body, endpoint, err := llm.NewOpenAIChatRequest(scheduledCtx, cfg, messages, llm.OpenAIChatRequestOptions{Stream: false, ResponseFormat: responseFormat})
-	if err != nil {
-		return llmIntentClassification{}, err
-	}
-	resp, err := httpClient.Do(req)
+	parsedResp, err := llm.DoOpenAIRequestWithOptions(scheduledCtx, cfg, messages, nil, httpClient, llm.OpenAIChatRequestOptions{
+		ResponseFormat: responseFormat,
+	})
 	globalLLMScheduler.ObserveResult(trace, err)
-	if err != nil {
-		return llmIntentClassification{}, fmt.Errorf("[%s] %w", endpoint, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		err := dumpLLMContext(resp.StatusCode, "intent classify request failed", body, h.getTempDir())
-		globalLLMScheduler.ObserveResult(trace, err)
-		return llmIntentClassification{}, err
-	}
-	parsedResp, err := llm.ParseNonStreamOpenAIResponse(resp)
 	if err != nil {
 		return llmIntentClassification{}, err
 	}

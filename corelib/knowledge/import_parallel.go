@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 
@@ -27,10 +26,6 @@ func canParallelLightImport(kind string, req DirectoryImportRequest) bool {
 		// LLM distillation is rate-limited / latency-bound; keep sequential so
 		// progress steps and backpressure stay simple.
 		if NormalizeDistillMode(req.DistillMode) == DistillModeLLMIfAny {
-			return false
-		}
-		// TopicHint forces auto-mode LLM; avoid surprising concurrent LLM calls.
-		if strings.TrimSpace(req.TopicHint) != "" && NormalizeDistillMode(req.DistillMode) != DistillModeRules {
 			return false
 		}
 		return true
@@ -160,7 +155,7 @@ func (s *SQLiteStore) importLightItemsBatch(
 		if emitStepProgress != nil {
 			emitStepProgress(item, "preparing", 1, 5)
 		}
-		existingSource, exists, err := findExistingSourceForImport(ctx, tx, req, item)
+		existingSource, exists, err := findExistingSourceForImport(ctx, tx, req, item, s.ownerForExistingSourceLookup(req.OwnerID))
 		if err != nil {
 			return err
 		}
@@ -173,6 +168,8 @@ func (s *SQLiteStore) importLightItemsBatch(
 			if source.SourceTrust == 0 {
 				source.SourceTrust = existingSource.SourceTrust
 			}
+			source = preserveStoredOwner(source, existingSource)
+			source = preserveStoredProjectPath(source, existingSource)
 		}
 		// Commit the lookup before parsing. A deferred transaction that has
 		// already read holds a shared lock until commit, and it also checks
@@ -382,7 +379,7 @@ func (s *SQLiteStore) importLightItemsBatch(
 			}
 		}
 		// Persist source row (may already reflect distilled status).
-		if err := insertSource(ctx, tx, source); err != nil {
+		if err := s.insertSource(ctx, tx, source); err != nil {
 			if undoErr := undo(err.Error()); undoErr != nil {
 				return undoErr
 			}
@@ -397,14 +394,14 @@ func (s *SQLiteStore) importLightItemsBatch(
 
 		if prep.unsupported {
 			source.Status = StatusPending
-			if err := insertSource(ctx, tx, source); err != nil {
+			if err := s.insertSource(ctx, tx, source); err != nil {
 				return err
 			}
 		} else if prep.parseErr != nil {
 			persistedParseErr := sanitizeKnowledgeParseError(item.Kind, prep.parseErr)
 			source.Status = StatusFailed
 			source.ErrorMessage = persistedParseErr.Error()
-			if err := insertSource(ctx, tx, source); err != nil {
+			if err := s.insertSource(ctx, tx, source); err != nil {
 				return err
 			}
 			item.Status = ItemStatusFailed
@@ -439,7 +436,7 @@ func (s *SQLiteStore) importLightItemsBatch(
 				}
 				source.Status = StatusDistilled
 				source.UpdatedAt = time.Now().UTC()
-				if err := insertSource(ctx, tx, source); err != nil {
+				if err := s.insertSource(ctx, tx, source); err != nil {
 					return err
 				}
 			}
@@ -503,10 +500,13 @@ func (s *SQLiteStore) prepareLightImportItem(ctx context.Context, req DirectoryI
 		nodes[i] = pn.node
 	}
 
+	// Cards copy owner_id from the source. Stamp first so that copy matches the
+	// source row written after this prepare step.
+	source = s.applyDesktopOwnerStamp(source)
 	cards := buildCardsForNodesFast(source, nodes)
 	if s != nil && s.distiller != nil && shouldUseLLMForMode(req.DistillMode, source, nodes) {
 		if llmCards, err := s.distiller.DistillCards(ctx, source, nodes); err == nil && len(llmCards) > 0 {
-			cards = NormalizeDistilledCards(source, llmCards)
+			cards = bindDistilledCardsToNodes(NormalizeDistilledCards(source, llmCards), nodes)
 		}
 	}
 	prepCards, prepFacts := prepareCardsAndFacts(source, cards)

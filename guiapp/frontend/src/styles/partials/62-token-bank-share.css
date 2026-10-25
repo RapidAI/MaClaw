@@ -26,7 +26,7 @@
     padding: 0;
     margin: 0;
     border: 1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border));
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--theme-surface);
     color: var(--theme-primary-strong);
     box-shadow: 0 0 0 2px var(--theme-surface);
@@ -91,7 +91,7 @@
     min-height: 30px;
     padding: 0 11px 0 8px;
     border: 1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border));
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--theme-surface);
     color: var(--theme-primary-strong);
     font-size: 0.75rem;
@@ -177,7 +177,7 @@
     gap: 14px;
     padding: 18px 20px;
     border: 1px solid var(--theme-border);
-    border-radius: var(--radius-md, 10px);
+    border-radius: var(--radius-md, 8px);
     background: var(--theme-surface);
     color: var(--theme-text-primary);
 }
@@ -282,7 +282,7 @@
     gap: 8px;
     flex-wrap: wrap;
     padding: 6px 8px;
-    border-radius: var(--radius-sm, 8px);
+    border-radius: var(--radius-sm, 6px);
     background: var(--theme-surface-muted);
 }
 
@@ -370,7 +370,7 @@
     margin: 0;
     padding: 7px 10px;
     border: 1px solid var(--theme-border);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     background: var(--theme-surface);
     color: var(--theme-text-primary);
     font-size: 0.8rem;
@@ -449,7 +449,7 @@
     max-height: 148px;
     overflow: auto;
     border: 1px solid var(--theme-border);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     background: var(--theme-surface);
 }
 
@@ -510,7 +510,7 @@
     min-height: 28px;
     padding: 4px 10px;
     border: 1px solid var(--theme-border);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     background: var(--theme-surface);
     color: var(--theme-text-primary);
     font-size: 0.78rem;

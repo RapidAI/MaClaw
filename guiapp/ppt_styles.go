@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -15,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/pptx"
 )
 
@@ -379,43 +377,7 @@ func (a *App) completePPTStyleJSON(request string) (string, error) {
 		map[string]interface{}{"role": "system", "content": pptStyleSystemPrompt},
 		map[string]interface{}{"role": "user", "content": request},
 	}
-	extra := map[string]interface{}{"max_tokens": maxTokens}
-	if captionUsesAnthropic(cfg) {
-		resp, err := llm.DoAnthropicRequestWithOptions(ctx, cfg, messages, nil, pptStyleHTTPClient, llm.AnthropicMessagesRequestOptions{MaxTokens: maxTokens})
-		text, err := documentStyleResponseText(resp, err)
-		return pdfStyleModelText(text, err)
-	}
-	if cfg.IsResponsesAPI() {
-		req, _, _, err := llm.NewResponsesAPIRequest(ctx, cfg, messages, llm.ResponsesAPIRequestOptions{Stream: false, ExtraBody: extra})
-		if err != nil {
-			return "", pdfStyleCallError(err)
-		}
-		return pptStyleHTTPParse(ctx, req, llm.ParseNonStreamResponsesAPIBody)
-	}
-	req, _, _, err := llm.NewOpenAIChatRequest(ctx, cfg, messages, llm.OpenAIChatRequestOptions{Stream: false, ExtraBody: extra})
-	if err != nil {
-		return "", pdfStyleCallError(err)
-	}
-	return pptStyleHTTPParse(ctx, req, llm.ParseNonStreamOpenAIResponseBody)
+	return completeDocumentStyleModel(ctx, cfg, pptStyleHTTPClient, messages, maxTokens)
 }
 
 var pptStyleHTTPClient = &http.Client{Timeout: pptStyleGenerateTimeout}
-
-func pptStyleHTTPParse(ctx context.Context, req *http.Request, parse func([]byte) (*llm.Response, error)) (string, error) {
-	req = req.WithContext(ctx)
-	resp, err := pptStyleHTTPClient.Do(req)
-	if err != nil {
-		return "", pdfStyleCallError(err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-	if err != nil {
-		return "", pdfStyleCallError(err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("模型请求失败（HTTP %d）", resp.StatusCode)
-	}
-	parsed, err := parse(body)
-	text, err := documentStyleResponseText(parsed, err)
-	return pdfStyleModelText(text, err)
-}

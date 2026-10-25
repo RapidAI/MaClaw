@@ -1,6 +1,7 @@
 package agentruntime
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -24,6 +25,15 @@ func TestResponseHasPDF(t *testing.T) {
 }
 
 func TestHostOwnedGeneratePDFSucceeded(t *testing.T) {
+	if strings.Contains(HostPublishedCurrentChannelFileNote, "send_file") || strings.Contains(HostPublishedCurrentChannelFileNote, "deliver it through") {
+		t.Fatalf("publish note asks the model to send: %q", HostPublishedCurrentChannelFileNote)
+	}
+	if !strings.Contains(HostPublishedCurrentChannelFileNote, "This is not a send.") {
+		t.Fatalf("publish note = %q", HostPublishedCurrentChannelFileNote)
+	}
+	if !HostOwnedGeneratePDFSucceeded(HostPublishedCurrentChannelFileNote) {
+		t.Fatal("host attach note was not recognized")
+	}
 	if !HostOwnedGeneratePDFSucceeded("PDF artifact published; deliver it through the current-channel file adapter.") {
 		t.Fatal("success marker was not recognized")
 	}

@@ -1,8 +1,10 @@
 package embedding
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -22,7 +24,7 @@ var releaseAssetsJSON []byte
 // ReleaseAsset is one first-run downloadable file.
 type ReleaseAsset struct {
 	Filename string `json:"filename"`
-	Kind     string `json:"kind"`   // model | intent_head | tool_head | interrupt_head
+	Kind     string `json:"kind"`   // model | intent_head | tool_head | interrupt_head | formula | layout | table
 	Subdir   string `json:"subdir"` // install dir under the models dir ("" = models dir)
 	Size     int64  `json:"size"`
 	SHA256   string `json:"sha256"`
@@ -42,6 +44,18 @@ func ReleaseAssets() []ReleaseAsset {
 // Spec converts an asset to a ModelSpec with the GitHub release URL.
 func (a ReleaseAsset) Spec() ModelSpec {
 	return ModelSpec{Filename: a.Filename, URLs: []string{ReleaseBaseURL + "/" + a.Filename}, Size: a.Size, SHA256: a.SHA256}
+}
+
+// IsHeadKind reports an intent, tool, or interrupt head. Formula, layout,
+// table weights, and the GGUF use other kinds so a head fetch does not
+// download them.
+func IsHeadKind(kind string) bool {
+	switch kind {
+	case "intent_head", "tool_head", "interrupt_head":
+		return true
+	default:
+		return false
+	}
 }
 
 // IsReleaseAssetFilename reports whether name is one of the pinned assets
@@ -94,6 +108,38 @@ func NewReleaseAssetFetcher(modelsDir string, a ReleaseAsset, hubURL string) *Mo
 		f.spec.URLs = append([]string(nil), spec.URLs...)
 		f.mu.Unlock()
 	}
-	f.KeepExisting = a.Kind != "model"
+	// Heads recalibrated locally must never be overwritten. Formula, layout,
+	// table weights, and the GGUF are replaced when the pin does not match.
+	f.KeepExisting = IsHeadKind(a.Kind)
 	return f
+}
+
+// EnsureReleaseKind downloads every release asset of kind into
+// modelsDir/<subdir>. GitHub Model_Release is tried first, then the hub
+// mirror. Size and SHA-256 come from release_assets.json. A file that
+// already matches the pin is left in place.
+func EnsureReleaseKind(ctx context.Context, modelsDir, hubURL, kind string) error {
+	modelsDir = strings.TrimSpace(modelsDir)
+	kind = strings.TrimSpace(kind)
+	if modelsDir == "" {
+		return errors.New("embedding: models dir unavailable")
+	}
+	if kind == "" {
+		return errors.New("embedding: release kind unavailable")
+	}
+	found := 0
+	for _, asset := range ReleaseAssets() {
+		if asset.Kind != kind {
+			continue
+		}
+		found++
+		fetcher := NewReleaseAssetFetcher(modelsDir, asset, hubURL)
+		if _, err := fetcher.Ensure(ctx); err != nil {
+			return fmt.Errorf("embedding: %s: %w", asset.Filename, err)
+		}
+	}
+	if found == 0 {
+		return fmt.Errorf("embedding: no release assets for kind %s", kind)
+	}
+	return nil
 }

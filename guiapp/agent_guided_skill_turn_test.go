@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 )
 
 func bookPDFTestSkill() corelib.NLSkillEntry {
@@ -92,6 +93,80 @@ func TestInitialAgentLoopPhaseAgentGuidedNamedSkill(t *testing.T) {
 	}
 	if shouldRestrictToSkillSearch(phase) {
 		t.Fatal("agent-guided mode must not restrict the surface to skill search")
+	}
+}
+
+func TestOpenDocumentWaveDoesNotForceSkillPreference(t *testing.T) {
+	app, _ := newSkillExecutorWithEntries(t, weatherPDFTestSkill())
+	h := &IMMessageHandler{app: app}
+	wave := fullDocumentLoop(intent.LabelDocumentGenerate)
+	wave.Runtime.SemanticIntent.Reason = "session residue document"
+
+	phase := h.initialAgentLoopPhase("生成新的pdf", wave)
+	if phase.ForceSkillPreference || phase.SkillMode != skillPreferenceNone || phase.PreferredSkillName != "" {
+		t.Fatalf("open PDF wave phase=%+v, want no skill preference", phase)
+	}
+	if prompt := buildSkillPreferenceConvergePrompt(phase); prompt != "" {
+		t.Fatalf("open PDF wave converge prompt=%q", prompt)
+	}
+	if shouldRestrictToSkillSearch(phase) {
+		t.Fatal("open PDF wave must not restrict the round to skill search")
+	}
+
+	fresh := fullDocumentLoop(intent.LabelDocumentGenerate)
+	stolen := h.initialAgentLoopPhase("生成新的pdf", fresh)
+	if !stolen.ForceSkillPreference || stolen.PreferredSkillName != weatherPDFTestSkill().Name {
+		t.Fatalf("fresh PDF sentence phase=%+v, want the learned weather skill", stolen)
+	}
+
+	longEdit := "把前面已经写好的整份技术架构分析重新整理并生成一份新的 pdf"
+	longPhase := h.initialAgentLoopPhase(longEdit, wave)
+	if !longPhase.ForceSkillPreference {
+		t.Fatalf("long document edit phase=%+v, want skill preference", longPhase)
+	}
+
+	namedApp, _ := newSkillExecutorWithEntries(t, bookPDFTestSkill())
+	named := &IMMessageHandler{app: namedApp}
+	namedPhase := named.initialAgentLoopPhase("使用book-pdf skill 编写教程", wave)
+	if !namedPhase.ForceSkillPreference || namedPhase.SkillMode != skillPreferenceAgentGuided || namedPhase.PreferredSkillName != bookPDFTestSkill().Name {
+		t.Fatalf("named skill on an open document phase=%+v", namedPhase)
+	}
+
+	bare := &IMMessageHandler{}
+	barePhase := bare.initialAgentLoopPhase("生成新的pdf", wave)
+	if barePhase.ForceSkillPreference {
+		t.Fatalf("open PDF wave without a local skill phase=%+v", barePhase)
+	}
+	bareFresh := bare.initialAgentLoopPhase("生成新的pdf", fresh)
+	if !bareFresh.ForceSkillPreference || bareFresh.SkillMode != skillPreferenceRemoteRequired {
+		t.Fatalf("fresh PDF sentence without a local skill phase=%+v", bareFresh)
+	}
+
+	stickyApp, _ := newSkillExecutorWithEntries(t, bookPDFTestSkill())
+	sticky := &IMMessageHandler{app: stickyApp}
+	owner := &LoopContext{UserID: "task-hop3"}
+	if first := sticky.initialAgentLoopPhase("book-pdf skill", owner); first.SkillMode != skillPreferenceAgentGuided {
+		t.Fatalf("setup SkillMode=%q", first.SkillMode)
+	}
+	office := fullDocumentLoop(intent.LabelOffice)
+	office.UserID = owner.UserID
+	office.Runtime.SemanticIntent.Reason = "session residue document"
+	officePhase := sticky.initialAgentLoopPhase("改一下标题", office)
+	if officePhase.ForceSkillPreference {
+		t.Fatalf("open office edit phase=%+v", officePhase)
+	}
+	if sticky.recallAgentGuidedSkill(owner.UserID, stickyApp.skillExecutor) == "" {
+		t.Fatal("short office edit cleared the named workflow")
+	}
+	pdfWave := fullDocumentLoop(intent.LabelDocumentGenerate)
+	pdfWave.UserID = owner.UserID
+	pdfWave.Runtime.SemanticIntent.Reason = "session residue document"
+	pdfPhase := sticky.initialAgentLoopPhase("生成新的pdf", pdfWave)
+	if pdfPhase.ForceSkillPreference {
+		t.Fatalf("open PDF wave reused the workflow: %+v", pdfPhase)
+	}
+	if sticky.recallAgentGuidedSkill(owner.UserID, stickyApp.skillExecutor) != "" {
+		t.Fatal("pdf hint on the open document kept the named workflow")
 	}
 }
 

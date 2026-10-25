@@ -52,6 +52,9 @@ func ensureSchema(ctx context.Context, db *sql.DB) error {
 // A missing schema object is not skipped: opening without it would hide a
 // real migration failure.
 func ensureCurrentKnowledgeMaintenance(ctx context.Context, db *sql.DB) error {
+	if err := ensureKnowledgeOrganizationSchema(ctx, db); err != nil {
+		return err
+	}
 	incomplete, err := knowledgeSchemaV2Incomplete(ctx, db)
 	if err != nil {
 		return err
@@ -60,6 +63,12 @@ func ensureCurrentKnowledgeMaintenance(ctx context.Context, db *sql.DB) error {
 		if err := createSchemaV2(ctx, db); err != nil {
 			return err
 		}
+	}
+	if err := ensureKnowledgeBodyParent(ctx, db); err != nil {
+		return err
+	}
+	if err := alignCardOwnersFromSources(ctx, db); err != nil && !IsSQLiteLockedError(err) {
+		return err
 	}
 	// The scrub UPDATE takes a reserved lock. On a clean database it matches
 	// nothing, so a read is enough and knowledge settings can open while a

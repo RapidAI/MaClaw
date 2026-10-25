@@ -266,8 +266,11 @@ func TestSQLiteStoreImportDirectory(t *testing.T) {
 	if len(results) == 0 {
 		t.Fatalf("expected search results")
 	}
-	if results[0].ResultType != "card" || results[0].CardID == "" {
-		t.Fatalf("expected card-first search result, got %#v", results[0])
+	if results[0].ResultType != "node" && results[0].ResultType != "table_row" {
+		t.Fatalf("expected a body search result, got %#v", results[0])
+	}
+	if !searchHitsCarryCard(results) {
+		t.Fatalf("expected the body to keep its card, got %#v", results)
 	}
 	if results[0].Citation == "" {
 		t.Fatalf("expected search result citation, got %#v", results[0])
@@ -284,12 +287,12 @@ func TestSQLiteStoreImportDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fact Search: %v", err)
 	}
-	if len(factResults) == 0 || factResults[0].ResultType != "fact" || factResults[0].FactID == "" {
-		t.Fatalf("expected fact search result, got %#v", factResults)
+	if len(factResults) == 0 || factResults[0].FactID == "" || factResults[0].ResultType != "fact" {
+		t.Fatalf("expected fact-only search results, got %#v", factResults)
 	}
 	for _, result := range factResults {
-		if result.ResultType != "fact" {
-			t.Fatalf("fact-only search returned %s", result.ResultType)
+		if result.ResultType != "fact" || result.FactID == "" {
+			t.Fatalf("fact search returned %s without a fact id", result.ResultType)
 		}
 	}
 
@@ -1553,15 +1556,15 @@ func TestSQLiteStoreSaveTextIndexesChineseSummaryFacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Search Chinese fact: %v", err)
 	}
-	if len(results) == 0 || results[0].ResultType != "fact" || results[0].Source.ID != source.ID {
-		t.Fatalf("expected saved Chinese fact to be searchable: %#v", results)
+	if len(results) == 0 || results[0].ResultType != "fact" || results[0].FactID == "" || results[0].Source.ID != source.ID || results[0].Object != "来源摘要" {
+		t.Fatalf("expected saved Chinese fact: %#v", results)
 	}
 	defaultResults, err := store.Search(ctx, SearchOptions{Query: "知识库", ProjectPath: "D:/project", Limit: 5})
 	if err != nil {
 		t.Fatalf("default Search Chinese fact: %v", err)
 	}
-	if !hasSearchResultType(defaultResults, "card") || !hasSearchResultType(defaultResults, "fact") {
-		t.Fatalf("default search should include both card context and fact evidence: %#v", defaultResults)
+	if !searchHitsCarryCard(defaultResults) || !searchHitsCarryFact(defaultResults) {
+		t.Fatalf("default search should keep card and fact annotations on the body: %#v", defaultResults)
 	}
 	pack, err := store.ContextPack(ctx, ContextPackOptions{
 		SearchOptions: SearchOptions{Query: "来源摘要", ProjectPath: "D:/project", ResultTypes: []string{"fact"}, Limit: 5},
@@ -2670,7 +2673,7 @@ func TestSQLiteStoreListSourcesByDomain(t *testing.T) {
 		if err := store.SaveSource(ctx, source); err != nil {
 			t.Fatalf("SaveSource: %v", err)
 		}
-		if err := store.SaveCard(ctx, Card{
+		saveSearchableCard(t, store, Card{
 			ID:          "kcard_" + source.ID,
 			SourceID:    source.ID,
 			Title:       source.Title,
@@ -2681,9 +2684,7 @@ func TestSQLiteStoreListSourcesByDomain(t *testing.T) {
 			SourceTrust: 0.8,
 			CreatedAt:   now,
 			UpdatedAt:   now,
-		}); err != nil {
-			t.Fatalf("SaveCard: %v", err)
-		}
+		})
 	}
 	exampleSources, err := store.ListSources(ctx, ListSourcesOptions{Domain: "example.com", Limit: 10})
 	if err != nil {
@@ -2768,7 +2769,7 @@ func TestSQLiteStoreNormalizesDirectListAndSearchFilterScalars(t *testing.T) {
 	if err := store.SaveSource(ctx, source); err != nil {
 		t.Fatalf("SaveSource: %v", err)
 	}
-	if err := store.SaveCard(ctx, Card{
+	saveSearchableCard(t, store, Card{
 		ID:          "kcard_scalar_filters",
 		SourceID:    source.ID,
 		Title:       "Scalar filters",
@@ -2782,9 +2783,7 @@ func TestSQLiteStoreNormalizesDirectListAndSearchFilterScalars(t *testing.T) {
 		SourceTrust: 0.8,
 		CreatedAt:   now,
 		UpdatedAt:   now,
-	}); err != nil {
-		t.Fatalf("SaveCard: %v", err)
-	}
+	})
 	listed, err := store.ListSources(ctx, ListSourcesOptions{
 		OwnerID:     " owner-a ",
 		TenantID:    " tenant-a ",
@@ -2855,6 +2854,15 @@ func TestSQLiteStoreFactGraphFiltersAndSummaries(t *testing.T) {
 	if err := store.ReplaceSourceLabels(ctx, source.ID, []string{"alpha", "local"}); err != nil {
 		t.Fatalf("ReplaceSourceLabels source: %v", err)
 	}
+	if err := store.SaveDocumentNode(ctx, DocumentNode{
+		ID:       "knode_graph_1",
+		SourceID: source.ID,
+		Type:     "paragraph",
+		Title:    "Graph card",
+		Text:     "Project Alpha uses SQLite and depends on FTS5.",
+	}); err != nil {
+		t.Fatalf("SaveDocumentNode: %v", err)
+	}
 	urlSource := Source{
 		ID:           "ksrc_graph_url",
 		Kind:         SourceKindURL,
@@ -2878,6 +2886,7 @@ func TestSQLiteStoreFactGraphFiltersAndSummaries(t *testing.T) {
 	card := Card{
 		ID:          "kcard_graph_1",
 		SourceID:    source.ID,
+		NodeID:      "knode_graph_1",
 		Title:       "Graph card",
 		Claim:       "Project Alpha uses SQLite and depends on FTS5.",
 		ProjectPath: source.ProjectPath,
@@ -3021,7 +3030,7 @@ func TestSQLiteStoreFactGraphFiltersAndSummaries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SearchFacets: %v", err)
 	}
-	if facets.Count == 0 || !hasSearchFacet(facets.ResultTypes, "card") || !hasSearchFacet(facets.SourceKinds, SourceKindText) || !hasSearchFacet(facets.Domains, "local") || !hasSearchFacet(facets.Labels, "alpha") || !hasSearchFacet(facets.Entities, "Project Alpha") || !hasSearchFacet(facets.Predicates, "uses") {
+	if facets.Count == 0 || !hasSearchFacet(facets.ResultTypes, "node") || !hasSearchFacet(facets.SourceKinds, SourceKindText) || !hasSearchFacet(facets.Domains, "local") || !hasSearchFacet(facets.Labels, "alpha") || !hasSearchFacet(facets.Entities, "Project Alpha") || !hasSearchFacet(facets.Predicates, "uses") {
 		t.Fatalf("unexpected search facets: %#v", facets)
 	}
 	browseFacets, err := store.SearchFacets(ctx, SearchOptions{ProjectPath: "D:/project", Limit: 10})
@@ -3318,6 +3327,11 @@ func TestSQLiteStoreSearchTopicRerank(t *testing.T) {
 	if linkResult.Linked > 0 && len(links) == 0 {
 		t.Fatalf("expected persisted topic links: %#v", linkResult)
 	}
+	for _, link := range links {
+		if link.Status != SourceLinkStatusSuggested {
+			t.Fatalf("topic overlap link status = %q, want suggested: %#v", link.Status, link)
+		}
+	}
 	if linkResult.Linked > 0 {
 		stats, err := store.Stats(ctx)
 		if err != nil {
@@ -3340,34 +3354,35 @@ func TestSQLiteStoreSearchTopicRerank(t *testing.T) {
 		if err != nil {
 			t.Fatalf("SourceGraph: %v", err)
 		}
-		if graph.Count != 2 || graph.EdgeCount == 0 || len(graph.Nodes) != 2 || len(graph.Edges) == 0 || !stringSliceContains(graph.Notes, "local_source_graph_no_llm") {
+		if graph.Count != 2 || graph.EdgeCount != 0 || len(graph.Nodes) != 2 || len(graph.Edges) != 0 || !stringSliceContains(graph.Notes, "local_source_graph_no_llm") {
 			t.Fatalf("unexpected source graph: %#v", graph)
 		}
-		if graph.ComponentCount != 1 || graph.LargestComponentSize != 2 || len(graph.Components) != 1 || !stringSliceContains(graph.Notes, "local_connected_components") {
-			t.Fatalf("expected connected source graph component summary: %#v", graph)
+		if graph.ComponentCount != 2 || graph.LargestComponentSize != 1 || len(graph.Components) != 2 || !stringSliceContains(graph.Notes, "local_connected_components") {
+			t.Fatalf("expected isolated source graph components: %#v", graph)
 		}
-		if graph.Components[0].Count != 2 || graph.Components[0].EdgeCount == 0 || graph.Components[0].AverageDegree <= 0 || graph.Components[0].Density <= 0 {
-			t.Fatalf("unexpected source graph component metrics: %#v", graph.Components)
+		for _, component := range graph.Components {
+			if component.Count != 1 || component.EdgeCount != 0 || !component.Isolated || component.AverageDegree != 0 {
+				t.Fatalf("unexpected isolated component: %#v", component)
+			}
 		}
-		if graph.Nodes[0].Degree == 0 {
-			t.Fatalf("expected graph nodes to include degree: %#v", graph.Nodes)
-		}
-		if graph.Nodes[0].ComponentID == 0 {
-			t.Fatalf("expected graph nodes to include component id: %#v", graph.Nodes)
+		for _, node := range graph.Nodes {
+			if node.Degree != 0 || node.ComponentID == 0 {
+				t.Fatalf("expected isolated graph nodes: %#v", node)
+			}
 		}
 		neighborhood, err := store.SourceNeighborhood(ctx, relevance.Sources[0].Source.ID, 2, 20, 50)
 		if err != nil {
 			t.Fatalf("SourceNeighborhood: %v", err)
 		}
-		if neighborhood.FocusSourceID != relevance.Sources[0].Source.ID || neighborhood.Depth != 2 || neighborhood.Count != 2 || !stringSliceContains(neighborhood.Notes, "local_source_neighborhood_no_llm") {
+		if neighborhood.FocusSourceID != relevance.Sources[0].Source.ID || neighborhood.Depth != 2 || neighborhood.Count != 1 || !stringSliceContains(neighborhood.Notes, "local_source_neighborhood_no_llm") {
 			t.Fatalf("unexpected source neighborhood: %#v", neighborhood)
 		}
 		path, err := store.SourcePath(ctx, relevance.Sources[0].Source.ID, links[0].RelatedSourceID, 4, 50)
 		if err != nil {
 			t.Fatalf("SourcePath: %v", err)
 		}
-		if !path.Found || path.HopCount != 1 || len(path.Nodes) != 2 || len(path.Steps) != 1 || path.VisitedCount == 0 || path.SearchedEdgeCount == 0 || !stringSliceContains(path.Notes, "local_source_path_no_llm") {
-			t.Fatalf("unexpected source path: %#v", path)
+		if path.Found || !stringSliceContains(path.Notes, "local_source_path_no_llm") {
+			t.Fatalf("suggested links must not connect a source path: %#v", path)
 		}
 	}
 }
@@ -3867,6 +3882,28 @@ func hasSourceTimelineEventKind(events []SourceTimelineEvent, kind string) bool 
 func containsStoredFact(facts []Fact, predicate, object string) bool {
 	for _, fact := range facts {
 		if fact.Predicate == predicate && fact.Object == object {
+			return true
+		}
+	}
+	return false
+}
+
+func searchResultIsBody(result SearchResult) bool {
+	return result.ResultType == "node" || result.ResultType == "table_row"
+}
+
+func searchHitsCarryCard(results []SearchResult) bool {
+	for _, result := range results {
+		if result.CardID != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func searchHitsCarryFact(results []SearchResult) bool {
+	for _, result := range results {
+		if result.FactID != "" {
 			return true
 		}
 	}

@@ -326,8 +326,8 @@ func TestSearchRerankWidensCJKLikePool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if searchHasNode(narrow, "cjk_gold") {
-		t.Fatal("nil reranker included the LIKE row past the final limit")
+	if !searchHasNode(narrow, "cjk_gold") {
+		t.Fatalf("page-ordered LIKE pool discarded the relevant tail node: %#v", narrow)
 	}
 
 	promote := &countingReranker{fn: func(passages []rerank.Passage) ([]float64, error) {
@@ -380,23 +380,48 @@ func newRerankFixtureStore(t *testing.T) *SQLiteStore {
 			t.Fatal(err)
 		}
 	}
-	if err := store.SaveCard(ctx, Card{ID: "kcard_name", SourceID: "ksrc_name", Title: "奇安信网神", Claim: "奇安信网神驻留在名称卡片里", ProjectPath: "D:/project"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveCard(ctx, Card{ID: "kcard_strong", SourceID: "ksrc_strong", Title: "TaxAlphaUniqueToken", Claim: "TaxAlphaUniqueToken TaxAlphaUniqueToken TaxAlphaUniqueToken", ProjectPath: "D:/project"}); err != nil {
-		t.Fatal(err)
-	}
+	saveSearchableCard(t, store, Card{ID: "kcard_name", SourceID: "ksrc_name", Title: "奇安信网神", Claim: "奇安信网神驻留在名称卡片里", ProjectPath: "D:/project"})
+	saveSearchableCard(t, store, Card{ID: "kcard_strong", SourceID: "ksrc_strong", Title: "TaxAlphaUniqueToken", Claim: "TaxAlphaUniqueToken TaxAlphaUniqueToken TaxAlphaUniqueToken", ProjectPath: "D:/project"})
 	for i := 0; i < 35; i++ {
 		id := "kcard_policy_" + rerankItoa(i)
 		claim := strings.Repeat("policy ", 12) + "filler card " + rerankItoa(i)
-		if err := store.SaveCard(ctx, Card{ID: id, SourceID: "ksrc_policy", Title: "policy card " + rerankItoa(i), Claim: claim, ProjectPath: "D:/project"}); err != nil {
-			t.Fatal(err)
-		}
+		saveSearchableCard(t, store, Card{ID: id, SourceID: "ksrc_policy", Title: "policy card " + rerankItoa(i), Claim: claim, ProjectPath: "D:/project"})
 	}
-	if err := store.SaveCard(ctx, Card{ID: "kcard_gold", SourceID: "ksrc_policy", Title: "policy tail", Claim: "policy GOLDNEEDLE", ProjectPath: "D:/project"}); err != nil {
-		t.Fatal(err)
-	}
+	saveSearchableCard(t, store, Card{ID: "kcard_gold", SourceID: "ksrc_policy", Title: "policy tail", Claim: "policy GOLDNEEDLE", ProjectPath: "D:/project"})
 	return store
+}
+
+// saveSearchableCard stores the claim on its own document node. Default search
+// returns that body and still carries the card id.
+func saveSearchableCard(t *testing.T, store *SQLiteStore, card Card) {
+	t.Helper()
+	ctx := context.Background()
+	if strings.TrimSpace(card.ID) == "" {
+		t.Fatal("card id is required")
+	}
+	if strings.TrimSpace(card.NodeID) == "" {
+		card.NodeID = "knode_" + card.ID
+	}
+	text := strings.TrimSpace(card.Claim)
+	if text == "" {
+		text = strings.TrimSpace(card.Title)
+	}
+	title := strings.TrimSpace(card.Title)
+	if title == "" {
+		title = text
+	}
+	if err := store.SaveDocumentNode(ctx, DocumentNode{
+		ID:       card.NodeID,
+		SourceID: card.SourceID,
+		Type:     "paragraph",
+		Title:    title,
+		Text:     text,
+	}); err != nil {
+		t.Fatalf("SaveDocumentNode %s: %v", card.ID, err)
+	}
+	if err := store.SaveCard(ctx, card); err != nil {
+		t.Fatalf("SaveCard %s: %v", card.ID, err)
+	}
 }
 
 func searchCardIDs(store *SQLiteStore, opts SearchOptions) ([]string, error) {

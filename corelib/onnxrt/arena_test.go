@@ -19,6 +19,8 @@ import (
 //   - TestArenaNeedsZeroDirtyReuse: ConvTranspose (col2im scatter-add) and
 //     ReduceMean (generic path) accumulate into their output, so an arena
 //     checkout holding garbage must be cleared first (arenaPlan.needsZero).
+//     ReduceSum is the opposite case: it assigns each output and must stay
+//     off needsZero, including when the checkout buffer is still dirty.
 //
 // The graphs are crafted so the dirty buffer reuse is DETERMINISTIC: a
 // same-sized eligible value dies immediately before the accumulating op
@@ -350,6 +352,106 @@ func TestArenaNeedsZeroDirtyReuse(t *testing.T) {
 		// convtranspose(xc, ones 2x2, stride 1) = [1,3,2, 4,10,6, 3,7,4];
 		// b = relu(a) = all 5s; out = b + ct.
 		want := []float32{6, 8, 7, 9, 15, 11, 8, 12, 9}
+		wantF32Exact(t, run()["out"], want)
+		wantF32Exact(t, run()["out"], want)
+	})
+
+	// ReduceSum assigns each output. A same-sized dirty buffer must not be
+	// added in. needsZero stays false: clearing would hide a += regression.
+	t.Run("ReduceSum", func(t *testing.T) {
+		m := &Model{Opset: 18, Graph: &GraphProto{
+			Nodes: []*Node{
+				arenaTestNode("mul0", "Mul", []string{"xa", "w"}, []string{"a"}, nil),
+				arenaTestNode("relu1", "Relu", []string{"xb"}, []string{"z"}, nil),
+				arenaTestNode("add2", "Add", []string{"a", "wb"}, []string{"b"}, nil),
+				arenaTestNode("sum3", "ReduceSum", []string{"z"}, []string{"s"},
+					map[string]Attr{
+						"keepdims": {I: 0},
+						"axes":     {Name: "axes", Type: 7, IntVals: []int64{0}},
+					}),
+				arenaTestNode("add4", "Add", []string{"b", "s"}, []string{"out"}, nil),
+			},
+			Initializers: map[string]*TensorProto{
+				"w":  f32Init("w", []int64{3}, []float32{7, 8, 9}),
+				"wb": f32Init("wb", []int64{3}, []float32{1, 1, 1}),
+			},
+			Inputs:  []ValueInfo{{Name: "xa"}, {Name: "xb"}},
+			Outputs: []ValueInfo{{Name: "out"}},
+		}}
+		g, err := NewGraph(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sumIdx := topoIndexOf(t, g, "sum3")
+		if g.plan.needsZero[g.nodes[sumIdx]] {
+			t.Fatal("ReduceSum must assign its output, not ask for a zeroed buffer")
+		}
+		if !g.plan.eligible["a"] || !g.plan.eligible["s"] {
+			t.Fatalf("expected a and s arena-eligible, plan=%v", g.plan.eligible)
+		}
+		planFreedAfter(t, g, "a", topoIndexOf(t, g, "add2"))
+
+		run := func() map[string]*Tensor {
+			outs, err := g.Run(map[string]*Tensor{
+				"xa": FloatFrom([]float32{1, 1, 1}, 3),             // a = [7,8,9]
+				"xb": FloatFrom([]float32{1, 2, 3, 4, 5, 6}, 2, 3), // sum axis 0 = [5,7,9]
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return outs
+		}
+		// b = a+1 = [8,9,10]; out = b+sum. A dirty += would yield [20, 24, 28].
+		want := []float32{13, 16, 19}
+		wantF32Exact(t, run()["out"], want)
+		wantF32Exact(t, run()["out"], want)
+	})
+
+	t.Run("ReduceSumMultiAxis", func(t *testing.T) {
+		m := &Model{Opset: 18, Graph: &GraphProto{
+			Nodes: []*Node{
+				arenaTestNode("mul0", "Mul", []string{"xa", "w"}, []string{"a"}, nil),
+				arenaTestNode("relu1", "Relu", []string{"xb"}, []string{"z"}, nil),
+				arenaTestNode("add2", "Add", []string{"a", "wb"}, []string{"b"}, nil),
+				arenaTestNode("sum3", "ReduceSum", []string{"z"}, []string{"s"},
+					map[string]Attr{
+						"keepdims": {I: 0},
+						"axes":     {Name: "axes", Type: 7, IntVals: []int64{0, 2}},
+					}),
+				arenaTestNode("add4", "Add", []string{"b", "s"}, []string{"out"}, nil),
+			},
+			Initializers: map[string]*TensorProto{
+				"w":  f32Init("w", []int64{2}, []float32{100, 200}),
+				"wb": f32Init("wb", []int64{2}, []float32{1, 1}),
+			},
+			Inputs:  []ValueInfo{{Name: "xa"}, {Name: "xb"}},
+			Outputs: []ValueInfo{{Name: "out"}},
+		}}
+		g, err := NewGraph(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sumIdx := topoIndexOf(t, g, "sum3")
+		if g.plan.needsZero[g.nodes[sumIdx]] {
+			t.Fatal("ReduceSum must assign its output, not ask for a zeroed buffer")
+		}
+		if !g.plan.eligible["a"] || !g.plan.eligible["s"] {
+			t.Fatalf("expected a and s arena-eligible, plan=%v", g.plan.eligible)
+		}
+		planFreedAfter(t, g, "a", topoIndexOf(t, g, "add2"))
+
+		run := func() map[string]*Tensor {
+			outs, err := g.Run(map[string]*Tensor{
+				"xa": FloatFrom([]float32{1, 1}, 2),                         // a = [100,200]
+				"xb": FloatFrom([]float32{1, 2, 3, 4, 5, 6, 7, 8}, 2, 2, 2), // axes 0 and 2 → [14,22]
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return outs
+		}
+		// b = [101,201]; out = b+sum. A dirty += would yield [215, 423].
+		want := []float32{115, 223}
 		wantF32Exact(t, run()["out"], want)
 		wantF32Exact(t, run()["out"], want)
 	})

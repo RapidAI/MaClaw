@@ -91,7 +91,7 @@
     align-items: center;
     justify-content: center;
     border: 1px solid var(--theme-border);
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     background: var(--theme-surface);
     color: var(--theme-text-secondary);
     cursor: pointer;
@@ -112,7 +112,7 @@
 
 .latex-template-page__btn {
     border: 1px solid var(--theme-border);
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     background: var(--theme-surface);
     color: var(--theme-text-primary);
     cursor: pointer;
@@ -233,7 +233,7 @@
     overflow: hidden;
     padding: 12px 12px 10px;
     border: 1px solid var(--theme-border);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     background: var(--theme-surface);
 }
 
@@ -310,7 +310,7 @@
 .latex-template-card__tag {
     flex-shrink: 0;
     border: 1px solid var(--theme-border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--theme-text-muted);
     font-size: 11px;
     line-height: 1.4;
@@ -323,8 +323,8 @@
 }
 
 .latex-template-card__tag--share[data-share-status="approved"] {
-    border-color: color-mix(in srgb, var(--theme-success, #4b796a) 45%, var(--theme-border));
-    color: var(--theme-success, #4b796a);
+    border-color: color-mix(in srgb, var(--theme-success, #11813a) 45%, var(--theme-border));
+    color: var(--theme-success, #11813a);
 }
 
 .latex-template-card__tag--share[data-share-status="rejected"] {

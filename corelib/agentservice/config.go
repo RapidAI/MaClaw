@@ -314,7 +314,7 @@ func ResolveLLMConfig(cfg corelib.AppConfig) (corelib.MaclawLLMConfig, error) {
 		if protocol == "" && corelib.IsAnthropicWireAPI(provider.WireAPI) {
 			protocol = "anthropic"
 		}
-		return corelib.MaclawLLMConfig{
+		built := corelib.MaclawLLMConfig{
 			URL:                          strings.TrimSpace(provider.URL),
 			Key:                          key,
 			Model:                        corelib.MigrateZhipuCodingModel(provider.Name, provider.Model),
@@ -330,8 +330,8 @@ func ResolveLLMConfig(cfg corelib.AppConfig) (corelib.MaclawLLMConfig, error) {
 			CacheReadPricePerMTokensRMB:  provider.CacheReadPricePerMTokensRMB,
 			CacheWritePricePerMTokensRMB: provider.CacheWritePricePerMTokensRMB,
 			AuthType:                     strings.TrimSpace(provider.AuthType),
-			ThinkingMode:                 corelib.EffectiveGlobalThinkingMode(cfg.MaclawLLMThinkingMode),
-		}, nil
+		}
+		return corelib.ApplyGlobalThinkingLevel(built, cfg.MaclawLLMThinkingMode), nil
 	}
 
 	url := strings.TrimSpace(cfg.MaclawLLMUrl)
@@ -343,15 +343,14 @@ func ResolveLLMConfig(cfg corelib.AppConfig) (corelib.MaclawLLMConfig, error) {
 	if isManagedByHubPlaceholder(url, key, model) {
 		return corelib.MaclawLLMConfig{}, fmt.Errorf("llm config still uses unresolved VE Platform managed-by-hub placeholder")
 	}
-	return corelib.MaclawLLMConfig{
+	return corelib.ApplyGlobalThinkingLevel(corelib.MaclawLLMConfig{
 		URL:           url,
 		Key:           key,
 		Model:         model,
 		Protocol:      strings.TrimSpace(cfg.MaclawLLMProtocol),
 		ContextLength: cfg.MaclawLLMContextLength,
 		TimeoutSec:    cfg.MaclawLLMTimeoutSec,
-		ThinkingMode:  corelib.EffectiveGlobalThinkingMode(cfg.MaclawLLMThinkingMode),
-	}, nil
+	}, cfg.MaclawLLMThinkingMode), nil
 }
 
 func isManagedByHubPlaceholder(url, key, model string) bool {

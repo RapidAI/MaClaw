@@ -517,7 +517,7 @@ function renderField(
         border: `1px solid ${theme.fieldBorder}`,
         background: theme.fieldBg,
         color: theme.inputText,
-        borderRadius: "var(--radius-md, 10px)",
+        borderRadius: "var(--radius-md, 8px)",
         padding: "9px 12px",
         fontSize: 13,
         fontFamily: "inherit",

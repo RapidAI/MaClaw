@@ -57,4 +57,38 @@ describe("ScopeApprovalDialog", () => {
         expect(onResolve).toHaveBeenCalledWith("full_access");
         expect(screen.getByRole("button", { name: "允许该目录 (7s)" })).toBeTruthy();
     });
+
+    it("asks for this call shape without a countdown", () => {
+        const onResolve = renderDialog({
+            isHighRisk: false,
+            isRemoteHighRisk: false,
+            countdown: 0,
+            approval: {
+                ...approval,
+                kind: "commit_shape",
+                tool: "bash",
+                path: "git push origin main",
+                timeoutSeconds: 0,
+                message: "执行 bash 缺少人的批准，这一步先不执行。要允许这一形状的调用吗？",
+            },
+        });
+        expect(screen.getByRole("alertdialog", { name: "调用确认" })).toBeTruthy();
+        expect(screen.getByText("执行 bash 缺少人的批准，这一步先不执行。要允许这一形状的调用吗？")).toBeTruthy();
+        expect(screen.getByText("这次调用")).toBeTruthy();
+        expect(screen.getByText("git push origin main")).toBeTruthy();
+        expect(screen.queryByRole("button", { name: /本次放行|以后允许|完全访问|允许该目录/ })).toBeNull();
+        expect(screen.queryByText(/自动拒绝/)).toBeNull();
+        fireEvent.click(screen.getByRole("button", { name: "仅这一次" }));
+        expect(onResolve).toHaveBeenCalledWith("allow_once");
+    });
+
+    it("keeps a task-shaped allow on the task button", () => {
+        const onResolve = renderDialog({
+            isHighRisk: false,
+            countdown: 0,
+            approval: { ...approval, kind: "commit_shape", timeoutSeconds: 0, message: "执行 mailbox_send 缺少人的批准，这一步先不执行。要允许这一形状的调用吗？" },
+        });
+        fireEvent.click(screen.getByRole("button", { name: "本任务内允许" }));
+        expect(onResolve).toHaveBeenCalledWith("allow_task");
+    });
 });

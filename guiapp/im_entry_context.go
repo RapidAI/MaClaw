@@ -135,8 +135,8 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	if !workflowReviewPending {
 		result.PendingUserReplyContext, result.HasPendingUserReply = h.bindPendingUserReplyAnswer(*msg, trimmed, &result.EntriesBeforeClear, &result.UnfinishedSlot)
 	} else {
-		h.pendingUserReply.Delete(msg.UserID)
-		h.pendingAskUser.Delete(msg.UserID)
+		h.deletePendingUserReply(msg.UserID)
+		h.deletePendingAskUser(msg.UserID)
 		h.pendingRecordAudio.Delete(msg.UserID)
 		h.clearPendingPostRecording(msg.UserID)
 	}

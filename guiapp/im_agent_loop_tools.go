@@ -686,6 +686,24 @@ func (h *IMMessageHandler) visionFallthroughExecutionTools(userID string) []map[
 	return stripExecutionContractMetadataForLLM(out)
 }
 
+// narrowRecoveredToolSurface applies the recovery path's policy tail after a
+// BaseTools reset: the expert-user slice, direct-mode blocking, the phase's
+// truncation block, and the policy fence. Recovery rebuilds the surface from
+// BaseTools, which predates the normal route, so the boundaries that route
+// applied must be re-applied before the closed replacement surface renders.
+func (h *IMMessageHandler) narrowRecoveredToolSurface(userID string, tools []map[string]interface{}, phase agentLoopPhase, directModeToolsFiltered bool) []map[string]interface{} {
+	tools = h.filterToolsForExpertUser(userID, tools)
+	if directModeToolsFiltered {
+		tools = filterDirectModeAllowedTools(tools)
+	}
+	beforeTruncation := len(tools)
+	tools = dropTruncationBlockedTools(tools, phase.TruncationBlockedTools)
+	if len(tools) < beforeTruncation {
+		log.Printf("[agent-loop] re-applied truncation block after baseTools reset: removed %d tools", beforeTruncation-len(tools))
+	}
+	return h.filterPolicyRejectedSurfaceTools(tools)
+}
+
 // removeComputerUseTools removes every desktop-automation definition for a
 // local-file turn. Besides the ref-based computer_* surface, the legacy gui_*
 // tools can click/type/screenshot the host directly; leaving those advertised

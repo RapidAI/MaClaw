@@ -53,16 +53,7 @@ func (h *IMMessageHandler) restoreToolsAfterSkillRecover(userID string, ctx *Loo
 		}
 		tools = h.sealClassifierTimeoutExecutionFloor(userID, ctx, tools, phase, directModeToolsFiltered, bound)
 	} else {
-		tools = h.filterToolsForExpertUser(userID, tools)
-		if directModeToolsFiltered {
-			tools = filterDirectModeAllowedTools(tools)
-		}
-		beforeTruncation := len(tools)
-		tools = dropTruncationBlockedTools(tools, phase.TruncationBlockedTools)
-		if len(tools) < beforeTruncation {
-			log.Printf("[agent-loop] re-applied truncation block after baseTools reset: removed %d tools", beforeTruncation-len(tools))
-		}
-		tools = h.filterPolicyRejectedSurfaceTools(tools)
+		tools = h.narrowRecoveredToolSurface(userID, tools, phase, directModeToolsFiltered)
 	}
 
 	tools = stripExecutionContractMetadataForLLM(tools)

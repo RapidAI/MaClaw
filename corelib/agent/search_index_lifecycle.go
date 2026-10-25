@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/codesearch"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -415,7 +416,8 @@ var notedSearchDirty = struct {
 }{paths: map[string]time.Time{}}
 
 // NoteSearchIndexDirty marks a file this process wrote so the next ripgrep
-// reads it before the background reconciler republishes the index.
+// reads it before the background reconciler republishes the index. The same
+// path is noted for the code_search chunk index.
 func NoteSearchIndexDirty(path string) {
 	if strings.TrimSpace(path) == "" {
 		return
@@ -450,6 +452,10 @@ func NoteSearchIndexDirty(path string) {
 	notedSearchDirty.Unlock()
 	if over {
 		pruneStaleNotedSearchPaths()
+	}
+	codesearch.NoteDirty(abs)
+	for _, extra := range extras {
+		codesearch.NoteDirty(extra)
 	}
 }
 

@@ -326,40 +326,20 @@ func (d *topicSwitchDetector) confirmWithLLM(contextText, newMessage string) Top
 	lease.SetCancel(scheduledCancel)
 	defer scheduledCancel()
 
-	var req *http.Request
+	extra := map[string]interface{}{"max_tokens": 10}
+	var parsed *llm.Response
 	var err error
 	if cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() {
-		req, _, _, err = llm.NewResponsesAPIRequest(scheduledCtx, cfg, messages, llm.ResponsesAPIRequestOptions{
-			Stream:    false,
-			ExtraBody: map[string]interface{}{"max_tokens": 10},
+		parsed, err = llm.DoResponsesAPIRequestWithOptions(scheduledCtx, cfg, messages, client, llm.ResponsesAPIRequestOptions{
+			ExtraBody: extra,
 		})
 	} else {
-		req, _, _, err = llm.NewOpenAIChatRequest(scheduledCtx, cfg, messages, llm.OpenAIChatRequestOptions{
-			Stream: false,
-			ExtraBody: map[string]interface{}{
-				"max_tokens": 10,
-			},
+		parsed, err = llm.DoOpenAIRequestWithOptions(scheduledCtx, cfg, messages, nil, client, llm.OpenAIChatRequestOptions{
+			ExtraBody: extra,
 		})
 	}
-	if err != nil {
-		return TopicSame
-	}
-
-	resp, err := client.Do(req)
 	globalLLMScheduler.ObserveResult(trace, err)
-	if err != nil {
-		return TopicSame
-	}
-	defer resp.Body.Close()
-
-	var parsed *llm.Response
-	if cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() {
-		parsed, err = llm.ParseNonStreamResponsesAPIResponse(resp)
-	} else {
-		parsed, err = llm.ParseNonStreamOpenAIResponse(resp)
-	}
-	globalLLMScheduler.ObserveResult(trace, err)
-	if err != nil || len(parsed.Choices) == 0 {
+	if err != nil || parsed == nil || len(parsed.Choices) == 0 {
 		return TopicSame
 	}
 

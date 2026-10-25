@@ -32,6 +32,7 @@ import (
 
 const (
 	codeNavigationToolName     = "code_navigation"
+	codeSearchToolName         = "code_search"
 	reportLocalizationToolName = "report_localization"
 	codegraphNPMPackage        = "@colbymchenry/codegraph"
 )
@@ -129,6 +130,40 @@ func localizationCandidatesFromOutput(output string) []CodingSubAgentLocalizatio
 		out = append(out, *c)
 	}
 	return rankLocalizationCandidates(out)
+}
+
+// codegraphCandidateProbe is the next lookup after a codegraph hit whose
+// source is already in the tool result. A miss, that file's own stale banner,
+// and every other backend still read the file. A banner that names a
+// different file leaves this file on code_navigation.
+func codegraphCandidateProbe(backend, output, file, probe string) string {
+	if backend != "codegraph" || codegraphMCPIndexedFileMiss(output) || codegraphCandidateKeepsRead(output, file) {
+		return probe
+	}
+	return "code_navigation node, file_symbols, callers, or callees"
+}
+
+// codegraphCandidateKeepsRead reports that this file is the one the result
+// told the model to open. "Read them directly" follows the stale path list,
+// so a file that is not on that list keeps the source already shown.
+func codegraphCandidateKeepsRead(output, file string) bool {
+	if codegraphOutsideFenceContains(output, "Read the file directly") || codegraphOutsideFenceContains(output, "directly for its current content") {
+		return true
+	}
+	if codegraphMCPStaleFile(output, file) {
+		return true
+	}
+	if codegraphMCPStale(output) {
+		return false
+	}
+	return codegraphOutsideFenceContains(output, "Read them directly")
+}
+
+func retargetCodegraphCandidateProbes(backend, output string, candidates []CodingSubAgentLocalizationCandidate) []CodingSubAgentLocalizationCandidate {
+	for i := range candidates {
+		candidates[i].NextProbe = codegraphCandidateProbe(backend, output, candidates[i].File, candidates[i].NextProbe)
+	}
+	return candidates
 }
 
 func (s *codingSubAgentLocalizationState) snapshot() *CodingSubAgentLocalizationEvidence {
@@ -1984,6 +2019,17 @@ type codeNavigationOutput struct {
 // miss is stale" was read as "the search that just returned did not happen."
 const codegraphKeepUsingHint = "This codegraph lookup succeeded; the lines above are the current source and are evidence. Do not repeat this search, and do not read_file or ripgrep a symbol already shown here. The next symbol, file, caller, or callee lookup should call code_navigation (node, file_symbols, callers, or callees)."
 
+// codegraphExploreRemainderHint is for an explore that was narrowed to the
+// named directory or that left files without a body. The keep-using hint
+// only mentioned symbols already shown, and the model listed the directory
+// and read build files to find the rest.
+const codegraphExploreRemainderHint = "This codegraph lookup succeeded; the lines above are the current source and are evidence. For a path listed below that has no body here, call code_navigation with operation file_symbols and that path, or node with the symbol name. list_directory repeats this map. read_file remains for build and documentation files CodeGraph does not index."
+
+// codegraphListedSourceSteer is appended to a directory listing that sits
+// inside a tree explore already returned. The listing stays, so CMakeLists
+// and README remain visible.
+const codegraphListedSourceSteer = "CodeGraph already mapped source files under this directory. The next source lookup is code_navigation with operation file_symbols and the path, or node with the symbol name. read_file is for build and documentation files CodeGraph does not index, such as CMakeLists.txt and README."
+
 // codegraphNamesHint is for a hit that lists names or locations and does not
 // include a definition. Calling that list the current source made the model
 // edit from the map, or read the whole file, instead of asking for the body.
@@ -2061,7 +2107,483 @@ func codegraphContinueHint(backend, output string) string {
 }
 
 func codegraphOutputAllowsDirectRead(output string) bool {
-	return strings.Contains(output, "Read the file directly") || strings.Contains(output, "directly for its current content") || strings.Contains(output, "Read them directly") || codegraphMCPStale(output)
+	return codegraphOutsideFenceContains(output, "Read the file directly") || codegraphOutsideFenceContains(output, "directly for its current content") || codegraphOutsideFenceContains(output, "Read them directly") || codegraphMCPStale(output)
+}
+
+// codegraphPrepareExplore narrows an explore result to the directory the query
+// names, and reports whether the model still needs file_symbols for a path
+// that has no body. Other operations pass through.
+func codegraphPrepareExplore(operation, query, output string) (string, []string, bool) {
+	if operation != "explore" {
+		return output, nil, false
+	}
+	// The model copies the #### path into the next file_symbols call. A "./"
+	// prefix on that header is not the path the index and the list steer use.
+	output = codegraphNormalizeExploreHeaders(output)
+	focused, narrowed := codegraphFocusExplore(query, output)
+	paths := codegraphExploreSectionPaths(focused)
+	// Narrowing already means some indexed files are not in this result. The
+	// trim footer is kept when a section is dropped. The same words inside a
+	// source fence are the file's text, including a fence that belonged to a
+	// dropped project, and must not make a complete hit look partial.
+	remainder := narrowed || codegraphExploreWasTrimmed(focused)
+	return focused, paths, remainder
+}
+
+// codegraphPresentExplore appends the path inventory and selects the remainder
+// hint. A complete hit keeps the hint the caller already chose.
+func codegraphPresentExplore(output string, paths []string, remainder bool, hint string) (string, string) {
+	if !remainder {
+		return output, hint
+	}
+	// "Found 85 symbols across 17 files" survives a focus that kept 4 files.
+	// The model quoted that total and listed the directory to find the rest.
+	output = codegraphRetargetExploreFileCount(output, len(paths))
+	// The daemon footer says to run codegraph_explore again and compares it
+	// with Read. The coding tool is code_navigation. Leaving the footer in
+	// place sent the next lookup at the wrong name.
+	output = codegraphRetargetTrimBanners(output)
+	if len(paths) > 0 {
+		output = codegraphAppendExploreInventory(output, paths)
+	}
+	if hint == codegraphKeepUsingHint {
+		hint = codegraphExploreRemainderHint
+	}
+	return output, hint
+}
+
+// codegraphRetargetExploreFileCount replaces the daemon's index total when
+// this result shows a different number of files. An equal count stays, so a
+// complete explore still reads as the daemon wrote it.
+func codegraphRetargetExploreFileCount(output string, files int) string {
+	if files < 1 {
+		return output
+	}
+	lines := strings.Split(output, "\n")
+	for i, line := range lines {
+		n, ok := codegraphExploreFileCount(strings.TrimSpace(line))
+		if !ok || n == files {
+			continue
+		}
+		lines[i] = codegraphExploreShownFilesLine(files, n)
+		return strings.Join(lines, "\n")
+	}
+	return output
+}
+
+func codegraphExploreShownFilesLine(shown, total int) string {
+	if total > shown {
+		if shown == 1 {
+			return fmt.Sprintf("Showing 1 of %d indexed files in this result. Further indexed files are a code_navigation explore or file_symbols lookup.", total)
+		}
+		return fmt.Sprintf("Showing %d of %d indexed files in this result. Further indexed files are a code_navigation explore or file_symbols lookup.", shown, total)
+	}
+	if shown == 1 {
+		return "Showing 1 indexed file in this result."
+	}
+	return fmt.Sprintf("Showing %d indexed files in this result.", shown)
+}
+
+func codegraphExploreFileCount(trim string) (int, bool) {
+	if !strings.HasPrefix(trim, "Found ") {
+		return 0, false
+	}
+	marker := " symbols across "
+	i := strings.Index(trim, marker)
+	if i < 0 {
+		return 0, false
+	}
+	tail := strings.TrimSuffix(strings.TrimSpace(trim[i+len(marker):]), ".")
+	fields := strings.Fields(tail)
+	if len(fields) != 2 || (fields[1] != "file" && fields[1] != "files") {
+		return 0, false
+	}
+	n, err := strconv.Atoi(fields[0])
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+func codegraphExploreWasTrimmed(output string) bool {
+	return codegraphOutsideFenceContains(output, "trimmed for size")
+}
+
+const codegraphTrimBanner = "> Some file sections were trimmed for size. For a path listed below that has no body here, call code_navigation with operation file_symbols and that path, or node with the symbol name."
+
+// codegraphRetargetTrimBanners rewrites the daemon trim footer. Source inside
+// a fence can mention the same words and must stay byte for byte.
+func codegraphRetargetTrimBanners(output string) string {
+	lines := strings.Split(output, "\n")
+	inFence := false
+	changed := false
+	for i, line := range lines {
+		trim := strings.TrimSpace(line)
+		if strings.HasPrefix(trim, "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence || !strings.HasPrefix(trim, ">") || !strings.Contains(trim, "trimmed for size") {
+			continue
+		}
+		lines[i] = codegraphTrimBanner
+		changed = true
+	}
+	if !changed {
+		return output
+	}
+	return strings.Join(lines, "\n")
+}
+
+func codegraphAppendExploreInventory(output string, paths []string) string {
+	if len(paths) == 0 {
+		return output
+	}
+	var b strings.Builder
+	b.WriteString(strings.TrimRight(output, "\n"))
+	b.WriteString("\n\nIndexed files in this result:\n")
+	for _, path := range paths {
+		b.WriteString(path)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// codegraphFocusExplore drops files outside the one directory the query names.
+// "snake" matches snake/ and leaves angry-birds out. "game" and "src" do not
+// choose a directory. Nothing is dropped when every file is already inside
+// that directory, or when two directories both match.
+func codegraphFocusExplore(query, output string) (string, bool) {
+	paths := codegraphExploreSectionPaths(output)
+	prefix, ok := codegraphExploreFocusPrefix(query, paths)
+	if !ok {
+		return output, false
+	}
+	var outside []string
+	for _, path := range paths {
+		if !codegraphExplorePathUnder(path, prefix) {
+			outside = append(outside, path)
+		}
+	}
+	if len(outside) == 0 {
+		return output, false
+	}
+	filtered := codegraphDropExplorePaths(output, outside)
+	if filtered == output {
+		return output, false
+	}
+	// The other project's stale path line is gone. The banner header and
+	// "Read them directly" would otherwise name no file and send the next
+	// lookup to read_file.
+	return codegraphStripEmptyStaleBanner(filtered), true
+}
+
+func codegraphExploreFocusPrefix(query string, paths []string) (string, bool) {
+	if len(paths) == 0 {
+		return "", false
+	}
+	var slash []string
+	var dirs []string
+	for _, tok := range codegraphExploreQueryTokens(query) {
+		cleaned := codegraphCleanExplorePath(tok)
+		if cleaned != "" && strings.Contains(cleaned, "/") && codegraphExplorePrefixHits(cleaned, paths) {
+			slash = codegraphAppendUniqueFold(slash, cleaned)
+			continue
+		}
+		tok = strings.Trim(tok, "/")
+		if tok == "" || strings.Contains(tok, "/") || codegraphGenericExploreToken(tok) {
+			continue
+		}
+		if comp := codegraphMatchingFirstComponent(tok, paths); comp != "" {
+			dirs = codegraphAppendUniqueFold(dirs, comp)
+		}
+	}
+	if len(slash) == 1 {
+		// snake/src and snake name one tree. snake/src and angry-birds name
+		// two, and focusing the slash prefix would hide the second tree.
+		if codegraphExploreFocusAgrees(slash[0], dirs) {
+			return slash[0], true
+		}
+		return "", false
+	}
+	if len(slash) > 1 {
+		return "", false
+	}
+	if len(dirs) == 1 {
+		return dirs[0], true
+	}
+	return "", false
+}
+
+func codegraphExploreQueryTokens(query string) []string {
+	return strings.FieldsFunc(query, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != '/' && r != '\\' && r != '.' && r != '-'
+	})
+}
+
+func codegraphGenericExploreToken(tok string) bool {
+	switch strings.ToLower(strings.TrimSpace(tok)) {
+	case "a", "an", "and", "app", "call", "callee", "callees", "caller", "callers", "class", "code", "core", "does", "explore", "file", "files", "for", "function", "game", "how", "implementation", "in", "include", "lib", "main", "node", "of", "on", "overview", "project", "source", "src", "symbol", "symbols", "test", "tests", "the", "to", "with", "work":
+		return true
+	default:
+		return false
+	}
+}
+
+func codegraphExploreFocusAgrees(prefix string, dirs []string) bool {
+	for _, dir := range dirs {
+		if strings.EqualFold(dir, prefix) || codegraphExplorePathUnder(prefix, dir) || codegraphExplorePathUnder(dir, prefix) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func codegraphExplorePrefixHits(prefix string, paths []string) bool {
+	for _, path := range paths {
+		if codegraphExplorePathUnder(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func codegraphMatchingFirstComponent(tok string, paths []string) string {
+	for _, path := range paths {
+		comp := codegraphExploreFirstComponent(path)
+		if comp != "" && strings.EqualFold(comp, tok) {
+			return comp
+		}
+	}
+	return ""
+}
+
+func codegraphExploreFirstComponent(path string) string {
+	path = codegraphCleanExplorePath(path)
+	i := strings.IndexByte(path, '/')
+	if i <= 0 {
+		return ""
+	}
+	return path[:i]
+}
+
+func codegraphAppendUniqueFold(dst []string, item string) []string {
+	for _, have := range dst {
+		if strings.EqualFold(have, item) {
+			return dst
+		}
+	}
+	return append(dst, item)
+}
+
+func codegraphExplorePathUnder(file, dir string) bool {
+	file = codegraphCleanExplorePath(file)
+	dir = codegraphCleanExplorePath(dir)
+	if file == "" {
+		return false
+	}
+	if dir == "" {
+		return true
+	}
+	if strings.EqualFold(file, dir) {
+		return true
+	}
+	return len(file) > len(dir) && strings.EqualFold(file[:len(dir)+1], dir+"/")
+}
+
+// codegraphStripDotSlash removes the daemon's "./" prefix. "." itself stays:
+// filepath.Rel uses it for the project root, and the list steer treats that
+// as every explored file.
+func codegraphStripDotSlash(path string) string {
+	path = strings.TrimSpace(strings.ReplaceAll(path, `\`, "/"))
+	for strings.HasPrefix(path, "./") {
+		path = path[len("./"):]
+	}
+	return path
+}
+
+func codegraphCleanExplorePath(path string) string {
+	path = strings.Trim(codegraphStripDotSlash(path), "/")
+	if path == "" || path == "." || navigationQueryEscapesRoot(path) {
+		return ""
+	}
+	return path
+}
+
+// codegraphNormalizeExploreHeaders rewrites #### paths to the cleaned
+// relative form. Source inside a fence can contain the same characters.
+func codegraphNormalizeExploreHeaders(output string) string {
+	if !strings.Contains(output, "#### ") {
+		return output
+	}
+	lines := strings.Split(output, "\n")
+	inFence := false
+	changed := false
+	for i, line := range lines {
+		trim := strings.TrimSpace(line)
+		if strings.HasPrefix(trim, "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		path, _ := codegraphMCPExploreHeader(line)
+		if path == "" {
+			continue
+		}
+		cleaned := codegraphCleanExplorePath(path)
+		if cleaned == "" || cleaned == path {
+			continue
+		}
+		lines[i] = strings.Replace(line, path, cleaned, 1)
+		changed = true
+	}
+	if !changed {
+		return output
+	}
+	return strings.Join(lines, "\n")
+}
+
+func codegraphExploreSectionPaths(output string) []string {
+	var paths []string
+	seen := map[string]bool{}
+	inFence := false
+	for _, line := range strings.Split(output, "\n") {
+		trim := strings.TrimSpace(line)
+		if strings.HasPrefix(trim, "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		path, _ := codegraphMCPExploreHeader(line)
+		path = codegraphCleanExplorePath(path)
+		if path == "" {
+			continue
+		}
+		key := strings.ToLower(path)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		paths = append(paths, path)
+	}
+	return paths
+}
+
+func codegraphDropExplorePaths(output string, outside []string) string {
+	outsideSet := map[string]bool{}
+	for _, path := range outside {
+		path = codegraphCleanExplorePath(path)
+		if path != "" {
+			outsideSet[strings.ToLower(path)] = true
+		}
+	}
+	lines := strings.Split(output, "\n")
+	var b strings.Builder
+	inFence := false
+	skipping := false
+	for _, line := range lines {
+		trim := strings.TrimSpace(line)
+		if !skipping && strings.HasPrefix(trim, "```") {
+			inFence = !inFence
+			b.WriteString(line)
+			b.WriteByte('\n')
+			continue
+		}
+		if inFence {
+			b.WriteString(line)
+			b.WriteByte('\n')
+			continue
+		}
+		if path, _ := codegraphMCPExploreHeader(line); path != "" {
+			skipping = outsideSet[strings.ToLower(codegraphCleanExplorePath(path))]
+			if skipping {
+				continue
+			}
+			b.WriteString(line)
+			b.WriteByte('\n')
+			continue
+		}
+		if skipping {
+			if codegraphExploreTrailer(trim) {
+				skipping = false
+				b.WriteString(line)
+				b.WriteByte('\n')
+			}
+			continue
+		}
+		if codegraphLineNamesOutside(line, outside) {
+			continue
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func codegraphExploreTrailer(trim string) bool {
+	// A skipped file is dropped until the next section. A line that merely
+	// starts with ">" or "In " is source, and ending the skip there printed
+	// the rest of the other project. Only the tool footer and a following
+	// heading stop the skip.
+	if strings.HasPrefix(trim, "## ") || strings.HasPrefix(trim, "Declarations referenced") {
+		return true
+	}
+	if !strings.HasPrefix(trim, ">") {
+		return false
+	}
+	return strings.Contains(trim, "trimmed for size") || strings.Contains(trim, "code_navigation") || strings.Contains(trim, "codegraph_")
+}
+
+func codegraphLineNamesOutside(line string, outside []string) bool {
+	for _, path := range outside {
+		if codegraphLineHasPath(line, path) {
+			return true
+		}
+	}
+	return false
+}
+
+func codegraphLineHasPath(line, path string) bool {
+	path = codegraphCleanExplorePath(path)
+	if path == "" {
+		return false
+	}
+	folded := strings.ToLower(strings.ReplaceAll(line, `\`, "/"))
+	needle := strings.ToLower(path)
+	for start := 0; start < len(folded); {
+		i := strings.Index(folded[start:], needle)
+		if i < 0 {
+			return false
+		}
+		i += start
+		end := i + len(needle)
+		if codegraphPathLeftEdge(folded, i) && (end >= len(folded) || !codegraphPathByte(folded[end])) {
+			return true
+		}
+		start = i + 1
+		if start > len(folded) {
+			break
+		}
+	}
+	return false
+}
+
+// codegraphPathLeftEdge reports that index i starts a path. A leading "./"
+// is the daemon's prefix, not a longer name, including "././".
+func codegraphPathLeftEdge(line string, i int) bool {
+	for i >= 2 && line[i-2] == '.' && line[i-1] == '/' {
+		i -= 2
+	}
+	return i == 0 || !codegraphPathByte(line[i-1])
+}
+
+func codegraphPathByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_' || b == '.' || b == '-' || b == '/'
 }
 
 // noteCodegraphReadSnapshots records files whose current body was just
@@ -2087,6 +2609,134 @@ func (c *codingSubAgentCallbacks) noteCodegraphReadSnapshots(root, output string
 		// The body is an index hit. Note it after the snapshot: a content
 		// change drops the survey cache, and this path must still be indexed.
 		c.noteCodegraphOwnership(abs, info, true)
+	}
+}
+
+// noteCodegraphExplored remembers source paths from an explore result so a
+// later list_directory can name them. Build and documentation files stay out
+// of that map: the steer would send the next lookup to code_navigation, and a
+// stuck index hit would block read_file. A trimmed source file is indexed for
+// the edit gate and does not receive a read snapshot. A stale path stays out.
+func (c *codingSubAgentCallbacks) noteCodegraphExplored(root, output string, paths []string) {
+	if c == nil {
+		return
+	}
+	ready := map[string]bool{}
+	for _, rel := range codegraphFilesReadyToEdit(output) {
+		ready[strings.ToLower(codegraphCleanExplorePath(rel))] = true
+	}
+	kept := make([]string, 0, len(paths))
+	for _, rel := range paths {
+		rel = codegraphCleanExplorePath(rel)
+		if rel == "" || codegraphMCPStaleFile(output, rel) || !codegraphExplorePathOwnsIndex(rel) {
+			continue
+		}
+		kept = append(kept, rel)
+		// A definition snapshot already recorded this path.
+		if ready[strings.ToLower(rel)] || strings.TrimSpace(root) == "" {
+			continue
+		}
+		abs := filepath.Join(root, filepath.FromSlash(rel))
+		if !navigationWithinRoot(root, abs) {
+			continue
+		}
+		info, err := os.Stat(abs)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		c.noteCodegraphOwnership(abs, info, true)
+	}
+	c.rememberCodegraphExplored(kept)
+}
+
+func (c *codingSubAgentCallbacks) rememberCodegraphExplored(paths []string) {
+	if c == nil || len(paths) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.codegraphExplored == nil {
+		c.codegraphExplored = map[string]struct{}{}
+	}
+	for _, path := range paths {
+		path = codegraphCleanExplorePath(path)
+		if path != "" {
+			c.codegraphExplored[path] = struct{}{}
+		}
+	}
+}
+
+// codegraphListSteer names source files explore already returned under dir.
+// An empty result leaves the directory listing unchanged.
+func (c *codingSubAgentCallbacks) codegraphListSteer(dir string) string {
+	if c == nil {
+		return ""
+	}
+	rel, ok := codegraphExploredDir(c.projectPath(), dir)
+	if !ok {
+		return ""
+	}
+	c.mu.Lock()
+	under := make([]string, 0, len(c.codegraphExplored))
+	for path := range c.codegraphExplored {
+		if codegraphExplorePathUnder(path, rel) {
+			under = append(under, path)
+		}
+	}
+	c.mu.Unlock()
+	if len(under) == 0 {
+		return ""
+	}
+	sort.Strings(under)
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString(codegraphListedSourceSteer)
+	b.WriteByte('\n')
+	for _, path := range under {
+		b.WriteString(path)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// codegraphExploredDir is the project-relative directory a listing asked for.
+// The empty string matches every explored file. That match is only for the
+// project root. list_directory joins "." and an empty path onto the absolute
+// project path first, and that absolute path must still steer. A path outside
+// the project returns ok false so it cannot inherit the whole map.
+func codegraphExploredDir(root, dir string) (string, bool) {
+	trimmed := strings.TrimSpace(dir)
+	if trimmed == "" || trimmed == "." {
+		return "", true
+	}
+	rel := codegraphFileWithinRoot(root, trimmed)
+	if rel == "." {
+		return "", true
+	}
+	if rel == "" {
+		return "", false
+	}
+	return rel, true
+}
+
+// codegraphExplorePathOwnsIndex reports a path whose explore outline is an
+// index hit. Build and documentation files are named in the result and still
+// read from disk. Marking them owned would stick: a later file_symbols miss
+// does not clear a hit for the same size and modification time.
+func codegraphExplorePathOwnsIndex(path string) bool {
+	base := strings.ToLower(filepath.Base(filepath.FromSlash(path)))
+	switch base {
+	case "cmakelists.txt", "cmakelists.txt.in", "readme", "license", "licence", "copying", "makefile", "gnumakefile":
+		return false
+	}
+	if strings.HasPrefix(base, "readme.") {
+		return false
+	}
+	switch filepath.Ext(base) {
+	case ".md", ".markdown", ".json", ".cmake":
+		return false
+	default:
+		return true
 	}
 }
 
@@ -2132,12 +2782,12 @@ func codegraphFilesReadyToEdit(output string) []string {
 		if fence == "" {
 			continue
 		}
-		if strings.Contains(line, "**Location:**") && heading != "" && codegraphExcerptDefines(fence, heading) {
-			add(codegraphLocationPath(line))
+		if loc := codegraphLocationPath(line); strings.Contains(line, "**Location:**") && heading != "" && codegraphExcerptDefinesFile(fence, heading, loc) {
+			add(loc)
 		}
 		if path, symbols := codegraphMCPExploreHeader(line); path != "" {
 			for _, sym := range symbols {
-				if codegraphMCPKindHasBody(sym.kind) && codegraphExcerptDefines(fence, sym.name) {
+				if codegraphMCPKindHasBody(sym.kind) && codegraphExcerptDefinesFile(fence, sym.name, path) {
 					add(path)
 					break
 				}
@@ -2352,11 +3002,11 @@ func codegraphCommandList(operation, query, question, file string) [][]string {
 // overload. callers itself cannot take a file, and a path outside the project
 // must not be passed through.
 func codegraphPinFile(file string) string {
-	file = strings.TrimSpace(file)
+	file = codegraphStripDotSlash(file)
 	if file == "" || file == "<nil>" || navigationQueryEscapesRoot(file) || strings.ContainsAny(file, "\r\n'\"") {
 		return ""
 	}
-	return strings.ReplaceAll(file, `\`, "/")
+	return file
 }
 
 // codegraphFileWithinRoot accepts the path the edit gate prints. That path is
@@ -2430,6 +3080,11 @@ func codegraphArgs(operation, query, question string) []string {
 // codegraphNodeArgs reads one symbol in full. A file path uses the symbol map
 // only; the numbered full-file view is the same cost as read_file.
 func codegraphNodeArgs(target string, symbolsOnly bool) []string {
+	if codegraphTargetIsFile(target) {
+		if cleaned := codegraphCleanExplorePath(target); cleaned != "" {
+			target = cleaned
+		}
+	}
 	if symbolsOnly {
 		return []string{"node", "--symbols-only", target}
 	}
@@ -2916,19 +3571,582 @@ func codegraphSourceBody(root, file, name string) string {
 		return ""
 	}
 	lines := strings.Split(string(data), "\n")
-	start := codegraphDefinitionStart(lines, name)
+	lua := codegraphLuaFile(file)
+	start, matched := codegraphDefinitionMatch(lines, name, lua)
 	if start < 0 {
 		return ""
 	}
-	if codegraphKeywordDefines(strings.TrimRight(lines[start], "\r"), name) && !codegraphBlockBrace(lines, start, name) {
-		return codegraphUnbracedBody(lines, start)
+	// The line may contain only the short heading name. Keyword and brace
+	// checks use that name, the same one that located the definition.
+	if codegraphKeywordDefines(strings.TrimRight(lines[start], "\r"), matched) && !codegraphBlockBrace(lines, start, matched, lua) {
+		return codegraphUnbracedBody(lines, start, lua)
 	}
+	return codegraphBracedSpan(lines, start, lua)
+}
+
+func codegraphLuaFile(file string) bool {
+	return strings.EqualFold(filepath.Ext(file), ".lua")
+}
+
+// codegraphDeclaredBody is a const, type, or other declaration that is not a
+// function. The edit gate asks for a node lookup of the symbol being changed.
+// A header constant and a struct have no name(, so the function reader
+// returned nothing and the lookup could not open the gate.
+func codegraphDeclaredBody(root, file, name string) string {
+	if root == "" || !codegraphRemoteNodeSymbol(name) || navigationQueryEscapesRoot(file) {
+		return ""
+	}
+	abs := filepath.Join(root, filepath.FromSlash(file))
+	if !navigationWithinRoot(root, abs) {
+		return ""
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil || len(data) > 2<<20 {
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+	lua := codegraphLuaFile(file)
+	start := codegraphDeclarationStart(lines, name, lua)
+	if start < 0 {
+		return ""
+	}
+	if codegraphBraceFollowsDecl(lines, start, lua) {
+		return codegraphBracedSpan(lines, start, lua)
+	}
+	if codegraphSigEndsBlock(lines[start]) {
+		return codegraphUnbracedBody(lines, start, lua)
+	}
+	return codegraphStatementSpan(lines, start)
+}
+
+// codegraphHeadingCandidates is the full query, then its short heading
+// name. The short name is only for a file that does not spell the full
+// query. A prototype or a use of Foo::Bar must not bind to another Bar.
+func codegraphHeadingCandidates(lines []string, name string) []string {
+	names := codegraphNodeHeadingNames(name)
+	if len(names) < 2 || !codegraphLinesHaveIdent(lines, names[0]) {
+		return names
+	}
+	return names[:1]
+}
+
+func codegraphLinesHaveIdent(lines []string, name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, line := range lines {
+		raw := strings.TrimRight(line, "\r")
+		idx := codegraphIdentIndex(raw, name)
+		if idx < 0 {
+			continue
+		}
+		// X::Foo::Bar spells a longer name. It is not the symbol Foo::Bar.
+		if _, longer := codegraphPrecedingQualifier(raw, idx); longer {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// codegraphDeclarationStart picks the declaration of name. A braced type
+// beats a later use. A mention inside an expression is not a declaration.
+// The full string is tried before the short heading name, and the short
+// name is skipped when the file already spells that full string.
+func codegraphDeclarationStart(lines []string, name string, lua bool) int {
+	lines = codegraphMaskComments(lines, lua)
+	for _, candidate := range codegraphHeadingCandidates(lines, name) {
+		// A fitting qualifier beats an earlier unqualified short name.
+		// struct Bar must not answer ns::Foo::Bar when Foo::Bar is declared.
+		qualifiedOnly := candidate != name && codegraphLinesHaveFittingQualifier(lines, name, candidate)
+		if start := codegraphDeclarationPick(lines, name, candidate, qualifiedOnly); start >= 0 || qualifiedOnly {
+			return start
+		}
+	}
+	return -1
+}
+
+func codegraphDeclarationPick(lines []string, query, name string, qualifiedOnly bool) int {
+	best, score := -1, 0
+	for i, line := range lines {
+		raw := strings.TrimRight(line, "\r")
+		if qualifiedOnly && !codegraphLineHasFittingQualifier(raw, query, name) {
+			continue
+		}
+		kind := codegraphDeclarationKind(raw, query, name)
+		if kind > score {
+			best, score = i, kind
+		}
+	}
+	return best
+}
+
+func codegraphDeclarationKind(line, query, name string) int {
+	if codegraphCodeIndex(line) < 0 {
+		return 0
+	}
+	code := codegraphCodeHead(line)
+	visible := code
+	if at := codegraphCodeIndex(code); at >= 0 {
+		visible = code[at:]
+	}
+	if strings.HasPrefix(strings.TrimSpace(visible), "#define") {
+		rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(visible), "#define"))
+		if codegraphIdentIndex(rest, name) == 0 {
+			return 1
+		}
+		return 0
+	}
+	idx := codegraphIdentForQuery(code, query, name)
+	if idx < 0 {
+		return 0
+	}
+	if codegraphTypeIntroduces(code[:idx]) {
+		if codegraphBraceOpens(code) {
+			return 2
+		}
+		return 1
+	}
+	if !codegraphValueDecl(code, name, idx) {
+		return 0
+	}
+	if codegraphBraceOpens(code) {
+		return 2
+	}
+	return 1
+}
+
+func codegraphTypeIntroduces(before string) bool {
+	toks := codegraphCodeTokens(before)
+	if len(toks) == 0 {
+		return false
+	}
+	prev := toks[len(toks)-1]
+	switch prev {
+	case "struct", "class", "enum", "interface", "trait", "union", "record", "type", "module", "object", "protocol":
+		return true
+	}
+	return len(toks) >= 2 && toks[len(toks)-2] == "enum" && (prev == "class" || prev == "struct")
+}
+
+func codegraphValueDecl(line, name string, idx int) bool {
+	if idx < 0 || idx+len(name) > len(line) {
+		return false
+	}
+	if idx > 0 {
+		prev, _ := utf8.DecodeLastRuneInString(line[:idx])
+		if prev == '.' || prev == '>' {
+			return false
+		}
+	}
+	left := strings.TrimSpace(line[:idx])
+	if left == "" {
+		return false
+	}
+	right := strings.TrimSpace(line[idx+len(name):])
+	if right == "" {
+		return false
+	}
+	switch right[0] {
+	case '=', '[', ':', '{':
+	case ';':
+		if codegraphOutsideLiteralIndex(line[:idx], '=') >= 0 {
+			return false
+		}
+	default:
+		return false
+	}
+	toks := codegraphCodeTokens(left)
+	if len(toks) == 0 || codegraphStatementWord(toks[0]) {
+		return false
+	}
+	return true
+}
+
+func codegraphStatementWord(word string) bool {
+	switch word {
+	case "return", "if", "else", "for", "while", "switch", "case", "goto", "throw", "delete", "sizeof", "alignof", "new", "do", "break", "continue", "yield", "await", "assert":
+		return true
+	default:
+		return false
+	}
+}
+
+func codegraphIdentTokens(s string) []string {
+	var out []string
+	var b strings.Builder
+	flush := func() {
+		if b.Len() == 0 {
+			return
+		}
+		out = append(out, b.String())
+		b.Reset()
+	}
+	for _, r := range s {
+		if r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return out
+}
+
+// codegraphCodeTokens is the ident-like words that sit in code. A word inside
+// a string or a comment is not one of them, so a comment cannot supply the
+// declaration's first or last token.
+func codegraphCodeTokens(s string) []string {
+	var out []string
+	var b strings.Builder
+	flush := func(at int) {
+		if b.Len() == 0 {
+			return
+		}
+		start := at - b.Len()
+		word := b.String()
+		b.Reset()
+		if codegraphInLiteral(s, start) {
+			return
+		}
+		out = append(out, word)
+	}
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if size < 1 {
+			break
+		}
+		if r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+			i += size
+			continue
+		}
+		flush(i)
+		i += size
+	}
+	flush(len(s))
+	return out
+}
+
+// codegraphWalkLine scans a single source line. cut is the byte index of a
+// line comment, or -1 when the line has none. // and /* inside a string, a
+// character literal, or a raw string do not start a comment. inLiteral is
+// true when p sits in one of those or in a comment, so the spelling at p is
+// not a symbol. p < 0 only asks for the comment cut. A string or comment
+// opened on an earlier line is not tracked.
+func codegraphWalkLine(line string, p int) (cut int, inLiteral bool) {
+	inString := byte(0)
+	inBlock := false
+	for i := 0; i < len(line); i++ {
+		if p >= 0 && i == p {
+			return -1, inString != 0 || inBlock
+		}
+		if inBlock {
+			if line[i] == '*' && i+1 < len(line) && line[i+1] == '/' {
+				if p == i+1 {
+					return -1, true
+				}
+				inBlock = false
+				i++
+			}
+			continue
+		}
+		if inString != 0 {
+			// The escaped byte is still inside the quote. A raw string has
+			// no escape, so a backslash there is an ordinary character.
+			if inString != '`' && line[i] == '\\' && i+1 < len(line) {
+				if p == i+1 {
+					return -1, true
+				}
+				i++
+				continue
+			}
+			if line[i] == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch line[i] {
+		case '"', '\'', '`':
+			inString = line[i]
+			continue
+		}
+		if i+1 < len(line) && line[i] == '/' && line[i+1] == '/' {
+			if p > i {
+				return i, true
+			}
+			return i, false
+		}
+		if i+1 < len(line) && line[i] == '/' && line[i+1] == '*' {
+			if p == i+1 {
+				return -1, true
+			}
+			inBlock = true
+			i++
+			continue
+		}
+	}
+	if p >= 0 && p <= len(line) && (inString != 0 || inBlock) {
+		return -1, true
+	}
+	return -1, false
+}
+
+func codegraphInLiteral(line string, p int) bool {
+	if p < 0 || p > len(line) {
+		return false
+	}
+	_, in := codegraphWalkLine(line, p)
+	return in
+}
+
+// codegraphCodeIndex is the first byte of this line that is still code.
+// -1 means the line is blank, a line comment, an unclosed block comment, or
+// a javadoc star continuation. A closed block comment does not cover the
+// code after it, and "*/" only closes a comment that started earlier.
+func codegraphCodeIndex(line string) int {
+	i := 0
+	for i < len(line) {
+		if line[i] == ' ' || line[i] == '\t' || line[i] == '\r' {
+			i++
+			continue
+		}
+		if strings.HasPrefix(line[i:], "//") || strings.HasPrefix(line[i:], "--") {
+			return -1
+		}
+		if strings.HasPrefix(line[i:], "/*") {
+			end := strings.Index(line[i+2:], "*/")
+			if end < 0 {
+				return -1
+			}
+			i += 2 + end + 2
+			continue
+		}
+		if strings.HasPrefix(line[i:], "*/") {
+			i += 2
+			continue
+		}
+		if line[i] == '*' {
+			return -1
+		}
+		return i
+	}
+	return -1
+}
+
+func codegraphOutsideLiteralIndex(line string, want byte) int {
+	from := 0
+	for from < len(line) {
+		rel := strings.IndexByte(line[from:], want)
+		if rel < 0 {
+			return -1
+		}
+		at := from + rel
+		if !codegraphInLiteral(line, at) {
+			return at
+		}
+		from = at + 1
+	}
+	return -1
+}
+
+func codegraphIdentIndex(line, name string) int {
+	if name == "" {
+		return -1
+	}
+	for i := 0; i+len(name) <= len(line); {
+		if !strings.HasPrefix(line[i:], name) {
+			_, size := utf8.DecodeRuneInString(line[i:])
+			if size < 1 {
+				break
+			}
+			i += size
+			continue
+		}
+		if i > 0 {
+			prev, _ := utf8.DecodeLastRuneInString(line[:i])
+			if prev == '_' || unicode.IsLetter(prev) || unicode.IsDigit(prev) {
+				i += len(name)
+				continue
+			}
+		}
+		after := i + len(name)
+		if after < len(line) {
+			next, _ := utf8.DecodeRuneInString(line[after:])
+			if next == '_' || unicode.IsLetter(next) || unicode.IsDigit(next) || codegraphIdentContinues(line, after) {
+				i += len(name)
+				continue
+			}
+		}
+		if codegraphInLiteral(line, i) {
+			i += len(name)
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
+// codegraphIdentContinues reports that the spelling is the front of a
+// longer qualified name. Foo::Bar is not a symbol in Foo::Bar::baz.
+func codegraphIdentContinues(line string, after int) bool {
+	if strings.HasPrefix(line[after:], "::") {
+		return true
+	}
+	if after >= len(line) || line[after] != '.' || after+1 >= len(line) {
+		return false
+	}
+	next, _ := utf8.DecodeRuneInString(line[after+1:])
+	return next == '_' || unicode.IsLetter(next) || unicode.IsDigit(next)
+}
+
+// codegraphIdentForQuery finds name on line. A short heading name may
+// follow a qualifier only when that qualifier is the query's qualifier
+// or a shorter suffix of it. Other::Bar does not bind to Foo::Bar.
+func codegraphIdentForQuery(line, query, name string) int {
+	offset := 0
+	rest := line
+	for {
+		idx := codegraphIdentIndex(rest, name)
+		if idx < 0 {
+			return -1
+		}
+		abs := offset + idx
+		if fits, _ := codegraphMatchQualifier(line, abs, query, name); fits {
+			return abs
+		}
+		step := idx + len(name)
+		if step >= len(rest) {
+			return -1
+		}
+		offset += step
+		rest = rest[step:]
+	}
+}
+
+// codegraphMatchQualifier reports whether the spelling at idx can answer
+// query. qualified is set when a Foo:: or Foo. prefix is present.
+// The full query rejects a longer chain. A short name accepts that prefix
+// when it is the query's qualifier or a shorter suffix of it.
+func codegraphMatchQualifier(line string, idx int, query, name string) (fits, qualified bool) {
+	qual, qualified := codegraphPrecedingQualifier(line, idx)
+	if !qualified {
+		return true, false
+	}
+	if name == query {
+		return false, true
+	}
+	want := codegraphQueryQualifier(query)
+	fits = want != "" && (qual == want || strings.HasSuffix(want, "::"+qual) || strings.HasSuffix(want, "."+qual))
+	return fits, true
+}
+
+func codegraphLinesHaveFittingQualifier(lines []string, query, name string) bool {
+	for _, line := range lines {
+		if codegraphLineHasFittingQualifier(strings.TrimRight(line, "\r"), query, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func codegraphLineHasFittingQualifier(line, query, name string) bool {
+	offset := 0
+	rest := line
+	for {
+		idx := codegraphIdentIndex(rest, name)
+		if idx < 0 {
+			return false
+		}
+		fits, qualified := codegraphMatchQualifier(line, offset+idx, query, name)
+		if fits && qualified {
+			return true
+		}
+		step := idx + len(name)
+		if step >= len(rest) {
+			return false
+		}
+		offset += step
+		rest = rest[step:]
+	}
+}
+
+func codegraphQueryQualifier(query string) string {
+	if i := strings.LastIndex(query, "::"); i >= 0 {
+		return query[:i]
+	}
+	if i := strings.LastIndex(query, "."); i > 0 {
+		return query[:i]
+	}
+	return ""
+}
+
+func codegraphPrecedingQualifier(line string, idx int) (string, bool) {
+	if idx < 1 || idx > len(line) {
+		return "", false
+	}
+	i := idx
+	for {
+		if i >= 2 && strings.HasSuffix(line[:i], "::") {
+			i -= 2
+		} else if i >= 1 && line[i-1] == '.' {
+			i--
+		} else {
+			break
+		}
+		end := i
+		for i > 0 {
+			r, size := utf8.DecodeLastRuneInString(line[:i])
+			if r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) {
+				i -= size
+				continue
+			}
+			break
+		}
+		if i == end {
+			return "", false
+		}
+	}
+	if i == idx {
+		return "", false
+	}
+	qual := strings.TrimSuffix(strings.TrimSuffix(line[i:idx], "::"), ".")
+	if qual == "" {
+		return "", false
+	}
+	return qual, true
+}
+
+func codegraphBraceFollowsDecl(lines []string, i int, lua bool) bool {
+	lines = codegraphMaskComments(lines, lua)
+	if i < 0 || i >= len(lines) {
+		return false
+	}
+	if codegraphBraceOpens(lines[i]) {
+		return true
+	}
+	if codegraphSemiEnds(lines[i]) {
+		return false
+	}
+	for j := i + 1; j < len(lines) && j <= i+6; j++ {
+		if codegraphBraceOpens(lines[j]) {
+			return true
+		}
+		if codegraphSemiEnds(lines[j]) {
+			return false
+		}
+	}
+	return false
+}
+
+func codegraphBracedSpan(lines []string, start int, lua bool) string {
+	masked := codegraphMaskComments(lines, lua)
 	var b strings.Builder
 	depth, seen := 0, false
 	for i := start; i < len(lines) && i < start+codegraphSourceBodyLines; i++ {
 		line := strings.TrimRight(lines[i], "\r")
 		fmt.Fprintf(&b, "%d\t%s\n", i+1, line)
-		opens, closes := codegraphBraceDelta(line)
+		opens, closes := codegraphBraceDelta(masked[i])
 		depth += opens - closes
 		if opens > 0 {
 			seen = true
@@ -2947,11 +4165,316 @@ func codegraphSourceBody(root, file, name string) string {
 	return text
 }
 
-func codegraphDefinitionStart(lines []string, name string) int {
+func codegraphStatementSpan(lines []string, start int) string {
+	var b strings.Builder
+	for i := start; i < len(lines) && i < start+12; i++ {
+		line := strings.TrimRight(lines[i], "\r")
+		fmt.Fprintf(&b, "%d\t%s\n", i+1, line)
+		head := strings.TrimSpace(codegraphCodeHead(line))
+		visible := head
+		if at := codegraphCodeIndex(head); at >= 0 {
+			visible = strings.TrimSpace(head[at:])
+		}
+		if strings.HasSuffix(visible, `\`) {
+			continue
+		}
+		if codegraphOutsideLiteralIndex(visible, ';') >= 0 || strings.HasPrefix(visible, "#define") {
+			break
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// codegraphMaskComments blanks comments, strings, and dead preprocessor
+// branches, and keeps every other byte in place. #if 0 / #if false and the
+// inactive side of #if 1 are the same lines the survey drops. A block comment,
+// a Lua long comment (--[[ / --[=[), or an unclosed quote stays open on the
+// following lines. A quote does not start a comment, and a comment does not
+// start a quote. Once a block comment is open, */ closes it. A backslash
+// escapes the next byte in " and ', not in a raw string. In a Lua file, --
+// after code is a comment, and [[ / [=[ is a long string until its closer.
+// Elsewhere a -- after code stays code, so a decrement does not open a long
+// comment, and [[ stays code.
+func codegraphMaskComments(lines []string, lua bool) []string {
+	return codegraphMaskCommentsMode(lines, lua, false)
+}
+
+// codegraphMaskSurvey blanks comments and Lua long strings but keeps quoted
+// text. Include paths and call-style initializers such as g_title("snake")
+// live inside those quotes.
+func codegraphMaskSurvey(lines []string, lua bool) []string {
+	return codegraphMaskCommentsMode(lines, lua, true)
+}
+
+func codegraphMaskCommentsMode(lines []string, lua bool, keepStrings bool) []string {
+	lines = strings.Split(codegraphLiveSource(strings.Join(lines, "\n"), lua), "\n")
+	return codegraphMaskLines(lines, lua, keepStrings)
+}
+
+// codegraphMaskLines blanks comments and strings. It does not apply #if
+// filtering. Live source calls this first so a directive inside a comment
+// or a string is not a branch.
+func codegraphMaskLines(lines []string, lua bool, keepStrings bool) []string {
+	out := make([]string, len(lines))
+	inBlock := false
+	inString := byte(0)
+	longLevel := -1
+	for i, line := range lines {
+		raw := strings.TrimRight(line, "\r")
+		// A markdown fence is an odd run of backticks. Treating it as a raw
+		// string swallows the fenced source that follows.
+		if !inBlock && inString == 0 && longLevel < 0 && codegraphFenceLine(raw) {
+			out[i] = raw
+			continue
+		}
+		out[i], inBlock, inString, longLevel = codegraphMaskLine(raw, inBlock, inString, longLevel, lua, keepStrings)
+	}
+	return out
+}
+
+func codegraphFenceLine(line string) bool {
+	trim := strings.TrimSpace(line)
+	if len(trim) < 3 || trim[0] != '`' {
+		return false
+	}
+	n := 0
+	for n < len(trim) && trim[n] == '`' {
+		n++
+	}
+	if n < 3 {
+		return false
+	}
+	for _, r := range trim[n:] {
+		if r == '_' || r == '+' || r == '-' || unicode.IsLetter(r) || unicode.IsDigit(r) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func codegraphMaskLine(line string, inBlock bool, inString byte, longLevel int, lua bool, keepStrings bool) (string, bool, byte, int) {
+	b := []byte(line)
+	for i := 0; i < len(b); i++ {
+		if longLevel >= 0 {
+			if n := codegraphLongBracketClose(b[i:], longLevel); n > 0 {
+				for j := 0; j < n; j++ {
+					b[i+j] = ' '
+				}
+				i += n - 1
+				longLevel = -1
+				continue
+			}
+			b[i] = ' '
+			continue
+		}
+		if inBlock {
+			if b[i] == '*' && i+1 < len(b) && b[i+1] == '/' {
+				b[i] = ' '
+				b[i+1] = ' '
+				i++
+				inBlock = false
+				continue
+			}
+			b[i] = ' '
+			continue
+		}
+		if inString != 0 {
+			if keepStrings {
+				if inString != '`' && b[i] == '\\' && i+1 < len(b) {
+					i++
+					continue
+				}
+				if b[i] == inString {
+					inString = 0
+				}
+				continue
+			}
+			if inString != '`' && b[i] == '\\' && i+1 < len(b) {
+				b[i] = ' '
+				b[i+1] = ' '
+				i++
+				continue
+			}
+			if b[i] == inString {
+				inString = 0
+			}
+			b[i] = ' '
+			continue
+		}
+		if keepStrings && (b[i] == '"' || b[i] == '\'' || b[i] == '`') {
+			quote := b[i]
+			j := i + 1
+			for j < len(b) {
+				if quote != '`' && b[j] == '\\' && j+1 < len(b) {
+					j += 2
+					continue
+				}
+				if b[j] == quote {
+					i = j
+					break
+				}
+				j++
+			}
+			if j >= len(b) {
+				inString = quote
+				break
+			}
+			continue
+		}
+		switch b[i] {
+		case '"', '\'', '`':
+			inString = b[i]
+			b[i] = ' '
+			continue
+		}
+		if i+1 < len(b) && b[i] == '-' && b[i+1] == '-' && (lua || !codegraphMaskHasCode(b[:i])) {
+			if level, n := codegraphLongBracketOpen(b[i+2:]); n > 0 {
+				end := i + 2 + n
+				for j := i; j < end; j++ {
+					b[j] = ' '
+				}
+				longLevel = level
+				i = end - 1
+				continue
+			}
+			for j := i; j < len(b); j++ {
+				b[j] = ' '
+			}
+			break
+		}
+		if lua && b[i] == '[' {
+			if level, n := codegraphLongBracketOpen(b[i:]); n > 0 {
+				end := i + n
+				for j := i; j < end; j++ {
+					b[j] = ' '
+				}
+				longLevel = level
+				i = end - 1
+				continue
+			}
+		}
+		if b[i] == '#' && codegraphHashComment(b[i:]) {
+			for j := i; j < len(b); j++ {
+				b[j] = ' '
+			}
+			break
+		}
+		if i+1 < len(b) && b[i] == '/' && b[i+1] == '/' {
+			for j := i; j < len(b); j++ {
+				b[j] = ' '
+			}
+			break
+		}
+		if i+1 < len(b) && b[i] == '/' && b[i+1] == '*' {
+			b[i] = ' '
+			b[i+1] = ' '
+			i++
+			inBlock = true
+			continue
+		}
+	}
+	return string(b), inBlock, inString, longLevel
+}
+
+// codegraphLongBracketOpen reads a Lua long bracket after "--".
+// [[ is level 0 and [=[ is level 1. A short comment returns n == 0.
+func codegraphLongBracketOpen(rest []byte) (level int, n int) {
+	if len(rest) < 2 || rest[0] != '[' {
+		return -1, 0
+	}
+	i := 1
+	for i < len(rest) && rest[i] == '=' {
+		i++
+	}
+	if i >= len(rest) || rest[i] != '[' {
+		return -1, 0
+	}
+	return i - 1, i + 1
+}
+
+// codegraphLongBracketClose matches the closer for a long-bracket level.
+// Level 0 closes on ]] and level 1 closes on ]=].
+func codegraphLongBracketClose(rest []byte, level int) int {
+	if level < 0 || len(rest) < level+2 || rest[0] != ']' {
+		return 0
+	}
+	for i := 1; i <= level; i++ {
+		if rest[i] != '=' {
+			return 0
+		}
+	}
+	if rest[level+1] != ']' {
+		return 0
+	}
+	return level + 2
+}
+
+func codegraphMaskHasCode(prefix []byte) bool {
+	for _, c := range prefix {
+		if c != ' ' && c != '\t' && c != '\r' {
+			return true
+		}
+	}
+	return false
+}
+
+// codegraphHashComment reports a # comment. A preprocessor line stays, so
+// #define is still a declaration and #if still selects a branch.
+func codegraphHashComment(rest []byte) bool {
+	s := strings.TrimSpace(string(rest))
+	if !strings.HasPrefix(s, "#") {
+		return false
+	}
+	s = strings.TrimSpace(s[1:])
+	if s == "" {
+		return true
+	}
+	name, _, _ := strings.Cut(s, " ")
+	if i := strings.IndexByte(name, '('); i >= 0 {
+		name = name[:i]
+	}
+	switch name {
+	case "define", "include", "if", "ifdef", "ifndef", "elif", "else", "endif", "pragma", "error", "warning", "line", "undef":
+		return false
+	default:
+		return true
+	}
+}
+
+// codegraphDefinitionStart keeps a definition of the full name. The short
+// heading name is used only when the file does not spell that full name.
+func codegraphDefinitionStart(lines []string, name string, lua bool) int {
+	start, _ := codegraphDefinitionMatch(lines, name, lua)
+	return start
+}
+
+// codegraphDefinitionMatch returns the line and the heading name that
+// located it. A later check has to use that name: the query can be
+// Type::name while the line only contains name.
+func codegraphDefinitionMatch(lines []string, name string, lua bool) (int, string) {
+	lines = codegraphMaskComments(lines, lua)
+	for _, candidate := range codegraphHeadingCandidates(lines, name) {
+		if start := codegraphDefinitionStartExact(lines, name, candidate); start >= 0 {
+			return start, candidate
+		}
+	}
+	return -1, ""
+}
+
+func codegraphDefinitionStartExact(lines []string, query, name string) int {
+	qualifiedOnly := name != query && codegraphLinesHaveFittingQualifier(lines, query, name)
+	return codegraphDefinitionPass(lines, query, name, qualifiedOnly)
+}
+
+func codegraphDefinitionPass(lines []string, query, name string, qualifiedOnly bool) int {
 	for i, line := range lines {
 		raw := strings.TrimRight(line, "\r")
 		rest, ok := codegraphNameCall(raw, name)
-		if !ok {
+		if !ok || !codegraphCallQualifierFits(raw, query, name) {
+			continue
+		}
+		if qualifiedOnly && !codegraphLineHasFittingQualifier(raw, query, name) {
 			continue
 		}
 		if codegraphBraceFollowsCall(lines, i, name) {
@@ -2999,7 +4522,8 @@ func codegraphBraceFollowsCall(lines []string, i int, name string) bool {
 // in the parameter list, and a table or dict in the body, do not: the body
 // still runs to `end` or the next dedent. A `{` that is still open, or that
 // sits on the line which closes the parameter list, is the function block.
-func codegraphBlockBrace(lines []string, i int, name string) bool {
+func codegraphBlockBrace(lines []string, i int, name string, lua bool) bool {
+	lines = codegraphMaskComments(lines, lua)
 	if i < 0 || i >= len(lines) {
 		return false
 	}
@@ -3034,19 +4558,41 @@ func codegraphBraceLeftOpen(line string) bool {
 }
 
 func codegraphKeywordDefines(line, name string) bool {
-	if _, ok := codegraphNameCall(line, name); !ok {
+	rest, ok := codegraphNameCall(line, name)
+	if !ok {
 		return false
 	}
-	idx := strings.Index(line, name+"(")
-	if idx < 0 {
+	return codegraphHeadKeyword(line, len(line)-len(rest))
+}
+
+// codegraphHeadKeyword reads the definition keyword before name. A qualifier
+// may sit between them: function Audio.playTone, function Audio:playTone,
+// and function Audio::playTone.
+func codegraphHeadKeyword(line string, idx int) bool {
+	if idx < 0 || idx > len(line) {
 		return false
 	}
 	head := strings.TrimSpace(line[:idx])
-	if head == "" {
-		return false
+	for head != "" {
+		fields := strings.Fields(head)
+		word := strings.Trim(fields[len(fields)-1], "*&")
+		if codegraphDefineKeyword(word) {
+			return true
+		}
+		cut := strings.TrimSpace(strings.TrimRight(head, ":."))
+		if cut == head {
+			return false
+		}
+		fields = strings.Fields(cut)
+		if len(fields) == 0 {
+			return false
+		}
+		head = strings.TrimSpace(strings.TrimSuffix(cut, fields[len(fields)-1]))
 	}
-	fields := strings.Fields(head)
-	word := strings.Trim(fields[len(fields)-1], "*&")
+	return false
+}
+
+func codegraphDefineKeyword(word string) bool {
 	switch word {
 	case "function", "def", "fn", "func", "fun", "sub", "proc", "method", "macro", "defn":
 		return true
@@ -3055,15 +4601,23 @@ func codegraphKeywordDefines(line, name string) bool {
 	}
 }
 
-func codegraphUnbracedBody(lines []string, start int) string {
+func codegraphUnbracedBody(lines []string, start int, lua bool) string {
+	// Indent and block words come from the masked line. A raw comment still
+	// has an indent, which would close a Python body, and an end inside a
+	// Lua long comment would close the function.
+	masked := codegraphMaskComments(lines, lua)
 	base := codegraphIndent(lines[start])
 	python := codegraphSigEndsBlock(lines[start])
 	depth := 1
 	var b strings.Builder
 	for i := start; i < len(lines) && i < start+codegraphSourceBodyLines; i++ {
 		line := strings.TrimRight(lines[i], "\r")
-		trim := strings.TrimSpace(line)
-		if i > start && trim != "" && codegraphIndent(line) <= base {
+		visible := line
+		if i < len(masked) {
+			visible = strings.TrimRight(masked[i], "\r")
+		}
+		trim := strings.TrimSpace(visible)
+		if i > start && trim != "" && codegraphIndent(visible) <= base {
 			if python || (depth <= 1 && codegraphUnbracedSibling(trim)) {
 				break
 			}
@@ -3187,62 +4741,82 @@ func codegraphIndent(line string) int {
 	return n
 }
 
+func codegraphCallQualifierFits(line, query, name string) bool {
+	rest, ok := codegraphNameCall(line, name)
+	if !ok {
+		return false
+	}
+	fits, _ := codegraphMatchQualifier(line, len(line)-len(rest), query, name)
+	return fits
+}
+
 func codegraphNameCall(line, name string) (string, bool) {
-	trim := strings.TrimSpace(line)
-	if trim == "" || strings.HasPrefix(trim, "//") || strings.HasPrefix(trim, "/*") || strings.HasPrefix(trim, "*") || strings.HasPrefix(trim, "#") {
+	at := codegraphCodeIndex(line)
+	if at < 0 || line[at] == '#' {
 		return "", false
 	}
 	key := name + "("
-	p := strings.Index(line, key)
-	if p < 0 {
-		return "", false
-	}
-	if p > 0 {
-		prev, _ := utf8.DecodeLastRuneInString(line[:p])
-		if prev == '_' || unicode.IsLetter(prev) || unicode.IsDigit(prev) {
+	for from := 0; from+len(key) <= len(line); {
+		rel := strings.Index(line[from:], key)
+		if rel < 0 {
 			return "", false
 		}
-		// `if (drawScene(dc)) {` and `obj.drawScene() {` are calls. A definition
-		// is preceded by a type or by `::`.
-		head := strings.TrimRight(line[:p], " \t")
-		if head != "" {
-			r, _ := utf8.DecodeLastRuneInString(head)
-			if r == '(' || r == '.' {
-				return "", false
-			}
+		p := from + rel
+		if codegraphNameCallAt(line, p) {
+			return line[p:], true
 		}
+		from = p + 1
 	}
-	if cmt := strings.Index(line, "//"); cmt >= 0 && cmt < p {
-		return "", false
+	return "", false
+}
+
+// codegraphNameCallAt reports that name( at p is a definition. A longer
+// ident, a parenthesized call, obj.name(), obj->name(), and obj:name() are
+// not. :: stays a qualifier. function Audio:playTone stays a definition.
+func codegraphNameCallAt(line string, p int) bool {
+	if codegraphInLiteral(line, p) {
+		return false
 	}
-	return line[p:], true
+	if p <= 0 {
+		return true
+	}
+	prev, _ := utf8.DecodeLastRuneInString(line[:p])
+	if prev == '_' || unicode.IsLetter(prev) || unicode.IsDigit(prev) {
+		return false
+	}
+	head := strings.TrimRight(line[:p], " \t")
+	if head == "" {
+		return true
+	}
+	r, _ := utf8.DecodeLastRuneInString(head)
+	singleColon := r == ':' && !strings.HasSuffix(head, "::")
+	if r == '(' || r == '>' || ((r == '.' || singleColon) && !codegraphHeadKeyword(line, p)) {
+		return false
+	}
+	return true
 }
 
 func codegraphCodeHead(line string) string {
-	if cmt := strings.Index(line, "//"); cmt >= 0 {
-		return line[:cmt]
+	if cut, _ := codegraphWalkLine(line, -1); cut >= 0 {
+		return line[:cut]
 	}
 	return line
 }
 
 func codegraphBraceOpens(line string) bool {
-	line = codegraphCodeHead(line)
-	brace := strings.Index(line, "{")
-	semi := strings.Index(line, ";")
+	brace := codegraphOutsideLiteralIndex(line, '{')
+	semi := codegraphOutsideLiteralIndex(line, ';')
 	return brace >= 0 && (semi < 0 || brace < semi)
 }
 
 func codegraphSemiEnds(line string) bool {
-	line = codegraphCodeHead(line)
-	brace := strings.Index(line, "{")
-	semi := strings.Index(line, ";")
+	brace := codegraphOutsideLiteralIndex(line, '{')
+	semi := codegraphOutsideLiteralIndex(line, ';')
 	return semi >= 0 && (brace < 0 || semi < brace)
 }
 
 func codegraphBraceDelta(line string) (opens, closes int) {
-	if cmt := strings.Index(line, "//"); cmt >= 0 {
-		line = line[:cmt]
-	}
+	line = codegraphCodeHead(line)
 	var quote byte
 	for i := 0; i < len(line); i++ {
 		c := line[i]
@@ -3481,8 +5055,9 @@ func codegraphAttachReferencedDecls(root, output string) string {
 		if err != nil || len(data) > 2<<20 {
 			continue
 		}
-		filePieces = append(filePieces, codegraphCollectDeclPieces(string(data), output, "", idents, seen)...)
-		for _, inc := range codegraphQuotedIncludes(string(data)) {
+		lua := codegraphLuaFile(rel)
+		filePieces = append(filePieces, codegraphCollectDeclPieces(string(data), output, "", idents, seen, lua)...)
+		for _, inc := range codegraphQuotedIncludes(string(data), lua) {
 			header := codegraphResolveInclude(root, abs, inc)
 			if header == "" || seenPath[header] {
 				continue
@@ -3507,7 +5082,7 @@ func codegraphAttachReferencedDecls(root, output string) string {
 		if err != nil || !navigationWithinRoot(root, header) {
 			continue
 		}
-		for _, piece := range codegraphCollectDeclPieces(string(data), output, filepath.ToSlash(label), idents, seen) {
+		for _, piece := range codegraphCollectDeclPieces(string(data), output, filepath.ToSlash(label), idents, seen, codegraphLuaFile(label)) {
 			only := false
 			for _, name := range piece.names {
 				if !fileNames[name] {
@@ -3580,9 +5155,9 @@ type codegraphDeclPiece struct {
 	names []string
 }
 
-func codegraphCollectDeclPieces(src, output, label string, idents, seen map[string]bool) []codegraphDeclPiece {
+func codegraphCollectDeclPieces(src, output, label string, idents, seen map[string]bool, lua bool) []codegraphDeclPiece {
 	var out []codegraphDeclPiece
-	for _, block := range codegraphFileScopeDecls(src, idents) {
+	for _, block := range codegraphFileScopeDecls(src, idents, lua) {
 		key := strings.TrimSpace(block)
 		if key == "" || seen[key] || strings.Contains(output, key) {
 			continue
@@ -3603,14 +5178,10 @@ func codegraphCollectDeclPieces(src, output, label string, idents, seen map[stri
 // codegraphQuotedIncludes lists headers the file itself includes. A constant
 // used by the function often lives in that header, not in the function file.
 // System includes use angle brackets and are not project source.
-func codegraphQuotedIncludes(src string) []string {
-	src = codegraphLiveSource(src)
+func codegraphQuotedIncludes(src string, lua bool) []string {
 	var out []string
 	seen := map[string]bool{}
-	inBlock := false
-	for _, line := range strings.Split(src, "\n") {
-		var code string
-		code, inBlock = codegraphScanCode(strings.TrimRight(line, "\r"), inBlock)
+	for _, code := range codegraphMaskSurvey(strings.Split(src, "\n"), lua) {
 		trim := strings.TrimSpace(code)
 		if strings.HasPrefix(trim, "#") {
 			trim = "#" + strings.TrimSpace(trim[1:])
@@ -3656,28 +5227,63 @@ func codegraphResolveInclude(root, fromFile, inc string) string {
 func codegraphFenceIdents(output string) map[string]bool {
 	want := map[string]bool{}
 	in := false
-	inBlock := false
+	lua := false
+	var body []string
+	add := func(lines []string) {
+		if len(lines) == 0 {
+			return
+		}
+		// The same mask as disk lookup. A name inside a comment, a string,
+		// or a Lua long string is not a referenced declaration. A #if 0
+		// region in the fence is not one either.
+		live := codegraphLiveSource(strings.Join(lines, "\n"), lua)
+		for _, code := range codegraphMaskLines(strings.Split(live, "\n"), lua, false) {
+			for _, id := range codegraphScanIdents(code) {
+				if len(id) < 3 || codegraphDeclSkip[id] {
+					continue
+				}
+				want[id] = true
+			}
+		}
+	}
 	for _, line := range strings.Split(output, "\n") {
 		trim := strings.TrimSpace(line)
 		if strings.HasPrefix(trim, "```") {
-			in = !in
-			inBlock = false
-			continue
-		}
-		if !in {
-			continue
-		}
-		visible, next := codegraphScanCode(codegraphStripNumberedLine(line), inBlock)
-		inBlock = next
-		code := codegraphStripStrings(visible)
-		for _, id := range codegraphScanIdents(code) {
-			if len(id) < 3 || codegraphDeclSkip[id] {
+			if in {
+				add(body)
+				body = nil
+				in = false
+				lua = false
 				continue
 			}
-			want[id] = true
+			in = true
+			if lang := strings.TrimSpace(strings.TrimPrefix(trim, "```")); lang != "" {
+				lua = codegraphFenceLangLua(lang)
+			}
+			continue
+		}
+		if in {
+			body = append(body, codegraphStripNumberedLine(line))
+			continue
+		}
+		if strings.Contains(line, "**Location:**") {
+			if loc := codegraphLocationPath(line); loc != "" {
+				lua = codegraphLuaFile(loc)
+			}
 		}
 	}
+	if in {
+		add(body)
+	}
 	return want
+}
+
+func codegraphFenceLangLua(lang string) bool {
+	lang = strings.ToLower(strings.TrimSpace(lang))
+	if i := strings.IndexAny(lang, " \t{"); i >= 0 {
+		lang = lang[:i]
+	}
+	return lang == "lua"
 }
 
 func codegraphStripNumberedLine(line string) string {
@@ -3718,57 +5324,6 @@ var codegraphDeclSkip = map[string]bool{
 	"struct": true, "switch": true, "this": true, "true": true, "unsigned": true, "void": true, "while": true,
 }
 
-// codegraphScanCode removes line and block comments. Text inside a string
-// stays, so a quote that contains /* or // does not start a comment.
-func codegraphScanCode(line string, inBlock bool) (string, bool) {
-	var b strings.Builder
-	b.Grow(len(line))
-	for i := 0; i < len(line); {
-		if inBlock {
-			if i+1 < len(line) && line[i] == '*' && line[i+1] == '/' {
-				inBlock = false
-				i += 2
-				b.WriteByte(' ')
-				continue
-			}
-			i++
-			continue
-		}
-		if line[i] == '"' || line[i] == '\'' {
-			quote := line[i]
-			b.WriteByte(quote)
-			i++
-			for i < len(line) {
-				b.WriteByte(line[i])
-				if line[i] == '\\' && i+1 < len(line) {
-					i++
-					b.WriteByte(line[i])
-					i++
-					continue
-				}
-				if line[i] == quote {
-					i++
-					break
-				}
-				i++
-			}
-			continue
-		}
-		if i+1 < len(line) && line[i] == '/' && line[i+1] == '/' {
-			break
-		}
-		if i+1 < len(line) && line[i] == '/' && line[i+1] == '*' {
-			inBlock = true
-			i += 2
-			b.WriteByte(' ')
-			continue
-		}
-		b.WriteByte(line[i])
-		i++
-	}
-	return b.String(), inBlock
-}
-
 type codegraphPPFrame struct {
 	live     bool
 	keepBoth bool
@@ -3777,21 +5332,24 @@ type codegraphPPFrame struct {
 
 // codegraphLiveSource blanks lines in a #if 0 / #if false region. An
 // unbalanced brace or include there is not code. #if 1 keeps its then-branch
-// only. An unknown condition keeps both branches.
-func codegraphLiveSource(src string) string {
+// only. An unknown condition keeps both branches. Directives are read from
+// the comment and string mask, so a #if inside a comment, a quote, or a Lua
+// long string does not change the live region. Outside Lua, [[ stays code.
+func codegraphLiveSource(src string, lua bool) string {
 	// "# if 0" is a real directive. A check for the exact text "#if" skips it
 	// and then the disabled branch is surveyed as live code.
 	if !strings.Contains(src, "#") {
 		return src
 	}
 	lines := strings.Split(src, "\n")
+	masked := codegraphMaskLines(lines, lua, false)
 	out := make([]string, len(lines))
-	inBlock := false
 	var stack []codegraphPPFrame
 	for i, line := range lines {
-		raw := strings.TrimRight(line, "\r")
-		visible, next := codegraphScanCode(raw, inBlock)
-		inBlock = next
+		visible := ""
+		if i < len(masked) {
+			visible = masked[i]
+		}
 		dir, arg := codegraphDirective(visible)
 		if dir != "" {
 			codegraphPPApply(dir, arg, &stack)
@@ -3800,7 +5358,7 @@ func codegraphLiveSource(src string) string {
 		if codegraphPPSkipping(stack) {
 			continue
 		}
-		out[i] = raw
+		out[i] = strings.TrimRight(line, "\r")
 	}
 	return strings.Join(out, "\n")
 }
@@ -3892,18 +5450,21 @@ func codegraphPPAlt(stack *[]codegraphPPFrame, elif bool, cond string) {
 	top.taken = true
 }
 
-func codegraphFileScopeDecls(src string, want map[string]bool) []string {
-	lines := strings.Split(codegraphLiveSource(src), "\n")
+func codegraphFileScopeDecls(src string, want map[string]bool, lua bool) []string {
+	lines := strings.Split(codegraphLiveSource(src, lua), "\n")
+	// Survey keeps quoted text so an include path and a call initializer stay
+	// readable. Comments and Lua long strings are still blank. A declaration
+	// or a brace inside them is not file scope.
+	masked := codegraphMaskSurvey(lines, lua)
 	var out []string
 	depth := 0
 	funcDepth := -1
 	pendingFn := false
-	inBlock := false
 	for i := 0; i < len(lines); i++ {
-		raw := strings.TrimRight(lines[i], "\r")
-		blockState := inBlock
-		var line string
-		line, inBlock = codegraphScanCode(raw, inBlock)
+		line := ""
+		if i < len(masked) {
+			line = strings.TrimRight(masked[i], "\r")
+		}
 		opens, closes := codegraphBraceDelta(line)
 		if funcDepth >= 0 {
 			depth += opens - closes
@@ -3959,18 +5520,15 @@ func codegraphFileScopeDecls(src string, want map[string]bool) []string {
 			continue
 		}
 		if codegraphIsFileScopeDecl(line) && (want == nil || codegraphNamesWanted(line, want)) {
-			block, consumed := codegraphTakeDecl(lines, i, blockState)
+			block, consumed := codegraphTakeDecl(lines, masked, i, lua)
 			if strings.TrimSpace(block) != "" {
 				out = append(out, block)
 			}
-			state := blockState
-			for n := 0; n <= consumed && i+n < len(lines); n++ {
-				visible, next := codegraphScanCode(strings.TrimRight(lines[i+n], "\r"), state)
-				state = next
+			for n := 0; n <= consumed && i+n < len(masked); n++ {
+				visible := strings.TrimRight(masked[i+n], "\r")
 				opens, closes := codegraphBraceDelta(visible)
 				depth += opens - closes
 			}
-			inBlock = state
 			if depth < 0 {
 				depth = 0
 			}
@@ -4343,20 +5901,6 @@ func codegraphNextIsStar(line string, i int) bool {
 	return false
 }
 
-func codegraphStripStrings(line string) string {
-	var b strings.Builder
-	for i := 0; i < len(line); {
-		if line[i] == '"' || line[i] == '\'' {
-			b.WriteByte(' ')
-			i = codegraphSkipString(line, i)
-			continue
-		}
-		b.WriteByte(line[i])
-		i++
-	}
-	return b.String()
-}
-
 func codegraphSkipString(line string, i int) int {
 	if i >= len(line) {
 		return len(line)
@@ -4421,16 +5965,24 @@ func codegraphLineOpensFunction(line string) bool {
 	return !strings.Contains(head, ";")
 }
 
-func codegraphTakeDecl(lines []string, start int, inBlock bool) (string, int) {
-	first, _ := codegraphScanCode(strings.TrimRight(lines[start], "\r"), inBlock)
+func codegraphTakeDecl(lines, masked []string, start int, lua bool) (string, int) {
+	if start < 0 || start >= len(lines) {
+		return "", 0
+	}
+	visibleAt := func(n int) string {
+		i := start + n
+		if i < 0 || i >= len(masked) {
+			return ""
+		}
+		return strings.TrimRight(masked[i], "\r")
+	}
+	first := visibleAt(0)
 	if strings.HasPrefix(strings.TrimSpace(first), "#define ") {
 		var b []string
 		for n := 0; n < 8 && start+n < len(lines); n++ {
 			line := strings.TrimRight(lines[start+n], "\r")
-			visible, next := codegraphScanCode(line, inBlock)
-			inBlock = next
 			b = append(b, line)
-			if !strings.HasSuffix(strings.TrimRight(visible, " \t"), `\`) {
+			if !strings.HasSuffix(strings.TrimRight(visibleAt(n), " \t"), `\`) {
 				return strings.Join(b, "\n"), n
 			}
 		}
@@ -4441,10 +5993,20 @@ func codegraphTakeDecl(lines []string, start int, inBlock bool) (string, int) {
 	paren := 0
 	for n := 0; n < 8 && start+n < len(lines); n++ {
 		line := strings.TrimRight(lines[start+n], "\r")
-		visible, next := codegraphScanCode(line, inBlock)
-		inBlock = next
+		visible := visibleAt(n)
 		if n > 0 && depth <= 0 && paren <= 0 && codegraphLineOpensFunction(visible) {
 			break
+		}
+		// A Lua assignment has no semicolon. The next named declaration ends
+		// this one. Trailing comment lines are not part of the value.
+		if lua && n > 0 && depth <= 0 && paren <= 0 && strings.TrimSpace(visible) != "" && codegraphIsFileScopeDecl(visible) {
+			for len(b) > 0 && strings.TrimSpace(visibleAt(len(b)-1)) == "" {
+				b = b[:len(b)-1]
+			}
+			if len(b) == 0 {
+				return "", 0
+			}
+			return strings.Join(b, "\n"), len(b) - 1
 		}
 		b = append(b, line)
 		opens, closes := codegraphBraceDelta(visible)
@@ -4481,9 +6043,7 @@ func codegraphDeclContinues(line string) bool {
 }
 
 func codegraphParenDelta(line string) int {
-	if cmt := strings.Index(line, "//"); cmt >= 0 {
-		line = line[:cmt]
-	}
+	line = codegraphCodeHead(line)
 	delta := 0
 	var quote byte
 	for i := 0; i < len(line); i++ {
@@ -4525,6 +6085,9 @@ func codegraphMissedNodeBody(root, operation, query, file string) (string, bool)
 		return "", false
 	}
 	body := strings.TrimSpace(codegraphSourceBody(root, pin, symbol))
+	if body == "" {
+		body = strings.TrimSpace(codegraphDeclaredBody(root, pin, symbol))
+	}
 	if body == "" {
 		return "", false
 	}
@@ -4595,7 +6158,7 @@ func attachCodegraphPinnedNodeBody(root, output string, cmds [][]string) string 
 		return output
 	}
 	stale := codegraphMCPStale(output) && codegraphMCPStaleFile(output, file)
-	if !stale && codegraphExcerptDefines(output, symbol) {
+	if !stale && codegraphExcerptDefinesFile(output, symbol, file) {
 		return output
 	}
 	body := strings.TrimSpace(codegraphSourceBody(root, file, symbol))
@@ -4979,10 +6542,14 @@ func (c *codingSubAgentCallbacks) executeLocalCodeNavigation(args map[string]int
 		return codingToolExecutionResult{Text: runErr.Error(), Outcome: codingToolOutcomeFailed}
 	}
 	output = codegraphRetargetReadAdvice(output)
+	var explorePaths []string
+	var exploreRemainder bool
 	var truncated bool
 	// A file miss names the file as absent. Do not read it to decorate that
 	// sentence as a symbol map, and do not record an edit snapshot.
 	if backend == "codegraph" && !codegraphMCPIndexedFileMiss(output) {
+		// Narrow before the cap so an unrelated project cannot spend the budget.
+		output, explorePaths, exploreRemainder = codegraphPrepareExplore(operation, query, output)
 		// A function body does not include the globals and constants it uses.
 		// The model otherwise read_file's the top of the file and ripgreps those names.
 		// A file lookup also keeps its structure section, so a long symbol list
@@ -4993,13 +6560,16 @@ func (c *codingSubAgentCallbacks) executeLocalCodeNavigation(args map[string]int
 		}
 		output, truncated = codegraphCapWithDecls(root, fileQuery, output)
 		c.noteCodegraphReadSnapshots(root, output)
+		c.noteCodegraphExplored(root, output, explorePaths)
 	} else if backend != "codegraph" {
 		output, truncated = capCodeNavigationOutput(output)
 	}
-	payload, _ := json.Marshal(codeNavigationOutput{Backend: backend, Operation: operation, Query: query, Output: output, Truncated: truncated, ContinueWith: codegraphContinueHint(backend, output)})
+	hint := codegraphContinueHint(backend, output)
+	output, hint = codegraphPresentExplore(output, explorePaths, exploreRemainder, hint)
+	payload, _ := json.Marshal(codeNavigationOutput{Backend: backend, Operation: operation, Query: query, Output: output, Truncated: truncated, ContinueWith: hint})
 	// Candidate ranking is included in the structured output so the model can
 	// compare suspects without rereading every raw match.
-	candidates := localizationCandidatesFromOutput(output)
+	candidates := retargetCodegraphCandidateProbes(backend, output, localizationCandidatesFromOutput(output))
 	if len(candidates) > 0 {
 		var wrapper map[string]interface{}
 		_ = json.Unmarshal(payload, &wrapper)
@@ -5958,18 +7528,23 @@ func (c *remoteCodingCallbacks) executeRemoteCodeNavigation(args map[string]inte
 			remoteCodegraphRememberIndex(c.agent.projectDir)
 		}
 	}
+	var explorePaths []string
+	var exploreRemainder bool
 	if codegraphHit {
 		result = codegraphRetargetReadAdvice(result)
+		result, explorePaths, exploreRemainder = codegraphPrepareExplore(operation, query, result)
 	}
 	result, truncated := capCodeNavigationOutput(result)
-	if succeeded {
-		c.trackRemoteSearch(codeNavigationToolName, question, c.agent.projectDir, result, true)
-	}
 	hintBackend := "remote:auto"
 	if codegraphHit {
 		hintBackend = "codegraph"
 	}
-	payload, _ := json.Marshal(map[string]interface{}{"backend": "remote:auto", "operation": operation, "query": query, "output": result, "truncated": truncated, "continue_with": codegraphContinueHint(hintBackend, result), "candidates": localizationCandidatesFromOutput(result)})
+	hint := codegraphContinueHint(hintBackend, result)
+	result, hint = codegraphPresentExplore(result, explorePaths, exploreRemainder, hint)
+	if succeeded {
+		c.trackRemoteSearch(codeNavigationToolName, question, c.agent.projectDir, result, true)
+	}
+	payload, _ := json.Marshal(map[string]interface{}{"backend": hintBackend, "operation": operation, "query": query, "output": result, "truncated": truncated, "continue_with": hint, "candidates": retargetCodegraphCandidateProbes(hintBackend, result, localizationCandidatesFromOutput(result))})
 	return string(payload)
 }
 
@@ -6582,7 +8157,8 @@ func codegraphAttachFileSurvey(root, file, output string) string {
 	b.WriteString("\n\nFile structure for ")
 	b.WriteString(file)
 	b.WriteString(".\n")
-	for _, inc := range codegraphIncludeLines(src) {
+	lua := codegraphLuaFile(file)
+	for _, inc := range codegraphIncludeLines(src, lua) {
 		if b.Len() > 1500 {
 			break
 		}
@@ -6591,7 +8167,7 @@ func codegraphAttachFileSurvey(root, file, output string) string {
 	}
 	defined := map[string]bool{}
 	var own []string
-	for _, block := range codegraphFileScopeDecls(src, nil) {
+	for _, block := range codegraphFileScopeDecls(src, nil, lua) {
 		key := strings.TrimSpace(block)
 		if key == "" || strings.Contains(output, key) {
 			continue
@@ -6610,7 +8186,7 @@ func codegraphAttachFileSurvey(root, file, output string) string {
 	}
 	var extras []surveyExtra
 	seenHeader := map[string]bool{}
-	for _, inc := range codegraphQuotedIncludes(src) {
+	for _, inc := range codegraphQuotedIncludes(src, lua) {
 		header := codegraphResolveInclude(root, abs, inc)
 		if header == "" || seenHeader[header] {
 			continue
@@ -6625,7 +8201,7 @@ func codegraphAttachFileSurvey(root, file, output string) string {
 			continue
 		}
 		label = filepath.ToSlash(label)
-		for _, block := range codegraphFileScopeDecls(string(hdata), nil) {
+		for _, block := range codegraphFileScopeDecls(string(hdata), nil, codegraphLuaFile(label)) {
 			names := codegraphSurveyNames(block)
 			fresh := false
 			for _, name := range names {
@@ -6693,14 +8269,10 @@ func codegraphSurveyNames(block string) []string {
 	return codegraphDefinedNames(line)
 }
 
-func codegraphIncludeLines(src string) []string {
-	src = codegraphLiveSource(src)
+func codegraphIncludeLines(src string, lua bool) []string {
 	var out []string
 	seen := map[string]bool{}
-	inBlock := false
-	for _, line := range strings.Split(src, "\n") {
-		var code string
-		code, inBlock = codegraphScanCode(strings.TrimRight(line, "\r"), inBlock)
+	for _, code := range codegraphMaskSurvey(strings.Split(src, "\n"), lua) {
 		trim := strings.TrimSpace(code)
 		if strings.HasPrefix(trim, "#") {
 			trim = "#" + strings.TrimSpace(trim[1:])

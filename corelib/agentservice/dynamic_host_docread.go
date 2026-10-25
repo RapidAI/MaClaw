@@ -24,6 +24,7 @@ const (
 	DocumentFormatSpreadsheet              = agent.DocumentAttachmentFormatSpreadsheet
 	DocumentFormatPresentation             = agent.DocumentAttachmentFormatPresentation
 	DocumentFormatText                     = agent.DocumentAttachmentFormatText
+	DocumentFormatMOBI                     = agent.DocumentAttachmentFormatMOBI
 )
 
 type reviewedHostDocumentInput struct {
@@ -93,6 +94,7 @@ func ProjectReviewedHostDocumentReadProvider(reader reviewedHostDocumentReader) 
 			{Capability: CapabilityDocumentRead, Qualifiers: map[string]string{QualifierDocumentFormat: DocumentFormatSpreadsheet}, Quality: 1},
 			{Capability: CapabilityDocumentRead, Qualifiers: map[string]string{QualifierDocumentFormat: DocumentFormatPresentation}, Quality: 1},
 			{Capability: CapabilityDocumentRead, Qualifiers: map[string]string{QualifierDocumentFormat: DocumentFormatText}, Quality: 1},
+			{Capability: CapabilityDocumentRead, Qualifiers: map[string]string{QualifierDocumentFormat: DocumentFormatMOBI}, Quality: 1},
 		},
 		Consumes: []coretool.ArtifactContract{{Kind: "document", Required: true}},
 		Effects:  []coretool.EffectClass{coretool.EffectReadOnly},

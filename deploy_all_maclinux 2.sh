@@ -167,7 +167,7 @@ fi
 REMOTE_USER="${REMOTE_USER:-root}"
 REMOTE_PORT="${REMOTE_PORT:-22}"
 HUB_MODEL_BASE_URL="${HUB_MODEL_BASE_URL:-https://github.com/RapidAI/MaClaw/releases/download/Model_Release}"
-HUB_MODEL_FILES="${HUB_MODEL_FILES:-Qwen3-Embedding-0.6B-Q8_0.gguf head_mlp_qwen3go_r13f1.json tool_head_ovr_qwen3go_r5.json interrupt_relevance_qwen3go.json sensevoice-small-q8.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro_v2.zip}"
+HUB_MODEL_FILES="${HUB_MODEL_FILES:-Qwen3-Embedding-0.6B-Q8_0.gguf head_mlp_qwen3go_r13f1.json tool_head_ovr_qwen3go_r5.json interrupt_relevance_qwen3go.json sensevoice-small-q8.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro_v2.zip formulanet-encoder.onnx formulanet-decoder.onnx formulanet-decoder-past.onnx formulanet-tokenizer.json PP-DocLayoutV3.onnx PP-DocLayoutV3.onnx.data unet.onnx}"
 
 brand_build_tag=""
 hub_binary_name="maclaw-hub"
@@ -476,7 +476,7 @@ set -eu
 : "${DEPLOY_HUB:=0}"
 : "${ENSURE_HUB_MODELS:=0}"
 : "${HUB_MODEL_BASE_URL:=https://github.com/RapidAI/MaClaw/releases/download/Model_Release}"
-: "${HUB_MODEL_FILES:=Qwen3-Embedding-0.6B-Q8_0.gguf head_mlp_qwen3go_r13f1.json tool_head_ovr_qwen3go_r5.json interrupt_relevance_qwen3go.json sensevoice-small-q8.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro_v2.zip}"
+: "${HUB_MODEL_FILES:=Qwen3-Embedding-0.6B-Q8_0.gguf head_mlp_qwen3go_r13f1.json tool_head_ovr_qwen3go_r5.json interrupt_relevance_qwen3go.json sensevoice-small-q8.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro_v2.zip formulanet-encoder.onnx formulanet-decoder.onnx formulanet-decoder-past.onnx formulanet-tokenizer.json PP-DocLayoutV3.onnx PP-DocLayoutV3.onnx.data unet.onnx}"
 : "${HUB_CONFIG_BASENAME:=}"
 : "${HUBCENTER_CONFIG_BASENAME:=hubcenter-config.yaml}"
 : "${HUB_BINARY_NAME:=maclaw-hub}"
@@ -557,7 +557,7 @@ clean_hubcenter_db_if_requested() {
 }
 
 is_allowed_model_file() {
-  case "$1" in ""|*/*|*\\*|*..*) return 1 ;; *.gguf|*.yolow|*.koro|*.zip|*.json) return 0 ;; *) return 1 ;; esac
+  case "$1" in ""|*/*|*\\*|*..*) return 1 ;; *.gguf|*.onnx|*.onnx.data|*.yolow|*.koro|*.zip|*.json) return 0 ;; *) return 1 ;; esac
 }
 
 seed_home_models() {

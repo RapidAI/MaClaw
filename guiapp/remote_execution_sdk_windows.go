@@ -18,3 +18,14 @@ func hideCommandWindow(cmd *exec.Cmd) {
 	}
 	cmd.SysProcAttr.CreationFlags |= _CREATE_NO_WINDOW
 }
+
+// applyExplorerSelect sets the exact command line Explorer needs to select a file.
+func applyExplorerSelect(cmd *exec.Cmd, explorer, path string) {
+	if cmd == nil {
+		return
+	}
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.CmdLine = explorerSelectCommandLine(explorer, path)
+}

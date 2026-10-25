@@ -49,10 +49,9 @@ func TestDeleteMemoriesImmediatelyInvalidatesAgentMemorySnapshot(t *testing.T) {
 	entry := store.List("", "")[0]
 	handler := &IMMessageHandler{memoryStore: store}
 	handler.WarmFrozenMemorySnapshot(desktopUserID)
-	// The frozen static section is deliberately content-free (recall-on-demand
-	// via memory(action: recall), keeping the prompt prefix stable); entry
-	// bodies never appear in it. The invariant under test is the invalidation
-	// wiring: a mutation must drop the cached snapshot.
+	// The frozen static section pins the prompt prefix for the open
+	// conversation. A warehouse edit reaches that conversation as a
+	// retraction; the snapshot bytes change at /new.
 	if cached := handler.cachedStaticMemorySnapshot(desktopUserID); cached == "" {
 		t.Fatal("precondition: static memory snapshot not built")
 	}
@@ -61,8 +60,18 @@ func TestDeleteMemoriesImmediatelyInvalidatesAgentMemorySnapshot(t *testing.T) {
 	if _, err := app.DeleteMemories([]string{entry.ID}); err != nil {
 		t.Fatalf("DeleteMemories() error = %v", err)
 	}
+	if cached := handler.cachedStaticMemorySnapshot(desktopUserID); cached == "" {
+		t.Fatal("pinned static memory snapshot was dropped mid-conversation")
+	}
+	retraction := handler.LoadMemoryRetractions()
+	if retraction == nil || len(retraction.Items) != 1 ||
+		retraction.Items[0].Kind != "deleted" || retraction.Items[0].Content != entry.Content {
+		t.Fatalf("retraction = %#v, want one deleted item for the entry", retraction)
+	}
+	// The next conversation (/new) rebuilds without the deleted content.
+	handler.RefreshMemorySnapshot(desktopUserID)
 	if cached := handler.cachedStaticMemorySnapshot(desktopUserID); cached != "" {
-		t.Fatalf("cached agent memory remains after delete: %q", cached)
+		t.Fatal("snapshot survived the /new refresh")
 	}
 	fresh, _ := handler.loadOrBuildStaticMemorySnapshot(desktopUserID)
 	if strings.Contains(fresh, entry.Content) {
@@ -94,9 +103,17 @@ func TestDeleteMemoriesImmediatelyInvalidatesGatewayAgentMemorySnapshot(t *testi
 	if _, err := app.DeleteMemories([]string{entry.ID}); err != nil {
 		t.Fatalf("DeleteMemories() error = %v", err)
 	}
-	if cached := handler.cachedStaticMemorySnapshot(desktopUserID); cached != "" {
-		t.Fatalf("cached gateway agent memory remains after delete: %q", cached)
+	// Gateway agents are separate handler instances; the deletion still
+	// reaches this one as a retraction while the pinned prefix holds.
+	if cached := handler.cachedStaticMemorySnapshot(desktopUserID); cached == "" {
+		t.Fatal("pinned gateway agent memory snapshot was dropped mid-conversation")
 	}
+	retraction := handler.LoadMemoryRetractions()
+	if retraction == nil || len(retraction.Items) != 1 ||
+		retraction.Items[0].Kind != "deleted" || retraction.Items[0].Content != entry.Content {
+		t.Fatalf("retraction = %#v, want one deleted item for the entry", retraction)
+	}
+	handler.RefreshMemorySnapshot(desktopUserID)
 	fresh, _ := handler.loadOrBuildStaticMemorySnapshot(desktopUserID)
 	if strings.Contains(fresh, entry.Content) {
 		t.Fatalf("fresh gateway agent memory still contains deleted content: %q", fresh)
@@ -172,8 +189,14 @@ func TestMemoryPipelineCompletionImmediatelyInvalidatesAgentMemorySnapshot(t *te
 	before := handler.cachedStaticMemorySnapshot(desktopUserID)
 	app := &App{memoryStore: store, imHandler: handler, testHomeDir: t.TempDir()}
 	guiMemoryEventEmitter{app: app}.Emit("memory:pipeline_completed", nil)
-	if got := handler.cachedStaticMemorySnapshot(desktopUserID); got != before {
-		t.Fatalf("pipeline completion rewrote the frozen snapshot:\n got %q\nwant %q", got, before)
+	// Whole-store maintenance ends the pinned snapshot immediately: the next
+	// build re-reads the store instead of trusting the old prefix.
+	if got := handler.cachedStaticMemorySnapshot(desktopUserID); got != "" {
+		t.Fatalf("pipeline completion kept a stale frozen snapshot: %q", got)
+	}
+	fresh, _ := handler.loadOrBuildStaticMemorySnapshot(desktopUserID)
+	if fresh != before {
+		t.Fatalf("rebuilt snapshot diverged from the unchanged store:\n got %q\nwant %q", fresh, before)
 	}
 }
 
@@ -205,8 +228,16 @@ func TestCompressMemoriesImmediatelyInvalidatesAgentMemorySnapshot(t *testing.T)
 	if _, err := app.CompressMemories(); err != nil {
 		t.Fatalf("CompressMemories() error = %v", err)
 	}
-	if got := handler.cachedStaticMemorySnapshot(desktopUserID); got != before {
-		t.Fatalf("compression rewrote the frozen snapshot:\n got %q\nwant %q", got, before)
+	// Compression rewrote the store, so the pinned snapshot must end: the
+	// stale prefix would keep advertising the pre-dedup entry pair.
+	if got := handler.cachedStaticMemorySnapshot(desktopUserID); got != "" {
+		t.Fatalf("compression kept a stale frozen snapshot: %q", got)
+	}
+	if entries := store.List("", ""); len(entries) != 1 {
+		t.Fatalf("store after compression = %#v, want the single kept entry", entries)
+	}
+	if fresh, _ := handler.loadOrBuildStaticMemorySnapshot(desktopUserID); fresh == before {
+		t.Fatal("rebuilt snapshot still shows the pre-compression content")
 	}
 }
 
@@ -419,13 +450,30 @@ func TestDeleteMemoriesInvalidatesFrozenMemorySnapshot(t *testing.T) {
 	if _, err := app.DeleteMemories([]string{entry.ID}); err != nil {
 		t.Fatalf("DeleteMemories() error = %v", err)
 	}
+	// A mid-conversation delete keeps the frozen snapshot pinned; the /new
+	// boundary is where the generation moves and the snapshot drops.
+	if after := handler.snapshotGeneration(ownerID); after != before {
+		t.Fatalf("frozen snapshot generation = %d, want unchanged %d after a mid-conversation delete", after, before)
+	}
+	if !handler.isCurrentMemoryPromptGeneration(ownerID, before) {
+		t.Fatal("a snapshot built before the deletion is no longer current")
+	}
+	if _, ok := handler.frozenMemorySnapshots.Load(ownerID); !ok {
+		t.Fatal("pinned frozen snapshot was dropped by DeleteMemories")
+	}
+	retraction := handler.LoadMemoryRetractions()
+	if retraction == nil || len(retraction.Items) != 1 || retraction.Items[0].Content != entry.Content {
+		t.Fatalf("retraction = %#v, want one deleted item for the entry", retraction)
+	}
+	// /new refreshes the pinned snapshot without the deleted content.
+	handler.RefreshMemorySnapshot(ownerID)
 	if after := handler.snapshotGeneration(ownerID); after <= before {
-		t.Fatalf("frozen snapshot generation = %d, want > %d after delete", after, before)
+		t.Fatalf("frozen snapshot generation = %d, want > %d after /new refresh", after, before)
 	}
 	if handler.isCurrentMemoryPromptGeneration(ownerID, before) {
-		t.Fatal("a snapshot begun before deletion is still considered current")
+		t.Fatal("a snapshot begun before the refresh is still considered current")
 	}
 	if _, ok := handler.frozenMemorySnapshots.Load(ownerID); ok {
-		t.Fatal("expected frozen snapshot deleted after DeleteMemories")
+		t.Fatal("expected frozen snapshot deleted after the /new refresh")
 	}
 }

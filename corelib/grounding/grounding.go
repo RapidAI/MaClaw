@@ -14,7 +14,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math"
 	"net/http"
 	"regexp"
@@ -275,34 +274,13 @@ func call(ctx context.Context, cfg corelib.MaclawLLMConfig, client *http.Client,
 	}
 	extra := map[string]interface{}{"max_tokens": MaxTokens, "temperature": 0}
 	if cfg.IsResponsesAPI() {
-		req, _, _, err := llm.NewResponsesAPIRequest(callCtx, cfg, messages, llm.ResponsesAPIRequestOptions{Stream: false, ExtraBody: map[string]interface{}{"max_output_tokens": MaxTokens}})
-		if err != nil {
-			return "", err
-		}
-		return do(client, req, llm.ParseNonStreamResponsesAPIBody)
+		resp, err := llm.DoResponsesAPIRequestWithOptions(callCtx, cfg, messages, client, llm.ResponsesAPIRequestOptions{
+			ExtraBody: map[string]interface{}{"max_output_tokens": MaxTokens},
+		})
+		return responseText(resp, err)
 	}
-	req, _, _, err := llm.NewOpenAIChatRequest(callCtx, cfg, messages, llm.OpenAIChatRequestOptions{Stream: false, ExtraBody: extra})
-	if err != nil {
-		return "", err
-	}
-	return do(client, req, llm.ParseNonStreamOpenAIResponseBody)
-}
-
-func do(client *http.Client, req *http.Request, parse func([]byte) (*llm.Response, error)) (string, error) {
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", &llm.HTTPStatusError{StatusCode: resp.StatusCode, Body: append([]byte(nil), body...)}
-	}
-	parsed, err := parse(body)
-	return responseText(parsed, err)
+	resp, err := llm.DoOpenAIRequestWithOptions(callCtx, cfg, messages, nil, client, llm.OpenAIChatRequestOptions{ExtraBody: extra})
+	return responseText(resp, err)
 }
 
 func responseText(resp *llm.Response, err error) (string, error) {

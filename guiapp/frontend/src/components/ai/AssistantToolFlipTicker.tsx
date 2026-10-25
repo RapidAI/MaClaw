@@ -1,6 +1,7 @@
 import React from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
-import { formatAssistantToolFlip, type AssistantToolCall } from "./assistantToolCall";
+import { formatAssistantToolFlip, sessionToolIconKind, type AssistantToolCall } from "./assistantToolCall";
+import { CodingAgentProcessIcon } from "./CodingAgentProcessIcon";
 
 const FLIP_MS = 1200;
 
@@ -116,6 +117,7 @@ export const AssistantToolFlipTicker = React.memo(function AssistantToolFlipTick
     };
 
     const flipping = frame.previous != null;
+    const iconKind = sessionToolIconKind(call);
     return (
         <div
             className={`assistant-tool-flip${flipping ? " is-flipping" : ""}`}
@@ -134,7 +136,9 @@ export const AssistantToolFlipTicker = React.memo(function AssistantToolFlipTick
                 ["--assistant-tool-flip-muted" as string]: theme.textMuted,
             }}
         >
-            <span aria-hidden="true" className="assistant-tool-flip-dot" />
+            {iconKind
+                ? <CodingAgentProcessIcon kind={iconKind} className="assistant-tool-flip-icon" />
+                : <span aria-hidden="true" className="assistant-tool-flip-dot" />}
             <div className="assistant-tool-flip-window">
                 {frame.previous ? (
                     <>

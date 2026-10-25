@@ -71,6 +71,9 @@ func codegraphMCPSpecs(operation, query, question, file string, line int) []code
 }
 
 func codegraphMCPFileArgs(file string, symbolsOnly bool) map[string]interface{} {
+	if cleaned := codegraphCleanExplorePath(file); cleaned != "" {
+		file = cleaned
+	}
 	args := map[string]interface{}{"file": file}
 	if symbolsOnly {
 		args["symbolsOnly"] = true
@@ -100,11 +103,17 @@ func codegraphMCPEdgeArgs(symbol, pin string) map[string]interface{} {
 // codegraphExcerptDefines reports that text still contains a definition of
 // symbol. Call sites and a stale slice of another function do not count.
 func codegraphExcerptDefines(text, symbol string) bool {
+	return codegraphExcerptDefinesFile(text, symbol, "")
+}
+
+// codegraphExcerptDefinesFile is codegraphExcerptDefines for a known path.
+// A .lua file masks long strings, so a function inside [[ ]] is not a hit.
+func codegraphExcerptDefinesFile(text, symbol, file string) bool {
 	symbol = strings.TrimSpace(symbol)
 	if symbol == "" || strings.TrimSpace(text) == "" {
 		return false
 	}
-	return codegraphDefinitionStart(strings.Split(text, "\n"), symbol) >= 0
+	return codegraphDefinitionStart(strings.Split(text, "\n"), symbol, codegraphLuaFile(file)) >= 0
 }
 
 // codegraphMCPRepair keeps text when it still defines symbol. Otherwise it
@@ -138,7 +147,7 @@ func codegraphMCPRepair(root, text, symbol, pin string) (string, bool) {
 			return "", false
 		}
 	}
-	if codegraphExcerptDefines(text, symbol) {
+	if codegraphExcerptDefinesFile(text, symbol, file) {
 		return text, true
 	}
 	if root != "" && file != "" && !navigationQueryEscapesRoot(file) {
@@ -156,34 +165,74 @@ func codegraphMCPRepair(root, text, symbol, pin string) (string, bool) {
 	return "", false
 }
 
+// codegraphOutsideFenceContains reports a daemon sentence. The same words
+// inside a source fence are the file's text.
+func codegraphOutsideFenceContains(text, phrase string) bool {
+	if phrase == "" || !strings.Contains(text, phrase) {
+		return false
+	}
+	inFence := false
+	for _, line := range strings.Split(text, "\n") {
+		trim := strings.TrimSpace(line)
+		if strings.HasPrefix(trim, "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		if strings.Contains(trim, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
 func codegraphMCPStale(text string) bool {
-	return strings.Contains(text, "were edited since the last index sync")
+	return codegraphOutsideFenceContains(text, "were edited since the last index sync")
 }
 
 // codegraphMCPStaleFile reports that the daemon's banner names this path.
 // The match is the listed path, not a shorter name inside a longer one.
+// A list copied into a source fence is not the banner.
 func codegraphMCPStaleFile(text, path string) bool {
 	if !codegraphMCPStale(text) {
 		return false
 	}
-	path = strings.ReplaceAll(strings.TrimSpace(path), `\`, "/")
+	path = codegraphStalePathKey(path)
 	if path == "" {
 		return false
 	}
+	inFence := false
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "- ") || !strings.Contains(line, " (edited ") {
+		if strings.HasPrefix(line, "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence || !strings.HasPrefix(line, "- ") || !strings.Contains(line, " (edited ") {
 			continue
 		}
 		listed := strings.TrimSpace(strings.TrimPrefix(line, "- "))
 		if i := strings.Index(listed, " (edited "); i >= 0 {
 			listed = strings.TrimSpace(listed[:i])
 		}
-		if strings.ReplaceAll(listed, `\`, "/") == path {
+		if codegraphStalePathKey(listed) == path {
 			return true
 		}
 	}
 	return false
+}
+
+// codegraphStalePathKey compares a banner path with an explore path. The
+// daemon may prefix "./" or use a backslash. A shorter name inside a longer
+// path stays distinct.
+func codegraphStalePathKey(path string) string {
+	path = strings.TrimSpace(strings.ReplaceAll(path, `\`, "/"))
+	for strings.HasPrefix(path, "./") {
+		path = path[len("./"):]
+	}
+	return strings.ToLower(strings.Trim(path, "/"))
 }
 
 // codegraphMCPRefreshExplore replaces an explore code block when the indexed
@@ -240,7 +289,7 @@ func codegraphMCPRefreshExplore(root, text string) string {
 			if stale {
 				missedDisk = true
 			}
-			if codegraphExcerptDefines(body, sym.name) {
+			if codegraphExcerptDefinesFile(body, sym.name, path) {
 				kept = true
 				continue
 			}
@@ -249,7 +298,9 @@ func codegraphMCPRefreshExplore(root, text string) string {
 			}
 		}
 		if stale && sawBody && !missedDisk {
-			refreshed[strings.ReplaceAll(path, `\`, "/")] = true
+			if key := codegraphStalePathKey(path); key != "" {
+				refreshed[key] = true
+			}
 		}
 		out = append(out, lines[i])
 		if fence > i+1 {
@@ -301,7 +352,7 @@ func codegraphStripRefreshedStaleBanner(text string, refreshed map[string]bool) 
 			if j := strings.Index(listed, " (edited "); j >= 0 {
 				listed = strings.TrimSpace(listed[:j])
 			}
-			if refreshed[strings.ReplaceAll(listed, `\`, "/")] {
+			if refreshed[codegraphStalePathKey(listed)] {
 				drop[i] = true
 			} else {
 				remaining++
@@ -330,6 +381,51 @@ func codegraphStripRefreshedStaleBanner(text string, refreshed map[string]bool) 
 		if !drop[i] {
 			kept = append(kept, line)
 		}
+	}
+	return strings.Join(kept, "\n")
+}
+
+// codegraphStripEmptyStaleBanner removes a staleness banner that lists no
+// file. Focus drops the other project's path line first. Leaving the header
+// and "Read them directly" tells the model to read a file the result no
+// longer names.
+func codegraphStripEmptyStaleBanner(text string) string {
+	if !codegraphMCPStale(text) {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	header := -1
+	instruction := -1
+	fileLines := 0
+	for i, line := range lines {
+		trim := strings.TrimSpace(line)
+		if header < 0 {
+			if strings.Contains(trim, "were edited since the last index sync") {
+				header = i
+			}
+			continue
+		}
+		if strings.HasPrefix(trim, "- ") && strings.Contains(trim, " (edited ") {
+			fileLines++
+			continue
+		}
+		if strings.Contains(trim, "Read them directly") {
+			instruction = i
+			break
+		}
+		if trim != "" {
+			break
+		}
+	}
+	if header < 0 || fileLines > 0 {
+		return text
+	}
+	kept := make([]string, 0, len(lines))
+	for i, line := range lines {
+		if i == header || i == instruction {
+			continue
+		}
+		kept = append(kept, line)
 	}
 	return strings.Join(kept, "\n")
 }

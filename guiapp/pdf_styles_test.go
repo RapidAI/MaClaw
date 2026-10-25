@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -242,14 +245,17 @@ func TestPrepareDocumentStyleModelLeavesRoomForTheAnswer(t *testing.T) {
 	flash, tokens := prepareDocumentStyleModel(corelib.MaclawLLMConfig{
 		URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.3-flash", ThinkingMode: "enabled",
 	})
-	if flash.ThinkingMode != "disabled" || tokens != 900 {
-		t.Fatalf("flash = %+v tokens=%d", flash.ThinkingMode, tokens)
+	if flash.ThinkingMode != "enabled" || flash.ReasoningEffort != "low" || tokens != corelib.LLMProbeAlwaysOnMaxOutputTokens {
+		t.Fatalf("flash = mode %q effort %q tokens %d", flash.ThinkingMode, flash.ReasoningEffort, tokens)
 	}
 	body := map[string]interface{}{}
 	corelib.ApplyReasoningControls(flash, body, corelib.ReasoningAPIAnthropic)
 	thinking, _ := body["thinking"].(map[string]interface{})
-	if thinking["type"] != "disabled" {
-		t.Fatalf("flash wire thinking = %#v", body["thinking"])
+	if thinking["type"] != "enabled" || body["reasoning_effort"] != "low" {
+		t.Fatalf("flash wire = %#v", body)
+	}
+	if _, ok := thinking["budget_tokens"]; ok {
+		t.Fatalf("flash kept a budget: %#v", thinking)
 	}
 
 	always, tokens := prepareDocumentStyleModel(corelib.MaclawLLMConfig{
@@ -262,12 +268,91 @@ func TestPrepareDocumentStyleModelLeavesRoomForTheAnswer(t *testing.T) {
 	auto, tokens := prepareDocumentStyleModel(corelib.MaclawLLMConfig{
 		URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.3-flash",
 	})
-	if auto.ThinkingMode != "disabled" || tokens != 900 {
-		t.Fatalf("auto flash = mode %q tokens %d", auto.ThinkingMode, tokens)
+	if auto.ThinkingMode != "enabled" || auto.ReasoningEffort != "low" || tokens != 2048 {
+		t.Fatalf("auto flash = mode %q effort %q tokens %d", auto.ThinkingMode, auto.ReasoningEffort, tokens)
 	}
 	plain, tokens := prepareDocumentStyleModel(corelib.MaclawLLMConfig{Model: "claude-sonnet"})
 	if plain.ThinkingMode != "" || tokens != 900 {
 		t.Fatalf("claude auto = mode %q tokens %d", plain.ThinkingMode, tokens)
+	}
+
+	xai, tokens := prepareDocumentStyleModel(corelib.MaclawLLMConfig{
+		URL: "https://api.x.ai/v1", Model: "grok-4.5", WireAPI: "responses",
+	})
+	if xai.ThinkingMode != "disabled" || xai.ReasoningEffort != "low" || tokens != 2048 {
+		t.Fatalf("xai = mode %q effort %q tokens %d", xai.ThinkingMode, xai.ReasoningEffort, tokens)
+	}
+	xaiBody := map[string]interface{}{}
+	corelib.ApplyReasoningControls(xai, xaiBody, corelib.ReasoningAPIResponses)
+	reasoning, _ := xaiBody["reasoning"].(map[string]interface{})
+	if reasoning["effort"] != "low" {
+		t.Fatalf("xai wire = %#v", xaiBody["reasoning"])
+	}
+	if _, ok := reasoning["summary"]; ok {
+		t.Fatalf("short JSON requested a reasoning summary: %#v", reasoning)
+	}
+
+	kimi, tokens := prepareDocumentStyleModel(corelib.MaclawLLMConfig{
+		URL: "https://api.kimi.com/coding/v1", Model: "kimi-k3",
+	})
+	if kimi.ThinkingMode != "enabled" || kimi.ReasoningEffort != "low" || tokens != 2048 {
+		t.Fatalf("kimi = mode %q effort %q tokens %d", kimi.ThinkingMode, kimi.ReasoningEffort, tokens)
+	}
+}
+
+func TestDocumentStyleModelRetriesWhenThinkingOffIsRejected(t *testing.T) {
+	for _, wire := range []string{"chat", "responses"} {
+		wire := wire
+		t.Run(wire, func(t *testing.T) {
+			var calls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]interface{}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode request: %v", err)
+					http.Error(w, "bad json", http.StatusBadRequest)
+					return
+				}
+				n := calls.Add(1)
+				thinking, _ := body["thinking"].(map[string]interface{})
+				if n == 1 {
+					if thinking["type"] != "disabled" {
+						t.Errorf("first thinking = %#v, want disabled", body["thinking"])
+					}
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(`{"error":{"message":"该模型始终思考，不支持关闭思考；请使用 low、high 或 max。"}}`))
+					return
+				}
+				if thinking["type"] != "enabled" {
+					t.Errorf("retry thinking = %#v, want enabled", body["thinking"])
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if wire == "responses" {
+					_, _ = w.Write([]byte(`{"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+			}))
+			defer srv.Close()
+
+			cfg := corelib.MaclawLLMConfig{
+				URL: srv.URL, Key: "test-key", Model: "doc-style-" + wire, ThinkingMode: "disabled",
+			}
+			if wire == "responses" {
+				cfg.WireAPI = "responses"
+			}
+			text, err := completeDocumentStyleModel(context.Background(), cfg, srv.Client(), []interface{}{
+				map[string]interface{}{"role": "user", "content": "design"},
+			}, 900)
+			if err != nil {
+				t.Fatalf("completeDocumentStyleModel: %v", err)
+			}
+			if text != "ok" {
+				t.Fatalf("text = %q, want ok", text)
+			}
+			if calls.Load() != 2 {
+				t.Fatalf("calls = %d, want 2", calls.Load())
+			}
+		})
 	}
 }
 

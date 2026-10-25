@@ -151,6 +151,21 @@ func TestNormalizeRunVarsPreservesArgsOverJSONInput(t *testing.T) {
 	}
 }
 
+func TestCaptureAssignedReadsDeclaredOrCanonicalKey(t *testing.T) {
+	if CaptureAssigned(nil, "report_path") {
+		t.Fatal("nil vars assigned a capture")
+	}
+	if CaptureAssigned(map[string]string{"report_path": "  "}, "report_path") {
+		t.Fatal("blank capture counted as assigned")
+	}
+	if !CaptureAssigned(map[string]string{"report_path": "ok"}, "report_path") {
+		t.Fatal("declared key missed")
+	}
+	if !CaptureAssigned(map[string]string{"report_path": "ok"}, "report-path") {
+		t.Fatal("canonical key missed")
+	}
+}
+
 func TestNormalizeRunVarsNilSafe(t *testing.T) {
 	if got := NormalizeRunVars(nil); got != nil {
 		t.Fatalf("NormalizeRunVars(nil) = %#v, want nil", got)

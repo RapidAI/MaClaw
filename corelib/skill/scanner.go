@@ -212,24 +212,24 @@ type SkillYAMLFile struct {
 	// ExperienceDomain scopes a self-learned skill to the kind of work it was
 	// distilled from: "coding" or "general". Empty means universal, which is
 	// what every deliberately installed skill carries.
-	ExperienceDomain string               `yaml:"experience_domain,omitempty"`
-	Platforms        []string             `yaml:"platforms"`
-	RequiresGUI      bool                 `yaml:"requires_gui"`
-	ProducesArtifact *bool                `yaml:"produces_artifact,omitempty"` // false = diagnostic/instruction skill, no file output expected
-	Mode             string               `yaml:"mode,omitempty"`              // "sequential" (default) | "interactive" | "api_workflow"
-	ExecMode         string               `yaml:"exec_mode,omitempty"`         // "all" (default) | "first" | "named"
-	GlobalTimeout    int                  `yaml:"global_timeout,omitempty"`    // per-skill global timeout in seconds
-	RequiredArgs     []string             `yaml:"required_args,omitempty"`     // required template variables
-	RequiredEnv      []string             `yaml:"required_env,omitempty"`      // required environment variables
+	ExperienceDomain string   `yaml:"experience_domain,omitempty"`
+	Platforms        []string `yaml:"platforms"`
+	RequiresGUI      bool     `yaml:"requires_gui"`
+	ProducesArtifact *bool    `yaml:"produces_artifact,omitempty"` // false = diagnostic/instruction skill, no file output expected
+	Mode             string   `yaml:"mode,omitempty"`              // "sequential" (default) | "interactive" | "api_workflow"
+	ExecMode         string   `yaml:"exec_mode,omitempty"`         // "all" (default) | "first" | "named"
+	GlobalTimeout    int      `yaml:"global_timeout,omitempty"`    // per-skill global timeout in seconds
+	RequiredArgs     []string `yaml:"required_args,omitempty"`     // required template variables
+	RequiredEnv      []string `yaml:"required_env,omitempty"`      // required environment variables
 	// NoLLMAPI declares a pure-local skill that never calls an OpenAI-compatible
 	// LLM API, so the runner skips starting the local OpenAI proxy.
 	NoLLMAPI       bool                 `yaml:"no_llm_api,omitempty"`
-	PreferredShell string               `yaml:"shell,omitempty"`             // "bash" or "cmd"; empty = auto-detect
-	Operations       []SkillYAMLOperation `yaml:"operations,omitempty"`        // named operations for api_workflow mode
-	Params           []SkillYAMLParam     `yaml:"params,omitempty"`            // parameter schema (aliases, CLI flags, defaults)
-	Type             string               `yaml:"type,omitempty"`              // "executable" (default) | "knowledge"
-	Content          string               `yaml:"content,omitempty"`           // Markdown content for knowledge-type skills
-	Capabilities     []string             `yaml:"capabilities,omitempty"`      // semantic execution capabilities, e.g. current_data
+	PreferredShell string               `yaml:"shell,omitempty"`        // "bash" or "cmd"; empty = auto-detect
+	Operations     []SkillYAMLOperation `yaml:"operations,omitempty"`   // named operations for api_workflow mode
+	Params         []SkillYAMLParam     `yaml:"params,omitempty"`       // parameter schema (aliases, CLI flags, defaults)
+	Type           string               `yaml:"type,omitempty"`         // "executable" (default) | "knowledge"
+	Content        string               `yaml:"content,omitempty"`      // Markdown content for knowledge-type skills
+	Capabilities   []string             `yaml:"capabilities,omitempty"` // semantic execution capabilities, e.g. current_data
 	// Tool availability conditions
 	RequiresTools       []string `yaml:"requires_tools,omitempty"`
 	FallbackForTools    []string `yaml:"fallback_for_tools,omitempty"`
@@ -243,7 +243,10 @@ type SkillYAMLFile struct {
 	Stateful bool `yaml:"stateful,omitempty"`
 	// Pipeline declares multi-skill orchestration (Pattern 5: Multi-Phase + Checkpoint)
 	Pipeline []SkillYAMLPipelineStep `yaml:"pipeline,omitempty"`
-	Extra    map[string]any          `yaml:"-"`
+	// Check is an exit-code command. A learned skill may be published when this
+	// is set, or when its last executable step is bash that stops on failure.
+	Check string         `yaml:"check,omitempty" json:"check,omitempty"`
+	Extra map[string]any `yaml:"-"`
 }
 
 // ResolveDiskSkillSource decides the runtime Source for a skill loaded from disk.
@@ -411,7 +414,7 @@ func parseSkillDefinitionRaw(raw map[string]any, label string) (*SkillYAMLFile, 
 		"status": true, "source": true, "platforms": true, "requires_gui": true,
 		"produces_artifact": true, "required_args": true, "required_env": true,
 		"no_llm_api": true,
-		"shell": true, "mode": true, "operations": true, "params": true,
+		"shell":      true, "mode": true, "operations": true, "params": true,
 		"type": true, "content": true, "capabilities": true,
 		"requires_tools": true, "fallback_for_tools": true,
 		"requires_toolsets": true, "fallback_for_toolsets": true,
@@ -419,6 +422,7 @@ func parseSkillDefinitionRaw(raw map[string]any, label string) (*SkillYAMLFile, 
 		"requires":                  true,
 		"exec_mode":                 true, "global_timeout": true,
 		"stateful": true, "pipeline": true,
+		"check": true,
 	}
 	extra := make(map[string]any)
 	for k, v := range raw {

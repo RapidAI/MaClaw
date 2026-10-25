@@ -254,10 +254,13 @@ func TestCanParallelLightImport(t *testing.T) {
 	if canParallelLightImport(SourceKindMarkdown, DirectoryImportRequest{DistillMode: DistillModeLLMIfAny}) {
 		t.Fatal("llm_if_available should stay sequential")
 	}
-	if canParallelLightImport(SourceKindMarkdown, DirectoryImportRequest{TopicHint: "security"}) {
-		t.Fatal("topic hint auto mode should stay sequential")
+	if !canParallelLightImport(SourceKindMarkdown, DirectoryImportRequest{TopicHint: "security"}) {
+		t.Fatal("topic hint in auto mode should parallelize")
 	}
 	if !canParallelLightImport(SourceKindMarkdown, DirectoryImportRequest{TopicHint: "security", DistillMode: DistillModeRules}) {
 		t.Fatal("topic hint with rules_only may parallelize")
+	}
+	if canParallelLightImport(SourceKindMarkdown, DirectoryImportRequest{TopicHint: "security", DistillMode: DistillModeLLMIfAny}) {
+		t.Fatal("explicit llm mode stays sequential even with a topic hint")
 	}
 }

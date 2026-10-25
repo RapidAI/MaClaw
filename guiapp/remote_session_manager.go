@@ -807,6 +807,29 @@ func (m *RemoteSessionManager) List() []*RemoteSession {
 	return out
 }
 
+func (m *RemoteSessionManager) SaveActiveCheckpointsForShutdown() {
+	if m == nil || m.app == nil {
+		return
+	}
+	m.app.ensureSessionCheckpointer()
+	if m.app.sessionCheckpointer == nil {
+		return
+	}
+	for _, s := range m.List() {
+		if s == nil {
+			continue
+		}
+		s.mu.RLock()
+		active := isActiveRemoteSessionStatus(s.Status)
+		s.mu.RUnlock()
+		if active {
+			if err := m.app.sessionCheckpointer.SaveCheckpoint(s); err != nil {
+				log.Printf("[session-lifecycle] shutdown checkpoint failed session=%s err=%v", s.ID, err)
+			}
+		}
+	}
+}
+
 func (m *RemoteSessionManager) HasActiveSessions() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

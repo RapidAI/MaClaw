@@ -228,6 +228,33 @@ func TestSkillAdmissionIgnoresAWeakDocumentOverlap(t *testing.T) {
 	}
 }
 
+func TestSkillAdmissionSkipsOpenDocumentWave(t *testing.T) {
+	app, _ := newSkillExecutorWithEntries(t, weatherPDFTestSkill())
+	h := &IMMessageHandler{app: app}
+	wave := fullDocumentLoop(intent.LabelDocumentGenerate)
+	wave.Runtime.SemanticIntent.Reason = "session residue document"
+	if decision := h.skillAdmissionForTurn(wave, "生成新的pdf"); decision.Mode != skillAdmissionNone {
+		t.Fatalf("open PDF wave mode=%v, want none", decision.Mode)
+	}
+	office := fullDocumentLoop(intent.LabelOffice)
+	office.Runtime.SemanticIntent.Reason = "session residue document"
+	if decision := h.skillAdmissionForTurn(office, "改一下标题"); decision.Mode != skillAdmissionNone {
+		t.Fatalf("open office wave mode=%v, want none", decision.Mode)
+	}
+	// The same reason on a longer edit is still a document task. The surface
+	// gate is the short open-file wave, not the reason string by itself.
+	longEdit := "把前面已经写好的整份技术架构分析重新整理并生成一份新的 pdf"
+	if decision := h.skillAdmissionForTurn(wave, longEdit); decision.Mode != skillAdmissionRemote {
+		t.Fatalf("long document edit mode=%v, want remote", decision.Mode)
+	}
+	namedApp, _ := newSkillExecutorWithEntries(t, bookPDFTestSkill())
+	namedHandler := &IMMessageHandler{app: namedApp}
+	named := namedHandler.skillAdmissionForTurn(wave, "使用book-pdf skill 编写教程")
+	if named.Mode != skillAdmissionGuided || len(named.Guided) != 1 || named.Guided[0].Name != bookPDFTestSkill().Name {
+		t.Fatalf("named skill on an open document decision=%#v", named)
+	}
+}
+
 func TestSkillAdmissionSkipsLookups(t *testing.T) {
 	app, _ := newSkillExecutorWithEntries(t, paperTranslatorTestSkill(), weatherPDFTestSkill())
 	h := &IMMessageHandler{app: app}

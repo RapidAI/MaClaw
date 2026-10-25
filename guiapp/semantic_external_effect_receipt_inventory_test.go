@@ -39,7 +39,7 @@ func TestPublishedExternalEffectHostAdaptersHaveAReceiptBoundary(t *testing.T) {
 	var providers []tool.ProviderSpec
 	definitions := map[string]map[string]interface{}{}
 	schemas := map[string]map[string]interface{}{}
-	if err := appendClosedHostSemanticProviders(&providers, definitions, schemas, "desktop", h); err != nil {
+	if err := appendClosedHostSemanticProviders(&providers, definitions, schemas, "desktop", h, ""); err != nil {
 		t.Fatalf("publish host providers: %v", err)
 	}
 	if len(providers) == 0 {

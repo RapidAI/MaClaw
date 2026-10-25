@@ -122,7 +122,14 @@ func (a *App) fileCompanionWriteExportPDF(defaultName, title, subtitle, markdown
 			return "", errors.New(fileCompanionErrCannotOverwrite)
 		}
 	}
-	written, err := docgen.GenerateToFile(docgen.Spec{
+	return fileCompanionGenerateExportPDF(dest, title, subtitle, body, prefix)
+}
+
+// fileCompanionGenerateExportPDF writes one companion PDF at dest. The save
+// dialog and the cloud upload both call this, so a transcript does not gain a
+// second layout when the reader picks 导出到云盘.
+func fileCompanionGenerateExportPDF(dest, title, subtitle, body, prefix string) (string, error) {
+	return docgen.GenerateToFile(docgen.Spec{
 		Title:          title,
 		Subtitle:       subtitle,
 		Brand:          fileCompanionExportBrand,
@@ -131,10 +138,6 @@ func (a *App) fileCompanionWriteExportPDF(defaultName, title, subtitle, markdown
 		FileNamePrefix: prefix,
 		PaperSize:      "A4",
 	}, dest)
-	if err != nil {
-		return "", err
-	}
-	return written, nil
 }
 
 // Default name for the save dialog: "<document>-回答.pdf", kept inside the

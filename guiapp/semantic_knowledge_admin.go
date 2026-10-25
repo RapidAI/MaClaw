@@ -42,12 +42,12 @@ func semanticTrustedKnowledgeAdminInvocationSchema() map[string]interface{} {
 	return map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
-			"id":      map[string]interface{}{"type": "string"},
+			"id": map[string]interface{}{"type": "string"},
 			// An unlabelled string leaves the model to guess the spelling. The
 			// canonicalizer does not read enum, so the check via the shared
 			// contract stays the boundary and this is documentation.
-			"status":   map[string]interface{}{"type": "string", "enum": tool.KnowledgeAdminStatusOptions()},
-			"refresh":  map[string]interface{}{"type": "boolean"},
+			"status":  map[string]interface{}{"type": "string", "enum": tool.KnowledgeAdminStatusOptions()},
+			"refresh": map[string]interface{}{"type": "boolean"},
 		},
 		"required":             []string{},
 		"additionalProperties": false,
@@ -213,11 +213,12 @@ func trustedKnowledgeAdminContext(parent context.Context, op string) (context.Co
 }
 
 func listTrustedKnowledgeSources(ctx context.Context, store *knowledge.SQLiteStore, principalID string) ([]knowledge.Source, error) {
-	owner, lineage, includeEmpty := knowledgeOwnerScope(principalID)
+	owner, lineage, _ := knowledgeOwnerScope(principalID)
 	opts := knowledge.ListSourcesOptions{
 		OwnerID:           owner,
 		OwnerLineage:      lineage,
-		IncludeEmptyOwner: includeEmpty,
+		IncludeEmptyOwner: false,
+		UseMembership:     true,
 		IncludeDisabled:   true,
 		Limit:             semanticTrustedKnowledgeAdminListLimit,
 	}

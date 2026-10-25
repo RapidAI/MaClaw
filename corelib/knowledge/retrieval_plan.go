@@ -43,8 +43,8 @@ type knowledgeRetrievalDecision struct {
 // knowledgeRetrievalPlan decides the vector half of Search after lexical
 // retrieval has already run. auto keeps the historical heuristic: embed when
 // nothing matched, the caller asked for it, the query has no word boundaries,
-// or the best non-node lexical score is below 2. A strict name suppresses
-// embedding on every route, including an explicit vector request.
+// or the best non-node lexical score is below its type-adjusted threshold.
+// A strict name suppresses embedding on every route, including vector.
 func knowledgeRetrievalPlan(opts SearchOptions, results []SearchResult, hasEmbedder bool) knowledgeRetrievalDecision {
 	if !hasEmbedder || QuerySuppressesEmbedding(opts.Query) {
 		return knowledgeRetrievalDecision{}
@@ -58,13 +58,16 @@ func knowledgeRetrievalPlan(opts SearchOptions, results []SearchResult, hasEmbed
 		return knowledgeRetrievalDecision{runEmbedding: true, fuse: true}
 	default:
 		bestFTSScore := 0.0
+		bestResultType := ""
 		for _, result := range results {
 			if result.Score > bestFTSScore && result.ResultType != "node" {
 				bestFTSScore = result.Score
+				bestResultType = result.ResultType
 			}
 		}
 		needsEmbedding := len(results) == 0 || opts.PreferEmbedding || containsNoSpaceScriptRunes(opts.Query)
-		if !needsEmbedding && bestFTSScore < 2.0 {
+		threshold := 2.0 - searchResultTypeBonus(bestResultType)
+		if !needsEmbedding && bestFTSScore < threshold {
 			needsEmbedding = true
 		}
 		return knowledgeRetrievalDecision{runEmbedding: needsEmbedding, fuse: needsEmbedding}

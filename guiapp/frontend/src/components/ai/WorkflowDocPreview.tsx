@@ -4,7 +4,8 @@ import { normalizeWorkflowPhaseID, FALLBACK_NON_DOCUMENT_PHASE_IDS } from "./wor
 import { localizeText, normalizeLang } from "../../i18n";
 import { WORKFLOW_PHASE_META } from "./workflowPhaseMeta.generated";
 import { withMarkdownProseTheme } from "./markdownPreviewInk";
-import { canonicalMermaidDiagramKeyword } from "./AssistantMermaidDiagram";
+import { canonicalMermaidDiagramKeyword, paintMermaidKatexInk } from "./AssistantMermaidDiagram";
+import { typesetMermaidLabelMath } from "./mermaidLabelMath";
 
 // ── Mermaid (local npm package, no network required) ──
 
@@ -30,6 +31,8 @@ function mermaidThemeConfig(theme: DocPreviewTheme) {
         startOnLoad: false,
         theme: "base",
         securityLevel: "strict",
+        legacyMathML: true,
+        forceLegacyMathML: true,
         suppressErrorRendering: true,
         themeVariables: {
             background: theme.bg,
@@ -74,8 +77,8 @@ async function renderMermaid(
                     return;
                 }
                 m.initialize(mermaidThemeConfig(theme));
-                const { svg } = await m.render(id, code, container);
-                resolveRender(svg);
+                const { svg } = await m.render(id, typesetMermaidLabelMath(code), container);
+                resolveRender(paintMermaidKatexInk(svg, theme.text));
             } catch (error) {
                 rejectRender(error);
             }

@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -49,7 +50,7 @@ func TestShutdownSnapshotCreatesSlotForActiveLoop(t *testing.T) {
 	}
 }
 
-func TestShutdownSnapshotKeepsExistingPendingSlot(t *testing.T) {
+func TestShutdownSnapshotQueuesExistingPendingSlot(t *testing.T) {
 	h := newShutdownSnapshotHandler(t)
 	userID := desktopUserID
 	existing := &agent.UnfinishedTaskSlot{SlotID: "slot-existing", UserID: userID, LastTask: "old undecided task"}
@@ -61,11 +62,15 @@ func TestShutdownSnapshotKeepsExistingPendingSlot(t *testing.T) {
 	h.snapshotInterruptedSessionsForShutdown()
 
 	slot := h.memory.GetUnfinishedSlot(userID)
-	if slot == nil || slot.SlotID != "slot-existing" {
-		t.Fatalf("existing pending slot overwritten: %#v", slot)
+	if slot == nil || slot.LastTask != "new task" {
+		t.Fatalf("new shutdown slot = %#v", slot)
+	}
+	h.memory.DismissUnfinishedSlot(userID, slot.SlotID)
+	if slot = h.memory.GetUnfinishedSlot(userID); slot == nil || slot.SlotID != "slot-existing" {
+		t.Fatalf("existing pending slot was lost: %#v", slot)
 	}
 	if !loop.IsCancelled() {
-		t.Fatal("expected active loop to be cancelled even when slot creation is skipped")
+		t.Fatal("expected active loop to be cancelled")
 	}
 }
 
@@ -229,5 +234,97 @@ func TestAppExitSlotNeverShowsHintBanner(t *testing.T) {
 	resp, handled := h.maybeReturnUnfinishedSlotHint(IMUserMessage{UserID: desktopUserID, Text: "你好"}, "你好", false, explicitTaskSlotDecision{}, slot)
 	if handled || resp != nil {
 		t.Fatalf("app-exit slot produced a hint banner: handled=%v resp=%#v", handled, resp)
+	}
+}
+
+func TestShutdownSnapshotIncludesPreLoopTurn(t *testing.T) {
+	h := newShutdownSnapshotHandler(t)
+	loop := NewLoopContext("pre-loop", 3, nil)
+	h.beginInFlightTurn(desktopUserID, "continue the pre-loop task", loop)
+
+	h.snapshotInterruptedSessionsForShutdown()
+
+	slot := h.memory.GetUnfinishedSlot(desktopUserID)
+	if slot == nil || slot.LastTask != "continue the pre-loop task" {
+		t.Fatalf("pre-loop recovery slot = %#v", slot)
+	}
+	if !loop.IsCancelled() {
+		t.Fatal("pre-loop turn was not cancelled")
+	}
+	h.endInFlightTurn(desktopUserID, loop)
+	h.waitForInterruptedSessionsForShutdown()
+}
+
+func TestShutdownWaitIncludesPreLoopCleanup(t *testing.T) {
+	h := newShutdownSnapshotHandler(t)
+	loop := NewLoopContext("pre-loop", 3, nil)
+	h.beginInFlightTurn(desktopUserID, "save before exit", loop)
+	cleaned := make(chan struct{})
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		h.memory.Save(desktopUserID, []agent.ConversationEntry{{Role: "assistant", Content: "final progress"}})
+		h.endInFlightTurn(desktopUserID, loop)
+		close(cleaned)
+	}()
+
+	h.waitForInterruptedSessionsForShutdown()
+
+	select {
+	case <-cleaned:
+	default:
+		t.Fatal("shutdown returned before pre-loop cleanup completed")
+	}
+}
+
+func TestShutdownFlushReloadKeepsFinalLoopProgress(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "conversation.json")
+	memory := agent.NewPersistentConversationMemory(path)
+	h := &IMMessageHandler{memory: memory}
+	loop := NewLoopContext("shutdown-run", 3, nil)
+	h.setSessionLoopCtx(desktopUserID, loop)
+	h.getSessionLoop(desktopUserID).userText = "finish the report"
+	go func() {
+		<-loop.CancelC
+		memory.Save(desktopUserID, []agent.ConversationEntry{
+			{Role: "user", Content: "finish the report"},
+			{Role: "assistant", Content: "final progress before exit"},
+		})
+		loop.Done()
+	}()
+
+	h.snapshotInterruptedSessionsForShutdown()
+	h.waitForInterruptedSessionsForShutdown()
+	if err := memory.FlushNow(); err != nil {
+		t.Fatal(err)
+	}
+	memory.Stop()
+
+	reloaded := agent.NewPersistentConversationMemory(path)
+	defer reloaded.Stop()
+	if slot := reloaded.GetUnfinishedSlot(desktopUserID); slot == nil || slot.LastTask != "finish the report" {
+		t.Fatalf("reloaded shutdown slot = %#v", slot)
+	}
+	entries := reloaded.Load(desktopUserID)
+	if len(entries) != 2 || entries[1].Content != "final progress before exit" {
+		t.Fatalf("final loop progress was not durable: %#v", entries)
+	}
+}
+
+func TestShutdownWaitsForMultipleLoopsInParallel(t *testing.T) {
+	h := newShutdownSnapshotHandler(t)
+	const loops = 3
+	for i := 0; i < loops; i++ {
+		loop := NewLoopContext("parallel-shutdown", 3, nil)
+		h.setSessionLoopCtx("desktop-user:parallel-"+string(rune('a'+i)), loop)
+		go func(loop *LoopContext) {
+			time.Sleep(100 * time.Millisecond)
+			loop.Done()
+		}(loop)
+	}
+
+	started := time.Now()
+	h.waitForInterruptedSessionsForShutdown()
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("parallel shutdown wait took %v", elapsed)
 	}
 }

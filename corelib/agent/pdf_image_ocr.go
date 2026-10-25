@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -616,9 +617,8 @@ func ocrImagePDFPages(pages *pdfPageImageReader, startPage, maxPages, endPage in
 	if maxPages > OCRPDFPageBatchMax {
 		maxPages = OCRPDFPageBatchMax
 	}
-	// One page at a time. ExtractImagesFromAllPages would decode the whole
-	// scan on every 8-page call. When the raw parser cannot see the page
-	// tree, the open that counted the pages is the one that reads images.
+	// One page at a time. The restore reader is the one that keeps a single
+	// classic parse, because it draws every page. This window must not.
 	numPages, pageErr := pages.numPages()
 	if pageErr != nil || numPages < 1 {
 		return OCRPDFPageBatch{}, nil, errOfficeImageOCRUnavailable
@@ -730,7 +730,21 @@ type pdfPageImageReader struct {
 	pageRoot        *pdfPageNode
 	pageKidResolves int
 	pageCount       int
-	imageCollects   int
+	// countParses counts a ledongthuc reader opened only to learn the page
+	// count and then discarded. A restore reader leaves this at zero.
+	countParses   int
+	imageCollects int
+	// retainClassic keeps one raw parse for a reader that draws every page.
+	// An OCR window leaves it false and reads one page at a time, so the
+	// decompressed images of pages it did not ask for are not retained.
+	retainClassic bool
+	classicOnce   bool
+	classicReads  int
+	pageExtracts  int
+	classicImages map[int][]gopdf2.ExtractedImage
+	classicErr    error
+	textHas       map[int]bool
+	textFalls     int
 }
 
 // pdfPageNode is one lazy page-tree node. A Pages node keeps /Count and does
@@ -749,6 +763,11 @@ type pdfPageNode struct {
 	images        []gopdf2.ExtractedImage
 	imagesErr     error
 	imagesDone    bool
+	// ctm is the composed image matrix at each Do. GoPDF2 keeps only the last
+	// cm and resets it on Q, so a flip written as its own cm is lost there.
+	ctmDone bool
+	ctmOK   bool
+	ctm     map[string]scanCTM
 }
 
 func (r *pdfPageImageReader) extract(pageIndex int) (images []gopdf2.ExtractedImage, err error) {
@@ -763,16 +782,138 @@ func (r *pdfPageImageReader) extract(pageIndex int) (images []gopdf2.ExtractedIm
 	}
 	r.classify()
 	if !r.rawBlind {
-		images, err = gopdf2.ExtractImagesFromPage(r.data, pageIndex)
-		if err == nil {
-			return images, nil
+		if r.retainClassic {
+			if err = r.ensureClassicImages(); err != nil {
+				return nil, err
+			}
+			if !r.rawBlind {
+				if r.classicImages == nil {
+					return nil, nil
+				}
+				return r.classicImages[pageIndex], nil
+			}
+		} else {
+			r.pageExtracts++
+			images, err = gopdf2.ExtractImagesFromPage(r.data, pageIndex)
+			if err == nil {
+				return images, nil
+			}
+			if !rawPDFPageTreeMissing(err) {
+				return nil, err
+			}
+			r.rawBlind = true
 		}
-		if !rawPDFPageTreeMissing(err) {
-			return nil, err
-		}
-		r.rawBlind = true
 	}
 	return r.imagesFromPageTree(pageIndex)
+}
+
+// ensureClassicImages parses a classic PDF once. An empty result is a file
+// whose pages have no images. A raw parser that saw no pages at all is the
+// object-stream case and switches to the page tree.
+func (r *pdfPageImageReader) ensureClassicImages() error {
+	if r == nil {
+		return errOfficeImageOCRUnavailable
+	}
+	if r.classicOnce {
+		return r.classicErr
+	}
+	r.classicOnce = true
+	r.classicReads++
+	byPage, err := gopdf2.ExtractImagesFromAllPages(r.data)
+	if err != nil {
+		if rawPDFPageTreeMissing(err) {
+			r.rawBlind = true
+			return nil
+		}
+		r.classicErr = err
+		return err
+	}
+	if len(byPage) == 0 {
+		_, probeErr := gopdf2.ExtractImagesFromPage(r.data, 0)
+		if rawPDFPageTreeMissing(probeErr) {
+			r.rawBlind = true
+			return nil
+		}
+		if probeErr != nil {
+			r.classicErr = probeErr
+			return probeErr
+		}
+		return nil
+	}
+	r.classicImages = byPage
+	return nil
+}
+
+// pageHasExtractableText reports whether a 0-based page has selectable text.
+// The answer comes from the one ledongthuc reader on this value. A scan page
+// has none, and opening the file again per page only repeats that result.
+func (r *pdfPageImageReader) pageHasExtractableText(pageIndex int) bool {
+	if r == nil || pageIndex < 0 || len(r.data) == 0 {
+		return false
+	}
+	if r.textHas != nil {
+		if has, ok := r.textHas[pageIndex]; ok {
+			return has
+		}
+	}
+	has, ok := r.ledongthucPageHasText(pageIndex)
+	if !ok {
+		r.textFalls++
+		text, err := gopdf2.ExtractPageText(r.data, pageIndex)
+		has = err == nil && strings.TrimSpace(text) != ""
+	}
+	if r.textHas == nil {
+		r.textHas = make(map[int]bool)
+	}
+	r.textHas[pageIndex] = has
+	return has
+}
+
+func (r *pdfPageImageReader) ledongthucPageHasText(pageIndex int) (has bool, ok bool) {
+	defer func() {
+		if recover() != nil {
+			has, ok = false, false
+		}
+	}()
+	reader, err := r.pageTree()
+	if err != nil || reader == nil {
+		return false, false
+	}
+	if pageIndex < 0 || pageIndex >= reader.NumPage() {
+		return false, false
+	}
+	page := reader.Page(pageIndex + 1)
+	if page.V.IsNull() {
+		return false, true
+	}
+	if page.V.Key("Contents").Kind() == lpdf.Null {
+		return false, true
+	}
+	// Row text is the first look. An empty result is not the end of the
+	// check: ExtractPageText still reads the content stream, and that look
+	// finds text the row walk misses. Both use this same open.
+	rows, rowErr := page.GetTextByRow()
+	if rowErr != nil {
+		text, plainErr := page.GetPlainText(nil)
+		if plainErr == nil && strings.TrimSpace(text) != "" {
+			return true, true
+		}
+	} else {
+		for _, row := range rows {
+			for _, word := range row.Content {
+				if strings.TrimSpace(word.S) != "" {
+					return true, true
+				}
+			}
+		}
+	}
+	content := page.Content()
+	for _, item := range content.Text {
+		if strings.TrimSpace(item.S) != "" {
+			return true, true
+		}
+	}
+	return false, true
 }
 
 // plaintextHasPDFPageObject reports whether a classic page dictionary is
@@ -812,32 +953,218 @@ func (r *pdfPageImageReader) classify() {
 	r.rawBlind = !plaintextHasPDFPageObject(r.data)
 }
 
-func (r *pdfPageImageReader) numPages() (int, error) {
+func (r *pdfPageImageReader) numPages() (n int, err error) {
 	if r == nil {
 		return 0, errOfficeImageOCRUnavailable
 	}
 	if r.pageCount > 0 {
 		return r.pageCount, nil
 	}
+	defer func() {
+		if recover() != nil {
+			n, err = 0, errOfficeImageOCRUnavailable
+		}
+	}()
 	r.classify()
-	if !r.rawBlind {
-		n, err := gopdf2.GetSourcePDFPageCountFromBytes(r.data)
+	// The restore reader already keeps a ledongthuc page tree for the text
+	// check. Counting through it avoids a second reader that is thrown away.
+	// An OCR window does not keep that tree, so its count stays a one-shot open.
+	if !r.rawBlind && !r.retainClassic {
+		r.countParses++
+		n, err = gopdf2.GetSourcePDFPageCountFromBytes(r.data)
 		if err != nil || n < 1 {
 			return n, err
 		}
 		r.pageCount = n
 		return n, nil
 	}
-	reader, err := r.pageTree()
-	if err != nil || reader == nil {
+	reader, openErr := r.pageTree()
+	if openErr != nil || reader == nil {
 		return 0, errOfficeImageOCRUnavailable
 	}
-	n := reader.NumPage()
+	n = reader.NumPage()
 	if n < 1 {
 		return 0, errOfficeImageOCRUnavailable
 	}
 	r.pageCount = n
 	return n, nil
+}
+
+// pageSizes reads each page's MediaBox from this reader's page tree.
+// The box is inherited from a parent /Pages node when the page omits it.
+// Width and height match GetSourcePDFPageSizesFromBytes.
+func (r *pdfPageImageReader) pageSizes() map[int][2]float64 {
+	sizes := map[int][2]float64{}
+	if r == nil {
+		return sizes
+	}
+	n, err := r.numPages()
+	if err != nil || n < 1 {
+		return sizes
+	}
+	for page := 1; page <= n; page++ {
+		node, nodeErr := r.pageNode(page)
+		if nodeErr != nil || node == nil || node.dict.IsNull() {
+			continue
+		}
+		w, h, ok := inheritedMediaBoxSize(node.dict)
+		if !ok {
+			continue
+		}
+		sizes[page] = [2]float64{w, h}
+	}
+	return sizes
+}
+
+// directMediaBox is the only form the raw image extractor reads. An indirect
+// /MediaBox N 0 R does not match, so that extractor keeps the US Letter default.
+var directMediaBox = regexp.MustCompile(`/MediaBox\s*\[\s*[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s*\]`)
+
+// pageDictOmitsMediaBox reports that this page object has no direct MediaBox
+// array. The raw image extractor then treats the page as US Letter, so the
+// reported image top has to be shifted by the real page height. Key().IsNull()
+// follows an indirect reference and would hide that default. The inherited
+// box from a parent /Pages node does not count: that extractor never reads it.
+// Page-tree order is what matters; a /Type /Page earlier in the file is a
+// different object.
+func (r *pdfPageImageReader) pageDictOmitsMediaBox(pageIndex int) bool {
+	if r == nil || pageIndex < 0 {
+		return false
+	}
+	node, err := r.pageNode(pageIndex + 1)
+	if err != nil || node == nil || node.dict.IsNull() {
+		return false
+	}
+	// String keeps an indirect reference as "N G R" instead of the array it points at.
+	return !directMediaBox.MatchString(node.dict.String())
+}
+
+// scanCTM is one content-stream transformation, in PDF cm order a b c d e f.
+type scanCTM struct {
+	a, b, c, d, e, f float64
+}
+
+func scanCTMIdent() scanCTM { return scanCTM{a: 1, d: 1} }
+
+// mul applies m to the current matrix. ledongthuc stores cm the same way:
+// the operand is on the left, so a later cm runs before the one already saved.
+func (m scanCTM) mul(old scanCTM) scanCTM {
+	return scanCTM{
+		a: m.a*old.a + m.b*old.c,
+		b: m.a*old.b + m.b*old.d,
+		c: m.c*old.a + m.d*old.c,
+		d: m.c*old.b + m.d*old.d,
+		e: m.e*old.a + m.f*old.c + old.e,
+		f: m.e*old.b + m.f*old.d + old.f,
+	}
+}
+
+// composedImageCTM returns the matrix in force at each image Do.
+// Names are stored with and without the leading slash. A second call on this
+// page does not read the stream again.
+func (r *pdfPageImageReader) composedImageCTM(pageIndex int) (out map[string]scanCTM, ok bool) {
+	if r == nil || pageIndex < 0 {
+		return nil, false
+	}
+	node, err := r.pageNode(pageIndex + 1)
+	if err != nil || node == nil || node.dict.IsNull() {
+		return nil, false
+	}
+	if node.ctmDone {
+		return node.ctm, node.ctmOK
+	}
+	node.ctmDone = true
+	defer func() {
+		if recover() != nil {
+			node.ctm = nil
+			node.ctmOK = false
+			out = nil
+			ok = false
+		}
+	}()
+	contents := node.dict.Key("Contents")
+	if contents.IsNull() {
+		return nil, false
+	}
+	node.ctm = composeImageCTM(contents)
+	node.ctmOK = node.ctm != nil
+	return node.ctm, node.ctmOK
+}
+
+func composeImageCTM(contents lpdf.Value) (found map[string]scanCTM) {
+	defer func() {
+		if recover() != nil {
+			found = nil
+		}
+	}()
+	if contents.IsNull() {
+		return nil
+	}
+	ctm := scanCTMIdent()
+	var saved []scanCTM
+	found = map[string]scanCTM{}
+	lpdf.Interpret(contents, func(stk *lpdf.Stack, op string) {
+		args := popPDFStack(stk)
+		switch op {
+		case "q":
+			saved = append(saved, ctm)
+		case "Q":
+			if n := len(saved); n > 0 {
+				ctm = saved[n-1]
+				saved = saved[:n-1]
+			}
+		case "cm":
+			if len(args) != 6 {
+				return
+			}
+			ctm = (scanCTM{
+				a: args[0].Float64(),
+				b: args[1].Float64(),
+				c: args[2].Float64(),
+				d: args[3].Float64(),
+				e: args[4].Float64(),
+				f: args[5].Float64(),
+			}).mul(ctm)
+		case "Do":
+			if len(args) < 1 {
+				return
+			}
+			name := args[0].Name()
+			if name == "" {
+				return
+			}
+			found[name] = ctm
+			found["/"+name] = ctm
+		}
+	})
+	if len(found) == 0 {
+		return nil
+	}
+	return found
+}
+
+func popPDFStack(stk *lpdf.Stack) []lpdf.Value {
+	n := stk.Len()
+	args := make([]lpdf.Value, n)
+	for i := n - 1; i >= 0; i-- {
+		args[i] = stk.Pop()
+	}
+	return args
+}
+
+func inheritedMediaBoxSize(v lpdf.Value) (w, h float64, ok bool) {
+	for cur := v; !cur.IsNull(); cur = cur.Key("Parent") {
+		box := cur.Key("MediaBox")
+		if box.Kind() != lpdf.Array || box.Len() < 4 {
+			continue
+		}
+		llx := box.Index(0).Float64()
+		lly := box.Index(1).Float64()
+		urx := box.Index(2).Float64()
+		ury := box.Index(3).Float64()
+		return urx - llx, ury - lly, true
+	}
+	return 0, 0, false
 }
 
 func rawPDFPageTreeMissing(err error) bool {

@@ -214,14 +214,34 @@ func skillAdmissionVectorBaselineFor(emb embedding.Embedder) float64 {
 
 func admittedBindingForEntry(entry corelib.NLSkillEntry) admittedSkillBinding {
 	return admittedSkillBinding{
-		Alias:         skillAdmissionAlias(entry, map[string]bool{}),
-		Name:          strings.TrimSpace(entry.Name),
-		StableID:      agentservice.DynamicSkillStableID(entry),
-		Version:       strings.TrimSpace(entry.Version),
-		ContentDigest: agentservice.DynamicSkillContentDigest(entry),
-		Description:   skillAdmissionPublishedDescription(entry.Source, entry.Description),
-		Params:        skill.CompleteParamsForRunner(entry.Params, entry.Steps, entry.RequiredArgs),
+		Alias:            skillAdmissionAlias(entry, map[string]bool{}),
+		Name:             strings.TrimSpace(entry.Name),
+		StableID:         agentservice.DynamicSkillStableID(entry),
+		Version:          strings.TrimSpace(entry.Version),
+		ContentDigest:    agentservice.DynamicSkillContentDigest(entry),
+		Description:      skillAdmissionPublishedDescription(entry.Source, entry.Description),
+		Params:           skill.CompleteParamsForRunner(entry.Params, entry.Steps, entry.RequiredArgs),
+		DeclaredCaptures: declaredSkillCaptureNames(entry.Steps),
 	}
+}
+
+// declaredSkillCaptureNames is the skill's own capture contract. A step that
+// names a variable is a deliverable. Steps without a capture add nothing.
+func declaredSkillCaptureNames(steps []corelib.NLSkillStep) []string {
+	seen := map[string]bool{}
+	var names []string
+	for _, step := range steps {
+		for name := range step.Capture {
+			name = strings.TrimSpace(name)
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 func resetSkillAdmissionVecCache() {

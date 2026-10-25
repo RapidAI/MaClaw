@@ -3117,10 +3117,7 @@ func (c *coreAgentCallbacks) executeToolStructuredUnguarded(name, argsJSON strin
 			return agent.ToolExecutionResult{Result: "Error: IM file delivery is not initialized", Outcome: agent.ToolExecutionOutcomeError}
 		}
 		if strings.TrimSpace(name) == "send_to_im" {
-			args["forward_to_im"] = true
-			if strings.TrimSpace(agent.StringArg(args, "destination")) == "" {
-				args["destination"] = "im"
-			}
+			agent.ForceSendFileToIM(args)
 		}
 		resolvedPath, err := c.resolveWorkspacePath(agent.StringArg(args, "path"))
 		if err != nil {

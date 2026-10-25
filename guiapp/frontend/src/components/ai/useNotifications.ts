@@ -21,6 +21,8 @@ export interface AdminNotification {
   priority: "normal" | "important" | "urgent";
   is_read: boolean;
   created_at: string; // ISO8601
+  /** Set for a reading-group invite merged into the bell. Not a Hub notice id. */
+  groupInviteId?: string;
 }
 
 interface NotificationState {

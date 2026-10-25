@@ -2,15 +2,21 @@ import React from 'react'
 import { installFrontendIssueReporting } from './frontendIssueReport'
 import {createRoot} from 'react-dom/client'
 import './style.css'
-import App from './App'
-import FileCompanionWindow, { readFileCompanionBootFlag } from './components/filecompanion/FileCompanionWindow'
+import './App.css'
+import { readFileCompanionBootFlag } from './components/filecompanion/fileCompanionBootFlag'
 import { DialogProvider } from './components/CustomDialog'
 import { ToastProvider } from './components/Toast'
 import { KnowledgeImportProvider } from './components/settings/KnowledgeImportContext'
 import { installWindowDragHandler } from './utils/windowDrag'
 import { hideBootSplash } from './components/startup/hideBootSplash'
+import { installMermaidPdfRaster } from './components/ai/mermaidPdfRaster'
+
+const App = React.lazy(() => import('./App'))
+const FileCompanionWindow = React.lazy(() => import('./components/filecompanion/FileCompanionWindow'))
+const isFileCompanionWindow = readFileCompanionBootFlag()
 
 installWindowDragHandler()
+installMermaidPdfRaster()
 try { void fetch('/maclaw-boot/ping?stage=react'); } catch { /* WebView may not have fetch during tests */ }
 
 // Cancel the browser default for external file drags as early as possible.
@@ -85,9 +91,9 @@ let appRoot: ReturnType<typeof createRoot> | null = createRoot(container, {
 // container, broken JSX transform, etc.).
 let renderScheduled = false
 
-// The static splash in index.html owns the very first paint.  Once React has
-// been scheduled, hand off to EnvCheckSplash after the next compositor frame
-// so the React shell is ready before the static layer is removed.
+// The static splash in index.html owns the very first paint. Once React has
+// been scheduled, hand off to the React startup or lazy-loading surface after
+// the next compositor frame so the static layer never reveals a blank window.
 function scheduleBootSplashHandoff() {
     const remove = () => hideBootSplash()
     if (typeof window.requestAnimationFrame === 'function') {
@@ -104,7 +110,17 @@ try {
             <ToastProvider>
                 <KnowledgeImportProvider>
                     <DialogProvider>
-                        {readFileCompanionBootFlag() ? <FileCompanionWindow /> : <App />}
+                        <React.Suspense fallback={
+                            <div className="app-loading-shell" aria-busy="true">
+                                <div className="app-loading-card">
+                                    <p className="app-loading-status" role="status">
+                                        {localizeStartupText('Loading…', '正在加载…', '正在載入…')}
+                                    </p>
+                                </div>
+                            </div>
+                        }>
+                            {isFileCompanionWindow ? <FileCompanionWindow /> : <App />}
+                        </React.Suspense>
                     </DialogProvider>
                 </KnowledgeImportProvider>
             </ToastProvider>

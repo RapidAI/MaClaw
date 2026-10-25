@@ -373,6 +373,12 @@ func (s *HTTPServer) handleAdminDatabaseProfileUpsert(w http.ResponseWriter, r *
 	replaced := false
 	if existing, found := findDatabaseProfile(profiles, profile.ID); found {
 		profile = mergeDatabaseProfileUpdate(existing, profile)
+		// Rebinding the credential is a generation change: bump the schema
+		// version like rotate-secret does, so approval contexts and cursors
+		// minted against the old credential cannot survive the upsert.
+		if strings.TrimSpace(profile.SecretRef) != strings.TrimSpace(existing.SecretRef) {
+			profile.SchemaVersion++
+		}
 		replaced = true
 	}
 	if err := database.ValidateProfile(profile); err != nil {

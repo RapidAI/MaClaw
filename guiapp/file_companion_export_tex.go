@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -107,7 +108,9 @@ func (a *App) fileCompanionWriteTeX(markdown, defaultName, source string, refuse
 	}
 	fragment := fileCompanionMarkdownToTeX(body)
 	if err := os.WriteFile(dest, []byte(fragment), 0o644); err != nil {
-		return "", err
+		// Same wrapper as a PDF that cannot be written, so a full disk or a
+		// refused folder is told apart from a generic failure.
+		return "", fmt.Errorf("写入 PDF 失败: %w", err)
 	}
 	return dest, nil
 }

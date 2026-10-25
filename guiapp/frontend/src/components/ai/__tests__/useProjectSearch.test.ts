@@ -64,6 +64,9 @@ describe("useProjectSearch", () => {
             if (req.corpus !== "knowledge") return localSearchResult();
             return localSearchResult([{
                 knowledge: {
+                    // knowledgeHitID keys rows by node_id/row_id now; a bare
+                    // card_id stays off the default list (see unifiedHeaderSearch).
+                    node_id: "c1",
                     card_id: "c1",
                     card_title: "Gateway",
                     snippet: "edge topology",
@@ -86,7 +89,7 @@ describe("useProjectSearch", () => {
             limit: 8,
         });
         expect(result.current.knowledgeResults[0]).toMatchObject({
-            id: "c1",
+            id: "node:c1",
             title: "Gateway",
             sourceId: "s1",
             resultType: "card",

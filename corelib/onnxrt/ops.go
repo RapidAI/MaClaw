@@ -71,6 +71,37 @@ var opRegistry = map[string]opFunc{
 	"AveragePool":        opAveragePool,
 	"GlobalAveragePool":  opGlobalAveragePool,
 	"Resize":             opResize,
+	"Constant":           opConstant,
+	"ConstantOfShape":    opConstantOfShape,
+	"Cast":               opCast,
+	"Gather":             opGather,
+	"LayerNormalization": opLayerNormalization,
+	"Equal":              opEqual,
+	"Greater":            opGreater,
+	"Less":               opLess,
+	"And":                opAnd,
+	"Clip":               opClip,
+	"Cos":                opCos,
+	"Sin":                opSin,
+	"Log":                opLog,
+	"Max":                opMax,
+	"ReduceMax":          opReduceMax,
+	"ReduceMin":          opReduceMin,
+	"ReduceSum":          opReduceSum,
+	"GatherElements":     opGatherElements,
+	"GatherND":           opGatherND,
+	"GridSample":         opGridSample,
+	"ScatterElements":    opScatterElements,
+	"Split":              opSplit,
+	"Tile":               opTile,
+	"TopK":               opTopK,
+	"Trilu":              opTrilu,
+	"Exp":                opExp,
+	"ArgMax":             opArgMax,
+	"Where":              opWhere,
+	"Expand":             opExpand,
+	"Range":              opRange,
+	"Pad":                opPad,
 }
 
 // --- attribute helpers ---
@@ -225,6 +256,22 @@ func opSqrt(rc *runCtx, n *Node, args []*Tensor) ([]*Tensor, error) {
 	return unaryDispatch(rc, n, args, uSqrt, 0, 0)
 }
 
+func opSin(rc *runCtx, n *Node, args []*Tensor) ([]*Tensor, error) {
+	return unaryDispatch(rc, n, args, uSin, 0, 0)
+}
+
+func opCos(rc *runCtx, n *Node, args []*Tensor) ([]*Tensor, error) {
+	return unaryDispatch(rc, n, args, uCos, 0, 0)
+}
+
+func opLog(rc *runCtx, n *Node, args []*Tensor) ([]*Tensor, error) {
+	return unaryDispatch(rc, n, args, uLog, 0, 0)
+}
+
+func opExp(rc *runCtx, n *Node, args []*Tensor) ([]*Tensor, error) {
+	return unaryDispatch(rc, n, args, uExp, 0, 0)
+}
+
 func opErf(rc *runCtx, n *Node, args []*Tensor) ([]*Tensor, error) {
 	return unaryDispatch(rc, n, args, uErf, 0, 0)
 }
@@ -241,9 +288,30 @@ func opShape(rc *runCtx, n *Node, args []*Tensor) ([]*Tensor, error) {
 	if err := requireArgs(n, args, 1); err != nil {
 		return nil, err
 	}
-	out := NewInt(len(args[0].Shape))
-	for i, d := range args[0].Shape {
-		out.I64[i] = int64(d)
+	rank := len(args[0].Shape)
+	start := int(attrInt(n, "start", 0))
+	end := rank
+	if _, ok := n.Attrs["end"]; ok {
+		end = int(n.Attrs["end"].Int())
+	}
+	if start < 0 {
+		start += rank
+	}
+	if end < 0 {
+		end += rank
+	}
+	if start < 0 {
+		start = 0
+	}
+	if end > rank {
+		end = rank
+	}
+	if end < start {
+		end = start
+	}
+	out := NewInt(end - start)
+	for i := start; i < end; i++ {
+		out.I64[i-start] = int64(args[0].Shape[i])
 	}
 	return []*Tensor{out}, nil
 }
@@ -600,6 +668,12 @@ func opTranspose(rc *runCtx, n *Node, args []*Tensor) ([]*Tensor, error) {
 	} else {
 		out = rc.newFloat(n, 0, outShape...)
 	}
+	if data.DType != DInt64 {
+		if axis, ok := adjacentSwap(p); ok {
+			transposeAdjacent(out.F32, data.F32, data.Shape, axis)
+			return []*Tensor{out}, nil
+		}
+	}
 	nOut := out.NumElements()
 	idx := make([]int, rank)
 	off := 0
@@ -885,20 +959,30 @@ func opBatchNorm(rc *runCtx, n *Node, args []*Tensor) ([]*Tensor, error) {
 	out := rc.newFloat(n, 0, x.Shape...)
 	N := x.Shape[0]
 	spatial := numElements(x.Shape[2:])
+	relu := false
+	if e := epilogueFor(rc, n); e != nil && e.kind == EpiRelu {
+		relu = true
+	}
 	// precompute per-channel factors
 	factor := make([]float32, C)
+	shift := make([]float32, C)
 	for c := 0; c < C; c++ {
 		factor[c] = sf[c] / float32(math.Sqrt(float64(vf[c])+eps))
+		shift[c] = bf[c] - mf[c]*factor[c]
 	}
-	for nI := 0; nI < N; nI++ {
-		for c := 0; c < C; c++ {
-			base := (nI*C + c) * spatial
-			f := factor[c]
-			off := bf[c] - mf[c]*f
-			for s := 0; s < spatial; s++ {
-				out.F32[base+s] = xf[base+s]*f + off
-			}
+	apply := func(start, end int) {
+		for i := start; i < end; i++ {
+			base := i * spatial
+			affineInto(out.F32[base:base+spatial], xf[base:base+spatial], factor[i%C], shift[i%C], relu)
 		}
+	}
+	if spatial > 0 && N*C > 1 && N*C*spatial >= 8192 {
+		xt.ParallelRanges(N*C, apply)
+	} else if spatial > 0 {
+		apply(0, N*C)
+	}
+	if e := epilogueFor(rc, n); e != nil && e.kind != EpiRelu {
+		applyEpilogue(out.F32, e)
 	}
 	// Only the first output (Y) is meaningful at inference time.
 	return []*Tensor{out}, nil

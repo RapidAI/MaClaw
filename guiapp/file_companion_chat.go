@@ -282,7 +282,7 @@ func fileCompanionPrompt(name, ext string) string {
 	base := "你是文件伴读。只讨论当前打开的这一个文件：" + name + "。不要引用其他文件。用户没有要求生成新文件时，不要声称已经生成或发送了 PDF。"
 	switch strings.ToLower(ext) {
 	case ".pdf":
-		return base + "查看这份 PDF 可以用工具：pdf_read_pages 读指定页原文；pdf_render_page 裁出某一页上的插图（Figure / 图）和图注，不包含同页正文和表格；pdf_extract_images 提取文档内嵌位图。要看某一张图时传 figure（图号，如 1）。不传 figure 时，该页有图注就只返回裁好的图。只有用户明确要看整页版式时才传 full=true。不要为了展示一张图去要整页。工具生成的图在本轮从「图1」重新编号，和上一轮的图号无关。回答里写工具刚刚返回的那个「图N」，宿主会把这张原图放在回答下面展示给用户；不要沿用上一轮的编号，也不要自己加一。扫描页没有文字层时，pdf_read_pages 会先用本机 PP-OCRv6 识别再返回文字。不要安装其他识别引擎。"
+		return base + "查看这份 PDF 可以用工具：pdf_read_pages 读指定页原文；pdf_render_page 裁出某一页上的插图（Figure / 图）和图注，不包含同页正文和表格；pdf_extract_images 提取文档内嵌位图。要看某一张图时传 figure（图号，如 1）。不传 figure 时，该页有图注就只返回裁好的图。只有用户明确要看整页版式时才传 full=true。不要为了展示一张图去要整页。工具生成的图在本轮从「图1」重新编号，和上一轮的图号无关。回答里写工具刚刚返回的那个「图N」，宿主会把这张原图放在回答下面展示给用户；不要沿用上一轮的编号，也不要自己加一。扫描页没有文字层时，pdf_read_pages 会先用本机 PP-OCRv6 识别再返回文字。不要安装其他识别引擎。用户要把扫描版恢复成可以选中、可以搜索的 PDF 时，调用 pdf_restore。它保留扫描图，用本机 PP-OCRv6 和已经接入的公式模型在对应位置加上文字层，公式区域会裁出来识别成 LaTeX。不覆盖当前打开的文件。单次最多 16 页，没做完就再调用一次。只有 pdf_restore 返回了结果，才可以说已经生成。不要安装其他识别引擎。"
 	case ".xlsx":
 		return base + "不要使用工具。如果用户要求修改这个工作簿，只返回一个完整的 JSON 对象 {\"sheets\":[...]}，不要附加说明。宿主会在工具循环之外整本替换当前文件。只讨论内容时用普通文字回答，不要返回 sheets JSON。"
 	case ".pptx":
@@ -404,6 +404,62 @@ func (a *App) ClearFileCompanionChat(path string) error {
 	}
 	logFileCompanion("chat cleared session=%s", sessionID)
 	return nil
+}
+
+// fileCompanionSnapshotChat reads one companion transcript and the generation
+// a later save must still match. Both are taken under chatMu. A sync bumps
+// that generation and writes its transcript before releasing the same lock,
+// so this turn cannot keep the old messages and the new generation.
+func (a *App) fileCompanionSnapshotChat(userID string) ([]agent.ConversationEntry, uint64, bool) {
+	if a == nil {
+		return nil, 0, false
+	}
+	userID = strings.TrimSpace(userID)
+	if !fileCompanionToolsDisabled(userID) {
+		return nil, 0, false
+	}
+	st := a.companionRuntime()
+	st.chatMu.Lock()
+	defer st.chatMu.Unlock()
+	if st.chatDiscard != nil {
+		st.chatDiscard[userID] = false
+	}
+	gen := uint64(0)
+	if st.chatGen != nil {
+		gen = st.chatGen[userID]
+	}
+	var entries []agent.ConversationEntry
+	if a.imHandler != nil && a.imHandler.memory != nil {
+		entries = append([]agent.ConversationEntry(nil), a.imHandler.memory.Load(userID)...)
+	}
+	return entries, gen, true
+}
+
+// fileCompanionReplaceChat installs a transcript and retires a turn that
+// already read the previous one. The bump and the save share chatMu with
+// fileCompanionSnapshotChat. A turn cannot observe the new generation while
+// the old messages are still what Load returns.
+func (a *App) fileCompanionReplaceChat(userID string, entries []agent.ConversationEntry) bool {
+	if a == nil || a.imHandler == nil || a.imHandler.memory == nil {
+		return false
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return false
+	}
+	st := a.companionRuntime()
+	st.chatMu.Lock()
+	defer st.chatMu.Unlock()
+	if st.chatGen == nil {
+		st.chatGen = map[string]uint64{}
+	}
+	st.chatGen[userID]++
+	if st.chatDiscard == nil {
+		st.chatDiscard = map[string]bool{}
+	}
+	st.chatDiscard[userID] = true
+	a.imHandler.memory.Save(userID, entries)
+	return true
 }
 
 // fileCompanionCaptureChatGen records that the next companion turn may save.

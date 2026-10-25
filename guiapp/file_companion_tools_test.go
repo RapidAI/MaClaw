@@ -35,7 +35,7 @@ func TestFileCompanionClosedSurfaceToolsOnlyForPDF(t *testing.T) {
 	h := &IMMessageHandler{app: app}
 	userID := "file-companion:" + pdfDoc.SessionID
 	tools := h.fileCompanionClosedSurfaceTools(userID)
-	want := []string{fileCompanionToolReadPages, fileCompanionToolRenderPage, fileCompanionToolExtractImgs}
+	want := []string{fileCompanionToolReadPages, fileCompanionToolRenderPage, fileCompanionToolExtractImgs, fileCompanionToolRestore}
 	if got := agentLoopToolNamesForLog(tools); len(got) != len(want) {
 		t.Fatalf("pdf surface tools = %q, want %q", got, want)
 	} else {
@@ -383,7 +383,7 @@ func TestFileCompanionAuthorizerAdmitsTheClosedSurfaceOnLightProfile(t *testing.
 		}}},
 	}
 	light := agent.PromptProfileLight
-	for _, name := range []string{fileCompanionToolReadPages, fileCompanionToolRenderPage, fileCompanionToolExtractImgs} {
+	for _, name := range []string{fileCompanionToolReadPages, fileCompanionToolRenderPage, fileCompanionToolExtractImgs, fileCompanionToolRestore} {
 		if !cb.IsToolAllowed(name) {
 			t.Fatalf("light turn refuses %s", name)
 		}
@@ -861,7 +861,7 @@ func TestFileCompanionReplyMatchesToolRenderedFigure(t *testing.T) {
 
 func TestFileCompanionPromptDescribesPDFTools(t *testing.T) {
 	pdf := fileCompanionPrompt("报告.pdf", ".pdf")
-	if !strings.Contains(pdf, fileCompanionToolRenderPage) || !strings.Contains(pdf, "图N") || !strings.Contains(pdf, "裁出") || !strings.Contains(pdf, "full=true") {
+	if !strings.Contains(pdf, fileCompanionToolRenderPage) || !strings.Contains(pdf, "图N") || !strings.Contains(pdf, "裁出") || !strings.Contains(pdf, "full=true") || !strings.Contains(pdf, fileCompanionToolRestore) {
 		t.Fatalf("pdf prompt lost the tool contract:\n%s", pdf)
 	}
 	if !strings.Contains(pdf, "不要声称已经生成或发送了 PDF") {

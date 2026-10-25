@@ -431,7 +431,7 @@ const headingStyle: CSSProperties = {
     margin: 0,
     fontSize: "1rem",
     fontWeight: 600,
-    color: "var(--theme-text-primary, #1c2733)",
+    color: "var(--theme-text-primary, #526277)",
 };
 
 const warningStyle: CSSProperties = {
@@ -467,13 +467,13 @@ const sectionHeadingStyle: CSSProperties = {
     margin: 0,
     fontSize: "0.88rem",
     fontWeight: 600,
-    color: "var(--theme-text-primary, #1c2733)",
+    color: "var(--theme-text-primary, #526277)",
 };
 
 const sectionDescStyle: CSSProperties = {
     margin: 0,
     fontSize: "0.75rem",
-    color: "var(--theme-text-muted, #657384)",
+    color: "var(--theme-text-muted, #56677c)",
 };
 
 const searchContainerStyle: CSSProperties = {
@@ -484,10 +484,10 @@ const searchInputStyle: CSSProperties = {
     width: "100%",
     padding: "8px 12px",
     fontSize: "0.82rem",
-    border: "1px solid var(--theme-border, #d9e1ec)",
-    borderRadius: "var(--radius-md, 10px)",
+    border: "1px solid var(--theme-border, #c9ddf6)",
+    borderRadius: "var(--radius-md, 8px)",
     background: "var(--theme-surface, #ffffff)",
-    color: "var(--theme-text-primary, #1c2733)",
+    color: "var(--theme-text-primary, #526277)",
     outline: "none",
     boxSizing: "border-box",
 };
@@ -508,7 +508,7 @@ const searchResultsStyle: CSSProperties = {
     margin: 0,
     padding: 0,
     background: "var(--theme-surface, #ffffff)",
-    border: "1px solid var(--theme-border, #d9e1ec)",
+    border: "1px solid var(--theme-border, #c9ddf6)",
     borderTop: "none",
     borderRadius: "0 0 6px 6px",
     maxHeight: "180px",
@@ -528,12 +528,12 @@ const searchResultItemStyle: CSSProperties = {
 
 const userNameStyle: CSSProperties = {
     fontWeight: 500,
-    color: "var(--theme-text-primary, #1c2733)",
+    color: "var(--theme-text-primary, #526277)",
 };
 
 const userEmailStyle: CSSProperties = {
     fontSize: "0.72rem",
-    color: "var(--theme-text-muted, #657384)",
+    color: "var(--theme-text-muted, #56677c)",
 };
 
 const userListStyle: CSSProperties = {
@@ -561,14 +561,14 @@ const userItemHeaderStyle: CSSProperties = {
 
 const userItemNameStyle: CSSProperties = {
     fontWeight: 600,
-    color: "var(--theme-text-primary, #1c2733)",
+    color: "var(--theme-text-primary, #526277)",
     fontSize: "0.82rem",
 };
 
 const removeButtonStyle: CSSProperties = {
     border: "none",
     background: "transparent",
-    color: "var(--theme-danger, #c43d34)",
+    color: "var(--theme-danger, #dc1f25)",
     cursor: "pointer",
     fontSize: "0.68rem",
     fontWeight: 700,
@@ -587,17 +587,17 @@ const configLabelStyle: CSSProperties = {
     flexDirection: "column",
     gap: "3px",
     fontSize: "0.72rem",
-    color: "var(--theme-text-secondary, #44546a)",
+    color: "var(--theme-text-secondary, #546479)",
 };
 
 const configInputStyle: CSSProperties = {
     width: "80px",
     padding: "4px 8px",
     fontSize: "0.8rem",
-    border: "1px solid var(--theme-border, #d9e1ec)",
-    borderRadius: "var(--radius-md, 10px)",
+    border: "1px solid var(--theme-border, #c9ddf6)",
+    borderRadius: "var(--radius-md, 8px)",
     background: "var(--theme-surface, #ffffff)",
-    color: "var(--theme-text-primary, #1c2733)",
+    color: "var(--theme-text-primary, #526277)",
     outline: "none",
 };
 
@@ -612,7 +612,7 @@ const saveButtonStyle: CSSProperties = {
     padding: "8px 20px",
     fontSize: "0.82rem",
     fontWeight: 500,
-    background: "var(--theme-primary, #2f6fbc)",
+    background: "var(--theme-primary, #2e75cb)",
     color: "var(--theme-on-primary)",
     border: "none",
     borderRadius: "6px",

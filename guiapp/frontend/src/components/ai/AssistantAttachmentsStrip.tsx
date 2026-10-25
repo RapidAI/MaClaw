@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
-import { AIAssistantAttachmentPreviewDataURL } from "../../../wailsjs/go/main/App";
+import { AIAssistantAttachmentPreviewDataURL, AIAssistantFileTypeIconDataURL } from "../../../wailsjs/go/main/App";
 import { AttachmentImageThumbnail } from "./AttachmentImagePreview";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { isImageFilePath } from "./useAIAssistant";
@@ -18,6 +18,33 @@ interface AssistantAttachmentsStripProps {
     theme: Theme;
 }
 
+const fileTypeIconPromises = new Map<string, Promise<string>>();
+const resolvedFileTypeIcons = new Map<string, string>();
+
+export function resetAttachmentFileTypeIconCacheForTests(): void {
+    fileTypeIconPromises.clear();
+    resolvedFileTypeIcons.clear();
+}
+
+// Own-icon extensions match fileTypeIconUsesOwnIcon in guiapp/file_type_icon.go.
+const ownFileTypeIconExtensions = new Set(["", ".exe", ".lnk", ".ico", ".url", ".scr"]);
+
+// fileTypeIconExtension matches path/filepath.Ext: the suffix from the last dot
+// in the final path element, including a name that itself starts with a dot.
+function fileTypeIconExtension(filePath: string): string {
+    const name = filePath.split(/[\\/]/).pop() || filePath;
+    const dot = name.lastIndexOf(".");
+    if (dot < 0) return "";
+    return name.slice(dot).toLowerCase();
+}
+
+function fileTypeIconCacheKey(filePath: string): string {
+    const trimmed = filePath.trim();
+    const ext = fileTypeIconExtension(trimmed);
+    if (ownFileTypeIconExtensions.has(ext)) return trimmed.toLowerCase();
+    return ext;
+}
+
 function attachmentKindLabel(fileName: string, extension: string): string {
     const raw = (extension || fileName.match(/\.[^./\\]+$/)?.[0] || "").replace(/^\./, "").trim();
     if (!raw) return "FILE";
@@ -28,47 +55,36 @@ function attachmentFileName(filePath: string): string {
     return filePath.split(/[\/\\]/).pop() || filePath;
 }
 
-const visuallyHiddenStyle: CSSProperties = {
-    position: "absolute",
-    width: 1,
-    height: 1,
-    padding: 0,
-    margin: -1,
-    overflow: "hidden",
-    clip: "rect(0, 0, 0, 0)",
-    whiteSpace: "nowrap",
-    border: 0,
+function loadFileTypeIcon(filePath: string): Promise<string> {
+    const key = fileTypeIconCacheKey(filePath);
+    const ready = resolvedFileTypeIcons.get(key);
+    if (ready) return Promise.resolve(ready);
+    const cached = fileTypeIconPromises.get(key);
+    if (cached) return cached;
+    const pending = (async () => {
+        try {
+            return String(await AIAssistantFileTypeIconDataURL(filePath) || "");
+        } catch {
+            return "";
+        }
+    })();
+    fileTypeIconPromises.set(key, pending);
+    void pending.then(url => {
+        // A newer lookup, or a test reset, may have replaced this entry.
+        if (fileTypeIconPromises.get(key) !== pending) return;
+        if (url) resolvedFileTypeIcons.set(key, url);
+        fileTypeIconPromises.delete(key);
+    });
+    return pending;
+}
+
+const iconFrameStyle: CSSProperties = {
+    width: "32px",
+    height: "32px",
+    flexShrink: 0,
+    objectFit: "contain",
+    display: "block",
 };
-
-function textGraphemes(value: string): string[] {
-    // Segment by user-perceived characters so emoji sequences, combining marks,
-    // and CJK names remain intact when a filename is abbreviated. The desktop
-    // runtime supports Intl.Segmenter; keep the fallback defensive for older
-    // WebViews that expose Intl but not Segmenter.
-    const Segmenter = (Intl as typeof Intl & { Segmenter?: typeof Intl.Segmenter }).Segmenter;
-    if (typeof Segmenter === "function") {
-        return Array.from(new Segmenter().segment(value), ({ segment }) => segment);
-    }
-    return Array.from(value);
-}
-
-function abbreviateAttachmentFileName(fileName: string, maxLength = 42): string {
-    const fileNameCharacters = textGraphemes(fileName);
-    if (fileNameCharacters.length <= maxLength) return fileName;
-
-    const extensionIndex = fileName.lastIndexOf(".");
-    const extension = extensionIndex > 0 ? fileName.slice(extensionIndex) : "";
-    const stem = extension ? fileName.slice(0, extensionIndex) : fileName;
-    const extensionCharacters = textGraphemes(extension);
-    const stemCharacters = textGraphemes(stem);
-    const availableStemLength = maxLength - extensionCharacters.length - 3;
-
-    if (availableStemLength < 6) return `${fileNameCharacters.slice(0, Math.max(1, maxLength - 3)).join("")}...`;
-
-    const headLength = Math.ceil(availableStemLength * 0.62);
-    const tailLength = availableStemLength - headLength;
-    return `${stemCharacters.slice(0, headLength).join("")}...${stemCharacters.slice(-tailLength).join("")}${extension}`;
-}
 
 function AttachmentTypeBadge({ label, theme }: { label: string; theme: Theme }) {
     return (
@@ -78,10 +94,10 @@ function AttachmentTypeBadge({ label, theme }: { label: string; theme: Theme }) 
                 display: "inline-flex",
                 alignItems: "center",
                 justifyContent: "center",
-                width: "30px",
-                height: "30px",
+                width: "32px",
+                height: "32px",
                 flexShrink: 0,
-                borderRadius: "5px",
+                borderRadius: "6px",
                 background: theme.codeBlockBorder,
                 color: theme.pathColor,
                 fontSize: label.length > 3 ? "8px" : "10px",
@@ -95,21 +111,15 @@ function AttachmentTypeBadge({ label, theme }: { label: string; theme: Theme }) 
     );
 }
 
-function AttachmentVisual({ filePath, fileName, isImage, lang, theme }: {
+function AttachmentImageFallback({ filePath, fileName, lang, theme }: {
     filePath: string;
     fileName: string;
-    isImage: boolean;
     lang: string;
     theme: Theme;
 }) {
     const [preview, setPreview] = useState("");
     const [previewFailed, setPreviewFailed] = useState(false);
     useEffect(() => {
-        if (!isImage) {
-            setPreview("");
-            setPreviewFailed(false);
-            return;
-        }
         let active = true;
         setPreviewFailed(false);
         void AIAssistantAttachmentPreviewDataURL(filePath)
@@ -125,39 +135,71 @@ function AttachmentVisual({ filePath, fileName, isImage, lang, theme }: {
                 setPreviewFailed(true);
             });
         return () => { active = false; };
-    }, [filePath, isImage]);
+    }, [filePath]);
 
     if (preview) {
-        // Resolved bytes can still fail to decode in the <img>; fall back to
-        // the type badge instead of a broken-image glyph.
-        return <AttachmentImageThumbnail src={preview} filePath={filePath} fileName={fileName || "attached image"} lang={lang} theme={theme} title={filePath} frameStyle={{ width: "30px", height: "30px", borderRadius: "4px", flexShrink: 0, border: "none", background: "transparent" }} onImageError={() => { setPreview(""); setPreviewFailed(true); }} />;
+        return <AttachmentImageThumbnail src={preview} filePath={filePath} fileName={fileName || "attached image"} lang={lang} theme={theme} title={filePath} frameStyle={{ width: "32px", height: "32px", borderRadius: "4px", flexShrink: 0, border: "none", background: "transparent" }} onImageError={() => { setPreview(""); setPreviewFailed(true); }} />;
     }
-    if (isImage && !previewFailed) {
-        return <span aria-label={fileName} className="aas-thumb-slot" />;
+    if (!previewFailed) {
+        return <span aria-hidden="true" className="aas-thumb-slot" style={{ width: "32px", height: "32px" }} />;
     }
-    return <AttachmentTypeBadge label={isImage ? "IMG" : attachmentKindLabel(fileName, "")} theme={theme} />;
+    return <AttachmentTypeBadge label="IMG" theme={theme} />;
+}
+
+function AttachmentChipIcon({ filePath, fileName, isImage, lang, theme }: {
+    filePath: string;
+    fileName: string;
+    isImage: boolean;
+    lang: string;
+    theme: Theme;
+}) {
+    const cacheKey = fileTypeIconCacheKey(filePath);
+    const [iconURL, setIconURL] = useState<string | null>(() => resolvedFileTypeIcons.get(cacheKey) ?? null);
+    useEffect(() => {
+        let active = true;
+        const known = resolvedFileTypeIcons.get(cacheKey);
+        if (known) {
+            setIconURL(known);
+            return;
+        }
+        setIconURL(null);
+        void loadFileTypeIcon(filePath).then(url => {
+            if (active) setIconURL(url);
+        });
+        return () => { active = false; };
+    }, [cacheKey, filePath]);
+
+    if (iconURL) {
+        return <img data-testid="attachment-file-type-icon" src={iconURL} alt="" draggable={false} style={iconFrameStyle} />;
+    }
+    if (iconURL === null) {
+        return <span aria-hidden="true" className="aas-thumb-slot" style={{ width: "32px", height: "32px" }} />;
+    }
+    if (isImage) {
+        return <AttachmentImageFallback filePath={filePath} fileName={fileName} lang={lang} theme={theme} />;
+    }
+    return <AttachmentTypeBadge label={attachmentKindLabel(fileName, "")} theme={theme} />;
 }
 
 function attachmentRemoveLabel(lang: string, fileName: string): string {
     return lang.startsWith("en") ? `Remove ${fileName}` : `移除 ${fileName}`;
 }
 
-function attachmentItemStyle(theme: Theme): CSSProperties {
-    return { ...attachmentRowStyle(theme), alignItems: "flex-start" };
-}
-
 function attachmentRowStyle(theme: Theme): CSSProperties {
     return {
         display: "flex",
+        flexDirection: "row",
         alignItems: "center",
-        gap: "5px",
+        gap: "8px",
         minWidth: 0,
-        padding: "3px",
-        borderRadius: "6px",
+        maxWidth: "100%",
+        padding: "4px 4px 4px 6px",
+        borderRadius: "8px",
         background: theme.codeBlockBg,
         border: `1px solid ${theme.codeBlockBorder}`,
         color: theme.text,
-        fontSize: "12px",
+        fontSize: "13px",
+        lineHeight: 1.3,
     };
 }
 
@@ -182,6 +224,34 @@ function removeButtonStyle(theme: Theme, disabled = false): CSSProperties {
     };
 }
 
+function AttachmentChip({ filePath, fileName, isImage, lang, theme, disabled, onRemove }: {
+    filePath: string;
+    fileName: string;
+    isImage: boolean;
+    lang: string;
+    theme: Theme;
+    disabled: boolean;
+    onRemove: () => void;
+}) {
+    return (
+        <div className="ai-attachment-row" role="listitem" title={filePath} style={attachmentRowStyle(theme)}>
+            <AttachmentChipIcon filePath={filePath} fileName={fileName} isImage={isImage} lang={lang} theme={theme} />
+            <span className="ai-attachment-name" title={fileName} aria-label={fileName}>{fileName}</span>
+            <button
+                type="button"
+                className="ai-attachment-remove"
+                onClick={onRemove}
+                disabled={disabled}
+                style={removeButtonStyle(theme, disabled)}
+                title={attachmentRemoveLabel(lang, fileName)}
+                aria-label={attachmentRemoveLabel(lang, fileName)}
+            >
+                {"×"}
+            </button>
+        </div>
+    );
+}
+
 export function AssistantAttachmentsStrip({
     cancelPending,
     clearSelectedFile,
@@ -204,8 +274,9 @@ export function AssistantAttachmentsStrip({
             role="list"
             aria-label={lang.startsWith("en") ? "Attached files" : "已附加文件"}
             style={{
-                gap: "5px",
+                gap: "6px",
                 alignSelf: "flex-start",
+                flexShrink: 0,
                 minWidth: 0,
                 maxHeight: "120px",
                 overflowY: "auto",
@@ -217,52 +288,36 @@ export function AssistantAttachmentsStrip({
                 ["--ai-attachment-focus-color" as string]: t.btnColor,
             }}
         >
-            {pendingAttachments.length > 0 && (
-                pendingAttachments.map((att, index) => {
-                    const fileName = att.fileName || attachmentFileName(att.filePath);
-                    const displayName = abbreviateAttachmentFileName(fileName);
-                    return (
-                        <div key={att.filePath + "-" + index} className="ai-attachment-row" role="listitem" title={att.filePath} style={attachmentItemStyle(t)}>
-                            <AttachmentVisual filePath={att.filePath} fileName={fileName} isImage={att.isImage} lang={lang} theme={t} />
-                            <span title={att.filePath} aria-label={fileName} style={visuallyHiddenStyle}>{displayName}</span>
-                            <button
-                                type="button"
-                                className="ai-attachment-remove"
-                                onClick={() => setPendingAttachments(prev => prev.filter(candidate => candidate !== att))}
-                                disabled={cancelPending}
-                                style={removeButtonStyle(t, cancelPending)}
-                                title={attachmentRemoveLabel(lang, fileName)}
-                                aria-label={attachmentRemoveLabel(lang, fileName)}
-                            >
-                                {"×"}
-                            </button>
-                        </div>
-                    );
-                })
-            )}
-            {selectedFilePaths.length > 0 && (
-                selectedFilePaths.map((filePath: string, index: number) => {
-                    const fileName = attachmentFileName(filePath);
-                    const displayName = abbreviateAttachmentFileName(fileName);
-                    return (
-                        <div key={filePath + index} className="ai-attachment-row" role="listitem" title={filePath} style={attachmentItemStyle(t)}>
-                            <AttachmentVisual filePath={filePath} fileName={fileName} isImage={isImageFilePath(filePath)} lang={lang} theme={t} />
-                            <span title={filePath} aria-label={fileName} style={visuallyHiddenStyle}>{displayName}</span>
-                            <button
-                                type="button"
-                                className="ai-attachment-remove"
-                                onClick={() => removeSelectedFile ? removeSelectedFile(filePath) : clearSelectedFile?.()}
-                                disabled={cancelPending}
-                                style={removeButtonStyle(t, cancelPending)}
-                                title={attachmentRemoveLabel(lang, fileName)}
-                                aria-label={attachmentRemoveLabel(lang, fileName)}
-                            >
-                                {"×"}
-                            </button>
-                        </div>
-                    );
-                })
-            )}
+            {pendingAttachments.map((att, index) => {
+                const fileName = att.fileName || attachmentFileName(att.filePath);
+                return (
+                    <AttachmentChip
+                        key={att.filePath + "-" + index}
+                        filePath={att.filePath}
+                        fileName={fileName}
+                        isImage={att.isImage}
+                        lang={lang}
+                        theme={t}
+                        disabled={cancelPending}
+                        onRemove={() => setPendingAttachments(prev => prev.filter(candidate => candidate !== att))}
+                    />
+                );
+            })}
+            {selectedFilePaths.map((filePath: string, index: number) => {
+                const fileName = attachmentFileName(filePath);
+                return (
+                    <AttachmentChip
+                        key={filePath + index}
+                        filePath={filePath}
+                        fileName={fileName}
+                        isImage={isImageFilePath(filePath)}
+                        lang={lang}
+                        theme={t}
+                        disabled={cancelPending}
+                        onRemove={() => removeSelectedFile ? removeSelectedFile(filePath) : clearSelectedFile?.()}
+                    />
+                );
+            })}
         </div>
     );
 }

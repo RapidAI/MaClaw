@@ -50,6 +50,29 @@ func TestCodegraphMCPSpecsUsesExploreForAnArea(t *testing.T) {
 	}
 }
 
+func TestCodegraphFileArgsDropDotSlash(t *testing.T) {
+	specs := codegraphMCPSpecs("file_symbols", `./snake/src/Game.cpp`, `./snake/src/Game.cpp`, "", 0)
+	if len(specs) != 1 || specs[0].Args["file"] != "snake/src/Game.cpp" || specs[0].Args["symbolsOnly"] != true {
+		t.Fatalf("file args = %#v", specs)
+	}
+	pinned := codegraphMCPSpecs("callers", "update", "Find callers of update", `.\snake\src\Game.cpp`, 0)
+	if pinned[0].Args["file"] != "snake/src/Game.cpp" {
+		t.Fatalf("pin = %#v", pinned[0].Args)
+	}
+	rootPin := codegraphPinFile(".")
+	if rootPin != "." {
+		t.Fatalf("project root pin = %q", rootPin)
+	}
+	cmds := codegraphCommandList("file_symbols", `./snake/src/Game.cpp`, `./snake/src/Game.cpp`, "")
+	if len(cmds) != 1 || cmds[0][len(cmds[0])-1] != "snake/src/Game.cpp" {
+		t.Fatalf("cli = %#v", cmds)
+	}
+	outside := codegraphMCPSpecs("callers", "update", "Find callers of update", "../snake/src/Game.cpp", 0)
+	if outside[0].Args["file"] != nil {
+		t.Fatalf("escaped pin = %#v", outside[0].Args)
+	}
+}
+
 func TestCodegraphExcerptDefinesIgnoresStaleSlice(t *testing.T) {
 	stale := "1247\tif (step()) {\n1248\t    drawScene(mem);\n1249\t}\n"
 	if codegraphExcerptDefines(stale, "drawScene") {
@@ -120,10 +143,32 @@ func TestCodegraphExcerptDefinesIgnoresStaleSlice(t *testing.T) {
 	if !ok || strings.Contains(toldFull, "Read them directly") || strings.Contains(toldFull, "were edited since the last index sync") || !strings.Contains(toldFull, "fill(dc)") {
 		t.Fatalf("refreshed explore kept the read instruction: %q ok=%v", toldFull, ok)
 	}
+	dotted := strings.Replace(told, "- snake.cpp (edited", "- ./Snake.CPP (edited", 1)
+	dottedFull, ok := codegraphMCPRepair(dir, dotted, "", "")
+	if !ok || strings.Contains(dottedFull, "Read them directly") || strings.Contains(dottedFull, "were edited since the last index sync") || strings.Contains(dottedFull, "old()") || !strings.Contains(dottedFull, "fill(dc)") {
+		t.Fatalf("dotted stale banner stayed after refresh: %q ok=%v", dottedFull, ok)
+	}
 	other := strings.Replace(short, "- snake.cpp (edited", "- extra.go (edited", 1)
 	keptOther, _ := codegraphMCPRepair(dir, other, "", "")
 	if !strings.Contains(keptOther, "old()") {
 		t.Fatalf("unrelated banner replaced the slice: %s", keptOther)
+	}
+}
+
+func TestCodegraphStaleFileMatchesCleanPath(t *testing.T) {
+	banner := "⚠️ Some files referenced below were edited since the last index sync — their codegraph entries may be stale:\n  - ./snake/src/Old.cpp (edited 10ms ago, pending sync)\n"
+	if !codegraphMCPStaleFile(banner, "snake/src/Old.cpp") || !codegraphMCPStaleFile(banner, `snake\src\Old.cpp`) || !codegraphMCPStaleFile(banner, "Snake/Src/Old.cpp") {
+		t.Fatal("cleaned stale path did not match")
+	}
+	if codegraphMCPStaleFile(banner, "Old.cpp") || codegraphMCPStaleFile(banner, "snake/src/Old.cpp.bak") || codegraphMCPStaleFile(banner, "snake/src/Old") {
+		t.Fatal("a shorter or longer path matched the stale file")
+	}
+	mixed := strings.Replace(banner, "./snake/src/Old.cpp", `.\Snake\Src\Old.cpp`, 1)
+	if !codegraphMCPStaleFile(mixed, "snake/src/Old.cpp") {
+		t.Fatal("backslash banner did not match")
+	}
+	if codegraphMCPStaleFile("no banner", "snake/src/Old.cpp") {
+		t.Fatal("a result without the stale banner matched a path")
 	}
 }
 

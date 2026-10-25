@@ -29,6 +29,11 @@ func StructuredPreview(toolName, content string, limit int) string {
 	}
 
 	tool := strings.ToLower(strings.TrimSpace(toolName))
+	if tool == "code_navigation" {
+		if p := PreviewCodeNavigation(content, limit); p != "" {
+			return p
+		}
+	}
 	switch {
 	case tool == "bash" || tool == "get_session_output" ||
 		strings.HasPrefix(tool, "ssh") || tool == "run_terminal_command":

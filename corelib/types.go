@@ -1110,9 +1110,11 @@ type MaclawLLMConfig struct {
 	// (none|minimal|low|medium|high). Empty = provider default.
 	// Set by cost-route Phase 3 when MACLAW_COST_ROUTE=on.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
-	// ThinkingMode controls DeepSeek-style request body thinking object:
-	// "" = auto (existing IsDeepSeekThinkingModeModel default),
-	// "enabled" | "disabled" for explicit override (cost-route Phase 3).
+	// ThinkingMode controls the request thinking switch:
+	// "" = auto (provider default), "enabled" | "disabled" for an explicit
+	// override. User-facing levels low/high/max/none are applied before the
+	// request is built and land here as enabled or disabled, with the depth
+	// in ReasoningEffort.
 	ThinkingMode string `json:"thinking_mode,omitempty"`
 
 	// Temperature is an optional sampling temperature sent as the request-body
@@ -1609,21 +1611,33 @@ func zhipuCodingProviderNameForID(providers []MaclawLLMProvider, providerID stri
 }
 
 // IsAlwaysOnThinkingModel reports whether the selected model rejects
-// thinking.type=disabled. GLM-5.3 always thinks; sending disabled fails.
+// thinking.type=disabled. GLM-5.3, GLM-5.3-Flash, and GLM-5.3-FlashX always
+// think; Zhipu answers HTTP 400 [1210] and requires reasoning_effort
+// low, high, or max.
 func IsAlwaysOnThinkingModel(cfg MaclawLLMConfig) bool {
-	return glmModelID(cfg) == strings.ToLower(ZhipuCodingDefaultModel)
-}
-
-// GLMFlashThinksByDefault reports GLM flash checkpoints that think when an
-// Anthropic request omits the thinking block, and that accept type=disabled.
-// GLM-5.3 itself is not in this set: it rejects disabled.
-func GLMFlashThinksByDefault(cfg MaclawLLMConfig) bool {
-	switch glmModelID(cfg) {
-	case "glm-5.3-flash", "glm-5.3-flashx":
-		return true
-	default:
+	id := glmModelID(cfg)
+	// OpenCode Zen's glm-5.3-flash-free is a different checkpoint. It rejects
+	// thinking fields, so the Zhipu always-on prefix must not claim it.
+	if strings.HasSuffix(id, "-free") {
 		return false
 	}
+	return id == "glm-5.3" || strings.HasPrefix(id, "glm-5.3-")
+}
+
+// GLMSupportsReasoningEffort reports GLM-5.2 and newer checkpoints whose
+// thinking depth is reasoning_effort. GLM-5.3 and its flash checkpoints
+// accept only low, high, and max. GLM-5.2 also accepts none.
+func GLMSupportsReasoningEffort(cfg MaclawLLMConfig) bool {
+	id := glmModelID(cfg)
+	return id == "glm-5.2" || strings.HasPrefix(id, "glm-5.2-") || IsAlwaysOnThinkingModel(cfg)
+}
+
+// GLMFlashThinksByDefault used to mean GLM flash checkpoints think when an
+// Anthropic request omits the thinking block and still accept type=disabled.
+// Those checkpoints now reject disabled the same way GLM-5.3 does. Callers
+// keep the helper so they stop sending an explicit disable.
+func GLMFlashThinksByDefault(cfg MaclawLLMConfig) bool {
+	return false
 }
 
 func glmModelID(cfg MaclawLLMConfig) string {

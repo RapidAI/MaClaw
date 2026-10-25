@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -97,6 +98,47 @@ func TestGroundCallsOpenAICompatibleModel(t *testing.T) {
 	}
 	if !sawImage {
 		t.Fatal("the screenshot must be sent to the grounder")
+	}
+}
+
+func TestGroundRetriesWhenThinkingOffIsRejected(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		n := calls.Add(1)
+		thinking, _ := body["thinking"].(map[string]any)
+		if n == 1 {
+			if thinking["type"] != "disabled" {
+				t.Errorf("first thinking = %#v, want disabled", body["thinking"])
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"该模型始终思考，不支持关闭思考；请使用 low、high 或 max。"}}`))
+			return
+		}
+		if thinking["type"] != "enabled" {
+			t.Errorf("retry thinking = %#v, want enabled", body["thinking"])
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"x\":3,\"y\":4}"}}]}`))
+	}))
+	defer srv.Close()
+
+	cfg := corelib.MaclawLLMConfig{
+		URL: srv.URL, Key: "test-key", Model: "ground-thinker", Protocol: "openai", ThinkingMode: "disabled",
+	}
+	res, err := Ground(context.Background(), cfg, srv.Client(), "QUJD", "image/png", 100, 100, "the OK button", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.X != 3 || res.Y != 4 {
+		t.Fatalf("res=%+v", res)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("calls = %d, want 2", calls.Load())
 	}
 }
 

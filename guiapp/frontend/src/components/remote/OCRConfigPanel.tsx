@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
-import { CheckOCRModel, DownloadOCRModel, GetOCREnabled, SetOCREnabled, SetOCRModelTier } from '../../../wailsjs/go/main/App';
-import { EventsOff, EventsOn } from '../../../wailsjs/runtime';
+import { CheckFormulaModel, CheckOCRModel, DownloadFormulaModel, DownloadOCRModel, GetFormulaEnabled, GetOCREnabled, SetFormulaEnabled, SetOCREnabled, SetOCRModelTier } from '../../../wailsjs/go/main/App';
+import { EventsOn } from '../../../wailsjs/runtime';
 import { ModelStatusBox } from './ModelStatusBox';
 
 type Props = { lang: string };
 
-// OCRConfigPanel manages the local PP-OCRv6 detection/recognition models
-// used for screen text extraction (computer use, GUI automation). It mirrors
-// the ASR/Diarization panels: toggle + tier selector + download state driven
-// by the 'ocr-download-progress' backend event.
+// OCRConfigPanel manages the local PP-OCRv6 models and the FormulaNet model
+// used by ocr_recognize (mode=formula). Download state comes from the
+// 'ocr-download-progress' and 'formula-download-progress' events.
 export function OCRConfigPanel({ lang }: Props) {
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
         lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
@@ -22,6 +21,14 @@ export function OCRConfigPanel({ lang }: Props) {
     const [total, setTotal] = useState(0);
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(true);
+    const [formulaEnabled, setFormulaEnabled] = useState(true);
+    const [formulaExists, setFormulaExists] = useState(false);
+    const [formulaSize, setFormulaSize] = useState(0);
+    const [formulaDownloading, setFormulaDownloading] = useState(false);
+    const [formulaProgress, setFormulaProgress] = useState(0);
+    const [formulaDownloaded, setFormulaDownloaded] = useState(0);
+    const [formulaTotal, setFormulaTotal] = useState(0);
+    const [formulaError, setFormulaError] = useState('');
 
     const tierOptions = [
         { id: 'tiny', en: 'Tiny (~6MB, fastest)', zh: 'Tiny（~6MB，最快）', zhHant: 'Tiny（~6MB，最快）' },
@@ -35,25 +42,51 @@ export function OCRConfigPanel({ lang }: Props) {
         setSize(info.size || 0);
         if (info.tier) setTier(info.tier);
     }, []);
+    const refreshFormula = useCallback(async () => {
+        const info: any = await CheckFormulaModel();
+        setFormulaExists(!!info.exists);
+        setFormulaSize(info.size || 0);
+    }, []);
 
     useEffect(() => {
-        Promise.all([refresh(), GetOCREnabled().then(setEnabled)]).catch(() => {}).finally(() => setLoading(false));
-    }, [refresh]);
+        Promise.all([
+            refresh(),
+            refreshFormula(),
+            GetOCREnabled().then(setEnabled),
+            GetFormulaEnabled().then(setFormulaEnabled),
+        ]).catch(() => {}).finally(() => setLoading(false));
+    }, [refresh, refreshFormula]);
 
     useEffect(() => {
         const handler = (data: any) => {
             if (data.error) { setError(data.error); setDownloading(false); return; }
+            setError('');
             const pct = data.percent || 0;
             setProgress(pct); setDownloaded(data.downloaded || 0); setTotal(data.total || 0);
-            if (pct > 0 && pct < 100) setDownloading(true);
+            if ((data.total || 0) > 0 && pct < 100) setDownloading(true);
             if (pct >= 100) {
                 setDownloading(false);
                 void refresh();
             }
         };
-        EventsOn('ocr-download-progress', handler);
-        return () => { EventsOff('ocr-download-progress'); };
-    }, [refresh]);
+        const stopOCR = EventsOn('ocr-download-progress', handler);
+        const formulaHandler = (data: any) => {
+            if (data.error) { setFormulaError(data.error); setFormulaDownloading(false); return; }
+            setFormulaError('');
+            const pct = data.percent || 0;
+            setFormulaProgress(pct); setFormulaDownloaded(data.downloaded || 0); setFormulaTotal(data.total || 0);
+            if ((data.total || 0) > 0 && pct < 100) setFormulaDownloading(true);
+            if (pct >= 100) {
+                setFormulaDownloading(false);
+                void refreshFormula();
+            }
+        };
+        const stopFormula = EventsOn('formula-download-progress', formulaHandler);
+        return () => {
+            stopOCR?.();
+            stopFormula?.();
+        };
+    }, [refresh, refreshFormula]);
 
     const toggle = async (next: boolean) => {
         setEnabled(next); setError('');
@@ -82,6 +115,31 @@ export function OCRConfigPanel({ lang }: Props) {
         setDownloading(true); setProgress(0); setDownloaded(0); setTotal(0); setError('');
         try { await DownloadOCRModel(); await refresh(); } catch (e: any) {
             setError(prev => prev || (e?.message || String(e))); setDownloading(false);
+        }
+    };
+    const toggleFormula = async (next: boolean) => {
+        setFormulaEnabled(next); setFormulaError('');
+        if (next && !formulaExists) setFormulaDownloading(true);
+        if (!next) setFormulaDownloading(false);
+        try {
+            await SetFormulaEnabled(next);
+            if (next) {
+                const info: any = await CheckFormulaModel();
+                const present = !!info?.exists;
+                setFormulaExists(present);
+                setFormulaSize(info?.size || 0);
+                // The files may have finished downloading while the switch was
+                // off. That run does not start again, so drop the spinner.
+                if (present) setFormulaDownloading(false);
+            }
+        } catch (e: any) {
+            setFormulaEnabled(!next); setFormulaDownloading(false); setFormulaError(e?.message || String(e));
+        }
+    };
+    const downloadFormula = async () => {
+        setFormulaDownloading(true); setFormulaProgress(0); setFormulaDownloaded(0); setFormulaTotal(0); setFormulaError('');
+        try { await DownloadFormulaModel(); await refreshFormula(); } catch (e: any) {
+            setFormulaError(prev => prev || (e?.message || String(e))); setFormulaDownloading(false);
         }
     };
 
@@ -116,5 +174,16 @@ export function OCRConfigPanel({ lang }: Props) {
             'PP-OCRv6 在本機識別截圖中的文字，用於電腦操作與介面自動化。當主模型支援圖片輸入時，優先使用模型自身的多模態視覺識別，OCR 作為兜底；不支援圖片的模型則由本引擎識別。預設啟用，模型從 HuggingFace 或 Hub 鏡像下載。切換檔位時，若新檔位模型缺失會在背景自動下載。'
         )}</p>
         {enabled && <ModelStatusBox exists={exists} downloading={downloading} size={size} progress={progress} downloaded={downloaded} total={total} error={error} onDownload={() => void download()} onRetry={() => void download()} accentColor="var(--theme-success)" t={t} />}
+        <h4 className="model-config-heading model-config-heading--success">{t('Formula recognition', '公式识别', '公式識別')}</h4>
+        <div className="model-config-toggle-row"><label className="model-config-check">
+            <input type="checkbox" checked={formulaEnabled} onChange={e => void toggleFormula(e.target.checked)} />
+            {t('Enable formula recognition', '启用公式识别', '啟用公式識別')}
+        </label></div>
+        <p className="model-config-copy">{t(
+            'FormulaNet reads one printed formula image into LaTeX, fully on-device. Call it from the OCR tool with mode=formula (one PNG, JPEG, or GIF). The model downloads from the GitHub release, then from your Hub mirror. It is enabled by default.',
+            'FormulaNet 在本地把一张印刷公式图片识别成 LaTeX。在 OCR 工具 ocr_recognize 里传 mode=formula（一张 PNG、JPEG 或 GIF）。模型先从 GitHub Release 下载，失败后再走 Hub。默认启用。',
+            'FormulaNet 在本機把一張印刷公式圖片識別成 LaTeX。在 OCR 工具 ocr_recognize 裡傳 mode=formula（一張 PNG、JPEG 或 GIF）。模型先從 GitHub Release 下載，失敗後再走 Hub。預設啟用。'
+        )}</p>
+        {formulaEnabled && <ModelStatusBox exists={formulaExists} downloading={formulaDownloading} size={formulaSize} progress={formulaProgress} downloaded={formulaDownloaded} total={formulaTotal} error={formulaError} onDownload={() => void downloadFormula()} onRetry={() => void downloadFormula()} onRedownload={() => void downloadFormula()} accentColor="var(--theme-success)" t={t} />}
     </div>;
 }

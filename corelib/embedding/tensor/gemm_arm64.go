@@ -64,7 +64,18 @@ func multiDot2DualB(out *[4]float32, a, b0, b1 []float32, K int) {
 	}
 }
 
+// useTripleK is every width the fused NEON triple kernel covers. That kernel
+// keeps each A chunk in register across three B columns. The old dual-plus-one
+// reload stays for the short tail widths.
+func useTripleK(K int) bool {
+	return K >= 16 && K%4 == 0
+}
+
 func multiDot4TripleB(out *[12]float32, a, b0, b1, b2 []float32, K int) {
+	if K >= 4 && len(a) >= 4*K && len(b0) >= K && len(b1) >= K && len(b2) >= K {
+		multiDot4TripleBNEON(out, &a[0], &b0[0], &b1[0], &b2[0], K)
+		return
+	}
 	var d8 [8]float32
 	var d4 [4]float32
 	multiDot4DualB(&d8, a, b0, b1, K)
@@ -73,6 +84,9 @@ func multiDot4TripleB(out *[12]float32, a, b0, b1, b2 []float32, K int) {
 	out[4], out[5], out[6], out[7] = d8[4], d8[5], d8[6], d8[7]
 	out[8], out[9], out[10], out[11] = d4[0], d4[1], d4[2], d4[3]
 }
+
+//go:noescape
+func multiDot4TripleBNEON(out *[12]float32, a, b0, b1, b2 *float32, K int)
 
 // MultiDot4TripleB is the public API for 4 A x 3 B micro-kernel.
 func MultiDot4TripleB(out *[12]float32, a, b0, b1, b2 []float32, K int) {

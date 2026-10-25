@@ -87,6 +87,53 @@ func TestReviewedHostDocumentReadExecutesPagingAndRejectsPathMapping(t *testing.
 	}
 }
 
+func TestReviewedHostDocumentReadAcceptsMOBI(t *testing.T) {
+	raw := []byte("not-a-book")
+	inputs, err := reviewedHostDocumentInputsForTurn("root", "turn", "user", []agent.MessageAttachment{{
+		FileName: "book.mobi",
+		MimeType: "application/octet-stream",
+		Data:     base64.StdEncoding.EncodeToString(raw),
+	}})
+	if err != nil || len(inputs) != 1 || inputs[0].Format != DocumentFormatMOBI || inputs[0].Suffix != ".mobi" {
+		t.Fatalf("inputs=%#v err=%v", inputs, err)
+	}
+	unnamed, err := reviewedHostDocumentInputsForTurn("root", "turn", "user", []agent.MessageAttachment{{
+		FileName: "file",
+		MimeType: "application/x-mobipocket-ebook",
+		Data:     base64.StdEncoding.EncodeToString(raw),
+	}})
+	if err != nil || len(unnamed) != 1 || unnamed[0].Format != DocumentFormatMOBI || unnamed[0].Suffix != ".mobi" || unnamed[0].FileName != "document.mobi" {
+		t.Fatalf("unnamed=%#v err=%v", unnamed, err)
+	}
+	registry, err := NewReviewedDynamicCapabilityRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &fakeHostDocumentReader{result: "mobi body"}
+	catalog, lifecycle, err := prepareReviewedDynamicSemanticCatalog(registry, nil, nil, DynamicCatalogLifecycle{}, reviewedHostOwnedServices{DocumentRead: reader})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := coretool.NewToolCatalog(registry).PublishWithCoverage(catalog.Providers, lifecycle.Coverage, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := coretool.NewToolPlanner(registry).Plan(coretool.RouteRequest{
+		RootTaskID: "task", TurnID: "turn", Snapshot: snapshot,
+		Needs: []coretool.CapabilityNeed{{
+			ID: "doc", Capability: CapabilityDocumentRead, Required: true,
+			Qualifiers: map[string]string{QualifierDocumentFormat: DocumentFormatMOBI},
+		}},
+		Facts: reviewedHostDocumentFacts(inputs),
+	})
+	if err != nil || len(plan.Selections) != 1 || len(plan.Unmet) != 0 {
+		t.Fatalf("mobi plan=%#v err=%v", plan, err)
+	}
+	if plan.Selections[0].FitProof.QualifierBindings[QualifierDocumentFormat] != DocumentFormatMOBI {
+		t.Fatalf("selection=%#v", plan.Selections[0])
+	}
+}
+
 func TestReviewedHostDocumentReadIsAbsentWithoutReader(t *testing.T) {
 	registry, err := NewReviewedDynamicCapabilityRegistry()
 	if err != nil {

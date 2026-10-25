@@ -1,6 +1,7 @@
 package desktopd
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -74,6 +75,11 @@ print(sup.current_pids(key, 20))
 }
 
 func TestBrowserProxyFlagsFollowTheContainerProxy(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The case shadowing (lowercase empty vars under an uppercase value)
+		// that feeds the lookup does not exist: Windows folds env names.
+		t.Skip("POSIX case-sensitive proxy env shadowing is asserted")
+	}
 	out := runSupervisorPython(t, `
 print(sup.browser_proxy_flags())
 `, "HTTPS_PROXY=http://user:pw@172.17.0.1:18083", "NO_PROXY=localhost,127.0.0.1", "https_proxy=", "http_proxy=", "HTTP_PROXY=", "no_proxy=")

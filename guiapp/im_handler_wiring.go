@@ -504,6 +504,10 @@ type IMMessageHandler struct {
 	// *pendingUserReplyState.
 	pendingUserReply sync.Map
 
+	pendingReplyStoreOnce sync.Once
+	pendingReplyStore     *pendingReplyDiskStore
+	pendingReplyDiskRev   uint64
+
 	// suppressPendingUserReplyUpdate preserves pendingUserReply for the current
 	// request when intent classification was inconclusive. Keyed by userID.
 	suppressPendingUserReplyUpdate sync.Map

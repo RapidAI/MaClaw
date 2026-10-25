@@ -3424,6 +3424,9 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	if err := v2.EnsureProjectDir(projectPath); err != nil {
 		log.Printf("[workflow-v2] pure coding: failed to ensure project dir %s: %v", projectPath, err)
 	}
+	if stop := keepCodeSearchWarm(projectPath); stop != nil {
+		defer stop()
+	}
 
 	// Load AGENTS.md / CLAUDE.md into sticky for this turn.
 	h.ensureStickyProjectInstructions(userID, projectPath)

@@ -1,7 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { appendToolCallMarker, assistantTaskSettledIncomplete, completedAssistantSummary, formatAssistantToolFlip, isTranscriptToolCallText, parseAssistantToolStatus, splitAssistantToolCallContent, stripAssistantToolCallMarkers, transcriptAlreadyShowsToolCall } from "./assistantToolCall";
+import { appendToolCallMarker, assistantTaskSettledIncomplete, completedAssistantSummary, formatAssistantToolFlip, isTranscriptToolCallText, parseAssistantToolStatus, sessionToolIconKind, splitAssistantToolCallContent, stripAssistantToolCallMarkers, transcriptAlreadyShowsToolCall } from "./assistantToolCall";
 
 describe("assistant tool call transcript", () => {
+    it("picks a status icon for session tools that match the coding trail", () => {
+        expect(sessionToolIconKind({ name: "web_search", action: "搜索网页" })).toBe("search");
+        expect(sessionToolIconKind({ name: "glob", action: "搜索文件" })).toBe("find");
+        expect(sessionToolIconKind({ name: "search", action: "搜索文件" })).toBe("find");
+        expect(sessionToolIconKind({ name: "查找", action: "查找" })).toBe("find");
+        expect(sessionToolIconKind({ name: "bash", action: "执行命令" })).toBe("run");
+        expect(sessionToolIconKind({ name: "read_file", action: "读取文件" })).toBe("read");
+        expect(sessionToolIconKind({ name: "todo_write", action: "待办" })).toBe("todo");
+        expect(sessionToolIconKind({ name: "delegate_task", action: "委派任务" })).toBe("agent");
+        expect(sessionToolIconKind({ name: "code_search", action: "" })).toBe("search");
+        expect(sessionToolIconKind({ name: "spawn_coding_agent", action: "" })).toBe("agent");
+        expect(sessionToolIconKind({ name: "查找文件", action: "查找文件" })).toBe("find");
+        expect(sessionToolIconKind({ name: "generate_pdf", action: "生成 PDF" })).toBeNull();
+        expect(sessionToolIconKind({ name: "custom_note", action: "save todos" })).toBeNull();
+        expect(sessionToolIconKind({ name: "待办", action: "待办" })).toBe("todo");
+    });
+
     it("formats the live strip as the tool name and a short argument", () => {
         expect(formatAssistantToolFlip({ name: "web_search", action: "搜索网页", detail: "北京天气" })).toEqual({
             name: "web_search",

@@ -12,18 +12,22 @@ import (
 // SSHPTYSession 通过 SSH channel 实现 ExecutionHandle 接口，
 // 提供与本地 ConPTY 完全一致的交互模型。
 type SSHPTYSession struct {
-	mu       sync.Mutex
-	client   *ssh.Client
-	session  *ssh.Session
-	stdin    io.WriteCloser
-	outputCh chan []byte
-	exitCh   chan PTYExit
-	readWg   sync.WaitGroup // 等待 readLoop goroutines 结束
-	started  bool
-	closed   bool
-	once     sync.Once
-	hostID   string
-	stopKA   chan struct{} // 停止 session 级 keepalive
+	mu            sync.Mutex
+	client        *ssh.Client
+	session       *ssh.Session
+	stdin         io.WriteCloser
+	outputCh      chan []byte
+	exitCh        chan PTYExit
+	readWg        sync.WaitGroup // 等待 readLoop goroutines 结束
+	started       bool
+	closed        bool
+	transportDead bool // 这次 PTY 上的 keepalive 已经以传输错误结束
+	verdictAt     time.Time
+	verdictAlive  bool
+	verdictValid  bool
+	once          sync.Once
+	hostID        string
+	stopKA        chan struct{} // 停止 session 级 keepalive
 }
 
 // NewSSHPTYSession 基于已有的 SSH 连接创建 PTY 会话。
@@ -119,19 +123,112 @@ func (s *SSHPTYSession) Start(spec SSHSessionSpec) error {
 // PID 返回 0（远程进程无本地 PID）。
 func (s *SSHPTYSession) PID() int { return 0 }
 
-// IsAlive 检查 SSH 会话是否仍然存活。
-// 带 5 秒超时保护，避免半开 TCP 连接导致 SendRequest 长时间阻塞。
+// IsAlive 报告这条 PTY 还可以继续用。
+// 未启动、已关闭、keepalive 以传输错误结束，或同一次请求超过
+// sshProbeStuckAfter 仍无应答，返回 false，连接复用会重连。
+// 更短的未完成等待仍是同一次请求，返回 true：复用方接着检查 shell，
+// 而不是因为这 5 秒没应答就拆掉 PTY。
 func (s *SSHPTYSession) IsAlive() bool {
 	s.mu.Lock()
-	if !s.started || s.closed || s.client == nil {
+	if !s.started || s.closed || s.client == nil || s.transportDead {
 		s.mu.Unlock()
 		return false
 	}
 	client := s.client
 	s.mu.Unlock()
 
-	ok, finished, _ := awaitSSHProbe(client, sshProbeWait)
-	return finished && ok
+	ok, finished, running, _ := awaitSSHProbe(client, sshProbeWait)
+	if finished && !ok {
+		s.markTransportDead()
+		return false
+	}
+	return !sshProbeCountsAsFailure(finished, ok, running)
+}
+
+func (s *SSHPTYSession) markTransportDead() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.transportDead = true
+	s.mu.Unlock()
+}
+
+// TransportFailed 报告这条 PTY 的传输已经结束并且失败。
+// 未启动、已关闭，或 keepalive 以传输错误结束，都是失败。
+// 请求还没结束时不是失败，哪怕已经超过 sshProbeStuckAfter：
+// 连接池的 keepalive 会关掉那条连接，探测随之以错误结束。
+// 在关掉之前就解除目录绑定，会让仍开着的会话旁边再被 connect 出一条。
+func (s *SSHPTYSession) TransportFailed() bool {
+	s.mu.Lock()
+	if !s.started || s.closed || s.client == nil || s.transportDead {
+		s.mu.Unlock()
+		return true
+	}
+	client := s.client
+	s.mu.Unlock()
+
+	ok, finished, _, _ := awaitSSHProbe(client, sshProbeWait)
+	if finished && !ok {
+		s.markTransportDead()
+		return true
+	}
+	return false
+}
+
+// ObservedTransportFailure reports a keepalive that has already finished
+// with a transport error. It does not start a probe. A session with no
+// probe yet, or one whose request is still in flight, returns false.
+func (s *SSHPTYSession) ObservedTransportFailure() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	if s.transportDead {
+		s.mu.Unlock()
+		return true
+	}
+	if !s.started || s.closed || s.client == nil {
+		s.mu.Unlock()
+		return false
+	}
+	client := s.client
+	s.mu.Unlock()
+	ok, finished, present := peekSSHProbe(client)
+	if present && finished && !ok {
+		s.markTransportDead()
+		return true
+	}
+	return false
+}
+
+// RememberTransportVerdict stores the latest catalog read on this handle.
+// The verdict dies with the handle, so a closed PTY is not kept alive by a
+// process-wide cache. ttl is applied by TransportVerdict.
+func (s *SSHPTYSession) RememberTransportVerdict(alive bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.verdictAt = time.Now()
+	s.verdictAlive = alive
+	s.verdictValid = true
+	s.mu.Unlock()
+}
+
+// TransportVerdict returns the catalog read stored on this handle.
+// ok is false when nothing is stored or ttl has elapsed.
+func (s *SSHPTYSession) TransportVerdict(ttl time.Duration) (alive bool, ok bool) {
+	if s == nil {
+		return false, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.verdictValid || time.Since(s.verdictAt) > ttl {
+		s.verdictValid = false
+		return false, false
+	}
+	return s.verdictAlive, true
 }
 
 // Client 返回底层池化 SSH 连接，供非 PTY 的 per-command exec channel 复用。
@@ -149,7 +246,7 @@ func (s *SSHPTYSession) Client() *ssh.Client {
 func (s *SSHPTYSession) Write(data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.started || s.closed || s.stdin == nil {
+	if !s.started || s.closed || s.transportDead || s.stdin == nil {
 		return fmt.Errorf("ssh session not running")
 	}
 	_, err := s.stdin.Write(data)
@@ -208,7 +305,6 @@ func (s *SSHPTYSession) sessionKeepalive(interval time.Duration) {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	failCount := 0
 	for {
 		select {
 		case <-s.stopKA:
@@ -221,48 +317,72 @@ func (s *SSHPTYSession) sessionKeepalive(interval time.Duration) {
 			if closed || client == nil {
 				return
 			}
-			ok, finished, running, stopped := s.readSSHProbe(client)
+			ok, finished, running, stopped, probe := s.readSSHProbe(client)
 			if stopped {
 				return
 			}
 			if finished && ok {
-				failCount = 0
 				continue
 			}
 			if !sshProbeCountsAsFailure(finished, ok, running) {
 				continue
 			}
-			failCount++
-			// 这里不关闭连接。连接池的 keepalive 负责回收；三次传输错误或一次
-			// 长时间无应答后停止本循环，避免继续堆积探测。
-			if !finished || failCount >= 3 {
+			if finished && !ok {
+				// 传输错误说明这条连接的 mux 已经结束。记在句柄上，
+				// 目录和情境提示不用再等探测表里的那条结果过期。
+				s.markTransportDead()
 				return
 			}
+			// 同一次请求已经超过 sshProbeStuckAfter，但还没结束。等的是这一次，
+			// 不另起探测。传输错误记在句柄上；迟到的成功不记失败，句柄仍可用。
+			// 卡住的当下不记失败，目录继续绑定这条还开着的 PTY。
+			// 连接池会关掉半开连接，这次探测随后结束。循环到此停止。
+			s.recordStuckProbe(probe)
+			return
 		}
+	}
+}
+
+// recordStuckProbe waits for the keepalive that has already run past
+// sshProbeStuckAfter. The failure is recorded only when that request
+// finishes with a transport error. Close unblocks the wait.
+func (s *SSHPTYSession) recordStuckProbe(probe *sharedSSHProbe) {
+	if probe == nil {
+		return
+	}
+	select {
+	case <-s.stopKA:
+		return
+	case <-probe.done:
+	}
+	if !probe.ok {
+		s.markTransportDead()
 	}
 }
 
 // readSSHProbe waits for the shared keepalive, or returns early when the
 // session is closed. stopped means the session asked this loop to end.
-func (s *SSHPTYSession) readSSHProbe(client *ssh.Client) (ok bool, finished bool, running time.Duration, stopped bool) {
-	type probe struct {
+// probe is the request that was waited on.
+func (s *SSHPTYSession) readSSHProbe(client *ssh.Client) (ok bool, finished bool, running time.Duration, stopped bool, probe *sharedSSHProbe) {
+	type result struct {
 		ok       bool
 		finished bool
 		running  time.Duration
+		probe    *sharedSSHProbe
 	}
 	// Buffer the result so a close during the wait does not leave the
 	// goroutine blocked, and so it never writes this function's results
 	// after return.
-	got := make(chan probe, 1)
+	got := make(chan result, 1)
 	go func() {
-		ok, finished, running := awaitSSHProbe(client, sshProbeWait)
-		got <- probe{ok: ok, finished: finished, running: running}
+		ok, finished, running, probe := awaitSSHProbe(client, sshProbeWait)
+		got <- result{ok: ok, finished: finished, running: running, probe: probe}
 	}()
 	select {
 	case <-s.stopKA:
-		return false, false, 0, true
+		return false, false, 0, true, nil
 	case result := <-got:
-		return result.ok, result.finished, result.running, false
+		return result.ok, result.finished, result.running, false, result.probe
 	}
 }
 

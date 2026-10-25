@@ -32,8 +32,15 @@ const root = resolve(fileURLToPath(new URL('.', import.meta.url)), '..')
 // classes that must out-rank the generic office-ink repaint
 // (.settings-panel button:not(...) sets border-color + color on every
 // in-panel button, so the dialog's stateful fills pin their colors).
-const IMPORTANT_BASELINE = 1608
-const INLINE_STYLE_BASELINE = 4064
+// Refreshed 1608 -> 1598 (2026-10-25 style-unification pass): 10 !important
+// came out of the hardcoded-color/radius tokenization in the partials.
+// Refreshed 1598 -> 1600 (2026-10-25): assembling the current partials copies
+// two "!important" words that already sit in a comment in 120-app-responsive.css.
+// The counter matches that text. No new override was added for the share dialog.
+// Refreshed 4064 -> 3336 (2026-10-25): the TSX inline-style inventory dropped
+// with the provider-management dialog and settings migrations already in tree.
+const IMPORTANT_BASELINE = 1600
+const INLINE_STYLE_BASELINE = 3336
 
 function countImportant(css) {
     return (css.match(/!important/g) || []).length

@@ -182,53 +182,144 @@ func preferActiveCodingRuntimeStatus(cur activeCodingRuntimeRefChoice, next acti
 // already shows that write. A newest failed row is kept, because the registry
 // only knows that a file exists and would otherwise list the turn as completed.
 // A live run or an approval still needs the user and outranks any sibling,
-// older or newer. A child shares the parent's project_ref, so a child's own
+// older or newer. A running row is that live run only while its lease is
+// still open, or while this process is still inside the attempt. A dead
+// lease is not a holder. StartAttempt and ExpireLeases record that death at
+// the lease end. This read applies the same predicate, and ranks that corpse
+// at the lease end, so a list drawn before the sweep agrees with one drawn
+// after it. ReadTaskList also reports that a dead lease was seen, including a
+// child row the list then skips, so the sidebar persists that death only then.
+// A later turn on the same directory, including a failed goal, must be able to
+// replace it. A child shares the parent's project_ref, so a child's own
 // finished row is not the task outcome: its failure would fail the task, and
 // its completion would be dropped and take the parent's failure with it. An
 // interrupted or still-queued child is the same kind of row: it is newer than
-// the parent and would replace that failure. A live child or a gate block
-// still counts. Otherwise the newest row wins, so a later completed run
-// suppresses an older interrupted row
-// instead of letting that stale recovery reminder surface forever. A gate
-// block is a failure, except a final_workspace_unchanged row that already
+// the parent and would replace that failure. A dead running child is skipped
+// the same way, and its waiting parent is ranked interrupted at the earliest
+// such child's lease end. A later child does not move that stamp forward. An
+// earlier child, noticed afterward, moves it back. This read uses that same
+// earliest instant, including when the parent was already stamped later, so
+// the list matches the ledger after the sweep. A live child or a gate block
+// still counts. Otherwise
+// the newest row wins, so a later completed run suppresses an older
+// interrupted row instead of letting that stale recovery reminder surface
+// forever. A gate block is a failure, except a final_workspace_unchanged row that already
 // recorded host file activity: that write is complete and is reported as
 // completed.
 func (s *SQLiteStore) ListActiveTaskStatusesByProjectRef() (map[string]string, error) {
+	statuses, _, err := s.listActiveTaskStatuses(time.Now().UTC())
+	return statuses, err
+}
+
+// ReadTaskList is the sidebar read. The bool is true when at least one
+// running attempt's lease has ended and this process is not inside it,
+// including a child row the list then skips. Statuses already rank that
+// corpse at the lease end. Call ExpireLeases only when the bool is true.
+func (s *SQLiteStore) ReadTaskList(now time.Time) (map[string]string, bool, error) {
+	return s.listActiveTaskStatuses(now)
+}
+
+func (s *SQLiteStore) listActiveTaskStatuses(now time.Time) (map[string]string, bool, error) {
 	if s == nil || s.db == nil {
-		return nil, nil
+		return nil, false, nil
 	}
-	rows, err := s.db.Query(`SELECT t.project_ref, t.status, t.updated_at, t.parent_task_id,
+	rows, err := s.db.Query(`SELECT t.task_id, t.project_ref, t.status, t.updated_at, t.parent_task_id,
 		COALESCE(a.error_code, ''),
-		EXISTS(SELECT 1 FROM coding_runtime_events e WHERE e.attempt_id = a.attempt_id AND e.type IN ('file_activity', 'remote_file_activity'))
+		EXISTS(SELECT 1 FROM coding_runtime_events e WHERE e.attempt_id = a.attempt_id AND e.type IN ('file_activity', 'remote_file_activity')),
+		COALESCE(a.lease_until, 0),
+		COALESCE(a.attempt_id, '')
 		FROM coding_runtime_tasks t
 		LEFT JOIN coding_runtime_attempts a ON a.task_id = t.task_id
 			AND a.attempt_no = (SELECT MAX(attempt_no) FROM coding_runtime_attempts WHERE task_id = t.task_id)`)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer rows.Close()
-	choices := map[string]activeCodingRuntimeRefChoice{}
+	nowUnix := unixNanos(now)
+	type statusRow struct {
+		taskID, ref, status, parentID, errorCode, attemptID string
+		updatedAt, leaseUntil                               int64
+		hasFileActivity                                     int
+	}
+	var scanned []statusRow
 	for rows.Next() {
-		var ref, status, parentID, errorCode string
-		var updatedAt int64
-		var hasFileActivity int
-		if err := rows.Scan(&ref, &status, &updatedAt, &parentID, &errorCode, &hasFileActivity); err != nil {
-			return nil, err
+		var row statusRow
+		if err := rows.Scan(&row.taskID, &row.ref, &row.status, &row.updatedAt, &row.parentID, &row.errorCode, &row.hasFileActivity, &row.leaseUntil, &row.attemptID); err != nil {
+			return nil, false, err
 		}
-		ref = strings.TrimSpace(ref)
+		scanned = append(scanned, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	// Same order as ExpireLeases. The first dead child stamps a waiting
+	// parent, so the read ranks that parent at the same child's lease end.
+	type childLease struct {
+		leaseUntil int64
+		attemptID  string
+		died       int64
+	}
+	deadChild := map[string]childLease{}
+	stale := false
+	for _, row := range scanned {
+		if row.attemptID == "" || TaskStatus(row.status) != TaskRunning || !runningAttemptDead(fromUnixNanos(row.leaseUntil), now, row.attemptID) {
+			continue
+		}
+		stale = true
+		parentID := strings.TrimSpace(row.parentID)
+		if parentID == "" {
+			continue
+		}
+		prev, ok := deadChild[parentID]
+		if ok && (row.leaseUntil > prev.leaseUntil || (row.leaseUntil == prev.leaseUntil && row.attemptID >= prev.attemptID)) {
+			continue
+		}
+		deadChild[parentID] = childLease{leaseUntil: row.leaseUntil, attemptID: row.attemptID, died: unixNanos(leaseDeathTime(fromUnixNanos(row.leaseUntil), now))}
+	}
+	choices := map[string]activeCodingRuntimeRefChoice{}
+	for _, row := range scanned {
+		ref := strings.TrimSpace(row.ref)
 		if ref == "" {
 			continue
 		}
+		status := row.status
+		updatedAt := row.updatedAt
 		// Only the latest attempt counts. An earlier write must not turn a later
 		// unchanged-workspace block into a completed run.
 		rawStatus := status
-		if TaskStatus(status) == TaskBlocked && errorCode == "final_workspace_unchanged" && hasFileActivity != 0 {
+		if TaskStatus(status) == TaskBlocked && row.errorCode == "final_workspace_unchanged" && row.hasFileActivity != 0 {
 			status = string(TaskCompleted)
+		}
+		// Same dead-lease rule as StartAttempt and ExpireLeases. A suspended
+		// executor is still in localWriterLive, so its expired clock stays
+		// running here too. Ranking uses the lease end, which is the instant
+		// the sweep writes onto the task. A missing lease has no death time
+		// to rank, so that row keeps the task's own updated_at.
+		if row.attemptID != "" && TaskStatus(status) == TaskRunning && runningAttemptDead(fromUnixNanos(row.leaseUntil), now, row.attemptID) {
+			status = string(TaskInterrupted)
+			if row.leaseUntil > 0 && row.leaseUntil <= nowUnix {
+				updatedAt = row.leaseUntil
+			}
+		}
+		// The sweep stamps the parent at the earliest dead child's lease end.
+		// A stamp that landed later is ranked back at that earlier instant.
+		// It is not persisted here.
+		if death, ok := deadChild[row.taskID]; ok {
+			switch TaskStatus(row.status) {
+			case TaskWaitingChild:
+				status = string(TaskInterrupted)
+				updatedAt = death.died
+			case TaskInterrupted:
+				if death.died < updatedAt {
+					updatedAt = death.died
+				}
+			}
 		}
 		// A child shares the parent's project_ref. A finished child is not the
 		// task outcome. Skipping it after the rewrite also ignores a child
-		// whose unchanged-workspace block was reported as completed.
-		if strings.TrimSpace(parentID) != "" {
+		// whose unchanged-workspace block was reported as completed. The dead
+		// child was already counted above, so skipping it still wakes the sweep.
+		if strings.TrimSpace(row.parentID) != "" {
 			switch TaskStatus(status) {
 			case TaskFailed, TaskCompleted, TaskCancelled, TaskInterrupted, TaskQueued:
 				continue
@@ -238,9 +329,6 @@ func (s *SQLiteStore) ListActiveTaskStatusesByProjectRef() (map[string]string, e
 		if cur, ok := choices[ref]; !ok || preferActiveCodingRuntimeStatus(cur, next) {
 			choices[ref] = next
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 	byRef := make(map[string]string, len(choices))
 	for ref, choice := range choices {
@@ -253,7 +341,7 @@ func (s *SQLiteStore) ListActiveTaskStatusesByProjectRef() (map[string]string, e
 		}
 		byRef[ref] = choice.status
 	}
-	return byRef, nil
+	return byRef, stale, nil
 }
 
 func (s *SQLiteStore) ListChildTasks(parentTaskID string) ([]*Task, error) {
@@ -409,7 +497,41 @@ func (s *SQLiteStore) StartAttempt(taskID, leaseOwner string, leaseFor time.Dura
 		return nil, err
 	}
 	if status == string(TaskRunning) {
-		return nil, ErrLeaseHeld
+		// A live lease, or this process still inside the attempt, really is
+		// held. That first read takes no write lock. An expired lease with no
+		// local executor is the same death ExpireLeases records. Another
+		// process can renew between that read and the interrupt, so a dead
+		// clock is taken again under the admission guard. Commit only when
+		// the interrupt wrote a row. A no-op leaves the lease held, and the
+		// rollback drops the guard bump.
+		attemptID, leaseUntil, qerr := runningAttemptClock(tx, taskID)
+		if qerr != nil {
+			return nil, qerr
+		}
+		if attemptID == "" || !runningAttemptDead(fromUnixNanos(leaseUntil), now, attemptID) {
+			return nil, ErrLeaseHeld
+		}
+		if _, err = tx.Exec(`UPDATE coding_runtime_writer_admission_guard SET revision=revision+1 WHERE guard_id=1`); err != nil {
+			return nil, err
+		}
+		attemptID, leaseUntil, qerr = runningAttemptClock(tx, taskID)
+		if qerr != nil {
+			return nil, qerr
+		}
+		if attemptID == "" || !runningAttemptDead(fromUnixNanos(leaseUntil), now, attemptID) {
+			return nil, ErrLeaseHeld
+		}
+		interrupted, ierr := s.interruptExpiredAttemptTx(tx, attemptID, now)
+		if ierr != nil {
+			return nil, ierr
+		}
+		if interrupted == nil {
+			return nil, ErrLeaseHeld
+		}
+		if err = tx.Commit(); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: start attempt", ErrInvalidTransition)
 	}
 	if !validStartStatus(TaskStatus(status)) {
 		return nil, fmt.Errorf("%w: start attempt", ErrInvalidTransition)
@@ -455,13 +577,22 @@ func (s *SQLiteStore) StartAttempt(taskID, leaseOwner string, leaseFor time.Dura
 	}
 	// One ledger connection. The task lookup has to wait until this cursor is
 	// closed, or admission blocks and a second writer never sees the conflict.
+	// Dead holders are interrupted only after every live holder has been
+	// checked, and in this same transaction, so a rejected writer does not
+	// leave a half-applied death behind.
+	// Earliest lease end first, then attempt id. That is the child that stamps
+	// a waiting parent. ExpireLeases uses the same order.
+	type deadAttempt struct {
+		id         string
+		leaseUntil int64
+	}
+	var deadAttempts []deadAttempt
 	for _, row := range running {
 		if row.taskID == taskID {
 			continue
 		}
-		// Same rule as MemoryStore: an expired lease does not block another
-		// task unless this process is still executing that attempt.
-		if row.leaseUntil <= unixNanos(now) && !localWriterLive(row.attemptID) {
+		if runningAttemptDead(fromUnixNanos(row.leaseUntil), now, row.attemptID) {
+			deadAttempts = append(deadAttempts, deadAttempt{id: row.attemptID, leaseUntil: row.leaseUntil})
 			continue
 		}
 		var otherPolicy PolicySnapshot
@@ -474,6 +605,37 @@ func (s *SQLiteStore) StartAttempt(taskID, leaseOwner string, leaseFor time.Dura
 		}
 		if conflict := WriterAdmissionConflict(*task, policy, *otherTask, otherPolicy); conflict.Conflicts {
 			return nil, WriterAdmissionError{Conflict: conflict}
+		}
+	}
+	sort.Slice(deadAttempts, func(i, j int) bool {
+		if deadAttempts[i].leaseUntil != deadAttempts[j].leaseUntil {
+			return deadAttempts[i].leaseUntil < deadAttempts[j].leaseUntil
+		}
+		return deadAttempts[i].id < deadAttempts[j].id
+	})
+	for _, dead := range deadAttempts {
+		id := dead.id
+		interrupted, ierr := s.interruptExpiredAttemptTx(tx, id, now)
+		if ierr != nil {
+			return nil, ierr
+		}
+		if interrupted != nil {
+			continue
+		}
+		// The holder was renewed, or this process entered it, between the
+		// scan and the interrupt. Admitting beside a still-running attempt
+		// would leave two writers. A row that already left running is not a
+		// holder. Rolling back drops every interrupt this transaction wrote.
+		var attemptStatus string
+		qerr := tx.QueryRow(`SELECT status FROM coding_runtime_attempts WHERE attempt_id=?`, id).Scan(&attemptStatus)
+		if errors.Is(qerr, sql.ErrNoRows) {
+			continue
+		}
+		if qerr != nil {
+			return nil, qerr
+		}
+		if TaskStatus(attemptStatus) == TaskRunning {
+			return nil, ErrLeaseHeld
 		}
 	}
 	var no int
@@ -962,12 +1124,17 @@ func (s *SQLiteStore) CancelTask(taskID string, now time.Time) ([]*Attempt, erro
 }
 
 func (s *SQLiteStore) ExpireLeases(now time.Time) ([]*Attempt, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, err
+	if s == nil || s.db == nil {
+		return nil, nil
 	}
-	defer tx.Rollback()
-	rows, err := tx.Query(`SELECT attempt_id FROM coding_runtime_attempts WHERE status=? AND lease_until<=?`, TaskRunning, unixNanos(now))
+	// Startup sweeps unconditionally. A task-list read calls this only after it
+	// has already seen a dead lease. This store has one connection. A write
+	// transaction here would queue behind, and in front of, the live coding
+	// writer even when the re-check finds every lease still open. Collect the
+	// dead ids first and skip the transaction when none remain.
+	// lease_until then attempt id matches the parent stamp the task list ranks.
+	// The first dead child in this order is the one that interrupts a waiting parent.
+	rows, err := s.db.Query(`SELECT attempt_id FROM coding_runtime_attempts WHERE status=? AND lease_until<=? ORDER BY lease_until ASC, attempt_id ASC`, TaskRunning, unixNanos(now))
 	if err != nil {
 		return nil, err
 	}
@@ -978,6 +1145,11 @@ func (s *SQLiteStore) ExpireLeases(now time.Time) ([]*Attempt, error) {
 			rows.Close()
 			return nil, err
 		}
+		// The process can still be inside an attempt whose stored clock has
+		// passed. That holder stays running; a startup sweep has an empty set.
+		if localWriterLive(id) {
+			continue
+		}
 		ids = append(ids, id)
 	}
 	if err = rows.Close(); err != nil {
@@ -986,35 +1158,26 @@ func (s *SQLiteStore) ExpireLeases(now time.Time) ([]*Attempt, error) {
 	if err = rows.Err(); err != nil {
 		return nil, err
 	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
 	var out []*Attempt
 	for _, id := range ids {
-		a, err := s.getAttempt(tx, id)
+		a, err := s.interruptExpiredAttemptTx(tx, id, now)
 		if err != nil {
 			return nil, err
 		}
-		if _, err = tx.Exec(`UPDATE coding_runtime_attempts SET status=?,side_effect_state=?,lease_until=0,finished_at=? WHERE attempt_id=?`, TaskInterrupted, SideEffectUncertain, unixNanos(now), id); err != nil {
-			return nil, err
+		if a != nil {
+			out = append(out, a)
 		}
-		if _, err = tx.Exec(`UPDATE coding_runtime_tasks SET status=?,updated_at=? WHERE task_id=?`, TaskInterrupted, unixNanos(now), a.TaskID); err != nil {
-			return nil, err
-		}
-		// A parent without a lease waits only for child delivery. When the
-		// process loses a running child, interrupt that parent too so recovery
-		// is explicit instead of leaving it permanently waiting_child.
-		var parentID string
-		if err = tx.QueryRow(`SELECT parent_task_id FROM coding_runtime_tasks WHERE task_id=?`, a.TaskID).Scan(&parentID); err != nil {
-			return nil, err
-		}
-		if parentID != "" {
-			if err = s.interruptWaitingParentTx(tx, parentID, now); err != nil {
-				return nil, err
-			}
-		}
-		if _, err = tx.Exec(`INSERT INTO coding_runtime_events(attempt_id,sequence,task_id,type,payload_digest,created_at) VALUES(?,(SELECT COALESCE(MAX(sequence),0)+1 FROM coding_runtime_events WHERE attempt_id=?),?, 'lease_expired','',?)`, id, id, a.TaskID, unixNanos(now)); err != nil {
-			return nil, err
-		}
-		a.Status, a.SideEffectState, a.LeaseUntil, a.FinishedAt = TaskInterrupted, SideEffectUncertain, time.Time{}, now
-		out = append(out, a)
+	}
+	if len(out) == 0 {
+		return nil, nil
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
@@ -1084,14 +1247,96 @@ func (s *SQLiteStore) InterruptUnstartedChildren(now time.Time) ([]*Attempt, err
 	return out, nil
 }
 
+// interruptExpiredAttemptTx closes a running attempt whose lease has ended
+// and whose executor is not on this process. finished_at and the owning
+// task's updated_at are the lease end (or now, when the lease has no end),
+// so noticing the row later does not move it in front of a newer outcome.
+// The task update matches only status=running, so a task that already
+// reached a later status is not rewritten.
+func (s *SQLiteStore) interruptExpiredAttemptTx(tx *sql.Tx, attemptID string, now time.Time) (*Attempt, error) {
+	// The attempt row carries the workspace probes. Lease death only needs
+	// the status, the lease end, and the parent link.
+	var taskID, status, parentID string
+	var leaseUntil int64
+	err := tx.QueryRow(`SELECT a.task_id, a.status, a.lease_until, t.parent_task_id FROM coding_runtime_attempts a JOIN coding_runtime_tasks t ON t.task_id=a.task_id WHERE a.attempt_id=?`, attemptID).Scan(&taskID, &status, &leaseUntil, &parentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	leaseTime := fromUnixNanos(leaseUntil)
+	if TaskStatus(status) != TaskRunning || !runningAttemptDead(leaseTime, now, attemptID) {
+		return nil, nil
+	}
+	died := leaseDeathTime(leaseTime, now)
+	res, err := tx.Exec(`UPDATE coding_runtime_attempts SET status=?,side_effect_state=?,lease_until=0,finished_at=? WHERE attempt_id=? AND status=?`, TaskInterrupted, SideEffectUncertain, unixNanos(died), attemptID, TaskRunning)
+	if err != nil {
+		return nil, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return nil, nil
+	}
+	if _, err = tx.Exec(`UPDATE coding_runtime_tasks SET status=?,updated_at=? WHERE task_id=? AND status=?`, TaskInterrupted, unixNanos(died), taskID, TaskRunning); err != nil {
+		return nil, err
+	}
+	// A parent without a lease waits only for child delivery. When the
+	// process loses a running child, interrupt that parent too so recovery
+	// is explicit instead of leaving it permanently waiting_child.
+	if parentID != "" {
+		if err = s.interruptWaitingParentTx(tx, parentID, died); err != nil {
+			return nil, err
+		}
+	}
+	if _, err = s.appendEventTx(tx, attemptID, taskID, "lease_expired", "", died); err != nil {
+		return nil, err
+	}
+	return &Attempt{AttemptID: attemptID, TaskID: taskID, Status: TaskInterrupted, SideEffectState: SideEffectUncertain, FinishedAt: died}, nil
+}
+
 func (s *SQLiteStore) interruptWaitingParentTx(tx *sql.Tx, parentTaskID string, now time.Time) error {
 	var parentStatus string
-	err := tx.QueryRow(`SELECT status FROM coding_runtime_tasks WHERE task_id=?`, parentTaskID).Scan(&parentStatus)
+	var updatedAt int64
+	err := tx.QueryRow(`SELECT status, updated_at FROM coding_runtime_tasks WHERE task_id=?`, parentTaskID).Scan(&parentStatus, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
-	if err != nil || TaskStatus(parentStatus) != TaskWaitingChild {
+	if err != nil {
 		return err
+	}
+	// A child noticed later can have an earlier lease end. The parent stays
+	// interrupted, and the stamp moves back to that lease end when it is
+	// still the task's current time. A newer write on the parent is left
+	// alone. A later child never moves the stamp forward.
+	if TaskStatus(parentStatus) == TaskInterrupted {
+		var attemptID string
+		var finishedAt int64
+		err = tx.QueryRow(`SELECT a.attempt_id, a.finished_at FROM coding_runtime_attempts a JOIN coding_runtime_events e ON e.attempt_id=a.attempt_id AND e.type='child_lease_expired' WHERE a.task_id=? AND a.status=? ORDER BY a.attempt_no DESC LIMIT 1`, parentTaskID, TaskInterrupted).Scan(&attemptID, &finishedAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		died := unixNanos(now)
+		if finishedAt <= died || updatedAt != finishedAt {
+			return nil
+		}
+		if _, err = tx.Exec(`UPDATE coding_runtime_tasks SET updated_at=? WHERE task_id=? AND status=? AND updated_at=?`, died, parentTaskID, TaskInterrupted, finishedAt); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(`UPDATE coding_runtime_attempts SET finished_at=? WHERE attempt_id=? AND finished_at=?`, died, attemptID, finishedAt); err != nil {
+			return err
+		}
+		_, err = tx.Exec(`UPDATE coding_runtime_events SET created_at=? WHERE attempt_id=? AND type='child_lease_expired' AND created_at=?`, died, attemptID, finishedAt)
+		return err
+	}
+	if TaskStatus(parentStatus) != TaskWaitingChild {
+		return nil
 	}
 	var attemptID string
 	err = tx.QueryRow(`SELECT attempt_id FROM coding_runtime_attempts WHERE task_id=? AND status=? ORDER BY attempt_no DESC LIMIT 1`, parentTaskID, TaskWaitingChild).Scan(&attemptID)
@@ -1105,6 +1350,12 @@ func (s *SQLiteStore) interruptWaitingParentTx(tx *sql.Tx, parentTaskID string, 
 		return err
 	}
 	if _, err = tx.Exec(`UPDATE coding_runtime_attempts SET status=?,side_effect_state=?,finished_at=? WHERE attempt_id=? AND status=?`, TaskInterrupted, SideEffectNone, unixNanos(now), attemptID, TaskWaitingChild); err != nil {
+		return err
+	}
+	// Queued siblings never took a lease. This is the same moment the parent
+	// stops being able to dispatch them, so they must not stay startable.
+	// A sibling that is still running keeps its own lease.
+	if _, err = tx.Exec(`UPDATE coding_runtime_tasks SET status=?,updated_at=? WHERE parent_task_id=? AND status=?`, TaskInterrupted, unixNanos(now), parentTaskID, TaskQueued); err != nil {
 		return err
 	}
 	_, err = s.appendEventTx(tx, attemptID, parentTaskID, "child_lease_expired", "", now)
@@ -1220,6 +1471,16 @@ func (s *SQLiteStore) ResolveSemanticTaskAnchor(runtimeTaskID, runtimeAttemptID 
 }
 
 type rowQuerier interface{ QueryRow(string, ...any) *sql.Row }
+
+// runningAttemptClock reads the newest running attempt on a task. An empty
+// attempt id means that task has no running attempt.
+func runningAttemptClock(q rowQuerier, taskID string) (attemptID string, leaseUntil int64, err error) {
+	err = q.QueryRow(`SELECT attempt_id, lease_until FROM coding_runtime_attempts WHERE task_id=? AND status=? ORDER BY attempt_no DESC LIMIT 1`, taskID, TaskRunning).Scan(&attemptID, &leaseUntil)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", 0, nil
+	}
+	return attemptID, leaseUntil, err
+}
 
 func (s *SQLiteStore) getAttempt(q rowQuerier, id string) (*Attempt, error) {
 	var a Attempt

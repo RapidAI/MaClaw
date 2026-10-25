@@ -54,6 +54,12 @@ func (a *App) ensureConfiguredAIModels() {
 				}
 			}
 
+			if cfg.FormulaEnabled {
+				if !modelStatusExists(a.CheckFormulaModel()) {
+					startPreload("formula", a.backgroundPreloadFormulaModel)
+				}
+			}
+
 			if cfg.DiarizationEnabled {
 				if !modelStatusExists(a.CheckDiarizationModel()) {
 					startPreload("CAM++ diarization", a.backgroundPreloadDiarizationModel)

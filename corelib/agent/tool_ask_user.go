@@ -154,7 +154,7 @@ func FormatAskedUserHistoryResult(req *AskUserRequest) string {
 		return "Asked user"
 	}
 	out := "Asked user: " + req.Question
-	if extra := strings.TrimSpace(req.Context); extra != "" {
+	if extra := visibleAskUserContext(req.Context); extra != "" {
 		out += "\n" + extra
 	}
 	return out
@@ -165,18 +165,33 @@ func FormatPendingAskUserAnswerHint(question, answer, context string) string {
 		"[Context hint] The user is answering your previous clarification question, not starting a new request.\nAssistant question: %s\nUser answer: %s\nInterpret it as supplementary or corrective information for the current task.",
 		question, answer,
 	)
-	if extra := strings.TrimSpace(context); extra != "" {
+	if extra := visibleAskUserContext(context); extra != "" {
 		hint += "\nQuestion context: " + extra
 	}
 	return hint
+}
+
+// visibleAskUserContext drops the commit-approval ticket. The nonce binds the
+// pending note; it is not part of the question the person or the model sees.
+func visibleAskUserContext(context string) string {
+	trimmed := strings.TrimSpace(context)
+	rest, found := strings.CutPrefix(trimmed, CommitApprovalContextPrefix)
+	if !found {
+		return trimmed
+	}
+	_, after, found := strings.Cut(rest, ";")
+	if !found {
+		return ""
+	}
+	return strings.TrimSpace(after)
 }
 
 // FormatAskUserForDisplay formats an AskUserRequest for text-based display
 // (used in TUI and IM gateways that don't support interactive cards).
 func FormatAskUserForDisplay(req *AskUserRequest) string {
 	var b strings.Builder
-	if req.Context != "" {
-		b.WriteString(req.Context)
+	if context := visibleAskUserContext(req.Context); context != "" {
+		b.WriteString(context)
 		b.WriteString("\n\n")
 	}
 	b.WriteString("")

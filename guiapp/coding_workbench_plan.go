@@ -271,7 +271,7 @@ func isCodingInquiryTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "list_directory", "glob", "read_file", "search_files", "search_file", "bash",
 		"ssh_read_file", "ssh_list_dir", "ssh_bash", "ssh_check_task",
-		codeNavigationToolName, "coding_knowledge_search", "knowledge_search", "knowledge_image_search":
+		codeNavigationToolName, codeSearchToolName, "coding_knowledge_search", "knowledge_search", "knowledge_image_search":
 		return true
 	default:
 		return false
@@ -284,7 +284,7 @@ func isCodingInquiryTool(name string) bool {
 func isGoalPlanPhaseTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "list_directory", "glob", "ripgrep", "read_file", "search_files", "search_file",
-		codeNavigationToolName, "coding_knowledge_search", "knowledge_search", "knowledge_image_search",
+		codeNavigationToolName, codeSearchToolName, "coding_knowledge_search", "knowledge_search", "knowledge_image_search",
 		"ssh_read_file", "ssh_list_dir":
 		return true
 	default:
@@ -322,7 +322,7 @@ func filterCodingInquiryTools(tools []map[string]interface{}) []map[string]inter
 // workflow merely because it is executed locally.
 func isCodingOperationalTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "glob", "ripgrep", "read_file", "list_directory", "bash", codeNavigationToolName,
+	case "glob", "ripgrep", "read_file", "list_directory", "bash", codeNavigationToolName, codeSearchToolName,
 		"coding_knowledge_search", "knowledge_search", "knowledge_image_search":
 		return true
 	default:
@@ -2614,6 +2614,151 @@ func numberedStepCount(text string) int {
 	return len(numberedStepLineRe.FindAllString(text, -1))
 }
 
+func codingChecklistStepClosed(status string) bool {
+	switch strings.TrimSpace(status) {
+	case codingStepPassed, codingStepSkipped:
+		return true
+	default:
+		return false
+	}
+}
+
+func codingChecklistStepActive(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case codingStepRunning, "in_progress", "started", "active":
+		return true
+	default:
+		return false
+	}
+}
+
+// rewindCodingChecklistCursor moves a running mark that sits after an earlier
+// unfinished step back onto that first unfinished step. Continue after an
+// interrupt must not resume from the middle of the list. A checklist that
+// already starts at the first open step is left as stored.
+func rewindCodingChecklistCursor(steps []codingWorkbenchStepStatus) ([]codingWorkbenchStepStatus, bool) {
+	if len(steps) == 0 {
+		return steps, false
+	}
+	ordered := append([]codingWorkbenchStepStatus(nil), steps...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Index < ordered[j].Index })
+	first := -1
+	for i, st := range ordered {
+		if st.Index <= 0 || codingChecklistStepClosed(st.Status) {
+			continue
+		}
+		first = i
+		break
+	}
+	if first < 0 {
+		return steps, false
+	}
+	later := false
+	for i := first + 1; i < len(ordered); i++ {
+		if codingChecklistStepActive(ordered[i].Status) {
+			later = true
+			break
+		}
+	}
+	if !later {
+		return steps, false
+	}
+	now := time.Now().Unix()
+	for i := first + 1; i < len(ordered); i++ {
+		if !codingChecklistStepActive(ordered[i].Status) {
+			continue
+		}
+		ordered[i].Status = codingStepPending
+		ordered[i].UpdatedUnix = now
+	}
+	if !codingChecklistStepActive(ordered[first].Status) {
+		ordered[first].Status = codingStepRunning
+		ordered[first].UpdatedUnix = now
+	}
+	return ordered, true
+}
+
+// rewindInterruptedCodingChecklist applies rewindCodingChecklistCursor to the
+// sticky checklist. The caller emits the steps snapshot after other plan
+// clears, so this does not emit by itself.
+func (h *IMMessageHandler) rewindInterruptedCodingChecklist(userID string) bool {
+	if h == nil {
+		return false
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return false
+	}
+	changed := false
+	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
+		next, ok := rewindCodingChecklistCursor(mem.StepStatuses)
+		if !ok {
+			return
+		}
+		mem.StepStatuses = next
+		changed = true
+	})
+	return changed
+}
+
+// insertCodingChecklistResumeNote places the rewind note after the opening
+// [系统续接] line. The marker has to stay at the start: goalContinuationSource
+// only treats the description as the phase contract when it begins with that
+// marker, and otherwise falls back to the 80-rune title.
+func insertCodingChecklistResumeNote(description, note string) string {
+	description = strings.TrimSpace(description)
+	note = strings.TrimSpace(note)
+	if note == "" {
+		return description
+	}
+	if description == "" {
+		return note
+	}
+	if !isGoalSystemContinuation(description) {
+		return note + "\n\n" + description
+	}
+	if i := strings.IndexByte(description, '\n'); i >= 0 {
+		rest := strings.TrimLeft(description[i+1:], "\n")
+		return description[:i] + "\n\n" + note + "\n\n" + rest
+	}
+	return description + "\n\n" + note
+}
+
+// codingChecklistResumeNote names the first unfinished checklist row after a
+// rewind. It does not repeat a later row's error: that text is what pulled
+// the agent back into the skipped step. Empty when no step is still open.
+func codingChecklistResumeNote(steps []codingWorkbenchStepStatus) string {
+	if len(steps) < 2 {
+		return ""
+	}
+	ordered := append([]codingWorkbenchStepStatus(nil), steps...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Index < ordered[j].Index })
+	first := -1
+	for i, st := range ordered {
+		if st.Index <= 0 || codingChecklistStepClosed(st.Status) {
+			continue
+		}
+		first = i
+		break
+	}
+	// The caller only asks after a rewind. A list that has not passed
+	// anything yet still has a first unfinished step to name.
+	if first < 0 {
+		return ""
+	}
+	title := strings.TrimSpace(ordered[first].Title)
+	if title == "" {
+		title = fmt.Sprintf("T%d", ordered[first].Index)
+	}
+	var b strings.Builder
+	b.WriteString("【续跑】上次执行在中途停下。从第一项未完成的步骤继续，不要跳到后面，也不要重做已完成项。\n")
+	fmt.Fprintf(&b, "从 T%d 开始：%s", ordered[first].Index, title)
+	if summary := strings.TrimSpace(ordered[first].Summary); summary != "" {
+		fmt.Fprintf(&b, "\nT%d 记录：%s", ordered[first].Index, truncateRunesForSubAgent(summary, 180))
+	}
+	return b.String()
+}
+
 // resolveCodingWorkbenchTasks returns the TaskItems to run for a pure-coding turn.
 // Complex requests may be expanded into an ordered multi-step plan via LLM.
 // Simple requests stay a single task. Planner failures fall back to single-task.
@@ -2676,14 +2821,23 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 	if isGoalSystemContinuation(userText) {
 		log.Printf("[coding-plan] single-task path user=%s reason=goal continuation", userID)
 		owned := false
+		rewound := false
 		if h != nil && userID != "" {
 			cur := h.getStickyCodingWorkbenchMemory(userID)
 			owned = strings.TrimSpace(cur.ExecutionPlan) != "" || strings.TrimSpace(cur.PendingPlanJSON) != ""
+			rewound = h.rewindInterruptedCodingChecklist(userID)
 		}
 		h.clearStickyCodingExecutionPlan(userID)
 		h.clearStickyPendingCodingPlan(userID)
-		if owned {
+		if owned || rewound {
 			h.emitCodingWorkbenchStepsUpdate(userID)
+		}
+		// A healthy continuation is already on the first open step. Only an
+		// interrupt that left a later step current needs the resume note.
+		if rewound && h != nil && userID != "" {
+			if note := codingChecklistResumeNote(h.getStickyCodingWorkbenchMemory(userID).StepStatuses); note != "" {
+				single[0].Description = insertCodingChecklistResumeNote(single[0].Description, note)
+			}
 		}
 		return single, "", false
 	}

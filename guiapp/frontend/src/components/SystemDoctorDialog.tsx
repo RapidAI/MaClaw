@@ -299,26 +299,26 @@ async function callPreviewSharedLoopCanary(userID: string, percent: number): Pro
 function statusColor(status: DoctorStatus): string {
     switch (status) {
         case 'ok':
-            return 'var(--theme-success, #4f7f6f)';
+            return 'var(--theme-success, #11813a)';
         case 'warn':
-            return 'var(--theme-warning, #d97706)';
+            return 'var(--theme-warning, #aa5d05)';
         case 'fail':
-            return 'var(--theme-danger, #c43d34)';
+            return 'var(--theme-danger, #dc1f25)';
         case 'skip':
-            return 'var(--theme-text-muted, #64748b)';
+            return 'var(--theme-text-muted, #56677c)';
         default:
-            return 'var(--theme-primary, #2f6fbc)';
+            return 'var(--theme-primary, #2e75cb)';
     }
 }
 
 function modeColor(mode: string | undefined): string {
     switch ((mode || '').toLowerCase()) {
         case 'on':
-            return 'var(--theme-success, #4f7f6f)';
+            return 'var(--theme-success, #11813a)';
         case 'shadow':
-            return 'var(--theme-warning, #d97706)';
+            return 'var(--theme-warning, #aa5d05)';
         default:
-            return 'var(--theme-text-muted, #64748b)';
+            return 'var(--theme-text-muted, #56677c)';
     }
 }
 
@@ -348,8 +348,8 @@ function PathBar({ shared, legacy }: { shared: number; legacy: number }) {
             }}
             title={`shared ${sharedPct}% · legacy ${100 - sharedPct}%`}
         >
-            <div style={{ width: `${sharedPct}%`, background: 'var(--theme-primary, #2f6fbc)' }} />
-            <div style={{ width: `${100 - sharedPct}%`, background: 'var(--theme-text-muted, #64748b)' }} />
+            <div style={{ width: `${sharedPct}%`, background: 'var(--theme-primary, #2e75cb)' }} />
+            <div style={{ width: `${100 - sharedPct}%`, background: 'var(--theme-text-muted, #56677c)' }} />
         </div>
     );
 }
@@ -567,7 +567,7 @@ export function SystemDoctorDialog({ open, onClose, t }: Props) {
                         </p>
                     )}
                     {!loading && error && (
-                        <p style={{ color: 'var(--theme-danger, #c43d34)', fontSize: '0.8rem' }}>{error}</p>
+                        <p style={{ color: 'var(--theme-danger, #dc1f25)', fontSize: '0.8rem' }}>{error}</p>
                     )}
                     {!loading && report && (
                         <>
@@ -741,7 +741,7 @@ export function SystemDoctorDialog({ open, onClose, t }: Props) {
                                                 width: 64,
                                                 fontSize: '0.72rem',
                                                 padding: '3px 6px',
-                                                borderRadius: 'var(--radius-md, 10px)',
+                                                borderRadius: 'var(--radius-md, 8px)',
                                                 border: '1px solid var(--theme-border)',
                                                 background: 'var(--theme-surface, #fff)',
                                                 color: 'var(--theme-text)',
@@ -848,7 +848,7 @@ export function SystemDoctorDialog({ open, onClose, t }: Props) {
                                                 maxWidth: 220,
                                                 fontSize: '0.72rem',
                                                 padding: '3px 8px',
-                                                borderRadius: 'var(--radius-md, 10px)',
+                                                borderRadius: 'var(--radius-md, 8px)',
                                                 border: '1px solid var(--theme-border)',
                                                 background: 'var(--theme-surface, #fff)',
                                                 color: 'var(--theme-text)',
@@ -873,8 +873,8 @@ export function SystemDoctorDialog({ open, onClose, t }: Props) {
                                                     fontSize: '0.72rem',
                                                     fontWeight: 600,
                                                     color: canaryPreview.allows
-                                                        ? 'var(--theme-success, #4f7f6f)'
-                                                        : 'var(--theme-danger, #c43d34)',
+                                                        ? 'var(--theme-success, #11813a)'
+                                                        : 'var(--theme-danger, #dc1f25)',
                                                 }}
                                                 title={canaryPreview.summary || undefined}
                                             >
@@ -903,12 +903,12 @@ export function SystemDoctorDialog({ open, onClose, t }: Props) {
                                     >
                                         <div>
                                             {t('sharedLoopShared')}:{' '}
-                                            <strong style={{ color: 'var(--theme-primary, #2f6fbc)' }}>{shared}</strong>
+                                            <strong style={{ color: 'var(--theme-primary, #2e75cb)' }}>{shared}</strong>
                                             {total > 0 ? ` (${sharedPct}%)` : ''}
                                         </div>
                                         <div>
                                             {t('sharedLoopLegacy')}:{' '}
-                                            <strong style={{ color: 'var(--theme-text-muted, #64748b)' }}>{legacy}</strong>
+                                            <strong style={{ color: 'var(--theme-text-muted, #56677c)' }}>{legacy}</strong>
                                             {total > 0 ? ` (${100 - sharedPct}%)` : ''}
                                         </div>
                                         <div>
@@ -1114,7 +1114,7 @@ export function SystemDoctorDialog({ open, onClose, t }: Props) {
                                         >
                                             {t('sharedLoopHubAdaptive')}:{' '}
                                             {loopStatus.hub_connected ? (
-                                                <strong style={{ color: 'var(--theme-success, #4f7f6f)' }}>
+                                                <strong style={{ color: 'var(--theme-success, #11813a)' }}>
                                                     {t('sharedLoopHubConnected')}
                                                 </strong>
                                             ) : (
@@ -1133,7 +1133,7 @@ export function SystemDoctorDialog({ open, onClose, t }: Props) {
                                                 style={{
                                                     gridColumn: '1 / -1',
                                                     fontSize: '0.7rem',
-                                                    color: 'var(--theme-success, #4f7f6f)',
+                                                    color: 'var(--theme-success, #11813a)',
                                                     wordBreak: 'break-all',
                                                 }}
                                                 title={t('sharedLoopPromptExportHint')}

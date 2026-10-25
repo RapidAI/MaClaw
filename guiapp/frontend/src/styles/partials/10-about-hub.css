@@ -128,7 +128,7 @@
 .about-hero-card__icon-wrap {
     width: 84px;
     height: 84px;
-    border-radius: 20px;
+    border-radius: var(--radius-xl);
     flex-shrink: 0;
     display: flex;
     align-items: center;
@@ -175,7 +175,7 @@
     font-weight: 600;
     letter-spacing: 0.02em;
     padding: 2px 8px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--theme-primary-soft);
     color: var(--theme-primary);
     vertical-align: middle;
@@ -196,7 +196,7 @@
     gap: 8px;
     background: var(--theme-surface);
     border: 1px solid var(--theme-border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     padding: 5px 14px;
     font-size: 0.8rem;
     font-weight: 600;
@@ -482,7 +482,7 @@
     min-height: 24px;
     padding: 0 9px;
     border: 1px solid color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border));
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--theme-primary-soft);
     color: var(--theme-primary);
     font-size: 0.72rem;
@@ -521,7 +521,7 @@
 .about-stat__icon {
     width: 38px;
     height: 38px;
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     flex-shrink: 0;
     display: flex;
     align-items: center;
@@ -548,7 +548,7 @@
     font-size: 0.68rem;
     background: var(--theme-primary-soft);
     color: var(--theme-primary);
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
     padding: 0 5px;
     font-weight: 600;
     white-space: nowrap;
@@ -581,7 +581,7 @@
     justify-content: center;
     background: var(--theme-surface-muted);
     border: 1px solid var(--theme-border);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     margin: 14px 0;
     padding: 12px;
     box-sizing: border-box;
@@ -595,7 +595,7 @@
 .about-mobile-auth-qr-dialog__code-card {
     background: #fff;
     padding: 10px;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
 }
 
 .about-mobile-auth-qr-dialog__error {
@@ -714,7 +714,7 @@
     margin: 0 0 20px;
     padding: 14px 16px;
     border: 1px solid var(--theme-border);
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     background: var(--theme-surface-muted);
 }
 
@@ -749,7 +749,7 @@
     margin: -6px 0 18px;
     padding: 9px 12px;
     border: 1px solid var(--theme-border);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     color: var(--theme-text-secondary);
     font-size: 0.8rem;
 }
@@ -774,7 +774,7 @@
 }
 
 .problem-report-dialog__field .form-label em {
-    color: var(--theme-danger, #c43d34);
+    color: var(--theme-danger, #dc1f25);
     font-style: normal;
 }
 
@@ -818,7 +818,7 @@
     height: 76px;
     box-sizing: border-box;
     border: 1px solid var(--theme-border);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     background: var(--theme-surface-muted);
 }
 
@@ -864,8 +864,8 @@
 }
 
 .problem-report-dialog__attachment-list .problem-report-dialog__attachment-remove:hover:not(:disabled) {
-    border-color: var(--theme-danger, #c43d34);
-    color: var(--theme-danger, #c43d34);
+    border-color: var(--theme-danger, #dc1f25);
+    color: var(--theme-danger, #dc1f25);
 }
 
 .problem-report-dialog__attachment-list .problem-report-dialog__attachment-remove:active:not(:disabled) {
@@ -901,7 +901,7 @@
     overflow-x: hidden;
     overflow-y: auto;
     border: 1px solid var(--theme-border);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
 }
 
 .problem-report-dialog__history-item {
@@ -965,7 +965,7 @@
 
 .problem-report-dialog__message {
     padding: 9px 12px;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     background: var(--theme-surface-muted);
 }
 
@@ -1082,7 +1082,7 @@
     gap: 6px;
     min-height: 28px;
     padding: 0 12px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     border: 1px solid var(--theme-border);
     background: var(--theme-surface-muted);
     color: var(--theme-text-muted);
@@ -1119,7 +1119,7 @@
     min-height: 32px;
     padding: 6px 12px;
     border: 1px solid var(--theme-border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--theme-surface);
     box-shadow: var(--shadow-sm);
     transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease, background-color 0.16s ease;
@@ -1174,7 +1174,7 @@
 .about-tile__icon {
     width: 36px;
     height: 36px;
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     display: flex;
     align-items: center;
     justify-content: center;

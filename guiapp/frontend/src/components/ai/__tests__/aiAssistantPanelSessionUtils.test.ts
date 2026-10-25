@@ -1,8 +1,45 @@
 import { describe, expect, it } from "vitest";
-import { ACP_ASSISTANT_TAB_IDENTITY, activeAssistantTaskIdentity, archiveExpertTranscriptForProject, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, coerceActiveAssistantTask, expertIDFromTaskTags, formatGoalChecklistFromRecord, goalChecklistMessageId, isACPAssistantSessionKey, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, messageAfterSessionFloor, messageBelongsToSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, shouldBlockAssistantTabOpenOnTaskRegistration, upsertGoalChecklistInHistory } from "../aiAssistantPanelSessionUtils";
+import { ACP_ASSISTANT_TAB_IDENTITY, activeAssistantTaskIdentity, archiveExpertTranscriptForProject, assistantSessionIsSending, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, coerceActiveAssistantTask, expertIDFromTaskTags, formatGoalChecklistFromRecord, goalChecklistMessageId, isACPAssistantSessionKey, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, messageAfterSessionFloor, messageBelongsToSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, shouldBlockAssistantTabOpenOnTaskRegistration, upsertGoalChecklistInHistory } from "../aiAssistantPanelSessionUtils";
 import type { ChatMessage } from "../useAIAssistant";
 
 describe("aiAssistantPanelSessionUtils", () => {
+    it("does not treat another session's busy flag as this tab sending", () => {
+        const sessionKey = "desktop-user:D:/tasks/goal-trail";
+        expect(assistantSessionIsSending({
+            sessionKey,
+            sending: true,
+            sendingSessionKey: "desktop-user",
+            busySessionKeys: ["desktop-user"],
+        })).toBe(false);
+        expect(assistantSessionIsSending({
+            sessionKey,
+            sending: true,
+            sendingSessionKey: "desktop-user:D:\\tasks\\goal-trail",
+            busySessionKeys: ["desktop-user:D:\\tasks\\goal-trail"],
+        })).toBe(true);
+        expect(assistantSessionIsSending({
+            sessionKey,
+            sending: true,
+            sendingSessionKey: sessionKey,
+        })).toBe(true);
+        expect(assistantSessionIsSending({
+            sessionKey,
+            sending: true,
+            sendingSessionKey: "desktop-user",
+        })).toBe(false);
+        expect(assistantSessionIsSending({
+            sessionKey,
+            sending: true,
+            fallbackRoundActive: true,
+        })).toBe(true);
+        expect(assistantSessionIsSending({
+            sessionKey,
+            sending: false,
+            panelInFlightKeys: [sessionKey],
+            busySessionKeys: [],
+        })).toBe(true);
+    });
+
     it("persists an async guide-injection marker and its session owner", () => {
         const plain: ChatMessage = {
             id: "same-message",
@@ -139,6 +176,20 @@ describe("aiAssistantPanelSessionUtils", () => {
             content: card,
         });
         expect(kept?.map(message => message.id)).toEqual(["ask", "stream", goalChecklistMessageId("desktop-user:D:/tasks/bird")]);
+        const trail = [{ id: "t1", sequence: 1, kind: "thinking" as const, content: "Inspect quality.h", timestamp: 2 }];
+        const storedTrail = [
+            { id: "ask", role: "user" as const, content: "/goal  设计", timestamp: 1 },
+            { id: "goal", role: "assistant" as const, content: "", requestId: "goal-cont-1", timestamp: 2, codingTimeline: trail },
+        ];
+        const staleLive = [{ id: "ask", role: "user" as const, content: "/goal  设计", timestamp: 1 }];
+        const keptTrail = nextGoalChecklistHistory({
+            history: storedTrail,
+            liveHistory: staleLive,
+            sessionKey: "desktop-user:D:/tasks/bird",
+            content: card,
+        });
+        expect(keptTrail?.find(message => message.id === "goal")?.codingTimeline).toEqual(trail);
+        expect(keptTrail?.some(message => message.kind === "goalChecklist")).toBe(true);
         expect(nextGoalChecklistHistory({ history: [], sessionKey: "desktop-user", content: card })).toBeNull();
         expect(nextGoalChecklistHistory({ history: live, cleared: true, sessionKey: "desktop-user", content: card })).toBeNull();
         const bird = [{ id: "ask", role: "user" as const, content: "/goal  设计", timestamp: 1 }];

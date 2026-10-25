@@ -270,6 +270,25 @@ func TestVerifyModelFileWrongSizeAndMarker(t *testing.T) {
 	}
 }
 
+func TestVerifyModelFileHashesCorruptBytesOnce(t *testing.T) {
+	body, spec := fakeModel(20_000)
+	body[3] ^= 1
+	path := filepath.Join(t.TempDir(), spec.Filename)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := atomic.LoadInt64(&verifyHashReads)
+	if err := VerifyModelFile(path, spec); !errors.Is(err, ErrModelCorrupt) {
+		t.Fatalf("first = %v", err)
+	}
+	if err := VerifyModelFile(path, spec); !errors.Is(err, ErrModelCorrupt) {
+		t.Fatalf("second = %v", err)
+	}
+	if got := atomic.LoadInt64(&verifyHashReads) - before; got != 1 {
+		t.Fatalf("hash reads = %d", got)
+	}
+}
+
 func TestQwen3ModelSpecMatchesLocalFile(t *testing.T) {
 	dir := os.Getenv("MACLAW_TEST_MODELS_DIR")
 	if dir == "" {

@@ -438,6 +438,7 @@ func TestSkillAutoSummary_RunQualityGate_RefusesToOverwriteDefinition(t *testing
 	draft := makeValidDraft()
 	draft.Name = "atomic_quality_gate_" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	draft.Source = "learned"
+	draft.Check = "printf ok"
 	first, err := RunQualityGate(draft, nil)
 	if err != nil {
 		t.Fatalf("first RunQualityGate: %v", err)
@@ -613,6 +614,97 @@ func TestSkillAutoSummaryPipelineCommitsStagedDefinition(t *testing.T) {
 	}
 }
 
+func TestSkillAutoSummaryPipelineRefusesReplayWithoutExitCheck(t *testing.T) {
+	app := setupNLSkillTransactionApp(t)
+	cfg := corelib.AppConfig{}
+	cfg.SetSkillEvolutionEnabled(true)
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	session := autoSummaryDurableMutationSession("auto-summary-no-check")
+	session.Entries[len(session.Entries)-1].Content = "[error] boom"
+	p := NewSkillAutoSummaryPipeline(nil, allowAllChecker(), app.skillExecutor, nil)
+	p.RunPipeline(session)
+
+	if loaded := app.skillExecutor.loadSkills(); len(loaded) != 0 {
+		t.Fatalf("published a learned skill with no exit check: %#v", loaded)
+	}
+	root, err := app.primarySkillsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries, err := os.ReadDir(root); err == nil && len(entries) != 0 {
+		t.Fatalf("no-check trajectory created durable skill entries: %#v", entries)
+	} else if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read primary skills root: %v", err)
+	}
+	stagingRoot, err := app.skillStagingDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries, err := os.ReadDir(stagingRoot); err == nil && len(entries) != 0 {
+		t.Fatalf("no-check trajectory created a staging dir: %#v", entries)
+	} else if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read staging root: %v", err)
+	}
+}
+
+func TestLearnedSkillExitCheck(t *testing.T) {
+	stopping := &skill.SkillYAMLFile{Source: "learned", Steps: []skill.SkillYAMLStep{{
+		Action: "bash", Params: map[string]interface{}{"command": "printf checked"},
+	}}}
+	if !learnedSkillHasExitCheck(stopping) {
+		t.Fatal("stopping bash was not a check")
+	}
+	skipped := &skill.SkillYAMLFile{Source: "learned", Steps: []skill.SkillYAMLStep{{
+		Action: "bash", Params: map[string]interface{}{"command": "printf checked"}, OnError: "skip",
+	}}}
+	if learnedSkillHasExitCheck(skipped) {
+		t.Fatal("skip on error counted as a check")
+	}
+	continued := &skill.SkillYAMLFile{Source: "learned", Steps: []skill.SkillYAMLStep{{
+		Action: "shell", Params: map[string]interface{}{"command": "printf checked"}, ContinueOnErr: true,
+	}}}
+	if learnedSkillHasExitCheck(continued) {
+		t.Fatal("continue on error counted as a check")
+	}
+	explicit := &skill.SkillYAMLFile{Source: "learned", Check: "printf ok", Steps: []skill.SkillYAMLStep{{
+		Action: "bash", OnError: "continue",
+	}}}
+	if !learnedSkillHasExitCheck(explicit) {
+		t.Fatal("explicit check did not allow a continuing last step")
+	}
+	if err := refuseLearnedSkillWithoutExitCheck(skipped); err == nil || !strings.Contains(err.Error(), "exit-code check") {
+		t.Fatalf("learned skip err=%v", err)
+	}
+	plain := makeValidDraft()
+	if err := refuseLearnedSkillWithoutExitCheck(plain); err != nil {
+		t.Fatalf("non-learned draft was refused: %v", err)
+	}
+}
+
+func TestSkillAutoSummary_RunQualityGate_RefusesLearnedDraftWithoutExitCheck(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("HOME", baseDir)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", baseDir)
+	}
+	draft := makeValidDraft()
+	draft.Source = "learned"
+	draft.Name = "no_exit_check_" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	if _, err := RunQualityGate(draft, nil); err == nil || !strings.Contains(err.Error(), "exit-code check") {
+		t.Fatalf("RunQualityGate err=%v", err)
+	}
+	root, err := skill.PrimarySkillsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	skillDir := filepath.Join(root, toKebabCase(draft.Name))
+	if _, err := os.Stat(skillDir); !os.IsNotExist(err) {
+		t.Fatalf("refused draft left %s: %v", skillDir, err)
+	}
+}
+
 func TestSkillAutoSummaryPipelineLiftsSessionOperands(t *testing.T) {
 	app := setupNLSkillTransactionApp(t)
 	cfg := corelib.AppConfig{}
@@ -730,6 +822,7 @@ func TestSkillAutoSummaryPipelineDefersAutomaticReplacement(t *testing.T) {
 		draft.Steps[i].OnError = "skip"
 	}
 	draft.Name = "auto-summary-existing"
+	draft.Check = "printf ok"
 	first, err := RunQualityGate(draft, nil)
 	if err != nil {
 		t.Fatal(err)

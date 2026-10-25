@@ -12,3 +12,5 @@ func (r *gpuRun) track(*Node, []*Tensor)                                   {}
 func (r *gpuRun) dead(int, *Node)                                          {}
 func (r *gpuRun) finish(map[string]*Tensor) error                          { return nil }
 func (r *gpuRun) abort()                                                   {}
+
+func metalSupported() bool { return false }

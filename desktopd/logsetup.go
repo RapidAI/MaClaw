@@ -60,8 +60,24 @@ func ConfigureProcessLog() error {
 		out = stderrTee{file: w, stderr: os.Stderr}
 	}
 	log.SetOutput(out)
+	processLogFile = w
 	log.Printf("[desktopd] logging to %s (rotate every %d bytes, keep %d)", path, maxBytes, maxFiles)
 	return nil
+}
+
+// processLogFile holds the writer ConfigureProcessLog installed so shutdown
+// and tests can release the OS handle; an open handle keeps a Windows
+// directory undeletable.
+var processLogFile *rotatingFile
+
+// CloseProcessLog releases the rotating log handle and restores stderr
+// logging. Safe to call more than once and when no file log was configured.
+func CloseProcessLog() {
+	if processLogFile != nil {
+		_ = processLogFile.Close()
+		processLogFile = nil
+	}
+	log.SetOutput(os.Stderr)
 }
 
 func mirrorStderr() bool {
@@ -219,4 +235,17 @@ func (w *rotatingFile) rotate() error {
 	}
 	w.size = 0
 	return w.open()
+}
+
+// Close releases the open log handle. Write reopens the file on demand, so
+// closing is safe at any point.
+func (w *rotatingFile) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.f == nil {
+		return nil
+	}
+	err := w.f.Close()
+	w.f = nil
+	return err
 }

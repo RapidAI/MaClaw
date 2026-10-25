@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyKnowledgeDomainFilterPayload, applyKnowledgeSearchFilterPayload, applyKnowledgeStructuredSearchPayload, clusterKnowledgeFacetChips, knowledgeCoverageAliasSummary, knowledgeCoverageFilterSummary, knowledgeExecutionActionSourceIDs, knowledgeExecutionFailureDetails, knowledgeExecutionResultSourceIDs, knowledgeExecutionSourceFilterLabel, knowledgeHealthActionConfirmMessage, knowledgeHealthActionExecutable, knowledgeHealthActionExecutionPayload, knowledgeHealthActionManualLabel, knowledgeHealthSummaryModel, knowledgeQualityExecutionContextLabel, knowledgeSearchFacetActive, knowledgeSearchFragmentDeletable, knowledgeSearchFragmentMatchesDeleted, knowledgeSearchFragmentPayload, knowledgeSearchKindOptions, knowledgeSearchResultTypeOptions, knowledgeSearchShouldReload, knowledgeSourceCoverageOptions, knowledgeSourceCoverageStateValue, knowledgeSourceListPayload, normalizeKnowledgeCoverageOption, normalizeKnowledgeDomainFilter, normalizeKnowledgeFilterToken, normalizeKnowledgeSourceLimit, parseDomainList, parseLabelList, parseURLBatch, resolveKnowledgeCoverageOption, splitKnowledgeFacetChip, toggleKnowledgeSearchFacet } from '../KnowledgeSettingsPanel';
+import { applyKnowledgeDomainFilterPayload, applyKnowledgeSearchFilterPayload, applyKnowledgeStructuredSearchPayload, clusterKnowledgeFacetChips, knowledgeCoverageAliasSummary, knowledgeCoverageFilterSummary, knowledgeExecutionActionSourceIDs, knowledgeExecutionFailureDetails, knowledgeExecutionResultSourceIDs, knowledgeExecutionSourceFilterLabel, knowledgeExportGroups, knowledgeHealthActionConfirmMessage, knowledgeHealthActionExecutable, knowledgeHealthActionExecutionPayload, knowledgeHealthActionManualLabel, knowledgeHealthSummaryModel, knowledgeQualityExecutionContextLabel, knowledgeSearchFacetActive, knowledgeSearchFragmentDeletable, knowledgeSearchFragmentMatchesDeleted, knowledgeSearchFragmentPayload, knowledgeSearchKindOptions, knowledgeSearchResultTypeOptions, knowledgeSearchShouldReload, knowledgeSourceCoverageOptions, knowledgeSourceCoverageStateValue, knowledgeSourceListPayload, normalizeKnowledgeCoverageOption, normalizeKnowledgeDomainFilter, normalizeKnowledgeFilterToken, normalizeKnowledgeSourceLimit, parseDomainList, parseLabelList, parseURLBatch, resolveKnowledgeCoverageOption, splitKnowledgeFacetChip, toggleKnowledgeSearchFacet } from '../KnowledgeSettingsPanel';
 
 describe('normalizeKnowledgeCoverageOption', () => {
     it('matches backend coverage filter key normalization style', () => {
@@ -520,7 +520,7 @@ describe('applyKnowledgeSearchFilterPayload', () => {
 });
 
 describe('knowledge search facet helpers', () => {
-    const form = { resultType: 'all', sourceKind: 'all', domain: '', sourceID: '', labels: '' };
+    const form = { resultType: 'all', sourceKind: 'all', domain: '', sourceID: '', labels: '', collectionID: '' };
 
     it('keeps html/image kinds and unknown current or facet kinds in the select', () => {
         expect(knowledgeSearchKindOptions()).toEqual(expect.arrayContaining(['html', 'image', 'docx']));
@@ -555,6 +555,38 @@ describe('knowledge search facet helpers', () => {
         const withSource = toggleKnowledgeSearchFacet(form, 'sources', 'src-1');
         expect(withSource.sourceID).toBe('src-1');
         expect(toggleKnowledgeSearchFacet(withSource, 'sources', 'src-1').sourceID).toBe('');
+
+        const withCollection = toggleKnowledgeSearchFacet(form, 'collections', 'kcol_1');
+        expect(withCollection.collectionID).toBe('kcol_1');
+        expect(knowledgeSearchFacetActive(withCollection, 'collections', 'kcol_1')).toBe(true);
+        expect(toggleKnowledgeSearchFacet(withCollection, 'collections', 'kcol_1').collectionID).toBe('');
+        const collectionPayload: Record<string, unknown> = { query: 'alpha' };
+        applyKnowledgeSearchFilterPayload(collectionPayload, { collectionID: ' kcol_1 ' });
+        expect(collectionPayload).toEqual({ query: 'alpha', collection_ids: ['kcol_1'] });
+    });
+
+    it('groups export rows by collection and keeps a batch-only source unassigned', () => {
+        const t = (en: string) => en;
+        const groups = knowledgeExportGroups(
+            [
+                { id: 'in', title: 'In collection' },
+                { id: 'both', title: 'Two collections' },
+                { id: 'batch-only', title: 'Batch only', batch_id: 'b1' },
+            ],
+            [{ id: 'b1', root_path: 'D:\\docs' }],
+            [
+                { id: 'c1', title: 'Notes', kind: 'manual', source_id: 'in' },
+                { id: 'c1', title: 'Notes', kind: 'manual', source_id: 'both' },
+                { id: 'c2', title: 'Project', kind: 'project', folder_path: 'D:/work', source_id: 'both' },
+            ],
+            t,
+        );
+        expect(groups.map(group => group.id)).toEqual(['collection:c1', 'collection:c2', 'unassigned']);
+        expect(groups[0].sources.map(source => source.id)).toEqual(['in', 'both']);
+        expect(groups[1].sources.map(source => source.id)).toEqual(['both']);
+        expect(groups[2].label).toBe('Ungrouped sources');
+        expect(groups[2].sources.map(source => source.id)).toEqual(['batch-only']);
+        expect(groups[2].sources[0].export_batch).toBe('D:\\docs');
     });
 
     it('splits kind/scope labels for compact facet chips', () => {

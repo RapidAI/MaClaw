@@ -663,7 +663,7 @@ func historyHandoffEntry(dropped []ConversationEntry) ConversationEntry {
 	seenPath := map[string]bool{}
 	priorSummary := ""
 	addUser := func(text string) {
-		text = oneLine(text)
+		text = handoffOneLine(text)
 		if text == "" || seenUser[text] {
 			return
 		}
@@ -700,9 +700,9 @@ func historyHandoffEntry(dropped []ConversationEntry) ConversationEntry {
 						addPath(item)
 					}
 					if len(parsedSummary) > 0 {
-						priorSummary = oneLine(parsedSummary[len(parsedSummary)-1])
+						priorSummary = handoffOneLine(parsedSummary[len(parsedSummary)-1])
 					} else if len(parsedUsers) == 0 && len(parsedPaths) == 0 {
-						body := oneLine(strings.TrimPrefix(text, contextHandoffPrefix))
+						body := handoffOneLine(strings.TrimPrefix(text, contextHandoffPrefix))
 						if body != "" {
 							priorSummary = TruncateRunes(body, 500)
 						}
@@ -710,7 +710,7 @@ func historyHandoffEntry(dropped []ConversationEntry) ConversationEntry {
 					continue
 				}
 				if strings.HasPrefix(text, conversationSummaryPrefix) {
-					body := oneLine(strings.TrimPrefix(text, conversationSummaryPrefix))
+					body := handoffOneLine(strings.TrimPrefix(text, conversationSummaryPrefix))
 					if body != "" {
 						priorSummary = TruncateRunes(body, 500)
 					}
@@ -761,7 +761,7 @@ func historyHandoffEntry(dropped []ConversationEntry) ConversationEntry {
 const contextHandoffPrefix = "[上下文恢复]"
 const conversationSummaryPrefix = "[对话历史摘要]"
 
-func oneLine(text string) string {
+func handoffOneLine(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
@@ -918,6 +918,12 @@ func argumentMap(raw interface{}) map[string]interface{} {
 // The generic 4KB head/tail cut deleted planned names that sorted in the
 // middle and left the petition sermon as the surviving instruction.
 const ToolsSearchMaxToolResult = 8192
+
+// CodeNavigationMaxToolResult keeps one code_navigation payload inline.
+// The navigation output is already capped near 24KB. The JSON around it
+// carries that source and continue_with. 64KB holds the capped payload.
+// A larger result still goes through the normal projector.
+const CodeNavigationMaxToolResult = 65536
 
 // MaxToolResultLen caps individual tool results to ~4KB before they enter
 // the conversation. This prevents a single verbose tool output (e.g. bash
@@ -1087,6 +1093,8 @@ func toolResultPreviewLimitForContext(toolName string, contextTokens int) int {
 		return ToolResultReadMaxToolResult
 	case "tools_search":
 		return ToolsSearchMaxToolResult
+	case "code_navigation":
+		return CodeNavigationMaxToolResult
 	default:
 		if strings.HasPrefix(name, "ssh") {
 			return TerminalMaxToolResult

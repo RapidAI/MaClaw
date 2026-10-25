@@ -84,9 +84,11 @@ type fileCompanionRuntime struct {
 	recordEvents bool
 	events       []recordedCompanionEvent
 
-	// chatMu guards the clear generation. A turn captures chatGen when it
-	// starts. /clear bumps the generation and drops a later save from that
-	// turn, so the reply cannot write the cleared transcript back.
+	// chatMu guards the clear generation and the companion transcript
+	// snapshot. A turn reads chatGen and the entries together. /clear and a
+	// synced transcript bump the generation and, for a sync, write the new
+	// transcript before releasing the lock, so a later save cannot put the
+	// previous chat back.
 	chatMu      sync.Mutex
 	chatGen     map[string]uint64
 	chatDiscard map[string]bool
@@ -609,7 +611,7 @@ func (a *App) onFileCompanionSecondInstance(data options.SecondInstanceData) {
 
 // notifyFileCompanionShow tells the open window to show its 打开 panel when
 // it has no tab. A launch that has not subscribed yet does that from its own
-// empty boot. The system file dialog stays behind the panel's 打开文件 row.
+// empty boot. The system file dialog stays behind the panel's 打开文档或导入项目 row.
 func (a *App) notifyFileCompanionShow() {
 	if a == nil {
 		return
@@ -744,6 +746,7 @@ func (a *App) fileCompanionStartup(ctx context.Context) {
 		return
 	}
 	a.ctx = ctx
+	a.installMermaidPDFRaster()
 	st := a.companionRuntime()
 	st.mu.Lock()
 	st.process = true

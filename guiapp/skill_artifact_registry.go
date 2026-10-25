@@ -2,12 +2,15 @@ package guiapp
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -59,6 +62,19 @@ func (a *App) skillArtifactRegistryDBPath() string {
 	return filepath.Join(a.GetDataDir(), "skill_artifacts.db")
 }
 
+// skillArtifactRegistryDBPool caches one opened *sql.DB per database file path
+// so periodic status polling does not repeat the open/PRAGMA/schema dance on
+// every request. Entries are keyed by absolute file path, so callers using
+// distinct database files (e.g. tests with isolated temp dirs) stay isolated.
+// The pool keeps no idle connections, so underlying file handles are released
+// as soon as a request finishes.
+var skillArtifactRegistryDBPools sync.Map // db path -> *skillArtifactRegistryDBPool
+
+type skillArtifactRegistryDBPool struct {
+	mu sync.Mutex
+	db *sql.DB
+}
+
 func openSkillArtifactRegistryDB(dbPath string) (*sql.DB, error) {
 	dbPath = strings.TrimSpace(dbPath)
 	if dbPath == "" {
@@ -67,10 +83,14 @@ func openSkillArtifactRegistryDB(dbPath string) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, fmt.Errorf("artifact registry mkdir: %w", err)
 	}
-	db, err := sql.Open("sqlite", dbPath)
+	// PRAGMAs are also passed via DSN query parameters so that every
+	// connection the pool opens inherits them, not just the first.
+	dsn := dbPath + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("artifact registry open: %w", err)
 	}
+	db.SetMaxIdleConns(0)
 	for _, pragma := range []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA busy_timeout=5000",
@@ -86,6 +106,70 @@ func openSkillArtifactRegistryDB(dbPath string) (*sql.DB, error) {
 		return nil, err
 	}
 	return db, nil
+}
+
+// acquireSkillArtifactRegistryDB returns a process-wide pooled handle for the
+// given database file, initializing it at most once per path. Callers must not
+// Close the returned handle. If a previously returned handle was closed
+// externally (e.g. a test calling the raw open function), the pool reopens it.
+func acquireSkillArtifactRegistryDB(dbPath string) (*sql.DB, error) {
+	dbPath = strings.TrimSpace(dbPath)
+	if dbPath == "" {
+		return nil, fmt.Errorf("artifact registry db path is required")
+	}
+	poolIface, _ := skillArtifactRegistryDBPools.LoadOrStore(dbPath, &skillArtifactRegistryDBPool{})
+	pool := poolIface.(*skillArtifactRegistryDBPool)
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	if pool.db != nil {
+		if err := pool.db.Ping(); err == nil {
+			return pool.db, nil
+		}
+		pool.db = nil
+	}
+	db, err := openSkillArtifactRegistryDB(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	pool.db = db
+	return db, nil
+}
+
+// skillArtifactRegistryWriteFingerprints remembers the last content
+// fingerprint actually upserted per (db path, artifact uri), so unchanged
+// artifacts can skip redundant writes. It is in-memory only: after a process
+// restart the first registration writes as before.
+var skillArtifactRegistryWriteFingerprints sync.Map // dbPath+"\x00"+uri -> string
+
+func skillArtifactRegistryFingerprintKey(dbPath, uri string) string {
+	return dbPath + "\x00" + uri
+}
+
+// skillArtifactRegistryRecordFingerprint hashes every column the upsert would
+// write except updated_at (which always changes and is not part of content
+// identity for dedup purposes).
+func skillArtifactRegistryRecordFingerprint(record skillArtifactRegistryRecord) string {
+	h := sha256.New()
+	for _, part := range []string{
+		record.URI,
+		record.RunID,
+		record.OwnerID,
+		record.Skill,
+		record.ArtifactID,
+		record.Name,
+		record.Path,
+		record.MimeType,
+		record.RemoteURL,
+		record.Checksum,
+		record.DownloadState,
+		record.Status,
+		record.Presentation,
+		fmt.Sprintf("%d", record.SizeBytes),
+	} {
+		h.Write([]byte(part))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func ensureSkillArtifactRegistrySchema(db *sql.DB) error {
@@ -136,11 +220,19 @@ func (a *App) registerSkillRunArtifacts(status *SkillRunStatus) {
 	if a == nil || status == nil || len(status.Artifacts) == 0 {
 		return
 	}
-	db, err := openSkillArtifactRegistryDB(a.skillArtifactRegistryDBPath())
+	dbPath := a.skillArtifactRegistryDBPath()
+	db, err := acquireSkillArtifactRegistryDB(dbPath)
 	if err != nil {
 		return
 	}
-	defer db.Close()
+	// Terminal runs always perform a final sync, even when the artifact
+	// content fingerprint is unchanged, so the durable record reflects the
+	// run's final state (updated_at included).
+	finalSync := false
+	switch status.Status.Normalized() {
+	case skillRunStatusSuccess, skillRunStatusFailed, skillRunStatusCancelled:
+		finalSync = true
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	for _, artifact := range status.Artifacts {
 		record := skillArtifactRegistryRecord{
@@ -173,7 +265,14 @@ func (a *App) registerSkillRunArtifacts(status *SkillRunStatus) {
 		if record.URI == "" || record.RunID == "" || record.ArtifactID == "" || (record.Path == "" && record.RemoteURL == "") {
 			continue
 		}
-		_, _ = db.ExecContext(context.Background(), `INSERT INTO skill_run_artifacts
+		fingerprintKey := skillArtifactRegistryFingerprintKey(dbPath, record.URI)
+		fingerprint := skillArtifactRegistryRecordFingerprint(record)
+		if !finalSync {
+			if cached, ok := skillArtifactRegistryWriteFingerprints.Load(fingerprintKey); ok && cached == fingerprint {
+				continue
+			}
+		}
+		if _, err := db.ExecContext(context.Background(), `INSERT INTO skill_run_artifacts
 			(uri, run_id, owner_id, skill, artifact_id, name, path, mime_type, size_bytes, remote_url, checksum, download_state, status, presentation, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(uri) DO UPDATE SET
@@ -191,7 +290,9 @@ func (a *App) registerSkillRunArtifacts(status *SkillRunStatus) {
 				status=excluded.status,
 				presentation=excluded.presentation,
 				updated_at=excluded.updated_at`,
-			record.URI, record.RunID, record.OwnerID, record.Skill, record.ArtifactID, record.Name, record.Path, record.MimeType, record.SizeBytes, record.RemoteURL, record.Checksum, record.DownloadState, record.Status, record.Presentation, now, record.UpdatedAt)
+			record.URI, record.RunID, record.OwnerID, record.Skill, record.ArtifactID, record.Name, record.Path, record.MimeType, record.SizeBytes, record.RemoteURL, record.Checksum, record.DownloadState, record.Status, record.Presentation, now, record.UpdatedAt); err == nil {
+			skillArtifactRegistryWriteFingerprints.Store(fingerprintKey, fingerprint)
+		}
 	}
 }
 
@@ -217,11 +318,10 @@ func (a *App) GetSkillRunArtifactForOwner(ownerID, runID, artifactRef string) (*
 	if uri == "" && runID != "" && artifactID != "" {
 		uri = skillRunArtifactURI(runID, artifactID)
 	}
-	db, err := openSkillArtifactRegistryDB(a.skillArtifactRegistryDBPath())
+	db, err := acquireSkillArtifactRegistryDB(a.skillArtifactRegistryDBPath())
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
 	var row *sql.Row
 	if strings.HasPrefix(strings.ToLower(uri), "artifact://") {
 		row = db.QueryRowContext(context.Background(), `SELECT `+skillArtifactRegistrySelectColumns+` FROM skill_run_artifacts WHERE uri = ?`, uri)
@@ -275,11 +375,10 @@ func (a *App) UpdateSkillRunArtifactCacheForOwner(ownerID, runID, artifactRef, l
 	if uri == "" && (runID == "" || artifactID == "") {
 		return nil, fmt.Errorf("artifact reference is required")
 	}
-	db, err := openSkillArtifactRegistryDB(a.skillArtifactRegistryDBPath())
+	db, err := acquireSkillArtifactRegistryDB(a.skillArtifactRegistryDBPath())
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
 	var artifactOwner string
 	if strings.HasPrefix(strings.ToLower(uri), "artifact://") {
 		err = db.QueryRowContext(context.Background(), `SELECT COALESCE(owner_id, '') FROM skill_run_artifacts WHERE uri = ?`, uri).Scan(&artifactOwner)
@@ -301,6 +400,10 @@ func (a *App) UpdateSkillRunArtifactCacheForOwner(ownerID, runID, artifactRef, l
 	if err != nil {
 		return nil, err
 	}
+	// The row changed outside registerSkillRunArtifacts; drop the write
+	// fingerprint so the next registration re-applies the run record instead
+	// of mistaking the row for already-in-sync content.
+	skillArtifactRegistryWriteFingerprints.Delete(skillArtifactRegistryFingerprintKey(a.skillArtifactRegistryDBPath(), uri))
 	return a.GetSkillRunArtifactForOwner(ownerID, runID, artifactRef)
 }
 
@@ -313,11 +416,10 @@ func (a *App) ListSkillRunArtifactsForOwner(ownerID, runID string, limit int) ([
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	db, err := openSkillArtifactRegistryDB(a.skillArtifactRegistryDBPath())
+	db, err := acquireSkillArtifactRegistryDB(a.skillArtifactRegistryDBPath())
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
 	baseQuery := `SELECT ` + skillArtifactRegistrySelectColumns + ` FROM skill_run_artifacts`
 	var rows *sql.Rows
 	if ownerID != "" && runID != "" {
@@ -359,11 +461,10 @@ func (a *App) lookupSkillArtifactPathForOwner(ownerID, runID, artifactRef string
 	if uri == "" && runID != "" && artifactID != "" {
 		uri = skillRunArtifactURI(runID, artifactID)
 	}
-	db, err := openSkillArtifactRegistryDB(a.skillArtifactRegistryDBPath())
+	db, err := acquireSkillArtifactRegistryDB(a.skillArtifactRegistryDBPath())
 	if err != nil {
 		return "", err
 	}
-	defer db.Close()
 	var path, artifactOwner string
 	if strings.HasPrefix(strings.ToLower(uri), "artifact://") {
 		err = db.QueryRowContext(context.Background(), `SELECT path, COALESCE(owner_id, '') FROM skill_run_artifacts WHERE uri = ?`, uri).Scan(&path, &artifactOwner)
@@ -395,23 +496,25 @@ func (a *App) CleanupSkillArtifactRegistry(maxAgeDays int, removeMissing bool) (
 	if a == nil {
 		return nil, fmt.Errorf("app is nil")
 	}
-	db, err := openSkillArtifactRegistryDB(a.skillArtifactRegistryDBPath())
+	dbPath := a.skillArtifactRegistryDBPath()
+	db, err := acquireSkillArtifactRegistryDB(dbPath)
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
 	result := map[string]int64{"expired": 0, "missing": 0}
 	if maxAgeDays > 0 {
 		cutoff := time.Now().UTC().AddDate(0, 0, -maxAgeDays).Format(time.RFC3339)
-		expiredRows, err := db.QueryContext(context.Background(), `SELECT path FROM skill_run_artifacts WHERE updated_at < ?`, cutoff)
+		expiredRows, err := db.QueryContext(context.Background(), `SELECT uri, path FROM skill_run_artifacts WHERE updated_at < ?`, cutoff)
 		if err != nil {
 			return result, err
 		}
 		var expiredPaths []string
+		var expiredURIs []string
 		for expiredRows.Next() {
-			var path string
-			if err := expiredRows.Scan(&path); err == nil {
+			var uri, path string
+			if err := expiredRows.Scan(&uri, &path); err == nil {
 				expiredPaths = append(expiredPaths, path)
+				expiredURIs = append(expiredURIs, uri)
 			}
 		}
 		if err := expiredRows.Err(); err != nil {
@@ -425,6 +528,9 @@ func (a *App) CleanupSkillArtifactRegistry(maxAgeDays int, removeMissing bool) (
 		}
 		if n, err := res.RowsAffected(); err == nil {
 			result["expired"] = n
+		}
+		for _, uri := range expiredURIs {
+			skillArtifactRegistryWriteFingerprints.Delete(skillArtifactRegistryFingerprintKey(dbPath, uri))
 		}
 		for _, path := range expiredPaths {
 			a.removeExpiredSkillAppOutputFile(path)
@@ -455,6 +561,7 @@ func (a *App) CleanupSkillArtifactRegistry(maxAgeDays int, removeMissing bool) (
 		for _, item := range staleRows {
 			if _, err := db.ExecContext(context.Background(), `DELETE FROM skill_run_artifacts WHERE uri = ?`, item.uri); err == nil {
 				result["missing"]++
+				skillArtifactRegistryWriteFingerprints.Delete(skillArtifactRegistryFingerprintKey(dbPath, item.uri))
 			}
 		}
 	}

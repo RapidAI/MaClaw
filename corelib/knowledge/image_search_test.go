@@ -36,6 +36,13 @@ func TestSearchImagesReturnsOnlyMatchingImageNodes(t *testing.T) {
 	if results[0].Media == nil || results[0].Media.AssetID != "image-source" {
 		t.Fatalf("image result lost stable asset ID: %#v", results[0].Media)
 	}
+	nonNodes, err := store.SearchImages(ctx, ImageSearchOptions{SearchOptions: SearchOptions{Query: "architecture diagram", ResultTypes: []string{"card"}}})
+	if err != nil || len(nonNodes) != 0 {
+		t.Fatalf("card-only image search = %#v, %v", nonNodes, err)
+	}
+	if _, err := store.SearchImages(ctx, ImageSearchOptions{SearchOptions: SearchOptions{Query: "architecture diagram", ResultTypes: []string{"image"}}}); err == nil {
+		t.Fatal("unknown image result type should fail")
+	}
 }
 
 func TestSearchImagesUsesRecordedAssetIDForEmbeddedImage(t *testing.T) {

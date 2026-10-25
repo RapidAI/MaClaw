@@ -6,7 +6,7 @@ import { consumePendingKnowledgeSearch, KNOWLEDGE_SEARCH_EVENT, peekPendingKnowl
 import { ConfirmDialog } from '../modals/ConfirmDialog';
 import { DeepCrawlConfig, DeepCrawlPanel, DeepCrawlPreviewResult, DeepCrawlRunResult } from './DeepCrawlPanel';
 import { buildHubCardStoreURL } from '../../utils/hubCredits';
-import { EnterpriseKnowledgeListLibraries, EnterpriseKnowledgeSetLibraryUserSync, EnterprisePurgeRevokedLibrary, EnterpriseSetSyncPaused, EnterpriseSyncNow, EnterpriseSyncStatus, GetHubLLMServiceStatus, KnowledgeBackfillSourceAutoLabels, KnowledgeBrowseAddFolderWatch, KnowledgeCapabilities, KnowledgeClearAll, KnowledgeContextPack, KnowledgeDeepCrawl, KnowledgeDeepCrawlPreview, KnowledgeDeleteHubShare, KnowledgeDeleteFragment, KnowledgeDeleteSource, KnowledgeDisableSensitiveSources, KnowledgeDisableSource, KnowledgeDisableSources, KnowledgeDisableSourcesByFilter, KnowledgeDiscoverURLs, KnowledgeDoctor, KnowledgeEnableSource, KnowledgeEnableSourcesByFilter, KnowledgeEntityProfile, KnowledgeExecuteSourceQualityMaintenancePlan, KnowledgeExplain, KnowledgeExportSnapshotWithOptions, KnowledgeFactGraph, KnowledgeFactIndex, KnowledgeGetImageAssetPaths, KnowledgeHealth, KnowledgeImportDirectory, KnowledgeImportFiles, KnowledgeImportHubShare, KnowledgeImportJobStatus, KnowledgeImportSnapshot, KnowledgeLinkSources, KnowledgeListCardsBySource, KnowledgeListDuplicateCards, KnowledgeListFactsBySource, KnowledgeListFolderWatches, KnowledgeListImportBatches, KnowledgeListImportItems, KnowledgeListMyHubShares, KnowledgeListSourceLabels, KnowledgeListSourceLinkEvents, KnowledgeListSourceLinks, KnowledgeListSourceVersions, KnowledgeListSources, KnowledgeListSuppressedCards, KnowledgeListURLDomainPolicies, KnowledgeMaintain, KnowledgeOpenImageAsset, KnowledgePreviewNodesBySource, KnowledgePreviewSourceRefresh, KnowledgePreviewSourceTopicLinks, KnowledgePreviewSourcesRefreshByFilter, KnowledgeQualityMaintenancePolicies, KnowledgeRebuildSourceDerived, KnowledgeRebuildSourcesDerived, KnowledgeRebuildSourcesDerivedByFilter, KnowledgeRefreshChangedSources, KnowledgeRefreshChangedSourcesByFilter, KnowledgeRefreshSource, KnowledgeRefreshSourceTopicLinks, KnowledgeRefreshSourceTopicLinksByFilter, KnowledgeRefreshSources, KnowledgeRefreshSourcesByFilter, KnowledgeRemoveFolderWatch, KnowledgeRestoreSuppressedCards, KnowledgeRetryImportBatch, KnowledgeSaveText, KnowledgeSaveURL, KnowledgeSaveURLs, KnowledgeScanDirectory, KnowledgeScanFiles, KnowledgeScanSensitiveContent, KnowledgeSearch, KnowledgeSearchFacets, KnowledgeSearchStructured, DigitalAssetListContributableLibraries, DigitalAssetListMySubmissions, DigitalAssetWithdrawSubmission, KnowledgeContributeToOrg, KnowledgeShareToHub, KnowledgeSourceDigest, KnowledgeSourceGraph, KnowledgeSourceNeighborhood, KnowledgeSourcePath, KnowledgeSourceQualityMaintenancePlan, KnowledgeSourceQualityReport, KnowledgeSourceTimeline, KnowledgeStartImportDirectory, KnowledgeStructuredCatalog, KnowledgeSuggest, KnowledgeSuppressDuplicateCards, KnowledgeSyncDelete, KnowledgeSyncDownload, KnowledgeSyncStatus, KnowledgeSyncUpload, KnowledgeSyncVerifyPassword, KnowledgeTopicRelevance, KnowledgeUnlinkSources, KnowledgeUpdateHubShare, KnowledgeUpdateSourceLabels, KnowledgeUpdateSourceMetadata, KnowledgeUpdateURLDomainPolicies, LoadConfig, OpenFileOrShowInFolder, OpenSystemUrl, SelectKnowledgeDirectory, SelectKnowledgeFiles, SelectKnowledgeSnapshotExportPath, SelectKnowledgeSnapshotFile } from '../../../wailsjs/go/main/App';
+import { EnterpriseKnowledgeListLibraries, EnterpriseKnowledgeSetLibraryUserSync, EnterprisePurgeRevokedLibrary, EnterpriseSetSyncPaused, EnterpriseSyncNow, EnterpriseSyncStatus, GetHubLLMServiceStatus, KnowledgeBackfillSourceAutoLabels, KnowledgeBrowseAddFolderWatch, KnowledgeCapabilities, KnowledgeClearAll, KnowledgeContextPack, KnowledgeDeepCrawl, KnowledgeDeepCrawlPreview, KnowledgeDeleteHubShare, KnowledgeDeleteFragment, KnowledgeDeleteSource, KnowledgeDisableSensitiveSources, KnowledgeDisableSource, KnowledgeDisableSources, KnowledgeDisableSourcesByFilter, KnowledgeDiscoverURLs, KnowledgeDoctor, KnowledgeEnableSource, KnowledgeEnableSourcesByFilter, KnowledgeEntityProfile, KnowledgeExecuteSourceQualityMaintenancePlan, KnowledgeExplain, KnowledgeExportSnapshotWithOptions, KnowledgeFactGraph, KnowledgeFactIndex, KnowledgeGetImageAssetPaths, KnowledgeHealth, KnowledgeImportDirectory, KnowledgeImportFiles, KnowledgeImportHubShare, KnowledgeImportJobStatus, KnowledgeImportSnapshot, KnowledgeLinkSources, KnowledgeListCardsBySource, KnowledgeListDuplicateCards, KnowledgeListFactsBySource, KnowledgeListFolderWatches, KnowledgeListImportBatches, KnowledgeListImportItems, KnowledgeListMyHubShares, KnowledgeListSourceLabels, KnowledgeListSourceLinkEvents, KnowledgeListSourceLinks, KnowledgeListSourceVersions, KnowledgeListSources, KnowledgeListCollections, KnowledgeCreateCollection, KnowledgeListCollectionMembers, KnowledgeAddCollectionMember, KnowledgeRemoveCollectionMember, KnowledgeListUnassignedSources, KnowledgeListSourceCollectionRefs, KnowledgeListSuppressedCards, KnowledgeListURLDomainPolicies, KnowledgeMaintain, KnowledgeOpenImageAsset, KnowledgePreviewNodesBySource, KnowledgePreviewSourceRefresh, KnowledgePreviewSourceTopicLinks, KnowledgePreviewSourcesRefreshByFilter, KnowledgeQualityMaintenancePolicies, KnowledgeRebuildSourceDerived, KnowledgeRebuildSourcesDerived, KnowledgeRebuildSourcesDerivedByFilter, KnowledgeRefreshChangedSources, KnowledgeRefreshChangedSourcesByFilter, KnowledgeRefreshSource, KnowledgeRefreshSourceTopicLinks, KnowledgeRefreshSourceTopicLinksByFilter, KnowledgeRefreshSources, KnowledgeRefreshSourcesByFilter, KnowledgeRemoveFolderWatch, KnowledgeRestoreSuppressedCards, KnowledgeRetryImportBatch, KnowledgeSaveText, KnowledgeSaveURL, KnowledgeSaveURLs, KnowledgeScanDirectory, KnowledgeScanFiles, KnowledgeScanSensitiveContent, KnowledgeSearch, KnowledgeSearchFacets, KnowledgeSearchStructured, DigitalAssetListContributableLibraries, DigitalAssetListMySubmissions, DigitalAssetWithdrawSubmission, KnowledgeContributeToOrg, KnowledgeShareToHub, KnowledgeSourceDigest, KnowledgeSourceGraph, KnowledgeSourceNeighborhood, KnowledgeSourcePath, KnowledgeSourceQualityMaintenancePlan, KnowledgeSourceQualityReport, KnowledgeSourceTimeline, KnowledgeStartImportDirectory, KnowledgeStructuredCatalog, KnowledgeSuggest, KnowledgeSuppressDuplicateCards, KnowledgeSyncDelete, KnowledgeSyncDownload, KnowledgeSyncStatus, KnowledgeSyncUpload, KnowledgeSyncVerifyPassword, KnowledgeTopicRelevance, KnowledgeUnlinkSources, KnowledgeUpdateHubShare, KnowledgeUpdateSourceLabels, KnowledgeUpdateSourceMetadata, KnowledgeUpdateURLDomainPolicies, LoadConfig, OpenFileOrShowInFolder, OpenSystemUrl, SelectKnowledgeDirectory, SelectKnowledgeFiles, SelectKnowledgeSnapshotExportPath, SelectKnowledgeSnapshotFile } from '../../../wailsjs/go/main/App';
 import { knowledge } from '../../../wailsjs/go/models';
 import { SuggestCombobox } from '../ui/SuggestCombobox';
 import { knowledgeEnterpriseLabel, knowledgeHitPreview, knowledgeHitTitle, knowledgeResultKey } from '../ai/unifiedHeaderSearch';
@@ -34,6 +34,22 @@ type Source = {
     card_count?: number;
     fact_count?: number;
     labels?: string[];
+    export_batch?: string;
+};
+
+type KnowledgeCollectionView = {
+    id?: string;
+    title?: string;
+    kind?: string;
+    folder_path?: string;
+    member_count?: number;
+};
+
+type KnowledgeCollectionMemberView = {
+    collection_id?: string;
+    source_id?: string;
+    added_by?: string;
+    source?: Source;
 };
 
 type SourceLabelSummary = {
@@ -494,6 +510,7 @@ type ImportItem = {
 
 type SearchResult = {
     source?: Source;
+    library_id?: string;
 	result_type?: string;
 	node_id?: string;
 	parent_node_id?: string;
@@ -556,6 +573,7 @@ type SearchFacetBucket = {
     source_id?: string;
     source_kind?: string;
     domain?: string;
+    collection_id?: string;
     examples?: string[];
 };
 
@@ -566,6 +584,7 @@ type SearchFacetsResult = {
     source_kinds?: SearchFacetBucket[];
     domains?: SearchFacetBucket[];
     labels?: SearchFacetBucket[];
+    collections?: SearchFacetBucket[];
     sources?: SearchFacetBucket[];
     entities?: SearchFacetBucket[];
     predicates?: SearchFacetBucket[];
@@ -860,6 +879,7 @@ export function applyKnowledgeSearchFilterPayload(payload: any, filters: {
     domain?: string;
     sourceID?: string;
     labels?: string;
+    collectionID?: string;
 } = {}) {
     const resultType = normalizeKnowledgeFilterToken(filters.resultType);
     if (resultType && resultType !== 'all') payload.result_types = [resultType];
@@ -870,9 +890,11 @@ export function applyKnowledgeSearchFilterPayload(payload: any, filters: {
     if (sourceID) payload.source_ids = [sourceID];
     const labels = parseLabelList(filters.labels || '');
     if (labels.length) payload.labels = labels;
+    const collectionID = (filters.collectionID || '').trim();
+    if (collectionID) payload.collection_ids = [collectionID];
 }
 
-export type KnowledgeSearchFacetGroup = 'result_types' | 'source_kinds' | 'domains' | 'labels' | 'sources';
+export type KnowledgeSearchFacetGroup = 'result_types' | 'source_kinds' | 'domains' | 'labels' | 'collections' | 'sources';
 
 export type KnowledgeSearchFormFilters = {
     resultType: string;
@@ -880,6 +902,7 @@ export type KnowledgeSearchFormFilters = {
     domain: string;
     sourceID: string;
     labels: string;
+    collectionID?: string;
 };
 
 export function knowledgeSearchTokenOptions(preset: readonly string[], current?: string, extras: Array<{ label?: string; kind?: string }> = []): string[] {
@@ -942,6 +965,8 @@ export function knowledgeSearchFacetActive(form: KnowledgeSearchFormFilters, gro
         }
         case 'labels':
             return parseLabelList(form.labels).some(label => normalizeKnowledgeFilterToken(label) === normalizeKnowledgeFilterToken(token));
+        case 'collections':
+            return (form.collectionID || '').trim() === token;
         case 'sources':
             return form.sourceID.trim() === token;
         default:
@@ -970,6 +995,8 @@ export function toggleKnowledgeSearchFacet<T extends KnowledgeSearchFormFilters>
                     : [...labels, needle].join(', '),
             };
         }
+        case 'collections':
+            return { ...form, collectionID: active ? '' : token };
         case 'sources':
             return { ...form, sourceID: active ? '' : token };
         default:
@@ -1409,45 +1436,89 @@ function knowledgeExportSourceMeta(source: Source) {
         source.kind,
         source.status,
         location,
+        source.export_batch ? `${source.export_batch}` : '',
         source.labels?.length ? source.labels.join(', ') : '',
         `nodes ${source.node_count || 0}`,
     ].filter(Boolean).join(' · ');
 }
 
-function knowledgeExportGroups(sources: Source[], batches: ImportBatch[], t: (en: string, zhHans: string, zhHant?: string) => string): ExportSourceGroup[] {
+export type KnowledgeExportCollectionRef = {
+    id?: string;
+    title?: string;
+    kind?: string;
+    folder_path?: string;
+    source_id?: string;
+};
+
+export function knowledgeCollectionKindLabel(kind: string | undefined, t: (en: string, zhHans: string, zhHant?: string) => string): string {
+    switch (String(kind || '').trim()) {
+        case 'manual':
+            return t('Manual', '手动');
+        case 'folder':
+            return t('Folder', '文件夹');
+        case 'project':
+            return t('Project', '项目');
+        default:
+            return String(kind || '').trim();
+    }
+}
+
+function knowledgeExportSourceWithBatch(source: Source, batchMap: Map<string, ImportBatch>): Source {
+    if (String(source.export_batch || '').trim()) return source;
+    const batchID = String(source.batch_id || '').trim();
+    const batch = batchID ? batchMap.get(batchID) : undefined;
+    if (!batch) return source;
+    const label = String(batch.root_path || batch.id || batchID).trim();
+    if (!label) return source;
+    return { ...source, export_batch: label };
+}
+
+export function knowledgeExportGroups(sources: Source[], batches: ImportBatch[], collections: KnowledgeExportCollectionRef[], t: (en: string, zhHans: string, zhHant?: string) => string): ExportSourceGroup[] {
     const batchMap = new Map<string, ImportBatch>();
     for (const batch of batches || []) {
         const id = String(batch.id || '').trim();
         if (id) batchMap.set(id, batch);
     }
+    const collectionMeta = new Map<string, KnowledgeExportCollectionRef>();
+    const members = new Map<string, string[]>();
+    for (const ref of collections || []) {
+        const id = String(ref.id || '').trim();
+        const sourceID = String(ref.source_id || '').trim();
+        if (!id) continue;
+        if (!collectionMeta.has(id)) collectionMeta.set(id, ref);
+        if (!sourceID) continue;
+        const list = members.get(sourceID) || [];
+        if (!list.includes(id)) list.push(id);
+        members.set(sourceID, list);
+    }
 
     const grouped = new Map<string, Source[]>();
     const unassigned: Source[] = [];
     for (const source of sources || []) {
-        const batchID = String(source.batch_id || '').trim();
-        if (batchID && batchMap.has(batchID)) {
-            const items = grouped.get(batchID);
-            if (items) {
-                items.push(source);
-            } else {
-                grouped.set(batchID, [source]);
-            }
-        } else {
-            unassigned.push(source);
+        const annotated = knowledgeExportSourceWithBatch(source, batchMap);
+        const sourceID = String(source.id || '').trim();
+        const collectionIDs = sourceID ? (members.get(sourceID) || []) : [];
+        if (!collectionIDs.length) {
+            unassigned.push(annotated);
+            continue;
+        }
+        for (const collectionID of collectionIDs) {
+            const items = grouped.get(collectionID);
+            if (items) items.push(annotated);
+            else grouped.set(collectionID, [annotated]);
         }
     }
 
-    const groups = Array.from(grouped.entries()).map(([batchID, items]) => {
-        const batch = batchMap.get(batchID) || {};
+    const groups = Array.from(grouped.entries()).map(([collectionID, items]) => {
+        const ref = collectionMeta.get(collectionID) || {};
+        const label = String(ref.title || ref.folder_path || collectionID).trim() || collectionID;
         return {
-            id: `batch:${batchID}`,
-            label: batch.root_path || batchID,
+            id: `collection:${collectionID}`,
+            label,
             meta: [
-                t('Import batch', '导入批次'),
-                batch.status,
-                batch.imported_files !== undefined ? `${batch.imported_files}/${batch.total_files || items.length} ${t('imported', '已导入')}` : '',
-                batch.failed_files ? `${batch.failed_files} ${t('failed', '失败')}` : '',
-                batch.updated_at,
+                t('Collection', '文集'),
+                knowledgeCollectionKindLabel(ref.kind, t),
+                ref.folder_path || '',
             ].filter(Boolean).join(' · '),
             sources: items,
         };
@@ -1458,7 +1529,7 @@ function knowledgeExportGroups(sources: Source[], batches: ImportBatch[], t: (en
         groups.push({
             id: 'unassigned',
             label: t('Ungrouped sources', '未归属来源'),
-            meta: t('Manual text, URLs, Hub imports, or older records without an import batch', '手工文本、URL、Hub 导入或没有导入批次的历史记录'),
+            meta: t('These sources are not in a collection. The import batch stays on each row.', '这些来源不属于任何文集。导入批次仍显示在每条记录上。'),
             sources: unassigned,
         });
     }
@@ -1538,6 +1609,13 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const [editShareSaving, setEditShareSaving] = useState(false);
     const [exportSources, setExportSources] = useState<Source[] | null>(null);
     const [exportBatches, setExportBatches] = useState<ImportBatch[] | null>(null);
+    const [exportCollectionRefs, setExportCollectionRefs] = useState<KnowledgeExportCollectionRef[]>([]);
+    const [knowledgeCollections, setKnowledgeCollections] = useState<KnowledgeCollectionView[] | null>(null);
+    const [selectedCollectionID, setSelectedCollectionID] = useState('');
+    const [collectionTitle, setCollectionTitle] = useState('');
+    const [collectionMembers, setCollectionMembers] = useState<KnowledgeCollectionMemberView[]>([]);
+    const [unassignedCollectionSources, setUnassignedCollectionSources] = useState<Source[]>([]);
+    const [collectionReload, setCollectionReload] = useState(0);
     const [exportSelection, setExportSelection] = useState<Record<string, boolean>>({});
     const [exportListLoading, setExportListLoading] = useState(false);
     const [exportListAttempted, setExportListAttempted] = useState(false);
@@ -1551,7 +1629,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const fragmentDeleteInFlightRef = useRef(false);
     const syncStatusIdentityRef = useRef('');
     const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
-    const [searchForm, setSearchForm] = useState({ query: '', resultType: 'all', sourceKind: 'all', domain: '', sourceID: '', labels: '', limit: 20, includeDisabled: false });
+    const [searchForm, setSearchForm] = useState({ query: '', resultType: 'all', sourceKind: 'all', domain: '', sourceID: '', labels: '', collectionID: '', limit: 20, includeDisabled: false });
     const searchFormRef = useRef(searchForm);
     const searchRequestRef = useRef(0);
     const loadSearchResultsRef = useRef<(form?: typeof searchForm) => Promise<{ count: number }>>(async () => ({ count: 0 }));
@@ -1610,6 +1688,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                 sourceKind: 'all',
                 domain: '',
                 labels: '',
+                collectionID: '',
             };
             searchFormRef.current = next;
             searchModeRef.current = 'semantic';
@@ -1776,8 +1855,8 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const coverageOptions = useMemo(() => knowledgeSourceCoverageOptions(capabilities, sourceFilter.coverage), [capabilities, sourceFilter.coverage]);
     const qualityCoverageOptions = useMemo(() => knowledgeSourceCoverageOptions(capabilities, qualityFilter.coverage), [capabilities, qualityFilter.coverage]);
     const exportSourceGroups = useMemo(
-        () => knowledgeExportGroups(exportSources || [], exportBatches || [], t),
-        [exportSources, exportBatches, t],
+        () => knowledgeExportGroups(exportSources || [], exportBatches || [], exportCollectionRefs, t),
+        [exportSources, exportBatches, exportCollectionRefs, t],
     );
     const selectedExportSourceIDs = useMemo(
         () => Object.keys(exportSelection).filter(id => exportSelection[id]),
@@ -1848,18 +1927,57 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         }
     }, [activeTab]);
 
+    useEffect(() => {
+        if (activeTab !== 'sources') return;
+        let cancelled = false;
+        void (async () => {
+            try {
+                const [nextCollections, nextUnassigned] = await Promise.all([
+                    KnowledgeListCollections(),
+                    KnowledgeListUnassignedSources(200),
+                ]);
+                if (cancelled) return;
+                const list = Array.isArray(nextCollections) ? nextCollections : [];
+                setKnowledgeCollections(list);
+                setUnassignedCollectionSources(Array.isArray(nextUnassigned) ? nextUnassigned : []);
+                setSelectedCollectionID(prev => (prev && list.some(item => item.id === prev) ? prev : String(list[0]?.id || '')));
+            } catch (err: any) {
+                if (!cancelled) setError(err?.message || String(err));
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [activeTab, collectionReload]);
+
+    useEffect(() => {
+        if (activeTab !== 'sources' || !selectedCollectionID) {
+            setCollectionMembers([]);
+            return;
+        }
+        let cancelled = false;
+        void KnowledgeListCollectionMembers(selectedCollectionID)
+            .then(members => {
+                if (!cancelled) setCollectionMembers(Array.isArray(members) ? members : []);
+            })
+            .catch((err: any) => {
+                if (!cancelled) setError(err?.message || String(err));
+            });
+        return () => { cancelled = true; };
+    }, [activeTab, selectedCollectionID, collectionReload]);
+
     const loadExportSelectionData = useCallback(async () => {
         setExportListAttempted(true);
         setExportListLoading(true);
         setError('');
         try {
-            const [nextSources, nextBatches] = await Promise.all([
+            const [nextSources, nextBatches, nextRefs] = await Promise.all([
                 KnowledgeListSources({ limit: 5000, include_disabled: true }),
                 KnowledgeListImportBatches(200),
+                KnowledgeListSourceCollectionRefs(),
             ]);
             const normalizedSources = Array.isArray(nextSources) ? nextSources : [];
             setExportSources(normalizedSources);
             setExportBatches(Array.isArray(nextBatches) ? nextBatches : []);
+            setExportCollectionRefs(Array.isArray(nextRefs) ? nextRefs : []);
             const availableIDs = new Set(normalizedSources.map(source => String(source.id || '').trim()).filter(Boolean));
             setExportSelection(prev => Object.fromEntries(
                 Object.entries(prev).filter(([id, selected]) => selected && availableIDs.has(id)),
@@ -1940,6 +2058,42 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         } finally {
             endWork(gen);
         }
+    };
+
+    const createManualCollection = async () => {
+        const title = collectionTitle.trim();
+        if (!title) {
+            setError(t('Enter a collection title.', '请填写文集标题。'));
+            return;
+        }
+        await runTask('createCollection', async () => {
+            const created = await KnowledgeCreateCollection(title);
+            setCollectionTitle('');
+            const createdID = String(created?.id || '').trim();
+            if (createdID) setSelectedCollectionID(createdID);
+            setCollectionReload(value => value + 1);
+            return created;
+        }, { successMessage: false, recordResult: false });
+    };
+
+    const addCollectionMember = async (sourceID: string) => {
+        const id = String(sourceID || '').trim();
+        if (!selectedCollectionID || !id) return;
+        await runTask('addCollectionMember', async () => {
+            await KnowledgeAddCollectionMember(selectedCollectionID, id);
+            setCollectionReload(value => value + 1);
+            return { ok: true };
+        }, { successMessage: false, recordResult: false });
+    };
+
+    const removeCollectionMember = async (sourceID: string) => {
+        const id = String(sourceID || '').trim();
+        if (!selectedCollectionID || !id) return;
+        await runTask('removeCollectionMember', async () => {
+            await KnowledgeRemoveCollectionMember(selectedCollectionID, id);
+            setCollectionReload(value => value + 1);
+            return { ok: true };
+        }, { successMessage: false, recordResult: false });
     };
 
     const importPayload = () => ({
@@ -4075,6 +4229,66 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                             </div> : <div className="knowledge-empty">{t('No indexed nodes are available for this source.', '该来源没有可预览的已索引节点。')}</div>}
                         </PanelBlock>
                     ) : null}
+                    <PanelBlock title={t('Collections', '文集')}>
+                        <div className="knowledge-stack" data-testid="knowledge-collections">
+                            <div className="knowledge-muted-line">{t('A collection groups sources. Removing a member keeps the source.', '文集用来组织来源。移出成员不会删除来源。')}</div>
+                            <div className="knowledge-inline-actions">
+                                <input className="knowledge-input" value={collectionTitle} onChange={event => setCollectionTitle(event.target.value)} placeholder={t('Collection title', '文集标题')} />
+                                <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy || !collectionTitle.trim()} onClick={createManualCollection}>{t('Create', '创建')}</button>
+                            </div>
+                            <div className="knowledge-list">
+                                {knowledgeCollections === null ? (
+                                    <div className="knowledge-empty">{t('Loading collections...', '正在加载文集...')}</div>
+                                ) : knowledgeCollections.length ? knowledgeCollections.map(collection => {
+                                    const id = String(collection.id || '');
+                                    const selected = id !== '' && id === selectedCollectionID;
+                                    return (
+                                        <button key={id || collection.title} type="button" className="knowledge-row" aria-pressed={selected} onClick={() => setSelectedCollectionID(id)}>
+                                            <div className="knowledge-row-main">
+                                                <strong>{collection.title || id}</strong>
+                                                <span className="knowledge-muted-line">{[knowledgeCollectionKindLabel(collection.kind, t), collection.folder_path, collection.member_count !== undefined ? `${collection.member_count}` : ''].filter(Boolean).join(' · ')}</span>
+                                            </div>
+                                        </button>
+                                    );
+                                }) : <div className="knowledge-empty">{t('No collections yet.', '还没有文集。')}</div>}
+                            </div>
+                            {selectedCollectionID ? (
+                                <div className="knowledge-list">
+                                    {collectionMembers.length ? collectionMembers.map(member => {
+                                        const sourceID = String(member.source_id || member.source?.id || '');
+                                        const title = member.source?.title || member.source?.relative_path || sourceID;
+                                        return (
+                                            <div key={sourceID || title} className="knowledge-row">
+                                                <div className="knowledge-row-main">
+                                                    <strong>{title}</strong>
+                                                    <span className="knowledge-muted-line">{member.added_by || ''}</span>
+                                                </div>
+                                                <div className="knowledge-inline-actions">
+                                                    <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy || !sourceID} onClick={() => removeCollectionMember(sourceID)}>{t('Remove', '移出')}</button>
+                                                </div>
+                                            </div>
+                                        );
+                                    }) : <div className="knowledge-empty">{t('This collection has no sources.', '这个文集还没有来源。')}</div>}
+                                </div>
+                            ) : null}
+                            <div className="knowledge-muted-line">{t('Sources not in a collection', '未归属来源')}</div>
+                            <div className="knowledge-list">
+                                {unassignedCollectionSources.length ? unassignedCollectionSources.map(source => {
+                                    const sourceID = String(source.id || '');
+                                    return (
+                                        <div key={sourceID || source.title} className="knowledge-row">
+                                            <div className="knowledge-row-main">
+                                                <strong>{source.title || source.relative_path || source.uri || sourceID}</strong>
+                                            </div>
+                                            <div className="knowledge-inline-actions">
+                                                <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy || !selectedCollectionID || !sourceID} onClick={() => addCollectionMember(sourceID)}>{t('Add', '加入')}</button>
+                                            </div>
+                                        </div>
+                                    );
+                                }) : <div className="knowledge-empty">{t('Every listed source is already in a collection.', '列出的来源都已在文集中。')}</div>}
+                            </div>
+                        </div>
+                    </PanelBlock>
                 </div>
             )}
 
@@ -4176,6 +4390,7 @@ function PanelBlock({ title, children, className }: { title: string; children: R
 function facetFilterValue(item: SearchFacetBucket, group: KnowledgeSearchFacetGroup): string {
     if (group === 'sources') return String(item.source_id || item.label || '').trim();
     if (group === 'domains') return String(item.domain || item.label || '').trim();
+    if (group === 'collections') return String(item.collection_id || '').trim();
     return String(item.label || item.kind || '').trim();
 }
 
@@ -4199,11 +4414,13 @@ function FacetGroups({
         { key: 'source_kinds' as const, title: t('Source kind', '来源种类'), items: facets?.source_kinds || [] },
         { key: 'domains' as const, title: t('Domain', '域名'), items: facets?.domains || [] },
         { key: 'labels' as const, title: t('Labels', '标签'), items: facets?.labels || [] },
+        { key: 'collections' as const, title: t('Collections', '文集'), items: facets?.collections || [] },
         { key: 'sources' as const, title: t('Sources', '来源'), items: facets?.sources || [] },
     ]).map(group => ({
         ...group,
         chips: group.items.flatMap(item => {
             if (group.key === 'sources' && !String(item.source_id || '').trim()) return [];
+            if (group.key === 'collections' && !String(item.collection_id || '').trim()) return [];
             const value = facetFilterValue(item, group.key);
             const label = String(item.label || item.kind || item.domain || '').trim();
             if (!value || !label) return [];
@@ -4336,7 +4553,7 @@ function ResultList({ results, empty, query, t, busy, onDelete }: {
                 : (result.card_title || result.node_title || result.subject || result.source?.title || result.source?.relative_path || 'Result');
         const sourceLabel = result.result_type === 'fact'
             ? plainLabel
-            : (knowledgeEnterpriseLabel(plainLabel, result.source?.title) || plainLabel);
+            : (knowledgeEnterpriseLabel(plainLabel, result.source?.title, result.library_id) || plainLabel);
         const meta = [
             result.result_type,
             result.source?.kind,

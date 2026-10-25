@@ -103,21 +103,21 @@ func TestSemanticSSHConnectDownloadResultLeadsWithTheCopy(t *testing.T) {
 }
 
 func TestSemanticTrustedSSHConnectPublishedGate(t *testing.T) {
-	if semanticTrustedSSHConnectPublished(nil) {
+	if semanticTrustedSSHConnectPublished(nil, "") {
 		t.Fatal("nil handler must not publish connect mode")
 	}
 	h := &IMMessageHandler{registry: NewToolRegistry()}
-	if !semanticTrustedSSHConnectPublished(h) {
+	if !semanticTrustedSSHConnectPublished(h, "") {
 		t.Fatal("session-less handler without runtime binding must publish connect mode")
 	}
-	if semanticTrustedSSHPublished(h) {
+	if semanticTrustedSSHPublished(h, "") {
 		t.Fatal("same handler must not publish exec mode without a bound session")
 	}
 	h.semanticTrustedSSH = func(string, string) (string, error) { return "", nil }
-	if semanticTrustedSSHConnectPublished(h) {
+	if semanticTrustedSSHConnectPublished(h, "") {
 		t.Fatal("runtime-bound handler must not publish connect mode")
 	}
-	if !semanticTrustedSSHPublished(h) {
+	if !semanticTrustedSSHPublished(h, "") {
 		t.Fatal("runtime-bound handler must publish exec mode")
 	}
 }

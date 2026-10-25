@@ -529,7 +529,7 @@ func TestIMSemanticComputerUsePublishesWhenDesktopHostEnabled(t *testing.T) {
 
 func TestTrustedRuntimeDefaultsStayUnpublishedWithoutHost(t *testing.T) {
 	h := &IMMessageHandler{}
-	if semanticTrustedSSHPublished(h) || semanticTrustedBrowserPublished(h) || semanticTrustedComputerUsePublished(h) || semanticTrustedDelegatePublished(h) {
+	if semanticTrustedSSHPublished(h, "") || semanticTrustedBrowserPublished(h) || semanticTrustedComputerUsePublished(h) || semanticTrustedDelegatePublished(h) {
 		t.Fatal("bare handler must not publish ssh/browser/CU/delegate")
 	}
 	if _, err := h.executeTrustedSSH("user-1", "uname", 0); err == nil || !strings.Contains(err.Error(), "unavailable") {

@@ -414,7 +414,7 @@ func NewReviewedDynamicCapabilityRegistry() (*coretool.CapabilityRegistry, error
 		Summary: "Read one trusted current-turn document attachment without exposing its path.",
 		Qualifiers: map[string]coretool.QualifierConstraint{
 			QualifierDocumentFormat: {
-				Values:   []string{DocumentFormatPDF, DocumentFormatWord, DocumentFormatSpreadsheet, DocumentFormatPresentation, DocumentFormatText},
+				Values:   []string{DocumentFormatPDF, DocumentFormatWord, DocumentFormatSpreadsheet, DocumentFormatPresentation, DocumentFormatText, DocumentFormatMOBI},
 				Required: true,
 			},
 		},

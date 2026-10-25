@@ -3476,6 +3476,10 @@ def current_pids(key, display):
 
 def reap_children():
     """Collect exited children so they do not stay behind as zombies."""
+    # os.WNOHANG exists only on POSIX. Windows has no zombies to reap: Popen
+    # objects collect themselves, and waitpid(-1, ...) is unavailable.
+    if not hasattr(os, "WNOHANG"):
+        return
     while True:
         try:
             pid, _ = os.waitpid(-1, os.WNOHANG)

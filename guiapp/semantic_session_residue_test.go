@@ -148,10 +148,11 @@ func TestArchetypeSearchDoesNotMakeTheOfficeALookup(t *testing.T) {
 
 func TestLookupCompanionDoesNotReopenAcquire(t *testing.T) {
 	residue := semanticSessionResidue{
-		Status: semanticResidueOpen,
+		Status:        semanticResidueOpen,
+		IntentPrimary: intent.LabelDocumentGenerate,
 		Needs: []tool.CapabilityNeed{
 			{ID: "need:search", Capability: "information.search.web", Required: true},
-			{ID: "need:gen", Capability: "document.generate.file", Required: true},
+			{ID: "need:gen", Capability: "document.generate.file", Required: true, Qualifiers: map[string]string{"format": "pdf"}},
 			{ID: "need:artifact.acquire.remote:ccc", Capability: tool.CapabilityArtifactAcquireRemote, EvidenceIDs: []string{"intent:archetype_bundle"}},
 			{ID: "need:zz-baseline:fs.write.local:bbb", Capability: tool.CapabilityFSWriteLocal, EvidenceIDs: []string{"intent:baseline_workspace"}},
 		},
@@ -163,12 +164,16 @@ func TestLookupCompanionDoesNotReopenAcquire(t *testing.T) {
 		},
 		LookupFacts: true,
 	}
+	reloaded := semanticResidueFromPersisted(semanticResidueToPersisted(residue))
+	if reloaded.IntentPrimary != intent.LabelDocumentGenerate {
+		t.Fatalf("reloaded primary=%s", reloaded.IntentPrimary)
+	}
 	report := intent.ClassificationResult{Primary: intent.LabelDocumentGenerate, Confidence: 0.92}
-	if got := decideSemanticResidueRelation(report, "生成pdf报告", residue); got != semanticResidueContinue {
+	if got := decideSemanticResidueRelation(report, "生成pdf报告", reloaded); got != semanticResidueContinue {
 		t.Fatalf("生成pdf报告 relation=%s", got)
 	}
-	rewritten, ok := semanticClassificationWithOpenResidue(report, residue.Needs, semanticResidueContinue)
-	if !ok || rewritten.Primary != intent.LabelDocumentGenerate || rewritten.HasLabel(intent.LabelFileDownload) || rewritten.HasLabel(intent.LabelFileWrite) {
+	rewritten, ok := semanticClassificationWithAuthorizedResidue(report, reloaded.Needs, semanticResidueContinue, reloaded.IntentPrimary)
+	if !ok || rewritten.Primary != intent.LabelDocumentGenerate || !rewritten.HasLabel(intent.LabelSearch) || rewritten.HasLabel(intent.LabelFileDownload) || rewritten.HasLabel(intent.LabelFileWrite) {
 		t.Fatalf("companion joined the lookup: %#v ok=%v", rewritten, ok)
 	}
 	remaining := semanticResidueRemainingForOpenTurn(residue, rewritten)
@@ -1730,6 +1735,171 @@ func TestShortYesOnSpentWaveDoesNotCloseTools(t *testing.T) {
 	}
 	if shortConsentContinuesHere(&intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.9}, blocked, true) != "" {
 		t.Fatal("an office label was treated as consent to stay in this chat")
+	}
+}
+
+func restartedHop3DocumentResidue() semanticSessionResidue {
+	stored := semanticSessionResidue{
+		Status:        semanticResidueOpen,
+		IntentPrimary: intent.LabelDocumentGenerate,
+		Summary:       "帮我生成详细的pdf 格式的hop3解析，包括整体架构，原理，实现细节",
+		Needs: []tool.CapabilityNeed{
+			{ID: "need:artifact.acquire.remote:47dfffbc86c8", Capability: tool.CapabilityArtifactAcquireRemote, Required: true, EvidenceIDs: []string{"intent:archetype_bundle"}},
+			{ID: "need:artifact.deliver.current_channel:2ba2c0469d4f", Capability: "artifact.deliver.current_channel", Required: true, Qualifiers: map[string]string{"format": "file"}},
+			{ID: "need:build.verify.local:4ce4c38d4454", Capability: tool.CapabilityBuildVerifyLocal, Required: true},
+			{ID: "need:document.generate.file:549acc88f83c", Capability: "document.generate.file", Required: true, Qualifiers: map[string]string{"format": "pdf"}},
+			{ID: "need:fs.write.local:4f224f7d2153", Capability: tool.CapabilityFSWriteLocal, Required: true},
+			{ID: "need:repo.inspect.vcs:ea8af2139251", Capability: tool.CapabilityRepoInspectVCS, Required: true},
+			{ID: "need:zz-baseline:shell.execute.local:63d070da4fef", Capability: tool.CapabilityShellExecuteLocal, Required: true},
+		},
+		Remaining: map[string]int{
+			string(tool.CapabilityArtifactAcquireRemote): 32,
+			"artifact.deliver.current_channel":           1,
+			string(tool.CapabilityBuildVerifyLocal):      6,
+			"document.generate.file":                     0,
+			string(tool.CapabilityFSWriteLocal):          8,
+			string(tool.CapabilityRepoInspectVCS):        4,
+			string(tool.CapabilityShellExecuteLocal):     8,
+		},
+	}
+	// Close and reopen drops the process map. The conversation record is
+	// what the next process loads, including the label that authorized the plan.
+	return semanticResidueFromPersisted(semanticResidueToPersisted(stored))
+}
+
+func TestSpentPDFFollowUpKeepsGenerateWhenCodingRodeAlong(t *testing.T) {
+	residue := restartedHop3DocumentResidue()
+	if residue.Status != semanticResidueOpen || residue.IntentPrimary != intent.LabelDocumentGenerate {
+		t.Fatalf("reloaded identity status=%s primary=%s", residue.Status, residue.IntentPrimary)
+	}
+	if !semanticResidueHasObligationCapability(residue.Needs, "document.generate.file") {
+		t.Fatal("reload dropped the open PDF")
+	}
+	follow := func(current intent.ClassificationResult, text, wantReason string) {
+		t.Helper()
+		relation := decideSemanticResidueRelation(current, text, residue)
+		if relation != semanticResidueContinue && relation != semanticResidueUnclear {
+			t.Fatalf("%q relation=%s", text, relation)
+		}
+		rewritten, applied := semanticClassificationWithAuthorizedResidue(current, residue.Needs, relation, residue.IntentPrimary)
+		planned := current
+		if applied {
+			planned = rewritten
+		}
+		if restored, ok := semanticRestoreResidueIntentPrimary(&current, residue, relation); ok {
+			planned = restored
+			applied = true
+		}
+		if !applied || planned.Primary != intent.LabelDocumentGenerate {
+			t.Fatalf("%q planned=%#v applied=%v", text, planned, applied)
+		}
+		if planned.HasLabel(intent.LabelMaintenance) || planned.HasLabel(intent.LabelCoding) || planned.HasLabel(intent.LabelBugFix) {
+			t.Fatalf("%q coding label became the open task: %#v", text, planned)
+		}
+		if !strings.Contains(planned.Reason, wantReason) {
+			t.Fatalf("%q reason=%q", text, planned.Reason)
+		}
+		remaining := semanticResidueRemainingForOpenTurn(residue, planned)
+		if _, spent := remaining["document.generate.file"]; spent {
+			t.Fatalf("%q generate stayed closed: %v", text, remaining)
+		}
+		if remaining["artifact.deliver.current_channel"] != 1 {
+			t.Fatalf("%q delivery ceiling=%v", text, remaining)
+		}
+	}
+	follow(intent.ClassificationResult{
+		Primary: intent.LabelDocumentGenerate, Confidence: 1, Layer: 3,
+		Reason: "tree-after-embedding: document_generate (0.999)",
+	}, "生成新的pdf", "session residue document")
+	follow(intent.ClassificationResult{
+		Primary: intent.LabelContinuation, Confidence: 0.9, Layer: 3,
+		Reason: "tree-after-embedding: continuation",
+	}, "继续", "session residue continuation")
+}
+
+func TestRestartedPDFFollowUpPlansGenerate(t *testing.T) {
+	h := registerDocumentGenerateAndSearch(t)
+	residue := restartedHop3DocumentResidue()
+	text := "生成新的pdf"
+	current := intent.ClassificationResult{
+		Primary: intent.LabelDocumentGenerate, Confidence: 1, Layer: 3,
+		Reason: "tree-after-embedding: document_generate (0.999)",
+	}
+	relation := decideSemanticResidueRelation(current, text, residue)
+	rewritten, applied := semanticClassificationWithAuthorizedResidue(current, residue.Needs, relation, residue.IntentPrimary)
+	planned := current
+	if applied {
+		planned = rewritten
+	}
+	if restored, ok := semanticRestoreResidueIntentPrimary(&current, residue, relation); ok {
+		planned = restored
+	}
+	remaining := semanticResidueRemainingForOpenTurn(residue, planned)
+	ctx := withSemanticResidueRemaining(context.Background(), remaining)
+	prepared, handled, err := h.semanticPlanForTurnWithContextAndClassificationAndAttachments(
+		ctx, "desktop-user", text, "desktop", "root-hop3", "turn-hop3", &planned, nil,
+	)
+	if err != nil || !handled || prepared == nil {
+		t.Fatalf("restarted PDF follow-up handled=%v err=%v", handled, err)
+	}
+	if !planHasCapabilities(prepared.plan, "document.generate.file", "artifact.deliver.current_channel") {
+		t.Fatalf("selections=%#v", prepared.plan.Selections)
+	}
+	deliver, ok := semanticSelectionForCapability(prepared.plan, "artifact.deliver.current_channel")
+	if !ok || len(deliver.ArtifactDependencies) == 0 || deliver.ArtifactDependencies[0].ProducerSelection == "" {
+		t.Fatalf("delivery did not bind the PDF this turn generates: %+v", deliver)
+	}
+	for _, capability := range []tool.CapabilityID{
+		tool.CapabilityBuildVerifyLocal,
+		tool.CapabilityFSWriteLocal,
+		tool.CapabilityRepoInspectVCS,
+		tool.CapabilityShellExecuteLocal,
+		tool.CapabilityArtifactAcquireRemote,
+		"information.search.web",
+	} {
+		if planHasCapabilities(prepared.plan, capability) {
+			t.Fatalf("capability %s rode into the new PDF: %#v", capability, prepared.plan.Selections)
+		}
+	}
+}
+
+func TestAuthorizedIntentDoesNotClaimAnotherPublishFamily(t *testing.T) {
+	pdf := []tool.CapabilityNeed{
+		{ID: "need:document.generate.file:1", Capability: "document.generate.file", Required: true, Qualifiers: map[string]string{"format": "pdf"}},
+		{ID: "need:artifact.deliver.current_channel:1", Capability: "artifact.deliver.current_channel", Required: true, Qualifiers: map[string]string{"format": "file"}},
+		{ID: "need:fs.write.local:1", Capability: tool.CapabilityFSWriteLocal, Required: true},
+	}
+	office := []tool.CapabilityNeed{
+		{ID: "need:office", Capability: tool.CapabilityDocumentWriteOffice, Required: true},
+		{ID: "need:artifact.deliver.current_channel:2", Capability: "artifact.deliver.current_channel", Required: true, Qualifiers: map[string]string{"format": "file"}},
+	}
+	image := []tool.CapabilityNeed{
+		{ID: "need:shot", Capability: "visual.capture.desktop", Required: true, Qualifiers: map[string]string{"display": "primary"}},
+		{ID: "need:artifact.deliver.current_channel:3", Capability: "artifact.deliver.current_channel", Required: true, Qualifiers: map[string]string{"format": "image"}},
+	}
+	if led, ok := semanticClassificationLedByAuthorizedIntent(intent.LabelOffice, pdf); ok || led.Primary == intent.LabelOffice {
+		t.Fatalf("office claimed the PDF via file delivery: %#v ok=%v", led, ok)
+	}
+	if led, ok := semanticClassificationLedByAuthorizedIntent(intent.LabelDocumentGenerate, office); ok || led.Primary == intent.LabelDocumentGenerate {
+		t.Fatalf("PDF generation claimed the office file via file delivery: %#v ok=%v", led, ok)
+	}
+	if led, ok := semanticClassificationLedByAuthorizedIntent(intent.LabelScreenshot, pdf); ok || led.Primary == intent.LabelScreenshot {
+		t.Fatalf("screenshot claimed the PDF file: %#v ok=%v", led, ok)
+	}
+	if led, ok := semanticClassificationLedByAuthorizedIntent(intent.LabelDocumentGenerate, image); ok || led.Primary == intent.LabelDocumentGenerate {
+		t.Fatalf("PDF generation claimed an image delivery: %#v ok=%v", led, ok)
+	}
+	led, ok := semanticClassificationLedByAuthorizedIntent(intent.LabelDocumentGenerate, pdf)
+	if !ok || led.Primary != intent.LabelDocumentGenerate || len(led.Secondary) != 0 {
+		t.Fatalf("PDF identity=%#v ok=%v", led, ok)
+	}
+	led, ok = semanticClassificationLedByAuthorizedIntent(intent.LabelOffice, office)
+	if !ok || led.Primary != intent.LabelOffice {
+		t.Fatalf("office identity=%#v ok=%v", led, ok)
+	}
+	led, ok = semanticClassificationLedByAuthorizedIntent(intent.LabelScreenshot, image)
+	if !ok || led.Primary != intent.LabelScreenshot {
+		t.Fatalf("screenshot identity=%#v ok=%v", led, ok)
 	}
 }
 

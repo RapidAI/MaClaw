@@ -77,4 +77,12 @@ export function looksLikeArxivReference(value: string): boolean {
     return /^\d{4}\.\d{4,5}(v\d+)?$/i.test(raw);
 }
 
-export const FILE_COMPANION_OPEN_HINT = "如 2510.16079、arxiv.org/abs/…，或 youtube 等视频页面地址";
+// Same token the host accepts: cd_ plus 32 lowercase hex digits, anywhere in the text.
+const COMPANION_SHARE_TOKEN = /cd_[0-9a-f]{32}/;
+
+/** A companion share link, a maclaw address, or the bare token. */
+export function looksLikeCompanionShare(value: string): boolean {
+    return COMPANION_SHARE_TOKEN.test(value.trim());
+}
+
+export const FILE_COMPANION_OPEN_HINT = "如 2510.16079、arxiv.org/abs/…、视频页面，或伴读分享链接";

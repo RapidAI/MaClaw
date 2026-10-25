@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib/docgen"
 )
@@ -60,20 +61,99 @@ func (a *App) FileCompanionExportChatPDF(path string, turns []CompanionChatTurn)
 	if info, statErr := os.Stat(source); statErr == nil && !info.IsDir() && sameFileCompanionExportPath(source, dest) {
 		return "", errors.New("不能覆盖当前文件")
 	}
-	written, err := docgen.GenerateToFile(docgen.Spec{
-		Title:          fileCompanionPaperSourceName(source),
-		Subtitle:       fmt.Sprintf("伴读对话记录 · %d 条消息", turnCount),
-		Brand:          fileCompanionExportBrand,
-		Content:        body,
-		FooterHint:     fileCompanionExportFooter,
-		FileNamePrefix: "companion-chat",
-		PaperSize:      "A4",
-	}, dest)
+	written, err := fileCompanionGenerateExportPDF(dest, fileCompanionPaperSourceName(source), fmt.Sprintf("伴读对话记录 · %d 条消息", turnCount), body, "companion-chat")
 	if err != nil {
 		return "", err
 	}
 	logFileCompanion("export chat pdf turns=%d", turnCount)
 	return written, nil
+}
+
+// fileCompanionMkdirTemp creates the directory a cloud export renders into.
+// Tests replace it to force a failure before any PDF is written.
+var fileCompanionMkdirTemp = os.MkdirTemp
+
+// fileCompanionUploadExportPDF sends a rendered transcript. Tests replace it
+// so a cloud export can be checked without a Hub login.
+var fileCompanionUploadExportPDF = func(a *App, filename string, raw []byte) (*MobileDocumentDraftSummary, error) {
+	if a == nil {
+		return nil, errors.New("应用不可用")
+	}
+	return a.uploadMobileDocumentOriginal(filename, raw, "application/pdf")
+}
+
+// FileCompanionExportChatCloud renders the conversation and uploads that PDF.
+// It does not upload the open document, and it does not ask for a save path.
+func (a *App) FileCompanionExportChatCloud(path string, turns []CompanionChatTurn) (*MobileDocumentDraftSummary, error) {
+	if a == nil {
+		return nil, errors.New("应用不可用")
+	}
+	grant, _, err := a.fileCompanionGrant(path)
+	if err != nil || grant == nil {
+		return nil, errFileCompanionNotGranted
+	}
+	body, turnCount := fileCompanionChatDocument(turns)
+	if turnCount == 0 {
+		return nil, errors.New("没有可导出的内容")
+	}
+	source := strings.TrimSpace(grant.Canonical)
+	summary, err := a.fileCompanionUploadRenderedChatPDF(fileCompanionChatFileName(source), fileCompanionPaperSourceName(source), fmt.Sprintf("伴读对话记录 · %d 条消息", turnCount), body)
+	if err != nil {
+		return nil, err
+	}
+	logFileCompanion("export chat pdf cloud turns=%d", turnCount)
+	return summary, nil
+}
+
+// FileCompanionExportWebChatCloud uploads a web tab's transcript. It does not
+// call fileCompanionGrant.
+func (a *App) FileCompanionExportWebChatCloud(sessionID string, turns []CompanionChatTurn) (*MobileDocumentDraftSummary, error) {
+	if a == nil {
+		return nil, errors.New("应用不可用")
+	}
+	if a.fileCompanionWebFrame(sessionID) == "" {
+		return nil, errors.New("web session is not open")
+	}
+	body, turnCount := fileCompanionChatDocument(turns)
+	if turnCount == 0 {
+		return nil, errors.New("没有可导出的内容")
+	}
+	summary, err := a.fileCompanionUploadRenderedChatPDF("对话.pdf", "网页", fmt.Sprintf("伴读对话记录 · %d 条消息", turnCount), body)
+	if err != nil {
+		return nil, err
+	}
+	logFileCompanion("export web chat pdf cloud turns=%d", turnCount)
+	return summary, nil
+}
+
+// fileCompanionUploadRenderedChatPDF writes the transcript under filename,
+// then hands those bytes to the cloud upload. The temp file is removed either
+// way, so a failed upload does not leave a PDF behind. The name is only the
+// file's own name, so a caller cannot write outside the temp directory.
+func (a *App) fileCompanionUploadRenderedChatPDF(filename, title, subtitle, body string) (*MobileDocumentDraftSummary, error) {
+	name := filepath.Base(strings.TrimSpace(filename))
+	if name == "." || name == ".." || name == "" {
+		return nil, errors.New("没有可导出的内容")
+	}
+	dir, err := fileCompanionMkdirTemp("", "maclaw-chat-pdf-")
+	if err != nil {
+		// Same wrapper as a save that cannot create its folder, so a full disk
+		// or a refused temp directory is told apart from a generic failure.
+		return nil, fmt.Errorf("创建目录失败: %w", err)
+	}
+	defer os.RemoveAll(dir)
+	dest := filepath.Join(dir, name)
+	if _, err := fileCompanionGenerateExportPDF(dest, title, subtitle, body, "companion-chat"); err != nil {
+		return nil, err
+	}
+	raw, err := os.ReadFile(dest)
+	if err != nil {
+		return nil, fmt.Errorf("写入 PDF 失败: %w", err)
+	}
+	if len(raw) == 0 {
+		return nil, errors.New("没有可导出的内容")
+	}
+	return fileCompanionUploadExportPDF(a, name, raw)
 }
 
 // FileCompanionExportWebChatPDF writes a web tab's chat. It does not call fileCompanionGrant.
@@ -159,7 +239,9 @@ func fileCompanionChatDocument(turns []CompanionChatTurn) (string, int) {
 // as "## 第 1 个回答", and the reader cannot tell which headings belong to the
 // answer and which to the transcript.
 //
-// Fenced code is left alone — a "#" in there is content.
+// Fenced code is left alone — a "#" in there is content. A fence that is
+// still open at the end of the turn is closed there. The turns are rendered
+// as one document, so an unclosed fence would swallow the next turn's heading.
 //
 // Only levels two through four move. A level-one heading is already bigger
 // than the turn heading, so demoting it would *create* the collision this
@@ -169,8 +251,21 @@ func fileCompanionChatDocument(turns []CompanionChatTurn) (string, int) {
 func fileCompanionNestTurnContent(content string) string {
 	lines := strings.Split(content, "\n")
 	fence := ""
-	for i, line := range lines {
-		trimmed := strings.TrimLeft(line, " \t")
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		// The renderer enters a closed $$ block before it looks for a fence.
+		// A ``` inside that block is formula text. Treating it as a fence
+		// would leave the next heading at the turn's size and, once this
+		// turn is closed, write a ``` that starts a real fence.
+		if fence == "" {
+			if end, ok := docgen.MarkdownDisplayMathSpan(lines, i); ok {
+				i = end
+				continue
+			}
+		}
+		// Docgen trims every Unicode space before it looks for a heading.
+		// The same cut has to happen here, or a fullwidth indent stays an H2.
+		trimmed := strings.TrimLeftFunc(line, unicode.IsSpace)
 		if marker, rest, ok := fileCompanionSplitFence(trimmed); ok {
 			switch {
 			case fence == "":
@@ -191,7 +286,14 @@ func fileCompanionNestTurnContent(content string) string {
 		if hashes < 2 || hashes > fileCompanionNestableHeading || hashes >= len(trimmed) || trimmed[hashes] != ' ' {
 			continue
 		}
-		lines[i] = "#" + line
+		// Keep the indent. The PDF renderer trims it before it looks for a
+		// heading, so "#" glued to the front of an indented line becomes a
+		// level-one heading ("#  ## 小节") instead of a nested one.
+		indent := line[:len(line)-len(trimmed)]
+		lines[i] = indent + "#" + trimmed
+	}
+	if fence != "" {
+		lines = append(lines, fence)
 	}
 	return strings.Join(lines, "\n")
 }

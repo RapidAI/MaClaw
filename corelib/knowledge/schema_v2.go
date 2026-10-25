@@ -49,7 +49,7 @@ func schemaV2DDL() []string {
 			schema_json TEXT,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
-			FOREIGN KEY(source_id) REFERENCES kb_sources(id) ON DELETE CASCADE
+			FOREIGN KEY(source_id) REFERENCES knowledge_sources(id) ON DELETE CASCADE
 		)`,
 		`CREATE TABLE IF NOT EXISTS kb_columns (
 			id TEXT PRIMARY KEY,
@@ -76,7 +76,7 @@ func schemaV2DDL() []string {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			FOREIGN KEY(table_id) REFERENCES kb_tables(id) ON DELETE CASCADE,
-			FOREIGN KEY(source_id) REFERENCES kb_sources(id) ON DELETE CASCADE
+			FOREIGN KEY(source_id) REFERENCES knowledge_sources(id) ON DELETE CASCADE
 		)`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS kb_rows_fts USING fts5(row_id UNINDEXED, primary_key_text, row_text)`,
 		`CREATE TABLE IF NOT EXISTS kb_cells (
@@ -120,7 +120,7 @@ func schemaV2DDL() []string {
 			embedding BLOB,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
-			FOREIGN KEY(source_id) REFERENCES kb_sources(id) ON DELETE CASCADE,
+			FOREIGN KEY(source_id) REFERENCES knowledge_sources(id) ON DELETE CASCADE,
 			FOREIGN KEY(row_id) REFERENCES kb_rows(id) ON DELETE SET NULL
 		)`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS kb_cards_fts USING fts5(card_id UNINDEXED, title, claim, summary)`,
@@ -143,7 +143,7 @@ func schemaV2DDL() []string {
 			confidence REAL DEFAULT 0.5,
 			created_at TEXT NOT NULL,
 			FOREIGN KEY(card_id) REFERENCES kb_cards(id) ON DELETE CASCADE,
-			FOREIGN KEY(source_id) REFERENCES kb_sources(id) ON DELETE CASCADE,
+			FOREIGN KEY(source_id) REFERENCES knowledge_sources(id) ON DELETE CASCADE,
 			FOREIGN KEY(row_id) REFERENCES kb_rows(id) ON DELETE SET NULL
 		)`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS kb_facts_fts USING fts5(fact_id UNINDEXED, subject, predicate, object)`,

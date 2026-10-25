@@ -24,18 +24,34 @@ const save = vi.fn();
 const send = vi.fn();
 const importKnowledge = vi.fn();
 const uploadCloud = vi.fn();
+const scanPDF = vi.fn(async (..._args: any[]): Promise<{ scan: boolean; path: string }> => ({ scan: false, path: "" }));
+const convertScan = vi.fn(async (..._args: any[]): Promise<{ ok: boolean; scan: boolean; complete?: boolean; pending?: boolean; started?: boolean; save_failed?: boolean; path?: string; message?: string }> => ({ ok: false, scan: false, path: "", message: "" }));
+const chooseConvertDest = vi.fn(async (..._args: unknown[]) => "C:/out/chosen.pdf");
 const ready = vi.fn();
 const choose = vi.fn();
 const openArxiv = vi.fn(async (..._args: any[]): Promise<any> => undefined);
+const searchArxiv = vi.fn(async (..._args: any[]): Promise<any> => [
+    { id: "2510.16079", title: "Attention Is All You Need", abstract: "We propose a new network architecture.", authors: "Ashish Vaswani" },
+]);
 const replaceOffice = vi.fn();
 const clearChat = vi.fn();
 const quit = vi.fn();
 const hideWindow = vi.fn();
+const windowFullscreen = vi.fn();
+const windowUnfullscreen = vi.fn();
+const windowGetSize = vi.fn(async () => ({ w: 1280, h: 800 }));
+const windowGetPosition = vi.fn(async () => ({ x: 40, y: 30 }));
+const windowSetSize = vi.fn();
+const setScreenPosition = vi.fn();
 const openResult = vi.fn();
 const saveResult = vi.fn();
 const figureDataURL = vi.fn();
 const exportPdf = vi.fn();
+const exportProject = vi.fn();
 const exportChatPdf = vi.fn();
+const exportChatCloud = vi.fn();
+const exportWebChatCloud = vi.fn();
+const showItemInFolder = vi.fn();
 const exportTex = vi.fn();
 const exportChatTex = vi.fn();
 const exportWebPdf = vi.fn();
@@ -55,6 +71,22 @@ const playerHide = vi.fn(async (..._args: any[]): Promise<any> => undefined);
 const discardWeb = vi.fn();
 const getBrandInfo = vi.fn();
 const clipboardWrite = vi.fn();
+type ListLibraryResult = { items: Array<Record<string, unknown>>; notice: string; updates?: Array<Record<string, unknown>>; removed?: string[] };
+const listLibrary = vi.fn<(args: unknown[]) => Promise<ListLibraryResult>>(async () => ({ items: [], notice: "" }));
+const shareDocument = vi.fn(async () => ({ url: "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", name: "a.md", visibility: "public", permanent: true }));
+const importShare = vi.fn(async (..._args: any[]): Promise<{ id: string; name: string; path: string; source: string }> => ({ id: "cd_0123456789abcdef0123456789abcdef", name: "shared.pdf", path: "C:/library/shared.pdf", source: "cloud" }));
+const listGroups = vi.fn(async () => [] as Array<Record<string, unknown>>);
+const syncShare = vi.fn(async () => ({ revision: 2 }));
+// AddFileCompanionShareNote returns the legacy notes array or the newer
+// { notes, notesRevision } object; companionNotePost accepts both.
+type AddShareNoteResult = Array<Record<string, unknown>> | { notes?: Array<Record<string, unknown>>; notesRevision?: number };
+const addShareNote = vi.fn(async (): Promise<AddShareNoteResult> => []);
+const createGroup = vi.fn(async (name: string) => ({ id: "cg_0123456789abcdef0123456789abcdef", name, admin: true, members: [] as Array<Record<string, unknown>> }));
+const addGroupMember = vi.fn(async () => ({ id: "cg_0123456789abcdef0123456789abcdef", name: "论文组", admin: true, members: [] as Array<Record<string, unknown>> }));
+const removeGroupMember = vi.fn(async () => ({ id: "cg_0123456789abcdef0123456789abcdef", name: "论文组", admin: true, members: [] as Array<Record<string, unknown>> }));
+const updateGroup = vi.fn(async (id: string, name: string, icon: string) => ({ id, name, icon, admin: true, members: [] as Array<Record<string, unknown>> }));
+const deleteGroup = vi.fn(async () => undefined);
+const leaveGroup = vi.fn(async () => undefined);
 
 vi.mock("../../../wailsjs/go/main/App", () => ({
     GetFileCompanionBoot: (...args: unknown[]) => boot(...args),
@@ -65,11 +97,15 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     SendFileCompanionMessage: (...args: unknown[]) => send(...args),
     FileCompanionImportKnowledge: (...args: unknown[]) => importKnowledge(...args),
     FileCompanionUploadCloud: (...args: unknown[]) => uploadCloud(...args),
+    FileCompanionPDFScan: (...args: unknown[]) => scanPDF(...args),
+    FileCompanionChooseConvertDestination: (...args: unknown[]) => chooseConvertDest(...args),
+    FileCompanionConvertScan: (...args: unknown[]) => convertScan(...args),
     FileCompanionReplaceOffice: (...args: unknown[]) => replaceOffice(...args),
     ClearFileCompanionChat: (...args: unknown[]) => clearChat(...args),
     FileCompanionUIReady: (...args: unknown[]) => ready(...args),
     ChooseFileCompanionFiles: (...args: unknown[]) => choose(...args),
     FileCompanionOpenArxiv: (...args: unknown[]) => openArxiv(...args),
+    FileCompanionSearchArxiv: (...args: unknown[]) => searchArxiv(...args),
     FileCompanionOpenWebPage: (...args: unknown[]) => openWeb(...args),
     FileCompanionPlayerSupported: (...args: unknown[]) => playerSupported(...args),
     FileCompanionPlayerPlace: (...args: unknown[]) => playerPlace(...args),
@@ -86,13 +122,29 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     FileCompanionExportChatTeX: (...args: unknown[]) => exportChatTex(...args),
     FileCompanionExportWebPDF: (...args: unknown[]) => exportWebPdf(...args),
     FileCompanionExportWebChatPDF: (...args: unknown[]) => exportWebChatPdf(...args),
-    FileCompanionExportWebTeX: (...args: unknown[]) => exportWebTex(...args),
-    FileCompanionExportWebChatTeX: (...args: unknown[]) => exportWebChatTex(...args),
-    OpenFileOrShowInFolder: (...args: unknown[]) => openResult(...args),
-    ExportTaskResultFile: (...args: unknown[]) => saveResult(...args),
-    FileCompanionFigureDataURL: (...args: unknown[]) => figureDataURL(...args),
-    FileCompanionExportPDF: (...args: unknown[]) => exportPdf(...args),
-    FileCompanionExportChatPDF: (...args: unknown[]) => exportChatPdf(...args),
+    FileCompanionExportWebTeX: (...args: Parameters<typeof exportWebTex>) => exportWebTex(...args),
+    FileCompanionExportWebChatTeX: (...args: Parameters<typeof exportWebChatTex>) => exportWebChatTex(...args),
+    OpenFileOrShowInFolder: (...args: Parameters<typeof openResult>) => openResult(...args),
+    ExportTaskResultFile: (...args: Parameters<typeof saveResult>) => saveResult(...args),
+    FileCompanionFigureDataURL: (...args: Parameters<typeof figureDataURL>) => figureDataURL(...args),
+    FileCompanionExportPDF: (...args: Parameters<typeof exportPdf>) => exportPdf(...args),
+    FileCompanionExportProject: (...args: Parameters<typeof exportProject>) => exportProject(...args),
+    ListFileCompanionLibrary: (...args: Parameters<typeof listLibrary>) => listLibrary(...args),
+    ShareFileCompanionDocument: (...args: Parameters<typeof shareDocument>) => shareDocument(...args),
+    ImportFileCompanionShare: (...args: Parameters<typeof importShare>) => importShare(...args),
+    ListFileCompanionGroups: (...args: Parameters<typeof listGroups>) => listGroups(...args),
+    SyncFileCompanionShare: (...args: Parameters<typeof syncShare>) => syncShare(...args),
+    AddFileCompanionShareNote: (...args: Parameters<typeof addShareNote>) => addShareNote(...args),
+    CreateFileCompanionGroup: (...args: Parameters<typeof createGroup>) => createGroup(...args),
+    AddFileCompanionGroupMember: (...args: Parameters<typeof addGroupMember>) => addGroupMember(...args),
+    RemoveFileCompanionGroupMember: (...args: Parameters<typeof removeGroupMember>) => removeGroupMember(...args),
+    UpdateFileCompanionGroup: (...args: Parameters<typeof updateGroup>) => updateGroup(...args),
+    DeleteFileCompanionGroup: (...args: Parameters<typeof deleteGroup>) => deleteGroup(...args),
+    LeaveFileCompanionGroup: (...args: Parameters<typeof leaveGroup>) => leaveGroup(...args),
+    FileCompanionExportChatPDF: (...args: Parameters<typeof exportChatPdf>) => exportChatPdf(...args),
+    FileCompanionExportChatCloud: (...args: Parameters<typeof exportChatCloud>) => exportChatCloud(...args),
+    FileCompanionExportWebChatCloud: (...args: Parameters<typeof exportWebChatCloud>) => exportWebChatCloud(...args),
+    ShowItemInFolder: (...args: unknown[]) => showItemInFolder(...args),
     PreviewTaskResultFile: async (path: string) => {
         const name = String(path).toLowerCase();
         if (name.endsWith(".mp4") || name.endsWith(".mp3")) {
@@ -101,11 +153,17 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
         return { kind: "text", content: "" };
     },
     GetBrandInfo: (...args: unknown[]) => getBrandInfo(...args),
+    SetMainWindowScreenPosition: (...args: unknown[]) => setScreenPosition(...args),
 }));
 
 vi.mock("../../../wailsjs/runtime", () => ({
     Quit: () => quit(),
     WindowHide: () => hideWindow(),
+    WindowFullscreen: () => windowFullscreen(),
+    WindowUnfullscreen: () => windowUnfullscreen(),
+    WindowGetSize: () => windowGetSize(),
+    WindowGetPosition: () => windowGetPosition(),
+    WindowSetSize: (width: number, height: number) => windowSetSize(width, height),
     EventsOn: () => {},
     EventsOff: () => {},
 }));
@@ -120,9 +178,16 @@ function renderWindow(options?: { askOnOpen?: boolean }) {
     );
 }
 
-// 打开 is a menu now: the 打开文件 row is what reaches the system dialog.
+// 导出 PDF opens a destination panel. 导出文件 is the save-dialog path.
+function exportChatAsFile() {
+    fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+    fireEvent.click(screen.getByTestId("file-companion-export-chat-file"));
+}
+
+// 打开 is a menu now: the 打开文档或导入项目 row is what reaches the system dialog.
 // An empty boot already has the menu open, so a click on the trigger would
 // close it before the row is reached.
+
 function pickLocalFile() {
     if (!screen.queryByTestId("file-companion-open-menu")) {
         fireEvent.click(screen.getByTestId("file-companion-choose"));
@@ -140,6 +205,10 @@ vi.mock("../ai/DocxPreviewPanel", () => ({
 
 vi.mock("../ai/PdfPreviewPanel", () => ({
     PdfPreviewPanel: ({ absPath }: { absPath: string }) => <div data-testid="pdf-preview-panel">{absPath}</div>,
+}));
+
+vi.mock("../ai/CompanionPdfReader", () => ({
+    CompanionPdfReader: ({ absPath }: { absPath: string }) => <div data-testid="pdf-preview-panel">{absPath}</div>,
 }));
 
 // Only the drawing is stubbed. jsdom has no canvas, so the real renderer would
@@ -190,14 +259,32 @@ beforeEach(() => {
     send.mockReset();
     importKnowledge.mockReset();
     uploadCloud.mockReset();
+    scanPDF.mockReset();
+    scanPDF.mockResolvedValue({ scan: false, path: "" });
+    convertScan.mockReset();
+    convertScan.mockResolvedValue({ ok: false, scan: false, path: "", message: "" });
+    chooseConvertDest.mockReset();
+    chooseConvertDest.mockResolvedValue("C:/out/chosen.pdf");
     ready.mockReset();
     choose.mockReset();
     openArxiv.mockReset();
     openArxiv.mockResolvedValue("C:/papers/2510.16079.pdf");
+    searchArxiv.mockReset();
+    searchArxiv.mockResolvedValue([
+        { id: "2510.16079", title: "Attention Is All You Need", abstract: "We propose a new network architecture.", authors: "Ashish Vaswani" },
+    ]);
     replaceOffice.mockReset();
     clearChat.mockReset();
     quit.mockReset();
     hideWindow.mockReset();
+    windowFullscreen.mockReset();
+    windowUnfullscreen.mockReset();
+    windowGetSize.mockReset();
+    windowGetSize.mockResolvedValue({ w: 1280, h: 800 });
+    windowGetPosition.mockReset();
+    windowGetPosition.mockResolvedValue({ x: 40, y: 30 });
+    windowSetSize.mockReset();
+    setScreenPosition.mockReset();
     openResult.mockReset();
     saveResult.mockReset();
     figureDataURL.mockReset();
@@ -205,8 +292,39 @@ beforeEach(() => {
     getBrandInfo.mockResolvedValue({ displayName: "MaClaw" });
     exportPdf.mockReset();
     exportPdf.mockResolvedValue("");
+    exportProject.mockReset();
+    exportProject.mockResolvedValue("");
+    listLibrary.mockReset();
+    listLibrary.mockResolvedValue({ items: [], notice: "" });
+    shareDocument.mockReset();
+    shareDocument.mockResolvedValue({ url: "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", name: "a.md", visibility: "public", permanent: true });
+    importShare.mockReset();
+    importShare.mockResolvedValue({ id: "cd_0123456789abcdef0123456789abcdef", name: "shared.pdf", path: "C:/library/shared.pdf", source: "cloud" });
+    listGroups.mockReset();
+    listGroups.mockResolvedValue([]);
+    syncShare.mockReset();
+    syncShare.mockResolvedValue({ revision: 2 });
+    addShareNote.mockReset();
+    addShareNote.mockResolvedValue([]);
+    createGroup.mockReset();
+    createGroup.mockImplementation(async (name: string) => ({ id: "cg_0123456789abcdef0123456789abcdef", name, admin: true, members: [] }));
+    addGroupMember.mockReset();
+    addGroupMember.mockResolvedValue({ id: "cg_0123456789abcdef0123456789abcdef", name: "论文组", admin: true, members: [] });
+    removeGroupMember.mockReset();
+    removeGroupMember.mockResolvedValue({ id: "cg_0123456789abcdef0123456789abcdef", name: "论文组", admin: true, members: [] });
+    updateGroup.mockReset();
+    updateGroup.mockImplementation(async (id: string, name: string, icon: string) => ({ id, name, icon, admin: true, members: [] }));
+    deleteGroup.mockReset();
+    deleteGroup.mockResolvedValue(undefined);
+    leaveGroup.mockReset();
+    leaveGroup.mockResolvedValue(undefined);
     exportChatPdf.mockReset();
     exportChatPdf.mockResolvedValue("");
+    exportChatCloud.mockReset();
+    exportChatCloud.mockResolvedValue({ id: "draft-1", title: "a-伴读对话.pdf" });
+    exportWebChatCloud.mockReset();
+    showItemInFolder.mockReset();
+    showItemInFolder.mockResolvedValue(undefined);
     exportTex.mockReset();
     exportTex.mockResolvedValue("");
     exportChatTex.mockReset();
@@ -506,11 +624,15 @@ describe("FileCompanionWindow", () => {
         expect(choose).not.toHaveBeenCalled();
         // No native player is on screen, so the panel stays centred.
         expect(menu.className).not.toContain("file-companion-open-menu--beside-player");
-        expect(screen.getByTestId("file-companion-open-local").textContent).toContain("打开文件");
+        expect(screen.getByTestId("file-companion-open-local").textContent).toContain("打开文档或导入项目");
         const input = screen.getByTestId("file-companion-arxiv-input") as HTMLInputElement;
-        expect(input.placeholder).toBe("如 2510.16079、arxiv.org/abs/…，或 youtube 等视频页面地址");
+        expect(input.placeholder).toBe("如 2510.16079、arxiv.org/abs/…、视频页面，或伴读分享链接");
         // Nothing typed yet: 确定 has nothing to fetch.
         expect((screen.getByTestId("file-companion-arxiv-go") as HTMLButtonElement).disabled).toBe(true);
+        const search = screen.getByTestId("file-companion-arxiv-search");
+        expect(search.textContent).toBe("搜索");
+        expect((search as HTMLButtonElement).disabled).toBe(false);
+        expect(screen.getByTestId("file-companion-arxiv-go").compareDocumentPosition(search) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         // The bar clips its row; the menu has to un-clip it or it is cut off.
         expect(screen.getByTestId("file-companion-titlebar").className).toContain("file-companion-titlebar--menu-open");
         // The cluster sits in the window-drag region. On Windows the drag
@@ -531,6 +653,249 @@ describe("FileCompanionWindow", () => {
         // the scrim unmounts with the menu on mousedown, the titlebar survives.
         fireEvent.mouseUp(screen.getByTestId("file-companion-titlebar"));
         expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
+    });
+
+    const shareLink = "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef";
+
+    async function pasteOpenBox(value: string) {
+        if (!screen.queryByTestId("file-companion-open-menu")) {
+            fireEvent.click(screen.getByTestId("file-companion-choose"));
+        }
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-input"), { target: { value } });
+        // The click starts an async import and does not return that promise.
+        // act waits out the rejection so the dialog state lands inside the test.
+        await act(async () => {
+            fireEvent.click(screen.getByTestId("file-companion-arxiv-go"));
+        });
+    }
+
+    it("imports a companion share from the open box", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        open.mockImplementation(async (path: string) => doc(path));
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-open-menu");
+        await pasteOpenBox(shareLink);
+        await waitFor(() => expect(importShare).toHaveBeenCalledWith(shareLink, ""));
+        await screen.findByTestId("file-companion-tab-shared.pdf");
+        expect(open).toHaveBeenCalledWith("C:/library/shared.pdf");
+        expect(openWeb).not.toHaveBeenCalled();
+        expect(openArxiv).not.toHaveBeenCalled();
+        expect(screen.getByRole("alert").textContent).toContain("已导入文档库");
+        expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
+        expect(screen.queryByTestId("file-companion-share-password")).toBeNull();
+    });
+
+    it("asks for a share password, then imports with it", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        open.mockImplementation(async (path: string) => doc(path));
+        importShare.mockImplementation(async (_link: string, password: string) => {
+            if (password !== "secret") throw new Error("需要分享密码");
+            return { id: "cd_0123456789abcdef0123456789abcdef", name: "shared.pdf", path: "C:/library/shared.pdf", source: "cloud" };
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-open-menu");
+        await pasteOpenBox(shareLink);
+        const box = await screen.findByTestId("file-companion-share-password");
+        expect(box.getAttribute("role")).toBe("dialog");
+        expect(open).not.toHaveBeenCalled();
+        expect(importShare).toHaveBeenCalledTimes(1);
+        const input = screen.getByTestId("file-companion-share-password-input") as HTMLInputElement;
+        expect(input.type).toBe("password");
+        expect(screen.getByRole("heading", { name: "输入分享密码" })).toBeTruthy();
+        expect(screen.getByText("该文档为私密分享，需要密码才能导入。")).toBeTruthy();
+        expect(input.autocomplete).toBe("new-password");
+        const reveal = screen.getByRole("button", { name: "显示密码" });
+        const press = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+        reveal.dispatchEvent(press);
+        expect(press.defaultPrevented).toBe(true);
+        reveal.focus();
+        fireEvent.click(reveal);
+        expect(input.type).toBe("text");
+        expect(document.activeElement).toBe(input);
+        fireEvent.click(screen.getByRole("button", { name: "隐藏密码" }));
+        expect(input.type).toBe("password");
+        expect(document.activeElement).toBe(input);
+        fireEvent.click(screen.getByTestId("file-companion-share-password-confirm"));
+        expect(screen.getByTestId("file-companion-share-password-error").textContent).toContain("请输入分享密码");
+        expect(importShare).toHaveBeenCalledTimes(1);
+        fireEvent.change(input, { target: { value: "secret" } });
+        await act(async () => {
+            fireEvent.click(screen.getByTestId("file-companion-share-password-confirm"));
+        });
+        await waitFor(() => expect(importShare).toHaveBeenCalledWith(shareLink, "secret"));
+        await screen.findByTestId("file-companion-tab-shared.pdf");
+        expect(screen.queryByTestId("file-companion-share-password")).toBeNull();
+    });
+
+    it("keeps the password box open when the share password is wrong", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        importShare.mockImplementation(async (_link: string, password: string) => {
+            if (!password) throw new Error("需要分享密码");
+            throw new Error("分享密码不正确");
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-open-menu");
+        await pasteOpenBox(shareLink);
+        await screen.findByTestId("file-companion-share-password");
+        fireEvent.change(screen.getByTestId("file-companion-share-password-input"), { target: { value: "nope" } });
+        await act(async () => {
+            fireEvent.click(screen.getByTestId("file-companion-share-password-confirm"));
+        });
+        await screen.findByTestId("file-companion-share-password-error");
+        expect(screen.getByTestId("file-companion-share-password-error").textContent).toContain("分享密码不正确");
+        expect(screen.getByTestId("file-companion-share-password")).toBeTruthy();
+        expect(open).not.toHaveBeenCalled();
+        expect(screen.getByTestId("file-companion-open-menu")).toBeTruthy();
+    });
+
+    it("keeps the caret in the password field while the import is in flight", async () => {
+        let rejectImport: (err: unknown) => void = () => undefined;
+        boot.mockResolvedValue({ paths: [] });
+        importShare.mockImplementation((_link: string, password: string) => {
+            if (!password) return Promise.reject(new Error("需要分享密码"));
+            return new Promise((_resolve, reject) => { rejectImport = reject; });
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-open-menu");
+        await pasteOpenBox(shareLink);
+        const input = await screen.findByTestId("file-companion-share-password-input") as HTMLInputElement;
+        fireEvent.change(input, { target: { value: "nope" } });
+        fireEvent.click(screen.getByTestId("file-companion-share-password-confirm"));
+        await waitFor(() => expect(input.readOnly).toBe(true));
+        expect(input.disabled).toBe(false);
+        expect(document.activeElement).toBe(input);
+        fireEvent.keyDown(window, { key: "Tab" });
+        expect(document.activeElement).toBe(input);
+        expect(screen.getByTestId("file-companion-arxiv-input")).not.toBe(document.activeElement);
+        fireEvent.keyDown(input, { key: "Escape" });
+        expect(screen.getByTestId("file-companion-share-password")).toBeTruthy();
+        expect(screen.getByTestId("file-companion-open-menu")).toBeTruthy();
+        expect(importShare).toHaveBeenCalledTimes(2);
+        await act(async () => { rejectImport(new Error("分享密码不正确")); });
+        await screen.findByTestId("file-companion-share-password-error");
+        expect(input.readOnly).toBe(false);
+        expect(document.activeElement).toBe(input);
+        expect(input.value).toBe("nope");
+    });
+
+    it("closes the password box on Escape without a second import", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        importShare.mockRejectedValue(new Error("需要分享密码"));
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-open-menu");
+        await pasteOpenBox(shareLink);
+        await screen.findByTestId("file-companion-share-password");
+        fireEvent.keyDown(screen.getByTestId("file-companion-share-password-input"), { key: "Escape" });
+        await waitFor(() => expect(screen.queryByTestId("file-companion-share-password")).toBeNull());
+        expect(importShare).toHaveBeenCalledTimes(1);
+        expect(screen.getByTestId("file-companion-open-menu")).toBeTruthy();
+        expect(open).not.toHaveBeenCalled();
+        expect(document.activeElement).toBe(screen.getByTestId("file-companion-arxiv-input"));
+    });
+
+    // Wails rejects a Go error as a string, not an Error. An Error-only
+    // check would show 导入失败 and never ask for the password.
+    it("opens the password box when the host rejects with the password sentence as text", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        importShare.mockRejectedValueOnce("需要分享密码");
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-open-menu");
+        await pasteOpenBox(shareLink);
+        await screen.findByTestId("file-companion-share-password");
+        expect(screen.getByTestId("file-companion-arxiv-hint").textContent).not.toContain("导入失败");
+        fireEvent.change(screen.getByTestId("file-companion-share-password-input"), { target: { value: "nope" } });
+        importShare.mockRejectedValueOnce("分享密码不正确");
+        await act(async () => {
+            fireEvent.click(screen.getByTestId("file-companion-share-password-confirm"));
+        });
+        await screen.findByTestId("file-companion-share-password-error");
+        expect(screen.getByTestId("file-companion-share-password-error").textContent).toContain("分享密码不正确");
+        expect(screen.getByTestId("file-companion-open-menu")).toBeTruthy();
+        expect(open).not.toHaveBeenCalled();
+    });
+
+    it("shows a text share failure on the open box", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        importShare.mockRejectedValueOnce("暂时无法连接云端");
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-open-menu");
+        await pasteOpenBox(shareLink);
+        await waitFor(() => {
+            expect(screen.getByTestId("file-companion-arxiv-hint").textContent).toContain("暂时无法连接云端");
+        });
+        expect(screen.queryByTestId("file-companion-share-password")).toBeNull();
+        expect(screen.getByTestId("file-companion-open-menu")).toBeTruthy();
+        expect(open).not.toHaveBeenCalled();
+    });
+
+    it("keeps the import when opening the saved file throws", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        open.mockResolvedValue(undefined);
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-open-menu");
+        await pasteOpenBox(shareLink);
+        await waitFor(() => {
+            expect(screen.getByTestId("file-companion-arxiv-hint").textContent).toContain("文件已导入，但没有打开");
+        });
+        expect(screen.getByRole("alert").textContent).toContain("已导入文档库");
+        expect(screen.queryByTestId("file-companion-share-password")).toBeNull();
+        expect(screen.getByTestId("file-companion-open-menu")).toBeTruthy();
+        expect(screen.queryByTestId("file-companion-tab-shared.pdf")).toBeNull();
+    });
+
+    it("keeps the password box over the chat while a native player is showing", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        importShare.mockRejectedValueOnce("需要分享密码");
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-open-menu");
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-input"), { target: { value: "https://www.youtube.com/watch?v=abc" } });
+        openWeb.mockResolvedValue({
+            kind: "web",
+            frameUrl: "https://www.youtube.com/embed/abc",
+            sessionId: "web-abc",
+        });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-go"));
+        await screen.findByTestId("file-companion-web-frame");
+        await pasteOpenBox(shareLink);
+        const box = await screen.findByTestId("file-companion-share-password");
+        expect(box.className).toContain("file-companion-share-password--beside-player");
+        expect(screen.getByTestId("file-companion-open-menu")).toBeTruthy();
+    });
+
+    it("keeps a second import from the url box while the password box is open", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        importShare.mockRejectedValue("需要分享密码");
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-open-menu");
+        await pasteOpenBox(shareLink);
+        await screen.findByTestId("file-companion-share-password");
+        fireEvent.keyDown(screen.getByTestId("file-companion-arxiv-input"), { key: "Enter" });
+        expect(importShare).toHaveBeenCalledTimes(1);
+        fireEvent.keyDown(screen.getByTestId("file-companion-share-password-input"), { key: "Tab", shiftKey: true });
+        expect(document.activeElement).toBe(screen.getByTestId("file-companion-share-password-confirm"));
+    });
+
+    it("shows the host sentence when opening the imported file is rejected as text", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        open.mockRejectedValue("文件已被占用");
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-open-menu");
+        await pasteOpenBox(shareLink);
+        await screen.findByText("文件已被占用");
+        expect(screen.getByRole("alert").textContent).toContain("已导入文档库");
+        expect(screen.queryByText("打不开这个文件")).toBeNull();
+        expect(screen.queryByTestId("file-companion-share-password")).toBeNull();
     });
 
     it("本地文件 opens the system dialog and closes the menu", async () => {
@@ -690,6 +1055,253 @@ describe("FileCompanionWindow", () => {
             expect(screen.getByTestId("file-companion-arxiv-hint").textContent).toContain("请填写");
         });
         expect(openArxiv).not.toHaveBeenCalled();
+    });
+
+    async function openArxivSearchDialog() {
+        if (!screen.queryByTestId("file-companion-open-menu")) {
+            fireEvent.click(screen.getByTestId("file-companion-choose"));
+        }
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-search"));
+        return screen.findByTestId("file-companion-arxiv-search-dialog");
+    }
+
+    it("opens an arXiv search dialog from the button beside 确定", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-open-menu");
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-input"), { target: { value: "transformer" } });
+        const dialog = await openArxivSearchDialog();
+        expect(dialog.getAttribute("role")).toBe("dialog");
+        expect(screen.getByTestId("file-companion-open-menu")).toBeTruthy();
+        expect((screen.getByTestId("file-companion-arxiv-search-input") as HTMLInputElement).value).toBe("transformer");
+        expect(dialog.textContent).toContain("最多 10 篇");
+        expect(dialog.textContent).not.toContain("按相关度");
+        expect(searchArxiv).not.toHaveBeenCalled();
+        expect(openArxiv).not.toHaveBeenCalled();
+    });
+
+    it("asks for a keyword before searching arXiv", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        installRuntime();
+        renderWindow();
+        await openArxivSearchDialog();
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-search-go"));
+        await waitFor(() => {
+            expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("请输入关键字");
+        });
+        expect(searchArxiv).not.toHaveBeenCalled();
+        expect(screen.getByTestId("file-companion-open-menu")).toBeTruthy();
+    });
+
+    it("says it is searching while the arXiv request is in flight", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        let release: (hits: unknown) => void = () => undefined;
+        searchArxiv.mockReturnValueOnce(new Promise((resolve) => { release = resolve; }));
+        installRuntime();
+        renderWindow();
+        await openArxivSearchDialog();
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "attention" } });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-search-go"));
+        await waitFor(() => {
+            expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("正在检索");
+        });
+        expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).not.toContain("输入关键字");
+        expect(screen.getByTestId("file-companion-arxiv-search-skeleton")).toBeTruthy();
+        release([]);
+        await waitFor(() => {
+            expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("检索完成，没有结果");
+        });
+        expect(screen.queryByTestId("file-companion-arxiv-search-skeleton")).toBeNull();
+    });
+
+    it("says when an arXiv search has no papers, and clears that once the keyword changes", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        searchArxiv.mockResolvedValueOnce([]);
+        installRuntime();
+        renderWindow();
+        await openArxivSearchDialog();
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "zzzz-not-a-paper" } });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-search-go"));
+        await waitFor(() => {
+            expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("检索完成，没有结果");
+        });
+        const empty = screen.getByTestId("file-companion-arxiv-search-empty");
+        expect(empty.textContent).toContain("后检索");
+        expect(empty.textContent).not.toContain("确定");
+        expect(screen.queryByRole("list", { name: "搜索结果" })).toBeNull();
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "attention" } });
+        expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("输入关键字");
+        expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).not.toContain("检索完成，没有结果");
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "zzzz-not-a-paper" } });
+        expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("检索完成，没有结果");
+    });
+
+    it("lists arXiv titles and abstracts, and opens the paper that is clicked", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: false, readOnly: true }));
+        searchArxiv.mockResolvedValue([
+            { id: "2510.16079", title: "Attention Is All You Need", abstract: "We propose a new network architecture.", authors: "Ashish Vaswani" },
+            { id: "cs/0701001", title: "An Old Paper", abstract: "From the archive.", authors: "Grace Hopper" },
+        ]);
+        installRuntime();
+        renderWindow();
+        await openArxivSearchDialog();
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "attention" } });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-search-go"));
+        await waitFor(() => expect(searchArxiv).toHaveBeenCalledWith("attention"));
+        const first = await screen.findByTestId("file-companion-arxiv-hit-2510.16079");
+        expect(first.textContent).toContain("Attention Is All You Need");
+        expect(first.textContent).toContain("We propose a new network architecture.");
+        expect(screen.getByTestId("file-companion-arxiv-hit-cs_0701001").textContent).toContain("From the archive.");
+        expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("找到 2 篇");
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "attention mechanism" } });
+        expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("关键字已修改");
+        expect(screen.getByTestId("file-companion-arxiv-hit-2510.16079")).toBeTruthy();
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "attention" } });
+        expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("找到 2 篇");
+        fireEvent.click(first);
+        await waitFor(() => expect(openArxiv).toHaveBeenCalledWith("2510.16079"));
+        await screen.findByTestId("file-companion-tab-2510.16079.pdf");
+        expect(open).toHaveBeenCalledWith("C:/papers/2510.16079.pdf");
+        expect(screen.queryByTestId("file-companion-arxiv-search-dialog")).toBeNull();
+        expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
+    });
+
+    it("shows the citation line of each hit: id, subjects, and date", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        searchArxiv.mockResolvedValue([
+            {
+                id: "2510.16079",
+                title: "Attention Is All You Need",
+                abstract: "We propose a new network architecture.",
+                authors: "Ashish Vaswani",
+                published: "2025-10-20",
+                categories: ["cs.CL", "cs.LG"],
+            },
+        ]);
+        installRuntime();
+        renderWindow();
+        await openArxivSearchDialog();
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "attention" } });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-search-go"));
+        const hit = await screen.findByTestId("file-companion-arxiv-hit-2510.16079");
+        expect(hit.textContent).toContain("2510.16079");
+        expect(hit.textContent).toContain("cs.CL");
+        expect(hit.textContent).toContain("cs.LG");
+        expect(hit.textContent).toContain("2025-10-20");
+        // The row is numbered, so the list reads as a bibliography.
+        expect(hit.querySelector(".file-companion-arxiv-hit-index")?.textContent).toBe("1");
+    });
+
+    it("lists a hit that carries no date or subjects", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        searchArxiv.mockResolvedValue([
+            { id: "cs/0701001", title: "An Old Paper", abstract: "From the archive.", authors: "Grace Hopper" },
+        ]);
+        installRuntime();
+        renderWindow();
+        await openArxivSearchDialog();
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "archive" } });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-search-go"));
+        const hit = await screen.findByTestId("file-companion-arxiv-hit-cs_0701001");
+        expect(hit.textContent).toContain("An Old Paper");
+        expect(hit.textContent).toContain("cs/0701001");
+        expect(hit.querySelectorAll(".file-companion-arxiv-hit-tag").length).toBe(0);
+        expect(hit.querySelector(".file-companion-arxiv-hit-date")).toBeNull();
+    });
+
+    it("holds the list's shape with placeholder rows while a search runs", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        let resolveSearch: ((value: unknown) => void) | undefined;
+        searchArxiv.mockImplementationOnce(() => new Promise((resolve) => { resolveSearch = resolve; }));
+        installRuntime();
+        renderWindow();
+        await openArxivSearchDialog();
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "attention" } });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-search-go"));
+        const skeleton = await screen.findByTestId("file-companion-arxiv-search-skeleton");
+        // Placeholders are decoration, not content: a screen reader must not
+        // announce four empty rows.
+        expect(skeleton.getAttribute("aria-hidden")).toBe("true");
+        expect(screen.getByTestId("file-companion-arxiv-search-go").textContent).toBe("检索中…");
+        await act(async () => { resolveSearch?.([]); });
+        expect(screen.queryByTestId("file-companion-arxiv-search-skeleton")).toBeNull();
+    });
+
+    it("offers a next step when a search finds nothing", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        searchArxiv.mockResolvedValueOnce([]);
+        installRuntime();
+        renderWindow();
+        await openArxivSearchDialog();
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "zzzz-not-a-paper" } });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-search-go"));
+        const empty = await screen.findByTestId("file-companion-arxiv-search-empty");
+        // The panel names the query that came back empty, so the reader can
+        // see what was actually searched instead of a second "no results".
+        expect(empty.textContent).toContain("没有与「zzzz-not-a-paper」匹配的论文");
+        expect(empty.textContent).toContain("arXiv 编号");
+        // The empty state replaces the list, and goes away once a search runs.
+        expect(screen.queryByRole("list", { name: "搜索结果" })).toBeNull();
+        // It also goes away on a keystroke: it describes the query it came
+        // from, and the status line has already returned to its idle sentence.
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "attention" } });
+        expect(screen.queryByTestId("file-companion-arxiv-search-empty")).toBeNull();
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "zzzz-not-a-paper" } });
+        searchArxiv.mockResolvedValueOnce([
+            { id: "2510.16079", title: "Attention Is All You Need", abstract: "Abstract.", authors: "Ashish Vaswani" },
+        ]);
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-search-go"));
+        await screen.findByTestId("file-companion-arxiv-hit-2510.16079");
+        expect(screen.queryByTestId("file-companion-arxiv-search-empty")).toBeNull();
+    });
+
+    it("keeps the search dialog open when arXiv search fails", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        searchArxiv.mockRejectedValueOnce(new Error("搜索失败：连接 arXiv 超时，请稍后再试"));
+        installRuntime();
+        renderWindow();
+        await openArxivSearchDialog();
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "attention" } });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-search-go"));
+        await waitFor(() => {
+            expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("超时");
+        });
+        expect(screen.getByTestId("file-companion-arxiv-search-status").dataset.state).toBe("error");
+        expect(screen.getByTestId("file-companion-arxiv-search-dialog")).toBeTruthy();
+        expect(screen.getByTestId("file-companion-open-menu")).toBeTruthy();
+        expect(openArxiv).not.toHaveBeenCalled();
+    });
+
+    it("keeps the search dialog open when the chosen paper does not download", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        openArxiv.mockRejectedValueOnce(new Error("下载失败：找不到这篇论文（404）"));
+        installRuntime();
+        renderWindow();
+        await openArxivSearchDialog();
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "attention" } });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-search-go"));
+        const first = await screen.findByTestId("file-companion-arxiv-hit-2510.16079");
+        fireEvent.click(first);
+        await waitFor(() => {
+            expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("404");
+        });
+        expect(screen.getByTestId("file-companion-arxiv-search-dialog")).toBeTruthy();
+        expect(screen.getByTestId("file-companion-open-menu")).toBeTruthy();
+        expect(open).not.toHaveBeenCalled();
+    });
+
+    it("closes arXiv search on Escape and leaves the open menu up", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        installRuntime();
+        renderWindow();
+        await openArxivSearchDialog();
+        const search = screen.getByTestId("file-companion-arxiv-search");
+        fireEvent.keyDown(screen.getByTestId("file-companion-arxiv-search-input"), { key: "Escape" });
+        expect(screen.queryByTestId("file-companion-arxiv-search-dialog")).toBeNull();
+        expect(screen.getByTestId("file-companion-open-menu")).toBeTruthy();
+        expect(document.activeElement).toBe(search);
     });
 
     it("shows an already open file without asking again", async () => {
@@ -1023,6 +1635,404 @@ describe("FileCompanionWindow", () => {
         expect(quit).not.toHaveBeenCalled();
         expect(screen.getByTestId("file-companion-tab-a.md")).toBeTruthy();
         expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("alpha");
+    });
+
+    it("fills the companion window from the title bar and restores that size", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha" }));
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.md");
+        const button = screen.getByTestId("file-companion-fullscreen");
+        const bar = screen.getByTestId("file-companion-titlebar");
+        const gap = screen.getByTestId("file-companion-titlebar-gap");
+        const close = screen.getByTestId("file-companion-close");
+        expect(button.parentElement).toBe(bar);
+        expect(gap.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(button.compareDocumentPosition(close) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(button.textContent).toBe("全屏");
+        expect(button.getAttribute("title")).toBe("全屏阅读");
+        expect(button.getAttribute("aria-pressed")).toBe("false");
+        expect(button.querySelector("svg.file-companion-tool-icon")?.getAttribute("data-icon")).toBe("fullscreen");
+        expect(button.querySelector("svg.file-companion-tool-icon")?.getAttribute("aria-hidden")).toBe("true");
+        fireEvent.click(button);
+        await waitFor(() => expect(windowFullscreen).toHaveBeenCalledTimes(1));
+        expect(windowGetSize).toHaveBeenCalled();
+        expect(windowGetPosition).toHaveBeenCalled();
+        expect(windowUnfullscreen).not.toHaveBeenCalled();
+        expect(hideWindow).not.toHaveBeenCalled();
+        const expanded = screen.getByTestId("file-companion-fullscreen");
+        expect(expanded.textContent).toBe("恢复原始大小");
+        expect(expanded.getAttribute("title")).toBe("恢复进入全屏前的窗口大小");
+        expect(expanded.getAttribute("aria-pressed")).toBe("true");
+        expect(expanded.querySelector("svg.file-companion-tool-icon")?.getAttribute("data-icon")).toBe("restore");
+        fireEvent.click(expanded);
+        await waitFor(() => expect(windowUnfullscreen).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(windowSetSize).toHaveBeenCalledWith(1280, 800));
+        expect(setScreenPosition).toHaveBeenCalledWith(40, 30);
+        expect(screen.getByTestId("file-companion-fullscreen").textContent).toBe("全屏");
+        fireEvent.keyDown(window, { key: "F11" });
+        await waitFor(() => expect(windowFullscreen).toHaveBeenCalledTimes(2));
+        fireEvent.keyDown(window, { key: "Escape" });
+        await waitFor(() => expect(windowUnfullscreen).toHaveBeenCalledTimes(2));
+        expect(screen.getByTestId("file-companion-fullscreen").textContent).toBe("全屏");
+        // The restore helper writes the saved size again after the OS settles.
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+    });
+
+    it("lists local and cloud documents and can share or import one", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha" }));
+        listLibrary.mockResolvedValue({
+            items: [
+                { id: "local:a", name: "a.md", path: "C:/notes/a.md", source: "local", openedAt: "2026-10-25T00:00:00Z" },
+                { id: "cd_0123456789abcdef0123456789abcdef", name: "shared.pdf", source: "cloud", shareUrl: "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", owner: "other@example.com", visibility: "public", permanent: true, mine: false },
+            ],
+            notice: "",
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.md");
+        const choose = screen.getByTestId("file-companion-choose");
+        const library = screen.getByTestId("file-companion-library");
+        const gap = screen.getByTestId("file-companion-titlebar-gap");
+        expect(library.textContent).toContain("文档管理");
+        expect(choose.compareDocumentPosition(library) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(library.compareDocumentPosition(gap) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        fireEvent.click(library);
+        await screen.findByTestId("file-companion-library-panel");
+        await waitFor(() => expect(screen.getByTestId("file-companion-library-local").textContent).toContain("a.md"));
+        expect(screen.getByTestId("file-companion-library-cloud").textContent).toContain("shared.pdf");
+        expect(screen.getByTestId("file-companion-library-cloud").textContent).toContain("https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef");
+        // 分享 is its own popup, opened from the row or the title bar.
+        fireEvent.click(screen.getByTestId("file-companion-library-share-action-local:a"));
+        await screen.findByTestId("file-companion-share-dialog");
+        fireEvent.click(screen.getByTestId("file-companion-share-private"));
+        fireEvent.change(screen.getByTestId("file-companion-share-password"), { target: { value: "secret" } });
+        fireEvent.click(screen.getByTestId("file-companion-share-months"));
+        fireEvent.change(screen.getByTestId("file-companion-share-amount"), { target: { value: "2" } });
+        fireEvent.click(screen.getByTestId("file-companion-library-share"));
+        await waitFor(() => expect(shareDocument).toHaveBeenCalledWith("C:/notes/a.md", "private", "secret", "", "[]", 60));
+        expect(screen.getByTestId("file-companion-library-link").textContent).toContain("/hub/documents/shares/");
+        fireEvent.click(screen.getByTestId("file-companion-share-dialog-close"));
+        await waitFor(() => expect(screen.queryByTestId("file-companion-share-dialog")).toBeNull());
+        // 导入分享 is its own popup too.
+        fireEvent.click(screen.getByTestId("file-companion-library-import-open"));
+        await screen.findByTestId("file-companion-import-dialog");
+        fireEvent.change(screen.getByTestId("file-companion-library-import-link"), { target: { value: "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef" } });
+        fireEvent.change(screen.getByTestId("file-companion-library-import-password"), { target: { value: "secret" } });
+        fireEvent.click(screen.getByTestId("file-companion-library-import"));
+        await waitFor(() => expect(importShare).toHaveBeenCalledWith("https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", "secret"));
+        await waitFor(() => expect(open).toHaveBeenCalledWith("C:/library/shared.pdf"));
+    });
+
+    it("opens 文档管理 with no document open and lists accepted shares as projects", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        listLibrary.mockResolvedValue({
+            items: [
+                { id: "local:a", name: "a.md", path: "C:/notes/a.md", source: "local", openedAt: "2026-10-25T00:00:00Z", size: 2048 },
+                { id: "cd_0123456789abcdef0123456789abcdef", name: "shared.pdf", path: "C:/library/shared.pdf", source: "cloud", owner: "other@example.com", visibility: "group", permanent: true, mine: false, size: 4096, notes: [{ id: "n1", author: "x", text: "不错" }] },
+            ],
+            notice: "",
+        });
+        installRuntime();
+        renderWindow();
+        // No document is open, so the empty hint is what the reader sees.
+        await screen.findByTestId("file-companion-empty");
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        await screen.findByTestId("file-companion-library-panel");
+        // Each row is one project: the document, its annotations, its discussion.
+        const localCard = await screen.findByTestId("file-companion-library-card-local:a");
+        expect(localCard.textContent).toContain("a.md");
+        expect(localCard.textContent).toContain("本机");
+        expect(localCard.textContent).toContain("2 KB");
+        const cloudCard = screen.getByTestId("file-companion-library-card-cd_0123456789abcdef0123456789abcdef");
+        expect(cloudCard.textContent).toContain("shared.pdf");
+        expect(cloudCard.textContent).toContain("云端");
+        expect(cloudCard.textContent).toContain("群组");
+        expect(cloudCard.textContent).toContain("讨论 1");
+        expect(cloudCard.textContent).toContain("4 KB");
+        // 导出项目 is per project, not per open tab.
+        fireEvent.click(screen.getByTestId("file-companion-library-export-local:a"));
+        await waitFor(() => expect(exportProject).toHaveBeenCalledWith("C:/notes/a.md", expect.any(String)));
+    });
+
+    it("moves focus into a dialog and gives it back when the dialog closes", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false }));
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.md");
+        // 分享 focuses its first audience tile, so the dialog is usable from
+        // the keyboard without tabbing through the title bar again.
+        const shareButton = screen.getByTestId("file-companion-share-open");
+        shareButton.focus();
+        fireEvent.click(shareButton);
+        await screen.findByTestId("file-companion-share-dialog");
+        await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("file-companion-share-public")));
+        // Closing returns focus to the control that opened it.
+        fireEvent.keyDown(document, { key: "Escape" });
+        await waitFor(() => expect(screen.queryByTestId("file-companion-share-dialog")).toBeNull());
+        await waitFor(() => expect(document.activeElement).toBe(shareButton));
+    });
+
+    it("keeps 文档管理 and 阅读群组 as separate screens over the reader", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha" }));
+        listGroups.mockResolvedValue([]);
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.md");
+        // Title-bar tools are icon-only now: tooltip and aria-label carry the
+        // text, and the one label span keeps the screen reader and tests fed.
+        const paper = screen.getByTestId("file-companion-paper");
+        expect(paper.className).toContain("file-companion-tool--icon");
+        expect(paper.getAttribute("aria-label")).toBe("论文解读");
+        expect(paper.getAttribute("title")).toContain("论文解读");
+        expect(paper.textContent).toBe("论文解读");
+        const upload = screen.getByTestId("file-companion-upload");
+        expect(upload.className).toContain("file-companion-tool--icon");
+        expect(upload.getAttribute("title")).toContain("上传到云盘");
+
+        // 文档管理 is a full screen. The reader stays mounted underneath, so a
+        // placed native player keeps its slot and a running note is not stopped.
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        await screen.findByTestId("file-companion-library-panel");
+        expect(screen.getByTestId("file-companion-library").getAttribute("aria-pressed")).toBe("true");
+        expect(screen.getByTestId("file-companion-split")).toBeTruthy();
+        fireEvent.click(screen.getByTestId("file-companion-library-back"));
+        await waitFor(() => expect(screen.queryByTestId("file-companion-library-panel")).toBeNull());
+        expect(screen.getByTestId("file-companion-library").getAttribute("aria-pressed")).toBe("false");
+
+        // 阅读群组 is its own screen with its own entry.
+        fireEvent.click(screen.getByTestId("file-companion-groups-open"));
+        await screen.findByTestId("file-companion-groups-view");
+        expect(screen.getByTestId("file-companion-groups-open").getAttribute("aria-pressed")).toBe("true");
+        fireEvent.change(screen.getByTestId("file-companion-group-name"), { target: { value: "新组" } });
+        fireEvent.click(screen.getByTestId("file-companion-group-create"));
+        await waitFor(() => expect(createGroup).toHaveBeenCalledWith("新组"));
+        fireEvent.click(screen.getByTestId("file-companion-groups-back"));
+        await waitFor(() => expect(screen.queryByTestId("file-companion-groups-view")).toBeNull());
+    });
+
+    it("shares with a person or a group from the share popup", async () => {
+        const groupID = "cg_0123456789abcdef0123456789abcdef";
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha" }));
+        listGroups.mockResolvedValue([{
+            id: groupID,
+            name: "论文组",
+            owner: "me@example.com",
+            admin: true,
+            members: [{ contact: "reader@example.com", status: "pending" }],
+        }]);
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.md");
+        // 分享 opens from the title bar for the open document.
+        fireEvent.click(screen.getByTestId("file-companion-share-open"));
+        await screen.findByTestId("file-companion-share-dialog");
+        fireEvent.click(screen.getByTestId("file-companion-share-group"));
+        await waitFor(() => expect(screen.getByTestId("file-companion-share-group-pick").querySelectorAll("option").length).toBeGreaterThan(1));
+        fireEvent.change(screen.getByTestId("file-companion-share-group-pick"), { target: { value: groupID } });
+        fireEvent.click(screen.getByTestId("file-companion-library-share"));
+        await waitFor(() => expect(shareDocument).toHaveBeenCalledWith("C:/notes/a.md", "group", "", groupID, "[]", 0));
+        await waitFor(() => expect(screen.getByTestId("file-companion-library-share").textContent).toBe("分享到云端"));
+        fireEvent.click(screen.getByTestId("file-companion-share-person"));
+        fireEvent.change(screen.getByTestId("file-companion-share-target"), { target: { value: "reader@example.com" } });
+        fireEvent.click(screen.getByTestId("file-companion-library-share"));
+        await waitFor(() => expect(shareDocument).toHaveBeenCalledWith("C:/notes/a.md", "person", "", "reader@example.com", "[]", 0));
+        await waitFor(() => expect(screen.getByTestId("file-companion-library-share").textContent).toBe("分享到云端"));
+        fireEvent.click(screen.getByTestId("file-companion-library-sync"));
+        await waitFor(() => expect(syncShare).toHaveBeenCalledWith("C:/notes/a.md", "[]"));
+    });
+
+    it("selects a newly created group and clears the selection when it is dissolved", async () => {
+        const firstID = "cg_11111111111111111111111111111111";
+        const secondID = "cg_22222222222222222222222222222222";
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false }));
+        listGroups.mockResolvedValue([{ id: firstID, name: "论文组", owner: "me@example.com", admin: true, members: [] }]);
+        createGroup.mockResolvedValue({ id: secondID, name: "新组", admin: true, members: [] });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.md");
+        fireEvent.click(screen.getByTestId("file-companion-groups-open"));
+        await screen.findByTestId(`file-companion-group-${firstID}`);
+        // The first group is selected by default.
+        expect(screen.getByTestId(`file-companion-group-${firstID}`).getAttribute("aria-selected")).toBe("true");
+
+        // Creating a group selects it, so the pane shows the group just made
+        // instead of keeping the previous one.
+        fireEvent.change(screen.getByTestId("file-companion-group-name"), { target: { value: "新组" } });
+        fireEvent.click(screen.getByTestId("file-companion-group-create"));
+        await waitFor(() => expect(createGroup).toHaveBeenCalledWith("新组"));
+        await waitFor(() => expect(screen.getByTestId(`file-companion-group-${secondID}`).getAttribute("aria-selected")).toBe("true"));
+        expect(screen.getByTestId(`file-companion-group-${firstID}`).getAttribute("aria-selected")).toBe("false");
+
+        // Dissolving it drops the selection; the remaining group takes over.
+        listGroups.mockResolvedValue([{ id: firstID, name: "论文组", owner: "me@example.com", admin: true, members: [] }]);
+        fireEvent.click(screen.getByTestId(`file-companion-group-dissolve-${secondID}`));
+        fireEvent.click(await screen.findByTestId(`file-companion-group-dissolve-confirm-${secondID}`));
+        await waitFor(() => expect(deleteGroup).toHaveBeenCalledWith(secondID));
+        await waitFor(() => expect(screen.queryByTestId(`file-companion-group-${secondID}`)).toBeNull());
+        // Exactly one row stays selected, never zero.
+        await waitFor(() => expect(screen.getByTestId(`file-companion-group-${firstID}`).getAttribute("aria-selected")).toBe("true"));
+    });
+
+    it("lets an admin manage members and rename a group on the 阅读群组 screen", async () => {
+        const groupID = "cg_0123456789abcdef0123456789abcdef";
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha" }));
+        listGroups.mockResolvedValue([{
+            id: groupID,
+            name: "论文组",
+            owner: "me@example.com",
+            admin: true,
+            members: [{ contact: "reader@example.com", status: "pending" }],
+        }]);
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.md");
+        fireEvent.click(screen.getByTestId("file-companion-groups-open"));
+        // The rail lists the group; the member list lives in the detail pane.
+        await screen.findByTestId(`file-companion-group-${groupID}`);
+        const detail = screen.getByTestId("file-companion-groups");
+        expect(detail.textContent).toContain("reader@example.com");
+        expect(detail.textContent).toContain("待确认");
+        fireEvent.change(screen.getByTestId("file-companion-group-name"), { target: { value: "新组" } });
+        fireEvent.click(screen.getByTestId("file-companion-group-create"));
+        await waitFor(() => expect(createGroup).toHaveBeenCalledWith("新组"));
+        await waitFor(() => expect(screen.getByTestId("file-companion-group-create").hasAttribute("disabled")).toBe(false));
+        fireEvent.change(screen.getByTestId(`file-companion-group-contact-${groupID}`), { target: { value: "13800138000" } });
+        fireEvent.click(screen.getByTestId(`file-companion-group-add-${groupID}`));
+        await waitFor(() => expect(addGroupMember).toHaveBeenCalledWith(groupID, "13800138000"));
+        await waitFor(() => expect(screen.getByTestId("file-companion-group-create").hasAttribute("disabled")).toBe(false));
+        fireEvent.click(screen.getByTestId(`file-companion-group-remove-${groupID}-reader@example.com`));
+        await waitFor(() => expect(removeGroupMember).toHaveBeenCalledWith(groupID, "reader@example.com"));
+        await waitFor(() => expect(screen.getByTestId(`file-companion-group-save-${groupID}`).hasAttribute("disabled")).toBe(false));
+        fireEvent.change(screen.getByTestId(`file-companion-group-rename-${groupID}`), { target: { value: "   " } });
+        fireEvent.click(screen.getByTestId(`file-companion-group-save-${groupID}`));
+        expect(updateGroup).not.toHaveBeenCalled();
+        fireEvent.change(screen.getByTestId(`file-companion-group-rename-${groupID}`), { target: { value: "名".repeat(41) } });
+        fireEvent.click(screen.getByTestId(`file-companion-group-save-${groupID}`));
+        expect(updateGroup).not.toHaveBeenCalled();
+        fireEvent.change(screen.getByTestId(`file-companion-group-rename-${groupID}`), { target: { value: "新论文组" } });
+        fireEvent.click(screen.getByTestId(`file-companion-group-icon-${groupID}-star`));
+        const save = screen.getByTestId(`file-companion-group-save-${groupID}`);
+        fireEvent.click(save);
+        fireEvent.click(save);
+        await waitFor(() => expect(updateGroup).toHaveBeenCalledTimes(1));
+        expect(updateGroup).toHaveBeenCalledWith(groupID, "新论文组", "star");
+        await waitFor(() => expect(screen.getByTestId(`file-companion-group-dissolve-${groupID}`).hasAttribute("disabled")).toBe(false));
+        expect(screen.queryByTestId(`file-companion-group-leave-${groupID}`)).toBeNull();
+        fireEvent.click(screen.getByTestId(`file-companion-group-dissolve-${groupID}`));
+        const dissolve = await screen.findByTestId(`file-companion-group-dissolve-confirm-${groupID}`);
+        fireEvent.click(dissolve);
+        fireEvent.click(dissolve);
+        await waitFor(() => expect(deleteGroup).toHaveBeenCalledTimes(1));
+        expect(deleteGroup).toHaveBeenCalledWith(groupID);
+    });
+
+    it("lets a member leave a group and shows the group icon", async () => {
+        const groupID = "cg_0123456789abcdef0123456789abcdef";
+        boot.mockResolvedValue({ paths: [] });
+        listGroups.mockResolvedValue([{
+            id: groupID,
+            name: "论文组",
+            owner: "host@example.com",
+            admin: false,
+            icon: "star",
+            members: [],
+        }]);
+        installRuntime();
+        renderWindow();
+        fireEvent.click(screen.getByTestId("file-companion-groups-open"));
+        const mark = await screen.findByTestId(`file-companion-group-mark-${groupID}`);
+        expect(mark.getAttribute("data-icon")).toBe("star");
+        expect(screen.getByTestId(`file-companion-group-leave-${groupID}`)).toBeTruthy();
+        expect(screen.queryByTestId(`file-companion-group-dissolve-${groupID}`)).toBeNull();
+        expect(screen.queryByTestId(`file-companion-group-rename-${groupID}`)).toBeNull();
+        fireEvent.click(screen.getByTestId(`file-companion-group-leave-${groupID}`));
+        const leave = await screen.findByTestId(`file-companion-group-leave-confirm-${groupID}`);
+        fireEvent.click(leave);
+        fireEvent.click(leave);
+        await waitFor(() => expect(leaveGroup).toHaveBeenCalledTimes(1));
+        expect(leaveGroup).toHaveBeenCalledWith(groupID);
+    });
+
+    it("keeps a renamed or dissolved group when the group list reload fails", async () => {
+        const groupID = "cg_0123456789abcdef0123456789abcdef";
+        boot.mockResolvedValue({ paths: [] });
+        listGroups.mockResolvedValue([{
+            id: groupID,
+            name: "论文组",
+            owner: "me@example.com",
+            admin: true,
+            icon: "book",
+            members: [],
+        }]);
+        installRuntime();
+        renderWindow();
+        fireEvent.click(screen.getByTestId("file-companion-groups-open"));
+        const rename = await screen.findByTestId(`file-companion-group-rename-${groupID}`);
+        listGroups.mockRejectedValueOnce(new Error("暂时无法连接云端"));
+        fireEvent.change(rename, { target: { value: "新论文组" } });
+        fireEvent.click(screen.getByTestId(`file-companion-group-icon-${groupID}-star`));
+        fireEvent.click(screen.getByTestId(`file-companion-group-save-${groupID}`));
+        await waitFor(() => expect((screen.getByTestId(`file-companion-group-rename-${groupID}`) as HTMLInputElement).value).toBe("新论文组"));
+        expect(screen.getByTestId(`file-companion-group-mark-${groupID}`).getAttribute("data-icon")).toBe("star");
+        expect(screen.getByTestId("file-companion-groups-notice").textContent).toContain("暂时无法连接云端");
+        listGroups.mockRejectedValueOnce(new Error("暂时无法连接云端"));
+        fireEvent.click(screen.getByTestId(`file-companion-group-dissolve-${groupID}`));
+        fireEvent.click(await screen.findByTestId(`file-companion-group-dissolve-confirm-${groupID}`));
+        await waitFor(() => expect(deleteGroup).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(screen.queryByTestId(`file-companion-group-${groupID}`)).toBeNull());
+    });
+
+    it("closes the management screens and popups on Escape without leaving fullscreen", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-open-menu");
+        const choose = screen.getByTestId("file-companion-choose");
+        const library = screen.getByTestId("file-companion-library");
+        const gap = screen.getByTestId("file-companion-titlebar-gap");
+        expect(screen.queryByTestId("file-companion-export")).toBeNull();
+        expect(choose.compareDocumentPosition(library) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(library.compareDocumentPosition(gap) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        fireEvent.click(library);
+        expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
+        await screen.findByTestId("file-companion-library-panel");
+        fireEvent.click(screen.getByTestId("file-companion-fullscreen"));
+        await waitFor(() => expect(windowFullscreen).toHaveBeenCalledTimes(1));
+        // The 文档管理 screen owns Escape: it closes, the window stays full.
+        fireEvent.keyDown(document, { key: "Escape" });
+        await waitFor(() => expect(screen.queryByTestId("file-companion-library-panel")).toBeNull());
+        expect(windowUnfullscreen).not.toHaveBeenCalled();
+        // With no screen up, Escape leaves fullscreen.
+        fireEvent.keyDown(window, { key: "Escape" });
+        await waitFor(() => expect(windowUnfullscreen).toHaveBeenCalledTimes(1));
+        // 打开 and 文档管理 are exclusive.
+        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        await screen.findByTestId("file-companion-open-menu");
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
+        await screen.findByTestId("file-companion-library-panel");
+    });
+
+    it("lets the share popup own Escape before the screen and the fullscreen exit", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false }));
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.md");
+        fireEvent.click(screen.getByTestId("file-companion-share-open"));
+        await screen.findByTestId("file-companion-share-dialog");
+        fireEvent.keyDown(document, { key: "Escape" });
+        await waitFor(() => expect(screen.queryByTestId("file-companion-share-dialog")).toBeNull());
+        // The popup did not also close the screen underneath it.
+        expect(screen.getByTestId("file-companion-split")).toBeTruthy();
     });
 
     it("hides the window without stopping a web note", async () => {
@@ -1399,12 +2409,16 @@ describe("FileCompanionWindow", () => {
         expect(screen.getByTestId("file-companion-import").className).toContain("file-companion-tool");
         expect(screen.getByTestId("file-companion-upload").className).toContain("file-companion-tool");
         expect(screen.getByTestId("file-companion-paper").textContent).toContain("论文解读");
-        // 导出 PDF sits immediately to the right of 论文解读, then 导入知识库.
-        expect(screen.getByTestId("file-companion-paper").nextElementSibling).toBe(screen.getByTestId("file-companion-export-chat"));
-        expect(screen.getByTestId("file-companion-export-chat").nextElementSibling).toBe(screen.getByTestId("file-companion-import"));
+        // 导出 PDF sits immediately to the right of 论文解读, then 导出项目 and 导入知识库.
+        // The destination panel hangs from an anchor beside the button.
+        const chatAnchor = screen.getByTestId("file-companion-export-anchor");
+        expect(screen.getByTestId("file-companion-paper").nextElementSibling).toBe(chatAnchor);
+        expect(chatAnchor.contains(screen.getByTestId("file-companion-export-chat"))).toBe(true);
+        expect(chatAnchor.nextElementSibling).toBe(screen.getByTestId("file-companion-export-project"));
+        expect(screen.getByTestId("file-companion-export-project").nextElementSibling).toBe(screen.getByTestId("file-companion-import"));
         expect(screen.getByTestId("file-companion-import").textContent).toContain("导入知识库");
         expect(screen.getByTestId("file-companion-upload").textContent).toContain("上传到云盘");
-        for (const id of ["file-companion-paper", "file-companion-export-chat", "file-companion-import", "file-companion-upload"]) {
+        for (const id of ["file-companion-paper", "file-companion-export-chat", "file-companion-export-project", "file-companion-import", "file-companion-upload"]) {
             expect(screen.getByTestId(id).querySelector("svg.file-companion-tool-icon")?.getAttribute("aria-hidden")).toBe("true");
         }
         fireEvent.click(screen.getByTestId("file-companion-import"));
@@ -1421,6 +2435,381 @@ describe("FileCompanionWindow", () => {
         });
         expect(screen.queryByTestId("file-companion-export-status")).toBeNull();
         expect(screen.getByTestId("file-companion-titlebar").textContent || "").not.toContain("已上传到云盘");
+    });
+
+    it("hides 转换 unless the open PDF is a scan", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false }));
+        scanPDF.mockResolvedValue({ scan: true, path: "" });
+        installRuntime();
+        const view = renderWindow();
+        await screen.findByTestId("file-companion-paper");
+        expect(screen.queryByTestId("file-companion-convert")).toBeNull();
+        expect(scanPDF).not.toHaveBeenCalled();
+        view.unmount();
+
+        boot.mockResolvedValue({ paths: ["C:/docs/paper.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        scanPDF.mockResolvedValue({ scan: false, path: "" });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-paper.pdf");
+        await waitFor(() => expect(scanPDF).toHaveBeenCalledWith("C:/docs/paper.pdf"));
+        expect(screen.queryByTestId("file-companion-convert")).toBeNull();
+        expect(screen.getByTestId("file-companion-paper").nextElementSibling).toBe(screen.getByTestId("file-companion-export-anchor"));
+    });
+
+    it("does not convert when the save dialog is cancelled", async () => {
+        boot.mockResolvedValue({ paths: ["C:/scans/book.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        scanPDF.mockResolvedValue({ scan: true, path: "" });
+        chooseConvertDest.mockResolvedValue("");
+        installRuntime();
+        renderWindow();
+        fireEvent.click(await screen.findByTestId("file-companion-convert"));
+        await waitFor(() => expect(chooseConvertDest).toHaveBeenCalledWith("C:/scans/book.pdf"));
+        expect(convertScan).not.toHaveBeenCalled();
+        expect(screen.getByTestId("file-companion-convert").textContent).toContain("转换");
+        expect(screen.getByTestId("file-companion-convert").textContent).not.toContain("正在转换");
+        expect(showItemInFolder).not.toHaveBeenCalled();
+    });
+
+    it("reports a failed save and still selects the session PDF", async () => {
+        boot.mockResolvedValue({ paths: ["C:/scans/book.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        scanPDF.mockResolvedValue({ scan: true, path: "" });
+        convertScan.mockResolvedValue({
+            ok: true,
+            scan: true,
+            complete: true,
+            save_failed: true,
+            path: "C:/data/searchable.pdf",
+            message: "无法保存到该位置",
+        });
+        installRuntime();
+        renderWindow();
+        fireEvent.click(await screen.findByTestId("file-companion-convert"));
+        await waitFor(() => {
+            const notes = screen.getAllByRole("alert").map((node) => node.textContent || "");
+            expect(notes.some((text) => text.includes("ERR") && text.includes("无法保存到该位置"))).toBe(true);
+            expect(notes.some((text) => text.includes("已生成可选中文字的 PDF"))).toBe(false);
+        });
+        expect(showItemInFolder).toHaveBeenCalledWith("C:/data/searchable.pdf");
+        expect(screen.getByTestId("file-companion-convert-result").textContent).toContain("无法保存到该位置");
+        expect(screen.getByTestId("file-companion-convert").textContent).toContain("转换");
+        expect(screen.getByTestId("file-companion-convert").textContent).not.toContain("正在转换");
+    });
+
+    it("reports a failed save from the background copy", async () => {
+        boot.mockResolvedValue({ paths: ["C:/scans/book.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        scanPDF.mockResolvedValue({ scan: true, path: "" });
+        convertScan.mockResolvedValue({ ok: true, scan: true, started: true });
+        const runtime = installRuntime();
+        renderWindow();
+        fireEvent.click(await screen.findByTestId("file-companion-convert"));
+        await waitFor(() => expect(screen.getByTestId("file-companion-convert").textContent).toContain("正在转换…"));
+        act(() => {
+            runtime.emit("file-companion:convert-done", {
+                path: "C:/scans/book.pdf",
+                ok: true,
+                scan: true,
+                complete: true,
+                save_failed: true,
+                pdf: "C:/data/searchable.pdf",
+                message: "无法保存到该位置",
+            });
+        });
+        await waitFor(() => {
+            const notes = screen.getAllByRole("alert").map((node) => node.textContent || "");
+            expect(notes.some((text) => text.includes("ERR") && text.includes("无法保存到该位置"))).toBe(true);
+            expect(notes.some((text) => text.includes("已生成可选中文字的 PDF"))).toBe(false);
+        });
+        expect(showItemInFolder).toHaveBeenCalledWith("C:/data/searchable.pdf");
+        expect(screen.getByTestId("file-companion-convert-result").textContent).toContain("无法保存到该位置");
+        expect((screen.getByTestId("file-companion-convert") as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it("converts a scanned PDF in the background and notices when it finishes", async () => {
+        boot.mockResolvedValue({ paths: ["C:/scans/book.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        scanPDF.mockResolvedValue({ scan: true, path: "" });
+        let converts = 0;
+        convertScan.mockImplementation(async () => {
+            converts += 1;
+            if (converts > 1) {
+                return {
+                    ok: true,
+                    scan: true,
+                    complete: true,
+                    path: "C:/out/searchable.pdf",
+                    message: "已生成可选中文字的 PDF，原文件没有改动。共 17 页。",
+                };
+            }
+            return { ok: true, scan: true, started: true, message: "正在后台转换，完成后会提示。" };
+        });
+        const runtime = installRuntime();
+        renderWindow();
+        const button = await screen.findByTestId("file-companion-convert");
+        expect(button.textContent).toContain("转换");
+        expect(button.querySelector("svg.file-companion-tool-icon")?.getAttribute("aria-hidden")).toBe("true");
+        expect(button.querySelector("svg.file-companion-tool-icon")?.getAttribute("data-icon")).toBe("convert");
+        expect(button.nextElementSibling).toBe(screen.getByTestId("file-companion-paper"));
+        fireEvent.click(button);
+        await waitFor(() => expect(screen.getByTestId("file-companion-convert").textContent).toContain("正在转换…"));
+        expect((screen.getByTestId("file-companion-convert") as HTMLButtonElement).disabled).toBe(true);
+        expect(chooseConvertDest).toHaveBeenCalledWith("C:/scans/book.pdf");
+        expect(convertScan).toHaveBeenCalledWith("C:/scans/book.pdf", "C:/out/chosen.pdf");
+        expect(screen.queryByTestId("file-companion-convert-result")).toBeNull();
+        expect(screen.queryByRole("alert")).toBeNull();
+        act(() => { runtime.emit("file-companion:convert-progress", { path: "C:/scans/book.pdf", done: 4, total: 17 }); });
+        expect(screen.getByTestId("file-companion-convert").getAttribute("title")).toContain("4/17");
+        expect(screen.getByTestId("file-companion-convert").textContent).toContain("正在转换…");
+        act(() => {
+            runtime.emit("file-companion:convert-done", {
+                path: "C:/scans/book.pdf",
+                ok: true,
+                scan: true,
+                complete: true,
+                pdf: "C:/out/searchable.pdf",
+                message: "已生成可选中文字的 PDF，原文件没有改动。共 17 页。",
+            });
+        });
+        await waitFor(() => expect(screen.getByTestId("file-companion-convert").textContent).toContain("转换"));
+        expect((screen.getByTestId("file-companion-convert") as HTMLButtonElement).disabled).toBe(false);
+        const card = await screen.findByTestId("file-companion-convert-result");
+        expect(card.textContent).toContain("已生成可选中文字的 PDF，原文件没有改动。");
+        expect(screen.getByTestId("task-result-view-btn").textContent).toBe("查看文档");
+        fireEvent.click(screen.getByTestId("task-result-view-btn"));
+        expect(openResult).toHaveBeenCalledWith("C:/out/searchable.pdf");
+        await waitFor(() => {
+            const notes = screen.getAllByRole("alert").map((node) => node.textContent || "");
+            expect(notes.some((text) => text.includes("「book.pdf」") && text.includes("已生成可选中文字的 PDF，原文件没有改动。"))).toBe(true);
+            expect(notes.some((text) => text.includes("共 17 页"))).toBe(false);
+        });
+        expect(showItemInFolder).toHaveBeenCalledWith("C:/out/searchable.pdf");
+        showItemInFolder.mockClear();
+        fireEvent.click(screen.getByTestId("file-companion-convert"));
+        await waitFor(() => {
+            const notes = screen.getAllByRole("alert").map((node) => node.textContent || "");
+            expect(notes.filter((text) => text.includes("「book.pdf」") && text.includes("已生成可选中文字的 PDF，原文件没有改动。")).length).toBeGreaterThan(1);
+        });
+        expect(showItemInFolder).toHaveBeenCalledWith("C:/out/searchable.pdf");
+        expect(convertScan).toHaveBeenCalledTimes(2);
+        expect(screen.getByTestId("file-companion-convert").textContent).toContain("转换");
+        expect(screen.getByTestId("file-companion-convert").textContent).not.toContain("正在转换");
+    });
+
+    it("toasts the server sentence when conversion is unfinished or still waiting on a model", async () => {
+        boot.mockResolvedValue({ paths: ["C:/scans/book.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        scanPDF.mockResolvedValue({ scan: true, path: "" });
+        convertScan.mockResolvedValue({ ok: true, scan: true, started: true });
+        const runtime = installRuntime();
+        const view = renderWindow();
+        fireEvent.click(await screen.findByTestId("file-companion-convert"));
+        await waitFor(() => expect(screen.getByTestId("file-companion-convert").textContent).toContain("正在转换…"));
+        expect(screen.queryByRole("alert")).toBeNull();
+        act(() => {
+            runtime.emit("file-companion:convert-done", {
+                path: "C:/scans/book.pdf",
+                ok: true,
+                scan: true,
+                complete: false,
+                pdf: "C:/out/searchable.pdf",
+                message: "已生成可选中文字的 PDF，原文件没有改动。后面还有 3 页。请再点「转换」继续。",
+            });
+        });
+        await waitFor(() => {
+            const notes = screen.getAllByRole("alert").map((node) => node.textContent || "");
+            expect(notes.some((text) => text.includes("后面还有 3 页") && text.includes("再点「转换」"))).toBe(true);
+        });
+        expect(showItemInFolder).toHaveBeenCalledWith("C:/out/searchable.pdf");
+        expect(screen.getByTestId("file-companion-convert-result").textContent).toContain("后面还有 3 页");
+        fireEvent.click(screen.getByTestId("file-companion-convert"));
+        await waitFor(() => expect(convertScan).toHaveBeenCalledTimes(2));
+        view.unmount();
+
+        boot.mockResolvedValue({ paths: ["C:/scans/book.pdf"] });
+        convertScan.mockResolvedValue({ ok: true, scan: true, started: true });
+        const again = installRuntime();
+        renderWindow();
+        fireEvent.click(await screen.findByTestId("file-companion-convert"));
+        await waitFor(() => expect(screen.getByTestId("file-companion-convert").textContent).toContain("正在转换…"));
+        act(() => {
+            again.emit("file-companion:convert-done", {
+                path: "C:/scans/book.pdf",
+                ok: true,
+                scan: true,
+                complete: true,
+                pending: true,
+                pdf: "C:/out/searchable.pdf",
+                message: "已生成可选中文字的 PDF，原文件没有改动。共 17 页。表格模型还在下载。下载完成后再点「转换」，这些页会补上表格结构。",
+            });
+        });
+        await waitFor(() => {
+            const notes = screen.getAllByRole("alert").map((node) => node.textContent || "");
+            expect(notes.some((text) => text.includes("表格模型还在下载") && text.includes("再点「转换」"))).toBe(true);
+        });
+    });
+
+    it("toasts when a background conversion fails and leaves the button ready", async () => {
+        boot.mockResolvedValue({ paths: ["C:/scans/book.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        scanPDF.mockResolvedValue({ scan: true, path: "" });
+        convertScan.mockResolvedValue({ ok: true, scan: true, started: true });
+        const runtime = installRuntime();
+        renderWindow();
+        fireEvent.click(await screen.findByTestId("file-companion-convert"));
+        await waitFor(() => expect(screen.getByTestId("file-companion-convert").textContent).toContain("正在转换…"));
+        act(() => {
+            runtime.emit("file-companion:convert-done", {
+                path: "C:/scans/book.pdf",
+                ok: false,
+                scan: true,
+                message: "本机识别尚未就绪",
+            });
+        });
+        await waitFor(() => {
+            const notes = screen.getAllByRole("alert").map((node) => node.textContent || "");
+            expect(notes.some((text) => text.includes("「book.pdf」") && text.includes("本机识别尚未就绪"))).toBe(true);
+        });
+        expect(screen.queryByTestId("file-companion-convert-result")).toBeNull();
+        expect(showItemInFolder).not.toHaveBeenCalled();
+        expect((screen.getByTestId("file-companion-convert") as HTMLButtonElement).disabled).toBe(false);
+        expect(screen.getByTestId("file-companion-convert").textContent).toContain("转换");
+    });
+
+    it("locates a finished PDF from the cache and drops the card when that PDF is gone", async () => {
+        boot.mockResolvedValue({ paths: ["C:/scans/book.pdf", "C:/scans/other.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        const ready = new Map<string, string>([["C:/scans/book.pdf", "C:/out/searchable.pdf"]]);
+        scanPDF.mockImplementation(async (path: string) => ({ scan: true, path: ready.get(String(path)) || "" }));
+        convertScan.mockResolvedValue({
+            ok: true,
+            scan: true,
+            complete: true,
+            path: "C:/out/searchable.pdf",
+            message: "已生成可选中文字的 PDF，原文件没有改动。共 17 页。",
+        });
+        installRuntime();
+        renderWindow();
+        const card = await screen.findByTestId("file-companion-convert-result");
+        expect(card.textContent).toContain("已生成可选中文字的 PDF，原文件没有改动。");
+        expect(showItemInFolder).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByTestId("file-companion-convert"));
+        await waitFor(() => {
+            const notes = screen.getAllByRole("alert").map((node) => node.textContent || "");
+            expect(notes.some((text) => text.includes("「book.pdf」") && text.includes("已生成可选中文字的 PDF，原文件没有改动。"))).toBe(true);
+            expect(notes.some((text) => text.includes("共 17 页"))).toBe(false);
+        });
+        expect(showItemInFolder).toHaveBeenCalledTimes(1);
+        expect(showItemInFolder).toHaveBeenCalledWith("C:/out/searchable.pdf");
+        expect(convertScan).toHaveBeenCalledTimes(1);
+        expect(screen.getByTestId("file-companion-convert").textContent).not.toContain("正在转换");
+
+        ready.delete("C:/scans/book.pdf");
+        showItemInFolder.mockClear();
+        convertScan.mockResolvedValue({ ok: true, scan: true, started: true, message: "正在后台转换，完成后会提示。" });
+        fireEvent.click(screen.getByTestId("file-companion-tab-other.pdf"));
+        await screen.findByTestId("file-companion-tab-other.pdf");
+        fireEvent.click(screen.getByTestId("file-companion-tab-book.pdf"));
+        await waitFor(() => expect(screen.queryByTestId("file-companion-convert-result")).toBeNull());
+        fireEvent.click(screen.getByTestId("file-companion-convert"));
+        await waitFor(() => expect(convertScan).toHaveBeenCalledTimes(2));
+        expect(showItemInFolder).not.toHaveBeenCalled();
+        expect(screen.getByTestId("file-companion-convert").textContent).toContain("正在转换");
+    });
+
+    it("hides 转换 when the open file is no longer a scan", async () => {
+        boot.mockResolvedValue({ paths: ["C:/scans/book.pdf", "C:/scans/other.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        let bookIsScan = true;
+        scanPDF.mockImplementation(async (path: string) => {
+            if (String(path).endsWith("book.pdf") && bookIsScan) return { scan: true, path: "C:/out/searchable.pdf" };
+            if (String(path).endsWith("book.pdf")) return { scan: false, path: "" };
+            return { scan: true, path: "" };
+        });
+        installRuntime();
+        renderWindow();
+        expect((await screen.findByTestId("file-companion-convert-result")).textContent).toContain("已生成可选中文字的 PDF");
+        bookIsScan = false;
+        fireEvent.click(screen.getByTestId("file-companion-tab-other.pdf"));
+        fireEvent.click(screen.getByTestId("file-companion-tab-book.pdf"));
+        await waitFor(() => {
+            expect(screen.queryByTestId("file-companion-convert")).toBeNull();
+            expect(screen.queryByTestId("file-companion-convert-result")).toBeNull();
+        });
+        expect(showItemInFolder).not.toHaveBeenCalled();
+    });
+
+    it("keeps 转换 when the scan probe cannot read the file", async () => {
+        boot.mockResolvedValue({ paths: ["C:/scans/book.pdf", "C:/scans/other.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        let bookUnreadable = false;
+        scanPDF.mockImplementation(async (path: string) => {
+            if (String(path).endsWith("book.pdf") && bookUnreadable) throw new Error("读取文档失败");
+            if (String(path).endsWith("book.pdf")) return { scan: true, path: "C:/out/searchable.pdf" };
+            return { scan: true, path: "" };
+        });
+        installRuntime();
+        renderWindow();
+        expect((await screen.findByTestId("file-companion-convert-result")).textContent).toContain("已生成可选中文字的 PDF");
+        const callsBefore = scanPDF.mock.calls.length;
+        bookUnreadable = true;
+        fireEvent.click(screen.getByTestId("file-companion-tab-other.pdf"));
+        fireEvent.click(screen.getByTestId("file-companion-tab-book.pdf"));
+        await waitFor(() => expect(scanPDF.mock.calls.length).toBeGreaterThan(callsBefore));
+        expect(screen.getByTestId("file-companion-convert").textContent).toContain("转换");
+        expect(screen.getByTestId("file-companion-convert-result").textContent).toContain("已生成可选中文字的 PDF");
+        expect(showItemInFolder).not.toHaveBeenCalled();
+    });
+
+    it("drops the result when conversion finds the file is no longer a scan", async () => {
+        boot.mockResolvedValue({ paths: ["C:/scans/book.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        scanPDF.mockResolvedValue({ scan: true, path: "C:/out/searchable.pdf" });
+        const runtime = installRuntime();
+        renderWindow();
+        expect((await screen.findByTestId("file-companion-convert-result")).textContent).toContain("已生成可选中文字的 PDF");
+        act(() => {
+            runtime.emit("file-companion:convert-done", {
+                path: "C:/scans/book.pdf",
+                ok: true,
+                scan: false,
+                message: "这份 PDF 已有文字层，可以直接选择和搜索，不需要再恢复。",
+            });
+        });
+        await waitFor(() => {
+            expect(screen.queryByTestId("file-companion-convert")).toBeNull();
+            expect(screen.queryByTestId("file-companion-convert-result")).toBeNull();
+        });
+        const notes = screen.getAllByRole("alert").map((node) => node.textContent || "");
+        expect(notes.some((text) => text.includes("「book.pdf」") && text.includes("已有文字层"))).toBe(true);
+        expect(showItemInFolder).not.toHaveBeenCalled();
+    });
+
+    it("drops the card when a failed conversion no longer has a PDF", async () => {
+        boot.mockResolvedValue({ paths: ["C:/scans/book.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        scanPDF.mockResolvedValue({ scan: true, path: "C:/out/searchable.pdf" });
+        const runtime = installRuntime();
+        renderWindow();
+        expect((await screen.findByTestId("file-companion-convert-result")).textContent).toContain("已生成可选中文字的 PDF");
+        scanPDF.mockResolvedValue({ scan: true, path: "" });
+        act(() => {
+            runtime.emit("file-companion:convert-done", {
+                path: "C:/scans/book.pdf",
+                ok: false,
+                scan: true,
+                message: "文档内容为空",
+            });
+        });
+        await waitFor(() => expect(screen.queryByTestId("file-companion-convert-result")).toBeNull());
+        expect(screen.getByTestId("file-companion-convert").textContent).toContain("转换");
+        const notes = screen.getAllByRole("alert").map((node) => node.textContent || "");
+        expect(notes.some((text) => text.includes("「book.pdf」") && text.includes("文档内容为空"))).toBe(true);
+        expect(showItemInFolder).not.toHaveBeenCalled();
     });
 
     it("shows knowledge import progress, then the desktop library result", async () => {
@@ -1453,6 +2842,382 @@ describe("FileCompanionWindow", () => {
         expect(button.disabled).toBe(true);
         fireEvent.click(button);
         expect(uploadCloud).toHaveBeenCalledTimes(1);
+    });
+
+    it("a reader's discussion is posted as a note and other readers' notes show on the paper", async () => {
+        send.mockResolvedValue(undefined);
+        addShareNote.mockResolvedValue([
+            { id: "cn_abc", author: "reader@example.com", text: "方法部分值得再看", createdAt: "2026-10-25T00:00:00Z" },
+            { id: "cn_def", author: "me@example.com", text: "我也这么看", createdAt: "2026-10-25T00:01:00Z" },
+        ]);
+        boot.mockResolvedValue({ paths: ["C:/library/shared.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:/library/shared.pdf",
+                source: "cloud",
+                token: "cd_0123456789abcdef0123456789abcdef",
+                mine: false,
+                notes: [{ id: "cn_abc", author: "reader@example.com", text: "方法部分值得再看", createdAt: "2026-10-25T00:00:00Z" }],
+            }],
+            notice: "",
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByText("方法部分值得再看");
+        expect(screen.getByTestId("file-companion-annotations").textContent).toContain("批注");
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "我也这么看" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await waitFor(() => expect(addShareNote).toHaveBeenCalledWith("C:/library/shared.pdf", "我也这么看"));
+        expect(send).toHaveBeenCalledTimes(1);
+        expect((await screen.findByTestId("file-companion-annotation-cn_def")).textContent).toContain("我也这么看");
+    });
+
+    it("a newer annotation list is not replaced by an older note or an older poll", async () => {
+        send.mockResolvedValue(undefined);
+        addShareNote.mockResolvedValue({
+            notesRevision: 1,
+            notes: [{ id: "cn_old", author: "reader@example.com", text: "旧批注", createdAt: "2026-10-25T00:00:00Z" }],
+        });
+        boot.mockResolvedValue({ paths: ["C:/library/shared.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:\\Library\\shared.pdf",
+                source: "cloud",
+                token: "cd_0123456789abcdef0123456789abcdef",
+                mine: false,
+                notesRevision: 2,
+                notes: [{ id: "cn_later", author: "other@example.com", text: "后来的讨论", createdAt: "2026-10-25T00:02:00Z" }],
+            }],
+            notice: "",
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByText("后来的讨论");
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "我也这么看" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await waitFor(() => expect(addShareNote).toHaveBeenCalledWith("C:/library/shared.pdf", "我也这么看"));
+        expect(screen.queryByText("旧批注")).toBeNull();
+        const calls = listLibrary.mock.calls.length;
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:/library/shared.pdf",
+                source: "cloud",
+                token: "cd_0123456789abcdef0123456789abcdef",
+                mine: false,
+                notesRevision: 1,
+                notes: [{ id: "cn_old", author: "reader@example.com", text: "旧批注", createdAt: "2026-10-25T00:00:00Z" }],
+            }],
+            notice: "",
+        });
+        await act(async () => { window.dispatchEvent(new Event("focus")); });
+        await waitFor(() => expect(listLibrary.mock.calls.length).toBeGreaterThan(calls));
+        expect(screen.queryByText("旧批注")).toBeNull();
+        expect(screen.getByText("后来的讨论")).toBeTruthy();
+    });
+
+    it("notes from every share of the open file stay on the page", async () => {
+        send.mockResolvedValue(undefined);
+        boot.mockResolvedValue({ paths: ["C:/library/shared.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        listLibrary.mockResolvedValue({
+            items: [
+                {
+                    path: "C:/library/shared.pdf",
+                    source: "cloud",
+                    token: "cd_0123456789abcdef0123456789abcdef",
+                    mine: true,
+                    notesRevision: 2,
+                    notes: [{ id: "cn_new", author: "a@example.com", text: "新分享里的批注", createdAt: "2026-10-25T00:02:00Z" }],
+                },
+                {
+                    path: "C:\\library\\shared.pdf",
+                    source: "cloud",
+                    token: "cd_abcdef0123456789abcdef0123456789",
+                    mine: true,
+                    notesRevision: 4,
+                    notes: [{ id: "cn_oldshare", author: "b@example.com", text: "另一份分享的批注", createdAt: "2026-10-25T00:01:00Z" }],
+                },
+            ],
+            notice: "",
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByText("新分享里的批注");
+        expect(screen.getByText("另一份分享的批注")).toBeTruthy();
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "主持人的新讨论" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+        expect(addShareNote).not.toHaveBeenCalled();
+        expect(screen.getByText("新分享里的批注")).toBeTruthy();
+        expect(screen.getByText("另一份分享的批注")).toBeTruthy();
+    });
+
+    it("a reader's line sent before the library list is still posted as a note", async () => {
+        send.mockResolvedValue(undefined);
+        addShareNote.mockResolvedValue([
+            { id: "cn_def", author: "me@example.com", text: "我也这么看", createdAt: "2026-10-25T00:01:00Z" },
+        ]);
+        let releaseList: (value: ListLibraryResult) => void = () => undefined;
+        listLibrary.mockReturnValue(new Promise((resolve) => { releaseList = resolve; }));
+        boot.mockResolvedValue({ paths: ["C:/library/shared.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-input");
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "我也这么看" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+        expect(addShareNote).not.toHaveBeenCalled();
+        await act(async () => {
+            releaseList({
+                items: [{
+                    path: "C:/library/shared.pdf",
+                    source: "cloud",
+                    token: "cd_0123456789abcdef0123456789abcdef",
+                    mine: false,
+                    notes: [],
+                }],
+                notice: "",
+            });
+        });
+        await waitFor(() => expect(addShareNote).toHaveBeenCalledWith("C:/library/shared.pdf", "我也这么看"));
+        expect(addShareNote).toHaveBeenCalledTimes(1);
+        expect((await screen.findByTestId("file-companion-annotation-cn_def")).textContent).toContain("我也这么看");
+    });
+
+    it("a host line sent before the library list is not posted as a note", async () => {
+        send.mockResolvedValue(undefined);
+        let releaseList: (value: ListLibraryResult) => void = () => undefined;
+        listLibrary.mockReturnValue(new Promise((resolve) => { releaseList = resolve; }));
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-input");
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "主持人的新讨论" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+        expect(addShareNote).not.toHaveBeenCalled();
+        await act(async () => {
+            releaseList({
+                items: [{
+                    path: "C:/notes/a.md",
+                    source: "cloud",
+                    token: "cd_0123456789abcdef0123456789abcdef",
+                    mine: true,
+                    notes: [{ id: "cn_abc", author: "reader@example.com", text: "方法部分值得再看", createdAt: "2026-10-25T00:00:00Z" }],
+                }],
+                notice: "",
+            });
+        });
+        await screen.findByText("方法部分值得再看");
+        expect(addShareNote).not.toHaveBeenCalled();
+    });
+
+    it("the host chat is not posted as a note", async () => {
+        send.mockResolvedValue(undefined);
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:/notes/a.md",
+                source: "cloud",
+                token: "cd_0123456789abcdef0123456789abcdef",
+                mine: true,
+                notes: [{ id: "cn_abc", author: "reader@example.com", text: "方法部分值得再看", createdAt: "2026-10-25T00:00:00Z" }],
+            }],
+            notice: "",
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByText("方法部分值得再看");
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "主持人的新讨论" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+        expect(addShareNote).not.toHaveBeenCalled();
+    });
+
+    it("annotations leave the page when the library list no longer has that share", async () => {
+        const note = { id: "cn_abc", author: "reader@example.com", text: "方法部分值得再看", createdAt: "2026-10-25T00:00:00Z" };
+        const share = {
+            path: "C:/library/shared.pdf",
+            source: "cloud",
+            token: "cd_0123456789abcdef0123456789abcdef",
+            mine: false,
+            notes: [note],
+        };
+        boot.mockResolvedValue({ paths: ["C:/library/shared.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        listLibrary.mockResolvedValue({ items: [share], notice: "" });
+        installRuntime();
+        renderWindow();
+        await screen.findByText("方法部分值得再看");
+        let calls = listLibrary.mock.calls.length;
+        listLibrary.mockResolvedValue({ items: [], notice: "" });
+        await act(async () => { window.dispatchEvent(new Event("focus")); });
+        await waitFor(() => expect(listLibrary.mock.calls.length).toBeGreaterThan(calls));
+        await waitFor(() => expect(screen.queryByText("方法部分值得再看")).toBeNull());
+        expect(screen.queryByTestId("file-companion-annotations")).toBeNull();
+        calls = listLibrary.mock.calls.length;
+        listLibrary.mockResolvedValue({ items: [share], notice: "" });
+        await act(async () => { window.dispatchEvent(new Event("focus")); });
+        await waitFor(() => expect(listLibrary.mock.calls.length).toBeGreaterThan(calls));
+        await screen.findByText("方法部分值得再看");
+        calls = listLibrary.mock.calls.length;
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:/library/other.pdf",
+                source: "cloud",
+                token: "cd_abcdef0123456789abcdef0123456789",
+                mine: false,
+                notes: [{ id: "cn_other", author: "reader@example.com", text: "另一篇的批注", createdAt: "2026-10-25T00:03:00Z" }],
+            }],
+            notice: "",
+        });
+        await act(async () => { window.dispatchEvent(new Event("focus")); });
+        await waitFor(() => expect(listLibrary.mock.calls.length).toBeGreaterThan(calls));
+        await waitFor(() => expect(screen.queryByText("方法部分值得再看")).toBeNull());
+        expect(screen.queryByText("另一篇的批注")).toBeNull();
+    });
+
+    it("annotations leave the page when the document library reloads without that share", async () => {
+        const note = { id: "cn_abc", author: "reader@example.com", text: "方法部分值得再看", createdAt: "2026-10-25T00:00:00Z" };
+        boot.mockResolvedValue({ paths: ["C:/library/shared.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:/library/shared.pdf",
+                source: "cloud",
+                token: "cd_0123456789abcdef0123456789abcdef",
+                mine: false,
+                notes: [note],
+            }],
+            notice: "",
+        });
+        installRuntime();
+        renderWindow();
+        await screen.findByText("方法部分值得再看");
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:/library/other.pdf",
+                source: "cloud",
+                token: "cd_abcdef0123456789abcdef0123456789",
+                mine: false,
+                notes: [],
+            }],
+            notice: "",
+        });
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        await screen.findByTestId("file-companion-library-panel");
+        await waitFor(() => expect(screen.queryByText("方法部分值得再看")).toBeNull());
+        expect(screen.getByTestId("file-companion-tab-shared.pdf")).toBeTruthy();
+    });
+
+    it("a removed copy closes the open tab when the document library reloads", async () => {
+        boot.mockResolvedValue({ paths: ["C:/library/shared.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        listLibrary.mockResolvedValue({ items: [], notice: "" });
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-shared.pdf");
+        listLibrary.mockResolvedValue({
+            items: [],
+            notice: "",
+            removed: ["C:\\library\\shared.pdf"],
+        });
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        await waitFor(() => expect(screen.queryByTestId("file-companion-tab-shared.pdf")).toBeNull());
+    });
+
+    it("a line sent before any library list survives an empty list", async () => {
+        send.mockResolvedValue(undefined);
+        addShareNote.mockResolvedValue([
+            { id: "cn_def", author: "me@example.com", text: "我也这么看", createdAt: "2026-10-25T00:01:00Z" },
+        ]);
+        let releaseFirst: (value: ListLibraryResult) => void = () => undefined;
+        listLibrary.mockReset();
+        listLibrary.mockResolvedValue({
+            items: [{
+                path: "C:/library/shared.pdf",
+                source: "cloud",
+                token: "cd_0123456789abcdef0123456789abcdef",
+                mine: false,
+                notes: [],
+            }],
+            notice: "",
+        });
+        listLibrary.mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = resolve; }));
+        boot.mockResolvedValue({ paths: ["C:/library/shared.pdf"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-input");
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "我也这么看" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+        expect(addShareNote).not.toHaveBeenCalled();
+        await act(async () => { releaseFirst({ items: [], notice: "" }); });
+        expect(addShareNote).not.toHaveBeenCalled();
+        await act(async () => { window.dispatchEvent(new Event("focus")); });
+        await waitFor(() => expect(addShareNote).toHaveBeenCalledWith("C:/library/shared.pdf", "我也这么看"));
+        expect(addShareNote).toHaveBeenCalledTimes(1);
+        expect((await screen.findByTestId("file-companion-annotation-cn_def")).textContent).toContain("我也这么看");
+    });
+
+    it("reloads the document library when a sync fails", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        syncShare.mockRejectedValue(new Error("只有分享者可以同步更新"));
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.md");
+        // 同步 lives in the 分享 popup; the list underneath still refreshes
+        // after a failed sync, so the revision that did land is shown.
+        fireEvent.click(screen.getByTestId("file-companion-share-open"));
+        await screen.findByTestId("file-companion-share-dialog");
+        const calls = listLibrary.mock.calls.length;
+        fireEvent.click(screen.getByTestId("file-companion-library-sync"));
+        await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("只有分享者可以同步更新"));
+        await waitFor(() => expect(listLibrary.mock.calls.length).toBeGreaterThan(calls));
+        await waitFor(() => expect((screen.getByTestId("file-companion-library-sync") as HTMLButtonElement).disabled).toBe(false));
+    });
+
+    it("a synced transcript replaces the open chat and drops the reply that was already running", async () => {
+        let rejectSend: (err: Error) => void = () => undefined;
+        send.mockImplementation(() => new Promise<void>((_resolve, reject) => { rejectSend = reject; }));
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "user", text: "旧问题" }, { role: "assistant", text: "旧回答" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("旧回答");
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "还在问" } });
+        fireEvent.click(screen.getByTestId("file-companion-send"));
+        await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+        expect(screen.getByText("还在问")).toBeTruthy();
+        listLibrary.mockResolvedValue({
+            items: [],
+            notice: "",
+            updates: [{
+                path: "C:/notes/a.md",
+                project: true,
+                highlights: "[]",
+                messages: [
+                    { role: "user", text: "分享者的新问题" },
+                    { role: "assistant", text: "分享者的新回答" },
+                ],
+            }],
+        });
+        await act(async () => { window.dispatchEvent(new Event("focus")); });
+        await screen.findByText("分享者的新回答");
+        expect(screen.queryByText("旧回答")).toBeNull();
+        expect(screen.queryByText("还在问")).toBeNull();
+        await act(async () => { rejectSend(new Error("cancelled")); });
+        expect(screen.queryByText("cancelled")).toBeNull();
+        await waitFor(() => expect(screen.getByTestId("file-companion-send").textContent).toBe("发送"));
     });
 
     it("sends from another file while a reply is running", async () => {
@@ -1768,6 +3533,36 @@ describe("FileCompanionWindow", () => {
         expect((await screen.findByTestId("docx-preview-panel")).textContent).toContain("C:/memo.docx");
         fireEvent.click(screen.getByTestId("file-companion-tab-paper.pdf"));
         expect((await screen.findByTestId("pdf-preview-panel")).textContent).toContain("C:/paper.pdf");
+    });
+
+    it("packs the open file with its highlights and restores an imported project", async () => {
+        localStorage.clear();
+        localStorage.setItem("maclaw.fileCompanionPdfMarks.v1", JSON.stringify({
+            "c:/paper.pdf": [{ id: "m1", page: 1, color: "yellow", rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }], text: "方法" }],
+        }));
+        boot.mockResolvedValue({ paths: ["C:/paper.pdf"] });
+        open.mockResolvedValue(doc("C:/paper.pdf", {
+            messages: [{ role: "user", text: "这段讲什么" }, { role: "assistant", text: "讲方法", reasoning: "先看摘要" }],
+        }));
+        const runtime = installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-paper.pdf");
+        fireEvent.click(screen.getByTestId("file-companion-export-project"));
+        await waitFor(() => expect(exportProject).toHaveBeenCalledWith("C:/paper.pdf", expect.stringContaining("yellow")));
+        expect(screen.getByText("这段讲什么")).toBeTruthy();
+
+        localStorage.clear();
+        open.mockResolvedValue(doc("C:/restored/paper.pdf", {
+            messages: [{ role: "user", text: "打包里的问题" }, { role: "assistant", text: "打包里的回答" }],
+            highlights: [{ id: "m9", page: 1, color: "pink", rects: [{ x: 0.2, y: 0.3, w: 0.2, h: 0.05 }], text: "方法" }],
+            imported: true,
+        }));
+        runtime.emit("file-companion:open", ["C:/project.zip"]);
+        await screen.findByText("打包里的问题");
+        expect(open).toHaveBeenCalledWith("C:/project.zip");
+        const stored = localStorage.getItem("maclaw.fileCompanionPdfMarks.v1") || "";
+        expect(stored).toContain("pink");
+        expect(stored).toContain("c:/restored/paper.pdf");
     });
 
     it("shows the assistant reply on the matching session_key only", async () => {
@@ -3080,7 +4875,7 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         await screen.findByText("图中给出结果。");
 
-        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        exportChatAsFile();
         await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
             { role: "user", content: "展示图 8.1" },
             { role: "assistant", content: "图中给出结果。\n\n![图 8.1 结果](data:image/png;base64,AAAA)" },
@@ -3107,7 +4902,7 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         await screen.findByText("见下图。");
 
-        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        exportChatAsFile();
         await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
             { role: "assistant", content: "见下图。\n\n![图 2 损失曲线 baseline](data:image/png;base64,AAAA)" },
         ]));
@@ -3132,7 +4927,7 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         await screen.findByText("图中给出结果。");
 
-        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        exportChatAsFile();
         // The text still exports; the missing picture is named.
         await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
             { role: "assistant", content: "图中给出结果。" },
@@ -3160,7 +4955,7 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         await screen.findByText(/三大抓手/);
 
-        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        exportChatAsFile();
         await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
             { role: "user", content: "画个流程图" },
             { role: "assistant", content: "三大抓手：\n\n![](data:image/png;base64,DIAGRAM)\n\n如上。" },
@@ -3187,7 +4982,7 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         await screen.findByText(/flowchart LR/);
 
-        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        exportChatAsFile();
         await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
             { role: "assistant", content: "```mermaid\nflowchart LR\n  A --> B\n```" },
         ]));
@@ -3211,7 +5006,7 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         await screen.findByText(/print\(1\)/);
 
-        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        exportChatAsFile();
         await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
             { role: "assistant", content: "示例：\n\n```python\nprint(1)\n```" },
         ]));
@@ -3249,7 +5044,7 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         await screen.findByText("两张图。");
 
-        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        exportChatAsFile();
         await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
             {
                 role: "assistant",
@@ -3283,7 +5078,7 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         await screen.findByText(/flowchart LR/);
 
-        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        exportChatAsFile();
         await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
             { role: "assistant", content: "![](data:image/png;base64,DIAGRAM)" },
             { role: "assistant", content: "![](data:image/png;base64,DIAGRAM)" },
@@ -3303,12 +5098,38 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         await screen.findByText(/开始画/);
 
-        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        exportChatAsFile();
         await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
             { role: "assistant", content: "开始画：\n\n```mermaid\nflowchart LR\n  A --> B" },
         ]));
         expect(renderMermaidFenceToPNGDataURL).not.toHaveBeenCalled();
         expect(screen.queryByText(/未能读取/)).toBeNull();
+    });
+
+    // A marker inside an unclosed fence is still part of that block. Drawing
+    // it would put a picture in the PDF where the window shows source.
+    it("does not draw a diagram that sits inside an unclosed fence", async () => {
+        exportChatPdf.mockResolvedValue("C:/out/a-伴读对话.pdf");
+        renderMermaidFenceToPNGDataURL.mockResolvedValue("data:image/png;base64,DIAGRAM");
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{
+                role: "assistant",
+                text: "~~~mermaid\nintro\n```mermaid\nflowchart LR\n  A --> B\n```\n",
+            }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText(/intro/);
+
+        exportChatAsFile();
+        await waitFor(() => expect(exportChatPdf).toHaveBeenCalledTimes(1));
+        expect(renderMermaidFenceToPNGDataURL).not.toHaveBeenCalled();
+        const [, turns] = exportChatPdf.mock.calls[0] as [string, { content: string }[]];
+        expect(turns[0].content).toContain("~~~mermaid");
+        expect(turns[0].content).toContain("```mermaid");
+        expect(turns[0].content).toContain("flowchart LR");
+        expect(turns[0].content).not.toContain("![](");
     });
 
     // A longer fence may carry extra text after the language, and the diagram
@@ -3324,7 +5145,7 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         await screen.findByText(/flowchart LR/);
 
-        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        exportChatAsFile();
         await waitFor(() => expect(renderMermaidFenceToPNGDataURL).toHaveBeenCalledTimes(1));
         const [code] = renderMermaidFenceToPNGDataURL.mock.calls[0] as [string];
         expect(code).toBe("flowchart LR\n  A --> B");
@@ -3343,7 +5164,7 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         await screen.findByText(/还在围栏里/);
 
-        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        exportChatAsFile();
         await waitFor(() => expect(exportChatPdf).toHaveBeenCalledTimes(1));
         expect(renderMermaidFenceToPNGDataURL).not.toHaveBeenCalled();
         const [, turns] = exportChatPdf.mock.calls[0] as [string, { content: string }[]];
@@ -3362,7 +5183,7 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         await screen.findByText(/说明/);
 
-        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        exportChatAsFile();
         await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
             { role: "assistant", content: "说明：\n\n```text\n示例 ```mermaid 只是文字\n```" },
         ]));
@@ -3404,7 +5225,7 @@ describe("FileCompanionWindow", () => {
         });
         await screen.findByText("刚到的半句");
 
-        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        exportChatAsFile();
         await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
             { role: "user", content: "第一个问题" },
             { role: "assistant", content: "第一个回答。" },
@@ -3434,7 +5255,7 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         await screen.findByText("解释如下。");
 
-        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        exportChatAsFile();
         // One unreachable picture must not cost the reader the whole answer.
         await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
             { role: "assistant", content: "解释如下。" },
@@ -3466,7 +5287,7 @@ describe("FileCompanionWindow", () => {
 
         const before = screen.getByTestId("file-companion-export-chat");
         expect(before.hasAttribute("disabled")).toBe(false);
-        fireEvent.click(before);
+        exportChatAsFile();
         await waitFor(() => expect(screen.getByTestId("file-companion-export-chat").getAttribute("aria-busy")).toBe("true"));
 
         const busy = screen.getByTestId("file-companion-export-chat");
@@ -3499,7 +5320,7 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         await waitFor(() => expect(screen.getByTestId("file-companion-export-chat")).toBeTruthy());
 
-        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        exportChatAsFile();
         await waitFor(() => expect(screen.getByTestId("file-companion-export-chat").getAttribute("aria-busy")).toBe("true"));
         fireEvent.click(screen.getByTestId("file-companion-tab-b.md"));
         // The other file is free to export; its button is not the busy one.
@@ -3526,7 +5347,7 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         await screen.findByText("要点");
 
-        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        exportChatAsFile();
         // Both sides travel together: an answer alone cannot be read on its own.
         await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
             { role: "user", content: "这段讲了什么？" },
@@ -3535,6 +5356,7 @@ describe("FileCompanionWindow", () => {
             { role: "assistant", content: "第二点讲的是边界。" },
         ]));
         await screen.findByText("已导出 PDF");
+        expect(showItemInFolder).toHaveBeenCalledWith("C:/out/a-伴读对话.pdf");
     });
 
     // A token that arrives after the request settles is a finished answer as
@@ -3565,7 +5387,7 @@ describe("FileCompanionWindow", () => {
         // The window agrees this answer is unfinished: it offers no controls.
         expect(screen.queryAllByTestId(/^file-companion-copy-/)).toHaveLength(0);
 
-        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        exportChatAsFile();
         await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
             { role: "user", content: "第二点呢？" },
         ]));
@@ -3595,7 +5417,7 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         await screen.findByText("这是回复。");
 
-        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        exportChatAsFile();
         await screen.findByText("磁盘已满");
         expect(screen.queryByText("已导出 PDF")).toBeNull();
         // The button must become usable again, or one full disk ends exporting.
@@ -3611,9 +5433,371 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         await screen.findByText("这是回复。");
 
-        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        exportChatAsFile();
         await waitFor(() => expect(exportChatPdf).toHaveBeenCalledTimes(1));
+        await act(async () => { await Promise.resolve(); });
         expect(screen.queryByText("已导出 PDF")).toBeNull();
+        expect(showItemInFolder).not.toHaveBeenCalled();
+    });
+
+    it("asks where to save, then selects the file in Explorer", async () => {
+        exportChatPdf.mockResolvedValue("C:/out/a-伴读对话.pdf");
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "assistant", text: "这是回复。" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("这是回复。");
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        expect(exportChatPdf).not.toHaveBeenCalled();
+        const menu = screen.getByTestId("file-companion-export-chat-dest");
+        expect(menu.textContent).toContain("导出文件");
+        expect(menu.textContent).toContain("导出到云盘");
+        expect(screen.getByTestId("file-companion-titlebar").className).toContain("file-companion-titlebar--menu-open");
+        fireEvent.mouseDown(screen.getByTestId("file-companion-export-chat-scrim"));
+        expect(screen.queryByTestId("file-companion-export-chat-dest")).toBeNull();
+        expect(exportChatPdf).not.toHaveBeenCalled();
+
+        exportChatAsFile();
+        await screen.findByText("已导出 PDF");
+        expect(showItemInFolder).toHaveBeenCalledWith("C:/out/a-伴读对话.pdf");
+    });
+
+    it("closes the destination panel on Escape and on a click outside it", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "assistant", text: "这是回复。" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("这是回复。");
+        fireEvent.click(screen.getByTestId("file-companion-fullscreen"));
+        await waitFor(() => expect(screen.getByTestId("file-companion-fullscreen").textContent).toBe("恢复原始大小"));
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        expect(screen.getByTestId("file-companion-export-chat-file").tagName).toBe("BUTTON");
+        expect(screen.getByTestId("file-companion-export-chat-cloud").tagName).toBe("BUTTON");
+        fireEvent.mouseDown(screen.getByTestId("file-companion-brand"));
+        expect(screen.queryByTestId("file-companion-export-chat-dest")).toBeNull();
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        fireEvent.keyDown(document, { key: "Escape" });
+        expect(screen.queryByTestId("file-companion-export-chat-dest")).toBeNull();
+        expect(windowUnfullscreen).not.toHaveBeenCalled();
+        expect(exportChatPdf).not.toHaveBeenCalled();
+        expect(document.activeElement).toBe(screen.getByTestId("file-companion-export-chat"));
+    });
+
+    it("does not bring the destination panel back after switching files", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md", "C:/notes/b.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "user", text: path.endsWith("a.md") ? "甲的问题" : "乙的问题" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("甲的问题");
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        expect(screen.getByTestId("file-companion-export-chat-dest")).toBeTruthy();
+
+        fireEvent.click(screen.getByTestId("file-companion-tab-b.md"));
+        await screen.findByText("乙的问题");
+        expect(screen.queryByTestId("file-companion-export-chat-dest")).toBeNull();
+
+        fireEvent.click(screen.getByTestId("file-companion-tab-a.md"));
+        await screen.findByText("甲的问题");
+        expect(screen.queryByTestId("file-companion-export-chat-dest")).toBeNull();
+        expect(exportChatPdf).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat-menu"));
+        expect(screen.getByTestId("file-companion-export-chat-tex")).toBeTruthy();
+        fireEvent.click(screen.getByTestId("file-companion-tab-b.md"));
+        await screen.findByText("乙的问题");
+        expect(screen.queryByTestId("file-companion-export-chat-tex")).toBeNull();
+        fireEvent.click(screen.getByTestId("file-companion-tab-a.md"));
+        await screen.findByText("甲的问题");
+        expect(screen.queryByTestId("file-companion-export-chat-tex")).toBeNull();
+    });
+
+    it("closes the LaTeX row when the chat is cleared", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "assistant", text: "这是摘要" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("这是摘要");
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat-menu"));
+        expect(screen.getByTestId("file-companion-export-chat-tex")).toBeTruthy();
+        fireEvent.change(screen.getByTestId("file-companion-input"), { target: { value: "  ／CLEAR  " } });
+        fireEvent.keyDown(screen.getByTestId("file-companion-input"), { key: "Enter" });
+        await waitFor(() => expect(screen.queryByTestId("file-companion-export-chat-tex")).toBeNull());
+        expect(screen.getByTestId("file-companion-chat-empty")).toBeTruthy();
+    });
+
+    it("leaves export disabled when the chat is only a paper card", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "assistant", text: "已生成论文解读", resultPath: "C:/out/paper.pdf" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("已生成论文解读");
+
+        const button = screen.getByTestId("file-companion-export-chat");
+        expect(button.hasAttribute("disabled")).toBe(true);
+        expect(button.getAttribute("title")).toBe("没有可导出的正文");
+        fireEvent.click(button);
+        expect(screen.queryByTestId("file-companion-export-chat-dest")).toBeNull();
+        expect(screen.queryByText("没有可导出的内容")).toBeNull();
+        expect(exportChatPdf).not.toHaveBeenCalled();
+        expect(button.textContent).toBe("导出 PDF");
+    });
+
+    it("exports the question beside a paper card and leaves the card out", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                { role: "user", text: "这篇讲什么？" },
+                { role: "assistant", text: "已生成论文解读", resultPath: "C:/out/paper.pdf" },
+            ],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("这篇讲什么？");
+
+        exportChatAsFile();
+        await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
+            { role: "user", content: "这篇讲什么？" },
+        ]));
+    });
+
+    it("says the page is not open when a web export has no session", async () => {
+        exportChatCloud.mockRejectedValue(new Error("web session is not open"));
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "assistant", text: "这是回复。" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("这是回复。");
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        fireEvent.click(screen.getByTestId("file-companion-export-chat-cloud"));
+        await screen.findByText("这个页面没有打开");
+        expect(screen.queryByText("web session is not open")).toBeNull();
+    });
+
+    it("says the file is not open when the export has no grant", async () => {
+        exportChatPdf.mockRejectedValue(new Error("path is outside the open file"));
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "assistant", text: "这是回复。" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("这是回复。");
+
+        exportChatAsFile();
+        await screen.findByText("这个文件没有打开");
+        expect(screen.queryByText("path is outside the open file")).toBeNull();
+    });
+
+    it("marks the conversation export busy before its figures finish loading", async () => {
+        const pending: Array<(value: string) => void> = [];
+        figureDataURL.mockImplementation(() => new Promise<string>((resolve) => { pending.push(resolve); }));
+        exportChatPdf.mockResolvedValue("C:/out/a-伴读对话.pdf");
+        exportChatCloud.mockResolvedValue({ id: "draft-1", title: "a.pdf", duplicate: false });
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{
+                role: "assistant",
+                text: "图中给出结果。",
+                figures: [{ label: "图 1", caption: "结果", path: "C:/papers/busy-export.png" }],
+            }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("图中给出结果。");
+
+        exportChatAsFile();
+        await waitFor(() => expect(screen.getByTestId("file-companion-export-chat").getAttribute("aria-busy")).toBe("true"));
+        expect(exportChatPdf).not.toHaveBeenCalled();
+        expect(exportChatCloud).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        expect(screen.queryByTestId("file-companion-export-chat-dest")).toBeNull();
+
+        await act(async () => { pending.forEach((resolve) => resolve("data:image/png;base64,QQ==")); });
+        await waitFor(() => expect(exportChatPdf).toHaveBeenCalledTimes(1));
+        expect(exportChatCloud).not.toHaveBeenCalled();
+    });
+
+    it("keeps an in-flight export busy on its own file", async () => {
+        const pending: Array<(value: string) => void> = [];
+        figureDataURL.mockImplementation(() => new Promise<string>((resolve) => { pending.push(resolve); }));
+        exportChatPdf.mockResolvedValue("C:/out/a-伴读对话.pdf");
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md", "C:/notes/b.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: path.endsWith("a.md")
+                ? [{ role: "assistant", text: "图中给出结果。", figures: [{ label: "图 1", caption: "结果", path: "C:/papers/busy-two-tabs.png" }] }]
+                : [{ role: "assistant", text: "乙的回复。" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("图中给出结果。");
+
+        exportChatAsFile();
+        await waitFor(() => expect(screen.getByTestId("file-companion-export-chat").textContent).toBe("正在导出…"));
+
+        fireEvent.click(screen.getByTestId("file-companion-tab-b.md"));
+        await screen.findByText("乙的回复。");
+        const other = screen.getByTestId("file-companion-export-chat");
+        expect(other.textContent).toBe("导出 PDF");
+        expect(other.getAttribute("aria-busy")).toBe("false");
+        expect(other.hasAttribute("disabled")).toBe(false);
+
+        fireEvent.click(screen.getByTestId("file-companion-tab-a.md"));
+        await screen.findByText("图中给出结果。");
+        expect(screen.getByTestId("file-companion-export-chat").textContent).toBe("正在导出…");
+
+        await act(async () => { pending.forEach((resolve) => resolve("data:image/png;base64,QQ==")); });
+        await waitFor(() => expect(exportChatPdf).toHaveBeenCalledTimes(1));
+        expect(screen.getByTestId("file-companion-export-chat").textContent).toBe("导出 PDF");
+    });
+
+    it("uploads the generated transcript to the cloud drive", async () => {
+        exportChatCloud.mockResolvedValue({ id: "draft-1", title: "a-伴读对话.pdf", duplicate: false });
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                { role: "user", text: "这段讲了什么？" },
+                { role: "assistant", text: "第一点最重要。" },
+            ],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("第一点最重要。");
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        fireEvent.click(screen.getByTestId("file-companion-export-chat-cloud"));
+        await waitFor(() => expect(exportChatCloud).toHaveBeenCalledWith("C:/notes/a.md", [
+            { role: "user", content: "这段讲了什么？" },
+            { role: "assistant", content: "第一点最重要。" },
+        ]));
+        expect(exportChatPdf).not.toHaveBeenCalled();
+        expect(uploadCloud).not.toHaveBeenCalled();
+        expect(showItemInFolder).not.toHaveBeenCalled();
+        await screen.findByText("已上传到云盘，手机端「文档」可打开");
+    });
+
+    it("names the existing cloud copy when the transcript was already uploaded", async () => {
+        exportChatCloud.mockResolvedValue({ id: "draft-9", title: "a-伴读对话.pdf", duplicate: true, duplicate_of_title: "旧对话" });
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "assistant", text: "这是回复。" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("这是回复。");
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        fireEvent.click(screen.getByTestId("file-companion-export-chat-cloud"));
+        await screen.findByText("云盘中已有相同内容（旧对话），未再次上传");
+        expect(showItemInFolder).not.toHaveBeenCalled();
+    });
+
+    it("says the cloud upload failed when the drive rejects the transcript", async () => {
+        exportChatCloud.mockRejectedValue(new Error("upload mobile document failed: HTTP 500 no"));
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "assistant", text: "这是回复。" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("这是回复。");
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        fireEvent.click(screen.getByTestId("file-companion-export-chat-cloud"));
+        await screen.findByText("上传到云盘失败，请稍后重试");
+        expect(screen.queryByText(/upload mobile document failed/)).toBeNull();
+        expect(showItemInFolder).not.toHaveBeenCalled();
+    });
+
+    it("says the save location failed when the folder name is invalid", async () => {
+        exportChatPdf.mockRejectedValue(new Error("创建目录失败: mkdir C:\\Users\\Director\\out: The directory name is invalid."));
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "assistant", text: "这是回复。" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("这是回复。");
+
+        exportChatAsFile();
+        await screen.findByText("无法保存到该位置");
+        expect(screen.queryByText("不支持上传文件夹")).toBeNull();
+        expect(screen.queryByText(/directory name is invalid/)).toBeNull();
+        expect(showItemInFolder).not.toHaveBeenCalled();
+    });
+
+    it("says the disk is full when the PDF cannot be written", async () => {
+        exportChatPdf.mockRejectedValue(new Error("写入 PDF 失败: write C:\\out\\a.pdf: There is not enough space on the disk."));
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "assistant", text: "这是回复。" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("这是回复。");
+
+        exportChatAsFile();
+        await screen.findByText("磁盘已满");
+        expect(screen.queryByText("无法保存到该位置")).toBeNull();
+        expect(screen.queryByText(/not enough space/)).toBeNull();
+    });
+
+    it("says there is no write permission when the PDF is refused", async () => {
+        exportChatPdf.mockRejectedValue(new Error("写入 PDF 失败: open C:\\out\\a.pdf: Access is denied."));
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "assistant", text: "这是回复。" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("这是回复。");
+
+        exportChatAsFile();
+        await screen.findByText("没有写入权限");
+        expect(screen.queryByText("无法保存到该位置")).toBeNull();
+        expect(screen.queryByText(/Access is denied/)).toBeNull();
+    });
+
+    it("says a folder cannot be uploaded", async () => {
+        uploadCloud.mockRejectedValue(new Error("path is a directory"));
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { canExport: true }));
+        installRuntime();
+        renderWindow();
+        fireEvent.click(await screen.findByTestId("file-companion-upload"));
+        await screen.findByText("不支持上传文件夹");
+    });
+
+    it("closes the document library when the export panel opens", async () => {
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "assistant", text: "这是回复。" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("这是回复。");
+
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        await screen.findByTestId("file-companion-library-panel");
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        expect(screen.getByTestId("file-companion-export-chat-dest")).toBeTruthy();
+        expect(screen.queryByTestId("file-companion-library-panel")).toBeNull();
     });
 
     it("offers no answer controls while the reply is still streaming", async () => {
@@ -3896,9 +6080,15 @@ describe("FileCompanionWindow", () => {
         await screen.findByTestId("file-companion-answer");
         const chatExport = screen.getByTestId("file-companion-export-chat");
         expect(chatExport.textContent).toBe("导出 PDF");
-        expect(screen.getByTestId("file-companion-paper").nextElementSibling).toBe(chatExport);
-        expect(chatExport.nextElementSibling).toBe(screen.getByTestId("file-companion-import"));
+        const chatAnchor = screen.getByTestId("file-companion-export-anchor");
+        expect(screen.getByTestId("file-companion-paper").nextElementSibling).toBe(chatAnchor);
+        expect(chatAnchor.contains(chatExport)).toBe(true);
+        expect(chatAnchor.nextElementSibling).toBe(screen.getByTestId("file-companion-export-project"));
+        expect(screen.getByTestId("file-companion-export-project").nextElementSibling).toBe(screen.getByTestId("file-companion-import"));
         fireEvent.click(chatExport);
+        expect(exportChatPdf).not.toHaveBeenCalled();
+        expect(screen.getByTestId("file-companion-export-chat-dest")).toBeTruthy();
+        fireEvent.click(screen.getByTestId("file-companion-export-chat-file"));
         await waitFor(() => expect(exportChatPdf).toHaveBeenCalledTimes(1));
         expect(exportChatTex).not.toHaveBeenCalled();
         fireEvent.click(screen.getByTestId("file-companion-export-chat-menu"));
@@ -4448,9 +6638,9 @@ describe("FileCompanionWindow", () => {
         open.mockClear();
 
         openWeb.mockReset();
-        openWeb.mockRejectedValue(new Error("本地文件请用「打开文件」，这里不接受 file:// 和其他协议"));
+        openWeb.mockRejectedValue(new Error("本地文件请用「打开文档或导入项目」，这里不接受 file:// 和其他协议"));
         await openField("file:///C:/media/clip.mp4");
-        await screen.findByText("本地文件请用「打开文件」，这里不接受 file:// 和其他协议");
+        await screen.findByText("本地文件请用「打开文档或导入项目」，这里不接受 file:// 和其他协议");
         expect(open).not.toHaveBeenCalled();
         openWeb.mockRejectedValue(new Error("这个地址是伴读自己的页面，不能当作视频网页打开"));
         await openField("http://wails.localhost/index.html");
@@ -4498,9 +6688,42 @@ describe("companion titlebar keeps its controls out of the window drag region", 
         expect(css()).toMatch(/\.file-companion-open\s*\{[^}]*--wails-draggable:\s*no-drag/);
     });
 
+    // jsdom runs no layout, so only a source assertion can pin this: the narrow
+    // inset beside a native player is 268px, and the download-progress label is
+    // the only sign that a click started a download. Hiding the whole action
+    // column there made a slow download look like a dead click.
+    it("keeps the download-progress label in the narrow player inset", () => {
+        const source = css();
+        // Only the unconditional rule is a defect. A rule that drops the column
+        // when the row is idle is the intended shape: 打开 is a hover hint, and
+        // the label appears the moment aria-busy flips.
+        const unconditional = /\.file-companion-arxiv-search--beside-player \.file-companion-arxiv-hit-action\s*\{([^}]*)\}/.exec(source);
+        const hidesUnconditionally = unconditional ? /display:\s*none/.test(unconditional[1]) : false;
+        expect(hidesUnconditionally, "no rule may hide the action column unconditionally").toBe(false);
+        // The rail and the idle hover hint may go; the busy state must survive.
+        expect(source).toMatch(/\.file-companion-arxiv-search--beside-player \.file-companion-arxiv-hit-index\s*\{[^}]*display:\s*none/);
+        expect(source).toMatch(/\.file-companion-arxiv-search--beside-player \.file-companion-arxiv-hit:not\(\[aria-busy="true"\]\) \.file-companion-arxiv-hit-action\s*\{[^}]*display:\s*none/);
+        // The column must not take width from the citation at 268px: it wraps
+        // under it instead, so the title stays one line and the abstract keeps
+        // the card's full inner width.
+        expect(source).toMatch(/\.file-companion-arxiv-search--beside-player \.file-companion-arxiv-hit\s*\{[^}]*flex-wrap:\s*wrap/);
+        expect(source).toMatch(/\.file-companion-arxiv-search--beside-player \.file-companion-arxiv-hit-body\s*\{[^}]*flex-basis:\s*100%/);
+    });
+
     it("hangs the open menu over the chat when a native player would cover the centre", () => {
         expect(css()).toMatch(/\.file-companion-open-menu--beside-player\s*\{[^}]*left:\s*auto/);
         expect(css()).toMatch(/\.file-companion-open-menu--beside-player\s*\{[^}]*right:\s*8px/);
+    });
+
+    it("hangs the share password box over the chat when a native player would cover the centre", () => {
+        expect(css()).toMatch(/\.file-companion-share-password--beside-player\s*\{[^}]*justify-content:\s*flex-end/);
+        expect(css()).toMatch(/\.file-companion-share-password--beside-player\s*\{[^}]*padding-right:\s*8px/);
+        expect(css()).toMatch(/\.file-companion-share-password--beside-player \.file-companion-share-password-card\s*\{[^}]*width:\s*min\(268px/);
+        // The card is the shared dialog shell. A padding or gap on this
+        // rule insets the header and footer a second time.
+        const cardRule = css().match(/(?:^|})\s*\.file-companion-share-password-card\s*\{([^}]*)\}/);
+        expect(cardRule?.[1] ?? "").not.toMatch(/padding|gap/);
+        expect(css()).toMatch(/\.file-companion-dialog-input::-ms-reveal,[\s\S]*?\{[^}]*display:\s*none/);
     });
 
     // jsdom never runs Wails' drop filter. OnFileDrop is registered with
@@ -4544,6 +6767,7 @@ describe("companion titlebar keeps its controls out of the window drag region", 
             ".file-companion-titlebar-files",
             ".file-companion-titlebar-tabs",
             ".file-companion-titlebar-actions",
+            ".file-companion-tool--fullscreen",
             ".file-companion-tool--close",
         ]) {
             expect(declaresNoDrag(source, selector), `${selector} must opt out of the drag region`).toBe(true);

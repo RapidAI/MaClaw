@@ -979,6 +979,23 @@ func (h *IMMessageHandler) RefreshMemorySnapshot(userID string) {
 	h.invalidateMemorySnapshot(userID, true)
 }
 
+// InvalidateAllFrozenMemorySnapshots drops every cached prompt snapshot this
+// handler holds. Whole-store memory operations (backup restore, compression)
+// cannot be expressed as per-entry retractions, so the pinned snapshot ends
+// here; the next prompt build reads the replaced store. The generation bump
+// inside invalidateMemorySnapshot still discards any in-flight builder.
+func (h *IMMessageHandler) InvalidateAllFrozenMemorySnapshots() {
+	if h == nil {
+		return
+	}
+	h.frozenMemorySnapshots.Range(func(key, _ any) bool {
+		if userID, ok := key.(string); ok {
+			h.invalidateMemorySnapshot(userID, false)
+		}
+		return true
+	})
+}
+
 // invalidateMemorySnapshot clears one user's frozen prompt-memory state. When
 // waitForBuild is false the generation bump still prevents a stale builder
 // from publishing, but the caller does not block on it.

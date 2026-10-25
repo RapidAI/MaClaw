@@ -288,3 +288,31 @@ func (s *managedIndustryExpertStore) HasActiveLocalID(id string) bool {
 	}
 	return false
 }
+
+// localIDFlags reads the industry sidecar once. known is every local id with
+// a row. active is every local id with at least one active row, so an older
+// inactive row does not hide a current one. A load error returns empty maps
+// and the caller treats every expert as personal.
+func (s *managedIndustryExpertStore) localIDFlags() (map[string]bool, map[string]bool) {
+	known := map[string]bool{}
+	active := map[string]bool{}
+	if s == nil {
+		return known, active
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, err := s.loadLocked()
+	if err != nil {
+		return known, active
+	}
+	for _, item := range f.Installs {
+		if item.LocalExpertID == "" {
+			continue
+		}
+		known[item.LocalExpertID] = true
+		if item.Active {
+			active[item.LocalExpertID] = true
+		}
+	}
+	return known, active
+}

@@ -94,7 +94,7 @@ export function PPTStyleChooser({
                                 setManualId(style.id);
                             }}
                         >
-                            <i style={{ background: style.accent ? `#${style.accent.replace('#', '')}` : 'var(--theme-primary, #2f6fbc)' }} aria-hidden="true" />
+                            <i style={{ background: style.accent ? `#${style.accent.replace('#', '')}` : 'var(--theme-primary, #2e75cb)' }} aria-hidden="true" />
                             <span>{localizedStyleLabel(style, lang)}</span>
                             {recommendedChip ? <em>{t('Suggested', '推荐', '推薦')}</em> : null}
                         </button>

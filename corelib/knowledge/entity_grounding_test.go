@@ -150,10 +150,23 @@ func TestStrictNameSearchSkipsEmbedding(t *testing.T) {
 	defer store.Close()
 	emb := &countingEmbedder{}
 	store.SetEmbedder(emb)
+	ctx := context.Background()
+	// An empty library has no vector space, so Search does not embed a query
+	// that cannot match. One stored node vector makes the dictionary-word route observable.
+	if err := store.SaveSource(ctx, Source{ID: "emb-src", Kind: SourceKindText, URI: "manual://emb", Status: StatusParsed, Title: "notes"}); err != nil {
+		t.Fatalf("SaveSource: %v", err)
+	}
+	if err := store.EnsureNodeEmbeddingColumn(); err != nil {
+		t.Fatalf("EnsureNodeEmbeddingColumn: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO document_nodes(id, source_id, type, title, text, embedding) VALUES ('emb-node', 'emb-src', 'paragraph', 'notes', 'stored body', ?)`, float32SliceToBytes([]float32{1, 0})); err != nil {
+		t.Fatalf("insert node: %v", err)
+	}
+	if err := store.upsertEmbeddingMetadata(ctx, embeddingEntityNode, "emb-node", embeddingModelIdentifier(emb), emb.Dim()); err != nil {
+		t.Fatalf("node metadata: %v", err)
+	}
 	store.WaitBackground()
 	emb.calls = 0
-
-	ctx := context.Background()
 	if _, err := store.Search(ctx, SearchOptions{Query: "中国人奇强", Limit: 5}); err != nil {
 		t.Fatalf("Search: %v", err)
 	}

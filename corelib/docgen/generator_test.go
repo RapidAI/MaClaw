@@ -47,6 +47,19 @@ func TestMarkdownToHTML_Headings(t *testing.T) {
 	}
 }
 
+func TestMarkdownToHTML_HeadingDropsTheClosingHashes(t *testing.T) {
+	html := markdownToHTML("## 方法原理 ##\n\n## C#\n\n## 标题 # 不是结尾\n")
+	if !strings.Contains(html, "<b>方法原理</b>") || strings.Contains(html, "方法原理 #") {
+		t.Fatalf("closing hashes stayed in the heading: %s", html)
+	}
+	if !strings.Contains(html, "<b>C#</b>") {
+		t.Fatalf("a hash inside the word was stripped: %s", html)
+	}
+	if !strings.Contains(html, "<b>标题 # 不是结尾</b>") {
+		t.Fatalf("an interior hash was stripped: %s", html)
+	}
+}
+
 func TestStripDuplicateLeadingHeading_RemovesMatchingH1(t *testing.T) {
 	spec := Spec{
 		Title:       "Hugging Face Daily Papers 综述与评论",

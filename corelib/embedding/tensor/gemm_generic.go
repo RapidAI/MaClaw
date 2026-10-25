@@ -48,6 +48,16 @@ func multiDot2DualB(out *[4]float32, a, b0, b1 []float32, K int) {
 	}
 }
 
+// useTripleK is the historical PP-OCR set. The scalar triple is a dual
+// plus one single dot, so wider K stays on the dual schedule.
+func useTripleK(K int) bool {
+	switch K {
+	case 48, 96, 120, 192, 384, 768:
+		return true
+	}
+	return false
+}
+
 func multiDot4TripleB(out *[12]float32, a, b0, b1, b2 []float32, K int) {
 	var d8 [8]float32
 	var d4 [4]float32

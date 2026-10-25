@@ -62,6 +62,16 @@ type ExecResult struct {
 	// StepsFailed is the number of steps that failed.
 	StepsFailed int
 
+	// FailedStepNumbers lists 1-based step indexes that failed.
+	// Stop-on-error returns the step error after recording the number.
+	// Continue records it and the run ends incomplete instead of successful.
+	FailedStepNumbers []int
+
+	// UnassignedCaptures lists declared capture names that stayed empty.
+	// A successful command that does not yield its capture, or an unsupported
+	// step that declared one, is not a finished skill run.
+	UnassignedCaptures []string
+
 	// LastStepOutput is the output of the last executed step.
 	LastStepOutput string
 }
@@ -145,7 +155,9 @@ func ExecuteStepsSync(ctx context.Context, entry *corelib.NLSkillEntry, vars map
 		// Only bash steps are supported in this synchronous engine.
 		action := NormalizeStepActionName(step.Action)
 		if action != "bash" && action != "" {
-			// Skip unsupported step types gracefully.
+			// Skip unsupported step types gracefully. A capture on a step this
+			// runner cannot execute stays unassigned.
+			noteUnassignedCaptures(result, step, vars)
 			if deps != nil {
 				deps.OnStepProgress(i, totalSteps, action, "skipped_unsupported")
 			}
@@ -167,6 +179,9 @@ func ExecuteStepsSync(ctx context.Context, entry *corelib.NLSkillEntry, vars map
 			}
 		}
 		if command == "" {
+			// A selected step that declares a capture and then has nothing to
+			// run did not produce that capture.
+			noteUnassignedCaptures(result, step, vars)
 			continue
 		}
 
@@ -209,6 +224,7 @@ func ExecuteStepsSync(ctx context.Context, entry *corelib.NLSkillEntry, vars map
 
 		if execErr != nil {
 			result.StepsFailed++
+			result.FailedStepNumbers = append(result.FailedStepNumbers, i+1)
 
 			// Check on_error policy.
 			onError := strings.TrimSpace(step.OnError)
@@ -219,6 +235,7 @@ func ExecuteStepsSync(ctx context.Context, entry *corelib.NLSkillEntry, vars map
 					for k, v := range captured {
 						vars[k] = v
 					}
+					noteUnassignedCaptures(result, step, vars)
 				}
 				if deps != nil {
 					deps.OnStepProgress(i, totalSteps, "bash", "failed_continue")
@@ -236,6 +253,7 @@ func ExecuteStepsSync(ctx context.Context, entry *corelib.NLSkillEntry, vars map
 			for k, v := range captured {
 				vars[k] = v
 			}
+			noteUnassignedCaptures(result, step, vars)
 		}
 
 		// Accumulate output.
@@ -251,11 +269,96 @@ func ExecuteStepsSync(ctx context.Context, entry *corelib.NLSkillEntry, vars map
 		}
 	}
 
+	if err := skillRunIncomplete(result); err != nil {
+		if strings.TrimSpace(result.Output) == "" {
+			result.Output = err.Error()
+		}
+		return result, err
+	}
 	if result.Output == "" && result.StepsExecuted > 0 {
 		result.Output = "Skill executed successfully (no output)"
 	}
 
 	return result, nil
+}
+
+// noteUnassignedCaptures records capture names this step declared that are
+// still empty. The declaration is the step's Capture map. A later step may
+// fill the same name; skillRunIncomplete drops names that end non-empty.
+func noteUnassignedCaptures(result *ExecResult, step corelib.NLSkillStep, vars map[string]string) {
+	if result == nil || len(step.Capture) == 0 {
+		return
+	}
+	names := make([]string, 0, len(step.Capture))
+	for name := range step.Capture {
+		names = append(names, name)
+	}
+	sortStrings(names)
+	for _, name := range names {
+		key := strings.TrimSpace(name)
+		if key == "" {
+			continue
+		}
+		if strings.TrimSpace(vars[key]) != "" || strings.TrimSpace(vars[canonicalRunVarKey(key)]) != "" {
+			continue
+		}
+		if !stringInSlice(result.UnassignedCaptures, key) {
+			result.UnassignedCaptures = append(result.UnassignedCaptures, key)
+		}
+	}
+}
+
+func skillRunIncomplete(result *ExecResult) error {
+	if result == nil {
+		return nil
+	}
+	stillMissing := result.UnassignedCaptures[:0]
+	for _, name := range result.UnassignedCaptures {
+		key := strings.TrimSpace(name)
+		if key == "" {
+			continue
+		}
+		if strings.TrimSpace(result.Vars[key]) != "" || strings.TrimSpace(result.Vars[canonicalRunVarKey(key)]) != "" {
+			continue
+		}
+		stillMissing = append(stillMissing, key)
+	}
+	result.UnassignedCaptures = append([]string(nil), stillMissing...)
+
+	if result.StepsFailed == 0 && len(result.UnassignedCaptures) == 0 {
+		return nil
+	}
+	var parts []string
+	if result.StepsFailed > 0 {
+		nums := make([]string, len(result.FailedStepNumbers))
+		for i, n := range result.FailedStepNumbers {
+			nums[i] = fmt.Sprintf("%d", n)
+		}
+		parts = append(parts, fmt.Sprintf("%d step(s) failed (%s)", result.StepsFailed, strings.Join(nums, ", ")))
+	}
+	if len(result.UnassignedCaptures) > 0 {
+		parts = append(parts, "declared capture empty: "+strings.Join(result.UnassignedCaptures, ", "))
+	}
+	return fmt.Errorf("skill run incomplete: %s", strings.Join(parts, "; "))
+}
+
+func sortStrings(values []string) {
+	for i := 1; i < len(values); i++ {
+		j := i
+		for j > 0 && values[j] < values[j-1] {
+			values[j], values[j-1] = values[j-1], values[j]
+			j--
+		}
+	}
+}
+
+func stringInSlice(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 // truncateOutput truncates output to maxLen characters for error messages.

@@ -52,6 +52,7 @@ type TrajectorySession struct {
 	ToolCallCount int                    `json:"tool_call_count,omitempty"`
 	InputTokens   int                    `json:"input_tokens,omitempty"`
 	OutputTokens  int                    `json:"output_tokens,omitempty"`
+	HopRun        *HopRunSnapshot        `json:"hop_run,omitempty"`
 	Entries       []TrajectoryEntry      `json:"entries"`
 }
 
@@ -187,6 +188,18 @@ func (r *TrajectoryRecorder) SetCurrentIteration(zeroBased int) {
 		return
 	}
 	r.currentIteration = zeroBased + 1
+}
+
+// SetHopRun records the structured execution contract and its final gate result.
+func (r *TrajectoryRecorder) SetHopRun(snapshot *HopRunSnapshot) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.session != nil {
+		r.session.HopRun = snapshot
+	}
 }
 
 // SetOutcome records loop-level outcome metadata before Flush.

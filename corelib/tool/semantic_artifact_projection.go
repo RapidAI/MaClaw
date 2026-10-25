@@ -37,6 +37,8 @@ func ArtifactFileName(ref ArtifactRef) string {
 		return base + ".pptx"
 	case "text/plain":
 		return base + ".txt"
+	case "application/x-mobipocket-ebook":
+		return base + ".mobi"
 	case "audio/wav", "audio/x-wav", "audio/wave":
 		return base + ".wav"
 	default:
@@ -57,6 +59,8 @@ func DocumentTempSuffixForSelection(selection PlannedSelection) string {
 		return ".xlsx"
 	case "presentation":
 		return ".pptx"
+	case "mobi":
+		return ".mobi"
 	default:
 		return ".txt"
 	}

@@ -3,6 +3,7 @@ package guiapp
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -42,6 +43,11 @@ type FileCompanionDocument struct {
 	Error          string                 `json:"error,omitempty"`
 	ReadOnlyReason string                 `json:"readOnlyReason,omitempty"`
 	Messages       []FileCompanionMessage `json:"messages,omitempty"`
+	// Highlights is set when this open unpacked a companion project. A normal
+	// open leaves it empty so the reader keeps the marks it already stored.
+	Highlights json.RawMessage `json:"highlights,omitempty"`
+	// Imported is set when Path is the document taken out of a project zip.
+	Imported bool `json:"imported,omitempty"`
 }
 
 // FileCompanionMessage is one restored chat bubble. Roles are user or assistant.
@@ -74,6 +80,10 @@ type FileCompanionSaveResult struct {
 }
 
 func (a *App) FileCompanionOpen(path string) (FileCompanionDocument, error) {
+	return a.fileCompanionOpen(path, true)
+}
+
+func (a *App) fileCompanionOpen(path string, acceptProject bool) (FileCompanionDocument, error) {
 	doc := FileCompanionDocument{Path: path, Name: filepath.Base(path)}
 	if a == nil {
 		return doc, errors.New("app unavailable")
@@ -118,6 +128,9 @@ func (a *App) FileCompanionOpen(path string) (FileCompanionDocument, error) {
 		doc.Name = base
 	}
 	canonical := identity
+	if acceptProject && strings.EqualFold(filepath.Ext(canonical), ".zip") {
+		return a.fileCompanionOpenProjectZip(display)
+	}
 	fileLock := a.fileCompanionFileLock(canonical)
 	fileLock.Lock()
 	unlocked := false
@@ -158,6 +171,7 @@ func (a *App) FileCompanionOpen(path string) (FileCompanionDocument, error) {
 		sid := doc.SessionID
 		unlockFile()
 		doc.Messages = a.fileCompanionHistory(sid)
+		a.rememberFileCompanionDocument(doc)
 		return doc, nil
 	}
 	defer file.Close()
@@ -212,6 +226,7 @@ func (a *App) FileCompanionOpen(path string) (FileCompanionDocument, error) {
 	sid := doc.SessionID
 	unlockFile()
 	doc.Messages = a.fileCompanionHistory(sid)
+	a.rememberFileCompanionDocument(doc)
 	return doc, nil
 }
 

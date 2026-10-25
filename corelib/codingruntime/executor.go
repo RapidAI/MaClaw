@@ -484,6 +484,25 @@ func localWriterLive(attemptID string) bool {
 	return ok
 }
 
+// runningAttemptDead is the one rule for a running row that no longer holds
+// the directory. Admission, lease expiry, and the task-list projection all
+// use it. An open lease is a holder. An expired lease is a holder only while
+// this process is still inside that attempt.
+func runningAttemptDead(leaseUntil, now time.Time, attemptID string) bool {
+	return !leaseUntil.After(now) && !localWriterLive(attemptID)
+}
+
+// leaseDeathTime is when a dead running attempt stopped being a holder.
+// Callers record finished_at and the task's updated_at at this instant.
+// Noticing the corpse later, including a sweep days afterward, must not
+// make that row newer than work that already finished after the lease ended.
+func leaseDeathTime(leaseUntil, now time.Time) time.Time {
+	if leaseUntil.IsZero() || leaseUntil.After(now) {
+		return now
+	}
+	return leaseUntil
+}
+
 // keepAttemptLease renews the admission lease until stop is called. The
 // interval stays inside the lease so a long step never becomes invisible to
 // the next task's admission check.

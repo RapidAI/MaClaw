@@ -7,6 +7,7 @@ import {
     CreateRunWindowTask,
     CreateTaskUnified,
     RenameCloudWorkspace,
+    SuggestNewTaskExpert,
     SuggestNewTaskType,
     EnsureCodingWorkbenchArmed,
     ListExperts,
@@ -30,7 +31,8 @@ import { expertTabId, parseExpertListJSON, parseInstalledManagedIndustryExpertsJ
 import { extractErrorMessage } from "../participantAddError";
 import { applyComposeActionToText, goalCreateCommand, isBtwCommandText, isHistoryResetCommandText, normalizeInstallCommandText, type ComposeAction } from "../composeAction";
 import { buildOutgoingMessageMulti } from "../useAIAssistant";
-import { defaultTaskDraft, draftFromWizardSeed, isDraftDefault, withCloudWorkspace, withTaskType, type NewTaskWizardSeed, type TaskDraft } from "./taskDraft";
+import { defaultTaskDraft, draftFromWizardSeed, isDraftDefault, withCloudWorkspace, withExpert, withTaskType, type NewTaskWizardSeed, type TaskDraft } from "./taskDraft";
+import { suggestedExpertForDraft, type NewTaskExpertSuggestion } from "./taskExpertSuggest";
 import { mismatchedTaskType, taskTypeMismatchCopy, type NewTaskTypeSuggestion } from "./taskTypeSuggest";
 import { isRunWindowScheduled, runWindowCreatedNotice, runWindowCreateRequest, validateRunWindow } from "./runWindow";
 import { dispatchDueRunWindows, launchRunWindowTask } from "./runWindowDispatch";
@@ -444,6 +446,29 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         if (covered?.selectedPaths?.length) replaceSelectedFilePaths?.(covered.selectedPaths);
     }, [clearComposerDraft, clearGuideDraft, isLocalTabActive, replacePendingAttachments, replaceSelectedFilePaths, retireLocalWizardFlag, showComposerText]);
 
+    // A confident reading assigns an installed expert before the task is created.
+    // No clear fit leaves 通用. An expert the user already chose, a workflow,
+    // and a cloud or remote workspace stay as they are.
+    const alignTaskExpertWithCommand = useCallback(async (command: string, draft: TaskDraft): Promise<TaskDraft> => {
+        const text = (command || "").trim();
+        if (!text || (draft.expertId || "").trim() || draft.workflowTemplateId !== null || draft.workspace.kind !== "local") {
+            return draft;
+        }
+        let suggestion: NewTaskExpertSuggestion | null = null;
+        try {
+            suggestion = await SuggestNewTaskExpert(text) as NewTaskExpertSuggestion;
+        } catch (err) {
+            console.warn("[task-expert] classify failed", err);
+            return draft;
+        }
+        const pick = suggestedExpertForDraft(draft, suggestion);
+        if (!pick) return draft;
+        const updated = withExpert(draft, pick.id, pick.name);
+        taskConfigDraftRef.current = updated;
+        setTaskConfigDraft(updated);
+        return updated;
+    }, []);
+
     // A confident local or LLM reading that disagrees with the selected type
     // asks once. Agreeing updates the draft (coding drops a cloud workspace).
     // Refusing, a classifier failure, or no dialog keeps the selected type.
@@ -498,7 +523,8 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         setTaskConfigSending(true);
         setTaskConfigError("");
         try {
-            const draft = await alignTaskTypeWithCommand(sendOptions?.classifyText ?? rawText, taskConfigDraftRef.current);
+            const expertDraft = await alignTaskExpertWithCommand(sendOptions?.classifyText ?? rawText, taskConfigDraftRef.current);
+            const draft = await alignTaskTypeWithCommand(sendOptions?.classifyText ?? rawText, expertDraft);
             const result = await runTaskConfigSend({
                 text: rawText,
                 draft,
@@ -579,7 +605,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             taskConfigSendingRef.current = false;
             setTaskConfigSending(false);
         }
-    }, [alignTaskTypeWithCommand, handoffComposer, lang]);
+    }, [alignTaskExpertWithCommand, alignTaskTypeWithCommand, handoffComposer, lang]);
 
     // The local assistant guide is the new-task page. There is no default
     // task: a send from that page creates a task even when every chip stays
@@ -628,7 +654,8 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         let startAt = "";
         let endAt: string | undefined;
         try {
-            const draft = await alignTaskTypeWithCommand(classifyText, taskConfigDraftRef.current);
+            const expertDraft = await alignTaskExpertWithCommand(classifyText, taskConfigDraftRef.current);
+            const draft = await alignTaskTypeWithCommand(classifyText, expertDraft);
             startAt = draft.runWindow?.startAt || "";
             endAt = draft.runWindow?.endAt;
             await CreateRunWindowTask(runWindowCreateRequest(named, named, initialMessage, draft) as unknown as Parameters<typeof CreateRunWindowTask>[0]);
@@ -663,7 +690,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             console.warn("[run-window] dispatch after create failed", err);
         });
         return true;
-    }, [alignTaskTypeWithCommand, handoffComposer, lang, showAlert]);
+    }, [alignTaskExpertWithCommand, alignTaskTypeWithCommand, handoffComposer, lang, showAlert]);
 
     // Name stays the typed text. A file with no text uses the filename so the
     // guide still creates a task instead of falling into a nameless session.

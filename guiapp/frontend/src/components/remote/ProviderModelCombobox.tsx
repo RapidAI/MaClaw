@@ -60,7 +60,7 @@ export function ProviderModelCombobox({
                         padding: "7px 10px",
                         fontSize: "0.8rem",
                         border: `1px solid ${colors.border}`,
-                        borderRadius: "var(--radius-md, 10px)",
+                        borderRadius: "var(--radius-md, 8px)",
                         background: colors.surface,
                         color: colors.text,
                         boxSizing: "border-box",
@@ -73,7 +73,7 @@ export function ProviderModelCombobox({
                     style={{
                         fontSize: "0.72rem", padding: "6px 10px", minHeight: 40, cursor: (fetching || !canFetch) ? "not-allowed" : "pointer",
                         background: colors.surface, color: colors.text,
-                        border: `1px solid ${colors.border}`, borderRadius: "var(--radius-md, 10px)",
+                        border: `1px solid ${colors.border}`, borderRadius: "var(--radius-md, 8px)",
                         whiteSpace: "nowrap", flexShrink: 0,
                         opacity: (fetching || !canFetch) ? 0.5 : 1,
                     }}

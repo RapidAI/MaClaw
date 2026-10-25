@@ -19,10 +19,10 @@ type Props = {
 
 const riskColor = (level: string) => {
     switch (level) {
-        case 'critical': return 'var(--theme-danger, #c43d34)';
-        case 'high': return 'var(--theme-warning, #d97706)';
+        case 'critical': return 'var(--theme-danger, #dc1f25)';
+        case 'high': return 'var(--theme-warning, #aa5d05)';
         case 'medium': return 'var(--theme-accent, #b7791f)';
-        default: return 'var(--theme-text-muted, #64748b)';
+        default: return 'var(--theme-text-muted, #56677c)';
     }
 };
 

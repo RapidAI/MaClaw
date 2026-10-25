@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -211,18 +212,34 @@ func normalizeCodingAgentTodoItems(items []codingAgentTodoItem) []codingAgentTod
 	return out
 }
 
+// enforceSingleInProgress keeps one current step, and that step is the first
+// item that is not completed or cancelled. A later in_progress while an earlier
+// item is still open is a skip: the cursor moves back. An all-pending list is
+// left alone so a plan can be written before work starts.
 func enforceSingleInProgress(items []codingAgentTodoItem) {
-	lastIP := -1
+	firstOpen := -1
+	anyActive := false
 	for i, it := range items {
+		switch it.Status {
+		case codingAgentTodoCompleted, codingAgentTodoCancelled:
+			continue
+		}
+		if firstOpen < 0 {
+			firstOpen = i
+		}
 		if it.Status == codingAgentTodoInProgress {
-			lastIP = i
+			anyActive = true
 		}
 	}
-	if lastIP < 0 {
+	if firstOpen < 0 || !anyActive {
 		return
 	}
 	for i := range items {
-		if items[i].Status == codingAgentTodoInProgress && i != lastIP {
+		if i == firstOpen {
+			items[i].Status = codingAgentTodoInProgress
+			continue
+		}
+		if items[i].Status == codingAgentTodoInProgress {
 			items[i].Status = codingAgentTodoPending
 		}
 	}
@@ -258,13 +275,18 @@ func (s *codingAgentTodoState) applyTodoWriteCAS(items []codingAgentTodoItem, me
 	} else {
 		byID := make(map[string]int, len(s.items))
 		for i, it := range s.items {
-			byID[it.ID] = i
+			byID[codingAgentTodoMergeKey(it.ID)] = i
 		}
 		for _, it := range cleaned {
-			if idx, ok := byID[it.ID]; ok {
+			key := codingAgentTodoMergeKey(it.ID)
+			if idx, ok := byID[key]; ok {
 				// Preserve title when caller only flips status.
 				if it.Content == "" {
 					it.Content = s.items[idx].Content
+				}
+				// "6" and "T6" are the same checklist row. Keep the id already stored.
+				if codingAgentTodoMergeKey(s.items[idx].ID) == key {
+					it.ID = s.items[idx].ID
 				}
 				s.items[idx] = it
 			} else {
@@ -274,7 +296,7 @@ func (s *codingAgentTodoState) applyTodoWriteCAS(items []codingAgentTodoItem, me
 				if len(s.items) >= codingAgentTodoMaxItems {
 					continue
 				}
-				byID[it.ID] = len(s.items)
+				byID[key] = len(s.items)
 				s.items = append(s.items, it)
 			}
 		}
@@ -519,7 +541,7 @@ const codingAgentTodoPromptSection = `
 ## 需求拆解与按步推进（todo_write）
 对非琐碎任务，必须先用 todo_write 拆成 2-8 个有序步骤，再动手改代码：
 1. 先规划：写入完整步骤，首项可标 in_progress，其余 pending。
-2. 一项一项做：同一时间最多一个 in_progress。
+2. 一项一项做：同一时间最多一个 in_progress，而且必须是清单里第一项还没完成的步骤。更早的步骤仍是 pending 时，不能把后面的步骤标成 in_progress。中断后续跑也从这一项开始，不要从中间项接着做。
 3. 做完立刻勾：将该步改为 completed，并把下一步改为 in_progress（可 merge=true 只更新 id+status）。
 4. 失败或取消：标 cancelled，并在摘要里说明原因。
 5. 禁止空口报完成：清单里还有 pending 或 in_progress 时，宿主会拒绝纯文字收尾。结束前必须调用 todo_write，把做完的标 completed、明确放弃的标 cancelled；还没做完的先做完再勾。未勾选的步骤不得在最终回复里声称已完成。
@@ -808,6 +830,97 @@ func stickyHasOrchestratedPlanSteps(mem stickyCodingWorkbenchMemory) bool {
 	return stickyPlanHasOpenSteps(mem.StepStatuses)
 }
 
+// codingAgentTodoMergeKey treats "6" and "T6" as one checklist row. The host
+// stores the numeric index. A model that copies the T-label still updates that row.
+func codingAgentTodoMergeKey(id string) string {
+	id = strings.TrimSpace(id)
+	if len(id) >= 2 && (id[0] == 'T' || id[0] == 't') {
+		rest := id[1:]
+		if n, err := strconv.Atoi(rest); err == nil && n > 0 && strconv.Itoa(n) == rest {
+			return rest
+		}
+	}
+	return id
+}
+
+// codingChecklistTodoStatus projects a sticky step onto the todo_write vocabulary.
+// Failed and verify_failed stay open: they still have to be resumed.
+func codingChecklistTodoStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case codingStepPassed, "completed", "done", "success", "succeeded":
+		return codingAgentTodoCompleted
+	case codingStepSkipped, "cancelled", "canceled":
+		return codingAgentTodoCancelled
+	case codingStepRunning, "in_progress", "started", "active":
+		return codingAgentTodoInProgress
+	default:
+		return codingAgentTodoPending
+	}
+}
+
+// codingChecklistToTodoItems rebuilds the in-memory checklist from sticky steps.
+// Ids are the 1-based indexes todo_write assigned when the row was first written.
+func codingChecklistToTodoItems(steps []codingWorkbenchStepStatus) []codingAgentTodoItem {
+	ordered := append([]codingWorkbenchStepStatus(nil), steps...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Index < ordered[j].Index })
+	out := make([]codingAgentTodoItem, 0, len(ordered))
+	seen := make(map[int]bool, len(ordered))
+	for _, st := range ordered {
+		if st.Index <= 0 || seen[st.Index] {
+			continue
+		}
+		seen[st.Index] = true
+		title := strings.TrimSpace(st.Title)
+		if title == "" {
+			title = fmt.Sprintf("T%d", st.Index)
+		}
+		out = append(out, codingAgentTodoItem{
+			ID:      strconv.Itoa(st.Index),
+			Content: truncateCodingAgentTodoContent(title),
+			Status:  codingChecklistTodoStatus(st.Status),
+		})
+	}
+	return out
+}
+
+func (s *codingAgentTodoState) seedFromChecklist(steps []codingWorkbenchStepStatus) {
+	seeded := codingChecklistToTodoItems(steps)
+	if s == nil || len(seeded) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.items) > 0 {
+		return
+	}
+	s.items = seeded
+}
+
+// restoreCodingAgentTodosFromSticky loads the sticky checklist before a write
+// when this process has not seen todo_write yet. After a restart the in-memory
+// list is empty, so both merge=true and an omitted merge (the contract says
+// "merge when a checklist already exists") would replace the whole checklist
+// with the few rows in this call. Explicit merge=false is the replace and is
+// not seeded. An orchestrator-owned plan stays out of the agent list.
+func restoreCodingAgentTodosFromSticky(state *codingAgentTodoState, handler *IMMessageHandler, userID, argsJSON string) {
+	if state == nil || handler == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" || len(state.snapshot()) > 0 {
+		return
+	}
+	items, merge, mergeSet, _, _, _, err := parseCodingAgentTodoWriteArgs(argsJSON)
+	if err != nil || len(items) == 0 || (mergeSet && !merge) {
+		return
+	}
+	mem := handler.getStickyCodingWorkbenchMemory(userID)
+	if stickyHasOrchestratedPlanSteps(mem) || len(mem.StepStatuses) == 0 {
+		return
+	}
+	state.seedFromChecklist(mem.StepStatuses)
+}
+
 // publishCodingAgentTodosToUI mirrors agent todos into sticky step statuses + event
 // so the pure-coding banner can show ☑/☐ live (local and remote).
 // Uses debounced disk persist: mid-turn todo updates are frequent.
@@ -849,12 +962,50 @@ func publishCodingAgentTodosToUI(handler *IMMessageHandler, userID string, items
 			mem.StepStatuses = nil
 			return
 		}
-		mem.StepStatuses = append([]codingWorkbenchStepStatus(nil), steps...)
+		// The outer snapshot can be stale. Keep host-recorded notes that the
+		// todo payload does not carry, matched under this lock.
+		mem.StepStatuses = mergeCodingChecklistNotes(mem.StepStatuses, steps)
 	})
 	// Only emit when we actually mutated sticky state (avoid no-op UI churn).
 	if changed {
 		handler.emitCodingWorkbenchStepsUpdate(userID)
 	}
+}
+
+// sameCodingChecklistTitle matches the title todo_write will store. That path
+// collapses whitespace and cuts at codingAgentTodoMaxContent, so a longer
+// stored title must still count as the same step.
+func sameCodingChecklistTitle(stored, written string) bool {
+	stored = truncateCodingAgentTodoContent(stored)
+	written = truncateCodingAgentTodoContent(written)
+	return stored != "" && stored == written
+}
+
+// mergeCodingChecklistNotes keeps a host-recorded summary on the same step
+// when todo_write only updates status. A rewritten title is a different step
+// and does not inherit the old note. Marking the step passed clears it.
+func mergeCodingChecklistNotes(prev, next []codingWorkbenchStepStatus) []codingWorkbenchStepStatus {
+	if len(prev) == 0 || len(next) == 0 {
+		return next
+	}
+	out := append([]codingWorkbenchStepStatus(nil), next...)
+	byIndex := make(map[int]codingWorkbenchStepStatus, len(prev))
+	for _, st := range prev {
+		if st.Index > 0 {
+			byIndex[st.Index] = st
+		}
+	}
+	for i := range out {
+		if out[i].Status == codingStepPassed || strings.TrimSpace(out[i].Summary) != "" {
+			continue
+		}
+		old, ok := byIndex[out[i].Index]
+		if !ok || !sameCodingChecklistTitle(old.Title, out[i].Title) {
+			continue
+		}
+		out[i].Summary = old.Summary
+	}
+	return out
 }
 
 func codingWorkbenchStepStatusesEqual(a, b []codingWorkbenchStepStatus) bool {

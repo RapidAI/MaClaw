@@ -1,3 +1,5 @@
+import type { CodingAgentProcessKind } from "./CodingAgentProcessIcon";
+
 /** One tool invocation kept in the assistant transcript, not the 3-line progress tray. */
 export interface AssistantToolCall {
     id: string;
@@ -74,6 +76,72 @@ export function isProgressOnlyToolAction(action: string): boolean {
 
 const TOOL_FLIP_ARG_LIMIT = 42;
 const TOOL_FLIP_ARG_KEYS = ["query", "q", "search", "keyword", "command", "cmd", "url", "uri", "path", "file", "file_path", "pattern", "name", "text", "message", "prompt"];
+
+const SESSION_ICON_BY_TOOL: Record<string, CodingAgentProcessKind> = {
+    bash: "run",
+    run_terminal: "run",
+    shell: "run",
+    powershell: "run",
+    ssh: "run",
+    read_file: "read",
+    read_files: "read",
+    read_code: "read",
+    read: "read",
+    write_file: "write",
+    write: "write",
+    create_file: "write",
+    edit_file: "edit",
+    edit_lines: "edit",
+    edit: "edit",
+    str_replace: "edit",
+    apply_patch: "edit",
+    git_diff: "edit",
+    list_directory: "find",
+    list_dir: "find",
+    search_files: "find",
+    search: "find",
+    glob: "find",
+    ripgrep: "search",
+    code_search: "search",
+    grep_search: "search",
+    grep: "search",
+    web_search: "search",
+    session_search: "search",
+    search_code: "search",
+    code_navigation: "explore",
+    todo_write: "todo",
+    delegate_task: "agent",
+    spawn_coding_agent: "agent",
+};
+
+const SESSION_ICON_PHRASES: Array<[RegExp, CodingAgentProcessKind]> = [
+    [/执行命令|run command/i, "run"],
+    [/读取文件|read file/i, "read"],
+    [/写入文件|write file/i, "write"],
+    [/编辑文件|edit file/i, "edit"],
+    [/列出目录|搜索文件|查找文件|(?:^|\s)查找(?:\s|$)|list directory|search files/i, "find"],
+    [/探索源码|探索代码|explore source/i, "explore"],
+    [/检索内容|搜索网页|搜索网络|search content|web search/i, "search"],
+    [/委派任务|delegate task/i, "agent"],
+    [/待办|(?:^|[^a-z0-9_])todo(?:[^a-z0-9_]|$)/i, "todo"],
+];
+
+/**
+ * Status icon for a session-agent tool row. Names that have no matching
+ * status stay unset so the row keeps its generic mark.
+ */
+export function sessionToolIconKind(call: { name?: string; action?: string }): CodingAgentProcessKind | null {
+    const raw = (call.name || "").trim().toLowerCase();
+    const bare = raw.startsWith("ssh_") ? raw.slice(4) : raw;
+    const named = SESSION_ICON_BY_TOOL[bare] || SESSION_ICON_BY_TOOL[raw];
+    if (named) return named;
+    const phrase = `${call.action || ""} ${call.name || ""}`.trim();
+    if (!phrase) return null;
+    for (const [pattern, kind] of SESSION_ICON_PHRASES) {
+        if (pattern.test(phrase)) return kind;
+    }
+    return null;
+}
 
 /** One-line label for the live tool strip: `web_search (北京天气)`. */
 export function formatAssistantToolFlip(call: Pick<AssistantToolCall, "name" | "action" | "detail">): { name: string; arg: string; text: string } {

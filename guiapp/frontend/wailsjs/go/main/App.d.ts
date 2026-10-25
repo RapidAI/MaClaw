@@ -39,6 +39,8 @@ export function GetReferralRegistrationStatus(arg1:string,arg2:string,arg3:strin
 
 export function SendFileCompanionMessage(arg1:Record<string, any>):Promise<void>;
 
+export function TranslateFileCompanionSelection(arg1:string, arg2:string):Promise<string>;
+
 export function SendReferralRegistrationEmail(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.RemoteRegistrationContactResult>;
 
 export function RegisterReferralEmail(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<void>;
@@ -198,6 +200,8 @@ export function CheckMCPServerHealth(arg1:string):Promise<void>;
 export function RetryMCPRuntimeSync(arg1:string,arg2:boolean):Promise<void>;
 
 export function CheckMaclawAppRuntimeHealth(arg1:string,arg2:string):Promise<Record<string, any>>;
+
+export function CheckFormulaModel():Promise<Record<string, any>>;
 
 export function CheckOCRModel():Promise<Record<string, any>>;
 
@@ -413,6 +417,9 @@ export function CreateTaskUnified(arg1:main.TaskCreateOptions):Promise<main.Unif
 // MANUAL SYNC: mirrors guiapp/task_type_suggest.go SuggestNewTaskType.
 export function SuggestNewTaskType(arg1:string):Promise<{ suggested: string; confident: boolean; reason?: string; source?: string }>;
 
+// MANUAL SYNC: mirrors guiapp/task_expert_suggest.go SuggestNewTaskExpert.
+export function SuggestNewTaskExpert(arg1:string):Promise<{ expertId: string; expertName: string; confident: boolean; reason?: string; source?: string }>;
+
 export function ProvisionCloudWorkspaceTask(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.CloudWorkspaceTaskProvision>;
 
 export function CloudWorkspaceTaskProvisionStatus(arg1:string):Promise<main.CloudWorkspaceTaskProvision>;
@@ -450,6 +457,10 @@ export function MailboxBrowseStart(arg1:string):Promise<Record<string, any>>;
 export function MailboxBrowseMessages(arg1:string,arg2:string,arg3:number):Promise<Array<Record<string, any>>>;
 
 export function MailboxBrowseRead(arg1:string,arg2:string,arg3:number):Promise<Record<string, any>>;
+
+export function MailboxBrowseMarkRead(arg1:string,arg2:string,arg3:Array<number>,arg4:boolean):Promise<Record<string, any>>;
+
+export function MailboxBrowseDelete(arg1:string,arg2:string,arg3:Array<number>):Promise<Record<string, any>>;
 
 export function MailboxOAuthLogin(arg1:string,arg2:string):Promise<string>;
 
@@ -568,6 +579,8 @@ export function CompileLatexWorkbenchFile(arg1:string,arg2:string):Promise<Recor
 
 export function DownloadMaclawAppPackageFromHub(arg1:string):Promise<Record<string, any>>;
 
+export function DownloadFormulaModel():Promise<void>;
+
 export function DownloadOCRModel():Promise<void>;
 
 export function DownloadSkillRunArtifact(arg1:string,arg2:string):Promise<main.SkillArtifactRegistryEntry>;
@@ -638,11 +651,19 @@ export function FileCompanionUIReady():Promise<Array<string>>;
 
 export function FileCompanionOpen(arg1:string):Promise<Record<string, any>>;
 
+export function FileCompanionPDFScan(arg1:string):Promise<Record<string, any>>;
+
+export function FileCompanionChooseConvertDestination(arg1:string):Promise<string>;
+
+export function FileCompanionConvertScan(arg1:string, arg2:string):Promise<Record<string, any>>;
+
 export function FileCompanionResumePaths():Promise<Array<string>>;
 
 export function SetFileCompanionOpenSet(arg1:Array<string>):Promise<void>;
 
 export function FileCompanionOpenArxiv(arg1:string):Promise<string>;
+
+export function FileCompanionSearchArxiv(arg1:string):Promise<Array<{id:string, title:string, abstract:string, authors?:string, published?:string, categories?:Array<string>}>>;
 
 export function FileCompanionOpenWebPage(arg1:string):Promise<Record<string, any>>;
 
@@ -692,7 +713,43 @@ export function FileCompanionUploadCloud(arg1:string):Promise<main.MobileDocumen
 
 export function FileCompanionExportPDF(arg1:string,arg2:string):Promise<string>;
 
+export function FileCompanionExportProject(arg1:string,arg2:string):Promise<string>;
+
+export function ListFileCompanionLibrary():Promise<{items:Array<Record<string, any>>, notice?:string}>;
+
+export function ShareFileCompanionDocument(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:number):Promise<Record<string, any>>;
+
+export function ImportFileCompanionShare(arg1:string,arg2:string):Promise<Record<string, any>>;
+
+export function SyncFileCompanionShare(arg1:string,arg2:string):Promise<Record<string, any>>;
+
+export function AddFileCompanionShareNote(arg1:string,arg2:string):Promise<Record<string, any>>;
+
+export function ListFileCompanionGroups():Promise<Array<Record<string, any>>>;
+
+export function CreateFileCompanionGroup(arg1:string):Promise<Record<string, any>>;
+
+export function AddFileCompanionGroupMember(arg1:string,arg2:string):Promise<Record<string, any>>;
+
+export function RemoveFileCompanionGroupMember(arg1:string,arg2:string):Promise<Record<string, any>>;
+
+export function UpdateFileCompanionGroup(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
+
+export function DeleteFileCompanionGroup(arg1:string):Promise<void>;
+
+export function LeaveFileCompanionGroup(arg1:string):Promise<void>;
+
+export function ListFileCompanionGroupInvites():Promise<Array<Record<string, any>>>;
+
+export function AcceptFileCompanionGroupInvite(arg1:string):Promise<void>;
+
+export function DeclineFileCompanionGroupInvite(arg1:string):Promise<void>;
+
 export function FileCompanionExportChatPDF(arg1:string,arg2:Array<main.CompanionChatTurn>):Promise<string>;
+
+export function FileCompanionExportChatCloud(arg1:string,arg2:Array<main.CompanionChatTurn>):Promise<main.MobileDocumentDraftSummary>;
+
+export function FileCompanionExportWebChatCloud(arg1:string,arg2:Array<main.CompanionChatTurn>):Promise<main.MobileDocumentDraftSummary>;
 
 export function FileCompanionReplaceOffice(arg1:string,arg2:string):Promise<void>;
 
@@ -974,6 +1031,8 @@ export function GetMobileLibraryItem(arg1:string):Promise<main.MobileLibraryItem
 export function GetMobileMeetingRecordingAudio(arg1:string):Promise<main.MobileMeetingRecordingAudioPayload>;
 
 export function GetNLSkillRunStatus(arg1:string):Promise<main.SkillRunStatus>;
+
+export function GetFormulaEnabled():Promise<boolean>;
 
 export function GetOCREnabled():Promise<boolean>;
 
@@ -1538,6 +1597,20 @@ export function KnowledgeListSourceLinks(arg1:string,arg2:number):Promise<Array<
 export function KnowledgeListSourceVersions(arg1:string,arg2:number):Promise<Array<knowledge.SourceVersion>>;
 
 export function KnowledgeListSources(arg1:knowledge.ListSourcesOptions):Promise<Array<knowledge.Source>>;
+
+export function KnowledgeListCollections():Promise<any[]>;
+
+export function KnowledgeCreateCollection(arg1:string):Promise<any>;
+
+export function KnowledgeListCollectionMembers(arg1:string):Promise<any[]>;
+
+export function KnowledgeAddCollectionMember(arg1:string,arg2:string):Promise<void>;
+
+export function KnowledgeRemoveCollectionMember(arg1:string,arg2:string):Promise<void>;
+
+export function KnowledgeListUnassignedSources(arg1:number):Promise<any[]>;
+
+export function KnowledgeListSourceCollectionRefs():Promise<any[]>;
 
 export function KnowledgeListSuppressedCards(arg1:number):Promise<Array<knowledge.CardSuppression>>;
 
@@ -2578,6 +2651,8 @@ export function VerifyAndActivateNLSkill(arg1:string):Promise<void>;
 
 export function VerifyAndActivateNLSkillWithArgs(arg1:string,arg2:Record<string, any>):Promise<void>;
 
+export function SetFormulaEnabled(arg1:boolean):Promise<void>;
+
 export function SetOCREnabled(arg1:boolean):Promise<void>;
 
 export function SetOCRModelTier(arg1:string):Promise<void>;
@@ -2896,6 +2971,8 @@ export function WithdrawPetStorePack(arg1:string):Promise<void>;
 
 export function WriteCodingWorkbenchConflictFileContent(arg1:string,arg2:string,arg3:string,arg4:string):Promise<string>;
 export function AIAssistantAttachmentPreviewDataURL(arg1:string):Promise<string>;
+
+export function AIAssistantFileTypeIconDataURL(arg1:string):Promise<string>;
 
 export function AIAssistantAttachmentFullDataURL(arg1:string):Promise<string>;
 

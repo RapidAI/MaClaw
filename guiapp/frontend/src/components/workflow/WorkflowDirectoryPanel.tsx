@@ -268,7 +268,7 @@ export function WorkflowDirectoryPanel({ hubBaseUrl, getWorkflowDirectory }: Wor
                 style={panelStyle}
             >
                 {loading && <CenteredMessage>加载中...</CenteredMessage>}
-                {!loading && error && <CenteredMessage color="var(--theme-danger, #c43d34)">加载失败: {error}</CenteredMessage>}
+                {!loading && error && <CenteredMessage color="var(--theme-danger, #dc1f25)">加载失败: {error}</CenteredMessage>}
                 {!loading && !error && items.length === 0 && (
                     <CenteredMessage>
                         <span style={{ display: "inline-flex", marginBottom: 8, opacity: 0.55 }}>
@@ -326,7 +326,7 @@ export function WorkflowDirectoryPanel({ hubBaseUrl, getWorkflowDirectory }: Wor
 
 function CenteredMessage({ children, color }: { children: ReactNode; color?: string }) {
     return (
-        <div style={{ ...centeredStyle, color: color || "var(--theme-text-muted, #657384)" }}>
+        <div style={{ ...centeredStyle, color: color || "var(--theme-text-muted, #56677c)" }}>
             {children}
         </div>
     );
@@ -388,7 +388,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function ResultBadge({ result }: { result: string }) {
-    const color = result === "approved" ? "var(--theme-success, #4f7f6f)" : result === "rejected" ? "var(--theme-danger, #c43d34)" : "var(--theme-text-muted, #64748b)";
+    const color = result === "approved" ? "var(--theme-success, #11813a)" : result === "rejected" ? "var(--theme-danger, #dc1f25)" : "var(--theme-text-muted, #56677c)";
     const label = result === "approved" ? "通过" : result === "rejected" ? "驳回" : result;
     return <span style={{ fontSize: "0.72rem", fontWeight: 500, color, marginLeft: 4 }}>{label}</span>;
 }
@@ -396,11 +396,11 @@ function ResultBadge({ result }: { result: string }) {
 function UrgencyIndicator({ urgency, timeRemaining }: { urgency?: string; timeRemaining?: number }) {
     if (!urgency || urgency === "normal") return null;
     if (urgency === "overdue") {
-        return <span style={{ color: "var(--theme-danger, #c43d34)", fontWeight: 600, fontSize: "0.72rem", marginLeft: 6 }}>已超时</span>;
+        return <span style={{ color: "var(--theme-danger, #dc1f25)", fontWeight: 600, fontSize: "0.72rem", marginLeft: 6 }}>已超时</span>;
     }
     if (urgency === "approaching_timeout") {
         const remaining = timeRemaining != null ? ` (${timeRemaining}h)` : "";
-        return <span style={{ color: "var(--theme-warning, #64748b)", fontWeight: 500, fontSize: "0.72rem", marginLeft: 6 }}>即将超时{remaining}</span>;
+        return <span style={{ color: "var(--theme-warning, #aa5d05)", fontWeight: 500, fontSize: "0.72rem", marginLeft: 6 }}>即将超时{remaining}</span>;
     }
     return null;
 }
@@ -432,13 +432,13 @@ function getStatusLabel(status: string): string {
 
 function getStatusBadgeColors(status: string): CSSProperties {
     switch (status) {
-        case "running": return { background: "var(--theme-info-bg, #eef5fb)", color: "var(--theme-primary, #2f6fbc)" };
-        case "completed": return { background: "var(--theme-success-bg, rgba(79, 127, 111, 0.12))", color: "var(--theme-success, #4f7f6f)" };
-        case "withdrawn": return { background: "var(--theme-info-bg, #eef5fb)", color: "var(--theme-primary, #2f6fbc)" };
-        case "failed": return { background: "var(--theme-danger-bg, #fbf1f0)", color: "var(--theme-danger, #c43d34)" };
-        case "blocked": return { background: "var(--theme-warning-bg, #f8fafc)", color: "var(--theme-warning, #64748b)" };
-        case "cancelled": return { background: "var(--theme-surface-muted, #f8fafc)", color: "var(--theme-text-muted, #64748b)" };
-        default: return { background: "var(--theme-surface-muted, #f8fafc)", color: "var(--theme-text-muted, #64748b)" };
+        case "running": return { background: "var(--theme-info-bg, rgba(47, 120, 208, 0.06))", color: "var(--theme-primary, #2e75cb)" };
+        case "completed": return { background: "var(--theme-success-bg, rgba(79, 127, 111, 0.12))", color: "var(--theme-success, #11813a)" };
+        case "withdrawn": return { background: "var(--theme-info-bg, rgba(47, 120, 208, 0.06))", color: "var(--theme-primary, #2e75cb)" };
+        case "failed": return { background: "var(--theme-danger-bg, #fbf1f0)", color: "var(--theme-danger, #dc1f25)" };
+        case "blocked": return { background: "var(--theme-warning-bg, rgba(217, 119, 6, 0.07))", color: "var(--theme-warning, #aa5d05)" };
+        case "cancelled": return { background: "var(--theme-surface-muted, #f8fafc)", color: "var(--theme-text-muted, #56677c)" };
+        default: return { background: "var(--theme-surface-muted, #f8fafc)", color: "var(--theme-text-muted, #56677c)" };
     }
 }
 
@@ -466,7 +466,7 @@ const tabBarStyle: CSSProperties = {
     display: "flex",
     gap: 0,
     padding: "0 12px",
-    borderBottom: "1px solid var(--theme-border, #d9e1ec)",
+    borderBottom: "1px solid var(--theme-border, #c9ddf6)",
     flexShrink: 0,
     background: "var(--theme-surface-muted, #f8fafc)",
 };
@@ -475,7 +475,7 @@ const tabStyle: CSSProperties = {
     padding: "10px 16px",
     border: "none",
     background: "transparent",
-    color: "var(--theme-text-secondary, #44546a)",
+    color: "var(--theme-text-secondary, #546479)",
     cursor: "pointer",
     fontSize: "0.82rem",
     fontWeight: 500,
@@ -511,17 +511,17 @@ const filterLabelStyle: CSSProperties = {
 
 const filterLabelTextStyle: CSSProperties = {
     fontSize: "0.7rem",
-    color: "var(--theme-text-muted, #657384)",
+    color: "var(--theme-text-muted, #56677c)",
     fontWeight: 500,
 };
 
 const filterSelectStyle: CSSProperties = {
     padding: "4px 8px",
     fontSize: "0.78rem",
-    border: "1px solid var(--theme-border, #d9e1ec)",
-    borderRadius: "var(--radius-md, 10px)",
+    border: "1px solid var(--theme-border, #c9ddf6)",
+    borderRadius: "var(--radius-md, 8px)",
     background: "var(--theme-surface, #ffffff)",
-    color: "var(--theme-text-primary, #1c2733)",
+    color: "var(--theme-text-primary, #526277)",
     minWidth: "90px",
     outline: "none",
 };
@@ -529,10 +529,10 @@ const filterSelectStyle: CSSProperties = {
 const filterInputStyle: CSSProperties = {
     padding: "4px 8px",
     fontSize: "0.78rem",
-    border: "1px solid var(--theme-border, #d9e1ec)",
-    borderRadius: "var(--radius-md, 10px)",
+    border: "1px solid var(--theme-border, #c9ddf6)",
+    borderRadius: "var(--radius-md, 8px)",
     background: "var(--theme-surface, #ffffff)",
-    color: "var(--theme-text-primary, #1c2733)",
+    color: "var(--theme-text-primary, #526277)",
     minWidth: "100px",
     outline: "none",
 };
@@ -576,7 +576,7 @@ const itemRow1Style: CSSProperties = {
 const itemNameStyle: CSSProperties = {
     fontSize: "0.85rem",
     fontWeight: 600,
-    color: "var(--theme-text-primary, #1c2733)",
+    color: "var(--theme-text-primary, #526277)",
 };
 
 const badgeBaseStyle: CSSProperties = {
@@ -593,13 +593,13 @@ const itemRow2Style: CSSProperties = {
     flexWrap: "wrap",
     gap: "12px",
     fontSize: "0.75rem",
-    color: "var(--theme-text-secondary, #44546a)",
+    color: "var(--theme-text-secondary, #546479)",
     marginBottom: "2px",
 };
 
 const itemRow3Style: CSSProperties = {
     fontSize: "0.72rem",
-    color: "var(--theme-text-muted, #657384)",
+    color: "var(--theme-text-muted, #56677c)",
 };
 
 const paginationStyle: CSSProperties = {
@@ -608,7 +608,7 @@ const paginationStyle: CSSProperties = {
     alignItems: "center",
     gap: "12px",
     padding: "10px 12px",
-    borderTop: "1px solid var(--theme-border, #d9e1ec)",
+    borderTop: "1px solid var(--theme-border, #c9ddf6)",
     flexShrink: 0,
     background: "var(--theme-surface-muted, #f8fafc)",
 };
@@ -616,10 +616,10 @@ const paginationStyle: CSSProperties = {
 const paginationBtnStyle: CSSProperties = {
     padding: "5px 12px",
     fontSize: "0.78rem",
-    border: "1px solid var(--theme-border, #d9e1ec)",
+    border: "1px solid var(--theme-border, #c9ddf6)",
     borderRadius: "4px",
     background: "var(--theme-surface, #ffffff)",
-    color: "var(--theme-text-primary, #1c2733)",
+    color: "var(--theme-text-primary, #526277)",
     cursor: "pointer",
 };
 
@@ -631,5 +631,5 @@ const paginationBtnDisabledStyle: CSSProperties = {
 
 const pageInfoStyle: CSSProperties = {
     fontSize: "0.78rem",
-    color: "var(--theme-text-secondary, #44546a)",
+    color: "var(--theme-text-secondary, #546479)",
 };

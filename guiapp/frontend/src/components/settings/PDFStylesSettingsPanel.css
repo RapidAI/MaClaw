@@ -46,7 +46,7 @@
     min-width: 0;
     padding: 10px;
     border: 1px solid var(--theme-border-subtle, var(--theme-border));
-    border-radius: 12px;
+    border-radius: var(--radius-lg);
     background: var(--theme-surface);
 }
 
@@ -74,7 +74,7 @@
     height: 132px;
     overflow: hidden;
     border: 1px solid #e7e5e4;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     background: #fff;
 }
 
@@ -269,7 +269,7 @@
 .pdf-style-badge {
     flex: none;
     padding: 1px 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--theme-surface-muted, #f4f4f5);
     color: var(--theme-text-secondary, var(--theme-text-muted));
     font-size: 11px;
@@ -300,7 +300,7 @@
     box-sizing: border-box;
     padding: 8px 10px;
     border: 1px solid var(--theme-border-subtle, var(--theme-border));
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     background: var(--theme-surface);
     color: var(--theme-text-primary);
     font: inherit;

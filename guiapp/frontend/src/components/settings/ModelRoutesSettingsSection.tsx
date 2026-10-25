@@ -294,7 +294,7 @@ export const ModelRoutesSettingsSection = ({
                 </button>
             </div>
             {saveError ? (
-                <div style={{ color: 'var(--theme-danger, #c43d34)', fontSize: 13 }}>{saveError}</div>
+                <div style={{ color: 'var(--theme-danger, #dc1f25)', fontSize: 13 }}>{saveError}</div>
             ) : null}
 
             <div data-testid="coding-route-pref-default" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -422,7 +422,7 @@ export const ModelRoutesSettingsSection = ({
                                 : textForLang(lang, 'Refresh', '刷新', '重新整理')}
                         </button>
                         {sidecarStats ? (
-                            <span style={{ fontSize: 12, color: (Number(sidecarStats.usage_ratio) >= 0.85) ? 'var(--theme-danger, #c43d34)' : 'var(--theme-text-secondary)' }}>
+                            <span style={{ fontSize: 12, color: (Number(sidecarStats.usage_ratio) >= 0.85) ? 'var(--theme-danger, #dc1f25)' : 'var(--theme-text-secondary)' }}>
                                 {`${((Number(sidecarStats.total_bytes) || 0) / (1024 * 1024)).toFixed(1)} / ${((Number(sidecarStats.max_bytes) || 0) / (1024 * 1024)).toFixed(0)} MB`}
                                 {Number(sidecarStats.dir_count) > 0 ? ` · ${sidecarStats.dir_count} labels` : ''}
                                 {Number(sidecarStats.usage_ratio) > 0 ? ` · ${Math.round(Number(sidecarStats.usage_ratio) * 100)}%` : ''}
@@ -448,7 +448,7 @@ export const ModelRoutesSettingsSection = ({
                                     height: '100%',
                                     width: `${Math.min(100, Math.max(0, (Number(sidecarStats.usage_ratio) || 0) * 100))}%`,
                                     background: (Number(sidecarStats.usage_ratio) >= 0.85)
-                                        ? 'var(--theme-danger, #c43d34)'
+                                        ? 'var(--theme-danger, #dc1f25)'
                                         : 'var(--theme-primary)',
                                     transition: 'width 0.2s ease',
                                 }}

@@ -58,12 +58,12 @@ func (h *IMMessageHandler) clearPerUserSessionStateOpts(userID string, keepCodin
 	}
 
 	// Pending interaction state.
-	h.pendingAskUser.Delete(userID)
+	h.deletePendingAskUser(userID)
 	h.clearMCPServerWriteState(userID)
 	h.pendingRecordAudio.Delete(userID)
 	h.clearPendingPostRecording(userID)
 	if _, preservePendingReply := h.suppressPendingUserReplyUpdate.Load(userID); !preservePendingReply {
-		h.pendingUserReply.Delete(userID)
+		h.deletePendingUserReply(userID)
 	}
 	h.pendingCapabilityGap.Delete(userID)
 	h.forgetAgentGuidedSkill(userID)

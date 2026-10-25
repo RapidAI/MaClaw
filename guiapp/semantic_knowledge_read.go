@@ -92,12 +92,13 @@ func (h *IMMessageHandler) readTrustedKnowledge(principalID, query string) (stri
 	defer store.Close()
 	ctx, cancel := trustedKnowledgeReadContext(knowledgeSearchContext(h.app.knowledgeContext()))
 	defer cancel()
-	owner, lineage, includeEmpty := knowledgeOwnerScope(principalID)
+	owner, lineage, _ := knowledgeOwnerScope(principalID)
 	results, err := store.Search(ctx, knowledge.SearchOptions{
 		Query:             query,
 		OwnerID:           owner,
 		OwnerLineage:      lineage,
-		IncludeEmptyOwner: includeEmpty,
+		IncludeEmptyOwner: false,
+		UseMembership:     true,
 		Limit:             semanticTrustedKnowledgeReadLimit,
 	})
 	if err != nil {

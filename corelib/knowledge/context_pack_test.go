@@ -132,3 +132,27 @@ func TestBuildFTSQueryQuotesChinesePhraseAndSplitsSpacedTerms(t *testing.T) {
 		t.Fatalf("unexpected spaced Chinese query: %q", got)
 	}
 }
+
+func TestContextPackKeepsSemanticEvidenceBeyondPreviewWindow(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.SaveSource(ctx, Source{ID: "semantic-window-source", Kind: SourceKindText, URI: "memory://semantic-window", Status: StatusParsed}); err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Repeat("背景内容。", 150) + "语义答案位于一千字之后"
+	if err := store.SaveDocumentNode(ctx, DocumentNode{ID: "semantic-window-node", SourceID: "semantic-window-source", Type: "paragraph", Text: text}); err != nil {
+		t.Fatal(err)
+	}
+	results := []SearchResult{{ResultType: "node", NodeID: "semantic-window-node", Snippet: text}}
+	enriched, _, err := store.enrichContextPackNodes(ctx, "同义查询没有原文锚点", results)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(enriched[0].Snippet, "语义答案位于一千字之后") {
+		t.Fatalf("semantic evidence was truncated: %q", enriched[0].Snippet)
+	}
+}

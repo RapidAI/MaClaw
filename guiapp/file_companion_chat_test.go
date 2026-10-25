@@ -544,6 +544,114 @@ func trimForTest(text string) string {
 	return text
 }
 
+func TestFileCompanionProjectSessionKeepsTheSyncedChatWhenATurnSaves(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	app.ctx = ctx
+	app.seedFileCompanionPaths(nil)
+	sessionID := "fc_syncedchat"
+	userID := "file-companion:" + sessionID
+	oldChat := []FileCompanionMessage{{Role: "user", Text: "旧问题"}, {Role: "assistant", Text: "旧回答"}}
+	if err := app.writeFileCompanionProjectSession(sessionID, oldChat); err != nil {
+		t.Fatal(err)
+	}
+	app.imHandler.beginInFlightTurn(userID, "旧问题", &LoopContext{})
+	synced := []FileCompanionMessage{{Role: "user", Text: "分享者的新问题"}, {Role: "assistant", Text: "分享者的新回答", Reasoning: "先看更新"}}
+	if err := app.writeFileCompanionProjectSession(sessionID, synced); err != nil {
+		t.Fatal(err)
+	}
+	app.imHandler.saveConversationHistoryTimed(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "旧问题"},
+		{Role: "assistant", Content: "旧回答"},
+	}, nil)
+	history := app.fileCompanionHistory(sessionID)
+	if len(history) != 2 || history[0].Text != "分享者的新问题" || history[1].Text != "分享者的新回答" || history[1].Reasoning != "先看更新" {
+		t.Fatalf("synced chat = %#v", history)
+	}
+	side := filepath.Join(app.GetDataDir(), "file-companion", "sessions", sessionID+".json")
+	body, err := os.ReadFile(side)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "分享者的新回答") || strings.Contains(string(body), "旧回答") {
+		t.Fatalf("side file = %s", body)
+	}
+	app.imHandler.beginInFlightTurn(userID, "下一问", &LoopContext{})
+	app.imHandler.saveConversationHistoryTimed(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "分享者的新问题"},
+		{Role: "assistant", Content: "分享者的新回答"},
+		{Role: "user", Content: "下一问"},
+		{Role: "assistant", Content: "新的回答"},
+	}, nil)
+	history = app.fileCompanionHistory(sessionID)
+	if len(history) != 4 || history[3].Text != "新的回答" {
+		t.Fatalf("chat after a new turn = %#v", history)
+	}
+}
+
+func TestFileCompanionProjectSessionKeepsTheSyncedChatWhenHistoryWasLoadedFirst(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	app.ctx = ctx
+	app.seedFileCompanionPaths(nil)
+	sessionID := "fc_snapchat"
+	userID := "file-companion:" + sessionID
+	oldChat := []FileCompanionMessage{{Role: "user", Text: "旧问题"}, {Role: "assistant", Text: "旧回答"}}
+	if err := app.writeFileCompanionProjectSession(sessionID, oldChat); err != nil {
+		t.Fatal(err)
+	}
+	loaded, gen, ok := app.fileCompanionSnapshotChat(userID)
+	if !ok || len(loaded) != 2 || loaded[1].Content != "旧回答" {
+		t.Fatalf("snapshot ok=%v gen=%d entries=%#v", ok, gen, loaded)
+	}
+	synced := []FileCompanionMessage{{Role: "user", Text: "分享者的新问题"}, {Role: "assistant", Text: "分享者的新回答", Reasoning: "先看更新"}}
+	if err := app.writeFileCompanionProjectSession(sessionID, synced); err != nil {
+		t.Fatal(err)
+	}
+	app.imHandler.beginInFlightTurnAtGen(userID, "旧问题", &LoopContext{}, gen)
+	app.imHandler.saveConversationHistoryTimed(userID, loaded, nil)
+	history := app.fileCompanionHistory(sessionID)
+	if len(history) != 2 || history[0].Text != "分享者的新问题" || history[1].Text != "分享者的新回答" || history[1].Reasoning != "先看更新" {
+		t.Fatalf("synced chat = %#v", history)
+	}
+	side := filepath.Join(app.GetDataDir(), "file-companion", "sessions", sessionID+".json")
+	body, err := os.ReadFile(side)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "分享者的新回答") || strings.Contains(string(body), "旧回答") {
+		t.Fatalf("side file = %s", body)
+	}
+
+	next := []FileCompanionMessage{{Role: "user", Text: "又一次更新"}, {Role: "assistant", Text: "更新后的回答"}}
+	if err := app.writeFileCompanionProjectSession(sessionID, next); err != nil {
+		t.Fatal(err)
+	}
+	loaded, gen2, ok := app.fileCompanionSnapshotChat(userID)
+	if !ok || gen2 == gen || len(loaded) != 2 || loaded[1].Content != "更新后的回答" {
+		t.Fatalf("second snapshot ok=%v gen=%d then %d entries=%#v", ok, gen, gen2, loaded)
+	}
+	app.imHandler.beginInFlightTurnAtGen(userID, "下一问", &LoopContext{}, gen2)
+	extended := append(append([]agent.ConversationEntry{}, loaded...),
+		agent.ConversationEntry{Role: "user", Content: "下一问"},
+		agent.ConversationEntry{Role: "assistant", Content: "新的回答"},
+	)
+	app.imHandler.saveConversationHistoryTimed(userID, extended, nil)
+	history = app.fileCompanionHistory(sessionID)
+	if len(history) != 4 || history[0].Text != "又一次更新" || history[3].Text != "新的回答" {
+		t.Fatalf("chat after a matching snapshot = %#v", history)
+	}
+	body, err = os.ReadFile(side)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "新的回答") || strings.Contains(string(body), "旧回答") {
+		t.Fatalf("side file after the new turn = %s", body)
+	}
+}
+
 func TestFileCompanionIsClearCommand(t *testing.T) {
 	for _, text := range []string{"/clear", "  /CLEAR  ", "／clear", "/new", "/reset", "\uFEFF/clear"} {
 		if !fileCompanionIsClearCommand(text) {

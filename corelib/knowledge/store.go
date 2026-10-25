@@ -61,6 +61,9 @@ type SQLiteStore struct {
 	bgCancel                   context.CancelFunc
 	bgCancelGen                uint64 // increments per schedule; clear only matches gen
 	bgCancelRequested          bool   // set if CancelBackground raced ahead of schedule
+	// desktopOwnerStamp, when set, writes an empty owner_id as that user.
+	// It is stored before the store is shared. Empty means do not stamp.
+	desktopOwnerStamp atomic.Value // string
 }
 
 // sameKnowledgeEmbedder reports whether both embedders address one retrieval
@@ -348,7 +351,14 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("knowledge sqlite embedding metadata schema: %w", err)
 	}
-	return &SQLiteStore{db: db, dbPath: dbPath, vectorANN: newVectorANNStore()}, nil
+	store := &SQLiteStore{db: db, dbPath: dbPath, vectorANN: newVectorANNStore()}
+	// Owners and projects become memberships. Empty owners stay empty until a
+	// desktop open passes a stamp.
+	if err := store.EnsureMembershipBackfill(context.Background(), ""); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return store, nil
 }
 
 func (s *SQLiteStore) SetCardDistiller(distiller CardDistiller) {
@@ -883,6 +893,7 @@ func createTables(db *sql.DB) error {
 			FOREIGN KEY(source_id) REFERENCES knowledge_sources(id) ON DELETE SET NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_document_nodes_type ON document_nodes(type)`,
+		`CREATE INDEX IF NOT EXISTS idx_document_nodes_parent ON document_nodes(parent_id, offset, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_sources_scope ON knowledge_sources(tenant_id, owner_id, project_path, kind, status)`,
 		`CREATE INDEX IF NOT EXISTS idx_sources_hash ON knowledge_sources(content_hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_sources_batch ON knowledge_sources(batch_id, relative_path)`,
@@ -904,6 +915,12 @@ func createTables(db *sql.DB) error {
 			return fmt.Errorf("knowledge sqlite schema: %w", err)
 		}
 	}
+	if err := ensureMembershipTable(context.Background(), db); err != nil {
+		return err
+	}
+	if err := ensureKnowledgeOrganizationSchema(context.Background(), db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -911,14 +928,15 @@ func (s *SQLiteStore) SaveSource(ctx context.Context, source Source) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("knowledge store is nil")
 	}
-	source = normalizeSource(source)
-	_, err := s.db.ExecContext(ctx, insertSourceSQL,
-		source.ID, source.Kind, source.URI, source.CanonicalURI, source.Title, source.Author, source.SiteName,
-		formatTime(source.PublishedAt), formatTime(source.FetchedAt), source.ContentHash, source.OwnerID, source.TenantID,
-		source.ProjectPath, source.TopicHint, source.SourceTrust, source.BatchID, source.RelativePath, source.Status,
-		source.ErrorMessage, formatTime(source.CreatedAt), formatTime(source.UpdatedAt),
-	)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := s.insertSource(ctx, tx, source); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) SaveDocumentNode(ctx context.Context, node DocumentNode) error {
@@ -1138,28 +1156,15 @@ func (s *SQLiteStore) ListSources(ctx context.Context, opts ListSourcesOptions) 
 		where = append(where, "tenant_id = ?")
 		args = append(args, opts.TenantID)
 	}
-	where, args = appendOwnerPredicate(where, args, "owner_id", ownerScope{
-		ID:           opts.OwnerID,
-		Lineage:      opts.OwnerLineage,
-		IncludeEmpty: opts.IncludeEmptyOwner,
-	})
+	where, args = appendSourceOwnershipFilters(where, args, "", ownerScope{
+		ID:            opts.OwnerID,
+		Lineage:       opts.OwnerLineage,
+		IncludeEmpty:  opts.IncludeEmptyOwner,
+		UseMembership: opts.UseMembership,
+	}, opts.SearchScope, opts.ProjectPath)
 	if opts.BatchID != "" {
 		where = append(where, "batch_id = ?")
 		args = append(args, opts.BatchID)
-	}
-	switch opts.SearchScope {
-	case SaveScopePersonal, SaveScopeLocalOnly, "local":
-		where = append(where, "COALESCE(project_path, '') = ''")
-	case SaveScopeProject:
-		if opts.ProjectPath != "" {
-			where = append(where, "project_path = ?")
-			args = append(args, opts.ProjectPath)
-		}
-	default:
-		if opts.ProjectPath != "" {
-			where = append(where, "project_path = ?")
-			args = append(args, opts.ProjectPath)
-		}
 	}
 	sourceIDs := normalizeSearchIDs(append(append([]string{}, opts.SourceIDs...), opts.SourceID))
 	if len(sourceIDs) == 1 {
@@ -1797,7 +1802,8 @@ func (s *SQLiteStore) ListNodesBySource(ctx context.Context, sourceID string, li
 	rows, err := s.db.QueryContext(ctx, `SELECT id, source_id, COALESCE(parent_id, ''), type, COALESCE(title, ''), COALESCE(text, ''),
 		level, page, COALESCE(sheet_name, ''), COALESCE(row_range, ''), COALESCE(col_range, ''), COALESCE(xpath, ''),
 		offset, COALESCE(metadata_json, '{}'), token_count
-		FROM document_nodes WHERE source_id = ? ORDER BY offset ASC, level ASC, id ASC LIMIT ?`, sourceID, limit)
+		FROM document_nodes WHERE source_id = ? ORDER BY offset ASC, level ASC,
+		CAST(CASE WHEN json_valid(metadata_json) THEN COALESCE(json_extract(metadata_json, '$.chunk_index'), '0') ELSE '0' END AS INTEGER) ASC, id ASC LIMIT ?`, sourceID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -2055,9 +2061,9 @@ func resolveFragmentDeleteTarget(result SearchResult) (kind, id string, err erro
 		}
 		return "table_row", rowID, nil
 	case "fact":
-		if rowID != "" {
-			return "table_row", rowID, nil
-		}
+		// A fact id deletes that claim. A row_id on the same payload is the
+		// body it describes, and the search row that shows the body uses
+		// result_type table_row.
 		if factID == "" {
 			return "", "", fmt.Errorf("fact id is required")
 		}
@@ -2824,6 +2830,9 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 		return nil, err
 	}
 	opts.Retrieval = retrieval
+	if err := validateSearchResultTypes(opts.ResultTypes); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(opts.Query) == "" {
 		setRerankNote(ctx, "rerank_off")
 		return []SearchResult{}, nil
@@ -2853,12 +2862,12 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	}
 	if runLexical {
 		candidateLimit := knowledgeScanLimit(opts.Limit, wantWide)
-		// LIKE keeps the historical final limit until the gate actually widens.
-		// Opening it earlier would change a strong hit that never calls the scorer.
-		likeLimit := opts.Limit
-		if wantWide && candidateLimit > likeLimit {
-			likeLimit = candidateLimit
+		if containsNoSpaceScriptRunes(opts.Query) && candidateLimit < knowledgeRerankPool {
+			candidateLimit = knowledgeRerankPool
 		}
+		// LIKE must score a wider candidate pool before the final limit; page order
+		// is not a relevance order and can otherwise discard later high-quality hits.
+		likeLimit := candidateLimit
 		var lexErr error
 		results, lexErr = s.collectLexicalResults(ctx, opts, query, candidateLimit, likeLimit)
 		if lexErr != nil {
@@ -2898,10 +2907,9 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	// vectors even when the lexical score is already strong.
 	if emb := s.currentEmbedder(); emb != nil && !embedding.IsNoop(emb) {
 		decision := knowledgeRetrievalPlan(opts, results, true)
-		searchLimit := opts.Limit
+		searchLimit := knowledgeScanLimit(opts.Limit, wantWide)
 		if wantWide {
 			decision = knowledgeRerankRetrieval(opts, results, true)
-			searchLimit = knowledgeRerankPool
 		}
 		if decision.runEmbedding {
 			searchOpts := opts
@@ -2909,7 +2917,7 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 			embResults, embErr := s.searchByEmbedding(ctx, searchOpts)
 			if embErr == nil && len(embResults) > 0 {
 				if decision.fuse && runLexical {
-					results = rrfFuse(results, embResults, searchLimit)
+					results = rrfFuse(results, embResults, len(results)+len(embResults))
 				} else {
 					results = embResults
 				}
@@ -2921,8 +2929,14 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 			}
 		}
 	}
+	if len(normalizeSearchResultTypes(opts.ResultTypes)) == 0 {
+		results = collapseSearchBodies(results)
+	}
+	if err := s.hydrateCollapsedBodyText(ctx, opts.Query, results); err != nil {
+		return nil, err
+	}
 	if wantWide && !wideRetrievalOrder && len(results) > knowledgeRerankPool {
-		sortSearchResults(results)
+		sortSearchResultsByBodyScore(results)
 		results = results[:knowledgeRerankPool]
 	}
 
@@ -2940,10 +2954,9 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	results = retainEntityMentionEvidence(opts.Query, results)
 
 	// A rerank miss on a wide fused or vector list keeps that retrieval order.
-	// A short list, a lexical-only list, and a nil reranker still use the
-	// historical type-and-score sort.
+	// A short list, a lexical-only list, and a nil reranker sort by body score.
 	if !appliedRerank && !(wideRetrievalOrder && len(results) > opts.Limit) {
-		sortSearchResults(results)
+		sortSearchResultsByBodyScore(results)
 	}
 	if len(results) > opts.Limit {
 		results = results[:opts.Limit]
@@ -2953,6 +2966,9 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 		return nil, err
 	}
 	if err := s.hydrateSearchResultSourceLabels(ctx, results); err != nil {
+		return nil, err
+	}
+	if err := s.hydrateSearchResultLibraryIDs(ctx, results); err != nil {
 		return nil, err
 	}
 	return results, nil
@@ -3203,6 +3219,11 @@ func (s *SQLiteStore) SearchFacets(ctx context.Context, opts SearchOptions) (Sea
 	result.Sources = searchFacetBuckets(sources, 20)
 	result.Entities = searchFacetBuckets(entities, 20)
 	result.Predicates = searchFacetBuckets(predicates, 20)
+	collections, err := s.collectionFacetBucketsFromHits(ctx, opts, results)
+	if err != nil {
+		return SearchFacetsResult{}, err
+	}
+	result.Collections = collections
 	return result, nil
 }
 
@@ -3256,6 +3277,11 @@ func (s *SQLiteStore) SearchFacetsBrowse(ctx context.Context, opts SearchOptions
 	if err := s.browseSourceLabelFacets(ctx, sourceWhere, sourceArgs, labels); err != nil {
 		return SearchFacetsResult{}, err
 	}
+	collections, err := s.browseSourceCollectionFacets(ctx, collectionFacetOwner(opts), sourceWhere, sourceArgs)
+	if err != nil {
+		return SearchFacetsResult{}, err
+	}
+	result.Collections = collections
 	sourceListArgs := append([]interface{}{}, sourceArgs...)
 	sourceListArgs = append(sourceListArgs, opts.Limit)
 	sourceRows, err := s.db.QueryContext(ctx, `SELECT s.id, s.kind, s.uri, s.canonical_uri, s.title, s.site_name, s.relative_path
@@ -3680,7 +3706,7 @@ func (s *SQLiteStore) FactIndex(ctx context.Context, opts FactIndexOptions) (Fac
 			SELECT f.id AS fact_id, f.card_id, f.source_id, f.subject, f.predicate, f.object
 			FROM kb_facts f
 			JOIN kb_cards c ON c.id = f.card_id
-			JOIN kb_sources s ON s.id = f.source_id
+			JOIN knowledge_sources s ON s.id = f.source_id
 			WHERE ` + strings.Join(kbWhere, " AND ") + `
 		), kb_fact_values AS (` + strings.ReplaceAll(valuesSQL, "filtered_facts", "kb_filtered_facts") + `),
 		combined_values AS (
@@ -4205,14 +4231,6 @@ func scoreSearchResult(result SearchResult, opts SearchOptions, base float64) fl
 	if score < 0 {
 		score = 0
 	}
-	switch result.ResultType {
-	case "card":
-		score += 0.30
-	case "fact":
-		score += 0.18
-	case "node":
-		score += 0.08
-	}
 	if result.Source.SourceTrust > 0 {
 		score += result.Source.SourceTrust * 0.12
 	}
@@ -4387,22 +4405,7 @@ func appendSearchFilters(where []string, args []interface{}, sourceAlias string,
 		where = append(where, prefix+"tenant_id = ?")
 		args = append(args, tenantID)
 	}
-	where, args = appendOwnerPredicate(where, args, prefix+"owner_id", ownerScopeFromSearch(opts))
-	scope := strings.ToLower(strings.TrimSpace(opts.SearchScope))
-	switch scope {
-	case SaveScopePersonal, SaveScopeLocalOnly, "local":
-		where = append(where, "COALESCE("+prefix+"project_path, '') = ''")
-	case SaveScopeProject:
-		if projectPath != "" {
-			where = append(where, prefix+"project_path = ?")
-			args = append(args, projectPath)
-		}
-	default:
-		if projectPath != "" {
-			where = append(where, prefix+"project_path = ?")
-			args = append(args, projectPath)
-		}
-	}
+	where, args = appendSourceOwnershipFilters(where, args, sourceAlias, ownerScopeFromSearch(opts), opts.SearchScope, projectPath)
 	kinds := normalizeSearchStrings(opts.SourceKinds)
 	if len(kinds) == 1 {
 		where = append(where, prefix+"kind = ?")
@@ -4434,6 +4437,10 @@ func appendSearchFilters(where []string, args []interface{}, sourceAlias string,
 		where = append(where, "EXISTS (SELECT 1 FROM knowledge_source_labels sl WHERE sl.source_id = "+sourceIDExpr+" AND sl.label = ?)")
 		args = append(args, label)
 	}
+	for _, collectionID := range normalizeSearchIDs(opts.CollectionIDs) {
+		where = append(where, "EXISTS (SELECT 1 FROM knowledge_collection_members kcm WHERE kcm.source_id = "+sourceIDExpr+" AND kcm.collection_id = ?)")
+		args = append(args, collectionID)
+	}
 	where, args = appendSourceDomainFilter(where, args, sourceAlias, opts.Domain)
 	if !opts.IncludeDisabled {
 		where = append(where, prefix+"status <> ?")
@@ -4464,6 +4471,18 @@ func appendSourceDomainFilter(where []string, args []interface{}, sourceAlias st
 		"http://%."+domain+"/%", "https://%."+domain+"/%",
 	)
 	return where, args
+}
+
+func validateSearchResultTypes(input []string) error {
+	for _, value := range input {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "", "card", "cards", "knowledge_card", "fact", "facts", "knowledge_fact",
+			"node", "nodes", "document_node", "source_node", "table_row", "table_rows", "row", "rows", "spreadsheet_row":
+		default:
+			return fmt.Errorf("unknown knowledge result type %q", value)
+		}
+	}
+	return nil
 }
 
 func normalizeSearchResultTypes(input []string) map[string]struct{} {
@@ -4637,13 +4656,14 @@ func (s *SQLiteStore) KnownContentHashes(ctx context.Context, req DirectoryImpor
 		where = append(where, "tenant_id = ?")
 		args = append(args, req.TenantID)
 	}
-	if req.OwnerID != "" {
-		where = append(where, "owner_id = ?")
-		args = append(args, req.OwnerID)
+	ownerID := s.ownerForExistingSourceLookup(req.OwnerID)
+	if clause, ownerArgs := contentHashOwnerFilter(ownerID); clause != "" {
+		where = append(where, clause)
+		args = append(args, ownerArgs...)
 	}
-	if req.ProjectPath != "" && req.SaveScope == SaveScopeProject {
-		where = append(where, "project_path = ?")
-		args = append(args, req.ProjectPath)
+	if clause, projectArgs := contentHashProjectFilter(ownerID, req.ProjectPath, req.SaveScope); clause != "" {
+		where = append(where, clause)
+		args = append(args, projectArgs...)
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT content_hash FROM knowledge_sources WHERE `+strings.Join(where, " AND "), args...)
 	if err != nil {
@@ -4897,6 +4917,9 @@ func (s *SQLiteStore) ScanFiles(ctx context.Context, req DirectoryImportRequest,
 
 func (s *SQLiteStore) ImportDirectory(ctx context.Context, req DirectoryImportRequest) (DirectoryImportResult, error) {
 	req = NormalizeDirectoryImportRequest(req)
+	if err := rejectSaveScopeSession(req.SaveScope); err != nil {
+		return DirectoryImportResult{}, err
+	}
 	// Targeted DB hash lookup after scanning — do not load all content hashes.
 	result, items, err := ScanDirectoryProgress(ctx, req, nil, s.currentScanProgressCallback())
 	if err != nil {
@@ -4911,6 +4934,9 @@ func (s *SQLiteStore) ImportDirectory(ctx context.Context, req DirectoryImportRe
 
 func (s *SQLiteStore) ImportFiles(ctx context.Context, req DirectoryImportRequest, filePaths []string) (DirectoryImportResult, error) {
 	req = NormalizeDirectoryImportRequest(req)
+	if err := rejectSaveScopeSession(req.SaveScope); err != nil {
+		return DirectoryImportResult{}, err
+	}
 	result, items, err := ScanFilesProgress(ctx, req, filePaths, nil, s.currentScanProgressCallback())
 	if err != nil {
 		return result, err
@@ -4941,8 +4967,132 @@ func (s *SQLiteStore) markExistingContentDuplicates(ctx context.Context, req Dir
 	if len(existing) == 0 {
 		return result, items, nil
 	}
-	result, items = applyExistingHashSkips(result, items, existing)
+	if err := s.adoptUnownedHashSources(ctx, s.ownerForExistingSourceLookup(req.OwnerID), existing); err != nil {
+		return result, items, err
+	}
+	blocked, localUpdate, err := s.pathsBlockingHashSkip(ctx, req, items, existing)
+	if err != nil {
+		return result, items, err
+	}
+	if err := s.addCrossProjectHashMembership(ctx, s.ownerForExistingSourceLookup(req.OwnerID), req, hashesToLink(items, existing, blocked, localUpdate)); err != nil {
+		return result, items, err
+	}
+	result, items = requeueBlockedHashSkips(result, items, blocked)
+	result, items = applyExistingHashSkips(result, items, existing, blocked, localUpdate)
 	return result, items, nil
+}
+
+// pathsBlockingHashSkip reports files this project already stores at the same
+// path with different bytes. A project membership counts as well as the
+// project_path column. localUpdate maps an incoming hash to that local source
+// id. A same-batch copy of the new bytes skips onto this id, and the hash is
+// not attached to another project's source.
+func (s *SQLiteStore) pathsBlockingHashSkip(ctx context.Context, req DirectoryImportRequest, items []ImportItem, existing map[string]string) (map[string]struct{}, map[string]string, error) {
+	blocked := map[string]struct{}{}
+	localUpdate := map[string]string{}
+	if len(existing) == 0 {
+		return blocked, localUpdate, nil
+	}
+	ownerSQL, ownerArgs := sourceOwnerMatchSQL(s.ownerForExistingSourceLookup(req.OwnerID))
+	byKind := map[string][]ImportItem{}
+	for _, item := range items {
+		if strings.TrimSpace(item.FilePath) == "" || item.FileHash == "" {
+			continue
+		}
+		if item.Status != ItemStatusQueued && item.Status != ItemStatusSkippedDuplicate {
+			continue
+		}
+		if strings.TrimSpace(existing[item.FileHash]) == "" {
+			continue
+		}
+		byKind[item.Kind] = append(byKind[item.Kind], item)
+	}
+	const batch = 80
+	projectPath := strings.TrimSpace(req.ProjectPath)
+	projectSQL, projectArgs := projectPathMatchSQL(projectPath)
+	type storedPathHash struct {
+		id, hash, project string
+	}
+	for kind, group := range byKind {
+		for start := 0; start < len(group); start += batch {
+			end := start + batch
+			if end > len(group) {
+				end = len(group)
+			}
+			chunk := group[start:end]
+			args := make([]any, 0, len(ownerArgs)+len(projectArgs)+len(chunk)+2)
+			args = append(args, kind)
+			args = append(args, ownerArgs...)
+			args = append(args, req.TenantID)
+			args = append(args, projectArgs...)
+			for _, item := range chunk {
+				args = append(args, item.FilePath)
+			}
+			rows, err := s.db.QueryContext(ctx, `SELECT id, uri, COALESCE(content_hash, ''), COALESCE(project_path, '') FROM knowledge_sources
+				WHERE kind = ? AND `+ownerSQL+` AND COALESCE(tenant_id, '') = ? AND `+projectSQL+`
+				AND uri IN (`+placeholders(len(chunk))+`)`, args...)
+			if err != nil {
+				return nil, nil, err
+			}
+			found := map[string]storedPathHash{}
+			for rows.Next() {
+				var id, uri, hash, project string
+				if err := rows.Scan(&id, &uri, &hash, &project); err != nil {
+					_ = rows.Close()
+					return nil, nil, err
+				}
+				hit := storedPathHash{id: strings.TrimSpace(id), hash: strings.TrimSpace(hash), project: strings.TrimSpace(project)}
+				if hit.id == "" {
+					continue
+				}
+				current, ok := found[uri]
+				if !ok || projectMatchRank(hit.project, projectPath) < projectMatchRank(current.project, projectPath) {
+					found[uri] = hit
+				}
+			}
+			if err := rows.Err(); err != nil {
+				_ = rows.Close()
+				return nil, nil, err
+			}
+			if err := rows.Close(); err != nil {
+				return nil, nil, err
+			}
+			for _, item := range chunk {
+				hit, ok := found[item.FilePath]
+				if !ok || hit.hash == item.FileHash {
+					continue
+				}
+				blocked[item.FilePath] = struct{}{}
+				if localUpdate[item.FileHash] == "" {
+					localUpdate[item.FileHash] = hit.id
+				}
+			}
+		}
+	}
+	return blocked, localUpdate, nil
+}
+
+func hashesToLink(items []ImportItem, existing map[string]string, blocked map[string]struct{}, localUpdate map[string]string) map[string]string {
+	link := make(map[string]string)
+	for _, item := range items {
+		if _, ok := blocked[item.FilePath]; ok {
+			continue
+		}
+		if item.Status != ItemStatusQueued && item.Status != ItemStatusSkippedDuplicate {
+			continue
+		}
+		// This batch will update a local source to this hash. Do not also
+		// attach another project's copy.
+		if strings.TrimSpace(localUpdate[item.FileHash]) != "" {
+			continue
+		}
+		id := strings.TrimSpace(existing[item.FileHash])
+		if id == "" {
+			continue
+		}
+		link[item.FileHash] = id
+	}
+	return link
 }
 
 // lastItemProgressFields maps a finished ImportItem into frontend log fields.
@@ -5247,7 +5397,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 			}
 			replacementPending = true
 			replacementBound = true
-			if err := insertSource(ctx, tx, source); err != nil {
+			if err := s.insertSource(ctx, tx, source); err != nil {
 				return err
 			}
 			return addSourceLabelsTx(ctx, tx, source.ID, ingestLabelsForSource(source, req.Labels, req.AutoLabels))
@@ -5256,6 +5406,9 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 			if err := release(true); err != nil {
 				return source, err
 			}
+			// Cards copy owner_id from the source. Stamp first so that copy matches
+			// the source row this import will write.
+			source = s.applyDesktopOwnerStamp(source)
 			prepared, prepErr := s.prepareDistilledCards(ctx, source, docNodes, req.DistillMode)
 			if prepErr != nil {
 				return source, prepErr
@@ -5269,7 +5422,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 			return s.writeDistilledCards(ctx, tx, source, prepared)
 		}
 		emitStepProgress(item, "preparing", 1, 5)
-		if existingSource, ok, err := findExistingSourceForImport(ctx, tx, req, item); err != nil {
+		if existingSource, ok, err := findExistingSourceForImport(ctx, tx, req, item, s.ownerForExistingSourceLookup(req.OwnerID)); err != nil {
 			return result, err
 		} else if ok {
 			source.ID = existingSource.ID
@@ -5280,6 +5433,8 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 			if source.SourceTrust == 0 {
 				source.SourceTrust = existingSource.SourceTrust
 			}
+			source = preserveStoredOwner(source, existingSource)
+			source = preserveStoredProjectPath(source, existingSource)
 			// The lookup above is a read. Commit it and drop the connection
 			// before parse and OCR. The replacement delete runs later, in the
 			// transaction that inserts the new rows.
@@ -5392,7 +5547,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 				preParsedOffice.close()
 				return result, err
 			}
-			if err := insertSource(ctx, tx, source); err != nil {
+			if err := s.insertSource(ctx, tx, source); err != nil {
 				preParsedOffice.close()
 				item.Status = ItemStatusFailed
 				item.ErrorMessage = err.Error()
@@ -5532,14 +5687,14 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 				}
 				if IsUnsupportedParserError(parseErr) {
 					source.Status = StatusPending
-					if err := insertSource(ctx, tx, source); err != nil {
+					if err := s.insertSource(ctx, tx, source); err != nil {
 						return result, err
 					}
 				} else {
 					persistedParseErr := sanitizeKnowledgeParseError(item.Kind, parseErr)
 					source.Status = StatusFailed
 					source.ErrorMessage = persistedParseErr.Error()
-					if err := insertSource(ctx, tx, source); err != nil {
+					if err := s.insertSource(ctx, tx, source); err != nil {
 						return result, err
 					}
 					item.Status = ItemStatusFailed
@@ -5593,7 +5748,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 						if !replaceExisting {
 							source.Status = StatusFailed
 							source.ErrorMessage = persistedParseErr.Error()
-							if saveErr := insertSource(ctx, tx, source); saveErr != nil {
+							if saveErr := s.insertSource(ctx, tx, source); saveErr != nil {
 								return result, saveErr
 							}
 						}
@@ -5618,7 +5773,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 					return result, err
 				}
 				if !replaceExisting && verifiedContentHash != "" {
-					if err := insertSource(ctx, tx, source); err != nil {
+					if err := s.insertSource(ctx, tx, source); err != nil {
 						officeImportParse.close()
 						return result, err
 					}
@@ -5644,7 +5799,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 					} else {
 						source.Status = StatusFailed
 						source.ErrorMessage = nodeErr.Error()
-						if saveErr := insertSource(ctx, tx, source); saveErr != nil {
+						if saveErr := s.insertSource(ctx, tx, source); saveErr != nil {
 							return result, saveErr
 						}
 					}
@@ -5696,7 +5851,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 						} else {
 							source.Status = StatusFailed
 							source.ErrorMessage = persistedParseErr.Error()
-							if saveErr := insertSource(ctx, tx, source); saveErr != nil {
+							if saveErr := s.insertSource(ctx, tx, source); saveErr != nil {
 								return result, saveErr
 							}
 						}
@@ -5729,7 +5884,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 					}
 					source.Status = StatusFailed
 					source.ErrorMessage = err.Error()
-					if saveErr := insertSource(ctx, tx, source); saveErr != nil {
+					if saveErr := s.insertSource(ctx, tx, source); saveErr != nil {
 						return result, saveErr
 					}
 					item.Status = ItemStatusFailed
@@ -5770,7 +5925,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 							} else {
 								source.Status = StatusFailed
 								source.ErrorMessage = nodeErr.Error()
-								if saveErr := insertSource(ctx, tx, source); saveErr != nil {
+								if saveErr := s.insertSource(ctx, tx, source); saveErr != nil {
 									return result, saveErr
 								}
 							}
@@ -5797,7 +5952,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 							}
 							source.Status = StatusFailed
 							source.ErrorMessage = err.Error()
-							if saveErr := insertSource(ctx, tx, source); saveErr != nil {
+							if saveErr := s.insertSource(ctx, tx, source); saveErr != nil {
 								return result, saveErr
 							}
 							item.Status = ItemStatusFailed
@@ -5825,7 +5980,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 			return result, err
 		}
 		if !replaceExisting && verifiedContentHash != "" {
-			if err := insertSource(ctx, tx, source); err != nil {
+			if err := s.insertSource(ctx, tx, source); err != nil {
 				return result, err
 			}
 		}
@@ -6002,14 +6157,26 @@ const insertCardSQL = `INSERT INTO knowledge_cards
 		updated_at = excluded.updated_at`
 
 func insertSource(ctx context.Context, tx *sql.Tx, source Source) error {
+	return writeInsertedSource(ctx, tx, nil, source)
+}
+
+func (s *SQLiteStore) insertSource(ctx context.Context, tx *sql.Tx, source Source) error {
+	return writeInsertedSource(ctx, tx, s, source)
+}
+
+func writeInsertedSource(ctx context.Context, tx *sql.Tx, store *SQLiteStore, source Source) error {
 	source = normalizeSource(source)
+	source = store.applyDesktopOwnerStamp(source)
 	_, err := tx.ExecContext(ctx, insertSourceSQL,
 		source.ID, source.Kind, source.URI, source.CanonicalURI, source.Title, source.Author, source.SiteName,
 		formatTime(source.PublishedAt), formatTime(source.FetchedAt), source.ContentHash, source.OwnerID, source.TenantID,
 		source.ProjectPath, source.TopicHint, source.SourceTrust, source.BatchID, source.RelativePath, source.Status,
 		source.ErrorMessage, formatTime(source.CreatedAt), formatTime(source.UpdatedAt),
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	return assignSourceMembershipsTx(ctx, tx, source)
 }
 
 func insertDocumentNode(ctx context.Context, tx *sql.Tx, node DocumentNode) error {
@@ -6153,17 +6320,25 @@ func deleteSourceCardsAndFacts(ctx context.Context, tx *sql.Tx, sourceID string)
 	return nil
 }
 
-func findExistingSourceForImport(ctx context.Context, tx *sql.Tx, req DirectoryImportRequest, item ImportItem) (Source, bool, error) {
+func findExistingSourceForImport(ctx context.Context, tx *sql.Tx, req DirectoryImportRequest, item ImportItem, ownerID string) (Source, bool, error) {
 	path := strings.TrimSpace(item.FilePath)
 	if path == "" {
 		return Source{}, false, nil
 	}
+	ownerSQL, ownerArgs := sourceOwnerMatchSQL(ownerID)
+	projectPath := strings.TrimSpace(req.ProjectPath)
+	projectSQL, projectArgs := projectPathMatchSQL(projectPath)
 	q := `SELECT id, kind, uri, canonical_uri, title, author, site_name, published_at, fetched_at, content_hash,
 		owner_id, tenant_id, project_path, topic_hint, source_trust, batch_id, relative_path, status, error_message, created_at, updated_at
 		FROM knowledge_sources
-		WHERE uri = ? AND kind = ? AND COALESCE(owner_id, '') = ? AND COALESCE(tenant_id, '') = ? AND COALESCE(project_path, '') = ?
-		ORDER BY updated_at DESC LIMIT 1`
-	source, err := scanSource(tx.QueryRowContext(ctx, q, path, item.Kind, req.OwnerID, req.TenantID, req.ProjectPath))
+		WHERE uri = ? AND kind = ? AND ` + ownerSQL + ` AND COALESCE(tenant_id, '') = ? AND ` + projectSQL + `
+		ORDER BY CASE WHEN COALESCE(project_path, '') = ? THEN 0 ELSE 1 END, ` + sourceOwnerMatchOrder + ` LIMIT 1`
+	args := []any{path, item.Kind}
+	args = append(args, ownerArgs...)
+	args = append(args, req.TenantID)
+	args = append(args, projectArgs...)
+	args = append(args, projectPath, ownerID)
+	source, err := scanSource(tx.QueryRowContext(ctx, q, args...))
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return Source{}, false, nil
@@ -6738,6 +6913,7 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 	}
 
 	results := make([]SearchResult, 0, limit)
+	resultTypes := normalizeSearchResultTypes(opts.ResultTypes)
 
 	// Build OR-based LIKE conditions for given terms and columns.
 	// Entity anchors are ANDed: every span must occur, while each span may
@@ -6761,7 +6937,7 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 	}
 
 	// Search cards by claim/title LIKE — use multi-char terms only for precision
-	{
+	if wantsSearchType(resultTypes, "card") {
 		likeExpr, likeArgs := buildLikeWhereWith([]string{"c.claim", "c.title", "c.summary"}, multiCharTerms)
 		cardWhere := []string{likeExpr, "NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)"}
 		cardArgs := append([]interface{}{}, likeArgs...)
@@ -6772,7 +6948,7 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 		s.owner_id, s.tenant_id, s.project_path, s.topic_hint, s.source_trust, s.batch_id, s.relative_path, s.status, s.error_message, s.created_at, s.updated_at
 		FROM knowledge_cards c
 		JOIN knowledge_sources s ON s.id = c.source_id
-		WHERE ` + strings.Join(cardWhere, " AND ") + ` ORDER BY c.importance DESC, c.updated_at DESC LIMIT ?`
+		WHERE ` + strings.Join(cardWhere, " AND ") + ` ORDER BY c.importance DESC, c.updated_at DESC, c.id ASC LIMIT ?`
 		rows, err := s.db.QueryContext(ctx, cardQuery, cardArgs...)
 		if err != nil {
 			return nil, err
@@ -6806,19 +6982,19 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 	}
 
 	// Search facts by subject/object LIKE — use multi-char terms only for precision
-	if len(results) < limit {
+	if wantsSearchType(resultTypes, "fact") {
 		likeExpr, likeArgs := buildLikeWhereWith([]string{"f.subject", "f.object"}, multiCharTerms)
 		factWhere := []string{likeExpr, "NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)"}
 		factArgs := append([]interface{}{}, likeArgs...)
 		factWhere, factArgs = appendSearchFilters(factWhere, factArgs, "s", opts)
-		factArgs = append(factArgs, limit-len(results))
+		factArgs = append(factArgs, limit)
 		factQuery := `SELECT f.id, f.card_id, f.subject, f.predicate, f.object, c.title, COALESCE(c.node_id, ''), c.claim, c.summary,
 		s.id, s.kind, s.uri, s.canonical_uri, s.title, s.author, s.site_name, s.published_at, s.fetched_at, s.content_hash,
 		s.owner_id, s.tenant_id, s.project_path, s.topic_hint, s.source_trust, s.batch_id, s.relative_path, s.status, s.error_message, s.created_at, s.updated_at
 		FROM knowledge_facts f
 		JOIN knowledge_cards c ON c.id = f.card_id
 		JOIN knowledge_sources s ON s.id = f.source_id
-		WHERE ` + strings.Join(factWhere, " AND ") + ` ORDER BY f.confidence DESC LIMIT ?`
+		WHERE ` + strings.Join(factWhere, " AND ") + ` ORDER BY f.confidence DESC, f.id ASC LIMIT ?`
 		rows, err := s.db.QueryContext(ctx, factQuery, factArgs...)
 		if err != nil {
 			return nil, err
@@ -6856,7 +7032,7 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 	// maximum recall against the original document full text. This is the
 	// root-cause fix for distillation loss: LIKE '%书%' matches "书籍" in the
 	// original text even when FTS and card LIKE cannot.
-	{
+	if wantsSearchType(resultTypes, "node") {
 		nodeLimit := limit
 		if nodeLimit < 3 {
 			nodeLimit = 3
@@ -6871,7 +7047,7 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 		s.owner_id, s.tenant_id, s.project_path, s.topic_hint, s.source_trust, s.batch_id, s.relative_path, s.status, s.error_message, s.created_at, s.updated_at
 		FROM document_nodes n
 		JOIN knowledge_sources s ON s.id = n.source_id
-		WHERE ` + strings.Join(nodeWhere, " AND ") + ` ORDER BY n.page ASC LIMIT ?`
+		WHERE ` + strings.Join(nodeWhere, " AND ") + ` ORDER BY n.page ASC, n.id ASC LIMIT ?`
 		rows, err := s.db.QueryContext(ctx, nodeQuery, nodeArgs...)
 		if err != nil {
 			return nil, err

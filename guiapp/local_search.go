@@ -186,13 +186,15 @@ func localSearchKnowledgeRoute(retrieval, query string) (string, error) {
 	return retrieval, nil
 }
 
-func localSearchEnterpriseLabel(text, sourceTitle string) string {
+func localSearchEnterpriseLabel(text, sourceTitle, libraryID string) string {
 	body := strings.TrimSpace(text)
-	source := strings.TrimSpace(sourceTitle)
-	if body == "" || !strings.HasPrefix(source, localSearchEnterpriseMark) || strings.HasPrefix(body, localSearchEnterpriseMark) {
+	if body == "" || strings.HasPrefix(body, localSearchEnterpriseMark) {
 		return body
 	}
-	return localSearchEnterpriseMark + " " + body
+	if strings.TrimSpace(libraryID) != "" || strings.HasPrefix(strings.TrimSpace(sourceTitle), localSearchEnterpriseMark) {
+		return localSearchEnterpriseMark + " " + body
+	}
+	return body
 }
 
 func localSearchFactText(result knowledge.SearchResult) string {
@@ -214,7 +216,7 @@ func localSearchKnowledgeTitle(result knowledge.SearchResult) string {
 	if result.ResultType == "fact" {
 		for _, value := range []string{result.CardTitle, result.NodeTitle, result.Source.Title} {
 			if value = strings.TrimSpace(value); value != "" {
-				return localSearchEnterpriseLabel(value, result.Source.Title)
+				return localSearchEnterpriseLabel(value, result.Source.Title, result.LibraryID)
 			}
 		}
 		if fact := localSearchFactText(result); fact != "" {
@@ -231,7 +233,7 @@ func localSearchKnowledgeTitle(result knowledge.SearchResult) string {
 		result.Source.URI,
 	} {
 		if value = strings.TrimSpace(value); value != "" {
-			return localSearchEnterpriseLabel(value, result.Source.Title)
+			return localSearchEnterpriseLabel(value, result.Source.Title, result.LibraryID)
 		}
 	}
 	return ""

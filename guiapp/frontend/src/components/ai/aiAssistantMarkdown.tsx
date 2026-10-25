@@ -102,7 +102,7 @@ function renderInlineMarkGlyph(visual: InlineMarkVisual, key: React.Key): React.
     if (visual.kind === "star") {
         return (
             <span key={key} data-testid="inline-star-glyph" style={inlineGlyphWrapStyle} aria-hidden>
-                <IconStar size={13} color="var(--theme-warning, #d97706)" filled />
+                <IconStar size={13} color="var(--theme-warning, #aa5d05)" filled />
             </span>
         );
     }

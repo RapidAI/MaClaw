@@ -47,6 +47,8 @@ func TestRotatingFileAppendsExisting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Release the handle: an open file keeps a Windows TempDir undeletable.
+	t.Cleanup(func() { _ = w.Close() })
 	if _, err := w.Write([]byte("more\n")); err != nil {
 		t.Fatal(err)
 	}
@@ -65,6 +67,7 @@ func TestRotatingFileHonorsMaxFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = w.Close() })
 	payload := []byte("0123456789abcdef0123456789abcd\n") // 33 bytes, over the limit
 	for i := 0; i < 4; i++ {
 		if _, err := w.Write(payload); err != nil {
@@ -90,9 +93,13 @@ func TestConfigureProcessLogWritesFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "logs", "desktopd.log")
 	t.Setenv("DESKTOPD_LOG_FILE", path)
-	t.Setenv("DESKTOPD_LOG_MAX_BYTES", "200")
+	// The budget must absorb the startup line: a Windows AppData temp path is
+	// far longer than a Linux one, and a tiny budget rotates the startup line
+	// out of the active file before the test reads it.
+	t.Setenv("DESKTOPD_LOG_MAX_BYTES", "8192")
 	t.Setenv("DESKTOPD_LOG_MAX_FILES", "2")
 	t.Setenv("DESKTOPD_LOG_STDERR", "0")
+	t.Cleanup(CloseProcessLog)
 	prev := log.Writer()
 	t.Cleanup(func() { log.SetOutput(prev) })
 	if err := ConfigureProcessLog(); err != nil {

@@ -7,6 +7,59 @@ import (
 	"testing"
 )
 
+func TestBindDistilledCardsToNodesUsesTheOnlyNode(t *testing.T) {
+	cards := []Card{{ID: "c1", Claim: "LLM structured mode produced this card."}}
+	nodes := []DocumentNode{{ID: "n1", Text: "short source"}}
+	bound := bindDistilledCardsToNodes(cards, nodes)
+	if len(bound) != 1 || bound[0].NodeID != "n1" {
+		t.Fatalf("single node = %#v", bound)
+	}
+	kept := bindDistilledCardsToNodes([]Card{{ID: "c2", NodeID: "n1", Claim: "kept"}}, nodes)
+	if kept[0].NodeID != "n1" {
+		t.Fatalf("existing node id changed: %#v", kept)
+	}
+	many := []DocumentNode{{ID: "n1", Text: "a"}, {ID: "n2", Text: "b"}}
+	unbound := bindDistilledCardsToNodes([]Card{{ID: "c3", Claim: "no body"}}, many)
+	if unbound[0].NodeID != "" {
+		t.Fatalf("invented a node: %#v", unbound)
+	}
+	dangling := bindDistilledCardsToNodes([]Card{{ID: "c4", NodeID: "missing", Claim: "x"}}, many)
+	if dangling[0].NodeID != "" {
+		t.Fatalf("kept a dangling node: %#v", dangling)
+	}
+	named := bindDistilledCardsToNodes([]Card{{ID: "c5", NodeID: " n2 ", Claim: "x"}}, many)
+	if named[0].NodeID != "n2" {
+		t.Fatalf("named node = %#v", named)
+	}
+}
+
+func TestShouldUseLLMCardDistillationIgnoresTopicHint(t *testing.T) {
+	hinted := Source{TopicHint: "security"}
+	short := []DocumentNode{{TokenCount: 40}}
+	if ShouldUseLLMCardDistillation(hinted, short) {
+		t.Fatal("topic hint must not force LLM distillation")
+	}
+	if ShouldUseLLMCardDistillation(hinted, nil) {
+		t.Fatal("empty nodes stay on rules")
+	}
+	if !ShouldUseLLMCardDistillation(hinted, []DocumentNode{{TokenCount: 600}}) {
+		t.Fatal("a 600-token node still uses LLM in auto mode")
+	}
+	total := []DocumentNode{{TokenCount: 400}, {TokenCount: 400}, {TokenCount: 400}}
+	if !ShouldUseLLMCardDistillation(Source{}, total) {
+		t.Fatal("1200 total tokens still use LLM in auto mode")
+	}
+	if shouldUseLLMForMode(DistillModeRules, hinted, []DocumentNode{{TokenCount: 600}}) {
+		t.Fatal("rules mode stays local")
+	}
+	if !shouldUseLLMForMode(DistillModeLLMIfAny, hinted, short) {
+		t.Fatal("explicit llm mode still distills")
+	}
+	if shouldUseLLMForMode(DistillModeAuto, hinted, short) {
+		t.Fatal("auto mode with a short hinted source stays on rules")
+	}
+}
+
 func TestBuildCardsForNodes(t *testing.T) {
 	source := Source{ID: "s1", Kind: SourceKindMarkdown, Title: "Guide", TopicHint: "sqlite, brain", ProjectPath: "D:/project", SourceTrust: 0.9}
 	nodes := []DocumentNode{{ID: "n1", SourceID: "s1", Type: "document", Title: "Guide", Text: "Use SQLite as the durable local knowledge substrate. Keep retrieval local and fast.", TokenCount: 40}}
@@ -247,7 +300,6 @@ func containsExactFact(facts []Fact, subject, predicate, object string) bool {
 	}
 	return false
 }
-
 
 func TestBuildCardsForNodesListSplitting(t *testing.T) {
 	source := Source{ID: "s1", Kind: SourceKindPDF, Title: "resume-academic", SourceTrust: 0.9}

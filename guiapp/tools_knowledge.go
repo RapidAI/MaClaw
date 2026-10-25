@@ -28,6 +28,7 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 		Required:    []string{"query"},
 		InputSchema: map[string]interface{}{
 			"query":        map[string]string{"type": "string", "description": "Search query"},
+			"retrieval":    map[string]string{"type": "string", "description": "Retrieval route: auto | fts | vector | hybrid. Default auto."},
 			"search_scope": map[string]string{"type": "string", "description": "all | project | personal. Default all."},
 			"topic_hint":   map[string]string{"type": "string", "description": "Optional current topic hint for local re-ranking. Does not call an LLM."},
 			"context_terms": map[string]interface{}{
@@ -155,6 +156,7 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 		Required:    []string{"query"},
 		InputSchema: map[string]interface{}{
 			"query":        map[string]string{"type": "string", "description": "Search query for the context pack"},
+			"retrieval":    map[string]string{"type": "string", "description": "Retrieval route: auto | fts | vector | hybrid. Default auto."},
 			"search_scope": map[string]string{"type": "string", "description": "all | project | personal. Default all."},
 			"topic_hint":   map[string]string{"type": "string", "description": "Optional current topic hint for local re-ranking. Does not call an LLM."},
 			"context_terms": map[string]interface{}{
@@ -1935,6 +1937,7 @@ func (a *App) toolKnowledgeSearch(args map[string]interface{}) string {
 	}
 	opts := knowledge.SearchOptions{
 		Query:           query,
+		Retrieval:       knowledgeToolStringArg(args, "retrieval"),
 		SearchScope:     knowledgeToolStringArg(args, "search_scope"),
 		ProjectPath:     knowledgeToolStringArg(args, "project_path"),
 		TopicHint:       knowledgeToolStringArg(args, "topic_hint"),
@@ -2189,6 +2192,7 @@ func (a *App) toolKnowledgeContextPack(args map[string]interface{}) string {
 	opts := knowledge.ContextPackOptions{
 		SearchOptions: knowledge.SearchOptions{
 			Query:           query,
+			Retrieval:       knowledgeToolStringArg(args, "retrieval"),
 			SearchScope:     knowledgeToolStringArg(args, "search_scope"),
 			ProjectPath:     knowledgeToolStringArg(args, "project_path"),
 			TopicHint:       knowledgeToolStringArg(args, "topic_hint"),

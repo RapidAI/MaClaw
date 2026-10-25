@@ -414,6 +414,16 @@ func DoSimpleLLMRequestContextWithOptions(parent context.Context, cfg corelib.Ma
 }
 
 func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, options SimpleLLMRequestOptions) (*LLMSimpleResponse, error) {
+	resp, err := doSimpleOpenAIRequestOnce(ctx, cfg, messages, client, options)
+	// HTTP 400 is not an outer transport retry. A thinking-off refusal still
+	// has one legal-effort retry, matching the non-stream Do helper.
+	if next, ok := llm.ConfigAfterThinkingRejection(cfg, err); ok {
+		return doSimpleOpenAIRequestOnce(ctx, next, messages, client, options)
+	}
+	return resp, err
+}
+
+func doSimpleOpenAIRequestOnce(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, options SimpleLLMRequestOptions) (*LLMSimpleResponse, error) {
 	if workbuddy.Matches(cfg) {
 		client = workbuddy.WrapClient(client)
 	}
@@ -485,6 +495,14 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 }
 
 func doSimpleResponsesRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, options SimpleLLMRequestOptions) (*LLMSimpleResponse, error) {
+	resp, err := doSimpleResponsesRequestOnce(ctx, cfg, messages, client, options)
+	if next, ok := llm.ConfigAfterThinkingRejection(cfg, err); ok {
+		return doSimpleResponsesRequestOnce(ctx, next, messages, client, options)
+	}
+	return resp, err
+}
+
+func doSimpleResponsesRequestOnce(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, options SimpleLLMRequestOptions) (*LLMSimpleResponse, error) {
 	extraBody := map[string]interface{}(nil)
 	if options.ResponseFormat != nil {
 		extraBody = map[string]interface{}{"response_format": options.ResponseFormat}

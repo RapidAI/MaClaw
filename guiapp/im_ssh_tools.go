@@ -271,11 +271,11 @@ func (h *IMMessageHandler) toolSSH(args map[string]interface{}) string {
 	case sshToolActionDownload:
 		return h.sshDownload(args)
 	case sshToolActionList:
-		return h.sshList()
+		return h.sshList(args)
 	case sshToolActionClose:
 		return h.sshClose(args)
 	case sshToolActionCloseAll:
-		return h.sshCloseAll()
+		return h.sshCloseAll(args)
 	default:
 		return fmt.Sprintf("未知 SSH 操作: %s（支持: connect/exec/exec_background/check_task/wait_task/list_tasks/kill_task/sudo_prepare/upload/download/list/close/close_all）", action)
 	}
@@ -284,8 +284,8 @@ func (h *IMMessageHandler) toolSSH(args map[string]interface{}) string {
 func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 	mgr := h.ensureSSHManager()
 	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
-	if hasRuntimeOwner && ownerID == "" {
-		return "ssh failed: runtime owner is missing; isolated runtime will not fall back to desktop loop"
+	if reason := sshMissingRuntimeOwnerReason(hasRuntimeOwner, ownerID); reason != "" {
+		return reason
 	}
 
 	host, _ := args["host"].(string)
@@ -355,7 +355,7 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 	}
 	if !forceNew {
 		targetID := fmt.Sprintf("%s@%s:%d", user, host, port)
-		if existing := h.findRunningSSHSession(mgr, targetID, label); existing != nil {
+		if existing := h.findRunningSSHSession(mgr, targetID, label, ownerID); existing != nil {
 			// Verify the connection is actually alive before reusing.
 			// The session status may say "running" but the underlying TCP
 			// connection could be dead (e.g. network interruption, server
@@ -407,6 +407,7 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 		InitialCommand: sshStrArg(args, "initial_command"),
 		Cols:           120,
 		Rows:           40,
+		OwnerID:        ownerID,
 	}
 
 	session, err := mgr.Create(spec)
@@ -472,29 +473,159 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 }
 
 // findRunningSSHSession looks for an existing SSH session matching the
-// given hostID (user@host:port) or label that is still running.
+// given hostID (user@host:port) or label that is still running and was
+// opened by ownerID. Another conversation's session to the same host is
+// not reusable: the two conversations do not share a PTY.
 func (h *IMMessageHandler) findRunningSSHSession(mgr interface {
 	List() []*remote.SSHManagedSession
-}, hostID, label string) *remote.SSHManagedSession {
+}, hostID, label, ownerID string) *remote.SSHManagedSession {
 	for _, s := range mgr.List() {
-		summary := s.GetSummary()
-		if !remote.SessionStatus(summary.Status).IsRunning() {
-			continue
-		}
-		if summary.HostID == hostID || (label != "" && summary.HostLabel == label) {
+		if sshSessionReusable(s, hostID, label, ownerID) {
 			return s
 		}
 	}
 	return nil
 }
 
+// sshBoundSituationSessionIDs lists up to three live session ids this
+// principal would bind. The situation prompt and the catalog read the same
+// set: a dead session, an unowned session, and another conversation's
+// session are not named as this turn's SSH session.
+func sshBoundSituationSessionIDs(sessions []*remote.SSHManagedSession, principalID string, alive func(*remote.SSHManagedSession) bool) []string {
+	return sshSituationSessionIDs(sshSessionsBoundToPrincipal(sessions, principalID, alive), principalID)
+}
+
+// sshSituationSessionIDs lists up to three session ids opened by principalID.
+// The situation prompt uses this list, so another conversation's session
+// must not appear as this turn's SSH session.
+func sshSituationSessionIDs(sessions []*remote.SSHManagedSession, principalID string) []string {
+	var ids []string
+	for _, session := range sessions {
+		if session == nil || !remote.SSHSessionOwnerMatches(session.OwnerID, principalID) {
+			continue
+		}
+		if len(ids) >= 3 {
+			break
+		}
+		ids = append(ids, session.ID)
+	}
+	return ids
+}
+
+// sshSessionStatusOpen is the in-memory lifecycle of a session this principal
+// still holds. Busy and waiting_input are the same PTY: the shell is draining
+// output or sitting at a prompt. Only a terminal status releases it.
+func sshSessionStatusOpen(status remote.SessionStatus) bool {
+	return status != remote.SessionExited && status != remote.SessionError
+}
+
+// sshSessionLocallyOpen reports that the process still has a non-terminal PTY
+// for this session. It does not send a keepalive.
+func sshSessionLocallyOpen(session *remote.SSHManagedSession) bool {
+	if session == nil || session.Handle == nil {
+		return false
+	}
+	return sshSessionStatusOpen(remote.SessionStatus(session.GetSummary().Status))
+}
+
+// sshAliveCacheTTL bounds how often a catalog question re-probes one PTY.
+// TransportFailed waits up to five seconds, and one plan asks several times.
+// An unfinished wait is remembered as still open. A keepalive that finished
+// with a transport error is remembered as dead. A terminal status is checked
+// before the cache, so an exited session is dropped immediately. The verdict
+// is stored on the handle: reconnect replaces it and the new PTY is probed
+// on its own, and a closed PTY does not stay reachable from a process map.
+const sshAliveCacheTTL = 3 * time.Second
+
+func cachedSSHSessionAlive(handle *remote.SSHPTYSession) (bool, bool) {
+	if handle == nil {
+		return false, false
+	}
+	alive, ok := handle.TransportVerdict(sshAliveCacheTTL)
+	if !ok {
+		return false, false
+	}
+	// The open answer was cached while the request was still in flight.
+	// If that same keepalive has since finished with a transport error,
+	// keeping the open answer publishes exec for the rest of this window.
+	if alive && handle.ObservedTransportFailure() {
+		rememberSSHSessionAlive(handle, false)
+		return false, true
+	}
+	return alive, true
+}
+
+func rememberSSHSessionAlive(handle *remote.SSHPTYSession, alive bool) {
+	if handle == nil {
+		return
+	}
+	handle.RememberTransportVerdict(alive)
+}
+
+// sshSituationSessionAlive is the prompt view of a session. It uses the
+// in-memory status, a transport error this handle has already recorded, and
+// the catalog's recent verdict. It does not start a keepalive. With no
+// verdict yet, a locally open handle stays in the prompt.
+func sshSituationSessionAlive(session *remote.SSHManagedSession) bool {
+	if !sshSessionLocallyOpen(session) {
+		return false
+	}
+	if session.Handle.ObservedTransportFailure() {
+		rememberSSHSessionAlive(session.Handle, false)
+		return false
+	}
+	if alive, ok := cachedSSHSessionAlive(session.Handle); ok {
+		return alive
+	}
+	return true
+}
+
+func sshSessionReusable(session *remote.SSHManagedSession, hostID, label, ownerID string) bool {
+	if session == nil || !remote.SSHSessionOwnerMatches(session.OwnerID, ownerID) {
+		return false
+	}
+	summary := session.GetSummary()
+	if !sshSessionStatusOpen(remote.SessionStatus(summary.Status)) {
+		return false
+	}
+	return summary.HostID == hostID || (label != "" && summary.HostLabel == label)
+}
+
+func sshMissingRuntimeOwnerReason(hasOwner bool, ownerID string) string {
+	if hasOwner && strings.TrimSpace(ownerID) == "" {
+		return "ssh failed: runtime owner is missing; isolated runtime will not fall back to desktop loop"
+	}
+	return ""
+}
+
+// sshForeignSessionReason rejects use of a session this principal did not
+// open. A call that does not carry a principal keeps the previous behavior.
+// A missing session is left for the caller to report.
+func sshForeignSessionReason(h *IMMessageHandler, sessionID, ownerID string, hasOwner bool) string {
+	if !hasOwner || h == nil || h.sshMgr == nil || strings.TrimSpace(sessionID) == "" {
+		return ""
+	}
+	session, ok := h.sshMgr.Get(sessionID)
+	if !ok || session == nil || remote.SSHSessionOwnerMatches(session.OwnerID, ownerID) {
+		return ""
+	}
+	return "SSH 会话不属于当前对话。请 connect 建立本对话自己的会话。"
+}
+
 func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
+	ownerID, hasOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if reason := sshMissingRuntimeOwnerReason(hasOwner, ownerID); reason != "" {
+		return reason
+	}
 	mgr := h.ensureSSHManager()
 
 	sessionID, _ := args["session_id"].(string)
 	command, _ := args["command"].(string)
 	if sessionID == "" || command == "" {
 		return "错误: exec 需要 session_id 和 command 参数"
+	}
+	if reason := sshForeignSessionReason(h, sessionID, ownerID, hasOwner); reason != "" {
+		return reason
 	}
 
 	// If the command contains characters that are likely to cause shell escaping
@@ -512,6 +643,11 @@ func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
 		waitSec = int(w)
 	}
 	if remote.IsLongRunningCommand(command) && waitSec <= 30 {
+		// sshExec already consumed the owner. Put it back so the background
+		// task is recorded for the same principal that owns the session.
+		if hasOwner {
+			args[registeredToolPolicyOwnerIDField] = ownerID
+		}
 		return h.sshExecBackground(args)
 	}
 
@@ -616,8 +752,8 @@ func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
 // sshExecBackground runs a long-running command in the background via nohup.
 func (h *IMMessageHandler) sshExecBackground(args map[string]interface{}) string {
 	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
-	if hasRuntimeOwner && ownerID == "" {
-		return "ssh failed: runtime owner is missing; isolated runtime will not fall back to desktop loop"
+	if reason := sshMissingRuntimeOwnerReason(hasRuntimeOwner, ownerID); reason != "" {
+		return reason
 	}
 	mgr := h.ensureSSHManager()
 	if h.bgTaskMgr == nil {
@@ -635,6 +771,9 @@ func (h *IMMessageHandler) sshExecBackground(args map[string]interface{}) string
 	taskRole, _ := args["task_role"].(string)
 	if sessionID == "" || command == "" {
 		return "错误: exec_background 需要 session_id 和 command 参数"
+	}
+	if reason := sshForeignSessionReason(h, sessionID, ownerID, hasRuntimeOwner); reason != "" {
+		return reason
 	}
 
 	// Auto-reconnect if needed.
@@ -757,8 +896,8 @@ func (h *IMMessageHandler) sshCheckTask(args map[string]interface{}) string {
 		return "错误: 无后台任务"
 	}
 	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
-	if hasRuntimeOwner && ownerID == "" {
-		return "ssh failed: runtime owner is missing; isolated runtime will not fall back to desktop loop"
+	if reason := sshMissingRuntimeOwnerReason(hasRuntimeOwner, ownerID); reason != "" {
+		return reason
 	}
 
 	taskID, _ := args["task_id"].(string)
@@ -786,8 +925,8 @@ func (h *IMMessageHandler) sshCheckTask(args map[string]interface{}) string {
 // sshWaitTask polls a background task until it reaches a terminal state or timeout.
 func (h *IMMessageHandler) sshWaitTask(args map[string]interface{}) string {
 	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
-	if hasRuntimeOwner && ownerID == "" {
-		return "ssh failed: runtime owner is missing; isolated runtime will not fall back to desktop loop"
+	if reason := sshMissingRuntimeOwnerReason(hasRuntimeOwner, ownerID); reason != "" {
+		return reason
 	}
 	return waitSSHBackgroundTaskForOwner(h.bgTaskMgr, args, ownerID, "error: no SSH background task manager", "error: wait_task requires task_id", func() {
 		h.emitAppEvent("background-loops-changed")
@@ -967,8 +1106,8 @@ func (h *IMMessageHandler) sshListTasks(args map[string]interface{}) string {
 	}
 
 	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
-	if hasRuntimeOwner && ownerID == "" {
-		return "ssh failed: runtime owner is missing; isolated runtime will not fall back to desktop loop"
+	if reason := sshMissingRuntimeOwnerReason(hasRuntimeOwner, ownerID); reason != "" {
+		return reason
 	}
 
 	tasks := h.bgTaskMgr.ListTasksForOwner(ownerID)
@@ -1009,8 +1148,8 @@ func (h *IMMessageHandler) sshKillTask(args map[string]interface{}) string {
 		return "错误: 无后台任务"
 	}
 	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
-	if hasRuntimeOwner && ownerID == "" {
-		return "ssh failed: runtime owner is missing; isolated runtime will not fall back to desktop loop"
+	if reason := sshMissingRuntimeOwnerReason(hasRuntimeOwner, ownerID); reason != "" {
+		return reason
 	}
 
 	taskID, _ := args["task_id"].(string)
@@ -1038,6 +1177,13 @@ func (h *IMMessageHandler) sshSudoPrepare(args map[string]interface{}) string {
 	if sessionID == "" {
 		return "错误: sudo_prepare 需要 session_id 参数"
 	}
+	ownerID, hasOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if reason := sshMissingRuntimeOwnerReason(hasOwner, ownerID); reason != "" {
+		return reason
+	}
+	if reason := sshForeignSessionReason(h, sessionID, ownerID, hasOwner); reason != "" {
+		return reason
+	}
 
 	ok, msg := h.bgTaskMgr.EnsureSudoToken(sessionID)
 	if ok {
@@ -1055,6 +1201,13 @@ func (h *IMMessageHandler) sshUpload(args map[string]interface{}) string {
 	if sessionID == "" || localPath == "" || remotePath == "" {
 		return "错误: upload 需要 session_id、local_path 和 remote_path 参数"
 	}
+	ownerID, hasOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if reason := sshMissingRuntimeOwnerReason(hasOwner, ownerID); reason != "" {
+		return reason
+	}
+	if reason := sshForeignSessionReason(h, sessionID, ownerID, hasOwner); reason != "" {
+		return reason
+	}
 	result, err := mgr.SFTPTransfer(sessionID, "upload", localPath, remotePath)
 	if err != nil {
 		return fmt.Sprintf("上传失败: %v", err)
@@ -1071,6 +1224,13 @@ func (h *IMMessageHandler) sshDownload(args map[string]interface{}) string {
 	if sessionID == "" || localPath == "" || remotePath == "" {
 		return "错误: download 需要 session_id、local_path 和 remote_path 参数"
 	}
+	ownerID, hasOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if reason := sshMissingRuntimeOwnerReason(hasOwner, ownerID); reason != "" {
+		return reason
+	}
+	if reason := sshForeignSessionReason(h, sessionID, ownerID, hasOwner); reason != "" {
+		return reason
+	}
 	result, err := mgr.SFTPTransfer(sessionID, "download", localPath, remotePath)
 	if err != nil {
 		return fmt.Sprintf("下载失败: %v", err)
@@ -1078,25 +1238,49 @@ func (h *IMMessageHandler) sshDownload(args map[string]interface{}) string {
 	return fmt.Sprintf("下载完成: %s → %s\n%s", remotePath, localPath, result)
 }
 
-func (h *IMMessageHandler) sshList() string {
+func (h *IMMessageHandler) sshList(args map[string]interface{}) string {
 	if h.sshMgr == nil {
 		return "当前无活跃 SSH 会话"
 	}
+	ownerID, hasOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if reason := sshMissingRuntimeOwnerReason(hasOwner, ownerID); reason != "" {
+		return reason
+	}
 
 	sessions := h.sshMgr.List()
-	if len(sessions) == 0 {
+	var visible []*remote.SSHManagedSession
+	for _, s := range sessions {
+		if s == nil || (hasOwner && !remote.SSHSessionOwnerMatches(s.OwnerID, ownerID)) {
+			continue
+		}
+		visible = append(visible, s)
+	}
+	if len(visible) == 0 {
 		return "当前无活跃 SSH 会话"
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("SSH 会话（%d 个）:\n", len(sessions)))
-	for _, s := range sessions {
+	sb.WriteString(fmt.Sprintf("SSH 会话（%d 个）:\n", len(visible)))
+	for _, s := range visible {
 		summary := s.GetSummary()
 		sb.WriteString(fmt.Sprintf("  - %s | %s | 状态: %s\n",
 			s.ID, summary.HostLabel, summary.Status))
 	}
 
 	poolStats := h.sshMgr.Pool().Stats()
+	if hasOwner {
+		visibleHosts := make(map[string]struct{}, len(visible))
+		for _, s := range visible {
+			if hostID := s.GetSummary().HostID; hostID != "" {
+				visibleHosts[hostID] = struct{}{}
+			}
+		}
+		for hostID := range poolStats {
+			if _, ok := visibleHosts[hostID]; !ok {
+				delete(poolStats, hostID)
+			}
+		}
+	}
 	if len(poolStats) > 0 {
 		sb.WriteString("连接池:\n")
 		for hostID, ref := range poolStats {
@@ -1115,6 +1299,13 @@ func (h *IMMessageHandler) sshClose(args map[string]interface{}) string {
 	if sessionID == "" {
 		return "错误: close 需要 session_id 参数"
 	}
+	ownerID, hasOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if reason := sshMissingRuntimeOwnerReason(hasOwner, ownerID); reason != "" {
+		return reason
+	}
+	if reason := sshForeignSessionReason(h, sessionID, ownerID, hasOwner); reason != "" {
+		return reason
+	}
 
 	// 先尝试发送 SIGKILL 终止远程进程（忽略错误，会话可能已断开）
 	_ = h.sshMgr.Kill(sessionID)
@@ -1130,15 +1321,22 @@ func (h *IMMessageHandler) sshClose(args map[string]interface{}) string {
 }
 
 // sshCloseAll closes all running SSH sessions.
-func (h *IMMessageHandler) sshCloseAll() string {
+func (h *IMMessageHandler) sshCloseAll(args map[string]interface{}) string {
 	if h.sshMgr == nil {
 		return "当前无 SSH 会话"
+	}
+	ownerID, hasOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if reason := sshMissingRuntimeOwnerReason(hasOwner, ownerID); reason != "" {
+		return reason
 	}
 	sessions := h.sshMgr.List()
 	running := make([]*remote.SSHManagedSession, 0, len(sessions))
 	for _, s := range sessions {
+		if s == nil || (hasOwner && !remote.SSHSessionOwnerMatches(s.OwnerID, ownerID)) {
+			continue
+		}
 		summary := s.GetSummary()
-		if remote.SessionStatus(summary.Status).IsRunning() {
+		if sshSessionStatusOpen(remote.SessionStatus(summary.Status)) {
 			running = append(running, s)
 		}
 	}

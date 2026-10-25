@@ -3,12 +3,17 @@ package guiapp
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/RapidAI/CodeClaw/corelib/mailbox"
 )
 
 // mailboxToolBrowser replaces the network dialer in browse tests.
 var mailboxToolBrowser mailbox.FolderBrowser
+
+// browseHTMLCap bounds one message's HTML part. The sanitizer on the desktop
+// side parses it; a multi-megabyte marketing mail must not slow that parse.
+const browseHTMLCap = 512 * 1024
 
 func (a *App) browsePeer() mailbox.FolderBrowser {
 	if mailboxToolBrowser != nil {
@@ -90,6 +95,7 @@ func (a *App) MailboxBrowseStart(accountID string) (map[string]interface{}, erro
 		"folders":  page.Folders,
 		"box":      page.Box,
 		"messages": messageRows(page.Messages),
+		"unseen":   page.Unseen,
 		"error":    browseNote(err),
 	}, nil
 }
@@ -140,7 +146,9 @@ func (a *App) MailboxBrowseMessages(accountID, box string, limit int) ([]map[str
 	return messageRows(items), nil
 }
 
-// MailboxBrowseRead returns one message as plain text for the management dialog.
+// MailboxBrowseRead returns one message for the management dialog: the plain
+// text view plus the raw HTML part when the mail has one. The desktop side
+// sanitizes the HTML before it ever renders; this function only caps its size.
 func (a *App) MailboxBrowseRead(accountID, box string, uid int) (map[string]interface{}, error) {
 	if uid <= 0 {
 		return nil, errors.New("需要 uid")
@@ -172,7 +180,84 @@ func (a *App) MailboxBrowseRead(accountID, box string, uid int) (map[string]inte
 		"date":        body.Date,
 		"seen":        body.Seen,
 		"body":        text,
+		"html":        clipHTML(body.HTML),
 		"truncated":   truncated,
 		"attachments": names,
 	}, nil
+}
+
+func clipHTML(raw string) string {
+	if len(raw) <= browseHTMLCap {
+		return raw
+	}
+	return raw[:browseHTMLCap]
+}
+
+// MailboxBrowseMarkRead marks the given messages read or unread in one folder.
+// The organize path is reversible, so no confirmation is needed here; the
+// dialog marks a message read when it is opened and lets the user undo it.
+func (a *App) MailboxBrowseMarkRead(accountID, box string, uids []uint32, read bool) (map[string]interface{}, error) {
+	if len(uids) == 0 {
+		return nil, errors.New("需要 uid")
+	}
+	if len(uids) > mailbox.OrganizeMaxUIDs {
+		return nil, fmt.Errorf("一次最多处理 %d 封邮件", mailbox.OrganizeMaxUIDs)
+	}
+	account, secret, err := a.browseInbound(context.Background(), accountID)
+	if err != nil {
+		return nil, err
+	}
+	organizer, ok := a.browsePeer().(mailbox.MailOrganizer)
+	if !ok {
+		return nil, errors.New(mailbox.MsgConnect)
+	}
+	action := "mark_read"
+	if !read {
+		action = "mark_unread"
+	}
+	updated, err := organizer.Organize(context.Background(), account, secret, mailbox.OrganizeRequest{
+		Action: action,
+		Box:    box,
+		UIDs:   uids,
+	})
+	if err != nil {
+		return nil, mailbox.ClientError(err)
+	}
+	return map[string]interface{}{"updated": updated}, nil
+}
+
+// MailboxBrowseDelete moves the given messages to the trash folder, or expunges
+// them when the folder already is the trash. The plan is frozen by a preview
+// first, so a folder that changed in between cannot delete different mail.
+func (a *App) MailboxBrowseDelete(accountID, box string, uids []uint32) (map[string]interface{}, error) {
+	if len(uids) == 0 {
+		return nil, errors.New("需要 uid")
+	}
+	if len(uids) > mailbox.DeleteUIDCap {
+		return nil, fmt.Errorf("一次最多删除 %d 封邮件", mailbox.DeleteUIDCap)
+	}
+	account, secret, err := a.browseInbound(context.Background(), accountID)
+	if err != nil {
+		return nil, err
+	}
+	deleter, ok := a.browsePeer().(mailbox.MailDeleter)
+	if !ok {
+		return nil, errors.New(mailbox.MsgConnect)
+	}
+	preview, err := deleter.PreviewDelete(context.Background(), account, secret, mailbox.DeleteRequest{
+		Scope: mailbox.DeleteScopeFolder,
+		Box:   box,
+		UIDs:  uids,
+	})
+	if err != nil {
+		return nil, mailbox.ClientError(err)
+	}
+	if preview.Total <= 0 {
+		return nil, errors.New(mailbox.MsgNotFound)
+	}
+	result, err := deleter.ApplyDelete(context.Background(), account, secret, preview.Plan)
+	if err != nil {
+		return nil, mailbox.ClientError(err)
+	}
+	return map[string]interface{}{"moved": result.Moved, "purged": result.Purged}, nil
 }

@@ -314,17 +314,24 @@ func guiRemoteCodingTargetIdentityForConfig(config remote.SSHHostConfig, workDir
 }
 
 func guiRuntimeSSHSessionAlive(session *remote.SSHManagedSession) bool {
-	if session == nil || session.Handle == nil || !session.Handle.IsAlive() {
+	// Terminal status is local. A keepalive is only needed for a PTY this
+	// process still considers open. Binding uses TransportFailed: the
+	// session drops only when the keepalive has finished with a transport
+	// error. An unfinished request stays bound, including one that has
+	// already run past the stuck threshold; the pool closes that connection
+	// and the probe then finishes. The answer is reused for a few seconds
+	// so one plan does not probe the same connection again. The cache is
+	// per handle, so a reconnect starts clean.
+	if !sshSessionLocallyOpen(session) {
 		return false
 	}
-	// A live SSH PTY can legitimately be reported as busy while the previous
-	// command's output is being drained, or as waiting_input while the shell is
-	// idle.  Both states are usable for a runtime-bound command.  Only terminal
-	// states make the frozen session unavailable; requiring exactly "running"
-	// caused a race after remote-isolate/bootstrap commands and produced the
-	// misleading "session is unavailable" failure.
-	status := remote.SessionStatus(session.GetSummary().Status)
-	return status != remote.SessionExited && status != remote.SessionError
+	handle := session.Handle
+	if alive, ok := cachedSSHSessionAlive(handle); ok {
+		return alive
+	}
+	alive := !handle.TransportFailed()
+	rememberSSHSessionAlive(handle, alive)
+	return alive
 }
 
 // guiRuntimeRemoteProbeMarkers creates an unpredictable begin/end pair for a

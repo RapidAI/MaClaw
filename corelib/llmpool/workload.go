@@ -937,9 +937,11 @@ func betterCapabilityModel(candidate, selected *ModelConfig, needs map[string]in
 }
 
 // liftWindowVisionOffLow moves a long image off low for classes whose own
-// band is mid or high. Chat and classify stay on low unless degree already
-// called them complex. A transcript without an image keeps the normal
-// availability descent, and an explicit tier pin never reaches this helper.
+// band is mid or high. Complex chat and classify move only to mid, the same
+// step as the degree gate, and stay on low when mid cannot be dialed. Other
+// chat and classify turns stay on low. A transcript without an image keeps
+// the normal availability descent, and an explicit tier pin never reaches
+// this helper.
 func liftWindowVisionOffLow(group *ServiceGroup, class, model, quality, degree string, needs map[string]int) (string, string, bool) {
 	if needs["vision"] == 0 || needs["window"] == 0 {
 		return model, quality, false
@@ -952,6 +954,11 @@ func liftWindowVisionOffLow(group *ServiceGroup, class, model, quality, degree s
 		if degree != DegreeComplex {
 			return model, quality, false
 		}
+		name := firstUsableModelForQuality(group, QualityMid)
+		if name == "" || strings.EqualFold(name, model) {
+			return model, quality, false
+		}
+		return name, QualityMid, true
 	}
 	for _, band := range []string{QualityMid, QualityHigh} {
 		name := firstUsableModelForQuality(group, band)

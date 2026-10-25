@@ -163,6 +163,16 @@ func TestLocalSearchKnowledgeFactUsesCardTitle(t *testing.T) {
 	if got := localSearchKnowledgeTitle(marked); got != "[企业] Gateway" {
 		t.Fatalf("marked title = %q", got)
 	}
+	byLibrary := fact
+	byLibrary.LibraryID = "lib-policies"
+	if got := localSearchKnowledgeTitle(byLibrary); got != "[企业] Gateway" {
+		t.Fatalf("library title = %q", got)
+	}
+	already := byLibrary
+	already.CardTitle = "[企业] Gateway"
+	if got := localSearchKnowledgeTitle(already); got != "[企业] Gateway" {
+		t.Fatalf("already marked title = %q", got)
+	}
 
 	bare := knowledge.SearchResult{ResultType: "fact", Claim: "distinct fact"}
 	if localSearchKnowledgeTitle(bare) != "distinct fact" || localSearchKnowledgeSnippet(bare) != "distinct fact" {

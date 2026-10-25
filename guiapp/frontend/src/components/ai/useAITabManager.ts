@@ -9,10 +9,11 @@ import { addParticipantIdentityKeys, participantIdentityMatches } from "./partic
 import { veStatusEventInfo } from "./veStatusEvent";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { archiveExpertTranscriptForProject, expertSessionKey, normalizeProjectSessionPath, purgeDeletedExpertTabLocalCache } from "./aiAssistantPanelSessionUtils";
-import { mergeChatMessages } from "./aiAssistantProjectTabState";
+import { mergeProjectRoundHistory } from "./aiAssistantProjectTabState";
 import { splitConversationView } from "./conversationViewWindow";
 import { cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTaskFields, isExplicitTaskCopy } from "./codingTaskMode";
 import type { TaskManagementItem } from "../layout/SidebarTaskManagement";
+import type { ChatMessage } from "./useAIAssistant";
 import { updateAssistantTabTaskSession } from "./aiAssistantPanelSessionUtils";
 import type { ExpertDefinition } from "./expertTypes";
 import { expertTabId } from "./expertTypes";
@@ -276,6 +277,8 @@ export interface UseAITabManagerResult {
 
 const PROJECT_TABS_STORAGE_KEY = "ai_assistant_project_tabs";
 const PROJECT_TAB_HISTORY_STORAGE_KEY = "ai_assistant_project_tab_histories";
+const PROJECT_TAB_DRAFTS_STORAGE_KEY = "ai_assistant_project_tab_drafts";
+const ACTIVE_TAB_STORAGE_KEY = "ai_assistant_active_tab_id";
 const VE_TABS_STORAGE_KEY = "ai_assistant_ve_tabs";
 const LOCAL_TAB_CUSTOM_TITLE_STORAGE_KEY = "ai_assistant_local_tab_custom_title";
 
@@ -355,6 +358,14 @@ function persistProjectTabHistories(tabStates: Map<string, AITabState>, tabs: AI
             if (history.length > 0) serialized[tabId] = history;
         }
 
+        const drafts: Record<string, string> = {};
+        for (const [tabId, state] of tabStates) {
+            if ((tabId.startsWith("proj-") || tabId.startsWith("expert-")) && state.inputText) {
+                drafts[tabId] = state.inputText;
+            }
+        }
+        if (Object.keys(drafts).length === 0) localStorage.removeItem(PROJECT_TAB_DRAFTS_STORAGE_KEY);
+        else localStorage.setItem(PROJECT_TAB_DRAFTS_STORAGE_KEY, JSON.stringify(drafts));
         if (Object.keys(serialized).length === 0) {
             localStorage.removeItem(PROJECT_TAB_HISTORY_STORAGE_KEY);
         } else {
@@ -379,6 +390,24 @@ function loadPersistedProjectTabHistories(): Record<string, unknown[]> {
         return histories;
     } catch {
         return {};
+    }
+}
+
+function loadPersistedProjectTabDrafts(): Record<string, string> {
+    try {
+        const parsed = JSON.parse(localStorage.getItem(PROJECT_TAB_DRAFTS_STORAGE_KEY) || "{}");
+        if (!parsed || typeof parsed !== "object") return {};
+        return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+    } catch {
+        return {};
+    }
+}
+
+function loadPersistedActiveTabId(): string {
+    try {
+        return String(localStorage.getItem(ACTIVE_TAB_STORAGE_KEY) || "").trim();
+    } catch {
+        return "";
     }
 }
 
@@ -714,6 +743,8 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         if (restoredVE.length > 0) {
             initial.tabs = [...initial.tabs, ...restoredVE.slice(0, maxVETabs).map(v => v.tab)];
         }
+        const restoredActiveTabId = loadPersistedActiveTabId();
+        if (initial.tabs.some(tab => tab.id === restoredActiveTabId)) initial.activeTabId = restoredActiveTabId;
         tabStateRef.current = initial;
         return initial;
     });
@@ -888,6 +919,9 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         setTabState(prev => {
             const next = updater(prev);
             tabStateRef.current = next;
+            if (next.activeTabId !== prev.activeTabId) {
+                try { localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, next.activeTabId); } catch { }
+            }
             // Persist project tabs only when the tab list actually changes.
             if (next.tabs !== prev.tabs) {
                 persistProjectTabs(next.tabs);
@@ -980,10 +1014,11 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
     if (!hydratedRef.current) {
         hydratedRef.current = true;
         const histories = loadPersistedProjectTabHistories();
-        for (const [tabId, history] of Object.entries(histories)) {
-            if (Array.isArray(history) && history.length > 0) {
-                tabStatesRef.current.set(tabId, { history, scrollTop: 0, inputText: "", lastActiveAt: 1 });
-            }
+        const drafts = loadPersistedProjectTabDrafts();
+        const tabIds = new Set([...Object.keys(histories), ...Object.keys(drafts)]);
+        for (const tabId of tabIds) {
+            const history = histories[tabId] || [];
+            tabStatesRef.current.set(tabId, { history, scrollTop: 0, inputText: drafts[tabId] || "", lastActiveAt: 1 });
         }
         // Hydrate VE tab states with persisted sessionIds from the tabs already
         // restored in the useState initializer above. Use the structured result
@@ -1056,8 +1091,24 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                 }
                 // A windowed session file is shorter than the local tail even when it is newer.
                 // Merge by id, then keep only the hot suffix the live view mounts.
-                const existingHistory = Array.isArray(existing?.history) ? existing.history : [];
-                const merged = splitConversationView(mergeChatMessages(existingHistory, history)).visible;
+                // The transcript is this tab's authoritative conversation. The
+                // panel's LoadProjectConversationHistory fallback writes
+                // `restored-*` placeholder rows to show something while it is
+                // still missing; once the real transcript lands those
+                // placeholders must yield instead of doubling every round
+                // (contract: full tab-session conversation over stripped
+                // project history).
+                // The transcript is this tab's authoritative conversation. The
+                // panel's LoadProjectConversationHistory fallback writes
+                // `restored-*` placeholder rows to show something while it is
+                // still missing; once the real transcript lands those
+                // placeholders must yield instead of doubling every round
+                // (contract: full tab-session conversation over stripped
+                // project history).
+                const transcript = (history as ChatMessage[]).filter(entry => !!entry && typeof entry === "object");
+                const existingHistory = ((Array.isArray(existing?.history) ? existing.history : []) as ChatMessage[])
+                    .filter(entry => !(typeof entry?.id === "string" && entry.id.startsWith("restored-")));
+                const merged = splitConversationView(mergeProjectRoundHistory(existingHistory, existingHistory, transcript)).visible;
                 tabStatesRef.current.set(tab.id, {
                     ...(existing || { scrollTop: 0, inputText: "" }),
                     history: merged,
@@ -1808,9 +1859,9 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             inputText: "",
         };
         tabStatesRef.current.set(tabId, { ...existing, ...state });
-        // Debounce-persist history for project/expert tabs
-        if (openTab && ((openTab.type === "project" && !isACPMirrorTab(openTab)) || openTab.type === "expert") && state.history) {
-            dirtyTabIdsRef.current.add(tabId);
+        // Debounce-persist history and unsent drafts for project/expert tabs.
+        if (openTab && ((openTab.type === "project" && !isACPMirrorTab(openTab)) || openTab.type === "expert") && (state.history || typeof state.inputText === "string")) {
+            if (state.history) dirtyTabIdsRef.current.add(tabId);
             scheduleHistoryPersist();
         }
         // Persist VE tabs when sessionId changes (critical for cross-restart recovery).

@@ -3,8 +3,21 @@ import { localizeText } from "./aiAssistantI18n";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { NotificationBell } from "./NotificationBell";
 import { asNotificationCategory, NotificationPanel, stripMarkdownPreview } from "./NotificationPanel";
+import { useCompanionGroupInvites, type GroupInviteError } from "./CompanionGroupInvites";
 import { useNotifications, type AdminNotification } from "./useNotifications";
 import { IconRecord } from "./WorkbenchIcons";
+
+function groupInviteElsewhereText(error: GroupInviteError, lang: string): string {
+    const name = error.name.trim();
+    if (!name) return error.message;
+    return localizeText(
+        lang,
+        `Couldn't handle “${name}”: ${error.message}`,
+        `「${name}」未处理：${error.message}`,
+        `「${name}」未處理：${error.message}`,
+    );
+}
+
 export function AssistantTitleBarNotifications({
     active = true,
     inline,
@@ -28,9 +41,14 @@ export function AssistantTitleBarNotifications({
         urgentToast,
         dismissUrgentToast,
     } = useNotifications();
+    const { notices: groupInvites, decide: decideGroupInvite, busyId: groupInviteBusyId, error: groupInviteError, listError: groupInviteListError } = useCompanionGroupInvites(active, lang);
+    const notificationsWithInvites = useMemo(
+        () => [...groupInvites, ...notifications],
+        [groupInvites, notifications],
+    );
     const [selectedNotification, setSelectedNotification] = useState<AdminNotification | null>(null);
     const handleSelectNotification = useCallback((notification: AdminNotification) => {
-        if (!notification.is_read) markRead(notification.id);
+        if (!notification.groupInviteId && !notification.is_read) markRead(notification.id);
         setSelectedNotification(notification);
     }, [markRead]);
     const handleClosePanel = useCallback(() => {
@@ -63,7 +81,24 @@ export function AssistantTitleBarNotifications({
         return () => window.removeEventListener('maclaw:open-system-notifications', openSystemNotifications);
     }, [active, panelOpen, togglePanel]);
     useEffect(() => { if (active || !panelOpen) return; setSelectedNotification(null); togglePanel(); const focused = document.activeElement; if (focused instanceof HTMLElement && focused.closest('[data-testid="notification-panel"]')) focused.blur(); }, [active, panelOpen, togglePanel]);
-    const resolvedSelected = selectedNotification ? notifications.find((item) => item.id === selectedNotification.id) ?? selectedNotification : null;
+    const resolvedSelected = selectedNotification
+        ? notificationsWithInvites.find((item) => item.id === selectedNotification.id)
+            ?? (selectedNotification.groupInviteId ? null : selectedNotification)
+        : null;
+    const openGroupInviteId = resolvedSelected?.groupInviteId || "";
+    // One decision is in flight for the whole list. Every open invite's buttons
+    // follow that lock, otherwise another row looks ready and the click is dropped.
+    const groupInviteBusy = Boolean(openGroupInviteId) && Boolean(groupInviteBusyId);
+    const groupInviteHold = groupInviteBusy && !groupInviteError
+        ? groupInviteBusyId === openGroupInviteId
+            ? localizeText(lang, "Handling this invitation.", "正在处理这条邀请。", "正在處理這條邀請。")
+            : localizeText(lang, "Another invitation is still being handled.", "正在处理另一条邀请。", "正在處理另一條邀請。")
+        : "";
+    // The detail only explains a failure for the invitation on screen. Anywhere
+    // else, keep that sentence so leaving the row does not hide the result.
+    const groupInviteElsewhere = groupInviteError && groupInviteError.id !== openGroupInviteId
+        ? groupInviteElsewhereText(groupInviteError, lang)
+        : "";
     useEffect(() => {
         if (!urgentToast || panelOpen) return;
         const onKeyDown = (event: KeyboardEvent) => {
@@ -86,7 +121,7 @@ export function AssistantTitleBarNotifications({
         <>
             <div data-notification-anchor="true" className="atbn-anchor">
                 <NotificationBell
-                    unreadCount={unreadCount}
+                    unreadCount={unreadCount + groupInvites.length}
                     onClick={handleTogglePanel}
                     theme={t}
                     inline={inline}
@@ -96,14 +131,21 @@ export function AssistantTitleBarNotifications({
             </div>
             {panelOpen && (
                 <NotificationPanel
-                    notifications={notifications}
+                    notifications={notificationsWithInvites}
                     categoryFilter={asNotificationCategory(categoryFilter)}
                     onCategoryChange={(category) => setCategoryFilter(category)}
                     onMarkAllRead={markAllRead}
                     onSelectNotification={handleSelectNotification}
                     onClose={handleClosePanel}
                     selectedNotification={resolvedSelected}
-                    onBackFromDetail={handleBackFromDetail} ariaHidden={!active}
+                    onBackFromDetail={handleBackFromDetail}
+                    onGroupInviteAction={decideGroupInvite}
+                    groupInviteBusy={groupInviteBusy}
+                    groupInviteHold={groupInviteHold}
+                    groupInviteActionError={groupInviteElsewhere}
+                    groupInviteListError={groupInviteListError}
+                    groupInviteError={resolvedSelected?.groupInviteId && groupInviteError?.id === resolvedSelected.groupInviteId ? groupInviteError.message : ""}
+                    ariaHidden={!active}
                     detailTheme={t}
                     lang={lang}
                     theme={notificationPanelTheme}
@@ -122,9 +164,9 @@ export function AssistantTitleBarNotifications({
                         width: "320px",
                         padding: "12px 16px",
                         background: t.titleBarBg,
-                        border: "1px solid var(--theme-danger, #c43d34)",
+                        border: "1px solid var(--theme-danger, #dc1f25)",
                         borderRadius: "8px",
-                        boxShadow: "0 4px 24px color-mix(in srgb, var(--theme-danger, #c43d34) 20%, transparent)",
+                        boxShadow: "0 4px 24px color-mix(in srgb, var(--theme-danger, #dc1f25) 20%, transparent)",
                         zIndex: 50000,
                         display: "flex",
                         flexDirection: "column",
@@ -133,7 +175,7 @@ export function AssistantTitleBarNotifications({
                 >
                     <div className="atbn-urgent-head">
                         <span className="atbn-urgent-label">
-                            <IconRecord size={12} color="var(--theme-danger, #c43d34)" />
+                            <IconRecord size={12} color="var(--theme-danger, #dc1f25)" />
                             {localizeText(lang, "Urgent Notification", "\u7d27\u6025\u901a\u77e5", "\u7dca\u6025\u901a\u77e5")}
                         </span>
                         <button

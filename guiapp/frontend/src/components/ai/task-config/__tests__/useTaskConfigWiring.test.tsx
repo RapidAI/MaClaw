@@ -1,8 +1,8 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CloudWorkspaceEntitlement, CreateCloudWorkspace, CreateLatexDocument, CreateRunWindowTask, CreateTaskUnified, ListLatexTemplates, RenameCloudWorkspace, SetTabWorkingDir, SuggestNewTaskType } from '../../../../../wailsjs/go/main/App';
+import { CloudWorkspaceEntitlement, CreateCloudWorkspace, CreateLatexDocument, CreateRunWindowTask, CreateTaskUnified, ListLatexTemplates, RenameCloudWorkspace, SetTabWorkingDir, SuggestNewTaskExpert, SuggestNewTaskType } from '../../../../../wailsjs/go/main/App';
 import { useTaskConfigWiring, type TaskConfigWiringOptions } from '../useTaskConfigWiring';
-import { defaultTaskDraft, withCloudWorkspace, withExpert, withLocalWorkspace, withRemoteWorkspace, withRunWindow } from '../taskDraft';
+import { defaultTaskDraft, withCloudWorkspace, withExpert, withLocalWorkspace, withRemoteWorkspace, withRunWindow, withWorkflow, WORKFLOW_AUTO } from '../taskDraft';
 import { LATEX_EXPERT_ID } from '../../../../utils/latexTemplates';
 import { EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH } from '../../../../constants/events';
 
@@ -17,6 +17,7 @@ vi.mock('../../../../../wailsjs/go/main/App', () => ({
     RenameCloudWorkspace: vi.fn(),
     CreateTaskUnified: vi.fn(),
     SuggestNewTaskType: vi.fn().mockResolvedValue({ suggested: '', confident: false }),
+    SuggestNewTaskExpert: vi.fn().mockResolvedValue({ expertId: '', confident: false }),
     CreateRunWindowTask: vi.fn(),
     ListRunWindowTasks: vi.fn().mockResolvedValue([]),
     ClaimRunWindowTask: vi.fn(),
@@ -975,11 +976,14 @@ describe('useTaskConfigWiring new-task wizard opening', () => {
 
 describe('useTaskConfigWiring task type suggestion', () => {
     const suggest = SuggestNewTaskType as unknown as ReturnType<typeof vi.fn>;
+    const suggestExpert = SuggestNewTaskExpert as unknown as ReturnType<typeof vi.fn>;
 
     afterEach(() => {
         cleanup();
         suggest.mockReset();
         suggest.mockResolvedValue({ suggested: '', confident: false });
+        suggestExpert.mockReset();
+        suggestExpert.mockResolvedValue({ expertId: '', confident: false });
         vi.mocked(CreateTaskUnified).mockReset();
         vi.mocked(CreateRunWindowTask).mockReset();
     });
@@ -1139,6 +1143,7 @@ describe('useTaskConfigWiring task type suggestion', () => {
         });
         await waitFor(() => expect(create).toHaveBeenCalled());
         expect(suggest).not.toHaveBeenCalled();
+        expect(suggestExpert).not.toHaveBeenCalled();
         expect(showConfirm).not.toHaveBeenCalled();
 
         await waitFor(() => expect(result.current.taskConfig.sending).toBe(false));
@@ -1224,5 +1229,145 @@ describe('useTaskConfigWiring task type suggestion', () => {
         });
         await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
         expect(create.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ mode: 'coding_dev' }));
+    });
+});
+
+describe('useTaskConfigWiring expert suggestion', () => {
+    const suggest = SuggestNewTaskType as unknown as ReturnType<typeof vi.fn>;
+    const suggestExpert = SuggestNewTaskExpert as unknown as ReturnType<typeof vi.fn>;
+
+    afterEach(() => {
+        cleanup();
+        suggest.mockReset();
+        suggest.mockResolvedValue({ suggested: '', confident: false });
+        suggestExpert.mockReset();
+        suggestExpert.mockResolvedValue({ expertId: '', confident: false });
+        vi.mocked(CreateTaskUnified).mockReset();
+        vi.mocked(CreateRunWindowTask).mockReset();
+    });
+
+    function guide(overrides?: Partial<TaskConfigWiringOptions>) {
+        return makeOptions({
+            localGuideVisible: true,
+            inputValue: '把这篇论文翻译成英文',
+            ...overrides,
+        });
+    }
+
+    it('creates the matching expert and does not ask about the session type', async () => {
+        suggestExpert.mockResolvedValue({
+            expertId: 'builtin-paper-translate',
+            expertName: '论文翻译专家',
+            confident: true,
+            source: 'local',
+        });
+        suggest.mockResolvedValue({ suggested: 'coding', confident: true, source: 'local' });
+        const showConfirm = vi.fn().mockResolvedValue(true);
+        const create = vi.mocked(CreateTaskUnified);
+        create.mockResolvedValue({ projectPath: 'D:/tasks/translate' } as never);
+        const { result } = renderHook(() => useTaskConfigWiring(guide({ showConfirm })));
+        await act(async () => {
+            result.current.handleSendWithTaskConfig();
+        });
+        await waitFor(() => expect(create).toHaveBeenCalled());
+        expect(suggestExpert).toHaveBeenCalledWith('把这篇论文翻译成英文');
+        expect(suggest).not.toHaveBeenCalled();
+        expect(showConfirm).not.toHaveBeenCalled();
+        expect(create.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
+            expertId: 'builtin-paper-translate',
+            expertName: '论文翻译专家',
+        }));
+    });
+
+    it('stays on 通用 and still classifies the session type when no expert fits', async () => {
+        suggestExpert.mockResolvedValue({ expertId: '', confident: false });
+        suggest.mockResolvedValue({ suggested: 'chat', confident: true, source: 'local' });
+        const showConfirm = vi.fn();
+        const create = vi.mocked(CreateTaskUnified);
+        create.mockResolvedValue({ projectPath: 'D:/tasks/chat' } as never);
+        const { result } = renderHook(() => useTaskConfigWiring(guide({
+            inputValue: '北京今天天气',
+            showConfirm,
+        })));
+        await act(async () => {
+            result.current.handleSendWithTaskConfig();
+        });
+        await waitFor(() => expect(create).toHaveBeenCalled());
+        expect(suggest).toHaveBeenCalledWith('北京今天天气');
+        expect(showConfirm).not.toHaveBeenCalled();
+        expect(create.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
+            expertId: '',
+            mode: 'chat',
+        }));
+    });
+
+    it('does not classify an expert when a workflow or a cloud workspace is already chosen', async () => {
+        suggestExpert.mockResolvedValue({
+            expertId: 'builtin-pptx-maker',
+            expertName: 'PPT 制作专家',
+            confident: true,
+        });
+        const create = vi.mocked(CreateTaskUnified);
+        create.mockResolvedValue({ projectPath: 'D:/tasks/flow' } as never);
+        const { result } = renderHook(() => useTaskConfigWiring(guide()));
+        act(() => {
+            result.current.taskConfig.onDraftChange(withWorkflow(defaultTaskDraft(), WORKFLOW_AUTO));
+        });
+        await act(async () => {
+            result.current.handleSendWithTaskConfig();
+        });
+        await waitFor(() => expect(create).toHaveBeenCalled());
+        expect(suggestExpert).not.toHaveBeenCalled();
+        expect(create.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ expertId: '' }));
+
+        await waitFor(() => expect(result.current.taskConfig.sending).toBe(false));
+        suggestExpert.mockClear();
+        create.mockClear();
+        act(() => {
+            result.current.taskConfig.onDraftChange(withCloudWorkspace(defaultTaskDraft(), 'cws-1', '讲义'));
+        });
+        await act(async () => {
+            result.current.handleSendWithTaskConfig();
+        });
+        await waitFor(() => expect(create).toHaveBeenCalled());
+        expect(suggestExpert).not.toHaveBeenCalled();
+        expect(create.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
+            expertId: '',
+            mode: 'cloud',
+        }));
+    });
+
+    it('stores the matched expert on a scheduled task', async () => {
+        suggestExpert.mockResolvedValue({
+            expertId: 'builtin-pptx-maker',
+            expertName: 'PPT 制作专家',
+            confident: true,
+            source: 'llm',
+        });
+        const schedule = vi.mocked(CreateRunWindowTask);
+        schedule.mockResolvedValue('rw-1' as never);
+        const { result } = renderHook(() => useTaskConfigWiring(guide({
+            inputValue: '做一个项目介绍PPT',
+            showAlert: vi.fn(),
+        })));
+        act(() => {
+            result.current.taskConfig.onDraftChange(withRunWindow(defaultTaskDraft(), {
+                mode: 'scheduled',
+                startAt: '2099-01-02T01:00',
+                endAt: '',
+            }));
+        });
+        await act(async () => {
+            result.current.handleSendWithTaskConfig();
+        });
+        await waitFor(() => expect(schedule).toHaveBeenCalled());
+        expect(vi.mocked(CreateTaskUnified)).not.toHaveBeenCalled();
+        expect(suggest).not.toHaveBeenCalled();
+        expect(schedule.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+            draft: expect.objectContaining({
+                expertId: 'builtin-pptx-maker',
+                expertName: 'PPT 制作专家',
+            }),
+        }));
     });
 });

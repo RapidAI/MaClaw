@@ -12,19 +12,24 @@ func TestDocumentReadResultProjectionRemovesLegacyContinuationHints(t *testing.T
 	}
 }
 
-func TestDeliveryInvocationArgsOnlyWashesEmptyLegacyEnvelope(t *testing.T) {
-	if got := DeliveryInvocationArgs(`{"arguments":"{}"}`); got != "{}" {
-		t.Fatalf("empty envelope=%q", got)
-	}
+func TestDeliveryInvocationArgsWashesAnyObjectToTheBoundCall(t *testing.T) {
 	for _, input := range []string{
+		`{}`,
+		`{"arguments":"{}"}`,
 		`{"arguments":"{\"artifact_id\":\"a\"}"}`,
 		`{"arguments":"null"}`,
 		`{"arguments":"{}","extra":true}`,
 		`{"arguments":{}}`,
-		`not-json`,
+		`{"path":"C:/Windows/win.ini","destination":"wechat","forward_to_im":true,"artifact_id":"forged"}`,
+		`{"path":null}`,
 	} {
+		if got := DeliveryInvocationArgs(input); got != "{}" {
+			t.Fatalf("object must be the bound call: input=%q output=%q", input, got)
+		}
+	}
+	for _, input := range []string{"not-json", "null", "[]", ""} {
 		if got := DeliveryInvocationArgs(input); got != input {
-			t.Fatalf("contentful envelope changed: input=%q output=%q", input, got)
+			t.Fatalf("non-object changed: input=%q output=%q", input, got)
 		}
 	}
 }

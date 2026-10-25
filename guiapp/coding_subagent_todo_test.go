@@ -70,8 +70,32 @@ func TestCodingAgentTodoWriteOnlyOneInProgress(t *testing.T) {
 		t.Fatal(outcome)
 	}
 	items := state.snapshot()
-	if items[0].Status != codingAgentTodoPending || items[1].Status != codingAgentTodoInProgress {
-		t.Fatalf("only last in_progress should remain: %+v", items)
+	if items[0].Status != codingAgentTodoInProgress || items[1].Status != codingAgentTodoPending {
+		t.Fatalf("first unfinished stays in progress: %+v", items)
+	}
+}
+
+func TestCodingAgentTodoWriteCannotSkipEarlierPending(t *testing.T) {
+	var state codingAgentTodoState
+	_, outcome := executeCodingAgentTodoWrite(&state, `{
+		"todos": [
+			{"id":"1","content":"probe","status":"completed"},
+			{"id":"2","content":"build","status":"completed"},
+			{"id":"3","content":"tests","status":"completed"},
+			{"id":"4","content":"run probe","status":"pending"},
+			{"id":"5","content":"git status","status":"pending"},
+			{"id":"6","content":"fix renderer","status":"in_progress"}
+		]
+	}`, nil, nil)
+	if outcome != codingToolOutcomeSuccess {
+		t.Fatal(outcome)
+	}
+	items := state.snapshot()
+	if items[3].Status != codingAgentTodoInProgress || items[3].Content != "run probe" {
+		t.Fatalf("cursor should be the first unfinished item: %+v", items[3])
+	}
+	if items[5].Status != codingAgentTodoPending {
+		t.Fatalf("later in_progress was not rewound: %+v", items[5])
 	}
 }
 
@@ -333,6 +357,189 @@ func TestPublishCodingAgentTodosDoesNotOverwriteOrchestratedPlan(t *testing.T) {
 	}
 	if mem.StepStatuses[1].Status != codingStepPending || mem.StepStatuses[2].Status != codingStepPending {
 		t.Fatalf("later plan steps must not be agent-passed: %+v", mem.StepStatuses)
+	}
+}
+
+func TestPublishCodingAgentTodosKeepsTheStepError(t *testing.T) {
+	userID := "desktop-user:todo-keep-note"
+	h := &IMMessageHandler{}
+	h.clearStickyCodingWorkbenchMemory(userID)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	h.setStickyCodingStepStatuses(userID, []codingWorkbenchStepStatus{
+		{Index: 1, Title: "运行 probe", Status: codingStepPending},
+		{Index: 2, Title: "修复渲染器", Status: codingStepRunning, Summary: "error C3861: 'spawnFood': identifier not found"},
+	})
+	publishCodingAgentTodosToUI(h, userID, []codingAgentTodoItem{
+		{ID: "1", Content: "运行 probe", Status: codingAgentTodoInProgress},
+		{ID: "2", Content: "修复渲染器", Status: codingAgentTodoPending},
+	})
+	got := h.getStickyCodingWorkbenchMemory(userID).StepStatuses
+	if len(got) != 2 || !strings.Contains(got[1].Summary, "C3861") {
+		t.Fatalf("todo mirror dropped the stored error: %+v", got)
+	}
+	publishCodingAgentTodosToUI(h, userID, []codingAgentTodoItem{
+		{ID: "1", Content: "运行 probe", Status: codingAgentTodoCompleted},
+		{ID: "2", Content: "修复渲染器", Status: codingAgentTodoCompleted},
+	})
+	done := h.getStickyCodingWorkbenchMemory(userID).StepStatuses
+	if len(done) != 2 || done[1].Status != codingStepPassed || done[1].Summary != "" {
+		t.Fatalf("passed step should drop the old error: %+v", done)
+	}
+}
+
+func TestPublishCodingAgentTodosKeepsErrorOnATruncatedTitle(t *testing.T) {
+	userID := "desktop-user:todo-keep-long-note"
+	h := &IMMessageHandler{}
+	h.clearStickyCodingWorkbenchMemory(userID)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	long := strings.Repeat("修", codingAgentTodoMaxContent+10)
+	h.setStickyCodingStepStatuses(userID, []codingWorkbenchStepStatus{
+		{Index: 1, Title: "运行 probe", Status: codingStepPending},
+		{Index: 2, Title: long, Status: codingStepRunning, Summary: "error C3861: identifier not found"},
+	})
+	publishCodingAgentTodosToUI(h, userID, []codingAgentTodoItem{
+		{ID: "1", Content: "运行 probe", Status: codingAgentTodoInProgress},
+		{ID: "2", Content: truncateCodingAgentTodoContent(long), Status: codingAgentTodoPending},
+	})
+	got := h.getStickyCodingWorkbenchMemory(userID).StepStatuses
+	if len(got) != 2 || !strings.Contains(got[1].Summary, "C3861") {
+		t.Fatalf("truncated title dropped the stored error: %+v", got)
+	}
+}
+
+func TestTodoWriteMergeAfterRestartKeepsTheChecklist(t *testing.T) {
+	userID := "desktop-user:todo-merge-restart"
+	h := &IMMessageHandler{}
+	h.clearStickyCodingWorkbenchMemory(userID)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	// Disk order is not list order. The cursor is the later running row.
+	h.setStickyCodingStepStatuses(userID, []codingWorkbenchStepStatus{
+		{Index: 6, Title: "修复渲染器", Status: codingStepRunning, Summary: "error C3861: 'spawnFood': identifier not found"},
+		{Index: 1, Title: "确认现状", Status: codingStepPassed},
+		{Index: 2, Title: "构建", Status: codingStepPassed},
+		{Index: 3, Title: "测试", Status: codingStepPassed},
+		{Index: 4, Title: "运行 probe", Status: codingStepPending, Summary: "probe exited 1"},
+		{Index: 5, Title: "记录结果", Status: codingStepPending},
+	})
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{
+			handler:    h,
+			loopCtx:    &LoopContext{UserID: userID},
+			onProgress: func(string) {},
+		},
+	}
+	res := cb.executeTodoWrite(`{"merge":true,"todos":[{"id":"T6","status":"in_progress"}]}`)
+	if res.Outcome != codingToolOutcomeSuccess {
+		t.Fatalf("%+v", res)
+	}
+	got := h.getStickyCodingWorkbenchMemory(userID).StepStatuses
+	if len(got) != 6 {
+		t.Fatalf("merge replaced the checklist: %+v", got)
+	}
+	if got[3].Index != 4 || got[3].Status != codingStepRunning || got[3].Title != "运行 probe" {
+		t.Fatalf("cursor = %+v, want T4 running", got[3])
+	}
+	if !strings.Contains(got[3].Summary, "probe exited 1") {
+		t.Fatalf("T4 note dropped: %+v", got[3])
+	}
+	if got[5].Index != 6 || got[5].Status != codingStepPending || !strings.Contains(got[5].Summary, "C3861") {
+		t.Fatalf("T6 = %+v, want pending with the compiler note", got[5])
+	}
+	if got[0].Status != codingStepPassed || got[2].Status != codingStepPassed {
+		t.Fatalf("passed rows changed: %+v", got[:3])
+	}
+}
+
+func TestTodoWriteWithoutMergeKeepsTheStickyChecklist(t *testing.T) {
+	userID := "desktop-user:todo-merge-omitted"
+	h := &IMMessageHandler{}
+	h.clearStickyCodingWorkbenchMemory(userID)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	h.setStickyCodingStepStatuses(userID, []codingWorkbenchStepStatus{
+		{Index: 1, Title: "旧步骤", Status: codingStepRunning},
+		{Index: 2, Title: "下一步", Status: codingStepPending},
+	})
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{
+			handler:    h,
+			loopCtx:    &LoopContext{UserID: userID},
+			onProgress: func(string) {},
+		},
+	}
+	res := cb.executeTodoWrite(`{"todos":[{"id":"1","content":"新任务","status":"in_progress"}]}`)
+	if res.Outcome != codingToolOutcomeSuccess {
+		t.Fatalf("%+v", res)
+	}
+	got := h.getStickyCodingWorkbenchMemory(userID).StepStatuses
+	if len(got) != 2 || got[0].Title != "新任务" || got[0].Status != codingStepRunning {
+		t.Fatalf("omitted merge replaced the checklist: %+v", got)
+	}
+	if got[1].Index != 2 || got[1].Title != "下一步" || got[1].Status != codingStepPending {
+		t.Fatalf("later row dropped: %+v", got)
+	}
+	if !strings.Contains(res.Text, "下一步") || !strings.Contains(res.Text, "进度：0/2") {
+		t.Fatalf("tool result dropped the sticky row: %s", res.Text)
+	}
+}
+
+func TestTodoWriteMergeFalseStillReplacesTheChecklist(t *testing.T) {
+	userID := "desktop-user:todo-merge-false"
+	h := &IMMessageHandler{}
+	h.clearStickyCodingWorkbenchMemory(userID)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	h.setStickyCodingStepStatuses(userID, []codingWorkbenchStepStatus{
+		{Index: 1, Title: "旧步骤", Status: codingStepRunning},
+		{Index: 2, Title: "下一步", Status: codingStepPending},
+	})
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{
+			handler:    h,
+			loopCtx:    &LoopContext{UserID: userID},
+			onProgress: func(string) {},
+		},
+	}
+	res := cb.executeTodoWrite(`{"merge":false,"todos":[{"id":"1","content":"新任务","status":"in_progress"}]}`)
+	if res.Outcome != codingToolOutcomeSuccess {
+		t.Fatalf("%+v", res)
+	}
+	got := h.getStickyCodingWorkbenchMemory(userID).StepStatuses
+	if len(got) != 1 || got[0].Title != "新任务" || got[0].Status != codingStepRunning {
+		t.Fatalf("explicit merge=false should replace: %+v", got)
+	}
+	if strings.Contains(res.Text, "下一步") {
+		t.Fatalf("replace kept the old row: %s", res.Text)
+	}
+}
+
+func TestTodoWriteMergeDoesNotAdoptAnOrchestratedPlan(t *testing.T) {
+	userID := "desktop-user:todo-merge-plan"
+	h := &IMMessageHandler{}
+	h.clearStickyCodingWorkbenchMemory(userID)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
+		mem.ExecutionPlan = "### T1: 检查\n### T2: 实现"
+		mem.StepStatuses = []codingWorkbenchStepStatus{
+			{Index: 1, Title: "检查远程环境", Status: codingStepRunning},
+			{Index: 2, Title: "实现功能", Status: codingStepPending},
+		}
+	})
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{
+			handler:    h,
+			loopCtx:    &LoopContext{UserID: userID},
+			onProgress: func(string) {},
+		},
+	}
+	res := cb.executeTodoWrite(`{"merge":true,"todos":[{"id":"1","content":"本步内部检查","status":"in_progress"}]}`)
+	if res.Outcome != codingToolOutcomeSuccess {
+		t.Fatalf("%+v", res)
+	}
+	if strings.Contains(res.Text, "检查远程环境") || strings.Contains(res.Text, "实现功能") || !strings.Contains(res.Text, "进度：0/1") {
+		t.Fatalf("agent merge adopted the orchestrator plan: %s", res.Text)
+	}
+	got := h.getStickyCodingWorkbenchMemory(userID).StepStatuses
+	if len(got) != 2 || got[0].Status != codingStepRunning || got[0].Title != "检查远程环境" {
+		t.Fatalf("orchestrator plan changed: %+v", got)
 	}
 }
 

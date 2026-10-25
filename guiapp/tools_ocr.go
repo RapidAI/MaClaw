@@ -1,9 +1,14 @@
 package guiapp
 
 import (
+	"bytes"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,6 +16,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/browser"
+	"github.com/RapidAI/CodeClaw/corelib/formula"
 )
 
 // registerOCRTools registers the native OCR recognition tool. The tool uses
@@ -24,20 +30,23 @@ func registerOCRTools(registry *ToolRegistry, app *App) {
 	registry.Register(RegisteredTool{
 		Name: "ocr_recognize",
 		Description: "Recognize text with the built-in local PP-OCRv6 engine (fully offline, no Python or cloud). " +
+			"Set mode to formula to recognize one printed formula image as LaTeX with the local FormulaNet model. " +
 			"Provide image_path (local PNG/JPEG, or a scanned PDF) or image_base64 (base64-encoded PNG/JPEG, data-URI allowed) — at least one is required. " +
+			"Formula mode accepts one PNG, JPEG, or GIF, not a PDF. " +
 			"A PDF is read from embedded page images, 8 image pages at a time. Pass output_path and, on the next call, the start_page named in the result. " +
 			"Do not install rapidocr, paddleocr, tesseract, or ocrmypdf for this. " +
-			"Returns recognized text regions with bounding boxes [x,y,w,h] and confidence. " +
+			"Text mode returns recognized text regions with bounding boxes [x,y,w,h] and confidence. Formula mode returns LaTeX. " +
 			"When the full result is needed downstream (e.g. saving to a file), pass output_path: the complete result is written there directly, avoiding truncation of large in-context tool results.",
 		Category: ToolCategoryBuiltin,
-		Tags:     []string{"ocr", "image", "text", "recognition"},
+		Tags:     []string{"ocr", "image", "text", "recognition", "formula", "latex"},
 		Priority: 5,
 		Status:   RegToolAvailable,
 		InputSchema: map[string]interface{}{
-			"image_path":   map[string]interface{}{"type": "string", "description": "Local PNG/JPEG, or a scanned PDF. PDF results go to output_path."},
-			"image_base64": map[string]interface{}{"type": "string", "description": "Base64-encoded PNG/JPEG image (data-URI prefix allowed)"},
-			"output_path":  map[string]interface{}{"type": "string", "description": "Write the recognition text here. Required for a PDF. Later PDF pages append when start_page > 1."},
+			"image_path":   map[string]interface{}{"type": "string", "description": "Local PNG/JPEG, or a scanned PDF. PDF results go to output_path. Formula mode does not accept a PDF."},
+			"image_base64": map[string]interface{}{"type": "string", "description": "Base64-encoded PNG/JPEG image (data-URI prefix allowed). Formula mode also accepts GIF."},
+			"output_path":  map[string]interface{}{"type": "string", "description": "Write the recognition text here. Required for a PDF. Later PDF pages append when start_page > 1. Formula mode writes the LaTeX string."},
 			"start_page":   map[string]interface{}{"type": "integer", "description": "1-based PDF page to start from. Use the next start_page from the previous result. Ignored for a single image."},
+			"mode":         map[string]interface{}{"type": "string", "description": "text (default) runs PP-OCRv6. formula runs FormulaNet and returns LaTeX for one image."},
 		},
 		Source: "builtin:ocr",
 		Handler: func(args map[string]interface{}) string {
@@ -47,6 +56,13 @@ func registerOCRTools(registry *ToolRegistry, app *App) {
 }
 
 func runOCRRecognizeTool(app *App, args map[string]interface{}) string {
+	mode, modeErr := ocrRecognizeMode(args)
+	if modeErr != nil {
+		return "ocr_recognize: " + modeErr.Error()
+	}
+	if mode == "formula" {
+		return runOCRFormula(app, args)
+	}
 	if app != nil && !app.GetOCREnabled() {
 		return "OCR is disabled in settings (ocr_enabled=false). Enable OCR first to use ocr_recognize."
 	}
@@ -85,6 +101,128 @@ func runOCRRecognizeTool(app *App, args map[string]interface{}) string {
 		return fmt.Sprintf("OCR 完成：%d 个文本区域，完整结果已写入 %s（%d 字节）。", len(results), written, len(text))
 	}
 	return text
+}
+
+func ocrRecognizeMode(args map[string]interface{}) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(stringVal(args, "mode"))) {
+	case "", "text", "ocr":
+		return "text", nil
+	case "formula", "latex":
+		return "formula", nil
+	default:
+		return "", fmt.Errorf("mode must be text or formula")
+	}
+}
+
+func runOCRFormula(app *App, args map[string]interface{}) string {
+	if app != nil && !app.GetFormulaEnabled() {
+		return "Formula recognition is disabled in settings (formula_enabled=false). Enable it in Settings → AI models → OCR."
+	}
+	if rejected := formulaModeArgsRejected(args); rejected != "" {
+		return rejected
+	}
+	var eng *formula.Engine
+	if app != nil {
+		ready, err := app.ensureFormulaReady()
+		if err != nil {
+			if errors.Is(err, errFormulaNotReady) {
+				return "Formula model files are not present yet; a background download of FormulaNet has been started. Please retry shortly."
+			}
+			if errors.Is(err, errFormulaRepairing) {
+				return "Formula model files failed verification; a repair has been started. Please retry shortly."
+			}
+			return fmt.Sprintf("ocr_recognize failed: %v", err)
+		}
+		eng = ready
+	}
+	if eng == nil {
+		return "ocr_recognize: formula engine is not available"
+	}
+	img, err := formulaImageFromToolArgs(args)
+	if err != nil {
+		return "ocr_recognize: " + err.Error()
+	}
+	latex, err := eng.Recognize(img)
+	if err != nil {
+		return fmt.Sprintf("ocr_recognize failed: %v", err)
+	}
+	if strings.TrimSpace(latex) == "" {
+		return "ocr_recognize: 没有识别出公式。"
+	}
+	if outPath := strings.TrimSpace(stringVal(args, "output_path")); outPath != "" {
+		written, wErr := writeOCRResultFile(outPath, latex)
+		if wErr != nil {
+			return fmt.Sprintf("ocr_recognize: write output file: %v", wErr)
+		}
+		return fmt.Sprintf("公式识别完成，LaTeX 已写入 %s（%d 字节）。", written, len(latex))
+	}
+	return latex
+}
+
+func formulaModeArgsRejected(args map[string]interface{}) string {
+	path := strings.TrimSpace(stringVal(args, "image_path"))
+	out := strings.TrimSpace(stringVal(args, "output_path"))
+	if strings.EqualFold(filepath.Ext(path), ".pdf") {
+		return "ocr_recognize: formula 模式只接受一张 PNG、JPEG 或 GIF，不接受 PDF"
+	}
+	if out != "" && strings.EqualFold(filepath.Ext(out), ".pdf") {
+		return "ocr_recognize: output_path 要写成 .txt。公式结果是 LaTeX 文本，不是 PDF。"
+	}
+	if path != "" && out != "" && ocrSamePath(path, out) {
+		return "ocr_recognize: output_path 不能是源图片。请改用旁边的 .txt 文件。"
+	}
+	return ""
+}
+
+func formulaImageFromToolArgs(args map[string]interface{}) (image.Image, error) {
+	path := strings.TrimSpace(stringVal(args, "image_path"))
+	if path != "" {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("stat image file: %w", err)
+		}
+		if info.Size() > ocrToolMaxImageBytes {
+			return nil, fmt.Errorf("image file too large: %d bytes (max %d)", info.Size(), ocrToolMaxImageBytes)
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, fmt.Errorf("read image file: %w", err)
+		}
+		defer f.Close()
+		img, err := formula.DecodeImage(f)
+		if err != nil {
+			return nil, err
+		}
+		return img, nil
+	}
+	b64, err := ocrToolImageBase64(args)
+	if err != nil {
+		return nil, err
+	}
+	payload := b64
+	if i := strings.Index(payload, ","); i >= 0 && strings.HasPrefix(strings.ToLower(payload[:i]), "data:") {
+		payload = payload[i+1:]
+	}
+	payload = strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\n', '\r', '\t':
+			return -1
+		default:
+			return r
+		}
+	}, payload)
+	raw, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		raw, err = base64.RawStdEncoding.DecodeString(payload)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("decode image_base64: %w", err)
+	}
+	img, err := formula.DecodeImage(bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	return img, nil
 }
 
 // writeOCRResultFile writes the OCR result text to path, creating parent

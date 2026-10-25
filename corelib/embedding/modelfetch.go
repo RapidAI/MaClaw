@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -120,6 +121,7 @@ var ErrModelCorrupt = errors.New("embedding model file corrupt")
 func VerifyModelFile(path string, spec ModelSpec) error {
 	fi, err := os.Stat(path)
 	if err != nil {
+		clearVerifyMiss(path)
 		return err
 	}
 	if !fi.Mode().IsRegular() {
@@ -131,19 +133,65 @@ func VerifyModelFile(path string, spec ModelSpec) error {
 	if spec.SHA256 == "" {
 		return nil
 	}
+	mtime := fi.ModTime().UnixNano()
 	marker := verifiedMarker(fi, spec.SHA256)
 	if b, err := os.ReadFile(path + ".verified"); err == nil && strings.TrimSpace(string(b)) == marker {
+		clearVerifyMiss(path)
 		return nil
 	}
+	// A failed hash is remembered for this path, size, and mtime. Repair
+	// checks the pin again before the replacement is visible, and the layout
+	// weights are large enough that a second full read is the wrong retry.
+	if cached, ok := cachedVerifyMiss(path, fi.Size(), mtime); ok {
+		return cached
+	}
+	atomic.AddInt64(&verifyHashReads, 1)
 	sum, err := fileSHA256(path)
 	if err != nil {
 		return err
 	}
 	if !strings.EqualFold(sum, spec.SHA256) {
-		return fmt.Errorf("%w: %s sha256 %s, want %s", ErrModelCorrupt, path, sum, spec.SHA256)
+		err = fmt.Errorf("%w: %s sha256 %s, want %s", ErrModelCorrupt, path, sum, spec.SHA256)
+		storeVerifyMiss(path, fi.Size(), mtime, err)
+		return err
 	}
+	clearVerifyMiss(path)
 	_ = os.WriteFile(path+".verified", []byte(marker+"\n"), 0o644)
 	return nil
+}
+
+var (
+	verifyHashReads int64
+	verifyMissMu    sync.Mutex
+	verifyMissCache = map[string]verifyMiss{}
+)
+
+type verifyMiss struct {
+	size  int64
+	mtime int64
+	err   error
+}
+
+func cachedVerifyMiss(path string, size, mtime int64) (error, bool) {
+	verifyMissMu.Lock()
+	defer verifyMissMu.Unlock()
+	miss, ok := verifyMissCache[path]
+	if !ok || miss.size != size || miss.mtime != mtime {
+		return nil, false
+	}
+	return miss.err, true
+}
+
+func storeVerifyMiss(path string, size, mtime int64, err error) {
+	verifyMissMu.Lock()
+	verifyMissCache[path] = verifyMiss{size: size, mtime: mtime, err: err}
+	verifyMissMu.Unlock()
+}
+
+func clearVerifyMiss(path string) {
+	verifyMissMu.Lock()
+	delete(verifyMissCache, path)
+	verifyMissMu.Unlock()
 }
 
 func verifiedMarker(fi os.FileInfo, sha string) string {

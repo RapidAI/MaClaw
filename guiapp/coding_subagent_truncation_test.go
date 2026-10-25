@@ -1,9 +1,12 @@
 package guiapp
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 func TestTruncateToolResult_ShortResults_PassThrough(t *testing.T) {
@@ -131,6 +134,124 @@ func TestTruncateToolResult_ListDir_LargeDirectory(t *testing.T) {
 	}
 	if !strings.Contains(result, "directories") && !strings.Contains(result, "files") {
 		t.Error("should have dir/file count summary")
+	}
+}
+
+func TestTruncateToolResult_ReadFile_KeepsCodegraphSurvey(t *testing.T) {
+	payload, err := json.Marshal(map[string]string{
+		"backend":       "codegraph",
+		"operation":     "file_symbols",
+		"query":         "snake/src/Game.cpp",
+		"output":        strings.Repeat("void update() {}\n", 2000),
+		"continue_with": codegraphKeepUsingHint,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := truncateToolResultForSubAgent("read_file", string(payload))
+	if got != string(payload) || strings.Contains(got, "read_file with offset") {
+		t.Fatalf("codegraph survey was turned into a byte read, len=%d", len(got))
+	}
+	plain := strings.Repeat("void update() {}\n", 2000)
+	if truncated := truncateToolResultForSubAgent("read_file", plain); !strings.Contains(truncated, "read_file with offset") {
+		t.Fatal("a plain source read should still page with offset")
+	}
+}
+
+func TestCodegraphProjectionKeepsTheSource(t *testing.T) {
+	output := strings.Repeat("void update() {}\n", 500) + "\n\nIndexed files in this result:\nsnake/src/Game.cpp\n"
+	payload, err := json.Marshal(map[string]string{
+		"backend":       "codegraph",
+		"operation":     "explore",
+		"query":         "snake game implementation overview",
+		"output":        output,
+		"continue_with": codegraphExploreRemainderHint,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(payload)
+	if codegraphProjectionLimit("read_file", text) != codegraphProjectedResultLimit {
+		t.Fatal("a codegraph survey returned through read_file used the short projector")
+	}
+	if codegraphProjectionLimit(codeNavigationToolName, text) != codegraphProjectedResultLimit {
+		t.Fatal("code_navigation used the short projector")
+	}
+	if codegraphProjectionLimit("read_file", "void update() {}\n") != maxToolResultLen {
+		t.Fatal("a plain source read changed projector budget")
+	}
+	sketched := projectToolResultHandle(codeNavigationToolName, "test", text, text, maxToolResultLen)
+	if strings.Contains(sketched, "[json_preview]") || !strings.Contains(sketched, codegraphExploreRemainderHint) || !strings.Contains(sketched, "snake/src/Game.cpp") || !strings.Contains(sketched, "middle of this codegraph result omitted") {
+		t.Fatalf("4KB code_navigation projector dropped the source:\n%s", sketched)
+	}
+	c := &codingSubAgentCallbacks{}
+	got := c.ProjectToolResult(codeNavigationToolName, agent.ToolExecutionResult{Result: text, Outcome: agent.ToolExecutionOutcomeOK})
+	if got != text {
+		t.Fatalf("codegraph result under the budget was sketched or rewritten, len=%d want %d", len(got), len(text))
+	}
+	huge := strings.Repeat("void update() {}\n", 8000) + "\nIndexed files in this result:\nsnake/src/Game.cpp\n"
+	hugePayload, err := json.Marshal(map[string]string{
+		"backend":       "codegraph",
+		"operation":     "explore",
+		"output":        huge,
+		"continue_with": codegraphExploreRemainderHint,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shrunk := codegraphResultPreview(string(hugePayload), 4000)
+	if shrunk == "" || len(shrunk) > 4000 || !strings.Contains(shrunk, codegraphExploreRemainderHint) || !strings.Contains(shrunk, "snake/src/Game.cpp") || !strings.Contains(shrunk, "middle of this codegraph result omitted") {
+		t.Fatalf("oversized preview len=%d\n%s", len(shrunk), shrunk)
+	}
+}
+
+func TestListDirectoryProjectionKeepsTheCodegraphSteer(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("directory: F:/test-prog/snake (80 entries)\n")
+	var late string
+	for i := 0; i < 80; i++ {
+		name := fmt.Sprintf("file%02d_%s.cpp", i, strings.Repeat("x", 80))
+		if i == 70 {
+			late = name
+		}
+		fmt.Fprintf(&b, "  [file] %s (1200 bytes)\n", name)
+	}
+	b.WriteString("\n")
+	b.WriteString(codegraphListedSourceSteer)
+	b.WriteByte('\n')
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&b, "snake/src/module%02d/FileName.cpp\n", i)
+	}
+	text := b.String()
+	if strings.Count(text, "\n") > subAgentTruncListDirMaxLines {
+		t.Fatalf("fixture has %d lines", strings.Count(text, "\n"))
+	}
+	c := &codingSubAgentCallbacks{}
+	got := c.ProjectToolResult("list_directory", agent.ToolExecutionResult{Result: text, Outcome: agent.ToolExecutionOutcomeOK})
+	if !strings.Contains(got, codegraphListedSourceSteer) || !strings.Contains(got, "snake/src/module00/FileName.cpp") || !strings.Contains(got, "directory: F:/test-prog/snake") {
+		t.Fatalf("projected listing lost the steer:\n%s", got)
+	}
+	if late != "" && strings.Contains(got, late) {
+		t.Fatalf("listing tail replaced the steer:\n%s", got)
+	}
+	short := "directory: snake (1 entries)\n  [file] Game.cpp (10 bytes)\n" + codegraphListedSourceSteer + "\nsnake/src/Game.cpp\n"
+	if got := c.ProjectToolResult("list_directory", agent.ToolExecutionResult{Result: short, Outcome: agent.ToolExecutionOutcomeOK}); got != short {
+		t.Fatalf("short listing was rewritten, len=%d want %d", len(got), len(short))
+	}
+}
+
+func TestTruncateToolResult_ListDir_KeepsCodegraphSteer(t *testing.T) {
+	var lines []string
+	for i := 1; i <= 300; i++ {
+		lines = append(lines, fmt.Sprintf("file_%d.go", i))
+	}
+	input := strings.Join(lines, "\n") + "\n" + codegraphListedSourceSteer + "\nsnake/src/Game.cpp\n"
+	result := truncateToolResultForSubAgent("list_directory", input)
+	if !strings.Contains(result, "file_1.go") || strings.Contains(result, "file_250.go") {
+		t.Fatalf("directory head was not kept:\n%s", result)
+	}
+	if !strings.Contains(result, codegraphListedSourceSteer) || !strings.Contains(result, "snake/src/Game.cpp") {
+		t.Fatalf("steer was truncated off the listing:\n%s", result)
 	}
 }
 

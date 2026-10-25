@@ -22,8 +22,8 @@ func TestMergeSearchResultsTagAndDedup(t *testing.T) {
 	if got[2].Source.ID != "e1" {
 		t.Fatalf("want e1 last, got %+v", got)
 	}
-	if got[2].Source.Title != "[企业] Policy" {
-		t.Fatalf("want tagged title, got %q", got[2].Source.Title)
+	if got[2].Source.Title != "Policy" || got[2].LibraryID != "enterprise" {
+		t.Fatalf("title = %q library = %q", got[2].Source.Title, got[2].LibraryID)
 	}
 }
 
@@ -46,8 +46,8 @@ func TestMergeSearchResultsKeepsDistinctPersonalEvidence(t *testing.T) {
 	if got[0].CardID != "c1" || got[1].FactID != "f1" || got[2].RowID != "r1" || got[3].Source.ID != "ent" {
 		t.Fatalf("order = %+v", got)
 	}
-	if got[3].Source.Title != "[企业] Policy" {
-		t.Fatalf("title = %q", got[3].Source.Title)
+	if got[3].Source.Title != "Policy" || got[3].LibraryID != "enterprise" {
+		t.Fatalf("title = %q library = %q", got[3].Source.Title, got[3].LibraryID)
 	}
 }
 
@@ -61,11 +61,23 @@ func TestMergeSearchResultsKeepsRoomForANewEnterpriseSource(t *testing.T) {
 		{ResultType: "card", CardID: "ec", Source: knowledge.Source{ID: "ent", Title: "Policy"}, Snippet: "remote"},
 	}
 	tight := MergeSearchResults(personal, enterprise, 2, true)
-	if len(tight) != 2 || tight[0].CardID != "c1" || tight[1].Source.ID != "ent" || tight[1].Source.Title != "[企业] Policy" {
+	if len(tight) != 2 || tight[0].CardID != "c1" || tight[1].Source.ID != "ent" || tight[1].Source.Title != "Policy" || tight[1].LibraryID != "enterprise" {
 		t.Fatalf("tight page = %+v", tight)
 	}
 	wide := MergeSearchResults(personal, enterprise, 4, true)
 	if len(wide) != 4 || wide[0].CardID != "c1" || wide[1].FactID != "f1" || wide[2].RowID != "r1" || wide[3].Source.ID != "ent" {
 		t.Fatalf("wide page = %+v", wide)
+	}
+}
+
+func TestMergeSearchResultsKeepsPresetLibraryIDAndTitle(t *testing.T) {
+	enterprise := []knowledge.SearchResult{{
+		Source:    knowledge.Source{ID: "e1", Title: "[企业] Policy"},
+		LibraryID: "lib",
+		Snippet:   "c",
+	}}
+	got := MergeSearchResults(nil, enterprise, 5, true)
+	if len(got) != 1 || got[0].Source.Title != "[企业] Policy" || got[0].LibraryID != "lib" {
+		t.Fatalf("kept = %+v", got)
 	}
 }

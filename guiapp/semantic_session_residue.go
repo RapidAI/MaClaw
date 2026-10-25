@@ -19,9 +19,11 @@ type semanticSessionResidue struct {
 	Status     semanticResidueStatus
 	Needs      []tool.CapabilityNeed
 	Summary    string
-	// IntentPrimary is the managed label that authorized this plan. A
-	// follow-up restores it when the granted needs cannot. x:mcp: needs are
-	// that case: they do not name worklog_update or any other rule label.
+	// IntentPrimary is the managed label that authorized this plan. It is
+	// what a follow-up continues after the process restarts: the persisted
+	// need list also holds workspace capabilities that shared the plan, and
+	// those cannot name the task. x:mcp: needs are the other case: they do
+	// not name worklog_update or any other rule label.
 	IntentPrimary intent.IntentLabel
 	// Remaining is how many further invocations of each capability this
 	// session may still plan. LookupFacts records a successful web lookup.
@@ -888,9 +890,11 @@ func semanticResidueMutatingDisjoint(current intent.ClassificationResult, needs 
 // stored first, and a plan records a knowledge read or a baseline write
 // before the shell it belongs to. After a restart that order became the
 // task. A lookup delivery (search plus a card or a document) keeps
-// evidence first. Any other open obligation is classified from the
-// side-effecting needs that are not companions, and the reads stay
-// secondary labels.
+// evidence first. Any other open obligation is the intent that authorized
+// the plan, when that intent still covers a side-effecting need. Workspace
+// capabilities stored beside it are not a second task. Without that intent,
+// the obligation is classified from the side-effecting needs that are not
+// companions, and the reads stay secondary labels.
 func semanticResidueWithoutCompanions(needs []tool.CapabilityNeed) []tool.CapabilityNeed {
 	if len(needs) == 0 {
 		return nil
@@ -908,12 +912,13 @@ func semanticResidueWithoutCompanions(needs []tool.CapabilityNeed) []tool.Capabi
 	return out
 }
 
-func semanticOpenResidueClassification(needs []tool.CapabilityNeed) intent.ClassificationResult {
+func semanticOpenResidueClassification(needs []tool.CapabilityNeed, authorized intent.IntentLabel) intent.ClassificationResult {
 	taskNeeds := semanticResidueWithoutAmbient(needs)
 	if semanticResidueIsLookupVisual(taskNeeds) {
 		// Stored order keeps the evidence label first. Companions are
 		// omitted: an archetype download on this result is a new acquire
-		// wave, and the spent download ceiling opens.
+		// wave, and the spent download ceiling opens. The authorizing
+		// intent does not replace that evidence label.
 		evidence := semanticResidueWithoutCompanions(taskNeeds)
 		if len(evidence) == 0 {
 			evidence = taskNeeds
@@ -926,6 +931,9 @@ func semanticOpenResidueClassification(needs []tool.CapabilityNeed) intent.Class
 	classified := semanticResidueWithoutCompanions(taskNeeds)
 	if len(classified) == 0 {
 		classified = taskNeeds
+	}
+	if led, ok := semanticClassificationLedByAuthorizedIntent(authorized, classified); ok {
+		return led
 	}
 	result := agentservice.ClassificationFromGrantedNeeds(classified, imSemanticIntentRuleSet)
 	obligation := semanticResidueObligationNeeds(classified)
@@ -955,6 +963,80 @@ func semanticOpenResidueClassification(needs []tool.CapabilityNeed) intent.Class
 	return lead
 }
 
+// semanticClassificationLedByAuthorizedIntent is the open task after a
+// restart. The persisted needs include every capability the last plan
+// granted. Several labels share one capability, so the task is the intent
+// that authorized the plan. A match keeps that rule's qualifiers. Publishing
+// the file is not the work: document generation, office, and a screenshot
+// all deliver on the current channel. That step names the task only when
+// no other family's side effect is still in the residue. Sibling labels are
+// not copied onto the result.
+func semanticClassificationLedByAuthorizedIntent(authorized intent.IntentLabel, needs []tool.CapabilityNeed) (intent.ClassificationResult, bool) {
+	authorized = intent.IntentLabel(strings.TrimSpace(string(authorized)))
+	if authorized == "" || authorized.IsNonCapabilityLabel() {
+		return intent.ClassificationResult{}, false
+	}
+	if !imSemanticIntentIsManaged(intent.ClassificationResult{Primary: authorized, Confidence: 0.98, Layer: 3}) {
+		return intent.ClassificationResult{}, false
+	}
+	matchedWork := false
+	matchedPublish := false
+	foreignWork := false
+	for _, need := range needs {
+		if semanticPlanCompanionNeed(need) || !sessionGovernedNeedHasSideEffect(need) {
+			continue
+		}
+		if semanticAuthorizedIntentCoversNeed(authorized, need) {
+			if semanticPublishCapability(need.Capability) {
+				matchedPublish = true
+			} else {
+				matchedWork = true
+			}
+			continue
+		}
+		if !semanticPublishCapability(need.Capability) {
+			foreignWork = true
+		}
+	}
+	if matchedWork || (matchedPublish && !foreignWork) {
+		return intent.ClassificationResult{Primary: authorized, Confidence: 0.98, Layer: 3}, true
+	}
+	return intent.ClassificationResult{}, false
+}
+
+func semanticAuthorizedIntentCoversNeed(authorized intent.IntentLabel, need tool.CapabilityNeed) bool {
+	for _, template := range imSemanticIntentRuleSet[authorized] {
+		if template.Capability == "" || template.Capability != need.Capability {
+			continue
+		}
+		if semanticTemplateQualifiersHold(template.Qualifiers, need.Qualifiers) {
+			return true
+		}
+	}
+	return false
+}
+
+// semanticTemplateQualifiersHold reports that every qualifier the rule
+// requires is the same value on the granted need. A need may carry more
+// keys. A rule with no qualifiers matches the capability alone.
+func semanticTemplateQualifiersHold(template, need map[string]string) bool {
+	for key, value := range template {
+		if strings.TrimSpace(need[key]) != strings.TrimSpace(value) {
+			return false
+		}
+	}
+	return true
+}
+
+func semanticPublishCapability(capability tool.CapabilityID) bool {
+	switch capability {
+	case agentservice.CapabilityArtifactDeliverCurrent, agentservice.CapabilityArtifactDeliverSpecified:
+		return true
+	default:
+		return false
+	}
+}
+
 func semanticLabelHasSideEffect(label intent.IntentLabel) bool {
 	for _, template := range imSemanticIntentRuleSet[label] {
 		if template.Capability == "" {
@@ -970,14 +1052,19 @@ func semanticLabelHasSideEffect(label intent.IntentLabel) bool {
 // semanticClassificationWithOpenResidue folds an open task's granted needs
 // into this turn's classification. Continue unions them with a new managed
 // label. Unclear, continuation, and unknown keep the open obligation and
-// do not take a new mutating family from the bare sentence.
+// do not take a new mutating family from the bare sentence. The authorizing
+// intent is empty here; callers that resumed a persisted residue pass it.
 func semanticClassificationWithOpenResidue(current intent.ClassificationResult, needs []tool.CapabilityNeed, relation semanticResidueRelation) (intent.ClassificationResult, bool) {
+	return semanticClassificationWithAuthorizedResidue(current, needs, relation, "")
+}
+
+func semanticClassificationWithAuthorizedResidue(current intent.ClassificationResult, needs []tool.CapabilityNeed, relation semanticResidueRelation, authorized intent.IntentLabel) (intent.ClassificationResult, bool) {
 	switch relation {
 	case semanticResidueContinue, semanticResidueUnclear:
 	default:
 		return current, false
 	}
-	inherited := semanticOpenResidueClassification(needs)
+	inherited := semanticOpenResidueClassification(needs, authorized)
 	if !imSemanticIntentIsManaged(inherited) {
 		return current, false
 	}
@@ -985,7 +1072,9 @@ func semanticClassificationWithOpenResidue(current intent.ClassificationResult, 
 		// A continuation label inherits the open task and keeps its workspace
 		// tools. A document label that stayed on the same file is only that
 		// file: the planner slims companions from this reason. The sentence
-		// is not read.
+		// is not read. The inherited primary is already the authorizing
+		// intent, so a coding capability stored beside the PDF does not
+		// become the task a restart continues.
 		inherited.Reason = "session residue continuation"
 		if semanticPureDocumentEditClassification(current) && !isGenericContinuationPrimary(current) {
 			inherited.Reason = "session residue document"

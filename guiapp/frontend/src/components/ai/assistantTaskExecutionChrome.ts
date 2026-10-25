@@ -1,5 +1,7 @@
 import { isWindowDragExcludedTarget } from "../../utils/windowDrag";
 import { localizeText } from "./aiAssistantI18n";
+import { normalizeProjectSessionPath } from "./assistantSessionPath";
+import { chatTaskTerminal } from "./chatTaskModel";
 import { codingStepIsDone } from "./codingStepStatus";
 
 export type TaskExecutionStatusTone = "failed" | "pending" | "cancelled" | "running" | "completed";
@@ -27,10 +29,18 @@ export function resolveTaskExecutionStatus(input: {
     pendingUnfinishedStatus: string;
     /** The latest assistant turn finished with a loop error. Idle chat with messages is not completion. */
     turnIncomplete?: boolean;
+    /**
+     * A background chat task is still this task's work. The foreground turn
+     * has already returned, so message history alone would say completed.
+     * "running" covers queued work. "needs_input" is waiting on the user.
+     */
+    openChatWork?: "" | "running" | "needs_input";
 }): TaskExecutionStatus {
     const raw = input.raw || "";
     const lang = input.lang;
-    if (/(fail|error|blocked|verify_failed|失败|错误|阻塞)/.test(raw)) {
+    // Failure still beats pause and an in-flight stop. A live worker is the
+    // current outcome, so a failed token left in the snapshot does not hide it.
+    if (!input.openChatWork && /(fail|error|blocked|verify_failed|失败|错误|阻塞)/.test(raw)) {
         return { label: localizeText(lang, "Failed", "失败", "失敗"), tone: "failed" };
     }
     // Only the leading status token counts. A later phase named "pause" must
@@ -40,6 +50,14 @@ export function resolveTaskExecutionStatus(input: {
     }
     if (input.cancelPending) {
         return { label: localizeText(lang, "Stopping", "正在停止", "正在停止"), tone: "pending" };
+    }
+    // The handed-off worker is the task now. A durable snapshot that still
+    // says failed, cancelled, or interrupted is the previous outcome.
+    if (input.openChatWork === "running") {
+        return { label: localizeText(lang, "In progress", "进行中", "進行中"), tone: "running" };
+    }
+    if (input.openChatWork === "needs_input") {
+        return { label: localizeText(lang, "Pending", "待处理", "待處理"), tone: "pending" };
     }
     if (/(cancel|canceled|cancelled|stopped|已取消|已停止)/.test(raw)) {
         return { label: localizeText(lang, "Cancelled", "已取消", "已取消"), tone: "cancelled" };
@@ -79,6 +97,44 @@ export function resolveTaskExecutionStatus(input: {
         return { label: localizeText(lang, "Completed", "已完成", "已完成"), tone: "completed" };
     }
     return { label: localizeText(lang, "Pending", "待处理", "待處理"), tone: "pending" };
+}
+
+// foldChatSessionKey makes a backend session key and a tab session key comparable.
+// It uses the transcript's project-path clean, so a dotted segment, padding, or
+// a trailing separator cannot leave the card visible while the header says completed.
+// Expert and ACP ids are not paths and stay as written.
+function foldChatSessionKey(sessionKey: string | undefined): string {
+    const key = String(sessionKey || "").trim();
+    const prefix = "desktop-user:";
+    if (!key.startsWith(prefix)) return key;
+    if (key.startsWith(`${prefix}expert:`) || key.startsWith(`${prefix}acp:`)) return key;
+    const path = normalizeProjectSessionPath(key.slice(prefix.length));
+    return path ? `${prefix}${path}` : "desktop-user";
+}
+
+/** Same chat after path folding. C:\ and C:/ are one task, not two. */
+export function chatTaskInSession(taskSessionKey: string | undefined, activeSessionKey: string): boolean {
+    const active = foldChatSessionKey(activeSessionKey);
+    if (!active) return false;
+    return foldChatSessionKey(taskSessionKey) === active;
+}
+
+/** Open background work for this chat. */
+export function openChatWorkForSession(
+    tasks: Array<{ sessionKey?: string; status?: string }>,
+    activeSessionKey: string,
+): "" | "running" | "needs_input" {
+    let waiting = false;
+    for (const task of tasks) {
+        if (!chatTaskInSession(task.sessionKey, activeSessionKey)) continue;
+        if (chatTaskTerminal(String(task.status || ""))) continue;
+        if (task.status === "needs_input") {
+            waiting = true;
+            continue;
+        }
+        return "running";
+    }
+    return waiting ? "needs_input" : "";
 }
 
 /** True when every coding step reached a successful terminal status. */

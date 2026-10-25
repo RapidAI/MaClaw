@@ -2069,7 +2069,9 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuationOwned(userID string, res
 		}
 		log.Printf("[goal-continuation] failing goal after turn error user=%s", userID)
 		engine.clearTransientGoalRetry(userID)
-		engine.failGoal(userID, g.GoalID, turnErr, false)
+		// The bar status alone does not say why the turn stopped. The notice
+		// is the error row the user sees after a failed goal turn.
+		engine.failGoal(userID, g.GoalID, turnErr, true)
 		return
 	}
 	engine.clearTransientGoalRetry(userID)

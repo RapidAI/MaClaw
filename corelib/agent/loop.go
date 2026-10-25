@@ -706,6 +706,13 @@ type SkillObligationNudger interface {
 // streamed that summary is the same kind of stop.
 const ErrChecklistUnsettled = "checklist_unsettled"
 
+// ErrDeliverableUnassigned is the hard-exit code when the model stops with
+// prose while the host still has declared deliverables and has not assigned
+// them. A written "done" is not that assignment. Hosts with no contract do
+// not implement DeliverableSettlementGuard, and an empty name list is not a
+// contract. Coding checklists stay on ChecklistSettlementGuard.
+const ErrDeliverableUnassigned = "deliverable_unassigned"
+
 // ErrNoProgress is the hard-exit code when consecutive tool batches make no
 // forward progress. The sentence beside those calls is not a checked finish,
 // so the host must not report the turn as success.
@@ -727,6 +734,24 @@ const checklistStillOpenNudge = "[系统] 清单仍未关闭。请马上用 todo
 // can still finish and then close the list.
 type ChecklistSettlementGuard interface {
 	OpenChecklistNudge() string
+}
+
+// deliverableUnassignedNudge is the first reminder. It names the deliverables
+// the host still has not assigned.
+const deliverableUnassignedNudge = "[系统] 声明的交付还没有赋值。已经写好的说明不算完成。请补上这些交付："
+
+// deliverableStillUnassignedNudge is the reminder after the names were already
+// listed. Later stops must not repeat that list.
+const deliverableStillUnassignedNudge = "[系统] 声明的交付仍未赋值。请补上，不要只用文字收尾。"
+
+// DeliverableSettlementGuard is an optional host callback. A tool-less stop
+// is not completion while UnassignedDeliverables returns names the host
+// declared and has not assigned. The host may assign during the call, for
+// example by writing a file it already has evidence for. An empty slice means
+// this turn has no contract, or every declared name is assigned. answer is
+// the prose the model just wrote; it is not evidence that a name is assigned.
+type DeliverableSettlementGuard interface {
+	UnassignedDeliverables(answer string) []string
 }
 
 // preferChecklistDeliverable keeps the report written before a checklist
@@ -828,6 +853,74 @@ func checklistFollowUpCarriesOutcome(follow string) bool {
 		}
 	}
 	return false
+}
+
+// considerUnassignedDeliverableStop decides whether a tool-less stop may
+// finish while declared deliverables are still unassigned. answer is the
+// prose already written. consecutive is that stop series only. cont asks for
+// another model look and nudge is the message to inject. unsettled means the
+// look budget is spent; text is the report to keep and the caller must finish
+// with ErrDeliverableUnassigned. No contract returns both flags false.
+func considerUnassignedDeliverableStop(cb LoopCallbacks, answer string, room bool, consecutive, total *int, preAnswer *string, emptyLimit, maxTotal int) (nudge string, cont, unsettled bool, text string) {
+	guard, ok := cb.(DeliverableSettlementGuard)
+	if !ok || consecutive == nil || total == nil || preAnswer == nil {
+		return "", false, false, ""
+	}
+	names := deliverableNames(guard.UnassignedDeliverables(answer))
+	if len(names) == 0 {
+		return "", false, false, ""
+	}
+	*consecutive++
+	*total++
+	*preAnswer = noteChecklistDeliverable(*preAnswer, answer)
+	limit := 2
+	if strings.TrimSpace(answer) == "" {
+		limit = emptyLimit
+	}
+	nudge = deliverableUnassignedNudge + strings.Join(deliverableDisplayNames(names), "、")
+	if *total > 1 {
+		nudge = deliverableStillUnassignedNudge
+	}
+	if *consecutive >= limit || *total >= maxTotal || !room {
+		text = StripThinkingTags(answer)
+		if pre := strings.TrimSpace(StripThinkingTags(*preAnswer)); pre != "" {
+			text = preferChecklistDeliverable(pre, text)
+		}
+		return "", false, true, text
+	}
+	return nudge, true, false, ""
+}
+
+func deliverableNames(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(names))
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
+}
+
+func deliverableDisplayNames(names []string) []string {
+	out := make([]string, len(names))
+	for i, name := range names {
+		switch name {
+		case "document.generate.file":
+			out[i] = "生成的文件"
+		case "document.write.office":
+			out[i] = "办公文件"
+		default:
+			out[i] = name
+		}
+	}
+	return out
 }
 
 // EarlyStopper is an optional host callback for non-cancel stops (e.g. daily
@@ -1186,6 +1279,12 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	// checklistPreAnswer is the best report written while the checklist was
 	// still open. A later short acknowledgement must not replace it.
 	checklistPreAnswer := ""
+	// Deliverable counters follow the checklist counters. A tool batch resets
+	// the consecutive looks. The total does not reset, so reminders stay bounded.
+	deliverableStopNudges := 0
+	deliverableFallbackNudges := 0
+	deliverableNudgeTotal := 0
+	deliverablePreAnswer := ""
 	const maxChecklistNudges = 3
 	const maxConsecutiveEmpty = 5
 	var lastToolName string         // track last tool name for empty-response recovery
@@ -1776,6 +1875,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				return finish(LoopResult{Error: err.Error(), Iterations: iteration, ToolCalls: totalToolCalls})
 			}
 		}
+		// The contract reminder is outbound only. conversation keeps the prompt the
+		// host built; the next iteration replaces this block instead of stacking it.
+		reqConversation = withIterationContractReminder(cb, reqConversation)
 		// Input accounting is an audit of the request about to leave the host, not
 		// of the broad BuildTools compatibility inventory held before rendering.
 		// Request-local renderers may remove legacy entries or mint governed
@@ -2582,9 +2684,40 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 						}
 					}
 					// A tool body adopted here is a successful answer. The same
-					// checklist settlement as a prose stop has to accept it;
-					// otherwise the turn passes while items stay open.
+					// deliverable and checklist settlement as a prose stop has
+					// to accept it; otherwise the turn passes while declared
+					// work is still open.
 					if !hardExit {
+						if nudge, cont, unsettled, kept := considerUnassignedDeliverableStop(cb, text, iteration+1 < maxIter, &deliverableFallbackNudges, &deliverableNudgeTotal, &deliverablePreAnswer, maxConsecutiveEmpty, maxChecklistNudges); unsettled || cont {
+							if unsettled {
+								if strings.TrimSpace(kept) == "" {
+									kept = text
+								}
+								return finish(LoopResult{
+									Text:       kept,
+									Error:      ErrDeliverableUnassigned,
+									Iterations: iteration + 1,
+									ToolCalls:  totalToolCalls,
+									HardExit:   true,
+								})
+							}
+							conversation = append(conversation, map[string]interface{}{
+								"role":              "assistant",
+								"content":           text,
+								"reasoning_content": "",
+							})
+							historyDelta = append(historyDelta, ConversationEntry{
+								Role:         "assistant",
+								Content:      text,
+								FinishReason: "stop",
+							})
+							conversation = append(conversation, map[string]interface{}{
+								"role":    "user",
+								"content": nudge,
+							})
+							historyDelta = append(historyDelta, HostUserEntry(nudge))
+							continue
+						}
 						if nudge, cont, unsettled, kept := considerOpenChecklistStop(cb, text, iteration+1 < maxIter, &checklistFallbackNudges, &checklistNudgeTotal, &checklistPreAnswer, maxConsecutiveEmpty, maxChecklistNudges); unsettled || cont {
 							if unsettled {
 								if strings.TrimSpace(kept) == "" {
@@ -2830,6 +2963,29 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				disposeSurface(ToolSurfaceResponseSettled)
 				continue
 			}
+			// Declared deliverables are a commitment. Prose that announces
+			// completion does not assign them. The host may assign during the
+			// check, from evidence it already holds. A nameless call whose
+			// bubble text was kept is this same stop.
+			if nudge, cont, unsettled, text := considerUnassignedDeliverableStop(cb, content, iteration+1 < maxIter, &deliverableStopNudges, &deliverableNudgeTotal, &deliverablePreAnswer, maxConsecutiveEmpty, maxChecklistNudges); unsettled || cont {
+				if unsettled {
+					disposeSurface(ToolSurfaceResponseSettled)
+					return finish(LoopResult{
+						Text:       text,
+						Error:      ErrDeliverableUnassigned,
+						Iterations: iteration + 1,
+						ToolCalls:  totalToolCalls,
+						HardExit:   true,
+					})
+				}
+				disposeSurface(ToolSurfaceResponseSettled)
+				conversation = append(conversation, map[string]interface{}{
+					"role":    "user",
+					"content": nudge,
+				})
+				historyDelta = append(historyDelta, HostUserEntry(nudge))
+				continue
+			}
 			// A published checklist is a commitment. Prose that announces
 			// completion does not close pending or in-progress items, and the
 			// turn must not pass while those items are still open. A nameless
@@ -2972,6 +3128,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			if pre := strings.TrimSpace(StripThinkingTags(checklistPreAnswer)); pre != "" {
 				finalText = preferChecklistDeliverable(pre, finalText)
 			}
+			if pre := strings.TrimSpace(StripThinkingTags(deliverablePreAnswer)); pre != "" {
+				finalText = preferChecklistDeliverable(pre, finalText)
+			}
 			// After every other rewrite. A lookup fold must not put an
 			// unchecked draft back into the reply.
 			next, message, cont := gateDesktopReply(cb, userText, finalText, historyDelta, latestShot, iteration+1 < maxIter)
@@ -3000,6 +3159,8 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		// restart the close-the-checklist reminder forever.
 		checklistStopNudges = 0
 		checklistFallbackNudges = 0
+		deliverableStopNudges = 0
+		deliverableFallbackNudges = 0
 
 		// Persist a valid conversation prefix before any tool begins. A batch of
 		// known read-only tools cannot have changed state, so a crash during it
@@ -4358,6 +4519,9 @@ func prepareToolsForToolSurfaceReceipt(cfg corelib.MaclawLLMConfig, tools []map[
 }
 
 func executeAuthorizedLoopToolCallWithContext(cb LoopCallbacks, name, argsJSON, callID string, execution ToolCallExecutionContext) ToolExecutionResult {
+	if result, blocked := ApplyCommitGate(cb, name, argsJSON); blocked {
+		return result
+	}
 	// Phase 2 dispatcher consultation comes first: a host that registers
 	// handlers owns those names outright. handled=false falls through to
 	// the legacy executor chain unchanged.
@@ -4534,6 +4698,17 @@ func doLLMRequestWithTools(ctx context.Context, cfg corelib.MaclawLLMConfig, con
 }
 
 func doResponsesRequestWithTools(ctx context.Context, cfg corelib.MaclawLLMConfig, conversation []interface{}, tools []map[string]interface{}, policy ToolSurfaceInvocationPolicy, httpClient *http.Client) (*llm.Response, error) {
+	resp, err := doResponsesRequestWithToolsOnce(ctx, cfg, conversation, tools, policy, httpClient)
+	// Chat and Anthropic retry a thinking-off refusal inside their Do helpers.
+	// This is the Responses counterpart, including the non-stream fallback
+	// after a Responses stream fails with the same refusal.
+	if next, ok := llm.ConfigAfterThinkingRejection(cfg, err); ok {
+		return doResponsesRequestWithToolsOnce(ctx, next, conversation, tools, policy, httpClient)
+	}
+	return resp, err
+}
+
+func doResponsesRequestWithToolsOnce(ctx context.Context, cfg corelib.MaclawLLMConfig, conversation []interface{}, tools []map[string]interface{}, policy ToolSurfaceInvocationPolicy, httpClient *http.Client) (*llm.Response, error) {
 	httpClient = llm.HTTPClientForRequestContext(ctx, httpClient)
 	choice, parallel := toolSurfacePolicyRequestOptions(policy)
 	req, _, endpoint, err := llm.NewResponsesAPIRequest(ctx, cfg, conversation, llm.ResponsesAPIRequestOptions{

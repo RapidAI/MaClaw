@@ -166,6 +166,22 @@ describe("CodingAgentPlanChecklist", () => {
         expect(step.textContent).not.toContain("pending");
     });
 
+    it("shows a stored error on the step that recorded it", () => {
+        const { getByTestId } = render(
+            <CodingAgentPlanChecklist
+                lang="zh"
+                theme={theme}
+                chrome={chrome}
+                steps={[
+                    { index: 4, title: "运行 probe", status: "running" },
+                    { index: 6, title: "修复渲染器", status: "pending", summary: "src\\game.cpp(114): error C3861: 'spawnFood': identifier not found" },
+                ]}
+            />,
+        );
+        expect(getByTestId("coding-agent-plan-current").textContent).toContain("T4");
+        expect(getByTestId("coding-agent-plan-step-6-note").textContent).toContain("identifier not found");
+    });
+
     it("shows a paraphrased understanding of the request", () => {
         const { getByTestId } = render(
             <CodingAgentPlanChecklist

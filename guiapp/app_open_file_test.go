@@ -110,6 +110,22 @@ func TestShowItemInFolderRejectsEmptyPath(t *testing.T) {
 	}
 }
 
+func TestExplorerSelectCommandLineQuotesThePathWithoutASpaceAfterTheComma(t *testing.T) {
+	got := explorerSelectCommandLine(`C:\Windows\explorer.exe`, `C:\Users\A\My Documents\周报-伴读对话.pdf`)
+	want := `"C:\Windows\explorer.exe" /select,"C:\Users\A\My Documents\周报-伴读对话.pdf"`
+	if got != want {
+		t.Fatalf("explorerSelectCommandLine = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "/select, ") {
+		t.Fatalf("command line has a space after /select,: %q", got)
+	}
+
+	stripped := explorerSelectCommandLine(`C:\Win"dows\explorer.exe`, `C:\a"b.pdf`)
+	if stripped != `"C:\Windows\explorer.exe" /select,"C:\ab.pdf"` {
+		t.Fatalf("quotes in the path were kept: %q", stripped)
+	}
+}
+
 func TestOpenProjectDirectoryExpandsTildeBeforeStat(t *testing.T) {
 	// Do not create the dir / launch explorer — only assert tilde expands before Stat.
 	home, err := os.UserHomeDir()

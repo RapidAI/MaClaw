@@ -132,7 +132,21 @@ export function CodingAgentPlanChecklist({
                         >
                             <span aria-hidden className="capc-glyph">{codingStepGlyph(st.status)}</span>
                             <span className="capc-step-idx">T{st.index}</span>
-                            <span className="capc-step-title">{st.title || codingStepStatusLabel(lang, st.status)}</span>
+                            <span style={{ display: "flex", flexDirection: "column", minWidth: 0, flex: 1 }}>
+                                <span className="capc-step-title">{st.title || codingStepStatusLabel(lang, st.status)}</span>
+                                {(st.summary || "").trim() ? (
+                                    <span
+                                        data-testid={`coding-agent-plan-step-${st.index}-note`}
+                                        style={{
+                                            fontWeight: 400,
+                                            color: failed ? chrome.stepFailedFg : chrome.muted,
+                                            whiteSpace: "pre-wrap",
+                                        }}
+                                    >
+                                        {st.summary}
+                                    </span>
+                                ) : null}
+                            </span>
                             {/* The glyph is aria-hidden and the color carries no
                                 meaning for screen readers, so state the status. */}
                             <span data-testid={`coding-agent-plan-step-${st.index}-sr-status`} style={srOnlyStyle}>

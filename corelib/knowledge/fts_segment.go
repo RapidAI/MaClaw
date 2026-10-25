@@ -298,13 +298,18 @@ func isCJKStopChar(r rune) bool {
 	return false
 }
 
-// RebuildFTSSegmentation rebuilds the lexical indexes from stored text.
+// RebuildFTSSegmentation rebuilds lexical indexes from stored text.
+// Body indexes are document nodes and table rows. Card and fact indexes stay
+// so claim annotations can still collapse onto those bodies.
 // It does not embed. Callers that also need vectors use RebuildFTSIndex or
 // SetEmbedder. A second embedding pass would not raise
 // LibraryEmbeddingRefreshActive, so search would wait behind it.
 func (s *SQLiteStore) RebuildFTSSegmentation(ctx context.Context) error {
 	if err := s.rebuildNodesFTS(ctx); err != nil {
 		return fmt.Errorf("rebuild document_nodes_fts: %w", err)
+	}
+	if err := s.rebuildRowsFTS(ctx); err != nil {
+		return fmt.Errorf("rebuild kb_rows_fts: %w", err)
 	}
 	if err := s.rebuildCardsFTS(ctx); err != nil {
 		return fmt.Errorf("rebuild knowledge_cards_fts: %w", err)
@@ -315,20 +320,13 @@ func (s *SQLiteStore) RebuildFTSSegmentation(ctx context.Context) error {
 	return nil
 }
 
-// RebuildFTSIndex rebuilds lexical indexes, then fills missing vectors with
-// the embedder already attached.
+// RebuildFTSIndex rebuilds lexical indexes, then fills missing node and row
+// vectors from stored text. Card vectors are not rebuilt here.
 func (s *SQLiteStore) RebuildFTSIndex(ctx context.Context) error {
 	if err := s.RebuildFTSSegmentation(ctx); err != nil {
 		return err
 	}
-	// Backfill card embeddings if embedder is available
 	if emb := s.currentEmbedder(); emb != nil && !embedding.IsNoop(emb) {
-		if err := s.backfillCardEmbeddings(ctx); err != nil {
-			// Non-fatal: FTS is rebuilt, embeddings can be backfilled later
-			fmt.Printf("[knowledge] embedding backfill failed: %v\n", err)
-		}
-		// Backfill node embeddings — root-cause fix for distillation loss.
-		// Original document text gets its own embedding for vector search.
 		if err := s.BackfillNodeEmbeddings(ctx); err != nil {
 			fmt.Printf("[knowledge] node embedding backfill failed: %v\n", err)
 		}
@@ -380,6 +378,151 @@ func (s *SQLiteStore) rebuildNodesFTS(ctx context.Context) error {
 			args[i] = []any{n.id, segmentTextForFTS(n.title), segmentTextForFTS(n.text)}
 		}
 		if err := s.insertFTSPage(ctx, `INSERT INTO document_nodes_fts(node_id, title, text) VALUES (?, ?, ?)`, args); err != nil {
+			return err
+		}
+		if len(page) < ftsRebuildPageSize {
+			return nil
+		}
+		after = page[len(page)-1].id
+	}
+}
+
+func (s *SQLiteStore) rebuildRowsFTS(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM kb_rows_fts`); err != nil {
+		return err
+	}
+	after := ""
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(primary_key_text, ''), COALESCE(row_text, '') FROM kb_rows WHERE id > ? ORDER BY id LIMIT ?`, after, ftsRebuildPageSize)
+		if err != nil {
+			return err
+		}
+		type rowFTS struct{ id, primaryKey, text string }
+		page := make([]rowFTS, 0, ftsRebuildPageSize)
+		for rows.Next() {
+			var row rowFTS
+			if err := rows.Scan(&row.id, &row.primaryKey, &row.text); err != nil {
+				rows.Close()
+				return err
+			}
+			page = append(page, row)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		if len(page) == 0 {
+			return nil
+		}
+		args := make([][]any, len(page))
+		for i, row := range page {
+			args[i] = []any{row.id, segmentTextForFTS(row.primaryKey), segmentTextForFTS(row.text)}
+		}
+		if err := s.insertFTSPage(ctx, `INSERT INTO kb_rows_fts(row_id, primary_key_text, row_text) VALUES (?, ?, ?)`, args); err != nil {
+			return err
+		}
+		if len(page) < ftsRebuildPageSize {
+			return nil
+		}
+		after = page[len(page)-1].id
+	}
+}
+
+// rebuildSourceBodyFTS rewrites one source's node and row lexical indexes from
+// the text already stored on those bodies. Segmentation runs between short
+// writes so a page query is closed before the insert.
+func (s *SQLiteStore) rebuildSourceBodyFTS(ctx context.Context, sourceID string) error {
+	if err := s.rebuildSourceNodeFTS(ctx, sourceID); err != nil {
+		return err
+	}
+	return s.rebuildSourceRowFTS(ctx, sourceID)
+}
+
+func (s *SQLiteStore) rebuildSourceNodeFTS(ctx context.Context, sourceID string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM document_nodes_fts WHERE node_id IN (SELECT id FROM document_nodes WHERE source_id = ?)`, sourceID); err != nil {
+		return err
+	}
+	after := ""
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(title, ''), COALESCE(text, '') FROM document_nodes WHERE source_id = ? AND id > ? ORDER BY id LIMIT ?`, sourceID, after, ftsRebuildPageSize)
+		if err != nil {
+			return err
+		}
+		type nodeRow struct{ id, title, text string }
+		page := make([]nodeRow, 0, ftsRebuildPageSize)
+		for rows.Next() {
+			var n nodeRow
+			if err := rows.Scan(&n.id, &n.title, &n.text); err != nil {
+				rows.Close()
+				return err
+			}
+			page = append(page, n)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		if len(page) == 0 {
+			return nil
+		}
+		args := make([][]any, len(page))
+		for i, n := range page {
+			args[i] = []any{n.id, segmentTextForFTS(n.title), segmentTextForFTS(n.text)}
+		}
+		if err := s.insertFTSPage(ctx, `INSERT INTO document_nodes_fts(node_id, title, text) VALUES (?, ?, ?)`, args); err != nil {
+			return err
+		}
+		if len(page) < ftsRebuildPageSize {
+			return nil
+		}
+		after = page[len(page)-1].id
+	}
+}
+
+func (s *SQLiteStore) rebuildSourceRowFTS(ctx context.Context, sourceID string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM kb_rows_fts WHERE row_id IN (SELECT id FROM kb_rows WHERE source_id = ?)`, sourceID); err != nil {
+		return err
+	}
+	after := ""
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(primary_key_text, ''), COALESCE(row_text, '') FROM kb_rows WHERE source_id = ? AND id > ? ORDER BY id LIMIT ?`, sourceID, after, ftsRebuildPageSize)
+		if err != nil {
+			return err
+		}
+		type rowFTS struct{ id, primaryKey, text string }
+		page := make([]rowFTS, 0, ftsRebuildPageSize)
+		for rows.Next() {
+			var row rowFTS
+			if err := rows.Scan(&row.id, &row.primaryKey, &row.text); err != nil {
+				rows.Close()
+				return err
+			}
+			page = append(page, row)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		if len(page) == 0 {
+			return nil
+		}
+		args := make([][]any, len(page))
+		for i, row := range page {
+			args[i] = []any{row.id, segmentTextForFTS(row.primaryKey), segmentTextForFTS(row.text)}
+		}
+		if err := s.insertFTSPage(ctx, `INSERT INTO kb_rows_fts(row_id, primary_key_text, row_text) VALUES (?, ?, ?)`, args); err != nil {
 			return err
 		}
 		if len(page) < ftsRebuildPageSize {

@@ -29,13 +29,13 @@ export const colors = {
 
 export const radius = {
     sm: "var(--radius-sm, 6px)",
-    md: "var(--radius-md, 10px)",
+    md: "var(--radius-md, 8px)",
     // Large cards use the same 14px corner language as the redesigned
     // workbench surfaces.  Keep this token shared so remote/settings pages,
     // scheduled tasks, and the system discussion page do not fall back to the
     // older compact 8px cards.
-    lg: "var(--radius-lg, 14px)",
-    xl: "var(--radius-lg, 14px)",
+    lg: "var(--radius-lg, 12px)",
+    xl: "var(--radius-lg, 12px)",
     pill: "999px",
 } as const;
 

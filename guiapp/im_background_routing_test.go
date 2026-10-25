@@ -51,8 +51,8 @@ func TestBackgroundManagedSemanticTurnClassifiesBeforeLegacyDispatch(t *testing.
 	if !handled || resp == nil {
 		t.Fatalf("background route handled=%v response=%#v", handled, resp)
 	}
-	if resp.Error != "" || resp.Text != "完成" {
-		t.Fatalf("background response=%+v", resp)
+	if resp.Error != "required_effect_unsettled" || resp.Text != "完成" {
+		t.Fatalf("a prose-only screenshot response must not complete the required capture: %+v", resp)
 	}
 	if len(requestTools) == 0 {
 		t.Fatal("managed background turn sent no tool surface")

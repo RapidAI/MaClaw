@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"golang.org/x/sync/singleflight"
 )
 
 var ErrRemoteSessionsUnavailable = errors.New("remote sessions are not initialized")
@@ -546,7 +547,32 @@ func (a *App) RunRemoteToolSmoke(toolName, projectDir string, useProxy bool) (Re
 	return report, nil
 }
 
+// listRemoteSessionsFlight coalesces concurrent refreshes. Building the
+// snapshot copies and sanitizes every session's full preview, events and
+// output, and the frontend debounce (200ms local, 300ms hub) is shorter
+// than a build while output streams in, so without this guard each refresh
+// serialized the whole list again and contended on the Wails bridge.
+var listRemoteSessionsFlight singleflight.Group
+
+// listRemoteSessionsBuildHook is set by tests to observe or stall a build.
+var listRemoteSessionsBuildHook func()
+
 func (a *App) ListRemoteSessions() []RemoteSessionView {
+	result, _, _ := listRemoteSessionsFlight.Do(fmt.Sprintf("list:%p", a), func() (any, error) {
+		return a.buildRemoteSessionList(), nil
+	})
+	views, _ := result.([]RemoteSessionView)
+	// Every caller used to receive its own slice; keep that so one caller's
+	// append or trim cannot corrupt a concurrent caller's result.
+	out := make([]RemoteSessionView, len(views))
+	copy(out, views)
+	return out
+}
+
+func (a *App) buildRemoteSessionList() []RemoteSessionView {
+	if listRemoteSessionsBuildHook != nil {
+		listRemoteSessionsBuildHook()
+	}
 	out := make([]RemoteSessionView, 0)
 	if a.remoteSessions != nil {
 		sessions := a.remoteSessions.List()

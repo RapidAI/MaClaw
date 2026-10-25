@@ -772,6 +772,7 @@ type transactionalTokenBuffer struct {
 	deltas    []string
 	runeCount int
 	streaming bool // true once threshold crossed — tokens pass through directly
+	emitted   bool // true once any token was handed to the caller
 }
 
 func newTransactionalTokenBuffer(onToken llm.TokenCallback) *transactionalTokenBuffer {
@@ -781,10 +782,15 @@ func newTransactionalTokenBuffer(onToken llm.TokenCallback) *transactionalTokenB
 	return &transactionalTokenBuffer{onToken: onToken}
 }
 
+func (b *transactionalTokenBuffer) Emitted() bool {
+	return b != nil && b.emitted
+}
+
 func (b *transactionalTokenBuffer) Write(delta string) {
 	if delta == "" {
 		return
 	}
+	b.emitted = true
 	// Reasoning tokens (prefixed with \x01) always pass through immediately —
 	// the user should always see the model's thinking process. They don't count
 	// toward the content threshold that controls preamble suppression.
@@ -913,14 +919,28 @@ func (h *IMMessageHandler) doLLMRequestStream(
 	defer scheduledCancel()
 	var resp *llm.Response
 	var err error
-	if cfg.IsResponsesWebSocket() {
-		resp, err = h.doResponsesWSLLMRequestStream(scheduledCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
-	} else if cfg.IsResponsesAPI() {
-		resp, err = h.doResponsesAPILLMRequestStream(scheduledCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
-	} else if cfg.Protocol == "anthropic" {
-		resp, err = h.doAnthropicLLMRequestStream(scheduledCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
-	} else {
-		resp, err = h.doOpenAILLMRequestStream(scheduledCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
+	for attempt := 0; attempt < 2; attempt++ {
+		if cfg.IsResponsesWebSocket() {
+			resp, err = h.doResponsesWSLLMRequestStream(scheduledCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
+		} else if cfg.IsResponsesAPI() {
+			resp, err = h.doResponsesAPILLMRequestStream(scheduledCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
+		} else if cfg.Protocol == "anthropic" {
+			resp, err = h.doAnthropicLLMRequestStream(scheduledCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
+		} else {
+			resp, err = h.doOpenAILLMRequestStream(scheduledCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
+		}
+		// Non-stream helpers already retry a thinking-off refusal once. This
+		// is the desktop chat send, so the same refusal has to be retried
+		// here too. A refusal arrives before any token; once text or
+		// reasoning has been shown, a second send would duplicate it.
+		if err == nil || attempt == 1 || tokenBuffer.Emitted() {
+			break
+		}
+		next, ok := llm.ConfigAfterThinkingRejection(cfg, err)
+		if !ok {
+			break
+		}
+		cfg = next
 	}
 	globalLLMScheduler.ObserveResult(trace, err)
 	if h.app != nil {

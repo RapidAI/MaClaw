@@ -20,6 +20,9 @@ func TestOldConfigWithoutOCRFieldsLoadsDefaults(t *testing.T) {
 	if cfg.OCRModelTier != DefaultOCRModelTier {
 		t.Fatalf("OCRModelTier = %q, want default %q", cfg.OCRModelTier, DefaultOCRModelTier)
 	}
+	if !cfg.FormulaEnabled {
+		t.Fatal("FormulaEnabled = false for old config without formula_enabled, want default true")
+	}
 }
 
 // TestOCRConfigFieldsRoundTrip ensures explicitly stored OCR settings win

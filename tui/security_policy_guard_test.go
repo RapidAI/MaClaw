@@ -196,10 +196,12 @@ func TestSkillSearchPolicyFiltersBlockedSourcesAndKeepsAllowedFallback(t *testin
 func TestDeveloperModeAllowsAnySkillSourceAndRecordsRiskOnly(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("MACLAW_DATA_DIR", dataDir)
+	// Developer mode exempts the skill *source allowlist* only. The network
+	// level is a separate Hub boundary, so it stays unconfigured (full) here
+	// and the org-wide shutdown refusal is pinned below.
 	cfg := corelib.AppConfig{
 		HubSecurityCentralized: true,
 		SecurityPolicyMode:     "developer",
-		NetworkLevel:           "none",
 		FileOutboundEnabled:    true,
 		ImageOutboundEnabled:   true,
 		SkillSourcesAllowed:    []string{"skillhub"},
@@ -216,5 +218,12 @@ func TestDeveloperModeAllowsAnySkillSourceAndRecordsRiskOnly(t *testing.T) {
 	}
 	if err := enforceScriptedCommandSecurity("skillhub", []string{"install-github", "https://github.com/acme/skill"}); err != nil {
 		t.Fatalf("developer scripted github install blocked: %v", err)
+	}
+	cfg.NetworkLevel = "none"
+	if err := commands.NewFileConfigStore(dataDir).SaveConfig(cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	if err := enforceScriptedCommandSecurity("skillhub", []string{"install-github", "https://github.com/acme/skill"}); err == nil {
+		t.Fatal("network_level=none must refuse the scripted install even in developer mode")
 	}
 }

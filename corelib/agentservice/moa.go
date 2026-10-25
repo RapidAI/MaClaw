@@ -27,7 +27,7 @@ func materializeProviderByName(cfg corelib.AppConfig, name string) (corelib.Macl
 		if protocol == "" && corelib.IsAnthropicWireAPI(p.WireAPI) {
 			protocol = "anthropic"
 		}
-		return corelib.MaclawLLMConfig{
+		return corelib.ApplyGlobalThinkingLevel(corelib.MaclawLLMConfig{
 			URL:             strings.TrimSpace(p.URL),
 			Key:             key,
 			Model:           strings.TrimSpace(p.Model),
@@ -40,8 +40,7 @@ func materializeProviderByName(cfg corelib.AppConfig, name string) (corelib.Macl
 			WireAPI:         strings.TrimSpace(p.WireAPI),
 			ProviderName:    strings.TrimSpace(p.Name),
 			AuthType:        p.AuthType,
-			ThinkingMode:    corelib.EffectiveGlobalThinkingMode(cfg.MaclawLLMThinkingMode),
-		}, nil
+		}, cfg.MaclawLLMThinkingMode), nil
 	}
 	return corelib.MaclawLLMConfig{}, fmt.Errorf("provider %q not found", name)
 }

@@ -162,6 +162,7 @@ func (p Prepared) Window(text string) string {
 		return string(runes[:MaxPassageRunes])
 	}
 	bestCov := -1
+	bestSpan := 0
 	bestLen := 0
 	bestAt := 0
 	bestStart := 0
@@ -175,9 +176,10 @@ func (p Prepared) Window(text string) string {
 			if i == 1 && start == starts[0] {
 				continue
 			}
-			cov := coveredTerms(hits, terms, start, start+MaxPassageRunes)
-			if cov > bestCov || (cov == bestCov && (termLen > bestLen || (termLen == bestLen && anchor.at < bestAt))) {
+			cov, span := coveredSpan(hits, terms, start, start+MaxPassageRunes)
+			if cov > bestCov || (cov == bestCov && (span < bestSpan || (span == bestSpan && (termLen > bestLen || (termLen == bestLen && anchor.at < bestAt))))) {
 				bestCov = cov
+				bestSpan = span
 				bestLen = termLen
 				bestAt = anchor.at
 				bestStart = start
@@ -347,18 +349,49 @@ func termHits(text []rune, term queryTerm) []int {
 }
 
 func coveredTerms(hits [][]int, terms []queryTerm, start, end int) int {
-	covered := 0
-	for i, term := range terms {
-		if hitInSpan(hits[i], start, end, len(term.runes)) {
-			covered++
-		}
-	}
-	return covered
+	cov, _ := coveredSpan(hits, terms, start, end)
+	return cov
 }
 
-func hitInSpan(hits []int, start, end, termLen int) bool {
+// coveredSpan reports how many terms land in [start, end) and how far the
+// outermost of those hits stretches. Equal coverage keeps the tighter stretch
+// so an earlier loose pair does not beat a later adjacent pair.
+func coveredSpan(hits [][]int, terms []queryTerm, start, end int) (cov, span int) {
+	lo := end
+	hi := start
+	for i, term := range terms {
+		termLo, termHi, ok := termExtent(hits[i], start, end, len(term.runes))
+		if !ok {
+			continue
+		}
+		cov++
+		if termLo < lo {
+			lo = termLo
+		}
+		if termHi > hi {
+			hi = termHi
+		}
+	}
+	if cov == 0 {
+		return 0, 0
+	}
+	return cov, hi - lo
+}
+
+func termExtent(hits []int, start, end, termLen int) (lo, hi int, ok bool) {
 	i := sort.Search(len(hits), func(i int) bool { return hits[i] >= start })
-	return i < len(hits) && hits[i]+termLen <= end
+	if i >= len(hits) || hits[i]+termLen > end {
+		return 0, 0, false
+	}
+	lo = hits[i]
+	hi = hits[i] + termLen
+	for i++; i < len(hits); i++ {
+		if hits[i] >= end || hits[i]+termLen > end {
+			break
+		}
+		hi = hits[i] + termLen
+	}
+	return lo, hi, true
 }
 
 func matchTermAt(text []rune, i int, term queryTerm) bool {

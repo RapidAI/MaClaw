@@ -370,6 +370,7 @@ type App struct {
 	remoteInfraOnce                   sync.Once   // guards ensureRemoteInfra initialization
 	remoteInfraReady                  atomic.Bool // fast-path check for ensureRemoteInfra
 	backgroundUpdateOnce              sync.Once   // guards startBackgroundUpdateChecks single loop
+	startupEnvironmentCheckOnce       sync.Once   // guards the automatic CheckEnvironment(false) startup check
 	warmupDone                        atomic.Bool // true after WarmupTools + WarmupHTTPConn complete
 	mcpAutoDiscovery                  *MCPAutoDiscovery
 	llmPromptCache                    *corelib.LLMPromptResponseCache
@@ -446,6 +447,16 @@ type App struct {
 	aiAssistantReadyAt         atomic.Int64
 	aiAssistantFirstChatLogged atomic.Bool
 	docGenerator               *swarm.SwarmDocGenerator        // cached PDF doc generator
+	mermaidRasterReady         atomic.Bool
+	mermaidRasterGaveUp        atomic.Bool
+	mermaidRasterSkipLogged    atomic.Bool
+	mermaidRasterPauseUntil    atomic.Int64
+	mermaidRasterSeq           atomic.Uint64
+	mermaidRasterWait          sync.Map
+	mermaidReadyOnce           sync.Once
+	mermaidReadyCh             chan struct{}
+	mermaidRasterCacheMu       sync.Mutex
+	mermaidRasterCache         []mermaidCachedPNG
 	workflowEngine             *workflow.WorkflowEngine        // TEST ONLY: never instantiated in production. Always nil at runtime.
 	workflowV2                 *workflowV2State                // V2 workflow engine (clean state machine)
 	workflowArtifactSaver      *deferredArtifactSaver          // shared artifact saver for OwnerID injection
@@ -936,11 +947,19 @@ func (a *App) scheduleWarmFrozenMemorySnapshot() {
 }
 
 // refreshActiveAgentMemorySnapshots drops cached prompt memory for handlers
-// backed by the App's shared memory store. It makes a GUI-managed memory
-// mutation visible to every affected Agent on its very next prompt build.
-// Handlers with private stores (for example hardware runtimes) are excluded.
+// backed by the App's shared memory store. It backs whole-store operations
+// (backup restore, compression) that cannot be expressed as per-entry
+// retractions: every affected Agent's pinned snapshot ends here, so its very
+// next prompt build reads the replaced store. Handlers with private stores
+// (for example hardware runtimes) are excluded.
 func (a *App) refreshActiveAgentMemorySnapshots() {
 	a.notifyMemoryWarehouseChanged(memoryWarehouseChange{})
+	for handler := range a.sharedMemoryStoreHandlers() {
+		if a.memoryStore != nil && handler.memoryStore != a.memoryStore {
+			continue
+		}
+		handler.InvalidateAllFrozenMemorySnapshots()
+	}
 }
 
 func warehouseChangeFromEntries(entries []memory.Entry, kind, replacement string) memoryWarehouseChange {
@@ -980,13 +999,10 @@ func (a *App) memoryEntriesByIDs(ids ...string) []memory.Entry {
 	return out
 }
 
-func (a *App) notifyMemoryWarehouseChanged(change memoryWarehouseChange) {
-	if a == nil {
-		return
-	}
-	if a.memoryStore != nil {
-		a.memoryStore.InvalidateAllRecallCaches()
-	}
+// sharedMemoryStoreHandlers collects every agent handler whose prompt pipeline
+// the App's warehouse changes can reach. Callers apply the shared-store guard
+// themselves: hardware-bound handlers intentionally own a private store.
+func (a *App) sharedMemoryStoreHandlers() map[*IMMessageHandler]struct{} {
 	handlers := make(map[*IMMessageHandler]struct{}, 8)
 	add := func(handler *IMMessageHandler) {
 		if handler != nil {
@@ -998,8 +1014,7 @@ func (a *App) notifyMemoryWarehouseChanged(change memoryWarehouseChange) {
 		add(hub.currentIMHandler())
 	}
 	// Gateway handlers are separate Agent instances, so their frozen prompt
-	// snapshots must be invalidated too. Keep the shared-store guard below:
-	// hardware-bound handlers can intentionally own a private memory store.
+	// snapshots must be invalidated too.
 	if a.weixinGateway != nil {
 		add(a.weixinGateway.currentLocalHandler())
 	}
@@ -1025,7 +1040,17 @@ func (a *App) notifyMemoryWarehouseChanged(change memoryWarehouseChange) {
 			add(handler)
 		}
 	}
-	for handler := range handlers {
+	return handlers
+}
+
+func (a *App) notifyMemoryWarehouseChanged(change memoryWarehouseChange) {
+	if a == nil {
+		return
+	}
+	if a.memoryStore != nil {
+		a.memoryStore.InvalidateAllRecallCaches()
+	}
+	for handler := range a.sharedMemoryStoreHandlers() {
 		if a.memoryStore != nil && handler.memoryStore != a.memoryStore {
 			continue
 		}
@@ -2011,7 +2036,7 @@ func (a *App) ensureTaskOrchestrator2() {
 	a.ensureInteractionInfra()
 	if a.taskOrchestrator2 == nil && a.remoteSessions != nil && a.toolSelector != nil {
 		a.ensureContextBridge()
-		a.taskOrchestrator2 = NewTaskOrchestrator2(a.remoteSessions, a.toolSelector, a.contextBridge)
+		a.taskOrchestrator2 = NewTaskOrchestrator2WithPersist(a.remoteSessions, a.toolSelector, a.contextBridge, filepath.Join(a.GetDataDir(), "runtime", "task_plans.json"))
 		if err := a.taskOrchestrator2.UseDurableRuntimeStores(filepath.Join(a.GetDataDir(), "runtime")); err != nil {
 			log.Printf("[task-orchestrator] durable runtime stores unavailable: %v", err)
 		}
@@ -2613,6 +2638,7 @@ func (a *App) startup(ctx context.Context) {
 	log.Printf("[startup] begin")
 	bootLog("App.startup ctx_nil=%v", ctx == nil)
 	a.ctx = ctx
+	a.installMermaidPDFRaster()
 	botNoticeApp.Store(a)
 	// Picture PDFs have no text layer. Wire OCR before the first document read
 	// so auto-extract and office(read_document) share the local engine.
@@ -2856,7 +2882,7 @@ func (a *App) finishDomReady(ctx context.Context) {
 	hideNativeEnvCheckSplash()
 	// Trigger environment check on startup
 	// IsInitMode and PauseEnvCheck logic is handled inside CheckEnvironment
-	a.CheckEnvironment(false)
+	a.startStartupEnvironmentCheck()
 	// Always arm the loop: each attempt re-reads check_update_on_startup so
 	// enabling/disabling mid-session takes effect without a restart.
 	a.startBackgroundUpdateChecks()
@@ -2872,6 +2898,20 @@ func (a *App) finishDomReady(ctx context.Context) {
 	a.applyPendingCloudWorkspaceShare()
 }
 
+func (a *App) startStartupEnvironmentCheck() {
+	if a == nil {
+		return
+	}
+	started := false
+	a.startupEnvironmentCheckOnce.Do(func() {
+		started = true
+		a.CheckEnvironment(false)
+	})
+	if !started {
+		bootLog("startup environment check already triggered; skipping duplicate")
+	}
+}
+
 func (a *App) markFrontendHTMLReady() {
 	if a == nil || !a.frontendHTMLReady.CompareAndSwap(false, true) {
 		return
@@ -2882,7 +2922,7 @@ func (a *App) markFrontendHTMLReady() {
 	}
 	bootLog("index.html boot-ping; hiding overlay and starting env check")
 	hideNativeEnvCheckSplash()
-	a.CheckEnvironment(false)
+	a.startStartupEnvironmentCheck()
 	a.startBackgroundUpdateChecks()
 	a.scheduleClampMaximizedWindowToWorkArea(120 * time.Millisecond)
 	a.watchEnvCheckPromote()
@@ -3098,6 +3138,9 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.localMCPManager != nil {
 		a.localMCPManager.StopAll()
 	}
+	if a.remoteSessions != nil {
+		a.remoteSessions.SaveActiveCheckpointsForShutdown()
+	}
 	a.conversationMemoryMu.Lock()
 	conversationMemory := a.aiConversationMemory
 	a.aiConversationMemory = nil
@@ -3108,6 +3151,7 @@ func (a *App) shutdown(ctx context.Context) {
 		// point (previously only crashes/max-rounds produced one).
 		if a.imHandler != nil {
 			a.imHandler.snapshotInterruptedSessionsForShutdown()
+			a.imHandler.waitForInterruptedSessionsForShutdown()
 		}
 		// Force-flush dirty state to disk BEFORE stopping the persist loop.
 		// When the process is killed by an updater (no graceful shutdown),
@@ -9025,6 +9069,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.OCRModelTier = corelib.NormalizeOCRModelTier(v)
+		case "formula_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.FormulaEnabled = v
 		case "diarization_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -12520,6 +12570,20 @@ func (a *App) normalizeOpenPathForApp(path string) (string, error) {
 	return normalizeOpenPathHome(path, home)
 }
 
+// startShownItemCommand launches the file manager. Tests replace it so a
+// reveal check does not open Explorer.
+var startShownItemCommand = func(cmd *exec.Cmd) error { return cmd.Start() }
+
+// explorerSelectCommandLine is the Windows command line that selects path.
+// Explorer reads /select,path as one switch. Separate arguments put a space
+// after the comma, and a path that contains a space is then not selected.
+// Quotes wrap the path only.
+func explorerSelectCommandLine(explorer, path string) string {
+	explorer = strings.ReplaceAll(explorer, `"`, "")
+	path = strings.ReplaceAll(path, `"`, "")
+	return `"` + explorer + `" /select,"` + path + `"`
+}
+
 // startSystemOpenForTest replaces the real OS default-handler launch in tests.
 // ShellExecuteW can block for minutes when the registered handler for a file
 // type answers DDE slowly or not at all, which stalls the whole test binary.
@@ -12569,7 +12633,9 @@ func (a *App) ShowItemInFolder(path string) error {
 		cmd = exec.Command("open", "-R", path)
 	case "windows":
 		path = filepath.FromSlash(path)
-		cmd = exec.Command(windowsSystemExecutable("explorer.exe"), "/select,", path)
+		exe := windowsSystemExecutable("explorer.exe")
+		cmd = exec.Command(exe)
+		applyExplorerSelect(cmd, exe, path)
 		hideCommandWindow(cmd)
 	case "linux":
 		cmd = exec.Command("xdg-open", filepath.Dir(path))
@@ -12577,7 +12643,7 @@ func (a *App) ShowItemInFolder(path string) error {
 		return fmt.Errorf("unsupported platform")
 	}
 	// Use Start instead of Run to avoid waiting for the process and ignoring exit codes (like 1 on Windows)
-	return cmd.Start()
+	return startShownItemCommand(cmd)
 }
 
 func (a *App) OpenFileOrShowInFolder(path string) error {

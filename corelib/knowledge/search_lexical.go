@@ -13,7 +13,6 @@ func (s *SQLiteStore) collectLexicalResults(ctx context.Context, opts SearchOpti
 	resultTypes := normalizeSearchResultTypes(opts.ResultTypes)
 	seenCards := make(map[string]struct{})
 	seenFacts := make(map[string]struct{})
-	seenNodes := make(map[string]struct{})
 
 	if wantsSearchType(resultTypes, "card") {
 		cardWhere := []string{"knowledge_cards_fts MATCH ?", "NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)", "COALESCE(c.invalid_at, '') = ''"}
@@ -58,9 +57,6 @@ func (s *SQLiteStore) collectLexicalResults(ctx context.Context, opts SearchOpti
 			result.Score = scoreSearchResult(result, opts, -rank)
 			result.Citation = formatResultCitation(result)
 			seenCards[result.CardID] = struct{}{}
-			if result.NodeID != "" {
-				seenNodes[source.ID+"\x00"+result.NodeID] = struct{}{}
-			}
 			results = append(results, result)
 		}
 		if err := cardRows.Close(); err != nil {
@@ -126,9 +122,6 @@ func (s *SQLiteStore) collectLexicalResults(ctx context.Context, opts SearchOpti
 			result.Citation = formatResultCitation(result)
 			seenFacts[result.FactID] = struct{}{}
 			seenCards[result.CardID] = struct{}{}
-			if result.NodeID != "" {
-				seenNodes[source.ID+"\x00"+result.NodeID] = struct{}{}
-			}
 			results = append(results, result)
 		}
 		if err := factRows.Close(); err != nil {
@@ -184,9 +177,6 @@ func (s *SQLiteStore) collectLexicalResults(ctx context.Context, opts SearchOpti
 			source.FetchedAt = parseTime(fetchedAt)
 			source.CreatedAt = parseTime(createdAt)
 			source.UpdatedAt = parseTime(updatedAt)
-			if _, ok := seenNodes[source.ID+"\x00"+result.NodeID]; ok {
-				continue
-			}
 			result.Source = source
 			result.ResultType = "node"
 			result.Snippet = strings.TrimSpace(snippet)
@@ -200,20 +190,24 @@ func (s *SQLiteStore) collectLexicalResults(ctx context.Context, opts SearchOpti
 	}
 
 	if wantsSearchType(resultTypes, "table_row") {
-		rowResults, rowErr := s.searchTableRowsFTS(ctx, opts)
-		if rowErr == nil && len(rowResults) > 0 {
-			seenRows := make(map[string]struct{})
-			for _, result := range results {
-				if result.ResultType == "table_row" && result.RowID != "" {
-					seenRows[result.RowID] = struct{}{}
-				}
-			}
+		seenRows := make(map[string]struct{})
+		appendRows := func(rowResults []SearchResult) {
 			for _, result := range rowResults {
 				if _, ok := seenRows[result.RowID]; ok {
 					continue
 				}
 				seenRows[result.RowID] = struct{}{}
 				results = append(results, result)
+			}
+		}
+		rowResults, rowErr := s.searchTableRowsFTS(ctx, opts)
+		if rowErr == nil {
+			appendRows(rowResults)
+		}
+		if containsNoSpaceScriptRunes(opts.Query) {
+			likeRows, likeErr := s.searchTableRowsLikeFallback(ctx, structuredSearchOptionsFromSearch(opts), opts.Limit)
+			if likeErr == nil {
+				appendRows(likeRows)
 			}
 		}
 	}

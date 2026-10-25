@@ -126,7 +126,10 @@ func (p *SSHPool) acquire(cfg SSHHostConfig) (*ssh.Client, error) {
 	// 池里没有仍被引用的连接时，才在锁外探测。
 	// 半开 TCP 上 SendRequest 可能阻塞 30-120 秒，必须限制等待时间。
 	if candidate != nil {
-		ok, finished, _ := awaitSSHProbe(candidate, sshProbeWait)
+		// 这条连接已经没有引用。探测没在时限内成功就丢掉它再拨号：
+		// 未完成的 keepalive 占着连接锁，新会话挂上去会一直等。
+		// 仍被会话引用的连接在上面直接复用，不会进到这里。
+		ok, finished, _, _ := awaitSSHProbe(candidate, sshProbeWait)
 		alive := finished && ok
 		if alive {
 			p.mu.Lock()
@@ -138,7 +141,7 @@ func (p *SSHPool) acquire(cfg SSHHostConfig) (*ssh.Client, error) {
 			p.mu.Unlock()
 			// entry 已被替换，走新建流程
 		} else {
-			// 连接已断，清理
+			// 空闲连接这次没有探测成功，丢掉再拨新的。
 			p.mu.Lock()
 			if e, ok := p.conns[hostID]; ok && e.client == candidate {
 				delete(p.conns, hostID)
@@ -279,8 +282,9 @@ func (p *SSHPool) Stats() map[string]int {
 	return stats
 }
 
-// IsAlive 检查指定主机的连接是否存活。
-// 带 5 秒超时保护，避免半开 TCP 连接导致 SendRequest 长时间阻塞。
+// IsAlive 报告池里的这条连接还可以继续用。
+// 与 SSHPTYSession.IsAlive 同一规则：传输错误或同一次请求超过
+// sshProbeStuckAfter 返回 false；更短的未完成等待仍算存活。
 func (p *SSHPool) IsAlive(cfg SSHHostConfig) bool {
 	cfg.Defaults()
 	hostID := sshPoolKey(cfg)
@@ -292,8 +296,8 @@ func (p *SSHPool) IsAlive(cfg SSHHostConfig) bool {
 	if !found || entry.client == nil {
 		return false
 	}
-	ok, finished, _ := awaitSSHProbe(entry.client, sshProbeWait)
-	return finished && ok
+	ok, finished, running, _ := awaitSSHProbe(entry.client, sshProbeWait)
+	return !sshProbeCountsAsFailure(finished, ok, running)
 }
 
 // Reconnect 强制断开旧连接并重新建立到指定主机的连接。
@@ -354,7 +358,7 @@ func (p *SSHPool) keepalive(hostID string, client *ssh.Client, interval time.Dur
 	for range ticker.C {
 		// 同一条连接同时只发一个 keepalive。超时后丢掉的 SendRequest 会占着
 		// 全局锁，后面的探测跟着超时，活连接也会被关掉。
-		ok, finished, running := awaitSSHProbe(client, sshProbeWait)
+		ok, finished, running, _ := awaitSSHProbe(client, sshProbeWait)
 		if finished && ok {
 			failCount = 0
 			continue

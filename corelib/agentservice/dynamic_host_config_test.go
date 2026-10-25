@@ -216,8 +216,8 @@ func TestReviewedHostConfigThinkingModeVocabulary(t *testing.T) {
 		t.Fatalf("config schema has no thinking_mode property: %#v", properties)
 	}
 	enum, ok := thinking["enum"].([]string)
-	if !ok || len(enum) != 2 {
-		t.Fatalf("thinking_mode must advertise the canonical pair, got %#v", thinking["enum"])
+	if !ok || len(enum) != 5 {
+		t.Fatalf("thinking_mode must advertise auto/low/high/max/none, got %#v", thinking["enum"])
 	}
 	for _, name := range enum {
 		mode, ok := reviewedHostConfigThinkingMode(name)
@@ -226,20 +226,17 @@ func TestReviewedHostConfigThinkingModeVocabulary(t *testing.T) {
 		}
 	}
 	// The shared set: legacy spellings accepted on both hosts, not advertised.
-	for _, sent := range []string{"true", "1", "false", "none", "auto", ""} {
+	for _, sent := range []string{"true", "1", "false", "enabled", "disabled", "off", ""} {
 		if _, ok := reviewedHostConfigThinkingMode(sent); !ok {
-			t.Fatalf("enumless-but-valid spelling %q must stay accepted by the shared parser", sent)
+			t.Fatalf("legacy spelling %q must stay accepted by the shared parser", sent)
 		}
 	}
-	for _, invented := range []string{"zhipu", "high", "medium"} {
+	for _, invented := range []string{"zhipu", "medium", "xhigh"} {
 		if _, ok := reviewedHostConfigThinkingMode(invented); ok {
 			t.Fatalf("invented mode %q must not be accepted", invented)
 		}
 	}
-	// The refusal the administer path formats carries the same canonical hint
-	// the GUI surface is pinned to verify end to end, so this host cannot
-	// reject with less than the other one shows.
-	if hint := corelib.GlobalThinkingModeHint(); !strings.Contains(hint, "enabled") || !strings.Contains(hint, "disabled") {
+	if hint := corelib.GlobalThinkingModeHint(); !strings.Contains(hint, "auto") || !strings.Contains(hint, "none") || !strings.Contains(hint, "low") {
 		t.Fatalf("hint %q does not name the canonical set", hint)
 	}
 }

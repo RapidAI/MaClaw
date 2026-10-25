@@ -648,6 +648,8 @@ func TestArxivDownloadErrorText(t *testing.T) {
 		"status code 404":           "404",
 		"403 Forbidden":             "拒绝",
 		"rate limited, blocked":     "拒绝",
+		"MaClaw Hub download requires a signed-in hub account": "需要先在主窗口登录",
+		"MaClaw Hub login is required to share documents":      "需要先在主窗口登录",
 	}
 	for in, want := range cases {
 		if got := arxivDownloadErrorText(errString(in)); !strings.Contains(got, want) {

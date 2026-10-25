@@ -1841,25 +1841,13 @@ func requestGroupDiscussionAuthorizationResponses(handler *IMMessageHandler, cfg
 			"schema": groupDiscussionAuthorizationJSONSchema,
 		},
 	}
-	req, body, endpoint, err := llm.NewResponsesAPIRequest(scheduledCtx, cfg, messages, llm.ResponsesAPIRequestOptions{
-		Stream:    false,
+	// The shared sender keeps the provider body. A local post handed
+	// dumpLLMContext the request bytes, so a thinking-off refusal could
+	// not be retried.
+	parsedResp, err := llm.DoResponsesAPIRequestWithOptions(scheduledCtx, cfg, messages, client, llm.ResponsesAPIRequestOptions{
 		ExtraBody: map[string]interface{}{"response_format": responseFormat},
 	})
-	if err != nil {
-		return groupDiscussionAuthorizationDecision{}, err
-	}
-	resp, err := client.Do(req)
 	globalLLMScheduler.ObserveResult(trace, err)
-	if err != nil {
-		return groupDiscussionAuthorizationDecision{}, fmt.Errorf("[%s] %w", endpoint, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		err := dumpLLMContext(resp.StatusCode, "group discussion authorization responses request failed", body, handler.getTempDir())
-		globalLLMScheduler.ObserveResult(trace, err)
-		return groupDiscussionAuthorizationDecision{}, err
-	}
-	parsedResp, err := llm.ParseNonStreamResponsesAPIResponse(resp)
 	if err != nil {
 		return groupDiscussionAuthorizationDecision{}, err
 	}
@@ -1885,25 +1873,10 @@ func requestGroupDiscussionAuthorizationOpenAI(handler *IMMessageHandler, cfg co
 			"schema": groupDiscussionAuthorizationJSONSchema,
 		},
 	}
-	req, body, endpoint, err := llm.NewOpenAIChatRequest(scheduledCtx, cfg, messages, llm.OpenAIChatRequestOptions{
-		Stream:         false,
+	parsedResp, err := llm.DoOpenAIRequestWithOptions(scheduledCtx, cfg, messages, nil, client, llm.OpenAIChatRequestOptions{
 		ResponseFormat: responseFormat,
 	})
-	if err != nil {
-		return groupDiscussionAuthorizationDecision{}, err
-	}
-	resp, err := client.Do(req)
 	globalLLMScheduler.ObserveResult(trace, err)
-	if err != nil {
-		return groupDiscussionAuthorizationDecision{}, fmt.Errorf("[%s] %w", endpoint, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		err := dumpLLMContext(resp.StatusCode, "group discussion authorization request failed", body, handler.getTempDir())
-		globalLLMScheduler.ObserveResult(trace, err)
-		return groupDiscussionAuthorizationDecision{}, err
-	}
-	parsedResp, err := llm.ParseNonStreamOpenAIResponse(resp)
 	if err != nil {
 		return groupDiscussionAuthorizationDecision{}, err
 	}

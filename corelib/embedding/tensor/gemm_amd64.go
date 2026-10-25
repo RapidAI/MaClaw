@@ -89,6 +89,22 @@ func multiDot8AVX2(out *[8]float32, a, b *float32, K int)
 //go:noescape
 func multiDot4DualBAVX2(out *[8]float32, a, b0, b1 *float32, K int)
 
+// useTripleK reports whether the 8-row tile should issue the triple-B
+// kernel. AVX-512's generic kernel covers every K>=32 multiple of 8 except
+// the tuned dual widths 128 and 560 (512 has its own one-pass triple).
+// AVX2 keeps the historical PP-OCR set: other widths would fall through to
+// a dual-plus-single reload of A.
+func useTripleK(K int) bool {
+	switch K {
+	case 48, 96, 120, 192, 384, 768:
+		return true
+	}
+	if !hasAVX512 || K < 32 || K%8 != 0 || K == 128 || K == 560 {
+		return false
+	}
+	return true
+}
+
 // multiDot4DualB: 4 A rows × 2 B vectors.
 // out[0:4] = dots with b0, out[4:8] = dots with b1.
 // Loads each A chunk once and FMAs into both B accumulators.

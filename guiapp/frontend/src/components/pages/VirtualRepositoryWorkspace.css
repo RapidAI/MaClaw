@@ -122,7 +122,7 @@
 .vrepo-client-status--end-aligned[open] .vrepo-client-status__body { left: auto; right: 0; }
 .vrepo-page .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
-.vrepo-empty { border: 1px solid var(--vrepo-border); border-radius: var(--radius-md, 10px); background: var(--vrepo-surface); }
+.vrepo-empty { border: 1px solid var(--vrepo-border); border-radius: var(--radius-md, 8px); background: var(--vrepo-surface); }
 .vrepo-empty { width: min(760px, 100%); box-sizing: border-box; margin: clamp(32px, 9vh, 92px) auto 32px; padding: 28px; }
 .vrepo-empty__intro { display: flex; align-items: flex-start; gap: 14px; text-align: left; }
 .vrepo-empty__mark { display: grid; flex: 0 0 36px; width: 36px; height: 36px; place-items: center; border: 1px solid color-mix(in srgb, var(--vrepo-primary) 48%, var(--vrepo-border)); border-radius: var(--radius-md, 8px); background: var(--vrepo-primary-soft); color: var(--vrepo-primary); font-size: .9rem; font-weight: 800; }
@@ -138,7 +138,7 @@
 .vrepo-recent__open:disabled { opacity: .78; }
 .vrepo-recent__task { flex: 0 0 auto; }
 
-.vrepo-management-shell { display: grid; grid-template-columns: minmax(230px, 280px) minmax(0, 1fr); min-height: 560px; border: 1px solid var(--vrepo-border); border-radius: var(--radius-md, 10px); overflow: hidden; background: var(--vrepo-surface); }
+.vrepo-management-shell { display: grid; grid-template-columns: minmax(230px, 280px) minmax(0, 1fr); min-height: 560px; border: 1px solid var(--vrepo-border); border-radius: var(--radius-md, 8px); overflow: hidden; background: var(--vrepo-surface); }
 .vrepo-repository-list { display: flex; min-height: 0; flex-direction: column; box-shadow: inset -1px 0 0 var(--vrepo-border); background: color-mix(in srgb, var(--vrepo-muted) 84%, var(--vrepo-surface)); }
 .vrepo-repository-list__head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 15px 14px 10px; }
 .vrepo-repository-list__head strong { color: var(--vrepo-ink); font-size: .84rem; }
@@ -150,7 +150,7 @@
 .vrepo-repository-list__items { overscroll-behavior: contain; }
 .vrepo-repository-list__record { contain: layout paint style; content-visibility: auto; contain-intrinsic-size: auto 88px; padding: 2px 0 8px; border-bottom: 1px solid color-mix(in srgb, var(--vrepo-border-subtle) 78%, transparent); }
 .vrepo-repository-list__record:last-child { border-bottom: 0; }
-.vrepo-repository-list__item { display: grid; width: 100%; min-height: 0 !important; gap: 5px; margin: 2px 0; padding: 10px 9px !important; border: 1px solid transparent !important; border-radius: 7px !important; background: transparent !important; color: var(--vrepo-secondary) !important; text-align: left; }
+.vrepo-repository-list__item { display: grid; width: 100%; min-height: 0 !important; gap: 5px; margin: 2px 0; padding: 10px 9px !important; border: 1px solid transparent !important; border-radius: var(--radius-md) !important; background: transparent !important; color: var(--vrepo-secondary) !important; text-align: left; }
 .vrepo-repository-list__item:hover:not(:disabled) { background: color-mix(in srgb, var(--vrepo-primary) 7%, var(--vrepo-surface)) !important; color: var(--vrepo-ink) !important; }
 .vrepo-repository-list__item.is-active { border-color: color-mix(in srgb, var(--vrepo-primary) 36%, var(--vrepo-border)) !important; background: var(--vrepo-primary-soft) !important; color: var(--vrepo-ink) !important; }
 .vrepo-repository-list__item-name { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 8px; }
@@ -166,7 +166,7 @@
 .vrepo-repository-menu__context { display: grid; gap: 2px; min-width: 0; padding: 5px 7px 8px; border-bottom: 1px solid var(--vrepo-border-subtle); }
 .vrepo-repository-menu__context span { color: var(--vrepo-muted-ink); font-size: .68rem; font-weight: 650; }
 .vrepo-repository-menu__context strong { overflow: hidden; color: var(--vrepo-secondary); font-size: .72rem; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.vrepo-repository-menu__delete { display: flex; width: 100%; min-height: 34px !important; align-items: center; justify-content: flex-start; gap: 8px; margin-top: 4px; padding: 0 7px !important; border: 1px solid transparent !important; border-radius: 5px !important; background: transparent !important; color: var(--vrepo-secondary) !important; font-size: .74rem !important; font-weight: 600 !important; text-align: left; }
+.vrepo-repository-menu__delete { display: flex; width: 100%; min-height: 34px !important; align-items: center; justify-content: flex-start; gap: 8px; margin-top: 4px; padding: 0 7px !important; border: 1px solid transparent !important; border-radius: var(--radius-sm) !important; background: transparent !important; color: var(--vrepo-secondary) !important; font-size: .74rem !important; font-weight: 600 !important; text-align: left; }
 .vrepo-repository-menu__delete svg { width: 15px; height: 15px; flex: 0 0 15px; fill: none; stroke: currentColor; stroke-width: 1.35; stroke-linecap: round; stroke-linejoin: round; }
 .vrepo-repository-menu__delete:hover:not(:disabled), .vrepo-repository-menu__delete:focus-visible { border-color: color-mix(in srgb, var(--vrepo-danger) 34%, var(--vrepo-border)) !important; background: color-mix(in srgb, var(--vrepo-danger) 7%, var(--vrepo-surface)) !important; color: var(--vrepo-danger) !important; outline: none; }
 .vrepo-repository-menu__delete:focus-visible { box-shadow: 0 0 0 2px color-mix(in srgb, var(--vrepo-primary) 28%, transparent); }
@@ -334,7 +334,7 @@ button.vrepo-tree__chevron:focus-visible { outline: 2px solid var(--vrepo-primar
 .vrepo-operation__targets span, .vrepo-operation-result span { color: var(--vrepo-secondary); }
 .vrepo-operation__hint { margin: 0 0 14px; color: var(--vrepo-secondary); font-size: .8rem; line-height: 1.5; }
 .vrepo-operation__danger, .vrepo-operation-result .is-error { color: var(--vrepo-danger); }
-.vrepo-operation-result { margin-top: 16px; padding: 18px; border: 1px solid var(--vrepo-border); border-radius: var(--radius-md, 10px); background: var(--vrepo-surface); }
+.vrepo-operation-result { margin-top: 16px; padding: 18px; border: 1px solid var(--vrepo-border); border-radius: var(--radius-md, 8px); background: var(--vrepo-surface); }
 .vrepo-tree__item:focus-visible, .vrepo-page button:focus-visible, .vrepo-page input:focus-visible, .vrepo-page select:focus-visible, .vrepo-page textarea:focus-visible, .vrepo-client-status summary:focus-visible { outline: 2px solid var(--vrepo-primary); outline-offset: 2px; }
 
 @media (max-width: 1000px) {

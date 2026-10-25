@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 const (
@@ -21,6 +22,7 @@ type digitalEmployeeSensitiveRequest struct {
 	RequestID      string `json:"request_id"`
 	SessionID      string `json:"session_id"`
 	Query          string `json:"query"`
+	Kind           string `json:"kind,omitempty"`
 	TimeoutSeconds int    `json:"timeout_seconds"`
 }
 
@@ -140,6 +142,51 @@ func (h *VEMessageHandler) shouldAnnounceSensitivePermissionRequest() bool {
 	}
 	return h.app.GetDigitalEmployeeSensitiveQueryPolicy() == digitalEmployeeSensitivePolicyConfirm
 }
+
+// waitVECommitApproval asks the local operator on the digital-employee
+// confirm dialog. Allow runs this call once. Deny is remembered by the gate.
+// No answer stores nothing. This does not use the coding scope dialog, and
+// it does not publish the question as the employee's reply.
+func waitVECommitApproval(app *App, ctx context.Context, sessionID, toolName, subject string) (agent.CommitDecision, bool) {
+	if app == nil {
+		return "", false
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return "", false
+	}
+	requestID := fmt.Sprintf("ve_commit_%d", time.Now().UnixNano())
+	ch := veSensitiveApprovals.register(requestID)
+	defer veSensitiveApprovals.remove(requestID)
+	query := agent.CommitAskQuestion(toolName)
+	if text := strings.TrimSpace(subject); text != "" {
+		query += "\n" + text
+	}
+	app.emitEvent("digital-employee-sensitive-request", digitalEmployeeSensitiveRequest{
+		RequestID:      requestID,
+		SessionID:      sessionID,
+		Query:          query,
+		Kind:           "commit",
+		TimeoutSeconds: 60,
+	})
+	timer := time.NewTimer(time.Minute)
+	defer timer.Stop()
+	var ctxDone <-chan struct{}
+	if ctx != nil {
+		ctxDone = ctx.Done()
+	}
+	select {
+	case allowed := <-ch:
+		if allowed {
+			return agent.CommitAllowOnce, true
+		}
+		return agent.CommitDeny, true
+	case <-timer.C:
+		return "", false
+	case <-ctxDone:
+		return "", false
+	}
+}
+
 func (h *VEMessageHandler) authorizeSensitiveQuery(ctx context.Context, sessionID, query string) bool {
 	if h == nil || h.app == nil {
 		return false

@@ -1273,7 +1273,7 @@ func (h *IMMessageHandler) dropPetWindowConfirm() {
 	if h.confirmationStore != nil {
 		h.confirmationStore.clear(petCompanionUserID)
 	}
-	h.pendingAskUser.Delete(petCompanionUserID)
+	h.deletePendingAskUser(petCompanionUserID)
 }
 
 func (a *App) savePetDocumentToLibrary(path, title, body string) (string, error) {

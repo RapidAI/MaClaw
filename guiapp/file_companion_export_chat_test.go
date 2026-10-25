@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -210,6 +211,151 @@ func TestFileCompanionExportChatPDFRefusesToOverwriteTheOpenFile(t *testing.T) {
 	}
 }
 
+func TestFileCompanionExportChatCloudUploadsTheTranscript(t *testing.T) {
+	if !docgen.New().HasFont() {
+		t.Skip("no usable font on this machine for PDF rendering")
+	}
+	dialogDest := filepath.Join(t.TempDir(), "unused")
+	app, path := newCompanionChatExportApp(t, dialogDest)
+	var gotName string
+	var gotPDF []byte
+	previous := fileCompanionUploadExportPDF
+	t.Cleanup(func() { fileCompanionUploadExportPDF = previous })
+	fileCompanionUploadExportPDF = func(_ *App, filename string, raw []byte) (*MobileDocumentDraftSummary, error) {
+		gotName = filename
+		gotPDF = append([]byte(nil), raw...)
+		return &MobileDocumentDraftSummary{ID: "draft-1", Title: filename}, nil
+	}
+	summary, err := app.FileCompanionExportChatCloud(path, []CompanionChatTurn{
+		{Role: "user", Content: "这段讲了什么？"},
+		{Role: "assistant", Content: "第一点最重要。"},
+	})
+	if err != nil {
+		t.Fatalf("cloud export: %v", err)
+	}
+	if summary == nil || summary.ID != "draft-1" {
+		t.Fatalf("summary: %+v", summary)
+	}
+	if gotName != "notes-伴读对话.pdf" {
+		t.Fatalf("cloud name: %q", gotName)
+	}
+	if !strings.HasPrefix(string(gotPDF), "%PDF") {
+		t.Fatalf("cloud payload is not a PDF (%d bytes)", len(gotPDF))
+	}
+	// The dialog destination must stay untouched: cloud export does not ask
+	// the reader where to save.
+	if _, statErr := os.Stat(dialogDest + ".pdf"); statErr == nil {
+		t.Fatal("cloud export wrote the dialog destination")
+	}
+}
+
+func TestFileCompanionExportChatCloudWrapsATempDirFailure(t *testing.T) {
+	app, path := newCompanionChatExportApp(t, filepath.Join(t.TempDir(), "unused"))
+	previousDir := fileCompanionMkdirTemp
+	t.Cleanup(func() { fileCompanionMkdirTemp = previousDir })
+	fileCompanionMkdirTemp = func(string, string) (string, error) {
+		return "", errors.New("mkdir temp: There is not enough space on the disk.")
+	}
+	called := false
+	previousUpload := fileCompanionUploadExportPDF
+	t.Cleanup(func() { fileCompanionUploadExportPDF = previousUpload })
+	fileCompanionUploadExportPDF = func(*App, string, []byte) (*MobileDocumentDraftSummary, error) {
+		called = true
+		return &MobileDocumentDraftSummary{ID: "x"}, nil
+	}
+	_, err := app.FileCompanionExportChatCloud(path, []CompanionChatTurn{{Role: "user", Content: "提问"}})
+	if err == nil || !strings.Contains(err.Error(), "创建目录失败") || !strings.Contains(err.Error(), "not enough space") {
+		t.Fatalf("temp dir: %v", err)
+	}
+	if called {
+		t.Fatal("upload ran without a file")
+	}
+}
+
+func TestFileCompanionExportChatCloudSkipsABlankOrClosedFile(t *testing.T) {
+	app, path := newCompanionChatExportApp(t, filepath.Join(t.TempDir(), "unused"))
+	called := false
+	previous := fileCompanionUploadExportPDF
+	t.Cleanup(func() { fileCompanionUploadExportPDF = previous })
+	fileCompanionUploadExportPDF = func(_ *App, _ string, _ []byte) (*MobileDocumentDraftSummary, error) {
+		called = true
+		return &MobileDocumentDraftSummary{ID: "draft-1"}, nil
+	}
+	if _, err := app.FileCompanionExportChatCloud(path, []CompanionChatTurn{{Role: "user", Content: "  "}}); err == nil || !strings.Contains(err.Error(), "没有可导出的内容") {
+		t.Fatalf("blank transcript: %v", err)
+	}
+	if _, err := app.FileCompanionExportChatCloud(filepath.Join(filepath.Dir(path), "other.md"), []CompanionChatTurn{{Role: "user", Content: "正文"}}); err == nil {
+		t.Fatal("unopened file uploaded")
+	}
+	if called {
+		t.Fatal("upload ran without a transcript")
+	}
+}
+
+func TestFileCompanionExportWebChatCloudRequiresTheOpenSession(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	called := false
+	previous := fileCompanionUploadExportPDF
+	t.Cleanup(func() { fileCompanionUploadExportPDF = previous })
+	fileCompanionUploadExportPDF = func(_ *App, filename string, raw []byte) (*MobileDocumentDraftSummary, error) {
+		called = true
+		if filename != "对话.pdf" || !strings.HasPrefix(string(raw), "%PDF") {
+			t.Fatalf("web upload %q (%d bytes)", filename, len(raw))
+		}
+		return &MobileDocumentDraftSummary{ID: "web-1", Title: filename}, nil
+	}
+	if _, err := app.FileCompanionExportWebChatCloud("missing", []CompanionChatTurn{{Role: "user", Content: "提问"}}); err == nil || !strings.Contains(err.Error(), "not open") {
+		t.Fatalf("closed session: %v", err)
+	}
+	if called {
+		t.Fatal("closed session uploaded")
+	}
+	if !docgen.New().HasFont() {
+		t.Skip("no usable font on this machine for PDF rendering")
+	}
+	opened, err := app.FileCompanionOpenReference("https://example.com/watch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := app.FileCompanionExportWebChatCloud(opened.SessionID, []CompanionChatTurn{{Role: "user", Content: "网页里的问题"}})
+	if err != nil {
+		t.Fatalf("web cloud export: %v", err)
+	}
+	if summary == nil || summary.ID != "web-1" || !called {
+		t.Fatalf("summary: %+v called=%v", summary, called)
+	}
+}
+
+func TestFileCompanionUploadRenderedChatPDFKeepsTheNameInsideTheTempDir(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	called := false
+	previous := fileCompanionUploadExportPDF
+	t.Cleanup(func() { fileCompanionUploadExportPDF = previous })
+	fileCompanionUploadExportPDF = func(_ *App, filename string, raw []byte) (*MobileDocumentDraftSummary, error) {
+		called = true
+		if filename != "secret.pdf" || !strings.HasPrefix(string(raw), "%PDF") {
+			t.Fatalf("upload name %q (%d bytes)", filename, len(raw))
+		}
+		return &MobileDocumentDraftSummary{ID: "kept"}, nil
+	}
+	if _, err := app.fileCompanionUploadRenderedChatPDF("..", "标题", "副标题", "正文"); err == nil || !strings.Contains(err.Error(), "没有可导出的内容") {
+		t.Fatalf("parent name: %v", err)
+	}
+	if called {
+		t.Fatal("parent name uploaded")
+	}
+	if !docgen.New().HasFont() {
+		t.Skip("no usable font on this machine for PDF rendering")
+	}
+	summary, err := app.fileCompanionUploadRenderedChatPDF(filepath.Join("..", "..", "secret.pdf"), "标题", "副标题", "正文")
+	if err != nil {
+		t.Fatalf("escaped name: %v", err)
+	}
+	if summary == nil || summary.ID != "kept" || !called {
+		t.Fatalf("summary: %+v called=%v", summary, called)
+	}
+}
+
 func TestFileCompanionChatFileNameKeepsADocumentName(t *testing.T) {
 	if got := fileCompanionChatFileName("C:/notes/周报 .md"); got != "周报-伴读对话.pdf" {
 		t.Fatalf("suffix: %q", got)
@@ -310,6 +456,107 @@ func TestFileCompanionChatDocumentNestsTheAnswersOwnHeadings(t *testing.T) {
 	// The original levels must not survive, or the collision is still there.
 	if strings.Contains(got, "\n## 方法原理") {
 		t.Fatalf("the answer kept a heading at the turn's level: %q", got)
+	}
+}
+
+// An indented "##" is still a heading once the renderer trims it. Gluing the
+// extra hash onto the indent promotes it to a level-one heading. The indent
+// sits after a sentence so the document's own TrimSpace does not eat it.
+func TestFileCompanionChatDocumentNestsAnIndentedHeading(t *testing.T) {
+	got, _ := fileCompanionChatDocument([]CompanionChatTurn{
+		{Role: "assistant", Content: "先说一句。\n  ## 缩进的小节\n\n正文。\n\t### 更深\n\u3000## 全角缩进\n"},
+	})
+	if !strings.Contains(got, "  ### 缩进的小节") {
+		t.Fatalf("indented heading was not nested: %q", got)
+	}
+	if !strings.Contains(got, "\t#### 更深") {
+		t.Fatalf("tab-indented heading was not nested: %q", got)
+	}
+	if !strings.Contains(got, "\u3000### 全角缩进") {
+		t.Fatalf("fullwidth-indented heading was not nested: %q", got)
+	}
+	if strings.Contains(got, "#  ##") || strings.Contains(got, "# \t###") || strings.Contains(got, "#  ###") || strings.Contains(got, "# \u3000##") {
+		t.Fatalf("indented heading was promoted: %q", got)
+	}
+}
+
+// Turns are one document. An answer that opens a fence and never closes it
+// would otherwise keep the next turn's heading inside that code block.
+func TestFileCompanionChatDocumentClosesAFenceBeforeTheNextTurn(t *testing.T) {
+	got, count := fileCompanionChatDocument([]CompanionChatTurn{
+		{Role: "assistant", Content: "```python\nprint(1)\n## 仍是代码\n"},
+		{Role: "user", Content: "然后呢？"},
+	})
+	if count != 2 {
+		t.Fatalf("turns: %d", count)
+	}
+	if strings.Contains(got, "### 仍是代码") {
+		t.Fatalf("a heading inside an open fence was nested: %q", got)
+	}
+	question := strings.Index(got, "## 第 1 个问题")
+	if question < 0 {
+		t.Fatalf("next turn heading missing: %q", got)
+	}
+	before := got[:question]
+	open := strings.Index(before, "```python")
+	close := strings.LastIndex(before, "```")
+	if open < 0 || close <= open {
+		t.Fatalf("fence did not close before the next turn: %q", got)
+	}
+}
+
+// A ``` between $$ and $$ is formula text. It must not open a fence, or the
+// heading after the formula stays at the turn's size and a closer written
+// for that fence starts a real code block in the PDF.
+func TestFileCompanionChatDocumentIgnoresAFenceInsideDisplayMath(t *testing.T) {
+	got, _ := fileCompanionChatDocument([]CompanionChatTurn{
+		{Role: "assistant", Content: "$$\n```\nE = mc^2\n$$\n\n## 小节\n"},
+		{Role: "user", Content: "下一问"},
+	})
+	if !strings.Contains(got, "### 小节") {
+		t.Fatalf("heading after math was not nested: %q", got)
+	}
+	if strings.Count(got, "```") != 1 {
+		t.Fatalf("a fence marker inside math grew a closer: %q", got)
+	}
+	if !strings.Contains(got, "## 第 1 个问题") {
+		t.Fatalf("next turn heading missing: %q", got)
+	}
+	plain, _ := fileCompanionChatDocument([]CompanionChatTurn{
+		{Role: "assistant", Content: "$$E = mc^2$$\n\n## 小节\n"},
+	})
+	if !strings.Contains(plain, "### 小节") {
+		t.Fatalf("heading after a one-line formula was not nested: %q", plain)
+	}
+}
+
+// An unclosed $$ covers only its own line. A fence after it is still a fence.
+func TestFileCompanionChatDocumentUnclosedMathDoesNotHideAFence(t *testing.T) {
+	got, _ := fileCompanionChatDocument([]CompanionChatTurn{
+		{Role: "assistant", Content: "$$\n```python\nprint(1)\n## 仍是代码\n"},
+		{Role: "user", Content: "然后呢？"},
+	})
+	if strings.Contains(got, "### 仍是代码") {
+		t.Fatalf("a heading inside the fence was nested: %q", got)
+	}
+	question := strings.Index(got, "## 第 1 个问题")
+	if question < 0 {
+		t.Fatalf("next turn heading missing: %q", got)
+	}
+	if strings.Count(got[:question], "```") < 2 {
+		t.Fatalf("fence after an unclosed formula was not closed: %q", got)
+	}
+}
+
+func TestFileCompanionChatDocumentDoesNotCloseAFinishedFenceTwice(t *testing.T) {
+	got, _ := fileCompanionChatDocument([]CompanionChatTurn{
+		{Role: "assistant", Content: "```\n# 注释\n```\n\n## 小节\n"},
+	})
+	if strings.Count(got, "```") != 2 {
+		t.Fatalf("fence markers: %q", got)
+	}
+	if !strings.Contains(got, "### 小节") {
+		t.Fatalf("heading after a closed fence was not nested: %q", got)
 	}
 }
 

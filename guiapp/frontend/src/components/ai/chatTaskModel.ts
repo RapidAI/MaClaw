@@ -198,6 +198,12 @@ export async function listDesktopChatTasks(sessionKey = ""): Promise<ChatTaskVie
     return normalizeChatTasks(await method(sessionKey));
 }
 
+export async function resumeDesktopChatTask(taskID: string, text = ""): Promise<ChatTaskView | null> {
+    const method = appMethod("ResumeAIAssistantChatTask");
+    if (!method) return null;
+    return normalizeChatTask(await method(taskID, text));
+}
+
 export async function cancelDesktopChatTask(taskID: string): Promise<void> {
     const method = appMethod("CancelAIAssistantChatTask");
     if (!method) return;

@@ -827,6 +827,9 @@ func TestApplyPackageRestoresSourcesAndMapWhenReplacementImportFails(t *testing.
 	if newMappings != 0 {
 		t.Fatalf("failed replacement advanced source map with %d new rows", newMappings)
 	}
+	if n := countLibraryMemberships(t, c.DataDir(), oldLocalID, libraryID); n != 1 {
+		t.Fatalf("restored library memberships = %d", n)
+	}
 }
 
 func TestApplyUpsertSourcesRemovesStaleNamespacedSources(t *testing.T) {
@@ -899,6 +902,9 @@ func TestApplyPackageRebuildsSourceMapWithForeignDALPrefix(t *testing.T) {
 	}
 	if _, err := store.GetSource(ctx, localID); err != nil {
 		t.Fatalf("mapped source missing from knowledge store: %v", err)
+	}
+	if n := countLibraryMemberships(t, c.DataDir(), localID, "lib_map"); n != 1 {
+		t.Fatalf("library memberships = %d", n)
 	}
 }
 

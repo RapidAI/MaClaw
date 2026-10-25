@@ -770,7 +770,7 @@ func semanticToolsSearchMaybeExpandScope(cb *sharedAgentLoopCallbacks, query str
 	// petitioning would spend the effectful budget on a guaranteed expansion
 	// failure. Connect mode (session-less) is petitionable: its provider can
 	// resolve the expansion and open a session on the re-issued call.
-	if cb.handler == nil || (!semanticTrustedSSHPublished(cb.handler) && !semanticTrustedSSHConnectPublished(cb.handler)) {
+	if cb.handler == nil || (!semanticTrustedSSHPublished(cb.handler, cb.semanticPrincipalID()) && !semanticTrustedSSHConnectPublished(cb.handler, cb.semanticPrincipalID())) {
 		return
 	}
 	cb.PetitionToolCall("ssh")

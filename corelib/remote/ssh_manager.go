@@ -45,6 +45,10 @@ type SSHManagedSession struct {
 	CreatedAt    time.Time
 	ExitCode     *int
 	LastOutputAt time.Time
+	// OwnerID is the conversation principal that opened this session.
+	// It is copied from SSHSessionSpec at create and does not change when
+	// the PTY reconnects. Another principal's session is a different session.
+	OwnerID string
 
 	// consecutiveExecFailures 记录连续 exec 失败次数（无输出或错误）。
 	// 达到阈值时上层应自动关闭并重建会话，避免 LLM 在死会话上无限重试。
@@ -183,11 +187,13 @@ func (m *SSHSessionManager) Create(spec SSHSessionSpec) (*SSHManagedSession, err
 	if label == "" {
 		label = hostID
 	}
+	spec.OwnerID = strings.TrimSpace(spec.OwnerID)
 
 	session := &SSHManagedSession{
-		ID:     sessionID,
-		Spec:   spec,
-		Status: SessionRunning,
+		ID:      sessionID,
+		Spec:    spec,
+		OwnerID: spec.OwnerID,
+		Status:  SessionRunning,
 		Summary: SSHSessionSummary{
 			SessionID: sessionID,
 			HostID:    hostID,

@@ -142,7 +142,9 @@ func TestBrowserRestoresTheLoggedInProfile(t *testing.T) {
 	if waitNext < 0 || navigatedNext < 0 || !strings.Contains(wait[:waitNext], "saw_document") || !strings.Contains(wait[:waitNext], "main_document_navigated") || !strings.Contains(wait[:waitNext], "document_replaced") || !strings.Contains(navigated[:navigatedNext], "parentId") || !strings.Contains(navigated[:navigatedNext], "page_origin") {
 		t.Fatal("a blank frame or an embedded frame is treated as the logged-in page")
 	}
-	restore := text[strings.Index(text, "def restore_page_login"):]
+	// The public restore_page_login is a timing wrapper; the restore policy
+	// under test lives in _restore_page_login.
+	restore := text[strings.Index(text, "def _restore_page_login"):]
 	restoreNext := strings.Index(restore, "\ndef ")
 	if restoreNext < 0 || strings.Index(restore[:restoreNext], "apply_page_login(") > strings.Index(restore[:restoreNext], "path.unlink") || !strings.Contains(restore[:restoreNext], "if not applied") || !strings.Contains(restore[:restoreNext], "if not pages or not settled") || !strings.Contains(restore[:restoreNext], "stable >= 8") || !strings.Contains(restore[:restoreNext], "origins.issubset") || !strings.Contains(restore[:restoreNext], "left") {
 		t.Fatal("a failed restore deletes the tab login")

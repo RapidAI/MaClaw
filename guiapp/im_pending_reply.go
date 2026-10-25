@@ -128,6 +128,9 @@ type pendingAskUserState struct {
 	// MCPServerWrite is set when the pending question is an unreviewed-MCP
 	// write confirmation: approving it must grant this server, not any other.
 	MCPServerWrite *pendingMCPServerWrite
+	// CommitApproval is set when the pending question is a human-commit gate.
+	// The answer records once, task, or deny for that fingerprint.
+	CommitApproval *pendingCommitApproval
 }
 
 // pendingRecordAudioState tracks an interactive recording session waiting for
@@ -339,12 +342,12 @@ func (h *IMMessageHandler) bindPendingUserReplyAnswer(msg IMUserMessage, trimmed
 	// any pending reply state to avoid blocking on LLM classification (which uses
 	// background scheduler priority and can be paused indefinitely after 503 errors).
 	if isInternalCommand(trimmed) {
-		if _, hadPending := h.pendingUserReply.LoadAndDelete(msg.UserID); hadPending {
+		if _, hadPending := h.takePendingUserReply(msg.UserID); hadPending {
 			log.Printf("[PendingUserReply] discarded by internal command for user=%s cmd_len=%d", msg.UserID, len(trimmed))
 		}
 		return "", false
 	}
-	raw, ok := h.pendingUserReply.LoadAndDelete(msg.UserID)
+	raw, ok := h.takePendingUserReply(msg.UserID)
 	if !ok {
 		return "", false
 	}
@@ -398,7 +401,7 @@ func (h *IMMessageHandler) bindPendingUserReplyAnswer(msg IMUserMessage, trimmed
 	if pendingFresh && strings.TrimSpace(trimmed) == "" {
 		// Only an empty message keeps the pending question parked for the next
 		// one. An unclassified non-empty reply has already been bound above.
-		h.pendingUserReply.Store(msg.UserID, pending)
+		h.storePendingUserReply(msg.UserID, pending)
 		h.suppressPendingUserReplyUpdate.Store(msg.UserID, true)
 	}
 	return "", false
@@ -410,6 +413,7 @@ func (h *IMMessageHandler) freshPendingAskUser(userID string) bool {
 	if h == nil || strings.TrimSpace(userID) == "" {
 		return false
 	}
+	h.ensurePendingReplyStore()
 	raw, ok := h.pendingAskUser.Load(userID)
 	if !ok {
 		return false
@@ -437,7 +441,7 @@ func (h *IMMessageHandler) consumePendingAskUserAnswer(userID, trimmed string, e
 	// be swallowed as a pending ask_user answer — doing so would both lose the
 	// command and resume a working state the user never answered.
 	if isInternalCommand(trimmed) {
-		if raw, hadPending := h.pendingAskUser.LoadAndDelete(userID); hadPending {
+		if raw, hadPending := h.takePendingAskUser(userID); hadPending {
 			if id := mailboxDraftIDFromPending(raw); id != "" {
 				h.dropMailboxDraft(userID, id)
 			}
@@ -445,7 +449,7 @@ func (h *IMMessageHandler) consumePendingAskUserAnswer(userID, trimmed string, e
 		}
 		return "", nil, false, false
 	}
-	raw, ok := h.pendingAskUser.LoadAndDelete(userID)
+	raw, ok := h.takePendingAskUser(userID)
 	if !ok {
 		return "", nil, false, false
 	}
@@ -472,6 +476,9 @@ func (h *IMMessageHandler) consumePendingAskUserAnswer(userID, trimmed string, e
 	if hint, handled := h.finishMCPServerWriteAskUser(userID, answer, pending.MCPServerWrite); handled {
 		// Unlike a mailbox draft, an approved write grant must resume the
 		// paused task so the model re-issues the call — settle stays false.
+		context = hint
+	}
+	if hint, handled := h.finishCommitApprovalAskUser(answer, pending.CommitApproval); handled {
 		context = hint
 	}
 	log.Printf("[AskUser] consumed pending ask_user for user %s, question_len=%d answer_len=%d", userID, len([]rune(pending.Question)), len([]rune(trimmed)))

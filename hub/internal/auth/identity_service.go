@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -1186,6 +1187,43 @@ func (s *IdentityService) boundPhoneNumberForUser(ctx context.Context, user *sto
 
 func (s *IdentityService) BoundPhoneNumberForUser(ctx context.Context, user *store.User) (string, error) {
 	return s.boundPhoneNumberForUser(ctx, user)
+}
+
+// ViewerContacts lists the addresses a signed-in reader can be invited or
+// shared with: the account email, the user id, and a verified phone.
+// The phone comes from a verified identity, not from the request.
+func (s *IdentityService) ViewerContacts(ctx context.Context, principal *ViewerPrincipal) []string {
+	if principal == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		seen[value] = struct{}{}
+		if lower := strings.ToLower(value); lower != value {
+			seen[lower] = struct{}{}
+		}
+	}
+	add(principal.Email)
+	add(principal.UserID)
+	if s != nil && s.users != nil && strings.TrimSpace(principal.UserID) != "" {
+		user, err := s.users.GetByID(ctx, principal.UserID)
+		if err == nil && user != nil {
+			add(user.Email)
+			if phone, phoneErr := s.BoundPhoneNumberForUser(ctx, user); phoneErr == nil {
+				add(phone)
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for value := range seen {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (s *IdentityService) currentLoginHubPayload() *EmailLoginHub {

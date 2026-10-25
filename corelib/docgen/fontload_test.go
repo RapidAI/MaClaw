@@ -29,6 +29,42 @@ func windowsTTCFixture(t *testing.T) string {
 	return path
 }
 
+func TestSystemCJKFontAvailableDoesNotCopy(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("system CJK font check runs on windows")
+	}
+	before := SystemCJKFontCopies()
+	if err := SystemCJKFontAvailable(); err != nil {
+		t.Fatal(err)
+	}
+	if SystemCJKFontCopies() != before {
+		t.Fatalf("copies = %d, was %d", SystemCJKFontCopies(), before)
+	}
+	data, err := SystemCJKFontBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) == 0 || SystemCJKFontCopies() != before+1 {
+		t.Fatalf("len=%d copies=%d was %d", len(data), SystemCJKFontCopies(), before)
+	}
+}
+
+func TestSystemCJKFontBytes(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("system CJK font check runs on windows")
+	}
+	data, err := SystemCJKFontBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) < 12 || (!bytes.Equal(data[:4], []byte{0x00, 0x01, 0x00, 0x00}) && !bytes.Equal(data[:4], []byte("true"))) {
+		t.Fatalf("expected embeddable TrueType, got %d bytes", len(data))
+	}
+	if err := fontCoversCJK(data); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLoadFontFileReducesTTCToEmbeddableSfnt(t *testing.T) {
 	path := windowsTTCFixture(t)
 	data, err := loadFontFile(path)

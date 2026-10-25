@@ -40,6 +40,7 @@ var codingStaticCompatibilityInventory = []codingStaticCompatibilityInventoryIte
 	// Local workspace I/O and inspection.
 	{codingStaticCompatibilityHostLocal, "Glob", tool.CapabilityFSReadLocal, tool.EffectReadOnly, "local-workspace", false},
 	{codingStaticCompatibilityHostLocal, "ripgrep", tool.CapabilityFSReadLocal, tool.EffectReadOnly, "local-workspace", false},
+	{codingStaticCompatibilityHostLocal, codeSearchToolName, tool.CapabilityID("code.search"), tool.EffectReadOnly, "local-workspace", false},
 	{codingStaticCompatibilityHostLocal, "read_file", tool.CapabilityFSReadLocal, tool.EffectReadOnly, "local-workspace", false},
 	{codingStaticCompatibilityHostLocal, "list_directory", tool.CapabilityFSReadLocal, tool.EffectReadOnly, "local-workspace", false},
 	{codingStaticCompatibilityHostLocal, "git_diff", tool.CapabilityRepoInspectVCS, tool.EffectReadOnly, "local-workspace", false},

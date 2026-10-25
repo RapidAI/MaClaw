@@ -122,6 +122,11 @@ var Baseline = map[Rule]map[string]Reason{
 		// The SQLite execution coordinator mints surface-ready grants inside
 		// the render/issue transaction; the issuer signs and persists them.
 		"corelib/tool/semantic_execution_coordinator.go:InvocationGrant": ReasonSemanticOwner,
+		// Expired-grant renewal inside the dynamic semantic surface: the
+		// successor is signed by the surface's own issuer (or committed by
+		// its coordinator) against the previous nonce, and the successor is
+		// consumed by the same call.
+		"corelib/agentservice/dynamic_semantic_routing.go:InvocationGrant": ReasonSemanticOwner,
 		// Empty sentinels on failure paths; no grant is authored at the site.
 		"corelib/tool/semantic_model_request_surface.go:InvocationGrant": ReasonZeroValueSentinel,
 		"corelib/tool/semantic_repeat.go:InvocationGrant":                ReasonZeroValueSentinel,
@@ -182,6 +187,11 @@ var Baseline = map[Rule]map[string]Reason{
 		// on inquiry/operational turns) as explicit planner deny constraints.
 		"guiapp/coding_static_catalog.go:RoutingConstraint":        ReasonTrustedFactProducer,
 		"guiapp/coding_static_remote_catalog.go:RoutingConstraint": ReasonTrustedFactProducer,
+		// The TUI static catalog records the same read-only host posture: the
+		// slice-1 inventory exposes no mutation provider at all, and the deny
+		// constraints keep a later provider append from silently making a
+		// read turn writable, shell-capable or remote-reaching.
+		"tui/semantic_static_catalog.go:RoutingConstraint": ReasonTrustedFactProducer,
 	},
 	RuleToolSurfaceMutation: {
 		"guiapp/im_handler_wiring.go:routeTools":                 ReasonLegacyNameRouter,
@@ -204,9 +214,9 @@ var Baseline = map[Rule]map[string]Reason{
 		"guiapp/im_agent_loop_tools.go:filterToolsForHardwareAutoSpeech":                ReasonLegacyPolicyFilter,
 		"guiapp/expert_session_policy.go:filterToolsForExpert":                          ReasonLegacyPolicyFilter,
 		"guiapp/expert_session_policy.go:filterToolsForExpertUser":                      ReasonLegacyPolicyFilter,
-		"guiapp/im_agent_loop_tools.go:filterToolsForExpertUser":                        ReasonLegacyPolicyFilter,
-		"guiapp/im_agent_loop_tool_augment.go:filterToolsForExpertUser":                 ReasonLegacyPolicyFilter,
-		"guiapp/im_agent_loop_tool_exec.go:filterToolsForExpertUser":                    ReasonLegacyPolicyFilter,
+		"guiapp/im_agent_loop_tools.go:filterToolsForExpertUser":        ReasonLegacyPolicyFilter,
+		"guiapp/im_agent_loop_tool_augment.go:filterToolsForExpertUser": ReasonLegacyPolicyFilter,
+		"guiapp/im_agent_loop_tool_exec.go:filterToolsForExpertUser":    ReasonLegacyPolicyFilter,
 		"guiapp/lansenger_group_permissions.go:filterToolsForLansengerGroupPermissions": ReasonLegacyPolicyFilter,
 		"guiapp/im_agent_loop_tools.go:filterToolsForLansengerGroupPermissions":         ReasonLegacyPolicyFilter,
 		"guiapp/im_agent_loop_tool_augment.go:filterToolsForLansengerGroupPermissions":  ReasonLegacyPolicyFilter,

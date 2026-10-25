@@ -169,6 +169,13 @@ func TestWindowKeepsQueryHit(t *testing.T) {
 		t.Fatalf("long name lost to its fragments: %q", got)
 	}
 
+	// The same two words fit loosely at the front and tightly later. The tight
+	// pair is the passage a scorer should see.
+	loose := "政策" + strings.Repeat("甲", 400) + "修订" + strings.Repeat("乙", MaxPassageRunes) + "政策、修订"
+	if got := Window(loose, "政策修订"); !strings.Contains(got, "政策、修订") {
+		t.Fatalf("loose pair beat the tight pair: %q", got)
+	}
+
 	// "R" is a word. A leading "语言" covers one term; "R语言" covers two.
 	lateR := "语言" + strings.Repeat("甲", MaxPassageRunes) + "R语言"
 	if got := Window(lateR, "R语言?"); !strings.Contains(got, "R语言") {

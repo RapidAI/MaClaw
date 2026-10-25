@@ -107,6 +107,21 @@ func DoAnthropicRequestWithOptions(
 	client *http.Client,
 	opts AnthropicMessagesRequestOptions,
 ) (*Response, error) {
+	resp, err := doAnthropicRequestOnce(ctx, cfg, messages, tools, client, opts)
+	if next, ok := ConfigAfterThinkingRejection(cfg, err); ok {
+		return doAnthropicRequestOnce(ctx, next, messages, tools, client, opts)
+	}
+	return resp, err
+}
+
+func doAnthropicRequestOnce(
+	ctx context.Context,
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	tools []map[string]interface{},
+	client *http.Client,
+	opts AnthropicMessagesRequestOptions,
+) (*Response, error) {
 	opts.Stream = false
 	opts.Tools = tools
 	endpoint, data, err := BuildAnthropicMessagesRequestData(cfg, messages, opts)

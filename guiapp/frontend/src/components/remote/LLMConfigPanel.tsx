@@ -18,7 +18,7 @@ import { LLMConfigToast, type LLMConfigToastData } from "./LLMConfigToast";
 import { LLMProfileAssignments } from "./LLMProfileAssignments";
 import { LLMConfigProviderLimitsFields } from "./LLMConfigProviderLimitsFields";
 import { LLMConfigDialogFooter } from "./LLMConfigDialogFooter";
-import { LLMMaxIterationsCard, LLMSubAgentConcurrencyCard, LLMThinkingModeCard } from "./LLMPanelTuningCards";
+import { LLMMaxIterationsCard, LLMSubAgentConcurrencyCard, LLMThinkingModeCard, type ThinkingLevel } from "./LLMPanelTuningCards";
 import { LLMConfigApiKeyFields } from "./LLMConfigApiKeyFields";
 import { LLMConfigOAuthFields } from "./LLMConfigOAuthFields";
 import { LLMConfigHubOfficialCard } from "./LLMConfigHubOfficialCard";
@@ -49,7 +49,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
     const [providerLoadSlow, setProviderLoadSlow] = useState(false);
     const [maxIter, setMaxIter] = useState(0);
     const [subAgentConc, setSubAgentConc] = useState(2);
-    const [thinkingMode, setThinkingMode] = useState<"enabled" | "disabled">("enabled");
+    const [thinkingMode, setThinkingMode] = useState<ThinkingLevel>("auto");
     const [thinkingModeSaving, setThinkingModeSaving] = useState(false);
     const thinkingModeSavingRef = useRef(false);
     const [thinkingModeError, setThinkingModeError] = useState<string | null>(null);
@@ -138,7 +138,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
         void loadHubServiceStatus();
     }, [loadHubServiceStatus]);
 
-    const saveThinkingMode = useCallback(async (mode: "enabled" | "disabled") => {
+    const saveThinkingMode = useCallback(async (mode: ThinkingLevel) => {
         if (thinkingModeSavingRef.current || mode === thinkingMode) return;
         const previous = thinkingMode;
         thinkingModeSavingRef.current = true;
@@ -306,11 +306,11 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
 
             if (thinkingResult.status === "fulfilled") {
                 const mode = thinkingResult.value;
-                // Unset/legacy "auto" resolves to enabled on the backend.
-                setThinkingMode(mode === "disabled" ? "disabled" : "enabled");
+                const levels: ThinkingLevel[] = ["auto", "low", "high", "max", "none"];
+                setThinkingMode(levels.includes(mode as ThinkingLevel) ? mode as ThinkingLevel : "auto");
                 console.info("[LLMConfigPanel] thinking mode loaded");
             } else {
-                setThinkingMode("enabled");
+                setThinkingMode("auto");
                 console.warn("[LLMConfigPanel] thinking mode load failed", thinkingResult.reason);
             }
 

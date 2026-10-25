@@ -16,7 +16,7 @@ const fetchedDocumentReadNote = "fetched document read"
 var fetchedDocumentFormatTokens = []string{
 	"asciidoc", "docx", "xlsx", "pptx", "dxfb",
 	"dwg", "dxf", "pdf", "doc", "xls", "ppt", "csv",
-	"epub", "gltf", "glb", "adoc", "eml",
+	"epub", "mobi", "gltf", "glb", "adoc", "eml",
 }
 
 // fetchedDocumentBodyReadCues are requests to read the body of a named file.

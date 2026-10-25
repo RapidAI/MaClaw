@@ -32,6 +32,49 @@ func TestRegisterKnowledgeTools(t *testing.T) {
 		}
 	}
 }
+
+func TestKnowledgeToolsExposeAndExecuteRetrievalRoute(t *testing.T) {
+	registry := NewToolRegistry()
+	app := &App{testHomeDir: t.TempDir()}
+	defer func() {
+		if app.enterpriseClient != nil {
+			_ = app.enterpriseClient.Close()
+			app.enterpriseClient = nil
+		}
+	}()
+	registerKnowledgeTools(registry, app)
+	for _, name := range []string{"knowledge_search", "knowledge_context_pack"} {
+		registered, ok := registry.Get(name)
+		if !ok {
+			t.Fatalf("missing %s", name)
+		}
+		if _, ok := registered.InputSchema["retrieval"]; !ok {
+			t.Fatalf("%s has no retrieval schema", name)
+		}
+	}
+	store, err := app.openKnowledgeStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveSource(context.Background(), knowledge.Source{ID: "retrieval-source", Kind: knowledge.SourceKindText, URI: "memory://retrieval", Status: knowledge.StatusParsed}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveDocumentNode(context.Background(), knowledge.DocumentNode{ID: "retrieval-node", SourceID: "retrieval-source", Type: "paragraph", Text: "retrieval route evidence"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for name, call := range map[string]func(map[string]interface{}) string{
+		"search": app.toolKnowledgeSearch, "context_pack": app.toolKnowledgeContextPack,
+	} {
+		out := call(map[string]interface{}{"query": "retrieval", "retrieval": "invalid-route"})
+		if !strings.Contains(out, "unknown knowledge retrieval") {
+			t.Fatalf("%s did not pass retrieval to the store: %s", name, out)
+		}
+	}
+}
+
 func TestKnowledgeImportToolsDescribeSixOfficeFormatsWithoutConverterRequirement(t *testing.T) {
 	registry := NewToolRegistry()
 	app := &App{testHomeDir: t.TempDir()}
@@ -787,6 +830,24 @@ func TestNormalizeKnowledgeSearchOptionsTrimsAndDedupesFilters(t *testing.T) {
 	if got, want := strings.Join(opts.Labels, ","), "governed,docs"; got != want {
 		t.Fatalf("labels = %q, want %q", got, want)
 	}
+	if !opts.UseMembership || opts.IncludeEmptyOwner || opts.OwnerID != desktopUserID || !opts.OwnerLineage {
+		t.Fatalf("desktop membership read = owner %q lineage %v empty %v membership %v", opts.OwnerID, opts.OwnerLineage, opts.IncludeEmptyOwner, opts.UseMembership)
+	}
+}
+func TestNormalizeKnowledgeSearchOptionsDefaultsEmptyScopeToAll(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	opts := app.normalizeKnowledgeSearchOptions(knowledge.SearchOptions{Query: "notes", ProjectPath: "D:/kept"})
+	if opts.SearchScope != "all" || opts.ProjectPath != "" || opts.OwnerID != desktopUserID || !opts.UseMembership || !opts.OwnerLineage || opts.IncludeEmptyOwner {
+		t.Fatalf("empty scope = %#v", opts)
+	}
+	list := app.normalizeKnowledgeListOptions(knowledge.ListSourcesOptions{})
+	if list.SearchScope != "all" || list.ProjectPath != "" || list.OwnerID != desktopUserID || !list.UseMembership || !list.OwnerLineage || list.IncludeEmptyOwner {
+		t.Fatalf("empty list scope = %#v", list)
+	}
+	kept := app.normalizeKnowledgeSearchOptions(knowledge.SearchOptions{OwnerID: "user-1", SearchScope: "project", ProjectPath: "D:/one"})
+	if kept.OwnerID != "user-1" || kept.OwnerLineage || kept.SearchScope != "project" || kept.ProjectPath != "D:/one" || !kept.UseMembership {
+		t.Fatalf("non-desktop owner = %#v", kept)
+	}
 }
 func TestNormalizeKnowledgeListOptionsTrimsAndDedupesFilters(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
@@ -1508,7 +1569,7 @@ func TestKnowledgeSearchToolUsesLocalStore(t *testing.T) {
 	}
 	if len(sourceLinks) > 0 {
 		pathOut := app.toolKnowledgeSourcePath(map[string]interface{}{"from_source_id": []interface{}{neighborhoodSourceID}, "to_source_id": []interface{}{sourceLinks[0].RelatedSourceID}, "max_depth": 4, "edge_limit": 50})
-		if !strings.Contains(pathOut, "\"ok\": true") || !strings.Contains(pathOut, "\"path\"") || !strings.Contains(pathOut, "local_source_path_no_llm") || !strings.Contains(pathOut, "\"found\": true") || !strings.Contains(pathOut, "visited_count") {
+		if !strings.Contains(pathOut, "\"ok\": true") || !strings.Contains(pathOut, "\"path\"") || !strings.Contains(pathOut, "local_source_path_no_llm") || !strings.Contains(pathOut, "\"found\": false") || !strings.Contains(pathOut, "visited_count") {
 			t.Fatalf("unexpected source path output: %s", pathOut)
 		}
 	}

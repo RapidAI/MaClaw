@@ -160,13 +160,74 @@ func (c *Client) EnsureStore() (*knowledge.SQLiteStore, error) {
 	if c.store != nil {
 		return c.store, nil
 	}
-	store, err := knowledge.NewSQLiteStore(KnowledgeDBPath(c.dataDir))
-	if err != nil {
-		return nil, err
+	if c.store == nil {
+		store, err := knowledge.NewSQLiteStore(KnowledgeDBPath(c.dataDir))
+		if err != nil {
+			return nil, err
+		}
+		c.store = store
+		log.Printf("[enterpriseknowledge] store opened at %s", KnowledgeDBPath(c.dataDir))
 	}
-	c.store = store
-	log.Printf("[enterpriseknowledge] store opened at %s", KnowledgeDBPath(c.dataDir))
+	// Retry until the flag is set. A failed copy leaves search working through
+	// the dal_ prefix and runs again on the next open.
+	c.backfillLibraryMembershipsLocked(c.store)
 	return c.store, nil
+}
+
+// backfillLibraryMembershipsLocked copies enterprise_source_map into library
+// memberships once. Caller holds c.mu. An empty map still records completion.
+// Failure is logged and does not fail EnsureStore.
+func (c *Client) backfillLibraryMembershipsLocked(store *knowledge.SQLiteStore) {
+	if c == nil || store == nil || c.meta == nil {
+		return
+	}
+	ctx := context.Background()
+	done, err := store.LibraryMembershipBackfillCompleted(ctx)
+	if err != nil {
+		log.Printf("[enterpriseknowledge] library membership backfill check: %v", err)
+		return
+	}
+	if done {
+		return
+	}
+	rows, err := c.meta.Query(`SELECT library_id, local_source_id FROM enterprise_source_map`)
+	if err != nil {
+		log.Printf("[enterpriseknowledge] library membership map read: %v", err)
+		return
+	}
+	grouped := map[string][]string{}
+	for rows.Next() {
+		var libraryID, localID string
+		if err := rows.Scan(&libraryID, &localID); err != nil {
+			_ = rows.Close()
+			log.Printf("[enterpriseknowledge] library membership map scan: %v", err)
+			return
+		}
+		libraryID = strings.TrimSpace(libraryID)
+		localID = strings.TrimSpace(localID)
+		if libraryID == "" || localID == "" {
+			continue
+		}
+		grouped[libraryID] = append(grouped[libraryID], localID)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		log.Printf("[enterpriseknowledge] library membership map rows: %v", err)
+		return
+	}
+	if err := rows.Close(); err != nil {
+		log.Printf("[enterpriseknowledge] library membership map close: %v", err)
+		return
+	}
+	for libraryID, ids := range grouped {
+		if err := store.AssignLibraryMemberships(ctx, libraryID, ids); err != nil {
+			log.Printf("[enterpriseknowledge] assign library memberships %s: %v", libraryID, err)
+			return
+		}
+	}
+	if err := store.FinishLibraryMembershipBackfill(ctx); err != nil {
+		log.Printf("[enterpriseknowledge] library membership backfill flag: %v", err)
+	}
 }
 
 // MetaDBExists reports whether the library-state file is present under dataDir
@@ -359,28 +420,31 @@ func (c *Client) SearchActive(ctx context.Context, q, libraryID string) ([]knowl
 	if err != nil {
 		return nil, err
 	}
-	// Precompute prefixes for O(hits * avg_prefix) instead of nested map scans.
-	prefixes := make([]string, 0, len(activeIDs))
-	for libID := range activeIDs {
-		prefixes = append(prefixes, "dal_"+libID+"_")
+	var soleLibrary string
+	if strings.TrimSpace(libraryID) == "" && len(activeIDs) == 1 {
+		for id := range activeIDs {
+			soleLibrary = id
+		}
 	}
 	filtered := make([]knowledge.SearchResult, 0, len(hits))
 	for _, h := range hits {
 		sid := h.Source.ID
-		keep := false
-		for _, p := range prefixes {
-			if strings.HasPrefix(sid, p) {
-				keep = true
+		matched := ""
+		for libID := range activeIDs {
+			if strings.HasPrefix(sid, "dal_"+libID+"_") {
+				matched = libID
 				break
 			}
 		}
-		if keep {
+		if matched != "" {
+			h.LibraryID = matched
 			filtered = append(filtered, h)
 			continue
 		}
 		// Legacy non-namespaced rows: only when exactly one active library and no filter,
 		// so multi-lib installs cannot leak unrelated content across libraries.
-		if libraryID == "" && len(activeIDs) == 1 && !strings.HasPrefix(sid, "dal_") {
+		if soleLibrary != "" && !strings.HasPrefix(sid, "dal_") {
+			h.LibraryID = soleLibrary
 			filtered = append(filtered, h)
 		}
 	}

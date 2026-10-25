@@ -2,8 +2,13 @@ import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const { fileTypeIconMock } = vi.hoisted(() => ({
+    fileTypeIconMock: vi.fn(async (..._args: any[]): Promise<string> => ""),
+}));
+
 vi.mock("../../../../wailsjs/go/main/App", () => ({
     AIAssistantAttachmentPreviewDataURL: vi.fn(async () => ""),
+    AIAssistantFileTypeIconDataURL: (...args: unknown[]) => fileTypeIconMock(...args),
     AIAssistantAttachmentOpeningPreview: vi.fn(async () => ({
         kind: "pdf",
         preview_url: "/maclaw-preview/v1/file?t=0123456789abcdef0123456789abcdef",
@@ -17,7 +22,7 @@ vi.mock("../pdfShotRaster", () => ({
 }));
 
 import { AIAssistantAttachmentOpeningPreview, PreviewTaskResultFile } from "../../../../wailsjs/go/main/App";
-import { AssistantAttachmentsStrip } from "../AssistantAttachmentsStrip";
+import { AssistantAttachmentsStrip, resetAttachmentFileTypeIconCacheForTests } from "../AssistantAttachmentsStrip";
 import { AttachmentDocumentPreview, settleAttachmentDocxHost } from "../AttachmentDocumentPreview";
 import { AI_PANEL_STATIC_STYLE_ID, lightTheme } from "../aiAssistantPanelTheme";
 import type { AttachmentInfo } from "../useBufferQueue";
@@ -35,39 +40,107 @@ function PendingAttachmentsHarness({ attachments }: { attachments: AttachmentInf
 }
 
 describe("AssistantAttachmentsStrip", () => {
-    afterEach(() => vi.unstubAllGlobals());
+    afterEach(() => {
+        fileTypeIconMock.mockReset();
+        fileTypeIconMock.mockResolvedValue("");
+        resetAttachmentFileTypeIconCacheForTests();
+        vi.unstubAllGlobals();
+    });
 
     it("loads compact attachment styles wherever the strip is rendered", () => {
         const stylesheet = document.getElementById(AI_PANEL_STATIC_STYLE_ID);
         expect(stylesheet?.textContent).toContain(".ai-attachment-remove:focus-visible");
         expect(stylesheet?.textContent).toContain("width: fit-content");
-        expect(stylesheet?.textContent).toContain("grid-template-columns: repeat(auto-fill, minmax(58px, max-content))");
+        expect(stylesheet?.textContent).toContain(".ai-attachment-name");
+        expect(stylesheet?.textContent).toContain("min-width: 6ch");
+        expect(stylesheet?.textContent).toContain("flex-wrap: wrap");
     });
 
-    it("shows a type icon while composing and removes it", () => {
+    it("shows the filename to the right of the icon and removes it", async () => {
         const path = "D:\\cases\\contracts\\supplier-agreement.pdf";
-        const { getByLabelText, getByRole, queryByTestId } = render(<PendingAttachmentsHarness attachments={[pendingAttachment(path)]} />);
+        const { findByText, getByLabelText, getByRole, queryByTestId } = render(<PendingAttachmentsHarness attachments={[pendingAttachment(path)]} />);
 
         const row = getByRole("listitem");
         expect(row.getAttribute("title")).toBe(path);
         expect(row.style.display).toBe("flex");
-        expect(row.textContent).toContain("PDF");
+        expect(row.style.flexDirection).toBe("row");
+        const name = row.querySelector(".ai-attachment-name") as HTMLElement;
+        expect(name.textContent).toBe("supplier-agreement.pdf");
+        expect(row.firstElementChild === name).toBe(false);
+        expect(name.compareDocumentPosition(row.firstElementChild as Node) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
         expect(queryByTestId("attachment-document-preview")).toBeNull();
         expect(queryByTestId("attachment-document-shot")).toBeNull();
         expect(getByLabelText("supplier-agreement.pdf").textContent).toBe("supplier-agreement.pdf");
+        expect(await findByText("PDF")).toBeTruthy();
         fireEvent.click(getByRole("button", { name: "Remove supplier-agreement.pdf" }));
         expect(document.querySelector('[data-testid="ai-pending-attachments"]')).toBeNull();
     });
 
-    it("keeps composer file icons in the short strip", () => {
+    it("shares one file-type icon per extension and retries a failed lookup", async () => {
+        fileTypeIconMock.mockResolvedValue("data:image/png;base64,TYPEICON");
+        const first = render(<PendingAttachmentsHarness attachments={[
+            pendingAttachment("D:\\docs\\信息安全数学基础.pdf"),
+            pendingAttachment("C:/other/notes.PDF"),
+        ]} />);
+        const icons = await first.findAllByTestId("attachment-file-type-icon");
+        expect(icons).toHaveLength(2);
+        expect(icons[0].getAttribute("src")).toBe("data:image/png;base64,TYPEICON");
+        expect(icons[1].getAttribute("src")).toBe("data:image/png;base64,TYPEICON");
+        expect(fileTypeIconMock).toHaveBeenCalledTimes(1);
+        first.unmount();
+
+        const cached = render(<PendingAttachmentsHarness attachments={[pendingAttachment("E:\\more\\third.pdf")]} />);
+        expect((await cached.findByTestId("attachment-file-type-icon")).getAttribute("src")).toBe("data:image/png;base64,TYPEICON");
+        expect(fileTypeIconMock).toHaveBeenCalledTimes(1);
+        cached.unmount();
+
+        const programs = render(<PendingAttachmentsHarness attachments={[
+            pendingAttachment("D:\\bin\\notepad.exe"),
+            pendingAttachment("D:\\bin\\calc.EXE"),
+        ]} />);
+        expect(await programs.findAllByTestId("attachment-file-type-icon")).toHaveLength(2);
+        expect(fileTypeIconMock).toHaveBeenCalledTimes(3);
+        programs.unmount();
+
+        resetAttachmentFileTypeIconCacheForTests();
+        fileTypeIconMock.mockReset();
+        fileTypeIconMock.mockRejectedValueOnce(new Error("shell missing"));
+        const failed = render(<PendingAttachmentsHarness attachments={[pendingAttachment("D:\\docs\\again.pdf")]} />);
+        expect(await failed.findByText("PDF")).toBeTruthy();
+        expect(fileTypeIconMock).toHaveBeenCalledTimes(1);
+        failed.unmount();
+
+        fileTypeIconMock.mockResolvedValue("data:image/png;base64,RETRY");
+        const retried = render(<PendingAttachmentsHarness attachments={[pendingAttachment("D:\\docs\\again.pdf")]} />);
+        expect((await retried.findByTestId("attachment-file-type-icon")).getAttribute("src")).toBe("data:image/png;base64,RETRY");
+        expect(fileTypeIconMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("uses the operating-system file icon beside the filename", async () => {
+        fileTypeIconMock.mockResolvedValue("data:image/png;base64,TYPEICON");
+        const path = "D:\\cases\\contracts\\supplier-agreement.pdf";
+        const { findByTestId, getByRole, queryByText } = render(<PendingAttachmentsHarness attachments={[pendingAttachment(path)]} />);
+
+        const icon = await findByTestId("attachment-file-type-icon");
+        const row = getByRole("listitem");
+        const name = row.querySelector(".ai-attachment-name") as HTMLElement;
+        expect(icon.getAttribute("src")).toBe("data:image/png;base64,TYPEICON");
+        expect(icon.compareDocumentPosition(name) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(name.textContent).toBe("supplier-agreement.pdf");
+        expect(queryByText("PDF")).toBeNull();
+    });
+
+    it("keeps composer file icons in the short strip", async () => {
         const attachments = Array.from({ length: 8 }, (_, index) => pendingAttachment(`D:\\batch\\document-${index}.pdf`));
-        const { getByTestId, getAllByRole, queryByTestId } = render(<PendingAttachmentsHarness attachments={attachments} />);
+        const { findAllByText, getByTestId, getAllByRole, queryByTestId } = render(<PendingAttachmentsHarness attachments={attachments} />);
 
         const strip = getByTestId("ai-pending-attachments");
         expect(strip.style.alignSelf).toBe("flex-start");
+        expect(strip.style.flexShrink).toBe("0");
         expect(strip.style.maxHeight).toBe("120px");
         expect(strip.style.overflowY).toBe("auto");
         expect(getAllByRole("listitem")).toHaveLength(8);
+        expect(await findAllByText("PDF")).toHaveLength(8);
         expect(queryByTestId("attachment-document-pdf")).toBeNull();
     });
 
@@ -82,8 +155,9 @@ describe("AssistantAttachmentsStrip", () => {
 
     it("does not remove pending attachments while cancellation is in progress", async () => {
         const setPendingAttachments = vi.fn();
-        const { getByRole } = render(<AssistantAttachmentsStrip cancelPending lang="en" pendingAttachments={[pendingAttachment("D:\\briefs\\locked.pdf")]} selectedFilePaths={[]} setPendingAttachments={setPendingAttachments} theme={lightTheme} />);
+        const { findByText, getByRole } = render(<AssistantAttachmentsStrip cancelPending lang="en" pendingAttachments={[pendingAttachment("D:\\briefs\\locked.pdf")]} selectedFilePaths={[]} setPendingAttachments={setPendingAttachments} theme={lightTheme} />);
 
+        expect(await findByText("PDF")).toBeTruthy();
         const remove = getByRole("button", { name: "Remove locked.pdf" }) as HTMLButtonElement;
         expect(remove.disabled).toBe(true);
         fireEvent.click(remove);

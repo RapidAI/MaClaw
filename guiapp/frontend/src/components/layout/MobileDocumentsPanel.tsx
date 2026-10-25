@@ -6,7 +6,8 @@ import { StatusGlyph } from '../ai/WorkbenchIcons';
 import { FilePreviewHost } from '../preview/FilePreviewHost';
 import { cloudDriveCompanionAvailable, filePreviewKindFromName, languageFromFileName, previewShouldMaterialize, rewriteMarkdownImageUrls } from '../preview/filePreviewKind';
 import { consumePendingFileLibraryOpen, OPEN_FILE_LIBRARY_EVENT, peekPendingFileLibraryOpen, type FileLibraryOpenDetail } from '../../utils/fileLibraryNavigation';
-import { classifyCloudDriveItem, cloudDriveItemMatchesQuery, groupCloudDrive, type CloudDriveGroup, type CloudFolderId, type DocumentCategoryId } from './cloudDriveFolders';
+import { classifyCloudDriveItem, cloudDriveGlyphKind, cloudDriveItemMatchesQuery, groupCloudDrive, type CloudDriveGroup, type CloudFolderId, type DocumentCategoryId } from './cloudDriveFolders';
+import { CloudDriveFileTypeGlyph, GlyphCloudDrive, GlyphClose, GlyphDropInbox, GlyphFolder, GlyphRefresh, GlyphSearch, GlyphUploadCloud } from './cloudDriveGlyphs';
 
 type ToolbarGlyphProps = { size?: number };
 
@@ -1811,50 +1812,19 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
       minHeight: 0,
       // Use real theme tokens (not --theme-bg* which do not exist on #App).
       background: 'var(--theme-surface, #ffffff)',
-      color: 'var(--theme-text-primary, #1c2733)',
+      color: 'var(--theme-text-primary, #526277)',
       // Follow the shared surface scale so the panel keeps the same radius
       // as the workbench in both light and dark themes.
       // Keep the documents dialog on the shared workbench radius scale.  The
       // token set intentionally stops at --radius-lg; --radius-xl would
       // silently fall back to an oversized 24px shell.
-      borderRadius: 'var(--radius-lg, 14px)',
-      border: '1px solid var(--theme-border, #d9e1ec)',
+      borderRadius: 'var(--radius-lg, 12px)',
+      border: '1px solid var(--theme-border, #c9ddf6)',
       boxShadow: 'var(--shadow-lg, 0 24px 70px rgba(19,43,77,0.18), 0 4px 14px rgba(19,43,77,0.08))',
       display: 'flex',
       flexDirection: 'column' as const,
       overflow: 'hidden',
     },
-    header: {
-      display: 'flex',
-      alignItems: 'center',
-      gap: 16,
-      padding: '24px 28px 20px',
-      borderBottom: '1px solid var(--theme-border-subtle, var(--theme-border, #1e293b))',
-      background:
-        'linear-gradient(180deg, color-mix(in srgb, var(--theme-primary, #2f6fbc) 5%, var(--theme-surface, #ffffff)), var(--theme-surface, #ffffff))',
-    },
-    btn: {
-      border: '1px solid var(--theme-border, #d9e1ec)',
-      background: 'var(--theme-surface, #ffffff)',
-      color: 'var(--theme-text-primary, #1c2733)',
-      borderRadius: 'var(--radius-md, 12px)',
-      minHeight: 44,
-      padding: '0 16px',
-      fontSize: '0.9rem',
-      fontWeight: 600,
-      cursor: 'pointer',
-    } as CSSProperties,
-    btnPrimary: {
-      border: '1px solid color-mix(in srgb, var(--theme-primary, #2f6fbc) 48%, var(--theme-border, #d9e1ec))',
-      background: 'var(--theme-primary-soft, rgba(47,111,188,0.10))',
-      color: 'var(--theme-primary-strong, #235a9e)',
-      borderRadius: 'var(--radius-md, 12px)',
-      minHeight: 44,
-      padding: '0 18px',
-      fontSize: '0.9rem',
-      fontWeight: 650,
-      cursor: 'pointer',
-    } as CSSProperties,
   };
 
   const folderLabel = (id: CloudFolderId) => t(CLOUD_FOLDER_LABEL[id][0], CLOUD_FOLDER_LABEL[id][1]);
@@ -2021,23 +1991,13 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
         ) : null}
       </div>
       <div
-        className="mobile-documents-preview-body"
-        style={{
-          flex: 1,
-          overflow: 'hidden',
-           padding: selected && !isAudioItem(selected) ? 0 : '24px 28px',
-           fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif",
-           fontSize: '0.98rem',
-           lineHeight: 1.65,
-          minHeight: 0,
-          opacity: selected ? 1 : 0.65,
-        }}
+        className={`mobile-documents-preview-body mdoc-preview-body${selected ? (isAudioItem(selected) ? ' mdoc-preview-body--audio' : ' mdoc-preview-body--flush') : ' mdoc-preview-body--empty'}`}
       >
         {selected ? (
           isAudioItem(selected) ? (
             <div aria-live="polite" className="mdoc-audio-grid">
               <MeetingRecordingPlayer item={selected} t={t} />
-              <div><strong>{isProcessingAudio(selected) ? t('Processing recording', '正在处理录音') : selected.processing?.status === 'failed' ? t('Processing failed', '处理失败') : selected.derived_documents?.minutes_draft_id ? t('Meeting minutes ready', '会议纪要已生成') : t('Ready for meeting minutes', '可生成会议纪要')}</strong>{selected.processing?.message ? <div className="mdoc-audio-message">{selected.processing.message}</div> : null}{isProcessingAudio(selected) ? <div className="mdoc-audio-track"><div style={{ width: `${Math.max(4, Math.min(100, Number(selected.processing?.progress || 0)))}%`, height: '100%', background: 'var(--theme-primary, #2f6fbc)', borderRadius: 3 }} /></div> : null}</div>
+              <div><strong>{isProcessingAudio(selected) ? t('Processing recording', '正在处理录音') : selected.processing?.status === 'failed' ? t('Processing failed', '处理失败') : selected.derived_documents?.minutes_draft_id ? t('Meeting minutes ready', '会议纪要已生成') : t('Ready for meeting minutes', '可生成会议纪要')}</strong>{selected.processing?.message ? <div className="mdoc-audio-message">{selected.processing.message}</div> : null}{isProcessingAudio(selected) ? <div className="mdoc-audio-track"><div style={{ width: `${Math.max(4, Math.min(100, Number(selected.processing?.progress || 0)))}%`, height: '100%', background: 'var(--theme-primary, #2e75cb)', borderRadius: 3 }} /></div> : null}</div>
               {(selected.derived_documents?.transcript_draft_id || selected.derived_documents?.minutes_draft_id) ? <div className="mdoc-audio-docs">{selected.derived_documents?.transcript_draft_id ? <button type="button" className="mobile-documents-btn mdoc-toolbar-btn" onClick={() => void openDocumentFromAudio(selected.derived_documents?.transcript_draft_id)}>{t('Open transcript', '打开逐字稿')}</button> : null}{selected.derived_documents?.minutes_draft_id ? <button type="button" className="mobile-documents-btn mdoc-toolbar-btn mdoc-toolbar-btn--accent" onClick={() => void openDocumentFromAudio(selected.derived_documents?.minutes_draft_id)}>{t('Open meeting minutes', '打开会议纪要')}</button> : null}</div> : null}
               {selected.retention_until ? <div className="mdoc-retention">{t('Original audio retention until', '原始音频保留至')} {formatUpdatedAt(selected.retention_until, isZh)}</div> : null}
             </div>
@@ -2064,50 +2024,52 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
   const renderLibraryRow = (d: MobileLibraryItem) => {
     const active = selected?.id === d.id;
     const deleteCopy = libraryDeleteButtonCopy(d, t);
+    const size = isAudioItem(d) ? d.audio?.size_bytes : d.source_size;
+    const meta = isAudioItem(d)
+      ? `${d.audio?.available ? t('Recording', '录音') : audioUnavailableLabel(d, t)}${d.audio?.duration_sec ? ` · ${formatAudioDuration(d.audio.duration_sec)}` : ''}`
+      : d.has_original
+        ? t('Original file', '原件')
+        : (d.rune_count ?? 0) > 0
+          ? `${d.rune_count} ${t('chars', '字')}`
+          : '';
     return (
       <div
-        className={`mobile-documents-list-row${active ? ' is-active' : ''}`}
+        className={`mobile-documents-list-row mdoc-list-row${active ? ' is-active' : ''}`}
         key={d.id}
         data-library-id={d.id}
-        style={{
-          display: 'flex',
-          alignItems: 'stretch',
-          borderBottom: '1px solid var(--theme-border-subtle, #e8eef5)',
-          borderLeft: active ? '3px solid var(--theme-primary, #2f6fbc)' : '3px solid transparent',
-          background: active
-            ? 'color-mix(in srgb, var(--theme-primary, #2f6fbc) 10%, var(--theme-surface, #ffffff))'
-            : 'transparent',
-        }}
       >
         <button
           className="mobile-documents-list-item mdoc-list-item"
           type="button"
           onClick={() => void selectDraft(d)}
         >
-          <div className="mobile-documents-list-item-title mdoc-item-title">
-            {d.title || d.id}
-          </div>
-          <div className="mobile-documents-list-item-meta mdoc-item-meta">
-            {isAudioItem(d)
-              ? `${d.audio?.available ? t('Recording', '录音') : audioUnavailableLabel(d, t)}${d.audio?.duration_sec ? ` · ${formatAudioDuration(d.audio.duration_sec)}` : ''}${d.audio?.size_bytes ? ` · ${formatLibraryFileSize(d.audio.size_bytes)}` : ''}`
-              : d.has_original
-                ? t('Original file', '原件')
-                : (d.rune_count ?? 0) > 0
-                  ? `${d.rune_count} ${t('chars', '字')}`
-                  : ''}
-            {!isAudioItem(d) && d.has_original && d.source_size
-              ? ` · ${formatLibraryFileSize(d.source_size)}`
-              : ''}
-            {d.updated_at ? ` · ${formatUpdatedAt(d.updated_at, isZh)}` : ''}
-          </div>
-          {d.preview ? (
-            <div className="mobile-documents-list-item-preview mdoc-item-preview">
-              {d.preview}
-            </div>
+          <CloudDriveFileTypeGlyph kind={cloudDriveGlyphKind(d)} />
+          <span className="mdoc-item-main">
+            <span className="mobile-documents-list-item-title mdoc-item-title">
+              {d.title || d.id}
+            </span>
+            {meta ? (
+              <span className="mobile-documents-list-item-meta mdoc-item-meta">{meta}</span>
+            ) : null}
+            {d.preview ? (
+              <span className="mobile-documents-list-item-preview mdoc-item-preview">
+                {d.preview}
+              </span>
+            ) : null}
+          </span>
+          {(size || d.updated_at) ? (
+            <span className="mdoc-item-side">
+              {size ? (
+                <span className="mdoc-item-size">{formatLibraryFileSize(size)}</span>
+              ) : null}
+              {d.updated_at ? (
+                <span className="mdoc-item-date">{formatUpdatedAt(d.updated_at, isZh)}</span>
+              ) : null}
+            </span>
           ) : null}
         </button>
         <button
-          className="mobile-documents-list-delete"
+          className="mobile-documents-list-delete mdoc-row-delete"
           type="button"
           title={deleteCopy.title}
           aria-label={deleteCopy.aria}
@@ -2116,18 +2078,8 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
             e.stopPropagation();
             void deleteDraft(d);
           }}
-          style={{
-            flexShrink: 0,
-            width: 44,
-            border: 'none',
-            background: 'transparent',
-            color: 'var(--theme-danger, #c43d34)',
-            cursor: uploading ? 'not-allowed' : 'pointer',
-            fontSize: '0.95rem',
-            opacity: uploading ? 0.45 : 0.75,
-          }}
         >
-          ×
+          <GlyphTrash size={14} />
         </button>
       </div>
     );
@@ -2148,6 +2100,7 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
             <path d="M4 2.5 8 6 4 9.5" />
           </svg>
         </span>
+        <span className="mdoc-folder-icon" aria-hidden="true"><GlyphFolder size={14} /></span>
         <span className="mdoc-folder-name">{label}</span>
         <span className="mdoc-folder-count">{count}</span>
       </button>
@@ -2174,14 +2127,9 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
         onMouseDown={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
       >
-        <div style={styles.header} className="mobile-documents-header">
-          <div
-            className="mobile-documents-icon mdoc-icon-tile"
-            aria-hidden
-          >
-            <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M6.5 17.5h11a3.5 3.5 0 0 0 .2-7 5.5 5.5 0 0 0-10.6 1.5A3.2 3.2 0 0 0 6.5 17.5Z" />
-            </svg>
+        <div className="mobile-documents-header mdoc-header">
+          <div className="mobile-documents-icon mdoc-icon-tile" aria-hidden>
+            <GlyphCloudDrive size={22} />
           </div>
           <div className="mobile-documents-heading mdoc-flex-fill">
             <div className="mobile-documents-title mdoc-title">
@@ -2195,20 +2143,53 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
             </div>
           </div>
           <div className="mobile-documents-header-actions mdoc-header-actions">
-            <button type="button" className="mobile-documents-btn" style={styles.btn} onClick={() => void refresh()} disabled={loading || uploading}>
-              {loading ? t('Loading…', '加载中…') : t('Refresh', '刷新')}
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="mdoc-hidden-input"
+              onChange={(e) => {
+                if (e.target.files?.length) void publishFiles(e.target.files);
+                e.target.value = '';
+              }}
+            />
+            <button
+              type="button"
+              className="mobile-documents-btn mdoc-upload-btn"
+              disabled={uploading}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <GlyphUploadCloud />
+              <span>{uploading ? t('Sharing…', '分享中…') : t('Choose files', '选择文件')}</span>
+            </button>
+            <button
+              type="button"
+              className="mobile-documents-btn mdoc-ghost-btn"
+              onClick={() => void refresh()}
+              disabled={loading || uploading}
+              aria-label={t('Refresh', '刷新')}
+            >
+              <GlyphRefresh />
+              <span>{loading ? t('Loading…', '加载中…') : t('Refresh', '刷新')}</span>
             </button>
             {!inline && (
-              <button type="button" className="mobile-documents-btn" style={styles.btn} onClick={onClose}>
-                {t('Close', '关闭')}
+              <button
+                type="button"
+                className="mobile-documents-btn mdoc-ghost-btn mdoc-ghost-btn--icon"
+                onClick={onClose}
+                aria-label={t('Close', '关闭')}
+                title={t('Close', '关闭')}
+              >
+                <GlyphClose />
               </button>
             )}
           </div>
         </div>
 
-        {/* Drop zone */}
+        {/* Drop zone: slim strip that holds the drag & drop affordance and the
+            storage quota; uploads also arrive via the header button. */}
         <div
-          className="mobile-documents-dropzone"
+          className={`mobile-documents-dropzone mdoc-dropstrip${dragOver ? ' is-dragover' : ''}`}
           data-testid="mobile-documents-drop-zone"
           onDrop={onDrop}
           onDragEnter={onDragEnter}
@@ -2216,66 +2197,38 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
           onDragOver={onDragOver}
           role="group"
           aria-label={t('Cloud drive upload drop zone', '云盘上传拖放区')}
-          style={{
-             margin: '18px 26px 0',
-             borderRadius: 18,
-            border: dragOver
-               ? '1.5px dashed color-mix(in srgb, var(--theme-primary, #2f6fbc) 80%, var(--theme-surface, #fff))'
-               : '1.5px dashed var(--theme-border, #d9e1ec)',
-            background: dragOver
-               ? 'color-mix(in srgb, var(--theme-primary, #2f6fbc) 12%, transparent)'
-              : 'color-mix(in srgb, var(--theme-control-well, var(--theme-surface-muted, #fff)) 3%, transparent)',
-             padding: '24px',
-            display: 'flex',
-            alignItems: 'center',
-             gap: 20,
-            transition: 'background 120ms ease, border-color 120ms ease',
-          }}
         >
+          <div className="mdoc-dropstrip-icon" aria-hidden>
+            <GlyphDropInbox size={20} />
+          </div>
           <div className="mobile-documents-dropzone-copy mdoc-flex-fill">
-            <div className="mobile-documents-dropzone-title mdoc-dropzone-title">
+            <span className="mobile-documents-dropzone-title mdoc-dropzone-title">
               {dragOver
                 ? t('Release to share with Mobile', '松开以上传并分享到手机')
                 : t('Drag & drop files to share', '拖放文件到此处分享')}
-            </div>
-            <div className="mobile-documents-dropzone-help mdoc-dropzone-help">
+            </span>
+            <span className="mobile-documents-dropzone-help mdoc-dropzone-help">
               {t(
                 'Any file type. Max 100MB after automatic compression; existing archives and DOCX/XLSX/PPTX are not recompressed.',
                 '支持任意格式；自动压缩后单文件 ≤100MB。压缩包及 DOCX/XLSX/PPTX 不重复压缩。',
               )}
-            </div>
-            {quota ? (
-              <div className="mobile-documents-quota mdoc-quota" aria-label={t('Cloud drive storage', '云盘存储空间')}>
-                <div className="mobile-documents-quota-copy mdoc-quota-copy">
-                  <span>{t('Used', '已用')} {formatLibraryFileSize(quota.document_quota_used_bytes)}</span>
-                  <span>{t('Remaining', '剩余')} {formatLibraryFileSize(quota.document_quota_remaining)}</span>
-                  <span>{t('Total', '总限额')} {formatLibraryFileSize(quota.document_quota_bytes)}</span>
-                </div>
-                <div className="mobile-documents-quota-track mdoc-quota-track">
-                  <div style={{ height: '100%', width: `${Math.min(100, Math.max(0, 100 * Number(quota.document_quota_used_bytes || 0) / Math.max(1, Number(quota.document_quota_bytes || 1))))}%`, background: 'var(--theme-primary, #2f6fbc)' }} />
-                </div>
-              </div>
-            ) : null}
+            </span>
           </div>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className="mdoc-hidden-input"
-            onChange={(e) => {
-              if (e.target.files?.length) void publishFiles(e.target.files);
-              e.target.value = '';
-            }}
-          />
-          <button
-            type="button"
-            className="mobile-documents-btn mobile-documents-btn--primary"
-            style={styles.btnPrimary}
-            disabled={uploading}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            {uploading ? t('Sharing…', '分享中…') : t('Choose files', '选择文件')}
-          </button>
+          {quota ? (
+            <div className="mobile-documents-quota mdoc-quota" aria-label={t('Cloud drive storage', '云盘存储空间')}>
+              <div className="mobile-documents-quota-copy mdoc-quota-copy">
+                <span>{t('Used', '已用')} {formatLibraryFileSize(quota.document_quota_used_bytes)}</span>
+                <span>{t('Remaining', '剩余')} {formatLibraryFileSize(quota.document_quota_remaining)}</span>
+                <span>{t('Total', '总限额')} {formatLibraryFileSize(quota.document_quota_bytes)}</span>
+              </div>
+              <div className="mobile-documents-quota-track mdoc-quota-track">
+                <div
+                  className="mdoc-quota-fill"
+                  style={{ width: `${Math.min(100, Math.max(0, 100 * Number(quota.document_quota_used_bytes || 0) / Math.max(1, Number(quota.document_quota_bytes || 1))))}%` }}
+                />
+              </div>
+            </div>
+          ) : null}
         </div>
 
         {banner ? (
@@ -2300,14 +2253,8 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
             {jobs.map((j, i) => (
               <span
                 key={`${j.name}-${i}`}
-                style={{
-                  fontSize: '0.72rem',
-                  padding: '3px 8px',
-                  borderRadius: 999,
-                  border: '1px solid var(--theme-border, #d9e1ec)',
-                  opacity: j.status === 'error' ? 1 : 0.9,
-                  color: j.status === 'error' ? 'var(--theme-danger, #c43d34)' : j.status === 'done' ? 'var(--theme-success, #18a86b)' : j.status === 'skipped' ? 'var(--theme-warning, #d97706)' : 'var(--theme-text-secondary, #44546a)',
-                }}
+                className="mdoc-job-pill"
+                data-status={j.status}
                 title={j.message}
               >
                 <span className="mdoc-job-chip">
@@ -2328,12 +2275,15 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
             className="mobile-documents-list-pane mdoc-list-pane"
           >
             <div className="mobile-documents-list-tools mdoc-list-tools">
-              <input
-                className="mobile-documents-search mdoc-search"
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                placeholder={t('Search files…', '搜索文件…')}
-              />
+              <div className="mdoc-search-box">
+                <span className="mdoc-search-icon" aria-hidden="true"><GlyphSearch size={14} /></span>
+                <input
+                  className="mobile-documents-search mdoc-search"
+                  value={filter}
+                  onChange={(e) => setFilter(e.target.value)}
+                  placeholder={t('Search files…', '搜索文件…')}
+                />
+              </div>
               <div className="mobile-documents-count mdoc-count">
                 {fileCountLabel}
                 {drafts.length >= 200 ? t(' · latest 200', ' · 仅最近 200 个') : ''}

@@ -41,13 +41,13 @@ const (
 var codingSubAgentSpawnRoleTools = map[codingSubAgentRole]map[string]bool{
 	codingRoleExplorer: {
 		"Glob": true, "ripgrep": true, "read_file": true, "list_directory": true,
-		codeNavigationToolName: true, reportLocalizationToolName: true,
+		codeNavigationToolName: true, codeSearchToolName: true, reportLocalizationToolName: true,
 		"git_diff": true, "web_search": true, "web_fetch": true, "current_datetime": true,
 		"coding_knowledge_search": true, "knowledge_search": true,
 	},
 	codingRoleReviewer: {
 		"Glob": true, "ripgrep": true, "read_file": true, "list_directory": true,
-		codeNavigationToolName: true, reportLocalizationToolName: true,
+		codeNavigationToolName: true, codeSearchToolName: true, reportLocalizationToolName: true,
 		"git_diff": true,
 		// Reviewer-only: shell validation under the read-only whitelist in
 		// codingagent.reviewerShellInvocationAllowed (ToolPolicy.IsToolCallAllowed).
@@ -362,9 +362,9 @@ func codingSpawnRoleMaxIterations(role codingSubAgentRole) int {
 func codingSpawnRolePromptHint(role codingSubAgentRole) string {
 	switch role {
 	case codingRoleExplorer:
-		return "你是只读探索子代理（explorer）：结构、符号和调用关系优先 code_navigation（codegraph explore / codegraph node）。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。禁止写文件或改仓库。遇到陌生概念、精确报错、第三方依赖/API/协议或版本兼容性问题时，必须用 web_search 搜索并优先核对官方来源，不能凭记忆猜测。完成后给出结构化发现（关键路径、符号、外部来源、风险点）。"
+		return "你是只读探索子代理（explorer）：结构、符号和调用关系优先 code_navigation（codegraph explore / codegraph node）。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。不知道名字、问的是行为或模块在哪时用 code_search。已知符号和调用边仍用 code_navigation。精确文本用 ripgrep。禁止写文件或改仓库。遇到陌生概念、精确报错、第三方依赖/API/协议或版本兼容性问题时，必须用 web_search 搜索并优先核对官方来源，不能凭记忆猜测。完成后给出结构化发现（关键路径、符号、外部来源、风险点）。"
 	case codingRoleReviewer:
-		return "你是审查/验证子代理（reviewer）：可读代码、跑 shell 检查与 git_diff，禁止 write/edit 改文件。涉及陌生或版本敏感的第三方事实时，必须用 web_search 核对；完成后给出问题清单、外部来源、验证结果与建议。"
+		return "你是审查/验证子代理（reviewer）：可读代码、跑 shell 检查与 git_diff，禁止 write/edit 改文件。不知道名字、问的是行为或模块在哪时用 code_search。已知符号和调用边仍用 code_navigation。精确文本用 ripgrep。涉及陌生或版本敏感的第三方事实时，必须用 web_search 核对；完成后给出问题清单、外部来源、验证结果与建议。"
 	default:
 		return "你是实现子代理（worker）：在隔离 git worktree 中完成指定实现/修复，只改声明过的 files，改完后自行验证。你不能再 spawn 更深层子代理。"
 	}

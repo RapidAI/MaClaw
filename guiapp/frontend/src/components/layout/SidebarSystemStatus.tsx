@@ -334,7 +334,7 @@ export const SidebarSystemStatus = ({
         }
     };
     const profileHealthColor = (health?: string) => health === 'configured'
-        ? 'var(--theme-success, #4f7f6f)'
+        ? 'var(--theme-success, #11813a)'
         : health === 'unavailable' || health === 'invalid'
             ? 'var(--theme-danger, #b74a4a)'
             : 'var(--theme-text-secondary)';

@@ -143,10 +143,13 @@ func TestSkillSearchAPIAllowedSourcesSkipsBlockedSources(t *testing.T) {
 }
 
 func TestSkillHubDeveloperModeDoesNotBlockSkillFetch(t *testing.T) {
+	// Developer mode exempts the skill *source allowlist* — the whole point
+	// of the mode. The network level is a different boundary and still
+	// applies, so the source exemption is exercised at the default (full)
+	// level and the org-wide shutdown is pinned to keep refusing installs.
 	cfg := corelib.AppConfig{
 		HubSecurityCentralized: true,
 		SecurityPolicyMode:     "developer",
-		NetworkLevel:           "none",
 		FileOutboundEnabled:    true,
 		ImageOutboundEnabled:   true,
 		SkillSourcesAllowed:    []string{"skillhub"},
@@ -156,5 +159,9 @@ func TestSkillHubDeveloperModeDoesNotBlockSkillFetch(t *testing.T) {
 	}
 	if err := enforceSkillHubSourceAction(cfg, "github", "install", map[string]interface{}{"install_ref": "https://github.com/acme/demo-skill"}); err != nil {
 		t.Fatalf("developer mode should allow any skill source, got %v", err)
+	}
+	cfg.NetworkLevel = "none"
+	if err := enforceSkillHubSourceAction(cfg, "github", "install", map[string]interface{}{"install_ref": "https://github.com/acme/demo-skill"}); err == nil {
+		t.Fatal("network_level=none must refuse the install even in developer mode")
 	}
 }

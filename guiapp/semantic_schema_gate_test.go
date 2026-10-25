@@ -191,7 +191,7 @@ func managedCallSurfaceSchemas(t *testing.T) map[string]map[string]interface{} {
 	hostDefinitions := make(map[string]map[string]interface{})
 	hostSchemas := make(map[string]map[string]interface{})
 	var providers []tool.ProviderSpec
-	if err := appendClosedHostSemanticProviders(&providers, hostDefinitions, hostSchemas, "lansenger", h); err != nil {
+	if err := appendClosedHostSemanticProviders(&providers, hostDefinitions, hostSchemas, "lansenger", h, ""); err != nil {
 		t.Fatalf("closed host providers: %v", err)
 	}
 	for adapter, schema := range hostSchemas {

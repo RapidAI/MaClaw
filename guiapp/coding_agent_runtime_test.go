@@ -437,6 +437,21 @@ func TestCodingToolEventTargetShowsSearchAndExplore(t *testing.T) {
 	if got := codingToolEventTarget("bash", `{"command":"git status --short"}`, root); got != "" {
 		t.Fatalf("git status target = %q, want empty", got)
 	}
+	if got := codingToolEventTarget("code_search", `{"query":"persist the widget","path":"src"}`, root); got != "persist the widget · src" {
+		t.Fatalf("code_search target = %q", got)
+	}
+	if got := codingToolEventTarget("spawn_coding_agent", `{"role":"explorer","task":"排查知识检索丢内容"}`, root); got != "排查知识检索丢内容" {
+		t.Fatalf("spawn target = %q", got)
+	}
+	if got := codingToolEventTarget("spawn_coding_agent", `{"task":"ignored","agents":[{"role":"explorer","task":"先看调用链"},{"role":"reviewer","task":"再看测试"}]}`, root); got != "先看调用链" {
+		t.Fatalf("spawn batch target = %q", got)
+	}
+	if got := codingToolEventTarget("todo_write", `{"todos":[{"id":"1","content":"定位知识库","status":"completed"},{"id":"2","title":"核对检索","status":"in_progress"}]}`, root); got != "核对检索" {
+		t.Fatalf("todo target = %q", got)
+	}
+	if got := codingToolEventTarget("todo_write", `{"merge":true,"todos":[{"id":"2","status":"completed"}]}`, root); got != "" {
+		t.Fatalf("todo status-only target = %q", got)
+	}
 }
 
 func TestSuppressCodingWorkbenchStatusProgress(t *testing.T) {

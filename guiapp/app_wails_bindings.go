@@ -1318,7 +1318,10 @@ func (a *App) SaveMemory(content, category string, tags []string) error {
 	if err := a.memoryStore.SaveManualMemory(content, memory.Category(category), tags); err != nil {
 		return err
 	}
-	a.refreshActiveAgentMemorySnapshots()
+	// An addition needs no retraction: the pinned prefix never carried it.
+	// Recall caches drop so tool-level recall sees the entry immediately;
+	// the snapshot bytes pick it up at /new.
+	a.notifyMemoryWarehouseChanged(memoryWarehouseChange{})
 	return nil
 }
 
@@ -3759,7 +3762,7 @@ func (a *App) ResolveCriticalConfirm(confirmID string, confirmed bool) error {
 }
 
 // ResolveScopeApproval handles the user's response to a SubAgent scope approval prompt.
-// decision: "deny", "allow_once", "allow_dir", or "full_access"
+// decision: "deny", "allow_once", "allow_task", "allow_dir", or "full_access"
 func (a *App) ResolveScopeApproval(approvalID string, decision string) {
 	ResolveScopeApproval(approvalID, decision)
 }

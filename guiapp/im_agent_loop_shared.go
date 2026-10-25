@@ -384,6 +384,8 @@ func (h *IMMessageHandler) executeSharedTurn(
 		trajRecorder  *TrajectoryRecorder
 		trajCleanup   func()
 		trajTelemetry *agentLoopTelemetry
+		cb            *sharedAgentLoopCallbacks
+		loopResult    agent.LoopResult
 	)
 	defer func() {
 		if r := recover(); r != nil {
@@ -425,6 +427,9 @@ func (h *IMMessageHandler) executeSharedTurn(
 		// Re-applying from a sparse IM response would clobber cancel/paused status
 		// and wipe LoopResult token usage (cancel uses Text, not Error).
 		// Panic / unexpected early return also lands here — close orphans first.
+		if trajRecorder != nil {
+			trajRecorder.SetHopRun(finalizeHopRun(cb.hopRunSnapshot(), loopResult))
+		}
 		if trajRecorder != nil && !trajRecorder.HasOutcome() {
 			if reason := unpairedCloseReasonFromIMResponse(result); reason != "" {
 				trajRecorder.CloseUnpairedToolCalls(reason)
@@ -489,14 +494,17 @@ func (h *IMMessageHandler) executeSharedTurn(
 	// time before the first Agent request.
 	progressOut := runtimeState.SendProgress
 	userContent := startState.UserContent
+	commitScope := desktopCommitScope(userID, projectPath)
+	commitTaskKey := resumeDesktopCommitTaskKey(h.app, commitScope, recoveryRunID)
 
-	cb := &sharedAgentLoopCallbacks{
+	cb = &sharedAgentLoopCallbacks{
 		handler:           h,
 		loopCtx:           ctx,
 		userID:            userID,
 		userText:          userText,
 		checkpointHistory: append(append([]agent.ConversationEntry(nil), history...), agent.ConversationEntry{Role: "user", Content: userContent}),
 		checkpointRunID:   recoveryRunID,
+		commitTaskKey:     commitTaskKey,
 		checkpointProject: projectPath,
 		hasLocalFileWork:  len(attachments) > 0 || hasCurrentLocalFileWork(userText),
 		platform:          platform, // pin turn platform for tool rewrites (not only loopCtx)
@@ -563,7 +571,8 @@ func (h *IMMessageHandler) executeSharedTurn(
 	if cb.semanticSurface != nil {
 		loopHistory = rewriteExpiredSemanticGrantNames(history, cb.semanticSurface.liveGrantNames())
 	}
-	loopResult := agentruntime.RunAgentTurnWithUserContent(cb, userText, userContent, loopHistory, startState.HTTPClient, cb)
+	loopResult = agentruntime.RunAgentTurnWithUserContent(cb, userText, userContent, loopHistory, startState.HTTPClient, cb)
+	defer finishDesktopCommitTurn(h.app, commitScope, cb.CommitTaskKey(), loopResult.AskUser)
 	// A durable/shared event sink is part of the Runtime contract. If it
 	// rejected any lifecycle, token, or tool event, do not report a successful
 	// turn: callers must retry/reconcile the run instead of believing the
@@ -628,7 +637,7 @@ func (h *IMMessageHandler) executeSharedTurn(
 			// marker transition reach disk together. Do not leave an in-memory
 			// pending answer that can disappear on restart while the old pre-tool
 			// checkpoint is still the durable truth.
-			h.pendingAskUser.Delete(userID)
+			h.deletePendingAskUser(userID)
 			return h.sharedInteractivePausePersistenceFailureResponse(
 				userID, requestID, telemetry, onStreamDone, cb,
 			)
@@ -640,6 +649,14 @@ func (h *IMMessageHandler) executeSharedTurn(
 			// boundary may a held dependant semantic capability be issued.
 			cb.releaseSemanticDependantIssue()
 		}
+		// The card approves some other effect. A file already published into
+		// this chat is not that effect; the host still attaches it. The
+		// dependant grant has to be issued first, which release just did.
+		paused := askUserOutcome.Response
+		if paused == nil {
+			paused = &IMAgentResponse{}
+		}
+		cb.projectPausedCurrentChannelFile(paused)
 		if askUserOutcome.Response != nil {
 			// handleAgentLoopAskUserToolResult deferred this local state mutation
 			// while the paired history waited for its atomic checkpoint transition.
@@ -649,14 +666,15 @@ func (h *IMMessageHandler) executeSharedTurn(
 				Context:   loopResult.AskUser.Context,
 				InputType: loopResult.AskUser.InputType,
 			}, askUserOutcome.History, loopResult.WorkingState)
-		}
-		if askUserOutcome.Response != nil {
-			return h.finalizeSharedLoopAskUser(userID, loopResult, requestID, telemetry, onStreamDone, cb, startState.Recorder, askUserOutcome.Response)
+			return h.finalizeSharedLoopAskUser(userID, loopResult, requestID, telemetry, onStreamDone, cb, startState.Recorder, paused)
 		}
 		if len(loopResult.HistoryDelta) > 0 {
 			h.saveConversationHistoryTimed(userID, outHistory, &IMAgentResponse{})
 		}
-		return h.finalizeSharedLoopAskUser(userID, loopResult, requestID, telemetry, onStreamDone, cb, startState.Recorder, nil)
+		if strings.TrimSpace(paused.FileData) == "" && strings.TrimSpace(paused.LocalFilePath) == "" {
+			paused = nil
+		}
+		return h.finalizeSharedLoopAskUser(userID, loopResult, requestID, telemetry, onStreamDone, cb, startState.Recorder, paused)
 	}
 
 	// Interactive record_audio pause: open desktop waveform card and stop the loop
@@ -1308,7 +1326,20 @@ func (c *sharedAgentLoopCallbacks) recordCompletedSemanticLookupEvidence(selecti
 }
 
 func (c *sharedAgentLoopCallbacks) flushHostOwnedCurrentChannelFileDelivery(resp *IMAgentResponse) {
-	if c == nil || c.skipHostAutoFileDelivery || c.semanticSurface == nil || strings.TrimSpace(c.semanticDeliveryFileData) != "" {
+	// skipHostAutoFileDelivery stays set for the whole pause. A question must
+	// not mint a PDF or an external send. The current-chat card is attached
+	// by projectPausedCurrentChannelFile, which does not clear this flag.
+	if c == nil || c.skipHostAutoFileDelivery {
+		return
+	}
+	c.attachReadyCurrentChannelFile(resp)
+}
+
+// attachReadyCurrentChannelFile runs the live current-chat file grant.
+// It does not look at the pause flag. Callers that must stay quiet during
+// ask_user use flushHostOwnedCurrentChannelFileDelivery instead.
+func (c *sharedAgentLoopCallbacks) attachReadyCurrentChannelFile(resp *IMAgentResponse) {
+	if c == nil || c.semanticSurface == nil || strings.TrimSpace(c.semanticDeliveryFileData) != "" {
 		return
 	}
 	if resp != nil && keepVisibleErrorAfterHostFileAttach(resp.Error) {
@@ -1330,6 +1361,27 @@ func (c *sharedAgentLoopCallbacks) flushHostOwnedCurrentChannelFileDelivery(resp
 	if strings.Contains(got, "[system rejected]") {
 		log.Printf("[semantic] host auto current-channel file deliver failed: %s", got)
 	}
+}
+
+// projectPausedCurrentChannelFile attaches a file this turn already published
+// onto an ask_user reply. The card approves a different effect. This chat
+// card is not that effect. The pause flag stays set, so this does not mint a
+// PDF or run a specified-target send, and it does not rewrite the question.
+func (c *sharedAgentLoopCallbacks) projectPausedCurrentChannelFile(resp *IMAgentResponse) {
+	if c == nil || resp == nil {
+		return
+	}
+	if strings.TrimSpace(c.semanticDeliveryFileData) == "" {
+		c.attachReadyCurrentChannelFile(resp)
+	}
+	if strings.TrimSpace(c.semanticDeliveryFileData) == "" {
+		return
+	}
+	resp.FileData = c.semanticDeliveryFileData
+	resp.FileName = c.semanticDeliveryFileName
+	resp.FileMimeType = c.semanticDeliveryFileMIME
+	resp.SemanticDelivery = c.semanticDelivery
+	materializeSemanticDeliveryFileForLocalChat(resp, c)
 }
 
 // flushHostOwnedSpecifiedTargetDelivery closes the model-stop gap for a
@@ -1445,6 +1497,7 @@ type sharedAgentLoopCallbacks struct {
 	// checkpoint metadata as diagnostic recovery evidence instead.
 	checkpointHistory   []agent.ConversationEntry
 	checkpointRunID     string
+	commitTaskKey       string
 	checkpointProject   string
 	checkpointCommitted bool
 	// leaseStop ends the background lease refresh started after the first
@@ -1512,6 +1565,11 @@ type sharedAgentLoopCallbacks struct {
 	// the next request clears the bindings and selects again; it must not
 	// clear this, or a skill the model already called is demanded again.
 	admittedSkillSettled bool
+	// skillAssignedCaptures records declared capture names a bound skill run
+	// filled. The key is stableID, a newline, and the declared name, so a
+	// later admission of a different skill does not inherit them. Republishing
+	// the tool list clears the bindings and must not clear this map.
+	skillAssignedCaptures map[string]struct{}
 	// legacyPetitionTools are host tool names admitted onto the visible
 	// surface through a governed overlay: live SQL database adapters after a
 	// semantic petition for database / database_query could not expand a
@@ -1993,7 +2051,24 @@ func (c *sharedAgentLoopCallbacks) IsToolAllowedForPromptProfile(name string, pr
 	if !profile.IsLight() {
 		return true
 	}
+	if c.capabilityExtensionAllows(name) {
+		return true
+	}
 	return agent.IsLightTurnToolAllowed(name)
+}
+
+// capabilityExtensionAllows is the closed pair published when the catalog has
+// no built-in. A light prompt must not answer that pair with a profile upgrade.
+func (c *sharedAgentLoopCallbacks) capabilityExtensionAllows(name string) bool {
+	if c == nil || c.loopCtx == nil || strings.TrimSpace(c.loopCtx.capabilityExtensionReason) == "" {
+		return false
+	}
+	switch strings.TrimSpace(name) {
+	case "search_and_install_skill", "craft_tool":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *sharedAgentLoopCallbacks) lookupContinuationMayRepeat(name string) bool {
@@ -2920,6 +2995,17 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 		c.setVisibleToolDefinitions(nil)
 		return nil
 	}
+	if c.loopCtx != nil && strings.TrimSpace(c.loopCtx.capabilityExtensionReason) != "" && c.semanticSurface == nil {
+		// Later iterations must not rebuild the legacy catalog. The gap
+		// turn stays on skill search and craft_tool for its whole life.
+		defs := capabilityExtensionToolDefs(c.handler)
+		if defs == nil {
+			defs = []map[string]interface{}{}
+		}
+		c.tools = defs
+		c.legacySurface = c.legacySurface.replaceDefinitions(defs, nil)
+		return c.tools
+	}
 	if c.semanticSurface != nil {
 		c.maybeOverlaySQLDatabaseForTurn(userText)
 		c.maybeOverlayDocumentContinuationForTurn(userText)
@@ -3170,7 +3256,7 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 		if capability == tool.CapabilityShellExecuteRemoteHost {
 			// §B4 observability: the trajectory records this model-visible message;
 			// the [ssh-rescue:...] token makes the rescuing layer machine-readable.
-			logSSHAvailabilityEvent("rescue", "layer=petition_expand", "mode="+sshAvailabilityMode(c.handler))
+			logSSHAvailabilityEvent("rescue", "layer=petition_expand", "mode="+sshAvailabilityMode(c.handler, c.semanticPrincipalID()))
 			return true, message + " [ssh-rescue:petition_expand]"
 		}
 		return true, message
@@ -6438,7 +6524,7 @@ func (c *sharedAgentLoopCallbacks) executeBoundSemanticAdapterCanonical(selectio
 		if desktopForward {
 			return "Delivered the bound document through the desktop IM sender (delivery record " + record.SelectionID + "). The file is also attached to this reply. This result is the delivery confirmation. Do not generate another document."
 		}
-		return "Delivery committed to the current channel (delivery record " + record.SelectionID + "). The artifact is attached to this turn's reply — this result IS the delivery confirmation, the step is complete. Report the file as sent; no further tool or confirmation step exists. Do not say the file was only prepared or is pending."
+		return "Delivery committed to the current channel (delivery record " + record.SelectionID + "). The file is attached to this chat. This is not a send. The step is complete. No further tool or confirmation step exists. Do not say the file was only prepared or is pending."
 	}
 	// Apply the Hub network gate to the trusted host adapters that perform
 	// silent network egress into the model context. The legacy tool path gates
@@ -6620,7 +6706,7 @@ func (c *sharedAgentLoopCallbacks) publishGeneratedDocumentArtifact(selection to
 		c.semanticSurface.pendingArtifacts[selection.ID] = append(c.semanticSurface.pendingArtifacts[selection.ID], tool.ArtifactPayload{Ref: ref})
 	}
 	c.turnPublishedPDF = true
-	return "PDF artifact published; deliver it through the current-channel file adapter."
+	return agentruntime.HostPublishedCurrentChannelFileNote
 }
 
 func (c *sharedAgentLoopCallbacks) executeTrustedLiveDataVisual() string {
@@ -7457,7 +7543,7 @@ func (c *sharedAgentLoopCallbacks) publishOfficeWriteArtifact(selection tool.Pla
 		}
 		c.semanticSurface.pendingArtifacts[selection.ID] = append(c.semanticSurface.pendingArtifacts[selection.ID], tool.ArtifactPayload{Ref: ref})
 	}
-	return "Office document artifact published; deliver it through the current-channel file adapter."
+	return "Office document artifact published. The host attaches it to this chat. This is not a send."
 }
 
 func (c *sharedAgentLoopCallbacks) executeTrustedAcquireRemote(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
@@ -7602,13 +7688,15 @@ func (c *sharedAgentLoopCallbacks) executeTrustedSSH(_ tool.PlannedSelection, ca
 		if err != nil {
 			return semanticPrefixedRejection(err)
 		}
+		principalID := c.semanticPrincipalID()
+		connectArgs[registeredToolPolicyOwnerIDField] = principalID
 		result := c.handler.sshConnect(connectArgs)
 		if strings.HasPrefix(result, "SSH 连接成功") || strings.HasPrefix(result, "复用已有 SSH 会话") {
 			if remotePath, _ := connectArgs["remote_path"].(string); strings.TrimSpace(remotePath) != "" {
 				localPath, _ := connectArgs["local_path"].(string)
 				sessionID := sshSessionIDFromConnectResult(result)
 				if sessionID == "" {
-					if session := trustedSSHSingleBoundSession(c.handler); session != nil {
+					if session := trustedSSHSingleBoundSession(c.handler, principalID); session != nil {
 						sessionID = session.ID
 					}
 				}
@@ -7639,7 +7727,7 @@ func (c *sharedAgentLoopCallbacks) executeTrustedSSH(_ tool.PlannedSelection, ca
 		return semanticPrefixedRejection(err)
 	}
 	if remotePath != "" || localPath != "" {
-		session := trustedSSHSingleBoundSession(c.handler)
+		session := trustedSSHSingleBoundSession(c.handler, c.semanticPrincipalID())
 		if session == nil {
 			return "[system rejected] trusted_ssh_session_unavailable"
 		}
@@ -7834,15 +7922,11 @@ func (c *sharedAgentLoopCallbacks) registerSemanticArtifacts(selectionID string)
 // semanticCanonicalArguments is the migration boundary between opaque semantic
 // adapters and legacy handlers. It closes the model input object before the
 // legacy dispatcher can add trusted runtime-only metadata.
-// semanticDeliveryInvocationArgs washes model-supplied delivery arguments.
-// The adapter takes no input; the observed correctable shape is the empty
-// envelope {"arguments": "{}"} — a serialization slip carrying no intent
-// (2026-08-26: it burned the one-shot send_file grant on
-// parameter_schema_invalid and stranded two delivered-but-unsent turns in a
-// tools_search spiral). Only that empty envelope washes away. Anything
-// contentful — a forged artifact_id, a path, even a non-empty envelope —
-// passes through unchanged so admission rejects it as an unknown field: the
-// model must learn it cannot steer delivery by argument.
+// semanticDeliveryInvocationArgs washes a current-channel delivery call.
+// The adapter takes no input. The bound artifact is the delivery, so a path
+// or a forged artifact id is the same call as {}. Rejecting it used to leave
+// the grant live, then five schema misses stopped the turn as no_progress
+// and the host refused to attach the file it had already published.
 func semanticDeliveryInvocationArgs(argsJSON string) string {
 	return agentruntime.DeliveryInvocationArgs(argsJSON)
 }
@@ -8224,13 +8308,14 @@ func shouldSaveSharedLoopTerminalHistory(loopResult agent.LoopResult, cb *shared
 // marker is not a crash. An empty error is a normal finish. A no-progress
 // hard exit is a failed finish: the loop committed the paired batch before
 // stopping, and the next message must not be offered as crash recovery.
-// Ask-user and record-audio pauses are still open. Any other error keeps
-// the marker.
+// A declared deliverable that stayed empty is the same kind of finish: the
+// turn ended incomplete on purpose. Ask-user and record-audio pauses are
+// still open. Any other error keeps the marker.
 func sharedLoopCheckpointIsFinishedWork(result agent.LoopResult) bool {
 	if result.AskUser != nil || result.RecordAudio != nil {
 		return false
 	}
-	return result.Error == "" || result.Error == agent.ErrNoProgress
+	return result.Error == "" || result.Error == agent.ErrNoProgress || result.Error == agent.ErrDeliverableUnassigned
 }
 
 // interruptedSharedLoopResultResponse keeps the UI outcome aligned with the
@@ -9007,6 +9092,9 @@ func (c *sharedAgentLoopCallbacks) systemPromptWithTaskAnchor(systemPrompt strin
 	if section := goalContinuationPhaseSection(c.userText); section != "" {
 		systemPrompt = section + systemPrompt
 	}
+	if c.loopCtx != nil && strings.TrimSpace(c.loopCtx.capabilityExtensionReason) != "" {
+		systemPrompt += "\n\n" + capabilityExtensionPrompt(c.loopCtx.capabilityExtensionReason, c.loopCtx.capabilityExtensionPaths, capabilityExtensionToolDefs(c.handler))
+	}
 	return appendTaskIdentityAnchorPrompt(systemPrompt, c.taskAnchor)
 }
 
@@ -9024,51 +9112,83 @@ func (c *sharedAgentLoopCallbacks) ShouldStop() bool {
 	return c.loopCtx.IsCancelled()
 }
 
-// RequiredEffectUnsettled reports a planned mailbox send that has not settled.
-// A model stop before that call is not turn success. A settled failure or an
-// uncertain SMTP result is an execution record. A frozen confirmation is not:
-// SMTP has not been observed, so a later stop must not be recorded as success.
-func (c *sharedAgentLoopCallbacks) RequiredEffectUnsettled() bool {
-	if c == nil || c.semanticSurface == nil {
-		return false
+// UnassignedDeliverables reports required outputs this turn has not finished.
+// That is a bound skill's declared captures, and required file producers on
+// the semantic plan. A document the host can already write from gathered
+// evidence is assigned here, before the prose is allowed to count as
+// completion. A skill with no declared capture is not a deliverable. A turn
+// that is still inside a tool batch, a durability block, or an ask-user pause
+// is not finishing, so both lists stay empty. A file plan whose optionality
+// cannot be proved keeps its base file requirements closed; skill captures
+// still count independently.
+func (c *sharedAgentLoopCallbacks) UnassignedDeliverables(answer string) []string {
+	return c.deliverableGapNames(true, answer)
+}
+
+// deliverableGapNames lists the same gaps as UnassignedDeliverables.
+// flushGenerate writes a host-owned PDF when that file is the gap. The
+// per-iteration reminder lists names and must not write.
+func (c *sharedAgentLoopCallbacks) deliverableGapNames(flushGenerate bool, answer string) []string {
+	if c == nil || c.hasPendingToolBatch || c.semanticDurabilityBlocked || c.skipHostAutoFileDelivery {
+		return nil
 	}
-	surface := c.semanticSurface
-	for _, selection := range surface.plan.Selections {
-		if selection.FitProof.MatchedCapability != tool.CapabilityMessageSendMailbox {
+	skillMissing := c.unassignedSkillCaptures()
+	if c.semanticSurface == nil || !planHasFileDeliverable(c.semanticSurface.plan) {
+		return skillMissing
+	}
+	completed := completedWithSatisfiedFamilies(c.semanticSurface)
+	optional, ok := semanticSurfaceOptionalNeeds(c.semanticSurface)
+	if !ok {
+		missing := unassignedFileDeliverableNames(c.semanticSurface.plan, completed, nil)
+		return mergeDeliverableNames(skillMissing, missing)
+	}
+	missing := unassignedFileDeliverableNames(c.semanticSurface.plan, completed, optional)
+	if len(missing) == 0 {
+		return skillMissing
+	}
+	if flushGenerate && fileDeliverableOpen(missing, "document.generate.file") {
+		c.flushHostOwnedDocumentGenerate(&IMAgentResponse{Text: answer})
+		missing = unassignedFileDeliverableNames(c.semanticSurface.plan, completed, optional)
+	}
+	return mergeDeliverableNames(skillMissing, missing)
+}
+
+func mergeDeliverableNames(first, second []string) []string {
+	if len(first) == 0 {
+		return second
+	}
+	if len(second) == 0 {
+		return first
+	}
+	seen := make(map[string]bool, len(first)+len(second))
+	out := make([]string, 0, len(first)+len(second))
+	for _, name := range append(append([]string{}, first...), second...) {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
 			continue
 		}
-		if surface.completed[selection.ID] {
-			continue
-		}
-		if surface.executor == nil {
-			for _, grant := range surface.grants {
-				if grant.SelectionID == selection.ID {
-					return true
-				}
-			}
-			continue
-		}
-		record, err := surface.executor.Execution(surface.scope, selection.ID)
-		if err != nil {
-			return true
-		}
-		switch record.State {
-		case tool.PlanExecutionSucceeded:
-			continue
-		case tool.PlanExecutionFailed:
-			// A confirmation used to be stored as a failure with this reason.
-			// New drafts are awaiting_receipt. A real send failure is settled.
-			if mailboxDraftAwaitingConfirmation(record.ReasonCode) {
-				return true
-			}
-			continue
-		case tool.PlanExecutionAwaitingReceipt:
-			return true
-		default:
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
+}
+
+func fileDeliverableOpen(names []string, capability string) bool {
+	for _, name := range names {
+		if name == capability {
 			return true
 		}
 	}
 	return false
+}
+
+// RequiredEffectUnsettled reports any required plan effect that has not
+// succeeded. Prose is not execution evidence. A failed, pending, running,
+// unmet, or receipt-waiting required selection keeps the run open; optional
+// selections do not block completion.
+func (c *sharedAgentLoopCallbacks) RequiredEffectUnsettled() bool {
+	snapshot := c.hopRunSnapshot()
+	return snapshot != nil && snapshot.Remaining > 0
 }
 
 // EarlyStop implements agent.EarlyStopper. Two stop shapes: the daily LLM

@@ -258,7 +258,7 @@ func (h *IMMessageHandler) commitPendingAskUser(userID string, askReq *AskUserRe
 	if h.goalBarTurnMustNotAsk(userID, turnGen) {
 		return
 	}
-	h.pendingAskUser.Store(userID, &pendingAskUserState{
+	h.storePendingAskUser(userID, &pendingAskUserState{
 		Question:       askReq.Question,
 		Options:        askReq.Options,
 		InputType:      askReq.InputType,
@@ -268,6 +268,7 @@ func (h *IMMessageHandler) commitPendingAskUser(userID string, askReq *AskUserRe
 		WorkingState:   agent.CloneWorkingState(workingState),
 		MailboxDraftID: h.takeMailboxDraftNoteFor(userID, askReq),
 		MCPServerWrite: h.takeMCPServerWriteNoteFor(userID, askReq),
+		CommitApproval: takeCommitApprovalForApp(h.app, askReq),
 	})
 }
 
@@ -290,7 +291,7 @@ func newConfirmNonce() string {
 // answer hint may repeat.
 func pendingAskUserContext(context string) string {
 	trimmed := strings.TrimSpace(context)
-	for _, marker := range []string{mailboxDraftAskContext, mcpServerWriteAskContext} {
+	for _, marker := range []string{mailboxDraftAskContext, mcpServerWriteAskContext, agent.CommitApprovalContextPrefix} {
 		if rest, ok := strings.CutPrefix(trimmed, marker); ok {
 			// <marker><nonce>;<context>
 			if _, after, found := strings.Cut(rest, ";"); found {

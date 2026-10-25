@@ -74,6 +74,10 @@ type admittedSkillBinding struct {
 	// from placeholders and required_args. The admitted function schema is
 	// this list.
 	Params []corelib.NLSkillParam
+	// DeclaredCaptures are output variables the skill's steps named.
+	// An admitted skill with none keeps the one-reminder obligation.
+	// A skill with any stays unfinished until a run assigns each one.
+	DeclaredCaptures []string
 }
 
 type skillAdmissionDecision struct {
@@ -168,6 +172,13 @@ func complexSkillTask(ctx *LoopContext, userText string) bool {
 	// The carried label can still say document_generate when this sentence
 	// is only 继续 or a lookup. Those are not a request to install a skill.
 	if skillSearchQueryIsBareContinuation(userText) || informationLookupQuery(userText) {
+		return false
+	}
+	// The classifier already kept this short sentence on the open document.
+	// That wave's tool is generate_pdf or office. Admitting a skill here
+	// closes that tool until the skill or a market search runs, so the
+	// follow-up never publishes the file the plan just authorized.
+	if ctx != nil && ctx.Runtime.SemanticIntent != nil && semanticResidueDocumentSurfaceTurn(*ctx.Runtime.SemanticIntent, userText) {
 		return false
 	}
 	if ctx == nil || !executionSurfaceIsFull(executionProfileFromLoop(ctx)) {
@@ -381,16 +392,8 @@ func admitLocalSkills(exec *SkillExecutor, userText, domain string) ([]admittedS
 			break
 		}
 		used[pick.def.Name] = true
-		alias := skillAdmissionAlias(pick.entry, usedAliases(bound))
-		binding := admittedSkillBinding{
-			Alias:         alias,
-			Name:          strings.TrimSpace(pick.entry.Name),
-			StableID:      agentservice.DynamicSkillStableID(pick.entry),
-			Version:       strings.TrimSpace(pick.entry.Version),
-			ContentDigest: agentservice.DynamicSkillContentDigest(pick.entry),
-			Description:   skillAdmissionPublishedDescription(pick.entry.Source, pick.def.Description),
-			Params:        skill.CompleteParamsForRunner(pick.entry.Params, pick.entry.Steps, pick.entry.RequiredArgs),
-		}
+		binding := admittedBindingForEntry(pick.entry)
+		binding.Alias = skillAdmissionAlias(pick.entry, usedAliases(bound))
 		bound = append(bound, binding)
 	}
 	return bound, nil
@@ -717,17 +720,70 @@ func (c *sharedAgentLoopCallbacks) executeAdmittedSkillBinding(binding admittedS
 			arguments = parsed
 		}
 	}
-	output, err := exec.executeBoundSkill(binding.StableID, binding.Name, binding.Version, binding.ContentDigest, arguments)
+	output, captured, err := exec.executeBoundSkill(binding.StableID, binding.Name, binding.Version, binding.ContentDigest, arguments)
 	if err != nil {
 		if strings.TrimSpace(output) == "" {
 			return err.Error(), false, true
 		}
 		return output + "\n" + err.Error(), false, true
 	}
+	c.noteAssignedSkillCaptures(binding, captured)
 	if strings.TrimSpace(output) == "" {
 		return "Skill " + binding.Name + " finished.", true, true
 	}
 	return output, true, true
+}
+
+func skillCaptureAssignmentKey(stableID, name string) string {
+	return strings.TrimSpace(stableID) + "\n" + strings.TrimSpace(name)
+}
+
+// noteAssignedSkillCaptures records captures filled by a successful run.
+// A non-empty value is assigned, and a blank one stays open. A skill that
+// declares nothing is not a deliverable.
+func (c *sharedAgentLoopCallbacks) noteAssignedSkillCaptures(binding admittedSkillBinding, captured map[string]string) {
+	if c == nil || len(binding.DeclaredCaptures) == 0 {
+		return
+	}
+	for _, name := range binding.DeclaredCaptures {
+		name = strings.TrimSpace(name)
+		if name == "" || !skill.CaptureAssigned(captured, name) {
+			continue
+		}
+		if c.skillAssignedCaptures == nil {
+			c.skillAssignedCaptures = map[string]struct{}{}
+		}
+		c.skillAssignedCaptures[skillCaptureAssignmentKey(binding.StableID, name)] = struct{}{}
+	}
+}
+
+// unassignedSkillCaptures lists declared capture names no run of that skill
+// has filled. A skill that never ran leaves every declared name here. Guided
+// workflows are not in admittedSkillBindings, so they are not on this list.
+func (c *sharedAgentLoopCallbacks) unassignedSkillCaptures() []string {
+	if c == nil || len(c.admittedSkillBindings) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	var names []string
+	for _, binding := range c.admittedSkillBindings {
+		for _, name := range binding.DeclaredCaptures {
+			name = strings.TrimSpace(name)
+			if name == "" || seen[name] {
+				continue
+			}
+			if _, assigned := c.skillAssignedCaptures[skillCaptureAssignmentKey(binding.StableID, name)]; assigned {
+				continue
+			}
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return nil
+	}
+	return names
 }
 
 // noteGuidedSkillUse records that an agent-guided workflow actually ran a

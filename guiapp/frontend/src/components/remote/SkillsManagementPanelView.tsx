@@ -5748,8 +5748,8 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     padding: "8px 10px",
                                                     fontSize: "0.74rem",
                                                     borderLeft: rec.success
-                                                        ? "3px solid var(--theme-success, #4f7f6f)"
-                                                        : "3px solid var(--theme-warning, #64748b)",
+                                                        ? "3px solid var(--theme-success, #11813a)"
+                                                        : "3px solid var(--theme-warning, #aa5d05)",
                                                 }}
                                             >
                                                 <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "4px" }}>

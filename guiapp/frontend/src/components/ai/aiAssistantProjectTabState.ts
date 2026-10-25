@@ -142,6 +142,133 @@ export function mergeChatMessages(...groups: Array<unknown[] | undefined>): Chat
     return merged;
 }
 
+type CodingTrail = NonNullable<ChatMessage["codingTimeline"]>;
+type CodingTrailItem = CodingTrail[number];
+
+/** Inclusive transport span. Sequence 0 is unset and must not overlap every row. */
+function positiveSpan(item: CodingTrailItem): [number, number] | null {
+    const start = item.sequence > 0 ? item.sequence : 0;
+    if (start <= 0) return null;
+    const last = item.lastSequence && item.lastSequence > start ? item.lastSequence : start;
+    return [start, last];
+}
+
+function eventHitsSpan(events: number[] | undefined, span: [number, number] | null): boolean {
+    if (!events || !span) return false;
+    const [start, end] = span;
+    for (const sequence of events) {
+        if (sequence >= start && sequence <= end) return true;
+    }
+    return false;
+}
+
+function eventsIntersect(left: number[] | undefined, right: number[] | undefined): boolean {
+    if (!left || !right) return false;
+    for (const sequence of left) {
+        if (sequence <= 0) continue;
+        for (const other of right) {
+            if (sequence === other) return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * A finished tool keeps its start sequence and records the finish beside it.
+ * Those two rows are one event. The same id is one row even when only the
+ * later copy has a transport sequence: the list key is that id, so keeping
+ * both paints the stale copy and drops the edit.
+ */
+function timelineItemsOverlap(earlier: CodingTrailItem, later: CodingTrailItem): boolean {
+    if (!!earlier.id && earlier.id === later.id) return true;
+    const left = positiveSpan(earlier);
+    const right = positiveSpan(later);
+    if (left && right && left[0] <= right[1] && right[0] <= left[1]) return true;
+    if (eventHitsSpan(later.eventSequences, left) || eventHitsSpan(earlier.eventSequences, right)) return true;
+    if (eventsIntersect(earlier.eventSequences, later.eventSequences)) return true;
+    return false;
+}
+
+/**
+ * Groups are older snapshot, then live message. The live copy replaces rows
+ * it overlaps, including the same trail id. A row it never reached stays.
+ * When nothing earlier survives, the live array is reused so an append-only
+ * token does not allocate.
+ */
+function unionCodingTrails(earlier: CodingTrail, later: CodingTrail): CodingTrail {
+    const kept: CodingTrailItem[] = [];
+    for (const item of earlier) {
+        let overlaps = false;
+        for (const next of later) {
+            if (!timelineItemsOverlap(item, next)) continue;
+            overlaps = true;
+            break;
+        }
+        if (!overlaps) kept.push(item);
+    }
+    if (kept.length === 0) return later;
+    const combined = kept.concat(later);
+    combined.sort((left, right) => (left.sequence || 0) - (right.sequence || 0));
+    return combined;
+}
+
+function absorbCodingTrail(trails: Map<string, CodingTrail>, message: ChatMessage) {
+    const trail = message.codingTimeline;
+    if (!message.id || !trail?.length) return;
+    const previous = trails.get(message.id);
+    if (!previous) {
+        trails.set(message.id, trail);
+        return;
+    }
+    if (previous === trail) return;
+    trails.set(message.id, unionCodingTrails(previous, trail));
+}
+
+/**
+ * Finish a project round into one transcript.
+ * A later row replaces the same id. Coding trails union by event span:
+ * a later item replaces any earlier item it overlaps, and an earlier item
+ * the later copy never reached stays. An error row clears that trail on purpose.
+ */
+export function mergeProjectRoundHistory(
+    visible: ChatMessage[] | undefined,
+    saved: ChatMessage[] | undefined,
+    fresh: ChatMessage[] | undefined,
+    held?: ChatMessage[] | undefined,
+    // While this session is still sending, the live message is the authority.
+    // A copy that left the coding trail must not have the saved trail painted
+    // back beside 正在访问模型. Another session's busy flag does not count.
+    // Settle still restores a thinner final row.
+    trustMissingTimeline = false,
+): ChatMessage[] {
+    const groups = [visible, saved, held, fresh];
+    const uniqueGroups: ChatMessage[][] = [];
+    const seenGroups = new Set<ChatMessage[]>();
+    for (const group of groups) {
+        if (!Array.isArray(group) || seenGroups.has(group)) continue;
+        seenGroups.add(group);
+        uniqueGroups.push(group);
+    }
+    const merged = mergeChatMessages(...uniqueGroups);
+    const trails = new Map<string, CodingTrail>();
+    for (const group of uniqueGroups) {
+        for (const message of group) {
+            if (message && typeof message === "object") absorbCodingTrail(trails, message as ChatMessage);
+        }
+    }
+    if (trails.size === 0) return merged;
+    let changed = false;
+    const next = merged.map(message => {
+        if (message.role === "error") return message;
+        const best = trails.get(message.id);
+        if (!best || message.codingTimeline === best) return message;
+        if (trustMissingTimeline && !(message.codingTimeline?.length)) return message;
+        changed = true;
+        return { ...message, codingTimeline: best };
+    });
+    return changed ? next : merged;
+}
+
 export function withoutProjectContextMessages(history: unknown[] | undefined): ChatMessage[] {
     if (!Array.isArray(history)) return [];
     return history.filter((message): message is ChatMessage => {

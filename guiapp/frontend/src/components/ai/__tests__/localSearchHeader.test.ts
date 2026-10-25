@@ -32,8 +32,7 @@ describe("localSearchHeader", () => {
             ],
         });
         expect(knowledgeSearchHits(payloads as Parameters<typeof knowledgeSearchHits>[0], 8)).toEqual([
-            expect.objectContaining({ id: "c1", title: "Gateway", sourceId: "s1", resultType: "card" }),
-            expect.objectContaining({ id: "n1", title: "Duplicate", sourceId: "s1" }),
+            expect.objectContaining({ id: "node:n1", title: "Duplicate", sourceId: "s1" }),
         ]);
     });
 

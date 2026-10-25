@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -94,12 +95,13 @@ type chatTaskRecord struct {
 	UpdatedAt     time.Time
 	Recovered     bool
 
-	loop       *LoopContext
-	answerCh   chan string
-	cancelCh   chan struct{}
-	cancelOnce sync.Once
-	Computer   bool
-	Screen     string
+	loop         *LoopContext
+	resumePrompt string
+	answerCh     chan string
+	cancelCh     chan struct{}
+	cancelOnce   sync.Once
+	Computer     bool
+	Screen       string
 }
 
 type chatTaskRunResult struct {
@@ -231,6 +233,67 @@ func (r *chatTaskRegistry) Dispatch(req AIAssistantChatTaskDispatchRequest) (AIA
 	return snap, nil
 }
 
+func (r *chatTaskRegistry) Resume(taskID, text string) (AIAssistantChatTask, error) {
+	if r == nil {
+		return AIAssistantChatTask{}, fmt.Errorf("chat tasks are unavailable")
+	}
+	r.mu.Lock()
+	task := r.tasks[strings.TrimSpace(taskID)]
+	if task == nil {
+		r.mu.Unlock()
+		return AIAssistantChatTask{}, fmt.Errorf("chat task not found")
+	}
+	if task.Status != chatTaskInterrupted {
+		r.mu.Unlock()
+		return AIAssistantChatTask{}, fmt.Errorf("chat task is not interrupted")
+	}
+	task.resumePrompt = chatTaskResumePrompt(task, text)
+	task.Status = chatTaskQueued
+	task.Question = ""
+	task.Error = ""
+	task.loop = nil
+	task.answerCh = make(chan string, 1)
+	task.cancelCh = make(chan struct{})
+	task.cancelOnce = sync.Once{}
+	task.UpdatedAt = time.Now()
+	snap := task.snapshotLocked()
+	r.mu.Unlock()
+	r.persist()
+	r.emit(snap)
+	go r.run(task)
+	return snap, nil
+}
+
+func chatTaskResumePrompt(task *chatTaskRecord, text string) string {
+	if task == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Continue the original background task from its saved conversation and progress. Do not restart it or repeat completed side effects.\nOriginal task: ")
+	b.WriteString(task.Prompt)
+	if task.WhereWeAre != "" {
+		b.WriteString("\nCurrent progress: ")
+		b.WriteString(task.WhereWeAre)
+	}
+	if task.NextStep != "" {
+		b.WriteString("\nNext step: ")
+		b.WriteString(task.NextStep)
+	}
+	if task.OpenProblems != "" {
+		b.WriteString("\nOpen problems: ")
+		b.WriteString(task.OpenProblems)
+	}
+	if task.Question != "" {
+		b.WriteString("\nQuestion waiting before restart: ")
+		b.WriteString(task.Question)
+	}
+	if strings.TrimSpace(text) != "" {
+		b.WriteString("\nUser continuation/answer: ")
+		b.WriteString(strings.TrimSpace(text))
+	}
+	return b.String()
+}
+
 func (r *chatTaskRegistry) List(sessionKey string) []AIAssistantChatTask {
 	if r == nil {
 		return nil
@@ -240,7 +303,7 @@ func (r *chatTaskRegistry) List(sessionKey string) []AIAssistantChatTask {
 	defer r.mu.Unlock()
 	out := make([]AIAssistantChatTask, 0, len(r.tasks))
 	for _, task := range r.tasks {
-		if sessionKey != "" && task.SessionKey != sessionKey {
+		if sessionKey != "" && !sameChatSession(task.SessionKey, sessionKey) {
 			continue
 		}
 		out = append(out, task.snapshotLocked())
@@ -268,7 +331,7 @@ func (r *chatTaskRegistry) CancelSession(sessionKey string) {
 	r.mu.Lock()
 	var ids []string
 	for id, task := range r.tasks {
-		if task.SessionKey == sessionKey && !task.Status.terminal() {
+		if sameChatSession(task.SessionKey, sessionKey) && !task.Status.terminal() {
 			ids = append(ids, id)
 		}
 	}
@@ -289,7 +352,15 @@ func (r *chatTaskRegistry) Answer(taskID, text string) error {
 		r.mu.Unlock()
 		return fmt.Errorf("chat task not found")
 	}
-	if task.Status != chatTaskNeedsInput {
+	interrupted := task.Status == chatTaskInterrupted && strings.TrimSpace(task.Question) != ""
+	r.mu.Unlock()
+	if interrupted {
+		_, err := r.Resume(taskID, text)
+		return err
+	}
+	r.mu.Lock()
+	task = r.tasks[strings.TrimSpace(taskID)]
+	if task == nil || task.Status != chatTaskNeedsInput {
 		r.mu.Unlock()
 		return fmt.Errorf("chat task is not waiting for input")
 	}
@@ -319,6 +390,11 @@ func (r *chatTaskRegistry) Steer(taskID, text string) error {
 	if task == nil {
 		r.mu.Unlock()
 		return fmt.Errorf("chat task not found")
+	}
+	if task.Status == chatTaskInterrupted {
+		r.mu.Unlock()
+		_, err := r.Resume(taskID, text)
+		return err
 	}
 	if task.Status.terminal() {
 		r.mu.Unlock()
@@ -355,7 +431,7 @@ const (
 // continueOpenChatTask attaches a host continuation to the single running
 // task. A task that is waiting for the user is not answered. The person's
 // steer path still answers that question; this one must not.
-func (r *chatTaskRegistry) continueOpenChatTask(sessionKey, text string) (chatTaskOpenContinue, error) {
+func (r *chatTaskRegistry) continueOpenChatTask(sessionKey, text, title string) (chatTaskOpenContinue, error) {
 	if r == nil {
 		return chatTaskOpenContinueHeld, fmt.Errorf("chat tasks are unavailable")
 	}
@@ -367,7 +443,7 @@ func (r *chatTaskRegistry) continueOpenChatTask(sessionKey, text string) (chatTa
 	r.mu.Lock()
 	var open []*chatTaskRecord
 	for _, task := range r.tasks {
-		if task.SessionKey == sessionKey && !task.Status.terminal() {
+		if sameChatSession(task.SessionKey, sessionKey) && !task.Status.terminal() {
 			open = append(open, task)
 		}
 	}
@@ -380,6 +456,7 @@ func (r *chatTaskRegistry) continueOpenChatTask(sessionKey, text string) (chatTa
 		return chatTaskOpenContinueHeld, nil
 	}
 	task := open[0]
+	taskID := task.ID
 	loop := task.loop
 	memoryKey := task.MemoryKey
 	r.mu.Unlock()
@@ -390,7 +467,28 @@ func (r *chatTaskRegistry) continueOpenChatTask(sessionKey, text string) (chatTa
 	if !r.deliverSteer(loop, memoryKey, text) {
 		return chatTaskOpenContinueNone, nil
 	}
+	if title = strings.TrimSpace(title); title != "" {
+		r.renameOpenTask(taskID, title)
+	}
 	return chatTaskOpenContinueSteered, nil
+}
+
+func (r *chatTaskRegistry) renameOpenTask(id, title string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	current := r.tasks[id]
+	if current == nil || current.Status.terminal() {
+		r.mu.Unlock()
+		return
+	}
+	current.Title = title
+	current.UpdatedAt = time.Now()
+	snap := current.snapshotLocked()
+	r.mu.Unlock()
+	r.persist()
+	r.emit(snap)
 }
 
 func (r *chatTaskRegistry) deliverSteer(loop *LoopContext, memoryKey, text string) bool {
@@ -554,6 +652,9 @@ func (h *IMMessageHandler) executeChatTaskAgentLoop(task *chatTaskRecord) chatTa
 	}
 	h.openHelperMemory(task, false)
 	text := task.Prompt
+	if strings.TrimSpace(task.resumePrompt) != "" {
+		text = task.resumePrompt
+	}
 	var lastLoop *LoopContext
 	var lastResp *IMAgentResponse
 	for wave := 0; wave < sessionRoundContinuationMaxWaves; wave++ {
@@ -908,13 +1009,20 @@ func (r *chatTaskRegistry) load() {
 		rec := recordFromSnapshot(snap)
 		if !rec.Status.terminal() {
 			rec.Status = chatTaskInterrupted
-			rec.Progress = "Was running when the app stopped. It was not resumed."
 			rec.Recovered = true
-			rec.Question = ""
 			if next := resumeTaskNextStep(rec); next != "" {
 				rec.NextStep = next
 			}
 			changed = true
+		}
+		// Interrupted is already terminal, so a task saved by an older restart
+		// never enters the block above. Progress is still a step: a status
+		// sentence or a silence line hides the card's own explanation.
+		if rec.Status == chatTaskInterrupted {
+			if cleaned := interruptedChatTaskProgress(rec.Progress); cleaned != rec.Progress {
+				rec.Progress = cleaned
+				changed = true
+			}
 		}
 		rec.answerCh = make(chan string, 1)
 		rec.cancelCh = make(chan struct{})
@@ -935,7 +1043,7 @@ func (r *chatTaskRegistry) activeCount(sessionKey string) int {
 func (r *chatTaskRegistry) activeCountLocked(sessionKey string) int {
 	n := 0
 	for _, task := range r.tasks {
-		if task.SessionKey == sessionKey && !task.Status.terminal() {
+		if sameChatSession(task.SessionKey, sessionKey) && !task.Status.terminal() {
 			n++
 		}
 	}
@@ -1151,8 +1259,15 @@ func (h *IMMessageHandler) continueSpentForegroundChat(loop *LoopContext, sessio
 	if sessionKey == "" && loop != nil {
 		sessionKey = strings.TrimSpace(loop.UserID)
 	}
-	prompt := foregroundChatContinuationPrompt(h.foregroundChatContinuationWorkspace(sessionKey), userText, h.chatTaskEarlierUserRequest(sessionKey, userText), result.HistoryDelta)
-	switch kind, err := reg.continueOpenChatTask(sessionKey, prompt); {
+	earlier := h.chatTaskEarlierUserRequest(sessionKey, userText)
+	prompt := foregroundChatContinuationPrompt(h.foregroundChatContinuationWorkspace(sessionKey), userText, earlier, result.HistoryDelta)
+	// A bare 「继续」 must not replace the running card's name with the folder.
+	// A new sentence does: that is the work the card should show.
+	steerTitle := ""
+	if named := continuationTitleText(userText); named != "" && !continuationCueOnly(named) {
+		steerTitle = chatTaskTitle(named)
+	}
+	switch kind, err := reg.continueOpenChatTask(sessionKey, prompt, steerTitle); {
 	case err != nil:
 		log.Printf("[chat-task] inline handoff failed session=%q err=%v", sessionKey, err)
 		return "", false
@@ -1166,7 +1281,7 @@ func (h *IMMessageHandler) continueSpentForegroundChat(loop *LoopContext, sessio
 	if _, err := reg.Dispatch(AIAssistantChatTaskDispatchRequest{
 		Text:       prompt,
 		SessionKey: sessionKey,
-		Title:      foregroundChatContinuationTitle(sessionKey, userText),
+		Title:      foregroundChatContinuationTitle(sessionKey, userText, earlier),
 	}); err != nil {
 		log.Printf("[chat-task] inline handoff failed session=%q err=%v", sessionKey, err)
 		return "", false
@@ -1378,10 +1493,23 @@ func continuationCarriesEarlierRequest(current string) bool {
 
 func continuationWording(current string) string {
 	text := chatTaskUserRequestText(current)
-	if i := agent.CurrentLocalFilePathPromptIndex(text); i >= 0 {
-		text = text[:i]
+	if cut := continuationFileBlockIndex(text); cut >= 0 {
+		text = text[:cut]
 	}
 	return strings.TrimSpace(text)
+}
+
+// continuationFileBlockIndex is the start of a file-picker block. The live
+// marker and the historical marker are the same block: an earlier request is
+// stored with the historical form, and that form is not a task name.
+func continuationFileBlockIndex(text string) int {
+	cut := -1
+	for _, marker := range []string{agent.FilePathPromptPrefix, agent.FilePathPromptPrefixHistorical} {
+		if i := strings.Index(text, marker); i >= 0 && (cut < 0 || i < cut) {
+			cut = i
+		}
+	}
+	return cut
 }
 
 func chatTaskEarlierUserRequest(entries []agent.ConversationEntry, current string) string {
@@ -1496,6 +1624,18 @@ func (a *App) ListAIAssistantChatTasks(sessionKey string) ([]AIAssistantChatTask
 	return handler.ensureChatTasks().List(sessionKey), nil
 }
 
+func (a *App) ResumeAIAssistantChatTask(taskID, text string) (*AIAssistantChatTask, error) {
+	handler, err := a.chatTaskHandler()
+	if err != nil {
+		return nil, err
+	}
+	snap, err := handler.ensureChatTasks().Resume(taskID, text)
+	if err != nil {
+		return nil, err
+	}
+	return &snap, nil
+}
+
 func (a *App) CancelAIAssistantChatTask(taskID string) error {
 	handler, err := a.chatTaskHandler()
 	if err != nil {
@@ -1596,6 +1736,33 @@ func resolveChatTaskSessionKey(sessionKey, projectPath string) string {
 	return projectSessionOwnerID(projectPath)
 }
 
+// sameChatSession reports one chat. A tab path and a stored owner differ by
+// slash, drive letter, and a trailing separator. Expert and ACP keys are not
+// file paths and stay as written.
+func sameChatSession(a, b string) bool {
+	return canonicalChatSessionKey(a) == canonicalChatSessionKey(b)
+}
+
+func canonicalChatSessionKey(key string) string {
+	key = strings.TrimSpace(key)
+	const prefix = "desktop-user:"
+	if !strings.HasPrefix(key, prefix) {
+		return key
+	}
+	rest := strings.TrimPrefix(key, prefix)
+	if rest == "" || strings.HasPrefix(rest, "expert:") || strings.HasPrefix(rest, "acp:") || strings.HasPrefix(rest, "task:") {
+		if rest == "" {
+			return "desktop-user"
+		}
+		return prefix + rest
+	}
+	cleaned := normalizeProjectSessionPath(rest)
+	if cleaned == "" {
+		return "desktop-user"
+	}
+	return prefix + cleaned
+}
+
 func resumeTaskNextStep(task *chatTaskRecord) string {
 	if task == nil {
 		return ""
@@ -1628,17 +1795,133 @@ func chatTaskDispatchTitle(title, prompt string) string {
 	return chatTaskTitle(prompt)
 }
 
-// foregroundChatContinuationTitle names the handed-off work. A managed task
-// folder is the original goal; the latest line is often only a short reply.
-// The host boilerplate is not a title.
-func foregroundChatContinuationTitle(sessionKey, userText string) string {
-	if title := managedTaskTitleFromSessionPath(projectPathFromSessionOwnerID(sessionKey)); title != "" {
-		return title
+// foregroundChatContinuationTitle names the work this handoff will do.
+// The window already shows the managed-task folder. A new request must not
+// reuse that folder. A continuation cue uses the earlier request, then the
+// folder. A file with no words is this handoff, so its name wins over the
+// folder. On a chat with no folder, a cue that only brings a file uses that
+// file name; the cue line remains when there is no file. The title is never
+// empty: Dispatch would otherwise put the worker prompt on the card.
+func foregroundChatContinuationTitle(sessionKey, userText, earlier string) string {
+	if request := continuationTitleText(userText); request != "" && !continuationCueOnly(request) {
+		return chatTaskTitle(request)
 	}
-	if text := chatTaskUserRequestText(userText); text != "" {
-		return text
+	if prior := continuationTitleText(earlier); prior != "" && !continuationCueOnly(prior) {
+		return chatTaskTitle(prior)
 	}
-	return strings.TrimSpace(userText)
+	folder := managedTaskTitleFromSessionPath(projectPathFromSessionOwnerID(sessionKey))
+	// A cue keeps the managed task the window already shows. With no folder,
+	// the file is the work and the cue line is not.
+	if request := continuationTitleText(userText); request != "" {
+		if folder != "" {
+			return folder
+		}
+		if base := continuationAttachedTitle(userText); base != "" {
+			return chatTaskTitle(base)
+		}
+		if base := continuationAttachedTitle(earlier); base != "" {
+			return chatTaskTitle(base)
+		}
+		return chatTaskTitle(request)
+	}
+	if base := continuationAttachedTitle(userText); base != "" {
+		return chatTaskTitle(base)
+	}
+	if folder != "" {
+		return folder
+	}
+	if base := continuationAttachedTitle(earlier); base != "" {
+		return chatTaskTitle(base)
+	}
+	// The worker prompt is host instructions. Dispatch treats an empty title
+	// as "use the prompt", which would put that text on the card.
+	return continuationBareTitle(userText + earlier)
+}
+
+// continuationAttachedTitle is the file this handoff is about when the user
+// did not write a line. The picker block itself is not a title. An earlier
+// message stores the reference-only marker; that file is still the work.
+func continuationAttachedTitle(text string) string {
+	paths := agent.SelectedLocalFilePathsFromPrompt(text)
+	if len(paths) == 0 {
+		paths = selectedPathsUnderHistoricalMarker(text)
+	}
+	if len(paths) == 0 {
+		return ""
+	}
+	base := filepath.Base(paths[0])
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		return ""
+	}
+	return base
+}
+
+func continuationBareTitle(text string) string {
+	for _, r := range text {
+		if unicode.Is(unicode.Han, r) {
+			return "这项工作"
+		}
+	}
+	return "This work"
+}
+
+// continuationTitleText is the user's own line that names this handoff.
+// The file-picker block is not part of it. A leading continuation cue does
+// not hide a later line that names the work. When every line is a cue, the
+// first cue is returned so the caller can fall through to the earlier request.
+func continuationTitleText(text string) string {
+	wording := continuationWording(text)
+	if wording == "" {
+		return ""
+	}
+	var first string
+	for _, line := range strings.Split(wording, "\n") {
+		line = firstProgressLine(line)
+		if line == "" {
+			continue
+		}
+		if first == "" {
+			first = line
+		}
+		if !continuationCueOnly(line) {
+			return line
+		}
+	}
+	return first
+}
+
+// continuationCueOnly is a line that asks to keep going and does not say what
+// the next piece of work is. Courtesy and the continuation word peel off.
+// "请继续" is a cue. "继续做配图版" still names the work.
+func continuationCueOnly(text string) bool {
+	text = strings.TrimSpace(text)
+	// Longer words first, so "继续做配图版" peels "继续做" and keeps "配图版".
+	prefixes := []string{
+		"请你", "請你", "请", "請", "麻烦你", "麻煩你", "麻烦", "麻煩", "帮我", "幫我",
+		"please", "pls",
+		"继续一下", "繼續一下", "继续做", "繼續做", "再继续", "再繼續", "然后继续", "然後繼續", "继续", "繼續",
+		"接着做", "接著做", "接着", "接著", "然后", "然後",
+		"keep going", "carry on", "go on", "continue",
+	}
+	for {
+		folded := strings.ToLower(strings.TrimSpace(text))
+		// Separators do not name the work. "请继续，" is still only a cue.
+		folded = strings.Trim(folded, " \t。.!！?？~…吧啊呀呢了，,、；;：:")
+		if folded == "" {
+			return true
+		}
+		peeled := false
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(folded, prefix) {
+				text = strings.TrimSpace(folded[len(prefix):])
+				peeled = true
+				break
+			}
+		}
+		if !peeled {
+			return false
+		}
+	}
 }
 
 // applyChatTaskWorkerExecutionProfile keeps a background chat task on the

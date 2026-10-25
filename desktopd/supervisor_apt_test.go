@@ -1,6 +1,7 @@
 package desktopd
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -28,6 +29,11 @@ def proxy_conf():
 `
 
 func TestAptLeavesTheIntranetMirrorAndBypassesTheProxyForTheFasterMirror(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The expected output pins a POSIX 0o440 sudoers mode, which a
+		// Windows host cannot represent.
+		t.Skip("POSIX file mode is asserted")
+	}
 	out := runSupervisorPython(t, aptRootPrelude+`
 timings.update({("http://deb.debian.org", False): 1.4, ("http://deb.debian.org", True): 0.8,
                 ("https://mirrors.tencent.com", False): 0.2, ("https://mirrors.tencent.com", True): None})

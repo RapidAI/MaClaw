@@ -6,13 +6,18 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
 
+// enterpriseLibraryFallbackID marks a merged enterprise hit whose search result
+// did not carry a real library id.
+const enterpriseLibraryFallbackID = "enterprise"
+
 // MergeSearchResults appends enterprise hits after personal ones.
 // Each personal evidence locator is kept, so a card, a fact, and a table row
 // from one document all remain. An enterprise source already covered by those
 // rows is omitted, and every other enterprise source contributes its first hit.
 // When the combined rows exceed limit, the page takes one hit from each source
 // before extra evidence from a source already on the page. limit <= 0 defaults
-// to 20. Enterprise titles may be tagged.
+// to 20. When tagEnterprise is set, a hit without a library id is marked with
+// the fallback id "enterprise". Titles are not rewritten.
 func MergeSearchResults(personal, enterprise []knowledge.SearchResult, limit int, tagEnterprise bool) []knowledge.SearchResult {
 	if limit <= 0 {
 		limit = 20
@@ -40,14 +45,8 @@ func MergeSearchResults(personal, enterprise []knowledge.SearchResult, limit int
 			}
 			seenSources[sourceKey] = struct{}{}
 		}
-		if tagEnterprise {
-			title := r.Source.Title
-			if title == "" {
-				title = r.Source.ID
-			}
-			if !strings.HasPrefix(title, "[企业]") {
-				r.Source.Title = "[企业] " + title
-			}
+		if tagEnterprise && strings.TrimSpace(r.LibraryID) == "" {
+			r.LibraryID = enterpriseLibraryFallbackID
 		}
 		enterpriseKept = append(enterpriseKept, r)
 	}

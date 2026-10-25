@@ -60,6 +60,23 @@ func TestKnowledgeRetrievalPlanKeepsAutoHeuristic(t *testing.T) {
 	if plan := knowledgeRetrievalPlan(SearchOptions{Retrieval: knowledgeRetrievalAuto, Query: "AlphaToken"}, low, true); !plan.runEmbedding || !plan.fuse {
 		t.Fatalf("auto below 2.0 = %#v", plan)
 	}
+	for _, tc := range []struct {
+		resultType string
+		score      float64
+		wantEmbed  bool
+	}{
+		{resultType: "card", score: 1.69, wantEmbed: true},
+		{resultType: "card", score: 1.70, wantEmbed: false},
+		{resultType: "fact", score: 1.81, wantEmbed: true},
+		{resultType: "fact", score: 1.82, wantEmbed: false},
+		{resultType: "table_row", score: 1.99, wantEmbed: true},
+		{resultType: "table_row", score: 2.00, wantEmbed: false},
+	} {
+		plan := knowledgeRetrievalPlan(SearchOptions{Retrieval: knowledgeRetrievalAuto, Query: "AlphaToken"}, []SearchResult{{ResultType: tc.resultType, Score: tc.score}}, true)
+		if plan.runEmbedding != tc.wantEmbed {
+			t.Fatalf("auto %s score %.2f = %#v", tc.resultType, tc.score, plan)
+		}
+	}
 	cjk := knowledgeRetrievalPlan(SearchOptions{Retrieval: knowledgeRetrievalAuto, Query: "园林"}, latinHit, true)
 	if !cjk.runEmbedding || !cjk.fuse {
 		t.Fatalf("auto CJK = %#v", cjk)
@@ -81,6 +98,12 @@ func TestKnowledgeRetrievalPlanKeepsAutoHeuristic(t *testing.T) {
 	if _, err := canonicalKnowledgeRetrieval("nope"); err == nil {
 		t.Fatal("expected unknown retrieval to fail")
 	}
+	if err := validateSearchResultTypes([]string{"carrd"}); err == nil {
+		t.Fatal("expected unknown result type to fail")
+	}
+	if err := validateSearchResultTypes([]string{"card", "facts", "document_node", "rows"}); err != nil {
+		t.Fatalf("valid result type aliases: %v", err)
+	}
 }
 
 func TestSearchRetrievalRoutes(t *testing.T) {
@@ -95,21 +118,15 @@ func TestSearchRetrievalRoutes(t *testing.T) {
 	if err := store.SaveSource(ctx, Source{ID: "route-source", Kind: SourceKindText, URI: "manual://route", Status: StatusParsed, Title: "notes"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveCard(ctx, Card{ID: "lexical-card", SourceID: "route-source", Title: "UniqueLexicalToken", Claim: "UniqueLexicalToken"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveCard(ctx, Card{
+	saveSearchableCard(t, store, Card{ID: "lexical-card", SourceID: "route-source", Title: "UniqueLexicalToken", Claim: "UniqueLexicalToken"})
+	saveSearchableCard(t, store, Card{
 		ID:        "semantic-card",
 		SourceID:  "route-source",
 		Title:     "Semantic",
 		Claim:     "SEMANTIC neighbor of the saved note.",
 		Embedding: []float32{1, 0},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveCard(ctx, Card{ID: "cjk-card", SourceID: "route-source", Title: "园林笔记", Claim: "这是一本关于园林的笔记"}); err != nil {
-		t.Fatal(err)
-	}
+	})
+	saveSearchableCard(t, store, Card{ID: "cjk-card", SourceID: "route-source", Title: "园林笔记", Claim: "这是一本关于园林的笔记"})
 	// A larger corpus raises the IDF of the rare Latin token so its lexical
 	// score clears the auto route's 2.0 cutoff.
 	for i := 0; i < 24; i++ {
@@ -169,6 +186,15 @@ func TestSearchRetrievalRoutes(t *testing.T) {
 	}
 	if searchHitsContainCard(vectorHits, "lexical-card") {
 		t.Fatalf("vector mixed in an FTS-only card: %#v", vectorHits)
+	}
+	nodeOnly, err := store.Search(ctx, SearchOptions{Query: "UniqueLexicalToken", Retrieval: knowledgeRetrievalVector, ResultTypes: []string{"node"}, Limit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, hit := range nodeOnly {
+		if hit.ResultType != "node" {
+			t.Fatalf("node-only vector search returned %s: %#v", hit.ResultType, nodeOnly)
+		}
 	}
 
 	emb.Reset()

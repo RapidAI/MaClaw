@@ -195,12 +195,10 @@ func matMulRangeDual(out, a, b, bias []float32, M, N, K, ns, ne int) {
 	var d8 [8]float32
 	var dDual0, dDual1 [8]float32
 	var dTri0, dTri1 [12]float32
-	// PP-OCR pointwise projections repeatedly use these feature widths. The
-	// triple-B kernel amortizes each A-panel load over three output
-	// channels; for the 8-row main tile this avoids the extra A pass that a
-	// dual-B pair plus singleton column requires. 48 and 768 are the det
-	// model's SE/entry widths; 120 is the rec model's SVTR width.
-	useTriple := K == 48 || K == 96 || K == 120 || K == 192 || K == 384 || K == 768
+	// Triple-B amortizes each A-panel load over three columns. The dual
+	// 8-row tile re-reads A once per column pair, which is most of the
+	// float32 GEMM traffic. useTripleK is true only where that kernel is fused.
+	useTriple := useTripleK(K)
 	m := 0
 	for ; m+7 < M; m += 8 {
 		aPanel := a[m*K : (m+8)*K]

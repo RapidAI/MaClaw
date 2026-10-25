@@ -2,6 +2,7 @@ package knowledge
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -93,5 +94,77 @@ func TestSelectContextPackResultsDiversifiesSiblingChunks(t *testing.T) {
 	selected := selectContextPackResults(results, 2)
 	if len(selected) != 2 || selected[0].NodeID != "chunk-1" || selected[1].NodeID != "other" {
 		t.Fatalf("MMR selection = %#v", selected)
+	}
+}
+
+func TestContextPackUsesAutomaticChunkOrder(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.SaveSource(ctx, Source{ID: "src-auto-chunks", Kind: SourceKindText, URI: "memory://auto-chunks", Status: StatusParsed}); err != nil {
+		t.Fatal(err)
+	}
+	var sourceText strings.Builder
+	for i := 0; i < 900; i++ {
+		fmt.Fprintf(&sourceText, "唯一标记%03d 自动分块顺序测试 ", i)
+	}
+	nodes := splitNodesToTokenBudget([]DocumentNode{{
+		ID: "auto-parent", SourceID: "src-auto-chunks", Type: "section", Title: "自动分块", Offset: 7,
+		Text: sourceText.String(),
+	}})
+	if len(nodes) < 4 {
+		t.Fatalf("automatic chunks = %d", len(nodes))
+	}
+	for _, node := range nodes {
+		if err := store.SaveDocumentNode(ctx, node); err != nil {
+			t.Fatal(err)
+		}
+	}
+	current := nodes[2]
+	results := []SearchResult{{ResultType: "node", NodeID: current.ID, ParentNodeID: current.ParentID, Snippet: current.Text}}
+	enriched, _, err := store.enrichContextPackNodes(ctx, current.Text, results)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := enriched[0].Snippet
+	preceding := "[preceding] " + searchBodyTextWindow(nodes[1].Text, current.Text)
+	following := "[following] " + searchBodyTextWindow(nodes[3].Text, current.Text)
+	currentPos := strings.Index(text, searchBodyTextWindowLimit(current.Text, current.Text, contextPackNodeWindowRunes))
+	precedingPos := strings.Index(text, preceding)
+	if currentPos < 0 || precedingPos < 0 || currentPos > precedingPos || !strings.Contains(text, following) {
+		t.Fatalf("neighbor order or budget mismatch: %q", text)
+	}
+}
+
+func TestContextPackToleratesMalformedChunkMetadata(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.SaveSource(ctx, Source{ID: "src-bad-meta", Kind: SourceKindText, URI: "memory://bad-meta", Status: StatusParsed}); err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range []DocumentNode{
+		{ID: "bad-parent", SourceID: "src-bad-meta", Type: "section", Title: "父节点"},
+		{ID: "bad-child", SourceID: "src-bad-meta", ParentID: "bad-parent", Type: "paragraph", Text: "正文仍然可读"},
+	} {
+		if err := store.SaveDocumentNode(ctx, node); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE document_nodes SET metadata_json = '{' WHERE id = 'bad-child'`); err != nil {
+		t.Fatal(err)
+	}
+	results := []SearchResult{{ResultType: "node", NodeID: "bad-child", ParentNodeID: "bad-parent"}}
+	if _, _, err := store.enrichContextPackNodes(ctx, "正文", results); err != nil {
+		t.Fatalf("malformed metadata blocked context: %v", err)
+	}
+	if _, err := store.ListNodesBySource(ctx, "src-bad-meta", 10); err != nil {
+		t.Fatalf("malformed metadata blocked source nodes: %v", err)
 	}
 }

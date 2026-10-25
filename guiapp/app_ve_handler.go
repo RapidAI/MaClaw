@@ -738,6 +738,7 @@ func (h *VEMessageHandler) runAgentForVE(ctx context.Context, sessionID, userMes
 
 	// Run the shared agent loop with VE-specific tools and system prompt
 	result := agentruntime.RunAgentTurn(callbacks, userMessage, history, nil)
+	defer finishCommitTurn(h.app, callbacks.CommitTaskKey(), result.AskUser)
 
 	// Save updated history
 	h.mu.Lock()
@@ -771,6 +772,9 @@ type veAgentCallbacks struct {
 	loopID    string
 	llmCfg    corelib.MaclawLLMConfig
 	onToken   func(string)
+	// commitAsk is the test hook for one human-class approval. Production
+	// leaves it nil and waits on the digital-employee confirm dialog.
+	commitAsk commitAskFunc
 	// history is the pre-turn conversation used for multi-turn auto-recall.
 	history []agent.ConversationEntry
 
@@ -1183,6 +1187,9 @@ func (c *veAgentCallbacks) OnToolResult(name string) {
 }
 
 func (c *veAgentCallbacks) ShouldStop() bool {
+	if c == nil || c.ctx == nil {
+		return false
+	}
 	return c.ctx.Err() != nil
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { codingStepsAllPassed, executionSecondaryChromeStyle, handleTaskExecutionHeaderDoubleClick, isTaskExecutionHeaderInteractiveTarget, resolveTaskExecutionStatus } from "../assistantTaskExecutionChrome";
+import { chatTaskInSession, codingStepsAllPassed, executionSecondaryChromeStyle, handleTaskExecutionHeaderDoubleClick, isTaskExecutionHeaderInteractiveTarget, openChatWorkForSession, resolveTaskExecutionStatus } from "../assistantTaskExecutionChrome";
 
 describe("executionSecondaryChromeStyle", () => {
     it("clips leftover title-bar chrome out of hit-testing", () => {
@@ -93,6 +93,58 @@ describe("isTaskExecutionHeaderInteractiveTarget", () => {
         expect(status).toEqual({ label: "进行中", tone: "running" });
     });
 
+    it("treats slash and backslash session keys as the same running task", () => {
+        const tasks = [{
+            sessionKey: "desktop-user:C:\\Users\\ma139\\.maclaw\\data\\tasks\\pdf-1",
+            status: "running",
+        }];
+        const active = "desktop-user:C:/Users/ma139/.maclaw/data/tasks/pdf-1";
+        expect(chatTaskInSession(tasks[0].sessionKey, active)).toBe(true);
+        expect(openChatWorkForSession(tasks, active)).toBe("running");
+        expect(openChatWorkForSession([{ sessionKey: tasks[0].sessionKey, status: "done" }], active)).toBe("");
+        expect(openChatWorkForSession([{ sessionKey: "desktop-user:C:/other", status: "running" }], active)).toBe("");
+        expect(chatTaskInSession(tasks[0].sessionKey + "/", active)).toBe(true);
+        expect(chatTaskInSession(tasks[0].sessionKey + "\\.", active)).toBe(true);
+        expect(chatTaskInSession("desktop-user:C:/Users/ma139/.maclaw/data/tasks/foo/../pdf-1", active)).toBe(true);
+        expect(chatTaskInSession("desktop-user:C:/Users/ma139/.maclaw/data /tasks/pdf-1", active)).toBe(true);
+        expect(chatTaskInSession("desktop-user:expert:ab\\cd", "desktop-user:expert:ab/cd")).toBe(false);
+        expect(chatTaskInSession("desktop-user:expert:ab/cd", "desktop-user:expert:ab/cd")).toBe(true);
+    });
+
+    it("stays in progress while a background chat task is still running", () => {
+        const status = resolveTaskExecutionStatus({
+            lang: "zh-Hans",
+            raw: "",
+            pendingReview: false,
+            cancelPending: false,
+            busy: false,
+            hasOutput: false,
+            hasMessages: true,
+            workflowActive: false,
+            codingStepCount: 0,
+            pendingUnfinishedStatus: "",
+            openChatWork: "running",
+        });
+        expect(status).toEqual({ label: "进行中", tone: "running" });
+    });
+
+    it("waits when the background chat task needs an answer", () => {
+        const status = resolveTaskExecutionStatus({
+            lang: "zh-Hans",
+            raw: "",
+            pendingReview: false,
+            cancelPending: false,
+            busy: false,
+            hasOutput: false,
+            hasMessages: true,
+            workflowActive: false,
+            codingStepCount: 0,
+            pendingUnfinishedStatus: "",
+            openChatWork: "needs_input",
+        });
+        expect(status).toEqual({ label: "待处理", tone: "pending" });
+    });
+
     it("still labels an idle chat without a recovery card as completed", () => {
         const status = resolveTaskExecutionStatus({
             lang: "zh-Hans",
@@ -178,6 +230,76 @@ describe("isTaskExecutionHeaderInteractiveTarget", () => {
         expect(status).toEqual({ label: "失败", tone: "failed" });
         expect(codingStepsAllPassed([{ status: "passed" }, { status: "passed" }])).toBe(true);
         expect(codingStepsAllPassed([{ status: "passed" }, { status: "pending" }])).toBe(false);
+    });
+
+    it("stays in progress when a running chat task outlives a failed snapshot", () => {
+        const base = {
+            lang: "zh-Hans",
+            pendingReview: false,
+            cancelPending: false,
+            busy: false,
+            hasOutput: false,
+            hasMessages: true,
+            workflowActive: false,
+            codingStepCount: 1,
+            codingStepsAllPassed: false,
+            pendingUnfinishedStatus: "",
+            openChatWork: "running" as const,
+        };
+        for (const raw of ["failed", "cancelled", "interrupted passed"]) {
+            const status = resolveTaskExecutionStatus({ ...base, raw });
+            expect(status).toEqual({ label: "进行中", tone: "running" });
+        }
+    });
+
+    it("waits on the user when a chat task needs input and the snapshot still says failed", () => {
+        const status = resolveTaskExecutionStatus({
+            lang: "zh-Hans",
+            raw: "failed",
+            pendingReview: false,
+            cancelPending: false,
+            busy: false,
+            hasOutput: false,
+            hasMessages: true,
+            workflowActive: false,
+            codingStepCount: 1,
+            pendingUnfinishedStatus: "",
+            openChatWork: "needs_input",
+        });
+        expect(status).toEqual({ label: "待处理", tone: "pending" });
+    });
+
+    it("keeps a failed step ahead of a paused snapshot when no chat task is open", () => {
+        const status = resolveTaskExecutionStatus({
+            lang: "zh-Hans",
+            raw: "paused failed",
+            pendingReview: false,
+            cancelPending: false,
+            busy: false,
+            hasOutput: true,
+            hasMessages: true,
+            workflowActive: false,
+            codingStepCount: 1,
+            pendingUnfinishedStatus: "",
+        });
+        expect(status).toEqual({ label: "失败", tone: "failed" });
+    });
+
+    it("shows stopping ahead of a running chat task and a failed snapshot", () => {
+        const status = resolveTaskExecutionStatus({
+            lang: "zh-Hans",
+            raw: "failed",
+            pendingReview: false,
+            cancelPending: true,
+            busy: true,
+            hasOutput: false,
+            hasMessages: true,
+            workflowActive: false,
+            codingStepCount: 1,
+            pendingUnfinishedStatus: "",
+            openChatWork: "running",
+        });
+        expect(status).toEqual({ label: "正在停止", tone: "pending" });
     });
 
     it("keeps a paused run paused when a phase follows the status", () => {

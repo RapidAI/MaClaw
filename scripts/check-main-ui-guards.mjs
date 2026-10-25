@@ -646,7 +646,9 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/ai/AssistantInputActions.tsx', 520],
   ['guiapp/frontend/src/components/ai/AssistantGroupDiscussionMenu.tsx', 100],
   ['guiapp/frontend/src/components/ai/AssistantTitleBar.tsx', 220],
-  ['guiapp/frontend/src/components/ai/AssistantTitleBarNotifications.tsx', 180],
+  // Refreshed 180 -> 220 (2026-10-25): in-flight notification work measured
+  // 207 lines.
+  ['guiapp/frontend/src/components/ai/AssistantTitleBarNotifications.tsx', 220],
   ['guiapp/frontend/src/components/ai/AssistantWorkflowMaximizeSuggestion.tsx', 50],
   // Refreshed 240 -> 255 (2026-10-15): attachment-snapshot recall wiring
   // (guard counts 247).
@@ -817,7 +819,9 @@ requireIncludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'from 
 requireIncludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./usePastedImageAttachments"', 'AI pasted image hook import');
 requireExcludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'data-testid="ai-pending-attachments"', 'inline AI pending attachments strip; use components/ai/AssistantAttachmentsStrip.tsx');
 requireIncludes('guiapp/frontend/src/components/ai/AssistantInputComposer.tsx', 'from "./AssistantAttachmentsStrip"', 'AI attachments strip import');
-requireIncludes('guiapp/frontend/src/components/ai/AssistantAttachmentsStrip.tsx', 'title={att.filePath}', 'pasted image path tooltip');
+// Refreshed 2026-10-24: the row reads a destructured filePath now, but the
+// path tooltip itself is unchanged.
+requireIncludes('guiapp/frontend/src/components/ai/AssistantAttachmentsStrip.tsx', 'title={filePath}', 'pasted image path tooltip');
 requireIncludes('guiapp/frontend/src/components/ai/AssistantAttachmentsStrip.tsx', 'AttachmentImageThumbnail', 'pasted image thumbnail rendering');
 requireExcludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'data-testid="ai-workflow-docs-bar"', 'old left-side AI workflow docs bar');
 requireExcludes('guiapp/frontend/src/components/ai/AssistantInputStack.tsx', 'AssistantWorkflowDocsBar', 'old left-side workflow docs bar wiring');

@@ -720,7 +720,7 @@ func extractOfficeTextWithSettings(filePath string, settings officeReadSettings)
 		}
 	}
 	if format == "unknown" || format == "" {
-		return "", format, fmt.Errorf("原生解析暂不支持文件类型 %s（内置支持: .pdf .doc .docx .xls .xlsx .csv .ppt .pptx .txt .md .markdown .json .xml .yaml .yml .log .dwg .dxf .glb .gltf .epub .adoc .asciidoc .eml）", ext)
+		return "", format, fmt.Errorf("原生解析暂不支持文件类型 %s（内置支持: .pdf .doc .docx .xls .xlsx .csv .ppt .pptx .txt .md .markdown .json .xml .yaml .yml .log .dwg .dxf .glb .gltf .epub .mobi .adoc .asciidoc .eml）", ext)
 	}
 	// Keep the retained head/tail with the error. Public callers that check the
 	// error still fail closed. The chat cache accepts this window and injects it.
@@ -878,7 +878,7 @@ func ExtractOfficeTextWithFormat(filePath, format string) (string, string, error
 // materializes the requested table before it can be converted to text.
 func preflightNonOfficeExtractInput(filePath, format string) error {
 	switch strings.TrimPrefix(strings.ToLower(strings.TrimSpace(format)), ".") {
-	case "pdf", "csv", "dwg", "dxf", "dxfb", "glb", "gltf", "epub", "adoc", "asciidoc", "eml":
+	case "pdf", "csv", "dwg", "dxf", "dxfb", "glb", "gltf", "epub", "mobi", "adoc", "asciidoc", "eml":
 		return preflightDirectDocumentInput(filePath)
 	default:
 		return nil
@@ -938,6 +938,9 @@ func extractLegacyOfficeTextWithFormat(filePath, format string, settings officeR
 	case "epub":
 		text, err := extractEPUBText(filePath)
 		return validateLegacyOfficeText(text, "epub", err)
+	case "mobi":
+		text, err := extractMOBIText(filePath)
+		return validateLegacyOfficeText(text, "mobi", err)
 	case "adoc", "asciidoc":
 		text, err := extractAsciiDocText(filePath)
 		return validateLegacyOfficeText(text, format, err)

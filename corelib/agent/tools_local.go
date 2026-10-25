@@ -64,6 +64,38 @@ const searchWalkStoppedFooter = "... search stopped before the tree was finished
 
 // --- Bash ---
 
+type cappedWriter struct {
+	buf       bytes.Buffer
+	limit     int
+	discarded int64
+}
+
+func (w *cappedWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	kept := 0
+	if remaining := w.limit - w.buf.Len(); remaining > 0 {
+		kept = len(p)
+		if kept > remaining {
+			kept = remaining
+		}
+		_, _ = w.buf.Write(p[:kept])
+	}
+	w.discarded += int64(n - kept)
+	return n, nil
+}
+
+func (w *cappedWriter) Len() int {
+	return w.buf.Len()
+}
+
+func (w *cappedWriter) String() string {
+	return w.buf.String()
+}
+
+func (w *cappedWriter) Truncated() bool {
+	return w.discarded > 0
+}
+
 // ToolBash executes a shell command on the host machine.
 // onProgress is called every 30s with a heartbeat message for long-running commands.
 func ToolBash(args map[string]interface{}, onProgress func(string)) string {
@@ -121,7 +153,8 @@ func ToolBashWithContext(parent context.Context, args map[string]interface{}, on
 	cmd := exec.Command(shellName, shellArgs...)
 	cmd.Dir = workDir
 	cmd.Env = tool.AppendUTF8Env(os.Environ())
-	var stdout, stderr bytes.Buffer
+	stdout := cappedWriter{limit: 8192}
+	stderr := cappedWriter{limit: 4096}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	HideCommandWindow(cmd)
@@ -161,15 +194,15 @@ func ToolBashWithContext(parent context.Context, args map[string]interface{}, on
 	var b strings.Builder
 	if stdout.Len() > 0 {
 		out := stdout.String()
-		if len(out) > 8192 {
-			out = out[:8192] + "\n... (输出已截断)"
+		if stdout.Truncated() {
+			out += "\n... (输出已截断)"
 		}
 		b.WriteString(out)
 	}
 	if stderr.Len() > 0 {
 		errOut := stderr.String()
-		if len(errOut) > 4096 {
-			errOut = errOut[:4096] + "\n... (错误输出已截断)"
+		if stderr.Truncated() {
+			errOut += "\n... (错误输出已截断)"
 		}
 		if b.Len() > 0 {
 			b.WriteString("\n")
@@ -1047,7 +1080,7 @@ func ToolSendFile(args map[string]interface{}) string {
 	b64 := base64.StdEncoding.EncodeToString(data)
 
 	// Structured only: destination enum and/or forward_to_im flag (no free-text NLP).
-	forwardIM := resolveToolSendFileForward(args)
+	forwardIM := SendFileForwardsToIM(args)
 	if forwardIM {
 		targetFlag := EncodeIMFileDeliveryTargetFlag(args)
 		if msgFlag := workflowDocDeliveryMessagePayloadFlag(args); msgFlag != "" {
@@ -1157,63 +1190,12 @@ func boolArg(args map[string]interface{}, key string, fallback bool) bool {
 	return fallback
 }
 
-// resolveToolSendFileForward uses structured tool args only (destination /
-// forward_to_im). No free-text keyword matching on the user message.
-func resolveToolSendFileForward(args map[string]interface{}) bool {
-	if args == nil {
-		return false
-	}
-	if raw, ok := args["destination"]; ok && raw != nil {
-		if s, isStr := raw.(string); isStr {
-			switch destKind := agentSendFileDestinationKind(s); destKind {
-			case agentSendFileDestIM:
-				return true
-			case agentSendFileDestDesktop:
-				return false
-			}
-		}
-	}
-	return boolArg(args, "forward_to_im", false)
-}
-
-type agentSendFileDestKind int
-
-const (
-	agentSendFileDestUnknown agentSendFileDestKind = iota
-	agentSendFileDestIM
-	agentSendFileDestDesktop
-)
-
-func agentSendFileDestinationKind(dest string) agentSendFileDestKind {
-	d := strings.ToLower(strings.TrimSpace(dest))
-	raw := strings.TrimSpace(dest)
-	switch d {
-	case "im", "wechat", "weixin", "wx", "feishu", "lark", "qq",
-		"dingtalk", "ding", "telegram", "tg":
-		return agentSendFileDestIM
-	case "chat", "desktop", "local", "ui", "assistant":
-		return agentSendFileDestDesktop
-	}
-	switch raw {
-	case "微信", "飞书", "钉钉", "企微", "企业微信":
-		return agentSendFileDestIM
-	case "桌面", "对话", "当前对话":
-		return agentSendFileDestDesktop
-	default:
-		return agentSendFileDestUnknown
-	}
-}
-
 // ToolSendToIM is send_file with IM delivery forced by tool name.
 func ToolSendToIM(args map[string]interface{}) string {
 	if args == nil {
 		args = map[string]interface{}{}
 	}
-	args["forward_to_im"] = true
-	// Tool name wins over missing/desktop/unknown destination.
-	if agentSendFileDestinationKind(StringArg(args, "destination")) != agentSendFileDestIM {
-		args["destination"] = "im"
-	}
+	ForceSendFileToIM(args)
 	return ToolSendFile(args)
 }
 

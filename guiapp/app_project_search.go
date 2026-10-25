@@ -4873,6 +4873,16 @@ func (a *App) applyTaskListWorkflow(result *ProjectSearchResult, workflowPath st
 	if runtimeState := codingLedgerStatusForTask(result.ProjectPath, result.Tags, activeByRef, shared, owners); runtimeState != nil {
 		result.ActiveWorkflow = runtimeState
 	}
+	if result.ActiveWorkflow == nil {
+		if memory := a.currentConversationMemory(); memory != nil {
+			if slot := memory.GetUnfinishedSlot(projectSessionOwnerID(result.ProjectPath)); slot != nil {
+				result.ActiveWorkflow = &ProjectWorkflowState{
+					ID: slot.SlotID, Type: "agent_recovery", Phase: "interrupted",
+					Status: "interrupted", ProjectPath: result.ProjectPath,
+				}
+			}
+		}
+	}
 }
 
 // projectWorkflowSnapshotActive reports a workflow the task list should keep
@@ -4951,6 +4961,10 @@ func codingRuntimeRefForTaskTags(tags []string) string {
 // ledger file already exists, the first task-list refresh opens it, so a
 // failed turn stays failed after a restart. SearchTasks does not create the
 // database: an app that has never run coding work keeps an empty sidebar.
+// The read ranks a dead lease at its end. ExpireLeases runs only when this
+// read saw one, so a quiet refresh does not take a second turn on the ledger's
+// single connection. A GUI that stays up still records the corpse, and that
+// row no longer outranks a later failure.
 func (a *App) activeCodingRuntimeStatusesByRef() map[string]string {
 	if a == nil {
 		return nil
@@ -4959,10 +4973,18 @@ func (a *App) activeCodingRuntimeStatusesByRef() map[string]string {
 	if store == nil {
 		return nil
 	}
-	byRef, err := store.ListActiveTaskStatusesByProjectRef()
+	now := time.Now().UTC()
+	byRef, stale, err := store.ReadTaskList(now)
 	if err != nil {
 		log.Printf("[task-search] coding runtime status load failed: %v", err)
 		return nil
+	}
+	if stale {
+		if expired, expireErr := store.ExpireLeases(now); expireErr != nil {
+			log.Printf("[coding-runtime] expire stale leases failed: %v", expireErr)
+		} else if len(expired) > 0 {
+			log.Printf("[coding-runtime] marked %d stale attempt(s) interrupted; recovery requires read-only probe", len(expired))
+		}
 	}
 	out := make(map[string]string, len(byRef))
 	for ref, status := range byRef {
