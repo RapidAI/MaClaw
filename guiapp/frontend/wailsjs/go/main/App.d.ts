@@ -2459,6 +2459,10 @@ export function DeleteDesktopBot(arg1:string):Promise<void>;
 
 export function GetDesktopBotCredits():Promise<{ applies: boolean; unlimited: boolean; limit: number; used: number; remaining: number }>;
 
+export function GetDesktopProxyMode():Promise<{ mode: string; user_mode: string; tenant_default: string; locked: boolean; applied: boolean; warning?: string }>;
+
+export function SaveDesktopProxyMode(arg1:string):Promise<{ mode: string; user_mode: string; tenant_default: string; locked: boolean; applied: boolean; warning?: string }>;
+
 export function GetDesktopBotLLM():Promise<{ mode: string; name?: string; url?: string; model?: string; key_set: boolean; warning?: string }>;
 
 export function SaveDesktopBotLLM(arg1:{ mode?: string; name?: string; url?: string; key?: string; model?: string; protocol?: string; wire_api?: string }):Promise<{ mode: string; name?: string; url?: string; model?: string; key_set: boolean; warning?: string }>;

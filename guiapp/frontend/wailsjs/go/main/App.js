@@ -4919,6 +4919,14 @@ export function GetDesktopBotCredits() {
   return window['go']['main']['App']['GetDesktopBotCredits']();
 }
 
+export function GetDesktopProxyMode() {
+  return window['go']['main']['App']['GetDesktopProxyMode']();
+}
+
+export function SaveDesktopProxyMode(arg1) {
+  return window['go']['main']['App']['SaveDesktopProxyMode'](arg1);
+}
+
 export function GetDesktopBotLLM() {
   return window['go']['main']['App']['GetDesktopBotLLM']();
 }

@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
 import { buildSidebarModelOptions } from '../../utils/sidebarModelOptions';
 import { FetchProviderModels } from '../../../wailsjs/go/main/App';
@@ -52,6 +52,10 @@ type BotLLMSettingsDialogProps = {
     saving: boolean;
     onClose: () => void;
     onSubmit: (payload: BotLLMSettingsSubmit) => void;
+    /** Header title when the dialog is the Model tab of the Settings dialog; labels.title then heads the body. */
+    heading?: string;
+    /** Tab strip rendered under the header (Settings dialog). */
+    tabs?: ReactNode;
 };
 
 /**
@@ -71,6 +75,8 @@ export function BotLLMSettingsDialog({
     saving,
     onClose,
     onSubmit,
+    heading,
+    tabs,
 }: BotLLMSettingsDialogProps) {
     const titleId = useId();
     const providerId = useId();
@@ -248,7 +254,7 @@ export function BotLLMSettingsDialog({
             >
                 <div className="modal-header custom-dialog__header">
                     <div className="custom-dialog__heading">
-                        <h3 id={titleId} className="custom-dialog__title">{labels.title}</h3>
+                        <h3 id={titleId} className="custom-dialog__title">{heading ?? labels.title}</h3>
                     </div>
                     <button type="button" className="btn-close custom-dialog__close" aria-label={labels.close} disabled={saving} onClick={onClose}>
                         <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
@@ -256,7 +262,9 @@ export function BotLLMSettingsDialog({
                         </svg>
                     </button>
                 </div>
+                {tabs}
                 <div className="modal-body custom-dialog__body">
+                    {heading ? <h4 className="bot-llm-dialog__section">{labels.title}</h4> : null}
                     <p className="bot-llm-dialog__hint">{labels.sharedHint}</p>
 
                     <div className="bot-llm-dialog__option">

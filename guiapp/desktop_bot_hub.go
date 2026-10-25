@@ -463,6 +463,44 @@ func (a *App) SaveDesktopBotLLM(in DesktopBotLLMInput) (*DesktopBotLLM, error) {
 	return &out, nil
 }
 
+// DesktopProxyMode is the network route of this user's cloud desktop:
+// "proxy" (everything through the overseas proxy), "direct" (everything from
+// the desktop host) or "smart" (mainland sites direct, the rest proxied).
+// Locked means the tenant administrator fixed it and the user cannot change it.
+type DesktopProxyMode struct {
+	Mode          string `json:"mode"`
+	UserMode      string `json:"user_mode"`
+	TenantDefault string `json:"tenant_default"`
+	Locked        bool   `json:"locked"`
+	Applied       bool   `json:"applied"`
+	Warning       string `json:"warning,omitempty"`
+}
+
+// GetDesktopProxyMode reads this user's desktop network mode from Hub.
+func (a *App) GetDesktopProxyMode() (*DesktopProxyMode, error) {
+	var out DesktopProxyMode
+	if err := a.desktopBotCall(context.Background(), http.MethodGet, "/api/v1/bots/desktop-proxy-mode", nil, &out, 20*time.Second); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(out.Mode) == "" {
+		out.Mode = "smart"
+	}
+	return &out, nil
+}
+
+// SaveDesktopProxyMode switches this user's desktop network mode. It applies
+// to the running desktop without a restart.
+func (a *App) SaveDesktopProxyMode(mode string) (*DesktopProxyMode, error) {
+	var out DesktopProxyMode
+	if err := a.desktopBotCall(context.Background(), http.MethodPut, "/api/v1/bots/desktop-proxy-mode", map[string]string{"mode": strings.TrimSpace(mode)}, &out, 30*time.Second); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(out.Mode) == "" {
+		out.Mode = "smart"
+	}
+	return &out, nil
+}
+
 // ActiveDesktopRun is one cloud-desktop turn this client has in flight.
 //
 // Identity reaches the run, not the bot. A bot can have several runs live at

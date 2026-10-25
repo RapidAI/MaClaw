@@ -28,6 +28,7 @@ import {
     GetDesktopBotBusy,
     GetDesktopBotSupplements,
     GetDesktopBotLLM,
+    GetDesktopProxyMode,
     GetHubLLMServiceStatus,
     GetMaclawLLMProviders,
     ArmDesktopBotCrossRun,
@@ -49,6 +50,7 @@ import {
     RenameDesktopBot,
     SetDesktopBotAppearance,
     SaveDesktopBotLLM,
+    SaveDesktopProxyMode,
     OpenFileOrShowInFolder,
     ReadDesktopBotShot,
     SaveBotSecret,
@@ -139,6 +141,7 @@ import { BotEditDialog } from './BotEditDialog';
 import { BotAvatar } from './BotAvatar';
 import { appearancesForUser, botNameTaken, captureBotLookRevisions, defaultAppearance, hubAppearance, hydrateBotLooks, looksToMigrate, markLookMigrated, mergeLooks, nextAppearance, saveBotAppearance, storeHubLooks, type BotAppearance } from './botAppearance';
 import { BotLLMSettingsDialog, type BotLLMProviderOption, type BotLLMSettingsSubmit } from './BotLLMSettingsDialog';
+import { BotNetworkSettingsDialog, BotSettingsTabs, type BotSettingsTab, type DesktopProxyModeState, type DesktopProxyModeValue } from './BotNetworkSettingsDialog';
 import { TaskResultArtifacts } from '../ai/assistantTaskArtifacts';
 import { BotFilePreview } from './BotFilePreview';
 import { BotRailIcon } from '../layout/SidebarNavIcons';
@@ -924,8 +927,21 @@ function copy(lang: string) {
             scheduleRemoveAsk: (name: string) => `Delete schedule "${name}"?`,
             schedulePaused: 'Paused',
             accountChanged: 'This message was not sent. The account changed before it went out.',
-            llmSettings: 'Model',
-            llmSettingsHint: 'Choose the model these bots run on',
+            llmSettings: 'Settings',
+            llmSettingsHint: 'Model and network settings for these bots',
+            settingsTitle: 'Settings',
+            settingsTabModel: 'Model',
+            settingsTabNetwork: 'Network',
+            netTitle: 'Cloud desktop network',
+            netHint: 'How the cloud desktop reaches websites. Switching applies right away; the desktop does not restart and logins stay.',
+            netCurrent: (mode: string) => `Current: ${mode}`,
+            netProxy: 'Proxy',
+            netProxyHint: 'Every site goes through the overseas proxy.',
+            netDirect: 'Direct',
+            netDirectHint: 'Every site is reached directly from the desktop host.',
+            netSmart: 'Smart',
+            netSmartHint: 'Mainland China sites (JD, Taobao, Baidu…) go direct, everything else through the proxy. Recommended.',
+            netLocked: 'Your administrator fixed this setting for the organization, so it cannot be changed here.',
             llmTitle: 'Model for your bots',
             llmSharedHint: 'Every bot of this account runs on the same model. Changing it here moves all of them.',
             llmUseDefault: 'Default',
@@ -1071,8 +1087,21 @@ function copy(lang: string) {
             scheduleRemoveAsk: (name: string) => `確定刪除定時任務「${name}」？`,
             schedulePaused: '已暫停',
             accountChanged: '這條沒有發出。發出前帳號已經切換。',
-            llmSettings: '模型',
-            llmSettingsHint: '設定 Bot 用哪個模型',
+            llmSettings: '設定',
+            llmSettingsHint: 'Bot 的模型與網路設定',
+            settingsTitle: '設定',
+            settingsTabModel: '模型',
+            settingsTabNetwork: '網路',
+            netTitle: '雲桌面網路',
+            netHint: '雲桌面存取網站的方式。切換後立即生效，桌面不會重啟，登入狀態保留。',
+            netCurrent: (mode: string) => `目前：${mode}`,
+            netProxy: '代理',
+            netProxyHint: '所有網站都經海外代理存取。',
+            netDirect: '直連',
+            netDirectHint: '所有網站都由桌面主機直接存取。',
+            netSmart: '智慧',
+            netSmartHint: '國內網站（京東、淘寶、百度等）直連，其餘經代理。建議使用。',
+            netLocked: '管理員已統一設定此項，這裡無法修改。',
             llmTitle: 'Bot 用的模型',
             llmSharedHint: '這個帳號底下的所有 Bot 都跑同一個模型，這裡改了會一起生效。',
             llmUseDefault: '預設',
@@ -1217,8 +1246,21 @@ function copy(lang: string) {
         scheduleRemoveAsk: (name: string) => `确定删除定时任务「${name}」？`,
         schedulePaused: '已暂停',
         accountChanged: '这条没有发出。发出前账号已经切换。',
-        llmSettings: '模型',
-        llmSettingsHint: '设置 Bot 用哪个模型',
+        llmSettings: '设置',
+        llmSettingsHint: 'Bot 的模型与网络设置',
+        settingsTitle: '设置',
+        settingsTabModel: '模型',
+        settingsTabNetwork: '网络',
+        netTitle: '云桌面网络',
+        netHint: '云桌面访问网站的方式。切换后立即生效，桌面不会重启，登录状态保留。',
+        netCurrent: (mode: string) => `当前：${mode}`,
+        netProxy: '代理',
+        netProxyHint: '所有网站都经海外代理访问。',
+        netDirect: '直连',
+        netDirectHint: '所有网站都由桌面主机直接访问。',
+        netSmart: '智能',
+        netSmartHint: '国内网站（京东、淘宝、百度等）直连，其余走代理。推荐。',
+        netLocked: '管理员已统一设置该项，这里无法修改。',
         llmTitle: 'Bot 用的模型',
         llmSharedHint: '这个账号下的所有 Bot 都跑同一个模型，这里改了会一起生效。',
         llmUseDefault: '默认',
@@ -2078,6 +2120,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [llmModel, setLlmModel] = useState('');
     const [llmSaving, setLlmSaving] = useState(false);
     const [llmNotice, setLlmNotice] = useState('');
+    // Settings dialog: the Model tab is the model dialog above, the Network tab
+    // the desktop proxy mode. Each tab loads and saves on its own.
+    const [netOpen, setNetOpen] = useState(false);
+    const [netState, setNetState] = useState<DesktopProxyModeState | null>(null);
+    const [netSaving, setNetSaving] = useState(false);
+    const [netNotice, setNetNotice] = useState('');
     const [messagesByBot, setMessagesByBot] = useState<Record<string, DesktopBotMessage[]>>({});
     const [command, setCommand] = useState('');
     const [listNotice, setListNotice] = useState('');
@@ -3892,6 +3940,55 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         } catch (error) {
             if (gen !== loadGen.current) return;
             setListNotice(error instanceof Error && error.message ? error.message : text.unavailable);
+        }
+    };
+
+    const openNetworkSettings = async () => {
+        if (netOpen) return;
+        const gen = loadGen.current;
+        setNetNotice('');
+        try {
+            const current = await GetDesktopProxyMode();
+            if (gen !== loadGen.current) return;
+            setNetState(current ?? { mode: 'smart', locked: false });
+            setLlmOpen(false);
+            setNetOpen(true);
+        } catch (error) {
+            if (gen !== loadGen.current) return;
+            const message = error instanceof Error && error.message ? error.message : text.unavailable;
+            if (llmOpen) setLlmNotice(message);
+            else setListNotice(message);
+        }
+    };
+
+    const switchSettingsTab = (tab: BotSettingsTab) => {
+        if (tab === 'network') {
+            void openNetworkSettings();
+            return;
+        }
+        setNetOpen(false);
+        void openLLMSettings();
+    };
+
+    const submitNetwork = async (mode: DesktopProxyModeValue) => {
+        if (netSaving) return;
+        const gen = loadGen.current;
+        setNetSaving(true);
+        setNetNotice('');
+        try {
+            const saved = await SaveDesktopProxyMode(mode);
+            if (gen !== loadGen.current) return;
+            setNetState(saved);
+            if (saved?.warning) {
+                setNetNotice(saved.warning);
+                return;
+            }
+            setNetOpen(false);
+        } catch (error) {
+            if (gen !== loadGen.current) return;
+            setNetNotice(error instanceof Error && error.message ? error.message : text.unavailable);
+        } finally {
+            setNetSaving(false);
         }
     };
 
@@ -6964,6 +7061,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         cancel: text.cancel,
                         close: text.close,
                     }}
+                    heading={text.settingsTitle}
+                    tabs={<BotSettingsTabs active="model" labels={{ model: text.settingsTabModel, network: text.settingsTabNetwork }} disabled={llmSaving} onSelect={switchSettingsTab} />}
                     providers={llmProviders}
                     initialMode={llmMode}
                     initialName={llmName}
@@ -6972,6 +7071,31 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     saving={llmSaving}
                     onClose={() => setLlmOpen(false)}
                     onSubmit={payload => { void submitLLM(payload); }}
+                />
+            ) : null}
+            {netOpen && netState ? (
+                <BotNetworkSettingsDialog
+                    labels={{
+                        heading: text.settingsTitle,
+                        title: text.netTitle,
+                        hint: text.netHint,
+                        current: text.netCurrent,
+                        modes: {
+                            proxy: { name: text.netProxy, hint: text.netProxyHint },
+                            direct: { name: text.netDirect, hint: text.netDirectHint },
+                            smart: { name: text.netSmart, hint: text.netSmartHint },
+                        },
+                        locked: text.netLocked,
+                        save: text.save,
+                        cancel: text.cancel,
+                        close: text.close,
+                    }}
+                    state={netState}
+                    notice={netNotice}
+                    saving={netSaving}
+                    tabs={<BotSettingsTabs active="network" labels={{ model: text.settingsTabModel, network: text.settingsTabNetwork }} disabled={netSaving} onSelect={switchSettingsTab} />}
+                    onClose={() => setNetOpen(false)}
+                    onSubmit={mode => { void submitNetwork(mode); }}
                 />
             ) : null}
         </section>

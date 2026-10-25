@@ -2832,4 +2832,32 @@
     color: #b91c1c;
     border-left-color: #ef4444;
     background: rgba(239, 68, 68, 0.08);
+/* 设置弹窗：模型 / 网络两个独立标签页，各自保存。 */
+.bot-settings-tabs {
+    display: flex;
+    gap: 4px;
+    padding: 0 20px;
+    border-bottom: 1px solid var(--theme-border, #e4e7ec);
+}
+
+.bot-settings-tabs__tab {
+    padding: 8px 12px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: none;
+    font-size: 13px;
+    color: var(--theme-text-muted, #667085);
+    cursor: pointer;
+}
+
+.bot-settings-tabs__tab.is-active {
+    color: var(--theme-text, #101828);
+    border-bottom-color: var(--theme-primary, #2563eb);
+    font-weight: 600;
+}
+
+.bot-llm-dialog__section {
+    margin: 0 0 6px;
+    font-size: 14px;
+    font-weight: 600;
 }
