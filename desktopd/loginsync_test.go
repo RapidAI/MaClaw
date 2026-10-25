@@ -208,3 +208,89 @@ print("write", sup.loginsync_cdp_write(20, [{"name": "a"}]))
 		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
 	}
 }
+
+// A container stop writes every screen back in turn. With live sync the
+// master Cookies is merged (newest row per cookie, minus live-sync logouts),
+// so a partial or stale last screen cannot shrink it, and a logout still
+// reaches it.
+func TestLoginSyncWritebackMergesMaster(t *testing.T) {
+	out := runSupervisorPython(t, `
+import sqlite3, time
+user = "ab" * 8
+os.environ["MACLAW_DESKTOP_KEY"] = user
+sup.save_registry({"users": {user: {"display": 20, "token": "aa" * 16}}})
+OFF = sup.CHROME_EPOCH_OFFSET
+def us(t): return int((t + OFF) * 1e6)
+def db(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    c = sqlite3.connect(str(path))
+    c.execute("CREATE TABLE cookies(creation_utc INTEGER, host_key TEXT, top_frame_site_key TEXT, name TEXT, value TEXT, encrypted_value BLOB, path TEXT, last_update_utc INTEGER)")
+    c.execute("CREATE UNIQUE INDEX cookies_unique_index ON cookies(host_key, top_frame_site_key, name, path)")
+    for host, name, val, t in rows:
+        c.execute("INSERT INTO cookies VALUES(?,?,?,?,?,?,?,?)", (us(t), host, "", name, val, b"", "/", us(t)))
+    c.commit(); c.close()
+def rows(path):
+    c = sqlite3.connect(str(path)); r = {(h, n): v for h, n, v in c.execute("select host_key,name,value from cookies")}; c.close(); return r
+now = time.time()
+master = sup.master_profile(user) / "Default" / "Cookies"
+db(master, [(".a.com", "sid", "a1", now - 500), (".b.com", "sid", "b1", now - 500), (".c.com", "sid", "c1", now - 500)])
+s20 = sup.screen_profile(user, 20) / "Default" / "Cookies"
+s21 = sup.screen_profile(user, 21) / "Default" / "Cookies"
+db(s20, [(".a.com", "sid", "a2", now - 100), (".b.com", "sid", "b1", now - 500), (".d.com", "sid", "d1", now - 100)])
+db(s21, [(".a.com", "sid", "a1", now - 500)])
+# live sync saw a logout on b.com after its cookie was written
+sup.loginsync_save(user, {"version": 3, "seen": {"20": 3, "21": 1}, "cookies": {
+    "sid\t.b.com\t/\t": {"c": None, "t": now - 50},
+    "sid\t.a.com\t/\t": {"c": {"name": "sid"}, "t": now - 100}}})
+print("w20", sup.writeback_screen_login(user, 20))
+print("w21", sup.writeback_screen_login(user, 21))
+r = rows(master)
+print("master", sorted(r.items()))
+# a later login on b.com (newer than the tombstone) comes back
+db(sup.screen_profile(user, 22) / "Default" / "Cookies", [(".b.com", "sid", "b2", now)])
+print("w22", sup.writeback_screen_login(user, 22), rows(master).get((".b.com", "sid")))
+`)
+	for _, want := range []string{
+		"w20 True",
+		"w21 False",
+		"master [(('.a.com', 'sid'), 'a2'), (('.c.com', 'sid'), 'c1'), (('.d.com', 'sid'), 'd1')]",
+		"w22 True b2",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+// Before the sync loop saved any state, a partial screen still cannot shrink
+// the master; with sync off the old whole-file copy stays.
+func TestLoginSyncWritebackWithoutState(t *testing.T) {
+	out := runSupervisorPython(t, `
+import sqlite3
+user = "cd" * 8
+os.environ["MACLAW_DESKTOP_KEY"] = user
+def db(path, names):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists(): path.unlink()
+    c = sqlite3.connect(str(path))
+    c.execute("CREATE TABLE cookies(creation_utc INTEGER, host_key TEXT, top_frame_site_key TEXT, name TEXT, value TEXT, path TEXT, last_update_utc INTEGER)")
+    c.execute("CREATE UNIQUE INDEX u ON cookies(host_key, top_frame_site_key, name, path)")
+    for n in names: c.execute("INSERT INTO cookies VALUES(1,?,?,?,?,?,1)", (".x.com", "", n, "v", "/"))
+    c.commit(); c.close()
+def count(path):
+    c = sqlite3.connect(str(path)); n = c.execute("select count(*) from cookies").fetchone()[0]; c.close(); return n
+master = sup.master_profile(user) / "Default" / "Cookies"
+db(master, ["a", "b", "c"])
+db(sup.screen_profile(user, 20) / "Default" / "Cookies", ["a"])
+sup.writeback_screen_login(user, 20)
+print("shared", count(master))
+(sup.ROOT / user / "login-sync").write_text("off", encoding="utf-8")
+sup.writeback_screen_login(user, 20)
+print("off", count(master))
+`)
+	for _, want := range []string{"shared 3", "off 1"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+}

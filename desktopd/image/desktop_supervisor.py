@@ -998,16 +998,140 @@ def writeback_screen_login(key, display=None):
     # newer than a screen that missed a later change. Its exit copy would put
     # a logged-out session back. Cookies are skipped then; the rest is copied.
     stale = loginsync_screen_is_stale(user, number)
+    state = (loginsync_load(user) or {}) if loginsync_mode(user) != "off" else None
     for rel in SCREEN_LOGIN_REL:
-        if stale and rel == Path("Default") / "Cookies":
-            continue
         src = work / rel
-        if src.exists() and not src.is_symlink():
-            if _copy_login_path(src, master / rel, user):
-                copied = True
+        if not src.exists() or src.is_symlink():
+            continue
+        if rel == Path("Default") / "Cookies":
+            merged = merge_cookie_db(src, master / rel, user, state)
+            if merged is not None:
+                copied = copied or merged
+                continue
+            if stale:
+                continue
+        if _copy_login_path(src, master / rel, user):
+            copied = True
     if copied:
         _note_login_record(user, number, False, True)
     return copied
+
+
+CHROME_EPOCH_OFFSET = 11644473600  # seconds from 1601-01-01 to 1970-01-01
+
+
+def _cookie_db_ok(path):
+    """True when path is a Chromium Cookies SQLite file."""
+    try:
+        with open(str(path), "rb") as fh:
+            if fh.read(16) != b"SQLite format 3\x00":
+                return False
+        import sqlite3
+        conn = sqlite3.connect("file:%s?mode=ro" % quote(str(path)), uri=True)
+        try:
+            return bool(conn.execute("select 1 from sqlite_master where type='table' and name='cookies'").fetchone())
+        finally:
+            conn.close()
+    except Exception:
+        return False
+
+
+def _cookie_key_columns(conn, cols):
+    """Columns of the cookies table's unique index (Chromium's cookie identity)."""
+    for row in conn.execute("PRAGMA main.index_list(cookies)").fetchall():
+        if row[2]:
+            key = [r[2] for r in conn.execute("PRAGMA main.index_info(%s)" % json.dumps(row[1])).fetchall()]
+            if key and all(k in cols for k in key):
+                return key
+    return [c for c in ("host_key", "top_frame_site_key", "name", "path") if c in cols]
+
+
+def loginsync_tombstones(state):
+    """(name, domain, path) -> unix time of the logout seen by live sync."""
+    out = {}
+    for key, item in ((state or {}).get("cookies") or {}).items():
+        if not isinstance(item, dict) or item.get("c") is not None:
+            continue
+        parts = str(key).split("\t")
+        if len(parts) >= 3:
+            k = (parts[0], parts[1], parts[2] or "/")
+            out[k] = max(out.get(k, 0), float(item.get("t") or 0))
+    return out
+
+
+def merge_cookie_db(src, dst, user, state):
+    """Merge a screen's Cookies into the master instead of replacing the file.
+
+    With live sync on (state given; {} before the loop saved any), the master is the union of both files,
+    newest row per cookie identity, minus cookies live sync saw deleted (a
+    logout) after the row was written. A stale or partial screen copy can
+    then not shrink the master. Returns True/False for merged/no change, or
+    None when a plain copy applies (no sync state, or not SQLite files).
+    """
+    if state is None or not profile_path_allowed(user, dst):
+        return None
+    src, dst = Path(src), Path(dst)
+    if dst.is_symlink() or not _cookie_db_ok(src):
+        return None
+    if not dst.exists():
+        return None
+    if not _cookie_db_ok(dst):
+        return None
+    import sqlite3
+    tomb = loginsync_tombstones(state)
+    tmp = dst.with_name(".Cookies.merge")
+    shutil.copy2(str(dst), str(tmp))
+    changed = 0
+    conn = sqlite3.connect(str(tmp))
+    try:
+        conn.execute("ATTACH DATABASE ? AS s", (str(src),))
+        mcols = [r[1] for r in conn.execute("PRAGMA main.table_info(cookies)")]
+        scols = set(r[1] for r in conn.execute("PRAGMA s.table_info(cookies)"))
+        cols = [c for c in mcols if c in scols]
+        key = _cookie_key_columns(conn, cols)
+        tcol = "last_update_utc" if "last_update_utc" in cols else "creation_utc"
+        if not key or tcol not in cols:
+            tmp.unlink()
+            return None
+        sel = ", ".join('"%s"' % c for c in cols)
+        where = " AND ".join('"%s" IS ?' % k for k in key)
+        ki = [cols.index(k) for k in key]
+        ti = cols.index(tcol)
+
+        def unix(row):
+            try:
+                return int(row[ti]) / 1e6 - CHROME_EPOCH_OFFSET
+            except (TypeError, ValueError):
+                return 0
+
+        def dead(row):
+            d = dict(zip(cols, row))
+            t = tomb.get((d.get("name") or "", d.get("host_key") or "", d.get("path") or "/"))
+            return t is not None and t >= unix(row)
+
+        for row in conn.execute("SELECT %s FROM s.cookies" % sel).fetchall():
+            if dead(row):
+                continue
+            kv = [row[i] for i in ki]
+            cur = conn.execute('SELECT "%s" FROM main.cookies WHERE %s' % (tcol, where), kv).fetchone()
+            if cur is not None and (cur[0] or 0) >= (row[ti] or 0):
+                continue
+            conn.execute("DELETE FROM main.cookies WHERE %s" % where, kv)
+            conn.execute("INSERT INTO main.cookies (%s) VALUES (%s)" % (sel, ",".join("?" * len(cols))), row)
+            changed += 1
+        for row in conn.execute("SELECT %s FROM main.cookies" % sel).fetchall():
+            if dead(row):
+                conn.execute("DELETE FROM main.cookies WHERE %s" % where, [row[i] for i in ki])
+                changed += 1
+        conn.commit()
+    finally:
+        conn.close()
+    if not changed:
+        tmp.unlink()
+        return False
+    os.chmod(str(tmp), 0o600)
+    os.replace(str(tmp), str(dst))
+    return True
 
 
 def _is_master_profile(key, profile):
