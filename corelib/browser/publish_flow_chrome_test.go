@@ -428,6 +428,23 @@ func TestPublishFlowPastesImagesIntoEditor(t *testing.T) {
 	}
 }
 
+// A success toast that lives shorter than one poll still counts.
+func TestPublishFlowShortToastCounts(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "xhs_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit?flash=1")
+	rep, err := RunPublish(d, PublishSpec{Files: []string{fixtureImage(t)}, Title: "10.18 HF论文精选｜速读", Body: fixtureBody, SuccessTexts: []string{"发布成功"}, VerifyURL: srv.URL + "/notes", StepBudget: 10 * time.Second})
+	ok := false
+	for _, s := range rep.Steps {
+		if strings.Contains(s.Detail, "page says 发布成功") {
+			ok = true
+		}
+	}
+	if err != nil || !ok || len(site.published) != 1 {
+		t.Fatalf("err=%v n=%d rep=%+v", err, len(site.published), rep)
+	}
+}
+
 // A submit that posts but leaves no sign on the page is settled by the
 // account's post list, not left as "submitted" for the model to guess.
 func TestPublishFlowSilentSubmitSettledByTheList(t *testing.T) {

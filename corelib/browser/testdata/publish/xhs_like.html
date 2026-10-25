@@ -28,6 +28,9 @@ customElements.define('xhs-publish-btn', class extends HTMLElement { constructor
     const q = new URLSearchParams(location.search);
     if (q.get('refuse')) { const r = await fetch('/refuse', {method: 'POST'}); const d = document.createElement('div'); d.className = 'toast'; d.setAttribute('role', 'alert'); d.textContent = '发布失败：内容违规'; document.body.appendChild(d); return; }
     await fetch('/publish', {method: 'POST', body: JSON.stringify({title: t, body: b})});
+    // ?flash=1: a 600ms toast, then the page resets to the upload view on a
+    // new URL (the real site after a good publish).
+    if (q.get('flash')) { const d = document.createElement('div'); d.className = 'toast'; d.textContent = '发布成功'; document.body.appendChild(d); setTimeout(() => { d.remove(); history.replaceState(null, '', '/edit?from=tab_switch'); }, 600); return; }
     if (new URLSearchParams(location.search).get('stay')) return; // ?stay=1: posts but stays on the editor
     location.href = '/success';
   }); } });

@@ -1009,6 +1009,18 @@ func (p *publishRun) clickText(texts []string, buttonsOnly bool) error {
 var publishSuccessTexts = []string{"发布成功", "已发布", "发表成功", "Published", "published successfully"}
 
 // saysAny: the first of texts found in s ("" when none).
+// publishToastWatchJS records text that nodes added after the click carry.
+const publishToastWatchJS = `(() => { if (!document.body) return 'none'; window.__mcAdded = []; if (window.__mcObs) window.__mcObs.disconnect(); window.__mcObs = new MutationObserver(ms => { for (const m of ms) for (const n of m.addedNodes) { const t = ((n.innerText !== undefined ? n.innerText : n.textContent) || '').trim(); if (t && t.length < 200 && window.__mcAdded.length < 200) window.__mcAdded.push(t); } }); window.__mcObs.observe(document.body, {childList: true, subtree: true}); return 'ok'; })()`
+
+// toastSays: a success text among the nodes added since the click.
+func (p *publishRun) toastSays() string {
+	v, err := p.evalWithin("(window.__mcAdded || []).join(' | ')", 2*time.Second)
+	if err != nil || v == "" {
+		return ""
+	}
+	return saysAny(v, p.spec.SuccessTexts)
+}
+
 func saysAny(s string, texts []string) string {
 	for _, t := range texts {
 		if t != "" && strings.Contains(strings.ToLower(s), strings.ToLower(t)) {
@@ -1043,6 +1055,9 @@ func (p *publishRun) submit() (string, error) {
 	// Set before the click: a page that freezes on publish never answers it.
 	closed := p.closeOverlays()
 	p.see(p.pageURL())
+	// Toasts ("published") can live for a second or two, shorter than one
+	// poll that also waits on hasEditor: record text added after the click.
+	_, _ = p.eval(publishToastWatchJS)
 	p.submitClicked.Store(true)
 	clickedAt := time.Now()
 	p.clickedAt = clickedAt
@@ -1061,6 +1076,9 @@ func (p *publishRun) submit() (string, error) {
 			if f := p.net.failedSince(clickedAt); len(f) > 0 {
 				return "", fmt.Errorf("clicked submit and the site refused it: %s; %s", strings.Join(f, "; "), p.afterSubmitState(clickedAt))
 			}
+		}
+		if m := p.toastSays(); m != "" {
+			return "page says " + m, nil
 		}
 		url := p.pageURL()
 		if p.spec.SuccessURL != "" && url != "" {
