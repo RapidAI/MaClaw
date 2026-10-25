@@ -57,6 +57,8 @@ func TestPublishPlanPhases(t *testing.T) {
 		{phaseLive, "probe", nil, false},
 		{phaseLive, "screenshot", nil, false},
 		{phaseIncomplete, "app_run", nil, false},
+		{phaseLive, "publish", nil, false},
+		{phaseSubmitted, "publish", nil, false},
 	}
 	for _, c := range cases {
 		err := desktopPublishPlanCheck(c.ph, c.act, c.args)
