@@ -215,6 +215,12 @@ func main() {
 		// Background only: /v1/health and the admin panel answer while it runs.
 		go svc.PrefetchImages(ctx)
 	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("DESKTOPD_BOOT_WATCH")), "off") {
+		log.Printf("[desktopd] boot watch disabled (DESKTOPD_BOOT_WATCH=off)")
+	} else {
+		// A desktop container that (re)started gets its screens back.
+		svc.StartBootWatcher(ctx, 20*time.Second)
+	}
 	log.Printf("[desktopd] browser and screen ports bind %s", svc.PublishBind)
 	log.Printf("desktopd listening on %s", addr)
 	if adminDisabled {

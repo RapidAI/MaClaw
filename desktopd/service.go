@@ -914,7 +914,9 @@ const desktopStopGrace = "25"
 
 // desktopHoldCommand is pid 1. sleep alone exits on SIGTERM and the runtime
 // then kills Chromium before it can write cookies. The trap flushes first.
-const desktopHoldCommand = `trap 'python3 /desktop_supervisor.py flush "$MACLAW_DESKTOP_KEY"; exit 0' TERM INT; sleep infinity & wait`
+// Every start (docker restart, host reboot, restart policy) also runs boot,
+// which brings the owner's screen and the bot screens in use back up.
+const desktopHoldCommand = `trap 'python3 /desktop_supervisor.py flush "$MACLAW_DESKTOP_KEY"; exit 0' TERM INT; python3 /desktop_supervisor.py boot >>/tmp/maclaw-boot.log 2>&1 & sleep infinity & wait`
 
 func (s *Service) stopContainer(ctx context.Context, name string) error {
 	_, err := s.docker(ctx, "stop", "--time", desktopStopGrace, name)

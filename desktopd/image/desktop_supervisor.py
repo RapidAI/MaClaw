@@ -632,6 +632,9 @@ def main(argv):
         return run_file(argv)
     if len(argv) >= 2 and argv[1] == "command":
         return run_command(argv)
+    if len(argv) == 2 and argv[1] == "boot":
+        print(json.dumps(boot_restore(), sort_keys=True))
+        return 0
     if len(argv) != 3 or argv[1] != "ensure":
         print("usage: desktop_supervisor.py ensure <user-key>", file=sys.stderr)
         return 2
@@ -647,6 +650,45 @@ def main(argv):
         result = ensure(key)
     print(json.dumps(result))
     return 0
+
+
+def boot_restore():
+    """Bring the screens back after the container (re)starts.
+
+    pid 1 runs this on every container start and desktopd runs it when it sees
+    a desktop container start, so a docker restart or host reboot brings the
+    owner's :20 (Chrome, gates, loginsync) and the bot screens that were in use
+    back without anyone calling ensure. It is idempotent: a second run finds
+    everything up. Output carries keys only, never tokens.
+    """
+    owner = owner_key()
+    if not owner:
+        return {"restored": [], "skipped": "no owner key"}
+    restored, failed = [], {}
+    try:
+        with desktop_lock():
+            ensure(owner)
+        restored.append(owner)
+    except (Exception, SystemExit) as exc:
+        failed[owner] = str(exc)[:200]
+    idle_limit = env_int("MACLAW_BOT_IDLE_SECONDS", BOT_IDLE_SECONDS)
+    for key in sorted(load_registry().get("users", {})):
+        if not is_bot_key(key, owner):
+            continue
+        age = bot_file_age(key, "activity")
+        if age is None or age > idle_limit:
+            continue
+        try:
+            with desktop_lock():
+                ensure_bot(key)
+            restored.append(key)
+        except (Exception, SystemExit) as exc:
+            failed[key] = str(exc)[:200]
+    log_event("boot_restore", restored=restored, failed=sorted(failed))
+    out = {"restored": restored}
+    if failed:
+        out["failed"] = failed
+    return out
 
 
 _desktop_lock_held = False
