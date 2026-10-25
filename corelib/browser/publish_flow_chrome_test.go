@@ -346,7 +346,7 @@ func TestPublishFlowReportsTheStuckStep(t *testing.T) {
 	d := fixtureTab(t, addr, srv.URL+"/edit")
 	rep, err := RunPublish(d, PublishSpec{Title: "t", Body: "b", SubmitTexts: []string{"不存在的按钮"}, StepBudget: 5 * time.Second})
 	if err == nil || rep.Stuck != "submit" || !strings.Contains(rep.String(), "submit: FAILED") {
-		t.Fatalf("err=%v rep=%s", err, rep.String())
+		t.Fatalf("err=%v state=%v n=%d rep=%+v", err, rep.State, len(site.published), rep)
 	}
 	if len(site.published) != 0 {
 		t.Fatal("published anyway")
@@ -410,5 +410,17 @@ func TestPublishFlowPastesImagesIntoEditor(t *testing.T) {
 	}
 	if len(site.published) != 1 || !strings.Contains(rep.String(), "pasted 1 image") {
 		t.Fatalf("published %+v", site.published)
+	}
+}
+
+// A submit that posts but leaves no sign on the page is settled by the
+// account's post list, not left as "submitted" for the model to guess.
+func TestPublishFlowSilentSubmitSettledByTheList(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "xhs_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit?stay=1")
+	rep, err := RunPublish(d, PublishSpec{Files: []string{fixtureImage(t)}, Title: "10.18 HF论文精选｜速读", Body: fixtureBody, VerifyURL: srv.URL + "/notes", StepBudget: 10 * time.Second})
+	if err != nil || rep.State != PublishLive || len(site.published) != 1 {
+		t.Fatalf("err=%v state=%v n=%d rep=%+v", err, rep.State, len(site.published), rep)
 	}
 }

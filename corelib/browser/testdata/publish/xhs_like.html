@@ -26,6 +26,7 @@ customElements.define('xhs-publish-btn', class extends HTMLElement { constructor
     const t = document.querySelector('.d-text').value, b = document.querySelector('.tiptap').innerText;
     if (!t || !b.trim() || !document.querySelector('#imgs img')) { alert('missing'); return; }
     await fetch('/publish', {method: 'POST', body: JSON.stringify({title: t, body: b})});
+    if (new URLSearchParams(location.search).get('stay')) return; // ?stay=1: posts but stays on the editor
     location.href = '/success';
   }); } });
 </script></body></html>

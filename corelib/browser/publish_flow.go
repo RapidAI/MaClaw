@@ -180,6 +180,15 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 		if strings.HasPrefix(st.name, "fill_") || st.name == "paste_images" {
 			p.lastEdit = time.Now()
 		}
+		if r.err != nil && st.name == "submit" && p.submitClicked.Load() && spec.VerifyURL != "" {
+			// The click went out but the page gave no sign: the account's
+			// post list decides (XHS-33 left the bot guessing).
+			if vout, verr := p.verify(); verr == nil {
+				p.rep.Steps = append(p.rep.Steps, PublishStep{Name: "verify_result", OK: true, Detail: "submit gave no sign; " + vout})
+				p.rep.State = PublishLive
+				return p.rep, nil
+			}
+		}
 		if r.err != nil {
 			p.rep.Stuck = st.name
 			p.rep.State = PublishNotSubmitted
@@ -856,6 +865,7 @@ func (p *publishRun) submit() (string, error) {
 	before, _ := p.eval("document.body ? document.body.innerText.slice(0, 20000) : ''")
 	// Set before the click: a page that freezes on publish never answers it.
 	p.submitClicked.Store(true)
+	clickedAt := time.Now()
 	if err := p.clickText(p.spec.SubmitTexts, true); err != nil {
 		return "", err
 	}
@@ -883,7 +893,9 @@ func (p *publishRun) submit() (string, error) {
 		}
 		// Many sites answer the first click with a settings panel whose
 		// own button carries the same text; press the newest one again.
-		if reclicks < 2 && time.Since(lastClick) > 3*time.Second {
+		// A click that already sent a write was taken: pressing again
+		// would post twice, so only a click with no write is repeated.
+		if reclicks < 2 && time.Since(lastClick) > 3*time.Second && (p.net == nil || !p.net.wroteSince(clickedAt)) {
 			reclicks++
 			lastClick = time.Now()
 			_ = p.clickText(p.spec.SubmitTexts, true)
