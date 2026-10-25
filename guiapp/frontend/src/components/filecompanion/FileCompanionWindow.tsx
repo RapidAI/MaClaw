@@ -1782,6 +1782,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     const flushPendingShareNotesRef = useRef<() => void>(() => undefined);
     const applyShareNotesRef = useRef<(listed: unknown) => void>(() => undefined);
     const applyLibraryListRef = useRef<(listed: unknown) => void>(() => undefined);
+    // A list request records this value when it starts. Delete increments it
+    // after the project is gone, so that request cannot paint the project back.
+    const libraryDeleteGen = useRef(0);
     const clearShareNotes = (keys: Set<string> | null) => {
         setTabs((current) => {
             let changed = false;
@@ -1891,8 +1894,9 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     useEffect(() => {
         let stopped = false;
         const refresh = () => {
+            const started = libraryDeleteGen.current;
             void ListFileCompanionLibrary().then((listed) => {
-                if (stopped) return;
+                if (stopped || libraryDeleteGen.current !== started) return;
                 applyLibraryListRef.current(listed);
             }).catch(() => undefined);
         };
@@ -3482,7 +3486,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         }));
         const toastText = !body.complete || body.pending
             ? (body.message || "请再点「转换」继续。")
-            : "已生成可选中文字的 PDF，原文件没有改动。";
+            : "已按原版式生成新的 PDF，原文件没有改动。";
         tell(toastText, "success");
         // The toast names the source file. Explorer selects the PDF this
         // result names: the path the reader picked when that copy was written.
@@ -4660,7 +4664,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                         {activeTab.status ? <CompanionStatus text={activeTab.status} kind={tabNoteKind(activeTab)} noteStartedAt={activeTab.noteStartedAt} phaseStartedAt={activeTab.phaseStartedAt} /> : null}
                         {convertCard ? (
                             <div data-testid="file-companion-convert-result">
-                                <p style={{ margin: "12px 16px 0", fontSize: 13 }}>{convertCard.message || "已生成可选中文字的 PDF，原文件没有改动。"}</p>
+                                <p style={{ margin: "12px 16px 0", fontSize: 13 }}>{convertCard.message || "已按原版式生成新的 PDF，原文件没有改动。"}</p>
                                 <PaperResultCard filePath={convertCard.pdf} messageId="convert" />
                             </div>
                         ) : null}
@@ -4784,6 +4788,27 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                     onListed={(listed) => { applyLibraryListRef.current(listed); }}
                     onShareProject={(path) => { setImportDialogLink(""); setShareDialogPath(path); }}
                     onImportLink={(link) => { setImportDialogLink(link); setImportDialogOpen(true); }}
+                    libraryDeleteGen={libraryDeleteGen}
+                    onProjectDeleted={(path) => {
+                        const key = companionSharePathKey(path);
+                        if (!key) return;
+                        const currentTabs = tabsRef.current;
+                        const index = currentTabs.findIndex((item) => companionSharePathKey(item.path) === key);
+                        if (index < 0) return;
+                        const tab = currentTabs[index];
+                        if (tab.kind === "web") {
+                            void FileCompanionDiscardWebNote(tab.sessionId).catch(() => undefined);
+                        } else {
+                            void CancelFileCompanionTurn(tab.path).catch(() => undefined);
+                        }
+                        forgetIntro(tab.path);
+                        const rest = currentTabs.filter((item) => companionSharePathKey(item.path) !== key);
+                        setTabs((current) => current.filter((item) => companionSharePathKey(item.path) !== key));
+                        setActive((current) => {
+                            if (companionSharePathKey(current) !== key) return current;
+                            return rest[Math.max(0, Math.min(index, rest.length - 1))]?.path ?? "";
+                        });
+                    }}
                     dialogOpen={Boolean(shareDialogPath) || importDialogOpen}
                 />
             ) : null}
@@ -4799,6 +4824,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                     name={shareDialogName}
                     showToast={showToast}
                     onListed={(listed) => { applyLibraryListRef.current(listed); }}
+                    libraryDeleteGen={libraryDeleteGen}
                     onClose={() => setShareDialogPath("")}
                 />
             ) : null}
@@ -4809,6 +4835,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                     onOpen={(path) => { void openPath(path, false, false, 0, true); setView("read"); }}
                     onShareUpdated={(update) => { applyShareUpdateRef.current(update); }}
                     onListed={(listed) => { applyLibraryListRef.current(listed); }}
+                    libraryDeleteGen={libraryDeleteGen}
                     onClose={() => { setImportDialogOpen(false); setImportDialogLink(""); }}
                 />
             ) : null}

@@ -3,13 +3,17 @@ package agent
 import (
 	"bytes"
 	"fmt"
+	"html"
 	"image"
 	"image/draw"
+	"image/jpeg"
 	"math"
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib/docgen"
 	gopdf2 "github.com/VantageDataChat/GoPDF2"
 )
 
@@ -51,6 +55,39 @@ type PlacedScanLine struct {
 	W       float64 `json:"w"`
 	H       float64 `json:"h"`
 	Formula bool    `json:"formula,omitempty"`
+}
+
+// RestoredPicture is a figure cropped from the scan and drawn in its own box.
+type RestoredPicture struct {
+	Payload    []byte
+	X, Y, W, H float64
+}
+
+// RestoredTable is one wired-table grid in page coordinates. Cells are the
+// regular grid from the UNET HTML. An empty slice is not a table: the page
+// keeps its OCR lines instead of an empty frame.
+type RestoredTable struct {
+	X, Y, W, H float64
+	Cells      [][]string
+}
+
+// RestoredLayout is a detected block in page coordinates. Only a formula
+// block is drawn: its LaTeX is typeset in that rectangle. A prose block is
+// not drawn, because each OCR line already has its own rectangle.
+type RestoredLayout struct {
+	X, Y, W, H float64
+	Text       string
+	Formula    bool
+}
+
+// RestoredPage is the figure crops, restored tables, and layout blocks for
+// one page. HoldScan keeps the page photo when the placement itself cannot
+// be cropped, so a turned or mirrored figure is not dropped.
+type RestoredPage struct {
+	Pictures []RestoredPicture
+	Tables   []RestoredTable
+	Layout   []RestoredLayout
+	HoldScan bool
 }
 
 // ScanPageImage is one embedded image drawn back onto the page.
@@ -566,82 +603,62 @@ func scanImagePixels(payload []byte, dictW, dictH int) (int, int) {
 	return 0, 0
 }
 
+// PlacePixelBox maps one image-pixel rectangle onto the page. x, y, w, h use
+// the image's top-left origin. The result is the same top-left rectangle
+// PlaceScanLines uses for a line, including a mirror and a quarter turn.
+// Layout boxes and OCR lines share this mapping so a mirrored scan does not
+// leave a block on the other side of the page from its text.
+func PlacePixelBox(place ScanImagePlacement, x, y, w, h float64) (float64, float64, float64, float64, bool) {
+	if place.PixelW < 1 || place.PixelH < 1 || place.DisplayW < 1 || place.DisplayH < 1 || w < 1 || h < 1 {
+		return 0, 0, 0, 0, false
+	}
+	if place.Turn != 0 {
+		pw := float64(place.PixelW)
+		ph := float64(place.PixelH)
+		u0 := x / pw
+		u1 := (x + w) / pw
+		// Pixel y grows down from the file top. PDF v grows up from the image bottom.
+		v1 := 1 - y/ph
+		v0 := 1 - (y+h)/ph
+		minX, minY, maxX, maxY := turnedCorners(place, u0, u1, v0, v1)
+		return minX, place.TurnPageH - maxY, maxX - minX, maxY - minY, true
+	}
+	scaleX := place.DisplayW / float64(place.PixelW)
+	scaleY := place.DisplayH / float64(place.PixelH)
+	px := x * scaleX
+	py := y * scaleY
+	pw := w * scaleX
+	ph := h * scaleY
+	// Pixel origin is the file's top-left. A mirrored axis paints that
+	// edge on the far side of the rectangle.
+	if place.MirrorX {
+		px = place.DisplayW - px - pw
+	}
+	if place.MirrorY {
+		py = place.DisplayH - py - ph
+	}
+	return place.X + px, place.Y + py, pw, ph, true
+}
+
 // PlaceScanLines maps pixel boxes onto the page. Empty text and boxes that
 // would draw smaller than one point are left out.
 func PlaceScanLines(place ScanImagePlacement, lines []ScanTextLine) []PlacedScanLine {
 	if place.PixelW < 1 || place.PixelH < 1 || place.DisplayW < 1 || place.DisplayH < 1 {
 		return nil
 	}
-	if place.Turn != 0 {
-		return placeTurnedScanLines(place, lines)
-	}
-	scaleX := place.DisplayW / float64(place.PixelW)
-	scaleY := place.DisplayH / float64(place.PixelH)
 	out := make([]PlacedScanLine, 0, len(lines))
 	for _, line := range lines {
 		text := strings.TrimSpace(line.Text)
 		if text == "" || line.BBox[2] < 1 || line.BBox[3] < 1 {
 			continue
 		}
-		x := float64(line.BBox[0]) * scaleX
-		y := float64(line.BBox[1]) * scaleY
-		w := float64(line.BBox[2]) * scaleX
-		h := float64(line.BBox[3]) * scaleY
-		// Pixel origin is the file's top-left. A mirrored axis paints that
-		// edge on the far side of the rectangle.
-		if place.MirrorX {
-			x = place.DisplayW - x - w
-		}
-		if place.MirrorY {
-			y = place.DisplayH - y - h
-		}
-		placed := PlacedScanLine{
-			Text:    text,
-			X:       place.X + x,
-			Y:       place.Y + y,
-			W:       w,
-			H:       h,
-			Formula: line.Formula,
-		}
-		if placed.W < 1 || placed.H < 1 || scanOverlayFontSize(placed.W, placed.H, text, line.Formula) < 1 {
+		x, y, w, h, ok := PlacePixelBox(place, float64(line.BBox[0]), float64(line.BBox[1]), float64(line.BBox[2]), float64(line.BBox[3]))
+		if !ok || w < 1 || h < 1 || scanOverlayFontSize(w, h, text, line.Formula) < 1 {
 			continue
 		}
-		out = append(out, placed)
-	}
-	return out
-}
-
-// placeTurnedScanLines maps a pixel box through the image CTM and keeps the
-// axis-aligned bounds. The matrix already includes a reflection, so MirrorX
-// and MirrorY are not applied again. Glyphs stay upright; the box moves
-// onto the ink.
-func placeTurnedScanLines(place ScanImagePlacement, lines []ScanTextLine) []PlacedScanLine {
-	pw := float64(place.PixelW)
-	ph := float64(place.PixelH)
-	out := make([]PlacedScanLine, 0, len(lines))
-	for _, line := range lines {
-		text := strings.TrimSpace(line.Text)
-		if text == "" || line.BBox[2] < 1 || line.BBox[3] < 1 {
-			continue
-		}
-		u0 := float64(line.BBox[0]) / pw
-		u1 := float64(line.BBox[0]+line.BBox[2]) / pw
-		// Pixel y grows down from the file top. PDF v grows up from the image bottom.
-		v1 := 1 - float64(line.BBox[1])/ph
-		v0 := 1 - float64(line.BBox[1]+line.BBox[3])/ph
-		minX, minY, maxX, maxY := turnedCorners(place, u0, u1, v0, v1)
-		placed := PlacedScanLine{
-			Text:    text,
-			X:       minX,
-			Y:       place.TurnPageH - maxY,
-			W:       maxX - minX,
-			H:       maxY - minY,
-			Formula: line.Formula,
-		}
-		if placed.W < 1 || placed.H < 1 || scanOverlayFontSize(placed.W, placed.H, text, line.Formula) < 1 {
-			continue
-		}
-		out = append(out, placed)
+		out = append(out, PlacedScanLine{
+			Text: text, X: x, Y: y, W: w, H: h, Formula: line.Formula,
+		})
 	}
 	return out
 }
@@ -683,18 +700,11 @@ func scanOverlayFontSize(w, h float64, text string, formula bool) float64 {
 	if n < 1 || w < 1 || h < 1 {
 		return 0
 	}
-	// The overlay is transparent. Formula source is longer than the glyphs
-	// it stands for, so fitting every rune inside the box drops the line.
+	// Size follows the line height. Shrinking to one point per rune used to
+	// drop a whole prose line, so the rebuilt page lost that text.
+	_ = formula
 	size := h * 0.92
-	if !formula {
-		if byWidth := w / float64(n); byWidth < size {
-			size = byWidth
-		}
-	}
 	if size < 1 {
-		if !formula {
-			return 0
-		}
 		size = 1
 	}
 	if size > 72 {
@@ -947,23 +957,31 @@ func formulaCropPad(w, h int) int {
 	return pad
 }
 
-// RestoreScannedPDF writes a new PDF. Each source page is rebuilt at its own
-// page size: the scan image is drawn again, then a transparent text layer.
+// RestoreScannedPDF writes a new PDF. Each source page keeps its page size.
 // JPEG scans use DCTDecode, which the page importer cannot read, so the scan
 // is not imported as a form. A page that already has extractable text is kept
 // at the same size; its original vectors are not copied. The source bytes are
-// not modified. Alpha 0 text is still extracted.
+// not modified. A page that has recognized lines, figure crops, a restored
+// table, or a formula block is rebuilt: the page-covering scan is left out,
+// figures are drawn in their boxes, a recognized table is a grid, and each
+// remaining line keeps its own rectangle. A formula box is painted after
+// those lines. A page that has not been recognized yet still shows its scan.
 func RestoreScannedPDF(src []byte, byPage map[int][]PlacedScanLine, font []byte) ([]byte, error) {
-	return restoreScannedPDF(NewScanRestore(src), byPage, font)
+	return restoreScannedPDF(NewScanRestore(src), byPage, nil, font)
 }
 
 // RestoreScannedPDFWith draws with doc. Pages doc has already read are not
 // extracted again.
 func RestoreScannedPDFWith(doc *ScanRestore, byPage map[int][]PlacedScanLine, font []byte) ([]byte, error) {
-	return restoreScannedPDF(doc, byPage, font)
+	return restoreScannedPDF(doc, byPage, nil, font)
 }
 
-func restoreScannedPDF(doc *ScanRestore, byPage map[int][]PlacedScanLine, font []byte) (out []byte, err error) {
+// RestoreRebuiltPDF draws figure crops and restored tables with the lines.
+func RestoreRebuiltPDF(doc *ScanRestore, byPage map[int][]PlacedScanLine, pages map[int]RestoredPage, font []byte) ([]byte, error) {
+	return restoreScannedPDF(doc, byPage, pages, font)
+}
+
+func restoreScannedPDF(doc *ScanRestore, byPage map[int][]PlacedScanLine, pages map[int]RestoredPage, font []byte) (out []byte, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			out = nil
@@ -999,10 +1017,6 @@ func restoreScannedPDF(doc *ScanRestore, byPage map[int][]PlacedScanLine, font [
 	if err := pdf.AddTTFFontData(family, font); err != nil {
 		return nil, err
 	}
-	tr, err := gopdf2.NewTransparency(0, "")
-	if err != nil {
-		return nil, err
-	}
 	for page := 1; page <= count; page++ {
 		view, viewErr := doc.Page(page)
 		if viewErr != nil {
@@ -1012,24 +1026,73 @@ func restoreScannedPDF(doc *ScanRestore, byPage map[int][]PlacedScanLine, font [
 		if pageW < 1 || pageH < 1 {
 			return nil, fmt.Errorf("page %d has no page size", page)
 		}
+		asset := pages[page]
+		lines := byPage[page]
+		rebuild := pageHasDrawnText(lines) || len(asset.Pictures) > 0 || restoredTablesDraw(asset.Tables) || restoredLayoutDraws(asset.Layout)
 		pdf.AddPageWithOption(gopdf2.PageOption{PageSize: &gopdf2.Rect{W: pageW, H: pageH}})
-		if err := drawScanPageImages(&pdf, view); err != nil {
+		if err := drawScanPageImages(&pdf, view, pageW, pageH, !rebuild || asset.HoldScan); err != nil {
 			return nil, err
 		}
-		if err := drawPlacedScanLines(&pdf, family, &tr, byPage[page]); err != nil {
+		// Pictures and the table grid go down first. A formula rectangle is
+		// painted after the other lines, so its white fill covers a rule, a
+		// joined cell string, or a neighboring line that runs into the box.
+		formulaRects := drawnFormulaRects(lines, asset.Pictures, asset.Layout)
+		if rebuild {
+			if err := drawRestoredPictures(&pdf, asset.Pictures); err != nil {
+				return nil, err
+			}
+			if err := drawRestoredTables(&pdf, family, asset.Tables, lines, asset.Pictures, asset.Layout, formulaRects); err != nil {
+				return nil, err
+			}
+		}
+		if err := drawPlacedScanLines(&pdf, family, lines, asset.Pictures, asset.Tables, asset.Layout, formulaRects, false); err != nil {
 			return nil, err
+		}
+		if err := drawPlacedScanLines(&pdf, family, lines, asset.Pictures, asset.Tables, asset.Layout, formulaRects, true); err != nil {
+			return nil, err
+		}
+		if rebuild {
+			if err := drawRestoredLayout(&pdf, family, asset.Layout); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return pdf.GetBytesPdfReturnErr()
 }
 
-func drawScanPageImages(pdf *gopdf2.GoPdf, view ScanPageView) error {
+func pageHasDrawnText(lines []PlacedScanLine) bool {
+	for _, line := range lines {
+		if strings.TrimSpace(line.Text) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func scanPlacementCoversPage(place ScanImagePlacement, pageW, pageH float64) bool {
+	if pageW < 1 || pageH < 1 {
+		return false
+	}
+	if place.PixelW < scanCoverMinPixels || place.PixelH < scanCoverMinPixels {
+		return false
+	}
+	dw, dh := math.Abs(place.DisplayW), math.Abs(place.DisplayH)
+	if place.FullPage {
+		dw, dh = pageW, pageH
+	}
+	return dw >= pageW*scanCoverPageFraction && dh >= pageH*scanCoverPageFraction
+}
+
+func drawScanPageImages(pdf *gopdf2.GoPdf, view ScanPageView, pageW, pageH float64, keepScan bool) error {
 	images := view.Images
 	if len(images) == 0 && len(view.Payload) > 0 {
 		images = []ScanPageImage{{Payload: view.Payload, Placement: view.Placement}}
 	}
 	for _, img := range images {
 		if len(img.Payload) == 0 {
+			continue
+		}
+		if !keepScan && scanPlacementCoversPage(img.Placement, pageW, pageH) {
 			continue
 		}
 		holder, err := gopdf2.ImageHolderByBytes(img.Payload)
@@ -1066,6 +1129,75 @@ func drawScanPageImages(pdf *gopdf2.GoPdf, view ScanPageView) error {
 	return nil
 }
 
+func drawRestoredPictures(pdf *gopdf2.GoPdf, pictures []RestoredPicture) error {
+	for _, pic := range pictures {
+		if len(pic.Payload) == 0 || pic.W < 1 || pic.H < 1 {
+			continue
+		}
+		holder, err := gopdf2.ImageHolderByBytes(pic.Payload)
+		if err != nil {
+			return err
+		}
+		if err := pdf.ImageByHolder(holder, pic.X, pic.Y, &gopdf2.Rect{W: pic.W, H: pic.H}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func lineUnderPicture(line PlacedScanLine, pictures []RestoredPicture) bool {
+	cx := line.X + line.W/2
+	cy := line.Y + line.H/2
+	for _, pic := range pictures {
+		if pic.W < 1 || pic.H < 1 {
+			continue
+		}
+		if cx >= pic.X && cx <= pic.X+pic.W && cy >= pic.Y && cy <= pic.Y+pic.H {
+			return true
+		}
+	}
+	return false
+}
+
+// CropScanRegion copies one upright region out of the scan. A turned or
+// mirrored placement is left alone so the crop cannot land on the wrong ink.
+func CropScanRegion(payload []byte, place ScanImagePlacement, x, y, w, h float64) ([]byte, bool) {
+	if len(payload) == 0 || place.Turn != 0 || place.MirrorX || place.MirrorY {
+		return nil, false
+	}
+	if place.PixelW < 1 || place.PixelH < 1 || place.DisplayW < 1 || place.DisplayH < 1 || w < 1 || h < 1 {
+		return nil, false
+	}
+	img, _, err := image.Decode(bytes.NewReader(payload))
+	if err != nil {
+		return nil, false
+	}
+	scaleX := place.DisplayW / float64(place.PixelW)
+	scaleY := place.DisplayH / float64(place.PixelH)
+	if scaleX <= 0 || scaleY <= 0 {
+		return nil, false
+	}
+	px := int(math.Round((x - place.X) / scaleX))
+	py := int(math.Round((y - place.Y) / scaleY))
+	pw := int(math.Round(w / scaleX))
+	ph := int(math.Round(h / scaleY))
+	if pw < 2 || ph < 2 {
+		return nil, false
+	}
+	bounds := img.Bounds()
+	rect := image.Rect(bounds.Min.X+px, bounds.Min.Y+py, bounds.Min.X+px+pw, bounds.Min.Y+py+ph).Intersect(bounds)
+	if rect.Dx() < 2 || rect.Dy() < 2 {
+		return nil, false
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, rect.Dx(), rect.Dy()))
+	draw.Draw(dst, dst.Bounds(), img, rect.Min, draw.Src)
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 85}); err != nil {
+		return nil, false
+	}
+	return buf.Bytes(), true
+}
+
 func placedLinesDraw(byPage map[int][]PlacedScanLine) bool {
 	for _, lines := range byPage {
 		for _, line := range lines {
@@ -1077,23 +1209,718 @@ func placedLinesDraw(byPage map[int][]PlacedScanLine) bool {
 	return false
 }
 
-func drawPlacedScanLines(pdf *gopdf2.GoPdf, family string, tr *gopdf2.Transparency, lines []PlacedScanLine) error {
+// ParseRestoredTableHTML reads the regular grid written by tablestruct.HTML.
+// Anything else, including an empty string or uneven rows, is not a table.
+func ParseRestoredTableHTML(raw string) [][]string {
+	s := strings.TrimSpace(raw)
+	if !strings.HasPrefix(s, "<table>") || !strings.HasSuffix(s, "</table>") {
+		return nil
+	}
+	body := s[len("<table>") : len(s)-len("</table>")]
+	if body == "" || strings.Contains(body, "<table") || strings.Contains(body, "<th") || strings.Contains(body, "colspan") || strings.Contains(body, "rowspan") {
+		return nil
+	}
+	var rows [][]string
+	for len(body) > 0 {
+		if !strings.HasPrefix(body, "<tr>") {
+			return nil
+		}
+		end := strings.Index(body, "</tr>")
+		if end < 0 {
+			return nil
+		}
+		rowBody := body[len("<tr>"):end]
+		body = body[end+len("</tr>"):]
+		var cells []string
+		for len(rowBody) > 0 {
+			if !strings.HasPrefix(rowBody, "<td>") {
+				return nil
+			}
+			cellEnd := strings.Index(rowBody, "</td>")
+			if cellEnd < 0 {
+				return nil
+			}
+			cells = append(cells, html.UnescapeString(rowBody[len("<td>"):cellEnd]))
+			rowBody = rowBody[cellEnd+len("</td>"):]
+		}
+		if len(cells) == 0 || (len(rows) > 0 && len(cells) != len(rows[0])) {
+			return nil
+		}
+		rows = append(rows, cells)
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	return rows
+}
+
+func restoredTablesDraw(tables []RestoredTable) bool {
+	for _, table := range tables {
+		if table.W >= 1 && table.H >= 1 && len(table.Cells) > 0 && len(table.Cells[0]) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+type pageRect struct {
+	X, Y, W, H float64
+}
+
+func drawnFormulaRects(lines []PlacedScanLine, pictures []RestoredPicture, blocks []RestoredLayout) []pageRect {
+	var out []pageRect
+	for _, block := range blocks {
+		if restoredLayoutDrawn(block) {
+			out = append(out, pageRect{X: block.X, Y: block.Y, W: block.W, H: block.H})
+		}
+	}
 	for _, line := range lines {
 		text := strings.TrimSpace(line.Text)
-		size := scanOverlayFontSize(line.W, line.H, text, line.Formula)
-		if text == "" || size < 1 {
+		if !line.Formula || text == "" || line.W < 1 || line.H < 1 {
 			continue
 		}
-		if err := pdf.SetFont(family, "", size); err != nil {
-			return err
+		if lineUnderPicture(line, pictures) || lineUnderLayout(line, blocks) {
+			continue
 		}
-		pdf.SetXY(line.X, line.Y)
-		if err := pdf.CellWithOption(&gopdf2.Rect{W: line.W, H: line.H}, text, gopdf2.CellOption{
-			Align:        gopdf2.Left | gopdf2.Middle,
-			Transparency: tr,
-		}); err != nil {
+		out = append(out, pageRect{X: line.X, Y: line.Y, W: line.W, H: line.H})
+	}
+	return out
+}
+
+func rectsOverlap(a, b pageRect) bool {
+	if a.W < 1 || a.H < 1 || b.W < 1 || b.H < 1 {
+		return false
+	}
+	return a.X < b.X+b.W && b.X < a.X+a.W && a.Y < b.Y+b.H && b.Y < a.Y+a.H
+}
+
+func tableCellIndex(table RestoredTable, x, y float64) (int, int, bool) {
+	rows := len(table.Cells)
+	if table.W < 1 || table.H < 1 || rows == 0 || len(table.Cells[0]) == 0 {
+		return 0, 0, false
+	}
+	if x < table.X || y < table.Y || x > table.X+table.W || y > table.Y+table.H {
+		return 0, 0, false
+	}
+	cols := len(table.Cells[0])
+	colW := table.W / float64(cols)
+	rowH := table.H / float64(rows)
+	if colW <= 0 || rowH <= 0 {
+		return 0, 0, false
+	}
+	c := int((x - table.X) / colW)
+	r := int((y - table.Y) / rowH)
+	if c >= cols {
+		c = cols - 1
+	}
+	if r >= rows {
+		r = rows - 1
+	}
+	if c < 0 || r < 0 {
+		return 0, 0, false
+	}
+	return r, c, true
+}
+
+func tableCellRect(table RestoredTable, row, col int) pageRect {
+	rows := len(table.Cells)
+	cols := len(table.Cells[0])
+	return pageRect{
+		X: table.X + float64(col)*table.W/float64(cols),
+		Y: table.Y + float64(row)*table.H/float64(rows),
+		W: table.W / float64(cols),
+		H: table.H / float64(rows),
+	}
+}
+
+// cellSkipsJoinedText reports a cell whose joined string would run through a
+// formula. The other lines in that cell are drawn from their own rectangles.
+func cellSkipsJoinedText(table RestoredTable, row, col int, lines []PlacedScanLine, pictures []RestoredPicture, blocks []RestoredLayout, formulas []pageRect) bool {
+	if !cellOverlapsFormula(table, row, col, formulas) {
+		return false
+	}
+	saw := false
+	for _, line := range lines {
+		if line.Formula || strings.TrimSpace(line.Text) == "" {
+			continue
+		}
+		r, c, ok := tableCellIndex(table, line.X+line.W/2, line.Y+line.H/2)
+		if !ok || r != row || c != col {
+			continue
+		}
+		if !lineCanLeaveTable(line, pictures, blocks) {
+			return false
+		}
+		saw = true
+	}
+	return saw
+}
+
+func cellOverlapsFormula(table RestoredTable, row, col int, formulas []pageRect) bool {
+	cell := tableCellRect(table, row, col)
+	for _, formula := range formulas {
+		if rectsOverlap(cell, formula) {
+			return true
+		}
+	}
+	return false
+}
+
+func lineCanLeaveTable(line PlacedScanLine, pictures []RestoredPicture, blocks []RestoredLayout) bool {
+	text := strings.TrimSpace(line.Text)
+	if text == "" || line.Formula || line.W < 1 || line.H < 1 || scanOverlayFontSize(line.W, line.H, text, false) < 1 {
+		return false
+	}
+	return !lineUnderPicture(line, pictures) && !lineUnderLayout(line, blocks)
+}
+
+// cellTextBox is the rectangle a joined cell string is fitted into. The
+// rectangle sits inside the cell. A formula that crosses it is removed, and
+// the string uses the free rectangle where a full-width run fits largest, so
+// a formula across the top of the cell leaves the band underneath. No free
+// rectangle that can hold the run at one point means the joined string is
+// not painted.
+func cellTextBox(table RestoredTable, row, col int, text string, formulas []pageRect) (x, y, w, h float64, ok bool) {
+	rows := len(table.Cells)
+	if table.W < 1 || table.H < 1 || rows == 0 || row < 0 || row >= rows {
+		return 0, 0, 0, 0, false
+	}
+	cols := len(table.Cells[0])
+	if cols == 0 || col < 0 || col >= cols {
+		return 0, 0, 0, 0, false
+	}
+	colW := table.W / float64(cols)
+	rowH := table.H / float64(rows)
+	w = colW * 0.92
+	h = rowH * 0.86
+	x = table.X + float64(col)*colW + (colW-w)/2
+	y = table.Y + float64(row)*rowH + (rowH-h)/2
+	box := pageRect{X: x, Y: y, W: w, H: h}
+	return freeTextBox(box, text, formulas)
+}
+
+// joinedRunSize estimates the font size drawScanLineText would use. A CJK
+// glyph is about one em wide, which is enough to choose among free rectangles.
+func joinedRunSize(w, h float64, text string) float64 {
+	n := utf8.RuneCountInString(strings.TrimSpace(text))
+	if n < 1 || w < 1 || h < 1 {
+		return 0
+	}
+	size := h * 0.92
+	if size > 72 {
+		size = 72
+	}
+	if float64(n)*size > w {
+		size = w / float64(n)
+	}
+	if size < 0 {
+		return 0
+	}
+	return size
+}
+
+func sortedFloats(vs []float64) []float64 {
+	sort.Float64s(vs)
+	out := vs[:0]
+	for _, v := range vs {
+		if len(out) == 0 || v-out[len(out)-1] > 0.01 {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// freeTextBox returns the free rectangle inside box where text fits at the
+// largest size. A box with no formula overlap is returned whole, including
+// when the run would have to shrink under one point.
+func freeTextBox(box pageRect, text string, formulas []pageRect) (x, y, w, h float64, ok bool) {
+	if box.W < 1 || box.H < 1 {
+		return 0, 0, 0, 0, false
+	}
+	xs := []float64{box.X, box.X + box.W}
+	ys := []float64{box.Y, box.Y + box.H}
+	var cuts []pageRect
+	for _, formula := range formulas {
+		if !rectsOverlap(box, formula) {
+			continue
+		}
+		x0, y0 := formula.X, formula.Y
+		x1, y1 := formula.X+formula.W, formula.Y+formula.H
+		if x0 < box.X {
+			x0 = box.X
+		}
+		if y0 < box.Y {
+			y0 = box.Y
+		}
+		if x1 > box.X+box.W {
+			x1 = box.X + box.W
+		}
+		if y1 > box.Y+box.H {
+			y1 = box.Y + box.H
+		}
+		if x1-x0 < 0.01 || y1-y0 < 0.01 {
+			continue
+		}
+		cuts = append(cuts, pageRect{X: x0, Y: y0, W: x1 - x0, H: y1 - y0})
+		xs = append(xs, x0, x1)
+		ys = append(ys, y0, y1)
+	}
+	if len(cuts) == 0 {
+		return box.X, box.Y, box.W, box.H, true
+	}
+	xs = sortedFloats(xs)
+	ys = sortedFloats(ys)
+	nx, ny := len(xs)-1, len(ys)-1
+	if nx < 1 || ny < 1 {
+		return 0, 0, 0, 0, false
+	}
+	blocked := make([]bool, nx*ny)
+	for j := 0; j < ny; j++ {
+		for i := 0; i < nx; i++ {
+			cx := (xs[i] + xs[i+1]) / 2
+			cy := (ys[j] + ys[j+1]) / 2
+			for _, cut := range cuts {
+				if cx >= cut.X && cx <= cut.X+cut.W && cy >= cut.Y && cy <= cut.Y+cut.H {
+					blocked[j*nx+i] = true
+					break
+				}
+			}
+		}
+	}
+	bestSize := -1.0
+	for i0 := 0; i0 < nx; i0++ {
+		for i1 := i0 + 1; i1 <= nx; i1++ {
+			for j0 := 0; j0 < ny; j0++ {
+				for j1 := j0 + 1; j1 <= ny; j1++ {
+					free := true
+					for j := j0; j < j1 && free; j++ {
+						for i := i0; i < i1; i++ {
+							if blocked[j*nx+i] {
+								free = false
+								break
+							}
+						}
+					}
+					if !free {
+						continue
+					}
+					rw, rh := xs[i1]-xs[i0], ys[j1]-ys[j0]
+					if rw < 1 || rh < 1 {
+						continue
+					}
+					size := joinedRunSize(rw, rh, text)
+					better := size > bestSize+1e-3
+					if !better && math.Abs(size-bestSize) <= 1e-3 {
+						better = rw > w+1e-3 || (math.Abs(rw-w) <= 1e-3 && (xs[i0] < x-1e-3 || (math.Abs(xs[i0]-x) <= 1e-3 && ys[j0] < y)))
+					}
+					if better {
+						bestSize = size
+						x, y, w, h = xs[i0], ys[j0], rw, rh
+					}
+				}
+			}
+		}
+	}
+	if bestSize < 1 || w < 1 || h < 1 {
+		return 0, 0, 0, 0, false
+	}
+	return x, y, w, h, true
+}
+
+func drawRestoredTables(pdf *gopdf2.GoPdf, family string, tables []RestoredTable, lines []PlacedScanLine, pictures []RestoredPicture, blocks []RestoredLayout, formulas []pageRect) error {
+	pdf.SetStrokeColor(0, 0, 0)
+	pdf.SetFillColor(255, 255, 255)
+	pdf.SetLineWidth(0.6)
+	for _, table := range tables {
+		cells := table.Cells
+		if table.W < 1 || table.H < 1 || len(cells) == 0 || len(cells[0]) == 0 {
+			continue
+		}
+		rows := len(cells)
+		cols := len(cells[0])
+		pdf.RectFromUpperLeftWithStyle(table.X, table.Y, table.W, table.H, "FD")
+		rowH := table.H / float64(rows)
+		colW := table.W / float64(cols)
+		for r := 1; r < rows; r++ {
+			y := table.Y + float64(r)*rowH
+			pdf.Line(table.X, y, table.X+table.W, y)
+		}
+		for c := 1; c < cols; c++ {
+			x := table.X + float64(c)*colW
+			pdf.Line(x, table.Y, x, table.Y+table.H)
+		}
+		pdf.SetFillColor(0, 0, 0)
+		for r := 0; r < rows; r++ {
+			if len(cells[r]) != cols {
+				continue
+			}
+			for c := 0; c < cols; c++ {
+				if cellSkipsJoinedText(table, r, c, lines, pictures, blocks, formulas) {
+					continue
+				}
+				text := strings.TrimSpace(cells[r][c])
+				if text == "" {
+					continue
+				}
+				x, y, cellW, cellH, ok := cellTextBox(table, r, c, text, formulas)
+				if !ok {
+					continue
+				}
+				if err := drawScanLineText(pdf, family, x, y, cellW, cellH, text); err != nil {
+					return err
+				}
+			}
+		}
+		pdf.SetFillColor(255, 255, 255)
+	}
+	pdf.SetFillColor(0, 0, 0)
+	return nil
+}
+
+func lineUnderTable(line PlacedScanLine, tables []RestoredTable) bool {
+	// A recognized formula is typeset in its own rectangle. The table grid
+	// keeps the rules around it and does not replace that typesetting.
+	if line.Formula || !restoredTablesDraw(tables) {
+		return false
+	}
+	cx := line.X + line.W/2
+	cy := line.Y + line.H/2
+	for _, table := range tables {
+		if table.W < 1 || table.H < 1 || len(table.Cells) == 0 {
+			continue
+		}
+		if cx >= table.X && cx <= table.X+table.W && cy >= table.Y && cy <= table.Y+table.H {
+			return true
+		}
+	}
+	return false
+}
+
+// lineReplacedByTable reports a prose line whose text is the joined cell
+// string. A cell the formula rectangle crosses keeps those lines on their own
+// rectangles instead, so the joined string is not painted through the formula.
+func lineReplacedByTable(line PlacedScanLine, tables []RestoredTable, lines []PlacedScanLine, pictures []RestoredPicture, blocks []RestoredLayout, formulas []pageRect) bool {
+	if !lineUnderTable(line, tables) {
+		return false
+	}
+	cx := line.X + line.W/2
+	cy := line.Y + line.H/2
+	for _, table := range tables {
+		row, col, ok := tableCellIndex(table, cx, cy)
+		if !ok {
+			continue
+		}
+		if cellSkipsJoinedText(table, row, col, lines, pictures, blocks, formulas) {
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+// restoredLayoutDrawn is a formula box that replaces the lines inside it.
+// A prose block is not drawn here: each OCR line already has its own page
+// rectangle, and stacking the block from its origin would move those lines.
+func restoredLayoutDrawn(block RestoredLayout) bool {
+	return block.Formula && block.W >= 1 && block.H >= 1 && strings.TrimSpace(block.Text) != ""
+}
+
+func restoredLayoutDraws(blocks []RestoredLayout) bool {
+	for _, block := range blocks {
+		if restoredLayoutDrawn(block) {
+			return true
+		}
+	}
+	return false
+}
+
+func drawRestoredLayout(pdf *gopdf2.GoPdf, family string, blocks []RestoredLayout) error {
+	for _, block := range blocks {
+		if !restoredLayoutDrawn(block) {
+			continue
+		}
+		if err := drawFormulaBox(pdf, family, block.X, block.Y, block.W, block.H, strings.TrimSpace(block.Text)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func lineUnderLayout(line PlacedScanLine, blocks []RestoredLayout) bool {
+	cx := line.X + line.W/2
+	cy := line.Y + line.H/2
+	for _, block := range blocks {
+		if !restoredLayoutDrawn(block) {
+			continue
+		}
+		if cx >= block.X && cx <= block.X+block.W && cy >= block.Y && cy <= block.Y+block.H {
+			return true
+		}
+	}
+	return false
+}
+
+func drawPlacedScanLines(pdf *gopdf2.GoPdf, family string, lines []PlacedScanLine, pictures []RestoredPicture, tables []RestoredTable, blocks []RestoredLayout, formulas []pageRect, formulaPass bool) error {
+	pdf.SetFillColor(0, 0, 0)
+	for _, line := range lines {
+		if line.Formula != formulaPass {
+			continue
+		}
+		text := strings.TrimSpace(line.Text)
+		if text == "" || scanOverlayFontSize(line.W, line.H, text, line.Formula) < 1 {
+			continue
+		}
+		if lineUnderPicture(line, pictures) || lineReplacedByTable(line, tables, lines, pictures, blocks, formulas) || lineUnderLayout(line, blocks) {
+			continue
+		}
+		var err error
+		if line.Formula {
+			err = drawFormulaBox(pdf, family, line.X, line.Y, line.W, line.H, text)
+		} else {
+			err = drawScanLineText(pdf, family, line.X, line.Y, line.W, line.H, text)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// drawScanLineText paints one OCR line in its own box. The size follows the
+// line height, then shrinks so the string fits the width when the font can
+// do that at one point or larger. The whole string stays one text run.
+func drawScanLineText(pdf *gopdf2.GoPdf, family string, x, y, w, h float64, text string) error {
+	size := scanOverlayFontSize(w, h, text, false)
+	if size < 1 {
+		return nil
+	}
+	if err := pdf.SetFont(family, "", size); err != nil {
+		return err
+	}
+	if width, err := pdf.MeasureTextWidth(text); err == nil && width > w && w > 0 {
+		fitted := size * w / width
+		if fitted < 1 {
+			fitted = 1
+		}
+		if fitted < size {
+			size = fitted
+			if err := pdf.SetFont(family, "", size); err != nil {
+				return err
+			}
+		}
+	}
+	pdf.SetFillColor(0, 0, 0)
+	pdf.SetXY(x, y)
+	return pdf.CellWithOption(&gopdf2.Rect{W: w, H: h}, text, gopdf2.CellOption{
+		Align: gopdf2.Left | gopdf2.Middle,
+	})
+}
+
+// drawFormulaBox paints FormulaNet LaTeX inside the formula's rectangle.
+// The rectangle is filled first, so a table rule or a cell string already
+// drawn there does not show through the glyphs. The existing math transform
+// turns the commands into the glyphs the page shows. A result with no markup
+// stays one text run, so a plain line is not split apart.
+func drawFormulaBox(pdf *gopdf2.GoPdf, family string, x, y, w, h float64, latex string) error {
+	if w >= 1 && h >= 1 {
+		pdf.SetFillColor(255, 255, 255)
+		pdf.RectFromUpperLeftWithStyle(x, y, w, h, "F")
+	}
+	pdf.SetFillColor(0, 0, 0)
+	presented := docgen.PresentFormula(latex)
+	if !strings.Contains(presented, "<") {
+		return drawScanLineText(pdf, family, x, y, w, h, strings.TrimSpace(latex))
+	}
+	plain := formulaPlainText(presented)
+	if plain == "" {
+		plain = strings.TrimSpace(latex)
+	}
+	// A superscript rises 0.35em above a top-aligned 1.2em line. The rise
+	// has to stay inside the formula rectangle. InsertHTMLBox records that
+	// rise and does not write a zero rise afterwards, so the following
+	// glyphs stay on the superscript baseline. The runs are placed in their
+	// own boxes instead. A box too short to spare the rise keeps the full
+	// rectangle, so the formula is still painted.
+	size := h / (formulaHTMLLine + formulaSupRise)
+	if size > 36 {
+		size = 36
+	}
+	if size < 1 {
+		size = 1
+	}
+	drawn, err := drawFormulaRuns(pdf, family, x, y, w, h, presented, size)
+	if err != nil {
+		return err
+	}
+	if !drawn {
+		return drawScanLineText(pdf, family, x, y, w, h, plain)
+	}
+	return nil
+}
+
+// formulaHTMLLine, formulaSupRise, and formulaSubDrop match the HTML box
+// the scan writer used to call: a line is 1.2em, a superscript rises 0.35em
+// of the parent size, and a subscript drops 0.25em at 0.7 of that size.
+const (
+	formulaHTMLLine = 1.2
+	formulaSupRise  = 0.35
+	formulaSubDrop  = 0.25
+	formulaScript   = 0.7
+)
+
+type formulaPiece struct {
+	text    string
+	sizeMul float64
+	riseMul float64
+}
+
+type formulaStyle struct {
+	tag     string
+	sizeMul float64
+	riseMul float64
+}
+
+// formulaPieces reads the tags PresentFormula emits. Anything else asks the
+// caller to paint the plain text, so an unknown tag is not dropped.
+func formulaPieces(src string) ([]formulaPiece, bool) {
+	stack := []formulaStyle{{sizeMul: 1}}
+	var pieces []formulaPiece
+	for i := 0; i < len(src); {
+		if src[i] != '<' {
+			j := strings.IndexByte(src[i:], '<')
+			if j < 0 {
+				j = len(src) - i
+			}
+			text := html.UnescapeString(src[i : i+j])
+			if text != "" {
+				top := stack[len(stack)-1]
+				pieces = append(pieces, formulaPiece{text: text, sizeMul: top.sizeMul, riseMul: top.riseMul})
+			}
+			i += j
+			continue
+		}
+		end := strings.IndexByte(src[i:], '>')
+		if end < 0 {
+			return nil, false
+		}
+		raw := strings.TrimSpace(src[i+1 : i+end])
+		i += end + 1
+		if raw == "" {
+			return nil, false
+		}
+		closing := raw[0] == '/'
+		if closing {
+			raw = strings.TrimSpace(raw[1:])
+		}
+		name := raw
+		if k := strings.IndexAny(name, " \t/"); k >= 0 {
+			name = name[:k]
+		}
+		name = strings.ToLower(name)
+		if closing {
+			if len(stack) == 1 || stack[len(stack)-1].tag != name {
+				return nil, false
+			}
+			stack = stack[:len(stack)-1]
+			continue
+		}
+		parent := stack[len(stack)-1]
+		next := parent
+		next.tag = name
+		switch name {
+		case "span":
+		case "sup":
+			next.sizeMul = parent.sizeMul * formulaScript
+			next.riseMul = parent.sizeMul * formulaSupRise
+		case "sub":
+			next.sizeMul = parent.sizeMul * formulaScript
+			next.riseMul = -parent.sizeMul * formulaSubDrop
+		default:
+			return nil, false
+		}
+		stack = append(stack, next)
+	}
+	if len(stack) != 1 || len(pieces) == 0 {
+		return nil, false
+	}
+	return pieces, true
+}
+
+// drawFormulaRuns paints each formula run at its own height. The shift is
+// the box position, so a later run does not inherit a superscript rise.
+func drawFormulaRuns(pdf *gopdf2.GoPdf, family string, x, y, w, h float64, presented string, size float64) (bool, error) {
+	pieces, ok := formulaPieces(presented)
+	if !ok {
+		return false, nil
+	}
+	widths := make([]float64, len(pieces))
+	total := 0.0
+	for i, piece := range pieces {
+		if err := pdf.SetFont(family, "", size*piece.sizeMul); err != nil {
+			return false, err
+		}
+		width, err := pdf.MeasureTextWidth(piece.text)
+		if err != nil {
+			return false, err
+		}
+		widths[i] = width
+		total += width
+	}
+	final := size
+	if total > w && w > 0 && total > 0 {
+		fitted := size * w / total
+		if fitted < 1 {
+			fitted = 1
+		}
+		if fitted < final {
+			scale := fitted / size
+			final = fitted
+			for i := range widths {
+				widths[i] *= scale
+			}
+		}
+	}
+	top := y
+	if pad := formulaSupRise * final; h-pad >= formulaHTMLLine*final-1e-3 {
+		top = y + pad
+	}
+	pdf.SetFillColor(0, 0, 0)
+	cursor := x
+	for i, piece := range pieces {
+		runSize := final * piece.sizeMul
+		if runSize < 0.01 || widths[i] <= 0 {
+			continue
+		}
+		if err := pdf.SetFont(family, "", runSize); err != nil {
+			return false, err
+		}
+		pdf.SetXY(cursor, top-piece.riseMul*final)
+		cellH := runSize
+		if cellH < 1 {
+			cellH = 1
+		}
+		if err := pdf.CellWithOption(&gopdf2.Rect{W: widths[i], H: cellH}, piece.text, gopdf2.CellOption{
+			Align: gopdf2.Left | gopdf2.Top,
+		}); err != nil {
+			return false, err
+		}
+		cursor += widths[i]
+	}
+	return true, nil
+}
+
+func formulaPlainText(html string) string {
+	var b strings.Builder
+	inTag := false
+	for _, r := range html {
+		switch {
+		case r == '<':
+			inTag = true
+		case r == '>':
+			inTag = false
+		case !inTag:
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(b.String())
 }

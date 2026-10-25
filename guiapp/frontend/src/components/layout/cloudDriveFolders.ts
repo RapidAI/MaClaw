@@ -43,7 +43,7 @@ const KNOWN_EXT = new Set<string>([
 ]);
 
 /** Real source suffix wins. A title suffix counts only when it is a known type, so "2026.10.05 纪要" stays a note. */
-function itemExtension(item: CloudDriveItem): string {
+export function cloudDriveItemExtension(item: CloudDriveItem): string {
   const sourceExt = fileExtFromName(String(item.source_filename || ''));
   if (sourceExt) return sourceExt;
   const titleExt = fileExtFromName(String(item.title || ''));
@@ -100,7 +100,7 @@ function classFromContentType(contentType: string): 'audio' | 'video' | 'image' 
 export function classifyCloudDriveItem(item: CloudDriveItem): { folder: CloudFolderId; category?: DocumentCategoryId } {
   if (item.type === 'audio') return { folder: 'audio' };
 
-  const ext = itemExtension(item);
+  const ext = cloudDriveItemExtension(item);
   const contentType = itemContentType(item);
   const fromType = classFromContentType(contentType);
   if (fromType === 'audio' || AUDIO_EXT.has(ext)) return { folder: 'audio' };
@@ -147,6 +147,29 @@ export function groupCloudDrive<T extends CloudDriveItem>(items: readonly T[]): 
 }
 
 export type CloudDriveGlyphKind = DocumentCategoryId | 'audio' | 'video' | 'image' | 'file';
+
+/** Suffix whose shell association paints a document type that has no suffix of its own. */
+const CATEGORY_EXT: Record<DocumentCategoryId, string> = {
+  pdf: '.pdf',
+  word: '.docx',
+  sheet: '.xlsx',
+  slides: '.pptx',
+  markdown: '.md',
+  text: '.txt',
+  web: '.html',
+  latex: '.tex',
+};
+
+/**
+ * Suffix that decides a row's icon. The file's own suffix wins; a document
+ * named without one still shows its type's icon rather than a generic sheet.
+ */
+export function cloudDriveIconExtension(item: CloudDriveItem): string {
+  const ext = cloudDriveItemExtension(item);
+  if (ext) return ext;
+  const classified = classifyCloudDriveItem(item);
+  return classified.category ? CATEGORY_EXT[classified.category] : '';
+}
 
 /** Icon kind for a row: document subtypes, media classes, image, or generic file. */
 export function cloudDriveGlyphKind(item: CloudDriveItem): CloudDriveGlyphKind {

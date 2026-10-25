@@ -4,6 +4,7 @@ import {
     CreateFileCompanionGroup,
     ImportFileCompanionShare,
     DeleteFileCompanionGroup,
+    DeleteFileCompanionProject,
     LeaveFileCompanionGroup,
     ListFileCompanionGroups,
     ListFileCompanionLibrary,
@@ -14,7 +15,9 @@ import {
     UpdateFileCompanionGroup,
     FileCompanionExportProject,
 } from "../../../wailsjs/go/main/App";
-import { loadPdfMarkCounts, loadPdfMarks, pdfMarkPathKey } from "./pdfMarks";
+import { useDialog } from "../CustomDialog";
+import { loadPdfMarkCounts, loadPdfMarks, pdfMarkPathKey, savePdfMarks } from "./pdfMarks";
+import { savePdfTranslations } from "./pdfTranslations";
 
 export type CompanionLibraryItem = {
     id: string;
@@ -497,6 +500,8 @@ export function CompanionLibraryView({
     onListed,
     onShareProject,
     onImportLink,
+    onProjectDeleted,
+    libraryDeleteGen,
     dialogOpen,
 }: {
     activePath: string;
@@ -507,12 +512,17 @@ export function CompanionLibraryView({
     onListed?: (listed: unknown) => void;
     onShareProject: (path: string) => void;
     onImportLink: (link: string) => void;
+    onProjectDeleted?: (path: string) => void;
+    // Bumped when a delete finishes. A list that started earlier must not paint
+    // that project, its marks, or its transcript back onto the screen.
+    libraryDeleteGen?: { current: number };
     dialogOpen?: boolean;
 }) {
     const [items, setItems] = useState<CompanionLibraryItem[]>([]);
     const [notice, setNotice] = useState("");
     const [loading, setLoading] = useState(true);
     const [rowBusy, setRowBusy] = useState<Record<string, string>>({});
+    const { showConfirm } = useDialog();
     const updatedRef = useRef(onShareUpdated);
     const listedRef = useRef(onListed);
     updatedRef.current = onShareUpdated;
@@ -521,11 +531,20 @@ export function CompanionLibraryView({
     // owns Escape, so the view must not exit on the same keypress.
     const dialogOpenRef = useRef(false);
     dialogOpenRef.current = dialogOpen === true;
+    // The delete confirm is the shared custom dialog. While it is open, Escape
+    // belongs to that dialog and must not also leave 文档管理.
+    const confirmOpenRef = useRef(false);
+    // showConfirm replaces a dialog that is already open and resolves the first
+    // one as cancel. A second click before React disables the button would
+    // close the real confirm and clear confirmOpenRef while it is still showing.
+    const deleteGate = useRef(false);
 
     const reload = useCallback(async () => {
+        const started = libraryDeleteGen?.current ?? 0;
         setLoading(true);
         try {
             const listed = await ListFileCompanionLibrary() as { items?: unknown[]; Items?: unknown[]; updates?: unknown; Updates?: unknown; removed?: unknown; Removed?: unknown };
+            if (libraryDeleteGen && libraryDeleteGen.current !== started) return;
             const next = Array.isArray(listed?.items) ? listed.items : Array.isArray(listed?.Items) ? listed.Items : [];
             setItems(next.map(readItem).filter((item): item is CompanionLibraryItem => item !== null));
             setNotice(textOf(listed as Record<string, unknown>, "notice", "Notice"));
@@ -537,7 +556,7 @@ export function CompanionLibraryView({
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [libraryDeleteGen]);
 
     useEffect(() => {
         void reload();
@@ -545,7 +564,7 @@ export function CompanionLibraryView({
 
     useEffect(() => {
         const onKey = (event: KeyboardEvent) => {
-            if (event.key !== "Escape" || dialogOpenRef.current) return;
+            if (event.key !== "Escape" || dialogOpenRef.current || confirmOpenRef.current) return;
             event.preventDefault();
             onExit();
         };
@@ -599,6 +618,54 @@ export function CompanionLibraryView({
             showToast(libraryError(err), "error", 6000);
         } finally {
             endRow(item.id);
+        }
+    };
+
+    const deleteRow = async (item: CompanionLibraryItem) => {
+        if (rowBusy[item.id] || deleteGate.current) return;
+        deleteGate.current = true;
+        try {
+            beginRow(item.id, "confirm");
+            const name = item.name.trim() || "这个项目";
+            confirmOpenRef.current = true;
+            let ok = false;
+            try {
+                ok = await showConfirm(
+                    `确认删除“${name}”？\n源文件会保留。本机的高亮、讨论和阅读记录会被清除。\n此操作不可撤销。`,
+                    "删除伴读数据",
+                    { confirmText: "删除", cancelText: "取消", confirmVariant: "danger" },
+                );
+            } finally {
+                confirmOpenRef.current = false;
+            }
+            if (!ok) {
+                endRow(item.id);
+                return;
+            }
+            setRowBusy((current) => ({ ...current, [item.id]: "delete" }));
+            try {
+                const raw = await DeleteFileCompanionProject(item.id) as Record<string, unknown>;
+                // Any list that started before this delete finished still has the
+                // project. Drop it. The reload below starts after the bump.
+                if (libraryDeleteGen) libraryDeleteGen.current += 1;
+                const path = textOf(raw, "path", "Path") || item.path;
+                const cleared = boolOf(raw, "cleared", "Cleared");
+                if (cleared && path) {
+                    savePdfMarks(path, []);
+                    savePdfTranslations(path, []);
+                    onProjectDeleted?.(path);
+                }
+                showToast(cleared ? "已删除伴读数据，源文件仍在" : "已从文档管理移除，源文件仍在", "success", 6000);
+            } catch (err) {
+                showToast(libraryError(err), "error", 6000);
+            }
+            try {
+                await reload();
+            } finally {
+                endRow(item.id);
+            }
+        } finally {
+            deleteGate.current = false;
         }
     };
 
@@ -693,6 +760,16 @@ export function CompanionLibraryView({
                             {busy === "export" ? "导出中…" : "导出"}
                         </button>
                     ) : null}
+                    <button
+                        type="button"
+                        className="file-companion-project-action"
+                        data-testid={`file-companion-library-delete-${item.id}`}
+                        disabled={Boolean(busy)}
+                        title="删除伴读数据，不删除源文件"
+                        onClick={() => { void deleteRow(item); }}
+                    >
+                        {busy === "delete" ? "删除中…" : "删除"}
+                    </button>
                 </div>
             </div>
         );
@@ -700,7 +777,7 @@ export function CompanionLibraryView({
 
     return (
         <div className="file-companion-dialog" data-testid="file-companion-library-panel" role="dialog" aria-modal="true" aria-labelledby="file-companion-library-title">
-            <div className="file-companion-dialog-scrim" data-testid="file-companion-library-scrim" onMouseDown={onExit} />
+            <div className="file-companion-dialog-scrim" data-testid="file-companion-library-scrim" onMouseDown={() => { if (confirmOpenRef.current) return; onExit(); }} />
             <div className="file-companion-dialog-card file-companion-library-dialog" ref={cardRef}>
                 <header className="file-companion-dialog-head">
                     <div className="file-companion-dialog-heading">
@@ -1252,12 +1329,14 @@ export function CompanionShareDialog({
     name,
     showToast,
     onListed,
+    libraryDeleteGen,
     onClose,
 }: {
     path: string;
     name: string;
     showToast: LibraryToast;
     onListed?: (listed: unknown) => void;
+    libraryDeleteGen?: { current: number };
     onClose: () => void;
 }) {
     const [visibility, setVisibility] = useState<ShareAudience>("public");
@@ -1291,12 +1370,15 @@ export function CompanionShareDialog({
     }, [onClose]);
 
     const reload = useCallback(async () => {
+        const started = libraryDeleteGen?.current ?? 0;
         try {
-            listedRef.current?.(await ListFileCompanionLibrary());
+            const listed = await ListFileCompanionLibrary();
+            if (libraryDeleteGen && libraryDeleteGen.current !== started) return;
+            listedRef.current?.(listed);
         } catch {
             // The toast already carried the failure; the next refresh lands the row.
         }
-    }, []);
+    }, [libraryDeleteGen]);
 
     // loadPdfMarks reads and parses local storage, so the dialog parses once
     // per render and both actions send the same string.
@@ -1507,6 +1589,7 @@ export function CompanionImportDialog({
     onOpen,
     onShareUpdated,
     onListed,
+    libraryDeleteGen,
     onClose,
 }: {
     initialLink: string;
@@ -1514,6 +1597,7 @@ export function CompanionImportDialog({
     onOpen: (path: string) => void;
     onShareUpdated?: (update: CompanionShareUpdate) => void;
     onListed?: (listed: unknown) => void;
+    libraryDeleteGen?: { current: number };
     onClose: () => void;
 }) {
     const [importLink, setImportLink] = useState(initialLink);
@@ -1548,7 +1632,9 @@ export function CompanionImportDialog({
             }
             showToast("已导入文档库", "success", 6000);
             try {
-                listedRef.current?.(await ListFileCompanionLibrary());
+                const started = libraryDeleteGen?.current ?? 0;
+                const listed = await ListFileCompanionLibrary();
+                if (!libraryDeleteGen || libraryDeleteGen.current === started) listedRef.current?.(listed);
             } catch {
                 // The import toast already reported success; the next refresh lands the row.
             }

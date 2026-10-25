@@ -6,8 +6,9 @@ import { StatusGlyph } from '../ai/WorkbenchIcons';
 import { FilePreviewHost } from '../preview/FilePreviewHost';
 import { cloudDriveCompanionAvailable, filePreviewKindFromName, languageFromFileName, previewShouldMaterialize, rewriteMarkdownImageUrls } from '../preview/filePreviewKind';
 import { consumePendingFileLibraryOpen, OPEN_FILE_LIBRARY_EVENT, peekPendingFileLibraryOpen, type FileLibraryOpenDetail } from '../../utils/fileLibraryNavigation';
-import { classifyCloudDriveItem, cloudDriveGlyphKind, cloudDriveItemMatchesQuery, groupCloudDrive, type CloudDriveGroup, type CloudFolderId, type DocumentCategoryId } from './cloudDriveFolders';
-import { CloudDriveFileTypeGlyph, GlyphCloudDrive, GlyphClose, GlyphDropInbox, GlyphFolder, GlyphRefresh, GlyphSearch, GlyphUploadCloud } from './cloudDriveGlyphs';
+import { classifyCloudDriveItem, cloudDriveItemMatchesQuery, groupCloudDrive, type CloudDriveGroup, type CloudFolderId, type DocumentCategoryId } from './cloudDriveFolders';
+import { CloudDriveFileIcon } from './CloudDriveFileIcon';
+import { GlyphCloudDrive, GlyphClose, GlyphDropInbox, GlyphFolder, GlyphRefresh, GlyphSearch, GlyphUploadCloud } from './cloudDriveGlyphs';
 
 type ToolbarGlyphProps = { size?: number };
 
@@ -2043,7 +2044,7 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
           type="button"
           onClick={() => void selectDraft(d)}
         >
-          <CloudDriveFileTypeGlyph kind={cloudDriveGlyphKind(d)} />
+          <CloudDriveFileIcon item={d} />
           <span className="mdoc-item-main">
             <span className="mobile-documents-list-item-title mdoc-item-title">
               {d.title || d.id}

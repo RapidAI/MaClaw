@@ -1,3 +1,4 @@
+import { getSettingsTabOptions } from '../../config/settingsTabs';
 import { getToolLabel, isToolTab } from '../../config/toolCatalog';
 import { miniAppShortLabel } from '../../i18n/maclawMiniAppLabels';
 import { expertsPageTitle, toolsPageTitle, utilitiesPageTitle } from '../../i18n/utilitiesLabels';
@@ -13,21 +14,15 @@ const zhHant = {
     workflows: '\u5de5\u4f5c\u6d41',
 };
 
+/**
+ * Name the header after the active settings tab (same label the rail shows),
+ * so "AI 模型" reads as "AI 模型" instead of a generic 全局设置.
+ * Unknown / missing tab ids fall back to the generic settings title.
+ */
 function settingsPageTitle(lang: string, t: (key: string) => string, settingsTab?: string) {
-    if (settingsTab === 'knowledge') {
-        if (lang === 'zh-Hans') return '知识库';
-        if (lang === 'zh-Hant') return '知識庫';
-        return 'Knowledge base';
-    }
-    if (settingsTab === 'email') {
-        if (lang === 'zh-Hans') return '邮箱配置';
-        if (lang === 'zh-Hant') return '郵箱配置';
-        return 'Mailbox configuration';
-    }
-    if (settingsTab === 'im') {
-        if (lang === 'zh-Hans') return '即时通讯';
-        if (lang === 'zh-Hant') return '即時通訊';
-        return 'Messaging';
+    if (settingsTab) {
+        const match = getSettingsTabOptions(lang).find((tab) => tab.id === settingsTab);
+        if (match) return match.label;
     }
     return t('globalSettings');
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyCloudDriveItem, cloudDriveGlyphKind, cloudDriveItemMatchesQuery, groupCloudDrive, type CloudDriveItem } from '../cloudDriveFolders';
+import { classifyCloudDriveItem, cloudDriveGlyphKind, cloudDriveIconExtension, cloudDriveItemMatchesQuery, groupCloudDrive, type CloudDriveItem } from '../cloudDriveFolders';
 
 function item(partial: CloudDriveItem & { id: string }): CloudDriveItem {
   return partial;
@@ -142,5 +142,31 @@ describe('cloudDriveGlyphKind', () => {
     expect(cloudDriveGlyphKind(item({ id: 'i', source_filename: 'cover.png' }))).toBe('image');
     expect(cloudDriveGlyphKind(item({ id: 'j', title: '会议纪要' }))).toBe('text');
     expect(cloudDriveGlyphKind(item({ id: 'k', source_filename: 'data.bin' }))).toBe('file');
+  });
+});
+
+describe('cloudDriveIconExtension', () => {
+  it('uses the file suffix, since that is what the shell resolves an icon from', () => {
+    expect(cloudDriveIconExtension(item({ id: 'a', source_filename: 'spec.PDF' }))).toBe('.pdf');
+    expect(cloudDriveIconExtension(item({ id: 'b', source_filename: '合同.wps' }))).toBe('.wps');
+    expect(cloudDriveIconExtension(item({ id: 'c', source_filename: 'data.bin' }))).toBe('.bin');
+  });
+
+  it('gives a nameless document the suffix of its type', () => {
+    expect(cloudDriveIconExtension(item({ id: 'note', title: '周会纪要' }))).toBe('.txt');
+    expect(cloudDriveIconExtension(item({
+      id: 'bare-sheet',
+      title: '导出',
+      source_content_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    }))).toBe('.xlsx');
+  });
+
+  it('has no suffix for an unknown binary or a recording', () => {
+    expect(cloudDriveIconExtension(item({
+      id: 'blob',
+      title: '上传文件',
+      source_content_type: 'application/octet-stream',
+    }))).toBe('');
+    expect(cloudDriveIconExtension(item({ id: 'rec', type: 'audio', title: '录音' }))).toBe('');
   });
 });

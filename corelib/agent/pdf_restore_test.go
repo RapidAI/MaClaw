@@ -5,6 +5,7 @@ import (
 	"compress/zlib"
 	"fmt"
 	"image"
+	"image/jpeg"
 	"io"
 	"math"
 	"runtime"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/docgen"
 	gopdf2 "github.com/VantageDataChat/GoPDF2"
+	gopdffont "github.com/VantageDataChat/GoPDF2/fontmaker/core"
 )
 
 func TestPlaceScanLinesMapsImageBox(t *testing.T) {
@@ -28,6 +30,23 @@ func TestPlaceScanLinesMapsImageBox(t *testing.T) {
 	}
 }
 
+func TestPlacePixelBoxMatchesTheLine(t *testing.T) {
+	place := ScanImagePlacement{
+		X: 72, Y: 100, DisplayW: 200, DisplayH: 100, PixelW: 40, PixelH: 20, MirrorY: true,
+	}
+	got := PlaceScanLines(place, []ScanTextLine{{Text: "上", BBox: [4]int{0, 0, 10, 4}}})
+	x, y, w, h, ok := PlacePixelBox(place, 0, 0, 10, 4)
+	if !ok || len(got) != 1 {
+		t.Fatalf("placed=%+v ok=%v", got, ok)
+	}
+	if math.Abs(got[0].X-x) > 0.01 || math.Abs(got[0].Y-y) > 0.01 || math.Abs(got[0].W-w) > 0.01 || math.Abs(got[0].H-h) > 0.01 {
+		t.Fatalf("box=(%v,%v,%v,%v) line=%+v", x, y, w, h, got[0])
+	}
+	if y <= 100.01 {
+		t.Fatalf("mirror left the top row at y=%v", y)
+	}
+}
+
 func TestPlaceScanLinesKeepsWideFormula(t *testing.T) {
 	place := ScanImagePlacement{X: 72, Y: 100, DisplayW: 200, DisplayH: 100, PixelW: 40, PixelH: 20}
 	latex := strings.Repeat("a", 80)
@@ -35,7 +54,7 @@ func TestPlaceScanLinesKeepsWideFormula(t *testing.T) {
 		{Text: latex, Formula: true, BBox: [4]int{0, 0, 4, 4}},
 		{Text: latex, BBox: [4]int{8, 0, 4, 4}},
 	})
-	if len(got) != 1 || !got[0].Formula || got[0].Text != latex {
+	if len(got) != 2 || !got[0].Formula || got[0].Text != latex || got[1].Formula || got[1].Text != latex {
 		t.Fatalf("placed = %+v", got)
 	}
 	font, err := docgen.SystemCJKFontBytes()
@@ -54,9 +73,672 @@ func TestPlaceScanLinesKeepsWideFormula(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(text, latex) {
+	if strings.Count(text, latex) < 2 {
 		t.Fatalf("extracted = %q", text)
 	}
+}
+
+func TestParseRestoredTableHTML(t *testing.T) {
+	got := ParseRestoredTableHTML("<table><tr><td>A&amp;B</td><td></td></tr><tr><td>丙</td><td>丁</td></tr></table>")
+	if len(got) != 2 || len(got[0]) != 2 || got[0][0] != "A&B" || got[0][1] != "" || got[1][0] != "丙" || got[1][1] != "丁" {
+		t.Fatalf("cells = %#v", got)
+	}
+	if ParseRestoredTableHTML("") != nil || ParseRestoredTableHTML("<p>no</p>") != nil {
+		t.Fatal("non-table accepted")
+	}
+	if ParseRestoredTableHTML("<table><tr><td>a</td></tr><tr><td>b</td><td>c</td></tr></table>") != nil {
+		t.Fatal("uneven grid accepted")
+	}
+}
+
+func TestRestoreRebuiltPDFKeepsFiguresAndTables(t *testing.T) {
+	font, err := docgen.SystemCJKFontBytes()
+	if err != nil {
+		if runtime.GOOS != "windows" {
+			t.Skip(err.Error())
+		}
+		t.Fatal(err)
+	}
+	scan := mustJPEG(t, 300, 400)
+	src := buildRestorableScanPDF(t, scan, 20, 30, 550, 800)
+	doc := NewScanRestore(src)
+	view, err := doc.Page(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := PlaceScanLines(view.Placement, []ScanTextLine{
+		{Text: "图中", BBox: [4]int{10, 10, 20, 10}},
+		{Text: "格内", BBox: [4]int{100, 20, 40, 16}},
+		{Text: "图外", BBox: [4]int{10, 220, 40, 16}},
+	})
+	byText := map[string]PlacedScanLine{}
+	for _, line := range lines {
+		byText[line.Text] = line
+	}
+	inside, cell, outside := byText["图中"], byText["格内"], byText["图外"]
+	if inside.Text == "" || cell.Text == "" || outside.Text == "" {
+		t.Fatalf("lines = %+v", lines)
+	}
+	pic := RestoredPicture{X: inside.X - 2, Y: inside.Y - 2, W: inside.W + 4, H: inside.H + 4}
+	crop, ok := CropScanRegion(view.Payload, view.Placement, pic.X, pic.Y, pic.W, pic.H)
+	if !ok || len(crop) == 0 || bytes.Equal(crop, scan) {
+		t.Fatal("figure crop")
+	}
+	pic.Payload = crop
+	table := RestoredTable{
+		X: cell.X - 4, Y: cell.Y - 4, W: cell.W + 70, H: cell.H + 36,
+		Cells: ParseRestoredTableHTML("<table><tr><td>甲</td><td>乙</td></tr><tr><td>丙</td><td>丁</td></tr></table>"),
+	}
+	if !lineUnderPicture(inside, []RestoredPicture{pic}) || lineUnderPicture(outside, []RestoredPicture{pic}) {
+		t.Fatalf("picture coverage inside=%+v outside=%+v pic=%+v", inside, outside, pic)
+	}
+	if !lineUnderTable(cell, []RestoredTable{table}) || lineUnderTable(outside, []RestoredTable{table}) {
+		t.Fatalf("table coverage cell=%+v outside=%+v table=%+v", cell, table, outside)
+	}
+	out, err := RestoreRebuiltPDF(doc, map[int][]PlacedScanLine{1: lines}, map[int]RestoredPage{
+		1: {Pictures: []RestoredPicture{pic}, Tables: []RestoredTable{table}},
+	}, font)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(out, scan) {
+		t.Fatal("page-covering scan is still in the rebuilt pdf")
+	}
+	if !bytes.Contains(out, crop) {
+		t.Fatal("figure crop is missing")
+	}
+	if bytes.Contains(out, []byte("/ca 0.000")) {
+		t.Fatal("text is still invisible")
+	}
+	if !pdfContentHas(out, " l S\n") {
+		t.Fatal("table has no rules")
+	}
+	text, err := gopdf2.ExtractPageText(out, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "图外") || !strings.Contains(text, "甲") || !strings.Contains(text, "乙") || !strings.Contains(text, "丙") || !strings.Contains(text, "丁") {
+		t.Fatalf("extracted = %q", text)
+	}
+	if strings.Contains(text, "图中") || strings.Contains(text, "格内") {
+		t.Fatalf("covered line still drawn: %q", text)
+	}
+}
+
+func TestRestoreTypesetsAFormulaInsideATable(t *testing.T) {
+	font, err := docgen.SystemCJKFontBytes()
+	if err != nil {
+		if runtime.GOOS != "windows" {
+			t.Skip(err.Error())
+		}
+		t.Fatal(err)
+	}
+	src := buildRestorableScanPDF(t, mustJPEG(t, 40, 20), 72, 100, 200, 100)
+	doc := NewScanRestore(src)
+	// Right cell is x 170–270. The formula sits inside it. 旁 is in that cell
+	// and clear of the formula. 叠 overlaps the formula, with its center outside.
+	formula := PlacedScanLine{Text: `\frac{a}{b}`, Formula: true, X: 190, Y: 120, W: 60, H: 28}
+	beside := PlacedScanLine{Text: "旁", X: 174, Y: 104, W: 20, H: 12}
+	overlap := PlacedScanLine{Text: "叠", X: 160, Y: 108, W: 50, H: 20}
+	prose := PlacedScanLine{Text: "格外", X: 72, Y: 200, W: 40, H: 16}
+	table := RestoredTable{
+		X: 70, Y: 100, W: 200, H: 60,
+		Cells: ParseRestoredTableHTML("<table><tr><td>甲</td><td>乙</td></tr></table>"),
+	}
+	lines := []PlacedScanLine{formula, beside, overlap, prose}
+	if lineUnderTable(formula, []RestoredTable{table}) {
+		t.Fatal("formula line was swallowed by the table")
+	}
+	if !lineUnderTable(PlacedScanLine{Text: "甲", X: formula.X, Y: formula.Y, W: formula.W, H: formula.H}, []RestoredTable{table}) {
+		t.Fatal("prose inside the table was left out of the grid")
+	}
+	left := PlacedScanLine{Text: "左", X: 80, Y: 110, W: 20, H: 16}
+	rects := drawnFormulaRects(lines, nil, nil)
+	if lineReplacedByTable(beside, []RestoredTable{table}, lines, nil, nil, rects) {
+		t.Fatal("line in the formula cell stayed in the joined string")
+	}
+	if !lineReplacedByTable(left, []RestoredTable{table}, append(lines, left), nil, nil, rects) {
+		t.Fatal("line in the other cell left the grid")
+	}
+	for _, pages := range []map[int]RestoredPage{
+		{1: {Tables: []RestoredTable{table}}},
+		{1: {Tables: []RestoredTable{table}, Layout: []RestoredLayout{{
+			X: formula.X, Y: formula.Y, W: formula.W, H: formula.H,
+			Text: formula.Text, Formula: true,
+		}}}},
+	} {
+		out, err := RestoreRebuiltPDF(doc, map[int][]PlacedScanLine{1: lines}, pages, font)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text, err := gopdf2.ExtractPageText(out, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Count(text, "(a)/(b)") != 1 || strings.Contains(text, "frac") || strings.Contains(text, "乙") ||
+			strings.Count(text, "甲") != 1 || strings.Count(text, "旁") != 1 || strings.Count(text, "叠") != 1 || !strings.Contains(text, "格外") {
+			t.Fatalf("extracted = %q", text)
+		}
+		if !pdfContentHas(out, " re f\n") {
+			t.Fatal("formula box does not cover the table ink under it")
+		}
+	}
+}
+
+func TestRestoreKeepsNeighborCellTextOutOfTheFormula(t *testing.T) {
+	font, err := docgen.SystemCJKFontBytes()
+	if err != nil {
+		if runtime.GOOS != "windows" {
+			t.Skip(err.Error())
+		}
+		t.Fatal(err)
+	}
+	src := buildRestorableScanPDF(t, mustJPEG(t, 40, 20), 72, 100, 200, 100)
+	doc := NewScanRestore(src)
+	const label = "甲乙丙丁戊己庚辛壬癸"
+	const other = "子"
+	formula := PlacedScanLine{Text: `\frac{a}{b}`, Formula: true, X: 190, Y: 112, W: 60, H: 28}
+	table := RestoredTable{
+		X: 70, Y: 100, W: 200, H: 60,
+		Cells: ParseRestoredTableHTML("<table><tr><td>" + label + "</td><td>" + other + "</td></tr></table>"),
+	}
+	out, err := RestoreRebuiltPDF(doc, map[int][]PlacedScanLine{1: {formula}}, map[int]RestoredPage{
+		1: {Tables: []RestoredTable{table}},
+	}, font)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := gopdf2.ExtractPageText(out, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, label) || !strings.Contains(text, other) || strings.Count(text, "(a)/(b)") != 1 {
+		t.Fatalf("extracted = %q", text)
+	}
+	fragments, err := gopdf2.ExtractTextFromPage(out, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One TJ reports every glyph at the run origin, so the origin check does
+	// not see the advance. These full-width glyphs advance about one em, and
+	// the fitted size is what keeps each run out of the formula.
+	seen, otherSeen := 0, 0
+	var labelX, labelSize, otherX, otherSize float64
+	for _, frag := range fragments {
+		if frag.Text == "" {
+			continue
+		}
+		if strings.Contains(label, frag.Text) {
+			if seen == 0 {
+				labelX = frag.X
+				labelSize = frag.FontSize
+			}
+			if frag.X < 70 || frag.X >= 170 || math.Abs(frag.X-labelX) > 0.1 || math.Abs(frag.FontSize-labelSize) > 0.1 {
+				t.Fatalf("cell glyph %q at x=%.1f size=%.2f", frag.Text, frag.X, frag.FontSize)
+			}
+			seen++
+			continue
+		}
+		if frag.Text == other {
+			if frag.X < 170 || frag.X >= 190 {
+				t.Fatalf("other cell glyph at x=%.1f", frag.X)
+			}
+			otherX = frag.X
+			otherSize = frag.FontSize
+			otherSeen++
+		}
+	}
+	if seen < len([]rune(label)) || otherSeen < 1 {
+		t.Fatalf("label glyphs = %d other = %d fragments = %+v", seen, otherSeen, fragments)
+	}
+	// Ten full-width glyphs at the row-height size run far past x=170.
+	// The other cell's one glyph stops at the formula, which starts at 190.
+	if labelSize <= 1 || labelX+float64(len([]rune(label)))*labelSize >= 170 || otherX+otherSize > 190.5 {
+		t.Fatalf("label run x=%.1f size=%.2f other x=%.1f size=%.2f", labelX, labelSize, otherX, otherSize)
+	}
+}
+
+func TestCellTextBoxStopsAtTheFormula(t *testing.T) {
+	table := RestoredTable{
+		X: 70, Y: 100, W: 200, H: 60,
+		Cells: [][]string{{"左", "右"}},
+	}
+	x, _, w, h, ok := cellTextBox(table, 0, 0, "左", nil)
+	if !ok || math.Abs(x-74) > 0.01 || math.Abs(w-92) > 0.01 || math.Abs(h-51.6) > 0.01 {
+		t.Fatalf("open box = %.2f %.2f %.2f ok=%v", x, w, h, ok)
+	}
+	// One glyph keeps the tall span to the left of the formula, 74 to 120.
+	x, _, w, _, ok = cellTextBox(table, 0, 0, "左", []pageRect{{X: 120, Y: 110, W: 80, H: 30}})
+	if !ok || math.Abs(x-74) > 0.01 || math.Abs(w-46) > 0.01 {
+		t.Fatalf("cut box = %.2f %.2f ok=%v", x, w, ok)
+	}
+	// A long run fits larger in the band under that formula than in the
+	// narrow span beside it. The band is y=140, height 15.8, full width.
+	x, y, w, h, ok := cellTextBox(table, 0, 0, "甲乙丙丁戊己庚辛壬癸", []pageRect{{X: 120, Y: 110, W: 80, H: 30}})
+	if !ok || math.Abs(x-74) > 0.01 || math.Abs(y-140) > 0.01 || math.Abs(w-92) > 0.01 || math.Abs(h-15.8) > 0.01 {
+		t.Fatalf("band = %.2f %.2f %.2f %.2f ok=%v", x, y, w, h, ok)
+	}
+	// A formula across the top of the cell leaves the band underneath.
+	x, y, w, h, ok = cellTextBox(table, 0, 0, "甲乙丙丁戊己庚辛壬癸", []pageRect{{X: 70, Y: 100, W: 100, H: 36}})
+	if !ok || math.Abs(x-74) > 0.01 || math.Abs(y-136) > 0.01 || math.Abs(w-92) > 0.01 || math.Abs(h-19.8) > 0.01 {
+		t.Fatalf("under box = %.2f %.2f %.2f %.2f ok=%v", x, y, w, h, ok)
+	}
+	// A formula below this row is not in the text box.
+	x, _, w, _, ok = cellTextBox(table, 0, 0, "左", []pageRect{{X: 74, Y: 200, W: 40, H: 20}})
+	if !ok || math.Abs(w-92) > 0.01 {
+		t.Fatalf("distant formula changed the box: %.2f %.2f ok=%v", x, w, ok)
+	}
+	if _, _, _, _, ok = cellTextBox(table, 0, 0, "左", []pageRect{{X: 70, Y: 100, W: 100, H: 60}}); ok {
+		t.Fatal("text box remained under a formula that covers the cell")
+	}
+}
+
+func TestRestoreKeepsASuperscriptInsideTheFormula(t *testing.T) {
+	font, err := docgen.SystemCJKFontBytes()
+	if err != nil {
+		if runtime.GOOS != "windows" {
+			t.Skip(err.Error())
+		}
+		t.Fatal(err)
+	}
+	var face gopdffont.TTFParser
+	if err := face.ParseFontData(font); err != nil {
+		t.Fatal(err)
+	}
+	upem := float64(face.UnitsPerEm())
+	if upem < 1 {
+		t.Fatal("font has no em size")
+	}
+	ascend := float64(face.TypoAscender()) / upem
+	descend := float64(face.TypoDescender()) / upem
+	if !strings.Contains(docgen.PresentFormula(`x^{2}`), "<sup>2</sup>") {
+		t.Fatalf("presented = %q", docgen.PresentFormula(`x^{2}`))
+	}
+	src := buildRestorableScanPDF(t, mustJPEG(t, 40, 20), 72, 100, 200, 100)
+	doc := NewScanRestore(src)
+	_, pageH := doc.pageSize(1)
+	if pageH < 1 {
+		t.Fatal("page has no height")
+	}
+	// The formula covers the lower part of the left cell, so the joined
+	// string's only free rectangle is the band that ends on the formula top.
+	const label = "上"
+	formula := PlacedScanLine{Text: `x^{2}`, Formula: true, X: 70, Y: 130, W: 100, H: 30}
+	_, bandY, _, bandH, ok := cellTextBox(RestoredTable{
+		X: 70, Y: 100, W: 200, H: 60,
+		Cells: [][]string{{label, "子"}},
+	}, 0, 0, label, []pageRect{{X: formula.X, Y: formula.Y, W: formula.W, H: formula.H}})
+	if !ok || math.Abs(bandY-104.2) > 0.01 || math.Abs(bandH-25.8) > 0.01 || bandY+bandH > formula.Y+0.01 {
+		t.Fatalf("band = %.2f %.2f ok=%v", bandY, bandH, ok)
+	}
+	table := RestoredTable{
+		X: 70, Y: 100, W: 200, H: 60,
+		Cells: ParseRestoredTableHTML("<table><tr><td>" + label + "</td><td>子</td></tr></table>"),
+	}
+	out, err := RestoreRebuiltPDF(doc, map[int][]PlacedScanLine{1: {formula}}, map[int]RestoredPage{
+		1: {Tables: []RestoredTable{table}},
+	}, font)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fragments, err := gopdf2.ExtractTextFromPage(out, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Baselines are PDF Y, bottom to top. The superscript rise is already
+	// in that baseline. The em box has to stay inside the formula rectangle.
+	top := pageH - formula.Y
+	bottom := pageH - (formula.Y + formula.H)
+	var sawSup, sawBase, sawLabel bool
+	var supTop, baseY, supY float64
+	for _, frag := range fragments {
+		if frag.Text == "" || frag.Text == "\uFFFD" {
+			continue
+		}
+		glyphTop := frag.Y + ascend*frag.FontSize
+		glyphBottom := frag.Y + descend*frag.FontSize
+		switch frag.Text {
+		case "2":
+			sawSup = true
+			supTop = glyphTop
+			supY = frag.Y
+			if glyphTop > top+0.6 || glyphBottom < bottom-0.6 {
+				t.Fatalf("superscript leaves the formula: y=%.2f size=%.2f top=%.2f bottom=%.2f box %.2f..%.2f", frag.Y, frag.FontSize, glyphTop, glyphBottom, bottom, top)
+			}
+		case "x":
+			sawBase = true
+			baseY = frag.Y
+			if glyphTop > top+0.6 || glyphBottom < bottom-0.6 {
+				t.Fatalf("base leaves the formula: y=%.2f size=%.2f top=%.2f bottom=%.2f box %.2f..%.2f", frag.Y, frag.FontSize, glyphTop, glyphBottom, bottom, top)
+			}
+		case label:
+			sawLabel = true
+		}
+	}
+	if !sawSup || !sawBase || !sawLabel || supY <= baseY || supTop > top+0.6 {
+		t.Fatalf("sup=%v base=%v label=%v supY=%.2f baseY=%.2f supTop=%.2f formulaTop=%.2f fragments=%+v", sawSup, sawBase, sawLabel, supY, baseY, supTop, top, fragments)
+	}
+}
+
+func TestRestoreReturnsToTheBaselineAfterASuperscript(t *testing.T) {
+	font, err := docgen.SystemCJKFontBytes()
+	if err != nil {
+		if runtime.GOOS != "windows" {
+			t.Skip(err.Error())
+		}
+		t.Fatal(err)
+	}
+	var face gopdffont.TTFParser
+	if err := face.ParseFontData(font); err != nil {
+		t.Fatal(err)
+	}
+	upem := float64(face.UnitsPerEm())
+	ascend := float64(face.TypoAscender()) / upem
+	descend := float64(face.TypoDescender()) / upem
+	src := buildRestorableScanPDF(t, mustJPEG(t, 40, 20), 72, 100, 200, 100)
+	doc := NewScanRestore(src)
+	_, pageH := doc.pageSize(1)
+	sup := PlacedScanLine{Text: `x^{2}+y`, Formula: true, X: 72, Y: 80, W: 180, H: 36}
+	sub := PlacedScanLine{Text: `a_{i}+b`, Formula: true, X: 72, Y: 140, W: 180, H: 36}
+	out, err := RestoreRebuiltPDF(doc, map[int][]PlacedScanLine{1: {sup, sub}}, nil, font)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pdfContentHas(out, " Ts\n") {
+		t.Fatal("formula rise stayed in the text state")
+	}
+	fragments, err := gopdf2.ExtractTextFromPage(out, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var xY, yY, twoY, aY, bY float64
+	var xSize, twoSize, aTop, iTop, iSize float64
+	seen := map[string]bool{}
+	for _, frag := range fragments {
+		if frag.Text == "" || frag.Text == "\uFFFD" {
+			continue
+		}
+		glyphTop := frag.Y + ascend*frag.FontSize
+		glyphBottom := frag.Y + descend*frag.FontSize
+		var boxTop, boxBottom float64
+		switch frag.Text {
+		case "x", "2", "y":
+			boxTop = pageH - sup.Y
+			boxBottom = pageH - (sup.Y + sup.H)
+		case "a", "i", "b":
+			boxTop = pageH - sub.Y
+			boxBottom = pageH - (sub.Y + sub.H)
+		default:
+			continue
+		}
+		if glyphTop > boxTop+0.6 || glyphBottom < boxBottom-0.6 {
+			t.Fatalf("%q leaves its formula: y=%.2f size=%.2f top=%.2f bottom=%.2f box %.2f..%.2f", frag.Text, frag.Y, frag.FontSize, glyphTop, glyphBottom, boxBottom, boxTop)
+		}
+		switch frag.Text {
+		case "x":
+			xY, xSize = frag.Y, frag.FontSize
+		case "y":
+			yY = frag.Y
+		case "2":
+			twoY, twoSize = frag.Y, frag.FontSize
+		case "a":
+			aY, aTop = frag.Y, glyphTop
+		case "b":
+			bY = frag.Y
+		case "i":
+			iTop, iSize = glyphTop, frag.FontSize
+		}
+		seen[frag.Text] = true
+	}
+	if !seen["x"] || !seen["2"] || !seen["y"] || !seen["a"] || !seen["i"] || !seen["b"] {
+		t.Fatalf("glyphs = %+v fragments = %+v", seen, fragments)
+	}
+	// The glyph after the script shares the base baseline. The script itself
+	// sits off that line, at a smaller size. A subscript's baseline barely
+	// moves because the smaller ascender cancels most of the drop, so the
+	// lock is the lower glyph top.
+	if math.Abs(yY-xY) > 0.6 || twoY <= xY+2 || twoSize >= xSize*0.85 {
+		t.Fatalf("superscript run x=%.2f y=%.2f two=%.2f size %.2f/%.2f", xY, yY, twoY, twoSize, xSize)
+	}
+	if math.Abs(bY-aY) > 0.6 || iTop > aTop-2 || iSize >= xSize*0.85 {
+		t.Fatalf("subscript run a=%.2f b=%.2f iTop=%.2f aTop=%.2f iSize=%.2f", aY, bY, iTop, aTop, iSize)
+	}
+}
+
+func TestRestoreFitsCellTextBesideAnOverlappingFormula(t *testing.T) {
+	font, err := docgen.SystemCJKFontBytes()
+	if err != nil {
+		if runtime.GOOS != "windows" {
+			t.Skip(err.Error())
+		}
+		t.Fatal(err)
+	}
+	src := buildRestorableScanPDF(t, mustJPEG(t, 40, 20), 72, 100, 200, 100)
+	doc := NewScanRestore(src)
+	const label = "甲乙丙丁戊己庚辛壬癸"
+	formula := PlacedScanLine{Text: `\frac{a}{b}`, Formula: true, X: 120, Y: 112, W: 80, H: 28}
+	table := RestoredTable{
+		X: 70, Y: 100, W: 200, H: 60,
+		Cells: ParseRestoredTableHTML("<table><tr><td>" + label + "</td><td>子</td></tr></table>"),
+	}
+	out, err := RestoreRebuiltPDF(doc, map[int][]PlacedScanLine{1: {formula}}, map[int]RestoredPage{
+		1: {Tables: []RestoredTable{table}},
+	}, font)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := gopdf2.ExtractPageText(out, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, label) || strings.Count(text, "(a)/(b)") != 1 {
+		t.Fatalf("extracted = %q", text)
+	}
+	fragments, err := gopdf2.ExtractTextFromPage(out, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The narrow span beside the formula is about 4.6pt. The band under the
+	// formula fits the same run at about 9pt, and that band sits lower on
+	// the page than the formula glyphs.
+	seen := 0
+	var labelX, labelY, labelSize, formulaY float64
+	for _, frag := range fragments {
+		if frag.Text == "" {
+			continue
+		}
+		if strings.Contains(label, frag.Text) {
+			if seen == 0 {
+				labelX = frag.X
+				labelY = frag.Y
+				labelSize = frag.FontSize
+			}
+			seen++
+			continue
+		}
+		if strings.Contains("(a)/(b)", frag.Text) && formulaY == 0 {
+			formulaY = frag.Y
+		}
+	}
+	if seen < len([]rune(label)) || labelX >= 120 || labelSize <= 7 || labelSize >= 14 || formulaY == 0 || labelY > formulaY-15 {
+		t.Fatalf("label glyphs = %d x=%.1f y=%.1f size=%.2f formulaY=%.1f fragments = %+v", seen, labelX, labelY, labelSize, formulaY, fragments)
+	}
+}
+
+func TestRestoreTypesetsAFormulaInItsLayoutBox(t *testing.T) {
+	font, err := docgen.SystemCJKFontBytes()
+	if err != nil {
+		if runtime.GOOS != "windows" {
+			t.Skip(err.Error())
+		}
+		t.Fatal(err)
+	}
+	src := buildRestorableScanPDF(t, mustJPEG(t, 40, 20), 72, 100, 200, 100)
+	doc := NewScanRestore(src)
+	lines := []PlacedScanLine{
+		{Text: `\frac{a}{b}`, Formula: true, X: 72, Y: 100, W: 120, H: 40},
+		{Text: "旁边正文", X: 72, Y: 160, W: 80, H: 16},
+	}
+	out, err := RestoreRebuiltPDF(doc, map[int][]PlacedScanLine{1: lines}, map[int]RestoredPage{
+		1: {Layout: []RestoredLayout{{X: 70, Y: 98, W: 130, H: 46, Text: `\frac{a}{b}`, Formula: true}}},
+	}, font)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := gopdf2.ExtractPageText(out, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "(a)/(b)") || strings.Contains(text, "frac") {
+		t.Fatalf("formula = %q", text)
+	}
+	if !strings.Contains(text, "旁边正文") {
+		t.Fatalf("neighbor missing: %q", text)
+	}
+}
+
+func TestRestoreDrawsLayoutTextAtTheBlock(t *testing.T) {
+	font, err := docgen.SystemCJKFontBytes()
+	if err != nil {
+		if runtime.GOOS != "windows" {
+			t.Skip(err.Error())
+		}
+		t.Fatal(err)
+	}
+	src := buildRestorableScanPDF(t, mustJPEG(t, 40, 20), 72, 100, 200, 100)
+	doc := NewScanRestore(src)
+	lines := []PlacedScanLine{
+		{Text: "左栏", X: 72, Y: 100, W: 80, H: 16},
+		{Text: "右栏重复", X: 300, Y: 100, W: 80, H: 16},
+	}
+	out, err := RestoreRebuiltPDF(doc, map[int][]PlacedScanLine{1: lines}, map[int]RestoredPage{
+		1: {Layout: []RestoredLayout{{X: 280, Y: 90, W: 120, H: 40, Text: "右栏"}}},
+	}, font)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := gopdf2.ExtractPageText(out, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "左栏") || !strings.Contains(text, "右栏重复") {
+		t.Fatalf("extracted = %q", text)
+	}
+	fragments, err := gopdf2.ExtractTextFromPage(out, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ExtractTextFromPage returns one glyph at a time. The line box is the
+	// position: x stays 300, and the baseline matches the other line at the
+	// same y. A block reflow would start at x=280 with a larger size.
+	var leftY float64
+	var leftFound bool
+	var right strings.Builder
+	var rightY, rightSize float64
+	for _, frag := range fragments {
+		if math.Abs(frag.X-72) < 8 && (frag.Text == "左" || frag.Text == "栏") {
+			leftY = frag.Y
+			leftFound = true
+		}
+		if math.Abs(frag.X-300) < 8 {
+			right.WriteString(frag.Text)
+			rightY = frag.Y
+			rightSize = frag.FontSize
+		}
+	}
+	if !leftFound || !strings.Contains(right.String(), "右栏重复") || math.Abs(rightY-leftY) > 1 || rightSize >= 18 {
+		t.Fatalf("fragments = %+v", fragments)
+	}
+}
+
+func TestRestoreKeepsAnUnreadCoveringScan(t *testing.T) {
+	font, err := docgen.SystemCJKFontBytes()
+	if err != nil {
+		if runtime.GOOS != "windows" {
+			t.Skip(err.Error())
+		}
+		t.Fatal(err)
+	}
+	recognized := mustColorJPEG(t, 300, 400, 20, 40, 80)
+	waiting := mustColorJPEG(t, 320, 420, 180, 20, 20)
+	src := buildTwoScanPages(t, recognized, 20, 30, 550, 800, waiting, 20, 30, 550, 800)
+	doc := NewScanRestore(src)
+	view, err := doc.Page(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := PlaceScanLines(view.Placement, []ScanTextLine{{Text: "正文", BBox: [4]int{8, 8, 40, 16}}})
+	out, err := RestoreScannedPDFWith(doc, map[int][]PlacedScanLine{1: lines}, font)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(out, []byte("/ca 0.000")) {
+		t.Fatal("text is still invisible")
+	}
+	outDoc := NewScanRestore(out)
+	rebuilt, err := outDoc.Page(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rebuilt.Payload) > 0 {
+		t.Fatalf("recognized page still has a covering scan (%d bytes)", len(rebuilt.Payload))
+	}
+	waitingPage, err := outDoc.Page(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := bytes.Equal(waitingPage.Payload, waiting)
+	for _, img := range waitingPage.Images {
+		if bytes.Equal(img.Payload, waiting) {
+			kept = true
+		}
+	}
+	if !kept {
+		t.Fatal("unread page dropped its scan")
+	}
+}
+
+func mustColorJPEG(t *testing.T, w, h int, r, g, b uint8) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for i := 0; i < len(img.Pix); i += 4 {
+		img.Pix[i] = r
+		img.Pix[i+1] = g
+		img.Pix[i+2] = b
+		img.Pix[i+3] = 255
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 60}); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildTwoScanPages(t *testing.T, first []byte, x1, y1, w1, h1 float64, second []byte, x2, y2, w2, h2 float64) []byte {
+	t.Helper()
+	pdf := gopdf2.GoPdf{}
+	pdf.Start(gopdf2.Config{PageSize: *gopdf2.PageSizeA4})
+	for _, page := range []struct {
+		jpeg []byte
+		box  [4]float64
+	}{
+		{first, [4]float64{x1, y1, w1, h1}},
+		{second, [4]float64{x2, y2, w2, h2}},
+	} {
+		holder, err := gopdf2.ImageHolderByBytes(page.jpeg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pdf.AddPage()
+		if err := pdf.ImageByHolder(holder, page.box[0], page.box[1], &gopdf2.Rect{W: page.box[2], H: page.box[3]}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := pdf.GetBytesPdfReturnErr()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 func TestApplyFormulaLinesKeepsProse(t *testing.T) {
@@ -735,6 +1417,10 @@ func TestScanRestorePlacesATurnedImage(t *testing.T) {
 	if len(placed) != 1 || math.Abs(placed[0].X-72) > 0.6 || math.Abs(placed[0].Y-442) > 0.6 ||
 		math.Abs(placed[0].W-50) > 0.6 || math.Abs(placed[0].H-200) > 0.6 {
 		t.Fatalf("line = %+v", placed)
+	}
+	bx, by, bw, bh, ok := PlacePixelBox(view.Placement, 0, 0, 40, 10)
+	if !ok || math.Abs(bx-placed[0].X) > 0.01 || math.Abs(by-placed[0].Y) > 0.01 || math.Abs(bw-placed[0].W) > 0.01 || math.Abs(bh-placed[0].H) > 0.01 {
+		t.Fatalf("box=(%v,%v,%v,%v) line=%+v", bx, by, bw, bh, placed[0])
 	}
 	font := loadScanRestoreFont(t)
 	doc := NewScanRestore(direct)

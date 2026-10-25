@@ -50,7 +50,7 @@ var errFileCompanionRestoreOCRNotReady = errors.New("ocr not ready")
 
 var errFileCompanionRestoreFont = errors.New("no cjk font")
 
-const fileCompanionRestorePassword = "这份 PDF 有打开密码，无法在上面加文字层。"
+const fileCompanionRestorePassword = "这份 PDF 有打开密码，无法按原版式生成新的 PDF。"
 
 const fileCompanionRestoreOCRNotReadyText = "这是扫描件，本机识别尚未就绪。请稍后再试。不要安装其他识别引擎。"
 
@@ -254,7 +254,7 @@ func (a *App) restoreCompanionPDF(canonical string, args map[string]interface{},
 	if fontErr != nil {
 		return restoreCall{text: "没有找到可嵌入的中文字体，无法生成可选中的 PDF。"}
 	}
-	out, writeErr := agent.RestoreScannedPDFWith(doc, restoreLinesByPage(merged), font)
+	out, writeErr := agent.RestoreRebuiltPDF(doc, restoreLinesByPage(merged), restorePageAssets(doc, merged), font)
 	if writeErr != nil {
 		if errors.Is(writeErr, gopdf2.ErrEncryptedPDF) {
 			return restoreCall{text: fileCompanionRestorePassword}
@@ -318,26 +318,26 @@ func (a *App) finishRestoreFromCache(doc *agent.ScanRestore, cache map[int]fileC
 		}
 		if rest > 0 {
 			return restoreCall{
-				text: a.withLayoutDownloadNote(fmt.Sprintf("可选中的 PDF 已有当前进度，原文件没有改动。后面还有 %d 页。请再次调用 pdf_restore 继续。", rest) + waiting),
+				text: a.withLayoutDownloadNote(fmt.Sprintf("已按原版式生成新的 PDF，原文件没有改动。后面还有 %d 页。请再次调用 pdf_restore 继续。", rest) + waiting),
 				ok:   true,
 				rest: rest,
 			}
 		}
 		return restoreCall{
-			text: a.withLayoutDownloadNote("可选中的 PDF 已经生成，原文件没有改动。" + waiting),
+			text: a.withLayoutDownloadNote("已按原版式生成新的 PDF，原文件没有改动。" + waiting),
 			ok:   true,
 		}
 	}
 	if rest > 0 {
 		return restoreCall{
-			text:    a.withLayoutDownloadNote(fmt.Sprintf("可选中的 PDF 已有当前进度，原文件没有改动。后面还有 %d 页。请再次调用 pdf_restore 继续。结果文件：%s", rest, path) + waiting),
+			text:    a.withLayoutDownloadNote(fmt.Sprintf("已按原版式生成新的 PDF，原文件没有改动。后面还有 %d 页。请再次调用 pdf_restore 继续。结果文件：%s", rest, path) + waiting),
 			ok:      true,
 			rest:    rest,
 			pdfPath: path,
 		}
 	}
 	return restoreCall{
-		text:    a.withLayoutDownloadNote(fmt.Sprintf("可选中的 PDF 已经生成，原文件没有改动。结果文件：%s", path) + waiting),
+		text:    a.withLayoutDownloadNote(fmt.Sprintf("已按原版式生成新的 PDF，原文件没有改动。结果文件：%s", path) + waiting),
 		ok:      true,
 		pdfPath: path,
 	}
@@ -472,7 +472,7 @@ func layoutDownloadNote(pending bool) string {
 	if !pending {
 		return ""
 	}
-	return "版面模型还在下载。下载完成后再调用 pdf_restore，这些页会按阅读顺序整理。"
+	return "版面模型还在下载。下载完成后再调用 pdf_restore，这些页会按原来的位置还原。"
 }
 
 func (a *App) withLayoutDownloadNote(msg string) string {
@@ -578,20 +578,22 @@ func (a *App) applyRestoreLayout(entry *fileCompanionRestoreCachePage, view agen
 	if place.PixelW < 1 || place.PixelH < 1 || place.DisplayW < 1 || place.DisplayH < 1 {
 		return lines
 	}
-	scaleX := place.DisplayW / float64(place.PixelW)
-	scaleY := place.DisplayH / float64(place.PixelH)
 	tableWaiting := false
 	blocks := make([]restoreBlock, 0, len(regions))
-	for _, region := range regions {
+	for i, region := range regions {
+		x, y, w, h, ok := agent.PlacePixelBox(place, region.Box.X0, region.Box.Y0, region.Box.Width(), region.Box.Height())
+		if !ok {
+			continue
+		}
 		block := restoreBlock{
 			Order: region.Order,
 			Label: region.Label,
 			Score: region.Score,
-			X:     place.X + region.Box.X0*scaleX,
-			Y:     place.Y + region.Box.Y0*scaleY,
-			W:     region.Box.Width() * scaleX,
-			H:     region.Box.Height() * scaleY,
-			Text:  blockText(lines, region.Box),
+			X:     x,
+			Y:     y,
+			W:     w,
+			H:     h,
+			Text:  blockText(lines, regions, i),
 		}
 		if region.Label == doclayout.TableLabel {
 			if restoreTableModelReady() {
@@ -697,7 +699,9 @@ func restoreTableHTML(img image.Image, box doclayout.Box, lines []agent.ScanText
 	}
 	var tableLines []tablestruct.Line
 	for _, line := range lines {
-		if strings.TrimSpace(line.Text) == "" {
+		// A formula line is typeset in the formula rectangle. The grid keeps
+		// the rules, and the cell does not also store the raw command.
+		if strings.TrimSpace(line.Text) == "" || line.Formula {
 			continue
 		}
 		cx := float64(line.BBox[0]) + float64(line.BBox[2])/2
@@ -755,7 +759,21 @@ func cropLayoutBox(img image.Image, box doclayout.Box) (*image.RGBA, int, int) {
 	return dst, x0 - bounds.Min.X, y0 - bounds.Min.Y
 }
 
-func blockText(lines []agent.ScanTextLine, box doclayout.Box) string {
+// blockText keeps the lines whose earliest containing region is regionIndex.
+// Earliest means the smallest Order, with the input order breaking a tie.
+// That is the same owner ReadingOrder uses, so a line inside a formula and
+// the paragraph around it is stored once.
+func blockText(lines []agent.ScanTextLine, regions []doclayout.Region, regionIndex int) string {
+	if regionIndex < 0 || regionIndex >= len(regions) {
+		return ""
+	}
+	order := make([]int, len(regions))
+	for i := range regions {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		return regions[order[i]].Order < regions[order[j]].Order
+	})
 	var parts []string
 	for _, line := range lines {
 		text := strings.TrimSpace(line.Text)
@@ -764,7 +782,14 @@ func blockText(lines []agent.ScanTextLine, box doclayout.Box) string {
 		}
 		cx := float64(line.BBox[0]) + float64(line.BBox[2])/2
 		cy := float64(line.BBox[1]) + float64(line.BBox[3])/2
-		if box.Contains(cx, cy) {
+		owner := -1
+		for _, idx := range order {
+			if regions[idx].Box.Contains(cx, cy) {
+				owner = idx
+				break
+			}
+		}
+		if owner == regionIndex {
 			parts = append(parts, text)
 		}
 	}
@@ -931,6 +956,108 @@ func restoreLinesByPage(cache map[int]fileCompanionRestoreCachePage) map[int][]a
 	return out
 }
 
+func pictorialRestoreLabel(label string) bool {
+	switch label {
+	case "image", "chart", "seal", "header_image", "footer_image":
+		return true
+	default:
+		return false
+	}
+}
+
+// restorePageAssets crops pictorial layout boxes out of the scan and turns
+// wired-table HTML into a grid. A recognized formula is the only text block
+// copied onto the page: its LaTeX is typeset in the formula rectangle, and
+// the lines inside that rectangle are not drawn again. Prose stays on each
+// OCR line's own rectangle. A turned or mirrored figure cannot be cropped,
+// so that page keeps its photo. A box that is only too small does not.
+func restorePageAssets(doc *agent.ScanRestore, cache map[int]fileCompanionRestoreCachePage) map[int]agent.RestoredPage {
+	if doc == nil {
+		return nil
+	}
+	var out map[int]agent.RestoredPage
+	for page, entry := range cache {
+		var asset agent.RestoredPage
+		view, viewErr := doc.Page(page)
+		if viewErr == nil {
+			asset.Pictures, asset.HoldScan = pictorialCrops(view.Placement, view.Payload, entry.Blocks)
+		}
+		for _, block := range entry.Blocks {
+			if block.Label != doclayout.TableLabel || block.W < 1 || block.H < 1 {
+				continue
+			}
+			cells := agent.ParseRestoredTableHTML(block.HTML)
+			if len(cells) == 0 {
+				continue
+			}
+			asset.Tables = append(asset.Tables, agent.RestoredTable{
+				X: block.X, Y: block.Y, W: block.W, H: block.H, Cells: cells,
+			})
+		}
+		for _, block := range entry.Blocks {
+			if !blockIsRecognizedFormula(block, entry.Lines) || block.W < 1 || block.H < 1 {
+				continue
+			}
+			asset.Layout = append(asset.Layout, agent.RestoredLayout{
+				X: block.X, Y: block.Y, W: block.W, H: block.H,
+				Text: strings.TrimSpace(block.Text), Formula: true,
+			})
+		}
+		if len(asset.Pictures) > 0 || len(asset.Tables) > 0 || len(asset.Layout) > 0 || asset.HoldScan {
+			if out == nil {
+				out = make(map[int]agent.RestoredPage)
+			}
+			out[page] = asset
+		}
+	}
+	return out
+}
+
+// pictorialCrops returns the figures that can be cut out of an upright scan.
+// Hold is set only when the placement is turned or mirrored: the crop would
+// not land on the ink, so the page photo stays and no partial crop is drawn.
+func pictorialCrops(place agent.ScanImagePlacement, payload []byte, blocks []restoreBlock) ([]agent.RestoredPicture, bool) {
+	var pics []agent.RestoredPicture
+	wanted := 0
+	uncroppable := place.Turn != 0 || place.MirrorX || place.MirrorY
+	for _, block := range blocks {
+		if !pictorialRestoreLabel(block.Label) || block.W < 1 || block.H < 1 {
+			continue
+		}
+		wanted++
+		if uncroppable || len(payload) == 0 {
+			continue
+		}
+		cropped, ok := agent.CropScanRegion(payload, place, block.X, block.Y, block.W, block.H)
+		if !ok {
+			continue
+		}
+		pics = append(pics, agent.RestoredPicture{
+			Payload: cropped, X: block.X, Y: block.Y, W: block.W, H: block.H,
+		})
+	}
+	if wanted > 0 && uncroppable && len(payload) > 0 {
+		return nil, true
+	}
+	return pics, false
+}
+
+func blockIsRecognizedFormula(block restoreBlock, lines []agent.PlacedScanLine) bool {
+	if !doclayout.FormulaLabel(block.Label) {
+		return false
+	}
+	text := strings.TrimSpace(block.Text)
+	if text == "" {
+		return false
+	}
+	for _, line := range lines {
+		if line.Formula && strings.TrimSpace(line.Text) == text {
+			return true
+		}
+	}
+	return false
+}
+
 func countFormulaLines(pages []fileCompanionRestoreCachePage) int {
 	n := 0
 	for _, page := range pages {
@@ -1006,20 +1133,20 @@ type restoreMessage struct {
 
 func fileCompanionRestoreMessage(s restoreMessage) string {
 	var b strings.Builder
-	b.WriteString("已生成可选中文字的 PDF，原文件没有改动。")
+	b.WriteString("已按原版式生成新的 PDF，原文件没有改动。")
 	if pages := restoreDonePages(s.done); pages != "" {
 		b.WriteString("这次处理了")
 		b.WriteString(pages)
 		b.WriteString("。")
 	}
 	if s.formulaLines > 0 {
-		b.WriteString("公式行已用已接入的公式模型写成 LaTeX。")
+		b.WriteString("公式已用已接入的公式模型还原到原位置。")
 	}
 	if s.formulaPending {
 		b.WriteString(formulaPendingNote)
 	}
 	if s.layoutBlocks > 0 {
-		b.WriteString("版面已按阅读顺序整理。")
+		b.WriteString("版面已按原来的位置还原。")
 	}
 	if note := layoutDownloadNote(s.layoutPending); note != "" {
 		b.WriteString(note)
@@ -1782,9 +1909,9 @@ func (a *App) convertMessageFromCache(cache map[int]fileCompanionRestoreCachePag
 	complete := missing == 0 && rest == 0 && pdfPath != "" && len(cachedFailed) == 0
 	var b strings.Builder
 	if complete {
-		fmt.Fprintf(&b, "已生成可选中文字的 PDF，原文件没有改动。共 %d 页。", count)
+		fmt.Fprintf(&b, "已按原版式生成新的 PDF，原文件没有改动。共 %d 页。", count)
 	} else {
-		b.WriteString("已生成可选中文字的 PDF，原文件没有改动。")
+		b.WriteString("已按原版式生成新的 PDF，原文件没有改动。")
 		if missing > 0 {
 			fmt.Fprintf(&b, "后面还有 %d 页。请再点「转换」继续。", missing)
 		} else if rest > 0 || len(cachedFailed) > 0 {
@@ -1792,7 +1919,7 @@ func (a *App) convertMessageFromCache(cache map[int]fileCompanionRestoreCachePag
 		}
 	}
 	if cacheHasFormulaLine(cache) {
-		b.WriteString("公式行已用已接入的公式模型写成 LaTeX。")
+		b.WriteString("公式已用已接入的公式模型还原到原位置。")
 	}
 	formulaReady := false
 	if cacheMapHasFormulaPending(cache) {
@@ -1803,7 +1930,7 @@ func (a *App) convertMessageFromCache(cache map[int]fileCompanionRestoreCachePag
 		b.WriteString(formulaNote)
 	}
 	if cacheHasLayoutBlock(cache) {
-		b.WriteString("版面已按阅读顺序整理。")
+		b.WriteString("版面已按原来的位置还原。")
 	}
 	layoutNote := convertRestoreWording(layoutDownloadNote(a.restoreLayoutPending()))
 	if layoutNote != "" {
@@ -2070,7 +2197,7 @@ func (a *App) materializeSearchablePDF(doc *agent.ScanRestore, cache map[int]fil
 	if fontErr != nil {
 		return "", errFileCompanionRestoreFont
 	}
-	out, writeErr := agent.RestoreScannedPDFWith(doc, restoreLinesByPage(cache), font)
+	out, writeErr := agent.RestoreRebuiltPDF(doc, restoreLinesByPage(cache), restorePageAssets(doc, cache), font)
 	if writeErr != nil {
 		return "", writeErr
 	}

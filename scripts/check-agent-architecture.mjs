@@ -641,7 +641,7 @@ requireText('corelib/agentservice/core_agent_executor.go', 'agentruntime.ParseTo
 requireText('corelib/agentservice/core_agent_executor.go', 'agentruntime.CanonicalizeToolCallJSON', 'headless combined tool-call adapter');
 requireText('guiapp/app_maclaw_llm.go', 'corelib.NormalizeGlobalThinkingMode', 'shared thinking-mode normalization adapter');
 requireText('corelib/agentservice/dynamic_host_config.go', 'corelib.ParseGlobalThinkingMode', 'headless thinking-mode parser adapter');
-requireText('corelib/agentservice/config.go', 'corelib.EffectiveGlobalThinkingMode', 'headless thinking-mode default adapter');
+requireText('corelib/agentservice/config.go', 'corelib.ApplyGlobalThinkingLevel', 'headless thinking-mode default adapter');
 requireText('guiapp/semantic_tool_routing.go', 'agent.DocumentAttachmentFormat', 'GUI shared document format adapter');
 requireText('corelib/agentservice/dynamic_host_docread.go', 'agent.DocumentAttachmentFormat', 'headless shared document format adapter');
 requireText('corelib/agent/attachment.go', 'func DocumentAttachmentFormat', 'shared document format classification');

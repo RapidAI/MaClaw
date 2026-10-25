@@ -34,6 +34,12 @@ var (
 	fileCompanionLibraryRefreshMu sync.Mutex
 	fileCompanionShareTokenMatch  = regexp.MustCompile(`^cd_[0-9a-f]{32}$`)
 	fileCompanionShareTokenFind   = regexp.MustCompile(`cd_[0-9a-f]{32}`)
+	fileCompanionSessionDirMatch  = regexp.MustCompile(`^fc_[0-9a-f]{32}$`)
+	// fileCompanionShareEpoch advances when a share is dismissed or brought
+	// back. A download captures the value before its HTTP call and publishes
+	// only when the value is unchanged. The map lives as long as this process,
+	// which is also how long an in-flight pull can last.
+	fileCompanionShareEpoch = map[string]uint64{}
 )
 
 // FileCompanionLibraryItem is one row in 文档管理.
@@ -315,19 +321,45 @@ func (a *App) ListFileCompanionLibrary() (FileCompanionLibraryList, error) {
 				items = fresh
 			}
 			previous := map[string]FileCompanionLibraryItem{}
+			epochs := map[string]uint64{}
 			for _, item := range items {
 				if item.Source == "cloud" && item.Token != "" {
 					previous[item.Token] = item
+					epochs[item.Token] = fileCompanionShareEpoch[item.Token]
 				}
 			}
-			items = mergeFileCompanionShares(items, remote, hub)
+			items = mergeFileCompanionShares(items, remote, hub, a.readDismissedShareTokensLocked())
 			fileCompanionLibraryMu.Unlock()
 			removedTokens := map[string]bool{}
-			removed = a.dropRevokedGroupCopies(previous, remote, removedTokens)
+			removed = a.dropRevokedGroupCopies(previous, remote, removedTokens, epochs)
 			updates = a.pullNewerFileCompanionShares(hub, viewer, items, previous)
 			fileCompanionLibraryMu.Lock()
 			if fresh, freshOK = a.readFileCompanionLibraryLocked(); freshOK {
+				// A delete that landed while this refresh was downloading has
+				// already hidden the share. The snapshot must not put the row
+				// back. The download publishes only while that share is still
+				// wanted, and Delete purges when it clears the last row, so
+				// this refresh does not remove reading data after the lock.
+				// Doing so here would race a re-import that already wrote the
+				// transcript the reader just asked for.
+				dismissedNow := a.readDismissedShareTokensLocked()
+				for token := range dismissedNow {
+					removedTokens[token] = true
+				}
+				// The revoke decision was made before these downloads. An import
+				// in that gap owns the share now. Leaving the token dropped would
+				// remove the row and close the tab after the file was published again.
+				superseded := map[string]bool{}
+				for token := range removedTokens {
+					if dismissedNow[token] || fileCompanionShareEpoch[token] == epochs[token] {
+						continue
+					}
+					delete(removedTokens, token)
+					superseded[token] = true
+				}
+				removed = a.withoutSupersededRevokePaths(removed, superseded)
 				items = reconcileFileCompanionLibrary(fresh, items, removedTokens)
+				updates = withoutDismissedShareUpdates(updates, dismissedNow)
 			}
 			_ = a.writeFileCompanionLibraryLocked(items)
 			fileCompanionLibraryMu.Unlock()
@@ -377,7 +409,7 @@ func dropMissingFileCompanionLibrary(items []FileCompanionLibraryItem) ([]FileCo
 	return kept, changed
 }
 
-func mergeFileCompanionShares(items, remote []FileCompanionLibraryItem, hub string) []FileCompanionLibraryItem {
+func mergeFileCompanionShares(items, remote []FileCompanionLibraryItem, hub string, dismissed map[string]bool) []FileCompanionLibraryItem {
 	previous := map[string]FileCompanionLibraryItem{}
 	kept := make([]FileCompanionLibraryItem, 0, len(items)+len(remote))
 	for _, item := range items {
@@ -389,7 +421,7 @@ func mergeFileCompanionShares(items, remote []FileCompanionLibraryItem, hub stri
 	}
 	seen := map[string]bool{}
 	for _, item := range remote {
-		if item.Token == "" || seen[item.Token] {
+		if item.Token == "" || seen[item.Token] || dismissed[item.Token] {
 			continue
 		}
 		seen[item.Token] = true
@@ -417,7 +449,7 @@ func mergeFileCompanionShares(items, remote []FileCompanionLibraryItem, hub stri
 		kept = append(kept, item)
 	}
 	for token, prev := range previous {
-		if seen[token] || prev.Visibility == "group" || !fileCompanionLibraryFileExists(prev.Path) {
+		if seen[token] || dismissed[token] || prev.Visibility == "group" || !fileCompanionLibraryFileExists(prev.Path) {
 			continue
 		}
 		kept = append(kept, prev)
@@ -469,7 +501,18 @@ func reconcileFileCompanionLibrary(fresh, snapshot []FileCompanionLibraryItem, d
 				} else {
 					keptNotes := item.Notes
 					keptRev := item.NotesRevision
+					keptPath := strings.TrimSpace(item.Path)
+					sameRevision := item.Revision == updated.Revision
 					item = updated
+					// A higher snapshot revision is a pull that published, so
+					// its path stays. At the same revision the fresh row already
+					// has the file in use, and this refresh did not replace it.
+					// An empty fresh path still takes the path this refresh published.
+					if sameRevision && keptPath != "" {
+						item.Path = keptPath
+					} else if strings.TrimSpace(item.Path) == "" {
+						item.Path = keptPath
+					}
 					if keptRev > item.NotesRevision {
 						item.Notes = keptNotes
 						item.NotesRevision = keptRev
@@ -718,7 +761,9 @@ func (a *App) ShareFileCompanionDocument(path, visibility, password, target, hig
 	}
 	item[0].Path = canonical
 	item[0].OpenedAt = time.Now().UTC().Format(time.RFC3339)
-	a.upsertFileCompanionCloud(item[0])
+	if err := a.upsertFileCompanionCloud(item[0]); err != nil {
+		return FileCompanionShareResult{}, errors.New("文档列表无法保存")
+	}
 	return FileCompanionShareResult{
 		URL:        item[0].ShareURL,
 		Name:       item[0].Name,
@@ -844,10 +889,6 @@ func (a *App) ImportFileCompanionShare(link, password string) (FileCompanionLibr
 	if len(raw) == 0 {
 		return FileCompanionLibraryItem{}, errors.New("文件是空的")
 	}
-	dest, highlights, _, project, err := a.materializeFileCompanionShare(token, name, raw)
-	if err != nil {
-		return FileCompanionLibraryItem{}, err
-	}
 	expires := strings.TrimSpace(resp.Header.Get("X-Companion-Document-Expires"))
 	visibility := strings.TrimSpace(resp.Header.Get("X-Companion-Document-Visibility"))
 	if visibility == "" {
@@ -862,7 +903,6 @@ func (a *App) ImportFileCompanionShare(link, password string) (FileCompanionLibr
 		ID:         token,
 		Token:      token,
 		Name:       name,
-		Path:       dest,
 		Source:     "cloud",
 		OpenedAt:   time.Now().UTC().Format(time.RFC3339),
 		Owner:      strings.TrimSpace(resp.Header.Get("X-Companion-Document-Owner")),
@@ -874,61 +914,45 @@ func (a *App) ImportFileCompanionShare(link, password string) (FileCompanionLibr
 		Mine:       false,
 		Revision:   revision,
 	}
-	if project {
-		item.Highlights = string(highlights)
+	// Stage outside the lock. The claim publishes the file and the library row
+	// together, so a refresh cannot sample the new generation and then replace
+	// this import.
+	stage, err := a.stageFileCompanionShare(token, name, raw)
+	if err != nil {
+		return FileCompanionLibraryItem{}, err
 	}
-	stored := item
-	stored.Highlights = ""
-	a.upsertFileCompanionCloud(stored)
+	installed, err := a.commitStagedFileCompanionShare(stage, 0, true, &item)
+	if err != nil {
+		if installed.path != "" {
+			return FileCompanionLibraryItem{}, errors.New("文档列表无法保存")
+		}
+		return FileCompanionLibraryItem{}, err
+	}
 	return item, nil
 }
 
-func (a *App) saveFileCompanionShareBody(token, name string, body io.Reader) (string, int64, error) {
-	dir := filepath.Join(a.GetDataDir(), "file-companion", "library-files", token)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", 0, err
-	}
-	dest := filepath.Join(dir, name)
-	tmp := dest + ".tmp"
-	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
-	if err != nil {
-		return "", 0, err
-	}
-	n, copyErr := io.Copy(file, io.LimitReader(body, mobileDocumentOriginalMaxBytes+1))
-	closeErr := file.Close()
-	if copyErr != nil {
-		_ = os.Remove(tmp)
-		return "", 0, errors.New("文件无法读取")
-	}
-	if closeErr != nil {
-		_ = os.Remove(tmp)
-		return "", 0, closeErr
-	}
-	if n > mobileDocumentOriginalMaxBytes {
-		_ = os.Remove(tmp)
-		return "", 0, errors.New("文件过大")
-	}
-	if n == 0 {
-		_ = os.Remove(tmp)
-		return "", 0, errors.New("文件是空的")
-	}
-	_ = os.Remove(dest)
-	if err := os.Rename(tmp, dest); err != nil {
-		_ = os.Remove(tmp)
-		return "", 0, err
-	}
-	return dest, n, nil
-}
-
-func (a *App) upsertFileCompanionCloud(item FileCompanionLibraryItem) {
+func (a *App) upsertFileCompanionCloud(item FileCompanionLibraryItem) error {
 	if a == nil || item.Token == "" {
-		return
+		return nil
 	}
 	fileCompanionLibraryMu.Lock()
 	defer fileCompanionLibraryMu.Unlock()
+	return a.upsertFileCompanionCloudLocked(item)
+}
+
+func (a *App) upsertFileCompanionCloudLocked(item FileCompanionLibraryItem) error {
+	if a == nil || item.Token == "" {
+		return nil
+	}
+	// A share the reader imports or publishes again is a project they want
+	// back in 文档管理. Clear the deletion before the row is written: a row
+	// stored while the token is still dismissed is dropped by the next list.
+	if err := a.undismissFileCompanionShareLocked(item.Token); err != nil {
+		return err
+	}
 	items, ok := a.readFileCompanionLibraryLocked()
 	if !ok {
-		return
+		return errors.New("文档列表无法读取")
 	}
 	kept := make([]FileCompanionLibraryItem, 0, len(items)+1)
 	for _, current := range items {
@@ -945,7 +969,7 @@ func (a *App) upsertFileCompanionCloud(item FileCompanionLibraryItem) {
 		kept = append(kept, current)
 	}
 	kept = append([]FileCompanionLibraryItem{item}, kept...)
-	_ = a.writeFileCompanionLibraryLocked(trimFileCompanionLibrary(kept, fileCompanionLibraryCap))
+	return a.writeFileCompanionLibraryLocked(trimFileCompanionLibrary(kept, fileCompanionLibraryCap))
 }
 
 // dropFileCompanionCloudToken removes one cloud row. The local file stays:
@@ -971,6 +995,399 @@ func (a *App) dropFileCompanionCloudToken(token string) {
 	}
 	if changed {
 		_ = a.writeFileCompanionLibraryLocked(kept)
+	}
+}
+
+// FileCompanionProjectDelete is what 文档管理 removed. Path is the document
+// that stayed on disk. Cleared is set when this row was the last project
+// using that path, so the window drops highlights and closes the tab.
+type FileCompanionProjectDelete struct {
+	ID      string `json:"id"`
+	Path    string `json:"path,omitempty"`
+	Name    string `json:"name,omitempty"`
+	Cleared bool   `json:"cleared"`
+}
+
+// DeleteFileCompanionProject removes one 文档管理 row and the companion data
+// that belongs only to it: the reading record, highlights on disk, discussion,
+// and generated notes. The source file is not removed.
+func (a *App) DeleteFileCompanionProject(id string) (FileCompanionProjectDelete, error) {
+	empty := FileCompanionProjectDelete{}
+	if a == nil {
+		return empty, errors.New("app unavailable")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return empty, errors.New("没有找到这个项目")
+	}
+	fileCompanionLibraryMu.Lock()
+	items, ok := a.readFileCompanionLibraryLocked()
+	if !ok {
+		fileCompanionLibraryMu.Unlock()
+		return empty, errors.New("文档列表无法读取")
+	}
+	var found *FileCompanionLibraryItem
+	kept := make([]FileCompanionLibraryItem, 0, len(items))
+	for i := range items {
+		item := items[i]
+		if found == nil && fileCompanionLibraryItemMatches(item, id) {
+			copy := item
+			found = &copy
+			continue
+		}
+		kept = append(kept, item)
+	}
+	if found == nil {
+		fileCompanionLibraryMu.Unlock()
+		return empty, errors.New("没有找到这个项目")
+	}
+	// Hide a cloud share before the row is removed. A failed hide leaves the
+	// row in place: the next list would otherwise download it again.
+	hidShare := false
+	if found.Source == "cloud" && fileCompanionShareTokenMatch.MatchString(found.Token) {
+		added, err := a.dismissFileCompanionShareLocked(found.Token)
+		if err != nil {
+			fileCompanionLibraryMu.Unlock()
+			return empty, errors.New("文档列表无法保存")
+		}
+		hidShare = added
+	}
+	if err := a.writeFileCompanionLibraryLocked(kept); err != nil {
+		if hidShare {
+			_ = a.undismissFileCompanionShareLocked(found.Token)
+		}
+		fileCompanionLibraryMu.Unlock()
+		return empty, errors.New("文档列表无法保存")
+	}
+	path := strings.TrimSpace(found.Path)
+	sharedPath := path != "" && fileCompanionLibraryUsesPath(kept, path)
+	result := FileCompanionProjectDelete{
+		ID:      found.ID,
+		Path:    path,
+		Name:    found.Name,
+		Cleared: path != "" && !sharedPath,
+	}
+	// Remove the transcript before releasing the lock. Import and a share
+	// pull publish that transcript under the same lock. Unlocking first lets
+	// the publish land, and this purge then deletes the record just imported.
+	if result.Cleared {
+		a.purgeFileCompanionProjectData(path)
+	}
+	fileCompanionLibraryMu.Unlock()
+	return result, nil
+}
+
+func fileCompanionLibraryItemMatches(item FileCompanionLibraryItem, id string) bool {
+	if item.ID == id {
+		return true
+	}
+	return item.Source == "cloud" && item.Token != "" && item.Token == id
+}
+
+func (a *App) fileCompanionDismissedSharePath() string {
+	if a == nil {
+		return ""
+	}
+	root := strings.TrimSpace(a.GetDataDir())
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(root, "file-companion", "dismissed-shares.json")
+}
+
+func (a *App) readDismissedShareTokensLocked() map[string]bool {
+	out := map[string]bool{}
+	path := a.fileCompanionDismissedSharePath()
+	if path == "" {
+		return out
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return out
+	}
+	var stored struct {
+		Tokens []string `json:"tokens"`
+	}
+	if json.Unmarshal(raw, &stored) != nil {
+		return out
+	}
+	for _, token := range stored.Tokens {
+		token = strings.TrimSpace(token)
+		if fileCompanionShareTokenMatch.MatchString(token) {
+			out[token] = true
+		}
+	}
+	return out
+}
+
+func (a *App) writeDismissedShareTokensLocked(tokens map[string]bool) error {
+	path := a.fileCompanionDismissedSharePath()
+	if path == "" {
+		return errors.New("library path is empty")
+	}
+	list := make([]string, 0, len(tokens))
+	for token := range tokens {
+		if fileCompanionShareTokenMatch.MatchString(token) {
+			list = append(list, token)
+		}
+	}
+	sort.Strings(list)
+	body, err := json.Marshal(struct {
+		Tokens []string `json:"tokens"`
+	}{Tokens: list})
+	if err != nil {
+		return err
+	}
+	return fileCompanionWriteAtomicFile(path, body, 0o600)
+}
+
+func (a *App) dismissFileCompanionShareLocked(token string) (bool, error) {
+	if !fileCompanionShareTokenMatch.MatchString(token) {
+		return false, nil
+	}
+	tokens := a.readDismissedShareTokensLocked()
+	if tokens[token] {
+		return false, nil
+	}
+	tokens[token] = true
+	if err := a.writeDismissedShareTokensLocked(tokens); err != nil {
+		return false, err
+	}
+	a.bumpFileCompanionShareEpochLocked(token)
+	return true, nil
+}
+
+func (a *App) undismissFileCompanionShareLocked(token string) error {
+	if !fileCompanionShareTokenMatch.MatchString(token) {
+		return nil
+	}
+	tokens := a.readDismissedShareTokensLocked()
+	if !tokens[token] {
+		return nil
+	}
+	delete(tokens, token)
+	if err := a.writeDismissedShareTokensLocked(tokens); err != nil {
+		return err
+	}
+	a.bumpFileCompanionShareEpochLocked(token)
+	return nil
+}
+
+// bumpFileCompanionShareEpochLocked invalidates a pull that already captured
+// the previous generation. The caller holds fileCompanionLibraryMu.
+func (a *App) bumpFileCompanionShareEpochLocked(token string) {
+	if !fileCompanionShareTokenMatch.MatchString(token) {
+		return
+	}
+	fileCompanionShareEpoch[token]++
+}
+
+func (a *App) bumpFileCompanionShareEpoch(token string) {
+	if a == nil || !fileCompanionShareTokenMatch.MatchString(token) {
+		return
+	}
+	fileCompanionLibraryMu.Lock()
+	a.bumpFileCompanionShareEpochLocked(token)
+	fileCompanionLibraryMu.Unlock()
+}
+
+// fileCompanionSharePullPermit is the generation a download must still match
+// when it publishes, and whether that download should not start. Hidden
+// shares are skipped. A row that already has this revision on disk is skipped
+// too, so a pull cannot replace an import that landed before this token was
+// reached. The caller must not hold fileCompanionLibraryMu.
+func (a *App) fileCompanionSharePullPermit(item FileCompanionLibraryItem) (uint64, bool) {
+	if a == nil || !fileCompanionShareTokenMatch.MatchString(item.Token) {
+		return 0, true
+	}
+	fileCompanionLibraryMu.Lock()
+	defer fileCompanionLibraryMu.Unlock()
+	if a.readDismissedShareTokensLocked()[item.Token] {
+		return 0, true
+	}
+	epoch := fileCompanionShareEpoch[item.Token]
+	items, ok := a.readFileCompanionLibraryLocked()
+	if !ok {
+		return epoch, false
+	}
+	for _, row := range items {
+		if row.Source != "cloud" || row.Token != item.Token {
+			continue
+		}
+		if row.Revision >= item.Revision && fileCompanionLibraryFileExists(row.Path) {
+			return epoch, true
+		}
+		break
+	}
+	return epoch, false
+}
+
+// withoutDismissedShareUpdates drops downloads whose share was deleted before
+// the refresh finished. The bytes stay where the commit left them: a pull that
+// lost the race never published, and Delete purges when this row was the last
+// user of the path.
+func withoutDismissedShareUpdates(updates []FileCompanionShareUpdate, dismissed map[string]bool) []FileCompanionShareUpdate {
+	if len(updates) == 0 || len(dismissed) == 0 {
+		return updates
+	}
+	kept := make([]FileCompanionShareUpdate, 0, len(updates))
+	for _, update := range updates {
+		token := strings.TrimSpace(update.Token)
+		if token != "" && dismissed[token] {
+			continue
+		}
+		kept = append(kept, update)
+	}
+	return kept
+}
+
+// recordFileCompanionSharePathLocked stores the file a pull just published.
+// The caller holds fileCompanionLibraryMu. A missing row is left alone: a new
+// share is not in the library until the refresh finishes, and Delete cannot
+// see it yet. The same path is not written again.
+func (a *App) recordFileCompanionSharePathLocked(token, path string) error {
+	path = strings.TrimSpace(path)
+	if a == nil || !fileCompanionShareTokenMatch.MatchString(token) || path == "" {
+		return nil
+	}
+	items, ok := a.readFileCompanionLibraryLocked()
+	if !ok {
+		return errors.New("文档列表无法读取")
+	}
+	index := -1
+	for i := range items {
+		if items[i].Source == "cloud" && items[i].Token == token {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return nil
+	}
+	previous := strings.TrimSpace(items[index].Path)
+	if previous == path || (previous != "" && fileCompanionDedupeKey(previous) == fileCompanionDedupeKey(path)) {
+		return nil
+	}
+	items[index].Path = path
+	if err := a.writeFileCompanionLibraryLocked(items); err != nil {
+		return err
+	}
+	// The row now names the new copy. A previous copy inside this share's
+	// directory has its own transcript. Nothing else is using it, so leaving
+	// it behind would survive a later delete of the new file.
+	if previous == "" || fileCompanionLibraryUsesPath(items, previous) {
+		return nil
+	}
+	root := filepath.Join(a.GetDataDir(), "file-companion", "library-files", token)
+	if !companionFigureInsideDir(root, previous) {
+		return nil
+	}
+	a.purgeFileCompanionProjectData(previous)
+	return nil
+}
+
+func fileCompanionLibraryUsesPath(items []FileCompanionLibraryItem, path string) bool {
+	key := fileCompanionDedupeKey(path)
+	if strings.TrimSpace(path) == "" || key == "" {
+		return false
+	}
+	for _, item := range items {
+		other := strings.TrimSpace(item.Path)
+		if other == "" {
+			continue
+		}
+		if fileCompanionDedupeKey(other) == key {
+			return true
+		}
+	}
+	return false
+}
+
+// fileCompanionProjectPurgeHook runs while fileCompanionLibraryMu is held,
+// before the transcript is removed. Tests block here to prove a publish
+// cannot install a replacement until this purge finishes.
+var fileCompanionProjectPurgeHook func()
+
+// purgeFileCompanionProjectData drops the transcript, drawings, and generated
+// notes for one document. It does not remove the document itself, or a copy
+// stored under library-files. The caller holds fileCompanionLibraryMu.
+func (a *App) purgeFileCompanionProjectData(path string) {
+	if a == nil {
+		return
+	}
+	identity, err := fileCompanionCanonicalPath(path)
+	if err != nil || strings.TrimSpace(identity) == "" {
+		return
+	}
+	sessionID := fileCompanionSessionID(identity)
+	if !fileCompanionSessionDirMatch.MatchString(sessionID) {
+		return
+	}
+	if fileCompanionProjectPurgeHook != nil {
+		fileCompanionProjectPurgeHook()
+	}
+	userID := "file-companion:" + sessionID
+	a.fileCompanionCancelNote(sessionID)
+	if a.isFileCompanionProcess() && a.imHandler != nil {
+		_, _ = a.imHandler.RequestCancelSessionForUser(userID)
+		side := filepath.Join(a.GetDataDir(), "file-companion", "sessions", sessionID+".json")
+		_ = a.fileCompanionDropChat(userID, side)
+	} else {
+		a.removeFileCompanionSessionFile(sessionID)
+	}
+	a.removeFileCompanionSessionTree("figures", sessionID, path)
+	a.removeFileCompanionSessionTree("results", sessionID, path)
+	a.removeFileCompanionSessionTree("work", sessionID, path)
+	logFileCompanion("project data cleared session=%s", sessionID)
+}
+
+func (a *App) removeFileCompanionSessionFile(sessionID string) {
+	if a == nil || !fileCompanionSessionDirMatch.MatchString(sessionID) {
+		return
+	}
+	root := strings.TrimSpace(a.GetDataDir())
+	if root == "" {
+		return
+	}
+	dir := filepath.Join(root, "file-companion", "sessions")
+	side := filepath.Join(dir, sessionID+".json")
+	if !companionFigureInsideDir(dir, side) {
+		return
+	}
+	if err := os.Remove(side); err != nil && !os.IsNotExist(err) {
+		logFileCompanion("project session remove failed session=%s", sessionID)
+	}
+}
+
+func (a *App) removeFileCompanionSessionTree(kind, sessionID, source string) {
+	if a == nil || !fileCompanionSessionDirMatch.MatchString(sessionID) {
+		return
+	}
+	switch kind {
+	case "figures", "results", "work":
+	default:
+		return
+	}
+	root := strings.TrimSpace(a.GetDataDir())
+	if root == "" {
+		return
+	}
+	parent := filepath.Join(root, "file-companion", kind)
+	dir := filepath.Join(parent, sessionID)
+	if !companionFigureInsideDir(parent, dir) {
+		return
+	}
+	// A document that itself lives in this tree is the source file. Leave
+	// the tree in place rather than remove the file the reader still has.
+	if strings.TrimSpace(source) != "" {
+		key := fileCompanionFigureKey(source)
+		dirKey := fileCompanionFigureKey(dir)
+		if key != "" && (key == dirKey || companionFigureInsideDir(dir, source)) {
+			return
+		}
+	}
+	if err := os.RemoveAll(dir); err != nil && !os.IsNotExist(err) {
+		logFileCompanion("project %s remove failed session=%s", kind, sessionID)
 	}
 }
 

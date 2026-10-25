@@ -11,22 +11,27 @@ describe('getHeaderTitle', () => {
         expect(getHeaderTitle('utilities', 'en', t)).toBe(utilitiesPageTitle('en'));
     });
 
-    it('names the Knowledge page when the settings knowledge tab is active', () => {
+    it('names every settings tab after the label its rail entry shows', () => {
         expect(getHeaderTitle('settings', 'zh-Hans', t, false, 'knowledge')).toBe('知识库');
         expect(getHeaderTitle('settings', 'zh-Hant', t, false, 'knowledge')).toBe('知識庫');
-        expect(getHeaderTitle('settings', 'en', t, false, 'knowledge')).toBe('Knowledge base');
+        expect(getHeaderTitle('settings', 'en', t, false, 'knowledge')).toBe('Knowledge');
+        expect(getHeaderTitle('settings', 'zh-Hans', t, false, 'email')).toBe('邮箱');
+        expect(getHeaderTitle('settings', 'zh-Hant', t, false, 'email')).toBe('郵箱');
+        expect(getHeaderTitle('settings', 'en', t, false, 'email')).toBe('Email');
+        expect(getHeaderTitle('settings', 'zh-Hans', t, false, 'im')).toBe('IM');
+        expect(getHeaderTitle('settings', 'en', t, false, 'im')).toBe('IM');
+        expect(getHeaderTitle('settings', 'zh-Hans', t, false, 'embedding')).toBe('AI 模型');
+        expect(getHeaderTitle('settings', 'zh-Hant', t, false, 'embedding')).toBe('AI 模型');
+        expect(getHeaderTitle('settings', 'en', t, false, 'embedding')).toBe('AI Model');
+        expect(getHeaderTitle('settings', 'zh-Hans', t, false, 'general')).toBe('通用设置');
+        expect(getHeaderTitle('settings', 'zh-Hant', t, false, 'general')).toBe('通用設定');
+        expect(getHeaderTitle('settings', 'en', t, false, 'general')).toBe('General');
+        expect(getHeaderTitle('settings', 'zh-Hans', t, false, 'llm')).toBe('大模型配置');
     });
 
-    it('names mailbox configuration when the settings email tab is active', () => {
-        expect(getHeaderTitle('settings', 'zh-Hans', t, false, 'email')).toBe('邮箱配置');
-        expect(getHeaderTitle('settings', 'zh-Hant', t, false, 'email')).toBe('郵箱配置');
-        expect(getHeaderTitle('settings', 'en', t, false, 'email')).toBe('Mailbox configuration');
-    });
-
-    it('names messaging when the settings IM tab is active', () => {
-        expect(getHeaderTitle('settings', 'zh-Hans', t, false, 'im')).toBe('即时通讯');
-        expect(getHeaderTitle('settings', 'zh-Hant', t, false, 'im')).toBe('即時通訊');
-        expect(getHeaderTitle('settings', 'en', t, false, 'im')).toBe('Messaging');
+    it('keeps the generic settings title for unknown settings tabs', () => {
+        expect(getHeaderTitle('settings', 'zh-Hans', t, false, 'not-a-tab')).toBe('globalSettings');
+        expect(getHeaderTitle('settings', 'zh-Hans', t)).toBe('globalSettings');
     });
 
     it('names the LaTeX template library instead of falling through to About', () => {
@@ -44,10 +49,5 @@ describe('getHeaderTitle', () => {
         expect(getHeaderTitle('files', 'zh-Hans', t)).toBe('云盘');
         expect(getHeaderTitle('files', 'zh-Hant', t)).toBe('雲端硬碟');
         expect(getHeaderTitle('files', 'en', t)).toBe('Cloud drive');
-    });
-
-    it('keeps the global settings title for other settings tabs', () => {
-        expect(getHeaderTitle('settings', 'zh-Hans', t, false, 'general')).toBe('globalSettings');
-        expect(getHeaderTitle('settings', 'zh-Hans', t)).toBe('globalSettings');
     });
 });

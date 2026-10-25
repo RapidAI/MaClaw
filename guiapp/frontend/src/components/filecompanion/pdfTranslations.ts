@@ -28,7 +28,8 @@ export type PdfTranslationDraft = {
 
 const MAX_TRANSLATIONS = 200;
 const MAX_PARTS = 30;
-const MAX_RECTS = 40;
+// One box per line. 40 raw client rects covered only about the first six lines.
+const MAX_RECTS = 160;
 const MAX_SOURCE = 4000;
 const MAX_TRANSLATION = 12000;
 

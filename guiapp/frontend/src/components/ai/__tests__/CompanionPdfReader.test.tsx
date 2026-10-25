@@ -721,4 +721,226 @@ describe("companion pdf reader", () => {
         expect(quote.textContent?.endsWith("…")).toBe(true);
         expect(quote.getAttribute("title")).toBe(long);
     });
+
+    it("draws one dashed box per selected line when a line is many client rects", async () => {
+        pdfWithPages(1, "abstract paragraph");
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        const page = await screen.findByTestId("companion-pdf-page-1");
+        box(page, 200, 400);
+        const lines = 8;
+        const fragments = 7;
+        const rects: ReturnType<typeof clientRect>[] = [];
+        for (let line = 0; line < lines; line += 1) {
+            // Gap is 10px, wider than 0.75× the 12px run. Every gap matches, so
+            // the line stays one box instead of being read as a column gutter.
+            for (let piece = 0; piece < fragments; piece += 1) {
+                rects.push(clientRect(10 + piece * 16, 10 + line * 18, 6, 12));
+            }
+        }
+        vi.spyOn(window, "getSelection").mockReturnValue({
+            isCollapsed: false,
+            rangeCount: 1,
+            toString: () => "abstract paragraph",
+            removeAllRanges: () => undefined,
+            getRangeAt: () => ({ getClientRects: () => rects }),
+        } as unknown as Selection);
+        fireEvent.contextMenu(page, { clientX: 20, clientY: 30 });
+        fireEvent.mouseDown(screen.getByTestId("pdf-translate"));
+        await screen.findByRole("button", { name: "译文" });
+        const drawn = document.querySelectorAll(".companion-pdf-translation");
+        expect(drawn.length).toBe(lines);
+        const tops = Array.from(drawn).map((node) => Number.parseFloat((node as HTMLElement).style.top));
+        expect(Math.max(...tops)).toBeCloseTo((10 + (lines - 1) * 18) / 400 * 100, 5);
+        expect(Number.parseFloat((drawn[0] as HTMLElement).style.width)).toBeCloseTo((6 + (fragments - 1) * 16) / 200 * 100, 5);
+    });
+
+    it("boxes every selected line when the range client rects stop early", async () => {
+        const lines = 10;
+        const getPage = vi.fn(async () => ({
+            getViewport: ({ scale }: { scale: number }) => ({
+                width: 200 * scale,
+                height: 400 * scale,
+                scale,
+                transform: [scale, 0, 0, -scale, 0, 400 * scale],
+            }),
+            getTextContent: async () => ({
+                items: Array.from({ length: lines }, (_, index) => ({
+                    str: `line ${index} `,
+                    transform: [12, 0, 0, 12, 40, 360 - index * 14],
+                    width: 80,
+                    height: 12,
+                })),
+            }),
+            render: () => ({ promise: Promise.resolve(), cancel: () => undefined }),
+        }));
+        getDocument.mockImplementation(() => ({
+            promise: Promise.resolve({ numPages: 1, getPage, destroy: () => undefined }),
+            destroy: () => undefined,
+        }));
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        const page = await screen.findByTestId("companion-pdf-page-1");
+        box(page, 200, 400);
+        const spans = page.querySelectorAll<HTMLElement>(".companion-pdf-text span");
+        expect(spans.length).toBe(lines);
+        spans.forEach((span, index) => {
+            span.getBoundingClientRect = () => clientRect(40, 20 + index * 16, 120, 12) as DOMRect;
+        });
+        vi.spyOn(window, "getSelection").mockReturnValue({
+            isCollapsed: false,
+            rangeCount: 1,
+            toString: () => Array.from({ length: lines }, (_, index) => `line ${index}`).join(" "),
+            removeAllRanges: () => undefined,
+            getRangeAt: () => ({
+                intersectsNode: () => true,
+                getClientRects: () => [clientRect(40, 20, 120, 12), clientRect(40, 36, 120, 12)],
+                startContainer: document.createTextNode(""),
+                endContainer: document.createTextNode(""),
+            }),
+        } as unknown as Selection);
+        fireEvent.contextMenu(page, { clientX: 20, clientY: 30 });
+        fireEvent.mouseDown(screen.getByTestId("pdf-translate"));
+        await screen.findByRole("button", { name: "译文" });
+        const drawn = document.querySelectorAll(".companion-pdf-translation");
+        expect(drawn.length).toBe(lines);
+        const tops = Array.from(drawn).map((node) => Number.parseFloat((node as HTMLElement).style.top));
+        expect(Math.max(...tops)).toBeCloseTo((20 + (lines - 1) * 16) / 400 * 100, 5);
+    });
+
+    it("keeps a narrow gutter apart, drops a covering rect, and leaves the line under a formula", async () => {
+        pdfWithPages(1, "two columns");
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        const page = await screen.findByTestId("companion-pdf-page-1");
+        box(page, 200, 400);
+        const rects = [
+            clientRect(10, 30, 50, 12),
+            // 10px gutter: wider than a word space, with no neighbor gap to call it justification.
+            clientRect(70, 28, 50, 12),
+            clientRect(8, 20, 184, 40),
+            clientRect(10, 90, 22, 12),
+            clientRect(34, 78, 24, 28),
+            clientRect(74, 90, 40, 12),
+            clientRect(10, 110, 50, 12),
+            clientRect(10, 200, 20, 12),
+            clientRect(36, 200, 20, 12),
+        ];
+        vi.spyOn(window, "getSelection").mockReturnValue({
+            isCollapsed: false,
+            rangeCount: 1,
+            toString: () => "two columns",
+            removeAllRanges: () => undefined,
+            getRangeAt: () => ({ getClientRects: () => rects }),
+        } as unknown as Selection);
+        fireEvent.contextMenu(page, { clientX: 20, clientY: 30 });
+        fireEvent.mouseDown(screen.getByTestId("pdf-translate"));
+        await screen.findByRole("button", { name: "译文" });
+        const drawn = Array.from(document.querySelectorAll<HTMLElement>(".companion-pdf-translation"));
+        expect(drawn).toHaveLength(6);
+        const widths = drawn.map((node) => Number.parseFloat(node.style.width));
+        expect(Math.max(...widths)).toBeLessThan(40);
+        const heights = drawn.map((node) => Number.parseFloat(node.style.height));
+        expect(heights.some((height) => height > 5)).toBe(true);
+        const tops = drawn.map((node) => Number.parseFloat(node.style.top));
+        expect(tops.some((top) => Math.abs(top - (78 / 400) * 100) < 0.05)).toBe(true);
+        expect(tops.some((top) => Math.abs(top - (90 / 400) * 100) < 0.05)).toBe(true);
+        expect(tops.some((top) => Math.abs(top - (110 / 400) * 100) < 0.05)).toBe(true);
+        expect(tops.some((top) => Math.abs(top - (200 / 400) * 100) < 0.05)).toBe(true);
+    });
+
+    it("treats a wide space run as the gutter and keeps equal gaps on one line", async () => {
+        const pieces = ["Left", " ", "Right", "A", " ", "B", " ", "C", " ", "D"];
+        const getPage = vi.fn(async () => ({
+            getViewport: ({ scale }: { scale: number }) => ({
+                width: 200 * scale,
+                height: 400 * scale,
+                scale,
+                transform: [scale, 0, 0, -scale, 0, 400 * scale],
+            }),
+            getTextContent: async () => ({
+                items: pieces.map((str) => ({
+                    str,
+                    transform: [12, 0, 0, 12, 40, 360],
+                    width: 40,
+                    height: 12,
+                })),
+            }),
+            render: () => ({ promise: Promise.resolve(), cancel: () => undefined }),
+        }));
+        getDocument.mockImplementation(() => ({
+            promise: Promise.resolve({ numPages: 1, getPage, destroy: () => undefined }),
+            destroy: () => undefined,
+        }));
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        const page = await screen.findByTestId("companion-pdf-page-1");
+        box(page, 200, 400);
+        const spans = page.querySelectorAll<HTMLElement>(".companion-pdf-text span");
+        expect(spans.length).toBe(pieces.length);
+        const rects = [
+            clientRect(10, 30, 40, 12),
+            clientRect(50, 30, 24, 12),
+            clientRect(74, 30, 40, 12),
+            clientRect(10, 60, 8, 12),
+            clientRect(18, 60, 10, 12),
+            clientRect(28, 60, 8, 12),
+            clientRect(36, 60, 10, 12),
+            clientRect(46, 60, 8, 12),
+            clientRect(54, 60, 10, 12),
+            clientRect(64, 60, 8, 12),
+        ];
+        spans.forEach((span, index) => {
+            span.getBoundingClientRect = () => rects[index] as DOMRect;
+        });
+        vi.spyOn(window, "getSelection").mockReturnValue({
+            isCollapsed: false,
+            rangeCount: 1,
+            toString: () => "Left Right A B C D",
+            removeAllRanges: () => undefined,
+            getRangeAt: () => ({
+                intersectsNode: () => true,
+                getClientRects: () => [clientRect(10, 30, 104, 42)],
+                startContainer: document.createTextNode(""),
+                endContainer: document.createTextNode(""),
+            }),
+        } as unknown as Selection);
+        fireEvent.contextMenu(page, { clientX: 20, clientY: 30 });
+        fireEvent.mouseDown(screen.getByTestId("pdf-translate"));
+        await screen.findByRole("button", { name: "译文" });
+        const drawn = Array.from(document.querySelectorAll<HTMLElement>(".companion-pdf-translation"));
+        expect(drawn).toHaveLength(3);
+        const widths = drawn.map((node) => Number.parseFloat(node.style.width));
+        expect(widths.filter((width) => Math.abs(width - (40 / 200) * 100) < 0.05)).toHaveLength(2);
+        expect(widths.some((width) => Math.abs(width - (62 / 200) * 100) < 0.05)).toBe(true);
+    });
+
+    it("clips the first run from the text offset instead of the range rects", async () => {
+        pdfWithPages(1, "Hello world");
+        render(<CompanionPdfReader absPath="C:/docs/Paper.PDF" theme={theme} lang="zh-Hans" />);
+        const page = await screen.findByTestId("companion-pdf-page-1");
+        box(page, 200, 400);
+        const span = page.querySelector<HTMLElement>(".companion-pdf-text span");
+        if (!span?.firstChild) throw new Error("missing text run");
+        span.getBoundingClientRect = () => clientRect(40, 20, 110, 12) as DOMRect;
+        const text = span.firstChild;
+        const length = text.textContent?.length ?? 0;
+        vi.spyOn(window, "getSelection").mockReturnValue({
+            isCollapsed: false,
+            rangeCount: 1,
+            toString: () => "world",
+            removeAllRanges: () => undefined,
+            getRangeAt: () => ({
+                intersectsNode: (node: Node) => node === span,
+                startContainer: text,
+                startOffset: length - 5,
+                endContainer: text,
+                endOffset: length,
+                getClientRects: () => [clientRect(0, 0, 200, 400)],
+            }),
+        } as unknown as Selection);
+        fireEvent.contextMenu(page, { clientX: 20, clientY: 30 });
+        fireEvent.mouseDown(screen.getByTestId("pdf-translate"));
+        await screen.findByRole("button", { name: "译文" });
+        const drawn = document.querySelector(".companion-pdf-translation") as HTMLElement;
+        expect(Number.parseFloat(drawn.style.width)).toBeCloseTo((110 * 5) / length / 200 * 100, 5);
+        expect(Number.parseFloat(drawn.style.left)).toBeCloseTo((40 + 110 * (length - 5) / length) / 200 * 100, 5);
+        expect(Number.parseFloat(drawn.style.height)).toBeCloseTo(12 / 400 * 100, 5);
+    });
 });

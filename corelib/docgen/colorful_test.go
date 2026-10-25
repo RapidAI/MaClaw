@@ -5,6 +5,13 @@ import (
 	"testing"
 )
 
+func TestPresentFormulaWritesAFraction(t *testing.T) {
+	got := PresentFormula(`\frac{a}{b}`)
+	if !strings.Contains(got, "(a)/(b)") || strings.Contains(got, `\frac`) {
+		t.Fatalf("presented = %q", got)
+	}
+}
+
 func TestColorfulPaperHTMLPaintsHeadingsLinksAndMark(t *testing.T) {
 	html := markdownToHTMLWithScratch(nil, "## 方法原理\n\n## 数据集\n\nhttps://example.com/cifar（可能）", true)
 	if !strings.Contains(html, `color:#1d4ed8`) || !strings.Contains(html, `color:#0f766e`) {

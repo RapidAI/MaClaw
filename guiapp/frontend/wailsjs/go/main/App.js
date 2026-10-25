@@ -42,6 +42,10 @@ export function AIAssistantFileTypeIconDataURL(arg1) {
   return window['go']['main']['App']['AIAssistantFileTypeIconDataURL'](arg1);
 }
 
+export function AIAssistantFileTypeIconDataURLIfAssociated(arg1) {
+  return window['go']['main']['App']['AIAssistantFileTypeIconDataURLIfAssociated'](arg1);
+}
+
 export function AIAssistantAttachmentOpeningPreview(arg1) {
   return window['go']['main']['App']['AIAssistantAttachmentOpeningPreview'](arg1);
 }
@@ -1467,6 +1471,10 @@ export function UpdateFileCompanionGroup(arg1, arg2, arg3) {
 
 export function DeleteFileCompanionGroup(arg1) {
   return window['go']['main']['App']['DeleteFileCompanionGroup'](arg1);
+}
+
+export function DeleteFileCompanionProject(arg1) {
+  return window['go']['main']['App']['DeleteFileCompanionProject'](arg1);
 }
 
 export function LeaveFileCompanionGroup(arg1) {

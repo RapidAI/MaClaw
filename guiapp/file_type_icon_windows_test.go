@@ -84,6 +84,86 @@ func TestAIAssistantFileTypeIconDataURLUsesShellAssociation(t *testing.T) {
 	}
 }
 
+// The cloud drive lists Hub files, so a row has a type but no path on this
+// machine. A bare type name must still resolve the association.
+func TestAIAssistantFileTypeIconDataURLAnswersBareTypeName(t *testing.T) {
+	app := &App{}
+	url, err := app.AIAssistantFileTypeIconDataURL("file.pdf")
+	if err != nil {
+		t.Fatalf("bare pdf icon: %v", err)
+	}
+	img := decodeIconImage(t, decodeFileTypeIcon(t, url))
+	if !shellIconVisible(img) {
+		t.Fatal("bare pdf icon has no visible pixels")
+	}
+}
+
+// A suffix no application claims resolves to the shell's blank sheet, which
+// says nothing about the type. The cloud drive's variant reports that as "no
+// icon" so the caller keeps its own per-type drawing.
+func TestAIAssistantFileTypeIconDataURLIfAssociatedSkipsBlankSheet(t *testing.T) {
+	app := &App{}
+	url, err := app.AIAssistantFileTypeIconDataURLIfAssociated(genericFileTypeIconProbeName)
+	if err != nil {
+		t.Fatalf("unassociated suffix: %v", err)
+	}
+	if url != "" {
+		t.Fatalf("unassociated suffix returned an icon of %d bytes, want none", len(url))
+	}
+
+	// A type with a real association still answers, so the check above is not
+	// just rejecting everything.
+	pdfURL, err := app.AIAssistantFileTypeIconDataURLIfAssociated("file.pdf")
+	if err != nil {
+		t.Fatalf("pdf icon: %v", err)
+	}
+	if pdfURL == "" {
+		t.Fatal("pdf should have an associated icon")
+	}
+}
+
+// The shared attachment path keeps the shell's answer even when it is the blank
+// sheet: the attachment strip has its own text badge and must not change.
+func TestAIAssistantFileTypeIconDataURLStillAnswersBlankSheet(t *testing.T) {
+	app := &App{}
+	url, err := app.AIAssistantFileTypeIconDataURL(genericFileTypeIconProbeName)
+	if err != nil {
+		t.Fatalf("unassociated suffix: %v", err)
+	}
+	if url == "" {
+		t.Fatal("the shared attachment path should still return the shell icon")
+	}
+}
+
+// Concurrent callers that wait on another lookup must see the same verdict as
+// the owner, not a default.
+func TestAIAssistantFileTypeIconDataURLIfAssociatedSharesTheVerdict(t *testing.T) {
+	app := &App{}
+	const n = 8
+	urls := make([]string, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			urls[i], errs[i] = app.AIAssistantFileTypeIconDataURLIfAssociated(genericFileTypeIconProbeName)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	for i := range urls {
+		if errs[i] != nil {
+			t.Fatalf("caller %d: %v", i, errs[i])
+		}
+		if urls[i] != "" {
+			t.Fatalf("caller %d got an icon for an unassociated suffix", i)
+		}
+	}
+}
+
 func decodeFileTypeIcon(t *testing.T, dataURL string) []byte {
 	t.Helper()
 	const prefix = "data:image/png;base64,"

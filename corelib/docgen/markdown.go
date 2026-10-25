@@ -1677,6 +1677,13 @@ func renderMathSegments(text string, colorful bool) string {
 	})
 }
 
+// PresentFormula turns FormulaNet LaTeX into the HTML the scan writer paints
+// inside the formula's original box. It is the same math transform a paper
+// PDF already uses for commands, fractions, and subscripts.
+func PresentFormula(latex string) string {
+	return transformMathText(strings.TrimSpace(latex))
+}
+
 func transformMathText(text string) string {
 	text = strings.TrimSpace(text)
 	if text == "" {

@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import FileCompanionWindow, {
     clampCompanionChatWidth,
@@ -15,6 +15,8 @@ import FileCompanionWindow, {
 } from "./FileCompanionWindow";
 import { finishCompanionReply, splitCompanionStreamDelta } from "./companionReasoning";
 import { ToastProvider } from "../Toast";
+import { DialogProvider } from "../CustomDialog";
+import { loadPdfMarks, savePdfMarks } from "./pdfMarks";
 
 const boot = vi.fn();
 const resume = vi.fn();
@@ -86,6 +88,7 @@ const addGroupMember = vi.fn(async () => ({ id: "cg_0123456789abcdef0123456789ab
 const removeGroupMember = vi.fn(async () => ({ id: "cg_0123456789abcdef0123456789abcdef", name: "论文组", admin: true, members: [] as Array<Record<string, unknown>> }));
 const updateGroup = vi.fn(async (id: string, name: string, icon: string) => ({ id, name, icon, admin: true, members: [] as Array<Record<string, unknown>> }));
 const deleteGroup = vi.fn(async () => undefined);
+const deleteProject = vi.fn(async (..._args: unknown[]) => ({ id: "", path: "", name: "", cleared: false }));
 const leaveGroup = vi.fn(async () => undefined);
 
 vi.mock("../../../wailsjs/go/main/App", () => ({
@@ -140,6 +143,7 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     RemoveFileCompanionGroupMember: (...args: Parameters<typeof removeGroupMember>) => removeGroupMember(...args),
     UpdateFileCompanionGroup: (...args: Parameters<typeof updateGroup>) => updateGroup(...args),
     DeleteFileCompanionGroup: (...args: Parameters<typeof deleteGroup>) => deleteGroup(...args),
+    DeleteFileCompanionProject: (...args: unknown[]) => deleteProject(...args),
     LeaveFileCompanionGroup: (...args: Parameters<typeof leaveGroup>) => leaveGroup(...args),
     FileCompanionExportChatPDF: (...args: Parameters<typeof exportChatPdf>) => exportChatPdf(...args),
     FileCompanionExportChatCloud: (...args: Parameters<typeof exportChatCloud>) => exportChatCloud(...args),
@@ -296,6 +300,8 @@ beforeEach(() => {
     exportProject.mockResolvedValue("");
     listLibrary.mockReset();
     listLibrary.mockResolvedValue({ items: [], notice: "" });
+    deleteProject.mockReset();
+    deleteProject.mockResolvedValue({ id: "", path: "", name: "", cleared: false });
     shareDocument.mockReset();
     shareDocument.mockResolvedValue({ url: "https://hub.example/hub/documents/shares/cd_0123456789abcdef0123456789abcdef", name: "a.md", visibility: "public", permanent: true });
     importShare.mockReset();
@@ -1757,6 +1763,103 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(exportProject).toHaveBeenCalledWith("C:/notes/a.md", expect.any(String)));
     });
 
+    it("asks with the custom dialog before deleting companion data and keeps the tab when cancelled", async () => {
+        const mark = { id: "m1", page: 1, color: "yellow" as const, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }], text: "Hello" };
+        savePdfMarks("C:/notes/a.md", [mark]);
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha" }));
+        const item = { id: "local:a", name: "a.md", path: "C:/notes/a.md", source: "local", openedAt: "2026-10-25T00:00:00Z" };
+        listLibrary.mockResolvedValue({ items: [item], notice: "" });
+        deleteProject.mockImplementation(async () => {
+            listLibrary.mockResolvedValue({ items: [], notice: "" });
+            return { id: "local:a", path: "C:/notes/a.md", name: "a.md", cleared: true };
+        });
+        installRuntime();
+        render(
+            <DialogProvider>
+                <ToastProvider>
+                    <FileCompanionWindow askOnOpen={false} />
+                </ToastProvider>
+            </DialogProvider>,
+        );
+        await screen.findByTestId("file-companion-tab-a.md");
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        await screen.findByTestId("file-companion-library-delete-local:a");
+        fireEvent.click(screen.getByTestId("file-companion-library-delete-local:a"));
+        const dialog = await screen.findByRole("dialog", { name: "删除伴读数据" });
+        expect(dialog.className).toContain("custom-dialog");
+        expect(within(dialog).getByText("确认删除？")).toBeTruthy();
+        expect(within(dialog).getByText("a.md").className).toContain("custom-dialog__subject-name");
+        expect(within(dialog).getByText("源文件会保留。本机的高亮、讨论和阅读记录会被清除。").className).toContain("custom-dialog__follow");
+        expect(within(dialog).getByText("此操作不可撤销").className).toContain("custom-dialog__notice");
+        fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+        await waitFor(() => expect(screen.queryByRole("dialog", { name: "删除伴读数据" })).toBeNull());
+        expect(deleteProject).not.toHaveBeenCalled();
+        expect(screen.getByTestId("file-companion-tab-a.md")).toBeTruthy();
+        expect(loadPdfMarks("C:/notes/a.md")).toEqual([mark]);
+
+        fireEvent.click(screen.getByTestId("file-companion-library-delete-local:a"));
+        const again = await screen.findByRole("dialog", { name: "删除伴读数据" });
+        fireEvent.click(within(again).getByRole("button", { name: "删除" }));
+        await waitFor(() => expect(deleteProject).toHaveBeenCalledWith("local:a"));
+        await waitFor(() => expect(screen.queryByTestId("file-companion-tab-a.md")).toBeNull());
+        await waitFor(() => expect(screen.queryByTestId("file-companion-library-card-local:a")).toBeNull());
+        expect(loadPdfMarks("C:/notes/a.md")).toEqual([]);
+    });
+
+    it("drops a library list that started before delete instead of restoring marks", async () => {
+        const mark = { id: "m1", page: 1, color: "yellow" as const, rects: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.04 }], text: "Hello" };
+        savePdfMarks("C:/notes/a.md", [mark]);
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: "alpha" }));
+        const item = { id: "local:a", name: "a.md", path: "C:/notes/a.md", source: "local", openedAt: "2026-10-25T00:00:00Z" };
+        const stale = {
+            items: [item],
+            notice: "",
+            updates: [{
+                path: "C:/notes/a.md",
+                highlights: JSON.stringify([mark]),
+                messages: [{ role: "assistant", text: "回来了" }],
+                project: true,
+            }],
+        };
+        let phase: "normal" | "hold" | "after" = "normal";
+        const held: Array<(value: ListLibraryResult) => void> = [];
+        listLibrary.mockImplementation(async () => {
+            if (phase === "hold") return new Promise((resolve) => { held.push(resolve); });
+            if (phase === "after") return { items: [], notice: "" };
+            return { items: [item], notice: "" };
+        });
+        deleteProject.mockResolvedValue({ id: "local:a", path: "C:/notes/a.md", name: "a.md", cleared: true });
+        installRuntime();
+        render(
+            <DialogProvider>
+                <ToastProvider>
+                    <FileCompanionWindow askOnOpen={false} />
+                </ToastProvider>
+            </DialogProvider>,
+        );
+        await screen.findByTestId("file-companion-tab-a.md");
+        fireEvent.click(screen.getByTestId("file-companion-library"));
+        await screen.findByTestId("file-companion-library-delete-local:a");
+        phase = "hold";
+        window.dispatchEvent(new Event("focus"));
+        await waitFor(() => expect(held.length).toBeGreaterThan(0));
+        fireEvent.click(screen.getByTestId("file-companion-library-delete-local:a"));
+        const dialog = await screen.findByRole("dialog", { name: "删除伴读数据" });
+        phase = "after";
+        fireEvent.click(within(dialog).getByRole("button", { name: "删除" }));
+        await waitFor(() => expect(deleteProject).toHaveBeenCalledWith("local:a"));
+        await waitFor(() => expect(loadPdfMarks("C:/notes/a.md")).toEqual([]));
+        await waitFor(() => expect(screen.queryByTestId("file-companion-library-card-local:a")).toBeNull());
+        await act(async () => {
+            for (const resolve of held) resolve(stale);
+        });
+        await waitFor(() => expect(screen.queryByTestId("file-companion-tab-a.md")).toBeNull());
+        expect(loadPdfMarks("C:/notes/a.md")).toEqual([]);
+        expect(screen.queryByTestId("file-companion-library-card-local:a")).toBeNull();
+    });
+
     it("moves focus into a dialog and gives it back when the dialog closes", async () => {
         boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false }));
@@ -1783,6 +1886,16 @@ describe("FileCompanionWindow", () => {
         installRuntime();
         renderWindow();
         await screen.findByTestId("file-companion-tab-a.md");
+        // 文档管理 and 阅读群组 are the only flex items in their anchor, so the
+        // anchor gap is the space between those two squares.
+        const anchor = screen.getByTestId("file-companion-library-anchor");
+        expect(Array.from(anchor.children, (node) => (node as HTMLElement).dataset.testid)).toEqual([
+            "file-companion-library",
+            "file-companion-groups-open",
+        ]);
+        // The strip between the squares is not a button. On Windows the drag
+        // handler ignores it only while this attribute stays on the anchor.
+        expect(anchor.hasAttribute("data-window-no-drag")).toBe(true);
         // Title-bar tools are icon-only now: tooltip and aria-label carry the
         // text, and the one label span keeps the screen reader and tests fed.
         const paper = screen.getByTestId("file-companion-paper");
@@ -2492,7 +2605,7 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => {
             const notes = screen.getAllByRole("alert").map((node) => node.textContent || "");
             expect(notes.some((text) => text.includes("ERR") && text.includes("无法保存到该位置"))).toBe(true);
-            expect(notes.some((text) => text.includes("已生成可选中文字的 PDF"))).toBe(false);
+            expect(notes.some((text) => text.includes("已按原版式生成新的 PDF"))).toBe(false);
         });
         expect(showItemInFolder).toHaveBeenCalledWith("C:/data/searchable.pdf");
         expect(screen.getByTestId("file-companion-convert-result").textContent).toContain("无法保存到该位置");
@@ -2523,7 +2636,7 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => {
             const notes = screen.getAllByRole("alert").map((node) => node.textContent || "");
             expect(notes.some((text) => text.includes("ERR") && text.includes("无法保存到该位置"))).toBe(true);
-            expect(notes.some((text) => text.includes("已生成可选中文字的 PDF"))).toBe(false);
+            expect(notes.some((text) => text.includes("已按原版式生成新的 PDF"))).toBe(false);
         });
         expect(showItemInFolder).toHaveBeenCalledWith("C:/data/searchable.pdf");
         expect(screen.getByTestId("file-companion-convert-result").textContent).toContain("无法保存到该位置");
@@ -2543,7 +2656,7 @@ describe("FileCompanionWindow", () => {
                     scan: true,
                     complete: true,
                     path: "C:/out/searchable.pdf",
-                    message: "已生成可选中文字的 PDF，原文件没有改动。共 17 页。",
+                    message: "已按原版式生成新的 PDF，原文件没有改动。共 17 页。",
                 };
             }
             return { ok: true, scan: true, started: true, message: "正在后台转换，完成后会提示。" };
@@ -2572,19 +2685,19 @@ describe("FileCompanionWindow", () => {
                 scan: true,
                 complete: true,
                 pdf: "C:/out/searchable.pdf",
-                message: "已生成可选中文字的 PDF，原文件没有改动。共 17 页。",
+                message: "已按原版式生成新的 PDF，原文件没有改动。共 17 页。",
             });
         });
         await waitFor(() => expect(screen.getByTestId("file-companion-convert").textContent).toContain("转换"));
         expect((screen.getByTestId("file-companion-convert") as HTMLButtonElement).disabled).toBe(false);
         const card = await screen.findByTestId("file-companion-convert-result");
-        expect(card.textContent).toContain("已生成可选中文字的 PDF，原文件没有改动。");
+        expect(card.textContent).toContain("已按原版式生成新的 PDF，原文件没有改动。");
         expect(screen.getByTestId("task-result-view-btn").textContent).toBe("查看文档");
         fireEvent.click(screen.getByTestId("task-result-view-btn"));
         expect(openResult).toHaveBeenCalledWith("C:/out/searchable.pdf");
         await waitFor(() => {
             const notes = screen.getAllByRole("alert").map((node) => node.textContent || "");
-            expect(notes.some((text) => text.includes("「book.pdf」") && text.includes("已生成可选中文字的 PDF，原文件没有改动。"))).toBe(true);
+            expect(notes.some((text) => text.includes("「book.pdf」") && text.includes("已按原版式生成新的 PDF，原文件没有改动。"))).toBe(true);
             expect(notes.some((text) => text.includes("共 17 页"))).toBe(false);
         });
         expect(showItemInFolder).toHaveBeenCalledWith("C:/out/searchable.pdf");
@@ -2592,7 +2705,7 @@ describe("FileCompanionWindow", () => {
         fireEvent.click(screen.getByTestId("file-companion-convert"));
         await waitFor(() => {
             const notes = screen.getAllByRole("alert").map((node) => node.textContent || "");
-            expect(notes.filter((text) => text.includes("「book.pdf」") && text.includes("已生成可选中文字的 PDF，原文件没有改动。")).length).toBeGreaterThan(1);
+            expect(notes.filter((text) => text.includes("「book.pdf」") && text.includes("已按原版式生成新的 PDF，原文件没有改动。")).length).toBeGreaterThan(1);
         });
         expect(showItemInFolder).toHaveBeenCalledWith("C:/out/searchable.pdf");
         expect(convertScan).toHaveBeenCalledTimes(2);
@@ -2617,7 +2730,7 @@ describe("FileCompanionWindow", () => {
                 scan: true,
                 complete: false,
                 pdf: "C:/out/searchable.pdf",
-                message: "已生成可选中文字的 PDF，原文件没有改动。后面还有 3 页。请再点「转换」继续。",
+                message: "已按原版式生成新的 PDF，原文件没有改动。后面还有 3 页。请再点「转换」继续。",
             });
         });
         await waitFor(() => {
@@ -2644,7 +2757,7 @@ describe("FileCompanionWindow", () => {
                 complete: true,
                 pending: true,
                 pdf: "C:/out/searchable.pdf",
-                message: "已生成可选中文字的 PDF，原文件没有改动。共 17 页。表格模型还在下载。下载完成后再点「转换」，这些页会补上表格结构。",
+                message: "已按原版式生成新的 PDF，原文件没有改动。共 17 页。表格模型还在下载。下载完成后再点「转换」，这些页会补上表格结构。",
             });
         });
         await waitFor(() => {
@@ -2690,17 +2803,17 @@ describe("FileCompanionWindow", () => {
             scan: true,
             complete: true,
             path: "C:/out/searchable.pdf",
-            message: "已生成可选中文字的 PDF，原文件没有改动。共 17 页。",
+            message: "已按原版式生成新的 PDF，原文件没有改动。共 17 页。",
         });
         installRuntime();
         renderWindow();
         const card = await screen.findByTestId("file-companion-convert-result");
-        expect(card.textContent).toContain("已生成可选中文字的 PDF，原文件没有改动。");
+        expect(card.textContent).toContain("已按原版式生成新的 PDF，原文件没有改动。");
         expect(showItemInFolder).not.toHaveBeenCalled();
         fireEvent.click(screen.getByTestId("file-companion-convert"));
         await waitFor(() => {
             const notes = screen.getAllByRole("alert").map((node) => node.textContent || "");
-            expect(notes.some((text) => text.includes("「book.pdf」") && text.includes("已生成可选中文字的 PDF，原文件没有改动。"))).toBe(true);
+            expect(notes.some((text) => text.includes("「book.pdf」") && text.includes("已按原版式生成新的 PDF，原文件没有改动。"))).toBe(true);
             expect(notes.some((text) => text.includes("共 17 页"))).toBe(false);
         });
         expect(showItemInFolder).toHaveBeenCalledTimes(1);
@@ -2732,7 +2845,7 @@ describe("FileCompanionWindow", () => {
         });
         installRuntime();
         renderWindow();
-        expect((await screen.findByTestId("file-companion-convert-result")).textContent).toContain("已生成可选中文字的 PDF");
+        expect((await screen.findByTestId("file-companion-convert-result")).textContent).toContain("已按原版式生成新的 PDF");
         bookIsScan = false;
         fireEvent.click(screen.getByTestId("file-companion-tab-other.pdf"));
         fireEvent.click(screen.getByTestId("file-companion-tab-book.pdf"));
@@ -2754,14 +2867,14 @@ describe("FileCompanionWindow", () => {
         });
         installRuntime();
         renderWindow();
-        expect((await screen.findByTestId("file-companion-convert-result")).textContent).toContain("已生成可选中文字的 PDF");
+        expect((await screen.findByTestId("file-companion-convert-result")).textContent).toContain("已按原版式生成新的 PDF");
         const callsBefore = scanPDF.mock.calls.length;
         bookUnreadable = true;
         fireEvent.click(screen.getByTestId("file-companion-tab-other.pdf"));
         fireEvent.click(screen.getByTestId("file-companion-tab-book.pdf"));
         await waitFor(() => expect(scanPDF.mock.calls.length).toBeGreaterThan(callsBefore));
         expect(screen.getByTestId("file-companion-convert").textContent).toContain("转换");
-        expect(screen.getByTestId("file-companion-convert-result").textContent).toContain("已生成可选中文字的 PDF");
+        expect(screen.getByTestId("file-companion-convert-result").textContent).toContain("已按原版式生成新的 PDF");
         expect(showItemInFolder).not.toHaveBeenCalled();
     });
 
@@ -2771,7 +2884,7 @@ describe("FileCompanionWindow", () => {
         scanPDF.mockResolvedValue({ scan: true, path: "C:/out/searchable.pdf" });
         const runtime = installRuntime();
         renderWindow();
-        expect((await screen.findByTestId("file-companion-convert-result")).textContent).toContain("已生成可选中文字的 PDF");
+        expect((await screen.findByTestId("file-companion-convert-result")).textContent).toContain("已按原版式生成新的 PDF");
         act(() => {
             runtime.emit("file-companion:convert-done", {
                 path: "C:/scans/book.pdf",
@@ -2795,7 +2908,7 @@ describe("FileCompanionWindow", () => {
         scanPDF.mockResolvedValue({ scan: true, path: "C:/out/searchable.pdf" });
         const runtime = installRuntime();
         renderWindow();
-        expect((await screen.findByTestId("file-companion-convert-result")).textContent).toContain("已生成可选中文字的 PDF");
+        expect((await screen.findByTestId("file-companion-convert-result")).textContent).toContain("已按原版式生成新的 PDF");
         scanPDF.mockResolvedValue({ scan: true, path: "" });
         act(() => {
             runtime.emit("file-companion:convert-done", {
@@ -6767,10 +6880,19 @@ describe("companion titlebar keeps its controls out of the window drag region", 
             ".file-companion-titlebar-files",
             ".file-companion-titlebar-tabs",
             ".file-companion-titlebar-actions",
+            ".file-companion-library-anchor",
             ".file-companion-tool--fullscreen",
             ".file-companion-tool--close",
         ]) {
             expect(declaresNoDrag(source, selector), `${selector} must opt out of the drag region`).toBe(true);
         }
+    });
+
+    // The bar's flex gap does not apply inside the anchor, so the pair
+    // carries the same 8px itself. The strip stays no-drag.
+    it("separates 文档管理 and 阅读群组 by the title-bar tool gap", () => {
+        const source = css();
+        expect(source).toMatch(/\.file-companion-library-anchor\s*\{[^}]*gap:\s*8px/);
+        expect(declaresNoDrag(source, ".file-companion-library-anchor")).toBe(true);
     });
 });

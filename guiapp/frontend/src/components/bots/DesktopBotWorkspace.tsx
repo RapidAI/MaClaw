@@ -950,6 +950,7 @@ function copy(lang: string) {
             pcTitle: 'Cloud computer',
             pcShared: 'You and all of your bots share this one computer. Restarting or resetting it affects every bot at the same time.',
             pcRestart: 'Restart computer',
+            pcRestartShort: 'Restart',
             pcRestartDesc: [
                 'Like turning a computer off and on again.',
                 'Open windows close and tasks bots are running are interrupted.',
@@ -962,6 +963,7 @@ function copy(lang: string) {
             pcRestartWorking: 'Restarting… saving website logins, then starting again. Please keep this window open.',
             pcRestartDone: 'Restarted. The browser opens again the next time you or a bot uses the computer.',
             pcReset: 'Reset computer',
+            pcResetShort: 'Reset',
             pcResetDesc: [
                 'Like installing a fresh computer with the latest system, then moving your data back.',
                 'Kept: website logins and browser data (yours and your bots\'), and the files in your home folder.',
@@ -1142,6 +1144,7 @@ function copy(lang: string) {
             pcTitle: '雲端電腦',
             pcShared: '這台電腦由你和你所有的 Bot 共用，重新啟動或重設會同時影響所有 Bot。',
             pcRestart: '重新啟動電腦',
+            pcRestartShort: '重新啟動',
             pcRestartDesc: [
                 '像給電腦關機再開機。',
                 '打開的視窗會關閉，Bot 正在執行的任務會中斷。',
@@ -1154,6 +1157,7 @@ function copy(lang: string) {
             pcRestartWorking: '正在重新啟動…先儲存網站登入，再重新開機，請勿關閉視窗。',
             pcRestartDone: '已重新啟動。下次你或 Bot 使用電腦時，瀏覽器會自動打開。',
             pcReset: '重設電腦',
+            pcResetShort: '重設',
             pcResetDesc: [
                 '像用最新的系統重新裝一台電腦，再把你的資料搬回去。',
                 '保留：網站登入和瀏覽器資料（含所有 Bot 的）、主資料夾檔案。',
@@ -1333,6 +1337,7 @@ function copy(lang: string) {
         pcTitle: '云电脑',
         pcShared: '这台电脑由你和你所有的 Bot 共用，重启或重置会同时影响所有 Bot。',
         pcRestart: '重启电脑',
+        pcRestartShort: '重启',
         pcRestartDesc: [
             '像给电脑关机再开机。',
             '打开的窗口会关闭，Bot 正在跑的任务会中断。',
@@ -1345,6 +1350,7 @@ function copy(lang: string) {
         pcRestartWorking: '正在重启…先保存网站登录，再重新开机，请不要关闭窗口。',
         pcRestartDone: '已重启。下次你或 Bot 使用电脑时，浏览器会自动打开。',
         pcReset: '重置电脑',
+        pcResetShort: '重置',
         pcResetDesc: [
             '像用最新的系统重新装一台电脑，再把你的数据搬回去。',
             '保留：网站登录和浏览器资料（包括所有 Bot 的）、主目录文件。',
@@ -2232,6 +2238,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [pcWorking, setPcWorking] = useState<DesktopComputerAction | null>(null);
     const [pcBusy, setPcBusy] = useState<DesktopComputerAction | null>(null);
     const [pcNotice, setPcNotice] = useState('');
+    const [pcNoticeTone, setPcNoticeTone] = useState<'success' | 'error'>('error');
     const [messagesByBot, setMessagesByBot] = useState<Record<string, DesktopBotMessage[]>>({});
     const [command, setCommand] = useState('');
     const [listNotice, setListNotice] = useState('');
@@ -4102,9 +4109,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 setPcBusy(action);
                 return;
             }
+            setPcNoticeTone('success');
             setPcNotice(action === 'reset' ? text.pcResetDone : text.pcRestartDone);
         } catch (error) {
             if (gen !== loadGen.current) return;
+            setPcNoticeTone('error');
             setPcNotice(error instanceof Error && error.message ? error.message : text.unavailable);
         } finally {
             setPcWorking(null);
@@ -7262,14 +7271,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         shared: text.pcShared,
                         actions: {
                             restart: {
-                                name: text.pcRestart, button: text.pcRestart, description: text.pcRestartDesc,
+                                name: text.pcRestart, button: text.pcRestart, short: text.pcRestartShort, description: text.pcRestartDesc,
                                 confirmTitle: text.pcRestartConfirm, confirmButton: text.pcRestart, forceButton: text.pcRestartForce,
-                                working: text.pcRestartWorking, done: text.pcRestartDone,
+                                working: text.pcRestartWorking,
                             },
                             reset: {
-                                name: text.pcReset, button: text.pcReset, description: text.pcResetDesc,
+                                name: text.pcReset, button: text.pcReset, short: text.pcResetShort, description: text.pcResetDesc,
                                 confirmTitle: text.pcResetConfirm, confirmButton: text.pcResetAck, forceButton: text.pcResetForce,
-                                working: text.pcResetWorking, done: text.pcResetDone,
+                                working: text.pcResetWorking,
                             },
                         },
                         resetDisabled: text.pcResetDisabled,
@@ -7282,6 +7291,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     working={pcWorking}
                     busy={pcBusy}
                     notice={pcNotice}
+                    noticeTone={pcNoticeTone}
                     tabs={<BotSettingsTabs active="computer" labels={settingsTabLabels} disabled={pcWorking !== null} onSelect={switchSettingsTab} />}
                     onClose={() => { if (!pcWorking) { setPcOpen(false); setPcBusy(null); } }}
                     onCancelConfirm={() => setPcBusy(null)}

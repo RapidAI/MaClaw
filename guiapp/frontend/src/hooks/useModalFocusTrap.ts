@@ -50,6 +50,32 @@ export function useModalFocusTrap(
         return () => document.removeEventListener("focusin", handleFocusIn, true);
     }, [dialogRef]);
 
+    // Focus can leave the dialog without a key press (pointer, screen reader),
+    // and it can also be dropped on <body> when the focused control is removed
+    // from the tree — body never fires focusin, so the handler above misses it.
+    // The document-level listener covers both: Escape and Tab keep working even
+    // when the dialog no longer holds focus.
+    useEffect(() => {
+        const handleKeyDown = (event: KeyboardEvent) => {
+            const dialog = dialogRef.current;
+            if (!dialog) return;
+            const focusInside = dialog.contains(document.activeElement);
+            if (focusInside) return; // The React handler owns the in-dialog case.
+            if (event.key !== "Escape" && event.key !== "Tab") return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (event.key === "Escape") {
+                onEscape();
+                return;
+            }
+            const items = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE));
+            const target = event.shiftKey ? items[items.length - 1] : items[0];
+            (target ?? dialog).focus({ preventScroll: true });
+        };
+        document.addEventListener("keydown", handleKeyDown, true);
+        return () => document.removeEventListener("keydown", handleKeyDown, true);
+    }, [dialogRef, onEscape]);
+
     const onKeyDown = (event: ReactKeyboardEvent) => {
         if (event.key === "Escape") {
             event.preventDefault();

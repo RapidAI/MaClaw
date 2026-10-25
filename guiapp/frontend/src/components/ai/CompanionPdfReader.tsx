@@ -153,6 +153,204 @@ function clampRect(rect: PdfMarkRect): PdfMarkRect | null {
     return { x, y, w: right - x, h: bottom - y };
 }
 
+type SelectionBox = { left: number; top: number; right: number; bottom: number; space?: boolean };
+
+function selectionBox(rect: { left: number; top: number; right: number; bottom: number }): SelectionBox | null {
+    if (rect.right - rect.left < 0.5 || rect.bottom - rect.top < 0.5) return null;
+    return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+}
+
+function boxMid(box: SelectionBox): number {
+    return (box.top + box.bottom) / 2;
+}
+
+function horizontalGap(a: SelectionBox, b: SelectionBox): number {
+    if (a.right < b.left) return b.left - a.right;
+    if (b.right < a.left) return a.left - b.right;
+    return 0;
+}
+
+// A parent quad from Range.getClientRects covers several line boxes. A tall
+// formula line covers none, so height alone must not drop it.
+function dropContainerBoxes(boxes: SelectionBox[]): SelectionBox[] {
+    if (boxes.length < 2) return boxes;
+    const heights = boxes.map((box) => box.bottom - box.top).sort((a, b) => a - b);
+    const median = heights[Math.floor((heights.length - 1) / 2)];
+    const kept = boxes.filter((box) => {
+        if (box.bottom - box.top <= median * 2) return true;
+        let covered = 0;
+        for (const other of boxes) {
+            if (other === box) continue;
+            const encloses = box.top <= other.top + 1
+                && box.bottom >= other.bottom - 1
+                && box.left <= other.left + 1
+                && box.right >= other.right - 1
+                && box.bottom - box.top > other.bottom - other.top + 1;
+            if (encloses && ++covered >= 2) return false;
+        }
+        return true;
+    });
+    return kept.length > 0 ? kept : boxes;
+}
+
+function unionBoxes(boxes: SelectionBox[]): SelectionBox {
+    let left = boxes[0].left;
+    let right = boxes[0].right;
+    let top = boxes[0].top;
+    let bottom = boxes[0].bottom;
+    for (let i = 1; i < boxes.length; i += 1) {
+        const box = boxes[i];
+        left = Math.min(left, box.left);
+        right = Math.max(right, box.right);
+        top = Math.min(top, box.top);
+        bottom = Math.max(bottom, box.bottom);
+    }
+    return { left, top, right, bottom };
+}
+
+// pdf.js keeps a gap inside a run only up to 0.6em (SPACE_IN_FLOW_MAX_FACTOR).
+// Anything wider is its own whitespace run, and that run fills the gutter so
+// the boxes on either side look adjacent. A gap counts as a gutter when it is
+// wider than a word space and wider than the other gaps on that baseline.
+// Equal stretched gaps are justification and stay one line.
+function isColumnBreak(ordered: SelectionBox[], gaps: number[], index: number): boolean {
+    const gap = gaps[index];
+    const prev = ordered[index];
+    const box = ordered[index + 1];
+    const limit = 0.75 * Math.min(prev.bottom - prev.top, box.bottom - box.top);
+    if (gap <= limit) return false;
+    if (gaps.length < 3) return true;
+    const others: number[] = [];
+    for (let i = 0; i < gaps.length; i += 1) {
+        if (i !== index) others.push(gaps[i]);
+    }
+    others.sort((a, b) => a - b);
+    const median = others[Math.floor((others.length - 1) / 2)];
+    return gap > median + 1;
+}
+
+function splitBaseline(boxes: SelectionBox[]): SelectionBox[] {
+    const ordered = [...boxes].sort((a, b) => a.left - b.left || a.top - b.top);
+    const content = ordered.filter((box) => !box.space);
+    if (content.length < 2) return content;
+    const gaps: number[] = [];
+    for (let i = 1; i < content.length; i += 1) gaps.push(horizontalGap(content[i - 1], content[i]));
+    const parts: SelectionBox[][] = [[content[0]]];
+    for (let i = 0; i < gaps.length; i += 1) {
+        if (isColumnBreak(content, gaps, i)) parts.push([content[i + 1]]);
+        else parts[parts.length - 1].push(content[i + 1]);
+    }
+    return parts.map(unionBoxes);
+}
+
+// One PDF line is many runs, and the two columns of a page share a baseline.
+// The shorter band is the match. A tall formula must not swallow the next line,
+// and the stored midline stays put so tight lines cannot chain.
+function mergeTextLineBoxes(boxes: SelectionBox[]): SelectionBox[] {
+    const sorted = [...boxes].sort((a, b) => boxMid(a) - boxMid(b) || a.left - b.left);
+    const groups: Array<{ mid: number; band: number; boxes: SelectionBox[] }> = [];
+    for (const box of sorted) {
+        const mid = boxMid(box);
+        const band = (box.bottom - box.top) * 0.45;
+        let group: (typeof groups)[number] | undefined;
+        for (let i = groups.length - 1; i >= 0; i -= 1) {
+            const item = groups[i];
+            // No earlier line can match once the gap exceeds this box's own band.
+            if (mid - item.mid > band) break;
+            if (mid - item.mid <= Math.min(item.band, band)) {
+                group = item;
+                break;
+            }
+        }
+        if (!group) {
+            groups.push({ mid, band, boxes: [box] });
+            continue;
+        }
+        group.boxes.push(box);
+    }
+    const lines: SelectionBox[] = [];
+    for (const group of groups) lines.push(...splitBaseline(group.boxes));
+    return lines;
+}
+
+// The span's border box is the PDF run. A character offset clips that width.
+// Calling getClientRects on the sub-range is what drops later lines.
+function spanSelectionBox(range: Range, span: HTMLElement): SelectionBox | null {
+    const whole = selectionBox(span.getBoundingClientRect());
+    if (!whole) return null;
+    const text = span.firstChild;
+    if (!text || text.nodeType !== Node.TEXT_NODE) return whole;
+    const length = (text as Text).length;
+    if (length <= 0) return whole;
+    let start = 0;
+    let end = length;
+    if (range.startContainer === text) start = Math.min(Math.max(range.startOffset, 0), length);
+    if (range.endContainer === text) end = Math.min(Math.max(range.endOffset, 0), length);
+    if (end <= start) return null;
+    if (start === 0 && end === length) return whole;
+    const width = whole.right - whole.left;
+    const left = whole.left + width * (start / length);
+    const right = whole.left + width * (end / length);
+    if (right - left < 0.5) return null;
+    return { left, top: whole.top, right, bottom: whole.bottom };
+}
+
+// A whitespace run wider than an in-flow space is the gap itself, not a word.
+function wideSpaceRun(span: HTMLElement, box: SelectionBox): boolean {
+    const text = span.textContent ?? "";
+    if (!text || !/^[\s\u00a0]+$/.test(text)) return false;
+    return box.right - box.left > (box.bottom - box.top) * 0.6;
+}
+
+// contains() first. A range mock that only names the span would reject the page.
+function rangeHitsPage(range: Range, page: HTMLElement): boolean {
+    const start = range.startContainer;
+    const end = range.endContainer;
+    if (start && page.contains(start)) return true;
+    if (end && end !== start && page.contains(end)) return true;
+    if (typeof range.intersectsNode !== "function") return true;
+    try {
+        return range.intersectsNode(page);
+    } catch {
+        return true;
+    }
+}
+
+function selectionLineBoxes(range: Range, page: HTMLElement): SelectionBox[] {
+    const spans = page.querySelectorAll<HTMLElement>(".companion-pdf-text span");
+    const boxes: SelectionBox[] = [];
+    if (typeof range.intersectsNode === "function" && spans.length > 0) {
+        let seen = false;
+        for (const span of spans) {
+            let hit = false;
+            let threw = false;
+            try {
+                hit = range.intersectsNode(span);
+            } catch {
+                threw = true;
+            }
+            // Spans follow the range. After the first hit, the next miss is the end.
+            if (!hit) {
+                if (seen && !threw) break;
+                continue;
+            }
+            seen = true;
+            const box = spanSelectionBox(range, span);
+            if (!box) continue;
+            if (wideSpaceRun(span, box)) box.space = true;
+            boxes.push(box);
+        }
+    }
+    if (boxes.length > 0) return mergeTextLineBoxes(boxes);
+    // A parent quad only shows up in Range.getClientRects. A span box is one run.
+    const raw: SelectionBox[] = [];
+    for (const rect of range.getClientRects()) {
+        const box = selectionBox(rect);
+        if (box) raw.push(box);
+    }
+    return mergeTextLineBoxes(dropContainerBoxes(raw));
+}
+
 function selectionParts(root: HTMLElement): SelectionPart[] {
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed || selection.rangeCount < 1) return [];
@@ -161,15 +359,15 @@ function selectionParts(root: HTMLElement): SelectionPart[] {
     const raw = selection.toString().replace(/\s+/g, " ").trim();
     const text = clipTranslateText(raw);
     const clipped = Array.from(raw).length > PDF_TRANSLATE_CHARS;
-    const boxes = Array.from(selection.getRangeAt(0).getClientRects());
+    const range = selection.getRangeAt(0);
     const parts: SelectionPart[] = [];
     root.querySelectorAll<HTMLElement>("[data-pdf-page]").forEach((page) => {
         const pageNumber = Number(page.dataset.pdfPage);
-        if (!pageNumber) return;
+        if (!pageNumber || !rangeHitsPage(range, page)) return;
         const box = page.getBoundingClientRect();
         if (box.width < 1 || box.height < 1) return;
         const rects: PdfMarkRect[] = [];
-        for (const item of boxes) {
+        for (const item of selectionLineBoxes(range, page)) {
             const left = Math.max(item.left, box.left);
             const right = Math.min(item.right, box.right);
             const top = Math.max(item.top, box.top);

@@ -2637,6 +2637,9 @@ func (a *App) startup(ctx context.Context) {
 	startupBegin := time.Now()
 	log.Printf("[startup] begin")
 	bootLog("App.startup ctx_nil=%v", ctx == nil)
+	// Start the runtime sampler before any heavy work so the first sample
+	// captures the WebView processes created alongside this window.
+	startPerfSampler()
 	a.ctx = ctx
 	a.installMermaidPDFRaster()
 	botNoticeApp.Store(a)
@@ -2849,12 +2852,14 @@ func (a *App) startup(ctx context.Context) {
 		go a.ensureMemoryStore()
 
 		log.Printf("[startup] complete in %v", time.Since(startupBegin))
+		perfMarkStartupDone()
 		return
 	}
 	a.setPowerOptimizationEnabled(false)
 	// Background warmup: same memory-store prewarm for the no-config path.
 	go a.ensureMemoryStore()
 	log.Printf("[startup] complete (no config) in %v", time.Since(startupBegin))
+	perfMarkStartupDone()
 }
 
 // domReady is called after the frontend Dom has been loaded.
@@ -2872,6 +2877,7 @@ func (a *App) domReady(ctx context.Context) {
 
 func (a *App) finishDomReady(ctx context.Context) {
 	a.frontendDOMReady.Store(true)
+	perfMarkDOMReady()
 	go a.startTeamInbox()
 	bootLog("wails OnDomReady htmlReady=%v (about:blank also fires this)", a.frontendHTMLReady.Load())
 	log.Printf("[domReady] err=none wails navigation completed htmlReady=%v warmup_done=%v", a.frontendHTMLReady.Load(), a.warmupDone.Load())
@@ -2916,6 +2922,7 @@ func (a *App) markFrontendHTMLReady() {
 	if a == nil || !a.frontendHTMLReady.CompareAndSwap(false, true) {
 		return
 	}
+	perfMarkHTMLReady()
 	if a.darwinDocumentLatchOpen() {
 		bootLog("index.html boot-ping deferred by darwin file latch")
 		return
@@ -2932,6 +2939,7 @@ func (a *App) markFrontendReactReady() {
 	if a == nil || !a.frontendReactReady.CompareAndSwap(false, true) {
 		return
 	}
+	perfMarkReactReady()
 	bootLog("react main.tsx loaded; envCheckDone=%v", a.frontendEnvCheckDone.Load())
 	if a.frontendEnvCheckDone.Load() {
 		bootLog("replaying env-check-done after late React load")

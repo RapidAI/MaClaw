@@ -158,7 +158,7 @@ func fileCompanionToolDefinitions() []map[string]interface{} {
 			"type": "function",
 			"function": map[string]interface{}{
 				"name":        fileCompanionToolRestore,
-				"description": "把当前打开的扫描版 PDF 恢复成可以选中、可以搜索的 PDF。扫描图保留，文字按识别位置写成透明文字层。公式行用已经接入的公式模型写成 LaTeX。不覆盖原文件。pages 可省略；省略时从未完成的页继续。单次最多 16 页。",
+				"description": "把当前打开的扫描版 PDF 按原来的版面位置重新生成一份可以选中、可以搜索的 PDF。正文每一行按识别到的原位置写回。公式用已经接入的公式模型还原到公式框里。插图裁回原处，有线表格恢复成表格。不覆盖原文件。pages 可省略；省略时从未完成的页继续。单次最多 16 页。",
 				"parameters": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{

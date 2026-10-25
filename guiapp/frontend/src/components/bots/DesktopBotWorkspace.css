@@ -3031,31 +3031,169 @@
     color: var(--theme-text-muted, #7f8ea1);
 }
 
-/* 设置弹窗「电脑」标签页：重启 / 重置云电脑。 */
-.bot-computer__item {
+/* ── 设置弹窗「电脑」标签页：重启 / 重置云电脑 ──────────────────────────
+   这两张卡不是单选项，卡片本身不可点：动作由卡片里的按钮发起。所以它们不借
+   .bot-llm-dialog__option（那套带 cursor:pointer 和整卡 hover，会误导用户点
+   说明文字），改用 .bot-computer__action，只做静态分组。 */
+.bot-computer__action {
     display: flex;
     flex-direction: column;
-    align-items: flex-start;
-    gap: 6px;
-    margin-top: 14px;
+    gap: 10px;
+    padding: 14px;
+    border: 1px solid var(--theme-border-subtle, #dde9fa);
+    border-radius: 10px;
+    background: var(--theme-surface, #fff);
 }
 
+/* 重置是不可逆操作，用危险色描边把两档区分开；重启保持中性。 */
+.bot-computer__action.is-danger {
+    border-color: color-mix(in srgb, var(--theme-danger, #d92d20) 30%, transparent);
+    background: color-mix(in srgb, var(--theme-danger, #d92d20) 3%, var(--theme-surface, #fff));
+}
+
+.bot-computer__action-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.bot-computer__action-title {
+    margin: 0;
+    font-size: 0.875rem;
+    font-weight: 650;
+    line-height: 1.4;
+    color: var(--theme-text-primary, #101828);
+}
+
+/* 按钮靠右，标题在左：一行读完"做什么 + 怎么触发"，按钮不拉伸。 */
+.bot-computer__action-head .btn-secondary {
+    margin-left: auto;
+    flex: 0 0 auto;
+    min-height: 30px;
+    padding: 0 12px;
+    font-size: 0.8125rem;
+}
+
+/* 说明列表：字号小但行高给足，圆点换成淡色小点，读起来是一组并列事实。 */
 .bot-computer__desc {
     margin: 0;
-    padding-left: 18px;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
     font-size: 12.5px;
-    line-height: 1.6;
+    line-height: 1.65;
     color: var(--theme-text-secondary, #475467);
 }
 
-.bot-computer__shared {
-    color: #b54708;
+.bot-computer__desc li {
+    position: relative;
+    padding-left: 14px;
 }
 
+.bot-computer__desc li::before {
+    content: '';
+    position: absolute;
+    top: 0.72em;
+    left: 0;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--theme-text-muted, #667085) 55%, transparent);
+}
+
+/* "共用"提醒是一条要注意的事实，不是错误：警示色，不是危险色。 */
+.bot-computer__shared {
+    margin: 0;
+    padding: 9px 12px;
+    border: 1px solid color-mix(in srgb, var(--theme-warning, #aa5d05) 26%, transparent);
+    border-radius: 8px;
+    background: var(--theme-warning-bg, rgba(217, 119, 6, 0.07));
+    color: var(--theme-warning, #aa5d05);
+    font-size: 12.5px;
+    line-height: 1.55;
+}
+
+/* 确认步骤的危险标题，跟卡片描边同一个信号。 */
 .bot-computer__danger-title {
-    color: #b91c1c;
+    color: var(--theme-danger, #d92d20);
 }
 
 .bot-computer__ack {
-    margin-top: 10px;
+    margin-top: 12px;
+    align-items: flex-start;
+    font-weight: 500;
+    line-height: 1.5;
+}
+
+.bot-computer__ack input {
+    margin-top: 2px;
+}
+
+/* 进行中与"有任务在跑"都是中性信息，红框留给真正的失败。 */
+.bot-computer__progress {
+    margin: 0;
+    padding: 9px 12px;
+    border: 1px solid color-mix(in srgb, var(--theme-primary, #2e75cb) 26%, transparent);
+    border-radius: 8px;
+    background: var(--theme-primary-soft, rgba(47, 120, 208, 0.10));
+    color: var(--theme-primary-strong, #1e6bc5);
+    font-size: 12.5px;
+    line-height: 1.55;
+}
+
+/* 动作完成是结果，不是错误：用成功色，别沿用红色失败横幅。 */
+.bot-computer__done {
+    margin: 0;
+    padding: 9px 12px;
+    border: 1px solid color-mix(in srgb, var(--theme-success, #11813a) 28%, transparent);
+    border-radius: 8px;
+    background: var(--theme-success-bg, rgba(22, 163, 74, 0.07));
+    color: var(--theme-success, #11813a);
+    font-size: 12.5px;
+    line-height: 1.55;
+}
+
+/* "有 Bot 正在跑" 不是失败，是一个要用户权衡的前提：警示色而不是错误红。
+   红色留给真正没做成的事。 */
+.bot-computer__warn {
+    margin: 0;
+    padding: 9px 12px;
+    border: 1px solid color-mix(in srgb, var(--theme-warning, #aa5d05) 30%, transparent);
+    border-radius: 8px;
+    background: var(--theme-warning-bg, rgba(217, 119, 6, 0.07));
+    color: var(--theme-warning, #aa5d05);
+    font-size: 12.5px;
+    line-height: 1.55;
+}
+
+[data-ai-theme='dark'] .bot-computer__action {
+    border-color: color-mix(in srgb, var(--theme-text-primary, #c9c9c9) 16%, transparent);
+    background: var(--theme-surface, #1c1c1c);
+}
+
+[data-ai-theme='dark'] .bot-computer__action.is-danger {
+    border-color: color-mix(in srgb, var(--theme-danger, #f47067) 38%, transparent);
+    background: color-mix(in srgb, var(--theme-danger, #f47067) 8%, var(--theme-surface, #1c1c1c));
+}
+
+/* App.css 里有一条 (0,5,0) 的规则，把 custom-dialog 页脚里的 .btn-danger 重涂成
+   主蓝色（那是给通用确认框定的）。重置电脑是不可逆操作，确认按钮必须是危险色：
+   这里多加一个 .bot-llm-dialog 让选择器到 (0,6,0)，只在「电脑」弹窗内生效。 */
+.modal-backdrop.custom-dialog-backdrop .bot-llm-dialog .custom-dialog__footer .btn-secondary.btn-danger {
+    background: var(--theme-danger, #d92d20);
+    color: var(--theme-on-primary, #fff);
+    border-color: transparent;
+    box-shadow: none;
+    filter: none;
+}
+
+.modal-backdrop.custom-dialog-backdrop .bot-llm-dialog .custom-dialog__footer .btn-secondary.btn-danger:hover {
+    background: color-mix(in srgb, var(--theme-danger, #d92d20) 86%, #000);
+}
+
+.modal-backdrop.custom-dialog-backdrop .bot-llm-dialog .custom-dialog__footer .btn-secondary.btn-danger:disabled {
+    background: color-mix(in srgb, var(--theme-danger, #d92d20) 42%, var(--theme-surface, #fff));
+    color: var(--theme-on-primary, #fff);
 }

@@ -31227,6 +31227,23 @@ input.mdoc-search:focus-visible {
 .mobile-documents-inline[data-ai-theme='dark'] .mdoc-file-glyph {
   filter: brightness(1.22) saturate(1.05);
 }
+/* The host's own icon for the type. It already carries the association's
+   colors, so the tinted tile and the dark-theme brightening are dropped; the
+   box stays so rows mixing both kinds keep one alignment. These two rules
+   follow the generic pair above: same specificity, so order decides. */
+.mobile-documents-overlay[data-ai-theme='dark'] .mdoc-file-glyph--system,
+.mobile-documents-inline[data-ai-theme='dark'] .mdoc-file-glyph--system {
+  filter: none;
+}
+.mdoc-file-glyph--system {
+  background: none;
+}
+.mdoc-file-glyph-img {
+  width: 28px;
+  height: 28px;
+  display: block;
+  object-fit: contain;
+}
 
 /* Folder sections. */
 .mdoc-folder {
@@ -32415,9 +32432,13 @@ body.companion-pdf-translation-dragging * {
   margin-left: 0;
   margin-right: 0;
 }
+/* These two squares share one row, so the title bar's flex gap never
+   lands between them. The strip is part of this anchor and stays no-drag. */
 .file-companion-library-anchor {
   display: inline-flex;
+  align-items: center;
   flex: 0 0 auto;
+  gap: 8px;
   --wails-draggable: no-drag;
 }
 /* 文档管理: a dialog whose rows read as one line each — kind badge, title and

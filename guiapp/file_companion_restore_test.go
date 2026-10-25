@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"image"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,7 +46,7 @@ func TestFileCompanionRestoreWritesSearchablePDF(t *testing.T) {
 	h := &IMMessageHandler{app: app}
 	userID := "file-companion:" + doc.SessionID
 	text, ok := h.executeFileCompanionHostTool(userID, fileCompanionToolRestore, `{}`)
-	if !ok || !strings.Contains(text, "已生成可选中文字的 PDF") || !strings.Contains(text, "公式行已用已接入的公式模型写成 LaTeX") || !strings.Contains(text, "原文件没有改动") {
+	if !ok || !strings.Contains(text, "已按原版式生成新的 PDF") || !strings.Contains(text, "公式已用已接入的公式模型还原到原位置") || !strings.Contains(text, "原文件没有改动") {
 		t.Fatalf("restore = %q ok=%v", text, ok)
 	}
 	if calls != 1 {
@@ -74,7 +75,7 @@ func TestFileCompanionRestoreWritesSearchablePDF(t *testing.T) {
 		t.Fatalf("extracted = %q", extracted)
 	}
 	again, ok := h.executeFileCompanionHostTool(userID, fileCompanionToolRestore, `{}`)
-	if !ok || calls != 1 || !strings.Contains(again, "已经生成") {
+	if !ok || calls != 1 || !strings.Contains(again, "已按原版式生成新的 PDF") {
 		t.Fatalf("second = %q ok=%v calls=%d", again, ok, calls)
 	}
 	afterSecond, err := os.ReadFile(path)
@@ -127,7 +128,7 @@ func TestFileCompanionRestoreReportsFormulaStillPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	again, ok := h.executeFileCompanionHostTool(userID, fileCompanionToolRestore, `{}`)
-	if !ok || calls != 1 || !strings.Contains(again, "已经生成") || !strings.Contains(again, "公式模型还在下载") {
+	if !ok || calls != 1 || !strings.Contains(again, "已按原版式生成新的 PDF") || !strings.Contains(again, "公式模型还在下载") {
 		t.Fatalf("second = %q ok=%v calls=%d", again, ok, calls)
 	}
 }
@@ -194,7 +195,7 @@ func TestFileCompanionRestoreKeepsLayoutOrder(t *testing.T) {
 	})
 	h := &IMMessageHandler{app: app}
 	text, ok := h.executeFileCompanionHostTool("file-companion:"+doc.SessionID, fileCompanionToolRestore, `{}`)
-	if !ok || !strings.Contains(text, "已生成可选中文字的 PDF") || !strings.Contains(text, "版面已按阅读顺序整理。") || !strings.Contains(text, "表格已恢复成结构。") {
+	if !ok || !strings.Contains(text, "已按原版式生成新的 PDF") || !strings.Contains(text, "版面已按原来的位置还原。") || !strings.Contains(text, "表格已恢复成结构。") {
 		t.Fatalf("restore = %q ok=%v", text, ok)
 	}
 	raw, err := os.ReadFile(filepath.Join(app.GetDataDir(), "file-companion", "results", doc.SessionID, "searchable.json"))
@@ -210,6 +211,13 @@ func TestFileCompanionRestoreKeepsLayoutOrder(t *testing.T) {
 	}
 	if len(cache.Pages[0].Blocks) != 2 || cache.Pages[0].Blocks[1].HTML != "<table><tr><td>右栏</td></tr></table>" || cache.Pages[0].Blocks[0].Text != "左栏" {
 		t.Fatalf("blocks %+v", cache.Pages[0].Blocks)
+	}
+	left, right := cache.Pages[0].Blocks[0], cache.Pages[0].Blocks[1]
+	if math.Abs(left.X-72) > 0.6 || math.Abs(left.Y-100) > 0.6 || math.Abs(left.W-100) > 0.6 || math.Abs(left.H-60) > 0.6 {
+		t.Fatalf("left block = %+v", left)
+	}
+	if math.Abs(right.X-172) > 0.6 || math.Abs(right.Y-100) > 0.6 || math.Abs(right.W-100) > 0.6 || math.Abs(right.H-100) > 0.6 {
+		t.Fatalf("right block = %+v", right)
 	}
 	if !cache.Pages[0].LayoutChecked || cache.Pages[0].TablePending {
 		t.Fatalf("checked %+v", cache.Pages[0])
@@ -253,7 +261,7 @@ func TestFileCompanionRestoreWaitsForTableModel(t *testing.T) {
 	h := &IMMessageHandler{app: app}
 	userID := "file-companion:" + doc.SessionID
 	text, ok := h.executeFileCompanionHostTool(userID, fileCompanionToolRestore, `{}`)
-	if !ok || !strings.Contains(text, "已生成可选中文字的 PDF") || !strings.Contains(text, "版面已按阅读顺序整理。") || !strings.Contains(text, "表格模型还在下载") || strings.Contains(text, "表格已恢复成结构。") {
+	if !ok || !strings.Contains(text, "已按原版式生成新的 PDF") || !strings.Contains(text, "版面已按原来的位置还原。") || !strings.Contains(text, "表格模型还在下载") || strings.Contains(text, "表格已恢复成结构。") {
 		t.Fatalf("restore = %q ok=%v", text, ok)
 	}
 	raw, err := os.ReadFile(filepath.Join(app.GetDataDir(), "file-companion", "results", doc.SessionID, "searchable.json"))
@@ -371,7 +379,7 @@ func TestFileCompanionRestoreReadsFormulaRegion(t *testing.T) {
 	})
 	h := &IMMessageHandler{app: app}
 	text, ok := h.executeFileCompanionHostTool("file-companion:"+doc.SessionID, fileCompanionToolRestore, `{}`)
-	if !ok || calls != 2 || !strings.Contains(text, "公式行已用已接入的公式模型写成 LaTeX") {
+	if !ok || calls != 2 || !strings.Contains(text, "公式已用已接入的公式模型还原到原位置") {
 		t.Fatalf("restore = %q ok=%v calls=%d", text, ok, calls)
 	}
 	raw, err := os.ReadFile(filepath.Join(app.GetDataDir(), "file-companion", "results", doc.SessionID, "searchable.json"))
@@ -385,6 +393,78 @@ func TestFileCompanionRestoreReadsFormulaRegion(t *testing.T) {
 	lines := cache.Pages[0].Lines
 	if len(cache.Pages) != 1 || len(lines) != 3 || lines[0].Text != `\frac{a}{b}` || !lines[0].Formula || lines[1].Text != "旁边正文" || lines[1].Formula || lines[2].Text != "a=b" || !lines[2].Formula {
 		t.Fatalf("lines %+v", lines)
+	}
+	if len(cache.Pages[0].Blocks) != 1 {
+		t.Fatalf("blocks %+v", cache.Pages[0].Blocks)
+	}
+	formula := cache.Pages[0].Blocks[0]
+	if math.Abs(formula.X-72) > 0.6 || math.Abs(formula.Y-100) > 0.6 || math.Abs(formula.W-120) > 0.6 || math.Abs(formula.H-60) > 0.6 || formula.Text != `\frac{a}{b}` {
+		t.Fatalf("formula block = %+v", formula)
+	}
+}
+
+func TestRestoreTableHTMLLeavesFormulaLinesOut(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 40, 20))
+	var got []tablestruct.Line
+	prev := fileCompanionRestoreTable
+	fileCompanionRestoreTable = func(_ image.Image, lines []tablestruct.Line) (string, error) {
+		got = append([]tablestruct.Line(nil), lines...)
+		return "<table><tr><td>格内</td></tr></table>", nil
+	}
+	t.Cleanup(func() { fileCompanionRestoreTable = prev })
+	html := restoreTableHTML(img, doclayout.Box{X0: 0, Y0: 0, X1: 40, Y1: 20}, []agent.ScanTextLine{
+		{Text: `\frac{a}{b}`, Formula: true, BBox: [4]int{0, 0, 20, 8}},
+		{Text: "格内", BBox: [4]int{0, 10, 20, 8}},
+	})
+	if html != "<table><tr><td>格内</td></tr></table>" || len(got) != 1 || got[0].Text != "格内" {
+		t.Fatalf("html %q lines %+v", html, got)
+	}
+}
+
+func TestBlockTextGivesALineOneOwner(t *testing.T) {
+	lines := []agent.ScanTextLine{
+		{Text: `\frac{a}{b}`, Formula: true, BBox: [4]int{0, 0, 24, 8}},
+		{Text: "旁边正文", BBox: [4]int{0, 8, 20, 6}},
+	}
+	regions := []doclayout.Region{
+		{Label: "display_formula", Order: 0, Box: doclayout.Box{X0: 0, Y0: 0, X1: 24, Y1: 8}},
+		{Label: "text", Order: 1, Box: doclayout.Box{X0: 0, Y0: 0, X1: 40, Y1: 20}},
+	}
+	formula := blockText(lines, regions, 0)
+	prose := blockText(lines, regions, 1)
+	if formula != `\frac{a}{b}` || prose != "旁边正文" {
+		t.Fatalf("formula %q prose %q", formula, prose)
+	}
+	regions[0].Order = 1
+	regions[1].Order = 0
+	formula = blockText(lines, regions, 0)
+	prose = blockText(lines, regions, 1)
+	if formula != "" || prose != `\frac{a}{b}`+"\n旁边正文" {
+		t.Fatalf("reversed formula %q prose %q", formula, prose)
+	}
+}
+
+func TestPictorialCropsKeepASmallMiss(t *testing.T) {
+	jpeg := mustJPEG(t, 300, 400)
+	place := agent.ScanImagePlacement{X: 20, Y: 30, DisplayW: 550, DisplayH: 800, PixelW: 300, PixelH: 400}
+	blocks := []restoreBlock{
+		{Label: "image", X: 20, Y: 30, W: 2, H: 2},
+		{Label: "image", X: 40, Y: 50, W: 120, H: 80},
+	}
+	pics, hold := pictorialCrops(place, jpeg, blocks)
+	if hold || len(pics) != 1 || math.Abs(pics[0].X-40) > 0.1 || math.Abs(pics[0].W-120) > 0.1 {
+		t.Fatalf("pics=%d hold=%v", len(pics), hold)
+	}
+	place.MirrorY = true
+	pics, hold = pictorialCrops(place, jpeg, blocks)
+	if !hold || len(pics) != 0 {
+		t.Fatalf("mirror pics=%d hold=%v", len(pics), hold)
+	}
+	place.MirrorY = false
+	place.Turn = 90
+	pics, hold = pictorialCrops(place, jpeg, blocks)
+	if !hold || len(pics) != 0 {
+		t.Fatalf("turn pics=%d hold=%v", len(pics), hold)
 	}
 }
 
@@ -624,8 +704,91 @@ func TestFileCompanionConvertScanReadsAScanThatAlsoHasText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(out, jpegBytes) {
-		t.Fatal("searchable pdf dropped the scan under the page number")
+	if bytes.Contains(out, jpegBytes) {
+		t.Fatal("rebuilt pdf still embeds the page-covering scan")
+	}
+	if bytes.Contains(out, []byte("/ca 0.000")) {
+		t.Fatal("rebuilt text is still invisible")
+	}
+	extracted, err := gopdf2.ExtractPageText(out, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(extracted, "扫描正文") {
+		t.Fatalf("extracted = %q", extracted)
+	}
+}
+
+func TestFileCompanionConvertScanRebuildsAFigureAndTable(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	app.seedFileCompanionPaths(nil)
+	font, err := loadCompanionRestoreFont(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "layout.pdf")
+	scan := mustJPEG(t, 300, 400)
+	src := buildCompanionPDFWithImageAndText(t, font, scan, 20, 30, 550, 800, "页码")
+	if err := os.WriteFile(path, src, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seedCompanionTestFileAt(t, app, path)
+	prevRec := fileCompanionRestoreRecognize
+	prevLayout := fileCompanionRestoreLayout
+	prevTable := fileCompanionRestoreTable
+	fileCompanionRestoreRecognize = func([]byte) ([]agent.ScanTextLine, error) {
+		return []agent.ScanTextLine{
+			{Text: "图中", BBox: [4]int{8, 8, 24, 12}},
+			{Text: "格内", BBox: [4]int{90, 16, 30, 12}},
+			{Text: "图外", BBox: [4]int{8, 200, 40, 16}},
+		}, nil
+	}
+	fileCompanionRestoreLayout = func(image.Image) ([]doclayout.Region, error) {
+		return []doclayout.Region{
+			{Label: "image", Score: 0.9, Order: 0, Box: doclayout.Box{X0: 0, Y0: 0, X1: 70, Y1: 50}},
+			{Label: doclayout.TableLabel, Score: 0.9, Order: 1, Box: doclayout.Box{X0: 80, Y0: 0, X1: 180, Y1: 70}},
+			{Label: "text", Score: 0.9, Order: 2, Box: doclayout.Box{X0: 0, Y0: 180, X1: 80, Y1: 240}},
+		}, nil
+	}
+	fileCompanionRestoreTable = func(image.Image, []tablestruct.Line) (string, error) {
+		return "<table><tr><td>甲</td><td>乙</td></tr><tr><td>丙</td><td>丁</td></tr></table>", nil
+	}
+	t.Cleanup(func() {
+		fileCompanionRestoreRecognize = prevRec
+		fileCompanionRestoreLayout = prevLayout
+		fileCompanionRestoreTable = prevTable
+	})
+	got := finishFileCompanionConvert(t, app, path)
+	if !got.OK || !got.Scan || got.Path == "" || !strings.Contains(got.Message, "表格已恢复成结构") || !strings.Contains(got.Message, "已按原版式生成新的 PDF") {
+		t.Fatalf("convert = %+v", got)
+	}
+	out, err := os.ReadFile(got.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(out, scan) {
+		t.Fatal("rebuilt pdf still embeds the page-covering scan")
+	}
+	view, err := agent.NewScanRestore(src).Page(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	place := view.Placement
+	scaleX := place.DisplayW / float64(place.PixelW)
+	scaleY := place.DisplayH / float64(place.PixelH)
+	crop, ok := agent.CropScanRegion(view.Payload, place, place.X, place.Y, 70*scaleX, 50*scaleY)
+	if !ok || !bytes.Contains(out, crop) {
+		t.Fatal("figure crop missing")
+	}
+	extracted, err := gopdf2.ExtractPageText(out, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(extracted, "图外") || !strings.Contains(extracted, "甲") || !strings.Contains(extracted, "乙") {
+		t.Fatalf("extracted = %q", extracted)
+	}
+	if strings.Contains(extracted, "图中") || strings.Contains(extracted, "格内") {
+		t.Fatalf("covered line still drawn: %q", extracted)
 	}
 }
 
@@ -769,7 +932,7 @@ func TestFileCompanionConvertScanWritesTheChosenPDF(t *testing.T) {
 	}
 	failed := app.deliverConvertedPDF(canonical, FileCompanionConvertResult{
 		OK: true, Scan: true, Complete: true, Path: sessionPDF,
-		Message: "已生成可选中文字的 PDF，原文件没有改动。共 1 页。结果文件：" + sessionPDF,
+		Message: "已按原版式生成新的 PDF，原文件没有改动。共 1 页。结果文件：" + sessionPDF,
 	}, bad)
 	if !failed.SaveFailed || !failed.OK || !failed.Complete || failed.Path != sessionPDF || failed.Message != "无法保存到该位置" || calls != 1 {
 		t.Fatalf("save failed = %+v calls=%d", failed, calls)
@@ -841,13 +1004,13 @@ func finishFileCompanionConvertTo(t *testing.T, app *App, path, dest string) Fil
 func TestCompanionConvertNoticeNamesTheSourceFile(t *testing.T) {
 	notice := companionConvertNotice("C:/scans/book.pdf", FileCompanionConvertResult{
 		OK: true, Scan: true, Complete: true, Path: "C:/out/searchable.pdf",
-		Message: "已生成可选中文字的 PDF，原文件没有改动。共 17 页。",
+		Message: "已按原版式生成新的 PDF，原文件没有改动。共 17 页。",
 	})
 	if notice["path"] != "C:/scans/book.pdf" || notice["pdf"] != "C:/out/searchable.pdf" || notice["ok"] != true || notice["complete"] != true {
 		t.Fatalf("notice = %#v", notice)
 	}
 	message, _ := notice["message"].(string)
-	if !strings.Contains(message, "已生成可选中文字的 PDF") {
+	if !strings.Contains(message, "已按原版式生成新的 PDF") {
 		t.Fatalf("message = %q", message)
 	}
 }
@@ -892,7 +1055,7 @@ func TestFileCompanionConvertScanReturnsBeforeThePagesFinish(t *testing.T) {
 	}
 	close(release)
 	done, ok := app.waitFileCompanionConvert(path, time.Minute)
-	if !ok || !done.OK || !done.Complete || done.Path == "" || !strings.Contains(done.Message, "已生成可选中文字的 PDF") {
+	if !ok || !done.OK || !done.Complete || done.Path == "" || !strings.Contains(done.Message, "已按原版式生成新的 PDF") {
 		t.Fatalf("done = %+v ok=%v", done, ok)
 	}
 }
@@ -926,7 +1089,7 @@ func TestFileCompanionConvertScanFinishesEveryPage(t *testing.T) {
 	if copied := docgen.SystemCJKFontCopies() - copiesBefore; copied != 1 {
 		t.Fatalf("font copies = %d", copied)
 	}
-	if !strings.Contains(got.Message, "已生成可选中文字的 PDF") || !strings.Contains(got.Message, "原文件没有改动") || !strings.Contains(got.Message, "共 17 页") {
+	if !strings.Contains(got.Message, "已按原版式生成新的 PDF") || !strings.Contains(got.Message, "原文件没有改动") || !strings.Contains(got.Message, "共 17 页") {
 		t.Fatalf("message = %q", got.Message)
 	}
 	after, err := os.ReadFile(path)
@@ -1126,7 +1289,7 @@ func TestFileCompanionConvertScanKeepsLayoutAndStopsWhileTablesWait(t *testing.T
 	if calls != fileCompanionRestorePagesMax+1 || !got.Complete || !got.Pending {
 		t.Fatalf("convert = %+v calls=%d", got, calls)
 	}
-	if !strings.Contains(got.Message, "已生成可选中文字的 PDF") || !strings.Contains(got.Message, "版面已按阅读顺序整理") || !strings.Contains(got.Message, "表格模型还在下载") || !strings.Contains(got.Message, "再点「转换」") || strings.Contains(got.Message, "表格已恢复成结构") {
+	if !strings.Contains(got.Message, "已按原版式生成新的 PDF") || !strings.Contains(got.Message, "版面已按原来的位置还原") || !strings.Contains(got.Message, "表格模型还在下载") || !strings.Contains(got.Message, "再点「转换」") || strings.Contains(got.Message, "表格已恢复成结构") {
 		t.Fatalf("message = %q calls=%d", got.Message, calls)
 	}
 	after, err := os.ReadFile(path)

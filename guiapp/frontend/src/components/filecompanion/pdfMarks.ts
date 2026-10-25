@@ -22,7 +22,8 @@ export type PdfMark = {
 };
 
 const MAX_MARKS = 2000;
-const MAX_RECTS = 40;
+// Line boxes, not raw client rects. 40 covered only the top of a long page.
+const MAX_RECTS = 160;
 const MAX_TEXT = 500;
 
 const FILL: Record<PdfMarkColor, string> = {
