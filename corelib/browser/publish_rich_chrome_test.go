@@ -306,3 +306,28 @@ func TestPublishFlowNoEditorIsNamed(t *testing.T) {
 		t.Fatalf("err=%v rep=%s", err, rep.String())
 	}
 }
+
+// The run's own deadline bounds every step: a picture that is never stored
+// ends the run with its report before the caller's hard limit.
+func TestPublishFlowDeadlineBoundsTheRun(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, _ := fixtureServer(t, "rich_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit?slowupload=1")
+	start := time.Now()
+	rep, err := RunPublish(d, PublishSpec{Files: richImages(t), Title: "t 截止", Body: richBody, StepBudget: 30 * time.Second, Deadline: time.Now().Add(8 * time.Second)})
+	if err == nil || time.Since(start) > 15*time.Second || rep.State != PublishNotSubmitted {
+		t.Fatalf("err=%v took=%s rep=%s", err, time.Since(start), rep.String())
+	}
+}
+
+// An editor that polls an upload's processing state with reads after the
+// upload request finished is still working on the picture, not idle.
+func TestPublishFlowRichBodyUploadPollingIsNotIdle(t *testing.T) {
+	addr := startFixtureChrome(t)
+	srv, site := fixtureServer(t, "rich_like.html")
+	d := fixtureTab(t, addr, srv.URL+"/edit?pollupload=1")
+	rep, err := RunPublish(d, PublishSpec{Files: richImages(t), Title: "t 轮询", Body: richBody, StepBudget: 10 * time.Second})
+	if err != nil || rep.State != PublishLive || len(site.published) != 1 {
+		t.Fatalf("err=%v rep=%s", err, rep.String())
+	}
+}

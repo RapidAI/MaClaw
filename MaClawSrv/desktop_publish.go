@@ -46,6 +46,9 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 		VerifyURL:      desktopArg(args, "verify_url"),
 		EditURL:        desktopArg(args, "edit_url"),
 		StepBudget:     30 * time.Second,
+		// The pipeline owns the time: it ends with its own report before
+		// the hard step limit (ZN-21 was cut off at 300s mid-read-back).
+		Deadline: time.Now().Add(desktopStepTimeout("publish") - 30*time.Second),
 	}
 	ts := desktopTaskSpecFor(scope.RunID)
 	spec.EditorURL = desktopArg(args, "editor_url")

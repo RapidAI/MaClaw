@@ -239,6 +239,7 @@ func fixtureServer(t *testing.T, page string) (*httptest.Server, *fixtureSite) {
 		m := last()
 		_ = json.NewEncoder(w).Encode(m)
 	})
+	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("{}")) })
 	mux.HandleFunc("/success", func(w http.ResponseWriter, r *http.Request) { page1(w, "发布成功") })
 	mux.HandleFunc("/p/123", func(w http.ResponseWriter, r *http.Request) {
 		m := last()

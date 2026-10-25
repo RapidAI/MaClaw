@@ -22,8 +22,11 @@ type netTracker struct {
 	last     time.Time
 	failures []netFailure
 	writes   int
-	starts   []time.Time
-	cancel   func()
+	// fetched: last XHR/fetch of any method (an editor polls an upload's
+	// processing state with reads after the write finished).
+	fetched time.Time
+	starts  []time.Time
+	cancel  func()
 }
 
 type netFailure struct {
@@ -69,6 +72,7 @@ func (t *netTracker) on(ev CDPEvent) {
 		Response struct {
 			Status int `json:"status"`
 		} `json:"response"`
+		Type      string `json:"type"`
 		ErrorText string `json:"errorText"`
 		Canceled  bool   `json:"canceled"`
 	}
@@ -77,6 +81,9 @@ func (t *netTracker) on(ev CDPEvent) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if ev.Method == "Network.requestWillBeSent" && (p.Type == "XHR" || p.Type == "Fetch") {
+		t.fetched = time.Now()
+	}
 	switch ev.Method {
 	case "Network.requestWillBeSent":
 		if netWriteMethods[strings.ToUpper(p.Request.Method)] {
@@ -110,6 +117,17 @@ func (t *netTracker) state() (int, time.Duration) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return len(t.open), time.Since(t.last)
+}
+
+// idleFor: time since the page last wrote or made any XHR/fetch.
+func (t *netTracker) idleFor() (int, time.Duration) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	last := t.last
+	if t.fetched.After(last) {
+		last = t.fetched
+	}
+	return len(t.open), time.Since(last)
 }
 
 // failedSince lists writing requests that failed after since.

@@ -37,6 +37,10 @@ type PublishSpec struct {
 	SubmitTexts    []string // exact button texts; default 发布/Publish/Post/提交
 	ConfirmTexts   []string // a second confirm button, if the site asks
 	VerifyURL      string   // page to open after submit where the post must be listed
+	// Deadline bounds the whole run (the caller's own hard limit minus a
+	// margin); every step's budget is clipped to it so the run always ends
+	// with its own report instead of being cut off from outside.
+	Deadline time.Time
 	// EditorURL is the page where a new post is written; the run opens it
 	// itself when the tab is elsewhere.
 	EditorURL string
@@ -152,6 +156,11 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 			// These steps end on the page's own events (uploads stored,
 			// draft saved, post found); the budget is only a safety net.
 			budget = publishSafetyBudget(spec.StepBudget)
+		}
+		if !spec.Deadline.IsZero() {
+			if rem := time.Until(spec.Deadline); rem < budget {
+				budget = maxDur(rem, time.Second)
+			}
 		}
 		select {
 		case r = <-ch:
@@ -1123,4 +1132,11 @@ func (p *publishRun) waitSaved() error {
 		return fmt.Errorf("the page kept saving for 60s after the last edit")
 	}
 	return nil
+}
+
+func maxDur(a, b time.Duration) time.Duration {
+	if a > b {
+		return a
+	}
+	return b
 }

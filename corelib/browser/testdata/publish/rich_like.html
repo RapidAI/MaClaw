@@ -2,7 +2,7 @@
 <!-- Zhihu-like rich editor: textarea title, contenteditable body that takes
      pasted HTML (keeps h2/h3/strong/em/ul/ol/li/p/blockquote, drops the rest)
      and pasted image files (inserted at the caret as <img>). Query flags:
-     ?plainpaste=1 drops all formatting; ?imgtop=1 puts every image at the top; ?hang=1 freezes the page for 25s on publish; ?stickyquote=1 pulls everything after a pasted quote into it; ?toolong=1 refuses publish with a length error; ?busypost=1 lands on a post page whose JS is busy for 9s; ?lazypost=1 publishes pictures as lazy placeholders (data: src, real URL in data-actualsrc); ?slowupload=1 stores the n-th picture only after 6s*n; ?droppic=1 leaves the last picture off the post page while it was published only once; ?noupload=1 never stores pasted pictures (they keep a data: source). -->
+     ?plainpaste=1 drops all formatting; ?imgtop=1 puts every image at the top; ?hang=1 freezes the page for 25s on publish; ?stickyquote=1 pulls everything after a pasted quote into it; ?toolong=1 refuses publish with a length error; ?busypost=1 lands on a post page whose JS is busy for 9s; ?lazypost=1 publishes pictures as lazy placeholders (data: src, real URL in data-actualsrc); ?slowupload=1 stores the n-th picture only after 6s*n; ?droppic=1 leaves the last picture off the post page while it was published only once; ?pollupload=1 stores a picture only after polling /status for 24s (reads only); ?noupload=1 never stores pasted pictures (they keep a data: source). -->
 <style>.public-DraftEditor-content{min-height:300px;width:690px;border:1px solid #ccc} img{width:200px}</style></head><body>
 <div class="WriteIndex-titleInput"><textarea class="Input" placeholder="请输入标题（最多 100 个字）"></textarea></div>
 <div class="DraftEditor-editorContainer"><div class="notranslate public-DraftEditor-content" contenteditable="true" role="textbox"></div></div>
@@ -17,7 +17,7 @@ ed.addEventListener('paste', e => {
   e.preventDefault();
   const fs = [...(e.clipboardData.files || [])];
   if (fs.length) {
-    for (const f of fs) { const rd = new FileReader(); const i = document.createElement('img'); i.width = 200; rd.onload = () => { i.src = rd.result; const n = (window.__up = (window.__up || 0) + 1); fetch('/upload?n=' + n + (q.get('slowupload') ? '&slow=1' : '') + (q.get('noupload') ? '&fail=1' : ''), {method: 'POST', body: f}).then(r => r.ok ? r.text() : null).then(u => { if (u) i.src = location.origin + u; }); }; rd.readAsDataURL(f);
+    for (const f of fs) { const rd = new FileReader(); const i = document.createElement('img'); i.width = 200; rd.onload = () => { i.src = rd.result; const n = (window.__up = (window.__up || 0) + 1); fetch('/upload?n=' + n + (q.get('slowupload') ? '&slow=1' : '') + (q.get('noupload') ? '&fail=1' : ''), {method: 'POST', body: f}).then(r => r.ok ? r.text() : null).then(async u => { if (u && q.get('pollupload')) { for (let k = 0; k < 4; k++) { await new Promise(r => setTimeout(r, 6000)); await fetch('/status'); } } if (u) i.src = location.origin + u; }); }; rd.readAsDataURL(f);
       if (q.get('imgtop')) ed.insertBefore(i, ed.firstChild); else { const f2 = document.createDocumentFragment(); f2.appendChild(i); atCaret(f2); } }
     return;
   }
