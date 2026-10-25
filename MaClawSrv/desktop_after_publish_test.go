@@ -29,10 +29,10 @@ func TestAfterVerifiedPublishStopsTheHunt(t *testing.T) {
 }
 
 func TestPostURLForListedID(t *testing.T) {
-	if got := desktopPostURLFor("https://creator.xiaohongshu.com/new/note-manager", "6adbf6450000000024036add"); got != "https://www.xiaohongshu.com/explore/6adbf6450000000024036add" {
+	if got := desktopPostURLFor(browser.PublishSpec{VerifyURL: "https://creator.xiaohongshu.com/new/note-manager"}, "6adbf6450000000024036add"); got != "https://www.xiaohongshu.com/explore/6adbf6450000000024036add" {
 		t.Fatal(got)
 	}
-	if desktopPostURLFor("https://example.com/list", "1") != "" {
+	if desktopPostURLFor(browser.PublishSpec{VerifyURL: "https://example.com/list"}, "1") != "" {
 		t.Fatal("unknown host must give no link")
 	}
 }

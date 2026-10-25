@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
@@ -61,6 +60,14 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 	if spec.EditURL == "" {
 		spec.EditURL = ts.EditURL
 	}
+	prof := ts.Profile
+	if prof == nil {
+		prof = browser.ProfileForURL(spec.EditorURL)
+	}
+	if prof == nil {
+		prof = browser.ProfileForURL(session.CurrentURL())
+	}
+	prof.Apply(&spec)
 	if spec.Title == "" && spec.Body == "" {
 		return "", fmt.Errorf("publish needs title and/or body")
 	}
@@ -85,22 +92,12 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 	return "", fmt.Errorf("%s\n%s\n%s", err.Error(), out, desktopPublishRecordText(rec))
 }
 
-// desktopPostURLPatterns is site data: the public post URL for an id the
-// publish verify list reports (hosts match by suffix).
-var desktopPostURLPatterns = map[string]string{
-	"xiaohongshu.com": "https://www.xiaohongshu.com/explore/%s",
-}
-
-func desktopPostURLFor(verifyURL, id string) string {
-	u, err := url.Parse(verifyURL)
-	if err != nil || id == "" {
-		return ""
+// desktopPostURLFor builds a listed post's public URL from its id through
+// the profile of the site the list is on (site data, not code).
+func desktopPostURLFor(spec browser.PublishSpec, id string) string {
+	p := browser.ProfileForURL(spec.VerifyURL)
+	if p == nil {
+		p = browser.ProfileForURL(spec.EditorURL)
 	}
-	h := strings.ToLower(u.Hostname())
-	for suf, pat := range desktopPostURLPatterns {
-		if h == suf || strings.HasSuffix(h, "."+suf) {
-			return fmt.Sprintf(pat, id)
-		}
-	}
-	return ""
+	return p.PostURLFor(id)
 }

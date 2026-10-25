@@ -1,0 +1,27 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Add New Post (synthetic WordPress-like fixture)</title>
+<!-- Synthetic, no real site: a block-editor shape. The sidebar already shows
+     "Published" before anything is posted; typing autosaves and renames the
+     URL to ?post=9&action=edit (still the editor); the first Publish opens a
+     pre-publish panel, whose own Publish posts; the page stays put and says
+     "Post published." -->
+<style>.ed{min-height:300px;width:690px;border:1px solid #ccc}</style></head><body>
+<aside><a href="#">Published (3)</a> <span>Status: Draft</span></aside>
+<h1 contenteditable="true" aria-label="Add title" class="title" style="width:690px;min-height:40px"></h1>
+<div class="ed" contenteditable="true" role="textbox" aria-label="Block editor"></div>
+<button id="pub">Publish</button>
+<script>
+const ed = document.querySelector('.ed');
+let saved = false;
+ed.addEventListener('input', () => { if (!saved) { saved = true; fetch('/draft', {method: 'POST', body: ed.innerText}).then(() => history.replaceState(null, '', '/edit?post=9&action=edit')); } });
+document.getElementById('pub').addEventListener('click', ev => {
+  if (!ev.isTrusted || document.getElementById('panel')) return;
+  const d = document.createElement('div'); d.id = 'panel'; d.innerHTML = '<p>Are you ready to publish?</p><button id="pub2">Publish</button>';
+  document.body.appendChild(d);
+  document.getElementById('pub2').addEventListener('click', async e => {
+    if (!e.isTrusted) return;
+    const t = document.querySelector('.title').innerText;
+    await fetch('/publish', {method: 'POST', body: JSON.stringify({title: t, body: ed.innerText})});
+    const n = document.createElement('div'); n.setAttribute('role', 'status'); n.innerText = 'Post published.'; document.body.appendChild(n);
+  });
+});
+</script></body></html>

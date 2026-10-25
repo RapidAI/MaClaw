@@ -29,3 +29,9 @@ func (d sessionPublishDriver) Subscribe() (<-chan CDPEvent, func()) {
 	d.s.startEventPump()
 	return subscribeSessionEvents(d.s)
 }
+
+// CurrentURL is the active tab's URL ("" when the page does not answer).
+func (s *BrowserAgentSession) CurrentURL() string {
+	u, _ := s.pageURL()
+	return u
+}

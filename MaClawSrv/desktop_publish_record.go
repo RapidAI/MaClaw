@@ -92,7 +92,7 @@ func desktopRecordPublish(scope agentruntime.Scope, spec browser.PublishSpec, re
 		r.State, r.Missing, r.PostID = rep.State, rep.Missing, rep.PostID
 		r.URL = rep.ResultURL
 		if rep.PostID != "" && spec.VerifyURL != "" {
-			if link := desktopPostURLFor(spec.VerifyURL, rep.PostID); link != "" {
+			if link := desktopPostURLFor(spec, rep.PostID); link != "" {
 				r.URL = link
 			}
 		}

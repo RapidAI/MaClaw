@@ -48,7 +48,20 @@ type PublishSpec struct {
 	// with it a picture missing from the live post is put back.
 	EditURL     string
 	UpdateTexts []string // buttons that save an edited post (default 更新/发布/Update/Publish)
-	StepBudget  time.Duration
+	// SuccessTexts: page text that says the post went out; only text that
+	// appeared after the submit click counts (default publishSuccessTexts).
+	SuccessTexts []string
+	// SuccessURL: a regexp the page URL matches once the post is out.
+	SuccessURL string
+	// BodyKind: rich, markdown or plain ("" detects from the editor).
+	BodyKind string
+	// ImageMode: paste or gallery ("" detects).
+	ImageMode string
+	// ImageTabTexts: labels of a tab that switches to image posts.
+	ImageTabTexts []string
+	// PlainBold renders bold/heading runs in a plain body ($1 = the text).
+	PlainBold  string
+	StepBudget time.Duration
 }
 
 type PublishStep struct {
@@ -118,6 +131,9 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 	}
 	if len(spec.SubmitTexts) == 0 {
 		spec.SubmitTexts = defaultSubmitTexts
+	}
+	if len(spec.SuccessTexts) == 0 {
+		spec.SuccessTexts = publishSuccessTexts
 	}
 	p := &publishRun{d: d, spec: spec, rep: &PublishReport{}, doc: parseRichBody(spec.Body, len(spec.Files))}
 	if b := p.doc.badAnchors; len(b) > 0 {
@@ -227,6 +243,9 @@ type publishRun struct {
 	spec        PublishSpec
 	rep         *PublishReport
 	editURL     string
+	// seen: page URLs the editor had before the submit click (an autosave
+	// renames the editor URL; none of these is a published post).
+	seen map[string]bool
 	// pasteLater: no file input showed the images; paste them into the
 	// body editor after the text (paste_images step).
 	pasteLater bool
@@ -376,6 +395,7 @@ func (p *publishRun) observeOnce() (string, error) {
 	}
 	_ = json.Unmarshal([]byte(out), &o)
 	p.editURL = o.URL
+	p.see(o.URL)
 	detail := fmt.Sprintf("%s file_inputs=%d title_field=%v editor=%v", o.URL, o.Files, o.Title, o.Body)
 	if len(p.spec.Files) == 0 {
 		if p.spec.Title != "" && !o.Title {
@@ -863,12 +883,45 @@ func (p *publishRun) clickText(texts []string, buttonsOnly bool) error {
 	return fmt.Errorf("no visible enabled button with text %q (searched all shadow roots)", strings.Join(texts, "/"))
 }
 
-var publishDoneRe = regexp.MustCompile(`发布成功|已发布|发表成功|Published|published successfully`)
+// publishSuccessTexts: generic discovery default; a site profile names its
+// own. Only text new since the click is searched.
+var publishSuccessTexts = []string{"发布成功", "已发布", "发表成功", "Published", "published successfully"}
+
+// saysAny: the first of texts found in s ("" when none).
+func saysAny(s string, texts []string) string {
+	for _, t := range texts {
+		if t != "" && strings.Contains(strings.ToLower(s), strings.ToLower(t)) {
+			return t
+		}
+	}
+	return ""
+}
+
+func (p *publishRun) see(u string) {
+	if u == "" {
+		return
+	}
+	if p.seen == nil {
+		p.seen = map[string]bool{}
+	}
+	p.seen[u] = true
+}
+
+// hasEditor: the page still shows the body (or title) editor; an error when
+// the page does not answer within d.
+func (p *publishRun) hasEditor(d time.Duration) (bool, error) {
+	out, err := p.evalWithin("(() => {"+publishHelpersJS+" const t = __title("+jsq(p.spec.TitleSelector)+"); return String(!!(__body("+jsq(p.spec.BodySelector)+", t) || t)); })()", d)
+	if err != nil {
+		return false, err
+	}
+	return out == "true", nil
+}
 
 func (p *publishRun) submit() (string, error) {
 	before, _ := p.eval("document.body ? document.body.innerText.slice(0, 20000) : ''")
 	// Set before the click: a page that freezes on publish never answers it.
 	closed := p.closeOverlays()
+	p.see(p.pageURL())
 	p.submitClicked.Store(true)
 	clickedAt := time.Now()
 	p.clickedAt = clickedAt
@@ -889,13 +942,22 @@ func (p *publishRun) submit() (string, error) {
 			}
 		}
 		url := p.pageURL()
-		// An autosaved draft also changes the URL (/write -> /p/1/edit):
-		// only a page outside the editor counts as published.
-		if url != "" && url != p.editURL && !publishEditorURL.MatchString(url) {
-			return "page left the editor: " + url, nil
+		if p.spec.SuccessURL != "" && url != "" {
+			if re, err := regexp.Compile(p.spec.SuccessURL); err == nil && re.MatchString(url) {
+				return "page is the post: " + url, nil
+			}
+		}
+		// A URL the editor never had, on a page without the editor, is the
+		// post (an autosave also renames the editor's URL, and the editor
+		// stays on the page then).
+		if url != "" && !p.seen[url] {
+			if ed, err := p.hasEditor(3 * time.Second); err != nil || !ed {
+				return "page left the editor: " + url, nil
+			}
+			p.see(url)
 		}
 		txt, _ := p.evalWithin("document.body ? document.body.innerText.slice(0, 20000) : ''", 3*time.Second)
-		if m := publishDoneRe.FindString(txt); m != "" {
+		if m := saysAny(newText(before, txt), p.spec.SuccessTexts); m != "" {
 			return "page says " + m, nil
 		}
 		if !confirmed && len(p.spec.ConfirmTexts) > 0 {
@@ -999,7 +1061,7 @@ func (p *publishRun) verify() (string, error) {
 	// (/p/<id>); when it shows the title and is not an editor, that is the
 	// result. Otherwise open verify_url, where the post must be listed.
 	if out, err := p.checkResult(key, 6*time.Second, false); err == nil {
-		if !publishEditorURL.MatchString(p.rep.ResultURL) || p.spec.VerifyURL == "" {
+		if ed, _ := p.hasEditor(3 * time.Second); !ed || p.spec.VerifyURL == "" {
 			return out, nil
 		}
 	}
@@ -1018,8 +1080,6 @@ func (p *publishRun) verify() (string, error) {
 
 // A landing URL that itself says the submit went through (?published=true).
 var publishSubmittedURL = regexp.MustCompile(`(?i)[?&#](published|publish_success|success|status)=(true|1|success|ok)`)
-
-var publishEditorURL = regexp.MustCompile(`(?i)/(edit|write|publish|creator|draft)`)
 
 func (p *publishRun) checkResult(key string, budget time.Duration, listed bool) (string, error) {
 	deadline := time.Now().Add(budget)
@@ -1125,6 +1185,11 @@ func (p *publishRun) pasteImages() (string, error) {
 
 // newLines is the text lines that appear in after but not in before.
 func newLines(before, after string) string {
+	return clipRunes(newText(before, after), 200)
+}
+
+// newText is every line of after that before did not have, unclipped.
+func newText(before, after string) string {
 	seen := map[string]bool{}
 	for _, l := range strings.Split(before, "\n") {
 		seen[strings.TrimSpace(l)] = true
@@ -1135,7 +1200,7 @@ func newLines(before, after string) string {
 			out = append(out, l)
 		}
 	}
-	return clipRunes(strings.Join(out, " | "), 200)
+	return strings.Join(out, " | ")
 }
 
 // publishSafetyBudget caps a step that ends on page events; it is reached

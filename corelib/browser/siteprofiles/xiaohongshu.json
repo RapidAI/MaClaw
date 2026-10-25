@@ -1,0 +1,13 @@
+{
+  "id": "xiaohongshu",
+  "hosts": ["xiaohongshu.com"],
+  "request_words": ["小红书", "xiaohongshu", "rednote"],
+  "editor_url": "https://creator.xiaohongshu.com/publish/publish?from=menu",
+  "verify_url": "https://creator.xiaohongshu.com/new/note-manager",
+  "post_url": "https://www.xiaohongshu.com/explore/{id}",
+  "image_mode": "gallery",
+  "image_tab_texts": ["上传图文", "图文"],
+  "plain_bold": "【$1】",
+  "submit_texts": ["发布"],
+  "success_texts": ["发布成功"]
+}

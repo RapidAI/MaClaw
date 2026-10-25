@@ -1,0 +1,12 @@
+{
+  "id": "zhihu",
+  "hosts": ["zhihu.com"],
+  "request_words": ["知乎", "zhihu"],
+  "editor_url": "https://zhuanlan.zhihu.com/write",
+  "edit_url": "{url}/edit",
+  "image_mode": "paste",
+  "submit_texts": ["发布"],
+  "update_texts": ["更新", "发布"],
+  "success_texts": ["发布成功", "已发布", "发表成功"],
+  "success_url": "^https://zhuanlan\\.zhihu\\.com/p/\\d+/?([?#].*)?$"
+}

@@ -1,8 +1,9 @@
 package main
 
 import (
-	"regexp"
 	"sync"
+
+	"github.com/RapidAI/CodeClaw/corelib/browser"
 )
 
 // desktopTaskSpec is what a run's request asks for, read once from the
@@ -15,16 +16,8 @@ type desktopTaskSpec struct {
 	EditorURL string
 	VerifyURL string
 	EditURL   string
+	Profile   *browser.SiteProfile
 	Avoid     map[string]bool
-}
-
-// Site data only: which request words name which site, and its pages.
-var desktopTaskSites = []struct {
-	re                         *regexp.Regexp
-	site, editor, verify, edit string
-}{
-	{regexp.MustCompile(`(?i)知乎|zhihu`), "zhihu", "https://zhuanlan.zhihu.com/write", "", "{url}/edit"},
-	{regexp.MustCompile(`(?i)小红书|xiaohongshu|rednote`), "xiaohongshu", "https://creator.xiaohongshu.com/publish/publish?from=menu", "https://creator.xiaohongshu.com/new/note-manager", ""},
 }
 
 func desktopTaskSpecOf(request string) desktopTaskSpec {
@@ -32,11 +25,11 @@ func desktopTaskSpecOf(request string) desktopTaskSpec {
 	if !desktopPublishAskRe.MatchString(request) {
 		return s
 	}
-	for _, t := range desktopTaskSites {
-		if t.re.MatchString(request) {
-			s.Site, s.EditorURL, s.VerifyURL, s.EditURL = t.site, t.editor, t.verify, t.edit
-			break
-		}
+	// The target site's pages come from its loadable profile
+	// (corelib/browser/siteprofiles); no profile leaves them empty and the
+	// publish action runs on generic discovery.
+	if p := browser.ProfileForRequest(request); p != nil {
+		s.Site, s.EditorURL, s.VerifyURL, s.EditURL, s.Profile = p.ID, p.EditorURL, p.VerifyURL, p.EditURL, p
 	}
 	return s
 }
