@@ -129,13 +129,14 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 	if spec.StepBudget <= 0 {
 		spec.StepBudget = 30 * time.Second
 	}
-	if len(spec.SubmitTexts) == 0 {
+	discover := len(spec.SubmitTexts) == 0
+	if discover {
 		spec.SubmitTexts = defaultSubmitTexts
 	}
 	if len(spec.SuccessTexts) == 0 {
 		spec.SuccessTexts = publishSuccessTexts
 	}
-	p := &publishRun{d: d, spec: spec, rep: &PublishReport{}, doc: parseRichBody(spec.Body, len(spec.Files))}
+	p := &publishRun{d: d, spec: spec, rep: &PublishReport{}, doc: parseRichBody(spec.Body, len(spec.Files)), discoverSubmit: discover}
 	if b := p.doc.badAnchors; len(b) > 0 {
 		p.rep.State = PublishNotSubmitted
 		p.rep.Stuck = "spec"
@@ -214,6 +215,8 @@ func RunPublish(d PublishDriver, spec PublishSpec) (*PublishReport, error) {
 			case p.submitClicked.Load() && p.net != nil && len(p.net.writesSince(p.clickedAt)) == 0 && spec.VerifyURL != "":
 				// The click sent nothing and the post list lacks the post:
 				// nothing went out, so the run may fix the cause and retry.
+			case p.submitClicked.Load() && p.net != nil && len(p.net.refusedSince(p.clickedAt)) > 0 && len(p.net.refusedSince(p.clickedAt)) == len(p.net.writesSince(p.clickedAt)):
+				// Every write the click sent was refused in its answer.
 			case p.submitClicked.Load():
 				p.rep.State = PublishSubmitted
 			case p.noEditor:
@@ -243,6 +246,10 @@ type publishRun struct {
 	spec        PublishSpec
 	rep         *PublishReport
 	editURL     string
+	kind        string // detected body kind
+	// discoverSubmit: no profile or caller named the submit button; when no
+	// button has an exact default text, the best-scored one is used.
+	discoverSubmit bool
 	// seen: page URLs the editor had before the submit click (an autosave
 	// renames the editor URL; none of these is a published post).
 	seen map[string]bool
@@ -330,9 +337,10 @@ func (p *publishRun) call(obj, fn string) (string, error) {
 
 const publishHelpersJS = `const __vis = e => { if (!e) return false; const r = e.getBoundingClientRect(); const s = getComputedStyle(e); return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
 const __area = e => { const r = e.getBoundingClientRect(); return r.width * r.height; };
-const __all = (sel) => { const out = []; const walk = root => { root.querySelectorAll(sel).forEach(e => out.push(e)); root.querySelectorAll('*').forEach(n => { if (n.shadowRoot) walk(n.shadowRoot); }); }; walk(document); return out; };
-const __title = (sel) => { if (sel) return document.querySelector(sel); const c = __all('input:not([type]),input[type=text],textarea,[contenteditable="true"]').filter(__vis); return c.find(e => /标题|title/i.test((e.placeholder || '') + ' ' + (e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('data-placeholder') || ''))) || null; };
-const __body = (sel, title) => { if (sel) return document.querySelector(sel); const c = __all('[contenteditable="true"],[contenteditable=""],textarea').filter(e => __vis(e) && e !== title && __area(e) > 4000 && !(title && e.contains(title))); c.sort((a, b) => __area(b) - __area(a)); return c.find(e => e.isContentEditable) || c[0] || null; };`
+const __all = (sel) => { const out = []; const walk = root => { root.querySelectorAll(sel).forEach(e => out.push(e)); root.querySelectorAll('*').forEach(n => { if (n.shadowRoot) walk(n.shadowRoot); }); }; walk(document); document.querySelectorAll('iframe,frame').forEach(f => { try { if (f.contentDocument) walk(f.contentDocument); } catch (e) {} }); return out; };
+const __title = (sel) => { if (sel) return document.querySelector(sel); const c = __all('input:not([type]),input[type=text],textarea,[contenteditable="true"]').filter(__vis); const lab = e => [...(e.labels || [])].map(l => l.innerText).join(' '); return c.find(e => /标题|title/i.test((e.placeholder || '') + ' ' + (e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('data-placeholder') || ''))) || c.find(e => /标题|主题|title|subject|headline/i.test(lab(e) + ' ' + (e.name || '') + ' ' + (e.id || ''))) || null; };
+const __body = (sel, title) => { if (sel) return document.querySelector(sel); const c = __all('[contenteditable="true"],[contenteditable=""],textarea,.CodeMirror').filter(e => __vis(e) && !(e.closest && e.parentElement && e.parentElement.closest('.CodeMirror')) && e !== title && __area(e) > 4000 && !(title && e.contains(title))); c.sort((a, b) => __area(b) - __area(a)); return c.find(e => e.isContentEditable) || c[0] || null; };
+const __kind = e => { if (!e) return ''; if (e.closest('.CodeMirror,.cm-editor,.monaco-editor,.bytemd,[class*=markdown],[class*=Markdown],[class*=md-editor]')) return 'markdown'; if (e.tagName === 'TEXTAREA') return 'plain'; return e.isContentEditable ? 'rich' : 'plain'; };`
 
 func jsq(s string) string { b, _ := json.Marshal(s); return string(b) }
 
@@ -570,7 +578,7 @@ func (p *publishRun) typeText(text string, multiline bool) error {
 	return nil
 }
 
-const readValueFn = `function(){ const v = (this.tagName === 'INPUT' || this.tagName === 'TEXTAREA') ? String(this.value || '') : String(this.innerText || this.textContent || ''); return v; }`
+const readValueFn = `function(){ if (this.CodeMirror && this.CodeMirror.getValue) return String(this.CodeMirror.getValue()); if (this.cmView && this.cmView.view) return String(this.cmView.view.state.doc.toString()); const v = (this.tagName === 'INPUT' || this.tagName === 'TEXTAREA') ? String(this.value || '') : String(this.innerText || this.textContent || ''); return v; }`
 
 var wsRe = regexp.MustCompile(`\s+`)
 
@@ -635,6 +643,9 @@ func (p *publishRun) fillTitle() (string, error) {
 }
 
 func (p *publishRun) fillBody() (string, error) {
+	if p.bodyKind() == "markdown" {
+		return p.fillMarkdown()
+	}
 	// Pictures that went to a gallery (note-style sites) leave a plain
 	// caption body: those editors do not keep bold or headings.
 	if p.doc.rich && !p.gallery {
@@ -664,8 +675,61 @@ func (p *publishRun) fillBody() (string, error) {
 	return p.fill("body", p.bodyExpr(), p.spec.Body, true)
 }
 
+// bodyKind is the declared body kind, else what the editor element looks
+// like (code/markdown editor, plain field or rich contenteditable).
+func (p *publishRun) bodyKind() string {
+	if p.spec.BodyKind != "" {
+		return p.spec.BodyKind
+	}
+	if p.kind == "" {
+		v, _ := p.eval("(() => {" + publishHelpersJS + " return __kind(__body(" + jsq(p.spec.BodySelector) + ", __title(" + jsq(p.spec.TitleSelector) + "))); })()")
+		p.kind = v
+	}
+	return p.kind
+}
+
+var imgAnchorRe = regexp.MustCompile(`\[\[img:\d+(\|[^\]]*)?\]\]\n?`)
+
+// markdownText is the body for a markdown editor: the person's Markdown as
+// written (picture anchors removed; the pictures are pasted after), or the
+// plain form when the body was HTML.
+func (p *publishRun) markdownText() string {
+	if strings.HasPrefix(strings.TrimSpace(p.spec.Body), "<") {
+		return p.doc.plain
+	}
+	return strings.TrimSpace(imgAnchorRe.ReplaceAllString(p.spec.Body, ""))
+}
+
+// fillMarkdown writes the Markdown source in one insert: a code editor
+// continues lists and closes brackets on typed keys, which would double them.
+func (p *publishRun) fillMarkdown() (string, error) {
+	text := p.markdownText()
+	obj, err := p.element(p.bodyExpr())
+	if err != nil || obj == "" {
+		return "", fmt.Errorf("no body field found; pass body_selector")
+	}
+	var got string
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := p.focusAndClear(obj); err != nil {
+			return "", err
+		}
+		if _, err := p.send("Input.insertText", map[string]interface{}{"text": text}); err != nil {
+			return "", err
+		}
+		time.Sleep(300 * time.Millisecond)
+		got, _ = p.call(obj, readValueFn)
+		if holds(got, text) {
+			return fmt.Sprintf("markdown body holds %d chars", len([]rune(got))), nil
+		}
+	}
+	return "", fmt.Errorf("markdown body read back %d chars (%q) instead of the text", len([]rune(got)), clipRunes(got, 24))
+}
+
 // bodyWant is the text the body editor must hold.
 func (p *publishRun) bodyWant() string {
+	if p.bodyKind() == "markdown" {
+		return p.markdownText()
+	}
 	switch {
 	case p.richFilled:
 		return p.doc.text
@@ -678,6 +742,10 @@ func (p *publishRun) bodyWant() string {
 // uploadOrInline: pictures anchored in the body of a rich editor go in at
 // their anchors during fill_body instead of through a file input.
 func (p *publishRun) uploadOrInline() (string, error) {
+	if p.bodyKind() == "markdown" && p.spec.Body != "" && isImageExt(fileExt(p.spec.Files)) {
+		p.pasteLater = true
+		return fmt.Sprintf("%d picture(s) are pasted into the markdown editor after the text", len(p.spec.Files)), nil
+	}
 	if len(p.doc.anchors) > 0 && p.canPasteImages() {
 		return fmt.Sprintf("%d picture(s) go into the body at their anchors", len(p.doc.anchors)), nil
 	}
@@ -780,6 +848,15 @@ func (n *domNode) text() string {
 // findByText walks the whole DOM, every shadow root (closed too) and
 // same-process frames, for clickable nodes whose text is exactly one of texts.
 func (p *publishRun) findByText(texts []string, buttonsOnly bool) ([]*domNode, error) {
+	want := map[string]bool{}
+	for _, t := range texts {
+		want[normText(t)] = true
+	}
+	return p.findWhere(func(_ *domNode, txt string) bool { return want[txt] }, buttonsOnly)
+}
+
+// findWhere walks the DOM like findByText with a label test.
+func (p *publishRun) findWhere(ok func(n *domNode, txt string) bool, buttonsOnly bool) ([]*domNode, error) {
 	raw, err := p.send("DOM.getDocument", map[string]interface{}{"depth": -1, "pierce": true})
 	if err != nil {
 		return nil, err
@@ -789,10 +866,6 @@ func (p *publishRun) findByText(texts []string, buttonsOnly bool) ([]*domNode, e
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, err
-	}
-	want := map[string]bool{}
-	for _, t := range texts {
-		want[normText(t)] = true
 	}
 	var hits []*domNode
 	var walk func(n *domNode)
@@ -809,7 +882,7 @@ func (p *publishRun) findByText(texts []string, buttonsOnly bool) ([]*domNode, e
 			if n.NodeName == "INPUT" {
 				txt = normText(n.attr("value"))
 			}
-			if clickable && want[txt] && n.attr("disabled") == "" && n.attr("aria-disabled") != "true" {
+			if clickable && txt != "" && ok(n, txt) && n.attr("disabled") == "" && n.attr("aria-disabled") != "true" {
 				hits = append(hits, n)
 			}
 		}
@@ -865,6 +938,53 @@ func (p *publishRun) clickObject(obj string) error {
 		return err
 	}
 	return p.mouseClick(x, y)
+}
+
+// submitVerbs start a submit button's label on sites without a profile
+// ("发布文章", "Publish now", "确定并发布"); submitNot marks look-alikes.
+var (
+	submitVerbs = []string{"发布", "发表", "发送", "提交", "确定并发布", "确认发布", "立即发布", "publish", "post", "submit", "send"}
+	submitNot   = regexp.MustCompile(`(?i)设置|草稿|预览|定时|取消|保存|评论|回复|setting|draft|preview|schedul|cancel|save|comment|reply`)
+)
+
+// clickSubmit presses the submit button: an exact text first; without a
+// declared text, the newest visible button whose short label starts with a
+// submit verb.
+func (p *publishRun) clickSubmit() error {
+	if !p.discoverSubmit {
+		return p.clickText(p.spec.SubmitTexts, true)
+	}
+	want := map[string]bool{}
+	for _, t := range p.spec.SubmitTexts {
+		want[normText(t)] = true
+	}
+	// Exact defaults and verb-led labels alike; the newest one (a panel's
+	// own confirm button comes after the editor's) is pressed.
+	hits, err := p.findWhere(func(n *domNode, txt string) bool {
+		if want[txt] {
+			return true
+		}
+		// Links are navigation ("Posts", "Published (3)"): exact only.
+		if n.NodeName == "A" || len([]rune(txt)) > 10 || submitNot.MatchString(txt) {
+			return false
+		}
+		low := strings.ToLower(txt)
+		for _, v := range submitVerbs {
+			if strings.HasPrefix(low, v) {
+				return true
+			}
+		}
+		return false
+	}, true)
+	if err != nil {
+		return err
+	}
+	for i := len(hits) - 1; i >= 0; i-- {
+		if x, y, berr := p.boxCenter(map[string]interface{}{"backendNodeId": hits[i].BackendNodeID}); berr == nil {
+			return p.mouseClick(x, y)
+		}
+	}
+	return fmt.Errorf("no visible enabled submit button (tried %q and labels starting with a submit verb); pass submit_texts", strings.Join(p.spec.SubmitTexts, "/"))
 }
 
 // clickText clicks the last visible node with that exact text.
@@ -925,7 +1045,7 @@ func (p *publishRun) submit() (string, error) {
 	p.submitClicked.Store(true)
 	clickedAt := time.Now()
 	p.clickedAt = clickedAt
-	if err := p.clickText(p.spec.SubmitTexts, true); err != nil {
+	if err := p.clickSubmit(); err != nil {
 		return "", err
 	}
 	confirmed := false
@@ -973,11 +1093,16 @@ func (p *publishRun) submit() (string, error) {
 		if reclicks < 2 && time.Since(lastClick) > 3*time.Second && (p.net == nil || !p.net.wroteSince(clickedAt)) {
 			reclicks++
 			lastClick = time.Now()
-			_ = p.clickText(p.spec.SubmitTexts, true)
+			_ = p.clickSubmit()
 		}
 	}
 	after, _ := p.eval("document.body ? document.body.innerText.slice(0, 20000) : ''")
 	state := p.afterSubmitState(clickedAt)
+	// A JSON answer that refused the write (GraphQL errors, success:false
+	// behind HTTP 200) is the site's reason when nothing else answered.
+	if r := p.net.refusedSince(clickedAt); len(r) > 0 {
+		state = "the site refused it: " + strings.Join(r, "; ") + "; " + state
+	}
 	if closed != "" {
 		state = "before the click: " + closed + "; " + state
 	}
@@ -1153,7 +1278,7 @@ func (p *publishRun) pasteImages() (string, error) {
 	if err != nil || obj == "" {
 		return "", fmt.Errorf("body editor not found for pasting images")
 	}
-	count := `function() { return String(this.querySelectorAll('img').length); }`
+	count := pictureCountFn
 	before, _ := p.call(obj, count)
 	// The browser reads the files itself (server and desktop disks differ;
 	// ZN-7 could not paste because the server read the desktop path).
@@ -1239,3 +1364,7 @@ func maxDur(a, b time.Duration) time.Duration {
 	}
 	return b
 }
+
+// pictureCountFn counts the pictures an editor holds: <img> elements, or
+// Markdown image links in a code editor's text.
+const pictureCountFn = `function() { let n = this.querySelectorAll('img').length; let v = ''; if (this.CodeMirror && this.CodeMirror.getValue) v = this.CodeMirror.getValue(); else if (this.cmView && this.cmView.view) v = this.cmView.view.state.doc.toString(); else if (this.tagName === 'TEXTAREA') v = this.value; else if (this.closest && this.closest('.cm-editor,.CodeMirror,.bytemd,[class*=markdown]')) v = this.innerText; n += (v.match(/!\[[^\]]*\]\(/g) || []).length; return String(n); }`

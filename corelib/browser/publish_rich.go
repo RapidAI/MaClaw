@@ -230,7 +230,7 @@ func (p *publishRun) loadPicker() (string, error) {
 }
 
 func (p *publishRun) imgCount(obj string) int {
-	v, _ := p.call(obj, `function() { return String(this.querySelectorAll('img').length); }`)
+	v, _ := p.call(obj, pictureCountFn)
 	n, _ := strconv.Atoi(v)
 	return n
 }

@@ -1,0 +1,23 @@
+<!doctype html><html><head><meta charset="utf-8"><title>New story (synthetic GraphQL single-page editor)</title>
+<!-- Synthetic, no real site: title and body are contenteditable with
+     data-placeholder; "Publish" opens a panel whose button is "Publish now";
+     the post goes to POST /graphql, which answers HTTP 200 with an "errors"
+     list when it refuses; success stays on the page with a live toast. -->
+<style>.b{min-height:300px;width:690px;border:1px solid #ccc}</style></head><body>
+<h3 contenteditable="true" data-placeholder="Title" class="t" style="width:690px;min-height:30px"></h3>
+<div contenteditable="true" data-placeholder="Tell your story…" class="b"></div>
+<button id="pub">Publish</button>
+<div aria-live="polite" id="toast"></div>
+<script>
+document.getElementById('pub').addEventListener('click', ev => {
+  if (!ev.isTrusted || document.getElementById('panel')) return;
+  const d = document.createElement('div'); d.id = 'panel'; d.innerHTML = '<p>Story preview</p><button id="now">Publish now</button>';
+  document.body.appendChild(d);
+  document.getElementById('now').addEventListener('click', async e => {
+    if (!e.isTrusted) return;
+    const r = await fetch('/graphql' + location.search, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({title: document.querySelector('.t').innerText, body: document.querySelector('.b').innerText})});
+    const j = await r.json();
+    if (!j.errors) document.getElementById('toast').innerText = 'Your story is published';
+  });
+});
+</script></body></html>

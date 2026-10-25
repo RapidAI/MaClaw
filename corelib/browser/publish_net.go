@@ -2,6 +2,7 @@ package browser
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +29,12 @@ type netTracker struct {
 	starts  []time.Time
 	log     []netWrite // every write and its answer, in order
 	cancel  func()
+	// d reads a write's answer body; json marks writes answered with JSON.
+	d    PublishDriver
+	json map[string]bool
+	// refusals: writes answered 2xx whose JSON body says they failed
+	// (GraphQL errors, success:false); only the submit consults them.
+	refusals []netFailure
 }
 
 type netWrite struct {
@@ -55,7 +62,7 @@ func startNetTracker(d PublishDriver) *netTracker {
 		return nil
 	}
 	ch, cancel := src.Subscribe()
-	t := &netTracker{open: map[string]string{}, last: time.Now(), cancel: cancel}
+	t := &netTracker{open: map[string]string{}, last: time.Now(), cancel: cancel, d: d, json: map[string]bool{}}
 	go func() {
 		for ev := range ch {
 			t.on(ev)
@@ -78,7 +85,8 @@ func (t *netTracker) on(ev CDPEvent) {
 			URL    string `json:"url"`
 		} `json:"request"`
 		Response struct {
-			Status int `json:"status"`
+			Status   int    `json:"status"`
+			MimeType string `json:"mimeType"`
 		} `json:"response"`
 		Type      string `json:"type"`
 		ErrorText string `json:"errorText"`
@@ -94,7 +102,7 @@ func (t *netTracker) on(ev CDPEvent) {
 	}
 	switch ev.Method {
 	case "Network.requestWillBeSent":
-		if netWriteMethods[strings.ToUpper(p.Request.Method)] {
+		if netWriteMethods[strings.ToUpper(p.Request.Method)] && !netBeacon(p.Type, p.Request.URL) {
 			t.open[p.RequestID] = p.Request.Method + " " + clipRunes(p.Request.URL, 120)
 			t.writes++
 			t.starts = append(t.starts, time.Now())
@@ -103,13 +111,20 @@ func (t *netTracker) on(ev CDPEvent) {
 		}
 	case "Network.responseReceived":
 		t.answer(p.RequestID, "HTTP "+itoa(p.Response.Status))
+		if _, ok := t.open[p.RequestID]; ok && strings.Contains(p.Response.MimeType, "json") && p.Response.Status < 400 {
+			t.json[p.RequestID] = true
+		}
 		if what, ok := t.open[p.RequestID]; ok && p.Response.Status >= 400 {
 			t.failures = append(t.failures, netFailure{time.Now(), what + " → HTTP " + itoa(p.Response.Status)})
 		}
 	case "Network.loadingFinished":
-		if _, ok := t.open[p.RequestID]; ok {
+		if what, ok := t.open[p.RequestID]; ok {
 			delete(t.open, p.RequestID)
 			t.last = time.Now()
+			if t.json[p.RequestID] && t.d != nil {
+				delete(t.json, p.RequestID)
+				go t.readAnswer(p.RequestID, what)
+			}
 		}
 	case "Network.loadingFailed":
 		if what, ok := t.open[p.RequestID]; ok {
@@ -208,6 +223,83 @@ func (t *netTracker) writesSince(since time.Time) []string {
 	for _, w := range t.log {
 		if w.at.After(since) {
 			out = append(out, w.what+" → "+w.answer)
+		}
+	}
+	return out
+}
+
+// netBeaconRe: analytics and logging endpoints; their writes are not the
+// page saving or posting anything.
+var netBeaconRe = regexp.MustCompile(`(?i)/(log|logs|logging|track|tracking|tracker|collect|beacon|metric|metrics|stat|stats|apm|sentry|analytics|telemetry|rum|perf)(/|\?|\.|$)`)
+
+func netBeacon(typ, u string) bool {
+	if typ == "Ping" || typ == "CSPViolationReport" {
+		return true
+	}
+	if i := strings.Index(u, "?"); i >= 0 {
+		u = u[:i]
+	}
+	return netBeaconRe.MatchString(u)
+}
+
+// readAnswer reads a JSON answer and notes a refusal the status code hid.
+func (t *netTracker) readAnswer(id, what string) {
+	raw, err := t.d.Send("Network.getResponseBody", map[string]interface{}{"requestId": id})
+	if err != nil {
+		return
+	}
+	var r struct {
+		Body string `json:"body"`
+		B64  bool   `json:"base64Encoded"`
+	}
+	if json.Unmarshal(raw, &r) != nil || r.B64 || len(r.Body) > 1<<16 {
+		return
+	}
+	if why := jsonRefusal(r.Body); why != "" {
+		t.mu.Lock()
+		t.refusals = append(t.refusals, netFailure{time.Now(), what + " → " + why})
+		t.answer(id, "refused: "+why)
+		t.mu.Unlock()
+	}
+}
+
+// jsonRefusal: a JSON answer that says the write failed ("" otherwise).
+func jsonRefusal(body string) string {
+	var m map[string]json.RawMessage
+	if json.Unmarshal([]byte(body), &m) != nil {
+		return ""
+	}
+	if e, ok := m["errors"]; ok {
+		var list []map[string]any
+		if json.Unmarshal(e, &list) == nil && len(list) > 0 {
+			msg, _ := list[0]["message"].(string)
+			return "errors: " + clipRunes(msg, 120)
+		}
+	}
+	if v, ok := m["success"]; ok && string(v) == "false" {
+		for _, k := range []string{"msg", "message", "error"} {
+			if x, ok := m[k]; ok {
+				var s string
+				_ = json.Unmarshal(x, &s)
+				return "success=false: " + clipRunes(s, 120)
+			}
+		}
+		return "success=false"
+	}
+	return ""
+}
+
+// refusedSince lists writes after since whose JSON answer refused them.
+func (t *netTracker) refusedSince(since time.Time) []string {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var out []string
+	for _, f := range t.refusals {
+		if f.at.After(since) {
+			out = append(out, f.what)
 		}
 	}
 	return out

@@ -1,0 +1,25 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Write (synthetic markdown editor in a frame)</title>
+<!-- Synthetic, no real site: the editor lives in a same-origin iframe; the
+     body is a code-editor style markdown field (.cm-editor > .cm-content)
+     that continues a numbered list on a typed Enter; "发布文章" opens a
+     dialog whose own button "确定并发布" posts. -->
+<style>iframe{width:900px;height:600px;border:0}</style></head><body>
+<iframe id="fr" srcdoc='<!doctype html><meta charset="utf-8"><style>.cm-content{min-height:300px;width:800px;border:1px solid #ccc;white-space:pre-wrap}</style>
+<input class="t" placeholder="请输入文章标题（5~100个字）" style="width:600px">
+<div class="cm-editor"><div class="cm-content" contenteditable="true" role="textbox"></div></div>
+<button id="pub">发布文章</button>
+<script>
+const ed = document.querySelector(".cm-content");
+ed.addEventListener("keydown", e => { if (e.key === "Enter") { const line = (ed.innerText.split("\n").pop() || ""); const m = line.match(/^(\d+)\. /); if (m) { e.preventDefault(); document.execCommand("insertText", false, "\n" + (Number(m[1]) + 1) + ". "); } } });
+document.getElementById("pub").addEventListener("click", ev => {
+  if (!ev.isTrusted || document.getElementById("dlg")) return;
+  const d = document.createElement("div"); d.id = "dlg"; d.innerHTML = "<div>文章标签</div><button id=\"go\">确定并发布</button><button>取消</button>";
+  document.body.appendChild(d);
+  document.getElementById("go").addEventListener("click", async e => {
+    if (!e.isTrusted) return;
+    const r = await fetch("/publish", {method: "POST", body: JSON.stringify({title: document.querySelector(".t").value, body: ed.innerText})});
+    top.location.href = await r.text();
+  });
+});
+</script>'></iframe>
+</body></html>

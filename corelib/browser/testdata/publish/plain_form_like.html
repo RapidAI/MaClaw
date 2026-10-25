@@ -1,0 +1,18 @@
+<!doctype html><html><head><meta charset="utf-8"><title>New topic (synthetic plain form)</title>
+<!-- Synthetic, no real site: a plain HTML form. The title field is named
+     only by its <label> and name; the body is a textarea; the submit is an
+     <input type=submit value=Submit>; the post opens at its own URL. -->
+</head><body>
+<nav><a href="/posts">Posts</a> <a href="/new">Post a new topic</a></nav>
+<form id="f">
+<p><label for="s">Subject</label><br><input id="s" name="subject" size="60"></p>
+<p><label for="m">Message</label><br><textarea id="m" name="message" rows="14" cols="80"></textarea></p>
+<p><input type="button" value="Preview"> <input type="submit" value="Submit"></p>
+</form>
+<script>
+document.getElementById('f').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const r = await fetch('/publish', {method: 'POST', body: JSON.stringify({title: document.getElementById('s').value, body: document.getElementById('m').value})});
+  location.href = await r.text();
+});
+</script></body></html>
