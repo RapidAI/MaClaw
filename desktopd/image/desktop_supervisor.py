@@ -2187,9 +2187,35 @@ def http_json_any(host, port, path):
             if not chunk:
                 break
             buf += chunk
+            if http_response_complete(buf):
+                # Chromium keeps the debug socket open after the answer.
+                # Waiting for it to close cost the full timeout per call.
+                break
     finally:
         sock.close()
     return json.loads(http_message_body(bytes(buf)).decode("utf-8"))
+
+
+def http_response_complete(buf):
+    """True once the whole response is in buf (Content-Length or last chunk)."""
+    head, sep, body = bytes(buf).partition(b"\r\n\r\n")
+    if not sep:
+        return False
+    length = None
+    chunked = False
+    for line in head.decode("iso-8859-1", "replace").lower().split("\r\n")[1:]:
+        name, _, value = line.partition(":")
+        name = name.strip()
+        if name == "content-length":
+            try:
+                length = int(value.strip())
+            except ValueError:
+                return False
+        elif name == "transfer-encoding" and "chunked" in value:
+            chunked = True
+    if chunked:
+        return body.endswith(b"0\r\n\r\n")
+    return length is not None and len(body) >= length
 
 
 def page_origin(raw):
@@ -7362,32 +7388,50 @@ def loginsync_screens(user):
     return out
 
 
+LOGINSYNC_WS = {}  # display -> webSocketDebuggerUrl of that screen's Chrome
+
+
+def loginsync_ws(display, fresh=False):
+    """The browser websocket of one screen, cached until a call on it fails."""
+    if not fresh and LOGINSYNC_WS.get(display):
+        return LOGINSYNC_WS[display]
+    LOGINSYNC_WS.pop(display, None)
+    version = http_json("127.0.0.1", chrome_cdp_port(display), "/json/version")
+    ws = version.get("webSocketDebuggerUrl") or ""
+    if not ws.startswith("ws://"):
+        return ""
+    LOGINSYNC_WS[display] = ws
+    return ws
+
+
+def loginsync_cdp(display, run):
+    """run(conn) on the screen's browser target. A stale cached URL (Chrome
+    restarted on that screen) is dropped and looked up once more."""
+    for fresh in (False, True):
+        try:
+            ws = loginsync_ws(display, fresh)
+            if not ws:
+                return None
+            with cdp_connection(ws) as conn:
+                return run(conn)
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            LOGINSYNC_WS.pop(display, None)
+    return None
+
+
 def loginsync_cdp_read(display):
-    try:
-        version = http_json("127.0.0.1", chrome_cdp_port(display), "/json/version")
-        ws = version.get("webSocketDebuggerUrl") or ""
-        if not ws.startswith("ws://"):
-            return None
-        with cdp_connection(ws) as conn:
-            result = conn.call("Storage.getCookies", {})
-        cookies = result.get("cookies")
+    def read(conn):
+        cookies = conn.call("Storage.getCookies", {}).get("cookies")
         return cookies if isinstance(cookies, list) else None
-    except (OSError, ValueError, TypeError, KeyError, AttributeError):
-        return None
+    return loginsync_cdp(display, read)
 
 
 def loginsync_cdp_write(display, params):
-    try:
-        version = http_json("127.0.0.1", chrome_cdp_port(display), "/json/version")
-        ws = version.get("webSocketDebuggerUrl") or ""
-        if not ws.startswith("ws://"):
-            return False
-        with cdp_connection(ws) as conn:
-            for start in range(0, len(params), 200):
-                conn.call("Storage.setCookies", {"cookies": params[start:start + 200]})
+    def write(conn):
+        for start in range(0, len(params), 200):
+            conn.call("Storage.setCookies", {"cookies": params[start:start + 200]})
         return True
-    except (OSError, ValueError, TypeError, KeyError, AttributeError):
-        return False
+    return bool(loginsync_cdp(display, write))
 
 
 def loginsync_interval(engine, now):

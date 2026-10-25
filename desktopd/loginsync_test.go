@@ -158,3 +158,53 @@ finally:
 		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
 	}
 }
+
+// The debug port keeps its socket open after answering; the CDP lookup must
+// return once the body is complete, and loginsync caches the browser URL per
+// screen until a call on it fails.
+func TestLoginSyncCDPLookupFast(t *testing.T) {
+	out := runSupervisorPython(t, `
+import socket, threading, time
+srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(8); port = srv.getsockname()[1]
+hits = [0]
+def serve():
+    while True:
+        c, _ = srv.accept(); c.recv(4096); hits[0] += 1
+        body = b'{"webSocketDebuggerUrl": "ws://127.0.0.1:1/devtools/browser/x"}'
+        if hits[0] == 2:
+            c.sendall(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n%x\r\n" % len(body) + body + b"\r\n0\r\n\r\n")
+        else:
+            c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % len(body) + body)
+        threading.Timer(5, c.close).start()  # never closes in time
+threading.Thread(target=serve, daemon=True).start()
+t = time.time(); v = sup.http_json("127.0.0.1", port, "/json/version"); print("content-length fast", time.time() - t < 0.5, v["webSocketDebuggerUrl"].endswith("/x"))
+t = time.time(); sup.http_json("127.0.0.1", port, "/json/version"); print("chunked fast", time.time() - t < 0.5)
+sup.chrome_cdp_port = lambda d: port
+calls = []
+class Conn:
+    def __init__(self, ws): self.ws = ws
+    def __enter__(self):
+        calls.append(self.ws)
+        if len(calls) == 3: raise OSError("chrome restarted")
+        return self
+    def __exit__(self, *a): return False
+    def call(self, m, p): return {"cookies": [{"name": "a"}]}
+sup.cdp_connection = Conn
+n = hits[0]
+print("read", sup.loginsync_cdp_read(20) == [{"name": "a"}], "lookups", hits[0] - n)
+sup.loginsync_cdp_read(20); print("cached lookups", hits[0] - n)
+print("stale retried", sup.loginsync_cdp_read(20) == [{"name": "a"}], "lookups", hits[0] - n)
+print("write", sup.loginsync_cdp_write(20, [{"name": "a"}]))
+`)
+	want := strings.Join([]string{
+		"content-length fast True True",
+		"chunked fast True",
+		"read True lookups 1",
+		"cached lookups 1",
+		"stale retried True lookups 2",
+		"write True",
+	}, "\n")
+	if out != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
+	}
+}
