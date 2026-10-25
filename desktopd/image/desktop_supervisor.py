@@ -569,6 +569,10 @@ def main(argv):
         return 0
     if len(argv) == 5 and argv[1] == "gate":
         return serve_gate(int(argv[2]), int(argv[3]), argv[4])
+    if len(argv) == 3 and argv[1] == "loginsync":
+        if not valid_key(argv[2]) or len(argv[2]) != 16:
+            return 2
+        return run_loginsync(argv[2])
     if len(argv) == 4 and argv[1] == "watch":
         return watch_vnc(argv[2], int(argv[3]))
     if len(argv) == 3 and argv[1] == "flush":
@@ -990,7 +994,13 @@ def writeback_screen_login(key, display=None):
     master.mkdir(mode=0o700, exist_ok=True)
     _chmod_private(master)
     copied = False
+    # With live sync the master's cookies come from login-state.json, which is
+    # newer than a screen that missed a later change. Its exit copy would put
+    # a logged-out session back. Cookies are skipped then; the rest is copied.
+    stale = loginsync_screen_is_stale(user, number)
     for rel in SCREEN_LOGIN_REL:
+        if stale and rel == Path("Default") / "Cookies":
+            continue
         src = work / rel
         if src.exists() and not src.is_symlink():
             if _copy_login_path(src, master / rel, user):
@@ -1188,6 +1198,8 @@ def start_browser(key, profile, env, log, chrome_port, bot=False):
     # The launcher pid can exit. Only the process that still has this profile
     # open is the browser with the website login.
     wait_for(lambda: browser_pid(profile) and port_open(chrome_port), "chromium profile %s" % profile)
+    # The saved logins of the other screens go in before this screen is used.
+    loginsync_on_browser_start(key, chrome_port)
 
 
 def keep_screen_awake(display):
@@ -6994,6 +7006,506 @@ def run_ctl(raw):
         result = {"ok": False, "error": str(exc)}
     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
     return 0 if result.get("ok") else 1
+
+
+# ---------------------------------------------------------------------------
+# Live login sync: log in once, every screen of this user has it.
+#
+# Each screen runs its own Chromium on its own working copy of the owner's
+# master profile. Copying happens only when a screen's Chrome starts or exits,
+# so a login made on one screen did not reach a screen whose Chrome was
+# already running. One loginsync process per container reads every running
+# screen's cookies over that screen's browser CDP target and writes changes
+# into the other screens with Storage.setCookies. Nothing is restarted.
+#
+# - State T: cookie key (name, domain, path, partitionKey) -> cookie or a
+#   tombstone, with the time the change was seen. Last write wins per key.
+# - Anti-echo: after writing into a screen, that screen's snapshot is set to
+#   what was written, so the next read does not report it as a new change.
+# - Deletions propagate (logout). A Chrome whose pid changed is a new
+#   process: its cookies are not compared with the old snapshot; T is written
+#   into it instead. A screen that loses most cookies of a site in one read
+#   must show the same loss on the next read before it counts.
+# - T is kept in login-state.json (encrypted with a per-container key) so a
+#   new screen gets T written in before it is handed over.
+# - Mode file /desktops/<user>/login-sync: "shared" (default), "isolated"
+#   (bot screens are left out; only the owner's screen is tracked), "off".
+# ---------------------------------------------------------------------------
+
+LOGINSYNC_FAST_SECONDS = 1.0
+LOGINSYNC_SLOW_SECONDS = 3.0
+LOGINSYNC_IDLE_SECONDS = 5.0
+LOGINSYNC_FAST_WINDOW = 30.0
+LOGINSYNC_IDLE_AFTER = 300.0
+LOGINSYNC_TOMBSTONE_SECONDS = 7 * 24 * 3600
+LOGINSYNC_MASS_MIN = 4
+LOGINSYNC_MASS_FRACTION = 0.5
+LOGINSYNC_COOKIE_FIELDS = ("value", "domain", "path", "secure", "httpOnly", "sameSite", "expires", "partitionKey", "session")
+
+
+def loginsync_cookie_key(cookie):
+    part = cookie.get("partitionKey")
+    if part is not None and not isinstance(part, str):
+        part = json.dumps(part, sort_keys=True)
+    return "\t".join([str(cookie.get("name") or ""), str(cookie.get("domain") or ""), str(cookie.get("path") or "/"), part or ""])
+
+
+def loginsync_norm(cookie):
+    """The fields that make two cookies the same login. Expiry in whole seconds."""
+    out = {"name": cookie.get("name") or ""}
+    for field in LOGINSYNC_COOKIE_FIELDS:
+        if field in cookie and cookie.get(field) is not None:
+            out[field] = cookie.get(field)
+    expires = out.get("expires")
+    if isinstance(expires, (int, float)):
+        if expires <= 0 or out.get("session"):
+            out.pop("expires", None)
+            out["session"] = True
+        else:
+            out["expires"] = int(expires)
+    out.setdefault("path", "/")
+    return out
+
+
+def loginsync_snapshot(cookies, now):
+    snap = {}
+    for cookie in cookies or []:
+        if not isinstance(cookie, dict) or not cookie.get("name") and not cookie.get("domain"):
+            continue
+        norm = loginsync_norm(cookie)
+        expires = norm.get("expires")
+        if isinstance(expires, int) and expires <= now:
+            continue
+        snap[loginsync_cookie_key(cookie)] = norm
+    return snap
+
+
+def loginsync_site(key):
+    domain = key.split("\t")[1].lstrip(".")
+    parts = domain.split(".")
+    return ".".join(parts[-2:]) if len(parts) >= 2 else domain
+
+
+def loginsync_set_param(cookie):
+    """Storage.setCookies parameter. A host-only cookie (no leading dot) is set by url."""
+    param = {"name": cookie["name"], "value": cookie.get("value", ""), "path": cookie.get("path") or "/"}
+    domain = cookie.get("domain") or ""
+    if domain.startswith("."):
+        param["domain"] = domain
+    else:
+        scheme = "https" if cookie.get("secure") else "http"
+        param["url"] = "%s://%s%s" % (scheme, domain, param["path"])
+    for field in ("secure", "httpOnly"):
+        if cookie.get(field):
+            param[field] = True
+    if cookie.get("sameSite") in ("Strict", "Lax", "None"):
+        param["sameSite"] = cookie["sameSite"]
+    if isinstance(cookie.get("expires"), int) and not cookie.get("session"):
+        param["expires"] = cookie["expires"]
+    part = cookie.get("partitionKey")
+    if part:
+        param["partitionKey"] = json.loads(part) if isinstance(part, str) and part.startswith("{") else part
+    return param
+
+
+def loginsync_delete_param(key, old):
+    """Deleting through the browser target: the same cookie, expired."""
+    name, domain, path, part = key.split("\t")
+    cookie = dict(old or {})
+    cookie.update({"name": name, "domain": domain, "path": path or "/", "value": "", "session": False, "expires": 1})
+    if part:
+        cookie["partitionKey"] = part
+    return loginsync_set_param(cookie)
+
+
+class LoginSync:
+    """Merge engine. Screen I/O is passed in, so tests can drive it.
+
+    read(screen) -> list of CDP cookies, or None when the screen cannot be read.
+    write(screen, params) -> True when Storage.setCookies took them.
+    """
+
+    def __init__(self, read, write, now=time.time, state=None):
+        self.read = read
+        self.write = write
+        self.now = now
+        state = state if isinstance(state, dict) else {}
+        self.cookies = dict(state.get("cookies") or {})  # key -> {"c": cookie|None, "t": ts}
+        self.version = int(state.get("version") or 0)
+        self.seen = {str(k): int(v) for k, v in (state.get("seen") or {}).items()}
+        self.snaps = {}  # screen -> snapshot dict
+        self.pids = {}  # screen -> pid at last snapshot
+        self.suspect = {}  # screen -> set of keys whose mass delete waits one more read
+        self.last_change = 0.0
+
+    def state(self):
+        now = self.now()
+        live = {k: v for k, v in self.cookies.items() if v.get("c") is not None or now - v.get("t", 0) < LOGINSYNC_TOMBSTONE_SECONDS}
+        return {"version": self.version, "cookies": live, "seen": dict(self.seen), "updated": now}
+
+    def truth(self):
+        now = self.now()
+        out = {}
+        for key, item in self.cookies.items():
+            cookie = item.get("c")
+            if cookie is None:
+                continue
+            expires = cookie.get("expires")
+            if isinstance(expires, int) and expires <= now:
+                continue
+            out[key] = cookie
+        return out
+
+    def _apply(self, key, cookie, ts):
+        current = self.cookies.get(key)
+        if current is not None and current.get("t", 0) > ts:
+            return False
+        if current is not None and current.get("c") == cookie:
+            return False
+        self.cookies[key] = {"c": cookie, "t": ts}
+        return True
+
+    def _changes(self, screen, snap):
+        """What this screen changed since its last snapshot, after the guards."""
+        old = self.snaps.get(screen) or {}
+        ups = {k: v for k, v in snap.items() if old.get(k) != v}
+        gone = [k for k in old if k not in snap]
+        by_site = {}
+        for k in old:
+            by_site.setdefault(loginsync_site(k), []).append(k)
+        held = set()
+        waiting = self.suspect.get(screen) or set()
+        lost = {}
+        for k in gone:
+            lost.setdefault(loginsync_site(k), []).append(k)
+        for site, keys in lost.items():
+            total = len(by_site.get(site) or [])
+            if total >= LOGINSYNC_MASS_MIN and len(keys) >= total * LOGINSYNC_MASS_FRACTION:
+                # Most of a site's cookies vanished at once. Real logouts clear a
+                # few cookies; a profile reset clears all. Wait one more read.
+                for k in keys:
+                    if k not in waiting:
+                        held.add(k)
+        self.suspect[screen] = held
+        dels = [k for k in gone if k not in held]
+        return ups, dels, held
+
+    def tick(self, screens):
+        """screens: {screen_id: pid}. Returns the number of keys that changed in T."""
+        now = self.now()
+        changed = 0
+        fresh = []
+        for screen, pid in screens.items():
+            cookies = self.read(screen)
+            if cookies is None:
+                continue
+            snap = loginsync_snapshot(cookies, now)
+            if screen not in self.snaps or self.pids.get(screen) != pid:
+                # New Chrome (new screen, restart or crash). Its cookies are
+                # additions only; missing ones are not a logout.
+                self.pids[screen] = pid
+                self.suspect.pop(screen, None)
+                for key, cookie in snap.items():
+                    if key not in self.cookies:
+                        changed += self._apply(key, cookie, now)
+                self.snaps[screen] = snap
+                fresh.append(screen)
+                continue
+            ups, dels, held = self._changes(screen, snap)
+            for key, cookie in ups.items():
+                changed += self._apply(key, cookie, now)
+            for key in dels:
+                changed += self._apply(key, None, now)
+            keep = dict(snap)
+            for key in held:
+                keep[key] = self.snaps[screen][key]
+            self.snaps[screen] = keep
+        for screen in list(self.snaps):
+            if screen not in screens:
+                self.snaps.pop(screen, None)
+                self.pids.pop(screen, None)
+                self.suspect.pop(screen, None)
+        if changed:
+            self.version += 1
+            self.last_change = now
+        truth = self.truth()
+        for screen in screens:
+            if screen not in self.snaps:
+                continue
+            self.push(screen, truth, full=screen in fresh)
+        return changed
+
+    def push(self, screen, truth=None, full=False):
+        """Write T into one screen: what differs from its snapshot, plus deletions."""
+        truth = self.truth() if truth is None else truth
+        snap = self.snaps.get(screen) or {}
+        params = []
+        expect = dict(snap)
+        for key, cookie in truth.items():
+            if snap.get(key) != cookie:
+                params.append(loginsync_set_param(cookie))
+                expect[key] = cookie
+        for key, item in self.cookies.items():
+            if item.get("c") is None and key in snap:
+                params.append(loginsync_delete_param(key, snap.get(key)))
+                expect.pop(key, None)
+        if params:
+            if not self.write(screen, params):
+                return False
+            self.snaps[screen] = expect
+        self.seen[str(screen)] = self.version
+        return True
+
+
+def loginsync_mode(user):
+    try:
+        text = (ROOT / user / "login-sync").read_text(encoding="utf-8").strip().lower()
+    except OSError:
+        text = ""
+    return text if text in ("shared", "isolated", "off") else "shared"
+
+
+def loginsync_state_path(user):
+    return ROOT / user / "login-state.json"
+
+
+def _loginsync_secret(user):
+    path = ROOT / user / ".login-state.key"
+    try:
+        data = path.read_bytes()
+        if len(data) == 32:
+            return data
+    except OSError:
+        pass
+    data = os.urandom(32)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+    os.replace(str(tmp), str(path))
+    return data
+
+
+def _loginsync_stream(key, nonce, length):
+    out = bytearray()
+    counter = 0
+    while len(out) < length:
+        out.extend(hmac.new(key, b"ks" + nonce + struct.pack(">Q", counter), hashlib.sha256).digest())
+        counter += 1
+    return bytes(out[:length])
+
+
+def loginsync_seal(user, payload):
+    """Encrypt-then-MAC with stdlib only (HMAC-SHA256 keystream + HMAC tag)."""
+    secret = _loginsync_secret(user)
+    enc = hmac.new(secret, b"enc", hashlib.sha256).digest()
+    mac = hmac.new(secret, b"mac", hashlib.sha256).digest()
+    nonce = os.urandom(16)
+    plain = json.dumps(payload, sort_keys=True).encode("utf-8")
+    body = bytes(a ^ b for a, b in zip(plain, _loginsync_stream(enc, nonce, len(plain))))
+    tag = hmac.new(mac, nonce + body, hashlib.sha256).digest()
+    return json.dumps({"v": 1, "n": base64.b64encode(nonce).decode(), "d": base64.b64encode(body).decode(), "t": base64.b64encode(tag).decode()})
+
+
+def loginsync_open(user, text):
+    try:
+        box = json.loads(text)
+        secret = _loginsync_secret(user)
+        enc = hmac.new(secret, b"enc", hashlib.sha256).digest()
+        mac = hmac.new(secret, b"mac", hashlib.sha256).digest()
+        nonce = base64.b64decode(box["n"])
+        body = base64.b64decode(box["d"])
+        if not hmac.compare_digest(base64.b64decode(box["t"]), hmac.new(mac, nonce + body, hashlib.sha256).digest()):
+            return None
+        plain = bytes(a ^ b for a, b in zip(body, _loginsync_stream(enc, nonce, len(body))))
+        data = json.loads(plain.decode("utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def loginsync_load(user):
+    try:
+        return loginsync_open(user, loginsync_state_path(user).read_text(encoding="utf-8"))
+    except OSError:
+        return None
+
+
+def loginsync_save(user, state):
+    path = loginsync_state_path(user)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(loginsync_seal(user, state))
+    os.replace(str(tmp), str(path))
+
+
+def loginsync_screens(user):
+    """{display: (key, chrome pid)} for this user's running screens."""
+    mode = loginsync_mode(user)
+    if mode == "off":
+        return {}
+    out = {}
+    for key, entry in (load_registry().get("users", {}) or {}).items():
+        if user_key_of(key) != user:
+            continue
+        if mode == "isolated" and key != user:
+            continue
+        number = _display_number((entry or {}).get("display") or 0)
+        if not number:
+            continue
+        pid = browser_pid(screen_profile(user, number))
+        if pid:
+            out[number] = (key, pid)
+    return out
+
+
+def loginsync_cdp_read(display):
+    try:
+        version = http_json("127.0.0.1", chrome_cdp_port(display), "/json/version")
+        ws = version.get("webSocketDebuggerUrl") or ""
+        if not ws.startswith("ws://"):
+            return None
+        with cdp_connection(ws) as conn:
+            result = conn.call("Storage.getCookies", {})
+        cookies = result.get("cookies")
+        return cookies if isinstance(cookies, list) else None
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return None
+
+
+def loginsync_cdp_write(display, params):
+    try:
+        version = http_json("127.0.0.1", chrome_cdp_port(display), "/json/version")
+        ws = version.get("webSocketDebuggerUrl") or ""
+        if not ws.startswith("ws://"):
+            return False
+        with cdp_connection(ws) as conn:
+            for start in range(0, len(params), 200):
+                conn.call("Storage.setCookies", {"cookies": params[start:start + 200]})
+        return True
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return False
+
+
+def loginsync_interval(engine, now):
+    quiet = now - engine.last_change
+    if quiet < LOGINSYNC_FAST_WINDOW:
+        return LOGINSYNC_FAST_SECONDS
+    if quiet < LOGINSYNC_IDLE_AFTER:
+        return LOGINSYNC_SLOW_SECONDS
+    return LOGINSYNC_IDLE_SECONDS
+
+
+def run_loginsync(user, ticks=0):
+    """The container's sync loop. Exits when no screen has run for a while."""
+    engine = LoginSync(loginsync_cdp_read, loginsync_cdp_write, state=loginsync_load(user))
+    engine.last_change = time.time()
+    empty_since = None
+    count = 0
+    saved_version = engine.version
+    while True:
+        screens = loginsync_screens(user)
+        if screens:
+            empty_since = None
+            try:
+                changed = engine.tick({d: pid for d, (_k, pid) in screens.items()})
+            except Exception as exc:  # one bad read must not stop the loop
+                log_event("loginsync_error", key=user, error=str(exc)[:200])
+                changed = 0
+            if changed:
+                log_event("loginsync_change", key=user, changed=changed, version=engine.version, screens=sorted(screens))
+            if changed or engine.version != saved_version or count % 30 == 0:
+                try:
+                    loginsync_save(user, engine.state())
+                    saved_version = engine.version
+                except OSError:
+                    pass
+        else:
+            empty_since = empty_since or time.time()
+            if time.time() - empty_since > 120:
+                return 0
+        count += 1
+        if ticks and count >= ticks:
+            return 0
+        time.sleep(loginsync_interval(engine, time.time()))
+
+
+def loginsync_pidfile(user):
+    return ROOT / user / "loginsync.pid"
+
+
+def ensure_loginsync(user):
+    """Start the one sync loop of this container, or replace an old-code one."""
+    if not user or loginsync_mode(user) == "off":
+        return
+    path = loginsync_pidfile(user)
+    code = supervisor_code()
+    try:
+        pid_text, _, old_code = path.read_text(encoding="utf-8").strip().partition(" ")
+        pid = int(pid_text)
+    except (OSError, ValueError):
+        pid, old_code = 0, ""
+    if pid and pid_alive(pid) and old_code == code and "loginsync" in proc_argv(pid):
+        return
+    if pid and pid_alive(pid) and "loginsync" in proc_argv(pid):
+        kill_pid(pid)
+    log = open(ROOT / user / "desktop.log", "ab")
+    proc = spawn([sys.executable, __file__, "loginsync", user], os.environ.copy(), log)
+    path.write_text("%d %s" % (proc.pid, code), encoding="utf-8")
+
+
+def loginsync_seed(key, display):
+    """Write the saved logins into a screen whose Chrome just started.
+
+    Runs before the screen is handed over, so a new bot screen starts logged
+    in even when the master profile has not been written back yet.
+    """
+    user = user_key_of(key)
+    if not user:
+        return 0
+    mode = loginsync_mode(user)
+    if mode == "off" or (mode == "isolated" and key != user):
+        return 0
+    state = loginsync_load(user)
+    if not state:
+        return 0
+    engine = LoginSync(lambda _s: None, loginsync_cdp_write, state=state)
+    current = loginsync_cdp_read(display)
+    if current is None:
+        return 0
+    engine.snaps[display] = loginsync_snapshot(current, time.time())
+    before = dict(engine.snaps[display])
+    engine.push(display)
+    return sum(1 for k, v in engine.snaps.get(display, {}).items() if before.get(k) != v) + len(set(before) - set(engine.snaps.get(display, {})))
+
+
+def loginsync_on_browser_start(key, chrome_port):
+    try:
+        display = chrome_port - 18000
+        if not _display_number(display):
+            return
+        loginsync_seed(key, display)
+        ensure_loginsync(user_key_of(key))
+    except Exception as exc:  # never block a desktop start on sync
+        log_event("loginsync_error", key=key, error=str(exc)[:200])
+
+
+def loginsync_screen_is_stale(user, display):
+    """True when T moved on after this screen last took it in.
+
+    Its exit write-back would then put older cookies into the master.
+    """
+    state = loginsync_load(user)
+    if not state:
+        return False
+    seen = (state.get("seen") or {}).get(str(int(display)))
+    if seen is None:
+        return False
+    return int(seen) < int(state.get("version") or 0)
+
 
 
 if __name__ == "__main__":
