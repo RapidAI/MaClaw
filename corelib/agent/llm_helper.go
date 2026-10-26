@@ -280,6 +280,37 @@ func cleanRetryableLLMFailure(resp *llm.Response, err error) bool {
 	return shouldRetrySimpleLLMError(err)
 }
 
+// gatewayRejectedLLMFailure is cleanRetryableLLMFailure restricted to failures
+// the gateway itself answered with a status, plus token validation (which runs
+// before the model). It is the gate for hosts that contain ambiguous delivery:
+// a bare transport error means the request was written but no reply came back,
+// so the model may already have processed it and a retry would duplicate the
+// turn. Only a definitive rejection proves nothing was generated.
+func gatewayRejectedLLMFailure(resp *llm.Response, err error) bool {
+	if !cleanRetryableLLMFailure(resp, err) {
+		return false
+	}
+	if llm.IsTransientTokenValidationError(err) {
+		return true
+	}
+	var httpErr *llmHTTPError
+	if errors.As(err, &httpErr) {
+		return true
+	}
+	var statusErr *llm.HTTPStatusError
+	if errors.As(err, &statusErr) && statusErr != nil {
+		return true
+	}
+	// Headers arrived and the body was dropped before any payload. The coding
+	// hosts suppress the immediate non-stream fallback for this case, so it has
+	// to reach the outer backoff or the turn dies on the first dropped
+	// connection.
+	if llm.IsUnexpectedStreamEOF(err) {
+		return true
+	}
+	return false
+}
+
 func shouldRetrySimpleLLMError(err error) bool {
 	if err == nil || hubDenialForbidsRetry(err) {
 		return false

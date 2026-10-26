@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ACP_ASSISTANT_TAB_IDENTITY, activeAssistantTaskIdentity, archiveExpertTranscriptForProject, assistantSessionIsSending, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, coerceActiveAssistantTask, expertIDFromTaskTags, formatGoalChecklistFromRecord, goalChecklistMessageId, isACPAssistantSessionKey, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, messageAfterSessionFloor, messageBelongsToSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, shouldBlockAssistantTabOpenOnTaskRegistration, upsertGoalChecklistInHistory } from "../aiAssistantPanelSessionUtils";
+import { ACP_ASSISTANT_TAB_IDENTITY, activeAssistantTaskIdentity, archiveExpertTranscriptForProject, assistantSessionIsSending, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, coerceActiveAssistantTask, expertIDFromTaskTags, formatGoalChecklistFromRecord, goalChecklistMessageId, isACPAssistantSessionKey, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, messageAfterSessionFloor, messageBelongsToSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, shouldBlockAssistantTabOpenOnTaskRegistration, upsertGoalChecklistInHistory, visibleProjectTranscript } from "../aiAssistantPanelSessionUtils";
 import type { ChatMessage } from "../useAIAssistant";
 
 describe("aiAssistantPanelSessionUtils", () => {
@@ -431,5 +431,110 @@ describe("aiAssistantPanelSessionUtils", () => {
         expect(messageAfterSessionFloor({ timestamp: 10 }, 20)).toBe(false);
         expect(messageAfterSessionFloor({ timestamp: 20 }, 20)).toBe(true);
         expect(messageAfterSessionFloor({ timestamp: 10 }, 0)).toBe(true);
+    });
+});
+
+describe("visibleProjectTranscript", () => {
+    const taskKey = "desktop-user:C:/Users/me/.maclaw/data/tasks/textproc";
+    const essay = { id: "s0", role: "assistant" as const, content: "下一轮只执行 S0。", sessionKey: "desktop-user:C:\\Users\\me\\.maclaw\\data\\tasks\\textproc", timestamp: 1 };
+    const report = {
+        id: "s2",
+        role: "assistant" as const,
+        content: "第 3 步（S2）已完成并归档。",
+        sessionKey: taskKey,
+        timestamp: 2,
+        fields: [{ label: "session_tokens", value: "in=1" }, { label: "Turn", value: "reasoning" }],
+    };
+
+    it("keeps the stage report whose session key is already on the essay", () => {
+        const shown = visibleProjectTranscript({
+            history: [essay],
+            live: [report],
+            activeSessionKey: "desktop-user:E:/workprj/mousika/textproc/qmsrcdet26",
+        });
+        expect(shown.map(message => message.id)).toEqual(["s0", "s2"]);
+        expect(shown[0].content).toContain("S0");
+        expect(shown[1].content).toContain("S2");
+        expect(shown[1].fields?.map(field => field.label)).toEqual(["session_tokens", "Turn"]);
+    });
+
+    it("shows live rows on an uncleared empty tab and keeps a cleared tab empty", () => {
+        expect(visibleProjectTranscript({
+            history: [],
+            live: [report],
+            activeSessionKey: taskKey,
+        }).map(message => message.id)).toEqual(["s2"]);
+        expect(visibleProjectTranscript({
+            history: [],
+            live: [report],
+            activeSessionKey: taskKey,
+            cleared: true,
+        })).toEqual([]);
+    });
+
+    it("keeps the saved essay when this paint has no live rows for the tab", () => {
+        const other = { id: "other", role: "assistant" as const, content: "别的任务", sessionKey: "desktop-user:D:/tasks/other", timestamp: 3 };
+        const unowned = { id: "bare", role: "assistant" as const, content: "无主", timestamp: 4 };
+        const shown = visibleProjectTranscript({
+            history: [essay],
+            live: [other, unowned],
+            activeSessionKey: "desktop-user:E:/workprj/mousika/textproc/qmsrcdet26",
+        });
+        expect(shown.map(message => message.id)).toEqual(["s0"]);
+        expect(visibleProjectTranscript({ history: [essay], live: [], activeSessionKey: taskKey })[0].content).toContain("S0");
+    });
+
+    it("joins the next stage by goal id when the session key changed", () => {
+        const workspaceKey = "desktop-user:E:/workprj/mousika/textproc/qmsrcdet26";
+        const stamped = {
+            id: "s0",
+            role: "assistant" as const,
+            content: "下一轮只执行 S0。",
+            sessionKey: workspaceKey,
+            requestId: "goal-cont-f7575c4e-1792978972557-2",
+            timestamp: 1,
+        };
+        const report = {
+            id: "s2",
+            role: "assistant" as const,
+            content: "第 3 步（S2）已完成并归档。",
+            sessionKey: taskKey,
+            requestId: "goal-cont-f7575c4e-1792980790226-4",
+            timestamp: 2,
+            fields: [{ label: "Turn", value: "reasoning" }],
+        };
+        const otherGoal = {
+            id: "other-goal",
+            role: "assistant" as const,
+            content: "别的目标",
+            sessionKey: "desktop-user:C:/Users/me/.maclaw/data/tasks/other",
+            requestId: "goal-cont-aaaaaaaa-1792980790999-1",
+            timestamp: 3,
+        };
+        const shown = visibleProjectTranscript({
+            history: [stamped],
+            live: [report, otherGoal],
+            activeSessionKey: workspaceKey,
+        });
+        expect(shown.map(message => message.id)).toEqual(["s0", "s2"]);
+        expect(shown[1].fields?.[0]?.label).toBe("Turn");
+        const shortEssay = { ...stamped, id: "short", requestId: "goal-cont-test-1" };
+        const otherShort = { ...otherGoal, requestId: "goal-cont-test-2" };
+        expect(visibleProjectTranscript({
+            history: [shortEssay],
+            live: [otherShort],
+            activeSessionKey: workspaceKey,
+        }).map(message => message.id)).toEqual(["short"]);
+    });
+
+    it("does not import the local desktop transcript from a bare owner", () => {
+        const bare = { id: "s0", role: "assistant" as const, content: "下一轮只执行 S0。", sessionKey: "desktop-user", timestamp: 1 };
+        const local = { id: "local", role: "assistant" as const, content: "本地闲聊", sessionKey: "desktop-user", timestamp: 2 };
+        const shown = visibleProjectTranscript({
+            history: [bare],
+            live: [local],
+            activeSessionKey: "desktop-user:E:/workprj/mousika/textproc/qmsrcdet26",
+        });
+        expect(shown.map(message => message.id)).toEqual(["s0"]);
     });
 });

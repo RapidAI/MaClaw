@@ -6,3 +6,6 @@ package embedding
 // figure: free + inactive + purgeable + compressible pages). Unknown means the
 // low-memory guard does not block; the load itself still degrades on error.
 func availableMemory() (uint64, bool) { return 0, false }
+
+// AvailableMemory is unknown on this platform (see availableMemory).
+func AvailableMemory() (uint64, bool) { return availableMemory() }

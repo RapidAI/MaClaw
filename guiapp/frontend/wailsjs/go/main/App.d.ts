@@ -663,7 +663,7 @@ export function SetFileCompanionOpenSet(arg1:Array<string>):Promise<void>;
 
 export function FileCompanionOpenArxiv(arg1:string):Promise<string>;
 
-export function FileCompanionSearchArxiv(arg1:string):Promise<Array<{id:string, title:string, abstract:string, authors?:string, published?:string, categories?:Array<string>}>>;
+export function FileCompanionSearchArxiv(arg1:string, arg2:number, arg3:boolean):Promise<{hits:Array<{id:string, title:string, abstract:string, authors?:string, published?:string, categories?:Array<string>}>, page:number, pageSize:number, total:number, interpreted?:string, groups?:Array<{terms:Array<string>, category?:string}>, fallback?:boolean}>;
 
 export function FileCompanionOpenWebPage(arg1:string):Promise<Record<string, any>>;
 
@@ -1252,7 +1252,7 @@ export function GetVectorSearchEnabled():Promise<boolean>;
 
 export function GetVectorSearchStatus():Promise<main.VectorSearchStatus>;
 
-export function GetEmbedAccelInfo():Promise<{backend: string; device: string; reason: string; npu_present: boolean}>;
+export function GetEmbedAccelInfo():Promise<{backend: string; device: string; reason: string; npu_present: boolean; gpu_available: boolean}>;
 
 export function SetEmbedHWAccel(arg1:boolean):Promise<corelib.AppConfig>;
 

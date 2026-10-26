@@ -72,54 +72,52 @@ func SSHConnect(deps SSHToolDeps, args map[string]interface{}) string {
 		return "SSH 连接失败: " + resolveErr.Error()
 	}
 	cfg.Defaults()
-	host, user, port = cfg.Host, cfg.User, cfg.Port
+	host, user = cfg.Host, cfg.User
 
 	if host == "" || user == "" {
 		return "错误: connect 需要 host 和 user 参数（或通过 label 引用已配置主机）"
 	}
 
-	// Check if a running session already exists for this host.
+	// Same admission as the GUI connect, including the one-dial gate.
+	// The label is the one left after alias resolution.
+	// force_new is the only request that skips the open session.
+	targetID := cfg.SSHHostID()
+	label = cfg.Label
 	forceNew, _ := args["force_new"].(bool)
-	if !forceNew {
-		targetID := fmt.Sprintf("%s@%s:%d", user, host, port)
-		if existing := FindRunningSSHSession(mgr, targetID, label); existing != nil {
-			// Verify the connection is actually alive before reusing.
-			if existing.Handle != nil && existing.Handle.IsAlive() {
-				if mgr.CheckShellResponsive(existing.ID) {
+	var result string
+	mgr.DoExclusiveConnect("", targetID, label, cfg.HostKeyFingerprint, false, func() {
+		if !forceNew {
+			existing, reconnected, retiredID := mgr.AttachOpenSession(targetID, label, "", cfg.HostKeyFingerprint, false)
+			if retiredID != "" && deps.OnClosed != nil {
+				deps.OnClosed(retiredID)
+			}
+			if existing != nil {
+				if !reconnected {
 					summary := existing.GetSummary()
-					result := fmt.Sprintf("复用已有 SSH 会话（无需重连）\n会话 ID: %s\n主机: %s\n状态: %s\n\n"+
+					result = fmt.Sprintf("复用已有 SSH 会话（无需重连）\n会话 ID: %s\n主机: %s\n状态: %s\n\n"+
 						"请直接 exec，session_id=%s。不要 force_new / 再次 connect。",
 						existing.ID, summary.HostID, summary.Status, existing.ID)
 					if summary.LastOutput != "" {
 						result += "\n\n最近输出: " + summary.LastOutput
 					}
-					return result
+					return
 				}
-				// Shell is unresponsive. Close and recreate.
-				mgr.RemoveSession(existing.ID)
-				if deps.OnClosed != nil {
-					deps.OnClosed(existing.ID)
+				time.Sleep(2 * time.Second)
+				preview := strings.Join(existing.PreviewTail(10), "\n")
+				result = fmt.Sprintf("复用已有 SSH 会话（已自动重连）\n会话 ID: %s\n主机: %s\n状态: %s",
+					existing.ID, targetID, runningSessionStatusLabel())
+				if preview != "" {
+					result += "\n\n--- 重连后输出 ---\n" + preview
 				}
-			} else {
-				// Connection is dead. Try to reconnect.
-				if err := mgr.ReconnectByID(existing.ID); err == nil {
-					time.Sleep(2 * time.Second)
-					preview := strings.Join(existing.PreviewTail(10), "\n")
-					result := fmt.Sprintf("复用已有 SSH 会话（已自动重连）\n会话 ID: %s\n主机: %s\n状态: %s",
-						existing.ID, targetID, runningSessionStatusLabel())
-					if preview != "" {
-						result += "\n\n--- 重连后输出 ---\n" + preview
-					}
-					return result
-				}
-				mgr.RemoveSession(existing.ID)
-				if deps.OnClosed != nil {
-					deps.OnClosed(existing.ID)
-				}
+				return
 			}
 		}
-	}
+		result = sshDialNewSession(deps, mgr, cfg, args)
+	})
+	return result
+}
 
+func sshDialNewSession(deps SSHToolDeps, mgr *remote.SSHSessionManager, cfg remote.SSHHostConfig, args map[string]interface{}) string {
 	spec := remote.SSHSessionSpec{
 		HostConfig:     cfg,
 		InitialCommand: strArg(args, "initial_command"),

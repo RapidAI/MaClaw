@@ -125,6 +125,11 @@ func (a *App) watchFrontendPaint() {
 	if a == nil {
 		return
 	}
+	// Independent of the recovery ladder below, which returns as soon as the
+	// document reports itself ready. A wedged GPU compositor can load every
+	// asset and still never present a frame, so "ready but never painted" needs
+	// its own observation point.
+	a.watchFirstPaintForGPUFailure()
 	go func() {
 		bootLog("watchFrontendPaint goroutine start ctx_nil=%v", a.ctx == nil)
 		recoverBlankWebView("immediate")
@@ -163,3 +168,41 @@ func (a *App) watchFrontendPaint() {
 }
 
 const frontendBootSplashInjectJS = `(function(){if(document.getElementById('maclaw-boot-splash'))return;try{document.body.style.margin='0';document.body.style.background='#f3f5f7';document.body.innerHTML='<div id="maclaw-boot-splash" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;font-family:Segoe UI,sans-serif;background:#f3f5f7;color:#1c1c1e"><div style="width:min(400px,92%);padding:24px 28px;border-radius:28px;background:#fff;box-shadow:0 18px 48px rgba(15,23,42,.08);text-align:center"><h1 style="margin:8px 0 6px;font-size:1.4rem">正在准备环境</h1><p style="margin:0;color:#8e8e93;font-size:.86rem">正在准备运行环境，请稍候</p></div></div>';}catch(e){}})();`
+
+// firstPaintGPUFailureGrace is how long a loaded document may go without
+// presenting a frame before compositing is treated as broken.
+//
+// A healthy renderer reports first paint within a couple of seconds; the grace
+// is deliberately far beyond that so a slow machine is never mistaken for a
+// broken compositor. The cost of a false positive is only "software rendering
+// from now on", which is what these machines used before GPU was enabled.
+const firstPaintGPUFailureGrace = 20 * time.Second
+
+// watchFirstPaintForGPUFailure records a GPU compositing failure when the page
+// loads but never paints.
+func (a *App) watchFirstPaintForGPUFailure() {
+	if a == nil || !perfProbeEnabled() {
+		// Without the renderer-side marks there is no signal to read; guessing
+		// would disable acceleration for everyone.
+		return
+	}
+	go func() {
+		deadline := time.Now().Add(firstPaintGPUFailureGrace)
+		for time.Now().Before(deadline) {
+			if firstPaintMark.Load() > 0 {
+				return
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+		// Only a document that actually loaded assets is evidence of a paint
+		// failure rather than an early navigation problem.
+		if !a.frontendHTMLReady.Load() || frontendAssetRequests.Load() == 0 {
+			bootLog("first-paint watchdog: no paint, but document never loaded (htmlReady=%v assets=%d); not blaming GPU",
+				a.frontendHTMLReady.Load(), frontendAssetRequests.Load())
+			return
+		}
+		bootLog("first-paint watchdog: no frame after %s despite htmlReady=true assets=%d; recording GPU failure",
+			firstPaintGPUFailureGrace, frontendAssetRequests.Load())
+		recordWebviewGPUFailure(defaultWebviewUserDataPath(), "no-first-paint")
+	}()
+}

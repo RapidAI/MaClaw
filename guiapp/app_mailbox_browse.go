@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 
 	"github.com/RapidAI/CodeClaw/corelib/mailbox"
 )
@@ -91,13 +92,19 @@ func (a *App) MailboxBrowseStart(accountID string) (map[string]interface{}, erro
 	if err != nil && len(page.Folders) == 0 {
 		return nil, mailbox.ClientError(err)
 	}
-	return map[string]interface{}{
+	out := map[string]interface{}{
 		"folders":  page.Folders,
 		"box":      page.Box,
 		"messages": messageRows(page.Messages),
 		"unseen":   page.Unseen,
 		"error":    browseNote(err),
-	}, nil
+	}
+	// Absent means the page did not resolve trash. An empty string means there
+	// is no trash folder, so the dialog must say the delete is permanent.
+	if page.TrashKnown {
+		out["trash_box"] = page.TrashBox
+	}
+	return out, nil
 }
 
 func browseNote(err error) string {
@@ -186,6 +193,25 @@ func (a *App) MailboxBrowseRead(accountID, box string, uid int) (map[string]inte
 	}, nil
 }
 
+func pageRepeatCount(messages []mailbox.MessageSummary, uids []uint32) int {
+	if len(messages) == 0 || len(uids) == 0 {
+		return 0
+	}
+	want := make(map[uint32]struct{}, len(uids))
+	for _, id := range uids {
+		if id != 0 {
+			want[id] = struct{}{}
+		}
+	}
+	n := 0
+	for _, msg := range messages {
+		if _, ok := want[msg.UID]; ok {
+			n++
+		}
+	}
+	return n
+}
+
 func clipHTML(raw string) string {
 	if len(raw) <= browseHTMLCap {
 		return raw
@@ -240,7 +266,27 @@ func (a *App) MailboxBrowseDelete(accountID, box string, uids []uint32) (map[str
 	if err != nil {
 		return nil, err
 	}
-	deleter, ok := a.browsePeer().(mailbox.MailDeleter)
+	peer := a.browsePeer()
+	// One login for the delete and the next page. Agent deletes stay on
+	// MailDeleter and do not list. A peer without this method keeps the
+	// preview-then-apply path, which returns no page.
+	if pageDeleter, ok := peer.(mailbox.FolderPageDeleter); ok {
+		page, err := pageDeleter.DeleteFolderPage(context.Background(), account, secret, box, uids, browseLimit(30))
+		if err != nil {
+			log.Printf("[mailbox] account_id=%s side=inbound action=browse_delete result_class=error uids=%d", account.ID, len(uids))
+			return nil, mailbox.ClientError(err)
+		}
+		log.Printf("[mailbox] account_id=%s side=inbound action=browse_delete result_class=ok uids=%d moved=%d purged=%d page=%d repeated=%d list_err=%t",
+			account.ID, len(uids), page.Result.Moved, page.Result.Purged, len(page.Messages), pageRepeatCount(page.Messages, uids), page.ListErr != nil)
+		out := map[string]interface{}{"moved": page.Result.Moved, "purged": page.Result.Purged}
+		if page.ListErr != nil {
+			out["list_error"] = mailbox.ClientError(page.ListErr).Error()
+		} else {
+			out["messages"] = messageRows(page.Messages)
+		}
+		return out, nil
+	}
+	deleter, ok := peer.(mailbox.MailDeleter)
 	if !ok {
 		return nil, errors.New(mailbox.MsgConnect)
 	}

@@ -835,9 +835,11 @@ func (m *SSHSessionManager) callWithSessionClient(s *SSHManagedSession, fn func(
 	if m == nil || s == nil {
 		return fmt.Errorf("ssh session not found")
 	}
-	cfg := s.Spec.HostConfig
-	cfg.Defaults()
+	// Borrow the connection the session currently holds. The pool key is that
+	// config; a copy taken before reconnect would dial a different entry.
 	call := func() error {
+		cfg := s.HostConfig()
+		cfg.Defaults()
 		client, err := m.pool.Acquire(cfg)
 		if err != nil {
 			return fmt.Errorf("acquire connection: %w", err)
@@ -849,7 +851,7 @@ func (m *SSHSessionManager) callWithSessionClient(s *SSHManagedSession, fn func(
 	if err == nil || !remoteSSHLinkLost(err) {
 		return err
 	}
-	if s.Handle != nil && s.Handle.IsAlive() {
+	if handle := s.PTY(); handle != nil && handle.IsAlive() {
 		return call()
 	}
 	if recErr := m.reconnectSession(s); recErr != nil {

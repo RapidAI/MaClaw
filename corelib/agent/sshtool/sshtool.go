@@ -117,17 +117,11 @@ func ResolveSSHHostByLabel(hosts []corelib.SSHHostEntry, label string) *corelib.
 	return nil
 }
 
-// FindRunningSSHSession looks for an existing SSH session matching the
-// given hostID (user@host:port) or label that is still running.
-func FindRunningSSHSession(mgr *remote.SSHSessionManager, hostID, label string) *remote.SSHManagedSession {
-	for _, s := range mgr.List() {
-		summary := s.GetSummary()
-		if !isRunningSessionStatus(summary.Status) {
-			continue
-		}
-		if summary.HostID == hostID || (label != "" && summary.HostLabel == label) {
-			return s
-		}
+// FindRunningSSHSession admits one open session for this endpoint and
+// host-key policy. The tool sessions it sees have no conversation owner.
+func FindRunningSSHSession(mgr *remote.SSHSessionManager, hostID, label, requestedPin string, capture bool) *remote.SSHManagedSession {
+	if mgr == nil {
+		return nil
 	}
-	return nil
+	return remote.SelectReusableSSHSession(mgr.List(), hostID, label, "", requestedPin, capture)
 }

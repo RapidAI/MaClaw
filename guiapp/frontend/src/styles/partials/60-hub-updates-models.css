@@ -266,7 +266,9 @@
 .confirm-dialog-overlay {
     position: fixed;
     inset: 0;
-    z-index: 10000;
+    /* Rendered inside the scaled app shell, so it must outrank the inline
+       assistant title bar (z-index 30000), same as .modal-overlay. */
+    z-index: 40000;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1555,7 +1557,9 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 9999;
+    /* Dialog scrims outrank both app title bars; see .modal-overlay in
+       50-pet-provider.css. */
+    z-index: 40000;
     background: color-mix(in srgb, var(--theme-page-bg) 58%, rgba(0, 0, 0, 0.48)) !important;
     backdrop-filter: blur(6px);
     -webkit-app-region: no-drag;
@@ -2403,7 +2407,7 @@
     display: inline-grid;
     place-content: center;
     border: 1px solid var(--theme-border);
-    border-radius: 5px;
+    border-radius: var(--radius-sm);
     background: var(--theme-surface);
     cursor: pointer;
     transition: background-color var(--transition-fast), border-color var(--transition-fast);

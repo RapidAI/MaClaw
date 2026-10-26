@@ -99,6 +99,17 @@ export function expertTabId(expertId: string): string {
 /** Default emoji badge when an expert has no icon configured. */
 export const DEFAULT_EXPERT_ICON = "\u{1F916}"; // 🤖
 
+/** Icons of the in-binary experts. The wizard opens them by id, before the catalog row is required. */
+export function builtinExpertIcon(id: string): string {
+    switch (String(id || "").trim()) {
+        case "builtin-paper-polish": return "📝";
+        case "builtin-paper-translate": return "🌐";
+        case "builtin-pptx-maker": return "📊";
+        case "builtin-latex-paper": return "📄";
+        default: return "";
+    }
+}
+
 /** First-run welcome message seeded into a freshly created expert tab (local only, no LLM call). */
 export function expertWelcomeMessageText(expert: Pick<ExpertDefinition, "name" | "description">, lang?: string): string {
     const name = String(expert?.name || "").trim();

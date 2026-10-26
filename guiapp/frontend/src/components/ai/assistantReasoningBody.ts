@@ -28,6 +28,28 @@ export const REASONING_BODY_MIN_RATIO = 3;
 /** A body this long is already the user-facing answer, not a stub follow-up. */
 export const REASONING_FOLLOWUP_MAX_CHARS = 80;
 
+/**
+ * Upper bound on the reasoning text kept for display.
+ *
+ * Reasoning is a thinking model's scratch pad and is display-only: it never
+ * re-enters the model context, which lives in the backend conversation store.
+ * Single trails of a megabyte have been observed in real transcripts, and that
+ * size is paid repeatedly — the transcript sanitizer runs several regex passes
+ * over it, the render cache key concatenates it, and the whole string is
+ * re-serialized on every save. Capping it bounds all three.
+ *
+ * The tail is kept rather than the head because thinking models put their
+ * conclusion at the end, and the collapsed 思考过程 panel is read top-down from
+ * the part nearest the answer.
+ */
+export const REASONING_DISPLAY_MAX_CHARS = 16_000;
+
+/** Truncates an over-long reasoning trail, keeping its tail. */
+export function capReasoningForDisplay(reasoning: string): string {
+    if (!reasoning || reasoning.length <= REASONING_DISPLAY_MAX_CHARS) return reasoning;
+    return "…\n" + reasoning.slice(reasoning.length - REASONING_DISPLAY_MAX_CHARS);
+}
+
 const TRAIL_TAIL_MIN_BODY_CHARS = 24;
 /** Prefix still looks like English CoT when CJK share is at or below this. */
 const CJK_PREFIX_MAX = 0.35;
@@ -66,9 +88,12 @@ const displayRoleSlot: { id: string; cursor: RolePrefixStreamCursor } = {
  * The reply bubble cleans one thought on every answer flush. Streaming only
  * appends, so the prefix already cleaned is reused. A different message or a
  * rewrite runs the full clean once.
+ *
+ * The trail is capped first: the clean pipeline runs several regex passes, and
+ * a megabyte trail made this the dominant cost when restoring a transcript.
  */
 export function reasoningCleanedForMessage(messageId: string, reasoning: string): string {
-    return rememberReasoningTrailClean(replyTrailClean, messageId || "", reasoning || "");
+    return rememberReasoningTrailClean(replyTrailClean, messageId || "", capReasoningForDisplay(reasoning || ""));
 }
 
 /** Audit strip of one reply. A growing answer does not rescan the stable prefix. */

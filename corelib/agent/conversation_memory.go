@@ -361,8 +361,30 @@ var errPersistentLoadPending = errors.New("conversation store is still loading")
 // automatic execution rather than guessing which task owns the session.
 var ErrInFlightCheckpointRunConflict = errors.New("in-flight checkpoint run conflict")
 
+// memorySnapshotSchemaVersion marks a store whose entries have already been
+// through sanitizeConversationEntriesForPersistence. Saving always sanitizes, so
+// a snapshot written at this version or later can be loaded without re-running
+// that pass.
+//
+// The pass is expensive: on a 38 MB / 16k-entry store it took 7.2s of a 7.4s
+// load, and it changed nothing, because the file it was re-reading had itself
+// just been written sanitized. Bump this constant whenever
+// sanitizeConversationEntryForPersistence gains a transform that existing files
+// must go through again.
+const memorySnapshotSchemaVersion = 1
+
+// snapshotEntriesNeedSanitize reports whether a loaded snapshot still has to go
+// through sanitizeConversationEntriesForPersistence. Version 0 means the file
+// predates versioning, so its entries are untrusted.
+func snapshotEntriesNeedSanitize(schemaVersion int) bool {
+	return schemaVersion < memorySnapshotSchemaVersion
+}
+
 type memorySnapshot struct {
-	Sessions map[string]persistedSession `json:"sessions"`
+	// SchemaVersion is 0 for stores written before versioning; those still get
+	// the full sanitize pass on load.
+	SchemaVersion int                         `json:"schema_version,omitempty"`
+	Sessions      map[string]persistedSession `json:"sessions"`
 }
 
 type memoryShard struct {
@@ -2786,7 +2808,7 @@ func (cm *ConversationMemory) overlayDetachedSessions() error {
 			cm.detached[userID] = path
 		}
 		cm.detachedMu.Unlock()
-		side, ok, err := readDetachedPersistedSession(path, userID)
+		side, ok, err := cm.readDetachedPersistedSession(path, userID)
 		if err != nil {
 			log.Printf("[ConversationMemory] detached session load failed user=%q path=%q err=%v", userID, path, err)
 			continue
@@ -2834,7 +2856,25 @@ func sideReplacesCurrent(current *conversationSession, side persistedSession) bo
 	return side.LastAccess.After(current.lastAccess)
 }
 
-func readDetachedPersistedSession(path, userID string) (persistedSession, bool, error) {
+// sanitizeSideSessionIfLegacy sanitizes one side-file snapshot that predates
+// the schema version.
+//
+// Side files are not covered by loadFromDisk's sanitize pass, which only walks
+// the shared snapshot. Without this, a side file written by an older version (or
+// edited by hand) entered memory unredacted even though the shared store was
+// clean. The rewrite is queued so the next start takes the fast path.
+func (cm *ConversationMemory) sanitizeSideSessionIfLegacy(userID string, snapshot memorySnapshot, session persistedSession) persistedSession {
+	if snapshot.SchemaVersion >= memorySnapshotSchemaVersion {
+		return session
+	}
+	if sanitized, changed := sanitizeConversationEntriesForPersistence(session.Entries); changed {
+		session.Entries = sanitized
+	}
+	cm.noteDetachedPending(userID)
+	return session
+}
+
+func (cm *ConversationMemory) readDetachedPersistedSession(path, userID string) (persistedSession, bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -2850,7 +2890,7 @@ func readDetachedPersistedSession(path, userID string) (persistedSession, bool, 
 	if !ok {
 		return persistedSession{}, false, nil
 	}
-	return session, true, nil
+	return cm.sanitizeSideSessionIfLegacy(userID, snapshot, session), true, nil
 }
 
 func (cm *ConversationMemory) installPersistedSession(userID string, session persistedSession) {
@@ -2970,6 +3010,7 @@ func (cm *ConversationMemory) loadDetachedSession(userID, path string) error {
 		cm.noteDetachedPendingIfLoaded(userID)
 		return nil
 	}
+	session = cm.sanitizeSideSessionIfLegacy(userID, snapshot, session)
 	// shardNoWait: this runs from loadFromDisk, which may already be inside
 	// the background loadOnce. shard() would re-enter that Once and deadlock.
 	sh := cm.shardNoWait(userID)
@@ -3017,6 +3058,10 @@ func writeMemorySnapshotFile(path string, snapshot memorySnapshot) error {
 	if strings.TrimSpace(path) == "" {
 		return nil
 	}
+	// Every writer goes through here, and every writer sanitizes its entries
+	// before building persistedSession. Stamping the version is what lets the
+	// loader skip that same pass when it reads the file back.
+	snapshot.SchemaVersion = memorySnapshotSchemaVersion
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -3051,6 +3096,14 @@ func (cm *ConversationMemory) loadFromDisk() error {
 	}
 	needsRewrite := false
 	now := time.Now()
+	// A store written by this version (or newer) already holds sanitized
+	// entries: writeMemorySnapshotFile stamps the version and every writer
+	// sanitizes first. Re-running the pass costs seconds on a large transcript
+	// and changes nothing, so only pre-versioning files pay for it.
+	entriesAlreadyClean := !snapshotEntriesNeedSanitize(snapshot.SchemaVersion)
+	if !entriesAlreadyClean {
+		log.Printf("[ConversationMemory] legacy store schema=%d; sanitizing entries on load", snapshot.SchemaVersion)
+	}
 	const projectTabSessionMaxAge = 30 * 24 * time.Hour
 	for userID, session := range snapshot.Sessions {
 		// T18: Skip project tab sessions that haven't been accessed in 30 days.
@@ -3067,9 +3120,13 @@ func (cm *ConversationMemory) loadFromDisk() error {
 			}
 		}
 		entries := session.Entries
-		sanitized, sanitizedChanged := sanitizeConversationEntriesForPersistence(entries)
-		if sanitizedChanged {
-			entries = sanitized
+		if !entriesAlreadyClean {
+			sanitized, sanitizedChanged := sanitizeConversationEntriesForPersistence(entries)
+			if sanitizedChanged {
+				entries = sanitized
+			}
+			// Either way the file must be rewritten, so the next load can skip
+			// this pass.
 			needsRewrite = true
 		}
 

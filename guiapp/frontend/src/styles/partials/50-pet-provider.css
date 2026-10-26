@@ -1205,7 +1205,10 @@
     display: flex;
     justify-content: center;
     align-items: center;
-    z-index: 2000;
+    /* Above the inline assistant title bar (z-index 30000). The bar is its own
+       stacking context, so a lower scrim leaves the whole header unmasked and
+       still clickable while a dialog is open. */
+    z-index: 40000;
     animation: fadeIn 0.15s ease-out;
     -webkit-app-region: no-drag;
     --wails-draggable: no-drag;
@@ -1392,7 +1395,7 @@
 .provider-config-tab-badge[data-tone='accent'] { background: #1d4ed8; }
 .provider-config-tab-badge[data-tone='warning'] { background: #92400e; }
 .provider-config-tab-badge[data-tone='neutral'] { background: #475569; color: #ffffff; }
-.provider-config-tab-badge[data-tone='success'] { background: #166534; }
+.provider-config-tab-badge[data-tone='success'] { background: var(--theme-success); }
 
 .provider-config-form-row {
     display: flex;
@@ -1661,6 +1664,21 @@
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 8px;
+}
+
+/* Filter-empty state spans the full grid as one quiet row. */
+.provider-selector-empty {
+    grid-column: 1 / -1;
+    min-height: 96px;
+    display: grid;
+    place-items: center;
+    padding: 12px;
+    border: 1px dashed var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    color: var(--theme-text-secondary);
+    background: color-mix(in srgb, var(--theme-surface-muted) 70%, var(--theme-surface));
+    font-size: 0.78rem;
+    text-align: center;
 }
 
 .provider-selector-card {
@@ -1999,6 +2017,17 @@
     background: color-mix(in srgb, var(--theme-primary, #2e75cb) 12%, transparent);
     border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 34%, transparent);
     color: var(--theme-primary, #2e75cb);
+}
+
+/* Quiet deny action: neutral until hovered, no danger tint by design. */
+.ve-auth-action--ghost {
+    background: transparent;
+    color: var(--theme-text-secondary, #546479);
+}
+
+.ve-auth-action--ghost:hover:not(:disabled) {
+    color: var(--theme-text-primary, #526277);
+    background: rgba(148, 163, 184, 0.1);
 }
 
 .ve-auth-action--danger {

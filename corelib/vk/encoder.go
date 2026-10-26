@@ -19,6 +19,10 @@ type Encoder struct {
 // Begin starts recording. Must be paired with Wait.
 func (d *Device) Begin() *Encoder {
 	e := &Encoder{dev: d}
+	if err := d.Err(); err != nil {
+		e.failed = err
+		return e
+	}
 	bi := commandBufferBeginInfo{
 		sType: structureTypeCommandBufferBeginInfo,
 		flags: commandBufferUsageOneTimeSubmit,
@@ -38,6 +42,10 @@ func (e *Encoder) SetPipeline(p *Pipeline) {
 		return
 	}
 	d := e.dev
+	if err := p.BindErr(); err != nil {
+		e.failed = err
+		return
+	}
 	call(d.fn.cmdBindPipeline, d.cmdBuf, pipelineBindPointCompute, p.pipe)
 	if set := p.CurrentSet(); set != 0 {
 		call(d.fn.cmdBindDescriptorSets, d.cmdBuf, pipelineBindPointCompute, p.layout,
@@ -45,9 +53,6 @@ func (e *Encoder) SetPipeline(p *Pipeline) {
 	}
 	e.cur = p
 }
-
-// SetBuffer is a no-op: descriptors are bound per pipeline via Bind.
-func (e *Encoder) SetBuffer(b *Buffer, offset, index int) {}
 
 // SetBytes pushes a push-constant block for the currently bound pipeline.
 func (e *Encoder) SetBytes(ptr unsafe.Pointer, n, index int) {

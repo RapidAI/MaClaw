@@ -4,9 +4,11 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,6 +33,17 @@ func TestSSHHostConfig_Defaults(t *testing.T) {
 	}
 }
 
+func TestSSHHostConfigDefaultsCanonicalizesEndpoint(t *testing.T) {
+	cfg := SSHHostConfig{Host: "[2001:db8::1]", User: " root ", Label: " gpu "}
+	cfg.Defaults()
+	if cfg.Host != "2001:db8::1" || cfg.User != "root" || cfg.Label != "gpu" || cfg.Port != 22 {
+		t.Fatalf("defaults = %+v", cfg)
+	}
+	if cfg.SSHHostID() != "root@2001:db8::1:22" {
+		t.Fatalf("id = %s", cfg.SSHHostID())
+	}
+}
+
 func TestSSHHostConfig_SSHHostID(t *testing.T) {
 	tests := []struct {
 		cfg    SSHHostConfig
@@ -39,6 +52,10 @@ func TestSSHHostConfig_SSHHostID(t *testing.T) {
 		{SSHHostConfig{Host: "10.0.0.1", User: "root", Port: 22}, "root@10.0.0.1:22"},
 		{SSHHostConfig{Host: "web.example.com", User: "deploy", Port: 2222}, "deploy@web.example.com:2222"},
 		{SSHHostConfig{Host: "10.0.0.1", User: "root"}, "root@10.0.0.1:22"}, // Port=0 → default 22
+		{SSHHostConfig{Host: " 10.0.0.1 ", User: " root ", Port: 22}, "root@10.0.0.1:22"},
+		{SSHHostConfig{Host: "[2001:db8::1]", User: "root", Port: 22}, "root@2001:db8::1:22"},
+		{SSHHostConfig{Host: "2001:0db8:0000:0000:0000:0000:0000:0001", User: "root", Port: 22}, "root@2001:db8::1:22"},
+		{SSHHostConfig{Host: " Web.Example ", User: "Deploy", Port: 2222}, "Deploy@Web.Example:2222"},
 	}
 	for _, tt := range tests {
 		got := tt.cfg.SSHHostID()
@@ -232,6 +249,11 @@ func TestSSHPoolAcquireResolvedCapturesOnlyKnownHostsVerifiedKey(t *testing.T) {
 
 func startTestPasswordSSHServer(t *testing.T, signer ssh.Signer, user, password string) string {
 	t.Helper()
+	return startTestPasswordSSHServerCounted(t, signer, user, password, nil)
+}
+
+func startTestPasswordSSHServerCounted(t *testing.T, signer ssh.Signer, user, password string, dials *int32) string {
+	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -251,6 +273,9 @@ func startTestPasswordSSHServer(t *testing.T, signer ssh.Signer, user, password 
 			if acceptErr != nil {
 				return
 			}
+			if dials != nil {
+				atomic.AddInt32(dials, 1)
+			}
 			go func() {
 				serverConn, channels, requests, handshakeErr := ssh.NewServerConn(conn, serverConfig)
 				if handshakeErr != nil {
@@ -266,6 +291,72 @@ func startTestPasswordSSHServer(t *testing.T, signer ssh.Signer, user, password 
 	}()
 	t.Cleanup(func() { _ = listener.Close() })
 	return listener.Addr().String()
+}
+
+// startTestShellSSHServer accepts a shell so a replacement PTY can start
+// on a connection the pool already holds.
+func startTestShellSSHServer(t *testing.T, signer ssh.Signer, user, password string, dials *int32) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverConfig := &ssh.ServerConfig{
+		PasswordCallback: func(conn ssh.ConnMetadata, gotPassword []byte) (*ssh.Permissions, error) {
+			if conn.User() == user && string(gotPassword) == password {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("invalid test credentials")
+		},
+	}
+	serverConfig.AddHostKey(signer)
+	go func() {
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			if dials != nil {
+				atomic.AddInt32(dials, 1)
+			}
+			go serveTestShell(conn, serverConfig)
+		}
+	}()
+	t.Cleanup(func() { _ = listener.Close() })
+	return listener.Addr().String()
+}
+
+func serveTestShell(conn net.Conn, cfg *ssh.ServerConfig) {
+	serverConn, channels, requests, err := ssh.NewServerConn(conn, cfg)
+	if err != nil {
+		_ = conn.Close()
+		return
+	}
+	go ssh.DiscardRequests(requests)
+	for newChannel := range channels {
+		if newChannel.ChannelType() != "session" {
+			_ = newChannel.Reject(ssh.UnknownChannelType, "unsupported")
+			continue
+		}
+		channel, reqs, acceptErr := newChannel.Accept()
+		if acceptErr != nil {
+			continue
+		}
+		go func() {
+			for req := range reqs {
+				switch req.Type {
+				case "pty-req", "shell":
+					req.Reply(true, nil)
+				default:
+					if req.WantReply {
+						req.Reply(false, nil)
+					}
+				}
+			}
+		}()
+		go func() { _, _ = io.Copy(io.Discard, channel) }()
+	}
+	_ = serverConn.Close()
 }
 
 func testSSHPort(t *testing.T, address string) int {
@@ -396,6 +487,293 @@ func TestSSHSessionManager_WriteInputNeverReconnects(t *testing.T) {
 	}
 	if session.Handle != handle {
 		t.Fatal("WriteInput replaced the bound SSH session handle")
+	}
+}
+
+func TestSSHReconnectReusesThePooledConnection(t *testing.T) {
+	signer := testSSHSigner(t)
+	var dials int32
+	addr := startTestShellSSHServer(t, signer, "root", "secret", &dials)
+	host, port := testSSHHostPort(t, addr)
+	cfg := SSHHostConfig{
+		Host:               host,
+		User:               "root",
+		Port:               port,
+		AuthMethod:         "password",
+		Password:           "secret",
+		ConnectTimeout:     2 * time.Second,
+		HostKeyFingerprint: ssh.FingerprintSHA256(signer.PublicKey()),
+	}
+	cfg.Defaults()
+	pool := NewSSHPool()
+	client, err := pool.Acquire(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if atomic.LoadInt32(&dials) != 1 {
+		t.Fatalf("setup dials = %d", dials)
+	}
+
+	mgr := NewSSHSessionManager(pool)
+	session := &SSHManagedSession{
+		ID:     "ssh_shell_exited",
+		Status: SessionExited,
+		Spec:   SSHSessionSpec{HostConfig: cfg},
+		Summary: SSHSessionSummary{
+			HostID: cfg.SSHHostID(),
+			Status: string(SessionExited),
+		},
+		Handle: &SSHPTYSession{
+			client:   client,
+			started:  true,
+			outputCh: make(chan []byte, 1),
+			exitCh:   make(chan PTYExit, 1),
+			stopKA:   make(chan struct{}),
+		},
+	}
+	mgr.mu.Lock()
+	mgr.sessions[session.ID] = session
+	mgr.mu.Unlock()
+	exitedShell := session.Handle
+
+	got, reconnected, retired := mgr.AttachOpenSession(cfg.SSHHostID(), "", "", "", false)
+	if retired != "" || got != session || !reconnected {
+		t.Fatalf("attach = %v reconnected=%v retired=%s", got, reconnected, retired)
+	}
+	if got.PTY() == exitedShell || SessionStatus(got.GetSummary().Status).IsOpen() == false {
+		t.Fatal("exited shell was reused")
+	}
+	if atomic.LoadInt32(&dials) != 1 {
+		t.Fatalf("replacement dials = %d, want the pooled connection", dials)
+	}
+	key := sshPoolKey(cfg)
+	pool.mu.Lock()
+	entry := pool.conns[key]
+	pool.mu.Unlock()
+	if entry == nil || entry.client != client || entry.refCount != 1 {
+		t.Fatalf("pool entry = %#v, want the original client at ref 1", entry)
+	}
+
+	handle := got.PTY()
+	again, againReconnected, againRetired := mgr.AttachOpenSession(cfg.SSHHostID(), "", "", "", false)
+	if againRetired != "" || again != session || againReconnected || again.PTY() != handle {
+		t.Fatalf("live shell attach = reconnected=%v retired=%s handle=%v", againReconnected, againRetired, again.PTY())
+	}
+	if atomic.LoadInt32(&dials) != 1 {
+		t.Fatalf("live attach dials = %d", dials)
+	}
+}
+
+func TestSSHReconnectDialsWhenThePooledClientCannotStartAShell(t *testing.T) {
+	signer := testSSHSigner(t)
+	var dials int32
+	addr := startTestPasswordSSHServerCounted(t, signer, "root", "secret", &dials)
+	host, port := testSSHHostPort(t, addr)
+	cfg := SSHHostConfig{
+		Host:               host,
+		User:               "root",
+		Port:               port,
+		AuthMethod:         "password",
+		Password:           "secret",
+		ConnectTimeout:     2 * time.Second,
+		HostKeyFingerprint: ssh.FingerprintSHA256(signer.PublicKey()),
+	}
+	cfg.Defaults()
+	pool := NewSSHPool()
+	client, err := pool.Acquire(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewSSHSessionManager(pool)
+	session := &SSHManagedSession{
+		ID:     "ssh_dead_client",
+		Status: SessionExited,
+		Spec:   SSHSessionSpec{HostConfig: cfg},
+		Summary: SSHSessionSummary{
+			HostID: cfg.SSHHostID(),
+			Status: string(SessionExited),
+		},
+		Handle: &SSHPTYSession{
+			client:   client,
+			started:  true,
+			outputCh: make(chan []byte, 1),
+			exitCh:   make(chan PTYExit, 1),
+			stopKA:   make(chan struct{}),
+		},
+	}
+	if err := mgr.reconnectSession(session); err == nil {
+		t.Fatal("a client that rejects shells was treated as the replacement PTY")
+	}
+	if got := atomic.LoadInt32(&dials); got != 2 {
+		t.Fatalf("dials = %d, want the retained client plus one new connection", got)
+	}
+	if session.ID != "ssh_dead_client" {
+		t.Fatalf("session id = %s", session.ID)
+	}
+	pool.mu.Lock()
+	left := len(pool.conns)
+	pool.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("pool kept %d connections after the failed replacement", left)
+	}
+}
+
+// The pool entry is already gone, which is what keepalive does when it drops
+// a dead connection. Acquire dials the replacement. That dial's inability to
+// start a shell is the result of this replacement, not another corpse to dial.
+func TestSSHReconnectDialsOnceWhenThePooledClientIsAlreadyGone(t *testing.T) {
+	signer := testSSHSigner(t)
+	var dials int32
+	addr := startTestPasswordSSHServerCounted(t, signer, "root", "secret", &dials)
+	host, port := testSSHHostPort(t, addr)
+	cfg := SSHHostConfig{
+		Host:               host,
+		User:               "root",
+		Port:               port,
+		AuthMethod:         "password",
+		Password:           "secret",
+		ConnectTimeout:     2 * time.Second,
+		HostKeyFingerprint: ssh.FingerprintSHA256(signer.PublicKey()),
+	}
+	cfg.Defaults()
+	pool := NewSSHPool()
+	client, err := pool.Acquire(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.Release(cfg, client)
+	if atomic.LoadInt32(&dials) != 1 {
+		t.Fatalf("setup dials = %d", dials)
+	}
+
+	mgr := NewSSHSessionManager(pool)
+	session := &SSHManagedSession{
+		ID:     "ssh_client_already_gone",
+		Status: SessionExited,
+		Spec:   SSHSessionSpec{HostConfig: cfg},
+		Summary: SSHSessionSummary{
+			HostID: cfg.SSHHostID(),
+			Status: string(SessionExited),
+		},
+		Handle: &SSHPTYSession{
+			client:   client,
+			started:  true,
+			outputCh: make(chan []byte, 1),
+			exitCh:   make(chan PTYExit, 1),
+			stopKA:   make(chan struct{}),
+		},
+	}
+	if err := mgr.reconnectSession(session); err == nil {
+		t.Fatal("a client that rejects shells was treated as the replacement PTY")
+	}
+	if got := atomic.LoadInt32(&dials); got != 2 {
+		t.Fatalf("dials = %d, want the dropped connection plus one replacement", got)
+	}
+	if session.ID != "ssh_client_already_gone" {
+		t.Fatalf("session id = %s", session.ID)
+	}
+	pool.mu.Lock()
+	left := len(pool.conns)
+	pool.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("pool kept %d connections after the failed replacement", left)
+	}
+}
+
+func TestCreateDialsOnceWhenTheRetainedClientCannotStartAShell(t *testing.T) {
+	signer := testSSHSigner(t)
+	var dials int32
+	addr := startTestPasswordSSHServerCounted(t, signer, "root", "secret", &dials)
+	host, port := testSSHHostPort(t, addr)
+	cfg := SSHHostConfig{
+		Host:               host,
+		User:               "root",
+		Port:               port,
+		AuthMethod:         "password",
+		Password:           "secret",
+		ConnectTimeout:     2 * time.Second,
+		HostKeyFingerprint: ssh.FingerprintSHA256(signer.PublicKey()),
+	}
+	cfg.Defaults()
+	pool := NewSSHPool()
+	if _, err := pool.Acquire(cfg); err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewSSHSessionManager(pool)
+	if _, err := mgr.Create(SSHSessionSpec{HostConfig: cfg}); err == nil {
+		t.Fatal("a retained client that rejects shells was started")
+	}
+	if got := atomic.LoadInt32(&dials); got != 2 {
+		t.Fatalf("dials = %d, want the retained client plus one replacement", got)
+	}
+	pool.mu.Lock()
+	left := len(pool.conns)
+	pool.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("pool kept %d connections after the failed create", left)
+	}
+}
+
+func TestCreateDoesNotReplaceAClientItJustDialed(t *testing.T) {
+	signer := testSSHSigner(t)
+	var dials int32
+	addr := startTestPasswordSSHServerCounted(t, signer, "root", "secret", &dials)
+	host, port := testSSHHostPort(t, addr)
+	cfg := SSHHostConfig{
+		Host:               host,
+		User:               "root",
+		Port:               port,
+		AuthMethod:         "password",
+		Password:           "secret",
+		ConnectTimeout:     2 * time.Second,
+		HostKeyFingerprint: ssh.FingerprintSHA256(signer.PublicKey()),
+	}
+	cfg.Defaults()
+	mgr := NewSSHSessionManager(NewSSHPool())
+	if _, err := mgr.Create(SSHSessionSpec{HostConfig: cfg}); err == nil {
+		t.Fatal("a new client that rejects shells was started")
+	}
+	if got := atomic.LoadInt32(&dials); got != 1 {
+		t.Fatalf("dials = %d, want the one connection this create dialed", got)
+	}
+}
+
+func TestCreateReusesARetainedLiveConnection(t *testing.T) {
+	signer := testSSHSigner(t)
+	var dials int32
+	addr := startTestShellSSHServer(t, signer, "root", "secret", &dials)
+	host, port := testSSHHostPort(t, addr)
+	cfg := SSHHostConfig{
+		Host:               host,
+		User:               "root",
+		Port:               port,
+		AuthMethod:         "password",
+		Password:           "secret",
+		ConnectTimeout:     2 * time.Second,
+		HostKeyFingerprint: ssh.FingerprintSHA256(signer.PublicKey()),
+	}
+	cfg.Defaults()
+	pool := NewSSHPool()
+	client, err := pool.Acquire(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewSSHSessionManager(pool)
+	session, err := mgr.Create(SSHSessionSpec{HostConfig: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.PTY() == nil || !SessionStatus(session.GetSummary().Status).IsOpen() {
+		t.Fatal("create did not publish an open shell")
+	}
+	if atomic.LoadInt32(&dials) != 1 {
+		t.Fatalf("dials = %d, want the retained connection", dials)
+	}
+	pool.mu.Lock()
+	entry := pool.conns[sshPoolKey(cfg)]
+	pool.mu.Unlock()
+	if entry == nil || entry.client != client || entry.refCount != 2 {
+		t.Fatalf("pool entry = %#v, want the original client at ref 2", entry)
 	}
 }
 

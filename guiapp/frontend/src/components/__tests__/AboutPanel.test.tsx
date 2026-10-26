@@ -21,7 +21,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
         qr_payload: '{"v":2,"type":"maclaw_mobile_desktop_authorization","session_id":"maqr_test","hub_url":"https://hub.example"}',
         expires_at: '2026-07-05T12:00:00Z',
     }),
-    GetEmbedAccelInfo: vi.fn().mockResolvedValue({ backend: 'cpu-simd', npu_present: false, device: '', reason: 'no NPU/XDNA' }),
+    GetEmbedAccelInfo: vi.fn().mockResolvedValue({ backend: 'cpu-simd', npu_present: false, gpu_available: false, device: '', reason: 'no NPU/XDNA' }),
     SetEmbedHWAccel: vi.fn().mockResolvedValue({}),
 }));
 
@@ -258,7 +258,7 @@ describe('AboutPanel', () => {
     });
 
     it('does not show a hardware-accel badge when instance backend is cpu-simd', async () => {
-        vi.mocked(GetEmbedAccelInfo).mockResolvedValue({ backend: 'cpu-simd', npu_present: false, device: '', reason: 'no NPU/XDNA' });
+        vi.mocked(GetEmbedAccelInfo).mockResolvedValue({ backend: 'cpu-simd', npu_present: false, gpu_available: false, device: '', reason: 'no NPU/XDNA' });
         render(
             <AboutPanel
                 {...baseProps}
@@ -270,7 +270,7 @@ describe('AboutPanel', () => {
     });
 
     it('shows a hardware-accel badge after the product title when backend is amd-npu', async () => {
-        vi.mocked(GetEmbedAccelInfo).mockResolvedValue({ backend: 'amd-npu', npu_present: true, device: 'AMD IPU', reason: 'NPU/XDNA present' });
+        vi.mocked(GetEmbedAccelInfo).mockResolvedValue({ backend: 'amd-npu', npu_present: true, gpu_available: false, device: 'AMD IPU', reason: 'NPU/XDNA present' });
         render(
             <AboutPanel
                 {...baseProps}
@@ -286,8 +286,20 @@ describe('AboutPanel', () => {
         expect(heading.textContent).toContain('NPU');
     });
 
+    it('shows a hardware-accel badge when the GPU backend is active', async () => {
+        vi.mocked(GetEmbedAccelInfo).mockResolvedValue({ backend: 'vulkan', npu_present: false, gpu_available: true, device: 'AMD Radeon 780M', reason: 'qwen3 runs on the Vulkan GPU' });
+        render(
+            <AboutPanel
+                {...baseProps}
+                t={(key) => key === 'aboutHwAccelBadge' ? 'HW Accel' : baseProps.t(key)}
+            />,
+        );
+        await waitFor(() => expect(screen.getByText('HW Accel')).toBeTruthy());
+        expect(screen.getByRole('heading').textContent).toContain('HW Accel');
+    });
+
     it('hides the badge when NPU is present but instance backend is cpu-simd (switch off)', async () => {
-        vi.mocked(GetEmbedAccelInfo).mockResolvedValue({ backend: 'cpu-simd', npu_present: true, device: 'AMD IPU', reason: 'hw accel switch off' });
+        vi.mocked(GetEmbedAccelInfo).mockResolvedValue({ backend: 'cpu-simd', npu_present: true, gpu_available: false, device: 'AMD IPU', reason: 'hw accel switch off' });
         render(
             <AboutPanel
                 {...baseProps}

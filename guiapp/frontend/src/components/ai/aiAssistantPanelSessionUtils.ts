@@ -400,6 +400,77 @@ export function messageBelongsToSessionOrLegacy(message: ChatMessage, sessionKey
     return !owner || owner === normalizeAssistantSessionKey(sessionKey);
 }
 
+/**
+ * goal-cont-<goalId>-<unixms>-<seq> shares <goalId> across stages.
+ * A single trailing number is part of the id. goal-cont-test-1 and
+ * goal-cont-test-2 are different continuations.
+ */
+function goalContinuationFamily(requestId?: string | null): string {
+    const id = typeof requestId === "string" ? requestId.trim() : "";
+    if (!id.startsWith("goal-cont-")) return "";
+    const body = id.slice("goal-cont-".length);
+    return body.replace(/-\d+-\d+$/, "") || body;
+}
+
+/**
+ * Live rows that belong on this tab's saved transcript.
+ * They match the open tab, a session key already on a history row, or the
+ * goal id already on a history request id. An empty owner never matches on
+ * its own. The bare desktop-user key is not a union owner.
+ */
+export function filterLiveProjectTranscriptMessages(
+    history: readonly ChatMessage[] | null | undefined,
+    live: readonly ChatMessage[] | null | undefined,
+    activeSessionKey?: string | null,
+): ChatMessage[] {
+    const rows = Array.isArray(live) ? live : [];
+    const saved = Array.isArray(history) ? history : [];
+    const owners = new Set<string>();
+    const goalFamilies = new Set<string>();
+    for (const message of saved) {
+        const owner = normalizeAssistantSessionKey(message?.sessionKey);
+        if (owner && owner !== "desktop-user") owners.add(owner);
+        const family = goalContinuationFamily(message?.requestId);
+        if (family) goalFamilies.add(family);
+    }
+    const active = normalizeAssistantSessionKey(activeSessionKey);
+    const accepted: ChatMessage[] = [];
+    for (const message of rows) {
+        const owner = normalizeAssistantSessionKey(message?.sessionKey);
+        const family = goalContinuationFamily(message?.requestId);
+        if (owner && owner === active) {
+            accepted.push(message);
+            continue;
+        }
+        if (owner && owner !== "desktop-user" && owners.has(owner)) {
+            accepted.push(message);
+            continue;
+        }
+        if (family && goalFamilies.has(family)) accepted.push(message);
+    }
+    return accepted;
+}
+
+/**
+ * Project transcript for one tab.
+ * A later key change must not hide the stage. A cleared empty tab stays
+ * empty. An uncleared empty tab shows the accepted live rows.
+ */
+export function visibleProjectTranscript(input: {
+    history?: ChatMessage[] | null;
+    live?: ChatMessage[] | null;
+    activeSessionKey?: string | null;
+    trustMissingTimeline?: boolean;
+    cleared?: boolean;
+}): ChatMessage[] {
+    const saved = Array.isArray(input.history) ? input.history : [];
+    if (input.cleared && saved.length === 0) return saved;
+    const accepted = filterLiveProjectTranscriptMessages(saved, input.live, input.activeSessionKey);
+    if (accepted.length === 0) return saved;
+    if (saved.length === 0) return accepted;
+    return mergeProjectRoundHistory(saved, saved, accepted, undefined, !!input.trustMissingTimeline);
+}
+
 /** Drop transcript turns that belong to a conversation cleared at floorMs. */
 export function messageAfterSessionFloor(message: { timestamp?: number } | null | undefined, floorMs?: number | null): boolean {
     const floor = Number(floorMs || 0);

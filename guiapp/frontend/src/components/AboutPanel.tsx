@@ -403,13 +403,14 @@ export function AboutPanel({
         );
     };
 
-    const [accelInfo, setAccelInfo] = useState<{ backend?: string; device?: string; npu_present?: boolean; reason?: string }>({});
+    const [accelInfo, setAccelInfo] = useState<{ backend?: string; device?: string; npu_present?: boolean; gpu_available?: boolean; reason?: string }>({});
     useEffect(() => {
         GetEmbedAccelInfo()
-            .then((info: { backend?: string; device?: string; npu_present?: boolean; reason?: string }) => setAccelInfo(info || {}))
+            .then((info: { backend?: string; device?: string; npu_present?: boolean; gpu_available?: boolean; reason?: string }) => setAccelInfo(info || {}))
             .catch(() => setAccelInfo({}));
     }, []);
-    const showHwAccelBadge = accelInfo.backend === 'amd-npu';
+    // The badge marks any hardware backend, not just the NPU.
+    const showHwAccelBadge = accelInfo.backend === 'amd-npu' || accelInfo.backend === 'vulkan' || accelInfo.backend === 'metal' || accelInfo.backend === 'dml-gpu';
 
     const [showHealthDialog, setShowHealthDialog] = useState(false);
     const [showSystemDoctor, setShowSystemDoctor] = useState(false);

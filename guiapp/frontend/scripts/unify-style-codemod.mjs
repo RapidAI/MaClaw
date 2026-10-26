@@ -87,6 +87,9 @@ const PROP_COLOR_MAP = [
 // preview mimics paper, terminal log keeps a fixed dark slate, brand accents,
 // status-badge color sets without theme equivalents).
 const KEEP_SELECTORS = [
+    // Badge colors are deliberately fixed dark fills for >=4.5:1 white-text
+    // contrast in both themes (see the comment at the rule in 50-pet-provider.css).
+    "provider-config-tab-badge",
     'weixin-qr-login-panel__qr',
     'hub-invitation-dialog__qr',
     'about-mobile-auth-qr-dialog__code-card',

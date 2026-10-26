@@ -1564,7 +1564,9 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .vet-menu-icon { flex-shrink: 0; }
 @keyframes vet-icon-spin { to { transform: rotate(1turn); } }
 .vet-spinning { animation: vet-icon-spin 0.9s linear infinite; }
-.vet-dialog-overlay { position: fixed; inset: 0; z-index: 10000; display: flex; align-items: center; justify-content: center; background: rgba(15, 23, 42, 0.32); }
+/* Rendered inside the scaled app shell, so it must outrank the inline
+   assistant title bar (z-index 30000), same as .modal-overlay. */
+.vet-dialog-overlay { position: fixed; inset: 0; z-index: 40000; display: flex; align-items: center; justify-content: center; background: rgba(15, 23, 42, 0.32); }
 .vet-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .vet-info-avatar-block { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-bottom: 20px; }
 .vet-info-avatar-wrap { position: relative; }

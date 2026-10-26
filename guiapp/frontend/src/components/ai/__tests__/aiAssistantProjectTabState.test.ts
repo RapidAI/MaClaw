@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { collapseDuplicatePendingUnfinishedSlots, latestAssistantTurnIncomplete, latestPendingUnfinishedStatus, loadProjectTabMsgIds, mergeChatMessages, mergeProjectRoundHistory, messageHasPendingUnfinishedSlot, PROJECT_TAB_MSG_IDS_KEY } from '../aiAssistantProjectTabState';
+import { collapseDuplicatePendingUnfinishedSlots, latestAssistantTurnIncomplete, latestPendingUnfinishedStatus, loadProjectTabMsgIds, mergeChatMessages, mergeProjectRoundHistory, messageHasPendingUnfinishedSlot, PROJECT_TAB_MSG_IDS_KEY, projectHistorySubstantiveDelta } from '../aiAssistantProjectTabState';
 
 describe('aiAssistantProjectTabState', () => {
     beforeEach(() => {
@@ -73,6 +73,35 @@ describe('aiAssistantProjectTabState', () => {
         expect(merged).toHaveLength(1);
         expect(merged[0].content).toBe('weather done');
         expect(merged[0].fields?.[0]?.value).toBe('ok');
+    });
+
+    it('commits a stage report during a stream and skips a token append', () => {
+        const essay = { id: 's0', role: 'assistant' as const, content: '下一轮只执行 S0。', timestamp: 1 };
+        const placeholder = { id: 's2', role: 'assistant' as const, content: '', timestamp: 2 };
+        const started = { ...placeholder, content: '第' };
+        expect(projectHistorySubstantiveDelta([essay, placeholder], [essay, started])).toBe(true);
+        expect(projectHistorySubstantiveDelta([essay, started], [
+            essay,
+            { ...started, content: `${started.content} 3 步` },
+        ])).toBe(false);
+        expect(projectHistorySubstantiveDelta([essay, { ...placeholder, content: '工作过程'.repeat(40) }], [
+            essay,
+            { ...placeholder, content: '第 3 步（S2）已完成并归档。', fields: [{ label: 'Turn', value: 'reasoning' }] },
+        ])).toBe(true);
+        expect(projectHistorySubstantiveDelta([essay], [
+            essay,
+            { ...placeholder, pendingCodingThoughts: [{ id: 't1', sequence: 1, kind: 'thinking' as const, content: '先核对指标。', timestamp: 2 }] },
+        ])).toBe(true);
+        expect(projectHistorySubstantiveDelta([essay, placeholder], [essay, placeholder])).toBe(false);
+        const startedTool = { id: 'p1', sequence: 2, kind: 'progress' as const, content: 'Coding Agent Event: {"event":"tool_started","detail":"bash"}', timestamp: 2 };
+        const finishedTool = { ...startedTool, content: 'Coding Agent Event: {"event":"tool_finished","detail":"bash"}', timestamp: 3 };
+        const withTool = { ...placeholder, codingTimeline: [startedTool] };
+        expect(projectHistorySubstantiveDelta([essay, withTool], [essay, { ...withTool, codingTimeline: [finishedTool] }])).toBe(true);
+        const thought = { id: 't1', sequence: 1, kind: 'thinking' as const, content: '先', timestamp: 1 };
+        expect(projectHistorySubstantiveDelta(
+            [essay, { ...placeholder, codingTimeline: [thought, startedTool] }],
+            [essay, { ...placeholder, codingTimeline: [{ ...thought, content: '先核对指标。' }, startedTool] }],
+        )).toBe(false);
     });
 
     it('keeps a saved coding trail when the fresh row is thinner', () => {

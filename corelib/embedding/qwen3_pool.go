@@ -14,6 +14,7 @@ package embedding
 
 import (
 	"fmt"
+	"log"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
 )
@@ -21,6 +22,36 @@ import (
 // PooledEmbedder returns last-token and mean-pooled vectors from one pass.
 type PooledEmbedder interface {
 	EmbedPooledWithRole(text string, role Role) (last, mean []float32, err error)
+}
+
+// finishVector truncates an output-normed hidden vector to the embedder's width
+// and L2-normalises it. Every vector the embedder returns goes through here, so
+// the MRL truncation and the normalisation cannot diverge between paths.
+func (q *Qwen3Embedder) finishVector(h []float32) []float32 {
+	out := make([]float32, q.dim)
+	copy(out, h[:q.dim])
+	tensor.L2Normalize(out)
+	return out
+}
+
+// pooledGPU runs the pooled embedding on the Vulkan backend. ok=false means the
+// caller must use the CPU path (backend failed or was released).
+func (q *Qwen3Embedder) pooledGPU(g *qwen3VKGPU, ids []int) (last, mean []float32, ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			last, mean, ok = nil, nil, false
+		}
+	}()
+	dim := q.hp.Dim
+	hidL := make([]float32, dim)
+	hidM := make([]float32, dim)
+	if err := g.forwardPooled(q, ids, hidL, hidM); err != nil {
+		if q.vkGPU.CompareAndSwap(g, nil) {
+			log.Printf("qwen3: Vulkan pooled backend failed, falling back to CPU: %v", err)
+		}
+		return nil, nil, false
+	}
+	return q.finishVector(hidL), q.finishVector(hidM), true
 }
 
 // EmbedPooledAs is EmbedAs for PooledEmbedder (error when unsupported).
@@ -49,7 +80,6 @@ func (q *Qwen3Embedder) EmbedPooledWithRole(text string, role Role) (last, mean 
 	if q == nil || q.tokenizer == nil {
 		return nil, nil, ErrEmbedderClosed
 	}
-	q.ensurePrefix(role)
 	if !q.inflight.acquire() {
 		return nil, nil, ErrEmbedderClosed
 	}
@@ -58,6 +88,17 @@ func (q *Qwen3Embedder) EmbedPooledWithRole(text string, role Role) (last, mean 
 	if len(ids) == 0 {
 		return nil, nil, fmt.Errorf("qwen3: empty token sequence")
 	}
+	// The GPU computes the whole sequence and pools all rows, which is the same
+	// mean the CPU split (cached prefix sum + suffix) produces. Long sequences
+	// stay on the CPU, like every other GPU call.
+	if g := q.vkGPU.Load(); g != nil && len(ids) <= qwen3VKMaxSeqTokens {
+		if last, mean, ok := q.pooledGPU(g, ids); ok {
+			return last, mean, nil
+		}
+	}
+	// Only the CPU path below consults the prefix cache, so warm it here rather
+	// than before the GPU attempt (which would be a wasted CPU forward).
+	q.ensurePrefix(role)
 	pre := q.matchPrefix(ids)
 	if pre != nil && pre.rowSum == nil {
 		pre = nil
@@ -79,10 +120,5 @@ func (q *Qwen3Embedder) EmbedPooledWithRole(text string, role Role) (last, mean 
 	for i := range sum {
 		sum[i] *= inv
 	}
-	last = make([]float32, q.dim)
-	copy(last, h[:q.dim])
-	tensor.L2Normalize(last)
-	mean = sum[:q.dim]
-	tensor.L2Normalize(mean)
-	return last, mean, nil
+	return q.finishVector(h), q.finishVector(sum), nil
 }

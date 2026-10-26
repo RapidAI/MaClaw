@@ -1,6 +1,9 @@
 package guiapp
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -27,7 +30,7 @@ func TestArxivSearchURLQuotesEachTerm(t *testing.T) {
 	if q.Get("search_query") != `all:"transformer" AND all:"attention" AND all:"ti:secret" AND all:"OR"` {
 		t.Fatalf("search_query=%q", q.Get("search_query"))
 	}
-	if q.Get("max_results") != "10" || q.Get("sortBy") != "relevance" || q.Get("start") != "0" || q.Get("id_list") != "" {
+	if q.Get("max_results") != "20" || q.Get("sortBy") != "relevance" || q.Get("start") != "0" || q.Get("id_list") != "" {
 		t.Fatalf("params=%v", q)
 	}
 }
@@ -45,6 +48,14 @@ func TestArxivSearchURLUsesIDListForIdentifiers(t *testing.T) {
 		{"2510.16079，1706.03762", "2510.16079,1706.03762"},
 		{"2510.16079 2510.16079v2", "2510.16079"},
 		{"cs/0701001 math/0701001", "cs/0701001,math/0701001"},
+		// The line arXiv prints on every abstract page. The colon must not send
+		// it to the model, and the subject in brackets is not a keyword.
+		{"arXiv:2510.16079 [cs.CL]", "2510.16079"},
+		{"Cite as: arXiv:2510.16079 [cs.CL]", "2510.16079"},
+		{"arXiv:2510.16079v2 [quant-ph]", "2510.16079"},
+		{"2510.16079 (2025)", "2510.16079"},
+		{"详见 arXiv:2510.16079。", "2510.16079"},
+		{"cited 2510.16079, see above", "2510.16079"},
 	}
 	for _, c := range cases {
 		got, err := arxivSearchURL(c.in)
@@ -72,6 +83,23 @@ func TestArxivSearchURLUsesIDListForIdentifiers(t *testing.T) {
 	q := mustQuery(t, got)
 	if q.Get("search_query") != `all:"attention" AND all:"2510.16079"` || q.Get("id_list") != "" || q.Get("sortBy") != "relevance" {
 		t.Fatalf("mixed params=%v", q)
+	}
+	// A hyphenated word is not an arXiv archive. quant-ph is; gpt-2 is not.
+	got, err = arxivSearchURL("gpt-2 2510.16079")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q = mustQuery(t, got)
+	if q.Get("search_query") != `all:"gpt-2" AND all:"2510.16079"` || q.Get("id_list") != "" {
+		t.Fatalf("gpt-2 params=%v", q)
+	}
+	got, err = arxivSearchURL("cs.CL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q = mustQuery(t, got)
+	if q.Get("search_query") != `all:"cs.CL"` || q.Get("id_list") != "" {
+		t.Fatalf("bare category params=%v", q)
 	}
 }
 
@@ -122,6 +150,55 @@ func TestArxivSearchURLKeepsCommaInsideAKeyword(t *testing.T) {
 	q = mustQuery(t, got)
 	if q.Get("search_query") != `all:"Smith" AND all:"John"` || q.Get("id_list") != "" {
 		t.Fatalf("author params=%v", q)
+	}
+}
+
+func TestArxivSearchURLDropsCitationPunctuationButKeepsAFormula(t *testing.T) {
+	// A period does not ask the model to expand, so it must not stay glued
+	// to the last word either. Otherwise all:"art." matches nothing.
+	if arxivGoalNeedsExpansion("state of the art.") {
+		t.Fatal("a trailing period is not a research-goal sentence")
+	}
+	got, err := arxivSearchURL("state of the art.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := mustQuery(t, got)
+	if q.Get("search_query") != `all:"state" AND all:"of" AND all:"the" AND all:"art"` || q.Get("id_list") != "" {
+		t.Fatalf("period params=%v", q)
+	}
+	got, err = arxivSearchURL("“transformer”")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q = mustQuery(t, got)
+	if q.Get("search_query") != `all:"transformer"` {
+		t.Fatalf("quotes params=%v", q)
+	}
+	got, err = arxivSearchURL("(transformer).")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q = mustQuery(t, got)
+	if q.Get("search_query") != `all:"transformer"` {
+		t.Fatalf("wrapped params=%v", q)
+	}
+	got, err = arxivSearchURL("Na(OH).")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q = mustQuery(t, got)
+	if q.Get("search_query") != `all:"Na(OH)"` {
+		t.Fatalf("formula params=%v", q)
+	}
+	// The period is not part of the identifier. It still selects that paper.
+	got, err = arxivSearchURL("2510.16079.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q = mustQuery(t, got)
+	if q.Get("id_list") != "2510.16079" || q.Get("search_query") != "" {
+		t.Fatalf("id params=%v", q)
 	}
 }
 
@@ -286,7 +363,7 @@ func TestFileCompanionSearchArxivListsPapers(t *testing.T) {
 	var gotQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.Query().Get("search_query")
-		if r.URL.Query().Get("max_results") != "10" {
+		if r.URL.Query().Get("max_results") != "20" {
 			t.Errorf("max_results=%q", r.URL.Query().Get("max_results"))
 		}
 		w.Header().Set("Content-Type", "application/atom+xml; charset=utf-8")
@@ -297,15 +374,19 @@ func TestFileCompanionSearchArxivListsPapers(t *testing.T) {
 	arxivAPIBaseURL = srv.URL + "/api/query"
 	t.Cleanup(func() { arxivAPIBaseURL = prev })
 
-	hits, err := (&App{}).FileCompanionSearchArxiv("listed paper")
+	page, err := (&App{}).FileCompanionSearchArxiv("listed paper", 1, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if gotQuery != `all:"listed" AND all:"paper"` {
 		t.Fatalf("query=%q", gotQuery)
 	}
+	hits := page.Hits
 	if len(hits) != 1 || hits[0].ID != "2510.16079" || hits[0].Title != "Listed Paper" || hits[0].Abstract != "Listed abstract." {
 		t.Fatalf("hits=%#v", hits)
+	}
+	if page.Fallback || page.Page != 1 || page.PageSize != 20 || page.Total != 1 || len(page.Groups) != 0 {
+		t.Fatalf("page=%#v", page)
 	}
 }
 
@@ -321,8 +402,8 @@ func TestFileCompanionSearchArxivRejectsBlankWithoutDialing(t *testing.T) {
 	t.Cleanup(func() { arxivAPIBaseURL = prev })
 
 	for _, in := range []string{"", "   ", `"`} {
-		_, err := (&App{}).FileCompanionSearchArxiv(in)
-		if err == nil || !strings.Contains(err.Error(), "请输入关键字") {
+		_, err := (&App{}).FileCompanionSearchArxiv(in, 1, false)
+		if err == nil || !strings.Contains(err.Error(), "请描述研究目标或输入关键字") {
 			t.Fatalf("input %q err=%v", in, err)
 		}
 	}
@@ -345,11 +426,11 @@ func TestFileCompanionSearchArxivReportsABadFeedAndHTTPStatus(t *testing.T) {
 	arxivAPIBaseURL = srv.URL + "/api/query"
 	t.Cleanup(func() { arxivAPIBaseURL = prev })
 
-	_, err := (&App{}).FileCompanionSearchArxiv("not a feed")
+	_, err := (&App{}).FileCompanionSearchArxiv("not a feed", 1, false)
 	if err == nil || !strings.Contains(err.Error(), "没有返回论文列表") {
 		t.Fatalf("bad feed err=%v", err)
 	}
-	_, err = (&App{}).FileCompanionSearchArxiv("missing")
+	_, err = (&App{}).FileCompanionSearchArxiv("missing", 1, false)
 	if err == nil || !strings.Contains(err.Error(), "搜索失败") {
 		t.Fatalf("status err=%v", err)
 	}
@@ -377,14 +458,646 @@ func TestFileCompanionSearchArxivFetchesAnIDList(t *testing.T) {
 	arxivAPIBaseURL = srv.URL + "/api/query"
 	t.Cleanup(func() { arxivAPIBaseURL = prev })
 
-	hits, err := (&App{}).FileCompanionSearchArxiv("https://arxiv.org/abs/2510.16079v2")
+	page, err := (&App{}).FileCompanionSearchArxiv("https://arxiv.org/abs/2510.16079v2", 1, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if idList != "2510.16079" || searchQuery != "" || sortBy != "" {
 		t.Fatalf("id_list=%q search_query=%q sortBy=%q", idList, searchQuery, sortBy)
 	}
+	hits := page.Hits
 	if len(hits) != 1 || hits[0].ID != "2510.16079" || hits[0].Title != "The Paper Itself" {
 		t.Fatalf("hits=%#v", hits)
+	}
+	if page.Fallback || len(page.Groups) != 0 || page.Total != 1 {
+		t.Fatalf("page=%#v", page)
+	}
+}
+
+func TestFileCompanionSearchArxivIDListTotalCountsPapersNotRejectedIDs(t *testing.T) {
+	const feed = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/api/errors#incorrect_id_format_for_0000.0000</id>
+    <title>Error</title>
+    <summary>incorrect id format for 0000.0000</summary>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2510.16079v1</id>
+    <title>Listed Paper</title>
+    <summary>Listed abstract.</summary>
+  </entry>
+</feed>`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("id_list") == "" || r.URL.Query().Get("search_query") != "" {
+			t.Errorf("params=%v", r.URL.Query())
+		}
+		w.Header().Set("Content-Type", "application/atom+xml")
+		_, _ = w.Write([]byte(feed))
+	}))
+	defer srv.Close()
+	prev := arxivAPIBaseURL
+	arxivAPIBaseURL = srv.URL + "/api/query"
+	t.Cleanup(func() { arxivAPIBaseURL = prev })
+
+	page, err := (&App{}).FileCompanionSearchArxiv("2510.16079,0000.0000", 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Hits) != 1 || page.Hits[0].ID != "2510.16079" || page.Total != 1 {
+		t.Fatalf("page=%#v", page)
+	}
+}
+
+func TestFileCompanionSearchArxivReportsAnAPIErrorEntry(t *testing.T) {
+	const feed = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/api/errors#incorrect_id_format_for_0000.0000</id>
+    <title>Error</title>
+    <summary>incorrect id format for 0000.0000</summary>
+  </entry>
+</feed>`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/atom+xml")
+		_, _ = w.Write([]byte(feed))
+	}))
+	defer srv.Close()
+	prev := arxivAPIBaseURL
+	arxivAPIBaseURL = srv.URL + "/api/query"
+	t.Cleanup(func() { arxivAPIBaseURL = prev })
+
+	_, err := (&App{}).FileCompanionSearchArxiv("listed paper", 1, false)
+	if err == nil || !strings.Contains(err.Error(), "拒绝了这次检索") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestArxivParseFeedPageKeepsAPaperBesideAnAPIError(t *testing.T) {
+	const feed = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/api/errors#bad</id>
+    <title>Error</title>
+    <summary>bad</summary>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2510.16079v1</id>
+    <title>Listed Paper</title>
+    <summary>Listed abstract.</summary>
+  </entry>
+</feed>`
+	hits, _, _, err := arxivParseFeedPage(feed)
+	if err != nil || len(hits) != 1 || hits[0].ID != "2510.16079" {
+		t.Fatalf("hits=%#v err=%v", hits, err)
+	}
+}
+
+func TestArxivSearchPageStartClamps(t *testing.T) {
+	page, start := arxivSearchPageStart(0)
+	if page != 1 || start != 0 {
+		t.Fatalf("page=%d start=%d", page, start)
+	}
+	page, start = arxivSearchPageStart(500)
+	if start != arxivSearchMaxStart || page != arxivSearchMaxStart/arxivSearchPageSize+1 {
+		t.Fatalf("page=%d start=%d", page, start)
+	}
+}
+
+func TestParseArxivExpansionReadsFencedJSON(t *testing.T) {
+	got, err := parseArxivExpansion("sure\n```json\n{\"interpreted\":\"长文档问答\",\"groups\":[{\"terms\":[\"retrieval\",\"document\"],\"category\":\"cs.CL\"}]}\n```")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, ok := arxivPlanFromExpansion(got)
+	if !ok || plan.fallback || plan.interpreted != "长文档问答" {
+		t.Fatalf("plan=%#v ok=%v", plan, ok)
+	}
+	if plan.searchQuery != `(all:"retrieval" AND all:"document" AND cat:cs.CL)` {
+		t.Fatalf("query=%q", plan.searchQuery)
+	}
+	if _, err := parseArxivExpansion("not json"); err == nil {
+		t.Fatal("expected prose to fail")
+	}
+}
+
+func TestArxivPlanFromExpansionDropsShortGroupsAndBadCategories(t *testing.T) {
+	plan, ok := arxivPlanFromExpansion(arxivExpansion{
+		Interpreted: "attention",
+		Groups: []FileCompanionArxivGroup{
+			{Terms: []string{"only-one"}, Category: "cs.CL"},
+			{Terms: []string{"self-attention", "sequence", `ti:secret`, `"OR"`}, Category: "not a category"},
+			{Terms: []string{"a", "b"}, Category: "cs.LG"},
+			{Terms: []string{"c", "d"}, Category: "math.NT"},
+		},
+	})
+	if !ok || plan.fallback || len(plan.groups) != 3 {
+		t.Fatalf("plan=%#v ok=%v", plan, ok)
+	}
+	if plan.groups[0].Category != "" || strings.Join(plan.groups[0].Terms, ",") != `self-attention,sequence,ti:secret,OR` {
+		t.Fatalf("first=%#v", plan.groups[0])
+	}
+	if plan.groups[1].Category != "cs.LG" || plan.groups[2].Category != "math.NT" {
+		t.Fatalf("groups=%#v", plan.groups)
+	}
+	// The fourth group is past the cap of three.
+	want := `(all:"self-attention" AND all:"sequence" AND all:"ti:secret" AND all:"OR") OR (all:"a" AND all:"b" AND cat:cs.LG) OR (all:"c" AND all:"d" AND cat:math.NT)`
+	if plan.searchQuery != want {
+		t.Fatalf("query=%q", plan.searchQuery)
+	}
+	if _, ok := arxivPlanFromExpansion(arxivExpansion{Groups: []FileCompanionArxivGroup{{Terms: []string{"solo"}}}}); ok {
+		t.Fatal("a one-term group is not a query")
+	}
+}
+
+func TestFileCompanionSearchArxivUsesExpansionAndReusesIt(t *testing.T) {
+	const feed = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">
+  <opensearch:totalResults>41</opensearch:totalResults>
+  <entry>
+    <id>http://arxiv.org/abs/2510.16079v1</id>
+    <title>Listed Paper</title>
+    <summary>Listed abstract.</summary>
+  </entry>
+</feed>`
+	var calls int
+	var starts []string
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		starts = append(starts, r.URL.Query().Get("start"))
+		queries = append(queries, r.URL.Query().Get("search_query"))
+		if r.URL.Query().Get("max_results") != "20" {
+			t.Errorf("max_results=%q", r.URL.Query().Get("max_results"))
+		}
+		w.Header().Set("Content-Type", "application/atom+xml")
+		_, _ = w.Write([]byte(feed))
+	}))
+	defer srv.Close()
+	prev := arxivAPIBaseURL
+	arxivAPIBaseURL = srv.URL + "/api/query"
+	t.Cleanup(func() { arxivAPIBaseURL = prev })
+
+	app := &App{}
+	app.arxivExpand = func(ctx context.Context, goal string) (arxivExpansion, error) {
+		calls++
+		if goal != "长文档问答" {
+			t.Errorf("goal=%q", goal)
+		}
+		return arxivExpansion{
+			Interpreted: "用检索增强做长文档问答",
+			Groups: []FileCompanionArxivGroup{
+				{Terms: []string{"retrieval augmented generation", "long document"}, Category: "cs.CL"},
+				{Terms: []string{"RAG", "question answering"}, Category: "CS.CL"},
+			},
+		}, nil
+	}
+	first, err := app.FileCompanionSearchArxiv("长文档问答", 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := app.FileCompanionSearchArxiv("  长文档问答  ", 2, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("expand calls=%d", calls)
+	}
+	wantQuery := `(all:"retrieval augmented generation" AND all:"long document" AND cat:cs.CL) OR (all:"RAG" AND all:"question answering")`
+	if len(queries) != 2 || queries[0] != wantQuery || queries[1] != wantQuery {
+		t.Fatalf("queries=%q", queries)
+	}
+	if len(starts) != 2 || starts[0] != "0" || starts[1] != "20" {
+		t.Fatalf("starts=%v", starts)
+	}
+	if first.Fallback || first.Total != 41 || first.Page != 1 || len(first.Hits) != 1 || len(first.Groups) != 2 || first.Groups[1].Category != "" {
+		t.Fatalf("first=%#v", first)
+	}
+	if second.Page != 2 || second.Total != 41 || second.Interpreted != first.Interpreted {
+		t.Fatalf("second=%#v", second)
+	}
+	// A new search of a plan that worked does not call the model again.
+	if _, err := app.FileCompanionSearchArxiv("长文档问答", 1, true); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("expand calls=%d", calls)
+	}
+	// The remembered total stops a page that cannot contain a paper.
+	before := len(starts)
+	past, err := app.FileCompanionSearchArxiv("长文档问答", 4, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(starts) != before || len(past.Hits) != 0 || past.Total != 41 || past.Page != 4 {
+		t.Fatalf("dials=%d past=%#v", len(starts)-before, past)
+	}
+}
+
+func TestFileCompanionSearchArxivFallsBackWhenExpansionFails(t *testing.T) {
+	var calls int
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query().Get("search_query")
+		w.Header().Set("Content-Type", "application/atom+xml")
+		_, _ = w.Write([]byte(`<feed xmlns="http://www.w3.org/2005/Atom"></feed>`))
+	}))
+	defer srv.Close()
+	prev := arxivAPIBaseURL
+	arxivAPIBaseURL = srv.URL + "/api/query"
+	t.Cleanup(func() { arxivAPIBaseURL = prev })
+
+	app := &App{}
+	app.arxivExpand = func(context.Context, string) (arxivExpansion, error) {
+		calls++
+		return arxivExpansion{}, errors.New("bad json")
+	}
+	const goal = "我想找注意力机制，以及它怎么用在长文档上"
+	page, err := app.FileCompanionSearchArxiv(goal, 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := app.FileCompanionSearchArxiv(goal, 2, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || !page.Fallback || !again.Fallback {
+		t.Fatalf("calls=%d page=%#v again=%#v", calls, page, again)
+	}
+	if gotQuery != `all:"我想找注意力机制，以及它怎么用在长文档上"` {
+		t.Fatalf("query=%q", gotQuery)
+	}
+	if len(page.Groups) != 1 || strings.Join(page.Groups[0].Terms, ",") != goal {
+		t.Fatalf("groups=%#v", page.Groups)
+	}
+	// 上一页 back to page 1 is a page turn. It must keep the failed plan.
+	if _, err := app.FileCompanionSearchArxiv(goal, 1, false); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("page turn retried expansion: calls=%d", calls)
+	}
+	// The search button retries a failed expansion.
+	if _, err := app.FileCompanionSearchArxiv(goal, 1, true); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("expand calls=%d", calls)
+	}
+}
+
+func TestArxivFinishPageTotalStopsTheLastSliceFromAdvertisingAnother(t *testing.T) {
+	total, known := arxivFinishPageTotal(9000, arxivSearchMaxStart, arxivSearchPageSize, true)
+	if total != arxivSearchMaxStart+arxivSearchPageSize || !known {
+		t.Fatalf("total=%d known=%v", total, known)
+	}
+	if (arxivSearchMaxStart/arxivSearchPageSize+1)*arxivSearchPageSize < total {
+		t.Fatal("next page would repeat the last slice")
+	}
+	// A short page before the cap still ends where the rows end, and a full
+	// page before the cap keeps the lower bound that opens the next page.
+	total, known = arxivFinishPageTotal(0, 0, 3, false)
+	if total != 3 || known {
+		t.Fatalf("short total=%d known=%v", total, known)
+	}
+	total, known = arxivFinishPageTotal(0, 0, arxivSearchPageSize, true)
+	if total != arxivSearchPageSize+1 || known {
+		t.Fatalf("full total=%d known=%v", total, known)
+	}
+	// One dropped row does not make a full window look finished.
+	total, known = arxivFinishPageTotal(0, 20, arxivSearchPageSize-1, true)
+	if total != 20+arxivSearchPageSize+1 || known {
+		t.Fatalf("dropped-row total=%d known=%v", total, known)
+	}
+	total, known = arxivFinishPageTotal(0, 20, arxivSearchPageSize-1, false)
+	if total != 39 || known {
+		t.Fatalf("short dropped total=%d known=%v", total, known)
+	}
+}
+
+func arxivTestFeed(total int, ids ...string) string {
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom" xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">`)
+	if total > 0 {
+		fmt.Fprintf(&b, `<opensearch:totalResults>%d</opensearch:totalResults>`, total)
+	}
+	for _, id := range ids {
+		fmt.Fprintf(&b, `<entry><id>http://arxiv.org/abs/%sv1</id><title>Paper %s</title><summary>S</summary></entry>`, id, id)
+	}
+	b.WriteString(`</feed>`)
+	return b.String()
+}
+
+func TestFileCompanionSearchArxivKeepsAKnownTotalWhenALaterFullPageOmitsIt(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		start := q.Get("start")
+		query := q.Get("search_query")
+		w.Header().Set("Content-Type", "application/atom+xml")
+		var body string
+		switch {
+		case strings.Contains(query, "attention") && start == "0":
+			body = arxivTestFeed(100, "2510.16079")
+		case strings.Contains(query, "attention") && start == "20":
+			ids := make([]string, arxivSearchPageSize)
+			for i := range ids {
+				ids[i] = fmt.Sprintf("2510.%05d", 10000+i)
+			}
+			body = arxivTestFeed(0, ids...)
+		case strings.Contains(query, "listed") && start == "0":
+			body = arxivTestFeed(100, "2510.16080")
+		case strings.Contains(query, "listed") && start == "20":
+			body = arxivTestFeed(0, "2510.16081")
+		case strings.Contains(query, "state") && start == "0":
+			body = arxivTestFeed(30, "2510.16082")
+		case strings.Contains(query, "state") && start == "20":
+			ids := make([]string, arxivSearchPageSize)
+			for i := range ids {
+				ids[i] = fmt.Sprintf("2510.%05d", 11000+i)
+			}
+			body = arxivTestFeed(0, ids...)
+		case strings.Contains(query, "state") && start == "40":
+			body = arxivTestFeed(0, "2510.16083")
+		case strings.Contains(query, "exact") && start == "0":
+			body = arxivTestFeed(40, "2510.16084")
+		case strings.Contains(query, "exact") && start == "20":
+			ids := make([]string, arxivSearchPageSize)
+			for i := range ids {
+				ids[i] = fmt.Sprintf("2510.%05d", 12000+i)
+			}
+			body = arxivTestFeed(0, ids...)
+		case strings.Contains(query, "exact") && start == "40":
+			// A dial past the ceiling would show this paper. The request must not happen.
+			body = arxivTestFeed(0, "2510.16085")
+		default:
+			body = `<feed xmlns="http://www.w3.org/2005/Atom"></feed>`
+		}
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	prev := arxivAPIBaseURL
+	arxivAPIBaseURL = srv.URL + "/api/query"
+	t.Cleanup(func() { arxivAPIBaseURL = prev })
+
+	app := &App{}
+	app.arxivExpand = func(context.Context, string) (arxivExpansion, error) {
+		t.Fatal("keyword pages must not call the model")
+		return arxivExpansion{}, nil
+	}
+
+	page, err := app.FileCompanionSearchArxiv("attention mechanism", 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 100 || len(page.Hits) != 1 {
+		t.Fatalf("page1 total=%d hits=%d", page.Total, len(page.Hits))
+	}
+	page, err = app.FileCompanionSearchArxiv("attention mechanism", 2, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 100 || len(page.Hits) != arxivSearchPageSize {
+		t.Fatalf("full page without totalResults total=%d hits=%d", page.Total, len(page.Hits))
+	}
+	kept, ok := app.arxivCachedPlan("attention mechanism")
+	if !ok || !kept.totalKnown || kept.total != 100 {
+		t.Fatalf("cached total=%d known=%v ok=%v", kept.total, kept.totalKnown, ok)
+	}
+
+	// A short page is the end. Restoring 100 would leave 下一页 enabled.
+	page, err = app.FileCompanionSearchArxiv("listed paper", 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err = app.FileCompanionSearchArxiv("listed paper", 2, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 21 || len(page.Hits) != 1 {
+		t.Fatalf("short page total=%d hits=%d", page.Total, len(page.Hits))
+	}
+	kept, ok = app.arxivCachedPlan("listed paper")
+	if !ok || !kept.totalKnown || kept.total != 100 {
+		t.Fatalf("short page pinned the end: total=%d known=%v ok=%v", kept.total, kept.totalKnown, ok)
+	}
+
+	// Rows past the cached ceiling disprove it. The page keeps the lower
+	// bound, and the next page is fetched instead of returning the stale 30.
+	page, err = app.FileCompanionSearchArxiv("state of the art", 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err = app.FileCompanionSearchArxiv("state of the art", 2, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 20+arxivSearchPageSize+1 || len(page.Hits) != arxivSearchPageSize {
+		t.Fatalf("lower bound total=%d hits=%d", page.Total, len(page.Hits))
+	}
+	kept, ok = app.arxivCachedPlan("state of the art")
+	if !ok || kept.totalKnown {
+		t.Fatalf("disproved ceiling still known: total=%d known=%v ok=%v", kept.total, kept.totalKnown, ok)
+	}
+	page, err = app.FileCompanionSearchArxiv("state of the art", 3, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 41 || len(page.Hits) != 1 {
+		t.Fatalf("page past a disproved ceiling total=%d hits=%d", page.Total, len(page.Hits))
+	}
+
+	// 40 papers fill two pages. The missing total's +1 must not advertise a third.
+	page, err = app.FileCompanionSearchArxiv("exact boundary", 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 40 {
+		t.Fatalf("exact page1 total=%d", page.Total)
+	}
+	page, err = app.FileCompanionSearchArxiv("exact boundary", 2, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 40 || len(page.Hits) != arxivSearchPageSize {
+		t.Fatalf("exact page2 total=%d hits=%d", page.Total, len(page.Hits))
+	}
+	kept, ok = app.arxivCachedPlan("exact boundary")
+	if !ok || !kept.totalKnown || kept.total != 40 {
+		t.Fatalf("exact ceiling total=%d known=%v ok=%v", kept.total, kept.totalKnown, ok)
+	}
+	page, err = app.FileCompanionSearchArxiv("exact boundary", 3, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Hits) != 0 || page.Total != 40 {
+		t.Fatalf("page past an exact ceiling total=%d hits=%d", page.Total, len(page.Hits))
+	}
+}
+
+func TestFileCompanionSearchArxivKeepsAKnownTotalWhenAFullWindowDropsARow(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		start := q.Get("start")
+		query := q.Get("search_query")
+		w.Header().Set("Content-Type", "application/atom+xml")
+		var body string
+		switch {
+		case strings.Contains(query, "dropped") && start == "0":
+			body = arxivTestFeed(100, "2510.16079")
+		case strings.Contains(query, "dropped") && start == "20":
+			ids := make([]string, arxivSearchPageSize)
+			for i := range ids {
+				ids[i] = fmt.Sprintf("2510.%05d", 13000+i)
+			}
+			// The last entry repeats the first paper, so the window is full
+			// and one row is not shown.
+			ids[len(ids)-1] = ids[0]
+			body = arxivTestFeed(0, ids...)
+		case strings.Contains(query, "short") && start == "0":
+			ids := make([]string, arxivSearchPageSize-1)
+			for i := range ids {
+				ids[i] = fmt.Sprintf("2510.%05d", 14000+i)
+			}
+			body = arxivTestFeed(0, ids...)
+		default:
+			body = `<feed xmlns="http://www.w3.org/2005/Atom"></feed>`
+		}
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	prev := arxivAPIBaseURL
+	arxivAPIBaseURL = srv.URL + "/api/query"
+	t.Cleanup(func() { arxivAPIBaseURL = prev })
+
+	app := &App{}
+	app.arxivExpand = func(context.Context, string) (arxivExpansion, error) {
+		t.Fatal("keyword pages must not call the model")
+		return arxivExpansion{}, nil
+	}
+	if _, err := app.FileCompanionSearchArxiv("dropped row", 1, false); err != nil {
+		t.Fatal(err)
+	}
+	page, err := app.FileCompanionSearchArxiv("dropped row", 2, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 100 || len(page.Hits) != arxivSearchPageSize-1 {
+		t.Fatalf("full window total=%d hits=%d", page.Total, len(page.Hits))
+	}
+	kept, ok := app.arxivCachedPlan("dropped row")
+	if !ok || !kept.totalKnown || kept.total != 100 {
+		t.Fatalf("cached total=%d known=%v ok=%v", kept.total, kept.totalKnown, ok)
+	}
+
+	// Nineteen entries really are the end. The missing total must not invent a next page.
+	page, err = app.FileCompanionSearchArxiv("short window", 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != arxivSearchPageSize-1 || len(page.Hits) != arxivSearchPageSize-1 {
+		t.Fatalf("short window total=%d hits=%d", page.Total, len(page.Hits))
+	}
+}
+
+func TestArxivGoalNeedsExpansion(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"attention", false},
+		{"attention mechanism", false},
+		{"one two three four five six", false},
+		{"one two three four five six seven", true},
+		{"注意力", true},
+		{"attention?", true},
+		{"find papers: attention", true},
+		{strings.Repeat("a", 80), false},
+		{strings.Repeat("a", 81), true},
+	}
+	for _, tc := range cases {
+		if got := arxivGoalNeedsExpansion(tc.in); got != tc.want {
+			t.Errorf("%q needs=%v want=%v", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestFileCompanionSearchArxivSkipsExpansionForShortKeywords(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query().Get("search_query")
+		w.Header().Set("Content-Type", "application/atom+xml")
+		_, _ = w.Write([]byte(`<feed xmlns="http://www.w3.org/2005/Atom"></feed>`))
+	}))
+	defer srv.Close()
+	prev := arxivAPIBaseURL
+	arxivAPIBaseURL = srv.URL + "/api/query"
+	t.Cleanup(func() { arxivAPIBaseURL = prev })
+
+	app := &App{}
+	app.arxivExpand = func(context.Context, string) (arxivExpansion, error) {
+		t.Fatal("a short keyword list must not call the model")
+		return arxivExpansion{}, nil
+	}
+	page, err := app.FileCompanionSearchArxiv("attention mechanism", 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.FileCompanionSearchArxiv("attention mechanism", 2, false); err != nil {
+		t.Fatal(err)
+	}
+	if page.Fallback || len(page.Groups) != 0 || gotQuery != `all:"attention" AND all:"mechanism"` {
+		t.Fatalf("page=%#v query=%q", page, gotQuery)
+	}
+}
+
+func TestFileCompanionSearchArxivIDListSkipsExpansion(t *testing.T) {
+	dials := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dials++
+		w.Header().Set("Content-Type", "application/atom+xml")
+		_, _ = w.Write([]byte(`<feed xmlns="http://www.w3.org/2005/Atom"><entry><id>http://arxiv.org/abs/2510.16079v1</id><title>Paper</title><summary>S</summary></entry></feed>`))
+	}))
+	defer srv.Close()
+	prev := arxivAPIBaseURL
+	arxivAPIBaseURL = srv.URL + "/api/query"
+	t.Cleanup(func() { arxivAPIBaseURL = prev })
+
+	app := &App{}
+	app.arxivExpand = func(context.Context, string) (arxivExpansion, error) {
+		t.Fatal("an id list must not call the model")
+		return arxivExpansion{}, nil
+	}
+	page, err := app.FileCompanionSearchArxiv("2510.16079", 2, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dials != 0 || len(page.Hits) != 0 || page.Total != 1 || page.Page != 2 {
+		t.Fatalf("dials=%d page=%#v", dials, page)
+	}
+}
+
+func TestFileCompanionSearchArxivCitationLineSkipsExpansion(t *testing.T) {
+	var idList, searchQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		idList = r.URL.Query().Get("id_list")
+		searchQuery = r.URL.Query().Get("search_query")
+		w.Header().Set("Content-Type", "application/atom+xml")
+		_, _ = w.Write([]byte(`<feed xmlns="http://www.w3.org/2005/Atom"><entry><id>http://arxiv.org/abs/2510.16079v1</id><title>Paper</title><summary>S</summary></entry></feed>`))
+	}))
+	defer srv.Close()
+	prev := arxivAPIBaseURL
+	arxivAPIBaseURL = srv.URL + "/api/query"
+	t.Cleanup(func() { arxivAPIBaseURL = prev })
+
+	app := &App{}
+	app.arxivExpand = func(context.Context, string) (arxivExpansion, error) {
+		t.Fatal("a pasted citation must not call the model")
+		return arxivExpansion{}, nil
+	}
+	page, err := app.FileCompanionSearchArxiv("Cite as: arXiv:2510.16079 [cs.CL]", 1, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idList != "2510.16079" || searchQuery != "" || page.Fallback || len(page.Groups) != 0 || len(page.Hits) != 1 || page.Total != 1 || page.Hits[0].ID != "2510.16079" {
+		t.Fatalf("id_list=%q search_query=%q page=%#v", idList, searchQuery, page)
 	}
 }

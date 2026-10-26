@@ -25,6 +25,11 @@ type BrowsePage struct {
 	Box      string
 	Messages []MessageSummary
 	Unseen   map[string]uint64
+	// TrashBox is the folder a delete moves into. Empty means the account has
+	// no trash, so a delete expunges. TrashKnown is false when this page did
+	// not resolve trash, including POP3.
+	TrashBox   string
+	TrashKnown bool
 }
 
 // FolderBrowser is the read side of the mailbox management dialog.
@@ -75,7 +80,13 @@ func (d *NetDialer) Browse(ctx context.Context, account Account, secret, box str
 	}
 	folders := classifyFolders(infos)
 	box = preferredFolder(folders, box)
-	page := BrowsePage{Folders: folders, Box: box, Unseen: folderUnseen(c, folders)}
+	page := BrowsePage{
+		Folders:    folders,
+		Box:        box,
+		Unseen:     folderUnseen(c, folders),
+		TrashBox:   resolveTrashBox(folders),
+		TrashKnown: true,
+	}
 	if box == "" {
 		return page, nil
 	}

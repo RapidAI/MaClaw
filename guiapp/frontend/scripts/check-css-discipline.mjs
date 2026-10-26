@@ -39,8 +39,11 @@ const root = resolve(fileURLToPath(new URL('.', import.meta.url)), '..')
 // The counter matches that text. No new override was added for the share dialog.
 // Refreshed 4064 -> 3336 (2026-10-25): the TSX inline-style inventory dropped
 // with the provider-management dialog and settings migrations already in tree.
-const IMPORTANT_BASELINE = 1600
-const INLINE_STYLE_BASELINE = 3336
+// Refreshed 1600 -> 1596 and 3336 -> 3252 (2026-10-26 notification/mail style
+// pass): the bell panel and notice detail moved from inline styles to themed
+// classes, which retired the legacy !important panel shell patch as well.
+const IMPORTANT_BASELINE = 1596
+const INLINE_STYLE_BASELINE = 3252
 
 function countImportant(css) {
     return (css.match(/!important/g) || []).length

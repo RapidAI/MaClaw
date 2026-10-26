@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { corelib, main } from '../../../../wailsjs/go/models';
 import { SystemSettingsPanel } from "../SystemSettingsPanel";
 
-const GetEmbedAccelInfo = vi.fn(async (..._args: unknown[]) => ({ backend: 'cpu-simd', npu_present: false, device: '', reason: 'no NPU/XDNA' }));
+const GetEmbedAccelInfo = vi.fn(async (..._args: unknown[]) => ({ backend: 'cpu-simd', npu_present: false, gpu_available: false, device: '', reason: 'no NPU/XDNA' }));
 const SetEmbedHWAccel = vi.fn(async (..._args: unknown[]) => ({}));
 
 vi.mock("../../../../wailsjs/go/main/App", () => ({
@@ -97,7 +97,7 @@ describe("SystemSettingsPanel", () => {
   });
 
   it("disables and unchecks hardware acceleration when no NPU is present", async () => {
-    GetEmbedAccelInfo.mockResolvedValue({ backend: 'cpu-simd', npu_present: false, device: '', reason: 'no NPU/XDNA' });
+    GetEmbedAccelInfo.mockResolvedValue({ backend: 'cpu-simd', npu_present: false, gpu_available: false, device: '', reason: 'no NPU/XDNA' });
     const { saveRemoteConfigField } = renderPanel();
     const box = await waitFor(() => screen.getByLabelText("Hardware Acceleration"));
     expect(box).toHaveProperty("disabled", true);
@@ -108,7 +108,28 @@ describe("SystemSettingsPanel", () => {
   });
 
   it("enables hardware acceleration checked by default when NPU is present", async () => {
-    GetEmbedAccelInfo.mockResolvedValue({ backend: 'cpu-simd', npu_present: true, device: 'AMD IPU', reason: 'NPU/XDNA present' });
+    GetEmbedAccelInfo.mockResolvedValue({ backend: 'cpu-simd', npu_present: true, gpu_available: false, device: 'AMD IPU', reason: 'NPU/XDNA present' });
+    renderPanel();
+    const box = await waitFor(() => screen.getByLabelText("Hardware Acceleration"));
+    expect(box).toHaveProperty("disabled", false);
+    expect(box).toHaveProperty("checked", true);
+  });
+
+  // The same switch now governs the GPU backends, which do not need an NPU:
+  // most machines that benefit from it have no NPU at all.
+  it("keeps hardware acceleration usable when only a Vulkan GPU is active", async () => {
+    GetEmbedAccelInfo.mockResolvedValue({ backend: 'vulkan', npu_present: false, gpu_available: true, device: 'AMD Radeon 780M', reason: 'qwen3 runs on the Vulkan GPU' });
+    const { saveRemoteConfigField } = renderPanel();
+    const box = await waitFor(() => screen.getByLabelText("Hardware Acceleration"));
+    expect(box).toHaveProperty("disabled", false);
+    expect(box).toHaveProperty("checked", true);
+    fireEvent.click(box);
+    expect(saveRemoteConfigField).toHaveBeenCalledWith({ embed_hw_accel: false });
+    expect(SetEmbedHWAccel).toHaveBeenCalledWith(false);
+  });
+
+  it("keeps the switch usable after the gate rejected a GPU, so it can be retried", async () => {
+    GetEmbedAccelInfo.mockResolvedValue({ backend: 'cpu-simd', npu_present: false, gpu_available: true, device: 'q8p:avx512:2pass', reason: 'qwen3 CPU SIMD (gpu too slow: 0.31x)' });
     renderPanel();
     const box = await waitFor(() => screen.getByLabelText("Hardware Acceleration"));
     expect(box).toHaveProperty("disabled", false);

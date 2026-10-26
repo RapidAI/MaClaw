@@ -107,16 +107,6 @@ export function AssistantTitleBarNotifications({
         document.addEventListener("keydown", onKeyDown);
         return () => document.removeEventListener("keydown", onKeyDown);
     }, [dismissUrgentToast, panelOpen, urgentToast]);
-    const notificationPanelTheme = useMemo(() => ({
-        bg: t.titleBarBg,
-        text: t.text,
-        textMuted: t.textMuted || t.promptColor,
-        headingColor: t.headingColor,
-        divider: t.titleBarBorder,
-        inputBarBg: t.fieldBg,
-        inputBarBorder: t.titleBarBorder,
-    }), [t.fieldBg, t.headingColor, t.promptColor, t.text, t.textMuted, t.titleBarBg, t.titleBarBorder]);
-
     return (
         <>
             <div data-notification-anchor="true" className="atbn-anchor">
@@ -146,9 +136,7 @@ export function AssistantTitleBarNotifications({
                     groupInviteListError={groupInviteListError}
                     groupInviteError={resolvedSelected?.groupInviteId && groupInviteError?.id === resolvedSelected.groupInviteId ? groupInviteError.message : ""}
                     ariaHidden={!active}
-                    detailTheme={t}
                     lang={lang}
-                    theme={notificationPanelTheme}
                 />
             )}
             {urgentToast && active && !panelOpen && (
@@ -157,30 +145,16 @@ export function AssistantTitleBarNotifications({
                     data-notification-toast="true"
                     role="status"
                     aria-live="assertive"
-                    style={{
-                        position: "fixed",
-                        top: "48px",
-                        right: "16px",
-                        width: "320px",
-                        padding: "12px 16px",
-                        background: t.titleBarBg,
-                        border: "1px solid var(--theme-danger, #dc1f25)",
-                        borderRadius: "8px",
-                        boxShadow: "0 4px 24px color-mix(in srgb, var(--theme-danger, #dc1f25) 20%, transparent)",
-                        zIndex: 50000,
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: "6px",
-                    }}
+                    className="notification-toast"
                 >
-                    <div className="atbn-urgent-head">
-                        <span className="atbn-urgent-label">
-                            <IconRecord size={12} color="var(--theme-danger, #dc1f25)" />
+                    <div className="notification-toast__head">
+                        <span className="notification-toast__label">
+                            <IconRecord size={12} className="notification-toast__glyph" />
                             {localizeText(lang, "Urgent Notification", "\u7d27\u6025\u901a\u77e5", "\u7dca\u6025\u901a\u77e5")}
                         </span>
                         <button
                             onClick={dismissUrgentToast}
-                            style={{ background: "none", border: "none", cursor: "pointer", color: t.promptColor, fontSize: "14px", padding: "0 2px", lineHeight: 1 }}
+                            className="notification-toast__close"
                             aria-label={localizeText(lang, "Dismiss", "\u5173\u95ed", "\u95dc\u9589")}
                         >
                             ×
@@ -189,13 +163,13 @@ export function AssistantTitleBarNotifications({
                     <button
                         data-testid="notification-urgent-toast-open"
                         onClick={handleOpenFromToast}
-                        className="atbn-urgent-open"
+                        className="notification-toast__open"
                     >
-                        <span style={{ fontSize: "13px", fontWeight: 500, color: t.text, lineHeight: 1.45, wordBreak: "break-word" }}>{urgentToast.title}</span>
-                        <span style={{ fontSize: "12px", color: t.promptColor, lineHeight: 1.5, display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "break-word" }}>
+                        <span className="notification-toast__title">{urgentToast.title}</span>
+                        <span className="notification-toast__preview">
                             {stripMarkdownPreview(urgentToast.content)}
                         </span>
-                        <span style={{ fontSize: "11px", fontWeight: 600, color: t.linkColor || t.headingColor }}>
+                        <span className="notification-toast__cta">
                             {localizeText(lang, "View full notice", "\u67e5\u770b\u5168\u6587", "\u67e5\u770b\u5168\u6587")}
                         </span>
                     </button>

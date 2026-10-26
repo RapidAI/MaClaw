@@ -2130,7 +2130,9 @@
 .prog-tools__kb-editor-overlay {
     position: fixed;
     inset: 0;
-    z-index: 1200;
+    /* Dialog scrims outrank both app title bars; see .modal-overlay in
+       50-pet-provider.css. */
+    z-index: 40000;
     display: flex;
     align-items: center;
     justify-content: center;

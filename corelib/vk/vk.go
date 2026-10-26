@@ -101,7 +101,7 @@ type Device struct {
 		createShaderModule, destroyShaderModule,
 		createDescriptorSetLayout, destroyDescriptorSetLayout,
 		createPipelineLayout, destroyPipelineLayout,
-		createDescriptorPool, destroyDescriptorPool,
+		createDescriptorPool, destroyDescriptorPool, resetDescriptorPool,
 		allocateDescriptorSets, updateDescriptorSets,
 		createComputePipeline, destroyPipeline,
 		createCommandPool, destroyCommandPool, allocateCommandBuffers, freeCommandBuffers,
@@ -112,6 +112,7 @@ type Device struct {
 	}
 	destroyInstance uintptr
 	mu              sync.Mutex
+	closed          bool // guards against double Close (refcount underflow)
 }
 
 // ErrUnavailable reports that no usable Vulkan compute device exists.
@@ -119,6 +120,40 @@ var ErrUnavailable = errors.New("vk: Vulkan unavailable")
 
 // ErrNoMemory reports that a buffer allocation exceeded the host-visible heap.
 var ErrNoMemory = errors.New("vk: out of host-visible memory")
+
+// ErrDeviceClosed reports use of a Device after Close. Callers must treat it as
+// a shutdown race, not a driver failure: calling into the driver with a
+// destroyed handle is an access violation, so every entry point checks first.
+var ErrDeviceClosed = errors.New("vk: device closed")
+
+// alive reports whether the device can still be used.
+func (d *Device) alive() bool {
+	if d == nil {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return !d.closed && d.dev != 0
+}
+
+// WaitIdle blocks until every submitted command has completed. Callers must use
+// it before releasing buffers a recent submission referenced: the fence proves
+// execution finished, but drivers may keep using that memory internally for a
+// while afterwards (freeing it immediately crashed the AMD driver).
+func (d *Device) WaitIdle() error {
+	if err := d.Err(); err != nil {
+		return err
+	}
+	return check(call(d.fn.deviceWaitIdle, d.dev), "vkDeviceWaitIdle")
+}
+
+// Err returns ErrDeviceClosed when the device is no longer usable.
+func (d *Device) Err() error {
+	if d.alive() {
+		return nil
+	}
+	return ErrDeviceClosed
+}
 
 func check(r uintptr, what string) error {
 	if int32(r) == success {

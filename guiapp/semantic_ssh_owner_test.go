@@ -111,8 +111,8 @@ func TestSSHSessionReuseStaysInsideTheOwner(t *testing.T) {
 		OwnerID: "mine",
 		Summary: remote.SSHSessionSummary{HostID: "user@host:22", Status: "exited"},
 	}
-	if sshSessionReusable(exited, "user@host:22", "", "mine") {
-		t.Fatal("an exited session is not reusable")
+	if !sshSessionReusable(exited, "user@host:22", "", "mine") {
+		t.Fatal("an exited session is still this debug machine until it is removed")
 	}
 	unowned := &remote.SSHManagedSession{
 		OwnerID: "",
@@ -151,12 +151,43 @@ func TestSSHSessionReuseStaysInsideTheOwner(t *testing.T) {
 
 	h := &IMMessageHandler{}
 	list := sshSessionList{other, mine}
-	got := h.findRunningSSHSession(list, "user@host:22", "", "mine")
+	got := h.findRunningSSHSession(list, "user@host:22", "", "mine", "", false)
 	if got == nil || got.ID != "ssh_mine" {
 		t.Fatalf("reusable session = %#v", got)
 	}
-	if got := h.findRunningSSHSession(sshSessionList{other}, "user@host:22", "", "mine"); got != nil {
+	if got := h.findRunningSSHSession(sshSessionList{other}, "user@host:22", "", "mine", "", false); got != nil {
 		t.Fatalf("foreign session was reused: %s", got.ID)
+	}
+}
+
+func TestSSHConnectAdmissionKeepsThePinnedSession(t *testing.T) {
+	pinned := &remote.SSHManagedSession{
+		ID:      "ssh_pinned",
+		OwnerID: "mine",
+		Spec:    remote.SSHSessionSpec{HostConfig: remote.SSHHostConfig{HostKeyFingerprint: "SHA256:pin"}},
+		Summary: remote.SSHSessionSummary{HostID: "root@10.0.0.8:8040", Status: "busy", UpdatedAt: 2},
+	}
+	otherPin := &remote.SSHManagedSession{
+		ID:      "ssh_other_pin",
+		OwnerID: "mine",
+		Spec:    remote.SSHSessionSpec{HostConfig: remote.SSHHostConfig{HostKeyFingerprint: "SHA256:other"}},
+		Summary: remote.SSHSessionSummary{HostID: "root@10.0.0.8:8040", Status: "running", UpdatedAt: 9},
+	}
+	unpinned := &remote.SSHManagedSession{
+		ID:      "ssh_open",
+		OwnerID: "mine",
+		Summary: remote.SSHSessionSummary{HostID: "root@10.0.0.8:8040", Status: "running", UpdatedAt: 1},
+	}
+	h := &IMMessageHandler{}
+	list := sshSessionList{unpinned, otherPin, pinned}
+	if got := h.findRunningSSHSession(list, "root@10.0.0.8:8040", "", "mine", "SHA256:pin", false); got == nil || got.ID != "ssh_pinned" {
+		t.Fatalf("same pin = %#v", got)
+	}
+	if got := h.findRunningSSHSession(list, "root@10.0.0.8:8040", "", "mine", "", true); got == nil || got.ID != "ssh_other_pin" {
+		t.Fatalf("capture keeps the newest already-pinned session, got %#v", got)
+	}
+	if got := h.findRunningSSHSession(sshSessionList{unpinned}, "root@10.0.0.8:8040", "", "mine", "", true); got != nil {
+		t.Fatal("capture must not adopt a session with no pin")
 	}
 }
 

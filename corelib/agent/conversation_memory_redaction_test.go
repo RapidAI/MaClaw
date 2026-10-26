@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -145,9 +147,10 @@ func TestPersistentConversationMemoryKeepsCleanToolTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
 	}
-	if string(got) != string(raw) {
-		t.Fatalf("clean tool transcript was rewritten:\n got %s\nwant %s", got, raw)
-	}
+	// The entries must come back untouched. The file may gain the one-time
+	// schema_version stamp that lets the next load skip the sanitize pass, but
+	// no transcript content may change.
+	assertTranscriptEntriesUnchanged(t, raw, got)
 }
 
 func TestPersistentConversationMemoryKeepsSessionIDText(t *testing.T) {
@@ -162,8 +165,40 @@ func TestPersistentConversationMemoryKeepsSessionIDText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != string(raw) {
-		t.Fatalf("message text containing session_id was rewritten:\n got %s\nwant %s", got, raw)
+	assertTranscriptEntriesUnchanged(t, raw, got)
+}
+
+// assertTranscriptEntriesUnchanged compares persisted sessions after parsing, so
+// the schema_version stamp is allowed while any change to an entry still fails.
+func assertTranscriptEntriesUnchanged(t *testing.T, before, after []byte) {
+	t.Helper()
+	var want, got memorySnapshot
+	if err := json.Unmarshal(before, &want); err != nil {
+		t.Fatalf("parse expected transcript: %v", err)
+	}
+	if err := json.Unmarshal(after, &got); err != nil {
+		t.Fatalf("parse rewritten transcript: %v\nraw: %s", err, after)
+	}
+	if len(got.Sessions) != len(want.Sessions) {
+		t.Fatalf("sessions after rewrite = %d, want %d", len(got.Sessions), len(want.Sessions))
+	}
+	for userID, wantSession := range want.Sessions {
+		gotSession, ok := got.Sessions[userID]
+		if !ok {
+			t.Fatalf("session %q disappeared after rewrite", userID)
+		}
+		if len(gotSession.Entries) != len(wantSession.Entries) {
+			t.Fatalf("session %q entries = %d, want %d", userID, len(gotSession.Entries), len(wantSession.Entries))
+		}
+		for i := range wantSession.Entries {
+			if !reflect.DeepEqual(gotSession.Entries[i], wantSession.Entries[i]) {
+				t.Fatalf("entry %d of session %q was rewritten:\n got %#v\nwant %#v",
+					i, userID, gotSession.Entries[i], wantSession.Entries[i])
+			}
+		}
+		if !gotSession.LastAccess.Equal(wantSession.LastAccess) {
+			t.Fatalf("session %q last_access = %v, want %v", userID, gotSession.LastAccess, wantSession.LastAccess)
+		}
 	}
 }
 

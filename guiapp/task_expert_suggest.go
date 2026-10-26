@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -28,13 +30,14 @@ type NewTaskExpertSuggestion struct {
 }
 
 const (
-	// A command has to sit clearly nearer one expert than the others. A close
-	// score goes to the LLM. A score under newTaskExpertAskMinScore, or an
-	// embedding timeout, stays on 通用.
+	// Embedding assigns an expert only when one card is clearly nearer than
+	// the others. A near miss, a low score, a timeout, or no embedder is not
+	// that reading: the model sees the whole command and may answer general.
+	// The command is not matched with a keyword list.
 	newTaskExpertMinScore = 0.72
 	newTaskExpertMinGap   = 0.08
-	// Below this, embedding already says the command is not near any expert,
-	// so the LLM is not asked.
+	// Logged when no model is configured and the best score stays under the
+	// floor. A configured model is still asked; the score is not a keyword.
 	newTaskExpertAskMinScore = 0.58
 	// The embedder call is capped so a long catalog cannot hold task creation
 	// open. Built-ins always stay inside the cap. The remaining slots go to
@@ -46,7 +49,8 @@ const (
 )
 
 // newTaskExpertCard is one installed expert the command can be matched to.
-// MatchText is what the embedder sees. The LLM sees the name and description.
+// MatchText is the embedder's document. The model sees the name, the
+// description, and the same built-in hint, so both readers judge one scope.
 type newTaskExpertCard struct {
 	ID          string
 	Name        string
@@ -71,6 +75,8 @@ func (a *App) SuggestNewTaskExpert(text string) NewTaskExpertSuggestion {
 	suggestion := suggestNewTaskExpert(command, catalog, a.taskExpertSuggestDeps())
 	if suggestion.Confident && strings.TrimSpace(suggestion.ExpertID) != "" {
 		log.Printf("[task-expert] suggested=%s source=%s", suggestion.ExpertID, suggestion.Source)
+	} else if suggestion.Reason != "" {
+		log.Printf("[task-expert] abstain reason=%s", suggestion.Reason)
 	}
 	return suggestion
 }
@@ -81,17 +87,30 @@ type taskExpertSuggestDeps struct {
 }
 
 func (a *App) taskExpertSuggestDeps() taskExpertSuggestDeps {
-	return taskExpertSuggestDeps{
+	deps := taskExpertSuggestDeps{
 		embed: func(query string, docs []string) ([]float32, [][]float32, embeddingRead) {
 			if a == nil {
 				return nil, nil, embeddingUnavailable
 			}
 			return embedNewTaskExpertVectors(a.intentEmbedder, query, docs, newTaskTypeLocalTimeout)
 		},
-		askLLM: func(command string, catalog []newTaskExpertCard) (string, bool) {
-			return a.askNewTaskExpertLLM(command, catalog)
-		},
 	}
+	// No assistant model means the embedding reason is the abstain. A closure
+	// that only fails the call would hide that reason behind llm-unavailable.
+	if expertLLMConfigured(a) {
+		deps.askLLM = func(command string, catalog []newTaskExpertCard) (string, bool) {
+			return a.askNewTaskExpertLLM(command, catalog)
+		}
+	}
+	return deps
+}
+
+func expertLLMConfigured(a *App) bool {
+	if a == nil {
+		return false
+	}
+	cfg := a.GetMaclawLLMConfig()
+	return strings.TrimSpace(cfg.URL) != "" && strings.TrimSpace(cfg.Model) != ""
 }
 
 func suggestNewTaskExpert(command string, catalog []newTaskExpertCard, deps taskExpertSuggestDeps) NewTaskExpertSuggestion {
@@ -117,41 +136,25 @@ func suggestNewTaskExpert(command string, catalog []newTaskExpertCard, deps task
 			}
 		}
 	}
-	if deps.askLLM != nil && expertShouldAskLLM(read, scores) {
+	// Embedding did not name an expert. A configured model reads the whole
+	// command, including a timeout or a low score, and may answer general.
+	// No model keeps the embedding reason.
+	if deps.askLLM != nil {
 		narrowed := expertCatalogForLLM(embedded, scores)
-		if raw, ok := deps.askLLM(command, narrowed); ok {
-			if card, ok := parseNewTaskExpertReply(raw, narrowed); ok {
-				return expertSuggestion(card, "llm")
-			}
+		raw, ok := deps.askLLM(command, narrowed)
+		if !ok {
+			return newTaskExpertAbstain("llm-unavailable")
 		}
+		if card, ok := parseNewTaskExpertReply(raw, narrowed); ok {
+			return expertSuggestion(card, "llm")
+		}
+		return newTaskExpertAbstain("llm-declined")
 	}
-	return NewTaskExpertSuggestion{}
+	return newTaskExpertAbstain(expertEmbedAbstainReason(read, embedded, scores))
 }
 
-// expertShouldAskLLM is true only when the LLM is the remaining signal: the
-// embedder is unavailable, its vectors are unusable, or the best score is a
-// near miss. A timeout leaves the embedder busy, and a low score already says
-// the command is not near any expert, so both stay on 通用.
-func expertShouldAskLLM(read embeddingRead, scores []float64) bool {
-	if read == embeddingTimeout {
-		return false
-	}
-	if read != embeddingReady {
-		return true
-	}
-	best := -1.0
-	for _, score := range scores {
-		if !confidenceIsFinite(score) || score < 0 {
-			continue
-		}
-		if score > best {
-			best = score
-		}
-	}
-	if best < 0 {
-		return true
-	}
-	return best >= newTaskExpertAskMinScore
+func newTaskExpertAbstain(reason string) NewTaskExpertSuggestion {
+	return NewTaskExpertSuggestion{Reason: reason}
 }
 
 func expertSuggestion(card newTaskExpertCard, source string) NewTaskExpertSuggestion {
@@ -260,8 +263,40 @@ func capNewTaskExpertCards(catalog []newTaskExpertCard) []newTaskExpertCard {
 	return out
 }
 
-// builtinExpertMatchHint adds a few purpose phrases to the embedded text of
-// a built-in expert. The decision is still the cosine, not a keyword hit.
+func expertEmbedAbstainReason(read embeddingRead, catalog []newTaskExpertCard, scores []float64) string {
+	switch read {
+	case embeddingTimeout:
+		return "embed-timeout"
+	case embeddingReady:
+		return expertScoreAbstainReason(catalog, scores)
+	default:
+		return "embed-unavailable"
+	}
+}
+
+func expertScoreAbstainReason(catalog []newTaskExpertCard, scores []float64) string {
+	if len(catalog) == 0 || len(scores) != len(catalog) {
+		return "embed-unusable"
+	}
+	rank := rankExpertScores(scores)
+	if rank.idx < 0 {
+		return "embed-unusable"
+	}
+	id := catalog[rank.idx].ID
+	switch {
+	case rank.best < newTaskExpertAskMinScore:
+		return fmt.Sprintf("below-ask best=%s score=%.2f", id, rank.best)
+	case rank.best < newTaskExpertMinScore:
+		return fmt.Sprintf("below-floor best=%s score=%.2f", id, rank.best)
+	case rank.second >= 0 && rank.best-rank.second < newTaskExpertMinGap:
+		return fmt.Sprintf("narrow-gap best=%s score=%.2f gap=%.2f", id, rank.best, rank.best-rank.second)
+	default:
+		return "embed-unusable"
+	}
+}
+
+// builtinExpertMatchHint is extra text in the built-in expert's embedding
+// document. It is not a keyword scan of the command.
 func builtinExpertMatchHint(id string) string {
 	switch id {
 	case "builtin-paper-polish":
@@ -280,7 +315,9 @@ func builtinExpertMatchHint(id string) string {
 // newTaskExpertDocVecCache keeps document vectors for the current embedder.
 // A later create embeds only the command. Entries are keyed by the raw match
 // text. The space is the embedder pointer, dimension, and model id, so a
-// model change drops the map. A timed-out call does not write this cache.
+// model change drops the map. The create deadline does not assign from a
+// late embed, but a document batch that finishes after that deadline is
+// still stored. A failed or short batch is not.
 type expertDocVecCache struct {
 	mu    sync.Mutex
 	space string
@@ -386,6 +423,20 @@ func embedNewTaskExpertVectors(emb embedding.Embedder, query string, docs []stri
 		if len(missing) > 0 {
 			vectors, err = embedding.EmbedBatchAs(emb, missing, embedding.RoleDocument)
 		}
+		// Store before reporting. The caller may already have returned on
+		// the deadline; the next create still reuses a finished batch.
+		if err == nil && len(vectors) == len(missing) {
+			storeDocs := make([]string, 0, len(missing))
+			storeVecs := make([][]float32, 0, len(missing))
+			for i, vec := range vectors {
+				if len(vec) == 0 || len(vec) != len(q) {
+					continue
+				}
+				storeDocs = append(storeDocs, missing[i])
+				storeVecs = append(storeVecs, vec)
+			}
+			newTaskExpertDocVecCache.store(space, storeDocs, storeVecs)
+		}
 		select {
 		case ch <- embedOutcome{query: q, docs: vectors, err: err}:
 		default:
@@ -402,17 +453,9 @@ func embedNewTaskExpertVectors(emb embedding.Embedder, query string, docs []stri
 				out[i] = cached[i]
 			}
 		}
-		storeDocs := make([]string, 0, len(missing))
-		storeVecs := make([][]float32, 0, len(missing))
 		for i, vec := range got.docs {
 			out[missingAt[i]] = vec
-			if len(vec) == 0 || len(vec) != len(got.query) {
-				continue
-			}
-			storeDocs = append(storeDocs, missing[i])
-			storeVecs = append(storeVecs, vec)
 		}
-		newTaskExpertDocVecCache.store(space, storeDocs, storeVecs)
 		return got.query, out, embeddingReady
 	case <-time.After(timeout):
 		return nil, nil, embeddingTimeout
@@ -427,6 +470,31 @@ func expertCosines(query []float32, docs [][]float32) []float64 {
 	return scores
 }
 
+type expertScoreRank struct {
+	idx    int
+	best   float64
+	second float64
+}
+
+func rankExpertScores(scores []float64) expertScoreRank {
+	rank := expertScoreRank{idx: -1, best: -1, second: -1}
+	for i, score := range scores {
+		if !confidenceIsFinite(score) || score < 0 {
+			continue
+		}
+		if score > rank.best {
+			rank.second = rank.best
+			rank.best = score
+			rank.idx = i
+			continue
+		}
+		if score > rank.second {
+			rank.second = score
+		}
+	}
+	return rank
+}
+
 // expertFromScores picks the nearest expert when its score clears the floor
 // and the gap to the next expert is wide enough. A missing vector scores -1
 // and is not a rival.
@@ -434,34 +502,20 @@ func expertFromScores(catalog []newTaskExpertCard, scores []float64) (newTaskExp
 	if len(catalog) == 0 || len(scores) != len(catalog) {
 		return newTaskExpertCard{}, false
 	}
-	bestIdx := -1
-	best := -1.0
-	second := -1.0
-	for i, score := range scores {
-		if !confidenceIsFinite(score) || score < 0 {
-			continue
-		}
-		if score > best {
-			second = best
-			best = score
-			bestIdx = i
-			continue
-		}
-		if score > second {
-			second = score
-		}
-	}
-	if bestIdx < 0 || best < newTaskExpertMinScore {
+	rank := rankExpertScores(scores)
+	if rank.idx < 0 || rank.best < newTaskExpertMinScore {
 		return newTaskExpertCard{}, false
 	}
-	if second >= 0 && best-second < newTaskExpertMinGap {
+	if rank.second >= 0 && rank.best-rank.second < newTaskExpertMinGap {
 		return newTaskExpertCard{}, false
 	}
-	return catalog[bestIdx], true
+	return catalog[rank.idx], true
 }
 
 // expertCatalogForLLM keeps the catalog short. When embedding scores exist,
 // the stronger cards go first so a near miss is still visible to the model.
+// Built-ins stay inside the cap: a long list of closer user experts must not
+// hide the PPT or LaTeX expert from the only reader that can still assign it.
 func expertCatalogForLLM(catalog []newTaskExpertCard, scores []float64) []newTaskExpertCard {
 	if len(catalog) == 0 {
 		return nil
@@ -480,10 +534,47 @@ func expertCatalogForLLM(catalog []newTaskExpertCard, scores []float64) []newTas
 			ordered[i] = catalog[at]
 		}
 	}
-	if len(ordered) > newTaskExpertLLMCap {
-		ordered = ordered[:newTaskExpertLLMCap]
+	if len(ordered) <= newTaskExpertLLMCap {
+		return ordered
 	}
-	return ordered
+	keep := make([]bool, len(ordered))
+	builtinN := 0
+	for i, card := range ordered {
+		if !card.Builtin {
+			continue
+		}
+		keep[i] = true
+		builtinN++
+	}
+	if builtinN > newTaskExpertLLMCap {
+		kept := 0
+		for i, card := range ordered {
+			if !card.Builtin {
+				continue
+			}
+			if kept >= newTaskExpertLLMCap {
+				keep[i] = false
+				continue
+			}
+			kept++
+		}
+		builtinN = newTaskExpertLLMCap
+	}
+	room := newTaskExpertLLMCap - builtinN
+	for i, card := range ordered {
+		if card.Builtin || room <= 0 {
+			continue
+		}
+		keep[i] = true
+		room--
+	}
+	out := make([]newTaskExpertCard, 0, newTaskExpertLLMCap)
+	for i, card := range ordered {
+		if keep[i] {
+			out = append(out, card)
+		}
+	}
+	return out
 }
 
 func (a *App) askNewTaskExpertLLM(command string, catalog []newTaskExpertCard) (string, bool) {
@@ -503,13 +594,17 @@ func (a *App) askNewTaskExpertLLM(command string, catalog []newTaskExpertCard) (
 	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "new-task-expert"})
 	client := &http.Client{Timeout: newTaskTypeLLMTimeout}
 	resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, newTaskTypeLLMTimeout)
-	if err != nil || resp == nil || strings.TrimSpace(resp.Content) == "" {
+	if err != nil || resp == nil {
 		if err != nil {
 			log.Printf("[task-expert] LLM classify failed: %v", err)
 		}
 		return "", false
 	}
-	return resp.Content, true
+	text, ok := expertModelReply(resp.Content, resp.RawContent, resp.ReasoningContent, catalog)
+	if !ok {
+		return "", false
+	}
+	return text, true
 }
 
 func newTaskExpertSystemPrompt(catalog []newTaskExpertCard) string {
@@ -522,22 +617,79 @@ func newTaskExpertSystemPrompt(catalog []newTaskExpertCard) string {
 可选专家：
 `)
 	for _, card := range catalog {
-		desc := oneLineExpertText(card.Description)
-		if desc == "" {
-			desc = oneLineExpertText(card.Name)
-		}
-		fmt.Fprintf(&b, "- %s：%s。%s\n", card.ID, oneLineExpertText(card.Name), desc)
+		fmt.Fprintf(&b, "- %s：%s。%s\n", card.ID, oneLineExpertText(card.Name), expertCardScopeLine(card))
 	}
 	return b.String()
+}
+
+// expertCardScopeLine is the scope the model judges. It is the description
+// plus the built-in hint the embedder already uses. User experts have no hint.
+func expertCardScopeLine(card newTaskExpertCard) string {
+	desc := oneLineExpertText(card.Description)
+	if desc == "" {
+		desc = oneLineExpertText(card.Name)
+	}
+	hint := oneLineExpertText(builtinExpertMatchHint(card.ID))
+	if hint == "" || strings.Contains(desc, hint) {
+		return desc
+	}
+	if desc == "" {
+		return hint
+	}
+	return desc + " " + hint
 }
 
 func oneLineExpertText(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
-// parseNewTaskExpertReply accepts the JSON object. general, an unknown id,
-// and a confidence outside the task-type floor all mean no expert.
-func parseNewTaskExpertReply(raw string, catalog []newTaskExpertCard) (newTaskExpertCard, bool) {
+// expertModelReply picks the field that carries the decision. Display text
+// wins when it names a card or explicitly declines. A think-tag filter can
+// leave that text empty while the raw provider text or the reasoning field
+// still holds the JSON; those are the decision too. An earlier explicit
+// general is not replaced by a later card.
+func expertModelReply(content, raw, reasoning string, catalog []newTaskExpertCard) (string, bool) {
+	var fallback string
+	for _, field := range []string{content, raw, reasoning} {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		if fallback == "" {
+			fallback = field
+		}
+		if expertReplyDeclines(field) {
+			return field, true
+		}
+		if _, ok := parseNewTaskExpertReply(field, catalog); ok {
+			return field, true
+		}
+	}
+	if fallback == "" {
+		return "", false
+	}
+	return fallback, true
+}
+
+func expertReplyDeclines(raw string) bool {
+	obj, ok := readExpertReplyObject(raw)
+	if !ok {
+		return false
+	}
+	switch strings.ToLower(obj.id) {
+	case "", "general", "generic", "none", "通用", "通用专家":
+		return true
+	default:
+		return false
+	}
+}
+
+type expertReplyObject struct {
+	id         string
+	confidence float64
+}
+
+func readExpertReplyObject(raw string) (expertReplyObject, bool) {
 	raw = strings.TrimSpace(raw)
 	raw = strings.TrimPrefix(raw, "```json")
 	raw = strings.TrimPrefix(raw, "```JSON")
@@ -546,7 +698,7 @@ func parseNewTaskExpertReply(raw string, catalog []newTaskExpertCard) (newTaskEx
 	start := strings.Index(raw, "{")
 	end := strings.LastIndex(raw, "}")
 	if start < 0 || end <= start {
-		return newTaskExpertCard{}, false
+		return expertReplyObject{}, false
 	}
 	var parsed struct {
 		ExpertID   string          `json:"expert_id"`
@@ -554,40 +706,170 @@ func parseNewTaskExpertReply(raw string, catalog []newTaskExpertCard) (newTaskEx
 		Confidence json.RawMessage `json:"confidence"`
 	}
 	if err := json.Unmarshal([]byte(raw[start:end+1]), &parsed); err != nil {
-		return newTaskExpertCard{}, false
+		return expertReplyObject{}, false
 	}
 	id := strings.TrimSpace(parsed.ExpertID)
 	if id == "" {
 		id = strings.TrimSpace(parsed.ExpertID2)
 	}
-	switch strings.ToLower(id) {
+	return expertReplyObject{id: id, confidence: parseNewTaskConfidence(parsed.Confidence)}, true
+}
+
+// parseNewTaskExpertReply accepts the JSON object. general, an unknown id,
+// and a confidence outside the task-type floor all mean no expert.
+func parseNewTaskExpertReply(raw string, catalog []newTaskExpertCard) (newTaskExpertCard, bool) {
+	obj, ok := readExpertReplyObject(raw)
+	if !ok {
+		return newTaskExpertCard{}, false
+	}
+	switch strings.ToLower(obj.id) {
 	case "", "general", "generic", "none", "通用", "通用专家":
 		return newTaskExpertCard{}, false
 	}
-	if !newTaskLLMConfidenceOK(parseNewTaskConfidence(parsed.Confidence)) {
+	confidence := obj.confidence
+	// Some replies use a percent. 70 and 100 are that scale; 0.70 is already
+	// a fraction and stays one. Anything above 100 is not a confidence.
+	if confidence > 1 && confidence <= 100 {
+		confidence = confidence / 100
+	}
+	if !newTaskLLMConfidenceOK(confidence) {
 		return newTaskExpertCard{}, false
 	}
-	return findExpertCard(catalog, id)
+	return findExpertCard(catalog, obj.id)
 }
 
-func findExpertCard(catalog []newTaskExpertCard, id string) (newTaskExpertCard, bool) {
-	id = strings.TrimSpace(id)
-	if id == "" {
+// findExpertCard resolves the model's answer onto a card it was shown.
+// An exact id wins. Otherwise one case-insensitive id wins, then one
+// name. A reply that repeats "id：name" is tried on each side. A reply
+// that starts with one card's id or name and then continues with that
+// card's scope still names that card. Two cards sharing a label are not
+// a choice.
+func findExpertCard(catalog []newTaskExpertCard, raw string) (newTaskExpertCard, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
 		return newTaskExpertCard{}, false
 	}
-	var folded newTaskExpertCard
-	foldedCount := 0
-	for _, card := range catalog {
-		if card.ID == id {
+	if card, ok := matchExpertCard(catalog, raw); ok {
+		return card, true
+	}
+	for _, sep := range []string{"：", ":"} {
+		at := strings.Index(raw, sep)
+		if at <= 0 {
+			continue
+		}
+		if card, ok := matchExpertCard(catalog, raw[:at]); ok {
 			return card, true
 		}
-		if strings.EqualFold(card.ID, id) {
-			folded = card
-			foldedCount++
+		if card, ok := matchExpertCard(catalog, raw[at+len(sep):]); ok {
+			return card, true
 		}
 	}
-	if foldedCount == 1 {
+	return newTaskExpertCard{}, false
+}
+
+func matchExpertCard(catalog []newTaskExpertCard, label string) (newTaskExpertCard, bool) {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return newTaskExpertCard{}, false
+	}
+	var folded, named newTaskExpertCard
+	foldedN, namedN := 0, 0
+	for _, card := range catalog {
+		if card.ID == label {
+			return card, true
+		}
+		if strings.EqualFold(card.ID, label) {
+			folded = card
+			foldedN++
+		}
+		if sameExpertLabel(card.Name, label) {
+			named = card
+			namedN++
+		}
+	}
+	if foldedN == 1 {
 		return folded, true
 	}
+	if namedN == 1 {
+		return named, true
+	}
+	var prefixed newTaskExpertCard
+	prefixN := 0
+	for _, card := range catalog {
+		if expertLabelNamesCard(label, card) {
+			prefixed = card
+			prefixN++
+		}
+	}
+	if prefixN == 1 {
+		return prefixed, true
+	}
 	return newTaskExpertCard{}, false
+}
+
+// expertLabelNamesCard reports whether label starts with this card's id or
+// name and the next character ends that label. Echoing "名称。职责说明" is
+// that card. A longer name that merely continues the letters is not.
+func expertLabelNamesCard(label string, card newTaskExpertCard) bool {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return false
+	}
+	if id := strings.TrimSpace(card.ID); id != "" && len(label) > len(id) && strings.EqualFold(label[:len(id)], id) {
+		if !expertIDContinue(label[len(id):]) {
+			return true
+		}
+	}
+	name := strings.TrimSpace(card.Name)
+	return name != "" && expertNameContinues(label, name)
+}
+
+func expertIDContinue(rest string) bool {
+	r, _ := utf8.DecodeRuneInString(rest)
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_'
+}
+
+// expertNameContinues is true when name is a strict prefix of label and the
+// following rune is punctuation or a symbol. Spaces inside either side are
+// ignored. An exact name is handled separately.
+func expertNameContinues(label, name string) bool {
+	li, ni := 0, 0
+	for {
+		li = skipExpertLabelSpace(label, li)
+		ni = skipExpertLabelSpace(name, ni)
+		if ni >= len(name) {
+			if li >= len(label) {
+				return false
+			}
+			r, _ := utf8.DecodeRuneInString(label[li:])
+			return unicode.IsPunct(r) || unicode.IsSymbol(r)
+		}
+		if li >= len(label) {
+			return false
+		}
+		lr, ls := utf8.DecodeRuneInString(label[li:])
+		nr, ns := utf8.DecodeRuneInString(name[ni:])
+		if ls <= 0 || ns <= 0 || !strings.EqualFold(string(lr), string(nr)) {
+			return false
+		}
+		li += ls
+		ni += ns
+	}
+}
+
+func skipExpertLabelSpace(text string, at int) int {
+	for at < len(text) {
+		r, size := utf8.DecodeRuneInString(text[at:])
+		if size <= 0 || !unicode.IsSpace(r) {
+			return at
+		}
+		at += size
+	}
+	return at
+}
+
+func sameExpertLabel(got, want string) bool {
+	got = strings.Join(strings.Fields(got), "")
+	want = strings.Join(strings.Fields(want), "")
+	return got != "" && strings.EqualFold(got, want)
 }

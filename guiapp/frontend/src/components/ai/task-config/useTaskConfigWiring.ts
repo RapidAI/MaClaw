@@ -27,7 +27,7 @@ import {
 import { openExpertConversation } from "../../../utils/expertConversationNavigation";
 import type { WelcomePromptSubmitMeta } from "../AssistantWelcomeView";
 import { isCloudWorkspacePath } from "../codingTaskMode";
-import { expertTabId, parseExpertListJSON, parseInstalledManagedIndustryExpertsJSON } from "../expertTypes";
+import { builtinExpertIcon, expertTabId, parseExpertListJSON, parseInstalledManagedIndustryExpertsJSON } from "../expertTypes";
 import { extractErrorMessage } from "../participantAddError";
 import { applyComposeActionToText, goalCreateCommand, isBtwCommandText, isHistoryResetCommandText, normalizeInstallCommandText, type ComposeAction } from "../composeAction";
 import { buildOutgoingMessageMulti } from "../useAIAssistant";
@@ -198,6 +198,8 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
     const taskConfigDraftRef = useRef(taskConfigDraft);
     taskConfigDraftRef.current = taskConfigDraft;
     const [taskConfigExperts, setTaskConfigExperts] = useState<ExpertOption[]>([]);
+    const taskConfigExpertsRef = useRef(taskConfigExperts);
+    taskConfigExpertsRef.current = taskConfigExperts;
     const [taskConfigWorkflows, setTaskConfigWorkflows] = useState<WorkflowOption[]>([]);
     const [taskConfigLatexTemplates, setTaskConfigLatexTemplates] = useState<LatexTemplate[]>([]);
     const latexListGenRef = useRef(0);
@@ -553,8 +555,14 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
                         window.dispatchEvent(new CustomEvent(EVENT_OPEN_TASK_LAUNCH, { detail }));
                     },
                     openExpert: (nav) => {
+                        const known = taskConfigExpertsRef.current.find((item) => item.id === nav.id);
                         openExpertConversation(
-                            { id: nav.id, name: nav.name, description: nav.description },
+                            {
+                                id: nav.id,
+                                name: nav.name,
+                                description: nav.description || known?.description,
+                                icon: String(known?.icon || "").trim() || builtinExpertIcon(nav.id),
+                            },
                             nav.initialMessage,
                             nav.latexDocument,
                             nav.projectPath,

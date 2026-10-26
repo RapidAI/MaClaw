@@ -180,6 +180,21 @@ func (p *SSHPool) acquire(cfg SSHHostConfig) (*ssh.Client, error) {
 	return client, nil
 }
 
+// holdsClient reports whether client is still the pooled connection for cfg.
+// A caller that released its own reference uses this to see whether another
+// reference kept the client in the pool.
+func (p *SSHPool) holdsClient(cfg SSHHostConfig, client *ssh.Client) bool {
+	if p == nil || client == nil {
+		return false
+	}
+	cfg.Defaults()
+	hostID := sshPoolKey(cfg)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	entry, ok := p.conns[hostID]
+	return ok && entry.client == client
+}
+
 // Release 释放 caller 持有的那条连接。引用只对应当初 Acquire 到的 client。
 // 池里的连接若已被替换，这里什么都不做，避免把新连接的计数减掉并关掉。
 // 计数归零时才关闭，避免空闲连接泄漏。

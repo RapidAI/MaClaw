@@ -4,28 +4,27 @@
 // Q8_0 tiled matmul: C[M,N] (=|+=) A[M,K] . W[N,K]^T.
 //
 // Weights are repacked at load into one int8 blob (row n of a matrix is K
-// contiguous int8 values) plus one f32 scale blob (row n owns K/32 scales,
-// one per 32-wide quantisation block).
+// contiguous int8 values) plus one f32 scale blob (row n owns K/32 scales, one
+// per 32-wide quantisation block).
 //
-// Workgroup tile: 64 columns x 32 rows of output, 256 threads (16x16). Each
-// thread computes 4 outputs (2 columns x 2 rows), so a 64x32 tile is fully
-// covered: (16*2) x (16*2) = 32 x 32... see the mapping below — the tile is
-// 64 wide because N (3072..4096) is much larger than M (a few tokens), so
-// spreading over N keeps more workgroups resident.
+// Tile: 32x32 outputs per workgroup, 256 threads (16x16), each thread owning
+// 2 rows x 2 columns.
 //
-// K advances one quantisation block (32 values) per step, so the dequant
-// scale is one scalar per weight row per step.
+// Weight traffic is (M/32) x the weight size because each workgroup re-reads
+// its weight slice per 32-row M-tile. Packing several M-tiles into one
+// workgroup (reusing the dequantised W tile) was measured on RDNA3 and is
+// SLOWER: the extra accumulators and the second barrier per K block cost more
+// than the saved bandwidth (512 rows: 428 ms with one tile vs 780 ms with two).
+// K advances one quantisation block (32 values) per step, so the dequant scale
+// is a single scalar per weight row per step.
+//
+// Shared memory is padded by one float per row: without the pad the row stride
+// is 128 bytes = every bank, so all lanes reading column k collide (32-way
+// conflict, measured ~4.6x slower end to end on RDNA3).
 
 layout(local_size_x = 16) in;
 layout(local_size_y = 16) in;
 
-// Field offsets are explicit: push-constant layout must match the Go struct
-// byte for byte, and relying on implicit packing has already bitten once.
-//
-// wOff is the int8 element offset of this matrix's first weight row inside the
-// packed weight blob; sOff is the f32 element offset of its first scale. Both
-// are absolute (not row indices) because the blob holds every layer back to
-// back.
 struct MMParams {
     int M;      // offset 0
     int N;      // offset 4
@@ -33,13 +32,13 @@ struct MMParams {
     int accum;  // offset 12
     int lda;    // offset 16
     int ldc;    // offset 20
-    int wOff;   // offset 24
-    int sOff;   // offset 28
+    int wOff;   // offset 24: first int8 element of this matrix in the blob
+    int sOff;   // offset 28: first f32 scale of this matrix in the blob
 };
 
 layout(std430, binding = 0) readonly buffer BufA { float a[]; };
 layout(std430, binding = 1) buffer BufB { float b[]; };
-layout(std430, binding = 2) readonly buffer Wq { int8_t wq[]; };
+layout(std430, binding = 2) readonly buffer Wq { uint wq4[]; };
 layout(std430, binding = 3) readonly buffer Ws { float ws[]; };
 layout(std430, binding = 4) readonly buffer Nrm { float nrm[]; };
 layout(std430, binding = 5) readonly buffer Aux { float aux[]; };
@@ -48,94 +47,92 @@ layout(std430, binding = 7) readonly buffer Pos { int positions[]; };
 
 layout(push_constant) uniform PC { MMParams mm; } pc;
 
-#define TM 32   // output rows per workgroup
+#define TM 32   // output rows per M-tile
 #define TN 32   // output columns per workgroup
 #define TK 32   // K values per step (one quantisation block)
+#define MT 1    // M-tiles per workgroup (weight traffic / MT)
 
-shared float As[TM][TK];
-shared float Wt[TN][TK];
+shared float As[TM][TK + 1];
+shared float Wt[TN][TK + 1];
 
 void main() {
     uint lx = gl_LocalInvocationID.x;   // 0..15
     uint ly = gl_LocalInvocationID.y;   // 0..15
+    uint t = ly * 16u + lx;
     int row0 = int(gl_WorkGroupID.y) * TM;
     int col0 = int(gl_WorkGroupID.x) * TN;
     int nb = pc.mm.K / 32;
 
-    // Each thread owns 2 output rows and 2 output columns of the tile.
-    int r0 = int(ly) * 2;
-    int c0 = int(lx) * 2;
+    // Tile staging indices: one float4 of A and one uint (4 int8) of W per thread.
+    int aRow = int(t) / 8;
+    int aK = (int(t) % 8) * 4;
+    int wRow = int(t) / 8;
+    int wK = (int(t) % 8) * 4;
+    int wWord = pc.mm.wOff / 4;
 
-    float acc00 = 0.0, acc01 = 0.0, acc10 = 0.0, acc11 = 0.0;
+    int outR = int(ly) * 2;
+    int outC = int(lx) * 2;
+    float acc[2][2];
+    for (int r = 0; r < 2; r++)
+        for (int c = 0; c < 2; c++) acc[r][c] = 0.0;
+
+    int gn = col0 + wRow;
 
     for (int blk = 0; blk < nb; blk++) {
-        // Stage A: 32 rows x 32 K. 256 threads load 1024 values, 4 each.
-        // Thread (lx,ly) loads rows {ly*2, ly*2+1} at K {lx*2, lx*2+1}.
-        for (int r = 0; r < 2; r++) {
-            int rr = int(ly) * 2 + r;
-            int gm = row0 + rr;
-            int k0 = blk * 32 + int(lx) * 2;
-            float v0 = 0.0, v1 = 0.0;
+        // W tile: 32 columns x 32 K, dequantised once for every M-tile.
+        if (gn < pc.mm.N) {
+            int wi = wWord + (gn * pc.mm.K + blk * 32 + wK) / 4;
+            uint p0 = wq4[wi];
+            float d = ws[pc.mm.sOff + gn * nb + blk];
+            Wt[wRow][wK + 0] = float(int8_t(p0 & 0xFFu)) * d;
+            Wt[wRow][wK + 1] = float(int8_t((p0 >> 8) & 0xFFu)) * d;
+            Wt[wRow][wK + 2] = float(int8_t((p0 >> 16) & 0xFFu)) * d;
+            Wt[wRow][wK + 3] = float(int8_t((p0 >> 24) & 0xFFu)) * d;
+        } else {
+            Wt[wRow][wK + 0] = 0.0;
+            Wt[wRow][wK + 1] = 0.0;
+            Wt[wRow][wK + 2] = 0.0;
+            Wt[wRow][wK + 3] = 0.0;
+        }
+
+        {
+            int gm = row0 + aRow;
+            int off = gm * pc.mm.lda + blk * 32 + aK;
             if (gm < pc.mm.M) {
-                v0 = a[gm * pc.mm.lda + k0];
-                v1 = a[gm * pc.mm.lda + k0 + 1];
+                As[aRow][aK + 0] = a[off + 0];
+                As[aRow][aK + 1] = a[off + 1];
+                As[aRow][aK + 2] = a[off + 2];
+                As[aRow][aK + 3] = a[off + 3];
+            } else {
+                As[aRow][aK + 0] = 0.0;
+                As[aRow][aK + 1] = 0.0;
+                As[aRow][aK + 2] = 0.0;
+                As[aRow][aK + 3] = 0.0;
             }
-            As[rr][int(lx) * 2] = v0;
-            As[rr][int(lx) * 2 + 1] = v1;
+            barrier();
+
+            for (int k = 0; k < TK; k++) {
+                float a0 = As[outR + 0][k];
+                float a1 = As[outR + 1][k];
+                float w0 = Wt[outC + 0][k];
+                float w1 = Wt[outC + 1][k];
+                acc[0][0] += a0 * w0;
+                acc[0][1] += a0 * w1;
+                acc[1][0] += a1 * w0;
+                acc[1][1] += a1 * w1;
+            }
+            barrier();
         }
-        // Stage W: 32 output columns x 32 K, dequantised.
+    }
+
+    for (int r = 0; r < 2; r++) {
+        int gm = row0 + outR + r;
+        if (gm >= pc.mm.M) continue;
         for (int c = 0; c < 2; c++) {
-            int cc = int(ly) * 2 + c;
-            int gn = col0 + cc;
-            int k0 = blk * 32 + int(lx) * 2;
-            float v0 = 0.0, v1 = 0.0;
-            if (gn < pc.mm.N) {
-                // wOff/sOff are absolute element offsets of column gn's row 0.
-                int base = pc.mm.wOff + gn * pc.mm.K + k0;
-                float d = ws[pc.mm.sOff + gn * nb + blk];
-                v0 = float(wq[base]) * d;
-                v1 = float(wq[base + 1]) * d;
-            }
-            Wt[cc][int(lx) * 2] = v0;
-            Wt[cc][int(lx) * 2 + 1] = v1;
+            int gn2 = col0 + outC + c;
+            if (gn2 >= pc.mm.N) continue;
+            int idx = gm * pc.mm.ldc + gn2;
+            if (pc.mm.accum == 1) b[idx] += acc[r][c]; else b[idx] = acc[r][c];
         }
-        barrier();
-
-        for (int k = 0; k < TK; k++) {
-            float a0 = As[r0][k];
-            float a1 = As[r0 + 1][k];
-            float w0 = Wt[c0][k];
-            float w1 = Wt[c0 + 1][k];
-            acc00 += a0 * w0;
-            acc01 += a0 * w1;
-            acc10 += a1 * w0;
-            acc11 += a1 * w1;
-        }
-        barrier();
-    }
-
-    int gm0 = row0 + r0;
-    int gm1 = gm0 + 1;
-    int gn0 = col0 + c0;
-    int gn1 = gn0 + 1;
-    bool okM0 = gm0 < pc.mm.M;
-    bool okM1 = gm1 < pc.mm.M;
-    bool okN0 = gn0 < pc.mm.N;
-    bool okN1 = gn1 < pc.mm.N;
-    if (okM0 && okN0) {
-        int c = gm0 * pc.mm.ldc + gn0;
-        if (pc.mm.accum == 1) b[c] += acc00; else b[c] = acc00;
-    }
-    if (okM0 && okN1) {
-        int c = gm0 * pc.mm.ldc + gn1;
-        if (pc.mm.accum == 1) b[c] += acc01; else b[c] = acc01;
-    }
-    if (okM1 && okN0) {
-        int c = gm1 * pc.mm.ldc + gn0;
-        if (pc.mm.accum == 1) b[c] += acc10; else b[c] = acc10;
-    }
-    if (okM1 && okN1) {
-        int c = gm1 * pc.mm.ldc + gn1;
-        if (pc.mm.accum == 1) b[c] += acc11; else b[c] = acc11;
     }
 }

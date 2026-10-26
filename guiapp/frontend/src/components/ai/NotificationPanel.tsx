@@ -1,7 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { IconBell } from "./WorkbenchIcons";
 import { NotificationDetail } from "./NotificationDetail";
-import { overlayTheme, type Theme } from "./aiAssistantPanelTheme";
 import type { AdminNotification as SharedNotification } from "./useNotifications";
 
 export type NotificationCategory =
@@ -14,16 +13,6 @@ export type NotificationCategory =
 export type NotificationPriority = "normal" | "important" | "urgent";
 
 export type AdminNotification = SharedNotification;
-
-export interface NotificationPanelTheme {
-    bg: string;
-    text: string;
-    textMuted: string;
-    headingColor: string;
-    divider: string;
-    inputBarBg: string;
-    inputBarBorder: string;
-}
 
 export interface NotificationPanelProps {
     notifications: AdminNotification[];
@@ -42,21 +31,17 @@ export interface NotificationPanelProps {
     groupInviteError?: string;
     /** Marks the transient panel inaccessible while its host page is hidden. */
     ariaHidden?: boolean;
-    detailTheme?: Theme;
     lang?: string;
-    theme: NotificationPanelTheme;
 }
 
 interface CategoryMeta {
     labelEn: string;
     labelZh: string;
-    color: string;
 }
 
 interface NotificationItemProps {
     notification: AdminNotification;
     lang?: string;
-    theme: NotificationPanelTheme;
     onSelect: (notification: AdminNotification) => void;
 }
 
@@ -68,11 +53,11 @@ const localizeText = (
 ) => (lang === "zh-Hant" ? zhHant : lang?.startsWith("zh") ? zhHans : en);
 
 const CATEGORY_META: Record<NotificationCategory, CategoryMeta> = {
-    system_announcement: { labelEn: "System", labelZh: "系统公告", color: "var(--theme-primary)" },
-    feature_update: { labelEn: "Feature", labelZh: "功能更新", color: "var(--theme-success)" },
-    security_alert: { labelEn: "Security", labelZh: "安全警报", color: "var(--theme-danger)" },
-    maintenance: { labelEn: "Ops", labelZh: "运维通知", color: "var(--theme-warning)" },
-    custom: { labelEn: "Custom", labelZh: "自定义", color: "#8b5cf6" },
+    system_announcement: { labelEn: "System", labelZh: "系统公告" },
+    feature_update: { labelEn: "Feature", labelZh: "功能更新" },
+    security_alert: { labelEn: "Security", labelZh: "安全警报" },
+    maintenance: { labelEn: "Ops", labelZh: "运维通知" },
+    custom: { labelEn: "Custom", labelZh: "自定义" },
 };
 
 const ALL_CATEGORIES: (NotificationCategory | null)[] = [
@@ -107,41 +92,36 @@ export function asNotificationCategory(value: string | null | undefined): Notifi
         : null;
 }
 
-function resolveDetailTheme(panel: NotificationPanelTheme, detail?: Theme): Theme {
-    if (detail) return detail;
-    return {
-        ...overlayTheme,
-        bg: panel.bg,
-        text: panel.text,
-        textMuted: panel.textMuted,
-        headingColor: panel.headingColor,
-        divider: panel.divider,
-        titleBarBg: panel.bg,
-        titleBarBorder: panel.divider,
-        fieldBg: panel.inputBarBg,
-        fieldBorder: panel.inputBarBorder,
-    };
+export interface NotificationPanelSizeInput {
+    /** Panel top in rendered pixels (post transform). */
+    renderedTop: number;
+    /** Panel right edge in rendered pixels; it stays put while width changes. */
+    renderedRight: number;
+    /** Left edge of the host canvas in rendered pixels. */
+    clipLeft: number;
+    /** Bottom edge of the host canvas in rendered pixels. */
+    clipBottom: number;
+    /** The --ui-scale applied to .app-scale-layer. */
+    uiScale: number;
+    /** Height the detail view prefers when there is room. */
+    preferredHeight: number;
 }
 
-let notificationItemStylesInjected = false;
-function ensureNotificationItemStyles() {
-    if (notificationItemStylesInjected) return;
-    notificationItemStylesInjected = true;
-    const style = document.createElement("style");
-    style.textContent = `
-.notification-item-row:hover,
-.notification-item-row:focus-visible {
-  background: var(--notif-hover-bg) !important;
-}
-.notification-item-row:focus-visible {
-  outline: 2px solid var(--notif-focus-ring);
-  outline-offset: -2px;
-}
-@media (prefers-reduced-motion: reduce) {
-  .notification-item-row { transition: none !important; }
-}
-`;
-    document.head.appendChild(style);
+/**
+ * Size the dropdown from its fixed right edge back into the host canvas.
+ * A percentage width would resolve against the tiny bell anchor and collapse,
+ * and rects are transform-scaled, so rendered pixels must be divided by the
+ * UI scale before they become CSS width/height.
+ */
+export function measureNotificationPanel(input: NotificationPanelSizeInput): { width: number; maxHeight: number } {
+    const scale = Number.isFinite(input.uiScale) && input.uiScale > 0 ? input.uiScale : 1;
+    const layoutPx = (rendered: number) => rendered / scale;
+    const available = Math.floor(layoutPx(input.clipBottom - input.renderedTop) - 8);
+    const widthBudget = Math.floor(layoutPx(input.renderedRight - input.clipLeft) - 16);
+    return {
+        width: widthBudget > 0 ? Math.min(400, widthBudget) : 400,
+        maxHeight: available > 0 ? Math.min(input.preferredHeight, available) : input.preferredHeight,
+    };
 }
 
 function formatRelativeTime(isoString: string, lang?: string): string {
@@ -167,10 +147,8 @@ function formatRelativeTime(isoString: string, lang?: string): string {
 const NotificationItem: React.FC<NotificationItemProps> = React.memo(({
     notification,
     lang,
-    theme: t,
     onSelect,
 }) => {
-    ensureNotificationItemStyles();
     const meta = CATEGORY_META[notification.category] ?? CATEGORY_META.custom;
     const categoryLabel = lang?.startsWith("zh") ? meta.labelZh : meta.labelEn;
     const priorityText =
@@ -179,12 +157,6 @@ const NotificationItem: React.FC<NotificationItemProps> = React.memo(({
             : notification.priority === "important"
               ? localizeText(lang, "Important", "重要", "重要")
               : "";
-    const priorityStyle: React.CSSProperties | undefined =
-        notification.priority === "urgent"
-            ? { color: "var(--theme-danger)", fontWeight: 700 }
-            : notification.priority === "important"
-              ? { color: "var(--theme-warning)", fontWeight: 600 }
-              : undefined;
     const titleText = (notification.title || "").trim();
     const contentPreview = notification.groupInviteId
         ? String(notification.content || "").replace(/\s+/g, " ").trim()
@@ -194,7 +166,7 @@ const NotificationItem: React.FC<NotificationItemProps> = React.memo(({
 
     return (
         <div
-            className="notification-item-row"
+            className={`notification-item-row${notification.is_read ? "" : " notification-item-row--unread"}`}
             data-testid={`notification-item-${notification.id}`}
             role="button"
             tabIndex={0}
@@ -205,110 +177,40 @@ const NotificationItem: React.FC<NotificationItemProps> = React.memo(({
                     onSelect(notification);
                 }
             }}
-            style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: "4px",
-                padding: "10px 14px",
-                cursor: "pointer",
-                borderBottom: `1px solid ${t.divider}`,
-                background: notification.is_read ? "transparent" : `${t.headingColor}08`,
-                transition: "background 0.15s ease",
-                ["--notif-hover-bg" as string]: `${t.headingColor}12`,
-                ["--notif-focus-ring" as string]: t.headingColor,
-            }}
         >
-            <div
-                className="np-head-row"
-            >
-                <span
-                    style={{
-                        padding: "1px 6px",
-                        borderRadius: "8px",
-                        background: `${meta.color}18`,
-                        color: meta.color,
-                        fontSize: "10px",
-                        fontWeight: 500,
-                        lineHeight: 1.4,
-                        flexShrink: 0,
-                    }}
-                >
+            <div className="np-head-row">
+                <span className={`notification-cat-badge notification-cat--${notification.category}`}>
                     {categoryLabel}
                 </span>
 
                 {priorityText && (
-                    <span style={{ fontSize: "10px", ...priorityStyle }}>
+                    <span className={`notification-priority notification-priority--${notification.priority}`}>
                         {priorityText}
                     </span>
                 )}
 
-                <span
-                    style={{
-                        marginLeft: "auto",
-                        color: t.textMuted,
-                        fontSize: "10px",
-                        flexShrink: 0,
-                    }}
-                >
+                <span className="notification-item-time">
                     {formatRelativeTime(notification.created_at, lang)}
                 </span>
 
-                {!notification.is_read && (
-                    <span
-                        style={{
-                            width: "6px",
-                            height: "6px",
-                            borderRadius: "50%",
-                            background: t.headingColor,
-                            flexShrink: 0,
-                        }}
-                    />
-                )}
+                {!notification.is_read && <span className="notification-unread-dot" aria-hidden="true" />}
             </div>
 
-            <span
-                style={{
-                    fontSize: "13px",
-                    fontWeight: notification.is_read ? 400 : 600,
-                    color: t.text,
-                    lineHeight: 1.45,
-                    display: "-webkit-box",
-                    WebkitLineClamp: 2,
-                    WebkitBoxOrient: "vertical",
-                    overflow: "hidden",
-                    wordBreak: "break-word",
-                }}
-            >
+            <span className="notification-item-title">
                 {notification.title}
             </span>
 
             {hasDistinctPreview && (
                 <span
                     data-testid={`notification-item-preview-${notification.id}`}
-                    style={{
-                        fontSize: "12px",
-                        lineHeight: 1.5,
-                        color: t.textMuted,
-                        display: "-webkit-box",
-                        WebkitLineClamp: 2,
-                        WebkitBoxOrient: "vertical",
-                        overflow: "hidden",
-                        wordBreak: "break-word",
-                    }}
+                    className="notification-item-preview"
                 >
                     {contentPreview}
                 </span>
             )}
 
             {(notification.groupInviteId || hasMoreToRead) && (
-                <span
-                    style={{
-                        fontSize: "11px",
-                        color: t.textMuted,
-                        fontWeight: 500,
-                        alignSelf: "flex-start",
-                    }}
-                >
+                <span className="notification-item-more">
                     {notification.groupInviteId
                         ? localizeText(lang, "Open to respond", "打开处理", "打開處理")
                         : localizeText(lang, "View full notice", "查看全文", "查看全文")}
@@ -335,9 +237,7 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
     groupInviteListError = "",
     groupInviteError = "",
     ariaHidden = false,
-    detailTheme,
     lang,
-    theme: t,
 }) => {
     const panelRef = useRef<HTMLDivElement>(null);
     const onCloseRef = useRef(onClose);
@@ -365,9 +265,12 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
     const showInviteListErrorBanner = Boolean(inviteListError) && (filteredNotifications.length > 0 || categoryMiss);
     const emptyIsInviteError = Boolean(inviteListError) && !categoryFilter;
     const viewingDetail = Boolean(selectedNotification);
-    const resolvedDetailTheme = resolveDetailTheme(t, detailTheme);
     const preferredHeight = viewingDetail ? 520 : 460;
     const [maxPanelHeight, setMaxPanelHeight] = useState(preferredHeight);
+    // A percentage width would resolve against the bell anchor (a few dozen
+    // pixels), not the title bar, and collapse the panel. Measure the host
+    // canvas instead so the panel fits scaled windows.
+    const [panelWidth, setPanelWidth] = useState(400);
 
     useEffect(() => {
         const onKeyDown = (event: KeyboardEvent) => {
@@ -410,14 +313,20 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
             // and only 38px tall, which makes available space look empty.
             // Prefer the nearest ancestor that actually clips (the panel body has
             // overflow:hidden); the panel root is only the outer bound.
+            const rootRect = root.getBoundingClientRect();
             const clip = root.closest("[data-testid='ai-panel-body']")
                 ?? root.closest("[data-testid='ai-panel-root']");
-            const clipBottom = clip instanceof HTMLElement
-                ? clip.getBoundingClientRect().bottom
-                : window.innerHeight;
-            const top = root.getBoundingClientRect().top;
-            const available = Math.floor(clipBottom - top - 8);
-            setMaxPanelHeight(available > 0 ? Math.min(preferredHeight, available) : preferredHeight);
+            const clipRect = clip instanceof HTMLElement ? clip.getBoundingClientRect() : null;
+            const { width, maxHeight } = measureNotificationPanel({
+                renderedTop: rootRect.top,
+                renderedRight: rootRect.right,
+                clipLeft: clipRect ? clipRect.left : 0,
+                clipBottom: clipRect ? clipRect.bottom : window.innerHeight,
+                uiScale: Number.parseFloat(getComputedStyle(root).getPropertyValue("--ui-scale")),
+                preferredHeight,
+            });
+            setPanelWidth(width);
+            setMaxPanelHeight(maxHeight);
         };
 
         measure();
@@ -462,22 +371,11 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
             aria-hidden={ariaHidden ? "true" : undefined}
             tabIndex={-1}
             aria-label={localizeText(lang, "Notifications", "通知", "通知")}
+            className="notification-panel"
             style={{
-                position: "absolute",
-                top: "100%",
-                right: 8,
-                width: "min(400px, calc(100% - 16px))",
+                width: panelWidth,
                 maxHeight: maxPanelHeight,
                 height: viewingDetail ? maxPanelHeight : undefined,
-                outline: "none",
-                background: t.bg,
-                border: `1px solid ${t.divider}`,
-                borderRadius: "10px",
-                boxShadow: "0 4px 8px rgba(15, 23, 42, 0.12)",
-                display: "flex",
-                flexDirection: "column",
-                zIndex: 1000,
-                overflow: "hidden",
             }}
             onClick={(e) => e.stopPropagation()}
         >
@@ -486,7 +384,6 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
                     notification={selectedNotification}
                     onBack={onBackFromDetail ?? onClose}
                     onClose={onClose}
-                    theme={resolvedDetailTheme}
                     lang={lang}
                     onGroupInviteAction={selectedNotification.groupInviteId ? onGroupInviteAction : undefined}
                     groupInviteBusy={Boolean(selectedNotification.groupInviteId) && groupInviteBusy}
@@ -496,37 +393,14 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
                 />
             ) : (
             <>
-            <div
-                style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    padding: "10px 14px 8px",
-                    borderBottom: `1px solid ${t.divider}`,
-                    flexShrink: 0,
-                }}
-            >
-                <span
-                    style={{
-                        fontSize: "14px",
-                        fontWeight: 600,
-                        color: t.text,
-                    }}
-                >
+            <div className="notification-panel__head">
+                <span className="notification-panel__title">
                     {localizeText(lang, "Notifications", "通知", "通知")}
                 </span>
                 <button
                     data-testid="notification-panel-close"
                     onClick={onClose}
-                    style={{
-                        background: "none",
-                        border: "none",
-                        cursor: "pointer",
-                        color: t.textMuted,
-                        fontSize: "16px",
-                        padding: "2px 4px",
-                        lineHeight: 1,
-                    }}
+                    className="notification-panel__close"
                     aria-label={localizeText(lang, "Close", "关闭", "關閉")}
                 >
                     ×
@@ -535,14 +409,7 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
 
             <div
                 data-testid="notification-category-filter"
-                style={{
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: "4px",
-                    padding: "8px 14px",
-                    borderBottom: `1px solid ${t.divider}`,
-                    flexShrink: 0,
-                }}
+                className="notification-panel__filters"
             >
                 {ALL_CATEGORIES.map((cat) => {
                     const isActive = categoryFilter === cat;
@@ -552,27 +419,15 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
                             : lang?.startsWith("zh")
                               ? CATEGORY_META[cat].labelZh
                               : CATEGORY_META[cat].labelEn;
-                    const pillColor = cat ? CATEGORY_META[cat].color : t.headingColor;
-
                     return (
                         <button
                             key={cat ?? "all"}
                             type="button"
                             data-testid={`notification-filter-${cat ?? "all"}`}
+                            data-category={cat ?? "all"}
                             aria-pressed={isActive}
                             onClick={() => onCategoryChange(cat)}
-                            style={{
-                                padding: "3px 8px",
-                                fontSize: "11px",
-                                fontWeight: isActive ? 600 : 400,
-                                borderRadius: "10px",
-                                border: `1px solid ${isActive ? pillColor : t.divider}`,
-                                background: isActive ? `${pillColor}18` : "transparent",
-                                color: isActive ? pillColor : t.textMuted,
-                                cursor: "pointer",
-                                lineHeight: 1.3,
-                                transition: "all 0.15s ease",
-                            }}
+                            className="notification-filter"
                         >
                             {label}
                         </button>
@@ -593,17 +448,7 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
                 {filteredNotifications.length === 0 ? (
                     <div
                         data-testid="notification-empty-state"
-                        style={{
-                            display: "flex",
-                            flexDirection: "column",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            padding: "32px 16px",
-                            color: t.textMuted,
-                            fontSize: "13px",
-                            textAlign: "center",
-                            gap: "8px",
-                        }}
+                        className="np-empty"
                     >
                         <span className="np-empty-icon"><IconBell size={28} /></span>
                         <span className={emptyIsInviteError ? "np-invite-list-error" : undefined} data-testid={emptyIsInviteError ? "notification-group-invite-list-error" : undefined} role={emptyIsInviteError ? "status" : undefined}>
@@ -620,38 +465,18 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
                             key={notification.id}
                             notification={notification}
                             lang={lang}
-                            theme={t}
                             onSelect={onSelectNotification}
                         />
                     ))
                 )}
             </div>
 
-            <div
-                style={{
-                    padding: "8px 14px",
-                    borderTop: `1px solid ${t.divider}`,
-                    flexShrink: 0,
-                    display: "flex",
-                    justifyContent: "center",
-                }}
-            >
+            <div className="notification-panel__footer">
                 <button
                     data-testid="notification-mark-all-read"
                     onClick={onMarkAllRead}
                     disabled={!hasUnread}
-                    style={{
-                        background: "none",
-                        border: "none",
-                        cursor: hasUnread ? "pointer" : "default",
-                        color: hasUnread ? t.headingColor : t.textMuted,
-                        fontSize: "12px",
-                        fontWeight: 500,
-                        padding: "4px 12px",
-                        borderRadius: "4px",
-                        opacity: hasUnread ? 1 : 0.5,
-                        transition: "opacity 0.15s ease",
-                    }}
+                    className="notification-panel__markall"
                 >
                     {localizeText(lang, "Mark all as read", "全部标为已读", "全部標為已讀")}
                 </button>

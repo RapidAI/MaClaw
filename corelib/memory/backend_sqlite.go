@@ -69,6 +69,12 @@ func applyMemoryPragmas(db *sql.DB) error {
 		"PRAGMA synchronous=NORMAL",
 		"PRAGMA cache_size=-8000", // 8MB cache
 		"PRAGMA foreign_keys=OFF",
+		// Memory-map the database file instead of copying pages through the
+		// page cache on every read. Opening the store selects every live entry
+		// (embeddings included), which is the startup hot path; mapped pages are
+		// file-backed and evictable, so they do not pin RAM the way a heap copy
+		// does. SQLite clamps the value to the file size.
+		"PRAGMA mmap_size=67108864", // 64MB
 	}
 	for _, p := range pragmas {
 		if _, err := db.Exec(p); err != nil {

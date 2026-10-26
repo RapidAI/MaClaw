@@ -1812,6 +1812,17 @@
     margin-top: 5px;
 }
 
+/* Hub sync error surfaces inside the meta row; keep it quiet but scannable. */
+.apps-approval-row__error {
+    display: block;
+    max-width: 100%;
+    margin-top: 3px;
+    color: var(--theme-danger);
+    font-size: 11px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
 .apps-approval-empty {
     min-height: 78px;
     display: grid;
@@ -7648,6 +7659,67 @@
 @media (prefers-reduced-motion: reduce) {
     .apps-preview--studio .apps-create-section > summary::before,
     .apps-layout-designer__region {
+        transition: none;
+    }
+}
+
+/* The quick-create form (outside the studio canvas) nests the same
+   collapsible sections; mirror the summary chrome there. */
+.apps-create-form .apps-create-section {
+    width: 100%;
+    min-width: 0;
+    display: grid;
+    gap: 12px;
+    padding: 12px 0 2px;
+    border-top: 1px solid var(--theme-border-subtle);
+}
+
+.apps-create-form .apps-create-section:first-of-type {
+    padding-top: 0;
+    border-top: 0;
+}
+
+.apps-create-form .apps-create-section > summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 24px;
+    cursor: pointer;
+    list-style: none;
+    color: var(--theme-text-primary);
+    font-size: var(--apps-font-md);
+    font-weight: 700;
+    user-select: none;
+}
+
+.apps-create-form .apps-create-section > summary::-webkit-details-marker {
+    display: none;
+}
+
+.apps-create-form .apps-create-section > summary::before {
+    content: '';
+    width: 7px;
+    height: 7px;
+    margin-top: -2px;
+    border-right: 1.5px solid var(--theme-text-muted);
+    border-bottom: 1.5px solid var(--theme-text-muted);
+    transform: rotate(45deg);
+    transition: transform var(--transition-fast);
+}
+
+.apps-create-form .apps-create-section:not([open]) > summary::before {
+    margin-top: 0;
+    transform: rotate(-45deg);
+}
+
+.apps-create-form .apps-create-section > summary:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--theme-primary) 28%, transparent);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .apps-create-form .apps-create-section > summary::before {
         transition: none;
     }
 }

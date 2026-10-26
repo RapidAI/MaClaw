@@ -20,7 +20,20 @@ import {
 import type { VEConversationViewProps, VEConversationError, VEConversationHandle } from "../VEConversationView";
 import type { Theme } from "../aiAssistantPanelTheme";
 import { CHAT_BUBBLE_SIDE_TAIL_INSET, CHAT_BUBBLE_SIDE_TAIL_TOP } from "../ChatBubbleFrame";
+import { STREAM_COALESCE_FLUSH_MS } from "../streamCoalescer";
 import { GroupDiscussionAttachmentPreviewDataURL, GroupDiscussionDownloadAttachment, GroupDiscussionGetConsultationDetail, ListVirtualEmployees, OpenFileOrShowInFolder, SelectAIAssistantFiles } from "../../../../wailsjs/go/main/App";
+
+/**
+ * Fold a coalescer burst into state. Since the 33ms stream coalescer landed
+ * (build 12451), the first ve:stream_chunk of a burst paints immediately and
+ * later chunks flush on its timer — advance just past it instead of running
+ * every pending timer.
+ */
+async function flushStreamBurst() {
+    await act(async () => {
+        await vi.advanceTimersByTimeAsync(STREAM_COALESCE_FLUSH_MS + 1);
+    });
+}
 
 // Mock Wails runtime
 const eventHandlers = new Map<string, (...args: any[]) => void>();
@@ -1916,6 +1929,7 @@ describe("VEConversationView", () => {
             act(() => {
                 eventHandlers.get("ve:stream_chunk")?.({ content: "####\u{1f4c5}明天\n多云" });
             });
+            await flushStreamBurst();
 
             const indicator = screen.getByTestId("ve-streaming-indicator");
             expect(indicator.textContent).toContain("晴天");
@@ -1934,6 +1948,7 @@ describe("VEConversationView", () => {
             act(() => {
                 eventHandlers.get("ve:stream_chunk")?.({ content: "world!" });
             });
+            await flushStreamBurst();
 
             expect(screen.getByTestId("ve-streaming-indicator").textContent).toContain("Hello world!");
         });
@@ -2316,6 +2331,7 @@ describe("VEConversationView", () => {
             act(() => {
                 eventHandlers.get("ve:stream_chunk")?.({ from_id: "ve-b", from_name: "Agent B", content: "B replies" });
             });
+            await flushStreamBurst();
 
             const msgList = screen.getByTestId("ve-message-list");
             expect(msgList.textContent).toContain("Agent A");
@@ -2340,6 +2356,7 @@ describe("VEConversationView", () => {
             act(() => {
                 eventHandlers.get("ve:stream_chunk")?.({ from_id: "machine-a", from_name: "Agent A", content: "merged" });
             });
+            await flushStreamBurst();
 
             const indicator = screen.getByTestId("ve-streaming-indicator");
             expect(indicator.textContent).toContain("alias merged");

@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 )
 
 // SSHWaitTimeoutShellBusyNotice is appended when a wait times out and the
@@ -53,6 +56,11 @@ type SSHManagedSession struct {
 	// consecutiveExecFailures 记录连续 exec 失败次数（无输出或错误）。
 	// 达到阈值时上层应自动关闭并重建会话，避免 LLM 在死会话上无限重试。
 	consecutiveExecFailures int
+
+	// reconnectMu is the single replacement of this session's PTY.
+	// Take it around the dial, and never while holding mu. The admit flight
+	// is a different lock: exec can reconnect while a connect holds that flight.
+	reconnectMu sync.Mutex
 }
 
 // PreviewTail 返回最后 n 行预览输出。
@@ -124,14 +132,55 @@ func (s *SSHManagedSession) GetSummary() SSHSessionSummary {
 	return s.Summary
 }
 
+// HostKeyFingerprint is the pin recorded for this session's handshake.
+// Reconnect keeps the session, so the pin stays with it.
+func (s *SSHManagedSession) HostKeyFingerprint() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return strings.TrimSpace(s.Spec.HostConfig.HostKeyFingerprint)
+}
+
+// PTY is the current shell. Reconnect replaces it, so callers must not keep
+// a handle read outside this lock and then close it.
+func (s *SSHManagedSession) PTY() *SSHPTYSession {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Handle
+}
+
+// HostConfig is a copy of the handshake configuration, including the pin.
+func (s *SSHManagedSession) HostConfig() SSHHostConfig {
+	if s == nil {
+		return SSHHostConfig{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Spec.HostConfig
+}
+
 // SSHSessionManager 管理所有 SSH 远程会话的生命周期。
 // 复用 SSHPool 做连接管理，对上层暴露与 TUISessionManager 一致的接口模式。
 type SSHSessionManager struct {
 	mu       sync.RWMutex
 	sessions map[string]*SSHManagedSession
+	// admits serializes connect for one owner and every identity admission
+	// can reuse: the endpoint, and every non-empty label, including a label
+	// whose text equals the host id. One flight is stored under each of those keys.
+	admits   map[string]*sshAdmitFlight
 	pool     *SSHPool
 	onUpdate func(sessionID string)
 	counter  int
+}
+
+// sshAdmitFlight is one connect currently deciding or dialing.
+type sshAdmitFlight struct {
+	done chan struct{}
 }
 
 // NewSSHSessionManager 创建 SSH 会话管理器。
@@ -141,8 +190,149 @@ func NewSSHSessionManager(pool *SSHPool) *SSHSessionManager {
 	}
 	return &SSHSessionManager{
 		sessions: make(map[string]*SSHManagedSession),
+		admits:   make(map[string]*sshAdmitFlight),
 		pool:     pool,
 	}
+}
+
+// sshAdmitKeys are the identities SelectReusableSSHSession can treat as one
+// session. The host id is always one. A non-empty label is the other, including
+// when that label text equals the host id: Select still matches another
+// session whose configured label is that text. The display fallback is decided
+// from the stored summary, where a label copied from the host id is not a
+// configured label. Keys are sorted so the set is stable. Different owners
+// stay different keys. The caller acquires every key or none of them.
+func sshAdmitKeys(ownerID, hostID, label string) []string {
+	owner := strings.TrimSpace(ownerID)
+	host := strings.TrimSpace(hostID)
+	label = strings.TrimSpace(label)
+	keys := []string{"host\n" + owner + "\n" + host}
+	if label != "" {
+		keys = append(keys, "label\n"+owner+"\n"+label)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func mergeAdmitKeys(parts ...[]string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0)
+	for _, part := range parts {
+		for _, key := range part {
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, key)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// connectAdmitKeys is the request plus the open session that request would
+// attach. A host-only connect and a label connect name that same PTY, so both
+// have to take its host id and its configured label or they reconnect it twice.
+// The pin and capture are the same ones AttachOpenSession will use; a wider
+// match would lock a different session and leave the real one unlocked.
+// Call it without holding m.mu: it lists sessions itself.
+func (m *SSHSessionManager) connectAdmitKeys(ownerID, hostID, label, requestedPin string, capture bool) []string {
+	keys := sshAdmitKeys(ownerID, hostID, label)
+	if m == nil {
+		return keys
+	}
+	existing := SelectReusableSSHSession(m.List(), hostID, label, ownerID, requestedPin, capture)
+	if existing == nil {
+		return keys
+	}
+	summary := existing.GetSummary()
+	return mergeAdmitKeys(keys, sshAdmitKeys(ownerID, summary.HostID, configuredSSHLabel(summary)))
+}
+
+// DoExclusiveConnect runs fn alone for this owner and for every identity that
+// would attach the same open session. Another connect that shares any of those
+// keys waits, then decides again, so it sees the session this call published
+// instead of opening a second PTY. Keys are chosen again after each wait.
+// No key is held while waiting. fn must not call DoExclusiveConnect for an
+// overlapping key: that waits on itself.
+func (m *SSHSessionManager) DoExclusiveConnect(ownerID, hostID, label, requestedPin string, capture bool, fn func()) {
+	if m == nil {
+		if fn != nil {
+			fn()
+		}
+		return
+	}
+	if fn == nil {
+		return
+	}
+	for {
+		keys := m.connectAdmitKeys(ownerID, hostID, label, requestedPin, capture)
+		m.mu.Lock()
+		if m.admits == nil {
+			m.admits = make(map[string]*sshAdmitFlight)
+		}
+		var wait <-chan struct{}
+		for _, key := range keys {
+			if flight, ok := m.admits[key]; ok && flight != nil {
+				wait = flight.done
+				break
+			}
+		}
+		if wait != nil {
+			m.mu.Unlock()
+			<-wait
+			continue
+		}
+		flight := &sshAdmitFlight{done: make(chan struct{})}
+		for _, key := range keys {
+			m.admits[key] = flight
+		}
+		m.mu.Unlock()
+		func() {
+			defer func() {
+				m.mu.Lock()
+				for _, key := range keys {
+					if current := m.admits[key]; current == flight {
+						delete(m.admits, key)
+					}
+				}
+				m.mu.Unlock()
+				close(flight.done)
+			}()
+			fn()
+		}()
+		return
+	}
+}
+
+// AttachOpenSession is the connect decision for a session that already
+// exists. An open session whose PTY is alive is that shell. A terminal
+// session, or a PTY whose transport is dead, is a new shell on the same id:
+// the SSH connection stays in the pool when it is still usable. A failed
+// replacement retires the session and reports RetiredID; a nil session is
+// the only signal that the caller may dial. Call it from DoExclusiveConnect
+// so two connects cannot both replace or both dial.
+func (m *SSHSessionManager) AttachOpenSession(hostID, label, ownerID, requestedPin string, capture bool) (session *SSHManagedSession, reconnected bool, retiredID string) {
+	if m == nil {
+		return nil, false, ""
+	}
+	existing := SelectReusableSSHSession(m.List(), hostID, label, ownerID, requestedPin, capture)
+	if existing == nil {
+		return nil, false, ""
+	}
+	summary := existing.GetSummary()
+	handle := existing.PTY()
+	// IsAlive waits on the keepalive. The shell can exit during that wait,
+	// so the open handle that was probed has to still be the current shell.
+	if SessionStatus(summary.Status).IsOpen() && handle != nil && handle.IsAlive() &&
+		SessionStatus(existing.GetSummary().Status).IsOpen() && existing.PTY() == handle {
+		return existing, false, ""
+	}
+	if err := m.ReconnectByID(existing.ID); err == nil {
+		return existing, true, ""
+	}
+	m.RemoveSession(existing.ID)
+	return nil, false, existing.ID
 }
 
 // SetOnUpdate 设置会话状态变更回调。
@@ -170,8 +360,27 @@ func (m *SSHSessionManager) Create(spec SSHSessionSpec) (*SSHManagedSession, err
 	// 创建 PTY 会话
 	ptySession := NewSSHPTYSession(client, hostID)
 	if err := ptySession.Start(spec); err != nil {
+		startErr := err
 		m.pool.Release(spec.HostConfig, client)
-		return nil, fmt.Errorf("start ssh pty: %w", err)
+		// Acquire does not probe a client another session still holds.
+		// A failed shell on that client would be handed out on every later
+		// Create. Replace it once. A client this call just dialed is already
+		// gone with the release above, so its failure is the result.
+		if m.pool.holdsClient(spec.HostConfig, client) {
+			var dialErr error
+			client, dialErr = m.pool.Reconnect(spec.HostConfig)
+			if dialErr != nil {
+				return nil, fmt.Errorf("start ssh pty: %w", startErr)
+			}
+			hostID = spec.HostConfig.SSHHostID()
+			ptySession = NewSSHPTYSession(client, hostID)
+			if err = ptySession.Start(spec); err != nil {
+				m.pool.Release(spec.HostConfig, client)
+				return nil, fmt.Errorf("start ssh pty: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("start ssh pty: %w", startErr)
+		}
 	}
 
 	now := time.Now()
@@ -209,8 +418,8 @@ func (m *SSHSessionManager) Create(spec SSHSessionSpec) (*SSHManagedSession, err
 	m.sessions[sessionID] = session
 	m.mu.Unlock()
 
-	go m.runOutputLoop(session)
-	go m.runExitLoop(session, spec.HostConfig)
+	go m.runOutputLoop(session, ptySession)
+	go m.runExitLoop(session, ptySession)
 
 	return session, nil
 }
@@ -301,33 +510,94 @@ func (m *SSHSessionManager) WriteInputChecked(sessionID, text string) (reconnect
 }
 
 // reconnectSession 对已断开的会话执行重连：重新建立 SSH 连接和 PTY 会话。
+// One session has one replacement. A caller that arrives while another
+// replacement is dialing waits, then keeps that PTY when it is alive.
 func (m *SSHSessionManager) reconnectSession(s *SSHManagedSession) error {
+	if s == nil {
+		return fmt.Errorf("ssh session is nil")
+	}
+	s.reconnectMu.Lock()
+	defer s.reconnectMu.Unlock()
+
 	s.mu.Lock()
 	spec := s.Spec
 	oldHandle := s.Handle
+	status := s.Status
 	s.mu.Unlock()
+	// A live shell is the open session. The probe waits, and the shell can
+	// exit during it; reuse the handle only when it is still that open shell.
+	// A terminal status means that shell has ended even when the SSH
+	// connection is still up, so it is replaced.
+	if status.IsOpen() && oldHandle != nil && oldHandle.IsAlive() {
+		s.mu.Lock()
+		still := s.Status.IsOpen() && s.Handle == oldHandle
+		s.mu.Unlock()
+		if still {
+			return nil
+		}
+	}
 
 	spec.HostConfig.Defaults()
-
-	// 关闭旧 handle
+	oldCfg := spec.HostConfig
+	var oldClient *ssh.Client
+	transportDead := false
 	if oldHandle != nil {
+		transportDead = oldHandle.ObservedTransportFailure()
+		oldClient = oldHandle.SSHClient()
 		_ = oldHandle.Close()
 	}
 
-	// 通过连接池重连
-	client, err := m.pool.Reconnect(spec.HostConfig)
+	// The pooled connection outlives one shell. Reuse it unless this handle
+	// already recorded a transport failure; that client cannot host a PTY.
+	var client *ssh.Client
+	var err error
+	if transportDead {
+		client, err = m.pool.Reconnect(oldCfg)
+	} else {
+		var resolved SSHHostConfig
+		client, resolved, err = m.pool.AcquireResolved(spec.HostConfig)
+		if err == nil {
+			spec.HostConfig = resolved
+		}
+	}
 	if err != nil {
 		return err
 	}
 
 	hostID := spec.HostConfig.SSHHostID()
 	ptySession := NewSSHPTYSession(client, hostID)
-	if err := ptySession.Start(spec); err != nil {
+	err = ptySession.Start(spec)
+	// Acquire does not probe a client this session still holds, so a failed
+	// shell on that same client would be handed out on every later call.
+	// Drop both refs and dial one replacement. A client this call just dialed
+	// is already that replacement: its start failure is the result.
+	if err != nil && !transportDead && oldClient == client {
 		m.pool.Release(spec.HostConfig, client)
+		m.pool.Release(spec.HostConfig, oldClient)
+		client, err = m.pool.Reconnect(spec.HostConfig)
+		if err != nil {
+			return err
+		}
+		oldClient = nil
+		ptySession = NewSSHPTYSession(client, hostID)
+		err = ptySession.Start(spec)
+	}
+	if err != nil {
+		m.pool.Release(spec.HostConfig, client)
+		if oldClient != nil && oldClient != client {
+			m.pool.Release(oldCfg, oldClient)
+		}
 		return fmt.Errorf("restart ssh pty: %w", err)
+	}
+	if oldClient == client {
+		// Acquire counted a second ref on the connection this session held.
+		m.pool.Release(spec.HostConfig, client)
+	} else if oldClient != nil {
+		m.pool.Release(oldCfg, oldClient)
 	}
 
 	s.mu.Lock()
+	s.Spec = spec
 	s.Handle = ptySession
 	s.Status = SessionRunning
 	s.Summary.Status = string(SessionRunning)
@@ -340,8 +610,8 @@ func (m *SSHSessionManager) reconnectSession(s *SSHManagedSession) error {
 	s.pendingLine = ""
 	s.mu.Unlock()
 
-	go m.runOutputLoop(s)
-	go m.runExitLoop(s, spec.HostConfig)
+	go m.runOutputLoop(s, ptySession)
+	go m.runExitLoop(s, ptySession)
 
 	return nil
 }
@@ -925,9 +1195,8 @@ func (m *SSHSessionManager) GetSessionStatus(sessionID string) (SessionStatus, b
 // RemoveSession 从管理器中移除指定会话并关闭其 handle。
 // 用于清理底层连接已死但状态仍为 running 的僵尸会话。
 //
-// 不直接调用 pool.Release —— 连接池引用由 runExitLoop 在 handle 关闭后
-// 自然释放。如果 reconnectSession 已经失败过，旧连接已被 pool.Reconnect
-// 清理，runExitLoop 的 Release 调用是安全的 no-op。
+// PTY 退出不释放池里的连接，下一次接入还要在上面开 shell。
+// 会话被移除时才释放这一次引用。连接已经被替换时 Release 对不上 client，是 no-op。
 func (m *SSHSessionManager) RemoveSession(sessionID string) {
 	m.mu.Lock()
 	s, ok := m.sessions[sessionID]
@@ -937,13 +1206,19 @@ func (m *SSHSessionManager) RemoveSession(sessionID string) {
 	m.mu.Unlock()
 
 	if ok && s != nil {
-		if s.Handle != nil {
-			_ = s.Handle.Close()
+		cfg := s.HostConfig()
+		var client *ssh.Client
+		if handle := s.PTY(); handle != nil {
+			client = handle.SSHClient()
+			_ = handle.Close()
 		}
 		s.mu.Lock()
 		s.Status = SessionExited
 		s.Summary.Status = string(SessionExited)
 		s.mu.Unlock()
+		if client != nil {
+			m.pool.Release(cfg, client)
+		}
 	}
 }
 
@@ -965,11 +1240,11 @@ func (m *SSHSessionManager) Close() {
 	m.pool.CloseAll()
 }
 
-func (m *SSHSessionManager) runOutputLoop(s *SSHManagedSession) {
-	if s.Handle == nil {
+func (m *SSHSessionManager) runOutputLoop(s *SSHManagedSession, handle *SSHPTYSession) {
+	if s == nil || handle == nil {
 		return
 	}
-	outCh := s.Handle.Output()
+	outCh := handle.Output()
 	if outCh == nil {
 		return
 	}
@@ -980,6 +1255,12 @@ func (m *SSHSessionManager) runOutputLoop(s *SSHManagedSession) {
 		now := time.Now()
 
 		s.mu.Lock()
+		// This loop belongs to the handle it was started with. A replacement
+		// shell has its own loop; the old PTY's trailing bytes are not its output.
+		if s.Handle != handle {
+			s.mu.Unlock()
+			continue
+		}
 		// 拼接上次未完成的半行，再按完整行切分
 		combined := s.pendingLine + string(chunk)
 		complete, remainder := splitCompleteSSHLines(combined)
@@ -1010,6 +1291,10 @@ func (m *SSHSessionManager) runOutputLoop(s *SSHManagedSession) {
 
 	// channel 关闭后 flush 残留半行
 	s.mu.Lock()
+	if s.Handle != handle {
+		s.mu.Unlock()
+		return
+	}
 	if s.pendingLine != "" {
 		s.PreviewLines = append(s.PreviewLines, s.pendingLine)
 		s.Summary.LastOutput = s.pendingLine
@@ -1019,15 +1304,12 @@ func (m *SSHSessionManager) runOutputLoop(s *SSHManagedSession) {
 	s.mu.Unlock()
 }
 
-func (m *SSHSessionManager) runExitLoop(s *SSHManagedSession, hostCfg SSHHostConfig) {
-	if s.Handle == nil {
+func (m *SSHSessionManager) runExitLoop(s *SSHManagedSession, handle *SSHPTYSession) {
+	if s == nil || handle == nil {
 		return
 	}
-	// 在 goroutine 启动时捕获当前 handle 引用。
-	// 关键：reconnectSession 会替换 s.Handle 为新的 PTY 会话，
-	// 如果这里不捕获，后面的 Close() 会关闭新会话而非旧会话，
-	// pool.Release 也会错误地释放新连接的引用计数。
-	handle := s.Handle
+	// handle is the PTY this loop was started for. Reading s.Handle here would
+	// race with replacement and could close or exit the new shell.
 	exitCh := handle.Exit()
 	if exitCh == nil {
 		return
@@ -1054,13 +1336,9 @@ func (m *SSHSessionManager) runExitLoop(s *SSHManagedSession, hostCfg SSHHostCon
 	s.mu.Unlock()
 
 	// 关闭捕获的旧 handle（不是 s.Handle，避免关闭新会话）。
+	// 不释放池连接。shell 结束不是这条 SSH 连接结束；会话还在管理器里时，
+	// 下一次接入要在同一条连接上开新的 PTY。RemoveSession 才释放引用。
 	_ = handle.Close()
-
-	// 只释放这次会话 Acquire 到的那条连接。reconnectSession 会换上新连接，
-	// 下载在旧连接被清掉后也可能拨一条新的。Release 认 client，不会把那条新连接关掉。
-	if !isStale {
-		m.pool.Release(hostCfg, handle.client)
-	}
 
 	m.mu.RLock()
 	cb := m.onUpdate

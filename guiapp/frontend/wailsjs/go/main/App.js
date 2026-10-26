@@ -1325,8 +1325,8 @@ export function FileCompanionOpenArxiv(arg1) {
   return window['go']['main']['App']['FileCompanionOpenArxiv'](arg1);
 }
 
-export function FileCompanionSearchArxiv(arg1) {
-  return window['go']['main']['App']['FileCompanionSearchArxiv'](arg1);
+export function FileCompanionSearchArxiv(arg1, arg2, arg3) {
+  return window['go']['main']['App']['FileCompanionSearchArxiv'](arg1, arg2, arg3);
 }
 
 export function FileCompanionOpenWebPage(arg1) {

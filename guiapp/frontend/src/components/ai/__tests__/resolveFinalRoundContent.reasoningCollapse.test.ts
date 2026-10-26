@@ -111,6 +111,20 @@ describe('resolveFinalRoundContent — reasoning-trail collapse', () => {
         expect(result).toBe(streamed);
     });
 
+    it('keeps the official coding-stage report when the stream is much longer', () => {
+        const report = '第 3 步（S2）已完成并归档。本步的核心产出如下。';
+        const streamed = `<!--maclaw-tool:call-1-->\n\n${'工作过程'.repeat(40)}`;
+        expect(streamed.length).toBeGreaterThanOrEqual(report.length * 2);
+        const message: ChatMessage = {
+            ...makeMessage(streamed),
+            codingTimeline: [{ id: 't1', sequence: 1, kind: 'thinking', content: '先核对指标。', timestamp: 1 }],
+            fields: [{ label: 'Turn', value: 'reasoning · primary' }],
+        };
+        const result = resolveFinalRoundContent(message, { text: report, response_source: 'agent_loop' });
+        expect(result).toBe(report);
+        expect(result).not.toContain('maclaw-tool');
+    });
+
     it('does not lift reasoning into the body on a coding-agent turn', () => {
         const finalText = '评审意见上一条已给出。是否需要英文版？';
         const reasoning = 'Major comment: missing scratch-prompt baseline. '.repeat(20);

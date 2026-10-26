@@ -5247,7 +5247,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 else commit(botId, marked);
             }
             try {
-                const response = await SendDesktopBotTask(botId, instruction, sendPhase) as { request_id?: string; RequestID?: string; deferred?: boolean; Deferred?: boolean; text?: string; Text?: string; error?: string; Error?: string; send_to_user?: string; SendToUser?: string };
+                // A nil Go struct serializes to null; treat it as an empty result
+                // instead of crashing the send path reading fields off it.
+                const response = (await SendDesktopBotTask(botId, instruction, sendPhase) ?? {}) as { request_id?: string; RequestID?: string; deferred?: boolean; Deferred?: boolean; text?: string; Text?: string; error?: string; Error?: string; send_to_user?: string; SendToUser?: string };
                 if (ownerLeft()) {
                     pending.settled = true;
                     pendingRef.current.delete(ticket);

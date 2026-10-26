@@ -15,7 +15,7 @@ import { liveStatusProgress } from "./aiAssistantProgressUtils";
 import { reasoningHasCodingStatusMilestone, stripCodingWorkbenchStatusReasoning } from "./codingAgentUserFinish";
 import { clearAssistantRoundProse, isRejectedRoundContentToken, rejectStreamedAssistantContent, rejectedRoundContentToken } from "./assistantRoundProse";
 import { appendToolCallMarker, contentHasAssistantToolCall, isProgressOnlyToolAction, isTranscriptToolCallText, parseAssistantToolStatus, stripAssistantToolCallMarkers, type AssistantToolCall } from "./assistantToolCall";
-import { cleanReasoningTrailForBody, parkReplacedStreamInReasoning } from "./assistantReasoningBody";
+import { capReasoningForDisplay, cleanReasoningTrailForBody, parkReplacedStreamInReasoning } from "./assistantReasoningBody";
 import { answerDesktopChatTask, appendChatTaskResultMessage, cancelDesktopChatTask, chatTaskCardMessage, chatTaskEventName, chatTasksToRestore, dispatchDesktopChatTask, isChatTaskResultResponse, listDesktopChatTasks, parseChatTaskEvent, resumeDesktopChatTask, steerDesktopChatTask, upsertChatTaskCard, upsertChatTaskList, type ChatTaskView } from "./chatTaskModel";
 import { takeAssistantStreamToken } from "../bots/visibleDesktopTurn";
 import { codingThoughtDeltaIsChrome, codingThoughtHasOpenFence, codingThoughtTextIsBlank } from "./assistantLiveActivity";
@@ -1026,8 +1026,11 @@ function sanitizeChatMessageForDisplay(message: ChatMessage): ChatMessage {
     const nextContent = stripRolePrefixFrontend(stripAssistantProtocolArtifactsFrontend(
         sanitizeAIAssistantFinalText(message.content || ''),
     ));
+    // Cap before sanitizing: the sanitizer runs multiple regex passes, and a
+    // single megabyte reasoning trail made history hydration block the main
+    // thread for seconds.
     const nextReasoning = message.reasoning
-        ? stripRolePrefixReasoning(sanitizeAIAssistantFinalText(message.reasoning))
+        ? stripRolePrefixReasoning(sanitizeAIAssistantFinalText(capReasoningForDisplay(message.reasoning)))
         : message.reasoning;
     const nextTimeline = message.codingTimeline?.map(sanitizeCodingThoughtItem);
     const nextPending = message.pendingCodingThoughts?.map(sanitizeCodingThoughtItem);
@@ -2977,7 +2980,13 @@ export function resolveFinalRoundContent(message: ChatMessage, response: any): s
         const raw = typeof response?.text === 'string' ? response.text : '';
         return stripRolePrefixFrontend(raw);
     }
-    return preserveEmbeddedToolCalls(selectFinalRoundContent(message, response), message.content || "");
+    const chosen = selectFinalRoundContent(message, response);
+    const rawFinal = typeof response?.text === "string" ? response.text.trim() : "";
+    // The coding finish is the stage report. Do not glue the working stream back on.
+    if (rawFinal && ((message.codingTimeline?.length ?? 0) > 0 || (message.pendingCodingThoughts?.length ?? 0) > 0)) {
+        return chosen;
+    }
+    return preserveEmbeddedToolCalls(chosen, message.content || "");
 }
 
 // A restored deliverable is a prefix of the bubble. The next round appends
@@ -3058,6 +3067,12 @@ function selectFinalRoundContent(message: ChatMessage, response: any): string {
     }
     if (!finalText && !streamedContent && hasStructuredResponsePayload(response)) {
         return '';
+    }
+
+    // A coding stage already keeps its working trail on the timeline.
+    // The bubble is the official finish report, even when the stream is longer.
+    if (finalText && ((message.codingTimeline?.length ?? 0) > 0 || (message.pendingCodingThoughts?.length ?? 0) > 0)) {
+        return finalText;
     }
 
     // --- Layer 2: Length comparison ---

@@ -316,23 +316,32 @@ type App struct {
 	devinLogin               *devinLoginFlow             // in-progress Devin account login
 	devinSaveMu              sync.Mutex                  // serializes Devin credential writes
 	// Smart session components
-	memoryStore                       *memory.Store
-	memoryStoreMu                     sync.Mutex
-	sceneIndexCacheMu                 sync.Mutex
-	sceneIndexCacheGen                uint64
-	sceneIndexCacheLimit              int
-	sceneIndexCache                   []memory.SceneRecord
-	sceneIndexCacheAt                 time.Time
-	answerCacheMu                     sync.Mutex
-	answerCache                       *answerCacheStore
-	configManager                     *ConfigManager
-	templateManager                   *remote.SessionTemplateManager
-	contextResolver                   *SessionContextResolver
-	sessionPrecheck                   *SessionPrecheck
-	conversationArchiver              *ConversationArchiver
-	sessionCheckpointer               *SessionCheckpointer
-	startupFeedback                   *SessionStartupFeedback
-	imHandler                         *IMMessageHandler
+	memoryStore          *memory.Store
+	memoryStoreMu        sync.Mutex
+	sceneIndexCacheMu    sync.Mutex
+	sceneIndexCacheGen   uint64
+	sceneIndexCacheLimit int
+	sceneIndexCache      []memory.SceneRecord
+	sceneIndexCacheAt    time.Time
+	answerCacheMu        sync.Mutex
+	answerCache          *answerCacheStore
+	configManager        *ConfigManager
+	templateManager      *remote.SessionTemplateManager
+	contextResolver      *SessionContextResolver
+	sessionPrecheck      *SessionPrecheck
+	conversationArchiver *ConversationArchiver
+	sessionCheckpointer  *SessionCheckpointer
+	startupFeedback      *SessionStartupFeedback
+	imHandler            *IMMessageHandler
+	// arxivSearchMu guards the one in-memory expansion for the companion
+	// search dialog. A later page of the same goal reuses it, so the model
+	// is not called again.
+	arxivSearchMu   sync.Mutex
+	arxivSearchSlot arxivSearchSlot
+	// arxivExpand, when set, replaces the model call. Tests inject it.
+	// A nil hook uses imHandler.LLMClassify. A missing handler falls back
+	// to the words the reader typed.
+	arxivExpand                       func(ctx context.Context, goal string) (arxivExpansion, error)
 	ioRelay                           *SessionIORelay
 	aiConversationMemory              *agent.ConversationMemory
 	conversationMemoryMu              sync.Mutex
@@ -446,7 +455,7 @@ type App struct {
 	hubClientEnsureMu          sync.Mutex
 	aiAssistantReadyAt         atomic.Int64
 	aiAssistantFirstChatLogged atomic.Bool
-	docGenerator               *swarm.SwarmDocGenerator        // cached PDF doc generator
+	docGenerator               *swarm.SwarmDocGenerator // cached PDF doc generator
 	mermaidRasterReady         atomic.Bool
 	mermaidRasterGaveUp        atomic.Bool
 	mermaidRasterSkipLogged    atomic.Bool
@@ -751,20 +760,41 @@ func (a *App) remoteSessionManagerIfReady() *RemoteSessionManager {
 // ---------------------------------------------------------------------------
 func (a *App) initCoreInfra() {
 	coreStart := time.Now()
+	// Per-step timing: this function is the largest remaining block in startup
+	// and the steps have very different costs on different machines (disk
+	// scans, file writes, JSON). Without a breakdown a slow start is
+	// unattributable, and bug reports only ever contain the total.
+	//
+	// Each step is mirrored through bootLog as well. The shared log.Printf sink
+	// has been observed to drop lines from these goroutines while still writing
+	// neighbouring lines, and step timing that silently disappears is worse than
+	// none: it reads as "that step was free".
+	stepStart := coreStart
+	mark := func(name string) {
+		now := time.Now()
+		line := fmt.Sprintf("[initCoreInfra] step=%s took=%s at=%s", name,
+			now.Sub(stepStart).Round(time.Millisecond), now.Sub(coreStart).Round(time.Millisecond))
+		log.Printf("%s", line)
+		bootLog("[perf] %s", line)
+		stepStart = now
+	}
 
 	// Deploy bundled skills (pdf-word, doc-redact, etc.) to the active data directory.
 	// on first run. Idempotent — skips if already deployed.
 	if strings.TrimSpace(a.testHomeDir) == "" {
 		_, _ = a.LoadConfig()
+		mark("load-config")
 		if primaryDir, err := a.primarySkillsDir(); err == nil {
 			deployBuiltinSkillsToDir(primaryDir)
 		}
+		mark("deploy-builtin-skills")
 		if err := a.reloadPPTStyles(); err != nil {
 			log.Printf("[ppt-style] load: %v", err)
 		}
 		if err := a.reloadPDFStyles(); err != nil {
 			log.Printf("[pdf-style] load: %v", err)
 		}
+		mark("reload-styles")
 	}
 
 	if a.remoteSessions == nil {
@@ -790,6 +820,7 @@ func (a *App) initCoreInfra() {
 			a.cachedSkillScanner.Init(roots)
 		}
 	}
+	mark("registries-and-skill-scanner")
 	if a.sessionStarter == nil {
 		a.sessionStarter = NewCodingSessionStarter(a)
 	}
@@ -813,9 +844,11 @@ func (a *App) initCoreInfra() {
 		a.toolDefGenerator.SetDeferredTools(DeferredToolNames)
 		log.Printf("[initCoreInfra] toolDefGenerator built in %v", time.Since(tdgStart))
 	}
+	mark("tool-definitions")
 	if a.toolRouter == nil {
 		a.toolRouter = NewToolRouter(a.toolDefGenerator)
 	}
+	mark("new-tool-router")
 	// Wire skill-aware routing: when skillExecutor is available, connect it
 	// to the toolRouter so that Route() can match user messages against
 	// installed skills and enrich the manage_skill tool description with
@@ -824,16 +857,19 @@ func (a *App) initCoreInfra() {
 	if a.toolRouter != nil && a.skillExecutor != nil {
 		a.toolRouter.SetSkillProvider(&skillExecutorProvider{executor: a.skillExecutor})
 	}
+	mark("set-skill-provider")
 	if a.usageTracker == nil {
 		trackerPath := tool.DefaultUsageTrackerPath()
 		if trackerPath != "" {
 			tracker, err := tool.NewUsageTracker(trackerPath)
+			mark("new-usage-tracker")
 			if err != nil {
 				log.Printf("[App] failed to load usage tracker: %v", err)
 			} else {
 				a.usageTracker = tracker
 				a.ensureExperienceLifecycleSink()
 				a.toolRouter.SetUsageTracker(tracker)
+				mark("set-usage-tracker")
 
 				// Register fingerprint providers for invalidation detection.
 				tracker.FingerprintProviders = []tool.FingerprintProvider{
@@ -869,23 +905,28 @@ func (a *App) initCoreInfra() {
 						}
 					}),
 				}
+				mark("fingerprint-providers")
 			}
 		}
 	}
 	if a.goalContinuation == nil {
 		goalDataDir := filepath.Join(a.GetDataDir(), "goals")
 		goalStore := goal.NewStore(goalDataDir)
+		mark("new-goal-store")
 		a.goalContinuation = NewGoalContinuationEngine(goalStore, a)
 	}
+	mark("goal-continuation")
 	if a.sharedContext == nil {
 		a.sharedContext = NewSharedContextStore()
 	}
 	if a.toolSelector == nil {
 		a.toolSelector = NewToolSelector()
 	}
+	mark("shared-context-and-selector")
 	if a.configManager == nil {
 		a.configManager = NewConfigManager(a)
 	}
+	mark("config-manager")
 	// Register OEM extra tools into the built-in tool registry.
 	{
 		registry := make(map[string]bool, len(remoteToolCatalog))
@@ -896,6 +937,7 @@ func (a *App) initCoreInfra() {
 			fmt.Printf("[initCoreInfra] WARNING: failed to register OEM extra tools: %v\n", err)
 		}
 	}
+	mark("remaining")
 	log.Printf("[initCoreInfra] done in %v", time.Since(coreStart))
 }
 
@@ -1096,10 +1138,19 @@ func (a *App) ensureMemoryStore() {
 		return
 	}
 	a.ensureAITrace()
+	memStepAt := time.Now()
+	memMark := func(name string) {
+		now := time.Now()
+		if took := now.Sub(memStepAt); took >= 20*time.Millisecond {
+			bootLog("[perf] mem-store step=%s took=%s", name, took.Round(time.Millisecond))
+		}
+		memStepAt = now
+	}
 	a.logMemorySnapshot("ensureMemoryStore:start")
 	baseDir := a.getMaclawBaseDir()
 	memPath := filepath.Join(memory.DataDirStoreDir(baseDir), "memories.json")
 	ms, err := memory.OpenDataDirStore(baseDir, memory.StoreModeSQLite)
+	memMark("open-store")
 	if err != nil {
 		fmt.Printf("[ensureMemoryStore] WARNING: failed to load SQLite memory store from %s: %v\n", baseDir, err)
 		backupPath := memPath + ".bad." + time.Now().Format("20060102_150405")
@@ -2397,6 +2448,13 @@ func (a *App) prepareHubClientSync() {
 	}
 	// Pre-initialize the IM handler so the first chat request does not pay
 	// handler construction/configuration cost.
+	//
+	// This stays synchronous on purpose. IsAIAssistantReady/GetAIAssistantInitStatus
+	// treat a missing handler as "not ready", so returning before the handler
+	// exists reports the assistant as unready and makes callers self-heal a
+	// client that is already being built. Moving this to the background traded a
+	// startup win for a readiness race; the honest fix is to make handler
+	// construction itself cheaper, not to hide it.
 	preInitStart := time.Now()
 	hubClient.ensureIMHandler()
 	log.Printf("[prepareHubClientSync] ensureIMHandler (pre-init) done in %v", time.Since(preInitStart))
@@ -2472,9 +2530,24 @@ func (a *App) asyncHubConnect() {
 // both createAndWireHubClient (legacy path) and prepareHubClientSync (new non-blocking path).
 func (a *App) buildHubClientIMHandlerConfigurator(hubClient *RemoteHubClient) func(handler *IMMessageHandler) {
 	return func(handler *IMMessageHandler) {
+		// This closure measured ~1.2s of the startup critical path. Each step is
+		// an ensure* that may lazily open a store, so the slow one has to be
+		// named before anything can be deferred. Only steps over 20ms are
+		// reported; the list is long and most are free.
+		wireStarted := time.Now()
+		stepAt := wireStarted
+		mark := func(name string) {
+			now := time.Now()
+			if took := now.Sub(stepAt); took >= 20*time.Millisecond {
+				bootLog("[perf] im-wire step=%s took=%s at=%s", name,
+					took.Round(time.Millisecond), now.Sub(wireStarted).Round(time.Millisecond))
+			}
+			stepAt = now
+		}
 		if a.capabilityGapDetector == nil {
 			a.ensureCapabilityGapDetector()
 		}
+		mark("capability-gap-detector")
 		if a.capabilityGapDetector != nil {
 			handler.SetCapabilityGapDetector(a.capabilityGapDetector)
 		}
@@ -2482,6 +2555,7 @@ func (a *App) buildHubClientIMHandlerConfigurator(hubClient *RemoteHubClient) fu
 			a.ensureLocalMCPManager()
 			handler.SetToolDefGenerator(a.toolDefGenerator)
 		}
+		mark("local-mcp-manager")
 		if a.toolRouter != nil {
 			handler.SetToolRouter(a.toolRouter)
 		}
@@ -2491,21 +2565,25 @@ func (a *App) buildHubClientIMHandlerConfigurator(hubClient *RemoteHubClient) fu
 		if a.memoryStore == nil {
 			a.ensureMemoryStore()
 		}
+		mark("memory-store")
 		if a.memoryStore != nil {
 			handler.SetMemoryStore(a.memoryStore)
 		}
 		if store := a.ensureAIConfirmationStore(); store != nil {
 			handler.SetConfirmationStore(store)
 		}
+		mark("confirmation-store")
 		a.ensureAITrace()
 		if a.aiTrace != nil {
 			handler.SetTraceService(a.aiTrace)
 		}
 		handler.SetTrajectoryRecorderFactory(a.buildTrajectoryRecorderFactory())
+		mark("trajectory-recorder")
 		if a.configManager != nil {
 			handler.SetConfigManager(a.configManager)
 		}
 		a.ensureTemplateManager()
+		mark("template-manager")
 		if a.templateManager != nil {
 			handler.SetTemplateManager(a.templateManager)
 		}
@@ -2515,16 +2593,19 @@ func (a *App) buildHubClientIMHandlerConfigurator(hubClient *RemoteHubClient) fu
 		if a.contextResolver == nil {
 			a.ensureContextResolver()
 		}
+		mark("context-resolver")
 		if a.contextResolver != nil {
 			handler.SetContextResolver(a.contextResolver)
 		}
 		if a.sessionPrecheck == nil {
 			a.ensureSessionPrecheck()
 		}
+		mark("session-precheck")
 		if a.sessionPrecheck != nil {
 			handler.SetSessionPrecheck(a.sessionPrecheck)
 		}
 		a.ensureStartupFeedback()
+		mark("startup-feedback")
 		if a.startupFeedback != nil {
 			handler.SetStartupFeedback(a.startupFeedback)
 		}
@@ -2688,8 +2769,10 @@ func (a *App) startup(ctx context.Context) {
 	// registers a binding-specific receipt source.
 	a.startSemanticEffectReceiptWorker(ctx)
 	log.Printf("[startup] platform+config_watcher done in %v", time.Since(startupBegin))
-	// Pre-warm gse Chinese segmenter dictionary in background so BM25
-	// tool routing doesn't block on first use.
+	// Pre-warm gse Chinese segmenter dictionary in background so BM25 tool
+	// routing doesn't block on first use. Main already started it before
+	// wails.Run so the WebView bring-up can overlap the load; this is the
+	// idempotent fallback for other entry points (tests, TUI).
 	bm25.PrewarmDict()
 	// Initialize CodeBuddy config in project directory
 	if config, err := a.LoadConfig(); err == nil {
@@ -2712,13 +2795,24 @@ func (a *App) startup(ctx context.Context) {
 			a.SetLanguage(config.Language)
 		}
 
+		// Let the renderer paint before the heavy init below begins. This
+		// goroutine does not block the window, but on a low-core machine its
+		// JSON parsing, skill deployment and directory scans steal CPU and disk
+		// from the first frame the user is waiting for. The wait is bounded, so
+		// a renderer that never reports cannot stall startup.
+		paintWaitStart := time.Now()
+		waitForFirstPaintOrTimeout(1500 * time.Millisecond)
+		logStartupPhase("first-paint yield", paintWaitStart, startupBegin)
+
 		// Synchronous embedding engine initialization: ensure the intent classifier
 		// has Layer 2 (embedding) ready BEFORE the UI becomes interactive.
 		// This prevents the cold-start window where BM25 noise can trigger wrong
 		// workflows because the semantic veto layer isn't available yet.
 		// Only blocks when the model file exists on disk (~1.5s load time).
 		// If the file is missing (needs download), skip and let async path handle it.
+		embedStart := time.Now()
 		a.ensureEmbeddingEngineSync(config.VectorSearchEnabled)
+		logStartupPhase("ensure-embedding-engine", embedStart, startupBegin)
 
 		if config.RemoteMachineID != "" && config.RemoteMachineToken != "" && config.RemoteHubURL != "" {
 			// Synchronous: prepare Hub client infrastructure (fast, no network I/O).

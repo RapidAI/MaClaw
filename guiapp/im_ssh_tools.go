@@ -203,7 +203,7 @@ func formatRemoteSetupFailure(result remote.SSHExecResult) string {
 // sshSessionStatusUsable is deliberately stricter than "record exists": a
 // retained terminal session cannot accept plan execution and must be recovered.
 func sshSessionStatusUsable(status remote.SessionStatus) bool {
-	return status != remote.SessionExited && status != remote.SessionError
+	return status.IsOpen()
 }
 
 // ensureSSHManager lazily initialises the SSH session manager (thread-safe).
@@ -310,10 +310,7 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 		}
 	}
 
-	port := 0
-	if p, ok := args["port"].(float64); ok && p > 0 {
-		port = int(p)
-	}
+	port := sshToolPort(args)
 	cfg := remote.SSHHostConfig{
 		Host:               host,
 		User:               user,
@@ -330,7 +327,7 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 	}
 	cfg = resolved
 	cfg.Defaults()
-	host, user, port = cfg.Host, cfg.User, cfg.Port
+	host, user = cfg.Host, cfg.User
 	if host == "" || user == "" {
 		return "错误: connect 需要 host 和 user 参数（或通过 label 引用已配置主机）"
 	}
@@ -342,66 +339,52 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 		cfg.HostKeyFingerprintCapture = func(string) {}
 	}
 
-	// Check if a running session already exists for this host.
-	// Reuse it instead of creating duplicate sessions — this prevents
-	// the common problem of the LLM spawning many sessions to the same
-	// host when previous ones time out or become unresponsive.
-	// Use force_new=true to bypass and create a new session.
+	// One connect decides and dials. The flight covers this endpoint, its
+	// configured label, and the open session those would attach, so a
+	// host-only connect and a label connect cannot both reconnect it.
+	// The label is the one left after alias resolution.
+	// force_new is the only request that skips the open session.
+	targetID := cfg.SSHHostID()
+	label = cfg.Label
 	forceNew, _ := args["force_new"].(bool)
-	// A pinned connection must never reuse a session created without the same
-	// host-key policy. The connection pool also isolates these configurations.
-	if cfg.HostKeyFingerprint != "" {
-		forceNew = true
-	}
-	if !forceNew {
-		targetID := fmt.Sprintf("%s@%s:%d", user, host, port)
-		if existing := h.findRunningSSHSession(mgr, targetID, label, ownerID); existing != nil {
-			// Verify the connection is actually alive before reusing.
-			// The session status may say "running" but the underlying TCP
-			// connection could be dead (e.g. network interruption, server
-			// restart, docker compose down).
-			if existing.Handle != nil && existing.Handle.IsAlive() {
-				// Connection is alive, but shell might be stuck (e.g. sqlite3 lock,
-				// interactive program). Verify shell responsiveness.
-				if mgr.CheckShellResponsive(existing.ID) {
-					h.registerSSHBackgroundLoop(existing, cfg)
+	capturing := captureHostKey && strings.TrimSpace(cfg.HostKeyFingerprint) == ""
+	var result string
+	mgr.DoExclusiveConnect(ownerID, targetID, label, cfg.HostKeyFingerprint, capturing, func() {
+		if !forceNew {
+			existing, reconnected, retiredID := mgr.AttachOpenSession(targetID, label, ownerID, cfg.HostKeyFingerprint, capturing)
+			if retiredID != "" {
+				h.completeSSHBackgroundLoop(retiredID)
+			}
+			if existing != nil {
+				h.registerSSHBackgroundLoop(existing, existing.HostConfig())
+				if !reconnected {
 					summary := existing.GetSummary()
-					result := fmt.Sprintf("复用已有 SSH 会话\n会话 ID: %s\n主机: %s\n状态: %s",
+					result = fmt.Sprintf("复用已有 SSH 会话\n会话 ID: %s\n主机: %s\n状态: %s",
 						existing.ID, summary.HostID, summary.Status)
 					if summary.LastOutput != "" {
 						result += "\n\n最近输出: " + summary.LastOutput
 					}
-					return result
+					return
 				}
-				// Shell is unresponsive (stuck process). Close and recreate.
-				mgr.RemoveSession(existing.ID)
-				h.completeSSHBackgroundLoop(existing.ID)
-			} else {
-				// Connection is dead. Try to reconnect the existing session.
-				if err := mgr.ReconnectByID(existing.ID); err == nil {
-					h.registerSSHBackgroundLoop(existing, cfg)
-					// Wait for shell init after reconnect.
-					time.Sleep(2 * time.Second)
-					// Rediscover orphan tasks after reconnect (sync to avoid PTY race).
-					if h.bgTaskMgr != nil {
-						h.bgTaskMgr.RediscoverOrphanTasksForOwner(existing.ID, ownerID)
-					}
-					preview := strings.Join(existing.PreviewTail(10), "\n")
-					result := fmt.Sprintf("复用已有 SSH 会话（已自动重连）\n会话 ID: %s\n主机: %s\n状态: running",
-						existing.ID, targetID)
-					if preview != "" {
-						result += "\n\n--- 重连后输出 ---\n" + preview
-					}
-					return result
+				time.Sleep(2 * time.Second)
+				if h.bgTaskMgr != nil {
+					h.bgTaskMgr.RediscoverOrphanTasksForOwner(existing.ID, ownerID)
 				}
-				// Reconnection failed. Close the dead session so we can create
-				// a fresh one below instead of looping on the same dead session.
-				mgr.RemoveSession(existing.ID)
-				h.completeSSHBackgroundLoop(existing.ID)
+				preview := strings.Join(existing.PreviewTail(10), "\n")
+				result = fmt.Sprintf("复用已有 SSH 会话（已自动重连）\n会话 ID: %s\n主机: %s\n状态: running",
+					existing.ID, targetID)
+				if preview != "" {
+					result += "\n\n--- 重连后输出 ---\n" + preview
+				}
+				return
 			}
 		}
-	}
+		result = h.sshDialNewSession(mgr, cfg, args, ownerID, captureHostKey)
+	})
+	return result
+}
 
+func (h *IMMessageHandler) sshDialNewSession(mgr *remote.SSHSessionManager, cfg remote.SSHHostConfig, args map[string]interface{}, ownerID string, captureHostKey bool) string {
 	spec := remote.SSHSessionSpec{
 		HostConfig:     cfg,
 		InitialCommand: sshStrArg(args, "initial_command"),
@@ -429,10 +412,9 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 		return errMsg
 	}
 	if captureHostKey && cfg.HostKeyFingerprint == "" {
-		// Create resolves the capture before starting the PTY. Use that final
-		// configuration for the background loop as well; it is also the config
-		// the session will use for release, SFTP and automatic reconnect.
-		cfg = session.Spec.HostConfig
+		// Create resolves the capture before starting the PTY. The background
+		// loop must release and reconnect with that same pin.
+		cfg = session.HostConfig()
 		if cfg.HostKeyFingerprint == "" {
 			mgr.RemoveSession(session.ID)
 			return "SSH 连接失败：未能确认服务器主机标识"
@@ -472,19 +454,16 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 	return result
 }
 
-// findRunningSSHSession looks for an existing SSH session matching the
-// given hostID (user@host:port) or label that is still running and was
-// opened by ownerID. Another conversation's session to the same host is
-// not reusable: the two conversations do not share a PTY.
+// findRunningSSHSession admits the session this owner, endpoint, and
+// host-key policy already has. An open PTY wins. A terminal session still
+// in the manager is that same id when nothing open matches. It does not dial.
 func (h *IMMessageHandler) findRunningSSHSession(mgr interface {
 	List() []*remote.SSHManagedSession
-}, hostID, label, ownerID string) *remote.SSHManagedSession {
-	for _, s := range mgr.List() {
-		if sshSessionReusable(s, hostID, label, ownerID) {
-			return s
-		}
+}, hostID, label, ownerID, requestedPin string, capture bool) *remote.SSHManagedSession {
+	if mgr == nil {
+		return nil
 	}
-	return nil
+	return remote.SelectReusableSSHSession(mgr.List(), hostID, label, ownerID, requestedPin, capture)
 }
 
 // sshBoundSituationSessionIDs lists up to three live session ids this
@@ -516,7 +495,7 @@ func sshSituationSessionIDs(sessions []*remote.SSHManagedSession, principalID st
 // still holds. Busy and waiting_input are the same PTY: the shell is draining
 // output or sitting at a prompt. Only a terminal status releases it.
 func sshSessionStatusOpen(status remote.SessionStatus) bool {
-	return status != remote.SessionExited && status != remote.SessionError
+	return status.IsOpen()
 }
 
 // sshSessionLocallyOpen reports that the process still has a non-terminal PTY
@@ -581,14 +560,7 @@ func sshSituationSessionAlive(session *remote.SSHManagedSession) bool {
 }
 
 func sshSessionReusable(session *remote.SSHManagedSession, hostID, label, ownerID string) bool {
-	if session == nil || !remote.SSHSessionOwnerMatches(session.OwnerID, ownerID) {
-		return false
-	}
-	summary := session.GetSummary()
-	if !sshSessionStatusOpen(remote.SessionStatus(summary.Status)) {
-		return false
-	}
-	return summary.HostID == hostID || (label != "" && summary.HostLabel == label)
+	return remote.SelectReusableSSHSession([]*remote.SSHManagedSession{session}, hostID, label, ownerID, "", false) != nil
 }
 
 func sshMissingRuntimeOwnerReason(hasOwner bool, ownerID string) string {
@@ -1441,6 +1413,47 @@ func (h *IMMessageHandler) loadSSHHosts() []corelib.SSHHostEntry {
 }
 
 // sshStrArg extracts a string from an args map (SSH-tool-specific helper).
+// sshToolPort reads the endpoint port from a tool argument. JSON objects
+// decode numbers as float64, and some callers pass json.Number, int, or a
+// decimal string. Missing those forms made the admission key port 22 while
+// the debug session was on the requested port, so connect dialed again.
+func sshToolPort(args map[string]interface{}) int {
+	if args == nil {
+		return 0
+	}
+	var n int
+	switch v := args["port"].(type) {
+	case float64:
+		n = int(v)
+	case float32:
+		n = int(v)
+	case int:
+		n = v
+	case int32:
+		n = int(v)
+	case int64:
+		n = int(v)
+	case json.Number:
+		parsed, err := v.Int64()
+		if err != nil {
+			return 0
+		}
+		n = int(parsed)
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			return 0
+		}
+		n = parsed
+	default:
+		return 0
+	}
+	if n <= 0 || n >= 65536 {
+		return 0
+	}
+	return n
+}
+
 func sshStrArg(args map[string]interface{}, key string) string {
 	s, _ := args[key].(string)
 	return s

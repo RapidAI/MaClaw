@@ -2,24 +2,13 @@ import type { ComponentProps } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BrowserOpenURL } from "../../../../wailsjs/runtime";
-import { NotificationPanel, type AdminNotification } from "../NotificationPanel";
-import { overlayTheme } from "../aiAssistantPanelTheme";
+import { measureNotificationPanel, NotificationPanel, type AdminNotification } from "../NotificationPanel";
 
 vi.mock("../../../../wailsjs/runtime", () => ({
     BrowserOpenURL: vi.fn(),
     EventsOn: vi.fn(() => vi.fn()),
     EventsOff: vi.fn(),
 }));
-
-const panelTheme = {
-    bg: overlayTheme.titleBarBg,
-    text: overlayTheme.titleText,
-    textMuted: overlayTheme.textMuted,
-    headingColor: overlayTheme.headingColor,
-    divider: overlayTheme.titleBarBorder,
-    inputBarBg: overlayTheme.fieldBg,
-    inputBarBorder: overlayTheme.titleBarBorder,
-};
 
 const longNotice: AdminNotification = {
     id: "invite-1",
@@ -43,7 +32,6 @@ const renderPanel = (
             onSelectNotification={vi.fn()}
             onClose={vi.fn()}
             lang="zh"
-            theme={panelTheme}
             {...overrides}
         />,
     );
@@ -67,7 +55,6 @@ describe("NotificationPanel", () => {
         renderPanel({
             selectedNotification: longNotice,
             onBackFromDetail: onBack,
-            detailTheme: overlayTheme,
         });
 
         expect(screen.getByTestId("notification-detail")).toBeTruthy();
@@ -92,7 +79,6 @@ describe("NotificationPanel", () => {
                 onSelectNotification={vi.fn()}
                 onClose={vi.fn()}
                 lang="zh"
-                theme={panelTheme}
             />,
         );
 
@@ -107,7 +93,7 @@ describe("NotificationPanel", () => {
         expect(onSelect).toHaveBeenCalledWith(longNotice);
     });
 
-    it("opens detail without a dedicated detailTheme", () => {
+    it("opens detail without a dedicated theme", () => {
         renderPanel({ selectedNotification: longNotice });
 
         expect(screen.getByTestId("notification-detail")).toBeTruthy();
@@ -143,7 +129,6 @@ describe("NotificationPanel", () => {
             selectedNotification: longNotice,
             onBackFromDetail: onBack,
             onClose,
-            detailTheme: overlayTheme,
         });
 
         fireEvent.keyDown(document, { key: "Escape" });
@@ -159,7 +144,6 @@ describe("NotificationPanel", () => {
                 onSelectNotification={vi.fn()}
                 onClose={onClose}
                 lang="zh"
-                theme={panelTheme}
             />,
         );
 
@@ -273,9 +257,7 @@ describe("NotificationPanel", () => {
                 selectedNotification={inviteNotice}
                 onBackFromDetail={vi.fn()}
                 onGroupInviteAction={onAction}
-                detailTheme={overlayTheme}
                 lang="zh"
-                theme={panelTheme}
             />,
         );
 
@@ -300,7 +282,6 @@ describe("NotificationPanel", () => {
                 groupInviteBusy
                 groupInviteError="没有找到入群邀请"
                 lang="en"
-                theme={panelTheme}
             />,
         );
         expect(screen.getByRole("button", { name: "Accept" }).hasAttribute("disabled")).toBe(true);
@@ -338,7 +319,6 @@ describe("NotificationPanel", () => {
                 onClose={vi.fn()}
                 onGroupInviteAction={vi.fn()}
                 lang="zh"
-                theme={panelTheme}
             />,
         );
         expect(screen.getByText("入群邀请")).toBeTruthy();
@@ -355,9 +335,7 @@ describe("NotificationPanel", () => {
                 onClose={vi.fn()}
                 selectedNotification={inviteNotice}
                 onGroupInviteAction={vi.fn()}
-                detailTheme={overlayTheme}
                 lang="zh"
-                theme={panelTheme}
             />,
         );
         const body = screen.getByTestId("notification-detail-content");
@@ -430,7 +408,6 @@ describe("NotificationPanel", () => {
             onGroupInviteAction: vi.fn(),
             groupInviteBusy: true,
             groupInviteHold: "正在处理另一条邀请。",
-            detailTheme: overlayTheme,
         });
         expect(screen.getByTestId("notification-group-invite-accept").hasAttribute("disabled")).toBe(true);
         expect(screen.getByTestId("notification-group-invite-decline").getAttribute("aria-busy")).toBe("true");
@@ -464,7 +441,6 @@ describe("NotificationPanel", () => {
             selectedNotification: inviteNotice,
             onGroupInviteAction: vi.fn(),
             groupInviteActionError: failed,
-            detailTheme: overlayTheme,
         });
         expect(screen.getByTestId("notification-group-invite-action-error").textContent).toBe(failed);
         expect(screen.queryByTestId("notification-group-invite-error")).toBeNull();
@@ -480,5 +456,49 @@ describe("NotificationPanel", () => {
         fireEvent.mouseDown(toast);
         expect(onClose).not.toHaveBeenCalled();
         toast.remove();
+    });
+});
+
+describe("notification panel sizing", () => {
+    const base = {
+        renderedTop: 40,
+        renderedRight: 900,
+        clipLeft: 0,
+        clipBottom: 800,
+        uiScale: 1,
+        preferredHeight: 460,
+    };
+
+    it("keeps the panel at 400px when the host canvas has room", () => {
+        expect(measureNotificationPanel(base)).toEqual({ width: 400, maxHeight: 460 });
+    });
+
+    it("budgets the width from the host's left edge, not the bell anchor", () => {
+        // The old percentage width resolved against the ~24px anchor and
+        // collapsed the panel. The usable span now comes from the fixed right
+        // edge back to the host canvas.
+        expect(measureNotificationPanel({ ...base, renderedRight: 320 }).width).toBe(304);
+    });
+
+    it("converts rendered pixels back to layout pixels under UI zoom", () => {
+        const size = measureNotificationPanel({
+            ...base,
+            renderedTop: 50,
+            renderedRight: 500,
+            clipBottom: 1000,
+            uiScale: 1.25,
+        });
+        expect(size.width).toBe(384); // 500 / 1.25 - 16
+        expect(size.maxHeight).toBe(460); // 950 / 1.25 - 8 still leaves room
+    });
+
+    it("caps the height to the space below the title bar", () => {
+        expect(measureNotificationPanel({ ...base, clipBottom: 400 }).maxHeight).toBe(352);
+    });
+
+    it("falls back to sane defaults before layout exists", () => {
+        expect(measureNotificationPanel({ ...base, renderedRight: 0 }).width).toBe(400);
+        // A missing/zero --ui-scale must not divide by zero.
+        expect(measureNotificationPanel({ ...base, uiScale: 0, clipBottom: 100 }).maxHeight).toBe(52);
     });
 });

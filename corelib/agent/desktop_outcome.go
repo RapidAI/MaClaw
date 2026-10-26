@@ -45,27 +45,32 @@ const desktopOutcomeJudgeSystem = "你只判断这一步的结果是否已经满
 
 // gateDesktopReply is the last rewrite before a reply leaves the loop.
 // room is false when this exit cannot take another model round.
-func gateDesktopReply(cb LoopCallbacks, userText, text string, history []ConversationEntry, shot *ToolModelImage, room bool) (next, nudge string, cont bool) {
+// checked reports that the reviewer REPLACED the draft: the host examined the
+// turn's evidence and supplied the text, so the reply is a checked outcome
+// rather than an unchecked claim beside failed calls.
+func gateDesktopReply(cb LoopCallbacks, userText, text string, history []ConversationEntry, shot *ToolModelImage, room bool) (next, nudge string, cont, checked bool) {
 	reviewer, ok := cb.(DesktopOutcomeReviewer)
 	if !ok {
-		return text, "", false
+		return text, "", false, false
 	}
 	return ApplyDesktopOutcome(text, reviewer.ReviewDesktopOutcome(userText, text, history, shot), room)
 }
 
 // ApplyDesktopOutcome applies one review. room is false when the loop cannot
 // take another model round. An unchecked draft does not become the reply.
-func ApplyDesktopOutcome(content string, decision DesktopOutcomeDecision, room bool) (next, message string, cont bool) {
+// checked is true only for a Replace verdict: the returned text is then the
+// host's own statement, not the model's claim.
+func ApplyDesktopOutcome(content string, decision DesktopOutcomeDecision, room bool) (next, message string, cont, checked bool) {
 	if decision.Continue && strings.TrimSpace(decision.Message) != "" && room {
-		return content, strings.TrimSpace(decision.Message), true
+		return content, strings.TrimSpace(decision.Message), true, false
 	}
 	if gap := strings.TrimSpace(decision.Replace); gap != "" && (!decision.Continue || !room) {
-		return gap, "", false
+		return gap, "", false, true
 	}
 	if decision.Continue && !room {
-		return desktopOutcomeUnconfirmed, "", false
+		return desktopOutcomeUnconfirmed, "", false, false
 	}
-	return content, "", false
+	return content, "", false, false
 }
 
 // JudgeDesktopOutcome asks the same model, in a separate call, whether the

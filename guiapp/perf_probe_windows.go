@@ -54,9 +54,7 @@ var (
 
 	perfSampleMu       sync.Mutex
 	perfLastSampleAt   time.Time
-	perfLastSampleCPU  float64
 	perfLastWebviewCPU float64
-	perfLastWebviewMem uint64
 )
 
 // startPerfSampler begins periodic sampling of this process and its WebView2
@@ -106,9 +104,7 @@ func perfTakeSample(baseline bool) {
 	prevAt := perfLastSampleAt
 	prevWebviewCPU := perfLastWebviewCPU
 	perfLastSampleAt = now
-	perfLastSampleCPU = selfCPU
 	perfLastWebviewCPU = webviewCPU
-	perfLastWebviewMem = webviewMem
 	perfSampleMu.Unlock()
 
 	if baseline || prevAt.IsZero() {
@@ -143,10 +139,11 @@ func logPerfSampleDetail(rows []perfProcSample) {
 // perfSampleProcessTree returns WebView2 child samples plus this process's own
 // cumulative CPU seconds.
 func perfSampleProcessTree() ([]perfProcSample, float64, error) {
-	parents, err := perfParentMap()
+	snapshot, err := perfParentMap()
 	if err != nil {
 		return nil, 0, err
 	}
+	parents := snapshot.parents
 	selfPID := uint32(windows.GetCurrentProcessId())
 	selfCPU, err := perfProcessCPUSeconds(selfPID)
 	if err != nil {
@@ -170,7 +167,7 @@ func perfSampleProcessTree() ([]perfProcSample, float64, error) {
 			continue
 		}
 		seen[pid] = struct{}{}
-		name := perfProcName(pid)
+		name := snapshot.names[pid]
 		if _, isWebview := perfWebviewProcessNames[strings.ToLower(name)]; isWebview {
 			cpu, cpuErr := perfProcessCPUSeconds(pid)
 			mem, memErr := perfProcessWorkingSet(pid)
@@ -183,47 +180,38 @@ func perfSampleProcessTree() ([]perfProcSample, float64, error) {
 	return rows, selfCPU, nil
 }
 
-// perfProcTable maps PID to parent PID for one Toolhelp snapshot.
-type perfProcTable map[uint32]uint32
+// perfProcSnapshot is one Toolhelp snapshot: PID to parent PID, plus the image
+// name for each PID. Names are captured from the same snapshot rather than a
+// long-lived cache, because Windows reuses PIDs and a stale mapping could make a
+// recycled PID look like a WebView2 process.
+type perfProcSnapshot struct {
+	parents map[uint32]uint32
+	names   map[uint32]string
+}
 
-func perfParentMap() (perfProcTable, error) {
+func perfParentMap() (perfProcSnapshot, error) {
 	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
-		return nil, err
+		return perfProcSnapshot{}, err
 	}
 	defer windows.CloseHandle(snap)
 	var entry windows.ProcessEntry32
 	entry.Size = uint32(unsafe.Sizeof(entry))
 	if err := windows.Process32First(snap, &entry); err != nil {
-		return nil, err
+		return perfProcSnapshot{}, err
 	}
-	out := make(perfProcTable, 256)
+	out := perfProcSnapshot{
+		parents: make(map[uint32]uint32, 256),
+		names:   make(map[uint32]string, 256),
+	}
 	for {
-		out[entry.ProcessID] = entry.ParentProcessID
-		perfCacheProcessName(entry.ProcessID, windows.UTF16ToString(entry.ExeFile[:]))
+		out.parents[entry.ProcessID] = entry.ParentProcessID
+		out.names[entry.ProcessID] = windows.UTF16ToString(entry.ExeFile[:])
 		if err := windows.Process32Next(snap, &entry); err != nil {
 			break
 		}
 	}
 	return out, nil
-}
-
-var (
-	perfProcNameMu    sync.RWMutex
-	perfProcNameCache = make(map[uint32]string, 256)
-)
-
-func perfCacheProcessName(pid uint32, name string) {
-	perfProcNameMu.Lock()
-	perfProcNameCache[pid] = name
-	perfProcNameMu.Unlock()
-}
-
-func perfProcName(pid uint32) string {
-	perfProcNameMu.RLock()
-	name := perfProcNameCache[pid]
-	perfProcNameMu.RUnlock()
-	return name
 }
 
 // perfProcessCPUSeconds returns cumulative CPU time for a process. Requires

@@ -340,10 +340,11 @@ func (h *IMMessageHandler) findOrCreateSSHSessionWithAuth(user, host string, por
 	return h.findOrCreateSSHSessionWithPinnedAuth(user, host, port, password, keyPath, label, "")
 }
 
-func (h *IMMessageHandler) findOrCreateSSHSessionWithPinnedAuth(user, host string, port int, password, keyPath, label, hostKeyFingerprint string) (string, string) {
-	if h == nil {
-		return "", ""
-	}
+// remoteSSHConnectArgs is the coding debug-machine connect. A missing pin
+// asks the dial to capture one. It does not set force_new: an open session
+// that already recorded a pin is this machine, and a requested pin selects
+// that session. force_new would open another PTY on every prepare.
+func remoteSSHConnectArgs(user, host string, port int, password, keyPath, label, hostKeyFingerprint string) map[string]interface{} {
 	if port <= 0 {
 		port = 22
 	}
@@ -366,16 +367,32 @@ func (h *IMMessageHandler) findOrCreateSSHSessionWithPinnedAuth(user, host strin
 	if label != "" {
 		args["label"] = label
 	}
-	if hostKeyFingerprint != "" {
-		args["host_key_fingerprint"] = hostKeyFingerprint
+	if pin := strings.TrimSpace(hostKeyFingerprint); pin != "" {
+		args["host_key_fingerprint"] = pin
 	} else {
-		// Capture the server key during this exact authenticated connection.
-		// This leaves the user with a single password prompt while giving the
-		// coding runtime the pin it needs for all later commands/reconnects.
 		args["capture_host_key"] = true
-		args["force_new"] = true
 	}
-	result := h.sshConnect(args)
+	return args
+}
+
+// stickyRecoverySSHConnectArgs is the debug-machine connect used when a
+// sticky session is gone. It uses the same pin policy as prepare, and it
+// does not carry a password: a missing secret still has to come from the
+// connection UI. authMethod overlays the profile when the key path did not
+// already choose one.
+func stickyRecoverySSHConnectArgs(user, host string, port int, label, keyPath, authMethod, hostKeyFingerprint string) map[string]interface{} {
+	args := remoteSSHConnectArgs(user, host, port, "", keyPath, label, hostKeyFingerprint)
+	if method := strings.TrimSpace(authMethod); method != "" {
+		args["auth_method"] = method
+	}
+	return args
+}
+
+func (h *IMMessageHandler) findOrCreateSSHSessionWithPinnedAuth(user, host string, port int, password, keyPath, label, hostKeyFingerprint string) (string, string) {
+	if h == nil {
+		return "", ""
+	}
+	result := h.sshConnect(remoteSSHConnectArgs(user, host, port, password, keyPath, label, hostKeyFingerprint))
 	if match := extractSSHSessionIDFromConnectResult(result); match != "" {
 		return match, ""
 	}

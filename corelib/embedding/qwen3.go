@@ -107,8 +107,16 @@ type Qwen3Embedder struct {
 	q8pFallback string           // why Q8P was wanted but not used; see Q8PFallbackReason
 
 	// Metal GPU backend (qwen3_metal.go); nil = CPU path.
-	gpu       atomic.Pointer[qwen3GPU]
-	gpuReason string // why the GPU is not used (empty when active or not darwin)
+	gpu atomic.Pointer[qwen3GPU]
+	// gpuReason explains why no GPU backend is in use. Written during load and
+	// by the hardware-acceleration toggle, read by diagnostics from other
+	// goroutines, so it is mutex-guarded.
+	gpuMu      sync.Mutex
+	gpuReason  string
+	gpuGate    GPUGate
+	closeMu    sync.Mutex
+	closedFlag bool
+	accelMu    sync.Mutex // serialises ApplyAccel
 
 	// Vulkan GPU backend (qwen3_vulkan.go); nil = not in use. Only one of gpu
 	// and vkGPU is ever non-nil (Metal is darwin-only, Vulkan is win/linux).
@@ -545,7 +553,10 @@ func (q *Qwen3Embedder) EmbedBatch(texts []string) ([][]float32, error) {
 		}
 		return results, nil
 	}
-	if q.gpu.Load() != nil {
+	// Both GPU backends share embedBatchGPU, which packs many texts into one
+	// forward. Dispatch on either: a Vulkan batch that fell through here would
+	// issue one submit per text instead of a handful.
+	if q.gpu.Load() != nil || q.vkGPU.Load() != nil {
 		if res, ok := q.embedBatchGPU(texts); ok {
 			return res, nil
 		}
@@ -587,7 +598,45 @@ func (q *Qwen3Embedder) HParams() Qwen3HParams { return q.hp }
 
 // Close waits for in-flight calls, makes later calls fail with
 // ErrEmbedderClosed, then releases the mmap.
+// setGPUReason records why a GPU backend is or is not in use.
+func (q *Qwen3Embedder) setGPUReason(reason string) {
+	q.gpuMu.Lock()
+	q.gpuReason = reason
+	q.gpuMu.Unlock()
+}
+
+// isClosed reports whether Close has begun tearing the embedder down.
+func (q *Qwen3Embedder) isClosed() bool {
+	if q == nil {
+		return true
+	}
+	q.closeMu.Lock()
+	defer q.closeMu.Unlock()
+	return q.closedFlag
+}
+
+// GPUReason returns the last recorded GPU-backend reason (thread-safe).
+func (q *Qwen3Embedder) GPUReason() string {
+	if q == nil {
+		return ""
+	}
+	q.gpuMu.Lock()
+	defer q.gpuMu.Unlock()
+	return q.gpuReason
+}
+
+// closeMu serialises Close: a second concurrent caller must wait for the first
+// to finish tearing down, not proceed on the strength of inflight.close()
+// returning false ("already closed") while the first is still waiting for
+// in-flight forwards. Proceeding early released the device (and the mmap)
+// underneath a running forward.
 func (q *Qwen3Embedder) Close() {
+	q.closeMu.Lock()
+	defer q.closeMu.Unlock()
+	if q.closedFlag {
+		return
+	}
+	q.closedFlag = true
 	q.inflight.close()
 	q.mu.Lock()
 	mf := q.mmap
@@ -597,6 +646,9 @@ func (q *Qwen3Embedder) Close() {
 	q.mu.Unlock()
 	if g := q.gpu.Swap(nil); g != nil {
 		g.release()
+	}
+	if g := q.vkGPU.Swap(nil); g != nil {
+		g.shutdown() // lock-aware: waits for any forward still holding g.mu
 	}
 	enqueueMmapClose(mf)
 	// In-flight calls have drained (inflight.close waits) and later calls

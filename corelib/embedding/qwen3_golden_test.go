@@ -27,6 +27,11 @@ func TestQwen3RetrievalGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer e.Close()
+	// The golden file is a CPU reference: it was written from the CPU kernels,
+	// and a GPU backend differs from them at ~1e-6. Comparing (or, worse,
+	// writing) it through the GPU would either fail every run or replace the
+	// reference with GPU vectors.
+	disableGPU(t, e)
 	var buf bytes.Buffer
 	put := func(v []float32, err error) {
 		if err != nil {

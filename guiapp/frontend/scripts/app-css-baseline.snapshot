@@ -904,6 +904,71 @@
     flex-shrink: 0;
 }
 
+/* iOS-style toggle (label.switch > input + span.slider) reusing the shared
+   switch chrome tokens; the hidden input keeps native semantics. */
+.problem-report-dialog .switch {
+    position: relative;
+    display: inline-flex;
+    flex: 0 0 auto;
+    width: 36px;
+    height: 20px;
+    margin: 0;
+    cursor: pointer;
+}
+
+.problem-report-dialog .switch input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.problem-report-dialog .switch .slider {
+    position: absolute;
+    inset: 0;
+    box-sizing: border-box;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-pill);
+    background: var(--theme-switch-track-off);
+    transition: background-color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.problem-report-dialog .switch .slider::before {
+    content: '';
+    position: absolute;
+    top: 1px;
+    left: 1px;
+    width: 16px;
+    height: 16px;
+    border-radius: var(--radius-pill);
+    background: var(--theme-switch-thumb);
+    box-shadow: var(--theme-switch-thumb-shadow);
+    transition: transform var(--transition-fast);
+}
+
+.problem-report-dialog .switch input:checked + .slider {
+    border-color: var(--theme-primary);
+    background: var(--theme-primary);
+}
+
+.problem-report-dialog .switch input:checked + .slider::before {
+    transform: translateX(16px);
+}
+
+.problem-report-dialog .switch input:focus-visible + .slider {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .problem-report-dialog .switch .slider,
+    .problem-report-dialog .switch .slider::before {
+        transition: none;
+    }
+}
+
 .problem-report-dialog__version {
     display: flex;
     align-items: center;
@@ -4376,6 +4441,39 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
     min-height: 36px;
 }
 
+/* Visually hidden but exposed to assistive tech (loading status, icon-only
+   control labels). */
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+/* Shared quiet note / error line used inside settings panels
+   (编程设置, LaTeX, …). */
+.settings-help-text {
+    margin: 0;
+    color: var(--theme-text-muted);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.settings-error {
+    margin: 0;
+    color: var(--theme-danger);
+    font-size: 0.78rem;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
 /* Migrated from inline styles in layout components (AppStatusMessageBar). */
 .asmb-warn-icon {
     width: 14px;
@@ -4511,6 +4609,33 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
     display: grid;
     gap: 4px;
     min-width: 0;
+}
+
+/* Coding-agent turn card in the task sidebar: one quiet card per turn, with
+   an outcome-coded edge (success green / failed red / blocked warning). */
+.coding-agent-turn-card {
+    padding: 8px 10px;
+    border: 1px solid var(--theme-border-subtle);
+    border-left: 3px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+    box-shadow: var(--shadow-sm);
+}
+
+.coding-agent-turn-card--success {
+    border-left-color: var(--theme-success);
+}
+
+.coding-agent-turn-card--failed {
+    border-left-color: var(--theme-danger);
+}
+
+.coding-agent-turn-card--blocked {
+    border-left-color: var(--theme-warning);
+}
+
+.coding-agent-turn-card--unknown {
+    border-left-color: var(--theme-border);
 }
 
 .cass-chip-label {
@@ -5000,7 +5125,9 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
 .feb-overlay {
     position: fixed;
     inset: 0;
-    z-index: 4100;
+    /* Rendered inside the scaled app shell, so it must outrank the inline
+       assistant title bar (z-index 30000), same as .modal-overlay. */
+    z-index: 40000;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -6143,7 +6270,9 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
 .knowledge-import-overlay {
     position: fixed;
     inset: 0;
-    z-index: 9999;
+    /* Dialog scrims outrank both app title bars; see .modal-overlay in
+       50-pet-provider.css. */
+    z-index: 40000;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -6547,6 +6676,29 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
     --wails-draggable: no-drag;
     pointer-events: auto;
     font-size: 13px;
+}
+/* The card is portalled to <body>, outside the scaled layer that hosts the
+   dialog scrims, so no z-index on a scrim can cover it. Hide it while any
+   full-screen dialog is open instead of leaving a second unmasked CTA above
+   the dialog. Keep this list in sync with the scrim classes in
+   modalOverlayLayering.test.ts. */
+body:has(
+    .modal-overlay,
+    .modal-backdrop,
+    .knowledge-import-overlay,
+    .knowledge-share-modal-overlay,
+    .llm-config-dialog-overlay,
+    .prog-tools__kb-editor-overlay,
+    .confirm-dialog-overlay,
+    .feb-overlay,
+    .vead-overlay,
+    .vet-dialog-overlay,
+    .im-audit-overlay,
+    .mailbox-manage-overlay,
+    .im-groups-modal-overlay,
+    .cwshare-backdrop
+) .app-update-float {
+    display: none;
 }
 .app-update-float__identity {
     display: flex;
@@ -6963,7 +7115,9 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
 .knowledge-share-modal-overlay {
     position: fixed;
     inset: 0;
-    z-index: var(--z-modal, 1200);
+    /* Dialog scrims outrank both app title bars; see .modal-overlay in
+       50-pet-provider.css. */
+    z-index: 40000;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -8114,6 +8268,31 @@ button.knowledge-chip:disabled {
     line-height: 1.5;
 }
 
+/* Unit/range note trailing a numeric field. */
+.ve-form-hint-inline {
+    color: var(--theme-text-muted);
+    font-size: 0.72rem;
+    white-space: nowrap;
+}
+
+/* Streaming cursor dots. The global prefers-reduced-motion guard already
+   collapses this animation for users who ask for reduced motion. */
+.ve-cursor-blink {
+    animation: ve-cursor-blink 1s steps(1) infinite;
+}
+
+@keyframes ve-cursor-blink {
+    0%, 60% { opacity: 1; }
+    60.01%, 100% { opacity: 0.25; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .ve-cursor-blink {
+        animation: none;
+        opacity: 1;
+    }
+}
+
 .ve-sensitive-hint {
     margin: -6px 0 0;
     padding: 0;
@@ -8231,7 +8410,15 @@ button.knowledge-chip:disabled {
 }
 
 .ve-btn--ghost:hover {
-    color: var(--theme-danger, #dc1f25);
+    color: var(--theme-text-primary);
+    background: var(--theme-surface-muted);
+}
+
+/* Destructive ghosts (remove item / clear avatar / delete rule) hover in
+   danger tones — mark them with ve-btn--danger explicitly. */
+.ve-btn--ghost.ve-btn--danger:hover {
+    background: var(--theme-danger-bg);
+    color: var(--theme-danger);
 }
 
 .ve-btn--link {
@@ -8245,6 +8432,180 @@ button.knowledge-chip:disabled {
 
 .ve-btn--link:hover {
     text-decoration: underline;
+}
+
+/* Size + semantic variants used by the approval rules editor. */
+.ve-btn--sm {
+    min-height: 28px;
+    padding: 4px 10px;
+    font-size: 0.74rem;
+}
+
+.ve-btn--xs {
+    min-height: 24px;
+    padding: 2px 8px;
+    font-size: 0.72rem;
+}
+
+.ve-btn--danger {
+    color: var(--theme-danger);
+    border-color: color-mix(in srgb, var(--theme-danger) 40%, var(--theme-border));
+}
+
+.ve-btn--danger:hover:not(:disabled) {
+    background: var(--theme-danger-bg);
+    color: var(--theme-danger);
+}
+
+/* Ghost + danger combination (delete-rule row button): stays quiet until
+   hovered, then reads as destructive rather than generic. */
+.ve-btn--ghost.ve-btn--danger {
+    color: var(--theme-danger);
+}
+
+/* Three-way routing rules editor (数字员工 tab). */
+.ve-rule-category {
+    margin-top: 12px;
+    padding: 12px 14px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--theme-control-well);
+}
+
+.ve-rule-category-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.ve-btn.ve-rule-category-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 30px;
+    color: var(--theme-text-primary);
+    font-weight: 600;
+}
+
+.ve-btn.ve-rule-category-toggle:hover {
+    color: var(--theme-text-primary);
+}
+
+.ve-rule-category-arrow {
+    font-size: 0.68rem;
+    color: var(--theme-text-muted);
+}
+
+.ve-rule-category-count {
+    color: var(--theme-text-muted);
+    font-size: 0.72rem;
+    font-weight: 500;
+}
+
+.ve-rule-category-body {
+    display: grid;
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.ve-rule-empty-hint {
+    margin: 0;
+}
+
+.ve-rule-item {
+    padding: 10px 12px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+}
+
+.ve-rule-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.ve-rule-header-left {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    flex: 1;
+}
+
+.ve-rule-position-controls {
+    display: inline-flex;
+    gap: 2px;
+    flex: 0 0 auto;
+}
+
+.ve-btn.ve-rule-toggle {
+    min-height: 26px;
+    color: var(--theme-text-muted);
+}
+
+.ve-btn.ve-rule-toggle:hover {
+    color: var(--theme-text-primary);
+}
+
+.ve-rule-name-input {
+    flex: 1 1 240px;
+    min-width: 120px;
+    max-width: 360px;
+}
+
+.ve-rule-body {
+    display: grid;
+    gap: 10px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--theme-border-subtle);
+}
+
+.ve-rule-conditions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.ve-rule-conditions-label {
+    color: var(--theme-text-secondary);
+    font-size: 0.76rem;
+    font-weight: 600;
+}
+
+.ve-rule-condition {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+/* Keep the three condition controls on one row; base .ve-form-input is 100% wide. */
+.ve-rule-condition-field,
+.ve-rule-condition-value {
+    flex: 0 1 200px;
+    min-width: 140px;
+}
+
+.ve-rule-condition-operator {
+    flex: 0 0 auto;
+    width: 140px;
+}
+
+.ve-rule-reason {
+    display: grid;
+    gap: 6px;
+}
+
+.ve-rule-reason-label {
+    font-size: 0.76rem;
+    color: var(--theme-text-secondary);
+    font-weight: 600;
 }
 
 .ve-dirs-header {
@@ -10421,7 +10782,10 @@ button.knowledge-chip:disabled {
     display: flex;
     justify-content: center;
     align-items: center;
-    z-index: 2000;
+    /* Above the inline assistant title bar (z-index 30000). The bar is its own
+       stacking context, so a lower scrim leaves the whole header unmasked and
+       still clickable while a dialog is open. */
+    z-index: 40000;
     animation: fadeIn 0.15s ease-out;
     -webkit-app-region: no-drag;
     --wails-draggable: no-drag;
@@ -10608,7 +10972,7 @@ button.knowledge-chip:disabled {
 .provider-config-tab-badge[data-tone='accent'] { background: #1d4ed8; }
 .provider-config-tab-badge[data-tone='warning'] { background: #92400e; }
 .provider-config-tab-badge[data-tone='neutral'] { background: #475569; color: #ffffff; }
-.provider-config-tab-badge[data-tone='success'] { background: #166534; }
+.provider-config-tab-badge[data-tone='success'] { background: var(--theme-success); }
 
 .provider-config-form-row {
     display: flex;
@@ -10877,6 +11241,21 @@ button.knowledge-chip:disabled {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 8px;
+}
+
+/* Filter-empty state spans the full grid as one quiet row. */
+.provider-selector-empty {
+    grid-column: 1 / -1;
+    min-height: 96px;
+    display: grid;
+    place-items: center;
+    padding: 12px;
+    border: 1px dashed var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    color: var(--theme-text-secondary);
+    background: color-mix(in srgb, var(--theme-surface-muted) 70%, var(--theme-surface));
+    font-size: 0.78rem;
+    text-align: center;
 }
 
 .provider-selector-card {
@@ -11215,6 +11594,17 @@ button.knowledge-chip:disabled {
     background: color-mix(in srgb, var(--theme-primary, #2e75cb) 12%, transparent);
     border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 34%, transparent);
     color: var(--theme-primary, #2e75cb);
+}
+
+/* Quiet deny action: neutral until hovered, no danger tint by design. */
+.ve-auth-action--ghost {
+    background: transparent;
+    color: var(--theme-text-secondary, #546479);
+}
+
+.ve-auth-action--ghost:hover:not(:disabled) {
+    color: var(--theme-text-primary, #526277);
+    background: rgba(148, 163, 184, 0.1);
 }
 
 .ve-auth-action--danger {
@@ -11601,7 +11991,9 @@ button.knowledge-chip:disabled {
 .confirm-dialog-overlay {
     position: fixed;
     inset: 0;
-    z-index: 10000;
+    /* Rendered inside the scaled app shell, so it must outrank the inline
+       assistant title bar (z-index 30000), same as .modal-overlay. */
+    z-index: 40000;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -12890,7 +13282,9 @@ button.knowledge-chip:disabled {
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 9999;
+    /* Dialog scrims outrank both app title bars; see .modal-overlay in
+       50-pet-provider.css. */
+    z-index: 40000;
     background: color-mix(in srgb, var(--theme-page-bg) 58%, rgba(0, 0, 0, 0.48)) !important;
     backdrop-filter: blur(6px);
     -webkit-app-region: no-drag;
@@ -13613,55 +14007,99 @@ button.knowledge-chip:disabled {
     color: var(--theme-text-muted);
 }
 
+/* ===== Shared vocabulary for the model/feature config panels =====
+   Used by the AI Model tab (embedding / ASR / diarization / OCR / TTS) and
+   the LaTeX tab. Each feature renders as one self-contained section card:
+   a header row (title + description + switch) followed by body rows. */
 .model-config-panel {
-    padding: 0 2px;
+    display: grid;
+    gap: 12px;
+    min-width: 0;
 }
 
+/* Legacy spaced variant: these panels now sit in the page's stacked grid,
+   which already owns the rhythm between cards. */
 .model-config-panel--spaced {
-    margin-top: 20px;
+    margin-top: 0;
 }
 
+.model-config-section {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+    padding: 16px 18px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--theme-surface);
+    box-shadow: var(--shadow-sm);
+}
+
+.model-config-section__head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.model-config-section__text {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+}
+
+.model-config-section__title {
+    margin: 0;
+    color: var(--theme-text-primary);
+    font-size: 0.92rem;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    line-height: 1.35;
+}
+
+.model-config-section__sub {
+    margin: 0;
+    color: var(--theme-text-secondary);
+    font-size: 0.78rem;
+    line-height: 1.55;
+}
+
+.model-config-section__body {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+}
+
+/* Headings keep the legacy modifier classes for compatibility, but render as
+   one calm neutral title — status colors live in the status boxes. */
 .model-config-heading {
-    margin: 0 0 12px;
-    color: var(--theme-primary);
-    font-size: 0.8rem;
-    font-weight: 700;
-    letter-spacing: 0.025em;
-    text-transform: uppercase;
+    margin: 0;
+    color: var(--theme-text-primary);
+    font-size: 0.92rem;
+    font-weight: 650;
+    letter-spacing: -0.01em;
 }
 
 .model-config-heading--spaced {
-    margin-top: 24px;
+    margin-top: 0;
 }
 
-.model-config-heading--primary {
-    color: var(--theme-primary);
-}
-
+.model-config-heading--primary,
 .model-config-heading--warning,
-.model-config-phase-title--warning {
-    color: var(--theme-primary, #2e75cb);
-}
-
-.model-config-heading--success,
-.model-config-phase-title--success,
-.model-config-calibration__message.is-success {
-    color: var(--theme-success);
-}
-
-.model-config-heading--info {
-    color: var(--theme-primary, #2e75cb);
+.model-config-heading--info,
+.model-config-heading--success {
+    color: var(--theme-text-primary);
 }
 
 .model-config-toggle-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 10px;
-    margin-bottom: 16px;
+    margin: 0;
 }
 
 .model-config-toggle-row--compact {
-    margin-bottom: 14px;
+    margin: 0;
 }
 
 .model-config-check {
@@ -13671,21 +14109,144 @@ button.knowledge-chip:disabled {
     color: var(--theme-text-primary);
     cursor: pointer;
     font-size: 0.82rem;
+    font-weight: 500;
+    user-select: none;
 }
 
-.model-config-check input {
+.model-config-check:has(input:disabled) {
+    cursor: default;
+    color: var(--theme-text-secondary);
+}
+
+/* Modern custom checkbox for the remaining inline toggles (sub-options,
+   selection lists). Replaces the native accent-color control. Anchor on both
+   panel and section roots: panels may hold several section cards, and
+   standalone panels (LaTeX, TTS, …) render one section directly. */
+:is(.model-config-panel, .model-config-section) :where(input[type='checkbox']) {
+    appearance: none;
     width: 16px;
     height: 16px;
     margin: 0;
+    padding: 0;
+    flex: 0 0 auto;
+    display: inline-grid;
+    place-content: center;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-sm);
+    background: var(--theme-surface);
     cursor: pointer;
-    accent-color: var(--theme-primary);
+    transition: background-color var(--transition-fast), border-color var(--transition-fast);
+}
+
+:is(.model-config-panel, .model-config-section) :where(input[type='checkbox'])::before {
+    content: '';
+    width: 9px;
+    height: 9px;
+    transform: scale(0);
+    transition: transform 110ms var(--ease-out);
+    background: var(--theme-on-primary);
+    clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+}
+
+:is(.model-config-panel, .model-config-section) :where(input[type='checkbox']):checked {
+    border-color: var(--theme-primary);
+    background: var(--theme-primary);
+}
+
+:is(.model-config-panel, .model-config-section) :where(input[type='checkbox']):checked::before {
+    transform: scale(1);
+}
+
+:is(.model-config-panel, .model-config-section) :where(input[type='checkbox']):focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+:is(.model-config-panel, .model-config-section) :where(input[type='checkbox']):disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* iOS-style switch reusing the shared token chrome from 00-tokens.css.
+   The input itself is the track; the thumb lives on ::after. Unscoped on the
+   dedicated class so it also styles switches outside a panel wrapper
+   (LaTeX renders one section directly) — its specificity still sits above
+   the generic checkbox rule, so the two never fight. */
+input[type='checkbox'].model-config-switch__input {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    padding: 0;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-pill);
+    background: var(--theme-switch-track-off);
+    box-sizing: border-box;
+    cursor: pointer;
+    transition: background-color var(--transition-fast), border-color var(--transition-fast);
+}
+
+input[type='checkbox'].model-config-switch__input::before {
+    content: none;
+}
+
+input[type='checkbox'].model-config-switch__input::after {
+    content: '';
+    position: absolute;
+    top: 1px;
+    left: 1px;
+    width: 16px;
+    height: 16px;
+    border-radius: var(--radius-pill);
+    background: var(--theme-switch-thumb);
+    box-shadow: var(--theme-switch-thumb-shadow);
+    transition: transform var(--transition-fast);
+}
+
+input[type='checkbox'].model-config-switch__input:checked {
+    border-color: var(--theme-primary);
+    background: var(--theme-primary);
+}
+
+input[type='checkbox'].model-config-switch__input:checked::after {
+    transform: translateX(16px);
+}
+
+input[type='checkbox'].model-config-switch__input:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+input[type='checkbox'].model-config-switch__input:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.model-config-switch {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    margin: 0;
+    cursor: pointer;
 }
 
 .model-config-copy {
-    margin: 0 0 16px;
+    margin: 0;
     color: var(--theme-text-secondary);
-    font-size: 0.76rem;
+    font-size: 0.78rem;
+    line-height: 1.55;
+}
+
+/* Status/action readouts sit a touch softer than body copy. */
+.model-config-copy--soft {
+    opacity: 0.85;
+}
+
+.model-config-error {
+    margin: 0;
+    color: var(--theme-danger);
+    font-size: 0.78rem;
     line-height: 1.5;
+    overflow-wrap: anywhere;
 }
 
 .model-config-inline-field {
@@ -13693,12 +14254,17 @@ button.knowledge-chip:disabled {
     flex-wrap: wrap;
     align-items: center;
     gap: 10px;
-    margin-bottom: 16px;
+    margin: 0;
 }
 
 .model-config-inline-label {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
     color: var(--theme-text-secondary);
     font-size: 0.78rem;
+    font-weight: 600;
 }
 
 .model-config-select {
@@ -13706,25 +14272,64 @@ button.knowledge-chip:disabled {
     height: 32px;
     padding: 0 10px;
     border: 1px solid var(--theme-border);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-md);
     outline: none;
     background: var(--theme-surface);
     color: var(--theme-text-primary);
+    font: inherit;
     font-size: 0.8rem;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.model-config-select:focus {
+    border-color: var(--theme-primary);
+    box-shadow: 0 0 0 3px var(--theme-primary-soft);
+}
+
+.model-config-select:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* Compact numeric fields inside toggle rows (keep-newest / max-age). */
+:is(.model-config-panel, .model-config-section) input[type='number'] {
+    min-height: 30px;
+    padding: 0 8px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font: inherit;
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+:is(.model-config-panel, .model-config-section) input[type='number']:focus {
+    border-color: var(--theme-primary);
+    box-shadow: 0 0 0 3px var(--theme-primary-soft);
+    outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    :is(.model-config-panel, .model-config-section) :where(input[type='checkbox'])::before,
+    input[type='checkbox'].model-config-switch__input::after {
+        transition: none;
+    }
 }
 
 .model-config-calibration {
-    margin-top: 20px;
+    margin-top: 0;
     padding: 12px 14px;
-    border: 1px solid var(--theme-border);
+    border: 1px solid var(--theme-border-subtle);
     border-radius: var(--radius-md);
-    background: var(--theme-surface-muted);
+    background: var(--theme-control-well);
 }
 
 .model-config-calibration__title {
     margin-bottom: 8px;
     color: var(--theme-text-primary);
-    font-size: 0.78rem;
+    font-size: 0.8rem;
     font-weight: 700;
 }
 
@@ -13743,15 +14348,25 @@ button.knowledge-chip:disabled {
 .model-config-phase-card {
     margin-bottom: 10px;
     padding: 10px 12px;
-    border: 1px solid var(--theme-border);
-    border-radius: var(--radius-sm);
-    background: var(--theme-surface);
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 24%, var(--theme-border));
+    border-radius: var(--radius-md);
+    background: var(--theme-info-bg);
 }
 
 .model-config-phase-title {
     margin-bottom: 4px;
     font-size: 0.76rem;
     font-weight: 700;
+}
+
+/* Transient calibration states keep their semantic colors. */
+.model-config-phase-title--warning {
+    color: var(--theme-warning);
+}
+
+.model-config-phase-title--success,
+.model-config-calibration__message.is-success {
+    color: var(--theme-success);
 }
 
 .model-config-reading-list {
@@ -13794,27 +14409,143 @@ button.knowledge-chip:disabled {
     gap: 8px;
 }
 
+/* Secondary action button. `.model-config-btn` previously shipped without any
+   CSS and rendered as the native gray control; both classes now share one
+   modern chrome. */
+.model-config-btn,
 .model-config-button {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 30px;
     padding: 5px 12px;
     border: 1px solid var(--theme-border);
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--theme-text-secondary);
-    cursor: pointer;
-    font-size: 0.73rem;
-}
-
-.model-config-button--accent {
-    padding-inline: 14px;
+    border-radius: var(--radius-md);
     background: var(--theme-surface);
-    color: var(--theme-success);
-    font-size: 0.76rem;
+    color: var(--theme-text-primary);
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 600;
+    line-height: 1.2;
+    cursor: pointer;
+    transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
+.model-config-btn:hover:not(:disabled),
+.model-config-button:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border));
+    background: var(--theme-primary-soft);
+    color: var(--theme-primary-strong);
+}
+
+.model-config-btn:disabled,
 .model-config-button:disabled {
+    border-color: var(--theme-border-subtle);
     background: var(--theme-surface-muted);
     color: var(--theme-text-muted);
     cursor: not-allowed;
+}
+
+.model-config-btn:focus-visible,
+.model-config-button:focus-visible,
+.model-status-box__primary:focus-visible,
+.model-status-box__retry:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+/* Filled main action (e.g. “校准麦克风”). */
+.model-config-button--accent {
+    border-color: transparent;
+    background: var(--theme-primary);
+    color: var(--theme-on-primary);
+}
+
+.model-config-button--accent:hover:not(:disabled) {
+    border-color: transparent;
+    background: var(--theme-primary-strong);
+    color: var(--theme-on-primary);
+}
+
+/* Destructive variants hover in danger tones, never the primary blue. */
+.model-config-btn--danger:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--theme-danger) 45%, var(--theme-border));
+    background: var(--theme-danger-bg);
+    color: var(--theme-danger);
+}
+
+/* Size variants: sm for feature action rows, xs for path/copy chips,
+   chip for in-list controls and filter pills. */
+.model-config-btn--sm {
+    min-height: 28px;
+    padding: 4px 10px;
+}
+
+.model-config-btn--xs {
+    min-height: 26px;
+    padding: 2px 8px;
+    font-size: 12px;
+}
+
+.model-config-btn--chip {
+    min-height: 24px;
+    padding: 1px 6px;
+    font-size: 11px;
+}
+
+.model-config-btn--chip.is-active {
+    border-color: color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border));
+    background: var(--theme-primary-soft);
+    color: var(--theme-primary-strong);
+}
+
+/* Computer Use log artifact list: a quiet well with compact rows. */
+.model-config-artifacts {
+    display: grid;
+    gap: 8px;
+    max-height: 220px;
+    overflow: auto;
+    padding: 10px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--theme-control-well);
+    color: var(--theme-text-secondary);
+    font-size: 0.75rem;
+}
+
+.model-config-artifacts__filters,
+.model-config-artifacts__bulk {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.model-config-artifacts__row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+    border-bottom: 1px solid var(--theme-border-subtle);
+}
+
+.model-config-artifacts__row:last-child {
+    border-bottom: 0;
+}
+
+.model-config-artifacts__kind {
+    min-width: 36px;
+    opacity: 0.7;
+}
+
+.model-config-artifacts__meta {
+    opacity: 0.65;
+}
+
+.model-config-artifacts__empty {
+    opacity: 0.7;
 }
 
 .model-config-calibration__message {
@@ -13823,9 +14554,9 @@ button.knowledge-chip:disabled {
 
 .model-status-box {
     padding: 12px 14px;
-    border: 1px solid var(--theme-border);
-    border-radius: var(--radius-sm);
-    background: var(--theme-surface);
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--theme-control-well);
 }
 
 .model-status-box__ready,
@@ -13885,11 +14616,12 @@ button.knowledge-chip:disabled {
 .model-status-box__primary {
     padding: 6px 16px;
     border: 0;
-    border-radius: var(--radius-xs);
+    border-radius: var(--radius-pill);
     background: var(--model-accent, var(--theme-primary));
     color: var(--theme-on-primary);
     cursor: pointer;
     font-size: 0.78rem;
+    font-weight: 600;
 }
 
 .model-status-box__error {
@@ -13902,11 +14634,19 @@ button.knowledge-chip:disabled {
     margin-left: 10px;
     padding: 4px 12px;
     border: 1px solid var(--theme-border);
-    border-radius: var(--radius-xs);
+    border-radius: var(--radius-sm);
     background: var(--theme-surface);
     color: var(--theme-text-primary);
     cursor: pointer;
     font-size: 0.74rem;
+    font-weight: 600;
+    transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.model-status-box__retry:hover {
+    border-color: color-mix(in srgb, var(--model-accent, var(--theme-primary)) 45%, var(--theme-border));
+    background: color-mix(in srgb, var(--model-accent, var(--theme-primary)) 8%, var(--theme-surface));
+    color: var(--model-accent, var(--theme-primary-strong));
 }
 
 .maclaw-role-panel {
@@ -14193,6 +14933,12 @@ button.knowledge-chip:disabled {
 
 .hub-service-redeem__voucher-heading .hub-service-redeem__label {
     margin-top: 0;
+}
+
+.hub-service-redeem__voucher-section {
+    margin-top: 4px;
+    padding-top: 12px;
+    border-top: 1px solid var(--theme-border-subtle);
 }
 
 .hub-service-redeem__voucher-heading p {
@@ -17164,6 +17910,29 @@ button.tbk-pill {
     font-size: 0.72rem;
 }
 
+/* Token stat rows: label left, tabular value right; semantic classes on the
+   strong carry their own colors. */
+.token-usage-panel__stats {
+    display: grid;
+    gap: 6px;
+    margin-top: 10px;
+}
+
+.token-usage-panel__stat-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    color: var(--theme-text-secondary);
+    font-size: 0.78rem;
+}
+
+.token-usage-panel__stat-row strong {
+    color: var(--theme-text-primary);
+    font-variant-numeric: tabular-nums;
+    font-weight: 650;
+}
+
 .usage-display__button {
     padding: 3px 10px;
     border: 0;
@@ -18133,7 +18902,9 @@ button.tbk-pill {
 .prog-tools__kb-editor-overlay {
     position: fixed;
     inset: 0;
-    z-index: 1200;
+    /* Dialog scrims outrank both app title bars; see .modal-overlay in
+       50-pet-provider.css. */
+    z-index: 40000;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -18350,6 +19121,14 @@ button.tbk-pill {
 
 .general-settings-office-read__heading p {
     max-width: 72ch;
+}
+
+/* Quiet footnote under the format fieldset. */
+.general-settings-office-read__scope-note {
+    margin: 0;
+    color: var(--theme-text-muted);
+    font-size: 0.72rem;
+    line-height: 1.5;
 }
 
 .general-settings-office-read__engine {
@@ -18854,6 +19633,8 @@ button.tbk-pill {
 .asset-kind-tabs button { border: 0; background: transparent; color: var(--theme-text-secondary); border-radius: var(--radius-sm); padding: 6px 10px; cursor: pointer; font-size: .76rem; }
 .asset-kind-tabs button[aria-selected="true"] { color: var(--theme-primary-strong); background: var(--theme-surface); font-weight: 650; }
 .asset-ledger-list { border-top: 1px solid var(--theme-border-subtle); }
+/* Loading / empty note row inside the ledger. */
+.asset-ledger-list .hint { display: grid; place-items: center; min-height: 72px; color: var(--theme-text-secondary); font-size: .76rem; text-align: center; }
 .asset-transaction { display: flex; justify-content: space-between; gap: 16px; padding: 11px 0; border-bottom: 1px solid var(--theme-border-subtle); }
 .asset-transaction > div { display: grid; gap: 3px; min-width: 0; }
 .asset-transaction > div:last-child { text-align: right; flex-shrink: 0; }
@@ -20689,6 +21470,28 @@ button.tbk-pill {
     line-height: 1.5;
 }
 
+/* OAuth quick-sign-in block: a quiet well that groups the hint and the
+   provider buttons instead of leaving them loose inside the section. */
+.email-settings-login {
+    display: grid;
+    gap: 10px;
+    max-width: 560px;
+    padding: 12px 14px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--theme-control-well);
+}
+
+.email-settings-login .email-settings-provider__hint {
+    margin: 0;
+}
+
+.email-settings-login__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
 .email-settings-grid,
 .email-settings-endpoint__grid {
     display: grid;
@@ -20905,22 +21708,16 @@ button.tbk-pill {
     color: var(--theme-on-primary, #ffffff);
 }
 
+/* The mail manager rides on the app-wide modal shell (.modal-backdrop /
+   .modal-content) so its scrim, border, elevation and entrance match every
+   other dialog. That surface comes from the shared modal rules (including the
+   Office-theme repaint at the end of the cascade), so this block only widens
+   the shell and adds room for three panes. */
 .mailbox-manage-overlay {
-    position: fixed;
-    inset: 0;
-    /* The settings page is scaled and clipped. This dialog is portalled to
-       document.body, so it has to sit above that shell and refuse window drags. */
-    z-index: 20000;
-    display: flex;
-    align-items: center;
-    justify-content: center;
     padding: 24px;
-    background: color-mix(in srgb, var(--theme-text-primary) 28%, transparent);
-    -webkit-app-region: no-drag;
-    --wails-draggable: no-drag;
 }
 
-.mailbox-manage {
+.modal-content.mailbox-manage {
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -20928,14 +21725,9 @@ button.tbk-pill {
     width: min(1180px, 100%);
     height: min(780px, 100%);
     min-height: 0;
-    padding: 14px 16px 16px;
-    border: 1px solid var(--theme-border);
-    border-radius: var(--radius-lg);
-    background: var(--theme-surface);
+    padding: 16px 18px 18px;
+    text-align: left;
     color: var(--theme-text-primary);
-    box-shadow: 0 18px 50px color-mix(in srgb, var(--theme-text-primary) 18%, transparent);
-    -webkit-app-region: no-drag;
-    --wails-draggable: no-drag;
 }
 
 .mailbox-manage *,
@@ -20944,24 +21736,27 @@ button.tbk-pill {
     box-sizing: border-box;
 }
 
-.mailbox-manage__header {
-    display: flex;
+/* .modal-header already supplies the divider and heading ink; only the
+   stacked title/account block and its spacing are local. */
+.modal-header.mailbox-manage__header {
     align-items: flex-start;
-    justify-content: space-between;
-    gap: 12px;
+    margin-bottom: 0;
+    padding-bottom: 10px;
 }
 
 .mailbox-manage__header-main {
     min-width: 0;
 }
 
-.mailbox-manage__header h3 {
+.modal-header.mailbox-manage__header h3 {
     display: flex;
     align-items: center;
     gap: 7px;
     margin: 0;
     color: var(--theme-text-primary);
-    font-size: 1rem;
+    font-size: 0.95rem;
+    font-weight: 650;
+    letter-spacing: -0.01em;
 }
 
 .mailbox-manage__title-glyph {
@@ -21010,21 +21805,19 @@ button.tbk-pill {
     cursor: default;
 }
 
-.mailbox-manage__tool:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--theme-primary-soft);
-}
-
 .mailbox-manage__error {
     margin: 0;
 }
 
-.mailbox-manage__body {
+/* Compound selector: .modal-body is assembled after this partial and would
+   otherwise re-apply its own bottom margin to the flexing three-pane grid. */
+.modal-body.mailbox-manage__body {
     display: grid;
     grid-template-columns: 186px minmax(220px, 0.92fr) minmax(0, 1.3fr);
     grid-template-rows: minmax(0, 1fr);
     gap: 12px;
     flex: 1 1 auto;
+    margin-bottom: 0;
     min-height: 0;
 }
 
@@ -21047,6 +21840,19 @@ button.tbk-pill {
     background: var(--theme-surface-muted);
     list-style: none;
     overflow: auto;
+}
+
+/* The shared modal repaint puts the dialog on --office-panel. In dark mode
+   that tone sits almost on top of --theme-surface-muted, so recess the three
+   panes with the app's technical-well recipe to keep the columns legible.
+   Light mode keeps the blue-tinted well. */
+:where([data-ai-theme='dark']) .modal-content.mailbox-manage :is(
+    .mailbox-manage__folders,
+    .mailbox-manage__messages,
+    .mailbox-manage__view,
+    .mailbox-manage__placeholder
+) {
+    background: color-mix(in srgb, var(--office-canvas) 82%, var(--office-panel));
 }
 
 .mailbox-manage__folders > li,
@@ -21111,7 +21917,7 @@ button.tbk-pill {
     height: 18px;
     padding: 0;
     border: 1px solid var(--theme-border);
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
     background: var(--theme-surface);
     color: var(--theme-on-primary, #ffffff);
     cursor: pointer;
@@ -21132,9 +21938,21 @@ button.tbk-pill {
     background: var(--theme-primary);
 }
 
-.mailbox-manage__check:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--theme-primary-soft);
+/* The shared Office modal shell raises every button to a 44px touch target on
+   coarse pointers. Mail keeps 18px square checkboxes and 28px icon tools, so
+   give them a sane square target instead of stretching them into tall slivers. */
+@media (pointer: coarse) {
+    .modal-content.mailbox-manage .mailbox-manage__check {
+        min-width: 28px;
+        min-height: 28px;
+    }
+
+    .modal-content.mailbox-manage .mailbox-manage__tool,
+    .modal-content.mailbox-manage .mailbox-manage__close {
+        width: 36px;
+        height: 36px;
+        min-height: 0;
+    }
 }
 
 .mailbox-manage__pane {
@@ -21184,7 +22002,7 @@ button.tbk-pill {
 .mailbox-manage__badge {
     min-width: 18px;
     padding: 1px 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--theme-primary);
     color: var(--theme-on-primary, #ffffff);
     font-size: 0.68rem;
@@ -21216,24 +22034,20 @@ button.tbk-pill {
     transform: translateY(-50%);
 }
 
-.mailbox-manage__close {
+/* .btn-close supplies the ink and cursor; this only sizes the hit target. */
+.btn-close.mailbox-manage__close {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     width: 28px;
     height: 28px;
     padding: 0;
-    border: 0;
     border-radius: var(--radius-md);
-    background: transparent;
-    color: var(--theme-text-muted);
-    font: inherit;
     font-size: 1.35rem;
     line-height: 1;
-    cursor: pointer;
 }
 
-.mailbox-manage__close:hover {
+.btn-close.mailbox-manage__close:hover {
     background: var(--theme-surface-muted);
 }
 
@@ -21311,13 +22125,6 @@ button.tbk-pill {
     background: var(--theme-primary-soft);
 }
 
-.mailbox-manage__folder:focus-visible,
-.mailbox-manage__message:focus-visible,
-.mailbox-manage__close:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--theme-primary-soft);
-}
-
 .mailbox-manage__view,
 .mailbox-manage__placeholder {
     flex: 1 1 auto;
@@ -21389,11 +22196,6 @@ button.tbk-pill {
     font-weight: 650;
 }
 
-.mailbox-manage__seg__btn:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--theme-primary-soft);
-}
-
 .mailbox-manage__view__meta {
     display: flex;
     align-items: flex-start;
@@ -21459,7 +22261,7 @@ button.tbk-pill {
     max-width: 240px;
     padding: 2px 9px;
     border: 1px solid var(--theme-border-subtle);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--theme-surface);
     color: var(--theme-text-secondary);
     font-size: 0.74rem;
@@ -21647,7 +22449,7 @@ button.tbk-pill {
 
 .mailbox-md code {
     padding: 1px 4px;
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
     background: var(--theme-surface);
     border: 1px solid var(--theme-border-subtle);
     font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
@@ -24340,7 +25142,9 @@ button.tbk-pill {
     display: flex;
     justify-content: center;
     align-items: center;
-    z-index: 2000;
+    /* Dialog scrims outrank both app title bars; see .modal-overlay in
+       50-pet-provider.css. */
+    z-index: 40000;
     -webkit-app-region: no-drag;
     --wails-draggable: no-drag;
 }
@@ -24973,17 +25777,113 @@ button.tbk-pill {
 .cpm-del { opacity: 0.7; }
 .cpm-inline-img { max-height: 200px; vertical-align: middle; border-radius: var(--radius-xs); }
 
-/* NotificationDetail.tsx */
-.ndet-root { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
-.ndet-back-arrow { font-size: 14px; }
-.ndet-content { flex: 1; overflow-y: auto; padding: 12px 14px 16px; }
+/* NotificationDetail.tsx — a full notice read inside the bell panel. Every
+   rule draws on the shared theme tokens so announcements match the app chrome
+   in light and dark schemes instead of carrying their own palette. */
+
+/* Category ink, shared by the panel pills and the detail badge. The default
+   lives in :where() (zero specificity) so the modifier classes below win no
+   matter where their base classes appear in the assembled stylesheet. */
+:where(.notification-cat-badge, .ndet-cat) { --notif-cat: var(--theme-primary); }
+.notification-cat--system_announcement { --notif-cat: var(--theme-primary); }
+.notification-cat--feature_update { --notif-cat: var(--theme-success); }
+.notification-cat--security_alert { --notif-cat: var(--theme-danger); }
+.notification-cat--maintenance { --notif-cat: var(--theme-warning); }
+.notification-cat--custom { --notif-cat: var(--theme-text-secondary); }
+
+.ndet-root { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; }
+.ndet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 10px 14px 8px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+}
+.ndet-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--theme-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.ndet-back:hover { background: var(--theme-surface-muted); color: var(--theme-text-primary); }
+.ndet-back-arrow { font-size: 14px; line-height: 1; }
+.ndet-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--theme-text-muted);
+  font: inherit;
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.ndet-close:hover { background: var(--theme-surface-muted); color: var(--theme-text-primary); }
+.ndet-content { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; padding: 14px 14px 18px; }
+.ndet-title {
+  margin: 0 0 10px;
+  color: var(--theme-text-primary);
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.ndet-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.ndet-cat {
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--notif-cat) 28%, transparent);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--notif-cat) 10%, transparent);
+  color: var(--notif-cat);
+  font-size: 11px;
+  font-weight: 550;
+  line-height: 1.5;
+}
+.ndet-priority {
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 550;
+  line-height: 1.5;
+}
+.ndet-priority--urgent {
+  border: 1px solid color-mix(in srgb, var(--theme-danger) 28%, transparent);
+  background: var(--theme-danger-bg);
+  color: var(--theme-danger);
+}
+.ndet-priority--important {
+  border: 1px solid color-mix(in srgb, var(--theme-warning) 30%, transparent);
+  background: var(--theme-warning-bg);
+  color: var(--theme-warning);
+}
+.ndet-date { margin-left: auto; color: var(--theme-text-muted); font-size: 11px; }
+.ndet-empty { color: var(--theme-text-muted); font-size: 13px; line-height: 1.7; }
 .ndet-invite-body {
   font-size: 13px;
   line-height: 1.7;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
-  color: var(--theme-text, #1f2937);
+  color: var(--theme-text-primary);
 }
 .ndet-invite-actions {
   display: flex;
@@ -24992,61 +25892,104 @@ button.tbk-pill {
   margin-top: 14px;
 }
 .ndet-invite-actions button {
-  height: 32px;
+  height: 30px;
   padding: 0 14px;
-  border-radius: var(--radius-md, 8px);
-  font: 600 13px/1 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
   cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
 }
 .ndet-invite-accept {
-  border: 1px solid var(--theme-primary, #2e75cb);
-  background: var(--theme-primary, #2e75cb);
-  color: #ffffff;
+  border: 1px solid color-mix(in srgb, var(--theme-primary) 58%, var(--theme-border));
+  background: var(--theme-primary-soft);
+  color: var(--theme-primary-strong);
 }
 .ndet-invite-accept:hover:not(:disabled) {
-  background: var(--theme-primary-strong, #1d4ed8);
-  border-color: var(--theme-primary-strong, #1d4ed8);
+  background: color-mix(in srgb, var(--theme-primary) 16%, var(--theme-surface));
+  border-color: var(--theme-primary);
 }
 .ndet-invite-decline {
-  border: 1px solid var(--theme-border, #c9ddf6);
-  background: var(--theme-surface, #ffffff);
-  color: var(--theme-text, #1f2937);
+  border: 1px solid var(--theme-border);
+  background: var(--theme-surface);
+  color: var(--theme-text-secondary);
 }
 .ndet-invite-decline:hover:not(:disabled) {
-  border-color: var(--theme-primary, #2e75cb);
-  color: var(--theme-primary, #2e75cb);
+  background: var(--theme-surface-muted);
+  color: var(--theme-text-primary);
+  border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border));
 }
 .ndet-invite-ignore {
   border: 1px solid transparent;
   background: transparent;
-  color: var(--theme-text-muted, #64748b);
+  color: var(--theme-text-muted);
 }
 .ndet-invite-ignore:hover:not(:disabled) {
-  color: var(--theme-text, #1f2937);
-  background: var(--theme-surface-muted, #f4f7fb);
+  background: var(--theme-surface-muted);
+  color: var(--theme-text-primary);
 }
-.ndet-invite-actions button:disabled {
-  opacity: 0.55;
-  cursor: default;
+.ndet-invite-actions button:disabled { opacity: 0.55; cursor: default; }
+.ndet-invite-error { margin: 10px 0 0; font-size: 12px; line-height: 1.45; color: var(--theme-danger); }
+.ndet-invite-note { margin: 10px 0 0; font-size: 12px; line-height: 1.45; color: var(--theme-text-muted); }
+
+/* Markdown body */
+.notification-markdown-content {
+  color: var(--theme-text-primary);
+  font-size: 13px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
-.ndet-invite-error {
-  margin: 10px 0 0;
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--theme-danger, #dc1f25);
-}
-.ndet-invite-note {
-  margin: 10px 0 0;
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--theme-text-muted, #64748b);
-}
-.ndet-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
 .ndet-p { margin: 6px 0; line-height: 1.7; }
 .ndet-list { margin: 6px 0; padding-left: 20px; }
 .ndet-li { margin: 3px 0; line-height: 1.6; }
+.ndet-link { color: var(--theme-link-color, var(--theme-primary)); text-decoration: underline; cursor: pointer; }
+.ndet-img-alt { color: var(--theme-text-muted); font-size: 12px; }
+.ndet-code {
+  padding: 1px 4px;
+  border-radius: var(--radius-xs);
+  background: var(--theme-surface-muted);
+  color: var(--theme-text-primary);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+}
+.ndet-codeblock {
+  display: block;
+  padding: 10px 12px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--theme-surface-muted);
+  color: var(--theme-text-primary);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.ndet-quote {
+  margin: 8px 0;
+  padding: 4px 12px;
+  border-left: 3px solid var(--theme-border);
+  color: var(--theme-text-secondary);
+  font-size: 12px;
+}
+.ndet-h1 { margin: 12px 0 6px; color: var(--theme-text-primary); font-size: 16px; font-weight: 700; }
+.ndet-h2 { margin: 10px 0 5px; color: var(--theme-text-primary); font-size: 15px; font-weight: 650; }
+.ndet-h3 { margin: 8px 0 4px; color: var(--theme-text-primary); font-size: 14px; font-weight: 650; }
+.ndet-hr { margin: 12px 0; border: none; border-top: 1px solid var(--theme-border-subtle); }
 .ndet-table-scroll { overflow-x: auto; margin: 8px 0; }
 .ndet-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.ndet-th {
+  padding: 6px 8px;
+  border: 1px solid var(--theme-border-subtle);
+  background: var(--theme-surface-muted);
+  color: var(--theme-text-primary);
+  font-size: 11px;
+  font-weight: 650;
+  text-align: left;
+}
+.ndet-td { padding: 5px 8px; border: 1px solid var(--theme-border-subtle); font-size: 12px; }
 
 /* AssistantGroupDiscussionDropdown.tsx */
 .aggd-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 8px; }
@@ -25086,7 +26029,9 @@ button.tbk-pill {
 .vegc-msg-list { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px; }
 
 /* VEAuthorizationDialog.tsx */
-.vead-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.4); z-index: 10000; }
+/* Rendered inside the scaled app shell, so it must outrank the inline
+   assistant title bar (z-index 30000), same as .modal-overlay. */
+.vead-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.4); z-index: 40000; }
 .vead-req-block { margin-bottom: 4px; }
 .vead-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .vead-bell-icon { display: block; }
@@ -25235,11 +26180,71 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
 .atb-btn-icon { display: block; flex-shrink: 0; }
 .atb-tools-group { display: flex; gap: 4px; align-items: center; min-width: 0; padding-top: 1px; }
 
-/* AssistantTitleBarNotifications.tsx */
+/* AssistantTitleBarNotifications.tsx — urgent notice toast, styled like the
+   app's other floating cards (surface, themed border, shared elevation). */
 .atbn-anchor { position: relative; }
-.atbn-urgent-head { display: flex; align-items: center; justify-content: space-between; }
-.atbn-urgent-label { font-size: 12px; font-weight: 600; color: var(--theme-danger, #dc1f25); display: inline-flex; align-items: center; gap: 6px; }
-.atbn-urgent-open { background: none; border: none; padding: 0; text-align: left; cursor: pointer; display: flex; flex-direction: column; gap: 6px; }
+.notification-toast {
+  position: fixed;
+  top: 48px;
+  right: 16px;
+  z-index: 50000;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-sizing: border-box;
+  width: 320px;
+  /* Fixed descendants of the transformed .app-scale-layer size against that
+     containing block; percentage keeps the toast inside a scaled window. */
+  max-width: calc(100% - 32px);
+  padding: 12px 16px;
+  border: 1px solid color-mix(in srgb, var(--theme-danger) 42%, var(--theme-border));
+  border-radius: var(--radius-lg);
+  background: var(--theme-surface);
+  box-shadow: var(--shadow-lg);
+}
+.notification-toast__head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.notification-toast__label { display: inline-flex; align-items: center; gap: 5px; color: var(--theme-danger); font-size: 11px; font-weight: 650; }
+.notification-toast__glyph { color: var(--theme-danger); }
+.notification-toast__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--theme-text-muted);
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.notification-toast__close:hover { background: var(--theme-surface-muted); color: var(--theme-text-primary); }
+.notification-toast__open {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.notification-toast__title { color: var(--theme-text-primary); font-size: 13px; font-weight: 600; line-height: 1.45; word-break: break-word; }
+.notification-toast__preview {
+  color: var(--theme-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+.notification-toast__cta { color: var(--theme-primary); font-size: 11px; font-weight: 600; }
 
 /* AssistantReasoningPanel.tsx */
 .arp-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -25455,10 +26460,173 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
 .ni-top-row { display: flex; align-items: center; gap: 6px; }
 .ni-spacer { flex: 1; }
 
-/* NotificationPanel.tsx */
+/* NotificationPanel.tsx — anchored card below the title-bar bell. It borrows
+   the app popover recipe: surface, theme border, radius-lg, shared elevation. */
+.notification-panel {
+  position: absolute;
+  top: 100%;
+  right: 8px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: 400px;
+  overflow: hidden;
+  border: 1px solid var(--theme-border);
+  border-radius: var(--radius-lg);
+  background: var(--theme-surface);
+  box-shadow: var(--shadow-lg);
+  outline: none;
+}
+.notification-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+}
+.notification-panel__title { color: var(--theme-text-primary); font-size: 14px; font-weight: 650; letter-spacing: -0.01em; }
+.notification-panel__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--theme-text-muted);
+  font: inherit;
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.notification-panel__close:hover { background: var(--theme-surface-muted); color: var(--theme-text-primary); }
+.notification-panel__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+}
+.notification-filter {
+  --notif-cat: var(--theme-primary);
+  padding: 3px 10px;
+  border: 1px solid var(--theme-border);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--theme-text-secondary);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+.notification-filter[data-category='feature_update'] { --notif-cat: var(--theme-success); }
+.notification-filter[data-category='security_alert'] { --notif-cat: var(--theme-danger); }
+.notification-filter[data-category='maintenance'] { --notif-cat: var(--theme-warning); }
+.notification-filter[data-category='custom'] { --notif-cat: var(--theme-text-secondary); }
+.notification-filter:hover { border-color: color-mix(in srgb, var(--theme-primary) 40%, var(--theme-border)); color: var(--theme-text-primary); }
+.notification-filter[aria-pressed='true'] {
+  border-color: color-mix(in srgb, var(--notif-cat) 55%, var(--theme-border));
+  background: color-mix(in srgb, var(--notif-cat) 10%, var(--theme-surface));
+  color: var(--notif-cat);
+  font-weight: 600;
+}
+.np-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 4px 0; }
+.notification-item-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+  background: transparent;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+.notification-item-row--unread { background: color-mix(in srgb, var(--theme-primary) 4%, transparent); }
+.notification-item-row:hover,
+.notification-item-row:focus-visible { background: var(--theme-surface-muted); }
+.notification-item-row:focus-visible { outline: 2px solid var(--theme-primary); outline-offset: -2px; }
 .np-head-row { display: flex; align-items: center; gap: 6px; font-size: 11px; }
-.np-list { flex: 1; overflow-y: auto; padding: 4px 0; }
+.notification-cat-badge {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border: 1px solid color-mix(in srgb, var(--notif-cat) 24%, transparent);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--notif-cat) 10%, transparent);
+  color: var(--notif-cat);
+  font-size: 10px;
+  font-weight: 550;
+  line-height: 1.5;
+}
+.notification-priority { flex-shrink: 0; font-size: 10px; font-weight: 600; }
+.notification-priority--urgent { color: var(--theme-danger); font-weight: 700; }
+.notification-priority--important { color: var(--theme-warning); }
+.notification-item-time { margin-left: auto; flex-shrink: 0; color: var(--theme-text-muted); font-size: 10px; }
+.notification-unread-dot { flex-shrink: 0; width: 6px; height: 6px; border-radius: 50%; background: var(--theme-primary); }
+.notification-item-title {
+  color: var(--theme-text-primary);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+.notification-item-row--unread .notification-item-title { font-weight: 600; }
+.notification-item-preview {
+  color: var(--theme-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+.notification-item-more { align-self: flex-start; color: var(--theme-text-muted); font-size: 11px; font-weight: 500; }
+.np-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 32px 16px;
+  color: var(--theme-text-muted);
+  font-size: 13px;
+  text-align: center;
+}
 .np-empty-icon { opacity: 0.45; display: inline-flex; }
+.notification-panel__footer {
+  display: flex;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 8px 14px;
+  border-top: 1px solid var(--theme-border-subtle);
+}
+.notification-panel__markall {
+  padding: 4px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--theme-primary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.notification-panel__markall:hover:not(:disabled) { background: var(--theme-primary-soft); }
+.notification-panel__markall:disabled { color: var(--theme-text-muted); opacity: 0.55; cursor: default; }
 .np-invite-list-error {
   margin: 0;
   font-size: 12px;
@@ -25466,6 +26634,9 @@ button.caps-process-chevron { padding: 0; border: none; background: none; color:
   color: var(--theme-danger, #dc1f25);
 }
 .np-list > .np-invite-list-error { padding: 8px 14px 2px; }
+@media (prefers-reduced-motion: reduce) {
+  .notification-item-row { transition: none; }
+}
 
 /* PreviewFileActions.tsx */
 .pfa-root { display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; }
@@ -26484,7 +27655,10 @@ button.btn-primary:active, button[class*='primary']:active, button[type='submit'
 [data-ai-theme='dark'] .form-input,
 [data-ai-theme='dark'] .form-select,
 [data-ai-theme='dark'] textarea,
-[data-ai-theme='dark'] input {
+/* Exclude toggle controls: their fill is the state indicator, forcing it to
+   the surface color erases the checked state (same exclusion chain as the
+   dark input rule in 90-im-channels-markdown.css). */
+[data-ai-theme='dark'] input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']) {
   color: var(--theme-text-primary);
   background: var(--theme-surface) !important;
   border-color: var(--theme-border);
@@ -27420,7 +28594,9 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .vet-menu-icon { flex-shrink: 0; }
 @keyframes vet-icon-spin { to { transform: rotate(1turn); } }
 .vet-spinning { animation: vet-icon-spin 0.9s linear infinite; }
-.vet-dialog-overlay { position: fixed; inset: 0; z-index: 10000; display: flex; align-items: center; justify-content: center; background: rgba(15, 23, 42, 0.32); }
+/* Rendered inside the scaled app shell, so it must outrank the inline
+   assistant title bar (z-index 30000), same as .modal-overlay. */
+.vet-dialog-overlay { position: fixed; inset: 0; z-index: 40000; display: flex; align-items: center; justify-content: center; background: rgba(15, 23, 42, 0.32); }
 .vet-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .vet-info-avatar-block { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-bottom: 20px; }
 .vet-info-avatar-wrap { position: relative; }
@@ -29173,20 +30349,6 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   display: none !important;
 }
 
-/* System notifications are shared by the workbench header, task pane, and
-   secondary pages.  The panel used to keep a legacy 10px radius and a very
-   tight shadow, which made it look like a separate popup style beside the
-   14px workbench cards.  Keep its inline theme colours, but give the shell the
-   same surface treatment and keyboard focus ring as the rest of the app. */
-[data-testid='notification-panel'] {
-  border-radius: var(--radius-lg, 12px) !important;
-  border-color: var(--theme-border, #c9ddf6) !important;
-  box-shadow: var(--shadow-lg, 0 8px 28px -6px rgba(30, 58, 95, 0.18)) !important;
-}
-[data-testid='notification-panel'] button:focus-visible {
-  outline: 2px solid var(--theme-primary, #2e75cb) !important;
-  outline-offset: 2px;
-}
 @media (max-width: 900px) {
   .mc-nav-rail .sidebar-header--maclaw {
     height: 56px !important;
@@ -31222,10 +32384,27 @@ input.mdoc-search:focus-visible {
 .mdoc-file-glyph[data-kind='audio'] { color: #9455d6; }
 .mdoc-file-glyph[data-kind='video'] { color: #c2417d; }
 .mdoc-file-glyph[data-kind='image'] { color: #b26a00; }
-.mdoc-file-glyph[data-kind='file'] { color: #64748b; }
+.mdoc-file-glyph[data-kind='file'] { color: var(--theme-text-muted); }
 .mobile-documents-overlay[data-ai-theme='dark'] .mdoc-file-glyph,
 .mobile-documents-inline[data-ai-theme='dark'] .mdoc-file-glyph {
   filter: brightness(1.22) saturate(1.05);
+}
+/* The host's own icon for the type. It already carries the association's
+   colors, so the tinted tile and the dark-theme brightening are dropped; the
+   box stays so rows mixing both kinds keep one alignment. These two rules
+   follow the generic pair above: same specificity, so order decides. */
+.mobile-documents-overlay[data-ai-theme='dark'] .mdoc-file-glyph--system,
+.mobile-documents-inline[data-ai-theme='dark'] .mdoc-file-glyph--system {
+  filter: none;
+}
+.mdoc-file-glyph--system {
+  background: none;
+}
+.mdoc-file-glyph-img {
+  width: 28px;
+  height: 28px;
+  display: block;
+  object-fit: contain;
 }
 
 /* Folder sections. */
@@ -31883,7 +33062,9 @@ input.cwshare-url {
   font-size: 11px;
   font-weight: 500;
 }
-.companion-pdf-menu-item--primary .companion-pdf-menu-glyph {
+/* Named accent, not "primary": button[class*='primary'] in the office theme
+   forces a solid fill and hides this label. */
+.companion-pdf-menu-item--accent .companion-pdf-menu-glyph {
   color: var(--theme-primary, #2e75cb);
 }
 .companion-pdf-menu-item--danger,
@@ -31987,12 +33168,12 @@ input.cwshare-url {
   z-index: 5;
   left: 0;
   top: calc(100% + 6px);
-  width: max-content;
-  /* A selection on the right would hang this card past the page. Shift it
-     back by its own border box so the reader does not grow a horizontal
-     scrollbar. border-box makes max-width include the padding, which is
-     the box the shift measures. */
   box-sizing: border-box;
+  /* width:max-content sizes to the longest line. A short answer or the pending
+     skeleton would collapse the card to an icon-width column, so keep a
+     readable floor and let the page width cap it. */
+  width: max-content;
+  min-width: min(200px, var(--page-w, 200px));
   max-width: min(280px, var(--page-w, 280px));
   transform: translate(calc(var(--pop-x, 0px) + min(0px, calc(var(--page-w, 280px) - 100% - var(--sel-x, 0px)))), var(--pop-y, 0px));
   max-height: 260px;
@@ -32004,7 +33185,10 @@ input.cwshare-url {
   color: var(--theme-text-primary, #526277);
   box-shadow: var(--shadow-lg, 0 8px 28px -6px rgba(30, 58, 95, 0.18));
   font: 13px/1.55 "Segoe UI", "Microsoft YaHei", sans-serif;
-  white-space: pre-wrap;
+  /* Not pre-wrap on the card: the card has block children, and pre-wrap turns
+     the newlines between them into extra line boxes that stretch the card.
+     The translation body keeps the line breaks of the answer instead. */
+  white-space: normal;
   pointer-events: auto;
 }
 .companion-pdf-translation-pop--above {
@@ -32103,10 +33287,19 @@ body.companion-pdf-translation-dragging * {
   opacity: 0.4;
   cursor: default;
 }
+/* The copy control reports its result in place: a check for success, the
+   danger colour for a failure, both clearing on the same short timer. */
+.companion-pdf-translation-action[data-copy-state="copied"] {
+  color: var(--theme-success, #11813a);
+}
+.companion-pdf-translation-action[data-copy-state="failed"] {
+  color: var(--theme-danger, #dc1f25);
+}
 .companion-pdf-translation-body {
   display: block;
   padding: 0 10px 9px;
   color: var(--theme-text-primary, #526277);
+  white-space: pre-wrap;
 }
 .companion-pdf-translation-clip {
   display: block;
@@ -32125,7 +33318,7 @@ body.companion-pdf-translation-dragging * {
   display: block;
   height: 8px;
   margin-bottom: 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   background: linear-gradient(90deg, var(--theme-border-subtle, #dde9fa) 25%, var(--theme-surface-muted, #eef5ff) 50%, var(--theme-border-subtle, #dde9fa) 75%);
   background-size: 200% 100%;
   animation: companion-pdf-skeleton 1.1s ease-in-out infinite;
@@ -32237,6 +33430,28 @@ body.companion-pdf-translation-dragging * {
    square: slightly wider than the icon-only tools, still no visible text. */
 .file-companion-export-chat {
   padding: 0 8px;
+}
+/* The caret opens the LaTeX variant, so it needs a real box: the inline SVG
+   had no width and height, collapsed to 0×0, and left the variant with no
+   pointer target. Sized like the 打开 caret. */
+.file-companion-export-caret {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  position: relative;
+}
+/* The chevron is a 10×6 target; a miss lands on the main export button and
+   opens the other menu. The pseudo-element widens the hit area to 18×22
+   without moving the glyph or changing the button's width. */
+.file-companion-export-caret::before {
+  content: "";
+  position: absolute;
+  inset: -8px -4px;
+}
+.file-companion-export-caret svg {
+  display: block;
+  width: 10px;
+  height: 6px;
 }
 /* The shared busy spinner brings its own left margin for inline buttons.
    These tools are flex, so that margin stacks on top of the icon gap. */
@@ -32401,9 +33616,13 @@ body.companion-pdf-translation-dragging * {
   margin-left: 0;
   margin-right: 0;
 }
+/* These two squares share one row, so the title bar's flex gap never
+   lands between them. The strip is part of this anchor and stays no-drag. */
 .file-companion-library-anchor {
   display: inline-flex;
+  align-items: center;
   flex: 0 0 auto;
+  gap: 8px;
   --wails-draggable: no-drag;
 }
 /* 文档管理: a dialog whose rows read as one line each — kind badge, title and
@@ -33571,11 +34790,12 @@ body.companion-pdf-translation-dragging * {
 }
 .file-companion-arxiv-search-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   box-sizing: border-box;
-  height: 38px;
-  padding: 0 4px 0 10px;
+  height: auto;
+  min-height: 38px;
+  padding: 4px 4px 4px 10px;
   border: 1px solid var(--theme-border, #c9ddf6);
   border-radius: var(--radius-md);
   background: var(--theme-surface, #ffffff);
@@ -33593,6 +34813,7 @@ body.companion-pdf-translation-dragging * {
   flex: 0 0 auto;
   width: 18px;
   height: 18px;
+  margin-top: 7px;
   color: var(--theme-text-muted, #64748b);
 }
 .file-companion-arxiv-search-row:focus-within .file-companion-arxiv-search-glyph {
@@ -33603,12 +34824,15 @@ body.companion-pdf-translation-dragging * {
   flex: 1 1 auto;
   width: auto;
   min-width: 0;
-  height: 30px;
-  padding: 0;
+  height: auto;
+  min-height: 64px;
+  padding: 6px 0;
   border: 0;
   border-radius: 0;
   background: transparent;
   font-size: 13px;
+  line-height: 1.45;
+  resize: none;
 }
 /* The row already draws the focus ring; an inner outline would double it. */
 .file-companion-arxiv-search-row .file-companion-dialog-input:focus-visible {
@@ -33617,8 +34841,50 @@ body.companion-pdf-translation-dragging * {
 }
 .file-companion-arxiv-search-row .file-companion-dialog-primary {
   flex: 0 0 auto;
+  align-self: flex-end;
   height: 30px;
   padding: 0 16px;
+}
+.file-companion-arxiv-search--beside-player .file-companion-arxiv-search-row {
+  flex-wrap: wrap;
+}
+.file-companion-arxiv-search--beside-player .file-companion-arxiv-search-input {
+  flex-basis: 100%;
+}
+.file-companion-arxiv-search-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.file-companion-arxiv-search-interpreted {
+  margin: 0;
+  color: var(--theme-text-secondary, #546479);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.file-companion-arxiv-search-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.file-companion-arxiv-search-group {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--theme-surface, #ffffff);
+  color: var(--theme-text-secondary, #546479);
+  font-size: 11.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 .file-companion-arxiv-search-status {
   margin: 0;
@@ -33628,6 +34894,17 @@ body.companion-pdf-translation-dragging * {
 }
 .file-companion-arxiv-search-status--error {
   color: var(--theme-danger, #dc1f25);
+}
+.file-companion-arxiv-search-pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  padding: 8px 16px 12px;
+  border-top: 1px solid var(--theme-border-subtle, #e6edf6);
 }
 /* Results read as a bibliography: a numbered rail on the left, the citation
    in the middle, one action on the right. */
@@ -33650,19 +34927,25 @@ body.companion-pdf-translation-dragging * {
   border: 1px solid var(--theme-border, #c9ddf6);
   border-radius: var(--radius-md);
   background: var(--theme-surface, #ffffff);
-  color: var(--theme-text, #1e293b);
+  color: var(--theme-text, #1f2937);
   font: 400 13px/1.5 "Segoe UI", "SF Pro Text", "Microsoft YaHei", sans-serif;
   text-align: left;
   cursor: pointer;
   transition: border-color 120ms ease, background 120ms ease;
 }
-.file-companion-arxiv-hit:hover:not(:disabled) {
+.file-companion-arxiv-hit:hover:not([aria-disabled="true"]) {
   border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 40%, var(--theme-border, #c9ddf6));
   background: color-mix(in srgb, var(--theme-primary, #2e75cb) 3%, var(--theme-surface, #ffffff));
 }
-.file-companion-arxiv-hit:disabled {
-  opacity: 0.6;
+/* The row is the whole target, so a busy search leaves it readable: only the
+   pointer changes, and the 正在下载… label in the action column carries the
+   state. A native `disabled` would dim the citation to unreadable and the
+   global button[aria-busy] rule would draw a second spinner into the row. */
+.file-companion-arxiv-hit[aria-disabled="true"] {
   cursor: default;
+}
+.file-companion-arxiv-hit[aria-busy="true"]::after {
+  content: none;
 }
 .file-companion-arxiv-hit:focus-visible {
   outline: 2px solid var(--theme-primary, #2563eb);
@@ -33695,7 +34978,7 @@ body.companion-pdf-translation-dragging * {
   color: var(--theme-text, #1f2937);
   overflow-wrap: anywhere;
 }
-.file-companion-arxiv-hit:hover:not(:disabled) .file-companion-arxiv-hit-title {
+.file-companion-arxiv-hit:hover:not([aria-disabled="true"]) .file-companion-arxiv-hit-title {
   color: var(--theme-primary, #2e75cb);
 }
 /* Citation line: identifier first, then subject tags, then the date. Every
@@ -33770,18 +35053,34 @@ body.companion-pdf-translation-dragging * {
   opacity: 0;
   transition: opacity 120ms ease;
 }
-.file-companion-arxiv-hit:hover:not(:disabled) .file-companion-arxiv-hit-open,
+.file-companion-arxiv-hit:hover:not([aria-disabled="true"]) .file-companion-arxiv-hit-open,
 .file-companion-arxiv-hit:focus-visible .file-companion-arxiv-hit-open {
   opacity: 1;
 }
-/* Narrow chat inset beside a native player: the numbered rail and the action
-   column have no room, so the entry stacks. */
-.file-companion-arxiv-search--beside-player .file-companion-arxiv-hit-index,
-.file-companion-arxiv-search--beside-player .file-companion-arxiv-hit-action {
+/* Narrow chat inset beside a native player. The row wraps: the numbered rail
+   has no room and goes, and the action column drops under the citation instead
+   of taking width from it — at 268px a side-by-side column squeezed the title
+   onto two lines and the abstract into a 146px strip. The action column is
+   only dropped while it is empty (打开 is a hover hint); it stays whenever it
+   carries the download-progress label, because hiding that would make a
+   stalled download look like a dead click. */
+.file-companion-arxiv-search--beside-player .file-companion-arxiv-hit-index {
   display: none;
 }
 .file-companion-arxiv-search--beside-player .file-companion-arxiv-hit {
+  flex-wrap: wrap;
   padding: 10px;
+}
+.file-companion-arxiv-search--beside-player .file-companion-arxiv-hit-body {
+  flex-basis: 100%;
+}
+.file-companion-arxiv-search--beside-player .file-companion-arxiv-hit-action {
+  order: 1;
+  align-self: flex-start;
+  margin-left: auto;
+}
+.file-companion-arxiv-search--beside-player .file-companion-arxiv-hit:not([aria-busy="true"]) .file-companion-arxiv-hit-action {
+  display: none;
 }
 .file-companion-arxiv-search--beside-player .file-companion-arxiv-hit-abstract {
   -webkit-line-clamp: 4;

@@ -29,7 +29,17 @@ import {
     MailboxBrowseRead,
     MailboxBrowseStart,
 } from '../../../../wailsjs/go/main/App';
-import { MailboxManageDialog } from '../MailboxManageDialog';
+import { MailboxManageDialog, MESSAGE_PAGE } from '../MailboxManageDialog';
+
+function fullPage(overrides: Array<{ uid: number; subject: string; seen?: boolean; from?: string }> = []) {
+    return Array.from({ length: MESSAGE_PAGE }, (_, i) => {
+        const custom = overrides[i];
+        if (custom) {
+            return { uid: custom.uid, from: custom.from || 'a@ex.com', subject: custom.subject, seen: custom.seen !== false };
+        }
+        return { uid: 1000 + i, from: 'a@ex.com', subject: `填充${i}`, seen: true };
+    });
+}
 
 const account = { id: 'mb1', name: 'Work', address: 'w@ex.com' };
 
@@ -42,8 +52,12 @@ function clickRowCheckbox(row: HTMLElement) {
 
 function deferred<T>() {
     let resolve!: (value: T) => void;
-    const promise = new Promise<T>(res => { resolve = res; });
-    return { promise, resolve };
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+    });
+    return { promise, resolve, reject };
 }
 
 function flushMicrotasks() {
@@ -193,7 +207,7 @@ describe('MailboxManageDialog', () => {
         expect(await screen.findByTestId('mailbox-manage-html')).toBeTruthy();
     });
 
-    it('deletes a message after confirmation and drops it from the list', async () => {
+    it('deletes a message after confirmation and keeps the rest of a short folder', async () => {
         showConfirmMock.mockResolvedValue(true);
         vi.mocked(MailboxBrowseStart).mockResolvedValue({
             folders: [{ name: 'INBOX', special: 'inbox' }],
@@ -202,9 +216,6 @@ describe('MailboxManageDialog', () => {
                 { uid: 2, from: 'a@ex.com', subject: '中奖通知', seen: true },
                 { uid: 3, from: 'b@ex.com', subject: '保留邮件', seen: true },
             ],
-        } as never);
-        vi.mocked(MailboxBrowseRead).mockResolvedValue({
-            uid: 2, from: 'a@ex.com', subject: '中奖通知', seen: true, body: '内容',
         } as never);
 
         render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
@@ -216,9 +227,328 @@ describe('MailboxManageDialog', () => {
         fireEvent.click(deleteBtn);
         await waitFor(() => expect(showConfirmMock).toHaveBeenCalled());
         expect(String(showConfirmMock.mock.calls[0][0])).toContain('中奖通知');
+        expect(String(showConfirmMock.mock.calls[0][0])).toContain('移到已删除');
         await waitFor(() => expect(MailboxBrowseDelete).toHaveBeenCalledWith('mb1', 'INBOX', [2]));
-        expect(await screen.findByRole('button', { name: /保留邮件/ })).toBeTruthy();
+        await flushMicrotasks();
+        // Fewer than a page means the folder has nothing older, so no second login.
+        expect(MailboxBrowseMessages).not.toHaveBeenCalled();
+        expect(screen.getByRole('button', { name: /保留邮件/ })).toBeTruthy();
         expect(screen.queryByRole('button', { name: /中奖通知/ })).toBeNull();
+        expect(screen.queryByText('这个文件夹里没有邮件。')).toBeNull();
+    });
+
+    it('refills from the server after deleting from a full page', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'INBOX', special: 'inbox' }],
+            box: 'INBOX',
+            messages: fullPage([
+                { uid: 2, subject: '中奖通知' },
+                { uid: 3, subject: '保留邮件' },
+            ]),
+        } as never);
+        vi.mocked(MailboxBrowseMessages).mockResolvedValue([
+            { uid: 3, from: 'b@ex.com', subject: '保留邮件', seen: true },
+            { uid: 4, from: 'c@ex.com', subject: '下一页的邮件', seen: false },
+        ] as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        const row = await screen.findByRole('button', { name: /中奖通知/ });
+        const rowActions = row.closest('.mailbox-manage__item')!.querySelector('.mailbox-manage__row-actions')!;
+        fireEvent.click(rowActions.querySelector('button[aria-label="删除"]') as HTMLButtonElement);
+        await waitFor(() => expect(MailboxBrowseDelete).toHaveBeenCalledWith('mb1', 'INBOX', [2]));
+        expect(MailboxBrowseMessages).toHaveBeenCalledWith('mb1', 'INBOX', MESSAGE_PAGE);
+        expect(await screen.findByRole('button', { name: /下一页的邮件/ })).toBeTruthy();
+        expect(screen.getByRole('button', { name: /保留邮件/ })).toBeTruthy();
+        expect(screen.queryByRole('button', { name: /中奖通知/ })).toBeNull();
+        expect(screen.queryByText('这个文件夹里没有邮件。')).toBeNull();
+    });
+
+    it('shows the page returned with the delete without another login', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'INBOX', special: 'inbox' }],
+            box: 'INBOX',
+            messages: fullPage([
+                { uid: 2, subject: '中奖通知' },
+                { uid: 3, subject: '保留邮件' },
+            ]),
+        } as never);
+        vi.mocked(MailboxBrowseDelete).mockResolvedValue({
+            moved: 1,
+            messages: [
+                { uid: 3, from: 'b@ex.com', subject: '保留邮件', seen: true },
+                { uid: 4, from: 'c@ex.com', subject: '下一页的邮件', seen: false },
+            ],
+        } as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        const row = await screen.findByRole('button', { name: /中奖通知/ });
+        fireEvent.click(row.closest('.mailbox-manage__item')!.querySelector('button[aria-label="删除"]') as HTMLButtonElement);
+        expect(await screen.findByRole('button', { name: /下一页的邮件/ })).toBeTruthy();
+        expect(MailboxBrowseMessages).not.toHaveBeenCalled();
+        expect(screen.getByRole('button', { name: /保留邮件/ })).toBeTruthy();
+        expect(screen.queryByRole('button', { name: /中奖通知/ })).toBeNull();
+        expect(screen.queryByText('这个文件夹里没有邮件。')).toBeNull();
+        expect(screen.queryByText('正在读取邮件…')).toBeNull();
+    });
+
+    it('keeps the remaining rows when the delete response could not list the next page', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'INBOX', special: 'inbox' }],
+            box: 'INBOX',
+            messages: fullPage([
+                { uid: 2, subject: '中奖通知' },
+                { uid: 3, subject: '保留邮件' },
+            ]),
+        } as never);
+        vi.mocked(MailboxBrowseDelete)
+            .mockResolvedValueOnce({ moved: 1, list_error: '列表刷新失败' } as never)
+            .mockResolvedValueOnce({ moved: 1 } as never);
+        vi.mocked(MailboxBrowseMessages).mockResolvedValue([
+            { uid: 9, from: 'd@ex.com', subject: '下一页的邮件', seen: true },
+        ] as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        const first = await screen.findByRole('button', { name: /中奖通知/ });
+        fireEvent.click(first.closest('.mailbox-manage__item')!.querySelector('button[aria-label="删除"]') as HTMLButtonElement);
+        expect((await screen.findByRole('alert')).textContent).toContain('列表刷新失败');
+        expect(MailboxBrowseMessages).not.toHaveBeenCalled();
+        expect(screen.getByRole('button', { name: /保留邮件/ })).toBeTruthy();
+        expect(screen.queryByRole('button', { name: /中奖通知/ })).toBeNull();
+
+        const second = screen.getByRole('button', { name: /保留邮件/ });
+        fireEvent.click(second.closest('.mailbox-manage__item')!.querySelector('button[aria-label="删除"]') as HTMLButtonElement);
+        expect(await screen.findByRole('button', { name: /下一页的邮件/ })).toBeTruthy();
+        expect(MailboxBrowseMessages).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not count an unread message twice when delete overlaps mark-read', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        const read = deferred<{ uid: number; from: string; subject: string; seen: boolean; body: string }>();
+        vi.mocked(MailboxBrowseRead).mockReturnValue(read.promise as never);
+        vi.mocked(MailboxBrowseDelete).mockImplementation(async () => {
+            read.resolve({ uid: 2, from: 'a@ex.com', subject: '中奖通知', seen: false, body: '正文' });
+            return { moved: 1 };
+        });
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'INBOX', special: 'inbox' }],
+            box: 'INBOX',
+            unseen: { INBOX: 2 },
+            messages: [
+                { uid: 2, from: 'a@ex.com', subject: '中奖通知', seen: false },
+                { uid: 3, from: 'b@ex.com', subject: '保留邮件', seen: true },
+            ],
+        } as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: /中奖通知/ }));
+        const row = screen.getByRole('button', { name: /中奖通知/ });
+        fireEvent.click(row.closest('.mailbox-manage__item')!.querySelector('button[aria-label="删除"]') as HTMLButtonElement);
+        await waitFor(() => expect(screen.queryByRole('button', { name: /中奖通知/ })).toBeNull());
+        expect(document.querySelector('.mailbox-manage__badge')?.textContent).toBe('1');
+        expect(screen.getByRole('button', { name: /保留邮件/ })).toBeTruthy();
+    });
+
+    it('keeps the unread count when the returned page still contains the deleted message', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        const deleting = deferred<{ moved: number; messages: Array<{ uid: number; from: string; subject: string; seen: boolean }> }>();
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'INBOX', special: 'inbox' }],
+            box: 'INBOX',
+            unseen: { INBOX: 2 },
+            messages: [
+                { uid: 2, from: 'a@ex.com', subject: '中奖通知', seen: false },
+                { uid: 3, from: 'b@ex.com', subject: '保留邮件', seen: true },
+            ],
+        } as never);
+        vi.mocked(MailboxBrowseDelete).mockReturnValue(deleting.promise as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        const row = await screen.findByRole('button', { name: /中奖通知/ });
+        const deleteBtn = row.closest('.mailbox-manage__item')!.querySelector('button[aria-label="删除"]') as HTMLButtonElement;
+        fireEvent.click(deleteBtn);
+        await waitFor(() => expect(deleteBtn.disabled).toBe(true));
+        deleting.resolve({
+            moved: 1,
+            messages: [
+                { uid: 2, from: 'a@ex.com', subject: '中奖通知', seen: false },
+                { uid: 3, from: 'b@ex.com', subject: '保留邮件', seen: true },
+            ],
+        });
+        await waitFor(() => expect(deleteBtn.disabled).toBe(false));
+        expect(document.querySelector('.mailbox-manage__badge')?.textContent).toBe('2');
+        const kept = screen.getByRole('button', { name: /中奖通知/ });
+        fireEvent.click(kept.closest('.mailbox-manage__item')!.querySelector('button[aria-label="标为已读"]') as HTMLButtonElement);
+        await waitFor(() => expect(MailboxBrowseMarkRead).toHaveBeenCalledWith('mb1', 'INBOX', [2], true));
+    });
+
+    it('does not restore the unread count when the returned page shows that message read', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        const deleting = deferred<{ moved: number; messages: Array<{ uid: number; from: string; subject: string; seen: boolean }> }>();
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'INBOX', special: 'inbox' }],
+            box: 'INBOX',
+            unseen: { INBOX: 1 },
+            messages: [{ uid: 2, from: 'a@ex.com', subject: '中奖通知', seen: false }],
+        } as never);
+        vi.mocked(MailboxBrowseDelete).mockReturnValue(deleting.promise as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        const row = await screen.findByRole('button', { name: /中奖通知/ });
+        const deleteBtn = row.closest('.mailbox-manage__item')!.querySelector('button[aria-label="删除"]') as HTMLButtonElement;
+        fireEvent.click(deleteBtn);
+        await waitFor(() => expect(deleteBtn.disabled).toBe(true));
+        deleting.resolve({
+            moved: 1,
+            messages: [{ uid: 2, from: 'a@ex.com', subject: '中奖通知', seen: true }],
+        });
+        await waitFor(() => expect(deleteBtn.disabled).toBe(false));
+        expect(document.querySelector('.mailbox-manage__badge')).toBeNull();
+        expect(screen.getByRole('button', { name: /中奖通知/ }).className).not.toContain('mailbox-manage__message--unread');
+    });
+
+    it('keeps an in-flight mark-read when the delete page still lists that message', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        const marking = deferred<never>();
+        vi.mocked(MailboxBrowseMarkRead).mockReturnValue(marking.promise as never);
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'INBOX', special: 'inbox' }],
+            box: 'INBOX',
+            unseen: { INBOX: 2 },
+            messages: [
+                { uid: 2, from: 'a@ex.com', subject: '刚打开的', seen: false },
+                { uid: 3, from: 'b@ex.com', subject: '要删的', seen: false },
+            ],
+        } as never);
+        vi.mocked(MailboxBrowseRead).mockResolvedValue({
+            uid: 2, from: 'a@ex.com', subject: '刚打开的', seen: false, body: '正文',
+        } as never);
+        vi.mocked(MailboxBrowseDelete).mockResolvedValue({
+            moved: 1,
+            messages: [{ uid: 2, from: 'a@ex.com', subject: '刚打开的', seen: false }],
+        } as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: /刚打开的/ }));
+        await waitFor(() => {
+            expect(screen.getByRole('button', { name: /刚打开的/ }).className).not.toContain('mailbox-manage__message--unread');
+        });
+        const victim = screen.getByRole('button', { name: /要删的/ });
+        fireEvent.click(victim.closest('.mailbox-manage__item')!.querySelector('button[aria-label="删除"]') as HTMLButtonElement);
+        await waitFor(() => expect(screen.queryByRole('button', { name: /要删的/ })).toBeNull());
+        expect(screen.getByRole('button', { name: /刚打开的/ }).className).not.toContain('mailbox-manage__message--unread');
+        expect(document.querySelector('.mailbox-manage__badge')).toBeNull();
+
+        marking.reject(new Error('标已读失败'));
+        await waitFor(() => {
+            expect(screen.getByRole('button', { name: /刚打开的/ }).className).toContain('mailbox-manage__message--unread');
+        });
+        expect(document.querySelector('.mailbox-manage__badge')?.textContent).toBe('1');
+    });
+
+    it('keeps the open message read when delete leaves it on the page', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        const marking = deferred<never>();
+        const deleting = deferred<{ moved: number; messages: Array<{ uid: number; from: string; subject: string; seen: boolean }> }>();
+        vi.mocked(MailboxBrowseMarkRead).mockReturnValue(marking.promise as never);
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'INBOX', special: 'inbox' }],
+            box: 'INBOX',
+            unseen: { INBOX: 1 },
+            messages: [{ uid: 2, from: 'a@ex.com', subject: '刚打开的', seen: false }],
+        } as never);
+        vi.mocked(MailboxBrowseRead).mockResolvedValue({
+            uid: 2, from: 'a@ex.com', subject: '刚打开的', seen: false, body: '正文',
+        } as never);
+        vi.mocked(MailboxBrowseDelete).mockReturnValue(deleting.promise as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: /刚打开的/ }));
+        await waitFor(() => {
+            expect(screen.getByRole('button', { name: /刚打开的/ }).className).not.toContain('mailbox-manage__message--unread');
+        });
+        expect(document.querySelector('.mailbox-manage__badge')).toBeNull();
+        const row = screen.getByRole('button', { name: /刚打开的/ });
+        const deleteBtn = row.closest('.mailbox-manage__item')!.querySelector('button[aria-label="删除"]') as HTMLButtonElement;
+        fireEvent.click(deleteBtn);
+        await waitFor(() => expect(deleteBtn.disabled).toBe(true));
+        deleting.resolve({
+            moved: 1,
+            messages: [{ uid: 2, from: 'a@ex.com', subject: '刚打开的', seen: false }],
+        });
+        await waitFor(() => {
+            const kept = screen.getByRole('button', { name: /刚打开的/ });
+            const button = kept.closest('.mailbox-manage__item')!.querySelector('button[aria-label="删除"]') as HTMLButtonElement;
+            expect(button.disabled).toBe(false);
+            expect(kept.className).not.toContain('mailbox-manage__message--unread');
+        });
+        expect(document.querySelector('.mailbox-manage__badge')).toBeNull();
+        expect(screen.getByText('正文')).toBeTruthy();
+
+        marking.reject(new Error('标已读失败'));
+        await waitFor(() => {
+            expect(screen.getByRole('button', { name: /刚打开的/ }).className).toContain('mailbox-manage__message--unread');
+        });
+        expect(document.querySelector('.mailbox-manage__badge')?.textContent).toBe('1');
+    });
+
+    it('says a delete inside the trash folder is permanent', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [
+                { name: 'INBOX', special: 'inbox' },
+                { name: 'Trash', special: 'trash' },
+            ],
+            box: 'INBOX',
+            trash_box: 'Trash',
+            messages: [{ uid: 2, from: 'a@ex.com', subject: '收件里的信', seen: true }],
+        } as never);
+        vi.mocked(MailboxBrowseMessages).mockResolvedValue([
+            { uid: 4, from: 'a@ex.com', subject: '已在垃圾箱', seen: true },
+        ] as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        const inbox = await screen.findByRole('button', { name: /收件里的信/ });
+        fireEvent.click(inbox.closest('.mailbox-manage__item')!.querySelector('button[aria-label="删除"]') as HTMLButtonElement);
+        await waitFor(() => expect(showConfirmMock).toHaveBeenCalled());
+        expect(String(showConfirmMock.mock.calls[0][0])).toContain('移到已删除');
+        await waitFor(() => expect(screen.queryByRole('button', { name: /收件里的信/ })).toBeNull());
+
+        fireEvent.click(screen.getByRole('button', { name: '已删除' }));
+        const trashed = await screen.findByRole('button', { name: /已在垃圾箱/ });
+        fireEvent.click(trashed.closest('.mailbox-manage__item')!.querySelector('button[aria-label="删除"]') as HTMLButtonElement);
+        await waitFor(() => expect(showConfirmMock).toHaveBeenCalledTimes(2));
+        expect(String(showConfirmMock.mock.calls[1][0])).toContain('彻底删除');
+        expect(String(showConfirmMock.mock.calls[1][0])).toContain('已在垃圾箱');
+    });
+
+    it('says every delete is permanent when the account has no trash folder', async () => {
+        showConfirmMock.mockResolvedValue(false);
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'INBOX', special: 'inbox' }],
+            box: 'INBOX',
+            trash_box: '',
+            messages: [{ uid: 2, from: 'a@ex.com', subject: '唯一的信', seen: true }],
+        } as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        const row = await screen.findByRole('button', { name: /唯一的信/ });
+        fireEvent.click(row.closest('.mailbox-manage__item')!.querySelector('button[aria-label="删除"]') as HTMLButtonElement);
+        await waitFor(() => expect(showConfirmMock).toHaveBeenCalled());
+        expect(String(showConfirmMock.mock.calls[0][0])).toContain('彻底删除');
+        expect(MailboxBrowseDelete).not.toHaveBeenCalled();
     });
 
     it('keeps the message when the delete confirmation is dismissed', async () => {
@@ -318,10 +648,113 @@ describe('MailboxManageDialog', () => {
         fireEvent.click(screen.getByTestId('mailbox-manage-batch-delete'));
         expect(String((await waitFor(() => showConfirmMock.mock.calls[0]))[0])).toContain('3 封');
         await waitFor(() => expect(MailboxBrowseDelete).toHaveBeenCalledWith('mb1', 'INBOX', [1, 2, 3]));
-        // All three rows leave the list and the unread badge loses the one unread row.
+        await flushMicrotasks();
+        expect(MailboxBrowseMessages).not.toHaveBeenCalled();
         expect(screen.queryByRole('button', { name: /第一封/ })).toBeNull();
         expect(screen.queryByRole('button', { name: /第二封/ })).toBeNull();
         expect(screen.queryByRole('button', { name: /第三封/ })).toBeNull();
+        expect(screen.getByText('这个文件夹里没有邮件。')).toBeTruthy();
+        expect(screen.getByTestId('mailbox-manage-batchbar').textContent).not.toContain('已选');
+    });
+
+    it('replaces a deleted full page with the next server page', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'INBOX', special: 'inbox' }],
+            box: 'INBOX',
+            messages: fullPage([{ uid: 1, subject: '第一封' }]),
+        } as never);
+        vi.mocked(MailboxBrowseMessages).mockResolvedValue([
+            { uid: 9, from: 'd@ex.com', subject: '下一页的邮件', seen: true },
+        ] as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        fireEvent.click(await screen.findByRole('checkbox', { name: '全选' }));
+        fireEvent.click(screen.getByTestId('mailbox-manage-batch-delete'));
+        await waitFor(() => expect(MailboxBrowseDelete).toHaveBeenCalled());
+        const deleted = vi.mocked(MailboxBrowseDelete).mock.calls[0][2] as number[];
+        expect(deleted).toHaveLength(MESSAGE_PAGE);
+        expect(await screen.findByRole('button', { name: /下一页的邮件/ })).toBeTruthy();
+        expect(screen.queryByRole('button', { name: /第一封/ })).toBeNull();
+        expect(screen.queryByText('这个文件夹里没有邮件。')).toBeNull();
+        expect(screen.getByTestId('mailbox-manage-batchbar').textContent).not.toContain('已选');
+    });
+
+    it('relists when a full-page delete response still contains the selected messages', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        const page = fullPage([{ uid: 1, subject: '第一封' }]);
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'INBOX', special: 'inbox' }],
+            box: 'INBOX',
+            messages: page,
+        } as never);
+        vi.mocked(MailboxBrowseDelete).mockResolvedValue({
+            moved: MESSAGE_PAGE,
+            messages: page,
+        } as never);
+        vi.mocked(MailboxBrowseMessages).mockResolvedValue([
+            { uid: 9, from: 'd@ex.com', subject: '下一页的邮件', seen: true },
+        ] as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        fireEvent.click(await screen.findByRole('checkbox', { name: '全选' }));
+        fireEvent.click(screen.getByTestId('mailbox-manage-batch-delete'));
+        expect(await screen.findByRole('button', { name: /下一页的邮件/ })).toBeTruthy();
+        expect(screen.queryByRole('button', { name: /第一封/ })).toBeNull();
+        expect(MailboxBrowseMessages).toHaveBeenCalledTimes(1);
+        expect(screen.getByTestId('mailbox-manage-batchbar').textContent).not.toContain('已选');
+    });
+
+    it('keeps the unread count when the reloaded full page still lists the selection', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        const page = fullPage([{ uid: 1, subject: '第一封', seen: false }]);
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'INBOX', special: 'inbox' }],
+            box: 'INBOX',
+            unseen: { INBOX: 1 },
+            messages: page,
+        } as never);
+        vi.mocked(MailboxBrowseDelete).mockResolvedValue({
+            moved: MESSAGE_PAGE,
+            messages: page,
+        } as never);
+        vi.mocked(MailboxBrowseMessages).mockResolvedValue(page as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        fireEvent.click(await screen.findByRole('checkbox', { name: '全选' }));
+        fireEvent.click(screen.getByTestId('mailbox-manage-batch-delete'));
+        await waitFor(() => expect(MailboxBrowseMessages).toHaveBeenCalledTimes(1));
+        expect(screen.getByRole('button', { name: /第一封/ })).toBeTruthy();
+        expect(document.querySelector('.mailbox-manage__badge')?.textContent).toBe('1');
+        expect(screen.getByTestId('mailbox-manage-batchbar').textContent).toContain('已选');
+    });
+
+    it('keeps the list when reloading a repeated full page fails', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        const page = fullPage([{ uid: 1, subject: '第一封', seen: false }]);
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'INBOX', special: 'inbox' }],
+            box: 'INBOX',
+            unseen: { INBOX: 1 },
+            messages: page,
+        } as never);
+        vi.mocked(MailboxBrowseDelete).mockResolvedValue({
+            moved: MESSAGE_PAGE,
+            messages: page,
+        } as never);
+        vi.mocked(MailboxBrowseMessages).mockRejectedValue(new Error('列表刷新失败'));
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        fireEvent.click(await screen.findByRole('checkbox', { name: '全选' }));
+        fireEvent.click(screen.getByTestId('mailbox-manage-batch-delete'));
+        expect((await screen.findByRole('alert')).textContent).toContain('列表刷新失败');
+        expect(screen.getByRole('button', { name: /第一封/ })).toBeTruthy();
+        expect(document.querySelector('.mailbox-manage__badge')?.textContent).toBe('1');
+        expect(screen.queryByText('这个文件夹里没有邮件。')).toBeNull();
     });
 
     it('marks the selected messages read in one batch call', async () => {
@@ -361,6 +794,178 @@ describe('MailboxManageDialog', () => {
         await waitFor(() => expect(MailboxBrowseDelete).toHaveBeenCalledTimes(2));
         expect(MailboxBrowseDelete).toHaveBeenNthCalledWith(1, 'mb1', 'INBOX', Array.from({ length: DELETE_CHUNK }, (_, i) => i + 1));
         expect(MailboxBrowseDelete).toHaveBeenNthCalledWith(2, 'mb1', 'INBOX', [DELETE_CHUNK + 1, DELETE_CHUNK + 2]);
+    });
+
+    it('keeps the page from the last delete call when a selection is split', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        const many = Array.from({ length: DELETE_CHUNK + 2 }, (_, i) => ({
+            uid: i + 1, from: 'a@ex.com', subject: `邮件${i + 1}`, seen: true,
+        }));
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'INBOX', special: 'inbox' }],
+            box: 'INBOX',
+            messages: many,
+        } as never);
+        vi.mocked(MailboxBrowseDelete)
+            .mockResolvedValueOnce({
+                moved: DELETE_CHUNK,
+                messages: [{ uid: 1, from: 'a@ex.com', subject: '过期页', seen: true }],
+            } as never)
+            .mockResolvedValueOnce({
+                moved: 2,
+                messages: [{ uid: 9, from: 'd@ex.com', subject: '最后一页', seen: true }],
+            } as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        fireEvent.click(await screen.findByRole('checkbox', { name: '全选' }));
+        fireEvent.click(screen.getByTestId('mailbox-manage-batch-delete'));
+        expect(await screen.findByRole('button', { name: /最后一页/ })).toBeTruthy();
+        expect(screen.queryByRole('button', { name: /过期页/ })).toBeNull();
+        expect(MailboxBrowseMessages).not.toHaveBeenCalled();
+    });
+
+    it('keeps the remaining rows when the reload after delete fails', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'INBOX', special: 'inbox' }],
+            box: 'INBOX',
+            messages: fullPage([
+                { uid: 2, subject: '中奖通知' },
+                { uid: 3, subject: '保留邮件' },
+            ]),
+        } as never);
+        vi.mocked(MailboxBrowseMessages).mockRejectedValue(new Error('列表刷新失败'));
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        const row = await screen.findByRole('button', { name: /中奖通知/ });
+        const rowActions = row.closest('.mailbox-manage__item')!.querySelector('.mailbox-manage__row-actions')!;
+        fireEvent.click(rowActions.querySelector('button[aria-label="删除"]') as HTMLButtonElement);
+        expect((await screen.findByRole('alert')).textContent).toContain('列表刷新失败');
+        expect(screen.getByRole('button', { name: /保留邮件/ })).toBeTruthy();
+        expect(screen.queryByRole('button', { name: /中奖通知/ })).toBeNull();
+        expect(screen.queryByText('这个文件夹里没有邮件。')).toBeNull();
+    });
+
+    it('refills again when an earlier reload failed and left a short list', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'INBOX', special: 'inbox' }],
+            box: 'INBOX',
+            messages: fullPage([
+                { uid: 2, subject: '中奖通知' },
+                { uid: 3, subject: '保留邮件' },
+            ]),
+        } as never);
+        vi.mocked(MailboxBrowseMessages)
+            .mockRejectedValueOnce(new Error('列表刷新失败'))
+            .mockResolvedValue([{ uid: 9, from: 'd@ex.com', subject: '下一页的邮件', seen: true }] as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        const first = await screen.findByRole('button', { name: /中奖通知/ });
+        fireEvent.click(first.closest('.mailbox-manage__item')!.querySelector('button[aria-label="删除"]') as HTMLButtonElement);
+        expect((await screen.findByRole('alert')).textContent).toContain('列表刷新失败');
+        expect(screen.getByRole('button', { name: /保留邮件/ })).toBeTruthy();
+
+        const second = screen.getByRole('button', { name: /保留邮件/ });
+        fireEvent.click(second.closest('.mailbox-manage__item')!.querySelector('button[aria-label="删除"]') as HTMLButtonElement);
+        expect(await screen.findByRole('button', { name: /下一页的邮件/ })).toBeTruthy();
+        expect(MailboxBrowseMessages).toHaveBeenCalledTimes(2);
+        expect(screen.queryByRole('button', { name: /保留邮件/ })).toBeNull();
+    });
+
+    it('keeps the remaining rows visible while the next page loads', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        const listed = deferred<unknown[]>();
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'INBOX', special: 'inbox' }],
+            box: 'INBOX',
+            messages: fullPage([
+                { uid: 2, subject: '中奖通知' },
+                { uid: 3, subject: '保留邮件' },
+            ]),
+        } as never);
+        vi.mocked(MailboxBrowseMessages).mockReturnValue(listed.promise as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        const row = await screen.findByRole('button', { name: /中奖通知/ });
+        const rowActions = row.closest('.mailbox-manage__item')!.querySelector('.mailbox-manage__row-actions')!;
+        fireEvent.click(rowActions.querySelector('button[aria-label="删除"]') as HTMLButtonElement);
+        await waitFor(() => expect(screen.queryByRole('button', { name: /中奖通知/ })).toBeNull());
+        // A partial delete must not flash the empty-folder line or a full reload.
+        expect(screen.getByRole('button', { name: /保留邮件/ })).toBeTruthy();
+        expect(screen.queryByText('正在读取邮件…')).toBeNull();
+        expect(screen.queryByText('这个文件夹里没有邮件。')).toBeNull();
+        listed.resolve([
+            { uid: 3, from: 'b@ex.com', subject: '保留邮件', seen: true },
+            { uid: 4, from: 'c@ex.com', subject: '下一页的邮件', seen: true },
+        ]);
+        expect(await screen.findByRole('button', { name: /下一页的邮件/ })).toBeTruthy();
+    });
+
+    it('drops a read that lands after its message was deleted', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        const read = deferred<Record<string, unknown>>();
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [{ name: 'INBOX', special: 'inbox' }],
+            box: 'INBOX',
+            messages: [
+                { uid: 2, from: 'a@ex.com', subject: '中奖通知', seen: true },
+                { uid: 3, from: 'b@ex.com', subject: '保留邮件', seen: true },
+            ],
+        } as never);
+        vi.mocked(MailboxBrowseRead).mockReturnValue(read.promise as never);
+        vi.mocked(MailboxBrowseMessages).mockResolvedValue([
+            { uid: 3, from: 'b@ex.com', subject: '保留邮件', seen: true },
+        ] as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: /中奖通知/ }));
+        expect(await screen.findByText('正在打开…')).toBeTruthy();
+        const row = screen.getByRole('button', { name: /中奖通知/ });
+        const rowActions = row.closest('.mailbox-manage__item')!.querySelector('.mailbox-manage__row-actions')!;
+        fireEvent.click(rowActions.querySelector('button[aria-label="删除"]') as HTMLButtonElement);
+        await waitFor(() => expect(screen.queryByRole('button', { name: /中奖通知/ })).toBeNull());
+        expect(screen.getByRole('button', { name: /保留邮件/ })).toBeTruthy();
+        read.resolve({ uid: 2, from: 'a@ex.com', subject: '中奖通知', seen: true, body: '不该出现' });
+        await flushMicrotasks();
+        expect(screen.queryByText('不该出现')).toBeNull();
+        expect(screen.getByText('选择一封邮件，在这里查看内容。')).toBeTruthy();
+    });
+
+    it('ignores a folder switch while a delete is still running', async () => {
+        showConfirmMock.mockResolvedValue(true);
+        const deleting = deferred<{ moved: number }>();
+        vi.mocked(MailboxBrowseDelete).mockReturnValue(deleting.promise as never);
+        vi.mocked(MailboxBrowseStart).mockResolvedValue({
+            folders: [
+                { name: 'INBOX', special: 'inbox' },
+                { name: 'Junk', special: 'junk' },
+            ],
+            box: 'INBOX',
+            messages: fullPage([{ uid: 1, subject: '第一封' }]),
+        } as never);
+        vi.mocked(MailboxBrowseMessages).mockResolvedValue([
+            { uid: 8, from: 'n@ex.com', subject: '下一页的邮件', seen: true },
+        ] as never);
+
+        render(<MailboxManageDialog lang="zh-Hans" account={account} onClose={onClose} />);
+
+        const row = await screen.findByRole('button', { name: /第一封/ });
+        const rowActions = row.closest('.mailbox-manage__item')!.querySelector('.mailbox-manage__row-actions')!;
+        fireEvent.click(rowActions.querySelector('button[aria-label="删除"]') as HTMLButtonElement);
+        await waitFor(() => expect(MailboxBrowseDelete).toHaveBeenCalledWith('mb1', 'INBOX', [1]));
+        fireEvent.click(screen.getByRole('button', { name: '垃圾邮件' }));
+        expect(MailboxBrowseMessages).not.toHaveBeenCalled();
+        deleting.resolve({ moved: 1 });
+        expect(await screen.findByRole('button', { name: /下一页的邮件/ })).toBeTruthy();
+        expect(screen.getByRole('button', { name: '收件箱' }).getAttribute('aria-current')).toBe('true');
+        expect(MailboxBrowseMessages).toHaveBeenCalledTimes(1);
+        expect(MailboxBrowseMessages).toHaveBeenCalledWith('mb1', 'INBOX', 30);
     });
 
     it('keeps the selection when a batch delete is dismissed', async () => {

@@ -2119,7 +2119,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			// The loop below installs a fresh deadline for that attempt. Host
 			// cancellation stays on requestBaseCtx and must not start another send.
 			canRetry := requestChannel == nil && resp == nil && requestBaseCtx.Err() == nil &&
-				(!containAmbiguousDelivery || cleanRetryableLLMFailure(resp, err))
+				(!containAmbiguousDelivery || gatewayRejectedLLMFailure(resp, err))
 			didAuthRefresh := false
 			// A fatal denial ends the turn. A period quota with a clock, a 5xx,
 			// or a dropped connection keeps an ordinary turn open and calls
@@ -2141,7 +2141,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				// canRetry is the gate for the first failure. A later attempt can
 				// come back with a partial payload or a denial that backoff will
 				// not fix. Stop there instead of resending the prompt.
-				if containAmbiguousDelivery && !cleanRetryableLLMFailure(resp, err) {
+				if containAmbiguousDelivery && !gatewayRejectedLLMFailure(resp, err) {
 					break
 				}
 				backoff, kind := continuation.next(err, time.Now())
@@ -2751,7 +2751,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					}
 					// The text is often the report written beside an earlier tool
 					// call. Publish it through the same desktop gate as a prose stop.
-					next, nudge, cont := gateDesktopReply(cb, userText, text, historyDelta, latestShot, iteration+1 < maxIter)
+					next, nudge, cont, _ := gateDesktopReply(cb, userText, text, historyDelta, latestShot, iteration+1 < maxIter)
 					if cont {
 						conversation = append(conversation, map[string]interface{}{
 							"role":              "assistant",
@@ -3133,7 +3133,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			}
 			// After every other rewrite. A lookup fold must not put an
 			// unchecked draft back into the reply.
-			next, message, cont := gateDesktopReply(cb, userText, finalText, historyDelta, latestShot, iteration+1 < maxIter)
+			next, message, cont, _ := gateDesktopReply(cb, userText, finalText, historyDelta, latestShot, iteration+1 < maxIter)
 			if cont {
 				disposeSurface(ToolSurfaceResponseSettled)
 				conversation = append(conversation, map[string]interface{}{
@@ -3614,7 +3614,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			}
 			// Same report as an empty stop: the sentence beside the failed
 			// calls is not a checked finish.
-			next, nudge, cont := gateDesktopReply(cb, userText, text, historyDelta, latestShot, iteration+1 < maxIter)
+			next, nudge, cont, checked := gateDesktopReply(cb, userText, text, historyDelta, latestShot, iteration+1 < maxIter)
 			if cont {
 				conversation = append(conversation, map[string]interface{}{
 					"role":    "user",
@@ -3622,6 +3622,18 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				})
 				historyDelta = append(historyDelta, HostUserEntry(nudge))
 				continue
+			}
+			if checked {
+				// The host reviewed the turn's evidence and supplied this text,
+				// so the turn ends on a checked outcome even though the calls
+				// made no progress. Reporting no_progress here would discard the
+				// reviewer's verdict and call the turn a failure.
+				return finish(LoopResult{
+					Text:       next,
+					Iterations: iteration + 1,
+					ToolCalls:  totalToolCalls,
+					HardExit:   true,
+				})
 			}
 			return finish(LoopResult{
 				Text:       next,
@@ -3746,7 +3758,10 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			// still gets one hint.
 			if allSame && allSameResult && !allSucceeded {
 				consecutiveSame++
-				if consecutiveSame == 2 {
+				// One identical window is enough: the no-progress breaker stops
+				// the turn at 5 misses, so guidance that waited for two windows
+				// (8 calls) could never be delivered.
+				if consecutiveSame == 1 {
 					driftTool := tail[0].name
 					log.Printf("[agent-loop] drift detected: tool %q called %d times with same args+result", driftTool, driftWindow*consecutiveSame)
 					driftMsg := fmt.Sprintf("[系统] 检测到重复调用 %s 且结果相同、调用没有成功。请停止用相同参数重试。如果任务还要继续，换一种做法；如果做不了，向用户说明工具返回的具体错误。", driftTool)
@@ -3776,6 +3791,19 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	}
 
 	log.Printf("[agent-loop] max iterations (%d) reached", maxIter)
+	// The last text beside these calls is an unchecked claim. Give a desktop
+	// host the same review the other terminal paths get: when it replaces the
+	// draft, the turn ends on the host's checked statement instead of a bare
+	// iteration error.
+	if text := strings.TrimSpace(StripThinkingTags(lastNonEmptyContent)); text != "" {
+		next, _, cont, checked := gateDesktopReply(cb, userText, text, historyDelta, latestShot, false)
+		if cont {
+			next = text // no room for another round; keep the draft
+		}
+		if checked {
+			return finish(LoopResult{Text: next, Iterations: maxIter, ToolCalls: totalToolCalls, HardExit: true})
+		}
+	}
 	return finish(LoopResult{Error: "max iterations reached", Iterations: maxIter, ToolCalls: totalToolCalls})
 }
 
@@ -5424,7 +5452,7 @@ func resumeLLMRetryLease(cb LoopCallbacks, ctx context.Context) error {
 // ambiguous delivery; marking a 502 that way would drop the tools before the
 // backoff retry can send again.
 func failedLLMAttemptDelivery(containAmbiguous bool, resp *llm.Response, err error) ToolSurfaceDeliveryState {
-	if containAmbiguous && cleanRetryableLLMFailure(resp, err) {
+	if containAmbiguous && gatewayRejectedLLMFailure(resp, err) {
 		return ToolSurfaceTransportRejected
 	}
 	return ToolSurfaceAmbiguousDelivery

@@ -21,6 +21,10 @@ import {
 // selections into sequential calls.
 const DELETE_CHUNK = 100;
 const MARK_CHUNK = 200;
+// The list is a window of the newest messages, not the whole folder.
+// Keep in sync with the limit passed to MailboxBrowseStart.
+// A page shorter than this is the rest of the folder.
+export const MESSAGE_PAGE = 30;
 
 function chunkUIDs(uids: number[], size: number): number[][] {
     const out: number[][] = [];
@@ -28,6 +32,22 @@ function chunkUIDs(uids: number[], size: number): number[][] {
         out.push(uids.slice(i, i + size));
     }
     return out;
+}
+
+function seenKey(folder: string, uid: number) {
+    return `${folder}\0${uid}`;
+}
+
+// A browse delete may carry the next page from the same IMAP login.
+// No `messages` field means this call listed nothing, so the caller refills.
+// An empty array is a real empty folder. `list_error` means the delete
+// finished and only the page read failed.
+function pageFromDelete(result: unknown): { messages?: MessageRow[]; listError?: string } | undefined {
+    if (!result || typeof result !== 'object') return undefined;
+    const row = result as { messages?: unknown; list_error?: unknown };
+    if (Array.isArray(row.messages)) return { messages: row.messages as MessageRow[] };
+    if (typeof row.list_error === 'string' && row.list_error.trim()) return { listError: row.list_error };
+    return undefined;
 }
 
 type FolderRow = { name: string; special?: string };
@@ -47,6 +67,9 @@ type StartPage = {
     messages?: MessageRow[];
     unseen?: Record<string, number>;
     error?: string;
+    // Present once browse has resolved trash. Empty means there is no trash
+    // folder, so every delete in this account is permanent.
+    trash_box?: string;
 };
 
 function textFor(lang: string, en: string, hans: string, hant: string) {
@@ -245,6 +268,21 @@ export function MailboxManageDialog({
     const folderGen = useRef(0);
     const messageGen = useRef(0);
     const readGen = useRef(0);
+    // Set synchronously for the whole delete, including the gap before React
+    // re-renders `batchBusy` / `actionUid`. Folder switches and opens check it.
+    const busyRef = useRef(false);
+    const messagesRef = useRef<MessageRow[]>([]);
+    const readingRef = useRef<MessageView | null>(null);
+    const selectedUidRef = useRef<number | null>(null);
+    // True when the last server page was full, so older mail may exist.
+    // A failed reload must not clear it: the next delete still has to refill.
+    const pageFullRef = useRef(false);
+    // Uids removed during this dialog session, keyed with the folder. A mark
+    // that lands after the delete must not touch the unread badge again.
+    const removedKeysRef = useRef(new Set<string>());
+    // Seen flips that have not necessarily rendered yet. finishDelete reads
+    // this so an in-flight mark-read is not counted a second time.
+    const seenFlipRef = useRef(new Map<string, boolean>());
     const [folders, setFolders] = useState<FolderRow[]>([]);
     const [box, setBox] = useState('');
     const [unseen, setUnseen] = useState<Record<string, number>>({});
@@ -264,14 +302,26 @@ export function MailboxManageDialog({
     // pictures after the user asks for them.
     const [plainView, setPlainView] = useState(false);
     const [showRemote, setShowRemote] = useState(false);
+    // null until browse says whether this account has a trash folder.
+    const [trashBox, setTrashBox] = useState<string | null>(null);
+    messagesRef.current = messages;
+    readingRef.current = reading;
+    selectedUidRef.current = selectedUid;
+    const listBusy = batchBusy || actionUid !== null;
 
     useEffect(() => {
+        // The dialog is opened from the settings page's manage button. Return
+        // keyboard focus there instead of dropping it on <body> after close.
+        const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         closeRef.current?.focus();
         const onKey = (event: KeyboardEvent) => {
             if (event.key === 'Escape') onCloseRef.current();
         };
         window.addEventListener('keydown', onKey);
-        return () => window.removeEventListener('keydown', onKey);
+        return () => {
+            window.removeEventListener('keydown', onKey);
+            if (previousFocus?.isConnected) previousFocus.focus();
+        };
     }, []);
 
     useEffect(() => {
@@ -286,13 +336,20 @@ export function MailboxManageDialog({
         setMessages([]);
         setUnseen({});
         setSelection(new Set());
+        pageFullRef.current = false;
+        removedKeysRef.current = new Set();
+        seenFlipRef.current = new Map();
+        setTrashBox(null);
         void MailboxBrowseStart(account.id).then(page => {
             if (mine !== folderGen.current) return;
             const start = (page || {}) as StartPage;
             const rows = Array.isArray(start.folders) ? start.folders : [];
+            const listed = Array.isArray(start.messages) ? start.messages : [];
             setFolders(rows);
             setBox(start.box || '');
-            setMessages(Array.isArray(start.messages) ? start.messages : []);
+            setMessages(listed);
+            pageFullRef.current = listed.length >= MESSAGE_PAGE;
+            setTrashBox(typeof start.trash_box === 'string' ? start.trash_box : null);
             setUnseen(start.unseen && typeof start.unseen === 'object' ? start.unseen : {});
             setError(start.error || '');
             setLoading('');
@@ -317,9 +374,53 @@ export function MailboxManageDialog({
         });
     }, []);
 
+    // A server page is the seen state. Drop local flips for those uids so a
+    // later delete does not trust a mark that the server has since replaced.
+    // A uid the server still lists is not removed, so mark-read must work on it.
+    const noteServerRows = (folder: string, rows: MessageRow[]) => {
+        for (const row of rows) {
+            const key = seenKey(folder, row.uid);
+            seenFlipRef.current.delete(key);
+            removedKeysRef.current.delete(key);
+        }
+    };
+
+    const acceptServerPage = (folder: string, fresh: MessageRow[]) => {
+        // Keep a mark that has not finished. The page was read on the delete
+        // connection and still has the old flag; wiping it makes the row jump
+        // back to unread and blocks the rollback if that mark then fails.
+        const merged = fresh.map(row => {
+            const key = seenKey(folder, row.uid);
+            removedKeysRef.current.delete(key);
+            const flipped = seenFlipRef.current.get(key);
+            if (flipped === undefined || flipped === Boolean(row.seen)) return row;
+            return { ...row, seen: flipped };
+        });
+        const freshUids = new Set(merged.map(row => row.uid));
+        setMessages(merged);
+        setReading(prev => {
+            if (!prev) return prev;
+            const match = merged.find(row => row.uid === prev.uid);
+            if (!match || Boolean(match.seen) === Boolean(prev.seen)) return prev;
+            return { ...prev, seen: Boolean(match.seen) };
+        });
+        pageFullRef.current = merged.length >= MESSAGE_PAGE;
+        setSelection(prev => {
+            let changed = false;
+            const next = new Set<number>();
+            for (const uid of prev) {
+                if (freshUids.has(uid)) next.add(uid);
+                else changed = true;
+            }
+            return changed ? next : prev;
+        });
+    };
+
     const selectFolder = (name: string) => {
         // Rapid switches stay safe: every bump of messageGen retires the
         // previous folder's in-flight response, so no loading guard is needed.
+        // A delete in flight keeps this folder; its own reload fills the page.
+        if (busyRef.current) return;
         if (name === box && !error) return;
         readGen.current += 1;
         const mine = ++messageGen.current;
@@ -332,9 +433,13 @@ export function MailboxManageDialog({
         setShowRemote(false);
         setSelection(new Set());
         setMessages([]);
-        void MailboxBrowseMessages(account.id, name, 30).then(list => {
+        pageFullRef.current = false;
+        void MailboxBrowseMessages(account.id, name, MESSAGE_PAGE).then(list => {
             if (mine !== messageGen.current) return;
-            setMessages(Array.isArray(list) ? list as MessageRow[] : []);
+            const listed = Array.isArray(list) ? list as MessageRow[] : [];
+            setMessages(listed);
+            noteServerRows(name, listed);
+            pageFullRef.current = listed.length >= MESSAGE_PAGE;
             setLoading('');
         }).catch((err: unknown) => {
             if (mine !== messageGen.current) return;
@@ -352,8 +457,16 @@ export function MailboxManageDialog({
     // toggle reports the rollback.
     const applySeen = async (uid: number, seen: boolean, silent = false) => {
         const folder = box;
-        const wasSeen = messages.find(m => m.uid === uid)?.seen ?? reading?.seen;
+        const key = seenKey(folder, uid);
+        // Deleted while this mark was still starting. The badge already
+        // counted the removal from the row that was on screen.
+        if (removedKeysRef.current.has(key)) return;
+        const flipped = seenFlipRef.current.get(key);
+        const wasSeen = flipped !== undefined
+            ? flipped
+            : messagesRef.current.find(m => m.uid === uid)?.seen ?? (readingRef.current?.uid === uid ? readingRef.current.seen : undefined);
         if (folder && wasSeen === !seen) {
+            seenFlipRef.current.set(key, seen);
             setMessages(prev => prev.map(m => (m.uid === uid ? { ...m, seen } : m)));
             setReading(prev => (prev && prev.uid === uid ? { ...prev, seen } : prev));
             adjustUnseen(folder, seen ? -1 : 1);
@@ -361,6 +474,8 @@ export function MailboxManageDialog({
         try {
             await MailboxBrowseMarkRead(account.id, folder, [uid], seen);
         } catch {
+            if (removedKeysRef.current.has(key) || seenFlipRef.current.get(key) !== seen) return;
+            seenFlipRef.current.set(key, !seen);
             setMessages(prev => prev.map(m => (m.uid === uid ? { ...m, seen: !seen } : m)));
             setReading(prev => (prev && prev.uid === uid ? { ...prev, seen: !seen } : prev));
             adjustUnseen(folder, seen ? 1 : -1);
@@ -371,6 +486,7 @@ export function MailboxManageDialog({
     };
 
     const openMessage = (uid: number) => {
+        if (busyRef.current) return;
         const mine = ++readGen.current;
         setError('');
         setSelectedUid(uid);
@@ -393,7 +509,7 @@ export function MailboxManageDialog({
     };
 
     const toggleSeen = async (message: MessageRow) => {
-        if (actionUid !== null || batchBusy) return;
+        if (actionUid !== null || batchBusy || busyRef.current) return;
         setActionUid(message.uid);
         try {
             await applySeen(message.uid, !message.seen);
@@ -407,6 +523,7 @@ export function MailboxManageDialog({
     /* -------------------------------------------------------------- */
 
     const toggleSelect = (uid: number) => {
+        if (busyRef.current) return;
         setSelection(prev => {
             const next = new Set(prev);
             if (next.has(uid)) next.delete(uid);
@@ -418,57 +535,236 @@ export function MailboxManageDialog({
     const allSelected = messages.length > 0 && messages.every(m => selection.has(m.uid));
 
     const toggleSelectAll = () => {
+        if (busyRef.current) return;
         setSelection(allSelected ? new Set() : new Set(messages.map(m => m.uid)));
+    };
+
+    // The list is only the newest MESSAGE_PAGE rows. Dropping deleted rows
+    // locally leaves a hole, and deleting the whole page looks like an empty
+    // folder even when older mail is still there. Reload that window so the
+    // next messages are ready for another pass. `showLoading` is only for the
+    // empty page; a partial delete keeps the remaining rows quiet.
+    const refillMessages = async (folder: string, showLoading: boolean) => {
+        const mine = ++messageGen.current;
+        const foldersSnap = folderGen.current;
+        if (showLoading) setLoading('messages');
+        try {
+            const list = await MailboxBrowseMessages(account.id, folder, MESSAGE_PAGE);
+            if (mine !== messageGen.current || foldersSnap !== folderGen.current) return;
+            const fresh = Array.isArray(list) ? list as MessageRow[] : [];
+            acceptServerPage(folder, fresh);
+        } catch (err) {
+            if (mine !== messageGen.current || foldersSnap !== folderGen.current) return;
+            throw err;
+        } finally {
+            if (showLoading && mine === messageGen.current && foldersSnap === folderGen.current) {
+                setLoading(current => (current === 'messages' ? '' : current));
+            }
+        }
+    };
+
+    // Apply a successful delete to the list that is on screen now, then refill
+    // it. Uses the refs because a read can finish while the IMAP delete is in
+    // flight; the closure captured at click time would clear the wrong pane.
+    const finishDelete = async (
+        folder: string,
+        generation: number,
+        foldersSnap: number,
+        removed: number[],
+        attached?: { messages?: MessageRow[]; listError?: string },
+    ) => {
+        if (removed.length === 0) return;
+        if (messageGen.current !== generation || folderGen.current !== foldersSnap) return;
+        const gone = new Set(removed);
+        // Captured before an optimistic hide. The hide re-renders and would
+        // otherwise make the badge loop see an empty list.
+        const listedNow = messagesRef.current;
+        // A same-login page can still list a uid we just asked to delete.
+        // That row is not gone: keep its in-flight mark and the open pane.
+        let pageRows = attached?.messages;
+        // Selecting the whole window and deleting it often gets that same
+        // window back: the list was read before the move was visible. Do not
+        // count those rows as deleted until a new login says they are gone.
+        // A short page is the whole folder, so a uid that is still there was
+        // not removed. A failed reread leaves the list and the badge alone.
+        const staleFull = !!pageRows
+            && pageRows.length >= MESSAGE_PAGE
+            && pageRows.some(row => gone.has(row.uid));
+        if (staleFull) {
+            const snapshot = listedNow;
+            const remain = snapshot.reduce((count, row) => count + (gone.has(row.uid) ? 0 : 1), 0);
+            const showLoading = remain === 0;
+            const mine = ++messageGen.current;
+            if (showLoading) {
+                setMessages(snapshot.filter(row => !gone.has(row.uid)));
+                setLoading('messages');
+            }
+            try {
+                const list = await MailboxBrowseMessages(account.id, folder, MESSAGE_PAGE);
+                if (mine !== messageGen.current || foldersSnap !== folderGen.current) return;
+                pageRows = Array.isArray(list) ? list as MessageRow[] : [];
+            } catch (err) {
+                if (mine !== messageGen.current || foldersSnap !== folderGen.current) return;
+                if (showLoading) setMessages(snapshot);
+                throw err;
+            } finally {
+                if (showLoading && mine === messageGen.current && foldersSnap === folderGen.current) {
+                    setLoading(current => (current === 'messages' ? '' : current));
+                }
+            }
+        }
+        const pageUids = pageRows ? new Set(pageRows.map(row => row.uid)) : null;
+        const serverSeen = new Map<number, boolean>();
+        if (pageRows) {
+            for (const row of pageRows) serverSeen.set(row.uid, Boolean(row.seen));
+        }
+        const stillListed = (uid: number) => pageUids?.has(uid) ?? false;
+        let delta = 0;
+        let remain = 0;
+        for (const row of listedNow) {
+            if (!gone.has(row.uid)) {
+                remain += 1;
+                continue;
+            }
+            const flipped = seenFlipRef.current.get(seenKey(folder, row.uid));
+            const localSeen = flipped !== undefined ? flipped : Boolean(row.seen);
+            if (stillListed(row.uid)) {
+                const shownSeen = flipped !== undefined ? flipped : serverSeen.get(row.uid) === true;
+                if (localSeen !== shownSeen) delta += shownSeen ? -1 : 1;
+                continue;
+            }
+            if (!localSeen) delta -= 1;
+        }
+        for (const uid of removed) {
+            if (stillListed(uid)) continue;
+            const key = seenKey(folder, uid);
+            removedKeysRef.current.add(key);
+            seenFlipRef.current.delete(key);
+        }
+        if (delta !== 0) adjustUnseen(folder, delta);
+        const vanished = (uid: number) => gone.has(uid) && !stillListed(uid);
+        setMessages(prev => prev.filter(row => !vanished(row.uid)));
+        setSelection(prev => {
+            let changed = false;
+            const next = new Set<number>();
+            for (const uid of prev) {
+                if (vanished(uid)) changed = true;
+                else next.add(uid);
+            }
+            return changed ? next : prev;
+        });
+        setReading(prev => (prev && vanished(prev.uid) ? null : prev));
+        if (selectedUidRef.current !== null && vanished(selectedUidRef.current)) {
+            // Also drops a read that has not landed yet.
+            readGen.current += 1;
+            setSelectedUid(null);
+            setLoading(current => (current === 'read' ? '' : current));
+        }
+        // The delete call already read the next page on the same login.
+        // A full page that still listed the deleted uids was replaced above
+        // by a new login. Paint that page. A uid it still lists stays.
+        if (pageRows) {
+            acceptServerPage(folder, pageRows);
+            return;
+        }
+        // The delete landed and only the page read failed. Keep pageFullRef
+        // so the next delete still refills, and do not pretend the folder is empty.
+        if (attached?.listError) {
+            throw new Error(attached.listError);
+        }
+        // A short page is the whole folder, so the rows already removed are
+        // the truth and another login would only repeat them. A full page,
+        // or a full page whose reload failed earlier, can still hide older mail.
+        if (pageFullRef.current) {
+            await refillMessages(folder, remain === 0);
+        }
+    };
+
+    // Trash was resolved by browse. An empty name means this account has no
+    // trash folder, so every delete expunges. Inside the trash folder the
+    // same expunge happens. Until browse says, keep the move wording.
+    const deletesPermanently = trashBox !== null && (trashBox === '' || trashBox === box);
+
+    const deleteConfirmText = (count: number, subject?: string) => {
+        if (subject) {
+            if (deletesPermanently) {
+                return t(
+                    `Permanently delete “${subject}”? This cannot be undone.`,
+                    `彻底删除「${subject}」？此操作无法恢复。`,
+                    `徹底刪除「${subject}」？此操作無法復原。`,
+                );
+            }
+            return t(
+                `Move “${subject}” to the trash folder?`,
+                `将「${subject}」移到已删除文件夹？`,
+                `將「${subject}」移到已刪除資料夾？`,
+            );
+        }
+        if (deletesPermanently) {
+            return t(
+                `Permanently delete ${count} selected message(s)? This cannot be undone.`,
+                `彻底删除选中的 ${count} 封邮件？此操作无法恢复。`,
+                `徹底刪除選中的 ${count} 封郵件？此操作無法復原。`,
+            );
+        }
+        return t(
+            `Move ${count} selected message(s) to the trash folder?`,
+            `将选中的 ${count} 封邮件移到已删除文件夹？`,
+            `將選中的 ${count} 封郵件移到已刪除資料夾？`,
+        );
     };
 
     // Batch delete moves every selected message to the trash in chunks of
     // DELETE_CHUNK. Chunks apply sequentially; the first failure stops the
     // run and the already-moved part stays deleted (reported, not rolled back).
     const deleteSelected = async () => {
-        if (batchBusy) return;
+        if (batchBusy || busyRef.current) return;
+        const folder = box;
+        const generation = messageGen.current;
+        const foldersSnap = folderGen.current;
         const rows = messages.filter(m => selection.has(m.uid));
         if (rows.length === 0) return;
         const confirmed = await showConfirm(
-            t(
-                `Move ${rows.length} selected message(s) to the trash folder?`,
-                `将选中的 ${rows.length} 封邮件移到已删除文件夹？`,
-                `將選中的 ${rows.length} 封郵件移到已刪除資料夾？`,
-            ),
+            deleteConfirmText(rows.length),
             t('Delete mail', '删除邮件', '刪除郵件'),
             { confirmVariant: 'danger' },
         );
         if (!confirmed) return;
+        busyRef.current = true;
         setBatchBusy(true);
         setError('');
         try {
             const done: number[] = [];
             let failure: unknown = null;
+            // Only the last successful call's page is the folder after every
+            // chunk that landed. A later call with no page drops it so the
+            // refill below sees the server, not a page from an earlier chunk.
+            let attached: { messages?: MessageRow[]; listError?: string } | undefined;
             for (const part of chunkUIDs(rows.map(m => m.uid), DELETE_CHUNK)) {
                 try {
-                    await MailboxBrowseDelete(account.id, box, part);
+                    const result = await MailboxBrowseDelete(account.id, folder, part);
                     done.push(...part);
+                    attached = pageFromDelete(result);
                 } catch (err: unknown) {
                     failure = err;
                     break;
                 }
             }
-            if (done.length > 0) {
-                const unreadGone = rows.filter(m => done.includes(m.uid) && !m.seen).length;
-                if (unreadGone > 0) adjustUnseen(box, -unreadGone);
-                setMessages(prev => prev.filter(m => !done.includes(m.uid)));
-                setSelection(prev => new Set([...prev].filter(uid => !done.includes(uid))));
-                if (reading && done.includes(reading.uid)) {
-                    readGen.current += 1;
-                    setReading(null);
-                    setSelectedUid(null);
-                }
+            let refillError: unknown = null;
+            try {
+                await finishDelete(folder, generation, foldersSnap, done, attached);
+            } catch (err: unknown) {
+                refillError = err;
             }
             if (failure) {
                 setError(errText(failure) + (done.length > 0
                     ? t(' Some messages were deleted.', '（前面的邮件已删除，后面的没有执行。）', '（前面的郵件已刪除，後面的沒有執行。）')
                     : ''));
+            } else if (refillError) {
+                setError(errText(refillError));
             }
         } finally {
+            busyRef.current = false;
             setBatchBusy(false);
         }
     };
@@ -476,7 +772,7 @@ export function MailboxManageDialog({
     // Batch read/unread flips the rows first and lets the server calls keep
     // them. Failed chunks roll back their own uids, so the pane stays honest.
     const markSelected = async (seen: boolean) => {
-        if (batchBusy) return;
+        if (batchBusy || busyRef.current) return;
         const targets = messages.filter(m => selection.has(m.uid) && Boolean(m.seen) !== seen);
         if (targets.length === 0) return;
         setBatchBusy(true);
@@ -506,38 +802,27 @@ export function MailboxManageDialog({
     };
 
     const deleteMessage = async (message: MessageRow) => {
-        if (actionUid !== null || batchBusy) return;
+        if (actionUid !== null || batchBusy || busyRef.current) return;
+        const folder = box;
+        const generation = messageGen.current;
+        const foldersSnap = folderGen.current;
         const subject = message.subject?.trim() || t('(no subject)', '（无主题）', '（無主題）');
         const confirmed = await showConfirm(
-            t(
-                `Move “${subject}” to the trash folder?`,
-                `将「${subject}」移到已删除文件夹？`,
-                `將「${subject}」移到已刪除資料夾？`,
-            ),
+            deleteConfirmText(1, subject),
             t('Delete mail', '删除邮件', '刪除郵件'),
             { confirmVariant: 'danger' },
         );
         if (!confirmed) return;
+        busyRef.current = true;
         setActionUid(message.uid);
         setError('');
         try {
-            await MailboxBrowseDelete(account.id, box, [message.uid]);
-            if (!message.seen) adjustUnseen(box, -1);
-            setMessages(prev => prev.filter(m => m.uid !== message.uid));
-            setSelection(prev => {
-                if (!prev.has(message.uid)) return prev;
-                const next = new Set(prev);
-                next.delete(message.uid);
-                return next;
-            });
-            if (selectedUid === message.uid) {
-                readGen.current += 1;
-                setReading(null);
-                setSelectedUid(null);
-            }
+            const result = await MailboxBrowseDelete(account.id, folder, [message.uid]);
+            await finishDelete(folder, generation, foldersSnap, [message.uid], pageFromDelete(result));
         } catch (err: unknown) {
             setError(errText(err));
         } finally {
+            busyRef.current = false;
             setActionUid(null);
         }
     };
@@ -545,7 +830,7 @@ export function MailboxManageDialog({
     // Refresh re-syncs folders, unread badges and the current folder's list.
     // The selection keeps only the uids that survive the reload.
     const refresh = () => {
-        if (loading || batchBusy) return;
+        if (loading || batchBusy || actionUid !== null || busyRef.current) return;
         const mine = ++folderGen.current;
         setLoading('messages');
         setError('');
@@ -553,20 +838,27 @@ export function MailboxManageDialog({
             if (mine !== folderGen.current) return;
             const start = (page || {}) as StartPage;
             if (Array.isArray(start.folders)) setFolders(start.folders);
+            setTrashBox(typeof start.trash_box === 'string' ? start.trash_box : null);
             if (start.unseen && typeof start.unseen === 'object') setUnseen(start.unseen);
             const target = start.box && start.box !== box ? box : start.box || box;
             if (!target) {
-                setMessages(Array.isArray(start.messages) ? start.messages : []);
+                const listed = Array.isArray(start.messages) ? start.messages : [];
+                setMessages(listed);
+                noteServerRows(start.box || '', listed);
+                pageFullRef.current = listed.length >= MESSAGE_PAGE;
                 setBox(start.box || '');
                 setLoading('');
                 return;
             }
             try {
-                const list = await MailboxBrowseMessages(account.id, target, 30);
+                const list = await MailboxBrowseMessages(account.id, target, MESSAGE_PAGE);
                 if (mine !== folderGen.current) return;
                 const fresh = Array.isArray(list) ? list as MessageRow[] : [];
+                const freshUids = new Set(fresh.map(row => row.uid));
                 setMessages(fresh);
-                setSelection(prev => new Set([...prev].filter(uid => fresh.some(m => m.uid === uid))));
+                noteServerRows(target, fresh);
+                pageFullRef.current = fresh.length >= MESSAGE_PAGE;
+                setSelection(prev => new Set([...prev].filter(uid => freshUids.has(uid))));
                 setError('');
             } catch (err: unknown) {
                 if (mine !== folderGen.current) return;
@@ -604,18 +896,18 @@ export function MailboxManageDialog({
 
     const dialog = (
         <div
-            className="mailbox-manage-overlay"
+            className="modal-backdrop mailbox-manage-overlay"
             {...portalThemeAttributes}
             onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}
         >
             <div
-                className="mailbox-manage"
+                className="modal-content mailbox-manage"
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="mailbox-manage-title"
                 data-testid="mailbox-manage-dialog"
             >
-                <header className="mailbox-manage__header">
+                <header className="modal-header mailbox-manage__header">
                     <div className="mailbox-manage__header-main">
                         <h3 id="mailbox-manage-title">
                             <IconMailRead size={17} className="mailbox-manage__title-glyph" />
@@ -629,20 +921,20 @@ export function MailboxManageDialog({
                             className="mailbox-manage__tool"
                             title={t('Refresh', '刷新', '重新整理')}
                             aria-label={t('Refresh', '刷新', '重新整理')}
-                            disabled={loading !== ''}
+                            disabled={loading !== '' || listBusy}
                             onClick={refresh}
                         ><IconRefresh size={15} /></button>
                         <button
                             ref={closeRef}
                             type="button"
-                            className="mailbox-manage__close"
+                            className="btn-close mailbox-manage__close"
                             aria-label={t('Close', '关闭', '關閉')}
                             onClick={onClose}
                         >×</button>
                     </div>
                 </header>
                 {error && <p className="email-settings-notice email-settings-notice--err mailbox-manage__error" role="alert">{error}</p>}
-                <div className="mailbox-manage__body">
+                <div className="modal-body mailbox-manage__body">
                     <ul className="mailbox-manage__folders" aria-label={t('Folders', '文件夹', '資料夾')}>
                         {folders.map(folder => {
                             const count = unseen[folder.name] || 0;
@@ -653,6 +945,7 @@ export function MailboxManageDialog({
                                         className={`mailbox-manage__folder${folder.name === box ? ' mailbox-manage__folder--current' : ''}`}
                                         aria-current={folder.name === box ? 'true' : undefined}
                                         title={folder.name}
+                                        disabled={listBusy}
                                         onClick={() => selectFolder(folder.name)}
                                     >
                                         <FolderGlyph special={folder.special} />
@@ -681,7 +974,7 @@ export function MailboxManageDialog({
                                 aria-label={t('Select all', '全选', '全選')}
                                 title={t('Select all', '全选', '全選')}
                                 className={`mailbox-manage__check mailbox-manage__check--all${allSelected ? ' mailbox-manage__check--on' : ''}`}
-                                disabled={batchBusy}
+                                disabled={listBusy}
                                 onClick={toggleSelectAll}
                             >{allSelected && <IconCheck size={11} />}</button>
                             <span className="mailbox-manage__batchbar__label">
@@ -696,7 +989,7 @@ export function MailboxManageDialog({
                                         className="mailbox-manage__tool"
                                         title={t('Mark as read', '标为已读', '標為已讀')}
                                         aria-label={t('Mark as read', '标为已读', '標為已讀')}
-                                        disabled={batchBusy}
+                                        disabled={listBusy}
                                         onClick={() => { void markSelected(true); }}
                                     ><IconMailRead size={14} /></button>
                                     <button
@@ -704,7 +997,7 @@ export function MailboxManageDialog({
                                         className="mailbox-manage__tool"
                                         title={t('Mark as unread', '标为未读', '標為未讀')}
                                         aria-label={t('Mark as unread', '标为未读', '標為未讀')}
-                                        disabled={batchBusy}
+                                        disabled={listBusy}
                                         onClick={() => { void markSelected(false); }}
                                     ><IconMailUnread size={14} /></button>
                                     <button
@@ -712,7 +1005,7 @@ export function MailboxManageDialog({
                                         className="mailbox-manage__tool mailbox-manage__tool--danger"
                                         title={t('Delete selected', '删除所选', '刪除所選')}
                                         aria-label={t('Delete selected', '删除所选', '刪除所選')}
-                                        disabled={batchBusy}
+                                        disabled={listBusy}
                                         data-testid="mailbox-manage-batch-delete"
                                         onClick={() => { void deleteSelected(); }}
                                     ><IconTrash size={14} /></button>
@@ -721,7 +1014,7 @@ export function MailboxManageDialog({
                                         className="mailbox-manage__tool"
                                         title={t('Clear selection', '取消选择', '取消選擇')}
                                         aria-label={t('Clear selection', '取消选择', '取消選擇')}
-                                        disabled={batchBusy}
+                                        disabled={listBusy}
                                         onClick={() => setSelection(new Set())}
                                     ><IconCross size={14} /></button>
                                 </div>
@@ -739,13 +1032,14 @@ export function MailboxManageDialog({
                                         aria-checked={selection.has(message.uid) ? 'true' : 'false'}
                                         aria-label={t('Select message', '选择邮件', '選擇郵件')}
                                         className={`mailbox-manage__check${selection.has(message.uid) ? ' mailbox-manage__check--on' : ''}`}
-                                        disabled={batchBusy}
+                                        disabled={listBusy}
                                         onClick={() => toggleSelect(message.uid)}
                                     >{selection.has(message.uid) && <IconCheck size={11} />}</button>
                                     <button
                                         type="button"
                                         className={`mailbox-manage__message${message.seen ? '' : ' mailbox-manage__message--unread'}${selectedUid === message.uid ? ' mailbox-manage__message--current' : ''}`}
                                         aria-current={selectedUid === message.uid ? 'true' : undefined}
+                                        disabled={listBusy}
                                         onClick={() => openMessage(message.uid)}
                                     >
                                         <span className="mailbox-manage__row-top">
@@ -818,7 +1112,7 @@ export function MailboxManageDialog({
                                                 aria-label={reading.seen
                                                     ? t('Mark as unread', '标为未读', '標為未讀')
                                                     : t('Mark as read', '标为已读', '標為已讀')}
-                                                disabled={actionUid !== null}
+                                                disabled={listBusy}
                                                 onClick={() => { void toggleSeen(reading); }}
                                             >{reading.seen ? <IconMailUnread size={14} /> : <IconMailRead size={14} />}</button>
                                             <button
@@ -826,7 +1120,7 @@ export function MailboxManageDialog({
                                                 className="mailbox-manage__tool mailbox-manage__tool--danger"
                                                 title={t('Delete', '删除', '刪除')}
                                                 aria-label={t('Delete', '删除', '刪除')}
-                                                disabled={actionUid !== null}
+                                                disabled={listBusy}
                                                 onClick={() => { void deleteMessage(reading); }}
                                             ><IconTrash size={14} /></button>
                                         </div>

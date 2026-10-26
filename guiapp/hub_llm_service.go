@@ -51,7 +51,21 @@ var hubServiceStatusCache struct {
 	valid     bool
 	hubURL    string
 	viewerTok string
+	// Failure backoff. A Hub that is unreachable (offline laptop, expired
+	// network, Hub outage) used to be re-probed every few seconds by the
+	// sidebar refresh, token-usage events and provider reads. Each probe holds
+	// a 30s HTTP timeout, so an offline Hub turned into a steady stream of
+	// doomed requests competing with startup for CPU and sockets. Consecutive
+	// failures now back off exponentially up to hubServiceStatusMaxBackoff.
+	failedAt time.Time
+	failures int
 }
+
+// hubServiceStatusBaseBackoff is the wait after the first failed probe.
+const hubServiceStatusBaseBackoff = 15 * time.Second
+
+// hubServiceStatusMaxBackoff caps the retry wait for an unreachable Hub.
+const hubServiceStatusMaxBackoff = 5 * time.Minute
 
 // clearHubServiceStatusCache invalidates the process-local Hub LLM status cache.
 // Used by tests and by config paths that change Hub identity.
@@ -62,7 +76,66 @@ func clearHubServiceStatusCache() {
 	hubServiceStatusCache.fetchedAt = time.Time{}
 	hubServiceStatusCache.hubURL = ""
 	hubServiceStatusCache.viewerTok = ""
+	hubServiceStatusCache.failedAt = time.Time{}
+	hubServiceStatusCache.failures = 0
 	hubServiceStatusCache.mu.Unlock()
+}
+
+// hubServiceStatusBackoffRemaining reports how long the fetch for this Hub
+// identity is still suppressed after consecutive failures. Zero means a probe
+// may run now.
+func hubServiceStatusBackoffRemaining(hubURL, viewerToken string) time.Duration {
+	hubServiceStatusCache.mu.RLock()
+	defer hubServiceStatusCache.mu.RUnlock()
+	if hubServiceStatusCache.failures == 0 || hubServiceStatusCache.failedAt.IsZero() {
+		return 0
+	}
+	if hubServiceStatusCache.hubURL != strings.TrimSpace(hubURL) ||
+		hubServiceStatusCache.viewerTok != strings.TrimSpace(viewerToken) {
+		// Different account or Hub: its health is unrelated.
+		return 0
+	}
+	wait := hubServiceStatusBackoff(hubServiceStatusCache.failures)
+	remaining := wait - time.Since(hubServiceStatusCache.failedAt)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+// hubServiceStatusBackoff returns the wait after `failures` consecutive
+// failures: base, 2x, 4x, ... capped. The first failure already backs off, so a
+// single dead Hub does not produce a burst of retries.
+func hubServiceStatusBackoff(failures int) time.Duration {
+	if failures <= 0 {
+		return 0
+	}
+	wait := hubServiceStatusBaseBackoff
+	for i := 1; i < failures; i++ {
+		wait *= 2
+		if wait >= hubServiceStatusMaxBackoff {
+			return hubServiceStatusMaxBackoff
+		}
+	}
+	return wait
+}
+
+// noteHubServiceStatusFailure records one failed probe for this identity.
+func noteHubServiceStatusFailure(hubURL, viewerToken string, err error) {
+	hubServiceStatusCache.mu.Lock()
+	if hubServiceStatusCache.hubURL != strings.TrimSpace(hubURL) ||
+		hubServiceStatusCache.viewerTok != strings.TrimSpace(viewerToken) {
+		// Failure streak is per identity; switching Hub starts a new streak.
+		hubServiceStatusCache.failures = 0
+	}
+	hubServiceStatusCache.failures++
+	hubServiceStatusCache.failedAt = time.Now()
+	hubServiceStatusCache.hubURL = strings.TrimSpace(hubURL)
+	hubServiceStatusCache.viewerTok = strings.TrimSpace(viewerToken)
+	failures := hubServiceStatusCache.failures
+	hubServiceStatusCache.mu.Unlock()
+	log.Printf("[hub-llm-service] probe failed (%d in a row, retry in %s): %v",
+		failures, hubServiceStatusBackoff(failures).Round(time.Second), err)
 }
 
 func hubServiceStatusCacheSameIdentity(hubURL, viewerToken string) bool {
@@ -86,17 +159,26 @@ func hubServiceStatusCacheMatches(hubURL, viewerToken string) bool {
 // an existing cache entry for the same signed-in Hub account changed. Keeping
 // this comparison at the cache boundary lets callers notify the GUI about
 // entitlement-only changes without persisting a policy snapshot to config.
+//
+// It also clears the failure streak. Every successful probe ends here, so doing
+// it at the cache boundary means no call site can forget: an explicit user
+// refresh or a redeem used to leave the breaker open, suppressing healthy
+// requests for minutes after the Hub was already reachable again.
 func storeHubServiceStatusCache(hubURL, viewerToken string, status HubLLMServiceStatus) bool {
+	hubURL = strings.TrimSpace(hubURL)
+	viewerToken = strings.TrimSpace(viewerToken)
 	hubServiceStatusCache.mu.Lock()
 	sameIdentity := hubServiceStatusCache.valid &&
-		hubServiceStatusCache.hubURL == strings.TrimSpace(hubURL) &&
-		hubServiceStatusCache.viewerTok == strings.TrimSpace(viewerToken)
+		hubServiceStatusCache.hubURL == hubURL &&
+		hubServiceStatusCache.viewerTok == viewerToken
 	changed := sameIdentity && !hubLLMServiceStatusDisplayEqual(hubServiceStatusCache.status, status)
 	hubServiceStatusCache.status = status
 	hubServiceStatusCache.fetchedAt = time.Now()
 	hubServiceStatusCache.valid = true
-	hubServiceStatusCache.hubURL = strings.TrimSpace(hubURL)
-	hubServiceStatusCache.viewerTok = strings.TrimSpace(viewerToken)
+	hubServiceStatusCache.hubURL = hubURL
+	hubServiceStatusCache.viewerTok = viewerToken
+	hubServiceStatusCache.failedAt = time.Time{}
+	hubServiceStatusCache.failures = 0
 	hubServiceStatusCache.mu.Unlock()
 	return changed
 }
@@ -369,8 +451,21 @@ func (a *App) GetHubLLMServiceStatus() (HubLLMServiceStatus, error) {
 	if err != nil {
 		return HubLLMServiceStatus{}, err
 	}
+	// Do not re-probe a Hub that just failed repeatedly. The caller gets the
+	// last known snapshot (or an empty status) instead of waiting out another
+	// 30s timeout that is very likely to fail the same way.
+	if remaining := hubServiceStatusBackoffRemaining(cfg.RemoteHubURL, cfg.RemoteViewerToken); remaining > 0 {
+		hubServiceStatusCache.mu.RLock()
+		stale, hasCache := hubServiceStatusCache.status, hubServiceStatusCache.valid
+		hubServiceStatusCache.mu.RUnlock()
+		if hasCache {
+			return stale, nil
+		}
+		return HubLLMServiceStatus{}, fmt.Errorf("hub status probe suppressed for %s after repeated failures", remaining.Round(time.Second))
+	}
 	status, err := a.fetchHubLLMServiceStatus(cfg)
 	if err != nil {
+		noteHubServiceStatusFailure(cfg.RemoteHubURL, cfg.RemoteViewerToken, err)
 		// On transient failure, return stale cache for the same Hub identity only
 		// (even if the TTL has expired — better a recent snapshot than hard fail).
 		if hubServiceStatusCacheSameIdentity(cfg.RemoteHubURL, cfg.RemoteViewerToken) {
@@ -618,11 +713,18 @@ func (a *App) syncHubLLMServiceStatusIntoConfig(cfg *corelib.AppConfig) {
 		return
 	}
 
+	// An unreachable Hub is probed at most once per backoff window. This path
+	// runs on every provider read, so without the gate an offline Hub produced a
+	// continuous stream of 30s requests.
+	if remaining := hubServiceStatusBackoffRemaining(cfg.RemoteHubURL, cfg.RemoteViewerToken); remaining > 0 {
+		return
+	}
+
 	status, err := a.fetchHubLLMServiceStatusWithTimeout(*cfg, hubServiceStatusTimeout)
 	if err != nil {
+		noteHubServiceStatusFailure(cfg.RemoteHubURL, cfg.RemoteViewerToken, err)
 		// Transient failure (503, timeout, network error). Preserve existing
 		// config — do not remove the hub provider on transient errors.
-		log.Printf("[hub-llm-service] status fetch failed (transient), preserving config: %v", err)
 		return
 	}
 	// Only apply status if Hub explicitly returned a response.

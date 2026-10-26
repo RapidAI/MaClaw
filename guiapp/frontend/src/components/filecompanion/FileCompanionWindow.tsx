@@ -882,7 +882,9 @@ function MarkdownSourceEditor({
     );
 }
 
-function CompanionActionIcon({ name, size = 14 }: { name: "paper" | "knowledge" | "cloud" | "hide" | "markdown" | "latex" | "pdf" | "check" | "file" | "fullscreen" | "restore" | "project" | "library" | "convert" | "note" | "stop" | "share" | "groups"; size?: number }) {
+// 20px is the title-bar size: it leaves 4px of air inside the 30px icon-only
+// squares. Compact rows such as the 打开 menu pass their own smaller size.
+function CompanionActionIcon({ name, size = 20 }: { name: "paper" | "knowledge" | "cloud" | "hide" | "markdown" | "latex" | "pdf" | "check" | "file" | "fullscreen" | "restore" | "project" | "library" | "convert" | "note" | "stop" | "share" | "groups"; size?: number }) {
     const common = {
         fill: "none",
         stroke: "currentColor",
@@ -1643,20 +1645,56 @@ type CompanionArxivHit = {
     categories: string[];
 };
 
-function companionArxivSearchStatus(error: string, query: string, submitted: string, searched: boolean, count: number, busy: boolean): string {
+type CompanionArxivGroup = {
+    terms: string[];
+    category: string;
+};
+
+type CompanionArxivPage = {
+    hits: CompanionArxivHit[];
+    page: number;
+    pageSize: number;
+    total: number;
+    interpreted: string;
+    groups: CompanionArxivGroup[];
+    fallback: boolean;
+};
+
+const companionArxivPageSize = 20;
+
+function companionArxivSearchStatus(error: string, query: string, submitted: string, searched: boolean, count: number, busy: boolean, paging: boolean, page: number, total: number, pageSize: number, fallback: boolean): string {
     if (error) return error;
-    // The request has cleared the previous list. The idle sentence would
-    // tell the reader to type a keyword they have already submitted.
+    // A fresh search is still asking the model what to look for. A page turn
+    // already has that plan, so it only says it is fetching the next slice.
+    if (busy && !paging) return "正在理解研究目标并检索…";
     if (busy) return "正在检索…";
     // The count describes the list on screen. It stays true only while the
-    // box still holds the query that produced that list; a keystroke must
-    // not leave "找到 N 篇" attached to a different keyword. What to try
-    // next lives in the empty panel, so this line only states the result.
+    // box still holds the goal that produced that list; a keystroke must
+    // not leave "约 N 篇" attached to a different sentence.
     const current = searched && query.trim() === submitted;
-    if (current && count === 0) return "检索完成，没有结果";
-    if (current && count > 0) return `找到 ${count} 篇，点击任一条下载并打开`;
-    if (count > 0) return "关键字已修改，请重新搜索";
-    return "输入关键字或 arXiv 编号，检索公开预印本";
+    if (current && count === 0 && page <= 1) {
+        return fallback ? "未能扩展关键词，已按原文检索。检索完成，没有结果" : "检索完成，没有结果";
+    }
+    // A later page can come back empty when the previous total was only a
+    // lower bound. Saying "第 1 页" here would hide that the reader is stuck
+    // past the last paper; the pager stays so they can go back.
+    if (current && count === 0 && page > 1) {
+        const head = fallback ? "未能扩展关键词，已按原文检索。" : "";
+        return `${head}这一页没有论文`;
+    }
+    if (current) {
+        const size = pageSize > 0 ? pageSize : companionArxivPageSize;
+        const safeTotal = Math.max(total, (Math.max(page, 1) - 1) * size + count);
+        const pages = Math.max(1, Math.ceil(safeTotal / size));
+        const shown = Math.min(Math.max(page, 1), pages);
+        const head = fallback ? "未能扩展关键词，已按原文检索。" : "";
+        return `${head}约 ${safeTotal} 篇，第 ${shown} / ${pages} 页`;
+    }
+    // A later page with no rows is still a result. Changing the box must say
+    // the goal moved, not the idle hint that belongs to an empty first page.
+    // Once the result itself has been cleared, there is nothing to revise.
+    if (searched && (page > 1 || count > 0)) return "目标已修改，请重新检索";
+    return "描述研究目标、关键字，或 arXiv 编号";
 }
 
 function companionArxivHits(raw: unknown): CompanionArxivHit[] {
@@ -1678,6 +1716,58 @@ function companionArxivHits(raw: unknown): CompanionArxivHit[] {
         hits.push({ id, title, abstract, authors, published, categories });
     }
     return hits;
+}
+
+function companionArxivGroups(raw: unknown): CompanionArxivGroup[] {
+    if (!Array.isArray(raw)) return [];
+    const groups: CompanionArxivGroup[] = [];
+    for (const item of raw) {
+        if (!item || typeof item !== "object") continue;
+        const row = item as Record<string, unknown>;
+        const rawTerms = row.terms ?? row.Terms;
+        const terms = Array.isArray(rawTerms)
+            ? rawTerms.map((term) => String(term ?? "").trim()).filter(Boolean)
+            : [];
+        const category = String(row.category ?? row.Category ?? "").trim();
+        if (terms.length === 0) continue;
+        groups.push({ terms, category });
+    }
+    return groups;
+}
+
+function companionArxivPage(raw: unknown): CompanionArxivPage {
+    const empty: CompanionArxivPage = {
+        hits: [],
+        page: 1,
+        pageSize: companionArxivPageSize,
+        total: 0,
+        interpreted: "",
+        groups: [],
+        fallback: false,
+    };
+    // Older callers, and the tests that still resolve a bare list, have no
+    // page envelope. Treat that list as page 1 of itself.
+    if (Array.isArray(raw)) {
+        const hits = companionArxivHits(raw);
+        return { ...empty, hits, total: hits.length };
+    }
+    if (!raw || typeof raw !== "object") return empty;
+    const row = raw as Record<string, unknown>;
+    const hits = companionArxivHits(row.hits ?? row.Hits);
+    const page = Math.max(1, Number(row.page ?? row.Page) || 1);
+    const pageSize = Math.max(1, Number(row.pageSize ?? row.PageSize) || companionArxivPageSize);
+    let total = Number(row.total ?? row.Total);
+    if (!Number.isFinite(total) || total < 0) total = hits.length;
+    if (total < hits.length) total = hits.length;
+    return {
+        hits,
+        page,
+        pageSize,
+        total,
+        interpreted: String(row.interpreted ?? row.Interpreted ?? "").trim(),
+        groups: companionArxivGroups(row.groups ?? row.Groups),
+        fallback: Boolean(row.fallback ?? row.Fallback),
+    };
 }
 
 export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: boolean } = {}) {
@@ -1711,6 +1801,13 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     const [arxivSearchHits, setArxivSearchHits] = useState<CompanionArxivHit[]>([]);
     const [arxivSearched, setArxivSearched] = useState(false);
     const [arxivSearchFor, setArxivSearchFor] = useState("");
+    const [arxivSearchPage, setArxivSearchPage] = useState(1);
+    const [arxivSearchTotal, setArxivSearchTotal] = useState(0);
+    const [arxivSearchPageSize, setArxivSearchPageSize] = useState(companionArxivPageSize);
+    const [arxivSearchGroups, setArxivSearchGroups] = useState<CompanionArxivGroup[]>([]);
+    const [arxivSearchInterpreted, setArxivSearchInterpreted] = useState("");
+    const [arxivSearchFallback, setArxivSearchFallback] = useState(false);
+    const [arxivSearchPaging, setArxivSearchPaging] = useState(false);
     const [arxivOpeningId, setArxivOpeningId] = useState("");
     const [sharePasswordLink, setSharePasswordLink] = useState("");
     const [sharePasswordValue, setSharePasswordValue] = useState("");
@@ -1725,9 +1822,10 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     arxivSearchRef.current = arxivSearchOpen;
     const arxivSearchBusyRef = useRef(false);
     const arxivSearchGenRef = useRef(0);
-    const arxivSearchInputRef = useRef<HTMLInputElement | null>(null);
+    const arxivSearchInputRef = useRef<HTMLTextAreaElement | null>(null);
     const arxivSearchButtonRef = useRef<HTMLButtonElement | null>(null);
     const arxivSearchDialogRef = useRef<HTMLDivElement | null>(null);
+    const arxivSearchListRef = useRef<HTMLDivElement | null>(null);
     const closeArxivSearchRef = useRef<() => void>(() => undefined);
     const sharePasswordInputRef = useRef<HTMLInputElement | null>(null);
     const sharePasswordDialogRef = useRef<HTMLDivElement | null>(null);
@@ -3952,47 +4050,87 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         setArxivSearchHits([]);
         setArxivSearched(false);
         setArxivSearchFor("");
+        setArxivSearchPage(1);
+        setArxivSearchTotal(0);
+        setArxivSearchGroups([]);
+        setArxivSearchInterpreted("");
+        setArxivSearchFallback(false);
+        setArxivSearchPaging(false);
         setArxivSearchBusy(false);
         arxivSearchBusyRef.current = false;
         setArxivOpeningId("");
         setArxivSearchOpen(true);
     };
 
-    const runArxivSearch = async () => {
+    const runArxivSearch = async (page?: number) => {
         if (arxivBusyRef.current || arxivSearchBusyRef.current) return;
-        const q = arxivSearchQuery.trim();
+        const turning = typeof page === "number" && page >= 1;
+        const requested = turning ? page : 1;
+        const q = (turning ? arxivSearchFor : arxivSearchQuery).trim();
         if (!q) {
-            setArxivSearchError("请输入关键字");
+            setArxivSearchError("请描述研究目标或输入关键字");
             setArxivSearched(false);
             setArxivSearchHits([]);
+            setArxivSearchGroups([]);
+            setArxivSearchInterpreted("");
+            setArxivSearchFallback(false);
+            setArxivSearchPage(1);
+            setArxivSearchTotal(0);
             return;
         }
+        // A page turn belongs to the goal that produced the list. Editing the
+        // box must not fetch the next slice of a different sentence.
+        if (turning && q !== arxivSearchQuery.trim()) return;
         const gen = ++arxivSearchGenRef.current;
         arxivSearchBusyRef.current = true;
         setArxivSearchBusy(true);
+        setArxivSearchPaging(turning);
         setArxivSearchError("");
-        setArxivSearchHits([]);
-        setArxivSearched(false);
+        if (!turning) {
+            setArxivSearchHits([]);
+            setArxivSearched(false);
+            setArxivSearchGroups([]);
+            setArxivSearchInterpreted("");
+            setArxivSearchFallback(false);
+            setArxivSearchPage(1);
+            setArxivSearchTotal(0);
+        }
         try {
-            const raw = await FileCompanionSearchArxiv(q);
+            // A page turn, including 上一页 back to page 1, must not retry a
+            // failed expansion. Only the search button starts a new attempt.
+            const raw = await FileCompanionSearchArxiv(q, requested, !turning);
             if (gen !== arxivSearchGenRef.current) return;
-            setArxivSearchHits(companionArxivHits(raw));
+            const result = companionArxivPage(raw);
+            setArxivSearchHits(result.hits);
             setArxivSearchFor(q);
             setArxivSearched(true);
+            setArxivSearchPage(result.page || requested);
+            setArxivSearchPageSize(result.pageSize);
+            setArxivSearchTotal(result.total);
+            setArxivSearchGroups(result.groups);
+            setArxivSearchInterpreted(result.interpreted);
+            setArxivSearchFallback(result.fallback);
         } catch (err) {
             if (gen !== arxivSearchGenRef.current) return;
             setArxivSearchError(bindingErrorText(err) || "搜索失败");
+            if (!turning) {
+                setArxivSearched(false);
+                setArxivSearchHits([]);
+            }
         } finally {
             if (gen === arxivSearchGenRef.current) {
                 arxivSearchBusyRef.current = false;
                 setArxivSearchBusy(false);
+                setArxivSearchPaging(false);
             }
         }
     };
 
     const openArxivHit = async (id: string) => {
         const paper = id.trim();
-        if (!paper || arxivBusyRef.current) return;
+        // A page turn keeps the previous rows on screen. Opening one would
+        // download a paper the list is about to replace.
+        if (!paper || arxivBusyRef.current || arxivSearchBusyRef.current) return;
         arxivBusyRef.current = true;
         setArxivBusy(true);
         setArxivSearchError("");
@@ -4116,6 +4254,23 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     }
     if (nextPin && !tabs.some((item) => item.kind === "web" && item.frameUrl && item.path === nextPin)) nextPin = "";
     if (nextPin !== pinnedPlayerPath) setPinnedPlayerPath(nextPin);
+
+    // A page turn replaces the rows inside the same scroller. Leaving the old
+    // scroll offset parks the reader on the bottom of the new page. Only the
+    // rows or the page number retrigger this. A failed page turn clears the
+    // paging flag and leaves both alone, so it must not jump to the top.
+    useLayoutEffect(() => {
+        const node = arxivSearchListRef.current;
+        if (node) node.scrollTop = 0;
+    }, [arxivSearchHits, arxivSearchPage]);
+
+    const arxivGoalCurrent = arxivSearched && arxivSearchQuery.trim() === arxivSearchFor;
+    // Page 2 of an unknown total can return no rows. The pager still has to
+    // be there, or 上一页 disappears with the list.
+    const arxivShowPager = arxivSearched && (arxivSearchPage > 1 || arxivSearchTotal > arxivSearchPageSize);
+    const arxivPagerLocked = !arxivGoalCurrent || arxivSearchBusy || arxivBusy;
+    const arxivPrevDisabled = arxivPagerLocked || arxivSearchPage <= 1;
+    const arxivNextDisabled = arxivPagerLocked || arxivSearchPage * arxivSearchPageSize >= arxivSearchTotal;
 
     return (
         <div data-testid="file-companion-window" className="file-companion-window" style={{ display: "flex", flexDirection: "column", height: "100vh", background: "#f3f5f7", color: "#1e293b" }}>
@@ -4254,7 +4409,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                     void chooseFiles();
                                 }}
                             >
-                                <CompanionActionIcon name="file" />
+                                <CompanionActionIcon name="file" size={14} />
                                 打开文档或导入项目
                             </button>
                             <div className="file-companion-open-sep" />
@@ -4433,7 +4588,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                             }}
                         >
                             <CompanionActionIcon name="pdf" />
-                            <span className="file-companion-sr">{chatExportBusy ? "正在导出…" : "导出 PDF"}</span><span data-testid="file-companion-export-chat-menu" role="button" aria-label="导出格式" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setChatExportDestPath(""); setChatTexOpen((current) => !current); }}><svg viewBox="0 0 10 6" aria-hidden="true" focusable="false"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.4" /></svg></span>{chatTexOpen ? <span data-testid="file-companion-export-chat-tex" role="menuitem" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setChatTexOpen(false); void exportChatTeX(); }}>LaTeX</span> : null}
+                            <span className="file-companion-sr">{chatExportBusy ? "正在导出…" : "导出 PDF"}</span><span className="file-companion-export-caret" data-testid="file-companion-export-chat-menu" role="button" aria-label="导出格式" title="导出格式" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setChatExportDestPath(""); setChatTexOpen((current) => !current); }}><svg viewBox="0 0 10 6" aria-hidden="true" focusable="false"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.4" /></svg></span>{chatTexOpen ? <span data-testid="file-companion-export-chat-tex" role="menuitem" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setChatTexOpen(false); void exportChatTeX(); }}>LaTeX</span> : null}
                         </button>
                         {chatExportDestOpen ? (
                             <div
@@ -4944,7 +5099,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                         <header className="file-companion-dialog-head">
                             <div className="file-companion-dialog-heading">
                                 <h2 id="file-companion-arxiv-search-title">arXiv 文献检索</h2>
-                                <p className="file-companion-dialog-sub">公开预印本，最多 10 篇</p>
+                                <p className="file-companion-dialog-sub">描述研究目标，检索公开预印本</p>
                             </div>
                             <button
                                 type="button"
@@ -4962,18 +5117,25 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                 <span className="file-companion-arxiv-search-glyph" aria-hidden="true">
                                     <CompanionActionIcon name="paper" size={15} />
                                 </span>
-                                <input
+                                <textarea
                                     ref={arxivSearchInputRef}
                                     className="file-companion-dialog-input file-companion-arxiv-search-input"
                                     data-testid="file-companion-arxiv-search-input"
-                                    aria-label="搜索关键字或论文编号"
-                                    placeholder="关键字、作者，或论文编号"
+                                    aria-label="研究目标、关键字或论文编号"
+                                    placeholder="研究目标、关键字，或论文编号"
+                                    rows={3}
                                     value={arxivSearchQuery}
                                     readOnly={arxivSearchBusy || arxivBusy}
                                     spellCheck={false}
                                     onChange={(event) => {
                                         setArxivSearchQuery(event.target.value);
                                         setArxivSearchError("");
+                                    }}
+                                    onKeyDown={(event) => {
+                                        if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+                                            event.preventDefault();
+                                            void runArxivSearch();
+                                        }
                                     }}
                                 />
                                 <button
@@ -4993,10 +5155,23 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                 data-state={arxivSearchError ? "error" : "hint"}
                                 role="status"
                             >
-                                {companionArxivSearchStatus(arxivSearchError, arxivSearchQuery, arxivSearchFor, arxivSearched, arxivSearchHits.length, arxivSearchBusy)}
+                                {companionArxivSearchStatus(arxivSearchError, arxivSearchQuery, arxivSearchFor, arxivSearched, arxivSearchHits.length, arxivSearchBusy, arxivSearchPaging, arxivSearchPage, arxivSearchTotal, arxivSearchPageSize, arxivSearchFallback)}
                             </p>
+                            {arxivGoalCurrent && arxivSearchGroups.length > 0 && !(arxivSearchBusy && !arxivSearchPaging) ? (
+                                <div className="file-companion-arxiv-search-plan" data-testid="file-companion-arxiv-search-groups">
+                                    {arxivSearchInterpreted ? <p className="file-companion-arxiv-search-interpreted">{arxivSearchInterpreted}</p> : null}
+                                    <ul className="file-companion-arxiv-search-groups">
+                                        {arxivSearchGroups.map((group) => (
+                                            <li key={`${group.category}:${group.terms.join("\u0000")}`} className="file-companion-arxiv-search-group">
+                                                <span>{group.terms.join(" · ")}</span>
+                                                {group.category ? <span className="file-companion-arxiv-hit-tag">{group.category}</span> : null}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            ) : null}
                         </div>
-                        {arxivSearchBusy ? (
+                        {arxivSearchBusy && !arxivSearchPaging ? (
                             // The first search has nothing to show yet. Placeholder
                             // rows hold the list's shape so the card does not jump
                             // from an empty box to ten results.
@@ -5013,8 +5188,8 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                 </ul>
                             </div>
                         ) : null}
-                        {!arxivSearchBusy && arxivSearchHits.length > 0 ? (
-                            <div className="file-companion-dialog-body">
+                        {(arxivSearchPaging || !arxivSearchBusy) && arxivSearchHits.length > 0 ? (
+                            <div className="file-companion-dialog-body" ref={arxivSearchListRef}>
                                 <ul className="file-companion-arxiv-hits" aria-label="搜索结果">
                                     {arxivSearchHits.map((hit, index) => {
                                         const opening = arxivOpeningId === hit.id;
@@ -5028,12 +5203,12 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                                     // button:disabled rule dims the whole row and the
                                                     // generic button[aria-busy] rule draws its own
                                                     // spinner beside the citation. The click handler
-                                                    // already refuses while a download runs.
+                                                    // refuses while a download or a search is in flight.
                                                     aria-disabled={arxivSearchBusy || arxivBusy}
                                                     aria-busy={opening}
                                                     onClick={() => { void openArxivHit(hit.id); }}
                                                 >
-                                                    <span className="file-companion-arxiv-hit-index" aria-hidden="true">{index + 1}</span>
+                                                    <span className="file-companion-arxiv-hit-index" aria-hidden="true">{(arxivSearchPage - 1) * arxivSearchPageSize + index + 1}</span>
                                                     <span className="file-companion-arxiv-hit-body">
                                                         <span className="file-companion-arxiv-hit-title">{hit.title}</span>
                                                         <span className="file-companion-arxiv-hit-meta">
@@ -5056,22 +5231,53 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                 </ul>
                             </div>
                         ) : null}
-                        {!arxivSearchBusy && arxivSearched && arxivSearchHits.length === 0 && !arxivSearchError ? (
+                        {!arxivSearchBusy && arxivSearched && arxivSearchHits.length === 0 && !arxivSearchError && arxivGoalCurrent ? (
                             // An empty list is a result, not a dead end. Naming the
-                            // query that came back empty is what makes it useful: the
+                            // goal that came back empty is what makes it useful: the
                             // reader can see the box and the answer disagree, instead
                             // of reading a second copy of "no results". It belongs to
-                            // the query that produced it, so a keystroke drops it —
+                            // the goal that produced it, so a keystroke drops it —
                             // the status line above is already back to its idle
-                            // sentence, and the two must not disagree.
-                            arxivSearchQuery.trim() === arxivSearchFor ? (
-                                <div className="file-companion-dialog-body" data-testid="file-companion-arxiv-search-empty">
-                                    <div className="file-companion-arxiv-empty">
-                                        <p className="file-companion-arxiv-empty-title">没有与「{arxivSearchFor}」匹配的论文</p>
-                                        <p className="file-companion-arxiv-empty-hint">换一个更常见的术语，或在上方输入 arXiv 编号（如 2510.16079）后检索。</p>
-                                    </div>
+                            // sentence, and the two must not disagree. A later page
+                            // with no rows is a different fact: the earlier pages had
+                            // papers, and 上一页 is how to get back to them.
+                            <div className="file-companion-dialog-body" data-testid="file-companion-arxiv-search-empty">
+                                <div className="file-companion-arxiv-empty">
+                                    {arxivSearchPage <= 1 ? (
+                                        <>
+                                            <p className="file-companion-arxiv-empty-title">没有与「{arxivSearchFor}」匹配的论文</p>
+                                            <p className="file-companion-arxiv-empty-hint">换一种说法描述研究目标，或在上方输入 arXiv 编号（如 2510.16079）后检索。</p>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <p className="file-companion-arxiv-empty-title">这一页没有论文</p>
+                                            <p className="file-companion-arxiv-empty-hint">回到上一页继续查看。</p>
+                                        </>
+                                    )}
                                 </div>
-                            ) : null
+                            </div>
+                        ) : null}
+                        {arxivShowPager ? (
+                            <div className="file-companion-arxiv-search-pager" data-testid="file-companion-arxiv-search-pager">
+                                <button
+                                    type="button"
+                                    className="file-companion-dialog-secondary"
+                                    data-testid="file-companion-arxiv-search-prev"
+                                    disabled={arxivPrevDisabled}
+                                    onClick={() => { void runArxivSearch(arxivSearchPage - 1); }}
+                                >
+                                    上一页
+                                </button>
+                                <button
+                                    type="button"
+                                    className="file-companion-dialog-secondary"
+                                    data-testid="file-companion-arxiv-search-next"
+                                    disabled={arxivNextDisabled}
+                                    onClick={() => { void runArxivSearch(arxivSearchPage + 1); }}
+                                >
+                                    下一页
+                                </button>
+                            </div>
                         ) : null}
                     </form>
                 </div>

@@ -4159,6 +4159,9 @@ describe('DesktopBotWorkspace', () => {
         };
         await screen.findByTestId('desktop-bot-bot_1');
         openRow('bot_1');
+        // The send path reads the dispatch result inline (build 12413+); this
+        // test wants a normal deferred turn, so the mock must return one.
+        sendTask.mockResolvedValue({ request_id: 'desktop-bot-1', deferred: true, session_key: 'alice:bot_1' });
         const box = await screen.findByTestId('desktop-bot-command') as HTMLTextAreaElement;
         expect(box.placeholder).toBe('给 值班 发消息');
         expect(screen.queryByTestId('desktop-bot-panel')).toBeNull();

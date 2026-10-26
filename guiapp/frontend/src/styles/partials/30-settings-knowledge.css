@@ -968,7 +968,9 @@
 .knowledge-import-overlay {
     position: fixed;
     inset: 0;
-    z-index: 9999;
+    /* Dialog scrims outrank both app title bars; see .modal-overlay in
+       50-pet-provider.css. */
+    z-index: 40000;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1372,6 +1374,29 @@
     --wails-draggable: no-drag;
     pointer-events: auto;
     font-size: 13px;
+}
+/* The card is portalled to <body>, outside the scaled layer that hosts the
+   dialog scrims, so no z-index on a scrim can cover it. Hide it while any
+   full-screen dialog is open instead of leaving a second unmasked CTA above
+   the dialog. Keep this list in sync with the scrim classes in
+   modalOverlayLayering.test.ts. */
+body:has(
+    .modal-overlay,
+    .modal-backdrop,
+    .knowledge-import-overlay,
+    .knowledge-share-modal-overlay,
+    .llm-config-dialog-overlay,
+    .prog-tools__kb-editor-overlay,
+    .confirm-dialog-overlay,
+    .feb-overlay,
+    .vead-overlay,
+    .vet-dialog-overlay,
+    .im-audit-overlay,
+    .mailbox-manage-overlay,
+    .im-groups-modal-overlay,
+    .cwshare-backdrop
+) .app-update-float {
+    display: none;
 }
 .app-update-float__identity {
     display: flex;
@@ -1788,7 +1813,9 @@
 .knowledge-share-modal-overlay {
     position: fixed;
     inset: 0;
-    z-index: var(--z-modal, 1200);
+    /* Dialog scrims outrank both app title bars; see .modal-overlay in
+       50-pet-provider.css. */
+    z-index: 40000;
     display: flex;
     align-items: center;
     justify-content: center;

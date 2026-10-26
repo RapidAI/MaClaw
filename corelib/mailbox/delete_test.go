@@ -513,6 +513,69 @@ func TestUIDSeqNeverEncodesZeroAsStar(t *testing.T) {
 	}
 }
 
+func TestPageRepeatsRemoved(t *testing.T) {
+	page := []MessageSummary{{UID: 8}, {UID: 3}}
+	if pageRepeatsRemoved(page, []uint32{1, 2}) {
+		t.Fatal("absent")
+	}
+	if !pageRepeatsRemoved(page, []uint32{3}) {
+		t.Fatal("present")
+	}
+	if pageRepeatsRemoved(page, nil) || pageRepeatsRemoved(nil, []uint32{3}) || pageRepeatsRemoved(page, []uint32{0}) {
+		t.Fatal("empty")
+	}
+}
+
+func TestSequenceBelow(t *testing.T) {
+	start, end, ok := sequenceBelow(100, 30)
+	if !ok || start != 41 || end != 70 {
+		t.Fatalf("under a full mailbox: %d:%d ok=%v", start, end, ok)
+	}
+	if _, _, ok := sequenceBelow(30, 30); ok {
+		t.Fatal("the newest page already covers the mailbox")
+	}
+	start, end, ok = sequenceBelow(40, 30)
+	if !ok || start != 1 || end != 10 {
+		t.Fatalf("short remainder: %d:%d ok=%v", start, end, ok)
+	}
+	if _, _, ok := sequenceBelow(0, 30); ok {
+		t.Fatal("empty mailbox")
+	}
+	// The next window follows the range that was fetched (71:100), even when
+	// a later EXISTS no longer says 100.
+	start, end, ok = windowBefore(71, 30)
+	if !ok || start != 41 || end != 70 {
+		t.Fatalf("under the fetched window: %d:%d ok=%v", start, end, ok)
+	}
+	if _, _, ok := windowBefore(1, 30); ok {
+		t.Fatal("sequence 1 has nothing under it")
+	}
+}
+
+func TestPageAfterAbsent(t *testing.T) {
+	ghosts := []MessageSummary{{UID: 100}, {UID: 99}}
+	older := []MessageSummary{{UID: 70}, {UID: 69}}
+	got := pageAfterAbsent(ghosts, older, []uint32{100, 99}, 30)
+	if len(got) != 2 || got[0].UID != 70 || got[1].UID != 69 {
+		t.Fatalf("lower window: %+v", got)
+	}
+	// The repeated page was the whole mailbox and those uids are gone.
+	got = pageAfterAbsent(ghosts, nil, []uint32{100, 99}, 30)
+	if len(got) != 0 {
+		t.Fatalf("whole mailbox: %+v", got)
+	}
+	// A lower window that is still only those uids is not a page of mail.
+	got = pageAfterAbsent(ghosts, ghosts, []uint32{100, 99}, 30)
+	if len(got) != 0 {
+		t.Fatalf("ghost window: %+v", got)
+	}
+	mixed := []MessageSummary{{UID: 100}, {UID: 50}}
+	got = pageAfterAbsent(mixed, []MessageSummary{{UID: 40}}, []uint32{100}, 30)
+	if len(got) != 2 || got[0].UID != 50 || got[1].UID != 40 {
+		t.Fatalf("keep the live row: %+v", got)
+	}
+}
+
 func TestCopyUIDsDropsZero(t *testing.T) {
 	got := copyUIDs([]uint32{0, 4, 0, 2})
 	if len(got) != 2 || got[0] != 2 || got[1] != 4 {

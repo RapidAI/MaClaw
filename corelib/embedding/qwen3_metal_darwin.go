@@ -12,8 +12,8 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/RapidAI/CodeClaw/corelib/mtl"
 	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
+	"github.com/RapidAI/CodeClaw/corelib/mtl"
 )
 
 // qwen3GPU runs the Qwen3 forward on the Metal GPU (pure Go via purego, no
@@ -39,6 +39,7 @@ type qwen3GPU struct {
 	pos, seg                *mtl.Buffer
 
 	WeightBytes int
+	released    bool // set by release(); guarded by mu
 }
 
 type gpuMat struct{ qOff, sOff, N, K int }
@@ -221,14 +222,29 @@ func (g *qwen3GPU) ActBytes() int {
 	return g.capRows * 4 * (2*hp.Dim + hp.QDim + 2*hp.KVDim + hp.QDim + 3*hp.FFDim + 2)
 }
 
+// release frees every GPU resource. Callers must either hold g.mu (shutdown)
+// or be certain no forward is running.
 func (g *qwen3GPU) release() {
-	if g == nil {
+	if g == nil || g.released {
 		return
 	}
+	g.released = true
 	for _, b := range []*mtl.Buffer{g.wq, g.ws, g.norms, g.cos, g.sin, g.x, g.nrm, g.qkv, g.att, g.gu, g.g, g.pos, g.seg, g.part} {
 		b.Release()
 	}
 	g.capRows = 0
+}
+
+// shutdown releases the GPU after any in-flight forward completes, so the
+// hardware-acceleration toggle cannot free buffers under a running forward.
+// Every other release path runs with no forward in flight.
+func (g *qwen3GPU) shutdown() {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.release()
 }
 
 type mmParams struct {
@@ -271,6 +287,9 @@ func (g *qwen3GPU) forward(q *Qwen3Embedder, seqs [][]int, outs [][]float32) err
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.released {
+		return fmt.Errorf("metal: backend released")
+	}
 	// +8 rows: attention_tiled reads up to 7 key rows past the last one.
 	if err := g.ensureRows(M + 8); err != nil {
 		return err

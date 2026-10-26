@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -290,6 +291,70 @@ func TestClearPerUserSessionStateClearsTemplateSubAgentPendingState(t *testing.T
 	}
 	if _, ok := h.pendingTemplateRemoteCoding.Load(userID); ok {
 		t.Fatalf("pendingTemplateRemoteCoding should be cleared")
+	}
+}
+
+func TestRemoteSSHConnectArgsReuseAPinnedSession(t *testing.T) {
+	fresh := remoteSSHConnectArgs("root", "10.0.0.8", 22, "secret", "", "", "")
+	if _, ok := fresh["force_new"]; ok {
+		t.Fatal("a capture must not demand a new session; an open pinned session is the same machine")
+	}
+	if fresh["capture_host_key"] != true {
+		t.Fatalf("missing pin captures during the dial, got %#v", fresh["capture_host_key"])
+	}
+	again := remoteSSHConnectArgs("root", "10.0.0.8", 8040, "secret", "", "", "SHA256:pin")
+	if _, ok := again["force_new"]; ok {
+		t.Fatal("a known pin must select the session that recorded it")
+	}
+	if _, ok := again["capture_host_key"]; ok {
+		t.Fatal("a known pin is not a new capture")
+	}
+	if again["host_key_fingerprint"] != "SHA256:pin" {
+		t.Fatalf("pin = %#v", again["host_key_fingerprint"])
+	}
+	if again["port"] != float64(8040) {
+		t.Fatalf("port = %#v", again["port"])
+	}
+}
+
+func TestStickyRecoveryUsesThePreparePinPolicy(t *testing.T) {
+	fresh := stickyRecoverySSHConnectArgs("root", "10.0.0.8", 8040, "", "", "", "")
+	if _, ok := fresh["force_new"]; ok {
+		t.Fatal("recovery must not demand a new session")
+	}
+	if fresh["capture_host_key"] != true {
+		t.Fatalf("recovery without a pin captures during the dial, got %#v", fresh["capture_host_key"])
+	}
+	if _, ok := fresh["password"]; ok {
+		t.Fatal("recovery does not carry a password")
+	}
+	again := stickyRecoverySSHConnectArgs("root", "10.0.0.8", 8040, "loong", "/keys/id", "key", "SHA256:pin")
+	if again["host_key_fingerprint"] != "SHA256:pin" {
+		t.Fatalf("pin = %#v", again["host_key_fingerprint"])
+	}
+	if _, ok := again["capture_host_key"]; ok {
+		t.Fatal("a stored pin is not a new capture")
+	}
+	if again["auth_method"] != "key" || again["key_path"] != "/keys/id" || again["label"] != "loong" {
+		t.Fatalf("profile = %#v", again)
+	}
+}
+
+func TestSSHToolPortKeepsTheRequestedEndpoint(t *testing.T) {
+	if got := sshToolPort(map[string]interface{}{"port": json.Number("8040")}); got != 8040 {
+		t.Fatalf("json.Number port = %d", got)
+	}
+	if got := sshToolPort(map[string]interface{}{"port": "8040"}); got != 8040 {
+		t.Fatalf("string port = %d", got)
+	}
+	if got := sshToolPort(map[string]interface{}{"port": float64(8040)}); got != 8040 {
+		t.Fatalf("float port = %d", got)
+	}
+	if got := sshToolPort(map[string]interface{}{"port": 8040}); got != 8040 {
+		t.Fatalf("int port = %d", got)
+	}
+	if got := sshToolPort(map[string]interface{}{}); got != 0 {
+		t.Fatalf("missing port = %d", got)
 	}
 }
 

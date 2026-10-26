@@ -930,6 +930,31 @@ button.knowledge-chip:disabled {
     line-height: 1.5;
 }
 
+/* Unit/range note trailing a numeric field. */
+.ve-form-hint-inline {
+    color: var(--theme-text-muted);
+    font-size: 0.72rem;
+    white-space: nowrap;
+}
+
+/* Streaming cursor dots. The global prefers-reduced-motion guard already
+   collapses this animation for users who ask for reduced motion. */
+.ve-cursor-blink {
+    animation: ve-cursor-blink 1s steps(1) infinite;
+}
+
+@keyframes ve-cursor-blink {
+    0%, 60% { opacity: 1; }
+    60.01%, 100% { opacity: 0.25; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .ve-cursor-blink {
+        animation: none;
+        opacity: 1;
+    }
+}
+
 .ve-sensitive-hint {
     margin: -6px 0 0;
     padding: 0;

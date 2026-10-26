@@ -73,6 +73,60 @@ func TestNewTaskExpertCardsKeepsBuiltinsAndSkipsInactiveManaged(t *testing.T) {
 	}
 }
 
+func TestSuggestNewTaskExpertAsksTheModelWhenEmbeddingIsUnsure(t *testing.T) {
+	catalog := []newTaskExpertCard{
+		{ID: "builtin-pptx-maker", Name: "PPT 制作专家"},
+		{ID: builtinLatexExpertID, Name: "LaTeX 论文专家"},
+		{ID: "builtin-paper-polish", Name: "论文润色专家"},
+	}
+	embedCalled := false
+	llmCalled := false
+	got := suggestNewTaskExpert("制作一份庆祝驱动开发网成立并运营26周年的纪念ppt", catalog, taskExpertSuggestDeps{
+		embed: func(string, []string) ([]float32, [][]float32, embeddingRead) {
+			embedCalled = true
+			return nil, nil, embeddingTimeout
+		},
+		askLLM: func(_ string, seen []newTaskExpertCard) (string, bool) {
+			llmCalled = true
+			if len(seen) != len(catalog) {
+				t.Fatalf("llm catalog = %d", len(seen))
+			}
+			return `{"expert_id":"builtin-pptx-maker","confidence":0.93}`, true
+		},
+	})
+	if !embedCalled || !llmCalled || !got.Confident || got.ExpertID != "builtin-pptx-maker" || got.Source != "llm" {
+		t.Fatalf("timeout = %#v embed=%v llm=%v", got, embedCalled, llmCalled)
+	}
+
+	llmCalled = false
+	got = suggestNewTaskExpert("做一份演示文稿", catalog, taskExpertSuggestDeps{
+		embed: func(string, []string) ([]float32, [][]float32, embeddingRead) {
+			return []float32{1, 0}, [][]float32{{0.2, 0.9797958971132712}, {0, 1}, {0, 1}}, embeddingReady
+		},
+		askLLM: func(string, []newTaskExpertCard) (string, bool) {
+			llmCalled = true
+			return `{"expert_id":"builtin-pptx-maker","confidence":0.9}`, true
+		},
+	})
+	if !llmCalled || !got.Confident || got.ExpertID != "builtin-pptx-maker" || got.Source != "llm" {
+		t.Fatalf("low score = %#v llm=%v", got, llmCalled)
+	}
+
+	llmCalled = false
+	got = suggestNewTaskExpert("不要做ppt，写一封邮件", catalog, taskExpertSuggestDeps{
+		embed: func(string, []string) ([]float32, [][]float32, embeddingRead) {
+			return nil, nil, embeddingTimeout
+		},
+		askLLM: func(string, []newTaskExpertCard) (string, bool) {
+			llmCalled = true
+			return `{"expert_id":"general","confidence":0.99}`, true
+		},
+	})
+	if !llmCalled || got.Confident || got.ExpertID != "" || got.Reason != "llm-declined" {
+		t.Fatalf("model declined = %#v llm=%v", got, llmCalled)
+	}
+}
+
 func TestExpertFromScoresRequiresFloorAndGap(t *testing.T) {
 	catalog := []newTaskExpertCard{
 		{ID: "polish", Name: "润色"},
@@ -142,21 +196,22 @@ func TestSuggestNewTaskExpertPrefersEmbeddingThenLLM(t *testing.T) {
 		t.Fatalf("llm = %#v called=%v", got, llmCalled)
 	}
 
+	called := false
 	got = suggestNewTaskExpert("北京今天天气", catalog, taskExpertSuggestDeps{
 		embed: func(string, []string) ([]float32, [][]float32, embeddingRead) {
 			return nil, nil, embeddingTimeout
 		},
 		askLLM: func(string, []newTaskExpertCard) (string, bool) {
-			t.Fatal("LLM must not run after an embedding timeout")
-			return "", false
+			called = true
+			return `{"expert_id":"general","confidence":0.99}`, true
 		},
 	})
-	if got.Confident || got.ExpertID != "" {
-		t.Fatalf("timeout = %#v", got)
+	if !called || got.Confident || got.ExpertID != "" || got.Reason != "llm-declined" {
+		t.Fatalf("timeout = %#v called=%v", got, called)
 	}
 }
 
-func TestSuggestNewTaskExpertAsksLLMOnlyOnANearMiss(t *testing.T) {
+func TestSuggestNewTaskExpertAsksTheModelWhenEmbeddingIsNotClear(t *testing.T) {
 	catalog := []newTaskExpertCard{
 		{ID: "polish", Name: "润色", MatchText: "润色"},
 		{ID: "slides", Name: "幻灯片", MatchText: "幻灯片"},
@@ -166,24 +221,25 @@ func TestSuggestNewTaskExpertAsksLLMOnlyOnANearMiss(t *testing.T) {
 	if scores := expertCosines(query, [][]float32{lowDoc, {0, 1}}); scores[0] >= newTaskExpertAskMinScore {
 		t.Fatalf("low fixture = %v", scores)
 	}
+	called := false
 	got := suggestNewTaskExpert("今天天气怎么样", catalog, taskExpertSuggestDeps{
 		embed: func(string, []string) ([]float32, [][]float32, embeddingRead) {
 			return query, [][]float32{lowDoc, {0, 1}}, embeddingReady
 		},
 		askLLM: func(string, []newTaskExpertCard) (string, bool) {
-			t.Fatal("LLM must not run when the best score is far from every expert")
-			return "", false
+			called = true
+			return `{"expert_id":"general","confidence":0.97}`, true
 		},
 	})
-	if got.Confident || got.ExpertID != "" {
-		t.Fatalf("low = %#v", got)
+	if !called || got.Confident || got.ExpertID != "" || got.Reason != "llm-declined" {
+		t.Fatalf("low = %#v called=%v", got, called)
 	}
 
 	midDoc := []float32{0.65, float32(math.Sqrt(1 - 0.65*0.65))}
 	if scores := expertCosines(query, [][]float32{midDoc, {0, 1}}); scores[0] < newTaskExpertAskMinScore || scores[0] >= newTaskExpertMinScore {
 		t.Fatalf("near miss fixture = %v", scores)
 	}
-	called := false
+	called = false
 	got = suggestNewTaskExpert("帮我改一下摘要的措辞", catalog, taskExpertSuggestDeps{
 		embed: func(string, []string) ([]float32, [][]float32, embeddingRead) {
 			return query, [][]float32{midDoc, {0, 1}}, embeddingReady
@@ -257,6 +313,112 @@ func TestParseNewTaskExpertReplyRejectsAWeakOrUnknownID(t *testing.T) {
 	}
 }
 
+func TestParseNewTaskExpertReplyAcceptsTheShownName(t *testing.T) {
+	catalog := []newTaskExpertCard{
+		{ID: "builtin-pptx-maker", Name: "PPT 制作专家"},
+		{ID: "builtin-paper-polish", Name: "论文润色专家"},
+	}
+	card, ok := parseNewTaskExpertReply(`{"expert_id":"PPT制作专家","confidence":0.9}`, catalog)
+	if !ok || card.ID != "builtin-pptx-maker" {
+		t.Fatalf("name = %#v %v", card, ok)
+	}
+	card, ok = parseNewTaskExpertReply(`{"expert_id":"builtin-pptx-maker：PPT 制作专家","confidence":93}`, catalog)
+	if !ok || card.ID != "builtin-pptx-maker" {
+		t.Fatalf("id and name = %#v %v", card, ok)
+	}
+	card, ok = parseNewTaskExpertReply(`{"expert_id":"builtin-paper-polish","confidence":100}`, catalog)
+	if !ok || card.ID != "builtin-paper-polish" {
+		t.Fatalf("percent = %#v %v", card, ok)
+	}
+	if _, ok := parseNewTaskExpertReply(`{"expert_id":"builtin-pptx-maker","confidence":101}`, catalog); ok {
+		t.Fatal("accepted a confidence above 100")
+	}
+	ambiguous := []newTaskExpertCard{
+		{ID: "a", Name: "润色"},
+		{ID: "b", Name: "润色"},
+	}
+	if _, ok := parseNewTaskExpertReply(`{"expert_id":"润色","confidence":0.9}`, ambiguous); ok {
+		t.Fatal("two cards with one name were accepted")
+	}
+	pptx := newTaskExpertCard{ID: "builtin-pptx-maker", Name: "PPT 制作专家", Description: "产出 .pptx"}
+	echo := pptx.Name + "。" + expertCardScopeLine(pptx)
+	card, ok = parseNewTaskExpertReply(`{"expert_id":"`+echo+`","confidence":0.92}`, []newTaskExpertCard{pptx, {ID: "builtin-paper-polish", Name: "论文润色专家"}})
+	if !ok || card.ID != pptx.ID {
+		t.Fatalf("echoed scope = %#v %v", card, ok)
+	}
+	if _, ok := parseNewTaskExpertReply(`{"expert_id":"PPT","confidence":0.95}`, []newTaskExpertCard{pptx}); ok {
+		t.Fatal("a short token was accepted as the ppt expert")
+	}
+	if _, ok := parseNewTaskExpertReply(`{"expert_id":"论文润色","confidence":0.95}`, catalog); ok {
+		t.Fatal("a clipped name was accepted")
+	}
+}
+
+func TestExpertModelReplyKeepsADecisionOutsideTheDisplayText(t *testing.T) {
+	catalog := []newTaskExpertCard{{ID: "builtin-pptx-maker", Name: "PPT 制作专家"}}
+	text, ok := expertModelReply("", `<think>{"expert_id":"builtin-pptx-maker","confidence":0.91}</think>`, "", catalog)
+	card, picked := parseNewTaskExpertReply(text, catalog)
+	if !ok || !picked || card.ID != "builtin-pptx-maker" {
+		t.Fatalf("think tag = %q ok=%v card=%#v", text, ok, card)
+	}
+	text, ok = expertModelReply(`{"expert_id":"general","confidence":0.95}`, "", `{"expert_id":"builtin-pptx-maker","confidence":0.99}`, catalog)
+	if !ok {
+		t.Fatal("missing decline")
+	}
+	if _, picked := parseNewTaskExpertReply(text, catalog); picked {
+		t.Fatal("an explicit general was replaced")
+	}
+	text, ok = expertModelReply("好的", "", `{"expert_id":"PPT 制作专家。产出 .pptx","confidence":0.9}`, catalog)
+	card, picked = parseNewTaskExpertReply(text, catalog)
+	if !ok || !picked || card.ID != "builtin-pptx-maker" {
+		t.Fatalf("reasoning = %q ok=%v card=%#v", text, ok, card)
+	}
+	if _, ok := expertModelReply("  ", "", "", catalog); ok {
+		t.Fatal("empty fields looked like a reply")
+	}
+}
+
+func TestNewTaskExpertSystemPromptShowsTheBuiltinScope(t *testing.T) {
+	prompt := newTaskExpertSystemPrompt([]newTaskExpertCard{
+		{ID: "builtin-pptx-maker", Name: "PPT 制作专家", Description: "产出 .pptx"},
+		{ID: "expert-notes", Name: "笔记专家", Description: "整理研究笔记"},
+	})
+	if !strings.Contains(prompt, "builtin-pptx-maker") || !strings.Contains(prompt, "幻灯片") || !strings.Contains(prompt, "演示文稿") {
+		t.Fatalf("pptx scope = %s", prompt)
+	}
+	parts := strings.Split(prompt, "expert-notes")
+	if len(parts) < 2 || strings.Contains(parts[1], "幻灯片") {
+		t.Fatal("a user expert picked up the ppt hint")
+	}
+}
+
+func TestSuggestNewTaskExpertModelFailureStaysGeneral(t *testing.T) {
+	catalog := []newTaskExpertCard{
+		{ID: "builtin-pptx-maker", Name: "PPT 制作专家"},
+		{ID: builtinLatexExpertID, Name: "LaTeX 论文专家"},
+	}
+	near := []float32{0.65, float32(math.Sqrt(1 - 0.65*0.65))}
+	got := suggestNewTaskExpert("做一份演示文稿", catalog, taskExpertSuggestDeps{
+		embed: func(string, []string) ([]float32, [][]float32, embeddingRead) {
+			return []float32{1, 0}, [][]float32{near, {0, 1}}, embeddingReady
+		},
+		askLLM: func(string, []newTaskExpertCard) (string, bool) {
+			return "", false
+		},
+	})
+	if got.Confident || got.ExpertID != "" || got.Reason != "llm-unavailable" {
+		t.Fatalf("model down = %#v", got)
+	}
+	got = suggestNewTaskExpert("做一份演示文稿", catalog, taskExpertSuggestDeps{
+		embed: func(string, []string) ([]float32, [][]float32, embeddingRead) {
+			return nil, nil, embeddingTimeout
+		},
+	})
+	if got.Confident || got.Reason != "embed-timeout" {
+		t.Fatalf("no model = %#v", got)
+	}
+}
+
 func TestExpertCatalogForLLMPrefersTheStrongerCards(t *testing.T) {
 	cards := make([]newTaskExpertCard, 30)
 	scores := make([]float64, 30)
@@ -271,6 +433,33 @@ func TestExpertCatalogForLLMPrefersTheStrongerCards(t *testing.T) {
 	plain := expertCatalogForLLM(cards, nil)
 	if len(plain) != newTaskExpertLLMCap || plain[0].ID != "0" {
 		t.Fatalf("plain = %s len %d", plain[0].ID, len(plain))
+	}
+}
+
+func TestExpertCatalogForLLMKeepsBuiltins(t *testing.T) {
+	cards := []newTaskExpertCard{
+		{ID: "builtin-pptx-maker", Name: "PPT", Builtin: true},
+		{ID: "builtin-latex-paper", Name: "LaTeX", Builtin: true},
+	}
+	for i := 0; i < 30; i++ {
+		cards = append(cards, newTaskExpertCard{ID: "user-" + strconv.Itoa(i), Name: "u"})
+	}
+	scores := make([]float64, len(cards))
+	scores[0] = 0.02
+	scores[1] = 0.01
+	for i := 2; i < len(scores); i++ {
+		scores[i] = 0.5 + float64(i)/1000
+	}
+	got := expertCatalogForLLM(cards, scores)
+	if len(got) != newTaskExpertLLMCap || got[0].ID != "user-29" || got[0].Builtin {
+		t.Fatalf("lead = %#v len %d", got[0], len(got))
+	}
+	seen := map[string]bool{}
+	for _, card := range got {
+		seen[card.ID] = true
+	}
+	if !seen["builtin-pptx-maker"] || !seen["builtin-latex-paper"] {
+		t.Fatalf("builtins dropped from %d cards", len(got))
 	}
 }
 
@@ -486,7 +675,7 @@ func (g *gateExpertEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
 func (g *gateExpertEmbedder) Dim() int { return 2 }
 func (g *gateExpertEmbedder) Close()   {}
 
-func TestEmbedNewTaskExpertVectorsTimeoutDoesNotFillTheCache(t *testing.T) {
+func TestEmbedNewTaskExpertVectorsTimeoutKeepsAFinishedBatch(t *testing.T) {
 	resetNewTaskExpertDocVecCache()
 	t.Cleanup(resetNewTaskExpertDocVecCache)
 	emb := &gateExpertEmbedder{gate: make(chan struct{}), done: make(chan struct{}, 1)}
@@ -500,8 +689,21 @@ func TestEmbedNewTaskExpertVectorsTimeoutDoesNotFillTheCache(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("abandoned embed did not finish")
 	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		newTaskExpertDocVecCache.mu.Lock()
+		_, ok := newTaskExpertDocVecCache.docs["论文润色"]
+		newTaskExpertDocVecCache.mu.Unlock()
+		if ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("a finished document batch was dropped after the deadline")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	_, _, read = embedNewTaskExpertVectors(emb, "再润色", []string{"论文润色"}, time.Second)
-	if read != embeddingReady || emb.batches != 2 {
-		t.Fatalf("after timeout batches=%d read=%v", emb.batches, read)
+	if read != embeddingReady || emb.batches != 1 || emb.embeds != 2 {
+		t.Fatalf("cached after timeout batches=%d embeds=%d read=%v", emb.batches, emb.embeds, read)
 	}
 }

@@ -7,18 +7,20 @@ import (
 	"unsafe"
 )
 
-// physicalDevice is the subset of VkPhysicalDeviceProperties we read. The
-// struct is 824 bytes in the C ABI; only the leading fields are needed.
+// physicalDeviceProperties mirrors VkPhysicalDeviceProperties. The C struct is
+// 824 bytes and the driver writes all of them, so the ignored tail below must
+// be exactly 532 bytes: an undersized struct writes past the Go allocation.
+// Only the leading fields are read.
 type physicalDeviceProperties struct {
-	apiVersion    uint32
-	driverVersion uint32
-	vendorID      uint32
-	deviceID      uint32
-	deviceType    uint32
-	deviceName    [256]byte
+	apiVersion        uint32
+	driverVersion     uint32
+	vendorID          uint32
+	deviceID          uint32
+	deviceType        uint32
+	deviceName        [256]byte
 	pipelineCacheUUID [16]byte
-	// Remaining limits/sparse fields are ignored (kept for size correctness).
-	rest [512]byte
+	// VkPhysicalDeviceLimits + VkPhysicalDeviceSparseProperties.
+	rest [532]byte
 }
 
 type physicalDeviceMemoryProperties struct {
@@ -35,9 +37,9 @@ type physicalDeviceMemoryProperties struct {
 }
 
 type queueFamilyProperties struct {
-	queueFlags   uint32
-	queueCount   uint32
-	timestampValidBits uint32
+	queueFlags                  uint32
+	queueCount                  uint32
+	timestampValidBits          uint32
 	minImageTransferGranularity struct{ width, height, depth uint32 }
 }
 
@@ -52,12 +54,21 @@ var (
 
 // NewDevice creates a compute-capable Vulkan device. Only one instance is
 // created per process and shared by every Device; Close decrements a refcount.
-func NewDevice() (*Device, error) {
+func NewDevice() (*Device, error) { return NewDeviceWithMinHeap(0) }
+
+// NewDeviceWithMinHeap is NewDevice but skips any physical device whose
+// host-visible heap cannot hold minBytes.
+//
+// This matters on hybrid laptops: the discrete GPU scores higher and would be
+// picked first, but its host-visible (BAR) heap is often far smaller than the
+// integrated GPU's shared system memory, so a large weight upload fails there
+// while it would have succeeded on the iGPU.
+func NewDeviceWithMinHeap(minBytes uint64) (*Device, error) {
 	inst, err := sharedInstance()
 	if err != nil {
 		return nil, err
 	}
-	d, err := newDeviceOnInstance(inst)
+	d, err := newDeviceOnInstance(inst, minBytes)
 	if err != nil {
 		releaseSharedInstance()
 		return nil, err
@@ -130,7 +141,7 @@ func resolve(inst, gipaPtr uintptr, name string) uintptr {
 	return r
 }
 
-func newDeviceOnInstance(inst uintptr) (*Device, error) {
+func newDeviceOnInstance(inst uintptr, minHeap uint64) (*Device, error) {
 	gipaPtr := instanceProcAddr[gipaFn]
 	enumPhys := resolve(inst, gipaPtr, "vkEnumeratePhysicalDevices")
 	getProps := resolve(inst, gipaPtr, "vkGetPhysicalDeviceProperties")
@@ -151,7 +162,8 @@ func newDeviceOnInstance(inst uintptr) (*Device, error) {
 		return nil, err
 	}
 
-	// Pick the first device with a compute queue; prefer a discrete GPU.
+	// Pick the best device with a compute queue whose host-visible heap can
+	// hold minHeap; prefer a discrete GPU among the ones that qualify.
 	best, bestScore := uintptr(0), -1
 	var bestFamily uint32
 	for _, p := range phys {
@@ -174,6 +186,12 @@ func newDeviceOnInstance(inst uintptr) (*Device, error) {
 		}
 		var props physicalDeviceProperties
 		call(getProps, p, uintptr(unsafe.Pointer(&props)))
+		// Skip devices whose host-visible heap cannot take the caller's upload.
+		var mp physicalDeviceMemoryProperties
+		call(getMemProps, p, uintptr(unsafe.Pointer(&mp)))
+		if _, heapSize, mok := pickMemoryType(&mp); !mok || (minHeap > 0 && heapSize < minHeap) {
+			continue
+		}
 		score := 0
 		switch props.deviceType {
 		case 2: // discrete
@@ -190,43 +208,16 @@ func newDeviceOnInstance(inst uintptr) (*Device, error) {
 		}
 	}
 	if best == 0 {
-		return nil, fmt.Errorf("%w: no compute queue", ErrUnavailable)
+		return nil, fmt.Errorf("%w: no compute queue with a host-visible heap >= %d MB", ErrUnavailable, minHeap>>20)
 	}
 
 	var props physicalDeviceProperties
 	call(getProps, best, uintptr(unsafe.Pointer(&props)))
 	var mp physicalDeviceMemoryProperties
 	call(getMemProps, best, uintptr(unsafe.Pointer(&mp)))
-
-	// Host-visible + coherent memory for CPU<->GPU shared buffers.
-	memIdx, found := uint32(0), false
-	// Prefer DEVICE_LOCAL host-visible coherent memory. On an integrated GPU
-	// that is the shared system-memory heap the GPU caches normally; falling
-	// back to plain host-visible coherent can land in the small uncached BAR
-	// heap, which measured ~10x slower for streaming 400 MB of weights.
-	bestMem, bestScore := uint32(0), -1
-	for i := uint32(0); i < mp.memoryTypeCount; i++ {
-		f := mp.memoryTypes[i].propertyFlags
-		if f&(memoryPropertyHostVisible|memoryPropertyHostCoherent) != (memoryPropertyHostVisible|memoryPropertyHostCoherent) {
-			continue
-		}
-		score := 0
-		if f&memoryPropertyDeviceLocal != 0 {
-			score = 10
-		}
-		if score > bestScore {
-			bestMem, bestScore = i, score
-			found = true
-		}
-	}
-	memIdx = bestMem
-	if !found {
+	memIdx, memSize, ok := pickMemoryType(&mp)
+	if !ok {
 		return nil, fmt.Errorf("%w: no host-visible coherent memory", ErrUnavailable)
-	}
-	heap := mp.memoryTypes[memIdx].heapIndex
-	var memSize uint64
-	if heap < mp.memoryHeapCount {
-		memSize = mp.memoryHeaps[heap].size
 	}
 
 	prio := float32(1.0)
@@ -281,6 +272,37 @@ func cString(b []byte) string {
 	return string(b)
 }
 
+// pickMemoryType returns the host-visible coherent memory type to use and the
+// size of its heap.
+//
+// DEVICE_LOCAL is preferred: on an integrated GPU that is the shared
+// system-memory heap the GPU caches normally, while plain host-visible
+// coherent can land in the small uncached BAR heap (measured ~10x slower for
+// streaming 400 MB of weights).
+func pickMemoryType(mp *physicalDeviceMemoryProperties) (idx uint32, heapSize uint64, ok bool) {
+	best, bestScore := uint32(0), -1
+	for i := uint32(0); i < mp.memoryTypeCount; i++ {
+		f := mp.memoryTypes[i].propertyFlags
+		if f&(memoryPropertyHostVisible|memoryPropertyHostCoherent) != (memoryPropertyHostVisible | memoryPropertyHostCoherent) {
+			continue
+		}
+		score := 0
+		if f&memoryPropertyDeviceLocal != 0 {
+			score = 10
+		}
+		if score > bestScore {
+			best, bestScore, ok = i, score, true
+		}
+	}
+	if !ok {
+		return 0, 0, false
+	}
+	if h := mp.memoryTypes[best].heapIndex; h < mp.memoryHeapCount {
+		heapSize = mp.memoryHeaps[h].size
+	}
+	return best, heapSize, true
+}
+
 func (d *Device) resolveDeviceFns(inst, gipaPtr uintptr) error {
 	// Device-level commands must be resolved through vkGetDeviceProcAddr: the
 	// instance-level lookup is only guaranteed for instance commands, and
@@ -318,6 +340,7 @@ func (d *Device) resolveDeviceFns(inst, gipaPtr uintptr) error {
 	f.destroyPipelineLayout = r("vkDestroyPipelineLayout")
 	f.createDescriptorPool = r("vkCreateDescriptorPool")
 	f.destroyDescriptorPool = r("vkDestroyDescriptorPool")
+	f.resetDescriptorPool = r("vkResetDescriptorPool")
 	f.allocateDescriptorSets = r("vkAllocateDescriptorSets")
 	f.updateDescriptorSets = r("vkUpdateDescriptorSets")
 	f.createComputePipeline = r("vkCreateComputePipelines")
@@ -393,11 +416,20 @@ func (d *Device) destroy() {
 }
 
 // Close destroys the device and releases the shared instance when it is the
-// last one.
+// last one. Safe to call more than once: a second call must not decrement the
+// instance refcount again, which could destroy the instance out from under
+// another live device.
 func (d *Device) Close() {
 	if d == nil {
 		return
 	}
+	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		return
+	}
+	d.closed = true
+	d.mu.Unlock()
 	d.destroy()
 	releaseSharedInstance()
 }

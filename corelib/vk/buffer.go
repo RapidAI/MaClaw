@@ -20,6 +20,9 @@ type Buffer struct {
 
 // NewBuffer allocates n bytes of host-visible coherent storage.
 func (d *Device) NewBuffer(n int) (*Buffer, error) {
+	if err := d.Err(); err != nil {
+		return nil, err
+	}
 	if n <= 0 {
 		n = 4
 	}
@@ -46,14 +49,14 @@ func (d *Device) NewBuffer(n int) (*Buffer, error) {
 		return nil, fmt.Errorf("%w: %v", ErrNoMemory, err)
 	}
 	if err := check(call(d.fn.bindBufferMemory, d.dev, buf, mem, 0), "vkBindBufferMemory"); err != nil {
-		call(d.fn.freeMemory, d.dev, mem, 0)
 		call(d.fn.destroyBuffer, d.dev, buf, 0)
+		call(d.fn.freeMemory, d.dev, mem, 0)
 		return nil, err
 	}
 	var mapped unsafe.Pointer
 	if err := check(call(d.fn.mapMemory, d.dev, mem, 0, uintptr(req.size), 0, uintptr(unsafe.Pointer(&mapped))), "vkMapMemory"); err != nil {
-		call(d.fn.freeMemory, d.dev, mem, 0)
 		call(d.fn.destroyBuffer, d.dev, buf, 0)
+		call(d.fn.freeMemory, d.dev, mem, 0)
 		return nil, err
 	}
 	return &Buffer{dev: d, buf: buf, mem: mem, ptr: mapped, Size: n}, nil
@@ -90,12 +93,17 @@ func (b *Buffer) Release() {
 	}
 	b.closed = true
 	d := b.dev
+	// vkDestroyBuffer must precede vkFreeMemory: freeing memory that a live
+	// buffer still references is a spec violation that corrupted the AMD
+	// driver's internal state and crashed a later vkCreateBuffer.
 	if b.mem != 0 {
 		call(d.fn.unmapMemory, d.dev, b.mem)
-		call(d.fn.freeMemory, d.dev, b.mem, 0)
 	}
 	if b.buf != 0 {
 		call(d.fn.destroyBuffer, d.dev, b.buf, 0)
+	}
+	if b.mem != 0 {
+		call(d.fn.freeMemory, d.dev, b.mem, 0)
 	}
 	b.ptr, b.buf, b.mem = nil, 0, 0
 }
@@ -106,12 +114,13 @@ type Pipeline struct {
 	pipe      uintptr
 	layout    uintptr
 	setLayout uintptr
-	pool      uintptr
-	sets      map[string]uintptr // descriptor set per buffer combination
-	cur       uintptr            // set selected by the last Bind
+	pool      uintptr                // descriptor pool for this pipeline's sets
+	sets      map[[8]uintptr]uintptr // descriptor set per buffer combination
+	cur       uintptr                // set selected by the last Bind
 	bindings  int
 	pushSize  int
 	closed    bool
+	bindErr   error // last Bind failure; surfaced by the encoder at Wait
 }
 
 // Compile builds a compute pipeline from SPIR-V for the given bindings
@@ -135,7 +144,7 @@ func (d *Device) Compile(spirv []byte, bindings, pushSize int) (*Pipeline, error
 	}
 	defer call(d.fn.destroyShaderModule, d.dev, mod, 0)
 
-	p := &Pipeline{dev: d, bindings: bindings, pushSize: pushSize, sets: map[string]uintptr{}}
+	p := &Pipeline{dev: d, bindings: bindings, pushSize: pushSize, sets: map[[8]uintptr]uintptr{}}
 	if err := p.createLayouts(); err != nil {
 		p.Release()
 		return nil, err
@@ -161,10 +170,8 @@ func (d *Device) Compile(spirv []byte, bindings, pushSize int) (*Pipeline, error
 		return nil, err
 	}
 	runtime.KeepAlive(name)
-	if err := p.allocSet(); err != nil {
-		p.Release()
-		return nil, err
-	}
+	// Sets are allocated lazily by Bind (one per buffer combination), so
+	// nothing to pre-allocate here.
 	return p, nil
 }
 
@@ -215,9 +222,15 @@ func (p *Pipeline) createLayouts() error {
 // norm: 1, rope/attn/silu: 1 each), so this is generous.
 const maxSetsPerPipeline = 32
 
-func (p *Pipeline) allocSet() error {
+// ensurePool creates the pipeline's descriptor pool on first use.
+//
+// Sets are never invalidated: the activation buffers are allocated once at
+// load, so a cached set always refers to a live buffer. (Resetting or
+// recreating sets was tried and crashed the AMD driver inside vkCreateBuffer —
+// see qwen3VKMaxRows — so the simpler model is also the safer one.)
+func (p *Pipeline) ensurePool() error {
 	d := p.dev
-	if p.bindings == 0 {
+	if p.bindings == 0 || p.pool != 0 {
 		return nil
 	}
 	ps := descriptorPoolSize{typ: descriptorTypeStorageBuffer, descriptorCount: uint32(p.bindings * maxSetsPerPipeline)}
@@ -246,21 +259,23 @@ func (p *Pipeline) Bind(buffers ...*Buffer) {
 	if n > p.bindings {
 		n = p.bindings
 	}
-	key := make([]uintptr, n)
+	var key [8]uintptr
 	for i := 0; i < n; i++ {
 		if buffers[i] != nil {
 			key[i] = buffers[i].buf
 		}
 	}
-	if s, ok := p.sets[keyString(key)]; ok {
+	if s, ok := p.sets[key]; ok {
 		p.cur = s
 		return
 	}
 	set, err := p.newSet()
 	if err != nil {
 		p.cur = 0
+		p.bindErr = err
 		return
 	}
+	p.bindErr = nil
 	d := p.dev
 	infos := make([]descriptorBufferInfo, n)
 	writes := make([]writeDescriptorSet, n)
@@ -280,10 +295,18 @@ func (p *Pipeline) Bind(buffers ...*Buffer) {
 	if n > 0 {
 		call(d.fn.updateDescriptorSets, d.dev, uintptr(n), uintptr(unsafe.Pointer(&writes[0])), 0, 0)
 	}
-	p.sets[keyString(key)] = set
+	p.sets[key] = set
 	p.cur = set
 	runtime.KeepAlive(infos)
 	runtime.KeepAlive(writes)
+}
+
+// BindErr reports the last Bind failure (nil when the binding is usable).
+func (p *Pipeline) BindErr() error {
+	if p == nil {
+		return nil
+	}
+	return p.bindErr
 }
 
 // CurrentSet returns the descriptor set selected by the last Bind call.
@@ -294,19 +317,11 @@ func (p *Pipeline) CurrentSet() uintptr {
 	return p.cur
 }
 
-// keyString builds a lookup key from buffer handles.
-func keyString(key []uintptr) string {
-	b := make([]byte, len(key)*8)
-	for i, v := range key {
-		for j := 0; j < 8; j++ {
-			b[i*8+j] = byte(v >> (8 * j))
-		}
-	}
-	return string(b)
-}
-
 // newSet allocates one descriptor set from the pipeline's pool.
 func (p *Pipeline) newSet() (uintptr, error) {
+	if err := p.ensurePool(); err != nil {
+		return 0, err
+	}
 	d := p.dev
 	ai := descriptorSetAllocateInfo{
 		sType:              structureTypeDescriptorSetAllocateInfo,
@@ -341,5 +356,5 @@ func (p *Pipeline) Release() {
 		call(d.fn.destroyDescriptorSetLayout, d.dev, p.setLayout, 0)
 	}
 	p.pipe, p.pool, p.layout, p.setLayout, p.cur = 0, 0, 0, 0, 0
-	p.sets = map[string]uintptr{}
+	p.sets = map[[8]uintptr]uintptr{}
 }

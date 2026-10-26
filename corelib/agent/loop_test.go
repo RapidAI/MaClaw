@@ -6765,7 +6765,13 @@ func TestRunLoop_ConsecutiveEmptyResponses_HardExit(t *testing.T) {
 	}
 }
 
-func TestRunLoop_DriftDetection_SameToolSameResult(t *testing.T) {
+// A repeated identical call with the same failing result is dithering. The
+// drift hint is injected after ONE identical window (4 calls) so it lands
+// before the no-progress breaker, and the breaker then ends the turn as a hard
+// exit at 5 misses. The turn does not silently "complete": the sentence beside
+// those calls is an unchecked claim, and the host must not report it as
+// success.
+func TestRunLoopDriftGuidancePrecedesNoProgressHardStop(t *testing.T) {
 	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
@@ -6822,16 +6828,31 @@ func TestRunLoop_DriftDetection_SameToolSameResult(t *testing.T) {
 
 	result := RunLoop(cb, "do something", nil, nil)
 
-	if result.Error != "" {
-		t.Fatalf("unexpected error: %s", result.Error)
+	if result.Error != ErrNoProgress {
+		t.Fatalf("error=%q, want %q (a repeated failing call is not a checked finish)", result.Error, ErrNoProgress)
 	}
-	// The drift detection should have injected a system message that caused
-	// the LLM to stop. The loop should complete before maxIter.
+	if !result.HardExit {
+		t.Fatal("the no-progress stop must be a hard exit")
+	}
+	// The drift hint must actually reach the model before the breaker fires:
+	// that is the whole point of firing it after one window instead of two.
+	injected := false
+	for _, e := range result.HistoryDelta {
+		if e.Role == "user" {
+			if s, ok := e.Content.(string); ok && strings.Contains(s, "检测到重复调用") {
+				injected = true
+				break
+			}
+		}
+	}
+	if !injected {
+		t.Fatal("drift guidance was never injected")
+	}
 	if result.Iterations >= 20 {
-		t.Fatalf("expected drift detection to stop loop early, got %d iterations", result.Iterations)
+		t.Fatalf("expected the breaker to stop the loop early, got %d iterations", result.Iterations)
 	}
 	if result.ToolCalls < 4 {
-		t.Fatalf("expected at least 4 tool calls before drift detection, got %d", result.ToolCalls)
+		t.Fatalf("expected at least 4 tool calls before the stop, got %d", result.ToolCalls)
 	}
 }
 

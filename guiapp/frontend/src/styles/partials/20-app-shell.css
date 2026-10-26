@@ -3001,6 +3001,33 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
     min-width: 0;
 }
 
+/* Coding-agent turn card in the task sidebar: one quiet card per turn, with
+   an outcome-coded edge (success green / failed red / blocked warning). */
+.coding-agent-turn-card {
+    padding: 8px 10px;
+    border: 1px solid var(--theme-border-subtle);
+    border-left: 3px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+    box-shadow: var(--shadow-sm);
+}
+
+.coding-agent-turn-card--success {
+    border-left-color: var(--theme-success);
+}
+
+.coding-agent-turn-card--failed {
+    border-left-color: var(--theme-danger);
+}
+
+.coding-agent-turn-card--blocked {
+    border-left-color: var(--theme-warning);
+}
+
+.coding-agent-turn-card--unknown {
+    border-left-color: var(--theme-border);
+}
+
 .cass-chip-label {
     opacity: 0.78;
     font-weight: 500;
@@ -3488,7 +3515,9 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
 .feb-overlay {
     position: fixed;
     inset: 0;
-    z-index: 4100;
+    /* Rendered inside the scaled app shell, so it must outrank the inline
+       assistant title bar (z-index 30000), same as .modal-overlay. */
+    z-index: 40000;
     display: flex;
     align-items: center;
     justify-content: center;

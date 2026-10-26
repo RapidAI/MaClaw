@@ -31,13 +31,22 @@ function diagnosticFn(): DiagnosticFn | null {
  */
 const pendingReports: Array<Record<string, unknown>> = [];
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
+// Bindings appear within the first second of a healthy launch. If they still
+// are not there after this window, the page is not running against the app
+// shell (a browser preview, a failed bind) and the retry loop must stop rather
+// than wake the renderer ten times a second forever.
+const FLUSH_GIVE_UP_MS = 30_000;
+const flushStartedAt = Date.now();
 
 function flushPending(): void {
     flushTimer = null;
     const fn = diagnosticFn();
     if (!fn) {
-        // Bindings still absent: keep waiting rather than discarding.
-        if (pendingReports.length > 0) scheduleFlush();
+        if (pendingReports.length > 0 && Date.now()-flushStartedAt < FLUSH_GIVE_UP_MS) {
+            scheduleFlush();
+            return;
+        }
+        pendingReports.length = 0;
         return;
     }
     while (pendingReports.length > 0) {
@@ -164,9 +173,12 @@ export function reportInteractive(durationMs: number, source: string): void {
 
 /**
  * Samples long tasks (main-thread work over 50ms). On a slow machine these are
- * what make clicks feel ignored. Reported as an aggregate plus the worst
- * offender's start offset, because "a 7s stall exists" is only actionable if we
- * know when it happened (chunk parse, first render, state hydration, ...).
+ * what make clicks feel ignored.
+ *
+ * Each of the first few tasks is reported individually with its start offset, so
+ * a multi-second stall can be lined up against the backend timeline in
+ * maclaw.log (was it chunk parse, first render, history hydration?). After that
+ * a single aggregate keeps watching without flooding the log.
  */
 export function startLongTaskSampling(): void {
     if (typeof PerformanceObserver === 'undefined') return;
@@ -178,10 +190,15 @@ export function startLongTaskSampling(): void {
     }
     if (!supported) return;
 
+    // Individual reports for the startup window, where a stall is most likely
+    // and most useful to attribute. Beyond this the traffic is not worth it.
+    const INDIVIDUAL_LIMIT = 12;
+    let reported = 0;
     let count = 0;
     let totalMs = 0;
     let maxMs = 0;
     let maxAt = -1;
+
     try {
         const observer = new PerformanceObserver((list) => {
             for (const entry of list.getEntries()) {
@@ -191,13 +208,21 @@ export function startLongTaskSampling(): void {
                     maxMs = entry.duration;
                     maxAt = Math.round(entry.startTime);
                 }
+                if (reported < INDIVIDUAL_LIMIT && entry.duration >= 250) {
+                    reported += 1;
+                    reportPerf('longtask', {
+                        metric: 'single',
+                        value: Math.round(entry.duration),
+                        at: Math.round(entry.startTime),
+                    });
+                }
             }
         });
         observer.observe({ type: 'longtask', buffered: false });
     } catch {
         return;
     }
-    // One aggregate line per minute keeps the signal without flooding the log.
+    // One aggregate line per minute keeps the trend without more noise.
     setInterval(() => {
         if (count === 0) return;
         reportPerf('longtasks', {
@@ -215,15 +240,26 @@ export function startLongTaskSampling(): void {
 }
 
 /**
- * Measures idle frame rate. A renderer forced onto the CPU (for example with
- * --disable-gpu) shows up here as a frame rate well below the display refresh
- * even when nothing is animating. Sampling pauses while the document is
- * hidden so a backgrounded window reports nothing rather than a false zero.
+ * Measures frame rate in short bursts.
+ *
+ * A permanently running requestAnimationFrame loop would itself keep the
+ * compositor busy and prevent the renderer from ever going idle — the opposite
+ * of what a slow machine needs. Each measurement therefore lasts only
+ * BURST_MS and runs every INTERVAL_MS, and nothing at all is scheduled while
+ * the document is hidden.
+ *
+ * The first burst starts a few seconds after launch, once startup work has
+ * settled, so the number describes steady-state rendering rather than the
+ * initial paint storm.
  */
 export function startFrameRateSampling(): void {
     if (typeof requestAnimationFrame !== 'function') return;
+
+    const BURST_MS = 2000;
+    const INTERVAL_MS = 60_000;
     let frames = 0;
-    let startedAt = 0;
+    let burstStart = 0;
+    let burstTimer: ReturnType<typeof setTimeout> | null = null;
     let running = false;
 
     const tick = () => {
@@ -232,19 +268,15 @@ export function startFrameRateSampling(): void {
         requestAnimationFrame(tick);
     };
 
-    const start = () => {
-        if (running) return;
-        running = true;
-        frames = 0;
-        startedAt = performance.now();
-        requestAnimationFrame(tick);
-    };
-
-    const stop = () => {
+    const stopBurst = () => {
         if (!running) return;
         running = false;
-        const elapsed = performance.now() - startedAt;
-        if (elapsed >= 1000 && frames > 0) {
+        if (burstTimer !== null) {
+            clearTimeout(burstTimer);
+            burstTimer = null;
+        }
+        const elapsed = performance.now() - burstStart;
+        if (elapsed >= 500 && frames > 0) {
             reportPerf('fps', {
                 metric: 'raf',
                 value: Math.round((frames / elapsed) * 1000),
@@ -255,31 +287,25 @@ export function startFrameRateSampling(): void {
         frames = 0;
     };
 
-    start();
+    const startBurst = () => {
+        if (running) return;
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+        running = true;
+        frames = 0;
+        burstStart = performance.now();
+        requestAnimationFrame(tick);
+        burstTimer = setTimeout(stopBurst, BURST_MS);
+    };
+
     if (typeof document !== 'undefined') {
         document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'hidden') {
-                stop();
-            } else {
-                start();
-            }
+            if (document.visibilityState === 'hidden') stopBurst();
         });
     }
-    // Report on a slow cadence: frame rate is a trend, not an event.
-    setInterval(() => {
-        if (document.visibilityState === 'hidden') return;
-        const elapsed = performance.now() - startedAt;
-        if (elapsed >= 1000 && frames > 0) {
-            reportPerf('fps', {
-                metric: 'raf',
-                value: Math.round((frames / elapsed) * 1000),
-                frames,
-                window_ms: Math.round(elapsed),
-            });
-        }
-        frames = 0;
-        startedAt = performance.now();
-    }, 30_000);
+
+    // First burst after the startup settle window, then on a slow cadence.
+    setTimeout(startBurst, 8000);
+    setInterval(startBurst, INTERVAL_MS);
 }
 
 /**

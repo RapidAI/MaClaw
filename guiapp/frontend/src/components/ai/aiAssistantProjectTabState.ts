@@ -269,6 +269,69 @@ export function mergeProjectRoundHistory(
     return changed ? next : merged;
 }
 
+function assistantSubstantiveBody(message: ChatMessage): boolean {
+    if ((message.content || "").trim()) return true;
+    if ((message.fields?.length ?? 0) > 0) return true;
+    if ((message.codingTimeline?.length ?? 0) > 0) return true;
+    return (message.pendingCodingThoughts?.length ?? 0) > 0;
+}
+
+/** True when a tool row was added, removed, or replaced. Thought text does not count. */
+function codingProgressRowsChanged(
+    before: ChatMessage["codingTimeline"] | undefined,
+    next: ChatMessage["codingTimeline"] | undefined,
+): boolean {
+    if (before === next) return false;
+    let left = 0;
+    let right = 0;
+    const leftCount = before?.length ?? 0;
+    const rightCount = next?.length ?? 0;
+    while (left < leftCount || right < rightCount) {
+        while (left < leftCount && before![left]?.kind !== "progress") left += 1;
+        while (right < rightCount && next![right]?.kind !== "progress") right += 1;
+        if (left >= leftCount || right >= rightCount) return left < leftCount || right < rightCount;
+        const prevItem = before![left];
+        const nextItem = next![right];
+        if (prevItem !== nextItem && (prevItem.content || "") !== (nextItem.content || "")) return true;
+        left += 1;
+        right += 1;
+    }
+    return false;
+}
+
+/**
+ * True when tab history should commit during a stream.
+ * Token appends keep the previous prefix and stay on the stream ref.
+ * A stage report, a field chip, a new or updated tool row, or the first thought commits.
+ * A thought revision stays on the stream ref.
+ */
+export function projectHistorySubstantiveDelta(previous: ChatMessage[] | undefined, next: ChatMessage[]): boolean {
+    const beforeById = new Map<string, ChatMessage>();
+    for (const message of previous || []) {
+        if (message?.id) beforeById.set(message.id, message);
+    }
+    for (const message of next) {
+        if (!message?.id) continue;
+        const before = beforeById.get(message.id);
+        if (!before) {
+            if (message.role !== "assistant" || assistantSubstantiveBody(message)) return true;
+            continue;
+        }
+        if (message.role !== "assistant") continue;
+        const prevContent = before.content || "";
+        const nextContent = message.content || "";
+        if (nextContent !== prevContent) {
+            if (!prevContent.trim() && nextContent.trim()) return true;
+            if (nextContent && !nextContent.startsWith(prevContent)) return true;
+        }
+        if ((message.fields?.length ?? 0) > (before.fields?.length ?? 0)) return true;
+        if ((message.codingTimeline?.length ?? 0) > (before.codingTimeline?.length ?? 0)) return true;
+        if (codingProgressRowsChanged(before.codingTimeline, message.codingTimeline)) return true;
+        if ((before.pendingCodingThoughts?.length ?? 0) === 0 && (message.pendingCodingThoughts?.length ?? 0) > 0) return true;
+    }
+    return false;
+}
+
 export function withoutProjectContextMessages(history: unknown[] | undefined): ChatMessage[] {
     if (!Array.isArray(history)) return [];
     return history.filter((message): message is ChatMessage => {

@@ -20,6 +20,15 @@ func (status SessionStatus) IsRunning() bool {
 	return status == SessionRunning
 }
 
+// IsOpen reports that this process still holds the PTY. Busy and
+// waiting_input are that same session: a command or a prompt does not
+// end it. Exited and error mean that PTY is gone. They do not forget the
+// session id; RemoveSession does. Connect admission reconnects a terminal
+// session when no open PTY matches.
+func (status SessionStatus) IsOpen() bool {
+	return status != SessionExited && status != SessionError
+}
+
 // ThinkingState 表示 Agent 的思考状态。
 type ThinkingState int
 

@@ -15,22 +15,25 @@ import (
 
 func TestApplyDesktopOutcomeKeepsAnUncheckedDraftOffTheReply(t *testing.T) {
 	draft := "Score: 10，游戏已运行"
-	kept, message, cont := ApplyDesktopOutcome(draft, DesktopOutcomeDecision{
+	kept, message, cont, _ := ApplyDesktopOutcome(draft, DesktopOutcomeDecision{
 		Continue: true,
 		Message:  "[系统] 画面里没有游戏。",
 	}, true)
 	if !cont || kept != draft || !strings.Contains(message, "画面里没有游戏") {
 		t.Fatalf("continue=%v kept=%q message=%q", cont, kept, message)
 	}
-	replaced, message, cont := ApplyDesktopOutcome(draft, DesktopOutcomeDecision{Replace: "终端是空的，游戏没有运行。"}, true)
-	if cont || message != "" || replaced != "终端是空的，游戏没有运行。" {
-		t.Fatalf("replace continue=%v message=%q text=%q", cont, message, replaced)
+	replaced, message, cont, checked := ApplyDesktopOutcome(draft, DesktopOutcomeDecision{Replace: "终端是空的，游戏没有运行。"}, true)
+	if cont || message != "" || replaced != "终端是空的，游戏没有运行。" || !checked {
+		t.Fatalf("replace continue=%v message=%q text=%q checked=%v", cont, message, replaced, checked)
 	}
-	closed, _, cont := ApplyDesktopOutcome(draft, DesktopOutcomeDecision{Continue: true, Message: "再改"}, false)
+	closed, _, cont, closedChecked := ApplyDesktopOutcome(draft, DesktopOutcomeDecision{Continue: true, Message: "再改"}, false)
+	if closedChecked {
+		t.Fatal("an unconfirmed turn must not be reported as checked")
+	}
 	if cont || closed == draft || !strings.Contains(closed, "还没有对照桌面确认") {
 		t.Fatalf("closed room text=%q cont=%v", closed, cont)
 	}
-	same, _, cont := ApplyDesktopOutcome(draft, DesktopOutcomeDecision{}, true)
+	same, _, cont, _ := ApplyDesktopOutcome(draft, DesktopOutcomeDecision{}, true)
 	if cont || same != draft {
 		t.Fatalf("empty decision changed the draft: %q cont=%v", same, cont)
 	}

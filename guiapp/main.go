@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/wailsapp/wails/v2"
@@ -57,6 +58,12 @@ func Main(v string) {
 
 	// --- Program log for programming tool output ---
 	programLogger.Init()
+
+	// Start the gse dictionary load before the WebView is constructed. The load
+	// takes seconds on a slow disk and is needed by the first BM25 tokenization
+	// (tool routing, skill matching, knowledge recall); letting it overlap the
+	// window bring-up keeps it off the startup critical path.
+	bm25.PrewarmDict()
 
 	// Migrate ~/.maclaw/skills → ~/.maclaw/data/skills (one-time).
 	skill.MigrateSkillsDir()
@@ -144,6 +151,10 @@ func Main(v string) {
 	// Windows 11 transparency is unnecessary because DWM owns the frame.
 	winWebviewTransparent, winWindowTranslucent := app.PlatformTransparencyFlags()
 	webviewUserDataPath := defaultWebviewUserDataPath()
+	// Decide once and remember it: the paint watchdog must only blame GPU
+	// compositing for a blank window when this launch actually turned it on.
+	gpuDisabled := webviewGPUDisabled(webviewUserDataPath)
+	noteWebviewGPUActive(!gpuDisabled)
 	clearWebviewAssetCacheIfNeeded(webviewUserDataPath)
 
 	// Create application with options. The first-run environment check needs a
@@ -238,7 +249,7 @@ func Main(v string) {
 			WebviewUserDataPath:  webviewUserDataPath,
 			// GPU compositing is on by default; see webview_gpu_windows.go for
 			// the self-healing fallback that disables it after a blank window.
-			WebviewGpuIsDisabled: webviewGPUDisabled(webviewUserDataPath),
+			WebviewGpuIsDisabled: gpuDisabled,
 			// On Windows 10, disable DWM decorations to prevent the invisible
 			// border area from offsetting the webview.  On Windows 11, keep
 			// decorations enabled so DWM provides native rounded corners.
@@ -797,11 +808,12 @@ func isImportantLogLine(line string) bool {
 		"[download_file]", "download_file=builtin", "effective_wd=", "configured_wd=",
 		"workdir ready", "inject workdir",
 		"[startup] loadconfig", "[startup] begin", "[startup] complete", "[startup] workdir",
-		// Startup performance marks and WebView2 process sampling must survive
-		// log_detail=off: a slow-machine report is only actionable with this
-		// timeline, and the users reporting slowness are exactly the ones
-		// running the default (non-verbose) configuration.
+		// Startup performance marks, per-step init timing and WebView2 process
+		// sampling must survive log_detail=off: a slow-machine report is only
+		// actionable with this timeline, and the users reporting slowness are
+		// exactly the ones running the default (non-verbose) configuration.
 		"[perf] mark=", "[perf] summary", "[perf] sample",
+		"[initcoreinfra] step=",
 		// Classification heads must stay visible with log_detail off: a missing
 		// intent/tool head silently falls back to the remote tree LLM.
 		"[intent] local l3", "[tool] tool head", "[embedding] head asset"}

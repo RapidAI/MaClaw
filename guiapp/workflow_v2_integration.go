@@ -4733,33 +4733,26 @@ func (h *IMMessageHandler) recoverStickyRemoteCodingSSHSession(userID string, re
 		port = 22
 	}
 
-	args := map[string]interface{}{
-		"host": host,
-		"user": user,
-		"port": float64(port),
-	}
-	// Reuse non-secret configured authentication metadata when this host has a
-	// profile. Password and passphrase are intentionally not copied here.
+	// Same pin policy as prepare. A recovery that omitted capture created an
+	// unpinned session, and the next prepare refused to adopt it and dialed again.
+	label := ""
+	keyPath := ""
+	authMethod := ""
+	pin := ""
 	for _, entry := range h.loadSSHHosts() {
 		entryPort := entry.Port
 		if entryPort <= 0 {
 			entryPort = 22
 		}
 		if strings.EqualFold(strings.TrimSpace(entry.Host), host) && strings.EqualFold(strings.TrimSpace(entry.User), user) && entryPort == port {
-			if value := strings.TrimSpace(entry.Label); value != "" {
-				args["label"] = value
-			}
-			if value := strings.TrimSpace(entry.AuthMethod); value != "" {
-				args["auth_method"] = value
-			}
-			if value := strings.TrimSpace(entry.KeyPath); value != "" {
-				args["key_path"] = value
-			}
+			label = strings.TrimSpace(entry.Label)
+			authMethod = strings.TrimSpace(entry.AuthMethod)
+			keyPath = strings.TrimSpace(entry.KeyPath)
+			pin = strings.TrimSpace(entry.HostKeyFingerprint)
 			break
 		}
 	}
-
-	connectResult := h.sshConnect(args)
+	connectResult := h.sshConnect(stickyRecoverySSHConnectArgs(user, host, port, label, keyPath, authMethod, pin))
 	newSessionID := extractSSHSessionIDFromConnectResult(connectResult)
 	if newSessionID == "" {
 		return remoteCtx, fmt.Sprintf("远程 SSH 会话 %s 已失效，已尝试自动新建 %s@%s:%d，但未能建立连接。请在远程连接面板重新认证后继续。\n\n%s", remoteCtx.SessionID, user, host, port, truncateRunesV2(connectResult, 500))

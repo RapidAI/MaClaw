@@ -87,6 +87,10 @@ func TestApplyOpenSSHClientConfigResolvesAliasAndJump(t *testing.T) {
 	if !got.OpenSSHChecked {
 		t.Fatal("resolved config must not query ssh -G again")
 	}
+	spaced, err := ApplyOpenSSHClientConfig(SSHHostConfig{Host: " gpu84 "})
+	if err != nil || spaced.Host != "10.247.16.143" || spaced.Label != "gpu84" || spaced.User != "wangqian" {
+		t.Fatalf("spaced alias = %+v %v", spaced, err)
+	}
 	again, err := ApplyOpenSSHClientConfig(got)
 	if err != nil || again.Host != got.Host || len(again.JumpHosts) != 1 {
 		t.Fatalf("second resolve changed config: %+v %v", again, err)
@@ -150,6 +154,12 @@ func TestApplyOpenSSHClientConfigIgnoresGlobalJumpAndDottedHost(t *testing.T) {
 	}
 	if calls != 0 || ip.Host != "10.247.16.143" {
 		t.Fatalf("IP dial consulted ssh -G %d times: %+v", calls, ip)
+	}
+
+	calls = 0
+	bracket, err := ApplyOpenSSHClientConfig(SSHHostConfig{Host: "[2001:db8::1]", User: " root ", Label: " loong "})
+	if err != nil || calls != 0 || bracket.Host != "2001:db8::1" || bracket.User != "root" || bracket.Label != "loong" {
+		t.Fatalf("bracketed IP consulted ssh -G %d times: %+v %v", calls, bracket, err)
 	}
 }
 

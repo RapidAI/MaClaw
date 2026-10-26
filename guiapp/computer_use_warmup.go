@@ -189,11 +189,24 @@ func (a *App) GetComputerUseLastError() map[string]interface{} {
 	return out
 }
 
+// computerUseWarmupSettleDelay keeps the computer-use pre-warm out of the
+// startup window.
+//
+// The warmup loads the YOLO screen-parser weights into memory (measured ~80MB of
+// live tensors plus decode buffers) and starts the UIA sidecar process. The tool
+// path itself loads those weights lazily on first use, so heating them during
+// startup only front-loads cost: it competes with first paint and holds memory
+// from second zero on machines that may never use computer use.
+const computerUseWarmupSettleDelay = 25 * time.Second
+
 // backgroundWarmupComputerUse pre-starts Windows UIA sidecar (and optionally
 // pings input simulator availability) so the first @computer task is snappier.
 func (a *App) backgroundWarmupComputerUse() {
 	cuWarmupOnce.Do(func() {
-		go a.runComputerUseWarmup("startup")
+		go func() {
+			time.Sleep(computerUseWarmupSettleDelay)
+			a.runComputerUseWarmup("startup")
+		}()
 		go a.backgroundAutoPruneComputerUseLogs()
 	})
 }

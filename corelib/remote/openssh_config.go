@@ -45,15 +45,24 @@ func SetOpenSSHConfigQueryForTest(fn func(host, user string, port int) (string, 
 }
 
 // ApplyOpenSSHClientConfig resolves an OpenSSH config alias such as gpu84.
-// IP addresses, dotted hostnames, and already-resolved configs are unchanged.
+// IP addresses and dotted hostnames are not looked up. Every returned config
+// uses the same endpoint spelling as SSHHostID, including a bracketed IP.
 // A matching alias rewrites HostName, fills an empty user, records IdentityFile,
 // and builds the ProxyJump chain. Explicit user, port, key path, and password
 // supplied by the caller stay in place.
 func ApplyOpenSSHClientConfig(cfg SSHHostConfig) (SSHHostConfig, error) {
+	// Alias lookup and the dial address share one spelling. An IP never reaches
+	// ssh -G, but it still has to leave here in the form SSHHostID and JoinHostPort use.
+	cfg.normalizeEndpoint()
 	if cfg.OpenSSHChecked || !shouldConsultOpenSSH(cfg.Host) {
 		return cfg, nil
 	}
-	return applyOpenSSH(cfg, map[string]struct{}{})
+	resolved, err := applyOpenSSH(cfg, map[string]struct{}{})
+	resolved.normalizeEndpoint()
+	for i := range resolved.JumpHosts {
+		resolved.JumpHosts[i].normalizeEndpoint()
+	}
+	return resolved, err
 }
 
 func applyOpenSSH(cfg SSHHostConfig, visited map[string]struct{}) (SSHHostConfig, error) {
@@ -186,13 +195,13 @@ func shouldConsultOpenSSH(host string) bool {
 }
 
 type parsedOpenSSHConfig struct {
-	user              string
-	hostname          string
-	port              int
-	proxyJump         string
-	identityFiles     []string
-	certificateFiles  []string
-	knownHosts        []string
+	user             string
+	hostname         string
+	port             int
+	proxyJump        string
+	identityFiles    []string
+	certificateFiles []string
+	knownHosts       []string
 }
 
 func parseOpenSSHG(output string) parsedOpenSSHConfig {

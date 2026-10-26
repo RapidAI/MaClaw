@@ -34,3 +34,7 @@ func availableMemory() (uint64, bool) {
 	}
 	return st.AvailPhys, true
 }
+
+// AvailableMemory reports the physical memory the OS says is free, for
+// diagnostics. ok=false when the platform cannot answer.
+func AvailableMemory() (uint64, bool) { return availableMemory() }

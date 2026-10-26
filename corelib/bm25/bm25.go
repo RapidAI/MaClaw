@@ -5,12 +5,12 @@ package bm25
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"io"
 	"log"
 	"math"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 
 	"github.com/go-ego/gse"
@@ -39,11 +39,19 @@ func PrewarmDict() {
 
 func initSeg() {
 	segOnce.Do(func() {
-		// Suppress gse's verbose "Load the gse dictionary" log output.
-		origOutput := log.Writer()
-		log.SetOutput(io.Discard)
+		// Deliberately does not redirect the global logger.
+		//
+		// This used to be log.SetOutput(io.Discard) around LoadDict to hide
+		// gse's verbose progress lines. LoadDict takes seconds, and log.SetOutput
+		// is process-global: every log line from every goroutine was discarded
+		// for that whole window, which is exactly the startup window. It also
+		// raced with the app's own log.SetOutput (openLogSinks/closeLogSinks),
+		// so the restore could clobber the file sink. That is what made startup
+		// log lines disappear intermittently. A few verbose gse lines are a much
+		// smaller price.
+		start := time.Now()
 		seg.LoadDict()
-		log.SetOutput(origOutput)
+		log.Printf("[bm25] dictionary loaded err=none took=%v", time.Since(start).Round(time.Millisecond))
 		close(segDone)
 	})
 }
@@ -79,8 +87,13 @@ type indexedDoc struct {
 }
 
 // New creates an empty BM25 index with standard parameters.
+//
+// It deliberately does not wait for the gse dictionary. Constructing an index is
+// pure allocation; blocking here made every startup pay for a dictionary that
+// only the first real tokenization needs, and Waits stacked up in whichever
+// constructor happened to run first. Segment (and therefore Tokenize and every
+// Rebuild) already waits, so the load still happens exactly once.
 func New() *Index {
-	waitSeg()
 	return &Index{k1: 1.2, b: 0.75}
 }
 

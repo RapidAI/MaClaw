@@ -1,7 +1,9 @@
 package remote
 
 import (
+	"net"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -61,8 +63,40 @@ type SSHHostConfig struct {
 	KeepaliveInterval time.Duration `json:"keepalive_interval,omitempty"`
 }
 
+// normalizeEndpoint trims the login and writes one IP spelling.
+// Bracketed and expanded IPv6 are the same host. A hostname is only trimmed:
+// its letters are the name the user typed and the OpenSSH alias that is looked up.
+func (c *SSHHostConfig) normalizeEndpoint() {
+	if c == nil {
+		return
+	}
+	c.Host = canonicalSSHHost(c.Host)
+	c.User = strings.TrimSpace(c.User)
+	c.Label = strings.TrimSpace(c.Label)
+}
+
+// canonicalSSHHost unwraps a bracketed IP and returns its canonical form.
+// Anything that is not an IP is returned trimmed, brackets included.
+func canonicalSSHHost(host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return ""
+	}
+	inner := host
+	if len(host) >= 2 && host[0] == '[' && host[len(host)-1] == ']' {
+		inner = strings.TrimSpace(host[1 : len(host)-1])
+	}
+	if ip := net.ParseIP(inner); ip != nil {
+		return ip.String()
+	}
+	return host
+}
+
 // SSHHostID 返回用于连接池索引的唯一标识。
+// The id is the normalized endpoint, so a connect that has not called Defaults
+// still names the same session as one that has.
 func (c SSHHostConfig) SSHHostID() string {
+	c.normalizeEndpoint()
 	port := c.Port
 	if port == 0 {
 		port = 22
@@ -72,6 +106,7 @@ func (c SSHHostConfig) SSHHostID() string {
 
 // Defaults 填充默认值。
 func (c *SSHHostConfig) Defaults() {
+	c.normalizeEndpoint()
 	if c.Port == 0 {
 		c.Port = 22
 	}

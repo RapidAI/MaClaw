@@ -33,14 +33,19 @@ const textForLang = localizeText;
 
 export const SystemSettingsPanel = ({ config, setConfig, lang, audioDevices, saveRemoteConfigField, showToastMessage }: SystemSettingsPanelProps) => {
     const defaultHeartbeatSec = 30;
-    const [accel, setAccel] = useState<{ backend?: string; npu_present?: boolean; device?: string; reason?: string }>({});
+    const [accel, setAccel] = useState<{ backend?: string; npu_present?: boolean; gpu_available?: boolean; device?: string; reason?: string }>({});
     useEffect(() => {
         GetEmbedAccelInfo()
             .then((info) => setAccel(info || {}))
             .catch(() => setAccel({}));
     }, []);
     const npuPresent = !!accel.npu_present;
-    const hwAccelChecked = npuPresent && (config as any)?.embed_hw_accel !== false;
+    // The same toggle governs the NPU and the GPU backends (Vulkan on
+    // Windows/Linux, Metal on macOS), so it must stay usable on a machine that
+    // has a GPU but no NPU — which is most of them.
+    const gpuActive = accel.backend === 'vulkan' || accel.backend === 'metal' || accel.backend === 'dml-gpu';
+    const hwAvailable = npuPresent || gpuActive || !!accel.gpu_available;
+    const hwAccelChecked = hwAvailable && (config as any)?.embed_hw_accel !== false;
 
     const diagnostics = buildSystemDiagnostics(config, lang);
 
@@ -102,10 +107,10 @@ export const SystemSettingsPanel = ({ config, setConfig, lang, audioDevices, sav
                     <input
                         type="checkbox"
                         aria-label={textForLang(lang, 'Hardware Acceleration', '\u786c\u4ef6\u52a0\u901f', '\u786c\u9ad4\u52a0\u901f')}
-                        disabled={!npuPresent}
+                        disabled={!hwAvailable}
                         checked={hwAccelChecked}
                         onChange={(e) => {
-                            if (!npuPresent) return;
+                            if (!hwAvailable) return;
                             const on = e.target.checked;
                             saveRemoteConfigField({ embed_hw_accel: on } as any);
                             void SetEmbedHWAccel(on)

@@ -37,6 +37,22 @@ type MailDeleter interface {
 	ApplyDelete(ctx context.Context, account Account, secret string, plan DeletePlan) (DeleteResult, error)
 }
 
+// FolderPageDeleter deletes one folder's messages and reads the newest page
+// that remains, on one login. Browse uses it when the dialer implements it.
+// Agent deletes stay on MailDeleter and do not list.
+type FolderPageDeleter interface {
+	DeleteFolderPage(ctx context.Context, account Account, secret, box string, uids []uint32, limit int) (FolderDeletePage, error)
+}
+
+// FolderDeletePage is a finished folder delete plus the page that remains.
+// ListErr is set only when the delete itself succeeded and the following
+// page read failed. Messages is unset in that case.
+type FolderDeletePage struct {
+	Result   DeleteResult
+	Messages []MessageSummary
+	ListErr  error
+}
+
 // DeleteRequest is the parsed trash call. Scope account ignores Box and UIDs.
 type DeleteRequest struct {
 	Scope string

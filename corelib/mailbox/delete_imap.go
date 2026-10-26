@@ -51,6 +51,57 @@ func (d *NetDialer) ApplyDelete(ctx context.Context, account Account, secret str
 		return DeleteResult{}, err
 	}
 	defer c.Logout()
+	return applyDeleteClient(ctx, c, plan)
+}
+
+// DeleteFolderPage previews, applies, and reads the newest page on one IMAP
+// login. A list failure after a finished delete is ListErr, not an error:
+// the messages are already gone, and the caller must not report the delete
+// as failed.
+func (d *NetDialer) DeleteFolderPage(ctx context.Context, account Account, secret, box string, uids []uint32, limit int) (FolderDeletePage, error) {
+	if account.Inbound == nil {
+		return FolderDeletePage{}, classErr("no_inbound", MsgNoInbound(account.Name))
+	}
+	if isPOP3(account) {
+		return FolderDeletePage{}, classErr("unsupported", MsgPOP3Unsupported)
+	}
+	if len(uids) == 0 {
+		return FolderDeletePage{}, classErr("not_found", MsgNotFound)
+	}
+	c, err := d.imapClient(ctx, account, secret)
+	if err != nil {
+		return FolderDeletePage{}, err
+	}
+	defer c.Logout()
+	infos, err := listMailboxes(c)
+	if err != nil {
+		return FolderDeletePage{}, mapIMAP(err, "list")
+	}
+	folders := classifyFolders(infos)
+	trash := resolveTrashBox(folders)
+	canonical := canonicalBox(folders, mailboxBox(account, box))
+	preview, err := previewFolderDelete(ctx, c, canonical, trash, DeleteRequest{
+		Scope: DeleteScopeFolder,
+		Box:   canonical,
+		UIDs:  uids,
+	})
+	if err != nil {
+		return FolderDeletePage{}, err
+	}
+	result, err := applyDeleteClient(ctx, c, preview.Plan)
+	if err != nil {
+		return FolderDeletePage{}, err
+	}
+	messages, listErr := listRemainingPage(c, preview.Plan.Box, limit, preview.Plan.UIDs)
+	if listErr != nil {
+		return FolderDeletePage{Result: result, ListErr: listErr}, nil
+	}
+	return FolderDeletePage{Result: result, Messages: messages}, nil
+}
+
+var _ FolderPageDeleter = (*NetDialer)(nil)
+
+func applyDeleteClient(ctx context.Context, c *imapclient.Client, plan DeletePlan) (DeleteResult, error) {
 	var result DeleteResult
 	progressed := false
 	for _, folder := range plan.Folders {
@@ -106,6 +157,295 @@ func (d *NetDialer) ApplyDelete(ctx context.Context, account Account, secret str
 		progressed = purgeMarksProgress(progressed, purged)
 	}
 	return result, nil
+}
+
+// listRemainingPage re-selects the folder and reads its newest messages.
+// MOVE updates sequence numbers, so the page is taken after a fresh SELECT.
+// A bulk move can still leave that high window naming the uids just removed,
+// or leave the high range empty while EXISTS still counts it. The next window
+// is the range under the one just fetched, not a mailbox count read later:
+// UID FETCH can shrink EXISTS and would otherwise skip a page. UID FETCH of
+// the removed set asks which ones still exist. The ones that are gone are
+// dropped. A window that is only those uids is skipped, not returned. That is not a search of the
+// whole mailbox. Uids that still exist stay on the page. An empty folder is
+// an empty page, not an error.
+func listRemainingPage(c *imapclient.Client, box string, limit int, removed []uint32) ([]MessageSummary, error) {
+	page, windowStart, err := readRecentWindow(c, box, limit)
+	if err != nil {
+		return nil, err
+	}
+	// A high range that comes back with no FETCH rows is not an empty
+	// folder: those sequences were vacated while EXISTS still counted them.
+	// Read the window under the range that was actually fetched. Messages
+	// that arrived without a UID are not treated as a vacant range.
+	page, windowStart = fillVacantWindow(c, page, windowStart, limit)
+	page = newestSummaries(page, clampPageLimit(limit))
+	if !pageRepeatsRemoved(page, removed) {
+		return page, nil
+	}
+	live, liveErr := presentUIDs(c, removed)
+	if liveErr != nil {
+		again, againStart, againErr := readRecentWindow(c, box, limit)
+		if againErr != nil {
+			return nil, againErr
+		}
+		again, _ = fillVacantWindow(c, again, againStart, limit)
+		return newestSummaries(again, clampPageLimit(limit)), nil
+	}
+	absent := absentRemoved(removed, live)
+	if len(absent) == 0 {
+		return page, nil
+	}
+	limit = clampPageLimit(limit)
+	// UID FETCH said these uids are gone. A sequence window that still
+	// names them is not the folder. Drop them and read the windows under
+	// the range just fetched until the page fills, the mailbox bottom is
+	// reached, or a few windows have been tried. Do not hand the ghost
+	// page back: the dialog would keep those rows.
+	filtered := newestSummaries(withoutUIDs(page, absent), limit)
+	start := windowStart
+	const ghostWindowCap = 4
+	for step := 0; len(filtered) < limit && step < ghostWindowCap; step++ {
+		bStart, bEnd, ok := windowBefore(start, limit)
+		if !ok {
+			break
+		}
+		extra, fetchErr := fetchSummaryWindow(c, bStart, bEnd)
+		if fetchErr != nil {
+			if len(filtered) == 0 {
+				return page, nil
+			}
+			break
+		}
+		start = bStart
+		filtered = pageAfterAbsent(filtered, extra, absent, limit)
+	}
+	if len(filtered) == 0 {
+		return []MessageSummary{}, nil
+	}
+	return filtered, nil
+}
+
+// fillVacantWindow reads the next lower sequence window when the fetched
+// range was empty but did not start at sequence 1. A failed or empty lower
+// read keeps the empty page; it does not fail the delete.
+func fillVacantWindow(c *imapclient.Client, page []MessageSummary, windowStart uint32, limit int) ([]MessageSummary, uint32) {
+	if len(page) > 0 {
+		return page, windowStart
+	}
+	start, end, ok := windowBefore(windowStart, limit)
+	if !ok {
+		return page, windowStart
+	}
+	extra, err := fetchSummaryWindow(c, start, end)
+	if err != nil || len(extra) == 0 {
+		return page, windowStart
+	}
+	return extra, start
+}
+
+// readRecentWindow selects the folder and fetches one sequence window.
+// The returned start is that window, captured from the SELECT count before
+// any later command can change it.
+func readRecentWindow(c *imapclient.Client, box string, limit int) ([]MessageSummary, uint32, error) {
+	limit = clampPageLimit(limit)
+	status, err := c.Select(box, true)
+	if err != nil {
+		return nil, 0, mapIMAP(err, "select")
+	}
+	count := uint32(0)
+	if status != nil {
+		count = status.Messages
+	}
+	start, end, ok := recentSequence(count, limit)
+	if !ok {
+		return []MessageSummary{}, 0, nil
+	}
+	page, err := fetchSummaryWindow(c, start, end)
+	if err != nil {
+		return nil, 0, err
+	}
+	return page, start, nil
+}
+
+func clampPageLimit(limit int) int {
+	if limit <= 0 || limit > ListMaxLimit {
+		return 30
+	}
+	return limit
+}
+
+// sequenceBelow is the sequence window immediately under the newest page.
+// The newest page is the high end of messages. There is no lower window
+// when that page already starts at sequence 1.
+func sequenceBelow(messages uint32, limit int) (start, end uint32, ok bool) {
+	top, _, topOK := recentSequence(messages, limit)
+	if !topOK {
+		return 0, 0, false
+	}
+	return windowBefore(top, limit)
+}
+
+// windowBefore is the sequence window immediately under a range that starts
+// at topStart. topStart is the range that was fetched, not a later EXISTS.
+func windowBefore(topStart uint32, limit int) (start, end uint32, ok bool) {
+	if topStart <= 1 {
+		return 0, 0, false
+	}
+	end = topStart - 1
+	width := uint32(clampPageLimit(limit))
+	start = 1
+	if end >= width {
+		start = end - width + 1
+	}
+	return start, end, true
+}
+
+func fetchSummaryWindow(c *imapclient.Client, start, end uint32) ([]MessageSummary, error) {
+	items, _ := summaryFetchItems(false)
+	seq := new(imap.SeqSet)
+	seq.AddRange(start, end)
+	msgs, err := seqFetch(c, seq, items)
+	if err != nil {
+		return nil, mapIMAP(err, "read")
+	}
+	return summariesFromMessages(msgs), nil
+}
+
+func summariesFromMessages(msgs []*imap.Message) []MessageSummary {
+	out := make([]MessageSummary, 0, len(msgs))
+	for _, msg := range msgs {
+		if msg == nil {
+			continue
+		}
+		out = append(out, summaryFromMessage(msg, ""))
+	}
+	return out
+}
+
+// presentUIDs is the subset of removed that a UID FETCH still finds.
+// Missing uids produce no FETCH row; that is an empty set, not an error.
+func presentUIDs(c *imapclient.Client, removed []uint32) (map[uint32]struct{}, error) {
+	seq := uidSeq(removed)
+	if seq.Empty() {
+		return map[uint32]struct{}{}, nil
+	}
+	msgs, err := uidFetch(c, seq, []imap.FetchItem{imap.FetchUid})
+	if err != nil {
+		return nil, mapIMAP(err, "read")
+	}
+	want := make(map[uint32]struct{}, len(removed))
+	for _, id := range removed {
+		if id != 0 {
+			want[id] = struct{}{}
+		}
+	}
+	live := make(map[uint32]struct{}, len(msgs))
+	for _, msg := range msgs {
+		if msg == nil || msg.Uid == 0 {
+			continue
+		}
+		if _, ok := want[msg.Uid]; !ok {
+			continue
+		}
+		live[msg.Uid] = struct{}{}
+	}
+	return live, nil
+}
+
+func absentRemoved(removed []uint32, live map[uint32]struct{}) []uint32 {
+	out := make([]uint32, 0, len(removed))
+	for _, id := range removed {
+		if id == 0 {
+			continue
+		}
+		if _, ok := live[id]; ok {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out
+}
+
+func withoutUIDs(messages []MessageSummary, skip []uint32) []MessageSummary {
+	if len(messages) == 0 || len(skip) == 0 {
+		return messages
+	}
+	drop := make(map[uint32]struct{}, len(skip))
+	for _, id := range skip {
+		if id != 0 {
+			drop[id] = struct{}{}
+		}
+	}
+	if len(drop) == 0 {
+		return messages
+	}
+	out := make([]MessageSummary, 0, len(messages))
+	for _, msg := range messages {
+		if _, ok := drop[msg.UID]; ok {
+			continue
+		}
+		out = append(out, msg)
+	}
+	return out
+}
+
+func newestSummaries(messages []MessageSummary, limit int) []MessageSummary {
+	seen := make(map[uint32]struct{}, len(messages))
+	out := make([]MessageSummary, 0, len(messages))
+	for _, msg := range messages {
+		if msg.UID == 0 {
+			continue
+		}
+		if _, ok := seen[msg.UID]; ok {
+			continue
+		}
+		seen[msg.UID] = struct{}{}
+		out = append(out, msg)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UID > out[j].UID })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+// pageAfterAbsent drops uids UID FETCH showed are gone and fills from the
+// next lower sequence window. A window that is only those uids adds nothing:
+// the caller reads further down instead of returning that page.
+func pageAfterAbsent(page, below []MessageSummary, absent []uint32, limit int) []MessageSummary {
+	if limit <= 0 {
+		limit = 30
+	}
+	filtered := withoutUIDs(page, absent)
+	lower := withoutUIDs(below, absent)
+	next := newestSummaries(append(append([]MessageSummary{}, filtered...), lower...), limit)
+	if len(next) == 0 {
+		return []MessageSummary{}
+	}
+	return next
+}
+
+// pageRepeatsRemoved reports that a just-removed uid is still in the page.
+func pageRepeatsRemoved(messages []MessageSummary, removed []uint32) bool {
+	if len(messages) == 0 || len(removed) == 0 {
+		return false
+	}
+	skip := make(map[uint32]struct{}, len(removed))
+	for _, id := range removed {
+		if id != 0 {
+			skip[id] = struct{}{}
+		}
+	}
+	if len(skip) == 0 {
+		return false
+	}
+	for _, msg := range messages {
+		if _, ok := skip[msg.UID]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // accountPurgeBoxes is the trash folders an account delete searches again.

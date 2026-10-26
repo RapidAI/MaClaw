@@ -67,14 +67,19 @@ func TestPerfProcessWorkingSetSelf(t *testing.T) {
 // TestPerfParentMapNonEmpty confirms the Toolhelp snapshot returns a usable
 // process table on this host.
 func TestPerfParentMapNonEmpty(t *testing.T) {
-	table, err := perfParentMap()
+	snapshot, err := perfParentMap()
 	if err != nil {
 		t.Fatalf("perfParentMap: %v", err)
 	}
-	if len(table) < 2 {
-		t.Fatalf("got %d processes, want at least 2", len(table))
+	if len(snapshot.parents) < 2 {
+		t.Fatalf("got %d processes, want at least 2", len(snapshot.parents))
 	}
-	if _, ok := table[uint32(windows.GetCurrentProcessId())]; !ok {
-		t.Fatalf("current process %d missing from snapshot", windows.GetCurrentProcessId())
+	selfPID := uint32(windows.GetCurrentProcessId())
+	if _, ok := snapshot.parents[selfPID]; !ok {
+		t.Fatalf("current process %d missing from snapshot", selfPID)
+	}
+	// The name map must cover the same PIDs; the sampler filters on it.
+	if name := snapshot.names[selfPID]; name == "" {
+		t.Fatalf("current process %d has no image name in snapshot", selfPID)
 	}
 }

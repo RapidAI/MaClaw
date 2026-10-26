@@ -16,7 +16,7 @@ import {
     latexPaperTaskMessage,
 } from "../../../utils/latexTemplates";
 import { openExpertConversation } from "../../../utils/expertConversationNavigation";
-import { expertTabId } from "../expertTypes";
+import { builtinExpertIcon, expertTabId } from "../expertTypes";
 import { runTaskConfigSend } from "./taskConfigSend";
 import { isRunWindowDue, taskDraftFromRunWindow, type RunWindowTaskRecord } from "./runWindow";
 
@@ -137,7 +137,12 @@ export async function launchRunWindowTask(task: RunWindowTaskRecord, lang = "zh-
             },
             openExpert: (nav) => {
                 openExpertConversation(
-                    { id: nav.id, name: nav.name, description: nav.description },
+                    {
+                        id: nav.id,
+                        name: nav.name,
+                        description: nav.description,
+                        icon: builtinExpertIcon(nav.id),
+                    },
                     nav.initialMessage,
                     nav.latexDocument,
                     nav.projectPath,

@@ -1,9 +1,8 @@
-import React, { useMemo } from "react";
+import React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { AdminNotification } from "./useNotifications";
-import type { Theme } from "./aiAssistantPanelTheme";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -13,7 +12,6 @@ export interface NotificationDetailProps {
   notification: AdminNotification;
   onBack: () => void;
   onClose?: () => void;
-  theme: Theme;
   lang?: string;
   onGroupInviteAction?: (groupId: string, action: "accept" | "decline" | "ignore") => void;
   groupInviteBusy?: boolean;
@@ -34,7 +32,8 @@ const localizeText = (
 ) => (lang === "zh-Hant" ? zhHant : lang?.startsWith("zh") ? zhHans : en);
 
 // ---------------------------------------------------------------------------
-// Category display
+// Category display. Colors live in CSS (notification-cat--*) so the pill
+// follows the active theme like every other status chip in the app.
 // ---------------------------------------------------------------------------
 
 const CATEGORY_LABELS: Record<AdminNotification["category"], { en: string; zh: string }> = {
@@ -43,14 +42,6 @@ const CATEGORY_LABELS: Record<AdminNotification["category"], { en: string; zh: s
   security_alert: { en: "Security Alert", zh: "安全警报" },
   maintenance: { en: "Maintenance", zh: "运维通知" },
   custom: { en: "Custom", zh: "自定义" },
-};
-
-const CATEGORY_COLORS: Record<AdminNotification["category"], string> = {
-  system_announcement: "#3b82f6",
-  feature_update: "#10b981",
-  security_alert: "#ef4444",
-  maintenance: "#f59e0b",
-  custom: "#8b5cf6",
 };
 
 // ---------------------------------------------------------------------------
@@ -66,7 +57,6 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
   notification,
   onBack,
   onClose,
-  theme: t,
   lang,
   onGroupInviteAction,
   groupInviteBusy = false,
@@ -76,13 +66,11 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
 }) => {
   const isZh = lang?.startsWith("zh");
   const catLabel = CATEGORY_LABELS[notification.category] || CATEGORY_LABELS.custom;
-  const catColor = CATEGORY_COLORS[notification.category] || CATEGORY_COLORS.custom;
 
   const formattedDate = formatDate(notification.created_at, lang);
   const titleText = (notification.title || "").trim();
   const bodyText = (notification.content || "").trim();
   const hasDistinctBody = Boolean(bodyText) && bodyText !== titleText;
-  const markdownComponents = useMemo(() => buildMarkdownComponents(t), [t]);
 
   return (
     <div
@@ -90,53 +78,21 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
       className="ndet-root"
     >
       {/* Header with back button */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: "8px",
-          padding: "10px 14px 8px",
-          borderBottom: `1px solid ${t.divider}`,
-          flexShrink: 0,
-        }}
-      >
+      <div className="ndet-head">
         <button
           data-testid="notification-detail-back"
           onClick={onBack}
-          style={{
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            color: t.linkColor || t.headingColor,
-            fontSize: "13px",
-            padding: "4px 6px",
-            borderRadius: "4px",
-            display: "inline-flex",
-            alignItems: "center",
-            gap: "4px",
-            minHeight: "28px",
-            transition: "opacity 0.15s ease",
-          }}
+          className="ndet-back"
           aria-label={localizeText(lang, "Back to list", "返回列表", "返回列表")}
         >
-          <span className="ndet-back-arrow">←</span>
+          <span className="ndet-back-arrow" aria-hidden="true">←</span>
           <span>{localizeText(lang, "Back", "返回", "返回")}</span>
         </button>
         {onClose && (
           <button
             data-testid="notification-detail-close"
             onClick={onClose}
-            style={{
-              background: "none",
-              border: "none",
-              cursor: "pointer",
-              color: t.textMuted,
-              fontSize: "16px",
-              padding: "2px 6px",
-              lineHeight: 1,
-              minHeight: "28px",
-            }}
+            className="ndet-close"
             aria-label={localizeText(lang, "Close", "关闭", "關閉")}
           >
             ×
@@ -145,65 +101,22 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
       </div>
 
       {/* Content area */}
-      <div
-        className="ndet-content"
-      >
+      <div className="ndet-content">
         {/* Title */}
-        <h3
-          style={{
-            margin: "0 0 8px",
-            fontSize: "15px",
-            fontWeight: 600,
-            color: t.text,
-            lineHeight: 1.4,
-            wordBreak: "break-word",
-          }}
-        >
+        <h3 className="ndet-title">
           {notification.title}
         </h3>
 
         {/* Meta row: category + date + priority */}
-        <div
-          className="ndet-meta"
-        >
+        <div className="ndet-meta">
           {/* Category pill */}
-          <span
-            style={{
-              padding: "2px 8px",
-              borderRadius: "10px",
-              background: `${catColor}18`,
-              color: catColor,
-              fontSize: "11px",
-              fontWeight: 500,
-              lineHeight: 1.4,
-              border: `1px solid ${catColor}30`,
-            }}
-          >
+          <span className={`ndet-cat notification-cat--${notification.category}`}>
             {isZh ? catLabel.zh : catLabel.en}
           </span>
 
           {/* Priority badge */}
           {notification.priority !== "normal" && (
-            <span
-              style={{
-                padding: "2px 8px",
-                borderRadius: "10px",
-                fontSize: "11px",
-                fontWeight: 500,
-                lineHeight: 1.4,
-                background:
-                  notification.priority === "urgent"
-                    ? "rgba(239, 68, 68, 0.10)"
-                    : "rgba(245, 158, 11, 0.10)",
-                color:
-                  notification.priority === "urgent" ? "#dc2626" : "#d97706",
-                border: `1px solid ${
-                  notification.priority === "urgent"
-                    ? "rgba(239, 68, 68, 0.25)"
-                    : "rgba(245, 158, 11, 0.25)"
-                }`,
-              }}
-            >
+            <span className={`ndet-priority ndet-priority--${notification.priority}`}>
               {notification.priority === "urgent"
                 ? localizeText(lang, "Urgent", "紧急", "緊急")
                 : localizeText(lang, "Important", "重要", "重要")}
@@ -211,13 +124,7 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
           )}
 
           {/* Date */}
-          <span
-            style={{
-              fontSize: "11px",
-              color: t.textMuted,
-              marginLeft: "auto",
-            }}
-          >
+          <span className="ndet-date">
             {formattedDate}
           </span>
         </div>
@@ -230,13 +137,6 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
           <div
             data-testid="notification-detail-content"
             className="notification-markdown-content"
-            style={{
-              fontSize: "13px",
-              lineHeight: 1.7,
-              color: t.text,
-              wordBreak: "break-word",
-              overflowWrap: "anywhere",
-            }}
           >
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
@@ -248,11 +148,7 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
         ) : !bodyText ? (
           <div
             data-testid="notification-detail-content"
-            style={{
-              fontSize: "13px",
-              lineHeight: 1.7,
-              color: t.textMuted,
-            }}
+            className="ndet-empty"
           >
             {localizeText(lang, "No additional details.", "没有更多正文。", "沒有更多正文。")}
           </div>
@@ -306,194 +202,104 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
 };
 
 // ---------------------------------------------------------------------------
-// Custom Markdown components for themed rendering
+// Markdown components. Every element is styled by the ndet-* classes in
+// 90-im-channels-markdown.css, so announcements inherit the app typography
+// and repaint correctly when the theme changes.
 // ---------------------------------------------------------------------------
 
-function buildMarkdownComponents(t: Theme) {
-  return {
-    // Links open externally
-    a: ({ href, children }: any) => {
-      const safeHref = typeof href === "string" && /^(https?:\/\/|mailto:)/i.test(href) ? href : "";
-      if (!safeHref) {
-        return (
-          <span style={{ color: t.linkColor || t.headingColor }}>
-            {children}
-          </span>
-        );
-      }
-      return (
-        <a
-          href={safeHref}
-          onClick={(event) => {
-            event.preventDefault();
-            BrowserOpenURL(safeHref);
-          }}
-          style={{
-            color: t.linkColor || t.headingColor,
-            textDecoration: "underline",
-            cursor: "pointer",
-          }}
-        >
-          {children}
-        </a>
-      );
-    },
-    // Do not fetch remote images from announcement markdown.
-    img: ({ alt }: any) =>
-      alt ? (
-        <span style={{ color: t.textMuted, fontSize: "12px" }}>[{alt}]</span>
-      ) : null,
-    // Code blocks
-    code: ({ inline, children, ...props }: any) =>
-      inline ? (
-        <code
-          {...props}
-          style={{
-            background: t.codeBg,
-            color: t.codeText,
-            padding: "1px 4px",
-            borderRadius: "3px",
-            fontSize: "12px",
-            fontFamily: "monospace",
-          }}
-        >
-          {children}
-        </code>
-      ) : (
-        <code
-          {...props}
-          style={{
-            display: "block",
-            background: t.codeBlockBg,
-            color: t.codeText,
-            padding: "10px 12px",
-            borderRadius: "6px",
-            border: `1px solid ${t.codeBlockBorder}`,
-            fontSize: "12px",
-            fontFamily: "monospace",
-            overflowX: "auto",
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-all",
-          }}
-        >
-          {children}
-        </code>
-      ),
-    // Block quotes
-    blockquote: ({ children, ...props }: any) => (
-      <blockquote
-        {...props}
-        style={{
-          borderLeft: `3px solid ${t.quoteBorder || t.divider}`,
-          margin: "8px 0",
-          padding: "4px 12px",
-          color: t.quoteText || t.textMuted,
-          fontSize: "12px",
+const markdownComponents = {
+  // Links open externally
+  a: ({ href, children }: any) => {
+    const safeHref = typeof href === "string" && /^(https?:\/\/|mailto:)/i.test(href) ? href : "";
+    if (!safeHref) {
+      return <span>{children}</span>;
+    }
+    return (
+      <a
+        href={safeHref}
+        className="ndet-link"
+        onClick={(event) => {
+          event.preventDefault();
+          BrowserOpenURL(safeHref);
         }}
       >
         {children}
-      </blockquote>
-    ),
-    // Headings
-    h1: ({ children, ...props }: any) => (
-      <h1 {...props} style={{ fontSize: "16px", fontWeight: 700, color: t.headingColor, margin: "12px 0 6px" }}>
+      </a>
+    );
+  },
+  // Do not fetch remote images from announcement markdown.
+  img: ({ alt }: any) =>
+    alt ? <span className="ndet-img-alt">[{alt}]</span> : null,
+  // Code. Keep the language-* class react-markdown supplies with fenced blocks.
+  code: ({ inline, className, children, ...props }: any) => {
+    const merged = `${inline ? "ndet-code" : "ndet-codeblock"}${className ? ` ${className}` : ""}`;
+    return (
+      <code {...props} className={merged}>
         {children}
-      </h1>
-    ),
-    h2: ({ children, ...props }: any) => (
-      <h2 {...props} style={{ fontSize: "15px", fontWeight: 600, color: t.headingColor, margin: "10px 0 5px" }}>
+      </code>
+    );
+  },
+  // Block quotes
+  blockquote: ({ children, ...props }: any) => (
+    <blockquote {...props} className="ndet-quote">
+      {children}
+    </blockquote>
+  ),
+  // Headings
+  h1: ({ children, ...props }: any) => (
+    <h1 {...props} className="ndet-h1">{children}</h1>
+  ),
+  h2: ({ children, ...props }: any) => (
+    <h2 {...props} className="ndet-h2">{children}</h2>
+  ),
+  h3: ({ children, ...props }: any) => (
+    <h3 {...props} className="ndet-h3">{children}</h3>
+  ),
+  // Paragraphs
+  p: ({ children, ...props }: any) => (
+    <p {...props} className="ndet-p">
+      {children}
+    </p>
+  ),
+  // Lists
+  ul: ({ children, ...props }: any) => (
+    <ul {...props} className="ndet-list">
+      {children}
+    </ul>
+  ),
+  ol: ({ children, ...props }: any) => (
+    <ol {...props} className="ndet-list">
+      {children}
+    </ol>
+  ),
+  li: ({ children, ...props }: any) => (
+    <li {...props} className="ndet-li">
+      {children}
+    </li>
+  ),
+  // Tables (GFM)
+  table: ({ children, ...props }: any) => (
+    <div className="ndet-table-scroll">
+      <table {...props} className="ndet-table">
         {children}
-      </h2>
-    ),
-    h3: ({ children, ...props }: any) => (
-      <h3 {...props} style={{ fontSize: "14px", fontWeight: 600, color: t.headingColor, margin: "8px 0 4px" }}>
-        {children}
-      </h3>
-    ),
-    // Paragraphs
-    p: ({ children, ...props }: any) => (
-      <p {...props} className="ndet-p">
-        {children}
-      </p>
-    ),
-    // Lists
-    ul: ({ children, ...props }: any) => (
-      <ul {...props} className="ndet-list">
-        {children}
-      </ul>
-    ),
-    ol: ({ children, ...props }: any) => (
-      <ol {...props} className="ndet-list">
-        {children}
-      </ol>
-    ),
-    li: ({ children, ...props }: any) => (
-      <li {...props} className="ndet-li">
-        {children}
-      </li>
-    ),
-    // Tables (GFM)
-    table: ({ children, ...props }: any) => (
-      <div className="ndet-table-scroll">
-        <table
-          {...props}
-          className="ndet-table"
-        >
-          {children}
-        </table>
-      </div>
-    ),
-    th: ({ children, ...props }: any) => (
-      <th
-        {...props}
-        style={{
-          border: `1px solid ${t.divider}`,
-          padding: "6px 8px",
-          background: t.codeBg || t.fieldBg,
-          fontWeight: 600,
-          textAlign: "left",
-          fontSize: "11px",
-        }}
-      >
-        {children}
-      </th>
-    ),
-    td: ({ children, ...props }: any) => (
-      <td
-        {...props}
-        style={{
-          border: `1px solid ${t.divider}`,
-          padding: "5px 8px",
-          fontSize: "12px",
-        }}
-      >
-        {children}
-      </td>
-    ),
-    // Horizontal rules
-    hr: (props: any) => (
-      <hr
-        {...props}
-        style={{
-          border: "none",
-          borderTop: `1px solid ${t.divider}`,
-          margin: "12px 0",
-        }}
-      />
-    ),
-    // Strong / emphasis
-    strong: ({ children, ...props }: any) => (
-      <strong {...props} style={{ fontWeight: 600, color: t.boldColor || t.text }}>
-        {children}
-      </strong>
-    ),
-    em: ({ children, ...props }: any) => (
-      <em {...props} style={{ color: t.italicColor || t.text }}>
-        {children}
-      </em>
-    ),
-  };
-}
+      </table>
+    </div>
+  ),
+  th: ({ children, ...props }: any) => (
+    <th {...props} className="ndet-th">
+      {children}
+    </th>
+  ),
+  td: ({ children, ...props }: any) => (
+    <td {...props} className="ndet-td">
+      {children}
+    </td>
+  ),
+  // Horizontal rules
+  hr: (props: any) => (
+    <hr {...props} className="ndet-hr" />
+  ),
+};
 
 // ---------------------------------------------------------------------------
 // Date formatting helper

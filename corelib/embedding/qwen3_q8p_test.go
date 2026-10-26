@@ -15,6 +15,9 @@ func TestQwen3Q8PMatchesFloatPath(t *testing.T) {
 		t.Skip("Q8P kernel unavailable on this CPU")
 	}
 	path := qwen3TestModel(t)
+	// This test compares the two CPU kernels; three embedders would each hold a
+	// ~495 MB GPU device for nothing and add the startup probe to the suite.
+	t.Setenv("MACLAW_QWEN3_VULKAN", "0")
 	t.Setenv("MACLAW_QWEN3_Q8P", "0")
 	ref, err := NewQwen3Embedder(path, 0)
 	if err != nil {

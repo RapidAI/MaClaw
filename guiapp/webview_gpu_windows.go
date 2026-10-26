@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
+	"syscall"
 )
 
 // WebView2 GPU acceleration policy.
@@ -39,6 +41,10 @@ const webviewGPUPolicyEnvKey = "MACLAW_WEBVIEW_GPU"
 // window on this machine.
 const webviewGPUFailureMarkerName = ".maclaw-webview-gpu-failed"
 
+// webviewGPUActive mirrors the decision made for this launch, so the paint
+// watchdog only blames GPU compositing when it was actually in use.
+var webviewGPUActive atomic.Bool
+
 // webviewGPUDisabled reports whether WebView2 should start with --disable-gpu.
 func webviewGPUDisabled(userDataPath string) bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(webviewGPUPolicyEnvKey))) {
@@ -59,12 +65,40 @@ func webviewGPUDisabled(userDataPath string) bool {
 			return true
 		}
 	}
+
+	// A Remote Desktop session has no hardware GPU to accelerate with. WebView2
+	// falls back to a software D3D rasterizer (WARP), which is slower at
+	// compositing this UI than the plain CPU path that --disable-gpu selects.
+	// The blank-window workaround this policy replaces was also most often hit
+	// on exactly these GPU-less configurations (VMs, RDP, high-DPI NVIDIA).
+	if perfSessionIsRemote() {
+		log.Printf("[webview-gpu] disabled: remote desktop session without hardware acceleration")
+		return true
+	}
+
 	return false
+}
+
+// noteWebviewGPUActive records whether this launch actually enabled GPU
+// compositing. Recording a failure only makes sense when acceleration was on:
+// otherwise an unrelated slow paint on a software-rendered session would write a
+// marker that disables GPU forever on the next local (non-RDP) launch.
+func noteWebviewGPUActive(enabled bool) {
+	webviewGPUActive.Store(enabled)
+}
+
+func webviewGPUIsActive() bool {
+	return webviewGPUActive.Load()
 }
 
 // recordWebviewGPUFailure remembers that the WebView stayed blank long enough
 // to need recovery, so the next launch starts with software rendering.
 func recordWebviewGPUFailure(userDataPath, reason string) {
+	if !webviewGPUIsActive() {
+		// GPU was already off; a blank window here is a different bug and
+		// must not be remembered as a GPU failure.
+		return
+	}
 	marker, err := webviewGPUFailureMarkerPath(userDataPath)
 	if err != nil {
 		return
@@ -99,4 +133,20 @@ func webviewGPUFailureMarkerPath(userDataPath string) (string, error) {
 		return "", os.ErrInvalid
 	}
 	return filepath.Join(userDataPath, webviewGPUFailureMarkerName), nil
+}
+
+// SM_REMOTESESSION is the GetSystemMetrics index that reports whether the
+// calling process is bound to a Remote Desktop session.
+const smRemoteSession = 0x1000
+
+var procGetSystemMetricsGPU = func() *syscall.LazyProc {
+	user32 := syscall.NewLazyDLL("user32.dll")
+	return user32.NewProc("GetSystemMetrics")
+}()
+
+// perfSessionIsRemote reports whether this process runs in a Remote Desktop
+// session, where hardware GPU acceleration is unavailable.
+func perfSessionIsRemote() bool {
+	ret, _, _ := procGetSystemMetricsGPU.Call(uintptr(smRemoteSession))
+	return ret != 0
 }

@@ -2,6 +2,7 @@ package tool
 
 import (
 	"strings"
+	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 )
@@ -20,6 +21,7 @@ type Selector struct {
 	profiles     map[string]Profile
 	profileOrder []string
 	bm25Index    *bm25.Index // cached index over profile capability texts
+	indexOnce    sync.Once   // builds the index on first Recommend
 }
 
 // NewSelector creates a Selector pre-loaded with default capability profiles.
@@ -53,13 +55,23 @@ func NewSelector() *Selector {
 	}
 	order := []string{"claude", "codex", "opencode", "iflow", "kilo"}
 
-	s := &Selector{
+	// The index is built on the first Recommend call, not here. Profiles are
+	// static, so nothing needs it during startup, and building it now meant
+	// tokenizing capability text with the gse dictionary — which blocked
+	// construction until the (seconds-long) dictionary load finished.
+	return &Selector{
 		profiles:     profiles,
 		profileOrder: order,
 		bm25Index:    bm25.New(),
 	}
-	s.rebuildIndex()
-	return s
+}
+
+// ensureIndex builds the profile index once, on first use.
+func (s *Selector) ensureIndex() {
+	if s == nil {
+		return
+	}
+	s.indexOnce.Do(s.rebuildIndex)
 }
 
 // rebuildIndex builds the BM25 index from profile capability texts.
@@ -77,6 +89,7 @@ func (s *Selector) rebuildIndex() {
 
 // Recommend returns the best tool name and a reason for the recommendation.
 func (s *Selector) Recommend(taskDescription string, installed []string) (string, string) {
+	s.ensureIndex()
 	desc := strings.ToLower(taskDescription)
 	words := strings.Fields(desc)
 

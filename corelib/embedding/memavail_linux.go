@@ -66,3 +66,7 @@ func cgroupMemory() (limit, used uint64, ok bool) {
 	}
 	return 0, 0, false
 }
+
+// AvailableMemory reports MemAvailable (capped by a container limit), for
+// diagnostics. ok=false when it cannot be read.
+func AvailableMemory() (uint64, bool) { return availableMemory() }

@@ -97,3 +97,7 @@ func embedThreadCap(isa string) int {
 		return 4
 	}
 }
+
+// PhysicalCores reports the physical core count the platform could determine
+// (0 when unknown). Exposed for diagnostics: it is the basis for EmbedThreads.
+func PhysicalCores() int { return physicalCores() }

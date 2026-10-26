@@ -185,3 +185,61 @@ func TestComputeDispatch(t *testing.T) {
 	}
 	t.Logf("dispatch OK: %d elements doubled on %s", n, d.Info.Name)
 }
+
+// TestDeviceCloseIdempotent guards the shared-instance refcount: closing one
+// device twice must not destroy the instance while another device is alive.
+func TestDeviceCloseIdempotent(t *testing.T) {
+	d1, err := NewDevice()
+	if err != nil {
+		t.Skipf("no Vulkan device: %v", err)
+	}
+	d2, err := NewDevice()
+	if err != nil {
+		d1.Close()
+		t.Skipf("second device unavailable: %v", err)
+	}
+	// Closing d1 twice must not drop d2's instance.
+	d1.Close()
+	d1.Close()
+	b, err := d2.NewBuffer(1024)
+	if err != nil {
+		t.Fatalf("buffer on the surviving device failed: %v", err)
+	}
+	b.Release()
+	d2.Close()
+	d2.Close()
+
+	// The instance must be usable again after everything was closed.
+	d3, err := NewDevice()
+	if err != nil {
+		t.Fatalf("re-open after full teardown: %v", err)
+	}
+	b3, err := d3.NewBuffer(256)
+	if err != nil {
+		t.Fatalf("buffer on re-opened device: %v", err)
+	}
+	b3.Release()
+	d3.Close()
+}
+
+// TestDeviceMinHeapFilter verifies the heap-size filter rejects an impossible
+// request with a diagnostic instead of failing later at allocation time.
+func TestDeviceMinHeapFilter(t *testing.T) {
+	// A petabyte cannot exist, so every device must be skipped.
+	d, err := NewDeviceWithMinHeap(1 << 50)
+	if err == nil {
+		d.Close()
+		t.Fatal("NewDeviceWithMinHeap(1<<50) succeeded, want a heap-size rejection")
+	}
+	t.Logf("rejected as expected: %v", err)
+
+	// A tiny request must still work (this is the normal path).
+	d2, err := NewDeviceWithMinHeap(1 << 20)
+	if err != nil {
+		t.Skipf("no Vulkan device: %v", err)
+	}
+	defer d2.Close()
+	if d2.Info.Name == "" {
+		t.Fatal("device name is empty")
+	}
+}

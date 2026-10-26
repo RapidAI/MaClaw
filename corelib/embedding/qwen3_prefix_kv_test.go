@@ -23,6 +23,9 @@ func cos32(a, b []float32) float64 { return dot(a, b) }
 // full prompt really start with the cached prefix ids.
 func TestQwen3PrefixKVMatchesFullForward(t *testing.T) {
 	e := loadQwen3(t)
+	// The prefix cache is CPU-only machinery; a GPU backend bypasses it and
+	// would make this comparison vacuous.
+	disableGPU(t, e)
 	for _, role := range []Role{RoleClassification, RoleQuery} {
 		qwen3PrefixKVEnabled = false
 		var ref [][]float32
@@ -85,6 +88,9 @@ func TestQwen3PrefixKVConcurrent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer e.Close()
+	// The prefix cache is CPU-only machinery; a GPU backend bypasses it and
+	// would make this comparison vacuous.
+	disableGPU(t, e)
 	want, _ := e.EmbedWithRole("帮我把这个文件发给张三", RoleClassification)
 	var wg sync.WaitGroup
 	errs := make(chan string, 16)

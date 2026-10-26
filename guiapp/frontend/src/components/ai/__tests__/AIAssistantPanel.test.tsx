@@ -4031,6 +4031,119 @@ describe('AIAssistantPanel property tests', () => {
         expect(container.querySelector('[data-process-kind="todo"]')).toBeTruthy();
     });
 
+    it('shows a goal stage thought before the first tool event', async () => {
+        const projectPath = 'D:/tasks/goal-stage-thought';
+        const sessionKey = `desktop-user:${projectPath}`;
+        loadProjectConversationHistoryMock.mockResolvedValue([
+            { role: 'user', content: '/goal 提升推理性能' },
+            { role: 'assistant', content: '下一轮只执行 S0。' },
+        ]);
+        const thought = '先核对 AVX2 的测量路径，再决定这一步要不要改源码。';
+        const goal = makeMsg({
+            id: 'goal-stage-thought',
+            role: 'assistant',
+            content: '',
+            requestId: 'goal-cont-thought',
+            sessionKey,
+            timestamp: 3,
+            pendingCodingThoughts: [
+                { id: 't1', sequence: 1, kind: 'thinking', content: thought, timestamp: 3 },
+            ],
+        });
+        const base = defaultPanelProps();
+        const props = {
+            ...base,
+            lang: 'zh-Hans' as const,
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Goal stage thought',
+                autoSend: false,
+                prepareMode: 'restore-context' as const,
+                agentMode: 'coding_dev' as const,
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { ...base.state, messages: [], sending: false, streaming: false, ready: true },
+        };
+        const { rerender, container } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        await waitFor(() => expect(container.textContent || '').toContain('下一轮只执行 S0。'));
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...props.state,
+            messages: [goal],
+            progressMessages: [],
+            sending: true,
+            streaming: true,
+            sendingSessionKey: sessionKey,
+            streamingSessionKey: sessionKey,
+            busySessionKeys: [sessionKey],
+            streamingSessionKeys: [sessionKey],
+        }} />);
+        await waitFor(() => expect(container.textContent || '').toContain(thought));
+        expect(container.textContent || '').toContain('下一轮只执行 S0。');
+        expect(container.querySelector('[data-live="true"] [data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在思考');
+    });
+
+    it('keeps the previous stage essay and the next stage report while the goal is still running', async () => {
+        const projectPath = 'D:/tasks/goal-stage-report';
+        const sessionKey = `desktop-user:${projectPath}`;
+        const essay = '下一轮只执行 S0（能力审计与范围裁定，不改源码）。';
+        const report = '第 3 步（S2）已完成并归档。本步的核心产出如下。';
+        loadProjectConversationHistoryMock.mockResolvedValue([
+            { role: 'assistant', content: essay },
+        ]);
+        const stage = makeMsg({
+            id: 'goal-stage-report',
+            role: 'assistant',
+            content: report,
+            requestId: 'goal-cont-report',
+            sessionKey: 'desktop-user:D:\\tasks\\goal-stage-report',
+            timestamp: 4,
+            fields: [
+                { label: 'session_tokens', value: 'in=515402888 out=8358403' },
+                { label: 'Turn', value: 'reasoning · primary · vendor/deepseek-v4-flash' },
+            ],
+            codingTimeline: [
+                { id: 't1', sequence: 1, kind: 'thinking', content: 'AVX2 还有空隙，但没有测到路径。', timestamp: 2 },
+                { id: 'p1', sequence: 2, kind: 'progress', content: 'Coding Agent Event: {"agent":"coding","event":"tool_started","phase":"running","detail":"bash","command":"git status --short"}', timestamp: 3 },
+            ],
+        });
+        const base = defaultPanelProps();
+        const props = {
+            ...base,
+            lang: 'zh-Hans' as const,
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Goal stage report',
+                autoSend: false,
+                prepareMode: 'restore-context' as const,
+                agentMode: 'coding_dev' as const,
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { ...base.state, messages: [], sending: false, streaming: false, ready: true },
+        };
+        const { rerender, container } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        await waitFor(() => expect(container.textContent || '').toContain(essay));
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...props.state,
+            messages: [stage],
+            progressMessages: [makeMsg({
+                role: 'progress',
+                content: 'Coding Agent Event: {"agent":"coding","event":"tool_finished","phase":"running","detail":"bash","outcome":"ok"}',
+                sessionKey,
+            })],
+            sending: true,
+            streaming: true,
+            sendingSessionKey: sessionKey,
+            streamingSessionKey: sessionKey,
+            busySessionKeys: [sessionKey],
+            streamingSessionKeys: [sessionKey],
+        }} />);
+        await waitFor(() => expect(container.textContent || '').toContain(report));
+        expect(container.textContent || '').toContain(essay);
+        expect(container.textContent || '').toContain('session_tokens');
+        expect(container.textContent || '').toContain('Turn');
+        expect(container.textContent || '').toContain('正在执行命令');
+    });
+
     it('auto-opens the cloud file preview when a restored cloud workspace tab resolves its cache path', async () => {
         getTabWorkingDirMock.mockResolvedValue({
             path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_a',

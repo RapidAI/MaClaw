@@ -1,6 +1,7 @@
 package embedding
 
 import (
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -21,6 +22,10 @@ type AccelInfo struct {
 	Device     string `json:"device"`
 	Reason     string `json:"reason"`
 	NPUPresent bool   `json:"npu_present"`
+	// GPUAvailable reports that a GPU device exists, whether or not the startup
+	// gate accepted it. Hosts use it to keep the hardware-acceleration toggle
+	// enabled on machines that have a GPU but no NPU.
+	GPUAvailable bool `json:"gpu_available"`
 }
 
 var (
@@ -178,21 +183,117 @@ type AccelEmbedder interface {
 	ApplyAccel(enabled bool)
 }
 
-// Accel reports the Qwen3 instance's backend: always CPU SIMD (no NPU/GPU
-// backend exists for it); Device carries the numeric path (ComputeMode, e.g.
-// "q8p:avx512:2pass" or "float") so the badge is truthful.
+// BackendVulkan is the Vulkan compute backend (Windows/Linux GPU).
+const BackendVulkan = "vulkan"
+
+// BackendMetal is the Metal compute backend (macOS GPU).
+const BackendMetal = "metal"
+
+// GPUGate is the outcome of the startup correctness + speed gate for a GPU
+// backend. It answers "why is the GPU (not) in use, and by how much" for
+// diagnostics and support reports.
+type GPUGate struct {
+	Backend  string  // BackendVulkan, or "" when no GPU backend was probed
+	Accepted bool    // true when the backend was adopted
+	Ratio    float64 // cpuDuration/gpuDuration at probe time (>1 = GPU faster)
+	CPUMs    float64
+	GPUMs    float64
+	MinRatio float64 // speed threshold that had to be met
+	CosFloor float64 // cosine floor that had to be met
+	MinCos   float64 // worst cosine measured against the CPU path
+	Reason   string  // non-empty when the gate refused the backend
+}
+
+// GPUGateInfo returns the recorded gate outcome (zero value when no GPU
+// backend was probed, e.g. on macOS where Metal has no gate).
+func (q *Qwen3Embedder) GPUGateInfo() GPUGate {
+	if q == nil {
+		return GPUGate{}
+	}
+	q.gpuMu.Lock()
+	defer q.gpuMu.Unlock()
+	return q.gpuGate
+}
+
+func (q *Qwen3Embedder) setGPUGate(g GPUGate) {
+	q.gpuMu.Lock()
+	q.gpuGate = g
+	q.gpuMu.Unlock()
+}
+
+// Accel reports the Qwen3 instance's backend. On Windows/Linux with a Vulkan
+// device that passed the numeric self-check the forward runs on the GPU
+// (BackendVulkan); otherwise it is CPU SIMD with Device carrying the numeric
+// path (ComputeMode, e.g. "q8p:avx512:2pass" or "float").
 func (q *Qwen3Embedder) Accel() AccelInfo {
 	det := CurrentAccelInfo()
-	info := AccelInfo{Backend: BackendCPUSIMD, Device: q.ComputeMode(), NPUPresent: det.NPUPresent, Reason: "qwen3 runs on CPU SIMD"}
-	if q != nil && q.q8pFallback != "" {
+	if q == nil {
+		return AccelInfo{Backend: BackendCPUSIMD, Device: "float", NPUPresent: det.NPUPresent, Reason: "no embedder"}
+	}
+	if g := q.vkGPU.Load(); g != nil {
+		return AccelInfo{Backend: BackendVulkan, Device: g.dev.Info.Name, NPUPresent: det.NPUPresent,
+			GPUAvailable: true, Reason: "qwen3 runs on the Vulkan GPU"}
+	}
+	if g := q.gpu.Load(); g != nil {
+		return AccelInfo{Backend: BackendMetal, Device: g.dev.Name, NPUPresent: det.NPUPresent,
+			GPUAvailable: true, Reason: "qwen3 runs on the Metal GPU"}
+	}
+	// A GPU that the gate refused still counts as present: the toggle must stay
+	// usable so the user can retry after a driver update.
+	gpuPresent := q.GPUGateInfo().Backend != ""
+	info := AccelInfo{Backend: BackendCPUSIMD, Device: q.ComputeMode(), NPUPresent: det.NPUPresent,
+		GPUAvailable: gpuPresent, Reason: "qwen3 runs on CPU SIMD"}
+	if reason := q.GPUReason(); reason != "" {
+		info.Reason = "qwen3 CPU SIMD (" + reason + ")"
+	}
+	if q.q8pFallback != "" {
 		info.Reason = "qwen3 float path (Q8P disabled: " + q.q8pFallback + ")"
 	}
 	return info
 }
 
-// ApplyAccel is a no-op for Qwen3 (CPU only); present so the hardware
-// acceleration toggle never needs a type switch on the model.
-func (q *Qwen3Embedder) ApplyAccel(bool) {}
+// ApplyAccel applies the hardware-acceleration toggle to the Vulkan backend:
+// off releases the GPU (the CPU path takes over), on re-runs the backend probe
+// and self-check. It never blocks on a device that is already in the requested
+// state, so the toggle stays cheap.
+func (q *Qwen3Embedder) ApplyAccel(enabled bool) {
+	if q == nil {
+		return
+	}
+	// Serialise: two concurrent enables would both pass the "already active"
+	// check below and each build a device, silently leaking the loser.
+	q.accelMu.Lock()
+	defer q.accelMu.Unlock()
+	if q.isClosed() {
+		return // nothing to toggle once the embedder is torn down
+	}
+	if !enabled {
+		if g := q.vkGPU.Swap(nil); g != nil {
+			g.shutdown()
+			log.Printf("qwen3: Vulkan backend released by the hardware-acceleration toggle")
+		}
+		if g := q.gpu.Swap(nil); g != nil {
+			g.shutdown()
+			log.Printf("qwen3: Metal backend released by the hardware-acceleration toggle")
+		}
+		return
+	}
+	if q.vkGPU.Load() != nil || q.gpu.Load() != nil {
+		return
+	}
+	q.initGPU()    // Metal (darwin only; no-op elsewhere)
+	q.initVulkan() // Vulkan (windows/linux only)
+	// Close may have run while the backend was being built; it would have
+	// swapped an empty slot, so release anything we just created.
+	if q.isClosed() {
+		if g := q.vkGPU.Swap(nil); g != nil {
+			g.shutdown()
+		}
+		if g := q.gpu.Swap(nil); g != nil {
+			g.shutdown()
+		}
+	}
+}
 
 var (
 	_ AccelEmbedder = (*GemmaEmbedder)(nil)

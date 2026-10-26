@@ -538,6 +538,8 @@
 .asset-kind-tabs button { border: 0; background: transparent; color: var(--theme-text-secondary); border-radius: var(--radius-sm); padding: 6px 10px; cursor: pointer; font-size: .76rem; }
 .asset-kind-tabs button[aria-selected="true"] { color: var(--theme-primary-strong); background: var(--theme-surface); font-weight: 650; }
 .asset-ledger-list { border-top: 1px solid var(--theme-border-subtle); }
+/* Loading / empty note row inside the ledger. */
+.asset-ledger-list .hint { display: grid; place-items: center; min-height: 72px; color: var(--theme-text-secondary); font-size: .76rem; text-align: center; }
 .asset-transaction { display: flex; justify-content: space-between; gap: 16px; padding: 11px 0; border-bottom: 1px solid var(--theme-border-subtle); }
 .asset-transaction > div { display: grid; gap: 3px; min-width: 0; }
 .asset-transaction > div:last-child { text-align: right; flex-shrink: 0; }
@@ -2611,22 +2613,16 @@
     color: var(--theme-on-primary, #ffffff);
 }
 
+/* The mail manager rides on the app-wide modal shell (.modal-backdrop /
+   .modal-content) so its scrim, border, elevation and entrance match every
+   other dialog. That surface comes from the shared modal rules (including the
+   Office-theme repaint at the end of the cascade), so this block only widens
+   the shell and adds room for three panes. */
 .mailbox-manage-overlay {
-    position: fixed;
-    inset: 0;
-    /* The settings page is scaled and clipped. This dialog is portalled to
-       document.body, so it has to sit above that shell and refuse window drags. */
-    z-index: 20000;
-    display: flex;
-    align-items: center;
-    justify-content: center;
     padding: 24px;
-    background: color-mix(in srgb, var(--theme-text-primary) 28%, transparent);
-    -webkit-app-region: no-drag;
-    --wails-draggable: no-drag;
 }
 
-.mailbox-manage {
+.modal-content.mailbox-manage {
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -2634,14 +2630,9 @@
     width: min(1180px, 100%);
     height: min(780px, 100%);
     min-height: 0;
-    padding: 14px 16px 16px;
-    border: 1px solid var(--theme-border);
-    border-radius: var(--radius-lg);
-    background: var(--theme-surface);
+    padding: 16px 18px 18px;
+    text-align: left;
     color: var(--theme-text-primary);
-    box-shadow: 0 18px 50px color-mix(in srgb, var(--theme-text-primary) 18%, transparent);
-    -webkit-app-region: no-drag;
-    --wails-draggable: no-drag;
 }
 
 .mailbox-manage *,
@@ -2650,24 +2641,27 @@
     box-sizing: border-box;
 }
 
-.mailbox-manage__header {
-    display: flex;
+/* .modal-header already supplies the divider and heading ink; only the
+   stacked title/account block and its spacing are local. */
+.modal-header.mailbox-manage__header {
     align-items: flex-start;
-    justify-content: space-between;
-    gap: 12px;
+    margin-bottom: 0;
+    padding-bottom: 10px;
 }
 
 .mailbox-manage__header-main {
     min-width: 0;
 }
 
-.mailbox-manage__header h3 {
+.modal-header.mailbox-manage__header h3 {
     display: flex;
     align-items: center;
     gap: 7px;
     margin: 0;
     color: var(--theme-text-primary);
-    font-size: 1rem;
+    font-size: 0.95rem;
+    font-weight: 650;
+    letter-spacing: -0.01em;
 }
 
 .mailbox-manage__title-glyph {
@@ -2716,21 +2710,19 @@
     cursor: default;
 }
 
-.mailbox-manage__tool:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--theme-primary-soft);
-}
-
 .mailbox-manage__error {
     margin: 0;
 }
 
-.mailbox-manage__body {
+/* Compound selector: .modal-body is assembled after this partial and would
+   otherwise re-apply its own bottom margin to the flexing three-pane grid. */
+.modal-body.mailbox-manage__body {
     display: grid;
     grid-template-columns: 186px minmax(220px, 0.92fr) minmax(0, 1.3fr);
     grid-template-rows: minmax(0, 1fr);
     gap: 12px;
     flex: 1 1 auto;
+    margin-bottom: 0;
     min-height: 0;
 }
 
@@ -2753,6 +2745,19 @@
     background: var(--theme-surface-muted);
     list-style: none;
     overflow: auto;
+}
+
+/* The shared modal repaint puts the dialog on --office-panel. In dark mode
+   that tone sits almost on top of --theme-surface-muted, so recess the three
+   panes with the app's technical-well recipe to keep the columns legible.
+   Light mode keeps the blue-tinted well. */
+:where([data-ai-theme='dark']) .modal-content.mailbox-manage :is(
+    .mailbox-manage__folders,
+    .mailbox-manage__messages,
+    .mailbox-manage__view,
+    .mailbox-manage__placeholder
+) {
+    background: color-mix(in srgb, var(--office-canvas) 82%, var(--office-panel));
 }
 
 .mailbox-manage__folders > li,
@@ -2817,7 +2822,7 @@
     height: 18px;
     padding: 0;
     border: 1px solid var(--theme-border);
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
     background: var(--theme-surface);
     color: var(--theme-on-primary, #ffffff);
     cursor: pointer;
@@ -2838,9 +2843,21 @@
     background: var(--theme-primary);
 }
 
-.mailbox-manage__check:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--theme-primary-soft);
+/* The shared Office modal shell raises every button to a 44px touch target on
+   coarse pointers. Mail keeps 18px square checkboxes and 28px icon tools, so
+   give them a sane square target instead of stretching them into tall slivers. */
+@media (pointer: coarse) {
+    .modal-content.mailbox-manage .mailbox-manage__check {
+        min-width: 28px;
+        min-height: 28px;
+    }
+
+    .modal-content.mailbox-manage .mailbox-manage__tool,
+    .modal-content.mailbox-manage .mailbox-manage__close {
+        width: 36px;
+        height: 36px;
+        min-height: 0;
+    }
 }
 
 .mailbox-manage__pane {
@@ -2890,7 +2907,7 @@
 .mailbox-manage__badge {
     min-width: 18px;
     padding: 1px 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--theme-primary);
     color: var(--theme-on-primary, #ffffff);
     font-size: 0.68rem;
@@ -2922,24 +2939,20 @@
     transform: translateY(-50%);
 }
 
-.mailbox-manage__close {
+/* .btn-close supplies the ink and cursor; this only sizes the hit target. */
+.btn-close.mailbox-manage__close {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     width: 28px;
     height: 28px;
     padding: 0;
-    border: 0;
     border-radius: var(--radius-md);
-    background: transparent;
-    color: var(--theme-text-muted);
-    font: inherit;
     font-size: 1.35rem;
     line-height: 1;
-    cursor: pointer;
 }
 
-.mailbox-manage__close:hover {
+.btn-close.mailbox-manage__close:hover {
     background: var(--theme-surface-muted);
 }
 
@@ -3017,13 +3030,6 @@
     background: var(--theme-primary-soft);
 }
 
-.mailbox-manage__folder:focus-visible,
-.mailbox-manage__message:focus-visible,
-.mailbox-manage__close:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--theme-primary-soft);
-}
-
 .mailbox-manage__view,
 .mailbox-manage__placeholder {
     flex: 1 1 auto;
@@ -3095,11 +3101,6 @@
     font-weight: 650;
 }
 
-.mailbox-manage__seg__btn:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--theme-primary-soft);
-}
-
 .mailbox-manage__view__meta {
     display: flex;
     align-items: flex-start;
@@ -3165,7 +3166,7 @@
     max-width: 240px;
     padding: 2px 9px;
     border: 1px solid var(--theme-border-subtle);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--theme-surface);
     color: var(--theme-text-secondary);
     font-size: 0.74rem;
@@ -3353,7 +3354,7 @@
 
 .mailbox-md code {
     padding: 1px 4px;
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
     background: var(--theme-surface);
     border: 1px solid var(--theme-border-subtle);
     font-family: ui-monospace, SFMono-Regular, Consolas, monospace;

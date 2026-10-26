@@ -23,3 +23,7 @@ func (g *qwen3GPU) forward(q *Qwen3Embedder, seqs [][]int, outs [][]float32) err
 
 func (g *qwen3GPU) release()      {}
 func (g *qwen3GPU) ActBytes() int { return 0 }
+
+// shutdown exists so the hardware-acceleration toggle can treat both GPU
+// backends the same; Metal is unavailable here so it is a no-op.
+func (g *qwen3GPU) shutdown() {}

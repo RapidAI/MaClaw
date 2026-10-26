@@ -123,11 +123,22 @@ func (s *SSHPTYSession) Start(spec SSHSessionSpec) error {
 // PID 返回 0（远程进程无本地 PID）。
 func (s *SSHPTYSession) PID() int { return 0 }
 
-// IsAlive 报告这条 PTY 还可以继续用。
+// SSHClient is the connection this PTY was started on. The pool owns it.
+// Closing the PTY does not close the connection.
+func (s *SSHPTYSession) SSHClient() *ssh.Client {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.client
+}
+
+// IsAlive 报告这条 PTY 的传输还可以继续用。
 // 未启动、已关闭、keepalive 以传输错误结束，或同一次请求超过
-// sshProbeStuckAfter 仍无应答，返回 false，连接复用会重连。
-// 更短的未完成等待仍是同一次请求，返回 true：复用方接着检查 shell，
-// 而不是因为这 5 秒没应答就拆掉 PTY。
+// sshProbeStuckAfter 仍无应答，返回 false。复用方重连的是这一条会话。
+// 更短的未完成等待仍是同一次请求，返回 true。传输还在，就是这一条
+// 会话；shell 正忙不是再拨一条的理由。
 func (s *SSHPTYSession) IsAlive() bool {
 	s.mu.Lock()
 	if !s.started || s.closed || s.client == nil || s.transportDead {
@@ -138,6 +149,14 @@ func (s *SSHPTYSession) IsAlive() bool {
 	s.mu.Unlock()
 
 	ok, finished, running, _ := awaitSSHProbe(client, sshProbeWait)
+	// The shell can exit while this wait runs. A closed PTY is not alive,
+	// even when the TCP keepalive succeeded.
+	s.mu.Lock()
+	unusable := !s.started || s.closed || s.client == nil || s.transportDead
+	s.mu.Unlock()
+	if unusable {
+		return false
+	}
 	if finished && !ok {
 		s.markTransportDead()
 		return false
@@ -169,6 +188,12 @@ func (s *SSHPTYSession) TransportFailed() bool {
 	s.mu.Unlock()
 
 	ok, finished, _, _ := awaitSSHProbe(client, sshProbeWait)
+	s.mu.Lock()
+	unusable := !s.started || s.closed || s.client == nil || s.transportDead
+	s.mu.Unlock()
+	if unusable {
+		return true
+	}
 	if finished && !ok {
 		s.markTransportDead()
 		return true

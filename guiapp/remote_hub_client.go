@@ -243,17 +243,25 @@ func (c *RemoteHubClient) ensureIMHandler() *IMMessageHandler {
 	if c.app != nil {
 		h = c.app.imHandler
 	}
+	buildStart := time.Now()
 	if h == nil {
 		h = NewIMMessageHandler(c.app, c.manager)
 		if c.app != nil {
 			c.app.imHandler = h
 		}
 	}
+	built := time.Since(buildStart)
 	c.imHandler = h
+	wireStart := time.Now()
 	if c.configureIMHandler != nil {
 		c.configureIMHandler(h)
 	}
 	h.clientToolDispatcher = c.dispatchHubClientTool
+	// Reported through bootLog because this runs inside the startup critical
+	// path and the two halves have very different costs: building the handler is
+	// ~10ms, while wiring it opens the memory store (the dominant cost).
+	bootLog("[perf] ensureIMHandler build=%s wire=%s",
+		built.Round(time.Millisecond), time.Since(wireStart).Round(time.Millisecond))
 	return h
 }
 

@@ -1081,7 +1081,7 @@ describe("FileCompanionWindow", () => {
         expect(dialog.getAttribute("role")).toBe("dialog");
         expect(screen.getByTestId("file-companion-open-menu")).toBeTruthy();
         expect((screen.getByTestId("file-companion-arxiv-search-input") as HTMLInputElement).value).toBe("transformer");
-        expect(dialog.textContent).toContain("最多 10 篇");
+        expect(dialog.textContent).toContain("描述研究目标");
         expect(dialog.textContent).not.toContain("按相关度");
         expect(searchArxiv).not.toHaveBeenCalled();
         expect(openArxiv).not.toHaveBeenCalled();
@@ -1094,7 +1094,7 @@ describe("FileCompanionWindow", () => {
         await openArxivSearchDialog();
         fireEvent.click(screen.getByTestId("file-companion-arxiv-search-go"));
         await waitFor(() => {
-            expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("请输入关键字");
+            expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("请描述研究目标或输入关键字");
         });
         expect(searchArxiv).not.toHaveBeenCalled();
         expect(screen.getByTestId("file-companion-open-menu")).toBeTruthy();
@@ -1110,7 +1110,7 @@ describe("FileCompanionWindow", () => {
         fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "attention" } });
         fireEvent.click(screen.getByTestId("file-companion-arxiv-search-go"));
         await waitFor(() => {
-            expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("正在检索");
+            expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("正在理解研究目标并检索");
         });
         expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).not.toContain("输入关键字");
         expect(screen.getByTestId("file-companion-arxiv-search-skeleton")).toBeTruthy();
@@ -1137,7 +1137,7 @@ describe("FileCompanionWindow", () => {
         expect(empty.textContent).not.toContain("确定");
         expect(screen.queryByRole("list", { name: "搜索结果" })).toBeNull();
         fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "attention" } });
-        expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("输入关键字");
+        expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("描述研究目标");
         expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).not.toContain("检索完成，没有结果");
         fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "zzzz-not-a-paper" } });
         expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("检索完成，没有结果");
@@ -1155,17 +1155,17 @@ describe("FileCompanionWindow", () => {
         await openArxivSearchDialog();
         fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "attention" } });
         fireEvent.click(screen.getByTestId("file-companion-arxiv-search-go"));
-        await waitFor(() => expect(searchArxiv).toHaveBeenCalledWith("attention"));
+        await waitFor(() => expect(searchArxiv).toHaveBeenCalledWith("attention", 1, true));
         const first = await screen.findByTestId("file-companion-arxiv-hit-2510.16079");
         expect(first.textContent).toContain("Attention Is All You Need");
         expect(first.textContent).toContain("We propose a new network architecture.");
         expect(screen.getByTestId("file-companion-arxiv-hit-cs_0701001").textContent).toContain("From the archive.");
-        expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("找到 2 篇");
+        expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("约 2 篇");
         fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "attention mechanism" } });
-        expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("关键字已修改");
+        expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("目标已修改");
         expect(screen.getByTestId("file-companion-arxiv-hit-2510.16079")).toBeTruthy();
         fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "attention" } });
-        expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("找到 2 篇");
+        expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("约 2 篇");
         fireEvent.click(first);
         await waitFor(() => expect(openArxiv).toHaveBeenCalledWith("2510.16079"));
         await screen.findByTestId("file-companion-tab-2510.16079.pdf");
@@ -1198,6 +1198,168 @@ describe("FileCompanionWindow", () => {
         expect(hit.textContent).toContain("2025-10-20");
         // The row is numbered, so the list reads as a bibliography.
         expect(hit.querySelector(".file-companion-arxiv-hit-index")?.textContent).toBe("1");
+    });
+
+    it("pages a research goal twenty at a time and keeps the list while the next page loads", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        let releasePage: ((value: unknown) => void) | undefined;
+        searchArxiv.mockImplementation(async (_query: string, page: number) => {
+            if (page === 2) {
+                return new Promise((resolve) => { releasePage = resolve; });
+            }
+            return {
+                hits: [{ id: "2510.16079", title: "Attention Is All You Need", abstract: "Abstract.", authors: "Ashish Vaswani" }],
+                page: 1,
+                pageSize: 20,
+                total: 40,
+                interpreted: "注意力机制",
+                groups: [{ terms: ["attention", "transformer"], category: "cs.CL" }],
+                fallback: false,
+            };
+        });
+        installRuntime();
+        renderWindow();
+        await openArxivSearchDialog();
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "我想找注意力机制的论文" } });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-search-go"));
+        await screen.findByTestId("file-companion-arxiv-hit-2510.16079");
+        expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("约 40 篇，第 1 / 2 页");
+        expect(screen.getByTestId("file-companion-arxiv-search-groups").textContent).toContain("attention · transformer");
+        expect(screen.getByTestId("file-companion-arxiv-search-groups").textContent).toContain("cs.CL");
+        expect(screen.getByTestId("file-companion-arxiv-search-groups").textContent).toContain("注意力机制");
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-search-next"));
+        await waitFor(() => {
+            expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("正在检索");
+        });
+        expect(screen.getByTestId("file-companion-arxiv-hit-2510.16079")).toBeTruthy();
+        expect(screen.queryByTestId("file-companion-arxiv-search-skeleton")).toBeNull();
+        // The rows stay up while the next page loads, and they must not start
+        // a download that the new list is about to throw away.
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-hit-2510.16079"));
+        expect(openArxiv).not.toHaveBeenCalled();
+        expect(searchArxiv).toHaveBeenLastCalledWith("我想找注意力机制的论文", 2, false);
+        await act(async () => {
+            releasePage?.({
+                hits: [{ id: "1706.03762", title: "Second Page", abstract: "More.", authors: "A" }],
+                page: 2,
+                pageSize: 20,
+                total: 40,
+                interpreted: "注意力机制",
+                groups: [{ terms: ["attention", "transformer"], category: "cs.CL" }],
+            });
+        });
+        const second = await screen.findByTestId("file-companion-arxiv-hit-1706.03762");
+        expect(second.querySelector(".file-companion-arxiv-hit-index")?.textContent).toBe("21");
+        expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("第 2 / 2 页");
+        expect(screen.queryByTestId("file-companion-arxiv-hit-2510.16079")).toBeNull();
+        const scroller = screen.getByRole("list", { name: "搜索结果" }).parentElement as HTMLElement;
+        scroller.scrollTop = 180;
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-search-prev"));
+        await screen.findByTestId("file-companion-arxiv-hit-2510.16079");
+        expect(scroller.scrollTop).toBe(0);
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "换一个目标" } });
+        expect((screen.getByTestId("file-companion-arxiv-search-next") as HTMLButtonElement).disabled).toBe(true);
+        expect((screen.getByTestId("file-companion-arxiv-search-prev") as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it("keeps the pager when a later page comes back empty", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        searchArxiv.mockImplementation(async (_query: string, page: number) => {
+            if (page === 2) {
+                return { hits: [], page: 2, pageSize: 20, total: 20, fallback: false };
+            }
+            return {
+                hits: [{ id: "2510.16079", title: "First Page", abstract: "Abstract.", authors: "A" }],
+                page: 1,
+                pageSize: 20,
+                total: 21,
+                fallback: false,
+            };
+        });
+        installRuntime();
+        renderWindow();
+        await openArxivSearchDialog();
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "attention" } });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-search-go"));
+        await screen.findByTestId("file-companion-arxiv-hit-2510.16079");
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-search-next"));
+        await waitFor(() => {
+            expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("这一页没有论文");
+        });
+        expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).not.toContain("第 1 / 1 页");
+        expect(screen.getByTestId("file-companion-arxiv-search-empty").textContent).toContain("回到上一页");
+        expect((screen.getByTestId("file-companion-arxiv-search-prev") as HTMLButtonElement).disabled).toBe(false);
+        expect((screen.getByTestId("file-companion-arxiv-search-next") as HTMLButtonElement).disabled).toBe(true);
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "attention mechanism" } });
+        expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("目标已修改，请重新检索");
+        expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).not.toContain("描述研究目标");
+        expect(screen.queryByTestId("file-companion-arxiv-search-empty")).toBeNull();
+        expect((screen.getByTestId("file-companion-arxiv-search-prev") as HTMLButtonElement).disabled).toBe(true);
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "attention" } });
+        expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("这一页没有论文");
+        expect((screen.getByTestId("file-companion-arxiv-search-prev") as HTMLButtonElement).disabled).toBe(false);
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-search-prev"));
+        await screen.findByTestId("file-companion-arxiv-hit-2510.16079");
+        expect(searchArxiv).toHaveBeenLastCalledWith("attention", 1, false);
+    });
+
+    it("drops a cleared search instead of calling the empty box a changed goal", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        searchArxiv.mockImplementation(async (_query: string, page: number) => {
+            if (page === 2) {
+                return {
+                    hits: [{ id: "1706.03762", title: "Second Page", abstract: "More.", authors: "A" }],
+                    page: 2,
+                    pageSize: 20,
+                    total: 40,
+                };
+            }
+            return {
+                hits: [{ id: "2510.16079", title: "First Page", abstract: "Abstract.", authors: "A" }],
+                page: 1,
+                pageSize: 20,
+                total: 40,
+            };
+        });
+        installRuntime();
+        renderWindow();
+        await openArxivSearchDialog();
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "attention" } });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-search-go"));
+        await screen.findByTestId("file-companion-arxiv-hit-2510.16079");
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-search-next"));
+        await screen.findByTestId("file-companion-arxiv-hit-1706.03762");
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "   " } });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-search-go"));
+        expect(screen.getByTestId("file-companion-arxiv-search-status").textContent).toContain("请描述研究目标或输入关键字");
+        expect(screen.queryByTestId("file-companion-arxiv-hit-1706.03762")).toBeNull();
+        expect(screen.queryByTestId("file-companion-arxiv-search-pager")).toBeNull();
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "a" } });
+        const status = screen.getByTestId("file-companion-arxiv-search-status").textContent ?? "";
+        expect(status).toContain("描述研究目标");
+        expect(status).not.toContain("目标已修改");
+    });
+
+    it("says when the goal could not be expanded and the typed words were used", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        searchArxiv.mockResolvedValueOnce({
+            hits: [{ id: "2510.16079", title: "Attention Is All You Need", abstract: "Abstract.", authors: "A" }],
+            page: 1,
+            pageSize: 20,
+            total: 1,
+            groups: [{ terms: ["注意力"] }],
+            fallback: true,
+        });
+        installRuntime();
+        renderWindow();
+        await openArxivSearchDialog();
+        fireEvent.change(screen.getByTestId("file-companion-arxiv-search-input"), { target: { value: "注意力" } });
+        fireEvent.click(screen.getByTestId("file-companion-arxiv-search-go"));
+        await screen.findByTestId("file-companion-arxiv-hit-2510.16079");
+        const status = screen.getByTestId("file-companion-arxiv-search-status").textContent ?? "";
+        expect(status).toContain("未能扩展关键词，已按原文检索");
+        expect(status).toContain("约 1 篇");
+        expect(screen.getByTestId("file-companion-arxiv-search-groups").textContent).toContain("注意力");
     });
 
     it("lists a hit that carries no date or subjects", async () => {

@@ -423,6 +423,8 @@ type mailboxBrowseFake struct {
 	markedRead  map[string][]uint32
 	deletedBox  string
 	deletedUIDs []uint32
+	trashBox    string
+	trashKnown  bool
 }
 
 func (f *mailboxBrowseFake) Folders(context.Context, mailbox.Account, string) ([]mailbox.Folder, error) {
@@ -430,10 +432,12 @@ func (f *mailboxBrowseFake) Folders(context.Context, mailbox.Account, string) ([
 }
 func (f *mailboxBrowseFake) Browse(context.Context, mailbox.Account, string, string, int) (mailbox.BrowsePage, error) {
 	return mailbox.BrowsePage{
-		Folders:  []mailbox.Folder{{Name: "INBOX", Special: "inbox"}, {Name: "Junk", Special: "junk"}},
-		Box:      "INBOX",
-		Messages: []mailbox.MessageSummary{{UID: 3, From: "a@ex.com", Subject: "Hello"}},
-		Unseen:   map[string]uint64{"INBOX": 2},
+		Folders:    []mailbox.Folder{{Name: "INBOX", Special: "inbox"}, {Name: "Junk", Special: "junk"}},
+		Box:        "INBOX",
+		Messages:   []mailbox.MessageSummary{{UID: 3, From: "a@ex.com", Subject: "Hello"}},
+		Unseen:     map[string]uint64{"INBOX": 2},
+		TrashBox:   f.trashBox,
+		TrashKnown: f.trashKnown,
 	}, nil
 }
 func (f *mailboxBrowseFake) List(_ context.Context, _ mailbox.Account, _, box string, _ int) ([]mailbox.MessageSummary, error) {
@@ -488,6 +492,9 @@ func TestMailboxBrowseFakeAssertions(t *testing.T) {
 	if _, ok := fb.(mailbox.MailDeleter); !ok {
 		t.Fatal("fake does not satisfy MailDeleter")
 	}
+	if _, ok := fb.(mailbox.FolderPageDeleter); ok {
+		t.Fatal("browse fake must stay on preview and apply")
+	}
 }
 
 func TestMailboxBrowseListsFolderAndReadsMessage(t *testing.T) {
@@ -511,6 +518,23 @@ func TestMailboxBrowseListsFolderAndReadsMessage(t *testing.T) {
 	started, err := app.MailboxBrowseStart(id)
 	if err != nil || started["box"] != "INBOX" || len(started["messages"].([]map[string]interface{})) != 1 {
 		t.Fatalf("start=%v err=%v", started, err)
+	}
+	if _, ok := started["trash_box"]; ok {
+		t.Fatal("trash box must be omitted until browse resolves one")
+	}
+	fake.trashKnown = true
+	fake.trashBox = "Trash"
+	started, err = app.MailboxBrowseStart(id)
+	if err != nil || started["trash_box"] != "Trash" {
+		t.Fatalf("trash start=%v err=%v", started, err)
+	}
+	fake.trashBox = ""
+	started, err = app.MailboxBrowseStart(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := started["trash_box"]; !ok || got != "" {
+		t.Fatalf("empty trash=%v ok=%v", got, ok)
 	}
 	folders, err := app.MailboxBrowseFolders(id)
 	if err != nil || len(folders) != 2 || folders[0].Name != "INBOX" {
@@ -578,8 +602,105 @@ func TestMailboxBrowseMarkReadAndDelete(t *testing.T) {
 	if fake.deletedBox != "INBOX" || len(fake.deletedUIDs) != 1 || fake.deletedUIDs[0] != 7 {
 		t.Fatalf("deleted box=%s uids=%v", fake.deletedBox, fake.deletedUIDs)
 	}
+	if _, ok := moved["messages"]; ok {
+		t.Fatal("preview path must not invent a page")
+	}
 	if _, err := app.MailboxBrowseDelete(id, "INBOX", nil); err == nil {
 		t.Fatal("empty uid delete must fail")
+	}
+}
+
+// mailboxPageDeleterFake deletes and returns the next page on one call.
+// The plain browse fake must not implement this: agent-style preview and
+// apply stay separate.
+type mailboxPageDeleterFake struct {
+	mailboxBrowseFake
+	pageCalls    int
+	previewCalls int
+	pageLimit    int
+	pageMessages []mailbox.MessageSummary
+	pageListErr  error
+	failDelete   error
+}
+
+func (f *mailboxPageDeleterFake) PreviewDelete(ctx context.Context, account mailbox.Account, secret string, req mailbox.DeleteRequest) (mailbox.DeletePreview, error) {
+	f.previewCalls++
+	return f.mailboxBrowseFake.PreviewDelete(ctx, account, secret, req)
+}
+
+func (f *mailboxPageDeleterFake) DeleteFolderPage(_ context.Context, _ mailbox.Account, _, box string, uids []uint32, limit int) (mailbox.FolderDeletePage, error) {
+	f.pageCalls++
+	f.pageLimit = limit
+	f.deletedBox = box
+	f.deletedUIDs = append([]uint32(nil), uids...)
+	if f.failDelete != nil {
+		return mailbox.FolderDeletePage{}, f.failDelete
+	}
+	return mailbox.FolderDeletePage{
+		Result:   mailbox.DeleteResult{Moved: len(uids)},
+		Messages: f.pageMessages,
+		ListErr:  f.pageListErr,
+	}, nil
+}
+
+func TestMailboxBrowseDeleteReturnsSameLoginPage(t *testing.T) {
+	app := newDatabaseProfileTestApp(t)
+	installFakeMailboxKeyring(t)
+	id, err := app.MailboxAccountSave(map[string]interface{}{
+		"name": "Work", "address": "w@ex.com",
+		"inbound": map[string]interface{}{"host": "imap.example.com", "port": 993, "security": "tls", "username": "w"},
+	})
+	if err != nil || id == "" {
+		t.Fatal(err)
+	}
+	if err := app.MailboxAccountSetSecret(id, mailbox.SideInbound, "stored-secret"); err != nil {
+		t.Fatal(err)
+	}
+	fake := &mailboxPageDeleterFake{
+		pageMessages: []mailbox.MessageSummary{{UID: 11, From: "n@ex.com", Subject: "Next"}},
+	}
+	prev := mailboxToolBrowser
+	mailboxToolBrowser = fake
+	t.Cleanup(func() { mailboxToolBrowser = prev })
+
+	got, err := app.MailboxBrowseDelete(id, "INBOX", []uint32{7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fake.pageCalls != 1 || fake.previewCalls != 0 || fake.pageLimit != 30 {
+		t.Fatalf("pageCalls=%d previewCalls=%d limit=%d", fake.pageCalls, fake.previewCalls, fake.pageLimit)
+	}
+	if got["moved"] != 1 || fake.deletedBox != "INBOX" || len(fake.deletedUIDs) != 1 || fake.deletedUIDs[0] != 7 {
+		t.Fatalf("delete=%v uids=%v", got, fake.deletedUIDs)
+	}
+	rows, _ := got["messages"].([]map[string]interface{})
+	if len(rows) != 1 || rows[0]["uid"] != uint32(11) || rows[0]["subject"] != "Next" {
+		t.Fatalf("messages=%v", got["messages"])
+	}
+	if _, ok := got["list_error"]; ok {
+		t.Fatalf("list_error=%v", got["list_error"])
+	}
+
+	fake.pageMessages = nil
+	fake.pageListErr = &mailbox.ClassError{Class: "connect", Message: "列表刷新失败"}
+	got, err = app.MailboxBrowseDelete(id, "INBOX", []uint32{8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["moved"] != 1 || got["list_error"] != "列表刷新失败" {
+		t.Fatalf("list failure=%v", got)
+	}
+	if _, ok := got["messages"]; ok {
+		t.Fatal("a failed page read must not look like an empty folder")
+	}
+
+	fake.pageListErr = nil
+	fake.failDelete = errors.New("nope")
+	if _, err := app.MailboxBrowseDelete(id, "INBOX", []uint32{9}); err == nil {
+		t.Fatal("delete failure must stay an error")
+	}
+	if fake.previewCalls != 0 {
+		t.Fatalf("previewCalls=%d", fake.previewCalls)
 	}
 }
 
