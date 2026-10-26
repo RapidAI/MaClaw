@@ -109,6 +109,10 @@ type Qwen3Embedder struct {
 	// Metal GPU backend (qwen3_metal.go); nil = CPU path.
 	gpu       atomic.Pointer[qwen3GPU]
 	gpuReason string // why the GPU is not used (empty when active or not darwin)
+
+	// Vulkan GPU backend (qwen3_vulkan.go); nil = not in use. Only one of gpu
+	// and vkGPU is ever non-nil (Metal is darwin-only, Vulkan is win/linux).
+	vkGPU atomic.Pointer[qwen3VKGPU]
 }
 
 type qwen3Scratch struct {
@@ -192,6 +196,7 @@ func NewQwen3Embedder(modelPath string, dim int) (*Qwen3Embedder, error) {
 	q.tokenizer = NewBPETokenizer(tokens, merges, tokenTypes, bos, eos, addBOS, addEOS)
 	q.ensureRoPE(64)
 	q.initGPU()
+	q.initVulkan()
 	return q, nil
 }
 
@@ -477,9 +482,11 @@ func (q *Qwen3Embedder) Tokenize(text string) []int {
 }
 
 // Embed returns the L2-normalised embedding of text (no prompt applied).
-// Matrix multiplies parallelise internally across cores.
+// Matrix multiplies parallelise internally, up to EmbedThreads() (adaptive:
+// the kernels saturate memory bandwidth around 4 threads, and past that point
+// extra threads cost CPU without buying latency).
 func (q *Qwen3Embedder) Embed(text string) ([]float32, error) {
-	return q.embed(text, 0)
+	return q.embed(text, EmbedThreads())
 }
 
 // EmbedConcurrent is Embed with single-threaded kernels, for callers that
@@ -692,7 +699,7 @@ func (q *Qwen3Embedder) forwardPool(ids []int, pre, capture *qwen3PrefixKV, s *q
 				f(0, mr)
 				return
 			}
-			tensor.ParallelRanges(mr, f)
+			tensor.ParallelRangesCapped(mr, maxWorkers, f)
 		}
 		half := hp.HeadDim / 2
 		for li := range q.layers {
@@ -839,6 +846,17 @@ func qwen3MatMulRows(seq int) int {
 	return seq
 }
 
+// attnWorkers resolves the attention unit count against the per-call worker
+// cap (0 = pool width). Attention fans out over (head, row-block) units, so it
+// needs the same cap the matmuls use to keep total CPU bounded.
+func attnWorkers(maxWorkers int) int {
+	nw := tensor.PoolWorkers()
+	if maxWorkers > 0 && maxWorkers < nw {
+		return maxWorkers
+	}
+	return nw
+}
+
 // qwen3CausalAttention: for the seq query rows at positions off..off+seq-1,
 // out[t, h] = softmax_{s<=off+t}(q[t,h]·k[s,kvh]/√d) · v[s,kvh], where kb/vb
 // hold all off+seq positions (off > 0 when a cached prefix precedes the rows).
@@ -891,7 +909,7 @@ func qwen3CausalAttention(out, qb, kb, vb, scores []float32, seq, off, nHeads, n
 			return
 		}
 		var next atomic.Int64
-		tensor.ParallelRangesN(min(tensor.PoolWorkers(), units), func() {
+		tensor.ParallelRangesN(min(attnWorkers(maxWorkers), units), func() {
 			sc := make([]float32, need)
 			for {
 				u := int(next.Add(1)) - 1
@@ -915,7 +933,7 @@ func qwen3CausalAttention(out, qb, kb, vb, scores []float32, seq, off, nHeads, n
 		const tb = 16
 		nTB := (seq + tb - 1) / tb
 		units := nHeads * nTB
-		nw := min(tensor.PoolWorkers(), units)
+		nw := min(attnWorkers(maxWorkers), units)
 		var next atomic.Int64
 		tensor.ParallelRangesN(nw, func() {
 			sc := make([]float32, off+seq)

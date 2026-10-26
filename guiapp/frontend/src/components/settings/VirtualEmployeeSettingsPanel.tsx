@@ -1087,7 +1087,7 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
                     {avatarPreviewURL && !formDisabled && (
                       <button
                         type="button"
-                        className="ve-btn ve-btn--ghost"
+                        className="ve-btn ve-btn--ghost ve-btn--danger"
                         onClick={handleClearAvatar}
                         data-testid="ve-avatar-clear-btn"
                       >
@@ -1233,7 +1233,7 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
                     <li key={item} className="ve-list-item">
                       <span className="ve-list-item-text">{item}</span>
                       <button
-                        className="ve-btn ve-btn--ghost"
+                        className="ve-btn ve-btn--ghost ve-btn--danger"
                         onClick={() => handleRemoveFromList(item)}
                         data-testid={"remove-" + item}
                       >
@@ -1324,7 +1324,7 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
                 <li key={dir} className="ve-list-item">
                   <span className="ve-list-item-text" title={dir}>{dir}</span>
                   <button
-                    className="ve-btn ve-btn--ghost"
+                    className="ve-btn ve-btn--ghost ve-btn--danger"
                     onClick={() => handleRemoveDirectory(dir)}
                     data-testid={`ve-remove-dir-${dir}`}
                     aria-label={`Remove ${dir}`}

@@ -2278,55 +2278,99 @@
     color: var(--theme-text-muted);
 }
 
+/* ===== Shared vocabulary for the model/feature config panels =====
+   Used by the AI Model tab (embedding / ASR / diarization / OCR / TTS) and
+   the LaTeX tab. Each feature renders as one self-contained section card:
+   a header row (title + description + switch) followed by body rows. */
 .model-config-panel {
-    padding: 0 2px;
+    display: grid;
+    gap: 12px;
+    min-width: 0;
 }
 
+/* Legacy spaced variant: these panels now sit in the page's stacked grid,
+   which already owns the rhythm between cards. */
 .model-config-panel--spaced {
-    margin-top: 20px;
+    margin-top: 0;
 }
 
+.model-config-section {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+    padding: 16px 18px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--theme-surface);
+    box-shadow: var(--shadow-sm);
+}
+
+.model-config-section__head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.model-config-section__text {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+}
+
+.model-config-section__title {
+    margin: 0;
+    color: var(--theme-text-primary);
+    font-size: 0.92rem;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    line-height: 1.35;
+}
+
+.model-config-section__sub {
+    margin: 0;
+    color: var(--theme-text-secondary);
+    font-size: 0.78rem;
+    line-height: 1.55;
+}
+
+.model-config-section__body {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+}
+
+/* Headings keep the legacy modifier classes for compatibility, but render as
+   one calm neutral title — status colors live in the status boxes. */
 .model-config-heading {
-    margin: 0 0 12px;
-    color: var(--theme-primary);
-    font-size: 0.8rem;
-    font-weight: 700;
-    letter-spacing: 0.025em;
-    text-transform: uppercase;
+    margin: 0;
+    color: var(--theme-text-primary);
+    font-size: 0.92rem;
+    font-weight: 650;
+    letter-spacing: -0.01em;
 }
 
 .model-config-heading--spaced {
-    margin-top: 24px;
+    margin-top: 0;
 }
 
-.model-config-heading--primary {
-    color: var(--theme-primary);
-}
-
+.model-config-heading--primary,
 .model-config-heading--warning,
-.model-config-phase-title--warning {
-    color: var(--theme-primary, #2e75cb);
-}
-
-.model-config-heading--success,
-.model-config-phase-title--success,
-.model-config-calibration__message.is-success {
-    color: var(--theme-success);
-}
-
-.model-config-heading--info {
-    color: var(--theme-primary, #2e75cb);
+.model-config-heading--info,
+.model-config-heading--success {
+    color: var(--theme-text-primary);
 }
 
 .model-config-toggle-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 10px;
-    margin-bottom: 16px;
+    margin: 0;
 }
 
 .model-config-toggle-row--compact {
-    margin-bottom: 14px;
+    margin: 0;
 }
 
 .model-config-check {
@@ -2336,21 +2380,144 @@
     color: var(--theme-text-primary);
     cursor: pointer;
     font-size: 0.82rem;
+    font-weight: 500;
+    user-select: none;
 }
 
-.model-config-check input {
+.model-config-check:has(input:disabled) {
+    cursor: default;
+    color: var(--theme-text-secondary);
+}
+
+/* Modern custom checkbox for the remaining inline toggles (sub-options,
+   selection lists). Replaces the native accent-color control. Anchor on both
+   panel and section roots: panels may hold several section cards, and
+   standalone panels (LaTeX, TTS, …) render one section directly. */
+:is(.model-config-panel, .model-config-section) :where(input[type='checkbox']) {
+    appearance: none;
     width: 16px;
     height: 16px;
     margin: 0;
+    padding: 0;
+    flex: 0 0 auto;
+    display: inline-grid;
+    place-content: center;
+    border: 1px solid var(--theme-border);
+    border-radius: 5px;
+    background: var(--theme-surface);
     cursor: pointer;
-    accent-color: var(--theme-primary);
+    transition: background-color var(--transition-fast), border-color var(--transition-fast);
+}
+
+:is(.model-config-panel, .model-config-section) :where(input[type='checkbox'])::before {
+    content: '';
+    width: 9px;
+    height: 9px;
+    transform: scale(0);
+    transition: transform 110ms var(--ease-out);
+    background: var(--theme-on-primary);
+    clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+}
+
+:is(.model-config-panel, .model-config-section) :where(input[type='checkbox']):checked {
+    border-color: var(--theme-primary);
+    background: var(--theme-primary);
+}
+
+:is(.model-config-panel, .model-config-section) :where(input[type='checkbox']):checked::before {
+    transform: scale(1);
+}
+
+:is(.model-config-panel, .model-config-section) :where(input[type='checkbox']):focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+:is(.model-config-panel, .model-config-section) :where(input[type='checkbox']):disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* iOS-style switch reusing the shared token chrome from 00-tokens.css.
+   The input itself is the track; the thumb lives on ::after. Unscoped on the
+   dedicated class so it also styles switches outside a panel wrapper
+   (LaTeX renders one section directly) — its specificity still sits above
+   the generic checkbox rule, so the two never fight. */
+input[type='checkbox'].model-config-switch__input {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    padding: 0;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-pill);
+    background: var(--theme-switch-track-off);
+    box-sizing: border-box;
+    cursor: pointer;
+    transition: background-color var(--transition-fast), border-color var(--transition-fast);
+}
+
+input[type='checkbox'].model-config-switch__input::before {
+    content: none;
+}
+
+input[type='checkbox'].model-config-switch__input::after {
+    content: '';
+    position: absolute;
+    top: 1px;
+    left: 1px;
+    width: 16px;
+    height: 16px;
+    border-radius: var(--radius-pill);
+    background: var(--theme-switch-thumb);
+    box-shadow: var(--theme-switch-thumb-shadow);
+    transition: transform var(--transition-fast);
+}
+
+input[type='checkbox'].model-config-switch__input:checked {
+    border-color: var(--theme-primary);
+    background: var(--theme-primary);
+}
+
+input[type='checkbox'].model-config-switch__input:checked::after {
+    transform: translateX(16px);
+}
+
+input[type='checkbox'].model-config-switch__input:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+input[type='checkbox'].model-config-switch__input:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.model-config-switch {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    margin: 0;
+    cursor: pointer;
 }
 
 .model-config-copy {
-    margin: 0 0 16px;
+    margin: 0;
     color: var(--theme-text-secondary);
-    font-size: 0.76rem;
+    font-size: 0.78rem;
+    line-height: 1.55;
+}
+
+/* Status/action readouts sit a touch softer than body copy. */
+.model-config-copy--soft {
+    opacity: 0.85;
+}
+
+.model-config-error {
+    margin: 0;
+    color: var(--theme-danger);
+    font-size: 0.78rem;
     line-height: 1.5;
+    overflow-wrap: anywhere;
 }
 
 .model-config-inline-field {
@@ -2358,12 +2525,17 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 10px;
-    margin-bottom: 16px;
+    margin: 0;
 }
 
 .model-config-inline-label {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
     color: var(--theme-text-secondary);
     font-size: 0.78rem;
+    font-weight: 600;
 }
 
 .model-config-select {
@@ -2371,25 +2543,64 @@
     height: 32px;
     padding: 0 10px;
     border: 1px solid var(--theme-border);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-md);
     outline: none;
     background: var(--theme-surface);
     color: var(--theme-text-primary);
+    font: inherit;
     font-size: 0.8rem;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.model-config-select:focus {
+    border-color: var(--theme-primary);
+    box-shadow: 0 0 0 3px var(--theme-primary-soft);
+}
+
+.model-config-select:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* Compact numeric fields inside toggle rows (keep-newest / max-age). */
+:is(.model-config-panel, .model-config-section) input[type='number'] {
+    min-height: 30px;
+    padding: 0 8px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font: inherit;
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+:is(.model-config-panel, .model-config-section) input[type='number']:focus {
+    border-color: var(--theme-primary);
+    box-shadow: 0 0 0 3px var(--theme-primary-soft);
+    outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    :is(.model-config-panel, .model-config-section) :where(input[type='checkbox'])::before,
+    input[type='checkbox'].model-config-switch__input::after {
+        transition: none;
+    }
 }
 
 .model-config-calibration {
-    margin-top: 20px;
+    margin-top: 0;
     padding: 12px 14px;
-    border: 1px solid var(--theme-border);
+    border: 1px solid var(--theme-border-subtle);
     border-radius: var(--radius-md);
-    background: var(--theme-surface-muted);
+    background: var(--theme-control-well);
 }
 
 .model-config-calibration__title {
     margin-bottom: 8px;
     color: var(--theme-text-primary);
-    font-size: 0.78rem;
+    font-size: 0.8rem;
     font-weight: 700;
 }
 
@@ -2408,15 +2619,25 @@
 .model-config-phase-card {
     margin-bottom: 10px;
     padding: 10px 12px;
-    border: 1px solid var(--theme-border);
-    border-radius: var(--radius-sm);
-    background: var(--theme-surface);
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 24%, var(--theme-border));
+    border-radius: var(--radius-md);
+    background: var(--theme-info-bg);
 }
 
 .model-config-phase-title {
     margin-bottom: 4px;
     font-size: 0.76rem;
     font-weight: 700;
+}
+
+/* Transient calibration states keep their semantic colors. */
+.model-config-phase-title--warning {
+    color: var(--theme-warning);
+}
+
+.model-config-phase-title--success,
+.model-config-calibration__message.is-success {
+    color: var(--theme-success);
 }
 
 .model-config-reading-list {
@@ -2459,27 +2680,143 @@
     gap: 8px;
 }
 
+/* Secondary action button. `.model-config-btn` previously shipped without any
+   CSS and rendered as the native gray control; both classes now share one
+   modern chrome. */
+.model-config-btn,
 .model-config-button {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 30px;
     padding: 5px 12px;
     border: 1px solid var(--theme-border);
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--theme-text-secondary);
-    cursor: pointer;
-    font-size: 0.73rem;
-}
-
-.model-config-button--accent {
-    padding-inline: 14px;
+    border-radius: var(--radius-md);
     background: var(--theme-surface);
-    color: var(--theme-success);
-    font-size: 0.76rem;
+    color: var(--theme-text-primary);
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 600;
+    line-height: 1.2;
+    cursor: pointer;
+    transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
+.model-config-btn:hover:not(:disabled),
+.model-config-button:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border));
+    background: var(--theme-primary-soft);
+    color: var(--theme-primary-strong);
+}
+
+.model-config-btn:disabled,
 .model-config-button:disabled {
+    border-color: var(--theme-border-subtle);
     background: var(--theme-surface-muted);
     color: var(--theme-text-muted);
     cursor: not-allowed;
+}
+
+.model-config-btn:focus-visible,
+.model-config-button:focus-visible,
+.model-status-box__primary:focus-visible,
+.model-status-box__retry:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+/* Filled main action (e.g. “校准麦克风”). */
+.model-config-button--accent {
+    border-color: transparent;
+    background: var(--theme-primary);
+    color: var(--theme-on-primary);
+}
+
+.model-config-button--accent:hover:not(:disabled) {
+    border-color: transparent;
+    background: var(--theme-primary-strong);
+    color: var(--theme-on-primary);
+}
+
+/* Destructive variants hover in danger tones, never the primary blue. */
+.model-config-btn--danger:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--theme-danger) 45%, var(--theme-border));
+    background: var(--theme-danger-bg);
+    color: var(--theme-danger);
+}
+
+/* Size variants: sm for feature action rows, xs for path/copy chips,
+   chip for in-list controls and filter pills. */
+.model-config-btn--sm {
+    min-height: 28px;
+    padding: 4px 10px;
+}
+
+.model-config-btn--xs {
+    min-height: 26px;
+    padding: 2px 8px;
+    font-size: 12px;
+}
+
+.model-config-btn--chip {
+    min-height: 24px;
+    padding: 1px 6px;
+    font-size: 11px;
+}
+
+.model-config-btn--chip.is-active {
+    border-color: color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border));
+    background: var(--theme-primary-soft);
+    color: var(--theme-primary-strong);
+}
+
+/* Computer Use log artifact list: a quiet well with compact rows. */
+.model-config-artifacts {
+    display: grid;
+    gap: 8px;
+    max-height: 220px;
+    overflow: auto;
+    padding: 10px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--theme-control-well);
+    color: var(--theme-text-secondary);
+    font-size: 0.75rem;
+}
+
+.model-config-artifacts__filters,
+.model-config-artifacts__bulk {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.model-config-artifacts__row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+    border-bottom: 1px solid var(--theme-border-subtle);
+}
+
+.model-config-artifacts__row:last-child {
+    border-bottom: 0;
+}
+
+.model-config-artifacts__kind {
+    min-width: 36px;
+    opacity: 0.7;
+}
+
+.model-config-artifacts__meta {
+    opacity: 0.65;
+}
+
+.model-config-artifacts__empty {
+    opacity: 0.7;
 }
 
 .model-config-calibration__message {
@@ -2488,9 +2825,9 @@
 
 .model-status-box {
     padding: 12px 14px;
-    border: 1px solid var(--theme-border);
-    border-radius: var(--radius-sm);
-    background: var(--theme-surface);
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--theme-control-well);
 }
 
 .model-status-box__ready,
@@ -2550,11 +2887,12 @@
 .model-status-box__primary {
     padding: 6px 16px;
     border: 0;
-    border-radius: var(--radius-xs);
+    border-radius: var(--radius-pill);
     background: var(--model-accent, var(--theme-primary));
     color: var(--theme-on-primary);
     cursor: pointer;
     font-size: 0.78rem;
+    font-weight: 600;
 }
 
 .model-status-box__error {
@@ -2567,11 +2905,19 @@
     margin-left: 10px;
     padding: 4px 12px;
     border: 1px solid var(--theme-border);
-    border-radius: var(--radius-xs);
+    border-radius: var(--radius-sm);
     background: var(--theme-surface);
     color: var(--theme-text-primary);
     cursor: pointer;
     font-size: 0.74rem;
+    font-weight: 600;
+    transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.model-status-box__retry:hover {
+    border-color: color-mix(in srgb, var(--model-accent, var(--theme-primary)) 45%, var(--theme-border));
+    background: color-mix(in srgb, var(--model-accent, var(--theme-primary)) 8%, var(--theme-surface));
+    color: var(--model-accent, var(--theme-primary-strong));
 }
 
 .maclaw-role-panel {
@@ -2858,6 +3204,12 @@
 
 .hub-service-redeem__voucher-heading .hub-service-redeem__label {
     margin-top: 0;
+}
+
+.hub-service-redeem__voucher-section {
+    margin-top: 4px;
+    padding-top: 12px;
+    border-top: 1px solid var(--theme-border-subtle);
 }
 
 .hub-service-redeem__voucher-heading p {

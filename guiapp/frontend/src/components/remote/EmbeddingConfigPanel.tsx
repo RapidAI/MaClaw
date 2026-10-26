@@ -375,711 +375,701 @@ export function EmbeddingConfigPanel({ lang }: Props) {
     if (loading) return <div className="model-config-loading">{t('Loading...', '加载中...', '加載中...')}</div>;
 
     return (
-        <div className="model-config-panel">
+        <>
             {/* ===== Section 0: Computer Use ===== */}
-            <h4 className="model-config-heading model-config-heading--primary">
-                {t('Computer Use (Desktop Control)', 'Computer Use（桌面操控）', 'Computer Use（桌面操控）')}
-            </h4>
-            <div className="model-config-toggle-row">
-                <label className="model-config-check">
-                    <input type='checkbox' checked={cuEnabled} onChange={e => handleCuToggle(e.target.checked)} />
-                    {t('Enable Computer Use', '启用 Computer Use', '啟用 Computer Use')}
-                </label>
-            </div>
-            <p className="model-config-copy">
-                {t(
-                    'Lets the agent operate native desktop apps via local OmniParser + OCR (text-only models supported). Screenshots stay local; the model receives eN element lists, not images. Use @computer or ask to operate the desktop.',
-                    '让 Agent 通过本地 OmniParser + OCR 操作本机桌面应用（纯文本模型也可用）。截图仅在本地解析，模型收到 eN 元素列表而非图片。可用 @computer 或描述桌面操作任务触发。',
-                    '讓 Agent 透過本地 OmniParser + OCR 操作本機桌面應用（純文字模型也可用）。截圖僅在本地解析，模型收到 eN 元素列表而非圖片。可用 @computer 或描述桌面操作任務觸發。'
-                )}
-            </p>
-            {cuStatus && <p className="model-config-copy" style={{ opacity: 0.85 }}>{cuStatus}</p>}
-            <div className="model-config-toggle-row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                <button
-                    type="button"
-                    disabled={cuChecking}
-                    onClick={() => { void handleCuSelfCheck(); }}
-                    className="model-config-btn"
-                    style={{ padding: '4px 10px', cursor: cuChecking ? 'wait' : 'pointer' }}
-                >
-                    {cuChecking
-                        ? t('Checking…', '自检中…', '自檢中…')
-                        : t('Run self-check', '运行自检', '執行自檢')}
-                </button>
-                <button
-                    type="button"
-                    disabled={cuChecking}
-                    onClick={() => {
-                        void OpenComputerUsePermissionSettingsDefault().catch((e: any) => {
-                            setCuError(e?.message || String(e));
-                        });
-                    }}
-                    className="model-config-btn"
-                    style={{ padding: '4px 10px', cursor: 'pointer' }}
-                    title={t(
-                        'Open system privacy settings (Accessibility / Screen Recording on macOS)',
-                        '打开系统隐私设置（macOS：辅助功能 / 屏幕录制）',
-                        '打開系統隱私設定（macOS：輔助功能 / 螢幕錄製）'
-                    )}
-                >
-                    {t('Open privacy settings', '打开隐私设置', '打開隱私設定')}
-                </button>
-                <button
-                    type="button"
-                    disabled={cuChecking}
-                    onClick={() => {
-                        void (async () => {
-                            setCuChecking(true);
-                            setCuError('');
-                            setCuActionMsg(t('Exporting…', '导出中…', '匯出中…'));
-                            try {
-                                const exp: any = await ExportComputerUseDiagnostics();
-                                if (exp?.ok) {
-                                    setCuActionMsg(t(`Exported: ${exp.path}`, `已导出: ${exp.path}`, `已匯出: ${exp.path}`));
-                                } else {
-                                    setCuError(exp?.error || t('Export failed', '导出失败', '匯出失敗'));
-                                    setCuActionMsg('');
-                                }
-                            } catch (e: any) {
-                                setCuError(e?.message || String(e));
-                                setCuActionMsg('');
-                            } finally {
-                                setCuChecking(false);
-                            }
-                        })();
-                    }}
-                    className="model-config-btn"
-                    style={{ padding: '4px 10px', cursor: cuChecking ? 'wait' : 'pointer' }}
-                    title={t('Export diagnostics JSON (no screenshots)', '导出诊断 JSON（不含截图）', '匯出診斷 JSON（不含截圖）')}
-                >
-                    {t('Export diagnostics', '导出诊断', '匯出診斷')}
-                </button>
-                <button
-                    type="button"
-                    disabled={cuChecking}
-                    onClick={() => {
-                        void (async () => {
-                            setCuChecking(true);
-                            setCuError('');
-                            setCuActionMsg(t('Exporting CSV…', '导出 CSV…', '匯出 CSV…'));
-                            try {
-                                const exp: any = await ExportComputerUseObserveHistoryCSV();
-                                if (exp?.ok) {
-                                    setCuActionMsg(
-                                        t(
-                                            `History CSV: ${exp.path} (${exp.rows ?? 0} rows)`,
-                                            `历史 CSV: ${exp.path}（${exp.rows ?? 0} 行）`,
-                                            `歷史 CSV: ${exp.path}（${exp.rows ?? 0} 行）`
-                                        )
-                                    );
-                                } else {
-                                    setCuError(exp?.error || t('CSV export failed', 'CSV 导出失败', 'CSV 匯出失敗'));
-                                    setCuActionMsg('');
-                                }
-                            } catch (e: any) {
-                                setCuError(e?.message || String(e));
-                                setCuActionMsg('');
-                            } finally {
-                                setCuChecking(false);
-                            }
-                        })();
-                    }}
-                    className="model-config-btn"
-                    style={{ padding: '4px 10px', cursor: cuChecking ? 'wait' : 'pointer' }}
-                    title={t('Export observe timing history as CSV', '导出 observe 耗时历史为 CSV', '匯出 observe 耗時歷史為 CSV')}
-                >
-                    {t('Export history CSV', '导出历史 CSV', '匯出歷史 CSV')}
-                </button>
-                <button
-                    type="button"
-                    disabled={cuChecking}
-                    onClick={() => {
-                        void (async () => {
-                            setCuError('');
-                            try {
-                                const r: any = await OpenComputerUseLastDiagnostics();
-                                if (r?.ok) {
-                                    setCuActionMsg(t(`Opened: ${r.path}`, `已打开: ${r.path}`, `已打開: ${r.path}`));
-                                } else {
-                                    const logs: any = await OpenComputerUseLogsFolder();
-                                    if (logs?.ok) {
-                                        setCuActionMsg(t(`Logs: ${logs.path}`, `日志目录: ${logs.path}`, `日誌目錄: ${logs.path}`));
-                                    } else {
-                                        setCuError(r?.error || logs?.error || t('Open failed', '打开失败', '打開失敗'));
-                                    }
-                                }
-                            } catch (e: any) {
-                                setCuError(e?.message || String(e));
-                            }
-                        })();
-                    }}
-                    className="model-config-btn"
-                    style={{ padding: '4px 10px', cursor: 'pointer' }}
-                    title={t('Open last diagnostics or logs folder', '打开最近诊断文件或日志目录', '打開最近診斷檔案或日誌目錄')}
-                >
-                    {t('Open diagnostics', '打开诊断', '打開診斷')}
-                </button>
-                <button
-                    type="button"
-                    disabled={cuChecking}
-                    onClick={() => {
-                        void (async () => {
-                            setCuChecking(true);
-                            setCuError('');
-                            setCuActionMsg(t('Running E2E…', 'E2E 中…', 'E2E 中…'));
-                            try {
-                                const e2e: any = await ComputerUseE2ESmoke();
-                                if (e2e?.diagnostics_path) setCuDiagPath(String(e2e.diagnostics_path));
-                                if (e2e?.history_csv_path) setCuCsvPath(String(e2e.history_csv_path));
-                                setCuActionMsg(
-                                    e2e?.ok
-                                        ? t(`E2E ok · ${e2e.ms ?? '?'}ms`, `E2E 通过 · ${e2e.ms ?? '?'}ms`, `E2E 通過 · ${e2e.ms ?? '?'}ms`)
-                                        : t(`E2E failed: ${e2e?.error || 'unknown'}`, `E2E 失败: ${e2e?.error || '未知'}`, `E2E 失敗: ${e2e?.error || '未知'}`)
-                                );
-                                await refreshCuArtifacts();
-                            } catch (e: any) {
-                                setCuError(e?.message || String(e));
-                                setCuActionMsg('');
-                            } finally {
-                                setCuChecking(false);
-                            }
-                        })();
-                    }}
-                    className="model-config-btn"
-                    style={{ padding: '4px 10px', cursor: cuChecking ? 'wait' : 'pointer' }}
-                    title={t('Smoke + launch editor + observe', '冒烟 + 启动编辑器 + 观察', '冒煙 + 啟動編輯器 + 觀察')}
-                >
-                    {t('E2E smoke', 'E2E 冒烟', 'E2E 冒煙')}
-                </button>
-                <button
-                    type="button"
-                    disabled={cuChecking}
-                    onClick={() => {
-                        void (async () => {
-                            setCuChecking(true);
-                            setCuError('');
-                            setCuActionMsg(t('Running E2E interact…', 'E2E 交互中…', 'E2E 交互中…'));
-                            try {
-                                const e2e: any = await ComputerUseE2EInteract();
-                                if (e2e?.diagnostics_path) setCuDiagPath(String(e2e.diagnostics_path));
-                                if (e2e?.history_csv_path) setCuCsvPath(String(e2e.history_csv_path));
-                                const tok = e2e?.token ? ` token=${e2e.token}` : '';
-                                const found =
-                                    e2e?.token_found === true
-                                        ? ' found'
-                                        : e2e?.token_found === false || e2e?.token_unconfirmed
-                                          ? ' not-found'
-                                          : '';
-                                const soft =
-                                    e2e?.soft_fail
-                                        ? ` soft_fail${e2e.skip_reason ? `=${e2e.skip_reason}` : ''}`
-                                        : '';
-                                setCuActionMsg(
-                                    e2e?.ok
-                                        ? t(
-                                              `E2E interact ok · ${e2e.ms ?? '?'}ms${tok}${found}${soft}`,
-                                              `E2E 交互通过 · ${e2e.ms ?? '?'}ms${tok}${found}${soft}`,
-                                              `E2E 交互通過 · ${e2e.ms ?? '?'}ms${tok}${found}${soft}`
-                                          )
-                                        : t(
-                                              `E2E interact failed: ${e2e?.error || e2e?.skip_reason || 'unknown'}${soft}`,
-                                              `E2E 交互失败: ${e2e?.error || e2e?.skip_reason || '未知'}${soft}`,
-                                              `E2E 交互失敗: ${e2e?.error || e2e?.skip_reason || '未知'}${soft}`
-                                          )
-                                );
-                                await refreshCuArtifacts();
-                            } catch (e: any) {
-                                setCuError(e?.message || String(e));
-                                setCuActionMsg('');
-                            } finally {
-                                setCuChecking(false);
-                            }
-                        })();
-                    }}
-                    className="model-config-btn"
-                    style={{ padding: '4px 10px', cursor: cuChecking ? 'wait' : 'pointer' }}
-                    title={t(
-                        'E2E with type into Notepad/TextEdit (moves real focus/cursor briefly)',
-                        'E2E 并在记事本/TextEdit 中输入（会短暂移动焦点/光标）',
-                        'E2E 並在記事本/TextEdit 中輸入（會短暫移動焦點/游標）'
-                    )}
-                >
-                    {t('E2E interact', 'E2E 交互', 'E2E 交互')}
-                </button>
-            </div>
-            {cuCheckReport && <p className="model-config-copy" style={{ opacity: 0.85 }}>{cuCheckReport}</p>}
-            {(cuDiagPath || cuCsvPath || cuArtifactCount > 0) && (
-                <div className="model-config-toggle-row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                    {cuDiagPath ? (
-                        <button
-                            type="button"
-                            className="model-config-btn"
-                            style={{ padding: '2px 8px', fontSize: 12 }}
-                            onClick={() => {
-                                void CopyComputerUsePath('diagnostics').then((r: any) => {
-                                    setCuActionMsg(
-                                        r?.ok
-                                            ? t('Diagnostics path copied', '已复制诊断路径', '已複製診斷路徑')
-                                            : (r?.error || t('Copy failed', '复制失败', '複製失敗'))
-                                    );
-                                });
-                            }}
-                        >
-                            {t('Copy diag path', '复制诊断路径', '複製診斷路徑')}
-                        </button>
-                    ) : null}
-                    {cuCsvPath ? (
-                        <button
-                            type="button"
-                            className="model-config-btn"
-                            style={{ padding: '2px 8px', fontSize: 12 }}
-                            onClick={() => {
-                                void CopyComputerUsePath('csv').then((r: any) => {
-                                    setCuActionMsg(
-                                        r?.ok
-                                            ? t('CSV path copied', '已复制 CSV 路径', '已複製 CSV 路徑')
-                                            : (r?.error || t('Copy failed', '复制失败', '複製失敗'))
-                                    );
-                                });
-                            }}
-                        >
-                            {t('Copy CSV path', '复制 CSV 路径', '複製 CSV 路徑')}
-                        </button>
-                    ) : null}
-                    <button
-                        type="button"
-                        className="model-config-btn"
-                        style={{ padding: '2px 8px', fontSize: 12 }}
-                        onClick={() => {
-                            setCuShowArtifacts((v) => !v);
-                            if (!cuShowArtifacts) void refreshCuArtifacts(cuArtifactFilter);
-                        }}
-                    >
-                        {cuShowArtifacts
-                            ? t('Hide file list', '隐藏文件列表', '隱藏檔案列表')
-                            : t(
-                                `Show files${cuArtifactCount ? ` (${cuArtifactCount})` : ''}`,
-                                `显示文件${cuArtifactCount ? `（${cuArtifactCount}）` : ''}`,
-                                `顯示檔案${cuArtifactCount ? `（${cuArtifactCount}）` : ''}`
+            <section className="model-config-section">
+                <div className="model-config-section__head">
+                    <div className="model-config-section__text">
+                        <h4 className="model-config-section__title">
+                            {t('Computer Use (Desktop Control)', 'Computer Use（桌面操控）', 'Computer Use（桌面操控）')}
+                        </h4>
+                        <p className="model-config-section__sub">
+                            {t(
+                                'Lets the agent operate native desktop apps via local OmniParser + OCR (text-only models supported). Screenshots stay local; the model receives eN element lists, not images. Use @computer or ask to operate the desktop.',
+                                '让 Agent 通过本地 OmniParser + OCR 操作本机桌面应用（纯文本模型也可用）。截图仅在本地解析，模型收到 eN 元素列表而非图片。可用 @computer 或描述桌面操作任务触发。',
+                                '讓 Agent 透過本地 OmniParser + OCR 操作本機桌面應用（純文字模型也可用）。截圖僅在本地解析，模型收到 eN 元素列表而非圖片。可用 @computer 或描述桌面操作任務觸發。'
                             )}
-                    </button>
-                    <button
-                        type="button"
-                        className="model-config-btn"
-                        style={{ padding: '2px 8px', fontSize: 12 }}
-                        disabled={cuChecking}
-                        title={t(
-                            `Keep ${cuKeepNewest} newest each; max age ${cuMaxAgeDays || '∞'} days`,
-                            `各保留最新 ${cuKeepNewest} 个；最长 ${cuMaxAgeDays || '不限'} 天`,
-                            `各保留最新 ${cuKeepNewest} 個；最長 ${cuMaxAgeDays || '不限'} 天`
-                        )}
-                        onClick={async () => {
-                            const ageLabel = cuMaxAgeDays > 0
-                                ? t(`and older than ${cuMaxAgeDays} days`, `以及超过 ${cuMaxAgeDays} 天`, `以及超過 ${cuMaxAgeDays} 天`)
-                                : t('(age unlimited)', '（不限天数）', '（不限天數）');
-                            const ok = await showConfirm(
-                                t(
-                                    `Delete Computer Use log files beyond the newest ${cuKeepNewest} per kind ${ageLabel}? This cannot be undone.`,
-                                    `将删除各类型超出最新 ${cuKeepNewest} 个 ${ageLabel} 的 Computer Use 日志，不可恢复。确定？`,
-                                    `將刪除各類型超出最新 ${cuKeepNewest} 個 ${ageLabel} 的 Computer Use 日誌，不可恢復。確定？`
-                                )
-                            , t('Clean up logs', '清理日志', '清理日誌'), { confirmText: t('Delete', '删除', '刪除'), cancelText: t('Cancel', '取消', '取消'), confirmVariant: 'danger' });
-                            if (!ok) return;
-                            void (async () => {
-                                setCuChecking(true);
-                                try {
-                                    const r: any = await PruneComputerUseLogArtifacts(cuKeepNewest, cuMaxAgeDays);
-                                    if (r?.ok) {
-                                        const errN = Number(r.remove_error_n ?? 0);
-                                        setCuActionMsg(
-                                            t(
-                                                `Pruned ${r.deleted_n ?? 0} file(s), freed ${r.freed_bytes ?? 0} bytes` +
-                                                    (errN ? ` (${errN} remove errors)` : ''),
-                                                `已清理 ${r.deleted_n ?? 0} 个文件，释放 ${r.freed_bytes ?? 0} 字节` +
-                                                    (errN ? `（${errN} 删除失败）` : ''),
-                                                `已清理 ${r.deleted_n ?? 0} 個檔案，釋放 ${r.freed_bytes ?? 0} 位元組` +
-                                                    (errN ? `（${errN} 刪除失敗）` : '')
-                                            )
-                                        );
-                                        if (errN && r.error) setCuError(String(r.error));
-                                        await refreshCuArtifacts(cuArtifactFilter);
-                                    } else {
-                                        setCuError(r?.error || t('Prune failed', '清理失败', '清理失敗'));
-                                    }
-                                } catch (e: any) {
-                                    setCuError(e?.message || String(e));
-                                } finally {
-                                    setCuChecking(false);
-                                }
-                            })();
-                        }}
-                    >
-                        {t(
-                            `Prune old logs${cuArtifactCount ? ` (${cuArtifactCount})` : ''}`,
-                            `清理旧日志${cuArtifactCount ? `（${cuArtifactCount}）` : ''}`,
-                            `清理舊日誌${cuArtifactCount ? `（${cuArtifactCount}）` : ''}`
-                        )}
-                    </button>
+                        </p>
+                    </div>
+                    <label className="model-config-switch" title={t('Enable Computer Use', '启用 Computer Use', '啟用 Computer Use')}>
+                        <input
+                            type="checkbox"
+                            className="model-config-switch__input"
+                            role="switch"
+                            checked={cuEnabled}
+                            onChange={e => handleCuToggle(e.target.checked)}
+                            aria-label={t('Enable Computer Use', '启用 Computer Use', '啟用 Computer Use')}
+                        />
+                    </label>
                 </div>
-            )}
-            <div className="model-config-toggle-row" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'center', marginTop: 4 }}>
-                <label className="model-config-copy" style={{ display: 'flex', alignItems: 'center', gap: 4, margin: 0 }}>
-                    {t('Keep newest', '保留最新', '保留最新')}
-                    <input
-                        type="number"
-                        min={1}
-                        max={100}
-                        value={cuKeepNewest}
-                        onChange={(e) => setCuKeepNewest(Math.max(1, Math.min(100, Number(e.target.value) || 10)))}
-                        style={{ width: 56 }}
-                    />
-                </label>
-                <label className="model-config-copy" style={{ display: 'flex', alignItems: 'center', gap: 4, margin: 0 }}>
-                    {t('Max age days (0=off)', '最长天数（0=不限）', '最長天數（0=不限）')}
-                    <input
-                        type="number"
-                        min={0}
-                        max={3650}
-                        value={cuMaxAgeDays}
-                        onChange={(e) => setCuMaxAgeDays(Math.max(0, Math.min(3650, Number(e.target.value) || 0)))}
-                        style={{ width: 56 }}
-                    />
-                </label>
-                <label className="model-config-check" style={{ margin: 0 }}>
-                    <input
-                        type="checkbox"
-                        checked={cuAutoPrune}
-                        onChange={(e) => {
-                            const on = e.target.checked;
-                            setCuAutoPrune(on);
-                            void SetComputerUseLogAutoPrune(on).then((r: any) => {
-                                if (!r?.ok) {
-                                    setCuAutoPrune(!on);
-                                    setCuError(r?.error || t('Save failed', '保存失败', '保存失敗'));
-                                } else {
-                                    setCuActionMsg(
-                                        on
-                                            ? t('Auto-prune on startup enabled', '已开启启动时自动清理', '已開啟啟動時自動清理')
-                                            : t('Auto-prune on startup disabled', '已关闭启动时自动清理', '已關閉啟動時自動清理')
-                                    );
-                                }
-                            });
-                        }}
-                    />
-                    {t('Auto-prune on startup', '启动时自动清理', '啟動時自動清理')}
-                </label>
-                <button
-                    type="button"
-                    className="model-config-btn"
-                    style={{ padding: '2px 8px', fontSize: 12 }}
-                    disabled={cuChecking}
-                    onClick={() => {
-                        void (async () => {
-                            setCuChecking(true);
-                            setCuError('');
-                            try {
-                                // autoPrune 0 = leave unchanged (checkbox already persists)
-                                const r: any = await SetComputerUseLogPrunePolicy(cuKeepNewest, cuMaxAgeDays, 0);
-                                if (r?.ok) {
-                                    setCuActionMsg(
-                                        t(
-                                            `Policy saved: keep=${r.keep_newest}, age=${r.max_age_days}d, auto=${r.auto_prune ? 'on' : 'off'}`,
-                                            `策略已保存：保留=${r.keep_newest}，天数=${r.max_age_days}，自动=${r.auto_prune ? '开' : '关'}`,
-                                            `策略已保存：保留=${r.keep_newest}，天數=${r.max_age_days}，自動=${r.auto_prune ? '開' : '關'}`
-                                        )
-                                    );
-                                } else {
-                                    setCuError(r?.error || t('Save failed', '保存失败', '保存失敗'));
-                                }
-                            } catch (e: any) {
-                                setCuError(e?.message || String(e));
-                            } finally {
-                                setCuChecking(false);
-                            }
-                        })();
-                    }}
-                >
-                    {t('Save policy', '保存策略', '保存策略')}
-                </button>
-            </div>
-            {cuShowArtifacts && (
-                <div
-                    className="model-config-copy"
-                    style={{
-                        maxHeight: 200,
-                        overflow: 'auto',
-                        border: '1px solid var(--theme-border, rgba(127,127,127,0.35))',
-                        borderRadius: 8,
-                        padding: 8,
-                        fontSize: 12,
-                        marginTop: 6,
-                    }}
-                >
-                    <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
-                        {(['all', 'diag', 'csv'] as const).map((k) => (
+                <div className="model-config-section__body">
+                    {cuStatus && <p className="model-config-copy model-config-copy--soft">{cuStatus}</p>}
+                    <div className="model-config-toggle-row">
+                        <button
+                            type="button"
+                            disabled={cuChecking}
+                            onClick={() => { void handleCuSelfCheck(); }}
+                            className="model-config-btn model-config-btn--sm"
+                        >
+                            {cuChecking
+                                ? t('Checking…', '自检中…', '自檢中…')
+                                : t('Run self-check', '运行自检', '執行自檢')}
+                        </button>
+                        <button
+                            type="button"
+                            disabled={cuChecking}
+                            onClick={() => {
+                                void OpenComputerUsePermissionSettingsDefault().catch((e: any) => {
+                                    setCuError(e?.message || String(e));
+                                });
+                            }}
+                            className="model-config-btn model-config-btn--sm"
+                            title={t(
+                                'Open system privacy settings (Accessibility / Screen Recording on macOS)',
+                                '打开系统隐私设置（macOS：辅助功能 / 屏幕录制）',
+                                '打開系統隱私設定（macOS：輔助功能 / 螢幕錄製）'
+                            )}
+                        >
+                            {t('Open privacy settings', '打开隐私设置', '打開隱私設定')}
+                        </button>
+                        <button
+                            type="button"
+                            disabled={cuChecking}
+                            onClick={() => {
+                                void (async () => {
+                                    setCuChecking(true);
+                                    setCuError('');
+                                    setCuActionMsg(t('Exporting…', '导出中…', '匯出中…'));
+                                    try {
+                                        const exp: any = await ExportComputerUseDiagnostics();
+                                        if (exp?.ok) {
+                                            setCuActionMsg(t(`Exported: ${exp.path}`, `已导出: ${exp.path}`, `已匯出: ${exp.path}`));
+                                        } else {
+                                            setCuError(exp?.error || t('Export failed', '导出失败', '匯出失敗'));
+                                            setCuActionMsg('');
+                                        }
+                                    } catch (e: any) {
+                                        setCuError(e?.message || String(e));
+                                        setCuActionMsg('');
+                                    } finally {
+                                        setCuChecking(false);
+                                    }
+                                })();
+                            }}
+                            className="model-config-btn model-config-btn--sm"
+                            title={t('Export diagnostics JSON (no screenshots)', '导出诊断 JSON（不含截图）', '匯出診斷 JSON（不含截圖）')}
+                        >
+                            {t('Export diagnostics', '导出诊断', '匯出診斷')}
+                        </button>
+                        <button
+                            type="button"
+                            disabled={cuChecking}
+                            onClick={() => {
+                                void (async () => {
+                                    setCuChecking(true);
+                                    setCuError('');
+                                    setCuActionMsg(t('Exporting CSV…', '导出 CSV…', '匯出 CSV…'));
+                                    try {
+                                        const exp: any = await ExportComputerUseObserveHistoryCSV();
+                                        if (exp?.ok) {
+                                            setCuActionMsg(
+                                                t(
+                                                    `History CSV: ${exp.path} (${exp.rows ?? 0} rows)`,
+                                                    `历史 CSV: ${exp.path}（${exp.rows ?? 0} 行）`,
+                                                    `歷史 CSV: ${exp.path}（${exp.rows ?? 0} 行）`
+                                                )
+                                            );
+                                        } else {
+                                            setCuError(exp?.error || t('CSV export failed', 'CSV 导出失败', 'CSV 匯出失敗'));
+                                            setCuActionMsg('');
+                                        }
+                                    } catch (e: any) {
+                                        setCuError(e?.message || String(e));
+                                        setCuActionMsg('');
+                                    } finally {
+                                        setCuChecking(false);
+                                    }
+                                })();
+                            }}
+                            className="model-config-btn model-config-btn--sm"
+                            title={t('Export observe timing history as CSV', '导出 observe 耗时历史为 CSV', '匯出 observe 耗時歷史為 CSV')}
+                        >
+                            {t('Export history CSV', '导出历史 CSV', '匯出歷史 CSV')}
+                        </button>
+                        <button
+                            type="button"
+                            disabled={cuChecking}
+                            onClick={() => {
+                                void (async () => {
+                                    setCuError('');
+                                    try {
+                                        const r: any = await OpenComputerUseLastDiagnostics();
+                                        if (r?.ok) {
+                                            setCuActionMsg(t(`Opened: ${r.path}`, `已打开: ${r.path}`, `已打開: ${r.path}`));
+                                        } else {
+                                            const logs: any = await OpenComputerUseLogsFolder();
+                                            if (logs?.ok) {
+                                                setCuActionMsg(t(`Logs: ${logs.path}`, `日志目录: ${logs.path}`, `日誌目錄: ${logs.path}`));
+                                            } else {
+                                                setCuError(r?.error || logs?.error || t('Open failed', '打开失败', '打開失敗'));
+                                            }
+                                        }
+                                    } catch (e: any) {
+                                        setCuError(e?.message || String(e));
+                                    }
+                                })();
+                            }}
+                            className="model-config-btn model-config-btn--sm"
+                            title={t('Open last diagnostics or logs folder', '打开最近诊断文件或日志目录', '打開最近診斷檔案或日誌目錄')}
+                        >
+                            {t('Open diagnostics', '打开诊断', '打開診斷')}
+                        </button>
+                        <button
+                            type="button"
+                            disabled={cuChecking}
+                            onClick={() => {
+                                void (async () => {
+                                    setCuChecking(true);
+                                    setCuError('');
+                                    setCuActionMsg(t('Running E2E…', 'E2E 中…', 'E2E 中…'));
+                                    try {
+                                        const e2e: any = await ComputerUseE2ESmoke();
+                                        if (e2e?.diagnostics_path) setCuDiagPath(String(e2e.diagnostics_path));
+                                        if (e2e?.history_csv_path) setCuCsvPath(String(e2e.history_csv_path));
+                                        setCuActionMsg(
+                                            e2e?.ok
+                                                ? t(`E2E ok · ${e2e.ms ?? '?'}ms`, `E2E 通过 · ${e2e.ms ?? '?'}ms`, `E2E 通過 · ${e2e.ms ?? '?'}ms`)
+                                                : t(`E2E failed: ${e2e?.error || 'unknown'}`, `E2E 失败: ${e2e?.error || '未知'}`, `E2E 失敗: ${e2e?.error || '未知'}`)
+                                        );
+                                        await refreshCuArtifacts();
+                                    } catch (e: any) {
+                                        setCuError(e?.message || String(e));
+                                        setCuActionMsg('');
+                                    } finally {
+                                        setCuChecking(false);
+                                    }
+                                })();
+                            }}
+                            className="model-config-btn model-config-btn--sm"
+                            title={t('Smoke + launch editor + observe', '冒烟 + 启动编辑器 + 观察', '冒煙 + 啟動編輯器 + 觀察')}
+                        >
+                            {t('E2E smoke', 'E2E 冒烟', 'E2E 冒煙')}
+                        </button>
+                        <button
+                            type="button"
+                            disabled={cuChecking}
+                            onClick={() => {
+                                void (async () => {
+                                    setCuChecking(true);
+                                    setCuError('');
+                                    setCuActionMsg(t('Running E2E interact…', 'E2E 交互中…', 'E2E 交互中…'));
+                                    try {
+                                        const e2e: any = await ComputerUseE2EInteract();
+                                        if (e2e?.diagnostics_path) setCuDiagPath(String(e2e.diagnostics_path));
+                                        if (e2e?.history_csv_path) setCuCsvPath(String(e2e.history_csv_path));
+                                        const tok = e2e?.token ? ` token=${e2e.token}` : '';
+                                        const found =
+                                            e2e?.token_found === true
+                                                ? ' found'
+                                                : e2e?.token_found === false || e2e?.token_unconfirmed
+                                                  ? ' not-found'
+                                                  : '';
+                                        const soft =
+                                            e2e?.soft_fail
+                                                ? ` soft_fail${e2e.skip_reason ? `=${e2e.skip_reason}` : ''}`
+                                                : '';
+                                        setCuActionMsg(
+                                            e2e?.ok
+                                                ? t(
+                                                      `E2E interact ok · ${e2e.ms ?? '?'}ms${tok}${found}${soft}`,
+                                                      `E2E 交互通过 · ${e2e.ms ?? '?'}ms${tok}${found}${soft}`,
+                                                      `E2E 交互通過 · ${e2e.ms ?? '?'}ms${tok}${found}${soft}`
+                                                  )
+                                                : t(
+                                                      `E2E interact failed: ${e2e?.error || e2e?.skip_reason || 'unknown'}${soft}`,
+                                                      `E2E 交互失败: ${e2e?.error || e2e?.skip_reason || '未知'}${soft}`,
+                                                      `E2E 交互失敗: ${e2e?.error || e2e?.skip_reason || '未知'}${soft}`
+                                                  )
+                                        );
+                                        await refreshCuArtifacts();
+                                    } catch (e: any) {
+                                        setCuError(e?.message || String(e));
+                                        setCuActionMsg('');
+                                    } finally {
+                                        setCuChecking(false);
+                                    }
+                                })();
+                            }}
+                            className="model-config-btn model-config-btn--sm"
+                            title={t(
+                                'E2E with type into Notepad/TextEdit (moves real focus/cursor briefly)',
+                                'E2E 并在记事本/TextEdit 中输入（会短暂移动焦点/光标）',
+                                'E2E 並在記事本/TextEdit 中輸入（會短暫移動焦點/游標）'
+                            )}
+                        >
+                            {t('E2E interact', 'E2E 交互', 'E2E 交互')}
+                        </button>
+                    </div>
+                    {cuCheckReport && <p className="model-config-copy model-config-copy--soft">{cuCheckReport}</p>}
+                    {(cuDiagPath || cuCsvPath || cuArtifactCount > 0) && (
+                        <div className="model-config-toggle-row">
+                            {cuDiagPath ? (
+                                <button
+                                    type="button"
+                                    className="model-config-btn model-config-btn--xs"
+                                    onClick={() => {
+                                        void CopyComputerUsePath('diagnostics').then((r: any) => {
+                                            setCuActionMsg(
+                                                r?.ok
+                                                    ? t('Diagnostics path copied', '已复制诊断路径', '已複製診斷路徑')
+                                                    : (r?.error || t('Copy failed', '复制失败', '複製失敗'))
+                                            );
+                                        });
+                                    }}
+                                >
+                                    {t('Copy diag path', '复制诊断路径', '複製診斷路徑')}
+                                </button>
+                            ) : null}
+                            {cuCsvPath ? (
+                                <button
+                                    type="button"
+                                    className="model-config-btn model-config-btn--xs"
+                                    onClick={() => {
+                                        void CopyComputerUsePath('csv').then((r: any) => {
+                                            setCuActionMsg(
+                                                r?.ok
+                                                    ? t('CSV path copied', '已复制 CSV 路径', '已複製 CSV 路徑')
+                                                    : (r?.error || t('Copy failed', '复制失败', '複製失敗'))
+                                            );
+                                        });
+                                    }}
+                                >
+                                    {t('Copy CSV path', '复制 CSV 路径', '複製 CSV 路徑')}
+                                </button>
+                            ) : null}
                             <button
-                                key={k}
                                 type="button"
-                                className="model-config-btn"
-                                style={{
-                                    padding: '1px 8px',
-                                    fontSize: 11,
-                                    opacity: cuArtifactFilter === k ? 1 : 0.7,
-                                    fontWeight: cuArtifactFilter === k ? 600 : 400,
-                                }}
+                                className="model-config-btn model-config-btn--xs"
                                 onClick={() => {
-                                    setCuArtifactFilter(k);
-                                    void refreshCuArtifacts(k);
+                                    setCuShowArtifacts((v) => !v);
+                                    if (!cuShowArtifacts) void refreshCuArtifacts(cuArtifactFilter);
                                 }}
                             >
-                                {k === 'all'
-                                    ? t('All', '全部', '全部')
-                                    : k === 'diag'
-                                      ? t('Diagnostics', '诊断', '診斷')
-                                      : t('History CSV', '历史 CSV', '歷史 CSV')}
-                            </button>
-                        ))}
-                    </div>
-                    {cuArtifacts.length === 0 ? (
-                        <div style={{ opacity: 0.7 }}>{t('No Computer Use log files yet.', '暂无 Computer Use 日志文件。', '暫無 Computer Use 日誌檔案。')}</div>
-                    ) : (
-                        <>
-                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
-                                <button
-                                    type="button"
-                                    className="model-config-btn"
-                                    style={{ padding: '1px 6px', fontSize: 11 }}
-                                    onClick={() => {
-                                        const all: Record<string, boolean> = {};
-                                        for (const it of cuArtifacts) {
-                                            const path = String(it.path || '');
-                                            if (path) all[path] = true;
-                                        }
-                                        setCuSelectedPaths(all);
-                                    }}
-                                >
-                                    {t('Select all', '全选', '全選')}
-                                </button>
-                                <button
-                                    type="button"
-                                    className="model-config-btn"
-                                    style={{ padding: '1px 6px', fontSize: 11 }}
-                                    onClick={() => setCuSelectedPaths({})}
-                                >
-                                    {t('Clear selection', '清除选择', '清除選擇')}
-                                </button>
-                                <button
-                                    type="button"
-                                    className="model-config-btn"
-                                    style={{ padding: '1px 6px', fontSize: 11, color: 'var(--theme-danger, #c44)' }}
-                                    disabled={cuChecking || Object.keys(cuSelectedPaths).filter((k) => cuSelectedPaths[k]).length === 0}
-                                    onClick={async () => {
-                                        const paths = Object.keys(cuSelectedPaths).filter((k) => cuSelectedPaths[k]);
-                                        if (!paths.length) return;
-                                        const ok = await showConfirm(
-                                            t(
-                                                `Delete ${paths.length} selected Computer Use log file(s)? This cannot be undone.`,
-                                                `删除选中的 ${paths.length} 个 Computer Use 日志？不可恢复。`,
-                                                `刪除選中的 ${paths.length} 個 Computer Use 日誌？不可恢復。`
-                                            )
-                                        , t('Delete selected logs', '删除选中日志', '刪除選取日誌'), { confirmText: t('Delete', '删除', '刪除'), cancelText: t('Cancel', '取消', '取消'), confirmVariant: 'danger' });
-                                        if (!ok) return;
-                                        void (async () => {
-                                            setCuChecking(true);
-                                            try {
-                                                const r: any = await BatchDeleteComputerUseLogArtifacts(paths);
-                                                if (r?.ok) {
-                                                    setCuActionMsg(
-                                                        t(
-                                                            `Deleted ${r.deleted_n ?? paths.length} file(s), freed ${r.freed_bytes ?? 0} bytes` +
-                                                                (r.error_n ? ` (${r.error_n} failed)` : ''),
-                                                            `已删除 ${r.deleted_n ?? paths.length} 个文件，释放 ${r.freed_bytes ?? 0} 字节` +
-                                                                (r.error_n ? `（${r.error_n} 失败）` : ''),
-                                                            `已刪除 ${r.deleted_n ?? paths.length} 個檔案，釋放 ${r.freed_bytes ?? 0} 位元組` +
-                                                                (r.error_n ? `（${r.error_n} 失敗）` : '')
-                                                        )
-                                                    );
-                                                    if (r.error_n) setCuError(String(r.error || ''));
-                                                    setCuSelectedPaths({});
-                                                    await refreshCuArtifacts(cuArtifactFilter);
-                                                } else {
-                                                    setCuError(r?.error || t('Batch delete failed', '批量删除失败', '批量刪除失敗'));
-                                                }
-                                            } catch (e: any) {
-                                                setCuError(e?.message || String(e));
-                                            } finally {
-                                                setCuChecking(false);
-                                            }
-                                        })();
-                                    }}
-                                >
-                                    {t(
-                                        `Delete selected (${Object.keys(cuSelectedPaths).filter((k) => cuSelectedPaths[k]).length})`,
-                                        `删除选中（${Object.keys(cuSelectedPaths).filter((k) => cuSelectedPaths[k]).length}）`,
-                                        `刪除選中（${Object.keys(cuSelectedPaths).filter((k) => cuSelectedPaths[k]).length}）`
+                                {cuShowArtifacts
+                                    ? t('Hide file list', '隐藏文件列表', '隱藏檔案列表')
+                                    : t(
+                                        `Show files${cuArtifactCount ? ` (${cuArtifactCount})` : ''}`,
+                                        `显示文件${cuArtifactCount ? `（${cuArtifactCount}）` : ''}`,
+                                        `顯示檔案${cuArtifactCount ? `（${cuArtifactCount}）` : ''}`
                                     )}
-                                </button>
-                            </div>
-                            {cuArtifacts.map((it) => {
-                                const path = String(it.path || '');
-                                const selected = !!(path && cuSelectedPaths[path]);
-                                return (
-                                    <div
-                                        key={path || it.name}
-                                        style={{
-                                            display: 'flex',
-                                            gap: 8,
-                                            alignItems: 'center',
-                                            flexWrap: 'wrap',
-                                            padding: '3px 0',
-                                            borderBottom: '1px solid rgba(127,127,127,0.15)',
+                            </button>
+                            <button
+                                type="button"
+                                className="model-config-btn model-config-btn--xs"
+                                disabled={cuChecking}
+                                title={t(
+                                    `Keep ${cuKeepNewest} newest each; max age ${cuMaxAgeDays || '∞'} days`,
+                                    `各保留最新 ${cuKeepNewest} 个；最长 ${cuMaxAgeDays || '不限'} 天`,
+                                    `各保留最新 ${cuKeepNewest} 個；最長 ${cuMaxAgeDays || '不限'} 天`
+                                )}
+                                onClick={async () => {
+                                    const ageLabel = cuMaxAgeDays > 0
+                                        ? t(`and older than ${cuMaxAgeDays} days`, `以及超过 ${cuMaxAgeDays} 天`, `以及超過 ${cuMaxAgeDays} 天`)
+                                        : t('(age unlimited)', '（不限天数）', '（不限天數）');
+                                    const ok = await showConfirm(
+                                        t(
+                                            `Delete Computer Use log files beyond the newest ${cuKeepNewest} per kind ${ageLabel}? This cannot be undone.`,
+                                            `将删除各类型超出最新 ${cuKeepNewest} 个 ${ageLabel} 的 Computer Use 日志，不可恢复。确定？`,
+                                            `將刪除各類型超出最新 ${cuKeepNewest} 個 ${ageLabel} 的 Computer Use 日誌，不可恢復。確定？`
+                                        )
+                                    , t('Clean up logs', '清理日志', '清理日誌'), { confirmText: t('Delete', '删除', '刪除'), cancelText: t('Cancel', '取消', '取消'), confirmVariant: 'danger' });
+                                    if (!ok) return;
+                                    void (async () => {
+                                        setCuChecking(true);
+                                        try {
+                                            const r: any = await PruneComputerUseLogArtifacts(cuKeepNewest, cuMaxAgeDays);
+                                            if (r?.ok) {
+                                                const errN = Number(r.remove_error_n ?? 0);
+                                                setCuActionMsg(
+                                                    t(
+                                                        `Pruned ${r.deleted_n ?? 0} file(s), freed ${r.freed_bytes ?? 0} bytes` +
+                                                            (errN ? ` (${errN} remove errors)` : ''),
+                                                        `已清理 ${r.deleted_n ?? 0} 个文件，释放 ${r.freed_bytes ?? 0} 字节` +
+                                                            (errN ? `（${errN} 删除失败）` : ''),
+                                                        `已清理 ${r.deleted_n ?? 0} 個檔案，釋放 ${r.freed_bytes ?? 0} 位元組` +
+                                                            (errN ? `（${errN} 刪除失敗）` : '')
+                                                    )
+                                                );
+                                                if (errN && r.error) setCuError(String(r.error));
+                                                await refreshCuArtifacts(cuArtifactFilter);
+                                            } else {
+                                                setCuError(r?.error || t('Prune failed', '清理失败', '清理失敗'));
+                                            }
+                                        } catch (e: any) {
+                                            setCuError(e?.message || String(e));
+                                        } finally {
+                                            setCuChecking(false);
+                                        }
+                                    })();
+                                }}
+                            >
+                                {t(
+                                    `Prune old logs${cuArtifactCount ? ` (${cuArtifactCount})` : ''}`,
+                                    `清理旧日志${cuArtifactCount ? `（${cuArtifactCount}）` : ''}`,
+                                    `清理舊日誌${cuArtifactCount ? `（${cuArtifactCount}）` : ''}`
+                                )}
+                            </button>
+                        </div>
+                    )}
+                    <div className="model-config-toggle-row">
+                        <label className="model-config-inline-label">
+                            {t('Keep newest', '保留最新', '保留最新')}
+                            <input
+                                type="number"
+                                min={1}
+                                max={100}
+                                value={cuKeepNewest}
+                                onChange={(e) => setCuKeepNewest(Math.max(1, Math.min(100, Number(e.target.value) || 10)))}
+                                style={{ width: 56 }}
+                            />
+                        </label>
+                        <label className="model-config-inline-label">
+                            {t('Max age days (0=off)', '最长天数（0=不限）', '最長天數（0=不限）')}
+                            <input
+                                type="number"
+                                min={0}
+                                max={3650}
+                                value={cuMaxAgeDays}
+                                onChange={(e) => setCuMaxAgeDays(Math.max(0, Math.min(3650, Number(e.target.value) || 0)))}
+                                style={{ width: 56 }}
+                            />
+                        </label>
+                        <label className="model-config-check">
+                            <input
+                                type="checkbox"
+                                checked={cuAutoPrune}
+                                onChange={(e) => {
+                                    const on = e.target.checked;
+                                    setCuAutoPrune(on);
+                                    void SetComputerUseLogAutoPrune(on).then((r: any) => {
+                                        if (!r?.ok) {
+                                            setCuAutoPrune(!on);
+                                            setCuError(r?.error || t('Save failed', '保存失败', '保存失敗'));
+                                        } else {
+                                            setCuActionMsg(
+                                                on
+                                                    ? t('Auto-prune on startup enabled', '已开启启动时自动清理', '已開啟啟動時自動清理')
+                                                    : t('Auto-prune on startup disabled', '已关闭启动时自动清理', '已關閉啟動時自動清理')
+                                            );
+                                        }
+                                    });
+                                }}
+                            />
+                            {t('Auto-prune on startup', '启动时自动清理', '啟動時自動清理')}
+                        </label>
+                        <button
+                            type="button"
+                            className="model-config-btn model-config-btn--xs"
+                            disabled={cuChecking}
+                            onClick={() => {
+                                void (async () => {
+                                    setCuChecking(true);
+                                    setCuError('');
+                                    try {
+                                        // autoPrune 0 = leave unchanged (checkbox already persists)
+                                        const r: any = await SetComputerUseLogPrunePolicy(cuKeepNewest, cuMaxAgeDays, 0);
+                                        if (r?.ok) {
+                                            setCuActionMsg(
+                                                t(
+                                                    `Policy saved: keep=${r.keep_newest}, age=${r.max_age_days}d, auto=${r.auto_prune ? 'on' : 'off'}`,
+                                                    `策略已保存：保留=${r.keep_newest}，天数=${r.max_age_days}，自动=${r.auto_prune ? '开' : '关'}`,
+                                                    `策略已保存：保留=${r.keep_newest}，天數=${r.max_age_days}，自動=${r.auto_prune ? '開' : '關'}`
+                                                )
+                                            );
+                                        } else {
+                                            setCuError(r?.error || t('Save failed', '保存失败', '保存失敗'));
+                                        }
+                                    } catch (e: any) {
+                                        setCuError(e?.message || String(e));
+                                    } finally {
+                                        setCuChecking(false);
+                                    }
+                                })();
+                            }}
+                        >
+                            {t('Save policy', '保存策略', '保存策略')}
+                        </button>
+                    </div>
+                    {cuShowArtifacts && (
+                        <div className="model-config-artifacts">
+                            <div className="model-config-artifacts__filters">
+                                {(['all', 'diag', 'csv'] as const).map((k) => (
+                                    <button
+                                        key={k}
+                                        type="button"
+                                        className={`model-config-btn model-config-btn--chip${cuArtifactFilter === k ? ' is-active' : ''}`}
+                                        onClick={() => {
+                                            setCuArtifactFilter(k);
+                                            void refreshCuArtifacts(k);
                                         }}
                                     >
-                                        <label style={{ display: 'flex', alignItems: 'center', margin: 0 }}>
-                                            <input
-                                                type="checkbox"
-                                                checked={selected}
-                                                disabled={!path}
-                                                onChange={(e) => {
-                                                    if (!path) return;
-                                                    setCuSelectedPaths((prev) => {
-                                                        const next = { ...prev };
-                                                        if (e.target.checked) next[path] = true;
-                                                        else delete next[path];
-                                                        return next;
-                                                    });
-                                                }}
-                                            />
-                                        </label>
-                                        <span style={{ opacity: 0.7, minWidth: 36 }}>{it.kind}</span>
+                                        {k === 'all'
+                                            ? t('All', '全部', '全部')
+                                            : k === 'diag'
+                                              ? t('Diagnostics', '诊断', '診斷')
+                                              : t('History CSV', '历史 CSV', '歷史 CSV')}
+                                    </button>
+                                ))}
+                            </div>
+                            {cuArtifacts.length === 0 ? (
+                                <div className="model-config-artifacts__empty">{t('No Computer Use log files yet.', '暂无 Computer Use 日志文件。', '暫無 Computer Use 日誌檔案。')}</div>
+                            ) : (
+                                <>
+                                    <div className="model-config-artifacts__bulk">
                                         <button
                                             type="button"
-                                            className="model-config-btn"
-                                            style={{ padding: '1px 6px', fontSize: 11 }}
-                                            title={path}
+                                            className="model-config-btn model-config-btn--chip"
                                             onClick={() => {
-                                                void OpenComputerUseLogArtifact(path).then((r: any) => {
-                                                    if (!r?.ok) setCuError(r?.error || t('Open failed', '打开失败', '打開失敗'));
-                                                });
+                                                const all: Record<string, boolean> = {};
+                                                for (const it of cuArtifacts) {
+                                                    const path = String(it.path || '');
+                                                    if (path) all[path] = true;
+                                                }
+                                                setCuSelectedPaths(all);
                                             }}
                                         >
-                                            {it.name}
-                                        </button>
-                                        <span style={{ opacity: 0.65 }}>
-                                            {typeof it.size === 'number' ? `${Math.max(1, Math.round(it.size / 1024))}KB` : ''}
-                                            {it.mod_time ? ` · ${String(it.mod_time).replace('T', ' ').slice(0, 16)}` : ''}
-                                        </span>
-                                        <button
-                                            type="button"
-                                            className="model-config-btn"
-                                            style={{ padding: '1px 6px', fontSize: 11 }}
-                                            onClick={() => {
-                                                void navigator.clipboard?.writeText(path).then(
-                                                    () => setCuActionMsg(t('Path copied', '路径已复制', '路徑已複製')),
-                                                    () => {
-                                                        void CopyComputerUsePath(it.kind === 'csv' ? 'csv' : 'diagnostics').then(() =>
-                                                            setCuActionMsg(t('Path copied', '路径已复制', '路徑已複製'))
-                                                        );
-                                                    }
-                                                );
-                                            }}
-                                        >
-                                            {t('Copy', '复制', '複製')}
+                                            {t('Select all', '全选', '全選')}
                                         </button>
                                         <button
                                             type="button"
-                                            className="model-config-btn"
-                                            style={{ padding: '1px 6px', fontSize: 11, color: 'var(--theme-danger, #c44)' }}
+                                            className="model-config-btn model-config-btn--chip"
+                                            onClick={() => setCuSelectedPaths({})}
+                                        >
+                                            {t('Clear selection', '清除选择', '清除選擇')}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="model-config-btn model-config-btn--danger model-config-btn--chip"
+                                            disabled={cuChecking || Object.keys(cuSelectedPaths).filter((k) => cuSelectedPaths[k]).length === 0}
                                             onClick={async () => {
-                                                const name = it.name || path || '';
+                                                const paths = Object.keys(cuSelectedPaths).filter((k) => cuSelectedPaths[k]);
+                                                if (!paths.length) return;
                                                 const ok = await showConfirm(
                                                     t(
-                                                        `Delete ${name}? This cannot be undone.`,
-                                                        `删除 ${name}？不可恢复。`,
-                                                        `刪除 ${name}？不可恢復。`
+                                                        `Delete ${paths.length} selected Computer Use log file(s)? This cannot be undone.`,
+                                                        `删除选中的 ${paths.length} 个 Computer Use 日志？不可恢复。`,
+                                                        `刪除選中的 ${paths.length} 個 Computer Use 日誌？不可恢復。`
                                                     )
-                                                , t('Delete log', '删除日志', '刪除日誌'), { confirmText: t('Delete', '删除', '刪除'), cancelText: t('Cancel', '取消', '取消'), confirmVariant: 'danger' });
+                                                , t('Delete selected logs', '删除选中日志', '刪除選取日誌'), { confirmText: t('Delete', '删除', '刪除'), cancelText: t('Cancel', '取消', '取消'), confirmVariant: 'danger' });
                                                 if (!ok) return;
-                                                void DeleteComputerUseLogArtifact(path).then(async (r: any) => {
-                                                    if (r?.ok) {
-                                                        setCuActionMsg(
-                                                            t(
-                                                                `Deleted ${name}`,
-                                                                `已删除 ${name}`,
-                                                                `已刪除 ${name}`
-                                                            )
-                                                        );
-                                                        await refreshCuArtifacts(cuArtifactFilter);
-                                                    } else {
-                                                        setCuError(r?.error || t('Delete failed', '删除失败', '刪除失敗'));
+                                                void (async () => {
+                                                    setCuChecking(true);
+                                                    try {
+                                                        const r: any = await BatchDeleteComputerUseLogArtifacts(paths);
+                                                        if (r?.ok) {
+                                                            setCuActionMsg(
+                                                                t(
+                                                                    `Deleted ${r.deleted_n ?? paths.length} file(s), freed ${r.freed_bytes ?? 0} bytes` +
+                                                                        (r.error_n ? ` (${r.error_n} failed)` : ''),
+                                                                    `已删除 ${r.deleted_n ?? paths.length} 个文件，释放 ${r.freed_bytes ?? 0} 字节` +
+                                                                        (r.error_n ? `（${r.error_n} 失败）` : ''),
+                                                                    `已刪除 ${r.deleted_n ?? paths.length} 個檔案，釋放 ${r.freed_bytes ?? 0} 位元組` +
+                                                                        (r.error_n ? `（${r.error_n} 失敗）` : '')
+                                                                )
+                                                            );
+                                                            if (r.error_n) setCuError(String(r.error || ''));
+                                                            setCuSelectedPaths({});
+                                                            await refreshCuArtifacts(cuArtifactFilter);
+                                                        } else {
+                                                            setCuError(r?.error || t('Batch delete failed', '批量删除失败', '批量刪除失敗'));
+                                                        }
+                                                    } catch (e: any) {
+                                                        setCuError(e?.message || String(e));
+                                                    } finally {
+                                                        setCuChecking(false);
                                                     }
-                                                });
+                                                })();
                                             }}
                                         >
-                                            {t('Delete', '删除', '刪除')}
+                                            {t(
+                                                `Delete selected (${Object.keys(cuSelectedPaths).filter((k) => cuSelectedPaths[k]).length})`,
+                                                `删除选中（${Object.keys(cuSelectedPaths).filter((k) => cuSelectedPaths[k]).length}）`,
+                                                `刪除選中（${Object.keys(cuSelectedPaths).filter((k) => cuSelectedPaths[k]).length}）`
+                                            )}
                                         </button>
                                     </div>
-                                );
-                            })}
-                        </>
+                                    {cuArtifacts.map((it) => {
+                                        const path = String(it.path || '');
+                                        const selected = !!(path && cuSelectedPaths[path]);
+                                        return (
+                                            <div
+                                                key={path || it.name}
+                                                className="model-config-artifacts__row"
+                                            >
+                                                <label className="model-config-check">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={selected}
+                                                        disabled={!path}
+                                                        onChange={(e) => {
+                                                            if (!path) return;
+                                                            setCuSelectedPaths((prev) => {
+                                                                const next = { ...prev };
+                                                                if (e.target.checked) next[path] = true;
+                                                                else delete next[path];
+                                                                return next;
+                                                            });
+                                                        }}
+                                                    />
+                                                </label>
+                                                <span className="model-config-artifacts__kind">{it.kind}</span>
+                                                <button
+                                                    type="button"
+                                                    className="model-config-btn model-config-btn--chip"
+                                                    title={path}
+                                                    onClick={() => {
+                                                        void OpenComputerUseLogArtifact(path).then((r: any) => {
+                                                            if (!r?.ok) setCuError(r?.error || t('Open failed', '打开失败', '打開失敗'));
+                                                        });
+                                                    }}
+                                                >
+                                                    {it.name}
+                                                </button>
+                                                <span className="model-config-artifacts__meta">
+                                                    {typeof it.size === 'number' ? `${Math.max(1, Math.round(it.size / 1024))}KB` : ''}
+                                                    {it.mod_time ? ` · ${String(it.mod_time).replace('T', ' ').slice(0, 16)}` : ''}
+                                                </span>
+                                                <button
+                                                    type="button"
+                                                    className="model-config-btn model-config-btn--chip"
+                                                    onClick={() => {
+                                                        void navigator.clipboard?.writeText(path).then(
+                                                            () => setCuActionMsg(t('Path copied', '路径已复制', '路徑已複製')),
+                                                            () => {
+                                                                void CopyComputerUsePath(it.kind === 'csv' ? 'csv' : 'diagnostics').then(() =>
+                                                                    setCuActionMsg(t('Path copied', '路径已复制', '路徑已複製'))
+                                                                );
+                                                            }
+                                                        );
+                                                    }}
+                                                >
+                                                    {t('Copy', '复制', '複製')}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="model-config-btn model-config-btn--danger model-config-btn--chip"
+                                                    onClick={async () => {
+                                                        const name = it.name || path || '';
+                                                        const ok = await showConfirm(
+                                                            t(
+                                                                `Delete ${name}? This cannot be undone.`,
+                                                                `删除 ${name}？不可恢复。`,
+                                                                `刪除 ${name}？不可恢復。`
+                                                            )
+                                                        , t('Delete log', '删除日志', '刪除日誌'), { confirmText: t('Delete', '删除', '刪除'), cancelText: t('Cancel', '取消', '取消'), confirmVariant: 'danger' });
+                                                        if (!ok) return;
+                                                        void DeleteComputerUseLogArtifact(path).then(async (r: any) => {
+                                                            if (r?.ok) {
+                                                                setCuActionMsg(
+                                                                    t(
+                                                                        `Deleted ${name}`,
+                                                                        `已删除 ${name}`,
+                                                                        `已刪除 ${name}`
+                                                                    )
+                                                                );
+                                                                await refreshCuArtifacts(cuArtifactFilter);
+                                                            } else {
+                                                                setCuError(r?.error || t('Delete failed', '删除失败', '刪除失敗'));
+                                                            }
+                                                        });
+                                                    }}
+                                                >
+                                                    {t('Delete', '删除', '刪除')}
+                                                </button>
+                                            </div>
+                                        );
+                                    })}
+                                </>
+                            )}
+                        </div>
                     )}
+                    {cuActionMsg && <p className="model-config-copy model-config-copy--soft">{cuActionMsg}</p>}
+                    {cuError && <p className="model-config-error">{cuError}</p>}
                 </div>
-            )}
-            {cuActionMsg && <p className="model-config-copy" style={{ opacity: 0.85 }}>{cuActionMsg}</p>}
-            {cuError && <p className="model-config-error">{cuError}</p>}
+            </section>
 
             {/* ===== Section 1: OminiParser-V2 (Screen Parsing) ===== */}
-            <h4 className="model-config-heading model-config-heading--warning model-config-heading--spaced">
-                {t('OminiParser-V2 (Screen Parsing)', 'OminiParser-V2（屏幕解析）', 'OminiParser-V2（螢幕解析）')}
-            </h4>
-            <div className="model-config-toggle-row">
-                <label className="model-config-check">
-                    <input type='checkbox' checked={spEnabled} onChange={e => handleSpToggle(e.target.checked)} />
-                    {t('Enable Screen Parsing', '启用屏幕解析', '啟用螢幕解析')}
-                </label>
-            </div>
-            <p className="model-config-copy">
-                {t(
-                    'OminiParser-V2 uses a YOLO-based model to detect and parse UI elements on screen, enabling vision-based interaction. Model file ~77MB, downloaded from Hub.',
-                    'OminiParser-V2 使用 YOLO 模型检测和解析屏幕上的 UI 元素，实现基于视觉的界面交互。模型文件约 77MB，将从 Hub 下载到本地。',
-                    'OminiParser-V2 使用 YOLO 模型檢測和解析螢幕上的 UI 元素，實現基於視覺的界面交互。模型文件約 77MB，將從 Hub 下載到本地。'
+            <section className="model-config-section">
+                <div className="model-config-section__head">
+                    <div className="model-config-section__text">
+                        <h4 className="model-config-section__title">
+                            {t('OminiParser-V2 (Screen Parsing)', 'OminiParser-V2（屏幕解析）', 'OminiParser-V2（螢幕解析）')}
+                        </h4>
+                        <p className="model-config-section__sub">
+                            {t(
+                                'OminiParser-V2 uses a YOLO-based model to detect and parse UI elements on screen, enabling vision-based interaction. Model file ~77MB, downloaded from Hub.',
+                                'OminiParser-V2 使用 YOLO 模型检测和解析屏幕上的 UI 元素，实现基于视觉的界面交互。模型文件约 77MB，将从 Hub 下载到本地。',
+                                'OminiParser-V2 使用 YOLO 模型檢測和解析螢幕上的 UI 元素，實現基於視覺的界面交互。模型文件約 77MB，將從 Hub 下載到本地。'
+                            )}
+                        </p>
+                    </div>
+                    <label className="model-config-switch" title={t('Enable Screen Parsing', '启用屏幕解析', '啟用螢幕解析')}>
+                        <input
+                            type="checkbox"
+                            className="model-config-switch__input"
+                            role="switch"
+                            checked={spEnabled}
+                            onChange={e => handleSpToggle(e.target.checked)}
+                            aria-label={t('Enable Screen Parsing', '启用屏幕解析', '啟用螢幕解析')}
+                        />
+                    </label>
+                </div>
+                {spEnabled && (
+                    <ModelStatusBox
+                        exists={spModelExists} downloading={spDownloading} size={spModelSize}
+                        progress={spProgress} downloaded={spDownloaded} total={spTotal}
+                        error={spError} onDownload={startSpDownload} onRetry={startSpDownload}
+                        accentColor="var(--theme-primary, #2f5f98)" t={t}
+                    />
                 )}
-            </p>
-            {spEnabled && (
-                <ModelStatusBox
-                    exists={spModelExists} downloading={spDownloading} size={spModelSize}
-                    progress={spProgress} downloaded={spDownloaded} total={spTotal}
-                    error={spError} onDownload={startSpDownload} onRetry={startSpDownload}
-                    accentColor="var(--theme-primary, #2f5f98)" t={t}
-                />
-            )}
+            </section>
 
             {/* ===== Section 2: Embedding Model (Vector Search) ===== */}
-            <h4 className="model-config-heading model-config-heading--primary model-config-heading--spaced">
-                {t('Embedding Model: Qwen3-Embedding-0.6B (Vector Search)', '嵌入模型：Qwen3-Embedding-0.6B（向量搜索）', '嵌入模型：Qwen3-Embedding-0.6B（向量搜尋）')}
-            </h4>
-            <div className="model-config-toggle-row">
-                <label className="model-config-check">
-                    <input type='checkbox' checked={embEnabled} onChange={e => handleEmbToggle(e.target.checked)} />
-                    {t('Enable Vector Search', '启用向量搜索', '啟用向量搜索')}
-                </label>
-            </div>
-            <p className="model-config-copy">
-                {t(
-                    'Vector search, local intent recognition and tool routing use the Qwen3-Embedding-0.6B model (Q8_0, ~610 MB) plus small intent/tool/interrupt heads. Files are downloaded from the GitHub release first, then from your Hub, and checked with SHA-256.',
-                    '向量搜索、本地意图识别和工具路由使用 Qwen3-Embedding-0.6B 模型（Q8_0，约 610 MB）以及小型意图/工具/打断头。文件先从 GitHub Release 下载，失败时改用 Hub，并做 SHA-256 校验。',
-                    '向量搜尋、本地意圖識別和工具路由使用 Qwen3-Embedding-0.6B 模型（Q8_0，約 610 MB）以及小型意圖/工具/打斷頭。檔案先從 GitHub Release 下載，失敗時改用 Hub，並做 SHA-256 校驗。'
+            <section className="model-config-section">
+                <div className="model-config-section__head">
+                    <div className="model-config-section__text">
+                        <h4 className="model-config-section__title">
+                            {t('Embedding Model: Qwen3-Embedding-0.6B (Vector Search)', '嵌入模型：Qwen3-Embedding-0.6B（向量搜索）', '嵌入模型：Qwen3-Embedding-0.6B（向量搜尋）')}
+                        </h4>
+                        <p className="model-config-section__sub">
+                            {t(
+                                'Vector search, local intent recognition and tool routing use the Qwen3-Embedding-0.6B model (Q8_0, ~610 MB) plus small intent/tool/interrupt heads. Files are downloaded from the GitHub release first, then from your Hub, and checked with SHA-256.',
+                                '向量搜索、本地意图识别和工具路由使用 Qwen3-Embedding-0.6B 模型（Q8_0，约 610 MB）以及小型意图/工具/打断头。文件先从 GitHub Release 下载，失败时改用 Hub，并做 SHA-256 校验。',
+                                '向量搜尋、本地意圖識別和工具路由使用 Qwen3-Embedding-0.6B 模型（Q8_0，約 610 MB）以及小型意圖/工具/打斷頭。檔案先從 GitHub Release 下載，失敗時改用 Hub，並做 SHA-256 校驗。'
+                            )}
+                        </p>
+                    </div>
+                    <label className="model-config-switch" title={t('Enable Vector Search', '启用向量搜索', '啟用向量搜索')}>
+                        <input
+                            type="checkbox"
+                            className="model-config-switch__input"
+                            role="switch"
+                            checked={embEnabled}
+                            onChange={e => handleEmbToggle(e.target.checked)}
+                            aria-label={t('Enable Vector Search', '启用向量搜索', '啟用向量搜索')}
+                        />
+                    </label>
+                </div>
+                {embEnabled && (
+                    <ModelStatusBox
+                        exists={embModelExists} downloading={embDownloading} size={embModelSize}
+                        progress={embProgress} downloaded={embDownloaded} total={embTotal}
+                        error={embError} onDownload={startEmbDownload} onRetry={startEmbDownload}
+                        onDelete={deleteEmbModel} onRedownload={redownloadEmbModel}
+                        accentColor="var(--theme-primary)" t={t}
+                    />
                 )}
-            </p>
-            {embEnabled && (
-                <ModelStatusBox
-                    exists={embModelExists} downloading={embDownloading} size={embModelSize}
-                    progress={embProgress} downloaded={embDownloaded} total={embTotal}
-                    error={embError} onDownload={startEmbDownload} onRetry={startEmbDownload}
-                    onDelete={deleteEmbModel} onRedownload={redownloadEmbModel}
-                    accentColor="var(--theme-primary)" t={t}
-                />
-            )}
-        </div>
+            </section>
+        </>
     );
 }

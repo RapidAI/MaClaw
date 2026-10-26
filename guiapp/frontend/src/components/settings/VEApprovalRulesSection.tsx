@@ -132,7 +132,7 @@ function ConditionEditor({
         />
       )}
       <button
-        className="ve-btn ve-btn--ghost ve-btn--sm"
+        className="ve-btn ve-btn--ghost ve-btn--danger ve-btn--sm"
         onClick={() => onRemove(index)}
         data-testid={`condition-remove-${index}`}
         aria-label={textForLang(lang, "Remove condition", "移除条件", "移除條件")}

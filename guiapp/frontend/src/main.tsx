@@ -10,6 +10,7 @@ import { KnowledgeImportProvider } from './components/settings/KnowledgeImportCo
 import { installWindowDragHandler } from './utils/windowDrag'
 import { hideBootSplash } from './components/startup/hideBootSplash'
 import { installMermaidPdfRaster } from './components/ai/mermaidPdfRaster'
+import { installPerfReporting } from './perfReporting'
 
 const App = React.lazy(() => import('./App'))
 const FileCompanionWindow = React.lazy(() => import('./components/filecompanion/FileCompanionWindow'))
@@ -17,6 +18,9 @@ const isFileCompanionWindow = readFileCompanionBootFlag()
 
 installWindowDragHandler()
 installMermaidPdfRaster()
+// Install before the first render so the paint observer is buffered and the
+// first contentful paint is not missed.
+installPerfReporting()
 try { void fetch('/maclaw-boot/ping?stage=react'); } catch { /* WebView may not have fetch during tests */ }
 
 // Cancel the browser default for external file drags as early as possible.

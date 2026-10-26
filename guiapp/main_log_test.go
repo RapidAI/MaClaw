@@ -213,9 +213,31 @@ func TestDetailAwareLogWriterKeepsBugReportLinesWhenDetailDisabled(t *testing.T)
 	}
 }
 
-func TestDetailAwareLogWriterAlwaysKeepsRegistrationLines(t *testing.T) {
+// Startup performance marks and WebView2 process samples must reach disk with
+// log_detail off. They were silently dropped once already: the detail gate only
+// passes lines containing a known keyword, and "mark=..." matched none, so a
+// slow-machine report carried no timeline at all.
+func TestDetailAwareLogWriterKeepsPerfLinesWhenDetailDisabled(t *testing.T) {
 	setLogDetailForTest(t, false)
 
+	for _, line := range []string{
+		"[perf] mark=interactive at=29.399s" + "\n",
+		"[perf] summary stages=startup-done=4.9s,interactive=29.3s cpus=16 go=go1.26.5" + "\n",
+		"[perf] sample webview_procs=7 webview_cpu_pct=50.9 webview_mem_mb=754 self_cpu_s=25.55 window_s=30" + "\n",
+	} {
+		var file bytes.Buffer
+		writer := &detailAwareLogWriter{file: &file, stderr: nil}
+		if _, err := writer.Write([]byte(line)); err != nil {
+			t.Fatalf("Write(%q) returned error: %v", line, err)
+		}
+		if file.Len() == 0 {
+			t.Fatalf("perf line was dropped with detail disabled: %q", line)
+		}
+	}
+}
+
+func TestDetailAwareLogWriterAlwaysKeepsRegistrationLines(t *testing.T) {
+	setLogDetailForTest(t, false)
 	var file bytes.Buffer
 	var reg bytes.Buffer
 	var stderr bytes.Buffer

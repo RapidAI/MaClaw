@@ -302,7 +302,22 @@ func syncWebViewClientSize() {
 	}
 }
 
+// captureMainWindowPNG writes a diagnostic screenshot of the whole window.
+//
+// This is a full-window PrintWindow plus PNG encode. On a low-end machine with
+// a large display that is a multi-hundred-millisecond stall on the startup path
+// and on every input-watchdog escalation, and the resulting images are only
+// ever read by a developer investigating a rendering bug. It therefore runs
+// only when explicitly requested:
+//
+//	MACLAW_UI_SCREENSHOTS=1
+//
+// The timeline marks in perf_probe.go remain the always-on diagnostic.
 func captureMainWindowPNG(tag string) {
+	if !uiScreenshotsEnabled() {
+		bootLog("captureMainWindowPNG tag=%s skipped (set MACLAW_UI_SCREENSHOTS=1)", tag)
+		return
+	}
 	hwnd := findWailsWindowHWND()
 	if hwnd == 0 {
 		bootLog("captureMainWindowPNG tag=%s no hwnd", tag)

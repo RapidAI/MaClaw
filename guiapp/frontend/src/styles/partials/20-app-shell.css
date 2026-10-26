@@ -2831,6 +2831,39 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
     min-height: 36px;
 }
 
+/* Visually hidden but exposed to assistive tech (loading status, icon-only
+   control labels). */
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+/* Shared quiet note / error line used inside settings panels
+   (编程设置, LaTeX, …). */
+.settings-help-text {
+    margin: 0;
+    color: var(--theme-text-muted);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.settings-error {
+    margin: 0;
+    color: var(--theme-danger);
+    font-size: 0.78rem;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
 /* Migrated from inline styles in layout components (AppStatusMessageBar). */
 .asmb-warn-icon {
     width: 14px;

@@ -45,7 +45,7 @@ describe('LatexSettingsPanel', () => {
         expect(await screen.findByTestId('latex-ready')).toBeTruthy();
         expect(screen.getByText('scheme-small 已就绪')).toBeTruthy();
         expect(screen.getByText('XeTeX test')).toBeTruthy();
-        const box = screen.getByRole('checkbox') as HTMLInputElement;
+        const box = screen.getByRole('switch') as HTMLInputElement;
         expect(box.checked).toBe(true);
         expect(screen.getByText(/下载源:/)).toBeTruthy();
     });
@@ -66,7 +66,7 @@ describe('LatexSettingsPanel', () => {
 
     it('persists turning TinyTeX off', async () => {
         render(<LatexSettingsPanel lang="en" />);
-        const box = await screen.findByRole('checkbox');
+        const box = await screen.findByRole('switch');
         fireEvent.click(box);
         await waitFor(() => expect(mocks.setEnabled).toHaveBeenCalledWith(false));
     });

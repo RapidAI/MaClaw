@@ -18,6 +18,7 @@ import { useRemotePanel } from './components/remote/useRemotePanel';
 import { TERMINAL_SESSION_STATUSES } from './components/remote/types';
 import type { SessionTab } from './components/remote/sessionTabs';
 import { startVisibleInterval } from './utils/visibleInterval';
+import { useStartupPerfProbe, reportInteractiveAfterPaint } from './components/startup/useStartupPerfProbe';
 import { defaultModelForQuickProvider } from './components/ai/assistantQuickModelMenu';
 import { useAudioDevices } from './components/ai/useAudioDevices';
 import { IMAuditPanel } from './components/remote/IMAuditPanel';
@@ -305,6 +306,7 @@ const VE_SIDEBAR_LIST_EVENT_THROTTLE_MS = 1_500;
 
 function App() {
     console.log('[startup-trace] App component render begin');
+    useStartupPerfProbe();
     const logStartupTrace = (stage: string, extra?: Record<string, unknown>) => {
         const logFn = (window as any).go?.main?.App?.LogFrontendDiagnostic;
         const payload = { tag: 'startup-trace', stage, ts: Date.now(), ...extra };
@@ -318,8 +320,7 @@ function App() {
     // paint and dominated ~/.maclaw logs (10k+ lines in one session).
     useEffect(() => {
         logStartupTrace('app-render-begin');
-    }, []);
-    // Bind before the pull. A result that finished while this GUI was offline
+    }, []);    // Bind before the pull. A result that finished while this GUI was offline
     // is written into the bot transcript even if the Bots page is not the one
     // on screen, and the same pull when the page opens is a no-op once acked.
     useEffect(() => {
@@ -2208,6 +2209,7 @@ function App() {
             if (seq !== loadingShellSeq) return;
             clearLoadingSafetyTimer();
             logStartupTrace('finish-loading-shell', { reason, seq });
+            reportInteractiveAfterPaint(reason);
             setIsLoading(false);
             setIsManualCheck(false);
             // Avoid a second blank gate: isLoading=false with config still null

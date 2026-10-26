@@ -81,6 +81,13 @@ func (a *App) promotePastEnvCheckSplash(reason string) {
 		a.ResizeWindow(size["width"], size["height"])
 		syncWebViewClientSize()
 		bootLog("delayed ResizeWindow after wails bind %dx%d", size["width"], size["height"])
+		// The remaining work is diagnostics only. Skip it on every normal
+		// launch: the DOM dump walks every stylesheet rule and the captures are
+		// full-window PrintWindow calls, which are pure startup cost on a slow
+		// machine.
+		if !uiScreenshotsEnabled() {
+			return
+		}
 		time.Sleep(700 * time.Millisecond)
 		runtime.WindowExecJS(a.ctx, dumpFrontendDOMJS)
 		captureMainWindowPNG("t1.5s")
@@ -139,6 +146,15 @@ func (a *App) watchFrontendPaint() {
 		bootLog("watch 4.5s tick navReady=%v htmlReady=%v", a.frontendDOMReady.Load(), a.frontendHTMLReady.Load())
 		if a.frontendHTMLReady.Load() {
 			return
+		}
+		// Only a blank window that never requested a single asset matches the
+		// WebView2 GPU-compositor failure mode. A slow machine requests assets
+		// and then paints late; recording that as a GPU failure would disable
+		// acceleration on exactly the hardware that benefits from it most.
+		if served := frontendAssetRequests.Load(); served == 0 {
+			recordWebviewGPUFailure(defaultWebviewUserDataPath(), "paint-watch-zero-asset-requests")
+		} else {
+			bootLog("paint watchdog: %d asset requests served but no HTML-ready; not a GPU failure", served)
 		}
 		log.Printf("[startup] WebView still not ready err=dom-timeout; reloading asset host")
 		runtime.WindowExecJS(a.ctx, "window.location.replace('http://wails.localhost/');")

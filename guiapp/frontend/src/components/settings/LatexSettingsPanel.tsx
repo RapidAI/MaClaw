@@ -125,23 +125,27 @@ export function LatexSettingsPanel({ lang }: { lang: string }) {
     const enabled = status?.enabled !== false;
     return (
         <div className="settings-content settings-content--stacked" data-testid="latex-settings">
-            <section className="model-config-panel model-config-panel--spaced">
-                <h4 className="model-config-heading">{t('LaTeX', 'LaTeX', 'LaTeX')}</h4>
-                <div className="model-config-toggle-row">
-                    <label className="model-config-check">
+            <section className="model-config-section">
+                <div className="model-config-section__head">
+                    <div className="model-config-section__text">
+                        <h4 className="model-config-section__title">{t('LaTeX', 'LaTeX', 'LaTeX')}</h4>
+                        <p className="model-config-section__sub">{t(
+                            'On by default. After install, MaClaw downloads the official TinyTeX-0 release (GitHub rstudio/tinytex-releases) and uses tlmgr to install TeX Live scheme-small, then checks xelatex --version. Chinese locales try a GitHub proxy first, then the Tsinghua CTAN mirror for packages. The files stay in the MaClaw data directory and are not a full TeX Live install.',
+                            '默认开启。安装完成后会在后台下载 TinyTeX 官方发行包 TinyTeX-0（GitHub rstudio/tinytex-releases），再用 tlmgr 安装 TeX Live scheme-small，并执行 xelatex --version 校验。中文环境优先走 GitHub 加速，宏包优先用清华 CTAN 镜像。文件放在 MaClaw 数据目录，不是完整 TeX Live。',
+                            '預設開啟。安裝完成後會在背景下載 TinyTeX 官方發行包 TinyTeX-0（GitHub rstudio/tinytex-releases），再用 tlmgr 安裝 TeX Live scheme-small，並執行 xelatex --version 校驗。中文環境優先走 GitHub 加速，巨集包優先用清華 CTAN 鏡像。檔案放在 MaClaw 資料目錄，不是完整 TeX Live。',
+                        )}</p>
+                    </div>
+                    <label className="model-config-switch" title={t('Enable TinyTeX (scheme-small)', '启用 TinyTeX（scheme-small）', '啟用 TinyTeX（scheme-small）')}>
                         <input
                             type="checkbox"
+                            className="model-config-switch__input"
+                            role="switch"
                             checked={enabled}
                             onChange={(e) => void toggle(e.target.checked)}
+                            aria-label={t('Enable TinyTeX (scheme-small)', '启用 TinyTeX（scheme-small）', '啟用 TinyTeX（scheme-small）')}
                         />
-                        {t('Enable TinyTeX (scheme-small)', '启用 TinyTeX（scheme-small）', '啟用 TinyTeX（scheme-small）')}
                     </label>
                 </div>
-                <p className="model-config-copy">{t(
-                    'On by default. After install, MaClaw downloads the official TinyTeX-0 release (GitHub rstudio/tinytex-releases) and uses tlmgr to install TeX Live scheme-small, then checks xelatex --version. Chinese locales try a GitHub proxy first, then the Tsinghua CTAN mirror for packages. The files stay in the MaClaw data directory and are not a full TeX Live install.',
-                    '默认开启。安装完成后会在后台下载 TinyTeX 官方发行包 TinyTeX-0（GitHub rstudio/tinytex-releases），再用 tlmgr 安装 TeX Live scheme-small，并执行 xelatex --version 校验。中文环境优先走 GitHub 加速，宏包优先用清华 CTAN 镜像。文件放在 MaClaw 数据目录，不是完整 TeX Live。',
-                    '預設開啟。安裝完成後會在背景下載 TinyTeX 官方發行包 TinyTeX-0（GitHub rstudio/tinytex-releases），再用 tlmgr 安裝 TeX Live scheme-small，並執行 xelatex --version 校驗。中文環境優先走 GitHub 加速，巨集包優先用清華 CTAN 鏡像。檔案放在 MaClaw 資料目錄，不是完整 TeX Live。',
-                )}</p>
                 {enabled && status?.ready && !busy && (
                     <div className="model-status-box__ready" data-testid="latex-ready">
                         <span className="model-status-box__label">{t('scheme-small ready', 'scheme-small 已就绪', 'scheme-small 已就緒')}</span>

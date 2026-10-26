@@ -1,6 +1,7 @@
 import { getSettingsTabOptions } from '../../config/settingsTabs';
 import { getToolLabel, isToolTab } from '../../config/toolCatalog';
 import { miniAppShortLabel } from '../../i18n/maclawMiniAppLabels';
+import { normalizeLang } from '../../i18n/langSelect';
 import { expertsPageTitle, toolsPageTitle, utilitiesPageTitle } from '../../i18n/utilitiesLabels';
 import { LATEX_TEMPLATES_NAV_TAB } from '../../utils/latexTemplates';
 
@@ -14,6 +15,10 @@ const zhHant = {
     workflows: '\u5de5\u4f5c\u6d41',
 };
 
+/** Normalized lang → tab id → rail label. The header runs on the render-hot
+ *  path; building the 25-entry tab list each time is wasted work. */
+const settingsTitleCache = new Map<string, Map<string, string>>();
+
 /**
  * Name the header after the active settings tab (same label the rail shows),
  * so "AI 模型" reads as "AI 模型" instead of a generic 全局设置.
@@ -21,8 +26,14 @@ const zhHant = {
  */
 function settingsPageTitle(lang: string, t: (key: string) => string, settingsTab?: string) {
     if (settingsTab) {
-        const match = getSettingsTabOptions(lang).find((tab) => tab.id === settingsTab);
-        if (match) return match.label;
+        const normalized = normalizeLang(lang);
+        let titles = settingsTitleCache.get(normalized);
+        if (!titles) {
+            titles = new Map(getSettingsTabOptions(normalized).map((tab) => [tab.id, tab.label]));
+            settingsTitleCache.set(normalized, titles);
+        }
+        const label = titles.get(settingsTab);
+        if (label) return label;
     }
     return t('globalSettings');
 }

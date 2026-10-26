@@ -19,6 +19,15 @@ func cosF32(a, b []float32) float64 {
 // with the prefix cache == mean without it; mean is not the last token.
 func TestQwen3PooledEmbed(t *testing.T) {
 	e := loadQwen3(t)
+	// This test pins the pooled path against the last-token path; both must run
+	// on the same backend, so take the GPU out of the comparison (the pooled
+	// path computes on the CPU by design — it needs every row's hidden state).
+	if saved := e.vkGPU.Swap(nil); saved != nil {
+		defer e.vkGPU.Store(saved)
+	}
+	if saved := e.gpu.Swap(nil); saved != nil {
+		defer e.gpu.Store(saved)
+	}
 	for _, txt := range qwen3GoldenTexts {
 		ref, err := e.EmbedWithRole(txt, RoleClassification)
 		if err != nil {

@@ -1138,6 +1138,29 @@
     font-size: 0.72rem;
 }
 
+/* Token stat rows: label left, tabular value right; semantic classes on the
+   strong carry their own colors. */
+.token-usage-panel__stats {
+    display: grid;
+    gap: 6px;
+    margin-top: 10px;
+}
+
+.token-usage-panel__stat-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    color: var(--theme-text-secondary);
+    font-size: 0.78rem;
+}
+
+.token-usage-panel__stat-row strong {
+    color: var(--theme-text-primary);
+    font-variant-numeric: tabular-nums;
+    font-weight: 650;
+}
+
 .usage-display__button {
     padding: 3px 10px;
     border: 0;

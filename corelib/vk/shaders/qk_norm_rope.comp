@@ -1,0 +1,79 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+
+// Fused per-head RMSNorm + NeoX RoPE on the packed QKV buffer (in place).
+//
+// Qwen3 normalises each head slice of Q and K with its own weight vector, then
+// rotates adjacent-halfd pairs by the position-dependent cos/sin table. Fusing
+// avoids a global-memory round trip of the normalised Q/K.
+//
+// Dispatch: grid = (M rows, nH + nKV heads), 64 threads (== head_dim/2).
+// Thread j owns the RoPE pair (j, j + hd/2); the norm reduction is cooperative
+// over the full head width.
+
+layout(local_size_x = 64) in;
+
+struct RopeParams {
+    int M; int nH; int nKV; int hd;
+    float eps;
+    int ld;        // row stride of the packed qkv buffer
+    int qOff;      // float offset of Q block inside a row
+    int kOff;      // float offset of K block inside a row
+    int qNormOff;  // float offset of the Q norm weight in nrm[]
+    int kNormOff;  // float offset of the K norm weight in nrm[]
+    int posOff;    // offset into pos[] of this batch's per-row positions
+};
+
+
+layout(std430, binding = 0) buffer BufA { float a[]; };
+layout(std430, binding = 1) buffer BufB { float b[]; };
+layout(std430, binding = 2) readonly buffer Wq { int8_t wq[]; };
+layout(std430, binding = 3) readonly buffer Ws { float ws[]; };
+layout(std430, binding = 4) readonly buffer Nrm { float nrm[]; };
+layout(std430, binding = 5) readonly buffer Aux { float aux[]; };
+layout(std430, binding = 6) readonly buffer Aux2 { float aux2[]; };
+layout(std430, binding = 7) readonly buffer Pos { int positions[]; };
+
+layout(push_constant) uniform PC { RopeParams p; } pc;
+
+shared float part[64];
+
+void main() {
+    uint r = gl_WorkGroupID.x;
+    uint h = gl_WorkGroupID.y;
+    uint j = gl_LocalInvocationID.x;
+    if (int(r) >= pc.p.M) return;
+
+    bool isQ = int(h) < pc.p.nH;
+    int headIdx = isQ ? int(h) : int(h) - pc.p.nH;
+    int hd = pc.p.hd;
+    int halfd = hd / 2;
+    int wOff = isQ ? pc.p.qNormOff : pc.p.kNormOff;
+    int base = isQ ? (int(r) * pc.p.ld + pc.p.qOff + headIdx * hd)
+                   : (int(r) * pc.p.ld + pc.p.kOff + headIdx * hd);
+
+    // Cooperative sum of squares over the head (64 threads cover hd=128).
+    float ss = 0.0;
+    for (int i = int(j); i < hd; i += 64) {
+        float v = a[base + i];
+        ss += v * v;
+    }
+    part[j] = ss;
+    barrier();
+    for (uint s = 32u; s > 0u; s >>= 1u) {
+        if (j < s) part[j] += part[j + s];
+        barrier();
+    }
+    float sc = inversesqrt(part[0] / float(hd) + pc.p.eps);
+
+    // Normalise (scaled by the per-head weight), then rotate the pair.
+    float x0 = a[base + int(j)] * sc * nrm[wOff + int(j)];
+    float x1 = a[base + int(j) + halfd] * sc * nrm[wOff + int(j) + halfd];
+
+    int pos = positions[pc.p.posOff + int(r)];
+    float c = aux[pos * halfd + int(j)];
+    float sn = aux2[pos * halfd + int(j)];
+    // NeoX rotate_half: (x0,x1) -> (x0*c - x1*s, x1*c + x0*s)
+    a[base + int(j)] = x0 * c - x1 * sn;
+    a[base + int(j) + halfd] = x1 * c + x0 * sn;
+}

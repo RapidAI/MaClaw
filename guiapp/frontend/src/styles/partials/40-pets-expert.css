@@ -1047,7 +1047,15 @@ button.knowledge-chip:disabled {
 }
 
 .ve-btn--ghost:hover {
-    color: var(--theme-danger, #dc1f25);
+    color: var(--theme-text-primary);
+    background: var(--theme-surface-muted);
+}
+
+/* Destructive ghosts (remove item / clear avatar / delete rule) hover in
+   danger tones — mark them with ve-btn--danger explicitly. */
+.ve-btn--ghost.ve-btn--danger:hover {
+    background: var(--theme-danger-bg);
+    color: var(--theme-danger);
 }
 
 .ve-btn--link {
@@ -1061,6 +1069,180 @@ button.knowledge-chip:disabled {
 
 .ve-btn--link:hover {
     text-decoration: underline;
+}
+
+/* Size + semantic variants used by the approval rules editor. */
+.ve-btn--sm {
+    min-height: 28px;
+    padding: 4px 10px;
+    font-size: 0.74rem;
+}
+
+.ve-btn--xs {
+    min-height: 24px;
+    padding: 2px 8px;
+    font-size: 0.72rem;
+}
+
+.ve-btn--danger {
+    color: var(--theme-danger);
+    border-color: color-mix(in srgb, var(--theme-danger) 40%, var(--theme-border));
+}
+
+.ve-btn--danger:hover:not(:disabled) {
+    background: var(--theme-danger-bg);
+    color: var(--theme-danger);
+}
+
+/* Ghost + danger combination (delete-rule row button): stays quiet until
+   hovered, then reads as destructive rather than generic. */
+.ve-btn--ghost.ve-btn--danger {
+    color: var(--theme-danger);
+}
+
+/* Three-way routing rules editor (数字员工 tab). */
+.ve-rule-category {
+    margin-top: 12px;
+    padding: 12px 14px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--theme-control-well);
+}
+
+.ve-rule-category-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.ve-btn.ve-rule-category-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 30px;
+    color: var(--theme-text-primary);
+    font-weight: 600;
+}
+
+.ve-btn.ve-rule-category-toggle:hover {
+    color: var(--theme-text-primary);
+}
+
+.ve-rule-category-arrow {
+    font-size: 0.68rem;
+    color: var(--theme-text-muted);
+}
+
+.ve-rule-category-count {
+    color: var(--theme-text-muted);
+    font-size: 0.72rem;
+    font-weight: 500;
+}
+
+.ve-rule-category-body {
+    display: grid;
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.ve-rule-empty-hint {
+    margin: 0;
+}
+
+.ve-rule-item {
+    padding: 10px 12px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+}
+
+.ve-rule-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.ve-rule-header-left {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    flex: 1;
+}
+
+.ve-rule-position-controls {
+    display: inline-flex;
+    gap: 2px;
+    flex: 0 0 auto;
+}
+
+.ve-btn.ve-rule-toggle {
+    min-height: 26px;
+    color: var(--theme-text-muted);
+}
+
+.ve-btn.ve-rule-toggle:hover {
+    color: var(--theme-text-primary);
+}
+
+.ve-rule-name-input {
+    flex: 1 1 240px;
+    min-width: 120px;
+    max-width: 360px;
+}
+
+.ve-rule-body {
+    display: grid;
+    gap: 10px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--theme-border-subtle);
+}
+
+.ve-rule-conditions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.ve-rule-conditions-label {
+    color: var(--theme-text-secondary);
+    font-size: 0.76rem;
+    font-weight: 600;
+}
+
+.ve-rule-condition {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+/* Keep the three condition controls on one row; base .ve-form-input is 100% wide. */
+.ve-rule-condition-field,
+.ve-rule-condition-value {
+    flex: 0 1 200px;
+    min-width: 140px;
+}
+
+.ve-rule-condition-operator {
+    flex: 0 0 auto;
+    width: 140px;
+}
+
+.ve-rule-reason {
+    display: grid;
+    gap: 6px;
+}
+
+.ve-rule-reason-label {
+    font-size: 0.76rem;
+    color: var(--theme-text-secondary);
+    font-weight: 600;
 }
 
 .ve-dirs-header {

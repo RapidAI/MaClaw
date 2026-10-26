@@ -1043,16 +1043,17 @@ func MatMulQ8BiasN(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, maxWo
 		matMulQ8SerialM(out, a, b, bias, M, N, K)
 		return
 	}
+	nw := maxWorkers // 0 = pool width; >1 caps the N-partition below
 	if M == 1 {
 		if shouldParallel(1, N, K) {
-			matMulQ8ParallelN_M1(out, a, b, bias, N, K)
+			matMulQ8ParallelN_M1(out, a, b, bias, N, K, nw)
 			return
 		}
 		matMulQ8Serial_M1(out, a, b, bias, N, K)
 		return
 	}
 	if shouldParallel(M, N, K) {
-		matMulQ8ParallelN_MTile(out, a, b, bias, M, N, K)
+		matMulQ8ParallelN_MTile(out, a, b, bias, M, N, K, nw)
 		return
 	}
 	matMulQ8SerialM(out, a, b, bias, M, N, K)
@@ -1100,7 +1101,7 @@ func MatMulQ8BiasAdd(out, a []float32, b *Q8Tensor, bias []float32, M, N, K int)
 		return
 	}
 	if shouldParallel(M, N, K) {
-		matMulQ8ParallelN_MTileAct(out, a, b, bias, M, N, K, false, true)
+		matMulQ8ParallelN_MTileAct(out, a, b, bias, M, N, K, false, true, 0)
 		return
 	}
 	matMulQ8SerialMAct(out, a, b, bias, M, N, K, false, true)
@@ -1118,7 +1119,7 @@ func MatMulQ8BiasReLU(out, a []float32, b *Q8Tensor, bias []float32, M, N, K int
 		return
 	}
 	if shouldParallel(M, N, K) {
-		matMulQ8ParallelN_MTileAct(out, a, b, bias, M, N, K, true, false)
+		matMulQ8ParallelN_MTileAct(out, a, b, bias, M, N, K, true, false, 0)
 		return
 	}
 	matMulQ8SerialMAct(out, a, b, bias, M, N, K, true, false)
@@ -1169,10 +1170,20 @@ func matMulQ8Serial_M1(out, a []float32, b *Q8Tensor, bias []float32, N, K int) 
 	matMulQ8Range_M1(out, a, b, bias, N, K, 0, N)
 }
 
-func matMulQ8ParallelN_M1(out, a []float32, b *Q8Tensor, bias []float32, N, K int) {
-	parallelRanges(N, func(ns, ne int) {
+func matMulQ8ParallelN_M1(out, a []float32, b *Q8Tensor, bias []float32, N, K, maxWorkers int) {
+	parallelRangesWithWorkers(N, workerCap(maxWorkers), func(ns, ne int) {
 		matMulQ8Range_M1(out, a, b, bias, N, K, ns, ne)
 	})
+}
+
+// workerCap resolves a per-call worker limit against the pool width
+// (0 or negative = pool width).
+func workerCap(maxWorkers int) int {
+	nw := poolWorkers()
+	if maxWorkers > 0 && maxWorkers < nw {
+		return maxWorkers
+	}
+	return nw
 }
 
 // matMulQ8Range_M1: dual-B DotQ8 — loads A once per Q8 block for two B columns.
@@ -1226,8 +1237,8 @@ func matMulQ8SerialM(out, a []float32, b *Q8Tensor, bias []float32, M, N, K int)
 
 // matMulQ8ParallelN_MTile partitions N across pool workers; each worker uses
 // M-tile-outer so its A panels stay hot for its B-column range.
-func matMulQ8ParallelN_MTile(out, a []float32, b *Q8Tensor, bias []float32, M, N, K int) {
-	matMulQ8ParallelN_MTileAct(out, a, b, bias, M, N, K, false, false)
+func matMulQ8ParallelN_MTile(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, maxWorkers int) {
+	matMulQ8ParallelN_MTileAct(out, a, b, bias, M, N, K, false, false, maxWorkers)
 }
 
 func storeDot4(out []float32, m, n, N int, d *[4]float32, bn float32, relu, accum bool) {
@@ -3085,8 +3096,8 @@ var q8EvenChunk = true
 // SetQ8EvenChunkForTest toggles even worker-range chunking (benchmarks only).
 func SetQ8EvenChunkForTest(enabled bool) { q8EvenChunk = enabled }
 
-func matMulQ8ParallelN_MTileAct(out, a []float32, b *Q8Tensor, bias []float32, M, N, K int, relu, accum bool) {
-	nw := rangeWorkers(N, matMulWorkersFor(M, N, K))
+func matMulQ8ParallelN_MTileAct(out, a []float32, b *Q8Tensor, bias []float32, M, N, K int, relu, accum bool, maxWorkers int) {
+	nw := rangeWorkers(N, min(matMulWorkersFor(M, N, K), workerCap(maxWorkers)))
 	if nw <= 1 {
 		matMulQ8Range(out, a, b, bias, M, N, K, 0, N, relu, accum)
 		return

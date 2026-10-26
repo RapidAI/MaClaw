@@ -464,7 +464,7 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
             body = wrapPanel('settings-content settings-panel', <MISDataSettingsPanel lang={lang} />);
             break;
         case 'embedding':
-            body = wrapPanel('settings-content settings-panel', (
+            body = wrapPanel('settings-content settings-content--stacked', (
                 <>
                     <EmbeddingConfigPanel lang={lang} />
                     <ASRConfigPanel lang={lang} />

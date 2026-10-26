@@ -625,7 +625,10 @@ button.btn-primary:active, button[class*='primary']:active, button[type='submit'
 [data-ai-theme='dark'] .form-input,
 [data-ai-theme='dark'] .form-select,
 [data-ai-theme='dark'] textarea,
-[data-ai-theme='dark'] input {
+/* Exclude toggle controls: their fill is the state indicator, forcing it to
+   the surface color erases the checked state (same exclusion chain as the
+   dark input rule in 90-im-channels-markdown.css). */
+[data-ai-theme='dark'] input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']) {
   color: var(--theme-text-primary);
   background: var(--theme-surface) !important;
   border-color: var(--theme-border);

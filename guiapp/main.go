@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	goruntime "runtime"
 	"sort"
 	"strings"
@@ -235,9 +236,9 @@ func Main(v string) {
 			WindowIsTranslucent:  winWindowTranslucent,
 			BackdropType:         windows.None,
 			WebviewUserDataPath:  webviewUserDataPath,
-			// Blank compact window with no asset requests is a known WebView2
-			// GPU-compositor failure mode on some NVIDIA/high-DPI setups.
-			WebviewGpuIsDisabled: true,
+			// GPU compositing is on by default; see webview_gpu_windows.go for
+			// the self-healing fallback that disables it after a blank window.
+			WebviewGpuIsDisabled: webviewGPUDisabled(webviewUserDataPath),
 			// On Windows 10, disable DWM decorations to prevent the invisible
 			// border area from offsetting the webview.  On Windows 11, keep
 			// decorations enabled so DWM provides native rounded corners.
@@ -363,14 +364,54 @@ func webviewProfileFolder() string {
 	}
 }
 
+// noStoreAssetMiddleware sets cache headers for the embedded frontend.
+//
+// Vite emits content-hashed filenames under /assets/ (for example
+// App-D0b2wISC.js), so those bodies can never change without their URL
+// changing. Marking them immutable lets WebView2 keep the parsed JavaScript,
+// CSS and fonts in its HTTP and code cache across launches.
+//
+// This matters most on low-end hardware: the entry bundle is ~1.9 MB of
+// JavaScript plus ~860 KB of CSS, and re-downloading and re-parsing it on every
+// launch is a large share of startup time on a slow CPU.
+//
+// Everything else stays no-store:
+//   - index.html must be revalidated so an update is picked up immediately;
+//   - /pdfjs/* and /wails/* have stable names whose content can change with the
+//     app build, so they cannot be immutable-cached.
+//
+// Correctness on upgrade is preserved by clearWebviewAssetCacheIfNeeded, which
+// clears the WebView caches whenever the embedded frontend fingerprint changes.
 func noStoreAssetMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		if req != nil && req.URL != nil && isImmutableAssetPath(req.URL.Path) {
+			rw.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			next.ServeHTTP(rw, req)
+			return
+		}
 		rw.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
 		rw.Header().Set("Pragma", "no-cache")
 		rw.Header().Set("Expires", "0")
 		next.ServeHTTP(rw, req)
 	})
 }
+
+// immutableAssetPathPrefix is where Vite writes content-hashed build output.
+const immutableAssetPathPrefix = "/assets/"
+
+// isImmutableAssetPath reports whether a request path addresses a
+// content-hashed build artifact that can be cached forever.
+func isImmutableAssetPath(path string) bool {
+	if !strings.HasPrefix(path, immutableAssetPathPrefix) {
+		return false
+	}
+	return contentHashSuffixPattern.MatchString(path)
+}
+
+// contentHashSuffixPattern matches Vite's "-<hash>.<ext>" filename suffix. The
+// hash is base64url-ish and at least 8 characters, which is long enough that a
+// false positive on a hand-named file is not a practical concern.
+var contentHashSuffixPattern = regexp.MustCompile(`-[A-Za-z0-9_-]{8,}\.(?:js|mjs|css|woff2?|ttf|otf|eot|svg|png|jpe?g|gif|webp|avif|ico|map)$`)
 
 func clearWebviewAssetCacheIfNeeded(userDataPath string) {
 	clearWebviewAssetCacheForFingerprint(userDataPath, embeddedFrontendFingerprint)
@@ -756,6 +797,11 @@ func isImportantLogLine(line string) bool {
 		"[download_file]", "download_file=builtin", "effective_wd=", "configured_wd=",
 		"workdir ready", "inject workdir",
 		"[startup] loadconfig", "[startup] begin", "[startup] complete", "[startup] workdir",
+		// Startup performance marks and WebView2 process sampling must survive
+		// log_detail=off: a slow-machine report is only actionable with this
+		// timeline, and the users reporting slowness are exactly the ones
+		// running the default (non-verbose) configuration.
+		"[perf] mark=", "[perf] summary", "[perf] sample",
 		// Classification heads must stay visible with log_detail off: a missing
 		// intent/tool head silently falls back to the remote tree LLM.
 		"[intent] local l3", "[tool] tool head", "[embedding] head asset"}

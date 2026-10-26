@@ -147,14 +147,29 @@ export function TTSConfigPanel({ lang }: Props) {
     const accentColor = 'var(--theme-primary, #4a8cff)';
 
     return (
-        <div className="model-config-panel model-config-panel--spaced">
-            <h4 className="model-config-heading model-config-heading--info">
-                {t('TTS Model (Voice Playback)', 'TTS 语音合成模型', 'TTS 語音合成模型')}
-            </h4>
-            <div className="model-config-toggle-row model-config-toggle-row--compact">
-                <label className="model-config-check">
-                    <input type='checkbox' checked={enabled} onChange={e => handleToggle(e.target.checked)} />
-                    {t('Enable TTS Voice Playback', '启用语音播报', '啟用語音播報')}
+        <section className="model-config-section">
+            <div className="model-config-section__head">
+                <div className="model-config-section__text">
+                    <h4 className="model-config-section__title">
+                        {t('TTS Model (Voice Playback)', 'TTS 语音合成模型', 'TTS 語音合成模型')}
+                    </h4>
+                    <p className="model-config-section__sub">
+                        {t(
+                            'TTS uses the local Kokoro-82M q8 model for voice playback. The model and selected voice files are downloaded from GitHub first, with Hub as fallback.',
+                            'TTS 使用本地 Kokoro-82M q8 模型进行语音播报。模型和音色文件会优先从 GitHub 下载，无法访问时从 Hub 回退下载。',
+                            'TTS 使用本地 Kokoro-82M q8 模型進行語音播報。模型和音色檔案會優先從 GitHub 下載，無法存取時從 Hub 回退下載。'
+                        )}
+                    </p>
+                </div>
+                <label className="model-config-switch" title={t('Enable TTS Voice Playback', '启用语音播报', '啟用語音播報')}>
+                    <input
+                        type="checkbox"
+                        className="model-config-switch__input"
+                        role="switch"
+                        checked={enabled}
+                        onChange={e => handleToggle(e.target.checked)}
+                        aria-label={t('Enable TTS Voice Playback', '启用语音播报', '啟用語音播報')}
+                    />
                 </label>
             </div>
             <div className="model-config-inline-field">
@@ -175,19 +190,12 @@ export function TTSConfigPanel({ lang }: Props) {
                     ))}
                 </select>
             </div>
-            <p className="model-config-copy">
-                {t(
-                    'TTS uses the local Kokoro-82M q8 model for voice playback. The model and selected voice files are downloaded from GitHub first, with Hub as fallback.',
-                    'TTS 使用本地 Kokoro-82M q8 模型进行语音播报。模型和音色文件会优先从 GitHub 下载，无法访问时从 Hub 回退下载。',
-                    'TTS 使用本地 Kokoro-82M q8 模型進行語音播報。模型和音色檔案會優先從 GitHub 下載，無法存取時從 Hub 回退下載。'
-                )}
-            </p>
             <div className="model-config-inline-field">
                 <label htmlFor='tts-preview-text' className="model-config-inline-label">
                     {t('Voice preview', '音色试听', '音色試聽')}
                 </label>
                 <input id='tts-preview-text' value={previewText} maxLength={200} onChange={e => setPreviewText(e.target.value)} className="model-config-select" />
-                <button type='button' onClick={previewVoice} disabled={downloading || previewing || !previewText.trim()}>
+                <button type='button' className="model-config-btn" onClick={previewVoice} disabled={downloading || previewing || !previewText.trim()}>
                     {previewing ? t('Generating...', '生成中…', '生成中…') : t('Preview', '试听', '試聽')}
                 </button>
             </div>
@@ -199,6 +207,6 @@ export function TTSConfigPanel({ lang }: Props) {
                     accentColor={accentColor} t={t}
                 />
             )}
-        </div>
+        </section>
     );
 }

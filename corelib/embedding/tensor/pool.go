@@ -115,6 +115,12 @@ func ParallelRanges(total int, fn func(start, end int)) {
 	parallelRanges(total, fn)
 }
 
+// ParallelRangesCapped is ParallelRanges with a per-call worker cap
+// (0 or negative = pool width).
+func ParallelRangesCapped(total, maxWorkers int, fn func(start, end int)) {
+	parallelRangesWithWorkers(total, workerCap(maxWorkers), fn)
+}
+
 // RunAsyncTask submits a reusable structured task. The caller owns wg and must
 // wait before returning its task to a pool or mutating its fields.
 func RunAsyncTask(task AsyncTask, wg *sync.WaitGroup) {

@@ -277,23 +277,31 @@ export function ASRConfigPanel({ lang }: Props) {
     const accentColor = 'var(--theme-success)';
 
     return (
-        <div className="model-config-panel model-config-panel--spaced">
-            <h4 className="model-config-heading model-config-heading--success">
-                {t('Speech Recognition Model', '语音识别模型', '語音識別模型')}
-            </h4>
-            <div className="model-config-toggle-row">
-                <label className="model-config-check">
-                    <input type='checkbox' checked={enabled} onChange={e => handleToggle(e.target.checked)} />
-                    {t('Enable Speech Recognition', '启用语音识别', '啟用語音識別')}
+        <section className="model-config-section">
+            <div className="model-config-section__head">
+                <div className="model-config-section__text">
+                    <h4 className="model-config-section__title">
+                        {t('Speech Recognition Model', '语音识别模型', '語音識別模型')}
+                    </h4>
+                    <p className="model-config-section__sub">
+                        {t(
+                            'Speech recognition uses the SenseVoice Small model to transcribe IM voice messages. The model will be downloaded from GitHub or Hub.',
+                            '语音识别使用 SenseVoice Small 模型，将 IM 语音消息自动转为文字。模型将从 GitHub 或 Hub 下载到本地。',
+                            '語音識別使用 SenseVoice Small 模型，將 IM 語音消息自動轉為文字。模型將從 GitHub 或 Hub 下載到本地。'
+                        )}
+                    </p>
+                </div>
+                <label className="model-config-switch" title={t('Enable Speech Recognition', '启用语音识别', '啟用語音識別')}>
+                    <input
+                        type="checkbox"
+                        className="model-config-switch__input"
+                        role="switch"
+                        checked={enabled}
+                        onChange={e => handleToggle(e.target.checked)}
+                        aria-label={t('Enable Speech Recognition', '启用语音识别', '啟用語音識別')}
+                    />
                 </label>
             </div>
-            <p className="model-config-copy">
-                {t(
-                    'Speech recognition uses the SenseVoice Small model to transcribe IM voice messages. The model will be downloaded from GitHub or Hub.',
-                    '语音识别使用 SenseVoice Small 模型，将 IM 语音消息自动转为文字。模型将从 GitHub 或 Hub 下载到本地。',
-                    '語音識別使用 SenseVoice Small 模型，將 IM 語音消息自動轉為文字。模型將從 GitHub 或 Hub 下載到本地。'
-                )}
-            </p>
             {enabled && (
                 <>
                     <div className="model-config-toggle-row">
@@ -407,6 +415,6 @@ export function ASRConfigPanel({ lang }: Props) {
                     )}
                 </div>
             )}
-        </div>
+        </section>
     );
 }

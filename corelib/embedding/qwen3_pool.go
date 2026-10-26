@@ -66,7 +66,7 @@ func (q *Qwen3Embedder) EmbedPooledWithRole(text string, role Role) (last, mean 
 	defer q.putScratch(s)
 	dim := q.hp.Dim
 	sum := make([]float32, dim)
-	h, err := q.forwardPool(ids, pre, nil, s, 0, sum)
+	h, err := q.forwardPool(ids, pre, nil, s, EmbedThreads(), sum)
 	if err != nil {
 		return nil, nil, err
 	}

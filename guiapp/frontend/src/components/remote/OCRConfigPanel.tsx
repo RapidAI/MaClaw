@@ -144,46 +144,70 @@ export function OCRConfigPanel({ lang }: Props) {
     };
 
     if (loading) return <div className="model-config-loading">{t('Loading...', '加载中...', '加載中...')}</div>;
-    return <div className="model-config-panel model-config-panel--spaced">
-        <h4 className="model-config-heading model-config-heading--success">{t('OCR Model', 'OCR 文字识别模型', 'OCR 文字識別模型')}</h4>
-        <div className="model-config-toggle-row"><label className="model-config-check">
-            <input type="checkbox" checked={enabled} onChange={e => void toggle(e.target.checked)} />
-            {t('Enable OCR', '启用文字识别', '啟用文字識別')}
-        </label></div>
-        <div className="model-config-inline-field">
-            <label htmlFor="ocr-tier-select" className="model-config-inline-label">
-                {t('Model tier', '模型档位', '模型檔位')}
-            </label>
-            <select
-                id="ocr-tier-select"
-                value={tier}
-                onChange={e => void handleTierChange(e.target.value)}
-                disabled={downloading}
-                className="model-config-select"
-            >
-                {tierOptions.map(option => (
-                    <option key={option.id} value={option.id}>
-                        {lang === 'en' ? option.en : lang === 'zh-Hant' ? option.zhHant : option.zh}
-                    </option>
-                ))}
-            </select>
-        </div>
-        <p className="model-config-copy">{t(
-            'PP-OCRv6 reads text from screenshots for computer use and GUI automation, fully on-device. When the main model supports image input, its own multimodal vision is used first and OCR serves as the fallback; models without vision rely on this engine. It is enabled by default and downloads from HuggingFace or your Hub mirror. Switching tiers downloads the new tier in the background when its models are missing.',
-            'PP-OCRv6 在本地识别截图中的文字，用于电脑操作与界面自动化。当主模型支持图片输入时，优先使用模型自身的多模态视觉识别，OCR 作为兜底；不支持图片的模型则由本引擎识别。默认启用，模型从 HuggingFace 或 Hub 镜像下载。切换档位时，若新档位模型缺失会在后台自动下载。',
-            'PP-OCRv6 在本機識別截圖中的文字，用於電腦操作與介面自動化。當主模型支援圖片輸入時，優先使用模型自身的多模態視覺識別，OCR 作為兜底；不支援圖片的模型則由本引擎識別。預設啟用，模型從 HuggingFace 或 Hub 鏡像下載。切換檔位時，若新檔位模型缺失會在背景自動下載。'
-        )}</p>
-        {enabled && <ModelStatusBox exists={exists} downloading={downloading} size={size} progress={progress} downloaded={downloaded} total={total} error={error} onDownload={() => void download()} onRetry={() => void download()} accentColor="var(--theme-success)" t={t} />}
-        <h4 className="model-config-heading model-config-heading--success">{t('Formula recognition', '公式识别', '公式識別')}</h4>
-        <div className="model-config-toggle-row"><label className="model-config-check">
-            <input type="checkbox" checked={formulaEnabled} onChange={e => void toggleFormula(e.target.checked)} />
-            {t('Enable formula recognition', '启用公式识别', '啟用公式識別')}
-        </label></div>
-        <p className="model-config-copy">{t(
-            'FormulaNet reads one printed formula image into LaTeX, fully on-device. Call it from the OCR tool with mode=formula (one PNG, JPEG, or GIF). The model downloads from the GitHub release, then from your Hub mirror. It is enabled by default.',
-            'FormulaNet 在本地把一张印刷公式图片识别成 LaTeX。在 OCR 工具 ocr_recognize 里传 mode=formula（一张 PNG、JPEG 或 GIF）。模型先从 GitHub Release 下载，失败后再走 Hub。默认启用。',
-            'FormulaNet 在本機把一張印刷公式圖片識別成 LaTeX。在 OCR 工具 ocr_recognize 裡傳 mode=formula（一張 PNG、JPEG 或 GIF）。模型先從 GitHub Release 下載，失敗後再走 Hub。預設啟用。'
-        )}</p>
-        {formulaEnabled && <ModelStatusBox exists={formulaExists} downloading={formulaDownloading} size={formulaSize} progress={formulaProgress} downloaded={formulaDownloaded} total={formulaTotal} error={formulaError} onDownload={() => void downloadFormula()} onRetry={() => void downloadFormula()} onRedownload={() => void downloadFormula()} accentColor="var(--theme-success)" t={t} />}
-    </div>;
+    return <>
+        <section className="model-config-section">
+            <div className="model-config-section__head">
+                <div className="model-config-section__text">
+                    <h4 className="model-config-section__title">{t('OCR Model', 'OCR 文字识别模型', 'OCR 文字識別模型')}</h4>
+                    <p className="model-config-section__sub">{t(
+                        'PP-OCRv6 reads text from screenshots for computer use and GUI automation, fully on-device. When the main model supports image input, its own multimodal vision is used first and OCR serves as the fallback; models without vision rely on this engine. It is enabled by default and downloads from HuggingFace or your Hub mirror. Switching tiers downloads the new tier in the background when its models are missing.',
+                        'PP-OCRv6 在本地识别截图中的文字，用于电脑操作与界面自动化。当主模型支持图片输入时，优先使用模型自身的多模态视觉识别，OCR 作为兜底；不支持图片的模型则由本引擎识别。默认启用，模型从 HuggingFace 或 Hub 镜像下载。切换档位时，若新档位模型缺失会在后台自动下载。',
+                        'PP-OCRv6 在本機識別截圖中的文字，用於電腦操作與介面自動化。當主模型支援圖片輸入時，優先使用模型自身的多模態視覺識別，OCR 作為兜底；不支援圖片的模型則由本引擎識別。預設啟用，模型從 HuggingFace 或 Hub 鏡像下載。切換檔位時，若新檔位模型缺失會在背景自動下載。'
+                    )}</p>
+                </div>
+                <label className="model-config-switch" title={t('Enable OCR', '启用文字识别', '啟用文字識別')}>
+                    <input
+                        type="checkbox"
+                        className="model-config-switch__input"
+                        role="switch"
+                        checked={enabled}
+                        onChange={e => void toggle(e.target.checked)}
+                        aria-label={t('Enable OCR', '启用文字识别', '啟用文字識別')}
+                    />
+                </label>
+            </div>
+            <div className="model-config-inline-field">
+                <label htmlFor="ocr-tier-select" className="model-config-inline-label">
+                    {t('Model tier', '模型档位', '模型檔位')}
+                </label>
+                <select
+                    id="ocr-tier-select"
+                    value={tier}
+                    onChange={e => void handleTierChange(e.target.value)}
+                    disabled={downloading}
+                    className="model-config-select"
+                >
+                    {tierOptions.map(option => (
+                        <option key={option.id} value={option.id}>
+                            {lang === 'en' ? option.en : lang === 'zh-Hant' ? option.zhHant : option.zh}
+                        </option>
+                    ))}
+                </select>
+            </div>
+            {enabled && <ModelStatusBox exists={exists} downloading={downloading} size={size} progress={progress} downloaded={downloaded} total={total} error={error} onDownload={() => void download()} onRetry={() => void download()} accentColor="var(--theme-success)" t={t} />}
+        </section>
+        <section className="model-config-section">
+            <div className="model-config-section__head">
+                <div className="model-config-section__text">
+                    <h4 className="model-config-section__title">{t('Formula recognition', '公式识别', '公式識別')}</h4>
+                    <p className="model-config-section__sub">{t(
+                        'FormulaNet reads one printed formula image into LaTeX, fully on-device. Call it from the OCR tool with mode=formula (one PNG, JPEG, or GIF). The model downloads from the GitHub release, then from your Hub mirror. It is enabled by default.',
+                        'FormulaNet 在本地把一张印刷公式图片识别成 LaTeX。在 OCR 工具 ocr_recognize 里传 mode=formula（一张 PNG、JPEG 或 GIF）。模型先从 GitHub Release 下载，失败后再走 Hub。默认启用。',
+                        'FormulaNet 在本機把一張印刷公式圖片識別成 LaTeX。在 OCR 工具 ocr_recognize 裡傳 mode=formula（一張 PNG、JPEG 或 GIF）。模型先從 GitHub Release 下載，失敗後再走 Hub。預設啟用。'
+                    )}</p>
+                </div>
+                <label className="model-config-switch" title={t('Enable formula recognition', '启用公式识别', '啟用公式識別')}>
+                    <input
+                        type="checkbox"
+                        className="model-config-switch__input"
+                        role="switch"
+                        checked={formulaEnabled}
+                        onChange={e => void toggleFormula(e.target.checked)}
+                        aria-label={t('Enable formula recognition', '启用公式识别', '啟用公式識別')}
+                    />
+                </label>
+            </div>
+            {formulaEnabled && <ModelStatusBox exists={formulaExists} downloading={formulaDownloading} size={formulaSize} progress={formulaProgress} downloaded={formulaDownloaded} total={formulaTotal} error={formulaError} onDownload={() => void downloadFormula()} onRetry={() => void downloadFormula()} onRedownload={() => void downloadFormula()} accentColor="var(--theme-success)" t={t} />}
+        </section>
+    </>;
 }

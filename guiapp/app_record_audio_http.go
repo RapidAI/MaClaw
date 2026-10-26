@@ -14,6 +14,13 @@ import (
 // (no base64). Frontend: POST body = raw bytes, query session_id=.
 const recordAudioHTTPPath = "/maclaw-record/v1/append"
 
+// frontendAssetRequests counts every asset-server request served in this
+// process. The paint watchdog uses it to tell a WebView2 GPU-compositor failure
+// (blank window that requests nothing) apart from a merely slow machine (assets
+// requested, paint still queued). Conflating the two would permanently disable
+// GPU acceleration on the slow hardware that needs it most.
+var frontendAssetRequests atomic.Int64
+
 // recordAudioAssetMiddleware intercepts binary record append POSTs, then
 // falls through to the next asset handler (frontend SPA / static files).
 func recordAudioAssetMiddleware(app *App, next http.Handler) http.Handler {
@@ -59,15 +66,13 @@ func recordAudioAssetMiddleware(app *App, next http.Handler) http.Handler {
 			handleRecordAudioAppendHTTP(app, rw, req)
 			return
 		}
-		// Chain existing no-store headers for static assets.
-		if req != nil {
-			rw.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
-			rw.Header().Set("Pragma", "no-cache")
-			rw.Header().Set("Expires", "0")
-		}
+		// Cache headers are applied by noStoreAssetMiddleware downstream: hashed
+		// build output is immutable, everything else stays no-store. Setting
+		// them here would overwrite that decision for every asset.
 		n := int32(0)
 		if req != nil {
 			n = assetLogN.Add(1)
+			frontendAssetRequests.Add(1)
 			if n <= 40 {
 				log.Printf("[assets] start err=none %s %s", req.Method, req.URL.Path)
 			}

@@ -61,17 +61,27 @@ export function DiarizationConfigPanel({ lang }: Props) {
     };
 
     if (loading) return <div className="model-config-loading">{t('Loading...', '加载中...', '加載中...')}</div>;
-    return <div className="model-config-panel model-config-panel--spaced">
-        <h4 className="model-config-heading model-config-heading--success">{t('Speaker Diarization Model', '说话人分离模型', '說話人分離模型')}</h4>
-        <div className="model-config-toggle-row"><label className="model-config-check">
-            <input type="checkbox" checked={enabled} onChange={e => void toggle(e.target.checked)} />
-            {t('Enable Speaker Diarization', '启用说话人分离', '啟用說話人分離')}
-        </label></div>
-        <p className="model-config-copy">{t(
-            'CAM++ separates and labels local speakers in a meeting recording before each segment is transcribed. It is enabled by default and downloads from GitHub or your Hub cache.',
-            'CAM++ 会先为会议录音分离并标记本地说话人，再分别转写。默认启用，模型从 GitHub 或 Hub 缓存下载。',
-            'CAM++ 會先為會議錄音分離並標記本地說話人，再分別轉寫。預設啟用，模型從 GitHub 或 Hub 快取下載。'
-        )}</p>
+    return <section className="model-config-section">
+        <div className="model-config-section__head">
+            <div className="model-config-section__text">
+                <h4 className="model-config-section__title">{t('Speaker Diarization Model', '说话人分离模型', '說話人分離模型')}</h4>
+                <p className="model-config-section__sub">{t(
+                    'CAM++ separates and labels local speakers in a meeting recording before each segment is transcribed. It is enabled by default and downloads from GitHub or your Hub cache.',
+                    'CAM++ 会先为会议录音分离并标记本地说话人，再分别转写。默认启用，模型从 GitHub 或 Hub 缓存下载。',
+                    'CAM++ 會先為會議錄音分離並標記本地說話人，再分別轉寫。預設啟用，模型從 GitHub 或 Hub 快取下載。'
+                )}</p>
+            </div>
+            <label className="model-config-switch" title={t('Enable Speaker Diarization', '启用说话人分离', '啟用說話人分離')}>
+                <input
+                    type="checkbox"
+                    className="model-config-switch__input"
+                    role="switch"
+                    checked={enabled}
+                    onChange={e => void toggle(e.target.checked)}
+                    aria-label={t('Enable Speaker Diarization', '启用说话人分离', '啟用說話人分離')}
+                />
+            </label>
+        </div>
         {enabled && <ModelStatusBox exists={exists} downloading={downloading} size={size} progress={progress} downloaded={downloaded} total={total} error={error} onDownload={() => void download()} onRetry={() => void download()} accentColor="var(--theme-success)" t={t} />}
-    </div>;
+    </section>;
 }

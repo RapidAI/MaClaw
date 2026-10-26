@@ -141,3 +141,48 @@ func TestNoStoreAssetMiddlewareSetsCacheHeaders(t *testing.T) {
 		t.Fatalf("Expires = %q", got)
 	}
 }
+
+// Hashed build output is content-addressed, so re-downloading and re-parsing it
+// on every launch is pure waste. This is the low-end-hardware startup cost the
+// immutable header removes.
+func TestNoStoreAssetMiddlewareCachesHashedAssetsImmutable(t *testing.T) {
+	handler := noStoreAssetMiddleware(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		rw.WriteHeader(http.StatusNoContent)
+	}))
+	for _, path := range []string{
+		"/assets/App-D0b2wISC.js",
+		"/assets/index-49vIv3Sq.css",
+		"/assets/KaTeX_AMS-Regular-BQhdFMY1.woff2",
+		"/assets/mermaid.core-DKxrPIop.js",
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if got := rec.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+			t.Fatalf("%s: Cache-Control = %q, want immutable", path, got)
+		}
+		if got := rec.Header().Get("Pragma"); got != "" {
+			t.Fatalf("%s: Pragma = %q, want empty for immutable assets", path, got)
+		}
+	}
+}
+
+// The entry document must never be cached: it is what points at the new hashed
+// filenames after an update.
+func TestNoStoreAssetMiddlewareNeverCachesEntryOrUnhashedPaths(t *testing.T) {
+	handler := noStoreAssetMiddleware(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		rw.WriteHeader(http.StatusNoContent)
+	}))
+	for _, path := range []string{
+		"/",
+		"/index.html",
+		"/pdfjs/pdf.worker.min.mjs",
+		"/assets/appicon.png",
+		"/favicon.ico",
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if got := rec.Header().Get("Cache-Control"); got != "no-store, no-cache, must-revalidate, max-age=0" {
+			t.Fatalf("%s: Cache-Control = %q, want no-store", path, got)
+		}
+	}
+}

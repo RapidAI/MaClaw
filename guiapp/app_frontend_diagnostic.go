@@ -17,8 +17,14 @@ func (a *App) LogFrontendDiagnostic(payload map[string]interface{}) {
 	// startup timeline instead of only landing as log text. The frontend
 	// reports these because only the renderer knows when a frame was actually
 	// painted.
-	if stage, _ := payload["stage"].(string); stage != "" && payload["tag"] == "startup-trace" {
-		noteFrontendPerfStage(stage, payload)
+	//
+	// The tag is compared with a string assertion rather than == so a payload
+	// decoded through Wails' JSON bridge (where the value may arrive as a
+	// non-string) still routes here.
+	if stage, _ := payload["stage"].(string); stage != "" {
+		if tag, _ := payload["tag"].(string); tag == "startup-trace" {
+			noteFrontendPerfStage(stage, payload)
+		}
 	}
 	encoded, err := json.Marshal(sanitizeFrontendDiagnosticPayload(payload))
 	if err != nil {
@@ -34,10 +40,14 @@ func (a *App) LogFrontendDiagnostic(payload map[string]interface{}) {
 // without changing the backend.
 func noteFrontendPerfStage(stage string, payload map[string]interface{}) {
 	switch stage {
+	case "html-ready":
+		perfMarkHTMLReady()
 	case "first-paint":
 		perfMarkFirstPaint()
 	case "interactive":
 		perfMarkInteractive()
+	default:
+		// Not a startup milestone; the generic diagnostic line still records it.
 	}
 	if perfProbeVerboseEnabled() {
 		if metric, ok := payload["metric"].(string); ok && metric != "" {

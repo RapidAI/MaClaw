@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"runtime"
@@ -118,8 +119,16 @@ func perfMarkInteractive() {
 // logPerfTimeline emits one line per milestone. Marks not yet reached are
 // omitted rather than reported as zero, so a startup that dies before first
 // paint still leaves a readable trail.
+//
+// The line is mirrored through bootLog as well: marks that arrive from the
+// renderer (first-paint, interactive) run on Wails' IPC goroutine, where the
+// shared log.Printf sink has been observed to swallow the line while sibling
+// lines from the same binding still reach the file. bootLog owns a separate
+// file handle, so the milestone is never lost.
 func logPerfTimeline(stage string) {
-	log.Printf("[perf] mark=%s at=%s", stage, perfMarkElapsed().Round(time.Millisecond))
+	line := fmt.Sprintf("[perf] mark=%s at=%s", stage, perfMarkElapsed().Round(time.Millisecond))
+	log.Printf("%s", line)
+	bootLog("%s", line)
 }
 
 // logPerfSummary emits the single line most bug reports will need: how long
@@ -144,4 +153,5 @@ func logPerfSummary() {
 	}
 	log.Printf("[perf] summary stages=%s cpus=%d go=%s",
 		strings.Join(parts, ","), runtime.NumCPU(), runtime.Version())
+	bootLog("[perf] summary stages=%s", strings.Join(parts, ","))
 }

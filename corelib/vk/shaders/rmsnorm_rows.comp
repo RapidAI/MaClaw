@@ -1,0 +1,48 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+
+// Row-wise RMSNorm: out[r,:] = x[r,:] * rsqrt(mean(x^2)+eps) * w[:].
+// One workgroup (256 threads) per row, so a row is reduced cooperatively
+// instead of by a single thread (D=1024 would be 1024 serial loads otherwise).
+
+layout(local_size_x = 256) in;
+
+struct NormParams { int M; int D; float eps; int ld; int wOff; };
+
+
+layout(std430, binding = 0) readonly buffer BufA { float a[]; };
+layout(std430, binding = 1) buffer BufB { float b[]; };
+layout(std430, binding = 2) readonly buffer Wq { int8_t wq[]; };
+layout(std430, binding = 3) readonly buffer Ws { float ws[]; };
+layout(std430, binding = 4) readonly buffer Nrm { float nrm[]; };
+layout(std430, binding = 5) readonly buffer Aux { float aux[]; };
+layout(std430, binding = 6) readonly buffer Aux2 { float aux2[]; };
+layout(std430, binding = 7) readonly buffer Pos { int positions[]; };
+
+layout(push_constant) uniform PC { NormParams p; } pc;
+
+shared float part[256];
+
+void main() {
+    uint r = gl_WorkGroupID.x;
+    uint t = gl_LocalInvocationID.x;
+    if (int(r) >= pc.p.M) return;
+    int base = int(r) * pc.p.ld;
+
+    float ss = 0.0;
+    for (int i = int(t); i < pc.p.D; i += 256) {
+        float v = a[base + i];
+        ss += v * v;
+    }
+    part[t] = ss;
+    barrier();
+    // Tree reduction over 256 values.
+    for (uint s = 128u; s > 0u; s >>= 1u) {
+        if (t < s) part[t] += part[t + s];
+        barrier();
+    }
+    float sc = inversesqrt(part[0] / float(pc.p.D) + pc.p.eps);
+    for (int i = int(t); i < pc.p.D; i += 256) {
+        b[base + i] = a[base + i] * sc * nrm[pc.p.wOff + i];
+    }
+}

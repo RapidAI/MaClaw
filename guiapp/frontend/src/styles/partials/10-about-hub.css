@@ -741,6 +741,71 @@
     flex-shrink: 0;
 }
 
+/* iOS-style toggle (label.switch > input + span.slider) reusing the shared
+   switch chrome tokens; the hidden input keeps native semantics. */
+.problem-report-dialog .switch {
+    position: relative;
+    display: inline-flex;
+    flex: 0 0 auto;
+    width: 36px;
+    height: 20px;
+    margin: 0;
+    cursor: pointer;
+}
+
+.problem-report-dialog .switch input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.problem-report-dialog .switch .slider {
+    position: absolute;
+    inset: 0;
+    box-sizing: border-box;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-pill);
+    background: var(--theme-switch-track-off);
+    transition: background-color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.problem-report-dialog .switch .slider::before {
+    content: '';
+    position: absolute;
+    top: 1px;
+    left: 1px;
+    width: 16px;
+    height: 16px;
+    border-radius: var(--radius-pill);
+    background: var(--theme-switch-thumb);
+    box-shadow: var(--theme-switch-thumb-shadow);
+    transition: transform var(--transition-fast);
+}
+
+.problem-report-dialog .switch input:checked + .slider {
+    border-color: var(--theme-primary);
+    background: var(--theme-primary);
+}
+
+.problem-report-dialog .switch input:checked + .slider::before {
+    transform: translateX(16px);
+}
+
+.problem-report-dialog .switch input:focus-visible + .slider {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .problem-report-dialog .switch .slider,
+    .problem-report-dialog .switch .slider::before {
+        transition: none;
+    }
+}
+
 .problem-report-dialog__version {
     display: flex;
     align-items: center;

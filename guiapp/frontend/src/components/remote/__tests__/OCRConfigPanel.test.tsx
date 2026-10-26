@@ -99,7 +99,7 @@ describe('OCRConfigPanel tier selector', () => {
     it('shows formula recognition in the OCR section and persists the toggle', async () => {
         render(<OCRConfigPanel lang="zh-Hans" />);
         expect(await screen.findByText('公式识别')).toBeTruthy();
-        const box = await screen.findByRole('checkbox', { name: '启用公式识别' });
+        const box = await screen.findByRole('switch', { name: '启用公式识别' });
         expect((box as HTMLInputElement).checked).toBe(true);
         fireEvent.click(box);
         await waitFor(() => expect(mocks.setFormulaEnabled).toHaveBeenCalledWith(false));
@@ -130,7 +130,7 @@ describe('OCRConfigPanel tier selector', () => {
         });
         expect(await screen.findByText('正在下载模型...')).toBeTruthy();
 
-        const box = await screen.findByRole('checkbox', { name: '启用公式识别' });
+        const box = await screen.findByRole('switch', { name: '启用公式识别' });
         fireEvent.click(box);
         await waitFor(() => expect(mocks.setFormulaEnabled).toHaveBeenCalledWith(false));
 

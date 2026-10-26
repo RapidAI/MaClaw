@@ -1,0 +1,85 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+
+// Causal GQA attention, one workgroup per (row, head).
+//
+// Thread d owns output element d of this head. The query vector is staged in
+// shared memory, then every key/value row up to the current position is
+// streamed once with an online softmax (running max + running sum), so keys
+// are read a single time.
+//
+// Dispatch: grid = (M rows, nH heads), local_size_x = hd (128).
+
+layout(local_size_x = 128) in;
+
+struct AttnParams {
+    int M; int nH; int nKV; int hd;
+    float scale;
+    int ld;       // row stride of the packed qkv buffer
+    int qOff; int kOff; int vOff;
+    int oLd;      // row stride of the attention output buffer
+    int oOff;     // float offset of this head's slice inside an output row
+    int segOff;   // offset of the per-row segment base array inside positions[]
+};
+
+
+layout(std430, binding = 0) buffer BufA { float a[]; };
+layout(std430, binding = 1) buffer BufB { float b[]; };
+layout(std430, binding = 2) readonly buffer Wq { int8_t wq[]; };
+layout(std430, binding = 3) readonly buffer Ws { float ws[]; };
+layout(std430, binding = 4) readonly buffer Nrm { float nrm[]; };
+layout(std430, binding = 5) readonly buffer Aux { float aux[]; };
+layout(std430, binding = 6) readonly buffer Aux2 { float aux2[]; };
+layout(std430, binding = 7) readonly buffer Pos { int positions[]; };
+
+layout(push_constant) uniform PC { AttnParams p; } pc;
+
+shared float qv[128];
+
+float fast_exp(float x) {
+    if (x < -88.0) return 0.0;
+    if (x > 88.0) return 3.4028235e38;
+    return intBitsToFloat(int(12102203.0 * x + 1065292415.0));
+}
+
+void main() {
+    uint r = gl_WorkGroupID.x;
+    uint h = gl_WorkGroupID.y;
+    uint d = gl_LocalInvocationID.x;
+    if (int(r) >= pc.p.M) return;
+
+    int hd = pc.p.hd;
+    int group = pc.p.nH / pc.p.nKV;
+    int kvh = int(h) / group;
+
+    int qBase = int(r) * pc.p.ld + pc.p.qOff + int(h) * hd;
+    qv[d] = a[qBase + int(d)];
+    barrier();
+
+    // Keys 0..pos of this row's segment are visible (causal). Both the row's
+    // position and its segment base come from the positions buffer, so one
+    // dispatch covers every sequence in the batch.
+    int pos = positions[int(r)];
+    int segBase = positions[pc.p.segOff + int(r)];
+    int kBase = pc.p.kOff + kvh * hd;
+    int vBase = pc.p.vOff + kvh * hd;
+
+    float m = -3.4028235e38;
+    float s = 0.0;
+    float acc = 0.0;
+    for (int t = 0; t <= pos; t++) {
+        int rowBase = (segBase + t) * pc.p.ld;
+        float dot = 0.0;
+        for (int i = 0; i < hd; i++) dot += qv[i] * a[rowBase + kBase + i];
+        float sc = dot * pc.p.scale;
+        // Online softmax update.
+        float mNew = max(m, sc);
+        float e = fast_exp(sc - mNew);
+        float corr = fast_exp(m - mNew);
+        s = s * corr + e;
+        acc = acc * corr + e * a[rowBase + vBase + int(d)];
+        m = mNew;
+    }
+    float inv = 1.0 / s;
+    b[int(r) * pc.p.oLd + pc.p.oOff + int(h) * hd + int(d)] = acc * inv;
+}

@@ -90,12 +90,28 @@ func (q *Qwen3Embedder) GPUMemoryBytes() (weights, acts int) {
 
 // embedGPU embeds tokenised sequences on the GPU. ok=false means the GPU
 // is not in use (or just failed and was disabled); the caller runs the CPU.
+// Metal and Vulkan expose the same forward(q, seqs, outs) contract, so the
+// backend choice is a single pointer check.
 func (q *Qwen3Embedder) embedGPU(seqs [][]int) (vecs [][]float32, ok bool) {
+	var hid [][]float32
+	if vg := q.vkGPU.Load(); vg != nil {
+		hid = make([][]float32, len(seqs))
+		for i := range hid {
+			hid[i] = make([]float32, q.hp.Dim)
+		}
+		if err := vg.forward(q, seqs, hid); err != nil {
+			if q.vkGPU.CompareAndSwap(vg, nil) {
+				log.Printf("qwen3: Vulkan backend failed, falling back to CPU: %v", err)
+			}
+			return nil, false
+		}
+		return q.poolVectors(hid), true
+	}
 	g := q.gpu.Load()
 	if g == nil {
 		return nil, false
 	}
-	hid := make([][]float32, len(seqs))
+	hid = make([][]float32, len(seqs))
 	for i := range hid {
 		hid[i] = make([]float32, q.hp.Dim)
 	}
@@ -105,7 +121,13 @@ func (q *Qwen3Embedder) embedGPU(seqs [][]int) (vecs [][]float32, ok bool) {
 		}
 		return nil, false
 	}
-	vecs = make([][]float32, len(seqs))
+	return q.poolVectors(hid), true
+}
+
+// poolVectors applies the output RMSNorm, MRL truncation, and L2 normalisation
+// to the last hidden row of each sequence.
+func (q *Qwen3Embedder) poolVectors(hid [][]float32) [][]float32 {
+	vecs := make([][]float32, len(hid))
 	for i, h := range hid {
 		n := make([]float32, q.hp.Dim)
 		tensor.RMSNorm(n, h, q.outputNorm, q.hp.RMSNormEps)
@@ -114,7 +136,7 @@ func (q *Qwen3Embedder) embedGPU(seqs [][]int) (vecs [][]float32, ok bool) {
 		tensor.L2Normalize(out)
 		vecs[i] = out
 	}
-	return vecs, true
+	return vecs
 }
 
 // embedBatchGPU packs texts into GPU forwards of up to qwen3MetalBatchRows rows.
